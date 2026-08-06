@@ -55,7 +55,7 @@ it lands as its own unit rather than as a side effect of the geometry wiring.
 
 Tree notes:
 - SphericalSpatialTrees.jl current GitHub main implements an ISEA10 diamond aperture-4 layout with 10 roots and 2^r x 2^r cells per root. `ISEA4R.RowMajorOrder` is layout-*isomorphic* to SST's `LinearIndices((2^r, 2^r, 10))` order, but the diamond numbering and per-diamond axis orientation are not cross-pinned; SST interop would be a permutation of that ordering fitted against SST fixtures, addable as a third ordering with zero tree changes.
-- DGGAL describes ISEA9R as a 5x6 Cartesian equal-area square-zone layout; do not apply the SST 10-root layout to ISEA9R without fixtures.
+- The ten-diamond *layout* is shared with ISEA9R: DGGAL's "5x6 Cartesian equal-area square-zone" phrasing describes a container CRS, and OGC 21-038r1 Annex B.2 names ten root rhombuses. `ISEA9R` therefore imports this system's charts unchanged. Identifier compatibility with DGGAL remains unclaimed for both — see [`ISEA9RDGGS`](@ref) and `docs/design/isea9r_layout.md`.
 
 Sources:
 - https://dggal.org/docs/html/dggal.html
@@ -81,34 +81,89 @@ ISEA9R — icosahedral aperture-9 equal-area rhombic grid, indexed by
 `isea9r_ordinal`, unbounded level.
 
 Report section 1.8. Storage model `:sorted_ids_or_dense_faces`; native tree
-strategy `:rhombic_aperture9` (root count not verified, radix 9, no prefix
-ranges).
+strategy `:rhombic_aperture9` (10 roots, radix 9, prefix ranges).
 
-# What an ISEA9R face grid would need, and what blocks it
+# What is built today
 
-*If* the ten-diamond layout applies to ISEA9R, the geometry is already written:
-the identical `ISEA4R.DIAMONDS` table and rhombus chart, which are
-aperture-agnostic (the chart admits any `nside`). The delta over the shipped
-ISEA4R face grid would be one ordering type of about thirty lines — `nside =
-3^level`, `data_index = diamond * 9^level + base3_interleave(ix, iy) + 1`, or
-row-major for arbitrary `nside`, restricted to `3^k` by `validate_ordering`
-exactly as `ISEA4R.MortonOrder` restricts to `2^k` — plus its tests.
+**The dense diamond grid, and geometry over the canonical ordinal** — the same
+two things `ISEA4RDGGS` has, over the same ten charts.
+`DiscreteGlobalGrids.ISEA9R` owns whole-sphere grids at any `nside >= 1`
+(`ISEA9R.Isea9rFaceGrid(nside; ordering)` → `treeify` → `Regridder`) and
+`Isea9rKernel.jl` answers the package's geometry generics from the charts:
+`cell_boundary`, `cell_center`, `cell_cap`, `cell_polygon_unitsphere` and
+`cell_polygon(ISEA9RDGGS(), level, id)` all work. The `id` they take is the
+`isea9r_ordinal` — equivalently `ISEA9R.MortonOrder`'s data position minus one
+at `nside = 3^level` — and the two paths are bitwise identical, sharing one
+evaluation of the chart.
 
-What blocks it is the layout question, not the code: DGGAL describes ISEA9R as
-a 5x6 Cartesian equal-area square-zone layout, which may not be the ten-diamond
-layout at all. Per the registry note below, the SST/ISEA4R 10-root layout must
-not be applied to ISEA9R without DGGAL or other external fixtures. Until then
-`root_count` stays unwired (`NotPortedError`), `supports_prefix_ranges` stays
-`false`, and no ISEA9R face grid is built. If fixtures do pin the ten-diamond
-reading, the package's own ISEA4R layout
-(`docs/design/isea4r_diamond_layout.md`) is the geometry it would reuse
-verbatim — with that note's compatibility caveat still applying to identifiers.
+The charts are not a second implementation: `ISEA9R` imports `ISEA4R`'s
+`xyd_to_point` / `cell_corners` by name, the rhombus chart being
+aperture-agnostic (it takes continuous `(x, y)` and quantises nothing). So an
+ISEA9R cell and an ISEA4R cell at the same lattice position and the same
+`nside = 3^k` are the same four `Float64`-triples, bitwise.
+
+`ISEA9R.MortonOrder` realizes the `isea9r_ordinal` shape
+`diamond * 9^level + position` at `nside = 3^level`, and **`position` is hereby
+pinned to the base-9 Morton (Z-order) code**: base-9 digit `k` of the code is
+`ix_k + 3 * iy_k`, the base-3 digits of the two coordinates interleaved. That is
+this package's canonical choice in this package's own diamond numbering, and is
+*not* DGGAL's index — see the compatibility section below.
+
+**The id hierarchy is deferred, not blocked**, on exactly the ISEA4R sibling's
+line and as one decision with it. `cell_children`, `cell_parent`,
+`cell_descendants`, `cell_to_ordinal`, `ordinal_to_cell`, `descendant_range`,
+`num_cells` and `root_ids` still throw `NotPortedError`, so there is no
+`DGGSGrid(ISEA9RDGGS(), level)` either. The radix-9 arithmetic over these
+ordinals is exact (the base-9 Morton code drops one digit per level up and the
+lattice nesting is bit-exact, `fl(ix/n) === fl(3ix/3n)`), so children `9p:9p+8`,
+ancestor `p ÷ 9^Δ` and descendant interval `[p * 9^Δ, (p + 1) * 9^Δ)` would all
+follow from `has_ordinal_ids = true` plus the already-wired `root_count = 10` /
+`radix = 9`. What that one line additionally owes is the kernel-test battery the
+resulting grids deserve and a `has_exact_subtree_cap` decision.
+
+# The layout question is settled; the DGGAL-compatibility question is not
+
+The registry note this entry used to carry — *"DGGAL describes ISEA9R as a 5x6
+Cartesian equal-area square-zone layout; do not apply the SST 10-root layout to
+ISEA9R without fixtures"* — conflated two questions. The first is **resolved**
+from primary sources:
+
+> "The ten root rhombuses are formed by combining two icosahedron triangles at
+> their base." — OGC 21-038r1 (*OGC API — DGGS Part 1: Core*), Annex B.2,
+> Listing B.2, <https://docs.ogc.org/is/21-038r1/21-038r1.html#isea9r-dggrs>
+
+and DGGAL's `RhombicIcosahedral9R::countZones(level)` returns `10 * 9^level`
+(`src/dggrs/RI9R.ec`), i.e. ten zones at level 0. The 5×6 space is a *container*
+CRS chosen so the grid is also an OGC 2D Tile Matrix Set: the sphere occupies
+ten of its thirty unit cells in a diagonal staircase, and each of those unit
+squares is one icosahedral rhombus — two triangular faces glued along an edge,
+which is precisely the ten-diamond layout. So the ten-diamond chart *is* ISEA9R
+geometry, and it is wired.
+
+The second question stands unchanged: **no DGGAL/DGGRID identifier or geometry
+compatibility is claimed, and fixtures are still required before any could be.**
+Three separate deltas would each have to close:
+
+1. *Identifiers.* DGGAL's zone id is `{LevelChar}{RootRhombus}-{HexIndex}` with
+   the index row-major within the rhombus; its root numbering runs
+   north/south/north/… around the staircase where this package numbers the five
+   northern diamonds first, and its in-square axes are the transpose of this
+   package's. Both the permutation and the transpose are *derivations*, not
+   oracle output.
+2. *Orientation.* DGGAL places the icosahedron at 11.20°E; this package's
+   DGGRID-standard placement is 11.25°E — about 5.6 km at the equator.
+3. *Ellipsoid.* DGGAL converts geodetic↔authalic latitude at the WGS84
+   boundary; `ISEA` works on the authalic sphere and does not.
+
+`docs/design/isea9r_layout.md` carries the citations, the derived permutation,
+and the seven-item fixture dump that would settle all three.
 
 Tree notes:
-- Rhombic variants should become prefix-range trees after the root layout is pinned against DGGAL or other external fixtures.
-- DGGAL describes ISEA9R as a 5x6 Cartesian equal-area square-zone layout; do not apply the SST 10-root layout to ISEA9R without fixtures.
+- 10 roots and radix 9, both wired; `supports_prefix_ranges` is true of the package-canonical base-9 Morton ordinal, not of DGGAL's zone id.
+- DGGAL's "5x6 Cartesian equal-area square-zone" phrasing describes a container CRS, not a 30-root decomposition (OGC 21-038r1 Annex B.2; DGGAL RI9R.ec).
 
 Sources:
+- https://docs.ogc.org/is/21-038r1/21-038r1.html#isea9r-dggrs
 - https://dggal.org/docs/html/dggal.html
 - https://github.com/ecere/dggal
 - https://github.com/meggart/SphericalSpatialTrees.jl/blob/main/src/iseatree.jl
@@ -117,10 +172,12 @@ Sources:
 
 Local references:
 - global_grid_systems_report.md#18-isea4r--isea9r
+- docs/design/isea9r_layout.md
+- docs/design/isea4r_diamond_layout.md
 - ConservativeRegridding.jl/examples/isea20_sst.jl
 
 Notes:
-- Verify root count/order before enabling prefix ranges.
+- The concrete backend is the package's own `ISEA9R` submodule over `ISEA4R`'s charts, not DGGAL; verify naming against DGGAL fixtures before declaring identifier compatibility.
 """
 struct ISEA9RDGGS <: AbstractISEARDGGS end
 
@@ -144,7 +201,54 @@ is_equal_area(::ISEA9RDGGS) = true
 aperture(::ISEA9RDGGS) = 9
 canonical_index_name(::ISEA9RDGGS) = :isea9r_ordinal
 max_level(::ISEA9RDGGS) = nothing
-supports_prefix_ranges(::ISEA9RDGGS) = false
-# No `root_count` method for ISEA9R: the root layout is not verified yet, so it
-# falls back to the `AbstractDGGS` method and throws `NotPortedError`.
+
+"""
+    supports_prefix_ranges(::ISEA9RDGGS) -> true
+
+True **of the package-canonical `isea9r_ordinal`**, and of nothing else.
+
+That ordinal is `diamond * 9^level + morton9_position` with `position` the
+base-9 Morton code (`ISEA9R.MortonOrder`). Over it, a cell's `leaf_level`
+descendants are the contiguous interval `[p * 9^Δ, (p + 1) * 9^Δ)`: the Morton
+code drops its low base-9 digit per level up, and the within-diamond lattice
+nesting is bit-exact (`fl(ix/n) === fl(3ix/3n)`, since all four integers are
+exactly representable as `Float64` and the real quotients are identical), so
+the interval arithmetic `leaf_interval` performs is exact rather than
+approximate.
+
+It is emphatically **not** true of DGGAL's ISEA9R identifiers. DGGAL packs a
+zone as `level << 59 | row << 30 | col` over the global 5×6 lattice (its textual
+form `{LevelChar}{RootRhombus}-{HexIndex}` reorders the same information), and
+the descendants of a zone are a *rectangular block* in `(row, col)` — never a
+contiguous integer interval in either encoding. DGGAL itself compacts by
+explicit nine-child set membership rather than by interval arithmetic
+(`compactI9RZones`, `src/dggrs/RI9R.ec`). Anything reading this trait as a
+statement about DGGAL ids is reading it wrong; see
+`docs/design/isea9r_layout.md`.
+"""
+supports_prefix_ranges(::ISEA9RDGGS) = true
+
+"""
+    root_count(::ISEA9RDGGS) -> 10
+
+Ten root rhombuses, each two icosahedron faces glued along an edge. Normative:
+
+> "The ten root rhombuses are formed by combining two icosahedron triangles at
+> their base." — OGC 21-038r1 (*OGC API — Discrete Global Grid Systems — Part 1:
+> Core*), Annex B.2 "ISEA9R DGGRS definition", Listing B.2,
+> <https://docs.ogc.org/is/21-038r1/21-038r1.html#isea9r-dggrs>
+
+and implemented: DGGAL's `RhombicIcosahedral9R::countZones(level)` returns
+`10 * 9^level` (`src/dggrs/RI9R.ec`), so `countZones(0) == 10`, and its zone-id
+codec admits exactly `root ∈ 0:9`.
+
+The "5×6 Cartesian equal-area square-zone" phrasing in DGGAL's own
+documentation — which an earlier version of this registry entry read as a
+possible thirty-root decomposition — describes a *container* CRS for tiling, not
+a root decomposition: the sphere occupies ten of the thirty unit cells in a
+diagonal staircase and the other twenty are empty. See
+`docs/design/isea9r_layout.md`.
+"""
+root_count(::ISEA9RDGGS) = 10
+
 radix(::ISEA9RDGGS) = 9

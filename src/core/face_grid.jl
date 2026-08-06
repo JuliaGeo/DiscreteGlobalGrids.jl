@@ -8,10 +8,11 @@
 # `ConservativeRegridding.Regridder` can consume: a *dense* grid — all
 # `nfaces * nside²` cells of one resolution — as a `SpatialTreeInterface` tree,
 # with no per-system tree code at all. A system joins by defining a
-# [`FaceGridSystem`](@ref) singleton plus seven small methods; the three
+# [`FaceGridSystem`](@ref) singleton plus seven small methods; the four
 # shipped instances are `src/HEALPix/face_grid.jl` (12 faces),
-# `src/S2/face_grid.jl` (6) and `src/ISEA4R/face_grid.jl` (10 diamonds), and
-# each one is that singleton, its orderings, and nothing else.
+# `src/S2/face_grid.jl` (6), `src/ISEA4R/face_grid.jl` (10 diamonds) and
+# `src/ISEA9R/face_grid.jl` (the same ten diamonds at aperture 9), and each one
+# is that singleton, its orderings, and nothing else.
 #
 # ## Why a per-face curvilinear grid rather than an id hierarchy
 #
@@ -89,10 +90,11 @@
 # default. A system may opt into the O(1) four-corner cap by overriding
 # [`cap_policy`](@ref) to [`FourCornerCap`](@ref) — but only together with a
 # written soundness argument, proved or measured, at the override. See the
-# three shipped overrides for what that looks like: S2 proves it from geodesic
+# four shipped overrides for what that looks like: S2 proves it from geodesic
 # block edges, ISEA4R measures it under a pre-registered decision rule with the
-# measurement kept as a standing test, HEALPix ports a measured property of the
-# HEALPix chart.
+# measurement kept as a standing test, ISEA9R re-runs that measurement at its
+# own block shapes rather than inheriting the sibling's result, and HEALPix
+# ports a measured property of the HEALPix chart.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -105,7 +107,8 @@
 A grid system that factors into `nfaces` charts `[0, 1]² → S²` over a square
 lattice — the contract this file's grid, tree and cap machinery is written
 against. Instances are per-system singletons living in the system's submodule
-(`HEALPix.HealpixFaceSystem`, `S2.S2FaceSystem`, `ISEA4R.Isea4rFaceSystem`).
+(`HEALPix.HealpixFaceSystem`, `S2.S2FaceSystem`, `ISEA4R.Isea4rFaceSystem`,
+`ISEA9R.Isea9rFaceSystem`).
 
 # Extension contract
 
@@ -182,7 +185,8 @@ restrictions belong to the individual orderings, and are enforced by
 `HealpixFaceSpace(3)` and `HealpixFaceSpace(5)` are perfectly good HEALPix
 grids that simply have no nested id space.
 
-Per-system aliases: `HealpixFaceSpace`, `S2FaceSpace`, `Isea4rFaceSpace`.
+Per-system aliases: `HealpixFaceSpace`, `S2FaceSpace`, `Isea4rFaceSpace`,
+`Isea9rFaceSpace`.
 
 ```julia
 space = HealpixFaceSpace(4)     # 192 pixels
@@ -204,9 +208,21 @@ struct FaceGridSpace{S<:FaceGridSystem}
     end
 end
 
-# The bounds are powers of two and are documented as such (`2^29`, `2^30`);
-# printing `536870912` in the error message would make them unrecognizable.
-_nside_bound_string(n::Integer) = ispow2(n) ? "2^$(trailing_zeros(n))" : string(n)
+# The bounds are powers of the system's aperture root and are documented as such
+# (`2^29` for the aperture-4 systems, `3^18` for ISEA9R); printing `536870912`
+# or `387420489` in the error message would make them unrecognizable. Anything
+# else prints as itself — a system whose bound is a plain wrap point has no
+# recognizable form to preserve.
+function _nside_bound_string(n::Integer)
+    ispow2(n) && return "2^$(trailing_zeros(n))"
+    m, k = one(n), 0
+    while m < n && m <= n ÷ 3          # `<= n ÷ 3` so the multiply cannot pass `n`
+        m *= 3
+        k += 1
+    end
+    m == n && return "3^$k"
+    return string(n)
+end
 
 """
     num_cells(space::FaceGridSpace) -> Int
@@ -228,12 +244,13 @@ Base.show(io::IO, space::FaceGridSpace{S}) where {S} =
     nfaces(sys::FaceGridSystem) -> Int
 
 Number of base faces the system's charts cover — 12 for HEALPix, 6 for S2, 10
-for ISEA4R. The root node of the tree has exactly this many children, and the
-grid has `nfaces(sys) * nside^2` cells.
+for ISEA4R and for ISEA9R. The root node of the tree has exactly this many
+children, and the grid has `nfaces(sys) * nside^2` cells.
 
-Numerically this equals `root_count` of the system's registry twin in all three
-shipped instances; that is a coincidence of these systems, not a contract, and
-the two are kept independent.
+Numerically this equals `root_count` of the system's registry twin in all four
+shipped instances; for ISEA9R the two really are the same ten root rhombuses
+(OGC 21-038r1 Annex B.2), for the others it is a coincidence of the system. It
+is not a contract either way, and the two are kept independent.
 """
 function nfaces end
 
@@ -292,7 +309,7 @@ function max_nside end
 
 The ordering `FaceGrid{Sys}(nside)` uses when none is named. Always the one
 defined for *every* `nside >= 1` (`RingOrder` for HEALPix, `RowMajorOrder` for
-S2 and ISEA4R), never a power-of-two-only ordering.
+S2, ISEA4R and ISEA9R), never a radix-restricted ordering.
 """
 function default_ordering end
 
@@ -357,9 +374,10 @@ end
 # nested/Hilbert/Morton-ordered files, and (later) arbitrary permutations —
 # without the tree code knowing which.
 #
-# Orderings stay per-system: `S2.RowMajorOrder` and `ISEA4R.RowMajorOrder` are
-# deliberately distinct types with per-system range checks, so the three
-# contract functions below are shared but no concrete ordering is.
+# Orderings stay per-system: `S2.RowMajorOrder`, `ISEA4R.RowMajorOrder` and
+# `ISEA9R.RowMajorOrder` are deliberately distinct types with per-system range
+# checks, so the three contract functions below are shared but no concrete
+# ordering is.
 # ---------------------------------------------------------------------------
 
 """
@@ -371,7 +389,8 @@ A [`FaceGrid`](@ref) is a lattice (`nfaces * nside²` cells addressed by
 `(ix, iy, face)`) plus one of these; the ordering is the *only* thing that
 decides which column of a `ConservativeRegridding.Regridder` a cell lands in.
 Each system subtypes this once (`HEALPix.AbstractHealpixOrdering`,
-`S2.AbstractS2Ordering`, `ISEA4R.AbstractIsea4rOrdering`) and ships its
+`S2.AbstractS2Ordering`, `ISEA4R.AbstractIsea4rOrdering`,
+`ISEA9R.AbstractIsea9rOrdering`) and ships its
 concrete orderings under that.
 
 # Extension contract
@@ -407,7 +426,8 @@ curve, or the column order of an on-disk product) can be added later without
 touching [`FaceGrid`](@ref), [`FaceChartGrid`](@ref) or
 [`FaceGridRoot`](@ref).
 
-Per-system aliases: `HealpixFaceGrid`, `S2FaceGrid`, `Isea4rFaceGrid`.
+Per-system aliases: `HealpixFaceGrid`, `S2FaceGrid`, `Isea4rFaceGrid`,
+`Isea9rFaceGrid`.
 """
 abstract type AbstractFaceOrdering end
 
@@ -420,9 +440,10 @@ abstract type AbstractFaceOrdering end
 half and its exact inverse.
 
 There is deliberately **no generic fallback method here** — not even for
-row-major. `S2.RowMajorOrder` and `ISEA4R.RowMajorOrder` are distinct types
-whose codecs carry per-system range checks and face counts, and collapsing them
-would silently accept out-of-range faces. Every ordering brings its own pair.
+row-major. `S2.RowMajorOrder`, `ISEA4R.RowMajorOrder` and
+`ISEA9R.RowMajorOrder` are distinct types whose codecs carry per-system range
+checks and face counts, and collapsing them would silently accept out-of-range
+faces. Every ordering brings its own pair.
 """
 function data_index end
 
@@ -519,7 +540,8 @@ with the data ordering its cells are numbered by. `treeify(grid)` turns it into
 a spatial tree ([`FaceGridRoot`](@ref)) that
 `ConservativeRegridding.Regridder` consumes directly.
 
-Per-system aliases: `HealpixFaceGrid`, `S2FaceGrid`, `Isea4rFaceGrid`.
+Per-system aliases: `HealpixFaceGrid`, `S2FaceGrid`, `Isea4rFaceGrid`,
+`Isea9rFaceGrid`.
 
 ```julia
 grid = HealpixFaceGrid(4; ordering = NestedOrder())
@@ -619,7 +641,7 @@ rather than an `Int` is what makes "already checked" a property of the type
 system instead of a convention the root has to keep.
 
 Per-system aliases: `HEALPix.FaceChartGrid`, `S2.FaceChartGrid`,
-`ISEA4R.DiamondChartGrid`.
+`ISEA4R.DiamondChartGrid`, `ISEA9R.DiamondChartGrid`.
 """
 struct FaceChartGrid{S<:FaceGridSystem,M<:GOCore.Manifold,O<:AbstractFaceOrdering} <: Trees.AbstractCurvilinearGrid{M}
     manifold::M
@@ -715,7 +737,8 @@ dual-tree traversal, going around the checks `FaceGrid` exists to run. Both are
 two comparisons on a singleton, so paying for them twice costs nothing that
 matters and closes the direct-construction hole.
 
-Per-system aliases: `HealpixFaceRoot`, `S2FaceRoot`, `Isea4rFaceRoot`.
+Per-system aliases: `HealpixFaceRoot`, `S2FaceRoot`, `Isea4rFaceRoot`,
+`Isea9rFaceRoot`.
 """
 struct FaceGridRoot{S<:FaceGridSystem,M<:GOCore.Manifold,O<:AbstractFaceOrdering}
     manifold::M

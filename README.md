@@ -103,12 +103,23 @@ system into the operations kernel.
 | `HEALPix` | HEALPix, as a nested id hierarchy (EOPF/GRID4EARTH conventions) and as a dense face grid | pure-Julia chart kernel; Healpix.jl in the lookup layer |
 | `IGeo7` | IGEO7 (ISEA7H + Z7), clean-room implementation | pure Julia, stdlib-only core; geometry from `ISEA` |
 | `ISEA4R` | ISEA4R, as a dense ten-diamond grid and as `ISEA4RDGGS` cell geometry | pure Julia; Snyder charts from `ISEA` |
+| `ISEA9R` | ISEA9R, the same ten diamonds at aperture 9, and `ISEA9RDGGS` cell geometry | pure Julia; **imports `ISEA4R`'s chart unchanged** — the rhombus chart carries no aperture — plus base-9 index maps |
 | `S2` | S2, as a dense cube-face grid and as `S2DGGS` cell geometry | pure-Julia closed forms; no s2geometry dependency |
 
-`S2` and `ISEA4R` have no `<X>Lookups` module: they are chart systems, and a
-dimension of stored ids needs an id hierarchy neither has yet. The ISEA4R
-ten-diamond numbering is a package convention with **no external oracle**, so no
-compatibility with any external ISEA4R product's identifiers is claimed — see
+`S2`, `ISEA4R` and `ISEA9R` have no `<X>Lookups` module: they are chart systems,
+and a dimension of stored ids needs an id hierarchy none has yet. `ISEA9R` is the
+thinnest instance of the shared face-grid layer: its `chart.jl` *imports*
+`ISEA4R`'s chart rather than defining one, a claim
+`test/ISEA9R/test_delegation.jl` checks with `===` on the function objects and
+then bitwise on the two systems' grids and Regridders.
+
+The ten-*root* layout both rhombic systems use is normative for ISEA9R — OGC
+21-038r1 Annex B.2, *"The ten root rhombuses are formed by combining two
+icosahedron triangles at their base"* — and DGGAL's
+`RhombicIcosahedral9R::countZones(level)` returns `10 * 9^level`. The ten-diamond
+*numbering*, the in-diamond axes and the in-diamond index are package
+conventions with **no external oracle**, so no DGGRID/DGGAL/SST identifier
+compatibility is claimed for either system — see
 `docs/design/isea4r_diamond_layout.md`. `zonal` and `stencil` currently exist
 only in `HealpixLookups`.
 
@@ -119,7 +130,8 @@ only in `HealpixLookups`.
 | `HEALPixDGGS`, `H3DGGS`, `IGEO7DGGS`, `A5DGGS` | yes | yes | the system's canonical id |
 | `S2DGGS` | no | yes | scaffold ordinal `face * 4^level + hilbert_position` |
 | `ISEA4RDGGS` | no | yes | canonical `isea4r_ordinal` `diamond * 4^level + morton_position` |
-| the other eight, incl. `ISEA9RDGGS`, `RHEALPixDGGS` | no | no | — |
+| `ISEA9RDGGS` | no | yes | canonical `isea9r_ordinal` `diamond * 9^level + morton_position` (base-9 Morton) |
+| the other seven, incl. `RHEALPixDGGS` | no | no | — |
 
 How much of the kernel each wired system gets for free is decided by four
 id-model traits (`cell_id_type`, `has_ordinal_ids`, `has_descendant_ranges`,
@@ -147,7 +159,7 @@ Pkg.test()
 
 `test/runtests.jl` aggregates one suite per unit — `test/test_helpers.jl` and
 `test/core/`, `test/A5/`, `test/H3/`, `test/HEALPix/`, `test/IGeo7/`,
-`test/ISEA4R/`, `test/S2/` — each wrapped in its own module so the generic
+`test/ISEA4R/`, `test/ISEA9R/`, `test/S2/` — each wrapped in its own module so the generic
 vocabulary the systems share cannot collide across suites. The IGEO7 suite
 validates against the oracle vectors in `test/IGeo7/vectors/` and dominates the
 count. **513,337 assertions, ~80 s warm.**

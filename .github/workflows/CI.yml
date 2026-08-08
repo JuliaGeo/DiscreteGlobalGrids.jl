@@ -1,0 +1,93 @@
+name: CI
+on:
+  push:
+    branches:
+      - main
+    tags: ['*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.11'
+          - '1'
+        os:
+          - ubuntu-latest
+        arch:
+          - x64
+        include:
+          - os: macos-latest
+            version: '1'
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v6
+      # Project.toml resolves ConservativeRegridding through a `[sources]` path
+      # entry pointing at the sibling checkout (its `Trees` submodule is not in a
+      # registered release yet), so CI has to materialise that sibling itself.
+      - name: Clone sibling ConservativeRegridding.jl
+        run: git clone --depth 1 --branch main https://github.com/JuliaGeo/ConservativeRegridding.jl.git "${{ github.workspace }}/../ConservativeRegridding.jl"
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+          arch: ${{ matrix.arch }}
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+      - uses: julia-actions/julia-processcoverage@v1
+        with:
+          directories: src
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          files: lcov.info
+          slug: JuliaGeo/DiscreteGlobalGrids.jl
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      statuses: write
+      actions: write
+      pull-requests: write
+    steps:
+      # Makie needs a GL stack and an X server even for CairoMakie-only builds,
+      # because GeoMakie/GLMakie may still be loaded by a doc page.
+      - name: Install binary dependencies
+        run: sudo apt-get update && sudo apt-get install -y xorg-dev mesa-utils xvfb libgl1 freeglut3-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
+      - uses: actions/checkout@v6
+      - name: Clone sibling ConservativeRegridding.jl
+        run: git clone --depth 1 --branch main https://github.com/JuliaGeo/ConservativeRegridding.jl.git "${{ github.workspace }}/../ConservativeRegridding.jl"
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - name: Install documentation dependencies
+        run: |
+          xvfb-run -s '-screen 0 1024x768x24' julia --project=docs -e '
+            using Pkg
+            Pkg.instantiate()'
+        env:
+          DISPLAY: ':0'
+          DATADEPS_ALWAYS_ACCEPT: 'true'
+      - uses: julia-actions/julia-docdeploy@v1
+        with:
+          prefix: xvfb-run
+          install-package: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
+          DISPLAY: ':0'
+          DATADEPS_ALWAYS_ACCEPT: 'true'

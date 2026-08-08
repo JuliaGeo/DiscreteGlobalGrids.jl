@@ -1,0 +1,1083 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Interactive architecture map of DiscreteGlobalGrids.jl">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%230d4c53'/%3E%3Cpath d='M8 16h16M16 8v16' stroke='%23f5c451' stroke-width='2'/%3E%3C/svg%3E">
+  <title>DiscreteGlobalGrids.jl — architecture map</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ice: #eaf7f6;
+      --paper: #f7fcfb;
+      --white: #ffffff;
+      --ink: #102d32;
+      --ink-soft: #38555a;
+      --line: #b8d4d1;
+      --line-strong: #799f9c;
+      --ocean: #176f70;
+      --ocean-deep: #0d4c53;
+      --aqua: #46b9b0;
+      --aqua-pale: #d5f0ed;
+      --sun: #f5c451;
+      --sun-pale: #fff2c7;
+      --coral: #dc685a;
+      --coral-pale: #fbe2de;
+      --violet: #7668a9;
+      --violet-pale: #ece8f7;
+      --shadow: 0 18px 50px rgba(16, 45, 50, 0.11);
+      --radius: 18px;
+      --mono: "SFMono-Regular", "Cascadia Code", "Liberation Mono", monospace;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(23, 111, 112, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 111, 112, 0.055) 1px, transparent 1px),
+        radial-gradient(circle at 83% 5%, rgba(70, 185, 176, 0.20), transparent 29rem),
+        var(--ice);
+      background-size: 42px 42px, 42px 42px, auto, auto;
+      font-family: var(--body);
+      line-height: 1.5;
+    }
+
+    button, a { font: inherit; }
+
+    a { color: inherit; }
+
+    button:focus-visible,
+    a:focus-visible {
+      outline: 3px solid var(--sun);
+      outline-offset: 3px;
+    }
+
+    .page-shell {
+      width: min(1480px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 32px 0 56px;
+    }
+
+    .hero {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+      gap: 34px;
+      align-items: center;
+      overflow: hidden;
+      padding: clamp(28px, 5vw, 64px);
+      color: #effdfb;
+      background: var(--ocean-deep);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(118deg, transparent 0 57%, rgba(70, 185, 176, 0.10) 57% 58%, transparent 58%),
+        radial-gradient(circle at 86% 42%, rgba(245, 196, 81, 0.12), transparent 20rem);
+    }
+
+    .hero-copy,
+    .globe-wrap { position: relative; z-index: 1; }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: #92ddd7;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 850px;
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(2.6rem, 6vw, 5.6rem);
+      font-weight: 400;
+      letter-spacing: -0.045em;
+      line-height: 0.94;
+    }
+
+    .hero-lede {
+      max-width: 760px;
+      margin: 22px 0 0;
+      color: #cde9e6;
+      font-size: clamp(1rem, 1.8vw, 1.22rem);
+    }
+
+    .hero code,
+    .node code,
+    .inspector code,
+    .source-note code {
+      font-family: var(--mono);
+      font-size: 0.88em;
+    }
+
+    .metric-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px 22px;
+      margin: 30px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .metric-line li {
+      display: inline-flex;
+      gap: 8px;
+      align-items: baseline;
+      color: #b8dcd8;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .metric-line strong {
+      color: var(--sun);
+      font-family: var(--display);
+      font-size: 1.55rem;
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+
+    .globe-wrap {
+      display: grid;
+      place-items: center;
+      min-height: 310px;
+    }
+
+    .globe {
+      width: min(100%, 360px);
+      height: auto;
+      overflow: visible;
+      filter: drop-shadow(0 25px 30px rgba(0, 0, 0, 0.20));
+    }
+
+    .globe .sphere-fill { fill: rgba(70, 185, 176, 0.09); }
+    .globe .sphere-line { fill: none; stroke: #72cbc4; stroke-width: 1.4; opacity: 0.75; }
+    .globe .kernel-ring { fill: none; stroke: var(--sun); stroke-width: 2.2; stroke-dasharray: 5 8; }
+    .globe .cell { fill: var(--sun); opacity: 0.94; }
+    .globe text { fill: #ecfcfa; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .globe .kernel-ring { animation: orbit 22s linear infinite; transform-origin: 180px 180px; }
+      @keyframes orbit { to { transform: rotate(360deg); } }
+    }
+
+    .architecture {
+      margin-top: 30px;
+      padding: clamp(22px, 4vw, 46px);
+      background: rgba(247, 252, 251, 0.94);
+      border: 1px solid rgba(121, 159, 156, 0.45);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 24px;
+      align-items: end;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-kicker {
+      margin: 0 0 5px;
+      color: var(--ocean);
+      font-family: var(--mono);
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(1.8rem, 4vw, 3.1rem);
+      font-weight: 400;
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+    }
+
+    .flow-note {
+      max-width: 350px;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 0.9rem;
+      text-align: right;
+    }
+
+    .flow-note span {
+      color: var(--ocean);
+      font-weight: 700;
+    }
+
+    .focus-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 22px 0 8px;
+    }
+
+    .focus-label {
+      margin-right: 5px;
+      color: var(--ink-soft);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .focus-button {
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      padding: 7px 13px;
+      color: var(--ink);
+      background: transparent;
+      cursor: pointer;
+      font-size: 0.83rem;
+      font-weight: 700;
+    }
+
+    .focus-button:hover { background: var(--aqua-pale); }
+
+    .focus-button[aria-pressed="true"] {
+      color: #f5fffd;
+      background: var(--ocean);
+      border-color: var(--ocean);
+    }
+
+    .route-summary {
+      min-height: 27px;
+      margin: 10px 0 0;
+      color: var(--ink-soft);
+      font-size: 0.9rem;
+    }
+
+    .route-summary strong { color: var(--ink); }
+
+    .diagram-stage {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-template-rows: repeat(6, auto);
+      gap: 90px 20px;
+      align-items: stretch;
+      margin-top: 26px;
+      padding: 18px 0 4px;
+      isolation: isolate;
+    }
+
+    .connectors {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      pointer-events: none;
+    }
+
+    .edge {
+      fill: none;
+      stroke: var(--line-strong);
+      stroke-width: 1.5;
+      vector-effect: non-scaling-stroke;
+      transition: opacity 180ms ease, stroke 180ms ease, stroke-width 180ms ease;
+    }
+
+    .edge.is-active {
+      stroke: var(--ocean);
+      stroke-width: 2.4;
+    }
+
+    .edge.is-dimmed { opacity: 0.11; }
+
+    .node {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      min-width: 0;
+      min-height: 150px;
+      padding: 19px 20px 18px;
+      color: var(--ink);
+      text-align: left;
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--node-accent, var(--ocean));
+      border-radius: var(--radius);
+      box-shadow: 0 12px 28px rgba(16, 45, 50, 0.08);
+      cursor: pointer;
+      transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease, filter 180ms ease;
+    }
+
+    .node:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 18px 34px rgba(16, 45, 50, 0.13);
+    }
+
+    .node[aria-pressed="true"] {
+      box-shadow: 0 0 0 3px var(--sun), 0 18px 34px rgba(16, 45, 50, 0.13);
+    }
+
+    .node.is-dimmed {
+      opacity: 0.22;
+      filter: saturate(0.15);
+    }
+
+    .node-type {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 11px;
+      color: var(--ink-soft);
+      font-family: var(--mono);
+      font-size: 0.69rem;
+      font-weight: 700;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+
+    .node-type::after {
+      content: "↘";
+      color: var(--node-accent, var(--ocean));
+      font-size: 1rem;
+      line-height: 1;
+    }
+
+    .node-title {
+      display: block;
+      margin-bottom: 7px;
+      font-family: var(--display);
+      font-size: clamp(1.22rem, 2vw, 1.62rem);
+      font-weight: 400;
+      letter-spacing: -0.025em;
+      line-height: 1.05;
+    }
+
+    .node-copy {
+      display: block;
+      color: var(--ink-soft);
+      font-size: 0.84rem;
+      line-height: 1.42;
+      overflow-wrap: anywhere;
+    }
+
+    .node-copy code { color: var(--ink); }
+
+    .mini-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .mini-list span {
+      display: inline-flex;
+      max-width: 100%;
+      padding: 3px 8px;
+      color: var(--ink);
+      background: var(--node-wash, var(--aqua-pale));
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 0.66rem;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .consumer { --node-accent: var(--violet); --node-wash: var(--violet-pale); }
+    .access { --node-accent: var(--ocean); --node-wash: var(--aqua-pale); }
+    .tree { --node-accent: var(--coral); --node-wash: var(--coral-pale); }
+    .core { --node-accent: var(--sun); --node-wash: var(--sun-pale); }
+    .system { --node-accent: var(--aqua); --node-wash: var(--aqua-pale); }
+    .foundation { --node-accent: var(--line-strong); --node-wash: #e9f0ef; }
+
+    #cubes { grid-column: 1 / span 4; grid-row: 1; }
+    #query { grid-column: 5 / span 4; grid-row: 1; }
+    #regridder { grid-column: 9 / span 4; grid-row: 1; }
+    #lookups { grid-column: 1 / span 4; grid-row: 2; }
+    #id-grids { grid-column: 5 / span 4; grid-row: 2; }
+    #face-grids { grid-column: 9 / span 4; grid-row: 2; }
+    #cursor { grid-column: 3 / span 4; grid-row: 3; }
+    #face-root { grid-column: 8 / span 4; grid-row: 3; }
+    #registry { grid-column: 1 / span 4; grid-row: 4; }
+    #kernel { grid-column: 5 / span 4; grid-row: 4; }
+    #face-core { grid-column: 9 / span 4; grid-row: 4; }
+    #full-systems { grid-column: 1 / span 6; grid-row: 5; }
+    #chart-systems { grid-column: 7 / span 3; grid-row: 5; }
+    #catalog-systems { grid-column: 10 / span 3; grid-row: 5; }
+    #helpers { grid-column: 1 / span 4; grid-row: 6; }
+    #isea { grid-column: 5 / span 4; grid-row: 6; }
+    #dependencies { grid-column: 9 / span 4; grid-row: 6; }
+
+    .lane-label {
+      position: absolute;
+      left: 0;
+      z-index: 0;
+      padding: 4px 8px;
+      color: var(--ink-soft);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 0.63rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      transform: translateY(-50%);
+    }
+
+    .inspector {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
+      gap: 28px;
+      margin-top: 34px;
+      padding-top: 28px;
+      border-top: 1px solid var(--line);
+    }
+
+    .inspector-index {
+      color: var(--ocean);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .inspector h3 {
+      margin: 5px 0 9px;
+      font-family: var(--display);
+      font-size: clamp(1.55rem, 3vw, 2.35rem);
+      font-weight: 400;
+      letter-spacing: -0.025em;
+      line-height: 1.06;
+    }
+
+    .inspector-summary {
+      margin: 0;
+      color: var(--ink-soft);
+    }
+
+    .inspector-detail {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 22px;
+    }
+
+    .detail-group h4 {
+      margin: 0 0 8px;
+      color: var(--ink-soft);
+      font-family: var(--mono);
+      font-size: 0.69rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .detail-group p,
+    .detail-group ul { margin: 0; }
+
+    .detail-group ul {
+      padding-left: 18px;
+      color: var(--ink-soft);
+      font-size: 0.88rem;
+    }
+
+    .detail-group li + li { margin-top: 5px; }
+
+    .source-paths {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .source-paths a {
+      display: inline-flex;
+      padding: 4px 8px;
+      color: var(--ocean-deep);
+      background: var(--aqua-pale);
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 0.69rem;
+      text-decoration: none;
+    }
+
+    .source-paths a:hover { text-decoration: underline; }
+
+    .source-note {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 14px;
+      margin: 24px 2px 0;
+      color: var(--ink-soft);
+      font-size: 0.78rem;
+    }
+
+    .source-note p { margin: 0; }
+
+    .source-note a {
+      color: var(--ocean-deep);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    @media (max-width: 980px) {
+      .hero { grid-template-columns: 1fr; }
+      .globe-wrap { min-height: 230px; }
+      .globe { width: 260px; }
+      .section-head { grid-template-columns: 1fr; align-items: start; }
+      .flow-note { text-align: left; }
+      .diagram-stage { gap: 76px 14px; }
+      .node { padding: 16px; }
+      .inspector { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 740px) {
+      .page-shell { width: min(100% - 22px, 1480px); padding-top: 12px; }
+      .hero, .architecture { border-radius: 20px; }
+      .hero { padding: 26px 21px; }
+      .architecture { padding: 24px 16px; }
+      .diagram-stage {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        padding-left: 20px;
+      }
+      .diagram-stage::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 5px;
+        width: 2px;
+        background: linear-gradient(var(--violet), var(--ocean), var(--coral), var(--sun), var(--aqua));
+      }
+      .node { min-height: 0; }
+      .node::before {
+        content: "";
+        position: absolute;
+        top: 28px;
+        left: -20px;
+        width: 12px;
+        height: 2px;
+        background: var(--node-accent, var(--ocean));
+      }
+      .connectors, .lane-label { display: none; }
+      .inspector-detail { grid-template-columns: 1fr; }
+      .metric-line { gap: 8px 16px; }
+      .globe-wrap { display: none; }
+    }
+
+    @media (max-width: 420px) {
+      h1 { font-size: 2.7rem; }
+      .focus-label { width: 100%; }
+      .focus-button { flex: 1 1 calc(50% - 8px); }
+    }
+  </style>
+</head>
+<body>
+  <main class="page-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Package cartography · v0.1.0</p>
+        <h1>One kernel,<br>many globes.</h1>
+        <p class="hero-lede">
+          <code>DiscreteGlobalGrids.jl</code> turns system-specific cell engines into one
+          dispatch-driven grid, lookup, geometry, and spatial-tree architecture.
+        </p>
+        <ul class="metric-line" aria-label="Architecture summary">
+          <li><strong>14</strong> registered systems</li>
+          <li><strong>6</strong> geometry-capable</li>
+          <li><strong>4</strong> full hierarchy</li>
+          <li><strong>3</strong> dense face grids</li>
+        </ul>
+      </div>
+
+      <div class="globe-wrap" aria-hidden="true">
+        <svg class="globe" viewBox="0 0 360 360">
+          <circle class="sphere-fill" cx="180" cy="180" r="126"/>
+          <circle class="sphere-line" cx="180" cy="180" r="126"/>
+          <ellipse class="sphere-line" cx="180" cy="180" rx="126" ry="48"/>
+          <ellipse class="sphere-line" cx="180" cy="180" rx="126" ry="88"/>
+          <ellipse class="sphere-line" cx="180" cy="180" rx="52" ry="126"/>
+          <ellipse class="sphere-line" cx="180" cy="180" rx="93" ry="126"/>
+          <path class="sphere-line" d="M55 158h250M55 202h250"/>
+          <circle class="kernel-ring" cx="180" cy="180" r="151"/>
+          <circle class="cell" cx="180" cy="29" r="5"/>
+          <circle class="cell" cx="319" cy="121" r="5"/>
+          <circle class="cell" cx="273" cy="298" r="5"/>
+          <circle class="cell" cx="87" cy="298" r="5"/>
+          <circle class="cell" cx="41" cy="121" r="5"/>
+          <text x="180" y="174" text-anchor="middle">MULTIPLE DISPATCH</text>
+          <text x="180" y="194" text-anchor="middle">OPERATIONS KERNEL</text>
+        </svg>
+      </div>
+    </header>
+
+    <section class="architecture" aria-labelledby="architecture-title">
+      <div class="section-head">
+        <div>
+          <p class="section-kicker">Dependency map</p>
+          <h2 id="architecture-title">From geo workflows to cell engines</h2>
+        </div>
+        <p class="flow-note"><span>Arrows point toward dependencies.</span> Select a node for its responsibilities and source files.</p>
+      </div>
+
+      <div class="focus-bar" role="group" aria-label="Highlight an architecture path">
+        <span class="focus-label">Trace a route</span>
+        <button class="focus-button" type="button" data-focus="all" aria-pressed="true">Whole package</button>
+        <button class="focus-button" type="button" data-focus="id" aria-pressed="false">ID hierarchy</button>
+        <button class="focus-button" type="button" data-focus="face" aria-pressed="false">Dense face grid</button>
+        <button class="focus-button" type="button" data-focus="registry" aria-pressed="false">Registry only</button>
+      </div>
+      <p class="route-summary" id="route-summary" aria-live="polite"><strong>Whole package:</strong> both execution paths share public geo and tree contracts while keeping indexing system-specific.</p>
+
+      <div class="diagram-stage" id="diagram-stage">
+        <svg class="connectors" id="connectors" aria-hidden="true">
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,4 L0,8 Z" fill="#799f9c"/>
+            </marker>
+            <marker id="arrow-active" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,4 L0,8 Z" fill="#176f70"/>
+            </marker>
+          </defs>
+        </svg>
+
+        <button class="node consumer" id="cubes" type="button" data-path="id" aria-pressed="false">
+          <span class="node-type">Consumer</span>
+          <span class="node-title">Vector data cubes</span>
+          <span class="node-copy">A sorted cell axis remains aligned with data through <code>DimensionalData</code> lookups.</span>
+          <span class="mini-list"><span>At</span><span>Contains</span><span>Touching</span></span>
+        </button>
+
+        <button class="node consumer" id="query" type="button" data-path="id face" aria-pressed="false">
+          <span class="node-type">Consumer</span>
+          <span class="node-title">Spatial queries</span>
+          <span class="node-copy"><code>STI.query</code> traverses either tree path with the same spherical-cap predicate.</span>
+          <span class="mini-list"><span>intersects_cap</span><span>node_extent</span></span>
+        </button>
+
+        <button class="node consumer" id="regridder" type="button" data-path="id face" aria-pressed="false">
+          <span class="node-type">Consumer</span>
+          <span class="node-title">Conservative regridding</span>
+          <span class="node-copy"><code>Regridder</code> sees spatial trees and unit-sphere polygons, not per-system internals.</span>
+          <span class="mini-list"><span>treeify</span><span>ncells</span><span>getcell</span></span>
+        </button>
+
+        <button class="node access" id="lookups" type="button" data-path="id" aria-pressed="false">
+          <span class="node-type">Public access</span>
+          <span class="node-title">DGGS lookups</span>
+          <span class="node-copy">Four lookup types subtype <code>AbstractDGGSLookup</code>; <code>DGGSGlobeIds</code> makes full coverage lazy.</span>
+          <span class="mini-list"><span>H3</span><span>A5</span><span>IGEO7</span><span>HEALPix</span></span>
+        </button>
+
+        <button class="node access" id="id-grids" type="button" data-path="id" aria-pressed="false">
+          <span class="node-type">Public access</span>
+          <span class="node-title">ID grid family</span>
+          <span class="node-copy">Whole levels, stored subsets, and one-cell subtrees share a leaf-index contract.</span>
+          <span class="mini-list"><span>DGGSGrid</span><span>DGGSPartialGrid</span><span>subtree_grid</span></span>
+        </button>
+
+        <button class="node access" id="face-grids" type="button" data-path="face" aria-pressed="false">
+          <span class="node-type">Public access</span>
+          <span class="node-title">Dense face grids</span>
+          <span class="node-copy">Data position is the cell identity under a swappable ring, Hilbert, Morton, or row-major ordering.</span>
+          <span class="mini-list"><span>HEALPix</span><span>S2</span><span>ISEA4R</span></span>
+        </button>
+
+        <button class="node tree" id="cursor" type="button" data-path="id" aria-pressed="false">
+          <span class="node-type">Tree execution</span>
+          <span class="node-title">DGGSCursor</span>
+          <span class="node-copy">One cursor serves dense ordinals, descendant ranges, or the parent-filter fallback.</span>
+          <span class="mini-list"><span>tree + node</span><span>3 descent modes</span></span>
+        </button>
+
+        <button class="node tree" id="face-root" type="button" data-path="face" aria-pressed="false">
+          <span class="node-type">Tree execution</span>
+          <span class="node-title">FaceGridRoot</span>
+          <span class="node-copy">A globe root fans out to one <code>TopDownQuadtreeCursor</code> per chart face.</span>
+          <span class="mini-list"><span>12 / 6 / 10 faces</span><span>ordered leaves</span></span>
+        </button>
+
+        <button class="node core" id="registry" type="button" data-path="common id face registry" aria-pressed="false">
+          <span class="node-type">Shared core</span>
+          <span class="node-title">Interface + registry</span>
+          <span class="node-copy"><code>AbstractDGGS</code> traits record verified facts for all 14 system singletons.</span>
+          <span class="mini-list"><span>aperture</span><span>cell shape</span><span>max level</span></span>
+        </button>
+
+        <button class="node core" id="kernel" type="button" data-path="common id face" aria-pressed="true">
+          <span class="node-type">Shared core</span>
+          <span class="node-title">Operations kernel</span>
+          <span class="node-copy">A uniform <code>(system, level, id)</code> vocabulary derives operations or fails explicitly.</span>
+          <span class="mini-list"><span>hierarchy</span><span>ordinals</span><span>geometry</span><span>caps</span></span>
+        </button>
+
+        <button class="node core" id="face-core" type="button" data-path="common face" aria-pressed="false">
+          <span class="node-type">Shared core</span>
+          <span class="node-title">Face-grid contract</span>
+          <span class="node-copy">Generic chart space, orderings, caps, grids, and tree wiring; systems supply charts.</span>
+          <span class="mini-list"><span>FaceGridSystem</span><span>FaceChartGrid</span><span>CapPolicy</span></span>
+        </button>
+
+        <button class="node system" id="full-systems" type="button" data-path="id face" aria-pressed="false">
+          <span class="node-type">System implementations · full</span>
+          <span class="node-title">Native → lookup → kernel</span>
+          <span class="node-copy">Four systems answer hierarchy, ordinals, geometry, and generic tree traversal. HEALPix also enters through the face-grid path.</span>
+          <span class="mini-list"><span>A5 · pure Julia</span><span>H3 · libh3</span><span>IGEO7 · Z7 + ISEA</span><span>HEALPix · nested</span></span>
+        </button>
+
+        <button class="node system" id="chart-systems" type="button" data-path="face" aria-pressed="false">
+          <span class="node-type">System implementations · geometry</span>
+          <span class="node-title">Chart systems</span>
+          <span class="node-copy">Dense face grids and bitwise-matching polygon geometry; native ID hierarchy remains deferred.</span>
+          <span class="mini-list"><span>S2</span><span>ISEA4R</span></span>
+        </button>
+
+        <button class="node system" id="catalog-systems" type="button" data-path="registry" aria-pressed="false">
+          <span class="node-type">System implementations · metadata</span>
+          <span class="node-title">Registry-only</span>
+          <span class="node-copy">Trait records are usable; unsupported operations stop at <code>NotPortedError</code>.</span>
+          <span class="mini-list"><span>ISEA3H</span><span>ISEA4H</span><span>ISEA4T</span><span>ISEA9R</span><span>IVEA</span><span>RTEA</span><span>rHEALPix</span><span>AusPIX</span></span>
+        </button>
+
+        <button class="node foundation" id="helpers" type="button" data-path="common id" aria-pressed="false">
+          <span class="node-type">Internal foundation</span>
+          <span class="node-title">Helpers</span>
+          <span class="node-copy">Dependency-light, allocation-free primitives for compact child lists, IDs, sorting, and authalic transforms.</span>
+          <span class="mini-list"><span>SmallList</span><span>sorted_index</span><span>AuthalicTransform</span></span>
+        </button>
+
+        <button class="node foundation" id="isea" type="button" data-path="id face" aria-pressed="false">
+          <span class="node-type">Internal foundation</span>
+          <span class="node-title">ISEA geometry</span>
+          <span class="node-copy">The shared spherical icosahedron and Snyder equal-area charts feed IGEO7 and ISEA4R.</span>
+          <span class="mini-list"><span>icosahedron</span><span>orientation</span><span>Snyder</span></span>
+        </button>
+
+        <button class="node foundation" id="dependencies" type="button" data-path="common id face" aria-pressed="false">
+          <span class="node-type">Upstream contracts</span>
+          <span class="node-title">Julia geo ecosystem</span>
+          <span class="node-copy">The package extends established geometry, lookup, and tree interfaces instead of wrapping them.</span>
+          <span class="mini-list"><span>GeometryOps</span><span>GeoInterface</span><span>DimensionalData</span><span>ConservativeRegridding</span></span>
+        </button>
+      </div>
+
+      <aside class="inspector" aria-live="polite" aria-labelledby="inspector-title">
+        <div>
+          <div class="inspector-index" id="inspector-index">Shared core · selected</div>
+          <h3 id="inspector-title">Operations kernel</h3>
+          <p class="inspector-summary" id="inspector-summary">The package’s narrow waist: every system adds methods to the same operation vocabulary, while generic grids and trees depend only on that vocabulary.</p>
+        </div>
+        <div class="inspector-detail">
+          <div class="detail-group">
+            <h4>Owns</h4>
+            <ul id="inspector-owns">
+              <li>Hierarchy and dense-ordinal operations</li>
+              <li>Unit-sphere boundary, center, polygon, and cap operations</li>
+              <li>Trait-gated derivations with explicit NotPortedError fallbacks</li>
+            </ul>
+          </div>
+          <div class="detail-group">
+            <h4>Source</h4>
+            <div class="source-paths" id="inspector-sources">
+              <a href="src/core/kernel.jl">src/core/kernel.jl</a>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <footer class="source-note">
+      <p>Mapped from the package source and <a href="docs/reference/common_layer.md">common-layer</a>, <a href="docs/reference/kernel_wiring.md">kernel-wiring</a>, and <a href="docs/reference/healpix_representations.md">HEALPix representation</a> records.</p>
+      <p>Source snapshot · 9 Aug 2026</p>
+    </footer>
+  </main>
+
+  <script>
+    (() => {
+      const details = {
+        cubes: {
+          index: "Consumer · cell-aligned data",
+          title: "Vector data cubes",
+          summary: "DGGS cell IDs act as a DimensionalData axis. Sorted explicit IDs preserve data order, while a globe-complete axis can stay lazy until it is indexed.",
+          owns: ["Cell selectors: At, Contains, Touching", "Stable lookup-position to tree-leaf alignment", "O(1) point selection for DGGSGlobeIds-backed lookups"],
+          sources: ["src/core/lookups.jl", "src/core/globe_ids.jl", "examples/dimensionaldata.jl"]
+        },
+        query: {
+          index: "Consumer · spatial traversal",
+          title: "Spatial queries",
+          summary: "Both tree families implement GeometryOps.SpatialTreeInterface, so spherical-cap queries traverse system hierarchies without system-specific query code.",
+          owns: ["STI.query traversal", "Node extent pruning", "intersects_cap as the public predicate"],
+          sources: ["src/core/generic_cursor.jl", "src/core/face_grid.jl", "src/core/kernel.jl"]
+        },
+        regridder: {
+          index: "Consumer · conservative transfer",
+          title: "Conservative regridding",
+          summary: "ConservativeRegridding consumes tree cells in source-data order. DiscreteGlobalGrids re-exports Trees.treeify, ncells, and getcell as the direct integration surface.",
+          owns: ["Tree-backed source geometry", "Column-to-data-position alignment", "Parallel subtree scheduling hooks"],
+          sources: ["src/DiscreteGlobalGrids.jl", "src/core/generic_cursor.jl", "examples/regridding.jl"]
+        },
+        lookups: {
+          index: "Public access · ID hierarchy route",
+          title: "DGGS lookups",
+          summary: "H3Lookup, A5Lookup, IGeo7Lookup, and HealpixLookup share one AbstractDGGSLookup supertype and one generic treeification path.",
+          owns: ["DimensionalData lookup behavior", "Point and geometry selectors", "Direct conversion to DGGSPartialGrid or dense DGGSGrid"],
+          sources: ["src/core/lookups.jl", "src/A5/A5Lookups.jl", "src/H3/H3Lookups.jl", "src/HEALPix/HealpixLookups.jl", "src/IGeo7/IGeo7Lookups.jl"]
+        },
+        "id-grids": {
+          index: "Public access · ID hierarchy route",
+          title: "ID grid family",
+          summary: "DGGSGrid models a complete level, DGGSPartialGrid keeps a caller-owned sorted subset, and subtree_grid materializes only one bounded hierarchy chunk.",
+          owns: ["Whole-level dense ordinal indexing", "Zero-copy partial grids", "Chunk-local leaf indexing for subtrees"],
+          sources: ["src/core/grid_types.jl", "src/core/globe_ids.jl"]
+        },
+        "face-grids": {
+          index: "Public access · dense chart route",
+          title: "Dense face grids",
+          summary: "HEALPix, S2, and ISEA4R expose complete one-resolution fields. Ordering is a component that maps chart lattice coordinates directly to data positions.",
+          owns: ["Dense full-sphere coverage", "Swappable ordering components", "Bitwise-consistent polygons between chart and kernel paths"],
+          sources: ["src/HEALPix/face_grid.jl", "src/S2/face_grid.jl", "src/ISEA4R/face_grid.jl"]
+        },
+        cursor: {
+          index: "Tree execution · ID hierarchy route",
+          title: "DGGSCursor",
+          summary: "The cursor is simultaneously a spatial tree and a node. Its concrete grid and stored-index representation select the descent strategy through dispatch.",
+          owns: ["Dense ordinal interval descent", "Partial descendant-range descent", "Parent-filter fallback for A5", "Trees.getcell and scheduler hooks"],
+          sources: ["src/core/generic_cursor.jl"]
+        },
+        "face-root": {
+          index: "Tree execution · dense chart route",
+          title: "FaceGridRoot",
+          summary: "One globe root owns a TopDownQuadtreeCursor per face: twelve for HEALPix, six for S2, and ten for ISEA4R.",
+          owns: ["Root-level fan-out by chart face", "Per-face quadtree traversal", "Leaf indices emitted in data ordering"],
+          sources: ["src/core/face_grid.jl"]
+        },
+        registry: {
+          index: "Shared core · facts and catalog",
+          title: "Interface + registry",
+          summary: "AbstractDGGS is the dispatch token. Trait methods record verified system facts, and all_systems returns the complete catalog without a runtime spec object.",
+          owns: ["System identity and grid metadata", "Aperture, root count, radix, and level limits", "Fourteen system singleton types"],
+          sources: ["src/core/interface.jl", "src/core/systems/"]
+        },
+        kernel: {
+          index: "Shared core · selected",
+          title: "Operations kernel",
+          summary: "The package’s narrow waist: every system adds methods to the same operation vocabulary, while generic grids and trees depend only on that vocabulary.",
+          owns: ["Hierarchy and dense-ordinal operations", "Unit-sphere boundary, center, polygon, and cap operations", "Trait-gated derivations with explicit NotPortedError fallbacks"],
+          sources: ["src/core/kernel.jl"]
+        },
+        "face-core": {
+          index: "Shared core · chart-grid machinery",
+          title: "Face-grid contract",
+          summary: "The face-grid layer factors out chart spaces, ordering, cap policy, curvilinear grids, and tree wiring. A system contributes only chart and ordering methods.",
+          owns: ["FaceGridSystem and AbstractFaceOrdering contracts", "FaceGrid, FaceChartGrid, and FaceGridRoot", "Four-corner or perimeter-walk cap policies"],
+          sources: ["src/core/face_grid.jl"]
+        },
+        "full-systems": {
+          index: "Systems · full kernel support",
+          title: "A5, H3, IGEO7, and HEALPix",
+          summary: "These systems supply canonical IDs, hierarchy operations, dense ordinal conversion, and geometry. Their wiring files adapt native vocabulary into the common kernel.",
+          owns: ["A5: pure-Julia pentagonal engine", "H3: H3_jll-backed native calls", "IGEO7: clean-room Z7 + ISEA engine", "HEALPix: nested hierarchy over closed-form charts"],
+          sources: ["src/A5/", "src/H3/", "src/IGeo7/", "src/HEALPix/"]
+        },
+        "chart-systems": {
+          index: "Systems · geometry-only kernel support",
+          title: "S2 and ISEA4R",
+          summary: "Both systems expose dense face grids and kernel geometry over ordinal positions. Cross-level canonical ID hierarchy remains outside the current wiring.",
+          owns: ["S2 cube-face quadratic charts + Hilbert ordering", "ISEA4R ten-diamond Snyder charts + Morton ordering", "Bitwise correspondence between face-grid and kernel polygons"],
+          sources: ["src/S2/", "src/ISEA4R/"]
+        },
+        "catalog-systems": {
+          index: "Systems · registry-only",
+          title: "Eight metadata records",
+          summary: "ISEA3H, ISEA4H, ISEA4T, ISEA9R, IVEA, RTEA, rHEALPix, and AusPIX publish traits and provenance while unsupported operations fail explicitly.",
+          owns: ["Verified descriptive traits", "Source and design records", "Written dispositions for known wiring gaps"],
+          sources: ["src/core/systems/"]
+        },
+        helpers: {
+          index: "Internal foundation · dependency-light leaf",
+          title: "Helpers",
+          summary: "Small, allocation-conscious primitives are shared across the native implementations without pulling the geo ecosystem into the leaf module.",
+          owns: ["SmallList and compact child enumeration", "Canonical ID parsing and sorted lookup helpers", "Geodetic/authalic latitude transforms"],
+          sources: ["src/Helpers/Helpers.jl", "src/Helpers/small_list.jl", "src/Helpers/ids.jl", "src/Helpers/authalic.jl"]
+        },
+        isea: {
+          index: "Internal foundation · icosahedral geometry",
+          title: "ISEA geometry",
+          summary: "The ISEA submodule owns aperture-agnostic icosahedron tables, orientation, and Snyder equal-area projection machinery shared by IGEO7 and ISEA4R.",
+          owns: ["Spherical icosahedron topology", "Standard ISEA orientation", "Forward and inverse Snyder charts"],
+          sources: ["src/ISEA/ISEA.jl", "src/ISEA/icosahedron.jl", "src/ISEA/snyder.jl"]
+        },
+        dependencies: {
+          index: "Upstream contracts · integration boundary",
+          title: "Julia geo ecosystem",
+          summary: "DiscreteGlobalGrids extends external generic functions and interfaces. Only H3Native crosses a C boundary through H3_jll; Healpix.jl is confined to the HEALPix lookup layer.",
+          owns: ["GeometryOps + GeometryOpsCore manifolds and spatial trees", "GeoInterface polygons and extents", "DimensionalData lookups", "ConservativeRegridding.Trees and Regridder"],
+          sources: ["Project.toml", "src/DiscreteGlobalGrids.jl"]
+        }
+      };
+
+      const edges = [
+        ["cubes", "lookups", "id"],
+        ["lookups", "id-grids", "id"],
+        ["id-grids", "cursor", "id"],
+        ["query", "cursor", "id"],
+        ["query", "face-root", "face"],
+        ["regridder", "cursor", "id"],
+        ["regridder", "face-root", "face"],
+        ["face-grids", "face-root", "face"],
+        ["cursor", "kernel", "id"],
+        ["face-root", "face-core", "face"],
+        ["kernel", "full-systems", "id"],
+        ["kernel", "chart-systems", "face"],
+        ["face-core", "full-systems", "face"],
+        ["face-core", "chart-systems", "face"],
+        ["registry", "full-systems", "common"],
+        ["registry", "chart-systems", "common"],
+        ["registry", "catalog-systems", "registry"],
+        ["full-systems", "helpers", "id"],
+        ["full-systems", "isea", "id"],
+        ["chart-systems", "isea", "face"],
+        ["kernel", "dependencies", "common"],
+        ["face-core", "dependencies", "common"]
+      ];
+
+      const summaries = {
+        all: "<strong>Whole package:</strong> both execution paths share public geo and tree contracts while keeping indexing system-specific.",
+        id: "<strong>ID hierarchy:</strong> lookup or grid → DGGSCursor → operations kernel → A5, H3, IGEO7, or nested HEALPix.",
+        face: "<strong>Dense face grid:</strong> ordered full-sphere grid → FaceGridRoot → shared face-grid core → HEALPix, S2, or ISEA4R chart.",
+        registry: "<strong>Registry only:</strong> verified traits remain available; hierarchy and geometry operations deliberately throw NotPortedError."
+      };
+
+      const stage = document.getElementById("diagram-stage");
+      const svg = document.getElementById("connectors");
+      const summary = document.getElementById("route-summary");
+      const nodeButtons = [...document.querySelectorAll(".node")];
+      const focusButtons = [...document.querySelectorAll(".focus-button")];
+      let activeFocus = "all";
+
+      function port(rect, stageRect, side) {
+        const x = rect.left - stageRect.left;
+        const y = rect.top - stageRect.top;
+        if (side === "bottom") return [x + rect.width / 2, y + rect.height];
+        if (side === "top") return [x + rect.width / 2, y];
+        if (side === "right") return [x + rect.width, y + rect.height / 2];
+        return [x, y + rect.height / 2];
+      }
+
+      function connectorPath(fromRect, toRect, stageRect) {
+        const fromCenter = { x: fromRect.left + fromRect.width / 2, y: fromRect.top + fromRect.height / 2 };
+        const toCenter = { x: toRect.left + toRect.width / 2, y: toRect.top + toRect.height / 2 };
+        const dx = toCenter.x - fromCenter.x;
+        const dy = toCenter.y - fromCenter.y;
+
+        if (Math.abs(dy) > Math.abs(dx) * 0.45) {
+          const goingDown = dy >= 0;
+          const start = port(fromRect, stageRect, goingDown ? "bottom" : "top");
+          const end = port(toRect, stageRect, goingDown ? "top" : "bottom");
+          const bend = Math.max(34, Math.abs(end[1] - start[1]) * 0.48);
+          const c1y = start[1] + (goingDown ? bend : -bend);
+          const c2y = end[1] - (goingDown ? bend : -bend);
+          return `M ${start[0]} ${start[1]} C ${start[0]} ${c1y}, ${end[0]} ${c2y}, ${end[0]} ${end[1]}`;
+        }
+
+        const goingRight = dx >= 0;
+        const start = port(fromRect, stageRect, goingRight ? "right" : "left");
+        const end = port(toRect, stageRect, goingRight ? "left" : "right");
+        const bend = Math.max(30, Math.abs(end[0] - start[0]) * 0.48);
+        const c1x = start[0] + (goingRight ? bend : -bend);
+        const c2x = end[0] - (goingRight ? bend : -bend);
+        return `M ${start[0]} ${start[1]} C ${c1x} ${start[1]}, ${c2x} ${end[1]}, ${end[0]} ${end[1]}`;
+      }
+
+      function drawEdges() {
+        svg.querySelectorAll(".edge").forEach(path => path.remove());
+        if (window.matchMedia("(max-width: 740px)").matches) return;
+        const stageRect = stage.getBoundingClientRect();
+        svg.setAttribute("viewBox", `0 0 ${stageRect.width} ${stageRect.height}`);
+
+        edges.forEach(([fromId, toId, route]) => {
+          const from = document.getElementById(fromId);
+          const to = document.getElementById(toId);
+          if (!from || !to) return;
+          const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          const active = activeFocus === "all" || route === activeFocus || route === "common";
+          path.setAttribute("d", connectorPath(from.getBoundingClientRect(), to.getBoundingClientRect(), stageRect));
+          path.setAttribute("class", `edge${activeFocus !== "all" && active ? " is-active" : ""}${active ? "" : " is-dimmed"}`);
+          path.setAttribute("data-route", route);
+          path.setAttribute("marker-end", activeFocus !== "all" && active ? "url(#arrow-active)" : "url(#arrow)");
+          svg.appendChild(path);
+        });
+      }
+
+      function setFocus(focus) {
+        activeFocus = focus;
+        focusButtons.forEach(button => button.setAttribute("aria-pressed", String(button.dataset.focus === focus)));
+        nodeButtons.forEach(node => {
+          const paths = node.dataset.path.split(" ");
+          const visible = focus === "all" || paths.includes(focus) || paths.includes("common");
+          node.classList.toggle("is-dimmed", !visible);
+        });
+        summary.innerHTML = summaries[focus];
+        drawEdges();
+      }
+
+      function selectNode(node) {
+        const detail = details[node.id];
+        if (!detail) return;
+        nodeButtons.forEach(button => button.setAttribute("aria-pressed", String(button === node)));
+        document.getElementById("inspector-index").textContent = detail.index;
+        document.getElementById("inspector-title").textContent = detail.title;
+        document.getElementById("inspector-summary").textContent = detail.summary;
+
+        const owns = document.getElementById("inspector-owns");
+        owns.replaceChildren(...detail.owns.map(item => {
+          const li = document.createElement("li");
+          li.textContent = item;
+          return li;
+        }));
+
+        const sources = document.getElementById("inspector-sources");
+        sources.replaceChildren(...detail.sources.map(path => {
+          const link = document.createElement("a");
+          link.href = path;
+          link.textContent = path;
+          return link;
+        }));
+      }
+
+      focusButtons.forEach(button => button.addEventListener("click", () => setFocus(button.dataset.focus)));
+      nodeButtons.forEach(node => node.addEventListener("click", () => selectNode(node)));
+      window.addEventListener("resize", drawEdges, { passive: true });
+      window.addEventListener("load", drawEdges, { once: true });
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(drawEdges);
+      drawEdges();
+    })();
+  </script>
+</body>
+</html>

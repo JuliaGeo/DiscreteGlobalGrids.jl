@@ -29,7 +29,9 @@ makedocs(;
 )
 
 DocumenterVitepress.deploydocs(;
-    repo = "https://github.com/JuliaGeo/DiscreteGlobalGrids.jl",
+    # Unlike `makedocs` and `MarkdownVitepress` above, which want a full URL,
+    # `deploydocs` parses this as host/user/repo and rejects a protocol.
+    repo = "github.com/JuliaGeo/DiscreteGlobalGrids.jl.git",
     devbranch = "main",
     push_preview = true,
 )

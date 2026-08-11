@@ -13,7 +13,7 @@ makedocs(;
     modules = [DiscreteGlobalGrids],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",
-    repo = "https://github.com/JuliaGeo/DiscreteGlobalGrids.jl",
+    repo = Documenter.Remotes.GitHub("JuliaGeo", "DiscreteGlobalGrids.jl"),
     format = DocumenterVitepress.MarkdownVitepress(;
         repo = "https://github.com/JuliaGeo/DiscreteGlobalGrids.jl",
         devbranch = "main",

@@ -1,4 +1,4 @@
-import{_ as n,C as l,ao as h,o as t,c as k,ap as e,E as p,w as r,a2 as E,j as d}from"./chunks/framework.aTM0HWAy.js";const m=JSON.parse('{"title":"DGGS gallery","description":"","frontmatter":{},"headers":[],"relativePath":"all_dggs.md","filePath":"all_dggs.md","lastUpdated":null}'),g={name:"all_dggs.md"},y={class:"vp-raw-html",innerHTML:`<div><div class="bonito-fragment" id="241d378b-a355-4911-9610-eeab5dba1fd5" data-jscall-id="root" style="display:contents"><div style="display:contents"><script src="/bonito/js/Bonito.bundled12977803111238366018.js" type="module"><\/script><style></style><style>@media (prefers-color-scheme: light) {
+import{_ as n,C as l,ao as h,o as t,c as k,ap as e,E as p,w as r,a2 as E,j as d}from"./chunks/framework.aTM0HWAy.js";const m=JSON.parse('{"title":"DGGS gallery","description":"","frontmatter":{},"headers":[],"relativePath":"all_dggs.md","filePath":"all_dggs.md","lastUpdated":null}'),g={name:"all_dggs.md"},y={class:"vp-raw-html",innerHTML:`<div><div class="bonito-fragment" id="8dacbad4-fed9-498a-95ef-4f32ec17d91b" data-jscall-id="root" style="display:contents"><div style="display:contents"><script src="/bonito/js/Bonito.bundled12977803111238366018.js" type="module"><\/script><style></style><style>@media (prefers-color-scheme: light) {
   :root {
     --bonito-widget-fg: #1a1a1a;
     --bonito-widget-accent: #3182bb;
@@ -55,8 +55,8 @@ html .noUi-marker {
 html .noUi-value {
   color: var(--bonito-widget-fg, inherit);
 }
-</style></div><div style="display:contents"><script type="module">Bonito.init_session("241d378b-a355-4911-9610-eeab5dba1fd5", Bonito.fetch_binary('/bonito/bin/8fca5f9b3be07cc53a5ee288eb41175f755ad7b5-13856356861651198796.bin'), "root", false);
-<\/script><div></div></div></div><div class="bonito-fragment" id="2aac5a2e-b065-4063-81b4-42badd06cb63" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
+</style></div><div style="display:contents"><script type="module">Bonito.init_session("8dacbad4-fed9-498a-95ef-4f32ec17d91b", Bonito.fetch_binary('/bonito/bin/bf62079275311f85875e034f3e28a1526af0650d-14468836305744473368.bin'), "root", false);
+<\/script><div></div></div></div><div class="bonito-fragment" id="1969613e-c491-4e70-9e6e-82aa9069b8df" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
   left: 50%;
   z-index: 1000;
   height: 40px;
@@ -78,7 +78,7 @@ html .noUi-value {
     transform: translate(-50%, -50%) rotate(360deg);
   }
 }
-</style><script src="/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("2aac5a2e-b065-4063-81b4-42badd06cb63", Bonito.fetch_binary('/bonito/bin/81520a9ceb700a7c95ebfd8c498983da125594b3-1307557524826591158.bin'), "sub", false);
+</style><script src="/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("1969613e-c491-4e70-9e6e-82aa9069b8df", Bonito.fetch_binary('/bonito/bin/f6b88ded48c62f93fecee52608e0afb0c8f8a2da-5520513613531998104.bin'), "sub", false);
 <\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="1"><canvas height="700px" data-jp-suppress-context-menu style="display: block" data-jscall-id="2" data-lm-suppress-shortcuts="true" width="1200px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="3"></div></div></div></div></div>`};function o(F,s,c,C,b,D){const i=l("ClientOnly"),a=h("exec-scripts");return t(),k("div",null,[s[0]||(s[0]=e(`<h1 id="DGGS-gallery" tabindex="-1">DGGS gallery <a class="header-anchor" href="#DGGS-gallery" aria-label="Permalink to &quot;DGGS gallery {#DGGS-gallery}&quot;">​</a></h1><p>This page compares all six DGGS implementations that currently provide cell geometry. The remaining eight entries returned by <code>all_systems()</code> are registry-only: their metadata is available, but their cell-boundary mathematics has not yet been ported and deliberately raises <code>NotPortedError</code>.</p><p>The levels below are chosen independently so that the cells remain visible at the size of the figure. Every grid follows the same path from a 1-based dense ordinal to a cell id and then to a unit-sphere polygon. The resulting figure is emitted as WGLMakie/Bonito HTML rather than as a static raster image.</p><div class="language-julia vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang">julia</span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">using</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> DiscreteGlobalGrids</span></span>
 <span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">import</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> DiscreteGlobalGrids </span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">as</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> DGG</span></span>
 <span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">using</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> GeoMakie</span></span>
@@ -132,4 +132,4 @@ html .noUi-value {
 <span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">    )</span></span>
 <span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">end</span></span>
 <span class="line"></span>
-<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">figure</span></span></code></pre></div>`,4)),p(i,null,{default:r(()=>[E(d("div",y,null,512),[[a]])]),_:1})])}const u=n(g,[["render",o]]);export{m as __pageData,u as default};
+<span class="line"><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;">figure</span></span></code></pre></div>`,4)),p(i,null,{default:r(()=>[E(d("div",y,null,512),[[a]])]),_:1})])}const f=n(g,[["render",o]]);export{m as __pageData,f as default};

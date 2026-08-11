@@ -1,4 +1,4 @@
-import{_ as p,C as d,ao as r,o as k,c as o,ap as t,E as e,w as n,a2 as l,j as h}from"./chunks/framework.aTM0HWAy.js";const G=JSON.parse('{"title":"DGGS gallery","description":"","frontmatter":{},"headers":[],"relativePath":"all_dggs.md","filePath":"all_dggs.md","lastUpdated":null}'),g={name:"all_dggs.md"},E={class:"vp-raw-html",innerHTML:`<div><div class="bonito-fragment" id="579e7703-5798-44f1-a803-e07a61da64d8" data-jscall-id="root" style="display:contents"><div style="display:contents"><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/Bonito.bundled12977803111238366018.js" type="module"><\/script><style></style><style>@media (prefers-color-scheme: light) {
+import{_ as p,C as d,ao as r,o as k,c as o,ap as t,E as e,w as n,a2 as l,j as h}from"./chunks/framework.aTM0HWAy.js";const G=JSON.parse('{"title":"DGGS gallery","description":"","frontmatter":{},"headers":[],"relativePath":"all_dggs.md","filePath":"all_dggs.md","lastUpdated":null}'),g={name:"all_dggs.md"},E={class:"vp-raw-html",innerHTML:`<div><div class="bonito-fragment" id="987c1d5f-2c18-49fb-b099-0551e6e1260c" data-jscall-id="root" style="display:contents"><div style="display:contents"><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/Bonito.bundled12977803111238366018.js" type="module"><\/script><style></style><style>@media (prefers-color-scheme: light) {
   :root {
     --bonito-widget-fg: #1a1a1a;
     --bonito-widget-accent: #3182bb;
@@ -55,8 +55,8 @@ html .noUi-marker {
 html .noUi-value {
   color: var(--bonito-widget-fg, inherit);
 }
-</style></div><div style="display:contents"><script type="module">Bonito.init_session("579e7703-5798-44f1-a803-e07a61da64d8", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/46cdb977fd5000f77290111684457a23a3c4d896-9085462008410074892.bin'), "root", false);
-<\/script><div></div></div></div><div class="bonito-fragment" id="fd5cf908-4519-45a3-9fdc-daf7f3817ef6" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
+</style></div><div style="display:contents"><script type="module">Bonito.init_session("987c1d5f-2c18-49fb-b099-0551e6e1260c", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/35e8cd44d2afa684a7b75fe6465c2e604604d6ae-9984796889971761964.bin'), "root", false);
+<\/script><div></div></div></div><div class="bonito-fragment" id="f3beb09b-9013-47a0-b239-7b91036b90af" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
   left: 50%;
   z-index: 1000;
   height: 40px;
@@ -78,8 +78,8 @@ html .noUi-value {
     transform: translate(-50%, -50%) rotate(360deg);
   }
 }
-</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("fd5cf908-4519-45a3-9fdc-daf7f3817ef6", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/7f5724ba07da98baaf175b9ee1804301f20e7f2f-7333684438851391353.bin'), "sub", false);
-<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="1"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="2" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="3"></div></div></div></div></div>`},c={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="f0fbc06a-3106-4743-854b-3f27a067bd0a" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
+</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("f3beb09b-9013-47a0-b239-7b91036b90af", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/d6a071f7fc364ece41f75a15cbf68c250ce0b600-999898787347147353.bin'), "sub", false);
+<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="1"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="2" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="3"></div></div></div></div></div>`},c={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="275cf7ad-0863-4cec-a161-e464c015e16b" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
   left: 50%;
   z-index: 1000;
   height: 40px;
@@ -101,8 +101,8 @@ html .noUi-value {
     transform: translate(-50%, -50%) rotate(360deg);
   }
 }
-</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("f0fbc06a-3106-4743-854b-3f27a067bd0a", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/7f1ad9e716c8724f7a881d40a568d7584b7eac1b-11275338271839346122.bin'), "sub", false);
-<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="4"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="5" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="6"></div></div></div></div>`},y={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="fdb88659-9af7-417b-b3af-dacd0ebe127d" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
+</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("275cf7ad-0863-4cec-a161-e464c015e16b", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/2dc3d01c654eb572f2df9d0018e6b20bda10785b-3533689357515194896.bin'), "sub", false);
+<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="4"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="5" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="6"></div></div></div></div>`},y={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="da9fbea0-f3c1-499e-a815-0f03842d1a14" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
   left: 50%;
   z-index: 1000;
   height: 40px;
@@ -124,8 +124,8 @@ html .noUi-value {
     transform: translate(-50%, -50%) rotate(360deg);
   }
 }
-</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("fdb88659-9af7-417b-b3af-dacd0ebe127d", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/dc7d1684eb8387ebb6733845b547c7d6fd55a9a4-7900258335582541310.bin'), "sub", false);
-<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="7"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="8" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="9"></div></div></div></div>`},b={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="9c9053a3-d40f-4112-a1f4-7c1e8f788ebf" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
+</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("da9fbea0-f3c1-499e-a815-0f03842d1a14", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/a65e8a5134961dbac2d6cb3b378cc440b94b87fc-13881905335840357825.bin'), "sub", false);
+<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="7"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="8" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="9"></div></div></div></div>`},b={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="b396d71b-1810-4b50-9e33-457aa10138f2" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
   left: 50%;
   z-index: 1000;
   height: 40px;
@@ -147,8 +147,8 @@ html .noUi-value {
     transform: translate(-50%, -50%) rotate(360deg);
   }
 }
-</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("9c9053a3-d40f-4112-a1f4-7c1e8f788ebf", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/fc1e4847bc9505158a216328501f9a1ea7eeb40b-6514457793415209088.bin'), "sub", false);
-<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="10"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="11" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="12"></div></div></div></div>`},u={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="1283ad09-263f-480e-8a62-979218315c88" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
+</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("b396d71b-1810-4b50-9e33-457aa10138f2", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/4d0dbfe9bfd366ea32a09e3c7dd9bc4ae75b90f4-13981922436727651971.bin'), "sub", false);
+<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="10"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="11" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="12"></div></div></div></div>`},u={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="271230a5-b626-4519-ad5c-24918a4a1792" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
   left: 50%;
   z-index: 1000;
   height: 40px;
@@ -170,8 +170,8 @@ html .noUi-value {
     transform: translate(-50%, -50%) rotate(360deg);
   }
 }
-</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("1283ad09-263f-480e-8a62-979218315c88", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/84541b777c3b864c0d12286d4cafb3440ba48be8-13735103183724667463.bin'), "sub", false);
-<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="13"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="14" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="15"></div></div></div></div>`},v={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="0d8335db-2a5c-4027-8d2b-443603e425e5" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
+</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("271230a5-b626-4519-ad5c-24918a4a1792", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/d4756e42c1aff10b3603eb1701631489c0a2e23a-11171423961224776624.bin'), "sub", false);
+<\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="13"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="14" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="15"></div></div></div></div>`},v={class:"vp-raw-html",innerHTML:`<div class="bonito-fragment" id="c6b50564-bdf4-4607-aef3-ef404067bfed" data-jscall-id="subsession-application-dom" style="display:contents"><div style="display:contents"><style></style><style>.wglmakie-spinner {
   left: 50%;
   z-index: 1000;
   height: 40px;
@@ -193,7 +193,7 @@ html .noUi-value {
     transform: translate(-50%, -50%) rotate(360deg);
   }
 }
-</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("0d8335db-2a5c-4027-8d2b-443603e425e5", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/a3c7e0122944e6000a3db4cd4096233ec17b29eb-10858898873799019409.bin'), "sub", false);
+</style><script src="/DiscreteGlobalGrids.jl/dev/bonito/js/WGLMakie.bundled14196690323180320639.js" type="module"><\/script></div><div style="display:contents"><script type="module">Bonito.init_session("c6b50564-bdf4-4607-aef3-ef404067bfed", Bonito.fetch_binary('/DiscreteGlobalGrids.jl/dev/bonito/bin/28c91bec9d6ac566534a4abe09146449034eac32-5783240615332433211.bin'), "sub", false);
 <\/script><div style="width: 100%; height: 100%; position: relative;" data-jscall-id="16"><canvas height="580px" data-jp-suppress-context-menu style="display: block" data-jscall-id="17" data-lm-suppress-shortcuts="true" width="650px" tabindex="0"></canvas><div class="wglmakie-spinner" data-jscall-id="18"></div></div></div></div>`};function F(m,s,f,C,_,D){const i=d("ClientOnly"),a=r("exec-scripts");return k(),o("div",null,[s[0]||(s[0]=t(`<h1 id="DGGS-gallery" tabindex="-1">DGGS gallery <a class="header-anchor" href="#DGGS-gallery" aria-label="Permalink to &quot;DGGS gallery {#DGGS-gallery}&quot;">​</a></h1><p>This page compares all six DGGS implementations that currently provide cell geometry. The remaining eight entries returned by <code>all_systems()</code> are registry-only: their metadata is available, but their cell-boundary mathematics has not yet been ported and deliberately raises <code>NotPortedError</code>.</p><p>The levels below are chosen independently so that the cells remain visible at the size of each figure. Every grid follows the same path from a 1-based dense ordinal to a cell id and then to a unit-sphere polygon. Each globe is emitted as WGLMakie/Bonito HTML rather than as a static raster image.</p><div class="language-julia vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang">julia</span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">using</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> DiscreteGlobalGrids</span></span>
 <span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">import</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> DiscreteGlobalGrids </span><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">as</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> DGG</span></span>
 <span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">using</span><span style="--shiki-light:#24292E;--shiki-dark:#E1E4E8;"> GeoMakie</span></span>

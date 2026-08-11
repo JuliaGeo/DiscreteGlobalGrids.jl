@@ -13,9 +13,9 @@ makedocs(;
     modules = [DiscreteGlobalGrids],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",
-    repo = "https://github.com/asinghvi17/DiscreteGlobalGrids.jl",
+    repo = "https://github.com/JuliaGeo/DiscreteGlobalGrids.jl",
     format = DocumenterVitepress.MarkdownVitepress(;
-        repo = "https://github.com/asinghvi17/DiscreteGlobalGrids.jl",
+        repo = "https://github.com/JuliaGeo/DiscreteGlobalGrids.jl",
         devbranch = "main",
         devurl = "dev",
     ),
@@ -29,7 +29,7 @@ makedocs(;
 )
 
 DocumenterVitepress.deploydocs(;
-    repo = "https://github.com/asinghvi17/DiscreteGlobalGrids.jl",
+    repo = "https://github.com/JuliaGeo/DiscreteGlobalGrids.jl",
     devbranch = "main",
     push_preview = true,
 )

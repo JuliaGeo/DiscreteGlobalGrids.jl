@@ -10,6 +10,15 @@ the size of each figure. Every grid follows the same path from a 1-based dense
 ordinal to a cell id and then to a unit-sphere polygon. Each globe is emitted as
 WGLMakie/Bonito HTML rather than as a static raster image.
 
+```@raw html
+<style>
+#VPContent .bonito-fragment canvas {
+    max-width: 100%;
+    height: auto !important;
+}
+</style>
+```
+
 ```@example all-dggs
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG

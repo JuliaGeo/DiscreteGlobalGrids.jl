@@ -14,5 +14,6 @@ using DiscreteGlobalGrids
     include("HEALPix/runtests.jl")
     include("IGeo7/runtests.jl")
     include("ISEA4R/runtests.jl")
+    include("ISEA9R/runtests.jl")
     include("S2/runtests.jl")
 end

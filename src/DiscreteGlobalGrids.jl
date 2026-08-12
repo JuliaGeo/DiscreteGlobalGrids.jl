@@ -12,11 +12,11 @@ operations kernel, and the generic grid/tree family built on it (`DGGSGrid`,
 `DGGSPartialGrid`, `subtree_grid`, `DGGSCursor`). The shared chart + ordering
 face-grid layer lives there too (`FaceGridSystem` and the `FaceGridSpace` /
 `FaceGrid` / `FaceChartGrid` / `FaceGridRoot` family, `src/core/face_grid.jl`);
-the HEALPix, S2 and ISEA4R submodules each supply one system singleton, their
-orderings, and nothing else. The `DimensionalData` lookups the systems define
-share one supertype here too (`AbstractDGGSLookup`), and one lazy id vector
-(`DGGSGlobeIds`) that makes a globe-complete dimension cost two words rather
-than one id per cell.
+the HEALPix, S2, ISEA4R and ISEA9R submodules each supply one system singleton,
+their orderings, and nothing else. The `DimensionalData` lookups the systems
+define share one supertype here too (`AbstractDGGSLookup`), and one lazy id
+vector (`DGGSGlobeIds`) that makes a globe-complete dimension cost two words
+rather than one id per cell.
 
 A grid becomes a spatial tree in one call — `treeify(grid)`, no manifold, no
 `Trees` import: `treeify`, `ncells` and `getcell` are re-exported from
@@ -39,14 +39,18 @@ predicate. Individual grid systems are submodules:
   `ISEA`'s Snyder machinery, dense face grids under swappable orderings. The
   ten-diamond layout is a package convention with no external oracle — see
   `docs/design/isea4r_diamond_layout.md`.
+- [`ISEA9R`](@ref) — ISEA9R at aperture 9 over the *same* ten charts, imported
+  from `ISEA4R` unchanged (the rhombus chart carries no aperture); what it adds
+  is the base-9 index maps and its own orderings. The ten-root layout is OGC
+  21-038r1 Annex B.2's — see `docs/design/isea9r_layout.md`.
 - [`S2`](@ref) — S2 cube-face chart grids: the six closed-form charts with the
   quadratic ST↔UV transform, dense face grids under swappable orderings.
   Closed forms only — no s2geometry dependency.
 
 Each system module contains its native layer plus, where ported, an
 `<X>Lookups` integration module and an `<X>Kernel.jl` wiring file — the latter
-is what puts the system on the generic kernel (S2 and ISEA4R wire geometry
-only; no `<X>Lookups` module yet). Systems share generic vocabulary (`cell_center`,
+is what puts the system on the generic kernel (S2, ISEA4R and ISEA9R wire
+geometry only; no `<X>Lookups` module yet). Systems share generic vocabulary (`cell_center`,
 `lonlat_to_cell`, ...), so system-level names are never re-exported here.
 """
 module DiscreteGlobalGrids
@@ -149,6 +153,9 @@ include("H3/H3.jl")
 include("HEALPix/HEALPix.jl")
 include("IGeo7/IGeo7.jl")
 include("ISEA4R/ISEA4R.jl")
+# After ISEA4R: `ISEA9R` imports that module's chart by name (`chart.jl`), the
+# rhombus chart being aperture-free. See `docs/design/isea9r_layout.md`.
+include("ISEA9R/ISEA9R.jl")
 include("S2/S2.jl")
 
 end # module DiscreteGlobalGrids

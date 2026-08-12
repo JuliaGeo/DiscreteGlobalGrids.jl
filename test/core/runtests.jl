@@ -22,7 +22,16 @@ import GeoInterface as GI
     @test radix(RHEALPixDGGS()) == 9
     @test root_count(ISEA4RDGGS()) == 10
     @test supports_prefix_ranges(ISEA4RDGGS())
-    @test !supports_prefix_ranges(ISEA9RDGGS())
+    # ISEA9R carries the same ten roots as its aperture-4 twin, and for a
+    # stronger reason than coincidence: OGC 21-038r1 Annex B.2 states them
+    # normatively ("The ten root rhombuses are formed by combining two
+    # icosahedron triangles at their base") and DGGAL's `countZones(0)` computes
+    # `10 * 9^0`. Prefix ranges are true of the PACKAGE ordinal
+    # (`diamond * 9^level + base-9 Morton`), not of DGGAL's zone id — see the
+    # `ISEA9RDGGS` docstring and `docs/design/isea9r_layout.md`.
+    @test root_count(ISEA9RDGGS()) == 10
+    @test radix(ISEA9RDGGS()) == 9
+    @test supports_prefix_ranges(ISEA9RDGGS())
 end
 
 @testset "trait interface" begin
@@ -85,17 +94,21 @@ end
     @test_throws NotPortedError root_count(ISEA4HDGGS())
     @test_throws NotPortedError root_count(IVEADGGS())
 
+    # `ISEA9RDGGS` used to be the worked example here; its root count is
+    # verified now (ten root rhombuses, OGC 21-038r1 Annex B.2 + DGGAL
+    # `countZones`), so the example moved to a system whose root layout really
+    # is unpinned.
     err = try
-        root_count(ISEA9RDGGS())
+        root_count(ISEA3HDGGS())
     catch e
         e
     end
     @test err isa NotPortedError
-    @test err.system === :ISEA9R
+    @test err.system === :ISEA3H
     @test err.operation === :root_count
     message = sprint(showerror, err)
     @test occursin("root_count", message)
-    @test occursin("ISEA9R", message)
+    @test occursin("ISEA3H", message)
     @test occursin("not verified yet", message)
 end
 
@@ -114,6 +127,19 @@ end
     isea4r = ISEA4RDGGS()
     @test leaf_count(isea4r, 2) == 10 * 4^2
     @test leaf_interval(isea4r, 0, 9, 2) == (9 * 16):(10 * 16 - 1)
+
+    # Radix 9 over ten roots — the arithmetic
+    # `supports_prefix_ranges(ISEA9RDGGS())` unlocked. The interval is the
+    # base-9 Morton descendant block `[p * 9^Δ, (p + 1) * 9^Δ)`, exact because
+    # the within-diamond lattice nesting is bit-exact
+    # (`fl(ix/n) === fl(3ix/3n)`).
+    isea9r = ISEA9RDGGS()
+    @test leaf_count(isea9r, 0) == 10
+    @test leaf_count(isea9r, 2) == 10 * 9^2
+    @test leaf_count(isea9r, 5) == 10 * 9^5
+    @test leaf_interval(isea9r, 0, 9, 2) == (9 * 81):(10 * 81 - 1)
+    @test leaf_interval(isea9r, 1, 5, 2) == (5 * 9):(6 * 9 - 1)
+    @test child_ids(isea9r, 0, 3) == collect(27:35)
 end
 
 # The same arithmetic, at the edge of `Int64`. `max_level` exists to name the
@@ -151,15 +177,16 @@ end
 
 @testset "not ported boundary math is explicit" begin
     # The interface fallback: a system with no wired geometry says so rather
-    # than guessing. `S2DGGS` used to be the example here; its geometry is wired
-    # now (over scaffold ordinals, `src/S2/S2Kernel.jl`), so the example moved to
-    # two systems that really are registry-only. `ISEA9RDGGS` is the deliberate
-    # one — the ten-diamond chart would serve it verbatim, but the DGGAL 5x6
-    # square-zone layout is unpinned, so nothing is wired (see its docstring).
-    @test_throws NotPortedError cell_polygon(ISEA9RDGGS(), 0, 0)
+    # than guessing. The example has moved twice as systems got wired — `S2DGGS`
+    # first (scaffold ordinals, `src/S2/S2Kernel.jl`), then `ISEA9RDGGS`, whose
+    # layout question the OGC 21-038r1 Annex B.2 ten-root statement settled
+    # (`src/ISEA9R/Isea9rKernel.jl`). What is left are systems that really are
+    # registry-only: `RHEALPixDGGS` carries a written disposition of what a
+    # wiring would need, `ISEA4TDGGS` is a plain gap.
     @test_throws NotPortedError cell_polygon(RHEALPixDGGS(), 0, 0)
+    @test_throws NotPortedError cell_polygon(ISEA4TDGGS(), 0, 0)
     # ...and the systems whose geometry IS wired answer at this same generic.
-    for system in (HEALPixDGGS(), S2DGGS(), ISEA4RDGGS())
+    for system in (HEALPixDGGS(), S2DGGS(), ISEA4RDGGS(), ISEA9RDGGS())
         @test cell_polygon(system, 2, 3) isa GI.Polygon
     end
 end

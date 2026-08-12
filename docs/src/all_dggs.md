@@ -28,6 +28,9 @@ using Bonito
 import Makie
 import GeoInterface as GI, GeometryOps as GO
 
+# Other pages use CairoMakie, so this one re-activates its own backend.
+WGLMakie.activate!()
+
 function cell_polygons(system, level)
     ordinals = 1:DGG.num_cells(system, level)
     cell_ids = ordinal_to_cell.((system,), (level,), ordinals)

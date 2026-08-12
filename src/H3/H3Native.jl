@@ -16,9 +16,11 @@ export MAX_RESOLUTION,
     get_base_cell,
     get_pentagons,
     get_resolution,
+    grid_disk,
     is_pentagon,
     is_valid_cell,
     lonlat_to_cell,
+    max_grid_disk_size,
     num_cells,
     res0_cells
 
@@ -203,6 +205,34 @@ function res0_cells()
     _check(ccall((:getRes0Cells, H3_jll.libh3), H3Error, (Ptr{H3Index},), cells),
            "getRes0Cells")
     return cells
+end
+
+"""Number of index slots a grid disk of radius `k` needs (`3k(k+1) + 1`)."""
+function max_grid_disk_size(k::Integer)
+    k >= 0 || throw(ArgumentError("grid disk radius must be non-negative"))
+    out = Ref{Int64}(0)
+    _check(ccall((:maxGridDiskSize, H3_jll.libh3), H3Error,
+                 (Int64, Ref{Int64}), Int64(k), out),
+           "maxGridDiskSize")
+    return out[]
+end
+
+"""
+    grid_disk(id, k) -> Vector{H3Index}
+
+All cells within grid distance `k` of `id`, `id` itself included. The vector
+has `max_grid_disk_size(k)` slots and keeps `0` where the disk is truncated
+by a pentagon distortion; no cell order is promised. This is `gridDisk`, the
+pentagon-safe path — `gridRingUnsafe` fails whenever a pentagon sits inside
+the ring.
+"""
+function grid_disk(id, k::Integer)
+    cell = _to_id(id)
+    disk = zeros(H3Index, max_grid_disk_size(k))
+    _check(ccall((:gridDisk, H3_jll.libh3), H3Error,
+                 (H3Index, Cint, Ptr{H3Index}), cell, Cint(k), disk),
+           "gridDisk")
+    return disk
 end
 
 function get_pentagons(resolution::Integer)

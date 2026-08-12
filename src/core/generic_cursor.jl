@@ -46,8 +46,9 @@ node owns (ordinals for a dense grid, positions in `grid.ids` for a partial
 one) and `selection` is the materialized index vector of the non-range partial
 path — exactly one of the two carries the node's leaf set.
 
-The two fields a traversal has any business reading are the cell the node
-stands for: [`node_level`](@ref) and [`node_id`](@ref). The rest is index
+What a traversal has any business reading is the cell the node stands for —
+[`node_level`](@ref) and [`node_id`](@ref) — plus the leaf-index set it owns,
+through [`node_indices`](@ref). The raw fields behind them are index
 bookkeeping whose representation is a dispatch detail (see the three descent
 modes at the top of this file).
 
@@ -150,6 +151,31 @@ whole sphere and reports the system's zero id, which is also a real level-0
 cell — check the level, not the id.
 """
 node_id(cursor::DGGSCursor) = cursor.id
+
+"""
+    node_indices(cursor::DGGSCursor) -> AbstractVector{Int}
+
+The leaf indices this node owns, in the *tree's* leaf index space — positions
+in `grid.ids` for a partial grid, dense ordinals for a [`DGGSGrid`](@ref) —
+so they line up with `Trees.getcell(tree, i)` and, for a lookup-backed grid,
+with positions in the `DimensionalData` lookup.
+
+This is the public accessor a traversal uses to accept a whole subtree
+without walking it (the alternative, an `STI.depth_first_search` collect,
+re-runs the per-node binary searches over every node underneath): for the
+range-backed cursors it is the O(1) window `first_index:last_index` —
+ascending, and empty ranges for the documented empty node forms — and for a
+selection cursor the node's materialized index vector. Only the dense
+no-interval fallback (a system without [`has_descendant_ranges`](@ref))
+enumerates its leaves.
+"""
+node_indices(cursor::DGGSCursor{<:DGGSPartialGrid,<:Any,Nothing}) =
+    cursor.first_index:cursor.last_index
+node_indices(cursor::DGGSCursor{<:DGGSPartialGrid,<:Any,Vector{Int}}) = cursor.selection
+function node_indices(cursor::DGGSCursor{<:DGGSGrid})
+    _has_interval(cursor) && return cursor.first_index:cursor.last_index
+    return Int[first(_leaf_entry(cursor, i)) for i in 1:_stored_count(cursor)]
+end
 
 function Base.show(io::IO, cursor::DGGSCursor)
     print(io, "DGGSCursor(", system_name(_system(cursor)), ", level=", cursor.level)

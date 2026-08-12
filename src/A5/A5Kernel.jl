@@ -246,6 +246,13 @@ element type. `kwargs` reach `DGGSPartialGrid`'s `bucket_size` / `root_level` /
 DGG.DGGSPartialGrid(l::A5Lookups.A5Lookup; kwargs...) =
     DGG.DGGSPartialGrid(DGG.A5DGGS(), l.resolution, l.data; kwargs...)
 
+# What the generic lookup operations (`neighbor_indices`, `stencil`, `zonal`)
+# ask of a lookup: which system, which level. Wired even though A5 has no
+# `cell_neighbors` yet, so those operations fail at the unported *operation*
+# (`NotPortedError`) rather than at the accessor.
+DGG.dggs_system(::A5Lookups.A5Lookup) = DGG.A5DGGS()
+DGG.dggs_level(l::A5Lookups.A5Lookup) = l.resolution
+
 # Treeifying a lookup directly is the shortest path from a `DimensionalData`
 # dimension to a `Regridder`, and it needs nothing from this file: the method
 # is generic over `AbstractDGGSLookup` (`core/lookups.jl`), routing a stored id

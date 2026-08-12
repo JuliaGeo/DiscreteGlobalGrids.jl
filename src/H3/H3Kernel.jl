@@ -23,6 +23,7 @@ import ..DiscreteGlobalGrids as DGG
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
+using SmallCollections: SmallVector
 
 # --------------------------------------------------------------------------
 # Id-model traits
@@ -66,6 +67,28 @@ DGG.num_cells(::DGG.H3DGGS, level::Integer) = H3Native.num_cells(level)
 # included. This is what `ncells` and the parallelize policy call per node.
 DGG.subtree_leaf_count(::DGG.H3DGGS, level::Integer, id, leaf_level::Integer) =
     H3Native.cell_to_children_size(id, leaf_level)
+
+# --------------------------------------------------------------------------
+# Neighbors
+#
+# `gridDisk(k = 1)` is the origin plus its edge neighbors, zero-padded where a
+# pentagon truncates the disk — the pentagon-safe enumeration (`gridRingUnsafe`
+# fails outright near pentagons). Dropping the origin and the padding leaves
+# exactly the 6 neighbors (5 for a pentagon); libh3 promises no order, so the
+# wiring sorts into the kernel's ascending contract.
+# --------------------------------------------------------------------------
+
+DGG.max_neighbors(::DGG.H3DGGS) = 6
+
+function DGG.cell_neighbors(::DGG.H3DGGS, level::Integer, id)
+    cell = UInt64(id)
+    out = SmallVector{6,UInt64}()
+    for neighbor in H3Native.grid_disk(cell, 1)
+        (neighbor == 0 || neighbor == cell) && continue
+        out = DGG._insert_sorted(out, neighbor)
+    end
+    return out
+end
 
 # --------------------------------------------------------------------------
 # Dense ordinals
@@ -271,6 +294,11 @@ element type. `kwargs` reach `DGGSPartialGrid`'s `bucket_size` / `root_level` /
 """
 DGG.DGGSPartialGrid(l::H3Lookups.H3Lookup; kwargs...) =
     DGG.DGGSPartialGrid(DGG.H3DGGS(), l.resolution, l.data; kwargs...)
+
+# What the generic lookup operations (`neighbor_indices`, `stencil`, `zonal`)
+# ask of a lookup: which system, which level.
+DGG.dggs_system(::H3Lookups.H3Lookup) = DGG.H3DGGS()
+DGG.dggs_level(l::H3Lookups.H3Lookup) = l.resolution
 
 # Treeifying a lookup directly is the shortest path from a `DimensionalData`
 # dimension to a `Regridder`, and it needs nothing from this file: the method

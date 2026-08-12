@@ -10,14 +10,15 @@ following the EOPF/ESA (GRID4EARTH) conventions:
   uncovered cells;
 - metadata attrs `grid_name="healpix"`, `level`, `indexing_scheme="nested"` (xdggs/EOPF).
 
-Spatial queries use the nested hierarchy directly (the same tree as
-`ConservativeRegriddingHealpixExt.HealpixTreeNode`): pixel `p` at level `l` owns the leaf
-id range `[p*4^Δ, (p+1)*4^Δ)`, so with sorted ids "the sort order is the index" — tree
-descent prunes on `searchsorted` range emptiness plus spatial disjointness.
+Spatial queries run the package-level spherical tree descent
+(`_query_positions`, `src/core/lookup_ops.jl`) over the nested hierarchy:
+pixel `p` at level `l` owns the leaf id range `[p*4^Δ, (p+1)*4^Δ)`, so with
+sorted ids "the sort order is the index" — the tree's binary searches prune
+on range emptiness, HEALPix's O(1) exact subtree caps on geometry. All
+predicates are spherical, so query geometries may cross the antimeridian or
+enclose a pole; their ring edges are great-circle arcs.
 
-Limitations (prototype): spherical HEALPix (not the WGS84 authalic-sphere variant);
-planar lon/lat predicates, so query geometries crossing the antimeridian or enclosing a
-pole are unsupported; `stencil` handles 1-D (Cells-only) arrays.
+Limitations (prototype): spherical HEALPix (not the WGS84 authalic-sphere variant).
 """
 module HealpixLookups
 
@@ -27,17 +28,19 @@ using ..Helpers: strictly_increasing
 # module is a grandchild of it, hence the third dot. It supplies the lookup
 # supertype and `DGGSGlobeIds`.
 import ...DiscreteGlobalGrids as DGG
+# `zonal` and `stencil` started life here and are still exported here, but as
+# the package-level generics (`src/core/lookup_ops.jl`) — the same bindings,
+# imported back, so a `using` of both namespaces cannot make them ambiguous.
+# The spatial query underneath them is package-level too, the spherical tree
+# descent this module's selectors route through (`_query_positions`).
+import ...DiscreteGlobalGrids: zonal, stencil, neighbor_indices
 import DimensionalData as DD
-import GeometryOps as GO
 import GeoInterface as GI
 import Extents
 import Healpix
 using DimensionalData: Lookups
-using Statistics
 
 export HealpixLookup, Cells, Touching, nested_neighbors, zonal, stencil, cell_centers, cell_polygons
-
-const MAX_QUERY_DENSIFY_DELTA = 8
 
 #=
 ## 8-neighbors in the nested scheme
@@ -214,8 +217,9 @@ cell_center(l::HealpixLookup, cell_id::Integer) = _cell_center_lonlat(resolution
 cell_centers(l::HealpixLookup) = [cell_center(l, c) for c in l.data]
 
 # boundary of nested pixel as a closed lon/lat ring with 4*step points, lons unwrapped
-# near the center lon. step > 1 densifies the (curved) edges; internal tree nodes MUST
-# pass step = 2^Δ so the planar outline exactly bounds the descendant leaf polygons.
+# near the center lon. step > 1 densifies the (curved) edges. This is the planar
+# *presentation* polygon (`cell_polygons` for plotting and planar consumers); the
+# spatial queries run on the unit-sphere geometry of the kernel instead.
 function _cell_polygon_lonlat(res, pix; step::Int=1)
     ringpix = Healpix.nest2ring(res, pix + 1)
     b = Healpix.boundariesRing(res, ringpix, step, Float64)   # (4*step) x 3 cartesian
@@ -246,10 +250,10 @@ function Lookups.selectindices(l::HealpixLookup, sel::Lookups.At{<:Integer})
     return i
 end
 # The lookup position holding a cell id, 0 when absent — this file's sentinel,
-# kept because `_point_index` and `neighbor_indices` below both read it. The two
-# branches behind it — binary search over stored ids, `cell_to_ordinal` over a
-# globe — are one generic method pair in core (`core/lookups.jl`), chosen by the
-# type of the id vector and so invisible at every call site here.
+# kept because `_point_index` below reads it. The two branches behind it —
+# binary search over stored ids, `cell_to_ordinal` over a globe — are one
+# generic method pair in core (`core/lookups.jl`), chosen by the type of the
+# id vector and so invisible at every call site here.
 _cellid_index(l, cid) = something(DGG.cell_position(l.data, cid), 0)
 function Lookups.selectindices(l::HealpixLookup, sel::Lookups.Contains)
     v = Lookups.val(sel)
@@ -258,7 +262,7 @@ function Lookups.selectindices(l::HealpixLookup, sel::Lookups.Contains)
     elseif v isa Tuple{Real,Real}
         return _point_index(l, v[1], v[2])
     elseif GI.isgeometry(v)
-        return _query_indices(l, v, :center)
+        return DGG._query_positions(l, v, :center)
     end
     throw(ArgumentError("unsupported Contains selector value $v"))
 end
@@ -271,167 +275,68 @@ end
 """
     Touching(geom)
 
-Selector for stored cells whose polygon intersects `geom`. This is the geometry analogue
-of `DD.Lookups.Touches`, which only admits tuples/`Extents.Extent`s in its type parameter
-and therefore cannot carry a polygon. Use as `A[Cells(Touching(geom))]`.
+Selector for stored cells whose (spherical) polygon intersects `geom`. This is the
+geometry analogue of `DD.Lookups.Touches`, which only admits tuples/`Extents.Extent`s
+in its type parameter and therefore cannot carry a polygon. Use as
+`A[Cells(Touching(geom))]`.
+
+The query is the package-level spherical tree descent (`src/core/lookup_ops.jl`):
+`geom` may cross the antimeridian or enclose a pole, and its ring edges are
+great-circle arcs — see [`zonal`](@ref) for the full geometry conventions.
 """
 struct Touching{T} <: Lookups.ArraySelector{T}
     val::T
 end
 Lookups.val(sel::Touching) = sel.val
-Lookups.selectindices(l::HealpixLookup, sel::Touching) = _query_indices(l, sel.val, :touches)
+Lookups.selectindices(l::HealpixLookup, sel::Touching) =
+    DGG._query_positions(l, sel.val, :touches)
 
-# DD-native Touches carries tuples or extents; treat them as a box polygon.
+# DD-native Touches carries tuples or extents; treat an extent as the
+# lon/lat-aligned box *region*.
 function Lookups.selectindices(l::HealpixLookup, sel::Lookups.Touches)
     ext = Lookups.val(sel)
     ext isa Extents.Extent ||
         throw(ArgumentError("only Touches(::Extents.Extent) is supported; use Touching(geom) for geometries"))
-    (x1, x2), (y1, y2) = ext.X, ext.Y
-    box = GI.Polygon([GI.LinearRing([(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)])])
-    return _query_indices(l, box, :touches)
+    return DGG._query_positions(l, _extent_polygon(ext), :touches)
 end
 
 #=
-## Hierarchical cover query
+An `Extents.Extent` is bounded by parallels above and below, and the spherical
+query engine draws ring edges as great-circle arcs — which parallels are not —
+so the box polygon densifies its two constant-latitude edges (a great-circle
+chord across 0.25° of longitude stays within ~10⁻⁶ rad of the parallel,
+far under any cell size this prototype reaches). The meridian sides ARE
+great circles and stay two-point edges.
 =#
-
-"""
-Tree-descent cover. `mode=:center`: stored cells whose center is contained in `geom`.
-`mode=:touches`: stored cells whose (planar lon/lat) polygon intersects `geom`.
-Prunes on (a) emptiness of the stored-id range under a node (binary search — the sort
-order is the index) and (b) spatial disjointness of the node's *densified* polygon from
-`geom`. The densification (`step = 2^Δ`) is load-bearing: with only 4 corners the planar
-diamond under-covers the curved node region and the prune drops real results.
-Limitation: planar lon/lat predicates — geometries crossing the antimeridian or
-enclosing a pole are not handled.
-"""
-function _query_indices(l::HealpixLookup, geom, mode::Symbol)
-    out = Int[]
-    geomext = GI.extent(geom)
-    for f in 0:11
-        _query!(out, l, geom, geomext, 0, f, mode)
+function _extent_polygon(ext::Extents.Extent)
+    (x1, x2), (y1, y2) = Float64.(ext.X), Float64.(ext.Y)
+    x2 - x1 < 360 || throw(ArgumentError(
+        "a full-longitude extent has no boundary meridians; query the two polar sides separately"))
+    lons = range(x1, x2; length=max(2, ceil(Int, (x2 - x1) / 0.25) + 1))
+    points = Vector{Tuple{Float64,Float64}}(undef, 2 * length(lons) + 1)
+    k = 0
+    for lon in lons
+        points[k += 1] = (lon, y1)
     end
-    return out
-end
-
-_query_polygon_step(Δ::Integer) =
-    Δ <= MAX_QUERY_DENSIFY_DELTA ? (1 << Int(Δ)) : nothing
-
-function _query!(out, l, geom, geomext, level, pix, mode)
-    Δ = l.level - level
-    lo = Int64(pix) * 4^Δ
-    hi = lo + 4^Δ
-    i1 = searchsortedfirst(l.data, lo)
-    (i1 > length(l.data) || l.data[i1] >= hi) && return        # nothing stored under this node
-
-    step = _query_polygon_step(Δ)
-    if step === nothing
-        for c in 0:3
-            _query!(out, l, geom, geomext, level + 1, 4 * pix + c, mode)
-        end
-        return
+    for lon in reverse(lons)
+        points[k += 1] = (lon, y2)
     end
-
-    # densified node outline: exactly bounds the descendant leaf planar polygons
-    nodepoly = _cell_polygon_lonlat(Healpix.Resolution(2^level), pix; step)
-    Extents.disjoint(GI.extent(nodepoly), geomext) && return
-    if level == l.level                                        # leaf: i1 is the stored index
-        hit = mode === :center ?
-            GO.contains(geom, _cell_center_lonlat(resolution(l), pix)) :
-            GO.intersects(geom, nodepoly)
-        hit && push!(out, i1)
-        return
-    end
-    GO.disjoint(geom, nodepoly) && return
-    if GO.covers(geom, nodepoly)   # whole subtree inside: valid for both modes
-        i2 = searchsortedlast(l.data, hi - 1)
-        append!(out, i1:i2)
-        return
-    end
-    for c in 0:3
-        _query!(out, l, geom, geomext, level + 1, 4 * pix + c, mode)
-    end
+    points[k += 1] = points[1]
+    return GI.Polygon([GI.LinearRing(points)])
 end
 
 #=
-## Zonal statistics
+## Zonal / stencil wiring
+
+`zonal`, `stencil` and `neighbor_indices` are the package-level generics
+(`src/core/lookup_ops.jl`), and so is the spatial query they and the
+selectors above resolve HEALPix cells through — the spherical tree descent
+over `treeify(DGGSPartialGrid(l))`. What this module contributes to that
+query lives in the kernel wiring (`HealpixKernel.jl`): the O(1) exact
+subtree caps the descent prunes with — which only a system whose parents
+geographically contain their children can offer — plus the densified pixel
+outlines (`subtree_polygon_unitsphere`) available to traversals that want
+polygon-level subtree classification.
 =#
-
-"""
-    zonal(f, A::DD.AbstractDimArray; of, boundary=:center, skipmissing=true)
-
-Zonal statistics over the `Cells` dimension of `A` (which must hold a `HealpixLookup`).
-`of` is a geometry, feature(collection), or vector thereof. HEALPix cells are equal-area,
-so e.g. `zonal(mean, ...)` is the true (unweighted) areal mean — no latitude weighting.
-Returns one value per geometry; `missing` where no stored cell matches.
-"""
-function zonal(f, A::DD.AbstractDimArray; of, boundary::Symbol=:center, skipmissing::Bool=true)
-    l = DD.lookup(A, Cells)
-    geoms = _geometries(of)
-    mode = boundary === :center ? :center : :touches
-    map(geoms) do g
-        idx = _query_indices(l, g, mode)
-        isempty(idx) && return missing
-        sub = A[Cells(idx)]
-        vals = skipmissing ? Base.skipmissing(sub) : sub
-        isempty(vals) ? missing : f(vals)
-    end
-end
-
-_geometries(of) = GI.isgeometry(of) ? [of] :
-    GI.trait(of) isa GI.AbstractFeatureCollectionTrait ? [GI.geometry(f) for f in GI.getfeature(of)] :
-    GI.trait(of) isa GI.AbstractFeatureTrait ? [GI.geometry(of)] :
-    of isa AbstractVector ? map(g -> GI.trait(g) isa GI.AbstractFeatureTrait ? GI.geometry(g) : g, of) :
-    throw(ArgumentError("cannot extract geometries from $(typeof(of))"))
-
-#=
-## Stencil operations
-=#
-
-"""
-    neighbor_indices(l::HealpixLookup) -> Vector{NTuple{8,Int}}
-
-For each stored cell, positions (into the lookup) of its 8 HEALPix neighbors;
-0 where the neighbor cell is not stored (coverage boundary) or does not exist.
-Computed once; this is the static "halo table" (DLWP-HPX pattern from the research doc).
-"""
-function neighbor_indices(l::HealpixLookup)
-    res = resolution(l)
-    map(l.data) do cid
-        nbs = nested_neighbors(res, cid)
-        ntuple(m -> nbs[m] < 0 ? 0 : _cellid_index(l, nbs[m]), 8)
-    end
-end
-
-"""
-    stencil(f, A::DD.AbstractDimArray; nbidx=nothing)
-
-Apply `f(center_value, neighbor_values::Vector)` over every stored cell of the (1-D)
-`Cells` array `A`. Neighbors outside the stored coverage are simply absent from the
-vector (partial-coverage semantics: reductions skip, like `nanmean`). Pass a precomputed
-`neighbor_indices(lookup)` as `nbidx` to amortize the halo table across many stencils.
-"""
-function stencil(f, A::DD.AbstractDimArray; nbidx=nothing)
-    l = DD.lookup(A, Cells)
-    nbi = nbidx === nothing ? neighbor_indices(l) : nbidx
-    data = parent(A)
-    length(nbi) == length(data) ||
-        throw(DimensionMismatch("neighbor index table and array must have the same length"))
-    out = similar(data, Base.promote_op(f, eltype(data), Vector{eltype(data)}))
-    for i in eachindex(data)
-        indices = nbi[i]
-        nneighbors = count(>(0), indices)
-        values = Vector{eltype(data)}(undef, nneighbors)
-        k = 0
-        @inbounds for j in indices
-            if j > 0
-                k += 1
-                values[k] = data[j]
-            end
-        end
-        @inbounds out[i] = f(data[i], values)
-    end
-    DD.rebuild(A; data=out)
-end
 
 end # module

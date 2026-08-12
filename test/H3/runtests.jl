@@ -178,4 +178,9 @@ end
 # itself in a module of its own.
 include("test_h3_kernel.jl")
 
+# Edge neighbors (`grid_disk` wrappers, `cell_neighbors` wiring) and the
+# lookup operations built on them (`neighbor_indices`, `stencil`, `zonal`);
+# also its own module.
+include("test_neighbors.jl")
+
 end # module H3TestSuite

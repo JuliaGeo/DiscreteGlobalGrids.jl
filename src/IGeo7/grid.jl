@@ -475,8 +475,19 @@ function lonlat_to_z7(lon::Real, lat::Real, res::Integer;
     orientation::Orientation=ORIENT_IDENTITY)
     0 <= res <= MAX_RESOLUTION || throw(InvalidZ7Error(
         :resolution_range, zero(UInt64), _z7_int(res), MAX_RESOLUTION))
-    r = Int(res)
-    p = to_grid(orientation, lonlat_to_xyz(Float64(lon), Float64(lat)))
+    return _xyz_to_z7(to_grid(orientation, lonlat_to_xyz(Float64(lon), Float64(lat))), Int(res))
+end
+
+"""
+    _xyz_to_z7(p, res) -> UInt64
+
+[`lonlat_to_z7`](@ref)'s decode body on a *grid-frame* unit vector: the
+containing face, its corner bases nearest-first, the three result-neutral
+search passes. Factored out so grid-frame producers — the neighbor step in
+[`_cell_neighbors`](@ref) hands over `dev_to_xyz` output directly — skip the
+degrees round trip and the orientation rotation.
+"""
+function _xyz_to_z7(p::NTuple{3,Float64}, r::Int)
     f, w = snyder_fwd(p)
     bs = _corner_bases(p, f)
     for i in 1:3
@@ -494,7 +505,7 @@ function lonlat_to_z7(lon::Real, lat::Real, res::Integer;
         end
     end
     throw(ErrorException(
-        "IGeo7 internal error: no cell accepted point ($lon, $lat) at res $r"))
+        "IGeo7 internal error: no cell accepted grid-frame point $p at res $r"))
 end
 
 """
@@ -505,6 +516,71 @@ Alias of [`lonlat_to_z7`](@ref): the Z7 `UInt64` *is* the cell id
 """
 lonlat_to_cell(lon::Real, lat::Real, res::Integer; kwargs...) =
     lonlat_to_z7(lon, lat, res; kwargs...)
+
+# ---------------------------------------------------------------------------
+# Edge neighbors
+#
+# A res-`r` cell's region is the Voronoi hexagon of its lattice point, so its
+# edge neighbors sit at exactly the six Eisenstein units away — the same
+# first-principles hex geometry the corner construction rests on. The step is
+# taken on the *physical* (post-collapse, cone-wrapped) lattice point that
+# `_encode_lattice` returns, a representative crossing the cone cut is
+# canonicalized by the center's branch exactly as `cell_boundary_cartesian`
+# canonicalizes corner representatives, and the resulting position — the
+# neighbor's own center, exact lattice arithmetic through the exact slot
+# maps — is handed to the standard decoder. No new convention enters: every
+# step is a fitted-and-validated piece of the existing pipeline, and the
+# strict re-encode acceptance inside `_try_decode` rejects any candidate that
+# is not exactly the cell standing at that position.
+#
+# Pentagons need no special geometry: at the cone apex the six unit
+# directions cover 360° of raw angle folded onto the 300° cone, so exactly
+# two of them land on the same physical ring slot (for either wrap branch the
+# folded direction coincides with another unit's slot) and the pentagon's
+# five neighbors fall out of id-deduplication.
+# ---------------------------------------------------------------------------
+
+"""
+    _cell_neighbors(z7) -> SmallList{6,UInt64}
+
+Canonical ids of the cells sharing an edge with `z7`, ascending: 6 for a
+hexagon, 5 for a pentagon. Exact lattice arithmetic for the neighbor
+positions (see the block comment above); the position-to-id step is the
+decoder validated at 100% exact decode on all 196,080 oracle cell centers.
+
+Throws [`InvalidZ7Error`](@ref) for invalid ids and for resolution-20 ids
+(valid for prefix arithmetic, no geometry — hence no neighbors).
+"""
+function _cell_neighbors(z7::UInt64)
+    res = _geometry_checked(z7)
+    base = z7_base_cell(z7)
+    (a, b) = _encode_lattice(z7, base, res)
+    c0 = ecpx(a, b)
+    scale = @inbounds CELL_SCALE[res+1]
+    # Which branch a cut-crossing representative wraps to is decided by the
+    # side the center sits on (`cell_boundary_cartesian`'s rule; a neighbor
+    # step never swings more than the 180° that rule discriminates). At the
+    # apex there is no side and no need for one: both branches fold the
+    # crossing direction onto another unit's slot, and the duplicate id is
+    # dropped below.
+    thc = mod(rad2deg(angle(c0)) - (@inbounds ARGP_DEG[res+1]), 360.0)
+    out = Helpers.empty_small_list(Val(6), zero(UInt64))
+    for j in 1:6
+        e = @inbounds UNITS[j]
+        u = (c0 + ecpx(e)) * scale
+        psi = mod(rad2deg(angle(u)), 360.0)
+        if psi >= DEV_CONE_DEG - CUT_EPS_DEG
+            u *= (thc > 150.0 ? CIS_P60 : CIS_M60)
+        end
+        z = _xyz_to_z7(dev_to_xyz(base, u), res)
+        seen = false
+        for k in 1:length(out)
+            (@inbounds out[k]) == z && (seen = true; break)
+        end
+        seen || (out = Helpers.small_push(out, z))
+    end
+    return Helpers.small_sort(out)
+end
 
 # ---------------------------------------------------------------------------
 # Dense full-world indexing, hierarchy wrappers and introspection

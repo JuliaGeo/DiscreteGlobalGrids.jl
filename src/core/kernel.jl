@@ -76,6 +76,26 @@ tighter stored-id union caps.
 """
 has_exact_subtree_cap(system::AbstractDGGS) = false
 
+"""
+    has_congruent_geometry(system::AbstractDGGS) -> Bool
+
+`true` when every parent cell geographically contains its descendants (a
+congruent refinement — nested HEALPix). That containment is what makes
+parent-level geometry sound for whole subtrees: it is the fact behind
+HEALPix's O(1) exact [`subtree_cap`](@ref) override, and it makes
+parent-outline polygon predicates (`pred_disjoint` to prune,
+`pred_covers` to bulk-accept) valid for any traversal that wants them —
+wire [`subtree_polygon_unitsphere`](@ref) alongside. (The shipped query
+descent measures that classification as a net loss under the current
+predicate engine and does not consult it; see the design note in
+`core/lookup_ops.jl`.)
+
+Defaults to `false` — in the aperture-7 systems (H3, IGEO7, A5) children
+overhang their parent, so no parent polygon bounds the subtree and every
+surviving leaf must be tested exactly.
+"""
+has_congruent_geometry(system::AbstractDGGS) = false
+
 # --------------------------------------------------------------------------
 # Hierarchy
 # --------------------------------------------------------------------------
@@ -233,6 +253,56 @@ function subtree_leaf_count(system::AbstractDGGS, level::Integer, id, leaf_level
     end
     return Int64(length(cell_descendants(system, level, id, leaf_level)))
 end
+
+# --------------------------------------------------------------------------
+# Neighbors
+#
+# Same-level edge adjacency, the operation the lookup-level halo table and
+# `stencil` (`core/lookup_ops.jl`) are built on. The neighbor count of a cell
+# is a small compile-time-boundable number — 6 for the hexagonal aperture-7
+# systems (5 at the 12 pentagons), 8 for HEALPix (7 at its 24 degree-3-vertex
+# pixels) — so the container is a `SmallCollections.SmallVector` sized by the
+# `max_neighbors` trait: fixed capacity, variable length, no heap allocation.
+# --------------------------------------------------------------------------
+
+"""
+    max_neighbors(system::AbstractDGGS) -> Int
+
+Capacity bound for [`cell_neighbors`](@ref)' container: the largest number of
+edge neighbors any cell of the system has. 6 for the hexagonal aperture-7
+systems (pentagons have 5), 8 for HEALPix (24 pixels per grid have 7). Wired
+next to `cell_neighbors`; the fallback throws [`NotPortedError`](@ref).
+"""
+function max_neighbors(system::AbstractDGGS)
+    throw(NotPortedError(system_name(system), :max_neighbors,
+        "Wire the static neighbor-count bound next to cell_neighbors."))
+end
+
+"""
+    cell_neighbors(system, level, id) -> SmallVector{max_neighbors(system),cell_id_type(system)}
+
+Canonical ids of the cells sharing an edge with cell `(level, id)`, in
+ascending canonical-id order. Hexagon cells in the aperture-7 systems have 6,
+the 12 pentagons 5; HEALPix pixels have 8 (24 per grid have 7 — corner
+neighbors included, following the HEALPix convention where the stencil
+neighborhood is the 3×3 lattice block).
+
+The relation is symmetric and never includes the cell itself. Directional
+(ring-)ordered neighborhoods stay native — `HealpixLookups.nested_neighbors`
+keeps the SW..S compass order for consumers that key on direction; this
+kernel operation trades that for an order every system can promise.
+"""
+function cell_neighbors(system::AbstractDGGS, level::Integer, id)
+    throw(NotPortedError(system_name(system), :cell_neighbors,
+        "Wire the native edge-neighbor enumeration."))
+end
+
+# Ascending insertion for the wirings that collect neighbors from an unordered
+# native enumeration (libh3's gridDisk, the HEALPix compass tuple): capacity is
+# at most 8, so a binary-search insert into the immutable SmallVector beats
+# materializing and sorting a heap vector.
+@inline _insert_sorted(v::SmallVector{N,T}, x::T) where {N,T} =
+    SmallCollections.insert(v, searchsortedfirst(v, x), x)
 
 # --------------------------------------------------------------------------
 # Dense ordinals
@@ -405,6 +475,26 @@ The cell's closed boundary ring as a unit-sphere polygon. Derived from
 function cell_polygon_unitsphere(system::AbstractDGGS, level::Integer, id)
     return GI.Polygon([GI.LinearRing(cell_boundary(system, level, id; closed=true))])
 end
+
+"""
+    subtree_polygon_unitsphere(system, level, id, leaf_level) -> Union{Nothing, GI.Polygon}
+
+A unit-sphere polygon that **exactly bounds** the union of the `leaf_level`
+descendant cell polygons of cell `(level, id)`, or `nothing` when no such
+polygon is available — the default, and the only sound answer where a parent
+does not geographically contain its children (the aperture-7 systems).
+
+The contract is geometric, not approximate: every point of every descendant's
+[`cell_polygon_unitsphere`](@ref) must lie inside (or on) the returned
+polygon, so a traversal may prune a subtree whose outline is disjoint from a
+geometry and bulk-accept one it covers. A wiring may also answer `nothing`
+selectively — HEALPix does above a densification cutoff, where the outline
+stops being worth building. Only meaningful where
+[`has_congruent_geometry`](@ref) holds; note the shipped query descent does
+not consult it (see the design note in `core/lookup_ops.jl`).
+"""
+subtree_polygon_unitsphere(system::AbstractDGGS, level::Integer, id, leaf_level::Integer) =
+    nothing
 
 """
     cell_cap(system, level, id) -> SphericalCap

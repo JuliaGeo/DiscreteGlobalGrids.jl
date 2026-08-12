@@ -208,6 +208,15 @@ end
 include("test_kernel_core.jl")
 include("test_generic_trees.jl")
 include("test_manifolds.jl")
+# The generic lookup operations (src/core/lookup_ops.jl): neighbor halo
+# tables, `stencil`, `zonal`, and the neighbor kernel generics' error paths.
+# Also a module of its own — it `using`s HealpixLookups next to the package.
+include("test_lookup_ops.jl")
+# The spherical tree query behind `Touching` and `zonal` (src/core/
+# lookup_ops.jl): brute-force spherical equivalence on all four lookup
+# types (antimeridian and pole geometries included), the `node_indices`
+# accessor, the geometry cap, and the descent-vs-brute perf bound.
+include("test_tree_queries.jl")
 # The lazy globe-complete id vector (src/core/globe_ids.jl), and the tree layer
 # and point selectors over the lookups built on it (src/core/lookups.jl); also
 # modules of their own, for the same `num_cells` reason.

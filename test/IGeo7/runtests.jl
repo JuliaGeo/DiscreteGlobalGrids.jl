@@ -29,6 +29,7 @@ const TEST_FILES = (
     "test_indexing.jl",
     "test_lookups.jl",
     "test_igeo7_kernel.jl",
+    "test_neighbors.jl",
 )
 
 @testset "IGeo7" begin

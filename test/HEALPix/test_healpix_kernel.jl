@@ -346,4 +346,46 @@ end
     @test isapprox(sum(partial.intersections), sum(partial.dst_areas); rtol=1e-10)
 end
 
+# ---------------------------------------------------------------------------
+# The congruent-geometry contract: `subtree_polygon_unitsphere` must bound
+# the union of the descendant leaf polygons EXACTLY — its perimeter vertices
+# are the descendant corner lattice points evaluated through the same chart,
+# so the spherical `covers` of every descendant is the whole claim, checked
+# through the same engine any traversal would use.
+# ---------------------------------------------------------------------------
+@testset "subtree_polygon_unitsphere" begin
+    @test DGG.has_congruent_geometry(S)
+    alg = GO.RelateNG(; manifold=GO.Spherical())
+    rng = Random.MersenneTwister(11)
+    for (level, leaf) in ((0, 2), (0, 4), (1, 3), (2, 5), (3, 4))
+        npix = 12 * 4^level
+        for id in unique(rand(rng, 0:(npix - 1), 3))
+            poly = DGG.subtree_polygon_unitsphere(S, level, id, leaf)
+            @test poly !== nothing
+            delta = leaf - level
+            @test GI.npoint(GI.getexterior(poly)) == 4 * 2^delta + 1
+            prep = GO.prepare(alg, poly)
+            lo, hi = DGG.descendant_range(S, level, id, leaf)
+            @test all(GO.relate_predicate(prep, GO.pred_covers(),
+                DGG.cell_polygon_unitsphere(S, leaf, d)) for d in lo:hi)
+            # ...and it is not the whole sky: a far-away cell is untouched
+            far = DGG.cell_polygon_unitsphere(S, leaf,
+                mod(lo + DGG.num_cells(S, leaf) ÷ 2, DGG.num_cells(S, leaf)))
+            @test !GO.relate_predicate(prep, GO.pred_covers(), far)
+        end
+    end
+    # Δ = 0 degenerates to the cell polygon itself, vertex for vertex
+    p0 = DGG.subtree_polygon_unitsphere(S, 3, 17, 3)
+    c0 = DGG.cell_polygon_unitsphere(S, 3, 17)
+    @test collect(GI.getpoint(GI.getexterior(p0))) ==
+          collect(GI.getpoint(GI.getexterior(c0)))
+    # past the densification cutoff the outline declines to exist
+    @test DGG.subtree_polygon_unitsphere(S, 0, 5, 9) === nothing
+    @test DGG.subtree_polygon_unitsphere(S, 0, 5, 8) !== nothing
+    # argument guards, matching the kernel's hierarchy conventions
+    @test_throws ArgumentError DGG.subtree_polygon_unitsphere(S, 3, 17, 2)
+    @test_throws ArgumentError DGG.subtree_polygon_unitsphere(S, 0, 12, 2)
+    @test_throws ArgumentError DGG.subtree_polygon_unitsphere(S, 0, -1, 2)
+end
+
 end # module HealpixKernelTestSuite

@@ -17,8 +17,10 @@ import GeometryOps as GO
 import GeoInterface as GI
 import Extents
 import SparseArrays
+using SmallCollections: SmallVector
 
 using DiscreteGlobalGrids
+const DGG = DiscreteGlobalGrids
 using DiscreteGlobalGrids.HEALPix.HealpixLookups
 using DiscreteGlobalGrids.HEALPix.HealpixLookups: nested_neighbors, HealpixLookups
 
@@ -55,6 +57,32 @@ using DiscreteGlobalGrids.HEALPix.HealpixLookups: nested_neighbors, HealpixLooku
     @test count(p -> any(<(0), nested_neighbors(res, p)), 0:npix-1) == 24
     res8 = Healpix.Resolution(8)
     @test count(p -> any(<(0), nested_neighbors(res8, p)), 0:(12*64 - 1)) == 24
+end
+
+# The kernel wiring over `nested_neighbors`: same neighbor sets, re-stated in
+# the kernel's contract — ascending ids, existing neighbors only, in the
+# `SmallVector` container `max_neighbors` sizes (src/HEALPix/HealpixKernel.jl).
+@testset "cell_neighbors kernel wiring" begin
+    level = 2                                     # nside=4, the brute-forced grid above
+    res = Healpix.Resolution(2^level)
+    npix = 12 * 4^level
+    @test max_neighbors(HEALPixDGGS()) == 8
+    sevens = 0
+    for p in 0:npix-1
+        nbs = cell_neighbors(HEALPixDGGS(), level, p)
+        @test nbs isa SmallVector{8,Int64}
+        @test issorted(nbs) && allunique(nbs)
+        @test !(p in nbs)
+        @test sort(collect(nbs)) == sort(filter(>=(0), collect(nested_neighbors(res, p))))
+        length(nbs) == 7 && (sevens += 1)
+        # symmetry, which the compass tuple never states
+        for q in nbs
+            @test p in cell_neighbors(HEALPixDGGS(), level, q)
+        end
+    end
+    @test sevens == 24
+    @test_throws ArgumentError cell_neighbors(HEALPixDGGS(), level, -1)
+    @test_throws ArgumentError cell_neighbors(HEALPixDGGS(), level, npix)
 end
 
 @testset "HealpixLookup basics" begin
@@ -119,12 +147,10 @@ end
 end
 
 @testset "bounded high-level query descent" begin
-    @test HealpixLookups._query_polygon_step(20) === nothing
-    @test maximum(
-        step for step in HealpixLookups._query_polygon_step.(0:20)
-        if !isnothing(step)
-    ) == 256
-
+    # A single stored pixel at level 18: the descent walks an 18-level chain
+    # of one-child nodes without ever building a subtree outline for it —
+    # the depth used to be what forced the planar descent's densification
+    # cutoff, and now just has to stay cheap and correct.
     level = 18
     res = Healpix.Resolution(2^level)
     pixel = Int64(
@@ -145,6 +171,18 @@ end
     @test Lookups.selectindices(lookup, Lookups.Contains(box)) == [1]
 end
 
+# The queries are spherical now, so the oracle is too: unprepared brute
+# force over every stored cell's unit-sphere geometry, through the same
+# spherical RelateNG engine but none of the tree, cap or descent machinery.
+const SPHERICAL_ALG = GO.RelateNG(; manifold=GO.Spherical())
+function sph_truth(l, geom, mode::Symbol)
+    prep = GO.prepare(SPHERICAL_ALG, geom)
+    mode === :center && return findall(i -> GO.relate_predicate(prep, GO.pred_contains(),
+        DGG.cell_center(HEALPixDGGS(), l.level, l.data[i])), eachindex(l.data))
+    return findall(i -> GO.relate_predicate(prep, GO.pred_intersects(),
+        cell_polygon_unitsphere(HEALPixDGGS(), l.level, l.data[i])), eachindex(l.data))
+end
+
 @testset "polygon cover" begin
     level = 5                                    # nside=32, 12288 cells
     # coverage: cells with centers in lon 0..40, lat 30..60
@@ -153,37 +191,38 @@ end
     covered = Int64[p for p in 0:(12*4^level - 1) if
         0 <= allcenters[p+1][1] <= 40 && 30 <= allcenters[p+1][2] <= 60]
     l = HealpixLookup(covered; level)
-    centers = cell_centers(l)
-    polys = cell_polygons(l)
     box = GI.Polygon([GI.LinearRing([(5.0, 40.0), (20.0, 40.0), (20.0, 52.0), (5.0, 52.0), (5.0, 40.0)])])
     idx = Lookups.selectindices(l, Lookups.Contains(box))
-    # ground truth by brute force over stored cells
-    truth = findall(c -> GO.contains(box, c), centers)
-    @test sort(idx) == truth
+    @test sort(idx) == sph_truth(l, box, :center)
     @test !isempty(idx)
-    # Touches against its own brute-force ground truth (also exercises cell_polygons);
-    # the subset check alone would pass even if Touches returned every stored cell.
+    # Touching against its own brute-force ground truth; the subset check
+    # alone would pass even if Touching returned every stored cell.
     idxt = Lookups.selectindices(l, Touching(box))
-    truth_t = findall(p -> GO.intersects(box, p), polys)
-    @test sort(idxt) == truth_t
+    @test sort(idxt) == sph_truth(l, box, :touches)
     @test issubset(sort(idx), sort(idxt))
-    # DD-native Touches with an Extent behaves like Touching with the equivalent box
-    @test sort(Lookups.selectindices(l, Lookups.Touches(Extents.Extent(X=(5.0, 20.0), Y=(40.0, 52.0))))) == truth_t
+    # DD-native Touches with an Extent means the lon/lat-aligned box REGION —
+    # parallels top and bottom — which is exactly the densified polygon
+    # `_extent_polygon` builds. (NOT the same cells as `Touching(box)`: the
+    # plain 4-corner box has great-circle edges that bulge off the parallels.)
+    ext = Extents.Extent(X=(5.0, 20.0), Y=(40.0, 52.0))
+    @test sort(Lookups.selectindices(l, Lookups.Touches(ext))) ==
+          sph_truth(l, HealpixLookups._extent_polygon(ext), :touches)
+    @test_throws ArgumentError HealpixLookups._extent_polygon(
+        Extents.Extent(X=(-180.0, 180.0), Y=(-10.0, 10.0)))
     # query box entirely outside coverage -> empty
     far = GI.Polygon([GI.LinearRing([(-100.0, -40.0), (-90.0, -40.0), (-90.0, -30.0), (-100.0, -30.0), (-100.0, -40.0)])])
     @test isempty(Lookups.selectindices(l, Lookups.Contains(far)))
-    # Fuzz: fixed boxes alone DO NOT catch non-conservative coarse-node pruning (plan
-    # review measured ~4% of random boxes affected before the step=2^Δ densification fix).
-    # Seeded random boxes, descent vs brute force, must agree exactly.
+    # Fuzz: fixed boxes alone DO NOT catch non-conservative coarse-node
+    # pruning (the plan review of the planar descent measured ~4% of random
+    # boxes affected before its densification fix). Seeded random boxes,
+    # descent vs spherical brute force, must agree exactly.
     rng = Random.MersenneTwister(42)
     for _ in 1:200
         lon0 = rand(rng) * 50 - 5; lat0 = rand(rng) * 30 + 28
         w = rand(rng) * 20 + 0.5; h = rand(rng) * 15 + 0.5
         b = GI.Polygon([GI.LinearRing([(lon0, lat0), (lon0 + w, lat0), (lon0 + w, lat0 + h), (lon0, lat0 + h), (lon0, lat0)])])
-        @test sort(Lookups.selectindices(l, Lookups.Contains(b))) ==
-              findall(c -> GO.contains(b, c), centers)
-        @test sort(Lookups.selectindices(l, Touching(b))) ==
-              findall(p -> GO.intersects(b, p), polys)
+        @test sort(Lookups.selectindices(l, Lookups.Contains(b))) == sph_truth(l, b, :center)
+        @test sort(Lookups.selectindices(l, Touching(b))) == sph_truth(l, b, :touches)
     end
 end
 
@@ -199,7 +238,7 @@ end
     A = DD.DimArray([field(lon, lat) for (lon, lat) in cell_centers(l)], Cells(l))
     box = GI.Polygon([GI.LinearRing([(5.0, 40.0), (20.0, 40.0), (20.0, 52.0), (5.0, 52.0), (5.0, 40.0)])])
     zs = zonal(mean, A; of=[box])
-    truthidx = findall(c -> GO.contains(box, c), cell_centers(l))
+    truthidx = sph_truth(l, box, :center)
     @test zs[1] ≈ mean(parent(A)[truthidx])
     # multiple zones incl. one fully outside coverage
     far = GI.Polygon([GI.LinearRing([(-100.0, -40.0), (-90.0, -40.0), (-90.0, -30.0), (-100.0, -30.0), (-100.0, -40.0)])])
@@ -210,6 +249,19 @@ end
                      (Cells(l), DD.Ti([0.0, 10.0])))
     zs3 = zonal(mean, A2; of=[box])
     @test zs3[1] ≈ zs[1] + 5.0
+end
+
+# `zonal` is the package-level generic, and so is the spherical tree query
+# under it — HEALPix's old planar `_query_indices` quadtree is gone, so
+# there is no second descent to cross-check anymore. What replaced the
+# old cross-check: the seeded-fuzz spherical-brute-force equivalence in
+# "polygon cover" above, and the all-systems (antimeridian/pole included)
+# equivalence suite in test/core/test_tree_queries.jl. The accessors the
+# generic query reads stay pinned here:
+@testset "generic query accessors" begin
+    l = HealpixLookup(Int64[3, 5]; level=2)
+    @test dggs_system(l) === HEALPixDGGS()
+    @test dggs_level(l) == 2
 end
 
 @testset "stencil" begin
@@ -226,7 +278,12 @@ end
         mean(vcat(center, nbs))
     end
     @test all(==(7.0), parent(sm))
+    # the halo table is the generic one now: `SmallVector` positions in
+    # ascending-neighbor-id order, `0` only where coverage ends (nonexistent
+    # neighbors are dropped, not sentinelled)
     nbi = HealpixLookups.neighbor_indices(l)
+    @test eltype(nbi) == SmallVector{8,Int}
+    @test all(idx -> 7 <= length(idx) <= 8, nbi)
     @test_throws DimensionMismatch stencil((c, nbs) -> c + sum(nbs), A; nbidx=nbi[1:end-1])
     interior = [i for i in eachindex(nbi) if all(>(0), nbi[i])]
     @test !isempty(interior)                       # region interior has full 8-neighborhoods

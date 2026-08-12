@@ -31,6 +31,12 @@ import ..DiscreteGlobalGrids as DGG
 import ConservativeRegridding: Trees
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
+import GeoInterface as GI
+# For `cell_neighbors` only: the neighbor tables live in `HealpixLookups`
+# (`nested_neighbors`, a healpix_base.cc transcription over Healpix.jl's xyf
+# codec), so this one operation rides Healpix.jl rather than the chart.
+import Healpix
+using SmallCollections: SmallVector
 
 # --------------------------------------------------------------------------
 # Id model
@@ -47,6 +53,41 @@ DGG.has_ordinal_ids(::DGG.HEALPixDGGS) = true
 # O(1), so the exact parent cap beats a stored-id union cap at every internal
 # node — which is what the old per-system HEALPix node extents did.
 DGG.has_exact_subtree_cap(::DGG.HEALPixDGGS) = true
+
+# The same containment, stated as the trait: nested HEALPix is a congruent
+# refinement. This is the fact the `subtree_cap` override above rests on, and
+# what makes the densified pixel outline wired below (`subtree_polygon_
+# unitsphere`) an exact subtree bound for any traversal that wants polygon-
+# level subtree classification.
+DGG.has_congruent_geometry(::DGG.HEALPixDGGS) = true
+
+# --------------------------------------------------------------------------
+# Neighbors
+#
+# The 3×3 lattice-block neighborhood (edge + corner neighbors), the HEALPix
+# stencil convention: 8 per pixel, 7 at the 24 pixels sitting on a degree-3
+# base-tiling vertex. `nested_neighbors` answers in compass order with -1 for
+# the missing diagonal; the kernel contract is ascending ids, existing
+# neighbors only.
+# --------------------------------------------------------------------------
+
+DGG.max_neighbors(::DGG.HEALPixDGGS) = 8
+
+function DGG.cell_neighbors(system::DGG.HEALPixDGGS, level::Integer, id)
+    # The ordinal id guard of the kernel's hierarchy defaults: pix2xyfNest
+    # happily un-Mortons an id no pixel has, into neighbors of a cell that
+    # does not exist.
+    total = DGG.num_cells(system, level)
+    0 <= id < total || throw(ArgumentError(
+        "$(DGG.system_name(system)) level-$(Int(level)) cell id $id is out of range 0:$(total - 1)"))
+    compass = HealpixLookups.nested_neighbors(Healpix.Resolution(2^Int(level)), Int(id))
+    out = SmallVector{8,Int64}()
+    for neighbor in compass
+        neighbor < 0 && continue
+        out = DGG._insert_sorted(out, Int64(neighbor))
+    end
+    return out
+end
 
 # --------------------------------------------------------------------------
 # Geometry
@@ -130,6 +171,69 @@ DGG.cell_cap(::DGG.HEALPixDGGS, level::Integer, id) =
 DGG.subtree_cap(system::DGG.HEALPixDGGS, level::Integer, id, leaf_level::Integer) =
     DGG.cell_cap(system, level, id)
 
+# Where the subtree outline below stops being worth building: the ring costs
+# `4 * 2^Δ` chart evaluations and any predicate over it scales with as many
+# segments. 8 is the old planar descent's `MAX_QUERY_DENSIFY_DELTA` cutoff:
+# a 1,025-vertex ring bounding a 65,536-leaf subtree.
+const MAX_SUBTREE_POLYGON_DELTA = 8
+
+"""
+    subtree_polygon_unitsphere(::HEALPixDGGS, level, id, leaf_level)
+
+The exact spherical outline of pixel `(level, id)`'s `leaf_level` subtree:
+the pixel's perimeter walked in **leaf-lattice** steps, every vertex the
+chart evaluated at a leaf corner (`xyf_to_point`, the same closed form
+`pixel_corners` evaluates). Descendant corners on the parent's perimeter are
+those very lattice points, so the ring's great-circle edges are *identical* —
+bit-for-bit endpoints — to the boundary edges of the perimeter leaf polygons,
+and the ring bounds the union of descendant [`cell_polygon_unitsphere`](@ref)
+4-gons exactly. (The pixel's own 4 corners would not: HEALPix edges are
+chart arcs, not great circles, so leaf corners along an edge bulge off the
+corner-to-corner chord — the spherical restatement of the `step = 2^Δ`
+densification the old planar query descent needed.)
+
+The ring is counter-clockwise seen from outside the sphere (the
+`pixel_corners` contract) and has `4 * 2^Δ` vertices, so past
+`MAX_SUBTREE_POLYGON_DELTA` levels of separation the method answers
+`nothing` rather than build an outline that big — a traversal descends one
+level and asks again, with Δ back under the cap.
+"""
+function DGG.subtree_polygon_unitsphere(system::DGG.HEALPixDGGS, level::Integer, id,
+        leaf_level::Integer)
+    level <= leaf_level || throw(ArgumentError("expected level <= leaf_level"))
+    delta = Int(leaf_level) - Int(level)
+    delta <= MAX_SUBTREE_POLYGON_DELTA || return nothing
+    # The ordinal id guard of the kernel's hierarchy defaults: `nested_to_xyf`
+    # happily un-Mortons an id no pixel has.
+    total = DGG.num_cells(system, level)
+    0 <= id < total || throw(ArgumentError(
+        "$(DGG.system_name(system)) level-$(Int(level)) cell id $id is out of range 0:$(total - 1)"))
+    s = 1 << delta                       # leaf cells per pixel side
+    n = 1 << Int(leaf_level)             # nside of the leaf lattice
+    ix, iy, face = nested_to_xyf(id, 1 << Int(level))
+    x0 = ix * s
+    y0 = iy * s
+    points = Vector{GO.UnitSphericalPoint{Float64}}(undef, 4 * s + 1)
+    k = 0
+    # Perimeter of the pixel's leaf-lattice square, starting at the "north"
+    # corner `((ix+1)/nside, (iy+1)/nside)` and running in `pixel_corners`'
+    # N → W → S → E order (CCW from outside the sphere).
+    for i in 0:(s - 1)
+        points[k += 1] = xyf_to_point((x0 + s - i) / n, (y0 + s) / n, face)
+    end
+    for i in 0:(s - 1)
+        points[k += 1] = xyf_to_point(x0 / n, (y0 + s - i) / n, face)
+    end
+    for i in 0:(s - 1)
+        points[k += 1] = xyf_to_point((x0 + i) / n, y0 / n, face)
+    end
+    for i in 0:(s - 1)
+        points[k += 1] = xyf_to_point((x0 + s) / n, (y0 + i) / n, face)
+    end
+    points[k += 1] = points[1]
+    return GI.Polygon([GI.LinearRing(points)])
+end
+
 """
     cell_polygon(::HEALPixDGGS, level, id) -> GI.Polygon
 
@@ -165,6 +269,11 @@ ordering and element type. `kwargs` reach `DGGSPartialGrid`'s `bucket_size` /
 """
 DGG.DGGSPartialGrid(l::HealpixLookups.HealpixLookup; kwargs...) =
     DGG.DGGSPartialGrid(DGG.HEALPixDGGS(), l.level, l.data; kwargs...)
+
+# What the generic lookup operations (`neighbor_indices`, `stencil`, `zonal`)
+# ask of a lookup: which system, which level.
+DGG.dggs_system(::HealpixLookups.HealpixLookup) = DGG.HEALPixDGGS()
+DGG.dggs_level(l::HealpixLookups.HealpixLookup) = l.level
 
 # Treeifying a lookup directly is the shortest path from a `DimensionalData`
 # dimension to a `Regridder`, and it needs nothing from this file: the method

@@ -61,6 +61,12 @@ import GeometryOps: SpatialTreeInterface as STI
 # vocabulary (`dims`, `rebuild`, `format`, ...) that would collide with this
 # namespace's own. Core needs it only for the lookup supertype below.
 import DimensionalData as DD
+# The neighbor containers of `cell_neighbors` / `neighbor_indices` / `stencil`:
+# fixed capacity (the `max_neighbors` trait), variable length, no allocation.
+# Only the type is brought in; the non-mutating verbs stay qualified
+# (`SmallCollections.push`, `SmallCollections.insert`).
+import SmallCollections
+using SmallCollections: SmallVector
 
 # Re-exported below so tree consumers never need `Trees` in scope. These are
 # `Trees`' own bindings, not wrappers: `treeify` stays the single function whose
@@ -86,6 +92,10 @@ include("core/kernel.jl")
 # `ordinal_to_cell` seen as a vector.
 include("core/globe_ids.jl")
 include("core/lookups.jl")
+# Lookup-level operations built on the kernel: the neighbor halo table,
+# `stencil`, and `zonal`, generic over any lookup whose system wires
+# `cell_neighbors` (stencil) / `descendant_range` (zonal).
+include("core/lookup_ops.jl")
 include("core/grid_types.jl")
 include("core/generic_cursor.jl")
 # Shared chart + ordering face-grid layer (the FaceGridSystem contract);
@@ -127,12 +137,22 @@ export cell_polygon, cell_extent
 # `cell_polygon_unitsphere` was in that group only while `A5Trees` exported it;
 # that module is gone and no submodule claims the name, so it is exported here.
 export cell_id_type, has_ordinal_ids, has_descendant_ranges, has_exact_subtree_cap
+export has_congruent_geometry
 export root_ids, cell_children, cell_parent, cell_descendants
 export subtree_leaf_count, cell_to_ordinal, ordinal_to_cell, descendant_range
+export max_neighbors, cell_neighbors
 export cell_polygon_unitsphere, cell_cap, cells_cap, subtree_cap, cell_cap_inflation
+export subtree_polygon_unitsphere
 export intersects_cap
 export DGGSGrid, DGGSPartialGrid, subtree_grid, DGGSCursor, node_level, node_id
+export node_indices
 export DGGSGlobeIds, AbstractDGGSLookup
+export dggs_system, dggs_level
+# `zonal` and `stencil` are also exported from `HealpixLookups`, which owned
+# them before they went generic — but as *these* bindings, imported back and
+# re-exported, so a `using` of both namespaces cannot make either ambiguous
+# (the `treeify` pattern above).
+export neighbor_indices, stencil, zonal
 export grid_manifold
 export treeify, ncells, getcell
 

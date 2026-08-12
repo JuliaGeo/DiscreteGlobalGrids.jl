@@ -17,7 +17,6 @@ using GeometryOps
 
 const DD = DimensionalData
 const GI = GeoInterface
-const GO = GeometryOps
 
 export A5Lookup,
     A5Cells,
@@ -156,6 +155,16 @@ Lookups.show_properties(io::IO, l::A5Lookup) =
     print(io, " resolution: ", l.resolution, " ncells: ", length(l.data))
 Lookups.show_properties(io::IO, mime, l::A5Lookup) = Lookups.show_properties(io, l)
 
+"""
+    Touching(geometry)
+
+Selector for every stored cell whose (spherical) polygon intersects
+`geometry` (`Contains` selects by cell *center* instead). Answered by the
+package-level spherical tree descent (`src/core/lookup_ops.jl`): `geometry`
+may cross the antimeridian or enclose a pole, and its ring edges are
+great-circle arcs — see [`DiscreteGlobalGrids.zonal`](@ref) for the full
+geometry conventions.
+"""
 struct Touching{G} <: Lookups.ArraySelector{G}
     val::G
 end
@@ -193,14 +202,11 @@ function Lookups.selectindices(l::A5Lookup, sel::Lookups.Contains)
         return isnothing(i) ? Int[] : [i]
     end
 
-    centers = cell_centers(l)
-    return findall(center -> GO.contains(value, center), centers)
+    return DGG._query_positions(l, value, :center)
 end
 
-function Lookups.selectindices(l::A5Lookup, sel::Touching)
-    geom = Lookups.val(sel)
-    return findall(poly -> GO.intersects(geom, poly), cell_polygons(l; segments=1))
-end
+Lookups.selectindices(l::A5Lookup, sel::Touching) =
+    DGG._query_positions(l, Lookups.val(sel), :touches)
 
 lonlat_to_cell(lon::Real, lat::Real, resolution::Integer) =
     A5Native.lonlat_to_cell(lon, lat, resolution)

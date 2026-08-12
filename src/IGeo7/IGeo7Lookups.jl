@@ -36,7 +36,6 @@ const _strictly_increasing = Helpers.strictly_increasing
 
 const DD = DimensionalData
 const GI = GeoInterface
-const GO = GeometryOps
 
 export IGeo7Lookup,
     IGeo7,
@@ -205,8 +204,11 @@ Lookups.show_properties(io::IO, mime, l::IGeo7Lookup) = Lookups.show_properties(
 """
     Touching(geometry)
 
-Selector for every cell whose polygon intersects `geometry` (`Contains`
-selects by cell *center* instead).
+Selector for every cell whose (spherical) polygon intersects `geometry`
+(`Contains` selects by cell *center* instead). Answered by the package-level
+spherical tree descent (`src/core/lookup_ops.jl`): `geometry` may cross the
+antimeridian or enclose a pole, and its ring edges are great-circle arcs —
+see [`DiscreteGlobalGrids.zonal`](@ref) for the full geometry conventions.
 """
 struct Touching{G} <: Lookups.ArraySelector{G}
     val::G
@@ -248,14 +250,11 @@ function Lookups.selectindices(l::IGeo7Lookup, sel::Lookups.Contains)
         return isnothing(i) ? Int[] : [i]
     end
 
-    centers = cell_centers(l)
-    return findall(center -> GO.contains(value, center), centers)
+    return DGG._query_positions(l, value, :center)
 end
 
-function Lookups.selectindices(l::IGeo7Lookup, sel::Touching)
-    geom = Lookups.val(sel)
-    return findall(poly -> GO.intersects(geom, poly), cell_polygons(l))
-end
+Lookups.selectindices(l::IGeo7Lookup, sel::Touching) =
+    DGG._query_positions(l, Lookups.val(sel), :touches)
 
 # --- native API delegation -------------------------------------------------
 # One method per function the sibling forwards to its native module. `kw...`

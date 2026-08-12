@@ -25,6 +25,7 @@
 import ..DiscreteGlobalGrids as DGG
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
+using SmallCollections: SmallVector
 
 # --------------------------------------------------------------------------
 # Id model
@@ -82,6 +83,25 @@ function DGG.subtree_leaf_count(::DGG.IGEO7DGGS, level::Integer, id, leaf_level:
         throw(InvalidZ7Error(:descendant_res, z, _z7_int(leaf_level), res))
     delta = Int(leaf_level) - res
     return is_pentagon(z) ? (@inbounds PENT_COUNT[delta+1]) : (@inbounds POW7[delta+1])
+end
+
+# --------------------------------------------------------------------------
+# Neighbors
+#
+# `_cell_neighbors` (grid.jl) already answers the kernel's contract — edge
+# neighbors, ascending, 6 for a hexagon and 5 for a pentagon — in the native
+# container (`Helpers.SmallList`, since the native core stays stdlib +
+# `Helpers` only); the wiring re-seats it in the kernel's `SmallVector`.
+# --------------------------------------------------------------------------
+
+DGG.max_neighbors(::DGG.IGEO7DGGS) = 6
+
+function DGG.cell_neighbors(::DGG.IGEO7DGGS, level::Integer, id)
+    out = SmallVector{6,UInt64}()
+    for neighbor in _cell_neighbors(UInt64(id))
+        out = DGG._insert_sorted(out, neighbor)
+    end
+    return out
 end
 
 # --------------------------------------------------------------------------
@@ -205,6 +225,11 @@ end
 # `bucket_size` / `root_level` / `root_id`.
 DGG.DGGSPartialGrid(l::IGeo7Lookups.IGeo7Lookup; kwargs...) =
     DGG.DGGSPartialGrid(DGG.IGEO7DGGS(), l.resolution, l.data; kwargs...)
+
+# What the generic lookup operations (`neighbor_indices`, `stencil`, `zonal`)
+# ask of a lookup: which system, which level.
+DGG.dggs_system(::IGeo7Lookups.IGeo7Lookup) = DGG.IGEO7DGGS()
+DGG.dggs_level(l::IGeo7Lookups.IGeo7Lookup) = l.resolution
 
 # Treeifying a lookup directly is the shortest path from a `DimensionalData`
 # dimension to a `Regridder`, and it needs nothing from this file: the method

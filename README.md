@@ -109,8 +109,12 @@ system into the operations kernel.
 dimension of stored ids needs an id hierarchy neither has yet. The ISEA4R
 ten-diamond numbering is a package convention with **no external oracle**, so no
 compatibility with any external ISEA4R product's identifiers is claimed — see
-`docs/design/isea4r_diamond_layout.md`. `zonal` and `stencil` currently exist
-only in `HealpixLookups`.
+`docs/design/isea4r_diamond_layout.md`. `zonal`, `stencil` and
+`neighbor_indices` are package-level generics over any `<X>Lookup` whose
+system wires the kernel operations underneath (`cell_neighbors` for the
+stencil family, `descendant_range` for `zonal`) — HEALPix, H3 and IGEO7
+today, with neighbor containers sized by the `max_neighbors` trait as
+non-allocating `SmallCollections.SmallVector`s.
 
 ### Which systems answer what
 

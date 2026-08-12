@@ -140,7 +140,7 @@ export cell_id_type, has_ordinal_ids, has_descendant_ranges, has_exact_subtree_c
 export has_congruent_geometry
 export root_ids, cell_children, cell_parent, cell_descendants
 export subtree_leaf_count, cell_to_ordinal, ordinal_to_cell, descendant_range
-export max_neighbors, cell_neighbors
+export max_neighbors, cell_neighbors, subtree_border
 export cell_polygon_unitsphere, cell_cap, cells_cap, subtree_cap, cell_cap_inflation
 export subtree_polygon_unitsphere
 export intersects_cap

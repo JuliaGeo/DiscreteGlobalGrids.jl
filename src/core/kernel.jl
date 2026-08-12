@@ -304,6 +304,49 @@ end
 @inline _insert_sorted(v::SmallVector{N,T}, x::T) where {N,T} =
     SmallCollections.insert(v, searchsortedfirst(v, x), x)
 
+"""
+    subtree_border(system, level, id, leaf_level) -> Vector{cell_id_type(system)}
+
+Canonical ids of the `leaf_level` descendants of cell `(level, id)` that share
+an edge with a cell *outside* that subtree — the subtree's rim — ascending.
+`leaf_level == level` returns `[id]`, whose whole neighborhood is outside its
+own subtree. As with [`cell_descendants`](@ref), `leaf_level < level` is an
+`ArgumentError` in every wiring.
+
+This is the hierarchy answering a question about adjacency, so it is not the
+same set as [`cell_boundary`](@ref)'s ring: in an aperture-7 system a parent
+does not geographically contain its children, and the union of a subtree is a
+rosette, not the parent's polygon. Clipping descendants against that polygon
+gives a *different*, wrong answer along exactly the edge this operation is
+about; membership here is decided by the id hierarchy alone.
+
+The generic fallback expands [`cell_children`](@ref) level by level, keeping
+only cells that already touch the outside — it prunes on the fact that a cell's
+children touch nothing outside the children of that cell and of its edge
+neighbors, which holds for every refinement in this package. Systems that can
+decide rim membership from the id itself should override it: `IGEO7` reads it
+off the Z7 digits in `O(result)` rather than `O(subtree)`.
+"""
+function subtree_border(system::AbstractDGGS, level::Integer, id, leaf_level::Integer)
+    Int(level) <= Int(leaf_level) || throw(ArgumentError("expected level <= leaf_level"))
+    T = cell_id_type(system)
+    root = T(id)
+    frontier = T[root]
+    for l in Int(level):(Int(leaf_level)-1)
+        next = T[]
+        for cell in frontier, child in cell_children(system, l, cell)
+            for neighbor in cell_neighbors(system, l + 1, child)
+                if cell_parent(system, l + 1, neighbor, level) != root
+                    push!(next, T(child))
+                    break
+                end
+            end
+        end
+        frontier = next
+    end
+    return sort!(frontier)
+end
+
 # --------------------------------------------------------------------------
 # Dense ordinals
 #

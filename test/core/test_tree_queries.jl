@@ -4,7 +4,8 @@
 # types — antimeridian-crossing and pole-enclosing geometries included, the
 # cases the old planar predicates documented away — plus the query's
 # supporting API: the `node_indices` cursor accessor, the spherical geometry
-# cap, the congruence trait, and a descent-vs-brute-force perf sanity bound.
+# cap, the rim sandwich that keeps `:touches` off the polygon predicate, the
+# congruence trait, and a descent-vs-brute-force perf sanity bound.
 
 module TreeQueryTests
 
@@ -55,6 +56,16 @@ const POLAR_CAP = lonlat_ring([(lon, 76.0) for lon in 0.0:15.0:360.0])
 # predicates disagree on much of its rim, so agreement with the oracle here
 # is agreement about *spherical* semantics, not just about small shapes.
 const BIG_TRIANGLE = lonlat_ring([(-40.0, 10.0), (35.0, 25.0), (-5.0, 65.0), (-40.0, 10.0)])
+# A 70°-long, 0.3°-tall sliver: nearly every cell its bounding cap admits is
+# far from the region, the worst case for the cap prune and the best case for
+# the rim sandwich (`_sandwich`) that backs it up.
+const THIN_BAND = box_ring(-20.0, 5.0, 70.0, 0.3)
+# A 200-vertex ring — the many-edge query geometry, where the sandwich's
+# per-cell boundary scan costs the most relative to the predicate it saves.
+const WOBBLY = lonlat_ring([
+    let angle = 2 * pi * i / 200, radius = 9.0 + 2.5 * sin(5 * angle)
+        (-25.0 + radius * cos(angle), 15.0 + 0.7 * radius * sin(angle))
+    end for i in 0:200])
 
 # One moderately sized lookup per system — small enough that the O(n · cost)
 # oracle stays cheap, global or near-global so the fixed geometries hit.
@@ -70,24 +81,50 @@ function test_lookups()
     return (hp, h3, ig, a5)
 end
 
+# The corpus the equivalence testsets share: the fixed geometries whose
+# families the planar predicates could not answer, plus random boxes. `rng` is
+# threaded rather than seeded here so that one stream spans the whole loop over
+# lookups and every system draws *different* boxes; the testsets below walk the
+# same lookups in the same order from the same seed, so they still see the same
+# corpus as each other.
+function fuzz_geometries(rng)
+    geoms = Any[ANTIMERIDIAN, POLAR_CAP, BIG_TRIANGLE, THIN_BAND, WOBBLY]
+    for _ in 1:12
+        lon0 = rand(rng) * 340 - 170
+        lat0 = rand(rng) * 130 - 75
+        push!(geoms, box_ring(lon0, lat0, rand(rng) * 40 + 2, rand(rng) * 25 + 2))
+    end
+    return geoms
+end
+
+# The descent with the rim sandwich switched off, i.e. every cell whose center
+# falls outside the geometry paying the exact `pred_intersects` — the code path
+# that shipped before `_sandwich` existed, and the reference the sandwich must
+# reproduce position for position.
+function sandwich_off(l, geom, mode::Symbol)
+    system = dggs_system(l)
+    leaf = dggs_level(l)
+    ids = DD.parent(l)
+    tree = treeify(DGGSPartialGrid(l; bucket_size=DGG.QUERY_BUCKET_SIZE))
+    prep = GO.prepare(SPHERICAL, geom)
+    cap = DGG._geometry_cap(prep, geom)
+    out = Int[]
+    DGG._tree_query!(out, tree, ids, system, leaf, prep, cap, nothing, mode)
+    return sort!(out)
+end
+
 @testset "spherical tree queries" begin
     @testset "descent == spherical brute force, all four systems" begin
         rng = MersenneTwister(1234)
         for l in test_lookups()
-            geoms = Any[ANTIMERIDIAN, POLAR_CAP, BIG_TRIANGLE]
-            for _ in 1:12
-                lon0 = rand(rng) * 340 - 170
-                lat0 = rand(rng) * 130 - 75
-                push!(geoms, box_ring(lon0, lat0, rand(rng) * 40 + 2, rand(rng) * 25 + 2))
-            end
-            for geom in geoms, mode in (:center, :touches)
+            for geom in fuzz_geometries(rng), mode in (:center, :touches)
                 got = DGG._query_positions(l, geom, mode)
                 want = brute_positions(l, geom, mode)
                 @test got == want
             end
             # ...and the fixed geometries really do select something, on every
             # system — an empty-vs-empty agreement would prove nothing.
-            for geom in (ANTIMERIDIAN, POLAR_CAP, BIG_TRIANGLE)
+            for geom in (ANTIMERIDIAN, POLAR_CAP, BIG_TRIANGLE, THIN_BAND, WOBBLY)
                 @test !isempty(DGG._query_positions(l, geom, :touches))
             end
         end
@@ -207,6 +244,115 @@ end
         @test pcap.radius < Float64(pi) / 2   # a real cap, not the give-up answer
         north = GO.UnitSphericalPoint(0.0, 0.0, 1.0)
         @test GO.UnitSpherical.spherical_distance(pcap.point, north) <= pcap.radius
+    end
+
+    @testset "rim sandwich" begin
+        # 1. The whole point: turning the prefilter on changes no answer, on
+        #    the same corpus and every system, in both modes. The equality is
+        #    exact — `_sandwich` may only skip the polygon predicate when it
+        #    has proved what that predicate would have said.
+        rng = MersenneTwister(1234)
+        for l in test_lookups()
+            for geom in fuzz_geometries(rng), mode in (:center, :touches)
+                @test DGG._query_positions(l, geom, mode) == sandwich_off(l, geom, mode)
+            end
+        end
+
+        # 2. Verdict by verdict, against the predicate it replaces — over
+        #    *every* stored cell, not just the ones the cap prune admits, so
+        #    the reject arm is exercised on distant cells too. Counted rather
+        #    than asserted per cell to keep the summary readable.
+        for l in test_lookups()
+            system = dggs_system(l)
+            level = dggs_level(l)
+            ids = DD.parent(l)
+            total_accepted = 0
+            for geom in (ANTIMERIDIAN, POLAR_CAP, BIG_TRIANGLE, THIN_BAND, WOBBLY,
+                         box_ring(5.0, 40.0, 10.0, 10.0), box_ring(-3.0, -60.0, 30.0, 12.0))
+                prep = GO.prepare(SPHERICAL, geom)
+                arcs = DGG._boundary_arcs(geom)
+                @test arcs !== nothing
+                wrong = accepted = rejected = undecided = 0
+                for id in ids
+                    center = DGG.cell_center(system, level, id)
+                    # the sandwich only ever runs behind a failed center test
+                    GO.relate_predicate(prep, GO.pred_contains(), center) && continue
+                    ring = DGG.cell_boundary(system, level, id; closed=true)
+                    verdict = DGG._sandwich(arcs, center, ring)
+                    if verdict == 0
+                        undecided += 1
+                        continue
+                    end
+                    verdict > 0 ? (accepted += 1) : (rejected += 1)
+                    truth = GO.relate_predicate(prep, GO.pred_intersects(),
+                        cell_polygon_unitsphere(system, level, id))
+                    (verdict > 0) == truth || (wrong += 1)
+                end
+                total_accepted += accepted
+                @test wrong == 0
+                # the reject arm may never be vacuous — most of the globe is
+                # far from any of these geometries...
+                @test rejected > 0
+                # ...and the annulus it leaves behind must be a small
+                # remainder, or the prefilter would not be worth its cost
+                @test undecided < rejected
+            end
+            # The accept arm needs the query boundary to pass within a cell's
+            # inradius, which on these deliberately coarse lookups some single
+            # geometry can miss entirely; over the corpus it must fire.
+            @test total_accepted > 0
+        end
+
+        # 3. The sandwich holds the cell's boundary ring anyway, so the exact
+        #    test it falls through to builds the cell polygon from that ring
+        #    instead of asking twice. That is only the same test while no
+        #    system overrides `cell_polygon_unitsphere` away from its
+        #    `cell_boundary`-derived default — pin it.
+        for l in test_lookups()
+            system = dggs_system(l)
+            level = dggs_level(l)
+            for id in DD.parent(l)[1:37:end]
+                ring = DGG.cell_boundary(system, level, id; closed=true)
+                @test collect(GI.getpoint(GI.Polygon([GI.LinearRing(ring)]))) ==
+                      collect(GI.getpoint(cell_polygon_unitsphere(system, level, id)))
+            end
+        end
+
+        # 4. The edge set is the *boundary*, all rings of all parts. A hole's
+        #    ring counts (a cell straddling it must still reach the exact
+        #    test), and points across two rings are never joined into an edge.
+        square(lon0, lat0, w) = GI.LinearRing([
+            (lon0, lat0), (lon0 + w, lat0), (lon0 + w, lat0 + w), (lon0, lat0 + w), (lon0, lat0)])
+        holed = GI.Polygon([square(0.0, 0.0, 10.0), square(3.0, 3.0, 4.0)])
+        # a closed n-point ring contributes n arcs: n-1 edges plus a
+        # degenerate closing one
+        @test length(DGG._boundary_arcs(holed)) == 10
+        multi = GI.MultiPolygon([GI.Polygon([square(0.0, 0.0, 10.0)]),
+                                 GI.Polygon([square(40.0, 0.0, 10.0)])])
+        @test length(DGG._boundary_arcs(multi)) == 10
+        @test length(DGG._boundary_arcs(GI.Point(1.0, 2.0))) == 1
+        # A geometry whose coordinates are not Float64 — GeoJSON reads Natural
+        # Earth as Float32 — must still land in the concrete `BoundaryArc`
+        # fields rather than throwing a MethodError.
+        square32(lon0, lat0, w) = GI.LinearRing([
+            (Float32(lon0), Float32(lat0)), (Float32(lon0 + w), Float32(lat0)),
+            (Float32(lon0 + w), Float32(lat0 + w)), (Float32(lon0), Float32(lat0 + w)),
+            (Float32(lon0), Float32(lat0))])
+        holed32 = GI.Polygon([square32(0.0, 0.0, 10.0), square32(3.0, 3.0, 4.0)])
+        @test length(DGG._boundary_arcs(holed32)) == 10
+        @test eltype(DGG._boundary_arcs(holed32)) === DGG.BoundaryArc
+        # kinds the walk does not vouch for switch the prefilter off rather
+        # than guess, and the query still answers exactly
+        @test DGG._boundary_arcs(square(0.0, 0.0, 10.0)) === nothing
+        hp = HealpixLookup(collect(Int64, 0:(12 * 4^4 - 1)); level=4)
+        @test DGG._query_positions(hp, holed, :touches) ==
+              brute_positions(hp, holed, :touches)
+        @test DGG._query_positions(hp, multi, :touches) ==
+              brute_positions(hp, multi, :touches)
+        # the hole really is respected: cells strictly inside it are selected
+        # by `:touches` only where the hole's rim crosses them
+        @test length(DGG._query_positions(hp, holed, :touches)) >
+              length(DGG._query_positions(hp, holed, :center))
     end
 
     @testset "congruence trait" begin

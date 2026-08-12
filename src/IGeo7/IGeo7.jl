@@ -21,7 +21,7 @@ is the dependency order):
 |:------------|:-------------------------------------------------------------|
 | `z7.jl`     | Z7 `UInt64` bit format, string/hex, prefix ops (no geometry)  |
 | `engine.jl` | Eisenstein integer arithmetic + fitted digit tables           |
-| `grid.jl`   | encode/decode, areas, dense indexing                          |
+| `grid.jl`   | encode/decode, areas, dense indexing, subtree borders          |
 
 plus the `IGeo7Lookups` integration module (`DimensionalData`) and
 `IGeo7Kernel.jl`, which wires the package's operations kernel — and through it
@@ -50,6 +50,7 @@ include("IGeo7Lookups.jl")
 # icosahedron/Snyder names reach users through `ISEA`, not from here.
 export InvalidZ7Error,
     MAX_RESOLUTION,
+    border_descendants,
     cell_area,
     cell_boundary,
     cell_boundary_cartesian,

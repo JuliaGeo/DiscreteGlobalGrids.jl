@@ -876,6 +876,146 @@ function _fill_descendants!(out::Vector{UInt64}, pos::Int, z::UInt64, res::Int, 
     return pos
 end
 
+# --- subtree border --------------------------------------------------------
+#
+# Which descendants of a cell touch a cell outside it, from the digit string
+# alone — no neighbor query, no geometry.
+#
+# The mechanism is the refinement itself. A child sits at `chi_k * x + sigma(d)`
+# (engine.jl's Horner step), and for any unit `u` the neighbor `child + u` has
+# parent `x + delta` with `N(delta) <= 1`, because `|sigma(d) + u - sigma(d')|`
+# is at most 3 and `sqrt(3) < sqrt(7)`. So a cell's children only ever touch
+# children of that cell or of its six edge neighbors. Two things follow:
+# `delta(0, u) = 0` for every unit, so the center child is enclosed by its own
+# siblings and no border suffix contains a zero digit anywhere; and a border
+# cell descends only from border cells, so the digit search prunes.
+#
+# What a border cell carries is *which* directions it is exposed in, and those
+# sets are always contiguous arcs of the six units. A state is therefore the arc
+# `{s, s+1, ..., s+L-1}` (mod 6), where `L` is exactly the number of border
+# children the cell has — 2, 3 or 4, plus `L = 6` for the subtree root, which is
+# exposed all round. `_border_step` is that arc's transition table.
+#
+# The table is *level-parity*-dependent, not fixed: refinement alternates
+# chirality (`chi_is_c`, engine.jl), multiplying by `c = 3 + omega` at even
+# levels and by `cbar` at odd ones, so the two tables are mirror images and a
+# cell's border suffixes depend on the resolutions its digits sit at, not only
+# on the depth below it. The digit alphabet itself never rotates — `SIGMA_J` is
+# one table for every level, and the ALPHA_DEG turn lives in the frame (`P_R`,
+# `THETA_DIR`), never in digit arithmetic.
+#
+# The census follows from the same table: an arc of length `L` has `L` border
+# children, of which one is a 2-arc, one a 3-arc and the rest 4-arcs, so with
+# `n_L` the count of each at a depth, `n_2' = n_3' = n_2 + n_3 + n_4` and
+# `n_4' = n_3 + 2 * n_4`. Hence `n_4 - n_2` is invariant — 6 for a hexagon root,
+# 5 for a pentagon, the discrete turning number of the closed rim — and
+# `B(d) = 3 * B(d-1) + (n_4 - n_2)`, which is `_border_count`.
+
+"""
+    _border_step(state, digit, level) -> NTuple{2,Int}
+
+State a `digit` child at absolute resolution `level` inherits from a cell in
+`state`, or `(0, 0)` when that child is interior to the subtree. A state is
+`(L, s)`: the arc of exposed directions `s, s+1, ..., s+L-1` (mod 6), in
+`SIGMA_J`'s unit indices. `L == 6` is the subtree root, the one state with no
+arc ends.
+"""
+@inline function _border_step(state::NTuple{2,Int}, digit::Int, level::Int)
+    L, s = state
+    (L == 0 || digit == 0) && return (0, 0)
+    t = @inbounds SIGMA_J[digit]
+    o = mod(t - s, 6)
+    o < L || return (0, 0)
+    if iseven(level)                         # chi_is_c(level): this level turns +ALPHA
+        L < 6 && o == 0 && return (3, mod(t - 1, 6))
+        L < 6 && o == L - 1 && return (2, mod(t - 2, 6))
+        return (4, mod(t - 2, 6))
+    else                                     # the mirror table
+        L < 6 && o == L - 1 && return (3, mod(t - 1, 6))
+        L < 6 && o == 0 && return (2, mod(t + 1, 6))
+        return (4, mod(t - 1, 6))
+    end
+end
+
+"""
+    _border_count(z7, own, target) -> Int
+
+Number of border descendants of `z7` (at resolution `own`) at resolution
+`target`, from the census recurrence above: `3^(d+1) - 3` for a hexagon,
+`5 * (3^d - 1) / 2` for a pentagon, `d = target - own`. Used to size the
+output; it is a count, so a wrong one would cost a reallocation, not a result.
+"""
+@inline function _border_count(z7::UInt64, own::Int, target::Int)
+    depth = target - own
+    depth == 0 && return 1
+    active = Z7_PAD_MASK ⊻ _z7_tail_mask(own)
+    p3 = 3^depth
+    return (z7 & active) == zero(UInt64) ? (5 * (p3 - 1)) ÷ 2 : 3 * p3 - 3
+end
+
+"""
+    border_descendants(id, res) -> Vector{UInt64}
+
+Descendants of `id` at resolution `res` that share an edge with a cell outside
+`id`'s subtree — the subtree's rim — in ascending id order **[contract]**.
+`res == get_resolution(id)` returns `[id]`, whose whole neighborhood is outside
+its own subtree.
+
+Decided from the Z7 digits alone (the block comment above), so the cost is
+`O(result)`: the rim of a hexagon subtree holds `3^(d+1) - 3` cells at depth
+`d`, against the `7^d` the subtree holds. Enumeration is digit-lexicographic
+depth-first, which *is* ascending id order, so the result needs no sort.
+
+Throws [`InvalidZ7Error`](@ref) (`:descendant_res`) when
+`res < get_resolution(id)` or `res > $MAX_RESOLUTION`, as
+[`cell_to_children`](@ref) does.
+"""
+function border_descendants(z7::UInt64, res::Integer)
+    own = _geometry_checked(z7)
+    own <= res <= MAX_RESOLUTION ||
+        throw(InvalidZ7Error(:descendant_res, z7, _z7_int(res), own))
+    target = Int(res)
+    out = Vector{UInt64}()
+    if target == own
+        push!(out, z7)
+        return out
+    end
+    sizehint!(out, _border_count(z7, own, target))
+    return _fill_border!(out, z7, own, target, (6, 0))
+end
+
+border_descendants(z7::Unsigned, res::Integer) = border_descendants(UInt64(z7), res)
+
+"""
+    _fill_border!(out, z, res, target, state) -> out
+
+Digit-lexicographic DFS over the border automaton, appending every res-`target`
+border descendant of `z` to `out`. The pentagon test is redone at each node for
+the same reason [`_fill_descendants!`](@ref) redoes it — a prefix stops being a
+pentagon at its first nonzero digit — even though a border suffix's first digit
+is already nonzero, so only the root node can ever be one.
+"""
+function _fill_border!(out::Vector{UInt64}, z::UInt64, res::Int, target::Int,
+    state::NTuple{2,Int})
+    deleted = @inbounds Z7_DELETED_DIGIT[z7_base_cell(z)+1]
+    active = Z7_PAD_MASK ⊻ _z7_tail_mask(res)
+    pentagon = (z & active) == zero(UInt64)
+    shift = _z7_shift(res + 1)
+    cleared = z & ~(UInt64(7) << shift)
+    for digit in 0:6
+        pentagon && digit == deleted && continue
+        child_state = _border_step(state, digit, res + 1)
+        child_state[1] == 0 && continue
+        child = cleared | (UInt64(digit) << shift)
+        if res + 1 == target
+            push!(out, child)
+        else
+            _fill_border!(out, child, res + 1, target, child_state)
+        end
+    end
+    return out
+end
+
 # --- introspection ---------------------------------------------------------
 
 """

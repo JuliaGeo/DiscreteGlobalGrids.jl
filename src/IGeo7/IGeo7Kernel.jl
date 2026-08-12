@@ -104,6 +104,16 @@ function DGG.cell_neighbors(::DGG.IGEO7DGGS, level::Integer, id)
     return out
 end
 
+# The subtree rim without a single neighbor query: `border_descendants`
+# (grid.jl) decides membership from the Z7 digits, so this runs in O(result)
+# where the generic fallback expands the whole subtree level by level. The
+# `level <= leaf_level` guard is the kernel's, for the reason `cell_descendants`
+# gives above; everything past it is Z7 validity and keeps the native error.
+function DGG.subtree_border(::DGG.IGEO7DGGS, level::Integer, id, leaf_level::Integer)
+    Int(level) <= Int(leaf_level) || throw(ArgumentError("expected level <= leaf_level"))
+    return border_descendants(UInt64(id), leaf_level)
+end
+
 # --------------------------------------------------------------------------
 # Dense ordinals
 #

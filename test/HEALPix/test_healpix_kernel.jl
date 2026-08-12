@@ -231,6 +231,30 @@ end
     end
 end
 
+# `subtree_border` has no HEALPix wiring, so this exercises the *generic*
+# fallback in src/core/kernel.jl — and on the id model IGEO7's suite cannot
+# reach, dense ordinals rather than structural ids. Ground truth is the
+# definition: sweep the whole subtree and keep the cells with a neighbor
+# outside it. HEALPix neighborhoods are the 3x3 lattice block (8 neighbors, 7
+# at the 24 corner pixels), so a rim here is thicker than an edge-adjacency
+# rim would be; the fallback inherits whatever `cell_neighbors` promises.
+@testset "HEALPix subtree border vs the definition" begin
+    for level in 0:2, pixel in sample_pixels(level), delta in 0:3
+        leaf_level = level + delta
+        lo, hi = DGG.descendant_range(S, level, pixel, leaf_level)
+        expected = [id for id in lo:hi
+                    if any(n -> !(lo <= n <= hi), DGG.cell_neighbors(S, leaf_level, id))]
+        rim = DGG.subtree_border(S, level, pixel, leaf_level)
+        @test rim == expected
+        @test issorted(rim)
+        @test all(id -> DGG.cell_parent(S, leaf_level, id, level) == pixel, rim)
+    end
+    # A subtree of depth 0 is the cell itself, whose whole neighborhood is
+    # outside it — the one case where the rim is the root.
+    @test DGG.subtree_border(S, 2, 100, 2) == [100]
+    @test_throws ArgumentError DGG.subtree_border(S, 2, 100, 1)
+end
+
 @testset "HEALPix subtree caps contain descendants" begin
     # Exhaustive over levels 0:3, then sampled at 4:6: every vertex of every
     # descendant must sit inside the parent's exact 4-corner cap. This is what

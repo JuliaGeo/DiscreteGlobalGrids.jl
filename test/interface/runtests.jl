@@ -18,7 +18,32 @@ struct UnimplementedGrid <: AbstractGrid end
 struct UnimplementedSystem <: AbstractHierarchicalGridSystem end
 struct UnimplementedIndex <: AbstractCellIndex end
 
+"""
+    DetachedDocProbe
+
+The positive control for the docstring-coverage test below, and a live
+specimen of a trap that cost the A5 port a review cycle: **a comment between a
+docstring and the thing it documents silently detaches it.** No warning, no
+error — the docstring is simply parsed as a free-standing string and thrown
+away.
+
+This one is detached on purpose. `docstring` must report it as undocumented,
+which is what makes the coverage assertions mean anything.
+"""
+# THIS COMMENT IS THE POINT — do not remove it, it is what detaches the
+# docstring above.
+struct DetachedDocProbe end
+
 const EXPORTED = filter(!=(:DiscreteGlobalGrids), names(DiscreteGlobalGrids))
+
+# The public surface each shipped system contributes: its singleton, the grid
+# type `levelgrid` returns, and its canonical id type. Derived from the
+# registry rather than listed, so a newly registered system is covered without
+# anyone remembering to add it here.
+const SYSTEM_TYPE_NAMES = sort!(unique!(reduce(vcat,
+    [[nameof(typeof(s)),
+      nameof(typeof(DGG.levelgrid(s, first(DGG.levels(s))))),
+      nameof(DGG.cellindextype(s))] for s in DGG.systems()])))
 
 """
     docstring(mod, name) -> String
@@ -91,6 +116,34 @@ end
     @test docstring(@__MODULE__, :UnimplementedGrid) == ""  # the probe can fail
     for n in EXPORTED
         @test !isempty(docstring(DiscreteGlobalGrids, n))
+    end
+
+    # ...and the coverage check can actually see the failure mode that matters.
+    #
+    # `UnimplementedGrid` above only shows that a name which never had a
+    # docstring reads as empty. The shape that bit the A5 port is different and
+    # much quieter: a docstring that WAS written, and was detached from its
+    # definition by an interposed comment. Julia reports nothing at all; for a
+    # method on a shared generic, `@doc` then shows the *interface* docstring,
+    # so the name still looks documented. This pins that a detached docstring
+    # reads as absent, which is what gives the loop above its teeth.
+    @test docstring(@__MODULE__, :DetachedDocProbe) == ""
+
+    # For the system types the loop above is enough — there is no generic for
+    # their text to fall through from, so detachment shows up as empty. Pinning
+    # that each one's docstring NAMES it closes the remaining gap: a name whose
+    # only documentation is inherited or interface-level text would pass an
+    # emptiness test and fail this one.
+    #
+    # This does not reach a detached docstring on a *method* of a shared
+    # generic — `cellat`, `neighbors` — where the interface text keeps showing
+    # through and no package-level check can tell the difference. Those are
+    # pinned in the systems' own suites, which is where the specific method is
+    # in scope; A5's suite does exactly that for all of its public names.
+    for n in SYSTEM_TYPE_NAMES
+        doc = docstring(DiscreteGlobalGrids, n)
+        @test !isempty(doc)
+        @test occursin(string(n), doc)
     end
 
     # Two contracts are load-bearing enough to pin in the docs themselves: the

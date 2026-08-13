@@ -251,12 +251,76 @@ function _ball(level::Int, idx::Int, k::Int, conn::Connectivity)
     return seen
 end
 
+# --- rotational order ------------------------------------------------------
+#
+# The contract's order is ROTATIONAL: each ring runs counter-clockwise seen from
+# OUTSIDE the sphere, and `neighbors(c, k)` is the rings 1..k concatenated
+# outward. A cube quadtree has no lattice direction to read a ring off — a
+# neighbourhood straddles faces, and a cube corner is shared by three of them —
+# so the mock realises the contract the way the interface docstring recommends
+# for exactly that case: by measurement. Each ring is ordered by azimuth about
+# the subject's centroid in a right-handed tangent frame, with the first ring-1
+# neighbour as the zero direction so every ring starts on the same spoke, and
+# exact ties broken by ascending id.
+#
+# This is written out here rather than borrowed from the harness, so that the
+# order laws test the mock's order instead of restating the harness's formula.
+
+"A right-handed tangent basis at `p`, with `east × north == p` (outward)."
+function _frame(p)
+    ax = abs(p[1]) <= abs(p[2]) ?
+        (abs(p[1]) <= abs(p[3]) ? (1.0, 0.0, 0.0) : (0.0, 0.0, 1.0)) :
+        (abs(p[2]) <= abs(p[3]) ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0))
+    s = ax[1] * p[1] + ax[2] * p[2] + ax[3] * p[3]
+    e = (ax[1] - s * p[1], ax[2] - s * p[2], ax[3] - s * p[3])
+    n = sqrt(e[1]^2 + e[2]^2 + e[3]^2)
+    east = (e[1] / n, e[2] / n, e[3] / n)
+    north = (p[2] * east[3] - p[3] * east[2],
+             p[3] * east[1] - p[1] * east[3],
+             p[1] * east[2] - p[2] * east[1])
+    return east, north
+end
+
+"Azimuth of `q` about `p`, increasing counter-clockwise seen from outside."
+function _azimuth(p, frame, q)
+    east, north = frame
+    r = q[1] * p[1] + q[2] * p[2] + q[3] * p[3]
+    d = (q[1] - r * p[1], q[2] - r * p[2], q[3] - r * p[3])
+    return atan(d[1] * north[1] + d[2] * north[2] + d[3] * north[3],
+                d[1] * east[1] + d[2] * east[2] + d[3] * east[3])
+end
+
+"The ids at adjacency distance exactly `k` from `idx`, counter-clockwise."
+function _ring_ids(level::Int, idx::Int, k::Int, conn::Connectivity)
+    k == 0 && return [idx]
+    shell = collect(setdiff(_ball(level, idx, k, conn), _ball(level, idx, k - 1, conn)))
+    length(shell) <= 1 && return shell
+    p = _centroid(level, idx)
+    frame = _frame(p)
+    az(j) = _azimuth(p, frame, _centroid(level, j))
+    # Ring 1 starts wherever the measurement does; every outer ring starts on
+    # the spoke through the first ring-1 neighbour.
+    zero = 0.0
+    if k > 1
+        inner = _ring_ids(level, idx, 1, conn)
+        isempty(inner) || (zero = az(first(inner)))
+    end
+    return sort!(shell; by = j -> (mod2pi(az(j) - zero), j))
+end
+
 function DGG.neighbors(g::CubeGrid, c::LevelIndex, k::Int = 1;
         connectivity::Connectivity = Vertex())
     k >= 0 || throw(ArgumentError("k must be non-negative, got $k"))
     idx = Int(rawid(c))
     k == 0 && return LevelIndex[]
-    ids = sort!(collect(delete!(_ball(g.level, idx, k, connectivity), idx)))
+    ids = Int[]
+    for j in 1:k
+        shell = _ring_ids(g.level, idx, j, connectivity)
+        # The old, wrong order: each ring by ascending id. The disc is still the
+        # rings concatenated, so this breaks the ROTATIONAL law and nothing else.
+        g.sys.bug === :sorted_neighbors && sort!(shell)
+        append!(ids, shell)
+    end
     out = [LevelIndex(g.level, i) for i in ids]
     # The injected asymmetry: cell 0 forgets one of its neighbours, which still
     # remembers cell 0.
@@ -268,10 +332,14 @@ function DGG.ring(g::CubeGrid, c::LevelIndex, k::Int;
         connectivity::Connectivity = Vertex())
     k >= 0 || throw(ArgumentError("k must be non-negative, got $k"))
     k == 0 && return [c]
-    idx = Int(rawid(c))
-    shell = setdiff(_ball(g.level, idx, k, connectivity),
-                    _ball(g.level, idx, k - 1, connectivity))
-    return [LevelIndex(g.level, i) for i in sort!(collect(shell))]
+    ids = _ring_ids(g.level, Int(rawid(c)), k, connectivity)
+    g.sys.bug === :sorted_neighbors && sort!(ids)
+    # A ring computed by an independent walk that agrees with `neighbors` as a
+    # SET and starts somewhere else: still counter-clockwise, still the right
+    # cells, no longer the tail block of the disc. This is the way the two are
+    # usually broken apart, and the set-level laws cannot see it.
+    g.sys.bug === :rotated_ring && length(ids) > 1 && (ids = circshift(ids, 1))
+    return [LevelIndex(g.level, i) for i in ids]
 end
 
 # --- optional methods, only on the `Extras` variant ------------------------
@@ -466,6 +534,84 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         @test any(contains("not symmetric"), problems)
     end
 
+    # The one-directional sweep only fires when the sampled cell is the VICTIM,
+    # and a sampler that draws 8 cells out of a level almost never draws it. The
+    # two-hop closure sees the same omission from the cell that COMMITTED it,
+    # which is the cell an implementor is most likely to be looking at.
+    @testset "harness catches: asymmetry from the forgetful cell (two-hop closure)" begin
+        grid = DGG.levelgrid(broken(:asymmetric_neighbors), 1)
+        culprit = LevelIndex(1, 0)   # the cell that drops one of its neighbours
+
+        # One-directional only: everything cell 0 still lists lists cell 0 back,
+        # so this is silent. That silence is the reason the closure exists.
+        @test Conf.neighbor_problems(grid, culprit; two_hop = false) == String[]
+
+        # Two hops out and back: the forgotten cell is a neighbour of one of the
+        # survivors, it names cell 0, and cell 0 does not name it.
+        problems = Conf.neighbor_problems(grid, culprit)
+        @test any(contains("two-hop closure"), problems)
+        @test any(contains("not symmetric"), problems)
+
+        # And it is the *right* cell that is named: the one the mock popped.
+        dropped = last(DGG.neighbors(DGG.levelgrid(MINIMAL, 1), culprit))
+        @test any(contains(string(dropped)), problems)
+
+        # No false positives on the correct mock, from either form.
+        @test Conf.neighbor_problems(DGG.levelgrid(MINIMAL, 1), culprit) == String[]
+        @test Conf.check_neighbors(DGG.levelgrid(MINIMAL, 2); n_samples = 12)
+    end
+
+    # The order is ROTATIONAL, and the set-level laws cannot see it: an id-sorted
+    # neighbourhood is the same cells, the same shells, the same disc.
+    @testset "harness catches: neighbours sorted by id instead of wound CCW" begin
+        good = DGG.levelgrid(MINIMAL, 2)
+        bad = DGG.levelgrid(broken(:sorted_neighbors), 2)
+        @test Conf.check_neighbor_order(good; n_samples = 12)
+        @test !Conf.check_neighbor_order(bad; n_samples = 12)
+
+        # Sorting by id keeps every set law: the cells, the shells and their
+        # disjointness are untouched, which is why this needed a new check.
+        @test Conf.check_neighbors(bad; n_samples = 12)
+        c = DGG.cellindex(bad, 40)
+        @test Set(DGG.neighbors(bad, c, 2)) == Set(DGG.neighbors(good, c, 2))
+
+        problems = Conf.neighbor_order_problems(bad, c)
+        @test any(contains("single counter-clockwise cycle"), problems)
+
+        # The winding check itself, on the three orders that matter: the correct
+        # one passes, the clockwise reversal fails, and a ROTATION passes —
+        # where a ring starts is the system's own documented choice, and only its
+        # direction is the contract's.
+        ccw = collect(DGG.ring(good, c, 1))
+        @test Conf.winding_problems(good, c, ccw) == String[]
+        @test !isempty(Conf.winding_problems(good, c, reverse(ccw)))
+        @test Conf.winding_problems(good, c, circshift(ccw, 3)) == String[]
+        @test any(contains("turns clockwise"), Conf.winding_problems(good, c, reverse(ccw)))
+        # Ring 1's winding is not negotiable, so opting out of the outer rings
+        # does not make an id-sorted neighbourhood conform.
+        @test !isempty(Conf.neighbor_order_problems(bad, c; require_rotational_rings = false))
+        @test isempty(Conf.neighbor_order_problems(good, c; require_rotational_rings = false))
+    end
+
+    # A ring that is right as a set, right as a cycle, and simply starts
+    # somewhere else: the tail-block law is the only thing that sees it.
+    @testset "harness catches: ring that is not the tail block of the disc" begin
+        good = DGG.levelgrid(MINIMAL, 2)
+        bad = DGG.levelgrid(broken(:rotated_ring), 2)
+        c = DGG.cellindex(bad, 40)
+
+        @test Set(DGG.ring(bad, c, 1)) == Set(DGG.ring(good, c, 1))   # same cells
+        @test Conf.check_neighbors(bad; n_samples = 12)               # same sets
+        @test !Conf.check_neighbor_order(bad; n_samples = 12)
+
+        problems = Conf.neighbor_order_problems(bad, c)
+        @test any(contains("tail block"), problems)
+        @test any(contains("rings concatenated outward"), problems)
+        # ...and it is not caught by mistaking a rotation for a bad winding: a
+        # rotated counter-clockwise cycle is still a counter-clockwise cycle.
+        @test !any(contains("counter-clockwise cycle"), problems)
+    end
+
     # The predicates above share their implementation with the `@testset` layer,
     # so this confirms the layer itself reports rather than swallows a failure.
     @testset "the @testset entry points fail on a broken mock" begin
@@ -484,6 +630,58 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
             test_grid_interface(DGG.levelgrid(broken(:cw_boundary), 2); n_samples = 4)
         end
         @test cw_fails > 0
+
+        # The order laws too, both halves: an id-sorted neighbourhood and a ring
+        # that is not its disc's tail block have to surface through the entry
+        # point, or they are laws only the predicates know about.
+        _, order_fails = capture() do
+            test_hierarchical_system(broken(:sorted_neighbors); n_samples = 4)
+        end
+        @test order_fails > 0
+
+        _, tail_fails = capture() do
+            test_hierarchical_system(broken(:rotated_ring); n_samples = 4)
+        end
+        @test tail_fails > 0
+
+        # Opting the outer rings out does not opt ring 1 out with them.
+        _, ring1_fails = capture() do
+            test_hierarchical_system(broken(:sorted_neighbors); n_samples = 4,
+                require_rotational_rings = false)
+        end
+        @test ring1_fails > 0
+    end
+
+    # `atol` and `unit_atol` exist because a system with exact (uninflated)
+    # subtree caps puts cell corners exactly ON the cap rim, where containment is
+    # a floating-point coin toss — HEALPix, in this package. A caller that cannot
+    # reach the tolerance cannot use the harness at all, so these assert that the
+    # kwargs really reach the checks rather than being decoration.
+    @testset "atol and unit_atol reach the checks they name" begin
+        # The covering `atol`: an extent that is genuinely too small is forgiven
+        # by a slack wide enough to swallow the shortfall, and only by that.
+        @test !isempty(Conf.covering_law_problems(broken(:small_extent)))
+        @test isempty(Conf.covering_law_problems(broken(:small_extent); atol = 10.0))
+
+        # ...and through the @testset entry point, which is what a caller uses.
+        _, tight = capture() do
+            test_hierarchical_system(broken(:small_extent); n_samples = 4)
+        end
+        _, loose = capture() do
+            test_hierarchical_system(broken(:small_extent); n_samples = 4, atol = 10.0)
+        end
+        @test tight > 0
+        @test loose == 0
+
+        # `unit_atol` reaches `node_extent_problems`: a tolerance no centre can
+        # meet fails the well-formedness set on the *correct* mock.
+        _, impossible = capture() do
+            test_hierarchical_system(MINIMAL; n_samples = 4, unit_atol = -1.0)
+        end
+        @test impossible > 0
+        @test any(contains("off the unit sphere"),
+            Conf.node_extent_problems(DGG.node_extent(MINIMAL, LevelIndex(1, 0));
+                unit_atol = -1.0))
     end
 
     @testset "whole-suite predicates agree with the laws they aggregate" begin

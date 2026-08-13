@@ -1346,4 +1346,63 @@ end
     @test witness ⊆ expanded
 end
 
+@testset "generic subtree_border / subtree_interior" begin
+    # The three shipped systems all override `subtree_border` with an
+    # automaton, so this testset is the ONLY exercise the generic in
+    # `src/fallbacks/subtree.jl` gets. Without it, the correct-for-everyone
+    # implementation that a fourth system will inherit is dead code.
+    #
+    # The mock's subtree at depth `d` is a `2^d x 2^d` block of the lon/lat
+    # lattice, so its rim is contained in the block's boundary ring — at most
+    # `4 * 2^d - 4` cells. Not exactly that many: the mock's roots tile a
+    # bounded lon/lat domain rather than a closed surface, so a block on the
+    # domain's outer edge has cells with nothing beyond them, and those are not
+    # exposed. The bound is still an independent geometric fact (an interior
+    # lattice cell cannot be on the rim), and the definitional loops below pin
+    # the exact answer.
+    for sys in (SORTED, UNSORTED)
+        root = LevelIndex(0, 3)
+
+        # A depth-0 subtree is the cell itself, and it is all rim.
+        @test subtree_border(sys, root, 0) == [root]
+        @test isempty(subtree_interior(sys, root, 0))
+
+        for d in 1:2
+            border = subtree_border(sys, root, d)
+            interior = subtree_interior(sys, root, d)
+            kids = descendants(sys, root, d)
+
+            @test !isempty(border)
+            @test length(border) <= 4 * 2^d - 4
+            @test allunique(border)
+            @test issorted(border)
+
+            # Border and interior partition the subtree, disjointly.
+            @test isempty(intersect(Set(border), Set(interior)))
+            @test union(Set(border), Set(interior)) == Set(kids)
+            @test length(border) + length(interior) == length(kids)
+
+            # Every rim cell really does have a neighbour outside the subtree,
+            # and no interior cell does — the definition, spelled out.
+            inside = Set(kids)
+            grid = levelgrid(sys, d)
+            for c in border
+                @test any(nb -> !(nb in inside), neighbors(grid, c, 1))
+            end
+            for c in interior
+                @test all(nb -> nb in inside, neighbors(grid, c, 1))
+            end
+        end
+
+        # Edge() is the narrower adjacency, so its rim can only be a subset of
+        # Vertex()'s — a cell exposed only diagonally drops out.
+        @test issubset(Set(subtree_border(sys, root, 2; connectivity=Edge())),
+            Set(subtree_border(sys, root, 2)))
+
+        # Asking below the cell's own level is an error, not an empty answer.
+        @test_throws ArgumentError subtree_border(sys, LevelIndex(2, 0), 1)
+        @test_throws ArgumentError subtree_interior(sys, LevelIndex(2, 0), 1)
+    end
+end
+
 end # module TestFallbacks

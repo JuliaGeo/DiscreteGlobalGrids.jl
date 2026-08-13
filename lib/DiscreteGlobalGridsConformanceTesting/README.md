@@ -11,5 +11,5 @@ test_grid_interface(grid)
 test_hierarchical_system(system)
 ```
 
-The package is a member of the repository's Julia 1.12 workspace. Repository
+The package is a member of the repository's Julia workspace. Repository
 tests resolve it through the path source declared in `test/Project.toml`.

@@ -207,6 +207,11 @@ end
 # suite's namespace.
 include("test_kernel_core.jl")
 include("test_generic_trees.jl")
+# The one contract a node extent has, on the wired systems rather than on a
+# mock: the cap a node reports contains every point of every leaf it owns
+# (src/core/generic_cursor.jl). A miss there deletes intersections from a
+# `Regridder` silently, so it is checked directly, over whole trees.
+include("test_node_extent_containment.jl")
 include("test_manifolds.jl")
 # The generic lookup operations (src/core/lookup_ops.jl): neighbor halo
 # tables, `stencil`, `zonal`, and the neighbor kernel generics' error paths.

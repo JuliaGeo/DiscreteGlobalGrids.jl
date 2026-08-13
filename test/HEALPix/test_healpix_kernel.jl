@@ -231,13 +231,18 @@ end
     end
 end
 
-# `subtree_border` has no HEALPix wiring, so this exercises the *generic*
-# fallback in src/core/kernel.jl — and on the id model IGEO7's suite cannot
-# reach, dense ordinals rather than structural ids. Ground truth is the
-# definition: sweep the whole subtree and keep the cells with a neighbor
-# outside it. HEALPix neighborhoods are the 3x3 lattice block (8 neighbors, 7
-# at the 24 corner pixels), so a rim here is thicker than an edge-adjacency
-# rim would be; the fallback inherits whatever `cell_neighbors` promises.
+# The rim against its definition: sweep the whole subtree and keep the cells
+# with a neighbor outside it. HEALPix neighborhoods are the 3x3 lattice block
+# (8 neighbors, 7 at the 24 corner pixels), so a rim here could in principle be
+# thicker than an edge-adjacency rim — `subtree_border` inherits whatever
+# `cell_neighbors` promises, and the sweep below is what pins that down.
+#
+# This testset predates the native override and was written against the
+# *generic* fallback in src/core/kernel.jl; it now exercises the override
+# instead, since that takes precedence. It is kept exactly as it was — the
+# definition does not care which implementation answers it — and the testset
+# below adds the coverage the native path needs, the fallback among its
+# references.
 @testset "HEALPix subtree border vs the definition" begin
     for level in 0:2, pixel in sample_pixels(level), delta in 0:3
         leaf_level = level + delta
@@ -253,6 +258,174 @@ end
     # outside it — the one case where the rim is the root.
     @test DGG.subtree_border(S, 2, 100, 2) == [100]
     @test_throws ArgumentError DGG.subtree_border(S, 2, 100, 1)
+end
+
+# The native override (src/HEALPix/HealpixKernel.jl): the rim read off the leaf
+# lattice — a subtree is an `s x s` block of face-local lattice cells, `s = 2^Δ`,
+# and the rim is that block's perimeter — instead of searched for with neighbor
+# queries. Two independent references, neither of them this implementation:
+#
+#   * the DEFINITION (`brute_border`), spelled with `cell_parent` so it assumes
+#     nothing about contiguity of the descendant id range — the very fact the
+#     override is built on. It costs `4^Δ` neighbor sweeps, which caps it at
+#     small depths.
+#   * the GENERIC kernel fallback, reached with `invoke` past the override. It
+#     is a genuinely different algorithm: it expands `cell_children` level by
+#     level and asks for actual neighbors at every step, where the override
+#     never queries a neighbor at all. The two share no code below
+#     `descendant_range`.
+#
+# Fixtures cover what a lattice rule could plausibly get wrong: whole-face roots
+# on all 12 base faces (`level = 0` — north polar 0:3, equatorial 4:7, south
+# polar 8:11), the per-face first/middle/last pixels that sit on the base-tiling
+# seams, and every block containing one of the 24 degenerate 7-neighbor pixels,
+# whose missing diagonal is the one neighbor the perimeter argument does not get
+# to assume exists.
+#
+# Big sweeps accumulate a failure counter and assert once (the idiom of
+# test/IGeo7/test_border.jl) so the suite's test count stays readable.
+
+"Descendants of `(level, pixel)` at `leaf_level` with a neighbor whose
+`level`-ancestor is not `pixel` — `O(4^Δ)`, the definition."
+brute_border(level, pixel, leaf_level) =
+    Int64[id for id in DGG.cell_descendants(S, level, pixel, leaf_level)
+          if any(n -> DGG.cell_parent(S, leaf_level, n, level) != pixel,
+                 DGG.cell_neighbors(S, leaf_level, id))]
+
+"The generic kernel fallback, which HEALPix overrides — reached past the override."
+generic_border(level, pixel, leaf_level) =
+    invoke(DGG.subtree_border, Tuple{DGG.AbstractDGGS,Integer,Any,Integer},
+        S, level, pixel, leaf_level)
+
+"The 24 pixels per grid that have only 7 neighbors (the degree-3 base vertices)."
+degenerate_pixels(level) =
+    Int64[p for p in 0:(DGG.num_cells(S, level) - 1)
+          if length(DGG.cell_neighbors(S, level, p)) == 7]
+
+@testset "HEALPix subtree border, native override" begin
+
+    @testset "matches the definition and the generic fallback" begin
+        bad = 0
+        # Exhaustive: every root of levels 0, 1 and 2 — so all 12 base faces
+        # whole (Δ up to 5 there), every seam and every face corner — against
+        # both references.
+        for (level, deltas) in ((0, 0:5), (1, 0:4), (2, 0:3)),
+            pixel in 0:(DGG.num_cells(S, level) - 1), delta in deltas
+
+            leaf_level = level + delta
+            rim = DGG.subtree_border(S, level, pixel, leaf_level)
+            rim == brute_border(level, pixel, leaf_level) || (bad += 1)
+            rim == generic_border(level, pixel, leaf_level) || (bad += 1)
+        end
+        @test bad == 0
+
+        # Deeper than brute force reaches, on seam- and corner-touching roots:
+        # the fallback alone, which is still an independent algorithm. It stays
+        # affordable this deep because it prunes to the rim as it descends —
+        # what the override saves is its per-cell neighbor machinery, not an
+        # exponent.
+        bad = 0
+        for level in 3:4, pixel in sample_pixels(level), delta in 4:8
+            DGG.subtree_border(S, level, pixel, level + delta) ==
+                generic_border(level, pixel, level + delta) || (bad += 1)
+        end
+        @test bad == 0
+    end
+
+    # The 24 seven-neighbor pixels are the only cells whose 3x3 block is
+    # incomplete, so they are the only way the "interior cells have all 8
+    # neighbors inside" half of the perimeter argument could fail. Every block
+    # that contains one, at every depth that has one, against the definition.
+    @testset "blocks containing a degenerate pixel" begin
+        bad = 0
+        blocks = Set{Tuple{Int,Int64,Int}}()
+        for leaf_level in 1:5, pixel in degenerate_pixels(leaf_level),
+            delta in 1:min(4, leaf_level)
+
+            level = leaf_level - delta
+            push!(blocks, (level, DGG.cell_parent(S, leaf_level, pixel, level), leaf_level))
+        end
+        @test all(l -> length(degenerate_pixels(l)) == 24, 1:5)
+        @test length(blocks) >= 200                # i.e. not silently empty
+        for (level, root, leaf_level) in blocks
+            DGG.subtree_border(S, level, root, leaf_level) ==
+                brute_border(level, root, leaf_level) || (bad += 1)
+        end
+        @test bad == 0
+
+        # A degenerate pixel is at a face corner, hence at a corner of every
+        # block containing it, hence always ON the rim — it never becomes an
+        # interior cell that the missing diagonal could exclude.
+        bad = 0
+        for leaf_level in 1:4, pixel in degenerate_pixels(leaf_level), level in 0:(leaf_level - 1)
+            root = DGG.cell_parent(S, leaf_level, pixel, level)
+            pixel in DGG.subtree_border(S, level, root, leaf_level) || (bad += 1)
+        end
+        @test bad == 0
+    end
+
+    @testset "result shape" begin
+        bad = 0
+        for (level, deltas) in ((0, 0:6), (2, 0:5), (5, 0:4)),
+            pixel in sample_pixels(level), delta in deltas
+
+            rim = DGG.subtree_border(S, level, pixel, level + delta)
+            rim isa Vector{Int64} || (bad += 1)                    # cell_id_type(S)
+            issorted(rim) || (bad += 1)
+            allunique(rim) || (bad += 1)
+            lo, hi = DGG.descendant_range(S, level, pixel, level + delta)
+            all(id -> lo <= id <= hi, rim) || (bad += 1)
+            all(id -> DGG.cell_parent(S, level + delta, id, level) == pixel, rim) || (bad += 1)
+            # The census: the perimeter of the `2^Δ x 2^Δ` block, `4 * 2^Δ - 4`.
+            # It coincides with the whole subtree `4^Δ` at Δ = 1 (four children,
+            # none enclosed) and breaks down at Δ = 0, where it reads 0 and the
+            # answer is the root itself — the branch taken before the walk.
+            length(rim) == (delta == 0 ? 1 : 4 * 2^delta - 4) || (bad += 1)
+        end
+        @test bad == 0
+
+        # Δ = 0: the cell itself, whose whole neighborhood is outside its own
+        # subtree. Δ = 1: all four children, none of them enclosed.
+        @test DGG.subtree_border(S, 3, 700, 3) == [700]
+        @test DGG.subtree_border(S, 3, 700, 4) == collect(2800:2803)
+        @test DGG.subtree_border(S, 3, 700, 4) == DGG.cell_children(S, 3, 700)
+        @test DGG.subtree_border(S, 0, 0, 0) == [0]
+
+        # Θ(rim), not Θ(subtree): a depth-14 rim is 65_532 cells out of the
+        # 268_435_456 the subtree holds, and materializing the subtree to find
+        # them is what the override exists to avoid.
+        deep = DGG.subtree_border(S, 1, 47, 15)
+        @test length(deep) == 4 * 2^14 - 4
+        @test issorted(deep) && allunique(deep)
+        @test DGG.subtree_leaf_count(S, 1, 47, 15) == 4^14
+    end
+
+    # Every guard is `descendant_range`'s, which is where the generic fallback's
+    # guards also end up — so the two must agree on error TYPE and MESSAGE, not
+    # merely on the fact that they threw. The last two cases are `leaf_level ==
+    # level` with a nonexistent id: the depth-0 branch must validate rather than
+    # hand back the id it was given.
+    @testset "error parity with the generic fallback" begin
+        for (level, pixel, leaf_level) in ((2, 100, 1), (3, 5, 2), (2, 192, 3),
+                                           (2, -1, 3), (0, 12, 2),
+                                           (2, 192, 2), (1, 48, 1))
+            native = try
+                DGG.subtree_border(S, level, pixel, leaf_level)
+                nothing
+            catch e
+                e
+            end
+            fallback = try
+                generic_border(level, pixel, leaf_level)
+                nothing
+            catch e
+                e
+            end
+            @test native isa ArgumentError
+            @test typeof(native) === typeof(fallback)
+            @test sprint(showerror, native) == sprint(showerror, fallback)
+        end
+    end
 end
 
 @testset "HEALPix subtree caps contain descendants" begin

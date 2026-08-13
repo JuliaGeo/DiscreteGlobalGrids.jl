@@ -25,7 +25,14 @@
 # containing extents the traversal cannot over-prune, so the returned index set
 # is exactly the set of leaves whose `cell_cap` meets the query. (The kernel's
 # own vertex-union caps contain descendant *cells*, not descendant *caps*, so
-# against them only a subset relation would be assertable.)
+# against them only a subset relation would be assertable.) The nodes that
+# report their own `cell_cap` — a node storing its whole subtree takes the
+# hierarchy's O(1) answer — carry the same property here for a reason of the
+# mock's geometry rather than of the fold: a child box halves its parent's
+# radius, so a depth-`d` leaf cap reaches `1 + 0.2 * 2^-d` of the parent's own
+# radius against the `1.2` the cap is inflated by. The "mock system
+# self-consistency" testset measures exactly that, so the premise is checked
+# rather than argued.
 module GenericTreeTests
 
 using Test
@@ -235,6 +242,18 @@ const SPARSE_IDS = sample_ids(RNG, ORDINAL_MOCK, LEVEL, 17)
     node_cap = DGG.subtree_cap(ORDINAL_MOCK, 1, 5, 4)
     for id in cell_descendants(ORDINAL_MOCK, 1, 5, 4)
         @test GO.UnitSpherical._contains(node_cap, cell_cap(ORDINAL_MOCK, LEVEL, id))
+    end
+
+    # ...and so does the plain `cell_cap`, which is what a node storing its
+    # whole subtree reports. The 1.2 inflation covers a descendant's *cap*
+    # here, not merely its vertices, at every depth these trees use — the other
+    # half of the premise behind the brute-force equalities (see the header).
+    for level in 0:3, id in (0, 5, 21, 87, DGG.num_cells(ORDINAL_MOCK, level) - 1)
+        id < DGG.num_cells(ORDINAL_MOCK, level) || continue
+        parent_cap = cell_cap(ORDINAL_MOCK, level, id)
+        for leaf in cell_descendants(ORDINAL_MOCK, level, id, LEVEL)
+            @test GO.UnitSpherical._contains(parent_cap, cell_cap(ORDINAL_MOCK, LEVEL, leaf))
+        end
     end
 end
 
@@ -590,11 +609,17 @@ end
         @test Trees.ncells(tree) == length(expected)
 
         # The cursor roots at the cell, not at the sphere, and its extent is
-        # that cell's chunk cap rather than the full sphere.
+        # that cell's own cap rather than the full sphere: a chunk stores its
+        # whole subtree, and the hierarchy bounds a whole subtree in O(1).
         @test tree.level == 1
         @test tree.id == 5
-        @test STI.node_extent(tree) == DGG.cells_cap(system, 4, expected)
+        @test STI.node_extent(tree) == cell_cap(system, 1, 5)
         @test STI.node_extent(tree) != DGG.full_sphere_extent()
+        # ...and it really does bound the chunk: every vertex of every leaf.
+        @test all(expected) do id
+            all(point -> GO.UnitSpherical._contains(STI.node_extent(tree), point),
+                DGG.cell_boundary(system, 4, id))
+        end
 
         # Leaves are numbered 1:subtree_leaf_count in ascending id order.
         @test all_leaf_indices(tree) == collect(1:length(expected))
@@ -737,19 +762,43 @@ end
 
 @testset "node extents come from the kernel" begin
     for system in MOCKS
-        # Partial internal nodes bound the ids they store; dense internal nodes
-        # bound the whole subtree; leaves use the cell cap.
+        # A partial internal node reports its own cell's cap — O(1), straight
+        # from the hierarchy — unless it stores a *proper* subset of its
+        # subtree and few enough leaves that bounding them directly is bounded
+        # work (`STORED_UNION_CAP_LIMIT`); that union is the tighter cap a
+        # sparse chunk exists for. Dense internal nodes bound the whole
+        # subtree, and leaves use the cell cap.
         @test !has_exact_subtree_cap(system)
         partial = DGGSPartialGrid(system, LEVEL, IDS)
         tree = treeify(partial)
+        union_nodes = 0
+        cell_nodes = 0
         walk_nodes(tree) do node
             node.level < 0 && return nothing
             stored = [IDS[i] for i in all_leaf_indices(node)]
-            expected = node.level == LEVEL ? cell_cap(system, LEVEL, node.id) :
-                       DGG.cells_cap(system, LEVEL, stored)
-            @test STI.node_extent(node) == expected
+            extent = STI.node_extent(node)
+            if node.level == LEVEL
+                @test extent == cell_cap(system, LEVEL, node.id)
+            elseif length(stored) <= DGG.STORED_UNION_CAP_LIMIT &&
+                   length(stored) < subtree_leaf_count(system, node.level, node.id, LEVEL)
+                @test extent == DGG.cells_cap(system, LEVEL, stored)
+                union_nodes += 1
+            else
+                @test extent == cell_cap(system, node.level, node.id)
+                cell_nodes += 1
+            end
+            # Whichever cap it is, it bounds what the node owns — the one
+            # thing a node extent may never get wrong, since a leaf outside it
+            # is silently dropped from every traversal, not reported.
+            @test all(stored) do id
+                all(point -> GO.UnitSpherical._contains(extent, point),
+                    DGG.cell_boundary(system, LEVEL, id))
+            end
             return nothing
         end
+        # Both halves of the rule are live on this grid (300 of 2,048 cells).
+        @test union_nodes > 0
+        @test cell_nodes > 0
 
         dense = treeify(DGGSGrid(system, 3))
         walk_nodes(dense) do node

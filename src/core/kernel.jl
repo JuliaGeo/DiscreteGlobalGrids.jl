@@ -66,13 +66,16 @@ has_descendant_ranges(system::AbstractDGGS) = has_ordinal_ids(system)
 """
     has_exact_subtree_cap(system::AbstractDGGS) -> Bool
 
-`true` when [`subtree_cap`](@ref) is both O(1) and geographically tight —
-the system's parent cells contain their descendants, so the cap of a node's
-own cell bounds any stored subset as well as a union cap would (HEALPix).
-The generic partial trees then use `subtree_cap` for internal-node extents
-instead of the O(stored) [`cells_cap`](@ref), matching the old per-system
-trees' O(1) node extents. Defaults to `false` — aperture-7 systems want the
-tighter stored-id union caps.
+`true` when [`subtree_cap`](@ref) is *geographically tight* — the system's
+parent cells contain their descendants, so a node's own cell cap bounds any
+stored subset as well as a union cap would (HEALPix, whose override is the
+exact parent-pixel cap rather than an inflated one). Internal-node extents are
+O(1) on either answer since `subtree_cap` itself is; what the trait says is
+that nothing a partial node computes from the ids it stores can improve on
+that cap, so the generic partial trees skip the union cap entirely. Defaults
+to `false` — where children overhang their parent, a *sparse* node's stored
+ids can still be bounded far more tightly than its whole cell
+(`core/generic_cursor.jl`).
 """
 has_exact_subtree_cap(system::AbstractDGGS) = false
 
@@ -310,8 +313,10 @@ end
 Canonical ids of the `leaf_level` descendants of cell `(level, id)` that share
 an edge with a cell *outside* that subtree — the subtree's rim — ascending.
 `leaf_level == level` returns `[id]`, whose whole neighborhood is outside its
-own subtree. As with [`cell_descendants`](@ref), `leaf_level < level` is an
-`ArgumentError` in every wiring.
+own subtree — but only for an `id` that is a cell at `level`, which that case
+checks by answering through [`cell_descendants`](@ref) rather than by spelling
+the singleton itself. As with [`cell_descendants`](@ref), `leaf_level < level`
+is an `ArgumentError` in every wiring.
 
 This is the hierarchy answering a question about adjacency, so it is not the
 same set as [`cell_boundary`](@ref)'s ring: in an aperture-7 system a parent
@@ -323,13 +328,33 @@ about; membership here is decided by the id hierarchy alone.
 The generic fallback expands [`cell_children`](@ref) level by level, keeping
 only cells that already touch the outside — it prunes on the fact that a cell's
 children touch nothing outside the children of that cell and of its edge
-neighbors, which holds for every refinement in this package. Systems that can
-decide rim membership from the id itself should override it: `IGEO7` reads it
-off the Z7 digits in `O(result)` rather than `O(subtree)`.
+neighbors. That premise holds for every refinement here *except* A5's res-1
+quintants, where 120 of the 300 res-2 apex cells reach a pentagon that is only a
+**vertex** neighbor of the parent quintant (a 3-edged triangle sitting under a
+5-edged pentagon). The conclusion survives anyway, because the exception is
+unreachable: a quintant's cross-face neighbor is always in another pentagon, so
+no quintant is ever interior and the fallback never prunes at that level.
+`test/A5/test_a5_kernel.jl` pins both halves — the violation and its
+unreachability — so the gap stays a measured fact rather than an assumption.
+That pruning keeps
+the frontier at the rim, so the fallback is already `O(result)` in *cells*; what
+it is not is cheap per cell, since it pays a [`cell_neighbors`](@ref) sweep and
+a [`cell_parent`](@ref) ascent for every child of every rim cell at every
+intermediate level. Systems that can decide rim membership from the id itself
+should override it and drop that constant: `IGEO7` reads the answer off the Z7
+digits, HEALPix off the Morton block, neither consulting an adjacency at all.
 """
 function subtree_border(system::AbstractDGGS, level::Integer, id, leaf_level::Integer)
     Int(level) <= Int(leaf_level) || throw(ArgumentError("expected level <= leaf_level"))
     T = cell_id_type(system)
+    # A depth-0 subtree is the cell itself. Answered through `cell_descendants`
+    # rather than as `[id]` directly: it is the same set by definition, and it
+    # is what carries each system's own id validation. Spelled as `[id]` this
+    # branch invents a confident answer for a cell that does not exist — the
+    # loop below never runs, so nothing else here ever looks at the id, and A5
+    # and HEALPix both reject it one call away.
+    Int(level) == Int(leaf_level) &&
+        return collect(T, cell_descendants(system, level, id, leaf_level))
     root = T(id)
     frontier = T[root]
     for l in Int(level):(Int(leaf_level)-1)
@@ -463,6 +488,11 @@ end
 # --------------------------------------------------------------------------
 
 const CELL_CAP_INFLATION = 1.2
+# Where an exact union cap stops paying for itself and [`cells_cap`](@ref)
+# gives up on the whole batch. It is a batch limit only: `subtree_cap` no
+# longer builds union caps at all (its docstring says why), so the name's
+# "subtree" is history — it stays because it is the number `cells_cap`'s
+# contract is written and tested against.
 const SUBTREE_CAP_EXACT_LIMIT = 2048
 
 """
@@ -561,7 +591,10 @@ end
 Bounding cap of an arbitrary batch of same-level cells: the exact union cap of
 their boundary vertices, or the full sphere once the batch exceeds
 `SUBTREE_CAP_EXACT_LIMIT` (the exact cap stops paying for itself). Used by the
-generic partial trees for internal-node extents.
+generic partial trees for the internal-node extents a whole-cell cap cannot
+answer well — the *sparse* nodes, which store few enough of their subtree that
+bounding what they really own is both much tighter and bounded work
+(`core/generic_cursor.jl`).
 """
 function cells_cap(system::AbstractDGGS, level::Integer, ids)
     isempty(ids) && return full_sphere_extent()
@@ -612,16 +645,42 @@ intersects_cap(cap::GO.UnitSpherical.SphericalCap) = Base.Fix1(intersects_cap, c
 """
     subtree_cap(system, level, id, leaf_level) -> SphericalCap
 
-Bounding cap of the full `leaf_level` subtree of cell `(level, id)`: an exact
-union cap while the subtree has at most `SUBTREE_CAP_EXACT_LIMIT` leaves, then
-the inflated [`cell_cap`](@ref) of the cell itself. Systems where a parent
-geographically contains its children (HEALPix) should override with the exact
-parent cap.
+Bounding cap of the full `leaf_level` subtree of cell `(level, id)`: the
+inflated [`cell_cap`](@ref) of the cell itself, at every depth and in O(1).
+The cell's own cap is already the hierarchy's answer for its whole subtree —
+that is exactly what [`cell_cap_inflation`](@ref) is for — so `leaf_level`
+does not enter the generic answer. It stays in the signature because it names
+the subtree the cap is claimed to bound, because it is what the guards below
+are run against, and because a system whose cap does depend on the depth needs
+it to override. Systems where a parent geographically contains its children
+(HEALPix) do override, with the exact — tighter, equally O(1) — parent cap.
+
+This used to return the exact union cap of the subtree's leaves while the
+subtree had at most `SUBTREE_CAP_EXACT_LIMIT` of them. That reserved the O(1)
+answer for the biggest nodes and charged the O(subtree) one to the many small
+nodes near the leaves, which is where a tree traversal spends its time: with
+aperture 7 putting `7^3 = 343` and `7^4 = 2401` either side of that limit,
+every leaf's boundary was recomputed by each of its three nearest ancestors
+even under a traversal that visits each node exactly once. What the union
+bought for it is at most the inflation factor in radius — IGEO7's descendants
+reach 1.048 of the cell's own radius against the 1.2 the cap is inflated by,
+H3's 1.052 — so the trade was several boundary evaluations per leaf for a few
+percent of cap radius. [`cells_cap`](@ref) is still how an arbitrary batch of
+cells is bounded, and is what a partial tree's genuinely sparse nodes use
+(`core/generic_cursor.jl`).
 """
 function subtree_cap(system::AbstractDGGS, level::Integer, id, leaf_level::Integer)
     level == leaf_level && return cell_cap(system, level, id)
-    if subtree_leaf_count(system, level, id, leaf_level) <= SUBTREE_CAP_EXACT_LIMIT
-        return cells_cap(system, leaf_level, cell_descendants(system, level, id, leaf_level))
-    end
+    # Asked for its guards, not for its value. `subtree_leaf_count` is the O(1)
+    # form of "is `(level, id)` a cell, and does it have `leaf_level`
+    # descendants at all", and it is where this function has always raised:
+    # `NotPortedError` for a system with no wired hierarchy (S2, ISEA4R — the
+    # honest state their kernels document), `ArgumentError` for a reversed
+    # level pair or an id that is not a cell, `OverflowError` or the system's
+    # own error for a `leaf_level` its ids cannot encode. Dropping the call
+    # would turn every one of those into a confident cap around a subtree that
+    # does not exist. (Where the compiler can prove the call cannot throw it
+    # may delete it, which is precisely the case where nothing is lost.)
+    subtree_leaf_count(system, level, id, leaf_level)
     return cell_cap(system, level, id)
 end

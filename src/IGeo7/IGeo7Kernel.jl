@@ -105,8 +105,10 @@ function DGG.cell_neighbors(::DGG.IGEO7DGGS, level::Integer, id)
 end
 
 # The subtree rim without a single neighbor query: `border_descendants`
-# (grid.jl) decides membership from the Z7 digits, so this runs in O(result)
-# where the generic fallback expands the whole subtree level by level. The
+# (grid.jl) decides membership from the Z7 digits. The fallback's pruned
+# frontier is already O(result) in cells, so what this drops is the constant —
+# the `grid_disk`-shaped neighbor sweep and the ancestor walk it runs per
+# candidate per level — not an exponent. The
 # `level <= leaf_level` guard is the kernel's, for the reason `cell_descendants`
 # gives above; everything past it is Z7 validity and keeps the native error.
 function DGG.subtree_border(::DGG.IGEO7DGGS, level::Integer, id, leaf_level::Integer)

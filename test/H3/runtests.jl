@@ -183,4 +183,9 @@ include("test_h3_kernel.jl")
 # also its own module.
 include("test_neighbors.jl")
 
+# The subtree rim (`DGG.subtree_border` and the digit automaton behind it);
+# also its own module. It leans on `cell_neighbors` for ground truth, so it
+# runs after the suite that establishes that operation.
+include("test_border.jl")
+
 end # module H3TestSuite

@@ -413,29 +413,61 @@ function STI.node_extent(cursor::DGGSCursor{<:DGGSGrid})
     return subtree_cap(system, cursor.level, cursor.id, leaf_level)
 end
 
+# How many stored leaves an internal node will spend `cell_boundary` calls on
+# to tighten its extent past its own cell's cap (`STI.node_extent` below). A
+# constant, deliberately, not a fraction of the subtree: it is the per-node
+# work bound, and the whole defect it replaces was a limit that scaled with the
+# subtree instead. 64 clears one child row at every aperture this package wires
+# (4, 7, 9) and two rows of an aperture-7 grid (49) — past that a node is not
+# "a handful of stored leaves" any more and its own cell is the honest bound.
+const STORED_UNION_CAP_LIMIT = 64
+
 function STI.node_extent(cursor::DGGSCursor{<:DGGSPartialGrid})
     cursor.level < 0 && return full_sphere_extent()
     system = _system(cursor)
     leaf_level = _leaf_level(cursor)
     cursor.level == leaf_level && return cell_cap(system, leaf_level, cursor.id)
     # Where a parent geographically contains its descendants, its own O(1) cap
-    # already bounds any stored subset, so paying `cells_cap`'s O(stored)
-    # boundary calls per node buys nothing — and above
-    # `SUBTREE_CAP_EXACT_LIMIT` it actively loses, since the union cap gives up
-    # and returns the full sphere (no pruning at all). HEALPix is the case.
+    # already bounds any stored subset as tightly as a union cap would, so
+    # paying `cells_cap`'s O(stored) boundary calls per node buys nothing at
+    # all. HEALPix is the case; that is what the trait means.
     has_exact_subtree_cap(system) &&
         return subtree_cap(system, cursor.level, cursor.id, leaf_level)
-    # Otherwise a partial internal node bounds only the ids it actually
-    # stores, so a sparse chunk of a dense subtree gets a tighter cap than the
-    # whole cell's. This is also a subtree-rooted grid's root extent. Above
-    # `SUBTREE_CAP_EXACT_LIMIT` the union cap gives up and returns the full
-    # sphere (no pruning at all), while the node's own `subtree_cap` bounds a
-    # superset of the stored ids and is O(1) in exactly that regime — so it
-    # prunes where the union cap cannot (a res-2 H3 chunk of 2,401 leaves).
-    stored = _stored_ids(cursor)
-    length(stored) > SUBTREE_CAP_EXACT_LIMIT &&
-        return subtree_cap(system, cursor.level, cursor.id, leaf_level)
-    return cells_cap(system, leaf_level, stored)
+    # Otherwise the node *is* the cell `(level, id)`, and the hierarchy already
+    # bounds that cell's whole subtree in O(1): `cell_cap_inflation` exists
+    # precisely so a cell's cap covers the descendants that overhang it (1.048
+    # measured for IGEO7 and 1.052 for H3 against the shared 1.2, 1.469 for A5
+    # against the 1.75 it wires — `test/<System>/test_*_kernel.jl` measures all
+    # of them). So the O(stored) union cap has to earn its keep, and it can
+    # only do that where the node stores a *proper* subset of its subtree:
+    #
+    #   * a node that stores the whole subtree gains at most the inflation
+    #     factor in radius from the union and pays one `cell_boundary` per leaf
+    #     for it. That was the old rule's pure loss, and it fell on the nodes
+    #     nearest the leaves — the many. Aperture 7 puts 7^3 = 343 and
+    #     7^4 = 2401 either side of the old `SUBTREE_CAP_EXACT_LIMIT`, so every
+    #     leaf's boundary was recomputed by each of its three nearest ancestors
+    #     even under a traversal that visits each node once: 5.8M
+    #     `cell_boundary` calls for 117,649 cells in the profile that prompted
+    #     this, 49x redundancy, 80% of a `Regridder`'s construction time.
+    #   * a node storing a handful of a big cell's leaves — the sparse chunk a
+    #     partial grid exists for — really is bounded far more tightly by a cap
+    #     around those leaves, and that tightness is pruning power. It keeps
+    #     the union, for a bounded `STORED_UNION_CAP_LIMIT` boundary calls
+    #     rather than for as many as the subtree happens to have.
+    #
+    # `_stored_count` is O(1) on every path, and `subtree_leaf_count` is asked
+    # only once the count is already known small — it is O(1) in every wiring
+    # (the generic trees lean on that elsewhere too, see its docstring). An
+    # empty node takes the cell cap as well: `cells_cap` answers the full
+    # sphere for an empty batch, which is sound and is also the worst extent
+    # there is, and the documented empty node forms do reach here.
+    stored = _stored_count(cursor)
+    if 0 < stored <= STORED_UNION_CAP_LIMIT &&
+       stored < subtree_leaf_count(system, cursor.level, cursor.id, leaf_level)
+        return cells_cap(system, leaf_level, _stored_ids(cursor))
+    end
+    return cell_cap(system, cursor.level, cursor.id)
 end
 
 """

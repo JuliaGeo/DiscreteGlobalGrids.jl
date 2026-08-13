@@ -353,16 +353,30 @@ end
 end
 
 @testset "subtree_cap edge cases" begin
+    # One answer at every depth — the cell's own cap, O(1) in the node. The
+    # subtree size no longer selects between an exact union and the cell cap:
+    # the union's O(subtree) boundary calls fell on the small nodes, which is
+    # where a traversal spends its time (see the docstring).
     @test DGG.subtree_cap(MOCK, 3, 100, 3) == cell_cap(MOCK, 3, 100)
-
-    # 4^5 = 1024 leaves: still under the exact limit, so the union cap is used.
     @test subtree_leaf_count(MOCK, 0, 2, 5) <= DGG.SUBTREE_CAP_EXACT_LIMIT
-    @test DGG.subtree_cap(MOCK, 0, 2, 5) ==
-        DGG.cells_cap(MOCK, 5, cell_descendants(MOCK, 0, 2, 5))
-
-    # 4^6 = 4096 leaves: over the limit, so the inflated cell cap stands in.
+    @test DGG.subtree_cap(MOCK, 0, 2, 5) == cell_cap(MOCK, 0, 2)
     @test subtree_leaf_count(MOCK, 0, 2, 6) > DGG.SUBTREE_CAP_EXACT_LIMIT
     @test DGG.subtree_cap(MOCK, 0, 2, 6) == cell_cap(MOCK, 0, 2)
+
+    # ...and it still contains what it claims to: every vertex of every leaf of
+    # the subtree, which is the whole contract a traversal rests on.
+    cap = DGG.subtree_cap(MOCK, 0, 2, 5)
+    @test all(cell_descendants(MOCK, 0, 2, 5)) do id
+        all(point -> GO.UnitSpherical._contains(cap, point), DGG.cell_boundary(MOCK, 5, id))
+    end
+
+    # The guards did not go with the union cap: a cap is still refused for a
+    # subtree that does not exist. `subtree_leaf_count` is what raises them,
+    # and it is still asked.
+    @test_throws ArgumentError DGG.subtree_cap(MOCK, 1, DGG.num_cells(MOCK, 1), 4)
+    @test_throws ArgumentError DGG.subtree_cap(MOCK, 1, -1, 4)
+    @test_throws ArgumentError DGG.subtree_cap(MOCK, 0, 0, 40)   # past max_level
+    @test_throws OverflowError DGG.subtree_cap(UNBOUNDED, 0, 0, 40)
 end
 
 @testset "NotPortedError paths" begin

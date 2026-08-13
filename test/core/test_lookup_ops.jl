@@ -51,15 +51,24 @@ using DiscreteGlobalGrids.IGeo7.IGeo7Lookups: IGeo7Lookup
     end
 
     @testset "unported systems fail at the operation, not the accessor" begin
-        @test_throws NotPortedError max_neighbors(A5DGGS())
-        @test_throws NotPortedError cell_neighbors(A5DGGS(), 0, DGG.root_ids(A5DGGS())[1])
+        # S2 is the remaining instance: no `cell_neighbors`, and no lookup type
+        # either, so the gap can only be reached at the kernel.
         @test_throws NotPortedError max_neighbors(S2DGGS())
-        # ...and through the lookup operations: A5 has the accessors wired, so
-        # `neighbor_indices` reaches `cell_neighbors` and reports THAT gap.
+        # A5 was this testset's lookup-level example until `cell_neighbors` was
+        # wired for it (`src/A5/A5Kernel.jl`). It now answers the whole chain,
+        # which is what the assertions below pin — the accessor/operation split
+        # this testset is named for currently has no lookup-reachable instance,
+        # and re-acquiring one means a *new* system, not a regression in this.
         a5 = A5Lookup(sort(DGG.root_ids(A5DGGS())); resolution=0)
-        @test_throws NotPortedError neighbor_indices(a5)
+        @test max_neighbors(A5DGGS()) == 5
+        halo = neighbor_indices(a5)
+        @test length(halo) == length(a5)
+        # The 12 res-0 cells are the dodecahedron's faces, so the lookup is
+        # closed under adjacency: every neighbor resolves to a position in it
+        # and none falls through to the `0` sentinel.
+        @test all(nbs -> length(nbs) == 5 && all(!iszero, nbs), halo)
         A = DD.DimArray(fill(1.0, length(a5)), DD.Dim{:cells}(a5))
-        @test_throws NotPortedError stencil((c, nbs) -> c, A)
+        @test stencil((c, nbs) -> c + sum(nbs), A) == fill(6.0, length(a5))
         # `zonal` used to be a NotPortedError here too (the old kernel
         # descent required descendant_range); the spherical tree query runs
         # on the selection-cursor fallback instead, so A5 answers.

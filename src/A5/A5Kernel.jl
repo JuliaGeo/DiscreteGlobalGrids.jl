@@ -29,6 +29,7 @@
 import ..DiscreteGlobalGrids as DGG
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
+using SmallCollections: SmallVector
 
 # --------------------------------------------------------------------------
 # Id model
@@ -84,6 +85,121 @@ function DGG.subtree_leaf_count(::DGG.A5DGGS, level::Integer, id, leaf_level::In
     lvl == 0 && return Int64(5) * Int64(4)^(leaf - 1)
     return Int64(4)^(leaf - lvl)
 end
+
+# --------------------------------------------------------------------------
+# Neighbors
+#
+# `A5Native._get_global_cell_neighbors` is A5's own adjacency walk and already
+# returns `sort!(collect(::Set))`, so this wiring is a container change, a mode
+# choice and two guards — not a computation.
+#
+# WHY `edge_only = true`. The native keyword defaults to `false`, which is a
+# *vertex* neighborhood (everything sharing a corner), and that default is what
+# A5 uses internally: `_spherical_to_cell` widens its point-location search
+# with it, where extra candidates only cost time. The kernel's contract is edge
+# adjacency — it is what `stencil` and the lookup halo table mean — and the two
+# sets genuinely differ. Measured over complete levels: res 1 gives 3 edge
+# against 11 vertex neighbors; res 2-4 give a flat 5 edge against 6, 7 or 8
+# vertex neighbors (60 cells of each level report 6 and 60 report 8, the rest
+# 7). Res 0 is the one level where the keyword changes nothing — a dodecahedron
+# face shares a vertex with no face it does not also share an edge with, and
+# `_get_res0_neighbors` ignores the keyword outright. Everywhere else passing
+# the default would type-check and quietly answer a different question, so the
+# keyword is spelled out.
+#
+# FIRST EXERCISE. Nothing in the package called `edge_only = true` before this
+# wiring — `_spherical_to_cell` was the function's only caller and it takes the
+# default — so the res-1 branch and the `edge_only` filters in
+# `_find_quintant_neighbor_s` / `_get_boundary_neighbors` were, until now,
+# dead code. The neighbor testsets in `test/A5/test_a5_kernel.jl` are the whole
+# of their coverage, and they assert the kernel contract directly rather than
+# trusting the native code: ascending, unique, self-excluded, same-resolution,
+# and above all *symmetric* — the res >= 2 answer is a `Set` union of two
+# independently computed families (the within-quintant lattice step and the
+# quintant/face-seam special cases), which is exactly the shape that produces a
+# one-directional edge. It does not: symmetry holds over every cell of res 0-8.
+#
+# THE BOUND IS MEASURED, not inferred from the cell shape. Sweeping complete
+# levels 0-8 (1_310_712 cells) and 400-cell ordinal samples with their two-hop
+# neighborhoods at res 9, 12, 15, 20, 25 and 29, the edge degree is not merely
+# bounded by 5 but *constant* per regime: exactly 5 at res 0 (a dodecahedron
+# face has 5 face-adjacent faces), exactly 3 at res 1 (a quintant is a triangle
+# and its three edges reach the two sibling quintants and one across a face
+# seam), exactly 5 at res >= 2 (the pentagon lattice is edge-to-edge, at the
+# apex and along the seams as much as in a quintant's interior). No cell
+# anywhere in that sweep reported 4, 6 or more edge neighbors, so 5 is the
+# bound with no slack rather than a padded guess — the same discipline as the
+# `cell_cap_inflation` measurement above, and the testset is the evidence.
+#
+# RES 30 IS REFUSED. `MAX_RESOLUTION` is 30 but `MAX_GRID_RESOLUTION` is 29:
+# only 42 of the 60 quintants fit the res-30 encoding, so there is no complete
+# res-30 grid (which is why `num_cells` and `subtree_leaf_count` already throw
+# there). Adjacency is worse than incomplete at res 30 — it is wrong. A res-30
+# neighbor landing in an unsupported quintant hits `serialize`'s
+# `S >> 2, MAX_RESOLUTION - 1` fallback and comes back as a *res-29* id, so the
+# native answer mixes resolutions, drops to 4 entries and is not symmetric.
+# Rather than hand that to the kernel, this method range-checks the level the
+# way `cell_to_ordinal` does and refuses.
+# --------------------------------------------------------------------------
+
+DGG.max_neighbors(::DGG.A5DGGS) = 5
+
+function DGG.cell_neighbors(::DGG.A5DGGS, level::Integer, id)
+    lvl = Int(level)
+    0 <= lvl <= A5Native.MAX_GRID_RESOLUTION || throw(ArgumentError(
+        "A5 full-grid resolution must be in 0:$(A5Native.MAX_GRID_RESOLUTION)"))
+    cell = UInt64(id)
+    # The id guard `cell_to_ordinal` uses, for the same reason: a structural id
+    # carries its own resolution, and the native walk reads it out of the id
+    # rather than out of `level`, so a mislabelled level would otherwise return
+    # a different level's neighbors under this level's name. `get_resolution`
+    # also rejects the world cell (resolution -1), which `deserialize` would
+    # hand on to an `InexactError` deep in the lattice arithmetic. An id whose
+    # quintant bits name no origin still reaches the native `BoundsError`, as
+    # it does through `cell_children` and `cell_to_ordinal`.
+    A5Native.get_resolution(cell) == lvl || throw(ArgumentError(
+        "cell $(repr(cell)) is at A5 resolution $(A5Native.get_resolution(cell)), not $lvl"))
+    out = SmallVector{5,UInt64}()
+    # The native return is already ascending and duplicate-free (it is a `Set`
+    # collected through `sort!`), so this is a straight refill; `_insert_sorted`
+    # keeps the kernel's ordering contract stated here rather than borrowed
+    # from A5Native's internals, at the cost of a binary search over <= 5 ids.
+    for neighbor in A5Native._get_global_cell_neighbors(cell; edge_only=true)
+        out = DGG._insert_sorted(out, neighbor)
+    end
+    return out
+end
+
+# `subtree_border` keeps the kernel's generic fallback. A5 has no index-only
+# shortcut of the kind `IGEO7` reads off its Z7 digits: rim membership there is
+# a digit predicate because the tiling is congruent and rep-7, while an A5
+# subtree is four Hilbert children that cover the parent's area but not its
+# footprint (`has_exact_subtree_cap` is false for the same reason). The
+# fallback's level-by-level expansion is therefore the end state here, and that
+# is fine: it pays a `cell_neighbors` sweep and a `cell_parent` ascent per rim
+# child per level where IGEO7 reads the answer off its digits, but the frontier
+# it carries is the rim, not the subtree.
+#
+# One caveat, because the fallback prunes rather than enumerating: it drops the
+# children of any cell that touches nothing outside the subtree, on the premise
+# that a cell's children touch nothing outside the children of that cell and of
+# its edge neighbors. Measured over complete levels, that closure holds at res 0
+# and from res 2 down (0 violations over all 12 + 240 cells and a res-3 sample)
+# but *fails at res 1*: 120 violations over the 60 quintants, two per quintant.
+# They are the res-2 cells at a pentagon apex, whose edge neighbors reach into
+# pentagons that are only *vertex* neighbors of the parent quintant — a
+# consequence of the res-1 regime being triangles with 3 edges where the res-2
+# lattice below it is pentagons with 5.
+#
+# The gap is unreachable, which is why the fallback is still exact here: a
+# quintant is never interior to any subtree the pruning sees. Its cross-face
+# neighbor always lies in a different pentagon, so for a res-0 root all five
+# quintants stay in the frontier and nothing is pruned at that step; for a res-1
+# root the root *is* the frontier and the first expansion tests res-2 cells
+# directly; a deeper root never traverses res 1 at all. The testset pins both
+# halves — the closure counts per level, the "no quintant is ever interior"
+# fact, and then the whole operation against a brute-force pass over
+# `cell_descendants` at root levels 0-3 and depths 0-6.
 
 # --------------------------------------------------------------------------
 # Dense ordinals
@@ -247,9 +363,9 @@ DGG.DGGSPartialGrid(l::A5Lookups.A5Lookup; kwargs...) =
     DGG.DGGSPartialGrid(DGG.A5DGGS(), l.resolution, l.data; kwargs...)
 
 # What the generic lookup operations (`neighbor_indices`, `stencil`, `zonal`)
-# ask of a lookup: which system, which level. Wired even though A5 has no
-# `cell_neighbors` yet, so those operations fail at the unported *operation*
-# (`NotPortedError`) rather than at the accessor.
+# ask of a lookup: which system, which level. With `cell_neighbors` wired above
+# those three now answer for A5 through their generic definitions; this pair is
+# what points them at the right system and resolution.
 DGG.dggs_system(::A5Lookups.A5Lookup) = DGG.A5DGGS()
 DGG.dggs_level(l::A5Lookups.A5Lookup) = l.resolution
 

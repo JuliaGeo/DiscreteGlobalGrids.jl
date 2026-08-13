@@ -21,12 +21,13 @@ import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: A5DGGS, DGGSGrid, DGGSPartialGrid, subtree_grid, NotPortedError,
     root_count, radix, max_level, treeify, ncells, getcell, node_level, node_id,
     intersects_cap
-using DiscreteGlobalGrids.A5.A5Lookups: A5Lookup
+using DiscreteGlobalGrids.A5.A5Lookups: A5Lookup, A5Cells
 import GeometryOps as GO
 import GeoInterface as GI
 import GeometryOps: SpatialTreeInterface as STI
 import ConservativeRegridding as CR
 import ConservativeRegridding: Trees
+import DimensionalData as DD
 import SparseArrays
 
 const A5N = DGG.A5.A5Native
@@ -178,6 +179,271 @@ end
     end
     @test DGG.subtree_leaf_count(S, 0, ROOTS[1], 29) == DGG.num_cells(S, 29) ÷ 12
     @test_throws ArgumentError DGG.subtree_leaf_count(S, 3, RES3[1], 2)
+end
+
+# ---------------------------------------------------------------------------
+# NEIGHBOR-VALIDATION, the `max_neighbors` counterpart of the CAP-VALIDATION
+# battery at the bottom of this file: the bound is a *measurement*, printed, not
+# a number read off the cell shape. "A5 cells are pentagons, so 5" is not an
+# argument — the res >= 2 answer is a `Set` union of two independently computed
+# families (`_find_quintant_neighbor_s`'s within-quintant lattice step and
+# `_get_boundary_neighbors`' quintant-seam, face-seam, apex and corner special
+# cases), and a union can only ever come out bigger than either part. The sweep
+# below is what says it does not.
+# ---------------------------------------------------------------------------
+@testset "A5 NEIGHBOR-VALIDATION: the degree bound is measured" begin
+    bound = DGG.max_neighbors(S)
+    @test bound == 5
+
+    # Deep levels are sampled by ordinal, as the cap battery samples them.
+    ordinal_sample(level, n) = (total = DGG.num_cells(S, level);
+        [DGG.ordinal_to_cell(S, level, o) for o in 1:max(1, (total - 1) ÷ (n - 1)):total])
+    RES4 = reduce(vcat, [DGG.cell_children(S, 3, cell) for cell in RES3])
+
+    println("\n  A5 NEIGHBOR-VALIDATION — edge degree (`length(cell_neighbors(...))`) per level")
+    groups = (("res 0 (all 12)", 0, ROOTS), ("res 1 (all 60)", 1, RES1),
+        ("res 2 (all 240)", 2, RES2), ("res 3 (all 960)", 3, RES3),
+        ("res 4 (all 3840)", 4, RES4),
+        ("res 9 (400 sample)", 9, ordinal_sample(9, 400)),
+        ("res 15 (400 sample)", 15, ordinal_sample(15, 400)),
+        ("res 22 (400 sample)", 22, ordinal_sample(22, 400)),
+        ("res 29 (400 sample)", 29, ordinal_sample(29, 400)))
+    worst = 0
+    for (label, level, cells) in groups
+        degrees = [length(DGG.cell_neighbors(S, level, id)) for id in cells]
+        @printf("  %-20s (%5d cells) degrees observed: %s\n", label, length(cells),
+            join(sort(unique(degrees)), ", "))
+        worst = max(worst, maximum(degrees))
+        # Not merely bounded by 5 — *constant* per regime, which is the stronger
+        # statement and the one that makes the bound safe to extrapolate past
+        # the sampled levels: 5 at res 0 (a dodecahedron face has 5 face-adjacent
+        # faces), 3 at res 1 (a quintant is a triangle: two sibling quintants and
+        # one across a face seam), 5 at res >= 2 (the pentagon lattice is
+        # edge-to-edge at the apex and along the seams as much as inside a
+        # quintant). No cell anywhere below reports 4, 6 or more.
+        @test unique(degrees) == [level == 1 ? 3 : 5]
+        @test maximum(degrees) <= bound
+    end
+    @printf("  worst edge degree observed %d against the wired bound %d\n\n", worst, bound)
+    # The bound is attained, so it has no slack to trim and none to spare.
+    @test worst == bound
+
+    # The container the bound sizes.
+    @test DGG.cell_neighbors(S, 0, ROOTS[1]) isa DGG.SmallVector{5,UInt64}
+end
+
+# ---------------------------------------------------------------------------
+# The kernel contract itself (`cell_neighbors` in `src/core/kernel.jl`):
+# ascending, unique, self-excluded, valid cells of the same level, and
+# symmetric. Checked exhaustively over complete levels rather than on samples,
+# because `edge_only = true` had no caller in the package before this wiring —
+# `_spherical_to_cell` takes the native default — so these testsets are the
+# whole of that mode's coverage.
+# ---------------------------------------------------------------------------
+@testset "A5 neighbors: the kernel contract" begin
+    RES4 = reduce(vcat, [DGG.cell_children(S, 3, cell) for cell in RES3])
+    RES5 = reduce(vcat, [DGG.cell_children(S, 4, cell) for cell in RES4])
+
+    # Complete levels: with every cell of the level in hand, "b in N(a) implies
+    # a in N(b)" over all a *is* symmetry, and set membership is exact validity.
+    for (level, cells) in ((0, ROOTS), (1, RES1), (2, RES2), (3, RES3), (4, RES4), (5, RES5))
+        table = Dict(id => DGG.cell_neighbors(S, level, id) for id in cells)
+        stored = Set(cells)
+        @test all(id -> ascending(table[id]), cells)          # ascending *and* unique
+        @test all(id -> !(id in table[id]), cells)            # never itself
+        @test all(id -> all(n -> A5N.get_resolution(n) == level, table[id]), cells)
+        @test all(id -> all(n -> n in stored, table[id]), cells)
+        @test all(id -> all(n -> id in table[n], table[id]), cells)
+    end
+
+    # Deep levels, where no complete level can be held: the same checks on a
+    # patch — sampled cells closed under one neighbor step — so that both
+    # directions of symmetry are testable for every pair inside the patch.
+    ordinal_sample(level, n) = (total = DGG.num_cells(S, level);
+        [DGG.ordinal_to_cell(S, level, o) for o in 1:max(1, (total - 1) ÷ (n - 1)):total])
+    for level in (9, 15, 22, 29)
+        seeds = ordinal_sample(level, 120)
+        patch = Set{UInt64}(seeds)
+        for id in seeds, n in DGG.cell_neighbors(S, level, id)
+            push!(patch, n)
+        end
+        cells = collect(patch)
+        table = Dict(id => DGG.cell_neighbors(S, level, id) for id in cells)
+        @test all(id -> ascending(table[id]) && !(id in table[id]), cells)
+        @test all(id -> all(n -> A5N.get_resolution(n) == level, table[id]), cells)
+        # Validity without a level to enumerate: the ordinal round trip, which
+        # only closes for an id that really is a cell of `level`.
+        @test all(id -> all(n -> DGG.ordinal_to_cell(S, level,
+                DGG.cell_to_ordinal(S, level, n)) == n, table[id]), cells)
+        # Symmetry in both directions for every pair with both ends in the patch.
+        @test all(id -> all(n -> !(n in patch) || (id in table[n]), table[id]), cells)
+    end
+
+    # `edge_only = true` is not the native default, and the difference is not
+    # cosmetic: the default is a *vertex* neighborhood, which is what
+    # `_spherical_to_cell` wants (more candidates around a point estimate) and
+    # is emphatically not what `stencil` or the halo table mean. The wired set
+    # is always a strict subset below res 0.
+    @test length(A5N._get_global_cell_neighbors(RES1[1]; edge_only=true)) == 3
+    @test length(A5N._get_global_cell_neighbors(RES1[1]; edge_only=false)) == 11
+    @test all(RES2) do id
+        vertexwise = A5N._get_global_cell_neighbors(id; edge_only=false)
+        edgewise = DGG.cell_neighbors(S, 2, id)
+        length(vertexwise) in 6:8 && Set(edgewise) ⊊ Set(vertexwise)
+    end
+    # Res 0 is the one level where the keyword changes nothing: a dodecahedron
+    # face's 5 face-adjacent faces are also all the faces it shares a vertex
+    # with, and `_get_res0_neighbors` ignores `edge_only` outright.
+    @test all(root -> A5N._get_global_cell_neighbors(root; edge_only=false) ==
+                      collect(DGG.cell_neighbors(S, 0, root)), ROOTS)
+
+    # Guards, the `cell_to_ordinal` discipline: a full-grid level, and an id
+    # that is a cell of exactly that level.
+    @test_throws ArgumentError DGG.cell_neighbors(S, 30, ROOTS[1])
+    @test_throws ArgumentError DGG.cell_neighbors(S, -1, ROOTS[1])
+    @test_throws ArgumentError DGG.cell_neighbors(S, 2, ROOTS[1])   # res-0 id at level 2
+    @test_throws ArgumentError DGG.cell_neighbors(S, 0, RES2[5])    # res-2 id at level 0
+    @test_throws ArgumentError DGG.cell_neighbors(S, 0, UInt64(0))  # the world cell
+
+    # WHY level 30 is refused rather than passed through. Only 42 of the 60
+    # quintants fit the res-30 encoding, so a res-30 neighbor landing outside
+    # them takes `serialize`'s `S >> 2, MAX_RESOLUTION - 1` fallback and comes
+    # back as a *res-29* id. The native answer there mixes resolutions and is
+    # not symmetric — this pins that the refusal is a native limit being
+    # declined, not a restriction invented by the wiring.
+    res30 = A5N.serialize(A5N.A5Cell(A5N.ORIGINS[1], A5N.ORIGINS[1].first_quintant, UInt64(0), 30))
+    @test A5N.get_resolution(res30) == 30
+    native30 = A5N._get_global_cell_neighbors(res30; edge_only=true)
+    @test any(n -> A5N.get_resolution(n) != 30, native30)
+end
+
+# ---------------------------------------------------------------------------
+# `subtree_border` — the operation `cell_neighbors` unblocks. A5 keeps the
+# generic fallback (no index-only shortcut exists for a non-congruent, non-rep-4
+# tiling), so what is checked here is the fallback's *pruning*, which is the
+# only thing that can make it disagree with the definition.
+# ---------------------------------------------------------------------------
+@testset "A5 subtree_border vs brute force" begin
+    # The definition, straight: a leaf is on the rim iff some edge neighbor of
+    # it has a different ancestor at the root's level.
+    function brute_border(level, root, leaf)
+        out = UInt64[]
+        for descendant in DGG.cell_descendants(S, level, root, leaf)
+            any(n -> DGG.cell_parent(S, leaf, n, level) != root,
+                DGG.cell_neighbors(S, leaf, descendant)) && push!(out, descendant)
+        end
+        return sort!(out)
+    end
+
+    for (level, roots) in ((0, ROOTS), (1, RES1[1:11:end]),
+            (2, RES2[1:53:end]), (3, RES3[1:211:end]))
+        for delta in 0:5, root in roots
+            leaf = level + delta
+            border = DGG.subtree_border(S, level, root, leaf)
+            @test border == brute_border(level, root, leaf)
+            @test ascending(border)
+            @test border ⊆ DGG.cell_descendants(S, level, root, leaf)
+        end
+    end
+    # One deeper probe per regime, where the pruning has had room to compound.
+    for (level, root, leaf) in ((0, ROOTS[9], 6), (1, RES1[7], 7), (2, RES2[33], 8))
+        @test DGG.subtree_border(S, level, root, leaf) == brute_border(level, root, leaf)
+    end
+
+    # Depth 0 is the cell itself — and only for an id that is a cell at `level`,
+    # which it learns from `cell_descendants` rather than by spelling `[id]`.
+    @test DGG.subtree_border(S, 1, RES1[3], 1) == [RES1[3]]
+    @test_throws ArgumentError DGG.subtree_border(S, 2, RES2[1], 1)
+
+    # Every quintant of a root is on the rim (each has a cross-face neighbor in
+    # another pentagon), and the rim shrinks as a fraction of the subtree by
+    # roughly half per level, as a perimeter should against an area.
+    @test DGG.subtree_border(S, 0, ROOTS[1], 1) == DGG.cell_children(S, 0, ROOTS[1])
+    fractions = [length(DGG.subtree_border(S, 0, ROOTS[1], leaf)) /
+                 DGG.subtree_leaf_count(S, 0, ROOTS[1], leaf) for leaf in 2:6]
+    @test fractions == sort(fractions; rev=true)
+    @test fractions[end] < 0.2
+
+    # THE PRUNING'S PREMISE, measured. The fallback drops the children of any
+    # cell that touches nothing outside the subtree, on the premise that a
+    # cell's children touch nothing outside the children of that cell and of its
+    # edge neighbors. A5 satisfies that at res 0 and from res 2 down — but NOT
+    # at res 1, where it fails twice per quintant.
+    function closure_violations(level, cells)
+        bad = 0
+        for cell in cells
+            allowed = Set{UInt64}(DGG.cell_children(S, level, cell))
+            for neighbor in DGG.cell_neighbors(S, level, cell)
+                union!(allowed, DGG.cell_children(S, level, neighbor))
+            end
+            for child in DGG.cell_children(S, level, cell),
+                m in DGG.cell_neighbors(S, level + 1, child)
+
+                m in allowed || (bad += 1)
+            end
+        end
+        return bad
+    end
+    @test closure_violations(0, ROOTS) == 0
+    @test closure_violations(1, RES1) == 120        # 2 per quintant — the gap
+    @test closure_violations(2, RES2) == 0
+    @test closure_violations(3, RES3[1:7:end]) == 0
+
+    # What the 120 are: res-2 cells at a pentagon apex whose edge neighbors sit
+    # in a pentagon that is only a *vertex* neighbor of the parent quintant —
+    # the res-1 regime is triangles with 3 edges while the res-2 lattice under
+    # it is pentagons with 5, so the child reaches past its parent's edge ring.
+    escapes = UInt64[]
+    for child in DGG.cell_children(S, 1, RES1[1]), m in DGG.cell_neighbors(S, 2, child)
+        parent = DGG.cell_parent(S, 2, m, 1)
+        (parent == RES1[1] || parent in DGG.cell_neighbors(S, 1, RES1[1])) && continue
+        push!(escapes, parent)
+    end
+    @test length(escapes) == 2
+    @test all(p -> p in A5N._get_global_cell_neighbors(RES1[1]; edge_only=false), escapes)
+
+    # ... and why the gap never bites: a quintant is never *interior* to a
+    # subtree, so the fallback never prunes one. Its cross-face neighbor always
+    # lies in another pentagon, so for a res-0 root all five quintants stay in
+    # the frontier; a res-1 root is its own frontier and expands to res 2
+    # directly; a deeper root never traverses res 1 at all. That is the whole
+    # reason the brute-force agreement above holds.
+    @test all(RES1) do quintant
+        root = DGG.cell_parent(S, 1, quintant, 0)
+        any(n -> DGG.cell_parent(S, 1, n, 0) != root, DGG.cell_neighbors(S, 1, quintant))
+    end
+end
+
+# ---------------------------------------------------------------------------
+# The lookup layer `cell_neighbors` unblocks: `neighbor_indices` is the halo
+# table `stencil` and `zonal` resolve values through.
+# ---------------------------------------------------------------------------
+@testset "A5 lookup neighbor operations" begin
+    ids = DGG.cell_descendants(S, 0, ROOTS[1], 3)
+    lookup = A5Lookup(ids; resolution=3, validate=true)
+    halo = DGG.neighbor_indices(lookup)
+    @test length(halo) == 80
+    @test eltype(halo) === DGG.SmallVector{5,Int}
+    @test all(v -> length(v) == 5, halo)             # 5 neighbors, stored or not
+    # A stored position points at the cell `cell_neighbors` named, in the same
+    # ascending order.
+    @test all(eachindex(ids)) do i
+        [ids[j] for j in halo[i] if j > 0] ==
+        [n for n in DGG.cell_neighbors(S, 3, ids[i]) if !isnothing(findfirst(==(n), ids))]
+    end
+    # The zeros — neighbors outside the stored coverage — are exactly the
+    # subtree's rim, which is `subtree_border` seen from the other side.
+    @test sort(ids[[i for i in eachindex(halo) if any(==(0), halo[i])]]) ==
+          DGG.subtree_border(S, 0, ROOTS[1], 3)
+
+    # `stencil` over that table: sum of the stored neighbors, so an interior
+    # cell sees 5 and a rim cell fewer.
+    array = DD.DimArray(ones(80), (A5Cells(lookup),))
+    counts = parent(DGG.stencil((_, vals) -> length(vals), array; nbidx=halo))
+    @test length(counts) == 80
+    @test maximum(counts) == 5
+    @test minimum(counts) < 5
+    @test count(==(5), counts) == 80 - length(DGG.subtree_border(S, 0, ROOTS[1], 3))
 end
 
 # ---------------------------------------------------------------------------

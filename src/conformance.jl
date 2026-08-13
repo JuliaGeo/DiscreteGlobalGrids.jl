@@ -608,8 +608,13 @@ descendant.
 function descendant_range_problems(sys, c, l::Integer, grid)
     problems = String[]
     r = DGG.descendant_range(sys, c, l)
-    r isa UnitRange{Int} ||
+    if !(r isa UnitRange{Int})
+        # Reported, not thrown: the checks below index and difference `r`, so
+        # carrying on with something that is not a range turns a conformance
+        # report into an uncaught error from inside the harness.
         push!(problems, "descendant_range($c, $l) returned a $(typeof(r)), not a UnitRange{Int}")
+        return problems
+    end
 
     actual = descendants_at(sys, c, l)
     positions = Int[]

@@ -402,6 +402,13 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         @test !Conf.check_covering_law(drifted)                       # caught only here
         problems = Conf.covering_law_problems(drifted)
         @test any(contains("ancestor at level 0, descendant at level 2"), problems)
+
+        # The chain-to-max_level probe earns its keep: with the bounded bushy
+        # walk switched off the chain alone still catches the drift, and with
+        # the chain switched off too, nothing does. Without this pair, deleting
+        # `_covering_chain!` would leave the whole suite green.
+        @test !Conf.check_covering_law(drifted; descent_depth = 0)
+        @test Conf.check_covering_law(drifted; descent_depth = 0, deep_chain = false)
     end
 
     @testset "harness catches: clockwise boundary ring" begin

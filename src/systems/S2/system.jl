@@ -322,7 +322,7 @@ The bounding cap of an S2 cell — *and therefore of its whole subtree*.
 
 # Why the four corners are the whole answer
 
-Three facts compose, and each is exact rather than sampled:
+Two facts compose, and each is exact rather than sampled:
 
  1. **Children tile their parent exactly.** A child's chart rectangle is a
     quadrant of the parent's, and the chart is a homeomorphism of the closed
@@ -330,14 +330,20 @@ Three facts compose, and each is exact rather than sampled:
     point at every depth lies in the closed spherical quadrilateral of this
     cell. (This is what the aperture-7 icosahedral systems cannot say, and why
     the generic `node_extent` has to inflate.)
- 2. **The cell is geodesically convex.** Its four edges are great-circle arcs
-    (see [`cell_boundary`](@ref)), and it is the gnomonic image of a convex
-    planar rectangle strictly inside a hemisphere, so it is the geodesic convex
-    hull of its four corners.
- 3. **Distance from an interior point is convex on it.** A convex function on a
-    convex hull attains its maximum at an extreme point, so `max d(centre, ·)`
-    over the cell is attained at a CORNER. `rmax` is therefore not an estimate
-    of the maximum — it *is* the maximum.
+ 2. **The cap through the four corners contains the cell.** The cell's edges
+    are great-circle arcs (see [`cell_boundary`](@ref)) and the gnomonic map
+    carries a convex planar rectangle to a geodesically convex patch, so the
+    cell *is* the geodesic hull of its four corners. `rmax` is at most a
+    level-0 face's `acos(1/√3) ≈ 0.9553 < π/2`, and a cap of radius below `π/2`
+    is itself geodesically convex — so containing the four corners, it contains
+    their hull, which is the cell.
+
+The `π/2` bound is the load-bearing half of step 2 and not a stray remark: it
+is what makes the cap convex, and hence what turns "contains the corners" into
+"contains the cell". Note that it is a bound on the corner distance from the
+cell's OWN centre; it says nothing about how far apart two points of the cell
+may be (on a level-0 face, up to 1.91 rad), and it is the former the cap
+argument needs.
 
 The measured margin agrees: sweeping levels 0-3 with a 17×17 chart sampling of
 each cell plus a 6-levels-deeper descendant lattice, the worst overshoot of
@@ -368,13 +374,14 @@ system.
 
 S2 children tile their parent exactly and an S2 cell is the geodesic convex hull
 of its four corners, so the cap through those corners already bounds the whole
-subtree at every depth. See `_cell_cap` for the three-step argument and for the
+subtree at every depth. See `_cell_cap` for the two-step argument and for the
 measured margin.
 
 The widest extent in the system is a level-0 face at 0.9553 rad ≈ 54.7°, well
-inside the 90° that makes a cap geodesically convex — so the conformance
-harness's vertex-sampling proxy for the covering law is sound here, and
-`require_convex_extents` needs no opting out.
+inside the 90° that makes a cap geodesically convex. That one bound does double
+duty: it is what makes the cap contain the cell in the first place (`_cell_cap`
+step 2), and it is what makes the conformance harness's vertex-sampling proxy
+for the covering law sound — so `require_convex_extents` needs no opting out.
 """
 function DGG.node_extent(::S2System, c::DGG.LevelIndex)
     nside = _nside(DGG.level(c))

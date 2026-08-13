@@ -35,10 +35,11 @@
 # lives in `(s, t)`, and `st_to_uv` is odd about `s = 1/2` **exactly** in
 # floating point (`st_to_uv(1 - s) == -st_to_uv(s)`). So a sign flip in `u` is a
 # reflection `s ↦ 1 - s` in `s`, and the same signed permutation carries the
-# lattice: writing the centred lattice coordinate `b = 2i + 1 - nside` (odd,
-# `|b| < nside`), the crossing sends `b ↦ σ b` and puts the result in the row or
-# column of `g` adjacent to the target edge. No `uv_to_st`, no rounding, no
-# `nside`-dependent tolerance.
+# lattice: writing the centred lattice coordinate `b = 2i + 1 - nside` (which
+# runs over `|b| < nside` with the parity of `nside + 1` — odd at every level
+# above 0, and just `b = 0` at `nside = 1`), the crossing sends `b ↦ σ b` and
+# puts the result in the row or column of `g` adjacent to the target edge. No
+# `uv_to_st`, no rounding, no `nside`-dependent tolerance.
 #
 # ## What this buys, and what it costs
 #

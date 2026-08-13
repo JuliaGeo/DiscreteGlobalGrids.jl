@@ -16,10 +16,25 @@
 #     winding, measured geometrically rather than restated from the lattice the
 #     system used to produce it;
 #   * the SUBTREE RIM HOOK: `subtree_border` / `subtree_interior` against the
-#     brute-force definition. All three systems override the border with an
-#     automaton, so the fallback in `src/fallbacks/subtree.jl` is never reached
-#     for them — the definition is spelled out again here, independently, and
-#     the automata are checked against it.
+#     brute-force definition, spelled out here independently of both.
+#
+#     FOUR of the six systems override the border with an `O(rim)` automaton —
+#     IGeo7's Z7 digit predicate, H3's digit-arc walk, HEALPix's Morton rim
+#     walk, ISEA4R's lattice-block edge walk — and for those this is the
+#     differential test that keeps the fast path honest.
+#
+#     TWO deliberately do not, and this suite must not assert otherwise:
+#       - A5, because its four Hilbert children cover the parent's *area* but
+#         not its footprint, so there is no digit predicate a rim could be read
+#         off at all;
+#       - S2, because nobody has written one yet — its quad lattice plus sorted
+#         subtrees is exactly the shape that would benefit, and it is recorded
+#         as future work rather than a defect.
+#     For those two the same assertions still bite, just one rung lower: they
+#     check `src/fallbacks/subtree.jl` against the definition. That is not
+#     circular — the fallback decides membership by walking each neighbour up
+#     to the root with `ancestor`, while `brute_force_border` below materialises
+#     the descendant set and asks it — so the two agree only if both are right.
 # ---------------------------------------------------------------------------
 
 module CrossSystemTests
@@ -27,8 +42,8 @@ module CrossSystemTests
 using Test
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: systems, levels, levelgrid, ncells, cellindex,
-    cell_centroid, neighbors, ring, level, children, descendants,
-    subtree_border, subtree_interior, Vertex, Edge
+    cell_boundary, cell_centroid, cellat, neighbors, ring, level, children,
+    descendants, subtree_border, subtree_interior, Vertex, Edge, PartialGrid
 
 # A deterministic spread of cells: no RNG, so a failure names the same cell on
 # every run and on every machine.
@@ -125,6 +140,28 @@ end
         end
     end
 
+    @testset "who ships a subtree-rim automaton" begin
+        # The header comment names four systems with an `O(rim)` automaton and
+        # two that keep the generic fallback. Pinned here so the claim cannot
+        # rot the way its predecessor did ("all three systems override the
+        # border" survived two systems being added that do not): a system that
+        # gains or loses an automaton must come and edit this list, which is
+        # exactly the moment to re-read the comment.
+        automaton = Set([:IGeo7System, :H3System, :HEALPixSystem, :ISEA4RSystem])
+        fallback = Set([:A5System, :S2System])
+        for sys in systems()
+            n = nameof(typeof(sys))
+            c = cellindex(levelgrid(sys, first(levels(sys))), 1)
+            m = which(subtree_border, Base.typesof(sys, c, level(c)))
+            overrides = m.module !== DGG.Fallbacks
+            # Module provenance, not specificity, and deliberately: the
+            # question here is "did this system write a rim walker", and
+            # `Fallbacks` owning the method is precisely the answer "no".
+            @test (n in automaton) ⊻ (n in fallback)   # nobody unaccounted for
+            @test overrides == (n in automaton)
+        end
+    end
+
     for sys in systems()
         name = string(nameof(typeof(sys)))
 
@@ -165,6 +202,55 @@ end
             end
         end
 
+        # -------------------------------------------------------------------
+        # The generic point-in-cell test, against the one point that is
+        # unarguably inside a cell.
+        #
+        # This is a REGRESSION LAW for a substrate bug, not a system contract,
+        # which is why it lives here and not in the conformance package: what
+        # it guards is `Fallbacks.point_in_cell`, and the way to guard a
+        # generic is to sweep it over every system in the registry, which is
+        # precisely what this file is for. Putting it in the conformance
+        # package would have restated a defect in the shared substrate as an
+        # obligation each system owes separately.
+        #
+        # The bug (T2 vintage, found by T9, fixed in T13): `point_in_cell`
+        # asked `spherical_ring_encloses` first, whose test arc runs from the
+        # query point to the antipode of the ring's vertex mass. For a point
+        # INSIDE a small cell that arc is a near-half-turn, and its
+        # between-ness test then admits every point on the sphere — so the
+        # cell's own centroid was reported OUTSIDE its own boundary for 282 of
+        # 3072 HEALPix level-4 cells, and for cells of H3, S2 and ISEA4R
+        # besides, while IGeo7's twelve exactly-symmetric pentagons returned
+        # `nothing`. See `anchor_arc_is_conditioned`.
+        #
+        # Both halves matter. The predicate is the bug; `cellat` on a
+        # `PartialGrid` is the symptom a user would actually hit, because a
+        # partial grid has no native point location to hide the fallback.
+        # -------------------------------------------------------------------
+        @testset "$name: fallback point-in-cell accepts a cell's own centroid" begin
+            l = min(2, last(levels(sys)))
+            grid = levelgrid(sys, l)
+            probes = sample_cells(grid, 200)
+
+            offenders = [c for c in probes
+                         if DGG.Fallbacks.point_in_cell(cell_boundary(grid, c),
+                                                        cell_centroid(grid, c)) !== true]
+            # Named, not merely counted: a bare count makes a regression here
+            # a number to argue with rather than a cell to go and look at.
+            @test isempty(offenders)
+            isempty(offenders) || @info "$name: centroid rejected" first(offenders, 5)
+
+            # ...and the consequence. A `PartialGrid` has no native `cellat`,
+            # so this is the generic descend-and-test path end to end: the
+            # centroid of a cell in the subset must locate that same cell.
+            subset = sort(probes)
+            pg = PartialGrid(sys, l, subset)
+            missed = [c for c in subset if cellat(pg, cell_centroid(grid, c)) !== c]
+            @test isempty(missed)
+            isempty(missed) || @info "$name: cellat missed its own cell" first(missed, 5)
+        end
+
         @testset "$name: subtree rim hook" begin
             root_level = first(levels(sys))
             grid0 = levelgrid(sys, root_level)
@@ -184,9 +270,10 @@ end
                     interior = collect(subtree_interior(sys, c, l))
                     kids = collect(descendants(sys, c, l))
 
-                    # The automaton against the definition. Every system here
-                    # overrides `subtree_border`, so this is the differential
-                    # test that keeps the fast path honest.
+                    # Against the definition — the automaton's differential
+                    # test for the four systems that ship one, and the generic
+                    # fallback's for A5 and S2. See the header for which is
+                    # which and why.
                     @test Set(border) == Set(brute_force_border(sys, c, l))
 
                     # Border and interior partition the subtree.
@@ -203,13 +290,15 @@ end
 
                     # The interface documents the border's order as ascending
                     # canonical order unless a system says otherwise, and none
-                    # of the three does. Verified across all three automatons
+                    # of the six does. Verified across all four automatons
                     # before pinning it here: the Z7 digit automaton, H3's
-                    # digit-arc automaton and HEALPix's Morton rim walk all
-                    # emit ascending by construction (the Morton walk visits
-                    # quadrants in id order precisely so that it can). Left
-                    # unpinned, an automaton could start emitting a rim in walk
-                    # order and only the docs would be wrong.
+                    # digit-arc automaton, HEALPix's Morton rim walk and
+                    # ISEA4R's edge walk all emit ascending by construction
+                    # (the Morton walk visits quadrants in id order precisely
+                    # so that it can). A5 and S2 inherit it from the fallback,
+                    # which preserves `descendants` order. Left unpinned, an
+                    # automaton could start emitting a rim in walk order and
+                    # only the docs would be wrong.
                     @test issorted(border)
                     @test issorted(interior)
                 end

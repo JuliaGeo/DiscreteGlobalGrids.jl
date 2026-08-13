@@ -311,10 +311,16 @@ talking to.
 # Connectivity
 
 `connectivity` selects which adjacency defines "has a neighbour outside", with
-the same meaning as in [`neighbors`](@ref). On hexagonal and pentagonal systems
-the two coincide, and on HEALPix the rim happens to be the same set either way;
-those systems accept the argument and document that it does not change their
-answer.
+the same meaning as in [`neighbors`](@ref). It changes the answer only where the
+two adjacencies differ: on systems whose vertices are all 3-valent (IGeo7, H3)
+they are the same relation, and on HEALPix the rim happens to come out the same
+set either way; those systems accept the argument and document that it does not
+change their answer.
+
+A5 is the counterexample to assume nothing from: its Cairo-style pentagonal
+tiling has 4-valent corners, so `Vertex()` and `Edge()` are genuinely different
+relations there (11 against 3 neighbours at resolution 1) and its rim genuinely
+depends on which one is asked for.
 
 The generic fallback enumerates [`descendants`](@ref) and tests each one's
 [`neighbors`](@ref) — correct for any system, and the reason a system with an

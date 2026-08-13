@@ -204,9 +204,18 @@ consumer cannot reconstruct from an edge-only answer — dropping the corner
 neighbours of a `Vertex()` result is one filter, while recovering them from an
 `Edge()` result needs the grid again.
 
-On hexagonal and pentagonal grids `Vertex()` and [`Edge()`](@ref Edge)
-coincide; on quadrilateral grids (HEALPix, S2) `Vertex()` adds the four corner
-neighbours.
+`Vertex()` and [`Edge()`](@ref Edge) coincide exactly on grids where **three
+cells meet at every vertex** — there a shared vertex is always the endpoint of
+a shared edge, so there are no corner-only neighbours to add. That covers the
+icosahedral hexagons-with-twelve-pentagons family (IGeo7, H3) and the
+dodecahedral resolution-0 shell.
+
+It is a claim about vertex valence, not about cell shape, and "pentagonal
+grids" is not enough for it: A5's Cairo-style pentagonal tiling has **4-valent
+corners**, where a shared vertex need not come with a shared edge, and its two
+connectivities genuinely differ — at resolution 1 a cell has 11 vertex
+neighbours against 3 edge neighbours. On quadrilateral grids (HEALPix, S2,
+ISEA4R) the corners are 4-valent for the same reason and `Vertex()` adds them.
 """
 struct Vertex <: Connectivity end
 

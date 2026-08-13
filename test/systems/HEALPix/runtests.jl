@@ -10,6 +10,19 @@
 #      is pure Julia — which is exactly what makes it an oracle rather than a
 #      tautology. Adapted from the pre-redesign `test/HEALPix/` suites.
 #
+#      HOW MUCH OF EACH LEVEL. The pixel-indexed suites iterate `pixel_sample`,
+#      which is EXHAUSTIVE only at the levels whose whole pixel count fits under
+#      the cap it is called with, and a seeded, reproducible draw of that many
+#      pixels above it. At the default cap of 64 that means levels 0 (12 pixels)
+#      and 1 (48) are every pixel and levels 2 (192) through 6 (49,152) are a
+#      64-pixel draw — about 0.13% of level 6. A larger cap moves the cutover
+#      up: at `n = 512` (the subtree-cap suite) levels 0-2 are exhaustive and
+#      3-6 are sampled. So read these as a fixed, re-runnable cross-section of a
+#      level, not as a proof over it. Where a property IS checked over a whole
+#      level or a whole subtree the testset iterates the range directly and says
+#      so — `neighbours`, the level sums in `cell_area`, `the full sphere is
+#      partitioned`, and `subtree_border`'s brute-force comparison.
+#
 #   2. CONTRACT. The two conformance suites from
 #      `DiscreteGlobalGridsConformanceTesting`, with default kwargs.
 #
@@ -18,9 +31,8 @@
 #      Morton rim walk, the `Edge()` restriction, and the 0-based/1-based
 #      conventions.
 #
-# Run directly:
+# `test/runtests.jl` includes this file; it also runs standalone:
 #     julia --project=test --startup-file=no test/systems/HEALPix/runtests.jl
-# (T7 wires it into `test/runtests.jl`.)
 # ---------------------------------------------------------------------------
 
 module HEALPixSystemTests
@@ -43,7 +55,17 @@ import Healpix
 
 const SYS = HP.HEALPixSystem()
 
-"A deterministic pixel sample: all of them when small, a seeded draw when not."
+"""
+A deterministic pixel sample: ALL `12 * 4^level` pixels when the level fits
+under `n`, a seeded draw of at most `n` of them when it does not.
+
+The cutover is per-`n`, and worth knowing before reading any "checked at levels
+0-6" claim as exhaustive. At the default `n = 64` it is every pixel at level 0
+(12) and level 1 (48), and a draw from level 2 (192) up — 64 of 49,152, about
+0.13%, at level 6. Callers passing a larger `n` push the cutover up
+correspondingly. The draw is `unique`d before sorting, so it can return fewer
+than `n` ids.
+"""
 function pixel_sample(level::Integer, n::Integer = 64)
     npix = 12 * 4^level
     npix <= n && return collect(0:(npix - 1))
@@ -192,6 +214,9 @@ end
 end
 
 @testset "cell_centroid vs Healpix.pix2vecNest" begin
+    # Every pixel at levels 0-1, where the whole level fits under the default
+    # `pixel_sample` cap of 64; a seeded 64-pixel draw at levels 2-6. See
+    # `pixel_sample` for the cutover.
     worst = 0.0
     for level in 0:6
         nside = 1 << level
@@ -400,6 +425,10 @@ end
     # continuous truth those vertices lie on, 32x finer than the cap is built
     # from. A negative worst-overshoot means the cap is not merely passing the
     # sampled law but bounding the real region.
+    #
+    # `pixel_sample(level, 512)` is every pixel at levels 0-2 (12, 48, 192) and
+    # a seeded 512-pixel draw at levels 3-6; the finer 256-per-edge perimeter
+    # below is what makes each sampled pixel's check sharp.
     worst_overshoot = -Inf
     max_radius = 0.0
     for level in 0:6
@@ -462,8 +491,20 @@ end
             @test allunique(es)
             @test !(c in vs)
             @test issubset(Set(es), Set(vs))        # Edge() restricts Vertex()
+            # `<=` and not `==`, deliberately: the Vertex() degree genuinely
+            # varies (6 at every level-0 base pixel, 7 at the 24 degree-3
+            # pixels, 8 everywhere else), so 8 is the `max_neighbors` bound
+            # restated per cell. The exact distribution is pinned by the
+            # `counts` histogram at the end of this testset, which is the real
+            # assertion; this line only catches an over-long list.
             @test length(vs) <= 8
-            @test length(es) <= 4
+            # Edge() IS exactly 4 at every pixel of every level. The only
+            # pixels short of eight Moore neighbours are the 24 degree-3 pixels
+            # (one missing entry) and the level-0 base pixels (two missing),
+            # and every dropped entry is a DIAGONAL — W/N/E/S in the compass
+            # tuple, the corner-only directions — never one of the four
+            # edge-adjacent SW/NW/NE/SE. So nothing can thin the Edge() cycle.
+            @test length(es) == 4
             counts[length(vs)] = get(counts, length(vs), 0) + 1
 
             # symmetry, both connectivities, exhaustively over the level
@@ -563,6 +604,60 @@ end
             @test es == filter(in(Set(es)), vs)
         end
     end
+end
+
+@testset "Edge() neighbours share an edge, corner-only ones share a point" begin
+    # THE test that actually decides which four of the eight `Edge()` keeps.
+    # Every other property asserted in this section — Edge() ⊆ Vertex(),
+    # allunique, symmetry, cardinality, CCW winding, and even the slot-tuple
+    # test above, which reads its expectation from the same literal it is
+    # checking and so restates rather than checks it — is satisfied just as
+    # happily by the WRONG cycle `(2, 4, 6, 8)` as by the correct `(1, 7, 5,
+    # 3)`. A HEALPix pixel is a diamond rotated 45° against the lattice, so the
+    # compass entries whose labels LOOK like edge directions (W, N, E, S) are
+    # the corner-only ones; only geometry can tell the two apart.
+    #
+    # So measure it: an `Edge()` neighbour must share a whole densified edge
+    # with the cell, a corner-only neighbour (`Vertex()` minus `Edge()`)
+    # exactly one lattice point.
+    #
+    # The comparison is an exact `Set` intersection of the two `cell_boundary`
+    # vectors, which is legitimate because shared lattice points come out
+    # BIT-identical — that is what "shared edges are bit-identical between
+    # neighbours" above establishes, and it holds where both pixels share a
+    # face and therefore the same chart arithmetic. Hence the restriction to
+    # FACE-INTERIOR pixels (`1 <= ix, iy <= nside - 2`), whose entire 3x3
+    # neighbourhood lies on the one face; across a seam the two sides evaluate
+    # different closed forms and bit-identity is not guaranteed.
+    checked = 0
+    for level in 2:4
+        nside = 1 << level
+        grid = levelgrid(SYS, level)
+        for p in pixel_sample(level, 64)
+            ix, iy, _ = HP.nested_to_xyf(p, nside)
+            (1 <= ix <= nside - 2 && 1 <= iy <= nside - 2) || continue
+            c = LevelIndex(level, p)
+            ring_c = Set(cell_boundary(grid, c))
+            vs = collect(neighbors(grid, c, 1))
+            es = collect(neighbors(grid, c, 1; connectivity = Edge()))
+            # face-interior, so nothing is missing from either list
+            @test length(vs) == 8
+            @test length(es) == 4
+            for n in es
+                shared = intersect(ring_c, Set(cell_boundary(grid, n)))
+                @test length(shared) >= 2                       # an EDGE, not a point
+                # and in fact the whole edge: its BOUNDARY_SEGMENTS start
+                # points plus the far corner, which the other ring supplies.
+                @test length(shared) == HP.BOUNDARY_SEGMENTS + 1
+            end
+            for n in setdiff(vs, es)
+                shared = intersect(ring_c, Set(cell_boundary(grid, n)))
+                @test length(shared) == 1                       # a single CORNER
+            end
+            checked += 1
+        end
+    end
+    @test checked > 0        # the face-interior filter did not empty the loop
 end
 
 @testset "ring is the tail block of neighbors" begin

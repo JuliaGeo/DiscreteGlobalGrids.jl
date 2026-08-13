@@ -3,7 +3,7 @@
 #
 # Ported wholesale from the pre-redesign `src/H3/H3Native.jl`: these wrappers
 # are the oracle, not a reimplementation of one, and they are deliberately
-# unchanged. Six wrappers were *added* on top of that file, none of them
+# unchanged. Seven wrappers were *added* on top of that file, none of them
 # altering an existing one:
 #
 #   cell_center_cartesian   the centre without the degree round trip
@@ -24,6 +24,32 @@
 # interface wiring lives one directory up in `system.jl` / `geometry.jl`.
 # ---------------------------------------------------------------------------
 
+"""
+    DiscreteGlobalGrids.H3.H3Native
+
+The raw libh3 ccall layer: a couple of dozen entry points wrapping ~28 `ccall`s
+into the C library shipped by
+[`H3_jll`](https://github.com/JuliaBinaryWrappers/H3_jll.jl), and the whole of
+this package's dependence on it.
+
+It speaks **H3's own vocabulary** — raw `UInt64` indices, degrees, zero-based
+child positions — and knows nothing about the grid interface. The interface
+wiring lives one directory up, in `system.jl` / `geometry.jl` / `neighbors.jl` /
+`border.jl`.
+
+These wrappers are **the oracle, not a reimplementation of one**. They were
+ported wholesale from the pre-redesign `src/H3/H3Native.jl` and are deliberately
+left unchanged, so that every geometric, hierarchical and adjacency answer this
+system gives is libh3's own answer rather than a rewrite that could drift from
+it. The only additions are the seven allocation-free wrappers listed in the file
+header, none of which alters an existing one.
+
+Callers normally want the interface generics instead — [`cell_boundary`](@ref),
+[`cellat`](@ref), [`neighbors`](@ref), [`children`](@ref) and friends on
+[`H3Grid`](@ref) / [`H3System`](@ref) — which is where the canonical ordering,
+the dense position numbering and the subtree border walk live. Reach for
+`H3Native` only when you specifically want to speak to libh3 directly.
+"""
 module H3Native
 
 using ...Helpers: to_uint64_id

@@ -17,7 +17,7 @@ an icosahedron, twelve pentagons, resolutions `0:15`.
   - [`H3System`](@ref) — the system singleton.
   - [`H3Cell`](@ref) — the canonical id, a `UInt64` with the resolution in
     bits 52-55.
-  - `H3Grid` — one complete resolution, from `levelgrid(H3System(), l)`.
+  - [`H3Grid`](@ref) — one complete resolution, from `levelgrid(H3System(), l)`.
   - [`H3Native`](@ref) — the raw libh3 ccall layer, if you want it directly.
 
 # The canonical order

@@ -76,7 +76,8 @@ The canonical cell index is [`LevelIndex`](@ref), whose `index` field holds the
 a subtree occupies a contiguous run of positions and
 [`descendant_range`](@ref) is exact and hole-free.
 [`max_neighbors`](@ref) is 8 under `Vertex()` and 4 under `Edge()`.
-[`node_extent`](@ref) is overridden with the exact subtree cap, so
+[`node_extent`](@ref) is overridden with the pixel's own bounding cap — nested
+parents *are* the union of their children, so nothing needs inflating and
 [`cap_inflation`](@ref) is never consulted.
 """
 struct HEALPixSystem <: DGG.AbstractHierarchicalGridSystem end
@@ -433,7 +434,7 @@ end
 end
 
 # ===========================================================================
-# node_extent — the exact subtree cap
+# node_extent — the subtree cap
 # ===========================================================================
 
 # How many chart samples per edge the subtree cap is built from. See
@@ -443,7 +444,7 @@ const CAP_EDGE_SEGMENTS = 8
 """
     _subtree_cap(ix, iy, face, nside) -> SphericalCap
 
-The exact bounding cap of a HEALPix pixel *and therefore of its whole subtree*.
+The bounding cap of a HEALPix pixel — *and therefore of its whole subtree*.
 
 # Why the pixel's own cap bounds the subtree
 
@@ -462,12 +463,25 @@ closed square on the square's PERIMETER — the centre is interior and the
 region is well inside a hemisphere, so there is no interior maximum — and the
 perimeter is sampled at `CAP_EDGE_SEGMENTS` points per edge.
 
-The `gap/2` term is what makes this a bound rather than a guess. `d(centre, ·)`
-is 1-Lipschitz, so between two consecutive perimeter samples the true distance
-cannot exceed the larger sample's by more than half their separation. In
-practice the maximum sits at a CORNER, and every corner is a sample, so the
-term is insurance rather than a correction — the tests measure the true
-perimeter at 32x this resolution and confirm the slack is never consumed.
+**What actually bounds it is the corners.** On a chart square the perimeter
+maximum of `d(centre, ·)` is attained at a CORNER, and all four corners are
+samples (the sampling starts each edge at its start vertex). So `rmax` is not
+an approximation of the maximum over the perimeter — it *is* that maximum,
+measured exactly. That, plus the nesting argument above, is the bound.
+
+**`gap/2` is measured insurance on top of it, not the proof.** The tempting
+justification — `d(centre, ·)` is 1-Lipschitz, so between two consecutive
+samples the true distance cannot exceed the larger sample's by more than half
+their separation — is not airtight as written. Lipschitz-ness bounds the excess
+by half the ARC LENGTH along the perimeter between the samples, whereas `gap`
+is the great-circle distance between them, a CHORD of that path. The arc
+exceeds the chord by O(gap³), so for a hypothetical non-corner maximum `gap/2`
+would under-cover by that third-order term. Do not read it as an exact
+Lipschitz bound. It does not matter here, because the corner argument already
+gives the true maximum, and the first-order slack `gap/2` adds on top absorbs
+the third-order shortfall many times over: the tests re-measure the true
+perimeter at 32x this sampling and confirm the cap strictly contains it, with
+the slack never even approached.
 
 The result is looser than a corner-only cap by a few per cent and tighter than
 the generic inflated default; over-covering costs only pruning time, while
@@ -491,13 +505,17 @@ end
 """
     node_extent(HEALPixSystem(), c) -> SphericalCap
 
-The **exact** subtree cap of `c` — an override of the generic inflated default,
-and the reason `cap_inflation` is never consulted for this system.
+The subtree cap of `c` — an override of the generic inflated default, and the
+reason `cap_inflation` is never consulted for this system.
 
-Nested HEALPix parents contain their children exactly, so a cap around the
-pixel itself already covers every descendant at every depth; there is nothing
-to inflate for. See `_subtree_cap` for the construction and the bound it rests
-on.
+What is **exact** is the nesting: a nested HEALPix parent *is* the geographic
+union of its children, at every depth, so the pixel's own bounding cap already
+bounds the whole subtree and there is nothing to inflate for.
+
+What is **measured** is the cap's RADIUS — a sampled perimeter (which does
+capture all four corners exactly, and the corners are where the maximum sits)
+plus a slack term. See `_subtree_cap` for the construction and for how far that
+argument does and does not go.
 """
 function DGG.node_extent(::HEALPixSystem, c::DGG.LevelIndex)
     l = DGG.level(c)

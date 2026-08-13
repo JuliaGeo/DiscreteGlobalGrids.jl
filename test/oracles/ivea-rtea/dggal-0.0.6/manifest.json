@@ -1,0 +1,52 @@
+{
+  "complete_cell_levels": [
+    0
+  ],
+  "files": {
+    "cells.jsonl": "e2f6618b650559598278493b06a35903842377a9408a7ed0f619c4f395e12832",
+    "lookup.csv": "48f476aba14e5bb94b2058ef9f111ebb25ff5299293c6d52fbf6c601007fd6ac",
+    "profiles.json": "b36c0946524be2b7ce71badcfc05e2853d977347645bb65f2f45b0499908de04"
+  },
+  "generator_environment": {
+    "command_prefix": "arch -x86_64",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "python": "3.14.6"
+  },
+  "lookup_levels": [
+    0
+  ],
+  "neighbor_order_semantics": "DGGAL direction labels; not asserted to be CCW",
+  "orientation": {
+    "adjacent_designated_vertex": "due north",
+    "cli_geographic_crs": "EPSG:4326 (latitude,longitude argument order)",
+    "first_vertex_authalic_lat_degrees": 58.282525588538995,
+    "first_vertex_geodetic_wgs84_lat_degrees": 58.397145907431,
+    "first_vertex_lon_degrees_east": 11.2,
+    "model": "DGGAL/OGC IVEA 5x6 atlas",
+    "planar_crs": "DGGAL 5x6"
+  },
+  "profiles": [
+    "IVEA4R",
+    "IVEA9R",
+    "IVEA3H",
+    "IVEA7H",
+    "IVEA7H_Z7",
+    "RTEA4R",
+    "RTEA9R",
+    "RTEA3H",
+    "RTEA7H",
+    "RTEA7H_Z7"
+  ],
+  "purpose": "level-scoped black-box IVEA/RTEA reconnaissance facts; only levels listed in complete_cell_levels and lookup_levels are implementation-gating",
+  "schema_version": 1,
+  "source": {
+    "known_limitations": [
+      "Predates e16cea7 odd-level RI7H point-to-zone fix; level-zero fixture only"
+    ],
+    "license": "BSD-3-Clause",
+    "name": "DGGAL",
+    "package_version": "0.0.6",
+    "revision": "c323c4c444522f16fd6eba0c56ec65714a147c8c",
+    "url": "https://github.com/ecere/dggal"
+  }
+}

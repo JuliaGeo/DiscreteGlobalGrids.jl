@@ -1,0 +1,35 @@
+# DGGRID is used only as a black-box oracle generator.  This template is
+# rendered by generate_isea_oracles.py; it is not an implementation reference.
+dggrid_operation GENERATE_GRID
+dggs_type @DGGS_TYPE@
+dggs_res_spec @RESOLUTION@
+dggs_orient_specify_type SPECIFIED
+dggs_vert0_lon @VERTEX_LONGITUDE@
+dggs_vert0_lat @VERTEX_LATITUDE@
+dggs_vert0_azimuth @VERTEX_AZIMUTH@
+clip_subset_type WHOLE_EARTH
+proj_datum CUSTOM_SPHERE
+proj_datum_radius 1.0
+precision 15
+output_cell_label_type OUTPUT_ADDRESS_TYPE
+output_address_type @ADDRESS_TYPE@
+output_hier_ndx_system @HIER_SYSTEM@
+output_hier_ndx_form @HIER_FORM@
+z3_invalid_digit 3
+cell_output_type @CELL_OUTPUT_TYPE@
+cell_output_file_name @CELL_FILE@
+point_output_type TEXT
+point_output_file_name @POINT_FILE@
+neighbor_output_type @NEIGHBOR_OUTPUT_TYPE@
+neighbor_output_file_name @NEIGHBOR_FILE@
+indexing_parent_output_type @INDEX_OUTPUT_TYPE@
+indexing_parent_output_file_name @PARENT_FILE@
+indexing_children_output_type NONE
+indexing_children_output_file_name @CHILDREN_FILE@
+hier_indexing_system_type @HIER_SYSTEM@
+densification 0
+longitude_wrap_mode WRAP
+unwrap_points FALSE
+output_first_seqnum 1
+output_last_seqnum 2147483647
+verbosity 0

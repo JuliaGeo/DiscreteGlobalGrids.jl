@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "source": "DGGRID CLI black-box output",
+  "dggrid_version": "9.0b",
+  "dggrid_commit_used_to_build_local_executable": "04bf5ed1372b174b9349faca8c265d112f6d8587",
+  "dggrid_executable_sha256": "5576fc87ee9cfb352bc883edae5685b889cf6425db5d6dc40a08063324d58045",
+  "implementation_reference": false,
+  "grid": "ISEA3H",
+  "purpose": "OGC Annex B orientation cross-check; not an OGC ZIRS oracle",
+  "orientation": {
+    "vertex_0_longitude_degrees": 11.2,
+    "vertex_0_spherical_authalic_latitude_degrees": 58.282525588538995,
+    "corresponding_wgs84_geodetic_latitude_degrees": 58.397145907431,
+    "vertex_0_azimuth_degrees": 0.0
+  },
+  "sphere_radius": 1.0,
+  "precision_digits_after_decimal": 15,
+  "address_type": "HIERNDX",
+  "hierarchy": "Z3",
+  "levels": [
+    {
+      "level": 0,
+      "cell_count": 12,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 12 cells"
+    },
+    {
+      "level": 1,
+      "cell_count": 32,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 32 cells"
+    },
+    {
+      "level": 2,
+      "cell_count": 92,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 92 cells"
+    },
+    {
+      "level": 3,
+      "cell_count": 272,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 272 cells"
+    }
+  ],
+  "files": [
+    {
+      "path": "level-00-boundaries.geojson",
+      "bytes": 4159,
+      "sha256": "8659393148cb900eb9cf6e9d157417f990287bc95cfefd4a6160db251f0bbf98"
+    },
+    {
+      "path": "level-00-centers.txt",
+      "bytes": 507,
+      "sha256": "6023b59d0fcfe3e3990f55ce79cf62c693b7f3214c88d545d71c35e1853c9542"
+    },
+    {
+      "path": "level-01-boundaries.geojson",
+      "bytes": 11903,
+      "sha256": "ca0f2897135d863f4b671f24ba1bf50ce8d6a03f1e2b87660c290ea4313ed441"
+    },
+    {
+      "path": "level-01-centers.txt",
+      "bytes": 1384,
+      "sha256": "bce693b9283304fa2bfa835565770ac57db16a2ca7cdaa2e3137c8704690796a"
+    },
+    {
+      "path": "level-02-boundaries.geojson",
+      "bytes": 35137,
+      "sha256": "0ece2f589200eb0c7434e285152d109d8f6f74a29efe743cd042479d4325bd86"
+    },
+    {
+      "path": "level-02-centers.txt",
+      "bytes": 4077,
+      "sha256": "a7296547b0dae700f1db95dff2eb07d53e36377d1ec09a8d5cd4a7e4326f5ce3"
+    },
+    {
+      "path": "level-03-boundaries.geojson",
+      "bytes": 104890,
+      "sha256": "51cd3db4d015c8289f1a16d8b26c54ef0161cc8e8670c9cfb3e9148eb90e4688"
+    },
+    {
+      "path": "level-03-centers.txt",
+      "bytes": 12320,
+      "sha256": "5382cb514a61e1c5635ba5975b1c43f7951569835e38384f140aa8423d75a8b5"
+    }
+  ]
+}

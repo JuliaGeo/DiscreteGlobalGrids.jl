@@ -1,0 +1,172 @@
+{
+  "schema": 1,
+  "source": "DGGRID CLI black-box output",
+  "dggrid_version": "9.0b",
+  "dggrid_commit_used_to_build_local_executable": "04bf5ed1372b174b9349faca8c265d112f6d8587",
+  "dggrid_executable_sha256": "5576fc87ee9cfb352bc883edae5685b889cf6425db5d6dc40a08063324d58045",
+  "implementation_reference": false,
+  "grid": "ISEA4H",
+  "orientation": {
+    "vertex_0_longitude_degrees": 11.25,
+    "vertex_0_latitude_degrees": 58.282525588538995,
+    "vertex_0_azimuth_degrees": 0.0
+  },
+  "sphere_radius": 1.0,
+  "precision_digits_after_decimal": 15,
+  "address_type": "HIERNDX",
+  "hierarchy": "ZORDER",
+  "levels": [
+    {
+      "level": 0,
+      "cell_count": 12,
+      "stderr": "",
+      "stdout_completion": "* generated 12 cells"
+    },
+    {
+      "level": 1,
+      "cell_count": 42,
+      "stderr": "",
+      "stdout_completion": "* generated 42 cells"
+    },
+    {
+      "level": 2,
+      "cell_count": 162,
+      "stderr": "",
+      "stdout_completion": "* generated 162 cells"
+    },
+    {
+      "level": 3,
+      "cell_count": 642,
+      "stderr": "",
+      "stdout_completion": "* generated 642 cells"
+    },
+    {
+      "level": 4,
+      "cell_count": 2562,
+      "stderr": "",
+      "stdout_completion": "* generated 2,562 cells"
+    }
+  ],
+  "files": [
+    {
+      "path": "level-00-boundaries.geojson",
+      "bytes": 4159,
+      "sha256": "c38a925d354314339b9eed30dc0e35c343fd32c7ececfb0b89f98c2711170035"
+    },
+    {
+      "path": "level-00-centers.txt",
+      "bytes": 507,
+      "sha256": "760f3da6445fab1908fbc6eb0b09f487f31af617206c96d303b8a72062235260"
+    },
+    {
+      "path": "level-00-neighbors.txt",
+      "bytes": 216,
+      "sha256": "860173b72ab5519a1a1513a538f057e787581f876d8763923055a5c5438fa74f"
+    },
+    {
+      "path": "level-00-zorder-int64-centers.txt",
+      "bytes": 675,
+      "sha256": "4f55e1e3b0d6c3147a4c34af69d161ebfbe6fb52a9cbd03072386b2a85ead13e"
+    },
+    {
+      "path": "level-01-boundaries.geojson",
+      "bytes": 15766,
+      "sha256": "71c7a692290d153b1e84439c010d4f029c6197385be3fd314ee731ef7f638171"
+    },
+    {
+      "path": "level-01-centers.txt",
+      "bytes": 1816,
+      "sha256": "5624647b1fbdbed58653a1df1b54ccfbde7894bb59bdd6008c304fecb402511b"
+    },
+    {
+      "path": "level-01-neighbors.txt",
+      "bytes": 1128,
+      "sha256": "c741f28b2efdfbd4eda64aa24816aeab1cbf9981d3b24648e5675c0c331a0ed5"
+    },
+    {
+      "path": "level-01-parents.txt",
+      "bytes": 294,
+      "sha256": "a20d1ac992d29be8929c12d6bf5d468bb2139f429e92adf103f3abc1b1bd1edf"
+    },
+    {
+      "path": "level-01-zorder-int64-centers.txt",
+      "bytes": 2362,
+      "sha256": "09ac29296ef018dfb7d982e9cb3d4dfbd95f75b7cc9928d76fc29fae93ecb68a"
+    },
+    {
+      "path": "level-02-boundaries.geojson",
+      "bytes": 62144,
+      "sha256": "070c627455688b7293174464fe2373d658492bb7636b09bb6ef303ed8f055909"
+    },
+    {
+      "path": "level-02-centers.txt",
+      "bytes": 7163,
+      "sha256": "d1fb6d52512a382ac03374cf7746cc8604be3301c16b398d90311e833a10f2be"
+    },
+    {
+      "path": "level-02-neighbors.txt",
+      "bytes": 5610,
+      "sha256": "ac7d2c46d0f43e60c6296953c6f39d18a40ebe2d76c233b6f8ec44f4e5a22239"
+    },
+    {
+      "path": "level-02-parents.txt",
+      "bytes": 1458,
+      "sha256": "3a066141ba0fa0085d379e2e1c75f452a7e3ac1375088af12d94643f6ca759e6"
+    },
+    {
+      "path": "level-02-zorder-int64-centers.txt",
+      "bytes": 9107,
+      "sha256": "341d0a52a7c5a7fe97aa3735bfda127be3e80ca6a3e4a21919f691a3e700ecbe"
+    },
+    {
+      "path": "level-03-boundaries.geojson",
+      "bytes": 248330,
+      "sha256": "767ed30124bf78404f62443fb61141dc44b972f2ebbae5a84a74738d6f55ab0d"
+    },
+    {
+      "path": "level-03-centers.txt",
+      "bytes": 29027,
+      "sha256": "59b942ace0895cf2d8bc84acc238628bb57738e1eb483ba6f0a9ae05838195ae"
+    },
+    {
+      "path": "level-03-neighbors.txt",
+      "bytes": 26892,
+      "sha256": "921e05055c61e425f9b998b05b91b4cd2e1a8484bb97cabb7910944cb2456e90"
+    },
+    {
+      "path": "level-03-parents.txt",
+      "bytes": 7062,
+      "sha256": "21f9e15d8091bf09a826a358a1f8891a2971fe0af9cca9aeb2c3eea88afbfbde"
+    },
+    {
+      "path": "level-03-zorder-int64-centers.txt",
+      "bytes": 36089,
+      "sha256": "3321d18c824312f39fd4fc6fe74b428ff7699d7ee1bb49d34f53d70c4cb74225"
+    },
+    {
+      "path": "level-04-boundaries.geojson",
+      "bytes": 994858,
+      "sha256": "3ea9ccfaa6fc068ff8a6a097050e8710ebc588ddcca46c2054bdb8111c905e24"
+    },
+    {
+      "path": "level-04-centers.txt",
+      "bytes": 118423,
+      "sha256": "7527052d72d277d26acaea2a2500dc9df798cbe661068ee33a84ea4f0a68c5c0"
+    },
+    {
+      "path": "level-04-neighbors.txt",
+      "bytes": 125454,
+      "sha256": "f382b281bea684c866f58dab9b378bec5d7b2c94443a1366fb9c1f7256d37272"
+    },
+    {
+      "path": "level-04-parents.txt",
+      "bytes": 33306,
+      "sha256": "3405e2e64a1d3b0408cb05c2b19825517904a1e1793a7805398dfa4b2ff29805"
+    },
+    {
+      "path": "level-04-zorder-int64-centers.txt",
+      "bytes": 144043,
+      "sha256": "a132e8edfceeab61f83ef4d084939b10f62ffd1e611eed1af85d0eb61aa38f05"
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "source": "DGGRID CLI black-box output",
+  "dggrid_version": "9.0b",
+  "dggrid_commit_used_to_build_local_executable": "04bf5ed1372b174b9349faca8c265d112f6d8587",
+  "dggrid_executable_sha256": "5576fc87ee9cfb352bc883edae5685b889cf6425db5d6dc40a08063324d58045",
+  "implementation_reference": false,
+  "grid": "ISEA4T",
+  "orientation": {
+    "vertex_0_longitude_degrees": 11.25,
+    "vertex_0_latitude_degrees": 58.282525588538995,
+    "vertex_0_azimuth_degrees": 0.0
+  },
+  "sphere_radius": 1.0,
+  "precision_digits_after_decimal": 15,
+  "address_type": "SEQNUM",
+  "hierarchy": null,
+  "levels": [
+    {
+      "level": 0,
+      "cell_count": 20,
+      "stderr": "",
+      "stdout_completion": "* generated 20 cells"
+    },
+    {
+      "level": 1,
+      "cell_count": 80,
+      "stderr": "",
+      "stdout_completion": "* generated 80 cells"
+    },
+    {
+      "level": 2,
+      "cell_count": 320,
+      "stderr": "",
+      "stdout_completion": "* generated 320 cells"
+    },
+    {
+      "level": 3,
+      "cell_count": 1280,
+      "stderr": "",
+      "stdout_completion": "* generated 1,280 cells"
+    },
+    {
+      "level": 4,
+      "cell_count": 5120,
+      "stderr": "",
+      "stdout_completion": "* generated 5,120 cells"
+    }
+  ],
+  "files": [
+    {
+      "path": "level-00-boundaries.geojson",
+      "bytes": 5240,
+      "sha256": "ef52f8e534c58ec33d3134247790f6025632c1a6680dfbcd4c8051a72d532214"
+    },
+    {
+      "path": "level-00-centers.txt",
+      "bytes": 836,
+      "sha256": "9c86085d9cfaea6148aac7151ddf8cef5daf4caa83c3b89938a696aac0e8b107"
+    },
+    {
+      "path": "level-01-boundaries.geojson",
+      "bytes": 20881,
+      "sha256": "a869ec1789780e9638481d37d7ff9874de2f891c2ed7374e535032d0fe72d713"
+    },
+    {
+      "path": "level-01-centers.txt",
+      "bytes": 3378,
+      "sha256": "a61e097df0a63ac93bcee7b1ce5780b22948f858631a81f56258295124699a5a"
+    },
+    {
+      "path": "level-02-boundaries.geojson",
+      "bytes": 83693,
+      "sha256": "4e9e6cef45a491a5022d3da8d6930c0335877c7e3a2f99a8a929e96b74cc8f49"
+    },
+    {
+      "path": "level-02-centers.txt",
+      "bytes": 13720,
+      "sha256": "977caa2245fd727500022fd8b486b8108b13e24e7e50b1dc818329a95fdc7c12"
+    },
+    {
+      "path": "level-03-boundaries.geojson",
+      "bytes": 335302,
+      "sha256": "b4b4aa75dcef7c2653105df4d812ee83312feca920deb9815c7cafcabe789e80"
+    },
+    {
+      "path": "level-03-centers.txt",
+      "bytes": 55498,
+      "sha256": "7908937983900997636865b1fd23545c4d04b6219bfbe609d37364d1a6ec5d19"
+    },
+    {
+      "path": "level-04-boundaries.geojson",
+      "bytes": 1344783,
+      "sha256": "d2a9ea6011c4525aea72b0f8ba20a45e435cbf541a52e4ffc6bdcf1cfa6c4b09"
+    },
+    {
+      "path": "level-04-centers.txt",
+      "bytes": 225279,
+      "sha256": "c6e4ece5f3f292ba34e209b420cd7e955b43f8fd8ff29319d37456fbc1156468"
+    }
+  ]
+}

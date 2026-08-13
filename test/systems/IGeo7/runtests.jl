@@ -74,6 +74,35 @@ ascending(v) = issorted(v; lt=(<=))
 pentagon(b::Integer, r::Integer) =
     Z7Cell(I.z7_from_string(lpad(string(b), 2, '0') * repeat("0", r)))
 
+# ---------------------------------------------------------------------------
+# Sweeping thousands of oracle rows one `@test` at a time buries a real failure
+# in a wall of passes, so these loops accumulate instead. A bare counter, on
+# the other hand, fails as `nbad == 0` and leaves you to go find the offending
+# row yourself — which for a 168,072-cell sweep is the actual work.
+#
+# `Tally` counts AND remembers the first offender. `@test verdict(t) == CLEAN`
+# then prints `Evaluated: (3, "row 91: children of 0512") == (0, "")`, naming
+# the row to look at.
+# ---------------------------------------------------------------------------
+mutable struct Tally
+    n::Int
+    first::String
+end
+Tally() = Tally(0, "")
+
+"Record a failure described by `what` (evaluated only when it fires)."
+function bad!(t::Tally, what)
+    t.n += 1
+    isempty(t.first) && (t.first = string(what))
+    return nothing
+end
+
+"`cond || bad!(t, what)`, with `what` lazy."
+check!(t::Tally, cond::Bool, what) = cond || bad!(t, what)
+
+verdict(t::Tally) = (t.n, t.first)
+const CLEAN = (0, "")
+
 @testset "IGeo7" begin
 
     @test isdir(VECTORS)
@@ -121,13 +150,14 @@ pentagon(b::Integer, r::Integer) =
         header, rows = read_csv(joinpath(VECTORS, "num_cells.csv"))
         @test header == ["res", "count"]
         @test length(rows) == 20
-        nbad = 0
+        t = Tally()
         for row in rows
             r = parse(Int, row[1])
             expected = parse(Int64, row[2])
-            DGG.ncells(DGG.levelgrid(S, r)) == expected || (nbad += 1)
+            check!(t, DGG.ncells(DGG.levelgrid(S, r)) == expected,
+                "level $r: ncells $(DGG.ncells(DGG.levelgrid(S, r))) != $expected")
         end
-        @test nbad == 0
+        @test verdict(t) == CLEAN
         @test DGG.ncells(DGG.levelgrid(S, 0)) == 12
         @test DGG.ncells(DGG.levelgrid(S, 19)) == 113988951853731432
         @test all(DGG.ncells(DGG.levelgrid(S, r)) == 10 * Int64(7)^r + 2 for r in 0:19)
@@ -163,15 +193,17 @@ pentagon(b::Integer, r::Integer) =
         # retired suite used this file for the id set alone and took the res-0
         # centres from `dggrid_res0_centers.csv` below. Comparing against
         # columns 4/5 here would fail by ~95 degrees.
-        nbad = 0
+        t = Tally()
         for row in rows
             c = Z7Cell(parse(UInt64, row[2]; base=16))
-            I.is_pentagon(c) || (nbad += 1)
-            parse(Int, row[7]) == 5 || (nbad += 1)
-            length(DGG.cell_boundary(g0, c)) == 5 || (nbad += 1)
-            I.z7_string(c) == String(row[3]) || (nbad += 1)
+            check!(t, I.is_pentagon(c), "$(I.z7_string(c)): not a pentagon")
+            check!(t, parse(Int, row[7]) == 5, "$(I.z7_string(c)): oracle vertex count != 5")
+            check!(t, length(DGG.cell_boundary(g0, c)) == 5,
+                "$(I.z7_string(c)): boundary has $(length(DGG.cell_boundary(g0, c))) points, not 5")
+            check!(t, I.z7_string(c) == String(row[3]),
+                "$(I.z7_string(c)): string form != oracle $(String(row[3]))")
         end
-        @test nbad == 0
+        @test verdict(t) == CLEAN
     end
 
     @testset "3b. oracle dggrid_res0_centers.csv vs cell_centroid" begin
@@ -239,7 +271,7 @@ pentagon(b::Integer, r::Integer) =
         @test header == ["z7_hex", "z7_string", "parent_chain_strings", "children_strings"]
         @test length(rows) == 150
 
-        nbad = 0
+        t = Tally()
         for row in rows
             c = Z7Cell(parse(UInt64, row[1]; base=16))
             text = String(row[2])
@@ -247,23 +279,25 @@ pentagon(b::Integer, r::Integer) =
             expected_children = String.(split(row[4], ';'))
             r = DGG.level(c)
 
-            I.z7_string(c) == text || (nbad += 1)
-            r == length(text) - 2 || (nbad += 1)
+            check!(t, I.z7_string(c) == text, "$text: string form is $(I.z7_string(c))")
+            check!(t, r == length(text) - 2, "$text: level $r != $(length(text) - 2)")
 
             # children: ascending, and exactly the oracle's list
             kids = collect(DGG.children(S, c))
-            I.z7_string.(kids) == expected_children || (nbad += 1)
-            ascending(kids) || (nbad += 1)
-            all(k -> parent(S, k) == c, kids) || (nbad += 1)
-            all(k -> DGG.level(k) == r + 1, kids) || (nbad += 1)
+            check!(t, I.z7_string.(kids) == expected_children,
+                "$text: children $(I.z7_string.(kids)) != oracle $expected_children")
+            check!(t, ascending(kids), "$text: children not strictly ascending")
+            check!(t, all(k -> parent(S, k) == c, kids), "$text: a child's parent is not it")
+            check!(t, all(k -> DGG.level(k) == r + 1, kids), "$text: a child is at the wrong level")
 
             # the parent chain, one level coarser per entry, finest first
-            [I.z7_string(DGG.ancestor(S, c, l)) for l in (r-1):-1:0] == parents ||
-                (nbad += 1)
+            check!(t, [I.z7_string(DGG.ancestor(S, c, l)) for l in (r-1):-1:0] == parents,
+                "$text: ancestor chain != oracle $parents")
             walker = c
             for expected in parents
                 walker = parent(S, walker)
-                I.z7_string(walker) == expected || (nbad += 1)
+                check!(t, I.z7_string(walker) == expected,
+                    "$text: parent walk reached $(I.z7_string(walker)), expected $expected")
             end
 
             # every ancestor's descendant_range brackets the cell's position
@@ -272,12 +306,14 @@ pentagon(b::Integer, r::Integer) =
             for (k, ptext) in enumerate(parents)
                 anc = Z7Cell(I.z7_from_string(ptext))
                 rng = DGG.descendant_range(S, anc, r)
-                pos in rng || (nbad += 1)
-                length(rng) == (I.is_pentagon(anc) ?
-                                (5 * 7^(r - (r - k)) + 1) ÷ 6 : 7^(r - (r - k))) || (nbad += 1)
+                check!(t, pos in rng, "$text: position $pos outside $ptext's range $rng")
+                expected_len = I.is_pentagon(anc) ?
+                               (5 * 7^(r - (r - k)) + 1) ÷ 6 : 7^(r - (r - k))
+                check!(t, length(rng) == expected_len,
+                    "$text: $ptext's range has $(length(rng)) cells, expected $expected_len")
             end
         end
-        @test nbad == 0
+        @test verdict(t) == CLEAN
     end
 
     # =======================================================================
@@ -290,43 +326,48 @@ pentagon(b::Integer, r::Integer) =
             "missing_digits"]
         @test length(rows) == 72          # 12 bases x 6 chain depths
 
-        nbad = 0
+        t = Tally()
         for row in rows
             base = parse(Int, row[1])
             depth = parse(Int, row[2])
             c = Z7Cell(I.z7_from_string(String(row[3])))
             expected = String.(split(row[4], ';'))
             missing_digit = parse(Int, row[5])
+            tag = "base $base depth $depth ($(I.z7_string(c)))"
 
-            I.is_pentagon(c) || (nbad += 1)
-            DGG.level(c) == depth - 1 || (nbad += 1)
-            I.z7_base_cell(DGG.rawid(c)) == base || (nbad += 1)
-            I.z7_deleted_digit(base) == missing_digit || (nbad += 1)
+            check!(t, I.is_pentagon(c), "$tag: not a pentagon")
+            check!(t, DGG.level(c) == depth - 1, "$tag: level $(DGG.level(c)) != $(depth - 1)")
+            check!(t, I.z7_base_cell(DGG.rawid(c)) == base, "$tag: base cell mismatch")
+            check!(t, I.z7_deleted_digit(base) == missing_digit,
+                "$tag: deleted digit $(I.z7_deleted_digit(base)) != $missing_digit")
 
             # a pentagon has SIX children, not seven, and the missing one is the
             # base's deleted digit
             kids = collect(DGG.children(S, c))
-            length(kids) == 6 || (nbad += 1)
-            I.z7_string.(kids) == expected || (nbad += 1)
-            ascending(kids) || (nbad += 1)
-            all(k -> parent(S, k) == c, kids) || (nbad += 1)
+            check!(t, length(kids) == 6, "$tag: $(length(kids)) children, not 6")
+            check!(t, I.z7_string.(kids) == expected, "$tag: children != oracle list")
+            check!(t, ascending(kids), "$tag: children not strictly ascending")
+            check!(t, all(k -> parent(S, k) == c, kids), "$tag: a child's parent is not it")
             # the deleted digit is rejected outright
             digits_taken = [I.z7_string(k)[end] - '0' for k in kids]
-            missing_digit in digits_taken && (nbad += 1)
-            sort(digits_taken) == sort([d for d in 0:6 if d != missing_digit]) ||
-                (nbad += 1)
+            check!(t, !(missing_digit in digits_taken),
+                "$tag: deleted digit $missing_digit appears among the children")
+            check!(t, sort(digits_taken) == sort([d for d in 0:6 if d != missing_digit]),
+                "$tag: child digits $(sort(digits_taken)) are not 0:6 minus $missing_digit")
 
             # subtree sizes follow the pentagon recurrence, and the deleted digit
             # leaves NO hole in the position range
-            length(DGG.descendants(S, c, DGG.level(c) + 1)) == 6 || (nbad += 1)
-            length(DGG.descendants(S, c, DGG.level(c) + 2)) == 41 || (nbad += 1)
+            check!(t, length(DGG.descendants(S, c, DGG.level(c) + 1)) == 6,
+                "$tag: depth-1 subtree is not 6 cells")
+            check!(t, length(DGG.descendants(S, c, DGG.level(c) + 2)) == 41,
+                "$tag: depth-2 subtree is not 41 cells")
             rng = DGG.descendant_range(S, c, DGG.level(c) + 1)
             g = DGG.levelgrid(S, DGG.level(c) + 1)
-            extrema(DGG.cellposition(g, k) for k in kids) == (first(rng), last(rng)) ||
-                (nbad += 1)
-            length(rng) == 6 || (nbad += 1)
+            check!(t, extrema(DGG.cellposition(g, k) for k in kids) == (first(rng), last(rng)),
+                "$tag: children do not span descendant_range $rng")
+            check!(t, length(rng) == 6, "$tag: descendant_range has $(length(rng)) cells, not 6")
         end
-        @test nbad == 0
+        @test verdict(t) == CLEAN
 
         # the deleted-digit table itself: 2 for bases 0-5, 5 for bases 6-11
         @test I.Z7_DELETED_DIGIT == (2, 2, 2, 2, 2, 2, 5, 5, 5, 5, 5, 5)

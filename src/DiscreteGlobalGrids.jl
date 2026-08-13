@@ -98,10 +98,46 @@ include("interface/system.jl")
 # Generic implementations of everything the interface declares.
 include("fallbacks/fallbacks.jl")
 
-# Grid systems.
+# Grid systems. The three ported ones first; then the second wave's stubs,
+# which are bare modules until T10-T12 fill them. They are included from the
+# start so that those tasks never have to touch this shared file.
 include("systems/IGeo7/IGeo7.jl")
 include("systems/H3/H3.jl")
 include("systems/HEALPix/HEALPix.jl")
+include("systems/A5/A5.jl")
+include("systems/S2/S2.jl")
+include("systems/ISEA4R/ISEA4R.jl")
+
+using .IGeo7: IGeo7System, IGeo7Grid, Z7Cell
+using .H3: H3System, H3Grid, H3Cell
+using .HEALPix: HEALPixSystem, HEALPixGrid, HEALPixRingIndex
+
+"""
+    systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
+
+Every grid system this package ships, as a tuple of singletons.
+
+    julia> using DiscreteGlobalGrids
+
+    julia> systems()
+    (IGeo7System(), H3System(), HEALPixSystem())
+
+Written for the two things a caller actually does with such a list: run one
+piece of code across all of them (a conformance sweep, a benchmark, a
+comparison table), and discover what is available without reading the source.
+Order is stable but carries no meaning.
+
+This is a **registry**, not an interface generic: nothing in the package
+dispatches on it, and a system defined outside this package is a first-class
+system that simply is not in this tuple. It replaces the old `all_systems()`,
+which returned metadata-only singletons for systems that had no working
+implementation; every entry here is fully ported and passes both
+`DiscreteGlobalGridsConformanceTesting` suites.
+
+See [`levels`](@ref) and [`levelgrid`](@ref) for turning one of these into a
+grid you can query.
+"""
+systems() = (IGeo7System(), H3System(), HEALPixSystem())
 
 # --- Type vocabulary -------------------------------------------------------
 export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
@@ -133,6 +169,18 @@ using .Fallbacks: PartialGrid, HierarchicalGridCursor,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
 export PartialGrid, HierarchicalGridCursor
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges
+
+# --- Grid systems ----------------------------------------------------------
+# One singleton, one canonical id type and one grid type per system, plus the
+# registry that lists them. The submodules themselves (`DiscreteGlobalGrids.H3`
+# and friends) are deliberately NOT exported: `H3`, `HEALPix` and `A5` are also
+# the names of registered packages, and a bare `using DiscreteGlobalGrids`
+# must not shadow them. Anything past this list — `IGeo7.equal_area_steradians`,
+# `IGeo7.z7_string`, `H3.H3Native` — is reached through the qualified module.
+export systems
+export IGeo7System, IGeo7Grid, Z7Cell
+export H3System, H3Grid, H3Cell
+export HEALPixSystem, HEALPixGrid, HEALPixRingIndex
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere

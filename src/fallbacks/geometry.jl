@@ -65,21 +65,176 @@ Whether the unit-sphere point `p` lies in the cell bounded by `boundary`
 (boundary points count as inside), or `nothing` when the question is
 genuinely undecidable.
 
-Two independent algorithms, because each has a degenerate case the other does
-not: `spherical_ring_encloses` bootstraps from a definitionally exterior
-anchor — the antipode of the ring's vertex mass — and gives up when `p` sits
-near that mass, i.e. near the middle of the cell, which is exactly where a
-caller most wants an answer. `spherical_ring_contains` bootstraps instead from
-a wedge at one ring edge, valid here because the boundary contract fixes the
-winding (counter-clockwise seen from outside). Only if both decline does this
-return `nothing`.
+Three algorithms, tried in order, because each has a degenerate case the
+others do not.
+
+ 1. `spherical_ring_encloses` — even-odd parity along the arc from `p` to a
+    definitionally exterior anchor, the antipode of the ring's vertex mass.
+    Robust for a `p` well away from the cell, and the only one of the three
+    that survives a ring which self-intersects *on the sphere*. Consulted
+    only when [`anchor_arc_is_conditioned`](@ref) says its test arc is, which
+    is the whole of the fix described there.
+ 2. `spherical_ring_contains` — parity from a wedge at one ring edge, valid
+    here because the boundary contract fixes the winding (counter-clockwise
+    seen from outside). Well conditioned exactly where (1) is not: its
+    bootstrap is a *local* edge midpoint rather than a near-antipode.
+ 3. the winding number, [`ring_winding_verdict`](@ref) — no bootstrap point at
+    all, so no bootstrap can be degenerate. This is what decides the exactly
+    symmetric rings on which both (1) and (2) hit exact vertex incidences and
+    decline.
+
+`nothing` now means only that `p` is (anti)podal to a boundary vertex, or that
+the ring has fewer than three distinct vertices.
 """
 function point_in_cell(boundary, p)
     ring, n = open_ring(boundary)
     n >= 3 || return nothing
-    verdict = US.spherical_ring_encloses(ring, n, p)
+    # Computed here rather than left to the `encloses` default so that the
+    # conditioning test and the algorithm see the same anchor, and so the
+    # O(n) vertex-mass sum is walked once rather than twice.
+    anchor = US.spherical_exterior_anchor(ring, n)
+    if anchor_arc_is_conditioned(ring, n, p, anchor)
+        verdict = US.spherical_ring_encloses(ring, n, p; anchor)
+        verdict === nothing || return verdict
+    end
+    verdict = US.spherical_ring_contains(ring, n, p)
     verdict === nothing || return verdict
-    return US.spherical_ring_contains(ring, n, p)
+    return ring_winding_verdict(ring, n, p)
+end
+
+"""
+    anchor_arc_is_conditioned(ring, n, q, anchor) -> Bool
+
+Whether `spherical_ring_encloses`' test arc `q -> anchor` is long enough for
+its own between-ness test to mean anything. **This guard is load-bearing:
+without it the generic point-in-cell test reports a cell's own centroid as
+outside the cell.**
+
+`spherical_ring_encloses` counts how often the arc from `q` to `anchor`
+crosses the ring, and `anchor` is the antipode of the ring's vertex mass. So
+for any `q` *inside* a small cell — the centroid above all — `q` is within a
+whisker of the vertex mass and the test arc is a **near-half-turn**:
+`q · anchor ≈ -1`.
+
+Every "does this point lie between the arc's endpoints" decision in that
+parity walk is `point_on_spherical_arc`, whose between-ness test is
+
+    (q · v ≥ q · anchor - tol)  ∧  (anchor · v ≥ q · anchor - tol)
+
+With `q · anchor ≈ -1`, and every dot product on the sphere `≥ -1`, **both
+inequalities hold for every point on the sphere**: the arc stops behaving like
+an arc and behaves like the entire great circle. That circle meets a cell's
+boundary twice, so the parity comes out even and the verdict is a confident
+`false` for a point that is not merely inside the cell but is its centroid.
+
+Writing `δ = π - length(arc)`, a point on the *complementary* arc is wrongly
+admitted exactly when it lies more than `2δ` behind `q`. So the walk is sound
+only while the ring stays nearer to `q` than that, and requiring `δ ≥ R`, for
+`R` the ring's angular radius about `q`, is the cheap sufficient condition —
+`cos δ ≤ cos R`, i.e.
+
+    -(q · anchor)  ≤  min over vertices v of (q · v)
+
+No tuned constant: the bound is the failure mode written down. A `q` well away
+from the cell passes it comfortably and still gets algorithm (1); a `q` inside
+the cell fails it and goes straight to the wedge bootstrap, which is exactly
+the division of labour [`point_in_cell`](@ref) always claimed to have.
+
+The upstream predicate does carry a guard of its own — it returns `nothing`
+when `q · anchor < -1 + 1e-9` — but that is scaled to catch *exact*
+antipodality (`δ ≲ 4.5e-5` rad) rather than the near-antipodality that breaks
+the between-ness test. That is why a perfectly symmetric cell whose centroid
+coincides with its vertex mass to machine precision (IGeo7's twelve pentagons)
+used to return `nothing`, while every slightly asymmetric cell — 282 of 3072
+HEALPix level-4 diamonds, and cells of H3, S2 and ISEA4R besides — returned a
+wrong `false`: one bug, two symptoms either side of one badly-scaled
+threshold.
+"""
+function anchor_arc_is_conditioned(ring, n, q, anchor)
+    anchor === nothing && return false
+    cos_slack = -(q[1] * anchor[1] + q[2] * anchor[2] + q[3] * anchor[3])
+    cos_radius = 1.0
+    for i in 1:n
+        v = ring[i]
+        d = q[1] * v[1] + q[2] * v[2] + q[3] * v[3]
+        d < cos_radius && (cos_radius = d)
+    end
+    return cos_slack <= cos_radius
+end
+
+"""
+    ring_winding_verdict(ring, n, p) -> Union{Bool,Nothing}
+
+Containment by **winding number**: `p` is inside the region the ring bounds
+when the ring winds around it a nonzero number of times.
+
+The last resort of [`point_in_cell`](@ref), and the only one of its three
+algorithms that picks no bootstrap point — which is the point. Both parity
+algorithms decide containment relative to a reference (an exterior anchor, an
+edge-midpoint wedge), and an exactly symmetric ring can put that reference in
+an exactly degenerate position: a regular pentagon's centre-to-edge-midpoint
+arc runs precisely through the opposite vertex, so every wedge
+`spherical_ring_contains` tries grazes a vertex and it declines on all of
+them. The winding number has no such reference to be unlucky with.
+
+Measured as the net turning of the ring's bearing seen from `p`: each vertex
+is projected into the tangent plane at `p`, and the bearing steps — each
+folded into `(-π, π]`, which is exact as long as no single edge subtends half
+a turn about `p` — sum to `±2π` inside and `0` outside.
+
+Magnitude, not sign: the boundary contract fixes the winding
+counter-clockwise from outside, but a ring that arrives wound the other way
+still has an inside, and this reports the region it bounds either way.
+
+Returns `nothing` when a vertex is (anti)podal to `p`, where the bearing is
+undefined.
+"""
+function ring_winding_verdict(ring, n, p)
+    # A right-handed tangent frame at `p` seen from outside the sphere; which
+    # reference direction seeds it does not matter, only the handedness.
+    a = abs(p[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)
+    radial = a[1] * p[1] + a[2] * p[2] + a[3] * p[3]
+    t = (a[1] - radial * p[1], a[2] - radial * p[2], a[3] - radial * p[3])
+    tn = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
+    tn < 1e-12 && return nothing
+    e1 = (t[1] / tn, t[2] / tn, t[3] / tn)
+    e2 = (p[2] * e1[3] - p[3] * e1[2],
+          p[3] * e1[1] - p[1] * e1[3],
+          p[1] * e1[2] - p[2] * e1[1])
+
+    first_bearing = _ring_bearing(p, e1, e2, ring[1])
+    first_bearing === nothing && return nothing
+    total = 0.0
+    previous = first_bearing
+    for i in 2:n
+        b = _ring_bearing(p, e1, e2, ring[i])
+        b === nothing && return nothing
+        total += _fold_turn(b - previous)
+        previous = b
+    end
+    # The closing edge `ring[n] -> ring[1]`, which the loop never took.
+    total += _fold_turn(first_bearing - previous)
+    return abs(total) > π
+end
+
+# The bearing of `v` seen from `p` in the tangent frame `(e1, e2)`, or
+# `nothing` where `v` is (anti)podal to `p` and no bearing exists.
+function _ring_bearing(p, e1, e2, v)
+    d = (v[1] - p[1], v[2] - p[2], v[3] - p[3])
+    x = d[1] * e1[1] + d[2] * e1[2] + d[3] * e1[3]
+    y = d[1] * e2[1] + d[2] * e2[2] + d[3] * e2[3]
+    return (x == 0.0 && y == 0.0) ? nothing : atan(y, x)
+end
+
+# One bearing step folded into (-pi, pi].
+function _fold_turn(d)
+    while d <= -π
+        d += 2π
+    end
+    while d > π
+        d -= 2π
+    end
+    return d
 end
 
 """

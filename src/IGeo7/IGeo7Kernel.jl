@@ -250,3 +250,14 @@ DGG.dggs_level(l::IGeo7Lookups.IGeo7Lookup) = l.resolution
 # `DGGSGrid` instead. All that is per-system is the manifold, which is what
 # makes the one-argument `treeify(l)` resolve at all.
 GOCore.best_manifold(::IGeo7Lookups.IGeo7Lookup) = GO.Spherical()
+
+# --------------------------------------------------------------------------
+# Tile stencils
+#
+# The subtree neighbor stepper: edge adjacency inside one tile from the Z7
+# digits alone, replacing the geometric `_cell_neighbors` on the path that
+# needs it most. Included last because it needs both `DGG` and this module's
+# engine layer.
+# --------------------------------------------------------------------------
+
+include("tile_neighbors.jl")

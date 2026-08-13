@@ -228,5 +228,8 @@ include("test_tree_queries.jl")
 include("test_globe_ids.jl")
 include("test_globe_trees.jl")
 include("test_globe_selectors.jl")
+# The regional counterpart (src/core/subtree_ids.jl): one subtree as a lazy id
+# vector, and the neighbor steppers a stencil sweep over it resolves through.
+include("test_subtree_ids.jl")
 
 end # module CoreTestSuite

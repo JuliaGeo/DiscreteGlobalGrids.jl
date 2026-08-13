@@ -82,8 +82,8 @@ igeo7_cr_grid = DGG.DGGSPartialGrid(lookup; root_level = 5, root_id = id)
 regridder = @time CR.Regridder(igeo7_cr_grid, longlat_cr_grid; threaded = true)
 CR.regrid!(dem_igeo7_ras, regridder, dem_longlat_ras |> vec)
 
-fap = poly(
-    [GO.transform(GO.GeographicFromUnitSphere(), cell_polygon_unitsphere(sys, DESTINATION_LEVEL, id)) for id in DD.lookup(dem_igeo7_ras, Dim{:cells}())]; 
-    color = vec(dem_igeo7_ras)
-);
+# fap = poly(
+#     [GO.transform(GO.GeographicFromUnitSphere(), cell_polygon_unitsphere(sys, DESTINATION_LEVEL, id)) for id in DD.lookup(dem_igeo7_ras, Dim{:cells}())]; 
+#     color = vec(dem_igeo7_ras)
+# );
 # save("dem_igeo7_ras.png", fap)

@@ -91,6 +91,9 @@ include("core/kernel.jl")
 # `<X>Lookups` modules subtype. Both sit above the kernel: `DGGSGlobeIds` is
 # `ordinal_to_cell` seen as a vector.
 include("core/globe_ids.jl")
+# The regional counterpart of `DGGSGlobeIds` — one subtree as a lazy id vector —
+# and the neighbor steppers a stencil sweep over such a tile resolves through.
+include("core/subtree_ids.jl")
 include("core/lookups.jl")
 # Lookup-level operations built on the kernel: the neighbor halo table,
 # `stencil`, and `zonal`, generic over any lookup whose system wires
@@ -147,6 +150,10 @@ export intersects_cap
 export DGGSGrid, DGGSPartialGrid, subtree_grid, DGGSCursor, node_level, node_id
 export node_indices
 export DGGSGlobeIds, AbstractDGGSLookup
+export DGGSSubtreeIds, subtree_position
+export subtree_border_positions, subtree_interior_positions
+export AbstractNeighborStepper, GenericNeighborStepper, TableNeighborStepper
+export neighbor_stepper, step_neighbors, neighbor_table, subtree_stencil
 export dggs_system, dggs_level
 # `zonal` and `stencil` are also exported from `HealpixLookups`, which owned
 # them before they went generic — but as *these* bindings, imported back and

@@ -31,6 +31,7 @@ const TEST_FILES = (
     "test_igeo7_kernel.jl",
     "test_neighbors.jl",
     "test_border.jl",
+    "test_tile_neighbors.jl",
 )
 
 @testset "IGeo7" begin

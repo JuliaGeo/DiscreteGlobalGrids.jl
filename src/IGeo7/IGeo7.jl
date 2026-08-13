@@ -11,17 +11,24 @@ Provenance: every algorithmic choice is sourced from a published paper
 **fitted** to recorded black-box oracle output; every such fit, and the
 evidence behind it, is recorded in `spec/igeo7-geometry-diagnosis.md`.
 
+One file is exempt and says so in its header: `gbt_neighbors.jl` ports the GBT
+adjacency tables from [IGEO7.jl](https://github.com/allixender/IGEO7.jl) with
+the author's permission. Nothing else depends on it — it replaces a clean-room
+implementation that is still here (`_cell_neighbors_geometric`) and still the
+thing it is tested against — so the clean-room core remains separable.
+
 The spherical icosahedron and the Snyder equal-area charts are not here: they
 are shared with the rest of the ISEA family and live in [`ISEA`](@ref), from
 which this module takes `VERTICES`, `Orientation`, `snyder_fwd`, `dev_to_xyz`
 and friends. What remains is the IGEO7-specific layering (`include` order below
 is the dependency order):
 
-| file        | contents                                                     |
-|:------------|:-------------------------------------------------------------|
-| `z7.jl`     | Z7 `UInt64` bit format, string/hex, prefix ops (no geometry)  |
-| `engine.jl` | Eisenstein integer arithmetic + fitted digit tables           |
-| `grid.jl`   | encode/decode, areas, dense indexing, subtree borders          |
+| file                | contents                                             |
+|:--------------------|:-----------------------------------------------------|
+| `z7.jl`             | Z7 `UInt64` bit format, string/hex, prefix ops (no geometry) |
+| `engine.jl`         | Eisenstein integer arithmetic + fitted digit tables   |
+| `grid.jl`           | encode/decode, areas, dense indexing, subtree borders |
+| `gbt_neighbors.jl`  | edge neighbors by GBT digit arithmetic (ported)       |
 
 plus the `IGeo7Lookups` integration module (`DimensionalData`) and
 `IGeo7Kernel.jl`, which wires the package's operations kernel — and through it
@@ -43,6 +50,7 @@ using ..ISEA
 include("z7.jl")
 include("engine.jl")
 include("grid.jl")
+include("gbt_neighbors.jl")
 include("IGeo7Lookups.jl")
 
 # Public API (spec/interface-contract.md). Names are defined by the include

@@ -154,7 +154,7 @@ Pkg.test()
 `test/ISEA4R/`, `test/S2/` — each wrapped in its own module so the generic
 vocabulary the systems share cannot collide across suites. The IGEO7 suite
 validates against the oracle vectors in `test/IGeo7/vectors/` and dominates the
-count. **513,337 assertions, ~80 s warm.**
+count. **537,872 assertions, ~92 s warm.**
 
 ## Provenance
 
@@ -171,3 +171,28 @@ dumps of its CLI output, never against its source. The clean-room records are
 unit's former name, `IGeo7Clean`); the full oracle audit trail, the 150 MB
 vector corpus and 24 MB of reference PDFs stay in `dggs_lookup/` — only the
 ~9 MB of vectors the suite reads travel here.
+
+### Exception: `src/IGeo7/gbt_neighbors.jl`
+
+One file breaks the rule above and is marked as such in its own header. Its
+eight GBT adjacency tables and the carry/rotation procedure over them are
+**ported from [IGEO7.jl](https://github.com/allixender/IGEO7.jl)**
+(`src/IGEO7.jl`, AGPL-3.0, by Alexander Kmoch), used **with the author's
+permission**, granted to Anshul Singhvi. This is source-level reuse, not
+black-box validation, so:
+
+* **The licensing consequence is unresolved and deliberate.** AGPL-3.0 is
+  strongly copyleft. This package currently ships no `LICENSE` file; before it
+  gets one, either the terms covering this port must be settled in writing with
+  the author, or the file must be replaced by a clean-room derivation.
+* **It is isolated so that it can be removed.** Nothing else in the package
+  depends on it. The clean-room implementation it displaced is still present
+  and still correct — `IGeo7._cell_neighbors_geometric` (`src/IGeo7/grid.jl`),
+  which derives adjacency from this module's own oracle-validated cell
+  boundaries. Deleting `gbt_neighbors.jl` and renaming that function back to
+  `_cell_neighbors` restores the fully clean-room package at ~35x the cost per
+  neighbor query.
+* **It is not trusted, it is checked.** `test/IGeo7/test_gbt_neighbors.jl`
+  pins the ported path against the clean-room one on every cell of resolutions
+  0–5 (196,092 cells), on samples through resolution 19, and across all twelve
+  pentagon chains and the base-cell crossings.

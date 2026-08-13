@@ -484,7 +484,7 @@ end
 [`lonlat_to_z7`](@ref)'s decode body on a *grid-frame* unit vector: the
 containing face, its corner bases nearest-first, the three result-neutral
 search passes. Factored out so grid-frame producers — the neighbor step in
-[`_cell_neighbors`](@ref) hands over `dev_to_xyz` output directly — skip the
+[`_cell_neighbors_geometric`](@ref) hands over `dev_to_xyz` output directly — skip the
 degrees round trip and the orientation rotation.
 """
 function _xyz_to_z7(p::NTuple{3,Float64}, r::Int)
@@ -541,17 +541,23 @@ lonlat_to_cell(lon::Real, lat::Real, res::Integer; kwargs...) =
 # ---------------------------------------------------------------------------
 
 """
-    _cell_neighbors(z7) -> SmallList{6,UInt64}
+    _cell_neighbors_geometric(z7) -> SmallList{6,UInt64}
 
 Canonical ids of the cells sharing an edge with `z7`, ascending: 6 for a
 hexagon, 5 for a pentagon. Exact lattice arithmetic for the neighbor
 positions (see the block comment above); the position-to-id step is the
 decoder validated at 100% exact decode on all 196,080 oracle cell centers.
 
+This is the *reference* implementation, kept because it derives adjacency from
+this module's own oracle-validated geometry and nothing else. It is not on the
+hot path: [`_cell_neighbors`](@ref) (gbt_neighbors.jl) answers the same
+question by digit arithmetic, ~30x faster, and is cross-checked against this
+function cell-for-cell in `test/IGeo7/test_gbt_neighbors.jl`.
+
 Throws [`InvalidZ7Error`](@ref) for invalid ids and for resolution-20 ids
 (valid for prefix arithmetic, no geometry — hence no neighbors).
 """
-function _cell_neighbors(z7::UInt64)
+function _cell_neighbors_geometric(z7::UInt64)
     res = _geometry_checked(z7)
     base = z7_base_cell(z7)
     (a, b) = _encode_lattice(z7, base, res)

@@ -88,10 +88,12 @@ end
 # --------------------------------------------------------------------------
 # Neighbors
 #
-# `_cell_neighbors` (grid.jl) already answers the kernel's contract — edge
-# neighbors, ascending, 6 for a hexagon and 5 for a pentagon — in the native
-# container (`Helpers.SmallList`, since the native core stays stdlib +
-# `Helpers` only); the wiring re-seats it in the kernel's `SmallVector`.
+# `_cell_neighbors` (gbt_neighbors.jl) already answers the kernel's contract —
+# edge neighbors, ascending, 6 for a hexagon and 5 for a pentagon — in the
+# native container (`Helpers.SmallList`, since the native core stays stdlib +
+# `Helpers` only); the wiring re-seats it in the kernel's `SmallVector`. It is
+# the GBT digit-arithmetic implementation, so this is a geometry-free path all
+# the way down: no floating point enters a stencil sweep or a halo table.
 # --------------------------------------------------------------------------
 
 DGG.max_neighbors(::DGG.IGEO7DGGS) = 6

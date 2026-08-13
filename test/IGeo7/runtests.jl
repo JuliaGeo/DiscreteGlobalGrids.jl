@@ -30,6 +30,7 @@ const TEST_FILES = (
     "test_lookups.jl",
     "test_igeo7_kernel.jl",
     "test_neighbors.jl",
+    "test_gbt_neighbors.jl",
     "test_border.jl",
     "test_tile_neighbors.jl",
 )

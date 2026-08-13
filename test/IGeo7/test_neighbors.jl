@@ -1,8 +1,14 @@
-# test/IGeo7/test_neighbors.jl — edge neighbors for IGEO7: the native lattice
-# implementation (`IGeo7._cell_neighbors`, src/IGeo7/grid.jl), the kernel
-# wiring (`DGG.cell_neighbors(::IGEO7DGGS, ...)`, src/IGeo7/IGeo7Kernel.jl),
-# and the lookup operations built on it (`neighbor_indices`, `stencil`,
-# `zonal` — src/core/lookup_ops.jl).
+# test/IGeo7/test_neighbors.jl — edge neighbors for IGEO7: the native
+# implementation (`IGeo7._cell_neighbors`, src/IGeo7/gbt_neighbors.jl), the
+# kernel wiring (`DGG.cell_neighbors(::IGEO7DGGS, ...)`,
+# src/IGeo7/IGeo7Kernel.jl), and the lookup operations built on it
+# (`neighbor_indices`, `stencil`, `zonal` — src/core/lookup_ops.jl).
+#
+# This file ground-truths adjacency against geometry, so it is where the
+# relation itself is pinned; test_gbt_neighbors.jl then only has to show that
+# the two implementations of it agree. Both are checked against the boundary
+# rule below — the geometric reference (`_cell_neighbors_geometric`,
+# src/IGeo7/grid.jl) as well as the GBT one that replaced it on the hot path.
 #
 # There is no recorded neighbor oracle in `vectors/`, so ground truth is
 # *geometric adjacency* from the module's own oracle-validated boundaries:
@@ -69,9 +75,13 @@ end
         z = IGeo7.lonlat_to_z7(10.0, 45.0, 4)
         nbs = DGG.cell_neighbors(S, 4, z)
         @test nbs isa SmallVector{6,UInt64}
-        # ...and the kernel wiring is the native lattice function re-seated.
+        # ...and the kernel wiring is the native function re-seated.
         @test collect(nbs) == collect(IGeo7._cell_neighbors(z))
         @test IGeo7._cell_neighbors(z) isa Helpers.SmallList{6,UInt64}
+        # The geometric reference is kept as the independent derivation of the
+        # same relation; the boundary sweeps below hold for it too.
+        @test IGeo7._cell_neighbors_geometric(z) == IGeo7._cell_neighbors(z)
+        @test IGeo7._cell_neighbors_geometric(z) isa Helpers.SmallList{6,UInt64}
 
         # Validation rides `_geometry_checked`: invalid ids and res-20 ids
         # (prefix arithmetic only, no geometry) keep the native error type.

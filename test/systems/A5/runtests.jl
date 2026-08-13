@@ -342,6 +342,27 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         # that do not exist.
         @test_throws ArgumentError DGG.children(S, A5.A5Cell(A5N.WORLD_CELL))
         @test_throws ArgumentError DGG.descendants(S, A5.A5Cell(UInt64(60) << 58 | UInt64(1) << 55), 3)
+
+        # ONE RULE IN BOTH DIRECTIONS: an invalid cell has no relatives, itself
+        # included. Coarsening is the tempting exception — truncation drops the
+        # junk bits along with the rest of the low bits, so `parent` and
+        # `ancestor` CAN answer, and their answer is a real cell. That is
+        # precisely why they must not: laundering a non-cell into a plausible
+        # ancestor is worse than refusing, and it would leave `parent` accepting
+        # ids that `children` rejects.
+        bad = A5.A5Cell(DGG.rawid(RES3[1]) | (UInt64(1) << 6))
+        @test !isvalid(bad)
+        @test DGG.level(bad) == 3                       # the level still looks fine
+        @test A5N.cell_to_parent(DGG.rawid(bad), 2) == DGG.rawid(RES2[1])  # ...so would the parent
+        @test_throws ArgumentError parent(S, bad)
+        @test_throws ArgumentError DGG.ancestor(S, bad, 1)
+        @test_throws ArgumentError DGG.ancestor(S, bad, 3)   # even the identity case
+        @test_throws ArgumentError DGG.children(S, bad)
+        @test_throws ArgumentError DGG.descendants(S, bad, 4)
+        @test_throws ArgumentError DGG.descendants(S, bad, 3)
+        # The position side of the same rule answers `nothing` instead, because
+        # that is what ITS contract says — the refusal is shared, not the shape.
+        @test DGG.cellposition(DGG.levelgrid(S, 3), bad) === nothing
     end
 
     # =======================================================================
@@ -833,6 +854,35 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         end
         @test occursin("A5Grid", sprint(show, DGG.levelgrid(S, 3)))
         @test sprint(show, S) == "A5System()"
+    end
+
+    # =======================================================================
+    # T13 exports these names, so they have to arrive carrying their own
+    # docstrings rather than falling through to the interface's generic ones.
+    # This is not a formality: a docstring is attached to the NEXT EXPRESSION,
+    # and a comment placed between the two silently detaches it — no warning,
+    # no error, the method simply stops being documented and `@doc` quietly
+    # shows the interface text instead. That is exactly the failure this
+    # testset caught once already.
+    @testset "every public name is documented" begin
+        documented = Set(b.var for b in keys(Docs.meta(A5)))
+        for name in (:A5, :A5Cell, :A5Grid, :A5System,
+                     # the four required grid primitives
+                     :cellindex, :cell_boundary, :cell_centroid,
+                     # position, adjacency, hierarchy
+                     :cellposition, :cellat, :neighbors, :ring,
+                     :parent, :children, :ancestor, :descendants, :rootcells,
+                     # traits and validity
+                     :max_neighbors, :cap_inflation, :has_sorted_subtrees, :isvalid)
+            @test name in documented
+        end
+        # And the docstring must be the A5 one, not the interface fallback
+        # showing through: check the two whose text carries a claim this
+        # module is on the hook for.
+        for (f, phrase) in ((DGG.neighbors, "smallest"), (DGG.max_neighbors, "Vertex"))
+            md = Docs.meta(A5)[Docs.Binding(DGG, nameof(f))]
+            @test any(occursin(phrase, string(d.text...)) for d in values(md.docs))
+        end
     end
 
     # =======================================================================

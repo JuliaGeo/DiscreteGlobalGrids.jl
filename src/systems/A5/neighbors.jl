@@ -57,6 +57,30 @@ function _native_neighbors(grid::A5Grid, c::A5Cell, connectivity::Connectivity)
     return A5Native._get_global_cell_neighbors(c.id; edge_only=_edge_only(connectivity))
 end
 
+# ALLOCATION — KNOWN, TRACKED, NOT FIXED HERE. A `k = 1` call allocates 3.0 KB
+# at res 2 and 6.4 KB from res 6 down (it plateaus there, since the deep levels
+# all take the same walk), nearly all of it inside
+# `A5Native._get_global_cell_neighbors`: it
+# accumulates candidates in a `Set{UInt64}` with intermediate vectors and hands
+# back `sort!(collect(set))`. No amount of work on this side recovers that — the
+# set is built and thrown away before this module is handed anything, so the
+# `SmallVector` in `neighbors` is copying an allocation that already happened.
+#
+# THE FIX, when someone takes it: the degree is bounded by 11 (see
+# `max_neighbors`), so the walk in `native.jl` needs no `Set` at all. Give it a
+# fixed-capacity scratch buffer — a `SmallVector{11,UInt64}` of candidates with a
+# linear dedup pass, which beats hashing at that size anyway — and let it fill a
+# caller-supplied destination instead of returning a fresh vector. That makes
+# `k = 1` allocation-free, matching `children`.
+#
+# Deferred deliberately rather than overlooked: `native.jl` is a verbatim
+# carry-over of the pre-redesign arithmetic, kept diff-clean against its source
+# so the port stays auditable. Changing its hot loop is a separate, testable
+# piece of work and wants its own before/after numbers.
+#
+# (Keep this note ABOVE the docstring. A comment between a docstring and the
+# function it documents silently DETACHES it — the docstring stops registering
+# for the method and `@doc` falls back to the interface's generic one.)
 """
     neighbors(grid::A5Grid, c::A5Cell, k = 1; connectivity = Vertex())
 
@@ -86,6 +110,10 @@ type is therefore a two-way union across `k`, with the boundary at `k = 1` /
 Throws an `ArgumentError` for a cell that is not a valid cell of this grid's
 resolution — there is no `nothing` in this contract to return, and answering
 for a neighbouring cell instead would be worse.
+
+Allocates: a few kilobytes even at `k = 1`, inside a5's own adjacency walk
+rather than here. See the note above this docstring for the numbers, the cause
+and the fix.
 """
 function neighbors(grid::A5Grid, c::A5Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
@@ -175,11 +203,11 @@ end
 # tangent basis at `centre` whose zero direction points at the ring-1 neighbour
 # with the smallest canonical id.
 #
-# `zero` is the anchor's own measured azimuth rather than the literal `0.0`. In
-# exact arithmetic they are the same number; in floating point the anchor's
-# tangential component can round to a hair below zero, and `mod(-eps, 2pi)` is
-# `2pi` — which would sort the spoke's own cell to the END of its ring.
-# Subtracting the measurement cancels that exactly.
+# The frame's third entry is the anchor's own measured azimuth rather than the
+# literal `0.0`. In exact arithmetic they are the same number; in floating point
+# the anchor's tangential component can round to a hair below zero, and
+# `mod(-eps, 2pi)` is `2pi` — which would sort the spoke's own cell to the END
+# of its ring. Subtracting the measurement cancels that exactly.
 function _spoke_frame(grid::A5Grid, centre, shell::AbstractVector{A5Cell})
     anchor = cell_centroid(grid, minimum(shell))
     e1, e2 = _tangent_basis(centre, anchor)
@@ -188,12 +216,21 @@ end
 
 # Order one shell counter-clockwise about `centre`, from the frame's spoke.
 # Exact ties go to the smaller canonical id, so the result is total.
+#
+# The keys are computed once per cell and sorted alongside them, rather than
+# handed to `sort!` as a `by` function: `cell_centroid` is a native projection
+# round trip, and a `by` key is recomputed at every comparison, which would
+# spend O(n log n) projections to order n cells.
 function _wind!(shell::AbstractVector{A5Cell}, grid::A5Grid, centre, frame)
     length(shell) <= 1 && return shell
-    e1, e2, zero = frame
+    e1, e2, spoke = frame
     turn = 2 * Float64(pi)
-    sort!(shell; by=d -> (mod(
-        _azimuth(centre, e1, e2, cell_centroid(grid, d)) - zero, turn), d))
+    keyed = [(mod(_azimuth(centre, e1, e2, cell_centroid(grid, d)) - spoke, turn), d)
+             for d in shell]
+    sort!(keyed)
+    for i in eachindex(shell, keyed)
+        @inbounds shell[i] = keyed[i][2]
+    end
     return shell
 end
 

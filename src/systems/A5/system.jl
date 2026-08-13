@@ -135,6 +135,14 @@ no lookup. Throws an `ArgumentError` on a res-0 cell, which has no parent.
 The three regimes meet here: dropping to level 1 keeps the quintant and clears
 the Hilbert state, dropping to level 0 divides the quintant by five, and every
 step below level 1 drops two Hilbert bits.
+
+The argument is checked for validity even though the arithmetic does not need
+it. Truncation would otherwise **launder junk**: an id carrying garbage in its
+padding bits names no cell, but dropping the low bits discards the garbage along
+with them, so an unchecked `parent` would hand back a perfectly real cell and
+say nothing about where it came from. That is the one failure mode this module
+refuses everywhere else — see [`cellposition`](@ref) — and the coarsening
+direction is not exempt from it just because it happens to produce a valid id.
 """
 function Base.parent(::A5System, c::A5Cell)
     l = level(c)
@@ -142,6 +150,7 @@ function Base.parent(::A5System, c::A5Cell)
         "A5 cell $c is a root cell (resolution 0) and has no parent"))
     1 <= l <= MAX_LEVEL || throw(ArgumentError(
         "A5 cell $c is at resolution $l, outside levels(A5System()) = 0:$MAX_LEVEL"))
+    isvalid(c) || throw(ArgumentError("A5 cell $c is not a valid cell"))
     return A5Cell(A5Native.cell_to_parent(c.id, l - 1))
 end
 
@@ -364,6 +373,12 @@ end
 The ancestor at resolution `l`, in one `cell_to_parent` call rather than
 `level(c) - l` of them: the bit arithmetic truncates to any coarser level
 directly.
+
+Validates its argument for the reason [`parent`](@ref) does, and does so before
+the `l == level(c)` identity case rather than after. One rule covers the whole
+hierarchy that way — **an invalid cell has no relatives, itself included** — and
+`parent`, `ancestor`, `children` and `descendants` all raise the same
+`ArgumentError` on the same ids.
 """
 function ancestor(::A5System, c::A5Cell, l::Integer)
     target = Int(l)
@@ -372,6 +387,7 @@ function ancestor(::A5System, c::A5Cell, l::Integer)
         "ancestor level $target is deeper than the cell's own level $lc"))
     target >= 0 || throw(ArgumentError(
         "ancestor level $target is above the root level 0"))
+    isvalid(c) || throw(ArgumentError("A5 cell $c is not a valid cell"))
     target == lc && return c
     return A5Cell(A5Native.cell_to_parent(c.id, target))
 end
@@ -398,8 +414,10 @@ function descendants(::A5System, c::A5Cell, l::Integer)
         "descendant level $target is above the cell's own level $lc"))
     target <= MAX_LEVEL || throw(ArgumentError(
         "descendant level $target is past max_level $MAX_LEVEL"))
-    target == lc && return A5Cell[c]
+    # Ahead of the identity case, so that the rule is the same one `ancestor`
+    # states: an invalid cell has no relatives, itself included.
     isvalid(c) || throw(ArgumentError("A5 cell $c is not a valid cell"))
+    target == lc && return A5Cell[c]
     ids = collect(UInt64, A5Native.cell_to_children(c.id, target))
     issorted(ids) || sort!(ids)
     return [A5Cell(id) for id in ids]

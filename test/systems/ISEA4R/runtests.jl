@@ -1265,7 +1265,7 @@ end
 
 @testset "conformance" begin
     for l in (0, 1, 3)
-        test_grid_interface(levelgrid(SYS, l); label = "ISEA4RGrid(level=$l)")
+        test_grid_interface(levelgrid(SYS, l); label = "ISEA4R level $l")
     end
     test_hierarchical_system(SYS)
 end

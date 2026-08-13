@@ -13,8 +13,8 @@ twelve equal-area base pixels on the sphere, each refined by aperture-4
 quadrant subdivision, levels `0:29` (`nside = 2^level`, `npix = 12 * 4^level`).
 
   - [`HEALPixSystem`](@ref) — the system singleton.
-  - [`HEALPixGrid`](@ref) — one complete level, from
-    `levelgrid(HEALPixSystem(), l)`.
+  - `levelgrid(HEALPixSystem(), l)` — one complete level, as the package's
+    [`HierarchicalLevelGrid`](@ref). HEALPix ships no grid type of its own.
   - `LevelIndex` — the canonical id: `LevelIndex(level, index)` with `index` the
     **NESTED** pixel number, **0-based**, as the standard defines it.
   - [`HEALPixRingIndex`](@ref) — the alternate scheme, the **RING** pixel number
@@ -27,7 +27,7 @@ quadrant subdivision, levels `0:29` (`nside = 2^level`, `npix = 12 * 4^level`).
 |---|---|
 | `chart.jl` | the twelve equal-area face charts and the nested/ring/xyf codecs — pure closed forms, plus the chart's analytic inverse (`point_to_xyf`). Copied wholesale from the pre-redesign `src/HEALPix/chart.jl`. |
 | `neighbors.jl` | the 3x3 lattice neighbourhood on the nested id, lifted off the old lookup layer. |
-| `system.jl` | `HEALPixSystem`, `HEALPixGrid`, `HEALPixRingIndex`, and every interface method. |
+| `system.jl` | `HEALPixSystem`, `HEALPixRingIndex`, and every interface method, system-level and grid-level both. |
 | `border.jl` | the Morton rim walk — a subtree's border with no neighbour queries. |
 
 # Fast paths over the generic fallbacks
@@ -67,6 +67,6 @@ include("neighbors.jl")
 include("system.jl")
 include("border.jl")
 
-export HEALPixSystem, HEALPixGrid, HEALPixRingIndex
+export HEALPixSystem, HEALPixRingIndex
 
 end # module HEALPix

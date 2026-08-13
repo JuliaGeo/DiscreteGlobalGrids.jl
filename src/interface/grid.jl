@@ -12,6 +12,10 @@
 #     `AbstractCellIndex` argument is an IDENTITY. See `AbstractGrid`.
 #   * All geometry is on the unit sphere, as `GO.UnitSphericalPoint`. Longitude
 #     and latitude appear only in explicitly named converting wrappers.
+#
+# A hierarchical system does not implement the four on a grid type of its own:
+# `levelgrid` hands back a `HierarchicalLevelGrid`, and the four arrive as the
+# system-level methods documented in `src/interface/system.jl`.
 # ---------------------------------------------------------------------------
 
 # ===========================================================================

@@ -839,7 +839,7 @@ end
 
 @testset "conformance" begin
     for l in (0, 1, 3)
-        test_grid_interface(levelgrid(SYS, l); label = "HEALPixGrid(level=$l)")
+        test_grid_interface(levelgrid(SYS, l); label = "HEALPix level $l")
     end
     test_hierarchical_system(SYS)
 end

@@ -17,7 +17,8 @@ an icosahedron, twelve pentagons, resolutions `0:15`.
   - [`H3System`](@ref) — the system singleton.
   - [`H3Cell`](@ref) — the canonical id, a `UInt64` with the resolution in
     bits 52-55.
-  - [`H3Grid`](@ref) — one complete resolution, from `levelgrid(H3System(), l)`.
+  - `levelgrid(H3System(), l)` — one complete resolution, as the package's
+    [`HierarchicalLevelGrid`](@ref). H3 ships no grid type of its own.
   - [`H3Native`](@ref) — the raw libh3 ccall layer, if you want it directly.
 
 # The canonical order
@@ -53,7 +54,7 @@ module H3
 # whole of its say in the matter.
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
-    AbstractCellIndex, Connectivity, Vertex, Edge,
+    AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,
     ncells, cellindex, cell_boundary, cell_centroid,
     cellposition, rawid,
     cellat, neighbors, ring, system, level,

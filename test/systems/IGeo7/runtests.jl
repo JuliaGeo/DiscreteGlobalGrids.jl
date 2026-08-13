@@ -750,7 +750,7 @@ const CLEAN = (0, "")
 
     @testset "14. conformance" begin
         for l in (0, 1, 3)
-            test_grid_interface(DGG.levelgrid(S, l); label="IGeo7Grid(level $l)")
+            test_grid_interface(DGG.levelgrid(S, l); label="IGeo7 level $l")
         end
         test_hierarchical_system(S)
     end

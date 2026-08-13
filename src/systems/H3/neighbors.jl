@@ -39,7 +39,7 @@
 const MAX_NEIGHBORS = 6
 
 """
-    neighbors(grid::H3Grid, c::H3Cell, k = 1; connectivity = Vertex())
+    neighbors(grid::LevelGrid, c::H3Cell, k = 1; connectivity = Vertex())
 
 The cells within `k` grid steps of `c`, excluding `c`, in **rotational order**:
 rings `1..k` concatenated outward, each ring counter-clockwise seen from
@@ -67,7 +67,7 @@ makes a whole-grid neighbour sweep garbage-free.
 The return type is therefore a two-way union across `k`, with the boundary at
 `k = 1` / `k = 2`.
 """
-function neighbors(grid::H3Grid, c::H3Cell, k::Integer=1;
+function neighbors(grid::LevelGrid, c::H3Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -82,7 +82,7 @@ function neighbors(grid::H3Grid, c::H3Cell, k::Integer=1;
 end
 
 """
-    ring(grid::H3Grid, c::H3Cell, k; connectivity = Vertex())
+    ring(grid::LevelGrid, c::H3Cell, k; connectivity = Vertex())
 
 The cells at grid distance **exactly** `k` from `c`, counter-clockwise seen
 from outside. `ring(grid, c, 0)` is `[c]`.
@@ -96,7 +96,7 @@ pentagon defeats it — the O(k²) distance-bucketed disk ordered by azimuth. Th
 fallback is not an approximation; it is the same set in the same rotational
 order, computed the expensive way.
 """
-function ring(grid::H3Grid, c::H3Cell, k::Integer;
+function ring(grid::LevelGrid, c::H3Cell, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))

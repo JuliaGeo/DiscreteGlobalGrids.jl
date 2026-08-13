@@ -51,7 +51,12 @@ function levels end
 The **complete** grid of `sys` at level `l`: every cell the system has at that
 level, in the system's canonical dense order.
 
-**Required.**
+**Derived, with a default**, and the entry point every consumer uses. The
+default is `HierarchicalLevelGrid(sys, l)`, checked against
+[`levels`](@ref) — so a system implements the five level-grid primitives below
+and never writes a grid type. Overriding this is the escape hatch for a system
+whose grid genuinely carries state beyond `(sys, l)`; none of the six shipped
+here does.
 
 `system(levelgrid(sys, l)) === sys` and `level(levelgrid(sys, l)) == l`. The
 grid is a lightweight descriptor, not a materialised cell list — constructing
@@ -61,6 +66,38 @@ one must not be O(cells).
 subset of a level, see `PartialGrid`.
 """
 function levelgrid end
+
+"""
+    ncells(sys::AbstractHierarchicalGridSystem, l::Integer) -> Int
+    cellindex(sys::AbstractHierarchicalGridSystem, l::Integer, i::Int) -> AbstractCellIndex
+    cellposition(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> Union{Int,Nothing}
+    cell_boundary(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex)
+    cell_centroid(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex)
+
+The complete level of `sys`, described cell by cell: its size, its dense order
+in both directions, and the geometry of one cell.
+
+**Required**, unless the system overrides [`levelgrid`](@ref) with a grid type
+of its own and answers the [`AbstractGrid`](@ref) contract there.
+
+These are the five methods [`HierarchicalLevelGrid`](@ref) forwards to. Each
+carries its grid-level contract — [`ncells`](@ref), [`cellindex`](@ref),
+[`cellposition`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref) —
+minus the two things the grid method has already settled:
+
+  - `cellindex` may assume `i in 1:ncells(sys, l)`. The grid bounds-checks.
+  - `cellposition` and the geometry pair may assume `c` is in
+    [`cellindextype(sys)`](@ref cellindextype), and that its level is the one
+    being asked about; the grid answers `nothing` for a cell at another level
+    and reindexes the alternate schemes. `cellposition` still returns `nothing`
+    for a canonical id that names no cell at all — a malformed encoding, or an
+    index past the end of its level.
+
+The geometry pair takes **no level argument**: an [`AbstractCellIndex`](@ref)
+is self-describing, so a level beside it would only be a second source of truth
+that could disagree with the first.
+"""
+ncells(::AbstractHierarchicalGridSystem, ::Integer)
 
 """
     rootcells(sys::AbstractHierarchicalGridSystem)

@@ -50,7 +50,7 @@ _edge_only(::Edge) = true
 # a5's adjacency for one cell, as raw ids. Guarded, because `deserialize` raises
 # a `BoundsError` out of `ORIGINS` for an id that names no face and the lattice
 # walk would otherwise answer for a cell that does not exist.
-function _native_neighbors(grid::A5Grid, c::A5Cell, connectivity::Connectivity)
+function _native_neighbors(grid::LevelGrid, c::A5Cell, connectivity::Connectivity)
     level(c) == grid.level || throw(ArgumentError(
         "A5 cell $c is at resolution $(level(c)), not this grid's $(grid.level)"))
     isvalid(c) || throw(ArgumentError("A5 cell $c is not a valid cell"))
@@ -82,7 +82,7 @@ end
 # function it documents silently DETACHES it — the docstring stops registering
 # for the method and `@doc` falls back to the interface's generic one.)
 """
-    neighbors(grid::A5Grid, c::A5Cell, k = 1; connectivity = Vertex())
+    neighbors(grid::LevelGrid, c::A5Cell, k = 1; connectivity = Vertex())
 
 The cells within `k` grid steps of `c`, excluding `c`, in **rotational order**:
 rings `1..k` concatenated outward, each ring counter-clockwise seen from outside
@@ -115,7 +115,7 @@ Allocates: a few kilobytes even at `k = 1`, inside a5's own adjacency walk
 rather than here. See the note above this docstring for the numbers, the cause
 and the fix.
 """
-function neighbors(grid::A5Grid, c::A5Cell, k::Integer=1;
+function neighbors(grid::LevelGrid, c::A5Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -132,7 +132,7 @@ function neighbors(grid::A5Grid, c::A5Cell, k::Integer=1;
 end
 
 """
-    ring(grid::A5Grid, c::A5Cell, k; connectivity = Vertex())
+    ring(grid::LevelGrid, c::A5Cell, k; connectivity = Vertex())
 
 The cells at grid distance **exactly** `k` from `c`, counter-clockwise seen from
 outside. `ring(grid, c, 0)` is `[c]`.
@@ -142,7 +142,7 @@ Identical, element for element, to the last `length` entries of
 winding step, so the disc really is its shells concatenated rather than merely
 agreeing with them as a set.
 """
-function ring(grid::A5Grid, c::A5Cell, k::Integer;
+function ring(grid::LevelGrid, c::A5Cell, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -163,7 +163,7 @@ end
 # because that is what makes `ring(grid, c, k)` the literal tail block of
 # `neighbors(grid, c, k)`: both read the same shells, so they cannot disagree
 # element for element.
-function _shells(grid::A5Grid, c::A5Cell, steps::Int, connectivity::Connectivity)
+function _shells(grid::LevelGrid, c::A5Cell, steps::Int, connectivity::Connectivity)
     shells = Vector{Vector{A5Cell}}()
     seen = Set{UInt64}((c.id,))
     frontier = UInt64[c.id]
@@ -208,7 +208,7 @@ end
 # the anchor's tangential component can round to a hair below zero, and
 # `mod(-eps, 2pi)` is `2pi` — which would sort the spoke's own cell to the END
 # of its ring. Subtracting the measurement cancels that exactly.
-function _spoke_frame(grid::A5Grid, centre, shell::AbstractVector{A5Cell})
+function _spoke_frame(grid::LevelGrid, centre, shell::AbstractVector{A5Cell})
     anchor = cell_centroid(grid, minimum(shell))
     e1, e2 = _tangent_basis(centre, anchor)
     return (e1, e2, _azimuth(centre, e1, e2, anchor))
@@ -221,7 +221,7 @@ end
 # handed to `sort!` as a `by` function: `cell_centroid` is a native projection
 # round trip, and a `by` key is recomputed at every comparison, which would
 # spend O(n log n) projections to order n cells.
-function _wind!(shell::AbstractVector{A5Cell}, grid::A5Grid, centre, frame)
+function _wind!(shell::AbstractVector{A5Cell}, grid::LevelGrid, centre, frame)
     length(shell) <= 1 && return shell
     e1, e2, spoke = frame
     turn = 2 * Float64(pi)

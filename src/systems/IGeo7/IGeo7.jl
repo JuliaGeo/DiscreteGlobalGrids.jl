@@ -26,7 +26,7 @@ interface (`levelgrid`, `cellindex`, `cell_boundary`, `neighbors`, `parent`,
 | `z7.jl`     | the Z7 `UInt64` bit format, string/hex codecs, prefix ops     |
 | `engine.jl` | Eisenstein integer arithmetic + the fitted digit tables       |
 | `z7grid.jl` | encode/decode, areas, dense ordinals, subtree borders         |
-| `system.jl` | `Z7Cell`, `IGeo7System`, `IGeo7Grid` — the interface wiring   |
+| `system.jl` | `Z7Cell`, `IGeo7System` — the interface wiring              |
 
 The first three are ported verbatim from the verified clean-room
 implementation, whose agreement with DGGRID is pinned by the sealed oracle
@@ -76,7 +76,6 @@ include("system.jl")
 # The system's contract surface. The package-level exports happen in T7; these
 # make the names reachable as `DiscreteGlobalGrids.IGeo7.<name>`.
 export IGeo7System,
-    IGeo7Grid,
     Z7Cell,
     InvalidZ7Error,
     MAX_RESOLUTION,

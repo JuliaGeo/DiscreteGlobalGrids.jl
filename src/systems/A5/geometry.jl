@@ -29,7 +29,7 @@ function _unit_point(lon::Real, lat::Real)
 end
 
 """
-    cell_boundary(grid::A5Grid, c::A5Cell) -> Vector{UnitSphericalPoint}
+    cell_boundary(::A5System, c::A5Cell) -> Vector{UnitSphericalPoint}
 
 The exact boundary ring of `c`: a5's own `cell_boundary`, on the unit sphere.
 
@@ -52,7 +52,7 @@ So a ring has `corners × segments` vertices: 5 corners at level 0, 3 at level 1
 (a quintant is a triangular slice of a face) and 5 below, times 64, 32, 16, …
 down to 1 from level 6.
 """
-function cell_boundary(::A5Grid, c::A5Cell)
+function cell_boundary(::A5System, c::A5Cell)
     ring = A5Native.cell_boundary(c.id; closed_ring=false, segments=:auto)
     out = Vector{USPoint}(undef, length(ring))
     for (i, p) in enumerate(ring)
@@ -62,7 +62,7 @@ function cell_boundary(::A5Grid, c::A5Cell)
 end
 
 """
-    cell_centroid(grid::A5Grid, c::A5Cell) -> UnitSphericalPoint
+    cell_centroid(::A5System, c::A5Cell) -> UnitSphericalPoint
 
 The cell centre from a5's `cell_to_lonlat`, straight onto the unit sphere.
 
@@ -76,7 +76,7 @@ exactly a geographic pole, so nothing downstream may build a tangent frame from
 a lon/lat east/north pair. The neighbour ordering in `neighbors.jl` measures its
 frame from a neighbour's direction instead, which is well-conditioned there.
 """
-function cell_centroid(::A5Grid, c::A5Cell)
+function cell_centroid(::A5System, c::A5Cell)
     lon, lat = A5Native.cell_to_lonlat(c.id)
     return _unit_point(lon, lat)
 end
@@ -86,8 +86,8 @@ end
 # ===========================================================================
 
 """
-    cellat(grid::A5Grid, p::UnitSphericalPoint) -> A5Cell
-    cellat(grid::A5Grid, lon::Real, lat::Real) -> A5Cell
+    cellat(grid::LevelGrid, p::UnitSphericalPoint) -> A5Cell
+    cellat(grid::LevelGrid, lon::Real, lat::Real) -> A5Cell
 
 The cell of `grid` containing a point, by a5's own `lonlat_to_cell`.
 
@@ -113,11 +113,11 @@ The `(lon, lat)` method takes **degrees** and is the primitive here — it hands
 the coordinates to the a5 arithmetic directly rather than routing them through
 `xyz` and back, which is one rounding step shorter.
 """
-function cellat(grid::A5Grid, lon::Real, lat::Real)
+function cellat(grid::LevelGrid, lon::Real, lat::Real)
     return A5Cell(A5Native.lonlat_to_cell(lon, lat, grid.level))
 end
 
-function cellat(grid::A5Grid, p::GO.UnitSphericalPoint)
+function cellat(grid::LevelGrid, p::GO.UnitSphericalPoint)
     lon = atand(p[2], p[1])
     lat = asind(clamp(p[3], -1.0, 1.0))
     return cellat(grid, lon, lat)

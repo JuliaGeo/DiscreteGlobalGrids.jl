@@ -138,7 +138,7 @@ function subtree_border(sys::HEALPixSystem, c::DGG.LevelIndex, leaf_level::Integ
     r = DGG.descendant_range(sys, c, leaf_level)
     lo = Int64(first(r)) - 1                 # back to the 0-based nested id
     delta = Int(leaf_level) - DGG.level(c)
-    _checked_index(HEALPixGrid(DGG.level(c)), c)
+    _checked_index(c)
     delta == 0 && return [DGG.LevelIndex(leaf_level, lo)]
 
     s = Int64(1) << delta

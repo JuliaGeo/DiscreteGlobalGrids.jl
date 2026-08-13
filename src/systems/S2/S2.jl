@@ -14,7 +14,8 @@ charts, each refined by aperture-4 quadrant subdivision and ordered along a
 Hilbert curve, levels `0:30` (`nside = 2^level`, `6 * 4^level` cells).
 
   - [`S2System`](@ref) — the system singleton.
-  - [`S2Grid`](@ref) — one complete level, from `levelgrid(S2System(), l)`.
+  - `levelgrid(S2System(), l)` — one complete level, as the package's
+    [`HierarchicalLevelGrid`](@ref). S2 ships no grid type of its own.
   - `LevelIndex` — the canonical id: `LevelIndex(level, index)` with `index` the
     **scaffold ordinal** `face * 4^level + hilbert_position`, **0-based**.
 
@@ -24,7 +25,7 @@ Hilbert curve, levels `0:30` (`nside = 2^level`, `6 * 4^level` cells).
 |---|---|
 | `chart.jl` | the six cube-face charts, the quadratic `ST ↔ UV` transform, the Hilbert and row-major codecs, and the chart's analytic inverse (`point_to_xyf`). Ported from the pre-redesign `src/S2/chart.jl`, plus the inverse the old port never wired. |
 | `neighbors.jl` | the 3×3 lattice neighbourhood, and the cube-edge seam table it crosses faces through — derived from the face frames, not transcribed. |
-| `system.jl` | `S2System`, `S2Grid`, and every interface method. |
+| `system.jl` | `S2System` and every interface method, system-level and grid-level both. |
 
 # What S2 trades, and what it buys
 
@@ -78,6 +79,6 @@ include("chart.jl")
 include("neighbors.jl")
 include("system.jl")
 
-export S2System, S2Grid
+export S2System
 
 end # module S2

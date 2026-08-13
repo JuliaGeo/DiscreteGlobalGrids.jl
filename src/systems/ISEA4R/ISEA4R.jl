@@ -18,8 +18,8 @@ that is refined by aperture-4 quadrant subdivision. Levels `0:29`
 (`nside = 2^level`, `10 * 4^level` cells).
 
   - [`ISEA4RSystem`](@ref) — the system singleton.
-  - [`ISEA4RGrid`](@ref) — one complete level, from
-    `levelgrid(ISEA4RSystem(), l)`.
+  - `levelgrid(ISEA4RSystem(), l)` — one complete level, as the package's
+    [`HierarchicalLevelGrid`](@ref). ISEA4R ships no grid type of its own.
   - `LevelIndex` — the canonical id: `LevelIndex(level, index)` with
     `index = diamond * 4^level + morton(ix, iy)`, **0-based** and dense, so a
     cell's position in the level grid is `index + 1`.
@@ -31,7 +31,7 @@ that is refined by aperture-4 quadrant subdivision. Levels `0:29`
 | `diamonds.jl` | the ten-diamond layout table — which two faces pair, how the ten are numbered, how the `(x, y)` square sits in each. Derived at load time from `ISEA`'s tables and asserted against pinned literals. Ported from the pre-redesign `src/ISEA4R/diamonds.jl`. |
 | `chart.jl` | the piecewise-affine, exactly equal-area rhombus chart and the row-major / Morton codecs, plus the chart's analytic inverse `point_to_xyd`. Ported from `src/ISEA4R/chart.jl`; the inverse is new. |
 | `topology.jl` | the rhombus lattice one-ring and the ten-diamond seam topology — the edge-adjacency and vertex-fan tables, derived from the layout. New. |
-| `system.jl` | `ISEA4RSystem`, `ISEA4RGrid`, and every interface method. New. |
+| `system.jl` | `ISEA4RSystem` and every interface method, system-level and grid-level both. New. |
 | `border.jl` | the lattice-block rim walk — a subtree's border with no neighbour queries. New. |
 
 # Fast paths over the generic fallbacks
@@ -90,6 +90,6 @@ include("border.jl")
 
 # The system's contract surface. The package-level exports are T13's; these
 # make the names reachable as `DiscreteGlobalGrids.ISEA4R.<name>`.
-export ISEA4RSystem, ISEA4RGrid
+export ISEA4RSystem
 
 end # module ISEA4R

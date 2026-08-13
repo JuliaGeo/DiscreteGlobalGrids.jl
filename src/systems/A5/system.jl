@@ -71,32 +71,21 @@ Neither is a cell of any grid; see [`A5Cell`](@ref) and `isvalid`.
 """
 struct A5System <: AbstractHierarchicalGridSystem end
 
-"""
-    A5Grid(level) <: AbstractGrid
+# `levelgrid(A5System(), l)` is the package's `HierarchicalLevelGrid`, which
+# stores the resolution and nothing else — so constructing the res-29 grid
+# (4,323,455,642,275,676,160 cells) is free. A5's fast paths hang off this
+# alias, and the five primitives it forwards to are the `(sys, ...)` methods
+# below.
+#
+# One warning belongs with the grid rather than with any one method: A5 has no
+# `has_sorted_subtrees`, so `treeify` builds a SELECTION-mode cursor whose root
+# materialises `1:ncells(grid)`. That is fine at the shallow levels and
+# impossible past about level 12. Everything that treeifies — the generic
+# `cellat`, `query` on a grid — inherits the limit; `cellat` is overridden here
+# precisely so it does not, and a deep query should be run as
+# `query(sys, pred; level)` over a `PartialGrid` of the region instead.
+const LevelGrid = HierarchicalLevelGrid{A5System}
 
-The complete A5 grid at one resolution — build one with
-[`levelgrid(A5System(), l)`](@ref levelgrid) rather than by calling this.
-
-A lightweight descriptor: it stores the resolution and nothing else, so
-constructing the res-29 grid (4,323,455,642,275,676,160 cells) is free.
-
-!!! warning "Do not `treeify` a deep complete grid"
-    A5 has no [`has_sorted_subtrees`](@ref), so [`treeify`](@ref) builds a
-    *selection-mode* cursor whose root materialises `1:ncells(grid)`. That is
-    fine at the shallow levels and impossible past about level 12. Everything
-    that treeifies — the generic [`cellat`](@ref), [`query`](@ref) on a grid —
-    inherits the limit; `cellat` is overridden here precisely so it does not,
-    and a deep query should be run as `query(sys, pred; level)` over a
-    [`PartialGrid`](@ref) of the region instead.
-"""
-struct A5Grid <: AbstractGrid
-    level::Int
-end
-
-system(::A5Grid) = A5System()
-level(g::A5Grid) = g.level
-
-Base.show(io::IO, g::A5Grid) = print(io, "A5Grid(res ", g.level, ")")
 Base.show(io::IO, ::A5System) = print(io, "A5System()")
 
 # `MAX_LEVEL` (29) is defined beside the encoding it is a fact about, in
@@ -109,13 +98,6 @@ Base.show(io::IO, ::A5System) = print(io, "A5System()")
 cellindextype(::A5System) = A5Cell
 
 levels(::A5System) = 0:MAX_LEVEL
-
-function levelgrid(::A5System, l::Integer)
-    lvl = Int(l)
-    0 <= lvl <= MAX_LEVEL || throw(ArgumentError(
-        "A5 resolution $lvl is outside levels(A5System()) = 0:$MAX_LEVEL"))
-    return A5Grid(lvl)
-end
 
 """
     rootcells(::A5System)
@@ -318,21 +300,20 @@ max_neighbors(::A5System, ::Edge) = 5
 # two to spare, which is exactly why `levels` stops where it does.
 _quintant_span(l::Int) = Int64(4)^(l - 1)
 
-function ncells(grid::A5Grid)
-    grid.level == 0 && return 12
-    return Int(60 * _quintant_span(grid.level))
+function ncells(::A5System, l::Integer)
+    Int(l) == 0 && return 12
+    return Int(60 * _quintant_span(Int(l)))
 end
 
 """
-    cellindex(grid::A5Grid, i::Int) -> A5Cell
+    cellindex(::A5System, l::Integer, i::Int) -> A5Cell
 
-The id at position `i`: one `divrem` into `(quintant, Hilbert state)` and one
-`serialize`. No table, no search, and O(1) at every level.
+The id at position `i` of resolution `l`: one `divrem` into
+`(quintant, Hilbert state)` and one `serialize`. No table, no search, and O(1)
+at every level. The grid has already bounds-checked `i`.
 """
-function cellindex(grid::A5Grid, i::Int)
-    n = ncells(grid)
-    1 <= i <= n || throw(BoundsError(grid, i))
-    l = grid.level
+function cellindex(::A5System, lvl::Integer, i::Int)
+    l = Int(lvl)
     l == 0 && return A5Cell(@inbounds A5Native.res0_cells()[i])
     quintant, S = divrem(Int64(i) - 1, _quintant_span(l))
     origin = @inbounds A5Native.ORIGINS[Int(quintant ÷ 5)+1]
@@ -341,11 +322,12 @@ function cellindex(grid::A5Grid, i::Int)
 end
 
 """
-    cellposition(grid::A5Grid, c::A5Cell) -> Union{Int,Nothing}
+    cellposition(::A5System, c::A5Cell) -> Union{Int,Nothing}
 
-The position of `c`, or `nothing` when `c` is not a cell of this grid — a
-different resolution, the world cell, a res-30 id, or an id that is malformed in
-any of the ways [`isvalid`](@ref) rejects.
+The position of `c` in its own resolution's dense order, or `nothing` when `c`
+is not a cell at all — the world cell, a res-30 id, or an id that is malformed
+in any of the ways [`isvalid`](@ref) rejects. The grid has already rejected a
+cell from another resolution.
 
 `nothing` rather than an error is the contract, and it is what makes asking "is
 this cell here?" the normal way to intersect an id set with a grid. The validity
@@ -353,9 +335,8 @@ check is not paranoia: the a5 arithmetic will happily decode an index with junk
 in its padding bits into a neighbouring cell's `(quintant, S)`, and returning
 that cell's position confidently is worse than returning nothing.
 """
-function cellposition(grid::A5Grid, c::A5Cell)
-    l = grid.level
-    level(c) == l || return nothing
+function cellposition(::A5System, c::A5Cell)
+    l = level(c)
     cell = _decode(c.id)
     cell === nothing && return nothing
     quintant = Int64(c.id >> A5Native.HILBERT_START_BIT)

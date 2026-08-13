@@ -48,7 +48,7 @@ using DiscreteGlobalGrids.S2: FACE_U_AXIS, FACE_V_AXIS, FACE_NORMAL,
     SWAP_MASK, INVERT_MASK, IJ_TO_POS, POS_TO_IJ, POS_TO_ORIENTATION,
     xyf_to_hilbert, hilbert_to_xyf,
     SEAM, NEIGHBOR_OFFSETS, wrap_xyf,
-    S2System, S2Grid, MAX_LEVEL
+    S2System, MAX_LEVEL
 
 const SYS = S2System()
 
@@ -545,7 +545,7 @@ end
 
     for l in (0, 1, 5, 30)
         g = levelgrid(SYS, l)
-        @test g isa S2Grid
+        @test g isa DGG.HierarchicalLevelGrid{S2System}
         @test system(g) === SYS
         @test level(g) == l
         @test ncells(g) == 6 * 4^l
@@ -1092,7 +1092,7 @@ end
 
 @testset "conformance" begin
     for l in (0, 1, 3)
-        test_grid_interface(levelgrid(SYS, l); label = "S2Grid(level=$l)")
+        test_grid_interface(levelgrid(SYS, l); label = "S2 level $l")
     end
     test_hierarchical_system(SYS)
 end

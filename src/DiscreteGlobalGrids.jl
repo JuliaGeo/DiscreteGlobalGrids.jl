@@ -18,6 +18,11 @@ implements, and against which every algorithm is written exactly once.
     of [`node_extent`](@ref), subtree ranges, sublinear queries. Hierarchy is
     always an optimisation, never a semantic.
 
+A system does not normally write a grid type at all. [`levelgrid`](@ref)
+defaults to [`HierarchicalLevelGrid`](@ref), which stores `(system, level)` and
+forwards the four required grid methods to system-level counterparts, so the
+four are answered once per system rather than once per grid type.
+
 Implementors write primitives; consumers get contracts. A system that overrides
 a generic for speed and changes an answer is wrong, and the separate
 `DiscreteGlobalGridsConformanceTesting` package is how that is caught.
@@ -39,8 +44,8 @@ edges, in wrappers that say so.
 
   - `src/interface/` — the type vocabulary and every generic's contract.
   - `src/fallbacks/` — the generic implementations: the cursor, the trees,
-    `PartialGrid`, `AuthalicGrid`/`AuthalicSystem`, `MultiOrderCellSet`, the
-    query engine.
+    [`HierarchicalLevelGrid`](@ref), `PartialGrid`,
+    `AuthalicGrid`/`AuthalicSystem`, `MultiOrderCellSet`, the query engine.
   - `lib/DiscreteGlobalGridsConformanceTesting/` — the separate test-only
     package whose property suites make the contracts executable.
   - `src/systems/{IGeo7,H3,HEALPix,A5,S2,ISEA4R}/` — one directory per grid
@@ -101,6 +106,14 @@ include("interface/system.jl")
 # Generic implementations of everything the interface declares.
 include("fallbacks/fallbacks.jl")
 
+# The concrete types the generic layer ships: the one complete-level grid, the
+# one subset grid, the ellipsoid wrapper pair, the one cursor, and the
+# multi-order coverage pair. Systems define none of these. Bound here rather
+# than beside their exports below because the system modules build on the first
+# of them.
+using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSystem,
+    HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges
+
 # Grid systems, all six ported. Include order never matters: the two ISEA-family
 # systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
 # first defines it behind an `isdefined` guard.
@@ -111,12 +124,12 @@ include("systems/A5/A5.jl")
 include("systems/S2/S2.jl")
 include("systems/ISEA4R/ISEA4R.jl")
 
-using .IGeo7: IGeo7System, IGeo7Grid, Z7Cell
-using .H3: H3System, H3Grid, H3Cell
-using .HEALPix: HEALPixSystem, HEALPixGrid, HEALPixRingIndex
-using .A5: A5System, A5Grid, A5Cell
-using .S2: S2System, S2Grid
-using .ISEA4R: ISEA4RSystem, ISEA4RGrid
+using .IGeo7: IGeo7System, Z7Cell
+using .H3: H3System, H3Cell
+using .HEALPix: HEALPixSystem, HEALPixRingIndex
+using .A5: A5System, A5Cell
+using .S2: S2System
+using .ISEA4R: ISEA4RSystem
 
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
@@ -228,34 +241,33 @@ export Intersects, Disjoint, Contains, Within, Covers, CoveredBy
 export Touches, Crosses, Overlaps, Equals
 
 # --- Fallback substrate ----------------------------------------------------
-# The concrete types the generic layer ships: the one subset grid, the ellipsoid
-# wrapper pair, the one cursor, and the multi-order coverage pair. Systems
-# define none of these.
-using .Fallbacks: PartialGrid, AuthalicGrid, AuthalicSystem,
-    HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges
-export PartialGrid, HierarchicalGridCursor
+# `using`-ed above the system includes, because `HierarchicalLevelGrid` is what
+# all six of them return from `levelgrid` and attach their fast paths to.
+export HierarchicalLevelGrid, PartialGrid, HierarchicalGridCursor
 export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges
 
 # --- Grid systems ----------------------------------------------------------
-# One singleton, one canonical id type and one grid type per system, plus the
-# registry that lists them. The submodules themselves (`DiscreteGlobalGrids.H3`
-# and friends) are deliberately NOT exported: `H3`, `HEALPix`, `A5` and `S2` are
-# also the names of registered packages, and a bare `using DiscreteGlobalGrids`
-# must not shadow them. Anything past this list — `IGeo7.equal_area_steradians`,
-# `IGeo7.z7_string`, `H3.H3Native`, `A5.A5Native` — is reached through the
-# qualified module.
+# One singleton and one canonical id type per system, plus the registry that
+# lists them. No system exports a grid type: all six return the package's
+# `HierarchicalLevelGrid` from `levelgrid` and hang their fast paths off
+# `HierarchicalLevelGrid{TheSystem}`. The submodules themselves
+# (`DiscreteGlobalGrids.H3` and friends) are deliberately NOT exported: `H3`,
+# `HEALPix`, `A5` and `S2` are also the names of registered packages, and a bare
+# `using DiscreteGlobalGrids` must not shadow them. Anything past this list —
+# `IGeo7.equal_area_steradians`, `IGeo7.z7_string`, `H3.H3Native`,
+# `A5.A5Native` — is reached through the qualified module.
 #
 # S2 and ISEA4R contribute no id type: both are canonically indexed by the
 # interface's own `LevelIndex` (exported above), over the scaffold ordinal
 # `face * 4^level + hilbert` and `diamond * 4^level + morton` respectively.
 export systems
-export IGeo7System, IGeo7Grid, Z7Cell
-export H3System, H3Grid, H3Cell
-export HEALPixSystem, HEALPixGrid, HEALPixRingIndex
-export A5System, A5Grid, A5Cell
-export S2System, S2Grid
-export ISEA4RSystem, ISEA4RGrid
+export IGeo7System, Z7Cell
+export H3System, H3Cell
+export HEALPixSystem, HEALPixRingIndex
+export A5System, A5Cell
+export S2System
+export ISEA4RSystem
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere

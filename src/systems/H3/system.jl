@@ -46,23 +46,12 @@ implementation cell for cell rather than approximating one.
 """
 struct H3System <: AbstractHierarchicalGridSystem end
 
-"""
-    H3Grid(level) <: AbstractGrid
+# `levelgrid(H3System(), l)` is the package's `HierarchicalLevelGrid`, which
+# stores the resolution and nothing else — so constructing the res-15 grid
+# (569,707,381,193,162 cells) is free. H3's fast paths hang off this alias, and
+# the five primitives it forwards to are the `(sys, ...)` methods below.
+const LevelGrid = HierarchicalLevelGrid{H3System}
 
-The complete H3 grid at one resolution — build one with
-[`levelgrid(H3System(), l)`](@ref levelgrid) rather than by calling this.
-
-A lightweight descriptor: it stores the resolution and nothing else, so
-constructing the res-15 grid (569,707,381,193,162 cells) is free.
-"""
-struct H3Grid <: AbstractGrid
-    level::Int
-end
-
-system(::H3Grid) = H3System()
-level(g::H3Grid) = g.level
-
-Base.show(io::IO, g::H3Grid) = print(io, "H3Grid(res ", g.level, ")")
 Base.show(io::IO, ::H3System) = print(io, "H3System()")
 
 # ===========================================================================
@@ -103,13 +92,6 @@ end
 cellindextype(::H3System) = H3Cell
 
 levels(::H3System) = 0:MAX_RESOLUTION
-
-function levelgrid(::H3System, l::Integer)
-    lvl = Int(l)
-    0 <= lvl <= MAX_RESOLUTION || throw(ArgumentError(
-        "H3 resolution $lvl is outside levels(H3System()) = 0:$MAX_RESOLUTION"))
-    return H3Grid(lvl)
-end
 
 """
     rootcells(::H3System)
@@ -206,20 +188,19 @@ max_neighbors(::H3System, ::Connectivity=Vertex()) = 6
 # The dense order: positions <-> ids
 # ===========================================================================
 
-function ncells(grid::H3Grid)
-    return @inbounds _H3_ROOT_ENDS[grid.level+1][122]
+function ncells(::H3System, l::Integer)
+    return @inbounds _H3_ROOT_ENDS[Int(l)+1][122]
 end
 
 """
-    cellindex(grid::H3Grid, i::Int) -> H3Cell
+    cellindex(::H3System, l::Integer, i::Int) -> H3Cell
 
-The id at position `i`: one binary search of the base-cell prefix sums, then
-libh3's `childPosToCell` for the position within that base cell.
+The id at position `i` of resolution `l`: one binary search of the base-cell
+prefix sums, then libh3's `childPosToCell` for the position within that base
+cell. The grid has already bounds-checked `i`.
 """
-function cellindex(grid::H3Grid, i::Int)
-    n = ncells(grid)
-    1 <= i <= n || throw(BoundsError(grid, i))
-    r = grid.level
+function cellindex(::H3System, l::Integer, i::Int)
+    r = Int(l)
     ends = @inbounds _H3_ROOT_ENDS[r+1]
     # First base cell whose cumulative count reaches `i`; counts are strictly
     # increasing (every base cell has at least one descendant), so there are no
@@ -231,10 +212,11 @@ function cellindex(grid::H3Grid, i::Int)
 end
 
 """
-    cellposition(grid::H3Grid, c::H3Cell) -> Union{Int,Nothing}
+    cellposition(::H3System, c::H3Cell) -> Union{Int,Nothing}
 
-The position of `c`, or `nothing` when `c` is not a cell of this grid — a
-different resolution, or not a valid index at all.
+The position of `c` in its own resolution's dense order, or `nothing` when `c`
+is not a valid index at all. The grid has already rejected a cell from another
+resolution.
 
 `nothing` rather than an error is the contract, and it is what makes asking
 "is this cell here?" the normal way to intersect an id set with a grid. The
@@ -242,11 +224,10 @@ validity check is not paranoia: libh3 will happily compute a child position for
 a malformed index, and returning a confident wrong position for one is worse
 than returning nothing.
 """
-function cellposition(grid::H3Grid, c::H3Cell)
-    level(c) == grid.level || return nothing
+function cellposition(::H3System, c::H3Cell)
     H3Native.is_valid_cell(c.id) || return nothing
     b = H3Native.get_base_cell(c.id)
-    ends = @inbounds _H3_ROOT_ENDS[grid.level+1]
+    ends = @inbounds _H3_ROOT_ENDS[level(c)+1]
     previous = b == 0 ? 0 : @inbounds ends[b]
     return Int(previous + H3Native.cell_to_child_pos(c.id, 0) + 1)
 end

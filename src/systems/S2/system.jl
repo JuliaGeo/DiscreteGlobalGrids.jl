@@ -85,16 +85,11 @@ so nothing needs inflating and [`cap_inflation`](@ref) is never consulted.
 """
 struct S2System <: DGG.AbstractHierarchicalGridSystem end
 
-"""
-    S2Grid(level) <: AbstractGrid
-
-The complete S2 grid at refinement `level`: all `6 * 4^level` cells in scaffold
-ordinal (face-major, Hilbert-within-face) order. Built by
-[`levelgrid`](@ref); a lightweight descriptor, not a materialised cell list.
-"""
-struct S2Grid <: DGG.AbstractGrid
-    level::Int
-end
+# `levelgrid(S2System(), l)` is the package's `HierarchicalLevelGrid`: all
+# `6 * 4^l` cells in scaffold ordinal (face-major, Hilbert-within-face) order.
+# S2's fast paths hang off this alias, and the five primitives it forwards to
+# are the `(sys, ...)` methods further down.
+const LevelGrid = DGG.HierarchicalLevelGrid{S2System}
 
 """
     MAX_LEVEL
@@ -120,13 +115,6 @@ DGG.has_sorted_subtrees(::S2System) = true
 
 DGG.max_neighbors(::S2System, ::DGG.Vertex) = 8
 DGG.max_neighbors(::S2System, ::DGG.Edge) = 4
-
-function DGG.levelgrid(sys::S2System, l::Integer)
-    lvl = Int(l)
-    lvl in DGG.levels(sys) || throw(ArgumentError(
-        "level $lvl is outside $(DGG.levels(sys)) for $(nameof(typeof(sys)))"))
-    return S2Grid(lvl)
-end
 
 """
     rootcells(S2System())
@@ -227,39 +215,42 @@ function DGG.descendants(sys::S2System, c::DGG.LevelIndex, l::Integer)
 end
 
 # ===========================================================================
-# Grid interface
+# The level grid: size, and positions <-> ids
 # ===========================================================================
 
-DGG.system(::S2Grid) = S2System()
-DGG.level(g::S2Grid) = g.level
-DGG.ncells(g::S2Grid) = Int(_ncells(g.level))
+DGG.ncells(::S2System, l::Integer) = Int(_ncells(l))
 
-function DGG.cellindex(g::S2Grid, i::Int)
-    1 <= i <= DGG.ncells(g) || throw(BoundsError(g, i))
-    return DGG.LevelIndex(g.level, i - 1)
-end
+# The grid bounds-checks `i`, so this is the bijection and nothing else.
+DGG.cellindex(::S2System, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
 
 """
-    cellposition(grid, c) -> Union{Int,Nothing}
+    cellposition(S2System(), c) -> Union{Int,Nothing}
 
-Closed form: `index + 1` for a cell at the grid's own level and in range, and
-`nothing` otherwise (a different level, or an ordinal no cell has). Replaces
-the fallback's linear scan.
+Closed form: `index + 1` for an in-range ordinal, and `nothing` for one no cell
+has. Replaces the fallback's linear scan. The grid has already rejected a cell
+from another level.
 """
-function DGG.cellposition(g::S2Grid, c::DGG.LevelIndex)
-    DGG.level(c) == g.level || return nothing
-    0 <= c.index < _ncells(g.level) || return nothing
+function DGG.cellposition(::S2System, c::DGG.LevelIndex)
+    0 <= c.index < _ncells(DGG.level(c)) || return nothing
     return Int(c.index + 1)
 end
 
-# The id guard every geometry entry point needs: `hilbert_to_xyf` validates the
-# ordinal's range for us, but not that the cell belongs to THIS grid's level.
-@inline function _checked_index(g::S2Grid, c::DGG.LevelIndex)
+# The id guard every geometry entry point needs: `hilbert_to_xyf` will happily
+# un-Hilbert an ordinal no cell has, yielding the geometry of a cell that does
+# not exist rather than an error.
+@inline function _checked_index(c::DGG.LevelIndex)
+    l = DGG.level(c)
+    0 <= c.index < _ncells(l) || throw(ArgumentError(
+        "scaffold ordinal $(c.index) is out of range 0:$(_ncells(l) - 1) at level $l"))
+    return c.index
+end
+
+# The grid-level form the topology entry points use, which additionally pins the
+# cell to the grid it was handed to.
+@inline function _checked_index(g::LevelGrid, c::DGG.LevelIndex)
     DGG.level(c) == g.level || throw(ArgumentError(
         "cell $c is at level $(DGG.level(c)), not the grid's level $(g.level)"))
-    0 <= c.index < _ncells(g.level) || throw(ArgumentError(
-        "scaffold ordinal $(c.index) is out of range 0:$(_ncells(g.level) - 1) at level $(g.level)"))
-    return c.index
+    return _checked_index(c)
 end
 
 # ===========================================================================
@@ -286,9 +277,9 @@ geodesic and whose ring therefore carries 32 vertices.
 Consequently `cell_area` needs no override: the generic spherical polygon area
 of this ring is the cell's true area.
 """
-function DGG.cell_boundary(g::S2Grid, c::DGG.LevelIndex)
-    nside = _nside(g.level)
-    ix, iy, face = hilbert_to_xyf(_checked_index(g, c), nside)
+function DGG.cell_boundary(::S2System, c::DGG.LevelIndex)
+    nside = _nside(DGG.level(c))
+    ix, iy, face = hilbert_to_xyf(_checked_index(c), nside)
     corners = cell_corners(ix, iy, face, nside)
     return GO.UnitSphericalPoint{Float64}[corners[1], corners[2], corners[3], corners[4]]
 end
@@ -305,9 +296,9 @@ strictly interior, as [`cell_centroid`](@ref) requires. It is **not** the area
 centroid of the spherical quadrilateral, and S2 does not claim it is: the chart
 is not equal-area, so the two differ by a fraction of a cell.
 """
-function DGG.cell_centroid(g::S2Grid, c::DGG.LevelIndex)
-    nside = _nside(g.level)
-    ix, iy, face = hilbert_to_xyf(_checked_index(g, c), nside)
+function DGG.cell_centroid(::S2System, c::DGG.LevelIndex)
+    nside = _nside(DGG.level(c))
+    ix, iy, face = hilbert_to_xyf(_checked_index(c), nside)
     return cell_center(ix, iy, face, nside)
 end
 
@@ -412,7 +403,7 @@ self-consistent (the returned cell's own centroid maps back to it):
   - the **lattice cell** is chosen by `floor`, which puts a point on a cut line
     on the higher side of it.
 """
-function DGG.cellat(g::S2Grid, p::GO.UnitSphericalPoint)
+function DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint)
     nside = _nside(g.level)
     ix, iy, face = point_to_xyf(p, nside)
     return DGG.LevelIndex(g.level, xyf_to_hilbert(ix, iy, face, nside))
@@ -429,7 +420,7 @@ The immediate neighbours of `c` in **counter-clockwise rotational order seen
 from outside the sphere, starting at the `+s` lattice direction**
 ([`NEIGHBOR_OFFSETS`](@ref)), with cube-corner steps and repeats dropped.
 """
-function _one_ring(g::S2Grid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+function _one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     _checked_index(g, c)
     out = SmallVector{8,DGG.LevelIndex}()
     for h in lattice_neighbors(c.index, g.level, connectivity)
@@ -482,7 +473,7 @@ spoke through the first ring-1 neighbour; see [`ring`](@ref).
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by `max_neighbors`.
 """
-function DGG.neighbors(g::S2Grid, c::DGG.LevelIndex, k::Integer = 1;
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -508,7 +499,7 @@ recommends for exactly this case, and it makes every ring start on the same
 spoke, so slot `j` of ring 2 points the same way as slot 1 of ring 1 does.
 Ties in azimuth break by canonical id, so the order is total and deterministic.
 """
-function DGG.ring(g::S2Grid, c::DGG.LevelIndex, k::Integer;
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -522,7 +513,7 @@ end
 # distance exactly `j`, each returned in CCW rotational order. Shared by
 # `neighbors` and `ring` so the two cannot disagree about what a shell is or
 # what order it is in.
-function _shells(g::S2Grid, c::DGG.LevelIndex, steps::Int,
+function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
         connectivity::DGG.Connectivity)
     shells = Vector{DGG.LevelIndex}[]
     steps == 0 && return shells
@@ -553,7 +544,7 @@ end
 # first ring-1 neighbour. `e1 x e2 == centre` makes `(e1, e2)` right-handed SEEN
 # FROM OUTSIDE, which is what puts increasing `atan(u.e2, u.e1)` counter-
 # clockwise from outside rather than from inside.
-function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::S2Grid, c::DGG.LevelIndex,
+function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::LevelGrid, c::DGG.LevelIndex,
         ring1::Vector{DGG.LevelIndex})
     length(cells) <= 1 && return cells
     centre = DGG.cell_centroid(g, c)

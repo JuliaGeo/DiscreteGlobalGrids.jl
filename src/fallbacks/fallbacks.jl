@@ -9,6 +9,7 @@
 #   geometry.jl      cell_polygon / cell_area / cell_extent / node_extent
 #   identity.jl      cellposition, reindex, ancestor, descendants
 #   subtree.jl       subtree_border / subtree_interior
+#   level_grid.jl    `HierarchicalLevelGrid`, the one complete-level grid type
 #   partial_grid.jl  `PartialGrid`, the one subset-grid type
 #   authalic_grid.jl `AuthalicGrid`/`AuthalicSystem`, the ellipsoid wrapper
 #   cursor.jl        `HierarchicalGridCursor` — the hierarchy IS the tree
@@ -31,7 +32,10 @@
 #   * `levelgrid(sys, l)` is the COMPLETE grid at `l`, and its positions ascend
 #     in canonical id order. The cursor treats any non-`PartialGrid` grid with a
 #     system as that grid, and reads a child's position window straight off
-#     `descendant_range`.
+#     `descendant_range`. Its default is a `HierarchicalLevelGrid`, which turns
+#     the four grid contracts below into the system-level methods
+#     `ncells(sys, l)`, `cellindex(sys, l, i)`, `cellposition(sys, c)`,
+#     `cell_boundary(sys, c)` and `cell_centroid(sys, c)`.
 #   * `descendant_range(sys, c, l)` is in that same position space, and answers
 #     the `l == level(c)` case with the cell's own one-element range — window
 #     descent asks for it at the level above the leaves.
@@ -89,6 +93,7 @@ include("caps.jl")
 include("geometry.jl")
 include("identity.jl")
 include("subtree.jl")
+include("level_grid.jl")
 include("partial_grid.jl")
 include("authalic_grid.jl")
 include("cursor.jl")

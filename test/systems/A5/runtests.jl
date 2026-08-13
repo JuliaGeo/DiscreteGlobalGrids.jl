@@ -852,7 +852,10 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             @test DGG.system(g) === S
             @test DGG.level(g) == l
         end
-        @test occursin("A5Grid", sprint(show, DGG.levelgrid(S, 3)))
+        # A5 ships no grid type: `levelgrid` returns the package's generic
+        # complete-level grid, parametrised on the system.
+        @test DGG.levelgrid(S, 3) isa DGG.HierarchicalLevelGrid{A5.A5System}
+        @test occursin("A5System", sprint(show, DGG.levelgrid(S, 3)))
         @test sprint(show, S) == "A5System()"
     end
 
@@ -866,7 +869,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     # testset caught once already.
     @testset "every public name is documented" begin
         documented = Set(b.var for b in keys(Docs.meta(A5)))
-        for name in (:A5, :A5Cell, :A5Grid, :A5System,
+        for name in (:A5, :A5Cell, :A5System,
                      # the four required grid primitives
                      :cellindex, :cell_boundary, :cell_centroid,
                      # position, adjacency, hierarchy
@@ -993,7 +996,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     # =======================================================================
     @testset "conformance" begin
         for l in (0, 1, 3, 9)
-            test_grid_interface(DGG.levelgrid(S, l); label="A5Grid(res $l)")
+            test_grid_interface(DGG.levelgrid(S, l); label="A5 res $l")
         end
         test_hierarchical_system(S)
         # Levels the seeded sampler will not have drawn, so the hierarchy laws

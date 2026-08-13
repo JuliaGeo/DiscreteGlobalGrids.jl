@@ -23,7 +23,8 @@ pentagonal tiling of a dodecahedron, resolutions `0:29`.
   - [`A5System`](@ref) — the system singleton.
   - [`A5Cell`](@ref) — the canonical id, a `UInt64` in upstream a5's own
     serialization, with the resolution in-band.
-  - [`A5Grid`](@ref) — one complete resolution, from `levelgrid(A5System(), l)`.
+  - `levelgrid(A5System(), l)` — one complete resolution, as the package's
+    [`HierarchicalLevelGrid`](@ref). A5 ships no grid type of its own.
   - [`A5Native`](@ref) — the ported upstream arithmetic, if you want it directly.
 
 # The hierarchy has three regimes
@@ -77,7 +78,7 @@ module A5
 # `has_sorted_subtrees`, so it owes no method.
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
-    AbstractCellIndex, Connectivity, Vertex, Edge,
+    AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,
     ncells, cellindex, cell_boundary, cell_centroid,
     cellposition, rawid,
     cellat, neighbors, ring, system, level,

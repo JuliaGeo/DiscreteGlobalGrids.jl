@@ -7,7 +7,7 @@
 # ---------------------------------------------------------------------------
 
 """
-    cell_boundary(grid::H3Grid, c::H3Cell) -> SmallVector{10,UnitSphericalPoint}
+    cell_boundary(::H3System, c::H3Cell) -> SmallVector{10,UnitSphericalPoint}
 
 The exact boundary ring of `c`: libh3's `cellToBoundary`, on the unit sphere.
 
@@ -28,7 +28,7 @@ real area: the old cleanup admitted errors up to 12% of a cell, while the
 untouched ring reproduces `cellAreaRads2` to about 1e-15 sr. The container is
 sized for the ten libh3 can produce and carries however many it did.
 """
-function cell_boundary(::H3Grid, c::H3Cell)
+function cell_boundary(::H3System, c::H3Cell)
     verts, n = H3Native.boundary_verts(c.id)
     out = SmallVector{10,USPoint}()
     for i in 1:n
@@ -39,7 +39,7 @@ function cell_boundary(::H3Grid, c::H3Cell)
 end
 
 """
-    cell_centroid(grid::H3Grid, c::H3Cell) -> UnitSphericalPoint
+    cell_centroid(::H3System, c::H3Cell) -> UnitSphericalPoint
 
 The cell centre from libh3's `cellToLatLng`, straight onto the unit sphere.
 
@@ -47,7 +47,7 @@ This is the centre H3's hierarchy is built around — the point child cells are
 arranged about — rather than the mean of the boundary vertices, and it is
 strictly interior to the cell for every valid index.
 """
-function cell_centroid(::H3Grid, c::H3Cell)
+function cell_centroid(::H3System, c::H3Cell)
     x, y, z = H3Native.cell_center_cartesian(c.id)
     return USPoint(x, y, z)
 end
@@ -57,8 +57,8 @@ end
 # ===========================================================================
 
 """
-    cellat(grid::H3Grid, p::UnitSphericalPoint) -> H3Cell
-    cellat(grid::H3Grid, lon::Real, lat::Real) -> H3Cell
+    cellat(grid::LevelGrid, p::UnitSphericalPoint) -> H3Cell
+    cellat(grid::LevelGrid, lon::Real, lat::Real) -> H3Cell
 
 The cell of `grid` containing a point, by libh3's `latLngToCell`.
 
@@ -79,11 +79,11 @@ The `(lon, lat)` method takes **degrees** and is the primitive here — it hands
 the coordinates to libh3 directly rather than routing them through `xyz` and
 back, which is both faster and one rounding step shorter.
 """
-function cellat(grid::H3Grid, p::GO.UnitSphericalPoint)
+function cellat(grid::LevelGrid, p::GO.UnitSphericalPoint)
     lon = atand(p[2], p[1])
     lat = asind(clamp(p[3], -1.0, 1.0))
     return H3Cell(H3Native.lonlat_to_cell(lon, lat, grid.level))
 end
 
-cellat(grid::H3Grid, lon::Real, lat::Real) =
+cellat(grid::LevelGrid, lon::Real, lat::Real) =
     H3Cell(H3Native.lonlat_to_cell(lon, lat, grid.level))

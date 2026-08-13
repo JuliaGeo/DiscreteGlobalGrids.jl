@@ -88,16 +88,10 @@ tile their parent's chart rectangle exactly, so nothing needs inflating and
 """
 struct ISEA4RSystem <: DGG.AbstractHierarchicalGridSystem end
 
-"""
-    ISEA4RGrid(level) <: AbstractGrid
-
-The complete ISEA4R grid at refinement `level`: all `10 * 4^level` cells in
-Morton order. Built by [`levelgrid`](@ref); a lightweight descriptor, not a
-materialised cell list.
-"""
-struct ISEA4RGrid <: DGG.AbstractGrid
-    level::Int
-end
+# `levelgrid(ISEA4RSystem(), l)` is the package's `HierarchicalLevelGrid`: all
+# `10 * 4^l` cells in Morton order. ISEA4R's fast paths hang off this alias, and
+# the five primitives it forwards to are the `(sys, ...)` methods further down.
+const LevelGrid = DGG.HierarchicalLevelGrid{ISEA4RSystem}
 
 # The one place `nside` is derived from a level, and the guard that keeps a bad
 # level from silently producing a shift of 64.
@@ -141,13 +135,6 @@ DGG.max_neighbors(::ISEA4RSystem, ::DGG.Edge) = 4
 # an id space with no consumer. `xyd_to_rowmajor`/`rowmajor_to_xyd` stay
 # available inside the submodule for the chart's own arbitrary-`nside` use.
 DGG.cellindextypes(::ISEA4RSystem) = (DGG.LevelIndex,)
-
-function DGG.levelgrid(sys::ISEA4RSystem, l::Integer)
-    lvl = Int(l)
-    lvl in DGG.levels(sys) || throw(ArgumentError(
-        "level $lvl is outside $(DGG.levels(sys)) for $(nameof(typeof(sys)))"))
-    return ISEA4RGrid(lvl)
-end
 
 """
     rootcells(ISEA4RSystem())
@@ -254,28 +241,23 @@ function DGG.descendants(sys::ISEA4RSystem, c::DGG.LevelIndex, l::Integer)
 end
 
 # ===========================================================================
-# Grid interface
+# The level grid: size, and positions <-> ids
 # ===========================================================================
 
-DGG.system(::ISEA4RGrid) = ISEA4RSystem()
-DGG.level(g::ISEA4RGrid) = g.level
-DGG.ncells(g::ISEA4RGrid) = Int(_ncells(g.level))
+DGG.ncells(::ISEA4RSystem, l::Integer) = Int(_ncells(l))
 
-function DGG.cellindex(g::ISEA4RGrid, i::Int)
-    1 <= i <= DGG.ncells(g) || throw(BoundsError(g, i))
-    return DGG.LevelIndex(g.level, i - 1)
-end
+# The grid bounds-checks `i`, so this is the bijection and nothing else.
+DGG.cellindex(::ISEA4RSystem, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
 
 """
-    cellposition(grid, c) -> Union{Int,Nothing}
+    cellposition(ISEA4RSystem(), c) -> Union{Int,Nothing}
 
-Closed form: `index + 1` for a cell at the grid's own level and in range, and
-`nothing` otherwise (a different level, or an id no cell has). Replaces the
-fallback's linear scan, and never throws — a miss is an answer.
+Closed form: `index + 1` for an in-range id, and `nothing` for one no cell has.
+Replaces the fallback's linear scan, and never throws — a miss is an answer.
+The grid has already rejected a cell from another level.
 """
-function DGG.cellposition(g::ISEA4RGrid, c::DGG.LevelIndex)
-    DGG.level(c) == g.level || return nothing
-    0 <= c.index < _ncells(g.level) || return nothing
+function DGG.cellposition(::ISEA4RSystem, c::DGG.LevelIndex)
+    0 <= c.index < _ncells(DGG.level(c)) || return nothing
     return Int(c.index + 1)
 end
 
@@ -283,12 +265,19 @@ end
 # de-interleave an id no cell has, yielding the geometry of a cell that does not
 # exist rather than an error. (`cellposition` deliberately does NOT use this —
 # there, a miss is `nothing`.)
-@inline function _checked_index(g::ISEA4RGrid, c::DGG.LevelIndex)
+@inline function _checked_index(c::DGG.LevelIndex)
+    l = DGG.level(c)
+    0 <= c.index < _ncells(l) || throw(ArgumentError(
+        "ISEA4R id $(c.index) is out of range 0:$(_ncells(l) - 1) at level $l"))
+    return c.index
+end
+
+# The grid-level form the topology entry points use, which additionally pins the
+# cell to the grid it was handed to.
+@inline function _checked_index(g::LevelGrid, c::DGG.LevelIndex)
     DGG.level(c) == g.level || throw(ArgumentError(
         "cell $c is at level $(DGG.level(c)), not the grid's level $(g.level)"))
-    0 <= c.index < _ncells(g.level) || throw(ArgumentError(
-        "ISEA4R id $(c.index) is out of range 0:$(_ncells(g.level) - 1) at level $(g.level)"))
-    return c.index
+    return _checked_index(c)
 end
 
 # ===========================================================================
@@ -404,9 +393,9 @@ right-handed `(u, w)` frame onto the sphere seen from outside.
 For the cell's **area**, prefer [`cell_area`](@ref), which is the exact
 equal-area value in closed form rather than this polygon's.
 """
-function DGG.cell_boundary(g::ISEA4RGrid, c::DGG.LevelIndex)
-    nside = _nside(g.level)
-    ix, iy, d = morton_to_xyd(_checked_index(g, c), nside)
+function DGG.cell_boundary(::ISEA4RSystem, c::DGG.LevelIndex)
+    nside = _nside(DGG.level(c))
+    ix, iy, d = morton_to_xyd(_checked_index(c), nside)
     return _perimeter_points(ix, iy, d, nside, BOUNDARY_SEGMENTS)
 end
 
@@ -430,7 +419,7 @@ therefore great circles — see `BOUNDARY_SEGMENTS`.)
 O(1), and independent of the boundary densification, so tightening
 `BOUNDARY_SEGMENTS` changes geometric predicates but never an area.
 """
-DGG.cell_area(g::ISEA4RGrid, c::DGG.LevelIndex) =
+DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex) =
     (_checked_index(g, c); 4 * Float64(π) / _ncells(g.level))
 
 """
@@ -444,9 +433,9 @@ midpoint of the chart rectangle is the canonical centre — and it is strictly
 interior, as [`cell_centroid`](@ref) requires. It is not the spherical centroid
 of the published 4-gon; no equal-area DGGS claims that of its cell centres.
 """
-function DGG.cell_centroid(g::ISEA4RGrid, c::DGG.LevelIndex)
-    nside = _nside(g.level)
-    ix, iy, d = morton_to_xyd(_checked_index(g, c), nside)
+function DGG.cell_centroid(::ISEA4RSystem, c::DGG.LevelIndex)
+    nside = _nside(DGG.level(c))
+    ix, iy, d = morton_to_xyd(_checked_index(c), nside)
     return cell_center(ix, iy, d, nside)
 end
 
@@ -560,7 +549,7 @@ the point on the higher side of each chart cut line. Deterministic per platform
 and self-consistent: the returned cell's own centroid maps back to it, which
 `test/systems/ISEA4R/runtests.jl` asserts over whole levels.
 """
-DGG.cellat(g::ISEA4RGrid, p::GO.UnitSphericalPoint) =
+DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
     DGG.LevelIndex(g.level, point_to_morton(p, _nside(g.level)))
 
 # ===========================================================================
@@ -581,7 +570,7 @@ lookup and they cannot be off the lattice. Re-deriving `ispow2(nside)` and two
 range tests per neighbour is the whole cost of this function otherwise, and this
 is the inner loop of every breadth-first shell walk.
 """
-function _one_ring(g::ISEA4RGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+function _one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     nside = _nside(g.level)
     ix, iy, d = morton_to_xyd(_checked_index(g, c), nside)
     out = SmallVector{9,DGG.LevelIndex}()
@@ -634,7 +623,7 @@ same starting spoke; see [`ring`](@ref).
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by [`max_neighbors`](@ref).
 """
-function DGG.neighbors(g::ISEA4RGrid, c::DGG.LevelIndex, k::Integer = 1;
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -660,7 +649,7 @@ recommends, and it makes every ring start on the same spoke by construction
 rather than by a second convention. Ties in azimuth break by canonical id, so
 the order is total and deterministic.
 """
-function DGG.ring(g::ISEA4RGrid, c::DGG.LevelIndex, k::Integer;
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -674,7 +663,7 @@ end
 # distance exactly `j`, each returned in CCW rotational order. Shared by
 # `neighbors` and `ring` so the two cannot disagree about what a shell is or
 # what order it is in.
-function _shells(g::ISEA4RGrid, c::DGG.LevelIndex, steps::Int,
+function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
         connectivity::DGG.Connectivity)
     shells = Vector{DGG.LevelIndex}[]
     steps == 0 && return shells
@@ -707,7 +696,7 @@ end
 # first ring-1 neighbour. `e1 × e2 == centre` makes `(e1, e2)` right-handed SEEN
 # FROM OUTSIDE, which is what puts increasing `atan(u·e2, u·e1)`
 # counter-clockwise from outside rather than from inside.
-function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::ISEA4RGrid,
+function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::LevelGrid,
         c::DGG.LevelIndex, reference::DGG.LevelIndex)
     length(cells) <= 1 && return cells
     centre = DGG.cell_centroid(g, c)

@@ -82,16 +82,10 @@ parents *are* the union of their children, so nothing needs inflating and
 """
 struct HEALPixSystem <: DGG.AbstractHierarchicalGridSystem end
 
-"""
-    HEALPixGrid(level) <: AbstractGrid
-
-The complete HEALPix grid at refinement `level`: all `12 * 4^level` pixels in
-nested order. Built by [`levelgrid`](@ref); a lightweight descriptor, not a
-materialised cell list.
-"""
-struct HEALPixGrid <: DGG.AbstractGrid
-    level::Int
-end
+# `levelgrid(HEALPixSystem(), l)` is the package's `HierarchicalLevelGrid`: all
+# `12 * 4^l` pixels in nested order. HEALPix's fast paths hang off this alias,
+# and the five primitives it forwards to are the `(sys, ...)` methods below.
+const LevelGrid = DGG.HierarchicalLevelGrid{HEALPixSystem}
 
 """
     HEALPixRingIndex(level, index) <: AbstractCellIndex
@@ -140,13 +134,6 @@ DGG.has_sorted_subtrees(::HEALPixSystem) = true
 
 DGG.max_neighbors(::HEALPixSystem, ::DGG.Vertex) = 8
 DGG.max_neighbors(::HEALPixSystem, ::DGG.Edge) = 4
-
-function DGG.levelgrid(sys::HEALPixSystem, l::Integer)
-    lvl = Int(l)
-    lvl in DGG.levels(sys) || throw(ArgumentError(
-        "level $lvl is outside $(DGG.levels(sys)) for $(nameof(typeof(sys)))"))
-    return HEALPixGrid(lvl)
-end
 
 DGG.rootcells(::HEALPixSystem) = [DGG.LevelIndex(0, i) for i in 0:11]
 
@@ -243,38 +230,26 @@ function DGG.descendants(sys::HEALPixSystem, c::DGG.LevelIndex, l::Integer)
 end
 
 # ===========================================================================
-# Grid interface
+# The level grid: size, and positions <-> ids
 # ===========================================================================
 
-DGG.system(::HEALPixGrid) = HEALPixSystem()
-DGG.level(g::HEALPixGrid) = g.level
-DGG.ncells(g::HEALPixGrid) = Int(_npix(g.level))
+DGG.ncells(::HEALPixSystem, l::Integer) = Int(_npix(l))
 
-function DGG.cellindex(g::HEALPixGrid, i::Int)
-    1 <= i <= DGG.ncells(g) || throw(BoundsError(g, i))
-    return DGG.LevelIndex(g.level, i - 1)
-end
+# The grid bounds-checks `i`, so this is the bijection and nothing else.
+DGG.cellindex(::HEALPixSystem, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
 
 """
-    cellposition(grid, c) -> Union{Int,Nothing}
+    cellposition(HEALPixSystem(), c) -> Union{Int,Nothing}
 
-Closed form: `index + 1` for a cell at the grid's own level and in range, and
-`nothing` otherwise (a different level, or an id no pixel has). Replaces the
-fallback's linear scan.
+Closed form: `index + 1` for an in-range id, and `nothing` for one no pixel has.
+Replaces the fallback's linear scan. The grid has already rejected a cell from
+another level, and reindexed a [`HEALPixRingIndex`](@ref) to nested — an
+out-of-range ring index makes `ring_to_xyf` throw, which the reindex step reads
+as "not a cell of this grid" and answers `nothing` for.
 """
-function DGG.cellposition(g::HEALPixGrid, c::DGG.LevelIndex)
-    DGG.level(c) == g.level || return nothing
-    0 <= c.index < _npix(g.level) || return nothing
+function DGG.cellposition(::HEALPixSystem, c::DGG.LevelIndex)
+    0 <= c.index < _npix(DGG.level(c)) || return nothing
     return Int(c.index + 1)
-end
-
-# The range guard runs BEFORE the conversion, and that ordering is the whole
-# point: `ring_to_xyf` throws an `ArgumentError` on an out-of-range ring index,
-# but a cell that is not in the grid is contractually `nothing`, not an error.
-function DGG.cellposition(g::HEALPixGrid, c::HEALPixRingIndex)
-    DGG.level(c) == g.level || return nothing
-    1 <= c.index <= _npix(g.level) || return nothing      # RING ids are 1-based
-    return DGG.cellposition(g, DGG.reindex(DGG.LevelIndex, HEALPixSystem(), c))
 end
 
 # ===========================================================================
@@ -380,9 +355,9 @@ vertices 1, 9, 17 and 25.
 For the cell's **area**, prefer [`cell_area`](@ref), which is the exact
 equal-area value in closed form rather than this polygon's.
 """
-function DGG.cell_boundary(g::HEALPixGrid, c::DGG.LevelIndex)
-    nside = _nside(g.level)
-    ix, iy, face = nested_to_xyf(_checked_index(g, c), nside)
+function DGG.cell_boundary(::HEALPixSystem, c::DGG.LevelIndex)
+    nside = _nside(DGG.level(c))
+    ix, iy, face = nested_to_xyf(_checked_index(c), nside)
     return _perimeter_points(ix, iy, face, nside, BOUNDARY_SEGMENTS)
 end
 
@@ -403,7 +378,7 @@ the true semantic; the polygon is the approximation of it.
 O(1), and independent of the boundary densification, so tightening
 `BOUNDARY_SEGMENTS` changes geometric predicates but never an area.
 """
-DGG.cell_area(g::HEALPixGrid, c::DGG.LevelIndex) =
+DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex) =
     (_checked_index(g, c); 4 * Float64(π) / _npix(g.level))
 
 """
@@ -416,21 +391,28 @@ midpoint of the chart square is the canonical centre — and it is strictly
 interior, as [`cell_centroid`](@ref) requires. Agrees with
 `Healpix.pix2vecNest` to ~9e-16 per coordinate.
 """
-function DGG.cell_centroid(g::HEALPixGrid, c::DGG.LevelIndex)
-    nside = _nside(g.level)
-    ix, iy, face = nested_to_xyf(_checked_index(g, c), nside)
+function DGG.cell_centroid(::HEALPixSystem, c::DGG.LevelIndex)
+    nside = _nside(DGG.level(c))
+    ix, iy, face = nested_to_xyf(_checked_index(c), nside)
     return pixel_center(ix, iy, face, nside)
 end
 
 # The id guard every geometry entry point needs: `nested_to_xyf` will happily
 # un-Morton an id no pixel has, yielding the geometry of a cell that does not
 # exist rather than an error.
-@inline function _checked_index(g::HEALPixGrid, c::DGG.LevelIndex)
+@inline function _checked_index(c::DGG.LevelIndex)
+    l = DGG.level(c)
+    0 <= c.index < _npix(l) || throw(ArgumentError(
+        "nested id $(c.index) is out of range 0:$(_npix(l) - 1) at level $l"))
+    return c.index
+end
+
+# The grid-level form the topology entry points use, which additionally pins the
+# cell to the grid it was handed to.
+@inline function _checked_index(g::LevelGrid, c::DGG.LevelIndex)
     DGG.level(c) == g.level || throw(ArgumentError(
         "cell $c is at level $(DGG.level(c)), not the grid's level $(g.level)"))
-    0 <= c.index < _npix(g.level) || throw(ArgumentError(
-        "nested id $(c.index) is out of range 0:$(_npix(g.level) - 1) at level $(g.level)"))
-    return c.index
+    return _checked_index(c)
 end
 
 # ===========================================================================
@@ -551,7 +533,7 @@ level 1 where `vec2pixNest` answers 19 and 35, each library being
 self-consistent. Do not "fix" this by matching Healpix.jl; assert the
 contractual properties instead.
 """
-DGG.cellat(g::HEALPixGrid, p::GO.UnitSphericalPoint) =
+DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
     DGG.LevelIndex(g.level, point_to_nested(p, g.level))
 
 # ===========================================================================
@@ -569,7 +551,7 @@ The dedup matters only at level 0, where `nside == 1` makes every lattice
 offset wrap through the face tables and two offsets could in principle name the
 same base pixel; keeping the FIRST occurrence is what preserves the cycle.
 """
-function _one_ring(g::HEALPixGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+function _one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     _checked_index(g, c)
     raw = nested_neighbors(c.index, g.level)
     out = SmallVector{8,DGG.LevelIndex}()
@@ -618,7 +600,7 @@ same starting reference; see [`ring`](@ref).
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by `max_neighbors` and allocates nothing.
 """
-function DGG.neighbors(g::HEALPixGrid, c::DGG.LevelIndex, k::Integer = 1;
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -644,7 +626,7 @@ west corner sits at 135° in the lattice plane, so the first neighbour
 counter-clockwise from it is `SW` at 180°. Ties in azimuth break by canonical
 id, so the order is total and deterministic.
 """
-function DGG.ring(g::HEALPixGrid, c::DGG.LevelIndex, k::Integer;
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -658,7 +640,7 @@ end
 # distance exactly `j`, each returned in CCW rotational order. Shared by
 # `neighbors` and `ring` so the two cannot disagree about what a shell is or
 # what order it is in.
-function _shells(g::HEALPixGrid, c::DGG.LevelIndex, steps::Int,
+function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
         connectivity::DGG.Connectivity)
     shells = Vector{DGG.LevelIndex}[]
     steps == 0 && return shells
@@ -688,7 +670,7 @@ end
 # own west corner. `e1 x e2 == centre` makes `(e1, e2)` right-handed SEEN FROM
 # OUTSIDE, which is what puts increasing `atan(u.e2, u.e1)` counter-clockwise
 # from outside rather than from inside.
-function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::HEALPixGrid, c::DGG.LevelIndex)
+function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::LevelGrid, c::DGG.LevelIndex)
     length(cells) <= 1 && return cells
     centre = DGG.cell_centroid(g, c)
     ring = DGG.cell_boundary(g, c)

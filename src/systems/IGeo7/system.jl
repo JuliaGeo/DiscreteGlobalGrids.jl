@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# The new-interface wiring: `Z7Cell`, `IGeo7System`, `IGeo7Grid`.
+# The new-interface wiring: `Z7Cell` and `IGeo7System`.
 #
 # Everything below is an adapter over the native layers included ahead of it
 # (`z7.jl`, `engine.jl`, `z7grid.jl`), which are ported verbatim from the
@@ -306,72 +306,47 @@ end
 # The level grid
 # ---------------------------------------------------------------------------
 
-"""
-    IGeo7Grid(level) <: AbstractGrid
-
-One complete level of [`IGeo7System`](@ref): all `10·7^level + 2` cells, in the
-canonical dense order (ascending Z7 id, which is the space-filling curve order).
-
-A lightweight descriptor — it stores the level and nothing else, so building one
-is O(1) and `cellindex` / `cellposition` are O(level) digit walks rather than
-table lookups. Obtain one with `levelgrid(IGeo7System(), l)`.
-"""
-struct IGeo7Grid <: AbstractGrid
-    level::Int
-end
+# `levelgrid(IGeo7System(), l)` is the package's `HierarchicalLevelGrid`: all
+# `10·7^l + 2` cells in the canonical dense order (ascending Z7 id, which is the
+# space-filling curve order). It stores the level and nothing else, so building
+# one is O(1) and `cellindex` / `cellposition` stay O(level) digit walks rather
+# than table lookups. IGeo7's fast paths hang off this alias, and the five
+# primitives it forwards to are the `(sys, ...)` methods below.
+const LevelGrid = DGG.HierarchicalLevelGrid{IGeo7System}
 
 """
-    levelgrid(sys::IGeo7System, l::Integer) -> IGeo7Grid
+    ncells(::IGeo7System, l::Integer) -> Int
 
-The complete IGEO7 grid at level `l`. Throws an `ArgumentError` for `l` outside
-`levels(sys)`.
+`10·7^l + 2`: twelve pentagons and `10·7^l − 10` hexagons. Fits `Int` through
+level 19 (1.14e17).
 """
-function DGG.levelgrid(::IGeo7System, l::Integer)
-    target = Int(l)
-    0 <= target <= MAX_RESOLUTION || throw(ArgumentError(
-        "IGeo7 level must be in 0:$MAX_RESOLUTION, got $target"))
-    return IGeo7Grid(target)
-end
-
-DGG.system(::IGeo7Grid) = IGeo7System()
-level(g::IGeo7Grid) = g.level
+DGG.ncells(::IGeo7System, l::Integer) = Int(num_cells(Int(l)))
 
 """
-    ncells(g::IGeo7Grid) -> Int
+    cellindex(::IGeo7System, l::Integer, i::Int) -> Z7Cell
 
-`10·7^level + 2`: twelve pentagons and `10·7^level − 10` hexagons. Fits `Int`
-through level 19 (1.14e17).
+The cell at position `i` of level `l`, by inverting the positional rank walk:
+peel the base cell's block, then at each level take the pentagon child while the
+remainder fits its subtree and otherwise divide by `7^depth` to pick the hexagon
+sibling, re-inserting the deleted digit's gap. O(level), allocation-free.
 """
-DGG.ncells(g::IGeo7Grid) = Int(num_cells(g.level))
-
-"""
-    cellindex(g::IGeo7Grid, i::Int) -> Z7Cell
-
-The cell at position `i`, by inverting the positional rank walk: peel the base
-cell's block, then at each level take the pentagon child while the remainder
-fits its subtree and otherwise divide by `7^depth` to pick the hexagon sibling,
-re-inserting the deleted digit's gap. O(level), allocation-free.
-
-`i` outside `1:ncells(g)` throws a `BoundsError`.
-"""
-DGG.cellindex(g::IGeo7Grid, i::Int) = Z7Cell(index_to_cell(i, g.level))
+DGG.cellindex(::IGeo7System, l::Integer, i::Int) = Z7Cell(index_to_cell(i, Int(l)))
 
 """
-    cellposition(g::IGeo7Grid, c::Z7Cell) -> Union{Int,Nothing}
+    cellposition(::IGeo7System, c::Z7Cell) -> Union{Int,Nothing}
 
-The position of `c` in the level's dense order, or `nothing` when `c` is not a
-cell of this grid — a different level, or an id that is not a valid cell at all.
-The walk adds the subtree size of every earlier sibling at each digit, which is
-O(level) and needs no table.
+The position of `c` in its own level's dense order, or `nothing` when `c` is not
+a valid cell at all. The walk adds the subtree size of every earlier sibling at
+each digit, which is O(level) and needs no table. The grid has already rejected
+a cell from another level.
 """
-function DGG.cellposition(g::IGeo7Grid, c::Z7Cell)
+function DGG.cellposition(::IGeo7System, c::Z7Cell)
     is_valid_cell(c.id) || return nothing
-    _z7_leading_resolution(c.id) == g.level || return nothing
     return cell_to_index(c.id)
 end
 
 """
-    cell_boundary(g::IGeo7Grid, c::Z7Cell) -> Vector{UnitSphericalPoint}
+    cell_boundary(::IGeo7System, c::Z7Cell) -> Vector{UnitSphericalPoint}
 
 The exact boundary ring of `c` on the unit sphere: six corners for a hexagon,
 five for a pentagon, **implicitly closed** (the first vertex is not repeated)
@@ -383,7 +358,7 @@ pentagon corners are the bisectors between the pentagon's five ring slots. Edges
 are straight in the Snyder chart and are reported as their endpoints, which the
 package then reads as great-circle arcs.
 """
-function DGG.cell_boundary(::IGeo7Grid, c::Z7Cell)
+function DGG.cell_boundary(::IGeo7System, c::Z7Cell)
     ring = cell_boundary_cartesian(c.id; closed_ring=false)
     out = Vector{USPoint}(undef, length(ring))
     @inbounds for i in eachindex(ring)
@@ -394,7 +369,7 @@ function DGG.cell_boundary(::IGeo7Grid, c::Z7Cell)
 end
 
 """
-    cell_centroid(g::IGeo7Grid, c::Z7Cell) -> UnitSphericalPoint
+    cell_centroid(::IGeo7System, c::Z7Cell) -> UnitSphericalPoint
 
 The centre of `c` on the unit sphere, strictly interior to the cell: the cell's
 physical lattice point pulled back through the Snyder chart, and for a pentagon
@@ -403,10 +378,10 @@ exactly the icosahedron vertex it surrounds.
 This is the true centre of the cell in the equal-area chart, which is what the
 oracle centre dumps publish.
 """
-DGG.cell_centroid(::IGeo7Grid, c::Z7Cell) = USPoint(_cell_center_xyz(c.id, _geometry_checked(c.id)))
+DGG.cell_centroid(::IGeo7System, c::Z7Cell) = USPoint(_cell_center_xyz(c.id, _geometry_checked(c.id)))
 
 """
-    cellat(g::IGeo7Grid, p::UnitSphericalPoint) -> Z7Cell
+    cellat(g::LevelGrid, p::UnitSphericalPoint) -> Z7Cell
 
 The cell containing `p`, in closed form — no tree descent. The Snyder forward
 map picks the containing face, its three corner bases are tried nearest-first
@@ -425,7 +400,7 @@ the margin comparison is in floating point, so a different CPU or libm may
 resolve an exactly-equidistant pair the other way. What holds everywhere is
 that the winner is one of the cells genuinely incident to the point.
 """
-DGG.cellat(g::IGeo7Grid, p::GO.UnitSphericalPoint) =
+DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
     Z7Cell(_xyz_to_z7((Float64(p[1]), Float64(p[2]), Float64(p[3])), g.level))
 
 # `cell_area` is deliberately NOT overridden — see `equal_area_steradians` for
@@ -478,7 +453,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    neighbors(g::IGeo7Grid, c::Z7Cell, k = 1; connectivity = Vertex()) -> SmallVector{6,Z7Cell}
+    neighbors(g::LevelGrid, c::Z7Cell, k = 1; connectivity = Vertex()) -> SmallVector{6,Z7Cell}
 
 The cells within `k` adjacency steps of `c`, excluding `c`.
 
@@ -519,7 +494,7 @@ The container is the static-capacity `SmallVector{6,Z7Cell}` at `k <= 1`, where
 the bound is [`max_neighbors`](@ref) and the call does not allocate, and a plain
 `Vector{Z7Cell}` above it, where the disc has no static bound.
 """
-function DGG.neighbors(g::IGeo7Grid, c::Z7Cell, k::Integer=1;
+function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
     connectivity::Connectivity=Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -544,7 +519,7 @@ end
 # the shells concatenated by construction rather than by coincidence. Shell `j`
 # is the cells at adjacency distance exactly `j`, in the contract's rotational
 # order.
-function _shells(g::IGeo7Grid, c::Z7Cell, steps::Int)
+function _shells(g::LevelGrid, c::Z7Cell, steps::Int)
     shells = Vector{Z7Cell}[]
     steps >= 1 || return shells
 
@@ -576,7 +551,7 @@ function _shells(g::IGeo7Grid, c::Z7Cell, steps::Int)
 end
 
 """
-    ring(g::IGeo7Grid, c::Z7Cell, k; connectivity = Vertex())
+    ring(g::LevelGrid, c::Z7Cell, k; connectivity = Vertex())
 
 The cells at adjacency distance **exactly** `k`. `ring(g, c, 0)` is `[c]`, and
 `ring(g, c, 1)` is [`neighbors`](@ref) at `k == 1`.
@@ -585,7 +560,7 @@ Shares [`neighbors`](@ref)' walk, so this is that function's trailing block:
 `neighbors(g, c, k)` is `vcat(ring(g, c, 1), ..., ring(g, c, k))`, and the
 order contract is the one stated there.
 """
-function DGG.ring(g::IGeo7Grid, c::Z7Cell, k::Integer;
+function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
     connectivity::Connectivity=Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -637,7 +612,7 @@ function _azimuth(centre, e1, e2, p)
     return a < 0 ? a + 2 * Float64(π) : a
 end
 
-function _sort_ccw!(shell::Vector{Z7Cell}, g::IGeo7Grid, c::Z7Cell,
+function _sort_ccw!(shell::Vector{Z7Cell}, g::LevelGrid, c::Z7Cell,
         reference)
     length(shell) <= 1 && return shell
     centre = DGG.cell_centroid(g, c)
@@ -650,7 +625,7 @@ end
 
 # A cell handed to a grid operation must belong to that grid's level; otherwise
 # every id below would be silently at the wrong resolution.
-@inline function _level_checked(g::IGeo7Grid, c::Z7Cell)
+@inline function _level_checked(g::LevelGrid, c::Z7Cell)
     res = _geometry_checked(c.id)
     res == g.level || throw(ArgumentError(
         "IGeo7 cell $(z7_to_string(c.id)) is at level $res, not this grid's level $(g.level)"))

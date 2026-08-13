@@ -647,7 +647,7 @@ end
     # =======================================================================
     @testset "conformance" begin
         for l in (0, 1, 3)
-            test_grid_interface(DGG.levelgrid(S, l); label="H3Grid(res $l)")
+            test_grid_interface(DGG.levelgrid(S, l); label="H3 res $l")
         end
         test_hierarchical_system(S)
     end

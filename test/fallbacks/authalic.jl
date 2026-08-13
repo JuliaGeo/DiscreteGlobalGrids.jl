@@ -18,10 +18,16 @@
 #      against a geodetic lon/lat grid lands where the data says it does, and an
 #      unwrapped one misses by the authalic shift.
 #
-# The conformance harness skips `cellat`, `neighbors` and `ring` on this grid —
-# they dispatch into `DGG.Fallbacks`, which is its "the system did not implement
-# this" sentinel (the same blind spot it documents for `PartialGrid`) — so those
-# three are tested directly below.
+# The harness used to skip `cellat`, `neighbors` and `ring` on this grid: its
+# "implemented?" guard tested module provenance, and these dispatch into
+# `DGG.Fallbacks`, which was its "not implemented" sentinel. T13 changed that
+# guard to test method SPECIFICITY instead — a method written for `AuthalicGrid`
+# is a method about `AuthalicGrid`, whoever's module it sits in — and the
+# harness now runs all three here (the eleven skips this suite used to report
+# are gone, and it exercises ~3800 more assertions on the wrapped paths).
+#
+# The direct collector calls below are kept anyway. They are cheap, and they
+# pin the warped geometry explicitly rather than by trusting the guard.
 # ---------------------------------------------------------------------------
 
 module AuthalicWrapperTests
@@ -192,11 +198,10 @@ end
 
         # Forwarding the ids is only half the claim: the ORDER contract is
         # rotational, and its winding is measured about the grid's own
-        # centroids — which here are the warped ones. The harness skips these
-        # laws on this grid (they dispatch into `Fallbacks`, its "not
-        # implemented" sentinel), so its collectors are called directly, on the
-        # warped geometry, rather than the winding being argued from the warp
-        # being orientation-preserving.
+        # centroids — which here are the warped ones. The harness runs these
+        # laws itself since T13's specificity fix; the collectors are still
+        # called directly here so the warped winding is pinned outright rather
+        # than argued from the warp being orientation-preserving.
         @test CT.winding_problems(g, c, collect(ring(g, c, 1)); label="warped ring 1") == String[]
         @test CT.neighbor_order_problems(g, c; k=2) == String[]
         @test CT.neighbor_problems(g, c) == String[]
@@ -435,16 +440,20 @@ end
 
     # The tree descends the WRAPPED node extents over the subset's own position
     # space, so a stored cell's own centroid must survive every prune on the way
-    # down to it. Asserted on the tree rather than through `cellat`, because the
-    # generic point-in-cell test that `cellat` finishes with misjudges the
-    # centroid of ~9% of HEALPix's densified rings — a pre-existing weakness of
-    # the fallback locate path (HEALPix's own `cellat` never reaches it), which
-    # hits the base grid and the wrapped grid identically and has nothing to say
-    # about the warp.
+    # down to it.
+    #
+    # This was originally asserted on the tree alone, because the generic
+    # point-in-cell test that `cellat` finishes with misjudged the centroid of
+    # ~9% of HEALPix's densified rings. That was the substrate bug T13 traced to
+    # `spherical_ring_encloses`' near-half-turn test arc and fixed, so the
+    # end-to-end path is asserted too now: on a `PartialGrid` there is no native
+    # point location to hide the fallback, which makes this the wrapped
+    # descend-and-test path in full.
     tree = treeify(pg)
     for c in ids[1:13:end]
         hits = STI.query(tree, cap -> FB.cap_contains(cap, cell_centroid(pg, c)))
         @test cellposition(pg, c) in hits
+        @test cellat(pg, cell_centroid(pg, c)) == c
     end
 
     # The subtree form, which is where `descendant_range` has to survive the wrap.

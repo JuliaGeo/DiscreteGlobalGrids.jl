@@ -67,28 +67,40 @@ _default_rng() = Random.MersenneTwister(DEFAULT_SEED)
 """
     has_nonfallback_method(f, args...) -> Bool
 
-Whether dispatch for `f(args...)` reaches an implementation outside
-`DiscreteGlobalGrids.Fallbacks` — the harness's test for "did the *system*
-implement this?".
+Whether dispatch for `f(args...)` reaches a method written **for this kind of
+grid or system** rather than the interface-wide generic — the harness's test
+for "is this primitive implemented here?".
 
-# Strategy: provenance, not applicability
+# Strategy: specificity, not provenance
 
-The guard is **provenance-based on purpose**. `applicable` alone answered this
-question only before the fallback substrate landed; since then every generic in
-the interface is applicable to every grid, because the substrate supplies a
-method for `AbstractGrid`/`AbstractHierarchicalGridSystem`. So applicability is
-now uniformly `true` and carries no information. `DGG.Fallbacks` is the sentinel
-module: a method whose `.module` is `Fallbacks` means *the system did not
-implement this*, and the guarded test set is skipped rather than failed. The
-`applicable` call is kept as the cheap first clause — it is what rules out a
-signature that genuinely has no method at all, and it keeps `which` off the
-error path for that case.
+The test is **specificity**: the matched method counts as an implementation
+when one of its arguments is a type *strictly narrower* than `AbstractGrid` or
+`AbstractHierarchicalGridSystem`. Whoever owns the module is not consulted.
 
-A consequence worth stating: this is a test of who *owns* the method, not of
-whether the answer is correct. A system that implements a primitive badly is
-tested and fails, which is the point; a system that leaves it to the substrate
-is skipped, because the substrate has its own tests and this harness is
-deliberately cursor-free.
+`applicable` alone answered this question only before the fallback substrate
+landed; since then every generic in the interface is applicable to every grid,
+because the substrate supplies a method for
+`AbstractGrid`/`AbstractHierarchicalGridSystem`. So applicability is uniformly
+`true` and carries no information. The `applicable` call is kept as the cheap
+first clause — it rules out a signature that genuinely has no method at all,
+and it keeps `which` off the error path for that case.
+
+This used to test **provenance**: `DGG.Fallbacks` as a sentinel module, a
+method owned by it meaning "not implemented". That is right for the generics
+and wrong for everything else the substrate ships, because `Fallbacks` also
+defines the package's own concrete grid types and their specialised methods.
+`PartialGrid` and `AuthalicGrid` were therefore reported as implementing
+nothing at all, and `cellat`, `neighbors` and `ring` were skipped on them —
+precisely the wrapped and subset paths most worth testing, and the ones with
+no other harness coverage. Specificity restores them with no special-case
+list: a method on `PartialGrid` is a method about `PartialGrid`, whichever
+module it was typed in.
+
+A consequence worth stating, unchanged by the move: this is a test of what the
+method is *written for*, not of whether the answer is correct. A grid that
+implements a primitive badly is tested and fails, which is the point; a grid
+that leaves it to the interface-wide generic is skipped, because that generic
+has its own tests and this harness is deliberately cursor-free.
 
 # Deliberate non-guards
 
@@ -103,14 +115,6 @@ that is not an oversight:
     the grid owes regardless of which module computes it. A generic
     `cellposition` that disagrees with the grid's own `cellindex` is a real
     conformance failure, not an unimplemented method.
-
-# Known blind spot
-
-A `PartialGrid` view reports "not implemented" for `neighbors`, `ring` and
-`cellat` even when the system underneath it has fast paths, because dispatch on
-the view lands in `Fallbacks` — the view is a fallback type. Those test sets are
-skipped for a partial grid, so run the harness against the full level grid to
-exercise them.
 """
 function has_nonfallback_method(f, args...)
     applicable(f, args...) || return false
@@ -118,14 +122,49 @@ function has_nonfallback_method(f, args...)
         which(f, Base.typesof(args...))
     catch err
         # `which` throws `ArgumentError` on an ambiguous match. An ambiguity is
-        # not a provenance answer, so it is not evidence that the system
-        # implemented anything: report "not implemented" and let the caller skip
+        # not a specificity answer either, so it is not evidence that anything
+        # was implemented: report "not implemented" and let the caller skip
         # rather than let the harness die inside its own guard.
         (err isa ArgumentError || err isa MethodError) || rethrow()
         return false
     end
-    return m.module !== DGG.Fallbacks
+    return has_specific_subject(m)
 end
+
+"""
+    has_specific_subject(m::Method) -> Bool
+
+Whether `m` takes a grid or a system argument **strictly narrower** than
+`AbstractGrid` / `AbstractHierarchicalGridSystem` — the specificity test behind
+[`has_nonfallback_method`](@ref).
+
+Each parameter of the signature is rewrapped in the method's own `where`
+clauses before the comparison, so a parametric subject type
+(`PartialGrid{S,V,ID,G}`, `AuthalicGrid{G}`) is compared as the closed type
+`PartialGrid{S,V,ID,G} where {S,V,ID,G}` rather than as an open body whose free
+type variables make subtyping undecidable.
+
+"Strictly narrower" is spelled `T <: base && !(base <: T)` rather than
+`T !== base` on purpose: a method written `f(g::G) where {G<:AbstractGrid}`
+has a parameter that is *equal* to `AbstractGrid` without being `===` to it,
+and that method is the interface-wide generic, not an implementation.
+"""
+function has_specific_subject(m::Method)
+    sig = m.sig
+    body = Base.unwrap_unionall(sig)
+    body isa DataType || return false
+    params = body.parameters
+    # Parameter 1 is `typeof(f)`; the subject can be in any of the rest.
+    for i in 2:length(params)
+        T = Base.rewrap_unionall(params[i], sig)
+        T isa Type || continue
+        (_strictly_narrower(T, DGG.AbstractGrid) ||
+         _strictly_narrower(T, DGG.AbstractHierarchicalGridSystem)) && return true
+    end
+    return false
+end
+
+_strictly_narrower(T, base) = T <: base && !(base <: T)
 
 # ===========================================================================
 # Small vector helpers

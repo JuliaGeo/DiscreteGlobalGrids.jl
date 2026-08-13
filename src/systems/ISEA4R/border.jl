@@ -22,9 +22,14 @@
 # corner-only offsets never decide a membership question here.
 #
 # Order is ascending canonical order, as the interface documents for the
-# default. The block is enumerated in lattice order and then sorted, which costs
-# `O(rim log rim)` — nothing next to the `O(4^Δ)` the fallback pays, and it
-# keeps the emission order a fact about `isless` rather than about the walk.
+# default. The ring is enumerated directly — the `j == 0` row, then the two
+# columns between the rows, then the `j == m-1` row — and then sorted, so the
+# cost is `O(rim log rim)` with no term in the block's size at all. That
+# distinction is the whole point of the method: SCANNING the block and skipping
+# its interior would also be correct, and would be `O(4^Δ)`, which is what the
+# generic fallback already costs. Sorting rather than emitting in Morton order
+# also keeps the published order a fact about `isless` rather than about the
+# walk.
 # ---------------------------------------------------------------------------
 
 """
@@ -36,6 +41,9 @@ cells against the block's `4^Δ`.
 
 `connectivity` does not change the answer — see the file header — and is
 accepted so that generic code can pass it through.
+
+Cost is `O(rim log rim)`, with no term in the `4^Δ` size of the subtree: the
+ring is enumerated edge by edge, never scanned out of the block.
 
 `subtree_border(sys, c, level(c))` is `[c]`; `l < level(c)` throws an
 `ArgumentError`, uniformly with every other system.
@@ -57,9 +65,26 @@ function DGG.subtree_border(sys::ISEA4RSystem, c::DGG.LevelIndex, l::Integer;
     y0 = iy * m
     out = Vector{DGG.LevelIndex}(undef, 4m - 4)
     k = 0
-    for j in 0:(m - 1), i in 0:(m - 1)
-        (i == 0 || i == m - 1 || j == 0 || j == m - 1) || continue
-        out[k += 1] = DGG.LevelIndex(target, xyd_to_morton(x0 + i, y0 + j, d, nside))
+    # The ring is enumerated DIRECTLY — the two full rows and the two columns
+    # between them — never by scanning the block and skipping its interior. A
+    # scan would be `O(4^Δ)` and would quietly make this method slower than the
+    # generic fallback it exists to replace: at Δ = 15 that is 10^9 skip-tests
+    # for a 131k-cell answer.
+    @inbounds begin
+        for i in 0:(m - 1)                  # the j == 0 row, in full
+            out[k += 1] = DGG.LevelIndex(target,
+                xyd_to_morton_unchecked(x0 + i, y0, d, nside))
+        end
+        for j in 1:(m - 2)                  # the two columns between the rows
+            out[k += 1] = DGG.LevelIndex(target,
+                xyd_to_morton_unchecked(x0, y0 + j, d, nside))
+            out[k += 1] = DGG.LevelIndex(target,
+                xyd_to_morton_unchecked(x0 + m - 1, y0 + j, d, nside))
+        end
+        for i in 0:(m - 1)                  # the j == m-1 row, in full
+            out[k += 1] = DGG.LevelIndex(target,
+                xyd_to_morton_unchecked(x0 + i, y0 + m - 1, d, nside))
+        end
     end
     return sort!(out)
 end

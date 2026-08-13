@@ -1208,6 +1208,29 @@ end
             @test minimum(sd(q, v) for v in cell_boundary(g, c)) < 1e-9
         end
     end
+
+    # THE TWELVE ICOSAHEDRON VERTICES, explicitly. The even-lattice sweep above
+    # steps `0:2:nside-1`, so it probes chart corner (0,0) but never (0,1) or
+    # (1,0) — and those are exactly the corners that carry vertices 0 and 11,
+    # the two degenerate five-diamond points. A vertex is the hardest tie in the
+    # system: three or five cells are incident and `snyder_fwd`'s face choice is
+    # a five-way argmax on equal dot products. Taken from `ISEA.VERTICES`
+    # directly rather than through the chart, so this probes the point itself
+    # and not a chart evaluation of it.
+    for v in 0:11
+        q = vpoint(v)
+        c = cellat(g, q)
+        @test cellat(g, q) == c                                  # deterministic
+        @test cellposition(g, c) !== nothing
+        @test minimum(sd(q, w) for w in cell_boundary(g, c)) < 1e-9
+        # The cell named really is one of the cells at that vertex: its chart
+        # corner slot on its own diamond carries this vertex.
+        ix, iy, d = xyd_of(c)
+        slot = findfirst(==(v), I4.DIAMONDS[d + 1].verts)
+        @test slot !== nothing
+        @test (ix, iy) == I4._corner_cell(slot, nside)
+    end
+
     # Random points anywhere: `cellat` never returns `nothing` on a complete
     # level grid, and the cell it names contains the point's own cell centre
     # neighbourhood — checked by the round trip through the chart.

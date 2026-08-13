@@ -259,6 +259,10 @@ drops one bit of `ix` and one of `iy`, i.e. steps exactly one level up, so
 The interleave is an explicit bit loop rather than the magic-mask "spread"
 trick; both are allocation-free, and at `nside ≤ 2^29` the loop runs at most 29
 iterations while staying obviously correct.
+
+This is the CHECKED entry point, which is what a user-supplied coordinate comes
+in through. [`xyd_to_morton_unchecked`](@ref) is the same interleave without the
+three guards, for callers that produced the coordinates themselves.
 """
 function xyd_to_morton(ix::Integer, iy::Integer, diamond::Integer, nside::Integer)
     ispow2(nside) || throw(ArgumentError(
@@ -267,6 +271,26 @@ function xyd_to_morton(ix::Integer, iy::Integer, diamond::Integer, nside::Intege
     (0 <= ix < nside && 0 <= iy < nside) || throw(ArgumentError(
         "lattice coordinates ($ix, $iy) out of range for nside=$nside (expected 0:$(nside - 1))"))
     0 <= diamond <= 9 || throw(ArgumentError("diamond $diamond out of range (expected 0:9)"))
+    return xyd_to_morton_unchecked(ix, iy, diamond, nside)
+end
+
+"""
+    xyd_to_morton_unchecked(ix, iy, diamond, nside) -> Int64
+
+[`xyd_to_morton`](@ref) with the three validity guards dropped: `nside` a power
+of two, `(ix, iy)` on the lattice, `diamond` in `0:9`.
+
+For callers that produced the coordinates themselves and know they are valid —
+`lattice_neighbors`' output, which is derived from a validated cell by table
+lookup, and the rim walk in `border.jl`, which enumerates a block it computed.
+Both run per neighbour and per rim cell respectively, where re-deriving what
+the caller already knows is pure overhead. Garbage in, garbage out: an
+out-of-range coordinate yields the id of a cell that does not exist rather than
+an error, which is exactly why the checked form is the one a user-supplied
+coordinate goes through.
+"""
+@inline function xyd_to_morton_unchecked(ix::Integer, iy::Integer, diamond::Integer,
+        nside::Integer)
     x = Int64(ix)
     y = Int64(iy)
     morton = Int64(0)

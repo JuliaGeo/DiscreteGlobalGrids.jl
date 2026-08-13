@@ -573,6 +573,13 @@ DGG.cellat(g::ISEA4RGrid, p::GO.UnitSphericalPoint) =
 The immediate neighbours of `c` in **counter-clockwise rotational order seen
 from outside the sphere, starting at the `(+1, 0)` chart direction**, from
 [`lattice_neighbors`](@ref).
+
+The subject's id is validated once, by `_checked_index`; the neighbours are then
+encoded through [`xyd_to_morton_unchecked`](@ref), because
+[`lattice_neighbors`](@ref) derives them from that validated cell by table
+lookup and they cannot be off the lattice. Re-deriving `ispow2(nside)` and two
+range tests per neighbour is the whole cost of this function otherwise, and this
+is the inner loop of every breadth-first shell walk.
 """
 function _one_ring(g::ISEA4RGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     nside = _nside(g.level)
@@ -580,7 +587,7 @@ function _one_ring(g::ISEA4RGrid, c::DGG.LevelIndex, connectivity::DGG.Connectiv
     out = SmallVector{9,DGG.LevelIndex}()
     for (jx, jy, jd) in lattice_neighbors(ix, iy, d, nside, connectivity)
         out = SmallCollections.push(out,
-            DGG.LevelIndex(g.level, xyd_to_morton(jx, jy, jd, nside)))
+            DGG.LevelIndex(g.level, xyd_to_morton_unchecked(jx, jy, jd, nside)))
     end
     return out
 end
@@ -705,6 +712,14 @@ function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::ISEA4RGrid,
     length(cells) <= 1 && return cells
     centre = DGG.cell_centroid(g, c)
     e1, e2 = _tangent_basis(centre, DGG.cell_centroid(g, reference))
+    # Family-wide observation, not a defect: an outer-ring cell whose azimuth
+    # falls within floating-point noise BELOW the starting spoke sorts to the
+    # END of the ring, because `mod(-ε, 2π)` is `~2π`. That is a start rotation
+    # only — the single-CCW-cycle law the contract states is cyclic and holds
+    # either way — and HEALPix and IGeo7 share the construction and the
+    # behaviour. Nothing here depends on which side of the spoke such a cell
+    # lands, so it is left alone rather than nudged by a tolerance that would
+    # itself need a documented width.
     key(x) = begin
         p = DGG.cell_centroid(g, x)
         (mod(_azimuth(centre, e1, e2, p), 2 * Float64(π)), x)

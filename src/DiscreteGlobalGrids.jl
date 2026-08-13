@@ -129,6 +129,10 @@ export DE9IMPredicate
 export Intersects, Disjoint, Contains, Within, Covers, CoveredBy
 export Touches, Crosses, Overlaps, Equals
 
+# --- Conformance harness ---------------------------------------------------
+using .Conformance: test_grid_interface, test_hierarchical_system
+export test_grid_interface, test_hierarchical_system
+
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere
 

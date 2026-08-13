@@ -166,6 +166,11 @@ The index schemes `sys` can name its cells in, canonical one first (so
 reachable through [`reindex`](@ref) in both directions.
 
 Defaults to `(cellindextype(sys),)` — one canonical scheme, no conversions.
+
+The grid form asks the grid's system; a standalone grid
+(`system(grid) === nothing`) defaults to `(typeof(cellindex(grid, 1)),)` — the
+one scheme it demonstrably names cells in (empty grids have no schemes to
+report).
 """
 function cellindextypes end
 

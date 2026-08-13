@@ -71,7 +71,7 @@ in ascending canonical order, all at level `first(levels(sys))`.
 **Required.**
 
 These are the roots the generic tree descent starts from, so this must be a
-small, cheap collection (12 for HEALPix, 122 for H3, 20 for IGeo7).
+small, cheap collection (12 for HEALPix, 122 for H3, 12 for IGeo7).
 """
 function rootcells end
 
@@ -122,8 +122,14 @@ The covering region of the whole subtree rooted at `c`.
 # The covering law
 
 > `node_extent(sys, c)` contains the geometry of **every descendant of `c`, at
-> every depth** — every boundary vertex of every cell in the subtree, all the
+> every depth** — every point of every cell boundary in the subtree, all the
 > way down to `max_level(sys)`.
+
+(For a geodesically convex extent — a spherical cap with angular radius at most
+90° — containing a cell's boundary *vertices* implies containing the great-arc
+edges between them, which is why the conformance suite may sample vertices as
+its proxy. An implementation whose extents are not convex owes the full law,
+not the proxy.)
 
 This is the contract that makes generic tree pruning **correct**. Every
 traversal in this package — [`query`](@ref), [`cellat`](@ref), the

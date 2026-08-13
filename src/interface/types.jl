@@ -153,6 +153,10 @@ grid the two coincide up to the base offset, but for a
 subset grid they do not, and [`cellposition`](@ref) is the only way to go from
 one to the other.
 
+Construction does not validate: a negative `level` or out-of-range `index` is
+representable. Ids are cheap names; validation happens where a name meets a
+system or a grid ([`cellposition`](@ref), [`levelgrid`](@ref)).
+
 ```jldoctest
 julia> c = LevelIndex(3, 17);
 

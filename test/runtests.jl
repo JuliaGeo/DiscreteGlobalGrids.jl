@@ -13,7 +13,7 @@ using DiscreteGlobalGrids
 # the kill list retires.
 @testset "DiscreteGlobalGrids.jl" begin
     include("interface/runtests.jl")
-    # TODO(T2): include("fallbacks/runtests.jl")
-    # TODO(T3): include("conformance/runtests.jl")
+    include("fallbacks/runtests.jl")
+    include("conformance/runtests.jl")
     # TODO(T4-T6): include("systems/{IGeo7,H3,HEALPix}/runtests.jl")
 end

@@ -20,3 +20,4 @@ DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
 
 [sources]
 DiscreteGlobalGrids = {path = ".."}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/dualdfs-carry-extents"}

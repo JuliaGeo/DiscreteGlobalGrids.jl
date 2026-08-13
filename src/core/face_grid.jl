@@ -679,6 +679,14 @@ end
 _node_extent(::PerimeterWalkCap, q::Trees.TopDownQuadtreeCursor) =
     Trees.cell_range_extent(q.grid, q.leafranges[1], q.leafranges[2])
 
+# Caching child extents costs a vector per visited node, which only the
+# perimeter walk's O(block edge) charting earns back; `FourCornerCap` is the
+# four-vertex shortcut it exists to avoid. Every system here wires the shortcut,
+# so this is `false` throughout the package and `true` for a system that keeps
+# the generic path.
+STI.node_extent_is_expensive(::Type{<:Trees.TopDownQuadtreeCursor{<:FaceChartGrid{S}}}) where {S<:FaceGridSystem} =
+    cap_policy(S()) isa PerimeterWalkCap
+
 # ---------------------------------------------------------------------------
 # Toplevel tree
 # ---------------------------------------------------------------------------

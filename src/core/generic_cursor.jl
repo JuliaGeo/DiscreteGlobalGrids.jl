@@ -405,6 +405,11 @@ function STI.getchild(cursor::DGGSCursor, i::Int)
     throw(BoundsError(cursor, i))
 end
 
+# Every extent below is derived from `cell_boundary` — an inverse projection per
+# cell — rather than read off the node, so the dual depth-first search should
+# cache a node's child extents instead of re-deriving them per opposing child.
+STI.node_extent_is_expensive(::Type{<:DGGSCursor}) = true
+
 function STI.node_extent(cursor::DGGSCursor{<:DGGSGrid})
     cursor.level < 0 && return full_sphere_extent()
     system = _system(cursor)

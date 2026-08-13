@@ -20,9 +20,9 @@ SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
 
 [sources]
 ConservativeRegridding = {url = "https://github.com/JuliaGeo/ConservativeRegridding.jl", rev = "best-manifold-for-grids"}
-GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "main"}
-GeometryOpsCore = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "main", subdir = "GeometryOpsCore"}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/dualdfs-carry-extents"}
 
 [compat]
 SmallCollections = "0.6.3"
 julia = "1.11"
+GeometryOpsCore = "0.1.11"

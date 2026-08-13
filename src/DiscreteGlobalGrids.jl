@@ -156,6 +156,7 @@ export system, level
 export cellindextype, levels, max_level, levelgrid, rootcells, children
 export node_extent, cap_inflation, max_neighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
+export subtree_border, subtree_interior
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate

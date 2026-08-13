@@ -35,11 +35,17 @@
 # Note that the parity roles are SWAPPED relative to IGeo7: the branch H3 takes
 # at an even child level is the one IGeo7 takes at an odd one.
 #
-# STATUS. There is no generic subtree border/interior hook in `src/interface/`
-# or `src/fallbacks/` as of T5, so this is exposed as an H3-module function
-# rather than as a method on a package generic. Wiring it (and IGeo7's and
-# HEALPix's) to a shared `subtree_border` generic is a T7 job.
+# STATUS. T7 introduced the generic `subtree_border` hook in `src/interface/`
+# with a `descendants`-and-`neighbors` fallback in `src/fallbacks/subtree.jl`,
+# and this automaton is now H3's method on it. The fallback is what the
+# brute-force agreement tests below are really re-deriving, so the two are
+# differential checks on each other.
 # ---------------------------------------------------------------------------
+
+# Extended, not shadowed: this file defines H3's method on the package generic,
+# so `H3.subtree_border` and `DiscreteGlobalGrids.subtree_border` are one
+# function and generic code reaches the automaton without knowing it exists.
+import ..DiscreteGlobalGrids: subtree_border
 
 """
     _H3_DIGIT_DIR[digit] -> Int
@@ -99,7 +105,9 @@ function _h3_fill_border!(out::Vector{UInt64}, z::UInt64, res::Int, target::Int,
 end
 
 """
-    subtree_border(sys::H3System, c::H3Cell, l::Integer) -> Vector{H3Cell}
+    subtree_border(sys::H3System, c::H3Cell, l::Integer; connectivity = Vertex()) -> Vector{H3Cell}
+
+H3's method on the package's [`subtree_border`](@ref) generic.
 
 The **rim** of `c`'s subtree at resolution `l`: every descendant of `c` at `l`
 that has a neighbour outside the subtree, ascending.
@@ -114,12 +122,13 @@ itself, and its whole neighbourhood is outside it.
 The count is exactly `3^(depth+1) - 3` for a hexagon and `5(3^depth - 1)/2` for
 a pentagon.
 
-!!! note "Not yet a package generic"
-    The interface has no subtree border/interior generic as of T5, so this is
-    reached as `DiscreteGlobalGrids.H3.subtree_border`. T7 is where the three
-    systems' automata get a shared name.
+`connectivity` is accepted for the generic's signature and does not change the
+answer: H3's cells are hexagons and pentagons, where sharing a vertex and
+sharing an edge are the same relation, so `Edge()` and `Vertex()` name the same
+rim.
 """
-function subtree_border(::H3System, c::H3Cell, l::Integer)
+function subtree_border(::H3System, c::H3Cell, l::Integer;
+        connectivity::Connectivity=Vertex())
     target = Int(l)
     lvl = level(c)
     target >= lvl || throw(ArgumentError(

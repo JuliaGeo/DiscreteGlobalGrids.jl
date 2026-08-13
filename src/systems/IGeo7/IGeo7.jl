@@ -37,13 +37,14 @@ the dumps' own print noise and decode to their exact Z7 string. Only
 `z7.jl` and `engine.jl` are pure integer layers; `z7grid.jl` composes them with
 [`ISEA`](@ref)'s floating-point geometry.
 
-# A note for T7
+# The subtree rim
 
-`subtree_border` / `subtree_border_count` are IGEO7's own names. The Z7 border
-automaton is a genuine fast path (`O(rim)` from the digits alone, against the
-`O(subtree)` a neighbour sweep costs), but the fallback layer exposes no generic
-border/interior iterator to extend, so there is nothing to hook them onto yet.
-If T7 introduces one, these two are the IGEO7 override, unchanged.
+The Z7 border automaton is a genuine fast path — `O(rim)` from the digits alone,
+against the `O(subtree)` a neighbour sweep costs — and since T7 introduced the
+generic hook it is reached as a method on [`subtree_border`](@ref) rather than
+under a module-local name. `subtree_border_count` stays IGEO7's own: it answers
+the size in closed form without a walk, which the generic interface has no
+counterpart for.
 """
 module IGeo7
 
@@ -54,7 +55,8 @@ import ..DiscreteGlobalGrids as DGG
 # and the interface generics are reached through `DGG.` so the two can never be
 # conflated. See the header of `system.jl`.
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
-    AbstractCellIndex, Connectivity, Vertex, Edge, level, rawid
+    AbstractCellIndex, Connectivity, Vertex, Edge, level, rawid,
+    subtree_border
 import ..Helpers
 using ..ISEA
 

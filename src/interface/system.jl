@@ -276,10 +276,80 @@ Every descendant of `c` at level `l`, in ascending canonical order, for
 
 This is O(subtree) and materialises: the result of asking for level 20
 descendants of a root cell is not a thing that fits in memory. Reach for
-[`descendant_range`](@ref) when the system supports it, and for the subtree
-border/interior iterators when only the rim is wanted.
+[`descendant_range`](@ref) when the system supports it, and for
+[`subtree_border`](@ref) when only the rim is wanted.
 """
 function descendants end
+
+"""
+    subtree_border(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer; connectivity::Connectivity = Vertex())
+
+The **rim** of `c`'s subtree at level `l`: every level-`l` descendant of `c`
+that has a neighbour which is *not* a descendant of `c`.
+
+`subtree_border(sys, c, level(c))` is `[c]` — a depth-0 subtree is the cell
+itself, and its entire neighbourhood lies outside it. `l < level(c)` throws an
+`ArgumentError`, as it does for [`descendants`](@ref).
+
+# Why this is a primitive and not a filter
+
+The rim is asymptotically nothing next to the subtree. For an aperture-7
+hexagonal system a depth-`d` subtree holds `7^d` cells and its rim holds
+`3^(d+1) − 3` of them; at depth 12 that is 1.6 million cells out of 13.8
+billion. Every system in this package can walk its rim directly from the id
+arithmetic — a digit automaton for the two hex systems, a Morton lattice walk
+for HEALPix — in time proportional to the *answer* rather than the subtree. A
+caller that had to enumerate the subtree and test each cell's neighbours would
+pay `O(7^d · degree)` for an `O(3^d)` result, which is the whole difference
+between "usable at depth 12" and "not".
+
+That is what this hook is for: it lets generic code — halo exchange, boundary
+conditions, coarse-to-fine stitching, dissolve — ask for the rim by name and
+get the fast path wherever one exists, without knowing which system it is
+talking to.
+
+# Connectivity
+
+`connectivity` selects which adjacency defines "has a neighbour outside", with
+the same meaning as in [`neighbors`](@ref). On hexagonal and pentagonal systems
+the two coincide, and on HEALPix the rim happens to be the same set either way;
+those systems accept the argument and document that it does not change their
+answer.
+
+The generic fallback enumerates [`descendants`](@ref) and tests each one's
+[`neighbors`](@ref) — correct for any system, and the reason a system with an
+automaton should override. Order is ascending canonical order unless a system
+documents otherwise.
+
+See also [`subtree_interior`](@ref), the complement.
+"""
+function subtree_border end
+
+"""
+    subtree_interior(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer; connectivity::Connectivity = Vertex())
+
+The level-`l` descendants of `c` that are **not** on the rim — the complement of
+[`subtree_border`](@ref) within [`descendants`](@ref), in ascending canonical
+order.
+
+    subtree_border(sys, c, l) ∪ subtree_interior(sys, c, l) == descendants(sys, c, l)
+
+with the two disjoint. `subtree_interior(sys, c, level(c))` is empty: the cell
+itself is its own rim.
+
+Unlike the border, the interior is *most* of the subtree, so this materialises
+something large by construction and there is no fast path to be had — the
+generic implementation is the implementation. It computes the border first and
+subtracts, so a system that overrides [`subtree_border`](@ref) with an automaton
+gets a correspondingly faster interior for free, without writing a second
+walker.
+
+Reach for this when the rim needs different treatment from the bulk — a stencil
+that is only valid away from the subtree edge, a halo that must not be written
+back — and prefer iterating [`descendant_range`](@ref) with a border set when
+the subtree is large enough that a second vector of ids is the wrong shape.
+"""
+function subtree_interior end
 
 """
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}

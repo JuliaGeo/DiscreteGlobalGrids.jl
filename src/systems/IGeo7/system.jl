@@ -76,6 +76,11 @@ The two text codecs of a cell id, on the typed wrapper: the Z7 string form
 16-character hexadecimal form. Both round-trip through [`Z7Cell`](@ref).
 """
 z7_string(c::Z7Cell) = z7_to_string(c.id)
+
+# The docstring above documents both codecs, but Julia attaches it to the
+# binding on the line that follows it — so `z7_hex` needs the attachment made
+# explicitly, or the exported name ships undocumented.
+@doc (@doc z7_string)
 z7_hex(c::Z7Cell; prefix::Bool=false) = z7_to_hex(c.id; prefix)
 
 """
@@ -86,6 +91,20 @@ zero, one per icosahedron vertex. Pentagons are the cells with five neighbours
 and six children instead of six and seven.
 """
 is_pentagon(c::Z7Cell) = is_pentagon(c.id)
+
+"""
+    is_valid_cell(c::Z7Cell) -> Bool
+
+Whether `c` names a cell that exists: a well-formed Z7 id at a level in
+`0:$(MAX_RESOLUTION)` whose digit chain does not take one of the twelve
+pentagons' deleted branches.
+
+This is the total, non-throwing test — the same one [`cellposition`](@ref)
+answers `nothing` from. The geometry entry points instead throw
+[`InvalidZ7Error`](@ref), because a caller asking for the boundary of a cell
+that does not exist has a bug rather than a miss.
+"""
+is_valid_cell(c::Z7Cell) = is_valid_cell(c.id)
 
 # ---------------------------------------------------------------------------
 # The system
@@ -112,9 +131,19 @@ cell polygon (see the covering law).
 | [`cap_inflation`](@ref) | `1.2` (the interface default) |
 
 Geometry is the Snyder equal-area chart on the icosahedron, shared with the rest
-of the ISEA family through the [`ISEA`](@ref) module. The projection is exactly
-equal-area, so `cell_area` on the authalic sphere is the closed form
-`4π/(10·7^r)` steradians for a hexagon and `5/6` of that for a pentagon.
+of the ISEA family through the [`ISEA`](@ref) module.
+
+The projection is exactly equal-area, but the published cell is **not** the
+chart's equal-area region: [`cell_boundary`](@ref) reports the corner ring, and
+those rings tile the sphere exactly while carrying slightly unequal areas
+(+1.6% on hexagons and −9.9% on pentagons at level 1, narrowing as cells
+shrink). So [`cell_area`](@ref) here is the ring's area — the area of the true
+cell, which for IGEO7 is the ring — and the chart's closed form
+`4π/(10·7^r)` steradians for a hexagon, `5/6` of that for a pentagon, is a
+*different quantity* available separately as
+[`equal_area_steradians`](@ref). Reach for that one when you want the
+system's nominal equal-area figure, and for `cell_area` when you want the area
+of the polygon this package will actually intersect, regrid and draw.
 
 Agreement with DGGRID is pinned by the sealed oracle vectors in
 `test/IGeo7/vectors/`: all 196,080 published cell centres at levels 1–5 decode
@@ -389,8 +418,12 @@ Never `nothing`: a complete level covers the sphere.
 
 **Ties.** A point exactly on a shared boundary is resolved by the decoder's
 rounding-tie fallback, which takes the equally near owner in ascending Voronoi
-margin. The result is deterministic, but which of two exactly equidistant cells
-wins is not promised bit-for-bit across platforms.
+margin. That is the documented rule, and it is deterministic in the sense the
+interface asks for — see [`cellat`](@ref)'s contract, which is per-platform
+determinism, not cross-platform bit-identity. IGEO7 does not strengthen it:
+the margin comparison is in floating point, so a different CPU or libm may
+resolve an exactly-equidistant pair the other way. What holds everywhere is
+that the winner is one of the cells genuinely incident to the point.
 """
 DGG.cellat(g::IGeo7Grid, p::GO.UnitSphericalPoint) =
     Z7Cell(_xyz_to_z7((Float64(p[1]), Float64(p[2]), Float64(p[3])), g.level))
@@ -447,14 +480,25 @@ On a hexagonal grid vertex and edge adjacency coincide, so `Vertex()` and
 
 # Order
 
-At `k == 1` the order is **counter-clockwise seen from outside the sphere**,
-starting from the dev frame's `+1` reference direction — the six Eisenstein unit
-steps in their lattice order, which is the same winding `cell_boundary` reports
-its ring in. A pentagon yields five: at the cone apex two of the six unit
-directions fold onto the same physical slot, and the duplicate id drops out.
+**Rotational**, per the interface contract: rings 1..`k` concatenated outward,
+each ring counter-clockwise seen from outside the sphere. So
+[`ring`](@ref)`(g, c, k)` is exactly the trailing block of `neighbors(g, c, k)`,
+element for element, and the two are computed by one walk so they cannot
+disagree.
 
-At `k > 1` the walk is breadth-first over that primitive and the result is
-sorted ascending by canonical id (a rotational order is not defined for a disc).
+Ring 1 starts at the dev frame's `+1` reference direction — the six Eisenstein
+unit steps in their lattice order, which is the same winding `cell_boundary`
+reports its ring in. A pentagon yields five: at the cone apex two of the six
+unit directions fold onto the same physical slot, and the duplicate id drops
+out.
+
+Rings 2 and outward have no lattice cycle of their own to read — the shell of a
+hex disc is not a unit-step orbit — so they are ordered by measurement, the way
+the interface docstring prescribes: by azimuth about the cell centroid,
+counter-clockwise seen from outside, taking the direction of ring 1's first
+entry as the zero. Every ring therefore starts on the same spoke, and exact
+azimuth ties break by ascending id.
+
 `k == 0` is empty; `k < 0` throws an `ArgumentError`.
 
 Neighbours are computed by exact lattice arithmetic — one Eisenstein unit step
@@ -462,6 +506,10 @@ on the cell's physical lattice point — and the position is turned back into an
 id by the same decoder `cellat` uses, whose strict re-encode rejects anything
 that is not exactly the cell standing there. Pentagon seams need no special
 case.
+
+The container is the static-capacity `SmallVector{6,Z7Cell}` at `k <= 1`, where
+the bound is [`max_neighbors`](@ref) and the call does not allocate, and a plain
+`Vector{Z7Cell}` above it, where the disc has no static bound.
 """
 function DGG.neighbors(g::IGeo7Grid, c::Z7Cell, k::Integer=1;
     connectivity::Connectivity=Vertex())
@@ -470,7 +518,9 @@ function DGG.neighbors(g::IGeo7Grid, c::Z7Cell, k::Integer=1;
     _level_checked(g, c)
     steps == 0 && return SmallVector{6,Z7Cell}()
     steps == 1 && return _neighbors1(c)
-    return _neighbors_bfs(c, steps)
+    shells = _shells(g, c, steps)
+    isempty(shells) && return Z7Cell[]
+    return reduce(vcat, shells)
 end
 
 # The k == 1 primitive, in CCW order and in the static-capacity container.
@@ -482,32 +532,50 @@ function _neighbors1(c::Z7Cell)
     return out
 end
 
-function _neighbors_bfs(c::Z7Cell, steps::Int)
-    seen = Set{Z7Cell}((c,))
-    frontier = Z7Cell[c]
-    out = Z7Cell[]
-    for _ in 1:steps
+# The breadth-first walk BOTH `neighbors` and `ring` read, so that the disc is
+# the shells concatenated by construction rather than by coincidence. Shell `j`
+# is the cells at adjacency distance exactly `j`, in the contract's rotational
+# order.
+function _shells(g::IGeo7Grid, c::Z7Cell, steps::Int)
+    shells = Vector{Z7Cell}[]
+    steps >= 1 || return shells
+
+    # Ring 1 comes out of the lattice already in CCW order, and its first entry
+    # is the zero direction every outer ring is measured against.
+    first_ring = collect(_neighbors1(c))
+    isempty(first_ring) && return shells
+    push!(shells, first_ring)
+    reference = DGG.cell_centroid(g, first(first_ring))
+
+    seen = Set{Z7Cell}(first_ring)
+    push!(seen, c)
+    frontier = first_ring
+    for _ in 2:steps
         next = Z7Cell[]
         for x in frontier
             for y in _neighbors1(x)
                 y in seen && continue
                 push!(seen, y)
                 push!(next, y)
-                push!(out, y)
             end
         end
         isempty(next) && break
+        _sort_ccw!(next, g, c, reference)
+        push!(shells, next)
         frontier = next
     end
-    return sort!(out)
+    return shells
 end
 
 """
     ring(g::IGeo7Grid, c::Z7Cell, k; connectivity = Vertex())
 
 The cells at adjacency distance **exactly** `k`. `ring(g, c, 0)` is `[c]`, and
-`ring(g, c, 1)` is [`neighbors`](@ref) at `k == 1`, in the same counter-clockwise
-order; deeper shells are sorted ascending by canonical id.
+`ring(g, c, 1)` is [`neighbors`](@ref) at `k == 1`.
+
+Shares [`neighbors`](@ref)' walk, so this is that function's trailing block:
+`neighbors(g, c, k)` is `vcat(ring(g, c, 1), ..., ring(g, c, k))`, and the
+order contract is the one stated there.
 """
 function DGG.ring(g::IGeo7Grid, c::Z7Cell, k::Integer;
     connectivity::Connectivity=Vertex())
@@ -516,21 +584,60 @@ function DGG.ring(g::IGeo7Grid, c::Z7Cell, k::Integer;
     _level_checked(g, c)
     steps == 0 && return Z7Cell[c]
     steps == 1 && return _neighbors1(c)
-    seen = Set{Z7Cell}((c,))
-    frontier = Z7Cell[c]
-    for _ in 1:steps
-        next = Z7Cell[]
-        for x in frontier
-            for y in _neighbors1(x)
-                y in seen && continue
-                push!(seen, y)
-                push!(next, y)
-            end
-        end
-        isempty(next) && return Z7Cell[]
-        frontier = next
+    shells = _shells(g, c, steps)
+    # A walk that ran out of cells before reaching `steps` has no shell there:
+    # the ring is genuinely empty, not missing.
+    steps <= length(shells) || return Z7Cell[]
+    return shells[steps]
+end
+
+# ---------------------------------------------------------------------------
+# Rotational ordering of the outer shells
+#
+# An orthonormal frame in the tangent plane at the subject cell's centroid, with
+# `u` pointing at the reference direction (ring 1's first entry) and `v` chosen
+# so that the rotation u -> v is counter-clockwise SEEN FROM OUTSIDE. That is
+# `v = p x u` and not `u x p`: for a point `p` on the unit sphere, `p x u`
+# leads `u` by a quarter turn in the right-handed sense about the outward
+# normal, which is what "counter-clockwise from outside" means.
+# ---------------------------------------------------------------------------
+
+function _tangent_frame(centre, toward)
+    d = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
+    radial = d[1] * centre[1] + d[2] * centre[2] + d[3] * centre[3]
+    t = (d[1] - radial * centre[1], d[2] - radial * centre[2],
+         d[3] - radial * centre[3])
+    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
+    # A degenerate reference means the zero direction coincides with the centre
+    # or its antipode, which a distinct neighbouring cell centre cannot do. The
+    # fallback only keeps this total.
+    if n <= eps(Float64)
+        t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)
+        n = 1.0
     end
-    return sort!(frontier)
+    e1 = (t[1] / n, t[2] / n, t[3] / n)
+    e2 = (centre[2] * e1[3] - centre[3] * e1[2],
+          centre[3] * e1[1] - centre[1] * e1[3],
+          centre[1] * e1[2] - centre[2] * e1[1])
+    return e1, e2
+end
+
+function _azimuth(centre, e1, e2, p)
+    d = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
+    a = atan(d[1] * e2[1] + d[2] * e2[2] + d[3] * e2[3],
+             d[1] * e1[1] + d[2] * e1[2] + d[3] * e1[3])
+    return a < 0 ? a + 2 * Float64(π) : a
+end
+
+function _sort_ccw!(shell::Vector{Z7Cell}, g::IGeo7Grid, c::Z7Cell,
+        reference)
+    length(shell) <= 1 && return shell
+    centre = DGG.cell_centroid(g, c)
+    e1, e2 = _tangent_frame(centre, reference)
+    # Ties by ascending id, per the contract: azimuth is the key, the id is the
+    # tiebreak, so the order is total and reproducible.
+    sort!(shell; by = z -> (_azimuth(centre, e1, e2, DGG.cell_centroid(g, z)), z))
+    return shell
 end
 
 # A cell handed to a grid operation must belong to that grid's level; otherwise
@@ -546,17 +653,23 @@ end
 # Subtree border
 #
 # Which descendants of a cell touch a cell outside its subtree, from the Z7
-# digits alone — no neighbour query and no geometry. Kept as IGeo7's own name
-# because the fallback layer exposes no generic border/interior iterator to
-# extend; see the note in `IGeo7.jl`.
+# digits alone — no neighbour query and no geometry. T7 added the generic
+# `subtree_border` hook, so this is now IGeo7's method on it rather than a
+# module-local name.
 # ---------------------------------------------------------------------------
 
 """
-    subtree_border(sys::IGeo7System, c::Z7Cell, l::Integer) -> Vector{Z7Cell}
+    subtree_border(sys::IGeo7System, c::Z7Cell, l::Integer; connectivity = Vertex()) -> Vector{Z7Cell}
+
+IGeo7's method on the package's [`subtree_border`](@ref) generic.
 
 The descendants of `c` at level `l` that share an edge with a cell outside `c`'s
 subtree — the subtree's rim — ascending. `l == level(c)` returns `[c]`, whose
 whole neighbourhood is outside its own subtree.
+
+`connectivity` is accepted for the generic's signature and does not change the
+answer: on a hexagonal grid sharing a vertex and sharing an edge are the same
+relation.
 
 Decided by a six-state automaton over the digit string (a border cell's exposed
 directions always form a contiguous arc of the six unit steps, and the arc's
@@ -566,7 +679,8 @@ the rim of a hexagon subtree holds `3^(d+1) − 3` cells at depth `d` against th
 
 Throws an `ArgumentError` for `l` outside `level(c):max_level`.
 """
-function subtree_border(::IGeo7System, c::Z7Cell, l::Integer)
+function subtree_border(::IGeo7System, c::Z7Cell, l::Integer;
+        connectivity::Connectivity=Vertex())
     res = _geometry_checked(c.id)
     target = Int(l)
     res <= target <= MAX_RESOLUTION || throw(ArgumentError(

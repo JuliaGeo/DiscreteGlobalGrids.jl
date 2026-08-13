@@ -212,14 +212,43 @@ function cell_polygon end
 """
     cell_area(grid::AbstractGrid, c::AbstractCellIndex) -> Float64
 
-The area of cell `c` **in steradians** — the spherical (geodesic-polygon) area
-of its boundary on the unit sphere. Multiply by `R^2` for a physical area on a
-sphere of radius `R`; for an equal-area DGGS read on its authalic sphere (see
+The area of cell `c` **in steradians**. Multiply by `R^2` for a physical area on
+a sphere of radius `R`; for an equal-area DGGS read on its authalic sphere (see
 [`authalic_sphere`](@ref)) that product is the true ellipsoidal area.
 
-Never planar. Computed from the exact ring, so it is right for cells that span
-a large solid angle, where a planar formula is not merely inaccurate but wrong
-in sign.
+# What "the cell" means here
+
+`cell_area` reports the area of the **true cell** — the region the system says
+this cell *is*. For most systems the true cell is exactly the polygon
+[`cell_boundary`](@ref) publishes, and then this is that polygon's spherical
+area and the two are the same statement. But the two can come apart, in both
+directions, and this method follows the cell rather than the ring:
+
+  - A system may publish a boundary that is a **densification** of a curved true
+    cell. HEALPix is this case: a pixel is an analytic equal-area diamond of
+    area exactly `4π/(12·4^level)`, and the published ring is a polyline
+    approximation of it that converges from below. `cell_area` returns the
+    closed form; the ring is the approximation, not the definition.
+  - A system may publish a boundary that tiles the sphere exactly while its
+    *chart* cells do not have that boundary. IGeo7 is this case: the corner
+    rings partition the sphere, so their areas are the honest answer to "how
+    much sphere does this cell own", even though the equal-area chart assigns a
+    slightly different figure (`IGeo7.equal_area_steradians`, which differs by
+    +1.6% on hexagons and −9.9% on pentagons at level 1). There the ring *is*
+    the true cell, and `cell_area` is ring-derived.
+
+So the rule is: **the true cell, not the ring** — and for the systems where the
+true cell is the ring, which is the common case, they coincide. A system whose
+`cell_area` is not simply the area of its own `cell_boundary` must say so in its
+`cell_area` docstring and say which quantity it returns.
+
+The generic fallback computes the spherical area of the [`cell_polygon`](@ref)
+ring, which is the right answer whenever the ring is the cell. A system
+overrides only to *correct* that, never to speed it up at the cost of changing
+the answer.
+
+Never planar. Spherical throughout, so it is right for cells that span a large
+solid angle, where a planar formula is not merely inaccurate but wrong in sign.
 """
 function cell_area end
 
@@ -273,8 +302,21 @@ converting wrapper and takes **degrees**.
 
 **Ties.** A point exactly on a shared boundary belongs to exactly one cell, and
 which one is deterministic and documented per system. The generic fallback
-resolves a tie by taking the first candidate in canonical id order. A tie is
-never resolved by floating-point luck.
+resolves a tie by taking the first candidate in canonical id order.
+
+"Deterministic" here means **per platform**: the same call, in the same process
+or in another process on the same machine and Julia build, always gives the same
+answer, and a system must document the rule it uses to get there. It does *not*
+promise bit-identity across platforms. It cannot: a tie is decided by comparing
+floating-point quantities that a different CPU, libm or `--math-mode` may round
+differently in the last place, and the set of points where that changes the
+answer is a measure-zero curve. Requiring cross-platform bit-identity would
+force every system to carry exact arithmetic on its boundary test for a class of
+input that no real workload lands on by accident — the wrong trade. What *is*
+promised everywhere is the part that matters: the answer is always one of the
+cells genuinely incident to the point, never a third cell and never `nothing`
+inside coverage. Systems whose tie rule is an exact integer or lattice
+comparison get cross-platform identity as a bonus and may say so.
 
 The generic implementation descends [`treeify(grid)`](@ref treeify) to a
 candidate set and then tests point-in-cell; systems with a closed-form inverse
@@ -300,11 +342,42 @@ grids the two coincide; on quadrilateral grids `Vertex()` adds the corners.
 
 # Order
 
-**Deterministic order is part of the contract.** Each system documents a
-canonical order for its neighbours (typically counter-clockwise from a
-canonical direction, which is what makes a stencil weight vector meaningful);
-the geometric fallback sorts by canonical id. No method in this package is ever
-allowed to return neighbours in an unspecified order.
+**The order is part of the contract, and it is rotational.** The result is the
+rings 1, 2, …, `k` concatenated outward, shell by shell:
+
+    neighbors(grid, c, k) == vcat(ring(grid, c, 1), ring(grid, c, 2), ..., ring(grid, c, k))
+
+Within one ring the cells run **counter-clockwise seen from outside the
+sphere** — counter-clockwise in the tangent plane at `cell_centroid(grid, c)`,
+viewed from above that plane — beginning at a cell each system documents. The
+rings are never interleaved and the result is never sorted by id.
+
+Because ring `k` is the last block, [`ring`](@ref) is the *tail* of `neighbors`:
+
+    ring(grid, c, k) == neighbors(grid, c, k)[end - length(ring(grid, c, k)) + 1 : end]
+
+That is the law, and it is what the rotational order is for. Position `j` of a
+ring always names the same direction relative to `c`, so a stencil weight vector
+means the same thing at every cell and can be rotated as a unit; a coarser
+neighbourhood extends a finer one by appending, without recomputing it. Sorting
+by id destroys both properties, which is why no method here sorts.
+
+Each system picks its own ring-1 start (a lattice direction, a compass point);
+what a system must not do is leave it unstated. Where a system has a natural
+direction only for the immediate ring, the recommended extension — and what the
+geometric fallback does — is to measure the outer rings' azimuths **relative to
+the first ring-1 neighbour**, so every ring starts on the same spoke.
+
+The geometric fallback has no lattice to read a direction off, so it realises
+the same contract by measurement: it orders each ring by azimuth about
+`cell_centroid(grid, c)`, counter-clockwise seen from outside, with the
+first ring-1 neighbour as the zero direction and exact ties broken by ascending
+canonical id. No method in this package is ever allowed to return neighbours in
+an unspecified order.
+
+A cell with fewer neighbours than the lattice maximum — a pentagon, or a cell on
+the edge of a partial grid — simply yields a shorter ring. The winding is
+unchanged; there is no padding and no gap marker.
 
 # Container
 
@@ -331,12 +404,19 @@ function neighbors end
 The cells of `grid` at adjacency distance **exactly** `k` from `c` — the shell,
 not the disc. `ring(grid, c, 0)` is `c` alone.
 
-Derived from [`neighbors`](@ref) and overridable. The two are related by
+Derived from [`neighbors`](@ref) and overridable. The two are related exactly,
+not merely as sets: the disc is the rings concatenated outward,
 
-    neighbors(grid, c, k) == reduce(vcat, ring(grid, c, j) for j in 1:k)
+    neighbors(grid, c, k) == vcat(ring(grid, c, 1), ..., ring(grid, c, k))
 
-up to order, and `ring` carries the same order, container and coverage
-contracts as `neighbors`.
+so `ring(grid, c, k)` is the **tail block** of `neighbors(grid, c, k)`,
+element for element and in order. A system that overrides one of these must
+override the other consistently — computing the two with independent walks that
+happen to agree as sets is the way this law is usually broken.
+
+`ring` carries the same order (counter-clockwise seen from outside the sphere,
+from the system's documented start), container and coverage contracts as
+[`neighbors`](@ref).
 """
 function ring end
 

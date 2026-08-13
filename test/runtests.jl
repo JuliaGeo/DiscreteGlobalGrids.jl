@@ -21,6 +21,7 @@ using DiscreteGlobalGrids
     include("systems/IGeo7/runtests.jl")
     include("systems/H3/runtests.jl")
     include("systems/HEALPix/runtests.jl")
+    include("systems/crosssystem/runtests.jl")
     # TODO(T10): include("systems/A5/runtests.jl")
     # TODO(T11): include("systems/S2/runtests.jl")
     # TODO(T12): include("systems/ISEA4R/runtests.jl")

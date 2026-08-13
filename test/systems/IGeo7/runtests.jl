@@ -484,9 +484,16 @@ pentagon(b::Integer, r::Integer) =
         @test isempty(DGG.neighbors(g1, c, 0))
         @test collect(DGG.ring(g1, c, 0)) == [c]
         @test collect(DGG.ring(g1, c, 1)) == collect(DGG.neighbors(g1, c, 1))
+        # The rotational contract, on the sequences and not merely on the sets:
+        # the disc IS the rings concatenated outward, so the ring is the disc's
+        # tail block element for element. Set equality alone passes happily for
+        # a disc that sorts by id, which is what this used to do.
         for k in 1:3
             union_rings = reduce(vcat, [collect(DGG.ring(g1, c, j)) for j in 1:k])
-            @test Set(union_rings) == Set(collect(DGG.neighbors(g1, c, k)))
+            disc = collect(DGG.neighbors(g1, c, k))
+            @test disc == union_rings
+            shell = collect(DGG.ring(g1, c, k))
+            @test disc[(end-length(shell)+1):end] == shell
             @test allunique(union_rings)
         end
 
@@ -660,8 +667,9 @@ pentagon(b::Integer, r::Integer) =
         @test !isempty(brute)
         @test issubset(Set(brute), Set(hits))
 
-        # the ConservativeRegridding.Trees surface works off dense positions
-        @test DGG.getcell(g, 1) isa Any
+        # the ConservativeRegridding.Trees surface works off dense positions.
+        # (`isa Any` was here and asserted nothing — every value is an `Any`.
+        # The trait check below is the real assertion.)
         @test GO.GI.geomtrait(DGG.getcell(g, 1)) isa GO.GI.PolygonTrait
         @test DGG.ncells(g) == 3432
     end

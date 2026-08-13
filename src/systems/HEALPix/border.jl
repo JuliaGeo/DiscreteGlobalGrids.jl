@@ -55,11 +55,15 @@
 # inherit none of the parent square's exposed sides emits in strictly ascending
 # id order by construction. The pruning is what keeps it O(rim).
 #
-# NOTE for T7: the interface documents "the subtree border/interior iterators"
-# in `descendants`' docstring but declares no generic for them, so this is
-# module-local rather than an override. If a generic `subtree_border` is added,
-# this is its HEALPix method with no change beyond the signature.
+# STATUS: T7 added the generic `subtree_border` hook to `src/interface/`, and
+# this walk is now HEALPix's method on it — the signature grew a `connectivity`
+# keyword it ignores (see the docstring) and nothing else changed.
 # ---------------------------------------------------------------------------
+
+# Extended, not shadowed: `HEALPix.subtree_border` and
+# `DiscreteGlobalGrids.subtree_border` are the same function, so generic code
+# gets the Morton walk without knowing HEALPix has one.
+import ..DiscreteGlobalGrids: subtree_border
 
 # Which sides of a square are exposed to the outside of the subtree, one bit per
 # side of the face-local lattice. A quadrant inherits only the sides it actually
@@ -105,20 +109,29 @@ function _rim_walk!(out::Vector{Int64}, k::Int, base::Int64, code::Int64,
 end
 
 """
-    subtree_border(sys, c, leaf_level) -> Vector{LevelIndex}
+    subtree_border(sys::HEALPixSystem, c::LevelIndex, leaf_level::Integer; connectivity = Vertex()) -> Vector{LevelIndex}
+
+HEALPix's method on the package's [`subtree_border`](@ref) generic.
 
 The **rim** of `c`'s subtree at `leaf_level`: the descendants that have at
 least one neighbour outside the subtree, ascending by canonical id.
 
 `4 * 2^Δ - 4` cells for `Δ = leaf_level - level(c) > 0`, and `[c]` at `Δ == 0`.
 Θ(rim) time and one allocation — the rim is read straight off the leaf lattice,
-with no neighbour query at any level. The answer is the same under `Vertex()`
-and `Edge()` connectivity; see the file header.
+with no neighbour query at any level.
+
+`connectivity` is accepted for the generic's signature and does not change the
+answer. A subtree is a square block of the face lattice, so a leaf is on the rim
+exactly when it sits on one of the block's four sides — and a cell on a side has
+a neighbour outside the block under edge adjacency already. `Vertex()` adds
+diagonal neighbours, which can only be outside the block for cells that are
+already on a side. See the file header.
 
 Positions, if wanted, are `rawid + 1` — the same convention
 [`descendant_range`](@ref) returns directly.
 """
-function subtree_border(sys::HEALPixSystem, c::DGG.LevelIndex, leaf_level::Integer)
+function subtree_border(sys::HEALPixSystem, c::DGG.LevelIndex, leaf_level::Integer;
+        connectivity::DGG.Connectivity=DGG.Vertex())
     # `descendant_range` runs FIRST and is the only guard needed: it raises the
     # `leaf_level < level(c)` and `> max_level` `ArgumentError`s, and its `lo`
     # is the subtree's first position. Nothing below re-derives either.

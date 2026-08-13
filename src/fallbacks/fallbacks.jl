@@ -8,6 +8,7 @@
 #   caps.jl          spherical-cap arithmetic; the one extent vocabulary
 #   geometry.jl      cell_polygon / cell_area / cell_extent / node_extent
 #   identity.jl      cellposition, reindex, ancestor, descendants
+#   subtree.jl       subtree_border / subtree_interior
 #   partial_grid.jl  `PartialGrid`, the one subset-grid type
 #   cursor.jl        `HierarchicalGridCursor` — the hierarchy IS the tree
 #   position_tree.jl the fallback tree for grids with no system
@@ -59,7 +60,8 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     cellat, neighbors, ring, treeify, query, system, level,
     cellindextype, levels, max_level, levelgrid, rootcells, children,
     node_extent, cap_inflation, max_neighbors, has_sorted_subtrees,
-    ancestor, descendants, descendant_range
+    ancestor, descendants, descendant_range,
+    subtree_border, subtree_interior
 import ..DiscreteGlobalGrids: Helpers
 
 import GeometryOps as GO
@@ -85,6 +87,7 @@ const Cap = GO.UnitSpherical.SphericalCap{Float64}
 include("caps.jl")
 include("geometry.jl")
 include("identity.jl")
+include("subtree.jl")
 include("partial_grid.jl")
 include("cursor.jl")
 include("position_tree.jl")

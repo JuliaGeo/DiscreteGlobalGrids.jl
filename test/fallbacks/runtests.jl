@@ -478,6 +478,23 @@ end
         return Dict(k => sort(v) for (k, v) in out)
     end
     @test levels_of(unsorted) == levels_of(sorted)
+
+    # The two modes must also agree on the answers a caller actually sees, not
+    # only on the shape of the tree they descend. Both grids are the same
+    # geometry, so every id must match exactly.
+    gs = levelgrid(SORTED, 2)
+    gu = levelgrid(UNSORTED, 2)
+    for i in 1:ncells(gs)
+        c = cellindex(gs, i)
+        @test neighbors(gu, c) == neighbors(gs, c)
+        @test neighbors(gu, c; connectivity=Edge()) ==
+              neighbors(gs, c; connectivity=Edge())
+    end
+    for lon in -175.0:12.5:175.0, lat in -44.0:8.0:44.0
+        @test cellat(gu, lon, lat) === cellat(gs, lon, lat)
+    end
+    # ... including where the answer is "no cell here".
+    @test cellat(gu, 0.0, 70.0) === cellat(gs, 0.0, 70.0) === nothing
 end
 
 @testset "PartialGrid" begin
@@ -996,6 +1013,74 @@ end
         end
     end
     @test checked_near > 0 && checked_far > 0
+end
+
+@testset "query: caps wider than a hemisphere" begin
+    # A cap of radius > pi/2 is not convex, so containment cannot be read off
+    # the vertices; it is decided through the complement cap instead. "All of
+    # the world except one region" is an ordinary enough target for this to be
+    # worth getting right rather than refusing.
+    grid = levelgrid(SORTED, 2)
+    wide = US.SphericalCap(sph(0.0, 0.0), deg2rad(100.0))
+    anti = sph(180.0, 0.0)
+
+    # Oracle: sample every edge densely and ask whether all of it is inside.
+    # Equivalent to containment here because a cell this size cannot swallow
+    # the 80-degree complement cap.
+    function boundary_inside(grid, c, cap)
+        ring, n = FB.open_ring(cell_boundary(grid, c))
+        for i in 1:n
+            a, b = ring[i], ring[i == n ? 1 : i+1]
+            for t in range(0.0, 1.0; length=33)
+                x = (1 - t) * a[1] + t * b[1]
+                y = (1 - t) * a[2] + t * b[2]
+                z = (1 - t) * a[3] + t * b[3]
+                s = sqrt(x * x + y * y + z * z)
+                US.spherical_distance(cap.point, P(x / s, y / s, z / s)) <= cap.radius ||
+                    return false
+            end
+        end
+        return true
+    end
+
+    inside = query(grid, Within(wide))
+    @test inside == [c for c in all_cells(grid) if boundary_inside(grid, c, wide)]
+    @test !isempty(inside)                       # ... and the oracle is not trivial
+    @test length(inside) < ncells(grid)
+    @test inside ⊆ query(grid, Intersects(wide))
+
+    # A cap covering the whole sphere holds every cell; the query engine must
+    # not trip over the degenerate complement.
+    @test query(grid, Within(FB.full_sphere_cap())) == all_cells(grid)
+    @test query(grid, Within(US.SphericalCap(sph(0.0, 0.0), Float64(pi)))) == all_cells(grid)
+
+    # The coverage traversal is where this used to throw mid-descent. Both of
+    # its paths have to work: cells emitted whole from above the max level, and
+    # cells reached by recursing along the cap's boundary.
+    set = query(SORTED, MultiOrderCoverage(wide); level=3)
+    cells = collect(set)
+    @test minimum(level, cells) < 3              # emitted coarse
+    @test maximum(level, cells) == 3             # recursed to the rim
+    @test allunique(cells)
+
+    covered = FB.cellindices(set, 3)
+    deep = levelgrid(SORTED, 3)
+    met = 0
+    missed = 0
+    for c in all_cells(deep)
+        boundary = cell_boundary(deep, c)
+        centroid = cell_centroid(deep, c)
+        if any(p -> US.spherical_distance(wide.point, p) <= wide.radius, boundary)
+            met += 1                              # a vertex inside: the cell meets it
+            @test c in covered
+        elseif US.spherical_distance(anti, centroid) +
+               maximum(p -> US.spherical_distance(centroid, p), boundary) <
+               Float64(pi) - wide.radius
+            missed += 1                           # wholly inside the complement
+            @test !(c in covered)
+        end
+    end
+    @test met > 0 && missed > 0
 end
 
 @testset "MultiOrderCoverage: children that overhang their parents" begin

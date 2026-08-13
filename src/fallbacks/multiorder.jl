@@ -177,9 +177,18 @@ system(set::MultiOrderCellSet) = set.system
 """
     curve_keys(set::MultiOrderCellSet) -> Vector{Int}
 
-The sort key of each cell, ascending: the start of its position interval at the
-set's reference level. Sibling intervals are adjacent, which is what makes
-compaction and binary-search membership cheap.
+The sort key of each cell, in the order the set stores them.
+
+For a system with [`has_sorted_subtrees`](@ref) these are curve keys proper: the
+start of each cell's position interval at the set's reference level, ascending,
+with sibling intervals adjacent — which is what makes compaction and
+binary-search membership cheap.
+
+Without sorted subtrees there are no position intervals to key on, and the set
+falls back to ordering cells by `(level, id)`. The keys are then each cell's own
+position within its own level, so they ascend only *within* a level and restart
+at the next one; they are reported for inspection, not to be compared across
+levels.
 """
 curve_keys(set::MultiOrderCellSet) = set.keys
 

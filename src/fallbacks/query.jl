@@ -323,7 +323,7 @@ end
 # An empty edge set would let the reject arm fire on every cell; there is no
 # geometry to be near, but there is also nothing to gain, so switch off.
 #
-# An ANTIPODAL edge switches it off too. A vanishing `nn` has two causes: a
+# A NEAR-ANTIPODAL edge switches it off too. A vanishing `nn` has two causes: a
 # repeated point, where the arc really is its endpoints and `_arc_cos_distance`
 # is exact; and `a == -b`, where the cross product also vanishes but the edge is
 # a whole half great circle whose direction is undefined. There the endpoint
@@ -331,10 +331,19 @@ end
 # direction for the reject arm — it could call a cell disjoint that a boundary
 # point sits inside. Such a geometry is pathological, and giving up the
 # optimisation for it costs only time.
+#
+# The guard is on `nn` rather than on exact antipodality because the normal is
+# already ill-conditioned before it vanishes: `nn` is |a x b|^2, so the
+# threshold below covers every edge within 1e-6 rad of a half circle, well past
+# the point where the normal's direction carries any accuracy. The dot-product
+# test keeps repeated points — where `nn` is just as small but the endpoint
+# distance is exact — on the fast path.
+const ANTIPODAL_NN = 1e-12
+
 function _finish_arcs!(arcs)
     isempty(arcs) && return nothing
     for arc in arcs
-        arc.nn > 0 && continue
+        arc.nn > ANTIPODAL_NN && continue
         arc.a[1] * arc.b[1] + arc.a[2] * arc.b[2] + arc.a[3] * arc.b[3] < 0 && return nothing
     end
     return arcs
@@ -453,12 +462,28 @@ _matches(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c) =
 
 # --- cap targets, answered exactly and without polygonising the cap ---------
 
-function _matches(::DE9IM.Intersects, target::CapTarget, grid, c)
-    cap = target.cap
+_matches(::DE9IM.Intersects, target::CapTarget, grid, c) =
+    _cell_meets_cap(target.cap, grid, c, false)
+
+# The exact cell/cap overlap test, at any radius. `strict` asks about the OPEN
+# cap (distance strictly below the radius) instead of the closed one, which is
+# what the complement of a closed cap actually is — see `Within` below.
+#
+# Exact because: if the cap's centre lies in the cell the two meet, and
+# otherwise any point of the intersection can be joined to the centre by a path
+# inside the cap, which must cross the cell's boundary on the way out. So a cell
+# meeting the cap without any boundary point in the cap is impossible. That
+# argument needs the cap to be connected along those paths, i.e. convex, which
+# holds up to radius pi/2; a wider cap is only ever asked about here through its
+# complement, which is narrower than pi/2 by construction.
+function _cell_meets_cap(cap, grid, c, strict::Bool)
     ring, n = open_ring(cell_boundary(grid, c))
-    cap_contains(cap, cell_centroid(grid, c)) && return true
+    radius = Float64(cap.radius)
+    holds(p) = strict ? US.spherical_distance(cap.point, p) < radius :
+               cap_contains(cap, p)
+    holds(cell_centroid(grid, c)) && return true
     for i in 1:n
-        cap_contains(cap, ring[i]) && return true
+        holds(ring[i]) && return true
     end
     # The cap's centre inside the cell, or the cell's boundary reaching into
     # the cap: between them these cover every remaining way to overlap.
@@ -468,28 +493,46 @@ function _matches(::DE9IM.Intersects, target::CapTarget, grid, c)
     # all, so the cap is either wholly inside the cell or wholly outside it —
     # and reading "undecidable" as "outside" would drop a cap that sits deep
     # inside a cell, which is precisely the configuration that makes the
-    # containment test give up.
-    point_in_cell(ring, cap.point) !== false && return true
-    threshold = cos(min(Float64(pi), Float64(cap.radius)))
+    # containment test give up. The `query` docstring states the trade.
+    radius > 0 && point_in_cell(ring, cap.point) !== false && return true
+    threshold = cos(min(Float64(pi), radius))
     for i in 1:n
         a = ring[i]
         b = ring[i == n ? 1 : i+1]
         arc = BoundaryArc(USPoint(a[1], a[2], a[3]), USPoint(b[1], b[2], b[3]))
-        _arc_cos_distance(arc, cap.point) >= threshold && return true
+        d = _arc_cos_distance(arc, cap.point)
+        (strict ? d > threshold : d >= threshold) && return true
     end
     return false
 end
 
-# A cell is inside a cap exactly when its vertices are — the convexity of a cap
-# of radius <= pi/2 carries the great-circle edges between them. A wider cap
-# has no such argument, so the question is refused rather than guessed.
+# A cell is inside a cap of radius <= pi/2 exactly when its vertices are: such a
+# cap is convex, so it carries the great-circle edge between any two points it
+# holds. A wider cap is not convex and that argument collapses — but its
+# complement is, being the OPEN cap of radius pi - r < pi/2 about the antipode,
+# and
+#
+#     cell within C(p, r)  <=>  cell does not meet C(-p, pi - r)
+#
+# which `_cell_meets_cap` decides with no restriction on r at all. The
+# complement is open, so the test there is strict: a cell tangent to the rim of
+# `cap` from the inside is within it, and must not read as meeting the
+# complement. ("Everything except a region" caps are ordinary enough — a
+# coverage of the whole world bar one country — so this is not a corner.)
 function _matches(::DE9IM.Within, target::CapTarget, grid, c)
-    target.cap.radius <= Float64(pi) / 2 || throw(ArgumentError(
-        "Within(cap) needs a cap of radius <= pi/2 to be decided from vertices alone"))
-    for p in cell_boundary(grid, c)
-        cap_contains(target.cap, p) || return false
+    cap = target.cap
+    radius = Float64(cap.radius)
+    radius >= Float64(pi) && return true          # the whole sphere holds everything
+    if radius <= Float64(pi) / 2
+        for p in cell_boundary(grid, c)
+            cap_contains(cap, p) || return false
+        end
+        return true
     end
-    return true
+    point = cap.point
+    complement = SphericalCap(USPoint(-point[1], -point[2], -point[3]),
+        Float64(pi) - radius)
+    return !_cell_meets_cap(complement, grid, c, true)
 end
 
 _matches(pred::DE9IM.DE9IMPredicate, ::CapTarget, grid, c) = throw(ArgumentError(
@@ -515,6 +558,15 @@ geometry, an `Extents.Extent` in lon/lat degrees, or a
 
 `Disjoint` is the complement of `Intersects` and is therefore the one predicate
 that cannot prune: it visits every cell of the grid by construction.
+
+A `SphericalCap` target is answered from the cap itself rather than by
+polygonising it, at any radius — `Within` decides a cap wider than a hemisphere
+through its complement, which is narrower than one. Two consequences worth
+knowing: where the containment of the cap's *centre* in a cell is numerically
+undecidable, `Intersects` counts it as a hit, since at that point the cap is
+either wholly inside the cell or wholly outside and reading "undecidable" as
+"outside" would drop a cap sitting deep inside a cell; and only `Intersects`,
+`Disjoint` and `Within` are implemented for caps, the rest throwing.
 """
 function query(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate)
     # The grid is asked its size first, deliberately: a grid that implements
@@ -532,6 +584,10 @@ end
 _id_type(grid::AbstractGrid) = (sys = system(grid);
 sys === nothing ? typeof(cellindex(grid, 1)) : cellindextype(sys))
 
+# A standalone grid names its id type only through a cell, and an empty grid has
+# none to ask — so the empty answer for one is abstractly typed. Unavoidable
+# without adding an id-type primitive to the interface, and harmless: the vector
+# is empty, so nothing is ever stored in it.
 _empty_ids(grid::AbstractGrid) = (sys = system(grid);
 sys === nothing ? AbstractCellIndex[] : cellindextype(sys)[])
 

@@ -224,7 +224,9 @@ function _arc_lat_extremes(a, b)
     # z - (z . u) u, the tangent direction of steepest latitude gain.
     vx, vy, vz = -uz * ux, -uz * uy, 1.0 - uz * uz
     vn = sqrt(vx * vx + vy * vy + vz * vz)
-    vn <= 1e-12 && return nothing            # the arc lies on a meridian circle
+    # `u` parallel to the pole means the arc's great circle IS the equator,
+    # where latitude is constant and there is no extreme to find.
+    vn <= 1e-12 && return nothing
     px, py, pz = vx / vn, vy / vn, vz / vn
     lo = nothing
     hi = nothing

@@ -32,7 +32,6 @@ const TEST_FILES = (
     "test_neighbors.jl",
     "test_gbt_neighbors.jl",
     "test_border.jl",
-    "test_tile_neighbors.jl",
 )
 
 @testset "IGeo7" begin

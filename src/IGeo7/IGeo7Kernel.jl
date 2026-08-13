@@ -256,10 +256,17 @@ GOCore.best_manifold(::IGeo7Lookups.IGeo7Lookup) = GO.Spherical()
 # --------------------------------------------------------------------------
 # Tile stencils
 #
-# The subtree neighbor stepper: edge adjacency inside one tile from the Z7
-# digits alone, replacing the geometric `_cell_neighbors` on the path that
-# needs it most. Included last because it needs both `DGG` and this module's
-# engine layer.
+# IGEO7 wires no `neighbor_stepper`, so a subtree stencil sweep takes the
+# generic one: `cell_neighbors` resolved through `subtree_position`.
+#
+# It used to wire one — `Z7TileNeighborStepper` (`tile_neighbors.jl`, removed
+# in the commit that added `gbt_neighbors.jl`), which derived edge adjacency
+# inside a tile from the Z7 digit suffix alone. Its premise was that the
+# generic path had to pay the *geometric* `_cell_neighbors` per cell, which is
+# what made a tile-local shortcut worth a second implementation. GBT neighbors
+# removed that premise: the generic path is now integer arithmetic too, and
+# measurably the faster of the two on identical tiles — 138 vs 242 ns/cell at
+# depth 7, 142 vs 285 at depth 8, the gap widening with tile size. The
+# specialization only ever covered hexagon-rooted tiles (a pentagon root makes
+# the suffix numeral non-base-7), so it was also the narrower path.
 # --------------------------------------------------------------------------
-
-include("tile_neighbors.jl")

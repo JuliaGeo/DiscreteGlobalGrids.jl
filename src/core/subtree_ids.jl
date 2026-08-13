@@ -175,9 +175,15 @@ end
 #
 #   generic   `cell_neighbors` + `subtree_position`. Correct for every wired
 #             system. Pays the system's own neighbor construction per cell,
-#             which on the ISEA systems means geometry.
-#   twiddle   integer digit arithmetic on the id, no geometry and no memory.
-#             Per-system; IGEO7 wires one (`src/IGeo7/tile_neighbors.jl`).
+#             which on a system whose `cell_neighbors` is geometric means
+#             geometry — but IGEO7's is integer digit arithmetic
+#             (`src/IGeo7/gbt_neighbors.jl`), so there it is already cheap.
+#   twiddle   integer digit arithmetic on the *tile*, no geometry and no
+#             memory: a stepper that reads positions straight off the digit
+#             suffix, skipping even `subtree_position`. Per-system; no system
+#             wires one at present. IGEO7 did until its `cell_neighbors`
+#             became integer too and made the generic path the faster of the
+#             two (see `src/IGeo7/IGeo7Kernel.jl`, "Tile stencils").
 #   table     any of the above, materialized once into `6 x n` `Int32`.
 #             O(1) per lookup afterwards, at 4 bytes per cell per direction.
 #

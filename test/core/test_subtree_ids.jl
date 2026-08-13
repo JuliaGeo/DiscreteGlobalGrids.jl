@@ -1,7 +1,7 @@
 # `DGGSSubtreeIds` and the generic neighbor-stepper layer
-# (`src/core/subtree_ids.jl`). Everything here is system-agnostic; the IGEO7
-# twiddle that specializes `neighbor_stepper` is tested in
-# `test/IGeo7/test_tile_neighbors.jl`.
+# (`src/core/subtree_ids.jl`). Everything here is system-agnostic. No system
+# currently specializes `neighbor_stepper`, so the generic stepper below is
+# also the one every wired system actually takes.
 
 using Test
 using DiscreteGlobalGrids

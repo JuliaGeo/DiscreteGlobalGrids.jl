@@ -154,7 +154,7 @@ Pkg.test()
 `test/ISEA4R/`, `test/S2/` — each wrapped in its own module so the generic
 vocabulary the systems share cannot collide across suites. The IGEO7 suite
 validates against the oracle vectors in `test/IGeo7/vectors/` and dominates the
-count. **537,872 assertions, ~92 s warm.**
+count. **528,156 assertions, ~89 s warm.**
 
 ## Provenance
 

@@ -1,31 +1,24 @@
 # ---------------------------------------------------------------------------
-# T10 — A5. STUB.
+# T10 — A5, step 1: the arithmetic.
 #
-# `A5Cell <: AbstractCellIndex` wrapping the native `UInt64` serialization
-# (origin + quintant + Hilbert bits from bit 58, `WORLD_CELL = 0`, the res-30
-# special case), `A5System <: AbstractHierarchicalGridSystem`. Port from
-# `src/A5/A5Native.jl` (the pure-Julia serialization) and `src/A5/A5Kernel.jl`
-# (children/parent/descendants, pentagon neighbours, boundary/center,
-# ordinals); the old `test/A5/` suite is the oracle.
-#
-# Two things make A5 the odd one out, deliberately:
-#
-#   - `has_sorted_subtrees = false`. A5 is the first real system to run on the
-#     cursor's selection mode and on `MultiOrderCellSet`'s `(level, ordinal)`
-#     fallback sort, so its suite must drive treeify/query/coverage through
-#     those paths rather than leaving the substrate's mocks as the only
-#     coverage.
-#   - `cap_inflation` overrides to 1.75, and pentagons mean `max_neighbors` is
-#     5 with `Edge()` == `Vertex()`.
-#
-# Neighbour order follows the rotational contract in `src/interface/grid.jl`:
-# derive the CCW cycle from geometry (azimuth about the cell centre) and VERIFY
-# the winding — the old kernel sorted by id, and both hex systems' "natural"
-# orders turned out to need fixing.
+# The pure-Julia port of upstream a5 carried across from `src/A5/A5Native.jl`,
+# so that the interface wiring in the next commit has something to be a wiring
+# OF. Nothing here implements a contract yet.
 # ---------------------------------------------------------------------------
 
+"""
+    DiscreteGlobalGrids.A5
+
+The [A5](https://a5geo.org) discrete global grid system: an equal-area
+pentagonal tiling of a dodecahedron.
+
+At this point the module is the ported upstream arithmetic and nothing else —
+see [`A5Native`](@ref). The grid-interface wiring lands on top of it.
+"""
 module A5
 
-# TODO(T10): port the A5 system onto the new interface.
+# The ported upstream arithmetic. Everything this module gains later is a
+# wiring of it.
+include("native.jl")
 
 end # module A5

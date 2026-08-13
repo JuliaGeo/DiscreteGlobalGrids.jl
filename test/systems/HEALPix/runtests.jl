@@ -278,6 +278,14 @@ end
     # densification point of one pixel is the SAME Float64 triple in its
     # neighbour's ring. Checked within a face, where the two pixels share the
     # chart and the argument arithmetic must agree bitwise.
+    #
+    # Hashing raw boundary points is safe here, which is not true everywhere:
+    # S2 and ISEA4R must normalise through a `vkey` because a coordinate of
+    # `-0.0` is `==` but not `isequal` to `0.0`, so a hashed container splits a
+    # coincident pair. Checked at T13 across every registered system: HEALPix
+    # emits no signed zero at all (0 of 294912 level-4 coordinates), and these
+    # tests are face-interior besides. S2 is the only system that produces them
+    # (192 of 4608), and it is the one that normalises.
     level = 4
     nside = 1 << level
     grid = levelgrid(SYS, level)

@@ -215,7 +215,9 @@ grids" is not enough for it: A5's Cairo-style pentagonal tiling has **4-valent
 corners**, where a shared vertex need not come with a shared edge, and its two
 connectivities genuinely differ — at resolution 1 a cell has 11 vertex
 neighbours against 3 edge neighbours. On quadrilateral grids (HEALPix, S2,
-ISEA4R) the corners are 4-valent for the same reason and `Vertex()` adds them.
+ISEA4R) the corners carry more than three cells for the same reason — four in
+the lattice interior, five where ISEA4R's diamonds meet an icosahedral vertex —
+and `Vertex()` adds them.
 """
 struct Vertex <: Connectivity end
 

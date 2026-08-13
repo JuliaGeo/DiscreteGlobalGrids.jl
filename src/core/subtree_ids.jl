@@ -140,15 +140,11 @@ This is the set a stencil cannot evaluate from the tile alone: its neighborhood
 is truncated, so a reduction over it sees fewer values than an interior cell
 does. Naming it is the point — an unnoticed truncated neighborhood is how a
 flow-routing sweep grows spurious pits along a tile edge.
+
+The materialized form of [`edge_cells`](@ref); the rim is small enough that
+the difference rarely matters, unlike the interior's.
 """
-function subtree_border_positions(t::DGGSSubtreeIds)
-    ids = subtree_border(t.system, t.root_level, t.root_id, t.level)
-    out = Vector{Int}(undef, length(ids))
-    @inbounds for k in eachindex(ids)
-        out[k] = subtree_position(t, ids[k])
-    end
-    return out                      # ascending: ordinals are monotone in id
-end
+subtree_border_positions(t::DGGSSubtreeIds) = collect(edge_cells(t))
 
 """
     subtree_interior_positions(tile, border=subtree_border_positions(tile)) -> Vector{Int}
@@ -156,14 +152,137 @@ end
 Positions of the tile cells whose whole edge neighborhood is inside the tile —
 the complement of [`subtree_border_positions`](@ref). Pass `border` back in if
 it is already computed.
+
+This materializes the interior, which is almost the whole tile; prefer
+[`interior_cells`](@ref), which is the same sequence without the array.
 """
-function subtree_interior_positions(t::DGGSSubtreeIds,
-        border::AbstractVector{Int}=subtree_border_positions(t))
-    mask = trues(length(t))
-    @inbounds for i in border
-        mask[i] = false
+subtree_interior_positions(t::DGGSSubtreeIds,
+    border::AbstractVector{Int}=subtree_border_positions(t)) =
+    collect(interior_cells(t, border))
+
+# --------------------------------------------------------------------------
+# Rim and interior, without the arrays
+#
+# The two sets are wildly different sizes, and the useful laziness follows the
+# asymmetry rather than treating them alike.
+#
+# The rim is small — `3^(d+1) - 3` cells against the `7^d` a hexagon subtree
+# holds, 2.4% of it at depth 8 — and `subtree_border` already enumerates it in
+# `O(result)`. So there is nothing to save by not holding it; what
+# `edge_cells` drops is only the *second* array, mapping ids to positions on
+# access instead of into a fresh `Vector{Int}`.
+#
+# The interior is the other 97.6%, and materializing it is close to writing
+# down `1:n` — 6.4 MB of `Int` at depth 8 to say "nearly everything". That one
+# is worth not building: the complement of an ascending set is a merge walk
+# with no state beyond a cursor, and its `k`-th element is a binary search.
+#
+# Both are `AbstractVector{Int}`, not just iterators, so they drop into
+# `subtree_stencil`'s `border` / `interior` keywords (which is where they are
+# now the defaults) and into anything else expecting an indexable position
+# list.
+# --------------------------------------------------------------------------
+
+"""
+    edge_cells(tile) -> AbstractVector{Int}
+
+Positions of the tile cells with at least one edge neighbor *outside* the
+tile — the rim — ascending, computed lazily from
+[`subtree_border`](@ref)'s ids.
+
+This is the set a stencil cannot evaluate from the tile alone: its
+neighborhood is truncated, so a reduction over it sees fewer values than an
+interior cell does. Naming it is the point — an unnoticed truncated
+neighborhood is how a flow-routing sweep grows spurious pits along a tile edge.
+
+`tile[i]` recovers the cell id at position `i`.
+
+    for i in edge_cells(tile)
+        halo_exchange!(data, i)
     end
-    return findall(mask)
+
+See [`interior_cells`](@ref) for the complement, and
+[`subtree_border_positions`](@ref) for the materialized form.
+"""
+struct SubtreeEdgeCells{T<:DGGSSubtreeIds,V<:AbstractVector} <: AbstractVector{Int}
+    tile::T
+    ids::V
+end
+
+edge_cells(t::DGGSSubtreeIds) =
+    SubtreeEdgeCells(t, subtree_border(t.system, t.root_level, t.root_id, t.level))
+
+Base.size(e::SubtreeEdgeCells) = (length(e.ids),)
+Base.IndexStyle(::Type{<:SubtreeEdgeCells}) = IndexLinear()
+
+# Ascending without a sort: ids come out ascending and ordinals are monotone
+# in the id, so the positions inherit the order.
+Base.@propagate_inbounds function Base.getindex(e::SubtreeEdgeCells, k::Int)
+    @boundscheck checkbounds(e, k)
+    return subtree_position(e.tile, @inbounds e.ids[k])
+end
+
+"""
+    interior_cells(tile, edge=edge_cells(tile)) -> AbstractVector{Int}
+
+Positions of the tile cells whose whole edge neighborhood is inside the tile —
+the complement of [`edge_cells`](@ref) — ascending, allocating nothing beyond
+`edge` itself. These are the cells a stencil can evaluate from tile-local data
+alone, so their loop needs no membership branch and their neighbor container
+is always full.
+
+Pass `edge` back in when it is already computed; the two are usually wanted
+together.
+
+    for i in interior_cells(tile)
+        data[i] = f(data[i])
+    end
+
+Iteration is a merge against `edge` (`O(1)` per cell); `getindex` is a binary
+search over it (`O(log |edge|)`).
+"""
+struct SubtreeInteriorCells{T<:DGGSSubtreeIds,E<:AbstractVector{Int}} <: AbstractVector{Int}
+    tile::T
+    edge::E
+    n::Int          # length(tile)
+    m::Int          # length(edge)
+end
+
+function interior_cells(t::DGGSSubtreeIds, edge::AbstractVector{Int}=edge_cells(t))
+    return SubtreeInteriorCells(t, edge, length(t), length(edge))
+end
+
+Base.size(v::SubtreeInteriorCells) = (v.n - v.m,)
+Base.IndexStyle(::Type{<:SubtreeInteriorCells}) = IndexLinear()
+
+# The k-th position that `edge` does not contain. With `edge` ascending and
+# distinct, `g(j) = edge[j] - j` is non-decreasing and counts the gap before
+# `edge[j]`; the answer sits after exactly `j*` edge entries, where `j*` is the
+# last `j` with `g(j) < k`. Then the answer is `k + j*`.
+Base.@propagate_inbounds function Base.getindex(v::SubtreeInteriorCells, k::Int)
+    @boundscheck checkbounds(v, k)
+    lo, hi = 0, v.m                  # invariant: g(lo) < k, and lo is feasible
+    @inbounds while lo < hi
+        mid = (lo + hi + 1) >>> 1
+        if v.edge[mid] - mid < k
+            lo = mid
+        else
+            hi = mid - 1
+        end
+    end
+    return k + lo
+end
+
+# Iteration walks the complement directly rather than re-searching per element:
+# `(next position, how many edge entries are already behind it)`.
+@inline function Base.iterate(v::SubtreeInteriorCells, state::Tuple{Int,Int}=(1, 1))
+    pos, j = state
+    @inbounds while j <= v.m && v.edge[j] == pos
+        pos += 1
+        j += 1
+    end
+    pos > v.n && return nothing
+    return pos, (pos + 1, j)
 end
 
 # --------------------------------------------------------------------------
@@ -315,7 +434,7 @@ neighbor_table(t::DGGSSubtreeIds, source::AbstractNeighborStepper=neighbor_stepp
 
 """
     subtree_stencil(f, data, tile; stepper=neighbor_stepper(tile),
-                    border=subtree_border_positions(tile), interior=...)
+                    border=edge_cells(tile), interior=interior_cells(tile, border))
 
 Apply `f(center_value, neighbor_values::SmallVector)` over every cell of
 `tile`, sweeping the interior and the border as separate loops.
@@ -332,8 +451,8 @@ keyword arguments so a repeated sweep pays for each of them once.
 """
 function subtree_stencil(f, data::AbstractVector, t::DGGSSubtreeIds;
         stepper::AbstractNeighborStepper=neighbor_stepper(t),
-        border::AbstractVector{Int}=subtree_border_positions(t),
-        interior::AbstractVector{Int}=subtree_interior_positions(t, border))
+        border::AbstractVector{Int}=edge_cells(t),
+        interior::AbstractVector{Int}=interior_cells(t, border))
     length(data) == length(t) || throw(DimensionMismatch(
         "data has $(length(data)) elements, tile has $(length(t)) cells"))
     return _subtree_sweep(f, data, stepper, border, interior)

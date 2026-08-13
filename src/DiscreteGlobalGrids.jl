@@ -152,6 +152,7 @@ export node_indices
 export DGGSGlobeIds, AbstractDGGSLookup
 export DGGSSubtreeIds, subtree_position
 export subtree_border_positions, subtree_interior_positions
+export edge_cells, interior_cells
 export AbstractNeighborStepper, GenericNeighborStepper, TableNeighborStepper
 export neighbor_stepper, step_neighbors, neighbor_table, subtree_stencil
 export dggs_system, dggs_level

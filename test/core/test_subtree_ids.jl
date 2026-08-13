@@ -57,6 +57,69 @@ end
         1:length(t))) == Set(border)
 end
 
+# `edge_cells` / `interior_cells` are the same two sets without the arrays, so
+# the contract is that they are indistinguishable from the materialized forms —
+# and, for the interior, that its two independent access paths (the merge walk
+# in `iterate`, the binary search in `getindex`) never disagree.
+@testset "edge_cells and interior_cells are lazy views of the same sets" begin
+    S = IGEO7DGGS()
+    for (rl, root, lvl) in ((5, 0x0c4d9fffffffffff, 9),   # hexagon-rooted
+                            (0, 0x2fffffffffffffff, 4),   # pentagon-rooted
+                            (3, 0x0c4fffffffffffff, 3))   # depth 0: all rim
+        t = DGGSSubtreeIds(S, rl, root, lvl)
+        e, v = edge_cells(t), interior_cells(t)
+
+        @test e isa AbstractVector{Int}
+        @test v isa AbstractVector{Int}
+        @test collect(e) == subtree_border_positions(t)
+        @test collect(v) == subtree_interior_positions(t)
+        @test length(e) + length(v) == length(t)
+        @test issorted(e) && issorted(v)
+        @test sort(vcat(collect(e), collect(v))) == collect(1:length(t))
+
+        # iterate (merge) and getindex (binary search) are separate code paths
+        @test [v[k] for k in eachindex(v)] == collect(v)
+        @test [e[k] for k in eachindex(e)] == collect(e)
+
+        @test_throws BoundsError v[length(v)+1]
+        @test_throws BoundsError e[length(e)+1]
+        length(v) > 0 && @test_throws BoundsError v[0]
+
+        # ids are recoverable through the tile
+        @test [t[i] for i in e] == DGG.subtree_border(S, rl, root, lvl)
+    end
+end
+
+# The interior is the whole point of the laziness: it is ~97% of a tile, so
+# materializing it is close to writing down `1:n`.
+@testset "interior_cells does not materialize the interior" begin
+    S = IGEO7DGGS()
+    t = DGGSSubtreeIds(S, 1, 0x33ffffffffffffff, 7)
+    e = edge_cells(t)
+    interior_cells(t, e)                        # warm
+    @test length(t) > 100_000                   # the fixture is big enough to matter
+    @test (@allocated interior_cells(t, e)) == 0
+    # and eager interior storage is what it avoids
+    @test length(interior_cells(t, e)) > 0.9 * length(t)
+end
+
+# The complement logic is index arithmetic over an ascending set; check it
+# against a brute-force complement on shapes the tile fixtures do not reach
+# (empty rim, full rim, rim at both ends, singletons).
+@testset "interior complement arithmetic, brute force" begin
+    S = IGEO7DGGS()
+    t = DGGSSubtreeIds(S, 5, 0x0c4d9fffffffffff, 7)
+    n = length(t)
+    for edge in (Int[], [1], [n], [1, n], collect(1:n), collect(1:2:n),
+                 collect(2:2:n), [1, 2, 3, n-1, n], collect(1:n-1), [n÷2])
+        v = interior_cells(t, edge)
+        expected = setdiff(1:n, edge)
+        @test length(v) == length(expected)
+        @test collect(v) == expected
+        @test [v[k] for k in eachindex(v)] == expected
+    end
+end
+
 @testset "generic stepper agrees with cell_neighbors" begin
     S = HEALPixDGGS()
     t = DGGSSubtreeIds(S, 3, 100, 6)

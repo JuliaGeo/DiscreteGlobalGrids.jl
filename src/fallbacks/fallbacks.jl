@@ -10,6 +10,7 @@
 #   identity.jl      cellposition, reindex, ancestor, descendants
 #   subtree.jl       subtree_border / subtree_interior
 #   partial_grid.jl  `PartialGrid`, the one subset-grid type
+#   authalic_grid.jl `AuthalicGrid`/`AuthalicSystem`, the ellipsoid wrapper
 #   cursor.jl        `HierarchicalGridCursor` — the hierarchy IS the tree
 #   position_tree.jl the fallback tree for grids with no system
 #   locate.jl        `cellat`, geometric `neighbors` / `ring`
@@ -89,6 +90,7 @@ include("geometry.jl")
 include("identity.jl")
 include("subtree.jl")
 include("partial_grid.jl")
+include("authalic_grid.jl")
 include("cursor.jl")
 include("position_tree.jl")
 include("locate.jl")

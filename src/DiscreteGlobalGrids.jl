@@ -39,7 +39,8 @@ edges, in wrappers that say so.
 
   - `src/interface/` — the type vocabulary and every generic's contract.
   - `src/fallbacks/` — the generic implementations: the cursor, the trees,
-    `PartialGrid`, `MultiOrderCellSet`, the query engine.
+    `PartialGrid`, `AuthalicGrid`/`AuthalicSystem`, `MultiOrderCellSet`, the
+    query engine.
   - `lib/DiscreteGlobalGridsConformanceTesting/` — the separate test-only
     package whose property suites make the contracts executable.
   - `src/systems/{IGeo7,H3,HEALPix}/` — one directory per grid system.
@@ -164,11 +165,13 @@ export Intersects, Disjoint, Contains, Within, Covers, CoveredBy
 export Touches, Crosses, Overlaps, Equals
 
 # --- Fallback substrate ----------------------------------------------------
-# The concrete types the generic layer ships: the one subset grid, the one
-# cursor, and the multi-order coverage pair. Systems define none of these.
-using .Fallbacks: PartialGrid, HierarchicalGridCursor,
-    MultiOrderCoverage, MultiOrderCellSet, level_ranges
+# The concrete types the generic layer ships: the one subset grid, the ellipsoid
+# wrapper pair, the one cursor, and the multi-order coverage pair. Systems
+# define none of these.
+using .Fallbacks: PartialGrid, AuthalicGrid, AuthalicSystem,
+    HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges
 export PartialGrid, HierarchicalGridCursor
+export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges
 
 # --- Grid systems ----------------------------------------------------------

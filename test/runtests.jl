@@ -11,9 +11,11 @@ using DiscreteGlobalGrids
 # test/test_helpers.jl) still exist on disk as reference for the ports and are
 # expected to fail against this branch until T4-T7 land them; T8 deletes what
 # the kill list retires.
+#
+# The conformance harness self-tests live in their own workspace package under
+# lib/. T4-T6 import that package and run its two public suites per system.
 @testset "DiscreteGlobalGrids.jl" begin
     include("interface/runtests.jl")
     include("fallbacks/runtests.jl")
-    include("conformance/runtests.jl")
     # TODO(T4-T6): include("systems/{IGeo7,H3,HEALPix}/runtests.jl")
 end

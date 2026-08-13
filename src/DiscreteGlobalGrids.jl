@@ -19,8 +19,8 @@ implements, and against which every algorithm is written exactly once.
     always an optimisation, never a semantic.
 
 Implementors write primitives; consumers get contracts. A system that overrides
-a generic for speed and changes an answer is wrong, and
-`test_grid_interface` / `test_hierarchical_system` are how that is caught.
+a generic for speed and changes an answer is wrong, and the separate
+`DiscreteGlobalGridsConformanceTesting` package is how that is caught.
 
 # Position vs identity
 
@@ -40,8 +40,8 @@ edges, in wrappers that say so.
   - `src/interface/` — the type vocabulary and every generic's contract.
   - `src/fallbacks/` — the generic implementations: the cursor, the trees,
     `PartialGrid`, `MultiOrderCellSet`, the query engine.
-  - `src/conformance.jl` — the property suites that make the contracts
-    executable.
+  - `lib/DiscreteGlobalGridsConformanceTesting/` — the separate test-only
+    package whose property suites make the contracts executable.
   - `src/systems/{IGeo7,H3,HEALPix}/` — one directory per grid system.
   - [`Helpers`](@ref) — shared allocation-free primitives (`SmallList`,
     `sorted_index`, the `AuthalicTransform`).
@@ -98,9 +98,6 @@ include("interface/system.jl")
 # Generic implementations of everything the interface declares.
 include("fallbacks/fallbacks.jl")
 
-# The executable form of the contracts above.
-include("conformance.jl")
-
 # Grid systems.
 include("systems/IGeo7/IGeo7.jl")
 include("systems/H3/H3.jl")
@@ -136,10 +133,6 @@ using .Fallbacks: PartialGrid, HierarchicalGridCursor,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
 export PartialGrid, HierarchicalGridCursor
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges
-
-# --- Conformance harness ---------------------------------------------------
-using .Conformance: test_grid_interface, test_hierarchical_system
-export test_grid_interface, test_hierarchical_system
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere

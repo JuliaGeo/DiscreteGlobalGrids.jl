@@ -137,8 +137,9 @@ traversal in this package — [`query`](@ref), [`cellat`](@ref), the
 inside it the moment its extent misses the target. If the law is violated by
 one cell at one depth, that cell is silently dropped from an answer, and
 nothing downstream can detect it. It is therefore a **property-tested
-contract**: `test_hierarchical_system(sys)` samples cells, walks their subtrees
-several levels down, and asserts containment.
+contract**: `DiscreteGlobalGridsConformanceTesting.test_hierarchical_system(sys)`
+samples cells, walks their subtrees several levels down, and asserts
+containment.
 
 Over-covering is always safe and only ever costs time. Under-covering is a
 correctness bug.

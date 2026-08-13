@@ -451,10 +451,18 @@ Both regions are honest tessellations. The corner rings tile the sphere exactly
 measured against the closed form, level-1 hexagons run +1.6% and pentagons
 −9.9%, and the spread narrows as cells shrink (±2.3% at level 3).
 
-[`cell_area`](@ref) is contractually "the spherical (geodesic-polygon) area of
-its boundary … computed from the exact ring", so it is left to the generic
-implementation and always agrees with [`cell_boundary`](@ref) and
-[`cell_polygon`](@ref). Reach for this function when the equal-area *property*
+[`cell_area`](@ref) is contractually the area of the **true cell** — and for
+IGEO7 the true cell is the published ring, since it is the rings that tile the
+sphere and the rings that this package intersects, regrids and draws. So
+`cell_area` is left to the generic ring-derived implementation and always
+agrees with [`cell_boundary`](@ref) and [`cell_polygon`](@ref); the closed form
+here is the *other* quantity, the chart's nominal equal-area figure. (Contrast
+HEALPix, where the true cell is an analytic diamond and the published ring is a
+densified approximation of it, so its `cell_area` overrides to the closed form
+instead. Same contract, opposite conclusion, because the systems differ in
+which region is the cell.)
+
+Reach for this function when the equal-area *property*
 is what matters — area-weighted statistics, sanity checks against DGGRID's
 published areas — and for the ellipsoidal area multiply by the authalic radius
 squared (`ISEA.R_AUTHALIC^2`).

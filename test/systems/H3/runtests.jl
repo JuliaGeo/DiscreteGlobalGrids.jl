@@ -622,6 +622,29 @@ end
     end
 
     # =======================================================================
+    @testset "ring 1 starts where the docstring says" begin
+        # ORACLE PIN on the documented START of the rotational order.
+        #
+        # The conformance harness's winding law is start-invariant by design —
+        # it asserts a ring is one CCW cycle, and every rotation of a cycle is
+        # still one cycle. So without this literal, nothing would catch H3's
+        # ring 1 quietly beginning at a different neighbour. That is worth
+        # catching: the value of a rotational order is that slot `j` names a
+        # fixed direction, so a stencil that bakes "slot 1" into a weight
+        # vector is silently rotated if the start moves.
+        #
+        # Produced by the implementation and checked against the documented
+        # rule, not transcribed from libh3 (libh3's `gridDisk` has its own
+        # order, which is exactly what this module replaces).
+        g = DGG.levelgrid(S, 2)
+        c = DGG.cellindex(g, 100)
+        @test string(DGG.rawid(c), base=16) == "82040ffffffffff"
+        @test [string(DGG.rawid(x), base=16) for x in DGG.neighbors(g, c, 1)] ==
+              ["82042ffffffffff", "820407fffffffff", "82041ffffffffff",
+               "8204e7fffffffff", "820457fffffffff", "820477fffffffff"]
+    end
+
+    # =======================================================================
     @testset "conformance" begin
         for l in (0, 1, 3)
             test_grid_interface(DGG.levelgrid(S, l); label="H3Grid(res $l)")

@@ -660,6 +660,30 @@ end
     @test checked > 0        # the face-interior filter did not empty the loop
 end
 
+@testset "ring 1 starts where the docstring says" begin
+    # ORACLE PIN on the documented START of the rotational order.
+    #
+    # The neighbouring testsets check the CYCLE (CCW winding, Edge() preserving
+    # the cycle, the slot tuple), and the conformance harness's winding law is
+    # start-invariant by construction — every rotation of a CCW cycle is still
+    # a CCW cycle. So the START itself is documented and otherwise unpinned,
+    # and a rotation would pass everything while silently rotating the weight
+    # vector of any stencil that has baked "slot 1 is SW" into itself.
+    #
+    # Values produced by the implementation and checked against the documented
+    # rule (the compass cycle from the SW neighbour), not from Healpix.jl,
+    # whose `neighbours` has its own ordering.
+    grid = levelgrid(SYS, 3)
+    c = cellindex(grid, 100)
+    @test rawid(c) == 99
+    @test [rawid(x) for x in neighbors(grid, c, 1)] ==
+          [98, 96, 97, 100, 102, 108, 105, 104]
+    # Edge() drops the four diagonals and keeps the survivors in cycle order,
+    # starting on the same spoke.
+    @test [rawid(x) for x in neighbors(grid, c, 1; connectivity = Edge())] ==
+          [98, 97, 102, 105]
+end
+
 @testset "ring is the tail block of neighbors" begin
     # The composition contract: neighbors(k) is rings 1..k concatenated
     # outward, so ring(k) is exactly the trailing block.

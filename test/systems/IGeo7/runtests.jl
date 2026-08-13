@@ -519,6 +519,35 @@ const CLEAN = (0, "")
         @test ntested > 0
         @test nccw == ntested
 
+        # ORACLE PIN on the documented START of the rotational order.
+        #
+        # The conformance harness's winding law is deliberately start-invariant
+        # — it checks that a ring is one CCW cycle, which every rotation of
+        # that ring satisfies. So nothing else in the suite would notice if
+        # IGeo7's ring 1 quietly began at a different unit step. That matters
+        # because the whole point of a rotational order is that position `j`
+        # names a fixed direction: once a stencil bakes "slot 1 is the +1 dev
+        # direction" into a weight vector, rotating the start silently rotates
+        # every consumer's weights. Hence a literal.
+        #
+        # Values produced by the implementation and checked against the
+        # documented rule (the six Eisenstein unit steps in lattice order from
+        # the dev frame's +1 reference), not typed in from an external oracle.
+        let g2 = DGG.levelgrid(S, 2)
+            hexagon = DGG.cellindex(g2, 100)
+            @test I.z7_string(hexagon) == "0234"
+            @test !I.is_pentagon(hexagon)
+            @test [I.z7_string(x) for x in DGG.neighbors(g2, hexagon, 1)] ==
+                  ["0201", "0203", "0236", "0230", "0235", "0212"]
+
+            # A pentagon yields five, not six: two of the unit directions fold
+            # onto the same slot at the cone apex. The start is pinned here too.
+            pent = Z7Cell(I.z7_from_string("0400"))
+            @test I.is_pentagon(pent)
+            @test [I.z7_string(x) for x in DGG.neighbors(g2, pent, 1)] ==
+                  ["0405", "0404", "0406", "0403", "0401"]
+        end
+
         # k = 0, and the ring/neighbours relation
         g1 = DGG.levelgrid(S, 2)
         c = DGG.cellindex(g1, 40)

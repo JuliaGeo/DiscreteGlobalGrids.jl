@@ -200,6 +200,18 @@ end
 
                     @test allunique(border)
                     @test eltype(border) === DGG.cellindextype(sys)
+
+                    # The interface documents the border's order as ascending
+                    # canonical order unless a system says otherwise, and none
+                    # of the three does. Verified across all three automatons
+                    # before pinning it here: the Z7 digit automaton, H3's
+                    # digit-arc automaton and HEALPix's Morton rim walk all
+                    # emit ascending by construction (the Morton walk visits
+                    # quadrants in id order precisely so that it can). Left
+                    # unpinned, an automaton could start emitting a rim in walk
+                    # order and only the docs would be wrong.
+                    @test issorted(border)
+                    @test issorted(interior)
                 end
 
                 # Asking for a level above the cell's own is an error, not an

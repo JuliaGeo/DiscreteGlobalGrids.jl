@@ -76,7 +76,29 @@ function cellposition(grid::AbstractGrid, c::AbstractCellIndex)
 end
 
 # The id as the grid's own scheme, or `nothing` when it cannot be one of the
-# grid's cells at all (wrong scheme, or a different level).
+# grid's cells at all (wrong scheme, wrong level, or a value the scheme's
+# converter refuses).
+#
+# This is the whole of the `Union{Int,Nothing}` half of [`cellposition`](@ref):
+# every caller here — the generic scan and `PartialGrid`'s binary search alike —
+# turns a `nothing` from this into a `nothing` from `cellposition`, so anything
+# that escapes as an exception escapes as a contract violation. `reindex` is
+# deliberately NOT nothing-contracted (an unnameable id is an error there, and
+# should stay one), which is why the translation has to happen at this boundary
+# and why it takes two guards rather than one:
+#
+#   * the SCHEME guard tests the INPUT type. An id from a different system —
+#     an `H3Cell` handed to a HEALPix grid — names no cell of this grid, so the
+#     answer is `nothing`. Testing the *canonical* type here instead would be a
+#     no-op: `first(cellindextypes(sys)) === cellindextype(sys)` is guaranteed by
+#     the interface, so `cellindextype(sys) in cellindextypes(sys)` is always
+#     true and control would always fall through to `reindex`, which throws.
+#   * the RANGE guard tests the VALUE. A scheme the system genuinely supports
+#     can still be handed a value that names no cell — a ring index past the end
+#     of the map — and a converter is entitled to reject that with an
+#     `ArgumentError`. Only `ArgumentError` is caught: a `MethodError` or a
+#     `BoundsError` out of a converter is a bug in that converter and must stay
+#     visible rather than being laundered into "no such cell".
 function _canonical(grid::AbstractGrid, c::AbstractCellIndex)
     l = level(grid)
     l === nothing || level(c) == l || return nothing
@@ -84,8 +106,13 @@ function _canonical(grid::AbstractGrid, c::AbstractCellIndex)
     sys === nothing && return c
     T = cellindextype(sys)
     c isa T && return c
-    T in cellindextypes(sys) || return nothing
-    return reindex(T, sys, c)
+    typeof(c) in cellindextypes(sys) || return nothing
+    return try
+        reindex(T, sys, c)
+    catch err
+        err isa ArgumentError || rethrow()
+        nothing
+    end
 end
 
 # ===========================================================================

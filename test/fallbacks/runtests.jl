@@ -112,6 +112,38 @@ function DGG.descendant_range(::Union{SortedMock,OverhangMock}, c::LevelIndex, l
     return (lo+1):(lo+span)
 end
 
+# A second naming scheme, wired onto `UnsortedMock` ALONE so that `SortedMock`
+# stays the single-scheme mock the assertions above it are written against.
+# `MockPairIndex` names a cell by (root, offset within that root's subtree)
+# rather than by a dense id — and, crucially for the `_canonical` regression
+# tests, its converter REJECTS an offset that names no cell. A system converter
+# is allowed to throw for a value that is simply not a cell; `cellposition` is
+# not allowed to let that throw escape.
+struct MockPairIndex <: AbstractCellIndex
+    level::Int
+    root::Int
+    within::Int
+end
+DGG.level(c::MockPairIndex) = c.level
+DGG.rawid(c::MockPairIndex) = c.root * RADIX^c.level + c.within
+Base.isless(a::MockPairIndex, b::MockPairIndex) = isless(rawid(a), rawid(b))
+
+DGG.cellindextypes(::UnsortedMock) = (LevelIndex, MockPairIndex)
+
+function DGG.reindex(::Type{LevelIndex}, ::UnsortedMock, c::MockPairIndex)
+    span = RADIX^c.level
+    0 <= c.root < ROOTS ||
+        throw(ArgumentError("root $(c.root) is outside 0:$(ROOTS - 1)"))
+    0 <= c.within < span ||
+        throw(ArgumentError("offset $(c.within) is outside 0:$(span - 1)"))
+    return LevelIndex(c.level, c.root * span + c.within)
+end
+
+function DGG.reindex(::Type{MockPairIndex}, ::UnsortedMock, c::LevelIndex)
+    root, within = divrem(Int(rawid(c)), RADIX^level(c))
+    return MockPairIndex(level(c), root, within)
+end
+
 "Longitude/latitude box (degrees) of a mock cell."
 function mock_box(c::LevelIndex)
     l = level(c)
@@ -260,6 +292,45 @@ end
 
 leaf_positions(tree) = STI.query(tree, _ -> true)
 
+"`q`'s offset from `p`, projected into the tangent plane at `p`."
+function tangent_offset(p, q)
+    u = (q[1] - p[1], q[2] - p[2], q[3] - p[3])
+    r = u[1] * p[1] + u[2] * p[2] + u[3] * p[3]
+    return (u[1] - r * p[1], u[2] - r * p[2], u[3] - r * p[3])
+end
+
+"""
+The signed volume `dot(cross(a, b), p)` of the tangent-plane offsets `a`, `b` of
+`qa` and `qb` about `p`. Positive exactly when the step from `qa` to `qb` is
+counter-clockwise **seen from outside** the sphere, which is the winding
+[`neighbors`](@ref) promises. Built from the offsets directly rather than from
+any azimuth, so it is an independent check on the implementation.
+"""
+function turn_sign(p, qa, qb)
+    a = tangent_offset(p, qa)
+    b = tangent_offset(p, qb)
+    c = (a[2] * b[3] - a[3] * b[2],
+        a[3] * b[1] - a[1] * b[3],
+        a[1] * b[2] - a[2] * b[1])
+    return c[1] * p[1] + c[2] * p[2] + c[3] * p[3]
+end
+
+"""
+The counter-clockwise-seen-from-outside angle in `[0, 2pi)` from `qa` to `qb`
+about `p`. Same independence as [`turn_sign`](@ref): no tangent basis, just the
+dot and signed cross products of the two offsets.
+"""
+function ccw_angle(p, qa, qb)
+    a = tangent_offset(p, qa)
+    b = tangent_offset(p, qb)
+    c = (a[2] * b[3] - a[3] * b[2],
+        a[3] * b[1] - a[1] * b[3],
+        a[1] * b[2] - a[2] * b[1])
+    sine = c[1] * p[1] + c[2] * p[2] + c[3] * p[3]
+    cosine = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+    return mod(atan(sine, cosine), 2 * Float64(pi))
+end
+
 # ===========================================================================
 
 @testset "geometry generics" begin
@@ -371,6 +442,58 @@ end
     # `descendant_range` is a MethodError for a system without the trait — the
     # trait and the method are declared together or not at all.
     @test_throws MethodError descendant_range(UNSORTED, LevelIndex(0, 0), 2)
+end
+
+@testset "cellposition: `nothing`, never a throw" begin
+    # `cellposition(grid, c)::Union{Int,Nothing}` is a contract, and `reindex`
+    # — which the generic reaches through `_canonical` — is deliberately not
+    # nothing-contracted. Two ways that used to leak an ArgumentError out.
+
+    # --- (a) a FOREIGN id type ------------------------------------------------
+    # Taken at the grid's OWN level, so the level guard is not what saves it:
+    # `OctantIndex` is level 0, and this is the level-0 grid.
+    roots = levelgrid(SORTED, 0)
+    @test level(OctantIndex(3)) == level(roots) == 0
+    @test !(OctantIndex in cellindextypes(SORTED))
+    @test cellposition(roots, OctantIndex(3)) === nothing
+    # ... and on a PartialGrid, which binary-searches but routes through the
+    # same `_canonical`.
+    part0 = PartialGrid(SORTED, 0, [LevelIndex(0, i) for i in (1, 3, 5)])
+    @test cellposition(part0, OctantIndex(3)) === nothing
+    # ... and on a standalone grid, which has no system to ask at all.
+    @test cellposition(OctantGrid(), LevelIndex(0, 1)) === nothing
+
+    # --- (b) an OUT-OF-RANGE id in a scheme the system DOES support ------------
+    # `UnsortedMock` names cells two ways, and the second scheme's converter
+    # rejects an offset that is not a cell. That rejection is correct; letting
+    # it out of `cellposition` is not.
+    @test cellindextypes(UNSORTED) == (LevelIndex, MockPairIndex)
+    @test cellindextype(UNSORTED) === LevelIndex
+    @test reindex(LevelIndex, UNSORTED, MockPairIndex(2, 0, 3)) === LevelIndex(2, 3)
+    @test reindex(MockPairIndex, UNSORTED, LevelIndex(2, 40)) === MockPairIndex(2, 2, 8)
+
+    ids = [LevelIndex(2, i) for i in (3, 5, 8, 40, 41, 100)]
+    partial = PartialGrid(UNSORTED, 2, ids)
+    @test cellposition(partial, MockPairIndex(2, 0, 3)) == 1
+    @test cellposition(partial, MockPairIndex(2, 0, 5)) == 2
+    @test cellposition(partial, MockPairIndex(2, 2, 8)) == 4      # 2*16 + 8 = 40
+    # In range, correctly converted, simply not one of this grid's cells.
+    @test cellposition(partial, MockPairIndex(2, 0, 4)) === nothing
+
+    # The regression, both halves: the converter throws, `cellposition` does not.
+    @test_throws ArgumentError reindex(LevelIndex, UNSORTED, MockPairIndex(2, 0, 99))
+    @test_throws ArgumentError reindex(LevelIndex, UNSORTED, MockPairIndex(2, 99, 0))
+    @test cellposition(partial, MockPairIndex(2, 0, 99)) === nothing
+    @test cellposition(partial, MockPairIndex(2, 99, 0)) === nothing
+    # ... on the complete level grid too, through the generic linear scan.
+    @test cellposition(levelgrid(UNSORTED, 2), MockPairIndex(2, 0, 5)) == 6
+    @test cellposition(levelgrid(UNSORTED, 2), MockPairIndex(2, 0, 99)) === nothing
+
+    # --- and `reindex` itself still throws ------------------------------------
+    # The fix belongs at the `cellposition` boundary; pushing it down into
+    # `reindex` would turn "I cannot name this" into a silent `nothing`.
+    @test_throws ArgumentError reindex(OctantIndex, UNSORTED, LevelIndex(2, 0))
+    @test_throws ArgumentError reindex(LevelIndex, UNSORTED, OctantIndex(1))
 end
 
 @testset "default node_extent and the covering law" begin
@@ -679,8 +802,11 @@ end
         vonneumann = neighbors(octants, c; connectivity=Edge())
         @test length(moore) == 6
         @test length(vonneumann) == 3
-        @test issorted(moore)
-        @test issorted(vonneumann)
+        # NOT `issorted`: the order is rotational now, and only the membership
+        # is asserted here. The winding itself is pinned in the
+        # "rotational neighbour order" testset below.
+        @test allunique(moore)
+        @test allunique(vonneumann)
         @test vonneumann ⊆ moore
         @test !(c in moore)
         @test all(d -> count_ones(xor(c.code, d.code)) == 1, vonneumann)
@@ -700,7 +826,9 @@ end
     @test ring(octants, c, 0) == [c]
     @test ring(octants, c, 1) == neighbors(octants, c, 1)
     @test ring(octants, c, 2) == [OctantIndex(7)]
-    @test sort(vcat(ring(octants, c, 1), ring(octants, c, 2))) ==
+    # The disc is the rings concatenated OUTWARD — no sort, or the shells would
+    # interleave and `ring` would stop being the tail block.
+    @test vcat(ring(octants, c, 1), ring(octants, c, 2)) ==
           neighbors(octants, c, 2)
     @test length(neighbors(octants, c, 3)) == 7
     @test_throws ArgumentError neighbors(octants, c, -1)
@@ -720,6 +848,88 @@ end
     # Longitude wraps across the antimeridian even though the grid's own
     # coordinates jump from 180 to -180 there.
     @test LevelIndex(1, 15) in neighbors(grid, interior)   # lon 135..180
+end
+
+@testset "rotational neighbour order" begin
+    # The order is contract, not convenience: it is what makes position `j` of
+    # a ring name a fixed direction. These are the three laws that pin it.
+    octants = OctantGrid()
+    g1 = levelgrid(SORTED, 1)
+    g2 = levelgrid(SORTED, 2)
+
+    subjects = vcat([(octants, c) for c in all_cells(octants)],
+        [(g1, c) for c in all_cells(g1)],
+        [(g2, LevelIndex(2, i)) for i in (0, 21, 42, 100)])
+
+    for (g, c) in subjects, conn in (Vertex(), Edge())
+        # 1. Shell concatenation: the disc IS the rings, outward, never sorted.
+        for k in 0:2
+            disc = neighbors(g, c, k; connectivity=conn)
+            rings = [ring(g, c, j; connectivity=conn) for j in 1:k]
+            @test disc == reduce(vcat, rings; init=typeof(c)[])
+            @test allunique(disc)
+            @test !(c in disc)
+        end
+        # 2. The tail-block law, element for element — and its corollary, that
+        #    the head of a disc is the next smaller disc, so a coarser
+        #    neighbourhood extends a finer one by appending.
+        for k in 1:2
+            shell = ring(g, c, k; connectivity=conn)
+            disc = neighbors(g, c, k; connectivity=conn)
+            isempty(shell) && continue
+            @test disc[(end-length(shell)+1):end] == shell
+            @test disc[1:(end-length(shell))] ==
+                  neighbors(g, c, k - 1; connectivity=conn)
+        end
+        # 3. Every shell is ordered by azimuth about the subject's centroid,
+        #    measured from ONE spoke — ring 1's first cell — so ring 2 does not
+        #    get a zero direction of its own. Recomputed here from the offsets
+        #    rather than from the fallback's frame.
+        r1 = ring(g, c, 1; connectivity=conn)
+        if !isempty(r1)
+            p = cell_centroid(g, c)
+            spoke = cell_centroid(g, first(r1))
+            @test ccw_angle(p, spoke, spoke) == 0.0
+            for k in 1:2
+                shell = ring(g, c, k; connectivity=conn)
+                @test issorted([ccw_angle(p, spoke, cell_centroid(g, d))
+                                for d in shell])
+            end
+        end
+    end
+
+    # 4. Ring 1 winds counter-clockwise SEEN FROM OUTSIDE, all the way round:
+    #    the signed volume of consecutive tangent offsets about the subject's
+    #    centroid is positive at every step, the wrap from last back to first
+    #    included. Only a ring that actually encircles its subject can close, so
+    #    the closure check is on cells with a full complement of neighbours —
+    #    every octant, and the mock's interior cells. (A coverage-edge cell's
+    #    ring is a partial arc; it still winds, but it does not come round.)
+    encircling = vcat([(octants, c, conn) for c in all_cells(octants)
+                       for conn in (Vertex(), Edge())],
+        [(g1, c, conn) for c in all_cells(g1) for conn in (Vertex(), Edge())
+         if length(neighbors(g1, c; connectivity=conn)) == (conn isa Edge ? 4 : 8)])
+    @test count(t -> t[1] === g1, encircling) > 0     # the filter is not empty
+    for (g, c, conn) in encircling
+        r = ring(g, c, 1; connectivity=conn)
+        @test length(r) >= 3
+        p = cell_centroid(g, c)
+        qs = [cell_centroid(g, d) for d in r]
+        for i in eachindex(qs)
+            @test turn_sign(p, qs[i], qs[i == length(qs) ? 1 : i+1]) > 0
+        end
+    end
+
+    # ... and a partial arc still winds, step by step, even though it does not
+    # close: this is the coverage-edge cell the testset above measured at 5.
+    let c = LevelIndex(1, 5), p = cell_centroid(g1, c)
+        r = ring(g1, c, 1)
+        @test length(r) == 5
+        qs = [cell_centroid(g1, d) for d in r]
+        # Azimuths ascend from the spoke — the arc's own consecutive steps are
+        # counter-clockwise wherever they turn by less than half a circle.
+        @test any(i -> turn_sign(p, qs[i], qs[i+1]) > 0, 1:(length(qs)-1))
+    end
 end
 
 @testset "query: correctness against brute force" begin

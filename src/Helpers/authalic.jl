@@ -6,7 +6,10 @@
 #   geodetic datum without converting latitude silently deforms the cells:
 #   for WGS84 the geodetic and authalic latitudes differ by up to 0.1283°
 #   (~14.3 km along a meridian, at ±45°), which is far larger than the cell
-#   size of any high-resolution grid. The authalic latitude ξ is the one that
+#   size of any high-resolution grid. That 0.1283° is the TRUE maximum of
+#   |φ − ξ|, attained at ξ = 44.93°; the coefficient-sum bound on it is
+#   slightly larger at 0.128463°, and is what `Fallbacks.authalic_shift`
+#   returns — the two are quoted apart wherever both appear. The authalic latitude ξ is the one that
 #   preserves area: equal areas on the ellipsoid map to equal areas on the
 #   sphere of radius `R_A`.
 #

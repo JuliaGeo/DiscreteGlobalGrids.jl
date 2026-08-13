@@ -41,8 +41,18 @@ magnitudes bounds the sum — which is sharp to three digits because `C'_1`
 dominates the rest by three orders of magnitude and `sin 2ξ` does reach 1 (at
 ±45°, where the deviation is famously largest).
 
-For WGS84 this is `2.2416e-3` rad = `0.12843°`, the ~14.3 km figure quoted in
-`src/Helpers/authalic.jl`.
+Two numbers, and they are not the same number:
+
+  - what this function **returns**, the bound `Σ|C'_j|`, is `2.2421e-3` rad =
+    `0.128463°` for WGS84;
+  - what it **caps**, the true maximum of `|φ − ξ|`, is `2.2392e-3` rad =
+    `0.128297°`, attained at `ξ = 44.93°` — that is the `0.1283°` / 14.3 km
+    figure `src/Helpers/authalic.jl` quotes, and `45° − 44.871702873°` from
+    that file's own worked example is the same quantity.
+
+The bound is 0.13% above the maximum it bounds: the `j ≥ 2` terms are added at
+full magnitude here, and their sines are not at their peaks where `sin 2ξ` is at
+its own.
 
 Not used by [`node_extent`](@ref) — [`authalic_stretch`](@ref) gives a strictly
 better cap there — but it is the quantity "how wrong is it to skip the warp?"
@@ -295,6 +305,10 @@ grid's geometry is precisely the geometry that is no longer equal-area. Handing
 `ConservativeRegridding` an `R_A`-radius manifold for coordinates that are unit
 vectors would put a factor of `R_A²` in every area twice over.
 """
+# Dispatch-redundant with the `AbstractGrid` fallback, and kept anyway: this is
+# the one grid type for which the *wrong* manifold is a plausible reading, so the
+# method exists to pin the semantics — and to carry the warning above — against
+# a future change to that fallback. Do not delete it as dead code.
 GOCore.best_manifold(::AuthalicGrid) = GO.Spherical(; radius=1.0)
 
 function Base.show(io::IO, grid::AuthalicGrid)
@@ -430,9 +444,10 @@ this package comes close: the widest node extent any of them produces is
 HEALPix's 0.907 rad at level 0, which `L` moves to 0.911.)
 
 For WGS84 `L − 1 = 4.4886e-3`, so this costs a node extent 0.45% of its radius —
-against the 0.1283° *additive* floor the naive "inflate by the maximum
-deviation" bound would put under every level, which at level 10 is thirty times
-the cell.
+against the *additive* floor the naive "inflate by the maximum deviation" bound
+would put under every level: at least 0.1283° ([`authalic_shift`](@ref)), and
+0.2566° once the centre is warped too, which at level 10 is thirty times the
+cell.
 """
 function node_extent(sys::AuthalicSystem, c::AbstractCellIndex)
     cap = node_extent(sys.system, c)

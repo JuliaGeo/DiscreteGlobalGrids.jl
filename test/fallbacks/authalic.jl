@@ -38,9 +38,21 @@ import GeometryOps: SpatialTreeInterface as STI
 using DiscreteGlobalGridsConformanceTesting
 
 const US = GO.UnitSpherical
+const CT = DiscreteGlobalGridsConformanceTesting
 const WGS84 = H.WGS84_AUTHALIC
 const BASE = HEALPixSystem()
 const SYS = AuthalicSystem(BASE)
+
+# A system that exists only to hand `AuthalicSystem` a node extent wide enough
+# that inflating it would leave the convex range. Nothing else about it is ever
+# asked, which is the point: the branch under test reads the base extent and
+# nothing else.
+struct WideExtentStub <: DGG.AbstractHierarchicalGridSystem
+    radius::Float64
+end
+
+DGG.node_extent(sys::WideExtentStub, ::DGG.AbstractCellIndex) =
+    US.SphericalCap(FB.USPoint(0.0, 0.0, 1.0), sys.radius)
 
 # A deterministic spread of cells: no RNG, so a failure names the same cell on
 # every run and on every machine.
@@ -177,6 +189,17 @@ end
         @test collect(subtree_border(SYS, c, 5)) == collect(subtree_border(BASE, c, 5))
         @test collect(neighbors(g, c)) == collect(neighbors(levelgrid(BASE, 3), c))
         @test collect(ring(g, c, 2)) == collect(ring(levelgrid(BASE, 3), c, 2))
+
+        # Forwarding the ids is only half the claim: the ORDER contract is
+        # rotational, and its winding is measured about the grid's own
+        # centroids — which here are the warped ones. The harness skips these
+        # laws on this grid (they dispatch into `Fallbacks`, its "not
+        # implemented" sentinel), so its collectors are called directly, on the
+        # warped geometry, rather than the winding being argued from the warp
+        # being orientation-preserving.
+        @test CT.winding_problems(g, c, collect(ring(g, c, 1)); label="warped ring 1") == String[]
+        @test CT.neighbor_order_problems(g, c; k=2) == String[]
+        @test CT.neighbor_problems(g, c) == String[]
     end
     @test_throws ArgumentError parent(SYS, first(rootcells(SYS)))
     @test_throws ArgumentError levelgrid(SYS, -1)
@@ -343,6 +366,26 @@ end
     @test checked > 0
     @test pushed_out > 0
     @test worst > 1
+
+    # The convexity threshold, from both sides. A base extent wide enough that
+    # `stretch` would carry it past 90° loses the argument that containing the
+    # warped vertices contains the arcs between them, and the only sound answer
+    # left is the whole sphere. No system in this package produces one — the
+    # widest is 0.907 rad — so the branch is pinned here on a stub rather than
+    # left to a system that might one day grow into it.
+    threshold = (pi / 2) / stretch
+    c0 = DGG.LevelIndex(0, 0)
+    narrow = node_extent(AuthalicSystem(WideExtentStub(0.999 * threshold)), c0)
+    @test narrow.radius <= pi / 2
+    @test narrow.radius < FB.full_sphere_cap().radius
+    # ... and everything above it, including a base extent that is already the
+    # full sphere. Note that `1.5` would NOT be here: 1.5 · L is 1.507, still
+    # inside the quadrant, which is the arithmetic this threshold is about.
+    for r in (1.001 * threshold, 1.57, pi / 2, FB.full_sphere_cap().radius)
+        wide = node_extent(AuthalicSystem(WideExtentStub(r)), c0)
+        @test wide.radius == FB.full_sphere_cap().radius
+        @test wide.point == FB.full_sphere_cap().point
+    end
 
     # SOUNDNESS, directly: every descendant vertex, several levels down, inside
     # the extent of every ancestor on the path. (The conformance suite below

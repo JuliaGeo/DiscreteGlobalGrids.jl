@@ -340,10 +340,12 @@ because it is the superset a caller cannot rebuild from an edge-only answer.
 [`Edge()`](@ref Edge) is the opt-in restriction. The two coincide exactly where
 **three cells meet at every vertex** — the icosahedral hexagons-with-twelve-
 pentagons family (IGeo7, H3) and the dodecahedral resolution-0 shell — because
-there a shared vertex always comes with a shared edge. Where vertices are
-4-valent the two differ, and that includes one *pentagonal* system: A5's
-Cairo-style tiling has 11 vertex neighbours against 3 edge neighbours at
-resolution 1. On quadrilateral grids `Vertex()` adds the corners.
+there a shared vertex always comes with a shared edge. Where a vertex carries
+more than three cells the two differ, and that includes one *pentagonal*
+system: A5's Cairo-style tiling has 11 vertex neighbours against 3 edge
+neighbours at resolution 1. On quadrilateral grids `Vertex()` adds the corners
+— four cells to a vertex in the lattice interior, five where ISEA4R's diamonds
+meet an icosahedral vertex.
 
 # Order
 

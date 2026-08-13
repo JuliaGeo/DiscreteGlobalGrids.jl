@@ -180,16 +180,39 @@ them. The winding number has no such reference to be unlucky with.
 Measured as the net turning of the ring's bearing seen from `p`: each vertex
 is projected into the tangent plane at `p`, and the bearing steps — each
 folded into `(-π, π]`, which is exact as long as no single edge subtends half
-a turn about `p` — sum to `±2π` inside and `0` outside.
+a turn about `p` — sum to `±2π` for a point the ring encircles and `0` for one
+it does not.
+
+**Encircling is not containment, because it cannot tell `p` from `-p`.**
+Azimuthal winding about a point is the negation of the winding about its
+antipode, so `±2π` is reached both inside the cell and at the antipode of the
+inside, and a bare magnitude test calls both contained. Hence the guard, which
+is the first thing this function does: **every vertex must lie strictly within
+a quarter turn of `p`**, which no sub-hemispheric ring can satisfy from the far
+side of the sphere, and the verdict abstains otherwise.
+
+Without that guard the correctness of this function would rest on its position
+*last* in [`point_in_cell`](@ref)'s cascade — an antipodal probe is in practice
+answered by one of the two parity algorithms and never arrives here — which is
+an ordering invariant nothing states and nothing enforces. The guard closes the
+mode outright instead.
 
 Magnitude, not sign: the boundary contract fixes the winding
 counter-clockwise from outside, but a ring that arrives wound the other way
 still has an inside, and this reports the region it bounds either way.
 
-Returns `nothing` when a vertex is (anti)podal to `p`, where the bearing is
-undefined.
+Returns `nothing` when any vertex is a quarter turn or more from `p`, and when
+a vertex is (anti)podal to `p`, where the bearing is undefined.
 """
 function ring_winding_verdict(ring, n, p)
+    # The sub-hemispheric guard. See the docstring: without it this function
+    # answers `true` for the antipode of an interior point just as readily as
+    # for the point itself.
+    for i in 1:n
+        v = ring[i]
+        p[1] * v[1] + p[2] * v[2] + p[3] * v[3] > 0.0 || return nothing
+    end
+
     # A right-handed tangent frame at `p` seen from outside the sphere; which
     # reference direction seeds it does not matter, only the handedness.
     a = abs(p[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)

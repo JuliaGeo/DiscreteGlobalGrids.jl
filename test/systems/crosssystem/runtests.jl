@@ -241,6 +241,32 @@ end
             @test isempty(offenders)
             isempty(offenders) || @info "$name: centroid rejected" first(offenders, 5)
 
+            # The other side of the same predicate: the ANTIPODE of a centroid
+            # is not inside the cell.
+            #
+            # `point_in_cell`'s last resort is a winding number, which measures
+            # how often the ring encircles the probe — and a ring encircles the
+            # antipode of a point exactly as often as it encircles the point
+            # itself, with the opposite sign. A bare magnitude test therefore
+            # calls both contained. That is why `ring_winding_verdict` carries a
+            # sub-hemispheric guard, and why it is pinned here directly as well
+            # as through the cascade: the mode is LATENT, because for these
+            # probes one of the two parity algorithms answers first and the
+            # winding verdict is never reached, so a test that only went through
+            # `point_in_cell` would pass with the guard removed and leave the
+            # safety resting on an unstated cascade-ordering invariant.
+            wrong_side = [c for c in probes
+                          if DGG.Fallbacks.point_in_cell(cell_boundary(grid, c),
+                                                         -cell_centroid(grid, c)) !== false]
+            @test isempty(wrong_side)
+
+            @test all(probes) do c
+                r, m = DGG.Fallbacks.open_ring(cell_boundary(grid, c))
+                # inside: decided; antipode of inside: abstains outright
+                DGG.Fallbacks.ring_winding_verdict(r, m, cell_centroid(grid, c)) === true &&
+                DGG.Fallbacks.ring_winding_verdict(r, m, -cell_centroid(grid, c)) === nothing
+            end
+
             # ...and the consequence. A `PartialGrid` has no native `cellat`,
             # so this is the generic descend-and-test path end to end: the
             # centroid of a cell in the subset must locate that same cell.

@@ -23,14 +23,63 @@ function closed_ring(points)
     n = length(points)
     n == 0 && return USPoint[]
     out = Vector{USPoint}(undef, n + 1)
-    @inbounds for i in 1:n
-        p = points[i]
-        out[i] = USPoint(p[1], p[2], p[3])
+    # `enumerate` rather than `points[i]`: the boundary contract allows any
+    # `AbstractVector`, including one that is not 1-based.
+    for (i, p) in enumerate(points)
+        @inbounds out[i] = USPoint(p[1], p[2], p[3])
     end
     @inbounds out[n+1] = out[1]
     # Already closed: drop the duplicate we just introduced.
     n > 1 && out[n] == out[1] && return out[1:n]
     return out
+end
+
+"""
+    open_ring(points) -> (ring, n)
+
+A boundary as a **1-based** vector together with its **open** length: `ring[1:n]`
+are the distinct vertices, with the closing edge `ring[n] -> ring[1]` implied.
+
+Two conversions in one, both needed by the spherical ring predicates, which
+index `pts[1:n]` positionally and count the closing edge themselves:
+
+  - a boundary that is not 1-based is collected (the contract allows any
+    `AbstractVector`);
+  - a boundary that repeats its first vertex at the end — which the contract
+    says it should not, but which [`closed_ring`](@ref) also tolerates — has
+    that vertex dropped from the count. Left in, it becomes a retraced
+    zero-length edge, and a retraced edge silently breaks the crossing parity
+    those predicates decide containment by.
+"""
+function open_ring(points)
+    ring = firstindex(points) == 1 ? points : collect(points)
+    n = length(ring)
+    n > 1 && ring[n] == ring[1] && (n -= 1)
+    return ring, n
+end
+
+"""
+    point_in_cell(boundary, p) -> Union{Bool,Nothing}
+
+Whether the unit-sphere point `p` lies in the cell bounded by `boundary`
+(boundary points count as inside), or `nothing` when the question is
+genuinely undecidable.
+
+Two independent algorithms, because each has a degenerate case the other does
+not: `spherical_ring_encloses` bootstraps from a definitionally exterior
+anchor — the antipode of the ring's vertex mass — and gives up when `p` sits
+near that mass, i.e. near the middle of the cell, which is exactly where a
+caller most wants an answer. `spherical_ring_contains` bootstraps instead from
+a wedge at one ring edge, valid here because the boundary contract fixes the
+winding (counter-clockwise seen from outside). Only if both decline does this
+return `nothing`.
+"""
+function point_in_cell(boundary, p)
+    ring, n = open_ring(boundary)
+    n >= 3 || return nothing
+    verdict = US.spherical_ring_encloses(ring, n, p)
+    verdict === nothing || return verdict
+    return US.spherical_ring_contains(ring, n, p)
 end
 
 """
@@ -91,8 +140,7 @@ Three things a naive vertex bounding box gets wrong, and what is done instead:
     winding, and which pole by a spherical containment test.
 """
 function cell_extent(grid::AbstractGrid, c::AbstractCellIndex)
-    points = cell_boundary(grid, c)
-    n = length(points)
+    points, n = open_ring(cell_boundary(grid, c))
     n == 0 && throw(ArgumentError("cell $c has an empty boundary"))
 
     latmin = latmax = 0.0
@@ -145,10 +193,10 @@ function cell_extent(grid::AbstractGrid, c::AbstractCellIndex)
 
     if abs(winding) > 180.0
         # The ring winds around a pole: no longitude bound exists, and the
-        # enclosed pole is at the latitude limit. `spherical_ring_encloses`
-        # answering `nothing` (a degenerate ring) gives up on both poles.
-        north = US.spherical_ring_encloses(points, n, USPoint(0.0, 0.0, 1.0))
-        south = US.spherical_ring_encloses(points, n, USPoint(0.0, 0.0, -1.0))
+        # enclosed pole is at the latitude limit. An undecidable ring gives up
+        # on both poles rather than guessing one.
+        north = point_in_cell(points, USPoint(0.0, 0.0, 1.0))
+        south = point_in_cell(points, USPoint(0.0, 0.0, -1.0))
         ymin = south === false ? latmin : -90.0
         ymax = north === false ? latmax : 90.0
         return Extents.Extent(X=(-180.0, 180.0), Y=(ymin, ymax))

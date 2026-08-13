@@ -32,8 +32,7 @@ function cellat(grid::AbstractGrid, p::GO.UnitSphericalPoint)
     # the coverage, which is a different — and wrong — answer.
     undecided = nothing
     for c in candidates
-        ring = cell_boundary(grid, c)
-        verdict = US.spherical_ring_encloses(ring, length(ring), p)
+        verdict = point_in_cell(cell_boundary(grid, c), p)
         verdict === true && return c
         verdict === nothing && undecided === nothing && (undecided = c)
     end
@@ -65,7 +64,7 @@ function adjacent_cells(grid::AbstractGrid, c::AbstractCellIndex,
         connectivity::Connectivity=Vertex(), tree=treeify(grid))
     boundary = cell_boundary(grid, c)
     cap = cell_cap(grid, c)
-    tol = 1e-4 * Float64(cap.radius) + 1e-12
+    tol = _match_tolerance(boundary)
     needed = connectivity isa Edge ? 2 : 1
     out = typeof(c)[]
     for i in STI.query(tree, other -> intersects_cap(cap, other))
@@ -74,6 +73,23 @@ function adjacent_cells(grid::AbstractGrid, c::AbstractCellIndex,
         _shared_vertices(boundary, cell_boundary(grid, d), tol) >= needed && push!(out, d)
     end
     return sort!(out)
+end
+
+# How close two vertices must be to count as the same corner: a thousandth of
+# the cell's own shortest edge. Scaled from the ring rather than from its
+# bounding cap, because `cell_cap` degrades to the full sphere for a cell wider
+# than a hemisphere and a tolerance derived from that would be a radian wide.
+function _match_tolerance(boundary)
+    ring, n = open_ring(boundary)
+    shortest = Inf
+    for i in 1:n
+        a = ring[i]
+        b = ring[i == n ? 1 : i+1]
+        d2 = (a[1] - b[1])^2 + (a[2] - b[2])^2 + (a[3] - b[3])^2
+        d2 > 0 && (shortest = min(shortest, d2))
+    end
+    isfinite(shortest) || return 1e-9        # an all-degenerate ring
+    return max(1e-12, 1e-3 * sqrt(shortest))
 end
 
 function _shared_vertices(a, b, tol::Float64)
@@ -108,11 +124,22 @@ not padded" rule holding by construction.
 """
 function neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer=1;
         connectivity::Connectivity=Vertex())
-    steps = Int(k)
+    shells = _adjacency_shells(grid, c, Int(k), connectivity)
+    isempty(shells) && return typeof(c)[]
+    return sort!(reduce(vcat, shells))
+end
+
+# The breadth-first walk both `neighbors` and `ring` are reads of: shell `j` of
+# the result is the cells at adjacency distance exactly `j`. One tree, built
+# once — for a grid with no hierarchy that build is O(ncells), so doing it per
+# step (or twice, for `ring`'s two discs) is the difference between one sweep
+# and several.
+function _adjacency_shells(grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
+        connectivity::Connectivity)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
     T = typeof(c)
-    out = T[]
-    steps == 0 && return out
+    shells = Vector{T}[]
+    steps == 0 && return shells
     tree = treeify(grid)
     seen = Set{T}((c,))
     frontier = T[c]
@@ -123,13 +150,13 @@ function neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer=1;
                 y in seen && continue
                 push!(seen, y)
                 push!(next, y)
-                push!(out, y)
             end
         end
+        push!(shells, next)
         isempty(next) && break
         frontier = next
     end
-    return sort!(out)
+    return shells
 end
 
 """
@@ -137,15 +164,18 @@ end
 
 The cells at adjacency distance **exactly** `k`. `ring(grid, c, 0)` is `[c]`.
 
-Derived from [`neighbors`](@ref) as the difference of two discs, and
-overridable by any system that can walk a shell directly.
+Shares [`neighbors`](@ref)' breadth-first walk — one shell of it, rather than
+the difference of two discs — and is overridable by any system that can walk a
+shell directly.
 """
 function ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = Int(k)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
     steps == 0 && return typeof(c)[c]
-    outer = neighbors(grid, c, steps; connectivity)
-    inner = neighbors(grid, c, steps - 1; connectivity)
-    return sort!(setdiff(outer, inner))
+    shells = _adjacency_shells(grid, c, steps, connectivity)
+    # A walk that ran out of cells before reaching `steps` has an empty shell
+    # there: the ring is genuinely empty, not missing.
+    steps <= length(shells) || return typeof(c)[]
+    return sort!(shells[steps])
 end

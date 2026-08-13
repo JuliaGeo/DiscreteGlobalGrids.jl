@@ -322,7 +322,23 @@ end
 
 # An empty edge set would let the reject arm fire on every cell; there is no
 # geometry to be near, but there is also nothing to gain, so switch off.
-_finish_arcs!(arcs) = isempty(arcs) ? nothing : arcs
+#
+# An ANTIPODAL edge switches it off too. A vanishing `nn` has two causes: a
+# repeated point, where the arc really is its endpoints and `_arc_cos_distance`
+# is exact; and `a == -b`, where the cross product also vanishes but the edge is
+# a whole half great circle whose direction is undefined. There the endpoint
+# distance UNDER-estimates how close the boundary comes, which is the unsafe
+# direction for the reject arm — it could call a cell disjoint that a boundary
+# point sits inside. Such a geometry is pathological, and giving up the
+# optimisation for it costs only time.
+function _finish_arcs!(arcs)
+    isempty(arcs) && return nothing
+    for arc in arcs
+        arc.nn > 0 && continue
+        arc.a[1] * arc.b[1] + arc.a[2] * arc.b[2] + arc.a[3] * arc.b[3] < 0 && return nothing
+    end
+    return arcs
+end
 
 # `cos` of the distance from `c` to the great-circle arc — the nearer endpoint
 # unless the foot of the perpendicular falls on the arc itself. Everything is
@@ -439,16 +455,22 @@ _matches(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c) =
 
 function _matches(::DE9IM.Intersects, target::CapTarget, grid, c)
     cap = target.cap
-    ring = cell_boundary(grid, c)
+    ring, n = open_ring(cell_boundary(grid, c))
     cap_contains(cap, cell_centroid(grid, c)) && return true
-    for p in ring
-        cap_contains(cap, p) && return true
+    for i in 1:n
+        cap_contains(cap, ring[i]) && return true
     end
     # The cap's centre inside the cell, or the cell's boundary reaching into
     # the cap: between them these cover every remaining way to overlap.
-    US.spherical_ring_encloses(ring, length(ring), cap.point) === true && return true
+    #
+    # An undecidable containment is taken as a hit rather than a miss. By this
+    # point the cap holds no vertex and (below) may hold no boundary point at
+    # all, so the cap is either wholly inside the cell or wholly outside it —
+    # and reading "undecidable" as "outside" would drop a cap that sits deep
+    # inside a cell, which is precisely the configuration that makes the
+    # containment test give up.
+    point_in_cell(ring, cap.point) !== false && return true
     threshold = cos(min(Float64(pi), Float64(cap.radius)))
-    n = length(ring)
     for i in 1:n
         a = ring[i]
         b = ring[i == n ? 1 : i+1]
@@ -496,10 +518,13 @@ that cannot prune: it visits every cell of the grid by construction.
 """
 function query(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate)
     # The grid is asked its size first, deliberately: a grid that implements
-    # nothing must bounce off the interface, not off the target parser.
-    ncells(grid) == 0 && return _empty_ids(grid)
+    # nothing must bounce off the interface, not off the target parser. The
+    # predicate and target are then validated BEFORE the empty short-circuit,
+    # so that an unusable query is an error whether or not the grid has cells.
+    n = ncells(grid)
     _check_predicate(pred)
     target = _query_target(Base.parent(pred))
+    n == 0 && return _empty_ids(grid)
     return _run_query(grid, pred, target)
 end
 

@@ -108,20 +108,28 @@ function _multi_order(sys::AbstractHierarchicalGridSystem, target_value, maxleve
 end
 
 function _coverage_visit!(cells, sys, target, c, maxlevel::Int, grids, top::Int)
-    # The subtree prune, under the covering law: a cell whose node extent misses
-    # the target has no descendant that can meet it.
+    # The ONLY sound subtree prune is the covering law: a cell whose node extent
+    # misses the target has no descendant that can meet it.
+    #
+    # A cell's own geometry is emphatically NOT a prune. Children overhang their
+    # parents wherever the refinement is not congruent — under aperture 7 they
+    # poke out past the parent's edges, which is the whole reason `node_extent`
+    # exists — so a cell disjoint from the target can still have a child that
+    # meets it, and descending only into cells that meet the target drops that
+    # child from the coverage silently. The exact test below therefore decides
+    # what is EMITTED, never what is descended into.
     intersects_cap(target.cap, node_extent(sys, c)) || return nothing
     lc = level(c)
     grid = grids[lc-top+1]
-    # Intersection first — it has the sandwich fast path, and a cell that does
-    # not even meet the target is not worth a containment predicate.
-    _matches(DE9IM.Intersects(nothing), target, grid, c) || return nothing
-    if _matches(DE9IM.Within(nothing), target, grid, c)
-        push!(cells, c)                      # entirely inside: emit whole
+    meets = _matches(DE9IM.Intersects(nothing), target, grid, c)
+    if lc >= maxlevel
+        meets && push!(cells, c)             # still crossed at the deepest level
         return nothing
     end
-    if lc >= maxlevel
-        push!(cells, c)                      # still crossed at the deepest level
+    # Containment is asked only of a cell already known to meet the target: it
+    # is the expensive predicate, and it has no fast path of its own.
+    if meets && _matches(DE9IM.Within(nothing), target, grid, c)
+        push!(cells, c)                      # entirely inside: emit whole
         return nothing
     end
     for child in children(sys, c)

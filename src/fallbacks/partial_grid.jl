@@ -107,6 +107,12 @@ struct PartialGrid{S<:AbstractHierarchicalGridSystem,V<:AbstractVector,ID,G<:Abs
         root_level = first(levels(sys)) - 1
         root_id = _placeholder_root(sys)
         if root !== nothing
+            # The root's type becomes the cursor's cell-id type parameter, and
+            # every descent step is stored into that field — so a non-canonical
+            # root fails on the first `children` call rather than here, where
+            # the caller can still see what they passed.
+            root isa ID || throw(ArgumentError(
+                "root must be a $ID for $(typeof(sys)), got $(typeof(root))"))
             root_level = level(root)
             root_level <= l || throw(ArgumentError(
                 "root cell is at level $root_level, deeper than the grid's level $l"))

@@ -47,7 +47,16 @@ const P = GO.UnitSphericalPoint
 
 struct SortedMock <: AbstractHierarchicalGridSystem end
 struct UnsortedMock <: AbstractHierarchicalGridSystem end
-const MockSystem = Union{SortedMock,UnsortedMock}
+
+# The same hierarchy again, with one geometric difference: every cell's box is
+# grown by `0.01 * (level + 1)` degrees, so a child sticks out past its parent's
+# edge by 0.01 degrees. That is the aperture-7 pathology in miniature — children
+# are NOT contained in their parents — and it is what makes `node_extent` (which
+# still covers, with room to spare: see the covering-law testset) the only sound
+# thing to prune a subtree with.
+struct OverhangMock <: AbstractHierarchicalGridSystem end
+
+const MockSystem = Union{SortedMock,UnsortedMock,OverhangMock}
 
 const ROOTS = 8
 const RADIX = 4
@@ -59,6 +68,7 @@ DGG.cellindextype(::MockSystem) = LevelIndex
 DGG.levels(::MockSystem) = 0:MAXLEVEL
 DGG.max_neighbors(::MockSystem, ::Connectivity) = 8
 DGG.has_sorted_subtrees(::SortedMock) = true
+DGG.has_sorted_subtrees(::OverhangMock) = true
 
 struct MockGrid{S<:MockSystem} <: AbstractGrid
     system::S
@@ -95,7 +105,7 @@ function DGG.children(::MockSystem, c::LevelIndex)
 end
 
 # Positions, not raw ids — the whole point of the T1 signature decision.
-function DGG.descendant_range(::SortedMock, c::LevelIndex, l::Integer)
+function DGG.descendant_range(::Union{SortedMock,OverhangMock}, c::LevelIndex, l::Integer)
     Int(l) >= level(c) || throw(ArgumentError("level $l is above the cell's own"))
     span = RADIX^(Int(l) - level(c))
     lo = Int(rawid(c)) * span
@@ -132,8 +142,28 @@ function DGG.cell_centroid(::MockGrid, c::LevelIndex)
     return sph((lon0 + lon1) / 2, (lat0 + lat1) / 2)
 end
 
+# Every cell's box grows by `OVERHANG_STEP * (level + 1)` degrees, so a child's
+# outer edge lands `OVERHANG_STEP` degrees beyond its parent's: the children are
+# strictly not contained in the parent, and a target sitting in that sliver
+# meets the child while missing the parent entirely.
+#
+# The growth is tiny next to the default `node_extent`'s 1.2x cap inflation
+# (checked in the covering-law testset), so the extents still cover — which is
+# exactly the situation the substrate has to survive.
+const OVERHANG_STEP = 0.01
+
+overhang_pad(l::Int) = OVERHANG_STEP * (l + 1)
+
+function DGG.cell_boundary(g::MockGrid{OverhangMock}, c::LevelIndex)
+    lon0, lat0, lon1, lat1 = mock_box(c)
+    pad = overhang_pad(level(c))
+    lon0 -= pad; lat0 -= pad; lon1 += pad; lat1 += pad
+    return [sph(lon0, lat0), sph(lon1, lat0), sph(lon1, lat1), sph(lon0, lat1)]
+end
+
 const SORTED = SortedMock()
 const UNSORTED = UnsortedMock()
+const OVERHANG = OverhangMock()
 
 # ===========================================================================
 # Mock standalone grid: the eight octants of the sphere
@@ -418,16 +448,20 @@ end
     @test collect(GI.getpoint(GI.getexterior(Trees.getcell(tree, 5)))) ==
           collect(GI.getpoint(GI.getexterior(getcell(grid, 5))))
     @test_throws BoundsError Trees.getcell(tree, ncells(grid) + 1)
-    @test Trees.should_parallelize(tree, FB.full_sphere_cap()) ==
-          (ncells(grid) <= max(1, ncells(grid) ÷ (Threads.nthreads() * 32)))
+    # Parallelising is a question about chunk size, so the answer has to differ
+    # between the whole grid and a single leaf however many threads are around.
+    @test !Trees.should_parallelize(tree, FB.full_sphere_cap())
+    @test Trees.should_parallelize(leaf, FB.full_sphere_cap())
 end
 
 @testset "cursor: selection mode" begin
     sorted = treeify(levelgrid(SORTED, 2))
     unsorted = treeify(levelgrid(UNSORTED, 2))
     @test unsorted isa HierarchicalGridCursor
-    @test unsorted.selection isa Vector{Int}
+    # Without `descendant_range` the cursor has to carry an explicit selection,
+    # and at the root that selection is the whole grid, in position order.
     @test sorted.selection === nothing
+    @test unsorted.selection == collect(1:ncells(levelgrid(UNSORTED, 2)))
 
     # The two modes must agree on everything a traversal can observe.
     @test leaf_positions(unsorted) == leaf_positions(sorted)
@@ -604,10 +638,18 @@ end
         @test cellat(octants, cell_centroid(octants, c)) === c
     end
     # A boundary point belongs to exactly one cell, deterministically the first
-    # in canonical order among the candidates.
-    onedge = cellat(octants, P(1.0, 0.0, 0.0))
+    # in canonical order among the cells that legitimately claim it. The
+    # candidate set is recomputed here by exhaustive scan, so this pins the
+    # tie-break rule rather than restating the call.
+    corner = P(1.0, 0.0, 0.0)
+    verdicts = [(c, FB.point_in_cell(cell_boundary(octants, c), corner))
+                for c in sort(all_cells(octants))]
+    claimants = [c for (c, v) in verdicts if v === true]
+    undecided = [c for (c, v) in verdicts if v === nothing]
+    @test length(claimants) + length(undecided) > 1     # genuinely shared
+    onedge = cellat(octants, corner)
+    @test onedge === (isempty(claimants) ? first(undecided) : first(claimants))
     @test onedge === OctantIndex(0)
-    @test cellat(octants, P(1.0, 0.0, 0.0)) === onedge
 end
 
 @testset "geometric neighbors and ring" begin
@@ -682,8 +724,10 @@ end
         @test issorted(got)
         @test got == expected
 
-        # `Disjoint` is the exact complement, over every cell.
-        @test sort(vcat(got, query(grid, Disjoint(target)))) == all_cells(grid)
+        # `Disjoint` against its own oracle — the engine computes it as the
+        # complement of `Intersects`, so checking it against that complement
+        # would only restate the implementation.
+        @test query(grid, Disjoint(target)) == brute_force(grid, target, GO.pred_disjoint)
 
         # `Within` and `Covers` against their own oracles.
         @test query(grid, Within(target)) ==
@@ -740,7 +784,8 @@ end
 
     for (predicate, relation) in ((Within, GO.within), (Contains, GO.contains),
         (Covers, GO.covers), (CoveredBy, GO.coveredby),
-        (Intersects, GO.intersects), (Touches, GO.touches))
+        (Intersects, GO.intersects), (Touches, GO.touches),
+        (Overlaps, GO.overlaps), (Disjoint, GO.disjoint))
         expected = [c for c in all_cells(grid)
                     if relation(alg, cell_polygon(grid, c), target)]
         @test query(grid, predicate(target)) == expected
@@ -750,6 +795,12 @@ end
     # loop above has something to catch: cells are far smaller than the target.
     @test !isempty(query(grid, Within(target)))
     @test isempty(query(grid, Contains(target)))
+    @test !isempty(query(grid, Overlaps(target)))
+
+    # `Equals` needs a target that is one cell exactly, and then it must find
+    # that cell and no other.
+    twin = cell_polygon(grid, LevelIndex(3, 100))
+    @test query(grid, Equals(twin)) == [LevelIndex(3, 100)]
 end
 
 @testset "query: targets and predicate errors" begin
@@ -766,25 +817,51 @@ end
     cap = US.SphericalCap(sph(20.0, 20.0), deg2rad(10.0))
     hits = query(grid, Intersects(cap))
     @test !isempty(hits)
+    missed = query(grid, Disjoint(cap))
+    near_checked = 0
+    far_checked = 0
     for c in all_cells(grid)
-        # The oracle: a cell meets the cap iff some point of it is within the
-        # cap's angular radius. Sampled densely along the boundary and at the
-        # centroid, which is enough at this cell size to agree exactly.
-        near = US.spherical_distance(cap.point, cell_centroid(grid, c)) <= cap.radius ||
-               any(p -> US.spherical_distance(cap.point, p) <= cap.radius,
-            cell_boundary(grid, c))
-        near && @test c in hits
+        # Two one-sided oracles, both proofs. A cell with a point inside the
+        # cap meets it; a cell whose every point is outside — bounded below by
+        # the centroid distance less the circumradius — does not.
+        centroid = cell_centroid(grid, c)
+        boundary = cell_boundary(grid, c)
+        if US.spherical_distance(cap.point, centroid) <= cap.radius ||
+           any(p -> US.spherical_distance(cap.point, p) <= cap.radius, boundary)
+            near_checked += 1
+            @test c in hits
+            @test !(c in missed)
+        elseif US.spherical_distance(cap.point, centroid) >
+               cap.radius + maximum(p -> US.spherical_distance(centroid, p), boundary)
+            far_checked += 1
+            @test !(c in hits)
+            @test c in missed
+        end
     end
+    @test near_checked > 0 && far_checked > 0
     @test query(grid, Within(cap)) ⊆ hits
-    @test sort(vcat(hits, query(grid, Disjoint(cap)))) == all_cells(grid)
     @test_throws ArgumentError query(grid, Touches(cap))
 
     # Unimplemented predicate, unusable target, band extent.
     @test_throws ArgumentError query(grid, Crosses(box))
     @test_throws ArgumentError query(grid, Intersects(nothing))
     @test_throws ArgumentError query(grid, Intersects(Extents.Extent(X=(-180.0, 180.0), Y=(-10.0, 10.0))))
-    # ... but a full-longitude extent reaching a pole IS a cap.
-    @test query(grid, Intersects(Extents.Extent(X=(-180.0, 180.0), Y=(40.0, 90.0)))) isa Vector
+    # ... but a full-longitude extent reaching a pole IS a cap: cells that
+    # reach past 40N are in the answer, cells that stay well south of it not.
+    polar = query(grid, Intersects(Extents.Extent(X=(-180.0, 180.0), Y=(40.0, 90.0))))
+    high = 0
+    low = 0
+    for c in all_cells(grid)
+        lats = [asind(p[3]) for p in cell_boundary(grid, c)]
+        if minimum(lats) > 41.0 || maximum(lats) > 41.0
+            high += 1
+            @test c in polar
+        elseif maximum(lats) < 39.0
+            low += 1
+            @test !(c in polar)
+        end
+    end
+    @test high > 0 && low > 0
 
     # An empty grid answers empty rather than erroring.
     empty_grid = PartialGrid(SORTED, 2, LevelIndex[])
@@ -836,19 +913,27 @@ end
     set = query(SORTED, coverage; level=4)
     @test set isa MultiOrderCellSet
     @test !isempty(set)
-    @test length(set) == length(collect(set))
     @test eltype(set) === LevelIndex
     @test occursin("MultiOrderCellSet", sprint(show, set))
     @test DGG.system(set) === SORTED
 
     cells = collect(set)
+    # Indexing and iteration are separate methods; they must agree.
+    @test all(set[i] === cells[i] for i in 1:length(set))
+    @test allunique(cells)
     # Mixed levels, coarsest possible: at least one cell above the max depth.
     @test minimum(level, cells) < 4
     @test maximum(level, cells) <= 4
 
-    # Curve order: the sort keys ascend, and no cell is an ancestor of another
-    # (that would double-count a region).
-    @test issorted(FB.curve_keys(set))
+    # Curve order, checked against the intervals themselves rather than against
+    # the stored keys: the cells' level-4 position intervals ascend and are
+    # pairwise disjoint, which is both the curve order and the guarantee that no
+    # cell is an ancestor of another (that would double-count a region).
+    intervals = [descendant_range(SORTED, c, 4) for c in cells]
+    @test issorted(intervals; by=first)
+    for k in 2:length(intervals)
+        @test first(intervals[k]) > last(intervals[k-1])
+    end
     for a in cells, b in cells
         a === b && continue
         level(a) < level(b) && @test ancestor(SORTED, b, level(a)) !== a
@@ -863,7 +948,8 @@ end
     positions = reduce(vcat, collect.(ranges))
     @test allunique(positions)
     @test issorted(positions)
-    @test length(positions) == sum(length, ranges)
+    # Merging changed the shape of the answer and nothing else.
+    @test positions == sort!(reduce(vcat, collect.(intervals)))
 
     # The coverage brackets the two single-level queries at that depth: every
     # cell wholly inside the target is in it, and nothing outside the target is.
@@ -876,19 +962,93 @@ end
 
     # Expansion to a coarser level than the set's own cells is refused.
     @test_throws ArgumentError level_ranges(set, 1)
-    # ... and a system without descendant ranges has no position ranges at all.
+    # ... and a system without descendant ranges has no position ranges at all,
+    # though it must still find the same cells: the two mocks are the same
+    # hierarchy over the same geometry, so their coverages have to agree.
     unsorted_set = query(UNSORTED, coverage; level=2)
     @test !isempty(unsorted_set)
-    @test issorted([(level(c), rawid(c)) for c in unsorted_set])
     @test_throws ArgumentError level_ranges(unsorted_set, 2)
+    @test sort!(reduce(vcat, [descendants(UNSORTED, c, 2) for c in unsorted_set])) ==
+          FB.cellindices(query(SORTED, coverage; level=2), 2)
 
     @test_throws ArgumentError query(SORTED, coverage; level=MAXLEVEL + 1)
 
-    # A cap target works the same way.
-    cap_set = query(SORTED, MultiOrderCoverage(US.SphericalCap(sph(0.0, 0.0), deg2rad(15.0)));
-        level=3)
+    # A cap target works the same way. Oracle: a cell whose centroid is inside
+    # the cap certainly meets it and so must be covered, and a cell further off
+    # than the cap's radius plus its own circumradius certainly does not.
+    cap = US.SphericalCap(sph(0.0, 0.0), deg2rad(15.0))
+    cap_set = query(SORTED, MultiOrderCoverage(cap); level=3)
     @test !isempty(cap_set)
-    @test issorted(FB.curve_keys(cap_set))
+    covered = FB.cellindices(cap_set, 3)
+    grid3 = levelgrid(SORTED, 3)
+    checked_near = 0
+    checked_far = 0
+    for c in all_cells(grid3)
+        centroid = cell_centroid(grid3, c)
+        d = US.spherical_distance(centroid, cap.point)
+        circum = maximum(p -> US.spherical_distance(centroid, p), cell_boundary(grid3, c))
+        if d < cap.radius
+            checked_near += 1
+            @test c in covered
+        elseif d > cap.radius + circum
+            checked_far += 1
+            @test !(c in covered)
+        end
+    end
+    @test checked_near > 0 && checked_far > 0
+end
+
+@testset "MultiOrderCoverage: children that overhang their parents" begin
+    # The regression test for the substrate's one real soundness trap. Under a
+    # non-congruent refinement a cell can be disjoint from the target while one
+    # of its children meets it, so the exact intersection test may decide what
+    # is EMITTED and never what is DESCENDED into. Pruning a subtree on the
+    # parent's own geometry drops that child silently — no error, just a
+    # coverage with a hole in it.
+
+    # First: the mock is legitimate. Its extents still cover every descendant...
+    for l in 0:2, c in all_cells(levelgrid(OVERHANG, l))
+        extent = node_extent(OVERHANG, c)
+        for deeper in l:min(l + 2, MAXLEVEL)
+            grid = levelgrid(OVERHANG, deeper)
+            for d in descendants(OVERHANG, c, deeper)
+                @test all(p -> US._contains(extent, p), cell_boundary(grid, d))
+            end
+        end
+    end
+    # ... and its children really do escape their parents.
+    let p = LevelIndex(1, 2), g1 = levelgrid(OVERHANG, 1), g2 = levelgrid(OVERHANG, 2)
+        outside = 0
+        for child in children(OVERHANG, p), v in cell_boundary(g2, child)
+            FB.point_in_cell(cell_boundary(g1, p), v) === false && (outside += 1)
+        end
+        @test outside > 0
+    end
+
+    # A sliver in the gap between the level-1 cell's east edge (-135 + 0.02) and
+    # its children's (-135 + 0.03): inside two of the children, outside the
+    # parent, and inside the neighbouring level-1 cell to the east.
+    target = lonlat_ring([sph(-134.977, -12.0), sph(-134.973, -12.0),
+        sph(-134.973, -11.0), sph(-134.977, -11.0)])
+
+    grid1 = levelgrid(OVERHANG, 1)
+    grid2 = levelgrid(OVERHANG, 2)
+    met1 = query(grid1, Intersects(target))
+    touching = query(grid2, Intersects(target))
+    @test !isempty(touching)
+
+    # The witness: level-2 cells that meet the target although their parents do
+    # not. Without these the testset would pass for the wrong reason.
+    witness = [c for c in touching if !(parent(OVERHANG, c) in met1)]
+    @test !isempty(witness)
+    @test LevelIndex(2, 9) in witness
+    @test !(LevelIndex(1, 2) in met1)
+
+    set = query(OVERHANG, MultiOrderCoverage(target); level=2)
+    expanded = FB.cellindices(set, 2)
+    # The coverage covers every cell that meets the target, overhang included.
+    @test touching ⊆ expanded
+    @test witness ⊆ expanded
 end
 
 end # module TestFallbacks

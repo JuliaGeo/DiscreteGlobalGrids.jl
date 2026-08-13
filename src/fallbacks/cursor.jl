@@ -163,8 +163,15 @@ node_cell(cursor::HierarchicalGridCursor) = _issynthetic(cursor) ? nothing : cur
 # Child enumeration
 # --------------------------------------------------------------------------
 
-_child_ids(cursor::HierarchicalGridCursor) =
-    _issynthetic(cursor) ? rootcells(cursor.system) : children(cursor.system, cursor.id)
+# A leaf has no children, and it must say so here rather than by raising the
+# system's own "cell is at max_level" error out of `children` — a bucketed node
+# is a leaf while still having perfectly good children in the hierarchy, so
+# `nchild` and `getchild` have to agree about it in one place.
+function _child_ids(cursor::HierarchicalGridCursor)
+    STI.isleaf(cursor) && return cellindextype(cursor.system)[]
+    _issynthetic(cursor) && return rootcells(cursor.system)
+    return children(cursor.system, cursor.id)
+end
 
 # Position window of a child on a COMPLETE level grid: `descendant_range` is
 # already in this grid's position space, by its own contract.
@@ -244,7 +251,6 @@ function STI.isleaf(cursor::HierarchicalGridCursor)
 end
 
 function STI.nchild(cursor::WindowCursor)
-    STI.isleaf(cursor) && return 0
     count = 0
     for child_id in _child_ids(cursor)
         lo, hi = _child_window(cursor, child_id)
@@ -253,8 +259,7 @@ function STI.nchild(cursor::WindowCursor)
     return count
 end
 
-STI.nchild(cursor::SelectionCursor) =
-    STI.isleaf(cursor) ? 0 : length(_selection_children(cursor))
+STI.nchild(cursor::SelectionCursor) = length(_selection_children(cursor))
 
 STI.getchild(cursor::WindowCursor) = Iterators.filter(_nonempty,
     (_window_child(cursor, child_id) for child_id in _child_ids(cursor)))
@@ -346,14 +351,18 @@ GOCore.best_manifold(cursor::HierarchicalGridCursor) = GOCore.best_manifold(curs
 # tree-level (`1:ncells(tree)`) and node-level index spaces.
 Trees.ncells(cursor::HierarchicalGridCursor) = _stored_count(cursor)
 
+# `i` is a GRID position, at every node — the same index space
+# `child_indices_extents` yields, so that the index pairs a dual tree walk
+# collects are valid arguments here. (At the root, where every consumer calls
+# it, the node-local and grid position spaces coincide anyway.)
 function Trees.getcell(cursor::HierarchicalGridCursor, i::Int)
-    count = _stored_count(cursor)
-    1 <= i <= count || throw(BoundsError(1:count, i))
-    return cell_polygon(cursor.grid, _stored_id(cursor, i))
+    total = ncells(cursor.grid)
+    1 <= i <= total || throw(BoundsError(1:total, i))
+    return cell_polygon(cursor.grid, cellindex(cursor.grid, i))
 end
 
 Trees.getcell(cursor::HierarchicalGridCursor) =
-    (Trees.getcell(cursor, i) for i in 1:Trees.ncells(cursor))
+    (Trees.getcell(cursor, i) for i in node_indices(cursor))
 
 # Mirrors `Trees.AbstractQuadtreeCursor`'s policy: spawn once a subtree's leaf
 # count drops below `total / (nthreads * 32)`, which lands a few hundred tasks

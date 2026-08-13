@@ -25,6 +25,7 @@
 import ..DiscreteGlobalGrids as DGG
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
+import SmallCollections
 using SmallCollections: SmallVector
 
 # --------------------------------------------------------------------------
@@ -100,6 +101,77 @@ function DGG.cell_neighbors(::DGG.IGEO7DGGS, level::Integer, id)
     out = SmallVector{6,UInt64}()
     for neighbor in _cell_neighbors(UInt64(id))
         out = DGG._insert_sorted(out, neighbor)
+    end
+    return out
+end
+
+function neighbors(::DGG.IGEO7DGGS, index::IGEO7Index)
+    out = SmallVector{6,IGEO7Index}()
+    for id in _cell_neighbors(index.id)
+        out = SmallCollections.push(out, IGEO7Index(id))
+    end
+    return out
+end
+
+neighbors(index::IGEO7Index) = neighbors(DGG.IGEO7DGGS(), index)
+
+@inline function Base.in(
+        index::IGEO7Index,
+        indices::IGEO7Indices{<:DGG.DGGSSubtreeIds{DGG.IGEO7DGGS}},
+    )
+    get_resolution(index) == indices.resolution || return false
+    return index.id in indices.ids
+end
+
+@inline function Base.in(
+        index::IGEO7Index,
+        indices::IGEO7Indices{<:DGG.DGGSGlobeIds{DGG.IGEO7DGGS}},
+    )
+    return get_resolution(index) == indices.resolution
+end
+
+function edges(
+        indices::IGEO7Indices{<:DGG.DGGSSubtreeIds{DGG.IGEO7DGGS}},
+    )
+    tile = indices.ids
+    return IGEO7Index.(border_descendants(tile.root_id, tile.level))
+end
+
+edges(::IGEO7Indices{<:DGG.DGGSGlobeIds{DGG.IGEO7DGGS}}) = IGEO7Index[]
+
+function _complete_subtree(indices::IGEO7Indices)
+    isempty(indices) && return nothing
+    if indices.contiguous && indices.first_ordinal == 1 &&
+            length(indices) == num_cells(indices.resolution)
+        return :globe
+    end
+    lo, hi = first(indices).id, last(indices).id
+    z7_base_cell(lo) == z7_base_cell(hi) || return nothing
+    root_level = 0
+    for level in 1:indices.resolution
+        _z7_digit(lo, level) == _z7_digit(hi, level) || break
+        root_level = level
+    end
+    root = z7_parent(lo, root_level)
+    DGG.subtree_leaf_count(
+        DGG.IGEO7DGGS(), root_level, root, indices.resolution) == length(indices) ||
+        return nothing
+    range = DGG.descendant_range(
+        DGG.IGEO7DGGS(), root_level, root, indices.resolution)
+    return range == (lo, hi) ? (root_level, root) : nothing
+end
+
+function edges(indices::IGEO7Indices)
+    isempty(indices) && return IGEO7Index[]
+    subtree = _complete_subtree(indices)
+    subtree === :globe && return IGEO7Index[]
+    if subtree !== nothing
+        _, root = subtree
+        return IGEO7Index.(border_descendants(root, indices.resolution))
+    end
+    out = IGEO7Index[]
+    for index in indices
+        any(neighbor -> neighbor ∉ indices, neighbors(index)) && push!(out, index)
     end
     return out
 end

@@ -22,6 +22,8 @@ using DimensionalData
 using DimensionalData: Lookups
 using GeoInterface
 using GeometryOps
+import SmallCollections
+using SmallCollections: SmallVector
 
 # The clean native core (this module's parent) and the package-wide helpers.
 import ..IGeo7
@@ -124,6 +126,7 @@ end
 function IGeo7Lookup(cell_ids; resolution::Integer, metadata=Dict{String,Any}(), validate::Bool=false)
     ids = [_to_id(id) for id in cell_ids]
     res = Int(resolution)
+    user_metadata = metadata === Lookups.NoMetadata ? Dict{String,Any}() : metadata
     md = merge(
         Dict{String,Any}(
             "grid_name" => "igeo7",
@@ -132,7 +135,7 @@ function IGeo7Lookup(cell_ids; resolution::Integer, metadata=Dict{String,Any}(),
             "external_indexing_schemes" => ["z7-string"],
             "projection" => "snyder-isea (standard ISEA placement)",
         ),
-        metadata,
+        user_metadata,
     )
     # The cheap structural checks run first, in the inner constructor.
     lookup = IGeo7Lookup(ids, res, md)
@@ -164,6 +167,7 @@ function IGeo7Lookup(cell_ids::DGG.DGGSGlobeIds; resolution::Integer=cell_ids.le
     cell_ids.system isa DGG.IGEO7DGGS || throw(ArgumentError(
         "an IGeo7Lookup cannot be built from a $(DGG.system_name(cell_ids.system)) globe"))
     res = Int(resolution)
+    user_metadata = metadata === Lookups.NoMetadata ? Dict{String,Any}() : metadata
     md = merge(
         Dict{String,Any}(
             "grid_name" => "igeo7",
@@ -172,7 +176,7 @@ function IGeo7Lookup(cell_ids::DGG.DGGSGlobeIds; resolution::Integer=cell_ids.le
             "external_indexing_schemes" => ["z7-string"],
             "projection" => "snyder-isea (standard ISEA placement)",
         ),
-        metadata,
+        user_metadata,
     )
     return IGeo7Lookup(cell_ids, res, md)
 end
@@ -189,6 +193,101 @@ Base.getindex(l::IGeo7Lookup, i::Int) = l.data[i]
 Base.firstindex(l::IGeo7Lookup) = firstindex(l.data)
 Base.lastindex(l::IGeo7Lookup) = lastindex(l.data)
 Base.iterate(l::IGeo7Lookup, state...) = iterate(l.data, state...)
+
+# The dimension tuple is part of an AbstractDimArray's type, so this dispatch
+# cannot affect an ordinary vector or a raster with Cartesian dimensions.
+function Base.eachindex(
+        A::DD.AbstractDimArray{T,1,D}
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    lookup = DD.val(only(DD.dims(A)))
+    return IGeo7.IGEO7Indices(DD.parent(lookup), lookup.resolution)
+end
+
+function IGeo7.cell_to_position(
+        A::DD.AbstractDimArray{T,1,D},
+        index::IGeo7.IGEO7Index,
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    lookup = DD.val(only(DD.dims(A)))
+    position = DGG.cell_position(DD.parent(lookup), index.id)
+    position === nothing && throw(BoundsError(A, index))
+    return position
+end
+
+function IGeo7.position_to_cell(
+        A::DD.AbstractDimArray{T,1,D},
+        position::Integer,
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    checkbounds(A, position)
+    lookup = DD.val(only(DD.dims(A)))
+    return IGeo7.IGEO7Index(@inbounds DD.parent(lookup)[position])
+end
+
+function Base.getindex(
+        A::DD.AbstractDimArray{T,1,D},
+        index::IGeo7.IGEO7Index,
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    return A[IGeo7.cell_to_position(A, index)]
+end
+
+function Base.setindex!(
+        A::DD.AbstractDimArray{T,1,D},
+        value,
+        index::IGeo7.IGEO7Index,
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    return setindex!(A, value, IGeo7.cell_to_position(A, index))
+end
+
+function Base.checkbounds(
+        ::Type{Bool},
+        A::DD.AbstractDimArray{T,1,D},
+        index::IGeo7.IGEO7Index,
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    lookup = DD.val(only(DD.dims(A)))
+    return DGG.cell_position(DD.parent(lookup), index.id) !== nothing
+end
+
+function IGeo7.neighbors(
+        A::DD.AbstractDimArray{T,1,D},
+        index::IGeo7.IGEO7Index,
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    checkbounds(Bool, A, index) || throw(BoundsError(A, index))
+    out = SmallVector{6,IGeo7.IGEO7Index}()
+    for neighbor in IGeo7.neighbors(DGG.IGEO7DGGS(), index)
+        checkbounds(Bool, A, neighbor) ||
+            continue
+        out = SmallCollections.push(out, neighbor)
+    end
+    return out
+end
+
+function IGeo7.celldistance(
+        A::DD.AbstractDimArray{T,1,D},
+        from::IGeo7.IGEO7Index,
+        to::IGeo7.IGEO7Index,
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    checkbounds(Bool, A, from) || throw(BoundsError(A, from))
+    checkbounds(Bool, A, to) || throw(BoundsError(A, to))
+    from == to && return 0.0
+    lookup = DD.val(only(DD.dims(A)))
+    pfrom = DGG.cell_center(DGG.IGEO7DGGS(), lookup.resolution, from.id)
+    pto = DGG.cell_center(DGG.IGEO7DGGS(), lookup.resolution, to.id)
+    angle = GeometryOps.UnitSpherical.spherical_distance(pfrom, pto)
+    return Float64(angle * IGeo7.R_AUTHALIC)
+end
+
+function IGeo7.cellarea(
+        A::DD.AbstractDimArray{T,1,D},
+        index::IGeo7.IGEO7Index,
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    checkbounds(Bool, A, index) || throw(BoundsError(A, index))
+    return IGeo7.cell_area(index.id)
+end
+
+function IGeo7.edges(
+        A::DD.AbstractDimArray{T,1,D},
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    return IGeo7.edges(eachindex(A))
+end
 
 function DD.rebuild(l::IGeo7Lookup; data=l.data, metadata=l.metadata, kw...)
     return IGeo7Lookup(data; resolution=l.resolution, metadata, kw...)

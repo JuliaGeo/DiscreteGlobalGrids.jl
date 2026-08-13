@@ -27,6 +27,7 @@ const TEST_FILES = (
     "test_chart.jl",
     "test_grid.jl",
     "test_indexing.jl",
+    "test_custom_indices.jl",
     "test_lookups.jl",
     "test_igeo7_kernel.jl",
     "test_neighbors.jl",

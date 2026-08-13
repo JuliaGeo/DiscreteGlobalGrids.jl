@@ -43,6 +43,7 @@ using ..ISEA
 include("z7.jl")
 include("engine.jl")
 include("grid.jl")
+include("indexing.jl")
 include("IGeo7Lookups.jl")
 
 # Public API (spec/interface-contract.md). Names are defined by the include
@@ -50,15 +51,23 @@ include("IGeo7Lookups.jl")
 # icosahedron/Snyder names reach users through `ISEA`, not from here.
 export InvalidZ7Error,
     MAX_RESOLUTION,
+    HexIndex,
+    IGEO7Index,
+    RelativeIGEO7Index,
     border_descendants,
     cell_area,
+    cellarea,
     cell_boundary,
     cell_boundary_cartesian,
     cell_center,
+    celldistance,
     cell_to_children,
     cell_to_index,
+    cell_to_position,
     cell_to_parent,
     cell_to_z7,
+    directioncode,
+    edges,
     get_resolution,
     index_to_cell,
     is_pentagon,
@@ -67,7 +76,9 @@ export InvalidZ7Error,
     lonlat_to_cell,
     lonlat_to_index,
     lonlat_to_z7,
+    neighbors,
     num_cells,
+    position_to_cell,
     res0_cells,
     z7_base_cell,
     z7_child,
@@ -81,7 +92,8 @@ export InvalidZ7Error,
     z7_resolution,
     z7_to_cell,
     z7_to_hex,
-    z7_to_string
+    z7_to_string,
+    trytranslate
 
 # Operations-kernel wiring for the `IGEO7DGGS` singleton. It defines methods
 # on the *package's* generics only — it adds no name to this module's contract

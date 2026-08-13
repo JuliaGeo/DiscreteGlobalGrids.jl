@@ -1,18 +1,19 @@
 using Test
 using DiscreteGlobalGrids
 
-# Each unit suite is wrapped in its own module (see e.g. test/A5/runtests.jl)
-# so that same-named exports (cell_center, lonlat_to_cell, ...) from different
-# systems never collide in a shared namespace. `include` evaluates at the top
-# level of Main, so the module definitions inside these files are legal even
-# from within the @testset.
+# Each unit suite is wrapped in its own module so that same-named exports from
+# different systems never collide in a shared namespace. `include` evaluates at
+# the top level of Main, so the module definitions inside these files are legal
+# even from within the @testset.
+#
+# Only the redesigned suites run here. The old-architecture suites (test/core,
+# test/A5, test/H3, test/HEALPix, test/IGeo7, test/ISEA4R, test/S2,
+# test/test_helpers.jl) still exist on disk as reference for the ports and are
+# expected to fail against this branch until T4-T7 land them; T8 deletes what
+# the kill list retires.
 @testset "DiscreteGlobalGrids.jl" begin
-    include("test_helpers.jl")
-    include("core/runtests.jl")
-    include("A5/runtests.jl")
-    include("H3/runtests.jl")
-    include("HEALPix/runtests.jl")
-    include("IGeo7/runtests.jl")
-    include("ISEA4R/runtests.jl")
-    include("S2/runtests.jl")
+    include("interface/runtests.jl")
+    # TODO(T2): include("fallbacks/runtests.jl")
+    # TODO(T3): include("conformance/runtests.jl")
+    # TODO(T4-T6): include("systems/{IGeo7,H3,HEALPix}/runtests.jl")
 end

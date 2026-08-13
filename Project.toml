@@ -8,6 +8,7 @@ projects = ["test", "docs"]
 
 [deps]
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
+DE9IM = "5483dedb-0874-478e-8d7a-8c665bf87f01"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 Extents = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
 GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
@@ -23,6 +24,7 @@ ConservativeRegridding = {url = "https://github.com/JuliaGeo/ConservativeRegridd
 GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/dualdfs-carry-extents"}
 
 [compat]
+DE9IM = "0.1"
 SmallCollections = "0.6.3"
 julia = "1.11"
 GeometryOpsCore = "0.1.11"

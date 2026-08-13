@@ -1,24 +1,26 @@
-# Demo: chunked data — one spatial tree per data chunk (H3).
+# Demo: chunked data — one grid, one tree, per data chunk (H3).
 #
-# A datacube stored as H3 res-6 cells grouped by their res-2 ancestor wants a
-# tree per chunk: built in O(chunk), indexed 1:chunk_size so the tree's leaf
-# indices are positions in the chunk's data array, and never reaching for a cell
-# the chunk does not own. `subtree_grid` is that constructor.
+# A datacube stored as H3 level-6 cells grouped by their level-2 ancestor wants
+# a grid per chunk: built in O(1), numbered 1:ncells so a position is an index
+# into the chunk's data array, and never naming a cell the chunk does not own.
 #
-# Environment: this demo needs nothing beyond DiscreteGlobalGrids and its own
-# dependencies, so it runs in the repository's project environment:
+#     grid = DGG.PartialGrid(DGG.H3System(), chunk, LEAF_LEVEL)
+#
+# is the whole constructor. On a system with sorted subtrees the ids are the
+# lazy `descendant_range` window, so nothing is materialised at all.
+#
+# Environment: needs nothing beyond DiscreteGlobalGrids and its dependencies:
 #
 #     julia -t 4 --project=. examples/chunked_h3.jl
 #
 # It ends in PASS/FAIL assertions and exits non-zero if any of them fail.
-using DiscreteGlobalGrids
-const DGG = DiscreteGlobalGrids
-const H3Native = DGG.H3.H3Native
+
+import DiscreteGlobalGrids as DGG
 import GeometryOps as GO
-import GeometryOps: SpatialTreeInterface as STI
+import Extents
 
 const FAILURES = Ref(0)
-function check(name, ok; detail = "")
+function check(name, ok; detail="")
     ok || (FAILURES[] += 1)
     println(ok ? "PASS  " : "FAIL  ", rpad(name, 56), detail)
     return ok
@@ -28,191 +30,145 @@ note(text) = println("      ", text)
 # Median-of-5 wall time and the allocated bytes of one call.
 timed(f) = (sort([(@timed f()).time for _ in 1:5])[3], (@timed f()).bytes)
 
+const SYS = DGG.H3System()
 const CHUNK_LEVEL = 2
 const LEAF_LEVEL = 6
-# Fixed res-2 hexagon over the western Alps — nothing about the demo depends on
-# which cell it is, only that it is the same one on every run.
-const CHUNK = H3Native.lonlat_to_cell(10.0, 45.0, CHUNK_LEVEL)
+# A fixed level-2 hexagon over the western Alps — nothing about the demo depends
+# on which cell it is, only that it is the same one on every run.
+const CHUNK = DGG.cellat(DGG.levelgrid(SYS, CHUNK_LEVEL), 10.0, 45.0)
 
 println("="^78)
-println("chunked_h3.jl — H3 res-$CHUNK_LEVEL chunk 0x", string(CHUNK; base = 16),
-        ", leaves at res $LEAF_LEVEL")
+println("chunked_h3.jl — H3 level-$CHUNK_LEVEL chunk $CHUNK, leaves at level $LEAF_LEVEL")
 println("julia $(VERSION)  threads=$(Threads.nthreads())")
 println("="^78)
 
 # --------------------------------------------------------------------------
-# The call site: two lines from "which chunk" to "a spatial tree".
+# 1. The grid holds exactly the chunk, and numbers it from 1.
+# --------------------------------------------------------------------------
+
+grid = DGG.PartialGrid(SYS, CHUNK, LEAF_LEVEL)
+tree = DGG.treeify(grid)
+
+expected = length(DGG.descendant_range(SYS, CHUNK, LEAF_LEVEL))
+check("ncells == the chunk's descendant range", DGG.ncells(grid) == expected;
+    detail="$(DGG.ncells(grid)) cells")
+check("every cell is a chunk descendant",
+    all(DGG.ancestor(SYS, DGG.cellindex(grid, i), CHUNK_LEVEL) == CHUNK
+        for i in 1:DGG.ncells(grid)))
+check("positions are chunk-local and round trip",
+    all(DGG.cellposition(grid, DGG.cellindex(grid, i)) == i
+        for i in (1, 2, 1200, expected)))
+check("the tree's leaf i is the grid's position i",
+    DGG.ncells(tree) == expected &&
+    all(DGG.getcell(tree, i) == DGG.cell_polygon(grid, DGG.cellindex(grid, i))
+        for i in (1, 2, 1200, expected)))
+
+# The globe at the same level is O(1) to build too, but its positions are global
+# ordinals, so a per-chunk data array no longer indexes through it.
+globe = DGG.levelgrid(SYS, LEAF_LEVEL)
+check("chunk position 1 is not globe position 1",
+    DGG.cellindex(grid, 1) != DGG.cellindex(globe, 1);
+    detail="$(DGG.cellindex(grid, 1)) vs $(DGG.cellindex(globe, 1))")
+note("globe at level $LEAF_LEVEL: $(DGG.ncells(globe)) cells " *
+     "($(round(Int, DGG.ncells(globe) / expected))x the chunk)")
+
+# --------------------------------------------------------------------------
+# 2. Queries answer in the chunk's own index space.
 #
-# Both levels are keywords, so the call cannot be mis-ordered: `root_id` is the
-# only positional argument and the two `Integer` levels name themselves.
+# `query` returns typed ids; `cellposition` is what turns one into an index into
+# the chunk's data array. A query whose target is nowhere near the chunk is
+# pruned at the grid's root extent and comes back empty.
 # --------------------------------------------------------------------------
 
-grid = subtree_grid(H3DGGS(), CHUNK; root_level = CHUNK_LEVEL, leaf_level = LEAF_LEVEL)
-tree = treeify(grid)
+near = Extents.Extent(X=(9.9, 10.1), Y=(44.9, 45.1))
+far = Extents.Extent(X=(-150.5, -149.5), Y=(-40.5, -39.5))
+
+hits = DGG.query(grid, DGG.Intersects(near))
+positions = [DGG.cellposition(grid, c) for c in hits]
+check("in-chunk query hits index the chunk", !isempty(hits) &&
+                                             all(p -> p isa Int && 1 <= p <= expected, positions);
+    detail="$(length(hits)) cells")
+check("hits really do meet the target",
+    all(DGG.cellindex(grid, p) in hits for p in positions))
+check("out-of-chunk query returns nothing",
+    isempty(DGG.query(grid, DGG.Intersects(far))))
+
+# `cellat` is the point form of the same question, and answers `nothing` outside
+# the chunk's coverage rather than pointing at some other chunk's cell.
+check("cellat inside the chunk finds a cell",
+    DGG.cellat(grid, 10.0, 45.0) !== nothing)
+check("cellat outside the chunk is nothing",
+    DGG.cellat(grid, -150.0, -40.0) === nothing)
 
 # --------------------------------------------------------------------------
-# 1. The tree holds exactly the chunk.
-# --------------------------------------------------------------------------
-
-expected = subtree_leaf_count(H3DGGS(), CHUNK_LEVEL, CHUNK, LEAF_LEVEL)
-check("leaf count == subtree_leaf_count", ncells(tree) == expected;
-      detail = "$(ncells(tree)) leaves")
-check("grid.ids holds only chunk descendants",
-      all(cell_parent(H3DGGS(), LEAF_LEVEL, id, CHUNK_LEVEL) == CHUNK for id in grid.ids))
-check("ids ascending and distinct", issorted(grid.ids; lt = (<=)))
-
-# The root cursor stands for the chunk cell itself, not for the whole sphere —
-# `node_level` / `node_id` are the public way to ask a node which cell it is.
-check("tree roots at the chunk cell, not the sphere",
-      (node_level(tree), node_id(tree)) == (CHUNK_LEVEL, CHUNK);
-      detail = "node_level=$(node_level(tree)) node_id=0x$(string(node_id(tree); base = 16))")
-
-# The tree's leaf index space is 1:n over the *chunk*, so a per-chunk data
-# array indexes straight through it — this is what a global grid cannot give.
-leaf_indices = Int[]
-function walk_leaves!(out, node)
-    if STI.isleaf(node)
-        append!(out, first.(STI.child_indices_extents(node)))
-    else
-        for child in STI.getchild(node)
-            walk_leaves!(out, child)
-        end
-    end
-    return out
-end
-walk_leaves!(leaf_indices, tree)
-check("leaf indices are exactly 1:$(expected)", sort(leaf_indices) == collect(1:expected))
-check("getcell(tree, i) is the polygon of grid.ids[i]",
-      all(getcell(tree, i) == cell_polygon_unitsphere(H3DGGS(), LEAF_LEVEL, grid.ids[i])
-          for i in (1, 2, 1200, expected)))
-
-# --------------------------------------------------------------------------
-# 2. Cap queries — one small cap inside the chunk, one far outside.
+# 3. The rim, without the interior.
 #
-# `intersects_cap(cap)` is the query predicate; node extents on a DGGS tree are
-# always spherical caps. A bounding-volume query is conservative by
-# construction: it answers with the cells whose *caps* survive the descent,
-# which is a superset of the cells that truly intersect and a subset of the
-# cells a naive per-cell cap test accepts. Both bounds are asserted, and every
-# cell in the gap is shown not to touch the cap at all.
+# Halo exchange between chunks needs the cells with a neighbour in another
+# chunk. `subtree_border` answers that directly, and H3 walks it in O(rim).
 # --------------------------------------------------------------------------
 
-const TO_SPHERE = GO.UnitSpherical.UnitSphereFromGeographic()
-distance = GO.UnitSpherical.spherical_distance
-
-inside_cap = GO.UnitSpherical.SphericalCap(DGG.cell_center(H3DGGS(), CHUNK_LEVEL, CHUNK), 0.01)
-hits = STI.query(tree, intersects_cap(inside_cap))
-
-# Naive brute force: the per-cell caps the tree itself reports at its leaves.
-candidates = [i for i in eachindex(grid.ids)
-              if intersects_cap(inside_cap, cell_cap(H3DGGS(), LEAF_LEVEL, grid.ids[i]))]
-# Sound subset: a cell whose center is inside the cap certainly intersects it.
-certain = [i for i in eachindex(grid.ids)
-           if distance(inside_cap.point, DGG.cell_center(H3DGGS(), LEAF_LEVEL, grid.ids[i])) <=
-              inside_cap.radius]
-
-check("in-chunk query: no false negatives", issubset(certain, hits);
-      detail = "$(length(certain)) certain / $(length(hits)) hits")
-check("in-chunk query: hits subset the per-cell cap test", issubset(hits, candidates);
-      detail = "$(length(hits)) hits / $(length(candidates)) candidates")
-dropped = setdiff(candidates, hits)
-nearest(i) = minimum(distance(inside_cap.point, v)
-                     for v in DGG.cell_boundary(H3DGGS(), LEAF_LEVEL, grid.ids[i]))
-check("dropped cells do not touch the query cap",
-      all(nearest(i) > inside_cap.radius for i in dropped);
-      detail = "$(length(dropped)) dropped; nearest boundary " *
-               "$(isempty(dropped) ? "-" : round(minimum(nearest, dropped); digits = 5)) rad " *
-               "vs cap radius $(inside_cap.radius)")
-
-outside_cap = GO.UnitSpherical.SphericalCap(TO_SPHERE((-150.0, -40.0)), 0.01)
-outside_hits = STI.query(tree, intersects_cap(outside_cap))
-check("out-of-chunk query returns nothing", isempty(outside_hits))
-
-# A subtree-rooted chunk of 2,401 leaves is past `SUBTREE_CAP_EXACT_LIMIT`, so
-# its root extent is the O(1) `subtree_cap` (the chunk cell's own inflated cap)
-# rather than an exact union cap, which at that size gives up and returns the
-# whole sphere. So the chunk carries a tight O(1) bound.
-root_extent = STI.node_extent(tree)
-chunk_cap = subtree_cap(H3DGGS(), CHUNK_LEVEL, CHUNK, LEAF_LEVEL)
-check("root extent is the O(1) chunk cap, not the whole sphere",
-      root_extent == chunk_cap && root_extent != DGG.full_sphere_extent();
-      detail = "radius $(round(root_extent.radius; digits = 4)) rad")
-check("one cap test against it settles the far query",
-      !intersects_cap(outside_cap, root_extent))
-
-# Worth knowing before wiring a hot query loop: `depth_first_search` (hence
-# `STI.query`) starts at the root's *children* and never tests the root's own
-# extent, so a far-away query still pays one row of child extents — for this
-# chunk, seven `cells_cap` folds over 343 cell boundaries each. Guarding the
-# call with the root cap is a caller-side decision the tree makes cheap.
-outside_time, outside_bytes = timed(() -> STI.query(tree, intersects_cap(outside_cap)))
-guard_time, guard_bytes = timed(() -> intersects_cap(outside_cap, STI.node_extent(tree)))
-note("far query, unguarded: $(round(outside_time * 1e3; digits = 2)) ms / " *
-     "$(round(outside_bytes / 1024; digits = 0)) KiB " *
-     "(STI.query descends from the root's children)")
-note("far query, root cap first: $(round(guard_time * 1e6; digits = 2)) us / " *
-     "$(guard_bytes) bytes — $(round(Int, outside_time / guard_time))x cheaper")
+rim = DGG.subtree_border(SYS, CHUNK, LEAF_LEVEL)
+check("rim is a strict subset of the chunk", 0 < length(rim) < expected;
+    detail="$(length(rim)) of $expected cells ($(round(100 * length(rim) / expected; digits=1))%)")
+check("every rim cell has a neighbour outside the chunk",
+    all(any(DGG.ancestor(SYS, nb, CHUNK_LEVEL) != CHUNK
+            for nb in DGG.neighbors(globe, c)) for c in rim))
+check("rim and interior partition the chunk",
+    length(rim) + length(DGG.subtree_interior(SYS, CHUNK, LEAF_LEVEL)) == expected)
 
 # --------------------------------------------------------------------------
-# 3. O(chunk), not O(globe).
+# 4. O(chunk), not O(globe).
 #
-# The same construction at one level coarser covers 7x the cells; time and
-# allocations follow the chunk, not the 14.1M-cell res-6 globe.
+# The same construction one level coarser covers 7x the cells. On H3 the ids are
+# a lazy window over the level grid, so even the 7x chunk allocates nothing much.
 # --------------------------------------------------------------------------
 
-coarse = cell_parent(H3DGGS(), CHUNK_LEVEL, CHUNK, CHUNK_LEVEL - 1)
-build_fine = () -> subtree_grid(H3DGGS(), CHUNK;
-                                root_level = CHUNK_LEVEL, leaf_level = LEAF_LEVEL)
-build_coarse = () -> subtree_grid(H3DGGS(), coarse;
-                                  root_level = CHUNK_LEVEL - 1, leaf_level = LEAF_LEVEL)
-build_fine(); build_coarse()                      # warm up
+coarse = parent(SYS, CHUNK)
+build_fine = () -> DGG.PartialGrid(SYS, CHUNK, LEAF_LEVEL)
+build_coarse = () -> DGG.PartialGrid(SYS, coarse, LEAF_LEVEL)
+build_fine();
+build_coarse();                       # warm up
 
 fine_time, fine_bytes = timed(build_fine)
 coarse_time, coarse_bytes = timed(build_coarse)
-n_fine, n_coarse = length(grid.ids), length(build_coarse().ids)
-n_globe = DGG.num_cells(H3DGGS(), LEAF_LEVEL)
+n_coarse = DGG.ncells(build_coarse())
 
 println()
 println("  chunk        cells        build        bytes")
-println("  res $CHUNK_LEVEL      $(lpad(n_fine, 9))   $(lpad(round(fine_time * 1e6; digits = 2), 8)) us   $(lpad(fine_bytes, 10))")
-println("  res $(CHUNK_LEVEL - 1)      $(lpad(n_coarse, 9))   $(lpad(round(coarse_time * 1e6; digits = 2), 8)) us   $(lpad(coarse_bytes, 10))")
-println("  ratio        $(lpad(round(n_coarse / n_fine; digits = 2), 9))   $(lpad(round(coarse_time / fine_time; digits = 2), 11))   $(lpad(round(coarse_bytes / fine_bytes; digits = 2), 10))")
-println("  globe        $(lpad(n_globe, 9))   ($(round(n_globe / n_fine; digits = 0))x the res-$CHUNK_LEVEL chunk)")
+println("  level $CHUNK_LEVEL    $(lpad(expected, 9))   $(lpad(round(fine_time * 1e6; digits=2), 8)) us   $(lpad(fine_bytes, 10))")
+println("  level $(CHUNK_LEVEL - 1)    $(lpad(n_coarse, 9))   $(lpad(round(coarse_time * 1e6; digits=2), 8)) us   $(lpad(coarse_bytes, 10))")
+println("  globe        $(lpad(DGG.ncells(globe), 9))")
 
-check("cell count scales 7x with one coarser level", n_coarse == 7 * n_fine)
-check("build time scales with the chunk, not the globe",
-      2.0 <= coarse_time / fine_time <= 20.0;
-      detail = "$(round(coarse_time / fine_time; digits = 2))x for 7x the cells")
-check("allocations scale with the chunk",
-      2.0 <= coarse_bytes / fine_bytes <= 20.0;
-      detail = "$(round(coarse_bytes / fine_bytes; digits = 2))x for 7x the cells")
+check("cell count scales 7x with one coarser level", n_coarse == 7 * expected)
+check("build cost does not scale with the chunk", coarse_bytes <= 4 * fine_bytes;
+    detail="$(fine_bytes) -> $(coarse_bytes) bytes for 7x the cells")
 
 # --------------------------------------------------------------------------
-# 4. The whole-globe alternatives, for contrast.
+# 5. The same two lines on every system.
 #
-# `DGGSPartialGrid` over every res-6 id is the same tree shape but has to
-# materialize 14.1M ids first; `DGGSGrid` is O(1) to build but numbers its
-# leaves globally, so a chunk's data array no longer indexes through it.
+# `PartialGrid(sys, cell, leaf)` is generic: sorted-subtree systems get the O(1)
+# lazy window, and A5 — which does not claim sorted subtrees — falls back to
+# materialising `descendants`. The call site does not change either way.
 # --------------------------------------------------------------------------
-
-globe_stats = @timed sort!(reduce(vcat, H3Native.cell_to_children.(H3Native.res0_cells(), LEAF_LEVEL)))
-globe_ids = globe_stats.value
-globe_grid = DGGSPartialGrid(H3DGGS(), LEAF_LEVEL, globe_ids)
-dense_tree = treeify(DGGSGrid(H3DGGS(), LEAF_LEVEL))
 
 println()
-note("whole-globe DGGSPartialGrid: $(length(globe_ids)) ids, " *
-     "$(round(globe_stats.time; digits = 3)) s / $(round(globe_stats.bytes / 2^20; digits = 1)) MiB to materialize " *
-     "($(round(Int, globe_stats.time / fine_time))x the chunk's build time)")
-note("whole-globe DGGSGrid: O(1) to build, but ncells = $(ncells(dense_tree)) — " *
-     "leaf i is a global ordinal, not chunk position i")
+println("  system            chunk cells   ids materialised")
+for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.H3System()))
+    base = sys isa DGG.AuthalicSystem ? parent(sys) : sys
+    root_level, leaf_level = 2, base isa Union{DGG.H3System,DGG.IGeo7System} ? 5 : 6
+    chunk = DGG.cellat(DGG.levelgrid(sys, root_level), 10.0, 45.0)
+    g = DGG.PartialGrid(sys, chunk, leaf_level)
+    lazy = !DGG.has_sorted_subtrees(sys)
+    name = sys isa DGG.AuthalicSystem ?
+           "Authalic($(nameof(typeof(base))))" : string(nameof(typeof(sys)))
+    println("  ", rpad(name, 18), lpad(DGG.ncells(g), 11), "   ", lazy ? "yes" : "no")
+    check("$name: chunk grid is rooted and local",
+        DGG.ncells(g) > 0 && DGG.cellposition(g, DGG.cellindex(g, 1)) == 1)
+end
 
-check("chunk leaf 1 and globe leaf 1 are different cells",
-      grid.ids[1] != globe_grid.ids[1];
-      detail = "chunk id 0x$(string(grid.ids[1]; base = 16)) vs globe id 0x$(string(globe_grid.ids[1]; base = 16))")
-check("chunk indices are chunk-local",
-      getcell(tree, 1) == cell_polygon_unitsphere(H3DGGS(), LEAF_LEVEL, grid.ids[1]) &&
-      getcell(tree, 1) != getcell(dense_tree, 1))
+println()
+note("call site, verbatim:  grid = DGG.PartialGrid(sys, chunk, LEAF_LEVEL)")
+note("`treeify(grid)` is the tree; `cellposition(grid, c)` is the data index")
 
 println()
 println(FAILURES[] == 0 ? "ALL CHECKS PASSED" : "$(FAILURES[]) CHECK(S) FAILED")

@@ -1,75 +1,191 @@
-# Demo: EOPF-convention HEALPix vector-data-cube — zonal stats + stencils on partial coverage.
+# Demo: a HEALPix vector data cube on PARTIAL coverage — zonal means, stencils.
 #
-# Environment: this demo additionally needs NaturalEarth and Rasters, which are
-# intentionally NOT DiscreteGlobalGrids dependencies (they are only used here, to
-# fetch reference country polygons and to cross-check against a regular lon/lat
-# grid). Run it in an environment that has DiscreteGlobalGrids plus those two.
-# NaturalEarth downloads its data at runtime, so the first run needs network access.
-import Healpix, NaturalEarth, GeoInterface as GI, GeometryOps as GO
-import DimensionalData as DD
-using DimensionalData: Lookups
+# A cropped cube stores one region's cells, not the globe's. `PartialGrid` is
+# that crop, and it is the only object the rest of the demo needs:
+#
+#     ids  = DGG.query(sys, DGG.Intersects(window); level)
+#     grid = DGG.PartialGrid(sys, level, ids)
+#
+# Positions `1:ncells(grid)` index the data vector; `query` selects zones in
+# that same index space through `cellposition`; `neighbors` gives the stencil
+# halo, with the slots outside the crop simply missing rather than padded.
+#
+# Environment: needs nothing beyond DiscreteGlobalGrids and its dependencies
+# (Healpix.jl is one of them, and is used here as an independent oracle):
+#
+#     julia -t 4 --project=. examples/healpix_demo.jl
+#
+# It ends in PASS/FAIL assertions and exits non-zero if any of them fail.
+
+import DiscreteGlobalGrids as DGG
+import GeometryOps as GO
+import Extents
+import Healpix
 using Statistics
-using DiscreteGlobalGrids
-using DiscreteGlobalGrids.HEALPix.HealpixLookups
 
-level = 7
-res = Healpix.Resolution(2^level)
-npix = 12 * 4^level
+const FAILURES = Ref(0)
+function check(name, ok; detail="")
+    ok || (FAILURES[] += 1)
+    println(ok ? "PASS  " : "FAIL  ", rpad(name, 52), detail)
+    return ok
+end
+note(text) = println("      ", text)
 
-# --- build partial coverage: cells over a European window (the "country crop" case) ---
-inwindow(lon, lat) = -12 <= lon <= 32 && 34 <= lat <= 62
-covered = Int64[p for p in 0:npix-1 if inwindow(HealpixLookups._cell_center_lonlat(res, p)...)]
-l = HealpixLookup(covered; level)
-println("coverage: $(length(covered)) of $npix cells ($(round(100length(covered)/npix; digits=2))%)")
+const SYS = DGG.HEALPixSystem()
+const LEVEL = 7                                    # nside = 128, 196608 cells
+const WINDOW = Extents.Extent(X=(-12.0, 32.0), Y=(34.0, 62.0))
+const LONLAT = GO.UnitSpherical.GeographicFromUnitSphere()
 
-# --- synthetic temperature-like field on cell centers ---
+println("="^78)
+println("healpix_demo.jl — level-$LEVEL crop over $(WINDOW)")
+println("julia $(VERSION)  threads=$(Threads.nthreads())")
+println("="^78)
+
+# --------------------------------------------------------------------------
+# 1. The crop.
+# --------------------------------------------------------------------------
+
+globe = DGG.levelgrid(SYS, LEVEL)
+ids = DGG.query(SYS, DGG.Intersects(WINDOW); level=LEVEL)
+grid = DGG.PartialGrid(SYS, LEVEL, ids)
+
+check("the crop is a strict subset of the globe",
+    0 < DGG.ncells(grid) < DGG.ncells(globe);
+    detail="$(DGG.ncells(grid)) of $(DGG.ncells(globe)) cells " *
+           "($(round(100 * DGG.ncells(grid) / DGG.ncells(globe); digits=2))%)")
+check("positions round trip through the crop",
+    all(DGG.cellposition(grid, DGG.cellindex(grid, i)) == i
+        for i in (1, DGG.ncells(grid) ÷ 2, DGG.ncells(grid))))
+
+# The EOPF claim: the complete level's dense order IS Healpix.jl's nested pixel
+# order, so a HealpixMap and a level-grid data vector are the same vector.
+res = Healpix.Resolution(2^LEVEL)
+theta, phi = Healpix.pix2angNest(res, 1)
+lon, lat = LONLAT(DGG.cell_centroid(globe, DGG.cellindex(globe, 1)))
+check("globe position 1 is Healpix.jl nested pixel 1",
+    rad2deg(phi) ≈ mod(lon, 360) && 90 - rad2deg(theta) ≈ lat;
+    detail="($(round(lon; digits=4)), $(round(lat; digits=4)))")
+
+# --------------------------------------------------------------------------
+# 2. A field on the crop, and equal-area means.
+# --------------------------------------------------------------------------
+
+centers = [LONLAT(DGG.cell_centroid(grid, DGG.cellindex(grid, i)))
+           for i in 1:DGG.ncells(grid)]
 field(lon, lat) = 20 - 0.5 * (lat - 34) + 2 * sind(3 * lon)
-A = DD.DimArray([field(lon, lat) for (lon, lat) in cell_centers(l)], Cells(l); name=:tsynth)
+data = [field(c...) for c in centers]
 
-# --- zonal means over real country polygons ---
-countries = NaturalEarth.naturalearth("admin_0_countries", 110)
-sel = ["Germany", "France", "Spain", "Italy", "Poland", "Austria", "Switzerland"]
-rows = findall(in(sel), countries.NAME)
-geoms = countries.geometry[rows]
-zs = zonal(mean, A; of=geoms)
-println("\nzonal means (HEALPix, equal-area => unweighted):")
-for (n, z) in zip(countries.NAME[rows], zs)
-    println("  ", rpad(n, 14), round(z; digits=3))
+exact = 4pi / DGG.ncells(globe)
+areas = [DGG.cell_area(globe, DGG.cellindex(grid, i)) for i in 1:DGG.ncells(grid)]
+check("HEALPix cells are exactly equal-area",
+    maximum(abs.(areas .- exact)) / exact < 1e-12;
+    detail="$(round(exact; sigdigits=6)) sr each, so an unweighted mean IS areal")
+
+# Ask the COMPLETE grid for the area, not the crop: HEALPix's exact
+# `4pi/ncells` override is attached to its level grid, and a `PartialGrid` falls
+# through to the generic area of the published four-vertex ring — which for a
+# curvilinear diamond is short by ~2.5e-5 relative.
+subset_areas = [DGG.cell_area(grid, DGG.cellindex(grid, i)) for i in 1:DGG.ncells(grid)]
+note("cell_area(crop, c) differs from cell_area(globe, c) by " *
+     "$(round(maximum(abs.(subset_areas .- areas)) / exact; sigdigits=3)) relative " *
+     "— the subset grid does not inherit the system's area override")
+
+# --------------------------------------------------------------------------
+# 3. Zonal statistics, as a query in the crop's index space.
+#
+# `query` returns typed ids; `cellposition` turns each into an index into
+# `data`. Two predicates bracket the answer: `Within` keeps only cells wholly
+# inside the zone, `Intersects` keeps every cell that touches it, and the
+# centre-in-zone rule that raster zonal statistics use sits between them.
+# --------------------------------------------------------------------------
+
+zones = (Iberia=Extents.Extent(X=(-9.0, 3.0), Y=(36.0, 44.0)),
+    France=Extents.Extent(X=(-4.0, 8.0), Y=(43.0, 51.0)),
+    Poland=Extents.Extent(X=(14.0, 24.0), Y=(49.0, 55.0)))
+
+zone_positions(g, target) = Int[DGG.cellposition(g, c) for c in DGG.query(g, target)]
+
+inside(ext, (lon, lat)) = ext.X[1] <= lon <= ext.X[2] && ext.Y[1] <= lat <= ext.Y[2]
+
+println()
+println("  zone      within  centre  touching     mean (within / centre)")
+for (name, ext) in pairs(zones)
+    within = zone_positions(grid, DGG.Within(ext))
+    touching = zone_positions(grid, DGG.Intersects(ext))
+    centre = findall(c -> inside(ext, c), centers)
+    println("  ", rpad(name, 9), lpad(length(within), 6), lpad(length(centre), 8),
+        lpad(length(touching), 8), "     ",
+        round(mean(data[within]); digits=3), " / ", round(mean(data[centre]); digits=3))
+    check("$name: within ⊆ centre ⊆ touching",
+        issubset(within, centre) && issubset(centre, touching))
+    check("$name: the two means agree to the cell size",
+        abs(mean(data[within]) - mean(data[centre])) < 0.5)
 end
 
-# --- independent check #1: brute force over stored centers ---
-centers = cell_centers(l)
-for (n, g, z) in zip(countries.NAME[rows], geoms, zs)
-    bf = mean(parent(A)[findall(c -> GO.contains(g, c), centers)])
-    @assert z ≈ bf "zonal mismatch for $n"
+# --------------------------------------------------------------------------
+# 4. Stencils on partial coverage.
+#
+# Adjacency is a property of the complete level, so the halo table is built
+# from the globe's neighbours and then filtered through `cellposition`: a
+# neighbour the crop does not own has no position, and is dropped rather than
+# padded. Cells that keep all eight are the interior of the crop.
+# --------------------------------------------------------------------------
+
+halo = [Int[p for p in (DGG.cellposition(grid, nb)
+                        for nb in DGG.neighbors(globe, DGG.cellindex(grid, i)))
+            if p !== nothing]
+        for i in 1:DGG.ncells(grid)]
+
+stencil(f) = [f(data[i], data[halo[i]]) for i in 1:DGG.ncells(grid)]
+smoothed = stencil((c, nbs) -> mean(vcat(c, nbs)))
+laplacian = stencil((c, nbs) -> isempty(nbs) ? zero(c) : mean(nbs) - c)
+
+full = count(==(8), length.(halo))
+println()
+println("  field var $(round(var(data); digits=4)) -> smoothed $(round(var(smoothed); digits=4))")
+println("  cells with a full 8-neighbourhood: $full / $(length(halo))")
+check("smoothing reduces variance", var(smoothed) < var(data))
+check("the field is smooth, so its Laplacian is small",
+    maximum(abs, laplacian) < 1.0; detail="max |lap| = $(round(maximum(abs, laplacian); digits=5))")
+check("only crop-boundary cells lose neighbours", 0 < full < length(halo))
+
+# `neighbors` on the crop itself answers the same question directly — the
+# generic geometric fallback, no HEALPix fast path, so it is much slower but it
+# is the spelling that needs no second grid.
+sample = 1:50:DGG.ncells(grid)
+check("neighbors(crop, c) == the filtered globe halo",
+    all(sort(Int[DGG.cellposition(grid, nb)
+                 for nb in DGG.neighbors(grid, DGG.cellindex(grid, i))]) == sort(halo[i])
+        for i in sample); detail="sampled $(length(sample)) cells")
+
+# --------------------------------------------------------------------------
+# 5. The same three moves on every system.
+# --------------------------------------------------------------------------
+
+println()
+println("  system              crop cells   within/touching   full-halo cells")
+for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.HEALPixSystem()))
+    base = sys isa DGG.AuthalicSystem ? parent(sys) : sys
+    l = base isa Union{DGG.H3System,DGG.IGeo7System} ? 5 : 6
+    g = DGG.PartialGrid(sys, l, DGG.query(sys, DGG.Intersects(WINDOW); level=l))
+    complete = DGG.levelgrid(sys, l)
+    within = zone_positions(g, DGG.Within(zones.France))
+    touching = zone_positions(g, DGG.Intersects(zones.France))
+    degrees = [count(!isnothing, (DGG.cellposition(g, nb)
+                                 for nb in DGG.neighbors(complete, DGG.cellindex(g, i))))
+               for i in 1:DGG.ncells(g)]
+    name = sys isa DGG.AuthalicSystem ?
+           "Authalic($(nameof(typeof(base))))" : string(nameof(typeof(sys)))
+    println("  ", rpad(name, 20), lpad(DGG.ncells(g), 10), lpad("$(length(within))/$(length(touching))", 18),
+        lpad(count(==(maximum(degrees)), degrees), 18))
+    check("$name: crop, zonal and halo all work",
+        DGG.ncells(g) > 0 && issubset(within, touching) && maximum(degrees) > 0)
 end
-println("\nbrute-force agreement: OK")
 
-# --- independent check #2: Rasters.zonal on a regular lon/lat grid of the same field ---
-import Rasters
-using Rasters: X, Y
-lons, lats = -12:0.25:32, 34:0.25:62
-rast = Rasters.Raster([field(lon, lat) for lon in lons, lat in lats],
-                      (X(lons), Y(lats)); name=:tsynth, missingval=NaN)
-rz = Rasters.zonal(mean, rast; of=geoms, boundary=:center, progress=false)
-println("\nHEALPix zonal vs Rasters.zonal on a 0.25° lon/lat grid:")
-for (n, a, b) in zip(countries.NAME[rows], zs, rz)
-    println("  ", rpad(n, 14), " healpix: ", round(a; digits=3), "  rasters: ", round(b; digits=3))
-    @assert abs(a - b) < 0.2 "HEALPix and lon/lat zonal means disagree for $n"
-    # (different discretizations of the same smooth field; equal-area vs lon/lat-weighted)
-end
+println()
+note("call site, verbatim:  grid = DGG.PartialGrid(sys, level, DGG.query(sys, DGG.Intersects(window); level))")
+note("zonal = query + cellposition; stencil = neighbors + cellposition")
 
-# --- selector sugar from the lookup itself ---
-germany = countries.geometry[findfirst(==("Germany"), countries.NAME)]
-@assert mean(A[Cells(Lookups.Contains(germany))]) ≈ zs[findfirst(==("Germany"), countries.NAME[rows])]
-println("\nA[Cells(Contains(germany))] == zonal(mean) for Germany: OK")
-
-# --- stencil ops: smoothing + Laplacian ---
-nbi = HealpixLookups.neighbor_indices(l)
-smooth = stencil((c, nbs) -> mean(vcat(c, nbs)), A; nbidx=nbi)
-lap = stencil((c, nbs) -> isempty(nbs) ? zero(c) : mean(nbs) - c, A; nbidx=nbi)
-println("\nstencil ops:")
-println("  field var: ", round(var(parent(A)); digits=4), " -> smoothed: ", round(var(parent(smooth)); digits=4))
-println("  max |laplacian| (smooth field, should be small): ", round(maximum(abs, parent(lap)); digits=5))
-nfull = count(t -> all(>(0), t), nbi)
-println("  cells with full 8-neighborhood: $nfull / $(length(nbi)) (rest are coverage-boundary cells)")
+println()
+println(FAILURES[] == 0 ? "ALL CHECKS PASSED" : "$(FAILURES[]) CHECK(S) FAILED")
+exit(FAILURES[] == 0 ? 0 : 1)

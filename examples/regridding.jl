@@ -7,7 +7,7 @@
 # `getcell` are `ConservativeRegridding.Trees`' own bindings extended for every
 # `AbstractGrid`.
 #
-#     src = levelgrid(HEALPixSystem(), 4)
+#     src = DGG.levelgrid(DGG.HEALPixSystem(), 4)
 #     regridder = CR.Regridder(MANIFOLD, DST, src)
 #
 # Swap `HEALPixSystem()` for `IGeo7System()` or `H3System()` and nothing else
@@ -19,8 +19,7 @@
 #
 # It ends in PASS/FAIL assertions and exits non-zero if any of them fail.
 
-using DiscreteGlobalGrids
-const DGG = DiscreteGlobalGrids
+import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
 import GeometryOps as GO
 
@@ -40,7 +39,7 @@ const DST_LON = collect(range(0, 360; length=73))
 const DST_LAT = collect(range(-90, 90; length=37))
 const DST = [TO_SPHERE((x, y)) for x in DST_LON, y in DST_LAT]
 # Destination cells as polygons, for the tree-free reference intersections.
-const DST_CELLS = vec(collect(getcell(treeify(DST))))
+const DST_CELLS = vec(collect(DGG.getcell(DGG.treeify(DST))))
 
 # THE MANIFOLD, declared once. Every grid in this package computes on the UNIT
 # sphere — `cell_boundary` returns `UnitSphericalPoint`s and `cell_area` returns
@@ -49,7 +48,7 @@ const DST_CELLS = vec(collect(getcell(treeify(DST))))
 # `best_manifold` guesses `Spherical()`, whose radius is the WGS84 mean radius;
 # mixing the two is a factor of R^2 in every area, so ConservativeRegridding
 # refuses rather than silently rescaling. Naming it here is the whole fix.
-const MANIFOLD = GO.Spherical(; radius = 1.0)
+const MANIFOLD = GO.Spherical(; radius=1.0)
 const INTERSECT = CR.DefaultIntersectionOperator(MANIFOLD)
 
 println("="^78)
@@ -64,11 +63,11 @@ directly clipped polygons, never against another tree.
 """
 function verify(label, sys, l)
     # THE CALL SITE — the singleton is the only system-specific token.
-    src = levelgrid(sys, l)
+    src = DGG.levelgrid(sys, l)
     regridder = CR.Regridder(MANIFOLD, DST, src)
 
     A = regridder.intersections
-    n_src = ncells(src)
+    n_src = DGG.ncells(src)
     check("$label: matrix is (dst cells, src cells)",
         size(A) == (length(DST_CELLS), n_src);
         detail="$(size(A)), nnz=$(length(A.nzval))")
@@ -96,8 +95,8 @@ function verify(label, sys, l)
     # the position/identity split: `j` is a POSITION in the matrix, and
     # `cellindex` is what turns it into the cell's name.
     j = argmax(diff(A.colptr))
-    c = cellindex(src, j)
-    polygon = cell_polygon(src, c)
+    c = DGG.cellindex(src, j)
+    polygon = DGG.cell_polygon(src, c)
     direct = [INTERSECT(cell, polygon) for cell in DST_CELLS]
     column = Vector(A[:, j])
     coldiff = maximum(abs.(direct .- column) ./ max.(abs.(direct), 1.0))
@@ -106,17 +105,17 @@ function verify(label, sys, l)
 
     # `getcell` on the tree is the same polygon the grid reports for that
     # position — the leaf index space IS the dense position space.
-    tree = treeify(src)
+    tree = DGG.treeify(src)
     check("$label: tree leaf $j is the position-$j cell",
-        getcell(tree, j) == polygon && ncells(tree) == n_src)
+        DGG.getcell(tree, j) == polygon && DGG.ncells(tree) == n_src)
     return regridder
 end
 
-healpix = verify("HEALPix 4", HEALPixSystem(), 4)
+healpix = verify("HEALPix 4", DGG.HEALPixSystem(), 4)
 println()
-igeo7 = verify("IGeo7 3", IGeo7System(), 3)
+igeo7 = verify("IGeo7 3", DGG.IGeo7System(), 3)
 println()
-h3 = verify("H3 2", H3System(), 2)
+h3 = verify("H3 2", DGG.H3System(), 2)
 
 # --------------------------------------------------------------------------
 # Regrid a smooth analytic field.
@@ -133,7 +132,8 @@ const ANALYTIC = vec([field(TO_SPHERE(((DST_LON[i] + DST_LON[i+1]) / 2,
                       for i in 1:(length(DST_LON)-1), j in 1:(length(DST_LAT)-1)])
 
 "Sample `field` at every cell centroid of `grid`, in position order."
-sample(grid) = [field(cell_centroid(grid, cellindex(grid, i))) for i in 1:ncells(grid)]
+sample(grid) = [field(DGG.cell_centroid(grid, DGG.cellindex(grid, i)))
+                for i in 1:DGG.ncells(grid)]
 
 function regrid_field(regridder, grid)
     destination = zeros(length(regridder.dst_areas))
@@ -146,11 +146,11 @@ println()
 println("  src level    cells    max |regridded - analytic|")
 errors = Float64[]
 for l in 4:6
-    grid = levelgrid(HEALPixSystem(), l)
+    grid = DGG.levelgrid(DGG.HEALPixSystem(), l)
     r = l == 4 ? healpix : CR.Regridder(MANIFOLD, DST, grid)
     source, destination = regrid_field(r, grid)
     push!(errors, maximum(abs.(destination .- ANALYTIC)))
-    println("  $l        $(lpad(ncells(grid), 9))    $(errors[end])")
+    println("  $l        $(lpad(DGG.ncells(grid), 9))    $(errors[end])")
     if l == 4
         src_mean = sum(source .* r.src_areas) / sum(r.src_areas)
         dst_mean = sum(destination .* r.dst_areas) / sum(r.dst_areas)
@@ -165,19 +165,46 @@ check("field error shrinks with source resolution", issorted(errors; rev=true);
 
 # Three different DGGS, same destination, same field: the regridded results are
 # three discretisations of one function and must agree to that order.
-_, healpix_dst = regrid_field(healpix, levelgrid(HEALPixSystem(), 4))
-_, igeo7_dst = regrid_field(igeo7, levelgrid(IGeo7System(), 3))
-_, h3_dst = regrid_field(h3, levelgrid(H3System(), 2))
+_, healpix_dst = regrid_field(healpix, DGG.levelgrid(DGG.HEALPixSystem(), 4))
+_, igeo7_dst = regrid_field(igeo7, DGG.levelgrid(DGG.IGeo7System(), 3))
+_, h3_dst = regrid_field(h3, DGG.levelgrid(DGG.H3System(), 2))
 for (name, other) in (("IGeo7 3", igeo7_dst), ("H3 2", h3_dst))
     cross = maximum(abs.(healpix_dst .- other))
     check("HEALPix 4 and $name agree on the same field", cross < 0.2;
         detail="max |HEALPix - $name| = $(round(cross; digits=5))")
 end
 
+# --------------------------------------------------------------------------
+# The claim, swept: every registered system, plus an ellipsoidal wrap of one.
+#
+# `AuthalicSystem` re-reads a system's geometry at geodetic latitude. It is a
+# system like any other, so it goes through the same call site — which is the
+# point of sweeping it here rather than treating it as a special case.
+# --------------------------------------------------------------------------
+
+# The wrapper is transparent to everything but geometry, so both the level
+# choice and the label read through it.
+base(sys) = sys isa DGG.AuthalicSystem ? parent(sys) : sys
+demo_level(sys) = base(sys) isa DGG.H3System ? 2 :
+                  base(sys) isa DGG.IGeo7System ? 3 : 4
+label(sys) = sys isa DGG.AuthalicSystem ?
+             "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
+
 println()
-note("call site, verbatim:  src = levelgrid(HEALPixSystem(), 4); CR.Regridder(MANIFOLD, DST, src)")
-note("swap the singleton for H3System()/IGeo7System() and nothing else changes")
-note("systems() lists them: " * join(string.(nameof.(typeof.(systems()))), ", "))
+println("  system                     cells    column-sum rel err")
+for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.IGeo7System()))
+    l = demo_level(sys)
+    grid = DGG.levelgrid(sys, l)
+    r = CR.Regridder(MANIFOLD, DST, grid)
+    err = maximum(abs.(vec(sum(r.intersections; dims=1)) .- r.src_areas) ./ r.src_areas)
+    println("  ", rpad("$(label(sys)) $l", 23), lpad(DGG.ncells(grid), 9), "    ", err)
+    check("$(label(sys)) $l: conservative", err <= 1e-10)
+end
+
+println()
+note("call site, verbatim:  src = DGG.levelgrid(DGG.HEALPixSystem(), 4); CR.Regridder(MANIFOLD, DST, src)")
+note("swap the singleton for any of systems(), or wrap one in AuthalicSystem")
+note("systems() lists them: " * join(string.(nameof.(typeof.(DGG.systems()))), ", "))
 
 println()
 println(FAILURES[] == 0 ? "ALL CHECKS PASSED" : "$(FAILURES[]) CHECK(S) FAILED")

@@ -8,9 +8,8 @@ using DiscreteGlobalGrids
 #
 # Only the redesigned suites run here. The old-architecture suites (test/core,
 # test/A5, test/H3, test/HEALPix, test/IGeo7, test/ISEA4R, test/S2,
-# test/test_helpers.jl) still exist on disk as reference for the remaining
-# ports and are expected to fail against this branch; T8 deletes what the kill
-# list retires.
+# test/test_helpers.jl) still exist on disk as the ports' oracles and are
+# expected to fail against this branch; T8 deletes what the kill list retires.
 #
 # The conformance harness self-tests live in their own workspace package under
 # lib/. Each system suite imports that package and runs its two public suites
@@ -22,8 +21,12 @@ using DiscreteGlobalGrids
     include("systems/IGeo7/runtests.jl")
     include("systems/H3/runtests.jl")
     include("systems/HEALPix/runtests.jl")
+    include("systems/A5/runtests.jl")
+    include("systems/S2/runtests.jl")
+    include("systems/ISEA4R/runtests.jl")
+    # Last on purpose: the cross-system laws sweep `systems()`, so they are the
+    # suite that grows when a system is registered rather than when one is
+    # written. Running them after every per-system suite means a failure here is
+    # unambiguously a *contract* failure, not a port that never worked.
     include("systems/crosssystem/runtests.jl")
-    # TODO(T10): include("systems/A5/runtests.jl")
-    # TODO(T11): include("systems/S2/runtests.jl")
-    # TODO(T12): include("systems/ISEA4R/runtests.jl")
 end

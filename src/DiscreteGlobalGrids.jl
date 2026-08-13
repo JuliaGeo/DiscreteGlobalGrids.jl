@@ -43,7 +43,9 @@ edges, in wrappers that say so.
     query engine.
   - `lib/DiscreteGlobalGridsConformanceTesting/` — the separate test-only
     package whose property suites make the contracts executable.
-  - `src/systems/{IGeo7,H3,HEALPix}/` — one directory per grid system.
+  - `src/systems/{IGeo7,H3,HEALPix,A5,S2,ISEA4R}/` — one directory per grid
+    system; see [`systems()`](@ref) for what distinguishes them. `src/systems/ISEA/`
+    is the Snyder/icosahedron basis IGeo7 and ISEA4R share.
   - [`Helpers`](@ref) — shared allocation-free primitives (`SmallList`,
     `sorted_index`, the `AuthalicTransform`).
 
@@ -99,9 +101,9 @@ include("interface/system.jl")
 # Generic implementations of everything the interface declares.
 include("fallbacks/fallbacks.jl")
 
-# Grid systems. The three ported ones first; then the second wave's stubs,
-# which are bare modules until T10-T12 fill them. They are included from the
-# start so that those tasks never have to touch this shared file.
+# Grid systems, all six ported. Include order never matters: the two ISEA-family
+# systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
+# first defines it behind an `isdefined` guard.
 include("systems/IGeo7/IGeo7.jl")
 include("systems/H3/H3.jl")
 include("systems/HEALPix/HEALPix.jl")
@@ -112,6 +114,9 @@ include("systems/ISEA4R/ISEA4R.jl")
 using .IGeo7: IGeo7System, IGeo7Grid, Z7Cell
 using .H3: H3System, H3Grid, H3Cell
 using .HEALPix: HEALPixSystem, HEALPixGrid, HEALPixRingIndex
+using .A5: A5System, A5Grid, A5Cell
+using .S2: S2System, S2Grid
+using .ISEA4R: ISEA4RSystem, ISEA4RGrid
 
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
@@ -121,7 +126,7 @@ Every grid system this package ships, as a tuple of singletons.
     julia> using DiscreteGlobalGrids
 
     julia> systems()
-    (IGeo7System(), H3System(), HEALPixSystem())
+    (IGeo7System(), H3System(), HEALPixSystem(), A5System(), S2System(), ISEA4RSystem())
 
 Written for the two things a caller actually does with such a list: run one
 piece of code across all of them (a conformance sweep, a benchmark, a
@@ -135,10 +140,68 @@ which returned metadata-only singletons for systems that had no working
 implementation; every entry here is fully ported and passes both
 `DiscreteGlobalGridsConformanceTesting` suites.
 
+# The six, and how they differ
+
+| system | cells at level `l` | cell shape | equal-area |
+|---|---|---|---|
+| [`IGeo7System`](@ref) | `10·7^l + 2` | hexagons + 12 pentagons | by construction; see `IGeo7.equal_area_steradians` |
+| [`H3System`](@ref) | `120·7^l + 2` | hexagons + 12 pentagons | no (libh3's gnomonic faces) |
+| [`HEALPixSystem`](@ref) | `12·4^l` | curvilinear diamonds | yes, exactly `4π/(12·4^l)` |
+| [`A5System`](@ref) | `12`, `60`, then `60·4^(l-1)` | pentagons (Cairo-style) | yes |
+| [`S2System`](@ref) | `6·4^l` | geodesic quadrilaterals | no; ~2.08× within-level spread |
+| [`ISEA4RSystem`](@ref) | `10·4^l` | rhombi on ten diamonds | yes, exactly `4π/(10·4^l)` |
+
+Traits worth knowing before writing generic code across them:
+
+  - **Neighbour degree is not uniform, and [`Vertex`](@ref)/[`Edge`](@ref) do
+    not always coincide.** [`max_neighbors`](@ref) is the container bound, not
+    the typical degree. IGeo7/H3 are 6 with 12 pentagons at 5, and their two
+    connectivities *do* coincide. A5 is the exception the interface docs used
+    to deny: its Cairo-style tiling has **4-valent** corners, so
+    `max_neighbors(A5System(), Vertex()) == 11` against
+    `max_neighbors(A5System(), Edge()) == 5`, and at resolution 1 a cell really
+    has 11 vertex-neighbours and 3 edge-neighbours. ISEA4R is 8 in the lattice
+    interior but **9** at the two icosahedral vertices 0 and 11, where five
+    diamond corners meet and the diagonal offset resolves to two cells — do not
+    assume 8.
+  - **[`node_extent`](@ref).** S2 and ISEA4R ship the cell's own *exact,
+    uninflated* cap: children tile the parent (a geodesic quad, a chart
+    rectangle) so the tight cap is already a legal covering. HEALPix likewise.
+    IGeo7, H3 and A5 take the generic inflated-cap default; A5 raises
+    [`cap_inflation`](@ref) to `1.75`.
+  - **[`has_sorted_subtrees`](@ref).** True for every system but A5, whose
+    resolution-0 → resolution-1 quintant numbering is a *rotation* of a5's own
+    segment walk, leaving the two-sided [`descendant_range`](@ref) contract
+    unverified. A5 therefore treeifies to a *selection-mode* cursor — correct,
+    just not range-pruned.
+  - **[`subtree_border`](@ref) automata.** IGeo7, H3, HEALPix and ISEA4R ship
+    `O(rim)` rim walkers. A5 and S2 keep the `O(subtree)` generic fallback: A5
+    because its Hilbert children cover the parent's *area* but not its
+    footprint, so there is no digit predicate to read a rim off; S2 because
+    nobody has written it yet (its quad lattice plus sorted subtrees is exactly
+    the shape that would benefit — an open future-work item, not a defect).
+
+# Interoperability caveats
+
+  - **ISEA4R's ten-diamond numbering has no external oracle.** The pairing of
+    the twenty icosahedral faces, the numbering of the ten diamonds, and the
+    orientation of the `(x, y)` square inside each are *this package's own
+    canonical choice*, anchored on the vertex pair `(0, 11)`. Identifier
+    compatibility with any external ISEA4R product — DGGAL included — is
+    deliberately not claimed and must not be inferred; interop needs a
+    permutation fitted against fixtures first.
+  - **S2's native 64-bit `s2_cellid` is not shipped** as an alternate
+    [`reindex`](@ref) scheme. The codec is one step from the canonical scaffold
+    ordinal, but this repository carries no s2geometry fixtures, so shipping it
+    would publish an interoperability claim nothing checks. Purely additive
+    later; the scaffold ordinal is canonical either way.
+
 See [`levels`](@ref) and [`levelgrid`](@ref) for turning one of these into a
-grid you can query.
+grid you can query, and each system's own module docstring
+(`?DiscreteGlobalGrids.A5`) for its id codec and fast paths.
 """
-systems() = (IGeo7System(), H3System(), HEALPixSystem())
+systems() = (IGeo7System(), H3System(), HEALPixSystem(),
+             A5System(), S2System(), ISEA4RSystem())
 
 # --- Type vocabulary -------------------------------------------------------
 export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
@@ -177,14 +240,22 @@ export MultiOrderCoverage, MultiOrderCellSet, level_ranges
 # --- Grid systems ----------------------------------------------------------
 # One singleton, one canonical id type and one grid type per system, plus the
 # registry that lists them. The submodules themselves (`DiscreteGlobalGrids.H3`
-# and friends) are deliberately NOT exported: `H3`, `HEALPix` and `A5` are also
-# the names of registered packages, and a bare `using DiscreteGlobalGrids`
+# and friends) are deliberately NOT exported: `H3`, `HEALPix`, `A5` and `S2` are
+# also the names of registered packages, and a bare `using DiscreteGlobalGrids`
 # must not shadow them. Anything past this list — `IGeo7.equal_area_steradians`,
-# `IGeo7.z7_string`, `H3.H3Native` — is reached through the qualified module.
+# `IGeo7.z7_string`, `H3.H3Native`, `A5.A5Native` — is reached through the
+# qualified module.
+#
+# S2 and ISEA4R contribute no id type: both are canonically indexed by the
+# interface's own `LevelIndex` (exported above), over the scaffold ordinal
+# `face * 4^level + hilbert` and `diamond * 4^level + morton` respectively.
 export systems
 export IGeo7System, IGeo7Grid, Z7Cell
 export H3System, H3Grid, H3Cell
 export HEALPixSystem, HEALPixGrid, HEALPixRingIndex
+export A5System, A5Grid, A5Cell
+export S2System, S2Grid
+export ISEA4RSystem, ISEA4RGrid
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere

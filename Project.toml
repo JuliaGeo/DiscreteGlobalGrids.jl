@@ -18,6 +18,7 @@ H3_jll = "60c8821e-da38-5dbd-93c7-983f1e6d69be"
 Healpix = "9f4e344d-96bc-545a-84a3-ae6b9e1b672b"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
 ConservativeRegridding = {url = "https://github.com/JuliaGeo/ConservativeRegridding.jl", rev = "best-manifold-for-grids"}

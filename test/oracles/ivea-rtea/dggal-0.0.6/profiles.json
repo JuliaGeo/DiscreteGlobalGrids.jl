@@ -1,0 +1,110 @@
+{
+  "IVEA3H": {
+    "aperture": 3,
+    "cell": "hexagon/pentagon",
+    "concrete": true,
+    "dggal_cli": "ivea3h",
+    "index": "OGC/DGGAL IVEA3H ZIRS",
+    "projection": "IVEA",
+    "refinement": "RI3H",
+    "root_count": 12
+  },
+  "IVEA4R": {
+    "aperture": 4,
+    "cell": "rhomb",
+    "concrete": true,
+    "dggal_cli": "ivea4r",
+    "index": "DGGAL RI4R ZIRS",
+    "projection": "IVEA",
+    "refinement": "RI4R",
+    "root_count": 10
+  },
+  "IVEA7H": {
+    "aperture": 7,
+    "cell": "hexagon/pentagon",
+    "concrete": true,
+    "dggal_cli": "ivea7h",
+    "index": "OGC/DGGAL IVEA7H ZIRS",
+    "projection": "IVEA",
+    "refinement": "RI7H",
+    "root_count": 12
+  },
+  "IVEA7H_Z7": {
+    "aperture": 7,
+    "cell": "hexagon/pentagon",
+    "concrete": true,
+    "dggal_cli": "ivea7h_z7",
+    "index": "Z7 alternate encoding",
+    "projection": "IVEA",
+    "refinement": "RI7H",
+    "root_count": 12
+  },
+  "IVEA9R": {
+    "aperture": 9,
+    "cell": "rhomb",
+    "concrete": true,
+    "dggal_cli": "ivea9r",
+    "index": "OGC/DGGAL IVEA9R ZIRS",
+    "projection": "IVEA",
+    "refinement": "RI9R",
+    "root_count": 10
+  },
+  "IVEA_family": {
+    "concrete": false,
+    "projection": "IVEA"
+  },
+  "RTEA3H": {
+    "aperture": 3,
+    "cell": "hexagon/pentagon",
+    "concrete": true,
+    "dggal_cli": "rtea3h",
+    "index": "DGGAL RI3H ZIRS",
+    "projection": "DGGAL RT(S)EA",
+    "refinement": "RI3H",
+    "root_count": 12
+  },
+  "RTEA4R": {
+    "aperture": 4,
+    "cell": "rhomb",
+    "concrete": true,
+    "dggal_cli": "rtea4r",
+    "index": "DGGAL RI4R ZIRS",
+    "projection": "DGGAL RT(S)EA",
+    "refinement": "RI4R",
+    "root_count": 10
+  },
+  "RTEA7H": {
+    "aperture": 7,
+    "cell": "hexagon/pentagon",
+    "concrete": true,
+    "dggal_cli": "rtea7h",
+    "index": "DGGAL RI7H ZIRS",
+    "projection": "DGGAL RT(S)EA",
+    "refinement": "RI7H",
+    "root_count": 12
+  },
+  "RTEA7H_Z7": {
+    "aperture": 7,
+    "cell": "hexagon/pentagon",
+    "concrete": true,
+    "dggal_cli": "rtea7h_z7",
+    "index": "Z7 alternate encoding",
+    "projection": "DGGAL RT(S)EA",
+    "refinement": "RI7H",
+    "root_count": 12
+  },
+  "RTEA9R": {
+    "aperture": 9,
+    "cell": "rhomb",
+    "concrete": true,
+    "dggal_cli": "rtea9r",
+    "index": "DGGAL RI9R ZIRS",
+    "projection": "DGGAL RT(S)EA",
+    "refinement": "RI9R",
+    "root_count": 10
+  },
+  "RTEA_family": {
+    "concrete": false,
+    "projection": "DGGAL RT(S)EA"
+  }
+}

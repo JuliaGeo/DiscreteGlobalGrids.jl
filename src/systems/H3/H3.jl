@@ -37,7 +37,7 @@ closed-form [`descendant_range`](@ref).
 | [`cellat`](@ref) | `latLngToCell`, a closed-form inverse projection |
 | [`cellindex`](@ref) / [`cellposition`](@ref) | base-cell prefix sums + `childPosToCell` |
 | [`descendant_range`](@ref) | `childPosToCell` + `cellToChildrenSize`, two calls |
-| [`neighbors`](@ref) / [`ring`](@ref) | `gridDisk`, and `gridRingUnsafe` where it is safe |
+| [`neighbors`](@ref) / [`ring`](@ref) | `gridRingUnsafe` shell walks, azimuth-ordered `gridDisk` at pentagons |
 | [`ancestor`](@ref) / [`descendants`](@ref) | `cellToParent` / `cellToChildren` across any level gap |
 | `subtree_border` | the digit-arc automaton in `border.jl` |
 

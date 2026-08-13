@@ -95,8 +95,15 @@ Whether libh3 recognises `c` as a real cell index.
 
 Worth spelling out because libh3 validates almost nothing on its own:
 `cellToChildren` of a malformed index cheerfully returns a subtree of
-malformed indices. Anything in this module that could otherwise enumerate
-cells that do not exist checks this first.
+malformed indices.
+
+The entry points that can be handed an arbitrary id and would otherwise
+enumerate or place cells that do not exist — [`cellposition`](@ref) and
+`subtree_border` — check this first. [`children`](@ref) and
+[`descendants`](@ref) deliberately do **not**: they sit in tree-descent inner
+loops, where their caller already holds a cell it got from this system, and a
+validity ccall per node is a real cost for a case that cannot arise there.
+Garbage in, garbage out is the contract for those two.
 
 Malformed does not mean "random bits": clearing a padding digit, writing a 7
 into an active digit slot, naming base cell 122, or taking the deleted K-axis

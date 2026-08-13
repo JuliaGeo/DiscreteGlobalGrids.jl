@@ -20,6 +20,7 @@ using Test
 using Random
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGridsConformanceTesting
+using SmallCollections: SmallVector
 
 const H3 = DGG.H3
 const H3N = H3.H3Native
@@ -40,6 +41,57 @@ end
 # The lon/lat probe grid for `cellat`, avoiding the poles' coordinate
 # degeneracy but keeping high latitudes.
 const PROBE_LONLAT = [(lon, lat) for lon in -180.0:24.0:170.0, lat in -78.0:12.0:78.0]
+
+# ---------------------------------------------------------------------------
+# Rotational-order machinery: is a sequence of cells counter-clockwise about a
+# centre, seen from OUTSIDE the sphere?
+#
+# Build a right-handed tangent basis at the centre (`east x north` is the
+# outward normal), take each cell's azimuth in it, and sum the signed
+# increments. A counter-clockwise cycle winds exactly +1 turn; a clockwise one
+# -1; a sequence that is merely deterministic and not rotational winds 0. This
+# is written independently of `neighbors.jl`'s own frame so that it tests the
+# order rather than restating it.
+# ---------------------------------------------------------------------------
+function tangent_frame(id::UInt64)
+    c = H3N.cell_center_cartesian(id)
+    ex, ey = -c[2], c[1]
+    n = sqrt(ex * ex + ey * ey)
+    east = n <= 1e-12 ? (1.0, 0.0, 0.0) : (ex / n, ey / n, 0.0)
+    north = (c[2] * east[3] - c[3] * east[2],
+             c[3] * east[1] - c[1] * east[3],
+             c[1] * east[2] - c[2] * east[1])
+    return c, east, north
+end
+
+function azimuth_of(frame, id::UInt64)
+    c, east, north = frame
+    p = H3N.cell_center_cartesian(id)
+    radial = p[1] * c[1] + p[2] * c[2] + p[3] * c[3]
+    d = (p[1] - radial * c[1], p[2] - radial * c[2], p[3] - radial * c[3])
+    return atan(d[1] * north[1] + d[2] * north[2] + d[3] * north[3],
+                d[1] * east[1] + d[2] * east[2] + d[3] * east[3])
+end
+
+"Signed winding of `cells` about `center`, in turns: +1 is counter-clockwise."
+function winding_turns(center::UInt64, cells)
+    frame = tangent_frame(center)
+    phis = [azimuth_of(frame, DGG.rawid(c)) for c in cells]
+    total = 0.0
+    for i in eachindex(phis)
+        a = phis[i]
+        b = phis[i == lastindex(phis) ? firstindex(phis) : i+1]
+        d = b - a
+        while d > pi
+            d -= 2pi
+        end
+        while d <= -pi
+            d += 2pi
+        end
+        total += d
+    end
+    return total / 2pi
+end
 
 @testset "H3" begin
 
@@ -324,11 +376,13 @@ const PROBE_LONLAT = [(lon, lat) for lon in -180.0:24.0:170.0, lat in -78.0:12.0
             for c in cells
                 id = DGG.rawid(c)
                 nbs = nbmap[c]
-                @test issorted(nbs)
                 @test allunique(nbs)
                 @test !(c in nbs)
                 @test length(nbs) == (H3N.is_pentagon(id) ? 5 : 6)
                 @test eltype(collect(nbs)) === H3.H3Cell
+                # The order is ROTATIONAL: counter-clockwise seen from outside,
+                # exactly one turn. This is the property sorting by id destroyed.
+                @test winding_turns(id, nbs) ≈ 1.0 atol = 0.02
                 # The oracle: gridDisk(k=1) minus the origin and the padding.
                 @test Set(DGG.rawid.(collect(nbs))) ==
                       Set(x for x in H3N.grid_disk(id, 1) if x != 0 && x != id)
@@ -348,12 +402,41 @@ const PROBE_LONLAT = [(lon, lat) for lon in -180.0:24.0:170.0, lat in -78.0:12.0
             @test isempty(DGG.neighbors(grid, c, 0))
             @test collect(DGG.neighbors(grid, c, 1; connectivity=DGG.Vertex())) ==
                   collect(DGG.neighbors(grid, c, 1; connectivity=DGG.Edge()))
-            # Larger discs are still gridDisk, sorted.
+            # Larger discs are still the whole gridDisk, as a set.
             for k in 2:3
                 @test Set(DGG.rawid.(DGG.neighbors(grid, c, k))) ==
                       Set(x for x in H3N.grid_disk(DGG.rawid(c), k) if x != 0 && x != DGG.rawid(c))
             end
         end
+    end
+
+    # =======================================================================
+    @testset "container types and allocation" begin
+        grid = DGG.levelgrid(S, 5)
+        c = DGG.cellindex(grid, 100_000)
+        pent = H3.H3Cell(first(H3N.get_pentagons(5)))
+
+        # The container is part of the contract, and `collect` erases it — so
+        # pin the concrete types. k = 0 and k = 1 must agree.
+        @test typeof(DGG.neighbors(grid, c, 0)) === SmallVector{6,H3.H3Cell}
+        @test typeof(DGG.neighbors(grid, c, 1)) === SmallVector{6,H3.H3Cell}
+        @test typeof(DGG.neighbors(grid, pent, 1)) === SmallVector{6,H3.H3Cell}
+        @test typeof(DGG.neighbors(grid, c)) === SmallVector{6,H3.H3Cell}
+        @test typeof(DGG.neighbors(grid, c, 2)) === Vector{H3.H3Cell}
+        @test typeof(DGG.children(S, c)) === SmallVector{7,H3.H3Cell}
+        @test typeof(DGG.ring(grid, c, 1)) === Vector{H3.H3Cell}
+        @test typeof(DGG.descendant_range(S, c, 7)) === UnitRange{Int}
+
+        # And the no-allocation claims those docstrings make. Both the shell
+        # walk and the pentagon fallback have to be free of the heap.
+        DGG.neighbors(grid, c, 1)
+        DGG.neighbors(grid, pent, 1)
+        DGG.children(S, c)
+        DGG.children(S, pent)
+        @test @allocated(DGG.neighbors(grid, c, 1)) == 0
+        @test @allocated(DGG.neighbors(grid, pent, 1)) == 0
+        @test @allocated(DGG.children(S, c)) == 0
+        @test @allocated(DGG.children(S, pent)) == 0
     end
 
     # =======================================================================
@@ -364,17 +447,25 @@ const PROBE_LONLAT = [(lon, lat) for lon in -180.0:24.0:170.0, lat in -78.0:12.0
             shells = Set{H3.H3Cell}()
             for k in 1:3
                 shell = DGG.ring(grid, c, k)
-                @test issorted(shell)
                 @test allunique(shell)
                 @test isempty(intersect(Set(shell), shells))
                 union!(shells, shell)
-                # The disc is the union of its shells.
-                @test Set(DGG.neighbors(grid, c, k)) == shells
+                # Each shell is counter-clockwise about the centre.
+                @test winding_turns(DGG.rawid(c), shell) ≈ 1.0 atol = 0.02
+                # The disc is the union of its shells...
+                disc = collect(DGG.neighbors(grid, c, k))
+                @test Set(disc) == shells
+                # ...and, because the disc IS its shells concatenated, the ring
+                # is the tail block of the disc element for element.
+                @test disc[end-length(shell)+1:end] == shell
                 # And every shell cell is at exactly that libh3 distance.
                 cells, dists = H3N.grid_disk_distances(DGG.rawid(c), k)
                 @test Set(DGG.rawid.(shell)) ==
                       Set(id for (id, d) in zip(cells, dists) if id != 0 && Int(d) == k)
             end
+            # The whole disc is the shells in order, for k = 3.
+            @test collect(DGG.neighbors(grid, c, 3)) ==
+                  vcat((DGG.ring(grid, c, j) for j in 1:3)...)
         end
         # A pentagon is exactly where the fast walk refuses and the fallback
         # has to carry the answer.
@@ -482,7 +573,14 @@ const PROBE_LONLAT = [(lon, lat) for lon in -180.0:24.0:170.0, lat in -78.0:12.0
         for res in (0, 2), c in sample_cells(res; stride=max(1, DGG.ncells(DGG.levelgrid(S, res)) ÷ 6))
             measured = max(measured, overhang(c, 6))
         end
-        # The measured overhang, and the headroom the declared factor keeps.
+        # NOTE ON THE THRESHOLD. 1.10 is a test threshold, not the converged
+        # overhang. This check is deliberately weaker than the offline
+        # measurement quoted in `cap_inflation`'s docstring (beam 400, depth 9,
+        # every base cell -> 1.0522) so that the suite stays fast: a beam of 60
+        # over 6 levels reaches ~1.05 and would not resolve the last 1e-5 of
+        # the geometric tail. It is a guard against a factor that has become
+        # unsound by a wide margin, and the covering-law walk below is what
+        # actually tests the property that matters, directly and to max_level.
         @test measured < 1.10
         @test measured < DGG.cap_inflation(S)
         @test DGG.cap_inflation(S) == 1.2

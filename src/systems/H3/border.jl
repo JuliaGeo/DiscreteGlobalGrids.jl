@@ -105,7 +105,7 @@ The **rim** of `c`'s subtree at resolution `l`: every descendant of `c` at `l`
 that has a neighbour outside the subtree, ascending.
 
 `O(3^depth)` rather than the `O(7^depth)` of enumerating the subtree and
-testing each cell — the rim of a depth-13 subtree is 1,594,320 cells out of
+testing each cell — the rim of a depth-12 subtree is 1,594,320 cells out of
 13,841,287,201.
 
 `subtree_border(sys, c, level(c))` is `[c]`: a depth-0 subtree is the cell

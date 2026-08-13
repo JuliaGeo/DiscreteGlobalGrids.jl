@@ -34,8 +34,11 @@ implementation cell for cell rather than approximating one.
   - **`cellat` ties** are libh3's own: the point is handed to `latLngToCell`,
     whose answer on a shared edge is deterministic and is the same answer every
     other H3 binding gives.
-  - **Neighbour order** is ascending [`H3Cell`](@ref) order. libh3 promises no
-    order from `gridDisk`, so one is imposed here rather than inherited.
+  - **Neighbour order** is rotational: [`neighbors`](@ref) is rings `1..k`
+    concatenated outward, each ring counter-clockwise seen from outside, so
+    [`ring`](@ref) is the tail block of [`neighbors`](@ref). The walk's starting
+    direction is libh3's own and is deterministic per cell rather than a uniform
+    compass bearing.
   - **Centroids** are libh3's `cellToLatLng`, the centre the hierarchy is
     actually built around.
 
@@ -134,9 +137,12 @@ end
 
 The seven children of a hexagon, or the six of a pentagon, ascending.
 
-The container is fixed-capacity and allocation-free; a pentagon simply returns
-six of the seven slots, which is the whole pentagon special case — generic code
-that reads `length` rather than assuming the aperture needs nothing else.
+The container is fixed-capacity and the call **does not allocate**: libh3
+writes the children into a stack buffer
+([`H3Native.cell_to_children_7`](@ref)), which matters because tree descent
+calls this once per node. A pentagon simply returns six of the seven slots,
+which is the whole pentagon special case — generic code that reads `length`
+rather than assuming the aperture needs nothing else.
 """
 function children(::H3System, c::H3Cell)
     l = level(c)
@@ -144,8 +150,11 @@ function children(::H3System, c::H3Cell)
         "H3 cell $c is at max_level $MAX_RESOLUTION and has no children"))
     out = SmallVector{7,H3Cell}()
     # `cellToChildren` emits ascending indices (digit 0 first, deleted digits
-    # skipped), so this preserves the canonical order rather than imposing one.
-    for id in H3Native.cell_to_children(c.id, l + 1)
+    # skipped) into the leading slots, so this preserves the canonical order
+    # rather than imposing one. A pentagon leaves the last slot `0`, which is
+    # never a valid H3 index.
+    for id in H3Native.cell_to_children_7(c.id, l + 1)
+        id == 0 && continue
         out = SmallCollections.push(out, H3Cell(id))
     end
     return out
@@ -169,8 +178,15 @@ own cap is not a legal [`node_extent`](@ref). The overhang converges: sampling
 every base cell and descending nine levels along the outermost branch puts the
 worst ratio of descendant-vertex distance to the cell's own cap radius at
 **1.0522**, with per-level increments already down to ~1e-5 and shrinking
-geometrically. `1.2` clears that by 14%, and `test/systems/H3/` re-measures the
-bound rather than trusting this comment.
+geometrically. `1.2` clears that by 14%.
+
+`test/systems/H3/` re-measures the overhang rather than trusting this comment,
+but deliberately re-measures it *weakly* — a beam of 60 over 6 levels, asserted
+under 1.10 — so the suite stays fast. That 1.10 is a test threshold, not the
+converged figure; the offline 1.0522 above is. The committed check would catch
+a factor that had become unsound by a wide margin, and the separate covering-law
+testset walks a chain to max_level and checks containment directly, which is
+the property that actually matters.
 """
 cap_inflation(::H3System) = 1.2
 

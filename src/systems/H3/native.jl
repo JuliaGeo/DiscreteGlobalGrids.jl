@@ -3,9 +3,21 @@
 #
 # Ported wholesale from the pre-redesign `src/H3/H3Native.jl`: these wrappers
 # are the oracle, not a reimplementation of one, and they are deliberately
-# unchanged except for the two additions noted at the bottom of the file
-# (`grid_ring_unsafe`, `grid_disk_distances`) that the new `ring` fast path
-# needs.
+# unchanged. Six wrappers were *added* on top of that file, none of them
+# altering an existing one:
+#
+#   cell_center_cartesian   the centre without the degree round trip
+#   boundary_verts          the boundary into a fixed tuple, no Vector
+#   grid_ring_unsafe        the O(k) hollow-ring walk, for `ring`
+#   grid_disk_distances     the pentagon-safe fallback `ring` needs
+#   grid_disk_1             the k = 1 disk into a stack buffer
+#   grid_ring_unsafe_1      the k = 1 hollow ring into a stack buffer
+#   cell_to_children_7      one level of children into a stack buffer
+#
+# The last three exist so that `neighbors(grid, c)` and `children(sys, c)` —
+# the two calls a whole-grid sweep makes per cell — do not allocate. libh3
+# writes into a caller-supplied array, so a fixed-size `Ref` tuple that never
+# escapes is stack-allocated by Julia and the heap is never touched.
 #
 # Nothing in here knows about the grid interface. It speaks H3's own vocabulary
 # — raw `UInt64` indices, degrees, zero-based child positions — and the
@@ -24,6 +36,7 @@ export MAX_RESOLUTION,
     cell_center,
     cell_to_child_pos,
     cell_to_children,
+    cell_to_children_7,
     cell_to_children_size,
     cell_to_parent,
     child_pos_to_cell,
@@ -31,8 +44,10 @@ export MAX_RESOLUTION,
     get_pentagons,
     get_resolution,
     grid_disk,
+    grid_disk_1,
     grid_disk_distances,
     grid_ring_unsafe,
+    grid_ring_unsafe_1,
     is_pentagon,
     is_valid_cell,
     lonlat_to_cell,
@@ -338,6 +353,71 @@ function grid_ring_unsafe(id, k::Integer)
                 (H3Index, Cint, Ptr{H3Index}), _to_id(id), Cint(k), out)
     err == 0 || return nothing
     return out
+end
+
+# Seven slots covers both stack-buffer calls below: `maxGridDiskSize(1)` is 7,
+# and a cell has at most seven children.
+const _ZERO7 = ntuple(_ -> H3Index(0), Val(7))
+const _ZERO6 = ntuple(_ -> H3Index(0), Val(6))
+
+"""
+    grid_ring_unsafe_1(id) -> Union{NTuple{6,H3Index},Nothing}
+
+The `k = 1` hollow ring — the six neighbours in counter-clockwise order —
+**without allocating**, or `nothing` when the walk meets a pentagon.
+
+The stack-buffer form of [`grid_ring_unsafe`](@ref): a `k = 1` ring is always
+exactly `6k = 6` slots, so no size call is needed and the `Ref` tuple never
+escapes.
+"""
+function grid_ring_unsafe_1(id)
+    buf = Ref(_ZERO6)
+    err = GC.@preserve buf ccall((:gridRingUnsafe, H3_jll.libh3), H3Error,
+        (H3Index, Cint, Ptr{H3Index}),
+        _to_id(id), Cint(1), Base.unsafe_convert(Ptr{H3Index}, buf))
+    err == 0 || return nothing
+    return buf[]
+end
+
+"""
+    grid_disk_1(id) -> NTuple{7,H3Index}
+
+The `k = 1` grid disk — `id` and its neighbours — **without allocating**.
+
+`maxGridDiskSize(1)` is always 7, so the size call the general `grid_disk`
+makes is skipped and libh3 writes straight into a seven-slot `Ref` tuple. The
+`Ref` never escapes, so Julia stack-allocates it and this touches no heap at
+all; that is what lets a whole-grid neighbour sweep run garbage-free.
+
+Unused slots — the six neighbours of a pentagon leave one — stay `0`, which is
+never a valid H3 index, so the caller filters on it.
+"""
+function grid_disk_1(id)
+    buf = Ref(_ZERO7)
+    err = GC.@preserve buf ccall((:gridDisk, H3_jll.libh3), H3Error,
+        (H3Index, Cint, Ptr{H3Index}),
+        _to_id(id), Cint(1), Base.unsafe_convert(Ptr{H3Index}, buf))
+    _check(err, "gridDisk")
+    return buf[]
+end
+
+"""
+    cell_to_children_7(id, child_resolution) -> NTuple{7,H3Index}
+
+One level of children — seven for a hexagon, six for a pentagon — **without
+allocating**, by the same stack-buffer route as [`grid_disk_1`](@ref).
+
+`child_resolution` must be exactly one finer than `id`'s, which is the only
+case that fits in seven slots. Unused slots stay `0`.
+"""
+function cell_to_children_7(id, child_resolution::Integer)
+    res = _check_resolution(child_resolution)
+    buf = Ref(_ZERO7)
+    err = GC.@preserve buf ccall((:cellToChildren, H3_jll.libh3), H3Error,
+        (H3Index, Cint, Ptr{H3Index}),
+        _to_id(id), Cint(res), Base.unsafe_convert(Ptr{H3Index}, buf))
+    _check(err, "cellToChildren")
+    return buf[]
 end
 
 """

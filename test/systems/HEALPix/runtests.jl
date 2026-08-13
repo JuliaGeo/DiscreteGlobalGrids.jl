@@ -313,6 +313,15 @@ end
             # A ring-named cell still finds its position in the nested grid.
             @test cellposition(grid, r) == cellposition(grid, c)
         end
+        # A ring id outside the grid answers `nothing`, not an error: the
+        # conversion would throw, so the range guard has to run before it.
+        npix = 12 * 4^level
+        @test cellposition(grid, HP.HEALPixRingIndex(level, 0)) === nothing
+        @test cellposition(grid, HP.HEALPixRingIndex(level, npix + 1)) === nothing
+        @test cellposition(grid, HP.HEALPixRingIndex(level, -5)) === nothing
+        @test cellposition(grid, HP.HEALPixRingIndex(level + 1, 1)) === nothing
+        # ... and one that IS in range still resolves.
+        @test cellposition(grid, HP.HEALPixRingIndex(level, npix)) !== nothing
     end
 end
 
@@ -366,6 +375,11 @@ end
             # is in the range — the two-sided contract.
             actual = [cellposition(grid, x) for x in descendants(SYS, c, target)]
             @test sort(actual) == collect(r)
+            # `descendants` reads consecutive ids off the range rather than
+            # recursing on `children`; both must agree, and it must be sorted.
+            ds = descendants(SYS, c, target)
+            @test issorted(ds)
+            @test ds == [LevelIndex(target, i - 1) for i in r]
             @test all(x -> ancestor(SYS, cellindex(grid, x), level) == c, r)
         end
         # Sibling ranges tile the parent's, in order.
@@ -444,8 +458,8 @@ end
             es = collect(neighbors(grid, c, 1; connectivity = Edge()))
 
             @test eltype(vs) === LevelIndex
-            @test issorted(vs) && allunique(vs)
-            @test issorted(es) && allunique(es)
+            @test allunique(vs)
+            @test allunique(es)
             @test !(c in vs)
             @test issubset(Set(es), Set(vs))        # Edge() restricts Vertex()
             @test length(vs) <= 8
@@ -467,15 +481,107 @@ end
         # Level 0 is its own case, and measured rather than assumed: with
         # nside == 1 a base pixel IS a face, every lattice offset wraps through
         # the face tables, and all twelve come out with exactly six neighbours
-        # (the `E` and `W` diagonals are absent for every face). So the base
-        # tiling is 6-regular, and the "24 pixels with 7" rule starts at
-        # level 1.
+        # — the polar faces (0-3, 8-11) losing the `E` and `W` diagonals and
+        # the equatorial faces (4-7) losing `N` and `S`. So the base tiling is
+        # 6-regular, and the "24 pixels with 7" rule starts at level 1.
         if level == 0
             @test counts == Dict(6 => 12)
         else
             @test counts[7] == 24
             @test counts[8] == npix - 24
             @test length(counts) == 2
+        end
+    end
+end
+
+@testset "neighbour order is CCW seen from outside" begin
+    # The rotational-order contract, measured rather than asserted by eye: sum
+    # the signed azimuth steps of the neighbour centres around the cell centre.
+    # A closed loop winding counter-clockwise seen from outside totals +2π; the
+    # raw compass tuple, which runs the other way, totals -2π and is the
+    # regression this pins (see `_neighbor_cycle`).
+    #
+    # `e1 × e2 == centre` is what makes the frame right-handed SEEN FROM
+    # OUTSIDE; building it the other way would make every sign below flip and
+    # the test would happily pass on a clockwise implementation.
+    function basis(c)
+        a = abs(c[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)
+        e1 = (a[2] * c[3] - a[3] * c[2], a[3] * c[1] - a[1] * c[3], a[1] * c[2] - a[2] * c[1])
+        n = sqrt(sum(e1 .^ 2)); e1 = e1 ./ n
+        e2 = (c[2] * e1[3] - c[3] * e1[2], c[3] * e1[1] - c[1] * e1[3], c[1] * e1[2] - c[2] * e1[1])
+        return e1, e2
+    end
+    azim(c, e1, e2, p) = atan(sum((p .- c) .* e2), sum((p .- c) .* e1))
+    wrap(d) = (d = mod(d, 2π); d > π ? d - 2π : d)
+    function winding(grid, c, cells)
+        ctr = Tuple(cell_centroid(grid, c))
+        e1, e2 = basis(ctr)
+        as = [azim(ctr, e1, e2, Tuple(cell_centroid(grid, x))) for x in cells]
+        return sum(wrap(as[mod1(i + 1, length(as))] - as[i]) for i in eachindex(as))
+    end
+
+    # Every base face, so polar (0-3, 8-11) and equatorial (4-7) are both
+    # covered, and every k=1 ring at several levels.
+    for level in 0:3, conn in (Vertex(), Edge())
+        grid = levelgrid(SYS, level)
+        for p in pixel_sample(level, 96)
+            c = LevelIndex(level, p)
+            ns = collect(neighbors(grid, c, 1; connectivity = conn))
+            length(ns) < 3 && continue
+            @test winding(grid, c, ns) ≈ 2π atol = 1e-6
+        end
+    end
+    # Outer rings are wound geometrically; they must come out CCW too.
+    for level in (3, 4), k in 2:3
+        grid = levelgrid(SYS, level)
+        for p in pixel_sample(level, 24)
+            c = LevelIndex(level, p)
+            shell = collect(ring(grid, c, k))
+            length(shell) < 3 && continue
+            @test winding(grid, c, shell) ≈ 2π atol = 1e-6
+        end
+    end
+end
+
+@testset "neighbours starts at SW and Edge() preserves the cycle" begin
+    # The documented starting direction, read straight off the compass tuple:
+    # under Vertex() the first neighbour is the SW entry (tuple slot 1) and the
+    # cycle is the tuple reversed; under Edge() it is the same cycle restricted.
+    for level in 1:3
+        grid = levelgrid(SYS, level)
+        for p in pixel_sample(level, 64)
+            c = LevelIndex(level, p)
+            raw = HP.nested_neighbors(p, level)
+            for (conn, slots) in ((Vertex(), (1, 8, 7, 6, 5, 4, 3, 2)),
+                                  (Edge(), (1, 7, 5, 3)))
+                expected = [LevelIndex(level, raw[m]) for m in slots if raw[m] >= 0]
+                @test collect(neighbors(grid, c, 1; connectivity = conn)) == expected
+            end
+            # Edge() is Vertex() with entries removed, order preserved.
+            vs = collect(neighbors(grid, c, 1))
+            es = collect(neighbors(grid, c, 1; connectivity = Edge()))
+            @test es == filter(in(Set(es)), vs)
+        end
+    end
+end
+
+@testset "ring is the tail block of neighbors" begin
+    # The composition contract: neighbors(k) is rings 1..k concatenated
+    # outward, so ring(k) is exactly the trailing block.
+    for level in (2, 3, 4), conn in (Vertex(), Edge())
+        grid = levelgrid(SYS, level)
+        for p in pixel_sample(level, 24)
+            c = LevelIndex(level, p)
+            acc = LevelIndex[]
+            for k in 1:3
+                shell = collect(ring(grid, c, k; connectivity = conn))
+                append!(acc, shell)
+                disc = collect(neighbors(grid, c, k; connectivity = conn))
+                @test disc == acc                              # concatenated outward
+                @test disc[(end - length(shell) + 1):end] == shell   # tail block
+                @test allunique(disc)
+                @test !(c in disc)
+            end
         end
     end
 end

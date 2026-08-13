@@ -443,9 +443,14 @@ rather than from `sqrt(3(1 - |z|))`.
 Pixel ownership is decided by `floor`, so a point lying exactly on a pixel
 boundary belongs to the pixel on the *higher* side of each cut line, and a
 point exactly on a face seam belongs to the face the seam's own arithmetic
-selects. This is deterministic and matches HEALPix's own convention; it is
-never resolved by floating-point luck. Boundary ties are of no consequence to
-the interface's `cellat` contract beyond being *stable*, which they are.
+selects. This is deterministic and never resolved by floating-point luck, which
+is all the interface's `cellat` contract asks of a tie.
+
+It does **not** follow that the tie goes the same way Healpix.jl breaks it.
+This transcription reproduces `vec2pixNest` exactly on points interior to a
+cell, but at a shared boundary the two libraries can pick different — equally
+valid — owners; see the `cellat` docstring in `system.jl` for the two known
+4-way corners where they differ, and do not "fix" this file to chase them.
 """
 function point_to_xyf(p, nside::Integer, order::Integer)
     z = Float64(p[3])

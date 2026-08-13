@@ -49,9 +49,29 @@
 # fails the conformance suite's `Edge() ⊆ Vertex()` and symmetry clauses.
 #
 # The 24 pixels sitting on a degree-3 vertex of the base tiling have only seven
-# neighbours; the table yields `-1` for the missing one and it is skipped. At
-# level 0 the polar faces lose two entries each this way (faces 0-3 and 8-11
-# have six neighbours, the equatorial faces eight).
+# neighbours; the table yields `-1` for the missing one and it is skipped.
+#
+# Level 0 is its own case: with `nside == 1` a base pixel IS a face, every
+# offset wraps through the face tables, and ALL TWELVE base pixels come out
+# with six neighbours — the polar faces (0-3, 8-11) lose the `E` and `W`
+# diagonals, the equatorial faces (4-7) lose `N` and `S`. So the base tiling is
+# 6-regular, and the "24 pixels with seven" rule starts at level 1.
+#
+# ## Rotational order
+#
+# The interface's canonical `neighbors` order is ROTATIONAL: counter-clockwise
+# seen from OUTSIDE the sphere, from a documented starting direction. The
+# compass tuple above is a natural cycle for that, but it runs the WRONG WAY —
+# its offsets sweep 180°, 135°, 90°, ... in the `(dx, dy)` lattice plane, i.e.
+# clockwise, and the chart is orientation-PRESERVING (the `(x, y)` lattice maps
+# to `(φ, z)` with positive Jacobian, and `(φ, z)` is right-handed seen from
+# outside — which is also why `pixel_corners`' N, W, S, E order is CCW). So the
+# tuple order is clockwise on the sphere and the cycle below REVERSES it.
+#
+# This is measured, not just argued: summing the signed azimuth steps of the
+# neighbour centres around the cell centre gives exactly -2π for the tuple
+# order at every level and on polar and equatorial faces alike, and +2π for the
+# cycle below. `test/systems/HEALPix/runtests.jl` keeps that assertion running.
 # ---------------------------------------------------------------------------
 
 const NB_XOFFSET = (-1, -1, 0, 1, 1, 1, 0, -1)
@@ -114,12 +134,21 @@ function nested_neighbors(pix::Integer, level::Integer)
 end
 
 """
-    _neighbor_slots(connectivity) -> Tuple
+    _neighbor_cycle(connectivity) -> Tuple
 
-Which positions of [`nested_neighbors`](@ref)' compass tuple a connectivity
-keeps: all eight under `Vertex()`, and the four edge-sharing offsets — the odd
-positions, compass `SW, NW, NE, SE` — under `Edge()`. See the file header for
-why the *diagonals* are the ones labelled `W, N, E, S`.
+The positions of [`nested_neighbors`](@ref)' compass tuple, in **counter-
+clockwise order seen from outside the sphere, starting at `SW`**.
+
+`Vertex()` gives the full cycle `SW, S, SE, E, NE, N, NW, W` — the compass
+tuple reversed (see the file header: the tuple itself runs clockwise), rotated
+so that `SW`, its own first entry, stays first.
+
+`Edge()` is that same cycle restricted to its four members, order preserved:
+`SW, SE, NE, NW`. Restricting a cycle cannot change its winding, so the
+`Edge()` order is CCW for free.
+
+Absent neighbours — the missing diagonal at the 24 degree-3 pixels, and the two
+missing entries at every level-0 base pixel — simply drop out of the cycle.
 """
-_neighbor_slots(::DGG.Vertex) = (1, 2, 3, 4, 5, 6, 7, 8)
-_neighbor_slots(::DGG.Edge) = (1, 3, 5, 7)
+_neighbor_cycle(::DGG.Vertex) = (1, 8, 7, 6, 5, 4, 3, 2)
+_neighbor_cycle(::DGG.Edge) = (1, 7, 5, 3)

@@ -224,6 +224,23 @@ function DGG.descendant_range(sys::HEALPixSystem, c::DGG.LevelIndex, l::Integer)
     return Int(lo + 1):Int(hi + 1)
 end
 
+"""
+    descendants(HEALPixSystem(), c, l)
+
+Every level-`l` descendant of `c`, ascending.
+
+Nested ids are dense and subtree-contiguous, so this is
+[`descendant_range`](@ref) read off as consecutive ids — one subtraction per
+cell, with no `children` recursion and no sort. The generic fallback would
+reach the same answer through `levelgrid`/`cellindex` per position; this skips
+that indirection.
+"""
+function DGG.descendants(sys::HEALPixSystem, c::DGG.LevelIndex, l::Integer)
+    r = DGG.descendant_range(sys, c, l)      # validates `l` both ways
+    target = Int(l)
+    return [DGG.LevelIndex(target, i - 1) for i in r]
+end
+
 # ===========================================================================
 # Grid interface
 # ===========================================================================
@@ -250,8 +267,14 @@ function DGG.cellposition(g::HEALPixGrid, c::DGG.LevelIndex)
     return Int(c.index + 1)
 end
 
-DGG.cellposition(g::HEALPixGrid, c::HEALPixRingIndex) =
-    DGG.cellposition(g, DGG.reindex(DGG.LevelIndex, HEALPixSystem(), c))
+# The range guard runs BEFORE the conversion, and that ordering is the whole
+# point: `ring_to_xyf` throws an `ArgumentError` on an out-of-range ring index,
+# but a cell that is not in the grid is contractually `nothing`, not an error.
+function DGG.cellposition(g::HEALPixGrid, c::HEALPixRingIndex)
+    DGG.level(c) == g.level || return nothing
+    1 <= c.index <= _npix(g.level) || return nothing      # RING ids are 1-based
+    return DGG.cellposition(g, DGG.reindex(DGG.LevelIndex, HEALPixSystem(), c))
+end
 
 # ===========================================================================
 # Alternate index scheme
@@ -495,9 +518,20 @@ analytic inverse, with no tree descent and no point-in-polygon test.
 
 Never `nothing`: a complete HEALPix level grid covers the sphere.
 
-**Ties.** A point exactly on a pixel boundary is assigned by the `floor`
-arithmetic of `point_to_xyf`, which puts it on the higher side of each cut
-line. Deterministic, and identical to `Healpix.ang2pixNest`.
+**Ties.** A point exactly on a pixel boundary is legitimately contained by
+every cell meeting there, so which one is returned is a tie. It is broken by
+the `floor` arithmetic of `point_to_xyf`, which puts the point on the higher
+side of each cut line: **deterministic and self-consistent** (the returned
+cell's own centroid maps back to it), which is what the interface requires.
+
+On points **interior** to a cell this agrees exactly with Healpix.jl —
+`vec2pixNest` fed the identical Cartesian point, at every level, is asserted in
+`test/systems/HEALPix/runtests.jl`. On **boundary** points the two libraries do
+not always agree, and neither is wrong: at the two known 4-way lattice corners
+`(1, 0, 0)` and `(45°, -asin(2/3))` this port answers pixels 17 and 33 at
+level 1 where `vec2pixNest` answers 19 and 35, each library being
+self-consistent. Do not "fix" this by matching Healpix.jl; assert the
+contractual properties instead.
 """
 DGG.cellat(g::HEALPixGrid, p::GO.UnitSphericalPoint) =
     DGG.LevelIndex(g.level, point_to_nested(p, g.level))
@@ -506,32 +540,27 @@ DGG.cellat(g::HEALPixGrid, p::GO.UnitSphericalPoint) =
 # Topology
 # ===========================================================================
 
-# Sorted, duplicate-free insertion into a fixed-capacity container. `nside == 1`
-# is the case that needs the dedup: at level 0 every lattice offset wraps
-# through the face tables and two offsets can name the same base pixel.
-@inline function _insert_sorted_unique(v::SmallVector{N,T}, x::T) where {N,T}
-    for i in eachindex(v)
-        vi = v[i]
-        vi == x && return v
-        x < vi && return SmallCollections.insert(v, i, x)
-    end
-    return SmallCollections.push(v, x)
-end
-
 """
     _one_ring(grid, c, connectivity) -> SmallVector{8,LevelIndex}
 
-The immediate neighbours of `c`, ascending by canonical id, deduplicated, and
-with the non-existent entries at the 24 degree-3 pixels dropped.
+The immediate neighbours of `c` in **counter-clockwise rotational order seen
+from outside the sphere, starting at the `SW` lattice direction**
+(`_neighbor_cycle`), deduplicated, with non-existent entries dropped.
+
+The dedup matters only at level 0, where `nside == 1` makes every lattice
+offset wrap through the face tables and two offsets could in principle name the
+same base pixel; keeping the FIRST occurrence is what preserves the cycle.
 """
 function _one_ring(g::HEALPixGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     _checked_index(g, c)
     raw = nested_neighbors(c.index, g.level)
     out = SmallVector{8,DGG.LevelIndex}()
-    for m in _neighbor_slots(connectivity)
+    for m in _neighbor_cycle(connectivity)
         id = raw[m]
         id < 0 && continue
-        out = _insert_sorted_unique(out, DGG.LevelIndex(g.level, id))
+        nb = DGG.LevelIndex(g.level, id)
+        nb in out && continue
+        out = SmallCollections.push(out, nb)
     end
     return out
 end
@@ -539,8 +568,13 @@ end
 """
     neighbors(grid, c, k = 1; connectivity = Vertex())
 
-The cells within `k` lattice steps of `c`, excluding `c`, **ascending by
-canonical id**.
+The cells within `k` lattice steps of `c`, excluding `c`, in **rotational
+order**: the rings `1:k` concatenated outward, each ring counter-clockwise seen
+from outside the sphere.
+
+So `ring(grid, c, k)` is exactly the trailing block of
+`neighbors(grid, c, k)`, and `neighbors(grid, c, k)` is
+`vcat(ring(grid, c, 1), ..., ring(grid, c, k))`.
 
 # Connectivity
 
@@ -553,11 +587,15 @@ directions SW, NW, NE, SE and the four corner-only ones are W, N, E, S; see
 
 # Order
 
-Ascending canonical id, which is the order the pre-redesign kernel returned and
-the one the generic fallback uses, so a consumer that sorts or binary-searches
-neighbour lists sees no difference between systems. The raw compass-ordered
-tuple — the one a directional stencil wants — is
-[`nested_neighbors`](@ref)`(index, level)`.
+**Counter-clockwise seen from outside, starting at the `SW` lattice
+direction** — the compass cycle `SW, S, SE, E, NE, N, NW, W` under `Vertex()`
+and its restriction `SW, SE, NE, NW` under `Edge()`. (The raw compass tuple in
+`nested_neighbors` runs the other way; see `_neighbor_cycle`.) Absent
+neighbours drop out of the cycle rather than leaving a hole, so a ring of seven
+is still in rotational order.
+
+Rings beyond the first are ordered by azimuth about the cell centre from the
+same starting reference; see [`ring`](@ref).
 
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by `max_neighbors` and allocates nothing.
@@ -570,15 +608,23 @@ function DGG.neighbors(g::HEALPixGrid, c::DGG.LevelIndex, k::Integer = 1;
     steps == 1 && return _one_ring(g, c, connectivity)
     shells = _shells(g, c, steps, connectivity)
     isempty(shells) && return DGG.LevelIndex[]
-    return sort!(reduce(vcat, shells))
+    return reduce(vcat, shells)
 end
 
 """
     ring(grid, c, k; connectivity = Vertex())
 
-The cells at lattice distance **exactly** `k`, ascending by canonical id.
-`ring(grid, c, 0)` is `[c]`. Same connectivity and order contracts as
-[`neighbors`](@ref).
+The cells at lattice distance **exactly** `k`, counter-clockwise seen from
+outside the sphere. `ring(grid, c, 0)` is `[c]`.
+
+`k == 1` is the lattice compass cycle (see [`neighbors`](@ref)). For `k >= 2`
+there is no lattice cycle to read off — an outer ring crosses face seams
+arbitrarily — so the shell is ordered **by azimuth about the cell centre**,
+measured counter-clockwise from the direction of the cell's own west corner.
+That reference is chosen because it reproduces the `k == 1` cycle exactly: the
+west corner sits at 135° in the lattice plane, so the first neighbour
+counter-clockwise from it is `SW` at 180°. Ties in azimuth break by canonical
+id, so the order is total and deterministic.
 """
 function DGG.ring(g::HEALPixGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
@@ -587,19 +633,20 @@ function DGG.ring(g::HEALPixGrid, c::DGG.LevelIndex, k::Integer;
     steps == 0 && return DGG.LevelIndex[c]
     shells = _shells(g, c, steps, connectivity)
     steps <= length(shells) || return DGG.LevelIndex[]
-    return sort!(shells[steps])
+    return shells[steps]
 end
 
 # Breadth-first expansion over the lattice one-ring; shell `j` is the set at
-# distance exactly `j`. Shared by `neighbors` and `ring` so the two cannot
-# disagree about what a shell is.
+# distance exactly `j`, each returned in CCW rotational order. Shared by
+# `neighbors` and `ring` so the two cannot disagree about what a shell is or
+# what order it is in.
 function _shells(g::HEALPixGrid, c::DGG.LevelIndex, steps::Int,
         connectivity::DGG.Connectivity)
     shells = Vector{DGG.LevelIndex}[]
     steps == 0 && return shells
     seen = Set{DGG.LevelIndex}((c,))
     frontier = DGG.LevelIndex[c]
-    for _ in 1:steps
+    for j in 1:steps
         next = DGG.LevelIndex[]
         for x in frontier
             for y in _one_ring(g, x, connectivity)
@@ -608,9 +655,56 @@ function _shells(g::HEALPixGrid, c::DGG.LevelIndex, steps::Int,
                 push!(next, y)
             end
         end
+        # Shell 1 is already the lattice cycle, in order. Outer shells come out
+        # of the breadth-first walk in whatever order the frontier happened to
+        # reach them, so they are wound geometrically.
+        j > 1 && _sort_ccw!(next, g, c)
         push!(shells, next)
         isempty(next) && break
         frontier = next
     end
     return shells
+end
+
+# Order a shell counter-clockwise about `c`'s centre, from the azimuth of `c`'s
+# own west corner. `e1 x e2 == centre` makes `(e1, e2)` right-handed SEEN FROM
+# OUTSIDE, which is what puts increasing `atan(u.e2, u.e1)` counter-clockwise
+# from outside rather than from inside.
+function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::HEALPixGrid, c::DGG.LevelIndex)
+    length(cells) <= 1 && return cells
+    centre = DGG.cell_centroid(g, c)
+    ring = DGG.cell_boundary(g, c)
+    west = ring[1 + BOUNDARY_SEGMENTS]          # the ring's second corner
+    e1, e2 = _tangent_basis(centre, west)
+    ref = _azimuth(centre, e1, e2, west)
+    key(x) = begin
+        p = DGG.cell_centroid(g, x)
+        (mod(_azimuth(centre, e1, e2, p) - ref, 2 * Float64(π)), x)
+    end
+    sort!(cells; by = key)
+    return cells
+end
+
+# A right-handed-from-outside tangent basis at `centre`, with `e1` pointing at
+# `toward` (projected into the tangent plane).
+function _tangent_basis(centre, toward)
+    u = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
+    dot = u[1] * centre[1] + u[2] * centre[2] + u[3] * centre[3]
+    t = (u[1] - dot * centre[1], u[2] - dot * centre[2], u[3] - dot * centre[3])
+    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
+    # A degenerate reference (a cell whose west corner is at its centre) cannot
+    # happen for a real pixel, but a fallback keeps this total.
+    n <= eps(Float64) && (t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0);
+                          n = 1.0)
+    e1 = (t[1] / n, t[2] / n, t[3] / n)
+    e2 = (centre[2] * e1[3] - centre[3] * e1[2],
+          centre[3] * e1[1] - centre[1] * e1[3],
+          centre[1] * e1[2] - centre[2] * e1[1])
+    return e1, e2
+end
+
+function _azimuth(centre, e1, e2, p)
+    u = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
+    return atan(u[1] * e2[1] + u[2] * e2[2] + u[3] * e2[3],
+                u[1] * e1[1] + u[2] * e1[2] + u[3] * e1[3])
 end

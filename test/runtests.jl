@@ -18,6 +18,7 @@ using DiscreteGlobalGrids
 @testset "DiscreteGlobalGrids.jl" begin
     include("interface/runtests.jl")
     include("fallbacks/runtests.jl")
+    include("fallbacks/authalic.jl")
     include("systems/IGeo7/runtests.jl")
     include("systems/H3/runtests.jl")
     include("systems/HEALPix/runtests.jl")

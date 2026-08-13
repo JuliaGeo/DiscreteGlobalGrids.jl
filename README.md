@@ -1,145 +1,150 @@
 # DiscreteGlobalGrids.jl
 
-Discrete global grid systems (DGGS) for the Julia geo ecosystem — 14 registered
-systems, six of which answer geometry, four of which are wired all the way into
-one generic spatial-tree family shared with `ConservativeRegridding` and
-`GeometryOps.SpatialTreeInterface`.
+Discrete global grid systems (DGGS) for the Julia geo ecosystem: six systems —
+IGEO7, H3, HEALPix, A5, S2, ISEA4R — behind one small interface, with every
+algorithm written against the interface exactly once.
 
-There is no per-system tree code. A system supplies operations — child
-enumeration, parent, descendant interval, unit-sphere boundary — and the package
-supplies the grid types, the traversal, the pruning and the caps. Adding a system
-to the tree layer is one `<X>Kernel.jl` file and its include line. The kernel is
-wired incrementally, and anything unwired throws `NotPortedError` rather than
-guessing.
+## The two tiers
+
+`AbstractGrid` is one finite collection of cells on the sphere: a complete DGGS
+level, a regional subset of one, or a standalone grid with no hierarchy at all.
+Four required methods — `ncells`, `cellindex`, `cell_boundary`, `cell_centroid`
+— buy the whole generic surface: `cell_polygon`, `cell_area`, `cell_extent`,
+`cellat`, `neighbors`, `ring`, `treeify`, `query`.
+
+`AbstractHierarchicalGridSystem` adds analytic parent/child structure. It is the
+fast-path tier: tree pruning under the covering law of `node_extent`, contiguous
+`descendant_range`s, sublinear `query`. Hierarchy is always an optimisation,
+never a semantic — a system whose override disagrees with the generic answer is
+wrong, not fast.
+
+A bare `Int` argument is always a **position** in `1:ncells(grid)`. A typed
+`AbstractCellIndex` is always an **identity**, self-describing about its level,
+so no call passes a level and an id side by side. All internal geometry is on
+the unit sphere, as `GeometryOps.UnitSphericalPoint`; longitude and latitude
+appear only in explicitly named converting wrappers, in degrees.
 
 ## Setup
 
-`ConservativeRegridding` resolves via a `[sources]` path entry to the sibling
-`../ConservativeRegridding.jl` checkout (its `Trees` submodule is not yet in a
-registered release), so this package needs **Julia ≥ 1.11 and that sibling
-checkout present**. Work in the package environment: `julia --project=.`.
+Julia ≥ 1.11. `ConservativeRegridding`, `GeometryOps` and `GeometryOpsCore`
+resolve from git branches through `[sources]` in `Project.toml`, so the usual
+`julia --project=.` followed by `Pkg.instantiate()` is all that is needed — no
+sibling checkouts.
+
+`Project.toml` declares a workspace: `test/`, `docs/` and
+`lib/DiscreteGlobalGridsConformanceTesting/` share one manifest.
 
 ## Quick start
 
 ```julia
-using DiscreteGlobalGrids
-using DiscreteGlobalGrids.HEALPix.HealpixLookups: HealpixLookup
-using DiscreteGlobalGrids.H3.H3Lookups: H3Lookup
-import DiscreteGlobalGrids.H3.H3Native
-import ConservativeRegridding as CR
-import GeometryOps as GO
-import GeometryOps: SpatialTreeInterface as STI
+import DiscreteGlobalGrids as DGG
 
-to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
-destination = [to_sphere((lon, lat)) for lon in range(0, 360; length=37),
-                                         lat in range(-90, 90; length=19)]
+# A complete level is the entry point. `levelgrid` returns a
+# `HierarchicalLevelGrid`, which holds the system and the level and nothing else.
+grid = DGG.levelgrid(DGG.HEALPixSystem(), 4)
+DGG.ncells(grid)                                  # 3072
 
-# 1. A whole level as a conservative-regridding source. The DGGS singleton is the
-#    only system-specific token in the call; swap it and nothing else moves.
-regridder = CR.Regridder(destination, DGGSGrid(HEALPixDGGS(), 3))
-size(regridder.intersections)                    # (648, 768) — (destination, source)
+# Positions <-> identities.
+c = DGG.cellindex(grid, 1000)                     # a typed cell id
+DGG.cellposition(grid, c)                         # 1000
+DGG.level(c)                                      # 4
 
-# 2. A stored cell axis becomes a spatial tree in one line. The grid holds
-#    `lookup.data` itself — never copied, never reordered — so tree leaf i is
-#    lookup position i, and a `DimArray` over that dimension lines up with a
-#    `Regridder` column-for-column, with no permutation anywhere.
-lookup = HealpixLookup(collect(Int64, 3000:3999); level=6)
-tree = treeify(lookup)                           # via DGGSPartialGrid(lookup)
-ncells(tree) == length(lookup.data)              # true
+# Geometry, on the unit sphere.
+DGG.cell_centroid(grid, c)
+DGG.cell_area(grid, c)                            # steradians
 
-# 3. A globe-complete axis costs nothing to build: `DGGSGlobeIds` is lazy, so the
-#    ids are computed on demand rather than stored. Indexing it degrades to an
-#    ordinary explicit-id lookup.
-globe = H3Lookup(DGGSGlobeIds(H3DGGS(), 9))
-length(globe)                                    # 4842432842, allocated: none
-ncells(treeify(globe))                           # same — a dense DGGSGrid cursor
-globe[1:10]                                      # an H3Lookup backed by a Vector
+# Location and topology. `(lon, lat)` wrappers take degrees.
+DGG.cellat(grid, 8.5, 47.4)
+DGG.neighbors(grid, c)                            # ring 1, CCW seen from outside
+DGG.ring(grid, c, 2)                              # exactly distance 2
 
-# 4. One cell's subtree as a chunk — O(subtree) to build, never O(globe) — and a
-#    cap query over it. Hits are positions in `chunk.ids`.
-chunk = subtree_grid(H3DGGS(), H3Native.lonlat_to_cell(10.0, 45.0, 2);
-                     root_level=2, leaf_level=5)
-cap = GO.UnitSpherical.SphericalCap(to_sphere((10.0, 45.0)), 0.02)
-hits = STI.query(treeify(chunk), intersects_cap(cap))
-DiscreteGlobalGrids.cell_center(H3DGGS(), 5, chunk.ids[first(hits)])
+# Spatial queries, with DE9IM predicate types and spherical semantics.
+import Extents
+DGG.query(grid, DGG.Intersects(Extents.Extent(X = (5, 12), Y = (45, 50))))
+
+# The hierarchy, on the system rather than the grid — an id knows its level.
+sys = DGG.HEALPixSystem()
+DGG.children(sys, c)
+parent(sys, c)
+DGG.descendant_range(sys, c, 6)                   # positions in levelgrid(sys, 6)
+DGG.subtree_border(sys, c, 6)                     # the rim, O(rim)
 ```
 
-Longer, assertion-checked versions live in `examples/` — `regridding.jl`,
-`dimensionaldata.jl`, `chunked_h3.jl` — each running standalone under
-`julia -t 4 --project=. examples/<name>.jl` and exiting non-zero if a check
-fails. (`examples/healpix_demo.jl` additionally wants NaturalEarth and Rasters,
-which are intentionally not dependencies.)
+Swapping `HEALPixSystem()` for `IGeo7System()`, `H3System()`, `A5System()`,
+`S2System()` or `ISEA4RSystem()` changes nothing else. `DGG.systems()` lists all
+six, and its docstring is the comparison table: cell counts, cell shape,
+equal-areaness, and the traits that differ across them.
 
-## Naming rules
-
-Nothing system-level is re-exported at the top level: the systems intentionally
-share generic vocabulary (`cell_center`, `cell_boundary`, `lonlat_to_cell`,
-`Touching`, ...), so reach them through their submodule.
+`treeify`, `ncells` and `getcell` are `ConservativeRegridding.Trees`' own
+bindings, extended here, so any grid is a regridding source with no wrapper:
 
 ```julia
-using DiscreteGlobalGrids
-using DiscreteGlobalGrids.H3.H3Lookups   # cell_center, lonlat_to_cell, ...
+import ConservativeRegridding as CR
+regridder = CR.Regridder(destination, DGG.levelgrid(DGG.HEALPixSystem(), 4))
 ```
 
-The same rule runs the other way, which is why the kernel generics `num_cells`,
-`cell_boundary` and `cell_center` are *not* exported even though every other one
-is: a submodule already claims each of those names, and a `using
-DiscreteGlobalGrids` next to a `using ...H3.H3Native` must not make either
-ambiguous. Call them qualified — `DiscreteGlobalGrids.num_cells(system, level)`.
+`examples/regridding.jl` is that claim as an assertion-checked script; run it
+with `julia -t 4 --project=. examples/regridding.jl` and it exits non-zero if a
+check fails. The other scripts under `examples/` and the tutorials under
+`docs/src/tutorials/` still target the pre-redesign API and are being rewritten.
 
-Note the capitalization of `HEALPix`: the submodule is deliberately *not* named
-`Healpix`, so it never shadows the registered Healpix.jl package it imports.
+## Layout
 
-## Grid systems
-
-One submodule per system, all the same shape: a native layer, an `<X>Lookups`
-`DimensionalData` integration nested inside it, and an `<X>Kernel.jl` wiring the
-system into the operations kernel.
-
-| Submodule | System | Native layer |
-|:--|:--|:--|
-| `A5` | A5 pentagonal DGGS | pure Julia |
-| `H3` | H3 hexagonal DGGS | `H3_jll` (libh3) |
-| `HEALPix` | HEALPix, as a nested id hierarchy (EOPF/GRID4EARTH conventions) and as a dense face grid | pure-Julia chart kernel; Healpix.jl in the lookup layer |
-| `IGeo7` | IGEO7 (ISEA7H + Z7), clean-room implementation | pure Julia, stdlib-only core; geometry from `ISEA` |
-| `ISEA4R` | ISEA4R, as a dense ten-diamond grid and as `ISEA4RDGGS` cell geometry | pure Julia; Snyder charts from `ISEA` |
-| `S2` | S2, as a dense cube-face grid and as `S2DGGS` cell geometry | pure-Julia closed forms; no s2geometry dependency |
-
-`S2` and `ISEA4R` have no `<X>Lookups` module: they are chart systems, and a
-dimension of stored ids needs an id hierarchy neither has yet. The ISEA4R
-ten-diamond numbering is a package convention with **no external oracle**, so no
-compatibility with any external ISEA4R product's identifiers is claimed — see
-`docs/design/isea4r_diamond_layout.md`. `zonal`, `stencil` and
-`neighbor_indices` are package-level generics over any `<X>Lookup` whose
-system wires the kernel operations underneath (`cell_neighbors` for the
-stencil family, `descendant_range` for `zonal`) — HEALPix, H3 and IGEO7
-today, with neighbor containers sized by the `max_neighbors` trait as
-non-allocating `SmallCollections.SmallVector`s.
-
-### Which systems answer what
-
-| System | id hierarchy + grids | cell geometry | id the geometry takes |
-|:--|:--|:--|:--|
-| `HEALPixDGGS`, `H3DGGS`, `IGEO7DGGS`, `A5DGGS` | yes | yes | the system's canonical id |
-| `S2DGGS` | no | yes | scaffold ordinal `face * 4^level + hilbert_position` |
-| `ISEA4RDGGS` | no | yes | canonical `isea4r_ordinal` `diamond * 4^level + morton_position` |
-| the other eight, incl. `ISEA9RDGGS`, `RHEALPixDGGS` | no | no | — |
-
-How much of the kernel each wired system gets for free is decided by four
-id-model traits (`cell_id_type`, `has_ordinal_ids`, `has_descendant_ranges`,
-`has_exact_subtree_cap`) plus its `cell_cap_inflation` budget. Those values, what
-each trait means, what the "registry-only" systems still record, and why the
-cursor has three descent modes: `docs/reference/kernel_wiring.md`.
-
-## Reference
-
-| Page | Contents |
+| Path | Contents |
 |:--|:--|
-| `docs/reference/common_layer.md` | the abstract interface, system registry, operations kernel, grid/tree family, lookups and `DGGSGlobeIds`, shared submodules |
-| `docs/reference/kernel_wiring.md` | id-model traits in full, the three cursor descent modes, the support matrix explained |
-| `docs/reference/healpix_representations.md` | HEALPix as an id hierarchy and as a face grid over one chart kernel |
-| `docs/design/` | design records: `full_globe_lookups.md`, `face_grid_generalization.md`, `isea4r_diamond_layout.md` |
-| `docs/IGeo7/` | IGEO7 clean-room record — `CLEANROOM.md`, `PROVENANCE.md`, spec |
+| `src/interface/` | the type vocabulary and every generic's contract — declarations and trait defaults, no algorithms |
+| `src/fallbacks/` | the generic implementations: `HierarchicalLevelGrid`, `PartialGrid`, `AuthalicGrid`/`AuthalicSystem`, `HierarchicalGridCursor`, `MultiOrderCellSet`, the query engine |
+| `src/systems/` | one directory per system, plus `src/systems/ISEA/` — the Snyder/icosahedron basis IGEO7 and ISEA4R share |
+| `src/Helpers/` | shared allocation-free primitives |
+| `lib/DiscreteGlobalGridsConformanceTesting/` | the test-only workspace package that makes the contracts executable |
+
+## The systems
+
+| System | Levels | Cells at level `l` | Cell shape | Equal-area | Canonical id |
+|:--|:--|:--|:--|:--|:--|
+| `IGeo7System` | `0:19` | `10·7^l + 2` | hexagons + 12 pentagons | yes | `Z7Cell` |
+| `H3System` | `0:15` | `120·7^l + 2` | hexagons + 12 pentagons | no | `H3Cell` |
+| `HEALPixSystem` | `0:29` | `12·4^l` | curvilinear diamonds | yes | `LevelIndex` (nested) |
+| `A5System` | `0:29` | `12`, `60`, then `60·4^(l-1)` | pentagons | yes | `A5Cell` |
+| `S2System` | `0:30` | `6·4^l` | geodesic quadrilaterals | no | `LevelIndex` |
+| `ISEA4RSystem` | `0:29` | `10·4^l` | rhombi on ten diamonds | yes | `LevelIndex` |
+
+Native layers: H3 calls libh3 through `H3_jll`; the other five are pure Julia.
+IGEO7 is a clean-room implementation; A5 ports upstream a5's arithmetic; HEALPix,
+S2 and ISEA4R are closed-form charts with no external dependency.
+
+No system defines a grid type. All six return `HierarchicalLevelGrid` from
+`levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
+`cell_area` — to `HierarchicalLevelGrid{TheSystem}`.
+
+The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
+**not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of
+registered packages. Reach past the interface through the qualified module —
+`DiscreteGlobalGrids.IGeo7.z7_string`, `DiscreteGlobalGrids.H3.H3Native`. Note
+the capitalisation of `HEALPix`: it never shadows the registered Healpix.jl,
+which this package's tests use as an independent oracle.
+
+ISEA4R's diamond pairing, numbering and axis orientations are this package's own
+convention with **no external oracle**; identifier compatibility with any
+external ISEA4R product is not claimed. S2's native 64-bit `s2_cellid` is not
+offered as an index scheme — the scaffold ordinal is canonical.
+
+## Conformance
+
+Every interface law has a property test a third-party implementor can run with
+two calls. The suites live in a separate workspace package so `Test` never
+becomes a dependency of `DiscreteGlobalGrids`:
+
+```julia
+using DiscreteGlobalGridsConformanceTesting
+
+test_grid_interface(grid)          # the AbstractGrid contract
+test_hierarchical_system(sys)      # the hierarchy contract, incl. the covering law
+```
+
+Each system's suite runs both against itself. The harness has its own tests
+under `lib/DiscreteGlobalGridsConformanceTesting/test/`, which check that it
+*catches* deliberately broken mock implementations rather than merely running.
 
 ## Tests
 
@@ -149,25 +154,24 @@ Pkg.activate("path/to/DiscreteGlobalGrids.jl")
 Pkg.test()
 ```
 
-`test/runtests.jl` aggregates one suite per unit — `test/test_helpers.jl` and
-`test/core/`, `test/A5/`, `test/H3/`, `test/HEALPix/`, `test/IGeo7/`,
-`test/ISEA4R/`, `test/S2/` — each wrapped in its own module so the generic
-vocabulary the systems share cannot collide across suites. The IGEO7 suite
-validates against the oracle vectors in `test/IGeo7/vectors/` and dominates the
-count. **513,337 assertions, ~80 s warm.**
+`test/runtests.jl` runs the interface suite, the fallback suites, one suite per
+system, and a cross-system suite that sweeps `systems()` so registering a system
+grows it automatically. Each is wrapped in its own module, because the systems
+share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
+output in `test/systems/IGeo7/vectors/` and dominates the count.
+**918,836 assertions, ~90 s warm**, with 2 broken — A5's documented
+`has_sorted_subtrees` trait skips.
 
 ## Provenance
 
 Migrated 2026-08-05 from the `dggs_lookup/` prototype tree in the
 `vectordatacubes` workspace.
 
-The IGEO7 implementation shipped here is a **clean-room** unit (`ISEA` +
-`IGeo7`). It replaces wholesale an earlier implementation whose native layer was
-ported from an AGPL-licensed reference implementation, which is deliberately
-**excluded** from this package. That reference implementation enters only as an
-independent **black-box validation oracle**: the suite checks agreement against
-dumps of its CLI output, never against its source. The clean-room records are
-`docs/IGeo7/CLEANROOM.md` and `docs/IGeo7/PROVENANCE.md` (written under the
-unit's former name, `IGeo7Clean`); the full oracle audit trail, the 150 MB
-vector corpus and 24 MB of reference PDFs stay in `dggs_lookup/` — only the
-~9 MB of vectors the suite reads travel here.
+The IGEO7 implementation is a **clean-room** unit (`src/systems/ISEA/` +
+`src/systems/IGeo7/`). It replaces an earlier implementation whose native layer
+was ported from an AGPL-licensed reference, which is deliberately **excluded**
+here. That reference enters only as an independent **black-box validation
+oracle**: the suite checks agreement against dumps of its CLI output, never
+against its source. The full audit trail, the 150 MB vector corpus and 24 MB of
+reference PDFs stay in `dggs_lookup/`; only the ~9 MB of vectors the suite reads
+travel here.

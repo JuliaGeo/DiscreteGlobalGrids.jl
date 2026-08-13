@@ -86,12 +86,17 @@ carries its grid-level contract — [`ncells`](@ref), [`cellindex`](@ref),
 minus the two things the grid method has already settled:
 
   - `cellindex` may assume `i in 1:ncells(sys, l)`. The grid bounds-checks.
-  - `cellposition` and the geometry pair may assume `c` is in
-    [`cellindextype(sys)`](@ref cellindextype), and that its level is the one
-    being asked about; the grid answers `nothing` for a cell at another level
-    and reindexes the alternate schemes. `cellposition` still returns `nothing`
-    for a canonical id that names no cell at all — a malformed encoding, or an
-    index past the end of its level.
+  - `cellposition` may assume `c` is in [`cellindextype(sys)`](@ref
+    cellindextype) and at the level being asked about: the grid answers
+    `nothing` for a cell at another level, and reindexes the alternate schemes
+    first. It still returns `nothing` for a canonical id that names no cell at
+    all — a malformed encoding, or an index past the end of its level.
+  - the geometry pair may assume only the **level**, which the grid enforces by
+    throwing an `ArgumentError` rather than by answering. It does *not* reindex:
+    an id in an alternate scheme at the right level is forwarded as it stands,
+    so a system that wants to accept one must say so with its own method. Left
+    alone, the fallthrough is a `MethodError`, exactly as it is on the system
+    method itself.
 
 The geometry pair takes **no level argument**: an [`AbstractCellIndex`](@ref)
 is self-describing, so a level beside it would only be a second source of truth

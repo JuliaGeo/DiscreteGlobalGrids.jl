@@ -248,6 +248,9 @@ end
 
     @test_throws MethodError cellindextype(s)
     @test_throws MethodError levels(s)
+    # `levelgrid` is no longer one of the unimplemented generics — T8 gave it a
+    # default. It still throws here, one call deeper: the default validates
+    # against `levels(s)`, which is what is missing.
     @test_throws MethodError levelgrid(s, 0)
     @test_throws MethodError rootcells(s)
     @test_throws MethodError parent(s, c)

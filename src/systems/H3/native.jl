@@ -46,8 +46,8 @@ header, none of which alters an existing one.
 
 Callers normally want the interface generics instead — [`cell_boundary`](@ref),
 [`cellat`](@ref), [`neighbors`](@ref), [`children`](@ref) and friends on
-[`H3Grid`](@ref) / [`H3System`](@ref) — which is where the canonical ordering,
-the dense position numbering and the subtree border walk live. Reach for
+[`H3System`](@ref) and its [`levelgrid`](@ref) — which is where the canonical
+ordering, the dense position numbering and the subtree border walk live. Reach for
 `H3Native` only when you specifically want to speak to libh3 directly.
 """
 module H3Native

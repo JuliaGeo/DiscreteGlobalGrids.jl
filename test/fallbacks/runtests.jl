@@ -1406,3 +1406,42 @@ end
 end
 
 end # module TestFallbacks
+
+# ---------------------------------------------------------------------------
+# The allocation-free primitives the substrate is built out of
+# (`src/Helpers/small_list.jl`, `src/Helpers/ids.jl`).
+#
+# Ported here from `test/test_helpers.jl`, which T8 deleted. `Helpers` is
+# substrate for every system, so its own suite belongs with the substrate's.
+# The authalic half of that file went to `test/fallbacks/authalic.jl`, next to
+# the wrapper that uses it.
+# ---------------------------------------------------------------------------
+
+module HelpersUtilTests
+
+using Test
+using DiscreteGlobalGrids.Helpers
+
+@testset "shared helpers" begin
+    empty = empty_small_list(Val(3), 0)
+    @test isempty(empty)
+    @test isbitstype(typeof(empty))
+
+    full = small_push(small_push(small_push(empty, 2), 1), 2)
+    @test collect(full) == [2, 1, 2]
+    @test collect(small_sort(full)) == [1, 2, 2]
+    @test_throws BoundsError small_push(full, 3)
+    @test_throws BoundsError full[4]
+
+    @test strictly_increasing(Int[])
+    @test strictly_increasing([1, 2, 3])
+    @test !strictly_increasing([1, 1, 2])
+    @test !strictly_increasing([2, 1])
+
+    @test sorted_index([1, 3, 5], 3) == 2
+    @test sorted_index([1, 3, 5], 2) == 0
+    @test to_uint64_id("ff") == 0xff
+    @test to_uint64_id("0xFF") == 0xff
+end
+
+end # module HelpersUtilTests

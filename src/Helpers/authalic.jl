@@ -27,7 +27,7 @@
 #     Working Manual", USGS PP 1395 (1987), eq. (3-12) and (3-13).
 #   * validated to <= 0.5 ulp against PROJ 9's `+proj=cea` (whose `pj_qsfn` is
 #     an independent implementation of Snyder 3-12) and against a 300-bit
-#     BigFloat evaluation of the closed form — see test/test_helpers.jl.
+#     BigFloat evaluation of the closed form — see test/fallbacks/authalic.jl.
 #
 # Status
 #   Nothing calls this yet — `cell_boundary`, `cell_center`, `lonlat_to_cell`,
@@ -293,7 +293,7 @@ one ulp *below* `ISEA.R_AUTHALIC`, the `6371007.180918475` literal that grid
 area computations use; `6371007.180918474` is the correctly rounded value (it
 is what PROJ's `+proj=cea` and a 300-bit evaluation of Snyder (3-13) both
 give). The difference is 9.3e-10 m and cannot matter — but see
-`test/test_helpers.jl`, which pins the relationship rather than letting it
+`test/fallbacks/authalic.jl`, which pins the relationship rather than letting it
 drift silently.
 """
 const WGS84_AUTHALIC = AuthalicTransform{Float64}(;

@@ -129,6 +129,14 @@ export DE9IMPredicate
 export Intersects, Disjoint, Contains, Within, Covers, CoveredBy
 export Touches, Crosses, Overlaps, Equals
 
+# --- Fallback substrate ----------------------------------------------------
+# The concrete types the generic layer ships: the one subset grid, the one
+# cursor, and the multi-order coverage pair. Systems define none of these.
+using .Fallbacks: PartialGrid, HierarchicalGridCursor,
+    MultiOrderCoverage, MultiOrderCellSet, level_ranges
+export PartialGrid, HierarchicalGridCursor
+export MultiOrderCoverage, MultiOrderCellSet, level_ranges
+
 # --- Conformance harness ---------------------------------------------------
 using .Conformance: test_grid_interface, test_hierarchical_system
 export test_grid_interface, test_hierarchical_system

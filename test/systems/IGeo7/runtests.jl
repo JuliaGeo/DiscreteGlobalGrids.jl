@@ -1,9 +1,9 @@
 # ---------------------------------------------------------------------------
 # IGeo7 (ISEA7H + Z7) — the sealed-oracle suites plus both conformance suites.
 #
-# The oracle vectors in `test/IGeo7/vectors/` are recorded DGGRID output and are
-# the authority for every geometric and combinatorial claim here: the old
-# suites' assertions are ported, with the call shapes adapted from the retired
+# The oracle vectors in `vectors/` are recorded DGGRID output and are the
+# authority for every geometric and combinatorial claim here: the old suites'
+# assertions are ported, with the call shapes adapted from the retired
 # `(system, level, id)` triple to typed `Z7Cell`s.
 #
 # Wrapped in a module so the system's names cannot collide with another system's
@@ -28,14 +28,8 @@ const US = GO.UnitSpherical
 
 const S = I.IGeo7System()
 
-# The sealed vectors still live beside the retired suite. Both locations are
-# accepted so that moving them under `test/systems/IGeo7/` in a later task needs
-# no edit here.
-const VECTORS = let
-    here = joinpath(@__DIR__, "vectors")
-    legacy = normpath(joinpath(@__DIR__, "..", "..", "IGeo7", "vectors"))
-    isdir(here) ? here : legacy
-end
+# The sealed DGGRID vectors, moved here from the retired suite in T8.
+const VECTORS = joinpath(@__DIR__, "vectors")
 
 const Z7Cell = I.Z7Cell
 

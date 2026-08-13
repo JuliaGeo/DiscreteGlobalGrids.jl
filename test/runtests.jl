@@ -6,10 +6,10 @@ using DiscreteGlobalGrids
 # the top level of Main, so the module definitions inside these files are legal
 # even from within the @testset.
 #
-# Only the redesigned suites run here. The old-architecture suites (test/core,
-# test/A5, test/H3, test/HEALPix, test/IGeo7, test/ISEA4R, test/S2,
-# test/test_helpers.jl) still exist on disk as the ports' oracles and are
-# expected to fail against this branch; T8 deletes what the kill list retires.
+# These are all the suites there are: T8 deleted the old-architecture ones
+# (test/core, test/A5, test/H3, test/HEALPix, test/IGeo7, test/ISEA4R,
+# test/S2, test/test_helpers.jl) once their assertions had been ported. The
+# DGGRID oracle vectors they carried now live in test/systems/IGeo7/vectors/.
 #
 # The conformance harness self-tests live in their own workspace package under
 # lib/. Each system suite imports that package and runs its two public suites

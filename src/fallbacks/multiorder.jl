@@ -17,11 +17,12 @@
 """
     MultiOrderCoverage(target)
 
-A multi-order coverage query: hand it to [`query`](@ref) with a system and a
-maximum depth to get a [`MultiOrderCellSet`](@ref).
+A multi-order coverage query: hand it to [`query`](@ref) with a system and
+either a maximum depth or a cell budget to get a [`MultiOrderCellSet`](@ref).
 
 ```julia
-set = query(sys, MultiOrderCoverage(polygon); level = 8)
+set = query(sys, MultiOrderCoverage(polygon); level = 8)      # accuracy first
+set = query(sys, MultiOrderCoverage(polygon); maxcells = 10)  # cardinality first
 ```
 
 `target` takes the same forms as any other query target — a GeoInterface
@@ -29,10 +30,28 @@ geometry, an `Extents.Extent` in lon/lat degrees, or a
 `GO.UnitSpherical.SphericalCap`. `Base.parent` unwraps it, as it does for a
 DE9IM predicate.
 
-The traversal emits a cell as soon as the cell lies entirely inside the target,
-and recurses into the children of a cell the target's boundary crosses, down to
-the requested level; cells still crossed at that level are emitted too, so the
-set **covers** the target rather than being covered by it.
+# The two modes
+
+`level` is the ACCURACY-FIRST mode, and the older one. The traversal is depth
+first: it emits a cell as soon as the cell lies entirely inside the target, and
+recurses into the children of a cell the target's boundary crosses, down to the
+requested level; cells still crossed at that level are emitted too, so the set
+**covers** the target rather than being covered by it. How many cells that takes
+is whatever the outline needs — a coastline at a fine level is tens of thousands
+of them.
+
+`maxcells` is the CARDINALITY-FIRST mode. It answers "give me ten cells that
+cover California, or a hundred", and it never returns more than the budget
+(with one documented exception, below). Refinement is breadth first over the
+cells the boundary crosses, coarsest level first, and it stops when the next
+replacement would not fit. The depth is then whatever the budget bought, and it
+differs from branch to branch: the two modes trade the same currency in
+opposite directions.
+
+Neither mode is the other's approximation. A `level` set is the exact answer at
+a fixed depth; a `maxcells` set is the best a fixed number of cells can say, and
+its own reference level is the deepest level it reached. [`query`](@ref)
+documents the keyword rules; the two are mutually exclusive.
 
 [`is_contained`](@ref) reports which emissions were *proven* to fit — the first
 kind, and only those; a cell emitted at the deepest level is never asked. The
@@ -91,6 +110,12 @@ level, which is exactly depth-first curve order and makes sibling intervals
 adjacent. A system without [`has_sorted_subtrees`](@ref) has no such intervals,
 and falls back to `(level, id)` order.
 
+The REFERENCE LEVEL is the depth the set speaks about: the `level` the query was
+given, or — in `maxcells` mode, where no depth was asked for — the deepest level
+the budget reached. It is the default expansion level for
+[`level_ranges`](@ref), [`cellindices`](@ref) and `CellLookup`, and the level at
+which the covering guarantee is stated.
+
 !!! note "Expansion needs sorted subtrees"
     `level_ranges` is the compressed form of the set and exists only where
     `has_sorted_subtrees(sys)` holds; on A5 it throws, because a cell's
@@ -113,21 +138,124 @@ end
 
 """
     MultiOrderCellSet(sys, coverage::MultiOrderCoverage; level)
+    MultiOrderCellSet(sys, coverage::MultiOrderCoverage; maxcells, maxlevel = deepest)
 
 Run a [`MultiOrderCoverage`](@ref) against `sys`, recursing no deeper than
-`level`. Equivalent to `query(sys, coverage; level)`.
+`level`, or refining until `maxcells` cells are spent. Equivalent to
+`query(sys, coverage; ...)`, which documents both modes.
 """
 MultiOrderCellSet(sys::AbstractHierarchicalGridSystem, coverage::MultiOrderCoverage;
-    level::Integer) = _multi_order(sys, coverage.target, Int(level))
+    level::Union{Integer,Nothing}=nothing, maxcells::Union{Integer,Nothing}=nothing,
+    maxlevel::Union{Integer,Nothing}=nothing) =
+    _multi_order_query(sys, coverage.target, level, maxcells, maxlevel)
 
 """
     query(sys, coverage::MultiOrderCoverage; level) -> MultiOrderCellSet
+    query(sys, coverage::MultiOrderCoverage; maxcells, maxlevel = deepest) -> MultiOrderCellSet
 
-The multi-order form of [`query`](@ref): the coarsest cells covering the
-target, down to `level`.
+The multi-order form of [`query`](@ref): the coarsest cells covering the target.
+The two keywords are the two modes of [`MultiOrderCoverage`](@ref), and exactly
+one of them must be given.
+
+`level` is ACCURACY FIRST: refine everything the target's boundary crosses down
+to `level`, and let the cell count fall where it may.
+
+```julia
+set = query(sys, MultiOrderCoverage(california); level = 7)   # thousands of cells
+```
+
+`maxcells` is CARDINALITY FIRST: refine the crossing cells coarsest first, and
+stop when the next replacement would not fit in the budget.
+
+```julia
+set = query(sys, MultiOrderCoverage(california); maxcells = 10)   # ten cells
+```
+
+`maxlevel` bounds how deep the budget may descend, and defaults to the system's
+deepest level, so that the budget alone decides. It is worth setting on a target
+much smaller than a root cell, where refinement replaces one crossing cell by one
+crossing cell for level after level and the budget never binds.
+
+# Edge cases, all of them by design
+
+  - Giving both keywords, or neither, is an `ArgumentError`: they are modes, not
+    a bound and a hint. `maxlevel` belongs with `maxcells`; in `level` mode the
+    level IS the bound.
+  - `maxcells < 1` is an `ArgumentError`. A covering of a target the system
+    meets at all needs at least one cell.
+  - **A seed larger than the budget is returned whole**, over budget, rather
+    than throwing. The seed is the set of coarsest cells that meet the target,
+    and it is the smallest covering this traversal can express; there is nothing
+    to refine away. A target spanning most of the sphere with `maxcells = 3`
+    lands here. `length(set) <= maxcells` holds in every other case.
+  - A target smaller than one cell of the seed comes back as that one crossing
+    cell when the budget is 1, and as a chain of single crossing cells descending
+    towards it as the budget grows.
+
+# What "cover" means here, and where it is exact
+
+Every point of the target lies inside one of the emitted cells. That is the
+plain reading of "ten cells that cover California", and it is the guarantee this
+mode is built around. The seed is the coarsest cells that meet the target, and
+those tile the sphere between them; refinement then replaces a crossing cell
+only by the children that meet the target, and a cell that no child of the
+replacement would cover is not replaced at all.
+
+It is EXACT, at every budget, on the three systems whose four children tile
+their parent: HEALPix, S2 and ISEA4R. Where children do not tile their parent it
+degrades in the way [`MultiOrderCoverage`](@ref)'s warning already describes, and
+for the same reason — replacing a cell by its children swaps one footprint for
+another. Measured on a state-sized outline as the fraction of the target lying
+in no emitted cell: under 2% on IGEO7 and its authalic wrap, under 11% on H3,
+under 25% on A5.
+
+The LEAF statement the `level` mode makes — every cell of the reference level
+that meets the target is a member or the descendant of one — is a law here on
+those same three systems only. The `level` mode earns it everywhere by
+descending into cells that miss the target, because a child can overhang its
+parent, and carrying that descent all the way to `level`. A budget has no fixed
+depth to carry it to; stopping early is the whole point, and a branch stopped
+early at a cell that misses the target is a branch whose overhang is not
+followed. Both statements are pinned per system, at three budgets and on four
+targets, in `test/systems/crosssystem/multiorder_budget.jl`.
+
+What a budget does NOT buy is a tight picture of the target: at ten cells the
+set over-covers California by a wide margin, and it says so through
+[`is_contained`](@ref) rather than by pretending otherwise.
+
+# Composition
+
+A budget set is a `MultiOrderCellSet` like any other. It sorts in curve order,
+answers [`coarsest_contained`](@ref), [`cell_polygons`](@ref) and
+[`level_ranges`](@ref), and backs a `CellLookup` at its own reference level or
+at any deeper one — so ten cells chosen for the picture can still name every
+leaf under them for the data.
 """
-query(sys::AbstractHierarchicalGridSystem, coverage::MultiOrderCoverage; level::Integer) =
-    _multi_order(sys, coverage.target, Int(level))
+query(sys::AbstractHierarchicalGridSystem, coverage::MultiOrderCoverage;
+    level::Union{Integer,Nothing}=nothing, maxcells::Union{Integer,Nothing}=nothing,
+    maxlevel::Union{Integer,Nothing}=nothing) =
+    _multi_order_query(sys, coverage.target, level, maxcells, maxlevel)
+
+# One place where the two modes are told apart, so that both entry points give
+# the same errors for the same keyword combinations.
+function _multi_order_query(sys::AbstractHierarchicalGridSystem, target_value,
+        level_kw, maxcells, maxlevel)
+    if level_kw !== nothing
+        maxcells === nothing || throw(ArgumentError(
+            "`level` and `maxcells` are the two modes of a multi-order coverage and " *
+            "cannot both be given: `level` refines to a fixed depth, `maxcells` " *
+            "spends a cell budget"))
+        maxlevel === nothing || throw(ArgumentError(
+            "`maxlevel` bounds the budget traversal and belongs with `maxcells`; " *
+            "in `level` mode the level is the bound"))
+        return _multi_order(sys, target_value, Int(level_kw))
+    end
+    maxcells === nothing && throw(ArgumentError(
+        "a multi-order coverage needs one of `level` (refine to a fixed depth) or " *
+        "`maxcells` (spend a cell budget)"))
+    cap = maxlevel === nothing ? last(levels(sys)) : Int(maxlevel)
+    return _multi_order_budget(sys, target_value, Int(maxcells), cap)
+end
 
 # The keyword `level` shadows the `level` function, so the whole traversal
 # lives here, where the maximum depth is a plain positional `Int`.
@@ -197,6 +325,120 @@ function _coverage_visit!(cells, contained, sys, target, c, maxlevel::Int, grids
     return nothing
 end
 
+# ---------------------------------------------------------------------------
+# The budget traversal
+#
+# Same target preparation, same prunes and the same two exact predicates as the
+# depth-first walk above. What changes is the SCHEDULE and what stops it.
+#
+# The covering is maintained explicitly as {contained cells} ∪ {crossing cells}.
+# Contained cells are never refined: a cell proven to lie inside the target is
+# already the tightest thing that can be said about its own footprint, and
+# splitting it spends budget to say the same thing in more words. Only crossing
+# cells are candidates, and they are visited COARSEST FIRST, ties broken by
+# position within the level — the curve order, so the schedule is a function of
+# the inputs alone and of nothing else.
+#
+# Coarsest-first plus "children are one level deeper" means the queue is at all
+# times a level and its successor, so the priority queue is spelled here as two
+# vectors and a level counter rather than as a heap. That is not a shortcut: it
+# is the same order a heap on `(level, key)` would pop, and it makes the
+# breadth-first shape of the traversal visible.
+#
+# WHEN A REPLACEMENT DOES NOT FIT the cell is set aside and the traversal moves
+# on to the next candidate rather than stopping. Nothing is lost by trying: the
+# set only ever grows, so a replacement rejected once is rejected for good, and
+# a single pass over the queue is enough. What is gained is the tail of the
+# budget — a coarse crossing cell with seven intersecting children can overrun a
+# budget that a finer one with two children still fits into, and stopping on the
+# first miss would strand those cells unspent.
+# ---------------------------------------------------------------------------
+
+function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
+        maxcells::Int, maxlevel::Int)
+    maxcells >= 1 || throw(ArgumentError(
+        "maxcells must be at least 1, got $maxcells"))
+    maxlevel in levels(sys) || throw(ArgumentError(
+        "maxlevel $maxlevel is outside $(typeof(sys))'s levels $(levels(sys))"))
+    target = _query_target(target_value)
+    ID = cellindextype(sys)
+    top = first(levels(sys))
+    grids = [levelgrid(sys, l) for l in top:maxlevel]
+
+    contained = ID[]        # proven `Within`: never refined, never requeued
+    stalled = ID[]          # crossing, and kept whole: the budget said no
+    current = ID[]          # crossing, at the level being refined
+    for c in rootcells(sys)
+        _budget_admit!(contained, current, sys, target, c, grids, top, maxlevel)
+    end
+    # The running size of {contained} ∪ {crossing}, maintained rather than
+    # recomputed: a replacement is committed exactly when the size it would
+    # leave behind fits.
+    total = length(contained) + length(current)
+
+    kids_in = ID[]
+    kids_out = ID[]
+    for _ in top:(maxlevel-1)
+        isempty(current) && break
+        sort!(current; by=c -> (level(c), _budget_key(grids[level(c)-top+1], c)))
+        next = ID[]
+        for c in current
+            empty!(kids_in)
+            empty!(kids_out)
+            for child in children(sys, c)
+                _budget_admit!(kids_in, kids_out, sys, target, child, grids, top, maxlevel)
+            end
+            k = length(kids_in) + length(kids_out)
+            # `k == 0` is a cell that meets the target and has no child that
+            # does, which non-congruent refinement allows. Replacing it by
+            # nothing would shrink the covering, so it is not a replacement.
+            if k == 0 || total + k - 1 > maxcells
+                push!(stalled, c)
+                continue
+            end
+            append!(contained, kids_in)
+            append!(next, kids_out)
+            total += k - 1
+        end
+        current = next
+    end
+    append!(stalled, current)       # whatever `maxlevel` left unrefinable
+
+    cells = vcat(contained, stalled)
+    flags = falses(length(cells))
+    flags[1:length(contained)] .= true
+    # No depth was asked for, so the set speaks about the deepest level it
+    # reached. An empty set reached nothing and reports the top.
+    reference = isempty(cells) ? top : maximum(level, cells)
+    return _sorted_cell_set(sys, cells, flags, reference)
+end
+
+# Classify one candidate cell, or reject it. Both prunes and both predicates are
+# the ones `_coverage_visit!` uses, in the same order and for the same reasons —
+# including the `maxlevel` arm, where `Within` is not asked because no decision
+# depends on the answer and the call is the expensive one. `is_contained`
+# documents what that leaves unproven.
+function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
+        maxlevel::Int)
+    extent = node_extent(sys, c)
+    intersects_cap(target.cap, extent) || return false
+    _subtree_outside(target, extent) && return false
+    lc = level(c)
+    grid = grids[lc-top+1]
+    _matches(DE9IM.Intersects(nothing), target, grid, c) || return false
+    if lc < maxlevel && _matches(DE9IM.Within(nothing), target, grid, c)
+        push!(contained, c)
+    else
+        push!(crossing, c)
+    end
+    return true
+end
+
+# The tie-break inside one level. `cellposition` is the level's own order, which
+# is curve order on every system here and is a bijection, so no two cells of a
+# level ever tie and the schedule has nothing left to decide.
+_budget_key(grid, c) = something(cellposition(grid, c), 0)
+
 function _sorted_cell_set(sys::AbstractHierarchicalGridSystem, cells::Vector{ID},
         contained::BitVector, reference_level::Int) where {ID}
     if has_sorted_subtrees(sys)
@@ -244,12 +486,22 @@ Whether the set's `i`th cell was **proven** to lie inside the coverage target.
 `true` means the traversal asked `Within` of that cell and it held. `false`
 means one of two different things, told apart by the cell's level:
 
-  - above the set's reference level, the cell *was* asked and the target's
+  - above the traversal's maximum depth, the cell *was* asked and the target's
     boundary crosses it — that is why the traversal descended into it. There
     the flag is exact in both directions.
-  - at the reference level, the cell was **never asked**. The traversal ran out
+  - at the maximum depth, the cell was **never asked**. The traversal ran out
     of depth and emitted it so that the set covers; it may fit inside the target
     or it may not.
+
+"Maximum depth" is the `level` keyword in accuracy-first mode, where the set's
+reference level and the maximum depth are the same number, so the blind spot is
+exactly the reference level. In `maxcells` mode they are not: the reference
+level is the deepest level the budget reached, the maximum depth is the
+`maxlevel` cap it was allowed, and every cell the budget stopped short of the
+cap *was* asked. A budget set whose refinement never reached its cap — which is
+the ordinary case — therefore carries an exact flag on every member, and a
+`true` at its deepest level is a real containment rather than a gap in the
+record.
 
 That asymmetry is the contract, not an oversight. `Within` costs on the order of
 48 KB of allocation per call against 600 bytes for `Intersects`, and a deep
@@ -268,11 +520,15 @@ is_contained(set::MultiOrderCellSet, i::Integer) = set.contained[i]
     coarsest_contained(set::MultiOrderCellSet) -> cell id or `nothing`
 
 The shallowest cell of `set` **proven** to lie inside the coverage target, or
-`nothing` when no cell above the set's reference level was — see
-[`is_contained`](@ref) for what "proven" leaves out. Reference-level cells are
-never tested, so a set made only of them answers `nothing` even where some of
-them do fit; a target smaller than one such cell is the clearest way to land
-there, not the only one.
+`nothing` when no cell of it was — see [`is_contained`](@ref) for what "proven"
+leaves out. Cells at the traversal's maximum depth are never tested, so a set
+made only of them answers `nothing` even where some of them do fit; a target
+smaller than one such cell is the clearest way to land there, not the only one.
+
+A budget set answers `nothing` for a second and more ordinary reason: at ten
+cells over a state, nothing has been refined far enough to fit inside it yet,
+and the accessor says so instead of handing back the shallowest crossing cell.
+Raise the budget and the answer appears.
 
 ```julia
 set = query(sys, MultiOrderCoverage(tile); level = 12)

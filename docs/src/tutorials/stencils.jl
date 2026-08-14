@@ -1,29 +1,35 @@
 # # Stencil operations
 #
 # A stencil operation recomputes every cell of a grid from its own value and the
-# values of its immediate neighbors. On HEALPix nearly every cell has the same
-# 8-neighbor structure, so a whole-globe pass is one sweep over a precomputed
-# neighbor table. This is also the primitive behind machine learning on
-# spherical grids: a graph convolution in the style of DeepSphere is exactly
-# such a pass, and stacking `k` of them gives each cell a `k`-hop receptive
-# field.
+# values of its immediate neighbours. Two calls set it up on any grid in this
+# package: `neighbors` names the neighbours, and `cellposition` turns each name
+# into an index into the data vector. That halo table is the stencil.
 #
-# ## A field on the whole globe
-#
-# We work at level 5 (`nside = 32`, 12288 cells). `DGGSGlobeIds` names every
-# cell at the level without materializing them, and the lookup built from it
-# behaves like any other `HealpixLookup`.
+# This is also the primitive behind machine learning on spherical grids: a graph
+# convolution in the style of DeepSphere is exactly such a pass, and stacking `k`
+# of them gives each cell a `k`-hop receptive field.
 
-using DiscreteGlobalGrids
-using DiscreteGlobalGrids.HEALPix.HealpixLookups
-import DimensionalData as DD
-using Statistics
-using Random
+import DiscreteGlobalGrids as DGG
+import GeometryOps as GO
+using Statistics, Random
 using CairoMakie, GeoMakie
 CairoMakie.activate!()
 
-l = HealpixLookup(DGGSGlobeIds(HEALPixDGGS(), 5))
-nothing
+# ## A field on the whole globe
+#
+# HEALPix level 5 is `nside = 32`, 12288 cells. `levelgrid` is the complete
+# level; it stores the system and the level and nothing else, so building it is
+# free.
+
+grid = DGG.levelgrid(DGG.HEALPixSystem(), 5)
+cells = [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
+
+# Geometry is on the unit sphere throughout. `GeographicFromUnitSphere` is the
+# one conversion this page needs, for sampling a lon/lat field at the cell
+# centroids and, later, for plotting.
+
+lonlat = GO.UnitSpherical.GeographicFromUnitSphere()
+centers = [lonlat(DGG.cell_centroid(grid, c)) for c in cells]
 
 # The test field is a hot zonal band with a wavy longitude signal on top, plus
 # noise — sharp edges at ±30° latitude for the Laplacian to find, and speckle
@@ -31,64 +37,77 @@ nothing
 
 Random.seed!(42)
 field(lon, lat) = (abs(lat) < 30 ? 8.0 : 0.0) + 3 * sind(2lon) * cosd(lat)
-vals = [field(lon, lat) for (lon, lat) in cell_centers(l)] .+ 0.4 .* randn(length(l))
-A = DD.DimArray(vals, Cells(l); name = :field)
+values = [field(c...) for c in centers] .+ 0.4 .* randn(length(cells))
 
-# ## The neighbor table
+# ## The halo table
 #
-# `neighbor_indices` builds the halo table once: for each cell, the positions
-# (into the lookup) of its 8 HEALPix neighbors, in the order SW, W, NW, N, NE,
-# E, SE, S. 24 pixels per grid sit at a degree-3 vertex of the base tiling and
-# have only 7 — the missing slot holds 0.
+# `neighbors(grid, c)` returns the ring-1 neighbours as typed cell ids, counter-
+# clockwise seen from outside the sphere. `cellposition` maps each back to its
+# position in the grid's dense order, which is the index into `values`. On a
+# complete level every neighbour is present; on a `PartialGrid` the ones outside
+# the coverage are simply absent, and the table is shorter there.
 
-nbi = HealpixLookups.neighbor_indices(l)
-nbi[1]
+halo = [Int[DGG.cellposition(grid, nb) for nb in DGG.neighbors(grid, c)] for c in cells]
+length.(halo) |> extrema
+
+# HEALPix has 8 neighbours nearly everywhere; 24 cells per grid sit at a
+# degree-3 vertex of the base tiling and have only 7.
+
+count(==(7), length.(halo))
 
 # ## Smoothing, edges, and diffusion
 #
-# `stencil(f, A; nbidx)` applies `f(center, neighbors::Vector)` to every cell
-# and returns a new array over the same lookup. Averaging the neighborhood
-# smooths; the discrete Laplacian `mean(neighbors) - center` is an edge
-# detector.
+# With the table in hand a stencil is one comprehension: `f(centre, neighbours)`
+# over every position. Averaging the neighbourhood smooths; the discrete
+# Laplacian `mean(neighbours) - centre` is an edge detector.
 
-smoothed = stencil((c, nbs) -> mean(vcat(c, nbs)), A; nbidx = nbi)
-lap = stencil((c, nbs) -> mean(nbs) - c, A; nbidx = nbi)
-var(parent(A)), var(parent(smoothed))
+stencil(f, v) = [f(v[i], v[halo[i]]) for i in eachindex(v)]
 
-# Each pass mixes a cell with its neighbors one hop out, so `k` repeated passes
+smoothed = stencil((c, nbs) -> mean(vcat(c, nbs)), values)
+laplacian = stencil((c, nbs) -> mean(nbs) - c, values)
+(var(values), var(smoothed))
+
+# Each pass mixes a cell with its neighbours one hop out, so `k` repeated passes
 # give a `k`-hop receptive field — iterated smoothing is diffusion.
 
-smooth_pass(X) = stencil((c, nbs) -> mean(vcat(c, nbs)), X; nbidx = nbi)
+diffused = foldl((v, _) -> stencil((c, nbs) -> mean(vcat(c, nbs)), v), 1:10; init = values)
+var(diffused)
 
-function diffuse(X, passes)
-    for _ in 1:passes
-        X = smooth_pass(X)
-    end
-    return X
-end
+# ## Plotting
+#
+# `cell_polygon` returns a unit-sphere polygon; one `GO.transform` takes the
+# whole vector to lon/lat. The `+over` flag keeps PROJ from wrapping the cells
+# that straddle ±180°, a hairline stroke in the fill colour hides antialiasing
+# seams, and the Laplacian panel gets a diverging colormap centred at 0 so the
+# band edges at ±30° stand out against the noise.
 
-diffused = diffuse(A, 10)
-nothing
-
-# `cell_polygons` returns one lon/lat polygon per stored cell, ready to hand to
-# `poly!`. The `+over` flag keeps PROJ from wrapping the cells that straddle
-# ±180°, a hairline stroke in the fill color hides antialiasing seams between
-# cells, and the Laplacian panel gets a diverging colormap centered at 0, so
-# the band edges at ±30° stand out against the noise.
-
-polys = cell_polygons(l)
-crange = extrema(vals)
-lmax = maximum(abs, parent(lap))
+polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
+crange = extrema(values)
+lmax = maximum(abs, laplacian)
 
 fig = Figure(size = (650, 1000))
-ax1 = GeoAxis(fig[1, 1]; dest = "+proj=moll +over", title = "original")
-poly!(ax1, polys; color = collect(parent(A)), colorrange = crange,
-    strokecolor = collect(parent(A)), strokewidth = 0.7)
-ax2 = GeoAxis(fig[2, 1]; dest = "+proj=moll +over", title = "after 10 smoothing passes")
-poly!(ax2, polys; color = collect(parent(diffused)), colorrange = crange,
-    strokecolor = collect(parent(diffused)), strokewidth = 0.7)
-ax3 = GeoAxis(fig[3, 1]; dest = "+proj=moll +over", title = "Laplacian of the original")
-poly!(ax3, polys; color = collect(parent(lap)), colormap = :balance,
-    colorrange = (-lmax, lmax), strokecolor = collect(parent(lap)),
-    strokewidth = 0.7)
+for (row, (title, v, kw)) in enumerate((
+        ("original", values, (; colorrange = crange)),
+        ("after 10 smoothing passes", diffused, (; colorrange = crange)),
+        ("Laplacian of the original", laplacian,
+            (; colormap = :balance, colorrange = (-lmax, lmax)))))
+    ax = GeoAxis(fig[row, 1]; dest = "+proj=moll +over", title)
+    poly!(ax, polys; color = v, strokecolor = v, strokewidth = 0.7, kw...)
+end
 fig
+
+# ## The same three lines on any system
+#
+# Nothing above named HEALPix except the singleton. `neighbors` and
+# `cellposition` are interface methods, so the halo table is built the same way
+# on every registered system — only the degree changes.
+
+for sys in DGG.systems()
+    l = sys isa Union{DGG.IGeo7System, DGG.H3System} ? 3 : 4
+    g = DGG.levelgrid(sys, l)
+    degrees = [length(DGG.neighbors(g, DGG.cellindex(g, i))) for i in 1:DGG.ncells(g)]
+    edges = [length(DGG.neighbors(g, DGG.cellindex(g, i); connectivity = DGG.Edge()))
+             for i in 1:DGG.ncells(g)]
+    println(rpad(nameof(typeof(sys)), 16), " level $l: ", DGG.ncells(g),
+            " cells, vertex degree ", extrema(degrees), ", edge degree ", extrema(edges))
+end

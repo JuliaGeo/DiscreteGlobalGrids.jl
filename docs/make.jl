@@ -13,7 +13,7 @@ WGLMakie.activate!()
 # The tutorials are Literate.jl scripts; generate their markdown next to the
 # sources, where the `pages` list below expects it. Execution happens in
 # Documenter's @example blocks, not here.
-for f in ("stencils", "zonal", "regridding", "healpix_astronomy")
+for f in ("stencils", "zonal", "regridding", "hydrology", "healpix_astronomy")
     Literate.markdown(joinpath(@__DIR__, "src", "tutorials", f * ".jl"),
                       joinpath(@__DIR__, "src", "tutorials");
                       flavor = Literate.DocumenterFlavor(), execute = false)
@@ -36,6 +36,7 @@ makedocs(;
             "Stencil operations" => "tutorials/stencils.md",
             "Zonal statistics" => "tutorials/zonal.md",
             "Regridding a time series" => "tutorials/regridding.md",
+            "Hydrology: a DEM on an IGEO7 grid" => "tutorials/hydrology.md",
             "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
         ],
     ],

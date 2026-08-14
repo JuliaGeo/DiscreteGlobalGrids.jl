@@ -1,128 +1,143 @@
 # # Zonal statistics
 #
-# Which cells of a discrete global grid lie inside a polygon, and what is the mean of a
-# field over them? This tutorial answers that for Texas on a whole-globe HEALPix grid,
-# twice: first with the built-in `zonal` and `Touching` machinery, then with a custom
-# descent of the grid's spatial tree using GeometryOps' spherical predicates — written
-# entirely against `SpatialTreeInterface`, so it runs on any grid the package can treeify.
+# Which cells of a discrete global grid lie inside a polygon, and what is the
+# mean of a field over them? `query` answers the first question directly, on any
+# grid in this package, with a DE9IM predicate that says exactly which sense of
+# "inside" is meant. This page answers it for Texas on a whole-globe HEALPix
+# grid, then shows the multi-order form, which returns the same region as a few
+# hundred mixed-level cells instead of a few thousand leaf ones.
 
-using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
-using DiscreteGlobalGrids.HEALPix.HealpixLookups
-import DimensionalData as DD
 import NaturalEarth
 import GeometryOps as GO
-import GeometryOps.SpatialTreeInterface as STI
 using Statistics
 using CairoMakie, GeoMakie
 CairoMakie.activate!()
-nothing
 
 # ## Texas and a field on the globe
 #
-# Texas comes from Natural Earth's admin-1 dataset. The grid is every HEALPix cell at
-# level 7 (`nside = 128`, 196608 cells), which `DGGSGlobeIds` provides lazily — the id
-# vector is computed, not stored — and the data is a smooth synthetic field sampled at
-# the cell centers.
+# Texas comes from Natural Earth's admin-1 dataset. The grid is every HEALPix
+# cell at level 7 (`nside = 128`, 196608 cells), and the data is a smooth
+# synthetic field sampled at the cell centroids.
 
 fc = NaturalEarth.naturalearth("admin_1_states_provinces", 50)
 texas = fc.geometry[findfirst(==("Texas"), fc.name)]
 
-level = 7
-lookup = HealpixLookup(DGGSGlobeIds(HEALPixDGGS(), level))
+grid = DGG.levelgrid(DGG.HEALPixSystem(), 7)
+lonlat = GO.UnitSpherical.GeographicFromUnitSphere()
 field(lon, lat) = 20 - 0.5 * (lat - 25) + 2 * sind(3 * lon)
-A = DD.DimArray([field(lon, lat) for (lon, lat) in cell_centers(lookup)], Cells(lookup); name = :tsynth)
-nothing
 
-# ## The built-in way
+# ## The query
 #
-# `zonal` reduces over the cells whose center falls inside the geometry, and the
-# `Touching` selector subsets to every cell whose polygon intersects it. HEALPix cells
-# are equal-area, so the unweighted mean *is* the areal mean — no latitude weights.
-
-tex_mean = only(zonal(mean, A; of = texas))
-touching = A[Cells(Touching(texas))]
-(; tex_mean, n_touching = length(touching))
-
-# ## The generic descent
+# `Within(texas)` keeps only the cells wholly inside the outline; `Intersects`
+# keeps every cell that touches it. Both return **sorted typed cell ids**, and
+# `cellposition` turns an id into the position that indexes a data vector — the
+# two directions of the one bijection the interface is built on.
 #
-# What `zonal` does internally generalizes to every DGGS in this package, because the id
-# hierarchy *is* a spatial tree — `treeify` hands the grid to you as one, speaking
-# `SpatialTreeInterface`. First prepare Texas once, on the spherical manifold:
-# this builds the point locators and edge index (~100 ms), and by default also validates
-# the rings for spherical use, so do it outside any loop.
+# The descent prunes whole subtrees against the conservative `node_extent` caps,
+# so of 196608 cells only the handful straddling the outline is ever handed to
+# an exact spherical predicate.
 
-prep = GO.prepare(GO.RelateNG(; manifold = GO.Spherical()), texas)
-nothing
+interior = DGG.query(grid, DGG.Within(texas))
+touching = DGG.query(grid, DGG.Intersects(texas))
+(; n_interior = length(interior), n_touching = length(touching))
 
-# Spherical predicates treat polygon edges as great-circle arcs, so a coarse cell's
-# four-vertex polygon is already an honest region on the sphere — no densification
-# hacks. They also consume the cells' native unit-sphere geometry directly, so the
-# whole walk stays on the sphere; Texas is the only lon/lat object, and `prepare`
-# ingested it once. The walk prunes any subtree disjoint from Texas, accepts a covered
-# subtree wholesale — `STI.depth_first_search` with an always-true predicate enumerates
-# its leaf indices, which for a dense whole-globe tree are the cell ordinals — and only
-# cells reached at the leaves, the ones straddling the outline, are classified
-# individually, by their center. The tree's root is a synthetic whole-sphere node
-# (`node_level` of `-1`), which the walk recurses through without a polygon test.
+# HEALPix cells are equal-area, so the unweighted mean over a cell set *is* the
+# areal mean — no latitude weights. The two predicates bracket the answer, and
+# at this resolution they agree to a hundredth of a degree.
 
-function descend!(interior, boundary, prep, sys, leaf_level, node)
-    if node_level(node) >= 0  # the root is synthetic: no cell, no polygon test
-        poly = cell_polygon_unitsphere(sys, node_level(node), node_id(node))
-        GO.relate_predicate(prep, GO.pred_disjoint(), poly) && return nothing
-        if GO.relate_predicate(prep, GO.pred_covers(), poly)
-            return STI.depth_first_search(i -> push!(interior, i), Returns(true), node)
-        end
-    end
-    if STI.isleaf(node)
-        for (i, _) in STI.child_indices_extents(node)
-            center = DGG.cell_center(sys, leaf_level, ordinal_to_cell(sys, leaf_level, i))
-            GO.relate_predicate(prep, GO.pred_covers(), center) && push!(boundary, i)
-        end
-    else
-        for child in STI.getchild(node)
-            descend!(interior, boundary, prep, sys, leaf_level, child)
-        end
-    end
-    return nothing
-end
+zonal(cells) = mean(field(lonlat(DGG.cell_centroid(grid, c))...) for c in cells)
+(; interior = zonal(interior), touching = zonal(touching))
 
-tree = treeify(DGGSGrid(HEALPixDGGS(), level))
-interior, boundary = Int[], Int[]
-descend!(interior, boundary, prep, HEALPixDGGS(), level, tree)
-(; n_interior = length(interior), n_boundary = length(boundary))
+# The rim is the difference of the two sets, and every predicate the engine
+# implements is available the same way — `Covers`, `Touches`, `Overlaps`,
+# `Disjoint`, and the rest.
 
-# The descent selects exactly the cells `zonal` averaged over, so the means agree — and
-# of 196608 cells on the globe, only the handful of leaf cells along the outline were
-# ever handed to an exact predicate; the interior arrived wholesale as accepted
-# subtrees, and everything else was pruned at coarse levels.
+rim = setdiff(touching, interior)
+length(rim)
 
-ords = sort!(vcat(interior, boundary))
-descent_mean = mean(A[Cells(ords)])
-(; descent_mean, tex_mean, agree = descent_mean ≈ tex_mean)
-
-# Boundary cells are included whenever their center is inside, so they straddle the
-# outline; the interior arrived as accepted subtrees. The walk only spoke
-# `SpatialTreeInterface` — `isleaf`, `getchild`, `child_indices_extents`,
-# `depth_first_search` — plus `node_level`/`node_id` to ask the kernel for each node's
-# polygon, so it runs unchanged on anything the package can `treeify`. Its accept and
-# prune steps do assume a parent cell geographically contains its descendants — true
-# for a congruent grid like HEALPix; for overhanging hierarchies like H3, test the
-# conservative `subtree_cap` instead of the parent polygon. And to classify many
-# geometries at once against the same tree, `STI.dual_depth_first_search` walks a tree
-# of geometries against the grid tree so both sides prune.
+# ## The multi-order form
 #
-# The descent never left the sphere; only the plot wants lon/lat.
+# `MultiOrderCoverage` asks the same question but keeps the answer compressed:
+# the interior is emitted at the **coarsest level that is still wholly inside**,
+# and only the boundary is refined down to the leaf. What comes back is a
+# mixed-level `MultiOrderCellSet` in space-filling-curve order.
 
-cellpoly(o) = GO.transform(GO.GeographicFromUnitSphere(),
-    cell_polygon_unitsphere(HEALPixDGGS(), level, ordinal_to_cell(HEALPixDGGS(), level, o)))
+set = DGG.query(DGG.HEALPixSystem(), DGG.MultiOrderCoverage(texas); level = 7)
+set
+
+# `level_ranges` expands it to sorted, disjoint **position** ranges at any level
+# no shallower than its coarsest cell. That is the handshake a lazy cell axis
+# consumes: the ranges are what gets stored, and the leaf ids are computed from
+# them on demand.
+
+ranges = DGG.level_ranges(set, 7)
+(; n_cells = length(set), n_ranges = length(ranges), n_leaves = sum(length, ranges))
+
+# Coverage means *covering*, not *covered by*: the emitted set covers Texas, so
+# it is a superset of `touching` rather than of `interior`.
+
+leaves = [DGG.cellindex(grid, i) for r in ranges for i in r]
+issubset(touching, leaves)
+
+# ## Plotting
+#
+# Only the plot wants lon/lat; everything above stayed on the sphere.
+
+topolys(cells) = GO.transform(GO.GeographicFromUnitSphere(),
+    [DGG.cell_polygon(DGG.levelgrid(DGG.HEALPixSystem(), DGG.level(c)), c) for c in cells])
 
 fig = Figure(size = (700, 620))
 ax = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
-    limits = ((-107.5, -92.5), (25.0, 37.5)), title = "HEALPix level-7 cells selected for Texas")
-poly!(ax, cellpoly.(interior); color = :steelblue, strokecolor = :white, strokewidth = 0.5)
-poly!(ax, cellpoly.(boundary); color = :orange, strokecolor = :white, strokewidth = 0.5)
+    limits = ((-107.5, -92.5), (25.0, 37.5)),
+    title = "HEALPix multi-order coverage of Texas")
+poly!(ax, topolys(collect(set)); color = DGG.level.(collect(set)),
+    colormap = :viridis, strokecolor = :white, strokewidth = 0.5)
 poly!(ax, texas; color = :transparent, strokecolor = :black, strokewidth = 2)
-axislegend(ax, [PolyElement(color = :steelblue), PolyElement(color = :orange)],
-    ["whole subtrees accepted", "boundary cells (center inside)"]; position = :lt)
 fig
+
+# Cells are coloured by their level: the interior arrives as a few coarse cells,
+# the outline as many fine ones.
+
+# ## The DimensionalData layer, as it should read
+#
+# A cube over this region wants ONE dimension naming its cells at the leaf
+# level, backed by the coverage rather than by the expanded id vector — memory
+# `O(length(set))`, not `O(sum(length, ranges))`.
+#
+# !!! warning "Aspirational — T16"
+#     Nothing implements the block below yet. It is the API this page wants,
+#     written out as the acceptance test for the DimensionalData layer, and it
+#     is a plain code fence rather than an `@example`, so the build never runs
+#     it.
+#
+# ```julia
+# lk = DGG.CellLookup(set)                     # MOC-backed, leaf level 7
+# length(lk) == sum(length, ranges)            # the logical content
+# lk[k]                                        # position -> typed leaf id, on demand
+# DGG.cellposition(lk, c)                      # typed leaf id -> position, or nothing
+#
+# A = DD.DimArray(values, DGG.Cells(lk); name = :tavg)
+# A[DGG.Cells(DD.At(c))]                       # a typed id
+# A[DGG.Cells(DD.Contains(-97.7, 30.3))]       # a lon/lat point, via `cellat`
+# A[DGG.Cells(DGG.Covering(travis_county))]    # a polygon: coverage ∩ backing
+#
+# mean(A[DGG.Cells(DGG.Covering(texas))])      # this whole page, in one line
+# ```
+
+# ## The same query on every system
+#
+# `query` is an interface method, so the zonal selection above is not a HEALPix
+# recipe. Only the cell counts differ.
+
+levels = Dict(DGG.IGeo7System => 4, DGG.H3System => 3)   # aperture 7; the rest are 4
+for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.HEALPixSystem()))
+    base = sys isa DGG.AuthalicSystem ? parent(sys) : sys
+    l = get(levels, typeof(base), 6)
+    g = DGG.levelgrid(sys, l)
+    inner, outer = DGG.query(g, DGG.Within(texas)), DGG.query(g, DGG.Intersects(texas))
+    name = sys isa DGG.AuthalicSystem ? "Authalic($(nameof(typeof(base))))" :
+           string(nameof(typeof(sys)))
+    println(rpad(name, 24), "level $l: ", lpad(length(inner), 6), " within, ",
+            lpad(length(outer), 6), " touching")
+end

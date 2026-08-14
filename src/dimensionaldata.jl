@@ -27,6 +27,7 @@ import ..DiscreteGlobalGrids: Helpers
 import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
 
+import SmallCollections
 import DimensionalData as DD
 import DimensionalData: Dimensions, Lookups
 
@@ -366,14 +367,26 @@ Base.@propagate_inbounds Base.getindex(lk::CellLookup, k::CartesianIndex{1}) = l
 
 for f in (:getindex, :view, :dotview)
     @eval Base.$f(lk::CellLookup, ::Colon) = lk
-    @eval Base.$f(lk::CellLookup, i::AbstractArray{Bool}) = _subset(lk, findall(i))
     @eval Base.$f(lk::CellLookup, i::AbstractArray{<:Integer}) = _subset(lk, i)
 end
+
+# SmallCollections' own `getindex(::AbstractVector, ::AbstractFixedOrSmall...)`
+# is neither more nor less specific than the line above, and a neighbour list is
+# exactly one of those vectors, so the tie is broken towards the same subset
+# rather than left as an ambiguity for whoever indexes an axis by a halo.
+Base.getindex(lk::CellLookup,
+    i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(lk, i)
 
 # Ascending indices keep the windowed form; anything else — a permutation, a
 # repeat, a reversal — is not a set of leaf windows and is answered with the
 # ordinary DimensionalData lookup that can hold it. That case materialises, and
 # only that case.
+#
+# A `Bool` array is a mask rather than a list of ones, and `Bool <: Integer`, so
+# the branch is here rather than in a second signature: dispatching on
+# `AbstractArray{Bool}` would re-open the ambiguity the method above closes.
+_subset(lk::CellLookup, mask::AbstractArray{Bool}) = _subset(lk, findall(mask))
+
 function _subset(lk::CellLookup, idx::AbstractArray{<:Integer})
     n = length(lk)
     positions = Vector{Int}(undef, length(idx))

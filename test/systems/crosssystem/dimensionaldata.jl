@@ -43,6 +43,7 @@ import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
 import GeoInterface as GI
 import GeometryOps as GO
+import SmallCollections
 const CL = DGG.CellLookups
 
 # ---------------------------------------------------------------------------
@@ -365,6 +366,14 @@ end
     mask = falses(length(lk));
     mask[2] = mask[4] = true
     @test collect(lk[mask]) == ids[[2, 4]]
+    # A neighbour list is a `SmallVector`, and indexing an axis by one is
+    # ambiguous unless the tie against SmallCollections' own method is broken.
+    @test collect(lk[SmallCollections.SmallVector{8,Int}([3, 4, 5])]) == ids[3:5]
+    # Stated as "none of MY methods", not "none at all", so that an ambiguity
+    # introduced upstream fails wherever it belongs rather than here.
+    @test !any(Test.detect_ambiguities(DGG; recursive=true)) do pair
+        any(m -> occursin("dimensionaldata.jl", string(m.file)), pair)
+    end
 
     # `parent` is the backing, deliberately, so the collection surface that
     # DimensionalData derives from `parent` is answered by the lookup instead.

@@ -15,7 +15,6 @@ import ArchGDAL
 import NaturalEarth
 import GeometryOps as GO
 import GeoInterface as GI
-using Statistics
 import Dates
 using CairoMakie, GeoMakie
 CairoMakie.activate!()

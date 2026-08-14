@@ -187,7 +187,7 @@ them and `docs/src/all_dggs.md` draws every system.
 | Path | Contents |
 |:--|:--|
 | `src/interface/` | the type vocabulary and every generic's contract — declarations and trait defaults, no algorithms |
-| `src/fallbacks/` | the generic implementations: `HierarchicalLevelGrid`, `PartialGrid`, `AuthalicGrid`/`AuthalicSystem`, `HierarchicalGridCursor`, `MultiOrderCellSet`, `CellVector`, the subtree iterators, the query engine |
+| `src/fallbacks/` | the generic implementations: `HierarchicalLevelGrid`, `PartialGrid`, `AuthalicGrid`/`AuthalicSystem`, `HierarchicalGridCursor`, `MultiOrderCellSet`, `CellVector`, the subtree iterators, the clipped stencils, the query engine |
 | `src/dimensionaldata.jl` | the cube face of `CellVector`: `CellLookup`, `Cells`, `Covering` |
 | `src/systems/` | one directory per system, plus `src/systems/ISEA/` — the Snyder/icosahedron basis IGEO7 and ISEA4R share |
 | `src/core/`, `src/Helpers/` | the authalic manifold pair, and shared allocation-free primitives |
@@ -258,7 +258,7 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**936,602 assertions, ~2m40s warm**, with 14 broken: A5's documented
+**945,192 assertions, ~2m55s warm**, with 14 broken: A5's documented
 `has_sorted_subtrees` skips, and the destination-direction conservation arms
 that wait on the upstream clipper fix.
 

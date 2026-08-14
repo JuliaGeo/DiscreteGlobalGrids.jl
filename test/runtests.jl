@@ -50,6 +50,11 @@ using DiscreteGlobalGrids
     # each automaton against its own oracle, so a failure here is the iterator
     # protocol or the sharing, not the walk.
     include("systems/crosssystem/subtree_iterators.jl")
+    # T21: adjacency on a SUBSET, which is the complete level's answer clipped
+    # to membership. Straight after the file above because the rooted halo table
+    # is built from those two iterators, so a failure there is the walk and a
+    # failure here is the clipping.
+    include("systems/crosssystem/stencils.jl")
     # T16: the DimensionalData cell axis, which is the multi-order set above
     # read as a cube dimension. After that file for the same reason it is after
     # the per-system suites — a failure here is the lookup, not the coverage.

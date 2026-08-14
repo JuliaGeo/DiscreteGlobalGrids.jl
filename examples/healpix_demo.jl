@@ -151,9 +151,12 @@ check("the field is smooth, so its Laplacian is small",
     maximum(abs, laplacian) < 1.0; detail="max |lap| = $(round(maximum(abs, laplacian); digits=5))")
 check("only crop-boundary cells lose neighbours", 0 < full < length(halo))
 
-# `neighbors` on the crop itself answers the same question directly — the
-# generic geometric fallback, no HEALPix fast path, so it is much slower but it
-# is the spelling that needs no second grid.
+# `neighbors` on the crop itself answers the same question directly, and since
+# T21 it answers it the same WAY: adjacency on a subset is the complete level's
+# clipped to membership, so the call routes through HEALPix's own fast path and
+# then drops what the crop does not hold. `DGG.halo_table(grid)` is the whole
+# table above in one call, up to row order: the rows above keep the globe's
+# counter-clockwise winding, and a halo table's are ascending positions.
 sample = 1:50:DGG.ncells(grid)
 check("neighbors(crop, c) == the filtered globe halo",
     all(sort(Int[DGG.cellposition(grid, nb)

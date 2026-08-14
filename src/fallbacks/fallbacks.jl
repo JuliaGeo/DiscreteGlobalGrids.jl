@@ -25,7 +25,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     ncells, cellindex, cell_boundary, cell_centroid,
     cellposition, rawid, reindex, cellindextypes,
     cell_polygon, cell_area, cell_extent, getcell,
-    cellat, neighbors, ring, treeify, query, system, level,
+    cellat, neighbors, ring, halo_table, treeify, query, system, level,
     cellindextype, levels, max_level, levelgrid, rootcells, children,
     node_extent, cap_inflation, max_neighbors, has_sorted_subtrees,
     ancestor, descendants, descendant_range,
@@ -68,5 +68,8 @@ include("locate.jl")
 include("query.jl")
 include("multiorder.jl")
 include("cell_vector.jl")
+# Last: the stencil layer reads every collection above it — the subset grid, the
+# compressed vector, the multi-order set — and the lazy rim walkers besides.
+include("stencil.jl")
 
 end # module Fallbacks

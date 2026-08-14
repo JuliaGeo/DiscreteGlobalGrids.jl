@@ -20,7 +20,15 @@ end
 
 Base.size(v::SubtreeIds) = (v.n,)
 Base.IndexStyle(::Type{<:SubtreeIds}) = Base.IndexLinear()
-Base.getindex(v::SubtreeIds, i::Int) = cellindex(v.grid, v.first + i - 1)
+
+# The check is written out rather than left to Base: a `getindex(::T, ::Int)`
+# defined directly is the whole method, so without it a position past the end
+# resolves an id from the NEXT subtree instead of throwing — and `PartialGrid`'s
+# `cellindex`, which the position contract says bounds-checks, is this call.
+Base.@propagate_inbounds function Base.getindex(v::SubtreeIds, i::Int)
+    @boundscheck checkbounds(v, i)
+    return cellindex(v.grid, v.first + i - 1)
+end
 
 # Positions of a complete level grid ascend in canonical id order, so the O(n)
 # verification `PartialGrid` runs on an arbitrary vector has nothing to find.
@@ -140,6 +148,12 @@ cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.comp
 # subset changes which cells exist, never their geometry, so the complete grid
 # is the authority.
 cell_area(grid::PartialGrid, c::AbstractCellIndex) = cell_area(grid.complete, c)
+
+# Membership as a predicate, which is what the subset law in `neighbors`'
+# contract is written with: `filter(in(sub), ring(complete, c, k))` has to RUN,
+# and Base's fallback would need a grid to be iterable. `CellVector` carries the
+# same method for the same reason.
+Base.in(c::AbstractCellIndex, grid::PartialGrid) = cellposition(grid, c) !== nothing
 
 # The ids are sorted, so the O(n) generic scan is two comparisons here.
 function cellposition(grid::PartialGrid, c::AbstractCellIndex)

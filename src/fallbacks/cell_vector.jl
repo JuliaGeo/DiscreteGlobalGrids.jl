@@ -530,8 +530,28 @@ handshake that lets a regridder consume a compressed coverage directly.
 The grid keeps the windows and drops the backing: [`cellset`](@ref)'s origin is
 provenance the grid never reads, and a regridder should not hold a coverage set
 alive behind it. `CellVector(PartialGrid(cv))` comes back in O(1) either way.
+
+The **root does not survive** the round trip: a `CellVector` stores windows, not
+an ancestor, so a grid that came back through one is unrooted even when its
+windows are exactly a subtree. Cells and positions are identical; what is lost
+is [`halo_table`](@ref)'s interior/rim fast path, which asks for a root. Build
+the grid from the root cell when the stencil matters.
 """
 PartialGrid(cv::CellVector) = PartialGrid(system(cv), cv.level, _bare(cv, cv.backing))
+
+# The other half of that round trip, which `PartialGrid`'s generic
+# `searchsortedfirst` would otherwise walk the long way: comparing against a
+# LAZY id vector resolves one `cellindex` per probe, so a membership test on a
+# grid built from a cell vector cost O(log #cells) DECODES where the vector
+# itself answers in O(log #windows) integer comparisons. Same answer, and it is
+# the vector's own answer rather than a second one.
+#
+# The system parameter is spelled with its DECLARED bound rather than as
+# `<:Any`, for the reason `_origin` gives above: a wildcard WIDENS a bounded
+# parameter, so `PartialGrid{<:Any,<:CellVector}` is a subtype of the general
+# signature without being more specific than it — an ambiguity, not an override.
+cellposition(grid::PartialGrid{<:AbstractHierarchicalGridSystem,<:CellVector},
+    c::AbstractCellIndex) = cellposition(grid.ids, c)
 
 # Dispatched on the backing's value, for the reason `_origin` gives above.
 _bare(cv::CellVector, backing) = CellVector(cv.windows, cv.grid, nothing, cv.level)

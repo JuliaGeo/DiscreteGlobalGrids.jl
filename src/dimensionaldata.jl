@@ -32,7 +32,8 @@ module CellLookups
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, ncells, cellindex, cellposition, cellat, level, system,
-    levelgrid, cellindextype, has_sorted_subtrees, descendants, query
+    levelgrid, cellindextype, has_sorted_subtrees, descendants, query,
+    neighbors, ring, halo_table, Connectivity, Vertex
 import ..DiscreteGlobalGrids: Helpers
 import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
@@ -276,6 +277,36 @@ it — including when `c` is at another level. The inverse of `lk[k]`, and the
 half of the bijection every selector ends at.
 """
 cellposition(lk::CellLookup, c::AbstractCellIndex) = cellposition(parent(lk), c)
+
+"""
+    neighbors(lk::CellLookup, c, k = 1; connectivity = Vertex())
+    ring(lk::CellLookup, c, k; connectivity = Vertex())
+    neighbors(lk::CellLookup, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
+    ring(lk::CellLookup, p::Int, k; connectivity = Vertex()) -> Vector{Int}
+    halo_table(lk::CellLookup, k = 1; connectivity = Vertex()) -> Vector{Vector{Int}}
+
+Adjacency on the axis: the system's neighbourhood clipped to the cells the
+lookup holds, in ids or in positions along the axis. Every one of them is the
+[`CellVector`](@ref)'s, because a `CellLookup` is one wearing a `Lookup` hat —
+so a stencil over a cube and a stencil over a plain vector are the same call
+with the same answer.
+"""
+neighbors(lk::CellLookup, c::AbstractCellIndex, k::Integer=1;
+    connectivity::Connectivity=Vertex()) =
+    neighbors(parent(lk), c, k; connectivity)
+
+ring(lk::CellLookup, c::AbstractCellIndex, k::Integer;
+    connectivity::Connectivity=Vertex()) = ring(parent(lk), c, k; connectivity)
+
+neighbors(lk::CellLookup, p::Int, k::Integer=1;
+    connectivity::Connectivity=Vertex()) =
+    neighbors(parent(lk), p, k; connectivity)
+
+ring(lk::CellLookup, p::Int, k::Integer;
+    connectivity::Connectivity=Vertex()) = ring(parent(lk), p, k; connectivity)
+
+halo_table(lk::CellLookup, k::Integer=1; connectivity::Connectivity=Vertex()) =
+    halo_table(parent(lk), k; connectivity)
 
 """
     PartialGrid(lk::CellLookup) -> PartialGrid

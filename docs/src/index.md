@@ -55,8 +55,8 @@ all six, and its docstring is the comparison table.
 The [DGGS gallery](all_dggs.md) draws every system. The tutorials are each the
 shortest honest path to one result:
 
-  - [Stencil operations](tutorials/stencils.md) — `neighbors` + `cellposition`
-    as a halo table, then smoothing, Laplacians and diffusion.
+  - [Stencil operations](tutorials/stencils.md) — `halo_table` on a whole level
+    and on a subset of one, then smoothing, Laplacians and diffusion.
   - [Zonal statistics](tutorials/zonal.md) — `query` with `Within` and
     `Intersects`, and the multi-order coverage that compresses the answer.
   - [Regridding a time series](tutorials/regridding.md) — conservative
@@ -64,6 +64,7 @@ shortest honest path to one result:
   - [Multi-order coverage](tutorials/multiorder.md) — one region at every
     resolution at once: giant cells inside, leaf cells along the coastline.
   - [Hydrology: a DEM on an IGEO7 grid](tutorials/hydrology.md) —
-    `MultiOrderCoverage`, `PartialGrid` over one subtree, and flow routing.
+    `MultiOrderCoverage`, `PartialGrid` over one subtree, and flow routing off
+    its `halo_table`.
   - [The sky in HEALPix](tutorials/healpix_astronomy.md) — nested order,
     cone searches against a `SphericalCap`, and a galactic-plane cut.

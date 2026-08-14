@@ -98,6 +98,13 @@ Return cells within `k` adjacency steps, excluding `c`, as outward-concatenated
 rings. A breadth-first traversal orders each ring counter-clockwise by measured
 azimuth from the smallest-id ring-1 neighbor; exact ties use canonical id.
 Cells outside grid coverage are omitted.
+
+This walk measures distance INSIDE the grid it is given, so on a subset it
+answers induced-subgraph distance rather than the clipped-to-membership law
+[`neighbors`](@ref) states — a hole here lengthens the path around itself. The
+two agree at `k == 1` and part company from `k == 2`. The law belongs to the
+named subset types ([`PartialGrid`](@ref), [`CellVector`](@ref), `CellLookup`),
+which override this method; a new subset grid owes its own override.
 """
 function neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer=1;
         connectivity::Connectivity=Vertex())

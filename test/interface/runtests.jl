@@ -84,7 +84,7 @@ end
     # The interface names are all there...
     for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :cellposition,
               :rawid, :reindex, :cellindextypes, :cell_polygon, :cell_area,
-              :cell_extent, :getcell, :cellat, :neighbors, :ring, :treeify,
+              :cell_extent, :getcell, :cellat, :neighbors, :ring, :halo_table, :treeify,
               :query, :system, :level, :cellindextype, :levels, :max_level,
               :levelgrid, :rootcells, :children, :node_extent, :cap_inflation,
               :max_neighbors, :has_sorted_subtrees, :ancestor, :descendants,

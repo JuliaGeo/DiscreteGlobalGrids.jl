@@ -132,6 +132,15 @@ using .A5: A5System, A5Cell
 using .S2: S2System
 using .ISEA4R: ISEA4RSystem
 
+# The DimensionalData layer. In-package rather than a package extension because
+# DimensionalData is a hard dependency, and because a cube axis is the shape
+# most consumers meet this package in — not an optional garnish. Included after
+# the systems so its cross-system tests can be written against `systems()`; it
+# depends on nothing any of them define.
+include("dimensionaldata.jl")
+
+using .CellLookups: CellLookup, Cells, Covering
+
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
 
@@ -248,6 +257,14 @@ export HierarchicalLevelGrid, PartialGrid, HierarchicalGridCursor
 export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
 export is_contained, coarsest_contained, cell_polygons
+
+# --- The DimensionalData layer ---------------------------------------------
+# A lookup, the dimension it goes in, and the one selector DimensionalData does
+# not already have a spelling for. `At` and `Contains` are DimensionalData's own
+# and are not re-exported here: this package already exports DE9IM's `Contains`,
+# a predicate about geometries rather than a selector about positions, and the
+# two must never end up as the same name in a caller's namespace.
+export CellLookup, Cells, Covering
 
 # --- Grid systems ----------------------------------------------------------
 # One singleton and one canonical id type per system, plus the registry that

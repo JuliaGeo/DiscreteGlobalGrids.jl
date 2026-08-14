@@ -34,9 +34,10 @@ and recurses into the children of a cell the target's boundary crosses, down to
 the requested level; cells still crossed at that level are emitted too, so the
 set **covers** the target rather than being covered by it.
 
-The two kinds of emission are told apart by [`is_contained`](@ref) — the
-shallowest cell of a set is a cell that fits inside the target only when that
-says so, and [`coarsest_contained`](@ref) is the accessor that asks.
+[`is_contained`](@ref) reports which emissions were *proven* to fit — the first
+kind, and only those; a cell emitted at the deepest level is never asked. The
+shallowest cell of a set fits inside the target only when that flag says so, and
+[`coarsest_contained`](@ref) is the accessor that asks.
 
 !!! warning "Coverage is a statement about the LEAVES, not about the drawn cells"
     The set is a statement about the deepest level: every cell of that level
@@ -97,8 +98,8 @@ and falls back to `(level, id)` order.
     interval of it. `descendants(sys, c, l)` still names them, so the set can
     always be expanded — just not to a short list of ranges.
 
-[`is_contained`](@ref) says whether each stored cell was emitted because it fits
-inside the target or because the traversal ran out of depth on it;
+[`is_contained`](@ref) says which stored cells were proven to fit inside the
+target — not which ones do, a distinction that docstring spells out;
 [`cell_polygon`](@ref) and [`cell_polygons`](@ref) read the geometry of a
 mixed-level member without the caller resolving a level grid per cell.
 """
@@ -135,10 +136,10 @@ function _multi_order(sys::AbstractHierarchicalGridSystem, target_value, maxleve
         "level $maxlevel is outside $(typeof(sys))'s levels $(levels(sys))"))
     target = _query_target(target_value)
     cells = cellindextype(sys)[]
-    # Parallel to `cells`: whether the traversal emitted that cell because the
-    # cell is inside the target, or because it ran out of depth on it. The
-    # traversal is the only place that knows, and the difference is what
-    # `coarsest_contained` needs.
+    # Parallel to `cells`: `true` exactly where `Within` was asked and held.
+    # Emissions at `maxlevel` are never asked, so `false` there records that
+    # nothing was proven, not that the cell sticks out. `is_contained` documents
+    # the asymmetry and why it is the contract.
     contained = BitVector()
     # One level grid per level, built once rather than per visited cell: the
     # traversal touches every level from the roots down, and `levelgrid` is
@@ -175,8 +176,11 @@ function _coverage_visit!(cells, contained, sys, target, c, maxlevel::Int, grids
     grid = grids[lc-top+1]
     meets = _matches(DE9IM.Intersects(nothing), target, grid, c)
     if lc >= maxlevel
-        # Still crossed at the deepest level: emitted so that the set covers the
-        # target, and NOT contained by it.
+        # Emitted so that the set covers the target, and flagged unproven
+        # WITHOUT asking `Within`. Many of these cells do fit; asking would cost
+        # one ~48 KB predicate call per boundary cell, thousands of them at a
+        # deep level, to label cells the traversal is finished with. The flag is
+        # a record of proof, not of geometry — see `is_contained`.
         meets && (push!(cells, c); push!(contained, false))
         return nothing
     end
@@ -236,26 +240,39 @@ system(set::MultiOrderCellSet) = set.system
 """
     is_contained(set::MultiOrderCellSet, i::Integer) -> Bool
 
-Whether the set's `i`th cell lies **inside** the coverage target, as opposed to
-merely crossing it.
+Whether the set's `i`th cell was **proven** to lie inside the coverage target.
+`true` means the traversal asked `Within` of that cell and it held. `false`
+means one of two different things, told apart by the cell's level:
 
-A coverage emits a cell for one of two reasons: the cell fits inside the target,
-or the traversal reached its maximum depth with the target's boundary still
-cutting through the cell. Both are needed for the set to cover the target and
-the result does not otherwise distinguish them, so
-`argmin(level, set)` is *not* "the coarsest cell inside the target" — when the
-target is smaller than one max-depth cell, every emission is a crossing and that
-idiom silently returns one. [`coarsest_contained`](@ref) asks the question this
-flag answers.
+  - above the set's reference level, the cell *was* asked and the target's
+    boundary crosses it — that is why the traversal descended into it. There
+    the flag is exact in both directions.
+  - at the reference level, the cell was **never asked**. The traversal ran out
+    of depth and emitted it so that the set covers; it may fit inside the target
+    or it may not.
+
+That asymmetry is the contract, not an oversight. `Within` costs on the order of
+48 KB of allocation per call against 600 bytes for `Intersects`, and a deep
+coverage finishes on thousands of reference-level cells; asking each of them
+once more would cost hundreds of megabytes and change no cell of the result.
+What the flag gives up is a label, and what it keeps is the direction that
+matters: `true` implies inside. Code that needs exact containment at the
+reference level asks `Within` itself, of the few cells it cares about.
+
+`argmin(level, set)` is therefore *not* "the coarsest cell inside the target" —
+every emission can be unproven. [`coarsest_contained`](@ref) reads this flag.
 """
 is_contained(set::MultiOrderCellSet, i::Integer) = set.contained[i]
 
 """
     coarsest_contained(set::MultiOrderCellSet) -> cell id or `nothing`
 
-The shallowest cell of `set` that lies inside the coverage target, or `nothing`
-when the traversal never got to emit one whole — which is the honest answer when
-the target is smaller than a cell of the set's deepest level.
+The shallowest cell of `set` **proven** to lie inside the coverage target, or
+`nothing` when no cell above the set's reference level was — see
+[`is_contained`](@ref) for what "proven" leaves out. Reference-level cells are
+never tested, so a set made only of them answers `nothing` even where some of
+them do fit; a target smaller than one such cell is the clearest way to land
+there, not the only one.
 
 ```julia
 set = query(sys, MultiOrderCoverage(tile); level = 12)

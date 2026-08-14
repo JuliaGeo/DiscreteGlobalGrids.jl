@@ -104,22 +104,33 @@ pair
 # Expand the set before computing with it as a region, and read the figure as
 # "which cells were chosen" rather than as the region itself.
 
-# ## Which cells fit inside, and which merely touch
+# ## Which cells were proven to fit inside
 #
 # A coverage emits a cell for one of two reasons, and the difference matters.
-# Most cells are emitted because they lie **inside** the target. The rest are
-# emitted because the traversal ran out of depth with the outline still cutting
-# through them — they are in the set so that the set *covers* the target.
+# Most cells are emitted because the traversal asked whether they lie **inside**
+# the target and the answer was yes. The rest are emitted at the deepest level,
+# because the descent ran out of depth — they are in the set so that the set
+# *covers* the target, and they are never asked the question at all.
+#
+# `is_contained` reports the first kind. It is a record of what was proven, not
+# of what is true: a level-7 cell here may well sit entirely inside California
+# and still read `false`, because nobody tested it. The containment predicate is
+# the expensive one — some eighty times the allocation of an intersection test —
+# and a deep coverage ends on thousands of those cells, so the traversal spends
+# it only where the answer changes what it does next. `true` always means
+# inside; `false` at the deepest level means untested.
 #
 # `argmin(level, coverage)` is therefore not "the coarsest cell inside
-# California": when the target is smaller than one leaf cell, every emission is
-# a crossing and that idiom silently returns one. `coarsest_contained` asks the
-# question properly and answers `nothing` when there is no such cell.
+# California" — every emission can be unproven, and that idiom would silently
+# return a boundary cell. `coarsest_contained` reads the flag instead, and
+# answers `nothing` when nothing above the deepest level was proven to fit.
 
 (; n_contained = count(i -> DGG.is_contained(coverage, i), eachindex(coverage)),
    coarsest = DGG.coarsest_contained(coverage))
 
-# A target smaller than a cell has no contained cell at all, and says so:
+# A target smaller than one cell is the clearest way to get `nothing`: every
+# emission is at the deepest level, so nothing was proven and the accessor says
+# so rather than handing back a boundary cell.
 
 small = GI.Polygon([GI.LinearRing([(-122.42, 37.77), (-122.40, 37.77),
                                    (-122.40, 37.79), (-122.42, 37.79),

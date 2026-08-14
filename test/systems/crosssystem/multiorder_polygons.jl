@@ -31,7 +31,12 @@
 #     law everywhere; stated as "no complete family is ever emitted" it is false
 #     on IGEO7 and A5, whose children cover their parent's area without
 #     covering its footprint, and the testset below pins which of the two is
-#     meant.
+#     meant — the strong form where the refinement is congruent, the weak one
+#     everywhere else.
+#   * PROVENANCE — `is_contained` is a record of what the traversal PROVED. It
+#     is exact above the leaf level and blind at it, because `Within` is never
+#     asked of a leaf-level emission, and the testset asserts both arms of that
+#     over the whole set rather than sampling the `true` one.
 #   * EXPANSION — `level_ranges` is sorted, disjoint and merged, and its leaf
 #     set contains the single-level `Intersects` query at that level, equalling
 #     it where the refinement is congruent.
@@ -301,7 +306,15 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
         # refinement, it does, because the children cover the parent's area
         # without covering its footprint.
         grid_of(c) = DGG.levelgrid(sys, DGG.level(c))
-        for p in complete_families(sys, set, leaf)
+        families = complete_families(sys, set, leaf)
+        if congruent
+            # Where the children tile the parent, the comment above is the
+            # stronger claim and the test says it: children all inside the
+            # target means the parent is too, so the traversal emitted the
+            # parent and never reached them.
+            @test isempty(families)
+        end
+        for p in families
             @test !FB._matches(DGG.Within(nothing), target, grid_of(p), p)
         end
     end
@@ -310,8 +323,14 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
         @test length(FB.curve_keys(set)) == length(set)
         contained = [i for i in eachindex(set) if DGG.is_contained(set, i)]
         @test !isempty(contained)
-        # `is_contained` is the exact `Within` predicate, remembered rather than
-        # recomputed.
+        # `is_contained` records what the traversal PROVED, not what is true. A
+        # cell above the leaf level is emitted only through the `Within` arm, so
+        # there the flag is exact both ways; a leaf-level cell is never asked —
+        # `Within` is the expensive predicate — and reads `false` whether or not
+        # it fits. Both arms are asserted over the WHOLE set, so a permutation
+        # bug in `_sorted_cell_set` cannot hide inside the blind spot.
+        @test all(i -> DGG.is_contained(set, i) == (DGG.level(set[i]) < leaf), eachindex(set))
+        # And where the flag is exact, it agrees with the predicate it stands for.
         for i in Iterators.take(contained, 12)
             c = set[i]
             @test FB._matches(DGG.Within(nothing), target, DGG.levelgrid(sys, DGG.level(c)), c)

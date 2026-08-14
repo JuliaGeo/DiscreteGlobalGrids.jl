@@ -10,8 +10,8 @@
 import DiscreteGlobalGrids as DGG
 import GeometryOps as GO
 using Statistics, Random
-using CairoMakie, GeoMakie
-CairoMakie.activate!()
+using GLMakie, GeoMakie
+GLMakie.activate!(inline = true)
 
 # ## A field on the sphere
 #

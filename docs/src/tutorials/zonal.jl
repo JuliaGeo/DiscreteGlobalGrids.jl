@@ -9,8 +9,8 @@ import DimensionalData as DD
 import GeometryOps as GO
 import NaturalEarth
 using Statistics
-using CairoMakie, GeoMakie
-CairoMakie.activate!()
+using GLMakie, GeoMakie
+GLMakie.activate!(inline = true)
 
 # ## A polygon, a grid, and data
 #
@@ -24,10 +24,14 @@ texas = fc.geometry[findfirst(==("Texas"), fc.name)]
 
 grid = DGG.levelgrid(DGG.HEALPixSystem(), 7)
 cells = DGG.CellVector(grid)
-
-lonlat = GO.UnitSpherical.GeographicFromUnitSphere()
-field(lon, lat) = 20 - 0.5 * (lat - 25) + 2 * sind(3 * lon)
-data = [field(lonlat(DGG.cell_centroid(grid, c))...) for c in cells]
+#
+f, a, p = poly(cells; axis = (; aspect = DataAspect()))
+lines!(a, texas)
+f
+#
+lonlat_tf = GO.UnitSpherical.GeographicFromUnitSphere()
+field_f(lon, lat) = 20 - 0.5 * (lat - 25) + 2 * sind(3 * lon)
+data = [field_f(lonlat_tf(DGG.cell_centroid(grid, c))...) for c in cells]
 
 # ## The zonal mean
 #
@@ -60,7 +64,7 @@ ax = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
     limits = ((-107.5, -92.5), (25.0, 37.5)),
     title = "HEALPix level-7 cells covering Texas")
 poly!(ax, polys; color = data[tx], colormap = :thermal,
-    strokecolor = :white, strokewidth = 0.5)
+    strokecolor = :white, strokewidth = 0.1)
 poly!(ax, texas; color = :transparent, strokecolor = :black, strokewidth = 2)
 fig
 

@@ -14,8 +14,8 @@
 import DiscreteGlobalGrids as DGG
 import NaturalEarth
 import GeometryOps as GO, GeoInterface as GI
-using CairoMakie, GeoMakie
-CairoMakie.activate!()
+using GLMakie, GeoMakie
+GLMakie.activate!(inline = true)
 
 fc = NaturalEarth.naturalearth("admin_1_states_provinces", 10)
 california = fc.geometry[findfirst(==("California"), fc.name)]
@@ -85,7 +85,7 @@ for (k, (n, set)) in enumerate(zip(budgets, sets))
         aspect = DataAspect(), title = "maxcells = $n",
         xticklabelsvisible = false, yticklabelsvisible = false)
     poly!(panel, GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(set));
-        color = DGG.level.(set), colormap = :viridis, colorrange = (1, 7),
+        color = DGG.level.(set), colormap = :isoluminant_cgo_70_c39_n256, colorrange = (1, 7),
         strokecolor = (:black, 0.6), strokewidth = 0.5)
     poly!(panel, california; color = :transparent, strokecolor = :black, strokewidth = 1.0)
 end
@@ -149,21 +149,27 @@ destination = DGG.PartialGrid(lk)
 
 (; entries = length(region), leaf_cells = length(lk), level = DGG.level(lk))
 
-# The source is WorldClim cropped to a box larger than the coverage, described
-# to the regridder as its matrix of cell-corner points on the unit sphere.
+# The source is WorldClim cropped to a box larger than the coverage, represented
+# by an indexed quadtree over its cell-corner points on the unit sphere.
 # `CR.Regridder(manifold, dst, src)` takes the destination first.
 
 raster = Raster(WorldClim{Climate}, :tavg; month = 7, res = "10m")
-box = raster[X(-128 .. -110), Y(30 .. 45)]
+box = set(raster[X(-128 .. -110), Y(30 .. 45)],
+    X => Rasters.Intervals(Rasters.Start()),
+    Y => Rasters.Intervals(Rasters.Start()))
 
-to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
-(west, east), (south, north) = bounds(box, X), bounds(box, Y)
-corners = [to_sphere((lon, lat))
-           for lon in range(west, east; length = size(box, X) + 1),
-               lat in range(south, north; length = size(box, Y) + 1)]
+xbounds, ybounds = Rasters.intervalbounds(box, (X, Y))
+# Build corner sequences in array-index order: X runs west-to-east while Y
+# runs north-to-south. The resulting cell `(i, j)` corresponds directly to
+# `box[i, j]`, so the data needs no reversal before flattening.
+xrange = [first(first(xbounds)); last.(xbounds)]
+yrange = [last(first(ybounds)); first.(ybounds)]
+latlong_point_matrix = [GO.UnitSphericalPoint((x, y)) for x in xrange, y in yrange]
+latlong_grid = CR.Trees.CellBasedGrid(GO.Spherical(), latlong_point_matrix) |>
+    CR.Trees.TopDownQuadtreeCursor
 
 manifold = GO.Spherical(; radius = 1.0)
-regridder = CR.Regridder(manifold, destination, corners)
+regridder = @time CR.Regridder(manifold, destination, latlong_grid)
 
 # Conservation check: regrid a field of ones, and every destination cell must
 # come back holding exactly one.
@@ -175,10 +181,10 @@ maximum(abs, ones_out .- 1)
 # Now the real field. The ocean is `missing`, so regrid the temperatures with
 # the gaps zeroed *and* a 0/1 data indicator, then divide — a weighted mean
 # over the data a cell actually has, so coastal cells are not dragged down by
-# the empty half of themselves. (`values` must be flattened in the same order
-# the corners were built in.)
+# the empty half of themselves. (`values` is flattened in the same order as
+# the source grid was built.)
 
-values = vec(reverse(parent(replace_missing(box, NaN)); dims = 2))
+values = vec(replace_missing(box, NaN))
 field = zeros(DGG.ncells(destination))
 cover = zeros(DGG.ncells(destination))
 CR.regrid!(field, regridder, replace(values, NaN => 0.0))

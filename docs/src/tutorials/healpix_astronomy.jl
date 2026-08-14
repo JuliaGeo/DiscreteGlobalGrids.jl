@@ -13,8 +13,8 @@ import DiscreteGlobalGrids as DGG
 import Healpix
 import GeometryOps as GO
 using Statistics, Random
-using CairoMakie, GeoMakie
-CairoMakie.activate!()
+using GLMakie, GeoMakie
+GLMakie.activate!(inline = true)
 
 # ## A synthetic sky
 #
@@ -27,8 +27,8 @@ cells = DGG.CellVector(grid)
 # The fake sky is a diffuse band along the galactic plane, four point sources,
 # and a little noise, evaluated at the cell centers read as galactic `(ℓ, b)`.
 
-lonlat = GO.UnitSpherical.GeographicFromUnitSphere()
-centers = [lonlat(DGG.cell_centroid(grid, c)) for c in cells]
+lonlat_tf = x -> GO.transform(GO.UnitSpherical.GeographicFromUnitSphere(), x)
+centers = [lonlat_tf(DGG.cell_centroid(grid, c)) for c in cells]
 
 separation(p, q) = acosd(clamp(sind(p[2]) * sind(q[2]) +
                                cosd(p[2]) * cosd(q[2]) * cosd(p[1] - q[1]), -1, 1))
@@ -58,7 +58,7 @@ all(i -> collect(Healpix.pix2vecNest(m.resolution, i)) ≈ collect(DGG.cell_cent
 
 polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
 
-fig = Figure(size = (800, 420))
+fig = Figure(size = (800, 420));
 ax = GeoAxis(fig[1, 1]; dest = "+proj=moll +over",
     title = "Synthetic all-sky map, galactic coordinates")
 plt = poly!(ax, polys; color = sky, colormap = :inferno, strokewidth = 0)
@@ -77,7 +77,9 @@ lon0, lat0, _ = sources[1]
 cone = GO.UnitSpherical.SphericalCap(to_sphere((lon0, lat0)), deg2rad(5))
 
 idx = DGG.cellposition.(Ref(grid), DGG.query(grid, DGG.Intersects(cone)))
+#
 (; n = length(idx), cone_mean = mean(sky[idx]), sky_mean = mean(sky))
+# TODO: plot
 
 # ## Cutting the galactic plane
 #

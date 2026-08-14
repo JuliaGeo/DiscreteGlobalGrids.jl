@@ -83,11 +83,11 @@ levels. Its two keywords are two modes, not a bound and a hint, and exactly one
 of them is given:
 
 ```julia
-sys = DGG.IGeo7System()
+igeo = DGG.IGeo7System()
 ext = Extents.Extent(X = (6.0, 10.5), Y = (45.8, 47.8))   # a Switzerland-shaped box
 
-accurate = DGG.query(sys, DGG.MultiOrderCoverage(ext); level = 7)     # accuracy first
-budget   = DGG.query(sys, DGG.MultiOrderCoverage(ext); maxcells = 10) # cardinality first
+accurate = DGG.query(igeo, DGG.MultiOrderCoverage(ext); level = 7)     # accuracy first
+budget   = DGG.query(igeo, DGG.MultiOrderCoverage(ext); maxcells = 10) # cardinality first
 ```
 
 `level` refines everything the target's boundary crosses down to a fixed depth
@@ -162,12 +162,13 @@ every area.
 
 A DGGS as the **source** conserves to `1e-13` on all six systems and on the
 authalic wrap. A DGGS as the **destination** conserves only where the
-destination cells' rings are convex — IGEO7 and S2 at every level, H3 at even
-ones — because the clipper's Sutherland–Hodgman is an intersection only against
-a convex clip window, and the destination is always that window.
-`test/systems/crosssystem/regridding_conservation.jl` asserts the law where it
-holds, marks the rest `@test_broken`, and names the upstream fix that closes
-them.
+destination cells' rings are convex — IGEO7 and S2 at every level the suite
+sweeps, H3 at the even ones — because the clipper's Sutherland–Hodgman is an
+intersection only against a convex clip window, and the destination is always
+that window. Convexity is a property of the system *and* the level, so
+`test/systems/crosssystem/regridding_conservation.jl` measures the rings rather
+than carrying a list: it asserts the law where they come out convex, marks the
+rest `@test_broken`, and names the upstream fix that closes them.
 
 ## Going further
 
@@ -182,7 +183,7 @@ them and `docs/src/all_dggs.md` draws every system.
 | Path | Contents |
 |:--|:--|
 | `src/interface/` | the type vocabulary and every generic's contract — declarations and trait defaults, no algorithms |
-| `src/fallbacks/` | the generic implementations: `HierarchicalLevelGrid`, `PartialGrid`, `AuthalicGrid`/`AuthalicSystem`, `HierarchicalGridCursor`, `MultiOrderCellSet`, `CellVector`, the query engine |
+| `src/fallbacks/` | the generic implementations: `HierarchicalLevelGrid`, `PartialGrid`, `AuthalicGrid`/`AuthalicSystem`, `HierarchicalGridCursor`, `MultiOrderCellSet`, `CellVector`, the subtree iterators, the query engine |
 | `src/dimensionaldata.jl` | the cube face of `CellVector`: `CellLookup`, `Cells`, `Covering` |
 | `src/systems/` | one directory per system, plus `src/systems/ISEA/` — the Snyder/icosahedron basis IGEO7 and ISEA4R share |
 | `src/core/`, `src/Helpers/` | the authalic manifold pair, and shared allocation-free primitives |
@@ -205,11 +206,13 @@ S2 and ISEA4R are closed-form charts with no external dependency.
 
 No system defines a grid type. All six return `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
-`cell_area` — to `HierarchicalLevelGrid{TheSystem}`. `subtree_border` and
-`subtree_interior` are `O(rim)` automata on every system but A5, which uses the
-`O(subtree)` fallback. A5 is also the one system without `has_sorted_subtrees`,
-so `level_ranges` throws there and everything that would use it takes the
-selection branch instead.
+`cell_area` — to `HierarchicalLevelGrid{TheSystem}`. `subtree_border` is an
+`O(rim)` automaton on every system but A5, which walks the whole subtree;
+`subtree_interior` shares that walk and emits the branches it prunes. Both are
+`collect` of a resumable `EdgeCellIterator` / `InnerCellIterator` in `O(depth)`
+memory. A5 is also the one system without `has_sorted_subtrees`, so
+`level_ranges` throws there and everything that would use it takes the selection
+branch instead.
 
 The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
 **not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of

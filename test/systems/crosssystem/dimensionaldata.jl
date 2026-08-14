@@ -24,6 +24,11 @@
 #     deeper multiplies the cells by the aperture cubed and must not move
 #     `Base.summarysize` at all, because the stored windows are the same
 #     windows. That law is EXCLUDED on A5 with a reason; see below.
+#   * CUBE OPERATIONS — `Where`, `reverse`, reductions, `vcat`/`cat` and `set`
+#     reach the lookup by routes that do not go through `getindex`, and each
+#     must answer as the leaf id vector rather than as the backing. Those are at
+#     the bottom of the file, on one system, because they test this file's
+#     plumbing rather than any system's arithmetic.
 #
 # A5 has `has_sorted_subtrees == false`, so `level_ranges` throws and the
 # windowed backing is unavailable. The decision T16 took is SELECTION MODE:
@@ -39,6 +44,7 @@
 module DimensionalDataTests
 
 using Test
+using Statistics
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
 import GeoInterface as GI
@@ -112,7 +118,12 @@ end
         @test lk isa DD.Lookups.Lookup
         @test DGG.level(lk) == leaf
         @test DGG.system(lk) == sys
-        @test parent(lk) === set
+        # `parent` is the VALUES, per DimensionalData's contract, and the
+        # backing has its own name. The whole of the DD machinery reads the
+        # former, so the two must not be confused.
+        @test parent(lk) isa AbstractVector{DGG.cellindextype(sys)}
+        @test parent(lk) == ids
+        @test DGG.cellset(lk) === set
         @test length(lk) == length(ids)
         @test eltype(lk) === DGG.cellindextype(sys)
         # A mixed-level backing standing for a single-level axis is the whole
@@ -195,6 +206,25 @@ end
         @test DD.lookup(A, DGG.Cells) === lk
         @test length(A) == length(ids)
         @test DD.dims(A, DGG.Cells) isa DGG.Cells
+    end
+
+    # `Where` filters `parent(lookup)` and returns the surviving indices AS
+    # POSITIONS. While `parent` answered with the backing it therefore filtered
+    # the coverage's mixed-level entries and handed back entry-list indices — a
+    # plausible subset of the wrong collection, silently. The first assertion
+    # below is the one that catches it, and the last is what makes the first
+    # mean something: the two collections have different lengths.
+    @testset "Where sees the axis, not the backing" begin
+        @test length(ids) != length(set)
+        @test length(A[DGG.Cells(DD.Where(c -> true))]) == length(ids)
+        @test length(A[DGG.Cells(DD.Where(c -> DGG.level(c) == leaf))]) == length(ids)
+        # A predicate false at RUNTIME, not one Julia can fold: a literally
+        # constant `false` makes the comprehension in DimensionalData's `Where`
+        # infer `Vector{Union{}}`, which hits an ambiguity in its own
+        # `getindex` — reproducible with a plain `Sampled` lookup and nothing
+        # to do with this one.
+        @test isempty(A[DGG.Cells(DD.Where(c -> DGG.level(c) == leaf + 1))])
+        @test parent(A[DGG.Cells(DD.Where(c -> c == ids[2]))]) == [2.0]
     end
 
     @testset "At(id) selects that id's position" begin
@@ -375,14 +405,27 @@ end
         any(m -> occursin("dimensionaldata.jl", string(m.file)), pair)
     end
 
-    # `parent` is the backing, deliberately, so the collection surface that
-    # DimensionalData derives from `parent` is answered by the lookup instead.
-    @test parent(lk) === set
+    # `parent` is the values, so the whole collection surface DimensionalData
+    # derives from it is correct without a per-method override.
+    @test parent(lk) == ids
+    @test DGG.cellset(lk) === set
     @test size(lk) == (length(ids),)
     @test axes(lk) == (Base.OneTo(length(ids)),)
+    @test keys(lk) == LinearIndices((Base.OneTo(length(ids)),))
+    @test first(lk) == ids[1] && last(lk) == ids[end]
     @test DD.Lookups.order(lk) === DD.Lookups.ForwardOrdered()
-    @test DD.Lookups.val(lk) === lk
+    @test DD.Lookups.val(lk) === parent(lk)
     @test DD.Lookups.metadata(lk) === DD.Lookups.NoMetadata()
+
+    # `bounds` is the one caller that asks about an empty axis rather than
+    # indexing it, and `first`/`last` of nothing is a BoundsError.
+    @test DD.Lookups.bounds(lk) == (ids[1], ids[end])
+    @test DD.Lookups.bounds(lk[Int[]]) == (nothing, nothing)
+
+    # Membership without selecting.
+    @test DD.Lookups.hasselection(lk, DD.At(ids[3]))
+    @test !DD.Lookups.hasselection(lk, DD.At(DGG.cellat(grid, FARAWAY...)))
+    @test DD.Lookups.hasselection(lk, DD.Contains(ids[3]))
 
     # Ids ascend with position on a complete level grid, which is what makes
     # the binary searches sound; `searchsortedfirst` is that fact, exposed.
@@ -390,10 +433,23 @@ end
     @test searchsortedfirst(lk, ids[7]) == 7
     @test searchsortedlast(lk, ids[7]) == 7
 
-    # A lookup has no properties to vary, so a rebuild that would change its
-    # values is refused rather than silently ignored.
+    # Rebuilding around new VALUES is how DimensionalData concatenates, so it
+    # is implemented rather than refused: an ascending union of windows is
+    # still a window set, and anything else takes the same fallback `getindex`
+    # takes. Only a rebuild around something that is not cells at all is an
+    # error, and that error names concatenation because that is the caller.
     @test DD.Lookups.rebuild(lk) === lk
-    @test_throws ArgumentError DD.Lookups.rebuild(lk; data=ids)
+    @test DD.Lookups.rebuild(lk; data=parent(lk)) === lk
+    @test DD.Lookups.rebuild(lk; data=ids) == lk
+    @test DD.Lookups.rebuild(lk; data=ids) isa DGG.CellLookup
+    @test DD.Lookups.rebuild(lk; data=reverse(ids)) isa DD.Lookups.Categorical
+    @test_throws ArgumentError DD.Lookups.rebuild(lk; data=[1, 2, 3])
+    @test occursin("cat", sprint(showerror,
+        try
+            DD.Lookups.rebuild(lk; data=[1, 2, 3])
+        catch err
+            err
+        end))
 
     # Equality is about content, not about which backing produced it.
     @test lk == DGG.CellLookup(DGG.PartialGrid(sys, leaf, ids))
@@ -422,6 +478,82 @@ end
     # A level deeper than the set's coarsest cell is refused by the expansion,
     # and a level above it by `level_ranges`' own bound.
     @test_throws ArgumentError DGG.CellLookup(set; level=minimum(DGG.level, set) - 1)
+end
+
+# ---------------------------------------------------------------------------
+# The DimensionalData generics that do not go through `getindex`
+#
+# Each of these reaches the lookup by a route of its own, and each one of them
+# was a crash — or, for `Where` above, a wrong answer — while `parent` returned
+# the backing. They are the regression tests for that, one per route.
+# ---------------------------------------------------------------------------
+
+@testset "cube operations over a cell axis" begin
+    sys = DGG.IGeo7System()
+    leaf = 5
+    grid = DGG.levelgrid(sys, leaf)
+    lk = DGG.CellLookup(DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf))
+    ids = collect(lk)
+    A = DD.DimArray(Float64.(eachindex(ids)), DGG.Cells(lk); name=:demo)
+
+    # DimensionalData reverses the lookups it knows and falls through to
+    # `Base.reverse` on the rest, which answers with a bare vector where a
+    # lookup belongs; every selector on the result then recursed on it.
+    @testset "reverse" begin
+        revA = reverse(A; dims=DGG.Cells)
+        revlk = DD.lookup(revA, DGG.Cells)
+        @test revlk isa DD.Lookups.Lookup
+        @test collect(revlk) == reverse(ids)
+        @test parent(revA) == reverse(parent(A))
+        # The selector that used to overflow the stack.
+        @test revA[DGG.Cells(DD.At(ids[3]))] == 3.0
+        # A descending axis is not a window set, so it comes back as the same
+        # `Categorical` fallback `lk[[3, 1]]` takes. Reversing twice therefore
+        # restores the VALUES, not the type: the data and the ids round trip,
+        # `A == revrevA` does not, because DimensionalData's `==` on lookups
+        # asks for `basetypeof` first.
+        revrevA = reverse(revA; dims=DGG.Cells)
+        @test parent(revrevA) == parent(A)
+        @test collect(DD.lookup(revrevA, DGG.Cells)) == ids
+        @test revlk isa DD.Lookups.Categorical
+    end
+
+    # A reduction collapses the axis to one element that no cell id names.
+    @testset "reductions over the cell axis" begin
+        for (f, want) in ((sum, sum(parent(A))), (mean, mean(parent(A))),
+            (maximum, maximum(parent(A))), (minimum, minimum(parent(A))))
+            r = f(A; dims=DGG.Cells)
+            @test size(r) == (1,)
+            @test r[1] == want
+            @test DD.lookup(r, DGG.Cells) isa DD.Lookups.NoLookup
+        end
+        @test DD.Lookups.reducelookup(lk) isa DD.Lookups.NoLookup
+    end
+
+    # Concatenation hands the joined id vector back through `rebuild`; two
+    # ascending disjoint axes join into one, and the result is a cell axis.
+    @testset "concatenation" begin
+        n = length(ids)
+        lo, hi = A[1:(n÷2)], A[(n÷2+1):n]
+        for joined in (vcat(lo, hi), cat(lo, hi; dims=DGG.Cells))
+            @test length(joined) == n
+            joinedlk = DD.lookup(joined, DGG.Cells)
+            @test joinedlk isa DGG.CellLookup
+            @test collect(joinedlk) == ids
+            @test joinedlk == lk
+            @test parent(joined) == parent(A)
+            @test joined[DGG.Cells(DD.At(ids[end]))] == Float64(n)
+        end
+    end
+
+    # Replacing the axis wholesale is `set`, and the replacement that works is
+    # `NoLookup` — the documented collateral of a lookup with no free fields.
+    @testset "replacing the axis" begin
+        plain = DD.set(A, DGG.Cells => DD.NoLookup())
+        @test DD.lookup(plain, DGG.Cells) isa DD.Lookups.NoLookup
+        @test parent(plain) == parent(A)
+        @test plain[DGG.Cells(3)] == 3.0
+    end
 end
 
 end # module DimensionalDataTests

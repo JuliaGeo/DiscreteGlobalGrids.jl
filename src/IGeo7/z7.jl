@@ -181,6 +181,12 @@ function Base.showerror(io::IO, e::InvalidZ7Error)
             "); it is valid for prefix arithmetic only")
     elseif r === :resolution_range
         print(io, "resolution must be in 0:", e.limit, ", got ", e.got)
+    elseif r === :monotonic_res
+        print(io, "Z7 index ", _z7_hex(e.value), " is at resolution ", e.got,
+            ", but the monotonic number line asked for was resolution ", e.limit)
+    elseif r === :monotonic_range
+        print(io, "monotonic position ", e.got, " is past the last position ", e.limit,
+            " of its resolution's number line")
     elseif r === :descendant_res
         print(io, "descendant resolution must be in ", e.limit, ":", MAX_RESOLUTION,
             ", got ", e.got, " (cell ", _z7_hex(e.value), ")")

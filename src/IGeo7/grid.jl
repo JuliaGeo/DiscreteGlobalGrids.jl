@@ -181,6 +181,37 @@ end
 # Public encode API (design Section 4.1)
 # ---------------------------------------------------------------------------
 
+"""
+    vert0_lon_orientation(vert0_lon) -> ISEA.Orientation
+
+The [`Orientation`](@ref) that places icosahedron vertex 0 at longitude
+`vert0_lon` degrees instead of the standard ISEA `ISEA_LON0 = $(ISEA_LON0)` —
+DGGRID's `dggs_vert0_lon` parameter, and the field of the same name in the Zarr
+DGGS convention's metadata block.
+
+The grid frame is fixed (vertex 0 sits at `(ISEA_LON0, ISEA_LAT_HI)` there), so
+a different placement is expressed as the world -> grid rotation
+`Rz(ISEA_LON0 − vert0_lon)` about the polar axis: it carries a world point at
+`vert0_lon` onto the frame's `ISEA_LON0`, and `from_grid` (which applies `R'`)
+carries grid results back the other way.
+
+Only the *longitude* of vertex 0 is free here. `dggs_vert0_lat`
+(`ISEA_LAT_HI = atand(φ)`) and `dggs_vert0_azimuth = 0` are not parameters —
+the azimuth is baked into `ISEA.REFERENCE_EDGE` — so an archive declaring
+either at a non-default value is describing a grid this constructor does not
+build.
+
+This matters more than its size suggests: the archives written by the Python
+IGEO7/Z7 tooling declare `dggs_vert0_lon = 11.2`, and decoding them under the
+default orientation shifts every cell center by the 0.05° difference rather
+than failing. See `DGGSZarr`, which reads the value off the archive.
+"""
+function vert0_lon_orientation(vert0_lon::Real)
+    delta = ISEA_LON0 - Float64(vert0_lon)
+    c, s = cosd(delta), sind(delta)
+    return Orientation((c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0))
+end
+
 "grid-frame unit vector of the cell center (validated id, res <= 19)"
 function _cell_center_xyz(z::UInt64, res::Int)
     base = z7_base_cell(z)

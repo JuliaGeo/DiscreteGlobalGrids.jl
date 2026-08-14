@@ -19,9 +19,10 @@ is the dependency order):
 
 | file        | contents                                                     |
 |:------------|:-------------------------------------------------------------|
-| `z7.jl`     | Z7 `UInt64` bit format, string/hex, prefix ops (no geometry)  |
-| `engine.jl` | Eisenstein integer arithmetic + fitted digit tables           |
-| `grid.jl`   | encode/decode, areas, dense indexing, subtree borders          |
+| `z7.jl`        | Z7 `UInt64` bit format, string/hex, prefix ops (no geometry) |
+| `z7_ranges.jl` | base-7 monotonic number line + lazy range/dense id vectors   |
+| `engine.jl`    | Eisenstein integer arithmetic + fitted digit tables          |
+| `grid.jl`      | encode/decode, areas, dense indexing, subtree borders        |
 
 plus the `IGeo7Lookups` integration module (`DimensionalData`) and
 `IGeo7Kernel.jl`, which wires the package's operations kernel — and through it
@@ -41,6 +42,7 @@ import ..Helpers
 using ..ISEA
 
 include("z7.jl")
+include("z7_ranges.jl")
 include("engine.jl")
 include("grid.jl")
 include("IGeo7Lookups.jl")
@@ -50,6 +52,9 @@ include("IGeo7Lookups.jl")
 # icosahedron/Snyder names reach users through `ISEA`, not from here.
 export InvalidZ7Error,
     MAX_RESOLUTION,
+    Z7CachedIds,
+    Z7LazyIds,
+    Z7RangeIds,
     border_descendants,
     cell_area,
     cell_boundary,
@@ -69,18 +74,27 @@ export InvalidZ7Error,
     lonlat_to_z7,
     num_cells,
     res0_cells,
+    vert0_lon_orientation,
     z7_base_cell,
+    z7_cached_position,
     z7_child,
     z7_children,
     z7_digit,
     z7_from_hex,
+    z7_from_monotonic,
     z7_from_string,
     z7_is_descendant,
+    z7_is_materialized,
     z7_is_pentagon,
+    z7_level,
+    z7_materialize!,
+    z7_nranges,
     z7_parent,
+    z7_range_position,
     z7_resolution,
     z7_to_cell,
     z7_to_hex,
+    z7_to_monotonic,
     z7_to_string
 
 # Operations-kernel wiring for the `IGEO7DGGS` singleton. It defines methods

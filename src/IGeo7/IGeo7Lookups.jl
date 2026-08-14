@@ -177,6 +177,36 @@ function IGeo7Lookup(cell_ids::DGG.DGGSGlobeIds; resolution::Integer=cell_ids.le
     return IGeo7Lookup(cell_ids, res, md)
 end
 
+# The lazy-ids fast path, for the same reason as the globe one above and with
+# the same load-bearing role: `DD.rebuild` routes through the keyword
+# constructor, so without this method every `format`, `set` or metadata change
+# on a ranges-backed lookup would run the comprehension and materialize the
+# whole dimension — undoing the one thing a `compression: "ranges"` archive is
+# read this way to avoid.
+#
+# The O(N) `validate` pass is dropped rather than made faster, as it is for a
+# globe. A `Z7RangeIds` derives its ids from a range table checked at
+# construction, and a `Z7CachedIds` checks its own on materialization
+# (`z7_materialize!`), so per-id revalidation here establishes nothing that the
+# id vector has not already promised — and would force the read.
+function IGeo7Lookup(cell_ids::IGeo7.Z7LazyIds; resolution::Integer=IGeo7.z7_level(cell_ids),
+    metadata=Dict{String,Any}(), validate::Bool=false)
+    res = Int(resolution)
+    res == IGeo7.z7_level(cell_ids) || throw(ArgumentError(
+        "IGEO7 lazy cell ids are at resolution $(IGeo7.z7_level(cell_ids)), not $res"))
+    md = merge(
+        Dict{String,Any}(
+            "grid_name" => "igeo7",
+            "resolution" => res,
+            "indexing_scheme" => "z7-u64",
+            "external_indexing_schemes" => ["z7-string"],
+            "projection" => "snyder-isea (standard ISEA placement)",
+        ),
+        metadata,
+    )
+    return IGeo7Lookup(cell_ids, res, md)
+end
+
 IGeo7Lookup(l::IGeo7Lookup; data=l.data, resolution=l.resolution, metadata=l.metadata) =
     IGeo7Lookup(data; resolution, metadata)
 
@@ -221,6 +251,16 @@ Lookups.val(sel::Touching) = sel.val
 # globe — are one generic method pair in core (`core/lookups.jl`), chosen by
 # the type of the id vector and so invisible at every call site below.
 _cell_position(l::IGeo7Lookup, id::UInt64) = DGG.cell_position(l.data, id)
+
+# Two more branches of the same dispatch, for the two lazy id vectors. Both
+# keep `cell_position`'s contract exactly — a position or `nothing`, never a
+# throw, for anything that is not a stored cell — and both keep it without
+# materializing: `Z7RangeIds` answers in O(log R) from the range table, and
+# `Z7CachedIds` is the one case that does read, because a dense coordinate has
+# no arithmetic to search instead of its ids. That read is the "downstream
+# consumer pulls" moment, and it happens here rather than at open.
+DGG.cell_position(ids::IGeo7.Z7RangeIds, id) = IGeo7.z7_range_position(ids, _to_id(id))
+DGG.cell_position(ids::IGeo7.Z7CachedIds, id) = IGeo7.z7_cached_position(ids, _to_id(id))
 
 Lookups.selectindices(l::IGeo7Lookup, sel::Lookups.StandardIndices) = sel
 

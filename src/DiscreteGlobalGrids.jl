@@ -171,4 +171,9 @@ include("IGeo7/IGeo7.jl")
 include("ISEA4R/ISEA4R.jl")
 include("S2/S2.jl")
 
+# I/O integrations. Last, because they read the systems above: `DGGSZarr` turns
+# a Zarr DGGS-convention archive into a lookup-indexed `YAXArrays.Dataset`, so
+# it needs every per-system module already defined.
+include("io/DGGSZarr.jl")
+
 end # module DiscreteGlobalGrids

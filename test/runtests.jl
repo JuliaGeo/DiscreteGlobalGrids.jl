@@ -15,4 +15,7 @@ using DiscreteGlobalGrids
     include("IGeo7/runtests.jl")
     include("ISEA4R/runtests.jl")
     include("S2/runtests.jl")
+    # I/O, last for the same reason src/ includes it last. Its archive-backed
+    # tier skips itself when the reference data is not on this machine.
+    include("DGGSZarr/runtests.jl")
 end

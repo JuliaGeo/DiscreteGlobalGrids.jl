@@ -48,6 +48,16 @@ igeo7_dem = Raster(
 )
 
 @testset "Geomorphometry on regridded IGeo7 DEM" begin
+    indices = eachindex(igeo7_dem)
+    @test indices === cells
+    @test indices isa DGG.CellVector
+    @test first(indices) in indices
+    complete = DGG.levelgrid(sys, DGG.level(first(indices)))
+    candidate = DGG.cellindex(complete, 1)
+    candidate in indices &&
+        (candidate = DGG.cellindex(complete, DGG.ncells(complete)))
+    @test candidate ∉ indices
+
     tpi = GM.topographic_position_index(igeo7_dem)
     @test size(tpi) == size(igeo7_dem)
     @test all(isfinite, parent(tpi))

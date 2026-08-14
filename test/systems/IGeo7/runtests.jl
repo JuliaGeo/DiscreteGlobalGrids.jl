@@ -29,15 +29,29 @@ const VECTORS = joinpath(@__DIR__, "vectors")
 
 const Z7Cell = I.Z7Cell
 
-@testset "relative IGeo7 indices" begin
+@testset "relative Z7 cells" begin
     grid = DGG.PartialGrid(S, Z7Cell("023"), 4)
     c = DGG.cellindex(grid, 10)
     ns = DGG.neighbors(DGG.levelgrid(S, 4), c)
-    @test sort(DGG.directioncode.(ns .- Ref(c))) == 1:6
+    ds = ns .- Ref(c)
+    @test all(d -> d isa DGG.RelativeZ7Cell, ds)
+    @test all(d -> d.cell == c, ds)
+    @test DGG.directioncode.(ds) == 1:6
     @test all(n -> c + (n - c) == n, ns)
-    @test c - c == DGG.RelativeIGEO7Index(4)
-    @test DGG.trytranslate(c, DGG.RelativeIGEO7Index(4)) == c
-    @test_throws DimensionMismatch c + DGG.RelativeIGEO7Index(3)
+    @test all(n -> n - (n - c) == c, ns)
+    @test c - c == DGG.RelativeZ7Cell(c, 0)
+    @test DGG.trytranslate(c, DGG.RelativeZ7Cell(c, 0)) == c
+    @test isnothing(DGG.trytranslate(first(ns), last(ns) - c))
+    @test_throws DomainError first(ns) + (last(ns) - c)
+    @test_throws DimensionMismatch Z7Cell("023") - Z7Cell("0230")
+
+    complete = DGG.levelgrid(S, 4)
+    first_cell = DGG.cellindex(complete, 1)
+    last_cell = DGG.cellindex(complete, DGG.ncells(complete))
+    @test first_cell + (last_cell - first_cell) == last_cell
+    @test isnothing(DGG.trytranslate(first_cell, DGG.RelativeZ7Cell(first_cell, -1)))
+    @test isnothing(DGG.trytranslate(last_cell, DGG.RelativeZ7Cell(last_cell, typemax(Int))))
+    @test_throws ArgumentError DGG.directioncode(last_cell - first_cell)
 end
 
 # ---------------------------------------------------------------------------

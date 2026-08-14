@@ -387,9 +387,21 @@ fig
 # and the leaf expansion of those is a superset of the state's own cells.
 #
 # A budget set backs the same axis. Nothing about `CellLookup` cares which mode
-# produced the set, and a ten-cell coverage expanded to level 6 is a perfectly
+# produced the set, and a forty-cell coverage expanded to level 6 is a perfectly
 # good — if generous — index into the same data.
 
-budget_lk = DGG.CellLookup(DGG.query(igeo, DGG.MultiOrderCoverage(california);
-        maxcells = 40, maxlevel = 5); level = DGG.level(lk))
+budget = DGG.query(igeo, DGG.MultiOrderCoverage(california); maxcells = 40, maxlevel = 5)
+
+fig = Figure(size = (620, 700))
+ax = Axis(fig[1, 1]; limits = ((-125.0, -113.8), (32.2, 42.3)), aspect = DataAspect(),
+    title = "maxcells = 40, maxlevel = 5")
+plt = poly!(ax, GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(budget));
+    color = DGG.level.(collect(budget)), colormap = :viridis, colorrange = (1, 5),
+    strokecolor = (:black, 0.6), strokewidth = 0.5)
+poly!(ax, california; color = :transparent, strokecolor = :black, strokewidth = 1.0)
+Colorbar(fig[1, 2], plt; label = "cell level")
+fig
+
+budget_lk = DGG.CellLookup(budget; level = DGG.level(lk))
 (; budget_leaf_cells = length(budget_lk), exact_leaf_cells = length(lk))
+ 

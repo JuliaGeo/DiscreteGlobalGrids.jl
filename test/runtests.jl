@@ -60,4 +60,5 @@ using DiscreteGlobalGrids
     # are non-convex, for a reason that lives in GeometryOps' clipper. Those
     # arms are `@test_broken` and the file says why.
     include("systems/crosssystem/regridding_conservation.jl")
+    include("plotting/runtests.jl")
 end

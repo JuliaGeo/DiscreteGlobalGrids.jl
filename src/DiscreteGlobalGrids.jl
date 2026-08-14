@@ -182,6 +182,7 @@ const HexIndex = IGeo7.HexIndex
 const IGEO7Index = IGeo7.IGEO7Index
 const RelativeIGEO7Index = IGeo7.RelativeIGEO7Index
 const cellarea = IGeo7.cellarea
+const cellbearing = IGeo7.cellbearing
 const celldistance = IGeo7.celldistance
 const cell_to_position = IGeo7.cell_to_position
 const directioncode = IGeo7.directioncode
@@ -191,7 +192,7 @@ const neighbors = IGeo7.neighbors
 const position_to_cell = IGeo7.position_to_cell
 const trytranslate = IGeo7.trytranslate
 export HexIndex, IGEO7Index, RelativeIGEO7Index
-export cellarea, celldistance, cell_to_position, directioncode, edges, get_resolution
+export cellarea, cellbearing, celldistance, cell_to_position, directioncode, edges, get_resolution
 export neighbors
 export position_to_cell
 export trytranslate

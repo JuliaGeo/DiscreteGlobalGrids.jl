@@ -105,6 +105,7 @@ end
         @test absent ∉ indices
         @test !checkbounds(Bool, A, absent)
         @test_throws BoundsError A[absent]
+        @test_throws BoundsError cellbearing(A, indices[1], absent)
         @test_throws BoundsError celldistance(A, indices[1], absent)
 
         position = first(subtree_interior_positions(tile))
@@ -115,7 +116,7 @@ end
         @test neighbors(index) == global_neighbors
         @test _ci_allocated(neighbors, _CI_SYSTEM, index) == 0
         @test stored_neighbors == global_neighbors
-        @test issorted(global_neighbors)
+        @test directioncode.(global_neighbors .- Ref(index)) == 1:6
         @test all(n -> n - index in (
             RelativeIGEO7Index(HexIndex(1, -1, 0), 8),
             RelativeIGEO7Index(HexIndex(1, 0, -1), 8),
@@ -130,6 +131,21 @@ end
         @test distance > 0
         @test celldistance(A, neighbor, index) ≈ distance
         @test celldistance(A, index, index) == 0.0
+        bearing = cellbearing(A, index, neighbor)
+        @test 0.0 <= bearing < 360.0
+        @test cellbearing(A, index, index) == 0.0
+
+        from_lon, from_lat = cell_center(index.id)
+        to_lon, to_lat = cell_center(neighbor.id)
+        phi_from, phi_to = deg2rad(from_lat), deg2rad(to_lat)
+        delta_lon = deg2rad(to_lon - from_lon)
+        expected_bearing = mod(rad2deg(atan(
+            sin(delta_lon) * cos(phi_to),
+            cos(phi_from) * sin(phi_to) -
+            sin(phi_from) * cos(phi_to) * cos(delta_lon),
+        )), 360.0)
+        @test bearing ≈ expected_bearing
+
         @test cellarea(A, index) == cell_area(index.id)
         @test cellarea(A, index) > 0
         @test_throws BoundsError cellarea(A, absent)

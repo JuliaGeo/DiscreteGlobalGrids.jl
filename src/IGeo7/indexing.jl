@@ -242,6 +242,15 @@ one-dimensional IGEO7 `DimArray`/`Raster` for its stored subset.
 function neighbors end
 
 """
+    cellbearing(A, from, to) -> Float64
+
+Initial great-circle bearing in degrees clockwise from local north at `from`
+to the center of `to`. Both cells must be stored in the same one-dimensional
+IGEO7 `DimArray`/`Raster`.
+"""
+function cellbearing end
+
+"""
     celldistance(A, from, to) -> Float64
 
 Great-circle distance in metres between the centers of two cells stored in a

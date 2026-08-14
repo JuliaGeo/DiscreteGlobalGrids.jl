@@ -124,20 +124,85 @@ using Geomorphometry
 
 # Extension
 Geomorphometry.cellarea(r::Raster, i::DGG.IGEO7Index; cellsize) = DGG.cellarea(r, i)
-Geomorphometry.neighbors(r::Raster, cell) = DGG.neighbors(r, cell)
-Geomorphometry.celldistance(r::Raster, from, to; kwargs...) = DGG.celldistance(r, from, to)
-Geomorphometry.outlets(r::Raster) = DGG.edges(r)
+Geomorphometry.neighbors(r::Raster, cell::IGEO7Index) = DGG.neighbors(r, cell)
+Geomorphometry.cellbearing(r::Raster, from::IGEO7Index, to::IGEO7Index) = DGG.cellbearing(r, from, to)
+Geomorphometry.celldistance(r::Raster, from::IGEO7Index, to::IGEO7Index; kwargs...) = DGG.celldistance(r, from, to)
+Geomorphometry.outlets(r::Raster{Float64, 1, Tuple{Dim{:cells, DiscreteGlobalGrids.IGeo7.IGeo7Lookups.IGeo7Lookup{Vector{UInt64}, Dict{String, Any}}}}, Tuple{}, Vector{Float64}, Symbol, DimensionalData.Dimensions.Lookups.NoMetadata, Nothing}) = DGG.edges(r)
 
-Geomorphometry.FlowDirection{C}(ci::RelativeIGEO7Index) where {C <: Geomorphometry.FlowDirectionConvention} =
-    FlowDirection{C}(DGG.directioncode(ci))
+const IGEO7_DIRECTION_HEX = (
+    HexIndex(0, 0, 0),
+    HexIndex(1, -1, 0),
+    HexIndex(1, 0, -1),
+    HexIndex(0, 1, -1),
+    HexIndex(-1, 1, 0),
+    HexIndex(-1, 0, 1),
+    HexIndex(0, -1, 1),
+)
+
+# Six counterclockwise directions embedded in the eight-direction conventions.
+# Opposite IGEO7 pairs (1,4), (2,5), and (3,6) remain opposite.
+const IGEO7_LDD_CODES = (0x05, 0x06, 0x09, 0x07, 0x04, 0x01, 0x03)
+const IGEO7_D8D_CODES = (0x00, 0x01, 0x80, 0x20, 0x10, 0x08, 0x02)
+
+Geomorphometry.FlowDirection{LDD}(ci::RelativeIGEO7Index) =
+    FlowDirection{LDD}(IGEO7_LDD_CODES[DGG.directioncode(ci) + 1])
+Geomorphometry.FlowDirection{D8D}(ci::RelativeIGEO7Index) =
+    FlowDirection{D8D}(IGEO7_D8D_CODES[DGG.directioncode(ci) + 1])
+
+const LDD_TO_IGEO7_CODE = (0x05, 0xff, 0x06, 0x04, 0x00, 0x01, 0x03, 0xff, 0x02)
+const D8D_BIT_TO_IGEO7_CODE = (0x01, 0x06, 0xff, 0x05, 0x04, 0x03, 0xff, 0x02)
+
+@inline function igeo7_directioncode(direction::FlowDirection{LDD})
+    value = Int(direction)
+    1 <= value <= length(LDD_TO_IGEO7_CODE) ||
+        throw(ArgumentError("invalid LDD direction $value"))
+    code = @inbounds LDD_TO_IGEO7_CODE[value]
+    code != 0xff ||
+        throw(ArgumentError("LDD direction $value has no IGEO7 equivalent"))
+    return code
+end
+
+@inline function igeo7_directioncode(direction::FlowDirection{D8D})
+    iszero(direction) && return 0x00
+    value = Int(direction)
+    ispow2(value) ||
+        throw(ArgumentError("D8D direction must be decomposed before conversion"))
+    bit = trailing_zeros(value) + 1
+    bit <= length(D8D_BIT_TO_IGEO7_CODE) ||
+        throw(ArgumentError("D8D direction $value has no IGEO7 equivalent"))
+    code = @inbounds D8D_BIT_TO_IGEO7_CODE[bit]
+    code != 0xff ||
+        throw(ArgumentError("D8D direction $value has no IGEO7 equivalent"))
+    return code
+end
+
+function Geomorphometry.decompose(
+    ::Type{RelativeIGEO7Index},
+    direction::FlowDirection,
+    center::IGEO7Index,
+)
+    resolution = DGG.get_resolution(center)
+    return map(Geomorphometry.decompose(direction)) do component
+        code = igeo7_directioncode(component)
+        RelativeIGEO7Index(IGEO7_DIRECTION_HEX[code + 1], resolution)
+    end
+end
+
+# D8D values can combine multiple IGEO7 directions. This value contains
+# direction codes 1 and 2 (D8D bits 1 and 128).
+Geomorphometry.decompose(RelativeIGEO7Index, FlowDirection{D8D}(1 | 128), random_cell)
 
 tpi = topographic_position_index(rl)
 
 slop = slope(rl)
 
-hand = height_above_nearest_drainage(rl; threshold = 500*1000)
+handa = height_above_nearest_drainage(rl; method=D8(), threshold = 500*1000)
+handb = height_above_nearest_drainage(rl; method=DInf(), threshold = 500*1000)
+handc = height_above_nearest_drainage(rl; method=FD8(), threshold = 500*1000)
 
-acc = flowaccumulation(rl, method=FD8())
+acca, dirsa = flowaccumulation(rl, method=D8());
+accb, dirsb = flowaccumulation(rl, method=DInf())
+accc, dirsc = flowaccumulation(rl, method=FD8())
 
 polys = [GO.transform(GO.GeographicFromUnitSphere(), cell_polygon_unitsphere(sys, DESTINATION_LEVEL, id)) for id in DD.lookup(rl, Dim{:cells}())]; 
 fap = poly(

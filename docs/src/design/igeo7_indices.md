@@ -302,6 +302,7 @@ Provide two scopes through dispatch:
 neighbors(index::IGEO7Index) -> SmallVector{6,IGEO7Index}
 neighbors(::IGEO7DGGS, index::IGEO7Index) -> SmallVector{6,IGEO7Index}
 neighbors(A::IGEO7DimVector, index::IGEO7Index) -> SmallVector{6,IGEO7Index}
+cellbearing(A::IGEO7DimVector, from::IGEO7Index, to::IGEO7Index) -> Float64
 celldistance(A::IGEO7DimVector, from::IGEO7Index, to::IGEO7Index) -> Float64
 cellarea(A::IGEO7DimVector, index::IGEO7Index) -> Float64
 edges(A::IGEO7DimVector) -> Vector{IGEO7Index}
@@ -315,9 +316,8 @@ canonical-ID order. It delegates to the existing neighbor machinery and
 filters with lookup membership. Off-coverage neighbors are absent, matching
 the current `stencil` and `subtree_stencil` semantics.
 
-Neighbor order is not directional order. Use addition with one of the six
-unit `HexIndex` values, converted to a `RelativeIGEO7Index` at the cell's
-resolution, when direction matters.
+Neighbor order is the counterclockwise order of the six Eisenstein units,
+constructed directly before the system kernel's canonical-ID sort.
 
 `celldistance` requires both cells to be stored and returns the great-circle
 distance between their centers in metres on IGEO7's WGS84 authalic sphere.

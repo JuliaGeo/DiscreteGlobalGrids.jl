@@ -260,6 +260,25 @@ function IGeo7.neighbors(
     return out
 end
 
+function IGeo7.cellbearing(
+        A::DD.AbstractDimArray{T,1,D},
+        from::IGeo7.IGEO7Index,
+        to::IGeo7.IGEO7Index,
+    ) where {T,D<:Tuple{<:DD.Dimension{<:IGeo7Lookup}}}
+    checkbounds(Bool, A, from) || throw(BoundsError(A, from))
+    checkbounds(Bool, A, to) || throw(BoundsError(A, to))
+    from == to && return 0.0
+
+    from_lon, from_lat = IGeo7.cell_center(from.id)
+    to_lon, to_lat = IGeo7.cell_center(to.id)
+    phi_from, phi_to = deg2rad(from_lat), deg2rad(to_lat)
+    delta_lon = deg2rad(to_lon - from_lon)
+    east = sin(delta_lon) * cos(phi_to)
+    north = cos(phi_from) * sin(phi_to) -
+            sin(phi_from) * cos(phi_to) * cos(delta_lon)
+    return mod(rad2deg(atan(east, north)), 360.0)
+end
+
 function IGeo7.celldistance(
         A::DD.AbstractDimArray{T,1,D},
         from::IGeo7.IGEO7Index,

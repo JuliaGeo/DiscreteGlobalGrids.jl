@@ -541,17 +541,18 @@ lonlat_to_cell(lon::Real, lat::Real, res::Integer; kwargs...) =
 # ---------------------------------------------------------------------------
 
 """
-    _cell_neighbors(z7) -> SmallList{6,UInt64}
+    _cell_neighbors_directional(z7) -> SmallList{6,UInt64}
 
-Canonical ids of the cells sharing an edge with `z7`, ascending: 6 for a
-hexagon, 5 for a pentagon. Exact lattice arithmetic for the neighbor
-positions (see the block comment above); the position-to-id step is the
-decoder validated at 100% exact decode on all 196,080 oracle cell centers.
+Canonical ids of the cells sharing an edge with `z7`, in the counterclockwise
+order of `UNITS`: 6 for a hexagon, 5 for a pentagon. Exact lattice
+arithmetic for the neighbor positions (see the block comment above); the
+position-to-id step is the decoder validated at 100% exact decode on all
+196,080 oracle cell centers.
 
 Throws [`InvalidZ7Error`](@ref) for invalid ids and for resolution-20 ids
 (valid for prefix arithmetic, no geometry — hence no neighbors).
 """
-function _cell_neighbors(z7::UInt64)
+function _cell_neighbors_directional(z7::UInt64)
     res = _geometry_checked(z7)
     base = z7_base_cell(z7)
     (a, b) = _encode_lattice(z7, base, res)
@@ -579,8 +580,17 @@ function _cell_neighbors(z7::UInt64)
         end
         seen || (out = Helpers.small_push(out, z))
     end
-    return Helpers.small_sort(out)
+    return out
 end
+
+"""
+    _cell_neighbors(z7) -> SmallList{6,UInt64}
+
+Canonical ids of the cells sharing an edge with `z7`, ascending. This is the
+system-kernel order; [`_cell_neighbors_directional`](@ref) exposes the native
+counterclockwise construction order.
+"""
+_cell_neighbors(z7::UInt64) = Helpers.small_sort(_cell_neighbors_directional(z7))
 
 # ---------------------------------------------------------------------------
 # Dense full-world indexing, hierarchy wrappers and introspection

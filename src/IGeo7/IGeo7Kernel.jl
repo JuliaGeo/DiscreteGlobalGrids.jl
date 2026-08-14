@@ -107,7 +107,7 @@ end
 
 function neighbors(::DGG.IGEO7DGGS, index::IGEO7Index)
     out = SmallVector{6,IGEO7Index}()
-    for id in _cell_neighbors(index.id)
+    for id in _cell_neighbors_directional(index.id)
         out = SmallCollections.push(out, IGEO7Index(id))
     end
     return out

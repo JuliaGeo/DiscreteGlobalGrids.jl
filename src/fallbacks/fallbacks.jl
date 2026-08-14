@@ -29,7 +29,8 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     cellindextype, levels, max_level, levelgrid, rootcells, children,
     node_extent, cap_inflation, max_neighbors, has_sorted_subtrees,
     ancestor, descendants, descendant_range,
-    subtree_border, subtree_interior
+    subtree_border, subtree_interior,
+    rim_engine, interior_engine, quadrant_step
 import ..DiscreteGlobalGrids: Helpers
 
 import GeometryOps as GO
@@ -58,6 +59,9 @@ include("subtree.jl")
 include("level_grid.jl")
 include("partial_grid.jl")
 include("authalic_grid.jl")
+# After `authalic_grid.jl`: the wrapper forwards both engines, so it must be a
+# type by the time those methods are defined.
+include("subtree_iterators.jl")
 include("cursor.jl")
 include("position_tree.jl")
 include("locate.jl")

@@ -44,6 +44,12 @@ using DiscreteGlobalGrids
     # axis's substrate: a failure here is the compression, and the file below
     # would then fail for a reason that is not its own.
     include("systems/crosssystem/cell_vector.jl")
+    # T20: the lazy form of the subtree rim and interior, which since T20 is the
+    # only form — the eager verbs are `collect` of these. After the file above
+    # for the same reason it is after the per-system suites: those suites check
+    # each automaton against its own oracle, so a failure here is the iterator
+    # protocol or the sharing, not the walk.
+    include("systems/crosssystem/subtree_iterators.jl")
     # T16: the DimensionalData cell axis, which is the multi-order set above
     # read as a cube dimension. After that file for the same reason it is after
     # the per-system suites — a failure here is the lookup, not the coverage.

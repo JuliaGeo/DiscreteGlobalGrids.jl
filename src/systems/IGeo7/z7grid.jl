@@ -823,46 +823,169 @@ function border_descendants(z7::UInt64, res::Integer)
     own = _geometry_checked(z7)
     own <= res <= MAX_RESOLUTION ||
         throw(InvalidZ7Error(:descendant_res, z7, _z7_int(res), own))
-    target = Int(res)
-    out = Vector{UInt64}()
-    if target == own
-        push!(out, z7)
-        return out
-    end
-    sizehint!(out, _border_count(z7, own, target))
-    return _fill_border!(out, z7, own, target, (6, 0))
+    return [c.id for c in Z7RimEngine(z7, own, Int(res))]
 end
 
 border_descendants(z7::Unsigned, res::Integer) = border_descendants(UInt64(z7), res)
 
-"""
-    _fill_border!(out, z, res, target, state) -> out
+# The automaton as a resumable walk. `next` is the digit to try when the frame is
+# next on top, so a frame retires at `next > 6`; `full` marks a branch the
+# automaton pruned, under which every cell is interior. Resolution is not stored
+# — frame `k` sits at `root + k - 1` — and neither is the id: one scalar `z`
+# carries the current path, because descending overwrites exactly one digit slot
+# and slots below the target keep the 7 padding that never gets written.
+struct Z7Frame
+    L::Int8
+    s::Int8
+    next::Int8
+    full::Bool
+end
 
-Digit-lexicographic DFS over the border automaton, appending every res-`target`
-border descendant of `z` to `out`. The pentagon test is redone at each node for
-the same reason [`_fill_descendants!`](@ref) redoes it — a prefix stops being a
-pentagon at its first nonzero digit — even though a border suffix's first digit
-is already nonzero, so only the root node can ever be one.
+const _Z7_STACK_CAP = MAX_RESOLUTION + 1
+const Z7Stack = Helpers.SmallList{_Z7_STACK_CAP,Z7Frame}
+
+@inline _z7_empty_stack() = Helpers.empty_small_list(Val(_Z7_STACK_CAP),
+    Z7Frame(Int8(0), Int8(0), Int8(0), false))
+
 """
-function _fill_border!(out::Vector{UInt64}, z::UInt64, res::Int, target::Int,
-    state::NTuple{2,Int})
-    deleted = @inbounds Z7_DELETED_DIGIT[z7_base_cell(z)+1]
+    Z7Walk(z, stack)
+
+The walk state: the current path's id and the frame stack, both inline.
+"""
+struct Z7Walk
+    z::UInt64
+    stack::Z7Stack
+end
+
+@inline _z7_root_walk(e) = Z7Walk(e.z,
+    Helpers.small_push(_z7_empty_stack(), Z7Frame(Int8(6), Int8(0), Int8(0), false)))
+
+@inline _z7_bump(f::Z7Frame) = Z7Frame(f.L, f.s, f.next + Int8(1), f.full)
+
+# The pentagon test is redone at each node for the same reason
+# [`_fill_descendants!`](@ref) redoes it — a prefix stops being a pentagon at its
+# first nonzero digit. `res` masks off the stale digits the scalar `z` still
+# carries from a deeper branch, so it reads the same value the recursion did.
+@inline function _z7_node(z::UInt64, res::Int)
     active = Z7_PAD_MASK ⊻ _z7_tail_mask(res)
-    pentagon = (z & active) == zero(UInt64)
-    shift = _z7_shift(res + 1)
-    cleared = z & ~(UInt64(7) << shift)
-    for digit in 0:6
-        pentagon && digit == deleted && continue
-        child_state = _border_step(state, digit, res + 1)
-        child_state[1] == 0 && continue
-        child = cleared | (UInt64(digit) << shift)
-        if res + 1 == target
-            push!(out, child)
-        else
-            _fill_border!(out, child, res + 1, target, child_state)
+    return (@inbounds Z7_DELETED_DIGIT[z7_base_cell(z)+1]),
+        (z & active) == zero(UInt64)
+end
+
+"""
+    Z7RimEngine(z, res, target)
+
+Digit-lexicographic walk over the border automaton, yielding every res-`target`
+rim descendant of `z` as a `Z7Cell`, ascending, in `O(depth)` memory.
+"""
+struct Z7RimEngine
+    z::UInt64
+    res::Int
+    target::Int
+end
+
+Base.eltype(::Type{Z7RimEngine}) = Z7Cell
+Base.IteratorSize(::Type{Z7RimEngine}) = Base.HasLength()
+Base.length(e::Z7RimEngine) = Int(_border_count(e.z, e.res, e.target))
+
+function Base.iterate(e::Z7RimEngine)
+    e.target == e.res && return (Z7Cell(e.z), Z7Walk(e.z, _z7_empty_stack()))
+    return iterate(e, _z7_root_walk(e))
+end
+
+function Base.iterate(e::Z7RimEngine, w::Z7Walk)
+    z = w.z
+    st = w.stack
+    while !isempty(st)
+        k = length(st)
+        f = @inbounds st[k]
+        if f.next > Int8(6)
+            st = Helpers.small_pop(st)
+            continue
         end
+        digit = Int(f.next)
+        st = Helpers.small_setlast(st, _z7_bump(f))
+        res = e.res + k - 1
+        deleted, pentagon = _z7_node(z, res)
+        pentagon && digit == deleted && continue
+        child = _border_step((Int(f.L), Int(f.s)), digit, res + 1)
+        child[1] == 0 && continue
+        shift = _z7_shift(res + 1)
+        z = (z & ~(UInt64(7) << shift)) | (UInt64(digit) << shift)
+        res + 1 == e.target && return (Z7Cell(z), Z7Walk(z, st))
+        st = Helpers.small_push(st,
+            Z7Frame(Int8(child[1]), Int8(child[2]), Int8(0), false))
     end
-    return out
+    return nothing
+end
+
+"""
+    Z7InteriorEngine(z, res, target)
+
+The complement, off the same automaton: where the rim walk prunes, the whole
+branch below is interior, so this one descends it in full instead of dropping
+it. No rim membership is ever tested or stored.
+"""
+struct Z7InteriorEngine
+    z::UInt64
+    res::Int
+    target::Int
+end
+
+Base.eltype(::Type{Z7InteriorEngine}) = Z7Cell
+Base.IteratorSize(::Type{Z7InteriorEngine}) = Base.HasLength()
+function Base.length(e::Z7InteriorEngine)
+    e.target == e.res && return 0
+    return Int(_descendant_count(e.z, e.res, e.target)) -
+           Int(_border_count(e.z, e.res, e.target))
+end
+
+function Base.iterate(e::Z7InteriorEngine)
+    e.target == e.res && return nothing
+    return iterate(e, _z7_root_walk(e))
+end
+
+function Base.iterate(e::Z7InteriorEngine, w::Z7Walk)
+    z = w.z
+    st = w.stack
+    while !isempty(st)
+        k = length(st)
+        f = @inbounds st[k]
+        if f.next > Int8(6)
+            st = Helpers.small_pop(st)
+            continue
+        end
+        digit = Int(f.next)
+        st = Helpers.small_setlast(st, _z7_bump(f))
+        res = e.res + k - 1
+        deleted, pentagon = _z7_node(z, res)
+        pentagon && digit == deleted && continue
+        child = f.full ? (0, 0) : _border_step((Int(f.L), Int(f.s)), digit, res + 1)
+        shift = _z7_shift(res + 1)
+        z = (z & ~(UInt64(7) << shift)) | (UInt64(digit) << shift)
+        if child[1] != 0
+            res + 1 == e.target && continue     # a rim cell: not ours
+            st = Helpers.small_push(st,
+                Z7Frame(Int8(child[1]), Int8(child[2]), Int8(0), false))
+            continue
+        end
+        res + 1 == e.target && return (Z7Cell(z), Z7Walk(z, st))
+        st = Helpers.small_push(st, Z7Frame(Int8(0), Int8(0), Int8(0), true))
+    end
+    return nothing
+end
+
+"""
+    _descendant_count(z7, own, target) -> Int
+
+Number of resolution-`target` descendants of `z7`: `7^d` for a hexagon, and the
+all-zero chain plus five branches, `1 + 5*(7^d - 1)/6`, for a pentagon.
+"""
+@inline function _descendant_count(z7::UInt64, own::Int, target::Int)
+    depth = target - own
+    active = Z7_PAD_MASK ⊻ _z7_tail_mask(own)
+    p7 = 7^depth
+    return (z7 & active) == zero(UInt64) ? 1 + 5 * (p7 - 1) ÷ 6 : p7
 end
 
 # --- introspection ---------------------------------------------------------

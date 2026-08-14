@@ -44,6 +44,7 @@ overflow `Int64`.
 
 `has_sorted_subtrees` is `true`. [`max_neighbors`](@ref) is 8 for `Vertex()` and
 4 for `Edge()`. [`node_extent`](@ref) uses the exact four-corner subtree cap.
+[`subtree_border`](@ref) is an `O(rim)` walk over the subtree's square block.
 """
 struct S2System <: DGG.AbstractHierarchicalGridSystem end
 

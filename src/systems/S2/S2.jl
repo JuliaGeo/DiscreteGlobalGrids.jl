@@ -34,6 +34,7 @@ S2 cell is exactly its four-corner spherical quadrilateral:
 | [`descendant_range`](@ref) | `4^Δ`-wide shift of the scaffold ordinal: subtrees are contiguous, hence `has_sorted_subtrees` |
 | [`node_extent`](@ref) | the cell's own four-corner cap, uninflated |
 | [`neighbors`](@ref) / [`ring`](@ref) | the lattice one-ring plus the cube-edge seam table, under both `Vertex()` (8, or 7 in a face corner) and `Edge()` (4) |
+| [`subtree_border`](@ref) / [`subtree_interior`](@ref) | the subtree is an aligned square block, so the rim is its perimeter: the shared aperture-4 walk under S2's Hilbert curve, `O(rim)` in `O(Δ)` memory |
 
 Native 64-bit `s2_cellid` is not an available [`reindex`](@ref) scheme. Its
 compatibility is not verified against s2geometry fixtures; the scaffold ordinal
@@ -55,6 +56,7 @@ using SmallCollections: SmallVector
 include("chart.jl")
 include("neighbors.jl")
 include("system.jl")
+include("border.jl")
 
 export S2System
 

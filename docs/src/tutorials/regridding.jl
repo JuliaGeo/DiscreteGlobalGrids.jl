@@ -47,7 +47,7 @@ size(corners)
 # The manifold is passed explicitly: every grid here computes on the **unit**
 # sphere, and a guessed manifold would be a WGS84 sphere — a factor of `R²` in
 # every area. `Regridder` takes the destination first; building it clips every
-# overlapping pair of cells and takes a few seconds.
+# overlapping pair of cells and takes ten seconds or so.
 
 manifold = GO.Spherical(; radius = 1.0)
 regridder = CR.Regridder(manifold, grid, corners)
@@ -130,8 +130,9 @@ texas = states.geometry[findfirst(==("Texas"), states.name)]
 tx = DGG.covering(DGG.CellVector(grid), texas)
 length(tx)
 
-# The same divide as above, on the small regridder. HEALPix cells are
-# equal-area, so the unweighted mean over them is the areal mean.
+# The same two regrids as above, with the divide taken over sums: HEALPix
+# cells are equal-area, so `sum(f)/sum(c)` is the mean over the covered ground,
+# and no barely-covered coastal cell can tilt it.
 
 rgtx = CR.Regridder(manifold, DGG.PartialGrid(tx), corners)
 f, c = zeros(length(tx)), zeros(length(tx))
@@ -139,7 +140,7 @@ ts = map(months) do m
     v = month_field(m)
     CR.regrid!(f, rgtx, replace(v, NaN => 0.0))
     CR.regrid!(c, rgtx, Float64.(.!isnan.(v)))
-    mean(f ./ c)
+    sum(f) / sum(c)
 end
 round.(ts; digits = 1)
 

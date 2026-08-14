@@ -25,12 +25,9 @@ jobs:
           - '1.12'
         os:
           - ubuntu-latest
-        arch:
-          - x64
         include:
           - os: macos-latest
             version: '1.12'
-            arch: arm64
     steps:
       - uses: actions/checkout@v6
       # Project.toml resolves ConservativeRegridding through a `[sources]` path
@@ -41,7 +38,6 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
-          arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
@@ -71,8 +67,6 @@ jobs:
       - name: Install binary dependencies
         run: sudo apt-get update && sudo apt-get install -y xorg-dev mesa-utils xvfb libgl1 freeglut3-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
       - uses: actions/checkout@v6
-      - name: Clone sibling ConservativeRegridding.jl
-        run: git clone --depth 1 --branch main https://github.com/JuliaGeo/ConservativeRegridding.jl.git "${{ github.workspace }}/../ConservativeRegridding.jl"
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
@@ -81,7 +75,7 @@ jobs:
         run: |
           xvfb-run -s '-screen 0 1024x768x24' julia --project=docs -e '
             using Pkg
-            Pkg.instantiate()'
+            Pkg.instantiate(; workspace = true)'
         env:
           DISPLAY: ':0'
           DATADEPS_ALWAYS_ACCEPT: 'true'

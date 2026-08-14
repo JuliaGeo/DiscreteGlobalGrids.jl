@@ -17,6 +17,7 @@
 #   locate.jl        `cellat`, geometric `neighbors` / `ring`
 #   query.jl         the DE9IM query engine (tree prune + rim sandwich)
 #   multiorder.jl    `MultiOrderCoverage` -> `MultiOrderCellSet`
+#   cell_vector.jl   `CellVector` — a coverage read as a lazy id vector
 #
 # The parent's generics are extended from in here by importing the bindings and
 # defining methods on them, so a method added here is the package's method.
@@ -76,6 +77,10 @@ import Extents
 import DE9IM
 import ConservativeRegridding: Trees
 import GeometryOps: SpatialTreeInterface as STI
+# Only for the `getindex` tie-break in `cell_vector.jl`: a neighbour list is one
+# of SmallCollections' vectors, and indexing a cell vector by one is otherwise
+# ambiguous against that package's own method.
+import SmallCollections
 
 # The unit-sphere vocabulary, spelled once. Every extent in this package is a
 # `SphericalCap` and every coordinate a `UnitSphericalPoint`.
@@ -101,5 +106,6 @@ include("position_tree.jl")
 include("locate.jl")
 include("query.jl")
 include("multiorder.jl")
+include("cell_vector.jl")
 
 end # module Fallbacks

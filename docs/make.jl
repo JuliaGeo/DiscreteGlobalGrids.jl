@@ -10,10 +10,17 @@ using Literate
 WGLMakie.activate!()
 # Makie.inline!(true)
 
+# Doctests in `src/` docstrings are written as if the package were loaded —
+# `LevelIndex(3, 17)`, not `DiscreteGlobalGrids.LevelIndex(3, 17)` — so the
+# doctest sandbox needs the same `using` before any of them runs.
+DocMeta.setdocmeta!(DiscreteGlobalGrids, :DocTestSetup,
+                    :(using DiscreteGlobalGrids); recursive = true)
+
 # The tutorials are Literate.jl scripts; generate their markdown next to the
 # sources, where the `pages` list below expects it. Execution happens in
 # Documenter's @example blocks, not here.
-for f in ("stencils", "zonal", "regridding", "healpix_astronomy")
+for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
+          "healpix_astronomy")
     Literate.markdown(joinpath(@__DIR__, "src", "tutorials", f * ".jl"),
                       joinpath(@__DIR__, "src", "tutorials");
                       flavor = Literate.DocumenterFlavor(), execute = false)
@@ -36,6 +43,8 @@ makedocs(;
             "Stencil operations" => "tutorials/stencils.md",
             "Zonal statistics" => "tutorials/zonal.md",
             "Regridding a time series" => "tutorials/regridding.md",
+            "Multi-order coverage" => "tutorials/multiorder.md",
+            "Hydrology: a DEM on an IGEO7 grid" => "tutorials/hydrology.md",
             "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
         ],
     ],

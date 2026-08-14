@@ -1,14 +1,12 @@
 # DGGS gallery
 
-This page compares all six DGGS implementations that currently provide cell
-geometry. The remaining eight entries returned by `all_systems()` are
-registry-only: their metadata is available, but their cell-boundary mathematics
-has not yet been ported and deliberately raises `NotPortedError`.
+This page draws the six grid systems `systems()` returns: IGeo7, H3, HEALPix,
+A5, S2, and ISEA4R. Every one of them answers the same interface, so one
+function draws all six — a system and a level go in, and cell polygons come out.
 
-The levels below are chosen independently so that the cells remain visible at
-the size of each figure. Every grid follows the same path from a 1-based dense
-ordinal to a cell id and then to a unit-sphere polygon. Each globe is emitted as
-WGLMakie/Bonito HTML rather than as a static raster image.
+The levels differ from panel to panel only so that the cells stay visible at the
+size of the figure. Each globe is emitted as WGLMakie/Bonito HTML rather than as
+a static raster image.
 
 ```@raw html
 <style>
@@ -20,24 +18,25 @@ WGLMakie/Bonito HTML rather than as a static raster image.
 ```
 
 ```@example all-dggs
-using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
 using GeoMakie
 using WGLMakie
 using Bonito
 import Makie
-import GeoInterface as GI, GeometryOps as GO
+import GeometryOps as GO
 
 # Other pages use CairoMakie, so this one re-activates its own backend.
 WGLMakie.activate!()
 
-function cell_polygons(system, level)
-    ordinals = 1:DGG.num_cells(system, level)
-    cell_ids = ordinal_to_cell.((system,), (level,), ordinals)
-    polygons = cell_polygon_unitsphere.((system,), (level,), cell_ids)
+# `levelgrid` is the complete level; a position `i` names a cell through
+# `cellindex`, and `cell_polygon` is that cell on the unit sphere.
+function cell_polygons(sys, level)
+    grid = DGG.levelgrid(sys, level)
+    cells = [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
+    return GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
 end
 
-function globe_figure(system, level)
+function globe_figure(sys, level)
     figure = Makie.Figure(size = (650, 580), figure_padding = 4)
     axis = GeoMakie.GlobeAxis(
         figure[1, 1];
@@ -49,7 +48,7 @@ function globe_figure(system, level)
     Makie.lines!(axis, GeoMakie.coastlines(); color = (:gray35, 0.55), linewidth = 0.8, zlevel = 0.005)
     Makie.poly!(
         axis,
-        cell_polygons(system, level) |> x -> GO.transform(GO.GeographicFromUnitSphere(), x),
+        cell_polygons(sys, level),
         color = :transparent,
         strokewidth = 0.9,
         strokecolor = :black,
@@ -61,50 +60,80 @@ end
 nothing
 ```
 
-## A5
+## IGeo7
 
-Level 3.
+Level 2. Hexagons with twelve pentagons, aperture 7, equal-area by construction.
 
 ```@example all-dggs
-globe_figure(A5DGGS(), 3)
+globe_figure(DGG.IGeo7System(), 2)
 ```
 
 ## H3
 
-Level 1.
+Level 1. The same hexagon-with-pentagon family, on libh3's gnomonic faces, so
+not equal-area.
 
 ```@example all-dggs
-globe_figure(H3DGGS(), 1)
-```
-
-## IGEO7
-
-Level 2.
-
-```@example all-dggs
-globe_figure(IGEO7DGGS(), 2)
+globe_figure(DGG.H3System(), 1)
 ```
 
 ## HEALPix
 
-Level 3.
+Level 3. Curvilinear diamonds, exactly `4π/(12·4^l)` steradians each.
 
 ```@example all-dggs
-globe_figure(HEALPixDGGS(), 3)
+globe_figure(DGG.HEALPixSystem(), 3)
+```
+
+## A5
+
+Level 3. Cairo-style pentagons, equal-area; the one system whose canonical order
+does not give contiguous `descendant_range`s.
+
+```@example all-dggs
+globe_figure(DGG.A5System(), 3)
 ```
 
 ## S2
 
-Level 3.
+Level 3. Geodesic quadrilaterals on the cube, with about a 2× area spread within
+a level.
 
 ```@example all-dggs
-globe_figure(S2DGGS(), 3)
+globe_figure(DGG.S2System(), 3)
 ```
 
 ## ISEA4R
 
-Level 3.
+Level 3. Rhombi on ten icosahedral diamonds, exactly `4π/(10·4^l)` steradians
+each.
 
 ```@example all-dggs
-globe_figure(ISEA4RDGGS(), 3)
+globe_figure(DGG.ISEA4RSystem(), 3)
+```
+
+## Ellipsoidal geometry
+
+`AuthalicSystem` re-reads any of the six at geodetic latitude, leaving ids,
+positions, hierarchy and ordering untouched. It is a system like any other, so
+it goes through the very same call.
+
+```@example all-dggs
+globe_figure(DGG.AuthalicSystem(DGG.ISEA4RSystem()), 3)
+```
+
+## What differs between them
+
+`systems()`'s own docstring is the comparison table — cell counts, cell shape,
+equal-areaness, neighbour degree, and the traits that differ.
+
+```@example all-dggs
+for sys in DGG.systems()
+    grid = DGG.levelgrid(sys, 3)
+    println(rpad(nameof(typeof(sys)), 16),
+            " levels ", DGG.levels(sys),
+            ", ", lpad(DGG.ncells(grid), 6), " cells at level 3",
+            ", sorted subtrees: ", DGG.has_sorted_subtrees(sys),
+            ", id: ", nameof(DGG.cellindextype(sys)))
+end
 ```

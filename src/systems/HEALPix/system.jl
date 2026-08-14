@@ -1,0 +1,480 @@
+# Nested HEALPix uses dense 0-based Morton ids: level `l` is
+# `0:12*4^l-1`, children are `4p:4p+3`, and the parent is `p ÷ 4`.
+# Grid positions and alternate RING indices are 1-based. Hierarchy operations
+# use integer arithmetic; location, topology, and subtree extents have direct
+# chart or lattice implementations.
+
+# ===========================================================================
+# Types
+# ===========================================================================
+
+"""
+    HEALPixSystem() <: AbstractHierarchicalGridSystem
+
+HEALPix on the unit sphere in nested Morton order. Its twelve equal-area base
+pixels refine by aperture 4, giving `12 * 4^l` cells of area
+`4π / (12 * 4^l)` at level `l`. Chart edges are not great circles, so
+[`cell_boundary`](@ref) densifies them.
+
+Canonical [`LevelIndex`](@ref) ids are 0-based; grid positions and alternate
+[`HEALPixRingIndex`](@ref) ids are 1-based. Supported levels are `0:29`, the
+largest range whose cell count fits `Int64`. Nested ordering makes subtrees
+contiguous. Maximum neighbour counts are 8 for `Vertex()` and 4 for `Edge()`.
+[`node_extent`](@ref) returns a direct subtree cap without generic inflation.
+"""
+struct HEALPixSystem <: DGG.AbstractHierarchicalGridSystem end
+
+# `levelgrid(HEALPixSystem(), l)` returns the package's `HierarchicalLevelGrid`,
+# a lightweight descriptor for all `12 * 4^level` pixels in nested order.
+# HEALPix's fast paths dispatch on this alias; the five primitives it forwards
+# to are the `(sys, ...)` methods below.
+const LevelGrid = DGG.HierarchicalLevelGrid{HEALPixSystem}
+
+"""
+    HEALPixRingIndex(level, index) <: AbstractCellIndex
+
+A 1-based HEALPix RING index, ordered north-to-south by iso-latitude ring and
+west-to-east within each ring. This alternate scheme is compatible with
+ring-ordered data vectors but does not preserve subtree order. Convert with
+[`reindex`](@ref).
+"""
+struct HEALPixRingIndex <: DGG.AbstractCellIndex
+    level::Int32
+    index::Int64
+end
+
+DGG.level(c::HEALPixRingIndex) = Int(c.level)
+DGG.rawid(c::HEALPixRingIndex) = c.index
+Base.isless(a::HEALPixRingIndex, b::HEALPixRingIndex) =
+    isless((a.level, a.index), (b.level, b.index))
+Base.show(io::IO, c::HEALPixRingIndex) =
+    print(io, "HEALPixRingIndex(", c.level, ", ", c.index, ")")
+
+# The one place `nside` is derived from a level, and the guard that keeps a
+# bad level from silently producing a shift of 64.
+@inline _nside(level::Integer) = Int64(1) << Int(level)
+@inline _npix(level::Integer) = 12 * (Int64(1) << (2 * Int(level)))
+
+const MAX_LEVEL = 29
+
+# ===========================================================================
+# System interface
+# ===========================================================================
+
+DGG.cellindextype(::HEALPixSystem) = DGG.LevelIndex
+DGG.cellindextypes(::HEALPixSystem) = (DGG.LevelIndex, HEALPixRingIndex)
+DGG.levels(::HEALPixSystem) = 0:MAX_LEVEL
+DGG.has_sorted_subtrees(::HEALPixSystem) = true
+
+DGG.max_neighbors(::HEALPixSystem, ::DGG.Vertex) = 8
+DGG.max_neighbors(::HEALPixSystem, ::DGG.Edge) = 4
+
+DGG.rootcells(::HEALPixSystem) = [DGG.LevelIndex(0, i) for i in 0:11]
+
+"""
+    parent(HEALPixSystem(), c) -> LevelIndex
+
+The nested parent: `index ÷ 4`, one level up. Throws an `ArgumentError` on a
+level-0 cell, which has no parent.
+"""
+function Base.parent(::HEALPixSystem, c::DGG.LevelIndex)
+    l = DGG.level(c)
+    l > 0 || throw(ArgumentError(
+        "level-0 HEALPix cell $c is a root and has no parent"))
+    return DGG.LevelIndex(l - 1, c.index >> 2)
+end
+
+"""
+    children(HEALPixSystem(), c)
+
+Return the four ascending nested children `4*index .+ (0:3)`. Throws an
+`ArgumentError` at `max_level`.
+"""
+function DGG.children(sys::HEALPixSystem, c::DGG.LevelIndex)
+    l = DGG.level(c)
+    l < DGG.max_level(sys) || throw(ArgumentError(
+        "HEALPix cell $c is at max_level $(DGG.max_level(sys)) and has no children"))
+    base = c.index << 2
+    return [DGG.LevelIndex(l + 1, base + k) for k in 0:3]
+end
+
+"""
+    ancestor(HEALPixSystem(), c, l) -> LevelIndex
+
+Return the level-`l` ancestor by dropping `2Δ` low Morton bits:
+`index >> 2Δ`.
+"""
+function DGG.ancestor(sys::HEALPixSystem, c::DGG.LevelIndex, l::Integer)
+    target = Int(l)
+    lc = DGG.level(c)
+    target <= lc || throw(ArgumentError(
+        "ancestor level $target is deeper than the cell's own level $lc"))
+    target >= 0 || throw(ArgumentError(
+        "ancestor level $target is above the root level 0"))
+    return DGG.LevelIndex(target, c.index >> (2 * (lc - target)))
+end
+
+"""
+    descendant_range(HEALPixSystem(), c, l) -> UnitRange{Int}
+
+Return the contiguous 1-based positions of `c`'s level-`l` descendants. For
+`Δ = l - level(c)`, their 0-based ids are
+`index * 4^Δ : (index + 1) * 4^Δ - 1`. The range is exact and hole-free.
+"""
+function DGG.descendant_range(sys::HEALPixSystem, c::DGG.LevelIndex, l::Integer)
+    target = Int(l)
+    lc = DGG.level(c)
+    target >= lc || throw(ArgumentError(
+        "descendant level $target is above the cell's own level $lc"))
+    target <= DGG.max_level(sys) || throw(ArgumentError(
+        "descendant level $target is past max_level $(DGG.max_level(sys))"))
+    shift = 2 * (target - lc)
+    lo = c.index << shift
+    hi = ((c.index + 1) << shift) - 1
+    return Int(lo + 1):Int(hi + 1)
+end
+
+"""
+    descendants(HEALPixSystem(), c, l)
+
+Return every level-`l` descendant of `c` in ascending nested order. Dense,
+subtree-contiguous ids permit direct conversion from [`descendant_range`](@ref).
+"""
+function DGG.descendants(sys::HEALPixSystem, c::DGG.LevelIndex, l::Integer)
+    r = DGG.descendant_range(sys, c, l)      # validates `l` both ways
+    target = Int(l)
+    return [DGG.LevelIndex(target, i - 1) for i in r]
+end
+
+# ===========================================================================
+# The level grid: size, and positions <-> ids
+# ===========================================================================
+
+DGG.ncells(::HEALPixSystem, l::Integer) = Int(_npix(l))
+
+# The grid bounds-checks `i`, so this is the bijection and nothing else.
+DGG.cellindex(::HEALPixSystem, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
+
+"""
+    cellposition(HEALPixSystem(), c) -> Union{Int,Nothing}
+
+Closed form: `index + 1` for an in-range id, and `nothing` for one no pixel has.
+Replaces the fallback's linear scan. The grid has already rejected a cell from
+another level, and reindexed a [`HEALPixRingIndex`](@ref) to nested — an
+out-of-range ring index makes `ring_to_xyf` throw, which the reindex step reads
+as "not a cell of this grid" and answers `nothing` for.
+"""
+function DGG.cellposition(::HEALPixSystem, c::DGG.LevelIndex)
+    0 <= c.index < _npix(DGG.level(c)) || return nothing
+    return Int(c.index + 1)
+end
+
+# ===========================================================================
+# Alternate index scheme
+# ===========================================================================
+
+function DGG.reindex(::Type{HEALPixRingIndex}, ::HEALPixSystem, c::DGG.LevelIndex)
+    l = DGG.level(c)
+    return HEALPixRingIndex(l, nested_to_ring(c.index, _nside(l)))
+end
+
+function DGG.reindex(::Type{DGG.LevelIndex}, ::HEALPixSystem, c::HEALPixRingIndex)
+    l = DGG.level(c)
+    return DGG.LevelIndex(l, ring_to_nested(c.index, _nside(l)))
+end
+
+# ===========================================================================
+# Geometry
+# ===========================================================================
+
+# HEALPix chart edges are not great circles. Eight great-circle segments per
+# edge give 32 boundary vertices and about 0.18% level-independent relative
+# area error. A power-of-two count also makes shared-edge sample arguments, and
+# therefore vertices, bit-identical across adjacent cells. The relative error
+# falls as `nseg^-2`, and `test/systems/HEALPix/runtests.jl` pins the bound for
+# this constant, so changing it moves that test.
+const BOUNDARY_SEGMENTS = 8
+
+"""
+    _perimeter_points(ix, iy, face, nside, nseg) -> Vector{UnitSphericalPoint}
+
+Return `nseg` chart samples per edge in north → west → south → east order.
+The implicitly closed ring omits duplicated edge endpoints; `nseg == 1`
+reproduces [`pixel_corners`](@ref).
+"""
+function _perimeter_points(ix::Integer, iy::Integer, face::Integer,
+        nside::Integer, nseg::Integer)
+    n = nside
+    x0 = Int64(ix)
+    y0 = Int64(iy)
+    pts = Vector{GO.UnitSphericalPoint{Float64}}(undef, 4 * nseg)
+    k = 0
+    for i in 0:(nseg - 1)          # north -> west, along y = (iy+1)/n
+        t = i / nseg
+        pts[k += 1] = xyf_to_point((x0 + 1 - t) / n, (y0 + 1) / n, face)
+    end
+    for i in 0:(nseg - 1)          # west -> south, along x = ix/n
+        t = i / nseg
+        pts[k += 1] = xyf_to_point(x0 / n, (y0 + 1 - t) / n, face)
+    end
+    for i in 0:(nseg - 1)          # south -> east, along y = iy/n
+        t = i / nseg
+        pts[k += 1] = xyf_to_point((x0 + t) / n, y0 / n, face)
+    end
+    for i in 0:(nseg - 1)          # east -> north, along x = (ix+1)/n
+        t = i / nseg
+        pts[k += 1] = xyf_to_point((x0 + 1) / n, (y0 + t) / n, face)
+    end
+    return pts
+end
+
+"""
+    cell_boundary(grid, c) -> Vector{UnitSphericalPoint}
+
+Return the implicitly closed boundary counter-clockwise from the north corner,
+in north → west → south → east order. Each chart edge is represented by
+`BOUNDARY_SEGMENTS` great-circle segments; the four corners occur at vertices
+1, 9, 17, and 25. Use [`cell_area`](@ref) for the exact equal-area value.
+"""
+function DGG.cell_boundary(::HEALPixSystem, c::DGG.LevelIndex)
+    nside = _nside(DGG.level(c))
+    ix, iy, face = nested_to_xyf(_checked_index(c), nside)
+    return _perimeter_points(ix, iy, face, nside, BOUNDARY_SEGMENTS)
+end
+
+"""
+    cell_area(grid, c) -> Float64
+
+Return the exact equal-area solid angle `4π / (12 * 4^level)` in O(1). This is
+independent of boundary densification; the 32-vertex polygon underestimates it
+by about 0.18%.
+"""
+DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex) =
+    (_checked_index(g, c); 4 * Float64(π) / _npix(g.level))
+
+"""
+    cell_centroid(grid, c) -> UnitSphericalPoint
+
+Return the canonical, strictly interior pixel centre: the chart evaluated at
+the lattice-cell midpoint.
+"""
+function DGG.cell_centroid(::HEALPixSystem, c::DGG.LevelIndex)
+    nside = _nside(DGG.level(c))
+    ix, iy, face = nested_to_xyf(_checked_index(c), nside)
+    return pixel_center(ix, iy, face, nside)
+end
+
+# The id guard every geometry entry point needs: `nested_to_xyf` will happily
+# un-Morton an id no pixel has, yielding the geometry of a cell that does not
+# exist rather than an error.
+@inline function _checked_index(c::DGG.LevelIndex)
+    l = DGG.level(c)
+    0 <= c.index < _npix(l) || throw(ArgumentError(
+        "nested id $(c.index) is out of range 0:$(_npix(l) - 1) at level $l"))
+    return c.index
+end
+
+# The grid-level form the topology entry points use, which additionally pins the
+# cell to the grid it was handed to.
+@inline function _checked_index(g::LevelGrid, c::DGG.LevelIndex)
+    DGG.level(c) == g.level || throw(ArgumentError(
+        "cell $c is at level $(DGG.level(c)), not the grid's level $(g.level)"))
+    return _checked_index(c)
+end
+
+# ===========================================================================
+# node_extent — the subtree cap
+# ===========================================================================
+
+# How many chart samples per edge the subtree cap is built from. See
+# `_subtree_cap` for why this number, and not the boundary's, sets the bound.
+const CAP_EDGE_SEGMENTS = 8
+
+"""
+    _subtree_cap(ix, iy, face, nside) -> SphericalCap
+
+Return a cap for the pixel and its complete subtree. Nested refinement exactly
+subdivides the parent's chart square, so bounding that square bounds every
+descendant in O(1).
+
+The cap is centred on the pixel centre. The maximum distance over the square
+occurs at a corner, and all corners are sampled, so `rmax` supplies the bound.
+`gap/2` adds conservative measured slack. It is not itself a formal Lipschitz
+bound because `gap` is a geodesic chord rather than chart-edge arc length.
+"""
+function _subtree_cap(ix::Integer, iy::Integer, face::Integer, nside::Integer)
+    center = pixel_center(ix, iy, face, nside)
+    pts = _perimeter_points(ix, iy, face, nside, CAP_EDGE_SEGMENTS)
+    rmax = 0.0
+    gap = 0.0
+    prev = pts[end]
+    for p in pts
+        rmax = max(rmax, US.spherical_distance(center, p))
+        gap = max(gap, US.spherical_distance(prev, p))
+        prev = p
+    end
+    radius = min(Float64(π), rmax + gap / 2)
+    return SphericalCap(center, nextfloat(radius))
+end
+
+"""
+    node_extent(HEALPixSystem(), c) -> SphericalCap
+
+Return the pixel's subtree cap. Nested children exactly partition the parent,
+so no generic inflation is required. `_subtree_cap` derives its radius from
+the corner-inclusive perimeter samples plus conservative slack.
+"""
+function DGG.node_extent(::HEALPixSystem, c::DGG.LevelIndex)
+    l = DGG.level(c)
+    nside = _nside(l)
+    ix, iy, face = nested_to_xyf(c.index, nside)
+    return _subtree_cap(ix, iy, face, nside)
+end
+
+# ===========================================================================
+# Location
+# ===========================================================================
+
+"""
+    cellat(grid, p::UnitSphericalPoint) -> LevelIndex
+
+Return the pixel containing `p` via the chart's closed-form inverse. A complete
+level grid covers the sphere, so this never returns `nothing`. Boundary ties
+use `point_to_xyf`'s deterministic higher-side `floor` convention. Other
+HEALPix implementations may choose a different valid cell at shared borders.
+"""
+DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
+    DGG.LevelIndex(g.level, point_to_nested(p, g.level))
+
+# ===========================================================================
+# Topology
+# ===========================================================================
+
+"""
+    _one_ring(grid, c, connectivity) -> SmallVector{8,LevelIndex}
+
+Return immediate neighbours counter-clockwise from `SW`, as seen from outside
+the sphere. Missing entries are omitted and level-0 duplicates keep their
+first occurrence to preserve the cycle.
+"""
+function _one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+    _checked_index(g, c)
+    raw = nested_neighbors(c.index, g.level)
+    out = SmallVector{8,DGG.LevelIndex}()
+    for m in _neighbor_cycle(connectivity)
+        id = raw[m]
+        id < 0 && continue
+        nb = DGG.LevelIndex(g.level, id)
+        nb in out && continue
+        out = SmallCollections.push(out, nb)
+    end
+    return out
+end
+
+"""
+    neighbors(grid, c, k = 1; connectivity = Vertex())
+
+Return rings `1:k` concatenated outward, excluding `c`. Each ring is ordered
+counter-clockwise as seen from outside the sphere. `Vertex()` uses all eight
+lattice directions, except the missing neighbour at degree-3 vertices;
+`Edge()` uses the edge-sharing `SW, NW, NE, SE` directions. The first ring
+starts at `SW`; outer rings use azimuth about the cell centre.
+
+`k == 0` returns an empty container. `k == 1` returns a fixed-capacity
+`SmallVector` without allocation.
+"""
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+        connectivity::DGG.Connectivity = DGG.Vertex())
+    steps = Int(k)
+    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps == 0 && return SmallVector{8,DGG.LevelIndex}()
+    steps == 1 && return _one_ring(g, c, connectivity)
+    shells = _shells(g, c, steps, connectivity)
+    isempty(shells) && return DGG.LevelIndex[]
+    return reduce(vcat, shells)
+end
+
+"""
+    ring(grid, c, k; connectivity = Vertex())
+
+Return cells at lattice distance exactly `k`, counter-clockwise as seen from
+outside the sphere. `k == 0` returns `[c]`; `k == 1` uses the lattice cycle.
+Outer rings are sorted by azimuth about the cell centre from its west-corner
+direction, with canonical ids breaking ties.
+"""
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+        connectivity::DGG.Connectivity = DGG.Vertex())
+    steps = Int(k)
+    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps == 0 && return DGG.LevelIndex[c]
+    shells = _shells(g, c, steps, connectivity)
+    steps <= length(shells) || return DGG.LevelIndex[]
+    return shells[steps]
+end
+
+# Breadth-first lattice expansion; shell `j` contains cells at distance `j` in
+# counter-clockwise rotational order.
+function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
+        connectivity::DGG.Connectivity)
+    shells = Vector{DGG.LevelIndex}[]
+    steps == 0 && return shells
+    seen = Set{DGG.LevelIndex}((c,))
+    frontier = DGG.LevelIndex[c]
+    for j in 1:steps
+        next = DGG.LevelIndex[]
+        for x in frontier
+            for y in _one_ring(g, x, connectivity)
+                y in seen && continue
+                push!(seen, y)
+                push!(next, y)
+            end
+        end
+        # Shell 1 is already cyclic; sort outer shells geometrically.
+        j > 1 && _sort_ccw!(next, g, c)
+        push!(shells, next)
+        isempty(next) && break
+        frontier = next
+    end
+    return shells
+end
+
+# Sort counter-clockwise from the west-corner azimuth. The tangent basis is
+# right-handed when viewed from outside the sphere.
+function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::LevelGrid, c::DGG.LevelIndex)
+    length(cells) <= 1 && return cells
+    centre = DGG.cell_centroid(g, c)
+    ring = DGG.cell_boundary(g, c)
+    west = ring[1 + BOUNDARY_SEGMENTS]          # the ring's second corner
+    e1, e2 = _tangent_basis(centre, west)
+    ref = _azimuth(centre, e1, e2, west)
+    key(x) = begin
+        p = DGG.cell_centroid(g, x)
+        (mod(_azimuth(centre, e1, e2, p) - ref, 2 * Float64(π)), x)
+    end
+    sort!(cells; by = key)
+    return cells
+end
+
+# A right-handed-from-outside tangent basis at `centre`, with `e1` pointing at
+# `toward` (projected into the tangent plane).
+function _tangent_basis(centre, toward)
+    u = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
+    dot = u[1] * centre[1] + u[2] * centre[2] + u[3] * centre[3]
+    t = (u[1] - dot * centre[1], u[2] - dot * centre[2], u[3] - dot * centre[3])
+    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
+    # A degenerate reference (a cell whose west corner is at its centre) cannot
+    # happen for a real pixel, but a fallback keeps this total.
+    n <= eps(Float64) && (t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0);
+                          n = 1.0)
+    e1 = (t[1] / n, t[2] / n, t[3] / n)
+    e2 = (centre[2] * e1[3] - centre[3] * e1[2],
+          centre[3] * e1[1] - centre[1] * e1[3],
+          centre[1] * e1[2] - centre[2] * e1[1])
+    return e1, e2
+end
+
+function _azimuth(centre, e1, e2, p)
+    u = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
+    return atan(u[1] * e2[1] + u[2] * e2[2] + u[3] * e2[3],
+                u[1] * e1[1] + u[2] * e1[2] + u[3] * e1[3])
+end

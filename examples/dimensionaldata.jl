@@ -1,169 +1,244 @@
-# Demo: DimensionalData lookups — from a stored cell axis to a spatial tree.
+# Demo: a DimensionalData cell axis backed by a multi-order coverage.
 #
-# A vector data cube stores one sparse coverage as a `DimArray` whose dimension
-# is a `<X>Lookup` — a sorted vector of cell ids. Everything downstream (a
-# `Regridder`, a cap query) has to address the *same* positions, or the answers
-# silently transpose. The generic partial grid guarantees that structurally: it
-# stores `lookup.data` by reference and never reorders it, so tree leaf i is
-# lookup position i is `parent(A)[i]`.
+# A regional cube wants ONE dimension naming a region's cells at a leaf level.
+# Materialising that dimension is the naive move: a Switzerland-sized region at
+# IGEO7 level 12 is millions of ids. The compact form already exists —
 #
-# Environment: this demo needs nothing beyond DiscreteGlobalGrids and its own
-# dependencies, so it runs in the repository's project environment:
+#     set    = DGG.query(sys, DGG.MultiOrderCoverage(region); level = leaf)
+#     ranges = DGG.level_ranges(set, leaf)
+#
+# `set` is a few thousand mixed-level cells; `ranges` is their expansion to
+# sorted, disjoint POSITION ranges at the leaf level. Their concatenation is
+# exactly the leaf id vector, so a DD lookup can be O(#ranges) in memory and
+# still answer `length`, `getindex` and every selector.
+#
+# `DGG.CellLookup` is that lookup and this file is its acceptance test. It was
+# written before the type existed, as twenty-five lines of `cumsum` and
+# `searchsortedfirst` over `level_ranges`, with the laws asserted so that the
+# implementation had a pinned specification; every one of those laws is still
+# below, now asked of the type instead of of the arithmetic.
+#
+# Environment: needs nothing beyond DiscreteGlobalGrids and its dependencies:
 #
 #     julia -t 4 --project=. examples/dimensionaldata.jl
 #
 # It ends in PASS/FAIL assertions and exits non-zero if any of them fail.
-#
-# Note the imports: the two `<X>Lookups` modules share generic vocabulary
-# (`cell_center`, `cell_polygons`, `Touching`, ...), so a script that wants both
-# systems at once names what it needs instead of `using` both wholesale.
-using DiscreteGlobalGrids
-const DGG = DiscreteGlobalGrids
-using DiscreteGlobalGrids.HEALPix.HealpixLookups: HealpixLookup
-using DiscreteGlobalGrids.IGeo7.IGeo7Lookups: IGeo7Lookup
-const IGeo7 = DGG.IGeo7
+
+import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
-import Healpix
 import ConservativeRegridding as CR
 import GeometryOps as GO
-import GeometryOps: SpatialTreeInterface as STI
-using Random
+import GeoInterface as GI
 
 const FAILURES = Ref(0)
-function check(name, ok; detail = "")
+function check(name, ok; detail="")
     ok || (FAILURES[] += 1)
     println(ok ? "PASS  " : "FAIL  ", rpad(name, 56), detail)
     return ok
 end
 note(text) = println("      ", text)
 
-const SEED = 20260805
-const NCELLS = 3000
+const SYS = DGG.IGeo7System()
+const LEAF = 9
+# A Switzerland-shaped box. Any GeoInterface polygon works; a rectangle keeps
+# the demo's output stable.
+const REGION = GI.Polygon([GI.LinearRing([(6.0, 45.8), (10.5, 45.8), (10.5, 47.8),
+    (6.0, 47.8), (6.0, 45.8)])])
 
-# Fixed 10-degree lon/lat destination, as unit-sphere corner points.
+println("="^78)
+println("dimensionaldata.jl — a leaf-level cell axis, held as a multi-order coverage")
+println("julia $(VERSION)  threads=$(Threads.nthreads())")
+println("="^78)
+
+# --------------------------------------------------------------------------
+# 1. The compact backing.
+# --------------------------------------------------------------------------
+
+set = DGG.query(SYS, DGG.MultiOrderCoverage(REGION); level=LEAF)
+ranges = DGG.level_ranges(set, LEAF)
+nleaf = sum(length, ranges)
+
+check("the coverage is mixed-level", length(unique(DGG.level.(collect(set)))) > 1;
+    detail="$(length(set)) cells over levels " *
+           "$(minimum(DGG.level, set)):$(maximum(DGG.level, set))")
+check("ranges are sorted and disjoint",
+    issorted(first.(ranges)) && all(last(ranges[i]) < first(ranges[i+1])
+                                    for i in 1:length(ranges)-1);
+    detail="$(length(ranges)) ranges, $nleaf leaf cells")
+note("compression: $(length(ranges)) stored ranges for $nleaf leaf cells " *
+     "($(round(nleaf / length(ranges); digits=1))x)")
+
+# --------------------------------------------------------------------------
+# 2. The lookup.
+#
+# `CellLookup(set)` is semantically the leaf id vector and structurally the
+# ranges. Position `k` maps to a leaf POSITION by a binary search over the
+# cumulative range lengths, and only then to a typed id — nothing is
+# materialised, which is what the memory section below measures.
+# --------------------------------------------------------------------------
+
+const LEAFGRID = DGG.levelgrid(SYS, LEAF)
+
+lk = DGG.CellLookup(set)                        # leaf level = set's reference level
+check("the lookup is the leaf id vector's length", length(lk) == nleaf;
+    detail="$(length(lk)) cells")
+check("every cell in it is a leaf", DGG.level(lk) == LEAF &&
+                                    all(DGG.level(lk[k]) == LEAF for k in (1, nleaf ÷ 2, nleaf)))
+check("the backing is the set itself", DGG.cellset(lk) === set;
+    detail="cellset(lk) === set, for a second coverage op")
+# `parent` is the VALUES, which is what DimensionalData reads: some thirty of
+# its `Lookup` methods derive their behaviour from it, `Where` among them.
+check("parent is the lazy id vector",
+    parent(lk) isa AbstractVector{eltype(lk)} && length(parent(lk)) == nleaf)
+
+# LAW 1 — position <-> id round trips.
+check("position -> id -> position round trips",
+    all(DGG.cellposition(lk, lk[k]) == k
+        for k in (1, 2, nleaf ÷ 3, nleaf ÷ 2, nleaf)))
+# LAW 2 — the lazy form equals the materialised leaf vector.
+materialised = DGG.cellindex.(Ref(LEAFGRID), reduce(vcat, collect.(ranges)))
+check("lazy ids == the materialised leaf vector",
+    length(materialised) == nleaf && collect(lk) == materialised)
+# LAW 3 — a cell outside the region has no position.
+outside = DGG.cellat(LEAFGRID, -60.0, 0.0)
+check("a cell outside the coverage has no position",
+    DGG.cellposition(lk, outside) === nothing)
+
+# The same type, re-expanded. The set's reference level is 9; asking for 12
+# names 343 times as many cells and stores the same 666 windows.
+deep = DGG.CellLookup(set; level=12)
+check("one set, any leaf level",
+    length(deep) == 343 * nleaf;
+    detail="level 12: $(length(deep)) cells")
+
+# --------------------------------------------------------------------------
+# 3. The cube, and the three questions a cell axis is asked.
+#
+# `At` and `Contains` stay spelled `DD.`-qualified: they are DimensionalData's
+# selectors and this package exports its own `Contains`, the DE9IM predicate,
+# which would collide with the selector under a plain `using`.
+# --------------------------------------------------------------------------
+
+A = DD.DimArray(Float64.(1:nleaf), DGG.Cells(lk); name=:dem)
+check("a DimArray over the lookup", DD.lookup(A, DGG.Cells) === lk;
+    detail=sprint(show, DD.lookup(A, DGG.Cells)))
+
+c = lk[nleaf÷2]
+check("At(id) selects one value", A[DGG.Cells(DD.At(c))] == Float64(nleaf ÷ 2);
+    detail="$c -> position $(nleaf ÷ 2)")
+
+k = DGG.cellposition(lk, DGG.cellat(LEAFGRID, 8.0, 46.5))
+check("Contains(lon, lat) selects the cell the point is in",
+    A[DGG.Cells(DD.Contains(8.0, 46.5))] == Float64(k);
+    detail="(8.0, 46.5) -> position $k -> $(lk[k])")
+
+zurich = GI.Polygon([GI.LinearRing([(8.4, 47.3), (8.7, 47.3), (8.7, 47.5),
+    (8.4, 47.5), (8.4, 47.3)])])
+sub = A[DGG.Cells(DGG.Covering(zurich))]
+selected = Int[k for r in DGG.level_ranges(
+                   DGG.query(SYS, DGG.MultiOrderCoverage(zurich); level=LEAF), LEAF)
+               for p in r
+               for k in (DGG.cellposition(lk, DGG.cellindex(LEAFGRID, p)),) if k !== nothing]
+check("Covering(polygon) == the coverage expansion",
+    parent(sub) == Float64.(selected);
+    detail="$(length(sub)) of $nleaf positions")
+
+# Any `query` target takes the same path, so a cap is a selector too.
+cap = GO.UnitSpherical.SphericalCap(GO.UnitSpherical.UnitSphereFromGeographic()((8.5, 46.8)),
+    0.005)
+check("Covering(cap) too", !isempty(A[DGG.Cells(DGG.Covering(cap))]);
+    detail="$(length(A[DGG.Cells(DGG.Covering(cap))])) cells within 0.005 rad of (8.5, 46.8)")
+
+# A selection is a view over a NEW CellLookup whose backing is the intersected
+# region, so subsetting a cube never materialises the axis either.
+sublk = DD.lookup(sub, DGG.Cells)
+check("a subset is a cell axis again", sublk isa DGG.CellLookup &&
+                                       collect(sublk) == [lk[k] for k in selected];
+    detail=sprint(show, sublk))
+
+# --------------------------------------------------------------------------
+# 4. The degenerate cases, which are the same type.
+# --------------------------------------------------------------------------
+
+whole = DGG.CellLookup(DGG.levelgrid(SYS, 5))
+check("a whole level is one window",
+    length(whole) == DGG.ncells(DGG.levelgrid(SYS, 5)) &&
+    collect(whole)[1:4] == [DGG.cellindex(DGG.levelgrid(SYS, 5), i) for i in 1:4];
+    detail=sprint(show, whole))
+
+partial = DGG.CellLookup(DGG.PartialGrid(SYS, LEAF, materialised))
+check("an explicit id list is the same axis", partial == lk && collect(partial) == materialised;
+    detail=sprint(show, partial))
+
+# --------------------------------------------------------------------------
+# 5. What the compression is worth.
+#
+# `PartialGrid` and `CellLookup` are the same set seen from two sides, so the
+# conversion is free and the regridder consumes the cube's own axis: grid
+# position `i` IS `parent(A)[i]`, with no permutation anywhere.
+# --------------------------------------------------------------------------
+
+check("the lookup as a grid is aligned with the cube",
+    all(DGG.cellindex(DGG.PartialGrid(lk), i) == lk[i] for i in (1, 2, nleaf ÷ 2, nleaf)))
+
+check("memory is the windows, not the cells",
+    Base.summarysize(deep) == Base.summarysize(lk);
+    detail="$(Base.summarysize(lk)) bytes for $nleaf cells and for $(length(deep))")
+note("the materialised level-12 vector would be " *
+     "$(round(Int, 343 * nleaf * sizeof(eltype(lk)) / 1024)) KiB")
+
+# The regridder, on the cube's own axis. A ratio of two fields through the same
+# matrix is a weighted mean whatever the row sums are, so this checks alignment
+# rather than conservativity — which is the property the axis is responsible
+# for.
 const TO_SPHERE = GO.UnitSpherical.UnitSphereFromGeographic()
-const DST_LON = collect(range(0, 360; length = 37))
-const DST_LAT = collect(range(-90, 90; length = 19))
-const DST = [TO_SPHERE((x, y)) for x in DST_LON, y in DST_LAT]
-const DST_CELLS = vec(collect(getcell(treeify(DST))))
-const INTERSECT = CR.DefaultIntersectionOperator(GO.Spherical())
-
-println("="^78)
-println("dimensionaldata.jl — Lookup -> DGGSPartialGrid -> tree, $NCELLS cells per system")
-println("julia $(VERSION)  threads=$(Threads.nthreads())  seed=$SEED")
-println("="^78)
-
-"`n` distinct ids drawn from a seeded uniform-on-sphere point stream, ascending."
-function sampled_ids(encode, T, n; seed = SEED)
-    rng = Xoshiro(seed)
-    ids = Set{T}()
-    while length(ids) < n
-        push!(ids, T(encode(360 * rand(rng) - 180, asind(2 * rand(rng) - 1))))
-    end
-    return sort!(collect(ids))
-end
+const DST = [TO_SPHERE((x, y)) for x in range(6.0, 10.5; length=10),
+             y in range(45.8, 47.8; length=6)]
+regridder = CR.Regridder(GO.Spherical(), DST, DGG.PartialGrid(lk))
+elevation = [40.0 + 20 * sinpi(k / nleaf) for k in 1:nleaf]
+mean_field = zeros(45)
+coverage = zeros(45)
+CR.regrid!(mean_field, regridder, elevation)
+CR.regrid!(coverage, regridder, ones(nleaf))
+zonal = mean_field ./ coverage
+check("regridding the cube's data through its own axis",
+    all(isfinite, zonal) && minimum(zonal) >= minimum(elevation) &&
+    maximum(zonal) <= maximum(elevation);
+    detail="45 destination cells, means in " *
+           "$(round(minimum(zonal); digits=2))..$(round(maximum(zonal); digits=2))")
 
 # --------------------------------------------------------------------------
-# The generic half of the demo: everything below is system-agnostic. It takes
-# the lookup plus the DGGS singleton and level the lookup describes, and never
-# names a system-specific tree, grid or polygon helper.
+# 6. A5, which has no descendant ranges.
+#
+# `level_ranges` throws there, so the lookup is built by SELECTION instead:
+# `descendants` names the leaves, they are resolved to positions, sorted, and
+# compressed like any other position list. Same type, same laws.
 # --------------------------------------------------------------------------
 
-function exercise(label, lookup, system, level)
-    # THE CALL SITE — one line from a stored cell axis to a spatial tree:
-    tree = treeify(DGGSPartialGrid(lookup))
+const A5 = DGG.A5System()
+a5set = DGG.query(A5, DGG.MultiOrderCoverage(REGION); level=7)
+check("A5 has no descendant ranges to expand",
+    !DGG.has_sorted_subtrees(A5) &&
+    (try
+        DGG.level_ranges(a5set, 7)
+        false
+    catch e
+        e isa ArgumentError
+    end))
 
-    grid = DGGSPartialGrid(lookup)
-    check("$label: ncells == length(lookup.data)",
-          ncells(tree) == length(lookup.data);
-          detail = "$(ncells(tree)) cells")
-    check("$label: grid.ids === lookup.data (no copy, no reorder)",
-          grid.ids === lookup.data)
-
-    sample = (1, 2, 977, NCELLS ÷ 2, NCELLS)
-    polygon(id) = cell_polygon_unitsphere(system, level, id)
-    check("$label: getcell(tree, i) is lookup position i's cell",
-          all(getcell(tree, i) == polygon(lookup.data[i]) for i in sample);
-          detail = "sampled i = $(sample)")
-
-    # A DimArray over the same lookup: `parent(A)[i]` is tree leaf i, so a field
-    # vector can be handed to `regrid!` with no permutation anywhere.
-    array = DD.DimArray(collect(1.0:length(lookup)), (DD.Dim{:cell}(lookup),))
-    check("$label: parent(DimArray)[i] pairs with tree leaf i",
-          all(parent(array)[i] == Float64(i) &&
-              getcell(tree, i) == polygon(lookup.data[i]) for i in sample))
-
-    # Regridder: CR's matrix is (dst cells) x (src cells), so with the DGGS on
-    # the source side the lookup axis is the COLUMNS.
-    regridder = CR.Regridder(DST, DGGSPartialGrid(lookup))
-    A = regridder.intersections
-    check("$label: matrix is (dst, lookup positions)",
-          size(A) == (length(DST_CELLS), length(lookup.data));
-          detail = "$(size(A)), nnz=$(length(A.nzval))")
-
-    # Spot-check: the column with the widest footprint, against the intersection
-    # areas computed directly from lookup.data[j]'s polygon — no tree involved.
-    j = argmax(diff(A.colptr))
-    direct = [INTERSECT(cell, polygon(lookup.data[j])) for cell in DST_CELLS]
-    column = Vector(A[:, j])
-    coldiff = maximum(abs.(direct .- column) ./ max.(abs.(direct), 1.0))
-    check("$label: column $j == direct intersection areas", coldiff <= 1e-12;
-          detail = "$(count(!iszero, column)) nonzero dst cells, max rel diff $coldiff")
-
-    # And with the DGGS on the destination side the lookup axis is the ROWS.
-    reversed = CR.Regridder(DGGSPartialGrid(lookup), DST)
-    R = reversed.intersections
-    rowdiff = maximum(abs.(Vector(R[j, :]) .- direct) ./ max.(abs.(direct), 1.0))
-    check("$label: reversed regridder row $j == same areas",
-          size(R) == (length(lookup.data), length(DST_CELLS)) && rowdiff <= 1e-12;
-          detail = "$(size(R)), max rel diff $rowdiff")
-
-    # Value-level alignment: a field that is 1 at lookup position j and 0
-    # elsewhere must land exactly on that cell's footprint.
-    indicator = zeros(length(lookup.data))
-    indicator[j] = 1.0
-    destination = zeros(length(regridder.dst_areas))
-    CR.regrid!(destination, regridder, indicator)
-    check("$label: indicator at $j lights that footprint",
-          findall(!iszero, destination) == findall(!iszero, direct);
-          detail = "$(count(!iszero, destination)) dst cells lit")
-
-    # A cap query answers in the same index space, so the hits index the
-    # DimArray directly. `intersects_cap` is the whole predicate.
-    cap = GO.UnitSpherical.SphericalCap(DGG.cell_center(system, level, lookup.data[j]), 0.2)
-    hits = STI.query(tree, intersects_cap(cap))
-    truth = [i for i in eachindex(lookup.data)
-             if intersects_cap(cap, cell_cap(system, level, lookup.data[i]))]
-    check("$label: cap query hits index the DimArray",
-          j in hits && issubset(hits, truth) && parent(array)[j] == Float64(j);
-          detail = "$(length(hits)) hits / $(length(truth)) per-cell candidates")
-    return tree
-end
-
-const HEALPIX_LEVEL = 6
-const HEALPIX_RES = Healpix.Resolution(2^HEALPIX_LEVEL)
-healpix_lookup = HealpixLookup(sampled_ids(
-        (lon, lat) -> Healpix.ang2pixNest(HEALPIX_RES, deg2rad(90 - lat), deg2rad(mod(lon, 360))) - 1,
-        Int64, NCELLS); level = HEALPIX_LEVEL)
-exercise("HEALPix 6", healpix_lookup, HEALPixDGGS(), HEALPIX_LEVEL)
+a5lk = DGG.CellLookup(a5set)
+a5ids = sort!(reduce(vcat, [DGG.descendants(A5, c, 7) for c in a5set]))
+check("and a cell axis all the same",
+    collect(a5lk) == a5ids &&
+    all(DGG.cellposition(a5lk, a5lk[k]) == k for k in eachindex(a5ids));
+    detail=sprint(show, a5lk))
+note("selection mode's cost is the construction, which walks the leaves;")
+note("an A5 leaf can also sit outside its own ancestor's footprint, so a")
+note("Covering selection over-covers by whatever the refinement does")
 
 println()
-const IGEO7_LEVEL = 5
-igeo7_lookup = IGeo7Lookup(sampled_ids((lon, lat) -> IGeo7.lonlat_to_cell(lon, lat, IGEO7_LEVEL),
-                                       UInt64, NCELLS); resolution = IGEO7_LEVEL)
-exercise("IGEO7 5", igeo7_lookup, IGEO7DGGS(), IGEO7_LEVEL)
-
-println()
-note("call site, verbatim:  tree = treeify(DGGSPartialGrid(lookup))")
-note("the same line for both systems; the Lookup carries level/resolution and eltype")
-note("`treeify(lookup)` is the same path in one step, straight off the DD dimension")
-
-# ...and the one-step form really is the same tree.
-short = treeify(healpix_lookup)
-check("treeify(lookup) == treeify(DGGSPartialGrid(lookup))",
-      ncells(short) == length(healpix_lookup.data) &&
-      short.grid.ids === healpix_lookup.data &&
-      (node_level(short), node_id(short)) == (-1, 0))
+note("what this replaces: twenty-five lines of cumsum + searchsortedfirst over")
+note("level_ranges(set, leaf), written out once per page before T16")
 
 println()
 println(FAILURES[] == 0 ? "ALL CHECKS PASSED" : "$(FAILURES[]) CHECK(S) FAILED")

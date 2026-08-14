@@ -1,47 +1,16 @@
-# authalic.jl — the authalic (equal-area) auxiliary latitude of an ellipsoid of
-# revolution, both directions, plus the authalic radius.
+# Authalic latitude conversion and radius for an ellipsoid of revolution.
+# Authalic latitude preserves area on the sphere of radius `R_A`.
 #
-# Why this exists
-#   Every DGGS in this package tiles a *sphere*. Mapping those cells onto a
-#   geodetic datum without converting latitude silently deforms the cells:
-#   for WGS84 the geodetic and authalic latitudes differ by up to 0.1283°
-#   (~14.3 km along a meridian, at ±45°), which is far larger than the cell
-#   size of any high-resolution grid. The authalic latitude ξ is the one that
-#   preserves area: equal areas on the ellipsoid map to equal areas on the
-#   sphere of radius `R_A`.
+# The order-6 forward and inverse series use Karney (2024), eqs. (A19–A20),
+# with exact rational coefficients. `authalic_q` and `authalic_radius` use
+# Snyder (1987), eqs. (3-12–3-13). test/fallbacks/authalic.jl compares both
+# with PROJ and 300-bit closed-form evaluations.
 #
-# Provenance
-#   * series coefficients (both directions) -> C. F. F. Karney, "On auxiliary
-#     latitudes", Survey Review 56(389) 165-180 (2024), arXiv:2212.05818,
-#     eq. (A19) (geodetic -> authalic) and (A20) (authalic -> geodetic).
-#     Transcribed via the Julia port in anowacki/Geodesics.jl#15, which itself
-#     follows the busstoptaktik/geodesy Rust crate's reading of GeographicLib.
-#     The tables here are the exact rationals of the paper, not decimals.
-#   * Clenshaw summation of the sine series -> the standard recurrence for
-#     Σ cₖ sin(kθ) via Chebyshev U; the same shape GeographicLib's
-#     `AuxLatitude::Clenshaw` uses.
-#   * closed-form `q` and the authalic radius -> Snyder, "Map Projections — A
-#     Working Manual", USGS PP 1395 (1987), eq. (3-12) and (3-13).
-#   * validated to <= 0.5 ulp against PROJ 9's `+proj=cea` (whose `pj_qsfn` is
-#     an independent implementation of Snyder 3-12) and against a 300-bit
-#     BigFloat evaluation of the closed form — see test/test_helpers.jl.
+# `src/systems/A5/native.jl` carries its own WGS84-hardcoded copy of the same
+# series; the two must be changed together.
 #
-# Status
-#   Nothing calls this yet — `cell_boundary`, `cell_center`, `lonlat_to_cell`,
-#   the lookups and the manifold dispatch are all deliberately untouched, since
-#   *where* the conversion belongs in the pipeline is still an open design
-#   question. Note also that `src/A5/A5Native.jl` carries its own private,
-#   WGS84-hardcoded copy of the same series (`_authalic_forward` /
-#   `_authalic_inverse`, ported from the A5 reference implementation). The two
-#   agree to 1 ulp; folding A5 onto this helper is a follow-up, not part of
-#   this change.
-#
-# Convention
-#   Unsuffixed entry points take and return **radians**; the `d`-suffixed ones
-#   take and return **degrees**, matching Base's `sin`/`sind` and the
-#   `cosd`/`sind`/`atand` style already used across `src/ISEA/`. Degrees are
-#   what the grid API speaks, so the degree path is written to be exact at the
-#   poles and the equator rather than routed through `deg2rad`.
+# Unsuffixed functions use radians; `d`-suffixed functions use degrees and
+# preserve the poles and equator exactly.
 
 # ---------------------------------------------------------------------------
 # Series order and coefficient tables
@@ -50,27 +19,18 @@
 """
     AUTHALIC_SERIES_ORDER
 
-Truncation order of the auxiliary-latitude series, `6`.
-
-Both directions are Fourier sine series in the *third flattening*
-`n = (a − b)/(a + b) = f/(2 − f)`, whose `j`-th coefficient is `O(nʲ)`. For
-WGS84 `n = 1.679e-3`, so the first neglected term is `O(n⁷) ≈ 1.5e-19` rad —
-three orders of magnitude below `eps(π/2)`. The series is therefore *not* the
-limiting error at `Float64`; round-off is (see [`geodetic_to_authalic`](@ref)).
+Truncation order of the auxiliary-latitude series, whose expansion parameter is
+the third flattening `n = (a − b)/(a + b) = f/(2 − f)`. For WGS84, neglected
+terms are below `Float64` roundoff.
 """
 const AUTHALIC_SERIES_ORDER = 6
 
 """
     AUTHALIC_FORWARD_TABLE
 
-Karney (2024) eq. (A19): the Taylor coefficients, in the third flattening `n`,
-of the series taking geodetic latitude to authalic latitude. Row `j` holds the
-polynomial for `C_j` in ascending powers of `n`, and `C_j = n · (row j)(n)`, so
-`C_j = O(nʲ)` and the table is upper triangular **[published]**.
-
-Stored as exact `Rational{Int64}` so that widening to `BigFloat` costs no
-accuracy; the conversion happens once, when an [`AuthalicTransform`](@ref) is
-built.
+Exact rational coefficients from Karney (2024), eq. (A19), for geodetic to
+authalic latitude. Row `j` is the ascending-power polynomial in third flattening
+`n`, with `C_j = n · (row j)(n) = O(nʲ)`.
 """
 const AUTHALIC_FORWARD_TABLE = (
     (-4//3, -4//45, 88//315, 538//4725, 20824//467775, -44732//2837835),
@@ -84,12 +44,8 @@ const AUTHALIC_FORWARD_TABLE = (
 """
     AUTHALIC_INVERSE_TABLE
 
-Karney (2024) eq. (A20): the reverse series, authalic latitude to geodetic
-latitude, laid out exactly as [`AUTHALIC_FORWARD_TABLE`](@ref) **[published]**.
-
-This is the answer to "the inverse has no closed form": rather than iterating,
-Karney gives the reverted series directly, to the same order and the same
-accuracy as the forward one.
+Exact rational coefficients from Karney (2024), eq. (A20), for authalic to
+geodetic latitude, laid out as [`AUTHALIC_FORWARD_TABLE`](@ref).
 """
 const AUTHALIC_INVERSE_TABLE = (
     (4//3, 4//45, -16//35, -2582//14175, 60136//467775, 28112932//212837625),
@@ -144,14 +100,10 @@ end
 """
     AuthalicTransform{T}
 
-Precomputed authalic-latitude machinery for one ellipsoid of revolution: the
-two truncated series (see [`AUTHALIC_SERIES_ORDER`](@ref)) plus the derived
-authalic radius. Build it once per ellipsoid and reuse it — the constructor
-does the only transcendental work, so the per-point transforms are one
+Precomputed forward and inverse authalic-latitude series and authalic radius for
+one ellipsoid of revolution. Build one per ellipsoid and reuse it: the
+constructor does the only transcendental work, leaving each transform a
 `sincos` and a handful of `muladd`s.
-
-Immutable and `isbits`, so a `const` instance such as [`WGS84_AUTHALIC`](@ref)
-is fully constant-folded at every call site.
 
 # Constructors
 
@@ -159,13 +111,11 @@ is fully constant-folded at every call site.
     AuthalicTransform{T}(; semimajor_axis, inverse_flattening)
     AuthalicTransform{T}(; semimajor_axis, eccentricity_squared)
 
-`T` defaults to `Float64`. `semimajor_axis` defaults to WGS84's and only
-affects [`authalic_radius`](@ref) — the latitude transforms are scale-free.
-Exactly one shape parameter must be supplied, else [`EllipsoidShapeError`](@ref).
-
-Series coefficients are always evaluated in at least `Float64` and narrowed
-only at the end, so `AuthalicTransform{Float32}` carries correctly rounded
-`Float32` coefficients rather than coefficients computed in `Float32`.
+`T` and `semimajor_axis` default to `Float64` and the WGS84 semi-major axis;
+`semimajor_axis` affects only [`authalic_radius`](@ref), as the latitude
+transforms are scale-free. Exactly one shape parameter is required; otherwise
+construction throws [`EllipsoidShapeError`](@ref). Coefficients are evaluated in at least `Float64`
+before conversion to `T`.
 
 # Fields
 
@@ -174,8 +124,6 @@ only at the end, so `AuthalicTransform{Float32}` carries correctly rounded
   - `authalic_radius` — `R_A`, precomputed (see [`authalic_radius`](@ref)).
   - `fwd`, `inv` — the geodetic→authalic and authalic→geodetic sine-series
     coefficients `C_j`, in radians, `j = 1…AUTHALIC_SERIES_ORDER`.
-
-# Example
 
 ```julia
 julia> geodetic_to_authalicd(WGS84_AUTHALIC, 45.0)
@@ -282,16 +230,9 @@ end
 """
     WGS84_AUTHALIC
 
-The [`AuthalicTransform`](@ref) for WGS84 — the default ellipsoid, provided so
-that no call site has to hardcode one.
-
-`WGS84_AUTHALIC.authalic_radius` is `6.371007180918474e6` m. Note that this is
-one ulp *below* `ISEA.R_AUTHALIC`, the `6371007.180918475` literal that grid
-area computations use; `6371007.180918474` is the correctly rounded value (it
-is what PROJ's `+proj=cea` and a 300-bit evaluation of Snyder (3-13) both
-give). The difference is 9.3e-10 m and cannot matter — but see
-`test/test_helpers.jl`, which pins the relationship rather than letting it
-drift silently.
+The [`AuthalicTransform`](@ref) for WGS84. Its authalic radius is
+`6.371007180918474e6` m, one ulp below the `ISEA.R_AUTHALIC` literal;
+`test/fallbacks/authalic.jl` pins this numerically negligible difference.
 """
 const WGS84_AUTHALIC = AuthalicTransform{Float64}(;
     semimajor_axis=WGS84_SEMIMAJOR_AXIS,
@@ -302,17 +243,7 @@ const WGS84_AUTHALIC = AuthalicTransform{Float64}(;
 # Evaluation
 # ---------------------------------------------------------------------------
 
-"""
-    _clenshaw_sin(two_cos, sinθ, coefficients) -> T
-
-Clenshaw summation of `Σ_{j=1}^{N} cⱼ · sin(jθ)` given `2cos θ` and `sin θ`.
-
-Uses `sin(jθ) = sin θ · U_{j−1}(cos θ)` and the Chebyshev-`U` recurrence
-`b_j = cⱼ + 2cos θ · b_{j+1} − b_{j+2}`, so the whole series costs a single
-sine/cosine pair (obtained by the caller) plus `N` `muladd`s, rather than `N`
-separate `sin` calls — 40.6 ns to 10.9 ns per point, with the error unchanged
-at 0.5 ulp. `N` is a type parameter, so the loop is fully unrolled.
-"""
+# Clenshaw sum of `Σ cⱼ sin(jθ)` from `2cos(θ)` and `sin(θ)`.
 @inline function _clenshaw_sin(two_cos::T, sinθ::T, coefficients::NTuple{N,T}) where {N,T}
     b1 = zero(T)   # b_{j+1}
     b2 = zero(T)   # b_{j+2}
@@ -325,29 +256,14 @@ end
 """
     geodetic_to_authalic(t::AuthalicTransform, latitude) -> T
 
-Geodetic (geographic) latitude `φ` to authalic latitude `ξ`, **radians**:
+Convert geodetic latitude `φ` to authalic latitude `ξ`, in radians:
 
     ξ = φ + Σ_{j=1}^{6} C_j sin(2jφ)          [Karney 2024, eq. (A19)]
 
-## Accuracy
-
-Measured over `[−90°, 90°]` against a 300-bit `BigFloat` evaluation of the
-closed form `ξ = asin(q/q_p)` (Snyder 3-11/3-12) for WGS84:
-
-| quantity                          | error                              |
-|:----------------------------------|:-----------------------------------|
-| order-6 truncation, exact arith.  | `1.4e-20` rad (`8.6e-14` m)        |
-| this function, `Float64`          | `1.12e-16` rad = 0.50 ulp (`0.71` nm) |
-
-That is, the result is correctly rounded to within half an ulp — the series
-truncation is irrelevant and the answer is as good as `Float64` allows. The
-truncation is `O(n⁷)` with `n ≈ f/2`, so it stays under `Float64` round-off
-for any `f ≲ 1/150` (every geodetic datum) and still under a micrometre out
-to `f ≈ 1/30`. For flattenings far beyond that, [`authalic_q`](@ref) is the
-exact fallback.
-
-`±π/2` and `0` are fixed points to the last bit. Type-stable and
-non-allocating; the result has the transform's element type.
+For WGS84, `Float64` error is at most 0.5 ulp against a 300-bit closed-form
+reference. The order-6 truncation remains below `Float64` roundoff for geodetic
+datums; use [`authalic_q`](@ref) for much larger flattenings. `±π/2` and `0`
+are exact fixed points. The result has the transform's element type.
 
 See [`geodetic_to_authalicd`](@ref) for the degree form and
 [`authalic_to_geodetic`](@ref) for the inverse.
@@ -361,31 +277,13 @@ end
 """
     authalic_to_geodetic(t::AuthalicTransform, latitude) -> T
 
-Authalic latitude `ξ` to geodetic (geographic) latitude `φ`, **radians**:
+Convert authalic latitude `ξ` to geodetic latitude `φ`, in radians:
 
     φ = ξ + Σ_{j=1}^{6} C'_j sin(2jξ)         [Karney 2024, eq. (A20)]
 
-The inverse has no closed form. The two standard routes are Newton iteration
-on `q(φ)` (Snyder 3-12) and a truncated series; this uses Karney's *reverted*
-series, which wins on both counts:
-
-  - it is a series in the third flattening `n ≈ f/2 ≈ 1/597` rather than in
-    `e² ≈ 1/149`, so it converges roughly four times faster per order and
-    order 6 already lands `~3e-19` rad below the truth;
-  - Newton would need a `log` (via `atanh`) *per iteration* plus two or three
-    iterations, i.e. ~50× the cost, to reach an accuracy this already exceeds.
-
-## Accuracy
-
-Same protocol as [`geodetic_to_authalic`](@ref), WGS84, over `[−90°, 90°]`:
-
-| quantity                          | error                                 |
-|:----------------------------------|:--------------------------------------|
-| order-6 truncation, exact arith.  | `3.0e-19` rad (`1.9e-12` m)           |
-| this function, `Float64`          | `1.10e-16` rad = 0.50 ulp (`0.70` nm) |
-| round trip with the forward       | `2.22e-16` rad = 1 ulp (`1.4` nm)     |
-
-`±π/2` and `0` are fixed points to the last bit.
+This evaluates Karney's order-6 reverted series. For WGS84, `Float64` error is
+at most 0.5 ulp and forward/inverse round trips close within 1 ulp against a
+300-bit reference. `±π/2` and `0` are exact fixed points.
 """
 @inline function authalic_to_geodetic(t::AuthalicTransform{T}, latitude::Real) where {T}
     ξ = T(latitude)
@@ -396,20 +294,8 @@ end
 """
     geodetic_to_authalicd(t::AuthalicTransform, latitude) -> T
 
-[`geodetic_to_authalic`](@ref) in **degrees**.
-
-The needed `(sin 2φ, cos 2φ)` is taken as `sincospi(φ/90)` rather than
-`sincosd(2φ)` or `sincos(deg2rad(2φ))`. That is both the fastest of the three
-(9.9 ns/point in a sweep versus 15.2 and 9.3 — `sincosd` pays two separate
-degree argument reductions) and the only one exact at the poles *by
-construction*: `sincospi(±1) == (±0.0, -1.0)` and `sincospi(0) == (0.0, 1.0)`
-are exact for every float type, so `±90` and `0` are fixed points regardless
-of ellipsoid or precision, rather than relying on a small correction being
-absorbed by the final addition.
-
-Accuracy elsewhere matches the radian form — 0.5 ulp, measured `7.1e-15`
-degrees (`0.79` nm on the authalic sphere) against a 300-bit reference. The
-round trip `geodetic → authalic → geodetic` closes to the same.
+[`geodetic_to_authalic`](@ref) in degrees. It uses `sincospi(latitude/90)`
+so `±90°` and `0°` are exact fixed points. Accuracy matches the radian form.
 """
 @inline function geodetic_to_authalicd(t::AuthalicTransform{T}, latitude::Real) where {T}
     φ = T(latitude)
@@ -437,19 +323,15 @@ end
 """
     authalic_q(e2, sinlat) -> T
 
-Snyder eq. (3-12) — the "authalic area function"
+Snyder eq. (3-12), the authalic area function:
 
     q(φ) = (1 − e²) · [ sin φ / (1 − e² sin²φ) + atanh(e sin φ) / e ]
 
-whose value is proportional to the area of the zone from the equator to `φ`.
-The authalic latitude is `ξ = asin(q(φ)/q(90°))` in closed form (Snyder 3-11)
-and the authalic radius is `R_A = a·√(q(90°)/2)` (Snyder 3-13).
-
-This is the exact reference the series are checked against, and the fallback
-for ellipsoids far outside the range where a sixth-order series in `n` is
-adequate. Prefer [`geodetic_to_authalic`](@ref) otherwise: `asin` near `±90°`
-has condition number `1/cos ξ`, so the closed form loses ~3 decimal digits at
-the poles where the series stays correctly rounded.
+Its value is proportional to ellipsoidal area between the equator and `φ`.
+Then `ξ = asin(q(φ)/q(90°))` and `R_A = a·√(q(90°)/2)`. This is the
+closed-form reference and the fallback for flattenings beyond the order-6
+series' range. Near the poles, prefer [`geodetic_to_authalic`](@ref) to avoid
+the ill-conditioning of `asin`.
 
 Returns `2 sin φ` exactly on the sphere (`e² = 0`), where the general form
 would evaluate `0/0`.
@@ -467,16 +349,12 @@ authalic_q(e2::Real, sinlat::Real) = authalic_q(promote(float(e2), float(sinlat)
     authalic_radius(t::AuthalicTransform) -> T
     authalic_radius(semimajor_axis, eccentricity_squared) -> T
 
-Radius of the sphere with the same surface area as the ellipsoid, Snyder
-eq. (3-13):
+Radius of the sphere with the same area as the ellipsoid, Snyder eq. (3-13):
 
     R_A = a · √(q_p / 2),    q_p = q(90°) = 1 + (1 − e²)·atanh(e)/e
 
-For WGS84 this is `6.371007180918474e6` m (see [`WGS84_AUTHALIC`](@ref) on the
-one-ulp relationship to `ISEA.R_AUTHALIC`). Equals `a` exactly when `e² = 0`.
-
-The one-argument form is a field read — the radius is computed once, when the
-transform is built.
+For WGS84 this is `6.371007180918474e6` m. It equals `a` when `e² = 0`. The
+one-argument form returns the precomputed field.
 """
 @inline authalic_radius(t::AuthalicTransform) = t.authalic_radius
 

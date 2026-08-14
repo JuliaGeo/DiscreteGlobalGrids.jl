@@ -165,6 +165,15 @@ level(grid::PartialGrid) = grid.level
 cell_boundary(grid::PartialGrid, c::AbstractCellIndex) = cell_boundary(grid.complete, c)
 cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.complete, c)
 
+# Not derived, forwarded. `cell_area`'s generic is the ring's polygon area,
+# which is the right answer only when the ring IS the cell: HEALPix and ISEA4R
+# have curvilinear edges and override it on their level grid with the exact
+# `4pi/ncells`. A `PartialGrid` is a different type, so the generic used to win
+# here and a subset of a level grid reported areas its parent grid did not
+# agree with. The subset changes which cells there are and nothing about their
+# geometry, so the complete grid is the authority for every one of them.
+cell_area(grid::PartialGrid, c::AbstractCellIndex) = cell_area(grid.complete, c)
+
 # The ids are sorted, so the O(n) generic scan is two comparisons here.
 function cellposition(grid::PartialGrid, c::AbstractCellIndex)
     target = _canonical(grid, c)

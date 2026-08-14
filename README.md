@@ -78,8 +78,9 @@ equal-areaness, and the traits that differ across them.
 
 ## Regions, kept compressed
 
-A multi-order coverage is the coarsest cells covering a target, mixed level. Its
-two keywords are two modes, not a bound and a hint, and exactly one is given:
+A multi-order coverage is the coarsest cells that cover a target, at mixed
+levels. Its two keywords are two modes, not a bound and a hint, and exactly one
+of them is given:
 
 ```julia
 sys = DGG.IGeo7System()
@@ -205,10 +206,10 @@ S2 and ISEA4R are closed-form charts with no external dependency.
 No system defines a grid type. All six return `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
 `cell_area` — to `HierarchicalLevelGrid{TheSystem}`. `subtree_border` and
-`subtree_interior` are `O(rim)` automata on IGEO7, H3, HEALPix and ISEA4R, and
-fall back to the `O(subtree)` walk on A5 and S2. A5 is also the one system
-without `has_sorted_subtrees`, so `level_ranges` throws there and everything that
-would use it takes the selection branch instead.
+`subtree_interior` are `O(rim)` automata on every system but A5, which uses the
+`O(subtree)` fallback. A5 is also the one system without `has_sorted_subtrees`,
+so `level_ranges` throws there and everything that would use it takes the
+selection branch instead.
 
 The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
 **not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of
@@ -250,7 +251,7 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**928,188 assertions, ~2m40s warm**, with 14 broken: A5's documented
+**936,602 assertions, ~2m40s warm**, with 14 broken: A5's documented
 `has_sorted_subtrees` skips, and the destination-direction conservation arms
 that wait on the upstream clipper fix.
 

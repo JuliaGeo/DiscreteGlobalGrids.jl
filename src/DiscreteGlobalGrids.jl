@@ -118,8 +118,7 @@ include("systems/A5/A5.jl")
 include("systems/S2/S2.jl")
 include("systems/ISEA4R/ISEA4R.jl")
 
-using .IGeo7: IGeo7System, Z7Cell, RelativeZ7Cell,
-    directioncode, trytranslate
+using .IGeo7: IGeo7System, Z7Cell, RelativeZ7Cell, directioncode
 using .H3: H3System, H3Cell
 using .HEALPix: HEALPixSystem, HEALPixRingIndex
 using .A5: A5System, A5Cell
@@ -261,7 +260,7 @@ export CellLookup, Cells, Covering
 # their scaffold ordinals.
 export systems
 export IGeo7System, Z7Cell, RelativeZ7Cell
-export directioncode, trytranslate
+export directioncode
 export H3System, H3Cell
 export HEALPixSystem, HEALPixRingIndex
 export A5System, A5Cell

@@ -44,8 +44,7 @@ const Z7Cell = I.Z7Cell
     @test all(n -> c + (n - c) == n, ns)
     @test all(n -> n - (n - c) == c, ns)
     @test c - c == DGG.RelativeZ7Cell(c, 0)
-    @test DGG.trytranslate(c, DGG.RelativeZ7Cell(c, 0)) == c
-    @test isnothing(DGG.trytranslate(first(ns), last(ns) - c))
+    @test c + DGG.RelativeZ7Cell(c, 0) == c
     @test_throws DomainError first(ns) + (last(ns) - c)
     @test_throws DimensionMismatch Z7Cell("023") - Z7Cell("0230")
 
@@ -53,9 +52,22 @@ const Z7Cell = I.Z7Cell
     first_cell = DGG.cellindex(complete, 1)
     last_cell = DGG.cellindex(complete, DGG.ncells(complete))
     @test first_cell + (last_cell - first_cell) == last_cell
-    @test isnothing(DGG.trytranslate(first_cell, DGG.RelativeZ7Cell(first_cell, -1)))
-    @test isnothing(DGG.trytranslate(last_cell, DGG.RelativeZ7Cell(last_cell, typemax(Int))))
+    @test_throws BoundsError first_cell + DGG.RelativeZ7Cell(first_cell, -1)
+    @test_throws BoundsError last_cell + DGG.RelativeZ7Cell(last_cell, typemax(Int))
     @test_throws ArgumentError DGG.directioncode(last_cell - first_cell)
+
+    # Exhaust every face seam, pentagon, and cone-cut case at small levels.
+    for l in 0:2
+        level_grid = DGG.levelgrid(S, l)
+        for p in 1:DGG.ncells(level_grid)
+            origin = DGG.cellindex(level_grid, p)
+            for (code, target) in enumerate(DGG.neighbors(level_grid, origin))
+                displacement = target - origin
+                @test origin + displacement == target
+                @test DGG.directioncode(displacement) == code
+            end
+        end
+    end
 end
 
 # ---------------------------------------------------------------------------

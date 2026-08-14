@@ -14,7 +14,6 @@ ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpa
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
-import Geomorphometry as GM
 using Rasters, RasterDataSources
 import ArchGDAL, NaturalEarth
 import GeometryOps as GO, GeoInterface as GI, Extents
@@ -83,15 +82,16 @@ fitting in DGG.query(sys, DGG.Within(tile); level = DGG.level(fitting))
 # straight through it, and on a sorted-subtree system like IGEO7 the ids are a
 # lazy window over the level grid, so building it is O(1).
 
-leaf = 13                                          # ≈ 22 m cells
+leaf = 10                                          # ≈ 430 m cells
 grid = DGG.PartialGrid(sys, fitting, leaf)
 (; n = DGG.ncells(grid), first = DGG.cellindex(grid, 1),
    last = DGG.cellindex(grid, DGG.ncells(grid)))
 
 # ## The DEM, conservatively regridded
 #
-# The tile is 3600×3600 at 30 m, close to the level-13 destination resolution,
-# so the native DEM is used directly.
+# The tile is 3600×3600 at 30 m, which is far finer than the destination cells;
+# `aggregate` averages it down to roughly one source pixel per DGGS cell before
+# the intersection matrix is built.
 
 # The download extent is a point inside the tile rather than the tile itself:
 # `getraster` maps an extent to every 1° tile it touches, and a closed 1° box
@@ -101,7 +101,7 @@ Rasters.checkmem!(false)                           # the tile is bigger than fre
 
 centre = Extents.Extent(X = (10.5, 10.5), Y = (46.5, 46.5))
 path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
-dem = Raster(path; lazy = true)
+dem = aggregate(mean, Raster(path; lazy = true), 16)
 size(dem)
 
 # ConservativeRegridding wants the source's cell **corners** on the unit sphere.
@@ -176,39 +176,6 @@ p2 = poly!(ax2, polys[shown]; color = drop[shown], colormap = :magma,
     nan_color = :gray80, strokewidth = 0)
 Colorbar(fig[2, 2], p2; vertical = false)
 save("dem_igeo7.png", fig)
-fig
-
-# ## Terrain analysis with Geomorphometry
-#
-# A `CellLookup` gives the raster canonical IGEO7 cell identities while keeping
-# its vector storage positional. Geomorphometry can then use the DGGS
-# neighbourhood and physical cell geometry directly. TPI is a single local
-# call; flow accumulation uses D8 here, with each result expressed as upstream
-# area in square metres.
-
-igeo7_dem = Raster(elevation,
-    (DGG.Cells(DGG.CellLookup(DGG.CellVector(grid))),);
-    name = :height)
-
-tpi = GM.topographic_position_index(igeo7_dem)
-accumulation, directions = GM.flowaccumulation(igeo7_dem; method = GM.D8())
-
-cell_area = GM.cellarea(igeo7_dem, first(eachindex(igeo7_dem)))
-log_cells = log10.(accumulation ./ cell_area)
-
-fig = Figure(size = (900, 430))
-ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
-    title = "topographic position index (m)")
-p1 = poly!(ax1, polys[shown]; color = tpi[shown], colorrange = (-25, 25),
-    colormap = :delta, strokewidth = 0)
-Colorbar(fig[2, 1], p1; vertical = false)
-ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84",
-    title = "D8 flow accumulation")
-p2 = poly!(ax2, polys[shown]; color = log_cells[shown],
-    colormap = :devon, strokewidth = 0)
-Colorbar(fig[2, 2], p2; vertical = false,
-    label = "log₁₀(upstream cell equivalents)")
-save("geomorphometry_igeo7.png", fig)
 fig
 
 # ## The same page on every system

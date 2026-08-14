@@ -48,7 +48,6 @@ export IGeo7System,
     is_valid_cell,
     subtree_border,
     subtree_border_count,
-    trytranslate,
     z7_hex,
     z7_string
 

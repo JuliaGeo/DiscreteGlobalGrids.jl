@@ -29,4 +29,9 @@ using DiscreteGlobalGrids
     # written. Running them after every per-system suite means a failure here is
     # unambiguously a *contract* failure, not a port that never worked.
     include("systems/crosssystem/runtests.jl")
+    # T15: the same treatment for multi-order coverage, against a committed
+    # real-world outline rather than a mock's box. Last because it is the
+    # slowest, and separate from the file above because its laws are about one
+    # operation rather than about the interface at large.
+    include("systems/crosssystem/multiorder_polygons.jl")
 end

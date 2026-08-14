@@ -143,12 +143,12 @@ log_cells = log10.(accumulation ./ cell_area)
 fig = Figure(size = (900, 430))
 ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
     title = "topographic position index (m)")
-p1 = poly!(ax1, polys[shown]; color = tpi[shown], colorrange = (-25, 25),
+p1 = poly!(ax1, polys[shown]; color = vec(tpi[shown]), colorrange = (-25, 25),
     colormap = :delta, strokewidth = 0)
 Colorbar(fig[2, 1], p1; vertical = false)
 ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84",
     title = "D8 flow accumulation")
-p2 = poly!(ax2, polys[shown]; color = log_cells[shown],
+p2 = poly!(ax2, polys[shown]; color = vec(log_cells[shown]),
     colormap = :devon, strokewidth = 0)
 Colorbar(fig[2, 2], p2; vertical = false,
     label = "log₁₀(upstream cell equivalents)")

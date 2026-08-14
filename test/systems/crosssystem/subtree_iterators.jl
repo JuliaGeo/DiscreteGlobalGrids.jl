@@ -97,10 +97,16 @@ end
 const GENERIC = Tuple{DGG.AbstractHierarchicalGridSystem,DGG.AbstractCellIndex,
     Int,Connectivity}
 
-generic_rim(sys, c, l, conn) =
-    collect(invoke(DGG.rim_engine, GENERIC, sys, c, Int(l), conn))
-generic_interior(sys, c, l, conn) =
-    collect(invoke(DGG.interior_engine, GENERIC, sys, c, Int(l), conn))
+# The generic engine, wrapped back into the public iterator through its
+# positional constructor, so the fallback can be asked every question the fast
+# path is asked — including the ones about `IteratorSize` and `length`.
+generic_edge(sys, c, l, conn = Vertex()) = EdgeCellIterator(sys, c, Int(l), conn,
+    invoke(DGG.rim_engine, GENERIC, sys, c, Int(l), conn))
+generic_inner(sys, c, l, conn = Vertex()) = InnerCellIterator(sys, c, Int(l), conn,
+    invoke(DGG.interior_engine, GENERIC, sys, c, Int(l), conn))
+
+generic_rim(sys, c, l, conn) = collect(generic_edge(sys, c, l, conn))
+generic_interior(sys, c, l, conn) = collect(generic_inner(sys, c, l, conn))
 
 # Iterating without collecting: the shape the LAZY law measures.
 function take_n(it, n::Int)
@@ -112,26 +118,42 @@ function take_n(it, n::Int)
     return seen
 end
 
+# CONSTRUCTION IS INSIDE THE MEASUREMENT, deliberately. Measuring only the
+# iteration of an already-built iterator cannot fail: an engine that materialises
+# its subtree in the constructor — which is exactly the regression this law
+# exists to catch, and exactly what A5 does — then walks a ready vector and
+# measures zero. Building and taking four is the whole claim.
+function build_and_take(T, sys, c, l, n::Int)
+    return take_n(T(sys, c, l), n)
+end
+
+function build_and_collect(T, sys, c, l)
+    return length(collect(T(sys, c, l)))
+end
+
 # `@allocated` behind a function barrier, and always after a warm-up call, so
 # what is measured is the walk rather than its compilation.
-function lazy_bytes(it, n::Int)
-    take_n(it, n)
-    return @allocated take_n(it, n)
+function lazy_bytes(T, sys, c, l, n::Int)
+    build_and_take(T, sys, c, l, n)
+    return @allocated build_and_take(T, sys, c, l, n)
 end
 
-function eager_bytes(it)
-    collect(it)
-    return @allocated collect(it)
+function eager_bytes(T, sys, c, l)
+    build_and_collect(T, sys, c, l)
+    return @allocated build_and_collect(T, sys, c, l)
 end
 
-# The base level each system is swept from, and the roots swept at it. Level 1
-# everywhere: deep enough that a subtree is not the whole sphere, shallow enough
-# that depth 3 stays cheap on an aperture-7 system.
-function sweep_roots(sys)
-    base = min(1, max_level(sys))
+# BOTH base levels, because they are different shapes of problem. A level-0 root
+# is a whole face or base cell: its block is flush with every seam the system
+# has, every mask bit stays set the whole way down, and on the square systems the
+# rim is the face boundary whose neighbours live on another face. A level-1 root
+# is an interior block with seams on some sides and siblings on others. Level 1
+# alone would leave the flush-everywhere arithmetic unexercised.
+sweep_bases(sys) = filter(b -> b <= max_level(sys), (0, 1))
+
+function sweep_roots(sys, base::Int)
     grid = levelgrid(sys, base)
-    roots = vcat(sample_cells(grid, 4), irregular_cells(grid, 2))
-    return base, unique(roots)
+    return unique(vcat(sample_cells(grid, 4), irregular_cells(grid, 2)))
 end
 
 # The deepest subtree under `base` that stays under a cell budget — derived from
@@ -148,9 +170,10 @@ end
 
 @testset "subtree iterators" begin
 
-    for sys in systems()
-        name = string(nameof(typeof(sys)))
-        base, roots = sweep_roots(sys)
+    for sys in systems(), base in sweep_bases(sys)
+        sysname = string(nameof(typeof(sys)))
+        name = "$sysname at level $base"
+        roots = sweep_roots(sys, base)
 
         @testset "$name: agreement with the eager verbs and the definition" begin
             for c in roots, d in 0:3
@@ -210,16 +233,36 @@ end
                 l <= max_level(sys) || continue
                 for it in (EdgeCellIterator(sys, c, l), InnerCellIterator(sys, c, l))
                     @test eltype(it) == cellindextype(sys)
-                    if Base.IteratorSize(typeof(it)) isa Base.HasLength
-                        @test length(it) == length(collect(it))
-                    else
-                        # The contract is that no `length` walks the subtree to
-                        # answer, so an uncounted iterator must not have one.
-                        @test_throws MethodError length(it)
-                    end
+                    # Every system's own walk is counted — the five automata by
+                    # closed form, A5 by the vector it materialised.
+                    @test Base.IteratorSize(typeof(it)) isa Base.HasLength
+                    @test length(it) == length(collect(it))
                     # Type stability where there is anything to yield.
                     isempty(collect(it)) || @test (@inferred first(it)) isa
                                                   cellindextype(sys)
+                end
+            end
+        end
+
+        # The other half of COUNTED. The generic walk is a lazy scan with no
+        # closed-form count, and the contract is that such a walk carries NO
+        # `length` rather than one that would traverse to answer — so the
+        # `MethodError` is the assertion, not an accident. A5 is excluded
+        # because its fallback materialises instead of scanning, which makes it
+        # legitimately counted.
+        if DGG.has_sorted_subtrees(sys) && base + 2 <= max_level(sys)
+            @testset "$name: the generic walk is uncounted" begin
+                l = base + 2
+                for c in roots
+                    for git in (generic_edge(sys, c, l), generic_inner(sys, c, l))
+                        @test Base.IteratorSize(typeof(git)) isa Base.SizeUnknown
+                        @test_throws MethodError length(git)
+                    end
+                    # ...and it still answers what the fast path answers.
+                    @test collect(generic_edge(sys, c, l)) ==
+                          collect(EdgeCellIterator(sys, c, l))
+                    @test collect(generic_inner(sys, c, l)) ==
+                          collect(InnerCellIterator(sys, c, l))
                 end
             end
         end
@@ -242,7 +285,7 @@ end
         # A5 is excluded by construction, not by accident: with no automaton its
         # engine is a vector built in the constructor, so these assertions would
         # pass while measuring nothing. See this file's header.
-        if name != "A5System"
+        if sysname != "A5System"
             @testset "$name: lazy" begin
                 c = first(roots)
                 deep = deep_depth(sys, base)
@@ -251,24 +294,23 @@ end
                 deep_l = base + deep
 
                 for T in (EdgeCellIterator, InnerCellIterator)
-                    shallow_it = T(sys, c, shallow_l)
                     deep_it = T(sys, c, deep_l)
                     length(collect(deep_it)) >= 64 || continue
 
-                    lazy = lazy_bytes(deep_it, 4)
-                    eager = eager_bytes(deep_it)
+                    lazy = lazy_bytes(T, sys, c, deep_l, 4)
+                    eager = eager_bytes(T, sys, c, deep_l)
 
                     # The point of the whole task, as a ratio rather than a byte
-                    # count: four cells off the front cost a fraction of the
-                    # walk they are the front of.
+                    # count: building the walk and taking four cells off the
+                    # front costs a fraction of the walk they are the front of.
                     @test lazy * 8 < eager
 
                     # ...and the sharper form of it. Between these two depths the
                     # rim grows by the aperture cubed, and a walk whose state is
-                    # its depth must not notice. This is the assertion that
-                    # would fail if the iterator ever went back to building the
-                    # rim and handing out its elements.
-                    @test lazy <= lazy_bytes(shallow_it, 4) + 64
+                    # its depth must not notice. This is the assertion that would
+                    # fail if the iterator ever went back to building the rim and
+                    # handing out its elements.
+                    @test lazy <= lazy_bytes(T, sys, c, shallow_l, 4) + 64
 
                     # The walk is resumable, not restarted: the prefix agrees
                     # with the collected form element for element.
@@ -287,9 +329,9 @@ end
     # the hierarchy that the ellipsoid does not touch — so both walks must
     # forward to the wrapped system and answer identically.
     @testset "AuthalicSystem forwards both walks" begin
-        for sys in systems()
+        for sys in systems(), base in sweep_bases(sys)
             wrapped = AuthalicSystem(sys)
-            base, roots = sweep_roots(sys)
+            roots = sweep_roots(sys, base)
             for c in roots, d in 0:2
                 l = base + d
                 l <= max_level(sys) || continue

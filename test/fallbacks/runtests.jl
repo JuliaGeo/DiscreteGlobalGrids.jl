@@ -1433,6 +1433,30 @@ using DiscreteGlobalGrids.Helpers
     @test_throws BoundsError small_push(full, 3)
     @test_throws BoundsError full[4]
 
+    # The stack half of the list, which the subtree walks in
+    # `src/fallbacks/subtree_iterators.jl` push, peek, advance and pop once per
+    # tree node. Both stay allocation-free, and both refuse an empty list rather
+    # than reading or writing past its end.
+    @test collect(small_pop(full)) == [2, 1]
+    @test collect(small_pop(small_pop(full))) == [2]
+    @test isempty(small_pop(small_pop(small_pop(full))))
+    @test_throws BoundsError small_pop(empty)
+
+    @test collect(small_setlast(full, 9)) == [2, 1, 9]
+    @test collect(small_setlast(small_pop(full), 9)) == [2, 9]
+    @test_throws BoundsError small_setlast(empty, 1)
+
+    # A pop leaves the dropped slot's contents in place; `len` is what puts it
+    # out of reach, and a later push must overwrite rather than resurrect it.
+    @test collect(small_push(small_pop(full), 7)) == [2, 1, 7]
+
+    @test isbitstype(typeof(small_pop(full)))
+    @test isbitstype(typeof(small_setlast(full, 9)))
+    let stack = full
+        small_pop(small_setlast(stack, 9))            # warm up
+        @test (@allocated small_pop(small_setlast(stack, 9))) == 0
+    end
+
     @test strictly_increasing(Int[])
     @test strictly_increasing([1, 2, 3])
     @test !strictly_increasing([1, 1, 2])

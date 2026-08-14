@@ -95,8 +95,8 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
 
 # The lazy subtree walkers' extension point and the parts a system builds one
 # from. Not exported — a caller reaches the iterators, a system reaches these.
-using .Fallbacks: EagerEngine, collect_subtree,
-    MortonCurve, SquareRimEngine, SquareInteriorEngine
+using .Fallbacks: collect_subtree,
+    MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine
 
 # Grid systems, all six ported. Include order never matters: the two ISEA-family
 # systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included

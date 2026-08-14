@@ -338,18 +338,6 @@ function rim_engine end
 function interior_engine end
 
 """
-    quadrant_step(curve, orientation, p) -> (i, j, child_orientation)
-
-Which half of its parent square in `x` (`i`) and `y` (`j`) the sub-square at
-space-filling-curve position `p` is, and the orientation state its own children
-are read under.
-
-The one system-specific part of the shared aperture-4 subtree walk: `MortonCurve`
-(HEALPix, ISEA4R) ignores orientation, S2's Hilbert curve advances it.
-"""
-function quadrant_step end
-
-"""
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}
 
 The contiguous interval of **positions** in `levelgrid(sys, l)`'s canonical

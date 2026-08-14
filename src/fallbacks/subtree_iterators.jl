@@ -105,10 +105,21 @@ Base.IteratorSize(::Type{<:InnerCellIterator{S,C,K,E}}) where {S,C,K,E} =
 # contract ("no `length` that silently costs a full traversal") being kept.
 Base.length(it::SubtreeIterator) = length(it.engine)
 
-Base.show(io::IO, it::EdgeCellIterator) =
-    print(io, "EdgeCellIterator(", it.system, ", ", it.cell, ", ", it.level, ")")
-Base.show(io::IO, it::InnerCellIterator) =
-    print(io, "InnerCellIterator(", it.system, ", ", it.cell, ", ", it.level, ")")
+# The docstrings advertise `collect` as the eager verbs, so `collect` must BE
+# the guarded path, not merely parallel to it: `collect`'s own `HasLength` route
+# would size its vector from a miscounting automaton and hand back an `undef`
+# tail as cell ids. See `collect_subtree`.
+Base.collect(it::SubtreeIterator) = collect_subtree(it)
+
+# Connectivity is shown even though it changes nothing on five of the six
+# systems: on A5 it changes the answer, and that is exactly when someone is
+# reading this.
+Base.show(io::IO, it::EdgeCellIterator) = print(io, "EdgeCellIterator(",
+    it.system, ", ", it.cell, ", ", it.level, "; connectivity = ",
+    it.connectivity, ")")
+Base.show(io::IO, it::InnerCellIterator) = print(io, "InnerCellIterator(",
+    it.system, ", ", it.cell, ", ", it.level, "; connectivity = ",
+    it.connectivity, ")")
 
 # ===========================================================================
 # The materialising engine
@@ -305,7 +316,14 @@ Which half of its parent square in `x` (`i`) and `y` (`j`) the sub-square at
 curve position `p` is, and the orientation state its own children are read
 under. Orientation is inert for [`MortonCurve`](@ref); S2's Hilbert curve
 advances it.
+
+Dispatches on the CURVE, not on the system — it is the one parameter of
+[`SquareRimEngine`](@ref), not a system extension point, which is why it lives
+here rather than beside `rim_engine` in `src/interface/`. A system supplies a
+curve type and one method of this; three systems currently supply two curves.
 """
+function quadrant_step end
+
 @inline quadrant_step(::MortonCurve, orientation::UInt8, p::Int) =
     (p & 1, (p >> 1) & 1, orientation)
 
@@ -343,6 +361,13 @@ const SquareStack = Helpers.SmallList{_SQUARE_CAP,SquareFrame}
 The perimeter of the `side x side` block whose first cell has raw index `base`,
 in ascending id. `4·side - 4` cells for `side > 1`, `O(depth)` memory, `O(rim)`
 time.
+
+Yields [`LevelIndex`](@ref) rather than a parameterized cell type, and not by
+oversight: the walk's premise is that a descendant's id is `base` plus its
+offset along the curve, which is a statement about a dense integer id, and
+`LevelIndex` is what wraps one. All three aperture-4 systems use it. A fourth
+that did not would need a cell-construction parameter here, not just an
+`eltype`.
 """
 struct SquareRimEngine{V}
     curve::V

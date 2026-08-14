@@ -8,6 +8,10 @@
 # arbitrary integers handed back as cell ids, silently. HEALPix guarded exactly
 # this for its own rim; every automaton with a counted rim needs it, so it lives
 # here. One comparison against Θ(rim) work.
+#
+# Takes any counted walk, not just the two iterators — `border_descendants` runs
+# an engine directly — so the message names the walk by `show` rather than by
+# fields only the iterators have.
 function collect_subtree(it)
     counted = Base.IteratorSize(typeof(it)) isa Base.HasLength
     out = eltype(it)[]
@@ -17,7 +21,7 @@ function collect_subtree(it)
     end
     counted && length(out) != length(it) && error(
         "$(nameof(typeof(it))) walked $(length(out)) cells but counts \
-         $(length(it)): $(it.system) cell $(it.cell) at level $(it.level)")
+         $(length(it)): $it")
     return out
 end
 

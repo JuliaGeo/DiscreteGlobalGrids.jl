@@ -823,7 +823,10 @@ function border_descendants(z7::UInt64, res::Integer)
     own = _geometry_checked(z7)
     own <= res <= MAX_RESOLUTION ||
         throw(InvalidZ7Error(:descendant_res, z7, _z7_int(res), own))
-    return [c.id for c in Z7RimEngine(z7, own, Int(res))]
+    # Through the guard, not a comprehension: a comprehension over a `HasLength`
+    # walk preallocates from the count and would leave an `undef` tail if the two
+    # ever disagreed. `collect_subtree` is the one place that comparison lives.
+    return [c.id for c in DGG.collect_subtree(Z7RimEngine(z7, own, Int(res)))]
 end
 
 border_descendants(z7::Unsigned, res::Integer) = border_descendants(UInt64(z7), res)

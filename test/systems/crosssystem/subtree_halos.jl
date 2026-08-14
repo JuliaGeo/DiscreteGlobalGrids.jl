@@ -12,9 +12,11 @@
 #
 # Written against the generic interface only, like its siblings here: no system
 # module is imported, every law runs against every system in `systems()`, plus
-# an `AuthalicSystem`-wrapped run. Helpers are deliberate copies of the ones in
-# `subtree_iterators.jl` rather than imports — the two files must be able to
-# disagree.
+# an `AuthalicSystem`-wrapped run — with one internal touch, the engine-type
+# checks against `DGG.Fallbacks.EagerEngine`, which are how the sweeps PROVE
+# the automaton was reached rather than the generic engine tested twice.
+# Helpers are deliberate copies of the ones in `subtree_iterators.jl` rather
+# than imports — the two files must be able to disagree.
 #
 # The laws, in order:
 #
@@ -25,11 +27,12 @@
 #     halo and every halo cell one in the border; `Edge()`'s halo is inside
 #     `Vertex()`'s, strictly so somewhere concrete.
 #   * THE AUTOMATON — the exterior-perimeter walk on the three aligned-block
-#     systems, which the bases-0-and-1 sweep cannot reach: a level-0 or level-1
-#     block is flush with its face on every side, and flush blocks take the
-#     generic engine (their halo crosses a seam). The level-2 sweep is where the
-#     lazy walk actually runs, so it gets its own oracle pass and the T20-style
-#     allocation ratio.
+#     systems, which the bases-0-and-1 sweep cannot reach: a level-0 block is
+#     flush with its face on every side and a level-1 block on two of its four
+#     (one per axis), and any flush block takes the generic engine (its halo
+#     crosses a seam). The level-2 sweep is where the lazy walk actually runs,
+#     so it gets its own oracle pass, a deep element-for-element case, and the
+#     T20-style allocation ratio.
 #   * SUBSETS — `halo(sub)` agrees between a rooted `PartialGrid`, the same ids
 #     with the root forgotten, and a `CellVector`; every element is out of set;
 #     a hole's cells join the halo.
@@ -54,9 +57,14 @@ using DiscreteGlobalGrids: systems, levels, max_level, levelgrid, ncells,
     NeighborCellIterator, PartialGrid, CellVector,
     AuthalicSystem, Vertex, Edge, Connectivity
 
-# The defining law, verbatim: slow, oracle-grade, sharing no code with any
-# engine. `sort!` before `unique!` so the dedup is the cheap adjacent one and
-# the result is already in canonical order.
+# The defining law, verbatim. Independent of the AUTOMATON wherever an
+# automaton runs — the square systems' band descent shares none of this
+# arithmetic — but on the generic-engine paths (IGeo7, H3, A5, flush blocks)
+# it is a re-derivation from the same T20-proven primitives the engine itself
+# uses, not a second opinion. The genuinely independent checks there are the
+# two coverage directions, sortedness by the level's own positions, and the
+# subset laws below. `sort!` before `unique!` so the dedup is the cheap
+# adjacent one and the result is already in canonical order.
 function brute_force_halo(sys, c, l; connectivity = Vertex())
     grid = levelgrid(sys, l)
     lc = level(c)
@@ -246,6 +254,24 @@ end
                 length(prefix) >= 4 && break
             end
             @test prefix == collect(it)[1:4]
+        end
+    end
+
+    # The level-2 sweep above element-checks the automaton only up to side 4;
+    # the deep runs in "lazy" check the count and a prefix, not the elements.
+    # One deep block, element for element against the oracle, closes that gap —
+    # the engine type is the proof the block is non-flush and the automaton is
+    # the code under test.
+    @testset "the automaton at depth, element for element" begin
+        sys = only(s for s in systems() if string(nameof(typeof(s))) == "S2System")
+        grid2 = levelgrid(sys, 2)
+        c = first(x for x in (cellindex(grid2, i) for i in 1:ncells(grid2))
+            if !(NeighborCellIterator(sys, x, 3).engine isa DGG.Fallbacks.EagerEngine))
+        l = 2 + 6                              # a 64 x 64 block, halo 260 cells
+        for conn in (Vertex(), Edge())
+            it = NeighborCellIterator(sys, c, l; connectivity = conn)
+            @test !(it.engine isa DGG.Fallbacks.EagerEngine)
+            @test collect(it) == brute_force_halo(sys, c, l; connectivity = conn)
         end
     end
 

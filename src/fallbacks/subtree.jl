@@ -1,4 +1,4 @@
-# The eager subtree verbs. Both are `collect` of the lazy iterators in
+# The eager subtree verbs. All three are `collect` of the lazy iterators in
 # `subtree_iterators.jl`, which is also where the per-system fast paths hang —
 # so a system writes its walker once and both faces of it get faster.
 

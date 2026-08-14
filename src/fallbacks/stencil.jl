@@ -297,8 +297,9 @@ each exactly once, in the complete level's ascending order.
 
 On a rooted [`PartialGrid`](@ref) holding a WHOLE subtree the answer is
 [`NeighborCellIterator`](@ref)`(system, root, level; connectivity)` itself —
-lazy, and no membership machinery at all, because a subtree's outside ring is a
-fact of the hierarchy. Everything else — a non-rooted `PartialGrid`, a
+lazy wherever that iterator's engine is (see its docstring for which), and no
+membership machinery at all, because a subtree's outside ring is a fact of the
+hierarchy. Everything else — a non-rooted `PartialGrid`, a
 [`CellVector`](@ref), a rooted grid missing cells, any grid of A5, whose order
 establishes no [`descendant_range`](@ref) to test wholeness against — takes
 the eager fallback:

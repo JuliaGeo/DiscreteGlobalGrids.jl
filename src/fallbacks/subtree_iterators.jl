@@ -1,10 +1,10 @@
-# Lazy rim and interior of a subtree; `subtree_border` / `subtree_interior` are
-# `collect` of these.
+# Lazy rim, interior and halo of a subtree; `subtree_border` /
+# `subtree_interior` / `subtree_halo` are `collect` of these.
 #
 # One public type per verb. The per-system algorithm lives in an ENGINE the type
-# forwards the whole iteration protocol to, so `rim_engine` / `interior_engine`
-# are the single extension point a system overrides — one method each, beside
-# its `subtree_border`.
+# forwards the whole iteration protocol to, so `rim_engine` / `interior_engine` /
+# `neighbor_engine` are the single extension point a system overrides — one
+# method each, beside its `subtree_border`.
 #
 # Walk state travels in the value `iterate` threads, never in the engine: an
 # iterator is restartable, and every state but the materialising fallback's is

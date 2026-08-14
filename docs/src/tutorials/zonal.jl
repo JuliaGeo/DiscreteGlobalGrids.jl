@@ -79,4 +79,4 @@ mean(A[DGG.Cells(DGG.Covering(texas))])
 # page unchanged. Two things do vary by system. Where cells are not equal-area,
 # weight the mean by `cell_area`. And where a system's refinement is not
 # congruent, a covering can name a few cells past the ones that touch —
-# see the multi-order coverage tutorial for that margin, per system.
+# the multi-order coverage tutorial shows where that margin comes from.

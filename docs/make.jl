@@ -10,6 +10,12 @@ using Literate
 WGLMakie.activate!()
 # Makie.inline!(true)
 
+# Doctests in `src/` docstrings are written as if the package were loaded —
+# `LevelIndex(3, 17)`, not `DiscreteGlobalGrids.LevelIndex(3, 17)` — so the
+# doctest sandbox needs the same `using` before any of them runs.
+DocMeta.setdocmeta!(DiscreteGlobalGrids, :DocTestSetup,
+                    :(using DiscreteGlobalGrids); recursive = true)
+
 # The tutorials are Literate.jl scripts; generate their markdown next to the
 # sources, where the `pages` list below expects it. Execution happens in
 # Documenter's @example blocks, not here.

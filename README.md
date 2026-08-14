@@ -85,8 +85,9 @@ regridder = CR.Regridder(destination, DGG.levelgrid(DGG.HEALPixSystem(), 4))
 
 `examples/regridding.jl` is that claim as an assertion-checked script; run it
 with `julia -t 4 --project=. examples/regridding.jl` and it exits non-zero if a
-check fails. The other scripts under `examples/` and the tutorials under
-`docs/src/tutorials/` still target the pre-redesign API and are being rewritten.
+check fails. Every script under `examples/` is written that way and runs in this
+project environment; the tutorials under `docs/src/tutorials/` are Literate.jl
+sources, run by the docs build.
 
 ## Layout
 

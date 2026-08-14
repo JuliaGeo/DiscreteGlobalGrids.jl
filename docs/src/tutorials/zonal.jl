@@ -5,9 +5,13 @@
 # grid in this package, with a DE9IM predicate that says exactly which sense of
 # "inside" is meant. This page answers it for Texas on a whole-globe HEALPix
 # grid, then shows the multi-order form, which returns the same region as a few
-# hundred mixed-level cells instead of a few thousand leaf ones.
+# hundred mixed-level cells instead of a few thousand leaf ones, and finally
+# hands that compressed answer to a DimensionalData cell axis, which keeps it
+# compressed.
 
 import DiscreteGlobalGrids as DGG
+import DimensionalData as DD
+import GeoInterface as GI
 import NaturalEarth
 import GeometryOps as GO
 using Statistics
@@ -99,31 +103,47 @@ fig
 # Cells are coloured by their level: the interior arrives as a few coarse cells,
 # the outline as many fine ones.
 
-# ## The DimensionalData layer, as it should read
+# ## The DimensionalData layer
 #
 # A cube over this region wants ONE dimension naming its cells at the leaf
 # level, backed by the coverage rather than by the expanded id vector — memory
-# `O(length(set))`, not `O(sum(length, ranges))`.
-#
-# !!! warning "Aspirational — T16"
-#     Nothing implements the block below yet. It is the API this page wants,
-#     written out as the acceptance test for the DimensionalData layer, and it
-#     is a plain code fence rather than an `@example`, so the build never runs
-#     it.
-#
-# ```julia
-# lk = DGG.CellLookup(set)                     # MOC-backed, leaf level 7
-# length(lk) == sum(length, ranges)            # the logical content
-# lk[k]                                        # position -> typed leaf id, on demand
-# DGG.cellposition(lk, c)                      # typed leaf id -> position, or nothing
-#
-# A = DD.DimArray(values, DGG.Cells(lk); name = :tavg)
-# A[DGG.Cells(DD.At(c))]                       # a typed id
-# A[DGG.Cells(DD.Contains(-97.7, 30.3))]       # a lon/lat point, via `cellat`
-# A[DGG.Cells(DGG.Covering(travis_county))]    # a polygon: coverage ∩ backing
-#
-# mean(A[DGG.Cells(DGG.Covering(texas))])      # this whole page, in one line
-# ```
+# `O(length(set))`, not `O(sum(length, ranges))`. `CellLookup` is that
+# dimension's lookup: semantically the leaf id vector, structurally the ranges.
+
+lk = DGG.CellLookup(set)
+(; n_cells = length(lk), n_windows = length(ranges), bytes = Base.summarysize(lk))
+
+# `lk[k]` is the `k`th leaf id, resolved on demand; `cellposition(lk, c)` is the
+# inverse, and `nothing` for a cell the region does not hold. Those two are the
+# whole of what a cube axis needs.
+
+k = length(lk) ÷ 2
+lk[k], DGG.cellposition(lk, lk[k])
+
+# `Cells` is the dimension the lookup goes in.
+
+A = DD.DimArray([field(lonlat(DGG.cell_centroid(grid, c))...) for c in lk],
+    DGG.Cells(lk); name = :tavg)
+
+# A typed id selects one cell, a lon/lat point selects the cell it falls in
+# (through `cellat`), and a polygon selects through the same `MultiOrderCoverage`
+# this page opened with, intersected with the axis.
+
+A[DGG.Cells(DD.At(lk[k]))], A[DGG.Cells(DD.Contains(-97.7, 30.3))]
+
+# Austin sits in Travis County; a box around it selects a few hundred of the
+# region's cells, and the view keeps the compact backing.
+
+travis = GI.Polygon([GI.LinearRing([(-98.2, 30.0), (-97.35, 30.0), (-97.35, 30.65),
+    (-98.2, 30.65), (-98.2, 30.0)])])
+austin = A[DGG.Cells(DGG.Covering(travis))]
+(; n_cells = length(austin), lookup = DD.lookup(austin, DGG.Cells), tavg = mean(austin))
+
+# And the zonal mean this page opened with is one line over the cube. It is the
+# mean over the *coverage's* leaves, so it brackets with `touching` rather than
+# with `interior` — the same distinction the two queries above drew.
+
+mean(A[DGG.Cells(DGG.Covering(texas))])
 
 # ## The same query on every system
 #

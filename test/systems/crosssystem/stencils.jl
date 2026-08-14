@@ -159,6 +159,16 @@ end
             @test neighbors(sub, c, k; connectivity = conn) ==
                   reduce(vcat, rings; init = cellindextype(sys)[])
         end
+        # The law AS THE CONTRACT SPELLS IT, `filter(in(sub), ...)` and all —
+        # a docstring equation that does not run is a claim, not a contract, and
+        # `in` is the half of it that lives outside this file.
+        cv = CellVector(sub)
+        for c in probes(sub, 3), k in 0:2
+            @test ring(sub, c, k) == filter(in(sub), ring(complete, c, k))
+            @test ring(cv, c, k) == filter(in(cv), ring(complete, c, k))
+            @test ring(CellLookup(cv), c, k) ==
+                  filter(in(CellLookup(cv)), ring(complete, c, k))
+        end
     end
 
     @testset "$label: the position face is the id face" for (label, sub) in
@@ -219,6 +229,25 @@ end
         # still reaches outside at `k == 2`, so the deeper table must NOT take
         # it. Same answer either way, which is what is asserted.
         @test halo_table(sub, 2) == [neighbors(sub, p, 2) for p in 1:ncells(sub)]
+        # Agreement alone cannot tell the two routes apart, so the gate itself
+        # is pinned: on a sorted-subtree system this shape MUST be recognised,
+        # and a regression that quietly stopped taking the split would leave
+        # every equality above green while losing the whole point of it.
+        @test (FB._whole_subtree_range(sub) !== nothing) == has_sorted_subtrees(sys)
+        @test FB._whole_subtree_range(scattered(sys, leaf)) === nothing
+        # Rooted but not WHOLE: the root is there, one descendant is not, and
+        # "interior" stops meaning "every neighbour is present". The generic
+        # route is the only correct one, and the gate has to say so.
+        root = cellindex(levelgrid(sys, base), 3)
+        ids = descendants(sys, root, leaf)
+        part = PartialGrid(sys, leaf, ids[1:(end-1)]; root)
+        @test FB._whole_subtree_range(part) === nothing
+        @test halo_table(part) == [neighbors(part, p, 1) for p in 1:ncells(part)]
+        # `k == 0` is the empty neighbourhood, one row per cell — the table's
+        # shape is the grid's, never the answer's.
+        table0 = halo_table(sub, 0)
+        @test length(table0) == ncells(sub)
+        @test all(isempty, table0)
     end
 
     @testset "a cell outside the subset has no neighbourhood" begin
@@ -237,6 +266,12 @@ end
         @test_throws ArgumentError neighbors(CellLookup(cv), outside)
         # And the position face keeps Base's contract instead.
         @test_throws BoundsError neighbors(sub, ncells(sub) + 1)
+        # Directly on `cellindex`, because that is where it is enforced: a
+        # subtree's ids are a WINDOW into the level, so an unchecked position
+        # past the end reads a real cell of the next subtree and the position
+        # form would answer confidently about a cell the subset does not hold.
+        @test_throws BoundsError cellindex(sub, 0)
+        @test_throws BoundsError cellindex(sub, ncells(sub) + 1)
     end
 end
 

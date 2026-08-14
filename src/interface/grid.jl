@@ -266,8 +266,8 @@ function cellat end
 # ===========================================================================
 
 """
-    neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Int = 1; connectivity::Connectivity = Vertex())
-    neighbors(grid::AbstractGrid, p::Int, k::Int = 1; connectivity::Connectivity = Vertex()) -> Vector{Int}
+    neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer = 1; connectivity::Connectivity = Vertex())
+    neighbors(grid::AbstractGrid, p::Int, k::Integer = 1; connectivity::Connectivity = Vertex()) -> Vector{Int}
 
 All cells of `grid` within `k` adjacency steps of `c`, excluding `c`.
 
@@ -317,21 +317,21 @@ from `k == 2`, which is why this is stated rather than left to the reader.
 
 `c` outside the subset is an `ArgumentError`, not a complete-grid answer.
 
+`k` must be ≥ 0; `k == 0` returns an empty collection. See [`ring`](@ref) for
+the cells at *exactly* distance `k`.
+
 # Positions
 
 Given a position, both verbs answer with **in-set positions in ascending order**
 — the form a stencil table is indexed by. Ids keep the rotational order above;
 positions do not, because an index list is read by membership rather than by
 direction. [`halo_table`](@ref) is this form for a whole grid at once.
-
-`k` must be ≥ 0; `k == 0` returns an empty collection. See [`ring`](@ref) for
-the cells at *exactly* distance `k`.
 """
 function neighbors end
 
 """
-    ring(grid::AbstractGrid, c::AbstractCellIndex, k::Int; connectivity::Connectivity = Vertex())
-    ring(grid::AbstractGrid, p::Int, k::Int; connectivity::Connectivity = Vertex()) -> Vector{Int}
+    ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer; connectivity::Connectivity = Vertex())
+    ring(grid::AbstractGrid, p::Int, k::Integer; connectivity::Connectivity = Vertex()) -> Vector{Int}
 
 The cells at adjacency distance exactly `k` from `c`. `ring(grid, c, 0)` is
 `c` alone. The ordered result satisfies
@@ -348,9 +348,9 @@ contracts as [`neighbors`](@ref), including the position form's ascending order.
 function ring end
 
 """
-    halo_table(grid::AbstractGrid, k::Int = 1; connectivity::Connectivity = Vertex()) -> Vector{Vector{Int}}
-    halo_table(cv::CellVector, k::Int = 1; connectivity::Connectivity = Vertex())
-    halo_table(lk::CellLookup, k::Int = 1; connectivity::Connectivity = Vertex())
+    halo_table(grid::AbstractGrid, k::Integer = 1; connectivity::Connectivity = Vertex()) -> Vector{Vector{Int}}
+    halo_table(cv::CellVector, k::Integer = 1; connectivity::Connectivity = Vertex())
+    halo_table(lk::CellLookup, k::Integer = 1; connectivity::Connectivity = Vertex())
 
 The whole stencil at once: entry `p` is `neighbors(grid, p, k)`, the in-set
 positions within `k` adjacency steps of position `p`, ascending.

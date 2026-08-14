@@ -530,6 +530,12 @@ handshake that lets a regridder consume a compressed coverage directly.
 The grid keeps the windows and drops the backing: [`cellset`](@ref)'s origin is
 provenance the grid never reads, and a regridder should not hold a coverage set
 alive behind it. `CellVector(PartialGrid(cv))` comes back in O(1) either way.
+
+The **root does not survive** the round trip: a `CellVector` stores windows, not
+an ancestor, so a grid that came back through one is unrooted even when its
+windows are exactly a subtree. Cells and positions are identical; what is lost
+is [`halo_table`](@ref)'s interior/rim fast path, which asks for a root. Build
+the grid from the root cell when the stencil matters.
 """
 PartialGrid(cv::CellVector) = PartialGrid(system(cv), cv.level, _bare(cv, cv.backing))
 

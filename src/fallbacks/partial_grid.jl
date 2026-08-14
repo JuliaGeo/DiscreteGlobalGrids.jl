@@ -149,6 +149,12 @@ cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.comp
 # is the authority.
 cell_area(grid::PartialGrid, c::AbstractCellIndex) = cell_area(grid.complete, c)
 
+# Membership as a predicate, which is what the subset law in `neighbors`'
+# contract is written with: `filter(in(sub), ring(complete, c, k))` has to RUN,
+# and Base's fallback would need a grid to be iterable. `CellVector` carries the
+# same method for the same reason.
+Base.in(c::AbstractCellIndex, grid::PartialGrid) = cellposition(grid, c) !== nothing
+
 # The ids are sorted, so the O(n) generic scan is two comparisons here.
 function cellposition(grid::PartialGrid, c::AbstractCellIndex)
     target = _canonical(grid, c)

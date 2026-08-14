@@ -41,8 +41,11 @@ end
 # One shape for both verbs and both containers: run the complete level's answer
 # and keep what the subset holds, in the order it came in. That order IS the
 # rotational contract, so clipping preserves it for free.
-function _clip(sub, c::AbstractCellIndex, cells)
-    _member_or_throw(sub, c)
+#
+# The membership check is the CALLER's, not this function's: an argument is
+# evaluated before the call, so checking here would compute a whole `k == 3`
+# disc for a cell the subset does not hold and throw afterwards.
+function _clip(sub, cells)
     out = Vector{eltype(cells)}()
     for nb in cells
         cellposition(sub, nb) === nothing || push!(out, nb)
@@ -62,13 +65,17 @@ and never the geometric tree walk; the clip is one `cellposition` per candidate.
 `c` outside `pg` throws an `ArgumentError` rather than answering about cells
 `pg` does not hold.
 """
-neighbors(pg::PartialGrid, c::AbstractCellIndex, k::Integer = 1;
-        connectivity::Connectivity = Vertex()) =
-    _clip(pg, c, neighbors(pg.complete, c, Int(k); connectivity))
+function neighbors(pg::PartialGrid, c::AbstractCellIndex, k::Integer = 1;
+        connectivity::Connectivity = Vertex())
+    _member_or_throw(pg, c)
+    return _clip(pg, neighbors(pg.complete, c, Int(k); connectivity))
+end
 
-ring(pg::PartialGrid, c::AbstractCellIndex, k::Integer;
-        connectivity::Connectivity = Vertex()) =
-    _clip(pg, c, ring(pg.complete, c, Int(k); connectivity))
+function ring(pg::PartialGrid, c::AbstractCellIndex, k::Integer;
+        connectivity::Connectivity = Vertex())
+    _member_or_throw(pg, c)
+    return _clip(pg, ring(pg.complete, c, Int(k); connectivity))
+end
 
 """
     neighbors(cv::CellVector, c, k = 1; connectivity = Vertex())
@@ -79,13 +86,17 @@ same clipped-to-membership meaning a [`PartialGrid`](@ref) has. Membership is
 the window search — `O(log #windows)` — so the clip costs nothing the vector
 was not already able to answer.
 """
-neighbors(cv::CellVector, c::AbstractCellIndex, k::Integer = 1;
-        connectivity::Connectivity = Vertex()) =
-    _clip(cv, c, neighbors(cv.grid, c, Int(k); connectivity))
+function neighbors(cv::CellVector, c::AbstractCellIndex, k::Integer = 1;
+        connectivity::Connectivity = Vertex())
+    _member_or_throw(cv, c)
+    return _clip(cv, neighbors(cv.grid, c, Int(k); connectivity))
+end
 
-ring(cv::CellVector, c::AbstractCellIndex, k::Integer;
-        connectivity::Connectivity = Vertex()) =
-    _clip(cv, c, ring(cv.grid, c, Int(k); connectivity))
+function ring(cv::CellVector, c::AbstractCellIndex, k::Integer;
+        connectivity::Connectivity = Vertex())
+    _member_or_throw(cv, c)
+    return _clip(cv, ring(cv.grid, c, Int(k); connectivity))
+end
 
 # ===========================================================================
 # The position forms
@@ -217,7 +228,7 @@ function _rooted_halo(pg::PartialGrid, r::UnitRange{Int}, connectivity::Connecti
     l = pg.level
     out = Vector{Vector{Int}}(undef, ncells(pg))
     _inner_rows!(out, complete, InnerCellIterator(sys, root, l; connectivity),
-        first(r), connectivity)
+        first(r), last(r), connectivity)
     _rim_rows!(out, complete, EdgeCellIterator(sys, root, l; connectivity),
         first(r), last(r), connectivity)
     return out
@@ -226,13 +237,34 @@ end
 # `cellposition(complete, ·)` cannot be `nothing` for either the walked cell or
 # its neighbours: both are cells OF the complete level, which is the grid being
 # asked. The `::Int` says so where a `nothing` would otherwise be silent.
-function _inner_rows!(out, complete, inner, lo::Int, connectivity::Connectivity)
+#
+# The interior pass takes "every neighbour is inside the block" on the
+# iterator's word, and that word is the ONLY thing keeping it from writing a
+# wrong row: a position outside the block still lands somewhere in `out` after
+# the offset. So it is checked rather than assumed — an interior cell with an
+# outside neighbour means the split is broken, and this says so at the cell.
+# Both passes check the ROW index the same way, for the same reason: what they
+# are told to write is only as trustworthy as the walk that named it.
+@noinline _escaped(d, nb) = error(
+    "interior cell $d has neighbour $nb outside its own subtree: the " *
+    "interior/rim split is wrong, and the halo table would be silently bad")
+
+@noinline _outside(d) = error(
+    "walked cell $d is outside the subtree it was walked from: the " *
+    "interior/rim split is wrong, and the halo table would be silently bad")
+
+function _inner_rows!(out, complete, inner, lo::Int, hi::Int,
+        connectivity::Connectivity)
     for d in inner
         row = Int[]
         for nb in neighbors(complete, d, 1; connectivity)
-            push!(row, cellposition(complete, nb)::Int - lo + 1)
+            q = cellposition(complete, nb)::Int
+            @boundscheck (lo <= q <= hi) || _escaped(d, nb)
+            push!(row, q - lo + 1)
         end
-        out[cellposition(complete, d)::Int-lo+1] = sort!(row)
+        p = cellposition(complete, d)::Int
+        @boundscheck (lo <= p <= hi) || _outside(d)
+        out[p-lo+1] = sort!(row)
     end
     return out
 end
@@ -245,7 +277,9 @@ function _rim_rows!(out, complete, rim, lo::Int, hi::Int, connectivity::Connecti
             (q < lo || q > hi) && continue
             push!(row, q - lo + 1)
         end
-        out[cellposition(complete, d)::Int-lo+1] = sort!(row)
+        p = cellposition(complete, d)::Int
+        @boundscheck (lo <= p <= hi) || _outside(d)
+        out[p-lo+1] = sort!(row)
     end
     return out
 end

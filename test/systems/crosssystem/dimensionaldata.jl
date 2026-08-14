@@ -401,8 +401,12 @@ end
     @test collect(lk[SmallCollections.SmallVector{8,Int}([3, 4, 5])]) == ids[3:5]
     # Stated as "none of MY methods", not "none at all", so that an ambiguity
     # introduced upstream fails wherever it belongs rather than here.
+    # `stencil.jl` joins the list because the subset topology verbs dispatch on
+    # the same wrapper types this file does, and a `<:Any` where a bounded
+    # parameter belongs is an ambiguity there for exactly the same reason.
     @test !any(Test.detect_ambiguities(DGG; recursive=true)) do pair
-        any(m -> occursin("dimensionaldata.jl", string(m.file)), pair)
+        any(m -> occursin("dimensionaldata.jl", string(m.file)) ||
+                     occursin("stencil.jl", string(m.file)), pair)
     end
 
     # `parent` is the values, so the whole collection surface DimensionalData

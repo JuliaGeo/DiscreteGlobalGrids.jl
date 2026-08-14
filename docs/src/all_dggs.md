@@ -16,7 +16,7 @@ apertures differ — each is chosen so the cells stay visible at figure size.
 ```@example all-dggs
 import DiscreteGlobalGrids as DGG
 using GeoMakie
-using WGLMakie   # other pages use CairoMakie; this one re-activates its own backend
+using WGLMakie   # tutorials use GLMakie; this page activates the web backend
 using Bonito
 import Makie
 import GeometryOps as GO

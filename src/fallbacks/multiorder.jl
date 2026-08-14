@@ -206,8 +206,10 @@ their parent: HEALPix, S2 and ISEA4R. Where children do not tile their parent it
 degrades in the way [`MultiOrderCoverage`](@ref)'s warning already describes, and
 for the same reason — replacing a cell by its children swaps one footprint for
 another. Measured on a state-sized outline as the fraction of the target lying
-in no emitted cell: under 2% on IGEO7 and its authalic wrap, under 11% on H3,
-under 25% on A5.
+in no emitted cell: under 2% on IGEO7, 3% on its authalic wrap, 15% on H3 and
+30% on A5. Those are not decorative figures — they are the bounds
+`test/systems/crosssystem/multiorder_budget.jl` asserts, per system, so this
+paragraph cannot quietly stop being true.
 
 The LEAF statement the `level` mode makes — every cell of the reference level
 that meets the target is a member or the descendant of one — is a law here on
@@ -216,8 +218,10 @@ descending into cells that miss the target, because a child can overhang its
 parent, and carrying that descent all the way to `level`. A budget has no fixed
 depth to carry it to; stopping early is the whole point, and a branch stopped
 early at a cell that misses the target is a branch whose overhang is not
-followed. Both statements are pinned per system, at three budgets and on four
-targets, in `test/systems/crosssystem/multiorder_budget.jl`.
+followed. On the same outline the leaf statement misses under 1% of the target
+on IGEO7, 2% on its authalic wrap and on H3, and 18% on A5. Both statements are
+pinned per system, at three budgets and on four targets, in
+`test/systems/crosssystem/multiorder_budget.jl`.
 
 What a budget does NOT buy is a tight picture of the target: at ten cells the
 set over-covers California by a wide margin, and it says so through
@@ -436,8 +440,18 @@ end
 
 # The tie-break inside one level. `cellposition` is the level's own order, which
 # is curve order on every system here and is a bijection, so no two cells of a
-# level ever tie and the schedule has nothing left to decide.
-_budget_key(grid, c) = something(cellposition(grid, c), 0)
+# level ever tie and the schedule has nothing left to decide. A missing position
+# would break that bijection and silently alias two cells onto one key, which is
+# a determinism bug wearing a plausible answer — so it is an error, not a zero.
+function _budget_key(grid, c)::Int
+    pos = cellposition(grid, c)
+    pos === nothing && throw(ArgumentError(
+        "$(typeof(grid)) has no position for the cell $c it just produced. The " *
+        "budget schedule orders each level by `cellposition` and needs it total: " *
+        "without it two cells share a key and the traversal stops being " *
+        "deterministic"))
+    return pos
+end
 
 function _sorted_cell_set(sys::AbstractHierarchicalGridSystem, cells::Vector{ID},
         contained::BitVector, reference_level::Int) where {ID}

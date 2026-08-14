@@ -172,6 +172,40 @@ const LADDER = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377)
 sysname(sys) = sys isa DGG.AuthalicSystem ?
                "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
 
+# ---------------------------------------------------------------------------
+# How much of the target a budget covering is allowed to miss, per system and
+# per reading.
+#
+# These are NOT slack. `query`'s docstring ships these very numbers as the
+# measured cost of non-congruence, so a uniform bound would let IGEO7 drift to
+# A5's figure with the suite still green and the docstring quietly false. Each
+# bound is that system's own claim, and the sweep below asserts it.
+#
+# Calibration: the worst fraction seen over budgets 10/40/100 on this file's
+# 0.1-degree sampler, and separately on an independent 7505-point sampler
+# during review. Each bound is at least 1.3x the worse of the two, rounded to a
+# round number — wide enough that no reshuffle of the sample grid trips it,
+# narrow enough that a change in KIND does. The congruent three are exact and
+# get no entry: zero is their bound, and it is a theorem rather than a
+# measurement.
+#
+#   system            union: here / review / bound     leaf: here / review / bound
+#   IGEO7               1.01% / 1.25% / 2%                 0% / 0.19% / 1%
+#   Authalic(IGEO7)     1.36% /    -  / 3%              0.31% /    -  / 2%
+#   H3                 11.09% /  7.4% / 15%                 0% /    0% / 2%
+#   A5                 22.77% / 16.3% / 30%             11.72% /  8.7% / 18%
+#
+# H3's union figure is worst at the SMALLEST budget, not the largest: ten cells
+# over a state is a handful of aperture-7 rosettes, and one rosette's footprint
+# mismatch is a large share of the answer. That is why the bound is not simply
+# the large-budget number.
+# ---------------------------------------------------------------------------
+
+const UNION_BOUND = Dict("IGeo7System" => 0.02, "Authalic(IGeo7System)" => 0.03,
+    "H3System" => 0.15, "A5System" => 0.30)
+const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
+    "H3System" => 0.02, "A5System" => 0.18)
+
 @testset "the budget sweep covers every registered system" begin
     swept = Set(typeof(s) for (s, _, _) in SWEEP)
     for s in DGG.systems()
@@ -390,18 +424,31 @@ end
         # Cap the descent shallow enough that the budget cannot spend itself,
         # and the cells stranded at the cap are flagged unproven without being
         # asked — the accuracy mode's contract, verbatim.
-        cap = first(DGG.levels(sys)) + 2
+        #
+        # The cap is `first + 6` and not something shallower because the second
+        # assertion needs cells that ACTUALLY fit inside California. At a cap of
+        # `first + 2` no cell of any of the seven does — level-2 cells are
+        # continent-sized — so the flag being `false` there would be a true
+        # statement rather than a blind one, and would prove nothing.
+        cap = first(DGG.levels(sys)) + 6
         set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=10_000, maxlevel=cap)
         @test set.reference_level == cap
-        @test all(i -> !DGG.is_contained(set, i),
-            (i for i in eachindex(set) if DGG.level(set[i]) == cap))
-        # And it is a blind spot, not a fact: some of those cells do fit.
         stranded = [i for i in eachindex(set) if DGG.level(set[i]) == cap]
         @test !isempty(stranded)
+        @test all(i -> !DGG.is_contained(set, i), stranded)
+        # And it IS a blind spot rather than a negative fact: ask `Within` of
+        # the same cells and some of them say yes. The flag does not, because
+        # nobody asked it.
+        grid = DGG.levelgrid(sys, cap)
+        fits = count(i -> FB._matches(DGG.Within(nothing), TARGET, grid, set[i]), stranded)
+        @test fits > 0
     end
 
     @testset "covering: the union reading" begin
         @test length(SAMPLES) > 2000
+        # Zero for the congruent three, and this system's OWN docstring figure
+        # for the rest — see `UNION_BOUND` for why it is not one number.
+        bound = congruent ? 0.0 : UNION_BOUND[sysname(sys)]
         for b in BUDGETS
             missed = union_misses(sets[b], SAMPLES)
             if congruent
@@ -409,23 +456,20 @@ end
                 # children that meet the target loses nothing.
                 @test missed == 0
             else
-                # A MEASUREMENT of documented non-congruence, bounded loosely
-                # enough that only a change in kind trips it. See
-                # `MultiOrderCoverage`'s warning for the same figure in the
-                # accuracy mode.
-                @test missed / length(SAMPLES) < 0.30
+                @test missed / length(SAMPLES) < bound
             end
         end
     end
 
     @testset "covering: the leaf reading" begin
+        bound = congruent ? 0.0 : LEAF_BOUND[sysname(sys)]
         for b in BUDGETS
             missed = leaf_misses(sys, sets[b], SAMPLES)
             if congruent
                 @test missed == 0
             else
                 # Same cause, measured through ancestry rather than geometry.
-                @test missed / length(SAMPLES) < 0.20
+                @test missed / length(SAMPLES) < bound
             end
         end
     end

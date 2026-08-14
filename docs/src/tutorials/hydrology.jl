@@ -157,5 +157,5 @@ fig
 
 # `MultiOrderCoverage`, `PartialGrid`, the regridder and `halo_table` are
 # interface methods, so the regridding and routing portions can use another
-# system. The relative indexing methods added for IGEO7 provide the
-# Geomorphometry integration.
+# system. `RelativeZ7Cell` and the lazy cell-index iterator provide the
+# IGEO7-specific Geomorphometry integration.

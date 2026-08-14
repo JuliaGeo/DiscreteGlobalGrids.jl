@@ -39,8 +39,7 @@ include("indexing.jl")
 # Public IGeo7 API.
 export IGeo7System,
     Z7Cell,
-    HexIndex,
-    RelativeIGEO7Index,
+    RelativeZ7Cell,
     InvalidZ7Error,
     MAX_RESOLUTION,
     equal_area_steradians,

@@ -128,6 +128,11 @@ A = DD.DimArray([field(lonlat(DGG.cell_centroid(grid, c))...) for c in lk],
 # A typed id selects one cell, a lon/lat point selects the cell it falls in
 # (through `cellat`), and a polygon selects through the same `MultiOrderCoverage`
 # this page opened with, intersected with the axis.
+#
+# `At` and `Contains` are spelled `DD.At` and `DD.Contains` throughout: they are
+# DimensionalData's selectors, and this package exports its own `Contains` — the
+# DE9IM predicate about geometries — which would collide with the selector under
+# a plain `using`.
 
 A[DGG.Cells(DD.At(lk[k]))], A[DGG.Cells(DD.Contains(-97.7, 30.3))]
 

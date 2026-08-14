@@ -84,8 +84,12 @@ check("the lookup is the leaf id vector's length", length(lk) == nleaf;
     detail="$(length(lk)) cells")
 check("every cell in it is a leaf", DGG.level(lk) == LEAF &&
                                     all(DGG.level(lk[k]) == LEAF for k in (1, nleaf ÷ 2, nleaf)))
-check("the backing is the set itself", parent(lk) === set;
-    detail="parent(lk) === set, for a second coverage op")
+check("the backing is the set itself", DGG.cellset(lk) === set;
+    detail="cellset(lk) === set, for a second coverage op")
+# `parent` is the VALUES, which is what DimensionalData reads: some thirty of
+# its `Lookup` methods derive their behaviour from it, `Where` among them.
+check("parent is the lazy id vector",
+    parent(lk) isa AbstractVector{eltype(lk)} && length(parent(lk)) == nleaf)
 
 # LAW 1 — position <-> id round trips.
 check("position -> id -> position round trips",
@@ -109,6 +113,10 @@ check("one set, any leaf level",
 
 # --------------------------------------------------------------------------
 # 3. The cube, and the three questions a cell axis is asked.
+#
+# `At` and `Contains` stay spelled `DD.`-qualified: they are DimensionalData's
+# selectors and this package exports its own `Contains`, the DE9IM predicate,
+# which would collide with the selector under a plain `using`.
 # --------------------------------------------------------------------------
 
 A = DD.DimArray(Float64.(1:nleaf), DGG.Cells(lk); name=:dem)

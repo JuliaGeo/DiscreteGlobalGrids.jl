@@ -26,6 +26,15 @@ membership, in ids or in positions, and [`halo_table`](@ref) is a whole
 subset's stencil in one call. [`member_neighbors`](@ref) asks the same question
 across the levels of a [`MultiOrderCellSet`](@ref).
 
+The two faces of a subtree boundary are verbs of their own.
+[`subtree_border`](@ref) and [`subtree_interior`](@ref) are its inside;
+[`subtree_halo`](@ref) is its outside — the level-`l` cells that are not
+descendants but touch one. All three are `collect` of a resumable
+`O(depth)`-memory iterator ([`EdgeCellIterator`](@ref),
+[`InnerCellIterator`](@ref), [`SubtreeHaloIterator`](@ref)), because a halo in
+particular can be far larger than the rim it wraps and materializing it is the
+caller's decision.
+
 Internal geometry uses `GeometryOps.UnitSphericalPoint`; explicitly named
 wrappers convert longitude and latitude at API boundaries.
 
@@ -101,12 +110,14 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     cellindices, is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
-    EdgeCellIterator, InnerCellIterator, member_neighbors
+    EdgeCellIterator, InnerCellIterator, member_neighbors,
+    SubtreeHaloIterator, subtree_halo, halo
 
 # The lazy subtree walkers' extension point and the parts a system builds one
 # from. Not exported — a caller reaches the iterators, a system reaches these.
 using .Fallbacks: collect_subtree,
-    MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine
+    MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine,
+    generic_halo_engine
 
 # Grid systems, all six ported. Include order never matters: the two ISEA-family
 # systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
@@ -183,6 +194,11 @@ Important cross-system traits:
     [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in `O(depth)`
     memory, of which [`subtree_border`](@ref) and [`subtree_interior`](@ref) are
     the `collect` forms.
+  - **[`subtree_halo`](@ref).** The same boundary from outside, as a resumable
+    [`SubtreeHaloIterator`](@ref). The generic engine walks the hierarchy from
+    outside the subtree with cap pruning, in `O(depth)` memory; A5, having no
+    [`descendant_range`](@ref) to prune by, scans the target level in `O(1)`
+    memory and `O(ncells)` time instead.
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
     the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
     their parent exactly; the hierarchy's own relation on IGEO7, H3 and A5,
@@ -222,6 +238,7 @@ export node_extent, cap_inflation, max_neighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
 export subtree_border, subtree_interior
 export EdgeCellIterator, InnerCellIterator
+export SubtreeHaloIterator, subtree_halo, halo
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate

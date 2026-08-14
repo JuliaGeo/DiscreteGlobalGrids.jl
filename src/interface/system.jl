@@ -319,23 +319,37 @@ function subtree_interior end
 """
     rim_engine(sys, c, target::Int, connectivity)
     interior_engine(sys, c, target::Int, connectivity)
+    halo_engine(sys, c, target::Int, connectivity)
 
-The iteration engine `EdgeCellIterator` / `InnerCellIterator` forwards the whole
-iteration protocol to — the single place a system overrides to ship an `O(rim)`
-subtree walk, and the single place both the lazy and the eager
-([`subtree_border`](@ref) / [`subtree_interior`](@ref)) faces of it read.
+The iteration engine `EdgeCellIterator` / `InnerCellIterator` /
+`SubtreeHaloIterator` forwards the whole iteration protocol to — the single
+place a system overrides to ship an `O(rim)` subtree walk or an `O(halo)` halo
+walk, and the single place both the lazy and the eager
+([`subtree_border`](@ref) / [`subtree_interior`](@ref) / `subtree_halo`) faces
+of it read.
 
-An engine is any iterator over `cellindextype(sys)`. Both methods own the level
-validation, so their `ArgumentError`s are the ones the eager verbs raise.
+An engine is any iterator over `cellindextype(sys)`. All three methods own their
+level validation, so their `ArgumentError`s are the ones the eager verbs raise.
+
+Engine selection is **private multiple dispatch on the system type**: a system
+ships a fast path by adding one method here, not by setting a trait anyone can
+read and not by anything inspecting the method table at runtime. That keeps each
+engine's protocol monomorphic, and it keeps "which walk did I get?" out of the
+public surface, where it would become a compatibility promise.
 
 The generic implementations walk [`descendant_range`](@ref) with one
 [`ancestor`](@ref) test per cell, and materialize where
-[`has_sorted_subtrees`](@ref) is `false`.
+[`has_sorted_subtrees`](@ref) is `false`. `halo_engine`'s generic implementation
+walks the hierarchy from OUTSIDE the subtree instead — see `SubtreeHaloIterator`
+— because the halo is not a sub-interval of any one subtree's position range.
 """
 function rim_engine end
 
 @doc (@doc rim_engine)
 function interior_engine end
+
+@doc (@doc rim_engine)
+function halo_engine end
 
 """
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}

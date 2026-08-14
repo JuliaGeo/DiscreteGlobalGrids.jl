@@ -25,9 +25,9 @@ Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 MakieExt = ["Makie"]
 
 [sources]
-ConservativeRegridding = {rev = "best-manifold-for-grids", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-GeometryOps = {rev = "as/dualdfs-carry-extents", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-GeometryOpsCore = {rev = "as/dualdfs-carry-extents", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+ConservativeRegridding = {rev = "agent/use-geometryops-main-cache", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+GeometryOps = {rev = "main", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 
 [compat]
 DE9IM = "0.1"

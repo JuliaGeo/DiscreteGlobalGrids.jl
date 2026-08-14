@@ -196,9 +196,13 @@ Lookups.bounds(lk::CellLookup) = isempty(lk) ? (nothing, nothing) : (first(lk), 
 Base.@propagate_inbounds Base.getindex(lk::CellLookup, k::Int) = parent(lk)[k]
 Base.@propagate_inbounds Base.getindex(lk::CellLookup, k::CartesianIndex{1}) = parent(lk)[k[1]]
 
+# `AbstractVector`, not `AbstractArray`, for the reason the core file gives at
+# the same signature: an index with a shape wants an answer with that shape, and
+# a window set has none to give. A matrix index falls through to Base's generic
+# here too, so both faces answer it the same way.
 for f in (:getindex, :view, :dotview)
     @eval Base.$f(lk::CellLookup, ::Colon) = lk
-    @eval Base.$f(lk::CellLookup, i::AbstractArray{<:Integer}) = _subset(lk, i)
+    @eval Base.$f(lk::CellLookup, i::AbstractVector{<:Integer}) = _subset(lk, i)
 end
 
 # DimensionalData reverses only the lookups it knows, and a `Lookup` it does not
@@ -214,6 +218,16 @@ Base.reverse(lk::CellLookup) = lk[lastindex(lk):-1:firstindex(lk)]
 # rather than left as an ambiguity for whoever indexes an axis by a halo.
 Base.getindex(lk::CellLookup,
     i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(lk, i)
+
+# A mask names a position by its index, so one of the wrong length is a bounds
+# error rather than a shorter answer. The core checks this too, and would catch
+# it a moment later through the delegation below; the check is repeated here so
+# that the error names the axis the caller indexed rather than the cell vector
+# behind it.
+function _subset(lk::CellLookup, mask::AbstractArray{Bool})
+    axes(mask) == axes(lk) || throw(BoundsError(lk, (mask,)))
+    return _subset(lk, findall(mask))
+end
 
 # The fork is the cell vector's: an ascending index set is windows again and
 # comes back as a `CellVector`, anything else is a plain id vector. This file

@@ -429,4 +429,107 @@ end
     @test Base.summarysize(deep) == small
 end
 
+# ---------------------------------------------------------------------------
+# Indexing follows Base, in the two places where "compressed" could quietly
+# stop meaning "vector"
+#
+# Both of these are inherited traps rather than invented ones: an index type
+# that is handled by a `_subset` fork gets whatever that fork does, and Base's
+# own contract is easy to lose on the way through.
+#
+#   * a LOGICAL MASK names positions by index, so `findall` on a mask of the
+#     wrong length reports the `true`s it was given and says nothing about the
+#     positions it was never asked about — a silently shorter answer where Base
+#     throws.
+#   * a SHAPED INDEX wants an answer of its own shape. While the window path
+#     caught matrices, an ascending matrix flattened to a `CellVector` and a
+#     non-ascending one came back as a proper `Matrix`: the same call answering
+#     in two different shapes depending on the values.
+#
+# The cube face is checked alongside the core because it is the same fork one
+# level up. Reaching `CellLookup` needs no DimensionalData import — that is the
+# point of the layering, and this file still has none.
+# ---------------------------------------------------------------------------
+
+@testset "indexing keeps Base's contract" begin
+    sys, leaf = DGG.IGeo7System(), 5
+    set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
+    cv = DGG.CellVector(set)
+    lk = DGG.CellLookup(set)
+    ids = collect(cv)
+    n = length(cv)
+
+    @testset "a logical mask must match the axis" begin
+        mask = falses(n)
+        mask[2] = mask[4] = true
+        @test collect(cv[mask]) == ids[[2, 4]]
+        @test collect(lk[mask]) == ids[[2, 4]]
+        # A mask of every position is the whole vector, not an error.
+        @test collect(cv[trues(n)]) == ids
+        @test isempty(cv[falses(n)])
+
+        # Short and long both throw, on both faces. The short one is the
+        # dangerous shape: `findall` would have answered with a prefix.
+        for bad in (trues(n - 1), falses(n - 1), trues(n + 1), falses(n + 1))
+            @test_throws BoundsError cv[bad]
+            @test_throws BoundsError lk[bad]
+        end
+        # And the error names what was indexed, so the two faces are told apart.
+        @test (try
+            cv[trues(n + 1)]
+        catch e
+            e
+        end).a isa DGG.CellVector
+        @test (try
+            lk[trues(n + 1)]
+        catch e
+            e
+        end).a isa DGG.CellLookup
+        # A mask of the wrong RANK is the same mistake and lands the same way.
+        @test_throws BoundsError cv[trues(2, 2)]
+    end
+
+    @testset "a shaped index answers the same way whatever its values" begin
+        up = [1 3; 2 4]           # ascending down each column
+        down = [4 2; 3 1]         # not ascending anywhere
+
+        # The core falls through to Base's generic, which preserves the index's
+        # shape — so both matrices come back as matrices, and the answer no
+        # longer depends on whether the values happened to ascend.
+        for m in (up, down)
+            got = cv[m]
+            @test got isa AbstractMatrix
+            @test size(got) == (2, 2)
+            @test got == ids[m]
+        end
+
+        # The cube face falls through to DimensionalData's own `getindex`, which
+        # rebuilds the lookup around the result — and a `Lookup` is
+        # one-dimensional, so there is no lookup a matrix could be. It refuses,
+        # with the message `rebuild` gives. The law is the CONSISTENCY: the
+        # ascending matrix and the descending one are answered identically,
+        # where before one flattened to a `CellLookup` and the other did not.
+        for m in (up, down)
+            @test_throws ArgumentError lk[m]
+        end
+
+        # A vector index is still the compressed path on both faces, which is
+        # what the narrowing had to preserve.
+        @test cv[[1, 3, 5]] isa DGG.CellVector
+        @test lk[[1, 3, 5]] isa DGG.CellLookup
+        @test cv[2:5] isa DGG.CellVector
+        @test lk[2:5] isa DGG.CellLookup
+    end
+
+    @testset "an out-of-range index reports the collection, as Base does" begin
+        err = try
+            cv[[1, n + 1]]
+        catch e
+            e
+        end
+        @test err isa BoundsError
+        @test err.i == ([1, n + 1],)
+    end
+end
+
 end # module CellVectorTests

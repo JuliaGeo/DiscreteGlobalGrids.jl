@@ -373,7 +373,13 @@ Base.getindex(cv::CellVector, ::Colon) = cv
 # repeat, a reversal — is not a set of leaf windows and is answered with the
 # ordinary `Vector` that can hold it. That case materialises, and only that
 # case. [`CellLookup`](@ref) takes the same fork one level up.
-Base.getindex(cv::CellVector, idx::AbstractArray{<:Integer}) = _subset(cv, idx)
+#
+# `AbstractVector`, not `AbstractArray`: indexing an array by a
+# higher-dimensional index returns something of the INDEX's shape, and a window
+# set has no shape to give back. Narrowing here lets `cv[matrix]` fall through
+# to Base's generic, which answers with a matrix of ids — so the answer's shape
+# no longer depends on whether the index happened to be ascending.
+Base.getindex(cv::CellVector, idx::AbstractVector{<:Integer}) = _subset(cv, idx)
 
 # SmallCollections' own `getindex(::AbstractVector, ::AbstractFixedOrSmall...)`
 # is neither more nor less specific than the line above, and a neighbour list is
@@ -385,14 +391,24 @@ Base.getindex(cv::CellVector,
 # A `Bool` array is a mask rather than a list of ones, and `Bool <: Integer`, so
 # the branch is here rather than in a second `getindex` signature: dispatching
 # on `AbstractArray{Bool}` would re-open the ambiguity the method above closes.
-_subset(cv::CellVector, mask::AbstractArray{Bool}) = _subset(cv, findall(mask))
+#
+# A mask names a position by its INDEX, so a mask of the wrong length is a
+# bounds error rather than a shorter answer. `findall` cannot tell — it reports
+# the `true`s it was given and nothing about the ones it was not — so the axes
+# are checked before it runs, which is what Base's own logical indexing does.
+# The signature stays `AbstractArray` so that a mask of the wrong RANK lands
+# here and is caught by the same check.
+function _subset(cv::CellVector, mask::AbstractArray{Bool})
+    axes(mask) == axes(cv) || throw(BoundsError(cv, (mask,)))
+    return _subset(cv, findall(mask))
+end
 
 function _subset(cv::CellVector, idx::AbstractArray{<:Integer})
     n = length(cv)
     positions = Vector{Int}(undef, length(idx))
     ascending = true
     for (j, k) in enumerate(idx)
-        1 <= k <= n || throw(BoundsError(cv, k))
+        1 <= k <= n || throw(BoundsError(cv, (idx,)))
         positions[j] = leafposition(cv.windows, Int(k))
         j > 1 && positions[j] <= positions[j-1] && (ascending = false)
     end
@@ -610,6 +626,13 @@ end
 # the left operand's order, which for an ascending vector IS ascending, and the
 # second is a pure set question. Both are answered here in O(#windows) instead
 # of O(#cells).
+#
+# They differ on operands from different systems or levels, and the asymmetry is
+# Base's rather than this file's: `issubset` is a question every pair of sets can
+# answer — the empty vector is a subset of anything, and across mismatched
+# domains nothing else is — while `intersect` has to RETURN a cell vector, and
+# there is no system or level to build one in. So the first answers and the
+# second throws.
 #
 # `union` is deliberately absent. Base's `union` maintains first-appearance
 # order, which for two ascending vectors is NOT ascending, so an ascending

@@ -34,4 +34,8 @@ using DiscreteGlobalGrids
     # slowest, and separate from the file above because its laws are about one
     # operation rather than about the interface at large.
     include("systems/crosssystem/multiorder_polygons.jl")
+    # T16: the DimensionalData cell axis, which is the multi-order set above
+    # read as a cube dimension. After that file for the same reason it is after
+    # the per-system suites — a failure here is the lookup, not the coverage.
+    include("systems/crosssystem/dimensionaldata.jl")
 end

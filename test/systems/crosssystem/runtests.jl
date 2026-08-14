@@ -18,17 +18,16 @@
 #   * the SUBTREE RIM HOOK: `subtree_border` / `subtree_interior` against the
 #     brute-force definition, spelled out here independently of both.
 #
-#     FIVE of the six systems override the border with an `O(rim)` automaton —
+#     Five registered systems override the border with an `O(rim)` automaton —
 #     IGeo7's Z7 digit predicate, H3's digit-arc walk, and the shared
 #     aperture-4 square walk under HEALPix's and ISEA4R's Morton curve and S2's
 #     Hilbert one — and for those this is the differential test that keeps the
 #     fast path honest.
 #
-#     ONE deliberately does not, and this suite must not assert otherwise: A5,
-#     because its four Hilbert children cover the parent's *area* but not its
-#     footprint, so there is no digit predicate a rim could be read off at all,
-#     and no `descendant_range` to walk instead.
-#     For A5 the same assertions still bite, just one rung lower: they check
+#     The remaining systems deliberately retain the fallback. A5 has no
+#     `descendant_range`; the new systems have not yet added a family-specific
+#     rim walker. For them the same assertions still bite, just one rung lower:
+#     they check
 #     `src/fallbacks/subtree.jl` against the definition. That is not circular —
 #     the fallback decides membership by walking each neighbour up to the root
 #     with `ancestor`, while `brute_force_border` below materialises the
@@ -156,7 +155,9 @@ end
         # automaton from.
         automaton = Set([:IGeo7System, :H3System, :HEALPixSystem, :ISEA4RSystem,
             :S2System])
-        fallback = Set([:A5System])
+        fallback = Set([:A5System, :ISEA3HSystem, :ISEA4HSystem, :ISEA4TSystem,
+            :RHEALPixSystem, :AuthalicSystem, :IVEA4RSystem, :IVEA9RSystem,
+            :RTEA4RSystem, :RTEA9RSystem])
         for sys in systems()
             n = nameof(typeof(sys))
             c = cellindex(levelgrid(sys, first(levels(sys))), 1)
@@ -315,16 +316,19 @@ end
                     @test union(Set(border), Set(interior)) == Set(kids)
                     @test length(border) + length(interior) == length(kids)
 
-                    # The rim is a small minority once there is any depth to
-                    # speak of — the property that makes the hook worth having.
-                    depth >= 2 && @test length(border) < length(kids)
+                    # The rim is a small minority once there is any depth and
+                    # more than one descendant. ISEA3H/4H's two polar roots
+                    # are intentionally singleton all-zero chains, so their
+                    # subtrees have no possible interior at any depth.
+                    depth >= 2 && length(kids) > 1 &&
+                        @test length(border) < length(kids)
 
                     @test allunique(border)
                     @test eltype(border) === DGG.cellindextype(sys)
 
                     # The interface documents the border's order as ascending
                     # canonical order unless a system says otherwise, and none
-                    # of the six does. Verified across all four automatons
+                    # of the registered systems does. Verified across the fast paths
                     # before pinning it here: the Z7 digit automaton, H3's
                     # digit-arc automaton, HEALPix's Morton rim walk and
                     # ISEA4R's edge walk all emit ascending by construction

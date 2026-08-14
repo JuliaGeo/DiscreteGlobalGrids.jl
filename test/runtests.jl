@@ -24,6 +24,9 @@ using DiscreteGlobalGrids
     include("systems/A5/runtests.jl")
     include("systems/S2/runtests.jl")
     include("systems/ISEA4R/runtests.jl")
+    include("systems/ISEAGrids/runtests.jl")
+    include("systems/RHEALPix/runtests.jl")
+    include("systems/IVEARTEA/runtests.jl")
     # Last on purpose: the cross-system laws sweep `systems()`, so they are the
     # suite that grows when a system is registered rather than when one is
     # written. Running them after every per-system suite means a failure here is
@@ -34,7 +37,7 @@ using DiscreteGlobalGrids
     # slowest, and separate from the file above because its laws are about one
     # operation rather than about the interface at large.
     include("systems/crosssystem/multiorder_polygons.jl")
-    # T18: the same outline, the same seven systems, and the other mode of the
+    # T18: the same outline, every supported system, and the other mode of the
     # same query — a cell BUDGET instead of a depth. Straight after the file
     # above because it shares its fixture and its samplers, and because the two
     # laws it cannot state everywhere are the ones that file already measures.

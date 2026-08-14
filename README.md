@@ -1,8 +1,10 @@
 # DiscreteGlobalGrids.jl
 
-Discrete global grid systems (DGGS) for the Julia geo ecosystem: six systems —
-IGEO7, H3, HEALPix, A5, S2, ISEA4R — behind one small interface, with every
-algorithm written against the interface exactly once.
+Discrete global grid systems (DGGS) for the Julia geo ecosystem: fifteen
+registered systems and profiles behind one small interface, with every
+algorithm written against the interface exactly once. Alongside IGEO7, H3,
+HEALPix, A5, S2 and ISEA4R, the package includes ISEA3H/4H/4T,
+rHEALPix/AusPIX, and rhombic IVEA/RTEA aperture-4/9 systems.
 
 ## The two tiers
 
@@ -74,10 +76,9 @@ DGG.descendant_range(sys, c, 6)                   # positions in levelgrid(sys, 
 DGG.subtree_border(sys, c, 6)                     # the rim, O(rim)
 ```
 
-Swapping `HEALPixSystem()` for `IGeo7System()`, `H3System()`, `A5System()`,
-`S2System()` or `ISEA4RSystem()` changes nothing else, and `AuthalicSystem`
-wraps any of them to read geometry at geodetic latitude. `DGG.systems()` lists
-all six, and its docstring is the comparison table: cell counts, cell shape,
+Swapping `HEALPixSystem()` for another entry from `DGG.systems()` changes
+nothing else, and `AuthalicSystem` wraps a unit-sphere system to read geometry
+at geodetic latitude. The registry docstring is the comparison table: cell counts, cell shape,
 equal-areaness, and the traits that differ across them.
 
 ## Regions, kept compressed
@@ -99,6 +100,11 @@ and lets the cell count fall where it may: 335 entries over levels 4 to 7 here.
 `maxcells` refines the crossing cells breadth first, coarsest up, and stops when
 the next replacement would not fit — "ten cells that cover California";
 `maxlevel` bounds how deep the budget may descend.
+
+ISEA3H/4H are the deliberate exception to budget mode: their canonical prefix
+parent is an indexing relation, not a spatial covering relation, so budget
+coverage throws an `ArgumentError`. Fixed-depth `level` coverage remains
+available.
 
 Covering is a statement about the leaves: at the deepest level, every cell
 meeting the target is a member of the set or a descendant of one. The union of
@@ -164,8 +170,8 @@ The manifold is named rather than inferred: geometry here is on the unit sphere,
 and `best_manifold` would guess a WGS84 radius, which is a factor of `R^2` in
 every area.
 
-A DGGS as the **source** conserves to `1e-13` on all six systems and on the
-authalic wrap. A DGGS as the **destination** conserves only where the
+The cross-system regridding suite measures conservation over the registered
+systems and authalic profiles. A DGGS as the **destination** conserves only where the
 destination cells' rings are convex — IGEO7 and S2 at every level the suite
 sweeps, H3 at the even ones — because the clipper's Sutherland–Hodgman is an
 intersection only against a convex clip window, and the destination is always
@@ -177,10 +183,10 @@ rest `@test_broken`, and names the upstream fix that closes them.
 ## Going further
 
 Every script under `examples/` is an assertion-checked demo that exits non-zero
-if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The six
+if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The
 tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
 build, each the shortest honest path to one result; `docs/src/index.md` lists
-them and `docs/src/all_dggs.md` draws every system.
+them and `docs/src/all_dggs.md` draws a representative gallery.
 
 ## Layout
 
@@ -203,12 +209,21 @@ them and `docs/src/all_dggs.md` draws every system.
 | `A5System` | `0:29` | `12`, `60`, then `60·4^(l-1)` | pentagons | yes | `A5Cell` |
 | `S2System` | `0:30` | `6·4^l` | geodesic quadrilaterals | no | `LevelIndex` |
 | `ISEA4RSystem` | `0:29` | `10·4^l` | rhombi on ten diamonds | yes | `LevelIndex` |
+| `ISEA3HSystem` | `0:30` | `10·3^l + 2` | hexagons + 12 pentagons | yes | `Z3Cell` |
+| `ISEA4HSystem` | `0:29` | `10·4^l + 2` | hexagons + 12 pentagons | yes | `LevelIndex` |
+| `ISEA4TSystem` | `0:12` | `20·4^l` | triangles | yes | `LevelIndex` |
+| `RHEALPixSystem` | `0:19` | `6·9^l` | curvilinear quads/darts/caps | yes | `RHEALPixCell` |
+| `AusPIXSystem()` | `0:19` | `6·9^l` | WGS84 rHEALPix profile | yes | `RHEALPixCell` |
+| `IVEA4RSystem` / `RTEA4RSystem` | `0:25` | `10·4^l` | rhombi | yes | `LevelIndex` |
+| `IVEA9RSystem` / `RTEA9RSystem` | `0:16` | `10·9^l` | rhombi | yes | `LevelIndex` |
 
-Native layers: H3 calls libh3 through `H3_jll`; the other five are pure Julia.
-IGEO7 is a clean-room implementation; A5 ports upstream a5's arithmetic; HEALPix,
-S2 and ISEA4R are closed-form charts with no external dependency.
+Native layers: H3 calls libh3 through `H3_jll`; the other systems are pure Julia.
+IGEO7 is a clean-room implementation; A5 ports upstream a5's arithmetic. The
+remaining systems use closed-form charts and package-owned indexing kernels,
+with no runtime dependency on their reference implementations.
 
-No system defines a grid type. All six return `HierarchicalLevelGrid` from
+No system defines a grid type. All fifteen registry entries return
+`HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
 `cell_area` — to `HierarchicalLevelGrid{TheSystem}`. `subtree_border` is an
 `O(rim)` automaton on every system but A5, which walks the whole subtree;

@@ -1,8 +1,9 @@
 # DiscreteGlobalGrids.jl
 
-Six discrete global grid systems — IGEO7, H3, HEALPix, A5, S2, ISEA4R — behind
-one small interface, with every algorithm written against the interface exactly
-once.
+Fifteen discrete global grid systems and profiles behind one small interface,
+with every algorithm written against the interface exactly once: IGEO7, H3,
+HEALPix, A5, S2, ISEA4R, ISEA3H/4H/4T, rHEALPix/AusPIX, and rhombic
+IVEA/RTEA aperture-4/9.
 
 The mental model is two tiers. A **grid** is one finite collection of cells on
 the sphere — a complete level, or a regional subset of one — and geometry,
@@ -24,13 +25,13 @@ import Extents
 DGG.query(grid, DGG.Intersects(Extents.Extent(X = (5, 12), Y = (45, 50))))
 ```
 
-Swap `IGeo7System()` for any of the six and nothing else changes. The
+Swap `IGeo7System()` for any entry in `DGG.systems()` and nothing else changes. The
 [README](https://github.com/JuliaGeo/DiscreteGlobalGrids.jl) walks the whole
 surface; the docstring of `DGG.systems()` is the comparison table.
 
 ## Where to go next
 
-The [DGGS gallery](all_dggs.md) draws every system. Each tutorial is the
+The [DGGS gallery](all_dggs.md) draws representative systems. Each tutorial is the
 shortest honest path to one result:
 
   - [Stencil operations](tutorials/stencils.md) — smoothing, Laplacians and

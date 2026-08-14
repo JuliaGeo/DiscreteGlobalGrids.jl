@@ -257,9 +257,11 @@ Useful exhaustive-oracle sizes are:
 ### Recommended ISEA3H canonical ID: `Z3Cell`
 
 DGGRID's Z3 digit string consists of a two-decimal-digit root `00` through
-`11`, followed by one ternary digit per level. Roots `00` through `09` each
-have three prefix children; the two polar roots `10` and `11` have only the
-all-zero chain. This produces exactly `10*3^r+2` IDs.
+`11`, followed by one ternary digit per level. The two polar roots `00` and
+`11` have only the all-zero chain; roots `01` through `10` each have three
+prefix children. This produces exactly `10*3^r+2` IDs. The distribution is
+pinned directly by the packed oracle: at level 1 the leading root nibbles occur
+`1, 3, 3, ..., 3, 1` times for roots `0, 1, ..., A, B`.
 
 Use an isbits `Z3Cell(::UInt64)` patterned after the package's `Z7Cell`:
 
@@ -271,18 +273,18 @@ unused digit     3
 ```
 
 The first padding digit gives the level; no padding means level 30. Structural
-validity additionally requires roots 10 and 11 to contain only active zero
+validity additionally requires roots 0 and 11 to contain only active zero
 digits. This bounds `levels(sys)` to `0:30`, well inside `Int64` cell counts.
 
-For a root `q < 10` and base-3 path value `p` at level `r`, the 1-based dense
-position is
+For a non-polar root `1 <= q <= 10` and base-3 path value `p` at level `r`,
+the 1-based dense position is
 
 ```text
-q*3^r + p + 1.
+2 + (q - 1)*3^r + p.
 ```
 
-The two polar positions are `10*3^r+1` and `10*3^r+2`. Parent drops the final
-digit. Children append `0:2`, except that a polar cell appends only `0`.
+The north and south polar positions are `1` and `10*3^r+2`. Parent drops the
+final digit. Children append `0:2`, except that a polar cell appends only `0`.
 At a fixed target level, all descendants of a prefix form one contiguous
 dense interval, so `has_sorted_subtrees = true` and `descendant_range` is
 closed-form.
@@ -328,14 +330,14 @@ would still have to be chosen. Therefore:
 ### ISEA4H
 
 DGGRID's ZORDER digit string has the same two-digit roots, followed by one
-base-4 digit per level. Roots `00:09` have four prefix children; polar roots
-`10:11` have only the zero child. Use that prefix tree, but make the canonical
-identity a 0-based `LevelIndex(level, ordinal)` in root-major/base-4 path
-order:
+base-4 digit per level. Roots `01:10` have four prefix children; polar roots
+`00` and `11` have only the zero child. Use that prefix tree, but make the
+canonical identity a 0-based `LevelIndex(level, ordinal)` in root-major/base-4
+path order:
 
 ```text
-q < 10: ordinal = q*4^r + path_value
-q = 10: ordinal = 10*4^r
+q = 0: ordinal = 0
+1 <= q <= 10: ordinal = 1 + (q - 1)*4^r + path_value
 q = 11: ordinal = 10*4^r + 1.
 ```
 

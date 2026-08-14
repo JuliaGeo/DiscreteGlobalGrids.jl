@@ -3,8 +3,8 @@
 #
 # `test/fallbacks/runtests.jl` already exercises `MultiOrderCoverage` against
 # the mocks, where the hierarchy is a lon/lat quadtree and the target is a
-# four-vertex box. This file asks the same laws of the six registered systems
-# plus an `AuthalicSystem` wrap, with the targets that a real coverage meets:
+# four-vertex box. This file asks the same laws of every registered system plus
+# an `AuthalicSystem` wrap, with the targets that a real coverage meets:
 # a 617-vertex admin outline, its offshore islands, a hole, an
 # antimeridian-crossing ring, and a target larger than a hemisphere.
 #
@@ -114,7 +114,7 @@ const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 # ---------------------------------------------------------------------------
 # Systems, and the depth each is swept to
 #
-# Levels are chosen so that a leaf cell is 6-9 km across on all seven, which is
+# Levels are chosen so that leaf cells are comparable across the sweep, which is
 # what makes the cell counts comparable: the apertures are 7, 7, 4, 4, 4, 4, so
 # a fixed level is not.
 #
@@ -142,6 +142,15 @@ const SWEEP = [
     (DGG.A5System(), 10, 7, false),
     (DGG.S2System(), 10, 7, true),
     (DGG.ISEA4RSystem(), 10, 7, true),
+    (DGG.ISEA3HSystem(), 9, 7, false),
+    (DGG.ISEA4HSystem(), 7, 5, false),
+    (DGG.ISEA4TSystem(), 7, 5, true),
+    (DGG.RHEALPixSystem(), 6, 4, true),
+    (DGG.AusPIXSystem(), 6, 4, true),
+    (DGG.IVEA4RSystem(), 7, 5, true),
+    (DGG.IVEA9RSystem(), 5, 3, true),
+    (DGG.RTEA4RSystem(), 7, 5, true),
+    (DGG.RTEA9RSystem(), 5, 3, true),
     (DGG.AuthalicSystem(DGG.IGeo7System()), 7, 5, false),
 ]
 

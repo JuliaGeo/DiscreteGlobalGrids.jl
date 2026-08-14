@@ -68,8 +68,8 @@ const FARAWAY = (-25.0, -40.0)
 
 const LONLAT = GO.UnitSpherical.GeographicFromUnitSphere()
 
-# Levels chosen so that a leaf cell is a few kilometres across on all seven —
-# the apertures are 7, 7, 4, 4, 4, 4, so a fixed level is not comparable. The
+# Levels chosen so that a leaf cell is a few kilometres across across the
+# registered families; a fixed level is not comparable between apertures. The
 # third column is how much deeper the memory law re-expands the same set.
 const SWEEP = [
     (DGG.IGeo7System(), 6, 3),
@@ -78,6 +78,15 @@ const SWEEP = [
     (DGG.A5System(), 9, 2),
     (DGG.S2System(), 9, 3),
     (DGG.ISEA4RSystem(), 9, 3),
+    (DGG.ISEA3HSystem(), 9, 2),
+    (DGG.ISEA4HSystem(), 7, 3),
+    (DGG.ISEA4TSystem(), 8, 3),
+    (DGG.RHEALPixSystem(), 7, 3),
+    (DGG.AusPIXSystem(), 7, 3),
+    (DGG.IVEA4RSystem(), 8, 3),
+    (DGG.IVEA9RSystem(), 5, 2),
+    (DGG.RTEA4RSystem(), 8, 3),
+    (DGG.RTEA9RSystem(), 5, 2),
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, 3),
 ]
 

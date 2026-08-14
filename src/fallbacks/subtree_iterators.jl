@@ -111,7 +111,7 @@ Base.length(it::SubtreeIterator) = length(it.engine)
 # tail as cell ids. See `collect_subtree`.
 Base.collect(it::SubtreeIterator) = collect_subtree(it)
 
-# Connectivity is shown even though it changes nothing on five of the six
+# Connectivity is shown even though it changes nothing on several
 # systems: on A5 it changes the answer, and that is exactly when someone is
 # reading this.
 Base.show(io::IO, it::EdgeCellIterator) = print(io, "EdgeCellIterator(",

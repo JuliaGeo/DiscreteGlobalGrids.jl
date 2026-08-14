@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# T18 — the BUDGET mode of multi-order coverage, on every system.
+# T18 — the BUDGET mode of multi-order coverage, on every spatial hierarchy.
 #
 # `query(sys, MultiOrderCoverage(target); level = l)` refines everything the
 # boundary crosses to a fixed depth and returns however many cells that takes.
@@ -10,8 +10,9 @@
 # a different thing held fixed.
 #
 # This file is the T15 treatment of that second mode: the same committed
-# `test/fixtures/california.txt` outline, the same seven systems (six registered
-# plus an `AuthalicSystem` wrap), the same dense-plus-adversarial point sampler.
+# `test/fixtures/california.txt` outline, every supported registered system plus
+# an `AuthalicSystem` wrap, and the same dense-plus-adversarial point sampler.
+# The two non-spatial ISEA hex prefix trees are checked for explicit rejection.
 #
 # THE LAWS, and what each is worth:
 #
@@ -50,7 +51,7 @@
 #         another. Bounded, not asserted zero.
 #       - THE LEAF READING: every cell of the reference level that meets the
 #         target is a member or the descendant of one. The accuracy mode has
-#         this on all seven — it earns it by descending into cells that MISS the
+#         this across the sweep — it earns it by descending into cells that MISS the
 #         target, because a child can overhang its parent, and carrying that all
 #         the way down to `level`. A budget has no fixed depth to carry it to;
 #         stopping early is the whole point of the mode, and a branch stopped at
@@ -161,6 +162,13 @@ const SWEEP = [
     (DGG.A5System(), 6, false),
     (DGG.S2System(), 7, true),
     (DGG.ISEA4RSystem(), 6, true),
+    (DGG.ISEA4TSystem(), 6, true),
+    (DGG.RHEALPixSystem(), 5, true),
+    (DGG.AusPIXSystem(), 5, true),
+    (DGG.IVEA4RSystem(), 6, true),
+    (DGG.IVEA9RSystem(), 4, true),
+    (DGG.RTEA4RSystem(), 6, true),
+    (DGG.RTEA9RSystem(), 4, true),
     (DGG.AuthalicSystem(DGG.IGeo7System()), 5, false),
 ]
 
@@ -208,10 +216,17 @@ const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
 
 @testset "the budget sweep covers every registered system" begin
     swept = Set(typeof(s) for (s, _, _) in SWEEP)
+    unsupported = Set([DGG.ISEA3HSystem, DGG.ISEA4HSystem])
     for s in DGG.systems()
-        @test typeof(s) in swept
+        @test (typeof(s) in swept) ⊻ (typeof(s) in unsupported)
     end
     @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
+    for sys in (DGG.ISEA3HSystem(), DGG.ISEA4HSystem())
+        @test_throws ArgumentError DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND);
+            maxcells=10)
+        @test DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=3) isa
+            DGG.MultiOrderCellSet
+    end
 end
 
 # ---------------------------------------------------------------------------
@@ -491,6 +506,10 @@ end
                 # parent, and emits what it finds beneath them. A budget cannot,
                 # so it is a subset of the same size or smaller. Asserting
                 # equality here would be asserting congruence.
+                # Central-place ISEA prefix descendants can be nonlocal on
+                # both sides of the parent footprint, so neither schedule's
+                # cardinality orders the other. Ordinary non-congruent trees
+                # retain the one-sided overhang relation above.
                 @test length(budgeted) <= length(accurate)
                 @test !isempty(budgeted)
             end

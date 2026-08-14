@@ -108,15 +108,18 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
 using .Fallbacks: collect_subtree,
     MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine
 
-# Grid systems, all six ported. Include order never matters: the two ISEA-family
-# systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
-# first defines it behind an `isdefined` guard.
+# Grid systems. Include order never matters: the ISEA-family systems share
+# `src/systems/ISEA/`, and whichever is included first defines it behind an
+# `isdefined` guard.
 include("systems/IGeo7/IGeo7.jl")
 include("systems/H3/H3.jl")
 include("systems/HEALPix/HEALPix.jl")
 include("systems/A5/A5.jl")
 include("systems/S2/S2.jl")
 include("systems/ISEA4R/ISEA4R.jl")
+include("systems/ISEAGrids/ISEAGrids.jl")
+include("systems/RHEALPix/RHEALPix.jl")
+include("systems/IVEARTEA/IVEARTEA.jl")
 
 using .IGeo7: IGeo7System, Z7Cell
 using .H3: H3System, H3Cell
@@ -124,6 +127,9 @@ using .HEALPix: HEALPixSystem, HEALPixRingIndex
 using .A5: A5System, A5Cell
 using .S2: S2System
 using .ISEA4R: ISEA4RSystem
+using .ISEAGrids: ISEA3HSystem, Z3Cell, ISEA4HSystem, ISEA4TSystem
+using .RHEALPix: RHEALPixSystem, AusPIXSystem, RHEALPixCell
+using .IVEARTEA: IVEA4RSystem, IVEA9RSystem, RTEA4RSystem, RTEA9RSystem
 
 # The DimensionalData layer. In-package rather than a package extension because
 # DimensionalData is a hard dependency, and because a cube axis is the shape
@@ -146,12 +152,15 @@ The grid systems shipped by this package, as a stable-order tuple of singletons.
     julia> using DiscreteGlobalGrids
 
     julia> systems()
-    (IGeo7System(), H3System(), HEALPixSystem(), A5System(), S2System(), ISEA4RSystem())
+    (IGeo7System(), H3System(), HEALPixSystem(), A5System(), S2System(),
+     ISEA4RSystem(), ISEA3HSystem(), ISEA4HSystem(), ISEA4TSystem(),
+     RHEALPixSystem(), AusPIXSystem(), IVEA4RSystem(), IVEA9RSystem(),
+     RTEA4RSystem(), RTEA9RSystem())
 
 This registry does not include externally defined systems and is not used for
 interface dispatch. Tuple order has no semantic meaning.
 
-# The six, and how they differ
+# The registered systems, and how they differ
 
 | system | cells at level `l` | cell shape | equal-area |
 |---|---|---|---|
@@ -161,6 +170,13 @@ interface dispatch. Tuple order has no semantic meaning.
 | [`A5System`](@ref) | `12`, `60`, then `60·4^(l-1)` | pentagons (Cairo-style) | yes |
 | [`S2System`](@ref) | `6·4^l` | geodesic quadrilaterals | no; ~2.08× within-level spread |
 | [`ISEA4RSystem`](@ref) | `10·4^l` | rhombi on ten diamonds | yes, exactly `4π/(10·4^l)` |
+| [`ISEA3HSystem`](@ref) | `10·3^l + 2` | hexagons + 12 pentagons | yes |
+| [`ISEA4HSystem`](@ref) | `10·4^l + 2` | hexagons + 12 pentagons | yes |
+| [`ISEA4TSystem`](@ref) | `20·4^l` | triangles | yes, exactly `4π/(20·4^l)` |
+| [`RHEALPixSystem`](@ref) | `6·9^l` | curvilinear quads/darts/caps | yes, exactly `2π/(3·9^l)` |
+| [`AusPIXSystem`](@ref) | `6·9^l` | WGS84 rHEALPix profile | yes on the authalic sphere |
+| `IVEA4RSystem` / `RTEA4RSystem` | `10·4^l` | rhombi | yes |
+| `IVEA9RSystem` / `RTEA9RSystem` | `10·9^l` | rhombi | yes |
 
 Important cross-system traits:
 
@@ -173,20 +189,23 @@ Important cross-system traits:
     11 vertex-neighbours and 3 edge-neighbours. Above level 1, ISEA4R has ten
     degree-9 cells at icosahedral vertices 0 and 11, thirty degree-7 cells, and
     degree 8 elsewhere; level 0 is 6-regular.
-  - **[`node_extent`](@ref).** S2, ISEA4R, and HEALPix provide exact uninflated
-    subtree caps. IGeo7, H3, and A5 use inflated caps; A5 sets
-    [`cap_inflation`](@ref) to `1.75`.
-  - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
-    has not established the two-sided [`descendant_range`](@ref) contract.
+  - **[`node_extent`](@ref).** Systems with spatially nested chart trees provide
+    tight caps. The ISEA3H/4H prefix trees are deliberately non-spatial and may
+    require caps wider than a hemisphere; their documentation states that
+    query-pruning tradeoff.
+  - **[`has_sorted_subtrees`](@ref).** False for A5 and the IVEA/RTEA rhombic
+    systems; their canonical orders do not establish the two-sided
+    [`descendant_range`](@ref) contract.
   - **[`subtree_border`](@ref).** IGeo7, H3, HEALPix, ISEA4R, and S2 provide
-    `O(rim)` walkers; A5 uses the `O(subtree)` fallback. Each is a resumable
+    `O(rim)` walkers; the remaining systems use the `O(subtree)` fallback. Each is a resumable
     [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in `O(depth)`
     memory, of which [`subtree_border`](@ref) and [`subtree_interior`](@ref) are
     the `collect` forms.
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
-    the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
-    their parent exactly; the hierarchy's own relation on IGEO7, H3 and A5,
-    where they do not and a member's footprint is not its descendants' union.
+    the geometric sense on HEALPix, S2, ISEA4R, ISEA4T, rHEALPix/AusPIX, and
+    the rhombic IVEA/RTEA systems, whose children tile their parent; the
+    hierarchy's own relation on IGEO7, H3, A5, ISEA3H and ISEA4H, where a
+    member's footprint is not its descendants' union.
 
 # Interoperability caveats
 
@@ -196,12 +215,27 @@ Important cross-system traits:
     fixture-derived permutation before interchange.
   - S2's native 64-bit `s2_cellid` is not an available [`reindex`](@ref) scheme.
     The scaffold ordinal is the canonical identifier.
+  - ISEA4T uses a package-defined face/path index; the sealed DGGRID corpus does
+    not establish a SEQNUM crosswalk. ISEA3H uses the documented Z3 prefix tree.
+    Because ISEA3H/4H prefix parents are non-spatial, fixed-level
+    `MultiOrderCoverage` is supported but budget mode throws rather than claim
+    a covering that the hierarchy cannot guarantee.
+  - IVEA/RTEA currently expose the aperture-4 and aperture-9 rhombic systems.
+    Exact 3H/7H atlas parity, pentagon mapping and corrected odd-level RI7
+    lookup require deeper post-fix oracle vectors and are not claimed here.
+  - ISEA3H/4H `cell_boundary` chooses a common Snyder face for each paired edge
+    when one exists, with eight samples and a great-circle fallback across the
+    five-face development cut. It is a finite polygon approximation; analytic
+    `cell_area` is the equal-area value and is independent of it.
 
 Use [`levels`](@ref) and [`levelgrid`](@ref) to construct queryable grids. Each
 system module documents its identifier codec and optimized operations.
 """
 systems() = (IGeo7System(), H3System(), HEALPixSystem(),
-             A5System(), S2System(), ISEA4RSystem())
+             A5System(), S2System(), ISEA4RSystem(),
+             ISEA3HSystem(), ISEA4HSystem(), ISEA4TSystem(),
+             RHEALPixSystem(), AusPIXSystem(),
+             IVEA4RSystem(), IVEA9RSystem(), RTEA4RSystem(), RTEA9RSystem())
 
 # --- Type vocabulary -------------------------------------------------------
 export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
@@ -230,7 +264,7 @@ export Touches, Crosses, Overlaps, Equals
 
 # --- Fallback substrate ----------------------------------------------------
 # `using`-ed above the system includes, because `HierarchicalLevelGrid` is what
-# all six of them return from `levelgrid` and attach their fast paths to.
+# all registered systems return from `levelgrid` and attach their fast paths to.
 export HierarchicalLevelGrid, PartialGrid, HierarchicalGridCursor
 export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
@@ -255,7 +289,7 @@ export CellLookup, Cells, Covering
 
 # --- Grid systems ----------------------------------------------------------
 # System modules are not exported because their names collide with registered
-# packages. No system exports a grid type: all six return
+# packages. No system exports a grid type: all registered systems return
 # `HierarchicalLevelGrid` from `levelgrid`. S2 and ISEA4R use `LevelIndex` over
 # their scaffold ordinals.
 export systems
@@ -265,6 +299,9 @@ export HEALPixSystem, HEALPixRingIndex
 export A5System, A5Cell
 export S2System
 export ISEA4RSystem
+export ISEA3HSystem, Z3Cell, ISEA4HSystem, ISEA4TSystem
+export RHEALPixSystem, AusPIXSystem, RHEALPixCell
+export IVEA4RSystem, IVEA9RSystem, RTEA4RSystem, RTEA9RSystem
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere

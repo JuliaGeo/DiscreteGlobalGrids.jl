@@ -18,23 +18,24 @@
 #   * the SUBTREE RIM HOOK: `subtree_border` / `subtree_interior` against the
 #     brute-force definition, spelled out here independently of both.
 #
-#     FOUR of the six systems override the border with an `O(rim)` automaton —
-#     IGeo7's Z7 digit predicate, H3's digit-arc walk, HEALPix's Morton rim
-#     walk, ISEA4R's lattice-block edge walk — and for those this is the
-#     differential test that keeps the fast path honest.
+#     FIVE of the six systems override the border with an `O(rim)` automaton —
+#     IGeo7's Z7 digit predicate, H3's digit-arc walk, and the shared
+#     aperture-4 square walk under HEALPix's and ISEA4R's Morton curve and S2's
+#     Hilbert one — and for those this is the differential test that keeps the
+#     fast path honest.
 #
-#     TWO deliberately do not, and this suite must not assert otherwise:
-#       - A5, because its four Hilbert children cover the parent's *area* but
-#         not its footprint, so there is no digit predicate a rim could be read
-#         off at all;
-#       - S2, because nobody has written one yet — its quad lattice plus sorted
-#         subtrees is exactly the shape that would benefit, and it is recorded
-#         as future work rather than a defect.
-#     For those two the same assertions still bite, just one rung lower: they
-#     check `src/fallbacks/subtree.jl` against the definition. That is not
-#     circular — the fallback decides membership by walking each neighbour up
-#     to the root with `ancestor`, while `brute_force_border` below materialises
-#     the descendant set and asks it — so the two agree only if both are right.
+#     ONE deliberately does not, and this suite must not assert otherwise: A5,
+#     because its four Hilbert children cover the parent's *area* but not its
+#     footprint, so there is no digit predicate a rim could be read off at all,
+#     and no `descendant_range` to walk instead.
+#     For A5 the same assertions still bite, just one rung lower: they check
+#     `src/fallbacks/subtree.jl` against the definition. That is not circular —
+#     the fallback decides membership by walking each neighbour up to the root
+#     with `ancestor`, while `brute_force_border` below materialises the
+#     descendant set and asks it — so the two agree only if both are right.
+#
+#     The lazy iterators those walks are made of get their own file,
+#     `subtree_iterators.jl`.
 # ---------------------------------------------------------------------------
 
 module CrossSystemTests
@@ -147,8 +148,15 @@ end
         # border" survived two systems being added that do not): a system that
         # gains or loses an automaton must come and edit this list, which is
         # exactly the moment to re-read the comment.
-        automaton = Set([:IGeo7System, :H3System, :HEALPixSystem, :ISEA4RSystem])
-        fallback = Set([:A5System, :S2System])
+        # T20 moved S2 across: its subtree is an aligned square block on one
+        # face and its rim is that block's perimeter, so it now shares the
+        # aperture-4 walk with HEALPix and ISEA4R under its own Hilbert curve.
+        # A5 is the only system left on the fallback, and structurally so — no
+        # `descendant_range`, and no closed-form child adjacency to build an
+        # automaton from.
+        automaton = Set([:IGeo7System, :H3System, :HEALPixSystem, :ISEA4RSystem,
+            :S2System])
+        fallback = Set([:A5System])
         for sys in systems()
             n = nameof(typeof(sys))
             c = cellindex(levelgrid(sys, first(levels(sys))), 1)

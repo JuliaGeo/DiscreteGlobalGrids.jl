@@ -90,7 +90,13 @@ include("fallbacks/fallbacks.jl")
 using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSystem,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     cellindices, is_contained, coarsest_contained, cell_polygons,
-    CellVector, cellset, covering, covering_positions
+    CellVector, cellset, covering, covering_positions,
+    EdgeCellIterator, InnerCellIterator
+
+# The lazy subtree walkers' extension point and the parts a system builds one
+# from. Not exported — a caller reaches the iterators, a system reaches these.
+using .Fallbacks: collect_subtree,
+    MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine
 
 # Grid systems, all six ported. Include order never matters: the two ISEA-family
 # systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
@@ -162,8 +168,11 @@ Important cross-system traits:
     [`cap_inflation`](@ref) to `1.75`.
   - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
     has not established the two-sided [`descendant_range`](@ref) contract.
-  - **[`subtree_border`](@ref).** IGeo7, H3, HEALPix, and ISEA4R provide
-    `O(rim)` walkers. A5 and S2 use the `O(subtree)` fallback.
+  - **[`subtree_border`](@ref).** IGeo7, H3, HEALPix, ISEA4R, and S2 provide
+    `O(rim)` walkers; A5 uses the `O(subtree)` fallback. Each is a resumable
+    [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in `O(depth)`
+    memory, of which [`subtree_border`](@ref) and [`subtree_interior`](@ref) are
+    the `collect` forms.
 
 # Interoperability caveats
 
@@ -198,6 +207,7 @@ export cellindextype, levels, max_level, levelgrid, rootcells, children
 export node_extent, cap_inflation, max_neighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
 export subtree_border, subtree_interior
+export EdgeCellIterator, InnerCellIterator
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate

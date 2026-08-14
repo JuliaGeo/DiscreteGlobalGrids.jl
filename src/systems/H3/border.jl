@@ -12,6 +12,12 @@
 # The transition table is fitted and parity-dependent. Its parity roles are
 # swapped relative to IGeo7: the branch H3 takes
 # at an even child level is the one IGeo7 takes at an odd one.
+#
+# The walk is a resumable iterator: an explicit frame stack, one inline value, so
+# a partial rim costs nothing beyond `O(depth)`. The interior comes off the same
+# walk — where the automaton PRUNES, the whole branch below is interior, so
+# `H3InteriorEngine` descends it in full instead of dropping it, and never needs
+# a rim membership set.
 
 # Extended, not shadowed: this file defines H3's method on the package generic,
 # so `H3.subtree_border` and `DiscreteGlobalGrids.subtree_border` are one
@@ -49,30 +55,188 @@ The state a `digit` child at absolute resolution `level` inherits from a cell in
     end
 end
 
-"""
-    _h3_fill_border!(out, z, res, target, state, pentagon) -> out
+# `next` is the digit to try when this frame is next on top; digits run `1:6` on
+# the rim walk and `0:6` below a pruned branch, so a frame retires at `next > 6`.
+# `full` marks a branch the automaton pruned: everything under it is interior.
+# Resolution is not stored — frame `k` sits at `root + k - 1`.
+struct H3Frame
+    L::Int8
+    s::Int8
+    next::Int8
+    pentagon::Bool
+    full::Bool
+end
 
-Digit-lexicographic DFS over the border automaton, appending every res-`target`
-rim descendant of `z` to `out`. `z` already carries `target` in its resolution
-field, so each step overwrites one digit slot and the leaves come out fully
-formed — and in ascending order, by construction rather than by sorting.
+const _H3_STACK_CAP = MAX_RESOLUTION + 1
+const H3Stack = DGG.Helpers.SmallList{_H3_STACK_CAP,H3Frame}
+
+@inline _h3_empty_stack() = DGG.Helpers.empty_small_list(Val(_H3_STACK_CAP),
+    H3Frame(Int8(0), Int8(0), Int8(0), false, false))
+
 """
-function _h3_fill_border!(out::Vector{UInt64}, z::UInt64, res::Int, target::Int,
-        state::NTuple{2,Int}, pentagon::Bool)
-    shift = _h3_digit_shift(res + 1)
-    cleared = z & ~(UInt64(7) << shift)
-    for digit in 1:6
-        pentagon && digit == 1 && continue    # the K axis, deleted under a pentagon
-        child_state = _h3_border_step(state, digit, res + 1)
-        child_state[1] == 0 && continue
-        child = cleared | (UInt64(digit) << shift)
-        if res + 1 == target
-            push!(out, child)
-        else
-            _h3_fill_border!(out, child, res + 1, target, child_state, false)
+    H3Walk(z, stack)
+
+The walk state. `z` carries the digits of the current path — each descent
+overwrites one digit slot, so the parent's id needs no restoring — and already
+holds `target` in its resolution field, which is what makes every leaf come out
+fully formed and in ascending order by construction.
+"""
+struct H3Walk
+    z::UInt64
+    stack::H3Stack
+end
+
+# The rim walk starts at digit 1: digit 0 is the centre child, which the
+# automaton would prune anyway. The interior walk must start at 0, because that
+# centre child is exactly the branch it is looking for.
+@inline function _h3_root_walk(e, start::Int8)
+    f = H3Frame(Int8(6), Int8(0), start, e.pentagon, false)
+    return H3Walk(e.z, DGG.Helpers.small_push(_h3_empty_stack(), f))
+end
+
+@inline _h3_bump(f::H3Frame) =
+    H3Frame(f.L, f.s, f.next + Int8(1), f.pentagon, f.full)
+
+# Descendants of a cell `d` levels down: the all-zero chain plus five branches
+# under a pentagon, a full `7^d` otherwise.
+@inline _h3_subtree_count(pentagon::Bool, d::Int) =
+    pentagon ? 1 + 5 * (7^d - 1) ÷ 6 : 7^d
+
+@inline _h3_rim_count(pentagon::Bool, d::Int) =
+    d == 0 ? 1 : (pentagon ? (5 * (3^d - 1)) ÷ 2 : 3 * 3^d - 3)
+
+"""
+    H3RimEngine(z, res, target, pentagon)
+
+The rim automaton as a resumable iterator over `H3Cell`s. `z` is the subtree
+root with its resolution field already moved to `target`.
+"""
+struct H3RimEngine
+    z::UInt64
+    res::Int
+    target::Int
+    pentagon::Bool
+end
+
+Base.eltype(::Type{H3RimEngine}) = H3Cell
+Base.IteratorSize(::Type{H3RimEngine}) = Base.HasLength()
+Base.length(e::H3RimEngine) = _h3_rim_count(e.pentagon, e.target - e.res)
+
+function Base.iterate(e::H3RimEngine)
+    e.target == e.res && return (H3Cell(e.z), H3Walk(e.z, _h3_empty_stack()))
+    return iterate(e, _h3_root_walk(e, Int8(1)))
+end
+
+function Base.iterate(e::H3RimEngine, w::H3Walk)
+    z = w.z
+    st = w.stack
+    while !isempty(st)
+        k = length(st)
+        f = @inbounds st[k]
+        if f.next > Int8(6)
+            st = DGG.Helpers.small_pop(st)
+            continue
         end
+        digit = Int(f.next)
+        st = DGG.Helpers.small_setlast(st, _h3_bump(f))
+        f.pentagon && digit == 1 && continue   # the K axis, deleted under a pentagon
+        res = e.res + k - 1
+        child = _h3_border_step((Int(f.L), Int(f.s)), digit, res + 1)
+        child[1] == 0 && continue
+        shift = _h3_digit_shift(res + 1)
+        z = (z & ~(UInt64(7) << shift)) | (UInt64(digit) << shift)
+        res + 1 == e.target && return (H3Cell(z), H3Walk(z, st))
+        st = DGG.Helpers.small_push(st,
+            H3Frame(Int8(child[1]), Int8(child[2]), Int8(1), false, false))
     end
-    return out
+    return nothing
+end
+
+"""
+    H3InteriorEngine(z, res, target, pentagon)
+
+The complement, off the same automaton: a branch the rim walk prunes is wholly
+interior, so this one descends it in full (digits `0:6`) instead of dropping it.
+No rim membership is ever tested or stored.
+"""
+struct H3InteriorEngine
+    z::UInt64
+    res::Int
+    target::Int
+    pentagon::Bool
+end
+
+Base.eltype(::Type{H3InteriorEngine}) = H3Cell
+Base.IteratorSize(::Type{H3InteriorEngine}) = Base.HasLength()
+function Base.length(e::H3InteriorEngine)
+    d = e.target - e.res
+    d == 0 && return 0
+    return _h3_subtree_count(e.pentagon, d) - _h3_rim_count(e.pentagon, d)
+end
+
+function Base.iterate(e::H3InteriorEngine)
+    e.target == e.res && return nothing
+    return iterate(e, _h3_root_walk(e, Int8(0)))
+end
+
+function Base.iterate(e::H3InteriorEngine, w::H3Walk)
+    z = w.z
+    st = w.stack
+    while !isempty(st)
+        k = length(st)
+        f = @inbounds st[k]
+        if f.next > Int8(6)
+            st = DGG.Helpers.small_pop(st)
+            continue
+        end
+        digit = Int(f.next)
+        st = DGG.Helpers.small_setlast(st, _h3_bump(f))
+        f.pentagon && digit == 1 && continue
+        res = e.res + k - 1
+        # Below a branch the automaton pruned, every cell is interior; on the rim
+        # path, the child it prunes is where the interior starts.
+        child = f.full ? (0, 0) : _h3_border_step((Int(f.L), Int(f.s)), digit, res + 1)
+        shift = _h3_digit_shift(res + 1)
+        z = (z & ~(UInt64(7) << shift)) | (UInt64(digit) << shift)
+        if child[1] != 0
+            res + 1 == e.target && continue      # a rim cell: not ours
+            st = DGG.Helpers.small_push(st,
+                H3Frame(Int8(child[1]), Int8(child[2]), Int8(0), false, false))
+            continue
+        end
+        res + 1 == e.target && return (H3Cell(z), H3Walk(z, st))
+        # A cell stays a pentagon exactly while its digits are all zero, which is
+        # reachable here — unlike on the rim walk — because digit 0 is taken.
+        st = DGG.Helpers.small_push(st,
+            H3Frame(Int8(0), Int8(0), Int8(0), f.pentagon && digit == 0, true))
+    end
+    return nothing
+end
+
+function DGG.rim_engine(sys::H3System, c::H3Cell, target::Int,
+        connectivity::Connectivity)
+    lvl, pentagon = _h3_border_checked(c, target)
+    return H3RimEngine(_h3_with_resolution(c.id, target), lvl, target, pentagon)
+end
+
+function DGG.interior_engine(sys::H3System, c::H3Cell, target::Int,
+        connectivity::Connectivity)
+    lvl, pentagon = _h3_border_checked(c, target)
+    return H3InteriorEngine(_h3_with_resolution(c.id, target), lvl, target, pentagon)
+end
+
+# libh3 validates neither `cellToChildren` nor `cellToChildrenSize`, so a
+# malformed index would otherwise come back as a confidently enumerated rim
+# of cells that do not exist.
+function _h3_border_checked(c::H3Cell, target::Int)
+    lvl = level(c)
+    target >= lvl || throw(ArgumentError(
+        "border level $target is above the cell's own level $lvl"))
+    target <= MAX_RESOLUTION || throw(ArgumentError(
+        "border level $target is past max_level $MAX_RESOLUTION"))
+    H3Native.is_valid_cell(c.id) || throw(ArgumentError(
+        "H3 cell $c is not a valid cell"))
+    return lvl, H3Native.is_pentagon(c.id)
 end
 
 """
@@ -83,30 +247,9 @@ Return, in ascending order, level-`l` descendants with a neighbour outside
 `O(7^depth)`. Counts are `3^(depth+1) - 3` for hexagons and
 `5(3^depth - 1)/2` for pentagons; depth zero returns `[c]`. H3 vertex and edge
 adjacency coincide, so `connectivity` does not affect the result.
+
+`collect` of [`EdgeCellIterator`](@ref), which is the same automaton lazily.
 """
-function subtree_border(::H3System, c::H3Cell, l::Integer;
-        connectivity::Connectivity=Vertex())
-    target = Int(l)
-    lvl = level(c)
-    target >= lvl || throw(ArgumentError(
-        "border level $target is above the cell's own level $lvl"))
-    target <= MAX_RESOLUTION || throw(ArgumentError(
-        "border level $target is past max_level $MAX_RESOLUTION"))
-    # libh3 validates neither `cellToChildren` nor `cellToChildrenSize`, so a
-    # malformed index would otherwise come back as a confidently enumerated rim
-    # of cells that do not exist.
-    H3Native.is_valid_cell(c.id) || throw(ArgumentError(
-        "H3 cell $c is not a valid cell"))
-    target == lvl && return H3Cell[c]
-    # The resolution field moves to `target` once; the digit slots between
-    # `lvl` and `target` are filled in on the way down, and the ones below
-    # `target` keep the 7 padding they already carry.
-    z = _h3_with_resolution(c.id, target)
-    pentagon = H3Native.is_pentagon(c.id)
-    depth = target - lvl
-    p3 = 3^depth
-    out = Vector{UInt64}()
-    sizehint!(out, pentagon ? (5 * (p3 - 1)) ÷ 2 : 3 * p3 - 3)
-    _h3_fill_border!(out, z, lvl, target, (6, 0), pentagon)
-    return [H3Cell(id) for id in out]
-end
+subtree_border(sys::H3System, c::H3Cell, l::Integer;
+    connectivity::Connectivity=Vertex()) =
+    DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))

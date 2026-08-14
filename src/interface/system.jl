@@ -285,9 +285,13 @@ adjacencies coincide (H3 and IGeo7, whose vertices are all 3-valent) or where
 the rim comes out the same set either way (HEALPix); A5's 4-valent corners make
 them genuinely different relations, so assume nothing.
 
-The generic fallback enumerates [`descendants`](@ref) and tests each one's
+The generic fallback walks [`descendant_range`](@ref) and tests each cell's
 [`neighbors`](@ref). Systems may override with an `O(rim)` algorithm. Order is
 ascending canonical order unless documented otherwise.
+
+This is `collect` of `EdgeCellIterator(sys, c, l; connectivity)`, which is the
+same walk resumable and in `O(depth)` memory — reach for the iterator when the
+rim is large or a prefix of it will do.
 
 See also [`subtree_interior`](@ref), the complement.
 """
@@ -305,11 +309,33 @@ order.
 with the two disjoint. `subtree_interior(sys, c, level(c))` is empty: the cell
 itself is its own rim.
 
-This materializes most of the subtree. The generic implementation computes and
-subtracts the border. For large subtrees, prefer iterating
-[`descendant_range`](@ref) while excluding a border set.
+This materializes most of the subtree. It is `collect` of
+`InnerCellIterator(sys, c, l; connectivity)`, which generates the interior from
+the rim walk's pruned branches — never a border set, never the rim materialized
+— in `O(depth)` memory. For large subtrees, use the iterator.
 """
 function subtree_interior end
+
+"""
+    rim_engine(sys, c, target::Int, connectivity)
+    interior_engine(sys, c, target::Int, connectivity)
+
+The iteration engine `EdgeCellIterator` / `InnerCellIterator` forwards the whole
+iteration protocol to — the single place a system overrides to ship an `O(rim)`
+subtree walk, and the single place both the lazy and the eager
+([`subtree_border`](@ref) / [`subtree_interior`](@ref)) faces of it read.
+
+An engine is any iterator over `cellindextype(sys)`. Both methods own the level
+validation, so their `ArgumentError`s are the ones the eager verbs raise.
+
+The generic implementations walk [`descendant_range`](@ref) with one
+[`ancestor`](@ref) test per cell, and materialize where
+[`has_sorted_subtrees`](@ref) is `false`.
+"""
+function rim_engine end
+
+@doc (@doc rim_engine)
+function interior_engine end
 
 """
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}

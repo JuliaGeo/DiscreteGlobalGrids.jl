@@ -505,15 +505,31 @@ Return the level-`l` descendants on the subtree rim, in ascending order;
 six-state digit automaton runs in `O(result)`; at depth `d` the rim contains
 `3^(d+1)-3` cells for a hexagon and `5*(3^d-1)/2` for a pentagon.
 
+`collect` of [`EdgeCellIterator`](@ref), which is the same automaton resumable
+and in `O(depth)` memory.
+
 Throws an `ArgumentError` for `l` outside `level(c):max_level`.
 """
-function subtree_border(::IGeo7System, c::Z7Cell, l::Integer;
-        connectivity::Connectivity=Vertex())
+subtree_border(sys::IGeo7System, c::Z7Cell, l::Integer;
+    connectivity::Connectivity=Vertex()) =
+    DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))
+
+function DGG.rim_engine(::IGeo7System, c::Z7Cell, target::Int,
+        connectivity::Connectivity)
+    return Z7RimEngine(c.id, _z7_subtree_checked(c, target), target)
+end
+
+function DGG.interior_engine(::IGeo7System, c::Z7Cell, target::Int,
+        connectivity::Connectivity)
+    return Z7InteriorEngine(c.id, _z7_subtree_checked(c, target), target)
+end
+
+# The one level guard both walks share, and the cell's own resolution.
+function _z7_subtree_checked(c::Z7Cell, target::Int)
     res = _geometry_checked(c.id)
-    target = Int(l)
     res <= target <= MAX_RESOLUTION || throw(ArgumentError(
         "IGeo7 descendant level must be in $res:$MAX_RESOLUTION, got $target"))
-    return [Z7Cell(z) for z in border_descendants(c.id, target)]
+    return res
 end
 
 """

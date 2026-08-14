@@ -214,7 +214,9 @@ No system defines a grid type. All six return `HierarchicalLevelGrid` from
 `O(rim)` automaton on every system but A5, which walks the whole subtree;
 `subtree_interior` shares that walk and emits the branches it prunes. Both are
 `collect` of a resumable `EdgeCellIterator` / `InnerCellIterator` in `O(depth)`
-memory. A5 is also the one system without `has_sorted_subtrees`, so
+memory, and `subtree_halo` walks the same boundary from outside as a
+`NeighborCellIterator` — the level-`l` cells around the subtree, for
+chunk-plus-halo reads. A5 is also the one system without `has_sorted_subtrees`, so
 `level_ranges` throws there and everything that would use it takes the selection
 branch instead.
 

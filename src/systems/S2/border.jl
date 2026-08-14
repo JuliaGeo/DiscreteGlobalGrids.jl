@@ -90,3 +90,33 @@ neighbour outside the block.
 subtree_border(sys::S2System, c::DGG.LevelIndex, l::Integer;
     connectivity::DGG.Connectivity = DGG.Vertex()) =
     DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))
+
+# The halo — the outside face of the same boundary — is the width-1 band around
+# the block, walked lazily by the package's face-quadtree descent wherever the
+# block is nowhere flush with its face's edge: a non-flush block's halo is
+# entirely in-face, where adjacency is the plain 3×3 lattice, so the band IS
+# the halo (minus its four corners under `Edge()`). A flush block's halo
+# crosses the seam onto up to three other faces — `wrap_xyf` territory, ids in
+# other ordinal ranges — and takes the generic materialising engine instead.
+#
+# The descent runs over the whole face, so it is seeded with the FACE's curve
+# state: `_hilbert_orientation`'s odd-face seed, before any position bits.
+function DGG.neighbor_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
+        connectivity::DGG.Connectivity)
+    DGG.descendant_range(sys, c, target)   # the level guard, both ArgumentErrors
+    _checked_index(c)
+    d = target - DGG.level(c)
+    if d > 0
+        ix, iy, face = hilbert_to_xyf(c.index, _nside(DGG.level(c)))
+        s = Int64(1) << d
+        x0 = Int64(ix) << d
+        y0 = Int64(iy) << d
+        n = _nside(target)
+        if 1 <= x0 && x0 + s <= n - 1 && 1 <= y0 && y0 + s <= n - 1
+            return DGG.SquareHaloEngine(HilbertCurve(), Int64(face) * n * n,
+                target, n, isodd(face) ? UInt8(SWAP_MASK) : 0x0,
+                x0, y0, s, connectivity isa DGG.Vertex)
+        end
+    end
+    return DGG.generic_neighbor_engine(sys, c, target, connectivity)
+end

@@ -285,6 +285,58 @@ function _rim_rows!(out, complete, rim, lo::Int, hi::Int, connectivity::Connecti
 end
 
 # ===========================================================================
+# The subset halo: the same boundary, seen from outside
+# ===========================================================================
+
+"""
+    halo(sub; connectivity = Vertex())
+
+The **out-of-set** cells adjacent to the subset: every cell of the complete
+level that `sub` does not hold but that has a `connectivity`-neighbor it does,
+each exactly once, in the complete level's ascending order.
+
+On a rooted [`PartialGrid`](@ref) holding a WHOLE subtree the answer is
+[`NeighborCellIterator`](@ref)`(system, root, level; connectivity)` itself —
+lazy, and no membership machinery at all, because a subtree's outside ring is a
+fact of the hierarchy. Everything else — a non-rooted `PartialGrid`, a
+[`CellVector`](@ref), a rooted grid missing cells, any grid of A5, whose order
+establishes no [`descendant_range`](@ref) to test wholeness against — takes
+the eager fallback:
+scan the members' one-rings, keep what [`cellposition`](@ref) cannot find,
+deduplicate, sort. Built two ways over the same cells, the two paths agree
+element for element.
+
+They do return different types — an iterator and a `Vector` — so `collect` the
+result where a vector is needed. See [`subtree_halo`](@ref) for the pure-cell
+form and [`halo_table`](@ref) for the in-set stencil this is the complement of.
+"""
+function halo(pg::PartialGrid; connectivity::Connectivity = Vertex())
+    r = _whole_subtree_range(pg)
+    r === nothing || return NeighborCellIterator(pg.system, pg.root_id, pg.level;
+        connectivity)
+    return _clipped_out_ring(pg, pg.complete,
+        (cellindex(pg, p) for p in 1:ncells(pg)), connectivity)
+end
+
+halo(cv::CellVector; connectivity::Connectivity = Vertex()) =
+    _clipped_out_ring(cv, cv.grid, cv, connectivity)
+
+# The fallback: `O(members · degree)` candidates with one membership test each —
+# the same `cellposition === nothing` clip the tables above run, with the
+# polarity reversed. Members arrive as an argument because the two containers
+# spell iteration differently; the complete grid is where the one-rings and the
+# final order both come from.
+function _clipped_out_ring(sub, complete, members, connectivity::Connectivity)
+    out = cellindextype(system(sub))[]
+    for c in members
+        for nb in neighbors(complete, c, 1; connectivity)
+            cellposition(sub, nb) === nothing && push!(out, nb)
+        end
+    end
+    return unique!(sort!(out))
+end
+
+# ===========================================================================
 # Cross-level adjacency on a multi-order set
 # ===========================================================================
 

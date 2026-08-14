@@ -50,6 +50,11 @@ using DiscreteGlobalGrids
     # each automaton against its own oracle, so a failure here is the iterator
     # protocol or the sharing, not the walk.
     include("systems/crosssystem/subtree_iterators.jl")
+    # T22: the third member of that family, walking OUTSIDE the subtree — the
+    # halo — plus `halo` on subset containers. After the file above because its
+    # oracle is built from `subtree_border`, so a failure there is the rim walk
+    # and a failure here is the exterior one.
+    include("systems/crosssystem/subtree_halos.jl")
     # T21: adjacency on a SUBSET, which is the complete level's answer clipped
     # to membership. Straight after the file above because the rooted halo table
     # is built from those two iterators, so a failure there is the walk and a

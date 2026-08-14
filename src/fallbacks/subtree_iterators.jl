@@ -87,17 +87,61 @@ function InnerCellIterator(sys::AbstractHierarchicalGridSystem, c::AbstractCellI
         interior_engine(sys, c, target, connectivity))
 end
 
+"""
+    NeighborCellIterator(sys, c, l; connectivity = Vertex())
+
+The **halo** of `c`'s subtree at level `l`, lazily: the level-`l` cells that
+are *not* descendants of `c` but have a neighbour that is, in ascending
+canonical order, each exactly once. The outside face of the boundary whose
+inside face is [`EdgeCellIterator`](@ref).
+
+`collect` of this is [`subtree_halo`](@ref), element for element.
+`l == level(c)` yields exactly the cell's own one-ring, sorted. `l < level(c)`
+and `l > max_level(sys)` throw an `ArgumentError`, as the eager verb does.
+
+The generic engine **materializes**: halo cells arrive rim-cell by rim-cell
+with duplicates and out of order, so the global dedup-and-sort wants the whole
+set in hand — `O(rim · degree)` time and memory, the same standing the T20
+walkers give A5. HEALPix, S2 and ISEA4R walk the exterior perimeter of their
+aligned block directly, in `O(depth)` memory, wherever the block is not flush
+with a face edge; see [`SquareHaloEngine`](@ref).
+
+[`Base.IteratorSize`](@ref) is `SizeUnknown` as a contract — face seams, poles
+and pentagons break perimeter formulas, so no closed-form count is promised.
+An engine that can prove one may declare `HasLength` (the square walk and the
+materialised fallbacks do), and `collect` guards it against under-delivery.
+"""
+struct NeighborCellIterator{S<:AbstractHierarchicalGridSystem,C<:AbstractCellIndex,
+        K<:Connectivity,E}
+    system::S
+    cell::C
+    level::Int
+    connectivity::K
+    engine::E
+end
+
+function NeighborCellIterator(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
+        l::Integer; connectivity::Connectivity = Vertex())
+    target = Int(l)
+    return NeighborCellIterator(sys, c, target, connectivity,
+        neighbor_engine(sys, c, target, connectivity))
+end
+
 const SubtreeIterator{S,C,K,E} = Union{EdgeCellIterator{S,C,K,E},
-                                       InnerCellIterator{S,C,K,E}}
+                                       InnerCellIterator{S,C,K,E},
+                                       NeighborCellIterator{S,C,K,E}}
 
 Base.iterate(it::SubtreeIterator) = iterate(it.engine)
 Base.iterate(it::SubtreeIterator, state) = iterate(it.engine, state)
 
 Base.eltype(::Type{<:EdgeCellIterator{S,C,K,E}}) where {S,C,K,E} = eltype(E)
 Base.eltype(::Type{<:InnerCellIterator{S,C,K,E}}) where {S,C,K,E} = eltype(E)
+Base.eltype(::Type{<:NeighborCellIterator{S,C,K,E}}) where {S,C,K,E} = eltype(E)
 Base.IteratorSize(::Type{<:EdgeCellIterator{S,C,K,E}}) where {S,C,K,E} =
     Base.IteratorSize(E)
 Base.IteratorSize(::Type{<:InnerCellIterator{S,C,K,E}}) where {S,C,K,E} =
+    Base.IteratorSize(E)
+Base.IteratorSize(::Type{<:NeighborCellIterator{S,C,K,E}}) where {S,C,K,E} =
     Base.IteratorSize(E)
 
 # Deliberately delegated rather than defined: an engine that cannot count
@@ -118,6 +162,9 @@ Base.show(io::IO, it::EdgeCellIterator) = print(io, "EdgeCellIterator(",
     it.system, ", ", it.cell, ", ", it.level, "; connectivity = ",
     it.connectivity, ")")
 Base.show(io::IO, it::InnerCellIterator) = print(io, "InnerCellIterator(",
+    it.system, ", ", it.cell, ", ", it.level, "; connectivity = ",
+    it.connectivity, ")")
+Base.show(io::IO, it::NeighborCellIterator) = print(io, "NeighborCellIterator(",
     it.system, ", ", it.cell, ", ", it.level, "; connectivity = ",
     it.connectivity, ")")
 
@@ -247,6 +294,32 @@ function interior_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellInd
         first(r), last(r), connectivity)
 end
 
+# The halo's generic engine materializes on EVERY system, not just A5: the
+# candidates arrive rim-cell by rim-cell, duplicated wherever two rim cells
+# share an outside neighbour and ordered by which rim cell found them, so the
+# global dedup-and-sort needs the whole set in hand. `O(rim · degree)` time and
+# memory — the documented fallback, not a hidden one. The aligned-block systems
+# override with `SquareHaloEngine` below for non-flush blocks; IGeo7 and H3
+# stay here deliberately, since an aperture-7 subtree boundary is a fractal
+# with no perimeter arithmetic to walk, and A5 stays for T20's reason.
+neighbor_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
+    target::Int, connectivity::Connectivity) =
+    generic_neighbor_engine(sys, c, target, connectivity)
+
+# Named rather than folded into the method above so a system override has a
+# fallback to CALL, not just to shadow: the square systems reach it for the
+# blocks their automaton must decline (flush with a face edge, or depth 0).
+function generic_neighbor_engine(sys::AbstractHierarchicalGridSystem,
+        c::AbstractCellIndex, target::Int, connectivity::Connectivity)
+    lc = level(c)
+    target >= lc || throw(ArgumentError(
+        "subtree_halo: level $target is above the cell's own level $lc"))
+    target == lc && return EagerEngine(
+        sort!(cellindextype(sys)[nb for nb in
+            neighbors(levelgrid(sys, target), c, 1; connectivity)]))
+    return EagerEngine(_eager_halo(sys, c, target, connectivity))
+end
+
 # A5 alone lands here: its canonical order establishes no `descendant_range`, so
 # there is no position interval to walk and no closed-form child adjacency to
 # build an automaton from. The subtree is materialised internally — the iterator
@@ -273,12 +346,33 @@ function _eager_interior(sys::AbstractHierarchicalGridSystem, c::AbstractCellInd
     return out
 end
 
-# The wrapper is transparent to both walks: the rim of a subtree is a question
-# about the discrete hierarchy, which the ellipsoid does not touch.
+# The defining law run forwards: every outside neighbour of a rim cell is halo,
+# and every halo cell is an outside neighbour of some rim cell (its in-subtree
+# neighbour is rim by definition). The rim arrives through the system's own
+# `EdgeCellIterator`, so a system with an `O(rim)` rim walk pays `O(rim)` here
+# too — only the dedup-and-sort is generic. Level validation is the rim
+# engine's, which is why `target > max_level` need not be re-checked above.
+function _eager_halo(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
+        target::Int, connectivity::Connectivity)
+    lc = level(c)
+    grid = levelgrid(sys, target)
+    out = cellindextype(sys)[]
+    for d in EdgeCellIterator(sys, c, target; connectivity)
+        for nb in neighbors(grid, d, 1; connectivity)
+            ancestor(sys, nb, lc) == c || push!(out, nb)
+        end
+    end
+    return unique!(sort!(out))
+end
+
+# The wrapper is transparent to all three walks: the rim and halo of a subtree
+# are questions about the discrete hierarchy, which the ellipsoid does not touch.
 rim_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
     connectivity::Connectivity) = rim_engine(sys.system, c, target, connectivity)
 interior_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
     connectivity::Connectivity) = interior_engine(sys.system, c, target, connectivity)
+neighbor_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
+    connectivity::Connectivity) = neighbor_engine(sys.system, c, target, connectivity)
 
 # ===========================================================================
 # The square-block walk, shared by the three aperture-4 systems
@@ -507,4 +601,158 @@ function Base.iterate(e::SquareInteriorEngine, s::SquareInteriorState)
         st = Helpers.small_push(st, SquareFrame(m, o, 0x0))
         code = child
     end
+end
+
+# ===========================================================================
+# The exterior-perimeter walk, shared by the same three systems
+# ===========================================================================
+
+# The halo of an aligned block that is nowhere flush with its face's edge is
+# the width-1 band around it — every band cell is on the block's own face, and
+# in-face adjacency is the plain 3×3 lattice on all three systems, so band and
+# halo coincide, with the four diagonal-contact corners dropped under `Edge()`.
+#
+# Unlike the rim, the band is not a curve interval of any one subtree, so there
+# is no `base + offset` walk to run. Instead the engine descends the whole
+# FACE's quadtree in curve order and prunes every quadrant that misses the
+# band: curve order at each level is ascending id by construction, so whatever
+# survives arrives ascending with no sort and no dedup. A quadrant of side `h`
+# survives only if it intersects the band, and at most `O(perimeter / h + 1)`
+# of each size do, so the walk visits `O(halo + depth)` nodes in `O(depth)`
+# memory — the descent tracks the running curve code and lattice origin, and
+# restores both on pop by re-reading the parent's last step.
+#
+# A block flush with a face edge has halo cells across the seam, on other
+# faces, whose ids no in-face arithmetic can name — those blocks take the
+# materialising generic engine instead, which is why this type needs no seam
+# machinery and no system tables, only the curve.
+
+# `mask` would be dead weight here — pruning is by lattice overlap, not by
+# flush sides — so the frame is the two bytes the descent actually needs.
+struct HaloFrame
+    orientation::UInt8
+    next::UInt8
+end
+
+const HaloStack = Helpers.SmallList{_SQUARE_CAP,HaloFrame}
+
+@inline _empty_halo_stack() =
+    Helpers.empty_small_list(Val(_SQUARE_CAP), HaloFrame(0x0, 0x0))
+
+"""
+    SquareHaloEngine(curve, facebase, level, faceside, orientation, x0, y0, side, corners)
+
+The halo of the `side x side` block at lattice origin `(x0, y0)` on the face
+whose first cell has raw index `facebase`, in ascending id: `4·side + 4` band
+cells, or `4·side` with `corners = false` (`Edge()` drops the four
+diagonal-contact corners). Valid only for a block not flush with the face —
+`1 <= x0` and `x0 + side <= faceside - 1`, likewise `y0` — which the
+constructing system checks; `O(halo + depth)` time, `O(depth)` memory.
+
+`faceside` is the face's full lattice side at `level` and `orientation` the
+curve state its root is read under: the walk descends the face, not the block,
+because the band cells are outside the block's own curve interval. Yields
+[`LevelIndex`](@ref) on [`SquareRimEngine`](@ref)'s reasoning, and takes the
+same [`quadrant_step`](@ref) curves.
+"""
+struct SquareHaloEngine{V}
+    curve::V
+    facebase::Int64
+    level::Int
+    faceside::Int64
+    orientation::UInt8
+    x0::Int64
+    y0::Int64
+    side::Int64
+    corners::Bool
+end
+
+"""
+    HaloWalk(stack, code, x, y)
+
+The walk state: the frame stack, and the within-face curve code and lattice
+origin of the sub-square on top of it. Frame `k`'s node has side
+`faceside >> (k - 1)`, so none of the three needs storing per frame — all are
+restored on pop by replaying the parent's last `quadrant_step`.
+"""
+struct HaloWalk
+    stack::HaloStack
+    code::Int64
+    x::Int64
+    y::Int64
+end
+
+# Does a node overlap the band's bounding square at all, and is it swallowed by
+# the block? A surviving node overlaps the outer square without sitting inside
+# the block, which forces it to overlap the band itself — the outer square
+# minus the block IS the band.
+@inline _halo_overlaps(e::SquareHaloEngine, x::Int64, y::Int64, h::Int64) =
+    x <= e.x0 + e.side && x + h - 1 >= e.x0 - 1 &&
+    y <= e.y0 + e.side && y + h - 1 >= e.y0 - 1
+
+@inline _inside_block(e::SquareHaloEngine, x::Int64, y::Int64, h::Int64) =
+    x >= e.x0 && x + h - 1 <= e.x0 + e.side - 1 &&
+    y >= e.y0 && y + h - 1 <= e.y0 + e.side - 1
+
+# The four cells that touch the block at a vertex only, halo under `Vertex()`
+# and not under `Edge()`.
+@inline _band_corner(e::SquareHaloEngine, x::Int64, y::Int64) =
+    (x == e.x0 - 1 || x == e.x0 + e.side) &&
+    (y == e.y0 - 1 || y == e.y0 + e.side)
+
+Base.eltype(::Type{<:SquareHaloEngine}) = LevelIndex
+Base.IteratorSize(::Type{<:SquareHaloEngine}) = Base.HasLength()
+Base.length(e::SquareHaloEngine) =
+    e.corners ? Int(4 * e.side + 4) : Int(4 * e.side)
+
+Base.iterate(e::SquareHaloEngine) = iterate(e, HaloWalk(
+    Helpers.small_push(_empty_halo_stack(), HaloFrame(e.orientation, 0x0)),
+    Int64(0), Int64(0), Int64(0)))
+
+function Base.iterate(e::SquareHaloEngine, w::HaloWalk)
+    st = w.stack
+    code = w.code
+    x = w.x
+    y = w.y
+    while !isempty(st)
+        k = length(st)
+        f = @inbounds st[k]
+        if f.next > 0x3
+            st = Helpers.small_pop(st)
+            if !isempty(st)
+                # Undo the push that entered the frame just dropped: its parent
+                # is back on top and has advanced past the position it used.
+                pk = length(st)
+                pf = @inbounds st[pk]
+                p = Int(pf.next) - 1
+                i, j, _ = quadrant_step(e.curve, pf.orientation, p)
+                half = e.faceside >> pk
+                code -= p * half * half
+                x -= i * half
+                y -= j * half
+            end
+            continue
+        end
+        p = Int(f.next)
+        st = Helpers.small_setlast(st, HaloFrame(f.orientation, f.next + 0x1))
+        i, j, o = quadrant_step(e.curve, f.orientation, p)
+        half = e.faceside >> k
+        cx = x + i * half
+        cy = y + j * half
+        _halo_overlaps(e, cx, cy, half) || continue
+        _inside_block(e, cx, cy, half) && continue
+        child = code + p * half * half
+        if half == 1
+            # A surviving leaf is a band cell; only the corner rule is left.
+            !e.corners && _band_corner(e, cx, cy) && continue
+            # Emitted without descending, so `code`/`x`/`y` still describe the
+            # frame on top and need no restoring on the way back in.
+            return (LevelIndex(e.level, e.facebase + child), HaloWalk(st, code, x, y))
+        end
+        st = Helpers.small_push(st, HaloFrame(o, 0x0))
+        code = child
+        x = cx
+        y = cy
+    end
+    return nothing
 end

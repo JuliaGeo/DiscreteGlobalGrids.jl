@@ -56,6 +56,30 @@ function DGG.interior_engine(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int,
     return DGG.SquareInteriorEngine(DGG.MortonCurve(), lo, target, side, 0x0)
 end
 
+# The halo — the outside face of the same boundary — is the width-1 band
+# around the block, walked lazily by the package's face-quadtree descent
+# wherever the block is nowhere flush with its face's edge: a non-flush block's
+# halo is entirely in-face, where adjacency is the plain 3×3 lattice (every
+# irregular neighbourhood in `NB_FACEARRAY` sits on a face edge), so the band
+# IS the halo, minus its four corners under `Edge()`. A flush block's halo
+# crosses the seam — `NB_SWAPARRAY` territory, ids on other faces — and takes
+# the generic materialising engine instead. `nested_to_xyf` of the block's
+# first id names its lattice origin, because min-Morton is min-corner.
+function DGG.neighbor_engine(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int,
+        connectivity::DGG.Connectivity)
+    lo, side = _healpix_square(sys, c, target)
+    if side > 1
+        n = _nside(target)
+        ix, iy, face = nested_to_xyf(lo, n)
+        x0, y0 = Int64(ix), Int64(iy)
+        if 1 <= x0 && x0 + side <= n - 1 && 1 <= y0 && y0 + side <= n - 1
+            return DGG.SquareHaloEngine(DGG.MortonCurve(), Int64(face) * n * n,
+                target, n, 0x0, x0, y0, side, connectivity isa DGG.Vertex)
+        end
+    end
+    return DGG.generic_neighbor_engine(sys, c, target, connectivity)
+end
+
 """
     subtree_border(sys::HEALPixSystem, c::LevelIndex, leaf_level::Integer; connectivity = Vertex()) -> Vector{LevelIndex}
 

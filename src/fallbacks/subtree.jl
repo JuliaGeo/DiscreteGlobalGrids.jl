@@ -47,3 +47,21 @@ subtracting a border set.
 subtree_interior(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
     l::Integer; connectivity::Connectivity=Vertex()) =
     collect_subtree(InnerCellIterator(sys, c, l; connectivity))
+
+"""
+    subtree_halo(sys, c, l; connectivity = Vertex()) -> Vector
+
+Return the level-`l` cells that are **not** descendants of `c` but have a
+neighbor that is — the exterior ring around the subtree — in ascending
+canonical order. `collect` of [`NeighborCellIterator`](@ref); the generic walk
+costs `O(rim · degree)`, the aligned-block systems' automaton `O(halo)`.
+
+Halo cells are outside the subtree, so their data lives in the COMPLETE level:
+`descendant_range(sys, c, l)` is the subtree's own contiguous position block,
+and `cellposition.(Ref(levelgrid(sys, l)), subtree_halo(sys, c, l))` is the
+fetch list for the ring around it — together a chunk-plus-halo read with no
+halo table built at all.
+"""
+subtree_halo(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
+    l::Integer; connectivity::Connectivity=Vertex()) =
+    collect_subtree(NeighborCellIterator(sys, c, l; connectivity))

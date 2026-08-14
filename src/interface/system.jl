@@ -319,23 +319,30 @@ function subtree_interior end
 """
     rim_engine(sys, c, target::Int, connectivity)
     interior_engine(sys, c, target::Int, connectivity)
+    neighbor_engine(sys, c, target::Int, connectivity)
 
-The iteration engine `EdgeCellIterator` / `InnerCellIterator` forwards the whole
-iteration protocol to — the single place a system overrides to ship an `O(rim)`
-subtree walk, and the single place both the lazy and the eager
-([`subtree_border`](@ref) / [`subtree_interior`](@ref)) faces of it read.
+The iteration engine `EdgeCellIterator` / `InnerCellIterator` /
+`NeighborCellIterator` forwards the whole iteration protocol to — the single
+place a system overrides to ship an `O(rim)` subtree walk, and the single place
+both the lazy and the eager ([`subtree_border`](@ref) /
+[`subtree_interior`](@ref) / [`subtree_halo`](@ref)) faces of it read.
 
-An engine is any iterator over `cellindextype(sys)`. Both methods own the level
-validation, so their `ArgumentError`s are the ones the eager verbs raise.
+An engine is any iterator over `cellindextype(sys)`. All three methods own the
+level validation, so their `ArgumentError`s are the ones the eager verbs raise.
 
-The generic implementations walk [`descendant_range`](@ref) with one
-[`ancestor`](@ref) test per cell, and materialize where
-[`has_sorted_subtrees`](@ref) is `false`.
+The generic `rim_engine` / `interior_engine` walk [`descendant_range`](@ref)
+with one [`ancestor`](@ref) test per cell, and materialize where
+[`has_sorted_subtrees`](@ref) is `false`. The generic `neighbor_engine` always
+materializes: its cells arrive rim-cell by rim-cell, with duplicates and out of
+order, so the global dedup-and-sort wants the whole set in hand.
 """
 function rim_engine end
 
 @doc (@doc rim_engine)
 function interior_engine end
+
+@doc (@doc rim_engine)
+function neighbor_engine end
 
 """
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}

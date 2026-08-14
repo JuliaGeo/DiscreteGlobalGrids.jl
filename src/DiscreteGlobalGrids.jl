@@ -23,8 +23,11 @@ Adjacency is a verb on subsets, not only on complete levels. On a
 [`PartialGrid`](@ref), a [`CellVector`](@ref) or a [`CellLookup`](@ref),
 [`neighbors`](@ref) and [`ring`](@ref) are the system's own answer clipped to
 membership, in ids or in positions, and [`halo_table`](@ref) is a whole
-subset's stencil in one call. [`member_neighbors`](@ref) asks the same question
-across the levels of a [`MultiOrderCellSet`](@ref).
+subset's stencil in one call. [`halo`](@ref) is the same boundary seen from
+outside — the out-of-set ring around a subset — and on a whole subtree it is
+the lazy [`NeighborCellIterator`](@ref) / [`subtree_halo`](@ref) pure-cell
+path, with no membership machinery at all. [`member_neighbors`](@ref) asks the
+same question across the levels of a [`MultiOrderCellSet`](@ref).
 
 Internal geometry uses `GeometryOps.UnitSphericalPoint`; explicitly named
 wrappers convert longitude and latitude at API boundaries.
@@ -101,12 +104,14 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     cellindices, is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
-    EdgeCellIterator, InnerCellIterator, member_neighbors
+    EdgeCellIterator, InnerCellIterator, NeighborCellIterator,
+    subtree_halo, halo, member_neighbors
 
 # The lazy subtree walkers' extension point and the parts a system builds one
 # from. Not exported — a caller reaches the iterators, a system reaches these.
 using .Fallbacks: collect_subtree,
-    MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine
+    MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine,
+    SquareHaloEngine, generic_neighbor_engine
 
 # Grid systems, all six ported. Include order never matters: the two ISEA-family
 # systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
@@ -212,7 +217,7 @@ export Connectivity, Vertex, Edge
 export ncells, cellindex, cell_boundary, cell_centroid
 export cellposition, rawid, reindex, cellindextypes
 export cell_polygon, cell_area, cell_extent, getcell
-export cellat, neighbors, ring, halo_table
+export cellat, neighbors, ring, halo_table, halo
 export treeify, query
 export system, level
 
@@ -220,8 +225,8 @@ export system, level
 export cellindextype, levels, max_level, levelgrid, rootcells, children
 export node_extent, cap_inflation, max_neighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
-export subtree_border, subtree_interior
-export EdgeCellIterator, InnerCellIterator
+export subtree_border, subtree_interior, subtree_halo
+export EdgeCellIterator, InnerCellIterator, NeighborCellIterator
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate

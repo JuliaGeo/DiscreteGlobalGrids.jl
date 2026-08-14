@@ -35,6 +35,30 @@ function _isea4r_square(sys::ISEA4RSystem, c::DGG.LevelIndex, target::Int)
     return lo, Int64(1) << (target - DGG.level(c))
 end
 
+# The halo — the outside face of the same boundary — is the width-1 band
+# around the block, walked lazily by the package's diamond-quadtree descent
+# wherever the block is nowhere flush with its diamond's edge: a non-flush
+# block's halo is entirely in-diamond, where adjacency is the plain 3×3 lattice
+# (every irregular neighbourhood — the corner fans, the valence-3 corners —
+# sits on a diamond edge), so the band IS the halo, minus its four corners
+# under `Edge()`. A flush block's halo crosses `EDGE_NEIGHBORS` onto other
+# diamonds and takes the generic materialising engine instead. `morton_to_xyd`
+# of the block's first id names its lattice origin: min-Morton is min-corner.
+function DGG.neighbor_engine(sys::ISEA4RSystem, c::DGG.LevelIndex, target::Int,
+        connectivity::DGG.Connectivity)
+    lo, side = _isea4r_square(sys, c, target)
+    if side > 1
+        n = _nside(target)
+        ix, iy, diamond = morton_to_xyd(lo, n)
+        x0, y0 = Int64(ix), Int64(iy)
+        if 1 <= x0 && x0 + side <= n - 1 && 1 <= y0 && y0 + side <= n - 1
+            return DGG.SquareHaloEngine(DGG.MortonCurve(), Int64(diamond) * n * n,
+                target, n, 0x0, x0, y0, side, connectivity isa DGG.Vertex)
+        end
+    end
+    return DGG.generic_neighbor_engine(sys, c, target, connectivity)
+end
+
 """
     subtree_border(ISEA4RSystem(), c, l; connectivity = Vertex()) -> Vector{LevelIndex}
 

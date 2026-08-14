@@ -30,7 +30,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     node_extent, cap_inflation, max_neighbors, has_sorted_subtrees,
     ancestor, descendants, descendant_range,
     subtree_border, subtree_interior,
-    rim_engine, interior_engine
+    rim_engine, interior_engine, neighbor_engine
 import ..DiscreteGlobalGrids: Helpers
 
 import GeometryOps as GO

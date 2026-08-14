@@ -1,0 +1,9 @@
+# The oracle implementation is dual-licensed; this project elects its MIT option.
+rHEALPixDGGS @ git+https://github.com/manaakiwhenua/rhealpixdggs-py.git@5929a73b427a33d66a64800051d077ce36bbf901
+
+# Exact versions used to seal the committed vectors. These are permissive.
+numpy==2.5.2
+scipy==1.18.0
+matplotlib==3.11.1
+pyproj==3.7.2
+shapely==2.1.2

@@ -61,6 +61,8 @@ shortest honest path to one result:
     `Intersects`, and the multi-order coverage that compresses the answer.
   - [Regridding a time series](tutorials/regridding.md) — conservative
     regridding onto a DGGS, with no adapter between the two packages.
+  - [Multi-order coverage](tutorials/multiorder.md) — one region at every
+    resolution at once: giant cells inside, leaf cells along the coastline.
   - [Hydrology: a DEM on an IGEO7 grid](tutorials/hydrology.md) —
     `MultiOrderCoverage`, `PartialGrid` over one subtree, and flow routing.
   - [The sky in HEALPix](tutorials/healpix_astronomy.md) — nested order,

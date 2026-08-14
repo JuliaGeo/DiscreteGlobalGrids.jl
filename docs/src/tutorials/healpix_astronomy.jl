@@ -1,13 +1,13 @@
 # # The sky in HEALPix
 #
 # HEALPix is astronomy's grid: every CMB map and all-sky survey ships as a flat
-# vector of `12 * nside^2` equal-area pixels, in nested order. That order is
-# exactly `levelgrid(HEALPixSystem(), level)`'s dense position order, so an
+# vector of `12 * nside^2` equal-area pixels in nested order. That order is
+# exactly the position order of `levelgrid(HEALPixSystem(), level)`, so an
 # astronomer's map and a DiscreteGlobalGrids data vector are the same vector.
 #
-# This page builds a synthetic all-sky map in galactic coordinates, checks the
-# Healpix.jl correspondence, and runs two classic sky operations: a cone search
-# around a source and a galactic-plane cut.
+# This page builds a synthetic all-sky map, checks that claim against
+# Healpix.jl, and runs the two classic sky operations: a cone search and a
+# galactic-plane cut.
 
 import DiscreteGlobalGrids as DGG
 import Healpix
@@ -16,13 +16,16 @@ using Statistics, Random
 using CairoMakie, GeoMakie
 CairoMakie.activate!()
 
-# Level 5 means `nside = 2^5 = 32`, i.e. 12288 pixels. The fake sky is a diffuse
-# band of emission along the galactic plane, four bright point sources, and a
-# little noise, evaluated at the cell centroids and read as galactic `(ℓ, b)`.
+# ## A synthetic sky
+#
+# Level 5 is `nside = 2^5 = 32`: 12288 pixels. `CellVector` reads the grid as a
+# lazy vector of cell ids, one per position.
 
-level = 5
-grid = DGG.levelgrid(DGG.HEALPixSystem(), level)
-cells = [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
+grid = DGG.levelgrid(DGG.HEALPixSystem(), 5)
+cells = DGG.CellVector(grid)
+
+# The fake sky is a diffuse band along the galactic plane, four point sources,
+# and a little noise, evaluated at the cell centers read as galactic `(ℓ, b)`.
 
 lonlat = GO.UnitSpherical.GeographicFromUnitSphere()
 centers = [lonlat(DGG.cell_centroid(grid, c)) for c in cells]
@@ -40,18 +43,18 @@ end
 
 # ## The Healpix.jl correspondence
 #
-# Position `i` of the level grid is Healpix.jl's nested pixel `i`, so the values
-# vector *is* a `HealpixMap` — no reshuffle, no copy of anything but the values.
+# The values vector *is* a nested-order `HealpixMap` — no reshuffle, no copy.
+# Every cell center agrees with Healpix.jl's center for the same position:
 
 m = Healpix.HealpixMap{Float64, Healpix.NestedOrder}(sky)
-theta, phi = Healpix.pix2angNest(m.resolution, 1)
-(; same_pixels = m.pixels == sky,
-   same_center = (rad2deg(phi), 90 - rad2deg(theta)) .≈ (mod(centers[1][1], 360), centers[1][2]))
+all(i -> collect(Healpix.pix2vecNest(m.resolution, i)) ≈ collect(DGG.cell_centroid(grid, cells[i])),
+    1:length(cells))
 
 # ## The all-sky map
 #
-# One `poly!` over the cell polygons paints the whole sphere; Mollweide is the
-# projection astronomers reach for.
+# One `poly!` over the cell polygons paints the whole sphere. Mollweide is the
+# projection astronomers reach for; `+over` keeps the cells straddling ±180°
+# from smearing across the map.
 
 polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
 
@@ -64,40 +67,29 @@ fig
 
 # ## Cone search
 #
-# The astronomer's spatial query: everything within 5° of a target. A
-# `SphericalCap` is a first-class `query` target — handled exactly, without
-# polygonising it — so the cone search is one call, and the returned ids become
-# data positions through `cellposition`.
+# The astronomer's spatial query: everything within 5° of a source. A
+# `SphericalCap` is a first-class `query` target, handled exactly, and
+# `cellposition` turns the returned ids into positions in `sky`. (`Within` in
+# place of `Intersects` would keep only the cells wholly inside the cone.)
 
 to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
 lon0, lat0, _ = sources[1]
 cone = GO.UnitSpherical.SphericalCap(to_sphere((lon0, lat0)), deg2rad(5))
 
-hits = DGG.query(grid, DGG.Intersects(cone))
-idx = [DGG.cellposition(grid, c) for c in hits]
-(; n = length(idx), cone_mean = mean(sky[idx]), cone_max = maximum(sky[idx]),
-   sky_mean = mean(sky))
-
-# `Intersects` keeps every cell that meets the cone, including those only
-# clipped by it. `Within` keeps the cells wholly inside, and the two bracket any
-# centre-based rule an astronomer might prefer.
-
-inner = DGG.query(grid, DGG.Within(cone))
-centred = [i for i in idx
-           if GO.UnitSpherical.spherical_distance(cone.point, to_sphere(centers[i])) <= cone.radius]
-(; n_within = length(inner), n_centred = length(centred), n_intersecting = length(idx))
+idx = DGG.cellposition.(Ref(grid), DGG.query(grid, DGG.Intersects(cone)))
+(; n = length(idx), cone_mean = mean(sky[idx]), sky_mean = mean(sky))
 
 # ## Cutting the galactic plane
 #
 # To measure the extragalactic sky, astronomy masks the plane first. Cells are
-# equal-area, so the masked mean needs no latitude weighting. `cell_area` on the
-# level grid returns the exact `4π/npix`.
+# equal-area — `cell_area` is exactly `4π/npix` — so the masked mean needs no
+# latitude weighting.
 
 offplane = findall(c -> abs(c[2]) > 20, centers)
 (; all_sky = mean(sky), off_plane = mean(sky[offplane]),
-   cell_area = DGG.cell_area(grid, cells[1]), exact = 4pi / DGG.ncells(grid))
+   area_is_exact = DGG.cell_area(grid, cells[1]) ≈ 4pi / DGG.ncells(grid))
 
-# The same mask, drawn: plane cells in gray, everything else as before.
+# The same cut, drawn: plane cells in gray.
 
 masked = [abs(c[2]) > 20 ? v : NaN for (c, v) in zip(centers, sky)]
 fig2 = Figure(size = (800, 420))
@@ -106,20 +98,9 @@ ax2 = GeoAxis(fig2[1, 1]; dest = "+proj=moll +over",
 poly!(ax2, polys; color = masked, colormap = :inferno, nan_color = :gray70, strokewidth = 0)
 fig2
 
-# ## The same cone on every system
+# ## Any grid, same query
 #
-# Nothing above is HEALPix-specific except the nested-order claim. A cap query
-# is an interface method, so the cone search runs unchanged on every registered
-# system, and on an `AuthalicSystem` wrap that re-reads the geometry at geodetic
-# latitude.
+# Nothing above is HEALPix-specific except the nested order. The same cone
+# search runs unchanged on any registered system:
 
-for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.HEALPixSystem()))
-    base = sys isa DGG.AuthalicSystem ? parent(sys) : sys
-    l = base isa Union{DGG.IGeo7System, DGG.H3System} ? 3 : 4
-    g = DGG.levelgrid(sys, l)
-    name = sys isa DGG.AuthalicSystem ? "Authalic($(nameof(typeof(base))))" :
-           string(nameof(typeof(sys)))
-    println(rpad(name, 24), "level $l: ",
-            lpad(length(DGG.query(g, DGG.Within(cone))), 4), " within, ",
-            lpad(length(DGG.query(g, DGG.Intersects(cone))), 4), " intersecting")
-end
+length(DGG.query(DGG.levelgrid(DGG.IGeo7System(), 3), DGG.Intersects(cone)))

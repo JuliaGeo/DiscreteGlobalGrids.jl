@@ -100,14 +100,18 @@ fig
 #
 # Nothing above named HEALPix except the singleton. `neighbors` and
 # `cellposition` are interface methods, so the halo table is built the same way
-# on every registered system — only the degree changes.
+# on every registered system, and on an `AuthalicSystem` wrap of one — only the
+# degree changes.
 
-for sys in DGG.systems()
-    l = sys isa Union{DGG.IGeo7System, DGG.H3System} ? 3 : 4
+for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.IGeo7System()))
+    base = sys isa DGG.AuthalicSystem ? parent(sys) : sys
+    name = sys isa DGG.AuthalicSystem ? "Authalic($(nameof(typeof(base))))" :
+           string(nameof(typeof(sys)))
+    l = base isa Union{DGG.IGeo7System, DGG.H3System} ? 3 : 4
     g = DGG.levelgrid(sys, l)
     degrees = [length(DGG.neighbors(g, DGG.cellindex(g, i))) for i in 1:DGG.ncells(g)]
     edges = [length(DGG.neighbors(g, DGG.cellindex(g, i); connectivity = DGG.Edge()))
              for i in 1:DGG.ncells(g)]
-    println(rpad(nameof(typeof(sys)), 16), " level $l: ", DGG.ncells(g),
+    println(rpad(name, 18), " level $l: ", DGG.ncells(g),
             " cells, vertex degree ", extrema(degrees), ", edge degree ", extrema(edges))
 end

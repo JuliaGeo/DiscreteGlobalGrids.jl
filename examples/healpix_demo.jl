@@ -83,8 +83,10 @@ check("HEALPix cells are exactly equal-area",
 
 # Ask the COMPLETE grid for the area, not the crop: HEALPix's exact
 # `4pi/ncells` override is attached to its level grid, and a `PartialGrid` falls
-# through to the generic area of the published four-vertex ring — which for a
-# curvilinear diamond is short by ~2.5e-5 relative.
+# through to the spherical area of the published boundary ring. That ring is
+# already densified — eight great-circle segments per chart edge, 32 vertices —
+# but a chord-wise polygon still under-reads a curvilinear diamond, by the
+# relative amount printed below.
 subset_areas = [DGG.cell_area(grid, DGG.cellindex(grid, i)) for i in 1:DGG.ncells(grid)]
 note("cell_area(crop, c) differs from cell_area(globe, c) by " *
      "$(round(maximum(abs.(subset_areas .- areas)) / exact; sigdigits=3)) relative " *

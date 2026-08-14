@@ -1,15 +1,10 @@
 # # Regridding a time series
 #
-# WorldClim ships monthly climatologies on a regular lon/lat grid, where a cell
-# near the pole covers far less ground than one at the equator. Here we move all
-# twelve months of mean temperature onto an equal-area HEALPix grid with
-# first-order conservative regridding, animate the seasonal cycle, and pull out
-# a monthly time series for Texas.
-#
-# The regridder needs no adapter. `treeify`, `ncells` and `getcell` are
-# `ConservativeRegridding.Trees`' own bindings, extended for every
-# `AbstractGrid` in this package, so a level grid is a regridding endpoint as it
-# stands.
+# WorldClim ships monthly mean temperature on a regular lon/lat grid, where a
+# cell near the pole covers far less ground than one at the equator. This page
+# moves all twelve months onto an equal-area HEALPix grid with first-order
+# conservative regridding, animates the seasonal cycle, and ends with a monthly
+# time series regridded onto just the cells that cover Texas.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 
@@ -19,25 +14,25 @@ using Rasters, RasterDataSources
 import ArchGDAL
 import NaturalEarth
 import GeometryOps as GO
-using Statistics
+import GeoInterface as GI
 import Dates
 using CairoMakie, GeoMakie
 CairoMakie.activate!()
 
-# ## Source rasters and destination grid
+# ## Source and destination
 #
-# RasterDataSources downloads WorldClim through the Rasters extension (about
-# 35 MB on first run, cached afterwards); ArchGDAL reads the GeoTIFFs. The
-# series holds one global raster per month, 2160×1080 cells at 10 arc-minutes,
-# in °C, `missing` over the oceans.
+# RasterDataSources downloads WorldClim (about 35 MB once, cached afterwards):
+# one global raster per month, 2160×1080 cells at 10 arc-minutes, in °C,
+# `missing` over the oceans.
 
 ser = RasterSeries(WorldClim{Climate}, :tavg; month = 1:12, res = "10m")
 r = first(ser)
 size(r)
 
-# The destination is the whole globe at HEALPix level 6 — 49152 equal-area
-# cells, a hair under 1° across. The source is described to
-# ConservativeRegridding as the matrix of cell-corner points on the unit sphere.
+# The destination is HEALPix level 6 — 49152 equal-area cells, a hair under 1°
+# across. A grid from this package is a regridding endpoint as it stands; the
+# lon/lat source is described as its matrix of cell-corner points on the unit
+# sphere.
 
 grid = DGG.levelgrid(DGG.HEALPixSystem(), 6)
 
@@ -46,56 +41,63 @@ to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
 corners = [to_sphere((lon, lat))
            for lon in range(west, east; length = size(r, X) + 1),
                lat in range(south, north; length = size(r, Y) + 1)]
+size(corners)
 
-# Every grid here computes on the **unit** sphere — `cell_boundary` returns
-# `UnitSphericalPoint`s and `cell_area` returns steradians — so the manifold is
-# named once, explicitly. A bare corner matrix carries no manifold of its own,
-# and mixing in a radius is a factor of `R²` in every area.
-#
-# `CR.Regridder(manifold, dst, src)` takes the destination first, so its
-# `.intersections` matrix is destination cells × source cells. Building it
-# intersects every overlapping pair and takes a few seconds.
+# The manifold is passed explicitly: every grid here computes on the **unit**
+# sphere, and a guessed manifold would be a WGS84 sphere — a factor of `R²` in
+# every area. `Regridder` takes the destination first; building it clips every
+# overlapping pair of cells and takes ten seconds or so.
 
 manifold = GO.Spherical(; radius = 1.0)
 regridder = CR.Regridder(manifold, grid, corners)
 size(regridder.intersections)
 
-# ## Regridding all twelve months
+# ## Twelve months, with gaps
 #
-# A conservative mean with gaps needs the standard coverage trick: regrid the
-# field with `NaN`s zeroed *and* regrid a 0/1 data-coverage indicator, then
-# divide — otherwise coastal cells get dragged down by the empty ocean fraction.
-# WorldClim's rows run north to south, so each matrix is flipped to match the
-# ascending latitudes before flattening; cells with under 1% coverage stay
-# `missing`.
+# A field with gaps needs one trick: regrid the field with its `NaN`s zeroed
+# *and* a 0/1 coverage indicator, then divide — otherwise coastal cells are
+# dragged down by the empty ocean fraction. The ratio is a genuine weighted
+# mean of the covered source values whatever each row of the intersection
+# matrix sums to, and that robustness matters here: a DGGS as a regridding
+# *source* is conservative on every system, but as a *destination* only where
+# its cells' rings are convex — HEALPix's are not — pending an upstream clipper
+# fix in GeometryOps. The README and
+# `test/systems/crosssystem/regridding_conservation.jl` carry the full account.
+#
+# WorldClim's rows run north to south, so each month is flipped to the corner
+# mesh's ascending latitudes before flattening; cells with under 1% coverage
+# stay `missing`.
 
 months = 1:12
+month_field(m) = vec(reverse(parent(replace_missing(ser[m], NaN)); dims = 2))
+
 tavg = Matrix{Union{Float64, Missing}}(missing, DGG.ncells(grid), length(months))
 field = zeros(DGG.ncells(grid))
 cover = zeros(DGG.ncells(grid))
 for m in months
-    v = vec(reverse(parent(replace_missing(ser[m], NaN)); dims = 2))
+    v = month_field(m)
     CR.regrid!(field, regridder, replace(v, NaN => 0.0))
     CR.regrid!(cover, regridder, Float64.(.!isnan.(v)))
-    covered = cover .> 0.01
-    tavg[covered, m] .= field[covered] ./ cover[covered]
+    ok = cover .> 0.01
+    tavg[ok, m] .= field[ok] ./ cover[ok]
 end
 count(!ismissing, tavg[:, 1])
 
-# ## The seasonal cycle, animated
+# ## The seasonal cycle
 #
 # `cell_polygon` is the unit-sphere polygon of one cell; one `GO.transform`
-# takes the whole vector to lon/lat, and clamping the longitudes to ±180° keeps
-# the handful of cells that straddle the antimeridian from smearing across the
-# map. One figure, one `Observable` of colours on a fixed colour range, and
-# `record` walks it through the months.
+# takes the whole vector to lon/lat. A few hundred cells straddle the
+# antimeridian and would smear into horizontal bands in planar lon/lat, so they
+# are masked like the ocean. One `Observable` of colours, and `record` walks it
+# through the months.
 
-cells = [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
-polys = GO.transform(p -> (clamp(p[1], -180.0, 180.0), p[2]),
-    GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells)))
+cells = DGG.CellVector(grid)
+polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
+lonspan(p) = (ring = GI.coordinates(p)[1]; maximum(first, ring) - minimum(first, ring))
+seam = lonspan.(polys) .> 180
 
 crange = extrema(skipmissing(tavg))
-month_colors(m) = replace(tavg[:, m], missing => NaN)
+month_colors(m) = ifelse.(seam, NaN, replace(tavg[:, m], missing => NaN))
 
 colors = Observable(month_colors(1))
 month_name = Observable(Dates.monthname(1))
@@ -117,19 +119,31 @@ nothing #hide
 
 # ## A Texas time series
 #
-# Zonal statistics are a `query` away: `Intersects(texas)` returns the cells
-# that meet the outline as sorted typed ids, and `cellposition` turns each into
-# the row of `tavg` it names. HEALPix cells are equal-area, so the unweighted
-# mean over them *is* the areal mean.
+# For one region there is no need to regrid the globe. `covering` selects the
+# cells of the grid that Texas' coverage names, as a lazy `CellVector`, and
+# `PartialGrid` reads that selection back as a grid — in O(1) — so it is a
+# regridding destination as it stands.
 
 states = NaturalEarth.naturalearth("admin_1_states_provinces", 50)
 texas = states.geometry[findfirst(==("Texas"), states.name)]
-rows = [DGG.cellposition(grid, c) for c in DGG.query(grid, DGG.Intersects(texas))]
-ts = [mean(skipmissing(tavg[rows, m])) for m in months]
-length(rows)
+tx = DGG.covering(DGG.CellVector(grid), texas)
+length(tx)
 
-# About 60 level-6 cells land in Texas, and their mean traces the expected
-# cycle: winter around 7 °C, high summer pushing 28 °C.
+# The same two regrids as above, with the divide taken over sums: HEALPix
+# cells are equal-area, so `sum(f)/sum(c)` is the mean over the covered ground,
+# and no barely-covered coastal cell can tilt it.
+
+rgtx = CR.Regridder(manifold, DGG.PartialGrid(tx), corners)
+f, c = zeros(length(tx)), zeros(length(tx))
+ts = map(months) do m
+    v = month_field(m)
+    CR.regrid!(f, rgtx, replace(v, NaN => 0.0))
+    CR.regrid!(c, rgtx, Float64.(.!isnan.(v)))
+    sum(f) / sum(c)
+end
+round.(ts; digits = 1)
+
+# Winter around 7 °C, high summer pushing 28 °C.
 
 fig = Figure(size = (600, 350))
 ax = Axis(fig[1, 1]; xticks = (months, Dates.monthabbr.(months)),
@@ -137,36 +151,7 @@ ax = Axis(fig[1, 1]; xticks = (months, Dates.monthabbr.(months)),
 scatterlines!(ax, months, ts)
 fig
 
-# ## The same regridder on every system
-#
-# The destination grid is the only system-specific token in this page. Swapping
-# it changes the cell count and the cell shape, but not the answer: the cell
-# covering a given point gets the same January temperature on every system, to
-# the resolution of its cells. `cellat` finds that cell and `cellposition` finds
-# its row, so the comparison is three interface calls.
-#
-# Dividing by the coverage matters here for more than the coastline. Both
-# numerator and denominator are the *same* row of the intersection matrix
-# applied to two source fields, so their ratio is an honest weighted mean of the
-# source values whatever the row sums to — which is what makes this the robust
-# quantity to compare across grids.
-
-january = vec(reverse(parent(replace_missing(ser[1], NaN)); dims = 2))
-probes = ((2.35, 48.86, "Paris"), (-97.7, 30.3, "Austin"), (151.2, -33.9, "Sydney"))
-
-println(rpad("system", 24), "level  cells   ", join(rpad.(last.(probes), 10)))
-for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.HEALPixSystem()))
-    base = sys isa DGG.AuthalicSystem ? parent(sys) : sys
-    l = base isa Union{DGG.IGeo7System, DGG.H3System} ? 4 : 5
-    g = DGG.levelgrid(sys, l)
-    rg = CR.Regridder(manifold, g, corners)
-    out, cov = zeros(DGG.ncells(g)), zeros(DGG.ncells(g))
-    CR.regrid!(out, rg, replace(january, NaN => 0.0))
-    CR.regrid!(cov, rg, Float64.(.!isnan.(january)))
-    at(lon, lat) = (i = DGG.cellposition(g, DGG.cellat(g, lon, lat));
-                    round(out[i] / cov[i]; digits = 2))
-    name = sys isa DGG.AuthalicSystem ? "Authalic($(nameof(typeof(base))))" :
-           string(nameof(typeof(sys)))
-    println(rpad(name, 24), lpad(l, 5), lpad(DGG.ncells(g), 8), "   ",
-            join(rpad.([at(p[1], p[2]) for p in probes], 10)))
-end
+# Nothing above is HEALPix-specific — any system slots into `levelgrid` — but
+# the choice was deliberate: equal-area cells make the sums above areal means
+# without weights. The conservation caveat is also not system-uniform: a
+# destination whose rings are convex (IGEO7, S2) conserves today.

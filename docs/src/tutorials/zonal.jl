@@ -1,181 +1,82 @@
 # # Zonal statistics
 #
-# Which cells of a discrete global grid lie inside a polygon, and what is the
-# mean of a field over them? `query` answers the first question directly, on any
-# grid in this package, with a DE9IM predicate that says exactly which sense of
-# "inside" is meant. This page answers it for Texas on a whole-globe HEALPix
-# grid, then shows the multi-order form, which returns the same region as a few
-# hundred mixed-level cells instead of a few thousand leaf ones, and finally
-# hands that compressed answer to a DimensionalData cell axis, which keeps it
-# compressed.
+# Zonal statistics is rasterization's sibling: take a polygon, find the cells
+# that cover it, aggregate data over them. Here the polygon is Texas, the grid
+# is HEALPix at level 7, and the statistic is a mean.
 
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
-import GeoInterface as GI
-import NaturalEarth
 import GeometryOps as GO
+import NaturalEarth
 using Statistics
 using CairoMakie, GeoMakie
 CairoMakie.activate!()
 
-# ## Texas and a field on the globe
+# ## A polygon, a grid, and data
 #
-# Texas comes from Natural Earth's admin-1 dataset. The grid is every HEALPix
-# cell at level 7 (`nside = 128`, 196608 cells), and the data is a smooth
-# synthetic field sampled at the cell centroids.
+# Texas comes from Natural Earth. The grid is every HEALPix cell at level 7,
+# read as a `CellVector` — the level's cell ids as a vector, so that position
+# `k` in a data array means cell `cells[k]`. The data is a synthetic field
+# sampled at each cell's centroid; only the sampling needs lon/lat.
 
 fc = NaturalEarth.naturalearth("admin_1_states_provinces", 50)
 texas = fc.geometry[findfirst(==("Texas"), fc.name)]
 
 grid = DGG.levelgrid(DGG.HEALPixSystem(), 7)
+cells = DGG.CellVector(grid)
+
 lonlat = GO.UnitSpherical.GeographicFromUnitSphere()
 field(lon, lat) = 20 - 0.5 * (lat - 25) + 2 * sind(3 * lon)
+data = [field(lonlat(DGG.cell_centroid(grid, c))...) for c in cells]
 
-# ## The query
+# ## The zonal mean
 #
-# `Within(texas)` keeps only the cells wholly inside the outline; `Intersects`
-# keeps every cell that touches it. Both return **sorted typed cell ids**, and
-# `cellposition` turns an id into the position that indexes a data vector — the
-# two directions of the one bijection the interface is built on.
+# `covering_positions` names the positions of every cell covering Texas,
+# ready to index `data`. HEALPix cells are equal-area, so this unweighted
+# mean *is* the areal mean — no latitude weights.
+
+tx = DGG.covering_positions(cells, texas)
+(; n = length(tx), tavg = mean(data[tx]))
+
+# ## Touching or inside
 #
-# The descent prunes whole subtrees against the conservative `node_extent` caps,
-# so of 196608 cells only the handful straddling the outline is ever handed to
-# an exact spherical predicate.
+# The covering keeps every cell that touches the outline. The opposite rule
+# keeps only the cells wholly inside it — `query` with the `Within`
+# predicate. Any boundary rule (a raster tool's centre-in-zone, say) lands
+# between the two; at this resolution the bracket is a hundredth wide.
 
 interior = DGG.query(grid, DGG.Within(texas))
-touching = DGG.query(grid, DGG.Intersects(texas))
-(; n_interior = length(interior), n_touching = length(touching))
+(; touching = mean(data[tx]),
+   inside = mean(data[DGG.cellposition(grid, c)] for c in interior))
 
-# HEALPix cells are equal-area, so the unweighted mean over a cell set *is* the
-# areal mean — no latitude weights. The two predicates bracket the answer, and
-# at this resolution they agree to a hundredth of a degree.
-
-zonal(cells) = mean(field(lonlat(DGG.cell_centroid(grid, c))...) for c in cells)
-(; interior = zonal(interior), touching = zonal(touching))
-
-# The rim is the difference of the two sets, and every predicate the engine
-# implements is available the same way — `Covers`, `Touches`, `Overlaps`,
-# `Disjoint`, and the rest.
-
-rim = setdiff(touching, interior)
-length(rim)
-
-# ## The multi-order form
+# ## The picture
 #
-# `MultiOrderCoverage` asks the same question but keeps the answer compressed:
-# the interior is emitted at the **coarsest level that is still wholly inside**,
-# and only the boundary is refined down to the leaf. What comes back is a
-# mixed-level `MultiOrderCellSet` in space-filling-curve order.
+# The covering, coloured by the data — the polygon, rasterized onto the grid.
 
-set = DGG.query(DGG.HEALPixSystem(), DGG.MultiOrderCoverage(texas); level = 7)
-set
-
-# `level_ranges` expands it to sorted, disjoint **position** ranges at any level
-# no shallower than its coarsest cell. That is the handshake a lazy cell axis
-# consumes: the ranges are what gets stored, and the leaf ids are computed from
-# them on demand.
-
-ranges = DGG.level_ranges(set, 7)
-(; n_cells = length(set), n_ranges = length(ranges), n_leaves = sum(length, ranges))
-
-# Coverage means *covering*, not *covered by*: the emitted set covers Texas, so
-# it is a superset of `touching` rather than of `interior`.
-
-leaves = [DGG.cellindex(grid, i) for r in ranges for i in r]
-issubset(touching, leaves)
-
-# ## Plotting
-#
-# Only the plot wants lon/lat; everything above stayed on the sphere.
-
-topolys(cells) = GO.transform(GO.GeographicFromUnitSphere(),
-    [DGG.cell_polygon(DGG.levelgrid(DGG.HEALPixSystem(), DGG.level(c)), c) for c in cells])
+polys = GO.transform(lonlat, [DGG.cell_polygon(grid, cells[k]) for k in tx])
 
 fig = Figure(size = (700, 620))
 ax = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
     limits = ((-107.5, -92.5), (25.0, 37.5)),
-    title = "HEALPix multi-order coverage of Texas")
-poly!(ax, topolys(collect(set)); color = DGG.level.(collect(set)),
-    colormap = :viridis, strokecolor = :white, strokewidth = 0.5)
+    title = "HEALPix level-7 cells covering Texas")
+poly!(ax, polys; color = data[tx], colormap = :thermal,
+    strokecolor = :white, strokewidth = 0.5)
 poly!(ax, texas; color = :transparent, strokecolor = :black, strokewidth = 2)
 fig
 
-# Cells are coloured by their level: the interior arrives as a few coarse cells,
-# the outline as many fine ones.
-
-# ## The DimensionalData layer
+# ## The cube spelling
 #
-# A cube over this region wants ONE dimension naming its cells at the leaf
-# level, backed by the coverage rather than by the expanded id vector — memory
-# `O(length(set))`, not `O(sum(length, ranges))`. `CellLookup` is that
-# dimension's lookup: semantically the leaf id vector, structurally the ranges.
+# The same selection inside a DimensionalData cube: `Cells` is the dimension,
+# and `Covering` is `covering` wearing a selector hat.
 
-lk = DGG.CellLookup(set)
-(; n_cells = length(lk), n_windows = length(ranges), bytes = Base.summarysize(lk))
-
-# `lk[k]` is the `k`th leaf id, resolved on demand; `cellposition(lk, c)` is the
-# inverse, and `nothing` for a cell the region does not hold. Those two are the
-# whole of what a cube axis needs.
-
-k = length(lk) ÷ 2
-lk[k], DGG.cellposition(lk, lk[k])
-
-# Neither of them is *about* cubes. The compression is its own type —
-# `CellVector`, which is the ranges read as the leaf id vector — and
-# `CellLookup` is that type wearing a DimensionalData hat. Code that is not a
-# cube reaches for the first one directly: `PartialGrid(cv)` is O(1), so a
-# regridder consumes a coverage without ever materialising it.
-
-cv = DGG.CellVector(set)
-(; n_cells = length(cv), bytes = Base.summarysize(cv), grid = DGG.PartialGrid(cv))
-
-# The selectors below have the same two faces. `Covering(target)` is the cube
-# spelling; `covering(cv, target)` is the same selection outside one, answering
-# with a `CellVector` again.
-
-# `Cells` is the dimension the lookup goes in.
-
-A = DD.DimArray([field(lonlat(DGG.cell_centroid(grid, c))...) for c in lk],
-    DGG.Cells(lk); name = :tavg)
-
-# A typed id selects one cell, a lon/lat point selects the cell it falls in
-# (through `cellat`), and a polygon selects through the same `MultiOrderCoverage`
-# this page opened with, intersected with the axis.
-#
-# `At` and `Contains` are spelled `DD.At` and `DD.Contains` throughout: they are
-# DimensionalData's selectors, and this package exports its own `Contains` — the
-# DE9IM predicate about geometries — which would collide with the selector under
-# a plain `using`.
-
-A[DGG.Cells(DD.At(lk[k]))], A[DGG.Cells(DD.Contains(-97.7, 30.3))]
-
-# Austin sits in Travis County; a box around it selects a few hundred of the
-# region's cells, and the view keeps the compact backing.
-
-travis = GI.Polygon([GI.LinearRing([(-98.2, 30.0), (-97.35, 30.0), (-97.35, 30.65),
-    (-98.2, 30.65), (-98.2, 30.0)])])
-austin = A[DGG.Cells(DGG.Covering(travis))]
-(; n_cells = length(austin), lookup = DD.lookup(austin, DGG.Cells), tavg = mean(austin))
-
-# And the zonal mean this page opened with is one line over the cube. It is the
-# mean over the *coverage's* leaves, so it brackets with `touching` rather than
-# with `interior` — the same distinction the two queries above drew.
-
+A = DD.DimArray(data, DGG.Cells(DGG.CellLookup(cells)); name = :tavg)
 mean(A[DGG.Cells(DGG.Covering(texas))])
 
-# ## The same query on every system
+# ## Any grid
 #
-# `query` is an interface method, so the zonal selection above is not a HEALPix
-# recipe. Only the cell counts differ.
-
-levels = Dict(DGG.IGeo7System => 4, DGG.H3System => 3)   # aperture 7; the rest are 4
-for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.HEALPixSystem()))
-    base = sys isa DGG.AuthalicSystem ? parent(sys) : sys
-    l = get(levels, typeof(base), 6)
-    g = DGG.levelgrid(sys, l)
-    inner, outer = DGG.query(g, DGG.Within(texas)), DGG.query(g, DGG.Intersects(texas))
-    name = sys isa DGG.AuthalicSystem ? "Authalic($(nameof(typeof(base))))" :
-           string(nameof(typeof(sys)))
-    println(rpad(name, 24), "level $l: ", lpad(length(inner), 6), " within, ",
-            lpad(length(outer), 6), " touching")
-end
+# Nothing above is a HEALPix recipe: `covering_positions`, `query` and the
+# selectors are interface methods, and any system in `DGG.systems()` runs this
+# page unchanged. Two things do vary by system. Where cells are not equal-area,
+# weight the mean by `cell_area`. And where a system's refinement is not
+# congruent, a covering can name a few cells past the ones that touch —
+# the multi-order coverage tutorial shows where that margin comes from.

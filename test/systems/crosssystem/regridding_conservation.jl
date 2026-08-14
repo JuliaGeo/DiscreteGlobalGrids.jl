@@ -46,7 +46,8 @@
 #
 #     IGeo7, S2, Authalic(IGeo7)  convex at every level swept   -> conservative
 #     H3                          convex at L0 and L2, NOT at
-#                                 L1 (21 cells in 120) or L3    -> L1 is broken
+#                                 L1 (21 of 120 sampled, and
+#                                 150 of all 842) or L3         -> L1 is broken
 #     HEALPix, ISEA4R, A5         non-convex at every level     -> broken
 #
 # HEALPix and ISEA4R and A5 are the systems whose cells are curvilinear, so
@@ -106,16 +107,23 @@ const MESH = [TO_SPHERE((x, y)) for x in range(0, 360; length = 73),
                                     y in range(-90, 90; length = 37)]
 const MESH_CELLS = 72 * 36
 
-# Does this ring turn right anywhere, i.e. is it non-convex? Repeated vertices
-# are skipped: `spherical_orient` goes through `robust_cross_product`, which
-# returns an arbitrary perpendicular for two identical points, so a duplicated
-# vertex would otherwise read as a random reflex turn.
+# Does this ring turn right anywhere, i.e. is it non-convex? CONSECUTIVE
+# repeated vertices are skipped: a zero-length edge has no turn to measure, and
+# `spherical_orient` goes through `robust_cross_product`, which returns an
+# arbitrary perpendicular for two identical points, so a duplicated vertex
+# would otherwise read as a random reflex turn.
+#
+# Consecutive, not global — this predicate exists to PREDICT what the upstream
+# clipper will do with the ring, and the clipper's own test skips consecutive
+# duplicates only. Deduplicating globally would answer about a different ring
+# than the one that gets clipped.
 function has_reflex_vertex(poly)
     pts = collect(GI.getpoint(GI.getexterior(poly)))
     while length(pts) > 1 && pts[end] == pts[1]
         pop!(pts)
     end
-    unique!(pts)
+    keep = [i for i in eachindex(pts) if i == 1 || pts[i] != pts[i - 1]]
+    pts = pts[keep]
     n = length(pts)
     n < 4 && return false
     return any(1:n) do i

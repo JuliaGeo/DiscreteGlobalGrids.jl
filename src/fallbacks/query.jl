@@ -415,6 +415,47 @@ function _sandwich(arcs::Vector{BoundaryArc}, centroid, ring)
 end
 
 # ===========================================================================
+# Proving a whole subtree outside the target
+# ===========================================================================
+
+# The reject arm of the sandwich again, but asked of a NODE EXTENT rather than
+# of one cell's ring, so that the answer covers the node's entire subtree.
+#
+# A cap that no boundary arc reaches is a connected set containing no point of
+# the target's boundary, so it lies wholly in the target's interior or wholly in
+# its exterior, and its centre says which. Exterior means no cell of the subtree
+# can meet the target — the covering law of `node_extent` carries the conclusion
+# from the cap to every descendant — so the subtree can be pruned.
+#
+# This is the polygon analogue of the wide-cap complement move. A target's own
+# bounding cap is the cheap prune, and it is the WHOLE SPHERE whenever the
+# target's antipode is interior to it (`_geometry_cap`); a target wider than a
+# hemisphere therefore prunes nothing by cap alone and the traversal would visit
+# every cell of its deepest level. It also pays on ordinary targets: California's
+# bounding cap is a 6.6-degree disc and the state fills a small part of it, and
+# everything in between is pruned here instead of being descended into.
+#
+# `nothing` arcs (an empty or near-antipodal boundary — see `_finish_arcs!`)
+# means no proof is available, and no proof means no prune.
+_subtree_outside(::QueryTarget, extent) = false
+
+function _subtree_outside(target::GeometryTarget, extent)
+    arcs = target.arcs
+    arcs === nothing && return false
+    # `cos` is decreasing on `[0, pi]`, so "farther than the radius" is "cosine
+    # below the radius's cosine". The slack widens the radius, which is the
+    # conservative direction: a cap that only just clears the boundary is not
+    # trusted. Clamping at `pi` keeps a full-sphere extent — what
+    # `AuthalicSystem` returns for a node its warp bound cannot contain — from
+    # wrapping past the antipode and pruning everything.
+    threshold = cos(min(Float64(pi), Float64(extent.radius) * (1 + SANDWICH_SLACK)))
+    for arc in arcs
+        _arc_cos_distance(arc, extent.point) >= threshold && return false
+    end
+    return !GO.relate_predicate(target.prepared, GO.pred_contains(), extent.point)
+end
+
+# ===========================================================================
 # The per-cell exact tests
 # ===========================================================================
 

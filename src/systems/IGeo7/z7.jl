@@ -1,17 +1,5 @@
-# Z7 index layer: the UInt64 cell id, its string/hex codecs, prefix
-# (hierarchy) operations and validation. Pure integer code — no geometry, no
-# floating point, no allocation on any scalar path.
-#
-# Provenance
-#   [contract] spec/interface-contract.md ("Z7 index" section), distilled from
-#              the untainted ../IGeo7/README.md and ../IGeo7/test/runtests.jl.
-#   [a7]       spec/aperture7-indexing-spec.md §4 (bit format, prefix ops,
-#              subtree counting).
-#   [design]   spec/design.md §3 (the Z7 UInt64 *is* the cell id) and §4.3.
-#   [fitted]   test/IGeo7/vectors/{pentagon_chains,hierarchy}.csv.
-#
-# `SmallList` comes from the package-wide `Helpers` module, bound by
-# `IGeo7.jl`'s `import ..Helpers`.
+# Z7 `UInt64` identifiers, codecs, prefix operations, and validation.
+# Scalar paths use only integer arithmetic and do not allocate.
 
 """
     MAX_RESOLUTION
@@ -41,65 +29,27 @@ const Z7_PAD_MASK = UInt64(0x0fffffffffffffff)
 # One bit per digit slot, at the slot's low bit (positions 0, 3, ..., 57):
 # (2^60 - 1) / 7. Used to fold each 3-bit slot down to a single flag bit.
 const Z7_SLOT_LSB = Z7_PAD_MASK ÷ UInt64(7)
-# = `ISEA.NBASE`; restated here because this is the pure integer layer and must
-# not depend on the shared geometry module. Pinned equal by
-# test/IGeo7/test_icosahedron.jl "cross-file constant consistency".
+# Matches `ISEA.NBASE` while keeping this integer layer independent.
 const Z7_NUM_BASES = 12
 
 """
     Z7_DELETED_DIGIT
 
-Per-base deleted (missing) child digit of the pentagon chain: digit `2` for
-bases `0:5`, digit `5` for bases `6:11`; indexed by `base + 1`.
-
-The deletion applies at every level for which the digit prefix is still all
-zero — i.e. while the cell is still a pentagon — and only there.
-
-Provenance: `test/IGeo7/vectors/pentagon_chains.csv` (all 12 bases, chain depths
-1..6, `missing_digits` column) **[fitted]**, matching the hemisphere rule
-predicted in `spec/z7-paper-spec.md` §5.4 and the `"002"` / `"065"` rejections
-recorded in `spec/interface-contract.md` **[contract]**.
-
-This is the package's single definition of the table; every other consumer
-(`grid.jl`'s pentagon collapse and cone wrap, the codecs below) reaches it
-through [`z7_deleted_digit`](@ref). See `PROVENANCE.md`.
+Deleted child digit for each base's pentagon chain, indexed by `base + 1`.
+The digit is `2` for bases `0:5` and `5` for bases `6:11`; deletion applies
+only while the active prefix remains all zero. Fitted from the oracle chains in
+`test/systems/IGeo7/vectors/pentagon_chains.csv`.
 """
 const Z7_DELETED_DIGIT = (2, 2, 2, 2, 2, 2, 5, 5, 5, 5, 5, 5)
 
-# --- error type ------------------------------------------------------------
-#
-# Every validation rejection in this file and in the id-validation paths of
-# `grid.jl` throws one `InvalidZ7Error`, written out at the site as a plain
-# `throw(InvalidZ7Error(:reason, ...))`. The struct carries only the *facts*
-# (a reason tag plus the offending values); the human-readable sentence is
-# built in `Base.showerror`, i.e. when the error is printed, never when it is
-# thrown. So a failure edge stores four immediates (plus, for the codecs, the
-# caller's own string) and calls `throw` — no `print_to_string` / `String`
-# formatting machinery lands in `z7_resolution`, `z7_from_string`,
-# `_geometry_checked`, ... Laziness comes from the *struct*, not from where
-# the throw is written.
-#
-# There are deliberately no `_throw_*` helper functions: a function whose only
-# job is to throw is indirection for its own sake, and the direct form keeps
-# each site's reason and payload readable next to the predicate that rejects.
-#
-# `BoundsError` (dense index out of range) and the plain `ArgumentError`s of
-# the lookups/trees wiring layers are deliberately left alone — they are cold
-# API-shape contracts, not hot validators.
+# Validation errors store structured facts; `showerror` formats them lazily.
 
 """
     InvalidZ7Error(reason, value, got, limit[, input]) <: Exception
 
-A Z7 index, digit, level, resolution or codec string was rejected. The
-message is constructed lazily by [`Base.showerror`](@ref) from:
-
-| field    | meaning |
-|:---------|:--------|
-| `reason` | tag from the taxonomy below; selects the message |
-| `value`  | the offending Z7 index (`0` when the reason is not about an id) |
-| `got`    | the offending scalar — digit, level, resolution, base cell, string position (truncated to `Int`) |
-| `limit`  | the bound that made it invalid — a maximum, the id's own resolution, the base cell, or an offending character's code point |
-| `input`  | the offending text for the string/hex codecs, `""` otherwise |
+A rejected Z7 identifier, digit, level, resolution, or codec input. The fields
+record the reason, offending identifier or scalar, applicable bound, and input
+text; [`Base.showerror`](@ref) constructs the message lazily.
 
 Reasons: `:base_range`, `:bad_padding`, `:invalid_index`, `:deleted_digit`,
 `:digit_level`, `:child_digit`, `:no_children`, `:no_parent`, `:parent_res`,
@@ -107,9 +57,7 @@ Reasons: `:base_range`, `:bad_padding`, `:invalid_index`, `:deleted_digit`,
 `:res20_geometry`, `:resolution_range`, `:descendant_res`,
 `:no_child_geometry`.
 
-The type is not `isbits` because `input` is a `String`; that costs nothing on
-the non-throwing path (the field is set from a string the caller already
-holds, and only on the failure edge that is about to throw).
+`input` is nonempty only for codec failures.
 """
 struct InvalidZ7Error <: Exception
     reason::Symbol
@@ -384,12 +332,11 @@ end
     z7_children(z7) -> SmallList{7,UInt64}
 
 Immediate children in ascending id order: seven for a hexagon, six for a
-pentagon (its deleted digit is skipped) **[contract, fitted:
-test/IGeo7/vectors/pentagon_chains.csv]**. Ascending digit order is ascending
+pentagon (its deleted digit is skipped). Ascending digit order is ascending
 `UInt64` order because the digit slots are the high bits of the tail.
 
 Throws [`InvalidZ7Error`](@ref) (`:no_children`) at resolution
-$(Z7_MAX_RESOLUTION) **[contract]**.
+$(Z7_MAX_RESOLUTION).
 """
 function z7_children(z7::UInt64)
     res = z7_resolution(z7)

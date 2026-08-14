@@ -1,44 +1,6 @@
-# ---------------------------------------------------------------------------
-# Adjacency
-#
-# THE ORDER IS ROTATIONAL, NOT SORTED. `neighbors(grid, c, k)` is rings
-# 1, 2, ..., k concatenated outward, and each ring runs counter-clockwise seen
-# from outside the sphere. So `ring(grid, c, k)` is exactly the tail block of
-# `neighbors(grid, c, k)`, and a stencil consumer can read a weight vector
-# straight off the result.
-#
-# WHERE THE SET COMES FROM. `A5Native._get_global_cell_neighbors` — a5's own
-# adjacency, a within-quintant lattice step unioned with the quintant-seam,
-# face-seam, apex and corner special cases. It is exact and it is fast; what it
-# is not is ordered. It ends in `sort!(collect(::Set))`, i.e. ASCENDING BY ID,
-# which is precisely the order the interface forbids. Nothing about a5's
-# internal walk order is usable either: the set is assembled from two
-# independently computed families, so there is no cycle to recover from it.
-#
-# WHERE THE ORDER COMES FROM, therefore: geometry. Each shell is sorted by
-# azimuth about `cell_centroid(grid, c)` in a right-handed tangent frame, which
-# is counter-clockwise seen from outside BY CONSTRUCTION — a sorted sequence of
-# angles in `[0, 2pi)` wraps exactly once, which is the winding law's
-# definition. This is the same scheme the generic geometric fallback uses, and
-# the suite re-derives the winding with an independently written frame rather
-# than restating this one.
-#
-# THE START. Ring 1 begins at the neighbour with the SMALLEST `A5Cell` id, and
-# every outer shell begins on that same spoke — the member whose azimuth,
-# measured counter-clockwise from the ring-1 anchor's direction, is smallest.
-# The anchor is an integer comparison, so the start is exactly reproducible
-# across platforms even though the ordering after it is floating point. The
-# choice is arbitrary in the way the interface says a start may be (a lattice
-# direction would be better, but A5's lattice direction changes meaning at every
-# quintant seam and would not be uniform either); what matters is that it is
-# stated, and `test/systems/A5/runtests.jl` pins one cell's literal sequence so
-# that a silent rotation cannot pass.
-#
-# CONNECTIVITY IS REAL HERE. Unlike the icosahedral hex systems, A5's `Vertex()`
-# and `Edge()` name different sets — see `max_neighbors` in `system.jl` for the
-# measurement. `edge_only = true` selects von Neumann; the a5 default, `false`,
-# is Moore, and is the interface's default too.
-# ---------------------------------------------------------------------------
+# A5 supplies unordered adjacency sets. Shells are therefore sorted by azimuth
+# counter-clockwise in a tangent frame. Ring 1 starts at the smallest id; outer
+# rings use the same spoke. `edge_only=true` implements `Edge()` connectivity.
 
 # The `Vertex()` bound, which is also the container capacity for both
 # connectivities so that `neighbors` has one concrete return type at k <= 1.
@@ -57,63 +19,23 @@ function _native_neighbors(grid::LevelGrid, c::A5Cell, connectivity::Connectivit
     return A5Native._get_global_cell_neighbors(c.id; edge_only=_edge_only(connectivity))
 end
 
-# ALLOCATION — KNOWN, TRACKED, NOT FIXED HERE. A `k = 1` call allocates 3.0 KB
-# at res 2 and 6.4 KB from res 6 down (it plateaus there, since the deep levels
-# all take the same walk), nearly all of it inside
-# `A5Native._get_global_cell_neighbors`: it
-# accumulates candidates in a `Set{UInt64}` with intermediate vectors and hands
-# back `sort!(collect(set))`. No amount of work on this side recovers that — the
-# set is built and thrown away before this module is handed anything, so the
-# `SmallVector` in `neighbors` is copying an allocation that already happened.
-#
-# THE FIX, when someone takes it: the degree is bounded by 11 (see
-# `max_neighbors`), so the walk in `native.jl` needs no `Set` at all. Give it a
-# fixed-capacity scratch buffer — a `SmallVector{11,UInt64}` of candidates with a
-# linear dedup pass, which beats hashing at that size anyway — and let it fill a
-# caller-supplied destination instead of returning a fresh vector. That makes
-# `k = 1` allocation-free, matching `children`.
-#
-# Deferred deliberately rather than overlooked: `native.jl` is a verbatim
-# carry-over of the pre-redesign arithmetic, kept diff-clean against its source
-# so the port stays auditable. Changing its hot loop is a separate, testable
-# piece of work and wants its own before/after numbers.
-#
-# (Keep this note ABOVE the docstring. A comment between a docstring and the
-# function it documents silently DETACHES it — the docstring stops registering
-# for the method and `@doc` falls back to the interface's generic one.)
+# The native adjacency walk allocates internally through a `Set{UInt64}` even
+# for `k == 1`: 3.0 KB at res 2, plateauing at 6.4 KB from res 6 down.
 """
     neighbors(grid::LevelGrid, c::A5Cell, k = 1; connectivity = Vertex())
 
-The cells within `k` grid steps of `c`, excluding `c`, in **rotational order**:
-rings `1..k` concatenated outward, each ring counter-clockwise seen from outside
-the sphere, every ring starting on the same spoke.
+Cells within `k` grid steps, excluding `c`, as counter-clockwise shells
+concatenated outward. Ring 1 starts at the smallest [`A5Cell`](@ref) id and all
+outer rings use the same spoke. [`ring`](@ref) is the final shell.
 
-This makes `ring(grid, c, k)` the tail block of `neighbors(grid, c, k)`, and it
-is what lets a stencil index into the result positionally. Ring 1 starts at the
-neighbour with the **smallest [`A5Cell`](@ref) id**; see this file's header for
-why the order is measured rather than read off a lattice.
-
-`connectivity` genuinely changes the answer on A5 — the default
-[`Vertex()`](@ref Vertex) adds the corner-only neighbours that
-[`Edge()`](@ref Edge) leaves out, 1 to 3 of them below level 1 and 8 of them at
-level 1 — which is unlike the two icosahedral hexagonal systems in this package.
-See [`max_neighbors`](@ref) for the degrees.
-
-# Container
+[`Vertex()`](@ref Vertex) includes corner-only neighbours; [`Edge()`](@ref Edge)
+does not. See [`max_neighbors`](@ref).
 
 `k <= 1` returns a `SmallVector{11,A5Cell}` — sized by the `Vertex()` bound
-under both connectivities, so the type does not depend on a keyword. `k >= 2`
-returns a `Vector{A5Cell}`, since a disc outgrows any static bound. The return
-type is therefore a two-way union across `k`, with the boundary at `k = 1` /
-`k = 2`.
+under both connectivities. `k >= 2` returns a `Vector{A5Cell}`.
 
-Throws an `ArgumentError` for a cell that is not a valid cell of this grid's
-resolution — there is no `nothing` in this contract to return, and answering
-for a neighbouring cell instead would be worse.
-
-Allocates: a few kilobytes even at `k = 1`, inside a5's own adjacency walk
-rather than here. See the note above this docstring for the numbers, the cause
-and the fix.
+Throws `ArgumentError` unless `c` is valid at the grid resolution. The native
+adjacency walk allocates internally.
 """
 function neighbors(grid::LevelGrid, c::A5Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
@@ -158,11 +80,7 @@ end
 # The breadth-first walk both entry points are reads of
 # ===========================================================================
 
-# Shell `j` of the result is the cells at adjacency distance exactly `j`,
-# already wound. The winding happens HERE rather than in the two callers,
-# because that is what makes `ring(grid, c, k)` the literal tail block of
-# `neighbors(grid, c, k)`: both read the same shells, so they cannot disagree
-# element for element.
+# Shell `j` contains cells at distance `j`, already wound for both callers.
 function _shells(grid::LevelGrid, c::A5Cell, steps::Int, connectivity::Connectivity)
     shells = Vector{Vector{A5Cell}}()
     seen = Set{UInt64}((c.id,))
@@ -203,11 +121,8 @@ end
 # tangent basis at `centre` whose zero direction points at the ring-1 neighbour
 # with the smallest canonical id.
 #
-# The frame's third entry is the anchor's own measured azimuth rather than the
-# literal `0.0`. In exact arithmetic they are the same number; in floating point
-# the anchor's tangential component can round to a hair below zero, and
-# `mod(-eps, 2pi)` is `2pi` — which would sort the spoke's own cell to the END
-# of its ring. Subtracting the measurement cancels that exactly.
+# Store the measured anchor azimuth so a negative rounding error cannot rotate
+# the anchor to the end via `mod(-eps, 2pi)`.
 function _spoke_frame(grid::LevelGrid, centre, shell::AbstractVector{A5Cell})
     anchor = cell_centroid(grid, minimum(shell))
     e1, e2 = _tangent_basis(centre, anchor)
@@ -217,10 +132,7 @@ end
 # Order one shell counter-clockwise about `centre`, from the frame's spoke.
 # Exact ties go to the smaller canonical id, so the result is total.
 #
-# The keys are computed once per cell and sorted alongside them, rather than
-# handed to `sort!` as a `by` function: `cell_centroid` is a native projection
-# round trip, and a `by` key is recomputed at every comparison, which would
-# spend O(n log n) projections to order n cells.
+# Cache keys to avoid recomputing projected centroids during comparisons.
 function _wind!(shell::AbstractVector{A5Cell}, grid::LevelGrid, centre, frame)
     length(shell) <= 1 && return shell
     e1, e2, spoke = frame
@@ -234,16 +146,8 @@ function _wind!(shell::AbstractVector{A5Cell}, grid::LevelGrid, centre, frame)
     return shell
 end
 
-# A tangent basis at `centre` with `e1` pointing at `toward` (projected into the
-# tangent plane) and `e2 = centre x e1`. Then `e1 x e2 == centre`, i.e. the pair
-# is right-handed SEEN FROM OUTSIDE the sphere, which is what makes increasing
-# `atan(u.e2, u.e1)` run counter-clockwise viewed from above the plane rather
-# than from below it.
-#
-# Seeding from a neighbour's direction rather than from local east is not a
-# stylistic choice: two of A5's twelve res-0 cells are centred exactly on a
-# geographic pole, where east and north do not exist, and a frame built from
-# them would emit NaNs and corrupt an order rather than fail.
+# Right-handed tangent basis with `e1` toward a neighbour and
+# `e2 = centre × e1`. A neighbour seed remains defined at polar cell centres.
 function _tangent_basis(centre, toward)
     u = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
     radial = u[1] * centre[1] + u[2] * centre[2] + u[3] * centre[3]

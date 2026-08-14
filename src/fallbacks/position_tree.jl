@@ -1,23 +1,6 @@
-# ---------------------------------------------------------------------------
-# The fallback tree: position space, built from cell caps
-#
-# What a grid with no hierarchy gets. There is no parent/child arithmetic to
-# lean on, so the tree is built once, eagerly, over the grid's positions:
-#
-#   1. every cell's tight cap (one `cell_boundary` per cell — the O(n) part),
-#   2. positions sorted by a Morton key on the cap centre's lon/lat, so that
-#      contiguous blocks of the sorted order are spatially compact whatever the
-#      grid's own position order happens to be,
-#   3. a 4-ary tree over that order, with each node's extent the merged cap of
-#      its children.
-#
-# Node extents are therefore *stored*, not derived: `node_extent_is_expensive`
-# is `false` here, unlike the hierarchical cursor.
-#
-# Leaf indices are grid positions throughout — `child_indices_extents` yields
-# them and `Trees.getcell` takes them — so a `Regridder` built on this tree
-# lines up with data laid out in the grid's own order.
-# ---------------------------------------------------------------------------
+# Eager fallback tree for grids without a hierarchy. It sorts tight cell caps by
+# Morton key and builds a 4-ary tree with stored extents. Leaf indices remain
+# grid positions.
 
 # Cells per leaf block. Small enough that a leaf's cells are genuinely close
 # together, large enough that the per-node overhead of the traversal is
@@ -28,13 +11,8 @@ const POSITION_TREE_ARITY = 4
 """
     PositionTree(grid)
 
-A spatial tree over the positions of any [`AbstractGrid`](@ref), built from the
-cells' bounding caps. This is what [`treeify`](@ref) returns for a grid with no
-hierarchical system; grids that have one get a [`HierarchicalGridCursor`](@ref)
-instead, which needs no build step at all.
-
-Construction is O(ncells) in time and memory (one cap per cell). The tree is
-immutable and its nodes are addressed by [`PositionTreeNode`](@ref).
+A spatial tree over grid positions, built from cell caps in `O(ncells)` time and
+memory. [`treeify`](@ref) uses it only for grids without a hierarchy.
 """
 struct PositionTree{G<:AbstractGrid}
     grid::G
@@ -73,9 +51,7 @@ function PositionTree(grid::AbstractGrid)
     return tree
 end
 
-# Depth-first build; children are recorded by index because the recursion
-# interleaves them (a breadth-first build would make them contiguous and buy
-# nothing — the child list is read once per visited node either way).
+# Depth-first recursion records children by node index.
 function _build_node!(tree::PositionTree, lo::Int, hi::Int)
     index = length(tree.node_first) + 1
     push!(tree.node_first, lo)
@@ -186,16 +162,10 @@ end
     treeify(grid::AbstractGrid)
     treeify(manifold, grid::AbstractGrid)
 
-A spatial tree over the grid — total on [`AbstractGrid`](@ref).
-
-A grid from a hierarchical system gets a [`HierarchicalGridCursor`](@ref): the
-hierarchy already is the tree, so there is nothing to build and construction is
-O(1). Any other grid gets a [`PositionTree`](@ref) built from its cell caps in
-O(ncells).
-
-The manifold argument carries no information — this package's geometry is on
-the unit sphere by construction — and exists so that
-`ConservativeRegridding.Regridder`, which always passes one, resolves here.
+Return a spatial tree for any [`AbstractGrid`](@ref). Hierarchical grids receive
+an `O(1)` [`HierarchicalGridCursor`](@ref); other grids receive an `O(ncells)`
+[`PositionTree`](@ref). The manifold overload supports callers that pass the
+grid's unit-sphere manifold.
 """
 treeify(grid::AbstractGrid) = treeify(GOCore.best_manifold(grid), grid)
 treeify(::GOCore.Manifold, grid::AbstractGrid) = _grid_tree(grid)

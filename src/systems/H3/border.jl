@@ -1,12 +1,5 @@
-# ---------------------------------------------------------------------------
-# The subtree border automaton
-#
-# The rim of a subtree — the descendants at some deeper resolution that have a
-# neighbour outside the subtree — without enumerating the subtree. A subtree of
-# depth `d` has `7^d` cells but only `O(3^d)` of them on the rim, so walking the
-# rim directly is the difference between a feasible query and an infeasible one.
-#
-# HOW IT WORKS. A cell on the rim is exposed along a contiguous *arc* of the six
+# The subtree rim is generated in O(3^d) without enumerating its O(7^d)
+# interior. A rim cell is exposed along a contiguous arc of the six
 # lattice directions, and the arc a child inherits is a function of the parent's
 # arc and which digit the child is. The state is `(L, s)`: the arc of exposed
 # directions `s, s+1, ..., s+L-1` (mod 6), in `_H3_DIGIT_DIR` positions.
@@ -14,33 +7,11 @@
 # ends; `L == 0` means interior, and the walk prunes there. Digit 0 (the centre
 # child) is never on the rim.
 #
-# PENTAGONS. All twelve pentagon base cells delete the same child, digit 1, the
-# K axis — H3 has no per-cell deleted digit, so the arc table needs no pentagon
-# variant, only the skip. The flag drops to `false` one level down for good:
-# H3's pentagon descendants are exactly the all-digit-0 chain, and a rim suffix
-# carries no zero digit, so only the subtree root can ever be a pentagon on a
-# rim path.
-#
-# PROVENANCE — this table was *fitted from observation, not derived*, and is
-# carried over from the pre-redesign kernel with its evidence intact:
-# exhaustive agreement with the definition (enumerate the subtree, keep the
-# cells with a `gridDisk` neighbour outside it) at depths 0-4 over 63 roots
-# spanning both level parities, all 12 pentagon base cells, higher-resolution
-# pentagons, base-cell-crossing roots and random roots at res 1-8; depths 5-6
-# over a five-root subset; sampled soundness at depth 10; and an exhaustive
-# search over all 720 digit-to-direction assignments that leaves exactly the six
-# rotations of `_H3_DIGIT_DIR`, which the root state `(6, 0)` makes immaterial.
-# `test/systems/H3/` re-runs the brute-force agreement rather than trusting this.
-#
-# Note that the parity roles are SWAPPED relative to IGeo7: the branch H3 takes
+# All pentagon base cells delete digit 1 (the K axis). The pentagon flag drops
+# after the root because a rim suffix contains no zero digit.
+# The transition table is fitted and parity-dependent. Its parity roles are
+# swapped relative to IGeo7: the branch H3 takes
 # at an even child level is the one IGeo7 takes at an odd one.
-#
-# STATUS. T7 introduced the generic `subtree_border` hook in `src/interface/`
-# with a `descendants`-and-`neighbors` fallback in `src/fallbacks/subtree.jl`,
-# and this automaton is now H3's method on it. The fallback is what the
-# brute-force agreement tests below are really re-deriving, so the two are
-# differential checks on each other.
-# ---------------------------------------------------------------------------
 
 # Extended, not shadowed: this file defines H3's method on the package generic,
 # so `H3.subtree_border` and `DiscreteGlobalGrids.subtree_border` are one
@@ -107,25 +78,11 @@ end
 """
     subtree_border(sys::H3System, c::H3Cell, l::Integer; connectivity = Vertex()) -> Vector{H3Cell}
 
-H3's method on the package's [`subtree_border`](@ref) generic.
-
-The **rim** of `c`'s subtree at resolution `l`: every descendant of `c` at `l`
-that has a neighbour outside the subtree, ascending.
-
-`O(3^depth)` rather than the `O(7^depth)` of enumerating the subtree and
-testing each cell — the rim of a depth-12 subtree is 1,594,320 cells out of
-13,841,287,201.
-
-`subtree_border(sys, c, level(c))` is `[c]`: a depth-0 subtree is the cell
-itself, and its whole neighbourhood is outside it.
-
-The count is exactly `3^(depth+1) - 3` for a hexagon and `5(3^depth - 1)/2` for
-a pentagon.
-
-`connectivity` is accepted for the generic's signature and does not change the
-answer: H3's cells are hexagons and pentagons, where sharing a vertex and
-sharing an edge are the same relation, so `Edge()` and `Vertex()` name the same
-rim.
+Return, in ascending order, level-`l` descendants with a neighbour outside
+`c`'s subtree. Complexity is `O(3^depth)` rather than full-subtree
+`O(7^depth)`. Counts are `3^(depth+1) - 3` for hexagons and
+`5(3^depth - 1)/2` for pentagons; depth zero returns `[c]`. H3 vertex and edge
+adjacency coincide, so `connectivity` does not affect the result.
 """
 function subtree_border(::H3System, c::H3Cell, l::Integer;
         connectivity::Connectivity=Vertex())

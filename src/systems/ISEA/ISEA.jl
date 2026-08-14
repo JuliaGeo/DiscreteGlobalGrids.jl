@@ -1,25 +1,9 @@
 """
     ISEA
 
-Shared icosahedral machinery for the ISEA family of discrete global grids: the
-spherical icosahedron (vertex/neighbor tables, per-base counterclockwise rings,
-the [`Orientation`](@ref) placement rotation) and the Snyder equal-area
-projection charts (per-face plane, forward/inverse, dev-frame slot maps).
-
-Nothing here knows about any particular aperture or indexing scheme — this is
-the common basis the ISEA systems build on: ISEA7H / IGEO7 today
-([`IGeo7`](@ref)), ISEA3H / ISEA4H / ISEA9H later. Everything lives in the
-*grid frame*, the standard ISEA placement; the identity orientation therefore
-returns coordinates in the standard ISEA frame directly.
-
-| file             | contents                                                |
-|:-----------------|:--------------------------------------------------------|
-| `icosahedron.jl` | sphere helpers, standard ISEA vertex/neighbor tables, `Orientation` |
-| `snyder.jl`      | per-face Snyder ISEA plane + dev-frame slot maps        |
-
-`snyder.jl` uses `icosahedron.jl`'s vertex tables and vector helpers and nothing
-else; both are stdlib-only floating-point geometry. Provenance of every constant
-and convention is cited inline and recorded in `docs/IGeo7/`.
+Shared icosahedron geometry and Snyder equal-area charts for ISEA grid systems.
+All coordinates use the standard ISEA grid frame; [`Orientation`](@ref) maps
+between that frame and world coordinates.
 """
 module ISEA
 

@@ -1,47 +1,17 @@
-# ---------------------------------------------------------------------------
-# `A5Native` — the pure-Julia port of upstream a5's own arithmetic
+# Pure-Julia upstream-compatible A5 arithmetic. This module's `A5Cell` is the
+# decoded record; `DiscreteGlobalGrids.A5.A5Cell` is the public encoded id.
 #
-# Copied across from the pre-redesign `src/A5/A5Native.jl` with ONE line
-# changed: the `Helpers` import now walks up two module levels rather than one,
-# because this module's parent no longer re-exports it. Nothing else moved.
-# It deals in raw `UInt64` indices, the internal `A5Cell` record (origin +
-# segment + Hilbert state + resolution) and lon/lat degree pairs.
-#
-# Everything above it in this directory is a wiring of these functions; the
-# surface that wiring uses is
-#
-#   serialize / deserialize / get_resolution   the id codec
-#   res0_cells / cell_to_children / cell_to_parent / num_cells
-#   lonlat_to_cell / cell_to_lonlat / cell_boundary
-#   _get_global_cell_neighbors                 adjacency, `edge_only` selecting
-#                                              von Neumann over Moore
-#   ORIGINS / MAX_RESOLUTION / MAX_GRID_RESOLUTION / HILBERT_START_BIT
-#
-# NAME CLASH, deliberate and contained: this module's `A5Cell` is the *decoded
-# record*, while `DiscreteGlobalGrids.A5.A5Cell` is the canonical cell index.
-# The wiring never `using`s this module, and refers to the record through the
-# `NativeCell` alias in `cell.jl`, so the two never meet unqualified.
-# ---------------------------------------------------------------------------
+# Line-by-line port of felixpalmer/a5 (`modules/core`, `lattice`, `geometry`,
+# `projections`), kept diff-clean against its source so the port stays
+# auditable; the only local change is the `Helpers` import path.
 
 """
     DiscreteGlobalGrids.A5.A5Native
 
-The ported upstream a5 arithmetic: the projection, the id codec, the Hilbert
-lattice, the adjacency walk and the boundary, and the whole of this package's
-dependence on how A5 is defined.
-
-It speaks **a5's own vocabulary** — raw `UInt64` indices, the decoded
-`A5Native.A5Cell` record, degrees — and knows nothing about the grid interface.
-The interface wiring lives one directory up, in `cell.jl` / `system.jl` /
-`geometry.jl` / `neighbors.jl`.
-
-Everything here is a line-by-line port of
-[felixpalmer/a5](https://github.com/felixpalmer/a5)'s `modules/core`,
-`modules/lattice`, `modules/geometry` and `modules/projections`, carried over
-unchanged from the pre-redesign tree. Reach for it only when you specifically
-want to speak to that arithmetic directly; the wiring is what implements the
-package's contracts, and it adds two things a5 does not have — a dense position
-numbering and a rotational neighbour order.
+Low-level A5 projection, id, Hilbert-lattice, adjacency, and boundary
+operations. Inputs and outputs use raw `UInt64` ids, decoded
+`A5Native.A5Cell` records, and degree coordinates. Public grid contracts are
+implemented by the enclosing [`A5`](@ref) module.
 """
 module A5Native
 

@@ -1,75 +1,11 @@
-# ---------------------------------------------------------------------------
-# The ten ISEA4R diamonds — the layout table
-#
-# An icosahedron's twenty faces pair up into ten rhombi ("diamonds"), each two
-# faces glued along a shared edge. That pairing, the numbering of the ten, and
-# the orientation of the `(x, y)` square inside each of them is the *layout*:
-# the one thing an ISEA4R grid needs that the Snyder machinery in `ISEA` does
-# not already provide. This file derives it, snaps the resulting affine
-# coefficients onto exact values, and asserts the result against pinned
-# literals at package load.
-#
-# ## Provenance — read this before claiming interoperability
-#
-# This numbering, pairing, and in-diamond orientation is this package's
-# canonical choice, derived at build time from `ISEA.FACE_TRIPLES` /
-# `ISEA.NBRS_CCW` / `ISEA.NEIGHBORS` in the submodule's standard ISEA
-# placement (identity `Orientation`), anchored on the vertex pair `(0, 11)`.
-# There is no external oracle pinning it: identifier compatibility with any
-# external ISEA4R/ISEA9R product, DGGAL included, is deliberately not claimed
-# and must not be inferred. The layout coincides in shape with
-# SphericalSpatialTrees.jl's `ISEACircleTree` (10 × 2^r × 2^r), but the diamond
-# numbering and per-diamond axis orientation have not been cross-pinned against
-# SST either. Anyone needing DGGAL/SST or any other external identifier interop
-# must first pin a permutation against fixtures.
-#
-# That is also why this table lives in `src/systems/ISEA4R/` rather than inside
-# the oracle-locked `src/systems/ISEA/`: see the `ISEA4R` module docstring.
-#
-# ## Provenance of the file
-#
-# Ported verbatim from the pre-redesign `src/ISEA4R/diamonds.jl` — the same
-# derivation, the same snapping, the same pinned literals. Only the docstring
-# cross-references moved.
-#
-# ## The derivation rule
-#
-# Three hardcoded convention choices, and everything else follows:
-#
-#   1. The anchor vertex pair is base `0` and its antipode base `11`.
-#   2. *Northern* diamond `d ∈ 0:4` is anchored on dev-slot `d` of base 0: its
-#      upper face is `(0, n_d, n_{d+1})` where `n_d = NBRS_CCW[1][d+1]` (the
-#      counterclockwise ring of base 0, indices mod 5), and its lower face is
-#      the unique *other* face carrying the edge `(n_d, n_{d+1})`.
-#   3. *Southern* diamond `5 + d` is the one whose top apex is `n_d`: its upper
-#      face is the unique face holding `n_d` and both of `n_d`'s neighbours on
-#      the southern ring (`NEIGHBORS[n_d+1] ∩ NEIGHBORS[12]`), and its lower
-#      face joins that pair to base 11.
-#
-# The five northern uppers/lowers are faces `{0,1,2,3,4,5,6,8,11,12}` and the
-# southern ones `{7,9,10,13,14,15,16,17,18,19}`; that the twenty faces are used
-# exactly once is asserted, not assumed.
-#
-# ## The chart corners
-#
-# Per diamond the four corners are `verts = (v00, v10, v11, v01)`, sitting at
-# chart `(0,0)`, `(1,0)`, `(1,1)`, `(0,1)`. The glued icosahedron edge — the
-# *seam* — is the MAIN DIAGONAL `y == x`, with endpoints `v00` and `v11`; `v01`
-# is the upper face's remaining corner and `v10` the lower face's. Northern
-# diamonds all have `v01 == 0`, southern ones all have `v10 == 11`.
-#
-# Which of the two seam endpoints is `v00` is not free: exactly one of the two
-# assignments makes the chart positively oriented (counterclockwise seen from
-# outside), and the build picks it by testing, then asserts the result against
-# the pinned literals below.
-# ---------------------------------------------------------------------------
+# Ten package-defined rhombi formed by pairing the twenty ISEA faces. Layout is
+# anchored on antipodal vertices `(0,11)`, positively oriented, and pinned at
+# load time. External identifier compatibility is not claimed.
 
 """
     Diamond
 
-One of the ten ISEA4R diamonds: two icosahedron faces glued along a seam, with
-the affine maps that carry the `[0, 1]²` chart square onto their two Snyder
-planes.
+Two icosahedron faces joined into one `[0,1]^2` chart.
 
 - `upper`, `lower`  the two 0-based face indices (`ISEA.FACES`); `upper` carries
                     the half `y >= x` and `lower` the half `y < x`
@@ -80,12 +16,8 @@ planes.
 - `cQ0, aQ, bQ`     lower-half affine: `u_Q(x, y) = cQ0 + x·aQ + y·bQ`, into
                     face `lower`'s frame
 
-Both halves agree on the seam (`u_P(t, t)` and `u_Q(t, t)` are the same
-spherical point to `< 1e-13` rad — the two planar segments are the two
-developments of the same icosahedron edge), so the pair defines one continuous
-chart of the square. Each affine has `imag(conj(a) * b) == 2π/5` *exactly*
-after the snapping below: the chart is equal-area, and a chart rectangle of
-area `A` covers solid angle `A · 4π/10`.
+The halves agree along `y == x`. Each affine has determinant `2π/5`, so chart
+area `A` maps to solid angle `A*4π/10`.
 
 See [`DIAMONDS`](@ref) for the table and [`xyd_to_point`](@ref) for the chart.
 """
@@ -108,7 +40,7 @@ The corner tuple `(v00, v10, v11, v01)` of each of the ten diamonds, written
 out. [`_make_diamonds`](@ref) derives the same table from `ISEA`'s icosahedron
 tables and `@assert`s equality against this literal, so drift in an upstream
 `ISEA` table fails at package load rather than silently renumbering a shipped
-grid. `test/systems/ISEA4R/runtests.jl` restates the same numbers independently.
+grid.
 """
 const _PINNED_DIAMOND_VERTS = (
     (1, 6, 2, 0), (2, 7, 3, 0), (3, 8, 4, 0), (4, 9, 5, 0), (5, 10, 1, 0),
@@ -164,19 +96,10 @@ end
 """
     _snap_edge(c) -> ComplexF64
 
-Snap a raw face-edge vector onto `L_PLANE · cis(30k°)` with exact components.
-
-Face corners sit at `R_EA · cis(0°/±120°)`, so the difference of any two is an
-icosahedron edge in the plane: magnitude exactly `L_PLANE = √3·R_EA`, direction
-an exact multiple of 30°. The raw difference carries FP noise on both; this
-replaces it with the analytic value and `@assert`s that the raw angle really was
-within `1e-9` degrees of a multiple of 30° (measured worst: `2.8e-14`). Same
-mechanism, same justification, as the `DevSlot` rotation snap in
-`ISEA`'s `snyder.jl`.
-
-The payoff is not cosmetic: after snapping, `imag(conj(aP) * bP)` is
-`2π/5` to the *last bit* on all ten diamonds, so the equal-area statement the
-chart makes is exact rather than approximate.
+Snap a face-edge vector to `L_PLANE*cis(30k°)` with exact components. This
+removes angular roundoff and preserves exact affine determinants. The `30k°` is
+not a fit: face corners sit at `R_EA·cis(0°/±120°)`, so the difference of any
+two is `L_PLANE = √3·R_EA` long at a multiple of 30°.
 """
 function _snap_edge(c::ComplexF64)
     a = rad2deg(angle(c))
@@ -189,28 +112,8 @@ end
 """
     _make_diamonds() -> NTuple{10, Diamond}
 
-Derive the ten-diamond table by the rule in this file's header, snap the affine
-coefficients, and assert the result — against the pinned literals, against the
-face partition, and against the geometry itself. Runs once, at package load.
-
-The assertions, in the order they fire:
-
-1. **Structure.** Every derived face triple exists, the ten `(upper, lower)`
-   pairs use each of the twenty faces exactly once, and the seam pair is a real
-   icosahedron edge.
-2. **Orientation.** Exactly one of the two seam-endpoint assignments gives
-   `imag(conj(aP) * bP) > 0` (counterclockwise seen from outside); the other is
-   its mirror. Both halves then carry `|det| == 2π/5`, i.e. `4π/10` — the ten
-   diamonds account for the whole sphere with nothing left over.
-3. **Corners.** The six affine corner predictions (three per half) reproduce the
-   planar corner positions to `< 1e-12` (measured `2.5e-16`), and the chart
-   corners land on their `ISEA.VERTICES` entries to `< 1e-13` rad (measured
-   `1.5e-15`).
-4. **Seam.** Upper and lower halves agree along `y == x` to `< 1e-13` rad
-   (measured `5.1e-15` over a dense sweep; the coarse build-time check samples
-   five parameters).
-5. **The pin.** `verts` and `(upper, lower)` equal
-   [`_PINNED_DIAMOND_VERTS`](@ref) / [`_PINNED_DIAMOND_FACES`](@ref).
+Build the ten diamonds and validate the face partition, positive orientation,
+equal-area determinants, corners, seams, and pinned layout. Runs at load time.
 """
 function _make_diamonds()
     ring = NBRS_CCW[1]                       # counterclockwise ring of base 0
@@ -304,11 +207,8 @@ end
 """
     DIAMONDS
 
-The ten [`Diamond`](@ref)s, indexed by `diamond + 1` (diamond ids are 0-based
-throughout this module, as face ids are in `HEALPix` and `S2`).
-
-Derived at load time by [`_make_diamonds`](@ref) and asserted equal to
-[`_PINNED_DIAMOND_VERTS`](@ref) / [`_PINNED_DIAMOND_FACES`](@ref):
+The ten [`Diamond`](@ref)s, indexed by `diamond + 1`. Derived and validated by
+[`_make_diamonds`](@ref):
 
 | d | upper face   | lower face   | `(v00, v10, v11, v01)` | seam    |
 |:--|:-------------|:-------------|:-----------------------|:--------|
@@ -323,10 +223,7 @@ Derived at load time by [`_make_diamonds`](@ref) and asserted equal to
 | 8 | 14 `(4,8,9)` | 18 `(8,9,11)`  | `(8, 11, 9, 4)`      | `(8,9)` |
 | 9 | 9 `(5,9,10)` | 15 `(9,10,11)` | `(9, 11, 10, 5)`     | `(9,10)`|
 
-Diamonds `0:4` are northern (all have `v01 == 0`), `5:9` southern (all have
-`v10 == 11`). **This numbering is a package convention with no external oracle
-behind it** — see the provenance block at the top of this file and
-the `ISEA4R` module docstring before assuming DGGAL / SST / other external
-identifier compatibility.
+Diamonds `0:4` are northern and `5:9` southern. Numbering and orientation are
+package conventions, not external interoperability guarantees.
 """
 const DIAMONDS = _make_diamonds()

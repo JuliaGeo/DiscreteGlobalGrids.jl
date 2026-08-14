@@ -1,40 +1,12 @@
 # ---------------------------------------------------------------------------
-# S2 cube-face charts — pure closed forms, no s2geometry
+# S2's six charts map `[0, 1]²` to the sphere through quadratic `ST → UV`,
+# cube-face `UV → XYZ`, and radial normalization. Chart lines map to great-circle
+# arcs, so four corners exactly describe each cell. Face frames, projection, and
+# Hilbert tables follow the published s2geometry conventions; no s2geometry code
+# or library is used. Those conventions are `s2coords.h` and `s2cell_id.h`, as
+# documented at https://s2geometry.io/devguide/s2cell_hierarchy.html.
 #
-# S2 (Google's spherical geometry library) is six continuous charts
-# `[0, 1]² → S²`, one per face of a cube inscribed in the sphere. Each chart is
-# the composition of three steps: the quadratic `ST → UV` transform, the linear
-# `UV → XYZ` lift onto the cube face, and radial normalisation onto the sphere.
-# Unlike HEALPix's, these charts are *not* equal-area — S2 trades that away for
-# geodesic cell edges: a line `u = const` on a cube face spans a plane through
-# the origin, so its spherical image is a great-circle arc and a four-corner
-# ring *is* the cell exactly, with no bulge between the corners.
-#
-# That is the whole reason a *chart* layer is worth having separately from the
-# id layer — cell geometry, vertex geometry, and refinement all fall out of
-# evaluating one function on the `(s, t)` lattice, with no Hilbert arithmetic in
-# between, and lattice points shared between neighbouring cells come out
-# bit-identical (⇒ the tessellation is exact, not merely consistent to
-# rounding).
-#
-# Provenance: everything here is transcribed from the *published conventions*
-# of s2geometry — the face frames and `S2_QUADRATIC_PROJECTION` of `s2coords.h`,
-# and the `kIJtoPos` / `kPosToIJ` / `kPosToOrientation` Hilbert tables of
-# `s2cell_id.h` — as documented at
-#
-#   https://s2geometry.io/devguide/s2cell_hierarchy.html
-#   https://github.com/google/s2geometry
-#   https://pkg.go.dev/github.com/golang/geo/s2
-#
-# No s2geometry code is vendored and no s2geometry library is called: the point
-# is a self-contained kernel, and the tests here are correspondingly oracle-free
-# (analytic invariants and internal consistency rather than a reference
-# implementation — contrast `test/systems/HEALPix/runtests.jl`, which does have
-# Healpix.jl to check against).
-#
-# ## Index conventions
-#
-# Read this block before calling anything here.
+# Index conventions:
 #
 # - `ix`, `iy` — 0-based face-local lattice coordinates in `0:nside-1`. `ix`
 #   runs along the `s`/`u` axis and `iy` along the `t`/`v` axis; continuous
@@ -46,33 +18,15 @@
 #   `nside = 2^level` is exactly the SCAFFOLD ORDINAL this system's canonical
 #   `LevelIndex` carries (`face * 4^level + hilbert_position`).
 #
-# Both id spaces are 0-based, and a cell's POSITION in a complete level grid is
-# `id + 1` for both. That is a deliberate simplification relative to
-# `HEALPix/chart.jl`, whose mixed 1-based-RING / 0-based-NESTED convention
-# exists only because RING doubles as the position in a HEALPix FITS field. S2
-# has no such external layout to match, so there is no reason to carry two
-# conventions.
-#
-# Argument order is `(ix, iy, face, nside)` throughout and ids come first in the
-# inverse direction (`rowmajor_to_xyf(q, nside)`), matching `HEALPix/chart.jl`
-# slot for slot so the two files diff against each other cleanly.
-#
-# Naming: the S2 literature says "cell", not "pixel", so the geometry helpers
-# here are `cell_corners` / `cell_center` — slot-for-slot siblings of HEALPix's
-# `pixel_corners` / `pixel_center`. These are functions *in the `S2`
-# submodule's namespace*, not methods of the interface generics
-# `cell_boundary` / `cell_centroid`, which `system.jl` implements in terms of
-# them.
+# Both ids are 0-based; complete-grid position is `id + 1`. Argument order is
+# `(ix, iy, face, nside)` and inverse codecs take the id first.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Face frames
 #
-# The six faces of the inscribed cube, each carried by a right-handed
-# orthonormal frame `(û, v̂, ŵ)` with `û × v̂ == ŵ` and `ŵ` the outward face
-# normal. `FACE_NORMAL[f + 1]` is a signed coordinate axis, each of the six
-# appearing exactly once; s2geometry's face numbering puts the normal on axis
-# `f % 3`, positive for `f < 3`.
+# Right-handed face frames `(û, v̂, ŵ)`, with `û × v̂ == ŵ`. Face `f` has its
+# outward normal on axis `f % 3`, positive for `f < 3`.
 # ---------------------------------------------------------------------------
 
 """
@@ -109,22 +63,13 @@ face `face` (0-based, `0:5`), returning an *unnormalised* point — the frame su
 `ŵ + u û + v v̂` of [`FACE_U_AXIS`](@ref) / [`FACE_V_AXIS`](@ref) /
 [`FACE_NORMAL`](@ref).
 
-Written as an explicit switch rather than as that sum for a reason that is
-numerical, not stylistic: the switch places the literal `±1.0` on the fixed
-axis and plain negations (`-u`, `-v`) on the others, so the coordinate two
-faces share along a seam comes out *bit-identically* on both sides — IEEE
-negation is exact, whereas `0 * x + 1 * y` style accumulation is not obliged to
-be. The cross-face seam identities the chart tests pin (`==`, not `≈`) rest on
-this.
+The explicit switch preserves shared seam coordinates bit-identically by using
+literal `±1.0` and exact negation rather than arithmetic accumulation.
 
 !!! note "Signed zero is the one exception"
-    Bit-identity holds up to the SIGN OF ZERO. A seam point whose shared
-    coordinate is exactly `0.0` on one face comes out `-0.0` on the other,
-    because the negation is exact and `-(0.0) === -0.0`. The two compare `==`
-    (and are the same point on the sphere) but not `isequal`, so code that
-    identifies shared vertices through a `Dict` or a `Set` must normalise —
-    adding `0.0` to each coordinate does it. `test/systems/S2/runtests.jl`
-    hits this at every cube-edge midpoint.
+    Seam coordinates may differ only by `0.0` versus `-0.0`. They compare with
+    `==` but not `isequal`; normalize signed zero before using coordinates as
+    `Dict` or `Set` keys.
 """
 function face_uv_to_xyz(face::Integer, u::Float64, v::Float64)
     face == 0 && return (1.0, u, v)
@@ -138,15 +83,11 @@ end
 """
     xyz_to_face(p) -> Int
 
-The 0-based cube face whose chart contains the direction `p` — the axis of `p`'s
-largest-magnitude component, signed.
+The 0-based cube face selected by the signed largest-magnitude component of `p`.
 
 **Ties are broken toward the lower axis**, `x` before `y` before `z`, and a
-component of exactly zero magnitude counts as positive. A point on a cube edge
-or corner is therefore assigned to exactly one face, deterministically, by an
-integer-free but branch-only comparison of three `Float64`s — no arithmetic
-happens, so the answer is the same on every platform for the same input bits.
-This is the tie rule [`cellat`](@ref) inherits and documents.
+component of zero counts as positive. This deterministically assigns cube-edge
+and cube-corner points and is the face tie rule used by [`cellat`](@ref).
 """
 function xyz_to_face(p)
     ax, ay, az = abs(p[1]), abs(p[2]), abs(p[3])
@@ -157,17 +98,9 @@ end
 # ---------------------------------------------------------------------------
 # ST <-> UV: the quadratic transform
 #
-# THE DECISION, recorded: this is s2geometry's `S2_QUADRATIC_PROJECTION`, and it
-# is what makes the `(s, t)` lattice at `nside = 2^level` land on the *exact*
-# canonical S2 cell boundaries. A cell of this system is then the same spherical
-# quadrilateral an `s2_cellid` cell is — the property a future native-id
-# `reindex` needs.
-#
-# Rejected alternative: the linear map `u = 2s - 1` (`S2_LINEAR_PROJECTION`).
-# Simpler and monotone too, but its cells are NOT canonical S2 cells, and its
-# cell areas vary by a factor of ~5.2 within a level against the quadratic
-# map's ~2.08. (The `S2_TAN_PROJECTION` is more uniform still but costs a
-# `tan`/`atan` per coordinate and is likewise not the canonical convention.)
+# s2geometry's quadratic projection places the dyadic `(s, t)` lattice on
+# canonical S2 boundaries and gives an approximately 2.08× within-level area
+# spread.
 # ---------------------------------------------------------------------------
 
 """
@@ -181,23 +114,12 @@ u = (4s² - 1) / 3              for s >= 1/2
 u = (1 - 4(1 - s)²) / 3        otherwise
 ```
 
-Strictly increasing, odd about `s = 1/2` (`st_to_uv(1 - s) == -st_to_uv(s)`,
-and *exactly* so in floating point — both branches consume the same `1 - s`),
-and C¹ across the branch seam (both one-sided derivatives are `4/3`). The three
-anchors are exact: `st_to_uv(0) == -1.0`, `st_to_uv(1/2) == 0.0`,
-`st_to_uv(1) == 1.0`.
+It is strictly increasing, C¹ at `s = 1/2`, and exactly odd there in floating
+point: `st_to_uv(1 - s) == -st_to_uv(s)`. Values at `0`, `1/2`, and `1` are
+exactly `-1`, `0`, and `1`.
 
-The exact oddness is load-bearing for the seam topology in `neighbors.jl`: the
-signed-permutation correspondence between two faces' `(u, v)` coordinates
-across a shared cube edge is the SAME signed permutation in `(s, t)`, which is
-what lets a seam crossing be integer lattice arithmetic rather than a
-re-projection.
-
-Choosing this transform rather than the linear `u = 2s - 1` is what puts the
-`(s, t)` lattice at `nside = 2^level` on canonical S2 cell boundaries; see the
-section comment above for the full decision record. It does *not* make the grid
-equal-area — S2 is not an equal-area system and stays that way — it only
-narrows the within-level cell-area spread from ~5.2× to ~2.08×.
+Exact oddness lets seam topology use signed-permutation integer lattice
+arithmetic without reprojection. The transform is not equal-area.
 
 See [`uv_to_st`](@ref) for the inverse.
 """
@@ -214,8 +136,7 @@ s = sqrt(1 + 3u) / 2           for u >= 0
 s = 1 - sqrt(1 - 3u) / 2       otherwise
 ```
 
-This is the step point location goes through: [`point_to_xyf`](@ref) is
-`xyz → face/uv → st → lattice`, and this is the middle of it.
+Used by [`point_to_xyf`](@ref) in `xyz → face/uv → st → lattice` conversion.
 """
 uv_to_st(u::Real) = (uf = Float64(u); uf >= 0 ? 0.5 * sqrt(1 + 3 * uf) : 1 - 0.5 * sqrt(1 - 3 * uf))
 
@@ -227,19 +148,11 @@ Evaluate the S2 chart of `face` (0-based, `0:5`) at continuous face coordinates
 quadratic [`st_to_uv`](@ref) per axis, then [`face_uv_to_xyz`](@ref), then
 radial normalisation.
 
-Defined for *any* real `s, t` in the unit square — nothing here is quantised to
-a lattice or restricted to power-of-two `nside`, which is exactly what makes it
-usable as the chart underlying refinement of arbitrary depth.
+Defined for all real `s, t` in the unit square, independent of lattice depth.
 
-The final step is the gnomonic projection of the cube face onto the sphere, and
-it is why S2 cell edges are exact great-circle arcs: a chart line `u = const`
-lifts to a straight line on the face plane, which together with the origin spans
-a plane, whose intersection with the sphere is a great circle. Consequently the
-four-corner ring of a cell is the cell *exactly*, with nothing to densify.
-
-Unlike HEALPix's `xyf_to_point`, the normalisation here needs no accuracy
-special-case: `n = sqrt(x² + y² + z²)` runs over `[1, √3]` with one component
-always `±1`, so there is no cancellation to guard against.
+The gnomonic projection maps chart lines to great-circle arcs, so a four-corner
+ring exactly represents a cell. Normalization is well-conditioned because one
+coordinate is always `±1` and the norm lies in `[1, √3]`.
 """
 function stf_to_point(s::Real, t::Real, face::Integer)
     x, y, z = face_uv_to_xyz(Int(face), st_to_uv(s), st_to_uv(t))
@@ -253,20 +166,13 @@ end
 The face-local lattice cell of resolution `nside` containing the unit-sphere
 point `p`: the chart's analytic inverse.
 
-`xyz → face` by [`xyz_to_face`](@ref), `xyz → (u, v)` by dividing the frame
-components by the outward one (a gnomonic projection, exact for a point on the
-correct face), `(u, v) → (s, t)` by [`uv_to_st`](@ref), and `(s, t) → (ix, iy)`
-by `floor`.
+It applies `xyz → face/uv → st → lattice`, using [`xyz_to_face`](@ref),
+[`uv_to_st`](@ref), and `floor`.
 
-**Ties.** A point on a cell edge belongs to the cell on the higher side of the
-cut, because the lattice step is a `floor`; a point on a cube edge or corner
-belongs to the face [`xyz_to_face`](@ref) picks. Both rules are deterministic
-and self-consistent — the returned cell's own centre maps back to it — which is
-what [`cellat`](@ref) contracts for.
+**Ties.** `floor` assigns chart cut lines to the higher-side cell; cube edges
+and corners use [`xyz_to_face`](@ref)'s face rule.
 
-The `clamp` is not a tie rule but a guard: `uv_to_st` can return a value a
-fraction of an ulp outside `[0, 1]` for a point on the face rim, and a bare
-`floor` would then name a lattice cell that does not exist.
+Clamping corrects sub-ulp excursions outside `[0, 1]` on a face rim.
 """
 function point_to_xyf(p, nside::Integer)
     face = xyz_to_face(p)
@@ -285,26 +191,8 @@ end
 # ---------------------------------------------------------------------------
 # Cell geometry
 #
-# Why the corner order below is counter-clockwise seen from outside, on all six
-# faces, analytically (the tests then check it by exhaustion):
-#
-#  1. The emission order `(s+, t+), (s-, t+), (s-, t-), (s+, t-)` is CCW in the
-#     `(s, t)` plane — its shoelace sum is `+2` on the unit square.
-#  2. `st_to_uv` is strictly increasing, so the image is still CCW in `(u, v)`.
-#  3. Every face frame `(û, v̂, ŵ)` is in SO(3), and the CCW-seen-from-outside
-#     measure is SO(3)-invariant. So verifying one face verifies all six.
-#  4. Face 0 at `nside = 1`: the unnormalised corners are `(1, 1, 1)`,
-#     `(1, -1, 1)`, `(1, -1, -1)`, `(1, 1, -1)`, whose `Σ pᵢ × pᵢ₊₁` is
-#     `(8, 0, 0)`; the outward direction `Σ pᵢ` is `(4, 0, 0)`, and the dot
-#     product is `32 > 0`. CCW.
-#  5. It extends to arbitrary sub-cells because the gnomonic map is an
-#     orientation-preserving diffeomorphism from the face square onto the face's
-#     spherical patch: any positively-oriented rectangle maps to a
-#     positively-oriented spherical quadrilateral.
-#
-# The same argument, read the other way, is what makes the `(s, t)` lattice
-# ORIENTATION agree with "counter-clockwise seen from outside" — which is what
-# `neighbors.jl` reads its rotational neighbour cycle off.
+# The corner order is counter-clockwise in `(s, t)`. Monotone `st_to_uv` and the
+# right-handed face frames preserve that orientation when viewed from outside.
 # ---------------------------------------------------------------------------
 
 """
@@ -313,23 +201,14 @@ end
 The four corners of cell `(ix, iy)` on `face` at resolution `nside`, as lattice
 points evaluated through [`stf_to_point`](@ref).
 
-The corners are emitted **counter-clockwise as seen from outside the sphere**,
+Corners are emitted counter-clockwise as seen from outside the sphere,
 in the order `((ix+1)/n, (iy+1)/n)`, `(ix/n, (iy+1)/n)`, `(ix/n, iy/n)`,
-`((ix+1)/n, iy/n)` — the same lattice order as HEALPix's `pixel_corners`. CCW
-is a hard contract, not a stylistic preference: the convex-clip kernel used for
-spherical intersection clips a clockwise ring to EMPTY, so a reversed ring
-silently produces zero intersection area instead of an error. The winding holds
-on every face for a structural reason (the emission order is CCW in `(s, t)`,
-`st_to_uv` is increasing, and each face frame is in SO(3), under which the
-measure is invariant); the file comment above spells the argument out.
+`((ix+1)/n, iy/n)`. This winding is required by spherical clipping: a clockwise
+ring clips to empty rather than erroring.
 
-Because every corner is a lattice point evaluated by the same function, two
-cells sharing a lattice corner get *bit-identical* points (up to the sign of
-zero — see [`face_uv_to_xyz`](@ref)) and the tessellation is exact. And unlike
-HEALPix — where the corners describe the pixel only to 4-gon accuracy, because
-pixel edges follow constant-`z` / constant-φ chart lines — S2 cell edges **are**
-great circles ([`stf_to_point`](@ref)), so the 4-gon *is* the cell, exactly.
-There is nothing to densify.
+Shared lattice corners are bit-identical except for signed zero; see
+[`face_uv_to_xyz`](@ref). Since cell edges are great-circle arcs, no
+densification is required.
 """
 function cell_corners(ix::Integer, iy::Integer, face::Integer, nside::Integer)
     n = nside
@@ -347,10 +226,8 @@ end
 The center of cell `(ix, iy)` on `face` at resolution `nside`: the chart
 evaluated at the lattice cell's midpoint `((ix + 0.5)/nside, (iy + 0.5)/nside)`.
 
-This is S2's own definition of a cell center, not a convention borrowed from
-HEALPix: `S2CellId::ToPoint` is precisely the ST-space midpoint pushed through
-`ST → UV → XYZ` and normalised. (It is *not* the centroid of the spherical
-quadrilateral, and S2 does not claim it is — the chart is not equal-area.)
+This matches `S2CellId::ToPoint`. It is not the spherical quadrilateral's area
+centroid.
 """
 cell_center(ix::Integer, iy::Integer, face::Integer, nside::Integer) =
     stf_to_point((ix + 0.5) / nside, (iy + 0.5) / nside, face)
@@ -358,15 +235,8 @@ cell_center(ix::Integer, iy::Integer, face::Integer, nside::Integer) =
 # ---------------------------------------------------------------------------
 # Row-major order
 #
-# The plain lexicographic layout of the `nside × nside` lattice, `ix` fastest,
-# then `iy`, then `face`. All closed-form arithmetic, valid for ANY
-# `nside >= 1` — the power-of-two restriction belongs to the *Hilbert* index
-# only, exactly as RING/NESTED split in `HEALPix/chart.jl`.
-#
-# Not reachable from the system interface: the canonical id is the Hilbert
-# scaffold ordinal, and row-major order does not nest. It is kept because it is
-# the independent second codec the chart tests check bijectivity against, and
-# because it is the natural layout for reading an S2-charted raster.
+# Lexicographic `nside × nside` layout with `ix` fastest, then `iy`, then face.
+# It supports any `nside >= 1` but is not the canonical nested system id.
 # ---------------------------------------------------------------------------
 
 """
@@ -402,11 +272,7 @@ end
 # ---------------------------------------------------------------------------
 # Hilbert order
 #
-# The Hilbert curve is to S2 what the Morton curve is to HEALPix: the canonical
-# within-face ordering, and the one the scaffold ordinal is written against
-# (`face * 4^level + hilbert_position`).
-#
-# The tables below are s2geometry's `kIJtoPos` / `kPosToIJ` /
+# Canonical within-face Hilbert order. The tables are s2geometry's `kIJtoPos` / `kPosToIJ` /
 # `kPosToOrientation`, indexed by a two-bit orientation state built from
 # `SWAP_MASK` and `INVERT_MASK`. At each level the quadrant `ij = 2i + j`
 # (`i` = the `ix`/s-axis bit, high; `j` = the `iy`/t-axis bit, low) is looked up
@@ -471,25 +337,17 @@ orientation state through [`POS_TO_ORIENTATION`](@ref); odd faces start at
 
 # Nesting
 
-Dropping the low two bits of the position steps exactly one level up:
+Dropping the low two position bits steps one level up:
 `xyf_to_hilbert(ix >> 1, iy >> 1, face, nside >> 1)`'s position is
 `xyf_to_hilbert(ix, iy, face, nside)`'s position `>> 2`. Because the face term
 `face * nside²` divides through by 4 as well, the same statement holds of the
 whole ordinal, and the system's parent/children arithmetic is exactly `÷ 4` and
-`4p + k` — which is what `has_sorted_subtrees(S2System())` asserts.
-
-This is verified by exhaustion over levels 0-6 in `test/systems/S2/runtests.jl`
-rather than taken on faith from the tables: it is the one property the whole
-hierarchy rests on.
+`4p + k`, making subtrees contiguous.
 
 !!! note "Alignment with native `s2_cellid` is intended, not yet verified"
-    The tables and the odd-face initial swap transcribe s2geometry's `kIJtoPos`
-    / `kPosToIJ` / `kPosToOrientation` and `S2CellId::FromFaceIJ`, so agreement
-    with native S2 cell ids is intended *by construction*. It is **not**
-    oracle-verified: this repository carries no s2geometry fixtures, and the
-    tests pin bijectivity, Hilbert locality, prefix nesting across levels and
-    hand-computed level-1/2 tables instead. A native-`s2_cellid` alternate
-    scheme via `reindex` waits on such an oracle.
+    The tables and odd-face initial swap follow s2geometry conventions, but
+    native S2 cell-id compatibility has not been fixture-verified. No native
+    `s2_cellid` reindexing scheme is provided.
 """
 function xyf_to_hilbert(ix::Integer, iy::Integer, face::Integer, nside::Integer)
     ispow2(nside) || throw(ArgumentError(
@@ -519,9 +377,8 @@ Inverse of [`xyf_to_hilbert`](@ref): face-local lattice coordinates and 0-based
 face of the 0-based Hilbert id (scaffold ordinal) `h`. `nside` must be a power
 of two — throws `ArgumentError` otherwise, and for an id outside `0:6nside²-1`.
 
-The mirror image of the forward walk: split off the face, then consume the
-position two bits at a time through [`POS_TO_IJ`](@ref), rebuilding `ix` and
-`iy` one bit per level while advancing the same orientation state.
+Splits off the face and consumes two position bits per level through
+[`POS_TO_IJ`](@ref), rebuilding `ix` and `iy`.
 
 !!! note "Alignment with native `s2_cellid` is intended, not yet verified"
     See [`xyf_to_hilbert`](@ref) — the same caveat applies verbatim.

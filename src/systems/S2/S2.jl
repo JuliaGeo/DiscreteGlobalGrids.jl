@@ -1,9 +1,6 @@
 # ---------------------------------------------------------------------------
-# T11 — S2.
-#
-# S2 on the grid interface. Everything here is a closed form on the six
-# cube-face charts; nothing depends on the s2geometry library, and no
-# s2geometry code is vendored.
+# S2 grid implementation using closed-form cube-face charts, without a runtime
+# dependency on s2geometry.
 # ---------------------------------------------------------------------------
 
 """
@@ -19,27 +16,13 @@ Hilbert curve, levels `0:30` (`nside = 2^level`, `6 * 4^level` cells).
   - `LevelIndex` — the canonical id: `LevelIndex(level, index)` with `index` the
     **scaffold ordinal** `face * 4^level + hilbert_position`, **0-based**.
 
-# The layers, bottom up
+S2 is not equal-area; its quadratic `ST → UV` projection gives an approximately
+2.08× within-level area spread. Every edge is an exact great-circle arc, so an
+S2 cell is exactly its four-corner spherical quadrilateral:
 
-| file | what it is |
-|---|---|
-| `chart.jl` | the six cube-face charts, the quadratic `ST ↔ UV` transform, the Hilbert and row-major codecs, and the chart's analytic inverse (`point_to_xyf`). Ported from the pre-redesign `src/S2/chart.jl`, plus the inverse the old port never wired. |
-| `neighbors.jl` | the 3×3 lattice neighbourhood, and the cube-edge seam table it crosses faces through — derived from the face frames, not transcribed. |
-| `system.jl` | `S2System` and every interface method, system-level and grid-level both. |
-
-# What S2 trades, and what it buys
-
-S2 is **not equal-area** — the quadratic `ST → UV` projection narrows the
-within-level cell-area spread to about 2.08×, and that is all it does about it.
-What it buys is that every cell edge is an exact great-circle arc, so an S2
-cell is a spherical quadrilateral *exactly*:
-
-  - [`cell_boundary`](@ref) is four vertices, not a densification (HEALPix
-    needs 32);
-  - `cell_area` needs no override — the generic spherical polygon area of that
-    ring is the true cell area;
-  - [`node_extent`](@ref) is the cell's own four-corner cap, exactly, because
-    the cell is the geodesic convex hull of those corners and children tile
+  - [`cell_boundary`](@ref) contains four vertices without densification;
+  - generic `cell_area` returns the true cell area;
+  - [`node_extent`](@ref) is the cell's four-corner cap because children tile
     their parent.
 
 # Fast paths over the generic fallbacks
@@ -52,14 +35,9 @@ cell is a spherical quadrilateral *exactly*:
 | [`node_extent`](@ref) | the cell's own four-corner cap, uninflated |
 | [`neighbors`](@ref) / [`ring`](@ref) | the lattice one-ring plus the cube-edge seam table, under both `Vertex()` (8, or 7 in a face corner) and `Edge()` (4) |
 
-# Deferred
-
-The native 64-bit `s2_cellid` (face bits, Hilbert bits, lsb sentinel) as an
-alternate scheme via [`reindex`](@ref). The codec is one step from
-`xyf_to_hilbert`, but this repository carries no s2geometry fixtures, so
-shipping it would publish an interoperability claim nothing checks. The
-scaffold ordinal is canonical either way, so adding the scheme later is purely
-additive.
+Native 64-bit `s2_cellid` is not an available [`reindex`](@ref) scheme. Its
+compatibility is not verified against s2geometry fixtures; the scaffold ordinal
+is canonical.
 """
 module S2
 
@@ -67,9 +45,8 @@ import ..DiscreteGlobalGrids as DGG
 
 import GeometryOps as GO
 const US = GO.UnitSpherical
-# The UnionAll, never `SphericalCap{Float64}`: the two-argument
-# `(point, radius)` constructor is a method of the UnionAll, and a parametrised
-# alias would silently reach the three-field default constructor instead.
+# Preserve the UnionAll so the two-argument `(point, radius)` constructor applies;
+# `SphericalCap{Float64}` would silently reach the three-field default instead.
 const SphericalCap = US.SphericalCap
 
 import SmallCollections

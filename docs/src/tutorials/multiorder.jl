@@ -17,12 +17,7 @@ import DiscreteGlobalGrids as DGG
 import NaturalEarth
 import GeometryOps as GO, GeoInterface as GI
 using CairoMakie, GeoMakie
-CairoMakie.activate!()
-
-# CairoMakie rather than GLMakie or WGLMakie: this page draws thousands of
-# polygons into a static figure, and Cairo renders `poly!` without a display.
-
-sys = DGG.H3System()
+# CairoMakie.activate!()
 
 fc = NaturalEarth.naturalearth("admin_1_states_provinces", 10)
 california = fc.geometry[findfirst(==("California"), fc.name)]
@@ -35,8 +30,9 @@ GI.npolygon(california)
 
 # ## The query
 
-coverage = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 7)
+sys = DGG.IGeo7System()
 
+coverage = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 7)
 # Level 7 cells are about 2 km across. The set holds a few thousand cells
 # spanning five levels, and stands for a leaf set twenty times larger:
 
@@ -58,12 +54,14 @@ coverage = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 7)
 cells = collect(coverage)
 polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(coverage))
 
+cali_centroid = GO.centroid(california)
+
 fig = Figure(size = (760, 820))
-ax = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
+ax = GeoAxis(fig[1, 1]; dest = "+proj=ortho +datum=WGS84 +lon_0=$(GI.x(cali_centroid)) +lat_0=$(GI.y(cali_centroid))",
     limits = ((-125.5, -113.5), (32.0, 42.5)),
-    title = "H3 multi-order coverage of California, to level 7")
-plt = poly!(ax, polys; color = DGG.level.(cells), colormap = :viridis,
-    strokecolor = (:black, 0.55), strokewidth = 0.25)
+    title = "IGeo7 multi-order coverage of California, to level 7")
+plt = poly!(ax, polys; color = DGG.level.(cells), colormap = :isoluminant_cgo_70_c39_n256,
+    alpha = 0.7, strokecolor = (:black, 0.55), strokewidth = 0.25)
 poly!(ax, california; color = :transparent, strokecolor = :black, strokewidth = 1.2)
 Colorbar(fig[1, 2], plt; label = "cell level")
 fig
@@ -77,7 +75,7 @@ fig
 
 # ## The cells do not tile, on this system
 #
-# H3 has aperture 7: a cell's seven children are a rotated rosette that has the
+# IGeo7 has aperture 7: a cell's seven children are a rotated rosette that has the
 # parent's area but not its footprint. Replacing a subtree by its root therefore
 # replaces the subtree's shape by a different shape of the same size, and a
 # mixed-level set has gaps in it. Aperture-4 systems whose four children tile
@@ -89,8 +87,8 @@ pair = Figure(size = (900, 430))
 for (k, (s, l, label)) in enumerate(((DGG.H3System(), 7, "H3 (aperture 7): slivers"),
                                      (DGG.S2System(), 9, "S2 (aperture 4): tiles")))
     cov = DGG.query(s, DGG.MultiOrderCoverage(california); level = l)
-    ax = GeoAxis(pair[1, k]; dest = "+proj=longlat +datum=WGS84", limits = window,
-        title = label, xticklabelsvisible = false, yticklabelsvisible = false)
+    ax = Axis(pair[1, k]; limits = window, aspect = DataAspect(),
+        title = label, xticklabelsvisible = true, yticklabelsvisible = true)
     poly!(ax, GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(cov));
         color = DGG.level.(collect(cov)), colormap = :viridis,
         strokecolor = (:black, 0.5), strokewidth = 0.4)
@@ -315,7 +313,7 @@ corners = [to_sphere((lon, lat))
                lat in range(south, north; length = size(box, Y) + 1)]
 
 manifold = GO.Spherical(; radius = 1.0)
-regridder = CR.Regridder(manifold, destination, corners)
+regridder = @time CR.Regridder(manifold, destination, corners)
 size(regridder.intersections)
 
 # Conservation, in the direction that is usually the broken one: regrid a field

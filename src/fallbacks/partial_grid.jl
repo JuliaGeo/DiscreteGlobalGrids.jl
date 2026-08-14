@@ -1,27 +1,11 @@
-# ---------------------------------------------------------------------------
-# `PartialGrid` — the one subset-grid type
-#
-# A subset of one level of one system, addressed by position in its sorted id
-# vector. This is what a regional workflow, a chunk, or a `DimensionalData`
-# lookup hands to the tree and the regridder: leaf index `i` of the resulting
-# tree is position `i` of `grid.ids`, so a `Regridder` lines up with the data
-# array without a permutation.
-#
-# It also absorbs the old lazy-subtree type. A partial grid built over one
-# cell's subtree keeps `root_level`/`root_id`, so `treeify` starts descent at
-# that node instead of at the whole sphere, and its ids need not be stored at
-# all — `SubtreeIds` computes them from the level grid.
-# ---------------------------------------------------------------------------
+# A `PartialGrid` is a sorted subset of one system level. Grid positions match
+# positions in its id vector. Rooted subsets start tree descent at their root.
 
 """
     SubtreeIds(grid, first, n) <: AbstractVector
 
-The ids of `n` consecutive positions of a complete level grid, computed on
-demand rather than stored — the descendants of one cell at one level, when the
-system has [`has_sorted_subtrees`](@ref) and the interval therefore exists.
-
-A handful of words however many cells it names, which is what makes a
-subtree-shaped [`PartialGrid`](@ref) free to build.
+Lazy ids for `n` consecutive positions of a complete level grid. This provides
+`O(1)` construction for rooted subsets in sorted-subtree systems.
 """
 struct SubtreeIds{G<:AbstractGrid,ID} <: AbstractVector{ID}
     grid::G
@@ -46,37 +30,25 @@ Helpers.strictly_increasing(::SubtreeIds) = true
     PartialGrid(sys, level, ids; bucket_size = 0, root = nothing)
     PartialGrid(sys, c::AbstractCellIndex, level; bucket_size = 0)
 
-A subset of `levelgrid(sys, level)`: the cells named by `ids`, which must be
-**strictly ascending** canonical ids at `level`. Positions run `1:length(ids)`,
-in that order — the vector is stored by reference, never copied or reordered,
-so position `i` of a caller's id vector stays position `i` of the grid.
+A subset of `levelgrid(sys, level)`. `ids` must be strictly ascending canonical
+ids at `level` and is stored by reference without copying or reordering.
 
-The second form is the subtree of one cell: every level-`level` descendant of
-`c`, with `c` remembered as the tree root so descent starts there. Where the
-system has [`has_sorted_subtrees`](@ref) the ids are computed rather than
-materialised ([`SubtreeIds`](@ref)), so building one is O(1) whatever the
-subtree's size.
+The second form contains all level-`level` descendants of `c` and stores `c` as
+the tree root. Sorted-subtree systems use [`SubtreeIds`](@ref), making
+construction `O(1)`.
 
 # Keywords
 
-  - `bucket_size` stops tree descent once a node covers that few stored cells
-    and scans them instead. `0` (the default) descends to single cells.
-  - `root` is a cell all the ids are descendants of. Passing it is what keeps
-    cursor descent *windowed* over a chunk instead of restarting from the
-    system's root cells.
+  - `bucket_size` stops descent at that many stored cells; `0` reaches cells.
+  - `root` declares a common ancestor and starts descent there.
 
 # What is checked
 
-`level` against [`levels`](@ref) (through [`levelgrid`](@ref)), `eltype(ids)`
-against [`cellindextype`](@ref), strict ascent, that the **endpoints** live at
-`level`, and — for a rooted grid — that the endpoints really are descendants of
-`root` (complete and O(1) where `has_sorted_subtrees` holds, since the sorted
-endpoints then bound every id; an [`ancestor`](@ref) check on the endpoints
-otherwise).
+Validation covers the level, id type, strict ascent, endpoint levels, and rooted
+endpoint ancestry. For sorted subtrees, endpoint checks cover the entire vector.
 
-Interior ids are trusted. Validating each one costs a hierarchy walk per cell,
-which is the expense a chunk built from a validated lookup has already paid,
-and an invalid id surfaces at the first geometry call that decodes it.
+Interior ids are not individually validated; a bad one surfaces at the first
+geometry call that decodes it.
 """
 struct PartialGrid{S<:AbstractHierarchicalGridSystem,V<:AbstractVector,ID,G<:AbstractGrid} <: AbstractGrid
     system::S
@@ -107,10 +79,7 @@ struct PartialGrid{S<:AbstractHierarchicalGridSystem,V<:AbstractVector,ID,G<:Abs
         root_level = first(levels(sys)) - 1
         root_id = _placeholder_root(sys)
         if root !== nothing
-            # The root's type becomes the cursor's cell-id type parameter, and
-            # every descent step is stored into that field — so a non-canonical
-            # root fails on the first `children` call rather than here, where
-            # the caller can still see what they passed.
+            # Validate before the root becomes the cursor's concrete id type.
             root isa ID || throw(ArgumentError(
                 "root must be a $ID for $(typeof(sys)), got $(typeof(root))"))
             root_level = level(root)
@@ -165,13 +134,11 @@ level(grid::PartialGrid) = grid.level
 cell_boundary(grid::PartialGrid, c::AbstractCellIndex) = cell_boundary(grid.complete, c)
 cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.complete, c)
 
-# Not derived, forwarded. `cell_area`'s generic is the ring's polygon area,
-# which is the right answer only when the ring IS the cell: HEALPix and ISEA4R
-# have curvilinear edges and override it on their level grid with the exact
-# `4pi/ncells`. A `PartialGrid` is a different type, so the generic used to win
-# here and a subset of a level grid reported areas its parent grid did not
-# agree with. The subset changes which cells there are and nothing about their
-# geometry, so the complete grid is the authority for every one of them.
+# Forwarded, not derived. The generic `cell_area` is the ring's polygon area,
+# right only where the ring IS the cell: HEALPix and ISEA4R have curvilinear
+# edges and override it on their level grid with the exact `4pi/ncells`. A
+# subset changes which cells exist, never their geometry, so the complete grid
+# is the authority.
 cell_area(grid::PartialGrid, c::AbstractCellIndex) = cell_area(grid.complete, c)
 
 # The ids are sorted, so the O(n) generic scan is two comparisons here.

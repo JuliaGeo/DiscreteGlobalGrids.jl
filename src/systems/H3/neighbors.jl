@@ -1,71 +1,25 @@
-# ---------------------------------------------------------------------------
-# Adjacency
-#
-# THE ORDER IS ROTATIONAL, NOT SORTED. `neighbors(grid, c, k)` is rings
-# 1, 2, ..., k concatenated outward, and each ring runs counter-clockwise seen
-# from outside the sphere. So `ring(grid, c, k)` is exactly the tail block of
-# `neighbors(grid, c, k)`, and a stencil consumer can read a weight vector
-# straight off the result. Sorting by id would throw all of that away for
-# nothing — the rotational order is what libh3 already produces.
-#
-# WHICH LIBH3 CALL PRODUCES IT. Measured, not assumed:
-#
-#   * `gridRingUnsafe` walks the shell and returns it counter-clockwise. Checked
-#     exhaustively over every cell at res 0, 1 and 2 for k = 1, 2, 3 — 18,890
-#     rings, zero counter-examples — by summing the signed azimuth increments
-#     around the cell centre and confirming exactly +1 turn.
-#   * `gridDisk` is NOT usable for this. Its within-disk order is deterministic
-#     but not rotational: at res 0, 33 of 122 cells give a k = 1 sequence whose
-#     azimuths wind 0 turns (it zigzags) or -1 (clockwise). This is the trap the
-#     first cut of this file fell into by sampling eight cells and generalising.
-#
-# So the shell walk is the source of truth wherever it succeeds, and it refuses
-# exactly around the twelve pentagons (72 cells per level at k = 1: the 12
-# pentagons plus their 60 neighbours). There the ring is recovered from the
-# distance-bucketed disk and ordered by azimuth about the cell centre, ties by
-# id — deterministic, and counter-clockwise by construction rather than by
-# libh3's grace.
-#
-# STARTING DIRECTION. libh3 picks the walk's starting vertex per cell; it is
-# deterministic for a given cell and stable across k, but it is not a globally
-# uniform compass direction, and the interface does not ask for one — it asks
-# for a documented deterministic order.
-#
-# Connectivity is accepted and has no effect: on a hexagonal/pentagonal
-# tessellation, sharing a vertex and sharing an edge are the same relation, so
-# `Vertex()` and `Edge()` name the same neighbours. See `max_neighbors`.
-# ---------------------------------------------------------------------------
+# `gridRingUnsafe` supplies counter-clockwise shells. `gridDisk` is not a
+# substitute: its order is deterministic but not rotational — at res 0, 33 of
+# the 122 k = 1 sequences wind 0 or -1 turns. At pentagon distortion,
+# rings are recovered from distance-bucketed disks and sorted by azimuth, then
+# id. The starting direction is libh3's deterministic per-cell choice.
 
 const MAX_NEIGHBORS = 6
 
 """
     neighbors(grid::LevelGrid, c::H3Cell, k = 1; connectivity = Vertex())
 
-The cells within `k` grid steps of `c`, excluding `c`, in **rotational order**:
-rings `1..k` concatenated outward, each ring counter-clockwise seen from
-outside the sphere.
+Cells within `k` grid steps, excluding `c`, as counter-clockwise shells
+concatenated outward. [`ring`](@ref) is the final shell. Hexagons have six
+immediate neighbours and pentagons five, without padding.
 
-This makes `ring(grid, c, k)` the tail block of `neighbors(grid, c, k)`, and it
-is what lets a stencil index into the result positionally. A hexagon has six
-neighbours and a pentagon five; around a pentagon the ring is genuinely smaller
-rather than zero-padded.
-
-The counter-clockwise order is libh3's own `gridRingUnsafe` walk, verified
-rather than assumed (see this file's header). Where that walk refuses — the
-twelve pentagons and their immediate neighbours — the ring is ordered by
-azimuth about the cell centre, ties broken by id. The starting direction is
-libh3's, deterministic per cell, and not a uniform compass bearing.
-
-# Container
+`gridRingUnsafe` supplies the order when available; pentagon-distorted rings use
+azimuth order with id tie-breaking.
 
 `k <= 1` returns a `SmallVector{6,H3Cell}` and **allocates nothing at all**,
-pentagons included: both the shell walk and the pentagon fallback read into
-stack buffers and insertion-sort into an immutable `SmallVector`. That is what
-makes a whole-grid neighbour sweep garbage-free.
+including at pentagons.
 
 `k >= 2` returns a `Vector{H3Cell}`, since `3k(k+1)` outgrows any static bound.
-The return type is therefore a two-way union across `k`, with the boundary at
-`k = 1` / `k = 2`.
 """
 function neighbors(grid::LevelGrid, c::H3Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
@@ -91,10 +45,8 @@ Identical, element for element, to the last `length` entries of
 [`neighbors`](@ref)`(grid, c, k)` — the two share one implementation, so the
 disc really is its shells concatenated rather than merely agreeing as a set.
 
-Two paths, same answer: libh3's O(k) `gridRingUnsafe` shell walk, and — where a
-pentagon defeats it — the O(k²) distance-bucketed disk ordered by azimuth. The
-fallback is not an approximation; it is the same set in the same rotational
-order, computed the expensive way.
+Uses libh3's O(k) shell walk, or an O(k²) pentagon-safe disk fallback ordered by
+azimuth.
 """
 function ring(grid::LevelGrid, c::H3Cell, k::Integer;
         connectivity::Connectivity=Vertex())

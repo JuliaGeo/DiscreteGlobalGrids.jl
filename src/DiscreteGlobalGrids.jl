@@ -1,64 +1,40 @@
 """
     DiscreteGlobalGrids
 
-Discrete global grid systems for the Julia geo ecosystem, built around one
-small interface that every grid — hierarchical or not, global or regional —
-implements, and against which every algorithm is written exactly once.
+Discrete global grid systems for the Julia geo ecosystem.
 
-# The two tiers
+[`AbstractGrid`](@ref) represents a finite global or regional cell collection.
+Implementations provide [`ncells`](@ref), [`cellindex`](@ref),
+[`cell_boundary`](@ref), and [`cell_centroid`](@ref); generic methods provide
+geometry, lookup, topology, trees, and queries.
 
-  - [`AbstractGrid`](@ref) is **one finite collection of cells on the sphere**:
-    a complete DGGS level, a regional subset of one, or a standalone structured
-    grid with no hierarchy at all. Four required methods
-    ([`ncells`](@ref), [`cellindex`](@ref), [`cell_boundary`](@ref),
-    [`cell_centroid`](@ref)) buy the whole generic surface — geometry,
-    [`cellat`](@ref), [`neighbors`](@ref), [`treeify`](@ref), [`query`](@ref).
-  - [`AbstractHierarchicalGridSystem`](@ref) adds **analytic parent/child
-    structure** and powers the fast paths: tree pruning under the covering law
-    of [`node_extent`](@ref), subtree ranges, sublinear queries. Hierarchy is
-    always an optimisation, never a semantic.
+[`AbstractHierarchicalGridSystem`](@ref) adds analytic parent/child structure,
+subtree operations, and hierarchy-based query acceleration. Overrides must
+preserve the generic methods' semantics.
 
-A system does not normally write a grid type at all. [`levelgrid`](@ref)
-defaults to [`HierarchicalLevelGrid`](@ref), which stores `(system, level)` and
-forwards the four required grid methods to system-level counterparts, so the
-four are answered once per system rather than once per grid type.
+A system needs no grid type of its own. [`levelgrid`](@ref) defaults to
+[`HierarchicalLevelGrid`](@ref), which holds `(system, level)` and forwards the
+four required grid methods to system-level counterparts.
 
-Implementors write primitives; consumers get contracts. A system that overrides
-a generic for speed and changes an answer is wrong, and the separate
-`DiscreteGlobalGridsConformanceTesting` package is how that is caught.
+A bare `Int` is a position in `1:ncells(grid)`. An
+[`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
 
-# Position vs identity
-
-A bare `Int` is always a **position** in a grid's canonical dense order
-`1:ncells(grid)` — the storage coordinate data arrays and regridding matrices
-are laid out against. A typed [`AbstractCellIndex`](@ref) is always an
-**identity** — a name relative to a system, meaningful with no grid in hand,
-and self-describing about its level. Ids are never bare integers, so the two
-never collide.
-
-All internal geometry is on the **unit sphere**
-(`GeometryOps.UnitSphericalPoint`); longitude and latitude appear only at the
-edges, in wrappers that say so.
+Internal geometry uses `GeometryOps.UnitSphericalPoint`; explicitly named
+wrappers convert longitude and latitude at API boundaries.
 
 # Layout
 
-  - `src/interface/` — the type vocabulary and every generic's contract.
-  - `src/fallbacks/` — the generic implementations: the cursor, the trees,
-    [`HierarchicalLevelGrid`](@ref), `PartialGrid`,
-    `AuthalicGrid`/`AuthalicSystem`, `MultiOrderCellSet`, the query engine.
-  - `lib/DiscreteGlobalGridsConformanceTesting/` — the separate test-only
-    package whose property suites make the contracts executable.
-  - `src/systems/{IGeo7,H3,HEALPix,A5,S2,ISEA4R}/` — one directory per grid
-    system; see [`systems()`](@ref) for what distinguishes them. `src/systems/ISEA/`
-    is the Snyder/icosahedron basis IGeo7 and ISEA4R share.
-  - [`Helpers`](@ref) — shared allocation-free primitives (`SmallList`,
-    `sorted_index`, the `AuthalicTransform`).
+  - `src/interface/`: abstract types and generic contracts.
+  - `src/fallbacks/`: generic implementations and wrapper types.
+  - `src/systems/`: grid-system implementations.
+  - [`Helpers`](@ref): shared allocation-free primitives.
+  - `lib/DiscreteGlobalGridsConformanceTesting/`: the test-only package whose
+    `test_grid_interface` / `test_hierarchical_system` suites make these
+    contracts executable; a new grid or system is expected to pass them.
 
-Predicate types for [`query`](@ref) come from DE9IM.jl and are re-exported
-here (`Intersects`, `Covers`, `Touches`, ...); this package implements their
-semantics on the sphere. `treeify`/`ncells`/`getcell` are
-`ConservativeRegridding.Trees`' own bindings, extended and re-exported, so a
-grid is a regridding source with no imports and no wrapper.
+[`query`](@ref) uses DE9IM.jl predicate types with spherical semantics defined
+here. `treeify`, `ncells`, and `getcell` extend and re-export
+`ConservativeRegridding.Trees` bindings.
 """
 module DiscreteGlobalGrids
 
@@ -149,24 +125,15 @@ using .CellLookups: CellLookup, Cells, Covering
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
 
-Every grid system this package ships, as a tuple of singletons.
+The grid systems shipped by this package, as a stable-order tuple of singletons.
 
     julia> using DiscreteGlobalGrids
 
     julia> systems()
     (IGeo7System(), H3System(), HEALPixSystem(), A5System(), S2System(), ISEA4RSystem())
 
-Written for the two things a caller actually does with such a list: run one
-piece of code across all of them (a conformance sweep, a benchmark, a
-comparison table), and discover what is available without reading the source.
-Order is stable but carries no meaning.
-
-This is a **registry**, not an interface generic: nothing in the package
-dispatches on it, and a system defined outside this package is a first-class
-system that simply is not in this tuple. It replaces the old `all_systems()`,
-which returned metadata-only singletons for systems that had no working
-implementation; every entry here is fully ported and passes both
-`DiscreteGlobalGridsConformanceTesting` suites.
+This registry does not include externally defined systems and is not used for
+interface dispatch. Tuple order has no semantic meaning.
 
 # The six, and how they differ
 
@@ -179,54 +146,36 @@ implementation; every entry here is fully ported and passes both
 | [`S2System`](@ref) | `6·4^l` | geodesic quadrilaterals | no; ~2.08× within-level spread |
 | [`ISEA4RSystem`](@ref) | `10·4^l` | rhombi on ten diamonds | yes, exactly `4π/(10·4^l)` |
 
-Traits worth knowing before writing generic code across them:
+Important cross-system traits:
 
-  - **Neighbour degree is not uniform, and [`Vertex`](@ref)/[`Edge`](@ref) do
-    not always coincide.** [`max_neighbors`](@ref) is the container bound, not
-    the typical degree. IGeo7/H3 are 6 with 12 pentagons at 5, and their two
-    connectivities *do* coincide. A5 is the exception the interface docs used
-    to deny: its Cairo-style tiling has **4-valent** corners, so
+  - **Neighbour degree varies, and [`Vertex`](@ref)/[`Edge`](@ref) need not
+    coincide.** [`max_neighbors`](@ref) is an upper bound. IGeo7/H3 have degree
+    6 except for 12 pentagons of degree 5, with identical connectivities. A5's
+    4-valent corners give
     `max_neighbors(A5System(), Vertex()) == 11` against
-    `max_neighbors(A5System(), Edge()) == 5`, and at resolution 1 a cell really
-    has 11 vertex-neighbours and 3 edge-neighbours. ISEA4R is 8 in the lattice
-    interior but **9** at the two icosahedral vertices 0 and 11, where five
-    diamond corners meet and the diagonal offset resolves to two cells — do not
-    assume 8.
-  - **[`node_extent`](@ref).** S2 and ISEA4R ship the cell's own *exact,
-    uninflated* cap: children tile the parent (a geodesic quad, a chart
-    rectangle) so the tight cap is already a legal covering. HEALPix likewise.
-    IGeo7, H3 and A5 take the generic inflated-cap default; A5 raises
+    `max_neighbors(A5System(), Edge()) == 5`; at resolution 1, some cells have
+    11 vertex-neighbours and 3 edge-neighbours. Above level 1, ISEA4R has ten
+    degree-9 cells at icosahedral vertices 0 and 11, thirty degree-7 cells, and
+    degree 8 elsewhere; level 0 is 6-regular.
+  - **[`node_extent`](@ref).** S2, ISEA4R, and HEALPix provide exact uninflated
+    subtree caps. IGeo7, H3, and A5 use inflated caps; A5 sets
     [`cap_inflation`](@ref) to `1.75`.
-  - **[`has_sorted_subtrees`](@ref).** True for every system but A5, whose
-    resolution-0 → resolution-1 quintant numbering is a *rotation* of a5's own
-    segment walk, leaving the two-sided [`descendant_range`](@ref) contract
-    unverified. A5 therefore treeifies to a *selection-mode* cursor — correct,
-    just not range-pruned.
-  - **[`subtree_border`](@ref) automata.** IGeo7, H3, HEALPix and ISEA4R ship
-    `O(rim)` rim walkers. A5 and S2 keep the `O(subtree)` generic fallback: A5
-    because its Hilbert children cover the parent's *area* but not its
-    footprint, so there is no digit predicate to read a rim off; S2 because
-    nobody has written it yet (its quad lattice plus sorted subtrees is exactly
-    the shape that would benefit — an open future-work item, not a defect).
+  - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
+    has not established the two-sided [`descendant_range`](@ref) contract.
+  - **[`subtree_border`](@ref).** IGeo7, H3, HEALPix, and ISEA4R provide
+    `O(rim)` walkers. A5 and S2 use the `O(subtree)` fallback.
 
 # Interoperability caveats
 
-  - **ISEA4R's ten-diamond numbering has no external oracle.** The pairing of
-    the twenty icosahedral faces, the numbering of the ten diamonds, and the
-    orientation of the `(x, y)` square inside each are *this package's own
-    canonical choice*, anchored on the vertex pair `(0, 11)`. Identifier
-    compatibility with any external ISEA4R product — DGGAL included — is
-    deliberately not claimed and must not be inferred; interop needs a
-    permutation fitted against fixtures first.
-  - **S2's native 64-bit `s2_cellid` is not shipped** as an alternate
-    [`reindex`](@ref) scheme. The codec is one step from the canonical scaffold
-    ordinal, but this repository carries no s2geometry fixtures, so shipping it
-    would publish an interoperability claim nothing checks. Purely additive
-    later; the scaffold ordinal is canonical either way.
+  - ISEA4R's face pairing, diamond numbering, and `(x, y)` orientations are
+    package-defined and anchored on vertices `(0, 11)`. Compatibility with
+    external ISEA4R identifiers, including DGGAL, is not claimed; establish a
+    fixture-derived permutation before interchange.
+  - S2's native 64-bit `s2_cellid` is not an available [`reindex`](@ref) scheme.
+    The scaffold ordinal is the canonical identifier.
 
-See [`levels`](@ref) and [`levelgrid`](@ref) for turning one of these into a
-grid you can query, and each system's own module docstring
-(`?DiscreteGlobalGrids.A5`) for its id codec and fast paths.
+Use [`levels`](@ref) and [`levelgrid`](@ref) to construct queryable grids. Each
+system module documents its identifier codec and optimized operations.
 """
 systems() = (IGeo7System(), H3System(), HEALPixSystem(),
              A5System(), S2System(), ISEA4RSystem())
@@ -281,19 +230,10 @@ export CellVector, covering, cellset
 export CellLookup, Cells, Covering
 
 # --- Grid systems ----------------------------------------------------------
-# One singleton and one canonical id type per system, plus the registry that
-# lists them. No system exports a grid type: all six return the package's
-# `HierarchicalLevelGrid` from `levelgrid` and hang their fast paths off
-# `HierarchicalLevelGrid{TheSystem}`. The submodules themselves
-# (`DiscreteGlobalGrids.H3` and friends) are deliberately NOT exported: `H3`,
-# `HEALPix`, `A5` and `S2` are also the names of registered packages, and a bare
-# `using DiscreteGlobalGrids` must not shadow them. Anything past this list —
-# `IGeo7.equal_area_steradians`, `IGeo7.z7_string`, `H3.H3Native`,
-# `A5.A5Native` — is reached through the qualified module.
-#
-# S2 and ISEA4R contribute no id type: both are canonically indexed by the
-# interface's own `LevelIndex` (exported above), over the scaffold ordinal
-# `face * 4^level + hilbert` and `diamond * 4^level + morton` respectively.
+# System modules are not exported because their names collide with registered
+# packages. No system exports a grid type: all six return
+# `HierarchicalLevelGrid` from `levelgrid`. S2 and ISEA4R use `LevelIndex` over
+# their scaffold ordinals.
 export systems
 export IGeo7System, Z7Cell
 export H3System, H3Cell

@@ -1,11 +1,5 @@
-# ---------------------------------------------------------------------------
-# Identity: index schemes, positions, and the derived hierarchy walks
-#
-# Position vs identity is the one convention everything here turns on: a bare
-# `Int` is a position in `1:ncells(grid)`, a typed id is a name. These are the
-# generics that convert between the two, and between one naming scheme and
-# another.
-# ---------------------------------------------------------------------------
+# Identity and hierarchy fallbacks. A bare `Int` is a grid position; a typed
+# `AbstractCellIndex` is a cell identifier.
 
 """
     cellindextypes(grid) -> Tuple
@@ -58,13 +52,8 @@ end
 """
     cellposition(grid, c) -> Union{Int,Nothing}
 
-The position of `c` in the grid's dense order, or `nothing` if it is not there.
-
-The generic fallback is a **linear scan** over `1:ncells(grid)`: with only
-[`cellindex`](@ref) in hand there is nothing else to do, since a grid's
-canonical order is its own choice and need not be searchable. Every grid that
-can answer faster should override this — `PartialGrid` binary-searches its
-sorted ids, and a system's complete level grid answers in closed form.
+Return the position of `c`, or `nothing` if absent. The generic fallback scans
+`1:ncells(grid)` linearly; searchable grids should override it.
 """
 function cellposition(grid::AbstractGrid, c::AbstractCellIndex)
     target = _canonical(grid, c)
@@ -75,30 +64,9 @@ function cellposition(grid::AbstractGrid, c::AbstractCellIndex)
     return nothing
 end
 
-# The id as the grid's own scheme, or `nothing` when it cannot be one of the
-# grid's cells at all (wrong scheme, wrong level, or a value the scheme's
-# converter refuses).
-#
-# This is the whole of the `Union{Int,Nothing}` half of [`cellposition`](@ref):
-# every caller here — the generic scan and `PartialGrid`'s binary search alike —
-# turns a `nothing` from this into a `nothing` from `cellposition`, so anything
-# that escapes as an exception escapes as a contract violation. `reindex` is
-# deliberately NOT nothing-contracted (an unnameable id is an error there, and
-# should stay one), which is why the translation has to happen at this boundary
-# and why it takes two guards rather than one:
-#
-#   * the SCHEME guard tests the INPUT type. An id from a different system —
-#     an `H3Cell` handed to a HEALPix grid — names no cell of this grid, so the
-#     answer is `nothing`. Testing the *canonical* type here instead would be a
-#     no-op: `first(cellindextypes(sys)) === cellindextype(sys)` is guaranteed by
-#     the interface, so `cellindextype(sys) in cellindextypes(sys)` is always
-#     true and control would always fall through to `reindex`, which throws.
-#   * the RANGE guard tests the VALUE. A scheme the system genuinely supports
-#     can still be handed a value that names no cell — a ring index past the end
-#     of the map — and a converter is entitled to reject that with an
-#     `ArgumentError`. Only `ArgumentError` is caught: a `MethodError` or a
-#     `BoundsError` out of a converter is a bug in that converter and must stay
-#     visible rather than being laundered into "no such cell".
+# Convert to the grid's canonical id, returning `nothing` for a wrong level,
+# unsupported input scheme, or rejected value. Only `ArgumentError` from
+# `reindex` denotes an absent value; other exceptions remain visible.
 function _canonical(grid::AbstractGrid, c::AbstractCellIndex)
     l = level(grid)
     l === nothing || level(c) == l || return nothing
@@ -142,13 +110,9 @@ end
 """
     descendants(sys, c, l)
 
-Every descendant of `c` at level `l`, ascending. O(subtree) and materialising —
-see the interface docstring, and reach for [`descendant_range`](@ref) instead
-wherever the system has it.
-
-Two implementations, picked by [`has_sorted_subtrees`](@ref): with the trait
-the answer is one `descendant_range` read off as positions in `levelgrid`;
-without it, [`children`](@ref) expanded level by level and sorted.
+Return all level-`l` descendants of `c`, ascending and materialized in
+`O(subtree)`. Sorted-subtree systems resolve one [`descendant_range`](@ref);
+others expand [`children`](@ref) level by level and sort.
 """
 function descendants(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer)
     target = Int(l)

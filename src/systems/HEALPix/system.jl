@@ -1,45 +1,8 @@
-# ---------------------------------------------------------------------------
-# The HEALPix system on the grid interface
-#
-# Nested HEALPix is the interface's reference DENSE-ORDINAL system: at level `l`
-# the cells are exactly `0:12*4^l - 1`, pixel `p`'s children are `4p:4p+3`, and
-# its parent is `p ÷ 4`. Every hierarchy method below is that arithmetic, and
-# nothing here needs a lookup table.
-#
-# ## The id, and the base of its numbering
-#
-# The canonical id is the interface's own `LevelIndex(level, index)`, where
-#
-#     index  ==  the 0-BASED nested (Morton) pixel id at that level
-#     position in `levelgrid(sys, level)`  ==  index + 1
-#
-# 0-based is not a coin flip. It is the EOPF/ESA convention the pre-redesign
-# `HealpixLookup` stored on disk and the one `chart.jl`'s NESTED codec is
-# written in, so choosing 1-based would have put a `+1` on every boundary
-# between this package and a HEALPix file, and — worse — broken the arithmetic
-# that is the entire reason nested ordering exists: `4p:4p+3` and `p ÷ 4` are
-# child/parent maps only in 0-based numbering. (Healpix.jl's own `nest2ring` /
-# `ring2nest` take 1-based pixel numbers, which is why the oracle tests here
-# convert with an explicit `+ 1`.)
-#
-# The `+ 1` therefore lives in exactly one place — the position/index
-# conversion in `cellindex` / `cellposition` — where the interface's "a bare
-# `Int` is a position" rule makes it visible rather than ambient.
-#
-# The RING numbering is offered as the alternate scheme `HEALPixRingIndex`,
-# reached with `reindex`. It is 1-based, because a ring index doubles as the
-# position in a ring-ordered data vector (the convention Healpix.jl and
-# SpeedyWeather's RingGrids both use), and making it 0-based would move an
-# off-by-one onto every one of those call sites instead.
-#
-# ## What is a fast path here
-#
-#   * `cellat` is closed-form (`point_to_nested`) — no tree descent.
-#   * `descendant_range` is `[p*4^Δ, (p+1)*4^Δ)` shifted into position space.
-#   * `node_extent` is the EXACT subtree cap, not the inflated default.
-#   * `neighbors` / `ring` walk the lattice, not the geometry.
-#   * `ancestor` drops `2Δ` bits in one shift.
-# ---------------------------------------------------------------------------
+# Nested HEALPix uses dense 0-based Morton ids: level `l` is
+# `0:12*4^l-1`, children are `4p:4p+3`, and the parent is `p ÷ 4`.
+# Grid positions and alternate RING indices are 1-based. Hierarchy operations
+# use integer arithmetic; location, topology, and subtree extents have direct
+# chart or lattice implementations.
 
 # ===========================================================================
 # Types
@@ -48,61 +11,32 @@
 """
     HEALPixSystem() <: AbstractHierarchicalGridSystem
 
-The HEALPix hierarchical grid system in **nested** (Morton) ordering, on the
-unit sphere.
+HEALPix on the unit sphere in nested Morton order. Its twelve equal-area base
+pixels refine by aperture 4, giving `12 * 4^l` cells of area
+`4π / (12 * 4^l)` at level `l`. Chart edges are not great circles, so
+[`cell_boundary`](@ref) densifies them.
 
-Twelve equal-area base pixels, each refined by aperture 4: level `l` has
-`12 * 4^l` pixels of exactly equal solid angle `4π / (12 * 4^l)`. Cells are
-quadrilaterals in the HEALPix chart (`chart.jl`); their edges follow chart
-lines, not great circles, so [`cell_boundary`](@ref) densifies them — see that
-method.
-
-# Ids
-
-The canonical cell index is [`LevelIndex`](@ref), whose `index` field holds the
-**0-based** nested pixel id; a cell's position in `levelgrid(sys, l)` is
-`index + 1`. [`HEALPixRingIndex`](@ref) is the alternate scheme, reached with
-[`reindex`](@ref).
-
-# Levels
-
-`0:29`. The bound is the Int64 codec's, not HEALPix's: at level 29 there are
-`12 * 4^29 = 3458764513820540928` pixels, and level 30 would overflow a signed
-64-bit cell count.
-
-# Traits
-
-`has_sorted_subtrees` is `true` — nested order *is* depth-first curve order, so
-a subtree occupies a contiguous run of positions and
-[`descendant_range`](@ref) is exact and hole-free.
-[`max_neighbors`](@ref) is 8 under `Vertex()` and 4 under `Edge()`.
-[`node_extent`](@ref) is overridden with the pixel's own bounding cap — nested
-parents *are* the union of their children, so nothing needs inflating and
-[`cap_inflation`](@ref) is never consulted.
+Canonical [`LevelIndex`](@ref) ids are 0-based; grid positions and alternate
+[`HEALPixRingIndex`](@ref) ids are 1-based. Supported levels are `0:29`, the
+largest range whose cell count fits `Int64`. Nested ordering makes subtrees
+contiguous. Maximum neighbour counts are 8 for `Vertex()` and 4 for `Edge()`.
+[`node_extent`](@ref) returns a direct subtree cap without generic inflation.
 """
 struct HEALPixSystem <: DGG.AbstractHierarchicalGridSystem end
 
-# `levelgrid(HEALPixSystem(), l)` is the package's `HierarchicalLevelGrid`: all
-# `12 * 4^l` pixels in nested order. HEALPix's fast paths hang off this alias,
-# and the five primitives it forwards to are the `(sys, ...)` methods below.
+# `levelgrid(HEALPixSystem(), l)` returns the package's `HierarchicalLevelGrid`,
+# a lightweight descriptor for all `12 * 4^level` pixels in nested order.
+# HEALPix's fast paths dispatch on this alias; the five primitives it forwards
+# to are the `(sys, ...)` methods below.
 const LevelGrid = DGG.HierarchicalLevelGrid{HEALPixSystem}
 
 """
     HEALPixRingIndex(level, index) <: AbstractCellIndex
 
-A HEALPix cell named in **RING** ordering: pixels numbered north-to-south along
-iso-latitude rings, west-to-east within a ring.
-
-`index` is **1-based**, unlike the 0-based nested `index` of the canonical
-[`LevelIndex`](@ref), because a ring index doubles as the position of the pixel
-in a ring-ordered data vector — the convention Healpix.jl and RingGrids both
-index HEALPix fields with. Converting to Healpix.jl's `ring2nest`/`nest2ring`
-therefore needs no shift on the ring side, and a `+ 1` on the nested side.
-
-This is an alternate scheme, not the canonical one: it does **not** sort in
-subtree order (ring-ordered siblings are scattered across rings), which is
-exactly why nested is canonical. Reach it with
-[`reindex`](@ref)`(HEALPixRingIndex, HEALPixSystem(), c)`.
+A 1-based HEALPix RING index, ordered north-to-south by iso-latitude ring and
+west-to-east within each ring. This alternate scheme is compatible with
+ring-ordered data vectors but does not preserve subtree order. Convert with
+[`reindex`](@ref).
 """
 struct HEALPixRingIndex <: DGG.AbstractCellIndex
     level::Int32
@@ -153,11 +87,8 @@ end
 """
     children(HEALPixSystem(), c)
 
-The four nested children `4*index .+ (0:3)`, one level down, ascending.
-
-Always exactly four: HEALPix refinement is a uniform quadtree with no
-pentagons and no exceptional cells, so unlike the icosahedral systems this
-count never varies. Throws an `ArgumentError` at `max_level`.
+Return the four ascending nested children `4*index .+ (0:3)`. Throws an
+`ArgumentError` at `max_level`.
 """
 function DGG.children(sys::HEALPixSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
@@ -170,12 +101,8 @@ end
 """
     ancestor(HEALPixSystem(), c, l) -> LevelIndex
 
-The ancestor at level `l`, in one shift: `index >> 2Δ`.
-
-Sound because the nested id is `face * 4^level + morton(ix, iy)` and the Morton
-code is positional — dropping the low `2Δ` bits drops `Δ` bits from each of
-`ix` and `iy`, which is exactly `Δ` steps up the quadtree, and the face term
-divides through untouched.
+Return the level-`l` ancestor by dropping `2Δ` low Morton bits:
+`index >> 2Δ`.
 """
 function DGG.ancestor(sys::HEALPixSystem, c::DGG.LevelIndex, l::Integer)
     target = Int(l)
@@ -190,14 +117,9 @@ end
 """
     descendant_range(HEALPixSystem(), c, l) -> UnitRange{Int}
 
-The contiguous **positions** in `levelgrid(sys, l)` occupied by `c`'s level-`l`
-descendants: `index * 4^Δ` through `(index + 1) * 4^Δ - 1` in 0-based nested
-ids, shifted into 1-based positions.
-
-Exact and hole-free in both directions, which is what
-`has_sorted_subtrees(sys) == true` asserts: nested order is depth-first curve
-order by construction, every position in the range names a real pixel (HEALPix
-has no id gaps), and sibling ranges tile the parent's exactly.
+Return the contiguous 1-based positions of `c`'s level-`l` descendants. For
+`Δ = l - level(c)`, their 0-based ids are
+`index * 4^Δ : (index + 1) * 4^Δ - 1`. The range is exact and hole-free.
 """
 function DGG.descendant_range(sys::HEALPixSystem, c::DGG.LevelIndex, l::Integer)
     target = Int(l)
@@ -215,13 +137,8 @@ end
 """
     descendants(HEALPixSystem(), c, l)
 
-Every level-`l` descendant of `c`, ascending.
-
-Nested ids are dense and subtree-contiguous, so this is
-[`descendant_range`](@ref) read off as consecutive ids — one subtraction per
-cell, with no `children` recursion and no sort. The generic fallback would
-reach the same answer through `levelgrid`/`cellindex` per position; this skips
-that indirection.
+Return every level-`l` descendant of `c` in ascending nested order. Dense,
+subtree-contiguous ids permit direct conversion from [`descendant_range`](@ref).
 """
 function DGG.descendants(sys::HEALPixSystem, c::DGG.LevelIndex, l::Integer)
     r = DGG.descendant_range(sys, c, l)      # validates `l` both ways
@@ -270,48 +187,20 @@ end
 # Geometry
 # ===========================================================================
 
-# How finely a cell edge is broken into great-circle segments.
-#
-# HEALPix pixel edges are chart lines, NOT great circles, so the four corners
-# alone are a poor spherical polygon: on a level-0 pixel the true edge departs
-# from the corner-to-corner geodesic by about 4.4 degrees. `cell_boundary` is
-# contractually a ring of great-circle arcs, so the edges are densified.
-#
-# THE COUNT DOES NOT DEPEND ON THE LEVEL, and that is the whole design note.
-# The tempting schedule is to densify coarse levels and stop at deep ones, on
-# the theory that deep cells are small enough to be flat. That reasoning holds
-# the ABSOLUTE error constant, which is the wrong invariant for a tessellation:
-# refinement is self-similar, so a HEALPix cell has essentially the SAME SHAPE
-# at every level and a k-gon approximation of it therefore has a
-# level-independent RELATIVE error. Measured max relative area error over whole
-# levels (`test/systems/HEALPix/runtests.jl` keeps this honest):
-#
-#     segments/edge |    1    |    2    |    4    |    8    |   16    |   32
-#     rel. area err | 9.9e-2  | 2.8e-2  | 7.3e-3  | 1.8e-3  | 4.6e-4  | 1.1e-4
-#
-# — flat across levels 0-6, and O(segments^-2) as the chord error predicts. So
-# a fixed count it is: 8 segments per edge, 32 vertices per cell, 0.18% on
-# area. (The pre-redesign tree shipped the bare 4 corners at every level, i.e.
-# the 9.9e-2 column, to ConservativeRegridding.)
-#
-# Powers of two matter beyond cost: an interior densification point of one
-# pixel is a lattice point of its neighbour's edge at the same level, and with
-# a power-of-two count the two `xyf_to_point` arguments are the same Float64,
-# so shared edges come out BIT-identical and the tessellation stays exact —
-# which is what makes conservative regridding conserve regardless of the
-# residual per-cell area error above.
+# HEALPix chart edges are not great circles. Eight great-circle segments per
+# edge give 32 boundary vertices and about 0.18% level-independent relative
+# area error. A power-of-two count also makes shared-edge sample arguments, and
+# therefore vertices, bit-identical across adjacent cells. The relative error
+# falls as `nseg^-2`, and `test/systems/HEALPix/runtests.jl` pins the bound for
+# this constant, so changing it moves that test.
 const BOUNDARY_SEGMENTS = 8
 
 """
     _perimeter_points(ix, iy, face, nside, nseg) -> Vector{UnitSphericalPoint}
 
-The pixel's boundary walked in `nseg` equal chart steps per edge, starting at
-the north corner and running north → west → south → east: the
-[`pixel_corners`](@ref) order, densified. `nseg == 1` reproduces
-`pixel_corners` exactly.
-
-Implicitly closed — each edge contributes its start vertex and its interior
-points, never its end vertex, so the next edge's start is not duplicated.
+Return `nseg` chart samples per edge in north → west → south → east order.
+The implicitly closed ring omits duplicated edge endpoints; `nseg == 1`
+reproduces [`pixel_corners`](@ref).
 """
 function _perimeter_points(ix::Integer, iy::Integer, face::Integer,
         nside::Integer, nseg::Integer)
@@ -342,18 +231,10 @@ end
 """
     cell_boundary(grid, c) -> Vector{UnitSphericalPoint}
 
-The pixel's boundary ring, **counter-clockwise seen from outside the sphere**
-and implicitly closed (the first vertex is not repeated).
-
-The ring starts at the pixel's north corner and runs north → west → south →
-east, the `pixel_corners` order that `Healpix.boundariesRing` also emits.
-Because HEALPix edges are chart lines rather than geodesics, each edge is
-densified into `BOUNDARY_SEGMENTS` great-circle segments — at every level, for
-the reason set out there — so the ring has 32 vertices and the four corners are
-vertices 1, 9, 17 and 25.
-
-For the cell's **area**, prefer [`cell_area`](@ref), which is the exact
-equal-area value in closed form rather than this polygon's.
+Return the implicitly closed boundary counter-clockwise from the north corner,
+in north → west → south → east order. Each chart edge is represented by
+`BOUNDARY_SEGMENTS` great-circle segments; the four corners occur at vertices
+1, 9, 17, and 25. Use [`cell_area`](@ref) for the exact equal-area value.
 """
 function DGG.cell_boundary(::HEALPixSystem, c::DGG.LevelIndex)
     nside = _nside(DGG.level(c))
@@ -364,19 +245,9 @@ end
 """
     cell_area(grid, c) -> Float64
 
-The pixel's area in steradians: `4π / (12 * 4^level)`, **exactly**, for every
-pixel of every level.
-
-This is an override of the generic polygon area, and it is a correction rather
-than only a speedup. Equal-areaness is HEALPix's defining property — the chart
-is an equal-area map by construction, so every pixel at a level subtends
-*identically* the same solid angle — while the generic answer is the area of
-the densified boundary polygon, which approaches this value from below and
-still differs from it by ~0.18% at `BOUNDARY_SEGMENTS = 8`. The closed form is
-the true semantic; the polygon is the approximation of it.
-
-O(1), and independent of the boundary densification, so tightening
-`BOUNDARY_SEGMENTS` changes geometric predicates but never an area.
+Return the exact equal-area solid angle `4π / (12 * 4^level)` in O(1). This is
+independent of boundary densification; the 32-vertex polygon underestimates it
+by about 0.18%.
 """
 DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex) =
     (_checked_index(g, c); 4 * Float64(π) / _npix(g.level))
@@ -384,12 +255,8 @@ DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex) =
 """
     cell_centroid(grid, c) -> UnitSphericalPoint
 
-The HEALPix pixel centre: the chart evaluated at the lattice cell's midpoint.
-
-This is the pixel centre *by definition* — the chart is equal-area, so the
-midpoint of the chart square is the canonical centre — and it is strictly
-interior, as [`cell_centroid`](@ref) requires. Agrees with
-`Healpix.pix2vecNest` to ~9e-16 per coordinate.
+Return the canonical, strictly interior pixel centre: the chart evaluated at
+the lattice-cell midpoint.
 """
 function DGG.cell_centroid(::HEALPixSystem, c::DGG.LevelIndex)
     nside = _nside(DGG.level(c))
@@ -426,48 +293,14 @@ const CAP_EDGE_SEGMENTS = 8
 """
     _subtree_cap(ix, iy, face, nside) -> SphericalCap
 
-The bounding cap of a HEALPix pixel — *and therefore of its whole subtree*.
+Return a cap for the pixel and its complete subtree. Nested refinement exactly
+subdivides the parent's chart square, so bounding that square bounds every
+descendant in O(1).
 
-# Why the pixel's own cap bounds the subtree
-
-A nested HEALPix parent is the exact geographic union of its four children, at
-every depth — refinement subdivides the chart square and nothing pokes out.
-(This is what the aperture-7 icosahedral systems cannot say, and why the
-generic `node_extent` has to inflate.) So every descendant boundary point at
-every depth lies in the closed chart square of this pixel, and a cap that
-covers the square covers the subtree. That is the whole content of the
-`node_extent` override, and it is O(1) at every level.
-
-# Why the radius is what it is
-
-The centre is the pixel centre. `d(centre, ·)` attains its maximum over the
-closed square on the square's PERIMETER — the centre is interior and the
-region is well inside a hemisphere, so there is no interior maximum — and the
-perimeter is sampled at `CAP_EDGE_SEGMENTS` points per edge.
-
-**What actually bounds it is the corners.** On a chart square the perimeter
-maximum of `d(centre, ·)` is attained at a CORNER, and all four corners are
-samples (the sampling starts each edge at its start vertex). So `rmax` is not
-an approximation of the maximum over the perimeter — it *is* that maximum,
-measured exactly. That, plus the nesting argument above, is the bound.
-
-**`gap/2` is measured insurance on top of it, not the proof.** The tempting
-justification — `d(centre, ·)` is 1-Lipschitz, so between two consecutive
-samples the true distance cannot exceed the larger sample's by more than half
-their separation — is not airtight as written. Lipschitz-ness bounds the excess
-by half the ARC LENGTH along the perimeter between the samples, whereas `gap`
-is the great-circle distance between them, a CHORD of that path. The arc
-exceeds the chord by O(gap³), so for a hypothetical non-corner maximum `gap/2`
-would under-cover by that third-order term. Do not read it as an exact
-Lipschitz bound. It does not matter here, because the corner argument already
-gives the true maximum, and the first-order slack `gap/2` adds on top absorbs
-the third-order shortfall many times over: the tests re-measure the true
-perimeter at 32x this sampling and confirm the cap strictly contains it, with
-the slack never even approached.
-
-The result is looser than a corner-only cap by a few per cent and tighter than
-the generic inflated default; over-covering costs only pruning time, while
-under-covering is a silent correctness bug (see the covering law).
+The cap is centred on the pixel centre. The maximum distance over the square
+occurs at a corner, and all corners are sampled, so `rmax` supplies the bound.
+`gap/2` adds conservative measured slack. It is not itself a formal Lipschitz
+bound because `gap` is a geodesic chord rather than chart-edge arc length.
 """
 function _subtree_cap(ix::Integer, iy::Integer, face::Integer, nside::Integer)
     center = pixel_center(ix, iy, face, nside)
@@ -487,17 +320,9 @@ end
 """
     node_extent(HEALPixSystem(), c) -> SphericalCap
 
-The subtree cap of `c` — an override of the generic inflated default, and the
-reason `cap_inflation` is never consulted for this system.
-
-What is **exact** is the nesting: a nested HEALPix parent *is* the geographic
-union of its children, at every depth, so the pixel's own bounding cap already
-bounds the whole subtree and there is nothing to inflate for.
-
-What is **measured** is the cap's RADIUS — a sampled perimeter (which does
-capture all four corners exactly, and the corners are where the maximum sits)
-plus a slack term. See `_subtree_cap` for the construction and for how far that
-argument does and does not go.
+Return the pixel's subtree cap. Nested children exactly partition the parent,
+so no generic inflation is required. `_subtree_cap` derives its radius from
+the corner-inclusive perimeter samples plus conservative slack.
 """
 function DGG.node_extent(::HEALPixSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
@@ -513,25 +338,10 @@ end
 """
     cellat(grid, p::UnitSphericalPoint) -> LevelIndex
 
-The pixel containing `p`, in closed form — `point_to_nested`, the chart's
-analytic inverse, with no tree descent and no point-in-polygon test.
-
-Never `nothing`: a complete HEALPix level grid covers the sphere.
-
-**Ties.** A point exactly on a pixel boundary is legitimately contained by
-every cell meeting there, so which one is returned is a tie. It is broken by
-the `floor` arithmetic of `point_to_xyf`, which puts the point on the higher
-side of each cut line: **deterministic and self-consistent** (the returned
-cell's own centroid maps back to it), which is what the interface requires.
-
-On points **interior** to a cell this agrees exactly with Healpix.jl —
-`vec2pixNest` fed the identical Cartesian point, at every level, is asserted in
-`test/systems/HEALPix/runtests.jl`. On **boundary** points the two libraries do
-not always agree, and neither is wrong: at the two known 4-way lattice corners
-`(1, 0, 0)` and `(45°, -asin(2/3))` this port answers pixels 17 and 33 at
-level 1 where `vec2pixNest` answers 19 and 35, each library being
-self-consistent. Do not "fix" this by matching Healpix.jl; assert the
-contractual properties instead.
+Return the pixel containing `p` via the chart's closed-form inverse. A complete
+level grid covers the sphere, so this never returns `nothing`. Boundary ties
+use `point_to_xyf`'s deterministic higher-side `floor` convention. Other
+HEALPix implementations may choose a different valid cell at shared borders.
 """
 DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
     DGG.LevelIndex(g.level, point_to_nested(p, g.level))
@@ -543,13 +353,9 @@ DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
 """
     _one_ring(grid, c, connectivity) -> SmallVector{8,LevelIndex}
 
-The immediate neighbours of `c` in **counter-clockwise rotational order seen
-from outside the sphere, starting at the `SW` lattice direction**
-(`_neighbor_cycle`), deduplicated, with non-existent entries dropped.
-
-The dedup matters only at level 0, where `nside == 1` makes every lattice
-offset wrap through the face tables and two offsets could in principle name the
-same base pixel; keeping the FIRST occurrence is what preserves the cycle.
+Return immediate neighbours counter-clockwise from `SW`, as seen from outside
+the sphere. Missing entries are omitted and level-0 duplicates keep their
+first occurrence to preserve the cycle.
 """
 function _one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     _checked_index(g, c)
@@ -568,37 +374,14 @@ end
 """
     neighbors(grid, c, k = 1; connectivity = Vertex())
 
-The cells within `k` lattice steps of `c`, excluding `c`, in **rotational
-order**: the rings `1:k` concatenated outward, each ring counter-clockwise seen
-from outside the sphere.
+Return rings `1:k` concatenated outward, excluding `c`. Each ring is ordered
+counter-clockwise as seen from outside the sphere. `Vertex()` uses all eight
+lattice directions, except the missing neighbour at degree-3 vertices;
+`Edge()` uses the edge-sharing `SW, NW, NE, SE` directions. The first ring
+starts at `SW`; outer rings use azimuth about the cell centre.
 
-So `ring(grid, c, k)` is exactly the trailing block of
-`neighbors(grid, c, k)`, and `neighbors(grid, c, k)` is
-`vcat(ring(grid, c, 1), ..., ring(grid, c, k))`.
-
-# Connectivity
-
-`Vertex()` (the default) is the HEALPix 3x3 lattice neighbourhood — 8 cells,
-and 7 at the 24 pixels sitting on a degree-3 vertex of the base tiling.
-`Edge()` keeps only the four that share a whole pixel edge. Because a HEALPix
-pixel is a diamond on the lattice, the edge-sharing neighbours are the compass
-directions SW, NW, NE, SE and the four corner-only ones are W, N, E, S; see
-`neighbors.jl`.
-
-# Order
-
-**Counter-clockwise seen from outside, starting at the `SW` lattice
-direction** — the compass cycle `SW, S, SE, E, NE, N, NW, W` under `Vertex()`
-and its restriction `SW, SE, NE, NW` under `Edge()`. (The raw compass tuple in
-`nested_neighbors` runs the other way; see `_neighbor_cycle`.) Absent
-neighbours drop out of the cycle rather than leaving a hole, so a ring of seven
-is still in rotational order.
-
-Rings beyond the first are ordered by azimuth about the cell centre from the
-same starting reference; see [`ring`](@ref).
-
-`k == 0` returns an empty container; `k == 1` returns a
-`SmallCollections.SmallVector` sized by `max_neighbors` and allocates nothing.
+`k == 0` returns an empty container. `k == 1` returns a fixed-capacity
+`SmallVector` without allocation.
 """
 function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
@@ -614,17 +397,10 @@ end
 """
     ring(grid, c, k; connectivity = Vertex())
 
-The cells at lattice distance **exactly** `k`, counter-clockwise seen from
-outside the sphere. `ring(grid, c, 0)` is `[c]`.
-
-`k == 1` is the lattice compass cycle (see [`neighbors`](@ref)). For `k >= 2`
-there is no lattice cycle to read off — an outer ring crosses face seams
-arbitrarily — so the shell is ordered **by azimuth about the cell centre**,
-measured counter-clockwise from the direction of the cell's own west corner.
-That reference is chosen because it reproduces the `k == 1` cycle exactly: the
-west corner sits at 135° in the lattice plane, so the first neighbour
-counter-clockwise from it is `SW` at 180°. Ties in azimuth break by canonical
-id, so the order is total and deterministic.
+Return cells at lattice distance exactly `k`, counter-clockwise as seen from
+outside the sphere. `k == 0` returns `[c]`; `k == 1` uses the lattice cycle.
+Outer rings are sorted by azimuth about the cell centre from its west-corner
+direction, with canonical ids breaking ties.
 """
 function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
@@ -636,10 +412,8 @@ function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
     return shells[steps]
 end
 
-# Breadth-first expansion over the lattice one-ring; shell `j` is the set at
-# distance exactly `j`, each returned in CCW rotational order. Shared by
-# `neighbors` and `ring` so the two cannot disagree about what a shell is or
-# what order it is in.
+# Breadth-first lattice expansion; shell `j` contains cells at distance `j` in
+# counter-clockwise rotational order.
 function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
         connectivity::DGG.Connectivity)
     shells = Vector{DGG.LevelIndex}[]
@@ -655,9 +429,7 @@ function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
                 push!(next, y)
             end
         end
-        # Shell 1 is already the lattice cycle, in order. Outer shells come out
-        # of the breadth-first walk in whatever order the frontier happened to
-        # reach them, so they are wound geometrically.
+        # Shell 1 is already cyclic; sort outer shells geometrically.
         j > 1 && _sort_ccw!(next, g, c)
         push!(shells, next)
         isempty(next) && break
@@ -666,10 +438,8 @@ function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
     return shells
 end
 
-# Order a shell counter-clockwise about `c`'s centre, from the azimuth of `c`'s
-# own west corner. `e1 x e2 == centre` makes `(e1, e2)` right-handed SEEN FROM
-# OUTSIDE, which is what puts increasing `atan(u.e2, u.e1)` counter-clockwise
-# from outside rather than from inside.
+# Sort counter-clockwise from the west-corner azimuth. The tangent basis is
+# right-handed when viewed from outside the sphere.
 function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::LevelGrid, c::DGG.LevelIndex)
     length(cells) <= 1 && return cells
     centre = DGG.cell_centroid(g, c)

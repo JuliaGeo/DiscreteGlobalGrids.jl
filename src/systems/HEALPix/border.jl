@@ -1,11 +1,4 @@
-# ---------------------------------------------------------------------------
-# The subtree rim, without a single neighbour query
-#
-# Ported from the pre-redesign `src/HEALPix/HealpixKernel.jl`. The derivation
-# below is that file's, re-checked against the new interface; the code is the
-# same Morton-quadrant recursion.
-#
-# WHY THE SUBTREE IS A SQUARE BLOCK. A nested id is
+# A nested id is
 # `face * nside^2 + morton(ix, iy)` (`xyf_to_nested`), and refining Δ levels
 # scales the lattice by `s = 2^Δ` on the SAME face: pixel `(ix, iy, face)` at
 # `level` covers exactly `[ix*s, (ix+1)*s) x [iy*s, (iy+1)*s)` of the leaf
@@ -14,8 +7,7 @@
 #
 #     morton(ix*s + dx, iy*s + dy) = morton(ix, iy) * s^2 + morton(dx, dy)
 #
-# — the high bits stay the parent's code, the low `2Δ` bits are free. Two
-# consequences, and the whole method is built on them:
+# Thus the high bits remain the parent code and the low `2Δ` bits are free:
 #
 #   * the subtree is the contiguous id range `[id * 4^Δ, (id+1) * 4^Δ)`, which
 #     is exactly what `descendant_range` returns; and
@@ -24,41 +16,18 @@
 #     the operation reduces to "emit the perimeter of an `s x s` square in
 #     Morton order".
 #
-# WHY THE RIM IS THAT PERIMETER. The neighbourhood here is the 3x3 lattice
-# block, so a descendant at offset `(dx, dy)` has every neighbour inside the
-# subtree iff `0 < dx < s-1` and `0 < dy < s-1`. The rim is therefore
+# In the 3x3 lattice neighbourhood, a descendant has all neighbours inside iff
+# `0 < dx < s-1` and `0 < dy < s-1`. The rim is
 # `dx ∈ {0, s-1} || dy ∈ {0, s-1}`, of size `4s - 4`.
 #
-# Three things could break that argument. None does:
-#
-#   * *Corner vs edge adjacency.* The 8-neighbourhood gives the IDENTICAL rim
-#     to a 4-neighbourhood: every perimeter cell already has an EDGE neighbour
-#     outside, and every interior cell has all 8 inside. So this answers the
-#     same question under `Vertex()` and under `Edge()`.
-#   * *Face seams.* A lattice step off a face edge wraps through `NB_FACEARRAY`,
-#     which could in principle deposit the neighbour back inside the block. It
-#     cannot: no entry of any non-centre row of that table maps a face to
-#     itself, so a wrapped neighbour always lands on a different base face — and
-#     a subtree block never leaves its own face.
-#   * *The 24 degenerate pixels.* The pixels with only seven neighbours sit on
-#     the degree-3 vertices of the base tiling, which in lattice terms are face
-#     CORNERS. A face corner is a corner of whatever block contains it, and a
-#     block corner has 5 of its 8 neighbours outside, so losing the one missing
-#     diagonal still leaves 4. The margin, not luck, is why the missing
-#     neighbour cannot un-rim it.
-#
-# WHY THE WALK RECURSES. Walking the perimeter geometrically (along the bottom,
-# up the right, back along the top) is NOT monotone in Morton order and would
-# need a sort. `_rim_walk!` instead recurses in Morton-quadrant order: the four
+# Edge and vertex connectivity yield the same rim; seam crossings leave the
+# subtree face (no non-centre row of `NB_FACEARRAY` maps a face to itself), and
+# missing diagonals at degree-3 vertices do not affect rim membership.
+# `_rim_walk!` recurses in Morton-quadrant order: the four
 # quadrants of an `s x s` square occupy consecutive id blocks at offsets
 # `q * (s/2)^2`, so visiting `q = 0, 1, 2, 3` and pruning the quadrants that
 # inherit none of the parent square's exposed sides emits in strictly ascending
-# id order by construction. The pruning is what keeps it O(rim).
-#
-# STATUS: T7 added the generic `subtree_border` hook to `src/interface/`, and
-# this walk is now HEALPix's method on it — the signature grew a `connectivity`
-# keyword it ignores (see the docstring) and nothing else changed.
-# ---------------------------------------------------------------------------
+# id order by construction, with O(rim) pruning.
 
 # Extended, not shadowed: `HEALPix.subtree_border` and
 # `DiscreteGlobalGrids.subtree_border` are the same function, so generic code
@@ -111,8 +80,6 @@ end
 """
     subtree_border(sys::HEALPixSystem, c::LevelIndex, leaf_level::Integer; connectivity = Vertex()) -> Vector{LevelIndex}
 
-HEALPix's method on the package's [`subtree_border`](@ref) generic.
-
 The **rim** of `c`'s subtree at `leaf_level`: the descendants that have at
 least one neighbour outside the subtree, ascending by canonical id.
 
@@ -120,15 +87,10 @@ least one neighbour outside the subtree, ascending by canonical id.
 Θ(rim) time and one allocation — the rim is read straight off the leaf lattice,
 with no neighbour query at any level.
 
-`connectivity` is accepted for the generic's signature and does not change the
-answer. A subtree is a square block of the face lattice, so a leaf is on the rim
-exactly when it sits on one of the block's four sides — and a cell on a side has
-a neighbour outside the block under edge adjacency already. `Vertex()` adds
-diagonal neighbours, which can only be outside the block for cells that are
-already on a side. See the file header.
+`connectivity` does not change the result: edge adjacency already identifies
+every boundary cell of the square lattice block.
 
-Positions, if wanted, are `rawid + 1` — the same convention
-[`descendant_range`](@ref) returns directly.
+Positions are `rawid + 1`.
 """
 function subtree_border(sys::HEALPixSystem, c::DGG.LevelIndex, leaf_level::Integer;
         connectivity::DGG.Connectivity=DGG.Vertex())

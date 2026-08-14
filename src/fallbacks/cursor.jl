@@ -1,65 +1,27 @@
-# ---------------------------------------------------------------------------
-# `HierarchicalGridCursor` — the hierarchy IS the tree
-#
-# One cursor type for every hierarchical system; systems never define cursors.
-# A cursor is simultaneously the tree and a node in it: `treeify` returns the
-# root, whose leaf index space is `1:ncells(grid)` — the space
-# `ConservativeRegridding` addresses through `Trees.getcell`, and, for a
-# `PartialGrid`, the position space of the caller's own id vector.
-#
-# Two descent modes, distinguished by the `selection` type parameter so that no
-# node pays a runtime branch:
-#
-#   * window mode (`has_sorted_subtrees(sys)`, `selection === nothing`): a node
-#     owns a contiguous *position* window. On a complete level grid that window
-#     is `descendant_range` itself — positions, not ids, so there is nothing to
-#     convert. On a `PartialGrid` it is two binary searches of the stored ids
-#     against the child's descendant id bounds: O(log n) per node, no per-node
-#     vector.
-#   * selection mode (`selection::Vector{Int}`): a node materialises the
-#     positions it owns, split from its parent's by one `ancestor` pass. The
-#     fallback for a system that does not declare sorted subtrees; the root
-#     selection is `1:ncells(grid)` materialised, which is the price of not
-#     having the trait.
-#
-# Node extents delegate to the system's `node_extent` — the covering law is the
-# system's to state, and the cursor has nothing to add to it except where a
-# node stores a *proper* subset of its subtree. There it may tighten to the
-# union cap of what it really owns, for a bounded number of boundary calls.
-# ---------------------------------------------------------------------------
+# A hierarchical cursor uses grid positions as leaf indices. Sorted-subtree
+# systems descend through contiguous windows; others materialize selections.
+# Sparse partial-grid nodes may tighten their system-provided extent.
 
 """
     HierarchicalGridCursor(grid; bucket_size = nothing)
 
-`GeometryOps.SpatialTreeInterface` cursor over a grid of a hierarchical
-system — build one with [`treeify(grid)`](@ref treeify) rather than by calling
-this constructor.
+`GeometryOps.SpatialTreeInterface` cursor over a hierarchical grid. Prefer
+[`treeify(grid)`](@ref treeify) to direct construction.
 
 The tree is the system's own hierarchy: a node is one cell, its children are
 that cell's [`children`](@ref), and its leaves are the grid's cells beneath it.
-A synthetic root one level above [`rootcells`](@ref) stands for the whole
-sphere; a [`PartialGrid`](@ref) built over a subtree starts at its own root
-cell instead, so descent stays windowed over the chunk.
+A synthetic root above [`rootcells`](@ref) covers the sphere. A rooted
+[`PartialGrid`](@ref) starts at its stored root.
 
-`bucket_size` stops descent once a node covers that few stored cells (they are
-then scanned, with one cap prune first); `nothing` takes the grid's own — a
-`PartialGrid` field, otherwise `0`, which descends to single cells.
+`bucket_size` stops descent when a node has at most that many stored cells;
+`nothing` uses the grid default.
 
-Node extents are `SphericalCap`s from the system's [`node_extent`](@ref), and
-`node_extent_is_expensive` is `true`, so GeometryOps' dual depth-first search
-caches a node's child extents rather than re-deriving them per opposing child.
+Node extents are system [`node_extent`](@ref) caps and are marked expensive.
 
 !!! note "What a system has to get right for this to work"
-    A grid that reports a system and is *not* a [`PartialGrid`](@ref) is taken
-    to be the complete `levelgrid(sys, level(grid))`, so that a child's window
-    is [`descendant_range`](@ref) read straight off — positions, no conversion.
-    A system whose `levelgrid` returned some other subset with a different
-    position order would descend into the wrong cells; that is precisely what
-    the position contract of `descendant_range` forbids.
-
-    Window descent also asks for `descendant_range(sys, c, level(c))` at the
-    level above the leaves, so the `l == level(c)` case must answer the cell's
-    own one-element position range rather than throwing.
+    A non-`PartialGrid` grid with a system must be its complete level grid in
+    canonical position order. `descendant_range(sys, c, level(c))` must return
+    the cell's one-element position range.
 """
 struct HierarchicalGridCursor{G<:AbstractGrid,S<:AbstractHierarchicalGridSystem,ID,X}
     grid::G
@@ -86,9 +48,7 @@ function HierarchicalGridCursor(grid::AbstractGrid; bucket_size::Union{Nothing,I
     bs >= 0 || throw(ArgumentError("bucket_size must be non-negative"))
     n = ncells(grid)
     lvl, id = _tree_root(grid, sys, top)
-    # Selection mode materialises the whole position space once, at the root.
-    # That is what a system without `has_sorted_subtrees` costs; every system
-    # in scope declares it and takes the window path.
+    # Selection mode materializes the root position space once.
     selection = has_sorted_subtrees(sys) ? nothing : collect(1:n)
     return HierarchicalGridCursor{typeof(grid),typeof(sys),typeof(id),typeof(selection)}(
         grid, sys, top, Int(leaf), bs, lvl, id, 1, n, selection)
@@ -141,13 +101,8 @@ _stored_id(cursor::HierarchicalGridCursor, i::Int) =
 """
     node_indices(cursor) -> AbstractVector{Int}
 
-The grid **positions** this node owns, ascending — the same index space
-`Trees.getcell(tree, i)` addresses, and, for a [`PartialGrid`](@ref), position
-`i` of the id vector the grid was built from.
-
-This is how a traversal accepts a whole subtree without walking it: for a
-window cursor it is the O(1) range, for a selection cursor the materialised
-vector.
+Return the ascending grid positions owned by this node. A window cursor returns
+an `O(1)` range; a selection cursor returns its materialized vector.
 """
 node_indices(cursor::WindowCursor) = cursor.first_index:cursor.last_index
 node_indices(cursor::SelectionCursor) = cursor.selection
@@ -163,10 +118,7 @@ node_cell(cursor::HierarchicalGridCursor) = _issynthetic(cursor) ? nothing : cur
 # Child enumeration
 # --------------------------------------------------------------------------
 
-# A leaf has no children, and it must say so here rather than by raising the
-# system's own "cell is at max_level" error out of `children` — a bucketed node
-# is a leaf while still having perfectly good children in the hierarchy, so
-# `nchild` and `getchild` have to agree about it in one place.
+# Treat bucketed and maximum-level nodes uniformly as leaves.
 function _child_ids(cursor::HierarchicalGridCursor)
     STI.isleaf(cursor) && return cellindextype(cursor.system)[]
     _issynthetic(cursor) && return rootcells(cursor.system)
@@ -180,10 +132,8 @@ _child_window(cursor::HierarchicalGridCursor, child_id) =
 
 _range_bounds(r::AbstractUnitRange) = (Int(first(r)), Int(last(r)))
 
-# ... and on a PartialGrid: two binary searches inside the parent's window,
-# against the child's descendant id bounds. Ids inside those bounds that are
-# not descendants cannot exist (that is the two-sided range contract), so the
-# window is exact rather than a superset.
+# A partial-grid child window is the exact intersection with its descendant-id
+# bounds, found by two binary searches.
 function _child_window(cursor::HierarchicalGridCursor{<:PartialGrid}, child_id)
     cursor.last_index >= cursor.first_index || return (cursor.first_index, cursor.first_index - 1)
     range = descendant_range(cursor.system, child_id, cursor.leaf_level)
@@ -206,10 +156,8 @@ _nonempty(cursor::HierarchicalGridCursor) = _stored_count(cursor) > 0
 """
     _selection_children(cursor) -> Vector{<:HierarchicalGridCursor}
 
-Children of a selection-mode node, non-empty ones only. One pass over the
-parent's selection buckets every stored position under its ancestor at the
-child level, so the whole child row costs `O(selection * log nchild)` rather
-than `O(selection * nchild)`.
+Return nonempty children of a selection-mode node. Bucketing by child ancestor
+costs `O(selection * log nchild)`.
 """
 function _selection_children(cursor::SelectionCursor)
     child_level = cursor.level + 1
@@ -281,13 +229,9 @@ function STI.getchild(cursor::HierarchicalGridCursor, i::Int)
     throw(BoundsError(cursor, i))
 end
 
-# How many stored leaves an internal node will spend `cell_boundary` calls on
-# to tighten its extent past the system's own `node_extent`. A constant,
-# deliberately, not a fraction of the subtree: it is the per-node work bound,
-# and the defect it replaces was a limit that scaled with the subtree instead.
-# 64 clears one child row at every aperture in scope (4, 7, 9) and two rows of
-# an aperture-7 grid (49); past that a node is not "a handful of stored leaves"
-# any more and the system's own bound is the honest one.
+# Maximum per-node boundary calls used to tighten a sparse node extent. 64
+# clears one child row at every aperture in scope (4, 7, 9) and two rows of an
+# aperture-7 grid (49).
 const STORED_UNION_CAP_LIMIT = 64
 
 function STI.node_extent(cursor::HierarchicalGridCursor)
@@ -297,23 +241,14 @@ function STI.node_extent(cursor::HierarchicalGridCursor)
     cursor.level >= cursor.leaf_level && return cell_cap(cursor.grid, cursor.id)
     count = _stored_count(cursor)
     if 0 < count <= STORED_UNION_CAP_LIMIT && count < _subtree_count(cursor)
-        # A node storing a handful of a big cell's leaves — the sparse chunk a
-        # partial grid exists for — is bounded far more tightly by a cap around
-        # those leaves, and that tightness is pruning power. A node that stores
-        # its WHOLE subtree gains at most the covering headroom from the union
-        # and pays one `cell_boundary` per leaf for it, which is pure loss and
-        # falls on the nodes nearest the leaves — the many.
+        # Tighten only proper sparse subsets; complete subtrees use the system cap.
         return cells_cap(cursor.grid, (_stored_id(cursor, i) for i in 1:count))
     end
     return node_extent(cursor.system, cursor.id)
 end
 
-# How many leaves the node's cell has in total, against which `_stored_count`
-# decides whether the node is sparse. A complete level grid stores every one of
-# them by construction, so the union cap can never win there and the count is
-# reported as the stored count itself. Where the subtree size is not O(1) to
-# know (no sorted subtrees) the node is assumed sparse: it is a partial grid on
-# the slow path, which is exactly the case the union cap exists for.
+# Complete grids report their stored count; partial grids use the descendant
+# range when available and otherwise conservatively qualify as sparse.
 _subtree_count(cursor::HierarchicalGridCursor) = _stored_count(cursor)
 
 function _subtree_count(cursor::HierarchicalGridCursor{<:PartialGrid})
@@ -324,10 +259,8 @@ end
 """
     STI.child_indices_extents(cursor) -> Vector{Tuple{Int,SphericalCap{Float64}}}
 
-Positions and tight cell caps of a leaf node's cells. Materialised
-deliberately: the dual depth-first search re-iterates this once per opposing
-leaf, so a lazy generator would recompute every cap — and its boundary — on
-each pass.
+Return leaf grid positions and tight cell caps. The result is materialized to
+avoid recomputing caps during repeated dual-tree passes.
 """
 function STI.child_indices_extents(cursor::HierarchicalGridCursor)
     STI.isleaf(cursor) ||
@@ -364,10 +297,9 @@ end
 Trees.getcell(cursor::HierarchicalGridCursor) =
     (Trees.getcell(cursor, i) for i in node_indices(cursor))
 
-# Mirrors `Trees.AbstractQuadtreeCursor`'s policy: spawn once a subtree's leaf
-# count drops below `total / (nthreads * 32)`, which lands a few hundred tasks
-# for the scheduler to balance. Without this method ConservativeRegridding's
-# `::Any` fallback applies — a cap-area heuristic, not a work estimate.
+# Parallelize below `total / (nthreads * chunks_per_thread)` stored leaves,
+# mirroring `Trees.AbstractQuadtreeCursor`'s policy. Without this method
+# ConservativeRegridding's `::Any` fallback decides on cap area, not work.
 const PARALLELIZE_CHUNKS_PER_THREAD = 32
 
 function Trees.should_parallelize(cursor::HierarchicalGridCursor, ::US.SphericalCap)

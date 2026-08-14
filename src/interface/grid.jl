@@ -1,21 +1,11 @@
 # ---------------------------------------------------------------------------
-# The base grid interface.
+# Base-grid interface contracts. `Int` arguments are dense positions;
+# `AbstractCellIndex` arguments are cell identities. Geometry uses
+# `GO.UnitSphericalPoint` unless a converting wrapper states otherwise.
 #
-# Four required primitives, and every other generic declared with the contract
-# it is implemented against. Implementations of the non-required generics live
-# in `src/fallbacks/`; this file is the contract, and it is what a third-party
-# implementor reads.
-#
-# Two conventions hold throughout, without exception:
-#
-#   * A bare `Int` argument is a POSITION in `1:ncells(grid)`. A typed
-#     `AbstractCellIndex` argument is an IDENTITY. See `AbstractGrid`.
-#   * All geometry is on the unit sphere, as `GO.UnitSphericalPoint`. Longitude
-#     and latitude appear only in explicitly named converting wrappers.
-#
-# A hierarchical system does not implement the four on a grid type of its own:
-# `levelgrid` hands back a `HierarchicalLevelGrid`, and the four arrive as the
-# system-level methods documented in `src/interface/system.jl`.
+# A hierarchical system implements the four required primitives as system-level
+# methods instead; see `src/interface/system.jl`. `levelgrid` returns a
+# `HierarchicalLevelGrid`, which forwards to them.
 # ---------------------------------------------------------------------------
 
 # ===========================================================================
@@ -104,14 +94,8 @@ function cell_centroid end
     level(c::AbstractCellIndex) -> Int
     level(grid::AbstractGrid) -> Union{Int,Nothing}
 
-The refinement level of a cell id, or of a grid.
-
-`level(c)` is **total on [`AbstractCellIndex`](@ref)**: every canonical id is
-self-describing about its level, either through in-band bits (`Z7Cell`,
-`H3Cell`) or an explicit field ([`LevelIndex`](@ref)). No system, grid or table
-is needed to answer it. This is precisely what lets the interface drop the old
-`(system, level, id)` argument triple: an id already carries its level, so
-passing one alongside it can only create a way to disagree.
+The refinement level of a cell id or grid. `level(c)` is total on
+[`AbstractCellIndex`](@ref): each id encodes its level without a system or grid.
 
 `level(grid)` is the level of the system grid `grid` is drawn from, or
 `nothing` for a standalone grid with no hierarchy. See [`system`](@ref).
@@ -181,13 +165,8 @@ function cellindextypes end
 """
     cellposition(grid::AbstractGrid, c::AbstractCellIndex) -> Union{Int,Nothing}
 
-The **position** of cell `c` in `grid`'s dense order, or `nothing` if `c` is
-not in `grid`.
-
-The inverse of [`cellindex`](@ref). `nothing` — rather than an error — is the
-answer for a cell outside the grid, because asking whether a cell is present is
-the normal way to intersect an id set with a partial grid, and because
-neighbour and query results at a coverage edge are full of legitimate misses.
+The **position** of cell `c` in `grid`'s dense order, or `nothing` when absent.
+It is the inverse of [`cellindex`](@ref).
 
 `c` may be given in any scheme in [`cellindextypes`](@ref); it is
 [`reindex`](@ref)ed to canonical first. A `c` at a different level than the
@@ -216,43 +195,14 @@ function cell_polygon end
 """
     cell_area(grid::AbstractGrid, c::AbstractCellIndex) -> Float64
 
-The area of cell `c` **in steradians**. Multiply by `R^2` for a physical area on
-a sphere of radius `R`; for an equal-area DGGS read on its authalic sphere (see
-[`authalic_sphere`](@ref)) that product is the true ellipsoidal area.
+The true spherical area of cell `c`, in steradians. Multiply by `R^2` for area
+on a sphere of radius `R`; using [`authalic_sphere`](@ref) gives ellipsoidal
+area for an equal-area DGGS.
 
-# What "the cell" means here
-
-`cell_area` reports the area of the **true cell** — the region the system says
-this cell *is*. For most systems the true cell is exactly the polygon
-[`cell_boundary`](@ref) publishes, and then this is that polygon's spherical
-area and the two are the same statement. But the two can come apart, in both
-directions, and this method follows the cell rather than the ring:
-
-  - A system may publish a boundary that is a **densification** of a curved true
-    cell. HEALPix is this case: a pixel is an analytic equal-area diamond of
-    area exactly `4π/(12·4^level)`, and the published ring is a polyline
-    approximation of it that converges from below. `cell_area` returns the
-    closed form; the ring is the approximation, not the definition.
-  - A system may publish a boundary that tiles the sphere exactly while its
-    *chart* cells do not have that boundary. IGeo7 is this case: the corner
-    rings partition the sphere, so their areas are the honest answer to "how
-    much sphere does this cell own", even though the equal-area chart assigns a
-    slightly different figure (`IGeo7.equal_area_steradians`, which differs by
-    +1.6% on hexagons and −9.9% on pentagons at level 1). There the ring *is*
-    the true cell, and `cell_area` is ring-derived.
-
-So the rule is: **the true cell, not the ring** — and for the systems where the
-true cell is the ring, which is the common case, they coincide. A system whose
-`cell_area` is not simply the area of its own `cell_boundary` must say so in its
-`cell_area` docstring and say which quantity it returns.
-
-The generic fallback computes the spherical area of the [`cell_polygon`](@ref)
-ring, which is the right answer whenever the ring is the cell. A system
-overrides only to *correct* that, never to speed it up at the cost of changing
-the answer.
-
-Never planar. Spherical throughout, so it is right for cells that span a large
-solid angle, where a planar formula is not merely inaccurate but wrong in sign.
+The generic fallback computes the spherical area of [`cell_polygon`](@ref).
+Systems must override when the published boundary only approximates the true
+cell, as for a densified curved boundary, and document the returned quantity.
+The result is never a planar area.
 """
 function cell_area end
 
@@ -274,17 +224,12 @@ function cell_extent end
 """
     getcell(grid::AbstractGrid, i::Int) -> GI.Polygon
 
-The cell at **position** `i` as a unit-sphere polygon.
-
-This is `ConservativeRegridding.Trees.getcell`, extended here with its `Trees`
-meaning intact: `Trees` addresses cells by dense position, and this is how a
-regridder walks a grid. Implemented once, generically, as
+The cell at **position** `i` as a unit-sphere polygon. This extends
+`ConservativeRegridding.Trees.getcell` and is implemented as
 
     cell_polygon(grid, cellindex(grid, i))
 
-Grid authors never write it. Note the argument convention — `getcell` takes a
-position, `cell_polygon` takes an id; they are the two halves of the same
-lookup, kept separate so neither can be confused for the other.
+`getcell` takes a position; [`cell_polygon`](@ref) takes an id.
 """
 function getcell end
 
@@ -304,23 +249,11 @@ converting wrapper and takes **degrees**.
 
 `nothing` is a real answer, not an error: grids need not cover the sphere.
 
-**Ties.** A point exactly on a shared boundary belongs to exactly one cell, and
-which one is deterministic and documented per system. The generic fallback
-resolves a tie by taking the first candidate in canonical id order.
-
-"Deterministic" here means **per platform**: the same call, in the same process
-or in another process on the same machine and Julia build, always gives the same
-answer, and a system must document the rule it uses to get there. It does *not*
-promise bit-identity across platforms. It cannot: a tie is decided by comparing
-floating-point quantities that a different CPU, libm or `--math-mode` may round
-differently in the last place, and the set of points where that changes the
-answer is a measure-zero curve. Requiring cross-platform bit-identity would
-force every system to carry exact arithmetic on its boundary test for a class of
-input that no real workload lands on by accident — the wrong trade. What *is*
-promised everywhere is the part that matters: the answer is always one of the
-cells genuinely incident to the point, never a third cell and never `nothing`
-inside coverage. Systems whose tie rule is an exact integer or lattice
-comparison get cross-platform identity as a bonus and may say so.
+**Ties.** A shared-boundary point is assigned deterministically per platform to
+one incident cell. The generic fallback selects the first candidate in canonical
+id order. Floating-point boundary tests do not guarantee cross-platform
+bit-identical ties; each system documents its rule. A tie must never select a
+nonincident cell or return `nothing` inside coverage.
 
 The generic implementation descends [`treeify(grid)`](@ref treeify) to a
 candidate set and then tests point-in-cell; systems with a closed-form inverse
@@ -335,74 +268,39 @@ function cellat end
 """
     neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Int = 1; connectivity::Connectivity = Vertex())
 
-All cells of `grid` within `k` adjacency steps of `c`, **excluding `c` itself**.
+All cells of `grid` within `k` adjacency steps of `c`, excluding `c`.
 
 # Connectivity
 
-[`Vertex()`](@ref Vertex) — Moore, share at least a vertex — is the **default**,
-because it is the superset a caller cannot rebuild from an edge-only answer.
-[`Edge()`](@ref Edge) is the opt-in restriction. The two coincide exactly where
-**three cells meet at every vertex** — the icosahedral hexagons-with-twelve-
-pentagons family (IGeo7, H3) and the dodecahedral resolution-0 shell — because
-there a shared vertex always comes with a shared edge. Where a vertex carries
-more than three cells the two differ, and that includes one *pentagonal*
-system: A5's Cairo-style tiling has 11 vertex neighbours against 3 edge
-neighbours at resolution 1. On quadrilateral grids `Vertex()` adds the corners
-— four cells to a vertex in the lattice interior, five where ISEA4R's diamonds
-meet an icosahedral vertex.
+[`Vertex()`](@ref Vertex), which includes vertex contact, is the default.
+[`Edge()`](@ref Edge) requires a shared edge. They coincide where exactly three
+cells meet at every vertex — the icosahedral hexagon-with-pentagon family
+(IGeo7, H3) — and differ wherever a vertex carries more, including one
+*pentagonal* system: A5's Cairo-style tiling gives 11 vertex against 3 edge
+neighbours at resolution 1. Quadrilateral grids add corner neighbours under
+`Vertex()`: four cells to a vertex in the lattice interior, five where ISEA4R's
+diamonds meet an icosahedral vertex.
 
 # Order
 
-**The order is part of the contract, and it is rotational.** The result is the
-rings 1, 2, …, `k` concatenated outward, shell by shell:
+Order is part of the contract. Results concatenate rings outward:
 
     neighbors(grid, c, k) == vcat(ring(grid, c, 1), ring(grid, c, 2), ..., ring(grid, c, k))
 
-Within one ring the cells run **counter-clockwise seen from outside the
-sphere** — counter-clockwise in the tangent plane at `cell_centroid(grid, c)`,
-viewed from above that plane — beginning at a cell each system documents. The
-rings are never interleaved and the result is never sorted by id.
+Within each ring, cells run counter-clockwise in the tangent plane at
+`cell_centroid(grid, c)`, viewed from outside the sphere, from a system-defined
+start. Results are not id-sorted. The geometric fallback uses the first ring-1
+neighbour as zero azimuth and breaks exact azimuth ties by canonical id.
 
-Because ring `k` is the last block, [`ring`](@ref) is the *tail* of `neighbors`:
-
-    ring(grid, c, k) == neighbors(grid, c, k)[end - length(ring(grid, c, k)) + 1 : end]
-
-That is the law, and it is what the rotational order is for. Position `j` of a
-ring always names the same direction relative to `c`, so a stencil weight vector
-means the same thing at every cell and can be rotated as a unit; a coarser
-neighbourhood extends a finer one by appending, without recomputing it. Sorting
-by id destroys both properties, which is why no method here sorts.
-
-Each system picks its own ring-1 start (a lattice direction, a compass point);
-what a system must not do is leave it unstated. Where a system has a natural
-direction only for the immediate ring, the recommended extension — and what the
-geometric fallback does — is to measure the outer rings' azimuths **relative to
-the first ring-1 neighbour**, so every ring starts on the same spoke.
-
-The geometric fallback has no lattice to read a direction off, so it realises
-the same contract by measurement: it orders each ring by azimuth about
-`cell_centroid(grid, c)`, counter-clockwise seen from outside, with the
-first ring-1 neighbour as the zero direction and exact ties broken by ascending
-canonical id. No method in this package is ever allowed to return neighbours in
-an unspecified order.
-
-A cell with fewer neighbours than the lattice maximum — a pentagon, or a cell on
-the edge of a partial grid — simply yields a shorter ring. The winding is
-unchanged; there is no padding and no gap marker.
+Cells with fewer neighbours yield shorter rings without padding.
 
 # Container
 
-The grid's choice: any ordered, indexable collection whose `eltype` is the
-grid's cell index type. A `SmallCollections.SmallVector` sized by
-[`max_neighbors`](@ref) is recommended at small `k`, so a neighbour sweep does
-not allocate.
+Any ordered, indexable collection with the grid's cell-index `eltype`.
 
 # Coverage
 
-Neighbours that fall outside a partial grid's coverage are **absent** from the
-result — never zero-padded, never `nothing`-filled. Padding is a lookup-layer
-convenience; it is not interface semantics, and a caller that wants it can get
-it from [`cellposition`](@ref) returning `nothing`.
+Neighbours outside a partial grid are omitted, not padded.
 
 `k` must be ≥ 0; `k == 0` returns an empty collection. See [`ring`](@ref) for
 the cells at *exactly* distance `k`.
@@ -412,18 +310,13 @@ function neighbors end
 """
     ring(grid::AbstractGrid, c::AbstractCellIndex, k::Int; connectivity::Connectivity = Vertex())
 
-The cells of `grid` at adjacency distance **exactly** `k` from `c` — the shell,
-not the disc. `ring(grid, c, 0)` is `c` alone.
-
-Derived from [`neighbors`](@ref) and overridable. The two are related exactly,
-not merely as sets: the disc is the rings concatenated outward,
+The cells at adjacency distance exactly `k` from `c`. `ring(grid, c, 0)` is
+`c` alone. The ordered result satisfies
 
     neighbors(grid, c, k) == vcat(ring(grid, c, 1), ..., ring(grid, c, k))
 
-so `ring(grid, c, k)` is the **tail block** of `neighbors(grid, c, k)`,
-element for element and in order. A system that overrides one of these must
-override the other consistently — computing the two with independent walks that
-happen to agree as sets is the way this law is usually broken.
+so ring `k` is the final ordered block of `neighbors(grid, c, k)`. Overrides
+must preserve this equality.
 
 `ring` carries the same order (counter-clockwise seen from outside the sphere,
 from the system's documented start), container and coverage contracts as
@@ -439,23 +332,16 @@ function ring end
     treeify(grid::AbstractGrid)
     treeify(manifold::GeometryOpsCore.Manifold, grid::AbstractGrid)
 
-A spatial tree over `grid`, for pruning traversals and for
-`ConservativeRegridding`.
-
-This is `ConservativeRegridding.Trees.treeify`, extended here, and it is
-**total on [`AbstractGrid`](@ref)** — every grid can be treeified, so the full
-`Trees` surface ([`ncells`](@ref), [`getcell`](@ref),
-`GeometryOpsCore.best_manifold`, `Trees.should_parallelize`) works for every
-grid this package can describe.
+A spatial tree over `grid`, used for traversal pruning and
+`ConservativeRegridding`. This extends `ConservativeRegridding.Trees.treeify`
+and is total on [`AbstractGrid`](@ref).
 
 The result implements `GeometryOps.SpatialTreeInterface`. **Node extents are
 `GO.UnitSpherical.SphericalCap`s** at every level of every tree here, which is
 the whole predicate vocabulary tree descent needs.
 
-A grid from a hierarchical system treeifies to a `HierarchicalGridCursor` whose
-node extents are the system's own [`node_extent`](@ref) — the hierarchy *is*
-the tree, so there is nothing to build. Any other grid gets a fallback tree
-built over position space from cell extents. Hierarchy is purely a fast path.
+A hierarchical grid uses its [`node_extent`](@ref) hierarchy; other grids use a
+fallback tree over position space.
 
 The one-argument form picks the manifold with `best_manifold(grid)`.
 """
@@ -474,11 +360,9 @@ typed cell ids.
 
 # Predicates
 
-The predicate vocabulary is [DE9IM.jl](https://github.com/rafaqz/DE9IM.jl)'s
-functor wrappers, re-exported here: `Intersects(target)`, `Covers(target)`,
-`Touches(target)`, `Within(target)`, and the rest. `Base.parent(pred)` unwraps
-the target; keywords ride along with it. DE9IM.jl supplies only the types —
-every semantic is implemented in this package, on the sphere.
+Predicates are re-exported DE9IM.jl wrappers such as `Intersects(target)`,
+`Covers(target)`, and `Touches(target)`. `Base.parent(pred)` returns the target.
+This package defines their spherical semantics.
 
 The target may be a GeoInterface geometry, an `Extents.Extent`, or a
 `GO.UnitSpherical.SphericalCap`. Longitude/latitude targets are lifted to the
@@ -486,10 +370,8 @@ unit sphere once, at the boundary of the call.
 
 # Semantics
 
-**Exact.** The tree prunes with [`node_extent`](@ref) under the covering law,
-which can only ever over-select; the surviving candidates are then decided by
-prepared spherical predicates. Pruning is an optimisation and never appears in
-the answer.
+Tree pruning may over-select candidates; prepared spherical predicates determine
+the exact result.
 
 The `sys` method answers at the requested `level` without materialising the
 level grid.
@@ -503,15 +385,8 @@ function query end
 """
     system(grid::AbstractGrid) -> Union{AbstractHierarchicalGridSystem,Nothing}
 
-The hierarchical system `grid` is a level (or a subset of a level) of, or
-`nothing` for a standalone grid that has no hierarchy.
-
-`nothing` is not a defect: a tripolar or gaussian grid is a perfectly good
-[`AbstractGrid`](@ref) and simply stops at the base interface. Generic code
-that wants a fast path tests for `nothing` and falls back; it must never
-*require* a system.
-
-The default is `nothing`, so a standalone grid implements nothing extra.
+The hierarchical system containing `grid`, or `nothing` for a standalone grid.
+The default is `nothing`.
 
 See also [`level`](@ref).
 """

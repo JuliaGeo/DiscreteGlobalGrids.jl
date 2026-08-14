@@ -1,46 +1,5 @@
-# ---------------------------------------------------------------------------
-# The ISEA4R system on the grid interface
-#
-# ISEA4R is the second DENSE-ORDINAL system in this package, and it is the same
-# arithmetic as nested HEALPix with ten diamonds in place of twelve faces: at
-# level `l` the cells are exactly `0:10*4^l - 1`, cell `p`'s children are
-# `4p:4p+3`, and its parent is `p ÷ 4`. Every hierarchy method below is that
-# arithmetic and nothing here needs a lookup table.
-#
-# ## The id, and the base of its numbering
-#
-# The canonical id is the interface's own `LevelIndex(level, index)`, where
-#
-#     index  ==  diamond * 4^level + morton(ix, iy),  0-BASED
-#     position in `levelgrid(sys, level)`  ==  index + 1
-#
-# 0-based because the radix-4 prefix arithmetic that is the whole point of the
-# Morton code — `4p:4p+3` for the children, `p ÷ 4` for the parent, `p >> 2Δ`
-# for an ancestor — is child/parent arithmetic only in 0-based numbering. The
-# `+ 1` therefore lives in exactly one place, the position/index conversion in
-# `cellindex`/`cellposition`, where the interface's "a bare `Int` is a position"
-# rule makes it visible rather than ambient.
-#
-# ## Why Morton and not row-major
-#
-# `chart.jl` carries both codecs, and the row-major one is valid at every
-# `nside` while Morton needs `nside = 2^k`. Morton is nonetheless the canonical
-# one, and the reason is the trait: `diamond * 4^level + morton` is depth-first
-# curve order, so subtrees are contiguous runs of positions and
-# `has_sorted_subtrees` is `true`. Row-major order scatters a cell's four
-# children across two rows, and every prefix fast path in the package would be
-# unavailable. Row-major is not offered as an alternate id scheme (see the
-# deferral note at `cellindextypes`).
-#
-# ## What is a fast path here
-#
-#   * `cellat` is closed-form (`point_to_morton`) — no tree descent.
-#   * `descendant_range` is `[p*4^Δ, (p+1)*4^Δ)` shifted into position space.
-#   * `node_extent` is the EXACT subtree cap, not the inflated default.
-#   * `neighbors`/`ring` walk the lattice and the seam tables, not the geometry.
-#   * `ancestor` drops `2Δ` bits in one shift.
-#   * `cell_area` is the closed-form equal-area value.
-# ---------------------------------------------------------------------------
+# ISEA4R uses 0-based Morton identifiers over ten diamonds. Parent/child and
+# subtree operations are radix-4 arithmetic; grid positions are identifier + 1.
 
 # ===========================================================================
 # Types
@@ -49,42 +8,13 @@
 """
     ISEA4RSystem() <: AbstractHierarchicalGridSystem
 
-The ISEA4R hierarchical grid system: ten equal-area rhombus charts over the
-icosahedron's ten diamonds, each refined by aperture-4 quadrant subdivision, on
-the unit sphere.
+Ten equal-area ISEA rhombus charts refined by aperture-4 subdivision. Level
+`l in 0:29` contains `10*4^l` cells of solid angle `4π/(10*4^l)`.
 
-Level `l` has `10 * 4^l` cells of exactly equal solid angle `4π / (10 * 4^l)`
-— the Snyder ISEA projection is equal-area per face and the chart's two affine
-halves each carry exactly `2π/5`, so this is exact rather than nominal. Cells
-are quadrilaterals in the diamond chart; their edges follow chart lines, not
-great circles, so [`cell_boundary`](@ref) densifies them — see that method.
-
-# Ids
-
-The canonical cell index is [`LevelIndex`](@ref), whose `index` field holds
-`diamond * 4^level + morton(ix, iy)`, **0-based**; a cell's position in
-`levelgrid(sys, l)` is `index + 1`. The ten-diamond layout those ids are written
-against is this package's own convention with no external oracle behind it —
-read the [`ISEA4R`](@ref) module docstring before inferring DGGAL / SST or any
-other identifier compatibility.
-
-# Levels
-
-`0:29`. The bound is the `Int64` codec's: at level 29 there are
-`10 * 4^29 = 2882303761517117440` cells, and level 30 would overflow a signed
-64-bit cell count.
-
-# Traits
-
-`has_sorted_subtrees` is `true` — the Morton ordering *is* depth-first curve
-order, so a subtree occupies a contiguous run of positions and
-[`descendant_range`](@ref) is exact and hole-free.
-[`max_neighbors`](@ref) is **9** under `Vertex()` and 4 under `Edge()`; the 9 is
-not a typo and not slack — see [`neighbors`](@ref) and `topology.jl` on the
-corner cells at icosahedron vertices 0 and 11.
-[`node_extent`](@ref) is overridden with the cell's own bounding cap: children
-tile their parent's chart rectangle exactly, so nothing needs inflating and
-[`cap_inflation`](@ref) is never consulted.
+Canonical [`LevelIndex`](@ref) values store
+`diamond*4^level + morton(ix,iy)`. Morton order gives contiguous subtrees.
+Vertex connectivity has at most 9 neighbors and edge connectivity at most 4.
+Chart edges are curved and [`cell_boundary`](@ref) densifies them.
 """
 struct ISEA4RSystem <: DGG.AbstractHierarchicalGridSystem end
 
@@ -122,8 +52,8 @@ diamond's interior has the usual eight, and a corner cell on one of the ten
 valence-3 icosahedron vertices has seven — but vertices 0 and 11 each carry
 FIVE diamond-corners, so the corner cell there meets four other cells at the
 vertex, two of which are not reached by any axis offset. Eight becomes nine at
-exactly twenty cells per level. See `topology.jl` for the derivation and
-`test/systems/ISEA4R/runtests.jl`, which counts the whole level.
+exactly ten cells per level for levels above zero. At level zero every diamond
+has six vertex-neighbors. See `topology.jl` for the seam and corner-fan rules.
 """
 DGG.max_neighbors(::ISEA4RSystem, ::DGG.Vertex) = 9
 DGG.max_neighbors(::ISEA4RSystem, ::DGG.Edge) = 4
@@ -284,54 +214,19 @@ end
 # Geometry
 # ===========================================================================
 
-# How finely a cell edge is broken into great-circle segments.
+# Eight great-circle segments approximate each curved chart edge. Shared points
+# are bit-identical within a diamond; cross-diamond incidence requires tolerance.
 #
-# Snyder ISEA maps the chart's straight lines to CURVES on the sphere, so the
-# four corners alone are a poor spherical polygon — the same situation as
-# HEALPix's chart lines, and unlike S2, whose cell edges are great circles.
-# `cell_boundary` is contractually a ring of great-circle arcs, so the edges are
-# densified.
-#
-# THE COUNT DOES NOT DEPEND ON THE LEVEL, for the reason set out at HEALPix's
-# `BOUNDARY_SEGMENTS`: refinement is self-similar, so a cell has essentially the
-# same shape at every level and a k-gon approximation of it has a
-# level-independent RELATIVE error. Measured max relative area error of the
-# densified ring against the exact `4π/(10·4^level)`, over whole levels 0-4
-# (`test/systems/ISEA4R/runtests.jl` keeps this honest):
-#
-#     segments/edge |    1    |    2    |    4    |    8    |   16
-#     rel. area err | 1.5e-1  | 2.1e-2  | 5.8e-3  | 1.6e-3  | 4.3e-4
-#
-# — O(segments^-2) from 2 on, as the chord error predicts, and flat across
-# levels (1.0e-3, 1.3e-3, 1.6e-3, 1.5e-3, 1.7e-3 at levels 1-5). Eight segments
-# per edge, 32 vertices per cell, 0.16% on area; the same count HEALPix settled
-# on. The bare 4-gon at the head of that row is why the pre-redesign kernel's
-# rings, which shipped four corners at every level, were not good enough for a
-# spherical predicate.
-#
-# LEVEL 0 IS EXACT and is not evidence about any other level: a diamond's four
-# rim edges are icosahedron edges, which Snyder maps to great-circle arcs, so a
-# level-0 cell IS its 4-gon and its ring area matches the closed form to 7e-16.
-# Every deeper level has interior chart edges, which curve.
-#
-# Powers of two matter beyond cost. An interior densification point of one cell
-# is a lattice point of its neighbour's edge at the same level, and with a
-# power-of-two count the two `xyd_to_point` arguments are the same `Float64`
-# (`ix + 1 - i/nseg` and `ix + (nseg-i)/nseg` are both exact and equal), so
-# shared edges come out BIT-identical WITHIN A DIAMOND and the tessellation is
-# exact there. Across a diamond rim the two sides are two developments of one
-# icosahedron edge and agree to ~4e-15 rad but on NO coordinate exactly — that
-# is a property of the icosahedron, not of this constant.
-#
-# So: an incidence test over these rings may use a hashed container only within
-# a diamond, and must use a tolerance across a rim. Two further traps, both
-# pinned by `signed zeros cannot break a hashed incidence test` in the suite:
-# `Set`/`Dict` compare with `isequal`, under which `-0.0` and `0.0` are DISTINCT
-# though `==` calls them equal, so a closed form that emits a negative zero on
-# one side of a join and a positive one on the other loses the match silently
-# (the sibling S2 port hit exactly this on its cube seams); and cross-rim points
-# are not bit-equal at all, so a `Set` intersection there reports a seam
-# neighbour as sharing nothing rather than sharing an edge.
+# So a hashed incidence test (`Set`/`Dict`) is sound only within a diamond, and
+# only because no boundary coordinate here is ever a NEGATIVE zero: those
+# containers compare with `isequal`, under which `-0.0` and `0.0` differ though
+# `==` equates them, so one negative zero on one side of a join would drop the
+# match silently — the sibling S2 port emits exactly these on its cube seams and
+# normalises for it. Exact zeros do occur, so this is pinned rather than assumed,
+# by "signed zeros cannot break a hashed incidence test" in
+# `test/systems/ISEA4R/runtests.jl`, which also pins that cross-rim points share
+# no coordinate exactly — turning such a test into a `Set` intersection would
+# report a seam neighbour as sharing nothing.
 const BOUNDARY_SEGMENTS = 8
 
 """
@@ -374,24 +269,10 @@ end
 """
     cell_boundary(grid, c) -> Vector{UnitSphericalPoint}
 
-The cell's boundary ring, **counter-clockwise seen from outside the sphere** and
-implicitly closed (the first vertex is not repeated).
-
-The ring starts at the cell's `(x+, y+)` chart corner and runs
-`(x+,y+) → (x-,y+) → (x-,y-) → (x+,y-)`, the [`cell_corners`](@ref) order.
-Because ISEA4R cell edges are chart lines rather than geodesics, each edge is
-densified into `BOUNDARY_SEGMENTS` great-circle segments — at every level, for
-the reason set out there — so the ring has 32 vertices and the four corners are
-vertices 1, 9, 17 and 25.
-
-The winding is structural, not measured: the chart's corner order is
-counter-clockwise in the `(x, y)` plane, both affine halves are
-orientation-preserving (`imag(conj(a)·b) == 2π/5 > 0`, asserted at load for all
-twenty half-maps), and `snyder_inv_xyz` preserves orientation from a face's
-right-handed `(u, w)` frame onto the sphere seen from outside.
-
-For the cell's **area**, prefer [`cell_area`](@ref), which is the exact
-equal-area value in closed form rather than this polygon's.
+Return the implicitly closed boundary counterclockwise from `(x+,y+)`, seen from
+outside the sphere. Each curved chart edge uses `BOUNDARY_SEGMENTS`
+great-circle segments. Use
+[`cell_area`](@ref) for the exact equal-area value.
 """
 function DGG.cell_boundary(::ISEA4RSystem, c::DGG.LevelIndex)
     nside = _nside(DGG.level(c))
@@ -402,22 +283,8 @@ end
 """
     cell_area(grid, c) -> Float64
 
-The cell's area in steradians: `4π / (10 * 4^level)`, **exactly**, for every
-cell of every level.
-
-This is an override of the generic polygon area, and it is a correction rather
-than only a speedup. Equal-areaness is the defining property of the chart —
-Snyder ISEA is exactly equal-area per face and each affine half of a diamond
-carries exactly `2π/5`, so a chart rectangle of area `A` covers solid angle
-`A · 4π/10` everywhere, on every diamond — while the generic answer is the area
-of the densified boundary polygon, which approaches this value from below and
-still differs by up to 0.16% at `BOUNDARY_SEGMENTS = 8`. The closed form is the
-true semantic; the polygon is the approximation of it. (At level 0 the two
-agree to 7e-16, because a diamond's rim edges are icosahedron edges and
-therefore great circles — see `BOUNDARY_SEGMENTS`.)
-
-O(1), and independent of the boundary densification, so tightening
-`BOUNDARY_SEGMENTS` changes geometric predicates but never an area.
+Exact cell area in steradians: `4π/(10*4^level)`. This `O(1)` value is
+independent of the approximate boundary polygon.
 """
 DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex) =
     (_checked_index(g, c); 4 * Float64(π) / _ncells(g.level))
@@ -450,41 +317,12 @@ const CAP_EDGE_SEGMENTS = 8
 """
     _subtree_cap(ix, iy, diamond, nside) -> SphericalCap
 
-The bounding cap of an ISEA4R cell — *and therefore of its whole subtree*.
-
-# Why the cell's own cap bounds the subtree
-
-A cell's four children tile its chart rectangle exactly, at every depth: the
-child rectangles quarter the parent's, and the lattice division is BIT-exact
-across resolutions (`fl(ix/n) === fl(2ix/2n)`, see [`xyd_to_point`](@ref)), so
-the shared chart coordinates are the same `Float64`s. The chart is a
-homeomorphism of the closed square onto the diamond's spherical patch — Snyder
-is a per-face homeomorphism and the two affine halves agree on the seam — so a
-descendant's geometry at any depth lies in the closed chart rectangle of this
-cell, and a cap that covers the rectangle covers the subtree.
-
-(This is what the aperture-7 icosahedral systems cannot say, and why the generic
-`node_extent` has to inflate. Here `cap_inflation` is never consulted.)
-
-# Why the radius is what it is
-
-The centre is the cell centre. The maximum of `d(centre, ·)` over the closed
-chart rectangle is attained on the PERIMETER, which is sampled at
-`CAP_EDGE_SEGMENTS` points per edge, and in fact at a CORNER: all four corners
-are samples (each edge's sampling starts at its start vertex), and the
-measurement — a dense 17×17 sampling of every cell's chart rectangle, on every
-diamond, at `nside ∈ (1, 2, 3, 4, 5, 8, 16)` — finds a worst overhang past the
-four-corner cap of exactly `0.0`, seam-straddling cells included: the farthest
-point of a cell from its centre is always one of its own four corners. That
-figure is inherited from the pre-redesign face-grid layer's `cap_policy`, and
-`test/systems/ISEA4R/runtests.jl` re-runs it as a standing test rather than
-trusting the record.
-
-`gap/2` on top is measured insurance, not the proof; read the same caveat as
-HEALPix's `_subtree_cap` carries — it is a first-order slack that absorbs the
-third-order shortfall of a Lipschitz argument the corner case makes unnecessary
-anyway. Over-covering costs only pruning time, while under-covering is a silent
-correctness bug (see the covering law).
+Bounding cap for a cell and its subtree. Children tile the parent chart
+rectangle exactly, so a cap covering that rectangle covers all descendants.
+The radius is the sampled perimeter maximum plus half the largest sample gap
+and one outward ULP. Sampling only the perimeter suffices because the distance
+from the centre is maximised there — in fact at one of the four corners, all of
+which are samples.
 """
 function _subtree_cap(ix::Integer, iy::Integer, diamond::Integer, nside::Integer)
     center = cell_center(ix, iy, diamond, nside)
@@ -504,22 +342,10 @@ end
 """
     node_extent(ISEA4RSystem(), c) -> SphericalCap
 
-The subtree cap of `c` — an override of the generic inflated default, and the
-reason [`cap_inflation`](@ref) is never consulted for this system.
-
-What is **exact** is the nesting: children tile their parent's chart rectangle
-bit-exactly and the chart is a homeomorphism, so the cell's own bounding cap
-already bounds the whole subtree and there is nothing to inflate for.
-
-What is **measured** is the cap's RADIUS — a sampled perimeter (which does
-capture all four corners exactly, and the corners are where the maximum sits)
-plus a slack term. See `_subtree_cap`.
-
-The extent is geodesically convex at every level: the widest cap in the system
-is a level-0 diamond's, whose radius is the median of a spherical face triangle
-(58.3°) plus the sampling slack, **62.34°** as shipped — comfortably inside the
-90° the conformance suite requires for vertex sampling to be a sound proxy for
-the whole boundary. Level 1 is 32.7°, and each level roughly halves it.
+Return the uninflated subtree cap. Exact chart nesting makes the cell rectangle
+a bound for every descendant; [`_subtree_cap`](@ref) supplies a conservative
+sampled radius. All returned caps are geodesically convex: the widest in the
+system is a level-0 diamond's, 62.3°, against the 90° bound.
 """
 function DGG.node_extent(::ISEA4RSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
@@ -535,19 +361,9 @@ end
 """
     cellat(grid, p::UnitSphericalPoint) -> LevelIndex
 
-The cell containing `p`, in closed form — [`point_to_morton`](@ref), the chart's
-analytic inverse, with no tree descent and no point-in-polygon test.
-
-Never `nothing`: a complete ISEA4R level grid covers the sphere, because the ten
-diamonds do.
-
-**Ties.** A point exactly on a cell boundary is legitimately contained by every
-cell meeting there, so which one is returned is a tie. It is broken by the
-arithmetic of [`point_to_xyd`](@ref) — `snyder_fwd`'s nearest-face-centre choice
-(lowest face index on an exact tie) for the diamond, then `floor`, which puts
-the point on the higher side of each chart cut line. Deterministic per platform
-and self-consistent: the returned cell's own centroid maps back to it, which
-`test/systems/ISEA4R/runtests.jl` asserts over whole levels.
+Return the cell containing `p` via the analytic chart inverse. Complete grids
+never return `nothing`. Boundary ties use Snyder's face choice and the
+higher-side lattice cell, deterministically per floating-point platform.
 """
 DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
     DGG.LevelIndex(g.level, point_to_morton(p, _nside(g.level)))
@@ -584,41 +400,16 @@ end
 """
     neighbors(grid, c, k = 1; connectivity = Vertex())
 
-The cells within `k` lattice steps of `c`, excluding `c`, in **rotational
-order**: the rings `1:k` concatenated outward, each ring counter-clockwise seen
-from outside the sphere.
+Cells within `k` lattice steps, excluding `c`, with rings concatenated outward.
+Each ring is counterclockwise seen from outside the sphere, starting at chart
+direction `(+1,0)` — a chart direction, not a compass one, so the same slot
+points a different way on each diamond. Vertex connectivity has degree 7–9 at
+corner cells and 8 in the interior; edge connectivity uses
+the four axis offsets. Missing corner slots are omitted and multi-cell vertex
+slots follow fan order. Outer rings use the same starting azimuth.
 
-So `ring(grid, c, k)` is exactly the trailing block of `neighbors(grid, c, k)`,
-and `neighbors(grid, c, k)` is `vcat(ring(grid, c, 1), ..., ring(grid, c, k))`.
-
-# Connectivity
-
-`Vertex()` (the default) is the 3×3 chart neighbourhood: 8 cells in a diamond's
-interior, 7 at a corner cell on one of the ten valence-3 icosahedron vertices,
-and 9 at the twenty corner cells on vertices 0 and 11, where five diamonds meet
-and the diagonal offset yields two cells instead of none.
-
-`Edge()` keeps only the four that share a whole cell edge. Because an ISEA4R
-cell is an axis-aligned square in its chart, the edge-sharing neighbours are the
-four AXIS offsets and the corner-only ones are the four diagonals — the opposite
-pairing from HEALPix, whose pixel is a diamond rotated 45° against its lattice.
-
-# Order
-
-**Counter-clockwise seen from outside the sphere, starting at the `(+1, 0)`
-chart direction** — the offset cycle `(+1,0), (+1,+1), (0,+1), (-1,+1), (-1,0),
-(-1,-1), (0,-1), (+1,-1)` under `Vertex()` and its restriction to the four axis
-offsets under `Edge()`. These are *chart* directions, not compass ones: a
-diamond is not aligned with anything on the globe, and the same slot points a
-different way on each of the ten.
-
-Where an offset yields no cell (a valence-3 corner) it simply drops out of the
-cycle; where it yields two (vertices 0 and 11) both are emitted in fan order
-about the vertex, which is the same sweep. There is no padding and no gap
-marker.
-
-Rings beyond the first are ordered by azimuth about the cell centre from the
-same starting spoke; see [`ring`](@ref).
+At level zero each diamond has six vertex-neighbors; the 7–9 counts apply to
+corner cells at finer levels.
 
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by [`max_neighbors`](@ref).
@@ -637,17 +428,8 @@ end
 """
     ring(grid, c, k; connectivity = Vertex())
 
-The cells at lattice distance **exactly** `k`, counter-clockwise seen from
-outside the sphere. `ring(grid, c, 0)` is `[c]`.
-
-`k == 1` is the chart offset cycle (see [`neighbors`](@ref)). For `k >= 2` there
-is no lattice cycle to read off — an outer ring crosses diamond rims and
-icosahedron vertices arbitrarily — so the shell is ordered **by azimuth about
-the cell centre, measured counter-clockwise from the direction of the FIRST
-ring-1 neighbour**. That is the extension the [`neighbors`](@ref) contract
-recommends, and it makes every ring start on the same spoke by construction
-rather than by a second convention. Ties in azimuth break by canonical id, so
-the order is total and deterministic.
+Cells at lattice distance exactly `k`, counterclockwise from the first ring-1
+direction. `k == 0` returns `[c]`; outer-ring azimuth ties use canonical order.
 """
 function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())

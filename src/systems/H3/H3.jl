@@ -1,57 +1,21 @@
-# ---------------------------------------------------------------------------
-# T5 — H3.
-#
-# Uber's H3 grid on the redesigned interface. The geometry, the location
-# inverse, the hierarchy arithmetic and the adjacency all come from libh3
-# itself through `H3_jll`, so what this module contributes is wiring, an order,
-# and two things libh3 does not have: a dense position numbering and a subtree
-# border walk.
-# ---------------------------------------------------------------------------
+# H3 interface over libh3, with dense grid positions and subtree-border walks.
 
 """
     DiscreteGlobalGrids.H3
 
-The [H3](https://h3geo.org) discrete global grid system: aperture-7 hexagons on
-an icosahedron, twelve pentagons, resolutions `0:15`.
+The [H3](https://h3geo.org) aperture-7 icosahedral grid: hexagons, twelve
+pentagons, and resolutions `0:15`. [`H3Cell`](@ref) wraps libh3's `UInt64` id;
+[`H3Native`](@ref) exposes the low-level calls.
 
-  - [`H3System`](@ref) — the system singleton.
-  - [`H3Cell`](@ref) — the canonical id, a `UInt64` with the resolution in
-    bits 52-55.
-  - `levelgrid(H3System(), l)` — one complete resolution, as the package's
-    [`HierarchicalLevelGrid`](@ref). H3 ships no grid type of its own.
-  - [`H3Native`](@ref) — the raw libh3 ccall layer, if you want it directly.
-
-# The canonical order
-
-Cells are numbered **base cell by base cell** (the `0:121` order `getRes0Cells`
-returns), and **within a base cell by H3's own child position** — the digit path
-read as a number, with the digit paths pentagons delete simply absent. That
-order is identical to unsigned comparison of the raw index at a fixed
-resolution, which is what [`H3Cell`](@ref)'s `isless` is, and it makes every
-subtree a contiguous run of positions — hence `has_sorted_subtrees` and the
-closed-form [`descendant_range`](@ref).
-
-# Fast paths over the generic fallbacks
-
-| operation | how |
-|---|---|
-| [`cellat`](@ref) | `latLngToCell`, a closed-form inverse projection |
-| [`cellindex`](@ref) / [`cellposition`](@ref) | base-cell prefix sums + `childPosToCell` |
-| [`descendant_range`](@ref) | `childPosToCell` + `cellToChildrenSize`, two calls |
-| [`neighbors`](@ref) / [`ring`](@ref) | `gridRingUnsafe` shell walks, azimuth-ordered `gridDisk` at pentagons |
-| [`ancestor`](@ref) / [`descendants`](@ref) | `cellToParent` / `cellToChildren` across any level gap |
-| `subtree_border` | the digit-arc automaton in `border.jl` |
-
-[`node_extent`](@ref) is the generic default — the cell's cap inflated by
-[`cap_inflation`](@ref) — which is sound here by measurement; see that
-docstring.
+Canonical order is base-cell-major, then H3 child position with deleted
+pentagon paths omitted. It matches raw-id order within a resolution and makes
+subtrees contiguous, enabling exact [`descendant_range`](@ref) values. Geometry,
+location, hierarchy, and adjacency use libh3; `border.jl` implements the
+digit-arc subtree rim. [`node_extent`](@ref) uses the generic inflated cap.
 """
 module H3
 
-# Exactly the generics this module defines methods on, plus the types those
-# methods dispatch on. `node_extent` is deliberately absent: H3 takes the
-# generic default (an inflated cell cap), and declaring `cap_inflation` is the
-# whole of its say in the matter.
+# `node_extent` is omitted intentionally; H3 uses the inflated generic cap.
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,

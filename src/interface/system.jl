@@ -1,15 +1,7 @@
 # ---------------------------------------------------------------------------
-# The hierarchical grid system interface.
-#
-# Everything here is a fast path. A system's methods let generic code prune
-# trees, walk subtrees, and answer queries in sublinear time; none of them may
-# change what an answer *is*. If a system's override and the base-interface
-# fallback disagree, the system is wrong.
-#
-# The argument convention is `(sys, c)` — a system and a typed cell id, and the
-# target level last where there is one (`ancestor(sys, c, l)`). A cell id knows
-# its own level (`level(c)` is total), so the old `(system, level, id)` triple
-# is gone, and with it every way for a level and an id to disagree.
+# Hierarchical-grid fast-path contracts. Arguments use `(sys, c)` with any
+# target level last; cell ids encode their own level. Overrides must preserve
+# base-interface semantics.
 # ---------------------------------------------------------------------------
 
 # ===========================================================================
@@ -37,11 +29,8 @@ the level of [`rootcells`](@ref) and `last(levels(sys))` is
 
 **Required.**
 
-A system with no intrinsic depth limit still returns a bounded range — the
-deepest level its id encoding and its `Int` cell counts remain valid at. That
-bound is a fact about the implementation, and stating it is what keeps
-`max_level` total and keeps `radix^level` arithmetic one comparison away from
-silent overflow rather than one multiply away from it.
+A system without an intrinsic depth limit must still bound the range at the
+deepest level supported by its id encoding and `Int` cell counts.
 """
 function levels end
 
@@ -145,10 +134,8 @@ canonical order.
 **Required**, and required to be **analytic**, for the same reason as
 [`parent`](@ref).
 
-The count is the system's aperture for most cells, and *less* for the
-exceptional ones: a pentagon in an aperture-7 icosahedral system has six
-children, not seven. Generic code must never assume a fixed child count; that
-is what makes the pentagon cases work by construction rather than by patch.
+Child count may vary by cell; generic code must not assume it equals the nominal
+aperture.
 
 Calling it on a cell at `max_level(sys)` throws an `ArgumentError`.
 """
@@ -157,55 +144,28 @@ function children end
 """
     node_extent(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> GO.UnitSpherical.SphericalCap
 
-The covering region of the whole subtree rooted at `c`.
+The covering region of the entire subtree rooted at `c`.
 
 **Required.**
-
-# The covering law
 
 > `node_extent(sys, c)` contains the geometry of **every descendant of `c`, at
 > every depth** — every point of every cell boundary in the subtree, all the
 > way down to `max_level(sys)`.
 
-(For a geodesically convex extent — a spherical cap with angular radius at most
-90° — containing a cell's boundary *vertices* implies containing the great-arc
-edges between them, which is why the conformance suite may sample vertices as
-its proxy. An implementation whose extents are not convex owes the full law,
-not the proxy.)
+Tree pruning depends on this covering law. Over-coverage only reduces pruning;
+under-coverage can omit valid results. For a convex cap of angular radius at
+most 90°, containing all boundary vertices also contains their great-circle
+arcs. Non-convex extents must establish containment of the full geometry.
 
-This is the contract that makes generic tree pruning **correct**. Every
-traversal in this package — [`query`](@ref), [`cellat`](@ref), the
-`ConservativeRegridding` dual tree walk — discards a node without looking
-inside it the moment its extent misses the target. If the law is violated by
-one cell at one depth, that cell is silently dropped from an answer, and
-nothing downstream can detect it. It is therefore a **property-tested
-contract**: `DiscreteGlobalGridsConformanceTesting.test_hierarchical_system(sys)`
-samples cells, walks their subtrees several levels down, and asserts
-containment.
+A cell's own boundary need not cover its descendants; aperture-7 children, for
+example, can extend beyond the parent boundary.
 
-Over-covering is always safe and only ever costs time. Under-covering is a
-correctness bug.
+The generic implementation inflates the cell's bounding cap by
+[`cap_inflation(sys)`](@ref cap_inflation). Systems may provide a tighter
+covering cap.
 
-# Implementing it
-
-A cell's own exact boundary is **not** in general a valid node extent. Under
-aperture 7 the children of a hexagon poke out past their parent's edges, so a
-tight parent polygon violates the law at depth 1 — this is why the old
-"congruent geometry" trait was a trap, and why there is no way to opt out of
-covering here.
-
-The generic default is the cell's bounding cap inflated by
-[`cap_inflation(sys)`](@ref cap_inflation), which is sound for every system in
-scope and O(1) at every depth. Systems that can do better override:
-
-  - **HEALPix** returns the exact subtree cap — nested children are contained
-    in their parent, so the tight cap is already legal, and it is still O(1).
-  - Systems whose overhang is well characterised lower `cap_inflation` rather
-    than overriding this.
-
-Note that the answer must **not** depend on how deep the caller intends to
-descend. There is no leaf-level argument: an extent that covers the subtree to
-depth `d` but not to `d + 1` is not a node extent.
+The result must cover through `max_level(sys)`, independent of a caller's
+planned traversal depth.
 
 Extents are `SphericalCap`s throughout this package, at every node of every
 tree, which is what lets one predicate vocabulary serve all of them.
@@ -222,15 +182,9 @@ function node_extent end
 Whether the descendants of any cell, at any fixed deeper level, occupy a
 **contiguous interval** of that level's canonical dense order.
 
-`false` by default — a system opts in by declaring it and implementing
-[`descendant_range`](@ref).
-
-This is the single trait that used to be spelled two ways (`supports_prefix_ranges`
-for the declaration, `has_descendant_ranges` for the wiring). It is worth a lot
-when true: subtree membership becomes two `searchsorted` calls against a sorted
-id vector, a tree cursor can carry a position *window* instead of a
-materialised selection, and a multi-order cell set can be expanded to any level
-as sorted disconnected ranges.
+`false` by default. A system opting in must implement
+[`descendant_range`](@ref). The property enables range-based subtree membership
+and traversal.
 
 Systems whose canonical order is a space-filling curve (nested HEALPix, Z7,
 H3's resolution-major order) have this property; it is a fact about the
@@ -246,11 +200,9 @@ bounding-cap radius so that the cap covers the cell's entire subtree.
 
 Defaults to `1.2`.
 
-The number is a property of the system's refinement geometry: how far past its
-parent's bounding cap the deepest descendant can reach, in the limit. It is
-measured, not guessed, and it belongs in the system's own test suite as a
-sampled bound. Systems whose children overhang more must raise it; systems that
-override `node_extent` outright ignore it.
+The value bounds how far descendants extend beyond a cell's bounding cap and
+must be validated for the system's refinement geometry. Systems overriding
+`node_extent` ignore it.
 
 Raising it costs query time (looser pruning). Setting it too low is a
 correctness bug — see the covering law in [`node_extent`](@ref).
@@ -263,12 +215,8 @@ cap_inflation(::AbstractHierarchicalGridSystem) = 1.2
 A **static** upper bound on the number of `connectivity`-neighbours of any cell
 of `sys`, at any level.
 
-Static is the point: it is a property of the types alone, so
-[`neighbors`](@ref) can size a `SmallCollections.SmallVector` at compile time
-and sweep a grid without allocating. Individual cells may have fewer — a
-pentagon has five neighbours where hexagons have six, and 24 HEALPix pixels
-have seven where the rest have eight; the bound covers the maximum, and the
-container is variable-length below it.
+The static bound permits fixed-capacity neighbour containers. Individual cells
+may have fewer neighbours.
 
 There is no default: a system that has not thought about the bound gets a
 `MethodError` rather than a silently wrong capacity.
@@ -316,10 +264,8 @@ Every descendant of `c` at level `l`, in ascending canonical order, for
 `descendants(sys, c, level(c))` is `[c]`. `l < level(c)` throws an
 `ArgumentError` (uniformly across systems, so generic code can catch it).
 
-This is O(subtree) and materialises: the result of asking for level 20
-descendants of a root cell is not a thing that fits in memory. Reach for
-[`descendant_range`](@ref) when the system supports it, and for
-[`subtree_border`](@ref) when only the rim is wanted.
+This materializes `O(subtree)` ids. Use [`descendant_range`](@ref) when
+available, or [`subtree_border`](@ref) when only the rim is needed.
 """
 function descendants end
 
@@ -333,41 +279,15 @@ that has a neighbour which is *not* a descendant of `c`.
 itself, and its entire neighbourhood lies outside it. `l < level(c)` throws an
 `ArgumentError`, as it does for [`descendants`](@ref).
 
-# Why this is a primitive and not a filter
-
-The rim is asymptotically nothing next to the subtree. For an aperture-7
-hexagonal system a depth-`d` subtree holds `7^d` cells and its rim holds
-`3^(d+1) − 3` of them; at depth 12 that is 1.6 million cells out of 13.8
-billion. Every system in this package can walk its rim directly from the id
-arithmetic — a digit automaton for the two hex systems, a Morton lattice walk
-for HEALPix — in time proportional to the *answer* rather than the subtree. A
-caller that had to enumerate the subtree and test each cell's neighbours would
-pay `O(7^d · degree)` for an `O(3^d)` result, which is the whole difference
-between "usable at depth 12" and "not".
-
-That is what this hook is for: it lets generic code — halo exchange, boundary
-conditions, coarse-to-fine stitching, dissolve — ask for the rim by name and
-get the fast path wherever one exists, without knowing which system it is
-talking to.
-
-# Connectivity
-
 `connectivity` selects which adjacency defines "has a neighbour outside", with
-the same meaning as in [`neighbors`](@ref). It changes the answer only where the
-two adjacencies differ: on systems whose vertices are all 3-valent (IGeo7, H3)
-they are the same relation, and on HEALPix the rim happens to come out the same
-set either way; those systems accept the argument and document that it does not
-change their answer.
-
-A5 is the counterexample to assume nothing from: its Cairo-style pentagonal
-tiling has 4-valent corners, so `Vertex()` and `Edge()` are genuinely different
-relations there (11 against 3 neighbours at resolution 1) and its rim genuinely
-depends on which one is asked for.
+the same meaning as in [`neighbors`](@ref). It changes nothing where the two
+adjacencies coincide (H3 and IGeo7, whose vertices are all 3-valent) or where
+the rim comes out the same set either way (HEALPix); A5's 4-valent corners make
+them genuinely different relations, so assume nothing.
 
 The generic fallback enumerates [`descendants`](@ref) and tests each one's
-[`neighbors`](@ref) — correct for any system, and the reason a system with an
-automaton should override. Order is ascending canonical order unless a system
-documents otherwise.
+[`neighbors`](@ref). Systems may override with an `O(rim)` algorithm. Order is
+ascending canonical order unless documented otherwise.
 
 See also [`subtree_interior`](@ref), the complement.
 """
@@ -385,17 +305,9 @@ order.
 with the two disjoint. `subtree_interior(sys, c, level(c))` is empty: the cell
 itself is its own rim.
 
-Unlike the border, the interior is *most* of the subtree, so this materialises
-something large by construction and there is no fast path to be had — the
-generic implementation is the implementation. It computes the border first and
-subtracts, so a system that overrides [`subtree_border`](@ref) with an automaton
-gets a correspondingly faster interior for free, without writing a second
-walker.
-
-Reach for this when the rim needs different treatment from the bulk — a stencil
-that is only valid away from the subtree edge, a halo that must not be written
-back — and prefer iterating [`descendant_range`](@ref) with a border set when
-the subtree is large enough that a second vector of ids is the wrong shape.
+This materializes most of the subtree. The generic implementation computes and
+subtracts the border. For large subtrees, prefer iterating
+[`descendant_range`](@ref) while excluding a border set.
 """
 function subtree_interior end
 
@@ -408,21 +320,16 @@ dense order occupied by the descendants of `c` at level `l`.
 Available only when [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) is
 `true`; otherwise there is no method and the call is a `MethodError`.
 
-# The two-sided contract
-
-Both directions hold, and generic code depends on both:
+Both directions are required:
 
  1. every level-`l` descendant of `c` has its position in the range, and
  2. every position in the range is a level-`l` descendant of `c`.
 
-So intersecting the range with any *sorted* vector of level-`l` positions
-yields exactly the descendants present, by two binary searches and no
-per-cell parent walk. Because these are positions among valid cells and not raw
-id bounds, the interval has no holes to skip: pentagon id gaps are never in it.
+The range is over valid dense positions, not raw ids, and therefore has no id
+encoding gaps. It can be intersected with sorted position vectors by binary
+search.
 
-Sibling ranges are disjoint and, taken in order, partition the parent's range —
-which is what makes ordering a multi-order cell set by `first(descendant_range)`
-at a fixed reference depth equal to depth-first curve order.
+Sibling ranges are disjoint and partition the parent's range in canonical order.
 
 `l < level(c)` throws an `ArgumentError`.
 """

@@ -1,34 +1,11 @@
-# ---------------------------------------------------------------------------
-# The query engine
-#
-# One spherical tree descent, two stages per node:
-#
-#   1. **Cap prune** (always sound): the node's `SphericalCap` extent — which
-#      bounds every cell under it by the covering law — against a cap bounding
-#      the target (`_geometry_cap`). Dot products, no polygon touched. Pruning
-#      is an optimisation and can only ever over-select, so it never appears in
-#      the answer.
-#   2. **Exact per-cell tests**: the target is `GO.prepare`d once per query, so
-#      a cell's centroid test is a cached point location. For `Intersects` that
-#      doubles as a fast accept — a centroid is interior to its cell by
-#      contract, so "centroid inside the target" already proves intersection —
-#      and only boundary-grazing cells pay the full polygon predicate.
-#   3. **The rim sandwich** (`_sandwich`, `Intersects` only): before paying that
-#      predicate, decide the cell from its distance to the target's *boundary*.
-#      Both arms are proofs, not heuristics — see the note above `_sandwich`.
-#
-# All predicates run on the unit sphere (`GO.RelateNG(manifold=Spherical())`),
-# consuming `UnitSphericalPoint` geometry directly — no lon/lat round trip,
-# hence no antimeridian or pole special cases. The flip side is that ring edges
-# are **great-circle arcs**: a long east-west edge does not follow its parallel.
-# Densify (`GO.segmentize`) geometries whose edges are meant to trace parallels.
-# ---------------------------------------------------------------------------
+# Spherical query descent: prune by conservative caps, then apply exact per-cell
+# predicates. `Intersects` also uses centroid acceptance and a boundary-distance
+# sandwich. Input ring edges are great-circle arcs; densify intended parallels
+# (`GO.segmentize`).
 
-# Leaf-bucket granularity of the query tree. Single-cell leaves pay cursor
-# construction and two binary searches per cell; a bucket amortises both across
-# its cells and prunes them with one cap first — but too big a bucket makes
-# that union cap its own hot spot. 16 measured well across all four systems of
-# the previous design on box, antimeridian, polar and quarter-sphere queries.
+# Leaf bucket size balancing cursor overhead against cap selectivity. 16 measured
+# well across all four systems of the previous design on box, antimeridian, polar
+# and quarter-sphere queries.
 const QUERY_BUCKET_SIZE = 16
 
 # ===========================================================================
@@ -107,10 +84,8 @@ _to_unit_sphere(t, geom) = throw(ArgumentError(
 # to be traced; 2 degrees keeps the sag under ~150 m on Earth.
 const EXTENT_STEP_DEGREES = 2.0
 
-# A lon/lat extent as a query target. A box that spans every longitude is not a
-# polygon at all — it is a cap (when it reaches a pole) or an annular band
-# (when it does not), so the two are separated here rather than silently
-# producing a degenerate ring.
+# Convert a lon/lat extent to a polygon or polar cap. A full-longitude,
+# non-polar extent is an annulus and cannot be represented by either.
 function _extent_target(ext::Extents.Extent)
     hasproperty(ext, :X) && hasproperty(ext, :Y) || throw(ArgumentError(
         "a query extent needs X and Y bounds in lon/lat degrees, got $(ext)"))
@@ -148,25 +123,10 @@ function _extent_target(ext::Extents.Extent)
     return GI.Polygon([GI.LinearRing(points)])
 end
 
-# ===========================================================================
-# Bounding cap of a target geometry
-#
-# Two facts make a rigorous cap out of nothing but the vertices and one
-# prepared point query:
-#
-#  1. a cap of radius <= pi/2 is geodesically convex, so the cap centred on the
-#     normalised vertex mean with radius = max vertex distance contains every
-#     great-circle edge between consecutive vertices — the whole *boundary*.
-#  2. the cap's complement is an open cap — connected — containing no boundary
-#     point, so it lies entirely inside or entirely outside the geometry, and
-#     one point decides which: the cap centre's antipode, the deepest point of
-#     that complement. Outside the geometry => the whole complement is outside
-#     => the geometry (interior, holes, multi-parts and all) is inside the cap.
-#
-# A vertex radius past pi/2 breaks the convexity argument and an antipode
-# inside the geometry means the region really does reach into the complement;
-# both give up and return the full sphere — no pruning, never a wrong prune.
-# ===========================================================================
+# A radius-`≤ π/2` vertex cap contains all great-circle boundary arcs. Its
+# connected, boundary-free complement is wholly inside or outside the geometry,
+# decided at the cap antipode. Wider caps or an interior antipode use the full
+# sphere.
 
 function _geometry_cap(prepared, geom)
     points = USPoint[]
@@ -184,38 +144,15 @@ end
 _geometry_cap(_, geom::GO.UnitSphericalPoint) = SphericalCap(
     USPoint(geom[1], geom[2], geom[3]), 0.0)
 
-# ===========================================================================
-# The rim sandwich
+# The rim sandwich compares centroid-to-target-boundary distance `d` with cell
+# radius bounds:
 #
-# Measured on the previous design's descent, the polygon predicate is where an
-# intersection query spends ~90% of its time, and MOST of those calls answer
-# "no": the cap prune can only bound cells against the whole geometry's cap, so
-# every cell in that cap whose centroid falls outside the region pays a full
-# polygon-polygon relate (~10 us cold, against ~0.06 us for a prepared centroid
-# query). On a long thin geometry the ratio was 6629 wasted calls out of 6730.
+#   * `d > r_out` proves disjointness when the centroid is outside the target.
+#   * `d < r_in` proves intersection by placing a target boundary point inside.
 #
-# What separates those populations is one number: `d`, the distance from the
-# cell centroid to the target's BOUNDARY. Sandwich it between two radii of the
-# cell:
-#
-#   * `d > r_out`, the cell's circumradius => DISJOINT. No boundary point lies
-#     in the cell, so the cell — connected — is wholly inside or wholly outside
-#     the region; its centroid is outside (the centroid test just said so), so
-#     all of it is.
-#   * `d < r_in`, a lower bound on the cell's inradius => INTERSECTS. The
-#     nearest boundary point is then strictly inside the cell, and it belongs
-#     to the geometry (a closed region contains its boundary), so they share it.
-#
-# Only the annulus `r_in <= d <= r_out` — cells the boundary genuinely grazes —
-# still needs the exact predicate. `r_out` is the ring's max centroid-to-vertex
-# distance, which bounds the whole great-circle polygon (along an arc,
-# `t -> cos(dist(centroid, p(t)))` solves `g'' = -k g`, so where positive it is
-# concave and dips no lower than at the arc's ends). `r_in` is the distance to
-# the nearest great circle *carrying* a ring edge, which is at most the
-# distance to the edge itself and therefore a sound lower bound. Each is nudged
-# by a relative `SANDWICH_SLACK` in the safe direction so floating-point noise
-# cannot turn a grazing cell into a wrong verdict.
-# ===========================================================================
+# The remaining annulus requires the exact predicate. `r_out` is the maximum
+# centroid-to-vertex distance; `r_in` is the minimum distance to an edge's
+# carrying great circle. `SANDWICH_SLACK` moves both bounds conservatively.
 
 const SANDWICH_SLACK = 1e-6
 
@@ -242,18 +179,10 @@ function BoundaryArc(a::USPoint, b::USPoint)
     return BoundaryArc(a, b, nx, ny, nz, nx * nx + ny * ny + nz * nz)
 end
 
-# Every great-circle edge of the point set the sandwich argument needs, or
-# `nothing` for a geometry kind this walk cannot enumerate — in which case the
-# sandwich is off and the exact predicate runs as before.
-#
-# The set must satisfy two properties, and both arms rest on exactly these: its
-# points all belong to the geometry (so a point of it inside a cell proves
-# intersection), and a cell meeting none of it cannot straddle inside and
-# outside (so a cell with an outside centroid that misses it is disjoint). For
-# a polygon that set is the topological boundary — ALL rings of ALL parts,
-# holes included, which is why the walk goes through `GI.getring` rather than
-# `GI.getpoint`: consecutive points across two rings are not an edge, and
-# inventing one could produce a wrong accept.
+# Enumerate every topological-boundary arc, including holes and all multipart
+# rings. Return `nothing` when the geometry cannot provide a safe boundary set.
+# Rings are walked one at a time (`GI.getring`, not `GI.getpoint`): an edge
+# invented between consecutive points of two different rings is a wrong accept.
 _boundary_arcs(geom) = _boundary_arcs!(BoundaryArc[], GI.trait(geom), geom)
 
 _boundary_arcs!(arcs, ::Any, geom) = nothing
@@ -320,24 +249,12 @@ function _chain_arcs!(arcs, chain, close::Bool)
     return arcs
 end
 
-# An empty edge set would let the reject arm fire on every cell; there is no
-# geometry to be near, but there is also nothing to gain, so switch off.
-#
-# A NEAR-ANTIPODAL edge switches it off too. A vanishing `nn` has two causes: a
-# repeated point, where the arc really is its endpoints and `_arc_cos_distance`
-# is exact; and `a == -b`, where the cross product also vanishes but the edge is
-# a whole half great circle whose direction is undefined. There the endpoint
-# distance UNDER-estimates how close the boundary comes, which is the unsafe
-# direction for the reject arm — it could call a cell disjoint that a boundary
-# point sits inside. Such a geometry is pathological, and giving up the
-# optimisation for it costs only time.
-#
-# The guard is on `nn` rather than on exact antipodality because the normal is
-# already ill-conditioned before it vanishes: `nn` is |a x b|^2, so the
-# threshold below covers every edge within 1e-6 rad of a half circle, well past
-# the point where the normal's direction carries any accuracy. The dot-product
-# test keeps repeated points — where `nn` is just as small but the endpoint
-# distance is exact — on the fast path.
+# Disable the sandwich for empty or near-antipodal edges. Near antipodality
+# makes the great-circle normal ill-conditioned and endpoint distance unsafe for
+# rejection. Repeated points remain safe and are distinguished by dot product.
+# The guard is on `nn = |a × b|²` rather than on exact antipodality, so it covers
+# every edge within 1e-6 rad of a half circle, where the normal's direction has
+# already lost its accuracy.
 const ANTIPODAL_NN = 1e-12
 
 function _finish_arcs!(arcs)
@@ -418,36 +335,33 @@ end
 # Proving a whole subtree outside the target
 # ===========================================================================
 
-# The reject arm of the sandwich again, but asked of a NODE EXTENT rather than
-# of one cell's ring, so that the answer covers the node's entire subtree.
+# The sandwich's reject arm asked of a NODE EXTENT rather than one cell's ring,
+# so the answer covers the node's whole subtree.
 #
-# A cap that no boundary arc reaches is a connected set containing no point of
-# the target's boundary, so it lies wholly in the target's interior or wholly in
-# its exterior, and its centre says which. Exterior means no cell of the subtree
-# can meet the target — the covering law of `node_extent` carries the conclusion
-# from the cap to every descendant — so the subtree can be pruned.
+# A cap no boundary arc reaches is connected and free of the target's boundary,
+# hence wholly interior or wholly exterior; its centre says which. Exterior
+# prunes: `node_extent`'s covering law carries that from the cap to every
+# descendant.
 #
-# This is the polygon analogue of the wide-cap complement move. A target's own
-# bounding cap is the cheap prune, and it is the WHOLE SPHERE whenever the
-# target's antipode is interior to it (`_geometry_cap`); a target wider than a
-# hemisphere therefore prunes nothing by cap alone and the traversal would visit
-# every cell of its deepest level. It also pays on ordinary targets: California's
-# bounding cap is a 6.6-degree disc and the state fills a small part of it, and
-# everything in between is pruned here instead of being descended into.
+# The polygon analogue of the wide-cap complement move. A target's bounding cap
+# is the cheap prune, and `_geometry_cap` answers the whole sphere whenever the
+# target's antipode is interior — anything wider than a hemisphere — leaving no
+# prune at all. It pays on ordinary targets too: California fills a small part
+# of the 6.6-degree disc that bounds it, and the rest is pruned here instead of
+# descended into.
 #
-# `nothing` arcs (an empty or near-antipodal boundary — see `_finish_arcs!`)
-# means no proof is available, and no proof means no prune.
+# `nothing` arcs (empty or near-antipodal boundary, see `_finish_arcs!`) means
+# no proof, and no proof means no prune.
 _subtree_outside(::QueryTarget, extent) = false
 
 function _subtree_outside(target::GeometryTarget, extent)
     arcs = target.arcs
     arcs === nothing && return false
-    # `cos` is decreasing on `[0, pi]`, so "farther than the radius" is "cosine
-    # below the radius's cosine". The slack widens the radius, which is the
-    # conservative direction: a cap that only just clears the boundary is not
-    # trusted. Clamping at `pi` keeps a full-sphere extent — what
-    # `AuthalicSystem` returns for a node its warp bound cannot contain — from
-    # wrapping past the antipode and pruning everything.
+    # `cos` decreases on `[0, pi]`, so "farther than the radius" is "cosine
+    # below the radius's". The slack widens the radius, which is conservative: a
+    # cap that only just clears the boundary is not trusted. The clamp keeps a
+    # full-sphere extent — what `AuthalicSystem` returns where its warp bound
+    # cannot contain a node — from wrapping past the antipode.
     threshold = cos(min(Float64(pi), Float64(extent.radius) * (1 + SANDWICH_SLACK)))
     for arc in arcs
         _arc_cos_distance(arc, extent.point) >= threshold && return false
@@ -506,17 +420,9 @@ _matches(pred::DE9IM.DE9IMPredicate, target::GeometryTarget, grid, c) =
 _matches(::DE9IM.Intersects, target::CapTarget, grid, c) =
     _cell_meets_cap(target.cap, grid, c, false)
 
-# The exact cell/cap overlap test, at any radius. `strict` asks about the OPEN
-# cap (distance strictly below the radius) instead of the closed one, which is
-# what the complement of a closed cap actually is — see `Within` below.
-#
-# Exact because: if the cap's centre lies in the cell the two meet, and
-# otherwise any point of the intersection can be joined to the centre by a path
-# inside the cap, which must cross the cell's boundary on the way out. So a cell
-# meeting the cap without any boundary point in the cap is impossible. That
-# argument needs the cap to be connected along those paths, i.e. convex, which
-# holds up to radius pi/2; a wider cap is only ever asked about here through its
-# complement, which is narrower than pi/2 by construction.
+# Exact cell/cap overlap for convex caps. `strict` tests the open cap used as a
+# closed cap's complement. Wider caps reach this helper only via their convex
+# complements.
 function _cell_meets_cap(cap, grid, c, strict::Bool)
     ring, n = open_ring(cell_boundary(grid, c))
     radius = Float64(cap.radius)
@@ -526,15 +432,9 @@ function _cell_meets_cap(cap, grid, c, strict::Bool)
     for i in 1:n
         holds(ring[i]) && return true
     end
-    # The cap's centre inside the cell, or the cell's boundary reaching into
-    # the cap: between them these cover every remaining way to overlap.
-    #
-    # An undecidable containment is taken as a hit rather than a miss. By this
-    # point the cap holds no vertex and (below) may hold no boundary point at
-    # all, so the cap is either wholly inside the cell or wholly outside it —
-    # and reading "undecidable" as "outside" would drop a cap that sits deep
-    # inside a cell, which is precisely the configuration that makes the
-    # containment test give up. The `query` docstring states the trade.
+    # Conservatively accept undecidable centre containment to avoid false misses:
+    # by here the cap holds no vertex, so it is wholly inside the cell or wholly
+    # outside it, and "outside" would drop a cap sitting deep inside one.
     radius > 0 && point_in_cell(ring, cap.point) !== false && return true
     threshold = cos(min(Float64(pi), radius))
     for i in 1:n
@@ -547,19 +447,12 @@ function _cell_meets_cap(cap, grid, c, strict::Bool)
     return false
 end
 
-# A cell is inside a cap of radius <= pi/2 exactly when its vertices are: such a
-# cap is convex, so it carries the great-circle edge between any two points it
-# holds. A wider cap is not convex and that argument collapses — but its
-# complement is, being the OPEN cap of radius pi - r < pi/2 about the antipode,
-# and
+# For `r ≤ π/2`, convexity makes vertex containment sufficient. For wider caps,
+# test the open convex complement about the antipode:
 #
 #     cell within C(p, r)  <=>  cell does not meet C(-p, pi - r)
 #
-# which `_cell_meets_cap` decides with no restriction on r at all. The
-# complement is open, so the test there is strict: a cell tangent to the rim of
-# `cap` from the inside is within it, and must not read as meeting the
-# complement. ("Everything except a region" caps are ordinary enough — a
-# coverage of the whole world bar one country — so this is not a corner.)
+# The complement test is strict so an internally tangent cell remains within.
 function _matches(::DE9IM.Within, target::CapTarget, grid, c)
     cap = target.cap
     radius = Float64(cap.radius)
@@ -588,8 +481,7 @@ _matches(pred::DE9IM.DE9IMPredicate, ::CapTarget, grid, c) = throw(ArgumentError
     query(grid, pred::DE9IM.DE9IMPredicate) -> Vector{<:AbstractCellIndex}
     query(sys, pred::DE9IM.DE9IMPredicate; level) -> Vector{<:AbstractCellIndex}
 
-Every cell satisfying the spatial predicate, as a sorted `Vector` of typed ids —
-see the interface docstring for the contract.
+Return every matching cell as a sorted vector of typed ids.
 
 Implemented predicates: `Intersects`, `Disjoint`, `Contains`, `Within`,
 `Covers`, `CoveredBy`, `Touches`, `Overlaps`, `Equals`. `Crosses` throws, since
@@ -597,23 +489,16 @@ inverting it is not a matter of naming its converse. Targets: a GeoInterface
 geometry, an `Extents.Extent` in lon/lat degrees, or a
 `GO.UnitSpherical.SphericalCap`.
 
-`Disjoint` is the complement of `Intersects` and is therefore the one predicate
-that cannot prune: it visits every cell of the grid by construction.
+`Disjoint` is computed as the full-grid complement of `Intersects` and cannot
+prune the output traversal.
 
-A `SphericalCap` target is answered from the cap itself rather than by
-polygonising it, at any radius — `Within` decides a cap wider than a hemisphere
-through its complement, which is narrower than one. Two consequences worth
-knowing: where the containment of the cap's *centre* in a cell is numerically
-undecidable, `Intersects` counts it as a hit, since at that point the cap is
-either wholly inside the cell or wholly outside and reading "undecidable" as
-"outside" would drop a cap sitting deep inside a cell; and only `Intersects`,
-`Disjoint` and `Within` are implemented for caps, the rest throwing.
+Caps are handled without polygonization. `Within` uses the complement for caps
+wider than a hemisphere. `Intersects` conservatively accepts undecidable cap-
+centre containment. Cap targets support only `Intersects`, `Disjoint`, and
+`Within`.
 """
 function query(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate)
-    # The grid is asked its size first, deliberately: a grid that implements
-    # nothing must bounce off the interface, not off the target parser. The
-    # predicate and target are then validated BEFORE the empty short-circuit,
-    # so that an unusable query is an error whether or not the grid has cells.
+    # Validate the grid, predicate, and target before the empty-grid shortcut.
     n = ncells(grid)
     _check_predicate(pred)
     target = _query_target(Base.parent(pred))
@@ -625,10 +510,7 @@ end
 _id_type(grid::AbstractGrid) = (sys = system(grid);
 sys === nothing ? typeof(cellindex(grid, 1)) : cellindextype(sys))
 
-# A standalone grid names its id type only through a cell, and an empty grid has
-# none to ask — so the empty answer for one is abstractly typed. Unavoidable
-# without adding an id-type primitive to the interface, and harmless: the vector
-# is empty, so nothing is ever stored in it.
+# Empty standalone grids have no discoverable concrete id type.
 _empty_ids(grid::AbstractGrid) = (sys = system(grid);
 sys === nothing ? AbstractCellIndex[] : cellindextype(sys)[])
 

@@ -1,105 +1,9 @@
-# ---------------------------------------------------------------------------
-# The rhombus lattice one-ring, and the ten-diamond seam topology
-#
-# Inside a diamond the neighbourhood is the plainest thing in this package: the
-# chart cell of `(ix, iy)` is the axis-aligned square `[ix, ix+1] × [iy, iy+1]`,
-# so the four axis offsets share a whole cell EDGE and the four diagonal offsets
-# share a single lattice POINT. (Note how this differs from HEALPix, where the
-# pixel is a diamond rotated 45° against the lattice and the pairing is the
-# other way round. Same lattice, opposite reading — do not transplant one file's
-# `Edge()` slot tuple into the other.)
-#
-# What needs deriving is what happens at a diamond's rim. Everything below comes
-# out of one observation about the layout table:
-#
-#   > A diamond's four chart edges are four icosahedron edges, named by their
-#   > endpoint vertex pairs; the SEAM (the main diagonal `y == x`) is a fifth,
-#   > and it is interior. Ten diamonds contribute forty rim edge-slots and ten
-#   > seams — exactly the icosahedron's thirty edges, the ten seams used once
-#   > and the twenty others twice.
-#
-# So the diamond-to-diamond adjacency is read straight off the vertex pairs,
-# with no geometry and no fitting.
-#
-# ## Edge slots, and why the pairing needs no orientation flag
-#
-# Number a diamond's rim edges by the counterclockwise boundary walk of its
-# chart square, `(0,0) → (1,0) → (1,1) → (0,1) → (0,0)`:
-#
-#     slot 1  S  y = 0   from v00 to v10      slot 3  N  y = 1   from v11 to v01
-#     slot 2  E  x = 1   from v10 to v11      slot 4  W  x = 0   from v01 to v00
-#
-# Read as ORDERED vertex pairs those are `(v00,v10)`, `(v10,v11)`, `(v11,v01)`,
-# `(v01,v00)`. Two diamonds sharing an edge traverse it in opposite directions —
-# the ten charts are consistently oriented (each is counterclockwise seen from
-# outside, which `diamonds.jl` asserts), and that is exactly what an orientable
-# surface's face boundaries do. So the neighbour of `(d, slot)` is the unique
-# `(d', slot')` whose ordered pair is the REVERSE, and the parameter along the
-# edge always runs backwards across the join. There is no per-edge "reversed"
-# bit to fit or to get wrong; the [`EDGE_NEIGHBORS`](@ref) build asserts the
-# reversal is unique and involutive rather than assuming it.
-#
-# ## Crossing an edge
-#
-# Give each rim cell of slot `e` an EDGE INDEX `j ∈ 0:nside-1`, its position
-# along the boundary walk:
-#
-#     S: j = ix     E: j = iy     N: j = nside-1-ix     W: j = nside-1-iy
-#
-# and let `_edge_cell` invert that. Then crossing is `j' = nside - 1 - j` into
-# the paired slot — the reversal above, on the lattice.
-#
-# The rule that makes this cover the diagonal offsets too is to read an
-# out-of-range offset as the extended chart square `[xx, xx+1] × [yy, yy+1]`
-# beyond the rim and ask which edge index IT spans:
-#
-#     xx == nside  ->  slot 2 (E), j = yy          yy == nside  ->  slot 3 (N), j = nside-1-xx
-#     xx == -1     ->  slot 4 (W), j = nside-1-yy  yy == -1     ->  slot 1 (S), j = xx
-#
-# At a diagonal offset that lands one step further along the rim than the axis
-# offset does, which is precisely the corner-only neighbour. One rule, both
-# cases, and it is the same rule read forwards.
-#
-# ## The twelve icosahedron vertices
-#
-# An offset with BOTH coordinates out of range can only happen at the four
-# corner cells of a diamond, and it points at an icosahedron vertex. That is
-# where the lattice stops being a lattice.
-#
-# Count the diamond-corners at each vertex: vertex 0 is `v01` of all five
-# northern diamonds and vertex 11 is `v10` of all five southern ones, so those
-# two carry FIVE diamond-corners each; the remaining ten vertices carry THREE.
-# (Forty corner-slots, five plus five plus ten times three. The five faces
-# meeting at a vertex are shared out as 60° or 120° per diamond-corner depending
-# on whether the vertex is a seam endpoint of that diamond, which is why the
-# counts differ while the 300° cone angle does not.)
-#
-# The cells touching a vertex are exactly the corner cells of those
-# diamond-corners — no other cell has the vertex as one of its four corners. Of
-# the `k-1` others, TWO are already reached by the axis offsets across the two
-# rim edges meeting at that corner, so the diagonal offset yields `k-3`: NONE at
-# a valence-3 vertex, and TWO at vertices 0 and 11.
-#
-# Hence the neighbour counts: 8 in the interior, 7 at a valence-3 corner cell,
-# and **9** at the twenty corner cells sitting on vertices 0 and 11 — which is
-# why `max_neighbors(sys, Vertex())` is 9 and not 8.
-#
-# ## Rotational order
-#
-# The offsets are emitted counterclockwise in the `(x, y)` chart plane starting
-# at `(+1, 0)`, and the chart is orientation-preserving onto the sphere seen
-# from outside (`diamonds.jl` asserts `imag(conj(a)·b) > 0` on all twenty
-# half-maps, and `snyder_inv_xyz` preserves orientation from a face's `(u, w)`
-# frame), so chart-counterclockwise IS counterclockwise seen from outside. That
-# is the argument; `test/systems/ISEA4R/runtests.jl` measures it, because the
-# argument has been wrong before in this package.
-#
-# The two cells a vertex offset yields must be wound too. They are emitted in
-# the order of the FAN WALK around the vertex, which [`CORNER_FANS`](@ref)
-# builds by repeatedly crossing rim edges: starting from the rim edge that precedes the
-# diagonal in the counterclockwise sweep and ending on the one that follows it,
-# so the extras fall between their two axis neighbours in the same sweep.
-# ---------------------------------------------------------------------------
+# Integer topology for axis-aligned diamond cells. Axis offsets are edge
+# neighbors and diagonal offsets are vertex-only neighbors. Rim crossings pair
+# reversed oriented edges; corner fans handle valence-3 vertices and the
+# valence-5 vertices 0 and 11. Results wind counterclockwise from `(+1,0)`; both
+# affine halves and `snyder_inv_xyz` preserve orientation, so chart-CCW is CCW
+# seen from outside the sphere, which is the order the interface asks for.
 
 # Rim edge slots, in boundary-walk order. `S, E, N, W` are the chart directions
 # `y = 0`, `x = 1`, `y = 1`, `x = 0` — chart directions, not compass ones: a
@@ -120,7 +24,7 @@ const CORNER_01 = 4
     _edge_pair(d, e) -> (a, b)
 
 The ordered base-vertex pair of rim edge slot `e` of diamond `d`, in the
-counterclockwise boundary walk of the chart square. See the file header.
+counterclockwise boundary walk of the chart square.
 """
 function _edge_pair(d::Int, e::Int)
     v00, v10, v11, v01 = @inbounds DIAMONDS[d+1].verts
@@ -136,8 +40,8 @@ end
 `EDGE_NEIGHBORS[d + 1][e] == (d', e')`: the diamond and rim edge slot on the
 other side of slot `e` of diamond `d`.
 
-Derived by matching REVERSED ordered vertex pairs (see the file header), and
-asserted at load time to be a well-defined involution over all forty slots.
+Derived by matching reversed ordered vertex pairs and asserted at load time to
+be an involution over all forty slots.
 """
 const EDGE_NEIGHBORS = let
     out = Vector{NTuple{4,Tuple{Int,Int}}}(undef, 10)
@@ -175,17 +79,9 @@ _corner_vertex(d::Int, c::Int) = @inbounds DIAMONDS[d+1].verts[c]
 """
     CORNER_FANS
 
-`CORNER_FANS[d + 1][c]`: the OTHER diamond-corners sitting on the same
-icosahedron vertex as corner slot `c` of diamond `d`, as `(d', c')` pairs, in
-counterclockwise fan order about that vertex.
-
-The walk starts by crossing the rim edge that precedes the corner's diagonal
-direction and ends on the one that follows it, so the first and last entries are
-always the two corners the AXIS offsets already reach and the interior entries —
-two of them at vertices 0 and 11, none anywhere else — are what the diagonal
-offset yields. The build asserts exactly that, plus that the walk
-closes on its starting corner and visits every diamond-corner of the vertex
-once.
+Other diamond corners at the same icosahedron vertex as `(d,c)`, in
+counterclockwise fan order. The endpoints are reached by axis offsets; interior
+entries are the additional diagonal neighbors at vertices 0 and 11.
 """
 const CORNER_FANS = let
     out = Vector{NTuple{4,Vector{Tuple{Int,Int}}}}(undef, 10)
@@ -235,9 +131,8 @@ end
 """
     _edge_cell(e, j, nside) -> (ix, iy)
 
-The rim cell of diamond-local slot `e` at boundary-walk position `j` — the
-inverse of the edge-index table in the file header (`S: j = ix`, `E: j = iy`,
-`N: j = nside-1-ix`, `W: j = nside-1-iy`).
+The rim cell of diamond-local slot `e` at boundary-walk position `j`, using
+`S: j=ix`, `E: j=iy`, `N: j=nside-1-ix`, and `W: j=nside-1-iy`.
 """
 @inline function _edge_cell(e::Int, j::Int, nside::Int)
     e == EDGE_S && return (j, 0)
@@ -273,8 +168,7 @@ The eight lattice offsets `(dx, dy)`, **counterclockwise in the chart plane
 starting at `(+1, 0)`**: E, NE, N, NW, W, SW, S, SE in chart directions.
 
 Slots `1, 3, 5, 7` — the four axis offsets — are the [`Edge`](@ref) subset:
-those share a whole cell edge, the diagonals share a single lattice point. See
-the file header on why this is the opposite reading from HEALPix's.
+those share a whole cell edge, while the diagonals share only a lattice point.
 """
 const NEIGHBOR_OFFSETS = ((1, 0), (1, 1), (0, 1), (-1, 1),
     (-1, 0), (-1, -1), (0, -1), (1, -1))
@@ -295,19 +189,11 @@ _offset_slots(::DGG.Edge) = (1, 3, 5, 7)
 """
     lattice_neighbors(ix, iy, diamond, nside, connectivity) -> SmallVector{9,NTuple{3,Int}}
 
-The `(ix, iy, diamond)` neighbours of a cell, in **counterclockwise rotational
-order seen from outside the sphere, starting at the `(+1, 0)` chart direction**.
-
-Eight cells in a diamond's interior, seven at a corner cell on one of the ten
-valence-3 icosahedron vertices, nine at a corner cell on vertex 0 or vertex 11
-(where the diagonal offset yields two cells rather than none) — see the file
-header for the count.
-
-Pure integer arithmetic on the layout tables: no geometry, no floating point,
-and no allocation — the result is a `SmallCollections.SmallVector` sized by the
-nine of `max_neighbors`. Duplicates are removed keeping the FIRST occurrence,
-which preserves the cycle; they can only arise at `nside == 1`, where a whole
-diamond is one cell.
+Return `(ix,iy,diamond)` neighbors counterclockwise from chart direction
+`(+1,0)`. Vertex connectivity yields 8 cells in the interior, 7 at valence-3
+corners, and 9 at vertices 0 and 11; edge connectivity yields at most 4.
+Integer table lookup is allocation-free, and duplicates at `nside == 1` are
+removed without changing order.
 """
 function lattice_neighbors(ix::Integer, iy::Integer, diamond::Integer,
         nside::Integer, connectivity::DGG.Connectivity = DGG.Vertex())

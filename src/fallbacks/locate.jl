@@ -1,35 +1,20 @@
-# ---------------------------------------------------------------------------
-# Location and topology: `cellat`, geometric `neighbors`, `ring`
-#
-# Both are tree descents against the cell that is being asked about — the
-# generic answers, correct for any grid, and the ones a system with closed-form
-# arithmetic overrides. "Slow but correct" is the deal the design makes here:
-# nothing in this file assumes a hierarchy, a projection, or a lattice.
-# ---------------------------------------------------------------------------
+# Generic location and adjacency operations for grids without closed-form
+# hierarchy or lattice methods.
 
 """
     cellat(grid, p::UnitSphericalPoint) -> Union{AbstractCellIndex,Nothing}
     cellat(grid, lon::Real, lat::Real)
 
-The cell containing a point, or `nothing` outside the grid's coverage. The
-`(lon, lat)` method takes **degrees** and converts; the unit-sphere method is
-the primitive.
-
-Generic implementation: descend [`treeify(grid)`](@ref treeify) to the cells
-whose extents contain the point, then test point-in-cell exactly, on the
-sphere. Candidates are visited in ascending canonical id order, so a point on a
-shared boundary — which both cells legitimately contain — resolves to the first
-of them, deterministically and never by floating-point luck.
+Return the cell containing a point, or `nothing` outside grid coverage. The
+`(lon, lat)` overload accepts degrees. Candidates are pruned by the spatial tree,
+tested exactly, and ordered by canonical id for deterministic boundary ties.
 """
 function cellat(grid::AbstractGrid, p::GO.UnitSphericalPoint)
     tree = treeify(grid)
     positions = STI.query(tree, cap -> cap_contains(cap, p))
     isempty(positions) && return nothing
     candidates = sort!([cellindex(grid, i) for i in positions])
-    # A ring the exact predicate cannot decide (degenerate edges, a
-    # near-hemispheric cell) is kept as a last resort rather than silently
-    # dropped: `nothing` from the whole scan would claim the point is outside
-    # the coverage, which is a different — and wrong — answer.
+    # Preserve one undecidable candidate rather than report it outside coverage.
     undecided = nothing
     for c in candidates
         verdict = point_in_cell(cell_boundary(grid, c), p)
@@ -48,25 +33,13 @@ cellat(grid::AbstractGrid, lon::Real, lat::Real) = cellat(grid, unit_point(lon, 
 """
     adjacent_cells(grid, c, connectivity = Vertex(), tree = treeify(grid))
 
-The cells of `grid` sharing at least a vertex (or, under [`Edge()`](@ref Edge),
-at least two) with cell `c`, excluding `c` itself.
+Return cells sharing at least one vertex, or two under [`Edge()`](@ref Edge),
+with `c`, excluding `c`. Results are sorted by canonical id; public rotational
+ordering is applied by [`neighbors`](@ref) and [`ring`](@ref).
 
-This is a **set-producing primitive**, not a neighbour answer: the order it
-returns is ascending by canonical id, chosen only so that a tree query's
-arrival order cannot leak into the result. The rotational order the interface
-promises is *not* imposed here — [`neighbors`](@ref) and [`ring`](@ref) apply it
-where the shells are assembled, because a shell's winding is defined about the
-subject cell `c` and this function is called once per frontier cell rather than
-once per shell. Callers wanting the contract order must go through `neighbors`
-or `ring`.
-
-It assumes a **conforming** tessellation: cells that meet do so at coincident
-vertices, matched here to within a tolerance scaled to the cell's own size. That
-covers every grid this package describes; a grid with T-junctions needs its own
-`neighbors` method, which is the fast path every system writes anyway.
-
-Candidate generation is sound: two cells that share a boundary point share a
-point of both bounding caps, so no touching cell is ever pruned.
+The fallback assumes a conforming tessellation with coincident shared vertices.
+Cap intersection safely prunes candidates because touching cells have
+intersecting caps.
 """
 function adjacent_cells(grid::AbstractGrid, c::AbstractCellIndex,
         connectivity::Connectivity=Vertex(), tree=treeify(grid))
@@ -121,25 +94,10 @@ end
 """
     neighbors(grid, c, k = 1; connectivity = Vertex())
 
-All cells within `k` adjacency steps of `c`, excluding `c`, as the rings
-1, 2, …, `k` **concatenated outward** — see the [`neighbors`](@ref) interface
-docstring, which is authoritative for the order.
-
-The fallback has no lattice to read a direction off, so it realises the
-rotational contract by measurement: each shell is ordered by azimuth about
-`cell_centroid(grid, c)`, counter-clockwise seen from outside the sphere, with
-the **first ring-1 neighbour** as the zero direction so that every shell starts
-on the same spoke. Ring 1's own start is its smallest canonical id, which is the
-only arbitrary choice in the scheme and the one that makes it reproducible.
-Exact azimuth ties break by ascending canonical id. Nothing here sorts the
-result by id: that would interleave the shells and destroy the tail-block law
-with [`ring`](@ref).
-
-The walk itself is a breadth-first sweep over [`adjacent_cells`](@ref), which is
-geometric and therefore slow; it exists so that every grid has correct
-neighbours, and every system overrides it. Cells outside the grid's coverage are
-simply never produced, which is the "absent, not padded" rule holding by
-construction.
+Return cells within `k` adjacency steps, excluding `c`, as outward-concatenated
+rings. A breadth-first traversal orders each ring counter-clockwise by measured
+azimuth from the smallest-id ring-1 neighbor; exact ties use canonical id.
+Cells outside grid coverage are omitted.
 """
 function neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer=1;
         connectivity::Connectivity=Vertex())
@@ -148,15 +106,8 @@ function neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer=1;
     return reduce(vcat, shells)
 end
 
-# The breadth-first walk both `neighbors` and `ring` are reads of: shell `j` of
-# the result is the cells at adjacency distance exactly `j`, already wound. One
-# tree, built once — for a grid with no hierarchy that build is O(ncells), so
-# doing it per step (or twice, for `ring`'s two discs) is the difference between
-# one sweep and several.
-#
-# The winding happens HERE rather than in the two callers, because that is what
-# makes `ring(grid, c, k)` the literal tail block of `neighbors(grid, c, k)`:
-# both read the same wound shells, so they cannot disagree element for element.
+# Shared breadth-first traversal producing already wound distance shells. It
+# builds one tree and makes `ring(..., k)` the exact tail of `neighbors(..., k)`.
 function _adjacency_shells(grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
         connectivity::Connectivity)
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
@@ -193,14 +144,8 @@ end
 """
     ring(grid, c, k; connectivity = Vertex())
 
-The cells at adjacency distance **exactly** `k`. `ring(grid, c, 0)` is `[c]`.
-
-Shares [`neighbors`](@ref)' breadth-first walk — one shell of it, rather than
-the difference of two discs — and therefore its order exactly: counter-clockwise
-seen from outside the sphere, from the same spoke every other shell starts on.
-The result is the tail block of `neighbors(grid, c, k)` element for element,
-which is the law the interface docstring states and the reason this reads a
-shell instead of walking its own.
+Return cells at adjacency distance exactly `k`; `k == 0` returns `[c]`. Ordering
+matches the corresponding tail block of [`neighbors`](@ref).
 """
 function ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer;
         connectivity::Connectivity=Vertex())
@@ -214,24 +159,10 @@ function ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer;
     return shells[steps]
 end
 
-# ===========================================================================
-# Rotational shell order
-#
-# The fallback's own azimuth machinery. It deliberately duplicates what the
-# HEALPix and H3 systems do with their own lattices: this layer may not depend
-# on a system module, and a system that has a lattice direction should be using
-# it rather than measuring one.
-# ===========================================================================
+# Rotational shell ordering by measured azimuth.
 
-# The frame every shell's azimuth is measured in, built once from ring 1:
-# the tangent basis at `centre` whose zero direction points at the ring-1
-# neighbour with the smallest canonical id.
-#
-# `zero` is the anchor's own measured azimuth rather than the literal `0.0`.
-# In exact arithmetic they are the same number; in floating point the anchor's
-# tangential component can round to a hair below zero, and `mod(-eps, 2pi)` is
-# `2pi` — which would sort the spoke's own cell to the END of its ring.
-# Subtracting the measurement cancels that exactly.
+# Tangent frame anchored at the smallest-id ring-1 neighbor. Subtract its
+# measured azimuth to prevent `mod(-eps, 2π)` from moving the anchor to the end.
 function _ring_frame(grid::AbstractGrid, centre, shell::AbstractVector)
     anchor = cell_centroid(grid, minimum(shell))
     e1, e2 = _tangent_basis(centre, anchor)
@@ -249,20 +180,14 @@ function _wind!(shell::AbstractVector, grid::AbstractGrid, centre, frame)
     return shell
 end
 
-# A tangent basis at `centre` with `e1` pointing at `toward` (projected into the
-# tangent plane) and `e2 = centre x e1`. Then `e1 x e2 == centre`, i.e. the pair
-# is right-handed SEEN FROM OUTSIDE the sphere, which is what makes increasing
-# `atan(u.e2, u.e1)` run counter-clockwise viewed from above the plane rather
-# than from below it.
+# Right-handed tangent basis at `centre`, with `e1` toward the anchor and
+# `e2 = centre × e1`; increasing azimuth is counter-clockwise from outside.
 function _tangent_basis(centre, toward)
     u = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
     radial = u[1] * centre[1] + u[2] * centre[2] + u[3] * centre[3]
     t = (u[1] - radial * centre[1], u[2] - radial * centre[2], u[3] - radial * centre[3])
     n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
-    # A neighbour whose centroid coincides with the subject's, or sits exactly
-    # antipodal to it, has no tangential direction. Neither can happen in a real
-    # tessellation, but an arbitrary-but-valid basis keeps this total instead of
-    # quietly returning NaNs and corrupting an order.
+    # Use an arbitrary valid tangent for coincident or antipodal centroids.
     if n <= eps(Float64)
         t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)
         radial = t[1] * centre[1] + t[2] * centre[2] + t[3] * centre[3]

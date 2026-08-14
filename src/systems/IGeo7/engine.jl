@@ -1,31 +1,6 @@
-# engine.jl — the Eisenstein digit engine: exact integer arithmetic on the
-# hexagonal lattice, the fitted IGEO7 digit tables, Horner encode and rounded
-# division decode (spec/aperture7-indexing-spec.md sections 1-3; conventions
-# fitted against recorded oracle output, spec/igeo7-geometry-diagnosis.md §4).
-#
-# Derivation in brief (full argument in the aperture-7 spec):
-#   * hex lattice centers = Eisenstein integers Z[omega], omega = e^{2 pi i/3};
-#     axial (a, b) denotes a + b*omega and the six units are the six neighbor
-#     directions.
-#   * aperture 7 = multiplication by a norm-7 Eisenstein integer; up to units
-#     the two choices are the conjugate pair c = 3+omega (arg +alpha) and
-#     cbar = 2-omega (arg -alpha), alpha = atan(sqrt(3)/5) = 19.106605...deg.
-#     c*cbar = 7, so dividing by c is multiplying by cbar and dividing by 7 --
-#     exact integer division after the digit has been subtracted.
-#   * {0} + {units} is a complete residue system mod c (N(c) = 7 is prime),
-#     which is what makes the digit at each level unique.
-#
-# Fitted conventions (constants marked below; fitted against recorded oracle
-# output, spec/igeo7-geometry-diagnosis.md §3-§4, and validated at 100% exact
-# decode on all 196,080 oracle cell centers res 1-5):
-#   * chirality alternates per level, cbar first: chi_k = cbar for odd k,
-#     c for even k.
-#   * digit -> unit direction (the A-gauge): 5->0deg, 4->60, 6->120, 2->180,
-#     3->240, 1->300 -- the published GBT digit cycle 4,6,2,3,1,5 running CCW
-#     seen from outside (spec/z7-paper-spec.md §3.4), up to the gauge rotation.
-#
-# No floating point is used by the integer core; `ecpx` and `hex_round` are
-# the deliberate lattice <-> plane bridge used by snyder.jl / grid.jl.
+# Exact Eisenstein-lattice arithmetic for Z7 encoding and decoding.
+# Level chirality alternates `cbar`, `c`; digit directions follow the fitted
+# GBT cycle. Floating point is confined to the lattice/plane bridge.
 
 # ---------------------------------------------------------------------------
 # 1. Eisenstein integers
@@ -34,10 +9,8 @@
 """
     MAX_DIGITS
 
-Number of Z7 digit levels the bit format can hold (spec section 4.1). Same
-fact as z7.jl's `Z7_MAX_RESOLUTION`, restated here so this file stays a
-self-contained integer layer; the two are pinned equal by
-`test/test_icosahedron.jl` ("cross-file constant consistency").
+Number of Z7 digit levels the bit format can hold. Matches
+`Z7_MAX_RESOLUTION` while keeping this integer layer self-contained.
 """
 const MAX_DIGITS = 20
 
@@ -106,7 +79,9 @@ res_c(a::Integer, b::Integer) = mod(a + 4b, 7)
 "Residue of `a + b*omega` modulo `cbar = 2 - omega` in `0:6` (`omega ↦ 2`)."
 res_cbar(a::Integer, b::Integer) = mod(a + 2b, 7)
 
-# residue -> unit index j (-1 marks the zero residue, i.e. digit 0)
+# residue -> unit index j (-1 marks the zero residue, i.e. digit 0). `{0}` plus
+# the six units is a complete residue system mod chi (N(chi) = 7 is prime), so
+# the table fills without gaps and each level's digit is unique.
 function _make_res_to_j(reschi)
     t = fill(-1, 7)
     for j in 0:5

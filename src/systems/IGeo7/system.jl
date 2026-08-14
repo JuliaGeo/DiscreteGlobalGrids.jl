@@ -1,44 +1,16 @@
-# ---------------------------------------------------------------------------
-# The new-interface wiring: `Z7Cell` and `IGeo7System`.
-#
-# Everything below is an adapter over the native layers included ahead of it
-# (`z7.jl`, `engine.jl`, `z7grid.jl`), which are ported verbatim from the
-# verified clean-room implementation and are the oracle-validated arithmetic.
-# No projection maths is rederived here; what changes is only the shape of the
-# calls — the old `(system, level, id)` triple becomes a typed cell that knows
-# its own level, and dense ordinals become grid *positions*.
-#
-# Namespace note: `z7grid.jl` defines native `cell_boundary`, `cell_area` and
-# `cell_center` that answer in `(lon, lat)` degrees. Those names are NOT
-# imported from the package, so inside this module they stay the native ones and
-# the interface generics are reached through `DGG.`; the two are never
-# conflated. This is the same discipline the old `IGeo7Kernel.jl` used.
-# ---------------------------------------------------------------------------
+# Typed interface over the native Z7 and ISEA geometry layers. Native geometry
+# names remain local; package interface methods are qualified with `DGG.`.
 
 """
     Z7Cell(id::UInt64) <: AbstractCellIndex
     Z7Cell(s::AbstractString)
 
-The canonical cell id of [`IGeo7System`](@ref): the Z7 `UInt64` itself, whose
-level is carried in-band by the digit slots (4 bits of base cell `0:11`, then
-twenty 3-bit digits, `7` marking a padded slot past the resolution).
+Canonical Z7 cell identifier. The `UInt64` stores a 4-bit base followed by
+twenty 3-bit digit slots; `7` pads slots below the cell's level. Ascending raw
+identifiers give canonical lexicographic order and contiguous subtrees.
 
-`level(c)` is the count of leading active digit slots, so it needs no system and
-no table. `rawid(c)` is the `UInt64`, which is what `z7_to_hex` /
-`z7_to_string` encode and what a file or a C library should carry.
-
-Ordering is ascending `UInt64`, which **is** the system's canonical cell order:
-the base cell occupies the high bits and the padding sentinel `7` sorts after
-every active digit, so comparing two same-level ids compares
-`(base, d_1 … d_r)` lexicographically — the space-filling curve order that makes
-[`has_sorted_subtrees`](@ref) true and every subtree one contiguous interval of
-grid positions.
-
-Construction does **not** validate, matching `LevelIndex`: an id is a cheap
-name, and validation happens where a name meets a system or a grid
-(`cellposition` answers `nothing`, the geometry entry points throw
-[`InvalidZ7Error`](@ref)). The string constructor is the exception — it goes
-through `z7_from_string`, which validates as it parses.
+Unsigned construction does not validate. String construction validates while
+parsing; grid and geometry operations validate other identifiers when used.
 
 ```julia
 julia> c = Z7Cell("0941054");
@@ -113,41 +85,13 @@ is_valid_cell(c::Z7Cell) = is_valid_cell(c.id)
 """
     IGeo7System() <: AbstractHierarchicalGridSystem
 
-The IGEO7 discrete global grid system: an aperture-7 hexagonal hierarchy on the
-icosahedron (ISEA7H) with Z7 indexing, in the standard ISEA placement.
+An aperture-7 hexagonal hierarchy on the icosahedron using the Snyder ISEA
+chart and [`Z7Cell`](@ref) identifiers. Level `r` contains `10·7^r + 2` cells:
+twelve pentagons and `10·7^r - 10` hexagons. Hexagons have seven children and
+pentagons six; child cells can overhang the parent boundary.
 
-Twelve pentagons — one per icosahedron vertex — and `10·7^r − 10` hexagons tile
-level `r`, for `10·7^r + 2` cells in all. Refinement is aperture 7: a hexagon
-has seven children, a pentagon six, and children **overhang** their parent's
-boundary, which is why [`node_extent`](@ref) is an inflated cap rather than the
-cell polygon (see the covering law).
-
-| trait | value |
-|:--|:--|
-| [`cellindextype`](@ref) | [`Z7Cell`](@ref) |
-| [`levels`](@ref) | `0:19` |
-| [`has_sorted_subtrees`](@ref) | `true` |
-| [`max_neighbors`](@ref) | `6` (pentagons have 5) |
-| [`cap_inflation`](@ref) | `1.2` (the interface default) |
-
-Geometry is the Snyder equal-area chart on the icosahedron, shared with the rest
-of the ISEA family through the [`ISEA`](@ref) module.
-
-The projection is exactly equal-area, but the published cell is **not** the
-chart's equal-area region: [`cell_boundary`](@ref) reports the corner ring, and
-those rings tile the sphere exactly while carrying slightly unequal areas
-(+1.6% on hexagons and −9.9% on pentagons at level 1, narrowing as cells
-shrink). So [`cell_area`](@ref) here is the ring's area — the area of the true
-cell, which for IGEO7 is the ring — and the chart's closed form
-`4π/(10·7^r)` steradians for a hexagon, `5/6` of that for a pentagon, is a
-*different quantity* available separately as
-[`equal_area_steradians`](@ref). Reach for that one when you want the
-system's nominal equal-area figure, and for `cell_area` when you want the area
-of the polygon this package will actually intersect, regrid and draw.
-
-Agreement with DGGRID is pinned by the sealed oracle vectors in
-`test/IGeo7/vectors/`: all 196,080 published cell centres at levels 1–5 decode
-to their exact Z7 string.
+[`cell_area`](@ref) measures the published great-circle corner ring.
+[`equal_area_steradians`](@ref) returns the distinct nominal Snyder-chart area.
 """
 struct IGeo7System <: AbstractHierarchicalGridSystem end
 
@@ -161,13 +105,9 @@ DGG.has_sorted_subtrees(::IGeo7System) = true
 # bound is 6 under either connectivity (a pentagon reaches 5).
 DGG.max_neighbors(::IGeo7System, ::Connectivity) = 6
 
-# `cap_inflation` keeps the interface default of 1.2. It is not a guess here:
-# the covering ratio (a subtree's farthest descendant vertex over the cell's own
-# cap radius) was measured exhaustively for depths 1-5 at levels 0-1 and over
-# pentagon neighbourhoods at levels 4 and 6, worst case 1.0482 — every
-# descendant sits inside 87% of the wired radius, and the ratio converges
-# geometrically in two-step (chirality alternates with level parity). The
-# conformance covering-law suite re-checks it by sampling.
+# The default `cap_inflation == 1.2` covers descendant overhang: the covering
+# ratio was measured exhaustively for depths 1-5 and over pentagon
+# neighbourhoods, worst case 1.0482.
 
 """
     rootcells(::IGeo7System) -> SmallVector{12,Z7Cell}
@@ -280,15 +220,9 @@ end
 """
     descendant_range(sys::IGeo7System, c::Z7Cell, l::Integer) -> UnitRange{Int}
 
-The contiguous interval of **positions** in `levelgrid(sys, l)` occupied by the
-descendants of `c` at level `l`.
-
-Two facts make this O(level) integer work rather than a subtree walk. Ascending
-id order is the level's canonical position order, and the level-`l` descendants
-of `c` are exactly the ids sharing `c`'s digit prefix — so they are contiguous,
-starting at the all-zero-suffix descendant (digit 0 is never a deleted pentagon
-digit, so that id is always a valid cell) and running for the subtree's size,
-which is `7^d` for a hexagon and `(5·7^d + 1)/6` for a pentagon.
+The contiguous position interval of `c`'s level-`l` descendants. Prefix order
+makes this an `O(level)` calculation; the size is `7^d` for a hexagon and
+`(5·7^d + 1)/6` for a pentagon.
 
 Throws an `ArgumentError` for `l` outside `level(c):max_level`.
 """
@@ -374,31 +308,16 @@ end
 The centre of `c` on the unit sphere, strictly interior to the cell: the cell's
 physical lattice point pulled back through the Snyder chart, and for a pentagon
 exactly the icosahedron vertex it surrounds.
-
-This is the true centre of the cell in the equal-area chart, which is what the
-oracle centre dumps publish.
 """
 DGG.cell_centroid(::IGeo7System, c::Z7Cell) = USPoint(_cell_center_xyz(c.id, _geometry_checked(c.id)))
 
 """
     cellat(g::LevelGrid, p::UnitSphericalPoint) -> Z7Cell
 
-The cell containing `p`, in closed form — no tree descent. The Snyder forward
-map picks the containing face, its three corner bases are tried nearest-first
-through the dev-frame slot maps, and each candidate is accepted only if a strict
-re-encode reproduces the rounded lattice point. Exactly one owner accepts, by
-global-lattice consistency, so there is no nearest-centre arbitration.
-
-Never `nothing`: a complete level covers the sphere.
-
-**Ties.** A point exactly on a shared boundary is resolved by the decoder's
-rounding-tie fallback, which takes the equally near owner in ascending Voronoi
-margin. That is the documented rule, and it is deterministic in the sense the
-interface asks for — see [`cellat`](@ref)'s contract, which is per-platform
-determinism, not cross-platform bit-identity. IGEO7 does not strengthen it:
-the margin comparison is in floating point, so a different CPU or libm may
-resolve an exactly-equidistant pair the other way. What holds everywhere is
-that the winner is one of the cells genuinely incident to the point.
+Return the cell containing `p` by Snyder projection and strict lattice
+re-encoding. Complete levels never return `nothing`. Boundary ties choose an
+incident cell by ascending Voronoi margin; exact ties may differ across
+floating-point platforms.
 """
 DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
     Z7Cell(_xyz_to_z7((Float64(p[1]), Float64(p[2]), Float64(p[3])), g.level))
@@ -409,38 +328,12 @@ DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
 """
     equal_area_steradians(c::Z7Cell) -> Float64
 
-The **ideal equal-area** solid angle of `c` in steradians, in closed form:
-`4π/(10·7^r)` for a hexagon at level `r` and `5/6` of that for a pentagon. These
-sum to exactly `4π` over a level, by construction.
-
-This is *not* `cell_area(grid, c)`, and the difference is real rather than
-numerical. The Snyder chart is exactly equal-area, so the true IGEO7 cell — the
-preimage of a chart hexagon — has exactly this area. But the boundary this
-package publishes is the cell's **corner ring**, and the great-circle arcs
-between those corners are not the true cell edges: they cut a slightly different
-region out of the sphere.
-
-Both regions are honest tessellations. The corner rings tile the sphere exactly
-(adjacent cells share corners, so they share whole edges, and their areas sum to
-`4π` to full double precision at every level), but they are *not* equal-area:
-measured against the closed form, level-1 hexagons run +1.6% and pentagons
-−9.9%, and the spread narrows as cells shrink (±2.3% at level 3).
-
-[`cell_area`](@ref) is contractually the area of the **true cell** — and for
-IGEO7 the true cell is the published ring, since it is the rings that tile the
-sphere and the rings that this package intersects, regrids and draws. So
-`cell_area` is left to the generic ring-derived implementation and always
-agrees with [`cell_boundary`](@ref) and [`cell_polygon`](@ref); the closed form
-here is the *other* quantity, the chart's nominal equal-area figure. (Contrast
-HEALPix, where the true cell is an analytic diamond and the published ring is a
-densified approximation of it, so its `cell_area` overrides to the closed form
-instead. Same contract, opposite conclusion, because the systems differ in
-which region is the cell.)
-
-Reach for this function when the equal-area *property*
-is what matters — area-weighted statistics, sanity checks against DGGRID's
-published areas — and for the ellipsoidal area multiply by the authalic radius
-squared (`ISEA.R_AUTHALIC^2`).
+Nominal Snyder-chart solid angle: `4π/(10·7^r)` for a level-`r` hexagon and
+`5/6` of that for a pentagon. This differs from [`cell_area`](@ref), which
+measures the published great-circle corner ring — a structural gap, not a
+numerical one: the rings tile exactly but run +1.6% on level-1 hexagons and
+−9.9% on pentagons, narrowing as cells shrink. Multiply by
+`ISEA.R_AUTHALIC^2` for ellipsoidal area.
 """
 function equal_area_steradians(c::Z7Cell)
     res = _geometry_checked(c.id)
@@ -455,44 +348,14 @@ end
 """
     neighbors(g::LevelGrid, c::Z7Cell, k = 1; connectivity = Vertex()) -> SmallVector{6,Z7Cell}
 
-The cells within `k` adjacency steps of `c`, excluding `c`.
+Cells within `k` adjacency steps of `c`, excluding `c`. Vertex and edge
+connectivity coincide. Rings are concatenated outward and ordered
+counterclockwise; ring 1 starts at the development frame's `+1` direction and
+outer rings use the same azimuth reference. Exact azimuth ties use ascending
+identifier order.
 
-On a hexagonal grid vertex and edge adjacency coincide, so `Vertex()` and
-`Edge()` return the same six cells (five for a pentagon) and `max_neighbors` is
-6 under either.
-
-# Order
-
-**Rotational**, per the interface contract: rings 1..`k` concatenated outward,
-each ring counter-clockwise seen from outside the sphere. So
-[`ring`](@ref)`(g, c, k)` is exactly the trailing block of `neighbors(g, c, k)`,
-element for element, and the two are computed by one walk so they cannot
-disagree.
-
-Ring 1 starts at the dev frame's `+1` reference direction — the six Eisenstein
-unit steps in their lattice order, which is the same winding `cell_boundary`
-reports its ring in. A pentagon yields five: at the cone apex two of the six
-unit directions fold onto the same physical slot, and the duplicate id drops
-out.
-
-Rings 2 and outward have no lattice cycle of their own to read — the shell of a
-hex disc is not a unit-step orbit — so they are ordered by measurement, the way
-the interface docstring prescribes: by azimuth about the cell centroid,
-counter-clockwise seen from outside, taking the direction of ring 1's first
-entry as the zero. Every ring therefore starts on the same spoke, and exact
-azimuth ties break by ascending id.
-
-`k == 0` is empty; `k < 0` throws an `ArgumentError`.
-
-Neighbours are computed by exact lattice arithmetic — one Eisenstein unit step
-on the cell's physical lattice point — and the position is turned back into an
-id by the same decoder `cellat` uses, whose strict re-encode rejects anything
-that is not exactly the cell standing there. Pentagon seams need no special
-case.
-
-The container is the static-capacity `SmallVector{6,Z7Cell}` at `k <= 1`, where
-the bound is [`max_neighbors`](@ref) and the call does not allocate, and a plain
-`Vector{Z7Cell}` above it, where the disc has no static bound.
+`k == 0` is empty and `k < 0` throws. For `k <= 1` the result is a
+`SmallVector{6,Z7Cell}`; larger discs return `Vector{Z7Cell}`.
 """
 function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
     connectivity::Connectivity=Vertex())
@@ -632,33 +495,15 @@ end
     return res
 end
 
-# ---------------------------------------------------------------------------
-# Subtree border
-#
-# Which descendants of a cell touch a cell outside its subtree, from the Z7
-# digits alone — no neighbour query and no geometry. T7 added the generic
-# `subtree_border` hook, so this is now IGeo7's method on it rather than a
-# module-local name.
-# ---------------------------------------------------------------------------
+# Subtree borders are derived directly from Z7 digits.
 
 """
     subtree_border(sys::IGeo7System, c::Z7Cell, l::Integer; connectivity = Vertex()) -> Vector{Z7Cell}
 
-IGeo7's method on the package's [`subtree_border`](@ref) generic.
-
-The descendants of `c` at level `l` that share an edge with a cell outside `c`'s
-subtree — the subtree's rim — ascending. `l == level(c)` returns `[c]`, whose
-whole neighbourhood is outside its own subtree.
-
-`connectivity` is accepted for the generic's signature and does not change the
-answer: on a hexagonal grid sharing a vertex and sharing an edge are the same
-relation.
-
-Decided by a six-state automaton over the digit string (a border cell's exposed
-directions always form a contiguous arc of the six unit steps, and the arc's
-length is exactly its number of border children), so the cost is `O(result)`:
-the rim of a hexagon subtree holds `3^(d+1) − 3` cells at depth `d` against the
-`7^d` the subtree holds, and a pentagon's holds `5·(3^d − 1)/2`.
+Return the level-`l` descendants on the subtree rim, in ascending order;
+`l == level(c)` returns `[c]`. Vertex and edge connectivity coincide. A
+six-state digit automaton runs in `O(result)`; at depth `d` the rim contains
+`3^(d+1)-3` cells for a hexagon and `5*(3^d-1)/2` for a pentagon.
 
 Throws an `ArgumentError` for `l` outside `level(c):max_level`.
 """

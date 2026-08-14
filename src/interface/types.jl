@@ -1,15 +1,6 @@
 # ---------------------------------------------------------------------------
-# The type vocabulary of the grid interface.
-#
-# Three abstract types carry the whole design: a grid is one finite collection
-# of cells, a system is a hierarchy that produces grids, and a cell index is a
-# typed name for a cell. Everything else in `interface/` is a generic function
-# written against these three.
-#
-# `level` and `rawid` are declared (bodiless) here because `LevelIndex`, the one
-# concrete cell index this layer ships, implements them immediately below. Their
-# contracts are documented in `interface/grid.jl`, next to the rest of the
-# identity plumbing.
+# Core grid, system, and cell-index types. `level` and `rawid` are declared here
+# for `LevelIndex`; their contracts are documented in `interface/grid.jl`.
 # ---------------------------------------------------------------------------
 
 function level end
@@ -18,27 +9,14 @@ function rawid end
 """
     abstract type AbstractGrid
 
-One finite collection of cells on the unit sphere: a complete DGGS level, a
-regional subset of one, or a standalone structured grid (tripolar, gaussian)
-with no hierarchy at all.
-
-# Coverage
-
-A grid is **not** assumed to partition the sphere. Partial coverage is a
-property of the base interface, not an exception to it: nothing generic may
-assume that every point of the sphere lies in some cell, and there is no
-`coverage_extent` primitive — coverage is whatever [`treeify`](@ref)'s root
-extent says it is.
+One finite collection of unit-sphere cells: a complete DGGS level, a regional
+subset, or a standalone structured grid. A grid need not cover the sphere;
+[`treeify`](@ref)'s root extent defines its coverage.
 
 # Position vs identity
 
-A grid imposes a **canonical dense order** on its cells, `1:ncells(grid)`. A
-bare `Int` passed to any function in this package is always a *position* in
-that order — the storage coordinate that data arrays, lookups and regridding
-matrices are laid out against. A typed [`AbstractCellIndex`](@ref) is always an
-*identity*: a name relative to a system, meaningful with no grid in hand. Ids
-are never bare integers, so `f(grid, i::Int)` and `f(grid, c::AbstractCellIndex)`
-coexist unambiguously and mean different things.
+A grid defines the canonical dense order `1:ncells(grid)`. A bare `Int` is a
+position in that order; an [`AbstractCellIndex`](@ref) is a typed cell identity.
 
 The canonical order is the grid's own choice, but it must be stable for the
 lifetime of the grid object and consistent with [`cellindex`](@ref) /
@@ -55,11 +33,11 @@ An implementor writes exactly four methods:
 | [`cell_boundary(grid, c)`](@ref cell_boundary) | exact boundary ring, unit-sphere points |
 | [`cell_centroid(grid, c)`](@ref cell_centroid) | representative interior point |
 
-Everything else — [`cellposition`](@ref), [`cell_polygon`](@ref),
+Everything else—[`cellposition`](@ref), [`cell_polygon`](@ref),
 [`cell_area`](@ref), [`cell_extent`](@ref), [`getcell`](@ref),
 [`cellat`](@ref), [`neighbors`](@ref), [`ring`](@ref), [`treeify`](@ref),
-[`query`](@ref) — is provided generically and may be overridden for speed,
-never for different semantics.
+and [`query`](@ref)—is provided generically and may be optimized without
+changing semantics.
 
 A grid produced by a hierarchical system reports it through [`system`](@ref)
 and [`level`](@ref); a standalone grid returns `nothing` from both and stops at
@@ -72,14 +50,9 @@ abstract type AbstractGrid end
 """
     abstract type AbstractHierarchicalGridSystem
 
-A hierarchy of grids: a family of levels related by analytic parent/child
-structure. The system is the object that *names* cells; a grid is one level of
-it (or a subset of one level), obtained with [`levelgrid`](@ref).
-
-Hierarchy is the fast path, never the contract. Every algorithm in this package
-is written against [`AbstractGrid`](@ref) first; a system's methods let the
-generic code prune trees, walk subtrees and answer queries in sublinear time,
-but they may not change what the answers *are*.
+A family of grid levels related by analytic parent/child structure. The system
+names cells; [`levelgrid`](@ref) returns a complete level grid. Hierarchical
+methods accelerate base-grid operations without changing their results.
 
 # Required interface
 
@@ -95,10 +68,8 @@ but they may not change what the answers *are*.
 
 # Traits
 
-[`has_sorted_subtrees`](@ref) (default `false`), [`cap_inflation`](@ref)
-(default `1.2`), [`max_neighbors`](@ref), [`max_level`](@ref). Descriptive
-metadata (cell shape, aperture, equal-areaness) is never load-bearing for an
-algorithm and lives outside this interface.
+[`has_sorted_subtrees`](@ref), [`cap_inflation`](@ref),
+[`max_neighbors`](@ref), and [`max_level`](@ref).
 
 See also [`AbstractGrid`](@ref), [`node_extent`](@ref).
 """
@@ -109,26 +80,16 @@ abstract type AbstractHierarchicalGridSystem end
 
 A typed, self-describing name for one cell of one system.
 
-A cell index is an *identity*, not a position: it means the same cell whether
-it is read against a complete level grid, a regional subset, or no grid at all.
-Bare integers are never cell indices — see [`AbstractGrid`](@ref) on position
-vs identity.
+A cell index is an identity, not a grid position, and names the same cell in
+complete grids, subsets, or without a grid.
 
 # Required of every subtype
 
-  - **isbits.** Cell indices are stored in dense arrays and small stack
-    containers by the million; they must be immutable and allocation-free.
-    Canonical schemes are an 8-byte wrapper with the level encoded in-band
-    (`Z7Cell`, `H3Cell`) or a level field plus a linear index
-    ([`LevelIndex`](@ref)).
-  - **[`level(c)`](@ref level) is total.** Every id knows its own level with no
-    system, grid or table in hand. This is why the interface never needs the
-    `(system, level, id)` argument triple.
+  - **isbits.** Indices must be immutable and allocation-free.
+  - **[`level(c)`](@ref level) is total.** Every id encodes its level.
   - **[`rawid(c)`](@ref rawid)** returns the encoded integer.
-  - **A total order.** `Base.isless` must implement the system's canonical cell
-    order, and `==`/`hash` must agree with it. Generic code sorts results by id
-    and binary-searches sorted id vectors; "unspecified order" is never allowed
-    anywhere in this package.
+  - **A total order.** `Base.isless` must implement canonical cell order, with
+    consistent `==` and `hash`.
 
 One scheme per system is canonical ([`cellindextype`](@ref)); alternates are
 reached through [`reindex`](@ref) and listed by [`cellindextypes`](@ref).
@@ -138,33 +99,20 @@ abstract type AbstractCellIndex end
 """
     LevelIndex(level, index) <: AbstractCellIndex
 
-The canonical id of a system whose cells at each level are a dense linear
-range: an explicit `level` field plus the linear `index` of the cell within
-that level. Nested HEALPix is the archetype.
+An id consisting of an explicit `level` and a system-defined linear `index`.
 
-`index` is the system's own linear numbering, and the system documents whether
-it is 0- or 1-based (a `LevelIndex` is agnostic; it only requires that the
-numbering be strictly increasing in canonical cell order, so that
-`isless(::LevelIndex, ::LevelIndex)` — lexicographic in `(level, index)` — *is*
-that order).
+The system documents whether `index` is zero- or one-based. It must increase in
+canonical cell order; `LevelIndex` orders lexicographically by `(level, index)`.
 
-Note that `index` is an identity, not a grid position: for a complete level
-grid the two coincide up to the base offset, but for a
-subset grid they do not, and [`cellposition`](@ref) is the only way to go from
-one to the other.
+`index` is an identity component, not a grid position. Use
+[`cellposition`](@ref) for the position in a complete or partial grid.
 
-Construction does not validate: a negative `level` or out-of-range `index` is
-representable. Ids are cheap names; validation happens where a name meets a
-system or a grid ([`cellposition`](@ref), [`levelgrid`](@ref)).
+Construction does not validate level or index ranges. Validation occurs when an
+id is used with a system or grid.
 
 ```jldoctest
-julia> c = LevelIndex(3, 17);
-
-julia> level(c), rawid(c)
+julia> c = LevelIndex(3, 17); (level(c), rawid(c))
 (3, 17)
-
-julia> LevelIndex(3, 17) < LevelIndex(3, 18) < LevelIndex(4, 0)
-true
 ```
 """
 struct LevelIndex <: AbstractCellIndex
@@ -197,27 +145,13 @@ abstract type Connectivity end
 """
     Vertex() <: Connectivity
 
-Moore connectivity: two cells are adjacent if they share **at least a vertex**.
+Moore connectivity: cells are adjacent when they share at least a vertex. This
+is the default connectivity.
 
-This is the default everywhere in this package, because it is the superset a
-consumer cannot reconstruct from an edge-only answer — dropping the corner
-neighbours of a `Vertex()` result is one filter, while recovering them from an
-`Edge()` result needs the grid again.
-
-`Vertex()` and [`Edge()`](@ref Edge) coincide exactly on grids where **three
-cells meet at every vertex** — there a shared vertex is always the endpoint of
-a shared edge, so there are no corner-only neighbours to add. That covers the
-icosahedral hexagons-with-twelve-pentagons family (IGeo7, H3) and the
-dodecahedral resolution-0 shell.
-
-It is a claim about vertex valence, not about cell shape, and "pentagonal
-grids" is not enough for it: A5's Cairo-style pentagonal tiling has **4-valent
-corners**, where a shared vertex need not come with a shared edge, and its two
-connectivities genuinely differ — at resolution 1 a cell has 11 vertex
-neighbours against 3 edge neighbours. On quadrilateral grids (HEALPix, S2,
-ISEA4R) the corners carry more than three cells for the same reason — four in
-the lattice interior, five where ISEA4R's diamonds meet an icosahedral vertex —
-and `Vertex()` adds them.
+`Vertex()` and [`Edge()`](@ref Edge) coincide where exactly three cells meet at
+each vertex. Higher-valence vertices add corner-only neighbours. This includes
+A5's 4-valent corners and ISEA4R's 4-valent lattice corners and 5-valent
+icosahedral vertices.
 """
 struct Vertex <: Connectivity end
 

@@ -1,32 +1,6 @@
-# grid.jl — the composed grid: encode (cell id -> center/boundary/area) and
-# decode (lon/lat -> cell id), spec/igeo7-geometry-diagnosis.md §6–§7 /
-# spec/design.md sections 11–12.
-#
-# This layer glues the four modules below it together (design Section 2):
-#   icosahedron.jl  vertex/neighbor tables, `Orientation`
-#   z7.jl           the UInt64 cell id, digit slots, validation
-#   engine.jl       exact Eisenstein lattice arithmetic + fitted digit tables
-#   snyder.jl        the per-face Snyder ISEA plane + dev-frame slot maps
-#
-# Ported from the verified clean-provenance prototype fit
-# (spec/igeo7-geometry-diagnosis.md §4), which reproduces every oracle cell
-# center at res 1..5 (all 196,080) within the dumps' own print noise and
-# decodes each to the exact z7 string. Provenance of each rule is cited
-# inline.
-#
-# The geometry pipeline:
-#
-#   Z7 digits --Horner--> res-r lattice point X in the base's dev frame
-#            --pentagon collapse + cone wrap--> physical lattice point
-#            --u = L*X/P_r--> dev-frame position
-#            --slot map + Snyder inverse--> unit sphere --Orientation--> world
-#
-# and the decoder runs it backwards — Snyder forward into the containing
-# face, the face's three corner bases nearest-first through the slot maps,
-# hex rounding in place of the lattice evaluation, and a strict re-encode
-# acceptance test in place of any nearest-center arbitration. The dev frame
-# covers each base's full 5-face neighborhood, so fringe cells are ordinary
-# dev positions: no rim transport exists anywhere.
+# Z7 geometry and dense indexing. Encoding maps digits through the Eisenstein
+# lattice and Snyder chart; decoding reverses that pipeline and verifies each
+# candidate by strict re-encoding.
 
 # ---------------------------------------------------------------------------
 # Constant tables (design Section 6: hoist every per-call lookup)
@@ -98,20 +72,10 @@ const TIE_EPS = 1e-6
 """
     _encode_lattice(z, base, res) -> (a, b)
 
-Physical res-`res` lattice point of cell `z` in its base's dev frame,
-streaming the digits straight out of the `UInt64` (no buffer):
-
-1. Horner: `X = Σ σ(d_k)·χ_{k+1}…χ_r` (2 integer multiplies + add per level)
-   **[a7]**;
-2. pentagon collapse **[fitted; see `spec/igeo7-geometry-diagnosis.md`
-   §4]**: at the level `m` of the first nonzero digit, the deleted
-   digit's 60° sector is excised and every kept subtree whose level-`m`
-   direction is CCW-past the deleted direction rotates by −60° (an exact
-   unit rotation);
-3. cone wrap: the whole-subtree representative is wrapped into dev angle
-   `[0°, 300°)` — wrapping by ±300° of angle is a unit rotation by ∓60°.
-
-Returns `(0, 0)` exactly for pentagons (all-zero digits).
+Return the physical level-`res` lattice point in the base's development frame.
+Digits are accumulated by Horner evaluation, the deleted pentagon sector is
+collapsed, and the result is wrapped into the `[0°, 300°)` cone. An all-zero
+pentagon prefix returns `(0, 0)`.
 """
 function _encode_lattice(z::UInt64, base::Int, res::Int)
     a = Int64(0)
@@ -135,6 +99,8 @@ function _encode_lattice(z::UInt64, base::Int, res::Int)
         end
     end
     m == 0 && return (Int64(0), Int64(0))
+    # collapse at level `m`, the first nonzero digit: the deleted digit's 60°
+    # sector is excised, so a subtree CCW-past it rotates back by 60° [fitted].
     thc = @inbounds THETA_DIR[m+1][dm]
     thdel = @inbounds THETA_DIR[m+1][z7_deleted_digit(base)]
     shift = thc > thdel ? -1 : 0
@@ -193,13 +159,9 @@ end
 """
     cell_center(z7; orientation=ORIENT_IDENTITY) -> (lon, lat)
 
-Center of cell `z7` in degrees, `(lon, lat)` order **[contract]**. Pentagon
-centers are exactly the icosahedron vertices; hexagon centers are the cell's
-physical lattice point in its base's dev frame, pulled back through the
-slot map and Snyder inverse. Under the default identity orientation this is
-the standard ISEA placement — validated at 100% exact z7 decode on all
-196,080 oracle cell centers, res 1–5. The `orientation` rotation is applied
-to the output (`from_grid`, design Section 5).
+Center of `z7` as `(longitude, latitude)` in degrees. Pentagon centers are
+icosahedron vertices; hexagon centers are obtained from the lattice point via
+the slot map and Snyder inverse. `orientation` rotates the result.
 
 Throws [`InvalidZ7Error`](@ref) for invalid ids and for resolution-20 ids
 (valid for prefix arithmetic, no geometry).
@@ -214,17 +176,9 @@ cell_center(z7::Unsigned; kwargs...) = cell_center(UInt64(z7); kwargs...)
     cell_boundary_cartesian(z7; closed_ring=true, orientation=ORIENT_IDENTITY)
         -> Vector{NTuple{3,Float64}}
 
-Boundary ring of cell `z7` as unit-sphere `xyz` tuples: 6 corners for a
-hexagon, 5 for a pentagon; `closed_ring` repeats the first corner at the end
-**[contract]**. Rings wind counterclockwise (seen from outside) under the
-identity orientation.
-
-Hexagon corners are the lattice-space midpoint constructions
-`(X + (e_j + e_{j+1})/3)·L/P_r`, each canonicalized across the cone cut by
-the cell center's branch (fringe corners are ordinary dev positions — no
-transport). Pentagon corners sit at radius `s_r/√3` at dev angles
-`θ_del + 60k − 30` — the bisectors between the pentagon's five ring slots in
-the res-`r` lattice **[fitted; design Section 4.1]**.
+Boundary of `z7` as unit-sphere `xyz` tuples: six corners for a hexagon and
+five for a pentagon. Rings wind counterclockwise (seen from outside the sphere)
+under the identity orientation; `closed_ring=true` repeats the first corner.
 """
 function cell_boundary_cartesian(z7::UInt64; closed_ring::Bool=true,
     orientation::Orientation=ORIENT_IDENTITY)
@@ -301,33 +255,12 @@ cell_area(z7::Unsigned) = cell_area(UInt64(z7))
 """
     _try_decode(base, u, res[, tie, gs]) -> (ok, z)
 
-Decode the dev-frame position `u` (at `base`'s vertex) at resolution `res`:
-
-1. hex-round `u·P_r/L` to the nearest lattice point **[a7]**;
-2. canonicalize a rounded point whose dev angle lands in `[300°, 360°)`
-   across the cone cut — which continuation branch (`ψ−300` vs `ψ−60`) is
-   decided by the side the *measured* angle came from (> 150° or not)
-   **[fitted, geometric]**;
-3. un-collapse: try the unit rotations `g ∈ (0, 1, −1, 2, −2)` — `g` absorbs
-   the pentagon-collapse rotation and the cut wrap. For each, a pure-Horner
-   digit decode streams digits directly into the Z7 word (residue mod 7 →
-   digit, subtract, exact divide by χ) **[a7]**; a candidate is accepted iff
-   the leftover is exactly `(0, 0)`, the digit string is valid (first nonzero
-   digit ≠ the base's deleted digit), and a strict re-encode
-   ([`_encode_lattice`](@ref)) reproduces the canonical rounded point.
-   Global-lattice consistency makes at most one `g` accept, so the search is
-   equivalent to computing `g` directly and doubles as a self-check.
-
-Returns `ok = false` when no candidate accepts — the owner then roots in
-another corner base of the containing face (see [`lonlat_to_z7`](@ref)).
-
-With `tie = true` (the last-resort pass), a failing primary candidate falls
-back to the runner-up lattice points whose Voronoi margin is within
-[`TIE_EPS`](@ref) of the primary, in ascending-margin order: on an exact
-cell-boundary tie (e.g. a point *on* an icosahedron edge midpoint) FP noise
-can flip the rounding to a lattice point outside every reachable subtree in
-every base; the runner-up is then the equally-near owner. Behavior on ties
-is deterministic but not bit-promised **[design Section 10 item 4]**.
+Decode development-frame position `u` at resolution `res`. The method rounds
+to the nearest lattice point, canonicalizes the cone cut, tries the possible
+pentagon-collapse rotations, and accepts only a valid digit string that
+strictly re-encodes to the rounded point. Return `ok=false` if this base has no
+owner. With `tie=true`, equally near lattice points within [`TIE_EPS`](@ref)
+are tried in ascending-margin order.
 """
 function _try_decode(base::Int, u::ComplexF64, res::Int, tie::Bool=false,
     gs::Tuple{Vararg{Int}}=(0, 1, -1, 2, -2))
@@ -455,19 +388,9 @@ end
 """
     lonlat_to_z7(lon, lat, res; orientation=ORIENT_IDENTITY) -> UInt64
 
-Z7 cell id of the res-`res` cell whose published polygon contains the point
-(degrees, `(lon, lat)` order). The Snyder forward map picks the containing
-face; its three corner bases are tried nearest-first through the dev-frame
-slot maps and [`_try_decode`](@ref) — first with the predicted `g` pair,
-then the full `g` search, then the rounding-tie fallback. Exactly one owner
-accepts (global-lattice consistency); there is no nearest-center arbitration
-anywhere. Validated at 100% exact decode on all 196,080 oracle cell centers,
-res 1–5.
-
-The search passes are result-neutral ordering (the at-most-one-accepts
-invariant): pass 1 is the predicted `(g, 1−g)` pair over the three corner
-bases, pass 2 the full `g` search (insurance + self-check), pass 3 the
-rounding-tie fallback — kept last so ordinary points are never affected.
+Return the Z7 cell containing `(lon, lat)` in degrees at resolution `res`.
+The containing face's corner bases are tried nearest-first, with the rounding
+tie fallback applied only after ordinary decoding fails.
 
 Throws [`InvalidZ7Error`](@ref) (`:resolution_range`) for `res ∉ 0:19`.
 """
@@ -517,36 +440,15 @@ Alias of [`lonlat_to_z7`](@ref): the Z7 `UInt64` *is* the cell id
 lonlat_to_cell(lon::Real, lat::Real, res::Integer; kwargs...) =
     lonlat_to_z7(lon, lat, res; kwargs...)
 
-# ---------------------------------------------------------------------------
-# Edge neighbors
-#
-# A res-`r` cell's region is the Voronoi hexagon of its lattice point, so its
-# edge neighbors sit at exactly the six Eisenstein units away — the same
-# first-principles hex geometry the corner construction rests on. The step is
-# taken on the *physical* (post-collapse, cone-wrapped) lattice point that
-# `_encode_lattice` returns, a representative crossing the cone cut is
-# canonicalized by the center's branch exactly as `cell_boundary_cartesian`
-# canonicalizes corner representatives, and the resulting position — the
-# neighbor's own center, exact lattice arithmetic through the exact slot
-# maps — is handed to the standard decoder. No new convention enters: every
-# step is a fitted-and-validated piece of the existing pipeline, and the
-# strict re-encode acceptance inside `_try_decode` rejects any candidate that
-# is not exactly the cell standing at that position.
-#
-# Pentagons need no special geometry: at the cone apex the six unit
-# directions cover 360° of raw angle folded onto the 300° cone, so exactly
-# two of them land on the same physical ring slot (for either wrap branch the
-# folded direction coincides with another unit's slot) and the pentagon's
-# five neighbors fall out of id-deduplication.
-# ---------------------------------------------------------------------------
+# Edge neighbors are the six Eisenstein-unit steps from the physical lattice
+# point. Cone wrapping uses the center branch; pentagon duplicates are removed.
 
 """
     _cell_neighbors(z7) -> SmallList{6,UInt64}
 
 Canonical ids of the cells sharing an edge with `z7`, ascending: 6 for a
-hexagon, 5 for a pentagon. Exact lattice arithmetic for the neighbor
-positions (see the block comment above); the position-to-id step is the
-decoder validated at 100% exact decode on all 196,080 oracle cell centers.
+hexagon and 5 for a pentagon. Neighbor positions use exact lattice arithmetic
+and the standard position-to-id decoder.
 
 Throws [`InvalidZ7Error`](@ref) for invalid ids and for resolution-20 ids
 (valid for prefix arithmetic, no geometry — hence no neighbors).
@@ -558,15 +460,9 @@ end
 """
     _cell_neighbors_ccw(z7) -> SmallList{6,UInt64}
 
-[`_cell_neighbors`](@ref) *before* the ascending-id sort: the same six (five for
-a pentagon) ids in the order the six Eisenstein unit directions are visited,
-which is counter-clockwise seen from outside the sphere starting at the dev
-frame's `+1` direction. `_cell_neighbors` is this list sorted, so the two agree
-as sets by construction.
-
-This is the order the new-interface [`DGG.neighbors`](@ref) reports at `k == 1`,
-where a stable rotational order is what makes a stencil weight vector mean
-something; the sorted form remains available for id-set work.
+Return the six neighbors, or five for a pentagon, counterclockwise from the
+development frame's `+1` direction. [`_cell_neighbors`](@ref) sorts this list
+by identifier.
 """
 function _cell_neighbors_ccw(z7::UInt64)
     res = _geometry_checked(z7)
@@ -600,27 +496,9 @@ function _cell_neighbors_ccw(z7::UInt64)
 end
 
 # ---------------------------------------------------------------------------
-# Dense full-world indexing, hierarchy wrappers and introspection
-# (design Sections 3, 4.3; contract "Native API")
-#
-# The canonical full-world order is **ascending encoded cell id**. Because the
-# base cell occupies bits [63:60] and the padding sentinel `7` sorts after
-# every active digit, ascending `UInt64` order *is* (base, digit-string)
-# lexicographic order, so the dense index of a cell is a positional rank in a
-# mixed-radix digit string:
-#
-#   * a hexagon prefix has all seven child digits, so its subtree at depth `d`
-#     holds `7^d` cells;
-#   * a pentagon prefix (all digits so far zero) is missing its base's deleted
-#     digit at every level for which it is still a pentagon, so its subtree
-#     holds `p(d) = (5·7^d + 1) / 6` cells (1, 6, 41, 288, … — the 6 and 41
-#     are pinned by the contract);
-#   * hence `num_cells(r) = 12·p(r) = 10·7^r + 2` **[contract]**.
-#
-# `cell_to_index` walks the digit string once, adding the subtree size of
-# every earlier sibling; `index_to_cell` runs the same walk backwards. Both
-# are O(res) integer ops with no allocation and no division by a runtime
-# value other than the precomputed table entries.
+# Dense order is ascending encoded identifier, equivalent to lexicographic
+# `(base, digits)` order. Hexagon subtrees contain `7^d` cells and pentagon
+# subtrees contain `(5*7^d + 1)/6`; rank and inverse-rank are `O(res)`.
 # ---------------------------------------------------------------------------
 
 "`POW7[d+1] = 7^d` — subtree size of a *hexagon* prefix at depth `d`."
@@ -630,20 +508,20 @@ const POW7 = ntuple(i -> Int64(7)^(i - 1), MAX_RESOLUTION + 1)
     PENT_COUNT
 
 `PENT_COUNT[d+1] = p(d) = (5·7^d + 1) / 6` — subtree size of a *pentagon*
-prefix at depth `d` **[contract: 6 at d = 1, 41 at d = 2]**. Recurrence
+prefix at depth `d`. Recurrence
 `p(d) = 6·7^(d-1) + p(d-1)`: a pentagon has six children, five of them
 hexagons (full `7^(d-1)` subtrees) and one — digit 0 — a pentagon again.
 """
 const PENT_COUNT = ntuple(i -> (5 * Int64(7)^(i - 1) + 1) ÷ 6, MAX_RESOLUTION + 1)
 
-"`NUM_CELLS[r+1] = 12·p(r) = 10·7^r + 2` **[contract, oracle: num_cells.csv]**."
+"`NUM_CELLS[r+1] = 12·p(r) = 10·7^r + 2`."
 const NUM_CELLS = ntuple(i -> 10 * Int64(7)^(i - 1) + 2, MAX_RESOLUTION + 1)
 
 """
     num_cells(res) -> Int64
 
 Number of cells covering the whole world at resolution `res`:
-`10·7^res + 2` **[contract; test/IGeo7/vectors/num_cells.csv]** — twelve
+`10·7^res + 2` — twelve
 pentagons and `10·7^res − 10` hexagons. Fits `Int64` through `res = 19`
 (1.14e17).
 
@@ -675,16 +553,8 @@ end
 """
     cell_to_index(id) -> Int
 
-One-based rank of `id` among all cells of its own resolution, in the
-canonical full-world order (ascending encoded id) **[contract, design
-Section 4.3]**.
-
-The walk is `base·p(res)` for the whole-base blocks that precede it, plus,
-for each level `k`, the total size of the subtrees of the siblings that sort
-before digit `d_k`. While the prefix is still all-zero (still a pentagon)
-digit 0 leads to a pentagon subtree of size `p(res−k)` and the base's deleted
-digit is absent; afterwards every sibling subtree has `7^(res−k)` cells.
-O(res), allocation-free.
+One-based rank of `id` among cells at its resolution in ascending encoded-id
+order. The mixed-radix prefix walk is `O(res)` and allocation-free.
 
 Throws [`InvalidZ7Error`](@ref) for a structurally invalid id or one at
 resolution 20 (no geometry, hence no dense index).
@@ -718,11 +588,9 @@ cell_to_index(z7::Unsigned) = cell_to_index(UInt64(z7))
 """
     index_to_cell(index, res) -> UInt64
 
-Inverse of [`cell_to_index`](@ref): the `index`-th cell of resolution `res`
-in canonical order. Greedy inverse of the rank walk — peel the base block,
-then at each level take the pentagon child while the remainder fits its
-subtree, otherwise divide by `7^(res−k)` to pick the hexagon sibling
-(re-inserting the deleted digit's gap). O(res), allocation-free.
+Return the `index`-th cell at resolution `res`, inverse to
+[`cell_to_index`](@ref). The greedy mixed-radix walk is `O(res)` and
+allocation-free.
 
 Throws `BoundsError` for `index ∉ 1:num_cells(res)` **[contract — the
 `BoundsError` is part of the API shape and is kept]** and
@@ -823,18 +691,14 @@ end
 """
     cell_to_children(id, res) -> SmallList{1,UInt64} / SmallList{7,UInt64} / Vector{UInt64}
 
-*All* descendants of `id` at resolution `res`, ascending **[contract]**. The
-return type follows the depth so the shallow cases stay allocation-free, as
-the spatial-tree wiring expects:
+All descendants of `id` at resolution `res`, in ascending identifier order.
+The return type depends on depth:
 
 | depth `res − get_resolution(id)` | result |
 |:--|:--|
 | 0 | `SmallList{1,UInt64}` holding `id` itself |
 | 1 | `SmallList{7,UInt64}` (6 entries for a pentagon) |
 | ≥ 2 | `Vector{UInt64}` of `7^depth` (hexagon) or `p(depth)` (pentagon) ids |
-
-Enumeration is digit-lexicographic depth-first, which *is* ascending id order
-(a deeper level only touches lower bits), so the result needs no sort.
 
 Throws [`InvalidZ7Error`](@ref) (`:descendant_res`) when
 `res < get_resolution(id)` or `res > $MAX_RESOLUTION`.
@@ -893,40 +757,14 @@ function _fill_descendants!(out::Vector{UInt64}, pos::Int, z::UInt64, res::Int, 
     return pos
 end
 
-# --- subtree border --------------------------------------------------------
-#
-# Which descendants of a cell touch a cell outside it, from the digit string
-# alone — no neighbor query, no geometry.
-#
-# The mechanism is the refinement itself. A child sits at `chi_k * x + sigma(d)`
-# (engine.jl's Horner step), and for any unit `u` the neighbor `child + u` has
-# parent `x + delta` with `N(delta) <= 1`, because `|sigma(d) + u - sigma(d')|`
-# is at most 3 and `sqrt(3) < sqrt(7)`. So a cell's children only ever touch
-# children of that cell or of its six edge neighbors. Two things follow:
-# `delta(0, u) = 0` for every unit, so the center child is enclosed by its own
-# siblings and no border suffix contains a zero digit anywhere; and a border
-# cell descends only from border cells, so the digit search prunes.
-#
-# What a border cell carries is *which* directions it is exposed in, and those
-# sets are always contiguous arcs of the six units. A state is therefore the arc
-# `{s, s+1, ..., s+L-1}` (mod 6), where `L` is exactly the number of border
-# children the cell has — 2, 3 or 4, plus `L = 6` for the subtree root, which is
-# exposed all round. `_border_step` is that arc's transition table.
-#
-# The table is *level-parity*-dependent, not fixed: refinement alternates
-# chirality (`chi_is_c`, engine.jl), multiplying by `c = 3 + omega` at even
-# levels and by `cbar` at odd ones, so the two tables are mirror images and a
-# cell's border suffixes depend on the resolutions its digits sit at, not only
-# on the depth below it. The digit alphabet itself never rotates — `SIGMA_J` is
-# one table for every level, and the ALPHA_DEG turn lives in the frame (`P_R`,
-# `THETA_DIR`), never in digit arithmetic.
-#
-# The census follows from the same table: an arc of length `L` has `L` border
-# children, of which one is a 2-arc, one a 3-arc and the rest 4-arcs, so with
-# `n_L` the count of each at a depth, `n_2' = n_3' = n_2 + n_3 + n_4` and
-# `n_4' = n_3 + 2 * n_4`. Hence `n_4 - n_2` is invariant — 6 for a hexagon root,
-# 5 for a pentagon, the discrete turning number of the closed rim — and
-# `B(d) = 3 * B(d-1) + (n_4 - n_2)`, which is `_border_count`.
+# The subtree-border automaton tracks each cell's contiguous arc of exposed
+# lattice directions. Its mirrored transition table follows level chirality,
+# prunes interior children, and enumerates only the `O(rim)` result. Pruning is
+# sound because a child's neighbors descend only from its parent or the parent's
+# six edge neighbors (`|sigma(d) + u - sigma(d')| <= 3 < sqrt 7`). Census: an arc
+# of length `L` has exactly `L` border children — one 2-arc, one 3-arc, the rest
+# 4-arcs — so `n_4 - n_2` is invariant (6 for a hexagon root, 5 for a pentagon)
+# and `B(d) = 3*B(d-1) + (n_4 - n_2)`, which is `_border_count`.
 
 """
     _border_step(state, digit, level) -> NTuple{2,Int}
@@ -974,14 +812,8 @@ end
     border_descendants(id, res) -> Vector{UInt64}
 
 Descendants of `id` at resolution `res` that share an edge with a cell outside
-`id`'s subtree — the subtree's rim — in ascending id order **[contract]**.
-`res == get_resolution(id)` returns `[id]`, whose whole neighborhood is outside
-its own subtree.
-
-Decided from the Z7 digits alone (the block comment above), so the cost is
-`O(result)`: the rim of a hexagon subtree holds `3^(d+1) - 3` cells at depth
-`d`, against the `7^d` the subtree holds. Enumeration is digit-lexicographic
-depth-first, which *is* ascending id order, so the result needs no sort.
+the subtree, in ascending identifier order. `res == get_resolution(id)` returns
+`[id]`. The digit automaton runs in `O(result)`.
 
 Throws [`InvalidZ7Error`](@ref) (`:descendant_res`) when
 `res < get_resolution(id)` or `res > $MAX_RESOLUTION`, as
@@ -1095,12 +927,4 @@ end
 end
 @inline z7_to_cell(z7::Unsigned) = z7_to_cell(UInt64(z7))
 
-# ---------------------------------------------------------------------------
-# Deliberately absent: `serialize` / `deserialize` of cell ids beyond the Z7
-# string and hex codecs in z7.jl. The sealed oracle exposes no observable
-# serialization semantics that could be fitted from the recorded oracle
-# vectors, and
-# guessing one would violate the provenance rule in CLEANROOM.md. Callers that
-# need a stable on-disk form use `z7_to_hex` / `z7_from_hex` (fixed 16-char,
-# order-preserving) or the raw `UInt64`.
-# ---------------------------------------------------------------------------
+# Stable storage uses the raw `UInt64` or the fixed-width hexadecimal codec.

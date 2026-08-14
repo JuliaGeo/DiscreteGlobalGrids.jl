@@ -1,31 +1,5 @@
-# snyder.jl — the per-face Snyder ISEA plane: THE grid chart
-# (spec/igeo7-geometry-diagnosis.md §3, §6; spec/design.md section 12; ported
-# from the verified prototype implementation of spec/isea-projection-spec.md
-# §6–§7).
-#
-# Pure floating-point geometry with no Z7 knowledge (design Section 2). The
-# only dependency is icosahedron.jl, included before this file: `VERTICES`,
-# `NBRS_CCW`, the vector helpers. Everything below those is self-contained
-# stdlib math.
-#
-# Provenance:
-#   * Snyder ISEA forward/inverse: implemented strictly from
-#     spec/isea-projection-spec.md §3, §5, §6, §7 (derived + published math;
-#     validated against that spec's own §9 vectors by test_chart.jl).
-#   * Face triples: spec/isea-projection-spec.md §5.2 table T2.
-#   * Dev-frame slot maps: the aperture-7 spec §5.4 vertex-centered strategy
-#     with the per-face Snyder plane as the chart — around each base vertex
-#     the five incident faces develop into a 300° wedge; slot j ∈ 0..4 covers
-#     dev angles [60j, 60j+60) and maps rigidly (corner-anchored, exact
-#     lattice-to-lattice rotation) onto face (b, j)'s planar triangle
-#     **[fitted; see spec/igeo7-geometry-diagnosis.md §4; validated on all
-#     196,080 oracle cell centers res 1–5]**.
-#
-# The grid.jl-facing surface is `snyder_fwd(p) -> (face, w)` /
-# `snyder_inv_xyz(face, w) -> xyz` plus the per-base dev-frame slot maps
-# (`dev_to_xyz`, `face_to_dev`). The dev frame covers each base's full
-# 5-face neighborhood, so fringe cells are ordinary dev positions — no
-# rim-transport step exists anywhere in the pipeline.
+# Snyder ISEA forward and inverse charts plus per-base development-frame slot
+# maps. This layer depends only on the shared icosahedron geometry.
 
 # ---------------------------------------------------------------------------
 # Planar constants of the equal-area face
@@ -218,20 +192,10 @@ end
 """
     snyder_fwd(p) -> (face, w)
 
-Snyder ISEA forward: unit vector `p` (grid frame) to its containing face
-(argmax of the 20 face-center dot products, lowest index on ties) and its
-planar position `w::ComplexF64` in that face's frame
-**[spec/isea-projection-spec.md §6]**. Face centers map to `0`, vertices to
-`R_EA·cis(0/±120°)`, icosa edges to the plane triangle's edges; the map is
-exactly equal-area within the face.
-
-The spec's formulas are evaluated through exact identities that need only
-one `sincos`, one `acos` and one `atan` of trig in total: `sin(z/2)` *is*
-half the chord `|p − c|` (both vectors unit — exact, and unlike
-`√((1 − cos z)/2)` it does not cancel near the face center);
-`(cos, sin)(Az′s) = (R_EA² − 2A_G·cot θ, 2A_G)` normalized, so the output
-direction `cis(Az′)` is that unit complex rotated `k` sectors; `sin(q/2)`
-is [`_sin_half_q`](@ref). Same math as the spec, term for term.
+Map grid-frame unit vector `p` to its containing icosahedron face and planar
+Snyder coordinate. Ties choose the lowest face index. The map is equal-area
+within each face; face centers map to zero and vertices to the face triangle's
+corners.
 """
 function snyder_fwd(p::NTuple{3,Float64})
     f = 0
@@ -263,21 +227,10 @@ end
 """
     snyder_inv_xyz(face, w) -> NTuple{3,Float64}
 
-Snyder ISEA inverse: planar position `w` in `face`'s frame back to the unit
-sphere (grid frame) **[spec/isea-projection-spec.md §7]**. The Newton loop
-on the azimuth converges in ≤ 4 iterations (spec §7.1); cap 10. `w` may lie
-beyond the face triangle (the dev frame's fringe positions): the formulas
-continue smoothly there, which is exactly how the grid places fringe cells
-**[validated; see `spec/igeo7-geometry-diagnosis.md` §4, on all fringe
-rows]**.
-
-As in [`snyder_fwd`](@ref), the spec's formulas are taken through exact
-identities: one `sincos` per Newton iteration (seeded by the sector angle's,
-already in hand) with `sin H = √(1 − cos²H)`; the stop test `|δ| ≤ 1e-7`
-exploits quadratic convergence — the *applied* step leaves an `O(δ²) ≈
-1e-14` rad error, the same order the previous `1e-13` threshold delivered;
-`sin(q/2)` is [`_sin_half_q`](@ref); and `z = 2·asin t` enters only through
-`sincos(z) = (2t√(1−t²), 1 − 2t²)`. Same math as the spec, term for term.
+Map planar Snyder coordinate `w` on `face` back to a grid-frame unit vector.
+The azimuth solve uses Newton iteration capped at 10 steps, which spec §7.1
+bounds at 4. Coordinates beyond the face triangle are valid for
+development-frame fringe cells.
 """
 function snyder_inv_xyz(f::Int, w::ComplexF64)
     fc = @inbounds FACES[f+1]

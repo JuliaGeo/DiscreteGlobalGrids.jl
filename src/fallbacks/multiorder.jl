@@ -1,89 +1,60 @@
-# ---------------------------------------------------------------------------
-# Multi-order coverage
-#
-# The other shape of a spatial query: instead of every cell at one level, the
-# COARSEST cells that describe a region — a breadth-first walk from the roots
-# that emits a cell whole once it is entirely inside the target, and recurses
-# only where the target's boundary crosses it.
-#
-# The result is sorted in **space-filling-curve order**: each cell owns a
-# disjoint position interval at a reference depth (`descendant_range`), and
-# ordering by that interval's start is depth-first curve order. That is what
-# generalises HEALPix's MOC/NUNIQ, and it buys sibling compaction, binary-search
-# membership, and lazy expansion to any level as sorted disconnected ranges —
-# the handshake the lookup layer consumes.
-# ---------------------------------------------------------------------------
+# Multi-order queries return the coarsest cells covering a region, ordered by
+# descendant-range start at a reference level — the generalisation of HEALPix's
+# MOC/NUNIQ.
 
 """
     MultiOrderCoverage(target)
 
-A multi-order coverage query: hand it to [`query`](@ref) with a system and
-either a maximum depth or a cell budget to get a [`MultiOrderCellSet`](@ref).
+A multi-order coverage query for [`query`](@ref), bounded by a maximum depth or
+by a cell budget.
 
 ```julia
 set = query(sys, MultiOrderCoverage(polygon); level = 8)      # accuracy first
 set = query(sys, MultiOrderCoverage(polygon); maxcells = 10)  # cardinality first
 ```
 
-`target` takes the same forms as any other query target — a GeoInterface
-geometry, an `Extents.Extent` in lon/lat degrees, or a
-`GO.UnitSpherical.SphericalCap`. `Base.parent` unwraps it, as it does for a
-DE9IM predicate.
+`target` accepts a GeoInterface geometry, lon/lat `Extents.Extent`, or
+`GO.UnitSpherical.SphericalCap`.
 
 # The two modes
 
-`level` is the ACCURACY-FIRST mode, and the older one. The traversal is depth
-first: it emits a cell as soon as the cell lies entirely inside the target, and
-recurses into the children of a cell the target's boundary crosses, down to the
-requested level; cells still crossed at that level are emitted too, so the set
-**covers** the target rather than being covered by it. How many cells that takes
-is whatever the outline needs — a coastline at a fine level is tens of thousands
-of them.
+`level` is accuracy first. Traversal is depth first: it emits a cell contained
+by the target and recurses through boundary crossings, to the requested level;
+cells still crossed there are emitted too, so the set covers the target rather
+than being covered by it. The cardinality is whatever the outline needs.
 
-`maxcells` is the CARDINALITY-FIRST mode. It answers "give me ten cells that
-cover California, or a hundred", and it never returns more than the budget
-(with one documented exception, below). Refinement is breadth first over the
-cells the boundary crosses, coarsest level first, and it stops when the next
-replacement would not fit. The depth is then whatever the budget bought, and it
-differs from branch to branch: the two modes trade the same currency in
-opposite directions.
+`maxcells` is cardinality first — "ten cells that cover California, or a
+hundred". Refinement is breadth first over the crossing cells, coarsest level
+up, and stops when the next replacement would not fit; the budget is never
+exceeded but for one documented case. The depth is then whatever the budget
+bought, and varies from branch to branch.
 
-Neither mode is the other's approximation. A `level` set is the exact answer at
-a fixed depth; a `maxcells` set is the best a fixed number of cells can say, and
-its own reference level is the deepest level it reached. [`query`](@ref)
-documents the keyword rules; the two are mutually exclusive.
+Neither mode approximates the other: a `level` set is the exact answer at a
+fixed depth, a `maxcells` set the best a fixed cardinality can say, with the
+deepest level it reached as its reference level. The keywords are mutually
+exclusive; [`query`](@ref) states the rules.
 
-[`is_contained`](@ref) reports which emissions were *proven* to fit — the first
-kind, and only those; a cell emitted at the deepest level is never asked. The
-shallowest cell of a set fits inside the target only when that flag says so, and
-[`coarsest_contained`](@ref) is the accessor that asks.
+[`is_contained`](@ref) reports which emissions were *proven* to fit — a cell
+emitted at the deepest level is never asked; [`coarsest_contained`](@ref) is the
+accessor that uses it.
 
-!!! warning "Coverage is a statement about the LEAVES, not about the drawn cells"
-    The set is a statement about the deepest level: every cell of that level
-    which meets the target is the set's own member or the descendant of one, and
-    no member is the descendant of another. That is the guarantee — and it is
-    the one a lookup layer needs, because it makes the expansion
-    ([`level_ranges`](@ref)) a superset of the single-level `Intersects` query,
-    equal to it wherever the refinement is congruent.
+!!! warning "Coverage is a statement about the leaves, not about the drawn cells"
+    The guarantee is at the deepest level: every cell there that meets the
+    target is a member of the set or a descendant of one, and no member
+    descends from another. [`level_ranges`](@ref) therefore contains the
+    single-level `Intersects` query, and equals it where refinement is
+    congruent.
 
-    It is **not** a guarantee about the union of the emitted cells' polygons.
-    Replacing a subtree by its root replaces the subtree's footprint by the
-    root's, and those two agree only where the refinement is congruent. On the
-    six shipped systems:
+    The union of the emitted polygons is not that region. Replacing a subtree
+    by its root swaps the subtree's footprint for the root's, and the two agree
+    only under congruent refinement: HEALPix, S2 and ISEA4R tile; IGEO7 and H3
+    leave slivers over roughly 3% of a state-sized target; A5 nearer 17%. Draw
+    a set as *which cells were chosen*; expand it before computing with it as a
+    region.
 
-      - HEALPix, S2 and ISEA4R refine congruently — four children exactly tile
-        their parent — and the emitted polygons do tile the target.
-      - IGEO7 and H3 are aperture 7: the seven children are a rotated rosette
-        that matches the parent in area but not in footprint. Roughly 3% of a
-        state-sized target falls in slivers between a mixed-level set's cells.
-      - A5's four children cover their parent's area without covering its
-        footprint at all, and the figure is nearer 17%.
-
-    Draw a multi-order set as a picture of *which cells were chosen*, and expand
-    it before computing with it as a region. In the other direction the same
-    non-congruence means a member's descendants can lie outside the target —
-    inside a hole in it, for instance — so the expansion over-covers exactly
-    where the refinement does.
+    The same non-congruence runs the other way: a member's descendants may lie
+    outside the target, inside a hole in it for instance, so the expansion
+    over-covers exactly where the refinement does.
 """
 struct MultiOrderCoverage{T}
     target::T
@@ -97,18 +68,15 @@ Base.show(io::IO, coverage::MultiOrderCoverage) =
 """
     MultiOrderCellSet
 
-A set of cells at **mixed levels**, in space-filling-curve order — the result of
-a [`MultiOrderCoverage`](@ref) query.
+A mixed-level cell set returned by [`MultiOrderCoverage`](@ref). Iteration yields
+typed ids in descendant-range order at the reference level; systems without
+sorted subtrees use `(level, id)` order. [`level_ranges`](@ref level_ranges)
+expands it to sorted, disjoint ranges at one level.
 
-Iterating it yields the typed cell ids, coarsest-first within each branch and
-in curve order overall (`length`, `getindex`, `eltype` and `collect` all work).
-[`level_ranges(set, l)`](@ref level_ranges) expands it to one level as sorted,
-disjoint position ranges.
-
-Order is by the start of each cell's `descendant_range` at the set's reference
-level, which is exactly depth-first curve order and makes sibling intervals
-adjacent. A system without [`has_sorted_subtrees`](@ref) has no such intervals,
-and falls back to `(level, id)` order.
+[`is_contained`](@ref) reports which cells were *proven* to fit inside the
+target — not which ones do; that docstring draws the line.
+[`cell_polygon`](@ref) and [`cell_polygons`](@ref) read mixed-level geometry
+without the caller resolving a level grid per cell.
 
 The REFERENCE LEVEL is the depth the set speaks about: the `level` the query was
 given, or — in `maxcells` mode, where no depth was asked for — the deepest level
@@ -117,16 +85,9 @@ the budget reached. It is the default expansion level for
 which the covering guarantee is stated.
 
 !!! note "Expansion needs sorted subtrees"
-    `level_ranges` is the compressed form of the set and exists only where
-    `has_sorted_subtrees(sys)` holds; on A5 it throws, because a cell's
-    descendants are scattered through their level rather than occupying one
-    interval of it. `descendants(sys, c, l)` still names them, so the set can
-    always be expanded — just not to a short list of ranges.
-
-[`is_contained`](@ref) says which stored cells were proven to fit inside the
-target — not which ones do, a distinction that docstring spells out;
-[`cell_polygon`](@ref) and [`cell_polygons`](@ref) read the geometry of a
-mixed-level member without the caller resolving a level grid per cell.
+    `level_ranges` throws where [`has_sorted_subtrees`](@ref) is `false` (A5),
+    because a cell's descendants do not occupy one interval of their level.
+    `descendants(sys, c, l)` still names them, as a list rather than ranges.
 """
 struct MultiOrderCellSet{S<:AbstractHierarchicalGridSystem,ID}
     system::S
@@ -269,9 +230,8 @@ function _multi_order(sys::AbstractHierarchicalGridSystem, target_value, maxleve
     target = _query_target(target_value)
     cells = cellindextype(sys)[]
     # Parallel to `cells`: `true` exactly where `Within` was asked and held.
-    # Emissions at `maxlevel` are never asked, so `false` there records that
-    # nothing was proven, not that the cell sticks out. `is_contained` documents
-    # the asymmetry and why it is the contract.
+    # Emissions at `maxlevel` are never asked, so `false` there means unproven,
+    # not outside. `is_contained` documents the asymmetry.
     contained = BitVector()
     # One level grid per level, built once rather than per visited cell: the
     # traversal touches every level from the roots down, and `levelgrid` is
@@ -285,22 +245,12 @@ function _multi_order(sys::AbstractHierarchicalGridSystem, target_value, maxleve
 end
 
 function _coverage_visit!(cells, contained, sys, target, c, maxlevel::Int, grids, top::Int)
-    # The ONLY sound subtree prune is the covering law: a cell whose node extent
-    # misses the target has no descendant that can meet it.
+    # Only `node_extent` may prune descendants; child geometry can overhang its
+    # parent. Exact cell geometry determines emission, not descent.
     #
-    # A cell's own geometry is emphatically NOT a prune. Children overhang their
-    # parents wherever the refinement is not congruent — under aperture 7 they
-    # poke out past the parent's edges, which is the whole reason `node_extent`
-    # exists — so a cell disjoint from the target can still have a child that
-    # meets it, and descending only into cells that meet the target drops that
-    # child from the coverage silently. The exact test below therefore decides
-    # what is EMITTED, never what is descended into.
-    #
-    # Both prunes read the node extent and nothing else: the target's own cap
-    # first, because it is one distance, then the boundary-arc proof, which is
-    # what keeps the traversal output-sensitive when that cap is the whole
-    # sphere (a target wider than a hemisphere) or merely much bigger than the
-    # target inside it (any long or thin one).
+    # Both prunes read that extent: the target's cap first, at one distance,
+    # then the boundary-arc proof, which is what keeps the traversal
+    # output-sensitive when the cap is loose or the whole sphere.
     extent = node_extent(sys, c)
     intersects_cap(target.cap, extent) || return nothing
     _subtree_outside(target, extent) && return nothing
@@ -308,11 +258,9 @@ function _coverage_visit!(cells, contained, sys, target, c, maxlevel::Int, grids
     grid = grids[lc-top+1]
     meets = _matches(DE9IM.Intersects(nothing), target, grid, c)
     if lc >= maxlevel
-        # Emitted so that the set covers the target, and flagged unproven
-        # WITHOUT asking `Within`. Many of these cells do fit; asking would cost
-        # one ~48 KB predicate call per boundary cell, thousands of them at a
-        # deep level, to label cells the traversal is finished with. The flag is
-        # a record of proof, not of geometry — see `is_contained`.
+        # Emitted to cover, and flagged unproven WITHOUT asking `Within`: many
+        # of these cells do fit, and asking costs one ~48 KB call per boundary
+        # cell to label cells the traversal is done with. See `is_contained`.
         meets && (push!(cells, c); push!(contained, false))
         return nothing
     end
@@ -497,35 +445,28 @@ system(set::MultiOrderCellSet) = set.system
     is_contained(set::MultiOrderCellSet, i::Integer) -> Bool
 
 Whether the set's `i`th cell was **proven** to lie inside the coverage target.
-`true` means the traversal asked `Within` of that cell and it held. `false`
-means one of two different things, told apart by the cell's level:
+`true` means `Within` was asked of it and held. `false` means one of two things,
+told apart by the cell's level:
 
-  - above the traversal's maximum depth, the cell *was* asked and the target's
-    boundary crosses it — that is why the traversal descended into it. There
-    the flag is exact in both directions.
-  - at the maximum depth, the cell was **never asked**. The traversal ran out
-    of depth and emitted it so that the set covers; it may fit inside the target
-    or it may not.
+  - above the traversal's maximum depth, the cell was asked and the target's
+    boundary crosses it. The flag is exact there, in both directions.
+  - at the maximum depth, the cell was never asked. The traversal ran out of
+    depth and emitted it to cover; it may or may not fit.
 
-"Maximum depth" is the `level` keyword in accuracy-first mode, where the set's
-reference level and the maximum depth are the same number, so the blind spot is
-exactly the reference level. In `maxcells` mode they are not: the reference
-level is the deepest level the budget reached, the maximum depth is the
-`maxlevel` cap it was allowed, and every cell the budget stopped short of the
-cap *was* asked. A budget set whose refinement never reached its cap — which is
-the ordinary case — therefore carries an exact flag on every member, and a
-`true` at its deepest level is a real containment rather than a gap in the
-record.
+In `level` mode the maximum depth *is* the reference level, so the blind spot
+sits exactly there. In `maxcells` mode they part: the reference level is the
+deepest level the budget reached, the maximum depth is the `maxlevel` cap, and a
+budget that stopped short of the cap — the ordinary case — carries an exact flag
+on every member.
 
-That asymmetry is the contract, not an oversight. `Within` costs on the order of
-48 KB of allocation per call against 600 bytes for `Intersects`, and a deep
-coverage finishes on thousands of reference-level cells; asking each of them
-once more would cost hundreds of megabytes and change no cell of the result.
-What the flag gives up is a label, and what it keeps is the direction that
-matters: `true` implies inside. Code that needs exact containment at the
-reference level asks `Within` itself, of the few cells it cares about.
+The asymmetry is the contract. `Within` allocates ~48 KB per call against ~600 B
+for `Intersects`, and a deep coverage ends on thousands of reference-level
+cells: labelling them exactly costs hundreds of megabytes and changes no member
+of the set. The direction that matters survives — `true` implies inside — and
+code needing exact containment at the reference level asks `Within` of the few
+cells it cares about.
 
-`argmin(level, set)` is therefore *not* "the coarsest cell inside the target" —
+`argmin(level, set)` is therefore not "the coarsest cell inside the target":
 every emission can be unproven. [`coarsest_contained`](@ref) reads this flag.
 """
 is_contained(set::MultiOrderCellSet, i::Integer) = set.contained[i]
@@ -533,24 +474,23 @@ is_contained(set::MultiOrderCellSet, i::Integer) = set.contained[i]
 """
     coarsest_contained(set::MultiOrderCellSet) -> cell id or `nothing`
 
-The shallowest cell of `set` **proven** to lie inside the coverage target, or
-`nothing` when no cell of it was — see [`is_contained`](@ref) for what "proven"
-leaves out. Cells at the traversal's maximum depth are never tested, so a set
-made only of them answers `nothing` even where some of them do fit; a target
-smaller than one such cell is the clearest way to land there, not the only one.
+The shallowest cell of `set` **proven** inside the coverage target, or `nothing`
+when no cell of it was — see [`is_contained`](@ref) for what "proven" leaves
+out. Maximum-depth cells are never tested, so a set of nothing but those answers
+`nothing` even where some fit; a target smaller than one cell is the clearest
+way there, not the only one.
 
-A budget set answers `nothing` for a second and more ordinary reason: at ten
-cells over a state, nothing has been refined far enough to fit inside it yet,
-and the accessor says so instead of handing back the shallowest crossing cell.
-Raise the budget and the answer appears.
+A budget set answers `nothing` for a second, more ordinary reason: at ten cells
+over a state nothing has been refined far enough to fit inside it, and the
+accessor says so rather than hand back the shallowest crossing cell. Raise the
+budget and the answer appears.
 
 ```julia
 set = query(sys, MultiOrderCoverage(tile); level = 12)
 cell = coarsest_contained(set)          # `nothing`, or a cell that fits in `tile`
 ```
 
-Ties are broken by the set's own order, so the answer is the first shallowest
-cell in curve order and does not depend on how the traversal was scheduled.
+Ties go to the first such cell in the set's own order.
 """
 function coarsest_contained(set::MultiOrderCellSet)
     best = nothing
@@ -563,19 +503,18 @@ end
 
 # --- geometry, without a level grid per cell -------------------------------
 
-# A `MultiOrderCellSet` is not a grid — it holds no positions and its cells are
-# at different levels — but it does know which level grid each of its cells
-# belongs to, and that is the only thing a caller was missing. `levelgrid` is
-# O(1), so resolving it per cell costs nothing worth caching.
+# A set is not a grid — no positions, and its cells are at different levels —
+# but it does know which level grid each cell belongs to. `levelgrid` is O(1),
+# so nothing here is worth caching.
 
 """
     cell_boundary(set::MultiOrderCellSet, c) -> Vector{UnitSphericalPoint}
     cell_centroid(set::MultiOrderCellSet, c) -> UnitSphericalPoint
     cell_polygon(set::MultiOrderCellSet, c) -> GI.Polygon
 
-The geometry of one member of a mixed-level set, read from
-`levelgrid(system(set), level(c))`. Same values as asking that grid directly;
-the set spares the caller from resolving it per cell.
+Geometry of one member of a mixed-level set, read from
+`levelgrid(system(set), level(c))`. Same values as that grid gives, without the
+caller resolving it.
 """
 cell_boundary(set::MultiOrderCellSet, c::AbstractCellIndex) =
     cell_boundary(levelgrid(set.system, level(c)), c)
@@ -589,8 +528,8 @@ cell_polygon(set::MultiOrderCellSet, c::AbstractCellIndex) =
 """
     cell_polygons(set::MultiOrderCellSet) -> Vector{<:GI.Polygon}
 
-Every cell of the set as a unit-sphere polygon, in the set's own order — what a
-plot of a coverage needs, in one call:
+Every cell of the set as a unit-sphere polygon, in the set's own order: what a
+plot of a coverage needs, in one call.
 
 ```julia
 poly(GO.transform(GO.GeographicFromUnitSphere(), cell_polygons(set)))
@@ -602,18 +541,9 @@ cell_polygons(set::MultiOrderCellSet) =
 """
     curve_keys(set::MultiOrderCellSet) -> Vector{Int}
 
-The sort key of each cell, in the order the set stores them.
-
-For a system with [`has_sorted_subtrees`](@ref) these are curve keys proper: the
-start of each cell's position interval at the set's reference level, ascending,
-with sibling intervals adjacent — which is what makes compaction and
-binary-search membership cheap.
-
-Without sorted subtrees there are no position intervals to key on, and the set
-falls back to ordering cells by `(level, id)`. The keys are then each cell's own
-position within its own level, so they ascend only *within* a level and restart
-at the next one; they are reported for inspection, not to be compared across
-levels.
+Return stored-cell sort keys. For sorted-subtree systems, each key is the start
+of the cell's reference-level descendant range. Otherwise it is the cell's
+position within its own level and is not comparable across levels.
 """
 curve_keys(set::MultiOrderCellSet) = set.keys
 
@@ -630,28 +560,18 @@ Base.show(io::IO, ::MIME"text/plain", set::MultiOrderCellSet) = show(io, set)
 """
     level_ranges(set::MultiOrderCellSet, l::Integer) -> Vector{UnitRange{Int}}
 
-The set expanded to level `l`, as **sorted, disjoint position ranges** in
-`levelgrid(sys, l)` — the form a lookup layer slices data arrays with.
-
-Adjacent ranges are merged, so a set whose cells happen to be a compacted
-sibling group comes back as one range rather than as its parts.
-
-Requires [`has_sorted_subtrees`](@ref) (there are no position intervals
-otherwise) and `l` at least as deep as every cell in the set: expanding to a
-coarser level would have to replace a cell by an ancestor, which covers more
-than the set does.
+Expand the set to sorted, disjoint position ranges in `levelgrid(sys, l)`,
+merging adjacent ranges. Requires sorted subtrees and `l` no shallower than any
+cell in the set.
 
 !!! warning "Two things the expansion is not"
-    It is not available everywhere. `has_sorted_subtrees(A5System())` is
-    `false` — an A5 cell's descendants are scattered through their level rather
-    than forming one interval of it — and this throws there. Generic code either
-    branches on the trait or expands with `descendants(sys, c, l)`, which is
-    always available and gives a list rather than ranges.
+    Not universal: it throws where [`has_sorted_subtrees`](@ref) is `false`
+    (A5). Branch on the trait, or expand with `descendants(sys, c, l)`.
 
-    It is not a covering of the target. A cell is in the set because the *cell*
-    is inside the target; where the refinement is not congruent its descendants
-    are not, so the expansion can name leaves the target does not touch — most
-    visibly inside a hole. See [`MultiOrderCoverage`](@ref).
+    Not a covering. A cell is in the set because the *cell* is inside the
+    target; under non-congruent refinement its descendants need not be, so the
+    expansion can name leaves the target does not touch — most visibly inside a
+    hole. See [`MultiOrderCoverage`](@ref).
 """
 function level_ranges(set::MultiOrderCellSet, l::Integer)
     has_sorted_subtrees(set.system) || throw(ArgumentError(

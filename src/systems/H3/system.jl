@@ -1,55 +1,19 @@
-# ---------------------------------------------------------------------------
-# `H3System` and its level grids
-#
-# The canonical dense order, which everything else here is a consequence of:
-#
-#     cells are numbered base cell by base cell (0:121, the order
-#     `getRes0Cells` already returns), and within a base cell by H3's own child
-#     position — the digit path read as a number with pentagon gaps skipped.
-#
-# That is exactly raw-`UInt64` order restricted to one level (see `cell.jl`), so
-# `cellindex` of a level grid comes out sorted, and a subtree occupies a
-# contiguous block of positions. One cumulative table per resolution turns a
-# position into a base cell with a single binary search, and libh3's
-# `cellToChildPos` / `childPosToCell` do the O(1) within-base-cell half — pentagon
-# holes included, which is the whole reason the ordinals are hole-free.
-# ---------------------------------------------------------------------------
+# Canonical order is base-cell-major, then H3 child position with pentagon gaps
+# omitted. Per-resolution prefix tables locate the base cell.
 
 """
     H3System() <: AbstractHierarchicalGridSystem
 
-Uber's [H3](https://h3geo.org) grid: an aperture-7 hexagonal hierarchy on an
-icosahedron, with twelve pentagons, over resolutions `0:15`.
-
-Canonical id: [`H3Cell`](@ref). Geometry, location and adjacency all come from
-libh3 itself through `H3_jll`, so this system agrees with every other H3
-implementation cell for cell rather than approximating one.
-
-# Conventions this system documents
-
-  - **Boundaries** are libh3's `cellToBoundary` ring, unchanged: counter-clockwise
-    seen from outside, implicitly closed, and 5 to 10 vertices — a cell that
-    crosses an icosahedron face edge carries extra *distortion* vertices there,
-    and they are part of the exact boundary rather than noise to be cleaned off.
-  - **`cellat` ties** are libh3's own: the point is handed to `latLngToCell`,
-    whose answer on a shared edge is deterministic and is the same answer every
-    other H3 binding gives.
-  - **Neighbour order** is rotational: [`neighbors`](@ref) is rings `1..k`
-    concatenated outward, each ring counter-clockwise seen from outside, so
-    [`ring`](@ref) is the tail block of [`neighbors`](@ref). The walk's starting
-    direction is libh3's own and is deterministic per cell rather than a uniform
-    compass bearing.
-  - **Centroids** are libh3's `cellToLatLng`, the centre the hierarchy is
-    actually built around.
-
-`has_sorted_subtrees` is `true`: see the module docstring on the canonical order.
+H3's aperture-7 hexagonal hierarchy with twelve pentagons at resolutions
+`0:15`. Libh3 supplies geometry, location, and adjacency. Boundaries are
+implicitly closed counter-clockwise rings and include distortion vertices.
+Canonical ordering makes `has_sorted_subtrees` true.
 """
 struct H3System <: AbstractHierarchicalGridSystem end
 
-# `levelgrid(H3System(), l)` is the package's `HierarchicalLevelGrid`, which
-# stores the resolution and nothing else — so constructing the res-15 grid
-# (569,707,381,193,162 cells) is free. H3's fast paths hang off this alias, and
-# the five primitives it forwards to are the `(sys, ...)` methods below.
+# `levelgrid(H3System(), l)` returns the package's `HierarchicalLevelGrid`, a
+# lightweight resolution descriptor. H3's fast paths dispatch on this alias; the
+# five primitives it forwards to are the `(sys, ...)` methods below.
 const LevelGrid = HierarchicalLevelGrid{H3System}
 
 Base.show(io::IO, ::H3System) = print(io, "H3System()")
@@ -57,10 +21,7 @@ Base.show(io::IO, ::H3System) = print(io, "H3System()")
 # ===========================================================================
 # The base tessellation, and the per-resolution prefix sums
 #
-# Both tables are pure Julia, deliberately: they are computed at precompile
-# time, and reaching into a JLL there is the kind of thing that works until it
-# does not. Every entry is checked against libh3 in `test/systems/H3/`, which is
-# where the oracle belongs.
+# Pure-Julia tables avoid calling the JLL during precompilation.
 # ===========================================================================
 
 # The twelve pentagon base cells. Fixed by H3's icosahedron orientation; the
@@ -119,12 +80,8 @@ end
 
 The seven children of a hexagon, or the six of a pentagon, ascending.
 
-The container is fixed-capacity and the call **does not allocate**: libh3
-writes the children into a stack buffer
-([`H3Native.cell_to_children_7`](@ref)), which matters because tree descent
-calls this once per node. A pentagon simply returns six of the seven slots,
-which is the whole pentagon special case — generic code that reads `length`
-rather than assuming the aperture needs nothing else.
+Returns an allocation-free fixed-capacity vector filled by
+[`H3Native.cell_to_children_7`](@ref). Pentagon cells use six of seven slots.
 """
 function children(::H3System, c::H3Cell)
     l = level(c)
@@ -153,22 +110,11 @@ has_sorted_subtrees(::H3System) = true
 """
     cap_inflation(::H3System) -> Float64
 
-`1.2`, the generic default, kept because it is measured to be sound here.
+`1.2`, the generic default.
 
-Under aperture 7 the children of a hexagon overhang their parent, so a cell's
-own cap is not a legal [`node_extent`](@ref). The overhang converges: sampling
-every base cell and descending nine levels along the outermost branch puts the
-worst ratio of descendant-vertex distance to the cell's own cap radius at
-**1.0522**, with per-level increments already down to ~1e-5 and shrinking
-geometrically. `1.2` clears that by 14%.
-
-`test/systems/H3/` re-measures the overhang rather than trusting this comment,
-but deliberately re-measures it *weakly* — a beam of 60 over 6 levels, asserted
-under 1.10 — so the suite stays fast. That 1.10 is a test threshold, not the
-converged figure; the offline 1.0522 above is. The committed check would catch
-a factor that had become unsound by a wide margin, and the separate covering-law
-testset walks a chain to max_level and checks containment directly, which is
-the property that actually matters.
+Children overhang their parents, so [`node_extent`](@ref) must be inflated. The
+measured maximum descendant-to-cell-cap ratio is `1.0522`; `1.2` preserves the
+covering invariant.
 """
 cap_inflation(::H3System) = 1.2
 
@@ -218,11 +164,8 @@ The position of `c` in its own resolution's dense order, or `nothing` when `c`
 is not a valid index at all. The grid has already rejected a cell from another
 resolution.
 
-`nothing` rather than an error is the contract, and it is what makes asking
-"is this cell here?" the normal way to intersect an id set with a grid. The
-validity check is not paranoia: libh3 will happily compute a child position for
-a malformed index, and returning a confident wrong position for one is worse
-than returning nothing.
+Malformed ids return `nothing`; libh3 child-position arithmetic is not itself a
+validity check.
 """
 function cellposition(::H3System, c::H3Cell)
     H3Native.is_valid_cell(c.id) || return nothing
@@ -280,13 +223,9 @@ end
 The contiguous interval of **positions** in `levelgrid(H3System(), l)` that the
 descendants of `c` at resolution `l` occupy.
 
-Two calls into libh3 and no enumeration: the subtree's first descendant is
-child position 0 under `c`, and `cellToChildrenSize` counts the rest in closed
-form with the pentagon gaps already taken out. Because the canonical order is
-base-cell-major and child positions are contiguous within a base cell, the
-descendants of `c` are exactly the positions in `[first, first + count)` — no
-holes, including across pentagons, where the missing digit paths are absent
-from the numbering rather than skipped over inside it.
+Computed without enumeration from child position zero and
+`cellToChildrenSize`. Pentagon gaps are absent from H3 child positions, so the
+range is contiguous and hole-free.
 """
 function descendant_range(sys::H3System, c::H3Cell, l::Integer)
     target = Int(l)

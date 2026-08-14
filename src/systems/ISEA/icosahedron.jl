@@ -1,30 +1,6 @@
-# icosahedron.jl — the IGEO7 icosahedron: sphere helpers, the standard ISEA
-# vertex table, neighbor rings, per-base counterclockwise rings and the
-# `Orientation` mechanism (spec/design.md sections 2, 5 and 12).
-#
-# Provenance
-#   * vertex layout (standard ISEA placement, closed form): golden-rectangle
-#     icosahedron rotated +11.25° about z, base-id assignment per
-#     spec/isea-projection-spec.md §4.2 / table T1 and spec/z7-paper-spec.md
-#     §1.2 [published]; locked against the recorded res-0 oracle centers
-#     (whose own print noise is ≤ 5.92e-9 deg) and cell-level against the
-#     res-1..5 oracle center dumps (spec/igeo7-geometry-diagnosis.md §2).
-#   * authalic radius -> spec/interface-contract.md  [contract]
-#   * adjacency / antipodal structure
-#                     -> spec/aperture7-indexing-spec.md section 5.1
-#   * per-base reference edge (dev-frame angle 0)
-#                     -> fitted, spec/igeo7-geometry-diagnosis.md §4 (the
-#                        A-gauge); validated on all 196,080 oracle cell
-#                        centers res 1-5
-#
-# Everything here lives in the *grid frame* — the standard ISEA placement
-# itself: the `Orientation` rotation is applied to world points on the way in
-# and inverted on the way out, so the tables below never move (design
-# section 5). The identity orientation therefore returns coordinates in the
-# standard ISEA frame directly — the frame the recorded oracle dumps are in.
-#
-# The planar constants of the chart (`R_EA`, `L_PLANE`, ...) belong to
-# snyder.jl; this file is pure spherical geometry.
+# Standard ISEA icosahedron, adjacency tables, spherical helpers, and frame
+# orientation. Tables remain in the grid frame; `Orientation` rotates inputs
+# and outputs without changing them.
 
 # ---------------------------------------------------------------------------
 # Sphere helpers (degrees on the boundary, radians internally)
@@ -35,8 +11,7 @@
 
 Unit vector of a spherical (lon, lat) pair in degrees, right-handed with
 `+z` at the north pole and `+x` at (0, 0). Lon/lat are plain spherical
-coordinates — IGEO7 applies no geodetic/authalic latitude conversion
-**[contract; confirmed against every oracle dump]**.
+coordinates; no geodetic/authalic latitude conversion is applied.
 """
 function lonlat_to_xyz(lon::Real, lat::Real)
     cl = cosd(lat)                 # hoisted: LLVM does not CSE the two cosd(lat)
@@ -75,10 +50,8 @@ angdist(a::NTuple{3,Float64}, b::NTuple{3,Float64}) = atand(vnorm(vcross(a, b)),
 """
     R_AUTHALIC
 
-WGS84 authalic Earth radius in metres **[contract]**. It enters the grid only
-through areas: `hex_area(r) = 4πR²/(10·7^r)`, `pentagon = 5/6 · hex`; the
-res-0 cell area `4πR²/12 = 4.250546847700739e13 m²` matches the recorded
-oracle areas exactly.
+WGS84 authalic Earth radius in metres. It enters the grid only through areas:
+`hex_area(r) = 4πR²/(10·7^r)` and `pentagon = 5/6 * hex`.
 """
 const R_AUTHALIC = 6371007.180918475
 
@@ -88,11 +61,7 @@ const ADJ_DOT = 1 / sqrt(5.0)
 """
     NBASE
 
-Number of base cells / icosahedron vertices. Same fact as z7.jl's
-`Z7_NUM_BASES`, deliberately restated there because `z7.jl` must stay
-standalone-includable (pure integer layer, see its file header and
-`test/test_z7.jl`); the two are pinned equal by `test/test_icosahedron.jl`
-("cross-file constant consistency").
+Number of base cells and icosahedron vertices.
 """
 const NBASE = 12
 
@@ -149,8 +118,7 @@ end
 
 The 12 icosahedron vertices (= res-0 pentagon centers) as unit vectors in the
 grid frame, indexed by `base + 1` — the standard ISEA placement: vertex 0
-at `(11.25°E, 58.28252559°N)`, azimuth 0 **[spec/isea-projection-spec.md
-§4.2 T1; locked against the recorded res-0 oracle centers]**.
+at `(11.25°E, 58.28252559°N)`, azimuth 0.
 """
 const VERTICES = _make_vertices()
 
@@ -212,12 +180,9 @@ nearest_vertex(lon::Real, lat::Real) = nearest_vertex(lonlat_to_xyz(lon, lat))
 """
     REFERENCE_EDGE
 
-Per-base reference edge: the neighbor base that sits at dev-frame angle 0 in
-each base's vertex chart **[fitted; see `spec/igeo7-geometry-diagnosis.md` §4
-(the A-gauge, whose pentagon-collapse rule is grid.jl's verbatim); validated
-on all 196,080 oracle cell centers res 1–5]**. One global
-chirality/digit map fits all 12 bases with these references — there are no
-mirrored bases.
+Neighbor base at development-frame angle zero for each base **[fitted, not
+derived; spec/igeo7-geometry-diagnosis.md §4, validated on all 196,080 oracle
+cell centers res 1–5]**. The same chirality and digit map applies to all bases.
 """
 const REFERENCE_EDGE = (1, 10, 6, 7, 8, 9, 11, 11, 11, 11, 11, 8)
 
@@ -257,32 +222,14 @@ const _IDENTITY_R = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 """
     Orientation(R)
 
-Rigid rotation of the sphere taking **world** coordinates to the **grid
-frame** in which the tables of this file live, stored row-major as an
-`NTuple{9,Float64}` (no StaticArrays dependency: the package core is
-stdlib-only).
-
-Decode applies `R` to the input point ([`to_grid`](@ref)); encode applies
-`R'` to the output ([`from_grid`](@ref)). Everything else — vertex table,
-charts, lattices — is orientation-independent.
-
-`R` is the *only* argument: the `identity` field beside it is a cached
-`R == I` predicate, not an independent fact, so it is computed here and there
-is no constructor that takes it (see the note on the struct).
-
-[`ORIENT_IDENTITY`](@ref) is the identity: the standard ISEA IGEO7
-placement, the default for every geometric entry point. Pass a custom
-`Orientation` to run the same grid in a rotated placement.
+Row-major rotation from world coordinates to the ISEA grid frame.
+[`to_grid`](@ref) applies `R`; [`from_grid`](@ref) applies `R'`. The cached
+`identity` flag is derived from `R`.
 """
 struct Orientation
     R::NTuple{9,Float64}
     identity::Bool
-    # `identity` is a fast path, not a degree of freedom: [`to_grid`](@ref) and
-    # [`from_grid`](@ref) *skip the rotation entirely* when it is set, so an
-    # `Orientation(R, true)` built beside a non-identity `R` would return every
-    # point unrotated — a silently wrong grid placement, not an error. The flag
-    # is therefore derived here and nowhere else; this inner constructor is the
-    # only way to make an `Orientation`, including for `ORIENT_IDENTITY` below.
+    # Derive the identity fast path so it cannot disagree with `R`.
     Orientation(R::NTuple{9,Float64}) = new(R, R == _IDENTITY_R)
 end
 

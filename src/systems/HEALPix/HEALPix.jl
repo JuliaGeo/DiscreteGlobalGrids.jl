@@ -1,52 +1,21 @@
-# ---------------------------------------------------------------------------
-# T6 — HEALPix.
-#
-# Nested HEALPix on the grid interface. Everything here is a closed form on the
-# twelve equal-area face charts; nothing depends on the `Healpix.jl` package.
-# ---------------------------------------------------------------------------
+# Nested HEALPix implemented directly on its twelve equal-area face charts.
 
 """
     DiscreteGlobalGrids.HEALPix
 
-The [HEALPix](https://healpix.sourceforge.io) discrete global grid system:
-twelve equal-area base pixels on the sphere, each refined by aperture-4
-quadrant subdivision, levels `0:29` (`nside = 2^level`, `npix = 12 * 4^level`).
+The [HEALPix](https://healpix.sourceforge.io) equal-area grid: twelve base
+pixels with aperture-4 refinement at levels `0:29`, where `nside = 2^level`
+and `npix = 12 * 4^level`.
 
-  - [`HEALPixSystem`](@ref) — the system singleton.
-  - `levelgrid(HEALPixSystem(), l)` — one complete level, as the package's
-    [`HierarchicalLevelGrid`](@ref). HEALPix ships no grid type of its own.
-  - `LevelIndex` — the canonical id: `LevelIndex(level, index)` with `index` the
-    **NESTED** pixel number, **0-based**, as the standard defines it.
-  - [`HEALPixRingIndex`](@ref) — the alternate scheme, the **RING** pixel number
-    and **1-based** (the convention Healpix.jl and SpeedyWeather's `RingGrids`
-    both use). Convert with [`reindex`](@ref) in either direction.
+[`HEALPixSystem`](@ref) is the system singleton; HEALPix ships no grid type of
+its own, so `levelgrid(HEALPixSystem(), l)` returns the package's
+[`HierarchicalLevelGrid`](@ref).
 
-# The layers, bottom up
-
-| file | what it is |
-|---|---|
-| `chart.jl` | the twelve equal-area face charts and the nested/ring/xyf codecs — pure closed forms, plus the chart's analytic inverse (`point_to_xyf`). Copied wholesale from the pre-redesign `src/HEALPix/chart.jl`. |
-| `neighbors.jl` | the 3x3 lattice neighbourhood on the nested id, lifted off the old lookup layer. |
-| `system.jl` | `HEALPixSystem`, `HEALPixRingIndex`, and every interface method, system-level and grid-level both. |
-| `border.jl` | the Morton rim walk — a subtree's border with no neighbour queries. |
-
-# Fast paths over the generic fallbacks
-
-| operation | how |
-|---|---|
-| [`cellat`](@ref) | `point_to_nested`, the chart's analytic inverse — no tree descent, no point-in-polygon |
-| [`cellindex`](@ref) / [`cellposition`](@ref) | the identity, up to the 0-based-id / 1-based-position `± 1` |
-| [`descendant_range`](@ref) | `4^Δ`-wide shift of the nested id: subtrees are contiguous, hence `has_sorted_subtrees` |
-| [`node_extent`](@ref) | the pixel's own bounding cap, uninflated — nested parents *are* the union of their children, so `cap_inflation` is never consulted |
-| [`cell_area`](@ref) | `4π / npix` in closed form, **exactly** equal-area, rather than the densified polygon's area |
-| [`neighbors`](@ref) / [`ring`](@ref) | the lattice one-ring on the Morton code, under both `Vertex()` (8) and `Edge()` (4) connectivity |
-| `subtree_border` | the Morton rim walk in `border.jl` |
-
-# Note the capitalisation
-
-This submodule is `HEALPix`, distinct from the registered `Healpix.jl` package.
-Nothing here depends on that package; it is used only by this system's TESTS,
-as an independent oracle for the codecs and for point location.
+Canonical `LevelIndex` ids are 0-based NESTED pixel numbers; alternate
+[`HEALPixRingIndex`](@ref) ids are 1-based RING numbers. Nested subtrees are
+contiguous, parent footprints equal their child unions, and every cell has
+exact area `4π / npix`. Location uses the analytic chart inverse; topology uses
+the Morton lattice. This module does not depend on `Healpix.jl`.
 """
 module HEALPix
 

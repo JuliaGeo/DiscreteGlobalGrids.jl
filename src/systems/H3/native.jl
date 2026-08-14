@@ -1,10 +1,5 @@
-# ---------------------------------------------------------------------------
-# The libh3 ccall layer.
-#
-# Ported wholesale from the pre-redesign `src/H3/H3Native.jl`: these wrappers
-# are the oracle, not a reimplementation of one, and they are deliberately
-# unchanged. Seven wrappers were *added* on top of that file, none of them
-# altering an existing one:
+# Thin libh3 wrappers. Fixed-size variants avoid allocation in common one-ring
+# and one-level-child operations:
 #
 #   cell_center_cartesian   the centre without the degree round trip
 #   boundary_verts          the boundary into a fixed tuple, no Vector
@@ -14,41 +9,17 @@
 #   grid_ring_unsafe_1      the k = 1 hollow ring into a stack buffer
 #   cell_to_children_7      one level of children into a stack buffer
 #
-# The last three exist so that `neighbors(grid, c)` and `children(sys, c)` —
-# the two calls a whole-grid sweep makes per cell — do not allocate. libh3
-# writes into a caller-supplied array, so a fixed-size `Ref` tuple that never
-# escapes is stack-allocated by Julia and the heap is never touched.
-#
 # Nothing in here knows about the grid interface. It speaks H3's own vocabulary
 # — raw `UInt64` indices, degrees, zero-based child positions — and the
 # interface wiring lives one directory up in `system.jl` / `geometry.jl`.
-# ---------------------------------------------------------------------------
 
 """
     DiscreteGlobalGrids.H3.H3Native
 
-The raw libh3 ccall layer: a couple of dozen entry points wrapping ~28 `ccall`s
-into the C library shipped by
-[`H3_jll`](https://github.com/JuliaBinaryWrappers/H3_jll.jl), and the whole of
-this package's dependence on it.
-
-It speaks **H3's own vocabulary** — raw `UInt64` indices, degrees, zero-based
-child positions — and knows nothing about the grid interface. The interface
-wiring lives one directory up, in `system.jl` / `geometry.jl` / `neighbors.jl` /
-`border.jl`.
-
-These wrappers are **the oracle, not a reimplementation of one**. They were
-ported wholesale from the pre-redesign `src/H3/H3Native.jl` and are deliberately
-left unchanged, so that every geometric, hierarchical and adjacency answer this
-system gives is libh3's own answer rather than a rewrite that could drift from
-it. The only additions are the seven allocation-free wrappers listed in the file
-header, none of which alters an existing one.
-
-Callers normally want the interface generics instead — [`cell_boundary`](@ref),
-[`cellat`](@ref), [`neighbors`](@ref), [`children`](@ref) and friends on
-[`H3System`](@ref) and its [`levelgrid`](@ref) — which is where the canonical
-ordering, the dense position numbering and the subtree border walk live. Reach for
-`H3Native` only when you specifically want to speak to libh3 directly.
+Low-level calls into the libh3 library shipped by
+[`H3_jll`](https://github.com/JuliaBinaryWrappers/H3_jll.jl). The API uses raw
+`UInt64` ids, degree coordinates, and zero-based child positions. Grid ordering
+and interface contracts are implemented by the enclosing [`H3`](@ref) module.
 """
 module H3Native
 
@@ -350,15 +321,8 @@ end
 
 _wraplon(lon) = lon > 180 ? lon - 360 : lon
 
-# ---------------------------------------------------------------------------
-# Additions for the redesigned `ring` / `neighbors` fast paths.
-#
-# `gridRingUnsafe` is the O(k) hollow-ring walk, and it is the reason `ring`
-# does not have to build and subtract two discs. It refuses — with a non-zero
-# error rather than a wrong answer — whenever the walk meets a pentagon, so it
-# is wrapped to return `nothing` there and let the caller fall back to the
-# pentagon-safe `gridDisk` path.
-# ---------------------------------------------------------------------------
+# `gridRingUnsafe` is O(k) but fails at pentagon distortion; wrappers return
+# `nothing` so callers can use the pentagon-safe `gridDisk` path.
 
 """
     grid_ring_unsafe(id, k) -> Union{Vector{H3Index},Nothing}
@@ -408,15 +372,8 @@ end
 """
     grid_disk_1(id) -> NTuple{7,H3Index}
 
-The `k = 1` grid disk — `id` and its neighbours — **without allocating**.
-
-`maxGridDiskSize(1)` is always 7, so the size call the general `grid_disk`
-makes is skipped and libh3 writes straight into a seven-slot `Ref` tuple. The
-`Ref` never escapes, so Julia stack-allocates it and this touches no heap at
-all; that is what lets a whole-grid neighbour sweep run garbage-free.
-
-Unused slots — the six neighbours of a pentagon leave one — stay `0`, which is
-never a valid H3 index, so the caller filters on it.
+The allocation-free `k = 1` disk containing `id` and its neighbours. Unused
+pentagon slots are `0`, which is never a valid H3 index.
 """
 function grid_disk_1(id)
     buf = Ref(_ZERO7)

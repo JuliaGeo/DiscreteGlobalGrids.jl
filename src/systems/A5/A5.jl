@@ -1,36 +1,13 @@
-# ---------------------------------------------------------------------------
-# T10 — A5.
-#
-# felixpalmer's A5 grid on the redesigned interface. The projection, the id
-# codec, the hierarchy arithmetic, the adjacency and the boundary all come from
-# `native.jl`, a verbatim carry-over of the pure-Julia port of upstream a5, so
-# what this module contributes is wiring, a dense order, and a rotational
-# neighbour order the upstream does not have (it sorts).
-#
-# A5 is the package's first system with `has_sorted_subtrees == false`: its
-# grids treeify to a *selection-mode* cursor and its multi-order sets take the
-# `(level, ordinal)` fallback sort. That is deliberate — see the trait's
-# docstring in `system.jl` — and `test/systems/A5/` drives treeify, query and
-# coverage through those paths on purpose.
-# ---------------------------------------------------------------------------
+# A5 interface over the upstream-compatible arithmetic in `native.jl`.
 
 """
     DiscreteGlobalGrids.A5
 
-The [A5](https://a5geo.org) discrete global grid system: an equal-area
-pentagonal tiling of a dodecahedron, resolutions `0:29`.
+The [A5](https://a5geo.org) equal-area pentagonal dodecahedral grid at
+resolutions `0:29`. [`A5Cell`](@ref) uses upstream a5's self-describing
+`UInt64` encoding; [`A5Native`](@ref) exposes the low-level arithmetic.
 
-  - [`A5System`](@ref) — the system singleton.
-  - [`A5Cell`](@ref) — the canonical id, a `UInt64` in upstream a5's own
-    serialization, with the resolution in-band.
-  - `levelgrid(A5System(), l)` — one complete resolution, as the package's
-    [`HierarchicalLevelGrid`](@ref). A5 ships no grid type of its own.
-  - [`A5Native`](@ref) — the ported upstream arithmetic, if you want it directly.
-
-# The hierarchy has three regimes
-
-A5 is **not** a fixed-radix system, and nothing here may be derived from an
-aperture:
+A5 is not fixed-radix:
 
 | level | cells | refinement |
 |---|---|---|
@@ -38,44 +15,22 @@ aperture:
 | 1 | 60 | each face cut into 5 triangular quintants |
 | ≥ 2 | `60·4^(l-1)` | 4 Hilbert children per cell |
 
-# The canonical order
-
-Cells at one level are numbered **quintant by quintant**, and within a quintant
-by the **Hilbert state `S`**:
+Cells are ordered by quintant, then Hilbert state `S`:
 
     position = quintant · 4^(level-1) + S + 1,     quintant = 5·origin + segment
 
-which is exactly ascending order of the raw `UInt64` at a fixed level (see
-[`A5Cell`](@ref)). Level 0 is the twelve faces in origin order.
+This equals ascending raw-`UInt64` order within a level. Level 0 contains the
+twelve faces in origin order.
 
-[`has_sorted_subtrees`](@ref) is nonetheless **`false`** here — the conservative
-default, kept because the two-sided `descendant_range` contract has not been
-verified across the res-0 → res-1 fan-out, whose quintant numbering is a
-*rotation* of a5's own segment walk. See that trait's docstring in `system.jl`
-for what it costs and what to do instead.
-
-# Fast paths over the generic fallbacks
-
-| operation | how |
-|---|---|
-| [`cellat`](@ref) | a5's own `lonlat_to_cell` point location |
-| [`cellindex`](@ref) / [`cellposition`](@ref) | the closed-form ordinal above |
-| [`neighbors`](@ref) / [`ring`](@ref) | a5's adjacency walk, wound counter-clockwise |
-| [`ancestor`](@ref) / [`descendants`](@ref) | `cell_to_parent` / `cell_to_children` across any level gap |
-
-[`node_extent`](@ref) is the generic default — the cell's cap inflated by
-[`cap_inflation`](@ref) — with the factor raised to `1.75`; see that docstring
-for the measurement. `subtree_border` keeps the generic fallback: an A5 subtree
-is four Hilbert children that cover the parent's area but not its footprint, so
-there is no digit predicate to read a rim off.
+[`has_sorted_subtrees`](@ref) is `false` because contiguity is not established
+across the level-0 fan-out. Location and topology use A5's native arithmetic;
+neighbours are wound counter-clockwise. [`node_extent`](@ref) uses the generic
+cell cap with inflation `1.75`; `subtree_border` also uses its fallback.
 """
 module A5
 
-# Exactly the generics this module defines methods on, plus the types those
-# methods dispatch on. `node_extent` is deliberately absent: A5 takes the
-# generic default (an inflated cell cap), and declaring `cap_inflation` is the
-# whole of its say in the matter. So is `descendant_range`: A5 does not declare
-# `has_sorted_subtrees`, so it owes no method.
+# Generics implemented by this module. `node_extent` and `descendant_range` use
+# package fallbacks.
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,

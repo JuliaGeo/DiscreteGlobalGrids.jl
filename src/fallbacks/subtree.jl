@@ -1,31 +1,11 @@
-# ---------------------------------------------------------------------------
-# Subtree rim and bulk.
-#
-# The generic realisation of `subtree_border` / `subtree_interior`. Both are
-# written against `descendants` + `neighbors` + `ancestor`, so they work for any
-# hierarchical system the moment it has those — and both are slow enough that
-# every system with a border automaton should override the border.
-#
-# The asymmetry is deliberate. `subtree_border` is the hook: its answer is
-# O(3^d) against an O(7^d) subtree, so a system that can walk the rim from its
-# digits alone wins by an unbounded factor, and that is worth a method.
-# `subtree_interior` is *most* of the subtree, so there is no asymptotic win to
-# be had; it is written once, here, in terms of the border, which means a system
-# that overrides the border also gets the faster interior with no second walker.
-# ---------------------------------------------------------------------------
+# Generic subtree border and interior implementations. Systems with direct
+# border traversal should override `subtree_border`; `subtree_interior` uses it.
 
 """
     subtree_border(sys, c, l; connectivity = Vertex()) -> Vector
 
-The rim of `c`'s subtree at level `l` — see the interface docstring for the
-contract.
-
-The generic implementation enumerates [`descendants`](@ref) and keeps the ones
-with a neighbour outside the subtree, testing membership by walking the
-neighbour back up to `level(c)` with [`ancestor`](@ref). That is
-`O(subtree · degree · depth)`, which is correct for every system and the right
-answer for none of them: it exists so that the hook is total, and so that a
-system's automaton has something to be differentially tested against.
+Return level-`l` descendants of `c` with a neighbor outside the subtree. The
+generic implementation costs `O(subtree · degree · depth)`.
 """
 function subtree_border(sys::AbstractHierarchicalGridSystem,
         c::AbstractCellIndex, l::Integer;
@@ -56,13 +36,8 @@ end
 """
     subtree_interior(sys, c, l; connectivity = Vertex()) -> Vector
 
-The level-`l` descendants of `c` that are not on its rim — see the interface
-docstring for the contract.
-
-Computed as [`descendants`](@ref) minus [`subtree_border`](@ref), so the border
-call dispatches to whatever fast path the system has. This is the whole
-implementation for every system: the interior is Θ(subtree) however it is
-found, so there is nothing for an automaton to save here.
+Return level-`l` descendants of `c` excluding [`subtree_border`](@ref). The
+result costs `Θ(subtree)` and uses any specialized border implementation.
 """
 function subtree_interior(sys::AbstractHierarchicalGridSystem,
         c::AbstractCellIndex, l::Integer;

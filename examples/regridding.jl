@@ -201,6 +201,50 @@ for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.IGeo7System()))
     check("$(label(sys)) $l: conservative", err <= 1e-10)
 end
 
+# --------------------------------------------------------------------------
+# The other direction: the lon/lat grid as SOURCE and the DGGS as DESTINATION.
+#
+# Same two grids, same manifold, arguments swapped — and it is NOT the same
+# matrix, because the intersection operator clips the source cell against the
+# destination cell and is not symmetric in the two. On a `Spherical` manifold
+# that operator is Sutherland-Hodgman, which clips the SUBJECT (the source
+# cell) against the half-space of every edge of the CLIP WINDOW (the
+# destination cell), and only a CONVEX clip window makes that the intersection.
+#
+# HEALPix, ISEA4R and A5 cells are curvilinear, so `cell_boundary` densifies
+# each chart edge into eight great-circle segments — and a straight chart edge
+# is a curve on the sphere, so two of a cell's sides bow inward and every
+# densified vertex on them is a reflex vertex. Correct geometry, and it still
+# tiles the sphere exactly (which is why the column sums above are exact); but
+# as a clip window it is out of contract, and the destination cells lose 0.2%
+# to 1.5% of their area — or, where a cell's first ring vertex lands on a
+# source cell's boundary, gain a whole extra copy of themselves.
+#
+# So this loop asserts the law where it holds and PRINTS the shortfall where it
+# does not, rather than pretending either. `test/systems/crosssystem/
+# regridding_conservation.jl` carries the same law with the failing arms marked
+# `@test_broken`, and names the upstream file and lines.
+# --------------------------------------------------------------------------
+
+println()
+println("  destination direction      cells    row-sum rel err")
+for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.IGeo7System()))
+    l = demo_level(sys)
+    grid = DGG.levelgrid(sys, l)
+    r = CR.Regridder(MANIFOLD, grid, DST)   # DGGS is now the DESTINATION
+    err = maximum(abs.(vec(sum(r.intersections; dims=2)) .- r.dst_areas) ./ r.dst_areas)
+    ones_back = zeros(DGG.ncells(grid))
+    CR.regrid!(ones_back, r, ones(length(r.src_areas)))
+    println("  ", rpad("$(label(sys)) $l", 23), lpad(DGG.ncells(grid), 9), "    ", err)
+    if err <= 1e-10
+        check("$(label(sys)) $l: conservative onto", true)
+    else
+        note("$(label(sys)) $l: NOT conservative onto — regrid!(ones) spans " *
+             "$(round.(extrema(ones_back); digits=3)); non-convex cell rings, " *
+             "GeometryOps sutherland_hodgman.jl:306-324")
+    end
+end
+
 println()
 note("call site, verbatim:  src = DGG.levelgrid(DGG.HEALPixSystem(), 4); CR.Regridder(MANIFOLD, DST, src)")
 note("swap the singleton for any of systems(), or wrap one in AuthalicSystem")

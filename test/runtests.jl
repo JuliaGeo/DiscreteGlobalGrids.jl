@@ -38,4 +38,10 @@ using DiscreteGlobalGrids
     # read as a cube dimension. After that file for the same reason it is after
     # the per-system suites — a failure here is the lookup, not the coverage.
     include("systems/crosssystem/dimensionaldata.jl")
+    # T17: and the same treatment for regridding, in BOTH directions. The
+    # source direction was the only one anything checked; the destination
+    # direction is silently non-conservative on every system whose cell rings
+    # are non-convex, for a reason that lives in GeometryOps' clipper. Those
+    # arms are `@test_broken` and the file says why.
+    include("systems/crosssystem/regridding_conservation.jl")
 end

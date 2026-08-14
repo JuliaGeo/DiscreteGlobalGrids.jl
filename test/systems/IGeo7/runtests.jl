@@ -29,6 +29,17 @@ const VECTORS = joinpath(@__DIR__, "vectors")
 
 const Z7Cell = I.Z7Cell
 
+@testset "relative IGeo7 indices" begin
+    grid = DGG.PartialGrid(S, Z7Cell("023"), 4)
+    c = DGG.cellindex(grid, 10)
+    ns = DGG.neighbors(DGG.levelgrid(S, 4), c)
+    @test sort(DGG.directioncode.(ns .- Ref(c))) == 1:6
+    @test all(n -> c + (n - c) == n, ns)
+    @test c - c == DGG.RelativeIGEO7Index(4)
+    @test DGG.trytranslate(c, DGG.RelativeIGEO7Index(4)) == c
+    @test_throws DimensionMismatch c + DGG.RelativeIGEO7Index(3)
+end
+
 # ---------------------------------------------------------------------------
 # Oracle-vector parsers
 # ---------------------------------------------------------------------------

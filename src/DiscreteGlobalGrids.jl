@@ -119,7 +119,8 @@ include("systems/A5/A5.jl")
 include("systems/S2/S2.jl")
 include("systems/ISEA4R/ISEA4R.jl")
 
-using .IGeo7: IGeo7System, Z7Cell
+using .IGeo7: IGeo7System, Z7Cell, HexIndex, RelativeIGEO7Index,
+    directioncode, trytranslate
 using .H3: H3System, H3Cell
 using .HEALPix: HEALPixSystem, HEALPixRingIndex
 using .A5: A5System, A5Cell
@@ -297,7 +298,8 @@ export CellLookup, Cells, Covering
 # --- Grid systems ----------------------------------------------------------
 # Export system types rather than modules whose names collide with packages.
 export systems
-export IGeo7System, Z7Cell
+export IGeo7System, Z7Cell, HexIndex, RelativeIGEO7Index
+export directioncode, trytranslate
 export H3System, H3Cell
 export HEALPixSystem, HEALPixRingIndex
 export A5System, A5Cell

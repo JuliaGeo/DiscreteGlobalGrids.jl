@@ -15,6 +15,7 @@ ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpa
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
+import Geomorphometry as GM
 using Rasters, RasterDataSources
 import ArchGDAL
 import GeometryOps as GO, Extents
@@ -135,6 +136,40 @@ p2 = poly!(ax2, cells; color = drop[shown], colormap = :magma,
 Colorbar(fig[2, 2], p2; vertical = false)
 fig
 
-# Only the singleton on the first line was IGEO7: `MultiOrderCoverage`,
-# `PartialGrid`, the regridder and `halo_table` are interface methods, so
-# swapping the system reruns the page unchanged.
+# ## Terrain analysis with Geomorphometry
+#
+# A `CellLookup` gives the raster canonical IGEO7 cell identities while keeping
+# its vector storage positional. Geomorphometry can then use the DGGS
+# neighbourhood and physical cell geometry directly. TPI is a single local
+# call; flow accumulation uses D8 here, with each result expressed as upstream
+# area in square metres.
+
+igeo7_dem = Raster(elevation,
+    (DGG.Cells(DGG.CellLookup(DGG.CellVector(grid))),);
+    name = :height)
+
+tpi = GM.topographic_position_index(igeo7_dem)
+accumulation, directions = GM.flowaccumulation(igeo7_dem; method = GM.D8())
+
+cell_area = GM.cellarea(igeo7_dem, first(eachindex(igeo7_dem)))
+log_cells = log10.(accumulation ./ cell_area)
+
+fig = Figure(size = (900, 430))
+ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
+    title = "topographic position index (m)")
+p1 = poly!(ax1, polys[shown]; color = tpi[shown], colorrange = (-25, 25),
+    colormap = :delta, strokewidth = 0)
+Colorbar(fig[2, 1], p1; vertical = false)
+ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84",
+    title = "D8 flow accumulation")
+p2 = poly!(ax2, polys[shown]; color = log_cells[shown],
+    colormap = :devon, strokewidth = 0)
+Colorbar(fig[2, 2], p2; vertical = false,
+    label = "log₁₀(upstream cell equivalents)")
+save("geomorphometry_igeo7.png", fig)
+fig
+
+# `MultiOrderCoverage`, `PartialGrid`, the regridder and `halo_table` are
+# interface methods, so the regridding and routing portions can use another
+# system. The relative indexing methods added for IGEO7 provide the
+# Geomorphometry integration.

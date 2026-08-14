@@ -533,6 +533,20 @@ alive behind it. `CellVector(PartialGrid(cv))` comes back in O(1) either way.
 """
 PartialGrid(cv::CellVector) = PartialGrid(system(cv), cv.level, _bare(cv, cv.backing))
 
+# The other half of that round trip, which `PartialGrid`'s generic
+# `searchsortedfirst` would otherwise walk the long way: comparing against a
+# LAZY id vector resolves one `cellindex` per probe, so a membership test on a
+# grid built from a cell vector cost O(log #cells) DECODES where the vector
+# itself answers in O(log #windows) integer comparisons. Same answer, and it is
+# the vector's own answer rather than a second one.
+#
+# The system parameter is spelled with its DECLARED bound rather than as
+# `<:Any`, for the reason `_origin` gives above: a wildcard WIDENS a bounded
+# parameter, so `PartialGrid{<:Any,<:CellVector}` is a subtype of the general
+# signature without being more specific than it — an ambiguity, not an override.
+cellposition(grid::PartialGrid{<:AbstractHierarchicalGridSystem,<:CellVector},
+    c::AbstractCellIndex) = cellposition(grid.ids, c)
+
 # Dispatched on the backing's value, for the reason `_origin` gives above.
 _bare(cv::CellVector, backing) = CellVector(cv.windows, cv.grid, nothing, cv.level)
 _bare(cv::CellVector, ::Nothing) = cv

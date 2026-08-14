@@ -1,9 +1,9 @@
 # # Stencil operations
 #
 # A stencil operation recomputes every cell of a grid from its own value and the
-# values of its immediate neighbours. Two calls set it up on any grid in this
-# package: `neighbors` names the neighbours, and `cellposition` turns each name
-# into an index into the data vector. That halo table is the stencil.
+# values of its immediate neighbours. One call sets it up on any grid in this
+# package: `halo_table` gives, for every position, the positions of the cells
+# within `k` steps of it. That table is the stencil.
 #
 # This is also the primitive behind machine learning on spherical grids: a graph
 # convolution in the style of DeepSphere is exactly such a pass, and stacking `k`
@@ -41,13 +41,14 @@ values = [field(c...) for c in centers] .+ 0.4 .* randn(length(cells))
 
 # ## The halo table
 #
-# `neighbors(grid, c)` returns the ring-1 neighbours as typed cell ids, counter-
-# clockwise seen from outside the sphere. `cellposition` maps each back to its
-# position in the grid's dense order, which is the index into `values`. On a
-# complete level every neighbour is present; on a `PartialGrid` the ones outside
-# the coverage are simply absent, and the table is shorter there.
+# `halo_table(grid, k)` is the whole stencil: entry `p` is the positions of the
+# cells within `k` steps of position `p`, ascending. It is exactly
+# `[DGG.neighbors(grid, p, k) for p in 1:DGG.ncells(grid)]` — the same answer,
+# built in one pass — and `neighbors(grid, c)` still names the same cells as
+# typed ids, counter-clockwise seen from outside the sphere, when the identities
+# rather than the indices are what is wanted.
 
-halo = [Int[DGG.cellposition(grid, nb) for nb in DGG.neighbors(grid, c)] for c in cells]
+halo = DGG.halo_table(grid)
 length.(halo) |> extrema
 
 # HEALPix has 8 neighbours nearly everywhere; 24 cells per grid sit at a
@@ -96,12 +97,49 @@ for (row, (title, v, kw)) in enumerate((
 end
 fig
 
+# ## The same pass on a region
+#
+# A `PartialGrid` is a subset of one level, and adjacency on it is the complete
+# level's **clipped to membership**: a neighbour outside the subset is omitted,
+# not padded, and distance is still measured in the system rather than inside
+# the subset. So the table is the same call, and the rows on the subset's edge
+# are simply shorter.
+
+sys = DGG.HEALPixSystem()
+face = DGG.cellindex(DGG.levelgrid(sys, 0), 5)     # one of the twelve base cells
+sub = DGG.PartialGrid(sys, face, 5)                # its level-5 subtree, 32 x 32
+subcells = [DGG.cellindex(sub, i) for i in 1:DGG.ncells(sub)]
+subhalo = DGG.halo_table(sub)
+(; n = DGG.ncells(sub), interior = count(==(8), length.(subhalo)),
+   edge = count(<(8), length.(subhalo)))
+
+# Position `i` of the subset is position `i` of its data vector, so the stencil
+# is the same comprehension as before.
+
+subvalues = [field(lonlat(DGG.cell_centroid(sub, c))...) for c in subcells]
+substencil(f, v) = [f(v[i], v[subhalo[i]]) for i in eachindex(v)]
+subsmoothed = substencil((c, nbs) -> mean(vcat(c, nbs)), subvalues)
+(var(subvalues), var(subsmoothed))
+
+# The clipping is a law, not a convention. Ring 2 of a cell on the subset's edge
+# is ring 2 of the complete level with the absent cells dropped — not a
+# breadth-first walk of the subset, which would have to detour around what is
+# missing and would name different cells:
+
+edgecell = subcells[findfirst(<(8), length.(subhalo))]
+DGG.ring(sub, edgecell, 2) ==
+    [c for c in DGG.ring(grid, edgecell, 2) if DGG.cellposition(sub, c) !== nothing]
+
+# A cell the subset does not hold has no neighbourhood here at all — asking is
+# an `ArgumentError` rather than the complete level's answer about cells that
+# are not in the data.
+
 # ## The same three lines on any system
 #
-# Nothing above named HEALPix except the singleton. `neighbors` and
-# `cellposition` are interface methods, so the halo table is built the same way
-# on every registered system, and on an `AuthalicSystem` wrap of one — only the
-# degree changes.
+# Nothing above named HEALPix except the singleton. `neighbors`, `halo_table`
+# and `cellposition` are interface methods, so the halo table is built the same
+# way on every registered system, and on an `AuthalicSystem` wrap of one — only
+# the degree changes.
 
 for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.IGeo7System()))
     base = sys isa DGG.AuthalicSystem ? parent(sys) : sys

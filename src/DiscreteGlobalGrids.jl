@@ -19,6 +19,13 @@ four required grid methods to system-level counterparts.
 A bare `Int` is a position in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
 
+Adjacency is a verb on subsets, not only on complete levels. On a
+[`PartialGrid`](@ref), a [`CellVector`](@ref) or a [`CellLookup`](@ref),
+[`neighbors`](@ref) and [`ring`](@ref) are the system's own answer clipped to
+membership, in ids or in positions, and [`halo_table`](@ref) is a whole
+subset's stencil in one call. [`member_neighbors`](@ref) asks the same question
+across the levels of a [`MultiOrderCellSet`](@ref).
+
 Internal geometry uses `GeometryOps.UnitSphericalPoint`; explicitly named
 wrappers convert longitude and latitude at API boundaries.
 
@@ -26,7 +33,10 @@ wrappers convert longitude and latitude at API boundaries.
 
   - `src/interface/`: abstract types and generic contracts.
   - `src/fallbacks/`: generic implementations and wrapper types.
+  - `src/dimensionaldata.jl`: the cube face of [`CellVector`](@ref) —
+    [`CellLookup`](@ref), [`Cells`](@ref), [`Covering`](@ref).
   - `src/systems/`: grid-system implementations.
+  - `src/core/`: the authalic manifold pair.
   - [`Helpers`](@ref): shared allocation-free primitives.
   - `lib/DiscreteGlobalGridsConformanceTesting/`: the test-only package whose
     `test_grid_interface` / `test_hierarchical_system` suites make these
@@ -91,7 +101,7 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     cellindices, is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
-    EdgeCellIterator, InnerCellIterator
+    EdgeCellIterator, InnerCellIterator, member_neighbors
 
 # The lazy subtree walkers' extension point and the parts a system builds one
 # from. Not exported — a caller reaches the iterators, a system reaches these.
@@ -173,6 +183,10 @@ Important cross-system traits:
     [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in `O(depth)`
     memory, of which [`subtree_border`](@ref) and [`subtree_interior`](@ref) are
     the `collect` forms.
+  - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
+    the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
+    their parent exactly; the hierarchy's own relation on IGEO7, H3 and A5,
+    where they do not and a member's footprint is not its descendants' union.
 
 # Interoperability caveats
 
@@ -198,7 +212,7 @@ export Connectivity, Vertex, Edge
 export ncells, cellindex, cell_boundary, cell_centroid
 export cellposition, rawid, reindex, cellindextypes
 export cell_polygon, cell_area, cell_extent, getcell
-export cellat, neighbors, ring
+export cellat, neighbors, ring, halo_table
 export treeify, query
 export system, level
 
@@ -220,7 +234,7 @@ export Touches, Crosses, Overlaps, Equals
 export HierarchicalLevelGrid, PartialGrid, HierarchicalGridCursor
 export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
-export is_contained, coarsest_contained, cell_polygons
+export is_contained, coarsest_contained, cell_polygons, member_neighbors
 
 # --- The compressed cell collection ----------------------------------------
 # A coverage read as a lazy id vector at one level, the region selector over

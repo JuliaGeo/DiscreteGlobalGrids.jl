@@ -20,7 +20,15 @@ end
 
 Base.size(v::SubtreeIds) = (v.n,)
 Base.IndexStyle(::Type{<:SubtreeIds}) = Base.IndexLinear()
-Base.getindex(v::SubtreeIds, i::Int) = cellindex(v.grid, v.first + i - 1)
+
+# The check is written out rather than left to Base: a `getindex(::T, ::Int)`
+# defined directly is the whole method, so without it a position past the end
+# resolves an id from the NEXT subtree instead of throwing — and `PartialGrid`'s
+# `cellindex`, which the position contract says bounds-checks, is this call.
+Base.@propagate_inbounds function Base.getindex(v::SubtreeIds, i::Int)
+    @boundscheck checkbounds(v, i)
+    return cellindex(v.grid, v.first + i - 1)
+end
 
 # Positions of a complete level grid ascend in canonical id order, so the O(n)
 # verification `PartialGrid` runs on an arbitrary vector has nothing to find.

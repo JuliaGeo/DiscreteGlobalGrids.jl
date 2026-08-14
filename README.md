@@ -10,7 +10,10 @@ algorithm written against the interface exactly once.
 level, a regional subset of one, or a standalone grid with no hierarchy at all.
 Four required methods — `ncells`, `cellindex`, `cell_boundary`, `cell_centroid`
 — buy the whole generic surface: `cell_polygon`, `cell_area`, `cell_extent`,
-`cellat`, `neighbors`, `ring`, `treeify`, `query`.
+`cellat`, `neighbors`, `ring`, `halo_table`, `treeify`, `query`. On a SUBSET of
+a level the topology verbs mean the complete level's answer clipped to
+membership — omitted, not padded — so a stencil on a region is the same call it
+is on the globe.
 
 `AbstractHierarchicalGridSystem` adds analytic parent/child structure. It is the
 fast-path tier: tree pruning under the covering law of `node_extent`, contiguous
@@ -57,6 +60,7 @@ DGG.cell_area(grid, c)                            # steradians
 DGG.cellat(grid, 8.5, 47.4)
 DGG.neighbors(grid, c)                            # ring 1, CCW seen from outside
 DGG.ring(grid, c, 2)                              # exactly distance 2
+DGG.halo_table(grid)                              # every cell's stencil, as positions
 
 # Spatial queries, with DE9IM predicate types and spherical semantics.
 import Extents

@@ -8,7 +8,7 @@
 #
 # Three interface calls carry the whole page: `MultiOrderCoverage` to find the
 # cells that cover a region, `PartialGrid` to name one subtree as a grid, and
-# `neighbors` to route water out of each cell.
+# `halo_table` to route water out of each cell.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 
@@ -138,17 +138,15 @@ extrema(elevation[covered])
 # ## Flow direction
 #
 # The first step of every flow-routing model: each cell sends its water to the
-# lowest of its neighbours. `neighbors` names them, `cellposition` turns each
-# name into an index into `elevation`, and a cell with no lower neighbour is a
-# pit. Adjacency is a property of the complete level, so the halo comes from the
-# level grid and is filtered through the subtree's own positions — a neighbour
-# outside the subtree simply has no position.
+# lowest of its neighbours. `halo_table` names them as positions in `elevation`
+# in one call, and a cell with no lower neighbour is a pit. Adjacency on a
+# subset is the complete level's clipped to membership, so a neighbour outside
+# the subtree is simply absent from the row — and on a rooted subtree like this
+# one the table takes the rim/interior split, which spares the interior any
+# membership test at all. The DEM's own coverage is the second filter, and it is
+# this page's rather than the grid's.
 
-complete = DGG.levelgrid(sys, leaf)
-halo = [Int[p for p in (DGG.cellposition(grid, nb)
-                        for nb in DGG.neighbors(complete, DGG.cellindex(grid, i)))
-            if p !== nothing && covered[p]]
-        for i in 1:DGG.ncells(grid)]
+halo = [[p for p in row if covered[p]] for row in DGG.halo_table(grid)]
 
 function downhill(i)
     isempty(halo[i]) && return 0
@@ -183,7 +181,7 @@ fig
 # ## The same page on every system
 #
 # Only the singleton on the first line was IGEO7. `MultiOrderCoverage`,
-# `PartialGrid` and `neighbors` are interface methods, so the coverage, the
+# `PartialGrid` and `halo_table` are interface methods, so the coverage, the
 # subtree grid and the halo table all come out the same way elsewhere — A5 alone
 # has no `descendant_range`, so its coverage cannot be expanded to position
 # ranges and its subtree ids are materialised instead of windowed.

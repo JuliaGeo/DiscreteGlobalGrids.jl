@@ -267,6 +267,7 @@ function cellat end
 
 """
     neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Int = 1; connectivity::Connectivity = Vertex())
+    neighbors(grid::AbstractGrid, p::Int, k::Int = 1; connectivity::Connectivity = Vertex()) -> Vector{Int}
 
 All cells of `grid` within `k` adjacency steps of `c`, excluding `c`.
 
@@ -298,9 +299,30 @@ Cells with fewer neighbours yield shorter rings without padding.
 
 Any ordered, indexable collection with the grid's cell-index `eltype`.
 
-# Coverage
+# Coverage, and what a subset means
 
-Neighbours outside a partial grid are omitted, not padded.
+Neighbours outside the grid's coverage are omitted, not padded.
+
+On a **subset of a complete level** — [`PartialGrid`](@ref),
+[`CellVector`](@ref), `CellLookup` — adjacency and distance are the complete
+level's, clipped to membership:
+
+    ring(sub, c, k) == filter(in(sub), ring(levelgrid(system(sub), level(sub)), c, k))
+
+Distance is therefore measured in the *system*, never inside the subset. A hole
+in the subset removes cells; it does not lengthen the path around itself, and a
+cell reachable only by leaving the subset and coming back keeps the distance the
+complete level gives it. The two readings coincide at `k == 1` and part company
+from `k == 2`, which is why this is stated rather than left to the reader.
+
+`c` outside the subset is an `ArgumentError`, not a complete-grid answer.
+
+# Positions
+
+Given a position, both verbs answer with **in-set positions in ascending order**
+— the form a stencil table is indexed by. Ids keep the rotational order above;
+positions do not, because an index list is read by membership rather than by
+direction. [`halo_table`](@ref) is this form for a whole grid at once.
 
 `k` must be ≥ 0; `k == 0` returns an empty collection. See [`ring`](@ref) for
 the cells at *exactly* distance `k`.
@@ -309,6 +331,7 @@ function neighbors end
 
 """
     ring(grid::AbstractGrid, c::AbstractCellIndex, k::Int; connectivity::Connectivity = Vertex())
+    ring(grid::AbstractGrid, p::Int, k::Int; connectivity::Connectivity = Vertex()) -> Vector{Int}
 
 The cells at adjacency distance exactly `k` from `c`. `ring(grid, c, 0)` is
 `c` alone. The ordered result satisfies
@@ -319,10 +342,29 @@ so ring `k` is the final ordered block of `neighbors(grid, c, k)`. Overrides
 must preserve this equality.
 
 `ring` carries the same order (counter-clockwise seen from outside the sphere,
-from the system's documented start), container and coverage contracts as
-[`neighbors`](@ref).
+from the system's documented start), container, coverage and subset-clipping
+contracts as [`neighbors`](@ref), including the position form's ascending order.
 """
 function ring end
+
+"""
+    halo_table(grid::AbstractGrid, k::Int = 1; connectivity::Connectivity = Vertex()) -> Vector{Vector{Int}}
+    halo_table(cv::CellVector, k::Int = 1; connectivity::Connectivity = Vertex())
+    halo_table(lk::CellLookup, k::Int = 1; connectivity::Connectivity = Vertex())
+
+The whole stencil at once: entry `p` is `neighbors(grid, p, k)`, the in-set
+positions within `k` adjacency steps of position `p`, ascending.
+
+    halo_table(sub, k)[p] == neighbors(sub, p, k)
+
+is the law, so this is never a second answer — only a faster route to the same
+one. On a subset the clipping is [`neighbors`](@ref)'s: system adjacency
+intersected with membership, omitted rather than padded, so rows have varying
+length and a cell whose neighbours all lie outside gets an empty one.
+
+A stencil pass is then one comprehension over the table.
+"""
+function halo_table end
 
 # ===========================================================================
 # Trees

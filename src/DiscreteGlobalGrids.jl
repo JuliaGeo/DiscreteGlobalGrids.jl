@@ -113,7 +113,8 @@ include("fallbacks/fallbacks.jl")
 # of them.
 using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSystem,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
-    cellindices, is_contained, coarsest_contained, cell_polygons
+    cellindices, is_contained, coarsest_contained, cell_polygons,
+    CellVector, cellset, covering, covering_positions
 
 # Grid systems, all six ported. Include order never matters: the two ISEA-family
 # systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
@@ -137,9 +138,13 @@ using .ISEA4R: ISEA4RSystem
 # most consumers meet this package in — not an optional garnish. Included after
 # the systems so its cross-system tests can be written against `systems()`; it
 # depends on nothing any of them define.
+#
+# It is a thin face over `Fallbacks.CellVector`, above: the compression itself
+# is DimensionalData-free, and everything that is not a cube — regridding,
+# chunking, plain arrays — reaches it without going through this file.
 include("dimensionaldata.jl")
 
-using .CellLookups: CellLookup, Cells, Covering, cellset
+using .CellLookups: CellLookup, Cells, Covering
 
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
@@ -258,14 +263,22 @@ export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
 export is_contained, coarsest_contained, cell_polygons
 
+# --- The compressed cell collection ----------------------------------------
+# A coverage read as a lazy id vector at one level, the region selector over
+# one, and the accessor for what either was built from. None of the three
+# involves DimensionalData: this is the compression, and `CellLookup` below is
+# its cube-shaped face. `covering_positions` is the position-space sibling of
+# `covering` and is reached as `DiscreteGlobalGrids.covering_positions`.
+export CellVector, covering, cellset
+
 # --- The DimensionalData layer ---------------------------------------------
-# A lookup, the dimension it goes in, the one selector DimensionalData does not
-# already have a spelling for, and the accessor for what a lookup is backed by.
-# `At` and `Contains` are DimensionalData's own and are not re-exported here:
-# this package already exports DE9IM's `Contains`, a predicate about geometries
-# rather than a selector about positions, and the two must never end up as the
-# same name in a caller's namespace.
-export CellLookup, Cells, Covering, cellset
+# A lookup and the dimension it goes in, plus the one selector DimensionalData
+# does not already have a spelling for. `At` and `Contains` are
+# DimensionalData's own and are not re-exported here: this package already
+# exports DE9IM's `Contains`, a predicate about geometries rather than a
+# selector about positions, and the two must never end up as the same name in a
+# caller's namespace.
+export CellLookup, Cells, Covering
 
 # --- Grid systems ----------------------------------------------------------
 # One singleton and one canonical id type per system, plus the registry that

@@ -112,7 +112,8 @@ include("fallbacks/fallbacks.jl")
 # than beside their exports below because the system modules build on the first
 # of them.
 using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSystem,
-    HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges
+    HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
+    cellindices, is_contained, coarsest_contained, cell_polygons
 
 # Grid systems, all six ported. Include order never matters: the two ISEA-family
 # systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
@@ -245,7 +246,8 @@ export Touches, Crosses, Overlaps, Equals
 # all six of them return from `levelgrid` and attach their fast paths to.
 export HierarchicalLevelGrid, PartialGrid, HierarchicalGridCursor
 export AuthalicGrid, AuthalicSystem
-export MultiOrderCoverage, MultiOrderCellSet, level_ranges
+export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
+export is_contained, coarsest_contained, cell_polygons
 
 # --- Grid systems ----------------------------------------------------------
 # One singleton and one canonical id type per system, plus the registry that

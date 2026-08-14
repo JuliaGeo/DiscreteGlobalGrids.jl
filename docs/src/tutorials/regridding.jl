@@ -91,7 +91,7 @@ count(!ismissing, tavg[:, 1])
 # are masked like the ocean. One `Observable` of colours, and `record` walks it
 # through the months.
 
-cells = [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
+cells = DGG.CellVector(grid)
 polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
 lonspan(p) = (ring = GI.coordinates(p)[1]; maximum(first, ring) - minimum(first, ring))
 seam = lonspan.(polys) .> 180
@@ -150,3 +150,8 @@ ax = Axis(fig[1, 1]; xticks = (months, Dates.monthabbr.(months)),
     ylabel = "mean temperature (°C)", title = "Texas monthly mean temperature")
 scatterlines!(ax, months, ts)
 fig
+
+# Nothing above is HEALPix-specific — any system slots into `levelgrid` — but
+# the choice was deliberate: equal-area cells make the sums above areal means
+# without weights. The conservation caveat is also not system-uniform: a
+# destination whose rings are convex (IGEO7, S2) conserves today.

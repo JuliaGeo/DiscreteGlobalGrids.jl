@@ -26,8 +26,8 @@ WGLMakie.activate!()
 # Every cell of a complete level, as lon/lat polygons.
 function cell_polygons(sys, level)
     grid = DGG.levelgrid(sys, level)
-    cells = [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
-    return GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
+    return GO.transform(GO.GeographicFromUnitSphere(),
+                        DGG.cell_polygon.(Ref(grid), DGG.CellVector(grid)))
 end
 
 figure = Makie.Figure(size = (1200, 850), figure_padding = 4)

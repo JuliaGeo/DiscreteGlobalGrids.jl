@@ -15,6 +15,7 @@ import DiscreteGlobalGrids as DGG
 import NaturalEarth
 import GeometryOps as GO, GeoInterface as GI
 using CairoMakie, GeoMakie
+CairoMakie.activate!()
 
 fc = NaturalEarth.naturalearth("admin_1_states_provinces", 10)
 california = fc.geometry[findfirst(==("California"), fc.name)]
@@ -27,8 +28,8 @@ california = fc.geometry[findfirst(==("California"), fc.name)]
 sys = DGG.IGeo7System()
 coverage = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 7)
 
-# Level 7 cells are about 2 km across. A few thousand mixed-level cells stand
-# for a leaf set twenty times larger:
+# Level 7 cells are about 6.8 km across (by √area, the convention on these
+# pages). How many cells came back, and how many level-7 leaves they stand for:
 
 (; n_cells = length(coverage),
    levels = extrema(DGG.level, coverage),
@@ -36,8 +37,10 @@ coverage = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 7)
 
 # `level_ranges(coverage, 7)` is the compressed form — sorted, disjoint
 # position ranges at level 7. It is what a lookup layer slices arrays with,
-# and it never materialises the leaf ids. The query itself is generic: the
-# same call runs on every registered system.
+# and it never materialises the leaf ids. The query is generic — the same
+# call runs on every registered system — but the compressed form needs
+# sorted subtrees: on A5, `level_ranges` throws, and `descendants` is the
+# always-available expansion.
 
 polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(coverage))
 
@@ -53,7 +56,7 @@ poly!(ax, california; color = :transparent, strokecolor = :black, strokewidth = 
 Colorbar(fig[1, 2], plt; label = "cell level")
 fig
 
-# The interior is level 3 and 4 — cells a hundred kilometres across — and the
+# The interior is level 4 and 5 — cells up to some 130 km across — and the
 # coastline is level 7. Nothing chose those levels: every cell was emitted at
 # the coarsest level where it still fit inside the state.
 #
@@ -227,7 +230,9 @@ fig
 #
 # A budget set backs the same axis. `CellLookup` does not care which mode
 # produced the set — a forty-cell coverage expanded to level 6 is a perfectly
-# good, if generous, index into the same data.
+# good, if generous, index into the same data. (`maxlevel = 5` keeps this set
+# coarser than the level it expands to; the forty-cell set above was
+# unconstrained and reached level 6 itself.)
 
 budget = DGG.query(sys, DGG.MultiOrderCoverage(california); maxcells = 40, maxlevel = 5)
 budget_lk = DGG.CellLookup(budget; level = DGG.level(lk))

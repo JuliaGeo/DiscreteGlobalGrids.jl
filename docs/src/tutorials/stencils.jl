@@ -19,10 +19,10 @@ CairoMakie.activate!()
 # latitude with a wavy longitude signal on top, plus noise — sharp edges for a
 # Laplacian to find, speckle for smoothing to remove. Geometry lives on the
 # unit sphere, so sampling at the cell centroids takes one conversion to
-# lon/lat.
+# lon/lat; `CellVector(grid)` is the grid's cells as a lazy vector.
 
 grid = DGG.levelgrid(DGG.HEALPixSystem(), 5)
-cells = [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
+cells = DGG.CellVector(grid)
 lonlat = GO.UnitSpherical.GeographicFromUnitSphere()
 
 Random.seed!(42)
@@ -92,7 +92,7 @@ subhalo = DGG.halo_table(sub)
 # Position `i` of the subset is position `i` of its data vector, so the stencil
 # is the same comprehension.
 
-subcells = [DGG.cellindex(sub, i) for i in 1:DGG.ncells(sub)]
+subcells = DGG.CellVector(sub)
 subvalues = [field(lonlat(DGG.cell_centroid(sub, c))...) for c in subcells]
 substencil(f, v) = [f(v[i], v[subhalo[i]]) for i in eachindex(v)]
 subsmoothed = substencil((c, nbs) -> mean(vcat(c, nbs)), subvalues)

@@ -120,6 +120,19 @@ lk = DGG.CellLookup(set)
 k = length(lk) ÷ 2
 lk[k], DGG.cellposition(lk, lk[k])
 
+# Neither of them is *about* cubes. The compression is its own type —
+# `CellVector`, which is the ranges read as the leaf id vector — and
+# `CellLookup` is that type wearing a DimensionalData hat. Code that is not a
+# cube reaches for the first one directly: `PartialGrid(cv)` is O(1), so a
+# regridder consumes a coverage without ever materialising it.
+
+cv = DGG.CellVector(set)
+(; n_cells = length(cv), bytes = Base.summarysize(cv), grid = DGG.PartialGrid(cv))
+
+# The selectors below have the same two faces. `Covering(target)` is the cube
+# spelling; `covering(cv, target)` is the same selection outside one, answering
+# with a `CellVector` again.
+
 # `Cells` is the dimension the lookup goes in.
 
 A = DD.DimArray([field(lonlat(DGG.cell_centroid(grid, c))...) for c in lk],

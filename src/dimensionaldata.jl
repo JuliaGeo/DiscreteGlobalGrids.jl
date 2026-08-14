@@ -202,8 +202,10 @@ some hundreds of words standing for tens of thousands of cells. `lk[k]`
 binary-searches the windows' cumulative lengths and resolves one `cellindex`;
 `cellposition(lk, c)` runs the inverse.
 
-`Base.parent` returns the backing — the set, or the grid — so a second coverage
-operation can be run against it without unpacking the lookup.
+`Base.parent` returns the lookup's VALUES, as `DimensionalData` requires: the
+lazy cell id vector, which is O(#windows) and materialises nothing.
+[`cellset`](@ref) returns the backing — the set, or the grid — for running a
+second coverage operation against without unpacking the lookup.
 
 # The three ways in
 
@@ -228,6 +230,31 @@ A[Cells(Covering(polygon))]                   # a region, through `MultiOrderCov
 `At` and `Contains` resolve to one position; [`Covering`](@ref) to the
 positions of every stored cell the region's coverage names, and the view it
 produces carries a `CellLookup` again.
+
+`At` and `Contains` are `DimensionalData`'s selectors and are reached through
+it (`DD.At`, `DD.Contains`) rather than re-exported here. That is not an
+oversight: this package exports DE9IM's [`Contains`](@ref), a *predicate about
+two geometries*, and a `using` of both packages would otherwise leave one name
+meaning two unrelated things. Only [`Covering`](@ref), which `DimensionalData`
+has no spelling for, is exported.
+
+# What the cube's own operations do to it
+
+Indexing, `vcat`/`cat` and reductions all reach the lookup, and each answers
+with the most specific thing that is still true:
+
+  - an ASCENDING subset — a range, a sorted index vector, a boolean mask, a
+    selector's result, or a concatenation of disjoint ascending axes — is a
+    window set again, so it is a `CellLookup`;
+  - a REORDERED one — `lk[[3, 1]]`, `reverse(A; dims = Cells)` — is not, and
+    falls back to an unordered `DimensionalData.Categorical` of the same ids.
+    The values are right and the selectors work; the type is not `CellLookup`,
+    so reversing twice restores the data but not the axis's type;
+  - a reduction (`sum(A; dims = Cells)`) collapses to a single element that no
+    cell id names, so the axis becomes `NoLookup`;
+  - `rebuild` around anything that is not cell ids at this level throws, since
+    a `CellLookup` has no free fields to put them in. Replacing an axis
+    wholesale is `set(A, Cells => NoLookup())`.
 
 !!! note "Systems without sorted subtrees (A5) are built by selection"
     [`level_ranges`](@ref) throws where [`has_sorted_subtrees`](@ref) is
@@ -348,19 +375,25 @@ windows(lk::CellLookup) = lk.ids.windows
 
 # --- the collection surface ------------------------------------------------
 
-# `parent` is the backing rather than the values, so every `Lookup` method
-# DimensionalData derives from `parent(l)` is answered here instead.
-Base.parent(lk::CellLookup) = lk.backing
-Base.size(lk::CellLookup) = size(lk.ids)
-Base.length(lk::CellLookup) = length(lk.ids)
-Base.axes(lk::CellLookup) = axes(lk.ids)
-Base.parentindices(lk::CellLookup) = axes(lk.ids)
-Base.firstindex(::CellLookup) = 1
-Base.lastindex(lk::CellLookup) = length(lk.ids)
-Base.first(lk::CellLookup) = lk.ids[1]
-Base.last(lk::CellLookup) = lk.ids[end]
+# `parent` is the VALUES — the lazy id vector — and nothing else. That is
+# DimensionalData's contract, and it is load-bearing rather than decorative:
+# some thirty `Lookup` methods derive their behaviour from `parent(l)`, and a
+# `parent` that answered with the backing instead had to be shadowed by a
+# hand-written override for each of them. Every one that was missed became a
+# crash inside DimensionalData's own machinery, or — for `Where`, which filters
+# `parent(lookup)` and returns the surviving indices as positions — a plausible
+# subset of the wrong collection, with no error at all. The backing is reached
+# through [`cellset`](@ref), which is this package's own name and cannot be
+# mistaken for the values by code that has never heard of it.
+#
+# So the list below is short by design. It is the methods where the lazy form
+# beats the generic one, not a re-implementation of the generic ones.
+Base.parent(lk::CellLookup) = lk.ids
 Base.IndexStyle(::Type{<:CellLookup}) = Base.IndexLinear()
-Lookups.val(lk::CellLookup) = lk
+
+# `first`/`last` on an empty lookup are a `BoundsError`, so the one caller that
+# asks about an empty axis rather than indexing it answers `nothing` instead.
+Lookups.bounds(lk::CellLookup) = isempty(lk) ? (nothing, nothing) : (first(lk), last(lk))
 
 Base.@propagate_inbounds Base.getindex(lk::CellLookup, k::Int) = lk.ids[k]
 Base.@propagate_inbounds Base.getindex(lk::CellLookup, k::CartesianIndex{1}) = lk.ids[k[1]]
@@ -369,6 +402,13 @@ for f in (:getindex, :view, :dotview)
     @eval Base.$f(lk::CellLookup, ::Colon) = lk
     @eval Base.$f(lk::CellLookup, i::AbstractArray{<:Integer}) = _subset(lk, i)
 end
+
+# DimensionalData reverses only the lookups it knows, and a `Lookup` it does not
+# know falls through to `Base.reverse` on the AbstractArray — which answers with
+# a bare `Vector` where a lookup is expected, and everything downstream of the
+# reversed dimension then recurses on it. Routing through `getindex` reverses
+# into the type the rest of this file understands.
+Base.reverse(lk::CellLookup) = lk[lastindex(lk):-1:firstindex(lk)]
 
 # SmallCollections' own `getindex(::AbstractVector, ::AbstractFixedOrSmall...)`
 # is neither more nor less specific than the line above, and a neighbour list is
@@ -402,6 +442,19 @@ function _subset(lk::CellLookup, idx::AbstractArray{<:Integer})
 end
 
 # --- what the lookup is, in this package's own vocabulary ------------------
+
+"""
+    cellset(lk::CellLookup)
+
+The thing the lookup was built from — a [`MultiOrderCellSet`](@ref), or the grid
+— for running a second coverage operation against without unpacking the lookup.
+
+`Base.parent(lk)` is deliberately NOT this: it is the lookup's VALUES, the lazy
+cell id vector, because that is what `DimensionalData` derives some thirty
+`Lookup` methods from. A subset produced by indexing or by a selector reports
+the [`PartialGrid`](@ref) describing it.
+"""
+cellset(lk::CellLookup) = lk.backing
 
 """
     system(lk::CellLookup)
@@ -446,39 +499,61 @@ PartialGrid(lk::CellLookup) = PartialGrid(system(lk), lk.level, lk.ids)
 Lookups.order(::CellLookup) = Lookups.ForwardOrdered()
 Lookups.metadata(::CellLookup) = Lookups.NoMetadata()
 
-# A `CellLookup` has no properties to vary: its values are its windows. Anything
-# that would change them goes through `getindex`, so a `data=` rebuild is a
-# caller error rather than a silently ignored keyword.
+# A `CellLookup` has no properties to vary — its values are its windows — but
+# it does have to survive being rebuilt around new VALUES, because that is how
+# DimensionalData concatenates: `vcat`/`cat` along a `Cells` dimension hand the
+# joined id vector back through `rebuild`. An ascending disjoint union of window
+# sets is still a window set, so the join stays in this type; anything else is
+# not a set of windows and takes the same honest fallback `getindex` takes.
 function Lookups.rebuild(lk::CellLookup; data=nothing, kw...)
-    data === nothing || data === lk || throw(ArgumentError(
-        "a CellLookup cannot be rebuilt around new values; index it instead"))
-    return lk
+    (data === nothing || data === lk || data === lk.ids) && return lk
+    return _rebuild(lk, data)
 end
+
+_rebuild(lk::CellLookup, ids::CellIds) = _derive(lk, ids.windows)
+
+function _rebuild(lk::CellLookup, ids::AbstractVector{<:AbstractCellIndex})
+    grid = lk.ids.grid
+    positions = Vector{Int}(undef, length(ids))
+    ascending = true
+    for (j, c) in enumerate(ids)
+        p = cellposition(grid, c)
+        p === nothing && throw(ArgumentError(
+            "$c is not a cell of levelgrid($(system(lk)), $(lk.level)), so it " *
+            "cannot join a CellLookup at that level"))
+        positions[j] = p
+        j > 1 && positions[j] <= positions[j-1] && (ascending = false)
+    end
+    ascending || return Lookups.Categorical(collect(ids); order=Lookups.Unordered())
+    return _derive(lk, _windows(positions))
+end
+
+@noinline _rebuild(lk::CellLookup, data) = throw(ArgumentError(
+    "a CellLookup holds cell ids at one level; it cannot be rebuilt around " *
+    "$(typeof(data)). Concatenate cell axes with `vcat`/`cat`, subset them by " *
+    "indexing, and replace one wholesale with `set(A, Cells => NoLookup())`."))
+
+# Reducing over the cell axis collapses it to one element, and no single cell
+# id names that element — the same answer `Categorical` gives, for the same
+# reason.
+Lookups.reducelookup(::CellLookup) = Lookups.NoLookup(Base.OneTo(1))
+
+# Asked directly rather than left to the generic search over the values: the
+# window search is the exact membership test, and it is O(log #windows) where
+# the generic is O(log #cells) of `cellindex` calls.
+Lookups.hasselection(lk::CellLookup, sel::Lookups.At{<:AbstractCellIndex}) =
+    cellposition(lk, Lookups.val(sel)) !== nothing
+
+Lookups.hasselection(lk::CellLookup, sel::Lookups.Contains{<:AbstractCellIndex}) =
+    cellposition(lk, Lookups.val(sel)) !== nothing
+
+Lookups.hasselection(lk::CellLookup, sel::Lookups.Contains{<:Tuple{Real,Real}}) =
+    _at_point(lk, Lookups.val(sel)...) !== nothing
 
 Dimensions.format(lk::CellLookup, ::Type, values, axis::AbstractRange) = lk
 
 Base.:(==)(a::CellLookup, b::CellLookup) =
     system(a) == system(b) && a.level == b.level && windows(a) == windows(b)
-
-# Hand-rolled because the generic `Lookup` methods search `parent(lookup)`,
-# which here is the backing rather than the values.
-function Base.searchsortedfirst(lk::CellLookup, x; lt=<, kw...)
-    lo, hi = 0, length(lk) + 1
-    while lo + 1 < hi
-        m = (lo + hi) >>> 1
-        lt(lk[m], x) ? (lo = m) : (hi = m)
-    end
-    return hi
-end
-
-function Base.searchsortedlast(lk::CellLookup, x; lt=<, kw...)
-    lo, hi = 0, length(lk) + 1
-    while lo + 1 < hi
-        m = (lo + hi) >>> 1
-        lt(x, lk[m]) ? (hi = m) : (lo = m)
-    end
-    return lo
-end
 
 function Base.show(io::IO, lk::CellLookup)
     print(io, "CellLookup(", typeof(system(lk)).name.name, ", level=", lk.level,
@@ -530,8 +605,16 @@ A[Cells(Covering(cap))]             # a GO.UnitSpherical.SphericalCap
 
 `target` is anything [`query`](@ref) accepts. The result is the intersection of
 the coverage's leaf expansion with the lookup, in ascending position order, and
-the view it produces carries a [`CellLookup`](@ref) again — so subsetting a cube
-never leaves the compact form.
+the view it produces carries a [`CellLookup`](@ref) again — so what a subset
+*stores* is windows, never an id vector.
+
+!!! note "What it stores and what it spends are different questions"
+    Selecting walks the coverage's leaves one at a time and builds the vector of
+    matching positions, because that vector is what indexes the cube's data.
+    Both are O(#leaf cells the coverage names), transiently, however compact the
+    two ends are: on a level-12 axis that is hundreds of megabytes passing
+    through. The storage claim is about the lookup, not about the selection —
+    select at the level you mean to read at.
 
 Coverage means *covering*: the selection is a superset of the cells that meet
 `target`, by whatever margin the system's refinement is non-congruent. See

@@ -139,7 +139,7 @@ using .ISEA4R: ISEA4RSystem
 # depends on nothing any of them define.
 include("dimensionaldata.jl")
 
-using .CellLookups: CellLookup, Cells, Covering
+using .CellLookups: CellLookup, Cells, Covering, cellset
 
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
@@ -259,12 +259,13 @@ export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
 export is_contained, coarsest_contained, cell_polygons
 
 # --- The DimensionalData layer ---------------------------------------------
-# A lookup, the dimension it goes in, and the one selector DimensionalData does
-# not already have a spelling for. `At` and `Contains` are DimensionalData's own
-# and are not re-exported here: this package already exports DE9IM's `Contains`,
-# a predicate about geometries rather than a selector about positions, and the
-# two must never end up as the same name in a caller's namespace.
-export CellLookup, Cells, Covering
+# A lookup, the dimension it goes in, the one selector DimensionalData does not
+# already have a spelling for, and the accessor for what a lookup is backed by.
+# `At` and `Contains` are DimensionalData's own and are not re-exported here:
+# this package already exports DE9IM's `Contains`, a predicate about geometries
+# rather than a selector about positions, and the two must never end up as the
+# same name in a caller's namespace.
+export CellLookup, Cells, Covering, cellset
 
 # --- Grid systems ----------------------------------------------------------
 # One singleton and one canonical id type per system, plus the registry that

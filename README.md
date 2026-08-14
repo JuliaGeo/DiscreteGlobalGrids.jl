@@ -71,32 +71,120 @@ DGG.subtree_border(sys, c, 6)                     # the rim, O(rim)
 ```
 
 Swapping `HEALPixSystem()` for `IGeo7System()`, `H3System()`, `A5System()`,
-`S2System()` or `ISEA4RSystem()` changes nothing else. `DGG.systems()` lists all
-six, and its docstring is the comparison table: cell counts, cell shape,
+`S2System()` or `ISEA4RSystem()` changes nothing else, and `AuthalicSystem`
+wraps any of them to read geometry at geodetic latitude. `DGG.systems()` lists
+all six, and its docstring is the comparison table: cell counts, cell shape,
 equal-areaness, and the traits that differ across them.
 
+## Regions, kept compressed
+
+A multi-order coverage is the coarsest cells covering a target, mixed level. Its
+two keywords are two modes, not a bound and a hint, and exactly one is given:
+
+```julia
+sys = DGG.IGeo7System()
+ext = Extents.Extent(X = (6.0, 10.5), Y = (45.8, 47.8))   # a Switzerland-shaped box
+
+accurate = DGG.query(sys, DGG.MultiOrderCoverage(ext); level = 7)     # accuracy first
+budget   = DGG.query(sys, DGG.MultiOrderCoverage(ext); maxcells = 10) # cardinality first
+```
+
+`level` refines everything the target's boundary crosses down to a fixed depth
+and lets the cell count fall where it may: 335 entries over levels 4 to 7 here.
+`maxcells` refines the crossing cells breadth first, coarsest up, and stops when
+the next replacement would not fit — "ten cells that cover California";
+`maxlevel` bounds how deep the budget may descend.
+
+Covering is a statement about the leaves: at the deepest level, every cell
+meeting the target is a member of the set or a descendant of one. The union of
+the *drawn* cells is that region only where refinement is congruent — HEALPix,
+S2 and ISEA4R tile, IGEO7 and H3 leave slivers, A5 more.
+
+`CellVector` reads either set as a lazy `AbstractVector` of ascending ids at one
+level, stored as the leaf position windows they occupy rather than as the ids:
+
+```julia
+cv = DGG.CellVector(accurate)              # or of a grid, or of an explicit id vector
+cv[3]                                      # the third id; nothing is materialised
+DGG.cellposition(cv, cv[3])                # the inverse, or `nothing`
+DGG.cellat(cv, 8.5, 47.4)                  # the cell of `cv` a point falls in
+DGG.covering(cv, Extents.Extent(X = (7, 8), Y = (46, 47)))   # a sub-region
+DGG.PartialGrid(cv)                        # read as a grid, O(1)
+```
+
+Memory is O(#windows), not O(#cells): 98 windows for the 1319 level-7 cells
+those 335 entries expand to, and the *same* 98 for
+`CellVector(accurate; level = 10)`, which names 452,417. `intersect` and
+`issubset` are Base's, answered over the windows. `PartialGrid(cv)` is the
+handshake with anything that wants a grid: position `k` of the grid is position
+`k` of the vector, so data laid out against the vector needs no permutation.
+
+`CellLookup` is that same type wearing a `DimensionalData.Lookup` hat, and the
+`Cells` dimension puts it on a cube:
+
+```julia
+import DimensionalData as DD
+using Statistics
+
+lk = DGG.CellLookup(accurate)
+A = DD.DimArray(rand(length(lk)), DGG.Cells(lk))
+
+A[DGG.Cells(DD.At(lk[3]))]                    # a typed cell id
+A[DGG.Cells(DD.Contains(8.0, 46.5))]          # a lon/lat point, through `cellat`
+mean(A[DGG.Cells(DGG.Covering(ext))])         # a region; the view's axis is a CellLookup again
+```
+
+`At` and `Contains` stay qualified as DimensionalData's: this package exports
+DE9IM's `Contains`, a predicate about two geometries rather than a selector, and
+the two names must not collide. `Covering`, which DimensionalData has no
+spelling for, is exported.
+
+## Regridding
+
 `treeify`, `ncells` and `getcell` are `ConservativeRegridding.Trees`' own
-bindings, extended here, so any grid is a regridding source with no wrapper:
+bindings, extended here, so any grid is a regridding source or destination with
+no wrapper:
 
 ```julia
 import ConservativeRegridding as CR
-regridder = CR.Regridder(destination, DGG.levelgrid(DGG.HEALPixSystem(), 4))
+import GeometryOps as GO
+
+manifold = GO.Spherical(; radius = 1.0)
+source = DGG.levelgrid(DGG.HEALPixSystem(), 3)
+destination = DGG.PartialGrid(cv)
+regridder = CR.Regridder(manifold, destination, source)
 ```
 
-`examples/regridding.jl` is that claim as an assertion-checked script; run it
-with `julia -t 4 --project=. examples/regridding.jl` and it exits non-zero if a
-check fails. Every script under `examples/` is written that way and runs in this
-project environment; the tutorials under `docs/src/tutorials/` are Literate.jl
-sources, run by the docs build.
+The manifold is named rather than inferred: geometry here is on the unit sphere,
+and `best_manifold` would guess a WGS84 radius, which is a factor of `R^2` in
+every area.
+
+A DGGS as the **source** conserves to `1e-13` on all six systems and on the
+authalic wrap. A DGGS as the **destination** conserves only where the
+destination cells' rings are convex — IGEO7 and S2 at every level, H3 at even
+ones — because the clipper's Sutherland–Hodgman is an intersection only against
+a convex clip window, and the destination is always that window.
+`test/systems/crosssystem/regridding_conservation.jl` asserts the law where it
+holds, marks the rest `@test_broken`, and names the upstream fix that closes
+them.
+
+## Going further
+
+Every script under `examples/` is an assertion-checked demo that exits non-zero
+if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The six
+tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
+build, each the shortest honest path to one result; `docs/src/index.md` lists
+them and `docs/src/all_dggs.md` draws every system.
 
 ## Layout
 
 | Path | Contents |
 |:--|:--|
 | `src/interface/` | the type vocabulary and every generic's contract — declarations and trait defaults, no algorithms |
-| `src/fallbacks/` | the generic implementations: `HierarchicalLevelGrid`, `PartialGrid`, `AuthalicGrid`/`AuthalicSystem`, `HierarchicalGridCursor`, `MultiOrderCellSet`, the query engine |
+| `src/fallbacks/` | the generic implementations: `HierarchicalLevelGrid`, `PartialGrid`, `AuthalicGrid`/`AuthalicSystem`, `HierarchicalGridCursor`, `MultiOrderCellSet`, `CellVector`, the query engine |
+| `src/dimensionaldata.jl` | the cube face of `CellVector`: `CellLookup`, `Cells`, `Covering` |
 | `src/systems/` | one directory per system, plus `src/systems/ISEA/` — the Snyder/icosahedron basis IGEO7 and ISEA4R share |
-| `src/Helpers/` | shared allocation-free primitives |
+| `src/core/`, `src/Helpers/` | the authalic manifold pair, and shared allocation-free primitives |
 | `lib/DiscreteGlobalGridsConformanceTesting/` | the test-only workspace package that makes the contracts executable |
 
 ## The systems
@@ -116,7 +204,11 @@ S2 and ISEA4R are closed-form charts with no external dependency.
 
 No system defines a grid type. All six return `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
-`cell_area` — to `HierarchicalLevelGrid{TheSystem}`.
+`cell_area` — to `HierarchicalLevelGrid{TheSystem}`. `subtree_border` and
+`subtree_interior` are `O(rim)` automata on IGEO7, H3, HEALPix and ISEA4R, and
+fall back to the `O(subtree)` walk on A5 and S2. A5 is also the one system
+without `has_sorted_subtrees`, so `level_ranges` throws there and everything that
+would use it takes the selection branch instead.
 
 The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
 **not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of
@@ -149,10 +241,8 @@ under `lib/DiscreteGlobalGridsConformanceTesting/test/`, which check that it
 
 ## Tests
 
-```julia
-using Pkg
-Pkg.activate("path/to/DiscreteGlobalGrids.jl")
-Pkg.test()
+```sh
+julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
 `test/runtests.jl` runs the interface suite, the fallback suites, one suite per
@@ -160,8 +250,9 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**918,836 assertions, ~90 s warm**, with 2 broken — A5's documented
-`has_sorted_subtrees` trait skips.
+**928,188 assertions, ~2m40s warm**, with 14 broken: A5's documented
+`has_sorted_subtrees` skips, and the destination-direction conservation arms
+that wait on the upstream clipper fix.
 
 ## Provenance
 

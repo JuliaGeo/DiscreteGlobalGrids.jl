@@ -26,12 +26,16 @@
 #      covers the subtree, and that `cellat` inverts `cell_box` on the edges
 #      where floating point makes the two disagree.
 #
+#   4. CONTRACT. The two conformance suites, in section (k): in full on a scaled
+#      twin of the shipped lattices, and — because the harness materialises a
+#      cell's whole child list, and reduces one range per child quadratically —
+#      at the interface level on GLO-30 and GLO-90 themselves, with their
+#      hierarchical runs behind `DGG_COPDEM_FULL=1`. That section carries the
+#      seed the harness's absolute `area_atol` forces on this system's pole rows,
+#      and the assertion that the seed still does what it claims.
+#
 # Every testset names the mutant it kills. A test that kills no mutant no other
 # test already kills does not belong here.
-#
-# The CONTRACT layer — the two conformance suites — is deliberately absent: it
-# arrives with Task 5, along with the sampling workaround the harness's absolute
-# `area_atol` forces on this system's pole rows.
 #
 # `test/runtests.jl` includes this file; it also runs standalone:
 #     julia --project=test --startup-file=no test/systems/CopernicusDEM/runtests.jl
@@ -45,6 +49,12 @@ using Random
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
 const CD = DiscreteGlobalGrids.CopernicusDEM
+
+using DiscreteGlobalGridsConformanceTesting
+# ... and by name as well, for `sample_positions` and `boundary_problems`, which
+# section (k) calls directly: the seed-away assertion there has to reproduce the
+# harness's own draw and the harness's own verdict, not an imitation of either.
+import DiscreteGlobalGridsConformanceTesting as CT
 
 import GeometryOps as GO
 import GeoInterface as GI
@@ -134,6 +144,30 @@ function exact_latitude_point(lon, lat)
         end
     end
     return nothing
+end
+
+# The seed section (k)'s conformance calls run on, and the sample size they run
+# it at. Both are named here rather than left to the harness's defaults because
+# `sampled_tile_lats` below has to reproduce the harness's draw EXACTLY — see
+# section (k) for what the reproduction is for.
+const CONFORMANCE_SEED = 20260815
+const GI_SAMPLES = 32
+
+"""
+The tile-row latitudes `test_grid_interface(levelgrid(sys, l); n_samples, rng =
+MersenneTwister(seed))` will sample: the harness's own draw, reproduced.
+
+`sample_positions` is the whole of the harness's sampling — `sample_cells` is it
+composed with `cellindex` — and `test_grid_interface` calls it once, before any
+law runs, so a caller can predict the cells from the seed alone. Calling the
+harness's own function rather than reimplementing `rand` is the point: an
+upstream change to how positions are drawn moves this too, and section (k)'s
+assertion goes red instead of silently testing different cells.
+"""
+function sampled_tile_lats(sys, l, seed, n_samples)
+    g = levelgrid(sys, l)
+    positions = CT.sample_positions(MersenneTwister(seed), ncells(g), n_samples)
+    return [CD.tilecorner(sys, cellindex(g, p))[1] for p in positions]
 end
 
 @testset "CopernicusDEM system" begin
@@ -905,6 +939,119 @@ end
         err
     end)
     @test occursin("3600", msg) && occursin("1200", msg)
+end
+
+# =========================================================================
+# (k) Contract: the conformance suites
+# =========================================================================
+
+# WHY THE TWIN. `test_hierarchical_system` calls `collect(children(sys, c))` for
+# every sampled cell, materialises `descendants_at` by recursion, and builds
+# `reduce(vcat, collect.(ranges))` over every sibling range (harness `:1610`). A
+# GLO-30 tile has up to 12 960 000 children and a GLO-90 tile 1 440 000, and the
+# last of those three is quadratic in that count, so the default `n_samples = 8`
+# is not affordable on either shipped lattice at any budget: ONE sampled tile of
+# GLO-90 measured 143.9 s and 3.36 TiB of allocation, and the note above the
+# opt-in runs below says why. `CopernicusDEMSystem{30}()` is the SAME CODE at a
+# different `N` — same band table, same six reduction factors, same tile lattice,
+# same pole clamps, 900 children per tile — so every law the harness states is
+# checked on the code that ships. The real lattices are then checked where they
+# differ from the twin, which is arithmetic: by
+# `test_grid_interface` at both levels below, by the opt-in hierarchical runs
+# below that, and by the fixture, prefix-sum and geometry testsets above.
+@testset "conformance (scaled twin)" begin
+    test_grid_interface(levelgrid(TWIN, 0); label = "CopernicusDEM twin level 0")
+    test_grid_interface(levelgrid(TWIN, 1); label = "CopernicusDEM twin level 1")
+    test_hierarchical_system(TWIN; label = "CopernicusDEM twin")
+
+    # And the property that lets the twin run unseeded where the shipped pair
+    # cannot: its pole-most rings clear the harness's absolute degeneracy floor.
+    # Put to `boundary_problems` itself rather than re-derived from an area, so
+    # this is the harness's own verdict on the harness's own threshold. Measured
+    # margins: 2.5e-10 sr at +90 and 2.2e-9 at -90, against a floor of 1e-12.
+    # Drop the twin's `N` far enough and this goes red HERE, deterministically,
+    # instead of turning the run above into a one-draw-in-many flake.
+    N = CD.lat_intervals(TWIN)
+    for (lat_s, j) in ((89, 0), (-90, N - 1))
+        c = CD.pixelcell(TWIN, CD.tilecell(TWIN, lat_s, 0), j, 0)
+        @test CT.boundary_problems(cell_boundary(TWIN, c)) == String[]
+    end
+end
+
+# THE SEED, AND WHAT IT IS FOR. `boundary_problems` (harness `:287-311`) calls a
+# ring degenerate when `abs(spherical_signed_area(pts)) <= area_atol`, and
+# `area_atol` is an ABSOLUTE steradian tolerance defaulting to `1e-12` that no
+# caller can reach: both call sites (`:385`, `:1231`) invoke
+# `boundary_problems(pts; unit_atol)`, and neither `test_grid_interface` nor
+# `test_hierarchical_system` forwards it. This system's pole-most level-1 rings
+# are legitimately smaller than that — a GLO-30 `lat_s = 89` top-row pixel is
+# 1/360 degrees wide and 1/7200 tall, i.e. 1.4e-16 sr — so a level-1 draw that
+# lands in a ±90 tile row reports a conformance failure on correct geometry.
+# Measured, counting raster rows from the pole inward until the ring area clears
+# `1e-12`:
+#
+#   system   N89 top rows   S90 bottom rows   smallest ring area (sr)
+#   GLO-30   878            877               1.4e-16 / 1.3e-15
+#   GLO-90    33             32               3.8e-15 / 3.5e-14
+#   twin       0              0               2.5e-10 / 2.2e-09
+#
+# That is 3.7e-4 of GLO-30's level 1, so the default draw of 32 fails about one
+# seed in eighty. The lever the harness does give a caller is `rng`, and the
+# sample is a pure function of it — so the level-1 calls below pass an explicit
+# `MersenneTwister` and ASSERT what it buys, by reproducing the harness's own
+# `sample_positions` at the same `n_samples` and checking that no sampled cell
+# lies in a ±90 tile row at all. (That is the wider property: it implies the
+# narrower "no cell in a sub-`1e-12` row", and unlike it, it does not have to be
+# restated when the threshold or the geometry moves.) A seed that stops working
+# after an upstream change to the sampling then goes red instead of quietly
+# re-introducing the flake. The pole rows themselves are NOT sampled away from
+# the suite — testset (e) carries them, exhaustively at level 0.
+#
+# UPSTREAM: `boundary_problems` should judge degeneracy against the ring's own
+# scale — `max(area_atol, unit_atol^2)`, say — or take a floor threaded through
+# `grid_interface_problems`/`test_grid_interface`, because an absolute steradian
+# floor is wrong for any system with legitimately tiny cells and will bite the
+# next one too. Not fixed here: the harness is shared by six other systems.
+@testset "conformance (GLO-30 and GLO-90)" begin
+    for sys in (GLO90, GLO30)
+        test_grid_interface(levelgrid(sys, 0); label = "$sys level 0")
+
+        # The seed-away, asserted before it is leaned on. `n_samples` is passed
+        # explicitly rather than left to the harness's default so that the draw
+        # reproduced here and the draw the call makes are the same draw.
+        @test !any(in((89, -90)),
+                   sampled_tile_lats(sys, 1, CONFORMANCE_SEED, GI_SAMPLES))
+        test_grid_interface(levelgrid(sys, 1); n_samples = GI_SAMPLES,
+                            rng = MersenneTwister(CONFORMANCE_SEED),
+                            label = "$sys level 1")
+    end
+
+    # THE HIERARCHICAL RUNS ARE OPT-IN, and the cost is the harness's, not this
+    # system's. `test_hierarchical_system`'s sibling-partition check (`:1610`)
+    # evaluates `reduce(vcat, collect.(ranges); init = Int[])` over one range per
+    # child; the `init` keyword takes it off `Base`'s `_typed_vcat` fast path and
+    # onto `foldl`, which is QUADRATIC in the number of children. Measured in
+    # isolation: 2.3 s at 100 000 ranges, 31.6 s at 300 000.
+    #
+    # So even at `n_samples = 1` this is not cheap. GLO-90 at the seed below
+    # draws the tile at (-54, 158), 960 000 children, and MEASURED 143.9 s and
+    # 3.36 TiB allocated (55% of it in GC) for 51 passes. GLO-30 draws the same
+    # tile — 8 640 000 children, 9x — and the quadratic makes that about 81x the
+    # work; it was not run to completion here, and no wall clock is quoted for it
+    # because none was observed. Neither belongs in a routine `Pkg.test()`.
+    #
+    # What a default run therefore loses on the shipped lattices is the covering
+    # law under a real descent and the sibling partition. Both are covered:
+    # in full on the twin above, and — for the descendant windows specifically —
+    # by testset (c), which walks all 64 800 of them EXHAUSTIVELY on all three
+    # systems, which is the stronger statement the harness samples one cell of.
+    if get(ENV, "DGG_COPDEM_FULL", "0") == "1"
+        for sys in (GLO90, GLO30)
+            test_hierarchical_system(sys; n_samples = 1,
+                                     rng = MersenneTwister(CONFORMANCE_SEED),
+                                     label = "CopernicusDEM $sys")
+        end
+    end
 end
 
 end # @testset "CopernicusDEM system"

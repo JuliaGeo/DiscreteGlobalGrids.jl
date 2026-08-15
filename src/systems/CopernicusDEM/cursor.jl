@@ -238,10 +238,9 @@ edge — which is where the bow lives — leaves the unpadded cap at all
 (`worst_interior`, asserted `< 0`, measured `-2.4e-15` rad), and the only
 overshoot is at the ring VERTICES, which are the corners the radius was built
 from (`worst_vertex`, asserted `< 1e-15`, measured `+3.2e-17` rad). That is
-float rounding in `spherical_distance`, not
-geometry, and it is asserted rather than merely measured in
-`test/systems/CopernicusDEM/runtests.jl`, "the block cursor is a tree over the
-lattice".
+float rounding in `spherical_distance`, not geometry, and it is asserted rather
+than merely measured in `test/systems/CopernicusDEM/runtests.jl`, "the block
+cursor is a tree over the lattice".
 
 So the pad is belt-and-braces against rounding at the corners, and the `Δλ²/16`
 expression is an ESTIMATE rather than a bound, in exactly the sense

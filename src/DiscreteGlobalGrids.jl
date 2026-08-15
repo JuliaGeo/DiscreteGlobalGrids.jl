@@ -242,7 +242,7 @@ export Touches, Crosses, Overlaps, Equals
 
 # --- Fallback substrate ----------------------------------------------------
 # `using`-ed above the system includes, because `HierarchicalLevelGrid` is what
-# all six of them return from `levelgrid` and attach their fast paths to.
+# all seven of them return from `levelgrid` and attach their fast paths to.
 export HierarchicalLevelGrid, PartialGrid, HierarchicalGridCursor
 export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
@@ -267,7 +267,7 @@ export CellLookup, Cells, Covering
 
 # --- Grid systems ----------------------------------------------------------
 # System modules are not exported because their names collide with registered
-# packages. No system exports a grid type: all six return
+# packages. No system exports a grid type: all seven return
 # `HierarchicalLevelGrid` from `levelgrid`. S2 and ISEA4R use `LevelIndex` over
 # their scaffold ordinals.
 export systems

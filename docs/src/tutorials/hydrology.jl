@@ -66,10 +66,11 @@ dem = set(dem, X => Rasters.Intervals(Rasters.Start()), Y => Rasters.Intervals(R
 # extended for every `AbstractGrid`.
 #
 # The source could skip the adapter too: `DGG.CopernicusDEMSystem(30)` is this
-# exact lattice as a grid system, so `DGG.PartialGrid(sys, tile, 1)` is a whole
-# tile as an ordinary grid — no corner matrix, no `CellBasedGrid`. This page
-# keeps the hand-built route because it is the one that works for *any* raster;
-# `examples/copernicus_dem.jl` is the tile-native one, end to end.
+# exact lattice as a grid system, so with `demtile` the level-0 id of the tile a
+# DEM came from, `DGG.PartialGrid(DGG.CopernicusDEMSystem(30), demtile, 1)` is
+# that whole tile as an ordinary grid — no corner matrix, no `CellBasedGrid`.
+# This page keeps the hand-built route because it is the one that works for
+# *any* raster; `examples/copernicus_dem.jl` is the tile-native one, end to end.
 
 xbounds, ybounds = Rasters.intervalbounds(dem, (X, Y))
 # `intervalbounds` follows array-index order while each pair remains `(low,

@@ -21,13 +21,18 @@ DGG.has_sorted_subtrees(::CopernicusDEMSystem) = true
 `8` under `Vertex()` and `4` under `Edge()`: the Moore and von Neumann bounds of a
 raster lattice.
 
-!!! warning "This system does not implement `neighbors`"
-    The bound is the *interior lattice* bound, and it is stated because
+!!! warning "No fast-path `neighbors`; the generic fallback answers"
+    There is no `neighbors` method for this system, so a call resolves to the
+    generic `AbstractGrid` walk in `src/fallbacks/locate.jl` — not a `MethodError`.
+    That walk goes through `treeify` and does return an answer: at level 0 it gives
+    an interior tile its eight Moore neighbours.
+
+    The bound above is the *interior lattice* bound, and it is stated because
     [`max_neighbors`](@ref) has no default. It is **not** a claim about the whole
     sphere: a pixel in the top row of a pole tile meets every other pixel of the pole
     ring at the pole itself, and a pixel just below a band boundary meets up to ten
-    coarser pixels above it. Anyone adding [`neighbors`](@ref) to this system must
-    revisit this number first.
+    coarser pixels above it. Anyone adding a fast-path [`neighbors`](@ref) to this
+    system must revisit this number first.
 """
 DGG.max_neighbors(::CopernicusDEMSystem, ::DGG.Vertex) = 8
 DGG.max_neighbors(::CopernicusDEMSystem, ::DGG.Edge) = 4

@@ -180,8 +180,10 @@ rest `@test_broken`, and names the upstream fix that closes them.
 ## Going further
 
 Every script under `examples/` is an assertion-checked demo that exits non-zero
-if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The six
-tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
+if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The one
+exception is `examples/copernicus_dem.jl`, which reads a COG and so needs the
+docs environment: `julia -t auto --project=docs examples/copernicus_dem.jl`. The
+six tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
 build, each the shortest honest path to one result; `docs/src/index.md` lists
 them and `docs/src/all_dggs.md` draws every system.
 
@@ -211,12 +213,12 @@ them and `docs/src/all_dggs.md` draws every system.
 `CopernicusDEMSystem` is the odd row: it is the Copernicus DEM raster lattice —
 1°×1° tiles over pixel-is-point rasters whose longitude spacing steps down at
 latitude 50/60/70/80/85 — rather than a tessellation designed to be a DGGS, so
-it is **not** in `systems()` and implements no `neighbors`. It is here because
-it is the *source* side of a DEM-to-DGGS regrid:
-`PartialGrid(CopernicusDEMSystem(90), tile, 1)` is one AWS COG tile as an
-ordinary `AbstractGrid`, with no `CellBasedGrid` adapter and no corner matrix.
-`examples/copernicus_dem.jl` moves one real tile onto IGEO7 and HEALPix and
-checks every conservation law the move owes.
+it is **not** in `systems()` and defines no fast-path `neighbors` (the generic
+fallback answers). It is here because it is the *source* side of a DEM-to-DGGS
+regrid: `PartialGrid(CopernicusDEMSystem(90), tile, 1)` is one AWS COG tile as
+an ordinary `AbstractGrid`, with no `CellBasedGrid` adapter and no corner
+matrix. `examples/copernicus_dem.jl` moves one real tile onto IGEO7 and HEALPix
+and checks every conservation law the move owes.
 
 Native layers: H3 calls libh3 through `H3_jll`; every other system is pure Julia.
 IGEO7 is a clean-room implementation but for one ported adjacency kernel (see
@@ -224,15 +226,15 @@ IGEO7 is a clean-room implementation but for one ported adjacency kernel (see
 ISEA4R are closed-form charts with no external dependency.
 
 No system defines a grid type. All seven return `HierarchicalLevelGrid` from
-`levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
-`cell_area` — to `HierarchicalLevelGrid{TheSystem}`. Among the six `systems()`
-entries, `subtree_border` is an `O(rim)` automaton on every one but A5, which
-walks the whole subtree; `subtree_interior` shares that walk and emits the
-branches it prunes. Both are
-`collect` of a resumable `EdgeCellIterator` / `InnerCellIterator` in `O(depth)`
-memory. A5 is also the one system without `has_sorted_subtrees`, so
-`level_ranges` throws there and everything that would use it takes the selection
-branch instead.
+`levelgrid` and attach their fast paths to `HierarchicalLevelGrid{TheSystem}` —
+`cellat`, `neighbors`, `ring` and `cell_area` for the six `systems()` entries,
+`cellat` and `cell_area` for `CopernicusDEMSystem`. Among the six,
+`subtree_border` is an `O(rim)` automaton on every one but A5, which walks the
+whole subtree; `subtree_interior` shares that walk and emits the branches it
+prunes. Both are `collect` of a resumable `EdgeCellIterator` /
+`InnerCellIterator` in `O(depth)` memory. A5 is also the one system without
+`has_sorted_subtrees`, so `level_ranges` throws there and everything that would
+use it takes the selection branch instead.
 
 The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
 **not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of

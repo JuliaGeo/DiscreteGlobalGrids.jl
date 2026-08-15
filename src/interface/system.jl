@@ -44,7 +44,7 @@ level, in the system's canonical dense order.
 default is `HierarchicalLevelGrid(sys, l)`, checked against
 [`levels`](@ref) — so a system implements the five level-grid primitives below
 and never writes a grid type. Overriding this is the escape hatch for a system
-whose grid genuinely carries state beyond `(sys, l)`; none of the six shipped
+whose grid genuinely carries state beyond `(sys, l)`; none of the seven shipped
 here does.
 
 `system(levelgrid(sys, l)) === sys` and `level(levelgrid(sys, l)) == l`. The

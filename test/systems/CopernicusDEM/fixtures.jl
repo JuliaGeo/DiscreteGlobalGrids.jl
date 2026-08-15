@@ -10,7 +10,9 @@
 # by `ArchGDAL` against `https://copernicus-dem-{30,90}m.s3.amazonaws.com/`.
 # 79 distinct COGs in all — 61 GLO-30 and 18 GLO-90, one fewer than the 80 rows
 # because 9.5 re-measures 9.3's `S85_00_E000_00`, and both readings are kept
-# below. The two arrays here are exactly those 61 and 18 tiles.
+# below. The two arrays here are exactly those tiles, as 61 GLO-30 rows and 19
+# GLO-90 rows — 19 rather than 18 because the re-measured tile keeps both of its
+# readings.
 #
 # These are the ONLY external evidence this system has. The band table in
 # `src/systems/CopernicusDEM/bands.jl` agrees with the Product Handbook's Table 3

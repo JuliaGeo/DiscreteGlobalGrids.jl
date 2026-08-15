@@ -86,7 +86,9 @@ function battery(label, cells)
 
             outside = DGG.cellindex(complete, DGG.ncells(complete))
             @test outside ∉ indices
-            @test_throws BoundsError dem[outside]
+            # String form on purpose: the type form never renders the message,
+            # so it cannot catch an unprintable error.
+            @test_throws "at index [Z7Cell" dem[outside]
         end
 
         # Neither the axis nor the ring may put anything on the heap. The axis is

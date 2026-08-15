@@ -542,3 +542,172 @@ build the oracle explicitly and hand it to the positional constructor.
 geometry_halo_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
         target::Int, connectivity::Connectivity) =
     outside_walk_engine(sys, c, target, connectivity, ForcedGeometry())
+
+# ===========================================================================
+# The exterior-perimeter walk, shared by the three aperture-4 systems
+# ===========================================================================
+
+# The halo of an aligned block that is nowhere flush with its face's edge is
+# the width-1 band around it — every band cell is on the block's own face, and
+# in-face adjacency is the plain 3×3 lattice on all three systems, so band and
+# halo coincide, with the four diagonal-contact corners dropped under `Edge()`.
+#
+# Unlike the rim, the band is not a curve interval of any one subtree, so there
+# is no `base + offset` walk to run. Instead the engine descends the whole
+# FACE's quadtree in curve order and prunes every quadrant that misses the
+# band: curve order at each level is ascending id by construction, so whatever
+# survives arrives ascending with no sort and no dedup. A quadrant of side `h`
+# survives only if it intersects the band, and at most `O(perimeter / h + 1)`
+# of each size do, so the walk visits `O(halo + depth)` nodes in `O(depth)`
+# memory — the descent tracks the running curve code and lattice origin, and
+# restores both on pop by re-reading the parent's last step.
+#
+# A block flush with a face edge has halo cells across the seam, on other
+# faces, whose ids no in-face arithmetic can name — those blocks take the
+# generic outside-first engine instead, which is why this type needs no seam
+# machinery and no system tables, only the curve. That also means the engine is
+# reachable only for roots at level >= 2: a level-0 block IS the face and is
+# flush on all four sides, and a level-1 block is flush on two per axis.
+#
+# NOTHING HERE IS A CONSERVATIVE BAND. The design permits a specialization to
+# enumerate candidates and filter them with the native one-ring; this walk does
+# not need to, because on a non-flush block the band and the halo are the same
+# set. The interval guard in each system's `halo_engine` is what buys that, and
+# it is the only reason no `neighbors` call appears below.
+
+# `mask` would be dead weight here — pruning is by lattice overlap, not by
+# flush sides — so the frame is the two bytes the descent actually needs.
+# `HaloFrame` above is the outside walk's frame and carries a cell; this one
+# carries a curve state, so the two cannot share a name.
+struct SquareBandFrame
+    orientation::UInt8
+    next::UInt8
+end
+
+const SquareBandStack = Helpers.SmallList{_SQUARE_CAP,SquareBandFrame}
+
+@inline _empty_band_stack() =
+    Helpers.empty_small_list(Val(_SQUARE_CAP), SquareBandFrame(0x0, 0x0))
+
+"""
+    SquareBandEngine(curve, facebase, level, faceside, orientation, x0, y0, side, corners)
+
+The halo of the `side x side` block at lattice origin `(x0, y0)` on the face
+whose first cell has raw index `facebase`, in ascending id: `4·side + 4` band
+cells, or `4·side` with `corners = false` ([`Edge`](@ref) drops the four
+diagonal-contact corners). Valid only for a block not flush with the face —
+`1 <= x0` and `x0 + side <= faceside - 1`, likewise `y0` — which the
+constructing system checks; `O(halo + depth)` time, `O(depth)` memory.
+
+`faceside` is the face's full lattice side at `level` and `orientation` the
+curve state its root is read under: the walk descends the face, not the block,
+because the band cells are outside the block's own curve interval. Yields
+[`LevelIndex`](@ref) on [`SquareRimEngine`](@ref)'s reasoning, and takes the
+same [`quadrant_step`](@ref) curves.
+
+The count is closed form, so [`Base.IteratorSize`](@ref) is `HasLength()`:
+the band of a non-flush block is its four sides plus, under `Vertex()`, its
+four corners, and no seam can shorten it.
+"""
+struct SquareBandEngine{V}
+    curve::V
+    facebase::Int64
+    level::Int
+    faceside::Int64
+    orientation::UInt8
+    x0::Int64
+    y0::Int64
+    side::Int64
+    corners::Bool
+end
+
+"""
+    SquareBandWalk(stack, code, x, y)
+
+The walk state: the frame stack, and the within-face curve code and lattice
+origin of the sub-square on top of it. Frame `k`'s node has side
+`faceside >> (k - 1)`, so none of the three needs storing per frame — all are
+restored on pop by replaying the parent's last [`quadrant_step`](@ref).
+"""
+struct SquareBandWalk
+    stack::SquareBandStack
+    code::Int64
+    x::Int64
+    y::Int64
+end
+
+# Does a node overlap the band's bounding square at all, and is it swallowed by
+# the block? A surviving node overlaps the outer square without sitting inside
+# the block, which forces it to overlap the band itself — the outer square
+# minus the block IS the band.
+@inline _halo_overlaps(e::SquareBandEngine, x::Int64, y::Int64, h::Int64) =
+    x <= e.x0 + e.side && x + h - 1 >= e.x0 - 1 &&
+    y <= e.y0 + e.side && y + h - 1 >= e.y0 - 1
+
+@inline _inside_block(e::SquareBandEngine, x::Int64, y::Int64, h::Int64) =
+    x >= e.x0 && x + h - 1 <= e.x0 + e.side - 1 &&
+    y >= e.y0 && y + h - 1 <= e.y0 + e.side - 1
+
+# The four cells that touch the block at a vertex only, halo under `Vertex()`
+# and not under `Edge()`.
+@inline _band_corner(e::SquareBandEngine, x::Int64, y::Int64) =
+    (x == e.x0 - 1 || x == e.x0 + e.side) &&
+    (y == e.y0 - 1 || y == e.y0 + e.side)
+
+Base.eltype(::Type{<:SquareBandEngine}) = LevelIndex
+Base.IteratorSize(::Type{<:SquareBandEngine}) = Base.HasLength()
+Base.length(e::SquareBandEngine) =
+    e.corners ? Int(4 * e.side + 4) : Int(4 * e.side)
+
+Base.iterate(e::SquareBandEngine) = iterate(e, SquareBandWalk(
+    Helpers.small_push(_empty_band_stack(), SquareBandFrame(e.orientation, 0x0)),
+    Int64(0), Int64(0), Int64(0)))
+
+function Base.iterate(e::SquareBandEngine, w::SquareBandWalk)
+    st = w.stack
+    code = w.code
+    x = w.x
+    y = w.y
+    while !isempty(st)
+        k = length(st)
+        f = @inbounds st[k]
+        if f.next > 0x3
+            st = Helpers.small_pop(st)
+            if !isempty(st)
+                # Undo the push that entered the frame just dropped: its parent
+                # is back on top and has advanced past the position it used.
+                pk = length(st)
+                pf = @inbounds st[pk]
+                p = Int(pf.next) - 1
+                i, j, _ = quadrant_step(e.curve, pf.orientation, p)
+                half = e.faceside >> pk
+                code -= p * half * half
+                x -= i * half
+                y -= j * half
+            end
+            continue
+        end
+        p = Int(f.next)
+        st = Helpers.small_setlast(st, SquareBandFrame(f.orientation, f.next + 0x1))
+        i, j, o = quadrant_step(e.curve, f.orientation, p)
+        half = e.faceside >> k
+        cx = x + i * half
+        cy = y + j * half
+        _halo_overlaps(e, cx, cy, half) || continue
+        _inside_block(e, cx, cy, half) && continue
+        child = code + p * half * half
+        if half == 1
+            # A surviving leaf is a band cell; only the corner rule is left.
+            !e.corners && _band_corner(e, cx, cy) && continue
+            # Emitted without descending, so `code`/`x`/`y` still describe the
+            # frame on top and need no restoring on the way back in.
+            return (LevelIndex(e.level, e.facebase + child),
+                SquareBandWalk(st, code, x, y))
+        end
+        st = Helpers.small_push(st, SquareBandFrame(o, 0x0))
+        code = child
+        x = cx
+        y = cy
+    end
+    return nothing
+end

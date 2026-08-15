@@ -393,4 +393,175 @@ Base.length(::MiscountingEngine) = 3
     @test_throws ErrorException collect(lying)
 end
 
+# ---------------------------------------------------------------------------
+# The square band walk — HEALPix, S2 and ISEA4R away from a face edge
+# ---------------------------------------------------------------------------
+
+# WHY THE ORACLE HERE IS `forced_geometry_halo` AND NOT `law_halo` ALONE.
+#
+# For the generic engine the forced-geometry comparison was only a test of the
+# adjacency predicate: both sides ran the same `OutsideWalkEngine`, the same
+# `_admit`, the same descendant-range skip, the same depth-first descent. That
+# stops being true here. `SquareBandEngine` enumerates by descending the FACE's
+# quadtree in curve order and pruning by lattice overlap — it never calls
+# `_admit`, never calls `descendant_range`, never looks at a cap, and never asks
+# the system for a neighbour at all. So comparing it against the forced-geometry
+# walk now pins the enumeration and the predicate together, end to end, which is
+# exactly what the design asks specializations to be tested by. `law_halo` is
+# kept as one arm below because it is cheaper to be sure than to argue: it
+# enumerates from an ascending position scan and shares nothing with either.
+#
+# What must NOT be the only oracle is `neighbors` or `subtree_border` — the band
+# walk is index arithmetic on the same lattice those are built from, so they
+# would agree with a wrong band for the same reason it was wrong.
+
+# Which roots the band walk claims is a fact about the lattice, not something a
+# test should hard-code: a block is claimed exactly when it is nowhere flush
+# with its face edge, which at base 2 is four of the sixteen cells per face on
+# all three systems. So roots are CLASSIFIED by the engine the constructor
+# actually chose, and both classes are checked — the claimed ones because that
+# is the walk under test, the unclaimed ones because a fallback that quietly
+# stopped agreeing would otherwise be invisible.
+#
+# A level-0 block is flush on all four sides and a level-1 block on two per
+# axis, so the engine is reachable only for roots at level >= 2. Base 2 is
+# therefore the shallowest base this section can use — and, on its own, not a
+# sufficient one. See `BAND_BASES`.
+function classify_roots(sys, base::Int, l::Int, conn)
+    grid = levelgrid(sys, base)
+    C = DGG.cellindextype(sys)
+    band, fallback = C[], C[]
+    for i in 1:ncells(grid)
+        c = cellindex(grid, i)
+        it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+        push!(it.engine isa DGG.Fallbacks.SquareBandEngine ? band : fallback, c)
+    end
+    return band, fallback
+end
+
+const SQUARE_SYSTEMS = (HEALPixSystem(), S2System(), ISEA4RSystem())
+
+# BASE 2 IS NOT ENOUGH, and this is measured, not defensive. At base 2 exactly
+# four of the sixteen cells per face are non-flush, and they are the four at
+# lattice `(1,1)`, `(1,2)`, `(2,1)`, `(2,2)` — every one of which is mapped to
+# itself by the square symmetry that a wrong S2 orientation seed induces
+# (`SWAP` fixes the two diagonal blocks, `SWAP|INVERT` the two anti-diagonal
+# ones). Seeding the descent with `_hilbert_orientation(c.index, ...)` instead
+# of the face root's `isodd(face) ? SWAP_MASK : 0x0` — the exact error PR #19
+# recorded — therefore passes every base-2 arm of this file element for
+# element, on all 144 band cases, while being wrong.
+#
+# At base 3 the non-flush set is 36 of 64 per face and most of those blocks are
+# not fixed by either symmetry: the same mutation fails 576 of 864 cases. So
+# base 3 is in the sweep, and a comment is not a substitute for it.
+const BAND_BASES = (2, 3)
+
+@testset "$(nameof(typeof(sys))): the band walk against forced geometry" for sys in
+        SQUARE_SYSTEMS
+    lazies = 0
+    for base in BAND_BASES, d in 1:2, conn in (Vertex(), Edge())
+        l = base + d
+        l <= max_level(sys) || continue
+        band, fallback = classify_roots(sys, base, l, conn)
+        @test !isempty(band)                    # the specialization was reached
+        lazies += length(band)
+        # Six claimed roots: enough to cross faces (four per face, so this
+        # reaches at least two of them) without paying for the oracle 64 times.
+        for c in band[1:min(6, length(band))]
+            it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+            @test it.engine isa DGG.Fallbacks.SquareBandEngine
+            @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+            check_halo_case(sys, c, l, conn)
+        end
+        # And three flush roots, which must still take the generic walk and must
+        # still agree with the oracle: the guard is a runtime interval test, and
+        # a guard that admitted a flush block would be caught here.
+        for c in fallback[1:min(3, length(fallback))]
+            it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+            @test !(it.engine isa DGG.Fallbacks.SquareBandEngine)
+            @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+        end
+    end
+    @test lazies > 0
+end
+
+# One arm against the O(ncells) brute force as well. `law_halo` shares nothing
+# with either the band walk or the geometry walk — it decides which cells to
+# consider by scanning positions 1:ncells — so it is the one check that a wrong
+# band and a wrong oracle cannot pass together. Depth 2 only: `law_halo` visits
+# every cell of the target level, and levels 4 and 5 are where that is still
+# cheap on all three systems (at most 12288 cells).
+@testset "$(nameof(typeof(sys))): the band walk against the law" for sys in
+        SQUARE_SYSTEMS
+    for base in BAND_BASES, conn in (Vertex(), Edge())
+        l = base + 2
+        l <= max_level(sys) || continue
+        band, _ = classify_roots(sys, base, l, conn)
+        for c in band[1:min(4, length(band))]
+            @test collect(SubtreeHaloIterator(sys, c, l; connectivity = conn)) ==
+                  law_halo(sys, c, l; connectivity = conn)
+        end
+    end
+end
+
+# The closed-form count, VERIFIED rather than declared: `4·side + 4` band cells
+# under `Vertex()` and `4·side` under `Edge()`, on every block size the sweep
+# can reach. `IteratorSize() == HasLength()` rests on this, and `collect_subtree`
+# turns a miscount into an `error` rather than an `undef` tail — but an engine
+# that counted wrong AND walked wrong by the same amount would slip past that,
+# so the formula is pinned against a real collect here.
+@testset "$(nameof(typeof(sys))): the band count is closed form" for sys in
+        SQUARE_SYSTEMS
+    for base in BAND_BASES, d in 1:4
+        l = base + d
+        l <= max_level(sys) || continue
+        side = 1 << d
+        for conn in (Vertex(), Edge())
+            band, _ = classify_roots(sys, base, l, conn)
+            isempty(band) && continue
+            for c in band[1:min(3, length(band))]
+                it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+                @test Base.IteratorSize(typeof(it)) isa Base.HasLength
+                @test length(it) == (conn isa Vertex ? 4side + 4 : 4side)
+                @test length(collect(it)) == length(it)
+            end
+        end
+    end
+end
+
+# The depth check PR #19's review found necessary: a 64x64 block, whose band is
+# 260 cells, element for element against the oracle on both connectivities. The
+# shallow cases above all have `side <= 8`, where a wrong `_restore_code` on the
+# way back up the face descent can still land on the right cell by accident; at
+# nine levels of descent it cannot. Three roots from base 3 rather than one from
+# base 2, for `BAND_BASES`' reason: a base-2 block is symmetric under the very
+# transforms a wrong descent applies.
+@testset "the band walk at 64x64" begin
+    sys = S2System()
+    l = 3 + 6
+    band, _ = classify_roots(sys, 3, l, Vertex())
+    @test !isempty(band)
+    for c in band[1:min(3, length(band))], conn in (Vertex(), Edge())
+        it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+        @test it.engine isa DGG.Fallbacks.SquareBandEngine
+        @test length(it) == (conn isa Vertex ? 260 : 256)
+        @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+    end
+end
+
+# The corner law. `Edge()` drops exactly the four cells that touch the block at
+# a vertex only, so the two halos differ by four and nothing else. Pinned to a
+# NON-FLUSH block deliberately: a flush block can lose a corner across a cube
+# corner, where three faces meet and the diagonal neighbour does not exist, so
+# the count would be three there and the law would read as broken.
+@testset "Edge drops exactly the four diagonal corners" begin
+    sys = S2System()
+    band, _ = classify_roots(sys, 2, 4, Vertex())
+    c = first(band)
+    hv = collect(SubtreeHaloIterator(sys, c, 4; connectivity = Vertex()))
+    he = collect(SubtreeHaloIterator(sys, c, 4; connectivity = Edge()))
+    @test length(setdiff(Set(hv), Set(he))) == 4
+    @test issubset(Set(he), Set(hv))
+end
+
 end # module

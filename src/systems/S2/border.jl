@@ -90,3 +90,50 @@ neighbour outside the block.
 subtree_border(sys::S2System, c::DGG.LevelIndex, l::Integer;
     connectivity::DGG.Connectivity = DGG.Vertex()) =
     DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))
+
+# The halo — the outside face of the same boundary — is the width-1 band around
+# the block, walked lazily by the package's face-quadtree descent wherever the
+# block is nowhere flush with its face's edge: a non-flush block's halo is
+# entirely in-face, where adjacency is the plain 3×3 lattice, so the band IS
+# the halo (minus its four corners under `Edge()`). A flush block's halo
+# crosses the seam onto up to three other faces — `wrap_xyf` territory, ids in
+# other ordinal ranges — and takes the generic outside-first engine instead.
+#
+# TWO THINGS HERE ARE NOT WHAT THE MORTON SYSTEMS DO, and both are Hilbert's
+# doing:
+#
+#   * The origin comes from the PARENT's `(ix, iy)` shifted left by `d`, not
+#     from decoding the block's first id. HEALPix and ISEA4R can decode the
+#     first id because min-Morton is min-corner; Hilbert's first position is
+#     whichever corner the curve enters the block by, so `hilbert_to_xyf(lo)`
+#     would name a different corner per orientation and the guard would pass on
+#     blocks it should reject.
+#   * The orientation seed is the FACE ROOT's, `isodd(face) ? SWAP_MASK : 0x0`,
+#     not `_hilbert_orientation(c.index, ...)`. The descent starts at the face
+#     root, not at the block, so it must be seeded before any position bits are
+#     consumed. Seeding it with the block's state produces a walk that still
+#     emits `4·side + 4` cells on the right face — a plausible-looking wrong
+#     order, which only a differential test against geometry catches, and only
+#     from a level-3 root at that: the four non-flush level-2 blocks per face
+#     are each fixed by the very square symmetry the wrong seed applies, so the
+#     error is invisible at level 2. `BAND_BASES` in
+#     `test/systems/crosssystem/subtree_halos.jl` is what covers it.
+function DGG.halo_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
+        connectivity::DGG.Connectivity)
+    DGG.descendant_range(sys, c, target)   # the level guard, both ArgumentErrors
+    _checked_index(c)
+    d = target - DGG.level(c)
+    if d > 0
+        ix, iy, face = hilbert_to_xyf(c.index, _nside(DGG.level(c)))
+        s = Int64(1) << d
+        x0 = Int64(ix) << d
+        y0 = Int64(iy) << d
+        n = _nside(target)
+        if 1 <= x0 && x0 + s <= n - 1 && 1 <= y0 && y0 + s <= n - 1
+            return DGG.SquareBandEngine(HilbertCurve(), Int64(face) * n * n,
+                target, n, isodd(face) ? UInt8(SWAP_MASK) : 0x0,
+                x0, y0, s, connectivity isa DGG.Vertex)
+        end
+    end
+    return DGG.generic_halo_engine(sys, c, target, connectivity)
+end

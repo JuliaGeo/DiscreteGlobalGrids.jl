@@ -12,10 +12,23 @@
 # Takes any counted walk, not just the two iterators — `border_descendants` runs
 # an engine directly — so the message names the walk by `show` rather than by
 # fields only the iterators have.
-function collect_subtree(it)
+#
+# `hint` is an APPROXIMATE size for a walk that declares none, and it is a
+# second positional argument rather than anything `IteratorSize` can see. That
+# separation is the point: `counted` still comes from `IteratorSize` alone, so
+# the guard below arms on exactly the walks that promise a count, and a number
+# that may be wrong reaches `sizehint!` and nothing else. A hint that is high
+# costs a roomier `Vector`; a hint that is low costs one reallocation. Neither
+# can put an `undef` slot in a caller's hands, which is what a wrong `length`
+# does. See `halo_sizehint`.
+function collect_subtree(it, hint::Union{Int,Nothing} = nothing)
     counted = Base.IteratorSize(typeof(it)) isa Base.HasLength
     out = eltype(it)[]
-    counted && sizehint!(out, length(it))
+    if counted
+        sizehint!(out, length(it))
+    elseif hint !== nothing
+        sizehint!(out, hint)
+    end
     for c in it
         push!(out, c)
     end

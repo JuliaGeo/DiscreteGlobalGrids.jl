@@ -93,8 +93,13 @@ const SubtreeIterator{S,C,K,E} = Union{EdgeCellIterator{S,C,K,E},
 Base.iterate(it::SubtreeIterator) = iterate(it.engine)
 Base.iterate(it::SubtreeIterator, state) = iterate(it.engine, state)
 
-Base.eltype(::Type{<:EdgeCellIterator{S,C,K,E}}) where {S,C,K,E} = eltype(E)
-Base.eltype(::Type{<:InnerCellIterator{S,C,K,E}}) where {S,C,K,E} = eltype(E)
+# `C` rather than `eltype(E)`, for `SubtreeHaloIterator`'s reason: the engine
+# parameter is a dispatch result, so delegating through it makes `eltype` a call
+# inference must resolve, and `collect_subtree` widens to `Vector{Any}` when it
+# cannot. These two unions happen to be one wide today; keying off the cell that
+# was asked about does not depend on that staying true.
+Base.eltype(::Type{<:EdgeCellIterator{S,C}}) where {S,C} = C
+Base.eltype(::Type{<:InnerCellIterator{S,C}}) where {S,C} = C
 Base.IteratorSize(::Type{<:EdgeCellIterator{S,C,K,E}}) where {S,C,K,E} =
     Base.IteratorSize(E)
 Base.IteratorSize(::Type{<:InnerCellIterator{S,C,K,E}}) where {S,C,K,E} =

@@ -76,6 +76,10 @@ end
 # own one-ring — exact at the degree-3 vertices, where a band of one is not.
 function DGG.halo_engine(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int,
         connectivity::DGG.Connectivity)
+    # Before `_healpix_square`, whose own guard is `descendant_range`'s and says
+    # something else about the same user error. The halo verb's wording is one
+    # wording on every system; see `check_halo_level`.
+    DGG.check_halo_level(sys, c, target)
     lo, side = _healpix_square(sys, c, target)
     side == 1 && return DGG.generic_halo_engine(sys, c, target, connectivity)
     n = _nside(target)

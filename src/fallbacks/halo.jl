@@ -53,7 +53,18 @@ end
 
 Base.iterate(it::SubtreeHaloIterator) = iterate(it.engine)
 Base.iterate(it::SubtreeHaloIterator, state) = iterate(it.engine, state)
-Base.eltype(::Type{<:SubtreeHaloIterator{S,C,K,E}}) where {S,C,K,E} = eltype(E)
+
+# `C`, NOT `eltype(E)`, and the difference is inference. The engine parameter is
+# whatever `halo_engine` dispatched to, and that return type is a union over
+# every engine the call might pick — wide enough, once a system specializes,
+# that inference gives up rather than split it, leaving `eltype(E)` unresolved
+# and `collect_subtree`'s `eltype(it)[]` widened to `Vector{Any}`. `C` is the
+# cell that was asked about, which is the cell type the answer is in, so reading
+# it costs inference nothing. The engines still declare their own `eltype`; the
+# sweep "eltype is the system's cell index type, on every engine" pins the two
+# readings together, and "subtree_halo's return type is inferred, not just
+# correct" pins this one.
+Base.eltype(::Type{<:SubtreeHaloIterator{S,C}}) where {S,C} = C
 Base.IteratorSize(::Type{<:SubtreeHaloIterator{S,C,K,E}}) where {S,C,K,E} =
     Base.IteratorSize(E)
 
@@ -135,16 +146,32 @@ end
 # Generic engine construction
 # ===========================================================================
 
-# Named rather than folded into the method below so a system override has a
-# fallback to CALL, not merely to shadow.
-function generic_halo_engine(sys::AbstractHierarchicalGridSystem,
-        c::AbstractCellIndex, target::Int, connectivity::Connectivity)
+# The halo's level guard, factored out because it has to be CALLABLE from a
+# system's own engine. `interface/system.jl` promises that an engine's
+# `ArgumentError` is the one the eager verb raises, and a specialization that
+# validated through `descendant_range` instead answered the very same user error
+# in the very same call with different words than the generic engine did — on
+# systems the caller is meant to be able to swap. One guard, one wording.
+#
+# "past max_level" and not "below the deepest level": nothing is below the
+# deepest, and a reader parses "below 19" as "< 19". The rest of the package
+# already says "past max_level".
+function check_halo_level(sys::AbstractHierarchicalGridSystem,
+        c::AbstractCellIndex, target::Int)
     lc = level(c)
     target >= lc || throw(ArgumentError(
         "subtree_halo: level $target is above the cell's own level $lc"))
     target <= max_level(sys) || throw(ArgumentError(
-        "subtree_halo: level $target is below the system's deepest level " *
-        "$(max_level(sys))"))
+        "subtree_halo: level $target is past max_level $(max_level(sys))"))
+    return nothing
+end
+
+# Named rather than folded into the method below so a system override has a
+# fallback to CALL, not merely to shadow.
+function generic_halo_engine(sys::AbstractHierarchicalGridSystem,
+        c::AbstractCellIndex, target::Int, connectivity::Connectivity)
+    check_halo_level(sys, c, target)
+    lc = level(c)
     grid = levelgrid(sys, target)
     target == lc && return RingHaloEngine(neighbors(grid, c, 1; connectivity))
     return outside_walk_engine(sys, c, target, connectivity, IndexedNeighbors())
@@ -240,6 +267,13 @@ end
 
 Base.iterate(it::SubsetHaloIterator) = iterate(it.engine)
 Base.iterate(it::SubsetHaloIterator, state) = iterate(it.engine, state)
+
+# THE ONE ITERATOR THAT STILL DELEGATES, and it can: there is no cell here to
+# key off — the subject is a membership predicate over an arbitrary set, not a
+# root — and `subset_halo_engine` picks between exactly two engine types, so the
+# union is narrow enough for inference to resolve `eltype(E)`. If a third subset
+# engine ever appears, this line is what to re-measure: the comment on
+# `SubtreeHaloIterator` above is what happens when the union outgrows it.
 Base.eltype(::Type{<:SubsetHaloIterator{S,K,E}}) where {S,K,E} = eltype(E)
 Base.IteratorSize(::Type{<:SubsetHaloIterator{S,K,E}}) where {S,K,E} =
     Base.IteratorSize(E)
@@ -728,6 +762,18 @@ sphere rather than growing. Nothing here is sized by the halo.
 `O(depth)` memory beyond the subset's own storage. A system with no
 [`descendant_range`](@ref) gets [`ScanHaloEngine`](@ref), for the same reason it
 does at a subtree.
+
+NOT AN EXTENSION POINT, which is why it is not declared in `interface/system.jl`
+beside `rim_engine` / `interior_engine` / `halo_engine` and why its signature
+does not follow their `(sys, c, target, connectivity)` shape. Those three are
+dispatched on the SYSTEM type: a system ships a fast path by adding a method.
+This one has no cell to dispatch a subtree walk from — its subject is a
+membership predicate over an arbitrary set — and it takes `complete` and `cap`
+because the subset, not the system, is what decides them. A system that wants a
+faster subset halo has nowhere to put it here; it makes `neighbors` and
+`descendant_range` faster, and every subset in the package gets it. Should that
+ever stop being true, the thing to add is a declared method on the system, not a
+fourth shape of this one.
 """
 function subset_halo_engine(sys::AbstractHierarchicalGridSystem, subset,
         complete::AbstractGrid, target::Int, connectivity::Connectivity, cap)
@@ -1217,7 +1263,9 @@ function _seam_band_engine(sys::AbstractHierarchicalGridSystem, curve,
         c::AbstractCellIndex, target::Int, connectivity::Connectivity,
         x0::Int64, y0::Int64, side::Int64, face::Int64, n::Int64,
         home::FaceRect)
-    nfaces = ncells(levelgrid(sys, 0))
+    # The faces ARE the root cells, and the root level is `first(levels(sys))` —
+    # not 0, which is only the systems bundled here.
+    nfaces = ncells(levelgrid(sys, first(levels(sys))))
     nfaces <= _BAND_RECT_CAP ||
         return generic_halo_engine(sys, c, target, connectivity)
     grid = levelgrid(sys, target)
@@ -1265,6 +1313,15 @@ function _seam_band_engine(sys::AbstractHierarchicalGridSystem, curve,
             end
         end
     end
+    # A rectangle whose face is not in `0:nfaces-1` never gets picked up, and a
+    # short `ordered` is a SHORT HALO — the one way this walk could answer wrong
+    # rather than fall back. `_merge_rect` keeps at most one rectangle per face,
+    # so the lengths agree exactly when every face was seen. If they do not, the
+    # system's face numbering is not the one the id law assumes, and this file's
+    # rule is to fall back, never to approximate — the same answer the
+    # `_BAND_RECT_CAP` guard above gives to the other assumption it cannot check.
+    length(ordered) == length(rects) ||
+        return generic_halo_engine(sys, c, target, connectivity)
     return SquareBandEngine(curve,
         NativeCheck(sys, grid, c, level(c), connectivity),
         target, n, Int32(face), x0, y0, side, connectivity isa Vertex, ordered)

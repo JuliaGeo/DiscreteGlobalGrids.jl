@@ -53,6 +53,9 @@ end
 # neighbourhood is not a band of one.
 function DGG.halo_engine(sys::ISEA4RSystem, c::DGG.LevelIndex, target::Int,
         connectivity::DGG.Connectivity)
+    # Before `_isea4r_square`, whose own guard is `descendant_range`'s and says
+    # something else about the same user error. See `check_halo_level`.
+    DGG.check_halo_level(sys, c, target)
     lo, side = _isea4r_square(sys, c, target)
     side == 1 && return DGG.generic_halo_engine(sys, c, target, connectivity)
     n = _nside(target)

@@ -702,22 +702,32 @@ end
 #
 # The cell BOXES are deliberately not asserted to tile the coarse box, because
 # they do not. Both products are pixel-is-point, so each outsets its box by half
-# of ITS OWN pixel, and the block's box is the coarse box translated south-east
-# by `Δ_coarse * (1 - 1/k) / 2` — 1.5" in longitude and 1" in latitude for the
-# shipped pair, one whole GLO-30 pixel. The block's areas therefore sum to that
-# translated box (asserted, `rtol = 1e-12`) and miss the coarse cell's own area
-# by about `tan(φ) * 1"`: measured worst 6.9e-5 at k = 3 and 4.1e-3 at k = 40,
-# and a factor of 1.8 / 2.9 in the ±90 tile rows, where the two systems' pole
-# clamps differ by half a pixel each. Those gaps are @info-logged, not asserted:
+# of ITS OWN pixel, and the block's box is the coarse box translated south-east,
+# on each axis, by `Δ_coarse * (1 - 1/k) / 2` — half a coarse pixel less half a
+# fine one, which at k = 3 is one whole GLO-30 pixel. That is a FRACTION of a
+# coarse pixel, so the arcsecond figure is per-band (in longitude 1.0" in
+# [0,50), 1.5" in [50,60), 10" in [85,90); in latitude 1.0" everywhere), and it
+# is the fraction, not the arcseconds, that `worst_shift` asserts below.
+#
+# The block's areas therefore sum to that translated box (asserted, via
+# `worst_union`) and miss the coarse cell's own area by about `tan(φ) * 1"`:
+# worst 6.9e-5 at k = 3 and 4.1e-3 at k = 40. In the pole tile rows, where the
+# two systems' pole clamps differ by half a pixel each, the miss is 1.78 (+90)
+# and 0.40 (-90) at k = 3, and 2.90 / 0.54 at k = 40. Every gap quoted here and
+# in `refine`'s docstring is the relative gap `|block - coarse| / coarse`, which
+# is the one convention both use. Those gaps are @info-logged, not asserted:
 # they are properties of the registration, not tolerances to tighten. See
-# `refine`'s docstring for why no index scheme fixes them.
+# `refine`'s docstring for why no uniform, tile-local index scheme fixes them.
 #
 # KILLS: a half-pixel registration shift between the two products — the
 # co-location probe sits ten orders inside the 2.8e-4 degrees the smallest such
 # shift moves a post, and measured 2.8e-3 against a `half_dlon = 0` mutant in
-# `cell_box`; hardcoding `k = 3`, which the k = 40 pair catches; an
-# off-by-one in the k-scaling, which breaks the round trip, the bitwise block
-# edges and the tile-corner extremes together; and a j/i transposition in the
+# `cell_box`; hardcoding `k = 3`, which the k = 40 pair catches; an off-by-one
+# in the k-scaling, which breaks the round trip and the tile-corner extremes
+# together; a block anchored anywhere but `(k*j, k*i)` — the "centred" block
+# `refine`'s docstring rules out reads a shift of 0 rather than `(1 - 1/k) / 2`,
+# and an off-by-one fine column reads `1/k` off, both of which `worst_shift`
+# catches eleven orders above its own noise; and a j/i transposition in the
 # block base, which lands in a different tile row entirely.
 @testset "one lattice nests k-fold inside another" begin
     # One tile per band per hemisphere, plus both pole rows.
@@ -735,9 +745,13 @@ end
         rng = MersenneTwister(20260815)
         bad = String[]
         worst_post = 0.0        # coarse post vs the block's north-west post, degrees
+        worst_shift = 0.0       # block box vs the coarse box, in coarse pixels
         worst_union = 0.0       # block area sum vs the block's own box
         worst_coarse = 0.0      # block area sum vs the coarse cell, off the pole rows
-        worst_pole = 0.0        # the same, in the ±90 tile rows
+        gap_lat50 = 0.0         # the same, in the lat_s = 50 tile row alone
+        gap_equator = 0.0       # the same, in the lat_s = 0 tile row alone
+        worst_pole_n = 0.0      # the same, in the +90 tile row
+        worst_pole_s = 0.0      # the same, in the -90 tile row
 
         for lat_s in nest_lats
             CD.ncols_at(fine, lat_s) == k * CD.ncols_at(coarse, lat_s) ||
@@ -766,24 +780,20 @@ end
                         note!(bad, "$label: not ascending and distinct")
                     all(f -> CD.coarsen(fine, coarse, f) == p, fs) ||
                         note!(bad, "$label: coarsen does not invert refine")
-                    all(f -> parent(fine, f) == tf, fs) ||
-                        note!(bad, "$label: the block left its tile")
+                    # `parent(fine, f) == tf` for every `f` is NOT re-asserted:
+                    # `coarsen` reads its tile straight out of `decode(fine, f)`,
+                    # so a block that left its tile could not round-trip back to
+                    # `p` above.
 
-                    # The block tiles its own box BITWISE: inside a row the east
+                    # The block tiles its own box bitwise — inside a row the east
                     # edge of one cell IS the west edge of the next, and between
                     # rows the south edge of one IS the north edge of the one
-                    # below — the same `Float64`, so the same geodesic.
+                    # below — so the union of the block is just the box spanned
+                    # by its north-west and south-east cells, and the areas sum
+                    # to it. That shared-edge identity is testset (d)'s, on the
+                    # fine lattice itself and for every system; re-checking it on
+                    # these blocks tests `cell_box`, not `refine`.
                     boxes = [CD.cell_box(fine, f) for f in fs]
-                    for a in 0:(k - 1), b in 0:(k - 1)
-                        n = a * k + b + 1
-                        b < k - 1 && !(boxes[n][2] === boxes[n + 1][1]) &&
-                            note!(bad, "$label: column edge $b is not shared bitwise")
-                        a < k - 1 && !(boxes[n][3] === boxes[n + k][4]) &&
-                            note!(bad, "$label: row edge $a is not shared bitwise")
-                    end
-
-                    # ... so the union of the block is the box spanned by its
-                    # north-west and south-east cells, and the areas sum to it.
                     west, north = boxes[1][1], boxes[1][4]
                     east, south = boxes[end][2], boxes[end][3]
                     union_area = deg2rad(east - west) * (sind(north) - sind(south))
@@ -791,11 +801,41 @@ end
                     worst_union = max(worst_union, abs(total - union_area) / union_area)
 
                     cw, ce, cs, cn = CD.cell_box(coarse, p)
+
+                    # The shift the docstring documents: the block's box is the
+                    # coarse box translated south-east by `Δ_coarse * (1-1/k)/2`
+                    # on each axis. Measured as a FRACTION of the coarse pixel,
+                    # which makes the assertion band-free and k-free.
+                    #
+                    # The pole rows: the longitude form holds there unchanged —
+                    # the clamps touch only north and south — and in fact reads
+                    # tighter (2.3e-12 vs 2.3e-11), the [85,90) and [-90,-89)
+                    # columns being 10" wide. The latitude form does NOT: at
+                    # `lat_s = 89, j = 0` both systems clamp their north edge to
+                    # exactly 90.0, so the block is not shifted at all there and
+                    # the ratio reads 0 against a target of 0.333 (k = 3) or
+                    # 0.4875 (k = 40); at `lat_s = -90, j = Nc - 1` the coarse
+                    # cell is one and a half pixels tall, so the same ratio comes
+                    # out at 2/3 of the target. Those two pixels, and only those
+                    # two, are skipped in latitude.
+                    target = (1 - 1 / k) / 2
+                    worst_shift = max(worst_shift,
+                        abs((boxes[1][1] - cw) / (ce - cw) - target))
+                    clamped = (lat_s == 89 && j == 0) ||
+                              (lat_s == -90 && j == Nc - 1)
+                    clamped || (worst_shift = max(worst_shift,
+                        abs((cn - boxes[1][4]) / (cn - cs) - target)))
+
                     gap = abs(total - cell_area(gc, p)) / cell_area(gc, p)
-                    if lat_s == 89 || lat_s == -90
-                        worst_pole = max(worst_pole, gap)
+                    if lat_s == 89
+                        worst_pole_n = max(worst_pole_n, gap)
+                    elseif lat_s == -90
+                        worst_pole_s = max(worst_pole_s, gap)
                     else
                         worst_coarse = max(worst_coarse, gap)
+                        # The two rows `refine`'s docstring quotes `tan(φ)·1"` at.
+                        lat_s == 50 && (gap_lat50 = max(gap_lat50, gap))
+                        lat_s == 0 && (gap_equator = max(gap_equator, gap))
                         # The co-location itself, on the box midpoints — which are
                         # the posts, by testset (b). Skipped in the ±90 rows only
                         # because `cell_box` clamps those to the pole by half of
@@ -810,11 +850,22 @@ end
             end
         end
 
-        @info "$coarse inside $fine (k = $k)" worst_post worst_union worst_coarse worst_pole
+        @info("$coarse inside $fine (k = $k)",
+              worst_post, worst_shift, worst_union,
+              worst_coarse, gap_lat50, gap_equator, worst_pole_n, worst_pole_s)
         @test bad == String[]
         # Measured 2.8e-14 degrees, i.e. 3 nm on the ground, against the 4.2e-4
         # degrees (1.5") a half-pixel registration slip would move a post.
         @test worst_post < 1e-12
+        # The documented south-east shift, as a fraction of a coarse pixel.
+        # Measured 2.3e-11 (k = 3) and 4.4e-13 (k = 40): cancellation, not
+        # registration. `boxes[1][1] - cw` differences two values near ±180,
+        # whose ulp is 2.8e-14, and the shift itself is only 2.8e-4 degrees at
+        # k = 3 in the widest band. That noise floor sits eleven orders below
+        # what a wrongly anchored block reads — 0.333 (k = 3) / 0.4875 (k = 40)
+        # for a block centred on the coarse box, `1/k` for an off-by-one fine
+        # column, i.e. 0.025 even at k = 40.
+        @test worst_shift < 1e-10
         # Measured 3.6e-16 (k = 3) and, at k = 40, 9.7e-16 standalone against
         # 8.2e-15 under `Pkg.test`'s `--check-bounds=yes`, which costs `sum` its
         # SIMD path and so changes the order of the 1600 additions. The areas are
@@ -824,7 +875,10 @@ end
 
         # The block decomposition IS the fine tile's raster cut into k x k
         # blocks: the first coarse pixel's block starts at the fine tile's first
-        # child, the last one's ends at its last, and the counts agree.
+        # child, and the last one's ends at its last. The count identity
+        # `k^2 * length(children(coarse, tc)) == length(ch)` is not asserted —
+        # both sides are `ncols * N` scaled by k, so it restates the per-row
+        # `ncols_at(fine) == k * ncols_at(coarse)` check at the top of the loop.
         for lat_s in (0, 50, 89, -90)
             tc = CD.tilecell(coarse, lat_s, 7)
             tf = CD.tilecell(fine, lat_s, 7)
@@ -833,7 +887,6 @@ end
             @test first(CD.refine(coarse, fine, CD.pixelcell(coarse, tc, 0, 0))) == first(ch)
             @test last(CD.refine(coarse, fine, CD.pixelcell(coarse, tc, Nc - 1, nc - 1))) ==
                   last(ch)
-            @test k * k * length(children(coarse, tc)) == length(ch)
         end
     end
 

@@ -57,22 +57,39 @@ sphere — measured on `N50_00_E006_00`, GLO-90 `(0,0)` and GLO-30 `(0,0)` are b
     Both products are pixel-is-point, so a cell's box is its post ± half of **that
     product's own** pixel — and the half-pixel outset is `k` times smaller on the fine
     side. The `k²` fine boxes therefore tile a box of the right SIZE that is the coarse
-    box translated south-east by `Δ_coarse·(1 - 1/k)/2`: 1.5″ in longitude and 1″ in
-    latitude for the shipped pair, i.e. one whole GLO-30 pixel. Their areas sum to that
-    translated box exactly (to 1.5e-16 relative), and so miss the coarse cell's own area
-    by about `tan(φ)·1″` — measured 6.0e-6 at latitude 50 and 8.4e-8 near the equator.
+    box translated south-east, on each axis, by `Δ_coarse·(1 - 1/k)/2` — half a coarse
+    pixel less half a fine one, equivalently `(k-1)/2` fine pixels, which at `k = 3`
+    comes out as exactly one whole GLO-30 pixel.
 
-    No index scheme fixes this. An exact box tiling would need the fine cells centred on
-    the coarse box, which is `k*i - (k-1)/2 …` — not an integer block for even `k`, and
-    ragged in any case: it would reach into the neighbouring tile at every tile edge, and
-    across a band boundary the tile above has a different `ncols`, whose column edges do
-    not fall on the coarse ones at all. Exact cell-box nesting does not exist in this
-    lattice; exact post nesting does, and that is what this function returns.
+    That shift is a FRACTION of a coarse pixel, so its arcsecond value is per-band and
+    no single figure states it. In longitude it is 1.0″ in the `[0, 50)` band, 1.5″ in
+    `[50, 60)` and 10″ in `[85, 90)`; in latitude it is 1.0″ in every band, because
+    `Δlat` does not vary by band. The test suite pins the fraction rather than the
+    arcseconds — `worst_shift`, which measures the west and north edges against
+    `(1 - 1/k)/2` and reads 2.3e-11 for the shipped pair.
+
+    Their areas sum to that translated box exactly (to 3.6e-16 relative, logged as
+    `worst_union`), and so miss the coarse cell's own area by about `tan(φ)·1″` — logged
+    as `gap_lat50` and `gap_equator`: 6.0e-6 in the latitude-50 tile row and 8.5e-8 in
+    the equator one.
+
+    No uniform, tile-local index scheme fixes this. An exact box tiling would need the
+    fine cells centred on the coarse box, which is `k*i - (k-1)/2 …` — not an integer
+    block for even `k`, and ragged in any case: it would reach into the neighbouring
+    tile at every tile edge, and across a band boundary the tile above has a different
+    `ncols`, whose column edges do not fall on the coarse ones at all. The GLO-90 pixel
+    at column 100 of an `N49` tile straddles latitude 50, and its west edge lands on
+    GLO-30 column **199.5** of the `[50, 60)` band above it. Exact cell-box nesting does
+    not exist in this lattice; exact post nesting does, and that is what this function
+    returns.
 
     The `lat_s = 89` and `lat_s = -90` tile rows are further apart still, because
     [`cell_box`](@ref)'s clamp to `+90` and extension to `-90` are each half of the
-    system's own pixel: the block and the coarse cell there differ in area by a factor of
-    1.8 and 0.6. Their posts still coincide; nothing else about them does.
+    system's own pixel: there the block's area differs from the coarse cell's by a
+    relative gap `|block - coarse| / coarse` — the convention every gap on this page is
+    quoted in — of **1.78** in the `+90` row and **0.40** in the `-90` row, logged as
+    `worst_pole_n` and `worst_pole_s`. Their posts still coincide; nothing else about
+    them does.
 
 !!! warning "A grid hierarchy, not a value hierarchy"
     GLO-90 is an independently produced mission product resampled from WorldDEM, not a

@@ -4,13 +4,23 @@ The six systems `systems()` returns, drawn the same way: `levelgrid(sys, level)`
 goes straight into `Makie.poly!`. The levels differ per panel only because
 apertures differ — each is chosen so the cells stay visible at figure size.
 
+```@raw html
+<style>
+#VPContent .bonito-fragment canvas {
+    max-width: 100%;
+    height: auto !important;
+}
+</style>
+```
+
 ```@example all-dggs
 import DiscreteGlobalGrids as DGG
 using GeoMakie
-using GLMakie
+using WGLMakie   # tutorials use GLMakie; this page activates the web backend
+using Bonito
 import Makie
 
-GLMakie.activate!(inline = true)
+WGLMakie.activate!()
 
 figure = Makie.Figure(size = (1200, 850), figure_padding = 4)
 for (k, (sys, level)) in enumerate([

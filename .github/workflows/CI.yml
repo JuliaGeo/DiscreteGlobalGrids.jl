@@ -79,21 +79,12 @@ jobs:
         env:
           DISPLAY: ':0'
           DATADEPS_ALWAYS_ACCEPT: 'true'
-      # Template expansion can spend more than 15 minutes rendering Makie
-      # examples without emitting output. Keep the hosted runner alive while
-      # running the same docs entry point that julia-docdeploy would include.
-      - name: Build and deploy documentation
-        run: |
-          xvfb-run julia --color=yes --project=docs docs/make.jl &
-          docs_pid=$!
-          while kill -0 "$docs_pid" 2>/dev/null; do
-            sleep 60
-            free -m | awk 'NR == 2 { print "Documentation build is still running; memory used: " $3 " MiB, available: " $7 " MiB" }'
-          done
-          wait "$docs_pid"
+      - uses: julia-actions/julia-docdeploy@v1
+        with:
+          prefix: xvfb-run
+          install-package: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
           DISPLAY: ':0'
           DATADEPS_ALWAYS_ACCEPT: 'true'
-          JULIA_DEBUG: Documenter

@@ -321,38 +321,24 @@ function subtree_interior end
     interior_engine(sys, c, target::Int, connectivity)
     halo_engine(sys, c, target::Int, connectivity)
 
-The iteration engine `EdgeCellIterator` / `InnerCellIterator` /
-`SubtreeHaloIterator` forwards the whole iteration protocol to — the single
-place a system overrides to ship an `O(rim)` subtree walk or an `O(halo)` halo
-walk, and the single place both the lazy and the eager
-([`subtree_border`](@ref) / [`subtree_interior`](@ref) / `subtree_halo`) faces
-of it read.
+Return the iteration engine used by `EdgeCellIterator`, `InnerCellIterator`, or
+`SubtreeHaloIterator`. A system may override these methods with an `O(rim)` or
+`O(halo)` traversal; eager operations collect the same engine.
 
 An engine is any iterator over `cellindextype(sys)`. All three methods own their
 level validation, so their `ArgumentError`s are the ones the eager verbs raise.
 
-Engine selection is **private multiple dispatch on the system type**: a system
-ships a fast path by adding one method here, not by setting a trait anyone can
-read and not by anything inspecting the method table at runtime. That keeps each
-engine's protocol monomorphic, and it keeps "which walk did I get?" out of the
-public surface, where it would become a compatibility promise.
+Engine selection uses private dispatch on the system type and is not part of
+the public compatibility surface.
 
-The generic implementations walk [`descendant_range`](@ref) with one
-[`ancestor`](@ref) test per cell, and materialize where
-[`has_sorted_subtrees`](@ref) is `false`. `halo_engine`'s generic implementation
-is `generic_halo_engine`, which walks the hierarchy from OUTSIDE the subtree
-instead — see `SubtreeHaloIterator` — because the halo is not a sub-interval of
-any one subtree's position range. A system that writes no method at all gets it.
+The generic rim and interior engines scan [`descendant_range`](@ref), or
+materialize descendants when [`has_sorted_subtrees`](@ref) is `false`. The
+generic halo engine walks cells outside the subtree because a halo is not a
+single descendant interval.
 
-FALL BACK, NEVER APPROXIMATE. Every engine is EXACT: a specialization may
-enumerate a conservative candidate band, but it must put every candidate through
-the adjacency test before yielding it. When a specialization meets a
-configuration whose assumptions it cannot verify — a face count past its
-capacity, a face numbering that is not the one it assumed — it returns
-`generic_halo_engine(sys, c, target, connectivity)` and answers correctly by the
-slow route. It never returns a shorter, faster, approximate halo. That is why
-`generic_halo_engine` is named rather than folded into the method above: an
-override needs a fallback to CALL, not merely one to shadow.
+Specializations may enumerate conservative candidates, but must filter them by
+the requested adjacency. If their preconditions cannot be verified, they must
+return `generic_halo_engine(sys, c, target, connectivity)`.
 """
 function rim_engine end
 
@@ -367,35 +353,24 @@ function halo_engine end
     lattice_cell(sys, level::Int, ix, iy, face) -> cell
     face_orientation(sys, face) -> UInt8
 
-The three lines an aperture-4 system writes to let the shared square halo walk
-cross its seams. Only the systems whose cells ARE an aligned square lattice per
-face — HEALPix, S2, ISEA4R — implement them; there is no generic fallback,
-because there is no generic lattice.
+Define the face-lattice operations used by the shared square halo traversal.
+Only systems with an aligned square lattice per face implement these methods.
 
-`lattice_decode` and `lattice_cell` are the system's existing face-lattice codec
-under one name (`nested_to_xyf`/`xyf_to_nested`, `hilbert_to_xyf`/
-`xyf_to_hilbert`, `morton_to_xyd`/`xyd_to_morton`), with `face` 0-based and
+`lattice_decode` and `lattice_cell` convert between cell ids and face-local
+coordinates, with `face` 0-based and
 `(ix, iy)` in `0:2^level - 1`. `face_orientation` is the curve state a face's
-ROOT is read under, before any position bits are consumed — `0x0` for the two
-Morton systems, and S2's odd-face swap for the Hilbert one.
+root uses before consuming position bits.
 
-The walk needs no seam table of its own: it asks the system for the neighbours
-of a few rim cells and reads the answers back through `lattice_decode`.
+The traversal derives seam rectangles by decoding neighbours of rim cells.
 
-THESE THREE ARE THE WHOLE DISPATCHED SURFACE, NOT THE WHOLE CONTRACT. The shared
-walk (`SquareBandEngine`) also assumes three things about the system that it
-cannot ask for and does not check:
+`SquareBandEngine` also requires these invariants:
 
  1. `cellindextype(sys) === LevelIndex`. The engine emits `LevelIndex` and
     declares it as its `eltype`, unconditionally.
- 2. The id law is `face * faceside^2 + curvecode`, with `faceside` the face's
-    lattice side at that level and both `face` and `curvecode` 0-based. The emit
-    step builds ids by that arithmetic directly — `lattice_cell` is called only
-    to PROBE one rim cell's neighbours, never to build an answer — so a system
-    laid out any other way would get a walk emitting other cells' ids.
- 3. Adjacency in the INTERIOR of a face is the plain 3x3 lattice. That is what
-    makes the away-from-the-edge band exactly the halo, and so what lets it be
-    emitted with no adjacency check applied at all.
+ 2. Ids follow `face * faceside^2 + curvecode`, with 0-based face and curve
+    code. The emit step constructs ids with this arithmetic.
+ 3. Interior face adjacency is the 3×3 lattice, so an in-face band requires no
+    additional adjacency check.
 
 A fourth square system holding all three writes only the three methods above. One
 that does not writes its own [`halo_engine`](@ref rim_engine) instead.
@@ -412,19 +387,13 @@ function face_orientation end
     hex_child_direction(sys, c) -> Int
     seeded_rim_engine(sys, c, target::Int, arclen::Int, start::Int)
 
-The two lines an aperture-7 system writes to let the shared calibrated halo walk
-(`hex_halo_engine`) approach a subtree from its neighbours. Only the systems
-that already own a subtree-rim automaton over an arc of exposed lattice
-directions — H3 and IGeo7 — implement them; there is no generic fallback,
-because there is no generic automaton.
+Define the operations used by the calibrated aperture-7 halo traversal. H3 and
+IGeo7 implement them using their subtree-rim automata.
 
-`hex_child_direction` is the position `0:5` on the six-direction ring of the step
-from `c`'s parent to `c`, and `-1` for the centre child (which has no direction)
-or for a root cell (which has no parent). It is the system's existing digit →
-direction table (`_H3_DIGIT_DIR`, `SIGMA_J`) read through the cell's own last
-digit — no child list is searched.
+`hex_child_direction` returns the position `0:5` of the parent-to-child step on
+the direction ring, or `-1` for a centre child or root cell.
 
-`seeded_rim_engine` is the system's rim automaton entered at an ARBITRARY arc
+`seeded_rim_engine` enters the system's rim automaton at an arbitrary arc
 `(arclen, start)` rather than at the fully exposed `(6, 0)` a subtree root gets:
 `c`'s level-`target` descendants reachable along the arc of exposed directions
 `start, start+1, …, start+arclen-1 (mod 6)`, ascending, in `O(depth)` memory. It
@@ -433,8 +402,8 @@ is seeded at a cell that may be a pentagon. It declares `SizeUnknown()`: the
 closed-form rim census counts the `(6, 0)` walk and does not describe a seeded
 one.
 
-Neither validates `c` — both are called from `hex_halo_engine` on cells that
-came out of `neighbors` and `children`, and the driver owns the level guard.
+Neither method validates `c`; `hex_halo_engine` supplies cells returned by
+`neighbors` and `children` and performs level validation.
 """
 function hex_child_direction end
 

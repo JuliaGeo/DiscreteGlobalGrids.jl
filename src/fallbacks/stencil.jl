@@ -298,16 +298,9 @@ end
 """
     halo(pg::PartialGrid; connectivity = Vertex())
 
-The cells immediately outside a subset grid, lazily. See [`halo`](@ref) for the
-definition, the hole law, and why this is always an iterator.
-
-TWO PATHS, ONE VERB. A rooted grid holding a COMPLETE subtree is a subtree, so
-it delegates to [`SubtreeHaloIterator`](@ref) and gets whatever specialization
-its system ships — the square band walk, the calibrated directed walk. Anything
-else — a hole, a forgotten root, an arbitrary id list — takes the outside-first
-subset walk. `_whole_subtree_range` decides it, the same three conditions
-[`halo_table`](@ref) splits on one function below, so the two verbs cannot drift
-apart about what "is a subtree" means.
+Return cells immediately outside a subset grid, lazily. A rooted grid containing
+a complete subtree delegates to [`SubtreeHaloIterator`](@ref); other subsets use
+the outside-first subset walk. `_whole_subtree_range` determines the path.
 
 The subset walk prunes by the subset's own [`subset_span`](@ref)s — the root, if
 there is one, is not consulted at all. Construction is `O(1)`: nothing about the
@@ -327,11 +320,8 @@ end
 The cells immediately outside the compressed collection, lazily. See
 [`halo`](@ref).
 
-ALWAYS THE SUBSET WALK, even when the windows happen to be exactly a subtree: a
-[`CellVector`](@ref) stores windows and not an ancestor, so there is no root to
-recognise one by — the same thing `PartialGrid(cv)` loses and
-[`halo_table`](@ref)'s fast path asks for. The answer is identical, and the way
-to get the subtree walk is to build the grid from the root cell.
+A [`CellVector`](@ref) always uses the subset walk because it stores windows but
+no root ancestor. Build a grid from the root cell to enable the subtree engine.
 
 Membership is the window search, `O(log #windows)`, so the walk's per-candidate
 cost is lower here than on a `PartialGrid` over a bare id vector — and so is its
@@ -345,31 +335,20 @@ halo(cv::CellVector; connectivity::Connectivity = Vertex()) =
 # ===========================================================================
 # The chunk-plus-halo stencil: the two faces above, addressed together
 #
-# The two verbs before this one are the two SIDES of a subset's boundary, and a
-# chunked stencil pass needs both at once — the block to read, the halo to fetch
-# alongside it — laid end to end in `[chunk; halo]`. Neither verb addresses that
-# buffer. `halo_table` is in-set, so at the rim its rows are SHORT, which is the
-# honest answer to "which of my own cells does each of my cells touch" and the
-# wrong one for a read where those neighbours ARE present, just past the chunk's
-# end; and `halo` names the extra cells without saying which row wants which.
+# A chunked stencil addresses subset and halo cells in one `[chunk; halo]`
+# buffer. `halo_table` clips rows to the subset, while `halo` names exterior
+# cells without mapping them back to rows.
 #
-# So this is a third verb rather than a method of either, because every clause
-# of its contract differs from `halo_table`'s:
+# `stencil_table` therefore has a separate contract:
 #
 #   * rows are COMPLETE, never clipped, and that is checked rather than hoped;
 #   * entries index the CONCATENATED buffer, not the subset;
 #   * rows keep the system's ROTATIONAL order rather than ascending position;
 #   * the result is CSR, not a vector of row vectors.
 #
-# WHY ROTATIONAL, against the position form's ascending rule. That rule
-# (`src/interface/grid.jl`) is stated for a CLIPPED row, and its reason is that a
-# clipped row is a mutilated cycle: with neighbours missing there is no direction
-# left to preserve, so membership is all the order can mean and ascending is the
-# cheapest useful choice. A complete row has the cycle intact, and the cycle is
-# what the callers of this verb are after — slope, aspect, curvature, flow
-# direction all read the ring as directions, not as a set. Sorting here would
-# throw away the one thing completeness makes available, and a caller who wants
-# ascending has `sort!` on a row view.
+# Complete rows preserve rotational order because direction is meaningful when
+# the full cycle is present. Clipped position rows remain ascending by the base
+# grid contract.
 # ===========================================================================
 
 """

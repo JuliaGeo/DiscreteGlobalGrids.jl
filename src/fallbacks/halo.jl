@@ -610,6 +610,19 @@ that face's ROOT is read under, from [`face_orientation`](@ref)).
 
 The rectangles of a [`SquareBandEngine`](@ref) are one per face and sorted by
 `face`, which is what makes walking them a canonical merge.
+
+`Int32` BOUNDS BIND AT LEVEL 32, NOT AT `max_level`. A level-`l` lattice
+coordinate runs to `2^l - 1`, so `Int32` holds one through level 31
+(`2^31 - 1 == typemax(Int32)`) and overflows at level 32. S2's `max_level` of 30
+is the deepest registered system, so there is exactly ONE level of headroom, and
+the quantity to compare a future `max_level` bump against is 31 — not 30, and
+not `_SQUARE_CAP`. Past it the failure is an `InexactError` raised by this
+constructor from inside `square_halo_engine`, i.e. from iterator construction,
+which is loud but says nothing about the cause; widen these six fields to
+`Int64` (they are `Int32` only to keep `_BAND_RECT_CAP` rectangles inline and
+cheap to copy) rather than clamping. `test/systems/crosssystem/subtree_halos.jl`
+walks a `max_level` block on all three systems, so the level-31 boundary is
+approached from one level below on every run.
 """
 struct FaceRect
     face::Int32
@@ -630,6 +643,16 @@ const BandRects = Helpers.SmallList{_BAND_RECT_CAP,FaceRect}
     FaceRect(0, 0x0, 0, 0, 0, 0))
 
 # Merge by face, so each face appears once and no cell can be reached twice.
+#
+# `r.orientation` is DISCARDED and the incumbent's kept, which is correct because
+# the branch is only taken when `q.face == r.face` and both orientations came
+# from `face_orientation(sys, face)` — a pure function of the face alone, with no
+# dependence on the cell, the level or the rectangle. So the two values are
+# necessarily equal and the merge has no choice to make. That is an invariant of
+# the `face_orientation` contract (`src/interface/system.jl`): a system whose
+# orientation varied within a face would break the whole descent, not only this
+# line, because `SquareBandEngine` seeds each rectangle's descent at that face's
+# ROOT and reads no per-cell state at all.
 function _merge_rect(rects::BandRects, r::FaceRect)
     for i in 1:length(rects)
         q = @inbounds rects[i]
@@ -704,6 +727,15 @@ on [`SquareRimEngine`](@ref)'s reasoning and takes the same
     No perimeter formula survives a seam (a cube corner is three cells, not
     four; an ISEA4R icosahedral vertex is five), so `IteratorSize` is
     `SizeUnknown()` and there is **no `length` method at all**.
+
+SIZE, WHICH IS NOT FREE EVEN WHERE TIME IS. `rects` is a fixed
+`_BAND_RECT_CAP`-slot inline list, so an engine is 352 bytes on the in-face path
+(`SquareBandEngine{MortonCurve,NoCheck}`), 296 of them the rectangle list with
+exactly one slot used. Nothing is heap-allocated and no measured time is spent on
+the unused slots — the descent reads `length(rects)`, never the capacity — but
+the in-face path is "free" in TIME only, and an engine returned by value costs
+that copy. Shrinking it would mean a second engine type for the one-rectangle
+case, which is not worth two monomorphic walks.
 """
 struct SquareBandEngine{V,K}
     curve::V
@@ -714,6 +746,10 @@ struct SquareBandEngine{V,K}
     x0::Int64
     y0::Int64
     side::Int64
+    # `Vertex()`, i.e. keep the four diagonal-contact corners. Read only by
+    # `_band_emit(::NoCheck, ...)`: under `NativeCheck` the one-ring is the
+    # filter and this field is inert, since the connectivity the check applies
+    # is the one stored on the `NativeCheck` itself.
     corners::Bool
     rects::BandRects
 end
@@ -755,8 +791,12 @@ end
 @inline _band_emit(::NoCheck, e::SquareBandEngine, cell, cx::Int64, cy::Int64) =
     e.corners || !_band_corner(e, cx, cy)
 
-@inline function _band_emit(chk::NativeCheck, e::SquareBandEngine, cell,
-        cx::Int64, cy::Int64)
+# The lattice position is the in-face band's business, not the one-ring's: the
+# check is the halo's own definition and needs only the cell. Hence the three
+# unnamed argument types — the signature exists to match `_band_emit`'s shape,
+# and naming arguments it ignores would suggest it consults them.
+@inline function _band_emit(chk::NativeCheck, ::SquareBandEngine, cell,
+        ::Int64, ::Int64)
     for nb in neighbors(chk.grid, cell, 1; connectivity = chk.connectivity)
         ancestor(chk.system, nb, chk.rootlevel) == chk.root && return true
     end
@@ -932,6 +972,23 @@ end
 # from inside an iterator rather than an honest fallback.
 # ---------------------------------------------------------------------------
 
+# The distinct probe positions of a block, at most four — a corner of a block
+# flush on two sides is an endpoint of both. Eight is the number of `(side,
+# endpoint)` pairs, so the list never has to reject a push.
+const _PROBE_CAP = 8
+const ProbeList = Helpers.SmallList{_PROBE_CAP,NTuple{2,Int64}}
+
+@inline _empty_probe_list() =
+    Helpers.empty_small_list(Val(_PROBE_CAP), (Int64(0), Int64(0)))
+
+@inline function _add_probe(probes::ProbeList, sx::Int64, sy::Int64)
+    for i in 1:length(probes)
+        p = @inbounds probes[i]
+        p[1] == sx && p[2] == sy && return probes
+    end
+    return Helpers.small_push(probes, (sx, sy))
+end
+
 # One probe: everything the native one-ring of the rim cell at `(sx, sy)` can
 # see, bucketed by face. In-face neighbours already inside the home band box are
 # dropped rather than merged, so the home rectangle stays the tight band;
@@ -961,26 +1018,34 @@ function _seam_band_engine(sys::AbstractHierarchicalGridSystem, curve,
         return generic_halo_engine(sys, c, target, connectivity)
     grid = levelgrid(sys, target)
     rects = Helpers.small_push(_empty_band_rects(), home)
-    # The two extreme rim cells of every flush side. At most eight probes, at
-    # most four distinct cells, and O(1) in the halo's size — construction stays
-    # a constant-time act however deep the target.
+    # The two extreme rim cells of every flush side — eight positions naming at
+    # most four distinct cells, because a flush CORNER is an endpoint of both of
+    # its sides and a whole-face block names each of its four corners twice.
+    # `_merge_rect` already makes a repeat idempotent, so the deduplication is
+    # for cost, not correctness: `_seam_probe` is a `neighbors` call, which
+    # allocates a `Vector` on S2, and a whole-face block would otherwise pay for
+    # eight of them to learn what four say. Still O(1) in the halo's size either
+    # way — construction is a constant-time act however deep the target.
+    probes = _empty_probe_list()
     if x0 == 0
-        rects = _seam_probe(sys, grid, rects, target, face, x0, y0, home)
-        rects = _seam_probe(sys, grid, rects, target, face, x0, y0 + side - 1, home)
+        probes = _add_probe(probes, x0, y0)
+        probes = _add_probe(probes, x0, y0 + side - 1)
     end
     if x0 + side == n
-        rects = _seam_probe(sys, grid, rects, target, face, x0 + side - 1, y0, home)
-        rects = _seam_probe(sys, grid, rects, target, face, x0 + side - 1,
-            y0 + side - 1, home)
+        probes = _add_probe(probes, x0 + side - 1, y0)
+        probes = _add_probe(probes, x0 + side - 1, y0 + side - 1)
     end
     if y0 == 0
-        rects = _seam_probe(sys, grid, rects, target, face, x0, y0, home)
-        rects = _seam_probe(sys, grid, rects, target, face, x0 + side - 1, y0, home)
+        probes = _add_probe(probes, x0, y0)
+        probes = _add_probe(probes, x0 + side - 1, y0)
     end
     if y0 + side == n
-        rects = _seam_probe(sys, grid, rects, target, face, x0, y0 + side - 1, home)
-        rects = _seam_probe(sys, grid, rects, target, face, x0 + side - 1,
-            y0 + side - 1, home)
+        probes = _add_probe(probes, x0, y0 + side - 1)
+        probes = _add_probe(probes, x0 + side - 1, y0 + side - 1)
+    end
+    for i in 1:length(probes)
+        p = @inbounds probes[i]
+        rects = _seam_probe(sys, grid, rects, target, face, p[1], p[2], home)
     end
     # Face order is canonical order, so the list is sorted once, here, by
     # walking the faces rather than the rectangles. Faces are `0:nfaces-1` and

@@ -415,9 +415,11 @@ Base.length(::MiscountingEngine) = 3
     #                every candidate goes through the native one-ring.
     #   `fallback` — anything else, i.e. the generic outside-first walk.
     #
-    # All three are checked against the oracle. The claimed ones because they are
-    # the walks under test; the unclaimed ones because a fallback that quietly
-    # stopped agreeing would otherwise be invisible.
+    # The two CLAIMED classes are checked against the oracle below, cell for cell.
+    # `fallback` is only asserted EMPTY (`check_root_classes`) — on these three
+    # systems it is supposed to have no members at all, so there is nothing here
+    # to oracle. The generic walk it names is still oracled, on the systems that
+    # genuinely take it: see "the generic fallback still agrees with the oracle".
     function classify_roots(sys, base::Int, l::Int, conn)
         grid = levelgrid(sys, base)
         C = DGG.cellindextype(sys)
@@ -705,6 +707,89 @@ Base.length(::MiscountingEngine) = 3
             @test it.engine isa DGG.Fallbacks.SquareBandEngine
             @test collect(it) == forced_geometry_halo(sys, c, 5, conn)
             check_halo_case(sys, c, 5, conn)
+        end
+    end
+
+    # THE DEEP REGIME, where the shallow sweep's arithmetic stops being the same
+    # arithmetic.
+    #
+    # Everything above tops out at level 9 (`the band walk at 64x64`), and the
+    # seam derivation's claim that the maps are affine at every `n` is an
+    # argument plus an offline sweep, neither of which leaves a runnable artifact
+    # in this repo. Two things can only go wrong deep:
+    #
+    #   * `FaceRect` stores its bounds as `Int32`, which holds a lattice
+    #     coordinate through LEVEL 31 and overflows at 32. S2's `max_level` is
+    #     30, so the headroom is exactly one level, and the failure mode is an
+    #     `InexactError` thrown by `FaceRect`'s constructor from inside iterator
+    #     construction — loud, but from a place that names neither the level nor
+    #     the field. A `max_level` bump must be evaluated against 31, not against
+    #     30 and not against `_SQUARE_CAP`; see `FaceRect`'s docstring.
+    #   * The face-quadtree descent is 30 levels long here rather than nine, so a
+    #     `code`/`x`/`y` restore that is off by a level has thirty chances to
+    #     show rather than nine.
+    #
+    # A MAX-LEVEL CORNER BLOCK is the sharpest cheap case: root at
+    # `max_level - 1`, target `max_level`, so the block is 2x2, flush on two
+    # sides, and its corner is a face corner — three faces meet there on S2 and
+    # the diagonal candidate does not exist, which is why the counts differ by
+    # system. It costs a few hundred microseconds because the halo is a dozen
+    # cells however deep the descent; the level-20 arm is the same shape one
+    # decade shallower, so a failure that is about the DEPTH and not about the
+    # corner separates the two.
+    @testset "the band walk at max_level and at level 20" begin
+        for sys in SQUARE_SYSTEMS
+            mx = max_level(sys)
+            for base in (mx - 1, 19), conn in (Vertex(), Edge())
+                l = base + 1
+                # Position 1 is lattice (0, 0) of face 0 under both curves: the
+                # Morton systems because min-code is min-corner, S2 because the
+                # Hilbert curve enters face 0 at its origin.
+                c = cellindex(levelgrid(sys, base), 1)
+                it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+                @test it.engine isa DGG.Fallbacks.SquareBandEngine
+                @test it.engine.check isa DGG.Fallbacks.NativeCheck
+                @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+                check_halo_case(sys, c, l, conn)
+            end
+        end
+        # The counts, pinned so a walk that agreed with a wrong oracle would
+        # still have to explain itself. A 2x2 corner block has five in-face band
+        # cells; the rest come across the two seams, and the diagonal one exists
+        # on HEALPix and not at an S2 cube corner or an ISEA4R icosahedral
+        # vertex. `Edge()` drops all four diagonal contacts on every system.
+        for (sys, nv) in ((HEALPixSystem(), 12), (S2System(), 11),
+                          (ISEA4RSystem(), 11))
+            mx = max_level(sys)
+            c = cellindex(levelgrid(sys, mx - 1), 1)
+            @test length(collect(SubtreeHaloIterator(sys, c, mx))) == nv
+            @test length(collect(SubtreeHaloIterator(sys, c, mx;
+                connectivity = Edge()))) == 8
+        end
+    end
+
+    # -----------------------------------------------------------------------
+    # The generic walk, still oracled where it is still the walk
+    # -----------------------------------------------------------------------
+
+    # `check_root_classes` asserts the square systems' `fallback` class is empty,
+    # which says the specialization was reached but says nothing about the walk
+    # it would have fallen back TO. That walk is not dead code — it is what H3
+    # and IGeo7 take today, and what any future system inherits — so it is
+    # oracled here directly, on roots that genuinely reach it. Without this arm
+    # the generic engine is only ever compared against ITSELF under a different
+    # adjacency provider (the "geometry agrees with topology" testset), which is
+    # a test of the predicate and not of the walk.
+    @testset "the generic fallback still agrees with the oracle" begin
+        for sys in (H3System(), IGeo7System()), base in (0, 1),
+                conn in (Vertex(), Edge())
+            grid = levelgrid(sys, base)
+            roots = unique(vcat(sample_cells(grid, 3), irregular_cells(grid, 2)))
+            for c in roots, l in (base + 1):min(base + 2, max_level(sys))
+                it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+                @test it.engine isa DGG.Fallbacks.OutsideWalkEngine
+                @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+            end
         end
     end
 

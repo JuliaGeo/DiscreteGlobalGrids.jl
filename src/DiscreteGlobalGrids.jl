@@ -188,7 +188,11 @@ Important cross-system traits:
     `max_neighbors(A5System(), Edge()) == 5`; at resolution 1, some cells have
     11 vertex-neighbours and 3 edge-neighbours. Above level 1, ISEA4R has ten
     degree-9 cells at icosahedral vertices 0 and 11, thirty degree-7 cells, and
-    degree 8 elsewhere; level 0 is 6-regular.
+    degree 8 elsewhere; level 0 is 6-regular. Among the literature families,
+    ISEA3H/4H are degree 6 with twelve degree-5 pentagons and the two
+    connectivities coincide; ISEA4T is 3-regular under `Edge()` and reaches 12
+    under `Vertex()`; rHEALPix/AusPIX and the IVEA/RTEA rhombi are 4-regular
+    under `Edge()` and reach 8 and 9 respectively under `Vertex()`.
   - **[`node_extent`](@ref).** Systems with spatially nested chart trees provide
     tight caps. The ISEA3H/4H prefix trees are deliberately non-spatial and may
     require caps wider than a hemisphere; their documentation states that
@@ -227,6 +231,14 @@ Important cross-system traits:
     when one exists, with eight samples and a great-circle fallback across the
     five-face development cut. It is a finite polygon approximation; analytic
     `cell_area` is the equal-area value and is independent of it.
+  - IVEA/RTEA `cell_boundary` densifies each chart edge to thirty-two segments
+    at every level — 128 points per cell, four times the density of the other
+    congruent systems — which holds midpoint-to-chord deviation under 2e-5 rad
+    at a level-0 root and far under it below. The count is level-INDEPENDENT on
+    purpose: chording a parent and its children at different steps opens a lens
+    between the two polylines that a mixed-level `MultiOrderCoverage` reads as a
+    sliver. `cell_area` is the analytic equal-area value and does not read the
+    polygon.
 
 Use [`levels`](@ref) and [`levelgrid`](@ref) to construct queryable grids. Each
 system module documents its identifier codec and optimized operations.

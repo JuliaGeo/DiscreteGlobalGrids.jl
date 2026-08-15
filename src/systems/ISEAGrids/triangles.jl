@@ -149,7 +149,23 @@ function _tri_edge_neighbors(g::LevelGrid{ISEA4TSystem}, c::DGG.LevelIndex)
 end
 
 @inline function _same_vertex(a, b)
-    return vdot(Tuple(a), Tuple(b)) >= 1 - 2e-13
+    return vdot(a, b) >= 1 - 2e-13
+end
+
+"""
+    _tri_corners(sys, c) -> NTuple{3,NTuple{3,Float64}}
+
+The cell's three corners on the sphere.
+
+Vertex incidence is a statement about corners, so this is what the vertex star
+tests — three inverse projections, against the twenty-four
+[`cell_boundary`](@ref) spends densifying the edges between them. The densified
+points can only ever confirm a shared edge, which the corners already report,
+because a conforming subdivision has no T-junctions.
+"""
+function _tri_corners(sys::ISEA4TSystem, c::DGG.LevelIndex)
+    face, t = _triangle(c)
+    return ntuple(j -> from_grid(sys.orientation, snyder_inv_xyz(face, t[j])), 3)
 end
 
 function _tri_sort_ccw!(cells, g, subject)
@@ -163,7 +179,10 @@ function _tri_sort_ccw!(cells, g, subject)
         mod(atan(vdot(d, e2), vdot(d, e1)), 2pi)
     end
     zeroaz = az(minimum(cells))
-    sort!(cells; by=c -> (mod(az(c) - zeroaz, 2pi), c))
+    # Keyed once per cell rather than once per comparison; `az` is a centroid
+    # construction, and `by` runs on every comparison the sort makes.
+    keys = map(c -> (mod(az(c) - zeroaz, 2pi), c), cells)
+    permute!(cells, sortperm(keys))
     return cells
 end
 
@@ -186,9 +205,16 @@ function _tri_neighbors1(g::LevelGrid{ISEA4TSystem}, c::DGG.LevelIndex,
         end
         frontier = shell
     end
-    ring = DGG.cell_boundary(g, c)
-    out = [n for n in candidates if any(_same_vertex(a, b)
-        for a in ring for b in DGG.cell_boundary(g, n))]
+    ring = _tri_corners(g.system, c)
+    # Each candidate's corners are built once. In the flattened generator this
+    # replaces, `cell_boundary(g, n)` was the INNER iterable and so was rebuilt
+    # for every vertex of the subject's ring — twenty-four densified rings per
+    # candidate, for a test that three corners settle.
+    out = DGG.LevelIndex[]
+    for n in candidates
+        corners = _tri_corners(g.system, n)
+        any(_same_vertex(a, b) for a in ring, b in corners) && push!(out, n)
+    end
     return _tri_sort_ccw!(out, g, c)
 end
 

@@ -63,11 +63,19 @@ function cell_center(sys,ix,iy,root,nside)
     x=(ix+0.5)/nside; y=(iy+0.5)/nside
     # Deep aperture-9 cells adjacent to an internal fundamental-triangle apex
     # are smaller than the directional condition number of the RTEA forward
-    # construction. Return a point one eighth of a cell farther from the apex;
+    # construction. Return a point a quarter of a cell farther from the apex;
     # `cell_centroid` promises an interior representative, not necessarily the
     # area centroid.
+    #
+    # A quarter and not an eighth: measured over the 5x5 block around every
+    # root's apex at level 16, an eighth of a cell still leaves the forward map
+    # landing 0.81 cell widths away — inside the NEIGHBOUR — while a quarter
+    # round-trips exactly, as does anything larger up to the half-cell the cell
+    # itself bounds. An eighth was inside the amplified error rather than
+    # outside it, and passed on the rounding of the inverse rather than on
+    # margin.
     if sys isa RTEA9RSystem && nside >= 3^15
-        d=0.125/Float64(nside)
+        d=0.25/Float64(nside)
         if abs(x-0.5) <= 2.5/Float64(nside) && abs(y-0.5) <= 2.5/Float64(nside)
             if x==0.5 && y==0.5
                 x+=d; y-=d

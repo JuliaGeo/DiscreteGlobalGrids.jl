@@ -54,10 +54,31 @@ function DGG.ancestor(sys::RhombicSystem,c::DGG.LevelIndex,target::Integer)
     return DGG.LevelIndex(t,rowmajor(ix÷q,iy÷q,r,tn))
 end
 
-# Curved inverse-projected chart edges are represented by 32 great-circle
-# segments per edge.  This is a polygonal geometry contract (not the analytic
-# area calculation); at level zero it reduces midpoint-to-chord deviation from
-# about 3.1e-4 rad at 8 segments to below 2e-5 rad.
+# Curved inverse-projected chart edges are represented by great-circle segments.
+# This is a polygonal geometry contract, not the analytic area calculation.
+#
+# Thirty-two per edge at EVERY level, and deliberately not fewer with depth.
+# The deviation of a segment from the edge it chords is quadratic in the chart
+# step `1/(nseg * nside)`, so a level-7 cell at one segment per edge already
+# holds 1.2e-6 rad — sixteen times tighter than the 1.9e-5 rad that thirty-two
+# segments buy at level zero, and the obvious economy is to spend the segments
+# only where the curvature is.
+#
+# It does not survive a MIXED-LEVEL set. A parent's edge and the child edges
+# along it are then chorded at different steps, and the lens between the two
+# polylines belongs to neither polygon: a `MultiOrderCoverage` of California
+# leaves five sampled interior points in no cell at all, every one of them where
+# a level-6 cell abuts level-7 ones. These systems are congruent — four children
+# tile their parent — and `multiorder_polygons.jl` pins that tiling at zero
+# slivers, so the gap is a broken law and not a tolerance.
+#
+# Nesting the polylines would fix it and cannot be afforded: a parent's samples
+# contain its children's only when `nseg(l) == s * nseg(l+1)`, which from a leaf
+# at one segment means `s^(maxlevel - l)` segments at level `l` — 2^25 of them
+# at a root. A level-independent count is what makes the mismatch quadratically
+# small instead of zero, and thirty-two is where it stops being observable.
+#
+# The projection under it got 5.3x faster instead; that is where the win is.
 const BOUNDARY_SEGMENTS=32
 function DGG.cell_boundary(sys::RhombicSystem,c::DGG.LevelIndex)
     n=_nside(sys,DGG.level(c)); ix,iy,r=from_rowmajor(checked(sys,c),n)
@@ -72,9 +93,19 @@ function DGG.cell_area(g::RhombicLevelGrid,c::DGG.LevelIndex)
     return 4Float64(pi)/_ncells(g.system,g.level)
 end
 
+# Children tile their parent, so a cell's own bounding cap already covers its
+# whole subtree and the extent is just that cap plus the slack the sampled
+# polyline leaves for the arcs between samples.
+#
+# Four segments per edge and not eight: measured across levels 0 to 7, halving
+# the samples widens the cap by 6.7% — a 14% area increase, against half the
+# inverse projections at every node of every tree descent. Two segments would
+# widen it by 20% and one by 47%, which is where the pruning starts paying for
+# the projections it saved.
+const EXTENT_SEGMENTS=4
 function DGG.node_extent(sys::RhombicSystem,c::DGG.LevelIndex)
     n=_nside(sys,DGG.level(c)); ix,iy,r=from_rowmajor(checked(sys,c),n)
-    ctr=cell_center(sys,ix,iy,r,n); pts=perimeter(sys,ix,iy,r,n,8)
+    ctr=cell_center(sys,ix,iy,r,n); pts=perimeter(sys,ix,iy,r,n,EXTENT_SEGMENTS)
     rad=maximum(US.spherical_distance(ctr,p) for p in pts)
     gap=maximum(US.spherical_distance(pts[i],pts[mod1(i+1,length(pts))]) for i in eachindex(pts))
     return SphericalCap(ctr,nextfloat(min(Float64(pi),rad+gap/2)))
@@ -94,43 +125,55 @@ function one_ring(g::RhombicLevelGrid,c::DGG.LevelIndex,conn::DGG.Connectivity)
 end
 
 function sort_ring!(ids,g::RhombicLevelGrid,subject::DGG.LevelIndex,ref::DGG.LevelIndex)
-    isempty(ids) && return ids
+    length(ids)<=1 && return ids
     c=_xyz(DGG.cell_centroid(g,subject)); rp=_xyz(DGG.cell_centroid(g,ref))
     rt=vadd(rp,vscale(c,-vdot(rp,c))); vnorm(rt)<1e-12 && return sort!(ids)
     u=vnormalize(rt); w=vcross(c,u)
-    az(id)=begin
+    # One centroid per cell, not one per comparison; see `sort_ccw!`.
+    keys=map(ids) do id
         p=_xyz(DGG.cell_centroid(g,id)); t=vadd(p,vscale(c,-vdot(p,c)))
-        n=vnorm(t); n<1e-12 ? (2pi,DGG.rawid(id)) : (mod(atan(vdot(t,w),vdot(t,u)),2pi),DGG.rawid(id))
+        n=vnorm(t)
+        n<1e-12 ? (2pi,DGG.rawid(id)) : (mod(atan(vdot(t,w),vdot(t,u)),2pi),DGG.rawid(id))
     end
-    return sort!(ids,by=az)
+    permute!(ids,sortperm(keys))
+    return ids
 end
 
-function DGG.neighbors(g::RhombicLevelGrid,c::DGG.LevelIndex,k::Integer=1;connectivity::DGG.Connectivity=DGG.Vertex())
-    steps=Int(k); steps>=0 || throw(ArgumentError("k must be non-negative")); steps==0 && return DGG.LevelIndex[]
-    seen=Set{DGG.LevelIndex}((c,)); frontier=DGG.LevelIndex[c]; result=DGG.LevelIndex[]
-    ref=first(one_ring(g,c,connectivity))
+# The one breadth-first walk both `neighbors` and `ring` read: `neighbors` is its
+# shells concatenated and `ring` is one of them, which is the contract's own
+# relation between the two verbs. Written once so the two cannot drift, and so
+# that asking for the ring does not repeat the disc's walk.
+#
+# Ring 1 comes out of `one_ring` already counter-clockwise; the outer shells are
+# sorted about the same zero azimuth, which is ring 1's head.
+function _shells(g::RhombicLevelGrid,c::DGG.LevelIndex,steps::Int,
+        connectivity::DGG.Connectivity)
+    shells=Vector{DGG.LevelIndex}[]
+    seen=Set{DGG.LevelIndex}((c,)); frontier=DGG.LevelIndex[c]
+    ref=c
     for j in 1:steps
         nxt=DGG.LevelIndex[]
         for x in frontier, y in one_ring(g,x,connectivity)
             y in seen && continue; push!(seen,y); push!(nxt,y)
         end
-        j>1 && sort_ring!(nxt,g,c,ref)
-        append!(result,nxt); frontier=nxt
+        j==1 ? (isempty(nxt) || (ref=first(nxt))) : sort_ring!(nxt,g,c,ref)
+        push!(shells,nxt)
+        isempty(nxt) && break
+        frontier=nxt
     end
-    return result
+    return shells
+end
+
+function DGG.neighbors(g::RhombicLevelGrid,c::DGG.LevelIndex,k::Integer=1;connectivity::DGG.Connectivity=DGG.Vertex())
+    steps=Int(k); steps>=0 || throw(ArgumentError("k must be non-negative"))
+    steps==0 && return DGG.LevelIndex[]
+    shells=_shells(g,c,steps,connectivity)
+    return isempty(shells) ? DGG.LevelIndex[] : reduce(vcat,shells)
 end
 
 function DGG.ring(g::RhombicLevelGrid,c::DGG.LevelIndex,k::Integer;connectivity::DGG.Connectivity=DGG.Vertex())
-    steps=Int(k); steps>=0 || throw(ArgumentError("k must be non-negative")); steps==0 && return [c]
-    seen=Set{DGG.LevelIndex}((c,)); frontier=DGG.LevelIndex[c]
-    ref=first(one_ring(g,c,connectivity))
-    for j in 1:steps
-        nxt=DGG.LevelIndex[]
-        for x in frontier,y in one_ring(g,x,connectivity)
-            y in seen && continue; push!(seen,y); push!(nxt,y)
-        end
-        j>1 && sort_ring!(nxt,g,c,ref)
-        frontier=nxt
-    end
-    return frontier
+    steps=Int(k); steps>=0 || throw(ArgumentError("k must be non-negative"))
+    steps==0 && return [c]
+    shells=_shells(g,c,steps,connectivity)
+    return steps<=length(shells) ? shells[steps] : DGG.LevelIndex[]
 end

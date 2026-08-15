@@ -183,50 +183,83 @@ function DGG.descendant_range(::ISEA4HSystem, c::DGG.LevelIndex, l::Integer)
     return Int(loid + 1):Int(hiid + 1)
 end
 
-@inline function _digits(path::Int64, r::Int, A::Int)
-    out = Vector{Int}(undef, r)
-    for k in r:-1:1
-        path, d = divrem(path, A)
-        out[k] = Int(d)
-    end
-    return out
-end
-
 # DGGRID-compatible central-place center construction.  A4 is the ordinary
 # class-I triangular lattice.  A3 alternates class II/class I; the even-level
 # digit gauge depends on the preceding ternary digit.  These are the
 # modified-balanced-ternary directions of Sahr (2008), expressed directly in
 # the base vertex's five-face development.
+#
+# The construction is a PREFIX SUM over the digits, and it is split into its
+# three parts — one digit's step, the wedge fold of a whole sum, and the walk
+# that composes them — because the inverse in `_locate_in_root` extends prefixes
+# one digit at a time and can then carry the running sum instead of re-walking
+# every digit of every candidate.
+
+# The directions and the radial scales, tabulated. Both are drawn from a handful
+# of values and the inverse below evaluates `_dev_step` a few hundred times per
+# located point, so a `cis` and a `^` per evaluation is the whole inner loop.
+# Each entry is the same expression the step used to write inline, so the values
+# are bit-identical to the ones it computed.
+const DEV_DIR4 = ntuple(s -> ntuple(d ->
+    cis(deg2rad((0.0, 180.0, 60.0, 120.0)[d + 1] - (s == 2 ? 60.0 : 0.0))), 3), 2)
+
+const DEV_DIR3 = ntuple(s -> ntuple(odd -> ntuple(prev -> ntuple(d -> begin
+    theta = odd == 2 ? (d == 1 ? 90.0 : 150.0) :
+            prev == 1 ? (d == 1 ? 60.0 : 120.0) :
+            prev == 2 ? (d == 1 ? 180.0 : 0.0) :
+            (d == 1 ? 240.0 : 300.0)
+    cis(deg2rad(theta - (s == 2 ? 60.0 : 0.0)))
+end, 2), 3), 2), 2)
+
+const DEV_SCALE4 = ntuple(k -> L_PLANE / 2.0^k, 32)
+const DEV_SCALE3 = ntuple(k -> L_PLANE / sqrt(3.0)^k, 32)
+
+"""
+    _dev_step(A, south, d, prev, k) -> ComplexF64
+
+Digit `d`'s contribution to the development-plane offset, at depth `k` and
+following digit `prev`. The aperture-3 gauge alternates class II/class I, so its
+even-depth direction depends on `prev`; the aperture-4 gauge ignores it. Digit
+`0` is the centre and contributes nothing.
+"""
+@inline function _dev_step(A::Int, south::Bool, d::Int, prev::Int, k::Int)
+    d == 0 && return complex(0.0, 0.0)
+    s = south ? 2 : 1
+    A == 4 && return @inbounds DEV_SCALE4[k] * DEV_DIR4[s][d]
+    return @inbounds DEV_SCALE3[k] * DEV_DIR3[s][isodd(k) ? 2 : 1][prev + 1][d]
+end
+
+"""
+    _dev_fold(u) -> ComplexF64
+
+The five-face development is a 300-degree cone; a summed offset that has run
+past the cut comes back by one 60-degree turn. Applied to a completed sum, never
+to a partial one.
+"""
+@inline function _dev_fold(u::ComplexF64)
+    u == 0 && return u
+    # `psi >= 300` puts the representative in the fourth quadrant of the cone,
+    # so a non-negative imaginary part settles it without the `atan` — which is
+    # the common case, and the `atan` was per candidate of the descent.
+    imag(u) >= 0 && return u
+    psi = mod(rad2deg(angle(u)), 360.0)
+    return psi >= 300.0 - 1e-10 ? u * cis(-pi / 3) : u
+end
+
 function _hex_dev(A::Int, root::Int, path::Int64, r::Int)
-    ds = _digits(path, r, A)
-    u = complex(0.0, 0.0)
+    r <= 0 && return complex(0.0, 0.0)
     south = 6 <= root <= 10
-    if A == 4
-        dirs = (0.0, 180.0, 60.0, 120.0)
-        for k in 1:r
-            d = ds[k]; d == 0 && continue
-            theta = dirs[d + 1] - (south ? 60.0 : 0.0)
-            u += (L_PLANE / 2.0^k) * cis(deg2rad(theta))
-        end
-    else
-        for k in 1:r
-            d = ds[k]; d == 0 && continue
-            theta = if isodd(k)
-                d == 1 ? 90.0 : 150.0
-            else
-                prev = ds[k - 1]
-                prev == 0 ? (d == 1 ? 60.0 : 120.0) :
-                    prev == 1 ? (d == 1 ? 180.0 : 0.0) :
-                    (d == 1 ? 240.0 : 300.0)
-            end
-            u += (L_PLANE / sqrt(3.0)^k) * cis(deg2rad(theta - (south ? 60.0 : 0.0)))
-        end
+    u = complex(0.0, 0.0)
+    prev = 0
+    rest = path
+    divisor = Int64(A)^(r - 1)
+    for k in 1:r
+        d, rest = divrem(rest, divisor)
+        divisor ÷= A
+        u += _dev_step(A, south, Int(d), prev, k)
+        prev = Int(d)
     end
-    if u != 0
-        psi = mod(rad2deg(angle(u)), 360.0)
-        psi >= 300.0 - 1e-10 && (u *= cis(-pi / 3))
-    end
-    return u
+    return _dev_fold(u)
 end
 
 @inline function _hexparts(c::Z3Cell)
@@ -357,34 +390,49 @@ end
 # planar representatives related by a 60-degree turn.  Taking the minimum of
 # the ordinary and the two adjacent representatives makes face-seam inversion
 # deterministic without changing distances in the cone interior.
-@inline function _dev_distance(x::ComplexF64, u::ComplexF64)
+@inline _dev_angle(x::ComplexF64) = mod(rad2deg(angle(x)), 360.0)
+
+@inline function _dev_distance(x::ComplexF64, u::ComplexF64, ax::Float64)
     d = abs(x - u)
-    ax = mod(rad2deg(angle(x)), 360.0)
-    au = mod(rad2deg(angle(u)), 360.0)
     # Only the two sides of the missing wedge are identified.  Rotating an
-    # interior representative would incorrectly identify different centers.
+    # interior representative would incorrectly identify different centers —
+    # and a query point away from the cut can never be identified with
+    # anything, so its candidates' own angles are never needed. `ax` is a
+    # property of the query, hoisted out of the descent that reuses it.
+    (ax <= 30.0 || ax >= 270.0) || return d
+    au = _dev_angle(u)
     au >= 270.0 && ax <= 30.0 && (d = min(d, abs(x - u * cis(pi / 3))))
     ax >= 270.0 && au <= 30.0 && (d = min(d, abs(x - u * cis(-pi / 3))))
     return d
 end
 
+@inline _dev_distance(x::ComplexF64, u::ComplexF64) = _dev_distance(x, u, _dev_angle(x))
+
 function _locate_in_root(A::Int, root::Int, x::ComplexF64, target::Int)
-    frontier = Int64[0]
+    south = 6 <= root <= 10
+    digits = _polar(root) ? (0:0) : (0:(A - 1))
+    ax = _dev_angle(x)
+    # A frontier entry is `(running sum, last digit, path)`. The development
+    # offset is a prefix sum, so extending a candidate by one digit is one
+    # `_dev_step`; re-deriving it with `_hex_dev` walked all `k` digits again and
+    # allocated a digit vector per candidate, which made the descent quadratic in
+    # the level for no gain.
+    frontier = [(complex(0.0, 0.0), 0, Int64(0))]
+    scored = Tuple{Float64,ComplexF64,Int,Int64}[]
     for k in 1:target
-        scored = Tuple{Float64,Int64}[]
-        for prefix in frontier
-            digits = _polar(root) ? (0:0) : (0:(A - 1))
-            for d in digits
-                path = prefix * A + d
-                dist = _dev_distance(x, _hex_dev(A, root, path, k))
-                push!(scored, (dist, path))
-            end
+        empty!(scored)
+        for (raw, prev, prefix) in frontier, d in digits
+            step = raw + _dev_step(A, south, d, prev, k)
+            push!(scored, (_dev_distance(x, _dev_fold(step), ax), step, d, prefix * A + d))
         end
-        sort!(scored)
-        frontier = [scored[i][2] for i in 1:min(24, length(scored))]
+        # `(distance, path)`, so that ties resolve by path as they did when the
+        # scored entries were that pair and nothing else.
+        sort!(scored; by = s -> (s[1], s[4]))
+        length(scored) > 24 && resize!(scored, 24)
+        frontier = [(s[2], s[3], s[4]) for s in scored]
     end
-    bestpath = frontier[1]
-    return bestpath, _dev_distance(x, _hex_dev(A, root, bestpath, target))
+    bestraw, _, bestpath = frontier[1]
+    return bestpath, _dev_distance(x, _dev_fold(bestraw), ax)
 end
 
 function _hex_cellat_face(g, q::NTuple{3,Float64}, A::Int)
@@ -466,7 +514,10 @@ function _hex_sort_ccw!(cells, g, subject)
         mod(atan(vdot(d, e2), vdot(d, e1)), 2pi)
     end
     zeroaz = az(minimum(cells))
-    sort!(cells; by=c -> (mod(az(c) - zeroaz, 2pi), c))
+    # Keyed once per cell rather than once per comparison: `az` is a centroid
+    # construction, and `by` runs on every comparison the sort makes.
+    keys = map(c -> (mod(az(c) - zeroaz, 2pi), c), cells)
+    permute!(cells, sortperm(keys))
     return cells
 end
 

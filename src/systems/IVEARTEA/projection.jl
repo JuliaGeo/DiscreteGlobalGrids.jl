@@ -81,8 +81,8 @@ end
 @inline midpoint(a::Vec3,b::Vec3) = vnormalize(vadd(a,b))
 @inline midpoint(a::Vec2,b::Vec2) = ((a[1]+b[1])/2, (a[2]+b[2])/2)
 
-"Return the six `(sphere vertices, planar vertices)` fundamental triangles of face `f`."
-function fundamental_triangles(f::Int)
+"Build the six `(sphere vertices, planar vertices)` fundamental triangles of face `f`."
+function build_fundamental_triangles(f::Int)
     ia,ib,ic = FACE_VERTICES[f+1]
     va,vb,vc = ICO_VERTICES[ia+1],ICO_VERTICES[ib+1],ICO_VERTICES[ic+1]
     pa,pb,pc = FACE_PLANAR[f+1]
@@ -96,6 +96,14 @@ function fundamental_triangles(f::Int)
         ((m[3],vb,ctr),(pm[3],pb,pct)), ((m[3],va,ctr),(pm[3],pa,pct)),
     )
 end
+
+# The twenty faces' triangles, built once. They are a function of the fixed
+# icosahedron alone, and rebuilding them per projected point cost six midpoint
+# normalisations on every call of the two hottest functions here.
+const FUNDAMENTAL_TRIANGLES = ntuple(i -> build_fundamental_triangles(i - 1), 20)
+
+"The six `(sphere vertices, planar vertices)` fundamental triangles of face `f`."
+@inline fundamental_triangles(f::Int) = @inbounds FUNDAMENTAL_TRIANGLES[f+1]
 
 @inline _radial_index(::IVEAProfile) = 2 # icosahedron vertex
 @inline _radial_index(::RTEAProfile) = 1 # edge midpoint / RT face centre
@@ -141,6 +149,56 @@ function forward_triangle(p::Vec3, A::Vec3,B::Vec3,C::Vec3, PA::Vec2,PB::Vec2,PC
     return cartesian((1-h,h*(1-q),h*q), PA,PB,PC)
 end
 
+"""
+    area_parameter(A, B, C, target) -> Float64
+
+The `t` in `[0, 1]` at which `spherical_area(A, B, slerp(B, C, t))` reaches
+`target`.
+
+Monotone inversion of the published angular-area coordinate: a safeguarded
+evaluation of the analytic construction, independent of any grid fixture, and
+avoiding the ill-conditioned closed form at the vertices.
+
+The map is smooth and strictly increasing from `0` to the triangle's own area,
+so `[0, 1]` brackets the root from the start. Illinois — regula falsi with the
+stale endpoint's value halved — keeps that bracket and converges superlinearly,
+where plain bisection spends one area evaluation per bit of `t`. The arc `BC` is
+fixed across the whole solve, so its length and the `sin` of it are hoisted out
+of the loop; a `slerp` call would recompute both on every step.
+
+This is the inner loop of the whole system: every `cell_centroid`,
+`cell_boundary` vertex and `node_extent` is one call of it per point.
+"""
+function area_parameter(A::Vec3, B::Vec3, C::Vec3, target::Float64)
+    d = angle(B,C)
+    d < 2eps(Float64) && return 0.0
+    sd = sin(d)
+    flo = -target
+    fhi = spherical_area(A,B,C) - target
+    flo >= 0 && return 0.0
+    fhi <= 0 && return 1.0
+    lo, hi = 0.0, 1.0
+    stale = 0
+    for _ in 1:64
+        hi - lo <= 4eps(hi) && break
+        t = (lo*fhi - hi*flo) / (fhi - flo)
+        (t > lo && t < hi) || (t = (lo + hi)/2)
+        D = vnormalize(vadd(vscale(B, sin((1-t)*d)/sd), vscale(C, sin(t*d)/sd)))
+        ft = spherical_area(A,B,D) - target
+        ft == 0 && return t
+        if ft < 0
+            lo, flo = t, ft
+            stale == 1 && (fhi /= 2)
+            stale = 1
+        else
+            hi, fhi = t, ft
+            stale == -1 && (flo /= 2)
+            stale = -1
+        end
+    end
+    return (lo + hi)/2
+end
+
 function inverse_triangle(p::Vec2, A::Vec3,B::Vec3,C::Vec3, PA::Vec2,PB::Vec2,PC::Vec2)
     w = barycentric(p,PA,PB,PC)
     w[1] > 1-2e-14 && return A
@@ -150,16 +208,7 @@ function inverse_triangle(p::Vec2, A::Vec3,B::Vec3,C::Vec3, PA::Vec2,PB::Vec2,PC
     h < 2e-15 && return A
     target = clamp(w[3]/h,0.0,1.0)*FUNDAMENTAL_AREA
 
-    # Monotone inversion of the published angular-area coordinate.  This is a
-    # safeguarded evaluation of the analytic construction, independent of any
-    # grid fixture, and avoids the ill-conditioned closed form at vertices.
-    lo,hi = 0.0,1.0
-    for _ in 1:58
-        mid=(lo+hi)/2
-        Dm=slerp(B,C,mid)
-        if spherical_area(A,B,Dm) < target; lo=mid else hi=mid end
-    end
-    D=slerp(B,C,(lo+hi)/2)
+    D=slerp(B,C,area_parameter(A,B,C,target))
     ad=angle(A,D)
     ad < 2eps(Float64) && return A
     x=2asin(clamp(h*sin(ad/2),-1.0,1.0))

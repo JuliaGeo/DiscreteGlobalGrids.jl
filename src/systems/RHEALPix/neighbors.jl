@@ -59,7 +59,7 @@ end
 # scale, where floating point has enormous headroom.  The resulting metadata
 # is then applied with integer ternary lattice arithmetic at every depth.
 # Direction slots are projected up, left, down, right.
-function _seam_metadata(sys::RHEALPixSystem, root::Int, direction::Int)
+function _derive_seam(sys::RHEALPixSystem, root::Int, direction::Int)
     ulx, uly = _root_ul(sys, root)
     delta = HALFPI / 32
     function across(t)
@@ -95,6 +95,23 @@ function _seam_metadata(sys::RHEALPixSystem, root::Int, direction::Int)
     bvary = target_edge in (1, 3) ? b[2] : b[3]
     return a[1], target_edge, bvary < avary
 end
+
+# The cut topology is a property of the two polar-square placements alone. The
+# derivation above round-trips plane -> sphere -> plane, and the longitude origin
+# cancels in that round trip, so sixteen placements times six roots times four
+# directions is the whole space: 384 entries, built once at load.
+#
+# Deriving it per call is what a seam crossing used to cost — four projections
+# and two inverse projections for a move that is otherwise integer arithmetic on
+# the ternary lattice, and `vertex_neighbors` makes nine such moves.
+const SEAM_TABLE = ntuple(16) do i
+    north, south = divrem(i - 1, 4)
+    sys = RHEALPixSystem(UInt8(north), UInt8(south), 0.0)
+    ntuple(root -> ntuple(direction -> _derive_seam(sys, root - 1, direction), 4), 6)
+end
+
+@inline _seam_metadata(sys::RHEALPixSystem, root::Int, direction::Int) =
+    @inbounds SEAM_TABLE[4 * Int(sys.north_square) + Int(sys.south_square) + 1][root+1][direction]
 
 """
     edge_neighbors(grid, cell) -> NTuple{4,RHEALPixCell}
@@ -175,9 +192,11 @@ function _sort_ccw!(cells::Vector{RHEALPixCell}, g::LevelGrid,
               center[3] * e1[1] - center[1] * e1[3],
               center[1] * e1[2] - center[2] * e1[1])
     end
-    sort!(cells; by = cell ->
-        (mod(_azimuth_about(center, e1, e2, DGG.cell_centroid(g, cell)),
-             2 * Float64(pi)), cell))
+    # One centroid per cell, not one per comparison: `by` is applied at every
+    # comparison, and a centroid here is an inverse projection.
+    keys = map(cell -> (mod(_azimuth_about(center, e1, e2, DGG.cell_centroid(g, cell)),
+        2 * Float64(pi)), cell), cells)
+    permute!(cells, sortperm(keys))
     return cells
 end
 

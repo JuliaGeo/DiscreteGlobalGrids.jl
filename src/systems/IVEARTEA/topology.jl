@@ -59,14 +59,22 @@ end
 @inline _xyz(p)=(Float64(p[1]),Float64(p[2]),Float64(p[3]))
 
 function sort_ccw!(cells,sys,subject,nside)
+    length(cells)<=1 && return cells
     ix,iy,r=subject; c=_xyz(cell_center(sys,ix,iy,r,nside))
     # Start ray is the local +x neighbor direction (or its seam continuation).
-    refcell=first(lattice_neighbors(ix,iy,r,nside,DGG.Edge()))
-    rx,ry,rr=refcell; ref=_xyz(cell_center(sys,rx,ry,rr,nside))
+    # `lattice_neighbors` emits `OFFSETS` in slot order under both
+    # connectivities and slot 1 IS `(+1, 0)`, so the head of the unsorted ring is
+    # already that neighbour — asking for the edge ring again only to read its
+    # head cost a second traversal of the seam logic.
+    rx,ry,rr=first(cells); ref=_xyz(cell_center(sys,rx,ry,rr,nside))
     u=vnormalize(vadd(ref,vscale(c,-vdot(ref,c)))); w=vcross(c,u)
-    az(cell)=begin
+    # Keys are computed once per cell rather than once per comparison: an
+    # inverse projection per `az` call and O(n log n) comparisons made the
+    # centroids, not the sort, the cost of a one-ring.
+    keys=map(cells) do cell
         x,y,q=cell; p=_xyz(cell_center(sys,x,y,q,nside)); t=vadd(p,vscale(c,-vdot(p,c)))
-        mod(atan(vdot(t,w),vdot(t,u)),2pi)
+        (mod(atan(vdot(t,w),vdot(t,u)),2pi),rowmajor(x,y,q,nside))
     end
-    sort!(cells,by=x->(az(x),rowmajor(x...,nside)))
+    permute!(cells,sortperm(keys))
+    return cells
 end

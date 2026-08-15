@@ -76,8 +76,9 @@ Nine source children against IGEO7's seven is 63 tests where two is 14, and a
 coarse split also over-commits: a block nine times too big for the opposing node
 cannot be pruned against it at all, so the two trees stop narrowing together.
 Halving descends in the smallest step that still separates, so every level
-prunes. The 20-level depth that costs is free — a node is eight integers with no
-allocation.
+prunes. The extra depth that costs — bisection needs `log2` of the cell count
+where a `K`-way split needs `log_K` of it — is free, because a node is eight
+integers with no allocation.
 
 The multithreaded walk that dominates an 8-thread build makes that argument
 stronger than the single-threaded one does. `ConservativeRegridding`'s
@@ -230,14 +231,14 @@ leaf beneath the node can have, and at level 0 a whole tile.
 # What the pad is actually doing, which is not bounding that bow
 
 The cap's radius is set by the box's CORNERS ([`_box_cap`](@ref)), and a corner
-is farther from the box centre than any point on a bowed edge — over leaves
-sampled in every band and both pole rows, the corner clears the farthest
-interior ring point by a measured median of 1.7 of these pads on a 1° tile and
-about 1.8e3 of them on a pixel. So with `pad = 0` a leaf's ring is still inside
-its own cap: no point in the INTERIOR of a ring edge — which is where the bow
-lives — leaves the unpadded cap at all (worst `-2.4e-15` rad), and the only
+is farther from the box centre than any point on a bowed edge. So with `pad = 0`
+a leaf's ring is still inside its own cap, and that is measured over leaves
+sampled in every band and both pole rows: no point in the INTERIOR of a ring
+edge — which is where the bow lives — leaves the unpadded cap at all
+(`worst_interior`, asserted `< 0`, measured `-2.4e-15` rad), and the only
 overshoot is at the ring VERTICES, which are the corners the radius was built
-from, at `+3.2e-17` rad. That is float rounding in `spherical_distance`, not
+from (`worst_vertex`, asserted `< 1e-15`, measured `+3.2e-17` rad). That is
+float rounding in `spherical_distance`, not
 geometry, and it is asserted rather than merely measured in
 `test/systems/CopernicusDEM/runtests.jl`, "the block cursor is a tree over the
 lattice".

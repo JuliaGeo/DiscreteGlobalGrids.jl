@@ -56,7 +56,9 @@ lat_intervals(::CopernicusDEMSystem{N}) where {N} = N
 #   [85, 90)     10x       360           120
 #
 # Three independent confirmations: Product Handbook Table 3, the AWS bucket readme,
-# and direct measurement of 44 real COGs. See the research document, section 1.2.
+# and direct measurement of real COGs — 79 distinct ones, 61 GLO-30 and 18 GLO-90,
+# read off AWS by hand and committed as `test/systems/CopernicusDEM/fixtures.jl`,
+# whose header carries their provenance.
 #
 # This is the DGED table. DTED (`.dt1`/`.dt2`) has five bands with factors
 # 1, 2, 3, 4, 6 and is not implemented here; the AWS buckets ship DGED.
@@ -74,8 +76,9 @@ with half-open intervals. In the northern hemisphere the label is the equator-wa
 edge; in the southern hemisphere it is the pole-ward one. So `N50` (50 -> 51, edge 50)
 is 1.5x and 2400 columns wide, while `S50` (-50 -> -49, edge **49**) is 1x and **3600**
 columns wide. That asymmetry is not stated in either primary source; it was
-established by measuring 44 real tiles and is what `test/systems/CopernicusDEM/`'s
-fixture table pins.
+established by measuring real tiles, and `test/systems/CopernicusDEM/fixtures.jl`
+is those measurements — the 79 COGs its header accounts for — which the suite
+checks this function against tile by tile.
 """
 function band_factor2(lat_s::Integer)
     -90 <= lat_s <= 89 || throw(ArgumentError(

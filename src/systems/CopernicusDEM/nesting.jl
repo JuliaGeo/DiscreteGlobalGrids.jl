@@ -29,6 +29,10 @@ end
 """
     refine(coarse::CopernicusDEMSystem, fine::CopernicusDEMSystem, c) -> Vector{LevelIndex}
 
+**Module-local**, so call it as `DiscreteGlobalGrids.CopernicusDEM.refine`: it is not
+exported and not a method of any `DiscreteGlobalGrids` generic. The module docstring
+has why, and what it would collide with.
+
 The cells of `fine` that `c`, a cell of `coarse`, refines into: one tile at level 0, and
 `k²` pixels at level 1, where `k = lat_intervals(fine) ÷ lat_intervals(coarse)`
 ([`nesting_factor`](@ref)) — `k = 3` for the shipped GLO-30-inside-GLO-90 pair.
@@ -48,10 +52,10 @@ The block never leaves the tile (`k*j + k - 1 < k*N_coarse = N_fine`), so
 Both products anchor their first pixel centre on the same integer-degree point, use the
 same six-band reduction table, and have column counts that divide without remainder, so
 the coarse post at `(j, i)` and the fine post at `(k*j, k*i)` are the same point on the
-sphere — measured on `N50_00_E006_00`, GLO-90 `(0,0)` and GLO-30 `(0,0)` are both exactly
-`(6.0, 51.0)`, and GLO-90 `(10,10)` and GLO-30 `(30,30)` agree to 8.9e-16 degrees
-(research document §5.4). The `k²` fine posts of a block are the coarse post and the
-`k² - 1` fine posts immediately south and east of it.
+sphere. That co-location is the one thing here that is measured rather than argued: the
+test suite sweeps it as `worst_post`, and asserts `< 1e-12` degrees against the 4.2e-4
+degrees (1.5″) a half-pixel registration slip would move a post. The `k²` fine posts of
+a block are the coarse post and the `k² - 1` fine posts immediately south and east of it.
 
 !!! warning "The cell BOXES do not tile the coarse box"
     Both products are pixel-is-point, so a cell's box is its post ± half of **that
@@ -93,8 +97,11 @@ sphere — measured on `N50_00_E006_00`, GLO-90 `(0,0)` and GLO-30 `(0,0)` are b
 
 !!! warning "A grid hierarchy, not a value hierarchy"
     GLO-90 is an independently produced mission product resampled from WorldDEM, not a
-    3x3 mean of public GLO-30 — at `(6.0, 51.0)` they read 81.479 m and 82.476 m. Use
-    this to relate CELLS. Aggregate VALUES yourself if you need them consistent.
+    3x3 mean of public GLO-30: co-located posts of the two products carry different
+    elevations, by about a metre in the one pair that was read off AWS by hand. Nothing
+    in `test/` reads a GLO-30 raster, so take that figure as an order of magnitude and
+    not a measurement this repo reproduces. Use this pair to relate CELLS; aggregate
+    VALUES yourself if you need them consistent.
 """
 function refine(coarse::CopernicusDEMSystem, fine::CopernicusDEMSystem,
         c::DGG.LevelIndex)
@@ -119,6 +126,9 @@ end
 
 """
     coarsen(fine::CopernicusDEMSystem, coarse::CopernicusDEMSystem, c) -> LevelIndex
+
+**Module-local**, so call it as `DiscreteGlobalGrids.CopernicusDEM.coarsen`; same
+reasons as [`refine`](@ref).
 
 The single cell of `coarse` that `c`, a cell of `fine`, refines from: the tile with the
 same lower-left corner at level 0, and the pixel `(j ÷ k, i ÷ k)` of that tile at level 1,

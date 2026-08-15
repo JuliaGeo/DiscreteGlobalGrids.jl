@@ -64,6 +64,12 @@ dem = set(dem, X => Rasters.Intervals(Rasters.Start()), Y => Rasters.Intervals(R
 # ConservativeRegridding wants the source's cell corners on the unit sphere.
 # The destination needs no adapter: `treeify`, `ncells` and `getcell` are
 # extended for every `AbstractGrid`.
+#
+# The source could skip the adapter too: `DGG.CopernicusDEMSystem(30)` is this
+# exact lattice as a grid system, so `DGG.PartialGrid(sys, tile, 1)` is a whole
+# tile as an ordinary grid — no corner matrix, no `CellBasedGrid`. This page
+# keeps the hand-built route because it is the one that works for *any* raster;
+# `examples/copernicus_dem.jl` is the tile-native one, end to end.
 
 xbounds, ybounds = Rasters.intervalbounds(dem, (X, Y))
 # `intervalbounds` follows array-index order while each pair remains `(low,

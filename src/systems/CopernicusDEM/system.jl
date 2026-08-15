@@ -304,11 +304,14 @@ for a 1° tile and about 10 μm for a 1-arcsec pixel. That small-angle expressio
 estimate, not a bound, and it errs low: the exact bow of a 1° edge at latitude 45 is
 1.9038830e-5 rad against the formula's 1.9038589e-5.
 
-The two bows nearly cancel, so ring and box differ in area by 2.0e-5 of a 1° tile at
-latitude 50, rising to 5.1e-5 for a tile in the ±90 rows. For a pixel the gap is a few
-times 1e-11 in the 1x band, about 7e-10 (GLO-30) and 3.6e-9 (GLO-90) in the 10x band
-above latitude 85, and up to 1.4e-5 in the ±90 tile rows, whose cells are half-pixel
-slivers and pole triangles.
+The two bows nearly cancel, so ring and box differ in area only slightly. The
+`"ring vs box"` testset in `test/systems/CopernicusDEM/runtests.jl` measures that gap
+over every band and both pole rows, `@info`s it as `worst_tile` / `worst_pixel` /
+`worst_pole_pixel`, and bounds each: worst over tiles `< 1e-4` (5.1e-5, at the ±90
+rows), worst over pixels outside the ±90 tile rows `< 1e-8` (8.1e-10 GLO-30, 3.8e-9
+GLO-90), and worst over pixels inside them `< 1e-4` (1.4e-5 GLO-30, 1.2e-6 GLO-90) —
+those cells being half-pixel slivers and pole triangles. Run it for the current
+numbers rather than trusting these.
 
 Densifying would close that gap and cost this system its convexity: a densified
 poleward edge reads as a chain of REFLEX vertices, which is exactly why HEALPix,
@@ -366,18 +369,20 @@ end
 The exact solid angle of the cell's lat/lon BOX, `Δλ · (sin φ_N − sin φ_S)` steradians,
 in O(1).
 
-The box, not the published ring: the ring is the box's undensified geodesic quad, whose
-area differs by 2.0e-5 relative for a 1° tile at latitude 50 and 5.1e-5 for one in the
-±90 rows. [`cell_boundary`](@ref) carries the pixel-scale figures.
+The box, not the published ring: the ring is the box's undensified geodesic quad, and
+the two differ in area by the bow [`cell_boundary`](@ref) describes and the
+`"ring vs box"` testset measures.
 
 Both regions tile the sphere, so both sum to 4π — but this closed form does **not**
-telescope exactly. 890 of the 64 800 GLO-90 tiles (1 750 of the GLO-30 ones) have
-`east - west !== 1.0`, by up to 1.4e-14, so consecutive terms do not cancel to the last
-bit. The sum is accurate because those errors are tiny and because pairwise summation
-stops them accumulating, not because anything cancels: **materialise** the 64 800 tile
-areas into a `Vector` and Julia's pairwise `sum` lands 3.6e-15 from 4π (2.8e-16
-relative), while a generator — or any sequential accumulation — lands 2.9e-12 (GLO-30)
-or 1.4e-12 (GLO-90) away, some 400x further out.
+telescope exactly. 890 of the 64 800 GLO-90 tiles have `east - west !== 1.0`, by up to
+1.4e-14, so consecutive terms do not cancel to the last bit. The sum is accurate
+because those errors are tiny and because pairwise summation stops them accumulating,
+not because anything cancels: **materialise** the 64 800 tile areas into a `Vector` and
+Julia's pairwise `sum` lands 3.6e-15 from 4π, while a generator — or any sequential
+accumulation — lands 2.9e-12 (GLO-30) or 1.4e-12 (GLO-90) away and fails the
+`rtol = 1e-14` the suite asserts. That assertion, and those figures, are
+`"the boxes partition the sphere"` in `test/systems/CopernicusDEM/runtests.jl`; do not
+loosen its tolerance to accommodate a generator.
 
 `ConservativeRegridding` never reads this — it measures the ring itself
 (`ConservativeRegridding/src/regridder/regridder.jl:102-103`) — so no conservation
@@ -397,10 +402,11 @@ IS the box, and the published ring is a slightly different region.
 
 The generic fallback (`src/fallbacks/geometry.jl`) derives the extent from the ring, and
 that is wrong here in a way that matters. The ring's poleward edge bows past the box's
-parallel, so the derived `Y` upper bound overshoots the box's north edge by the bow —
-0.00107° for a 1° tile at latitude 50, 0.00109° at latitude 44 — and vertically adjacent
-tiles then report OVERLAPPING extents. Extents of a partition must abut, because callers
-use them to decide which cells a query region can touch.
+parallel by the `(Δλ²/8)·sin φ·cos φ` [`cell_boundary`](@ref) quantifies — 0.00107° for
+a 1° tile at mid latitudes, four GLO-30 pixel rows — so the derived `Y` upper bound
+overshoots the box's north edge by that much and vertically adjacent tiles report
+OVERLAPPING extents. Extents of a partition must abut, because callers use them to
+decide which cells a query region can touch.
 """
 function DGG.cell_extent(g::LevelGrid, c::DGG.LevelIndex)
     _checked_index(g, c)
@@ -467,10 +473,11 @@ because the tile is chosen first and the raster indices are clamped into it.
 
 The tie only decides anything when the point's latitude really is the edge, and the unit
 sphere is a lossy carrier for that: `asind ∘ cosd(90 - ·)` moves a latitude by up to 10
-ulps (1.1e-13° over the 180 GLO-30 tile-row south edges), and it is expansive near the
-equator, so 60 of those 180 edges are not in its image at all and cannot be probed
-through a `UnitSphericalPoint`. What this method guarantees for the ones that survive is
-exactness against [`cell_box`](@ref): the south edge is `Float64(lat_s) + Δlat/2`, and
+ulps, and it is expansive near the equator, so a third of the 180 tile-row south edges —
+60 of them, pinned as `found == 120` by `"cellat agrees with cell_box on south edges"` —
+are not in its image at all and cannot be probed through a `UnitSphericalPoint`. What
+this method guarantees for the ones that survive is exactness against
+[`cell_box`](@ref): the south edge is `Float64(lat_s) + Δlat/2`, and
 because `(x + h) - h` is not a `Float64` identity the `floor` below is repaired against
 that expression rather than trusted.
 

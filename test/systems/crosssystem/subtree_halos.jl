@@ -177,9 +177,22 @@ Base.length(::MiscountingEngine) = 3
         # stopped covering them. Not hypothetical: swapping the walk's `rootcap`
         # from `node_extent` to the under-covering `cell_cap` — which changes no
         # arithmetic, only the covering margin the prune's soundness rests on —
-        # is caught HERE and nowhere else in this file, by the two H3 arms. Two
-        # roots is all the runtime affords: H3's level-4 grid is 288k cells and the
-        # law visits every one.
+        # is caught here, by the two H3 arms — and by the H3 arms only; the IGeo7
+        # half of this same loop passes, which is why both systems are swept
+        # rather than one. Two roots is all the runtime affords: H3's level-4 grid
+        # is 288k cells and the law visits every one.
+        #
+        # SINCE TASK 6 THIS IS NO LONGER THE ONLY ARM THAT CATCHES IT, and the
+        # strengthening is worth recording because it was a side effect rather
+        # than a design. `forced_geometry_halo` IS the generic walk — the same
+        # `_admit`, the same `rootcap` — so once H3 and IGeo7 grew a directed walk
+        # that shares none of that, every comparison of the two became a comparison
+        # of a sound enumeration against a broken one. The same mutation now also
+        # fails "the directed walk against forced geometry" (118 + 88 assertions)
+        # and "the directed walk at depth four" (2 + 2). What is still true is the
+        # narrow claim: the arm below is where an under-covering cap is caught with
+        # the generic walk on BOTH sides of the comparison, which is the only shape
+        # that would survive the specializations being removed.
         #
         # THE GENERIC WALK IS BUILT EXPLICITLY, not reached. Every system now
         # ships a specialization, so the keyword constructor no longer returns
@@ -908,7 +921,26 @@ Base.length(::MiscountingEngine) = 3
         for base in (0, 1), conn in (Vertex(), Edge())
             grid = levelgrid(sys, base)
             roots = [cellindex(grid, i) for i in 1:ncells(grid)]
-            for l in (base + 1):min(base + 3, max_level(sys))
+            for l in (base + 1):min(base + 4, max_level(sys))
+                check_hex_classes(sys, roots, base, l, conn)
+            end
+        end
+        # AND ONE DEEP BASE, because the purpose of this testset is to notice a
+        # guard that grew stricter and the guards are not all base-independent:
+        # `_hex_validate` runs only from depth three, `_hex_calibrate` reads a
+        # ring whose shape at base 0 is a whole base cell's and at base 8 an
+        # ordinary hexagon's, and the seeded frames sit at the other parity. The
+        # generation cannot be enumerated — H3's level-8 grid is 7e8 cells — so
+        # the roots are the twelve pentagons BY NAME, the ring around two of them
+        # (the arc-3 neighbours), and a positional spread. Depth 4 is included at
+        # every base for the same reason: it is the first depth at which a seeded
+        # arc has been through three transitions, and the shallow arms would not
+        # notice a guard that only fires there.
+        base = 8
+        if base + 1 <= max_level(sys)
+            roots = hex_roots(sys, base, 4)
+            for conn in (Vertex(), Edge()),
+                    l in (base + 1):min(base + 4, max_level(sys))
                 check_hex_classes(sys, roots, base, l, conn)
             end
         end
@@ -931,6 +963,72 @@ Base.length(::MiscountingEngine) = 3
                 l <= max_level(sys) || continue
                 it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
                 @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+            end
+        end
+    end
+
+    # THE EXACTNESS CONTRACT, WHICH NOTHING ELSE IN THIS FILE PINS.
+    #
+    # `HexArcHaloEngine` runs `_touches_subtree(IndexedNeighbors(), e, x)` on
+    # every candidate before yielding it, and `halo.jl` says in as many words that
+    # the check is what makes the engine EXACT rather than TRUSTED. But the
+    # calibrated walk is already exact — candidate-to-halo ratio 1.0000 at every
+    # depth — so the check never rejects anything, and deleting both call sites
+    # leaves this file at its full pass count with nothing red. A future
+    # simplification pass would find a green suite saying the check may go.
+    #
+    # So the check is pinned by making the band conservative on purpose. Widening
+    # every calibrated arc `(L, s)` to `(L + 1, s - 1)` keeps the original arc
+    # inside the new one, so the widened walk is a SUPERSET of the calibrated
+    # one — asserted below by counting the raw automaton output, which is a
+    # strict inequality and not a pinned number — and the engine's answer must be
+    # unchanged, because the check filters the surplus back out. Delete either
+    # `_touches_subtree` call in `HexArcHaloEngine` and this testset fails; every
+    # other arm in this file stays green.
+    #
+    # Deliberately NOT a count of the surplus: the point is the invariant "the
+    # emitted set is the halo whatever the band proposes", and a number would pin
+    # the widening rather than the check.
+    function widen_hex_arcs(e)
+        ring = e.ring
+        for i in 1:length(ring)
+            h = ring[i]
+            ring = DGG.Helpers.small_setindex(ring,
+                DGG.Fallbacks.HexNeighbour(h.cell, h.lo, h.arclen + Int8(1),
+                    Int8(mod(Int(h.start) - 1, 6))), i)
+        end
+        return DGG.Fallbacks.HexArcHaloEngine(e.system, e.grid, e.root,
+            e.rootlevel, e.target, e.connectivity, ring)
+    end
+
+    # The engine's candidate stream BEFORE the check: the seeded automata alone,
+    # which is what "conservative band" names.
+    function hex_candidate_count(e)
+        n = 0
+        for i in 1:length(e.ring)
+            nb = e.ring[i]
+            for _ in DGG.seeded_rim_engine(e.system, nb.cell, e.target,
+                    Int(nb.arclen), Int(nb.start))
+                n += 1
+            end
+        end
+        return n
+    end
+
+    @testset "$(nameof(typeof(sys))): the check filters a widened arc" for sys in
+            HEX_SYSTEMS
+        for base in (0, 1, 2), d in 2:3, conn in (Vertex(), Edge())
+            l = base + d
+            l <= max_level(sys) || continue
+            for c in spread(hex_roots(sys, base, 3), 5)
+                it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+                @test it.engine isa DGG.Fallbacks.HexArcHaloEngine
+                wide = widen_hex_arcs(it.engine)
+                # The band really did widen, so the equality below is the check
+                # doing work and not the mutation being a no-op.
+                @test hex_candidate_count(wide) > hex_candidate_count(it.engine)
+                @test collect(SubtreeHaloIterator(sys, c, l, conn, wide)) ==
+                      collect(it)
             end
         end
     end
@@ -1103,6 +1201,72 @@ Base.length(::MiscountingEngine) = 3
                 @test h == law_halo(sys, c, l; connectivity = conn)
             end
         end
+    end
+
+    # -----------------------------------------------------------------------
+    # Resumability, on every engine this file can reach
+    # -----------------------------------------------------------------------
+
+    # THE PREFIX-EQUALITY LAW, mirroring `subtree_iterators.jl`'s: "the walk is
+    # resumable, not restarted". Four cells taken off the front must be the first
+    # four of the collected form, and a second `collect` must reproduce the whole
+    # walk — which is the observable half of the house rule that an engine is
+    # immutable and ALL walk state travels in the value `iterate` threads. An
+    # engine that cached a cursor in a mutable field would pass every oracle in
+    # this file and fail exactly here, on the second pass.
+    #
+    # Run against EVERY engine type rather than one per system: the seven walks
+    # thread seven different state types — a selection emit, a frame stack, a
+    # position counter, a quadtree descent under two emit rules, a child cursor,
+    # and a seeded automaton plus its own stack — and resumability is a property
+    # of the state, not of the system. The set assertion at the end is what says
+    # the list did not quietly stop covering one.
+    @testset "the walk is resumable, not restarted" begin
+        seen = Set{Symbol}()
+        # `SquareBandEngine` is two walks wearing one name, so the tag reads the
+        # emit rule as well: the exact band and the seam band differ in what they
+        # do between yields, which is exactly what resumability is about.
+        engine_tag(e) = e isa DGG.Fallbacks.SquareBandEngine ?
+            (e.check isa DGG.Fallbacks.NoCheck ? :SquareBandNoCheck :
+             :SquareBandNativeCheck) : nameof(typeof(e))
+        function check_prefix(it)
+            push!(seen, engine_tag(it.engine))
+            full = collect(it)
+            @test length(full) >= 4
+            prefix = eltype(it)[]
+            for x in it
+                push!(prefix, x)
+                length(prefix) >= 4 && break
+            end
+            @test prefix == full[1:4]
+            @test collect(it) == full        # a second pass gives the same walk
+        end
+        for sys in systems()
+            c = cellindex(levelgrid(sys, 1), 1)
+            l = min(level(c) + 2, max_level(sys))
+            check_prefix(SubtreeHaloIterator(sys, c, l))              # shipped
+            check_prefix(SubtreeHaloIterator(sys, c, level(c)))       # one-ring
+            # The generic walk is no longer reachable through the keyword
+            # constructor on any system, so it is built explicitly — and on A5
+            # that same call is the scan, which is how both fallbacks are covered
+            # without naming either system.
+            check_prefix(SubtreeHaloIterator(sys, c, l, Vertex(),
+                DGG.Fallbacks.generic_halo_engine(sys, c, l, Vertex())))
+        end
+        # Depth one on the aperture-7 systems is the automaton-free child walk,
+        # which the `l = level(c) + 2` cases above never reach.
+        for sys in HEX_SYSTEMS
+            check_prefix(SubtreeHaloIterator(sys, cellindex(levelgrid(sys, 1), 1), 2))
+        end
+        # Both square emit rules, on the blocks the constructor actually claims.
+        for sys in SQUARE_SYSTEMS
+            inface, seam, _ = classify_roots(sys, 2, 4, Vertex())
+            check_prefix(SubtreeHaloIterator(sys, first(inface), 4))
+            check_prefix(SubtreeHaloIterator(sys, first(seam), 4))
+        end
+        @test seen == Set((:RingHaloEngine, :OutsideWalkEngine, :ScanHaloEngine,
+            :SquareBandNoCheck, :SquareBandNativeCheck, :HexChildHaloEngine,
+            :HexArcHaloEngine))
     end
 
     # -----------------------------------------------------------------------

@@ -1116,6 +1116,21 @@ end
 # No heap, no seen-set, no sort — 25,536 pairwise range comparisons across both
 # systems found zero overlaps.
 #
+# WHERE "OUTSIDE" IS STATED, because unlike every other engine in this file these
+# two never test it. `OutsideWalkEngine` retires the subject subtree by integer
+# range containment (`_admit`'s `_HALO_SKIP`), `ScanHaloEngine` compares
+# `ancestor` against the root, and `SquareBandEngine` prunes the block by lattice
+# box (`_inside_block`) — each an explicit "this candidate is not a descendant".
+# The hexagonal engines have no such line, and they need one: `_touches_root`
+# would ACCEPT a descendant of the root, since a descendant's neighbours are
+# descendants too. What carries it is the invariant that
+# `neighbors(grid, c, 1; connectivity)` never returns `c` itself. Every candidate
+# here is a descendant of a cell in `neighbors(levelgrid(sys, lc), c, 1)`, so if
+# that ring excluded nothing the root would be walked as its own neighbour and
+# its whole rim would be emitted as halo. No bundled system's one-ring lists the
+# cell it was asked about; a system whose did would need an explicit skip here,
+# not merely a wider guard.
+#
 # THE WALK IS EXACT, NOT CONSERVATIVE. Candidate-to-halo ratio is 1.0000 at every
 # depth from two down; run with the check disabled over 4,622 cases it produced
 # zero surplus candidates. The check is kept anyway, on every candidate, because
@@ -1378,11 +1393,18 @@ the fixed ring. Nothing sized by the halo is ever built, so a prefix costs what
 the prefix costs.
 
 [`Base.IteratorSize`](@ref) is `SizeUnknown()` and there is NO `length`, even
-though the counts are known: a neighbour's stream is `(3^d + 1)/2` cells for both
-arc lengths — an arc-2 seed emits that many outright, and an arc-3 seed emits
-`3^d` but arc-3 happens only at a pentagon, whose deleted digit removes precisely
-the 4-arc branch and collapses the census back — so the halo is `3^(d+1) + 3`
-around a hexagon and `5(3^d + 1)/2` around a pentagon. That was verified in
+though the counts are known: a CALIBRATED neighbour's stream is `(3^d + 1)/2`
+cells for both arc lengths — a calibrated arc-2 seed emits that many outright,
+and a calibrated arc-3 seed emits `3^d` but arc-3 happens only at a pentagon,
+whose deleted digit removes precisely the 4-arc branch and collapses the census
+back — so the halo is `3^(d+1) + 3` around a hexagon and `5(3^d + 1)/2` around a
+pentagon. CALIBRATED is load-bearing in that sentence and not a hedge: the census
+describes the arcs [`_hex_calibrate`](@ref) produces, over 13,692 of which the
+seeded walk emits exactly `(3^d + 1)/2` with pentagon neighbours included. It is
+NOT a statement about an arbitrary `(L, s)` — on an H3 level-3 pentagon an arc-2
+seed at `s = 0` emits 2, 3, 9 and 27 leaves for `d = 1…4`, not 2, 5, 14 and 41 —
+so nobody should reuse the formula to size a seeded walk of their own. That was
+verified in
 176/176 configurations (all twelve pentagons of each system, hexagons adjacent to
 them, hexagons far from them, both connectivities, root levels 0-3, depths 1-5)
 and end to end to depth six. It is still ENUMERATION, not a derivation from the
@@ -1478,12 +1500,26 @@ neighbour must calibrate; and from depth three up the calibration must survive
 [`_hex_validate`](@ref). None of the last three was observed to fire anywhere in
 the spike that measured this design.
 
-The probe is ALWAYS `Vertex()`, whatever was requested, so one containment
+THE RING PROBE is ALWAYS `Vertex()`, whatever was requested, so one containment
 argument covers both connectivities: the `Edge()` halo is a subset of the
-`Vertex()` one, and a superset of the larger is a superset of the smaller. The
-requested connectivity is what the calibration and the emit check filter by.
-(Moot on both systems, whose vertex and edge adjacency coincide — which is
-exactly why it is worth writing down rather than discovering later.)
+`Vertex()` one, and a superset of the larger is a superset of the smaller. Only
+the ring is probed that way. [`_hex_calibrate`](@ref) and [`_hex_validate`](@ref)
+below are called with the REQUESTED connectivity, so on a system whose `Edge()`
+adjacency is strictly smaller than its `Vertex()` one an `Edge()` query can find
+fewer than two touching children under a neighbour, and `_hex_calibrate` answers
+`(0, 0)` — a whole-root fallback to [`generic_halo_engine`](@ref), which is
+correct and slower. The superset ring buys that system nothing under `Edge()`;
+what it buys is that the ring never has to be re-derived per connectivity.
+
+That asymmetry is deliberate rather than an oversight, and calibrating at
+`Vertex()` instead would be the riskier code. A `Vertex()`-calibrated arc IS a
+conservative band for the `Edge()` halo, and the emit check would filter it —
+but its coverage has never been measured, because all 52,182 calibrations behind
+this design ran on systems where the two connectivities coincide. So the choice
+is between a documented fallback that is merely slow and a fast path whose
+containment nobody has tested, and this file's rule is that an unproved band does
+not reach the caller. Moot on both shipped systems; written down because the
+first system where it is not moot should meet a fallback, not a surprise.
 """
 function hex_halo_engine(sys::AbstractHierarchicalGridSystem,
         c::AbstractCellIndex, target::Int, connectivity::Connectivity)

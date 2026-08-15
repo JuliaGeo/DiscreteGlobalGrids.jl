@@ -61,6 +61,10 @@ import GeometryOps: SpatialTreeInterface as STI
 import SmallCollections
 using SmallCollections: SmallVector
 
+# `@public` declares a name public-but-unexported. Exactly one name in this
+# package needs that: `aggregate`, beside the export list below.
+using SciMLPublic: @public
+
 # Imported qualified, then re-exported by name below: GeometryOps has an
 # unrelated internal `DE9IM` matrix struct, so the module name must never be
 # `using`-ed into this namespace. DE9IM.jl supplies the predicate *types* only
@@ -250,13 +254,15 @@ export CellVector, covering, cellset
 # mesh's cell axis), the adaptive constructor (`coarsen`), the leaf-level
 # re-presentation (`expand`) and the sphere complement. Contract in
 # `docs/design/moc-storage.md`.
-#
+export MultiOrderVector, coarsen, expand, complement
+
 # `aggregate` — the fixed-level verb — is deliberately NOT exported, for the
 # reason `Contains` is not: Rasters exports an `aggregate`, and Rasters is the
 # very package this feature's demos load data with, so exporting ours would
 # make the name unusable unqualified in exactly the sessions that want both.
-# Reach it as `DiscreteGlobalGrids.aggregate`.
-export MultiOrderVector, coarsen, expand, complement
+# Reach it as `DiscreteGlobalGrids.aggregate`. Unexported is not private,
+# though: `@public` marks it as documented, stable API a caller may rely on.
+@public aggregate
 
 # --- The DimensionalData layer ---------------------------------------------
 # A lookup and the dimension it goes in, plus the one selector DimensionalData

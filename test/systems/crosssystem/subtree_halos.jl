@@ -2538,6 +2538,37 @@ fixture_collect_bytes(sys, c, l) =
     # the same number of times — there is no second measurement to make. The
     # construction arm above is the one that has to see both, because a
     # per-member construction cost is exactly what could differ between them.
+    # THE RATIO IS BLIND TO A UNIFORM MULTIPLIER, AND THE EXACT TOTALS BELOW ARE
+    # WHY THERE IS ONE. `lp <= 0.2 * lc` is a ratio, so an `_admit` that asked
+    # `subset_span` twice where once would do raises `lp` and `lc` together and
+    # the ratio does not move — that mutation was applied to the subset arm of
+    # `_admit` and every arm of this file stayed green. The pinned totals see it
+    # on the first system.
+    #
+    # THEY ARE EXACT BECAUSE THEY CAN BE. The walk asks its subset a fixed
+    # sequence of questions decided by the hierarchy alone; no machine, no
+    # allocator, no Julia version enters it. That is the whole reason this arm
+    # counts rather than weighs, and a tolerance band around these would give
+    # back exactly the blindness they exist to remove.
+    #
+    # THIS IS A CHANGE DETECTOR, ON PURPOSE, AND HERE IS HOW TO TREAT IT. A
+    # legitimate optimisation of the subset walk SHOULD move these numbers. The
+    # maintainer who moves them is expected to look at the new value, satisfy
+    # themselves it moved the way the change claims, and say so in the commit
+    # message. Re-running the measurement and pasting the output until the suite
+    # goes green is the one use they do not have. A system registered later has
+    # no entry and fails loudly with a `KeyError` rather than being skipped,
+    # which is the same instruction addressed to whoever registers it.
+    #
+    # ONLY THE TOTAL IS PINNED. Every question the four-cell prefix asks, the
+    # full collect asks as well, so a pinned total already catches an extra
+    # question wherever it is asked; and with `lc` fixed, the ratio law above
+    # becomes an exact bound on `lp`. A second golden number would restate what
+    # those two together already say.
+    SUBSET_QUESTION_TOTALS = Dict(
+        :IGeo7System => 4622, :H3System => 6005, :HEALPixSystem => 2143,
+        :A5System => 28010, :S2System => 1572, :ISEA4RSystem => 1865)
+
     @testset "the subset walk is lazy, and its construction is O(1)" begin
         for sys in systems()
             mx = max_level(sys)
@@ -2574,6 +2605,9 @@ fixture_collect_bytes(sys, c, l) =
             @test lh == eh == collect(halo(cv))
             @test lp <= 0.2 * lc         # the law
             @test ep > 0.2 * ec          # and the engine it refuses
+            # And the question count itself, which the ratio cannot constrain.
+            # Read the comment above this testset before changing this number.
+            @test lc == SUBSET_QUESTION_TOTALS[nameof(typeof(sys))]
         end
     end
 

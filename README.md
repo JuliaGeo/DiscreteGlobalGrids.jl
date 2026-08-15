@@ -205,8 +205,9 @@ them and `docs/src/all_dggs.md` draws every system.
 | `ISEA4RSystem` | `0:29` | `10·4^l` | rhombi on ten diamonds | yes | `LevelIndex` |
 
 Native layers: H3 calls libh3 through `H3_jll`; the other five are pure Julia.
-IGEO7 is a clean-room implementation; A5 ports upstream a5's arithmetic; HEALPix,
-S2 and ISEA4R are closed-form charts with no external dependency.
+IGEO7 is a clean-room implementation but for one ported adjacency kernel (see
+[Provenance](#provenance)); A5 ports upstream a5's arithmetic; HEALPix, S2 and
+ISEA4R are closed-form charts with no external dependency.
 
 No system defines a grid type. All six return `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
@@ -258,7 +259,7 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**945,192 assertions, ~2m55s warm**, with 14 broken: A5's documented
+**945,225 assertions, ~2m55s warm**, with 14 broken: A5's documented
 `has_sorted_subtrees` skips, and the destination-direction conservation arms
 that wait on the upstream clipper fix.
 
@@ -268,10 +269,44 @@ Migrated 2026-08-05 from the `dggs_lookup/` prototype tree in the
 `vectordatacubes` workspace.
 
 The IGEO7 implementation is a **clean-room** unit (`src/systems/ISEA/` +
-`src/systems/IGeo7/`). It replaces an earlier implementation whose native layer
-was ported from an AGPL-licensed reference, which is deliberately **excluded**
-here. That reference enters only as an independent **black-box validation
-oracle**: the suite checks agreement against dumps of its CLI output, never
-against its source. The full audit trail, the 150 MB vector corpus and 24 MB of
-reference PDFs stay in `dggs_lookup/`; only the ~9 MB of vectors the suite reads
-travel here.
+`src/systems/IGeo7/`), with the one marked exception below. It replaces an
+earlier implementation whose native layer was ported from an AGPL-licensed
+reference, which is deliberately **excluded** here. That reference enters only
+as an independent **black-box validation oracle**: the suite checks agreement
+against dumps of its CLI output, never against its source. The full audit trail,
+the 150 MB vector corpus and 24 MB of reference PDFs stay in `dggs_lookup/`; only
+the ~9 MB of vectors the suite reads travel here.
+
+### Exception: `src/systems/IGeo7/gbt.jl`
+
+One file is source-level reuse rather than black-box validation, and says so in
+its own header. The one-ring adjacency kernel is **ported from
+[IGEO7.jl](https://github.com/allixender/IGEO7.jl)** (`src/IGEO7.jl`) by
+**Alexander Kmoch** — specifically `get_neighbour`, `get_neighbours`,
+`first_non_zero`, and the eight tables those read (`BASE_CELL_NEIGHBOURS`,
+`EXCLUDE_NEIGHBOURS`, `ROTATIONS`, `POLE_0_ROTATIONS`, and the four GBT addition
+tables). The reuse is covered by a **licence grant from Alexander Kmoch** to this
+package.
+
+> **TODO (Anshul):** record the grant's actual terms. This repository ships no
+> `LICENSE` file yet; the terms belong next to it. Whether the grant is a
+> relicence, a dual licence or something else is not recorded anywhere in this
+> tree, so nothing beyond the fact of the grant is asserted here.
+
+Attribution is owed whatever the terms are, so the file header names the upstream
+repository, file, functions and author, and each ported table's docstring points
+back at that header. What the port changed is shape, not arithmetic; the
+counterclockwise ordering it emits in (`_encode_lattice_rot`, `z7grid.jl`) is
+this package's own, because upstream defines no rotational order.
+
+The port is **not trusted, it is checked**, against this package's own
+independent implementation of the same question:
+`IGeo7._cell_neighbors_ccw_geometric` (`src/systems/IGeo7/z7grid.jl`) derives
+adjacency from the oracle-validated lattice and decoder instead of from digit
+arithmetic. Two implementations that share no reasoning are the strongest
+evidence available that either is right, so the geometric one stays in the tree
+as the differential oracle even though nothing on the hot path calls it. Testset
+`9b` of `test/systems/IGeo7/runtests.jl` pins the two together — same ids, same
+order — on every cell of levels 0–3, on samples through level 19, across all
+twelve pentagon chains and their two-ring neighbourhoods, and over the whole
+`neighbors`/`ring` disc to `k = 3`.

@@ -42,15 +42,13 @@ coverage = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 7)
 # sorted subtrees: on A5, `level_ranges` throws, and `descendants` is the
 # always-available expansion.
 
-polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(coverage))
-
 cali_centroid = GO.centroid(california)
 
 fig = Figure(size = (760, 820))
 ax = GeoAxis(fig[1, 1]; dest = "+proj=ortho +datum=WGS84 +lon_0=$(GI.x(cali_centroid)) +lat_0=$(GI.y(cali_centroid))",
     limits = ((-125.5, -113.5), (32.0, 42.5)),
     title = "IGeo7 multi-order coverage of California, to level 7")
-plt = poly!(ax, polys; color = DGG.level.(coverage), colormap = :isoluminant_cgo_70_c39_n256,
+plt = poly!(ax, coverage; color = DGG.level.(coverage), colormap = :isoluminant_cgo_70_c39_n256,
     alpha = 0.7, strokecolor = (:black, 0.55), strokewidth = 0.25)
 poly!(ax, california; color = :transparent, strokecolor = :black, strokewidth = 1.2)
 Colorbar(fig[1, 2], plt; label = "cell level")
@@ -84,7 +82,7 @@ for (k, (n, set)) in enumerate(zip(budgets, sets))
     local panel = Axis(fig[1, k]; limits = ((-125.5, -113.5), (32.0, 42.5)),
         aspect = DataAspect(), title = "maxcells = $n",
         xticklabelsvisible = false, yticklabelsvisible = false)
-    poly!(panel, GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(set));
+    poly!(panel, set;
         color = DGG.level.(set), colormap = :isoluminant_cgo_70_c39_n256, colorrange = (1, 7),
         strokecolor = (:black, 0.6), strokewidth = 0.5)
     poly!(panel, california; color = :transparent, strokecolor = :black, strokewidth = 1.0)
@@ -222,9 +220,7 @@ end
 fig = Figure(size = (620, 700))
 ax = Axis(fig[1, 1]; limits = ((-125.0, -113.8), (32.2, 42.3)), aspect = DataAspect(),
     title = "July mean temperature on an IGEO7 level-$(DGG.level(lk)) coverage")
-plt = poly!(ax, GO.transform(GO.GeographicFromUnitSphere(),
-        DGG.cell_polygon.(Ref(destination), lk));
-    color = tavg, colormap = Reverse(:RdYlBu), strokewidth = 0)
+plt = poly!(ax, lk; color = tavg, colormap = Reverse(:RdYlBu), strokewidth = 0)
 poly!(ax, california; color = :transparent, strokecolor = :black, strokewidth = 1.0)
 Colorbar(fig[1, 2], plt; label = "mean temperature (°C)")
 fig

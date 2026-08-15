@@ -119,8 +119,8 @@ end
 #
 # A coverage names a region; it does not carry values. `CellLookup` reads the
 # set as a one-level cell axis, `PartialGrid` reads that axis as a grid, and
-# `ConservativeRegridding` fills it from anything with cell corners — here
-# WorldClim's July mean temperature at 10 arc-minutes.
+# `ConservativeRegridding` fills it from anything with cell corners — here a
+# deterministic temperature-like field on a regular lon/lat raster.
 #
 # One honesty note: conservative regridding *onto* a DGGS is exact only where
 # the destination cells' rings are convex, because the clipper intersects
@@ -128,14 +128,10 @@ end
 # level — H3's are not at odd levels — so the conservation check below comes
 # out at machine precision.
 
-ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH",
-    joinpath(tempdir(), "rasterdatasources")))
-
 import ConservativeRegridding as CR
 import DimensionalData as DD
 import Extents
-using Rasters, RasterDataSources
-import ArchGDAL
+using Rasters
 using Statistics
 
 region = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 6)
@@ -147,14 +143,19 @@ destination = DGG.PartialGrid(lk)
 
 (; entries = length(region), leaf_cells = length(lk), level = DGG.level(lk))
 
-# The source is WorldClim cropped to a box larger than the coverage, represented
-# by an indexed quadtree over its cell-corner points on the unit sphere.
+# The source covers a box larger than the coverage and is represented by an
+# indexed quadtree over its cell-corner points on the unit sphere.
 # `CR.Regridder(manifold, dst, src)` takes the destination first.
 
-raster = Raster(WorldClim{Climate}, :tavg; month = 7, res = "10m")
-box = set(raster[X(-128 .. -110), Y(30 .. 45)],
-    X => Rasters.Intervals(Rasters.Start()),
-    Y => Rasters.Intervals(Rasters.Start()))
+lon = -127.95:0.1:-110.05
+lat = 44.95:-0.1:30.05
+july_temperature(x, y) = 30 - 0.45(y - 30) +
+    4exp(-((x + 120) / 1.8)^2) + 1.5sind(3x)
+box = Raster(
+    [july_temperature(x, y) for x in lon, y in lat],
+    (X(lon; sampling = Rasters.Intervals(Rasters.Center())),
+     Y(lat; sampling = Rasters.Intervals(Rasters.Center()))),
+)
 
 xbounds, ybounds = Rasters.intervalbounds(box, (X, Y))
 # Build corner sequences in array-index order: X runs west-to-east while Y
@@ -176,11 +177,10 @@ ones_out = zeros(DGG.ncells(destination))
 CR.regrid!(ones_out, regridder, ones(size(regridder.intersections, 2)))
 maximum(abs, ones_out .- 1)
 
-# Now the real field. The ocean is `missing`, so regrid the temperatures with
-# the gaps zeroed *and* a 0/1 data indicator, then divide — a weighted mean
-# over the data a cell actually has, so coastal cells are not dragged down by
-# the empty half of themselves. (`values` is flattened in the same order as
-# the source grid was built.)
+# Regrid the field and a 0/1 data indicator, then divide. The analytic field is
+# complete, but this normalization is also the pattern for real rasters with
+# gaps: coastal cells are not dragged down by missing source values. (`values`
+# is flattened in the same order as the source grid was built.)
 
 values = vec(replace_missing(box, NaN))
 field = zeros(DGG.ncells(destination))
@@ -214,8 +214,8 @@ for (name, ext) in (("Central Valley", Extents.Extent(X = (-121.5, -119.0), Y = 
             round(mean(sub); digits = 1), " °C")
 end
 
-# The valley runs some three degrees hotter than the coast at the same
-# latitude — the answer the data has, delivered by the axis.
+# The analytic inland ridge runs hotter than the coast at the same latitude —
+# the answer the data has, delivered by the axis.
 
 fig = Figure(size = (620, 700))
 ax = Axis(fig[1, 1]; limits = ((-125.0, -113.8), (32.2, 42.3)), aspect = DataAspect(),

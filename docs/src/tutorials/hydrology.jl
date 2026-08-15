@@ -4,7 +4,8 @@
 # catchment area are all areal quantities, and on a lon/lat raster every one of
 # them is a function of latitude. This page moves a Copernicus 30 m DEM tile
 # over the Alps onto IGEO7 — hexagons, equal-area by construction — and does
-# the first step of a flow-routing model on it.
+# the first step of a flow-routing model on it. The worked example averages
+# the source to 120 m so it also fits comfortably on a standard CI runner.
 #
 # Three calls carry the page: `coarsest_contained` picks the cell to work in,
 # `PartialGrid` names its subtree as a grid, and `halo_table` routes water out
@@ -44,7 +45,7 @@ root, DGG.level(root)
 # an ordinary grid: positions run `1:ncells`, so a data vector indexes straight
 # through it.
 
-leaf = 13                                          # ≈ 430 m cells
+leaf = 12                                          # ≈ 1.1 km cells
 grid = DGG.PartialGrid(sys, root, leaf)
 #
 DGG.ncells(grid)
@@ -53,14 +54,15 @@ DGG.ncells(grid)
 #
 # The download asks for a point inside the tile rather than the tile itself:
 # `getraster` fetches every 1° tile an extent touches, and a closed 1° box
-# touches four. The source stays at its native 30 m resolution; the source
-# quadtree keeps intersection work localized while the matrix is built.
+# touches four. Averaging the native 30 m source to 120 m keeps this worked
+# example compact; the source quadtree keeps intersection work localized while
+# the matrix is built.
 
-Rasters.checkmem!(false)                           # the tile is bigger than free RAM
 centre = Extents.Extent(X = (10.5, 10.5), Y = (46.5, 46.5))
 path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
 dem = Raster(path; lazy = false)
 dem = set(dem, X => Rasters.Intervals(Rasters.Start()), Y => Rasters.Intervals(Rasters.Start()))
+dem = aggregate(mean, dem, 4; progress = false)
 # ConservativeRegridding wants the source's cell corners on the unit sphere.
 # The destination needs no adapter: `treeify`, `ncells` and `getcell` are
 # extended for every `AbstractGrid`.

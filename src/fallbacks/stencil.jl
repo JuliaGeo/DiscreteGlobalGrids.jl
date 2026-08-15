@@ -45,6 +45,19 @@ end
 # The membership check is the CALLER's, not this function's: an argument is
 # evaluated before the call, so checking here would compute a whole `k == 3`
 # disc for a cell the subset does not hold and throw afterwards.
+# The clip keeps the container it was handed. A clipped ring is a subset of the
+# unclipped one, so `k == 1` stays in the `SmallVector` the system answered in
+# rather than moving to the heap for the membership test; `k >= 2` has no static
+# bound, arrives in a `Vector`, and leaves in one.
+function _clip(sub, cells::SmallCollections.SmallVector{N,T}) where {N,T}
+    out = SmallCollections.SmallVector{N,T}()
+    for nb in cells
+        cellposition(sub, nb) === nothing ||
+            (out = SmallCollections.push(out, nb))
+    end
+    return out
+end
+
 function _clip(sub, cells)
     out = Vector{eltype(cells)}()
     for nb in cells

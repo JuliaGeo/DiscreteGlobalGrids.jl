@@ -1,24 +1,7 @@
-# ---------------------------------------------------------------------------
-# T3 — Conformance harness.
-#
-# The executable form of the interface contracts: `test_grid_interface(grid)`
-# and `test_hierarchical_system(sys)`, property suites a third-party
-# implementor runs with two calls. Cursor-free by design — it exercises
-# interface primitives only, so it does not depend on the T2 fallbacks.
-#
-# The structure is two layers, and the reason is that a conformance harness has
-# two different callers. Every law is implemented once as a function returning
-# a `Vector{String}` of *problems* (empty means conforming); the `@testset`
-# layer wraps those in labelled test sets so a failure names the violated
-# contract, and the `check_*` predicates wrap the same functions in a `Bool` so
-# a caller can assert that a deliberately broken implementation is *caught*
-# without capturing test-set internals. The harness's own test suite does
-# exactly that, which is how the harness is tested rather than merely run.
-#
-# Sampling is seeded (`rng` kwarg) and every law is checked on the same sampled
-# cells, so two runs of the same call examine the same cells and a reported
-# failure is reproducible by re-running it.
-# ---------------------------------------------------------------------------
+# Conformance checks for the public grid and hierarchical-system interfaces.
+# Each law has a problem collector, a labelled `@testset` wrapper, and a
+# boolean `check_*` wrapper. Seeded sampling makes failures reproducible, and
+# all laws in one run examine the same sampled cells.
 
 module DiscreteGlobalGridsConformanceTesting
 
@@ -34,10 +17,10 @@ using DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
 
 export test_grid_interface, test_hierarchical_system
 
-"""Seed of the default RNG, so that an unparameterised run is reproducible."""
+"""Seed used for reproducible default sampling."""
 const DEFAULT_SEED = 20260813
 
-"""How far a boundary vertex may sit off the unit sphere. "A few `eps`", generously."""
+"""Maximum Euclidean deviation of a boundary vertex from the unit sphere."""
 const DEFAULT_UNIT_ATOL = 1e-9
 
 """Angular slack (radians) allowed before a point is *outside* a node extent."""
@@ -47,12 +30,8 @@ const DEFAULT_CAP_ATOL = 1e-12
 Angular slack (radians) on the 90° geodesic-convexity threshold for a
 `SphericalCap`.
 
-Defined once and used by both places that ask the question, because they must
-agree: [`covering_law_problems`](@ref) decides whether sampling boundary
-*vertices* is enough on it, and [`test_hierarchical_system`](@ref) asserts
-convexity on it. A radius inside the band would otherwise be simultaneously
-"convex enough to skip densification" and "not convex", which reports a
-conformance failure while quietly weakening the check that failure is about.
+[`covering_law_problems`](@ref) and [`test_hierarchical_system`](@ref) use this
+same tolerance when deciding whether a cap is geodesically convex.
 """
 const CONVEX_RADIUS_SLACK = 1e-9
 
@@ -67,64 +46,27 @@ _default_rng() = Random.MersenneTwister(DEFAULT_SEED)
 """
     has_nonfallback_method(f, args...) -> Bool
 
-Whether dispatch for `f(args...)` reaches a method written **for this kind of
-grid or system** rather than the interface-wide generic — the harness's test
-for "is this primitive implemented here?".
+Whether dispatch for `f(args...)` reaches a method specialized for a grid or
+system type rather than an interface-wide generic.
 
-# Strategy: specificity, not provenance
+# Method selection
 
-The test is **specificity**: the matched method counts as an implementation
-when one of its arguments is a type *strictly narrower* than `AbstractGrid` or
-`AbstractHierarchicalGridSystem`. Whoever owns the module is not consulted.
+The matched method counts as specialized when any grid or system parameter is
+strictly narrower than `AbstractGrid` or
+`AbstractHierarchicalGridSystem`. Module ownership is irrelevant because a
+module may define both generic fallbacks and specialized methods.
 
-`applicable` alone answered this question only before the fallback substrate
-landed; since then every generic in the interface is applicable to every grid,
-because the substrate supplies a method for
-`AbstractGrid`/`AbstractHierarchicalGridSystem`. So applicability is uniformly
-`true` and carries no information. The `applicable` call is kept as the cheap
-first clause — it rules out a signature that genuinely has no method at all,
-and it keeps `which` off the error path for that case.
-
-This used to test **provenance**: `DGG.Fallbacks` as a sentinel module, a
-method owned by it meaning "not implemented". That is right for the generics
-and wrong for everything else the substrate ships, because `Fallbacks` also
-defines the package's own concrete grid types and their specialised methods.
-`PartialGrid` and `AuthalicGrid` were therefore reported as implementing
-nothing at all, and `cellat`, `neighbors` and `ring` were skipped on them —
-precisely the wrapped and subset paths most worth testing, and the ones with
-no other harness coverage. Specificity restores them with no special-case
-list: a method on `PartialGrid` is a method about `PartialGrid`, whichever
-module it was typed in.
-
-A consequence worth stating, unchanged by the move: this is a test of what the
-method is *written for*, not of whether the answer is correct. A grid that
-implements a primitive badly is tested and fails, which is the point; a grid
-that leaves it to the interface-wide generic is skipped, because that generic
-has its own tests and this harness is deliberately cursor-free.
-
-# Deliberate non-guards
-
-Two checks in [`test_hierarchical_system`](@ref) run **unconditionally**, and
-that is not an oversight:
-
-  - [`node_extent`](@ref) — the generic default is parameterised by the
-    system's own [`cap_inflation`](@ref), so even a fully generic extent is the
-    system's claim about its own geometry. The covering law is therefore always
-    the system's to answer for.
-  - [`cellposition`](@ref) — the `cellindex`/`cellposition` bijection is a law
-    the grid owes regardless of which module computes it. A generic
-    `cellposition` that disagrees with the grid's own `cellindex` is a real
-    conformance failure, not an unimplemented method.
+This function reports only whether a specialized method exists. The
+conformance checks separately validate the method's result. `node_extent` and
+`cellposition` are checked unconditionally because their contracts also apply
+when an interface-wide implementation provides them.
 """
 function has_nonfallback_method(f, args...)
     applicable(f, args...) || return false
     m = try
         which(f, Base.typesof(args...))
     catch err
-        # `which` throws `ArgumentError` on an ambiguous match. An ambiguity is
-        # not a specificity answer either, so it is not evidence that anything
-        # was implemented: report "not implemented" and let the caller skip
-        # rather than let the harness die inside its own guard.
+        # Ambiguous dispatch does not identify a specialized implementation.
         (err isa ArgumentError || err isa MethodError) || rethrow()
         return false
     end
@@ -169,9 +111,7 @@ _strictly_narrower(T, base) = T <: base && !(base <: T)
 # ===========================================================================
 # Small vector helpers
 #
-# Written out rather than taken from LinearAlgebra: the interface layer's only
-# geometric dependency is the unit sphere itself, and three-component dot and
-# cross products are less code than the import they would replace.
+# Local three-component operations avoid adding LinearAlgebra as a dependency.
 # ===========================================================================
 
 _dot(a, b) = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
@@ -567,10 +507,8 @@ function covering_law_problems(sys;
             root = [(c, DGG.node_extent(sys, c))]
             _covering_descend!(problems, sys, c, root, getgrid, rng,
                 Int(descent_depth), Int(branch_samples), densify, Int(arc_samples), atol)
-            # The bushy walk above is bounded in depth, but the law is not: an
-            # extent that covers three levels and fails at four is still a
-            # violation, and `cap_inflation` is documented as a limiting
-            # quantity. One chain per cell reaches max_level for O(depth) cells.
+            # The sampled branches are depth-limited. One additional chain
+            # reaches `max_level` so deeper extent failures remain observable.
             deep_chain && _covering_chain!(problems, sys, c, root, getgrid, rng,
                 densify, Int(arc_samples), atol)
         end
@@ -583,11 +521,8 @@ function _covering_check!(problems, sys, c, ancestors, getgrid, densify, arc_sam
     l = DGG.level(c)
     pts = DGG.cell_boundary(getgrid(l), c)
 
-    # Vertices suffice against convex (≤ 90°) caps; densify against anything
-    # wider. The threshold is `CONVEX_RADIUS_SLACK` so that it is the *same*
-    # question `test_hierarchical_system`'s convexity assertion asks — a cap in
-    # a band between the two would be densified and reported, or asserted
-    # convex and sampled at its vertices only.
+    # Vertices suffice for convex caps with radius at most 90°. Wider caps use
+    # densified arcs. The system-level convexity check uses the same threshold.
     d = densify === nothing ?
         (all(a -> last(a).radius <= π / 2 + CONVEX_RADIUS_SLACK, ancestors) ? 0 : arc_samples) :
         Int(densify)
@@ -703,28 +638,12 @@ function neighbor_problems(grid, c; connectivity::Connectivity = Vertex(),
         c in back || push!(problems, "neighbours are not symmetric: $nb ∈ neighbors($c) but $c ∉ neighbors($nb)")
     end
 
-    # ---- Two-hop symmetry closure -----------------------------------------
-    #
-    # The sweep above is one-directional: it walks out from `c` and asks whether
-    # each cell that `c` names lists `c` back, so it only fires when the sampled
-    # cell is the VICTIM of an omission. A cell that forgets one of its own
-    # neighbours passes it — from the forgetful cell everything it still lists
-    # is symmetric — and the violation is invisible unless the sampler happens
-    # to draw the forgotten cell too. On a grid sampled at 8 cells out of
-    # millions, it usually does not.
-    #
-    # The closure fixes that from `c` alone. A cell `x` that is truly adjacent
-    # to `c` but missing from `neighbors(c)` cannot be far away: the
-    # neighbourhood of `c` is a cycle, so `x` shares a boundary feature with at
-    # least one of `c`'s SURVIVING neighbours and is therefore reachable in two
-    # hops. Gathering `X = ⋃ neighbors(nb)` over `nb ∈ neighbors(c)` and asking,
-    # for every `x ∈ X` that `c` does not list, whether `x` lists `c` is
-    # therefore a COMPLETE test for a single omission at `c` — the exhaustive
-    # both-directions sweep of `test/systems/H3/runtests.jl`, made affordable on
-    # a sampled grid.
+    # A direct symmetry check only detects omissions when the omitted cell is
+    # sampled. The two-hop closure also examines cells reached through each
+    # reported neighbour, exposing a cell that lists `c` when `c` omits it.
     if two_hop
-        # Seeded with `c` and everything `c` already lists, so the loop only
-        # ever visits the cells that are candidates for the omission, once each.
+        # Skip the subject and its reported neighbours; only omission
+        # candidates need a reverse-adjacency check.
         checked = Set(ns)
         push!(checked, c)
         for nb in ns
@@ -750,10 +669,9 @@ end
 # ===========================================================================
 # Rotational order
 #
-# `neighbors` and `ring` are ordered, and the order is part of the contract:
-# each ring runs counter-clockwise seen from OUTSIDE the sphere, and the disc is
-# its rings concatenated outward. These are the checks for that, and they are
-# the reason nothing else in this harness ever sorts a neighbour list.
+# Each ring runs counter-clockwise as seen from outside the sphere, and a
+# neighbourhood is its rings concatenated outward. Sorting would destroy this
+# rotational order.
 # ===========================================================================
 
 """
@@ -1189,16 +1107,14 @@ function test_grid_interface(grid;
             @test sys === nothing || sys isa AbstractHierarchicalGridSystem
             l = DGG.level(grid)
             @test l === nothing || l isa Integer
-            # A grid made by a system reports both; a standalone grid reports neither.
+            # System provenance and level are either both present or both absent.
             @test (sys === nothing) == (l === nothing)
             if sys !== nothing
                 @test l in DGG.levels(sys)
                 @test all(c -> DGG.level(c) == l, cells)
                 @test all(c -> c isa DGG.cellindextype(sys), cells)
-                # A system grid's dense order IS the system's canonical id order
-                # (`isless`), which is what every `searchsorted` fast path
-                # assumes. A standalone grid may choose its own order, so this
-                # is asserted only for grids that have a system.
+                # System grids use canonical cell-id order; standalone grids
+                # may define a different dense order.
                 @test issorted(cells)
             end
         end
@@ -1248,9 +1164,8 @@ function test_grid_interface(grid;
                 for c in cells
                     centroid = DGG.cell_centroid(grid, c)
                     @test DGG.cellat(grid, centroid) == c
-                    # Interior points that are not the centroid. Without these a
-                    # nearest-centroid lookup conforms, and nearest-centroid is
-                    # wrong for every tessellation that is not a Voronoi one.
+                    # Midpoints between the centroid and each vertex verify
+                    # interior lookup away from the centroid itself.
                     for v in DGG.cell_boundary(grid, c)
                         @test DGG.cellat(grid, USph.slerp(centroid, v, 0.5)) == c
                     end
@@ -1342,7 +1257,7 @@ seeded sample of that many is used, always including the coarsest and deepest.
 Derived methods that a system has not implemented (`ancestor`, `descendants`,
 [`neighbors`](@ref), [`ring`](@ref)) are skipped rather than failed.
 
-# The keyword arguments that carry semantics
+# Keyword arguments
 
   - `atol` — angular slack, in radians, before a boundary point counts as
     *outside* an ancestor's [`node_extent`](@ref); forwarded to
@@ -1493,25 +1408,20 @@ function test_hierarchical_system(sys;
         end
 
         @testset "node_extent convexity (vertex-sampling proxy)" begin
-            # A cap of radius ≤ 90° is geodesically convex, so containing a
-            # boundary's vertices implies containing its arcs. `node_extent`
-            # explicitly permits wider extents ("owes the full law, not the
-            # proxy"), and the covering check densifies for them, so a system
-            # that means it opts out with `require_convex_extents = false`.
+            # For caps with radius at most 90°, containing a boundary's vertices
+            # also contains its arcs. Wider caps require densified boundary checks.
             if !require_convex_extents
                 @test_skip "convex node extents not required; the covering check densifies"
             else
                 for l in tested, c in last(samples[l])
-                    # The same threshold the covering check's densify decision
-                    # uses, to the bit: see `CONVEX_RADIUS_SLACK`.
+                    # Match the threshold used to select boundary densification.
                     @test DGG.node_extent(sys, c).radius <= π / 2 + CONVEX_RADIUS_SLACK
                 end
             end
         end
 
         @testset "covering law" begin
-            # The same sampled cells every other law used, so a covering failure
-            # is attributable to a cell the rest of the report also names.
+            # Reuse the samples from the other laws for consistent reports.
             @test covering_law_problems(sys; levels = tested, rng,
                 cells = Dict(l => last(samples[l]) for l in tested),
                 descent_depth, branch_samples, atol) == String[]
@@ -1527,15 +1437,14 @@ function test_hierarchical_system(sys;
                     grid = grids[l]
                     for c in last(samples[l])
                         @test neighbor_problems(grid, c; connectivity = conn, sys) == String[]
-                        # Ring 1 is `neighbors(c, 1)`, so its winding is testable
-                        # here without `ring` — and it is the one ring whose
-                        # rotational order is never negotiable.
+                        # Ring 1 is `neighbors(c, 1)`, so its winding can be
+                        # checked even when `ring` is not implemented.
                         @test winding_problems(grid, c,
                             DGG.neighbors(grid, c, 1; connectivity = conn);
                             label = "neighbors(c, 1)") == String[]
                     end
                 end
-                # Edge() is the opt-in restriction of the Vertex() default.
+                # Edge neighbours are a subset of vertex neighbours.
                 if Vertex() in connectivities && Edge() in connectivities
                     for l in tested, c in last(samples[l])
                         vs = collect(DGG.neighbors(grids[l], c, 1; connectivity = Vertex()))
@@ -1552,18 +1461,15 @@ function test_hierarchical_system(sys;
                     !has_nonfallback_method(DGG.ring, grids[first(tested)], first(probe), 0)
                 @test_skip "ring is not implemented for this system"
             else
-                # The order laws relate `ring` to `neighbors`, so they are the
-                # composite's to answer for only when the system owns both.
+                # Sequence-order checks require specialized `ring` and
+                # `neighbors` implementations.
                 ordered = has_nonfallback_method(DGG.neighbors, grids[first(tested)],
                     first(probe), 1)
                 for conn in connectivities, l in tested
                     grid = grids[l]
                     for c in last(samples[l])
                         @test collect(DGG.ring(grid, c, 0; connectivity = conn)) == [c]
-                        # `neighbors(c, k)` is the union of the shells 1..k, and
-                        # the shells are disjoint. At k = 1 this collapses to an
-                        # identity every implementation gets right, so it is the
-                        # k ≥ 2 case that carries the weight.
+                        # `neighbors(c, k)` is the union of disjoint shells 1:k.
                         shells = Set{DGG.cellindextype(sys)}()
                         for k in 1:neighbor_k
                             shell = Set(DGG.ring(grid, c, k; connectivity = conn))
@@ -1571,12 +1477,8 @@ function test_hierarchical_system(sys;
                             union!(shells, shell)
                             @test Set(DGG.neighbors(grid, c, k; connectivity = conn)) == shells
                         end
-                        # ...and the same relation as SEQUENCES, which is the
-                        # actual contract: the disc is its rings concatenated
-                        # outward, each ring is the tail block of its disc, and
-                        # each ring winds counter-clockwise. The set laws above
-                        # are what an implementation that sorts by id still
-                        # satisfies.
+                        # The sequence checks also verify concatenation, tail
+                        # blocks, and counter-clockwise winding.
                         if ordered
                             @test neighbor_order_problems(grid, c; connectivity = conn,
                                 k = neighbor_k, require_rotational_rings) == String[]

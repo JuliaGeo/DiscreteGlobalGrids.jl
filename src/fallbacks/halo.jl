@@ -22,6 +22,22 @@ order, each cell exactly once.
 is `c`'s own one-ring, sorted. `l < level(c)` and `l > max_level(sys)` throw an
 `ArgumentError`.
 
+THE ORDER IS A CONTRACT, and it is worth naming the order precisely, because
+"canonical" is this package's word and a caller needs the operational one:
+`cellposition(levelgrid(sys, l), x)` is STRICTLY INCREASING over the walk. So a
+consumer indexing a position-ordered array — a chunk, a `Vector` laid out by
+`cellposition`, a cube axis — needs no `sort` and no `sortperm`, on any system
+and through any engine. [`halo_positions`](@ref) is that stream of positions
+directly.
+
+NOT TO BE CONFUSED WITH ONE-RING ORDER, which is a different question with a
+different answer. `neighbors` is rotationally ordered on H3 and IGeo7, and
+ascending position holds for none of it: 0 of the 41,162 H3 level-3 cells have a
+one-ring that is already ascending. The guarantee here is about the HALO, which
+the engines emit in position order by construction — `RingHaloEngine` by
+selection emit at depth zero, everything deeper by walking a canonical
+enumeration it never has to repair.
+
 Construction never materialises the halo: the iterator holds `O(depth)` walk
 state and bounded native neighbour containers, and nothing sized by the answer.
 Taking the first few cells of a deep halo therefore costs what those cells cost,
@@ -30,9 +46,11 @@ not what the whole ring would.
 [`Base.IteratorSize`](@ref) is `SizeUnknown()` wherever no count is proved —
 face seams, poles and pentagons break perimeter formulas — and `HasLength()`
 only where an engine derives the count in closed form. There is no `length` that
-would silently cost a traversal.
+would silently cost a traversal. [`halo_sizehint`](@ref) is the separate,
+explicitly approximate answer for a caller who only wants to `sizehint!`.
 
-See also [`halo`](@ref) for the same question about a subset, and
+See also [`halo`](@ref) for the same question about a subset,
+[`halo_positions`](@ref) for the same walk in position space, and
 [`EdgeCellIterator`](@ref) for the inside face of the same boundary.
 """
 struct SubtreeHaloIterator{S<:AbstractHierarchicalGridSystem,C<:AbstractCellIndex,
@@ -76,7 +94,11 @@ Base.length(it::SubtreeHaloIterator) = length(it.engine)
 # `collect` must BE the guarded path, not merely parallel to it: `collect`'s own
 # `HasLength` route would size its vector from a miscounting engine and hand
 # back an `undef` tail as cell ids. See `collect_subtree`.
-Base.collect(it::SubtreeHaloIterator) = collect_subtree(it)
+#
+# The hint is the second argument and never the first: `collect_subtree` still
+# reads `IteratorSize` to decide whether the count guard arms, so an approximate
+# number reaches `sizehint!` and nothing else. See `halo_sizehint`.
+Base.collect(it::SubtreeHaloIterator) = collect_subtree(it, halo_sizehint(it))
 
 Base.show(io::IO, it::SubtreeHaloIterator) = print(io, "SubtreeHaloIterator(",
     it.system, ", ", it.cell, ", ", it.level, "; connectivity = ",
@@ -166,8 +188,18 @@ function check_halo_level(sys::AbstractHierarchicalGridSystem,
     return nothing
 end
 
-# Named rather than folded into the method below so a system override has a
-# fallback to CALL, not merely to shadow.
+"""
+    generic_halo_engine(sys, c, target, connectivity)
+
+The engine every specialization's guards return to, and the one a newly
+registered system inherits: the level guard, then the one-ring at depth zero,
+then [`OutsideWalkEngine`](@ref) — or [`ScanHaloEngine`](@ref) on a system with
+no [`descendant_range`](@ref) to prune by.
+
+Named rather than inlined into `halo_engine` because a system's own method calls
+this when a guard fires, which is what makes a specialization a speed decision
+and never a correctness one.
+"""
 function generic_halo_engine(sys::AbstractHierarchicalGridSystem,
         c::AbstractCellIndex, target::Int, connectivity::Connectivity)
     check_halo_level(sys, c, target)
@@ -192,32 +224,55 @@ halo_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
 The level-`l` cells outside `c`'s subtree that touch it, ascending. The
 explicitly materialising form of [`SubtreeHaloIterator`](@ref) — the halo can be
 far larger than the subtree's rim, so collecting it is the caller's decision,
-never the constructor's.
+never the constructor's. Ascending means ascending `cellposition` on
+`levelgrid(sys, l)`; see the iterator's docstring for the contract.
 
-The motivating read is a chunk plus its stencil margin:
-`descendant_range(sys, c, l)` is the chunk's contiguous position block, and
-`cellposition.(Ref(levelgrid(sys, l)), subtree_halo(sys, c, l))` is the extra
-fetch list a one-ring stencil needs — with no halo table built at all.
+THE MOTIVATING READ IS A CHUNK PLUS ITS STENCIL MARGIN, AND IT IS NOT THIS VERB.
+On the five systems with [`has_sorted_subtrees`](@ref) — every one but A5, which
+has no [`descendant_range`](@ref) method to call — `descendant_range(sys, c, l)`
+is the chunk's contiguous position block, and the extra fetch list a one-ring
+stencil needs is [`halo_positions`](@ref), which streams:
 
-That fetch list is also the second argument of [`stencil_table`](@ref), which is
-how the two halves get addressed once they are laid end to end in one buffer.
+    for p in halo_positions(sys, c, l)
+        margin[p] = source[p]
+    end
+
+No halo table, no id `Vector`, no position `Vector`. Writing that read as
+`cellposition.(Ref(levelgrid(sys, l)), subtree_halo(sys, c, l))` would build both
+— for a 30-million-cell halo, 480 MB of ids to make 240 MB of positions and then
+drop the ids — which is spending the laziness this file is built out of in order
+to arrive at the same integers.
+
+Reach for `subtree_halo` when the IDS are the answer and are wanted all at once:
+naming cells to a system that indexes by id, or handing a halo to something that
+must index it more than once. `sizehint!` it with [`halo_sizehint`](@ref) if you
+are building the `Vector` yourself.
+
+The position stream is also the second argument of [`stencil_table`](@ref), which
+is how the two halves get addressed once they are laid end to end in one buffer.
 """
 subtree_halo(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
         l::Integer; connectivity::Connectivity = Vertex()) =
-    collect_subtree(SubtreeHaloIterator(sys, c, l; connectivity))
+    collect(SubtreeHaloIterator(sys, c, l; connectivity))
 
 """
     halo(subset; connectivity = Vertex())
 
 The cells immediately outside a same-level subset — the subset face of
 [`SubtreeHaloIterator`](@ref). Defined for [`PartialGrid`](@ref),
-[`CellVector`](@ref) and [`CellLookup`](@ref), whose methods live beside the
-other subset verbs in `stencil.jl` and `dimensionaldata.jl`.
+[`CellVector`](@ref) and
+[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), whose methods
+live beside the other subset verbs in `stencil.jl` and `dimensionaldata.jl`.
 
 The same definition a subtree gets, read against membership instead of ancestry:
 every cell of the subset's level that the subset does **not** hold but that has a
 neighbour the subset does, ascending, each cell once. `Vertex()` counts vertex
 contact, `Edge()` requires a shared edge.
+
+Ascending is the same contract [`SubtreeHaloIterator`](@ref) states, read on the
+COMPLETE level grid: `cellposition(subset, x)` is `nothing` for every cell of a
+halo by definition, so the grid a position can mean here is the complete one the
+subset was cut from. [`halo_positions`](@ref) of this iterator yields those.
 
 **A hole is part of the halo.** A cell removed from the middle of a subset is
 outside the subset and has in-subset neighbours, so it is a halo cell. That is
@@ -252,7 +307,8 @@ function halo end
 
 The halo of an arbitrary same-level subset, lazily — what [`halo`](@ref) returns
 whenever the subset is not a rooted complete subtree: a subset with a hole, a
-subset whose root was forgotten, a [`CellVector`](@ref), a [`CellLookup`](@ref).
+subset whose root was forgotten, a [`CellVector`](@ref), a
+[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
 
 Positional and built by [`halo`](@ref), which owns the engine choice. There is
 nothing a caller could pass here that `halo` does not already decide from the
@@ -287,10 +343,200 @@ Base.IteratorSize(::Type{<:SubsetHaloIterator{S,K,E}}) where {S,K,E} =
 # engine counts without walking, so the `MethodError` from here is the contract.
 Base.length(it::SubsetHaloIterator) = length(it.engine)
 
-Base.collect(it::SubsetHaloIterator) = collect_subtree(it)
+Base.collect(it::SubsetHaloIterator) = collect_subtree(it, halo_sizehint(it))
 
 Base.show(io::IO, it::SubsetHaloIterator) = print(io, "SubsetHaloIterator(",
     it.subset, "; connectivity = ", it.connectivity, ")")
+
+# ===========================================================================
+# The same walk, in position space
+#
+# WHY THIS IS A VERB AND NOT A `map`. A halo is a fetch list, and a fetch list
+# is read against storage laid out by `cellposition` — a chunk, a cube axis, a
+# `Vector` the caller allocated `ncells` long. So the caller's last step is
+# almost always the position, and the id was a way station. Two of the engines
+# never needed it in the first place: `ScanHaloEngine` walks POSITIONS and calls
+# `cellindex` to make an id, and `SquareBandEngine` computes `face·n² + child`,
+# which is the position minus one, before wrapping it in a `LevelIndex`.
+#
+# Yielding positions therefore costs nothing worth measuring on HEALPix, S2 and
+# ISEA4R (a measured 0.64-0.71 ns per cell for `cellposition`, which on those
+# three is `index + 1` behind one type check) and is strictly cheaper on A5,
+# where the scan's own state IS the position and re-deriving it through
+# `cellposition` costs a measured 38 ns of Hilbert decode per cell. It genuinely
+# costs a conversion on the two aperture-7 systems — a measured 7.7 ns on IGeo7
+# and 16.6 ns on H3, whose `cellposition` is an FFI validity check plus a child
+# position — and that is the honest price of a system whose canonical id is not
+# its position. `test/systems/crosssystem/subtree_halos.jl` is where those six
+# numbers are reproduced.
+#
+# WHAT IT IS NOT. Not `cellposition.(collect(halo))`: that materialises the ids
+# to throw them away, which is the whole cost this exists to remove. The
+# iterator holds the halo iterator and the grid, threads the halo's own state,
+# and adds nothing sized by the answer.
+# ===========================================================================
+
+"""
+    HaloPositionIterator(halo, grid)
+
+A halo walk read as `cellposition`s on `grid`, lazily — what
+[`halo_positions`](@ref) returns.
+
+Yields `Int`, strictly increasing, one per cell of the underlying walk and in
+the same order. Everything else is the wrapped iterator's:
+[`Base.IteratorSize`](@ref), the `length` that exists on exactly two engines and
+on no others, resumability, and the `O(depth)` state.
+"""
+struct HaloPositionIterator{I,G}
+    halo::I
+    grid::G
+end
+
+# The grid a position is a position IN. For a subtree it is the target level;
+# for a subset it is the COMPLETE grid the walk enumerates from, which both
+# subset engines already carry as `grid` — the subset's own `cellposition`
+# answers `nothing` for every halo cell, so it cannot be the one meant.
+_halo_grid(it::SubtreeHaloIterator) = levelgrid(it.system, it.level)
+_halo_grid(it::SubsetHaloIterator) = it.engine.grid
+
+"""
+    halo_positions(sys, c, l; connectivity = Vertex()) -> HaloPositionIterator
+    halo_positions(it) -> HaloPositionIterator
+
+The halo as POSITIONS rather than ids: `cellposition` on `levelgrid(sys, l)` for
+every cell [`SubtreeHaloIterator`](@ref) would yield, strictly increasing, lazily.
+
+The one-argument form takes a halo iterator, so a subset's halo composes —
+`halo_positions(halo(pg))` — and the positions are then on the complete grid the
+subset was cut from, for the reason [`halo`](@ref) gives.
+
+The motivating read is a stencil margin against position-indexed storage:
+
+    for p in halo_positions(sys, chunk, l)
+        margin[p] = source[p]
+    end
+
+which is why this is a verb and not `cellposition.(subtree_halo(...))`. That
+expression materialises a `Vector` of ids in order to build a `Vector` of
+positions and then discards the first; this streams, in the walk's own
+`O(depth)` state.
+
+WHAT IT COSTS, per cell, on top of the walk. Nothing worth measuring on HEALPix,
+S2 and ISEA4R, where a position is the id plus one. Strictly less than nothing on
+A5, whose scan holds the position already and would otherwise pay a Hilbert
+decode to recover it. A real conversion on IGeo7 and H3, whose canonical ids are
+not dense — under 10% of what those systems' own halo walks cost per cell, but
+not free, and named here rather than glossed.
+"""
+halo_positions(it::Union{SubtreeHaloIterator,SubsetHaloIterator}) =
+    HaloPositionIterator(it, _halo_grid(it))
+
+halo_positions(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
+        l::Integer; connectivity::Connectivity = Vertex()) =
+    halo_positions(SubtreeHaloIterator(sys, c, l; connectivity))
+
+# The conversion, dispatched on the ENGINE so each walk pays only what its own
+# state leaves undone. This is the default — one `cellposition`. The one
+# override lives beside `ScanHaloEngine`, whose state already IS the position.
+@inline _halo_position(::Any, grid, x, state) = cellposition(grid, x)::Int
+
+Base.eltype(::Type{<:HaloPositionIterator}) = Int
+Base.IteratorSize(::Type{<:HaloPositionIterator{I,G}}) where {I,G} =
+    Base.IteratorSize(I)
+
+# Delegated for its wrapped walk's reason: an engine that cannot count without
+# walking defines no `length`, and reading positions instead of ids does not
+# make it countable.
+Base.length(it::HaloPositionIterator) = length(it.halo)
+
+Base.collect(it::HaloPositionIterator) = collect_subtree(it, halo_sizehint(it))
+
+Base.show(io::IO, it::HaloPositionIterator) =
+    print(io, "halo_positions(", it.halo, ")")
+
+function Base.iterate(it::HaloPositionIterator)
+    r = iterate(it.halo)
+    r === nothing && return nothing
+    x, s = r
+    return (_halo_position(it.halo.engine, it.grid, x, s), s)
+end
+
+function Base.iterate(it::HaloPositionIterator, state)
+    r = iterate(it.halo, state)
+    r === nothing && return nothing
+    x, s = r
+    return (_halo_position(it.halo.engine, it.grid, x, s), s)
+end
+
+# ===========================================================================
+# An approximate size, which is deliberately not a `length`
+# ===========================================================================
+
+"""
+    halo_sizehint(it) -> Union{Int,Nothing}
+
+An APPROXIMATE upper bound on how many cells `it` yields, or `nothing` where no
+bound is known. For `sizehint!` and for nothing else.
+
+    h = halo_sizehint(it)
+    out = eltype(it)[]
+    h === nothing || sizehint!(out, h)
+    for x in it; push!(out, x); end
+
+WHY THIS IS NOT A `length`, AND MUST NOT BECOME ONE. `length` is a promise a
+caller may allocate against and index into: `collect`'s sized route fills a
+vector of exactly that many slots by iterating, so a `length` that is one too
+large hands back an `undef` slot as a cell id. Five of the seven engines refuse
+to declare one for exactly that reason (see [`SubtreeHaloIterator`](@ref)), and
+`collect_subtree`'s miscount guard is meaningful only while they do. A HINT may
+be wrong in both directions and costs at most one reallocation either way, so it
+can answer where a count cannot — and it is threaded into `collect` as a
+`sizehint!` argument, never through [`Base.IteratorSize`](@ref). Refusing every
+size estimate as well as every count is what made `collect` of a `SizeUnknown`
+halo allocate several times its own answer while growing.
+
+WHERE THE NUMBERS COME FROM. Every one of them is measured by
+`test/systems/crosssystem/subtree_halos.jl`, and the sweep is described here
+rather than summarised as a case count so that the description stays true when
+the sweep is widened:
+
+  - the one-ring at depth zero, and the in-face square band, are EXACT — both
+    engines already declare a `length` and this returns it;
+  - the seam square band is `4·side + 8`. Over WHOLE GENERATIONS of all three
+    aperture-4 systems at bases 0-2 and depths 1-3, both connectivities, the
+    count is `4·side` under [`Edge`](@ref) and `4·side + e` under
+    [`Vertex`](@ref) with `e ∈ {0, 2, 3, 4, 5}`; `e == 5` is ISEA4R and only
+    ISEA4R, at a block whose corner sits at icosahedral vertex 0 or 11, where
+    five diamonds meet and the corner contributes two cells rather than one.
+    It is still exactly 5 at depth 12, i.e. at side 4096, so it is a fact about
+    the vertex and not about the perimeter. `+8` is two cells per corner, which
+    is the structural reading of that observation rather than the fitted
+    constant;
+  - the hexagonal walks are `3^(d+1) + 3` for `d = l - level(c)`, which is the
+    census around a hexagon exactly, and about 20% over around a pentagon
+    (`5(3^d + 1)/2`). Sampled across both systems at bases 0-1 and depths 1-4,
+    every halo has one of those two counts and none exceeds the hint;
+  - [`ScanHaloEngine`](@ref) and [`OutsideWalkEngine`](@ref) answer `nothing`.
+    A5's subtree perimeter does not follow the aperture-4 formula — measured 12,
+    22 and 42 at depths 1-3 from a level-1 root against `4·2^d + 5` of 13, 21
+    and 37, under at one depth and over at two — and the generic walk serves
+    subsets, whose halo has no perimeter at all. A guess there would be the one
+    kind of wrong this file does not ship.
+"""
+halo_sizehint(it::SubtreeHaloIterator) = _halo_sizehint(it.engine)
+halo_sizehint(it::SubsetHaloIterator) = _halo_sizehint(it.engine)
+halo_sizehint(it::HaloPositionIterator) = halo_sizehint(it.halo)
+
+# Nothing is the answer for a walk with no bound, and it is the answer a walk
+# gets by DEFAULT — `ScanHaloEngine` and `OutsideWalkEngine` land here, and so
+# does an engine added later, which is unbounded until someone measures it. The
+# four bounded engines answer beside their own definitions below, the way each
+# one's `IteratorSize` and emit rule already do.
+_halo_sizehint(::Any) = nothing
+
+# The one-ring's count is exact and already declared, so the hint IS the
+# `length` rather than a second opinion about it.
+_halo_sizehint(e::RingHaloEngine) = length(e)
 
 # ===========================================================================
 # The adjacency providers
@@ -810,6 +1056,17 @@ Base.IteratorSize(::Type{<:ScanHaloEngine}) = Base.SizeUnknown()
     ancestor(e.system, x, e.rootlevel) != e.root
 @inline _scan_outside(::SubsetMembership, e, x) = true
 
+# The scan's state is the position it will resume at, so the cell just yielded
+# sat one before it and `halo_positions` needs no `cellposition` at all. That is
+# the largest per-cell saving the position walk makes anywhere: A5's
+# `cellposition` is a Hilbert decode, a measured 38 ns against the 0.64 ns the
+# three aperture-4 systems pay.
+#
+# The grid and the cell go unnamed for `_band_emit`'s reason — naming arguments
+# this ignores would suggest it consults them, and the whole point is that it
+# does not have to.
+@inline _halo_position(::ScanHaloEngine, ::Any, ::Any, state::Int) = state - 1
+
 Base.iterate(e::ScanHaloEngine) = iterate(e, 1)
 function Base.iterate(e::ScanHaloEngine, p::Int)
     n = ncells(e.grid)
@@ -1173,6 +1430,15 @@ Base.IteratorSize(::Type{<:SquareBandEngine{V,K}}) where {V,K<:NativeCheck} =
 # docstring.
 Base.length(e::SquareBandEngine{V,NoCheck}) where {V} =
     e.corners ? Int(4 * e.side + 4) : Int(4 * e.side)
+
+# The exact band's hint is its own count. The seam band's is the band plus two
+# cells per corner: a seam corner can contribute a second cell where more than
+# three faces meet, which is ISEA4R at icosahedral vertex 0 or 11 and nowhere
+# else measured. See `halo_sizehint` for the sweep those two sentences come
+# from, and note that a hint three cells generous of the worst case measured is
+# a `sizehint!` and not a `length` — the count contract above is untouched.
+_halo_sizehint(e::SquareBandEngine{V,NoCheck}) where {V} = length(e)
+_halo_sizehint(e::SquareBandEngine) = Int(4 * e.side + 8)
 
 Base.iterate(e::SquareBandEngine) =
     iterate(e, SquareBandWalk(0, _empty_band_stack(),
@@ -1801,6 +2067,24 @@ end
 
 Base.eltype(::Type{<:HexArcHaloEngine{S,G,C,K}}) where {S,G,C,K} = C
 Base.IteratorSize(::Type{<:HexArcHaloEngine}) = Base.SizeUnknown()
+
+# The census the docstring above refuses to declare as a `length`, offered as
+# the thing it IS good enough to be: a `sizehint!`. `3^(d+1) + 3` is the count
+# around a hexagon and an over-estimate of about 20% around a pentagon, whose
+# census is `5(3^d + 1)/2` — and the hexagon figure is the larger of the two, so
+# one formula bounds both. Both engines answer it, at depth one and deeper,
+# because the depth-one halo is the same census with `d == 1`.
+#
+# WHY THIS IS NOT THE `length` THE DOCSTRING WITHHOLDS. Nothing has changed
+# about the evidence: the census is still enumeration rather than a derivation
+# from the seeded transition relation. What changed is the promise. A `length`
+# that is 20% high hands a caller `undef` slots as cell ids through `collect`'s
+# sized route; a hint that is 20% high costs a `Vector` that is 20% roomier than
+# it needed to be, and is never read as a count by anything.
+_halo_sizehint(e::HexChildHaloEngine) = _hex_sizehint(e.target - e.rootlevel)
+_halo_sizehint(e::HexArcHaloEngine) = _hex_sizehint(e.target - e.rootlevel)
+
+@inline _hex_sizehint(d::Int) = 3^(d + 1) + 3
 
 """
     HexArcWalk(slot, arc, state)

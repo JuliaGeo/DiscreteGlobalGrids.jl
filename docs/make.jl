@@ -27,7 +27,11 @@ for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
 end
 
 makedocs(;
-    modules = [DiscreteGlobalGrids],
+    # The submodule is listed because the boundary reference page pulls
+    # docstrings out of it — the halo engines live in `Fallbacks`, and a
+    # `@docs` entry whose binding belongs to a module Documenter was not told
+    # about is reported as an error rather than rendered.
+    modules = [DiscreteGlobalGrids, DiscreteGlobalGrids.Fallbacks],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",
     repo = Documenter.Remotes.GitHub("JuliaGeo", "DiscreteGlobalGrids.jl"),
@@ -46,6 +50,12 @@ makedocs(;
             "Multi-order coverage" => "tutorials/multiorder.md",
             "Hydrology: a DEM on an IGEO7 grid" => "tutorials/hydrology.md",
             "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
+        ],
+        # The first rendered docstrings on the site. Until this page existed
+        # every `@ref` in the package resolved nowhere, because no page carried
+        # a `@docs` block at all.
+        "API" => [
+            "Subtree and subset boundaries" => "api/boundaries.md",
         ],
     ],
     plugins = [DocumenterVitepress.BonitoPlugin()],

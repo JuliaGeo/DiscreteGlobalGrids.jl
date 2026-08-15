@@ -54,6 +54,15 @@
 #
 #   Sortedness, uniqueness, outside ancestry, both adjacency directions.
 #   `check_halo_case`, from every sweep; `law_halo` pins SET and ORDER on top.
+#   The order is now a CONTRACT, not a property, so "halo_positions is the
+#   ascending position stream, on every engine" restates it in the space a
+#   caller consumes it in, across all seven engines at once.
+#
+#   An approximate size where an exact one is refused.
+#   "halo_sizehint bounds the walk, and stays out of the count" derives every
+#   number in its docstring; "the size hint is what preallocates the collect"
+#   measures what it buys. The count contract is untouched — the last arm of
+#   the first testset is what says so.
 #
 #   Rooted and root-forgotten `PartialGrid`, holes, `CellVector`, `CellLookup`.
 #   "$(system): halo on subsets" — delegation asserted BY TYPE, the
@@ -140,7 +149,7 @@ using Test
 using DiscreteGlobalGrids
 using DiscreteGlobalGrids: systems, levelgrid, level, max_level, ncells,
     cellindex, cellposition, neighbors, ancestor, subtree_border, Vertex, Edge,
-    SubtreeHaloIterator, subtree_halo
+    SubtreeHaloIterator, subtree_halo, halo_positions, halo_sizehint
 import DiscreteGlobalGrids as DGG
 
 # ---------------------------------------------------------------------------
@@ -1949,6 +1958,236 @@ fixture_collect_bytes(sys, c, l) =
     end
 
     # -----------------------------------------------------------------------
+    # THE ORDER, PROMOTED FROM A PROPERTY TO A CONTRACT — in position space,
+    # which is the space a caller actually consumes it in
+    # -----------------------------------------------------------------------
+
+    # `check_halo_case` already asserts `issorted(cellposition.(...))` on every
+    # case it sees, so the ORDER is not new evidence. What is new is that the
+    # order is now a documented promise, that `halo_positions` is the verb which
+    # hands it over, and that both are pinned ACROSS ALL SEVEN ENGINES AT ONCE
+    # by the tag-set mechanism — the shape that notices an engine going
+    # uncovered rather than an engine going wrong.
+    #
+    # WHAT THIS KILLS THAT NOTHING ELSE DOES. `_halo_position` is dispatched per
+    # engine, and `ScanHaloEngine`'s override reads the position out of the
+    # walk's own resume state instead of calling `cellposition`. An off-by-one
+    # there is invisible to every other assertion in this file — the ids are
+    # untouched, the order is untouched, only the integers a caller indexes with
+    # move by one — so the comparison against `cellposition` of the id stream is
+    # the only thing standing between that shortcut and silently reading the
+    # wrong cell of somebody's array. The `issorted` assertion is the contract
+    # itself, restated where the docstring now promises it.
+    #
+    # NOT ASSERTED, DELIBERATELY: that a one-ring is ascending. It is not.
+    # `neighbors` is rotationally ordered on H3 and IGeo7, and 0 of 41,162 H3
+    # level-3 cells have an already-ascending one-ring. The halo is ascending
+    # because `RingHaloEngine` emits it that way at depth zero and because every
+    # deeper walk enumerates canonically; conflating the two would be promising
+    # something about `neighbors` that is false.
+    @testset "halo_positions is the ascending position stream, on every engine" begin
+        seen = Set{Symbol}()
+        wrappers = Set{Symbol}()
+        function check_positions(grid, it)
+            push!(seen, engine_tag(it.engine))
+            push!(wrappers, nameof(typeof(it)))
+            ids = collect(it)
+            hp = halo_positions(it)
+            ps = collect(hp)
+            @test !isempty(ps)
+            # The stream IS the conversion of the id stream, element for element
+            # — including on the subset walks, where the grid a position means
+            # is the COMPLETE level and not the subset.
+            @test ps == [cellposition(grid, x) for x in ids]
+            # The contract.
+            @test issorted(ps)
+            @test allunique(ps)
+            # Answered in the type domain, for `collect`'s sake: an iterator
+            # that only knew `Int` at run time would hand back a `Vector{Any}`
+            # with nothing red anywhere.
+            @test eltype(typeof(hp)) === Int
+            @test ps isa Vector{Int}
+            # Reading positions instead of ids changes nothing about counting.
+            @test Base.IteratorSize(typeof(hp)) === Base.IteratorSize(typeof(it))
+            if Base.IteratorSize(typeof(hp)) isa Base.HasLength
+                @test length(hp) == length(ps)
+            else
+                @test_throws MethodError length(hp)
+            end
+            # Resumable, not restarted — the wrapper threads the walk's own
+            # state, so a second pass must reproduce the first.
+            @test collect(Iterators.take(hp, 4)) == ps[1:min(4, length(ps))]
+            @test collect(hp) == ps
+        end
+        for sys in systems()
+            mx = max_level(sys)
+            c0 = cellindex(levelgrid(sys, 0), 1)
+            for l in 0:min(2, mx)
+                check_positions(levelgrid(sys, l), SubtreeHaloIterator(sys, c0, l))
+            end
+            l = min(2, mx)
+            check_positions(levelgrid(sys, l), generic_iterator(sys, c0, l))
+            loose = PartialGrid(sys, l, collect(PartialGrid(sys, c0, l).ids))
+            check_positions(levelgrid(sys, l), halo(loose))
+            check_positions(levelgrid(sys, l), halo(CellVector(loose)))
+        end
+        for sys in SQUARE_SYSTEMS
+            check_positions(levelgrid(sys, 4),
+                SubtreeHaloIterator(sys, inface_root(sys, 2, 4), 4))
+        end
+        @test seen == ALL_ENGINE_TAGS
+        @test wrappers == Set((:SubtreeHaloIterator, :SubsetHaloIterator))
+        # The three-argument form is the two-argument one, and reaches the same
+        # walk the id verb does.
+        for sys in systems()
+            l = min(2, max_level(sys))
+            c0 = cellindex(levelgrid(sys, 0), 1)
+            @test collect(halo_positions(sys, c0, l)) ==
+                  [cellposition(levelgrid(sys, l), x)
+                   for x in subtree_halo(sys, c0, l)]
+            @test collect(halo_positions(sys, c0, l; connectivity = Edge())) ==
+                  [cellposition(levelgrid(sys, l), x)
+                   for x in subtree_halo(sys, c0, l; connectivity = Edge())]
+        end
+    end
+
+    # -----------------------------------------------------------------------
+    # `halo_sizehint`: bounding, approximate, and never a count
+    # -----------------------------------------------------------------------
+
+    # THE NUMBERS IN `halo_sizehint`'S DOCSTRING ARE DERIVED HERE, which is the
+    # only reason they are allowed to be written down. Three claims:
+    #
+    #   * the square band is `4·side + e` with `e ∈ {0, 2, 3, 4, 5}` under
+    #     `Vertex()` and exactly `4·side` under `Edge()`, so `4·side + 8` — the
+    #     band plus two cells per corner — bounds it. The `e == 5` case is
+    #     ISEA4R and only ISEA4R: it is a block whose corner sits at
+    #     icosahedral vertex 0 or 11, where five diamonds meet and the corner
+    #     contributes two cells rather than one. The excess SETS are asserted
+    #     rather than a maximum, because the maximum alone would not notice
+    #     ISEA4R's fifth cell moving to a system that should not have one.
+    #   * the hexagonal census is `3^(d+1) + 3` around a hexagon and
+    #     `5(3^d + 1)/2` around a pentagon, and the hint is the first, which is
+    #     the larger. Asserted as membership in the pair, so a walk that started
+    #     emitting a pentagon census around a hexagon fails here.
+    #   * A5's scan, the generic walk and both subset walks answer `nothing`.
+    #     A5 is the arm with content: its subtree perimeter does NOT follow the
+    #     aperture-4 formula (12, 22, 42 at depths 1-3 from a level-1 root,
+    #     against 13, 21, 37), so a hint fitted from the other three would be
+    #     wrong in both directions, and `nothing` is the honest answer.
+    #
+    # AND THE HINT IS NOT A COUNT. The last arm is the whole point of the verb
+    # existing separately: an engine that answers `halo_sizehint` must still
+    # refuse `length` and still declare `SizeUnknown()`. A future edit that
+    # "helpfully" routed the hint into `IteratorSize` would make `collect`'s
+    # sized path allocate from it and fill fewer slots than it claimed, which is
+    # the `undef`-tail failure `collect_subtree` exists to catch — and this is
+    # where that edit is caught before it gets there.
+    @testset "halo_sizehint bounds the walk, and stays out of the count" begin
+        # --- the aperture-4 band, over whole generations -------------------
+        excess = Dict{Tuple{Symbol,Any},Set{Int}}()
+        unbounded = 0
+        for sys in SQUARE_SYSTEMS, conn in (Vertex(), Edge())
+            s = Set{Int}()
+            for base in 0:2, d in 1:3
+                l = base + d
+                l <= max_level(sys) || continue
+                g = levelgrid(sys, base)
+                for i in 1:ncells(g)
+                    it = SubtreeHaloIterator(sys, cellindex(g, i), l;
+                        connectivity = conn)
+                    n = length(collect(it))
+                    h = halo_sizehint(it)
+                    unbounded += (h === nothing || n > h)
+                    push!(s, n - 4 * 2^d)
+                end
+            end
+            excess[(nameof(typeof(sys)), conn)] = s
+        end
+        @test unbounded == 0
+        @test excess[(:HEALPixSystem, Vertex())] == Set((2, 3, 4))
+        @test excess[(:S2System, Vertex())] == Set((0, 3, 4))
+        @test excess[(:ISEA4RSystem, Vertex())] == Set((2, 3, 4, 5))
+        for sys in SQUARE_SYSTEMS
+            @test excess[(nameof(typeof(sys)), Edge())] == Set((0,))
+        end
+        # The fifth cell is a fact about the icosahedral vertex and not about
+        # the depth: it is still exactly five at side 4096, where a fitted
+        # constant that drifted with the perimeter would be thousands off.
+        let sys = ISEA4RSystem(), g = levelgrid(sys, 2)
+            for d in (6, 12)
+                it = SubtreeHaloIterator(sys, cellindex(g, 11), 2 + d)
+                @test length(collect(it)) == 4 * 2^d + 5
+                @test halo_sizehint(it) == 4 * 2^d + 8
+            end
+        end
+
+        # --- the aperture-7 census -----------------------------------------
+        for sys in HEX_SYSTEMS, base in 0:1, d in 1:4
+            l = base + d
+            l <= max_level(sys) || continue
+            g = levelgrid(sys, base)
+            step = max(1, ncells(g) ÷ 8)
+            for i in 1:step:ncells(g)
+                it = SubtreeHaloIterator(sys, cellindex(g, i), l)
+                n = length(collect(it))
+                @test n in (3^(d + 1) + 3, (5 * (3^d + 1)) ÷ 2)
+                @test halo_sizehint(it) == 3^(d + 1) + 3
+                @test n <= halo_sizehint(it)
+            end
+        end
+
+        # --- where nothing is known ----------------------------------------
+        for sys in systems()
+            l = min(2, max_level(sys))
+            c0 = cellindex(levelgrid(sys, 0), 1)
+            @test halo_sizehint(generic_iterator(sys, c0, l)) === nothing
+            loose = PartialGrid(sys, l, collect(PartialGrid(sys, c0, l).ids))
+            @test halo_sizehint(halo(loose)) === nothing
+            @test halo_sizehint(halo(CellVector(loose))) === nothing
+        end
+        let sys = A5System(), g = levelgrid(sys, 1)
+            c = cellindex(g, 1)
+            @test halo_sizehint(SubtreeHaloIterator(sys, c, 2)) === nothing
+            # The measurement behind that refusal: an aperture-4 perimeter
+            # formula would claim 13, 21 and 37 for a walk that emits 12, 22
+            # and 42 — under at depth 2 and over at depths 1 and 3.
+            @test [length(subtree_halo(sys, c, 1 + d)) for d in 1:3] == [12, 22, 42]
+        end
+
+        # --- and it is not a count -----------------------------------------
+        # Each of the four bounded engines, asked both questions. A hint that
+        # had become a `length` would answer the second here instead of
+        # throwing, and `SizeUnknown` would have quietly turned into
+        # `HasLength` on the two that refuse.
+        hinted = Set{Symbol}()
+        function check_not_a_count(it)
+            push!(hinted, engine_tag(it.engine))
+            @test halo_sizehint(it) isa Int
+            @test halo_sizehint(it) >= length(collect(it))
+            @test halo_sizehint(halo_positions(it)) == halo_sizehint(it)
+            if Base.IteratorSize(typeof(it)) isa Base.SizeUnknown
+                @test_throws MethodError length(it)
+            else
+                @test length(it) == length(collect(it))
+            end
+        end
+        for sys in SQUARE_SYSTEMS
+            c0 = cellindex(levelgrid(sys, 0), 1)
+            check_not_a_count(SubtreeHaloIterator(sys, c0, 0))     # the one-ring
+            check_not_a_count(SubtreeHaloIterator(sys, c0, 3))     # the seam band
+            check_not_a_count(SubtreeHaloIterator(sys, inface_root(sys, 2, 4), 4))
+        end
+        for sys in HEX_SYSTEMS
+            c1 = cellindex(levelgrid(sys, 1), 1)
+            check_not_a_count(SubtreeHaloIterator(sys, c1, 2))
+            check_not_a_count(SubtreeHaloIterator(sys, c1, 4))
+        end
+        @test hinted == Set((:RingHaloEngine, :SquareBandNoCheck,
+            :SquareBandNativeCheck, :HexChildHaloEngine, :HexArcHaloEngine))
+    end
+
+    # -----------------------------------------------------------------------
     # "Consumable incrementally or in caller-selected batches"
     # -----------------------------------------------------------------------
 
@@ -2141,10 +2380,18 @@ fixture_collect_bytes(sys, c, l) =
             @test last(sizes) >= 5 * first(sizes)
             # The share the prefix costs did not.
             @test last(fracs) <= first(fracs)
-            # And it is small. Measured at the deep end: 0.060 (HEALPix,
-            # ISEA4R), 0.024 (S2), 0.0023 (IGeo7), 0.0011 (H3), 0.0032 (A5) —
-            # against 0.50, 0.30, 0.13, 0.13 and 0.29 at the shallow end, which
-            # is why the threshold is on the deep end only.
+            # And it is small. Measured at the deep end: 0.079 (HEALPix,
+            # ISEA4R), 0.025 (S2), 0.0039 (IGeo7 and H3), 0.0032 (A5) — against
+            # 0.56, 0.31, 0.25, 0.25 and 0.29 at the shallow end, which is why
+            # the threshold is on the deep end only.
+            #
+            # THE DEEP-END FIGURES ROSE WHEN `halo_sizehint` LANDED, and the
+            # direction is the point rather than a regression: the denominator
+            # is `subtree_halo`, which now preallocates instead of doubling its
+            # way up, so it fell by 2.6-3.5x while the prefix did not move at
+            # all. A ratio law is exactly the shape that survives that — the
+            # prefix is still a small and shrinking share of a collect that
+            # itself got cheaper.
             @test last(fracs) < 0.15
         end
     end
@@ -2262,6 +2509,71 @@ fixture_collect_bytes(sys, c, l) =
             # ... and building the iterator did not notice, on either container.
             @test maximum(ctor.grid) - minimum(ctor.grid) <= 64
             @test maximum(ctor.vector) - minimum(ctor.vector) <= 64
+        end
+    end
+
+    # WHAT THE SIZE HINT BUYS, AS A CONTROLLED DIFFERENCE. `collect_subtree` is
+    # called twice on the SAME iterator with the only difference being the
+    # second argument, so nothing but the `sizehint!` can move: same walk, same
+    # engine, same cells, same element type, same order. That is the reason this
+    # measures the hint rather than measuring `subtree_halo` before and after,
+    # which would compare two versions of the file.
+    #
+    # WHY A `Vector` THAT GROWS COSTS SEVERAL TIMES ITS ANSWER. `push!` onto a
+    # full buffer allocates a larger one and copies; the copies are geometric,
+    # so a walk that ends at `n` elements has allocated a constant multiple of
+    # `n` on the way there rather than `n`. Measured on a 16k-cell seam halo,
+    # 3.4x the answer's own bytes; hinted, 1.06x. The three assertions are the
+    # three halves of that sentence: the hinted form allocates less than half
+    # what the growing form does, it lands within 40% of the answer's own size,
+    # and the growing form does not.
+    #
+    # S2 IS IN THE WEAK ARM AND IT IS NOT A WEAKNESS OF THE HINT. Its
+    # `neighbors` heap-allocates a `Vector` per candidate, and `NativeCheck`
+    # asks it once per candidate, so the WALK's allocation swamps the vector's:
+    # the same 16k halo measures 11.4x the answer either way, and the hint's
+    # 612 KB saving is real but arithmetically invisible next to 2.4 MB of
+    # neighbour lists. Asserting the strong form there would be asserting
+    # something about `s2_neighbors` in a file about halos.
+    #
+    # THE ONE THING NO ARM HERE PINS is a raw byte count, for the reason the
+    # section comment gives.
+    @testset "the size hint is what preallocates the collect" begin
+        function hint_bytes(sys, c, l)
+            it = SubtreeHaloIterator(sys, c, l)
+            h = halo_sizehint(it)
+            @test h !== nothing
+            DGG.collect_subtree(it, nothing)
+            DGG.collect_subtree(it, h)
+            grown = @allocated DGG.collect_subtree(it, nothing)
+            hinted = @allocated DGG.collect_subtree(it, h)
+            out = DGG.collect_subtree(it, h)
+            return (grown, hinted, length(out) * sizeof(eltype(it)))
+        end
+        # A seam block on two of the three aperture-4 systems, and a depth-8
+        # halo on both aperture-7 ones: 16387, 16389, 19686 and 16405 cells,
+        # which is large enough that the growth doubling has happened many
+        # times over.
+        for (sys, base, i, l) in ((HEALPixSystem(), 2, 6, 14),
+                                  (ISEA4RSystem(), 2, 11, 14),
+                                  (H3System(), 0, 1, 8),
+                                  (IGeo7System(), 0, 1, 8))
+            c = cellindex(levelgrid(sys, base), i)
+            grown, hinted, answer = hint_bytes(sys, c, l)
+            # Measured 2.79x (both hexagonal) to 3.2x (both square).
+            @test 2 * hinted < grown
+            # Measured 1.04x to 1.25x — the 1.25 is IGeo7's level-0 root, which
+            # is a pentagon, where the hint is the hexagon census and 20% high
+            # by construction.
+            @test hinted < 1.4 * answer
+            # And the growing form is not: measured 2.91x to 3.49x.
+            @test grown > 2 * answer
+        end
+        # S2, held only to the direction. Measured 2987968 B growing against
+        # 2376128 B hinted on the same 16387-cell halo.
+        let sys = S2System()
+            grown, hinted, _ = hint_bytes(sys, cellindex(levelgrid(sys, 2), 6), 14)
+            @test hinted < grown
         end
     end
 

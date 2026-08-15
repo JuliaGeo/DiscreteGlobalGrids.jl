@@ -40,7 +40,11 @@ descendants but touch one. All three are `collect` of a resumable
 `O(depth)`-memory iterator ([`EdgeCellIterator`](@ref),
 [`InnerCellIterator`](@ref), [`SubtreeHaloIterator`](@ref)), because a halo in
 particular can be far larger than the rim it wraps and materializing it is the
-caller's decision.
+caller's decision. A halo is emitted in ascending `cellposition` on the target
+grid — a contract, not an accident — so [`halo_positions`](@ref) can stream the
+fetch list a stencil margin needs without a sort and without materializing the
+ids first, and [`halo_sizehint`](@ref) answers approximately where the design
+refuses to answer exactly.
 
 Internal geometry uses `GeometryOps.UnitSphericalPoint`; explicitly named
 wrappers convert longitude and latitude at API boundaries.
@@ -118,7 +122,8 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     cellindices, is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
     EdgeCellIterator, InnerCellIterator, member_neighbors,
-    SubtreeHaloIterator, SubsetHaloIterator, subtree_halo, halo,
+    SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator,
+    subtree_halo, halo, halo_positions, halo_sizehint,
     StencilTable, stencil_table
 
 # The lazy subtree walkers' extension point and the parts a system builds one
@@ -296,7 +301,8 @@ export node_extent, cap_inflation, max_neighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
 export subtree_border, subtree_interior
 export EdgeCellIterator, InnerCellIterator
-export SubtreeHaloIterator, SubsetHaloIterator, subtree_halo, halo
+export SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator
+export subtree_halo, halo, halo_positions, halo_sizehint
 export StencilTable, stencil_table
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------

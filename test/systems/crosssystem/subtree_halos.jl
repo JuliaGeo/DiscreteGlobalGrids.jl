@@ -126,11 +126,12 @@
 #     it actually made; the depth-invariance arm is restricted to the engines
 #     that have the property.
 #
-#   * THE SUBSET WALK'S COST is not measured by a clock either, and does not
-#     need to be: the walk asks its subset exactly two questions, so a wrapper
-#     that counts them counts the work. "the subset walk's cost follows the halo,
-#     not the subset" is that count at two sizes, and "the subset walk is lazy"
-#     is the construction and prefix pair the other engines get.
+#   * THE SUBSET WALK'S COST is not measured by a clock either, and its prefix
+#     is not measured by the allocator: the walk asks its subset exactly two
+#     questions, so a wrapper that counts them counts the work. "the subset
+#     walk's cost follows the halo, not the subset" is that count at two sizes,
+#     and "the subset walk is lazy" is that count against a four-cell prefix,
+#     beside the construction measurement the other engines get.
 #
 #   * A SUBSET THAT IS NOT A SUBTREE HAS NO GEOMETRY ORACLE. `ForcedGeometry`
 #     answers "does `x` touch a descendant of `c`", and an arbitrary set of ids
@@ -175,31 +176,38 @@ Base.length(::MiscountingEngine) = 3
 
 # The second fixture, out here for the same reason, playing the opposite role:
 # `MiscountingEngine` is an engine every value assertion refuses, and this is
-# one every value assertion ACCEPTS. `EagerHaloEngine` answers exactly, in
-# canonical order, with a concrete `eltype` and an honest `length`, and is
-# resumable, restartable and batchable — it calls `subtree_halo`. What it does
-# not do is stay lazy: it materialises the whole halo in its constructor, so
-# `length` is free, and again on every fresh walk, which is what an engine that
-# built its answer on the first `iterate` would pay. The four allocation laws
-# are the only things in the package that refuse it — see "an eager engine with
-# the same surface fails every allocation law".
-struct EagerHaloEngine{S,C,K}
-    system::S
-    root::C
-    target::Int
-    connectivity::K
+# one every value assertion ACCEPTS. `EagerHaloEngine` yields exactly what the
+# engine it wraps yields, in the same order, with a concrete `eltype` and an
+# honest `length`, and is resumable, restartable and batchable. What it does not
+# do is stay lazy: it drains that engine in its constructor, so `length` is
+# free, and again on every fresh walk, which is what an engine that built its
+# answer on the first `iterate` would pay. The four allocation laws are the only
+# things in the package that refuse it — see "an eager engine with the same
+# surface fails every allocation law" for the first three and "the subset walk
+# is lazy, and its construction is O(1)" for the fourth.
+#
+# IT WRAPS AN ENGINE RATHER THAN RE-DERIVING A HALO, and that is what lets ONE
+# fixture stand against laws about two different walks. The subtree arms hand it
+# `halo_engine`'s answer inside a `SubtreeHaloIterator`; the subset arm hands it
+# `subset_halo_engine`'s inside a `SubsetHaloIterator`. Either way the wrapped
+# engine IS the shipped walk, so the ONLY difference between this iterator and
+# the shipped one is the eagerness — which is what makes a law that refuses this
+# and accepts that a statement about laziness and nothing else. A fixture that
+# re-derived the halo by calling `subtree_halo` would additionally differ in
+# whatever `subtree_halo` does that an engine does not, and has: it picked up
+# `halo_sizehint`'s preallocation, which is not a property of eagerness at all.
+struct EagerHaloEngine{E,C}
+    inner::E
     cells::Vector{C}
 end
 
-EagerHaloEngine(sys, c, l, conn) = EagerHaloEngine(sys, c, Int(l), conn,
-    subtree_halo(sys, c, Int(l); connectivity = conn))
+EagerHaloEngine(inner) = EagerHaloEngine(inner, DGG.collect_subtree(inner))
 
-Base.iterate(e::EagerHaloEngine{S,C,K}) where {S,C,K} =
-    iterate(e, (subtree_halo(e.system, e.root, e.target;
-        connectivity = e.connectivity), 1))
-Base.iterate(::EagerHaloEngine{S,C,K}, s::Tuple{Vector{C},Int}) where {S,C,K} =
+Base.iterate(e::EagerHaloEngine{E,C}) where {E,C} =
+    iterate(e, (DGG.collect_subtree(e.inner), 1))
+Base.iterate(::EagerHaloEngine{E,C}, s::Tuple{Vector{C},Int}) where {E,C} =
     s[2] > length(s[1]) ? nothing : (@inbounds(s[1][s[2]]), (s[1], s[2] + 1))
-Base.eltype(::Type{<:EagerHaloEngine{S,C,K}}) where {S,C,K} = C
+Base.eltype(::Type{<:EagerHaloEngine{E,C}}) where {E,C} = C
 Base.IteratorSize(::Type{<:EagerHaloEngine}) = Base.HasLength()
 Base.length(e::EagerHaloEngine) = length(e.cells)
 
@@ -210,7 +218,7 @@ Base.length(e::EagerHaloEngine) = length(e.cells)
 # no allocation proxy, no threshold that a faster machine could move.
 #
 # It is a SUBSET, not an engine: `halo` decides its own container's engine, so
-# the counting arm builds `subset_halo_engine` directly and hands it this. The
+# the counting arms build `subset_halo_engine` directly and hand it this. The
 # answer is asserted equal to the container's on every use, which is what says
 # the wrapper changed the measurement and not the walk.
 mutable struct CountingSubset{S}
@@ -226,9 +234,29 @@ DGG.cellposition(cs::CountingSubset, c::DGG.AbstractCellIndex) =
 DGG.Fallbacks.subset_span(cs::CountingSubset, lo::Int, hi::Int) =
     (cs.calls += 1; DGG.Fallbacks.subset_span(cs.inner, lo, hi))
 
-counting_halo(sys, cs::CountingSubset, complete, l, conn) = DGG.collect_subtree(
-    DGG.Fallbacks.SubsetHaloIterator(cs, conn,
+# `wrap` is where the eager fixture goes in. `identity` is the shipped walk; the
+# laziness arm passes `EagerHaloEngine` and gets the same walk made eager, which
+# is the only difference between the two measurements it compares.
+counting_iterator(sys, cs::CountingSubset, complete, l, conn, wrap = identity) =
+    DGG.Fallbacks.SubsetHaloIterator(cs, conn, wrap(
         DGG.Fallbacks.subset_halo_engine(sys, cs, complete, Int(l), conn)))
+
+counting_halo(sys, cs::CountingSubset, complete, l, conn) =
+    DGG.collect_subtree(counting_iterator(sys, cs, complete, l, conn))
+
+# The two counts the laziness law compares, from one iterator and one subset:
+# questions asked before the `n`th cell, and questions asked by the whole walk.
+# The counter is ZEROED rather than fresh, so an engine that drained itself in
+# its CONSTRUCTOR is not charged for that here — construction is a separate arm,
+# and this one is about the walk. `take_n` is below, with the harness.
+function counted_walk(it, cs::CountingSubset, n::Int)
+    cs.calls = 0
+    take_n(it, n)
+    prefix = cs.calls
+    cs.calls = 0
+    h = DGG.collect_subtree(it)
+    return (prefix, cs.calls, h)
+end
 
 # ---------------------------------------------------------------------------
 # The allocation harness — also out here, and for a measurement reason
@@ -292,7 +320,7 @@ generic_construct_bytes(sys, c, l) =
 # same shapes the laws are. (`fixture_` rather than `eager_`: `eager_bytes`
 # above is the eager VERB's cost, a different quantity.)
 fixture_iterator(sys, c, l) = SubtreeHaloIterator(sys, c, Int(l), Vertex(),
-    EagerHaloEngine(sys, c, Int(l), Vertex()))
+    EagerHaloEngine(DGG.Fallbacks.halo_engine(sys, c, Int(l), Vertex())))
 
 fixture_collect(sys, c, l) = DGG.collect_subtree(fixture_iterator(sys, c, l))
 fixture_construct!(sys, c, l) = (SINK[] = fixture_iterator(sys, c, l); nothing)
@@ -2284,11 +2312,17 @@ fixture_collect_bytes(sys, c, l) =
     #      prefix costs a small and NON-GROWING share of a full collect while
     #      the halo grows by an order of magnitude. Unlike (2) it holds
     #      everywhere, and it is what separates a lazy iterator from an eager.
-    #   4. The subset walk, weaker for the reason given at its own arm.
+    #   4. THE SUBSET WALK'S PREFIX IS COUNTED, NOT WEIGHED: a four-cell prefix
+    #      asks a small share of the questions the whole walk asks its subset.
+    #      Integers off a wrapper rather than bytes off the allocator, which is
+    #      why it is the one arm with no machine in it — and why it is the one
+    #      that states its law and the fixture's refusal side by side.
     #
     # And a fifth that is none of them: `EagerHaloEngine`, a correct iterator
     # every one of the four refuses. Without it the four are thresholds nobody
-    # has watched fail.
+    # has watched fail. Arms 1-3 are negated in the testset named for it, arm 4
+    # at its own arm, because the subject there is a subset rather than a
+    # subtree and the fixture has to be handed the subset engine.
     #
     # (2) DOES NOT HOLD FOR THE GENERIC WALK AND IS NOT ASSERTED OF IT —
     # `_admit` calls `node_extent` on every node it prunes and that allocates,
@@ -2437,10 +2471,17 @@ fixture_collect_bytes(sys, c, l) =
     # Measured on IGeo7 from a level-0 root at levels 3, 5 and 7, where the halo
     # runs 70 -> 610 -> 5470 cells: its construction spans 111744 B where a
     # shipped engine's spans zero, its four-cell prefix spans 223488 B, and that
-    # prefix is 0.82 of a full collect where the shipped walk is 0.0023. The
+    # prefix is 0.82 of a full collect where the shipped walk is 0.0039. The
     # assertions are the LAWS NEGATED, not those numbers — each is the arm above
     # with its comparison turned round, so a law that was relaxed would stop
     # failing here and this arm would go red.
+    #
+    # ARM 4 IS NOT HERE, and that is the one thing this testset cannot say. Its
+    # subject is a SUBSET's walk, and there is no subset in a `(system, cell,
+    # level)` triple to hand a subtree engine; the fixture is refused there too,
+    # by the same struct wrapped round `subset_halo_engine` instead, asserted at
+    # that arm. Negating arm 4 with a subtree fixture is what this testset used
+    # to do, and it was measuring a quantity the law does not constrain.
     @testset "an eager engine with the same surface fails every allocation law" begin
         for sys in systems()
             c = cellindex(levelgrid(sys, 0), 1)
@@ -2455,16 +2496,6 @@ fixture_collect_bytes(sys, c, l) =
             @test maximum(pref) - minimum(pref) > 64      # arm 2 refuses it
             @test fixture_prefix_bytes(sys, c, last(depths), 4) >=
                   0.15 * fixture_collect_bytes(sys, c, last(depths))   # arm 3
-            # And arm 4's shape, which is the one that hoists construction out
-            # of the measurement: an engine that pays the halo on every walk is
-            # still refused there, which is why the fixture materialises per
-            # walk and not only in its constructor.
-            it = fixture_iterator(sys, c, first(depths))
-            take_n(it, 4)
-            lb = @allocated take_n(it, 4)
-            DGG.collect_subtree(it)
-            eb = @allocated DGG.collect_subtree(it)
-            @test lb > 0.7 * eb
         end
     end
 
@@ -2477,12 +2508,36 @@ fixture_collect_bytes(sys, c, l) =
     # by more than an order of magnitude, and any per-member construction cost
     # put back would fail here rather than in a benchmark nobody runs.
     #
-    # The second arm is the one that was always assertable: a four-cell prefix
-    # against a full collect, with the iterator hoisted out of the measurement so
-    # that an engine which materialised in its constructor could not read zero.
-    # `EagerHaloEngine` pays the halo on every walk and reads 0.78 to 1.00 on the
-    # same six systems, which is why this threshold is 0.7 rather than a number
-    # nobody has watched fail.
+    # THE SECOND ARM IS COUNTED, NOT WEIGHED, AND THAT IS A CORRECTION. It used
+    # to be a four-cell prefix's BYTES against a full collect's, with the
+    # iterator hoisted out so that an engine which materialised in its
+    # constructor could not read zero. That comparison cannot separate the two
+    # hypotheses it was written to separate, and the reason is arithmetic rather
+    # than a stale threshold: an engine that materialises per walk pays the
+    # materialisation in the prefix AND in the collect, so its ratio is
+    # `M / (M + V)` where `V` is the collect's own output vector and `M` already
+    # contains a vector of the same halo. `M >= V`, so the ratio CANNOT FALL
+    # BELOW 0.5 however cheap the walk is — and a threshold placed above 0.5 to
+    # refuse it is a statement about two unrelated allocation profiles, not
+    # about laziness.
+    #
+    # `CountingSubset` has no such floor. The walk asks its subset exactly two
+    # questions; an engine answering from a materialised list has asked ALL of
+    # them before its first yield, and a lazy one has asked a few. Measured at
+    # the larger of the two inputs: 0.014 (A5), 0.026 (IGeo7), 0.027 (H3),
+    # 0.045 (ISEA4R), 0.063 (S2), 0.071 (HEALPix) — against the eager fixture's
+    # 1.000 on all six, which is the one value that measurement can take. A
+    # factor of 14 where the byte ratio had none, in integers, with no machine
+    # and no allocator in it. It is also the first arm that says anything about
+    # A5's subset walk: `ScanHaloEngine` has no complexity claim to make, but it
+    # does stop scanning once it has four cells, and that is laziness.
+    #
+    # ONE CONTAINER, not both: the count is a fact about the WALK. Both
+    # containers hold the same members, so both answer `subset_span` and
+    # `cellposition` alike, so the walk prunes alike and asks the same questions
+    # the same number of times — there is no second measurement to make. The
+    # construction arm above is the one that has to see both, because a
+    # per-member construction cost is exactly what could differ between them.
     @testset "the subset walk is lazy, and its construction is O(1)" begin
         for sys in systems()
             mx = max_level(sys)
@@ -2495,13 +2550,6 @@ fixture_collect_bytes(sys, c, l) =
                 for (built, sub) in ((ctor.grid, loose),
                         (ctor.vector, CellVector(loose)))
                     push!(built, subset_construct_bytes(sub))
-                    it = halo(sub)
-                    take_n(it, 4)
-                    lb = @allocated take_n(it, 4)
-                    DGG.collect_subtree(it)
-                    eb = @allocated DGG.collect_subtree(it)
-                    @test eb > 0
-                    @test lb <= 0.7 * eb
                 end
             end
             # The input grew by more than an order of magnitude ...
@@ -2509,6 +2557,23 @@ fixture_collect_bytes(sys, c, l) =
             # ... and building the iterator did not notice, on either container.
             @test maximum(ctor.grid) - minimum(ctor.grid) <= 64
             @test maximum(ctor.vector) - minimum(ctor.vector) <= 64
+            # And the walk, at the larger of those two inputs.
+            deep = min(4, mx)
+            root = cellindex(levelgrid(sys, 0), 1)
+            cv = CellVector(PartialGrid(sys, deep,
+                collect(PartialGrid(sys, root, deep).ids)))
+            complete = levelgrid(sys, deep)
+            lazy = CountingSubset(cv)
+            lp, lc, lh = counted_walk(
+                counting_iterator(sys, lazy, complete, deep, Vertex()), lazy, 4)
+            eager = CountingSubset(cv)
+            ep, ec, eh = counted_walk(
+                counting_iterator(sys, eager, complete, deep, Vertex(),
+                    EagerHaloEngine), eager, 4)
+            # Both wrappers changed the measurement, not the walk.
+            @test lh == eh == collect(halo(cv))
+            @test lp <= 0.2 * lc         # the law
+            @test ep > 0.2 * ec          # and the engine it refuses
         end
     end
 

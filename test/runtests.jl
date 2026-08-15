@@ -44,6 +44,13 @@ using DiscreteGlobalGrids
     # axis's substrate: a failure here is the compression, and the file below
     # would then fail for a reason that is not its own.
     include("systems/crosssystem/cell_vector.jl")
+    # MOC storage: the mixed-level container over the coverage machinery, then
+    # the aggregation verbs that build one, then its cube face. In dependency
+    # order for the same reason cell_vector precedes dimensionaldata: a failure
+    # should name the lowest layer that owns it.
+    include("systems/crosssystem/multiorder_vector.jl")
+    include("systems/crosssystem/aggregate.jl")
+    include("systems/crosssystem/multiorder_data.jl")
     # T20: the lazy form of the subtree rim and interior, which since T20 is the
     # only form — the eager verbs are `collect` of these. After the file above
     # for the same reason it is after the per-system suites: those suites check

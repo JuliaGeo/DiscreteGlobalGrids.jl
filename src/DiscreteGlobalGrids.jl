@@ -101,7 +101,8 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     cellindices, is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
-    EdgeCellIterator, InnerCellIterator, member_neighbors
+    EdgeCellIterator, InnerCellIterator, member_neighbors,
+    MultiOrderVector, aggregate, coarsen, expand, complement
 
 # The lazy subtree walkers' extension point and the parts a system builds one
 # from. Not exported — a caller reaches the iterators, a system reaches these.
@@ -244,6 +245,14 @@ export is_contained, coarsest_contained, cell_polygons, member_neighbors
 # `covering` and is reached as `DiscreteGlobalGrids.covering_positions`.
 export CellVector, covering, cellset
 
+# --- Multi-order storage -----------------------------------------------------
+# The mixed-level DATA container (`MultiOrderVector`, an adaptively refined
+# mesh's cell axis), the aggregation verbs that build one (`aggregate` to a
+# fixed level, `coarsen` adaptively within a tolerance), the leaf-level
+# re-presentation (`expand`) and the sphere complement. Contract in
+# `docs/design/moc-storage.md`.
+export MultiOrderVector, aggregate, coarsen, expand, complement
+
 # --- The DimensionalData layer ---------------------------------------------
 # A lookup and the dimension it goes in, plus the one selector DimensionalData
 # does not already have a spelling for. `At` and `Contains` are
@@ -252,6 +261,9 @@ export CellVector, covering, cellset
 # selector about positions, and the two must never end up as the same name in a
 # caller's namespace.
 export CellLookup, Cells, Covering
+# The mixed-level lookup joins in wave 2 of the MOC-storage work; the export
+# binds when `CellLookups` defines it and the `using` above gains the name.
+export MultiOrderLookup
 
 # --- Grid systems ----------------------------------------------------------
 # System modules are not exported because their names collide with registered

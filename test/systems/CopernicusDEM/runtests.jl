@@ -30,9 +30,10 @@
 #      twin of the shipped lattices, and — because the harness materialises a
 #      cell's whole child list, and reduces one range per child quadratically —
 #      at the interface level on GLO-30 and GLO-90 themselves, with their
-#      hierarchical runs behind `DGG_COPDEM_FULL=1`. That section carries the
-#      seed the harness's absolute `area_atol` forces on this system's pole rows,
-#      and the assertion that the seed still does what it claims.
+#      hierarchical runs behind `DGG_COPDEM_FULL` (`90`, `30` or `all`; off by
+#      default). That section carries the seed the harness's absolute
+#      `area_atol` forces on this system's pole rows, and the assertion that the
+#      seed still does what it claims.
 #
 # Every testset names the mutant it kills. A test that kills no mutant no other
 # test already kills does not belong here.
@@ -254,8 +255,9 @@ end
 # =========================================================================
 
 # KILLS: an off-by-one in the prefix sums — which corrupts every tile after the
-# first, and which no single-tile test can see — and a row/column transposition
-# in `tilebase`, which survives any test that only looks at square rows.
+# first, and which no single-tile test can see — a row/column transposition in
+# `tilebase`, which survives any test that only looks at square rows, and a
+# `children`/`decode` pair that stops inverting each other at the SHIPPED `N`s.
 @testset "ids, prefix sums and descendant windows" begin
     for sys in ALL_SYSTEMS
         N = CD.lat_intervals(sys)
@@ -296,6 +298,30 @@ end
                 @test cellposition(g, c) == i
             end
         end
+
+        # children -> parent, AT REAL `N`. `children` numbers a tile's pixels
+        # from `tilebase`, `parent` reads the tile back out of an id through
+        # `decode`, and both go through the same `N`-dependent prefix sums — so
+        # a disagreement between them (a base off by a row, a decode that
+        # searches on the wrong side) shows up here and — outside section (k)'s
+        # OPT-IN hierarchical runs — in nothing else that starts from a real
+        # tile's `children`; testset (i) closes the same loop from `cellat`,
+        # which shares the decode but not the base arithmetic. Every
+        # band-edge and pole row, at the three probe longitudes in turn, three
+        # children each: the range is LAZY, so `ch[k]` is O(1) and the
+        # 12 960 000-element child list is never built.
+        bad = String[]
+        for (i, lat_s) in enumerate(PROBE_LATS)
+            lon_w = PROBE_LONS[mod1(i, length(PROBE_LONS))]
+            t = CD.tilecell(sys, lat_s, lon_w)
+            ch = children(sys, t)
+            nch = length(ch)
+            for k in (1, (nch + 1) ÷ 2, nch)
+                p = parent(sys, ch[k])
+                p == t || note!(bad, "child $k/$nch of (lat_s=$lat_s, lon_w=$lon_w) -> $p")
+            end
+        end
+        @test bad == String[]
     end
 end
 
@@ -951,14 +977,16 @@ end
 # GLO-30 tile has up to 12 960 000 children and a GLO-90 tile 1 440 000, and the
 # last of those three is quadratic in that count, so the default `n_samples = 8`
 # is not affordable on either shipped lattice at any budget: ONE sampled tile of
-# GLO-90 measured 143.9 s and 3.36 TiB of allocation, and the note above the
-# opt-in runs below says why. `CopernicusDEMSystem{30}()` is the SAME CODE at a
-# different `N` — same band table, same six reduction factors, same tile lattice,
-# same pole clamps, 900 children per tile — so every law the harness states is
-# checked on the code that ships. The real lattices are then checked where they
-# differ from the twin, which is arithmetic: by
-# `test_grid_interface` at both levels below, by the opt-in hierarchical runs
-# below that, and by the fixture, prefix-sum and geometry testsets above.
+# GLO-90 allocated 3.36 TiB, and the note above the opt-in runs below says why.
+# `CopernicusDEMSystem{30}()` is the SAME CODE at a different `N` — same band
+# table, same six reduction factors, same tile lattice, same pole clamps, 900
+# children per tile — so every law the harness states is checked on the code
+# that ships. The real lattices are then checked where they differ from the
+# twin, which is arithmetic: by `test_grid_interface` at both levels below; by
+# the fixture, prefix-sum and geometry testsets above; and — only when
+# `DGG_COPDEM_FULL` asks for them, which nothing routine does — by the OPT-IN
+# hierarchical runs below that, which a default `Pkg.test()` never reaches and
+# which therefore defend nothing on their own.
 @testset "conformance (scaled twin)" begin
     test_grid_interface(levelgrid(TWIN, 0); label = "CopernicusDEM twin level 0")
     test_grid_interface(levelgrid(TWIN, 1); label = "CopernicusDEM twin level 1")
@@ -1007,6 +1035,17 @@ end
 # re-introducing the flake. The pole rows themselves are NOT sampled away from
 # the suite — testset (e) carries them, exhaustively at level 0.
 #
+# ONE PIECE OF EVIDENCE, NOT TWO. The loop below asserts the seed-away on both
+# shipped lattices, but at this seed the two draws land on the SAME tile rows —
+# the positions differ, the latitudes do not. `rand(rng, 1:n, 32)` turns each
+# raw word of the stream into `floor(u * n)` for a `u` that does not depend on
+# `n`, and GLO-30's row prefix sums are exactly 9x GLO-90's (3x the columns, 3x
+# the rows), so both lattices cut `1:n` into rows at the same fractions of `n`
+# and the row sequence is invariant in `N`. So this is one piece of evidence
+# read twice, not two: a seed safe for GLO-90 is safe for GLO-30 for that
+# reason and not for an independent one, and the second assertion earns its
+# place as a guard on the invariance, not as a second sample.
+#
 # UPSTREAM: `boundary_problems` should judge degeneracy against the ring's own
 # scale — `max(area_atol, unit_atol^2)`, say — or take a floor threaded through
 # `grid_interface_problems`/`test_grid_interface`, because an absolute steradian
@@ -1021,36 +1060,97 @@ end
         # reproduced here and the draw the call makes are the same draw.
         @test !any(in((89, -90)),
                    sampled_tile_lats(sys, 1, CONFORMANCE_SEED, GI_SAMPLES))
+
+        # ...and that the harness really did make THAT draw. The line above
+        # predicts the sampled cells from the seed, which is only sound while
+        # `test_grid_interface` consumes its `rng` in exactly one
+        # `sample_positions(rng, ncells(g), n_samples)` before any law runs
+        # (harness `:1178`). That is a fact about upstream, not a promise, so it
+        # is asserted here rather than assumed: `ref` is advanced by the
+        # reproduction alone, `r` by the harness alone, and the two generators
+        # must end in the same state. One extra draw upstream, a different
+        # `n_samples`, or sampling moved after a law that itself draws, and this
+        # goes red — instead of the seed-away above quietly guarding cells the
+        # suite no longer visits.
+        r = MersenneTwister(CONFORMANCE_SEED)
+        ref = MersenneTwister(CONFORMANCE_SEED)
+        CT.sample_positions(ref, ncells(levelgrid(sys, 1)), GI_SAMPLES)
         test_grid_interface(levelgrid(sys, 1); n_samples = GI_SAMPLES,
-                            rng = MersenneTwister(CONFORMANCE_SEED),
-                            label = "$sys level 1")
+                            rng = r, label = "$sys level 1")
+        @test r == ref
     end
 
     # THE HIERARCHICAL RUNS ARE OPT-IN, and the cost is the harness's, not this
     # system's. `test_hierarchical_system`'s sibling-partition check (`:1610`)
     # evaluates `reduce(vcat, collect.(ranges); init = Int[])` over one range per
     # child; the `init` keyword takes it off `Base`'s `_typed_vcat` fast path and
-    # onto `foldl`, which is QUADRATIC in the number of children. Measured in
-    # isolation: 2.3 s at 100 000 ranges, 31.6 s at 300 000.
+    # onto `foldl`, which rebuilds the accumulator at every step. The children
+    # are at `max_level`, so each of those ranges holds ONE position and the
+    # foldl writes 1 + 2 + ... + n `Int`s for n children — `8 * n^2 / 2` bytes,
+    # a closed form that needs no machine to state. That is the honest measure
+    # of this cost: at n = 960 000 it predicts 3.353 TiB against the 3.36 TiB
+    # observed below (the per-range `collect`s add the rest). The only wall
+    # clock quoted for the foldl itself is MACHINE-LOCAL, and is here as the
+    # anchor the form was checked against: 2.385 s at n = 100 000.
     #
     # So even at `n_samples = 1` this is not cheap. GLO-90 at the seed below
-    # draws the tile at (-54, 158), 960 000 children, and MEASURED 143.9 s and
-    # 3.36 TiB allocated (55% of it in GC) for 51 passes. GLO-30 draws the same
-    # tile — 8 640 000 children, 9x — and the quadratic makes that about 81x the
-    # work; it was not run to completion here, and no wall clock is quoted for it
-    # because none was observed. Neither belongs in a routine `Pkg.test()`.
+    # draws the tile at (-54, 158), 960 000 children, and allocated 3.36 TiB
+    # (55% of the run in GC) for 51 passes and 2 broken. Its 143.9 s is
+    # MACHINE-LOCAL and was measured once, at this seed; the TiB figure is the
+    # portable one, being the form above. The only other observation of it is
+    # the same order and no more portable: this file, run standalone with
+    # `DGG_COPDEM_FULL=90`, takes 2 m 09 s end to end against ~6 s without.
+    # GLO-30 draws the same tile — 8 640 000 children, 9x — so the quadratic
+    # makes it ABOUT 81x the work. THAT RUN HAS NEVER BEEN CARRIED TO COMPLETION
+    # HERE: the 81x is a ratio and nothing more, no wall clock is quoted for it
+    # because none has ever been observed, and nothing here should be read as a
+    # report that it passes. Neither belongs in a routine `Pkg.test()`.
     #
-    # What a default run therefore loses on the shipped lattices is the covering
-    # law under a real descent and the sibling partition. Both are covered:
-    # in full on the twin above, and — for the descendant windows specifically —
-    # by testset (c), which walks all 64 800 of them EXHAUSTIVELY on all three
-    # systems, which is the stronger statement the harness samples one cell of.
-    if get(ENV, "DGG_COPDEM_FULL", "0") == "1"
-        for sys in (GLO90, GLO30)
-            test_hierarchical_system(sys; n_samples = 1,
-                                     rng = MersenneTwister(CONFORMANCE_SEED),
-                                     label = "CopernicusDEM $sys")
-        end
+    # SO THE GATE IS BY VALUE — running both at once is exactly the thing that
+    # has never finished:
+    #
+    #   unset, or "0"   neither. The default, and what CI runs.
+    #   "90"            GLO-90 only. Measured green: 51 pass, 2 broken; minutes,
+    #                   not seconds — see the wall clock above and its caveat.
+    #   "1"             the same as "90", kept for the original instruction.
+    #   "30"            GLO-30 only. Never completed; see above.
+    #   "all"           both, i.e. the combination nobody has waited out.
+    #
+    # Each gated run adds the harness's `neighbors` and `ring` skips, so the
+    # broken column rises with the gate: a full `Pkg.test()` reports 19 broken by
+    # default and 21 under `90`.
+    #
+    # WHAT A DEFAULT RUN THEREFORE NEVER RUNS ON THE SHIPPED LATTICES, listed in
+    # full rather than by the two laws that are easiest to defend: the
+    # parent/child inverses (`hierarchy_problems`), the `rootcells` laws,
+    # `ancestor` and `descendants`, `node_extent` well-formedness and its
+    # convexity proxy, the covering law under a real descent, the sibling
+    # partition, the `ArgumentError` guards on `parent`/`children`/`levelgrid`,
+    # and the trait block. None of the harness's own versions of those laws runs
+    # at `N = 1200` or `N = 3600` unless the gate is set.
+    #
+    # The defence is not that those laws are minor — it is that they are not
+    # about `N`. Of the interface, only `children`, `descendant_range`,
+    # `cell_box` and `cellat` have `N` in their method bodies; everything in the
+    # list above reaches the lattice through the shared `tables` / `decode` /
+    # `pixelcell` helpers and is otherwise `N`-free, so the twin above runs THE
+    # SAME CODE, not an analogue of it. What that leaves is the four parametric
+    # bodies and those three helpers, which do have to be right at the shipped
+    # `N`s — and that is what testsets (a), (c), (d), (h), (i) and (j) do at
+    # real `N`: the band table and child counts, the prefix sums exhaustively
+    # and the children -> parent round trip, the raster order, `node_extent`
+    # over real subtrees, `cellat` on real box edges, and the cross-lattice
+    # nesting.
+    gate = get(ENV, "DGG_COPDEM_FULL", "0")
+    gated = gate in ("0", "")   ? () :
+            gate in ("1", "90") ? (GLO90,) :
+            gate == "30"        ? (GLO30,) :
+            gate == "all"       ? (GLO90, GLO30) :
+            throw(ArgumentError("DGG_COPDEM_FULL=$gate is not one of 0, 1, 90, 30, all"))
+    for sys in gated
+        test_hierarchical_system(sys; n_samples = 1,
+                                 rng = MersenneTwister(CONFORMANCE_SEED),
+                                 label = "CopernicusDEM $sys")
     end
 end
 

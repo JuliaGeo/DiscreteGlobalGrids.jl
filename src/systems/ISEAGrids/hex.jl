@@ -24,24 +24,50 @@ DGG.cellindextype(::ISEA3HSystem) = Z3Cell
 DGG.levels(::ISEA3HSystem) = 0:30
 DGG.has_sorted_subtrees(::ISEA3HSystem) = true
 DGG.max_neighbors(::ISEA3HSystem, ::DGG.Connectivity) = 6
-# The primary prefix tree is not a spatial containment tree.  In the planar
-# chart its limiting center overhang plus the ancestor boundary is at most
-# `1 + sqrt(3)/(sqrt(3)-1) = 3.3661` ancestor circumradii.  The 4.5 factor adds
-# Snyder distortion/seam margin.  Exhaustive oracle levels 0:5 measured 1.9664;
-# 22,977 seeded boundary probes through level 30 measured 1.9704.  Root caps
-# consequently exceed a hemisphere (and saturate at the full sphere), which is
-# intentional: a convex cap cannot cover these non-spatial prefix subtrees.
-DGG.cap_inflation(::ISEA3HSystem) = 4.5
+# The primary prefix tree is not a spatial containment tree, so the covering cap
+# must reach past the cell.  It reaches exactly **2** ancestor circumradii, and
+# that is a supremum rather than a measurement.
+#
+# The covering factor of a descendant `n` levels down is
+# `sqrt(3)*|sum_{j=1..n} q^j u_j| + q^n` with `q = 1/sqrt(3)` and `u_j` the unit
+# digit direction at depth `j`.  Bounding `|sum|` by `sum |.|` gives the old
+# `1 + sqrt(3)/(sqrt(3)-1) = 3.3661`, but that triangle inequality assumes every
+# level's step points the same way.  These directions ROTATE: odd depths use the
+# fixed `{90,150}` gauge and even depths are gauged by the preceding digit (see
+# `_dev_step`), so consecutive steps largely cancel.  Taking the support function
+# of the reachable displacement set — a DP over `(depth, previous digit)`, swept
+# over direction with a `sec(pi/M)` enclosure and a geometric tail bound — gives
+# a supremum of exactly `2`, attained in the limit by the alternating digit
+# sequence `1,2,1,2,...` and only from an EVEN-depth ancestor; odd-depth
+# ancestors reach only `sqrt(3)`.  Brute force over every admissible sequence to
+# depth 13 gives 1.99942, with 0.0023 of tail left.
+#
+# On the sphere the Snyder chart adds about 1%: ancestor and descendant share one
+# local Jacobian, so the anisotropy (1.5864 at its worst) very nearly cancels in
+# the ratio rather than multiplying it.  Exhaustive over every ancestor at levels
+# 0:4 with subtrees seven levels deep, the sphere-side worst is 2.0211 — on the
+# ODD ancestor levels, as predicted.  2.3 carries 14% over that.
+#
+# The old 4.5 put a level-0 extent at 168 degrees, past a hemisphere; that, and
+# not the refinement, is why these systems used to opt out of the harness's
+# convex-extent check.  At 2.3 the widest extent is 86 degrees and every cap is
+# convex.  `test/systems/ISEAGrids/runtests.jl` reproduces the measurement.
+DGG.cap_inflation(::ISEA3HSystem) = 2.3
 DGG.ncells(::ISEA3HSystem, l::Integer) = Int(_hexcount(3, Int(l)))
 
 DGG.cellindextype(::ISEA4HSystem) = DGG.LevelIndex
 DGG.levels(::ISEA4HSystem) = 0:29
 DGG.has_sorted_subtrees(::ISEA4HSystem) = true
 DGG.max_neighbors(::ISEA4HSystem, ::DGG.Connectivity) = 6
-# Planar limiting ratio `1 + sqrt(3) = 2.7321`, with Snyder/seam margin.
-# Exhaustive oracle levels 0:4 measured 1.6177; 22,977 seeded probes through
-# level 29 measured 1.6983.  See the ISEA3H note above about non-convex roots.
-DGG.cap_inflation(::ISEA4HSystem) = 3.5
+# The same argument, one step simpler: aperture 4's digit directions do NOT
+# depend on depth or on the preceding digit, so the worst sequence is a single
+# direction repeated and `|sum q^j u_j| -> q/(1-q) = 1` with `q = 1/2`.  The
+# supremum is therefore `sqrt(3)*1 + 0 = sqrt(3) = 1.7321` — the old `1 + sqrt(3)`
+# was this plus a spurious whole ancestor circumradius for the descendant, which
+# shrinks to nothing as the subtree deepens.  Brute force to depth 10 gives
+# 1.731336.  Sphere-side, exhaustive over levels 0:3 with six-level subtrees:
+# 1.721.  2.0 carries 16% over that, and puts the widest extent at 75 degrees.
+DGG.cap_inflation(::ISEA4HSystem) = 2.0
 DGG.ncells(::ISEA4HSystem, l::Integer) = Int(_hexcount(4, Int(l)))
 
 const CentralPlaceHexSystem = Union{ISEA3HSystem,ISEA4HSystem}

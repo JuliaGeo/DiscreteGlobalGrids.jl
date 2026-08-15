@@ -202,11 +202,61 @@ end
     end
 
 
+    # `cap_inflation` is the one constant on these two systems that is a
+    # correctness bug when it is too small and a silent tax on every tree descent
+    # when it is too large. It was 4.5 and 3.5, from a triangle-inequality bound
+    # that ignores the rotation of the central-place digit directions; the true
+    # planar suprema are 2 and sqrt(3) (see `hex.jl`). Nothing reproduced either
+    # number, which is how the oversize survived.
+    #
+    # This is that measurement: the smallest factor that satisfies the covering
+    # law, exhaustively over every ancestor at the low levels. It kills the mutant
+    # in both directions — a factor lowered under the geometry, and a refinement
+    # change that moves the geometry out from under the factor.
+    @testset "cap_inflation covers the subtree, and is not wildly over it" begin
+        function worst_factor(sys, levels, depth)
+            worst = 0.0
+            for la in levels
+                ga = levelgrid(sys, la)
+                for i in 1:ncells(ga)
+                    c = cellindex(ga, i)
+                    cap = DGG.Fallbacks.cell_cap(ga, c)
+                    for j in 1:depth
+                        gd = levelgrid(sys, la + j)
+                        for d in DGG.descendants(sys, c, la + j)
+                            capd = DGG.Fallbacks.cell_cap(gd, d)
+                            f = (GO.UnitSpherical.spherical_distance(cap.point,
+                                     capd.point) + capd.radius) / cap.radius
+                            worst = max(worst, f)
+                        end
+                    end
+                end
+            end
+            return worst
+        end
+
+        for (sys, levels, depth, expected) in
+            ((G.ISEA3HSystem(), 0:3, 5, 1.9953), (G.ISEA4HSystem(), 0:2, 4, 1.6788))
+
+            worst = worst_factor(sys, levels, depth)
+            # The geometry has not moved.
+            @test worst ≈ expected atol = 1e-3
+            # The declared factor covers it, with margin but not a factor of two.
+            @test worst <= DGG.cap_inflation(sys)
+            @test DGG.cap_inflation(sys) <= 1.3 * worst
+            # And every extent it produces is a convex cap, which is what lets
+            # the conformance call below keep `require_convex_extents` on.
+            g0 = levelgrid(sys, 0)
+            @test maximum(DGG.node_extent(sys, cellindex(g0, i)).radius
+                          for i in 1:ncells(g0)) < π / 2
+        end
+    end
+
     @testset "package interface conformance" begin
         test_hierarchical_system(G.ISEA3HSystem(); levels=0:8, n_levels=5,
-            n_samples=16, require_convex_extents=false)
+            n_samples=16)
         test_hierarchical_system(G.ISEA4HSystem(); levels=0:8, n_levels=5,
-            n_samples=16, require_convex_extents=false)
+            n_samples=16)
         test_hierarchical_system(G.ISEA4TSystem(); levels=0:8, n_levels=5,
             n_samples=16)
     end

@@ -219,7 +219,7 @@ has no such digit algebra on record here at all — `hex.jl` calls A4 the ordina
 class-I triangular lattice, which points at lattice coordinates rather than at a
 named arithmetic.
 
-**ISEA3H/4H `node_extent` is 9µs and the declared `cap_inflation` is 3.5–4.5.**
+**ISEA3H/4H `node_extent` is 9µs and `cap_inflation` was 3.5–4.5.**
 Neither system overrides `node_extent`, so the 9µs is `cell_boundary`
 (8.7–8.8µs above) reduced to a cap and scaled by the constant. Both are
 central-place refinements and a cell's children genuinely lie outside its
@@ -237,9 +237,34 @@ that cap radius buys nothing. The oversize is also the only reason the ISEA3H
 and ISEA4H conformance calls pass `require_convex_extents=false`: at 4.5 and 3.5
 an extent exceeds a hemisphere at ISEA3H levels 0–1 and ISEA4H level 0, and
 nowhere else. Non-convexity is the declared constant's doing, not the
-refinement's — at the measured requirement every extent is a convex cap. The
-constants are being tightened to the measured requirement, with a test that
-reproduces it landing alongside.
+refinement's.
+
+The bound turned out to be exactly derivable, so the constants are now **2.3 and
+2.0** rather than a measurement plus a guess. The covering factor of a descendant
+`n` levels down is `sqrt(3)·|Σ q^j u_j| + q^n`; bounding `|Σ|` by `Σ|·|` is where
+`3.3661` and `2.7321` came from, and it assumes every step points the same way.
+Aperture 4's digit directions are constant, so its worst case really is a single
+direction repeated — but that gives `sqrt(3) = 1.7321`, and the old `1 + sqrt(3)`
+had added a whole ancestor circumradius for a descendant that shrinks to nothing.
+Aperture 3's directions rotate: odd depths use a fixed gauge, even depths are
+gauged by the preceding digit. Taking the support function of the reachable
+displacement set — a DP over `(depth, previous digit)`, swept over direction with
+a `sec(π/M)` enclosure and a geometric tail bound — gives a supremum of exactly
+**2**, approached by the alternating sequence `1,2,1,2,…` and only from an
+even-depth ancestor; odd-depth ancestors reach only `sqrt(3)`. Brute force over
+every admissible sequence to depth 13 gives 1.99942 with 0.0023 of tail left, and
+the model is checked digit-by-digit against `_dev_step` itself.
+
+The sphere adds about 1%, not the 59% the chart's worst-case anisotropy (1.5864)
+would suggest: an ancestor and its subtree share one local Jacobian, so the
+distortion very nearly cancels in a ratio instead of multiplying it. Exhaustively
+over every ancestor at levels 0–4 with seven-level subtrees, the sphere-side
+worst is **2.0211** for ISEA3H — on the odd ancestor levels, as predicted — and
+**1.721** for ISEA4H over levels 0–3. The new factors carry 14% and 16% over
+those, put the widest extent at 86° and 75°, and let both systems drop
+`require_convex_extents=false` and take the harness's convexity assertions like
+every other system. `test/systems/ISEAGrids/runtests.jl` reproduces the
+measurement, which nothing did before — that is how 4.5 went unchallenged.
 
 **ISEA4T's vertex star is geometric.** 33µs against 4µs for the edge star: the
 edge star crosses each chart edge at its inverse-projected midpoint and asks

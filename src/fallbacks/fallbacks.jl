@@ -31,7 +31,8 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     ancestor, descendants, descendant_range,
     subtree_border, subtree_interior,
     rim_engine, interior_engine, halo_engine,
-    lattice_decode, lattice_cell, face_orientation
+    lattice_decode, lattice_cell, face_orientation,
+    hex_child_direction, seeded_rim_engine
 import ..DiscreteGlobalGrids: Helpers
 
 import GeometryOps as GO

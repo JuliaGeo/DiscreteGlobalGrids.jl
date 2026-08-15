@@ -180,9 +180,20 @@ Base.length(::MiscountingEngine) = 3
         # is caught HERE and nowhere else in this file, by the two H3 arms. Two
         # roots is all the runtime affords: H3's level-4 grid is 288k cells and the
         # law visits every one.
+        #
+        # THE GENERIC WALK IS BUILT EXPLICITLY, not reached. Every system now
+        # ships a specialization, so the keyword constructor no longer returns
+        # `OutsideWalkEngine` anywhere and this arm would otherwise have stopped
+        # testing the cap prune the moment Task 6 landed — silently, since both
+        # engines answer correctly. The law is computed once and both walks are
+        # held to it.
         if (sys isa DGG.IGeo7System || sys isa DGG.H3System) && mx >= 4
             for c in sample_cells(grid0, 2), conn in (Vertex(), Edge())
-                check_law(sys, c, 4, conn)
+                want = law_halo(sys, c, 4; connectivity = conn)
+                @test collect(SubtreeHaloIterator(sys, c, 4; connectivity = conn)) ==
+                      want
+                @test collect(SubtreeHaloIterator(sys, c, 4, conn,
+                    DGG.Fallbacks.generic_halo_engine(sys, c, 4, conn))) == want
             end
         end
 
@@ -769,26 +780,327 @@ Base.length(::MiscountingEngine) = 3
     end
 
     # -----------------------------------------------------------------------
+    # The calibrated directed walk — H3 and IGeo7
+    # -----------------------------------------------------------------------
+
+    # WHY THE ORACLE HERE IS `forced_geometry_halo`, AND WHY IT IS A REAL ONE.
+    #
+    # `HexArcHaloEngine` enumerates by seeding each NEIGHBOUR's rim automaton
+    # with an arc calibrated from observation and walking it down. It shares no
+    # step with the generic descent — no `_admit`, no cap, no `rootcells` — and
+    # it never asks about the root's own subtree at all. So comparing it against
+    # the forced-geometry walk pins the enumeration and the adjacency predicate
+    # together, end to end. `law_halo` runs on one arm below for the same reason
+    # it does on the square walks: it decides which cells to consider by scanning
+    # positions `1:ncells`, so a wrong walk and a wrong oracle cannot pass it
+    # together.
+    #
+    # What must NOT be the only oracle is `subtree_border` — the seeded automaton
+    # IS the border automaton, so the two would agree with a wrong arc for
+    # precisely the reason it was wrong.
+    #
+    # THE TWO STRUCTURAL RISKS THIS SECTION EXISTS FOR.
+    #
+    #   * Pentagons. Twelve per level per system, and they are where the arc-3
+    #     calibration lives: the only configuration in 52,182 measured pairs
+    #     where the minimal covering arc is three directions wide is a pentagon
+    #     neighbour whose deleted direction falls between the two touching
+    #     children. They are pinned BY NAME (`ispentagon`, `z7_is_pentagon`)
+    #     rather than found by degree, so a change to `irregular_cells` cannot
+    #     quietly stop covering them, and the count is asserted to be twelve at
+    #     every base.
+    #   * Parity. The two systems' automata have exchanged parity branches and
+    #     test their `L < 6` guards in the opposite order, so a seed that is
+    #     right on H3 at an even level can be wrong on IGeo7 at the same level.
+    #     Every arm therefore runs BOTH systems at consecutive root levels, which
+    #     is what makes an even and an odd seeding of the same shape appear.
+
+    HEX_SYSTEMS = (H3System(), IGeo7System())
+
+    hex_ispentagon(sys, c) = sys isa DGG.H3System ?
+        DGG.H3.ispentagon(c) : DGG.IGeo7.z7_is_pentagon(c.id)
+
+    # The twelve pentagons of a level, by NAME. Deep levels have billions of
+    # cells and must never be enumerated: the centre child of a pentagon is a
+    # pentagon, so descending the first child from each level-0 pentagon names
+    # the whole level-`base` pentagon set in twelve short walks.
+    function hex_pentagons(sys, base::Int)
+        grid0 = levelgrid(sys, 0)
+        out = DGG.cellindextype(sys)[]
+        for i in 1:ncells(grid0)
+            c = cellindex(grid0, i)
+            hex_ispentagon(sys, c) || continue
+            for _ in 1:base
+                c = first(DGG.children(sys, c))
+            end
+            hex_ispentagon(sys, c) && push!(out, c)
+        end
+        return out
+    end
+
+    # All twelve pentagons, the ring around two of them (the arc-3 neighbours),
+    # and a spread of ordinary cells by position.
+    function hex_roots(sys, base::Int, nhex::Int)
+        grid = levelgrid(sys, base)
+        pents = hex_pentagons(sys, base)
+        @test length(pents) == 12
+        n = ncells(grid)
+        step = max(1, n ÷ nhex)
+        rest = [cellindex(grid, i) for i in 1:step:n][1:min(nhex, end)]
+        around = unique(vcat([collect(neighbors(grid, p, 1)) for p in pents[1:2]]...))
+        return unique(vcat(pents, around, rest))
+    end
+
+    # Which walk a root gets is read OFF THE CODE UNDER TEST, exactly as
+    # `classify_roots` does for the square systems. Three classes:
+    #
+    #   `child`    — `HexChildHaloEngine`: `target == level(root) + 1`, where the
+    #                calibration is already the answer and no automaton runs.
+    #   `arc`      — `HexArcHaloEngine`: one seeded rim automaton per neighbour.
+    #   `fallback` — anything else, i.e. the generic outside-first walk.
+    function classify_hex_roots(sys, roots, l::Int, conn)
+        C = DGG.cellindextype(sys)
+        child, arc, fallback = C[], C[], C[]
+        for c in roots
+            e = SubtreeHaloIterator(sys, c, l; connectivity = conn).engine
+            if e isa DGG.Fallbacks.HexChildHaloEngine
+                push!(child, c)
+            elseif e isa DGG.Fallbacks.HexArcHaloEngine
+                push!(arc, c)
+            else
+                push!(fallback, c)
+            end
+        end
+        return child, arc, fallback
+    end
+
+    # HOW MANY ROOTS EACH WALK MUST CLAIM, and why a count is needed on top of
+    # every oracle comparison below.
+    #
+    # `hex_halo_engine` has four guards that send a case back to the generic
+    # walk, and none of them was observed to fire anywhere in the spike that
+    # measured this design. A guard that grew stricter — a calibration that
+    # started rejecting arc-3 pentagons, say — would therefore be INVISIBLE to
+    # every oracle arm in this file: the rejected roots would fall to the generic
+    # walk, which answers correctly, and every comparison would still pass
+    # element for element. Only a count notices.
+    #
+    # The rule is not statistical: depth one is `HexChildHaloEngine` and every
+    # deeper target is `HexArcHaloEngine`, for EVERY root of both systems at
+    # every level, so the two claimed classes partition the generation and the
+    # fallback class is empty. That is asserted exhaustively over the level-0 and
+    # level-1 generations below, which is 122 + 842 H3 roots and 12 + 72 IGeo7
+    # ones.
+    function check_hex_classes(sys, roots, base::Int, l::Int, conn)
+        child, arc, fallback = classify_hex_roots(sys, roots, l, conn)
+        if l == base + 1
+            @test length(child) == length(roots)
+            @test isempty(arc)
+        else
+            @test isempty(child)
+            @test length(arc) == length(roots)
+        end
+        @test isempty(fallback)
+    end
+
+    @testset "$(nameof(typeof(sys))): every root takes the directed walk" for sys in
+            HEX_SYSTEMS
+        for base in (0, 1), conn in (Vertex(), Edge())
+            grid = levelgrid(sys, base)
+            roots = [cellindex(grid, i) for i in 1:ncells(grid)]
+            for l in (base + 1):min(base + 3, max_level(sys))
+                check_hex_classes(sys, roots, base, l, conn)
+            end
+        end
+    end
+
+    # The differential sweep. Bases 0 and 1 are whole base cells and their
+    # children; bases 5 and 8 are ordinary cells deep in the hierarchy, where the
+    # ring is six neighbours of an ordinary hexagon and the seeded frames sit at
+    # both parities. Depths 1-3 everywhere: depth 1 is the automaton-free path,
+    # depth 2 is the first seeded walk and runs WITHOUT the depth-two validation
+    # (`hex_halo_engine` skips it there), and depth 3 is the first depth that
+    # validates.
+    @testset "$(nameof(typeof(sys))): the directed walk against forced geometry" for
+            sys in HEX_SYSTEMS
+        for base in (0, 1, 5, 8)
+            base + 1 <= max_level(sys) || continue
+            roots = hex_roots(sys, base, 4)
+            for c in roots, d in 1:3, conn in (Vertex(), Edge())
+                l = base + d
+                l <= max_level(sys) || continue
+                it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+                @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+            end
+        end
+    end
+
+    # The contract bundle — uniqueness, sortedness, outside ancestry, both
+    # adjacency directions — on a smaller spread, because it builds two `Set`s
+    # and a `subtree_border` per case. Pentagons first, so the expensive laws run
+    # where the walk is least ordinary.
+    @testset "$(nameof(typeof(sys))): the directed walk keeps the contract" for sys in
+            HEX_SYSTEMS
+        for base in (0, 2), conn in (Vertex(), Edge())
+            base + 1 <= max_level(sys) || continue
+            for c in spread(hex_roots(sys, base, 2), 6),
+                    l in (base + 1):min(base + 3, max_level(sys))
+                check_halo_case(sys, c, l, conn)
+            end
+        end
+    end
+
+    # Depth four, where the halo is 246 cells around a hexagon and 205 around a
+    # pentagon, and where a seeded arc has been through three transitions rather
+    # than one. The oracle costs about 50 ms a call here, so this is two roots —
+    # a pentagon and a hexagon — per system rather than a sweep.
+    @testset "$(nameof(typeof(sys))): the directed walk at depth four" for sys in
+            HEX_SYSTEMS
+        grid = levelgrid(sys, 2)
+        pent = first(hex_pentagons(sys, 2))
+        hex = first(filter(c -> !hex_ispentagon(sys, c),
+            collect(neighbors(grid, pent, 1))))
+        for c in (pent, hex), conn in (Vertex(), Edge())
+            it = SubtreeHaloIterator(sys, c, 6; connectivity = conn)
+            @test it.engine isa DGG.Fallbacks.HexArcHaloEngine
+            @test collect(it) == forced_geometry_halo(sys, c, 6, conn)
+        end
+    end
+
+    # One arm against the O(ncells) brute force, which shares nothing with either
+    # the directed walk or the geometry walk. Level-0 roots at depths 1 and 2,
+    # where the target grids are at most 5882 cells on H3 and 492 on IGeo7.
+    @testset "$(nameof(typeof(sys))): the directed walk against the law" for sys in
+            HEX_SYSTEMS
+        for c in spread(hex_roots(sys, 0, 4), 6), d in 1:2, conn in (Vertex(), Edge())
+            @test collect(SubtreeHaloIterator(sys, c, d; connectivity = conn)) ==
+                  law_halo(sys, c, d; connectivity = conn)
+        end
+    end
+
+    # THE COUNTS, PINNED BUT NOT PROMISED. `3^(d+1) + 3` around a hexagon and
+    # `5(3^d + 1)/2` around a pentagon — verified in 176/176 configurations by
+    # the spike and derived from a per-neighbour census of `(3^d + 1)/2` that
+    # holds for both arc lengths, but derived by ENUMERATION rather than from the
+    # transition recurrence. So the numbers are pinned here against a real
+    # `collect`, and `IteratorSize` still says `SizeUnknown()` with no `length`
+    # method at all — the next testset is what says so. Pinning them is not the
+    # same as promising them: this arm turns "the census changed" into a failure
+    # instead of a silent drift, which is what the design asks for while a count
+    # is evidence.
+    @testset "$(nameof(typeof(sys))): the directed walk's census" for sys in HEX_SYSTEMS
+        for base in (0, 3)
+            grid = levelgrid(sys, base)
+            pents = hex_pentagons(sys, base)
+            hexes = filter(c -> !hex_ispentagon(sys, c),
+                collect(neighbors(grid, first(pents), 1)))
+            # IGeo7's base tessellation is twelve pentagons and nothing else, so
+            # at base 0 there is no hexagon to take; base 3 supplies both.
+            cells = isempty(hexes) ? [first(pents)] : [first(pents), first(hexes)]
+            for d in 1:4
+                base + d <= max_level(sys) || continue
+                for c in cells
+                    n = length(collect(SubtreeHaloIterator(sys, c, base + d)))
+                    @test n == (hex_ispentagon(sys, c) ? (5 * (3^d + 1)) ÷ 2 :
+                                3^(d + 1) + 3)
+                end
+            end
+        end
+    end
+
+    # The count contract in the negative, as for the seam walk. The census above
+    # is evidence, not an API promise, so neither hex engine declares a length
+    # and the `MethodError` is the contract being kept.
+    @testset "the directed walk declares no length" begin
+        for sys in HEX_SYSTEMS, d in 1:2
+            c = cellindex(levelgrid(sys, 1), 1)
+            it = SubtreeHaloIterator(sys, c, 1 + d)
+            @test Base.IteratorSize(typeof(it)) isa Base.SizeUnknown
+            @test_throws MethodError length(it)
+        end
+    end
+
+    # THE LAZINESS LAW, which is the other thing Task 6 delivers. The generic
+    # walk descends from `rootcells` and prunes by cap, so reaching the first
+    # halo cell of a deep target costs a traversal that grows with the target
+    # level: taking ten cells of an IGeo7 L=5, d=7 halo cost 42 ms and 779 KB of
+    # allocation — allocation in proportion to the whole halo, which the design's
+    # verification section forbids in as many words. The directed walk holds one
+    # seeded automaton and its frame stack, both isbits, so the same prefix is a
+    # flat 256 bytes at every depth.
+    #
+    # The assertion that matters is INDEPENDENCE, not a threshold: the same
+    # number of bytes at depth three, five and seven is the `O(depth)` claim, and
+    # a walk that started materialising would break it at once.
+    @testset "a prefix of a deep halo costs O(depth), not O(halo)" begin
+        prefix10 = it -> begin
+            n = 0
+            for _ in it
+                n += 1
+                n >= 10 && break
+            end
+            n
+        end
+        for sys in HEX_SYSTEMS
+            base = 5
+            grid = levelgrid(sys, base)
+            root = cellindex(grid, ncells(grid) ÷ 2 + 1)
+            depths = filter(d -> base + d <= max_level(sys), [3, 5, 7])
+            allocs = map(depths) do d
+                prefix10(SubtreeHaloIterator(sys, root, base + d))     # compile
+                @allocated prefix10(SubtreeHaloIterator(sys, root, base + d))
+            end
+            @test all(a -> a <= 4096, allocs)
+            @test length(unique(allocs)) == 1
+            @test all(d -> prefix10(SubtreeHaloIterator(sys, root, base + d)) == 10,
+                depths)
+        end
+        # And the walk it replaced, on the system where the violation was
+        # measured: the generic prefix allocates hundreds of kilobytes where the
+        # directed one allocates hundreds of bytes.
+        sys = IGeo7System()
+        grid = levelgrid(sys, 5)
+        root = cellindex(grid, ncells(grid) ÷ 2 + 1)
+        gen = () -> prefix10(SubtreeHaloIterator(sys, root, 12, Vertex(),
+            DGG.Fallbacks.generic_halo_engine(sys, root, 12, Vertex())))
+        gen()
+        dir = () -> prefix10(SubtreeHaloIterator(sys, root, 12))
+        dir()
+        @test @allocated(gen()) > 100 * @allocated(dir())
+    end
+
+    # -----------------------------------------------------------------------
     # The generic walk, still oracled where it is still the walk
     # -----------------------------------------------------------------------
 
-    # `check_root_classes` asserts the square systems' `fallback` class is empty,
-    # which says the specialization was reached but says nothing about the walk
-    # it would have fallen back TO. That walk is not dead code — it is what H3
-    # and IGeo7 take today, and what any future system inherits — so it is
-    # oracled here directly, on roots that genuinely reach it. Without this arm
-    # the generic engine is only ever compared against ITSELF under a different
-    # adjacency provider (the "geometry agrees with topology" testset), which is
-    # a test of the predicate and not of the walk.
+    # `check_root_classes` and `check_hex_classes` assert that no root of any
+    # system falls back, which says the specializations were reached but says
+    # nothing about the walk they would have fallen back TO. That walk is not
+    # dead code: it is what every one of `hex_halo_engine`'s and
+    # `_seam_band_engine`'s guards returns, and what a system added later
+    # inherits until it writes an engine of its own. Since Task 6 no system
+    # reaches it through the keyword constructor at all, so it is BUILT here and
+    # held to both oracles — the geometry walk, and the `O(ncells)` law, which
+    # enumerates from an ascending position scan and shares nothing with either.
+    #
+    # Without this arm the generic walk would be exercised only as the oracle's
+    # own carrier: `forced_geometry_halo` runs the same `OutsideWalkEngine` under
+    # a different adjacency provider, so a bug in the enumeration or the cap
+    # prune would move both sides together and show up nowhere. (The one other
+    # place it is still pinned is the depth-4 aperture-7 arm of "the defining
+    # law", which is where an under-covering root cap is caught.)
     @testset "the generic fallback still agrees with the oracle" begin
-        for sys in (H3System(), IGeo7System()), base in (0, 1),
-                conn in (Vertex(), Edge())
+        for sys in HEX_SYSTEMS, base in (0, 1), conn in (Vertex(), Edge())
             grid = levelgrid(sys, base)
             roots = unique(vcat(sample_cells(grid, 3), irregular_cells(grid, 2)))
-            for c in roots, l in (base + 1):min(base + 2, max_level(sys))
-                it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+            l = base + 1
+            for c in roots
+                it = SubtreeHaloIterator(sys, c, l, conn,
+                    DGG.Fallbacks.generic_halo_engine(sys, c, l, conn))
                 @test it.engine isa DGG.Fallbacks.OutsideWalkEngine
-                @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+                h = collect(it)
+                @test h == forced_geometry_halo(sys, c, l, conn)
+                @test h == law_halo(sys, c, l; connectivity = conn)
             end
         end
     end
@@ -833,6 +1145,18 @@ Base.length(::MiscountingEngine) = 3
                     @test collect(it) ==
                           collect(SubtreeHaloIterator(sys, c, l; connectivity = conn))
                 end
+            end
+        end
+        # And on the aperture-7 specialization, for the same reason.
+        for sys in HEX_SYSTEMS
+            wrapped = DGG.AuthalicSystem(sys)
+            c = cellindex(levelgrid(sys, 1), 1)
+            for d in 1:2, conn in (Vertex(), Edge())
+                it = SubtreeHaloIterator(wrapped, c, 1 + d; connectivity = conn)
+                @test it.engine isa (d == 1 ? DGG.Fallbacks.HexChildHaloEngine :
+                                     DGG.Fallbacks.HexArcHaloEngine)
+                @test collect(it) ==
+                      collect(SubtreeHaloIterator(sys, c, 1 + d; connectivity = conn))
             end
         end
     end

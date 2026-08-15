@@ -230,12 +230,22 @@ struct ForcedGeometry end
 
 # --- the indexed test -------------------------------------------------------
 
-@inline function _touches_subtree(::IndexedNeighbors, e, x)
-    for nb in neighbors(e.grid, x, 1; connectivity = e.connectivity)
-        ancestor(e.system, nb, e.rootlevel) == e.root && return true
+# The halo's own definition, as one free function: `x` is a halo cell of `root`'s
+# subtree exactly when the system's one-ring puts a descendant of `root` next to
+# it. Every engine in this file that filters candidates ends here — the outside
+# walk through the provider below, the seam band through `NativeCheck`, the
+# hexagonal walk through both its emit rule and its calibration — so there is one
+# definition to read and one to get wrong.
+@inline function _touches_root(sys, grid, root, rootlevel::Int, x,
+        connectivity::Connectivity)
+    for nb in neighbors(grid, x, 1; connectivity)
+        ancestor(sys, nb, rootlevel) == root && return true
     end
     return false
 end
+
+@inline _touches_subtree(::IndexedNeighbors, e, x) =
+    _touches_root(e.system, e.grid, e.root, e.rootlevel, x, e.connectivity)
 
 # --- the geometry test ------------------------------------------------------
 
@@ -795,13 +805,9 @@ end
 # check is the halo's own definition and needs only the cell. Hence the three
 # unnamed argument types — the signature exists to match `_band_emit`'s shape,
 # and naming arguments it ignores would suggest it consults them.
-@inline function _band_emit(chk::NativeCheck, ::SquareBandEngine, cell,
-        ::Int64, ::Int64)
-    for nb in neighbors(chk.grid, cell, 1; connectivity = chk.connectivity)
-        ancestor(chk.system, nb, chk.rootlevel) == chk.root && return true
-    end
-    return false
-end
+@inline _band_emit(chk::NativeCheck, ::SquareBandEngine, cell, ::Int64, ::Int64) =
+    _touches_root(chk.system, chk.grid, chk.root, chk.rootlevel, cell,
+        chk.connectivity)
 
 Base.eltype(::Type{<:SquareBandEngine}) = LevelIndex
 
@@ -1064,4 +1070,447 @@ function _seam_band_engine(sys::AbstractHierarchicalGridSystem, curve,
     return SquareBandEngine(curve,
         NativeCheck(sys, grid, c, level(c), connectivity),
         target, n, Int32(face), x0, y0, side, connectivity isa Vertex, ordered)
+end
+
+# ===========================================================================
+# The calibrated directed walk, shared by the two aperture-7 systems
+# ===========================================================================
+
+# A subtree of H3 or IGeo7 is not a block of anything: its rim is a hexagonal
+# spiral, its halo wraps a shape with no lattice box, and the aperture is odd, so
+# nothing above applies. What both systems DO have is a subtree-rim automaton
+# over an arc of exposed lattice directions — `(L, s)` meaning the arc
+# `s, s+1, …, s+L-1 (mod 6)` — and the halo is reachable through it from the
+# OTHER side.
+#
+# THE IDEA. Every level-`target` halo cell of `root` lies in the subtree of one
+# of `root`'s same-level neighbours. So walk the neighbours, and inside each one
+# walk only the part of its subtree that faces `root` — which is a rim walk of
+# that neighbour, entered not at the fully exposed `(6, 0)` a subtree root gets
+# but at the short arc that points back at `root`.
+#
+# WHY IT IS CONTAINED, which is the whole load-bearing claim. The NESTED
+# ADJACENCY LEMMA: if `y` is adjacent to `x` at level `l`, then `parent(y)` is
+# `parent(x)` or is adjacent to it. Induct: a halo cell `x` at level `l` touches
+# some descendant of `root`, so `parent(x)` touches `root`'s subtree at level
+# `l-1`; `parent(x)` is not a descendant of `root` (or `x` would be one), so by
+# induction it lies under a neighbour of `root`, and so does `x`. Verified
+# exhaustively over 910,560 adjacency pairs on both systems and both
+# connectivities, with zero violations.
+#
+# WHY THE ARC IS OBSERVED AND NEVER TABULATED. The two automata have EXCHANGED
+# parity branches — H3's even-level branch is IGeo7's odd-level one — and their
+# two `L < 6` guards are tested in the opposite order, so any table of seeds
+# fitted on one system is wrong on the other, and a table fitted per parity is
+# wrong at the other parity. The admission guard `o < L` is the one part that is
+# parity-independent in both files, so the set of children a seeded arc admits at
+# depth one is identical at both parities in both systems. `_hex_calibrate`
+# therefore derives the arc from the children that are OBSERVED to touch
+# `root` — one native check per child of one neighbour — and the asymmetry
+# becomes invisible. That is the single reason one driver serves both systems.
+#
+# WHY CONCATENATION IS A MERGE, again. Distinct same-level cells have disjoint
+# subtrees, so ordering the neighbours by `first(descendant_range(sys, nb,
+# target))` puts their candidate blocks in ascending, non-overlapping order;
+# within a neighbour the automaton is digit-lexicographic, which is ascending id.
+# No heap, no seen-set, no sort — 25,536 pairwise range comparisons across both
+# systems found zero overlaps.
+#
+# THE WALK IS EXACT, NOT CONSERVATIVE. Candidate-to-halo ratio is 1.0000 at every
+# depth from two down; run with the check disabled over 4,622 cases it produced
+# zero surplus candidates. The check is kept anyway, on every candidate, because
+# it is this file's exactness contract and it costs what the halo already costs.
+#
+# DEPTH ONE HAS NO AUTOMATON. At `target == rootlevel + 1` the calibration IS the
+# answer — the touching children are the halo — so `HexChildHaloEngine` emits
+# each neighbour's children filtered by the same check, and no arc is derived at
+# all. Seeding an automaton to walk one level is where the win thins to nothing,
+# which is the sign that the automaton would be doing no work there.
+#
+# WHAT IT BUYS, measured against the generic outside-first walk on a full halo:
+# 7-36x on H3 and 1.1-16x on IGeo7 over depths one to five, widening with depth
+# because the generic walk's cost grows with the target LEVEL while this one's
+# grows with the halo. The prefix is the sharper number: taking ten cells of an
+# IGeo7 depth-seven halo was 42 ms and 779 KB through the generic walk and is
+# 1.1 ms and 256 bytes here — and the 256 bytes do not move with the depth, which
+# is the design's laziness law rather than a speed-up.
+
+# Six is a hexagon's neighbour count and five a pentagon's, so the list is never
+# more than six long on either system. Eight is that plus slack, so a system with
+# a wider ring reaches the guard in `hex_halo_engine` rather than a `BoundsError`
+# from inside `small_push`.
+const _HEX_RING_CAP = 8
+
+"""
+    HexNeighbour(cell, lo, arclen, start)
+
+One of `root`'s same-level neighbours, with the arc `(arclen, start)` calibrated
+to face `root` and `lo = first(descendant_range(sys, cell, target))`, the key the
+ring is kept sorted by. `arclen == 0` marks an uncalibrated entry, which only the
+depth-one engine holds.
+"""
+struct HexNeighbour{C}
+    cell::C
+    lo::Int
+    arclen::Int8
+    start::Int8
+end
+
+const HexRing{C} = Helpers.SmallList{_HEX_RING_CAP,HexNeighbour{C}}
+
+@inline _empty_hex_ring(c::C) where {C} =
+    Helpers.empty_small_list(Val(_HEX_RING_CAP), HexNeighbour(c, 0, Int8(0), Int8(0)))
+
+# Insertion sort over at most six entries: the whole list fits in registers and a
+# heap would be a heap-allocation. Shifts down from the end, so the list is
+# sorted by `lo` at every point and the walk can read it straight through.
+function _hex_insert(ring::HexRing{C}, e::HexNeighbour{C}) where {C}
+    ring = Helpers.small_push(ring, e)
+    i = length(ring)
+    while i > 1
+        prev = @inbounds ring[i - 1]
+        prev.lo <= e.lo && break
+        ring = Helpers.small_setindex(ring, prev, i)
+        i -= 1
+    end
+    return Helpers.small_setindex(ring, e, i)
+end
+
+# ---------------------------------------------------------------------------
+# Calibration
+# ---------------------------------------------------------------------------
+
+"""
+    _minimal_arc(p, q) -> (arclen, start)
+
+The shortest arc of the six-direction ring containing both `p` and `q`, or
+`(0, 0)` when there is not exactly one such arc or its length is not 2 or 3.
+
+The scan is the definition rather than the closed form (`arclen` is the ring
+distance plus one, taken the short way round) so that the UNIQUENESS question is
+answered by counting, not argued: two directions exactly opposite each other
+admit two four-arcs and no shorter one, and this returns `(0, 0)` there instead
+of picking one. Thirty-six iterations of integer work, once per neighbour.
+"""
+function _minimal_arc(p::Int, q::Int)
+    bestlen = 7
+    beststart = 0
+    ties = 0
+    for L in 1:6, s in 0:5
+        (mod(p - s, 6) < L && mod(q - s, 6) < L) || continue
+        if L < bestlen
+            bestlen = L
+            beststart = s
+            ties = 1
+        elseif L == bestlen
+            ties += 1
+        end
+    end
+    ties == 1 || return (0, 0)
+    (bestlen == 2 || bestlen == 3) || return (0, 0)
+    return (bestlen, beststart)
+end
+
+"""
+    _hex_calibrate(sys, grid1, root, rootlevel, nb, connectivity) -> (arclen, start)
+
+The arc of `nb` that faces `root`, derived by asking which of `nb`'s children are
+halo cells of `root`'s subtree one level down, or `(0, 0)` if any of the guards
+fails.
+
+Measured over 52,182 `(root, neighbour)` pairs on both systems, root levels 0-11:
+the number of touching children is ALWAYS exactly two, the minimal covering arc
+is always unique, and its length is 2 in 98.6% of cases and 3 in the remaining
+1.4% — never 1, never 4 or more. The arc-3 case is fully characterised: `nb` is a
+pentagon and its deleted direction lies strictly between the two touching
+children. Nothing else predicts it, which is the other reason this is measured
+per call rather than looked up.
+
+So none of the returns below was observed to fire. That is what a guard on a
+structural claim should look like — it is here because the claim is evidence and
+not yet a theorem, and a system whose one-ring changed would meet it rather than
+meeting a wrong answer.
+"""
+function _hex_calibrate(sys, grid1, root, rootlevel::Int, nb,
+        connectivity::Connectivity)
+    p = -1
+    q = -1
+    n = 0
+    for k in children(sys, nb)
+        _touches_root(sys, grid1, root, rootlevel, k, connectivity) || continue
+        n += 1
+        n > 2 && return (0, 0)
+        d = hex_child_direction(sys, k)
+        # The centre child is enclosed by its six siblings and cannot reach out
+        # of its parent at all, so it has no direction to put on the ring. If one
+        # ever tested as touching, the ring model is wrong for this system and
+        # the arc must not be guessed.
+        d < 0 && return (0, 0)
+        n == 1 ? (p = d) : (q = d)
+    end
+    n == 2 || return (0, 0)
+    return _minimal_arc(p, q)
+end
+
+"""
+    _hex_validate(sys, root, rootlevel, ring, connectivity) -> Bool
+
+Does every depth-two halo cell under each neighbour really lie on that
+neighbour's calibrated walk? The calibration only observes depth one, so this is
+the one direct check that one level of observation carries to the next.
+
+`O(1)` in the halo's size — at most seven grandchildren per child per
+neighbour — but that is still about 300 native checks, which EXCEEDS the entire
+directed walk at the shallow depths. `hex_halo_engine` therefore runs it only
+from depth three up; at depth two the generic engine is barely slower than the
+validation alone, so skipping the specialization there would cost more than
+trusting it does.
+
+MEASURED, because the number is not the same on the two systems: the validation
+is about 55 µs on H3 and about 0.92 ms on IGeo7, whose `neighbors` is
+lattice arithmetic rather than a library call. So on H3 it is the rounding error
+the design expected at every depth it runs, while on IGeo7 it still dominates
+construction at depths three and four (1.04 ms against a walk of roughly 0.3 ms)
+and only becomes cheap from depth five. It is constant either way — construction
+never grows with the halo — so the laziness law holds regardless, and the
+threshold is left where the design put it rather than tuned per system. Raising
+it to four on IGeo7 is the obvious lever if that constant ever matters.
+
+Deliberately NOT restricted to pentagons or to arc-3 neighbours, which would be
+question-begging: the premise under test is exactly that the ordinary cases need
+no test.
+
+Both sides are ascending — the automaton is digit-lexicographic, and nested
+`children` calls are ascending by contract — so containment is a two-pointer
+merge with no set and no allocation.
+"""
+function _hex_validate(sys, root, rootlevel::Int, ring::HexRing{C},
+        connectivity::Connectivity) where {C}
+    target = rootlevel + 2
+    grid = levelgrid(sys, target)
+    for i in 1:length(ring)
+        e = @inbounds ring[i]
+        arc = seeded_rim_engine(sys, e.cell, target, Int(e.arclen), Int(e.start))
+        r = iterate(arc)
+        for k in children(sys, e.cell), x in children(sys, k)
+            _touches_root(sys, grid, root, rootlevel, x, connectivity) || continue
+            while r !== nothing && r[1] < x
+                r = iterate(arc, r[2])
+            end
+            (r !== nothing && r[1] == x) || return false
+            r = iterate(arc, r[2])
+        end
+    end
+    return true
+end
+
+# ---------------------------------------------------------------------------
+# Depth one: the calibration is the answer
+# ---------------------------------------------------------------------------
+
+"""
+    HexChildHaloEngine(system, grid, root, rootlevel, target, connectivity, ring)
+
+`target == rootlevel + 1`: each neighbour's children in turn, native-checked, the
+neighbours in descendant-range order. No automaton and no calibration — at this
+depth the children ARE the candidates.
+
+`children` is re-read per step rather than stored, which keeps the walk state two
+integers and costs a bounded-container rebuild of at most seven ids.
+"""
+struct HexChildHaloEngine{S,G,C,K}
+    system::S
+    grid::G
+    root::C
+    rootlevel::Int
+    target::Int
+    connectivity::K
+    ring::HexRing{C}
+end
+
+Base.eltype(::Type{<:HexChildHaloEngine{S,G,C,K}}) where {S,G,C,K} = C
+Base.IteratorSize(::Type{<:HexChildHaloEngine}) = Base.SizeUnknown()
+
+"""
+    HexChildWalk(slot, next)
+
+Which neighbour of the ring is being read, and which of its children comes next.
+"""
+struct HexChildWalk
+    slot::Int
+    next::Int
+end
+
+Base.iterate(e::HexChildHaloEngine) = iterate(e, HexChildWalk(1, 1))
+
+function Base.iterate(e::HexChildHaloEngine, w::HexChildWalk)
+    slot = w.slot
+    next = w.next
+    while slot <= length(e.ring)
+        kids = children(e.system, (@inbounds e.ring[slot]).cell)
+        if next > length(kids)
+            slot += 1
+            next = 1
+            continue
+        end
+        x = @inbounds kids[next]
+        next += 1
+        _touches_subtree(IndexedNeighbors(), e, x) || continue
+        return (x, HexChildWalk(slot, next))
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Deeper: one seeded automaton per neighbour
+# ---------------------------------------------------------------------------
+
+"""
+    HexArcHaloEngine(system, grid, root, rootlevel, target, connectivity, ring)
+
+`target > rootlevel + 1`: the system's own rim automaton seeded with each
+neighbour's calibrated arc, walked to `target`, every leaf native-checked before
+it is yielded. The ring is in descendant-range order and the blocks are disjoint,
+so concatenating the neighbours' streams is already the canonical merge.
+
+Memory is `O(depth)`: one seeded engine and its frame stack, both isbits, plus
+the fixed ring. Nothing sized by the halo is ever built, so a prefix costs what
+the prefix costs.
+
+[`Base.IteratorSize`](@ref) is `SizeUnknown()` and there is NO `length`, even
+though the counts are known: a neighbour's stream is `(3^d + 1)/2` cells for both
+arc lengths — an arc-2 seed emits that many outright, and an arc-3 seed emits
+`3^d` but arc-3 happens only at a pentagon, whose deleted digit removes precisely
+the 4-arc branch and collapses the census back — so the halo is `3^(d+1) + 3`
+around a hexagon and `5(3^d + 1)/2` around a pentagon. That was verified in
+176/176 configurations (all twelve pentagons of each system, hexagons adjacent to
+them, hexagons far from them, both connectivities, root levels 0-3, depths 1-5)
+and end to end to depth six. It is still ENUMERATION, not a derivation from the
+transition recurrence, and the design admits a count as an API contract only once
+it is derived symbolically and validated around every pentagon and parity
+configuration. What remains to prove: that the seeded transition relation has the
+claimed leaf census at every parity, and that the pentagon deletion always
+removes the 4-arc branch rather than another. Until then the `MethodError` from
+`length` is the honest answer.
+"""
+struct HexArcHaloEngine{S,G,C,K}
+    system::S
+    grid::G
+    root::C
+    rootlevel::Int
+    target::Int
+    connectivity::K
+    ring::HexRing{C}
+end
+
+Base.eltype(::Type{<:HexArcHaloEngine{S,G,C,K}}) where {S,G,C,K} = C
+Base.IteratorSize(::Type{<:HexArcHaloEngine}) = Base.SizeUnknown()
+
+"""
+    HexArcWalk(slot, arc, state)
+
+The walk state: which neighbour of the ring is being descended, that neighbour's
+seeded automaton, and the automaton's own frame stack. All three are isbits, and
+the engine is rebuilt rather than stored per slot, so resuming needs nothing that
+was not returned.
+"""
+struct HexArcWalk{A,W}
+    slot::Int
+    arc::A
+    state::W
+end
+
+@inline function _hex_arc_engine(e::HexArcHaloEngine, slot::Int)
+    nb = @inbounds e.ring[slot]
+    return seeded_rim_engine(e.system, nb.cell, e.target, Int(nb.arclen),
+        Int(nb.start))
+end
+
+# Open neighbour `slot` and every later one until a candidate passes the check.
+# Written as a fresh-start scan rather than folded into the resume path so the
+# walk state is only ever built from a narrowed, concrete iterate result — a
+# `Union{Nothing,W}` state field would infect the engine's whole return type.
+function _hex_arc_open(e::HexArcHaloEngine, slot::Int)
+    while slot <= length(e.ring)
+        arc = _hex_arc_engine(e, slot)
+        r = iterate(arc)
+        while r !== nothing
+            x, w = r
+            _touches_subtree(IndexedNeighbors(), e, x) &&
+                return (x, HexArcWalk(slot, arc, w))
+            r = iterate(arc, w)
+        end
+        slot += 1
+    end
+    return nothing
+end
+
+Base.iterate(e::HexArcHaloEngine) = _hex_arc_open(e, 1)
+
+function Base.iterate(e::HexArcHaloEngine, s::HexArcWalk)
+    r = iterate(s.arc, s.state)
+    while r !== nothing
+        x, w = r
+        _touches_subtree(IndexedNeighbors(), e, x) &&
+            return (x, HexArcWalk(s.slot, s.arc, w))
+        r = iterate(s.arc, w)
+    end
+    return _hex_arc_open(e, s.slot + 1)
+end
+
+# ---------------------------------------------------------------------------
+# Building one
+# ---------------------------------------------------------------------------
+
+"""
+    hex_halo_engine(sys, c, target, connectivity)
+
+The halo engine for a system with a seeded rim automaton — H3 and IGeo7, whose
+`halo_engine` methods are this call and nothing else. Falls back to
+[`generic_halo_engine`](@ref) whenever a guard fires, so the specialization is
+never the reason an answer is wrong, only the reason it is fast.
+
+The guards, in order: the system must have sorted subtrees (the ring's
+descendant-range order is what makes concatenation a merge); the target must be
+strictly deeper than `c` and no deeper than the system (both level errors belong
+to the generic engine, and depth zero is its one-ring); the ring must fit; every
+neighbour must calibrate; and from depth three up the calibration must survive
+[`_hex_validate`](@ref). None of the last three was observed to fire anywhere in
+the spike that measured this design.
+
+The probe is ALWAYS `Vertex()`, whatever was requested, so one containment
+argument covers both connectivities: the `Edge()` halo is a subset of the
+`Vertex()` one, and a superset of the larger is a superset of the smaller. The
+requested connectivity is what the calibration and the emit check filter by.
+(Moot on both systems, whose vertex and edge adjacency coincide — which is
+exactly why it is worth writing down rather than discovering later.)
+"""
+function hex_halo_engine(sys::AbstractHierarchicalGridSystem,
+        c::AbstractCellIndex, target::Int, connectivity::Connectivity)
+    lc = level(c)
+    (has_sorted_subtrees(sys) && lc < target <= max_level(sys)) ||
+        return generic_halo_engine(sys, c, target, connectivity)
+    nbs = neighbors(levelgrid(sys, lc), c, 1; connectivity = Vertex())
+    length(nbs) <= _HEX_RING_CAP ||
+        return generic_halo_engine(sys, c, target, connectivity)
+    grid = levelgrid(sys, target)
+    ring = _empty_hex_ring(c)
+    if target == lc + 1
+        for nb in nbs
+            ring = _hex_insert(ring, HexNeighbour(nb,
+                first(descendant_range(sys, nb, target)), Int8(0), Int8(0)))
+        end
+        return HexChildHaloEngine(sys, grid, c, lc, target, connectivity, ring)
+    end
+    grid1 = levelgrid(sys, lc + 1)
+    for nb in nbs
+        arclen, start = _hex_calibrate(sys, grid1, c, lc, nb, connectivity)
+        arclen == 0 && return generic_halo_engine(sys, c, target, connectivity)
+        ring = _hex_insert(ring, HexNeighbour(nb,
+            first(descendant_range(sys, nb, target)), Int8(arclen), Int8(start)))
+    end
+    if target - lc >= 3 && !_hex_validate(sys, c, lc, ring, connectivity)
+        return generic_halo_engine(sys, c, target, connectivity)
+    end
+    return HexArcHaloEngine(sys, grid, c, lc, target, connectivity, ring)
 end

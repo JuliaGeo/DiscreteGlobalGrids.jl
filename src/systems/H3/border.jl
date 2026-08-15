@@ -127,7 +127,14 @@ function Base.iterate(e::H3RimEngine)
     return iterate(e, _h3_root_walk(e, Int8(1)))
 end
 
-function Base.iterate(e::H3RimEngine, w::H3Walk)
+Base.iterate(e::H3RimEngine, w::H3Walk) = _h3_rim_advance(e.res, e.target, w)
+
+# The walk itself, taking the two numbers it actually reads rather than an
+# engine: the seeded arc engine below runs the same automaton from a different
+# root frame, and this is the whole of what they share. Every frame past the root
+# is built here, so a seeded entry differs from a rim entry in exactly one
+# `H3Frame` and in nothing else.
+function _h3_rim_advance(res0::Int, target::Int, w::H3Walk)
     z = w.z
     st = w.stack
     while !isempty(st)
@@ -140,17 +147,50 @@ function Base.iterate(e::H3RimEngine, w::H3Walk)
         digit = Int(f.next)
         st = DGG.Helpers.small_setlast(st, _h3_bump(f))
         f.pentagon && digit == 1 && continue   # the K axis, deleted under a pentagon
-        res = e.res + k - 1
+        res = res0 + k - 1
         child = _h3_border_step((Int(f.L), Int(f.s)), digit, res + 1)
         child[1] == 0 && continue
         shift = _h3_digit_shift(res + 1)
         z = (z & ~(UInt64(7) << shift)) | (UInt64(digit) << shift)
-        res + 1 == e.target && return (H3Cell(z), H3Walk(z, st))
+        res + 1 == target && return (H3Cell(z), H3Walk(z, st))
         st = DGG.Helpers.small_push(st,
             H3Frame(Int8(child[1]), Int8(child[2]), Int8(1), false, false))
     end
     return nothing
 end
+
+"""
+    H3ArcEngine(z, res, target, pentagon, L, s)
+
+The same automaton entered at an arbitrary arc: the level-`target` descendants of
+the cell `z` reachable along the exposed directions `s, s+1, …, s+L-1 (mod 6)`,
+ascending, in `O(depth)` memory. `H3RimEngine` is this with `(L, s) == (6, 0)`,
+which is the one state with no arc ends and therefore the one the census
+formulas describe — so this engine declares `SizeUnknown()` and no `length`.
+
+`pentagon` is the SEED CELL's own flag, not a subtree root's. A calibrated arc is
+seeded at a neighbour, which may itself be a pentagon, and dropping the flag
+would walk the deleted K axis and yield ids for cells that do not exist. It drops
+below the root frame for the usual reason: a rim suffix contains no zero digit,
+so no descendant reached from here is a pentagon.
+"""
+struct H3ArcEngine
+    z::UInt64
+    res::Int
+    target::Int
+    pentagon::Bool
+    L::Int8
+    s::Int8
+end
+
+Base.eltype(::Type{H3ArcEngine}) = H3Cell
+Base.IteratorSize(::Type{H3ArcEngine}) = Base.SizeUnknown()
+
+Base.iterate(e::H3ArcEngine) = iterate(e, H3Walk(e.z,
+    DGG.Helpers.small_push(_h3_empty_stack(),
+        H3Frame(e.L, e.s, Int8(1), e.pentagon, false))))
+
+Base.iterate(e::H3ArcEngine, w::H3Walk) = _h3_rim_advance(e.res, e.target, w)
 
 """
     H3InteriorEngine(z, res, target, pentagon)
@@ -224,6 +264,37 @@ function DGG.interior_engine(sys::H3System, c::H3Cell, target::Int,
     lvl, pentagon = _h3_border_checked(c, target)
     return H3InteriorEngine(_h3_with_resolution(c.id, target), lvl, target, pentagon)
 end
+
+# ---------------------------------------------------------------------------
+# The two lines the shared calibrated halo walk needs (`hex_halo_engine`)
+# ---------------------------------------------------------------------------
+
+# The ring position of the step from a cell's parent to the cell, read off the
+# cell's own last digit through the same table `_h3_border_step` uses. Digit 0 is
+# the centre child, which has no direction, and a base cell has no parent.
+function DGG.hex_child_direction(::H3System, c::H3Cell)
+    res = level(c)
+    res == 0 && return -1
+    digit = Int((c.id >> _h3_digit_shift(res)) & UInt64(7))
+    digit == 0 && return -1
+    return @inbounds _H3_DIGIT_DIR[digit]
+end
+
+# Unvalidated on purpose: `hex_halo_engine` owns the level guard and only ever
+# passes cells that came out of `neighbors`. `_h3_border_checked` is the entry
+# point for the public verbs, which do not know that.
+DGG.seeded_rim_engine(::H3System, c::H3Cell, target::Int, arclen::Int,
+        start::Int) =
+    H3ArcEngine(_h3_with_resolution(c.id, target), level(c), target,
+        H3Native.is_pentagon(c.id), Int8(arclen), Int8(start))
+
+# The halo is approached from the neighbouring subtrees rather than from the
+# root's own, because a subtree's halo is not an interval of anything H3 can
+# name. See `hex_halo_engine` for the calibration, the containment argument, and
+# the guards that send a case back to the generic walk.
+DGG.halo_engine(sys::H3System, c::H3Cell, target::Int,
+    connectivity::Connectivity) =
+    DGG.hex_halo_engine(sys, c, target, connectivity)
 
 # libh3 validates neither `cellToChildren` nor `cellToChildrenSize`, so a
 # malformed index would otherwise come back as a confidently enumerated rim

@@ -524,6 +524,36 @@ function DGG.interior_engine(::IGeo7System, c::Z7Cell, target::Int,
     return Z7InteriorEngine(c.id, _z7_subtree_checked(c, target), target)
 end
 
+# ---------------------------------------------------------------------------
+# The two lines the shared calibrated halo walk needs (`hex_halo_engine`)
+# ---------------------------------------------------------------------------
+
+# The ring position of the step from a cell's parent to the cell, read off the
+# cell's own last digit through the same table `_border_step` uses. Digit 0 is
+# the centre child, which has no direction, and a base cell has no parent.
+function DGG.hex_child_direction(::IGeo7System, c::Z7Cell)
+    res = z7_resolution(c.id)
+    res == 0 && return -1
+    digit = _z7_digit(c.id, res)
+    digit == 0 && return -1
+    return @inbounds SIGMA_J[digit]
+end
+
+# Unvalidated on purpose: `hex_halo_engine` owns the level guard and only ever
+# passes cells that came out of `neighbors`. `_z7_subtree_checked` is the entry
+# point for the public verbs, which do not know that.
+DGG.seeded_rim_engine(::IGeo7System, c::Z7Cell, target::Int, arclen::Int,
+        start::Int) = Z7ArcEngine(c.id, z7_resolution(c.id), target,
+    Int8(arclen), Int8(start))
+
+# The halo is approached from the neighbouring subtrees rather than from the
+# root's own, because a subtree's halo is not an interval of anything Z7 can
+# name. See `hex_halo_engine` for the calibration, the containment argument, and
+# the guards that send a case back to the generic walk.
+DGG.halo_engine(sys::IGeo7System, c::Z7Cell, target::Int,
+    connectivity::Connectivity) =
+    DGG.hex_halo_engine(sys, c, target, connectivity)
+
 # The one level guard both walks share, and the cell's own resolution.
 function _z7_subtree_checked(c::Z7Cell, target::Int)
     res = _geometry_checked(c.id)

@@ -896,7 +896,12 @@ function Base.iterate(e::Z7RimEngine)
     return iterate(e, _z7_root_walk(e))
 end
 
-function Base.iterate(e::Z7RimEngine, w::Z7Walk)
+Base.iterate(e::Z7RimEngine, w::Z7Walk) = _z7_rim_advance(e.res, e.target, w)
+
+# The walk itself, taking the two numbers it reads rather than an engine: the
+# seeded arc engine below runs the same automaton from a different root frame,
+# and this is the whole of what the two share.
+function _z7_rim_advance(res0::Int, target::Int, w::Z7Walk)
     z = w.z
     st = w.stack
     while !isempty(st)
@@ -908,19 +913,49 @@ function Base.iterate(e::Z7RimEngine, w::Z7Walk)
         end
         digit = Int(f.next)
         st = Helpers.small_setlast(st, _z7_bump(f))
-        res = e.res + k - 1
+        res = res0 + k - 1
         deleted, pentagon = _z7_node(z, res)
         pentagon && digit == deleted && continue
         child = _border_step((Int(f.L), Int(f.s)), digit, res + 1)
         child[1] == 0 && continue
         shift = _z7_shift(res + 1)
         z = (z & ~(UInt64(7) << shift)) | (UInt64(digit) << shift)
-        res + 1 == e.target && return (Z7Cell(z), Z7Walk(z, st))
+        res + 1 == target && return (Z7Cell(z), Z7Walk(z, st))
         st = Helpers.small_push(st,
             Z7Frame(Int8(child[1]), Int8(child[2]), Int8(0), false))
     end
     return nothing
 end
+
+"""
+    Z7ArcEngine(z, res, target, L, s)
+
+The same automaton entered at an arbitrary arc: the res-`target` descendants of
+`z` reachable along the exposed directions `s, s+1, …, s+L-1 (mod 6)`, ascending,
+in `O(depth)` memory. [`Z7RimEngine`](@ref) is this with `(L, s) == (6, 0)`,
+which is the one state the census recurrence describes — so this engine declares
+`SizeUnknown()` and no `length`.
+
+The seed cell's own pentagon deletion needs no field here, unlike H3's: `_z7_node`
+re-derives it from `z` at every node, and at the root frame that is exactly "is
+`z` a pentagon at resolution `res`". A calibrated arc IS seeded at cells that are
+pentagons, so this is load-bearing rather than incidental.
+"""
+struct Z7ArcEngine
+    z::UInt64
+    res::Int
+    target::Int
+    L::Int8
+    s::Int8
+end
+
+Base.eltype(::Type{Z7ArcEngine}) = Z7Cell
+Base.IteratorSize(::Type{Z7ArcEngine}) = Base.SizeUnknown()
+
+Base.iterate(e::Z7ArcEngine) = iterate(e, Z7Walk(e.z,
+    Helpers.small_push(_z7_empty_stack(), Z7Frame(e.L, e.s, Int8(0), false))))
+
+Base.iterate(e::Z7ArcEngine, w::Z7Walk) = _z7_rim_advance(e.res, e.target, w)
 
 """
     Z7InteriorEngine(z, res, target)

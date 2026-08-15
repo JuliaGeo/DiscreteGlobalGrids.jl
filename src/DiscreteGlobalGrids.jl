@@ -117,7 +117,8 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
 # from. Not exported — a caller reaches the iterators, a system reaches these.
 using .Fallbacks: collect_subtree,
     MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine,
-    SquareBandEngine, square_halo_engine, generic_halo_engine
+    SquareBandEngine, square_halo_engine, generic_halo_engine,
+    HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine
 
 # Grid systems, all six ported. Include order never matters: the two ISEA-family
 # systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included

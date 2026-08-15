@@ -382,6 +382,39 @@ function lattice_cell end
 function face_orientation end
 
 """
+    hex_child_direction(sys, c) -> Int
+    seeded_rim_engine(sys, c, target::Int, arclen::Int, start::Int)
+
+The two lines an aperture-7 system writes to let the shared calibrated halo walk
+(`hex_halo_engine`) approach a subtree from its neighbours. Only the systems
+that already own a subtree-rim automaton over an arc of exposed lattice
+directions — H3 and IGeo7 — implement them; there is no generic fallback,
+because there is no generic automaton.
+
+`hex_child_direction` is the position `0:5` on the six-direction ring of the step
+from `c`'s parent to `c`, and `-1` for the centre child (which has no direction)
+or for a root cell (which has no parent). It is the system's existing digit →
+direction table (`_H3_DIGIT_DIR`, `SIGMA_J`) read through the cell's own last
+digit — no child list is searched.
+
+`seeded_rim_engine` is the system's rim automaton entered at an ARBITRARY arc
+`(arclen, start)` rather than at the fully exposed `(6, 0)` a subtree root gets:
+`c`'s level-`target` descendants reachable along the arc of exposed directions
+`start, start+1, …, start+arclen-1 (mod 6)`, ascending, in `O(depth)` memory. It
+must carry `c`'s own pentagon deletion on the root frame, since a calibrated arc
+is seeded at a cell that may be a pentagon. It declares `SizeUnknown()`: the
+closed-form rim census counts the `(6, 0)` walk and does not describe a seeded
+one.
+
+Neither validates `c` — both are called from `hex_halo_engine` on cells that
+came out of `neighbors` and `children`, and the driver owns the level guard.
+"""
+function hex_child_direction end
+
+@doc (@doc hex_child_direction)
+function seeded_rim_engine end
+
+"""
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}
 
 The contiguous interval of **positions** in `levelgrid(sys, l)`'s canonical

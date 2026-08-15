@@ -1008,37 +1008,81 @@ end
     @test treeify(midrow) isa DGG.HierarchicalGridCursor
     @test treeify(scattered) isa DGG.HierarchicalGridCursor
 
+    # A level-1 run of WHOLE tiles is a rectangle too — one tile row segment, or
+    # whole tile rows, the same two shapes the level-0 rule admits — and it gets
+    # the tile-node machinery a level-1 level grid already uses.
+    # KILLS: a dispatch that reads "more than one tile" as "not a rectangle" and
+    # sends the window down the generic cursor's 64 800-child root; and one that
+    # reads it as a rectangle without checking that the END tile is whole, which
+    # would claim positions the grid does not hold.
+    ntwin = Int(CD.lat_intervals(TWIN))
+    nc_twin = Int(CD.ncols_at(TWIN, 50))
+    two_lo = CD.pixelcell(TWIN, CD.tilecell(TWIN, 50, 6), 0, 0).index
+    two_hi = CD.pixelcell(TWIN, CD.tilecell(TWIN, 50, 7), ntwin - 1, nc_twin - 1).index
+    two_tiles = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in two_lo:two_hi])
+    # Whole tile rows, at level 1: the pole-most two TWIN rows are 3 columns to a
+    # tile, so this is 64 800 pixels rather than millions.
+    pole_lo = CD.pixelcell(TWIN, CD.tilecell(TWIN, 89, -180), 0, 0).index
+    pole_hi = CD.pixelcell(TWIN, CD.tilecell(TWIN, 88, 179), ntwin - 1,
+                           Int(CD.ncols_at(TWIN, 88)) - 1).index
+    pole_rows = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in pole_lo:pole_hi])
+    part_end = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in two_lo:(two_hi-2)])
+    @test treeify(two_tiles) isa CD.BlockCursor
+    @test treeify(pole_rows) isa CD.BlockCursor
+    @test treeify(part_end) isa DGG.HierarchicalGridCursor
+
+    # An id no cell has. `decode` throws on one and `PartialGrid` does not
+    # range-check its ids, while `treeify` is documented to answer for every
+    # grid. KILLS: dropping the range check in `_block_cursor`, which turns a
+    # fallback into an `ArgumentError` out of `treeify`.
+    beyond = ncells(TWIN, 1)
+    @test treeify(PartialGrid(TWIN, 1, [LevelIndex(1, beyond + k) for k in 0:3])) isa
+          DGG.HierarchicalGridCursor
+
     # ---- the leaves partition the positions, exactly once each --------------
     # KILLS: an off-by-one in the near-equal split (`_part`), which drops or
     # repeats whole blocks; and a `_position` that forgets the band's `ncols` or
     # the grid's own first id.
+    # The counts are kept rather than short-circuited: "some position was wrong"
+    # and "position 7 was yielded twice by two different leaves" are different
+    # bugs, and the failure message should say which — with the grid and the
+    # strategy that produced it, since every case below runs the same assertion.
     function leaf_positions(tree, n)
         seen = falses(n)
         stack = [tree]
         nodes = 0
+        dup = 0
+        oob = 0
         while !isempty(stack)
             node = pop!(stack)
             nodes += 1
             if STI.isleaf(node)
                 for (i, _) in STI.child_indices_extents(node)
-                    (1 <= i <= n && !seen[i]) || return (false, nodes)
-                    seen[i] = true
+                    if !(1 <= i <= n)
+                        oob += 1
+                    elseif seen[i]
+                        dup += 1
+                    else
+                        seen[i] = true
+                    end
                 end
             else
                 append!(stack, collect(STI.getchild(node)))
             end
         end
-        return (all(seen), nodes)
+        return (nodes = nodes, seen = count(seen), dup = dup, oob = oob)
     end
 
     twin_tile = PartialGrid(TWIN, CD.tilecell(TWIN, 50, 6), 1)
     for (label, grid) in (("twin tile", twin_tile),
                           ("4 GLO-90 rows", rows),
-                          ("GLO-90 tiles", levelgrid(GLO90, 0)))
+                          ("GLO-90 tiles", levelgrid(GLO90, 0)),
+                          ("two twin tiles", two_tiles),
+                          ("two twin tile rows", pole_rows))
         for strategy in (CD.Blocked{3}(), CD.Bisected())
-            covered, nodes = leaf_positions(CD.BlockCursor(grid; strategy), ncells(grid))
-            @test covered
-            @test nodes > 1
+            r = leaf_positions(CD.BlockCursor(grid; strategy), ncells(grid))
+            @test (label, string(typeof(strategy)), r.seen, r.dup, r.oob, r.nodes > 1) ==
+                  (label, string(typeof(strategy)), ncells(grid), 0, 0, true)
         end
     end
 
@@ -1066,11 +1110,166 @@ end
         return worst
     end
 
-    for (label, grid) in (("twin tile", twin_tile), ("GLO-90 tiles", levelgrid(GLO90, 0)))
-        slack = covering_slack(CD.BlockCursor(grid), grid)
-        @info "block cursor covering slack, $label" slack
-        @test slack < 0        # every leaf vertex strictly inside every ancestor cap
+    # Both strategies: the caps are derived from a node's rectangle, and the two
+    # strategies cut different rectangles out of the same grid — `Blocked{3}`'s
+    # edge blocks are the ceil-divided ones, which is where an off-by-one in
+    # `_part` would put a cell outside its own node's box.
+    for (label, grid) in (("twin tile", twin_tile), ("GLO-90 tiles", levelgrid(GLO90, 0))),
+        strategy in (CD.Blocked{3}(), CD.Bisected())
+
+        slack = covering_slack(CD.BlockCursor(grid; strategy), grid)
+        @info "block cursor covering slack, $label" strategy slack
+        # every leaf vertex strictly inside every ancestor cap
+        @test (label, string(typeof(strategy)), slack < 0) ==
+              (label, string(typeof(strategy)), true)
     end
+
+    # ---- and the caps against the BOX, not just the corners it was built from --
+    # The walk above bottoms out at leaf cells whose ring vertices ARE the box
+    # corners the cap radius came from, so its leaf arm can only re-derive
+    # `_leaf_pad`. This samples the node's own box perimeter instead — 65 points
+    # to an edge, a TEST-ONLY densification of the continuous truth a cap has to
+    # bound, as in section (h) — at both scales, in three bands and both pole
+    # rows, with the two TILE blocks straddling the band edges at latitude 50 and
+    # 85 where the column count steps.
+    # KILLS: a `_box_cap` centred anywhere but the box midpoint, and a
+    # `_node_box` tile branch that takes one band's half-pixel west offset for a
+    # block spanning several.
+    g0_90, g1_90 = levelgrid(GLO90, 0), levelgrid(GLO90, 1)
+    n90 = Int(CD.lat_intervals(GLO90))
+    worst_box = -Inf
+    for (lat_s, lon_w, pixels) in ((50, 6, true), (89, 0, true), (-90, 100, true),
+                                   (86, -180, true), (51, 0, false), (86, 100, false))
+        r, q = 89 - lat_s, lon_w + 180
+        nc = Int(CD.ncols(GLO90, r))
+        node = pixels ?
+               CD.BlockCursor(g1_90, GLO90, CD.Bisected(), 1, Int64(-1), r, r, q, q,
+                              0, min(n90, 64) - 1, 0, min(nc, 64) - 1, true) :
+               CD.BlockCursor(g0_90, GLO90, CD.Bisected(), 0, Int64(-1),
+                              r, min(r + 3, 179), q, min(q + 2, 359), 0, 0, 0, 0, false)
+        cap = STI.node_extent(node)
+        west, east, south, north = CD._node_box(node)
+        for k in 0:64
+            f = k / 64
+            for p in (CD.TO_SPHERE((west + f * (east - west), south)),
+                      CD.TO_SPHERE((west + f * (east - west), north)),
+                      CD.TO_SPHERE((west, south + f * (north - south))),
+                      CD.TO_SPHERE((east, south + f * (north - south))))
+                worst_box = max(worst_box,
+                                US.spherical_distance(cap.point, p) - cap.radius)
+            end
+        end
+    end
+    @info "block cursor caps vs the densely sampled node box" worst_box
+    @test worst_box < 0
+
+    # ---- what `_leaf_pad` is, which is not a bound on the bow ---------------
+    # Its docstring says the CORNER sets the cap radius and a bowed edge never
+    # reaches it, so the pad is belt-and-braces against rounding rather than the
+    # thing that keeps a ring inside. This is that statement as an assertion:
+    # rebuild each leaf's cap with pad ZERO and sample its ring's edges, at both
+    # scales and in both pole rows.
+    # KILLS: a rationale that has drifted from the code. If `cell_boundary` ever
+    # densified its rings, or a band's Δλ grew enough for the bow to matter, this
+    # goes red and the docstring gets rewritten instead of quietly lying.
+    worst_vertex = -Inf
+    worst_interior = -Inf
+    for lat_s in (89, 86, 50, 0, -60, -90), lon_w in (-180, 6)
+        r, q = 89 - lat_s, lon_w + 180
+        nc = Int(CD.ncols(GLO90, r))
+        for (lvl, j, i) in ((1, 0, 0), (1, n90 ÷ 2, nc ÷ 2), (1, n90 - 1, nc - 1),
+                            (0, 0, 0))
+            grid = lvl == 0 ? g0_90 : g1_90
+            node = CD.BlockCursor(grid, GLO90, CD.Bisected(), lvl, Int64(-1),
+                                  r, r, q, q, j, j, i, i, lvl == 1)
+            west, east, south, north = CD._node_box(node)
+            bare = CD._box_cap(west, east, south, north, 0.0)
+            c = lvl == 0 ? LevelIndex(0, CD.tileordinal(r, q)) :
+                CD.pixelcell(GLO90, LevelIndex(0, CD.tileordinal(r, q)), j, i)
+            ring = cell_boundary(grid, c)
+            m = length(ring)
+            for k in 1:m, t in range(0, 1; length = 65)
+                a, b = ring[k], ring[mod1(k + 1, m)]
+                x = (1 - t) * a[1] + t * b[1]
+                y = (1 - t) * a[2] + t * b[2]
+                z = (1 - t) * a[3] + t * b[3]
+                nrm = sqrt(x * x + y * y + z * z)
+                p = US.UnitSphericalPoint(x / nrm, y / nrm, z / nrm)
+                s = US.spherical_distance(bare.point, p) - bare.radius
+                # A vertex IS a corner the radius was built from, so its slack is
+                # the rounding; the interior of an edge is where the bow lives.
+                if t == 0 || t == 1
+                    worst_vertex = max(worst_vertex, s)
+                else
+                    worst_interior = max(worst_interior, s)
+                end
+            end
+        end
+    end
+    @info "leaf ring vs its UNPADDED corner cap" worst_vertex worst_interior
+    @test worst_interior < 0        # the bow never leaves the unpadded cap at all
+    @test worst_vertex < 1e-15      # and the corners leave it by float rounding
+
+    # ---- the level-1 TILE node path ----------------------------------------
+    # A level-1 grid over more than one tile descends TILE nodes before it ever
+    # reaches a raster, and that is a separate arm in three places: `isleaf` (a
+    # tile block of a level-1 grid is never a leaf, however few tiles it holds),
+    # `_childspace` (a one-tile block descends straight into that tile's raster,
+    # spending no level on itself), and `_node_box` (the tile-rectangle branch).
+    # KILLS: `isleaf` reading a one-tile level-1 node as a leaf, which would
+    # yield one position where a whole raster belongs; and a `_childspace` that
+    # descends into the wrong tile's column count.
+    g1twin = levelgrid(TWIN, 1)
+    root = treeify(g1twin)
+    @test root isa CD.BlockCursor
+    @test !STI.isleaf(root)
+    holds(nd, r, q, j, i) = nd.inpixels ?
+                            (nd.r0 == r && nd.q0 == q && nd.j0 <= j <= nd.j1 && nd.i0 <= i <= nd.i1) :
+                            (nd.r0 <= r <= nd.r1 && nd.q0 <= q <= nd.q1)
+    worst_ancestor = -Inf
+    worst_globe = -Inf
+    reached = 0
+    for (lat_s, lon_w) in ((-90, 0), (89, 179), (50, 6), (49, 6), (86, -180))
+        tile = CD.tilecell(TWIN, lat_s, lon_w)
+        r, q, _, _ = CD.decode(TWIN, tile)
+        nc = Int(CD.ncols(TWIN, r))
+        for (j, i) in ((0, 0), (ntwin - 1, nc - 1))
+            c = CD.pixelcell(TWIN, tile, j, i)
+            pos = cellposition(g1twin, c)
+            ring = cell_boundary(g1twin, c)
+            node = root
+            depth = 0
+            while !STI.isleaf(node) && depth < 90
+                cap = STI.node_extent(node)
+                for p in ring
+                    s = US.spherical_distance(cap.point, p) - cap.radius
+                    # The root spans the globe, so `_box_cap` takes its POLAR
+                    # branch and clamps the radius at π — and the pole opposite
+                    # that cap's centre then sits exactly ON it. A cap of radius
+                    # π IS the whole sphere, so 0.0 is the right answer there and
+                    # only there; every narrower cap must contain the ring
+                    # strictly, which is what the pad is for.
+                    if cap.radius >= Float64(π)
+                        worst_globe = max(worst_globe, s)
+                    else
+                        worst_ancestor = max(worst_ancestor, s)
+                    end
+                end
+                k = findfirst(k -> holds(STI.getchild(node, k), r, q, j, i),
+                              1:STI.nchild(node))
+                k === nothing && break
+                node = STI.getchild(node, k)
+                depth += 1
+            end
+            STI.isleaf(node) &&
+                any(idx == pos for (idx, _) in STI.child_indices_extents(node)) &&
+                (reached += 1)
+        end
+    end
+    @info "level-1 tile descent" worst_ancestor worst_globe
+    @test reached == 10          # every target found, in its own leaf
+    @test worst_ancestor < 0     # and strictly inside every cap on the way down
+    @test worst_globe <= 0       # the whole-sphere root included, on its rim
 
     # ---- the index space ----------------------------------------------------
     # `Trees.getcell(tree, i)` and `child_indices_extents`'s `i` are the same
@@ -1089,8 +1288,14 @@ end
     # descends the SYSTEM's hierarchy and knows nothing about rectangles, so
     # agreeing with it to the last bit is agreeing about the geometry, not about
     # a shared implementation. Both strategies, both scales.
+    # Two destinations, because they descend differently: HEALPix bisects a
+    # 4-fold hierarchy and IGEO7 a 7-fold one, so the pairs the dual search puts
+    # this cursor's nodes against are not the same pairs. And a multi-tile
+    # level-1 source, which is the only case whose root is a level-1 TILE node.
     for (label, src, dst) in
         (("twin tile -> HEALPix 5", twin_tile, levelgrid(DGG.HEALPixSystem(), 5)),
+         ("twin tile -> IGEO7 4", twin_tile, levelgrid(DGG.IGeo7System(), 4)),
+         ("two twin tiles -> HEALPix 5", two_tiles, levelgrid(DGG.HEALPixSystem(), 5)),
          ("GLO-90 tiles -> HEALPix 2", levelgrid(GLO90, 0),
           levelgrid(DGG.HEALPixSystem(), 2)))
 
@@ -1100,7 +1305,8 @@ end
         for strategy in (CD.Blocked{3}(), CD.Bisected())
             blocked = CR.Regridder(MANIFOLD, dst,
                 CD.BlockCursor(src; strategy)).intersections
-            @test blocked == reference
+            @test (label, string(typeof(strategy)), blocked == reference) ==
+                  (label, string(typeof(strategy)), true)
         end
     end
 end

@@ -15,9 +15,10 @@
 # ever built that the search does not visit.
 #
 # Building the whole 960 000-pixel `N50_00_E006_00` tile's matched-resolution
-# regridder goes from 68.7 s to 11.5 s onto IGEO7 and from 75.1 s to 8.9 s onto
+# regridder goes from 105.7 s to 11.5 s onto IGEO7 and from 83.9 s to 9.2 s onto
 # HEALPix, with the intersection matrix identical to the last bit. How a node
-# splits changes only the speed, and [`BlockStrategy`](@ref) has that table.
+# splits changes only the speed, and [`BlockStrategy`](@ref) has that table and
+# the script that reproduces it.
 #
 # # The generic seam
 #
@@ -53,14 +54,19 @@ which `treeify` uses, or [`Blocked`](@ref), which it was measured against.
 Every strategy here produces the SAME intersection matrix, bit for bit — they
 differ only in how fast the dual tree search reaches it. Building the
 matched-resolution regridder for the whole `N50_00_E006_00` GLO-90 tile
-(960 000 pixels, `-t auto` on 8 threads):
+(960 000 pixels), by `scripts/bench_copdem_cursor.jl`, which is the reproducer
+for every number in this table:
 
 | source tree                        | onto IGEO7 12 | onto HEALPix 16 |
 |:-----------------------------------|--------------:|----------------:|
-| generic `HierarchicalGridCursor`   |      68.7 s   |        75.1 s   |
-| `Blocked{3}` — 9 children a node   |      42.0 s   |        53.6 s   |
-| `Blocked{2}` — 4 children a node   |      25.0 s   |        23.1 s   |
-| `Bisected`   — 2 children a node   |      11.5 s   |         8.9 s   |
+| generic `HierarchicalGridCursor`   |     105.7 s   |        83.9 s   |
+| `Blocked{3}` — 9 children a node   |      52.3 s   |        51.9 s   |
+| `Blocked{2}` — 4 children a node   |      24.1 s   |        25.1 s   |
+| `Bisected`   — 2 children a node   |      11.5 s   |         9.2 s   |
+
+MACHINE-LOCAL, and measured once: an M-series laptop on 8 threads, in the `docs`
+project, which is the environment `examples/copernicus_dem.jl` runs in and quotes
+its own two builds from. The ratios are the claim; the seconds are this machine's.
 
 Monotone in the fanout, and the mechanism is the dual search's shape rather than
 this tree's: when neither node is a leaf it tests `nchild(src) x nchild(dst)`
@@ -72,6 +78,17 @@ cannot be pruned against it at all, so the two trees stop narrowing together.
 Halving descends in the smallest step that still separates, so every level
 prunes. The 20-level depth that costs is free — a node is eight integers with no
 allocation.
+
+The multithreaded walk that dominates an 8-thread build makes that argument
+stronger than the single-threaded one does. `ConservativeRegridding`'s
+`multithreaded_dual_depth_first_search`
+(`src/utils/MultithreadedDualDepthFirstSearch.jl:27-31`) derives the opposing
+node's extent INSIDE the loop over this node's children, so it calls
+`node_extent` `nchild(src) x nchild(dst)` times per pair of interior nodes,
+unconditionally: it has no expense cache, and `node_extent_is_expensive` — which
+this cursor sets, because its cap is four inverse projections and four distances
+derived on demand — buys nothing there. Every child this strategy does not
+create is a row of that product not paid for.
 """
 abstract type BlockStrategy end
 
@@ -96,8 +113,12 @@ struct Blocked{K} <: BlockStrategy end
     Bisected()
 
 Split the LONGER axis in two, so the axis alternates by construction and blocks
-stay near-square. What [`treeify`](@ref) builds; [`BlockStrategy`](@ref) carries
-the measurement that chose it.
+stay near-square — in INDEX space, which is the only space this arithmetic sees:
+a block of equal row and column counts spans `N/ncols` times as many degrees of
+longitude as of latitude, ten times as many in the 10x reduction band above
+latitude 85, of which the cosine of the latitude then takes most back on the
+ground. What [`treeify`](@ref) builds; [`BlockStrategy`](@ref) carries the
+measurement that chose it.
 """
 struct Bisected <: BlockStrategy end
 
@@ -199,15 +220,33 @@ end
 """
     _leaf_pad(cursor) -> Float64
 
-Radians of cap headroom for the bow of a LEAF's published ring outside its own
-box. [`cell_boundary`](@ref) emits undensified geodesic quads, so a cell's north
-and south edges bow poleward by about `(Δλ²/8)·sin φ·cos φ ≤ Δλ²/16`.
+Radians of cap headroom at a LEAF, sized by the bow of a leaf's published ring
+outside its own box. [`cell_boundary`](@ref) emits undensified geodesic quads,
+so a cell's north and south edges bow poleward by about
+`(Δλ²/8)·sin φ·cos φ ≤ Δλ²/16`, and this returns that bound for the leaf's own
+`Δλ` — at level 1 a pixel of the block's COARSEST band, the largest `Δλ` any
+leaf beneath the node can have, and at level 0 a whole tile.
 
-The leaf's `Δλ`, not the node's: the node box already contains every descendant
-BOX (that is what [`_node_box`](@ref) computes), and the only geometry that
-leaves a box is a leaf ring's bow. At level 1 that is a pixel of the block's
-COARSEST band — the largest `Δλ` any leaf beneath the node can have — and at
-level 0 it is a whole tile.
+# What the pad is actually doing, which is not bounding that bow
+
+The cap's radius is set by the box's CORNERS ([`_box_cap`](@ref)), and a corner
+is farther from the box centre than any point on a bowed edge — over leaves
+sampled in every band and both pole rows, the corner clears the farthest
+interior ring point by a measured median of 1.7 of these pads on a 1° tile and
+about 1.8e3 of them on a pixel. So with `pad = 0` a leaf's ring is still inside
+its own cap: no point in the INTERIOR of a ring edge — which is where the bow
+lives — leaves the unpadded cap at all (worst `-2.4e-15` rad), and the only
+overshoot is at the ring VERTICES, which are the corners the radius was built
+from, at `+3.2e-17` rad. That is float rounding in `spherical_distance`, not
+geometry, and it is asserted rather than merely measured in
+`test/systems/CopernicusDEM/runtests.jl`, "the block cursor is a tree over the
+lattice".
+
+So the pad is belt-and-braces against rounding at the corners, and the `Δλ²/16`
+expression is an ESTIMATE rather than a bound, in exactly the sense
+`cell_boundary`'s own bow figure is (`system.jl:302-305`) — small angle, and it
+errs low. Nothing here relies on it being tight; the covering law it serves is
+asserted by sampling in that same testset, not derived from this number.
 """
 function _leaf_pad(c::BlockCursor)
     c.level == 0 && return deg2rad(1.0)^2 / 16
@@ -352,8 +391,6 @@ function STI.nchild(c::BlockCursor)
     return pr * pc
 end
 
-STI.getchild(c::BlockCursor) = (STI.getchild(c, k) for k in 1:STI.nchild(c))
-
 function STI.getchild(c::BlockCursor, k::Int)
     n = STI.nchild(c)
     1 <= k <= n || throw(BoundsError(c, k))
@@ -433,11 +470,19 @@ Give a Copernicus DEM grid the [`BlockCursor`](@ref) tree instead of the generic
 64 800 children over tile nodes with up to 12 960 000 each.
 
 A `PartialGrid` gets it only when its cells are exactly one axis-aligned
-rectangle of the lattice, held as one contiguous id run — which is what
-`PartialGrid(sys, tile, 1)` and a band of whole raster rows are, and what makes
-`position = id - origin` a closed form. Anything else (a scattered id list, a
-window that starts mid-row, a multi-tile level-1 window) falls back to the
-generic cursor, which is correct for every grid and merely slower here.
+rectangle of the lattice, held as one contiguous id run, which is what makes
+`position = id - origin` a closed form. Three shapes qualify, and the id order
+is why there are only three:
+
+  * level 0 — one segment of a tile row, or whole tile rows;
+  * level 1 — one tile's whole raster rows, which is `PartialGrid(sys, tile, 1)`
+    and any band of it;
+  * level 1 — a run of WHOLE tiles that is a tile rectangle by the level-0 rule,
+    which descends as a tile node until it reaches one tile.
+
+Anything else (a scattered id list, a window that starts mid-row, a multi-tile
+window with a partial tile at either end) falls back to the generic cursor,
+which is correct for every grid and merely slower here.
 """
 DGG.treeify(::GOCore.Manifold, grid::LevelGrid) = BlockCursor(grid)
 DGG.treeify(::GOCore.Manifold, c::BlockCursor) = c
@@ -478,21 +523,46 @@ function _block_cursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem},
     n == 0 && return nothing
     lo = DGG.cellindex(grid, 1)
     hi = DGG.cellindex(grid, n)
-    hi.index - lo.index + 1 == n || return nothing        # contiguous ids
+    # CONTIGUITY, and two endpoints are the whole of it: `PartialGrid` rejects an
+    # id vector that is not STRICTLY ascending at construction
+    # (`src/fallbacks/partial_grid.jl:80-81`), so `n` ids spanning `hi - lo + 1 == n`
+    # values are exactly the run `lo:hi`, with none missing and none repeated. That
+    # invariant is what makes the shape test below a test on `lo` and `hi` alone,
+    # and what makes `position = id - origin` a closed form.
+    hi.index - lo.index + 1 == n || return nothing
+    # `decode` throws on an id no cell has and a `PartialGrid` does not range-check
+    # its ids, while `treeify` owes an answer for every grid: a miss falls back to
+    # the generic cursor here rather than escaping as an `ArgumentError`.
+    # `cellposition` is the decoder that answers `nothing` instead of throwing.
+    (DGG.cellposition(sys, lo) === nothing || DGG.cellposition(sys, hi) === nothing) &&
+        return nothing
     origin = Int64(lo.index) - 1
     ra, qa, ja, ia = decode(sys, lo)
     rb, qb, jb, ib = decode(sys, hi)
+    # One tile row segment, or whole tile rows: those are the contiguous tile runs
+    # that are rectangles of the tile lattice, and there are no others.
+    tilerect = ra == rb || (qa == 0 && qb == NCOLS_TILES - 1)
     if l == 0
-        # Whole tile rows, or one row: both are rectangles of the tile lattice.
-        (qa == 0 && qb == NCOLS_TILES - 1) || ra == rb || return nothing
+        tilerect || return nothing
         return BlockCursor(grid, sys, strategy, 0, origin, ra, rb, qa, qb,
             0, 0, 0, 0, false)
     end
-    # One tile, whole raster rows: the only level-1 run that is a rectangle
-    # whose ids stay contiguous.
-    (ra == rb && qa == qb) || return nothing
-    nc = Int(ncols(sys, ra))
-    (ia == 0 && ib == nc - 1) || return nothing
-    return BlockCursor(grid, sys, strategy, 1, origin, ra, ra, qa, qa,
-        ja, jb, 0, nc - 1, true)
+    if ra == rb && qa == qb
+        # One tile, whole raster rows.
+        nc = Int(ncols(sys, ra))
+        (ia == 0 && ib == nc - 1) || return nothing
+        return BlockCursor(grid, sys, strategy, 1, origin, ra, ra, qa, qa,
+            ja, jb, 0, nc - 1, true)
+    end
+    # Several tiles, each of them whole: the run starts at the first pixel of its
+    # first tile and ends at the last pixel of its last, so it is every pixel of
+    # that tile rectangle. The node is then a level-1 TILE node, which is the
+    # interior shape `_childspace` and `_node_box` already build for a level-1
+    # level grid — one tile down, it descends straight into the raster.
+    N = Int(lat_intervals(sys))
+    (ja == 0 && ia == 0 && jb == N - 1 && ib == Int(ncols(sys, rb)) - 1) ||
+        return nothing
+    tilerect || return nothing
+    return BlockCursor(grid, sys, strategy, 1, origin, ra, rb, qa, qb,
+        0, 0, 0, 0, false)
 end

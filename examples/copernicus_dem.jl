@@ -19,11 +19,16 @@
 # reuses it if it is already there. It ends in PASS/FAIL assertions and exits non-zero
 # if any of them fail.
 #
-# Cost, measured on an M-series laptop with `-t auto` (8 threads): 38.8 s wall for
-# the whole tile — 960 000 pixels — onto BOTH destinations at MATCHED cell size,
-# of which 11.0 s and 8.5 s are the two `Regridder` builds and 4.7 s is the GLO-30
-# section. `COPDEM_ROWS=n` cuts the source to the northernmost `n` raster rows if
-# you want it faster; the default is the whole tile, because that is the claim.
+# Cost of this script, ONE run on an M-series laptop with `-t auto` (8 threads):
+# 38.4 s wall for the whole tile — 960 000 pixels — onto BOTH destinations at
+# MATCHED cell size, of which 11.0 s and 8.3 s are the two `Regridder` builds and
+# 4.5 s is the GLO-30 section. Those are machine-local and they move a few percent
+# from run to run: `scripts/bench_copdem_cursor.jl`, which is the reproducer for
+# this pair and for the source-tree table in `src/systems/CopernicusDEM/cursor.jl`,
+# measured the same two builds at 11.5 s and 9.2 s in its own run — against
+# 105.7 s and 83.9 s for the generic cursor. `COPDEM_ROWS=n` cuts the source to the
+# northernmost `n` raster rows if you want it faster; the default is the whole
+# tile, because that is the claim.
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
@@ -74,7 +79,12 @@ const TIF = joinpath(tempdir(), "$STEM.tif")
 
 if !isfile(TIF)
     println("  downloading $URL")
-    Downloads.download(URL, TIF)
+    # To a scratch name and then `mv`: a download interrupted halfway would
+    # otherwise leave a truncated file at the cached path, and every later run
+    # would read that instead of re-fetching. `mv` within one directory is atomic.
+    part = "$TIF.part-$(getpid())"
+    Downloads.download(URL, part)
+    mv(part, TIF; force=true)
 end
 note("tile file: $TIF ($(round(filesize(TIF) / 2^20; digits=2)) MiB)")
 
@@ -209,10 +219,16 @@ end
 # search would cost O(n_src x dst-depth). `src/systems/CopernicusDEM/cursor.jl`
 # gives the lattice a real tree instead, by recursively bisecting the pixel
 # rectangle, and `treeify` picks it up with nothing named here. The two build
-# times this file prints below are the payoff: the same two builds cost 68.7 s
-# and 75.1 s on the generic cursor, for an intersection matrix identical to the
-# last bit — that file's `BlockStrategy` docstring carries the table.
-const ROWS = parse(Int, get(ENV, "COPDEM_ROWS", "1200"))
+# times this file prints below are the payoff: the same two builds cost 105.7 s
+# and 83.9 s on the generic cursor, for an intersection matrix identical to the
+# last bit. `scripts/bench_copdem_cursor.jl` is the reproducer for that pair and
+# for the whole fanout table in that file's `BlockStrategy` docstring; those
+# numbers are one run on the machine named at the top of this file.
+const ROWS = let n = parse(Int, get(ENV, "COPDEM_ROWS", string(NROWS)))
+    1 <= n <= NROWS || error("COPDEM_ROWS=$n is outside 1:$NROWS — this tile has " *
+                             "$NROWS raster rows and the chunk is its northernmost `n`")
+    n
+end
 
 "The chunk of the tile's northernmost `rows` raster rows, and its values."
 function row_band(rows)
@@ -241,11 +257,13 @@ end
 #     south corners bows POLEWARD of the parallel by about `(dlam^2/8) sin(phi)
 #     cos(phi)`. `query`'s own extent conversion samples at
 #     `EXTENT_STEP_DEGREES = 2.0`, i.e. one segment across a 1-degree tile, and
-#     that bow is 0.00109 degrees — 1.3 GLO-90 pixel rows. The southernmost
-#     raster row then falls OUTSIDE the covering near mid-longitude and regrids
-#     to nothing: measured, 1393 of a 64-row band's 51 200 columns lost area and
-#     the worst lost all of it. At 64 segments per degree the bow is 4.6e-9
-#     degrees, under 1e-5 of a pixel.
+#     at this tile's latitude that bow is 1.87e-5 rad = 0.00107 degrees — 1.3
+#     GLO-90 pixel rows. The southernmost raster row then falls OUTSIDE the
+#     covering near mid-longitude and regrids to nothing: measured on a 64-row
+#     band handed to `query` as a bare `Extents.Extent`, 898 of its 51 200
+#     columns came back short of their own area by more than 1e-9 relative, and
+#     the worst lost all of it. At 64 segments per degree the same bow is
+#     4.58e-9 rad = 2.62e-7 degrees, 3.1e-4 of one pixel row.
 #  2. PAD. The published pixel rings bow poleward of their own boxes too, by
 #     about 3e-11 rad. A covering of the box exactly would clip those slivers
 #     off the outermost rows — 1.2e-5 of a boundary pixel's area, five orders
@@ -267,17 +285,30 @@ function box_polygon(w, e, s, n; pad_lon=0.0, pad_lat=0.0)
     return GI.Polygon([GI.LinearRing(pts)])
 end
 
-"Does this ring turn right anywhere — i.e. is it an invalid Sutherland-Hodgman clip window?"
-function has_reflex_vertex(poly)
+"""
+How a ring turns, which is what says whether Sutherland-Hodgman can use it as a
+clip window: `:ccw_convex` (every turn left, seen from outside the sphere — a
+valid window), `:cw_convex` (convex, but wound the other way, which is NOT one),
+or `:reflex` (it turns both ways).
+
+ORIENTATION is why this is not the one-line "does it turn right anywhere" test
+this repo's regridding suites carry: that test reads a clockwise CONVEX ring as
+reflex, so a destination system that emitted its rings clockwise would take the
+loose branch below without anything saying which of the two defects it had.
+"""
+function ring_shape(poly)
     pts = collect(GI.getpoint(GI.getexterior(poly)))
     while length(pts) > 1 && pts[end] == pts[1]
         pop!(pts)
     end
     pts = pts[[i for i in eachindex(pts) if i == 1 || pts[i] != pts[i-1]]]
     n = length(pts)
-    n < 4 && return false
-    return any(i -> US.spherical_orient(pts[i], pts[mod1(i + 1, n)],
-            pts[mod1(i + 2, n)]) < 0, 1:n)
+    n < 3 && return :ccw_convex          # nothing left to turn
+    turns = [US.spherical_orient(pts[i], pts[mod1(i + 1, n)], pts[mod1(i + 2, n)])
+             for i in 1:n]
+    all(>=(0), turns) && return :ccw_convex
+    all(<=(0), turns) && return :cw_convex
+    return :reflex
 end
 
 lat_of(p) = asind(clamp(p[3], -1.0, 1.0))
@@ -304,27 +335,52 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     println("  $label: $n_src pixels -> $n_dst $(nameof(typeof(dstsys))) level-$L " *
             "cells, Regridder built in $(round(build; digits=2)) s")
 
-    # THE tolerance, and it is not a free parameter. Sutherland-Hodgman clips the
-    # SOURCE cell against the DESTINATION cell's ring, and only a CONVEX clip
-    # window makes that the intersection. IGEO7 cells are plain spherical
-    # polygons; HEALPix `cell_boundary` densifies each curved chart edge into
-    # eight arcs, so every vertex on a bowed side is reflex and the clipper
-    # silently loses area. Same defect as the twelve `@test_broken` cases in
+    # WHICH ARM the laws below are checked on is derived, not chosen.
+    # Sutherland-Hodgman clips the SOURCE cell against the DESTINATION cell's
+    # ring, and only a counter-clockwise CONVEX clip window makes that clip the
+    # intersection. IGEO7 cells are plain spherical polygons; HEALPix
+    # `cell_boundary` densifies each curved chart edge into eight arcs, so every
+    # vertex on a bowed side is reflex and the clipper silently loses area. Same
+    # defect as the twelve `@test_broken` cases in
     # `test/systems/crosssystem/regridding_conservation.jl:197-205`, and it
     # belongs to the destination, not to this system — whose own 4-corner quads
     # are convex, which is checked once before the regrids begin.
-    convex = !has_reflex_vertex(DGG.cell_polygon(dstgrid, DGG.cellindex(dst, 1)))
-    tol = convex ? 1e-8 : 1e-4
+    #
+    # The CONSTANTS are chosen, one per law rather than one reused, each a
+    # decade or more above what the whole tile measures on that arm:
+    #
+    #   law                             exact arm (IGEO7)   clipped arm (HEALPix)
+    #   column sums == source areas      2.6e-10 -> 1e-9      6.0e-5 -> 1e-4
+    #   no destination over-covered      5.7e-11 -> 1e-9      1.5e-5 -> 1e-4
+    #   interior cells covered exactly   5.7e-11 -> 1e-9      5.1e-5 -> 1e-4
+    #
+    # The three land on the same pair of decades and are not the same number for
+    # the same reason: on the exact arm every residue is float rounding over the
+    # handful of pieces a pixel is cut into, and on the clipped arm each is a
+    # different aggregate of the destination's own bow — which is the defect
+    # being reported, not a tolerance being granted.
+    shape = ring_shape(DGG.cell_polygon(dstgrid, DGG.cellindex(dst, 1)))
+    convex = shape === :ccw_convex
+    col_tol = convex ? 1e-9 : 1e-4
+    over_tol = convex ? 1e-9 : 1e-4
+    deep_tol = convex ? 1e-9 : 1e-4
+    nvert = length(DGG.cell_boundary(dstgrid, DGG.cellindex(dst, 1)))
     if convex
         check("$label: destination rings are convex clip windows", true;
-            detail="$(length(DGG.cell_boundary(dstgrid, DGG.cellindex(dst, 1))))-vertex " *
-                   "rings, so the clip is exact and conservation must be too")
+            detail="$nvert-vertex rings, counter-clockwise, so the clip is exact " *
+                   "and conservation must be too")
+    elseif shape === :cw_convex
+        note("$label: destination rings are CONVEX but wound CLOCKWISE " *
+             "($nvert-vertex rings), which Sutherland-Hodgman cannot use as a clip " *
+             "window either — the loose bounds below are taken for that reason, " *
+             "which is a different defect from a reflex vertex and is said here " *
+             "rather than passed over.")
     else
-        note("$label: destination rings have REFLEX vertices " *
-             "($(length(DGG.cell_boundary(dstgrid, DGG.cellindex(dst, 1)))) of them per " *
-             "cell, eight per densified chart edge), so Sutherland-Hodgman loses a " *
-             "little of every clipped source cell and conservation below is bounded " *
-             "at $tol rather than exact. Upstream defect, and it belongs to the " *
+        note("$label: destination rings have REFLEX vertices ($nvert-vertex rings, " *
+             "eight arcs per densified chart edge, so every vertex on a bowed side " *
+             "turns the wrong way), so Sutherland-Hodgman loses a little of every " *
+             "clipped source cell and conservation below is bounded at $col_tol " *
+             "rather than exact. Upstream defect, and it belongs to the " *
              "DESTINATION: see the twelve @test_broken cases in " *
              "test/systems/crosssystem/regridding_conservation.jl:197-205, and the " *
              "same shortfall printed by examples/regridding.jl's last loop.")
@@ -340,10 +396,13 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     # fail if this system's rings were non-convex, or did not tile, or if the
     # covering left a sliver.
     col_err = maximum(abs.(vec(sum(M; dims=1)) .- r.src_areas) ./ r.src_areas)
-    check("$label: column sums == source cell areas", col_err <= tol;
-        detail="max rel err $col_err (tolerance $tol)")
+    check("$label: column sums == source cell areas", col_err <= col_tol;
+        detail="max rel err $col_err (tolerance $col_tol)")
+    # The same law summed. Not an independent bound — the per-column errors
+    # cancel, so this can only be tighter — but a sign error or a lost block
+    # would survive the maximum above and not this.
     check("$label: total intersection area == total source area",
-        abs(sum(M) - sum(r.src_areas)) / sum(r.src_areas) <= tol;
+        abs(sum(M) - sum(r.src_areas)) / sum(r.src_areas) <= col_tol;
         detail="$(sum(M)) vs $(sum(r.src_areas)) sr")
 
     # The area budget against the closed form. `src_areas` measures the published
@@ -367,8 +426,13 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     # destination cell's covered fraction.
     cover = zeros(n_dst)
     CR.regrid!(cover, r, ones(n_src))
-    check("$label: no destination cell is over-covered", maximum(cover) <= 1 + tol;
-        detail="cover in $(round.(extrema(cover); digits=6))")
+    # Its own bound, and its own physics: this one is about a destination cell
+    # being handed MORE than its own area, which the source tessellation's
+    # overlaps and the destination's own area formula decide — not about a
+    # source pixel being fully consumed.
+    check("$label: no destination cell is over-covered", maximum(cover) <= 1 + over_tol;
+        detail="max cover - 1 = $(maximum(cover) - 1) (tolerance $over_tol), " *
+               "cover in $(round.(extrema(cover); digits=6))")
 
     # Orientation. Two analytic fields, not one: a row flip and a column flip are
     # different mistakes and a single tilted field would confound them. Both are
@@ -402,8 +466,9 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
                    s + margin < lat_of(p) < n - margin]
         deep_err = isempty(deep) ? NaN : maximum(abs(cover[k] - 1) for k in deep)
         check("$label: interior cells are covered exactly",
-            !isempty(deep) && deep_err <= tol;
-            detail="$(length(deep)) interior cells, max |cover - 1| = $deep_err")
+            !isempty(deep) && deep_err <= deep_tol;
+            detail="$(length(deep)) interior cells, max |cover - 1| = $deep_err " *
+                   "(tolerance $deep_tol)")
     else
         note("$label: chunk is thinner than 4 destination cells — no interior " *
              "cells to check coverage on; run with COPDEM_ROWS unset")
@@ -424,7 +489,7 @@ end
 # This system's own rings are the convex 4-corner quads it promises — the
 # premise the IGEO7 arm above rests on, checked here rather than assumed.
 check("source pixel rings are convex quads",
-    all(!has_reflex_vertex(DGG.cell_polygon(g1, CD.pixelcell(sys, tile, j, i))) &&
+    all(ring_shape(DGG.cell_polygon(g1, CD.pixelcell(sys, tile, j, i))) === :ccw_convex &&
         length(DGG.cell_boundary(g1, CD.pixelcell(sys, tile, j, i))) == 4
         for (j, i) in ((0, 0), (599, 400), (NROWS - 1, NCOLS - 1))))
 
@@ -432,8 +497,10 @@ chunk, chunkvalues = row_band(ROWS)
 println()
 println("  matched-resolution regrids over $ROWS of $NROWS raster rows " *
         "($(DGG.ncells(chunk)) pixels)")
-note("source tree: $(nameof(typeof(DGG.treeify(chunk)))) — " *
-     "src/systems/CopernicusDEM/cursor.jl, chosen by `treeify` with nothing named here")
+check("the chunk gets the block cursor", DGG.treeify(chunk) isa CD.BlockCursor;
+    detail="$(nameof(typeof(DGG.treeify(chunk)))) from " *
+           "src/systems/CopernicusDEM/cursor.jl, chosen by `treeify` with nothing " *
+           "named here")
 builds = Dict(name => regrid_onto(name, dstsys, LEVELS[name], chunk, chunkvalues)
               for (name, dstsys) in DESTINATIONS)
 

@@ -137,7 +137,7 @@ using .ISEA4R: ISEA4RSystem
 # chunking, plain arrays — reaches it without going through this file.
 include("dimensionaldata.jl")
 
-using .CellLookups: CellLookup, Cells, Covering
+using .CellLookups: CellLookup, Cells, Covering, MultiOrderLookup
 
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}

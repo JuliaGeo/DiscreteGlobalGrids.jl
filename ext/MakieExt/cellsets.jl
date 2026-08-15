@@ -52,6 +52,28 @@ function Makie.convert_arguments(P::Type{<:Makie.Poly}, lookup::DGG.CellLookup)
     Makie.convert_arguments(P, parent(lookup))
 end
 
+# A mixed-level container is read cell by cell rather than through a grid: each
+# of its cells belongs to a different level's grid, which is what
+# `cell_polygons` already resolves — the same route the `MultiOrderCellSet`
+# conversions above take, for the same reason.
+function Makie.convert_arguments(P::Makie.PointBased, vector::DGG.MultiOrderVector)
+    Makie.convert_arguments(P,
+        GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(vector)))
+end
+
+function Makie.convert_arguments(P::Type{<:Makie.Poly}, vector::DGG.MultiOrderVector)
+    Makie.convert_arguments(P,
+        GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(vector)))
+end
+
+function Makie.convert_arguments(P::Makie.PointBased, lookup::DGG.MultiOrderLookup)
+    Makie.convert_arguments(P, parent(lookup))
+end
+
+function Makie.convert_arguments(P::Type{<:Makie.Poly}, lookup::DGG.MultiOrderLookup)
+    Makie.convert_arguments(P, parent(lookup))
+end
+
 # The subtree iterators carry the system and leaf level which a plain vector of
 # cell ids lacks, so they can be read unambiguously as partial grids.
 const SubtreeIterator = Union{DGG.EdgeCellIterator,DGG.InnerCellIterator}

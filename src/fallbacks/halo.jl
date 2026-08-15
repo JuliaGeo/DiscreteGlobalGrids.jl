@@ -1158,6 +1158,16 @@ end
 # same claim through the forced-geometry oracle, which is the only oracle in
 # that file that can see a candidate this derivation never proposed.
 #
+# AND SO IS TIGHTNESS, which is a separate claim and the one a future edit is
+# likelier to break. Every rectangle is the bounding box of probe images, and a
+# probe image is a neighbour of a block rim cell on another face — a `Vertex()`
+# halo cell by definition — so the candidate stream is the `Vertex()` halo cell
+# for cell, with no surplus for `NativeCheck` to reject. Widening any bound by
+# one cell would still ANSWER correctly, because the check filters what the
+# rectangles over-propose, so no oracle comparison can see it; the test file
+# counts the candidate stream and requires the equality, which is what makes a
+# lazy bounding box here a failure rather than a silent slowdown.
+#
 # WHAT FALLS BACK. One configuration only: a system with more faces than
 # `_BAND_RECT_CAP`, which none of the three is. Everything else — every flush
 # side, every face corner, every whole-face block, both connectivities — is
@@ -1590,7 +1600,8 @@ pentagon. CALIBRATED is load-bearing in that sentence and not a hedge: the censu
 describes the arcs [`_hex_calibrate`](@ref) produces, over 13,692 of which the
 seeded walk emits exactly `(3^d + 1)/2` with pentagon neighbours included. It is
 NOT a statement about an arbitrary `(L, s)` — on an H3 level-3 pentagon an arc-2
-seed at `s = 0` emits 2, 3, 9 and 27 leaves for `d = 1…4`, not 2, 5, 14 and 41 —
+seed at `s = 0` emits 1, 3, 9 and 27 leaves for `d = 1…4`, not 2, 5, 14 and 41,
+and does so identically on all twelve of that level's pentagons —
 so nobody should reuse the formula to size a seeded walk of their own. That was
 verified in
 176/176 configurations (all twelve pentagons of each system, hexagons adjacent to

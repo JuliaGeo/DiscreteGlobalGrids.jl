@@ -11,9 +11,7 @@ Canonical ordering makes `has_sorted_subtrees` true.
 """
 struct H3System <: AbstractHierarchicalGridSystem end
 
-# `levelgrid(H3System(), l)` returns the package's `HierarchicalLevelGrid`, a
-# lightweight resolution descriptor. H3's fast paths dispatch on this alias; the
-# five primitives it forwards to are the `(sys, ...)` methods below.
+# Grid descriptor for all cells at one H3 resolution.
 const LevelGrid = HierarchicalLevelGrid{H3System}
 
 Base.show(io::IO, ::H3System) = print(io, "H3System()")
@@ -21,11 +19,10 @@ Base.show(io::IO, ::H3System) = print(io, "H3System()")
 # ===========================================================================
 # The base tessellation, and the per-resolution prefix sums
 #
-# Pure-Julia tables avoid calling the JLL during precompilation.
+# These tables permit precompilation without loading libh3.
 # ===========================================================================
 
-# The twelve pentagon base cells. Fixed by H3's icosahedron orientation; the
-# test suite asserts this tuple against `getPentagons(0)`.
+# The twelve pentagon base cells in H3's icosahedron orientation.
 const PENTAGON_BASE_CELLS = (4, 14, 24, 38, 49, 58, 63, 72, 83, 97, 107, 117)
 
 # A res-0 index: mode 1, resolution 0, base cell `b`, all fifteen digits 7.
@@ -78,20 +75,16 @@ end
 """
     children(::H3System, c::H3Cell) -> SmallVector{7,H3Cell}
 
-The seven children of a hexagon, or the six of a pentagon, ascending.
-
-Returns an allocation-free fixed-capacity vector filled by
-[`H3Native.cell_to_children_7`](@ref). Pentagon cells use six of seven slots.
+The seven children of a hexagon, or the six of a pentagon, in ascending id
+order. The result uses a fixed-capacity vector.
 """
 function children(::H3System, c::H3Cell)
     l = level(c)
     l < MAX_RESOLUTION || throw(ArgumentError(
         "H3 cell $c is at max_level $MAX_RESOLUTION and has no children"))
     out = SmallVector{7,H3Cell}()
-    # `cellToChildren` emits ascending indices (digit 0 first, deleted digits
-    # skipped) into the leading slots, so this preserves the canonical order
-    # rather than imposing one. A pentagon leaves the last slot `0`, which is
-    # never a valid H3 index.
+    # `cellToChildren` emits ascending ids with deleted digits skipped. A
+    # pentagon leaves the final slot as the invalid sentinel `0`.
     for id in H3Native.cell_to_children_7(c.id, l + 1)
         id == 0 && continue
         out = SmallCollections.push(out, H3Cell(id))
@@ -103,8 +96,7 @@ end
 # Traits
 # ===========================================================================
 
-# The canonical order is base-cell-major then child-position, and a subtree is
-# a contiguous run of child positions -- see the header of this file.
+# Base-cell-major child-position order makes each subtree contiguous.
 has_sorted_subtrees(::H3System) = true
 
 """
@@ -141,9 +133,8 @@ end
 """
     cellindex(::H3System, l::Integer, i::Int) -> H3Cell
 
-The id at position `i` of resolution `l`: one binary search of the base-cell
-prefix sums, then libh3's `childPosToCell` for the position within that base
-cell. The grid has already bounds-checked `i`.
+The id at position `i` of resolution `l`, computed from the base-cell prefix
+sums and libh3's `childPosToCell`. The grid must bounds-check `i` first.
 """
 function cellindex(::H3System, l::Integer, i::Int)
     r = Int(l)
@@ -160,9 +151,8 @@ end
 """
     cellposition(::H3System, c::H3Cell) -> Union{Int,Nothing}
 
-The position of `c` in its own resolution's dense order, or `nothing` when `c`
-is not a valid index at all. The grid has already rejected a cell from another
-resolution.
+The position of `c` in its resolution's dense order, or `nothing` when `c` is
+not a valid index. The grid must reject cells from another resolution first.
 
 Malformed ids return `nothing`; libh3 child-position arithmetic is not itself a
 validity check.
@@ -182,8 +172,7 @@ end
 """
     ancestor(::H3System, c::H3Cell, l::Integer) -> H3Cell
 
-The ancestor at resolution `l`, in one `cellToParent` call rather than
-`level(c) - l` of them.
+The ancestor at resolution `l`, computed by one `cellToParent` call.
 """
 function ancestor(::H3System, c::H3Cell, l::Integer)
     target = Int(l)
@@ -199,9 +188,8 @@ end
 """
     descendants(::H3System, c::H3Cell, l::Integer) -> Vector{H3Cell}
 
-Every descendant at resolution `l`, ascending. `cellToChildren` spans any
-number of levels in one call and already emits ascending indices, so this never
-expands level by level.
+Every descendant at resolution `l`, in ascending id order. `cellToChildren`
+handles any depth in one call.
 
 O(subtree) and materialising, as the contract says — reach for
 [`descendant_range`](@ref) instead wherever positions will do.

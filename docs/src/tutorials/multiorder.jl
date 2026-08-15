@@ -14,8 +14,8 @@
 import DiscreteGlobalGrids as DGG
 import NaturalEarth
 import GeometryOps as GO, GeoInterface as GI
-using CairoMakie, GeoMakie
-CairoMakie.activate!()
+using GLMakie, GeoMakie
+GLMakie.activate!(inline = true)
 
 fc = NaturalEarth.naturalearth("admin_1_states_provinces", 10)
 california = fc.geometry[findfirst(==("California"), fc.name)]
@@ -42,15 +42,13 @@ coverage = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 7)
 # sorted subtrees: on A5, `level_ranges` throws, and `descendants` is the
 # always-available expansion.
 
-polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(coverage))
-
 cali_centroid = GO.centroid(california)
 
 fig = Figure(size = (760, 820))
 ax = GeoAxis(fig[1, 1]; dest = "+proj=ortho +datum=WGS84 +lon_0=$(GI.x(cali_centroid)) +lat_0=$(GI.y(cali_centroid))",
     limits = ((-125.5, -113.5), (32.0, 42.5)),
     title = "IGeo7 multi-order coverage of California, to level 7")
-plt = poly!(ax, polys; color = DGG.level.(coverage), colormap = :isoluminant_cgo_70_c39_n256,
+plt = poly!(ax, coverage; color = DGG.level.(coverage), colormap = :isoluminant_cgo_70_c39_n256,
     alpha = 0.7, strokecolor = (:black, 0.55), strokewidth = 0.25)
 poly!(ax, california; color = :transparent, strokecolor = :black, strokewidth = 1.2)
 Colorbar(fig[1, 2], plt; label = "cell level")
@@ -84,8 +82,8 @@ for (k, (n, set)) in enumerate(zip(budgets, sets))
     local panel = Axis(fig[1, k]; limits = ((-125.5, -113.5), (32.0, 42.5)),
         aspect = DataAspect(), title = "maxcells = $n",
         xticklabelsvisible = false, yticklabelsvisible = false)
-    poly!(panel, GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(set));
-        color = DGG.level.(set), colormap = :viridis, colorrange = (1, 7),
+    poly!(panel, set;
+        color = DGG.level.(set), colormap = :isoluminant_cgo_70_c39_n256, colorrange = (1, 7),
         strokecolor = (:black, 0.6), strokewidth = 0.5)
     poly!(panel, california; color = :transparent, strokecolor = :black, strokewidth = 1.0)
 end
@@ -121,8 +119,8 @@ end
 #
 # A coverage names a region; it does not carry values. `CellLookup` reads the
 # set as a one-level cell axis, `PartialGrid` reads that axis as a grid, and
-# `ConservativeRegridding` fills it from anything with cell corners — here
-# WorldClim's July mean temperature at 10 arc-minutes.
+# `ConservativeRegridding` fills it from anything with cell corners — here a
+# deterministic temperature-like field on a regular lon/lat raster.
 #
 # One honesty note: conservative regridding *onto* a DGGS is exact only where
 # the destination cells' rings are convex, because the clipper intersects
@@ -130,14 +128,10 @@ end
 # level — H3's are not at odd levels — so the conservation check below comes
 # out at machine precision.
 
-ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH",
-    joinpath(tempdir(), "rasterdatasources")))
-
 import ConservativeRegridding as CR
 import DimensionalData as DD
 import Extents
-using Rasters, RasterDataSources
-import ArchGDAL
+using Rasters
 using Statistics
 
 region = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 6)
@@ -149,21 +143,32 @@ destination = DGG.PartialGrid(lk)
 
 (; entries = length(region), leaf_cells = length(lk), level = DGG.level(lk))
 
-# The source is WorldClim cropped to a box larger than the coverage, described
-# to the regridder as its matrix of cell-corner points on the unit sphere.
+# The source covers a box larger than the coverage and is represented by an
+# indexed quadtree over its cell-corner points on the unit sphere.
 # `CR.Regridder(manifold, dst, src)` takes the destination first.
 
-raster = Raster(WorldClim{Climate}, :tavg; month = 7, res = "10m")
-box = raster[X(-128 .. -110), Y(30 .. 45)]
+lon = -127.95:0.1:-110.05
+lat = 44.95:-0.1:30.05
+july_temperature(x, y) = 30 - 0.45(y - 30) +
+    4exp(-((x + 120) / 1.8)^2) + 1.5sind(3x)
+box = Raster(
+    [july_temperature(x, y) for x in lon, y in lat],
+    (X(lon; sampling = Rasters.Intervals(Rasters.Center())),
+     Y(lat; sampling = Rasters.Intervals(Rasters.Center()))),
+)
 
-to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
-(west, east), (south, north) = bounds(box, X), bounds(box, Y)
-corners = [to_sphere((lon, lat))
-           for lon in range(west, east; length = size(box, X) + 1),
-               lat in range(south, north; length = size(box, Y) + 1)]
+xbounds, ybounds = Rasters.intervalbounds(box, (X, Y))
+# Build corner sequences in array-index order: X runs west-to-east while Y
+# runs north-to-south. The resulting cell `(i, j)` corresponds directly to
+# `box[i, j]`, so the data needs no reversal before flattening.
+xrange = [first(first(xbounds)); last.(xbounds)]
+yrange = [last(first(ybounds)); first.(ybounds)]
+latlong_point_matrix = [GO.UnitSphericalPoint((x, y)) for x in xrange, y in yrange]
+latlong_grid = CR.Trees.CellBasedGrid(GO.Spherical(), latlong_point_matrix) |>
+    CR.Trees.TopDownQuadtreeCursor
 
 manifold = GO.Spherical(; radius = 1.0)
-regridder = CR.Regridder(manifold, destination, corners)
+regridder = @time CR.Regridder(manifold, destination, latlong_grid)
 
 # Conservation check: regrid a field of ones, and every destination cell must
 # come back holding exactly one.
@@ -172,13 +177,12 @@ ones_out = zeros(DGG.ncells(destination))
 CR.regrid!(ones_out, regridder, ones(size(regridder.intersections, 2)))
 maximum(abs, ones_out .- 1)
 
-# Now the real field. The ocean is `missing`, so regrid the temperatures with
-# the gaps zeroed *and* a 0/1 data indicator, then divide — a weighted mean
-# over the data a cell actually has, so coastal cells are not dragged down by
-# the empty half of themselves. (`values` must be flattened in the same order
-# the corners were built in.)
+# Regrid the field and a 0/1 data indicator, then divide. The analytic field is
+# complete, but this normalization is also the pattern for real rasters with
+# gaps: coastal cells are not dragged down by missing source values. (`values`
+# is flattened in the same order as the source grid was built.)
 
-values = vec(reverse(parent(replace_missing(box, NaN)); dims = 2))
+values = vec(replace_missing(box, NaN))
 field = zeros(DGG.ncells(destination))
 cover = zeros(DGG.ncells(destination))
 CR.regrid!(field, regridder, replace(values, NaN => 0.0))
@@ -210,15 +214,13 @@ for (name, ext) in (("Central Valley", Extents.Extent(X = (-121.5, -119.0), Y = 
             round(mean(sub); digits = 1), " °C")
 end
 
-# The valley runs some three degrees hotter than the coast at the same
-# latitude — the answer the data has, delivered by the axis.
+# The analytic inland ridge runs hotter than the coast at the same latitude —
+# the answer the data has, delivered by the axis.
 
 fig = Figure(size = (620, 700))
 ax = Axis(fig[1, 1]; limits = ((-125.0, -113.8), (32.2, 42.3)), aspect = DataAspect(),
     title = "July mean temperature on an IGEO7 level-$(DGG.level(lk)) coverage")
-plt = poly!(ax, GO.transform(GO.GeographicFromUnitSphere(),
-        DGG.cell_polygon.(Ref(destination), lk));
-    color = tavg, colormap = Reverse(:RdYlBu), strokewidth = 0)
+plt = poly!(ax, lk; color = tavg, colormap = Reverse(:RdYlBu), strokewidth = 0)
 poly!(ax, california; color = :transparent, strokecolor = :black, strokewidth = 1.0)
 Colorbar(fig[1, 2], plt; label = "mean temperature (°C)")
 fig

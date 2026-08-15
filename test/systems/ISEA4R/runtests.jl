@@ -1,21 +1,16 @@
-# ---------------------------------------------------------------------------
-# T12 — ISEA4R system tests.
-#
-# Three kinds of test, and the distinction matters when one fails:
+# ISEA4R system tests:
 #
 #   1. ORACLE. ISEA4R has no independent implementation to check against — the
 #      ten-diamond layout is this package's own convention with no external
-#      fixture behind it (see the `ISEA4R` module docstring). What plays the
-#      oracle's role instead is the pre-redesign `test/ISEA4R/` suite, whose
-#      vectors are restated here INDEPENDENTLY of the source: the pinned
-#      layout literals are written out a second time, the structural facts (the
+#      fixture behind it (see the `ISEA4R` module docstring). Instead, pinned
+#      layout literals are defined independently, the structural facts (the
 #      ten pairs partition the twenty faces, every seam is a real icosahedron
 #      edge, the northern/southern apexes are bases 0 and 11) are re-derived
 #      rather than restated, and the chart's own claims — equal-areaness, seam
 #      ownership, bit-exact nesting — are measured against closed forms written
 #      out here.
 #
-#      HOW MUCH OF EACH LEVEL. Levels 0-3 (10, 40, 160 and 640 cells) are walked
+#      Sample coverage. Levels 0-3 (10, 40, 160 and 640 cells) are walked
 #      EXHAUSTIVELY almost everywhere below; `cell_sample` is used where a
 #      deeper level is wanted and takes a seeded, reproducible draw above its
 #      cap. Where a testset iterates a whole level it says so.
@@ -23,15 +18,12 @@
 #   2. CONTRACT. The two conformance suites from
 #      `DiscreteGlobalGridsConformanceTesting`, with default kwargs.
 #
-#   3. STRUCTURAL. The things nothing else has an opinion about because they
-#      are this port's own design: the seam topology and its 9-neighbour corner
+#   3. STRUCTURAL. The package-specific seam topology and its 9-neighbour corner
 #      cells, the rotational start, the exact subtree cap, and the 0-based id /
 #      1-based position convention.
 #
-# `test/runtests.jl` includes this file (T13 flips that line on); it also runs
-# standalone:
+# `test/runtests.jl` includes this file; it also runs standalone:
 #     julia --project=test --startup-file=no test/systems/ISEA4R/runtests.jl
-# ---------------------------------------------------------------------------
 
 module ISEA4RSystemTests
 
@@ -51,7 +43,7 @@ const US = GO.UnitSpherical
 
 const SYS = I4.ISEA4RSystem()
 
-# Recorded so the numbers land in the test log (and in the milestone report).
+# Retain the largest measurement for each key in the test log.
 const MEASURED = Dict{String,Float64}()
 record!(key, value) = (MEASURED[key] = max(get(MEASURED, key, -Inf), value))
 
@@ -132,24 +124,21 @@ end
 A hashable key for a boundary point, with `-0.0` normalised to `0.0`.
 
 `Set` and `Dict` compare with `isequal`, under which `-0.0` and `0.0` are
-DISTINCT even though `==` says they are equal. Two closed forms that agree on
+distinct even though `==` says they are equal. Two closed forms that agree on
 every bit but the sign of a zero coordinate therefore vanish from a hashed
-incidence test, silently and only at the handful of points where a coordinate is
-exactly zero. That is a real trap in this family — the sibling S2 port hit it on
-its cube seams — so every hashed comparison below goes through this, and
-`signed zeros cannot break a hashed incidence test` pins the two facts that make
-ISEA4R immune to it today. `x + 0.0` is the identity on every `Float64` except
-`-0.0`, which it maps to `0.0`.
+incidence test when a coordinate is exactly zero. Every hashed comparison
+therefore uses this normalization. `x + 0.0` is the identity on every
+`Float64` except `-0.0`, which it maps to `0.0`.
 """
 vkey(p) = (p[1] + 0.0, p[2] + 0.0, p[3] + 0.0)
 
 """
 How many boundary points two cells share, to a tolerance.
 
-A tolerance rather than a `Set` intersection, and that is load-bearing: shared
-lattice points are BIT-identical only within a diamond. Across a diamond rim the
+A tolerance rather than a `Set` intersection is required: shared lattice points
+are bit-identical only within a diamond. Across a diamond rim the
 two sides are two independent developments of the same icosahedron edge and
-agree to ~4e-15 rad but to NO bits at all, so an exact set intersection would
+agree to ~4e-15 rad but not bit-for-bit, so an exact set intersection would
 report a seam neighbour as sharing nothing. The measured worst mismatch across a
 rim is recorded by `cross-diamond borders line up point for point` below, three
 orders under this tolerance.
@@ -504,12 +493,11 @@ end
 # =========================================================================
 
 @testset "the four-corner cap already bounds the whole cell" begin
-    # THE measurement `node_extent` rests on: the farthest point of a cell from
+    # The farthest sampled point of a cell from
     # its own centre is one of its four corners, seam-straddling cells included,
     # so a cap through the corners needs no inflation for the cell itself. A
     # dense 17x17 sampling of every cell's chart rectangle, on every diamond, at
-    # every `nside` below. The pre-redesign face-grid layer recorded a worst
-    # overhang of exactly 0.0; this re-runs it rather than trusting the record.
+    # every `nside` below. A positive overhang would invalidate the cap.
     worst = -Inf
     for nside in (1, 2, 3, 4, 5, 8, 16)
         for d in 0:9, ix in 0:(nside - 1), iy in 0:(nside - 1)
@@ -679,9 +667,9 @@ end
 end
 
 @testset "Edge() neighbours share a whole edge, corner-only ones share a point" begin
-    # THE test that decides which four of the eight `Edge()` keeps, and the one
-    # every other property in this section is satisfied by just as happily under
-    # the WRONG four. An ISEA4R cell is an axis-aligned square in its chart, so
+    # This test identifies which four of the eight vertex neighbours share
+    # edges. The other properties in this section also hold if the wrong four
+    # are selected. An ISEA4R cell is an axis-aligned square in its chart, so
     # the axis offsets are the edge-sharing ones and the diagonals are the
     # corner-only ones — the OPPOSITE of HEALPix, whose pixel is rotated 45°
     # against its lattice. Only geometry can tell the two apart.
@@ -1209,7 +1197,7 @@ end
         end
     end
 
-    # THE TWELVE ICOSAHEDRON VERTICES, explicitly. The even-lattice sweep above
+    # Check the twelve icosahedron vertices explicitly. The even-lattice sweep
     # steps `0:2:nside-1`, so it probes chart corner (0,0) but never (0,1) or
     # (1,0) — and those are exactly the corners that carry vertices 0 and 11,
     # the two degenerate five-diamond points. A vertex is the hardest tie in the

@@ -8,17 +8,12 @@ using WGLMakie
 using Literate
 
 WGLMakie.activate!()
-# Makie.inline!(true)
 
-# Doctests in `src/` docstrings are written as if the package were loaded —
-# `LevelIndex(3, 17)`, not `DiscreteGlobalGrids.LevelIndex(3, 17)` — so the
-# doctest sandbox needs the same `using` before any of them runs.
+# Make unqualified package names available to every doctest.
 DocMeta.setdocmeta!(DiscreteGlobalGrids, :DocTestSetup,
                     :(using DiscreteGlobalGrids); recursive = true)
 
-# The tutorials are Literate.jl scripts; generate their markdown next to the
-# sources, where the `pages` list below expects it. Execution happens in
-# Documenter's @example blocks, not here.
+# Generate Markdown beside each Literate source without executing its examples.
 for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
           "healpix_astronomy")
     Literate.markdown(joinpath(@__DIR__, "src", "tutorials", f * ".jl"),
@@ -27,7 +22,8 @@ for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
 end
 
 makedocs(;
-    modules = [DiscreteGlobalGrids],
+    # Register `Fallbacks` so Documenter can render its boundary API docstrings.
+    modules = [DiscreteGlobalGrids, DiscreteGlobalGrids.Fallbacks],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",
     repo = Documenter.Remotes.GitHub("JuliaGeo", "DiscreteGlobalGrids.jl"),
@@ -47,6 +43,9 @@ makedocs(;
             "Hydrology: a DEM on an IGEO7 grid" => "tutorials/hydrology.md",
             "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
         ],
+        "API" => [
+            "Subtree and subset boundaries" => "api/boundaries.md",
+        ],
     ],
     plugins = [DocumenterVitepress.BonitoPlugin()],
     checkdocs = :none,
@@ -54,8 +53,7 @@ makedocs(;
 )
 
 DocumenterVitepress.deploydocs(;
-    # Unlike `makedocs` and `MarkdownVitepress` above, which want a full URL,
-    # `deploydocs` parses this as host/user/repo and rejects a protocol.
+    # `deploydocs` expects host/user/repository syntax without a URL protocol.
     repo = "github.com/JuliaGeo/DiscreteGlobalGrids.jl.git",
     devbranch = "main",
     push_preview = true,

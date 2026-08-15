@@ -13,7 +13,8 @@ Four required methods — `ncells`, `cellindex`, `cell_boundary`, `cell_centroid
 `cellat`, `neighbors`, `ring`, `halo_table`, `treeify`, `query`. On a SUBSET of
 a level the topology verbs mean the complete level's answer clipped to
 membership — omitted, not padded — so a stencil on a region is the same call it
-is on the globe.
+is on the globe, and `halo` names the cells just outside it that the clipping
+dropped.
 
 `AbstractHierarchicalGridSystem` adds analytic parent/child structure. It is the
 fast-path tier: tree pruning under the covering law of `node_extent`, contiguous
@@ -72,6 +73,14 @@ DGG.children(sys, c)
 parent(sys, c)
 DGG.descendant_range(sys, c, 6)                   # positions in levelgrid(sys, 6)
 DGG.subtree_border(sys, c, 6)                     # the rim, O(rim)
+DGG.subtree_halo(sys, c, 6)                       # the cells just OUTSIDE the rim
+
+# The halo can dwarf the rim, so collecting it is always the caller's call:
+# `SubtreeHaloIterator` is the lazy form, and `halo` asks the same of a subset.
+for x in DGG.SubtreeHaloIterator(sys, c, 6)       # O(depth) memory, resumable
+    break
+end
+DGG.halo(DGG.PartialGrid(sys, c, 6))              # ... of a region, with holes counted
 ```
 
 Swapping `HEALPixSystem()` for `IGeo7System()`, `H3System()`, `A5System()`,
@@ -205,8 +214,9 @@ them and `docs/src/all_dggs.md` draws every system.
 | `ISEA4RSystem` | `0:29` | `10·4^l` | rhombi on ten diamonds | yes | `LevelIndex` |
 
 Native layers: H3 calls libh3 through `H3_jll`; the other five are pure Julia.
-IGEO7 is a clean-room implementation; A5 ports upstream a5's arithmetic; HEALPix,
-S2 and ISEA4R are closed-form charts with no external dependency.
+IGEO7 is a clean-room implementation but for one ported adjacency kernel (see
+[Provenance](#provenance)); A5 ports upstream a5's arithmetic; HEALPix, S2 and
+ISEA4R are closed-form charts with no external dependency.
 
 No system defines a grid type. All six return `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
@@ -217,6 +227,22 @@ No system defines a grid type. All six return `HierarchicalLevelGrid` from
 memory. A5 is also the one system without `has_sorted_subtrees`, so
 `level_ranges` throws there and everything that would use it takes the selection
 branch instead.
+
+`subtree_halo` is the outside of that same boundary and is built the same way:
+`collect` of a resumable `SubtreeHaloIterator` in `O(depth)` memory, so a prefix
+of a deep halo costs what the prefix costs and not what the ring would. HEALPix,
+S2 and ISEA4R walk the band around their square block, one pruned quadtree
+descent per face the halo touches; IGeo7 and H3 seed each neighbour's rim
+automaton with a calibrated arc and walk that; A5, again for want of
+`descendant_range`, scans the target level. Only two of the seven engines count
+in closed form — depth zero, which is the one-ring already in hand, and the
+square in-face band, which is `4·side + 4` — so only those declare a `length`;
+everywhere else `IteratorSize` is `SizeUnknown()` and there is no `length`
+method at all, deliberately, because a `length` that walked the halo to answer
+is the thing the design forbids. `halo`
+asks the same question of a `PartialGrid`, `CellVector` or `CellLookup`, always
+lazily; a cell punched out of the middle of a subset joins that subset's halo,
+which is `halo` doing something `subtree_halo` cannot.
 
 The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
 **not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of
@@ -258,7 +284,7 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**945,192 assertions, ~2m55s warm**, with 14 broken: A5's documented
+**945,225 assertions, ~2m55s warm**, with 14 broken: A5's documented
 `has_sorted_subtrees` skips, and the destination-direction conservation arms
 that wait on the upstream clipper fix.
 
@@ -268,10 +294,44 @@ Migrated 2026-08-05 from the `dggs_lookup/` prototype tree in the
 `vectordatacubes` workspace.
 
 The IGEO7 implementation is a **clean-room** unit (`src/systems/ISEA/` +
-`src/systems/IGeo7/`). It replaces an earlier implementation whose native layer
-was ported from an AGPL-licensed reference, which is deliberately **excluded**
-here. That reference enters only as an independent **black-box validation
-oracle**: the suite checks agreement against dumps of its CLI output, never
-against its source. The full audit trail, the 150 MB vector corpus and 24 MB of
-reference PDFs stay in `dggs_lookup/`; only the ~9 MB of vectors the suite reads
-travel here.
+`src/systems/IGeo7/`), with the one marked exception below. It replaces an
+earlier implementation whose native layer was ported from an AGPL-licensed
+reference, which is deliberately **excluded** here. That reference enters only
+as an independent **black-box validation oracle**: the suite checks agreement
+against dumps of its CLI output, never against its source. The full audit trail,
+the 150 MB vector corpus and 24 MB of reference PDFs stay in `dggs_lookup/`; only
+the ~9 MB of vectors the suite reads travel here.
+
+### Exception: `src/systems/IGeo7/gbt.jl`
+
+One file is source-level reuse rather than black-box validation, and says so in
+its own header. The one-ring adjacency kernel is **ported from
+[IGEO7.jl](https://github.com/allixender/IGEO7.jl)** (`src/IGEO7.jl`) by
+**Alexander Kmoch** — specifically `get_neighbour`, `get_neighbours`,
+`first_non_zero`, and the eight tables those read (`BASE_CELL_NEIGHBOURS`,
+`EXCLUDE_NEIGHBOURS`, `ROTATIONS`, `POLE_0_ROTATIONS`, and the four GBT addition
+tables). The reuse is covered by a **licence grant from Alexander Kmoch** to this
+package.
+
+> **TODO (Anshul):** record the grant's actual terms. This repository ships no
+> `LICENSE` file yet; the terms belong next to it. Whether the grant is a
+> relicence, a dual licence or something else is not recorded anywhere in this
+> tree, so nothing beyond the fact of the grant is asserted here.
+
+Attribution is owed whatever the terms are, so the file header names the upstream
+repository, file, functions and author, and each ported table's docstring points
+back at that header. What the port changed is shape, not arithmetic; the
+counterclockwise ordering it emits in (`_encode_lattice_rot`, `z7grid.jl`) is
+this package's own, because upstream defines no rotational order.
+
+The port is **not trusted, it is checked**, against this package's own
+independent implementation of the same question:
+`IGeo7._cell_neighbors_ccw_geometric` (`src/systems/IGeo7/z7grid.jl`) derives
+adjacency from the oracle-validated lattice and decoder instead of from digit
+arithmetic. Two implementations that share no reasoning are the strongest
+evidence available that either is right, so the geometric one stays in the tree
+as the differential oracle even though nothing on the hot path calls it. Testset
+`9b` of `test/systems/IGeo7/runtests.jl` pins the two together — same ids, same
+order — on every cell of levels 0–3, on samples through level 19, across all
+twelve pentagon chains and their two-ring neighbourhoods, and over the whole
+`neighbors`/`ring` disc to `k = 3`.

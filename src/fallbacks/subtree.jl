@@ -1,21 +1,16 @@
-# The eager subtree verbs. Both are `collect` of the lazy iterators in
-# `subtree_iterators.jl`, which is also where the per-system fast paths hang —
-# so a system writes its walker once and both faces of it get faster.
+# Eager subtree operations collect the lazy, system-specializable iterators.
 
-# `collect`, plus the one check it cannot do for us. Given `HasLength`, `collect`
-# sizes its vector from `length` and fills by iterating; a walk that emits fewer
-# cells than its closed-form count claims therefore returns a tail of `undef` —
-# arbitrary integers handed back as cell ids, silently. HEALPix guarded exactly
-# this for its own rim; every automaton with a counted rim needs it, so it lives
-# here. One comparison against Θ(rim) work.
-#
-# Takes any counted walk, not just the two iterators — `border_descendants` runs
-# an engine directly — so the message names the walk by `show` rather than by
-# fields only the iterators have.
-function collect_subtree(it)
+# Collect an iterator while validating any declared length. An incorrect
+# `HasLength` count would otherwise leave uninitialized output slots. `hint` is
+# used only by `sizehint!` for iterators whose size is unknown.
+function collect_subtree(it, hint::Union{Int,Nothing} = nothing)
     counted = Base.IteratorSize(typeof(it)) isa Base.HasLength
     out = eltype(it)[]
-    counted && sizehint!(out, length(it))
+    if counted
+        sizehint!(out, length(it))
+    elseif hint !== nothing
+        sizehint!(out, hint)
+    end
     for c in it
         push!(out, c)
     end

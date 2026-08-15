@@ -1,9 +1,8 @@
 # ---------------------------------------------------------------------------
 # Geometry and location
 #
-# All three primitives are libh3's own answers, converted to the unit sphere and
-# otherwise untouched. That is deliberate: H3's geometry is defined by libh3, so
-# anything this file "improved" would be a different grid wearing the same name.
+# Geometry methods preserve libh3's cell definitions while converting results
+# to unit-sphere points.
 # ---------------------------------------------------------------------------
 
 """
@@ -28,11 +27,8 @@ end
 """
     cell_centroid(::H3System, c::H3Cell) -> UnitSphericalPoint
 
-The cell centre from libh3's `cellToLatLng`, straight onto the unit sphere.
-
-This is the centre H3's hierarchy is built around — the point child cells are
-arranged about — rather than the mean of the boundary vertices, and it is
-strictly interior to the cell for every valid index.
+The cell centre from libh3's `cellToLatLng`, converted to a unit-sphere point.
+It is not the mean of the boundary vertices.
 """
 function cell_centroid(::H3System, c::H3Cell)
     x, y, z = H3Native.cell_center_cartesian(c.id)
@@ -40,7 +36,7 @@ function cell_centroid(::H3System, c::H3Cell)
 end
 
 # ===========================================================================
-# Location — the marquee fast path
+# Location
 # ===========================================================================
 
 """

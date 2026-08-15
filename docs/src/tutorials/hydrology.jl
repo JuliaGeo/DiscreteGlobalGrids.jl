@@ -4,7 +4,8 @@
 # catchment area are all areal quantities, and on a lon/lat raster every one of
 # them is a function of latitude. This page moves a Copernicus 30 m DEM tile
 # over the Alps onto IGEO7 — hexagons, equal-area by construction — and does
-# the first step of a flow-routing model on it.
+# the first step of a flow-routing model on it. The worked example averages
+# the source to 120 m so it also fits comfortably on a standard CI runner.
 #
 # Three calls carry the page: `coarsest_contained` picks the cell to work in,
 # `PartialGrid` names its subtree as a grid, and `halo_table` routes water out
@@ -19,8 +20,8 @@ using Rasters, RasterDataSources
 import ArchGDAL
 import GeometryOps as GO, Extents
 using Statistics
-using CairoMakie, GeoMakie
-CairoMakie.activate!()
+using GLMakie, GeoMakie
+GLMakie.activate!(inline = true)
 
 sys = DGG.IGeo7System()
 
@@ -33,6 +34,10 @@ sys = DGG.IGeo7System()
 
 tile = Extents.Extent(X = (10.0, 11.0), Y = (46.0, 47.0))
 root = DGG.coarsest_contained(DGG.query(sys, DGG.MultiOrderCoverage(tile); level = 10))
+f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
+poly!(DGG.PartialGrid(sys, root, DGG.level(root)); strokewidth = 2)
+f
+# This is the actual cell we have:
 root, DGG.level(root)
 
 # ## One subtree as a grid
@@ -41,39 +46,49 @@ root, DGG.level(root)
 # an ordinary grid: positions run `1:ncells`, so a data vector indexes straight
 # through it.
 
-leaf = 10                                          # ≈ 430 m cells
+leaf = 12                                          # ≈ 1.1 km cells
 grid = DGG.PartialGrid(sys, root, leaf)
+#
 DGG.ncells(grid)
 
-# ## The DEM, conservatively regridded
+# ## Regridding the DEM
 #
 # The download asks for a point inside the tile rather than the tile itself:
 # `getraster` fetches every 1° tile an extent touches, and a closed 1° box
-# touches four. At 30 m the tile is far finer than the destination cells, so
-# `aggregate` averages it down before the intersection matrix is built.
+# touches four. Averaging the native 30 m source to 120 m keeps this worked
+# example compact; the source quadtree keeps intersection work localized while
+# the matrix is built.
 
-Rasters.checkmem!(false)                           # the tile is bigger than free RAM
 centre = Extents.Extent(X = (10.5, 10.5), Y = (46.5, 46.5))
 path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
-dem = aggregate(mean, Raster(path; lazy = true), 16)
-
+dem = Raster(path; lazy = false)
+dem = set(dem, X => Rasters.Intervals(Rasters.Start()), Y => Rasters.Intervals(Rasters.Start()))
+dem = aggregate(mean, dem, 4; progress = false)
 # ConservativeRegridding wants the source's cell corners on the unit sphere.
 # The destination needs no adapter: `treeify`, `ncells` and `getcell` are
 # extended for every `AbstractGrid`.
 
-(west, east), (south, north) = bounds(dem, X), bounds(dem, Y)
-to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
-corners = [to_sphere((lon, lat))
-           for lon in range(west, east; length = size(dem, X) + 1),
-               lat in range(south, north; length = size(dem, Y) + 1)]
-regridder = CR.Regridder(GO.Spherical(; radius = 1.0), grid, corners)
+xbounds, ybounds = Rasters.intervalbounds(dem, (X, Y))
+# `intervalbounds` follows array-index order while each pair remains `(low,
+# high)`. The raster's X lookup runs west-to-east, so its corner sequence starts
+# at the first low edge. Its Y lookup runs north-to-south, so that sequence
+# starts at the first high edge. Cell `(i, j)` then describes `dem[i, j]`
+# directly, without copying or reordering the DEM.
+xrange = [first(first(xbounds)); last.(xbounds)]
+yrange = [last(first(ybounds)); first.(ybounds)]
+latlong_point_matrix = [GO.UnitSphericalPoint((x, y)) for x in xrange, y in yrange]
+latlong_grid = CR.Trees.CellBasedGrid(GO.Spherical(), latlong_point_matrix) |> CR.Trees.TopDownQuadtreeCursor
+
+regridder = @time CR.Regridder(GO.Spherical(; radius = 1.0), grid, latlong_grid)
+# Just for fun, let's look at the sparsity pattern of the regridder matrix:
+spy(regridder.intersections; axis = (; aspect = DataAspect(), title = "Sparsity pattern of lat-long -> IGEO7 regridder"))
 
 # The tile need not cover every rim cell of the subtree, so regrid the field
 # and a 0/1 indicator with the same matrix and divide. The ratio is a weighted
 # mean of the source values — right for a partly covered cell, where the raw
 # number is not.
 
-source = vec(Float64.(reverse(parent(dem); dims = 2)))
+source = vec(dem)
 raw = zeros(DGG.ncells(grid))
 cover = zeros(DGG.ncells(grid))
 CR.regrid!(raw, regridder, source)
@@ -105,19 +120,18 @@ drop = [flow[i] == 0 ? NaN : elevation[i] - elevation[flow[i]] for i in eachinde
 
 # Elevation, and the drop to the downhill neighbour — the drop map picks out
 # valley floors as the flat regions and headwalls as the steep ones.
-# `getcell(grid, i)` is the polygon at position `i`; without an argument it is
-# all of them.
+# `CellVector(grid)[shown]` is the covered cells as a vector, which `poly!`
+# draws directly, in the same order `elevation[shown]` follows.
 
-lonlat(g) = GO.transform(GO.GeographicFromUnitSphere(), g)
-polys = map(lonlat, DGG.getcell(grid))
 shown = findall(covered)
+cells = DGG.CellVector(grid)[shown]
 
 fig = Figure(size = (900, 430))
 ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84", title = "elevation (m)")
-p1 = poly!(ax1, polys[shown]; color = elevation[shown], colormap = :terrain, strokewidth = 0)
+p1 = poly!(ax1, cells; color = elevation[shown], colormap = :terrain, strokewidth = 0)
 Colorbar(fig[2, 1], p1; vertical = false)
 ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84", title = "drop to downhill neighbour (m)")
-p2 = poly!(ax2, polys[shown]; color = drop[shown], colormap = :magma,
+p2 = poly!(ax2, cells; color = drop[shown], colormap = :magma,
     nan_color = :gray80, strokewidth = 0)
 Colorbar(fig[2, 2], p2; vertical = false)
 fig

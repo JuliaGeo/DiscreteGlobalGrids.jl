@@ -1,11 +1,7 @@
 # Interface-layer tests.
 #
-# T1 ships declarations, contracts and trait defaults — no algorithms — so this
-# suite checks exactly that: the module loads with the new surface and none of
-# the old one, `LevelIndex` behaves, the trait defaults are the documented ones,
-# and every generic that is only *declared* raises a `MethodError` on a type
-# that has not implemented it (rather than silently answering `nothing`, which
-# is the failure mode a bodiless method definition would have produced).
+# The suite checks the exported surface, `LevelIndex`, documented trait
+# defaults, and the `MethodError` behavior of unimplemented interface methods.
 
 module InterfaceTests
 
@@ -21,17 +17,11 @@ struct UnimplementedIndex <: AbstractCellIndex end
 """
     DetachedDocProbe
 
-The positive control for the docstring-coverage test below, and a live
-specimen of a trap that cost the A5 port a review cycle: **a comment between a
-docstring and the thing it documents silently detaches it.** No warning, no
-error — the docstring is simply parsed as a free-standing string and thrown
-away.
-
-This one is detached on purpose. `docstring` must report it as undocumented,
-which is what makes the coverage assertions mean anything.
+A positive control for the docstring-coverage test. The intervening comment
+deliberately detaches this docstring from the type, so `docstring` must report
+the type as undocumented.
 """
-# THIS COMMENT IS THE POINT — do not remove it, it is what detaches the
-# docstring above.
+# This comment must remain between the docstring and the type definition.
 struct DetachedDocProbe end
 
 const EXPORTED = filter(!=(:DiscreteGlobalGrids), names(DiscreteGlobalGrids))
@@ -81,7 +71,7 @@ end
     @test UnimplementedSystem() isa AbstractHierarchicalGridSystem
     @test UnimplementedIndex() isa AbstractCellIndex
 
-    # The interface names are all there...
+    # Required interface names are exported.
     for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :cellposition,
               :rawid, :reindex, :cellindextypes, :cell_polygon, :cell_area,
               :cell_extent, :getcell, :cellat, :neighbors, :ring, :halo_table, :treeify,
@@ -93,7 +83,7 @@ end
         @test n in EXPORTED
     end
 
-    # ... and the old architecture is gone, not merely shadowed.
+    # Retired interface names are not defined.
     for n in (:AbstractDGGS, :all_systems, :DGGSGrid, :DGGSCursor, :cell_neighbors,
               :cell_children, :cell_parent, :has_exact_subtree_cap,
               :supports_prefix_ranges, :subtree_grid, :HEALPixDGGS)
@@ -112,21 +102,13 @@ end
     @test parent(Covers(:target)) === :target
     @test Intersects(:t) isa DE9IMPredicate
 
-    # Every exported name carries a docstring...
+    # Every exported name carries a docstring.
     @test docstring(@__MODULE__, :UnimplementedGrid) == ""  # the probe can fail
     for n in EXPORTED
         @test !isempty(docstring(DiscreteGlobalGrids, n))
     end
 
-    # ...and the coverage check can actually see the failure mode that matters.
-    #
-    # `UnimplementedGrid` above only shows that a name which never had a
-    # docstring reads as empty. The shape that bit the A5 port is different and
-    # much quieter: a docstring that WAS written, and was detached from its
-    # definition by an interposed comment. Julia reports nothing at all; for a
-    # method on a shared generic, `@doc` then shows the *interface* docstring,
-    # so the name still looks documented. This pins that a detached docstring
-    # reads as absent, which is what gives the loop above its teeth.
+    # An interposed comment detaches a docstring, which must read as absent.
     @test docstring(@__MODULE__, :DetachedDocProbe) == ""
 
     # For the system types the loop above is enough — there is no generic for
@@ -149,8 +131,7 @@ end
     # Two contracts are load-bearing enough to pin in the docs themselves: the
     # covering law (without it, generic tree pruning is silently unsound) and
     # the position-vs-identity rule (without it, `Int` arguments are a coin
-    # flip). Both are what a third-party implementor reads instead of the
-    # design document.
+    # flip). Both must be explicit in the public documentation.
     node_extent_doc = docstring(DiscreteGlobalGrids, :node_extent)
     @test occursin("covering law", lowercase(node_extent_doc))
     @test occursin("every descendant", node_extent_doc)
@@ -248,9 +229,7 @@ end
 
     @test_throws MethodError cellindextype(s)
     @test_throws MethodError levels(s)
-    # `levelgrid` is no longer one of the unimplemented generics — T8 gave it a
-    # default. It still throws here, one call deeper: the default validates
-    # against `levels(s)`, which is what is missing.
+    # The default `levelgrid` validates against the unimplemented `levels(s)`.
     @test_throws MethodError levelgrid(s, 0)
     @test_throws MethodError rootcells(s)
     @test_throws MethodError parent(s, c)

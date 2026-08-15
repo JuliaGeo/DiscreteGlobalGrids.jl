@@ -1,9 +1,6 @@
-# Pure-Julia upstream-compatible A5 arithmetic. This module's `A5Cell` is the
-# decoded record; `DiscreteGlobalGrids.A5.A5Cell` is the public encoded id.
-#
-# Line-by-line port of felixpalmer/a5 (`modules/core`, `lattice`, `geometry`,
-# `projections`), kept diff-clean against its source so the port stays
-# auditable; the only local change is the `Helpers` import path.
+# Pure-Julia A5 arithmetic compatible with felixpalmer/a5. This module's
+# `A5Cell` is a decoded record; `DiscreteGlobalGrids.A5.A5Cell` is the public
+# encoded id.
 
 """
     DiscreteGlobalGrids.A5.A5Native

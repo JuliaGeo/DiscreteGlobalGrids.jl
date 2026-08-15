@@ -1,47 +1,59 @@
 # # Regridding a time series
 #
-# WorldClim ships monthly mean temperature on a regular lon/lat grid, where a
-# cell near the pole covers far less ground than one at the equator. This page
-# moves all twelve months onto an equal-area HEALPix grid with first-order
+# A temperature field on a regular lon/lat grid has cells that cover far less
+# ground near the pole than at the equator. This page moves twelve deterministic
+# monthly fields onto an equal-area HEALPix grid with first-order
 # conservative regridding, animates the seasonal cycle, and ends with a monthly
 # time series regridded onto just the cells that cover Texas.
 
-ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
-
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
-using Rasters, RasterDataSources
-import ArchGDAL
+using Rasters
 import NaturalEarth
 import GeometryOps as GO
 import GeoInterface as GI
 import Dates
-using CairoMakie, GeoMakie
-CairoMakie.activate!()
+using GLMakie, GeoMakie
+GLMakie.activate!(inline = true)
 
 # ## Source and destination
 #
-# RasterDataSources downloads WorldClim (about 35 MB once, cached afterwards):
-# one global raster per month, 2160×1080 cells at 10 arc-minutes, in °C,
-# `missing` over the oceans.
+# A one-degree analytic raster keeps the example reproducible and offline. Its
+# latitude trend and phase-shifted seasonal cycle are temperature-like; a few
+# fixed gaps exercise the same missing-data path as an observational field.
 
-ser = RasterSeries(WorldClim{Climate}, :tavg; month = 1:12, res = "10m")
+lon = -179.5:1.0:179.5
+lat = 89.5:-1.0:-89.5
+isgap(x, y) = abs(y) > 80 || (20 < x < 80 && -25 < y < 20)
+temperature(m, x, y) = isgap(x, y) ? NaN :
+    28 - 0.35abs(y) + 2sind(x) + 10sign(y) * cospi((m - 7) / 6)
+temperature_raster(m) = Raster(
+    [temperature(m, x, y) for x in lon, y in lat],
+    (X(lon; sampling = Rasters.Intervals(Rasters.Center())),
+     Y(lat; sampling = Rasters.Intervals(Rasters.Center()))),
+)
+ser = temperature_raster.(1:12)
 r = first(ser)
 size(r)
 
 # The destination is HEALPix level 6 — 49152 equal-area cells, a hair under 1°
 # across. A grid from this package is a regridding endpoint as it stands; the
-# lon/lat source is described as its matrix of cell-corner points on the unit
-# sphere.
+# lon/lat source is an indexed quadtree built from its matrix of cell-corner
+# points on the unit sphere.
 
 grid = DGG.levelgrid(DGG.HEALPixSystem(), 6)
 
-(west, east), (south, north) = bounds(r, X), bounds(r, Y)
-to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
-corners = [to_sphere((lon, lat))
-           for lon in range(west, east; length = size(r, X) + 1),
-               lat in range(south, north; length = size(r, Y) + 1)]
-size(corners)
+xbounds, ybounds = Rasters.intervalbounds(r, (X, Y))
+# `intervalbounds` follows array-index order while each pair remains `(low,
+# high)`. The X lookup runs west-to-east and the Y lookup runs north-to-south,
+# so the corner sequences begin at the first low X edge and
+# first high Y edge. Cell `(i, j)` then describes `r[i, j]` directly.
+xrange = [first(first(xbounds)); last.(xbounds)]
+yrange = [last(first(ybounds)); first.(ybounds)]
+latlong_point_matrix = [GO.UnitSphericalPoint((x, y)) for x in xrange, y in yrange]
+latlong_grid = CR.Trees.CellBasedGrid(GO.Spherical(), latlong_point_matrix) |>
+    CR.Trees.TopDownQuadtreeCursor
+size(latlong_point_matrix)
 
 # The manifold is passed explicitly: every grid here computes on the **unit**
 # sphere, and a guessed manifold would be a WGS84 sphere — a factor of `R²` in
@@ -49,8 +61,9 @@ size(corners)
 # overlapping pair of cells and takes ten seconds or so.
 
 manifold = GO.Spherical(; radius = 1.0)
-regridder = CR.Regridder(manifold, grid, corners)
-size(regridder.intersections)
+regridder = @time CR.Regridder(manifold, grid, latlong_grid)
+spy(regridder.intersections; axis = (; aspect = DataAspect(),
+    title = "Sparsity pattern of lat-long -> HEALPix regridder"))
 
 # ## Twelve months, with gaps
 #
@@ -64,12 +77,12 @@ size(regridder.intersections)
 # fix in GeometryOps. The README and
 # `test/systems/crosssystem/regridding_conservation.jl` carry the full account.
 #
-# WorldClim's rows run north to south, so each month is flipped to the corner
-# mesh's ascending latitudes before flattening; cells with under 1% coverage
-# stay `missing`.
+# Because the corner grid follows the raster's array-index order, each month
+# can be flattened directly without copying or reordering it. Cells with under
+# 1% coverage stay `missing`.
 
 months = 1:12
-month_field(m) = vec(reverse(parent(replace_missing(ser[m], NaN)); dims = 2))
+month_field(m) = vec(replace_missing(ser[m], NaN))
 
 tavg = Matrix{Union{Float64, Missing}}(missing, DGG.ncells(grid), length(months))
 field = zeros(DGG.ncells(grid))
@@ -127,13 +140,16 @@ nothing #hide
 states = NaturalEarth.naturalearth("admin_1_states_provinces", 50)
 texas = states.geometry[findfirst(==("Texas"), states.name)]
 tx = DGG.covering(DGG.CellVector(grid), texas)
-length(tx)
+f, a, p = poly(tx; axis = (; aspect = DataAspect()))
+lines!(a, texas)
+f
 
 # The same two regrids as above, with the divide taken over sums: HEALPix
 # cells are equal-area, so `sum(f)/sum(c)` is the mean over the covered ground,
 # and no barely-covered coastal cell can tilt it.
 
-rgtx = CR.Regridder(manifold, DGG.PartialGrid(tx), corners)
+rgtx = @time CR.Regridder(manifold, DGG.PartialGrid(tx), latlong_grid)
+
 f, c = zeros(length(tx)), zeros(length(tx))
 ts = map(months) do m
     v = month_field(m)
@@ -153,5 +169,5 @@ fig
 
 # Nothing above is HEALPix-specific — any system slots into `levelgrid` — but
 # the choice was deliberate: equal-area cells make the sums above areal means
-# without weights. The conservation caveat is also not system-uniform: a
-# destination whose rings are convex (IGEO7, S2) conserves today.
+# without weights. Conservation differs by system: destinations whose rings are
+# convex, such as IGEO7 and S2, conserve.

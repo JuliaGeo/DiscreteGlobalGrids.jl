@@ -56,8 +56,8 @@ small_push(list::SmallList{N,T}, item) where {N,T} =
 """
     small_pop(list)
 
-Return `list` without its last element. The dropped slot keeps its old contents,
-which `len` puts out of reach. Throws `BoundsError` when empty.
+Return `list` without its last element. Unused storage is unchanged. Throws
+`BoundsError` when empty.
 """
 @inline function small_pop(list::SmallList{N,T}) where {N,T}
     list.len > 0 || throw(BoundsError(list, 0))
@@ -67,8 +67,7 @@ end
 """
     small_setlast(list, item)
 
-Return `list` with its last element replaced — the in-place update an immutable
-stack needs to advance the frame on top of it. Throws `BoundsError` when empty.
+Return `list` with its last element replaced. Throws `BoundsError` when empty.
 """
 @inline function small_setlast(list::SmallList{N,T}, item::T) where {N,T}
     list.len > 0 || throw(BoundsError(list, 0))
@@ -77,6 +76,20 @@ end
 
 small_setlast(list::SmallList{N,T}, item) where {N,T} =
     small_setlast(list, convert(T, item))
+
+"""
+    small_setindex(list, item, i)
+
+Return `list` with element `i` replaced. Throws `BoundsError` unless
+`i ∈ 1:length(list)`.
+"""
+@inline function small_setindex(list::SmallList{N,T}, item::T, i::Int) where {N,T}
+    1 <= i <= list.len || throw(BoundsError(list, i))
+    return SmallList{N,T}(list.len, tuple_set(list.data, item, i))
+end
+
+small_setindex(list::SmallList{N,T}, item, i::Int) where {N,T} =
+    small_setindex(list, convert(T, item), i)
 
 """
     small_sort(list)

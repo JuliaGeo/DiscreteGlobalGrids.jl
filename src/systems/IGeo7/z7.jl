@@ -4,7 +4,7 @@
 """
     MAX_RESOLUTION
 
-Finest resolution with geometry (`0:19`) **[contract]**. The Z7 bit format
+Finest resolution with geometry (`0:19`). The Z7 bit format
 holds one more level: prefix/string/hex operations are valid through
 `Z7_MAX_RESOLUTION == 20`, which geometry constructors must reject.
 """
@@ -14,11 +14,11 @@ const MAX_RESOLUTION = 19
     Z7_MAX_RESOLUTION
 
 Number of 3-bit digit slots in the Z7 `UInt64`, i.e. the coarsest-to-finest
-resolution range the bit format can represent (`0:20`) **[a7 §4.1]**.
+resolution range the bit format can represent (`0:20`).
 """
 const Z7_MAX_RESOLUTION = 20
 
-# Bit layout [contract, a7 §4.1]:
+# Bit layout:
 #   bits [63:60]                base cell 0:11
 #   digit k (k = 1..20)         bits [62-3k : 60-3k]  (digit 1 = bits 59:57)
 #   digit values 0:6 active, 7 = padding for every slot past the resolution.
@@ -37,8 +37,7 @@ const Z7_NUM_BASES = 12
 
 Deleted child digit for each base's pentagon chain, indexed by `base + 1`.
 The digit is `2` for bases `0:5` and `5` for bases `6:11`; deletion applies
-only while the active prefix remains all zero. Fitted from the oracle chains in
-`test/systems/IGeo7/vectors/pentagon_chains.csv`.
+only while the active prefix remains all zero.
 """
 const Z7_DELETED_DIGIT = (2, 2, 2, 2, 2, 2, 5, 5, 5, 5, 5, 5)
 

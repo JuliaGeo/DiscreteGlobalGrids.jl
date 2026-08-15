@@ -10,8 +10,8 @@
 import DiscreteGlobalGrids as DGG
 import GeometryOps as GO
 using Statistics, Random
-using CairoMakie, GeoMakie
-CairoMakie.activate!()
+using GLMakie, GeoMakie
+GLMakie.activate!(inline = true)
 
 # ## A field on the sphere
 #
@@ -56,12 +56,11 @@ var(diffused)
 
 # ## Plotting
 #
-# `cell_polygon` returns unit-sphere polygons; one `GO.transform` takes the
-# whole vector to lon/lat. `+over` keeps PROJ from rewrapping the cells that
-# straddle ±180°, a hairline stroke in the fill colour hides antialiasing
-# seams, and the Laplacian gets a diverging colormap centred at 0.
+# `poly!` draws `cells` directly, as lon/lat polygons in position order.
+# `+over` keeps PROJ from rewrapping the cells that straddle ±180°, a hairline
+# stroke in the fill colour hides antialiasing seams, and the Laplacian gets a
+# diverging colormap centred at 0.
 
-polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
 crange = extrema(values)
 lmax = maximum(abs, laplacian)
 
@@ -72,7 +71,7 @@ for (row, (title, v, kw)) in enumerate((
         ("Laplacian of the original", laplacian,
             (; colormap = :balance, colorrange = (-lmax, lmax)))))
     ax = GeoAxis(fig[row, 1]; dest = "+proj=moll +over", title)
-    poly!(ax, polys; color = v, strokecolor = v, strokewidth = 0.7, kw...)
+    poly!(ax, cells; color = v, strokecolor = v, strokewidth = 0.7, kw...)
 end
 fig
 
@@ -106,6 +105,13 @@ subsmoothed = substencil((c, nbs) -> mean(vcat(c, nbs)), subvalues)
 
 edgecell = subcells[findfirst(<(8), length.(subhalo))]
 DGG.ring(sub, edgecell, 2) == filter(in(sub), DGG.ring(grid, edgecell, 2))
+
+# What the clipping dropped has a name: `halo` is the cells just outside the
+# subset that touch it — the extra fetch list a stencil on a tile needs, and
+# the other half of `halo_table`'s answer. It is lazy, so ask for as much of it
+# as you want.
+
+DGG.ncells(sub), length(collect(DGG.halo(sub)))
 
 # Nothing above named HEALPix except the singleton. `levelgrid`, `halo_table`
 # and the position forms of `neighbors` and `ring` are interface methods, so

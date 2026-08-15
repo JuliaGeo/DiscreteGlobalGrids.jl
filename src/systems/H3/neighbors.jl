@@ -41,9 +41,7 @@ end
 The cells at grid distance **exactly** `k` from `c`, counter-clockwise seen
 from outside. `ring(grid, c, 0)` is `[c]`.
 
-Identical, element for element, to the last `length` entries of
-[`neighbors`](@ref)`(grid, c, k)` — the two share one implementation, so the
-disc really is its shells concatenated rather than merely agreeing as a set.
+The result is the final shell returned by [`neighbors`](@ref)`(grid, c, k)`.
 
 Uses libh3's O(k) shell walk, or an O(k²) pentagon-safe disk fallback ordered by
 azimuth.
@@ -72,8 +70,7 @@ function _ring1(c::H3Cell)
         end
         return out
     end
-    # Pentagon seam: recover the ring from the stack-buffer disk and impose the
-    # rotational order ourselves.
+    # At a pentagon seam, recover the ring from the disk and sort it by azimuth.
     frame = _tangent_frame(c.id)
     keyed = SmallVector{MAX_NEIGHBORS,Tuple{Float64,H3Cell}}()
     for id in H3Native.grid_disk_1(c.id)
@@ -105,15 +102,13 @@ end
 # The tangent frame the fallback orders by
 # ===========================================================================
 
-# A right-handed tangent basis at a cell centre: `east x north` is the outward
-# normal, so increasing `atan(d.north, d.east)` is counter-clockwise seen from
-# OUTSIDE the sphere — the same handedness `cell_boundary` winds in.
+# A right-handed tangent basis at a cell centre. Increasing
+# `atan(d.north, d.east)` is counter-clockwise when viewed from outside.
 @inline function _tangent_frame(id::UInt64)
     c = H3Native.cell_center_cartesian(id)
     ex, ey = -c[2], c[1]
     n = sqrt(ex * ex + ey * ey)
-    # No H3 cell centre lands exactly on a pole, but a frame that silently
-    # produced NaNs there would corrupt an order rather than fail.
+    # Use a fixed east vector when longitude is undefined at a pole.
     east = n <= 1e-12 ? (1.0, 0.0, 0.0) : (ex / n, ey / n, 0.0)
     north = (c[2] * east[3] - c[3] * east[2],
              c[3] * east[1] - c[1] * east[3],
@@ -133,11 +128,7 @@ end
                 dx * east[1] + dy * east[2] + dz * east[3])
 end
 
-# Insert into a sorted `SmallVector`, keeping it immutable and allocation-free.
-#
-# `SmallCollections.sort` is deliberately not used anywhere in this file: it
-# returns a `MutableSmallVector`, which is both a different concrete type from
-# the `k = 0` answer and a heap allocation.
+# Insert into an immutable sorted `SmallVector` without allocating.
 @inline function _insert_sorted(v::SmallVector{N,T}, x::T) where {N,T}
     i = length(v)
     v = SmallCollections.push(v, x)

@@ -480,9 +480,20 @@ function _sort_ccw!(shell::Vector{Z7Cell}, g::LevelGrid, c::Z7Cell,
     length(shell) <= 1 && return shell
     centre = DGG.cell_centroid(g, c)
     e1, e2 = _tangent_frame(centre, reference)
+    # Keys first, then sort. `sort!(; by)` recomputes the key on every
+    # comparison, and a key here is a centroid — an `_encode_lattice` and a
+    # Snyder inverse — so keying up front turns O(n log n) projections into n.
     # Ties by ascending id, per the contract: azimuth is the key, the id is the
     # tiebreak, so the order is total and reproducible.
-    sort!(shell; by = z -> (_azimuth(centre, e1, e2, DGG.cell_centroid(g, z)), z))
+    keyed = Vector{Tuple{Float64,Z7Cell}}(undef, length(shell))
+    @inbounds for i in eachindex(shell)
+        z = shell[i]
+        keyed[i] = (_azimuth(centre, e1, e2, DGG.cell_centroid(g, z)), z)
+    end
+    sort!(keyed)
+    @inbounds for i in eachindex(shell)
+        shell[i] = keyed[i][2]
+    end
     return shell
 end
 

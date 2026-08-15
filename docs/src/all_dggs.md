@@ -1,9 +1,10 @@
 # DGGS gallery
 
-Six representative systems, drawn through one function: a system and a level
-go in, cell polygons come out. `systems()` returns fifteen systems/profiles;
-the full registry comparison is in its docstring. Levels differ per panel only
-because apertures differ — each is chosen so cells stay visible at figure size.
+Six representative systems, drawn the same way: `levelgrid(sys, level)` goes
+straight into `Makie.poly!`. The levels differ per panel only because apertures
+differ — each is chosen so the cells stay visible at figure size. `systems()`
+returns fifteen entries in all; the full registry comparison is in its
+docstring.
 
 ```@raw html
 <style>
@@ -20,16 +21,8 @@ using GeoMakie
 using WGLMakie   # tutorials use GLMakie; this page activates the web backend
 using Bonito
 import Makie
-import GeometryOps as GO
 
 WGLMakie.activate!()
-
-# Every cell of a complete level, as lon/lat polygons.
-function cell_polygons(sys, level)
-    grid = DGG.levelgrid(sys, level)
-    return GO.transform(GO.GeographicFromUnitSphere(),
-                        DGG.cell_polygon.(Ref(grid), DGG.CellVector(grid)))
-end
 
 figure = Makie.Figure(size = (1200, 850), figure_padding = 4)
 for (k, (sys, level)) in enumerate([
@@ -45,7 +38,7 @@ for (k, (sys, level)) in enumerate([
     )
     GeoMakie.meshimage!(axis, -180..180, -90..90, fill(colorant"white", 1, 1); zlevel = 0.0)
     Makie.lines!(axis, GeoMakie.coastlines(); color = (:gray35, 0.55), linewidth = 0.8, zlevel = 0.005)
-    Makie.poly!(axis, cell_polygons(sys, level);
+    Makie.poly!(axis, DGG.levelgrid(sys, level);
         color = :transparent, strokewidth = 0.9, strokecolor = :black, zlevel = 0.01)
     Makie.Label(figure[row, col, Makie.Top()], "$(nameof(typeof(sys))), level $level"; font = :bold)
 end

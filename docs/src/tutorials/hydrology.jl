@@ -33,7 +33,7 @@ sys = DGG.IGeo7System()
 tile = Extents.Extent(X = (10.0, 11.0), Y = (46.0, 47.0))
 root = DGG.coarsest_contained(DGG.query(sys, DGG.MultiOrderCoverage(tile); level = 10))
 f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
-poly!(DGG.cell_polygon(DGG.levelgrid(sys, DGG.level(root)), root) |> x -> GO.transform(GO.GeographicFromUnitSphere(), x); strokewidth = 2)
+poly!(DGG.PartialGrid(sys, root, DGG.level(root)); strokewidth = 2)
 f
 # This is the actual cell we have:
 root, DGG.level(root)
@@ -117,19 +117,18 @@ drop = [flow[i] == 0 ? NaN : elevation[i] - elevation[flow[i]] for i in eachinde
 
 # Elevation, and the drop to the downhill neighbour — the drop map picks out
 # valley floors as the flat regions and headwalls as the steep ones.
-# `getcell(grid, i)` is the polygon at position `i`; without an argument it is
-# all of them.
+# `CellVector(grid)[shown]` is the covered cells as a vector, which `poly!`
+# draws directly, in the same order `elevation[shown]` follows.
 
-lonlat(g) = GO.transform(GO.GeographicFromUnitSphere(), g)
-polys = map(lonlat, DGG.getcell(grid))
 shown = findall(covered)
+cells = DGG.CellVector(grid)[shown]
 
 fig = Figure(size = (900, 430))
 ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84", title = "elevation (m)")
-p1 = poly!(ax1, polys[shown]; color = elevation[shown], colormap = :terrain, strokewidth = 0)
+p1 = poly!(ax1, cells; color = elevation[shown], colormap = :terrain, strokewidth = 0)
 Colorbar(fig[2, 1], p1; vertical = false)
 ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84", title = "drop to downhill neighbour (m)")
-p2 = poly!(ax2, polys[shown]; color = drop[shown], colormap = :magma,
+p2 = poly!(ax2, cells; color = drop[shown], colormap = :magma,
     nan_color = :gray80, strokewidth = 0)
 Colorbar(fig[2, 2], p2; vertical = false)
 fig

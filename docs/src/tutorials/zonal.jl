@@ -56,14 +56,14 @@ interior = DGG.query(grid, DGG.Within(texas))
 # ## The picture
 #
 # The covering, coloured by the data — the polygon, rasterized onto the grid.
-
-polys = GO.transform(lonlat, [DGG.cell_polygon(grid, cells[k]) for k in tx])
+# `cells[tx]` is the selected cells as a `CellVector`, which `poly!` draws
+# directly, in the same order `data[tx]` follows.
 
 fig = Figure(size = (700, 620))
 ax = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
     limits = ((-107.5, -92.5), (25.0, 37.5)),
     title = "HEALPix level-7 cells covering Texas")
-poly!(ax, polys; color = data[tx], colormap = :thermal,
+poly!(ax, cells[tx]; color = data[tx], colormap = :thermal,
     strokecolor = :white, strokewidth = 0.1)
 poly!(ax, texas; color = :transparent, strokecolor = :black, strokewidth = 2)
 fig

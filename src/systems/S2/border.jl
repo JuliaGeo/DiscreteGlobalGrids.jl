@@ -11,9 +11,8 @@
 # is no special case, because its neighbours across the seam are on another face
 # and so outside the subtree regardless.
 #
-# So the walk is the package's `SquareRimEngine`, shared with HEALPix and ISEA4R;
-# only the curve differs. Hilbert's quadrant order is orientation-dependent,
-# which is exactly what `quadrant_step` carries: `POS_TO_IJ` reads the curve
+# `SquareRimEngine` performs the walk in Hilbert order. Hilbert's quadrant order
+# is orientation-dependent, which `quadrant_step` carries: `POS_TO_IJ` reads the curve
 # position back to a quadrant and `POS_TO_ORIENTATION` advances the state, the
 # same two tables `hilbert_to_xyf` descends with. Pure index arithmetic — no
 # geometry, and no neighbour query at any level.
@@ -53,8 +52,8 @@ function _hilbert_orientation(index::Int64, nside::Int64)
     return UInt8(orientation)
 end
 
-# `descendant_range` is the only level guard needed — it raises both
-# `ArgumentError`s — and its `lo` is the subtree's first ordinal.
+# `descendant_range` validates the target level and returns the subtree's first
+# ordinal.
 function _s2_square(sys::S2System, c::DGG.LevelIndex, target::Int)
     r = DGG.descendant_range(sys, c, target)
     lc = DGG.level(c)
@@ -100,11 +99,10 @@ subtree_border(sys::S2System, c::DGG.LevelIndex, l::Integer;
 # derives those candidates by asking `neighbors` about a few rim cells, then
 # filters every one of them with the native one-ring. At a cube corner
 # `wrap_xyf` returns `nothing` and there is simply no diagonal candidate to
-# find, which is exactly why the count is not `4·side + 4` there and why the
-# seam path declares no `length`.
+# find. The seam path therefore has no fixed `4·side + 4` count and declares no
+# `length`.
 #
-# TWO THINGS HERE ARE NOT WHAT THE MORTON SYSTEMS DO, and both are Hilbert's
-# doing:
+# Hilbert ordering requires two distinctions from Morton ordering:
 #
 #   * The origin comes from the PARENT's `(ix, iy)` shifted left by `d`, not
 #     from decoding the block's first id. HEALPix and ISEA4R can decode the
@@ -115,20 +113,11 @@ subtree_border(sys::S2System, c::DGG.LevelIndex, l::Integer;
 #   * The orientation seed is the FACE ROOT's, `isodd(face) ? SWAP_MASK : 0x0`,
 #     not `_hilbert_orientation(c.index, ...)`. The descent starts at the face
 #     root, not at the block, so it must be seeded before any position bits are
-#     consumed. Seeding it with the block's state produces a walk that still
-#     emits `4·side + 4` cells on the right face — a plausible-looking wrong
-#     order, which only a differential test against geometry catches, and only
-#     from a level-3 root at that: the four non-flush level-2 blocks per face
-#     are each fixed by the very square symmetry the wrong seed applies, so the
-#     error is invisible at level 2. `BAND_BASES` in
-#     `test/systems/crosssystem/subtree_halos.jl` is what covers it. That seed
-#     is now `face_orientation` below, which the shared walk reads for EVERY
-#     face it visits, not only the block's own.
+#     consumed. `face_orientation` supplies the root state for every face the
+#     walk visits.
 function DGG.halo_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
         connectivity::DGG.Connectivity)
-    # The level guard, both `ArgumentError`s, in the halo verb's own wording —
-    # `descendant_range` would answer the same user error differently. See
-    # `check_halo_level`.
+    # Apply the common halo-level validation before deriving the block.
     DGG.check_halo_level(sys, c, target)
     _checked_index(c)
     d = target - DGG.level(c)
@@ -139,7 +128,7 @@ function DGG.halo_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
         _nside(target))
 end
 
-# The three lines the shared square walk needs from a system.
+# Square-walk hooks.
 DGG.lattice_decode(sys::S2System, c::DGG.LevelIndex) =
     hilbert_to_xyf(c.index, _nside(DGG.level(c)))
 

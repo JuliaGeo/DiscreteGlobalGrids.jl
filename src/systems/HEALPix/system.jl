@@ -24,10 +24,7 @@ contiguous. Maximum neighbour counts are 8 for `Vertex()` and 4 for `Edge()`.
 """
 struct HEALPixSystem <: DGG.AbstractHierarchicalGridSystem end
 
-# `levelgrid(HEALPixSystem(), l)` returns the package's `HierarchicalLevelGrid`,
-# a lightweight descriptor for all `12 * 4^level` pixels in nested order.
-# HEALPix's fast paths dispatch on this alias; the five primitives it forwards
-# to are the `(sys, ...)` methods below.
+# Grid descriptor for all `12 * 4^level` pixels in nested order.
 const LevelGrid = DGG.HierarchicalLevelGrid{HEALPixSystem}
 
 """
@@ -50,8 +47,7 @@ Base.isless(a::HEALPixRingIndex, b::HEALPixRingIndex) =
 Base.show(io::IO, c::HEALPixRingIndex) =
     print(io, "HEALPixRingIndex(", c.level, ", ", c.index, ")")
 
-# The one place `nside` is derived from a level, and the guard that keeps a
-# bad level from silently producing a shift of 64.
+# Convert a validated level to its face side and pixel count.
 @inline _nside(level::Integer) = Int64(1) << Int(level)
 @inline _npix(level::Integer) = 12 * (Int64(1) << (2 * Int(level)))
 
@@ -158,11 +154,9 @@ DGG.cellindex(::HEALPixSystem, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
 """
     cellposition(HEALPixSystem(), c) -> Union{Int,Nothing}
 
-Closed form: `index + 1` for an in-range id, and `nothing` for one no pixel has.
-Replaces the fallback's linear scan. The grid has already rejected a cell from
-another level, and reindexed a [`HEALPixRingIndex`](@ref) to nested — an
-out-of-range ring index makes `ring_to_xyf` throw, which the reindex step reads
-as "not a cell of this grid" and answers `nothing` for.
+Return `index + 1` for an in-range nested id, or `nothing` otherwise. The grid
+must reject cells from another level and convert [`HEALPixRingIndex`](@ref)
+values before calling this method.
 """
 function DGG.cellposition(::HEALPixSystem, c::DGG.LevelIndex)
     0 <= c.index < _npix(DGG.level(c)) || return nothing
@@ -191,8 +185,7 @@ end
 # edge give 32 boundary vertices and about 0.18% level-independent relative
 # area error. A power-of-two count also makes shared-edge sample arguments, and
 # therefore vertices, bit-identical across adjacent cells. The relative error
-# falls as `nseg^-2`, and `test/systems/HEALPix/runtests.jl` pins the bound for
-# this constant, so changing it moves that test.
+# falls as `nseg^-2`.
 const BOUNDARY_SEGMENTS = 8
 
 """
@@ -264,9 +257,7 @@ function DGG.cell_centroid(::HEALPixSystem, c::DGG.LevelIndex)
     return pixel_center(ix, iy, face, nside)
 end
 
-# The id guard every geometry entry point needs: `nested_to_xyf` will happily
-# un-Morton an id no pixel has, yielding the geometry of a cell that does not
-# exist rather than an error.
+# Validate a nested id before decoding it into face coordinates.
 @inline function _checked_index(c::DGG.LevelIndex)
     l = DGG.level(c)
     0 <= c.index < _npix(l) || throw(ArgumentError(
@@ -274,8 +265,7 @@ end
     return c.index
 end
 
-# The grid-level form the topology entry points use, which additionally pins the
-# cell to the grid it was handed to.
+# Also require the cell and grid to have the same level.
 @inline function _checked_index(g::LevelGrid, c::DGG.LevelIndex)
     DGG.level(c) == g.level || throw(ArgumentError(
         "cell $c is at level $(DGG.level(c)), not the grid's level $(g.level)"))
@@ -286,8 +276,7 @@ end
 # node_extent — the subtree cap
 # ===========================================================================
 
-# How many chart samples per edge the subtree cap is built from. See
-# `_subtree_cap` for why this number, and not the boundary's, sets the bound.
+# Chart samples per edge used to bound a subtree.
 const CAP_EDGE_SEGMENTS = 8
 
 """
@@ -462,8 +451,8 @@ function _tangent_basis(centre, toward)
     dot = u[1] * centre[1] + u[2] * centre[2] + u[3] * centre[3]
     t = (u[1] - dot * centre[1], u[2] - dot * centre[2], u[3] - dot * centre[3])
     n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
-    # A degenerate reference (a cell whose west corner is at its centre) cannot
-    # happen for a real pixel, but a fallback keeps this total.
+    # Use a deterministic tangent direction if the reference has no tangent
+    # component.
     n <= eps(Float64) && (t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0);
                           n = 1.0)
     e1 = (t[1] / n, t[2] / n, t[3] / n)

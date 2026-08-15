@@ -18,13 +18,10 @@ Chart edges are curved and [`cell_boundary`](@ref) densifies them.
 """
 struct ISEA4RSystem <: DGG.AbstractHierarchicalGridSystem end
 
-# `levelgrid(ISEA4RSystem(), l)` is the package's `HierarchicalLevelGrid`: all
-# `10 * 4^l` cells in Morton order. ISEA4R's fast paths hang off this alias, and
-# the five primitives it forwards to are the `(sys, ...)` methods further down.
+# Grid descriptor for all `10 * 4^l` cells in Morton order.
 const LevelGrid = DGG.HierarchicalLevelGrid{ISEA4RSystem}
 
-# The one place `nside` is derived from a level, and the guard that keeps a bad
-# level from silently producing a shift of 64.
+# Convert a validated level to its diamond side and cell count.
 @inline _nside(level::Integer) = Int64(1) << Int(level)
 @inline _ncells(level::Integer) = 10 * (Int64(1) << (2 * Int(level)))
 
@@ -47,23 +44,14 @@ DGG.has_sorted_subtrees(::ISEA4RSystem) = true
 
 `9` under `Vertex()`, `4` under `Edge()`.
 
-The nine is the icosahedron showing through a square lattice. A cell in a
-diamond's interior has the usual eight, and a corner cell on one of the ten
-valence-3 icosahedron vertices has seven — but vertices 0 and 11 each carry
-FIVE diamond-corners, so the corner cell there meets four other cells at the
-vertex, two of which are not reached by any axis offset. Eight becomes nine at
-exactly ten cells per level for levels above zero. At level zero every diamond
-has six vertex-neighbors. See `topology.jl` for the seam and corner-fan rules.
+Interior cells have eight vertex neighbours. At vertices 0 and 11, five
+diamond corners meet and a cell can have nine. Other valence-3 icosahedron
+vertices give seven. At level zero every diamond has six vertex neighbours.
 """
 DGG.max_neighbors(::ISEA4RSystem, ::DGG.Vertex) = 9
 DGG.max_neighbors(::ISEA4RSystem, ::DGG.Edge) = 4
 
-# Deferred, deliberately: `chart.jl` also carries a row-major codec, which would
-# make a perfectly good `ISEA4RRowMajorIndex` alternate scheme. It is not
-# offered, because unlike HEALPix's RING there is no external file layout that
-# wants it — nothing reads or writes ISEA4R row-major on disk — so it would be
-# an id space with no consumer. `xyd_to_rowmajor`/`rowmajor_to_xyd` stay
-# available inside the submodule for the chart's own arbitrary-`nside` use.
+# Row-major codecs remain internal; only the canonical Morton index is exposed.
 DGG.cellindextypes(::ISEA4RSystem) = (DGG.LevelIndex,)
 
 """
@@ -92,10 +80,8 @@ end
 
 The four Morton children `4*index .+ (0:3)`, one level down, ascending.
 
-Always exactly four: ISEA4R refinement is a uniform quadtree on every diamond,
-with no pentagons and no exceptional cells — the icosahedron's twelve vertices
-distort the *neighbourhood*, never the *subdivision*, because every vertex is a
-corner of the chart square and quartering a square keeps it one.
+ISEA4R refinement is a uniform quadtree, so every cell has exactly four
+children. Icosahedron vertices affect adjacency but not subdivision.
 
 In `(ix, iy)` terms the four are `(2ix, 2iy)`, `(2ix+1, 2iy)`, `(2ix, 2iy+1)`,
 `(2ix+1, 2iy+1)` in that order, since `morton(2ix + a, 2iy + b) == 4*morton(ix,
@@ -182,19 +168,15 @@ DGG.cellindex(::ISEA4RSystem, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
 """
     cellposition(ISEA4RSystem(), c) -> Union{Int,Nothing}
 
-Closed form: `index + 1` for an in-range id, and `nothing` for one no cell has.
-Replaces the fallback's linear scan, and never throws — a miss is an answer.
-The grid has already rejected a cell from another level.
+Return `index + 1` for an in-range id, or `nothing` otherwise. The grid must
+reject cells from another level first.
 """
 function DGG.cellposition(::ISEA4RSystem, c::DGG.LevelIndex)
     0 <= c.index < _ncells(DGG.level(c)) || return nothing
     return Int(c.index + 1)
 end
 
-# The id guard every geometry entry point needs: `morton_to_xyd` would happily
-# de-interleave an id no cell has, yielding the geometry of a cell that does not
-# exist rather than an error. (`cellposition` deliberately does NOT use this —
-# there, a miss is `nothing`.)
+# Validate a Morton id before decoding it into diamond coordinates.
 @inline function _checked_index(c::DGG.LevelIndex)
     l = DGG.level(c)
     0 <= c.index < _ncells(l) || throw(ArgumentError(
@@ -217,16 +199,9 @@ end
 # Eight great-circle segments approximate each curved chart edge. Shared points
 # are bit-identical within a diamond; cross-diamond incidence requires tolerance.
 #
-# So a hashed incidence test (`Set`/`Dict`) is sound only within a diamond, and
-# only because no boundary coordinate here is ever a NEGATIVE zero: those
-# containers compare with `isequal`, under which `-0.0` and `0.0` differ though
-# `==` equates them, so one negative zero on one side of a join would drop the
-# match silently — the sibling S2 port emits exactly these on its cube seams and
-# normalises for it. Exact zeros do occur, so this is pinned rather than assumed,
-# by "signed zeros cannot break a hashed incidence test" in
-# `test/systems/ISEA4R/runtests.jl`, which also pins that cross-rim points share
-# no coordinate exactly — turning such a test into a `Set` intersection would
-# report a seam neighbour as sharing nothing.
+# Hashed coordinate incidence is valid only within one diamond. Cross-diamond
+# boundaries require a tolerance, and boundary coordinates do not contain
+# negative zero.
 const BOUNDARY_SEGMENTS = 8
 
 """

@@ -56,8 +56,8 @@ small_push(list::SmallList{N,T}, item) where {N,T} =
 """
     small_pop(list)
 
-Return `list` without its last element. The dropped slot keeps its old contents,
-which `len` puts out of reach. Throws `BoundsError` when empty.
+Return `list` without its last element. Unused storage is unchanged. Throws
+`BoundsError` when empty.
 """
 @inline function small_pop(list::SmallList{N,T}) where {N,T}
     list.len > 0 || throw(BoundsError(list, 0))
@@ -67,8 +67,7 @@ end
 """
     small_setlast(list, item)
 
-Return `list` with its last element replaced — the in-place update an immutable
-stack needs to advance the frame on top of it. Throws `BoundsError` when empty.
+Return `list` with its last element replaced. Throws `BoundsError` when empty.
 """
 @inline function small_setlast(list::SmallList{N,T}, item::T) where {N,T}
     list.len > 0 || throw(BoundsError(list, 0))
@@ -81,10 +80,8 @@ small_setlast(list::SmallList{N,T}, item) where {N,T} =
 """
     small_setindex(list, item, i)
 
-Return `list` with element `i` replaced. [`small_setlast`](@ref) is the stack's
-version of this; this one is for the small ACCUMULATORS — a fixed-capacity table
-merged into by key, where the slot to update is found by a linear scan rather
-than being the top of a stack. Throws `BoundsError` outside `1:length(list)`.
+Return `list` with element `i` replaced. Throws `BoundsError` unless
+`i ∈ 1:length(list)`.
 """
 @inline function small_setindex(list::SmallList{N,T}, item::T, i::Int) where {N,T}
     1 <= i <= list.len || throw(BoundsError(list, i))

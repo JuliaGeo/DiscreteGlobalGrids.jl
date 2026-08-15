@@ -16,9 +16,7 @@ quintants; neither belongs to a complete system level.
 """
 struct A5System <: AbstractHierarchicalGridSystem end
 
-# `levelgrid(A5System(), l)` returns the package's `HierarchicalLevelGrid`, a
-# lightweight resolution descriptor. A5's fast paths dispatch on this alias;
-# the five primitives it forwards to are the `(sys, ...)` methods below.
+# Grid descriptor for all cells at one A5 resolution.
 #
 # Because A5 lacks sorted subtrees, treeifying a complete grid materializes all
 # root positions. Use a `PartialGrid` for deep queries.
@@ -26,8 +24,6 @@ const LevelGrid = HierarchicalLevelGrid{A5System}
 
 Base.show(io::IO, ::A5System) = print(io, "A5System()")
 
-# `MAX_LEVEL` (29) is defined beside the encoding it is a fact about, in
-# `cell.jl`.
 
 # ===========================================================================
 # Required system interface
@@ -40,9 +36,7 @@ levels(::A5System) = 0:MAX_LEVEL
 """
     rootcells(::A5System)
 
-The twelve dodecahedron faces, ascending. These are A5's res-0 tessellation, and
-the only level whose cells are pentagons of the *base solid* rather than of the
-lattice.
+The twelve level-0 dodecahedron faces in ascending id order.
 """
 rootcells(::A5System) = [A5Cell(id) for id in A5Native.res0_cells()]
 
@@ -72,11 +66,8 @@ end
 """
     children(::A5System, c::A5Cell) -> SmallVector{5,A5Cell}
 
-The five quintants of a res-0 face, or the four Hilbert children of anything
-deeper, ascending.
-
-Returns a non-allocating fixed-capacity vector in ascending id order. Level-0
-cells have five children; deeper cells have four.
+The five quintants of a level-0 face, or the four Hilbert children of a deeper
+cell, in ascending id order. The result uses a fixed-capacity vector.
 """
 function children(::A5System, c::A5Cell)
     l = level(c)
@@ -157,9 +148,8 @@ max_neighbors(::A5System, ::Edge) = 5
 # The dense order: positions <-> ids
 # ===========================================================================
 
-# `4^(level - 1)`, the number of cells per quintant, as an `Int64`. At level 29
-# this is 7.2e16 and the whole level is 4.3e18 — inside `Int64` with a factor of
-# two to spare, which is exactly why `levels` stops where it does.
+# Number of cells per quintant at a positive level. At level 29 the complete
+# grid still fits in `Int64`.
 _quintant_span(l::Int) = Int64(4)^(l - 1)
 
 function ncells(::A5System, l::Integer)
@@ -170,9 +160,9 @@ end
 """
     cellindex(::A5System, l::Integer, i::Int) -> A5Cell
 
-The id at position `i` of resolution `l`: one `divrem` into
-`(quintant, Hilbert state)` and one `serialize`. No table, no search, and O(1)
-at every level. The grid has already bounds-checked `i`.
+The id at position `i` of resolution `l`, computed from its quintant and Hilbert
+state in constant time. The grid must bounds-check `i` before calling this
+method.
 """
 function cellindex(::A5System, lvl::Integer, i::Int)
     l = Int(lvl)
@@ -186,12 +176,10 @@ end
 """
     cellposition(::A5System, c::A5Cell) -> Union{Int,Nothing}
 
-The position of `c` in its own resolution's dense order, or `nothing` when `c`
-is not a cell at all — the world cell, a res-30 id, or an id that is malformed
-in any of the ways [`isvalid`](@ref) rejects. The grid has already rejected a
-cell from another resolution.
-
-Malformed ids, including ids with nonzero padding, return `nothing`.
+The position of `c` in its resolution's dense order. Returns `nothing` for the
+world cell, a resolution-30 id, or any malformed encoding, including nonzero
+padding bits. The grid must reject cells from another resolution before calling
+this method.
 """
 function cellposition(::A5System, c::A5Cell)
     l = level(c)
@@ -209,9 +197,7 @@ end
 """
     ancestor(::A5System, c::A5Cell, l::Integer) -> A5Cell
 
-The ancestor at resolution `l`, in one `cell_to_parent` call rather than
-`level(c) - l` of them: the bit arithmetic truncates to any coarser level
-directly.
+The ancestor at resolution `l`, computed by truncating the id directly.
 
 Validation precedes the identity case: invalid cells have no ancestors,
 including themselves.
@@ -231,8 +217,7 @@ end
 """
     descendants(::A5System, c::A5Cell, l::Integer) -> Vector{A5Cell}
 
-Every descendant at resolution `l`, ascending. `cell_to_children` spans any
-number of levels in one call, so this never expands level by level.
+Every descendant at resolution `l`, in ascending id order.
 
 The result is checked and sorted only if the level-0 segment rotation requires
 it.
@@ -247,8 +232,7 @@ function descendants(::A5System, c::A5Cell, l::Integer)
         "descendant level $target is above the cell's own level $lc"))
     target <= MAX_LEVEL || throw(ArgumentError(
         "descendant level $target is past max_level $MAX_LEVEL"))
-    # Ahead of the identity case, so that the rule is the same one `ancestor`
-    # states: an invalid cell has no relatives, itself included.
+    # Invalid cells have no descendants, including at their reported level.
     isvalid(c) || throw(ArgumentError("A5 cell $c is not a valid cell"))
     target == lc && return A5Cell[c]
     ids = collect(UInt64, A5Native.cell_to_children(c.id, target))

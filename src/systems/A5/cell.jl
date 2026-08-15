@@ -24,9 +24,8 @@
 # resolution — under a name that cannot be confused with the id type below.
 const NativeCell = A5Native.A5Cell
 
-# The deepest level with a COMPLETE grid, which is a fact about the encoding
-# rather than about the system: `A5Native.MAX_RESOLUTION` is 30, but only 42 of
-# the 60 quintants fit the res-30 layout. `levels(A5System())` is `0:MAX_LEVEL`.
+# Deepest level whose encoding accommodates all 60 quintants. Resolution 30
+# accommodates only 42 quintants.
 const MAX_LEVEL = A5Native.MAX_GRID_RESOLUTION      # 29
 
 """
@@ -57,8 +56,7 @@ Base.show(io::IO, c::A5Cell) =
     print(io, "A5Cell(0x", string(c.id; base=16, pad=16), ", res ", level(c), ")")
 
 # ---------------------------------------------------------------------------
-# The one decoder every entry point that can be handed an arbitrary id goes
-# through.
+# Decode only ids that belong to a complete system level.
 # ---------------------------------------------------------------------------
 
 """

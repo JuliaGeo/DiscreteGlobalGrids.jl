@@ -219,13 +219,27 @@ has no such digit algebra on record here at all — `hex.jl` calls A4 the ordina
 class-I triangular lattice, which points at lattice coordinates rather than at a
 named arithmetic.
 
-**ISEA3H/4H `node_extent` is 9µs and `cap_inflation` is 3.5–4.5.** The prefix
-parents are deliberately non-spatial: a cell's children are not inside it, so the
-covering cap has to be wide, and the systems opt out of the conformance
-harness's convexity requirement. Tree pruning is correspondingly poor, which is
-why these two are the slowest systems in the multi-order coverage tests even
-after the fixes. That is a property of the indexing choice, and the branch
-already documents it.
+**ISEA3H/4H `node_extent` is 9µs and the declared `cap_inflation` is 3.5–4.5.**
+Neither system overrides `node_extent`, so the 9µs is `cell_boundary`
+(8.7–8.8µs above) reduced to a cap and scaled by the constant. Both are
+central-place refinements and a cell's children genuinely lie outside its
+polygon, so the cap does have to inflate past the cell — that much the geometry
+forces. How far it has to inflate is a measurement: the smallest `f` with
+`spherical_distance(centres) + r_desc <= f · r_anc` over every
+ancestor/descendant pair, exhaustive at the low levels, is ~2.0 for ISEA3H and
+~1.68 for ISEA4H. The declared 4.5 and 3.5 are more than double that. They are a
+magnitude-sum limit of the per-level overhang series — a triangle inequality
+that assumes every level's displacement points the same way — where the
+central-place digit directions rotate between levels and mostly cancel. Tree
+pruning is correspondingly poor, which is why these two are the slowest systems
+in the multi-order coverage tests even after the fixes, and more than half of
+that cap radius buys nothing. The oversize is also the only reason the ISEA3H
+and ISEA4H conformance calls pass `require_convex_extents=false`: at 4.5 and 3.5
+an extent exceeds a hemisphere at ISEA3H levels 0–1 and ISEA4H level 0, and
+nowhere else. Non-convexity is the declared constant's doing, not the
+refinement's — at the measured requirement every extent is a convex cap. The
+constants are being tightened to the measured requirement, with a test that
+reproduces it landing alongside.
 
 **ISEA4T's vertex star is geometric.** 33µs against 4µs for the edge star: the
 edge star crosses each chart edge at its inverse-projected midpoint and asks

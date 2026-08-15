@@ -205,7 +205,8 @@ function _rekey(mov::MultiOrderVector, ref::Int)
     ref == mov.reference_level && return mov
     ref >= mov.reference_level || throw(ArgumentError(
         "cannot re-key a multi-order vector from reference level " *
-        "$(mov.reference_level) up to $ref: a stored cell may be deeper than $ref"))
+        "$(mov.reference_level) to the shallower level $ref: a stored cell may " *
+        "be deeper than $ref"))
     ranges = [descendant_range(mov.system, c, ref) for c in mov.cells]
     return _multiorder_vector(mov.system, mov.cells, first.(ranges), last.(ranges), ref, false)
 end
@@ -550,9 +551,29 @@ function _merged_intervals(ivs::Vector{Tuple{Int,Int}})
     return out
 end
 
+# Both operands are already sorted by start, so the union is their MERGE — the
+# O(n + m) the type's complexity note promises, where sorting the concatenation
+# would have been O((n + m) log(n + m)) over data that was never out of order.
+# Ties keep `A` first, which is the stable sort's answer too.
 function _union_intervals(A::Vector{Tuple{Int,Int}}, B::Vector{Tuple{Int,Int}})
-    both = vcat(A, B)
-    sort!(both; by=first)
+    both = Vector{Tuple{Int,Int}}(undef, length(A) + length(B))
+    i = j = 1
+    for k in eachindex(both)
+        take_a = if i > length(A)
+            false
+        elseif j > length(B)
+            true
+        else
+            @inbounds A[i][1] <= B[j][1]
+        end
+        if take_a
+            @inbounds both[k] = A[i]
+            i += 1
+        else
+            @inbounds both[k] = B[j]
+            j += 1
+        end
+    end
     return _merged_intervals(both)
 end
 
@@ -622,16 +643,20 @@ end
 
 # --- equality and geometry -------------------------------------------------
 
-# Same system and the same cells. The intervals are compared rather than the
-# ids, at the deeper of the two reference levels, so that two containers of the
-# same cells keyed at different levels compare equal — the reference level is
-# the unit the intervals are stated in, not part of what is stored.
+# Same system and the same cells — the CELLS, which is the question `mov`
+# semantically is its id vector answers, and the one `cellposition` answers too:
+# an interval names a cell only together with the level it is read at, which is
+# why that function tests the level as well and why this one cannot test the
+# intervals alone.
+#
+# The reference level does not enter, and that is the point rather than an
+# omission: it is the unit the intervals are stated in, not part of what is
+# stored, so two containers of the same cells keyed at different levels compare
+# equal here without either being re-keyed first.
 function Base.:(==)(a::MultiOrderVector, b::MultiOrderVector)
     system(a) == system(b) || return false
     length(a) == length(b) || return false
-    ref = max(a.reference_level, b.reference_level)
-    x, y = _rekey(a, ref), _rekey(b, ref)
-    return x.starts == y.starts && x.stops == y.stops
+    return a.cells == b.cells
 end
 
 """

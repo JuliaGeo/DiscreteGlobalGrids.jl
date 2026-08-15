@@ -77,6 +77,15 @@ function _complete_segment(w::CellWindows, r::UnitRange{Int})
     return a:b
 end
 
+# `intervals` MATERIALISES one tuple per window, which on `PositionWindows` is
+# one per CELL — megabytes on a selection this package is meant to hold tens of
+# millions of. The set operations want the vector, because they merge it; a walk
+# only ever iterates, so it gets the same sequence lazily.
+eachinterval(w::RangeWindows) =
+    ((@inbounds(w.starts[j]), @inbounds(w.stops[j])) for j in eachindex(w.starts))
+
+eachinterval(w::PositionWindows) = ((p, p) for p in w.positions)
+
 # ===========================================================================
 # Fixed level
 # ===========================================================================
@@ -153,7 +162,15 @@ end
 # The data-array segments are ranges even though a group's leaf positions need
 # not be: `k` counts positions `cv` holds, so a gap in the middle of a group is
 # a gap in the leaf positions and no gap at all in the concatenation.
-function _aggregate_segments(cv::CellVector, coarse::AbstractGrid, target::Int)
+#
+# The windows are handed on as their own argument so that the loop below is
+# specialised on ONE shape: `cv.windows` is a `Union` of the two, and a
+# `Union`-typed iterator would make every statement in the loop dynamic.
+_aggregate_segments(cv::CellVector, coarse::AbstractGrid, target::Int) =
+    _aggregate_segments(cv, cv.windows, coarse, target)
+
+function _aggregate_segments(cv::CellVector, w::CellWindows, coarse::AbstractGrid,
+        target::Int)
     sys = system(cv)
     leaf = level(cv)
     positions = Int[]
@@ -161,7 +178,7 @@ function _aggregate_segments(cv::CellVector, coarse::AbstractGrid, target::Int)
     k = 0        # values consumed
     kstart = 0   # first value of the open group
     stop = 0     # last leaf POSITION of the open group; 0 while none is open
-    for (lo, hi) in intervals(cv.windows)
+    for (lo, hi) in eachinterval(w)
         p = lo
         while p <= hi
             if p > stop
@@ -284,11 +301,33 @@ function _coarsen(cv::CellVector, values::AbstractVector; atol, by=_mean,
         "minlevel $stop_level is deeper than the vector's level $(level(cv)); " *
         "coarsening only ever climbs"))
     cells = cellindextype(sys)[]
-    vals = Any[]
+    # `_accumulator` is a function BARRIER: its element type is a runtime value,
+    # so this call is one dynamic dispatch per root cell and everything the walk
+    # does below it is specialised on a concrete vector.
+    vals = _accumulator(values, by)
     for c in rootcells(sys)
         _coarsen_visit!(cells, vals, cv, values, c, stop_level, atol, by)
     end
     return cells, _narrow(vals, values)
+end
+
+# What the walk can push, decided before it starts: a leaf pushes an element of
+# `values`, a merge pushes `by`'s answer, and an all-`missing` group pushes
+# `missing` — which can only arise when `eltype(values)` already admits it.
+# Both are known here, so the values go into a CONCRETE vector — an `isbits`
+# `Union` at worst, one tag byte per element — instead of being boxed one at a
+# time into a `Vector{Any}`.
+#
+# This is a widening, not the answer: `_narrow` still reports the narrowest
+# container holding what was actually emitted, so a `by` that inference cannot
+# see through costs the old `Vector{Any}` accumulation and nothing else.
+#
+# `promote_op` is an inference query and costs a fixed ~1.4 kB per `coarsen`
+# call, whatever the vector's length. That is the trade: a constant, against one
+# heap box per stored value on a container built for tens of millions of them.
+function _accumulator(values::AbstractVector, by)
+    T = Union{eltype(values),Base.promote_op(by, typeof(view(values, 1:0)))}
+    return Vector{T}(undef, 0)
 end
 
 # Top-down, which the monotonicity of the criterion makes equivalent to the
@@ -298,8 +337,9 @@ end
 # is read, which is what keeps the walk O(#nodes the data touches) rather than
 # O(#cells of the level).
 #
-# `rootcells` and `children` are ascending by contract, so the pre-order walk
-# emits cells already sorted by descendant-range start.
+# `rootcells` is ascending by contract and the descent below takes the children
+# in position order, so the pre-order walk emits cells already sorted by
+# descendant-range start.
 function _coarsen_visit!(cells, vals, cv::CellVector, values::AbstractVector,
         c::AbstractCellIndex, minlevel::Int, atol, by)
     sys = system(cv)
@@ -321,48 +361,96 @@ function _coarsen_visit!(cells, vals, cv::CellVector, values::AbstractVector,
     if lc >= minlevel
         ks = _complete_segment(w, r)
         if ks !== nothing
-            merges, v = _merged_value(values, ks, atol, by)
+            merges, allmissing = _merges(values, ks, atol)
             if merges
                 push!(cells, c)
-                push!(vals, v)
+                # `by` runs HERE, once the merge is committed and never for a
+                # candidate that was rejected — and an all-`missing` region
+                # stores `missing` rather than whatever `by` makes of it.
+                push!(vals, allmissing ? missing : by(view(values, ks)))
                 return nothing
             end
         end
     end
-    for child in children(sys, c)
-        _coarsen_visit!(cells, vals, cv, values, child, minlevel, atol, by)
+    # The children, without materialising them. With sorted subtrees a cell's
+    # descendants at the NEXT level are exactly its children and occupy one
+    # ascending interval of that level, so this names the same cells in the same
+    # order `children` would — and `children` allocates a vector per node on
+    # every system that does not answer with a `SmallVector`, once per cell the
+    # data touches.
+    kids = levelgrid(sys, lc + 1)
+    for q in descendant_range(sys, c, lc + 1)
+        _coarsen_visit!(cells, vals, cv, values, cellindex(kids, q), minlevel, atol, by)
     end
     return nothing
 end
 
-# The criterion, on one subtree's leaf values. Returns whether it merges and,
-# when it does, what to store.
+# The criterion, on one subtree's leaf values: `(merges, allmissing)`, which the
+# caller turns into a value. Two `Bool`s rather than the value itself, because a
+# `Union{Missing,T}` cannot ride home in a tuple without being boxed — once per
+# candidate node, which is once per cell the data touches.
 #
 # The three-way reading of `missing` is the pinned one: all-missing is a
-# perfectly flat region and merges to `missing`, mixed never merges. Counting
-# first also keeps `extrema` off a vector that would answer `missing` for a
+# perfectly flat region and merges to `missing`, mixed never merges.
+#
+# ONE pass, and it stops at the first value that settles the question. A group
+# that fails on its second element used to be walked three times over — a
+# `count(ismissing)`, an `extrema` and only then the decision — where the answer
+# was available at the second element.
+#
+# The first element decides which of the two readings is even open, which is
+# what keeps the spread test off a vector that would answer `missing` for a
 # reason that has nothing to do with the spread.
-function _merged_value(values::AbstractVector, ks::UnitRange{Int}, atol, by)
+function _merges(values::AbstractVector, ks::UnitRange{Int}, atol)
     vs = view(values, ks)
-    nmissing = count(ismissing, vs)
-    nmissing == length(vs) && return true, missing
-    nmissing == 0 || return false, missing
-    lo, hi = extrema(vs)
-    hi - lo <= atol || return false, missing
-    return true, by(vs)
+    n = length(vs)
+    v1 = @inbounds vs[1]
+    if ismissing(v1)
+        for i in 2:n
+            ismissing(@inbounds vs[i]) || return false, false
+        end
+        return true, true
+    end
+    lo = hi = v1
+    for i in 2:n
+        v = @inbounds vs[i]
+        ismissing(v) && return false, false
+        # `min`/`max` rather than comparisons, because that is what `extrema`
+        # answered with: a `NaN` propagates into both ends and the spread test
+        # then refuses the merge, where `v < lo` would have ignored it.
+        lo, hi = min(lo, v), max(hi, v)
+        hi - lo <= atol || return false, false
+    end
+    # A one-element group never enters the loop, so the spread is settled here;
+    # for a longer one the last iteration already settled it.
+    hi - lo <= atol || return false, false
+    return true, false
 end
 
-# The values are accumulated untyped because their type is not known until `by`
-# has run — a `mean` of integers is not an integer, and an all-`missing` group
-# contributes `Missing` whatever the input eltype was. Widening over what was
-# actually emitted gives the narrowest container that holds it, rather than
-# `promote_type`'s answer to a question nobody asked.
-function _narrow(vals::Vector{Any}, values::AbstractVector)
+# The accumulator holds what the walk COULD push (`_accumulator`); this reports
+# what it did. A `mean` of integers is not an integer and an all-`missing` group
+# contributes `Missing` whatever else was emitted, so widening over the values
+# themselves gives the narrowest container that holds them, rather than
+# `promote_type`'s answer to a question nobody asked — and an `Int` field that
+# never merged comes back a `Vector{Int}`.
+#
+# The copy is skipped when the accumulator was already that narrow, which is the
+# ordinary case: one eltype in, one eltype out. A CONCRETE accumulator is that
+# case by construction — every element of a `Vector{S}` is an `S` when `S` is
+# concrete — so it does not even need the scan.
+#
+# The scan tests `typeof(v) === T` rather than `v isa T`: `isa` against a
+# `Union{}`-typed local is folded to `true` where the element type is concrete
+# (Julia 1.12), which would answer `Vector{Union{}}` and throw on the copy.
+function _narrow(vals::Vector{S}, values::AbstractVector) where {S}
     isempty(vals) && return similar(values, 0)
+    isconcretetype(S) && return vals
     T = Union{}
     for v in vals
-        v isa T || (T = Union{T,typeof(v)})
+        U = typeof(v)
+        U === T || (T = Union{T,U})
     end
+    T === S && return vals
     out = Vector{T}(undef, length(vals))
     copyto!(out, vals)
     return out

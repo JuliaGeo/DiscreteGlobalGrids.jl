@@ -389,6 +389,43 @@ end
         @test any(c -> DGG.level(c) == L, cells)
     end
 
+    @testset "the position-list window shape answers the same" begin
+        # Every fixture above stores `RangeWindows`: the compression picks that
+        # shape whenever the cells run in long blocks, which a whole subtree and
+        # a group-punched one both do. So the OTHER shape — a bare sorted
+        # position list, and the window lookups written for it — went unread by
+        # this file, and `_next_position(::PositionWindows, ...)` could search
+        # from the wrong end without a single assertion noticing.
+        #
+        # This keeps the first sibling group whole and thins everything after it
+        # to every other cell: gaps enough that the heuristic stores positions,
+        # and one complete group so the MERGE path is reached on that shape too.
+        g = length(DGG.descendant_range(sys, parents[1], L))
+        thin = cv[[k for k in 1:n if k <= g || isodd(k)]]
+        @test FB.windows(thin) isa FB.PositionWindows
+        @test length(thin) < n
+
+        # Flat on the whole group, distinct after it.
+        values = [k <= g ? 1.0 : Float64(k) for k in eachindex(thin)]
+        cells, vals = FB._coarsen(thin, values; atol=0.0)
+        want, wantvals = brute_coarsen(sys, thin, values, 0.0, mean, top)
+        @test cells == want
+        @test isequal(vals, wantvals)
+        # Not vacuous in either direction, which is what makes the comparison
+        # above worth making: the whole group merged, the thinned ones did not,
+        # and nothing outside `thin` was named.
+        @test parents[1] in cells
+        @test any(c -> DGG.level(c) == L, cells)
+        @test all(c -> DGG.level(c) == L ? c in thin : true, cells)
+
+        # And the fixed-level verb, which reads the same windows as intervals.
+        acells, avals = DGG.aggregate(sum, thin, values, L - 1)
+        awant, awantvals, _ = brute_aggregate(sum, sys, collect(thin), values, L - 1)
+        @test collect(acells) == awant
+        @test avals == awantvals
+        @test sum(avals) == sum(values)
+    end
+
     @testset "`missing` is read three ways" begin
         # The first level-`L-1` group all `missing`, the second mixed, the rest
         # data.

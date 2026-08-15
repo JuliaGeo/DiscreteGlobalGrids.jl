@@ -24,19 +24,14 @@
 # subtree face (no non-centre row of `NB_FACEARRAY` maps a face to itself), and
 # missing diagonals at degree-3 vertices do not affect rim membership.
 #
-# That leaves nothing HEALPix-specific in the walk itself: it is the package's
-# `SquareRimEngine` under `MortonCurve`, shared with ISEA4R (same curve) and S2
-# (Hilbert), which descends the quadtree in curve order and prunes a quadrant
-# inheriting none of the parent square's exposed sides.
+# `SquareRimEngine` descends this block in Morton order and prunes quadrants
+# that inherit none of the square's exposed sides.
 
-# Extended, not shadowed: `HEALPix.subtree_border` and
-# `DiscreteGlobalGrids.subtree_border` are the same function, so generic code
-# gets the Morton walk without knowing HEALPix has one.
+# Extend the package-level `subtree_border` generic.
 import ..DiscreteGlobalGrids: subtree_border
 
-# `descendant_range` runs FIRST and is the only level guard needed: it raises the
-# `target < level(c)` and `> max_level` `ArgumentError`s, and its `lo` is the
-# subtree's first nested id. Nothing below re-derives either.
+# `descendant_range` validates the target level and returns the subtree's first
+# nested position.
 function _healpix_square(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int)
     r = DGG.descendant_range(sys, c, target)
     _checked_index(c)
@@ -55,6 +50,41 @@ function DGG.interior_engine(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int,
     lo, side = _healpix_square(sys, c, target)
     return DGG.SquareInteriorEngine(DGG.MortonCurve(), lo, target, side, 0x0)
 end
+
+# The halo — the outside face of the same boundary — is the width-1 band
+# around the block, walked lazily by the package's face-quadtree descent. Away
+# from the face edge that band is entirely in-face, where adjacency is the plain
+# 3×3 lattice (every irregular neighbourhood in `NB_FACEARRAY` sits on a face
+# edge), so the band IS the halo, minus its four corners under `Edge()`. Flush
+# with the edge it crosses the seam — `NB_SWAPARRAY` territory, ids on other
+# faces — and `square_halo_engine` derives the candidate rectangles by asking
+# `neighbors` about a few rim cells and filtering every candidate with the
+# native one-ring. Neither case needs a seam table here.
+#
+# The block's first Morton id decodes to its minimum lattice corner.
+#
+# `side == 1` is depth zero, which the generic engine answers with the cell's
+# own one-ring — exact at the degree-3 vertices, where a band of one is not.
+function DGG.halo_engine(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int,
+        connectivity::DGG.Connectivity)
+    # Apply the common halo-level validation before deriving the square.
+    DGG.check_halo_level(sys, c, target)
+    lo, side = _healpix_square(sys, c, target)
+    side == 1 && return DGG.generic_halo_engine(sys, c, target, connectivity)
+    n = _nside(target)
+    ix, iy, face = nested_to_xyf(lo, n)
+    return DGG.square_halo_engine(sys, DGG.MortonCurve(), c, target, connectivity,
+        Int64(ix), Int64(iy), side, Int64(face), n)
+end
+
+# Square-walk hooks. Morton orientation is `0x0` on every face.
+DGG.lattice_decode(sys::HEALPixSystem, c::DGG.LevelIndex) =
+    nested_to_xyf(c.index, _nside(DGG.level(c)))
+
+DGG.lattice_cell(sys::HEALPixSystem, l::Int, ix::Integer, iy::Integer,
+    face::Integer) = DGG.LevelIndex(l, xyf_to_nested(ix, iy, face, _nside(l)))
+
+DGG.face_orientation(sys::HEALPixSystem, face::Integer) = 0x0
 
 """
     subtree_border(sys::HEALPixSystem, c::LevelIndex, leaf_level::Integer; connectivity = Vertex()) -> Vector{LevelIndex}

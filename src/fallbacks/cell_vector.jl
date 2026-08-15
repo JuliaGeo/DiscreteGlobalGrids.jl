@@ -1,29 +1,15 @@
-# ---------------------------------------------------------------------------
-# `CellVector` — the compressed cell collection
+# `CellVector` is a strictly ascending collection of cells from one system and
+# level. It stores leaf-grid position windows and resolves ids on demand.
+# DimensionalData's `CellLookup` delegates to this dependency-free collection.
 #
-# A strictly ascending run of cells at ONE level of one system, stored as the
-# leaf position WINDOWS they occupy rather than as their ids. It is an
-# `AbstractVector` of the ids: the compression is the storage, never the
-# semantics.
-#
-# This is the substrate the DimensionalData layer (`src/dimensionaldata.jl`)
-# wraps, and it is deliberately DimensionalData-free so that everything else —
-# regridding, chunking, a bare `PartialGrid` workflow — gets the same
-# compression without importing a cube library. `CellLookup` is this type
-# wearing a `DimensionalData.Lookup` hat and nothing more; every verb it
-# answers is one of the verbs below.
-#
-# The two shapes below answer the same two questions, which is the whole of
-# what the vector needs:
+# Both window representations support these mappings:
 #
 #   `leafposition(w, k)`   concatenation position -> leaf grid position
 #   `windowposition(w, p)` leaf grid position -> concatenation position or `nothing`
 # ---------------------------------------------------------------------------
 
-# Ranges are held as three parallel `Int` vectors rather than as a
-# `Vector{UnitRange{Int}}` plus offsets: same three words per window, and both
-# searches become a plain `searchsortedfirst` over a stored vector instead of a
-# `last.(ranges)` allocation on every lookup.
+# Parallel vectors allow both searches to use `searchsortedfirst` without
+# deriving range endpoints for each lookup.
 struct RangeWindows
     starts::Vector{Int}
     stops::Vector{Int}
@@ -67,18 +53,45 @@ end
 
 leafpositions(w::CellWindows) = (leafposition(w, k) for k in 1:length(w))
 
-# Every window set in this file is built in CANONICAL form: runs are maximal, so
-# two windowings name the same leaf positions if and only if their runs match
-# one for one. That is what lets the `RangeWindows` pair below decide equality
-# on three vectors instead of on every position, and it is why the set
-# operations normalise (`_windows_from_intervals`) rather than emitting whatever
-# split their merge happened to produce.
+# Classify how much of the leaf block `lo:hi` is stored. Both representations
+# inspect the first entry that reaches `lo`:
+#
+#   * nothing reaches `lo`, or the first thing that does starts past `hi` — the
+#     block is empty of stored cells;
+#   * that one run covers the whole block — the block is stored entire, and it
+#     takes only one run to say so because runs are maximal and disjoint;
+#   * anything else — the block is partly stored, which is all the walk needs.
+#
+# For `PositionWindows`, strict ascent makes the block complete exactly when
+# the entry `hi - lo` slots later is `hi`.
+@inline function span_windows(w::RangeWindows, lo::Int, hi::Int)
+    j = searchsortedfirst(w.stops, lo)
+    j <= length(w.stops) || return _SPAN_NONE
+    @inbounds start = w.starts[j]
+    start > hi && return _SPAN_NONE
+    (start <= lo && @inbounds(w.stops[j]) >= hi) && return _SPAN_ALL
+    return _SPAN_SOME
+end
+
+@inline function span_windows(w::PositionWindows, lo::Int, hi::Int)
+    j = searchsortedfirst(w.positions, lo)
+    j <= length(w.positions) || return _SPAN_NONE
+    @inbounds p = w.positions[j]
+    p > hi && return _SPAN_NONE
+    if p == lo
+        k = j + (hi - lo)
+        (k <= length(w.positions) && @inbounds(w.positions[k]) == hi) &&
+            return _SPAN_ALL
+    end
+    return _SPAN_SOME
+end
+
+# Runs are stored maximally, so equal `RangeWindows` have identical boundaries.
+# Set operations normalize their output to preserve this invariant.
 Base.:(==)(a::RangeWindows, b::RangeWindows) =
     a.starts == b.starts && a.stops == b.stops
 
-# Across the two shapes the runs cannot be compared directly, so the fallback
-# says the same thing the slow way: the compression heuristic is an
-# implementation detail and must not be observable through `==`.
+# Compare logical positions when the window representations differ.
 Base.:(==)(a::CellWindows, b::CellWindows) =
     length(a) == length(b) && all(((x, y),) -> x == y, zip(leafpositions(a), leafpositions(b)))
 
@@ -97,10 +110,8 @@ function _range_windows(ranges)
     return RangeWindows(starts, stops, offsets)
 end
 
-# Run-compress a sorted position list, then keep whichever shape is smaller.
-# A run costs three words and a bare position one, so ranges win exactly when
-# they are at most a third of the positions; the factor is stated here rather
-# than tuned, because both shapes answer identically and only memory moves.
+# Run-compress sorted positions and keep the smaller representation. A range
+# uses three integers; an explicit position uses one.
 function _windows(positions::Vector{Int})
     isempty(positions) && return _empty_windows()
     runs = 1
@@ -131,18 +142,16 @@ end
 
 # --- the two shapes, read as intervals -------------------------------------
 #
-# The set operations are interval arithmetic, and interval arithmetic does not
-# care which shape stored the interval. A bare position is a one-cell interval,
-# so both shapes answer this and the merges below are O(#windows) on either.
+# Set operations convert both representations to intervals. An explicit
+# position becomes a one-cell interval.
 
 intervals(w::RangeWindows) =
     [(@inbounds(w.starts[j]), @inbounds(w.stops[j])) for j in eachindex(w.starts)]
 
 intervals(w::PositionWindows) = [(p, p) for p in w.positions]
 
-# Sorted, disjoint, maximal intervals -> windows, in the canonical form the
-# equality above assumes. The heuristic is `_windows`', restated over intervals
-# so that a set operation never has to expand to positions to choose a shape.
+# Convert sorted intervals to maximal windows without expanding ranges merely
+# to choose a representation.
 function _windows_from_intervals(ivs::Vector{Tuple{Int,Int}})
     isempty(ivs) && return _empty_windows()
     merged = Tuple{Int,Int}[]
@@ -183,26 +192,20 @@ end
     CellVector(grid::AbstractGrid)
     CellVector(sys, level, ids::AbstractVector)
 
-An immutable, lazy `AbstractVector` of **strictly ascending cell ids at one
-level** of one hierarchical system, stored as the leaf position *windows* they
-occupy rather than as the ids themselves.
+An immutable, lazy `AbstractVector` of strictly ascending cell ids from one
+level of one hierarchical system. It stores their leaf-grid position windows
+instead of the ids.
 
 Semantically `cv` **is** the id vector: `length(cv)` is the number of cells,
 `cv[k]` is the `k`th of them, `collect(cv)` is the vector itself. What is
-*stored* is sorted, disjoint intervals (or, where intervals are unavailable, a
-sorted position list) in `levelgrid(system(cv), level(cv))`, so memory is
-O(#windows) rather than O(#cells) — on a Switzerland-sized region at IGEO7
-level 9 that is 666 windows standing for 60,861 cells, and the *same* 666
-windows for the level-12 re-expansion of the same coverage, which names
-20,875,323. `cv[k]` binary-searches the windows' cumulative lengths and
+*stored* is sorted, disjoint intervals or a sorted position list in
+`levelgrid(system(cv), level(cv))`, so memory is O(number of windows) rather
+than O(number of cells). `cv[k]` searches the windows' cumulative lengths and
 resolves one `cellindex`; [`cellposition`](@ref) runs the inverse. Nothing is
 materialised.
 
-This is the compression itself, with no cube library attached.
-[`CellLookup`](@ref) is this type wearing a `DimensionalData.Lookup` hat, and
-every method it answers delegates to one of the verbs here — so regridding,
-chunking and plain-array code get the same laziness without importing
-`DimensionalData`.
+[`CellLookup`](@ref) provides the DimensionalData wrapper and delegates its
+collection operations to this type.
 
 # The three ways in
 
@@ -215,8 +218,7 @@ chunking and plain-array code get the same laziness without importing
   - `sys, level, ids` — an explicit **strictly ascending** id vector, validated
     and run-compressed.
 
-`CellVector(cv)` is the identity. The last two forms are the degenerate cases
-of the first and answer every method below identically.
+`CellVector(cv)` returns `cv` unchanged.
 
 # The verbs
 
@@ -232,26 +234,19 @@ PartialGrid(cv)                # read as a grid, O(1) — the regridding handsha
 cellset(cv)                    # what it was built from
 ```
 
-# Memory, and where it is spent
+`Base.summarysize(cv)` is O(number of windows) plus the object referenced by
+[`cellset`](@ref). Indexing is O(log(number of windows)) and allocation-free.
 
-`Base.summarysize(cv)` is O(#windows) plus whatever [`cellset`](@ref) points
-at, and re-expanding one coverage to a deeper level does not move it — that
-invariance is the reason the type exists. Reading is O(log #windows) and
-allocation-free.
-
-Construction is a different question. Where [`has_sorted_subtrees`](@ref)
-holds, [`level_ranges`](@ref) is already the answer and building is
+Where [`has_sorted_subtrees`](@ref) holds, [`level_ranges`](@ref) constructs the
+windows in
 O(#entries). Where it does not (A5), a cell's descendants are not one interval
 of their level, so the vector is built by SELECTION: `descendants` names the
 leaves, they are resolved to positions and sorted, and the result is
 run-compressed like any other position list. Every method above is unchanged
-and every law still holds; what it costs is the *construction*, which walks the
-leaves. The stored form is still whatever the compression finds — usually a
-handful of windows on a connected region, one position per cell in the worst
-case, and bounded by the subset either way.
+as any other position list. This construction visits every leaf. The stored
+form ranges from a small set of windows to one position per cell.
 
-One consequence there is inherited rather than introduced: an A5 cell's
-descendants need not lie inside its own footprint, so expanding a coverage
+For A5, descendants need not lie inside their parent's footprint, so expanding a coverage
 names leaves the target does not touch — most visibly inside a hole. A
 [`covering`](@ref) subset on A5 is therefore a superset of the cells that meet
 the region, by the same margin the refinement itself is; see
@@ -270,8 +265,7 @@ function CellVector(windows::CellWindows, grid::AbstractGrid, backing, l::Intege
         windows, grid, backing, Int(l))
 end
 
-# The keyword shadows the `level` function, so the work is a positional `Int`
-# one call in — the `_multi_order` pattern.
+# Convert the shadowing `level` keyword to a positional `Int` internally.
 CellVector(set::MultiOrderCellSet; level::Integer=set.reference_level) =
     _cellvector(set, Int(level))
 
@@ -284,9 +278,8 @@ function _cellvector(set::MultiOrderCellSet, l::Int)
     return CellVector(w, grid, set, l)
 end
 
-# The selection-mode expansion: `descendants` names the leaves as a list, and
-# their positions are sorted afterwards because the concatenation of two
-# siblings' subtrees need not be ascending where subtrees are not sorted.
+# Selection mode sorts leaf positions because sibling descendant lists need not
+# concatenate in canonical order.
 function _selection_positions(set::MultiOrderCellSet, grid::AbstractGrid, l::Int)
     sys = system(set)
     out = Int[]
@@ -315,25 +308,23 @@ CellVector(sys::AbstractHierarchicalGridSystem, l::Integer, ids::AbstractVector)
 
 CellVector(cv::CellVector) = cv
 
-# A grid holding every cell of its level is positions `1:ncells` by the
-# completeness contract, whatever wrapper it wears; only a proper subset has to
-# be walked.
+# A complete level occupies positions `1:ncells`; proper subsets are resolved
+# cell by cell.
 function _grid_windows(grid::AbstractGrid, complete::AbstractGrid)
     n = ncells(grid)
     n == ncells(complete) && return _range_windows((1:n,))
     return _windows(_grid_positions(grid, complete))
 end
 
-# A rooted subset over sorted subtrees is one window and knows it, so the walk
-# below is skipped rather than performed and compressed.
+# A rooted, sorted subtree maps directly to one position window.
 function _grid_windows(grid::PartialGrid{<:Any,<:SubtreeIds}, complete::AbstractGrid)
     ids = grid.ids
     ids.n == 0 && return _empty_windows()
     return _range_windows((ids.first:(ids.first+ids.n-1),))
 end
 
-# The round trip. `PartialGrid(cv)` is O(1) and so is coming back: the grid's
-# ids ARE a `CellVector`, and its windows are already the answer.
+# Reuse the windows when converting a `CellVector`-backed `PartialGrid` back to
+# a vector.
 _grid_windows(grid::PartialGrid{<:Any,<:CellVector}, complete::AbstractGrid) =
     grid.ids.windows
 
@@ -349,9 +340,8 @@ function _grid_positions(grid::AbstractGrid, complete::AbstractGrid)
     return out
 end
 
-# A subset of an existing vector keeps the same leaf grid and level, and has no
-# backing of its own: `cellset` answers such a vector with the `PartialGrid`
-# describing it, which is O(1) to build because the ids stay lazy.
+# Derived subsets keep the leaf grid and level but replace provenance with a
+# lazily constructed `PartialGrid`.
 _derive(cv::CellVector, w::CellWindows) = CellVector(w, cv.grid, nothing, cv.level)
 
 windows(cv::CellVector) = cv.windows
@@ -369,10 +359,8 @@ end
 # Immutable, so the whole-vector slice is the vector rather than a copy of it.
 Base.getindex(cv::CellVector, ::Colon) = cv
 
-# Ascending indices keep the windowed form; anything else — a permutation, a
-# repeat, a reversal — is not a set of leaf windows and is answered with the
-# ordinary `Vector` that can hold it. That case materialises, and only that
-# case. [`CellLookup`](@ref) takes the same fork one level up.
+# Ascending unique indices remain windowed; permutations, repetitions, and
+# reversals return an ordinary materialized vector.
 #
 # `AbstractVector`, not `AbstractArray`: indexing an array by a
 # higher-dimensional index returns something of the INDEX's shape, and a window
@@ -381,23 +369,12 @@ Base.getindex(cv::CellVector, ::Colon) = cv
 # no longer depends on whether the index happened to be ascending.
 Base.getindex(cv::CellVector, idx::AbstractVector{<:Integer}) = _subset(cv, idx)
 
-# SmallCollections' own `getindex(::AbstractVector, ::AbstractFixedOrSmall...)`
-# is neither more nor less specific than the line above, and a neighbour list is
-# exactly one of those vectors, so the tie is broken towards the same subset
-# rather than left as an ambiguity for whoever indexes a cell vector by a halo.
+# Resolve the method ambiguity with SmallCollections vector indexing.
 Base.getindex(cv::CellVector,
     i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(cv, i)
 
-# A `Bool` array is a mask rather than a list of ones, and `Bool <: Integer`, so
-# the branch is here rather than in a second `getindex` signature: dispatching
-# on `AbstractArray{Bool}` would re-open the ambiguity the method above closes.
-#
-# A mask names a position by its INDEX, so a mask of the wrong length is a
-# bounds error rather than a shorter answer. `findall` cannot tell — it reports
-# the `true`s it was given and nothing about the ones it was not — so the axes
-# are checked before it runs, which is what Base's own logical indexing does.
-# The signature stays `AbstractArray` so that a mask of the wrong RANK lands
-# here and is caught by the same check.
+# Handle boolean masks inside `_subset` because `Bool <: Integer`. Validate axes
+# before `findall` so masks with the wrong length or rank throw `BoundsError`.
 function _subset(cv::CellVector, mask::AbstractArray{Bool})
     axes(mask) == axes(cv) || throw(BoundsError(cv, (mask,)))
     return _subset(cv, findall(mask))
@@ -416,14 +393,10 @@ function _subset(cv::CellVector, idx::AbstractArray{<:Integer})
     return _derive(cv, _windows(positions))
 end
 
-# The ids ascend in canonical order by construction — the windows are ascending
-# positions of a complete level grid — so the O(n) verification `PartialGrid`
-# runs on an arbitrary vector has nothing to find.
+# Ascending leaf-grid positions imply ascending canonical ids.
 Helpers.strictly_increasing(::CellVector) = true
 
-# Same system, same level and the same windows name the same ids, so equality is
-# O(#windows) instead of O(#cells) — and it agrees with the elementwise answer
-# `AbstractVector` would give, because an id is self-describing about its level.
+# Equal systems, levels, and logical windows imply elementwise equality.
 Base.:(==)(a::CellVector, b::CellVector) =
     system(a) == system(b) && a.level == b.level && a.windows == b.windows
 
@@ -447,25 +420,19 @@ level(cv::CellVector) = cv.level
     cellset(cv::CellVector)
     cellset(lk::CellLookup)
 
-The thing the collection was built from — a [`MultiOrderCellSet`](@ref), a
-[`MultiOrderVector`](@ref) expanded to one level, or the grid — for running a
-second coverage operation against without unpacking it.
+Return the [`MultiOrderCellSet`](@ref), the [`MultiOrderVector`](@ref) expanded
+to one level, or the grid used to build the collection.
 
 A collection *derived* from another one, by indexing or by [`covering`](@ref),
 has no such origin and reports the [`PartialGrid`](@ref) describing it instead.
 
-For a [`CellLookup`](@ref), `Base.parent` is deliberately NOT this: it is the
-lookup's VALUES, the [`CellVector`](@ref), because that is what
-`DimensionalData` derives some thirty `Lookup` methods from.
+For [`CellLookup`](@ref), `Base.parent` returns the logical values as a
+[`CellVector`](@ref).
 """
 cellset(cv::CellVector) = _origin(cv, cv.backing)
 
-# Dispatched on the field's VALUE rather than on the fourth type parameter: a
-# `CellVector{<:Any,<:Any,<:Any,Nothing}` signature is a subtype of the general
-# one but is not *more specific* than it — the two slots left open have declared
-# bounds the wildcard widens — so the general method wins and every derived
-# vector answers `nothing`. Passing the field in leaves the choice to ordinary
-# dispatch on `Nothing`, and the type parameter still constant-folds it.
+# Dispatch on the backing value to distinguish `Nothing` without ambiguous
+# partially specified `CellVector` parameter bounds.
 _origin(::CellVector, backing) = backing
 _origin(cv::CellVector, ::Nothing) = PartialGrid(cv)
 
@@ -516,21 +483,19 @@ end
 
 cellat(cv::CellVector, lon::Real, lat::Real) = cellat(cv, unit_point(lon, lat))
 
-# Membership is the window search, which is the exact test and O(log #windows)
-# where the generic scan over the values is O(#cells) of `cellindex` calls.
+# Membership uses the O(log(number of windows)) inverse position search.
 Base.in(c::AbstractCellIndex, cv::CellVector) = cellposition(cv, c) !== nothing
+
+# Classify a complete-grid position block directly from the windows.
+subset_span(cv::CellVector, lo::Int, hi::Int) = span_windows(cv.windows, lo, hi)
 
 """
     PartialGrid(cv::CellVector) -> PartialGrid
 
-The vector read as a grid: position `k` of the grid is position `k` of the
-vector, so a `Regridder` built on it lines up with data laid out against the
-vector without a permutation. **O(1)** — the ids stay lazy, and this is the
-handshake that lets a regridder consume a compressed coverage directly.
+Return a grid whose position `k` is `cv[k]`. Construction is O(1) and keeps the
+ids lazy, so data indexed by the vector needs no permutation.
 
-The grid keeps the windows and drops the backing: [`cellset`](@ref)'s origin is
-provenance the grid never reads, and a regridder should not hold a coverage set
-alive behind it. `CellVector(PartialGrid(cv))` comes back in O(1) either way.
+The grid keeps the windows but drops the backing object.
 
 The **root does not survive** the round trip: a `CellVector` stores windows, not
 an ancestor, so a grid that came back through one is unrooted even when its
@@ -540,21 +505,13 @@ the grid from the root cell when the stencil matters.
 """
 PartialGrid(cv::CellVector) = PartialGrid(system(cv), cv.level, _bare(cv, cv.backing))
 
-# The other half of that round trip, which `PartialGrid`'s generic
-# `searchsortedfirst` would otherwise walk the long way: comparing against a
-# LAZY id vector resolves one `cellindex` per probe, so a membership test on a
-# grid built from a cell vector cost O(log #cells) DECODES where the vector
-# itself answers in O(log #windows) integer comparisons. Same answer, and it is
-# the vector's own answer rather than a second one.
-#
-# The system parameter is spelled with its DECLARED bound rather than as
-# `<:Any`, for the reason `_origin` gives above: a wildcard WIDENS a bounded
-# parameter, so `PartialGrid{<:Any,<:CellVector}` is a subtype of the general
-# signature without being more specific than it — an ambiguity, not an override.
+# Delegate membership to the compressed vector to avoid decoding one id per
+# binary-search probe. Spell the system parameter with its declared bound to
+# keep this method more specific than the general `PartialGrid` method.
 cellposition(grid::PartialGrid{<:AbstractHierarchicalGridSystem,<:CellVector},
     c::AbstractCellIndex) = cellposition(grid.ids, c)
 
-# Dispatched on the backing's value, for the reason `_origin` gives above.
+# Preserve an already bare vector; otherwise drop its backing.
 _bare(cv::CellVector, backing) = CellVector(cv.windows, cv.grid, nothing, cv.level)
 _bare(cv::CellVector, ::Nothing) = cv
 
@@ -580,13 +537,8 @@ data[covering_positions(cv, watershed)]  # the same selection as positions
 array laid out against `cv`. This is what the `DimensionalData` selector
 [`Covering`](@ref) is spelled as outside `DimensionalData`.
 
-!!! note "What it stores and what it spends are different questions"
-    Selecting walks the coverage's leaves one at a time, because that walk is
-    what decides which of them `cv` holds. It is O(#leaf cells the coverage
-    names), transiently, however compact the two ends are: on a level-12 vector
-    that is hundreds of megabytes passing through. The storage claim is about
-    the result, not about the selection — select at the level you mean to read
-    at.
+Selection visits each leaf named by the coverage, even though the result is
+stored compactly. Select at the level being read to avoid unnecessary expansion.
 
 Coverage means *covering*: the result is a superset of the cells that meet
 `target`, by whatever margin the system's refinement is non-congruent. See
@@ -624,8 +576,7 @@ function _covering_leafpositions(cv::CellVector, target)
     return issorted(out) ? out : sort!(out)
 end
 
-# The one place the two expansions are chosen between: ranges where subtrees are
-# sorted, `descendants` where they are not. Both visit each leaf once.
+# Use ranges for sorted subtrees and explicit descendants otherwise.
 function _each_leaf_position(f, cv::CellVector, target)
     sys = system(cv)
     set = query(sys, MultiOrderCoverage(target); level=cv.level)
@@ -643,22 +594,14 @@ end
 
 # --- set arithmetic over the windows ---------------------------------------
 #
-# `intersect` and `issubset` are Base's, with Base's meaning: the first keeps
-# the left operand's order, which for an ascending vector IS ascending, and the
-# second is a pure set question. Both are answered here in O(#windows) instead
-# of O(#cells).
+# `intersect` preserves the left operand's ascending order; `issubset` performs
+# a set comparison. Both run in O(number of windows).
 #
-# They differ on operands from different systems or levels, and the asymmetry is
-# Base's rather than this file's: `issubset` is a question every pair of sets can
-# answer — the empty vector is a subset of anything, and across mismatched
-# domains nothing else is — while `intersect` has to RETURN a cell vector, and
-# there is no system or level to build one in. So the first answers and the
-# second throws.
+# Across different systems or levels, only an empty left vector is a subset.
+# `intersect` throws because no result system and level can be selected.
 #
-# `union` is deliberately absent. Base's `union` maintains first-appearance
-# order, which for two ascending vectors is NOT ascending, so an ascending
-# answer would be a different function wearing Base's name. Merge two coverages
-# by querying their union, or by `CellVector(sys, l, sort(vcat(a, b)))`.
+# `union` is not specialized because Base preserves first-appearance order,
+# which need not be ascending for two ascending operands.
 
 function _same_space(a::CellVector, b::CellVector, verb::AbstractString)
     system(a) == system(b) || throw(ArgumentError(

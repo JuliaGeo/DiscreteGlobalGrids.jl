@@ -5,7 +5,7 @@
 #
 #   * `cellat` is closed-form (`point_to_xyf`) — no tree descent.
 #   * `descendant_range` is `[p*4^Δ, (p+1)*4^Δ)` shifted into position space.
-#   * `node_extent` is the EXACT four-corner cap, not the inflated default.
+#   * `node_extent` is the exact four-corner cap.
 #   * `neighbors` / `ring` walk the lattice and the seam table, not the geometry.
 #   * `ancestor` drops `2Δ` bits in one shift.
 #
@@ -48,10 +48,7 @@ overflow `Int64`.
 """
 struct S2System <: DGG.AbstractHierarchicalGridSystem end
 
-# `levelgrid(S2System(), l)` is the package's `HierarchicalLevelGrid`: all
-# `6 * 4^l` cells in scaffold ordinal (face-major, Hilbert-within-face) order.
-# S2's fast paths hang off this alias, and the five primitives it forwards to
-# are the `(sys, ...)` methods further down.
+# Grid descriptor for all `6 * 4^l` cells in face-major Hilbert order.
 const LevelGrid = DGG.HierarchicalLevelGrid{S2System}
 
 """

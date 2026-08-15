@@ -1,10 +1,7 @@
-# Geometry uses A5's geographic lon/lat frame. Do not mix it with the native
-# internal Cartesian frame, which omits longitude and latitude conversions:
-# `cell_boundary_cartesian` stops in that frame, while `cell_boundary`,
-# `cell_to_lonlat` and `lonlat_to_cell` are geographic. Mixing the two puts ring
-# and centroid 93 degrees apart in longitude.
+# `cell_boundary_cartesian` uses A5's internal Cartesian frame. The public
+# geometry methods use geographic longitude and geodetic latitude.
 
-# The one degrees -> unit-sphere conversion this module makes.
+# Convert geographic longitude and latitude in degrees to a unit vector.
 function _unit_point(lon::Real, lat::Real)
     λ = deg2rad(Float64(lon))
     φ = deg2rad(Float64(lat))
@@ -22,9 +19,8 @@ Edges are straight in the face plane, not great circles. A5's `:auto`
 subdivision uses `2^(6-level)` segments per edge through level 6 and one segment
 afterward.
 
-So a ring has `corners × segments` vertices: 5 corners at level 0, 3 at level 1
-(a quintant is a triangular slice of a face) and 5 below, times 64, 32, 16, …
-down to 1 from level 6.
+The returned vertex count is `corners × segments`: five corners at level 0,
+three at level 1, and five at deeper levels.
 """
 function cell_boundary(::A5System, c::A5Cell)
     ring = A5Native.cell_boundary(c.id; closed_ring=false, segments=:auto)
@@ -48,7 +44,7 @@ function cell_centroid(::A5System, c::A5Cell)
 end
 
 # ===========================================================================
-# Location — the marquee fast path
+# Location
 # ===========================================================================
 
 """

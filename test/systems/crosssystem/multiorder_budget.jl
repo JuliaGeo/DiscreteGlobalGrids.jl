@@ -1,88 +1,5 @@
-# ---------------------------------------------------------------------------
-# T18 — the BUDGET mode of multi-order coverage, on every system.
-#
-# `query(sys, MultiOrderCoverage(target); level = l)` refines everything the
-# boundary crosses to a fixed depth and returns however many cells that takes.
-# `query(sys, MultiOrderCoverage(target); maxcells = n)` answers the other
-# question — "ten cells that cover California, or a hundred" — by refining the
-# crossing cells coarsest first and stopping when the next replacement would not
-# fit. Same predicates, same prunes, same result type; a different schedule and
-# a different thing held fixed.
-#
-# This file is the T15 treatment of that second mode: the same committed
-# `test/fixtures/california.txt` outline, the same seven systems (six registered
-# plus an `AuthalicSystem` wrap), the same dense-plus-adversarial point sampler.
-#
-# THE LAWS, and what each is worth:
-#
-#   * THE BUDGET IS A BOUND — `length(set) <= maxcells`, at every budget, with
-#     one documented exception: a SEED bigger than the budget is returned whole,
-#     because the seed is the coarsest covering the traversal can express and
-#     there is nothing to refine away. Both arms are pinned, the exception with
-#     a target that produces it.
-#   * DETERMINISM — same inputs, same output, cells and flags and keys. The
-#     schedule is a priority order over (level, position within the level) and
-#     nothing else, so this is a statement about the implementation containing
-#     no `Dict` iteration and no ties.
-#   * SIZE IS MONOTONE IN THE BUDGET — a measurement of the schedule, not a
-#     theorem. Raising the budget cannot make the answer smaller in any case
-#     swept here, and the testset says which it swept.
-#   * SHAPE — the result is a `MultiOrderCellSet` in every sense the accuracy
-#     mode's is: no emitted cell has an emitted ancestor, the reference-level
-#     intervals ascend and are disjoint, `cell_polygons` and
-#     `coarsest_contained` work, and A5 takes the documented `(level, id)`
-#     fallback.
-#   * PROVENANCE, AND WHY IT IS SHARPER HERE — the budget traversal asks
-#     `Within` of every cell it admits, because contained and crossing is the
-#     classification the schedule runs on. So `is_contained` is EXACT in both
-#     directions on a budget set, unless refinement actually reached the
-#     `maxlevel` cap, where the accuracy mode's blind spot returns verbatim.
-#     Both arms are asserted.
-#   * COVERING — and this is the one that needs care, because the two readings
-#     of "cover" do not agree here the way they do for the accuracy mode.
-#
-#       - THE UNION READING: every point of the target lies inside some emitted
-#         cell. This is what "ten cells that cover California" means, and it is
-#         EXACT — zero misses at every budget — on the three systems whose four
-#         children tile their parent. Elsewhere it degrades exactly as
-#         `MultiOrderCoverage`'s own warning describes, because it is the same
-#         phenomenon: replacing a cell by its children swaps one footprint for
-#         another. Bounded, not asserted zero.
-#       - THE LEAF READING: every cell of the reference level that meets the
-#         target is a member or the descendant of one. The accuracy mode has
-#         this on all seven — it earns it by descending into cells that MISS the
-#         target, because a child can overhang its parent, and carrying that all
-#         the way down to `level`. A budget has no fixed depth to carry it to;
-#         stopping early is the whole point of the mode, and a branch stopped at
-#         a cell that misses the target is a branch whose overhang was not
-#         followed. So this too is a law on the congruent three and a bounded
-#         measurement on the other four.
-#
-#     Neither is a defect of the schedule. A bounded look past a child that
-#     misses the target was measured while this was written: two extra levels
-#     take IGEO7, H3 and the authalic wrap to zero misses on these fixtures and
-#     A5 to a handful, three extra levels leave A5 alone still failing. There is
-#     no depth at which it becomes a proof — `_subtree_outside` never fires on a
-#     cell hugging the target's boundary from outside, at any level — so the
-#     constant would be a number that happened to pass, and the mode ships
-#     without one. The numbers below are what it does instead.
-#
-#   * EQUIVALENCE WITH THE ACCURACY MODE — give the budget exactly the number of
-#     cells `level = L` produces, and cap it at `L`, and the two modes return
-#     the SAME SET, cell for cell and flag for flag. That is the sharpest
-#     statement available that the budget mode is the same traversal: it holds
-#     on the three congruent systems at every level swept. On the other four the
-#     two diverge for the covering reason above, and the testset states that as
-#     an exclusion with its reason rather than weakening the law.
-#   * COMPOSITION — a budget set backs a `CellLookup` at its own reference level
-#     and at any deeper one, the positions round-trip, and the expansion equals
-#     the brute-force `descendants` walk. Ten cells chosen for the picture still
-#     name every leaf under them for the data.
-#
-# A5 runs all of it. The budget traversal needs `children` and `cellposition`
-# and nothing else — no `descendant_range` — and the testset at the bottom
-# asserts that from the other side.
-# ---------------------------------------------------------------------------
+# Cross-system laws for budget-limited multi-order coverage. The committed
+# California outline provides a non-rectangular geometry fixture.
 
 module MultiOrderBudgetTests
 
@@ -172,34 +89,6 @@ const LADDER = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377)
 sysname(sys) = sys isa DGG.AuthalicSystem ?
                "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
 
-# ---------------------------------------------------------------------------
-# How much of the target a budget covering is allowed to miss, per system and
-# per reading.
-#
-# These are NOT slack. `query`'s docstring ships these very numbers as the
-# measured cost of non-congruence, so a uniform bound would let IGEO7 drift to
-# A5's figure with the suite still green and the docstring quietly false. Each
-# bound is that system's own claim, and the sweep below asserts it.
-#
-# Calibration: the worst fraction seen over budgets 10/40/100 on this file's
-# 0.1-degree sampler, and separately on an independent 7505-point sampler
-# during review. Each bound is at least 1.3x the worse of the two, rounded to a
-# round number — wide enough that no reshuffle of the sample grid trips it,
-# narrow enough that a change in KIND does. The congruent three are exact and
-# get no entry: zero is their bound, and it is a theorem rather than a
-# measurement.
-#
-#   system            union: here / review / bound     leaf: here / review / bound
-#   IGEO7               1.01% / 1.25% / 2%                 0% / 0.19% / 1%
-#   Authalic(IGEO7)     1.36% /    -  / 3%              0.31% /    -  / 2%
-#   H3                 11.09% /  7.4% / 15%                 0% /    0% / 2%
-#   A5                 22.77% / 16.3% / 30%             11.72% /  8.7% / 18%
-#
-# H3's union figure is worst at the SMALLEST budget, not the largest: ten cells
-# over a state is a handful of aperture-7 rosettes, and one rosette's footprint
-# mismatch is a large share of the answer. That is why the bound is not simply
-# the large-budget number.
-# ---------------------------------------------------------------------------
 
 const UNION_BOUND = Dict("IGeo7System" => 0.02, "Authalic(IGeo7System)" => 0.03,
     "H3System" => 0.15, "A5System" => 0.30)
@@ -235,8 +124,6 @@ function interior_samples(geom, t, n::Int)
     return out
 end
 
-# A hair inside the outline, where a covering that rounds the wrong way loses
-# points. Offsets straddle the boundary and the oracle keeps what lands inside.
 function boundary_samples(geom, t; stride::Int=1)
     corners = Tuple{Float64,Float64}[]
     for r in GI.getring(geom), p in GI.getpoint(r)
@@ -261,8 +148,6 @@ const TARGET = prepare(MAINLAND)
 const SAMPLES = vcat(interior_samples(MAINLAND, TARGET, 40),
     boundary_samples(MAINLAND, TARGET; stride=5))
 
-# THE LEAF READING: a point is covered when its own reference-level cell is
-# emitted, or an ancestor of it is.
 function leaf_misses(sys, set, samples)
     leaf = set.reference_level
     grid = DGG.levelgrid(sys, leaf)
@@ -284,9 +169,6 @@ function leaf_misses(sys, set, samples)
     return n
 end
 
-# THE UNION READING: a point is covered when it lies in some emitted cell's
-# polygon. One cap per cell so the scan is a distance comparison per pair and a
-# point-in-polygon only where the cap admits it.
 function union_misses(set, samples)
     rings = [FB.open_ring(DGG.cell_boundary(set, c)) for c in set]
     caps = [FB.points_cap(view(r[1], 1:r[2])) for r in rings]
@@ -358,8 +240,6 @@ end
             cells = collect(set)
             @test allunique(cells)
             @test isempty(emitted_ancestors(sys, set))
-            # The reference level is the deepest level the budget reached, not a
-            # number the caller supplied — that is what makes it a *budget*.
             @test set.reference_level == maximum(DGG.level, cells)
             @test length(DGG.cell_polygons(set)) == length(set)
             if DGG.has_sorted_subtrees(sys)
@@ -368,8 +248,6 @@ end
                 @test all(k -> first(intervals[k]) > last(intervals[k-1]), 2:length(intervals))
                 @test FB.curve_keys(set) == first.(intervals)
             else
-                # EXCLUDED with its reason: no descendant ranges on A5, so the
-                # documented `(level, id)` fallback is what is asserted.
                 @test !DGG.has_sorted_subtrees(sys)
                 @test issorted(cells; by=c -> (DGG.level(c), c))
             end
@@ -446,8 +324,6 @@ end
 
     @testset "covering: the union reading" begin
         @test length(SAMPLES) > 2000
-        # Zero for the congruent three, and this system's OWN docstring figure
-        # for the rest — see `UNION_BOUND` for why it is not one number.
         bound = congruent ? 0.0 : UNION_BOUND[sysname(sys)]
         for b in BUDGETS
             missed = union_misses(sets[b], SAMPLES)
@@ -468,7 +344,6 @@ end
             if congruent
                 @test missed == 0
             else
-                # Same cause, measured through ancestry rather than geometry.
                 @test missed / length(SAMPLES) < bound
             end
         end
@@ -486,11 +361,6 @@ end
                 @test budgeted.contained == accurate.contained
                 @test budgeted.reference_level == accurate.reference_level
             else
-                # EXCLUDED, with its reason: the accuracy mode descends into
-                # cells that miss the target because a child can overhang its
-                # parent, and emits what it finds beneath them. A budget cannot,
-                # so it is a subset of the same size or smaller. Asserting
-                # equality here would be asserting congruence.
                 @test length(budgeted) <= length(accurate)
                 @test !isempty(budgeted)
             end
@@ -563,11 +433,6 @@ end
 end
 
 @testset "an empty answer is still a set" begin
-    # A target the traversal admits nothing for: a cap of zero radius over a
-    # point is met by the cell containing it, so instead the emptiness is built
-    # from a level cap the seed cannot pass — a `maxlevel` at the top with a
-    # target no root meets is not reachable, so this asserts the shape of the
-    # zero-cell path directly through the constructor instead.
     sys = DGG.S2System()
     empty = FB._sorted_cell_set(sys, DGG.cellindextype(sys)[], falses(0),
         first(DGG.levels(sys)))

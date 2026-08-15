@@ -1,12 +1,5 @@
-# A DimensionalData cell axis. Every cell in it sits at one leaf level, but the
-# stored form is the multi-order set the region came back as, never the expanded
-# id vector: memory is O(#coverage entries), the ids are computed on demand.
-#
-# All of that arithmetic is `Fallbacks.CellVector`, which is DimensionalData-free
-# and lives in `src/fallbacks/cell_vector.jl`. This file is the cube-shaped face
-# of it: a `Lookup` that HOLDS one, the `Cells` dimension it goes in, and the
-# selectors. Every method below either delegates to a `CellVector` verb or is
-# DimensionalData plumbing that has no counterpart outside a cube.
+# DimensionalData wrappers for `Fallbacks.CellVector`. Cell ids are computed
+# from compressed position windows rather than stored as an expanded vector.
 
 """
     CellLookups
@@ -30,8 +23,8 @@ an adaptively refined mesh's values hang off. [`coarsen`](@ref) builds one from 
 `CellLookup` axis, [`expand`](@ref) presents one back at a single level, and
 [`aggregate`](@ref) is the fixed-level reduction beside them.
 
-The split is deliberate. `CellVector` is usable — and is used — with no cube
-library in sight; this module is what makes one an axis.
+`CellVector` provides the storage and indexing behavior; this module provides
+the lookup, dimension, and selectors required by DimensionalData.
 """
 module CellLookups
 
@@ -39,12 +32,11 @@ import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, ncells, cellindex, cellposition, cellat, level, system,
     levelgrid, cellindextype, has_sorted_subtrees, descendants, descendant_range,
-    query, neighbors, ring, halo_table, Connectivity, Vertex
+    query, neighbors, ring, halo_table, halo, Connectivity, Vertex
 import ..DiscreteGlobalGrids: Helpers
 import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
-# The core type and its verbs. Everything this file does to a cell axis, it does
-# by calling one of these.
+# Core collection operations delegated to `CellVector`.
 import ..DiscreteGlobalGrids.Fallbacks: CellVector, cellset, covering,
     covering_positions, windows, nwindows, RangeWindows, CellWindows, _derive,
     _windows
@@ -67,8 +59,8 @@ import DimensionalData: Dimensions, Lookups
     CellLookup(set::MultiOrderCellSet; level = set's reference level)
     CellLookup(grid::AbstractGrid)
 
-A `DimensionalData` lookup naming cells at ONE level, backed by the compact set
-they came from. Pair it with [`Cells`](@ref) to make a cube axis:
+A `DimensionalData` lookup naming cells at one level. Pair it with
+[`Cells`](@ref) to make a cube axis:
 
 ```julia
 set = query(sys, MultiOrderCoverage(region); level = 9)
@@ -79,21 +71,12 @@ A   = DimensionalData.DimArray(values, Cells(lk))
 Semantically `lk` is the leaf id vector: `length(lk)` is the number of leaf
 cells, `lk[k]` is the `k`th of them, `collect(lk)` is the vector itself.
 
-# The layering
-
-A `CellLookup` **is** a [`CellVector`](@ref) wearing a `DimensionalData.Lookup`
-hat, and holds nothing else. The `CellVector` is where the compression lives —
-the set's expansion to sorted, disjoint position windows at the leaf level
-([`level_ranges`](@ref)), so memory is O(#entries in the set) rather than
-O(#leaf cells). On a Switzerland-sized region at IGEO7 level 9 that is some
-hundreds of words standing for tens of thousands of cells, and the same words
-for the level-12 re-expansion, which names twenty million.
-
-That type is DimensionalData-free on purpose: regridding, chunking and plain
-`Array` code use it directly, and this module exists so that a *cube* can too.
-Every method here delegates to one of its verbs — `lk[k]`,
+`CellLookup` stores only a [`CellVector`](@ref). The vector represents the set
+as sorted, disjoint position windows at the leaf level ([`level_ranges`](@ref)),
+using O(number of windows) memory instead of O(number of leaf cells). Lookup
+operations delegate to the vector's methods, including `lk[k]`,
 [`cellposition`](@ref), [`cellset`](@ref), [`covering`](@ref),
-[`PartialGrid`](@ref) — and adds only what a `Lookup` owes DimensionalData.
+and [`PartialGrid`](@ref).
 
 `Base.parent` returns the lookup's VALUES, as `DimensionalData` requires: the
 `CellVector`, which is an `AbstractVector` of the ids, is O(#windows) and
@@ -101,18 +84,17 @@ materialises nothing. [`cellset`](@ref) returns the backing — the set, or the
 grid — for running a second coverage operation against without unpacking the
 lookup.
 
-# The three ways in
+Accepted inputs are:
 
-  - a [`MultiOrderCellSet`](@ref), the compressed form, optionally re-expanded
+  - a [`MultiOrderCellSet`](@ref), optionally re-expanded
     to a deeper `level` than the set's own reference level;
   - `levelgrid(sys, l)`, a whole level, which is one window;
   - a [`PartialGrid`](@ref), an arbitrary ascending subset, which is that
     subset's positions — one window when the subset is a subtree, and the
     explicit list when it is scattered.
 
-The last two are the degenerate cases of the first, and answer every method
-below identically. All three build the [`CellVector`](@ref) first; a caller who
-already has one hands it over directly.
+All forms construct a [`CellVector`](@ref); an existing vector can be passed
+directly.
 
 # Selectors
 
@@ -128,17 +110,13 @@ produces carries a `CellLookup` again. Outside a cube those three are
 `cellposition(cv, c)`, `cellposition(cv, lon, lat)` and
 [`covering`](@ref)`(cv, polygon)`.
 
-`At` and `Contains` are `DimensionalData`'s selectors and are reached through
-it (`DD.At`, `DD.Contains`) rather than re-exported here. That is not an
-oversight: this package exports DE9IM's [`Contains`](@ref), a *predicate about
-two geometries*, and a `using` of both packages would otherwise leave one name
-meaning two unrelated things. Only [`Covering`](@ref), which `DimensionalData`
-has no spelling for, is exported.
+`At` and `Contains` are referenced as `DD.At` and `DD.Contains`. They are not
+re-exported because this package exports DE9IM's unrelated [`Contains`](@ref)
+geometry predicate. [`Covering`](@ref) is exported by this package.
 
 # What the cube's own operations do to it
 
-Indexing, `vcat`/`cat` and reductions all reach the lookup, and each answers
-with the most specific thing that is still true:
+Indexing, concatenation, and reductions preserve the most specific valid lookup:
 
   - an ASCENDING subset — a range, a sorted index vector, a boolean mask, a
     selector's result, or a concatenation of disjoint ascending axes — is a
@@ -156,7 +134,7 @@ with the most specific thing that is still true:
 !!! note "Systems without sorted subtrees (A5) are built by selection"
     [`level_ranges`](@ref) throws where [`has_sorted_subtrees`](@ref) is
     `false`, because a cell's descendants are not one interval of their level.
-    The lookup is then built by SELECTION: `descendants` names the leaves, they
+    The lookup is then built by selection: `descendants` names the leaves, they
     are resolved to positions and sorted, and the result is run-compressed like
     any other position list. Every method above is unchanged and every law
     still holds. [`CellVector`](@ref) documents what that costs, and the one
@@ -169,8 +147,7 @@ end
 
 CellLookup(cv::CellVector{ID}) where {ID} = CellLookup{ID,typeof(cv)}(cv)
 
-# The keyword shadows the `level` function, so it is forwarded by name to the
-# core constructor, which takes the same care one call in.
+# Forward the `level` keyword explicitly because it shadows the function name.
 CellLookup(set::MultiOrderCellSet; level::Integer=set.reference_level) =
     CellLookup(CellVector(set; level=level))
 
@@ -178,73 +155,47 @@ CellLookup(grid::AbstractGrid) = CellLookup(CellVector(grid))
 
 CellLookup(lk::CellLookup) = lk
 
-# A subset of an existing lookup is a subset of its cell vector, wrapped again.
+# Preserve the lookup wrapper when deriving a window subset.
 _derive(lk::CellLookup, w::CellWindows) = CellLookup(_derive(parent(lk), w))
 
 windows(lk::CellLookup) = windows(parent(lk))
 
 # --- the collection surface ------------------------------------------------
 
-# `parent` is the VALUES — the lazy `CellVector` — and nothing else. That is
-# DimensionalData's contract, and it is load-bearing rather than decorative:
-# some thirty `Lookup` methods derive their behaviour from `parent(l)`, and a
-# `parent` that answered with the backing instead had to be shadowed by a
-# hand-written override for each of them. Every one that was missed became a
-# crash inside DimensionalData's own machinery, or — for `Where`, which filters
-# `parent(lookup)` and returns the surviving indices as positions — a plausible
-# subset of the wrong collection, with no error at all. The backing is reached
-# through [`cellset`](@ref), which is this package's own name and cannot be
-# mistaken for the values by code that has never heard of it.
-#
-# So the list below is short by design. It is the methods where the lazy form
-# beats the generic one, not a re-implementation of the generic ones.
+# DimensionalData derives lookup behavior from `parent`, so it must return the
+# logical values (`CellVector`). Use `cellset` to access the backing set or grid.
 Base.parent(lk::CellLookup) = lk.cells
 Base.IndexStyle(::Type{<:CellLookup}) = Base.IndexLinear()
 
-# `first`/`last` on an empty lookup are a `BoundsError`, so the one caller that
-# asks about an empty axis rather than indexing it answers `nothing` instead.
+# Empty lookups have no lower or upper value bound.
 Lookups.bounds(lk::CellLookup) = isempty(lk) ? (nothing, nothing) : (first(lk), last(lk))
 
 Base.@propagate_inbounds Base.getindex(lk::CellLookup, k::Int) = parent(lk)[k]
 Base.@propagate_inbounds Base.getindex(lk::CellLookup, k::CartesianIndex{1}) = parent(lk)[k[1]]
 
-# `AbstractVector`, not `AbstractArray`, for the reason the core file gives at
-# the same signature: an index with a shape wants an answer with that shape, and
-# a window set has none to give. A matrix index falls through to Base's generic
-# here too, so both faces answer it the same way.
+# Only vector indices can produce a one-dimensional window set. Shaped indices
+# use Base's generic array indexing.
 for f in (:getindex, :view, :dotview)
     @eval Base.$f(lk::CellLookup, ::Colon) = lk
     @eval Base.$f(lk::CellLookup, i::AbstractVector{<:Integer}) = _subset(lk, i)
 end
 
-# DimensionalData reverses only the lookups it knows, and a `Lookup` it does not
-# know falls through to `Base.reverse` on the AbstractArray — which answers with
-# a bare `Vector` where a lookup is expected, and everything downstream of the
-# reversed dimension then recurses on it. Routing through `getindex` reverses
-# into the type the rest of this file understands.
+# Route reversal through lookup indexing so the result remains a valid lookup.
 Base.reverse(lk::CellLookup) = lk[lastindex(lk):-1:firstindex(lk)]
 
-# SmallCollections' own `getindex(::AbstractVector, ::AbstractFixedOrSmall...)`
-# is neither more nor less specific than the line above, and a neighbour list is
-# exactly one of those vectors, so the tie is broken towards the same subset
-# rather than left as an ambiguity for whoever indexes an axis by a halo.
+# Resolve the method ambiguity with SmallCollections vector indexing.
 Base.getindex(lk::CellLookup,
     i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(lk, i)
 
-# A mask names a position by its index, so one of the wrong length is a bounds
-# error rather than a shorter answer. The core checks this too, and would catch
-# it a moment later through the delegation below; the check is repeated here so
-# that the error names the axis the caller indexed rather than the cell vector
-# behind it.
+# Validate boolean-mask axes against the lookup so bounds errors identify the
+# indexed lookup rather than its backing vector.
 function _subset(lk::CellLookup, mask::AbstractArray{Bool})
     axes(mask) == axes(lk) || throw(BoundsError(lk, (mask,)))
     return _subset(lk, findall(mask))
 end
 
-# The fork is the cell vector's: an ascending index set is windows again and
-# comes back as a `CellVector`, anything else is a plain id vector. This file
-# only has to say what a *lookup* wears in each case — its own type, or the
-# ordinary DimensionalData lookup that can hold an unordered list.
+# Ascending subsets remain compressed; reordered subsets use an unordered
+# DimensionalData categorical lookup.
 function _subset(lk::CellLookup, idx)
     sub = parent(lk)[idx]
     sub isa CellVector && return CellLookup(sub)
@@ -256,13 +207,10 @@ end
 """
     cellset(lk::CellLookup)
 
-The thing the lookup was built from — a [`MultiOrderCellSet`](@ref), or the grid
-— for running a second coverage operation against without unpacking the lookup.
+Return the [`MultiOrderCellSet`](@ref) or grid used to construct the lookup.
 
-`Base.parent(lk)` is deliberately NOT this: it is the lookup's VALUES, the
-[`CellVector`](@ref), because that is what `DimensionalData` derives some thirty
-`Lookup` methods from. A subset produced by indexing or by a selector reports
-the [`PartialGrid`](@ref) describing it.
+`Base.parent(lk)` returns the logical values as a [`CellVector`](@ref). A subset
+produced by indexing or selection reports its [`PartialGrid`](@ref).
 """
 cellset(lk::CellLookup) = cellset(parent(lk))
 
@@ -295,12 +243,11 @@ cellposition(lk::CellLookup, c::AbstractCellIndex) = cellposition(parent(lk), c)
     neighbors(lk::CellLookup, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
     ring(lk::CellLookup, p::Int, k; connectivity = Vertex()) -> Vector{Int}
     halo_table(lk::CellLookup, k = 1; connectivity = Vertex()) -> Vector{Vector{Int}}
+    halo(lk::CellLookup; connectivity = Vertex())
 
-Adjacency on the axis: the system's neighbourhood clipped to the cells the
-lookup holds, in ids or in positions along the axis. Every one of them is the
-[`CellVector`](@ref)'s, because a `CellLookup` is one wearing a `Lookup` hat —
-so a stencil over a cube and a stencil over a plain vector are the same call
-with the same answer.
+Return the backing vector's adjacency operations. Neighbour and ring results
+are clipped to lookup membership; [`halo_table`](@ref) returns in-set positions
+and [`halo`](@ref) lazily returns adjacent cells outside the lookup.
 """
 neighbors(lk::CellLookup, c::AbstractCellIndex, k::Integer=1;
     connectivity::Connectivity=Vertex()) =
@@ -319,6 +266,9 @@ ring(lk::CellLookup, p::Int, k::Integer;
 halo_table(lk::CellLookup, k::Integer=1; connectivity::Connectivity=Vertex()) =
     halo_table(parent(lk), k; connectivity)
 
+halo(lk::CellLookup; connectivity::Connectivity=Vertex()) =
+    halo(parent(lk); connectivity)
+
 """
     PartialGrid(lk::CellLookup) -> PartialGrid
 
@@ -335,12 +285,8 @@ PartialGrid(lk::CellLookup) = PartialGrid(parent(lk))
 Lookups.order(::CellLookup) = Lookups.ForwardOrdered()
 Lookups.metadata(::CellLookup) = Lookups.NoMetadata()
 
-# A `CellLookup` has no properties to vary — its values are its windows — but
-# it does have to survive being rebuilt around new VALUES, because that is how
-# DimensionalData concatenates: `vcat`/`cat` along a `Cells` dimension hand the
-# joined id vector back through `rebuild`. An ascending disjoint union of window
-# sets is still a window set, so the join stays in this type; anything else is
-# not a set of windows and takes the same honest fallback `getindex` takes.
+# DimensionalData passes concatenated values through `rebuild`. Ascending cell
+# ids remain compressed; other orders become an unordered categorical lookup.
 function Lookups.rebuild(lk::CellLookup; data=nothing, kw...)
     (data === nothing || data === lk || data === parent(lk)) && return lk
     return _rebuild(lk, data)
@@ -369,14 +315,10 @@ end
     "$(typeof(data)). Concatenate cell axes with `vcat`/`cat`, subset them by " *
     "indexing, and replace one wholesale with `set(A, Cells => NoLookup())`."))
 
-# Reducing over the cell axis collapses it to one element, and no single cell
-# id names that element — the same answer `Categorical` gives, for the same
-# reason.
+# A reduced cell axis no longer corresponds to a cell id.
 Lookups.reducelookup(::CellLookup) = Lookups.NoLookup(Base.OneTo(1))
 
-# Asked directly rather than left to the generic search over the values: the
-# window search is the exact membership test, and it is O(log #windows) where
-# the generic is O(log #cells) of `cellindex` calls.
+# Use the window membership search instead of searching all logical cell ids.
 Lookups.hasselection(lk::CellLookup, sel::Lookups.At{<:AbstractCellIndex}) =
     cellposition(lk, Lookups.val(sel)) !== nothing
 
@@ -418,21 +360,19 @@ DD.@dim Cells "Cells"
 # ===========================================================================
 # Selectors
 #
-# Three questions, one answer each. Point and id resolve to a position;
-# a region resolves to the positions its coverage names. Every method is typed
-# on the selector's VALUE as well as on the lookup, because DimensionalData
+# Point and id selectors resolve to one position; a region selector resolves to
+# all matching positions. Methods include the selector value type because DimensionalData
 # reads a `Tuple`-valued selector as a pair of interval endpoints and a
 # `Vector`-valued one as an elementwise map — both of which a bare
 # `(::CellLookup, ::Contains)` method would be ambiguous with.
 #
-# Each of them is one line, because each of them is one `CellVector` verb.
 # ===========================================================================
 
 """
     Covering(target)
 
-The region selector for a [`Cells`](@ref) dimension: every stored cell that
-[`MultiOrderCoverage`](@ref) names for `target`, at the lookup's own level.
+Select every stored cell named by [`MultiOrderCoverage`](@ref) for `target` at
+the lookup's level.
 
 ```julia
 A[Cells(Covering(county))]          # a GeoInterface geometry
@@ -441,12 +381,11 @@ A[Cells(Covering(cap))]             # a GO.UnitSpherical.SphericalCap
 ```
 
 `target` is anything [`query`](@ref) accepts. The result is the intersection of
-the coverage's leaf expansion with the lookup, in ascending position order, and
-the view it produces carries a [`CellLookup`](@ref) again — so what a subset
-*stores* is windows, never an id vector.
+the coverage's leaf expansion with the lookup, in ascending position order. The
+resulting view retains a [`CellLookup`](@ref).
 
-This is [`covering`](@ref) under a `DimensionalData` hat: outside a cube the
-same selection is `covering(cv, target)`, which answers with a
+Outside a cube, the equivalent selection is `covering(cv, target)`, which
+returns a
 [`CellVector`](@ref), or `covering_positions(cv, target)` for the positions
 alone. See that docstring for what the selection costs and for the
 over-covering it inherits from the coverage itself.
@@ -470,9 +409,7 @@ Lookups.selectindices(lk::CellLookup, sel::Lookups.At{<:AbstractCellIndex}; kw..
 Lookups.selectindices(lk::CellLookup, sel::Lookups.Contains{<:AbstractCellIndex}; kw...) =
     _found(lk, cellposition(lk, Lookups.val(sel)), sel)
 
-# A point names a cell before it names a position: `cellat` on the leaf grid,
-# then the same window search every other selector ends in — which is exactly
-# what the three-argument `cellposition` on a `CellVector` is.
+# Resolve a point to a leaf-grid cell, then search its position in the windows.
 Lookups.selectindices(lk::CellLookup, sel::Lookups.Contains{<:Tuple{Real,Real}}; kw...) =
     _found(lk, cellposition(parent(lk), Lookups.val(sel)...), sel)
 

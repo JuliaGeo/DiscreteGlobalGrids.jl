@@ -37,8 +37,7 @@ Base.show(io::IO, c::H3Cell) =
     print(io, "H3Cell(0x", string(c.id; base=16, pad=16), ", res ", level(c), ")")
 
 # ---------------------------------------------------------------------------
-# The bit vocabulary the hierarchy arithmetic and the border automaton share.
-# Ported from the old `src/H3/H3Kernel.jl`.
+# Bit operations shared by hierarchy arithmetic and the border iterator.
 # ---------------------------------------------------------------------------
 
 const MAX_RESOLUTION = H3Native.MAX_RESOLUTION      # 15
@@ -59,10 +58,8 @@ _h3_with_resolution(id::UInt64, res::Int) =
     isvalid(c::H3Cell) -> Bool
 
 Whether libh3 recognises `c` as a valid cell. This checks mode, base cell,
-active and padding digits, and deleted pentagon branches. [`cellposition`](@ref)
-and `subtree_border` check it first; [`children`](@ref) and
-[`descendants`](@ref) deliberately do not, and libh3 will happily descend a
-malformed index into malformed ones.
+active and padding digits, and deleted pentagon branches. [`children`](@ref) and
+[`descendants`](@ref) pass ids directly to libh3 without this validation.
 """
 Base.isvalid(c::H3Cell) = H3Native.is_valid_cell(c.id)
 

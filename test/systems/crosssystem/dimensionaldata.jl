@@ -1,45 +1,5 @@
-# ---------------------------------------------------------------------------
-# T16 — the DimensionalData cell axis, on every system.
-#
-# A `CellLookup` claims to BE the leaf id vector while storing the multi-order
-# set it came from. Everything below is one of the two halves of that claim:
-#
-#   * EQUIVALENCE — the lazy form answers exactly what the materialised leaf
-#     vector would. `collect(lk)`, `lk[k]`, iteration, `first`/`last`, and the
-#     three degenerate constructions (a whole level, a rooted subset, an
-#     arbitrary ascending subset) are all checked against an expansion computed
-#     independently of the lookup, through the trait branch the lookup itself
-#     is not allowed to skip.
-#   * ROUND TRIP — `cellposition(lk, lk[k]) == k` for every k, and `nothing`
-#     for a cell the lookup does not hold, including one at another level. That
-#     is the bijection every selector lands on.
-#   * PARTIAL ⊂ COMPLETE — a lookup over a subset and a lookup over the whole
-#     level agree about every cell they share: same ids, and positions related
-#     by the complete grid's own `cellposition`.
-#   * SELECTORS — `At(c)` is the position of `c`; `Contains(lon, lat)` on a
-#     cell's own centroid is that cell's position, which is the `cellat`
-#     contract read through the lookup; `Covering(region)` is exactly the
-#     coverage expansion intersected with the lookup, computed here by hand.
-#   * MEMORY — the point of the type. Re-expanding one set to three levels
-#     deeper multiplies the cells by the aperture cubed and must not move
-#     `Base.summarysize` at all, because the stored windows are the same
-#     windows. That law is EXCLUDED on A5 with a reason; see below.
-#   * CUBE OPERATIONS — `Where`, `reverse`, reductions, `vcat`/`cat` and `set`
-#     reach the lookup by routes that do not go through `getindex`, and each
-#     must answer as the leaf id vector rather than as the backing. Those are at
-#     the bottom of the file, on one system, because they test this file's
-#     plumbing rather than any system's arithmetic.
-#
-# A5 has `has_sorted_subtrees == false`, so `level_ranges` throws and the
-# windowed backing is unavailable. The decision T16 took is SELECTION MODE:
-# the lookup is built by naming the leaves through `descendants`, resolving
-# them to positions and compressing what comes out. Every law above still holds
-# there and is run there; the memory law is the one that cannot, because the
-# construction walks the leaves whatever the compression then finds. Its
-# testset states that as an exclusion and pins the decision from the other
-# side — that the A5 lookup IS the `descendants` expansion, and that building
-# it at sixteen times the depth costs an order of magnitude more.
-# ---------------------------------------------------------------------------
+# Cross-system laws for the DimensionalData cell lookup. The tests compare its
+# vector interface and selectors with independent cell-set expansions.
 
 module DimensionalDataTests
 
@@ -52,13 +12,6 @@ import GeometryOps as GO
 import SmallCollections
 const CL = DGG.CellLookups
 
-# ---------------------------------------------------------------------------
-# Fixtures
-#
-# A Switzerland-sized box and a Zurich-sized one strictly inside it, so that
-# `Covering` has both a non-empty and a proper-subset answer to give, plus a
-# point in the South Atlantic that no lookup here can hold.
-# ---------------------------------------------------------------------------
 
 const REGION = GI.Polygon([GI.LinearRing([(6.0, 45.8), (10.5, 45.8), (10.5, 47.8),
     (6.0, 47.8), (6.0, 45.8)])])
@@ -68,9 +21,6 @@ const FARAWAY = (-25.0, -40.0)
 
 const LONLAT = GO.UnitSpherical.GeographicFromUnitSphere()
 
-# Levels chosen so that a leaf cell is a few kilometres across on all seven —
-# the apertures are 7, 7, 4, 4, 4, 4, so a fixed level is not comparable. The
-# third column is how much deeper the memory law re-expands the same set.
 const SWEEP = [
     (DGG.IGeo7System(), 6, 3),
     (DGG.H3System(), 5, 3),
@@ -92,11 +42,6 @@ sysname(sys) = sys isa DGG.AuthalicSystem ?
     @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
 end
 
-# The oracle: a multi-order set expanded to leaf ids WITHOUT the lookup, taking
-# the same trait branch the lookup takes but by a different route — positions
-# from `level_ranges` where subtrees are sorted, ids from `descendants` where
-# they are not. `sort` is what makes the two routes comparable: only the first
-# is in curve order already.
 function expand(sys, set, l::Int)
     grid = DGG.levelgrid(sys, l)
     DGG.has_sorted_subtrees(sys) &&
@@ -208,12 +153,6 @@ end
         @test DD.dims(A, DGG.Cells) isa DGG.Cells
     end
 
-    # `Where` filters `parent(lookup)` and returns the surviving indices AS
-    # POSITIONS. While `parent` answered with the backing it therefore filtered
-    # the coverage's mixed-level entries and handed back entry-list indices — a
-    # plausible subset of the wrong collection, silently. The first assertion
-    # below is the one that catches it, and the last is what makes the first
-    # mean something: the two collections have different lengths.
     @testset "Where sees the axis, not the backing" begin
         @test length(ids) != length(set)
         @test length(A[DGG.Cells(DD.Where(c -> true))]) == length(ids)
@@ -235,10 +174,6 @@ end
         @test_throws DD.Lookups.SelectorError A[DGG.Cells(DD.At(outside))]
     end
 
-    # `cell_centroid` is interior to its cell by contract, so a point selector
-    # asked about a cell's own centroid must come back with that cell — this is
-    # the `cellat` law read through the lookup, and the composition is where it
-    # could be lost.
     @testset "Contains(lon, lat) selects the cell the point is in" begin
         for k in (1, length(ids) ÷ 3, length(ids) ÷ 2, length(ids))
             lon, lat = LONLAT(DGG.cell_centroid(grid, ids[k]))
@@ -291,11 +226,6 @@ end
     (sys, leaf, deeper) in SWEEP
 
     if !DGG.has_sorted_subtrees(sys)
-        # EXCLUDED, with the reason and the decision both pinned rather than
-        # skipped: selection mode materialises one position per leaf to build
-        # the lookup, so nothing bounds its cost by the entry count even where
-        # the compression afterwards happens to. What CAN be asserted is that
-        # the decision was taken — see the A5 testset below.
         @test !DGG.has_sorted_subtrees(sys)
         continue
     end
@@ -346,13 +276,6 @@ end
     @test collect(lk) == ids
     @test all(DGG.cellposition(lk, lk[k]) == k for k in eachindex(ids))
 
-    # The cost of the decision, pinned so that a later change to it is visible.
-    # It is the CONSTRUCTION that walks the leaves, not the stored form: sixteen
-    # times the cells cost an order of magnitude more to build, and then
-    # compress to the same windows, because a coverage of a connected region
-    # happens to have contiguous runs even where the subtrees are unsorted.
-    # That "happens to" is the whole reason the memory law above is excluded
-    # here rather than merely restated: nothing guarantees it.
     DGG.CellLookup(set)
     DGG.CellLookup(set; level=leaf + 2)
     @test @allocated(DGG.CellLookup(set; level=leaf + 2)) >
@@ -361,12 +284,6 @@ end
     @test length(deep) > length(lk)
     @test Base.summarysize(deep) <= 8 * length(deep)
 
-    # The consequence the decision inherits rather than causes: an A5 cell's
-    # descendants need not lie inside its own footprint, so a coverage's leaf
-    # expansion — and therefore a `Covering` selection — over-covers. The
-    # selector is still exactly that expansion, which is what is asserted here;
-    # the over-covering itself belongs to `MultiOrderCoverage` and is measured
-    # in test/systems/crosssystem/multiorder_polygons.jl.
     A = DD.DimArray(Float64.(eachindex(ids)), DGG.Cells(lk))
     inner = DGG.query(sys, DGG.MultiOrderCoverage(ZURICH); level=leaf)
     byhand = sort!(filter!(!isnothing,
@@ -399,11 +316,6 @@ end
     # A neighbour list is a `SmallVector`, and indexing an axis by one is
     # ambiguous unless the tie against SmallCollections' own method is broken.
     @test collect(lk[SmallCollections.SmallVector{8,Int}([3, 4, 5])]) == ids[3:5]
-    # Stated as "none of MY methods", not "none at all", so that an ambiguity
-    # introduced upstream fails wherever it belongs rather than here.
-    # `stencil.jl` joins the list because the subset topology verbs dispatch on
-    # the same wrapper types this file does, and a `<:Any` where a bounded
-    # parameter belongs is an ambiguity there for exactly the same reason.
     @test !any(Test.detect_ambiguities(DGG; recursive=true)) do pair
         any(m -> occursin("dimensionaldata.jl", string(m.file)) ||
                      occursin("stencil.jl", string(m.file)), pair)
@@ -431,17 +343,10 @@ end
     @test !DD.Lookups.hasselection(lk, DD.At(DGG.cellat(grid, FARAWAY...)))
     @test DD.Lookups.hasselection(lk, DD.Contains(ids[3]))
 
-    # Ids ascend with position on a complete level grid, which is what makes
-    # the binary searches sound; `searchsortedfirst` is that fact, exposed.
     @test issorted(ids)
     @test searchsortedfirst(lk, ids[7]) == 7
     @test searchsortedlast(lk, ids[7]) == 7
 
-    # Rebuilding around new VALUES is how DimensionalData concatenates, so it
-    # is implemented rather than refused: an ascending union of windows is
-    # still a window set, and anything else takes the same fallback `getindex`
-    # takes. Only a rebuild around something that is not cells at all is an
-    # error, and that error names concatenation because that is the caller.
     @test DD.Lookups.rebuild(lk) === lk
     @test DD.Lookups.rebuild(lk; data=parent(lk)) === lk
     @test DD.Lookups.rebuild(lk; data=ids) == lk
@@ -484,13 +389,6 @@ end
     @test_throws ArgumentError DGG.CellLookup(set; level=minimum(DGG.level, set) - 1)
 end
 
-# ---------------------------------------------------------------------------
-# The DimensionalData generics that do not go through `getindex`
-#
-# Each of these reaches the lookup by a route of its own, and each one of them
-# was a crash — or, for `Where` above, a wrong answer — while `parent` returned
-# the backing. They are the regression tests for that, one per route.
-# ---------------------------------------------------------------------------
 
 @testset "cube operations over a cell axis" begin
     sys = DGG.IGeo7System()
@@ -509,7 +407,6 @@ end
         @test revlk isa DD.Lookups.Lookup
         @test collect(revlk) == reverse(ids)
         @test parent(revA) == reverse(parent(A))
-        # The selector that used to overflow the stack.
         @test revA[DGG.Cells(DD.At(ids[3]))] == 3.0
         # A descending axis is not a window set, so it comes back as the same
         # `Categorical` fallback `lk[[3, 1]]` takes. Reversing twice therefore

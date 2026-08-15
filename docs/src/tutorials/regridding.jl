@@ -1,17 +1,14 @@
 # # Regridding a time series
 #
-# WorldClim ships monthly mean temperature on a regular lon/lat grid, where a
-# cell near the pole covers far less ground than one at the equator. This page
-# moves all twelve months onto an equal-area HEALPix grid with first-order
+# A temperature field on a regular lon/lat grid has cells that cover far less
+# ground near the pole than at the equator. This page moves twelve deterministic
+# monthly fields onto an equal-area HEALPix grid with first-order
 # conservative regridding, animates the seasonal cycle, and ends with a monthly
 # time series regridded onto just the cells that cover Texas.
 
-ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
-
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
-using Rasters, RasterDataSources
-import ArchGDAL
+using Rasters
 import NaturalEarth
 import GeometryOps as GO
 import GeoInterface as GI
@@ -21,13 +18,22 @@ GLMakie.activate!(inline = true)
 
 # ## Source and destination
 #
-# RasterDataSources downloads WorldClim (about 35 MB once, cached afterwards):
-# one global raster per month, 2160×1080 cells at 10 arc-minutes, in °C,
-# `missing` over the oceans.
+# A one-degree analytic raster keeps the example reproducible and offline. Its
+# latitude trend and phase-shifted seasonal cycle are temperature-like; a few
+# fixed gaps exercise the same missing-data path as an observational field.
 
-ser = RasterSeries(WorldClim{Climate}, :tavg; month = 1:12, res = "10m")
-r = set(first(ser), X => Rasters.Intervals(Rasters.Start()),
-    Y => Rasters.Intervals(Rasters.Start()))
+lon = -179.5:1.0:179.5
+lat = 89.5:-1.0:-89.5
+isgap(x, y) = abs(y) > 80 || (20 < x < 80 && -25 < y < 20)
+temperature(m, x, y) = isgap(x, y) ? NaN :
+    28 - 0.35abs(y) + 2sind(x) + 10sign(y) * cospi((m - 7) / 6)
+temperature_raster(m) = Raster(
+    [temperature(m, x, y) for x in lon, y in lat],
+    (X(lon; sampling = Rasters.Intervals(Rasters.Center())),
+     Y(lat; sampling = Rasters.Intervals(Rasters.Center()))),
+)
+ser = temperature_raster.(1:12)
+r = first(ser)
 size(r)
 
 # The destination is HEALPix level 6 — 49152 equal-area cells, a hair under 1°
@@ -39,8 +45,8 @@ grid = DGG.levelgrid(DGG.HEALPixSystem(), 6)
 
 xbounds, ybounds = Rasters.intervalbounds(r, (X, Y))
 # `intervalbounds` follows array-index order while each pair remains `(low,
-# high)`. WorldClim's X lookup runs west-to-east and its Y lookup runs
-# north-to-south, so the corner sequences begin at the first low X edge and
+# high)`. The X lookup runs west-to-east and the Y lookup runs north-to-south,
+# so the corner sequences begin at the first low X edge and
 # first high Y edge. Cell `(i, j)` then describes `r[i, j]` directly.
 xrange = [first(first(xbounds)); last.(xbounds)]
 yrange = [last(first(ybounds)); first.(ybounds)]
@@ -163,5 +169,5 @@ fig
 
 # Nothing above is HEALPix-specific — any system slots into `levelgrid` — but
 # the choice was deliberate: equal-area cells make the sums above areal means
-# without weights. The conservation caveat is also not system-uniform: a
-# destination whose rings are convex (IGEO7, S2) conserves today.
+# without weights. Conservation differs by system: destinations whose rings are
+# convex, such as IGEO7 and S2, conserve.

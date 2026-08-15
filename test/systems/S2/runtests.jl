@@ -1,14 +1,11 @@
-# ---------------------------------------------------------------------------
-# T11 — S2 system tests.
+# S2 system tests:
 #
-# Three kinds of test, and the distinction matters when one fails:
-#
-#   1. ORACLE — with an asterisk. There is **no S2 oracle in this repository**:
+#   1. ORACLE. There is no external S2 implementation or fixture in this
+#      repository:
 #      `src/systems/S2/` carries no s2geometry dependency and no s2geometry
 #      fixtures are vendored, so unlike HEALPix (which has Healpix.jl) the
 #      ground truth here is analytic invariants, internal consistency, and
-#      hand-computed tables. Sections 1-2 are the pre-redesign `test/S2/`
-#      chart suite carried over verbatim in substance: the face frames, the
+#      hand-computed tables: the face frames, the
 #      quadratic transform's anchors and exact oddness, great-circle sections,
 #      CCW winding, the twelve cube-edge seams bit-identical, the Euler count,
 #      and both index codecs' bijectivity, locality and prefix nesting.
@@ -16,15 +13,13 @@
 #   2. CONTRACT. The two conformance suites from
 #      `DiscreteGlobalGridsConformanceTesting`, with default kwargs.
 #
-#   3. STRUCTURAL. What the port newly owns and the old wiring never had: the
-#      hierarchy over the scaffold ordinal, the cube-edge seam topology checked
+#   3. STRUCTURAL. The hierarchy over the scaffold ordinal, the cube-edge seam topology checked
 #      GEOMETRICALLY against shared boundary points, the rotational neighbour
 #      order and its documented start, the exact four-corner `node_extent`, and
 #      the chart inverse behind `cellat`.
 #
 # `test/runtests.jl` includes this file; it also runs standalone:
 #     julia --project=test --startup-file=no test/systems/S2/runtests.jl
-# ---------------------------------------------------------------------------
 
 module S2SystemTests
 
@@ -105,7 +100,7 @@ function cell_sample(level::Integer, n::Integer = 64)
     return sort!(unique(rand(rng, Int64(0):(ncell - 1), n)))
 end
 
-# Recorded so the numbers land in the test log (and in the port's report).
+# Retain the largest measurement for each key in the test log.
 const MEASURED = Dict{String,Float64}()
 record!(key, value) = (MEASURED[key] = max(get(MEASURED, key, -Inf), value))
 
@@ -114,9 +109,8 @@ record!(key, value) = (MEASURED[key] = max(get(MEASURED, key, -Inf), value))
 # =========================================================================
 # 1. Chart: frames, transform, geometry, seams
 #
-# Carried over from the pre-redesign `test/S2/test_chart.jl`. Analytic
-# invariants and internal consistency, because there is no reference
-# implementation here to check against.
+# Analytic invariants and internal consistency provide the oracle because no
+# external reference implementation is available here.
 # =========================================================================
 
 @testset "face frames" begin
@@ -315,9 +309,8 @@ end
 @testset "seam multiplicity and Euler count (nside = $nside)" for nside in (1, 2, 4, 8)
     # Every boundary-lattice point of every face, counted once per face. At
     # power-of-two `nside` the reversed seams pair `1 - k/n` against `(n-k)/n`,
-    # which are the same Float64, so this can be done on exact keys rather than
-    # quantised ones (the pre-redesign suite quantised because it also swept
-    # non-dyadic `nside`, which the id space does not have).
+    # which are the same Float64. Exact keys therefore suffice because the id
+    # space contains only dyadic `nside` values.
     mult = Dict{NTuple{3,Float64},Int}()
     total = 0
     for face in 0:5
@@ -528,9 +521,7 @@ end
 # =========================================================================
 # 3. Ids and hierarchy over the scaffold ordinal
 #
-# The half of the surface the pre-redesign wiring never had: it shipped
-# geometry over these ordinals but no `cell_to_ordinal`, no neighbours and no
-# hierarchy at all.
+# Hierarchy and adjacency over the scaffold ordinal.
 # =========================================================================
 
 @testset "system traits and level grids" begin
@@ -725,7 +716,7 @@ end
 # =========================================================================
 
 @testset "node_extent covers the subtree" begin
-    # THE COVERING LAW, measured rather than argued: every descendant boundary
+    # Measure the covering law: every descendant boundary
     # point of every sampled cell, several levels down, against the ancestor's
     # own cap. The margin is expected to be tiny and NEGATIVE — descendant
     # corners land on the ancestor's corners bit-identically, and `nextfloat` on
@@ -810,8 +801,7 @@ end
 # =========================================================================
 
 @testset "the seam table is the geometry (level $level)" for level in 0:3
-    # THE structural check of this port, and the one the T6 review established
-    # for HEALPix: the neighbour relation computed from `SEAM`'s integer
+    # The neighbour relation computed from `SEAM`'s integer
     # arithmetic must equal the one computed from SHARED BOUNDARY POINTS, over
     # a whole level, seams and cube corners included.
     #

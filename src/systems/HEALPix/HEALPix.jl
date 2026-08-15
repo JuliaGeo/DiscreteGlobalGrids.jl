@@ -23,9 +23,8 @@ import ..DiscreteGlobalGrids as DGG
 
 import GeometryOps as GO
 const US = GO.UnitSpherical
-# The UnionAll, never `SphericalCap{Float64}`: the two-argument
-# `(point, radius)` constructor is a method of the UnionAll, and a parametrised
-# alias would silently reach the three-field default constructor instead.
+# Preserve the UnionAll so the two-argument `(point, radius)` constructor is
+# selected.
 const SphericalCap = US.SphericalCap
 
 import SmallCollections

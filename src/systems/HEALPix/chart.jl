@@ -13,11 +13,6 @@
 #   equatorial belt, `8:11` the south polar caps.
 # - RING indices are 1-based; NESTED ids are 0-based.
 # Argument order is `(ix, iy, face, nside)`; inverse codecs take the id first.
-# The chart and RING codecs port HEALPix's `xyf2loc`/`xyf2ring`/`pix2xyf` via
-# ConservativeRegridding.jl's RingGrids extension, whose argument order they keep.
-
-# (`GO` is imported once by the enclosing `HEALPix` module, which includes this
-# file; the original carried its own `import GeometryOps as GO` here.)
 
 # Górski face constants, indexed by 0-based face number `f` as `JRLL[f + 1]`.
 # `JRLL` is the face's row in the 3-row base tiling (2 = north cap, 3 =
@@ -123,8 +118,8 @@ pixel_center(ix::Integer, iy::Integer, face::Integer, nside::Integer) =
 # The ring layout numbers pixels north→south along iso-latitude rings, and
 # west→east within a ring. Ring `jr` (1-based, `1:4nside-1`) holds `4jr` pixels
 # in the north cap, `4nside` through the belt, mirrored in the south. All of
-# it is closed-form arithmetic, valid for ANY `nside >= 1` — the power-of-two
-# restriction belongs to the *nested* index only.
+# it is closed-form arithmetic valid for any `nside >= 1`. Only the nested
+# index requires a power-of-two side length.
 # ---------------------------------------------------------------------------
 
 """
@@ -235,8 +230,8 @@ end
 #
 # The nested id is a Morton (Z-order) code within a face: it exists precisely
 # so that a pixel's four children at the next level are `4p:4p+3`, which needs
-# the face to be a `2^k × 2^k` quadtree. Hence — unlike the RING maps above —
-# these two functions are only defined for `nside == 2^k` and say so loudly.
+# the face to be a `2^k × 2^k` quadtree. These functions therefore require
+# `nside == 2^k`.
 # ---------------------------------------------------------------------------
 
 """

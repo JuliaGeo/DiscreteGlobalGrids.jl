@@ -177,7 +177,7 @@ that meets the target is a member or the descendant of one — is a law here on
 those same three systems only. The `level` mode earns it everywhere by
 descending into cells that miss the target, because a child can overhang its
 parent, and carrying that descent all the way to `level`. A budget has no fixed
-depth to carry it to; stopping early is the whole point, and a branch stopped
+depth to carry it to. A budget may stop early, and a branch stopped
 early at a cell that misses the target is a branch whose overhang is not
 followed. On the same outline the leaf statement misses under 1% of the target
 on IGEO7, 2% on its authalic wrap and on H3, and 18% on A5. Both statements are

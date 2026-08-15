@@ -41,7 +41,7 @@ const DST = [TO_SPHERE((x, y)) for x in DST_LON, y in DST_LAT]
 # Destination cells as polygons, for the tree-free reference intersections.
 const DST_CELLS = vec(collect(DGG.getcell(DGG.treeify(DST))))
 
-# THE MANIFOLD, declared once. Every grid in this package computes on the UNIT
+# The manifold is declared once. Every grid in this package computes on the unit
 # sphere — `cell_boundary` returns `UnitSphericalPoint`s and `cell_area` returns
 # steradians — so that is the manifold the regridder must work on. A bare
 # `Matrix{UnitSphericalPoint}` carries no manifold of its own, and
@@ -62,7 +62,7 @@ possible: the intersection matrix is verified against cell areas and against
 directly clipped polygons, never against another tree.
 """
 function verify(label, sys, l)
-    # THE CALL SITE — the singleton is the only system-specific token.
+    # The system singleton is the only system-specific token at the call site.
     src = DGG.levelgrid(sys, l)
     regridder = CR.Regridder(MANIFOLD, DST, src)
 

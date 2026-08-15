@@ -4,13 +4,27 @@
 # PROVENANCE — ported, not clean-room.
 #
 # The rest of this module is clean-room (paper, first principles, or fitted to
-# black-box oracle output; see `IGeo7`'s docstring). The eight tables below and
-# the carry/rotation procedure are not: they are ported from IGEO7.jl
-# (https://github.com/allixender/IGEO7.jl, `src/IGEO7.jl`, functions
-# `get_neighbour`/`get_neighbours`), whose own comments trace them to
-# `cpp_source/library.h`. Alexander Kmoch is their author and the port is used
-# **with his permission**; IGEO7.jl is AGPL-3.0, so the licence this file may be
-# distributed under is a decision recorded outside the source.
+# black-box oracle output; see `IGeo7`'s docstring). This file is not. Ported
+# from IGEO7.jl (https://github.com/allixender/IGEO7.jl, `src/IGEO7.jl`) by
+# **Alexander Kmoch**:
+#
+#   * `get_neighbour` — the direction step and its carry ripple, here `_gbt_step`
+#   * `get_neighbours` — the six-direction pass, the base crossing and the
+#     exclusion-zone correction, here `_gbt_cross_base` and the body of
+#     `_cell_neighbors_ccw`
+#   * `first_non_zero`, here `_first_nonzero_level`
+#   * the eight tables those read: `BASE_CELL_NEIGHBOURS`, `EXCLUDE_NEIGHBOURS`,
+#     `ROTATIONS`, `POLE_0_ROTATIONS`, `GBT_CW_0`, `GBT_CW_1`, `GBT_CCW_0`,
+#     `GBT_CCW_1` — which upstream's own comments trace to `cpp_source/library.h`
+#
+# The reuse is covered by a **licence grant from Alexander Kmoch** to this
+# package. The grant settles which terms apply; the credit is owed either way,
+# and that is what this header is for.
+#
+# TODO(Anshul): record the grant's actual terms next to the LICENSE file this
+# repo still lacks. Whether it is a relicence, a dual licence or something else
+# is not known to this file, so nothing beyond the fact of the grant is stated
+# here.
 #
 # What the port changed is shape, not arithmetic: static tuples instead of
 # `StaticArrays`, `Helpers.SmallList` instead of a heap `Vector`, this module's

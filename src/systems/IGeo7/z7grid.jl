@@ -489,12 +489,13 @@ lattice point in each of the six unit directions, project the result through
 the development frame's `+1` direction, by construction — the loop *is* the
 unit order.
 
-This is the definition [`_cell_neighbors_ccw`](@ref) is checked against, and it
-is the oracle-validated decoder, so it stays in the tree as the differential
-reference (testset `9b` of `test/systems/IGeo7/runtests.jl`) even though nothing
-on the hot path calls it: a floating-point round trip with a three-base search in
-it, per neighbour, is roughly forty times the cost of the digit arithmetic that
-replaced it.
+Nothing on the hot path calls this — a floating-point round trip with a
+three-base search in it, per neighbour, is roughly forty times the cost of
+`gbt.jl`'s digit arithmetic. It stays because it is the **differential oracle**:
+it answers adjacency from this package's own oracle-validated lattice and
+decoder, sharing no reasoning with the ported digit kernel, so agreement between
+the two is real evidence rather than a restatement. Testset `9b` of
+`test/systems/IGeo7/runtests.jl` is that comparison.
 """
 function _cell_neighbors_ccw_geometric(z7::UInt64)
     res = _geometry_checked(z7)

@@ -279,26 +279,34 @@ the ~9 MB of vectors the suite reads travel here.
 
 ### Exception: `src/systems/IGeo7/gbt.jl`
 
-One file breaks the rule above and says so in its own header. Its eight GBT
-adjacency tables and the carry/rotation procedure over them are **ported from
-[IGEO7.jl](https://github.com/allixender/IGEO7.jl)** (`src/IGEO7.jl`, AGPL-3.0,
-by Alexander Kmoch), used **with the author's permission**, granted to Anshul
-Singhvi. This is source-level reuse, not black-box validation, so:
+One file is source-level reuse rather than black-box validation, and says so in
+its own header. The one-ring adjacency kernel is **ported from
+[IGEO7.jl](https://github.com/allixender/IGEO7.jl)** (`src/IGEO7.jl`) by
+**Alexander Kmoch** — specifically `get_neighbour`, `get_neighbours`,
+`first_non_zero`, and the eight tables those read (`BASE_CELL_NEIGHBOURS`,
+`EXCLUDE_NEIGHBOURS`, `ROTATIONS`, `POLE_0_ROTATIONS`, and the four GBT addition
+tables). The reuse is covered by a **licence grant from Alexander Kmoch** to this
+package.
 
-* **The licensing consequence is unresolved and deliberate.** AGPL-3.0 is
-  strongly copyleft. This package currently ships no `LICENSE` file; before it
-  gets one, either the terms covering this port must be settled in writing with
-  the author, or the file must be replaced by a clean-room derivation.
-* **It is isolated so that it can be removed.** Only `_cell_neighbors_ccw` comes
-  from it, and the clean-room implementation it displaced is still present and
-  still correct: `IGeo7._cell_neighbors_ccw_geometric` (`src/systems/IGeo7/
-  z7grid.jl`) derives adjacency from this package's own oracle-validated lattice
-  and decoder. Deleting `gbt.jl` and renaming that function back to
-  `_cell_neighbors_ccw` restores the fully clean-room package at roughly forty
-  times the cost per neighbour query. The counterclockwise slot bridge in
-  `_encode_lattice_rot` is this package's own and stays either way.
-* **It is not trusted, it is checked.** Testset `9b` of
-  `test/systems/IGeo7/runtests.jl` pins the ported path against the clean-room
-  one — same ids, same order — on every cell of levels 0–3, on samples through
-  level 19, across all twelve pentagon chains and their two-ring
-  neighbourhoods, and over the whole `neighbors`/`ring` disc to `k = 3`.
+> **TODO (Anshul):** record the grant's actual terms. This repository ships no
+> `LICENSE` file yet; the terms belong next to it. Whether the grant is a
+> relicence, a dual licence or something else is not recorded anywhere in this
+> tree, so nothing beyond the fact of the grant is asserted here.
+
+Attribution is owed whatever the terms are, so the file header names the upstream
+repository, file, functions and author, and each ported table's docstring points
+back at that header. What the port changed is shape, not arithmetic; the
+counterclockwise ordering it emits in (`_encode_lattice_rot`, `z7grid.jl`) is
+this package's own, because upstream defines no rotational order.
+
+The port is **not trusted, it is checked**, against this package's own
+independent implementation of the same question:
+`IGeo7._cell_neighbors_ccw_geometric` (`src/systems/IGeo7/z7grid.jl`) derives
+adjacency from the oracle-validated lattice and decoder instead of from digit
+arithmetic. Two implementations that share no reasoning are the strongest
+evidence available that either is right, so the geometric one stays in the tree
+as the differential oracle even though nothing on the hot path calls it. Testset
+`9b` of `test/systems/IGeo7/runtests.jl` pins the two together — same ids, same
+order — on every cell of levels 0–3, on samples through level 19, across all
+twelve pentagon chains and their two-ring neighbourhoods, and over the whole
+`neighbors`/`ring` disc to `k = 3`.

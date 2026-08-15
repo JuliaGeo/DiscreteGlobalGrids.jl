@@ -248,16 +248,15 @@ The halo of an arbitrary same-level subset, lazily — what [`halo`](@ref) retur
 whenever the subset is not a rooted complete subtree: a subset with a hole, a
 subset whose root was forgotten, a [`CellVector`](@ref), a [`CellLookup`](@ref).
 
-Positional and built by [`halo`](@ref), which owns both the engine choice and
-the cap the walk prunes by. There is nothing a caller could pass here that
-`halo` does not already decide from the subset itself.
+Positional and built by [`halo`](@ref), which owns the engine choice. There is
+nothing a caller could pass here that `halo` does not already decide from the
+subset itself.
 
-Construction never materialises the halo. The walk is
-[`OutsideWalkEngine`](@ref)'s, so the state is one `O(depth)` frame stack; the
-only input-sized cost is the bounding cap, which is computed once and gives up
-to the full sphere past a fixed batch. [`Base.IteratorSize`](@ref) is the
-engine's, which is `SizeUnknown()` — a subset's halo has no perimeter formula at
-all.
+Construction costs `O(1)` and materialises nothing — not the halo, and not a
+summary of the input either. The walk is [`OutsideWalkEngine`](@ref)'s, so the
+state is one `O(depth)` frame stack, and it prunes by the subset's own
+[`subset_span`](@ref)s. [`Base.IteratorSize`](@ref) is the engine's, which is
+`SizeUnknown()` — a subset's halo has no perimeter formula at all.
 """
 struct SubsetHaloIterator{S,K<:Connectivity,E}
     subset::S
@@ -346,12 +345,40 @@ cell.
 since a subset's own `neighbors` is already clipped to membership and would hide
 exactly the cells being looked for. The subset supplies membership only, which
 is `O(log #windows)` on a [`CellVector`](@ref) and `O(log #cells)` on a
-[`PartialGrid`](@ref).
+[`PartialGrid`](@ref) — plus [`subset_span`](@ref), which is that same search
+asked about a whole block at once.
 """
 struct SubsetMembership{S,G}
     subset::S
     complete::G
 end
+
+# ---------------------------------------------------------------------------
+# The subset's shape, read as position spans
+# ---------------------------------------------------------------------------
+
+const _SPAN_NONE = 0
+const _SPAN_SOME = 1
+const _SPAN_ALL = 2
+
+"""
+    subset_span(subset, lo::Int, hi::Int) -> Int
+
+How much of the position block `lo:hi` of the subset's own complete level the
+subset holds: `_SPAN_NONE`, `_SPAN_SOME` or `_SPAN_ALL`.
+
+The block is always a node's [`descendant_range`](@ref), so this is the
+membership search asked about a whole subtree at once instead of cell by cell —
+`O(log #windows)` on a [`CellVector`](@ref) and `O(log #cells)` on a
+[`PartialGrid`](@ref), the same searches [`cellposition`](@ref) runs, and never
+`O(hi - lo)`. It is what lets the subset walk retire a chunk's whole interior
+for the price of one lookup; see `_admit(::SubsetMembership, ...)`.
+
+Both containers store cells in ascending position order, so "the subset holds
+every position of `lo:hi`" is decided by the two ENDPOINTS plus a count: the
+stored entries between them number `hi - lo + 1` only if none is missing.
+"""
+function subset_span end
 
 # --- the indexed test -------------------------------------------------------
 
@@ -476,6 +503,44 @@ end
 #
 # Why not lon/lat: longitude/latitude boxes are unusable at seams and poles, so
 # everything here stays in unit-sphere XYZ.
+#
+# ---------------------------------------------------------------------------
+# THE SUBSET WALK PRUNES BY A DIFFERENT LAW, AND IT IS NOT GEOMETRIC
+#
+# `SubsetMembership` has no root, so there is no root cap to compare against and
+# no covering law to lean on. What it has instead is the subset's own position
+# spans, and the prune those support is the COARSE-CONTAINMENT LAW:
+#
+#     for every pair of cells `x`, `y` that the system calls VERTEX-adjacent at
+#     level `l`, `parent(y)` is `parent(x)` or a vertex-neighbour of it.
+#
+# Applied down the generations it gives the statement the walk actually uses: a
+# neighbour of a level-`t` cell has its level-`lc` ancestor inside the CLOSED
+# one-ring of that cell's own level-`lc` ancestor. So if neither a node nor any
+# level-`lc` neighbour of it holds a member, no target-level descendant of it can
+# have a member neighbour, and none of them is a halo cell. That is what
+# `_near_subset` tests, and it is why the subset walk visits nodes in proportion
+# to the subset's BOUNDARY rather than to the area of a bounding cap.
+#
+# THE SAME KIND OF ASSUMPTION THE CAP PRUNE MAKES, and it fails the same way:
+# loudly in the differential tests, silently in production. A system whose
+# refinement moved a cell out from under its parent's neighbourhood — an
+# adjacency defined by index arithmetic that jumps a generation — would keep this
+# arithmetic intact and its soundness not, and the walk would drop that halo
+# cell. Every bundled system obeys it EXHAUSTIVELY: zero violations over every
+# adjacent pair at levels 1 through 6 on HEALPix, S2, ISEA4R and A5, 1 through 5
+# on IGeo7 and 1 through 4 on H3, which is what
+# `test/systems/crosssystem/subtree_halos.jl` re-runs on every suite. A system
+# that does not obey it must supply its own subset engine.
+#
+# THE PROBE IS `Vertex()` WHATEVER WAS REQUESTED, for `_seam_band_engine`'s
+# reason: the `Edge()` halo is a subset of the `Vertex()` one, so a superset
+# derived under `Vertex()` covers both, and the law above is stated — and
+# tested — under `Vertex()` only. NOTHING HERE RELIES ON AN `Edge()` READING OF
+# IT, and nothing should: narrowing the probe to the requested connectivity would
+# be assuming a second law this file has not written down and the testset does
+# not check, and a system that obeyed the `Vertex()` form while breaking the
+# `Edge()` one would then lose halo cells silently under `Edge()` alone.
 
 # One frame per level strictly above the target, so a full-depth walk from the
 # root generation pushes at most `max_level` of them — 30 on S2, the deepest
@@ -548,10 +613,12 @@ const _HALO_SKIP = 0
 const _HALO_EMIT = 1
 const _HALO_DESCEND = 2
 
-# How expensive a cap prune is BEFORE the adjacency test, per provider. The
+# How expensive a cap prune is BEFORE the adjacency test, per SUBTREE provider —
+# the subset arm of `_admit` never asks, because its adjacency test opens with a
+# `cellposition` that retires an in-set candidate for less than a cap costs. The
 # indexed provider is one native `neighbors` call, cheaper than building a cap
-# from a boundary, so it declines: at the target level it goes straight to the
-# test. The forced-geometry provider walks the ROOT's subtree once per
+# from a boundary, so it declines too: at the target level it goes straight to
+# the test. The forced-geometry provider walks the ROOT's subtree once per
 # candidate, so a single cap comparison that retires the candidate outright is
 # worth many times its cost — and this is the oracle path, which the
 # differential tests hammer. Dispatch on the provider so the indexed path pays
@@ -564,10 +631,16 @@ const _HALO_DESCEND = 2
 @inline _target_prune(::IndexedNeighbors, e, c) = true
 @inline _target_prune(::ForcedGeometry, e, c) =
     intersects_cap(cell_cap(e.grid, c), e.rootcap)
-# Declines for the indexed provider's reason: the first half of the subset test
-# is one `cellposition`, a binary search over integers, which retires an in-set
-# candidate for far less than building a cap from a boundary would cost.
-@inline _target_prune(::SubsetMembership, e, c) = true
+
+# ONE VERDICT PER NODE, AND THE PROVIDER DECIDES IT. The subtree providers ask a
+# question about ANCESTRY and prune by geometry; `SubsetMembership` asks one
+# about MEMBERSHIP and prunes by the subset's own position spans. Those are
+# different rules, not one rule with a flag, so `_admit` dispatches on the
+# provider exactly as `_touches_subtree` and `_target_prune` do — each arm stays
+# monomorphic and neither pays for the other's fields.
+@inline _admit(e::OutsideWalkEngine, c) = _admit(e.provider, e, c)
+
+# --- the subtree arm --------------------------------------------------------
 
 # Three questions, cheapest first. A node whose whole descendant range sits
 # inside the subject's is the subject subtree itself (ranges nest or are
@@ -581,18 +654,57 @@ const _HALO_DESCEND = 2
 # the containment test is a `descendant_range` call that cannot succeed. On
 # IGeo7 with a level-2 root at `l = 5` that is 630 of the 689 nodes the walk
 # visits.
-@inline function _admit(e::OutsideWalkEngine, c)
+@inline function _admit(p::Union{IndexedNeighbors,ForcedGeometry},
+        e::OutsideWalkEngine, c)
     lc = level(c)
     if lc == e.rootlevel
         r = descendant_range(e.system, c, e.target)
         (first(r) >= e.lo && last(r) <= e.hi) && return _HALO_SKIP
     end
     if lc == e.target
-        _target_prune(e.provider, e, c) || return _HALO_SKIP
-        return _touches_subtree(e.provider, e, c) ? _HALO_EMIT : _HALO_SKIP
+        _target_prune(p, e, c) || return _HALO_SKIP
+        return _touches_subtree(p, e, c) ? _HALO_EMIT : _HALO_SKIP
     end
     intersects_cap(node_extent(e.system, c), e.rootcap) || return _HALO_SKIP
     return _HALO_DESCEND
+end
+
+# --- the subset arm ---------------------------------------------------------
+
+# Two integer questions and no geometry at all — see `subset_halo_engine` for
+# why the cap is gone and what replaces it.
+#
+#   * a node the subset holds ENTIRELY holds no halo cell, because a halo cell
+#     is by definition one the subset does not hold. One `subset_span` retires
+#     the whole block, which is what makes a chunk's own interior free;
+#   * a node the subset touches at all must be descended, because the boundary
+#     between held and unheld cells is inside it;
+#   * a node the subset does not touch is descended only if a level-`lc`
+#     NEIGHBOUR of it does — the coarse-containment law below.
+@inline function _admit(p::SubsetMembership, e::OutsideWalkEngine, c)
+    lc = level(c)
+    if lc == e.target
+        return _touches_subtree(p, e, c) ? _HALO_EMIT : _HALO_SKIP
+    end
+    r = descendant_range(e.system, c, e.target)
+    s = subset_span(p.subset, first(r), last(r))
+    s == _SPAN_ALL && return _HALO_SKIP
+    s == _SPAN_SOME && return _HALO_DESCEND
+    return _near_subset(p, e, c, lc) ? _HALO_DESCEND : _HALO_SKIP
+end
+
+# The one-ring of `c` at `c`'s OWN level, asked of the subset's spans. The probe
+# is `Vertex()` whatever connectivity was requested, for the seam band's reason:
+# the `Edge()` halo is a subset of the `Vertex()` one, so one conservative
+# superset serves both, and the requested connectivity is still what
+# `_touches_subtree` filters by at the target level.
+@inline function _near_subset(p::SubsetMembership, e::OutsideWalkEngine, c, lc::Int)
+    coarse = levelgrid(e.system, lc)
+    for nb in neighbors(coarse, c, 1; connectivity = Vertex())
+        r = descendant_range(e.system, nb, e.target)
+        subset_span(p.subset, first(r), last(r)) == _SPAN_NONE || return true
+    end
+    return false
 end
 
 Base.iterate(e::OutsideWalkEngine{S,G,C}) where {S,G,C} =
@@ -733,31 +845,31 @@ geometry_halo_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
     outside_walk_engine(sys, c, target, connectivity, ForcedGeometry())
 
 """
-    subset_halo_engine(sys, subset, complete, target, connectivity, cap)
+    subset_halo_engine(sys, subset, complete, target, connectivity)
 
 The engine behind [`halo`](@ref) for an arbitrary subset: the same outside-first
 walk the subtree fallback uses, with [`SubsetMembership`](@ref) in place of the
-subtree providers and the subject skip switched off.
+subtree providers and with the SUBSET'S OWN SPANS in place of the subtree's
+root range and bounding cap.
 
-WHY THE SKIP IS SWITCHED OFF rather than pointed at the subset. `_admit` retires
-a node whose whole target-level range sits inside the subject's, which is exactly
-what must not happen here: a cell punched out of the middle of a subset lies in
-that range and IS a halo cell. Setting `rootlevel` one below the system's
-shallowest level makes the branch unreachable — no level compares equal to it —
-so the walk descends everywhere and every candidate is decided by membership
-alone. `lo`/`hi` are an empty range so the skip would refuse even if some future
-edit made the branch live again, and `root` is a placeholder that fixes the
-frame stack's element type and nothing else. Both are unread on this path.
+WHY THE SUBTREE'S SKIP IS SWITCHED OFF rather than pointed at the subset.
+`_admit`'s subtree arm retires a node whose whole target-level range sits inside
+the SUBJECT SUBTREE's, which is exactly what must not happen here: a cell punched
+out of the middle of a subset lies in that range and IS a halo cell. Setting
+`rootlevel` one below the system's shallowest level makes the branch unreachable
+— no level compares equal to it — so nothing on this path can reach it. `lo`/`hi`
+are an empty range so the skip would refuse even if some future edit made the
+branch live again, `rootcap` is the full sphere so a cap test would prune
+nothing, and `root` is a placeholder that fixes the frame stack's element type.
+All four are unread on this path; the subset arm of `_admit` reads none of them.
 
-WHAT IT PRUNES BY. `cap`, and the prune is sound for the reason the subtree
-walk's rootcap is: a halo cell shares a boundary point with a member, that point
-lies in `cap`, and it is also one of the candidate's own corners, so the two caps
-intersect and a node whose cap misses `cap` holds no halo cell. [`halo`](@ref)
-supplies the root's [`node_extent`](@ref) when the grid is rooted — every member
-is a descendant, so the covering law carries — and otherwise [`cells_cap`](@ref)
-over the subset's own cells. That is an INPUT-sized cost paid once at
-construction, and bounded: past `UNION_CAP_BATCH_LIMIT` cells it answers the full
-sphere rather than growing. Nothing here is sized by the halo.
+WHAT IT PRUNES BY INSTEAD, and why there is no cap at all. A node is descended
+only when the subset touches it or touches one of its level-`lc` neighbours, so
+the walk follows the subset's BOUNDARY rather than filling a bounding region:
+`O(halo)` nodes rather than `O(cap area)`, and construction is `O(1)` rather
+than a boundary evaluation per member. See the coarse-containment law in the
+section comment above [`OutsideWalkEngine`](@ref) for why the neighbour probe is
+sound and what a system would have to violate to break it.
 
 `O(depth)` memory beyond the subset's own storage. A system with no
 [`descendant_range`](@ref) gets [`ScanHaloEngine`](@ref), for the same reason it
@@ -776,15 +888,15 @@ ever stop being true, the thing to add is a declared method on the system, not a
 fourth shape of this one.
 """
 function subset_halo_engine(sys::AbstractHierarchicalGridSystem, subset,
-        complete::AbstractGrid, target::Int, connectivity::Connectivity, cap)
+        complete::AbstractGrid, target::Int, connectivity::Connectivity)
     provider = SubsetMembership(subset, complete)
     seed = first(rootcells(sys))
     nolevel = first(levels(sys)) - 1
     has_sorted_subtrees(sys) ||
         return ScanHaloEngine(sys, complete, seed, nolevel, target, provider,
             connectivity)
-    return OutsideWalkEngine(sys, complete, seed, nolevel, target, 1, 0, cap,
-        rootcells(sys), provider, connectivity)
+    return OutsideWalkEngine(sys, complete, seed, nolevel, target, 1, 0,
+        full_sphere_cap(), rootcells(sys), provider, connectivity)
 end
 
 # ===========================================================================

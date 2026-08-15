@@ -58,10 +58,13 @@
 #   Rooted and root-forgotten `PartialGrid`, holes, `CellVector`, `CellLookup`.
 #   "$(system): halo on subsets" — delegation asserted BY TYPE, the
 #   root-forgotten form and three shapes of punched hole held to the GEOMETRY
-#   oracle, and the rooted-but-incomplete form, the only arm exercising the
-#   `node_extent` prune rather than `cells_cap`. The other subset rule — no
+#   oracle, and the rooted-but-incomplete form. The other subset rule — no
 #   `halo` for a mixed-level `MultiOrderCellSet` — is "a mixed-level set has no
 #   halo".
+#
+#   The ASSUMPTION the subset walk prunes by.  "the coarse-containment law the
+#   subset prune rests on" — the one statement about a system that, if it were
+#   false, would make `halo` drop a cell silently rather than loudly.
 #
 #   Equality through `AuthalicSystem`.  "AuthalicSystem forwards the halo walk",
 #   over all seven engines and the subset verb on all three containers.
@@ -114,11 +117,11 @@
 #     it actually made; the depth-invariance arm is restricted to the engines
 #     that have the property.
 #
-#   * THE SUBSET WALK'S CONSTRUCTION is held to no scaling law at all: it pays
-#     `cells_cap` over the subset's own cells, which is INPUT-sized, and the
-#     input is the very thing whose halo would have to grow for a scaling law to
-#     have two points to compare. "the subset walk is lazy, measured with
-#     construction hoisted out" says what is asserted instead, and why.
+#   * THE SUBSET WALK'S COST is not measured by a clock either, and does not
+#     need to be: the walk asks its subset exactly two questions, so a wrapper
+#     that counts them counts the work. "the subset walk's cost follows the halo,
+#     not the subset" is that count at two sizes, and "the subset walk is lazy"
+#     is the construction and prefix pair the other engines get.
 #
 #   * A SUBSET THAT IS NOT A SUBTREE HAS NO GEOMETRY ORACLE. `ForcedGeometry`
 #     answers "does `x` touch a descendant of `c`", and an arbitrary set of ids
@@ -191,6 +194,33 @@ Base.eltype(::Type{<:EagerHaloEngine{S,C,K}}) where {S,C,K} = C
 Base.IteratorSize(::Type{<:EagerHaloEngine}) = Base.HasLength()
 Base.length(e::EagerHaloEngine) = length(e.cells)
 
+# THE THIRD FIXTURE, WHICH MAKES THE SUBSET WALK'S COST COUNTABLE WITHOUT A
+# CLOCK. `SubsetMembership` asks the subset it was handed exactly two questions —
+# `cellposition` for one cell and `subset_span` for a whole block — so a wrapper
+# that forwards both and counts them counts the walk's work exactly. No timing,
+# no allocation proxy, no threshold that a faster machine could move.
+#
+# It is a SUBSET, not an engine: `halo` decides its own container's engine, so
+# the counting arm builds `subset_halo_engine` directly and hands it this. The
+# answer is asserted equal to the container's on every use, which is what says
+# the wrapper changed the measurement and not the walk.
+mutable struct CountingSubset{S}
+    inner::S
+    calls::Int
+end
+
+CountingSubset(inner) = CountingSubset{typeof(inner)}(inner, 0)
+
+DGG.cellposition(cs::CountingSubset, c::DGG.AbstractCellIndex) =
+    (cs.calls += 1; DGG.cellposition(cs.inner, c))
+
+DGG.Fallbacks.subset_span(cs::CountingSubset, lo::Int, hi::Int) =
+    (cs.calls += 1; DGG.Fallbacks.subset_span(cs.inner, lo, hi))
+
+counting_halo(sys, cs::CountingSubset, complete, l, conn) = DGG.collect_subtree(
+    DGG.Fallbacks.SubsetHaloIterator(cs, conn,
+        DGG.Fallbacks.subset_halo_engine(sys, cs, complete, Int(l), conn)))
+
 # ---------------------------------------------------------------------------
 # The allocation harness — also out here, and for a measurement reason
 #
@@ -203,10 +233,12 @@ Base.length(e::EagerHaloEngine) = length(e.cells)
 # engine that materialised its answer in its constructor would measure zero from
 # a harness that built the iterator first and timed only the walk, which is the
 # failure the design's last verification row exists to catch. THE ONE EXCEPTION
-# says so in its own name — "the subset walk is lazy, measured with construction
-# hoisted out" — because the subset's construction cost is INPUT-sized and obeys
-# no scaling law; what keeps that arm honest is `EagerHaloEngine`, which pays
-# the halo on every walk as well as in its constructor and is refused there too.
+# is the prefix-against-collect arm of "the subset walk is lazy, and its
+# construction is O(1)", which hoists the iterator out on purpose so that the
+# WALK's laziness is what is measured — construction is measured separately in
+# the same testset, by `subset_construct_bytes`, and what keeps the hoisted arm
+# honest is `EagerHaloEngine`, which pays the halo on every walk as well as in
+# its constructor and is refused there too.
 #
 # Every measurement is WARM: the untimed call before the timed one is the
 # compile, not a courtesy.
@@ -229,6 +261,12 @@ const SINK = Ref{Any}(nothing)
 
 construct!(sys, c, l) = (SINK[] = SubtreeHaloIterator(sys, c, l); nothing)
 construct_bytes(sys, c, l) = (construct!(sys, c, l); @allocated construct!(sys, c, l))
+
+# The same shape for the subset verb, whose argument is a container rather than
+# a `(system, cell, level)` triple.
+subset_construct!(sub) = (SINK[] = halo(sub); nothing)
+subset_construct_bytes(sub) =
+    (subset_construct!(sub); @allocated subset_construct!(sub))
 
 # The same three, forced onto the generic outside-first walk. No system reaches
 # it through the keyword constructor any more, so it has to be built.
@@ -1533,13 +1571,130 @@ fixture_collect_bytes(sys, c, l) =
                 # ROOTED BUT NOT COMPLETE, the branch neither the whole
                 # subtree nor the root-forgotten form reaches:
                 # `_whole_subtree_range` refuses it on the count, so it takes
-                # the subset walk — but the walk prunes by the ROOT's
-                # `node_extent` rather than by `cells_cap`, and this is the only
-                # arm that exercises that cap. Same ids, same answer.
+                # the subset walk. THE ROOT MUST MAKE NO DIFFERENCE — the walk
+                # prunes by the subset's own spans and never asks whether one was
+                # declared — and this is the arm that says so. Same ids, same
+                # answer.
                 rooted = PartialGrid(sys, l, ids; root = c)
                 @test halo(rooted) isa DGG.Fallbacks.SubsetHaloIterator
                 @test collect(halo(rooted; connectivity = conn)) == hh
             end
+        end
+    end
+
+    # THE ONE ASSUMPTION THE SUBSET WALK PRUNES BY, checked rather than argued.
+    #
+    # `SubsetMembership` has no root, so the subset walk has no root cap and no
+    # covering law to prune with. What it prunes with instead is the
+    # COARSE-CONTAINMENT LAW: for every pair of cells the system calls
+    # vertex-adjacent at a level, the two parents are equal or vertex-adjacent
+    # themselves. Compose it down the generations and it says that a neighbour of
+    # a target-level cell has its level-`lc` ancestor inside the CLOSED one-ring
+    # of that cell's own level-`lc` ancestor — which is exactly `_near_subset`'s
+    # licence to skip a node no neighbour of which holds a member.
+    #
+    # WHY IT IS HERE AND NOT LEFT TO THE VALUE ARMS. A prune that is too eager
+    # does not throw and does not mis-order: it DROPS a halo cell, and it drops
+    # it only where the law is violated, which is a seam or a pentagon on some
+    # level the sampled subsets above may never reach. Stating the law directly
+    # and running it over EVERY adjacent pair is the difference between "no
+    # sample found a violation" and "there is none".
+    #
+    # `Vertex()` only, because that is the connectivity the probe uses whatever
+    # was requested, and the `Edge()` halo is a subset of the `Vertex()` one. The
+    # sweep is exhaustive to level 6, and stops at the first level past 300000
+    # cells — IGeo7 at 5 and H3 at 4 — which costs a couple of seconds in total
+    # and is where the aperture-7 seams and pentagons already are.
+    #
+    # ONE assertion per system rather than one per level, because the levels are
+    # one law and not six: a failure prints the `(level, count)` pairs, which is
+    # everything a per-level arm would have said.
+    @testset "the coarse-containment law the subset prune rests on" begin
+        for sys in systems()
+            escaped = Tuple{Int,Int}[]
+            for l in 1:6
+                l <= max_level(sys) || continue
+                grid = levelgrid(sys, l)
+                ncells(grid) <= 300_000 || continue
+                coarse = levelgrid(sys, l - 1)
+                out = 0
+                for p in 1:ncells(grid)
+                    x = cellindex(grid, p)
+                    a = ancestor(sys, x, l - 1)
+                    ring = neighbors(coarse, a, 1; connectivity = Vertex())
+                    for y in neighbors(grid, x, 1; connectivity = Vertex())
+                        b = ancestor(sys, y, l - 1)
+                        (b == a || any(==(b), ring)) || (out += 1)
+                    end
+                end
+                out == 0 || push!(escaped, (l, out))
+            end
+            @test escaped == Tuple{Int,Int}[]
+        end
+    end
+
+    # A rooted subtree with one interior cell removed: the smallest departure
+    # from a subtree there is, and the one that forces the subset walk — a
+    # complete subtree would delegate and measure the wrong engine.
+    function holed_subtree(sys, c, l)
+        r = DGG.descendant_range(sys, c, l)
+        grid = levelgrid(sys, l)
+        ids = [cellindex(grid, p) for p in r]
+        deleteat!(ids, length(ids) ÷ 2)
+        return PartialGrid(sys, l, ids; root = c)
+    end
+
+    # AND THE COMPLEXITY CLASS THAT LAW BUYS, counted rather than timed.
+    #
+    # The walk asks its subset two questions and nothing else — `subset_span` for
+    # a block, `cellposition` for a cell — so `CountingSubset` measures its work
+    # exactly, with no clock and no allocation proxy. The fixture is a rooted
+    # subtree with one interior cell punched out, which is the irregular chunk
+    # `halo` exists for: five levels apart its MEMBER count grows by a thousand
+    # and its HALO by thirty, so a walk sized by the input and one sized by the
+    # answer cannot both pass.
+    #
+    # TWO STATEMENTS, because one of them alone is not enough. The RATIO arm says
+    # the growth followed the answer, and it is what refuses a walk with no node
+    # prune at all — but a walk that visits its members and prunes nothing else
+    # can still slip under a ratio threshold, since both endpoints grow together.
+    # The FRACTION arm is the one that refuses that: a walk asking fewer questions
+    # than the subset has members has demonstrably not visited them. Measured
+    # 0.237, 0.203, 0.205 (the square systems), 0.389 (IGeo7) and 0.373 (H3),
+    # against ratio-to-halo figures of 0.94, 1.06, 0.93, 0.86 and 0.60 — so both
+    # thresholds sit a factor of 1.5 clear, and a walk that descended into the
+    # members misses the second by four.
+    #
+    # A5 IS EXCLUDED FOR ITS USUAL REASON: with no `descendant_range` there are
+    # no spans to prune by, so `subset_halo_engine` hands back `ScanHaloEngine`
+    # and the cost is `O(ncells)` by construction, not by regression.
+    @testset "the subset walk's cost follows the halo, not the subset" begin
+        for sys in systems()
+            DGG.has_sorted_subtrees(sys) || continue
+            c = cellindex(levelgrid(sys, 0), 1)
+            # Five and three levels of descent, which are the same subtree size
+            # either side of the aperture: about 260000 members on the aperture-4
+            # systems and about 100000 on the aperture-7 ones. The whole arm
+            # costs a tenth of a second.
+            depths = any(h -> sys isa typeof(h), HEX_SYSTEMS) ? (3, 6) : (4, 9)
+            all(l -> l <= max_level(sys), depths) || continue
+            calls = Int[]; members = Int[]; halos = Int[]
+            for l in depths
+                cv = CellVector(holed_subtree(sys, c, l))
+                counted = CountingSubset(cv)
+                h = counting_halo(sys, counted, levelgrid(sys, l), l, Vertex())
+                # The wrapper changed the measurement, not the walk.
+                @test h == collect(halo(cv))
+                push!(calls, counted.calls)
+                push!(members, length(cv))
+                push!(halos, length(h))
+            end
+            # The two hypotheses are far enough apart to tell apart ...
+            @test members[2] / members[1] >= 4 * (halos[2] / halos[1])
+            # ... the growth went with the answer ...
+            @test calls[2] <= 1.6 * (halos[2] / halos[1]) * calls[1]
+            # ... and the walk never asked about most of the members at all.
+            @test calls[2] <= 0.6 * members[2]
         end
     end
 
@@ -2066,33 +2221,33 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
-    # THE SUBSET WALK GETS A WEAKER LAW, and the reason is worth stating rather
-    # than hiding behind a looser threshold. `halo` on an arbitrary subset pays
-    # `cells_cap` over the subset's own cells at construction.
-    # That is INPUT-sized — and bounded, since past
-    # `UNION_CAP_BATCH_LIMIT` it answers the whole sphere — but the input is the
-    # very thing whose halo would have to grow for a scaling law to have two
-    # comparable points. Measured on IGeo7, constructing `halo(loose)` is 7616 B
-    # over the subset's own 6 cells at level 1 and 1474624 B over 2001 at level
-    # 4; the halos are 10 and 205, so neither figure is the halo's. (An IGeo7
-    # level-0 cell is a pentagon with six children, so the subtree counts are 6
-    # and 2001 rather than 7^1 and 7^4.) The with-construction fraction
-    # therefore RISES with the level, and asserting the form above would be
-    # asserting something false about a cost that is not the halo's.
+    # THE SUBSET WALK NOW OBEYS BOTH LAWS, AND IT DID NOT ALWAYS. `halo` used to
+    # summarise the subset into a bounding cap at construction — one
+    # `cell_boundary` per member, up to a fixed batch, and the whole sphere past
+    # it — so its construction was INPUT-sized and the only law assertable here
+    # was the walk's. Nothing is read from the subset before the first `iterate`
+    # now, so construction is FLAT across two inputs whose member counts differ
+    # by more than an order of magnitude, and any per-member construction cost
+    # put back would fail here rather than in a benchmark nobody runs.
     #
-    # What is assertable is the walk itself, with the iterator hoisted out of
-    # the measurement: a four-cell prefix against a full collect. Measured worst
-    # case 0.50 (IGeo7 at level 4), 0.0 on H3, 0.0032 on A5 — against
-    # `EagerHaloEngine`, which pays the halo on every walk and reads 0.78 to
-    # 1.00 on the same six systems. That fixture is the reason this threshold is
-    # 0.7 rather than a number nobody has watched fail.
-    @testset "the subset walk is lazy, measured with construction hoisted out" begin
+    # The second arm is the one that was always assertable: a four-cell prefix
+    # against a full collect, with the iterator hoisted out of the measurement so
+    # that an engine which materialised in its constructor could not read zero.
+    # `EagerHaloEngine` pays the halo on every walk and reads 0.78 to 1.00 on the
+    # same six systems, which is why this threshold is 0.7 rather than a number
+    # nobody has watched fail.
+    @testset "the subset walk is lazy, and its construction is O(1)" begin
         for sys in systems()
             mx = max_level(sys)
+            ctor = (grid = Int[], vector = Int[])
+            sizes = Int[]
             for l in unique((1, min(4, mx)))
                 c = cellindex(levelgrid(sys, 0), 1)
                 loose = PartialGrid(sys, l, collect(PartialGrid(sys, c, l).ids))
-                for sub in (loose, CellVector(loose))
+                push!(sizes, ncells(loose))
+                for (built, sub) in ((ctor.grid, loose),
+                        (ctor.vector, CellVector(loose)))
+                    push!(built, subset_construct_bytes(sub))
                     it = halo(sub)
                     take_n(it, 4)
                     lb = @allocated take_n(it, 4)
@@ -2102,6 +2257,11 @@ fixture_collect_bytes(sys, c, l) =
                     @test lb <= 0.7 * eb
                 end
             end
+            # The input grew by more than an order of magnitude ...
+            @test last(sizes) >= 10 * first(sizes)
+            # ... and building the iterator did not notice, on either container.
+            @test maximum(ctor.grid) - minimum(ctor.grid) <= 64
+            @test maximum(ctor.vector) - minimum(ctor.vector) <= 64
         end
     end
 

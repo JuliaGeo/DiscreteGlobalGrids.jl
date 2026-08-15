@@ -279,12 +279,32 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
+    # THE MESSAGE IS PART OF THE CONTRACT, not decoration. `interface/system.jl`
+    # says an engine owns its level validation and that its `ArgumentError` is
+    # the one the eager verb raises — which makes the wording a function of which
+    # system the caller picked, on systems the whole package exists to let them
+    # swap. The three square engines validated through `descendant_range` and so
+    # answered the same user error in different words than the generic engine
+    # did; `check_halo_level` is the one guard both now run.
+    #
+    # THE MUTATION THIS KILLS is dropping that call from any one system's
+    # `halo_engine`. An `@test_throws ArgumentError` cannot see it: both wordings
+    # are `ArgumentError`s, which is exactly why the inconsistency survived.
     @testset "level validation" begin
+        msg(f) = try
+            f()
+            nothing
+        catch e
+            e isa ArgumentError ? e.msg : rethrow()
+        end
         for sys in systems()
             grid = levelgrid(sys, 1)
             c = cellindex(grid, 1)
-            @test_throws ArgumentError SubtreeHaloIterator(sys, c, 0)
-            @test_throws ArgumentError SubtreeHaloIterator(sys, c, max_level(sys) + 1)
+            mx = max_level(sys)
+            @test msg(() -> SubtreeHaloIterator(sys, c, 0)) ==
+                "subtree_halo: level 0 is above the cell's own level 1"
+            @test msg(() -> SubtreeHaloIterator(sys, c, mx + 1)) ==
+                "subtree_halo: level $(mx + 1) is past max_level $mx"
         end
     end
 
@@ -1676,6 +1696,35 @@ fixture_collect_bytes(sys, c, l) =
         end
         @test seen == ALL_ENGINE_TAGS
         @test wrappers == Set((:SubtreeHaloIterator, :SubsetHaloIterator))
+    end
+
+    # WHY THE TESTSET ABOVE IS NOT ENOUGH, AND WHAT THIS ONE ADDS.
+    # Every assertion up there is a RUN-TIME one — it builds the iterator, then
+    # asks the built type its `eltype`. That passes whether or not INFERENCE can
+    # reach the same answer from the argument types alone, and on five of these
+    # six systems it did while inference could not: `halo_engine`'s return type
+    # is a union over every engine the call might pick, so an `eltype` that
+    # delegated through the engine parameter left `collect_subtree`'s
+    # `eltype(it)[]` as `Vector{Any}` and `subtree_halo` inferring `Any`
+    # (IGeo7, H3) or `Union{Vector{Any}, Vector{LevelIndex}}` (HEALPix, S2,
+    # ISEA4R). Correct cells, dynamic dispatch, and an `Any`-typed answer in the
+    # caller's hands. A5 alone already inferred, and its arm passes either way.
+    #
+    # THE MUTATION THIS KILLS is restoring that delegation — `eltype(E)` in
+    # place of the `C` parameter at `fallbacks/halo.jl`. Nothing else in this
+    # file notices it, and restoring it fails five of the six arms below.
+    #
+    # ONLY `subtree_halo` IS ASKED. `subtree_border` and `subtree_interior` key
+    # off `C` for the same reason, but their engine unions are one wide on every
+    # bundled system, so `eltype(E)` resolves there and an arm for them could
+    # not fail today. It would be coverage-shaped and empty.
+    @testset "subtree_halo's return type is inferred, not just correct" begin
+        for sys in systems()
+            c = cellindex(levelgrid(sys, 0), 1)
+            T = Tuple{typeof(sys),typeof(c),Int}
+            @test only(Base.return_types(subtree_halo, T)) ===
+                Vector{DGG.cellindextype(sys)}
+        end
     end
 
     # -----------------------------------------------------------------------

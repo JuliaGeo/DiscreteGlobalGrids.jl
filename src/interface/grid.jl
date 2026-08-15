@@ -363,6 +363,13 @@ intersected with membership, omitted rather than padded, so rows have varying
 length and a cell whose neighbours all lie outside gets an empty one.
 
 A stencil pass is then one comprehension over the table.
+
+Not to be confused with [`halo`](@ref), which despite the name answers the
+opposite question. This verb is the IN-SET stencil — one row of in-set neighbour
+positions per cell the subset holds. `halo` is the set of cells the subset does
+**not** hold that touch it, which is what a stencil pass has to FETCH before it
+can run. Neither replaces the other, and `halo`'s docstring says the same thing
+from its side.
 """
 function halo_table end
 

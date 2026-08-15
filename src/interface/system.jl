@@ -340,8 +340,19 @@ public surface, where it would become a compatibility promise.
 The generic implementations walk [`descendant_range`](@ref) with one
 [`ancestor`](@ref) test per cell, and materialize where
 [`has_sorted_subtrees`](@ref) is `false`. `halo_engine`'s generic implementation
-walks the hierarchy from OUTSIDE the subtree instead — see `SubtreeHaloIterator`
-— because the halo is not a sub-interval of any one subtree's position range.
+is `generic_halo_engine`, which walks the hierarchy from OUTSIDE the subtree
+instead — see `SubtreeHaloIterator` — because the halo is not a sub-interval of
+any one subtree's position range. A system that writes no method at all gets it.
+
+FALL BACK, NEVER APPROXIMATE. Every engine is EXACT: a specialization may
+enumerate a conservative candidate band, but it must put every candidate through
+the adjacency test before yielding it. When a specialization meets a
+configuration whose assumptions it cannot verify — a face count past its
+capacity, a face numbering that is not the one it assumed — it returns
+`generic_halo_engine(sys, c, target, connectivity)` and answers correctly by the
+slow route. It never returns a shorter, faster, approximate halo. That is why
+`generic_halo_engine` is named rather than folded into the method above: an
+override needs a fallback to CALL, not merely one to shadow.
 """
 function rim_engine end
 
@@ -369,9 +380,25 @@ ROOT is read under, before any position bits are consumed — `0x0` for the two
 Morton systems, and S2's odd-face swap for the Hilbert one.
 
 The walk needs no seam table of its own: it asks the system for the neighbours
-of a few rim cells and reads the answers back through `lattice_decode`. That is
-the whole per-system surface, which is why a fourth square system would need
-nothing else.
+of a few rim cells and reads the answers back through `lattice_decode`.
+
+THESE THREE ARE THE WHOLE DISPATCHED SURFACE, NOT THE WHOLE CONTRACT. The shared
+walk (`SquareBandEngine`) also assumes three things about the system that it
+cannot ask for and does not check:
+
+ 1. `cellindextype(sys) === LevelIndex`. The engine emits `LevelIndex` and
+    declares it as its `eltype`, unconditionally.
+ 2. The id law is `face * faceside^2 + curvecode`, with `faceside` the face's
+    lattice side at that level and both `face` and `curvecode` 0-based. The emit
+    step builds ids by that arithmetic directly — `lattice_cell` is called only
+    to PROBE one rim cell's neighbours, never to build an answer — so a system
+    laid out any other way would get a walk emitting other cells' ids.
+ 3. Adjacency in the INTERIOR of a face is the plain 3x3 lattice. That is what
+    makes the away-from-the-edge band exactly the halo, and so what lets it be
+    emitted with no adjacency check applied at all.
+
+A fourth square system holding all three writes only the three methods above. One
+that does not writes its own [`halo_engine`](@ref rim_engine) instead.
 """
 function lattice_decode end
 

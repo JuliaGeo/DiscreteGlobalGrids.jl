@@ -126,7 +126,10 @@ subtree_border(sys::S2System, c::DGG.LevelIndex, l::Integer;
 #     face it visits, not only the block's own.
 function DGG.halo_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
         connectivity::DGG.Connectivity)
-    DGG.descendant_range(sys, c, target)   # the level guard, both ArgumentErrors
+    # The level guard, both `ArgumentError`s, in the halo verb's own wording —
+    # `descendant_range` would answer the same user error differently. See
+    # `check_halo_level`.
+    DGG.check_halo_level(sys, c, target)
     _checked_index(c)
     d = target - DGG.level(c)
     d == 0 && return DGG.generic_halo_engine(sys, c, target, connectivity)

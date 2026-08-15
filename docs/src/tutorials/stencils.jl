@@ -107,6 +107,13 @@ subsmoothed = substencil((c, nbs) -> mean(vcat(c, nbs)), subvalues)
 edgecell = subcells[findfirst(<(8), length.(subhalo))]
 DGG.ring(sub, edgecell, 2) == filter(in(sub), DGG.ring(grid, edgecell, 2))
 
+# What the clipping dropped has a name: `halo` is the cells just outside the
+# subset that touch it — the extra fetch list a stencil on a tile needs, and
+# the other half of `halo_table`'s answer. It is lazy, so ask for as much of it
+# as you want.
+
+DGG.ncells(sub), length(collect(DGG.halo(sub)))
+
 # Nothing above named HEALPix except the singleton. `levelgrid`, `halo_table`
 # and the position forms of `neighbors` and `ring` are interface methods, so
 # the same three lines run unchanged on every registered system — only the

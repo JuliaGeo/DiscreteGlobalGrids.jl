@@ -10,6 +10,145 @@
 # every law runs against every system in `systems()`.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# THE DESIGN'S VERIFICATION LIST, AND WHERE EACH ROW IS DISCHARGED
+#
+# `docs/plans/PR19-halo-design.md` closes with two checklists — "Verification"
+# and "Iterator contract". This file is where they are answered, so the mapping
+# is written down here rather than left for a reader to reconstruct from
+# testset names. A row that is NOT covered says so, at the bottom, with the
+# reason; an honest gap is more useful than a test that pretends.
+#
+# FROM "Verification":
+#
+#   The oracle discipline — "specialized engines must be tested against the
+#   forced geometry implementation, not against `neighbors` or
+#   `subtree_border`, which share indexed topology".
+#       `forced_geometry_halo`, used by "the band walk against forced
+#       geometry", "the seam walk against forced geometry", "the directed walk
+#       against forced geometry", "the seam walk at depth five", "the band walk
+#       at max_level and at level 20", "the directed walk at depth four", "A5
+#       stays on the linear scan" and "the generic fallback still agrees with
+#       the oracle". `law_halo` is the second and stronger oracle: it decides
+#       which cells to consider by an ascending position scan and so shares no
+#       code with any walk in this package.
+#
+#   All bundled systems and both connectivities.
+#       Every `for sys in systems()` arm. The sweep "$(system) at level $base"
+#       runs the whole `check_halo_case` bundle under both connectivities and
+#       pins `Edge() ⊆ Vertex()` on top.
+#
+#   Depth zero and deeper subtrees.
+#       "depth zero is the cell's own one-ring" and "forced geometry at depth
+#       zero"; the sweep's `l in base:base+2`; "$(system) at depth"
+#       (`deep_depth`); "the band walk at 64x64" (nine levels of descent); "the
+#       seam walk at depth five"; "the band walk at max_level and at level 20"
+#       (thirty on S2); "the directed walk at depth four".
+#
+#   Ordinary, seam, pole, corner, pentagon and irregular-degree cells.
+#       `irregular_cells` finds them by DEGREE, so no arm needs system
+#       knowledge; `classify_roots` sweeps whole generations of the square
+#       systems, which is every seam and corner block there is at that base;
+#       `hex_pentagons` names the twelve pentagons rather than finding them;
+#       "the two HEALPix poles, pinned by location rather than by degree" adds
+#       the one awkward cell that degree does NOT expose; and the max_level
+#       corner block in "the band walk at max_level and at level 20" is a
+#       three-face cube/icosahedral corner.
+#
+#   Sortedness, uniqueness, outside ancestry, both adjacency directions.
+#       `check_halo_case`, run from every sweep. `law_halo` additionally pins
+#       the SET and the ORDER against an independent enumeration.
+#
+#   Rooted and root-forgotten `PartialGrid`, holes, `CellVector`, `CellLookup`.
+#       "$(system): halo on subsets" — the rooted complete subtree (delegation
+#       asserted BY TYPE, since every value assertion passes either way), the
+#       root-forgotten form, the rooted-but-incomplete form (the only arm that
+#       exercises the `node_extent` prune rather than `cells_cap`), the punched
+#       hole, `CellVector` and `CellLookup`. The design's other subset rule —
+#       that a mixed-level `MultiOrderCellSet` gets NO `halo` method, because
+#       there is no one level for it to answer at — is "a mixed-level set has
+#       no halo", which pins that `MethodError` the way the count arm pins the
+#       missing `length`s.
+#
+#   Equality through `AuthalicSystem`.
+#       "AuthalicSystem forwards the halo walk", which now reaches every engine
+#       rather than only the generic one: the seam and in-face square band,
+#       both hexagonal engines, A5's scan, the one-ring, and the subset verb on
+#       all three containers.
+#
+#   Restartability and prefix equality.
+#       "the walk is resumable, not restarted". Its closing set assertion is
+#       what says the list did not quietly stop covering an engine, and it
+#       covers both wrapper types as well as all seven engines.
+#
+#   Truthful count guards where `length` is implemented.
+#       "length is truthful where it exists and absent where it does not"
+#       partitions all seven engines into the two that count in closed form —
+#       each checked against a real `collect` — and the five that refuse, each
+#       pinned by the `MethodError` that IS the contract. "the band count is
+#       closed form" pins the formula itself, "the seam walk declares no
+#       length" and "the directed walk declares no length" pin two of the
+#       refusals where they matter most, and "collect is the guarded path"
+#       pins `collect_subtree`'s error on a lying engine.
+#
+#   Construction and short-prefix allocation independent of halo cardinality;
+#   scaling measured after warm-up, never by wall clock.
+#       The four arms under "The allocation laws", plus "a prefix of a deep
+#       halo costs O(depth), not O(halo)". There is no `@elapsed`, no
+#       `@time` and no wall-clock threshold anywhere in this file.
+#
+# FROM "Iterator contract":
+#
+#   exact, unique, canonically ordered   `law_halo` + `check_halo_case`.
+#   restartable and resumable            "the walk is resumable, not restarted".
+#   type-stable in `eltype`              "eltype is the system's cell index
+#                                        type, on every engine".
+#   honest about `IteratorSize`/`length` "length is truthful where it exists
+#                                        and absent where it does not".
+#   constructible without output-sized   "construction does not allocate in
+#     materialization                    proportion to the halo".
+#   consumable incrementally, or in      "consumable incrementally and in
+#     caller-selected batches            caller-chosen batches".
+#
+# WHAT IS *NOT* DISCHARGED HERE, AND WHY:
+#
+#   * The `O(depth)` MEMORY CLASS is not measured directly — nothing here reads
+#     a stack depth. Allocation is the proxy: an engine whose state left the
+#     inline `SmallList` would show it in the prefix and construction arms,
+#     which measure zero growth in the target level. The structural claim is
+#     carried by the code (immutable engines, `Helpers.SmallList` frames) and
+#     by review, not by an assertion.
+#
+#   * THE GENERIC WALK'S PREFIX COST IS NOT DEPTH-INVARIANT, and this file does
+#     not pretend it is. `_admit` calls `node_extent` on every node it prunes
+#     on the way to the first emittable cell, and `node_extent` computes a
+#     boundary, which allocates — so a deeper target means a longer descent and
+#     more bytes. Measured on IGeo7 from a level-0 root, a four-cell prefix of
+#     the generic walk is 3136 B at `l = 3` and 213216 B at `l = 6`. That is
+#     allocation proportional to the WORK, not to the OUTPUT, and only the
+#     second is what `SubtreeHaloIterator` promises. The ratio arms are what
+#     hold the generic walk to the promise it actually made; the
+#     depth-invariance arm is restricted to the engines that genuinely have the
+#     property.
+#
+#   * THE SUBSET WALK'S CONSTRUCTION is held to no scaling law at all. It pays
+#     `cells_cap` over the subset's own cells, which is INPUT-sized (and
+#     bounded — past `UNION_CAP_BATCH_LIMIT` it answers the full sphere), and
+#     the input is the very thing whose halo would have to grow for a scaling
+#     law to have two points to compare. Measured on IGeo7, constructing
+#     `halo(loose)` is 7616 B at level 1 and 1474624 B at level 4 — that is the
+#     cap over 10 and 2401 cells, not a materialised halo of 10 and 205. What
+#     IS asserted there is the walk-only form: with the iterator hoisted out of
+#     the measurement, a four-cell prefix costs at most 70% of a full collect
+#     (measured worst case 50%, and 0% on H3), where an engine that materialised
+#     on first iterate would read ~100%.
+#
+#   * THE BYTE FIGURES QUOTED IN COMMENTS ARE MEASUREMENTS, not bounds. Every
+#     assertion below is a difference, a ratio or a MethodError; no arm pins a
+#     raw byte count, because a raw byte count is a fact about one machine and
+#     one Julia version.
+# ---------------------------------------------------------------------------
+
 module SubtreeHaloTests
 
 using Test
@@ -41,6 +180,67 @@ Base.iterate(::MiscountingEngine, ::Int) = nothing
 Base.eltype(::Type{MiscountingEngine}) = DGG.LevelIndex
 Base.IteratorSize(::Type{MiscountingEngine}) = Base.HasLength()
 Base.length(::MiscountingEngine) = 3
+
+# ---------------------------------------------------------------------------
+# The allocation harness — also out here, and for a measurement reason
+#
+# A helper defined inside the testset would be a CLOSURE over that block's
+# local scope, and a closure that captured a boxed local would put bytes on the
+# heap that belong to the harness rather than to the walk. Nothing below
+# captures anything: every input travels as an argument, so the numbers these
+# functions report are the numbers a top-level script reports.
+#
+# CONSTRUCTION IS INSIDE THE MEASUREMENT everywhere, without exception. An
+# engine that materialised its answer in its constructor would measure zero
+# from a harness that built the iterator first and timed only the walk, which
+# is precisely the failure mode the design's last verification row exists to
+# catch.
+#
+# Every measurement is taken WARM: the untimed call before the timed one is the
+# compile, not a courtesy.
+# ---------------------------------------------------------------------------
+
+take_n(it, n::Int) = (seen = 0; for _ in it
+    seen += 1
+    seen >= n && break
+end; seen)
+
+build_and_take(sys, c, l, n::Int) = take_n(SubtreeHaloIterator(sys, c, l), n)
+
+function lazy_bytes(sys, c, l, n::Int)
+    build_and_take(sys, c, l, n)
+    return @allocated build_and_take(sys, c, l, n)
+end
+
+function eager_bytes(sys, c, l)
+    subtree_halo(sys, c, l)
+    return @allocated subtree_halo(sys, c, l)
+end
+
+# A sink, so `@allocated` cannot be handed a dead value and told the truth
+# about a constructor that never ran.
+const SINK = Ref{Any}(nothing)
+
+construct!(sys, c, l) = (SINK[] = SubtreeHaloIterator(sys, c, l); nothing)
+
+function construct_bytes(sys, c, l)
+    construct!(sys, c, l)
+    return @allocated construct!(sys, c, l)
+end
+
+# The same three, forced onto the generic outside-first walk. No system reaches
+# it through the keyword constructor any more, so it has to be built.
+generic_iterator(sys, c, l) = SubtreeHaloIterator(sys, c, Int(l), Vertex(),
+    DGG.Fallbacks.generic_halo_engine(sys, c, Int(l), Vertex()))
+
+generic_take(sys, c, l, n::Int) = take_n(generic_iterator(sys, c, l), n)
+generic_collect(sys, c, l) = DGG.collect_subtree(generic_iterator(sys, c, l))
+generic_construct!(sys, c, l) = (SINK[] = generic_iterator(sys, c, l); nothing)
+
+function generic_construct_bytes(sys, c, l)
+    generic_construct!(sys, c, l)
+    return @allocated generic_construct!(sys, c, l)
+end
 
 # Everything from here down is ONE testset, so a failure in an early section is
 # recorded and the rest of the file still runs. See the fixture note above.
@@ -1336,6 +1536,22 @@ Base.length(::MiscountingEngine) = 3
               collect(halo(holed; connectivity = Edge()))
     end
 
+    # A MIXED-LEVEL SET HAS NO `halo`, AND THAT ABSENCE IS A DECISION.
+    #
+    # `MultiOrderCellSet`'s members sit at different levels, so "the cells just
+    # outside it" has no one level to be answered at and the verb would have to
+    # invent one. The design says so in as many words, and `halo`'s docstring
+    # repeats it — so the `MethodError` is pinned here, the same way the missing
+    # `length`s are. Mixed-level adjacency is `member_neighbors`, which is
+    # tested next door in `multiorder_*.jl`.
+    @testset "a mixed-level set has no halo" begin
+        for sys in systems()
+            c = cellindex(levelgrid(sys, 1), 1)
+            set = DGG.MultiOrderCellSet(sys, [c], [1], trues(1), level(c))
+            @test_throws MethodError halo(set)
+        end
+    end
+
     # -----------------------------------------------------------------------
     # Resumability, on every engine this file can reach
     # -----------------------------------------------------------------------
@@ -1354,16 +1570,36 @@ Base.length(::MiscountingEngine) = 3
     # and a seeded automaton plus its own stack — and resumability is a property
     # of the state, not of the system. The set assertion at the end is what says
     # the list did not quietly stop covering one.
+    # `SquareBandEngine` is two walks wearing one name, so the tag reads the
+    # emit rule as well: the exact band and the seam band differ in what they do
+    # between yields, which is exactly what resumability — and the count
+    # contract — are about. Hoisted to file scope because three testsets now
+    # partition the engines by it, and a second copy could drift from the first.
+    #
+    # THERE ARE SEVEN ENGINES AND TWO WRAPPERS. The tag sets asserted below are
+    # the mechanism that stops a list from quietly losing one: an engine that
+    # stopped being reachable would drop out of the set and fail the equality,
+    # rather than being covered by nothing and noticed by no one.
+    engine_tag(e) = e isa DGG.Fallbacks.SquareBandEngine ?
+        (e.check isa DGG.Fallbacks.NoCheck ? :SquareBandNoCheck :
+         :SquareBandNativeCheck) : nameof(typeof(e))
+
+    ALL_ENGINE_TAGS = Set((:RingHaloEngine, :OutsideWalkEngine, :ScanHaloEngine,
+        :SquareBandNoCheck, :SquareBandNativeCheck, :HexChildHaloEngine,
+        :HexArcHaloEngine))
+
+    # An in-face square root, which is the only way to reach the counted emit
+    # rule: a level-0 or level-1 block is flush with its face edge on every one
+    # of the three systems.
+    inface_root(sys, base::Int, l::Int) =
+        first(first(classify_roots(sys, base, l, Vertex())))
+
     @testset "the walk is resumable, not restarted" begin
         seen = Set{Symbol}()
-        # `SquareBandEngine` is two walks wearing one name, so the tag reads the
-        # emit rule as well: the exact band and the seam band differ in what they
-        # do between yields, which is exactly what resumability is about.
-        engine_tag(e) = e isa DGG.Fallbacks.SquareBandEngine ?
-            (e.check isa DGG.Fallbacks.NoCheck ? :SquareBandNoCheck :
-             :SquareBandNativeCheck) : nameof(typeof(e))
+        wrappers = Set{Symbol}()
         function check_prefix(it)
             push!(seen, engine_tag(it.engine))
+            push!(wrappers, nameof(typeof(it)))
             full = collect(it)
             @test length(full) >= 4
             prefix = eltype(it)[]
@@ -1409,9 +1645,411 @@ Base.length(::MiscountingEngine) = 3
             check_prefix(halo(loose))
             check_prefix(halo(CellVector(loose)))
         end
-        @test seen == Set((:RingHaloEngine, :OutsideWalkEngine, :ScanHaloEngine,
-            :SquareBandNoCheck, :SquareBandNativeCheck, :HexChildHaloEngine,
-            :HexArcHaloEngine))
+        @test seen == ALL_ENGINE_TAGS
+        # And BOTH WRAPPERS, which is a separate claim: `SubsetHaloIterator`
+        # forwards `iterate` itself rather than inheriting
+        # `SubtreeHaloIterator`'s, so a cursor cached in the wrapper would be
+        # invisible to an engine-only tag set.
+        @test wrappers == Set((:SubtreeHaloIterator, :SubsetHaloIterator))
+    end
+
+    # -----------------------------------------------------------------------
+    # Type stability in `eltype`, on every engine and every system
+    # -----------------------------------------------------------------------
+
+    # WHY THE QUESTION IS ASKED OF THE TYPE AND NOT OF THE INSTANCE.
+    # `eltype(typeof(it))` is what `collect`, `Iterators.partition` and every
+    # `Vector{eltype(it)}` preallocation dispatch on, and an engine that only
+    # knew its element type at run time would answer `Any` there while still
+    # yielding perfectly good cells — a silent `Vector{Any}` in every caller's
+    # hands and nothing red anywhere. The three assertions per engine are the
+    # type-domain answer, its concreteness, and the run-time consequence.
+    #
+    # Nine shapes to cover and seven of them are engines, so the set assertion
+    # at the end is the same mechanism the resumability testset uses: an engine
+    # that stopped being reachable would leave the set rather than leave a gap.
+    @testset "eltype is the system's cell index type, on every engine" begin
+        seen = Set{Symbol}()
+        wrappers = Set{Symbol}()
+        function check_eltype(sys, it)
+            push!(seen, engine_tag(it.engine))
+            push!(wrappers, nameof(typeof(it)))
+            C = DGG.cellindextype(sys)
+            @test eltype(typeof(it)) === C
+            @test isconcretetype(eltype(typeof(it)))
+            @test collect(it) isa Vector{C}
+        end
+        for sys in systems()
+            mx = max_level(sys)
+            c0 = cellindex(levelgrid(sys, 0), 1)
+            check_eltype(sys, SubtreeHaloIterator(sys, c0, 0))       # the one-ring
+            for l in 1:min(2, mx)
+                check_eltype(sys, SubtreeHaloIterator(sys, c0, l))   # what it ships
+            end
+            l = min(2, mx)
+            check_eltype(sys, generic_iterator(sys, c0, l))          # walk, or scan
+            pg = PartialGrid(sys, c0, l)
+            loose = PartialGrid(sys, l, collect(pg.ids))
+            check_eltype(sys, halo(pg))
+            check_eltype(sys, halo(loose))
+            check_eltype(sys, halo(CellVector(loose)))
+            check_eltype(sys, halo(CellLookup(CellVector(loose))))
+        end
+        # The counted square emit rule, which no level-0 or level-1 root can
+        # reach: those blocks are flush with their face edge on all three
+        # systems.
+        for sys in SQUARE_SYSTEMS
+            check_eltype(sys, SubtreeHaloIterator(sys, inface_root(sys, 2, 4), 4))
+        end
+        @test seen == ALL_ENGINE_TAGS
+        @test wrappers == Set((:SubtreeHaloIterator, :SubsetHaloIterator))
+    end
+
+    # -----------------------------------------------------------------------
+    # The count contract, for ALL SEVEN ENGINES AT ONCE
+    # -----------------------------------------------------------------------
+
+    # Two engines count in closed form and five refuse, and this is where that
+    # partition is pinned as a partition rather than engine by engine.
+    #
+    # WHY BOTH HALVES MATTER. A `length` that is wrong is caught by
+    # `collect_subtree`, which compares the claim against the walk and `error`s
+    # — but only for a claim that is too LARGE or too small by a different
+    # amount than the walk is wrong by, so the count is also checked here
+    # against a real `collect`. A missing `length` is the other half of the
+    # contract and is just as load-bearing: the design says an engine that
+    # cannot count declares `SizeUnknown()` and defines NO method, so that the
+    # `MethodError` is the honest answer. A `length` that quietly walked the
+    # halo to answer would satisfy every caller and violate the whole design.
+    #
+    # `RingHaloEngine` counts because the ring is already in hand.
+    # `SquareBandEngine` under `NoCheck` counts because `4·side + 4` is the
+    # band. `SquareBandEngine` under `NativeCheck` does not, because no
+    # perimeter formula survives a seam; neither hexagonal engine does, because
+    # its census is validated by enumeration rather than derived; and neither
+    # generic walk does, because counting would be walking.
+    @testset "length is truthful where it exists and absent where it does not" begin
+        counted = Set{Symbol}()
+        refusing = Set{Symbol}()
+        function check_count(it)
+            tag = engine_tag(it.engine)
+            h = collect(it)
+            @test !isempty(h)
+            if Base.IteratorSize(typeof(it)) isa Base.HasLength
+                push!(counted, tag)
+                @test length(it) == length(h)
+            else
+                @test Base.IteratorSize(typeof(it)) isa Base.SizeUnknown
+                push!(refusing, tag)
+                @test_throws MethodError length(it)
+            end
+        end
+        for sys in systems()
+            mx = max_level(sys)
+            c0 = cellindex(levelgrid(sys, 0), 1)
+            check_count(SubtreeHaloIterator(sys, c0, 0))
+            for l in 1:min(2, mx)
+                check_count(SubtreeHaloIterator(sys, c0, l))
+            end
+            l = min(2, mx)
+            check_count(generic_iterator(sys, c0, l))
+            loose = PartialGrid(sys, l, collect(PartialGrid(sys, c0, l).ids))
+            check_count(halo(loose))
+            check_count(halo(CellVector(loose)))
+        end
+        for sys in SQUARE_SYSTEMS
+            for d in 1:3
+                l = 2 + d
+                l <= max_level(sys) || continue
+                check_count(SubtreeHaloIterator(sys, inface_root(sys, 2, l), l))
+            end
+        end
+        @test counted == Set((:RingHaloEngine, :SquareBandNoCheck))
+        @test refusing == Set((:OutsideWalkEngine, :ScanHaloEngine,
+            :SquareBandNativeCheck, :HexChildHaloEngine, :HexArcHaloEngine))
+    end
+
+    # -----------------------------------------------------------------------
+    # "Consumable incrementally or in caller-selected batches"
+    # -----------------------------------------------------------------------
+
+    # The prefix law above says a partial walk is a prefix. This says the two
+    # standard ways a caller cuts a lazy stream into pieces — `Iterators.take`
+    # for a bounded read and `Iterators.partition` for a chunked one — put the
+    # pieces back together into exactly the walk, at every chunk size including
+    # ones that do not divide it. That is not free given `SizeUnknown()`:
+    # `partition` takes a different route for a sized iterator, and an engine
+    # whose `iterate` mutated shared state would reassemble into something
+    # shorter than the collect.
+    @testset "consumable incrementally and in caller-chosen batches" begin
+        function check_batches(it)
+            full = collect(it)
+            @test length(full) >= 6
+            @test collect(Iterators.take(it, 3)) == full[1:3]
+            @test collect(Iterators.take(it, length(full) + 5)) == full
+            @test isempty(collect(Iterators.take(it, 0)))
+            for k in (1, 2, 5)
+                parts = collect.(Iterators.partition(it, k))
+                @test reduce(vcat, parts) == full
+                @test all(p -> 1 <= length(p) <= k, parts)
+            end
+        end
+        for sys in systems()
+            l = min(2, max_level(sys))
+            c0 = cellindex(levelgrid(sys, 0), 1)
+            check_batches(SubtreeHaloIterator(sys, c0, l))
+            check_batches(generic_iterator(sys, c0, l))
+            loose = PartialGrid(sys, l, collect(PartialGrid(sys, c0, l).ids))
+            check_batches(halo(loose))
+        end
+        for sys in SQUARE_SYSTEMS
+            check_batches(SubtreeHaloIterator(sys, inface_root(sys, 2, 4), 4))
+        end
+    end
+
+    # -----------------------------------------------------------------------
+    # The one awkward cell that DEGREE does not find
+    # -----------------------------------------------------------------------
+
+    # `irregular_cells` catches pentagons, cube corners and icosahedral
+    # vertices because their one-ring is the wrong size. A HEALPix POLE is not
+    # like that: the cell containing the north pole has the modal degree of
+    # eight, so every sweep in this file reaches it only by luck of sampling —
+    # and it is a genuinely distinct configuration, the meeting point of the
+    # four polar faces, where `nested_neighbors` runs its `-1` entries and the
+    # seam walk's rectangles come from three faces rather than two.
+    #
+    # So it is pinned BY LOCATION: `cellat` at ±89.999° names it at any level
+    # without this file knowing a single HEALPix identifier. Both poles, three
+    # bases, two depths, both connectivities, against the geometry oracle and
+    # the whole contract bundle; and one arm against the `O(ncells)` law, which
+    # shares nothing with either.
+    @testset "the two HEALPix poles, pinned by location rather than by degree" begin
+        sys = HEALPixSystem()
+        for base in (1, 2, 3), lat in (89.999, -89.999)
+            grid = levelgrid(sys, base)
+            p = DGG.cellat(grid, 0.0, lat)
+            @test p !== nothing
+            for d in 1:2, conn in (Vertex(), Edge())
+                l = base + d
+                l <= max_level(sys) || continue
+                @test collect(SubtreeHaloIterator(sys, p, l; connectivity = conn)) ==
+                      forced_geometry_halo(sys, p, l, conn)
+                check_halo_case(sys, p, l, conn)
+            end
+        end
+        grid = levelgrid(sys, 1)
+        for lat in (89.999, -89.999), conn in (Vertex(), Edge())
+            p = DGG.cellat(grid, 0.0, lat)
+            @test collect(SubtreeHaloIterator(sys, p, 3; connectivity = conn)) ==
+                  law_halo(sys, p, 3; connectivity = conn)
+        end
+    end
+
+    # -----------------------------------------------------------------------
+    # THE ALLOCATION LAWS
+    # -----------------------------------------------------------------------
+
+    # WHAT IS ASSERTED HERE, AND WHAT DELIBERATELY IS NOT.
+    #
+    # The design's last verification row is "construction and short-prefix
+    # allocation independent of halo cardinality", and its performance
+    # paragraph adds "measure scaling and allocation after warm-up, not brittle
+    # wall-clock thresholds". Four arms, in increasing order of how much they
+    # claim:
+    #
+    #   1. CONSTRUCTION IS FLAT IN THE TARGET LEVEL, on every engine including
+    #      both generic ones. Construction is inside every measurement here —
+    #      an engine that materialised its answer in its constructor would
+    #      measure zero from a harness that built first and timed the walk
+    #      afterwards, which is the exact failure this row exists to catch.
+    #
+    #   2. THE SPECIALIZED PREFIX IS FLAT IN THE TARGET LEVEL. This is the
+    #      strong form, and it is asserted only where it is genuinely true: the
+    #      square band walk and the two hexagonal walks reach their first cell
+    #      in `O(depth)` node visits with no geometry at all.
+    #
+    #   3. THE FRACTION LAW, on every engine including the generic walk. A
+    #      short prefix costs a small and NON-GROWING share of collecting the
+    #      whole halo, while the halo itself grows by an order of magnitude.
+    #      This is the property that actually separates a lazy iterator from an
+    #      eager one, and unlike (2) it holds everywhere.
+    #
+    #   4. The subset walk, which obeys a weaker version of (3) for a reason
+    #      given at its own arm.
+    #
+    # THE FORM (2) TAKES DOES NOT HOLD FOR THE GENERIC WALK AND IS NOT ASSERTED
+    # OF IT. `_admit` calls `node_extent` on every node it prunes on the way
+    # down, and `node_extent` computes a boundary, which allocates; a deeper
+    # target is a longer descent. Measured on IGeo7 from a level-0 root, a
+    # four-cell prefix of the generic walk is 3136 B at `l = 3` and 213216 B at
+    # `l = 6`. That is allocation proportional to the WORK, not to the OUTPUT,
+    # and only the second is what the docstring promises. Writing
+    # `lazy_bytes(deep) <= lazy_bytes(shallow) + 64` for the generic engine
+    # would pin an accident that is not even true.
+    #
+    # NO ARM BELOW PINS A RAW BYTE COUNT. Every assertion is a difference
+    # between two measurements of the same shape, or a ratio; the byte figures
+    # in these comments are what this machine measured while the laws were
+    # written, and are here so a future reader can see how much headroom a
+    # threshold has.
+
+    # The five systems whose halo engine reaches its first cell in `O(depth)`
+    # node visits. A5 IS EXCLUDED BY NAME rather than by a `filter` nobody can
+    # read: it takes `ScanHaloEngine`, which reaches its first cell by scanning
+    # positions upward from 1, so the prefix cost is a fact about where that
+    # cell sits in the target level's ordering and not about the target level
+    # at all — measured 53776, 20864, 19504 and 56576 B at levels 1 to 4 from
+    # one root, neither flat nor monotone. That is the documented price of
+    # having no `descendant_range` to prune by; arm 3 is where A5 is held to
+    # the law it does obey.
+    DEPTH_FLAT_SYSTEMS = (HEALPixSystem(), S2System(), ISEA4RSystem(),
+        H3System(), IGeo7System())
+
+    @testset "construction does not allocate in proportion to the halo" begin
+        for sys in systems()
+            c = cellindex(levelgrid(sys, 0), 1)
+            # A5's targets stop at 3: its `subtree_halo` at level 4 is a
+            # 3840-cell scan whose per-cell cost is a `Set`-allocating
+            # `neighbors`, and the law here needs only two comparable points.
+            depths = filter(l -> l <= max_level(sys),
+                sys isa DGG.A5System ? (1, 2, 3) : (3, 5, 7))
+            ship = [construct_bytes(sys, c, l) for l in depths]
+            gen = [generic_construct_bytes(sys, c, l) for l in depths]
+            sizes = [length(subtree_halo(sys, c, l)) for l in depths]
+            @test last(sizes) >= 2 * first(sizes)
+            # Measured EXACTLY flat on every system and both engines: 880 B
+            # (HEALPix, ISEA4R band), 1392 (S2 band), 256 (both hex walks), 64
+            # (A5 scan); 576/1280/1360/416/1328 for the generic walk. The 64 B
+            # of slack is for a future engine that rounds an allocation
+            # differently, not for a trend.
+            @test maximum(ship) - minimum(ship) <= 64
+            @test maximum(gen) - minimum(gen) <= 64
+        end
+    end
+
+    @testset "the specialized prefix costs the same at every depth" begin
+        for sys in DEPTH_FLAT_SYSTEMS
+            c = cellindex(levelgrid(sys, 0), 1)
+            depths = filter(l -> l <= max_level(sys), (3, 5, 7))
+            allocs = [lazy_bytes(sys, c, l, 4) for l in depths]
+            sizes = [length(subtree_halo(sys, c, l)) for l in depths]
+            # The halo grows 15x (HEALPix, ISEA4R: 34 -> 514), 16x (S2:
+            # 32 -> 512) and 78x (H3 84 -> 6564, IGeo7 70 -> 5470) ...
+            @test last(sizes) >= 8 * first(sizes)
+            # ... and the four-cell prefix does not move at all: 880 B on
+            # HEALPix and ISEA4R, 1904 on S2 (whose `neighbors` allocates a
+            # `Vector`), 256 on both hexagonal systems, at every one of the
+            # three depths.
+            @test maximum(allocs) - minimum(allocs) <= 64
+            @test all(>(0), allocs)
+        end
+        # And on an IN-FACE block, which is the square systems' OTHER emit
+        # rule — a counted band with no native check between yields, where a
+        # regression would look nothing like one in the seam walk. Flatness of
+        # the in-face guard in the target level (`1 <= ix <= 2^b - 2`,
+        # independent of the depth) is why one classification serves all three
+        # targets. Measured 800 B at every depth from 1 to 6, against a halo
+        # growing 12 -> 260.
+        for sys in SQUARE_SYSTEMS
+            c = inface_root(sys, 3, 4)
+            depths = filter(l -> l <= max_level(sys), (4, 6, 9))
+            allocs = [lazy_bytes(sys, c, l, 4) for l in depths]
+            sizes = [length(subtree_halo(sys, c, l)) for l in depths]
+            @test last(sizes) >= 8 * first(sizes)
+            @test maximum(allocs) - minimum(allocs) <= 64
+        end
+    end
+
+    @testset "a short prefix is a small, non-growing fraction of the collect" begin
+        for sys in systems()
+            c = cellindex(levelgrid(sys, 0), 1)
+            # A5 goes 1 -> 4 rather than 3 -> 7: its halo from a level-0 root
+            # grows 15 -> 80 over those levels, and level 5 would be a
+            # 15360-cell scan for no extra claim.
+            depths = sys isa DGG.A5System ? (1, 4) : (3, 7)
+            all(l -> l <= max_level(sys), depths) || continue
+            fracs = [lazy_bytes(sys, c, l, 4) / eager_bytes(sys, c, l)
+                     for l in depths]
+            sizes = [length(subtree_halo(sys, c, l)) for l in depths]
+            # The halo grew: 15x to 78x on the five, 5.3x on A5.
+            @test last(sizes) >= 5 * first(sizes)
+            # The share the prefix costs did not.
+            @test last(fracs) <= first(fracs)
+            # And it is small. Measured at the deep end: 0.060 (HEALPix,
+            # ISEA4R), 0.024 (S2), 0.0023 (IGeo7), 0.0011 (H3), 0.0032 (A5) —
+            # against 0.50, 0.30, 0.13, 0.13 and 0.29 at the shallow end, which
+            # is why the threshold is on the deep end only.
+            @test last(fracs) < 0.15
+        end
+    end
+
+    @testset "the generic walk obeys the same fraction law" begin
+        for sys in systems()
+            # A5's `halo_engine` IS `generic_halo_engine` — with no
+            # `descendant_range` it returns the scan — so the arm above already
+            # measured exactly this walk on it, and repeating it here would buy
+            # a second copy of the same numbers and a 17 MB collect.
+            sys isa DGG.A5System && continue
+            c = cellindex(levelgrid(sys, 0), 1)
+            depths = (3, 6)
+            all(l -> l <= max_level(sys), depths) || continue
+            fracs = Float64[]
+            sizes = Int[]
+            for l in depths
+                h = generic_collect(sys, c, l)             # warm up, and count
+                eb = @allocated generic_collect(sys, c, l)
+                generic_take(sys, c, l, 4)                 # warm up
+                lb = @allocated generic_take(sys, c, l, 4)
+                push!(fracs, lb / eb)
+                push!(sizes, length(h))
+            end
+            # 34 -> 258 on HEALPix and ISEA4R, 32 -> 256 on S2, 70 -> 1825 on
+            # IGeo7, 84 -> 2190 on H3.
+            @test last(sizes) >= 5 * first(sizes)
+            # 0.067 -> 0.036 (IGeo7), 0.411 -> 0.024 (H3), 0.132 -> 0.069
+            # (HEALPix), 0.111 -> 0.008 (S2), 0.060 -> 0.003 (ISEA4R). The
+            # prefix cost grows with the descent — see the section comment —
+            # but never as fast as the halo does, which is the whole claim.
+            @test last(fracs) <= first(fracs)
+            @test last(fracs) < 0.15
+        end
+    end
+
+    # THE SUBSET WALK GETS A WEAKER LAW, and the reason is worth stating rather
+    # than hiding behind a looser threshold.
+    #
+    # `halo` on an arbitrary subset pays `cells_cap` over the subset's own
+    # cells at construction. That is INPUT-sized — and bounded, since past
+    # `UNION_CAP_BATCH_LIMIT` it answers the whole sphere — but the input here
+    # is the very thing whose halo would have to grow for a scaling law to have
+    # two comparable points. Measured on IGeo7, constructing `halo(loose)` is
+    # 7616 B over 10 cells at level 1 and 1474624 B over 2401 at level 4; the
+    # halos are 10 and 205. So the with-construction fraction RISES with the
+    # level (0.70 -> 0.92) and asserting the form above would be asserting
+    # something false about a cost that is not the halo's.
+    #
+    # What is assertable is the walk itself, with the iterator hoisted out of
+    # the measurement: a four-cell prefix against a full collect. An engine
+    # that materialised the halo on its first `iterate` would read ~1.0 here.
+    # Measured worst case 0.50 (IGeo7 at level 4), 0.0 on H3, 0.003 on A5.
+    @testset "the subset walk is lazy, measured with construction hoisted out" begin
+        for sys in systems()
+            mx = max_level(sys)
+            for l in unique((1, min(4, mx)))
+                c = cellindex(levelgrid(sys, 0), 1)
+                loose = PartialGrid(sys, l, collect(PartialGrid(sys, c, l).ids))
+                for sub in (loose, CellVector(loose))
+                    it = halo(sub)
+                    take_n(it, 4)
+                    lb = @allocated take_n(it, 4)
+                    DGG.collect_subtree(it)
+                    eb = @allocated DGG.collect_subtree(it)
+                    @test eb > 0
+                    @test lb <= 0.7 * eb
+                end
+            end
+        end
     end
 
     # -----------------------------------------------------------------------
@@ -1427,15 +2065,24 @@ Base.length(::MiscountingEngine) = 3
     # same cell ids, in the same order. `halo_engine(::AuthalicSystem, ...)` is one
     # forwarding line, and this is what says the line is there.
     @testset "AuthalicSystem forwards the halo walk" begin
+        seen = Set{Symbol}()
         for sys in systems()
             wrapped = DGG.AuthalicSystem(sys)
             grid0 = levelgrid(sys, 0)
             c = cellindex(grid0, 1)
             for l in level(c):min(level(c) + 2, max_level(sys))
-                @test collect(SubtreeHaloIterator(wrapped, c, l)) ==
-                      collect(SubtreeHaloIterator(sys, c, l))
+                it = SubtreeHaloIterator(wrapped, c, l)
+                push!(seen, engine_tag(it.engine))
+                @test collect(it) == collect(SubtreeHaloIterator(sys, c, l))
             end
         end
+        # A level-0 root is flush on all four sides of its face and is nobody's
+        # ordinary cell, so the loop above reaches the one-ring, the SEAM band,
+        # both hexagonal walks and A5's scan — but never the counted in-face
+        # band. That one is picked up explicitly below, and the tag set is what
+        # says which of the seven this testset actually forwarded.
+        @test seen == Set((:RingHaloEngine, :SquareBandNativeCheck,
+            :HexChildHaloEngine, :HexArcHaloEngine, :ScanHaloEngine))
         # And on a root the SPECIALIZATION claims. Forwarding that only ever ran on
         # a level-0 root would be forwarding that only ever reached the generic
         # walk — the wrapper would be free to lose the fast path, and every
@@ -1467,6 +2114,26 @@ Base.length(::MiscountingEngine) = 3
                 @test collect(it) ==
                       collect(SubtreeHaloIterator(sys, c, 1 + d; connectivity = conn))
             end
+        end
+        # AND THE SUBSET VERB, which reaches the wrapper by a different route:
+        # `halo(pg)` reads `pg.system`, so a `PartialGrid` built on the wrapper
+        # carries it into `subset_halo_engine` and into `_whole_subtree_range`'s
+        # `has_sorted_subtrees` question. Every container, and the delegating
+        # and non-delegating branches both — a wrapper that lost the fast path
+        # here would answer correctly and silently.
+        for sys in systems()
+            wrapped = DGG.AuthalicSystem(sys)
+            l = min(2, max_level(sys))
+            c = cellindex(levelgrid(sys, 0), 1)
+            pg = PartialGrid(wrapped, c, l)
+            loose = PartialGrid(wrapped, l, collect(pg.ids))
+            expected = subtree_halo(sys, c, l)
+            @test halo(pg) isa (DGG.has_sorted_subtrees(sys) ? SubtreeHaloIterator :
+                                DGG.Fallbacks.SubsetHaloIterator)
+            @test collect(halo(pg)) == expected
+            @test collect(halo(loose)) == expected
+            @test collect(halo(CellVector(pg))) == expected
+            @test collect(halo(CellLookup(CellVector(pg)))) == expected
         end
     end
 

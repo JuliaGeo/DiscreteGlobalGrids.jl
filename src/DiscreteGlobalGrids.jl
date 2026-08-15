@@ -23,8 +23,12 @@ Adjacency is a verb on subsets, not only on complete levels. On a
 [`PartialGrid`](@ref), a [`CellVector`](@ref) or a [`CellLookup`](@ref),
 [`neighbors`](@ref) and [`ring`](@ref) are the system's own answer clipped to
 membership, in ids or in positions, and [`halo_table`](@ref) is a whole
-subset's stencil in one call. [`member_neighbors`](@ref) asks the same question
-across the levels of a [`MultiOrderCellSet`](@ref).
+subset's stencil in one call. [`halo`](@ref) is the outward-facing question the
+same three containers answer — the cells they do *not* hold that touch cells
+they do, as a lazy iterator, with a punched hole counted like any other outside
+cell. [`member_neighbors`](@ref) asks the adjacency question across the levels
+of a [`MultiOrderCellSet`](@ref), which has no `halo` because it has no single
+level to answer at.
 
 The two faces of a subtree boundary are verbs of their own.
 [`subtree_border`](@ref) and [`subtree_interior`](@ref) are its inside;
@@ -196,16 +200,48 @@ Important cross-system traits:
     memory, of which [`subtree_border`](@ref) and [`subtree_interior`](@ref) are
     the `collect` forms.
   - **[`subtree_halo`](@ref).** The same boundary from outside, as a resumable
-    [`SubtreeHaloIterator`](@ref). HEALPix, S2 and ISEA4R walk the band around
-    their square block directly, in `O(halo + depth)` time and `O(depth)`
-    memory — one pruned quadtree descent per face the halo touches, in face
-    order, which is canonical order; across a seam the band is a conservative
-    superset and every candidate is filtered by the native one-ring first, so
-    only the in-face case has a closed-form `length`. IGeo7 and H3 use the
-    generic engine, which walks the hierarchy from outside the subtree with cap
-    pruning, also in `O(depth)` memory. A5, having no [`descendant_range`](@ref)
-    to prune by, scans the target level in `O(1)` memory and `O(ncells)` time
-    instead.
+    [`SubtreeHaloIterator`](@ref) in `O(depth)` memory. `l == level(c)` is the
+    cell's own one-ring on every system, emitted ascending without a sort.
+    Deeper, five of the six take a specialization and A5 does not:
+
+      + **HEALPix, S2 and ISEA4R** walk the width-one band around their square
+        block, one pruned quadtree descent per face the halo touches, taken in
+        face order — which is canonical order, so the merge is concatenation.
+        `O(halo + depth)` time. A block nowhere flush with its face edge has a
+        closed-form count (`4·side + 4` under [`Vertex`](@ref), `4·side` under
+        [`Edge`](@ref)) and therefore a `length`; a block that crosses a seam
+        has a conservative rectangle band that every candidate is filtered
+        through the native one-ring before yielding, and declares
+        `SizeUnknown()`.
+      + **IGeo7 and H3** approach the halo from the root's own same-level
+        neighbours. One level down the calibration is already the answer; deeper,
+        each neighbour's subtree-rim automaton is seeded with an exposed-direction
+        arc calibrated by observation and walked to the target. Neighbouring
+        subtrees occupy disjoint [`descendant_range`](@ref)s, so walking them in
+        range order is canonical without a heap or a seen-set, and every
+        candidate goes through the native one-ring. Neither hexagonal engine
+        declares a `length`: the observed counts (`3^(d+1) + 3` around a
+        hexagon, `5(3^d + 1)/2` around a pentagon) are validated by enumeration,
+        not derived from the transition recurrence.
+      + **A5** has no [`descendant_range`](@ref) to prune a descent by and no
+        validated boundary automaton, so it scans the target level in `O(1)`
+        memory and `O(ncells)` time. Its aperture and Hilbert-like indexing are
+        not evidence of a square fast path, and none is inferred from them.
+
+    The generic outside-first hierarchy walk — canonical-order candidates with
+    [`node_extent`](@ref) cap pruning — is still what every specialization's
+    guards return to and what a newly registered system inherits.
+  - **[`halo`](@ref).** The same question about a SUBSET rather than a subtree,
+    on [`PartialGrid`](@ref), [`CellVector`](@ref) and [`CellLookup`](@ref), and
+    always an iterator. A rooted grid holding a complete subtree delegates to
+    [`SubtreeHaloIterator`](@ref) and keeps its system's specialization;
+    everything else — a hole, a forgotten root, an arbitrary id list — takes an
+    outside-first walk against membership, pruned by the root's
+    [`node_extent`](@ref) or by a bounding cap over the ids. A cell punched
+    out of the middle of a subset is outside it and touches it, so it joins the
+    halo. A5 is again the exception to the delegation: without
+    [`has_sorted_subtrees`](@ref) there is no way to recognise a held subtree, so
+    even its rooted complete grid takes the subset walk — to the same answer.
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
     the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
     their parent exactly; the hierarchy's own relation on IGEO7, H3 and A5,

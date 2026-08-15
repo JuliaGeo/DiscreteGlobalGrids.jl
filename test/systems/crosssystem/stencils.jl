@@ -27,6 +27,10 @@
 #   * HALO — `halo_table(sub, k)[p] == neighbors(sub, p, k)` for every `p`,
 #     including on the rooted-subtree fast path, which takes a different route
 #     (T20's rim/interior split) to the same answer.
+#   * COMPLETE ROWS — `stencil_table` against a `[chunk; halo]` buffer laid out
+#     by cell ID, which is the one claim `halo_table`'s law cannot make: no row
+#     is ever short. Its own section below says how the oracle avoids sharing
+#     arithmetic with the thing it checks.
 #   * MEMBER ADJACENCY — `member_neighbors` against a brute-force oracle that
 #     expands every member and shares no code with the rim walk: first with the
 #     level grid's own adjacency, then — on the systems whose children tile
@@ -51,7 +55,8 @@ using DiscreteGlobalGrids: systems, levelgrid, ncells, cellindex, cellposition,
     neighbors, ring, halo_table, level, levels, max_level, descendants,
     descendant_range, has_sorted_subtrees, PartialGrid, CellVector, CellLookup,
     MultiOrderCoverage, member_neighbors, AuthalicSystem, Vertex, Edge,
-    Connectivity, cellindextype, query, system
+    Connectivity, cellindextype, query, system,
+    halo, stencil_table, StencilTable
 
 # ---------------------------------------------------------------------------
 # Systems, and the depths each is swept at
@@ -311,6 +316,267 @@ end
     # Not "some system somewhere might differ" — the hole makes it happen, and
     # a return to induced-subgraph semantics would make this zero.
     @test divergences > 0
+end
+
+# ---------------------------------------------------------------------------
+# COMPLETE ROWS
+#
+# `halo_table` is IN-SET, so a rim cell's row is SHORT. `stencil_table` is those
+# same rows completed against a fetched halo and renumbered into the
+# `[chunk; halo]` buffer the two halves were read into. Two claims, and no other
+# law in this package can catch either failing:
+#
+#   * every row is the cell's WHOLE one-ring — same cells, same rotational order
+#     — as indices into that buffer; and
+#   * no row is ever short, which is the defect the verb exists to remove.
+#
+# THE ORACLE SHARES NO ARITHMETIC WITH THE IMPLEMENTATION. It lays the buffer
+# out by cell ID into a dictionary and looks each neighbour up as itself, where
+# `stencil_table` addresses the chunk half by integer range (or by
+# `cellposition`) and the halo half by binary search over positions. So a
+# neighbour the oracle cannot find is the completeness claim failing, and it is
+# recorded rather than thrown — hence `get(..., 0)` and the `uncovered` list.
+#
+# THE SWEEP is every root of every system at its shallowest level, at depths 0,
+# 1 and 2, plus a spread of roots one and two levels below that, at depth 2. At
+# the shallowest level a subtree is a whole face, so its halo lies entirely across
+# seams; that sweep therefore contains every HEALPix polar face, every IGeo7 and
+# A5 pentagon, H3's twelve and the S2 cube corners without any of them being
+# named here, and the deeper roots add the blocks that sit wholly inside a face.
+# Depth 0 is the chunk that is ALL rim: one cell, whose entire row comes out of
+# the halo half.
+# ---------------------------------------------------------------------------
+
+# `[chunk; halo]` as ids, and each neighbour looked up as itself. `0` means the
+# buffer does not contain it at all, which is the row that could not have been
+# completed.
+function buffer_rows(sys, l, chunk_ids, halo_ids, conn)
+    grid = levelgrid(sys, l)
+    slot = Dict{eltype(chunk_ids),Int}()
+    for (k, c) in enumerate(chunk_ids)
+        slot[c] = k
+    end
+    for (k, c) in enumerate(halo_ids)
+        slot[c] = length(chunk_ids) + k
+    end
+    return [[get(slot, nb, 0) for nb in neighbors(grid, d, 1; connectivity = conn)]
+            for d in chunk_ids]
+end
+
+@testset "stencil_table rows are complete and address [chunk; halo]" begin
+    uncovered = Any[]      # the halo did not cover some neighbour
+    disagreed = Any[]      # the table is not the oracle's rows
+    layout = Any[]         # row i is not `descendant_range` offset i
+    csr = Any[]            # the flat form does not tile into the rows
+    tables = 0
+    cells = 0
+    for (sys, _, _) in SWEEP
+        top = first(levels(sys))
+        for (rootlevel, depth) in ((top, 0), (top, 1), (top, 2),
+                                   (top + 1, 2), (top + 2, 2))
+            l = rootlevel + depth
+            l <= last(levels(sys)) || continue
+            roots = levelgrid(sys, rootlevel)
+            grid = levelgrid(sys, l)
+            n = ncells(roots)
+            # Exhaustive at the shallowest level, where the structure lives;
+            # a fixed spread deeper, where the roots are only more of the same.
+            step = rootlevel == top ? 1 : max(1, n ÷ 24)
+            for i in 1:step:n, conn in (Vertex(), Edge())
+                root = cellindex(roots, i)
+                pg = PartialGrid(sys, root, l)
+                halo_ids = collect(halo(pg; connectivity = conn))
+                halo_pos = [cellposition(grid, x)::Int for x in halo_ids]
+                t = stencil_table(pg, halo_pos; connectivity = conn)
+                ids = [cellindex(pg, p) for p in 1:ncells(pg)]
+                want = buffer_rows(sys, l, ids, halo_ids, conn)
+                tables += 1
+                cells += ncells(pg)
+
+                any(row -> any(iszero, row), want) &&
+                    push!(uncovered, (sysname(sys), root, l, conn))
+                (length(t) == ncells(pg) &&
+                 all(p -> collect(t[p]) == want[p], 1:ncells(pg))) ||
+                    push!(disagreed, (sysname(sys), root, l, conn))
+                (t.offsets[1] == 1 && t.offsets[end] == length(t.indices) + 1 &&
+                 all(s -> 1 <= s <= t.nchunk + t.nhalo, t.indices) &&
+                 reduce(vcat, t; init = Int[]) == t.indices) ||
+                    push!(csr, (sysname(sys), root, l, conn))
+
+                # The link between "row i" and "buffer slot i" that nothing else
+                # states: the chunk half is read as `descendant_range`, so row i
+                # must be that range's i-th cell. Both the table and the oracle
+                # above go through `cellindex(pg, ·)`, so they would agree with
+                # each other even if the range disagreed with both — and the
+                # caller's buffer would then be shifted under a correct table.
+                if has_sorted_subtrees(sys)
+                    ids == [cellindex(grid, q) for q in descendant_range(sys, root, l)] ||
+                        push!(layout, (sysname(sys), root, l))
+                end
+            end
+        end
+    end
+    # Named rather than counted, as the neighbouring files do: a regression here
+    # should name a root to go and look at.
+    @test isempty(uncovered)
+    @test isempty(disagreed)
+    @test isempty(layout)
+    @test isempty(csr)
+    # The sweep itself, pinned: a refactor that quietly stopped building tables
+    # would leave every emptiness above green.
+    @test tables == 1846
+    @test cells == 38828
+end
+
+@testset "stencil_table: a hole is addressed, and both paths agree" begin
+    holes = Any[]
+    hole_in_halo = 0
+    for (sys, base, leaf) in SWEEP
+        grid = levelgrid(sys, leaf)
+        # `holed` has no root, so it takes the membership path whatever the
+        # system — and its punched-out cells are halo cells by `halo`'s hole
+        # law, which is what lets its rim rows complete at all.
+        root = cellindex(levelgrid(sys, base), 3)
+        ids = descendants(sys, root, leaf)
+        n = length(ids)
+        punched = Set(ids[(n÷3+1):(2n÷3)])
+        sub = holed(sys, base, leaf)
+        for conn in (Vertex(), Edge())
+            halo_ids = collect(halo(sub; connectivity = conn))
+            halo_pos = [cellposition(grid, x)::Int for x in halo_ids]
+            t = stencil_table(sub, halo_pos; connectivity = conn)
+            want = buffer_rows(sys, leaf, [cellindex(sub, p) for p in 1:ncells(sub)],
+                halo_ids, conn)
+            all(p -> collect(t[p]) == want[p], 1:ncells(sub)) ||
+                push!(holes, (sysname(sys), conn))
+            any(x -> x in punched, halo_ids) && (hole_in_halo += 1)
+        end
+    end
+    @test isempty(holes)
+    # The hole is not incidental to the above: it really is in the halo, on
+    # every system and both connectivities, which is what makes those rows
+    # completable at all.
+    @test hole_in_halo == 2 * length(SWEEP)
+
+    # The two membership routes are one function. A sorted-subtree system can
+    # build the same subtree rooted (contiguous block, integer range) or bare
+    # (membership search), and the gate tells them apart — so this is not two
+    # spellings of one code path.
+    paths = Any[]
+    for (sys, base, leaf) in SWEEP
+        has_sorted_subtrees(sys) || continue
+        grid = levelgrid(sys, leaf)
+        root = cellindex(levelgrid(sys, base), 3)
+        blocked = PartialGrid(sys, root, leaf)
+        member = PartialGrid(sys, leaf, descendants(sys, root, leaf))
+        (FB._whole_subtree_range(blocked) !== nothing &&
+         FB._whole_subtree_range(member) === nothing) || push!(paths, (sysname(sys), :gate))
+        for conn in (Vertex(), Edge())
+            halo_pos = [cellposition(grid, x)::Int
+                        for x in halo(blocked; connectivity = conn)]
+            stencil_table(blocked, halo_pos; connectivity = conn) ==
+            stencil_table(member, halo_pos; connectivity = conn) ||
+                push!(paths, (sysname(sys), conn))
+        end
+    end
+    @test isempty(paths)
+
+    # The bridge the docstring offers a `CellVector` — wrap it as a
+    # `PartialGrid`'s ids, which copies nothing — reaches the same table. Pinned
+    # because it is documented: an unrunnable instruction is worse than none.
+    bridged = Any[]
+    for (sys, base, leaf) in SWEEP
+        grid = levelgrid(sys, leaf)
+        sub = rooted(sys, base, leaf)
+        cv = CellVector(sub)
+        wrapped = PartialGrid(system(cv), level(cv), cv)
+        halo_pos = [cellposition(grid, x)::Int for x in halo(sub)]
+        stencil_table(sub, halo_pos) == stencil_table(wrapped, halo_pos) ||
+            push!(bridged, sysname(sys))
+    end
+    @test isempty(bridged)
+end
+
+# ---------------------------------------------------------------------------
+# WHAT IT REFUSES
+#
+# Every one of these would otherwise produce a SHORT row — the exact defect the
+# verb removes — and a short row is invisible at the call site. HEALPix at
+# level 3 is the fixture because its `Vertex()` and `Edge()` halos differ (19
+# cells against 16), which no hexagonal system can demonstrate.
+# ---------------------------------------------------------------------------
+
+@testset "stencil_table refuses what would come back short" begin
+    sys = DGG.HEALPixSystem()
+    leaf = 3
+    grid = levelgrid(sys, leaf)
+    pg = PartialGrid(sys, cellindex(levelgrid(sys, 1), 3), leaf)
+    vertex_halo = [cellposition(grid, x)::Int for x in halo(pg)]
+    edge_halo = [cellposition(grid, x)::Int for x in halo(pg; connectivity = Edge())]
+    @test length(vertex_halo) == 19 && length(edge_halo) == 16
+
+    # A width-1 halo completes a one-ring and nothing wider.
+    @test_throws ArgumentError stencil_table(pg, vertex_halo, 2)
+    @test_throws ArgumentError stencil_table(pg, vertex_halo, 0)
+    # The lazy halo is not a buffer, and saying so is a method rather than a
+    # `MethodError`, because passing it is the mistake the lazy design invites.
+    @test_throws ArgumentError stencil_table(pg, halo(pg))
+    # An unsorted fetch list would misaddress rows rather than fail.
+    @test_throws ArgumentError stencil_table(pg, reverse(vertex_halo))
+    # Every halo cell touches the chunk by definition, so dropping ANY of them
+    # must be caught — not merely the ones at the ends, which is what a check
+    # written against the halo's endpoints would manage.
+    @test all(j -> (try
+            stencil_table(pg, deleteat!(copy(vertex_halo), j))
+            false
+        catch e
+            e isa ArgumentError
+        end), eachindex(vertex_halo))
+    # The connectivity has to be the halo's: an `Edge()` margin cannot complete
+    # `Vertex()` rows, and it does complete `Edge()` ones.
+    @test_throws ArgumentError stencil_table(pg, edge_halo; connectivity = Vertex())
+    @test stencil_table(pg, edge_halo; connectivity = Edge()) isa StencilTable
+
+    # `offsets` is one longer than the table, so an unchecked position past the
+    # end reads a real offset and returns a plausible row of somebody else's
+    # neighbours.
+    t = stencil_table(pg, vertex_halo)
+    @test_throws BoundsError t[0]
+    @test_throws BoundsError t[length(t)+1]
+end
+
+# ---------------------------------------------------------------------------
+# NOTHING IS SIZED BY THE HALO
+#
+# The house rule as an executable claim, with no threshold to argue about. A
+# margin only has to be ascending and to COVER, so everything of the level
+# outside the chunk is a valid one; and since the rows are the same rows, both
+# calls build output arrays of identical length. Allocation must therefore be
+# identical too — a `Dict` over the halo, a `sort` of it, or any copy would make
+# the wide call cost more, and here the wide halo is 179 times the real one.
+#
+# HEALPix is the fixture because its own `neighbors` allocates nothing, so what
+# is measured is this function rather than the system underneath it.
+# ---------------------------------------------------------------------------
+
+@testset "stencil_table allocates nothing sized by the halo" begin
+    sys = DGG.HEALPixSystem()
+    leaf = 5
+    grid = levelgrid(sys, leaf)
+    root = cellindex(levelgrid(sys, 1), 3)
+    pg = PartialGrid(sys, root, leaf)
+    block = descendant_range(sys, root, leaf)
+    tight = [cellposition(grid, x)::Int for x in halo(pg)]
+    wide = [q for q in 1:ncells(grid) if !(first(block) <= q <= last(block))]
+    @test length(tight) == 67 && length(wide) == 12032
+
+    a = stencil_table(pg, tight)
+    b = stencil_table(pg, wide)
+    @test length(a.indices) == length(b.indices)
+    # ...and the two are NOT the same table: the halo half is numbered against
+    # the list it was given, so this is two real answers, not one memoised.
+    @test a != b
+    @test (@allocated stencil_table(pg, tight)) == (@allocated stencil_table(pg, wide))
 end
 
 # ---------------------------------------------------------------------------

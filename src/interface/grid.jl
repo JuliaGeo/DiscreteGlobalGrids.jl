@@ -364,12 +364,15 @@ length and a cell whose neighbours all lie outside gets an empty one.
 
 A stencil pass is then one comprehension over the table.
 
-Not to be confused with [`halo`](@ref), which despite the name answers the
-opposite question. This verb is the IN-SET stencil — one row of in-set neighbour
-positions per cell the subset holds. `halo` is the set of cells the subset does
-**not** hold that touch it, which is what a stencil pass has to FETCH before it
-can run. Neither replaces the other, and `halo`'s docstring says the same thing
-from its side.
+**IN-SET, WHICH MAKES RIM ROWS SHORT.** That is the answer to the question this
+verb asks — "which of my own cells does each of my cells touch" — and two other
+verbs answer the rest of it. [`halo`](@ref), despite the name, answers the
+opposite question: the cells the subset does **not** hold that touch it, which is
+what a stencil pass has to FETCH before it can run. [`stencil_table`](@ref) is
+then this table's rows completed through that fetched halo and renumbered into
+the concatenated `[chunk; halo]` buffer. Reach for the pair whenever the
+alternative is building a neighbour table over the whole level to process one
+chunk of it; none of the three replaces another, and each says so from its side.
 """
 function halo_table end
 

@@ -198,6 +198,9 @@ The motivating read is a chunk plus its stencil margin:
 `descendant_range(sys, c, l)` is the chunk's contiguous position block, and
 `cellposition.(Ref(levelgrid(sys, l)), subtree_halo(sys, c, l))` is the extra
 fetch list a one-ring stencil needs — with no halo table built at all.
+
+That fetch list is also the second argument of [`stencil_table`](@ref), which is
+how the two halves get addressed once they are laid end to end in one buffer.
 """
 subtree_halo(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
         l::Integer; connectivity::Connectivity = Vertex()) =
@@ -233,7 +236,10 @@ two branches are. So `for x in halo(sub)` gets the same laziness either way, and
 Not to be confused with [`halo_table`](@ref), which is the IN-SET positional
 stencil: one row of in-set neighbour positions per cell of the subset. That verb
 answers "which of my own cells does each of my cells touch"; this one answers
-"which cells that I do not hold touch me". Neither replaces the other.
+"which cells that I do not hold touch me". Neither replaces the other, and
+[`stencil_table`](@ref) is the verb that needs both — it takes this list, once
+materialised as ascending positions, and completes `halo_table`'s short rim rows
+against it.
 
 A [`MultiOrderCellSet`](@ref) has no method here and will not grow one: its
 members sit at different levels, so there is no one level for a halo to answer

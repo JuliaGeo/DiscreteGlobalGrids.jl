@@ -343,6 +343,305 @@ halo(cv::CellVector; connectivity::Connectivity = Vertex()) =
         cv.grid, level(cv), connectivity))
 
 # ===========================================================================
+# The chunk-plus-halo stencil: the two faces above, addressed together
+#
+# The two verbs before this one are the two SIDES of a subset's boundary, and a
+# chunked stencil pass needs both at once — the block to read, the halo to fetch
+# alongside it — laid end to end in `[chunk; halo]`. Neither verb addresses that
+# buffer. `halo_table` is in-set, so at the rim its rows are SHORT, which is the
+# honest answer to "which of my own cells does each of my cells touch" and the
+# wrong one for a read where those neighbours ARE present, just past the chunk's
+# end; and `halo` names the extra cells without saying which row wants which.
+#
+# So this is a third verb rather than a method of either, because every clause
+# of its contract differs from `halo_table`'s:
+#
+#   * rows are COMPLETE, never clipped, and that is checked rather than hoped;
+#   * entries index the CONCATENATED buffer, not the subset;
+#   * rows keep the system's ROTATIONAL order rather than ascending position;
+#   * the result is CSR, not a vector of row vectors.
+#
+# WHY ROTATIONAL, against the position form's ascending rule. That rule
+# (`src/interface/grid.jl`) is stated for a CLIPPED row, and its reason is that a
+# clipped row is a mutilated cycle: with neighbours missing there is no direction
+# left to preserve, so membership is all the order can mean and ascending is the
+# cheapest useful choice. A complete row has the cycle intact, and the cycle is
+# what the callers of this verb are after — slope, aspect, curvature, flow
+# direction all read the ring as directions, not as a set. Sorting here would
+# throw away the one thing completeness makes available, and a caller who wants
+# ascending has `sort!` on a row view.
+# ===========================================================================
+
+"""
+    StencilTable <: AbstractVector
+
+The stencil of a chunk read together with its halo: `t[i]` is the FULL
+neighbourhood of the chunk's `i`-th cell, as indices into the concatenated
+`[chunk; halo]` buffer — `1:nchunk` for a cell of the chunk, `nchunk+1 :
+nchunk+nhalo` for one of the halo. Built by [`stencil_table`](@ref), which is
+where the contract is stated.
+
+CSR, and the two arrays are public: `t.offsets` is `nchunk + 1` long with row `i`
+occupying `t.offsets[i] : t.offsets[i+1] - 1`, and `t.indices` is the flat
+neighbour array those slices cut. `t.nchunk` and `t.nhalo` are the two halves'
+lengths, so `t.nchunk + t.nhalo` is the buffer length a row can address and the
+one to check a fetch against.
+
+Indexing gives the row as a `view`, so `t[i]` allocates nothing and a stencil
+pass can be written either way — over rows, or over `t.indices` directly with
+`t.offsets` as the row bounds, which is the loop a kernel wants.
+"""
+struct StencilTable <: AbstractVector{SubArray{Int,1,Vector{Int},Tuple{UnitRange{Int}},true}}
+    offsets::Vector{Int}
+    indices::Vector{Int}
+    nchunk::Int
+    nhalo::Int
+end
+
+Base.size(t::StencilTable) = (t.nchunk,)
+Base.IndexStyle(::Type{StencilTable}) = Base.IndexLinear()
+
+# `offsets` is `nchunk + 1` long by construction, so `i + 1` is in range as soon
+# as `i` is, and reading the two bounds unchecked is safe. The VIEW is left
+# CHECKED, and deliberately: both arrays are public fields, so a hand-assembled
+# table would otherwise be able to read past the flat array's end, and one range
+# comparison per row is nothing beside reading the row.
+Base.@propagate_inbounds function Base.getindex(t::StencilTable, i::Int)
+    @boundscheck checkbounds(t, i)
+    lo = @inbounds t.offsets[i]
+    hi = @inbounds t.offsets[i+1] - 1
+    return view(t.indices, lo:hi)
+end
+
+Base.show(io::IO, t::StencilTable) = print(io, "StencilTable(nchunk=", t.nchunk,
+    ", nhalo=", t.nhalo, ", entries=", length(t.indices), ")")
+Base.show(io::IO, ::MIME"text/plain", t::StencilTable) = show(io, t)
+
+# Which slot of the buffer's FIRST half a neighbour occupies, or `0` — free as a
+# sentinel, since a position is one-based — when the chunk does not hold it.
+#
+# Two shapes, chosen once in `stencil_table` and passed by value, so the inner
+# loop is monomorphic on whichever it got. This is the same split
+# `_whole_subtree_range` makes for `halo_table` and `halo`, deliberately read
+# from the same function: the halo a caller was handed came out of `halo(pg)`,
+# which branched on that predicate, so a second notion of "is a subtree" here
+# could hand back a table addressed against a different halo than the one that
+# was fetched.
+struct BlockChunk
+    lo::Int
+    hi::Int
+end
+
+# The unnamed arguments are the ones the shape does not read, as elsewhere in
+# this package: the block decides by POSITION alone, the membership form by the
+# CELL alone, and naming what each ignores would suggest it consults it.
+@inline _chunk_slot(b::BlockChunk, ::AbstractCellIndex, q::Int) =
+    (b.lo <= q <= b.hi) ? q - b.lo + 1 : 0
+
+# The general subset: a hole, a scattered id set, or a system with no
+# `descendant_range` to give the block. `O(log nchunk)` per neighbour against
+# the block form's `O(1)`, which is the whole reason the block form exists.
+struct MemberChunk{S}
+    subset::S
+end
+
+@inline function _chunk_slot(m::MemberChunk, nb::AbstractCellIndex, ::Int)
+    p = cellposition(m.subset, nb)
+    return p === nothing ? 0 : p
+end
+
+@noinline _stencil_k(k) = throw(ArgumentError(
+    "stencil_table: k must be 1, got $k. This is the ONE-RING table: `halo` " *
+    "and `subtree_halo` produce a width-1 margin, so a one-ring is what a " *
+    "fetched halo can complete, and answering k = 2 from it would give SHORT " *
+    "rows — the defect this verb exists to remove. `halo_table` is the in-set " *
+    "table at any k"))
+
+@noinline _stencil_unsorted() = throw(ArgumentError(
+    "stencil_table: the halo positions must be strictly ascending. That is " *
+    "the order `halo` and `subtree_halo` emit in, and it is what the binary " *
+    "search that addresses the halo half of the buffer rests on — an " *
+    "unsorted list would silently misaddress rows rather than fail"))
+
+@noinline _stencil_incomplete(d, nb, q) = throw(ArgumentError(
+    "stencil_table: cell $d has neighbour $nb at level position $q, which is " *
+    "in neither the chunk nor the halo, so its row cannot be completed. The " *
+    "halo passed is not this chunk's one-ring halo under this connectivity — " *
+    "the usual causes are a halo collected under Vertex() and a table asked " *
+    "for under Edge() or the reverse, a halo of a different chunk, or a " *
+    "truncated fetch list"))
+
+"""
+    stencil_table(pg::PartialGrid, halo_positions::AbstractVector{<:Integer}, k = 1;
+                  connectivity = Vertex()) -> StencilTable
+
+The positional stencil of a chunk read together with its halo. Row `i` is the
+**complete** one-ring of `cellindex(pg, i)`, in the system's rotational order,
+as indices into the concatenated `[chunk; halo]` buffer: `1:ncells(pg)` names a
+cell of the chunk and `ncells(pg)+j` names `halo_positions[j]`.
+
+This is the addressing [`halo_table`](@ref) does not give. That verb is IN-SET,
+so at the rim its rows are short; here the missing neighbours are exactly the
+halo, and pointing at them is the whole content of this function.
+
+`halo_positions` is the halo's positions on `levelgrid(system(pg), level(pg))`,
+strictly ascending — the fetch list itself:
+
+```julia
+grid  = levelgrid(sys, l)
+pg    = PartialGrid(sys, root, l)                       # the chunk
+hpos  = [cellposition(grid, x) for x in halo(pg)]       # the margin to fetch
+buf   = vcat(read(store, descendant_range(sys, root, l)), read(store, hpos))
+table = stencil_table(pg, hpos)
+mean_of_neighbours = [sum(@view buf[row]) / length(row) for row in table]
+```
+
+# The three decisions, and why
+
+**POSITIONS, MATERIALISED, NOT THE ITERATOR.** [`halo`](@ref) is lazy by design
+and this function refuses it (loudly — there is a method whose only job is to
+say so). A table of buffer indices presupposes a buffer, and there is no buffer
+until the halo has been walked and read; a caller who has one already owns this
+array, so taking the iterator would mean either walking the halo twice or
+hiding an `nhalo`-sized `collect` inside a function whose caller already paid
+for it. Positions rather than ids for the same reason: the buffer is indexed by
+integer, `cellposition` is what turns the walk into a fetch list, and searching
+positions asks nothing of the id order beyond what the fetch already asked.
+
+Ascending is not sorted for and not assumed: it is CHECKED, in one allocation-free
+pass, because the binary search that addresses the halo half rests on it and a
+violation would misaddress rows rather than fail.
+
+The list need not be MINIMAL, only ascending and covering. A caller who fetched
+a two-ring margin gets a one-ring table addressed into it, with the outer ring's
+slots simply unreferenced; what is refused is a margin that is too *small*.
+
+**CSR, NOT A VECTOR OF ROWS.** `nchunk` separate row vectors is `nchunk`
+allocations to build a table whose rows are read once each. The flat form is one
+`offsets` array and one `indices` array, both output-sized, and
+[`StencilTable`](@ref) exposes them; `t[i]` is a `view`, so reading by row costs
+nothing either.
+
+**`k == 1` ONLY.** [`halo`](@ref) and [`subtree_halo`](@ref) produce a width-1
+margin — nothing in this package produces a wider one — so a one-ring is what a
+fetched halo can complete, and anything else is an `ArgumentError` rather than a
+short row. The refusal is deliberately in front of the completeness check rather
+than behind it: the check would catch a `k == 2` request against a one-ring
+margin, but only after the caller had built a workflow around a shape no verb
+here supplies. Accepting a wider margin (above) and answering a wider table are
+different things, and only the first is offered.
+
+# Completeness, which is checked
+
+Every neighbour of every chunk cell is looked up, and one that is in neither
+half is an `ArgumentError` naming the cell, the neighbour and its position. So a
+`Vertex()` halo handed to an `Edge()` call, a halo of the wrong chunk, or a
+truncated fetch list fails at the first row that would have been short. Nothing
+here returns a partial row.
+
+# The two paths
+
+A [`PartialGrid`](@ref) holding a whole rooted subtree has its chunk positions
+as one contiguous block, and membership is then two integer comparisons and a
+subtraction. Everything else — a hole, a forgotten root, an arbitrary id list —
+resolves membership through `cellposition`, `O(log nchunk)`. The split is
+`_whole_subtree_range`, the same predicate [`halo`](@ref) and
+[`halo_table`](@ref) branch on, read from the same function so that "is a
+subtree" cannot come to mean two things: the halo a caller passes here came out
+of `halo(pg)`, which asked that question first.
+
+**A HOLE IS ADDRESSED, NOT AN ERROR.** `halo(pg)` counts a punched-out interior
+cell as a halo cell, so a holed chunk's rows complete through the halo half like
+any other. That is the hole law of [`halo`](@ref) paying for itself.
+
+**A5 IS SUPPORTED**, on the membership path, at every root and depth — it is the
+one system with no [`descendant_range`](@ref), so it never takes the block path.
+Its subtrees do in fact occupy contiguous position blocks, but no primitive in
+this package promises that, and nothing here depends on it.
+
+ONE CONTAINER, DELIBERATELY. [`halo`](@ref) answers on three collections; this
+verb takes only a [`PartialGrid`](@ref), because a chunk is a thing you READ —
+one block of storage plus one margin — and that is the shape a `PartialGrid`
+carries. A [`CellVector`](@ref) reaches it as `PartialGrid(system(cv), level(cv),
+cv)`, which copies nothing, though membership then goes through the vector's
+`getindex` rather than its own `O(log #windows)` window search; a
+[`CellLookup`](@ref) unwraps to its `CellVector` first.
+
+`O(nchunk · degree · log nhalo)` time. The only allocation of this function's own
+is the two output arrays: no intermediate is sized by the halo, there is no hash
+map anywhere, and the halo is neither copied nor sorted — which is what the
+ascending requirement buys. Whatever the system's own `neighbors` allocates per
+call it allocates here too, unchanged.
+
+See [`halo_table`](@ref) for the in-set table, [`halo`](@ref) for the fetch list
+this addresses, and [`StencilTable`](@ref) for the layout.
+"""
+function stencil_table(pg::PartialGrid, halo_positions::AbstractVector{<:Integer},
+        k::Integer = 1; connectivity::Connectivity = Vertex())
+    Int(k) == 1 || _stencil_k(k)
+    Helpers.strictly_increasing(halo_positions) || _stencil_unsorted()
+    r = _whole_subtree_range(pg)
+    chunk = r === nothing ? MemberChunk(pg) : BlockChunk(first(r), last(r))
+    return _stencil_rows(pg, chunk, halo_positions, connectivity)
+end
+
+# The refusal `halo` invites. Written as a method rather than left to
+# `MethodError` because passing the iterator is the one mistake the lazy design
+# makes natural, and the answer to it is a sentence, not a signature.
+@noinline stencil_table(::PartialGrid,
+        ::Union{SubtreeHaloIterator,SubsetHaloIterator}, ::Vararg{Any}; kw...) =
+    throw(ArgumentError(
+        "stencil_table needs the halo MATERIALISED as ascending positions, not " *
+        "as the iterator: its rows are indices into a `[chunk; halo]` buffer, " *
+        "and that buffer does not exist until the halo has been walked and " *
+        "read. Pass `[cellposition(levelgrid(sys, l), x) for x in halo(pg)]` — " *
+        "the same fetch list the read used"))
+
+# One pass, in POSITION order, which is what lets the offsets be filled as the
+# rows are produced. `halo_table`'s rooted path splits the walk into
+# `InnerCellIterator` and `EdgeCellIterator` instead; that split is not reused
+# here, for two reasons. It would cost the single pass — the two walks emit
+# interleaved, and CSR rows have to be appended in row order — and it would buy
+# nothing, because `_chunk_slot` already retires every interior cell's
+# neighbours before the halo search is reached, so an interior row does no work
+# a "this cell is interior" flag could save. The split that IS reused is
+# `_whole_subtree_range`, one function above, which is the one that has to agree
+# with `halo`.
+function _stencil_rows(pg::PartialGrid, chunk, halo_positions::AbstractVector,
+        connectivity::Connectivity)
+    complete = pg.complete
+    n = ncells(pg)
+    m = length(halo_positions)
+    offsets = Vector{Int}(undef, n + 1)
+    @inbounds offsets[1] = 1
+    indices = Int[]
+    # The degree ceiling, which is the row length almost everywhere: this is the
+    # output's own size to within the pentagons and seam cells, not a guess, and
+    # asking for it once is what keeps the append from reallocating on the way
+    # up. Deliberately not a second pass to count exactly — that pass would have
+    # to compute every neighbourhood twice.
+    sizehint!(indices, n * max_neighbors(pg.system, connectivity))
+    for i in 1:n
+        d = cellindex(pg, i)
+        for nb in neighbors(complete, d, 1; connectivity)
+            # Cannot be `nothing`: `nb` is a cell OF the complete level, which is
+            # the grid it came from. The `::Int` says so where a `nothing` would
+            # otherwise flow silently into the search below.
+            q = cellposition(complete, nb)::Int
+            slot = _chunk_slot(chunk, nb, q)
+            if slot == 0
+                j = Helpers.sorted_index(halo_positions, q)
+                j == 0 && _stencil_incomplete(d, nb, q)
+                slot = n + j
+            end
+            push!(indices, slot)
+        end
+        @inbounds offsets[i+1] = length(indices) + 1
+    end
+    return StencilTable(offsets, indices, n, m)
+end
+
+# ===========================================================================
 # Cross-level adjacency on a multi-order set
 # ===========================================================================
 

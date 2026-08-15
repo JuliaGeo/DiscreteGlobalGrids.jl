@@ -176,6 +176,17 @@ Every level-`l` descendant of `c`, ascending, as the same **lazy** vector
 [`children`](@ref) returns — the ids are [`descendant_range`](@ref) read off as
 consecutive ordinals, and a GLO-30 tile's 12 960 000 of them are not worth
 materialising.
+
+!!! warning "This diverges from the interface"
+    The interface docstring for [`descendants`](@ref) says the call *materializes*
+    `O(subtree)` ids, and on every other system it hands back a freshly allocated
+    `Vector` the caller owns. **This method does not.** It returns a **lazy, read-only
+    `AbstractVector`** that computes each id on indexing. Reading is complete — `length`,
+    `getindex`, iteration, `collect` — but nothing that writes works, because there is no
+    array to write into: no `setindex!`, no `push!`, no `sort!`, and no passing it to an
+    API that mutates its argument. **`collect` it first if you need any of those.** The
+    divergence is deliberate: one GLO-30 tile has 12 960 000 level-1 descendants, and a
+    `Vector{LevelIndex}` of them is 16 bytes apiece.
 """
 function DGG.descendants(sys::CopernicusDEMSystem, c::DGG.LevelIndex, l::Integer)
     r = DGG.descendant_range(sys, c, l)     # validates `l` both ways

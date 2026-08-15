@@ -93,7 +93,7 @@ end
 # ===========================================================================
 
 "Per-`N` lattice tables: column count and cumulative pixel count, by tile row."
-struct Tables
+struct BandTables
     ncols::Vector{Int64}     # 180 entries, index r+1, r = 89 - lat_s
     rowbase::Vector{Int64}   # 181 entries, pixels in tile rows 0:r-1 at index r+1
 end
@@ -117,22 +117,26 @@ function build_tables(N::Integer)
     rowbase[1] = 0
     for r in 0:(NROWS - 1)
         f2 = band_factor2(_lat_s(r))
-        (2 * N) % f2 == 0 || throw(ArgumentError(
+        (2 * Int64(N)) % f2 == 0 || throw(ArgumentError(
             "N = $N does not divide evenly by the $(f2 / 2)x reduction factor; " *
             "a Copernicus DEM lattice needs 30 | N"))
         ncols[r + 1] = (2 * Int64(N)) ÷ f2
         rowbase[r + 2] = rowbase[r + 1] + Int64(NCOLS_TILES) * ncols[r + 1] * Int64(N)
     end
-    return Tables(ncols, rowbase)
+    return BandTables(ncols, rowbase)
 end
 
-const GLO30_TABLES = build_tables(3600)
-const GLO90_TABLES = build_tables(1200)
-const OTHER_TABLES = Dict{Int,Tables}()
+const GLO30_TABLES = build_tables(3600)::BandTables
+const GLO90_TABLES = build_tables(1200)::BandTables
+# `CopernicusDEMSystem{30}()` is the test suite's conformance workhorse — the scaled twin
+# the whole harness runs on — so it gets a table of its own rather than a locked lookup.
+const TWIN30_TABLES = build_tables(30)::BandTables
+const OTHER_TABLES = Dict{Int,BandTables}()
 const OTHER_LOCK = ReentrantLock()
 
 @inline tables(::CopernicusDEMSystem{3600}) = GLO30_TABLES
 @inline tables(::CopernicusDEMSystem{1200}) = GLO90_TABLES
+@inline tables(::CopernicusDEMSystem{30}) = TWIN30_TABLES
 # Any other `N` is a scaled twin, used by the test suite so the conformance harness's
 # `collect(children(...))` stays affordable. Looked up rather than dispatched, because
 # there is no reason to compile a table into the method table for a one-off.
@@ -142,8 +146,10 @@ function tables(::CopernicusDEMSystem{N}) where {N}
     end
 end
 
-"Columns in the tiles of tile row `r` (equivalently, of the tile at latitude `lat_s`)."
+"Columns in every tile of tile row `r` (north to south, `r = 89 - lat_s`)."
 ncols(sys::CopernicusDEMSystem, r::Integer) = tables(sys).ncols[Int(r) + 1]
+
+"Columns in the tile whose lower-left corner latitude is `lat_s`."
 ncols_at(sys::CopernicusDEMSystem, lat_s::Integer) = ncols(sys, _row(lat_s))
 
 # ===========================================================================
@@ -166,6 +172,8 @@ and tile column `q`.
 
 The prefix sum makes this O(1): `rowbase[r + 1]` counts every pixel in the tile rows
 north of `r`, and within a row every tile has the same `ncols * N` pixels.
+
+Callers must supply a decoded `(r, q)`; it validates nothing.
 """
 tilebase(sys::CopernicusDEMSystem{N}, r::Integer, q::Integer) where {N} =
     tables(sys).rowbase[Int(r) + 1] + Int64(q) * ncols(sys, r) * Int64(N)

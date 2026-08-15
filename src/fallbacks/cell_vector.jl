@@ -447,8 +447,9 @@ level(cv::CellVector) = cv.level
     cellset(cv::CellVector)
     cellset(lk::CellLookup)
 
-The thing the collection was built from — a [`MultiOrderCellSet`](@ref), or the
-grid — for running a second coverage operation against without unpacking it.
+The thing the collection was built from — a [`MultiOrderCellSet`](@ref), a
+[`MultiOrderVector`](@ref) expanded to one level, or the grid — for running a
+second coverage operation against without unpacking it.
 
 A collection *derived* from another one, by indexing or by [`covering`](@ref),
 has no such origin and reports the [`PartialGrid`](@ref) describing it instead.

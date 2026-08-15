@@ -88,4 +88,3 @@ jobs:
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
           DISPLAY: ':0'
           DATADEPS_ALWAYS_ACCEPT: 'true'
-          JULIA_DEBUG: Documenter

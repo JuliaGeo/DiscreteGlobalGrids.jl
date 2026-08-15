@@ -21,16 +21,25 @@ SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
 [weakdeps]
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 
+[sources.ConservativeRegridding]
+rev = "agent/use-geometryops-main-cache"
+url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"
+
+[sources.GeometryOps]
+rev = "main"
+url = "https://github.com/JuliaGeo/GeometryOps.jl.git"
+
+[sources.GeometryOpsCore]
+rev = "main"
+subdir = "GeometryOpsCore"
+url = "https://github.com/JuliaGeo/GeometryOps.jl.git"
+
 [extensions]
 MakieExt = ["Makie"]
-
-[sources]
-ConservativeRegridding = {rev = "agent/use-geometryops-main-cache", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-GeometryOps = {rev = "main", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 
 [compat]
 DE9IM = "0.1"
 GeometryOpsCore = "0.1.11"
+Makie = "0.24"
 SmallCollections = "0.6.3"
 julia = "1.11"

@@ -15,7 +15,7 @@ module SubtreeHaloTests
 using Test
 using DiscreteGlobalGrids
 using DiscreteGlobalGrids: systems, levelgrid, level, max_level, ncells,
-    cellindex, neighbors, ancestor, Vertex, Edge,
+    cellindex, cellposition, neighbors, ancestor, subtree_border, Vertex, Edge,
     SubtreeHaloIterator, subtree_halo
 import DiscreteGlobalGrids as DGG
 
@@ -266,6 +266,131 @@ end
                   collect(SubtreeHaloIterator(sys, c, 2; connectivity = conn))
         end
     end
+end
+
+# ---------------------------------------------------------------------------
+# The sweep harness
+#
+# `law_halo` above answers "is this the right SET, in the right order?" by a
+# scan that shares nothing with the walk, and it is the strongest oracle here —
+# but it is `O(ncells)` per call, so it can only be afforded shallow. The bundle
+# below is the other half: a fixed list of the iterator contract's laws, cheap
+# enough to run at every root, level and connectivity the sweep reaches, and the
+# thing every specialization added later is put through unchanged. It is not an
+# oracle — it cannot tell a walk that drops a cell from one that never should
+# have emitted it — but it pins uniqueness, sortedness, outside ancestry, both
+# adjacency directions, `subtree_halo`/`collect` agreement, and any `length` an
+# engine claims.
+# ---------------------------------------------------------------------------
+
+# Bases 0, 1 and 2, so a root is a whole face, then a quarter of one, then a
+# sixteenth — the last is the first that can be nowhere flush with its face
+# edge, which is the configuration the square band walk needs.
+#
+# A5 STOPS AT BASE 1, on purpose and not to hide anything: it is the one system
+# with no `descendant_range`, so it takes `ScanHaloEngine`, which is `O(ncells)`
+# per halo — and its `neighbors` allocates a `Set` per call, so the constant is
+# large too. Sweeping it at base 2 (targets up to level 4, 3840 cells scanned
+# twice per case) costs more than the other five systems together and pins
+# nothing they do not. Bases 0 and 1 still run every law at every level, and
+# `law_halo` and the forced-geometry testset above both cover A5 at full width.
+sweep_bases(sys) = filter(b -> b <= max_level(sys),
+    sys isa DGG.A5System ? (0, 1) : (0, 1, 2))
+
+sweep_roots(sys, base::Int) = (grid = levelgrid(sys, base);
+    unique(vcat(sample_cells(grid, 4), irregular_cells(grid, 2))))
+
+# The deepest target whose grid is within `budget` times the root generation's,
+# so "deep" means the same amount of WORK on an aperture-4 and an aperture-7
+# system rather than the same number of levels.
+function deep_depth(sys, base::Int, budget::Int = 70_000)
+    d = 0
+    while base + d + 1 <= max_level(sys) &&
+        ncells(levelgrid(sys, base + d + 1)) ÷ ncells(levelgrid(sys, base)) <= budget
+        d += 1
+    end
+    return d
+end
+
+# The per-case law bundle. Every engine, every specialization, goes through it.
+function check_halo_case(sys, c, l, conn)
+    it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+    h = collect(it)
+    @test h == subtree_halo(sys, c, l; connectivity = conn)
+    @test allunique(h)
+    lc = level(c)
+    @test all(x -> ancestor(sys, x, lc) != c, h)          # outside ancestry
+    grid = levelgrid(sys, l)
+    @test issorted([cellposition(grid, x) for x in h])    # canonical order
+    # Both adjacency directions, under the same connectivity: every border cell
+    # reaches the halo, and every halo cell reaches the border.
+    border = subtree_border(sys, c, l; connectivity = conn)
+    hs, bs = Set(h), Set(border)
+    @test all(r -> any(in(hs), neighbors(grid, r, 1; connectivity = conn)), border)
+    @test all(x -> any(in(bs), neighbors(grid, x, 1; connectivity = conn)), h)
+    Base.IteratorSize(typeof(it)) isa Base.HasLength && @test length(it) == length(h)
+    return h
+end
+
+@testset "$(nameof(typeof(sys))) at level $base" for sys in systems(),
+        base in sweep_bases(sys)
+    for c in sweep_roots(sys, base), l in base:min(base + 2, max_level(sys))
+        hv = check_halo_case(sys, c, l, Vertex())
+        he = check_halo_case(sys, c, l, Edge())
+        # `Edge()` is `Vertex()` minus the cells that touch at a point only.
+        @test issubset(Set(he), Set(hv))
+    end
+end
+
+# One deep case per system, where `deep_depth` puts the target grid within a
+# fixed factor of the root generation. One root and one connectivity: the point
+# is that the laws still hold when the halo is hundreds of cells and the descent
+# is long, not to re-sweep at depth. A5 is excluded for the reason `sweep_bases`
+# gives — its `deep_depth` from a level-0 root is level 7, a million-cell scan.
+@testset "$(nameof(typeof(sys))) at depth" for sys in
+        filter(s -> !(s isa DGG.A5System), systems())
+    d = deep_depth(sys, 0)
+    d >= 1 || continue
+    check_halo_case(sys, cellindex(levelgrid(sys, 0), 1), d, Vertex())
+end
+
+# ---------------------------------------------------------------------------
+# The wrapper, and the guard on a lying count
+# ---------------------------------------------------------------------------
+
+# The authalic transform moves where a cell is DRAWN, not which cells are
+# adjacent, so the halo through the wrapper must be the halo without it — the
+# same cell ids, in the same order. `halo_engine(::AuthalicSystem, ...)` is one
+# forwarding line, and this is what says the line is there.
+@testset "AuthalicSystem forwards the halo walk" begin
+    for sys in systems()
+        wrapped = DGG.AuthalicSystem(sys)
+        grid0 = levelgrid(sys, 0)
+        c = cellindex(grid0, 1)
+        for l in level(c):min(level(c) + 2, max_level(sys))
+            @test collect(SubtreeHaloIterator(wrapped, c, l)) ==
+                  collect(SubtreeHaloIterator(sys, c, l))
+        end
+    end
+end
+
+# Claims three, yields one — exactly the shape `collect_subtree` exists to
+# catch. Without it `collect`'s own `HasLength` route sizes the vector from the
+# claim and hands back two `undef` slots as cell ids; the specializations below
+# are the engines that claim a closed-form count, so this guard is load-bearing
+# for them and not a curiosity.
+struct MiscountingEngine end
+Base.iterate(::MiscountingEngine) = (DGG.LevelIndex(0, 0), 1)
+Base.iterate(::MiscountingEngine, ::Int) = nothing
+Base.eltype(::Type{MiscountingEngine}) = DGG.LevelIndex
+Base.IteratorSize(::Type{MiscountingEngine}) = Base.HasLength()
+Base.length(::MiscountingEngine) = 3
+
+@testset "collect is the guarded path" begin
+    sys = HEALPixSystem()
+    c = cellindex(levelgrid(sys, 1), 1)
+    lying = SubtreeHaloIterator(sys, c, 1, Vertex(), MiscountingEngine())
+    @test_throws ErrorException collect(lying)
 end
 
 end # module

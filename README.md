@@ -227,12 +227,18 @@ No system defines a grid type. All fifteen registry entries return
 `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
 `cell_area` — to `HierarchicalLevelGrid{TheSystem}`. `subtree_border` is an
-`O(rim)` automaton on every system but A5, which walks the whole subtree;
-`subtree_interior` shares that walk and emits the branches it prunes. Both are
-`collect` of a resumable `EdgeCellIterator` / `InnerCellIterator` in `O(depth)`
-memory. A5 is also the one system without `has_sorted_subtrees`, so
-`level_ranges` throws there and everything that would use it takes the selection
-branch instead.
+`O(rim)` automaton on IGEO7, H3, HEALPix, S2 and ISEA4R; every other system
+walks the whole subtree. `subtree_interior` shares that walk and emits the
+branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
+`InnerCellIterator` in `O(depth)` memory.
+
+`has_sorted_subtrees` is false on A5 and on the four IVEA/RTEA rhombic systems,
+whose canonical order is row-major within a root rather than a space-filling
+curve. There `level_ranges` throws and everything that would use it takes the
+selection branch instead — including `member_neighbors`, which falls back to a
+per-call member dictionary. An aperture-4 rhombic system in Morton order would
+have contiguous ranges, as ISEA4R does; that is the change these four have not
+made rather than a property they lack.
 
 The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
 **not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of

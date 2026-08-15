@@ -52,16 +52,15 @@ all(i -> collect(Healpix.pix2vecNest(m.resolution, i)) ≈ collect(DGG.cell_cent
 
 # ## The all-sky map
 #
-# One `poly!` over the cell polygons paints the whole sphere. Mollweide is the
-# projection astronomers reach for; `+over` keeps the cells straddling ±180°
-# from smearing across the map.
-
-polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
+# One `poly!` over the cell vector paints the whole sphere: Makie reads
+# `cells` as one polygon per position, so `color = sky` lines up. Mollweide is
+# the projection astronomers reach for; `+over` keeps the cells straddling
+# ±180° from smearing across the map.
 
 fig = Figure(size = (800, 420));
 ax = GeoAxis(fig[1, 1]; dest = "+proj=moll +over",
     title = "Synthetic all-sky map, galactic coordinates")
-plt = poly!(ax, polys; color = sky, colormap = :inferno, strokewidth = 0)
+plt = poly!(ax, cells; color = sky, colormap = :inferno, strokewidth = 0)
 Colorbar(fig[1, 2], plt; label = "brightness")
 fig
 
@@ -79,7 +78,26 @@ cone = GO.UnitSpherical.SphericalCap(to_sphere((lon0, lat0)), deg2rad(5))
 idx = DGG.cellposition.(Ref(grid), DGG.query(grid, DGG.Intersects(cone)))
 #
 (; n = length(idx), cone_mean = mean(sky[idx]), sky_mean = mean(sky))
-# TODO: plot
+
+# The same query, drawn. `cells[idx]` is the returned cells as a cell vector,
+# `sky[idx]` is their data, and both share the order of `idx`, so they pair up
+# in `poly!` just like `cells` and `sky` did. An orthographic view centred on
+# the source shows the neighbourhood faded and the selection at full strength:
+# the query returned a disc of cells around the source (the cross).
+
+near = findall(c -> separation(c, (lon0, lat0)) < 15, centers)
+
+fig3 = Figure(size = (520, 540))
+ax3 = GeoAxis(fig3[1, 1]; dest = "+proj=ortho +lon_0=$lon0 +lat_0=$lat0",
+    limits = ((lon0 - 20, lon0 + 20), (lat0 - 16, lat0 + 16)),
+    title = "Cells returned by the 5° cone search")
+poly!(ax3, cells[near]; color = sky[near], colormap = :inferno,
+    colorrange = extrema(sky), alpha = 0.25, strokewidth = 0)
+plt3 = poly!(ax3, cells[idx]; color = sky[idx], colormap = :inferno,
+    colorrange = extrema(sky), strokewidth = 0.4, strokecolor = :white)
+scatter!(ax3, lon0, lat0; color = :cyan, marker = :xcross, markersize = 12)
+Colorbar(fig3[1, 2], plt3; label = "brightness")
+fig3
 
 # ## Cutting the galactic plane
 #
@@ -97,7 +115,7 @@ masked = [abs(c[2]) > 20 ? v : NaN for (c, v) in zip(centers, sky)]
 fig2 = Figure(size = (800, 420))
 ax2 = GeoAxis(fig2[1, 1]; dest = "+proj=moll +over",
     title = "Galactic-plane mask, |b| ≤ 20° in gray")
-poly!(ax2, polys; color = masked, colormap = :inferno, nan_color = :gray70, strokewidth = 0)
+poly!(ax2, cells; color = masked, colormap = :inferno, nan_color = :gray70, strokewidth = 0)
 fig2
 
 # ## Any grid, same query

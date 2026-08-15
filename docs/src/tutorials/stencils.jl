@@ -56,12 +56,11 @@ var(diffused)
 
 # ## Plotting
 #
-# `cell_polygon` returns unit-sphere polygons; one `GO.transform` takes the
-# whole vector to lon/lat. `+over` keeps PROJ from rewrapping the cells that
-# straddle ±180°, a hairline stroke in the fill colour hides antialiasing
-# seams, and the Laplacian gets a diverging colormap centred at 0.
+# `poly!` draws `cells` directly, as lon/lat polygons in position order.
+# `+over` keeps PROJ from rewrapping the cells that straddle ±180°, a hairline
+# stroke in the fill colour hides antialiasing seams, and the Laplacian gets a
+# diverging colormap centred at 0.
 
-polys = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygon.(Ref(grid), cells))
 crange = extrema(values)
 lmax = maximum(abs, laplacian)
 
@@ -72,7 +71,7 @@ for (row, (title, v, kw)) in enumerate((
         ("Laplacian of the original", laplacian,
             (; colormap = :balance, colorrange = (-lmax, lmax)))))
     ax = GeoAxis(fig[row, 1]; dest = "+proj=moll +over", title)
-    poly!(ax, polys; color = v, strokecolor = v, strokewidth = 0.7, kw...)
+    poly!(ax, cells; color = v, strokecolor = v, strokewidth = 0.7, kw...)
 end
 fig
 

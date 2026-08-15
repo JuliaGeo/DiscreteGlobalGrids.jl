@@ -206,7 +206,7 @@ end
 # ===========================================================================
 
 """
-    cell_box(sys, c) -> (lon_w, lon_e, lat_s, lat_n)
+    cell_box(sys, c) -> (west, east, south, north)
 
 The cell's longitude/latitude box in **degrees**, closed on every side — the region
 the DEM post samples. Every other geometric method here is a function of it.
@@ -291,9 +291,17 @@ counter-clockwise seen from outside the sphere, in the order
 # Why there is no densification
 
 A parallel is a small circle, not a great circle, so the ring's north and south edges
-bow poleward of the true box edge by at most `(Δλ²/8)·sin φ·cos φ` — about 120 m for a
-1° tile and about 10 μm for a 1-arcsec pixel. The two bows nearly cancel, so the ring
-and the box differ in area by only 2e-5 of a 1° tile and 3e-11 of a pixel.
+bow poleward of the true box edge by about `(Δλ²/8)·sin φ·cos φ` — 1.9e-5 rad (120 m)
+for a 1° tile and about 10 μm for a 1-arcsec pixel. That small-angle expression is an
+estimate, not a bound, and it errs low: the exact bow of a 1° edge at latitude 45 is
+1.9038830e-5 rad against the formula's 1.9038589e-5.
+
+The two bows nearly cancel, so ring and box differ in area by 2.0e-5 of a 1° tile at
+latitude 50, rising to 5.1e-5 for a tile in the ±90 rows. For a pixel the gap is a few
+times 1e-11 in the 1x band, about 7e-10 (GLO-30) and 3.6e-9 (GLO-90) in the 10x band
+above latitude 85, and up to 1.4e-5 in the ±90 tile rows, whose cells are half-pixel
+slivers and pole triangles.
+
 Densifying would close that gap and cost this system its convexity: a densified
 poleward edge reads as a chain of REFLEX vertices, which is exactly why HEALPix,
 ISEA4R and A5 are non-conservative as regridding DESTINATIONS
@@ -305,9 +313,12 @@ the bow analytically rather than by sampling.
 Adjacent cells share their corner POINTS bit-identically within a band, so the shared
 edge is literally the same geodesic and the quads tile the sphere with no gaps. Across
 a band boundary (latitude 50/60/70/80/85) the two sides cut the shared parallel at
-different longitudes, so their bows differ and the quads leave slivers: 1.8e-12 rad
-(12 μm) at latitude 50 in GLO-30, about 4e-7 of that pixel's own height. The box
-tessellation is exact there; the quad tessellation is exact to that order.
+different longitudes, so their bows differ and the quads leave slivers of width
+`|Δλ_below² − Δλ_above²|/8 · sin φ cos φ`: in GLO-30 that is 1.8e-12 rad (11.5 μm) at
+latitude 50, about 4e-7 of that pixel's own height, rising to 1.9e-11 rad (122 μm) at
+latitude 85. Those are values of the small-angle formula, not measurements of the
+emitted rings. The box tessellation is exact there; the quad tessellation is exact to
+that order.
 
 # Poles
 
@@ -333,8 +344,8 @@ end
 The midpoint of the cell's box, which is the DEM post itself for a pixel.
 
 Strictly inside the published quad, as the contract requires: the quad's poleward edge
-bows off the box's parallel by at most `(Δλ²/8)·sin φ·cos φ` — 1.9e-5 rad for a 1°
-tile, against a half-height of 8.7e-3 rad — so the midpoint clears it by three orders.
+bows off the box's parallel by about `(Δλ²/8)·sin φ·cos φ` — 1.9e-5 rad for a 1° tile,
+against a half-height of 8.7e-3 rad — so the midpoint clears it by a factor of 458.
 """
 function DGG.cell_centroid(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     west, east, south, north = cell_box(sys, c)
@@ -348,10 +359,18 @@ The exact solid angle of the cell's lat/lon BOX, `Δλ · (sin φ_N − sin φ_S
 in O(1).
 
 The box, not the published ring: the ring is the box's undensified geodesic quad, whose
-area differs by ~2e-5 relative for a 1° tile and ~3e-11 for a pixel. Both regions tile
-the sphere and both therefore sum to 4π, and this closed form telescopes there
-analytically — every tile spans exactly 1° of longitude and consecutive tile rows share
-a latitude edge — so summing the 64 800 tiles lands within 4e-15 of 4π.
+area differs by 2.0e-5 relative for a 1° tile at latitude 50 and 5.1e-5 for one in the
+±90 rows. [`cell_boundary`](@ref) carries the pixel-scale figures.
+
+Both regions tile the sphere, so both sum to 4π — but this closed form does **not**
+telescope exactly. 890 of the 64 800 GLO-90 tiles (1 750 of the GLO-30 ones) have
+`east - west !== 1.0`, by up to 1.4e-14, so consecutive terms do not cancel to the last
+bit. The sum is accurate because those errors are tiny and because pairwise summation
+stops them accumulating, not because anything cancels: **materialise** the 64 800 tile
+areas into a `Vector` and Julia's pairwise `sum` lands 3.6e-15 from 4π (2.8e-16
+relative), while a generator — or any sequential accumulation — lands 2.9e-12 (GLO-30)
+or 1.4e-12 (GLO-90) away, some 400x further out.
+
 `ConservativeRegridding` never reads this — it measures the ring itself
 (`ConservativeRegridding/src/regridder/regridder.jl:102-103`) — so no conservation
 assertion anywhere depends on the choice.
@@ -363,19 +382,53 @@ function DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex)
 end
 
 """
+    cell_extent(grid, c) -> Extents.Extent{(:X, :Y)}
+
+The cell's [`cell_box`](@ref), verbatim. Same rationale as [`cell_area`](@ref): the cell
+IS the box, and the published ring is a slightly different region.
+
+The generic fallback (`src/fallbacks/geometry.jl`) derives the extent from the ring, and
+that is wrong here in a way that matters. The ring's poleward edge bows past the box's
+parallel, so the derived `Y` upper bound overshoots the box's north edge by the bow —
+0.00107° for a 1° tile at latitude 50, 0.00109° at latitude 44 — and vertically adjacent
+tiles then report OVERLAPPING extents. Extents of a partition must abut, because callers
+use them to decide which cells a query region can touch.
+"""
+function DGG.cell_extent(g::LevelGrid, c::DGG.LevelIndex)
+    _checked_index(g, c)
+    west, east, south, north = cell_box(g.system, c)
+    return DGG.Extents.Extent(X = (west, east), Y = (south, north))
+end
+
+"""
     node_extent(CopernicusDEMSystem(...), c) -> SphericalCap
 
 The cap centred on the cell centre, with radius the largest corner distance plus an
 analytic pad for the great-circle bow, and one outward ULP.
 
-Sound without sampling and without densification. The farthest point of the box from
-its centre is a corner, and all corners are measured. The only geometry that escapes
-the box is a descendant's ring bowing poleward of the box's parallel, by at most
-`(Δλ²/8)·sin φ·cos φ` with `Δλ` the CELL's own longitude span — a child's span is
-smaller, so the parent's bound covers it. `|sin φ cos φ| ≤ 1/2`, so the pad is
-`Δλ²/16`: about 1.9e-5 rad (120 m) for a 1° tile, and proportionally nothing for a
-pixel. Radii are far below 90°, so `require_convex_extents = true` holds and the
-harness's vertex-sampling proxy is sound.
+Sound without sampling and without densification, in three steps.
+
+ 1. **The corners bound the box.** The farthest point of a lat/lon box from its midpoint
+    centroid `(λ_c, φ_c)` is a corner, and all four corners are measured. Fix `φ`:
+    `cos d = sin φ_c sin φ + cos φ_c cos φ cos(λ − λ_c)` falls as `|λ − λ_c|` grows, so
+    the distance peaks at `λ ∈ {W, E}`. Now fix that `λ`: as a function of `φ` the same
+    expression is `A sin φ + B cos φ` with `B = cos φ_c cos Δλ ≥ 0`, a sinusoid whose
+    trough sits outside `[−90°, 90°]`; it is therefore unimodal on `[φ_S, φ_N]` and its
+    minimum — the maximal distance — is at `φ ∈ {S, N}`. So `rmax` bounds every point of
+    the box, hence every box vertex of every descendant.
+ 2. **The cell's own ring is already inside that cap.** Its vertices are the box corners,
+    each within `rmax`, and a spherical cap is convex — it contains the geodesic between
+    any two points it contains — so it contains the whole ring, bow and all.
+ 3. **The pad covers the descendants' bows.** The only geometry that leaves a descendant's
+    box is that descendant's own ring, bowing poleward by about `(Δλ_child²/8)·sin φ·cos φ`.
+    With `|sin φ cos φ| ≤ 1/2` the pad `Δλ²/16` — 1.9e-5 rad (120 m) for a 1° tile —
+    already covers a bow at the CELL's own span; a child's span is at most `Δλ/120` on the
+    shipped lattices (GLO-90's 10x band above latitude 85 is the coarsest, at 120 columns),
+    so its bow is at least 14 400x inside the pad. The pad is belt-and-braces; steps 1 and
+    2 are the proof.
+
+Radii are far below 90°, so `require_convex_extents = true` holds and the harness's
+vertex-sampling proxy is sound.
 """
 function DGG.node_extent(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     centre = DGG.cell_centroid(sys, c)
@@ -401,21 +454,43 @@ latitude row. A complete level grid covers the sphere, so this never returns `no
 Ties on a shared boundary are decided by `floor` and are deterministic. A tile owns
 `[west, east) x [south, north)`; within a tile the raster row is measured downward from
 the north edge, so a point exactly on an interior row boundary goes to the row south of
-it instead. That distinction is only observable for an exactly-representable input — a
-boundary point round-tripped through the unit sphere lands on either side of it at the
-1e-16 level — and the level-0 answer is [`parent`](@ref) of the level-1 answer either
-way, because the tile is chosen first and the raster indices are clamped into it. A
-point at a pole has `atan(0, 0) == 0` for its longitude, so it lands in the `lon_w = 0`
-tile of the pole row.
+it instead. Either way the level-0 answer is [`parent`](@ref) of the level-1 answer,
+because the tile is chosen first and the raster indices are clamped into it.
+
+The tie only decides anything when the point's latitude really is the edge, and the unit
+sphere is a lossy carrier for that: `asind ∘ cosd(90 - ·)` moves a latitude by up to 10
+ulps (1.1e-13° over the 180 GLO-30 tile-row south edges), and it is expansive near the
+equator, so 60 of those 180 edges are not in its image at all and cannot be probed
+through a `UnitSphericalPoint`. What this method guarantees for the ones that survive is
+exactness against [`cell_box`](@ref): the south edge is `Float64(lat_s) + Δlat/2`, and
+because `(x + h) - h` is not a `Float64` identity the `floor` below is repaired against
+that expression rather than trusted.
+
+At a pole the longitude is whatever `atan` makes of a signed zero, and that depends on
+which longitude the point was BUILT from. `TO_SPHERE((lon, ±90))` has
+`x = sind(0 or 180) * cosd(lon)`, which is `-0.0` whenever `cosd(lon) < 0`, and
+`atand(±0.0, -0.0)` is `±180`. So a pole point built from `|lon| > 90` lands in the W180
+tile of the pole row, and one built from `|lon| <= 90` — including the exact
+`UnitSphericalPoint(0.0, 0.0, ±1.0)` literals that [`cell_boundary`](@ref) emits — lands
+in the `lon_w = 0` tile. Deterministic either way, and the pole is on the boundary of all
+360 tiles of the row regardless.
 """
 function DGG.cellat(g::LevelGrid{N}, p::GO.UnitSphericalPoint) where {N}
     sys = g.system
+    g.level == 0 || g.level == 1 || throw(ArgumentError(
+        "level $(g.level) is outside $(DGG.levels(sys))"))
     lon, lat = FROM_SPHERE(p)
     lat = clamp(lat, -90.0, 90.0)
     half_dlat = (1 / N) / 2
     # A tile spans latitudes `[lat_s + Δlat/2, lat_s + 1 + Δlat/2)`. At `lat = 90` the
     # floor is 89; at `lat = -90` it is -91, and the clamp is the extended bottom row.
     lat_s = clamp(floor(Int, lat - half_dlat), -90, 89)
+    # `cell_box` builds the south edge as `Float64(lat_s) + half_dlat`; adding then
+    # subtracting `half_dlat` is not a Float64 identity, so repair against the edge itself.
+    # The two branches are mutually exclusive — the first leaves `lat` at or above the new
+    # tile's south edge, which is exactly what the second tests for — so each fires once.
+    lat_s <  89 && lat >= Float64(lat_s + 1) + half_dlat && (lat_s += 1)
+    lat_s > -90 && lat <  Float64(lat_s)     + half_dlat && (lat_s -= 1)
     r = _row(lat_s)
     nc = ncols(sys, r)
     half_dlon = (1 / nc) / 2

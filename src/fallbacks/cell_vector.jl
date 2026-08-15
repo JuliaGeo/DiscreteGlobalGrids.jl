@@ -67,6 +67,41 @@ end
 
 leafpositions(w::CellWindows) = (leafposition(w, k) for k in 1:length(w))
 
+# [`subset_span`](@ref)'s third question, asked of a windowing: how much of the
+# leaf block `lo:hi` is stored. Both shapes answer it from the FIRST entry that
+# reaches `lo`, which one `searchsortedfirst` finds:
+#
+#   * nothing reaches `lo`, or the first thing that does starts past `hi` — the
+#     block is empty of stored cells;
+#   * that one run covers the whole block — the block is stored entire, and it
+#     takes only one run to say so because runs are maximal and disjoint;
+#   * anything else — the block is partly stored, which is all the walk needs.
+#
+# The `PositionWindows` arm reads `hi - lo` slots ahead rather than searching
+# again: the positions are strictly ascending, so the block is complete exactly
+# when the slot that far along holds `hi`.
+@inline function span_windows(w::RangeWindows, lo::Int, hi::Int)
+    j = searchsortedfirst(w.stops, lo)
+    j <= length(w.stops) || return _SPAN_NONE
+    @inbounds start = w.starts[j]
+    start > hi && return _SPAN_NONE
+    (start <= lo && @inbounds(w.stops[j]) >= hi) && return _SPAN_ALL
+    return _SPAN_SOME
+end
+
+@inline function span_windows(w::PositionWindows, lo::Int, hi::Int)
+    j = searchsortedfirst(w.positions, lo)
+    j <= length(w.positions) || return _SPAN_NONE
+    @inbounds p = w.positions[j]
+    p > hi && return _SPAN_NONE
+    if p == lo
+        k = j + (hi - lo)
+        (k <= length(w.positions) && @inbounds(w.positions[k]) == hi) &&
+            return _SPAN_ALL
+    end
+    return _SPAN_SOME
+end
+
 # Every window set in this file is built in CANONICAL form: runs are maximal, so
 # two windowings name the same leaf positions if and only if their runs match
 # one for one. That is what lets the `RangeWindows` pair below decide equality
@@ -518,6 +553,12 @@ cellat(cv::CellVector, lon::Real, lat::Real) = cellat(cv, unit_point(lon, lat))
 # Membership is the window search, which is the exact test and O(log #windows)
 # where the generic scan over the values is O(#cells) of `cellindex` calls.
 Base.in(c::AbstractCellIndex, cv::CellVector) = cellposition(cv, c) !== nothing
+
+# [`subset_span`](@ref) is that same search asked about a whole block, and the
+# windowing already IS the answer: a stored run is a block the vector holds
+# entire. This is where the compression pays the halo walk back — a subset the
+# vector keeps as one window retires as one window, whatever its cell count.
+subset_span(cv::CellVector, lo::Int, hi::Int) = span_windows(cv.windows, lo, hi)
 
 """
     PartialGrid(cv::CellVector) -> PartialGrid

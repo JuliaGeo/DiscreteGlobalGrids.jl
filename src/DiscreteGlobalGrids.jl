@@ -236,8 +236,11 @@ Important cross-system traits:
     always an iterator. A rooted grid holding a complete subtree delegates to
     [`SubtreeHaloIterator`](@ref) and keeps its system's specialization;
     everything else — a hole, a forgotten root, an arbitrary id list — takes an
-    outside-first walk against membership, pruned by the root's
-    [`node_extent`](@ref) or by a bounding cap over the ids. A cell punched
+    outside-first walk against membership, pruned by the subset's own position
+    spans rather than by geometry: a block the subset holds entire is retired by
+    one lookup, and a block no NEIGHBOUR of which it touches is retired by the
+    coarse-containment law. The walk follows the subset's boundary, so its cost
+    is the halo's and not the subset's. A cell punched
     out of the middle of a subset is outside it and touches it, so it joins the
     halo. A5 is again the exception to the delegation: without
     [`has_sorted_subtrees`](@ref) there is no way to recognise a held subtree, so

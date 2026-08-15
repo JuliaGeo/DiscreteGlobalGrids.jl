@@ -309,17 +309,16 @@ subset walk. `_whole_subtree_range` decides it, the same three conditions
 [`halo_table`](@ref) splits on one function below, so the two verbs cannot drift
 apart about what "is a subtree" means.
 
-The subset walk prunes by the root's [`node_extent`](@ref) when the grid is
-rooted and by [`cells_cap`](@ref) over the ids when it is not. Both are computed
-once; neither is sized by the answer.
+The subset walk prunes by the subset's own [`subset_span`](@ref)s — the root, if
+there is one, is not consulted at all. Construction is `O(1)`: nothing about the
+answer, and nothing about the input either, is computed before the first
+`iterate`.
 """
 function halo(pg::PartialGrid; connectivity::Connectivity = Vertex())
     _whole_subtree_range(pg) === nothing ||
         return SubtreeHaloIterator(pg.system, pg.root_id, pg.level; connectivity)
-    cap = _is_rooted(pg) ? node_extent(pg.system, pg.root_id) :
-          cells_cap(pg.complete, pg.ids)
     return SubsetHaloIterator(pg, connectivity, subset_halo_engine(pg.system, pg,
-        pg.complete, pg.level, connectivity, cap))
+        pg.complete, pg.level, connectivity))
 end
 
 """
@@ -335,11 +334,13 @@ recognise one by — the same thing `PartialGrid(cv)` loses and
 to get the subtree walk is to build the grid from the root cell.
 
 Membership is the window search, `O(log #windows)`, so the walk's per-candidate
-cost is lower here than on a `PartialGrid` over a bare id vector.
+cost is lower here than on a `PartialGrid` over a bare id vector — and so is its
+per-NODE cost, since [`subset_span`](@ref) reads a stored run as a block the
+vector holds entire.
 """
 halo(cv::CellVector; connectivity::Connectivity = Vertex()) =
     SubsetHaloIterator(cv, connectivity, subset_halo_engine(system(cv), cv,
-        cv.grid, level(cv), connectivity, cells_cap(cv.grid, cv)))
+        cv.grid, level(cv), connectivity))
 
 # ===========================================================================
 # Cross-level adjacency on a multi-order set

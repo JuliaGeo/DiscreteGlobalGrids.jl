@@ -45,16 +45,31 @@ const Z7Cell = I.Z7Cell
     @test all(n -> n - (n - c) == c, ns)
     @test c - c == DGG.RelativeZ7Cell(c, 0)
     @test c + DGG.RelativeZ7Cell(c, 0) == c
-    @test_throws DomainError first(ns) + (last(ns) - c)
-    @test_throws DimensionMismatch Z7Cell("023") - Z7Cell("0230")
+    @test_throws I.RelativeZ7Error first(ns) + (last(ns) - c)
+    @test_throws I.RelativeZ7Error Z7Cell("023") - Z7Cell("0230")
 
     complete = DGG.levelgrid(S, 4)
     first_cell = DGG.cellindex(complete, 1)
     last_cell = DGG.cellindex(complete, DGG.ncells(complete))
     @test first_cell + (last_cell - first_cell) == last_cell
-    @test_throws BoundsError first_cell + DGG.RelativeZ7Cell(first_cell, -1)
-    @test_throws BoundsError last_cell + DGG.RelativeZ7Cell(last_cell, typemax(Int))
-    @test_throws ArgumentError DGG.directioncode(last_cell - first_cell)
+    @test_throws I.RelativeZ7Error first_cell + DGG.RelativeZ7Cell(first_cell, -1)
+    # An offset that would overflow a widened target position is still just an
+    # out-of-range offset: the check brackets the offset, never the sum.
+    @test_throws I.RelativeZ7Error last_cell + DGG.RelativeZ7Cell(last_cell, typemax(Int))
+    @test_throws I.RelativeZ7Error DGG.directioncode(last_cell - first_cell)
+    # An id that names no cell is Z7's own error, not a displacement error
+    @test_throws I.InvalidZ7Error Z7Cell(0xffffffffffffffff) +
+                                  DGG.RelativeZ7Cell(Z7Cell(0xffffffffffffffff), 0)
+
+    # Every reason reports itself: the messages are built lazily in `showerror`,
+    # so nothing else would notice a field that the formatter reads wrongly.
+    for reason in (:level_mismatch, :foreign_origin, :out_of_range, :not_a_neighbor,
+        :bogus)
+        e = I.RelativeZ7Error(reason, first_cell, last_cell, 3)
+        @test occursin("Z7Cell", sprint(showerror, e))
+    end
+    @test occursin("-1:24010", sprint(showerror,
+        I.RelativeZ7Error(:out_of_range, DGG.cellindex(complete, 2), first_cell, -5)))
 
     # Exhaust every face seam, pentagon, and cone-cut case at small levels.
     for l in 0:2

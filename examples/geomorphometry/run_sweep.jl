@@ -1,14 +1,12 @@
 #!/usr/bin/env julia
-# Exhaustive-ish deterministic sweep of the subtree halo API, driven by real
-# terrain code (see SphericalTerrain.jl).
+# Deterministic sweep of the subtree halo API using the terrain metrics in
+# `SphericalTerrain.jl`.
 #
 #   julia --project=test examples/geomorphometry/run_sweep.jl
 #
-# Every root at levels 0 and 1 of every system, every target depth 0..3 (capped
-# by grid size), both connectivities, four elevation fields. Exhausting the
-# roots is how pentagons, poles, face seams, cube corners and icosahedral
-# vertices get covered without having to name them: the classifier only
-# *reports* which of those each case touched.
+# The sweep covers every level-0 and level-1 root, target depths 0–3 subject to
+# a grid-size cap, both connectivity modes, and four elevation fields. Geometry
+# labels are reported but do not select cases.
 
 include("Harness.jl")
 using .Harness
@@ -16,7 +14,7 @@ import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: Vertex, Edge
 using Printf
 
-const MAXCELLS = 30_000     # cap on the level grid we will build a full ctx for
+const MAXCELLS = 30_000     # maximum grid size for a complete neighbour cache
 const FIELDS = (:noise, :harmonic, :step, :ramp)
 
 function main()
@@ -92,23 +90,23 @@ function main()
             root = DGG.cellindex(groot, p)
             r = chunk_range(sys, root, level)
             members = collect(r)
-            # (a) the complete subtree, root forgotten
+            # Complete subtree without a stored root.
             append!(allfails, check_subset_case(sys, level, conn, members;
                 label = "complete subtree of $root")); nsubset += 1
-            # (b) the same subtree with an interior hole punched out
+            # Same subtree with one interior cell removed.
             if length(members) > 4
                 holed = deleteat!(copy(members), cld(length(members), 2))
                 append!(allfails, check_subset_case(sys, level, conn, holed;
                     label = "subtree of $root minus its middle cell")); nsubset += 1
             end
-            # (c) two disjoint subtrees, so the halo has two components
+            # Two disjoint subtrees with separate halo components.
             if p + 1 <= DGG.ncells(groot)
                 r2 = chunk_range(sys, DGG.cellindex(groot, p + 1), level)
                 append!(allfails, check_subset_case(sys, level, conn,
                     vcat(collect(r), collect(r2));
                     label = "two adjacent subtrees")); nsubset += 1
             end
-            # (d) a scattered subset: every third cell of the subtree
+            # Scattered subset containing every third subtree cell.
             append!(allfails, check_subset_case(sys, level, conn, members[1:3:end];
                 label = "every third cell of $root")); nsubset += 1
             p >= 6 && break

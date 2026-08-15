@@ -4,27 +4,18 @@
 Terrain analysis on a DGGS, written directly against `DiscreteGlobalGrids`'
 `neighbors` / `subtree_halo` / `halo` API.
 
-The functions here are ports of the generic (non-`AbstractMatrix`) methods
-proposed in <https://github.com/Deltares/Geomorphometry.jl/pull/83>: maximum
-downward gradient, slope, aspect, curvature, TPI, TRI, roughness, prominence,
-D8 flow direction and flow accumulation.
+The module provides maximum downward gradient, slope, aspect, curvature, TPI,
+TRI, roughness, prominence, D8 flow direction, and flow accumulation. Metrics
+use absolute cell IDs and resolve them to array positions with `cellposition`.
 
-Deliberately NOT ported: that PR's "relative cell" abstraction
-(`RelativeZ7Cell`, `neighbor - center`, `cell + dir`). Everything here keeps
-absolute cell ids and resolves them to array positions through `cellposition`.
-It cost nothing: no metric below wants to name a direction, only to visit one.
-
-Everything runs against one small interface, so that the *same* function body
-runs over a whole level grid and over a chunk-plus-halo read, and the two can
-be compared cell for cell:
+The same field interface supports complete grids and chunk-plus-halo reads:
 
     positions(f)     # grid positions we produce output for, in output order
     value(f, p)      # elevation at grid position `p`, or NaN if not held
     ctx(f)           # shared per-grid stencil cache
 
-`value` counts every unavailable position in `f.misses[]`. That counter is the
-sharp halo test: over a chunk field it must stay at zero, because the halo is
-by definition every outside cell a one-ring stencil can reach.
+`value` increments `f.misses[]` whenever a requested position is unavailable.
+A complete one-ring halo therefore leaves the counter at zero.
 """
 module SphericalTerrain
 
@@ -38,9 +29,7 @@ export max_downward_gradient, slope_mdg, roughness, tpi, tri, prominence,
 export gcdistance, bearing_deg, METRICS, same, first_difference
 export FIELD_KINDS, make_field
 
-# ---------------------------------------------------------------------------
-# geometry helpers
-# ---------------------------------------------------------------------------
+# Geometry helpers.
 
 "Great-circle distance, in radians, between two unit-sphere points."
 @inline function gcdistance(a, b)
@@ -54,9 +43,8 @@ end
 """
     local_frame(a) -> (east, north)
 
-A deterministic right-handed ENU tangent frame at unit-sphere point `a`.
-Falls back to a fixed frame at the poles rather than producing NaNs, so polar
-cells need no special case in the callers.
+Return a deterministic right-handed east-north tangent frame at unit-sphere
+point `a`. A fixed fallback keeps the frame finite at the poles.
 """
 function local_frame(a)
     ex, ey, ez = -a[2], a[1], 0.0          # ẑ × a
@@ -85,14 +73,7 @@ function bearing_deg(a, b)
     return mod(atand(dot3(v, east), dot3(v, north)), 360.0)
 end
 
-# ---------------------------------------------------------------------------
-# the per-grid stencil cache
-#
-# This is the first thing a real consumer has to write, and it is the first
-# API friction: `neighbors` speaks cell ids, arrays speak positions, and there
-# is no positional one-ring table that spans a chunk PLUS its halo
-# (`halo_table` is in-set only). So we build one.
-# ---------------------------------------------------------------------------
+# Cache cell IDs, centroids, and one-ring neighbours in grid-position space.
 
 struct GridCtx{G,K,C}
     grid::G
@@ -129,14 +110,10 @@ Base.length(k::GridCtx) = length(k.cells)
 """
     chunk_range(sys, root, level) -> UnitRange{Int}
 
-The chunk's contiguous position block.
+Return the contiguous grid-position range occupied by a subtree.
 
-`descendant_range` is the documented way to get this, but it only exists where
-`has_sorted_subtrees(sys)` is true — and it is NOT true for `A5System`, which
-still has a perfectly good `subtree_halo`. So a consumer who wants the
-chunk-plus-halo read to work on all six systems has to write this fallback:
-materialise `descendants`, take the position hull, and check it really is a
-hull. That is API friction worth naming, not a bug.
+Systems with sorted subtrees use `descendant_range`. Other systems materialize
+the descendant positions and verify that their position hull contains no gaps.
 """
 function chunk_range(sys, root, level::Integer)
     if DGG.has_sorted_subtrees(sys)
@@ -159,9 +136,7 @@ function gridctx(sys, level::Integer, connectivity::Connectivity)
     end
 end
 
-# ---------------------------------------------------------------------------
-# fields
-# ---------------------------------------------------------------------------
+# Field representations.
 
 """
     WholeField(ctx, z)
@@ -178,19 +153,18 @@ WholeField(k::GridCtx, z::Vector{Float64}) = WholeField(k, z, Ref(0))
 """
     ChunkField(ctx, sys, root, z_whole; halo_connectivity = ctx.connectivity)
 
-A chunk-plus-halo read, built exactly the way the halo design doc advertises:
+Store a subtree chunk and the halo needed by a one-ring stencil.
 
 * `descendant_range(sys, root, level)` is the contiguous position block a
-  chunked store hands back for the data;
-* `subtree_halo(sys, root, level; connectivity)` is the extra fetch list, whose
-  cell ids we must map to positions ourselves.
+  chunked store reads;
+* `subtree_halo(sys, root, level; connectivity)` supplies outside cell IDs,
+  which are converted to grid positions.
 
-Only those two blocks of `z_whole` are copied in. Everything else is
-unavailable and shows up as a miss.
+Only chunk and halo values are copied from `z_whole`. Access elsewhere returns
+`NaN` and increments the miss counter.
 
-`halo_connectivity` exists so that a deliberately-too-small halo can be used as
-a negative control: an `Edge()` halo under a `Vertex()` stencil must produce
-misses, or the miss detector proves nothing.
+`halo_connectivity` may differ from `ctx.connectivity`; a narrower halo then
+exposes missing stencil inputs through the miss counter.
 """
 struct ChunkField{K,C}
     ctx::K
@@ -238,25 +212,18 @@ reset_misses!(f::Field) = (f.misses[] = 0; f)
     return NaN
 end
 
-# ---------------------------------------------------------------------------
-# 1. Maximum downward gradient  (the headline function)
-# ---------------------------------------------------------------------------
+# Maximum downward gradient.
 
 """
     max_downward_gradient(f; degrees = true)
 
-For each cell, the steepest DOWNHILL gradient to any one-ring neighbour:
+For each cell, return the steepest downhill gradient to a one-ring neighbour:
 
     max over neighbours n of  (z(c) - z(n)) / d(c, n)
 
-with `d` the great-circle distance between cell centroids on the unit sphere,
-in radians. Pits (no lower neighbour) give exactly `0`. With `degrees = true`
-the result is `atand` of that, i.e. a slope angle.
-
-Neighbour degree varies — 5 at pentagons, 6 for hexagons, 3..11 on A5, 7 or 8
-at HEALPix and S2 corners — and this needs no knowledge of that: it iterates
-whatever `neighbors` returns. Non-uniform spacing is handled by dividing by the
-actual centroid distance rather than by a nominal cell size.
+where `d` is the great-circle distance between centroids in radians. Pits
+return `0`. With `degrees = true`, apply `atand` to return a slope angle.
+Distances and neighbour counts are evaluated per cell.
 """
 function max_downward_gradient(f::Field; degrees::Bool = true)
     k = f.ctx
@@ -278,16 +245,13 @@ function max_downward_gradient(f::Field; degrees::Bool = true)
     return out
 end
 
-# ---------------------------------------------------------------------------
-# 2. The rest of the PR's local metrics
-# ---------------------------------------------------------------------------
+# Local terrain metrics.
 
 """
     slope_mdg(f)
 
-PR #83's `slope!(::MaximumDownwardGradient, ...)` literally: the maximum
-*absolute* inter-cell gradient, in degrees. (Uphill neighbours count too, so
-this is not a downhill slope; kept for fidelity to the PR.)
+Return the largest absolute one-ring gradient in degrees. Both uphill and
+downhill neighbours contribute.
 """
 function slope_mdg(f::Field)
     k = f.ctx
@@ -362,7 +326,7 @@ function prominence(f::Field)
         zc = value(f, p); n = 0
         for j in nrange(k, p)
             zn = value(f, k.nbr[j])
-            isnan(zn) && (n -= 1000)         # poison, so a miss is visible
+            isnan(zn) && (n -= 1000)         # preserve a visible invalid result
             zn <= zc && (n += 1)
         end
         out[i] = n
@@ -373,9 +337,9 @@ end
 """
     _plane_fit(f, p) -> (east_gradient, north_gradient, ok)
 
-Least-squares fit of a tilted plane to the one-ring, in the local ENU tangent
-frame — PR #83's `_localaspect`, with great-circle distance and bearing in
-place of a raster's cell size. `ok = false` marks a degenerate normal matrix.
+Fit a plane to the one-ring by least squares in the local east-north tangent
+frame. Distances and bearings follow great-circle geometry. `ok = false` marks
+a degenerate normal matrix.
 """
 @inline function _plane_fit(f::Field, p::Int)
     k = f.ctx
@@ -443,20 +407,14 @@ function curvature(f::Field)
     return out
 end
 
-# ---------------------------------------------------------------------------
-# 3. Flow
-# ---------------------------------------------------------------------------
+# Flow metrics.
 
 """
     flow_direction(f) -> Vector{Int}
 
-D8-style single flow direction generalised to a DGGS: the GRID POSITION of the
-neighbour with the steepest downhill gradient. A pit points at itself. Ties
-break on ascending position, so the answer does not depend on the rotational
-phase of `neighbors`.
-
-Absolute positions rather than a packed direction code — the deliberate
-alternative to PR #83's relative-index type.
+Return the grid position of the neighbour with the steepest downhill gradient.
+A pit points to itself. Ties choose the smallest grid position, making the
+result independent of the rotational phase of `neighbors`.
 """
 function flow_direction(f::Field)
     k = f.ctx
@@ -482,13 +440,11 @@ end
 """
     flow_accumulation(f::WholeField) -> Vector{Float64}
 
-Single-direction (D8) flow accumulation: every cell starts with one unit and
-pushes its total downhill in descending-elevation order.
+Compute single-direction flow accumulation. Every cell starts with one unit
+and sends its accumulated value downhill in descending-elevation order.
 
-Only defined for a whole field, because it is a GLOBAL algorithm — a cell's
-value depends on its whole upslope basin, not on a one-ring. That is itself a
-finding: a one-ring halo does not make the interesting half of PR #83
-chunkable.
+The method accepts only `WholeField` because each result depends on the entire
+upslope basin rather than a one-ring neighbourhood.
 """
 function flow_accumulation(f::WholeField)
     dir = flow_direction(f)
@@ -502,11 +458,9 @@ function flow_accumulation(f::WholeField)
     return acc
 end
 
-# ---------------------------------------------------------------------------
-# 4. Synthetic elevation fields
-# ---------------------------------------------------------------------------
+# Synthetic elevation fields.
 
-"Degree-3 spherical-harmonic-ish smooth field; nothing flat, nothing jumping."
+"Smooth degree-three polynomial field on the unit sphere."
 function smooth_harmonic(k::GridCtx)
     n = length(k)
     z = Vector{Float64}(undef, n)
@@ -542,7 +496,7 @@ function lat_ramp(k::GridCtx)
     return z
 end
 
-"Reproducible white noise — maximally sensitive to a wrong neighbour value."
+"Return reproducible white-noise elevations in `[0, 1000)`."
 white_noise(k::GridCtx, rng) = rand(rng, length(k)) .* 1000
 
 const FIELD_KINDS = (:harmonic, :spike, :step, :ramp, :noise)
@@ -559,9 +513,7 @@ function make_field(kind::Symbol, k::GridCtx, rng; spike_at::Int = 1)
     throw(ArgumentError("unknown field kind $kind"))
 end
 
-# ---------------------------------------------------------------------------
-# 5. Registry + comparison used by the checkers
-# ---------------------------------------------------------------------------
+# Metric registry and comparison helpers.
 
 const METRICS = (
     (:max_downward_gradient, max_downward_gradient),

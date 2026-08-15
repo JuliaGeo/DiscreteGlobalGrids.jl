@@ -1,14 +1,7 @@
-# Lazy rim and interior of a subtree; `subtree_border` / `subtree_interior` are
-# `collect` of these.
-#
-# One public type per verb. The per-system algorithm lives in an ENGINE the type
-# forwards the whole iteration protocol to, so `rim_engine` / `interior_engine`
-# are the single extension point a system overrides — one method each, beside
-# its `subtree_border`.
-#
-# Walk state travels in the value `iterate` threads, never in the engine: an
-# iterator is restartable, and every state but the materialising fallback's is
-# `isbits`, so a partial walk allocates nothing.
+# Lazy subtree rim and interior iterators. `subtree_border` and
+# `subtree_interior` collect them. Systems specialize `rim_engine` and
+# `interior_engine`; iteration state is returned by `iterate`, so engines remain
+# restartable.
 
 # ===========================================================================
 # The two public types
@@ -62,7 +55,7 @@ that are **not** on the rim, in ascending canonical order.
 together with [`EdgeCellIterator`](@ref) it partitions
 [`descendants`](@ref)`(sys, c, l)`. `l == level(c)` is empty.
 
-The interior is generated from the rim walk's PRUNED branches — the automaton
+The interior is generated from branches pruned by the rim walk. The automaton
 prunes exactly where a branch goes wholly interior, so the interior is a
 disjoint union of complete sub-subtrees, emitted in place. No membership set,
 and the rim is never materialised to be subtracted.
@@ -93,11 +86,8 @@ const SubtreeIterator{S,C,K,E} = Union{EdgeCellIterator{S,C,K,E},
 Base.iterate(it::SubtreeIterator) = iterate(it.engine)
 Base.iterate(it::SubtreeIterator, state) = iterate(it.engine, state)
 
-# `C` rather than `eltype(E)`, for `SubtreeHaloIterator`'s reason: the engine
-# parameter is a dispatch result, so delegating through it makes `eltype` a call
-# inference must resolve, and `collect_subtree` widens to `Vector{Any}` when it
-# cannot. These two unions happen to be one wide today; keying off the cell that
-# was asked about does not depend on that staying true.
+# Derive `eltype` from the input cell type so engine dispatch unions do not widen
+# collected results to `Vector{Any}`.
 Base.eltype(::Type{<:EdgeCellIterator{S,C}}) where {S,C} = C
 Base.eltype(::Type{<:InnerCellIterator{S,C}}) where {S,C} = C
 Base.IteratorSize(::Type{<:EdgeCellIterator{S,C,K,E}}) where {S,C,K,E} =
@@ -105,20 +95,14 @@ Base.IteratorSize(::Type{<:EdgeCellIterator{S,C,K,E}}) where {S,C,K,E} =
 Base.IteratorSize(::Type{<:InnerCellIterator{S,C,K,E}}) where {S,C,K,E} =
     Base.IteratorSize(E)
 
-# Deliberately delegated rather than defined: an engine that cannot count
-# without walking defines no `length`, and the `MethodError` from here is the
-# contract ("no `length` that silently costs a full traversal") being kept.
+# Engines without a constant-time count intentionally provide no `length`.
 Base.length(it::SubtreeIterator) = length(it.engine)
 
-# The docstrings advertise `collect` as the eager verbs, so `collect` must BE
-# the guarded path, not merely parallel to it: `collect`'s own `HasLength` route
-# would size its vector from a miscounting automaton and hand back an `undef`
-# tail as cell ids. See `collect_subtree`.
+# Guard declared lengths during collection; a wrong count must not expose an
+# uninitialized tail.
 Base.collect(it::SubtreeIterator) = collect_subtree(it)
 
-# Connectivity is shown even though it changes nothing on five of the six
-# systems: on A5 it changes the answer, and that is exactly when someone is
-# reading this.
+# Include connectivity because it affects A5 results.
 Base.show(io::IO, it::EdgeCellIterator) = print(io, "EdgeCellIterator(",
     it.system, ", ", it.cell, ", ", it.level, "; connectivity = ",
     it.connectivity, ")")
@@ -150,9 +134,8 @@ Base.length(e::EagerEngine) = length(e.cells)
 # The generic scan: lazy over positions, one `ancestor` test per cell
 # ===========================================================================
 
-# A neighbour is outside the subtree exactly when its ancestor at the root's
-# level is not the root — the same test the eager fallback used, and still
-# cheaper than a membership set over the subtree.
+# A neighbour is outside the subtree when its root-level ancestor differs from
+# the subtree root.
 @inline function _has_outside_neighbor(sys, grid, root, rootlevel, d, connectivity)
     for nb in neighbors(grid, d, 1; connectivity)
         ancestor(sys, nb, rootlevel) != root && return true
@@ -252,10 +235,8 @@ function interior_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellInd
         first(r), last(r), connectivity)
 end
 
-# A5 alone lands here: its canonical order establishes no `descendant_range`, so
-# there is no position interval to walk and no closed-form child adjacency to
-# build an automaton from. The subtree is materialised internally — the iterator
-# is still an iterator, but its memory is `O(subtree)`, not `O(depth)`.
+# Systems without `descendant_range` materialize descendants before iterating,
+# using O(subtree) rather than O(depth) memory. A5 currently uses this path.
 function _eager_border(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
         target::Int, connectivity::Connectivity)
     lc = level(c)
@@ -278,8 +259,7 @@ function _eager_interior(sys::AbstractHierarchicalGridSystem, c::AbstractCellInd
     return out
 end
 
-# The wrapper is transparent to both walks: the rim of a subtree is a question
-# about the discrete hierarchy, which the ellipsoid does not touch.
+# Authalic wrapping does not change the hierarchy or subtree membership.
 rim_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
     connectivity::Connectivity) = rim_engine(sys.system, c, target, connectivity)
 interior_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
@@ -297,8 +277,7 @@ interior_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
 # flush with, and prune a quadrant that is flush with none. Visiting the four
 # curve positions in order emits in ascending id by construction.
 #
-# The curve enters only through `quadrant_step`, which is what lets HEALPix and
-# ISEA4R (Morton) and S2 (Hilbert) share one walker.
+# `quadrant_step` abstracts the Morton and Hilbert curve differences.
 
 const _RIM_XMIN = 0x1
 const _RIM_XMAX = 0x2
@@ -322,22 +301,17 @@ curve position `p` is, and the orientation state its own children are read
 under. Orientation is inert for [`MortonCurve`](@ref); S2's Hilbert curve
 advances it.
 
-Dispatches on the CURVE, not on the system — it is the one parameter of
-[`SquareRimEngine`](@ref), not a system extension point, which is why it lives
-here rather than beside `rim_engine` in `src/interface/`. A system supplies a
-curve type and one method of this; three systems currently supply two curves.
+Dispatches on the curve used by [`SquareRimEngine`](@ref). A system supplies a
+curve type and a method for its quadrant transition.
 """
 function quadrant_step end
 
 @inline quadrant_step(::MortonCurve, orientation::UInt8, p::Int) =
     (p & 1, (p >> 1) & 1, orientation)
 
-# A frame carries only what its parent cannot recompute: the sides it is flush
-# with, its curve orientation, and the child position to try next (retired at
-# 4). Its size is `side >> (depth - 1)` and its code is threaded alongside the
-# stack, both restored on pop by one shift and one subtraction — which is what
-# keeps the frame three bytes, and the whole stack a register-sized inline
-# value. 32 frames is past every registered system's depth (S2's 30 is deepest).
+# A frame stores exposed sides, curve orientation, and the next child. The
+# square size and curve code are derived from stack depth. The 32-frame capacity
+# exceeds the deepest registered system level (S2 level 30).
 struct SquareFrame
     mask::UInt8
     orientation::UInt8
@@ -367,12 +341,9 @@ The perimeter of the `side x side` block whose first cell has raw index `base`,
 in ascending id. `4·side - 4` cells for `side > 1`, `O(depth)` memory, `O(rim)`
 time.
 
-Yields [`LevelIndex`](@ref) rather than a parameterized cell type, and not by
-oversight: the walk's premise is that a descendant's id is `base` plus its
-offset along the curve, which is a statement about a dense integer id, and
-`LevelIndex` is what wraps one. All three aperture-4 systems use it. A fourth
-that did not would need a cell-construction parameter here, not just an
-`eltype`.
+Yields [`LevelIndex`](@ref) because the traversal constructs each dense id as
+`base` plus its curve offset. Systems using another id type require a different
+engine or a cell-construction parameter.
 """
 struct SquareRimEngine{V}
     curve::V

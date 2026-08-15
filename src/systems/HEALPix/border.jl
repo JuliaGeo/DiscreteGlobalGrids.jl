@@ -24,19 +24,14 @@
 # subtree face (no non-centre row of `NB_FACEARRAY` maps a face to itself), and
 # missing diagonals at degree-3 vertices do not affect rim membership.
 #
-# That leaves nothing HEALPix-specific in the walk itself: it is the package's
-# `SquareRimEngine` under `MortonCurve`, shared with ISEA4R (same curve) and S2
-# (Hilbert), which descends the quadtree in curve order and prunes a quadrant
-# inheriting none of the parent square's exposed sides.
+# `SquareRimEngine` descends this block in Morton order and prunes quadrants
+# that inherit none of the square's exposed sides.
 
-# Extended, not shadowed: `HEALPix.subtree_border` and
-# `DiscreteGlobalGrids.subtree_border` are the same function, so generic code
-# gets the Morton walk without knowing HEALPix has one.
+# Extend the package-level `subtree_border` generic.
 import ..DiscreteGlobalGrids: subtree_border
 
-# `descendant_range` runs FIRST and is the only level guard needed: it raises the
-# `target < level(c)` and `> max_level` `ArgumentError`s, and its `lo` is the
-# subtree's first nested id. Nothing below re-derives either.
+# `descendant_range` validates the target level and returns the subtree's first
+# nested position.
 function _healpix_square(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int)
     r = DGG.descendant_range(sys, c, target)
     _checked_index(c)
@@ -66,19 +61,13 @@ end
 # `neighbors` about a few rim cells and filtering every candidate with the
 # native one-ring. Neither case needs a seam table here.
 #
-# `nested_to_xyf` of the block's first id names its lattice origin, because
-# min-Morton is min-corner. (That step is Morton-specific and does NOT
-# generalise: see S2, where the Hilbert curve's first id is any corner of the
-# block and the origin has to come from the parent's own lattice coordinates
-# instead.)
+# The block's first Morton id decodes to its minimum lattice corner.
 #
 # `side == 1` is depth zero, which the generic engine answers with the cell's
 # own one-ring — exact at the degree-3 vertices, where a band of one is not.
 function DGG.halo_engine(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int,
         connectivity::DGG.Connectivity)
-    # Before `_healpix_square`, whose own guard is `descendant_range`'s and says
-    # something else about the same user error. The halo verb's wording is one
-    # wording on every system; see `check_halo_level`.
+    # Apply the common halo-level validation before deriving the square.
     DGG.check_halo_level(sys, c, target)
     lo, side = _healpix_square(sys, c, target)
     side == 1 && return DGG.generic_halo_engine(sys, c, target, connectivity)
@@ -88,9 +77,7 @@ function DGG.halo_engine(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int,
         Int64(ix), Int64(iy), side, Int64(face), n)
 end
 
-# The three lines the shared square walk needs from a system. `_nside` is the
-# face's lattice side at a level, and the Morton curve's state never changes, so
-# every face root is read under `0x0`.
+# Square-walk hooks. Morton orientation is `0x0` on every face.
 DGG.lattice_decode(sys::HEALPixSystem, c::DGG.LevelIndex) =
     nested_to_xyf(c.index, _nside(DGG.level(c)))
 

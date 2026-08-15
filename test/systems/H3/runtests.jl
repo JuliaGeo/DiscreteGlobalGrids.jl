@@ -1,7 +1,4 @@
-# ---------------------------------------------------------------------------
-# T5 — the H3 system suite.
-#
-# Two kinds of test, deliberately kept apart:
+# H3 system tests:
 #
 #   * ORACLE tests, which check the wiring against libh3 itself. libh3 is the
 #     definition of H3, so anywhere this package could have drifted — the
@@ -12,7 +9,6 @@
 #   * CONFORMANCE tests, the two property suites from
 #     `DiscreteGlobalGridsConformanceTesting`, which check the interface
 #     contracts every system owes.
-# ---------------------------------------------------------------------------
 
 module H3TestSuite
 
@@ -123,7 +119,7 @@ end
         @test length(H3N.get_pentagons(2)) == 12
         @test H3N.get_resolution("0x8928308280fffff") == 9
 
-        # The two wrappers this port added.
+        # Wrappers around libh3's ring operations.
         hex = H3N.lonlat_to_cell(10.0, 45.0, 5)
         @test length(H3N.grid_ring_unsafe(hex, 2)) == 12
         @test H3N.grid_ring_unsafe(hex, 0) == [hex]
@@ -573,14 +569,9 @@ end
         for res in (0, 2), c in sample_cells(res; stride=max(1, DGG.ncells(DGG.levelgrid(S, res)) ÷ 6))
             measured = max(measured, overhang(c, 6))
         end
-        # NOTE ON THE THRESHOLD. 1.10 is a test threshold, not the converged
-        # overhang. This check is deliberately weaker than the offline
-        # measurement quoted in `cap_inflation`'s docstring (beam 400, depth 9,
-        # every base cell -> 1.0522) so that the suite stays fast: a beam of 60
-        # over 6 levels reaches ~1.05 and would not resolve the last 1e-5 of
-        # the geometric tail. It is a guard against a factor that has become
-        # unsound by a wide margin, and the covering-law walk below is what
-        # actually tests the property that matters, directly and to max_level.
+        # The 1.10 threshold leaves the bounded beam search inexpensive while
+        # still detecting a materially unsound inflation factor. The
+        # covering-law walk validates the extent contract through `max_level`.
         @test measured < 1.10
         @test measured < DGG.cap_inflation(S)
         @test DGG.cap_inflation(S) == 1.2

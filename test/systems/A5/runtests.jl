@@ -1,12 +1,9 @@
-# ---------------------------------------------------------------------------
-# T10 — the A5 system suite.
+# A5 system tests:
 #
-# Three kinds of test, deliberately kept apart:
-#
-#   * ORACLE tests, which check the wiring against `A5Native` — the ported
-#     upstream arithmetic — and against the sealed vectors the pre-redesign
-#     `test/A5/` suite pinned (the Tokyo index, its centre, the antimeridian
-#     ring, the res-30 children). `A5Native` is A5's definition here, so
+#   * ORACLE tests, which check the wiring against the independently maintained
+#     `A5Native` arithmetic and sealed values for the Tokyo index, its center,
+#     the antimeridian ring, and the resolution-30 children. `A5Native` defines
+#     A5's indexing behavior, so
 #     anywhere this package could have drifted is checked against a direct call
 #     rather than against a value someone typed in.
 #   * CONFORMANCE tests, the two property suites from
@@ -22,7 +19,6 @@
 # them, because both are claims about A5's geometry that the docstrings quote:
 # NEIGHBOR-VALIDATION for the `max_neighbors` bounds and the Moore/von Neumann
 # split, CAP-VALIDATION for the raised `cap_inflation`.
-# ---------------------------------------------------------------------------
 
 module A5TestSuite
 
@@ -503,11 +499,10 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     end
 
     @testset "Vertex() really is Moore and Edge() really is von Neumann" begin
-        # THE ASSUMPTION UNDER TEST: `Vertex()` docs say hexagonal and
-        # pentagonal grids coincide. That holds for the icosahedral hex systems,
-        # where three cells meet at every vertex. A5 tiles in the manner of a
-        # Cairo pentagon tiling — four cells meet at some corners — so it does
-        # not, and the two connectivities name different sets.
+        # `Vertex()` and `Edge()` adjacency coincide on the icosahedral hex
+        # systems, where three cells meet at every vertex. In A5's Cairo-like
+        # pentagonal tiling, four cells meet at some corners, so the
+        # connectivities name different sets.
         #
         # Checked against the ring CORNERS, not the densified boundary: an edge
         # neighbour shares two corners, a corner-only neighbour exactly one.
@@ -625,7 +620,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
                     @test isempty(intersect(Set(shell), seen))
                     union!(seen, shell)
                     push!(shells, collect(shell))
-                    # THE ORDER IS ROTATIONAL: counter-clockwise seen from
+                    # The order is rotational: counter-clockwise seen from
                     # outside, exactly one turn. This is the property the
                     # native `sort!(collect(::Set))` destroyed.
                     length(shell) >= 3 && @test winding_turns(grid, c, shell) ≈ 1.0 atol = 0.02
@@ -859,14 +854,8 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test sprint(show, S) == "A5System()"
     end
 
-    # =======================================================================
-    # T13 exports these names, so they have to arrive carrying their own
-    # docstrings rather than falling through to the interface's generic ones.
-    # This is not a formality: a docstring is attached to the NEXT EXPRESSION,
-    # and a comment placed between the two silently detaches it — no warning,
-    # no error, the method simply stops being documented and `@doc` quietly
-    # shows the interface text instead. That is exactly the failure this
-    # testset caught once already.
+    # Public A5 bindings must carry their own docstrings rather than displaying
+    # only the shared interface documentation.
     @testset "every public name is documented" begin
         documented = Set(b.var for b in keys(Docs.meta(A5)))
         for name in (:A5, :A5Cell, :A5System,

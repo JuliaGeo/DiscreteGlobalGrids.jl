@@ -1,6 +1,5 @@
 #!/usr/bin/env julia
-# The measurements behind the API critique. Not correctness tests -- these all
-# "pass"; they are the numbers a consumer of the halo API runs into.
+# Report iterator sizing, ID-to-position conversion, and wider-halo costs.
 #
 #   julia --project=test examples/geomorphometry/api_ergonomics.jl
 
@@ -63,7 +62,7 @@ function wider_k()
         t1 = @elapsed h1 = DGG.subtree_halo(sys, root, tl)
         _, ids = build()
         t2 = @elapsed h2 = collect(DGG.halo(DGG.CellVector(sys, tl, ids)))
-        # correctness: k1 + k2 must equal the 2-ring outside the chunk
+        # The first and second rings together equal the chunk's two-ring halo.
         want = Set{Int}()
         for p in r, m in DGG.neighbors(g, DGG.cellindex(g, p), 2; connectivity = Vertex())
             q = DGG.cellposition(g, m)

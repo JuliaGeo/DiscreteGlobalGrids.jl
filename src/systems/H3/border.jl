@@ -9,19 +9,13 @@
 #
 # All pentagon base cells delete digit 1 (the K axis). The pentagon flag drops
 # after the root because a rim suffix contains no zero digit.
-# The transition table is fitted and parity-dependent. Its parity roles are
-# swapped relative to IGeo7: the branch H3 takes
-# at an even child level is the one IGeo7 takes at an odd one.
+# The transition table depends on child-level parity. H3's even-level rule
+# corresponds to IGeo7's odd-level rule.
 #
-# The walk is a resumable iterator: an explicit frame stack, one inline value, so
-# a partial rim costs nothing beyond `O(depth)`. The interior comes off the same
-# walk — where the automaton PRUNES, the whole branch below is interior, so
-# `H3InteriorEngine` descends it in full instead of dropping it, and never needs
-# a rim membership set.
+# The resumable iterator stores an inline frame stack in `O(depth)` memory.
+# `H3InteriorEngine` fully descends branches that the rim iterator prunes.
 
-# Extended, not shadowed: this file defines H3's method on the package generic,
-# so `H3.subtree_border` and `DiscreteGlobalGrids.subtree_border` are one
-# function and generic code reaches the automaton without knowing it exists.
+# Extend the package-level `subtree_border` generic.
 import ..DiscreteGlobalGrids: subtree_border
 
 """
@@ -76,10 +70,8 @@ const H3Stack = DGG.Helpers.SmallList{_H3_STACK_CAP,H3Frame}
 """
     H3Walk(z, stack)
 
-The walk state. `z` carries the digits of the current path — each descent
-overwrites one digit slot, so the parent's id needs no restoring — and already
-holds `target` in its resolution field, which is what makes every leaf come out
-fully formed and in ascending order by construction.
+Iterator state containing the current path id and inline frame stack. `z`
+already contains the target resolution; descending overwrites one digit slot.
 """
 struct H3Walk
     z::UInt64
@@ -129,11 +121,7 @@ end
 
 Base.iterate(e::H3RimEngine, w::H3Walk) = _h3_rim_advance(e.res, e.target, w)
 
-# The walk itself, taking the two numbers it actually reads rather than an
-# engine: the seeded arc engine below runs the same automaton from a different
-# root frame, and this is the whole of what they share. Every frame past the root
-# is built here, so a seeded entry differs from a rim entry in exactly one
-# `H3Frame` and in nothing else.
+# Advance either a full-rim or seeded-arc walk from its current frame stack.
 function _h3_rim_advance(res0::Int, target::Int, w::H3Walk)
     z = w.z
     st = w.stack
@@ -162,17 +150,13 @@ end
 """
     H3ArcEngine(z, res, target, pentagon, L, s)
 
-The same automaton entered at an arbitrary arc: the level-`target` descendants of
-the cell `z` reachable along the exposed directions `s, s+1, …, s+L-1 (mod 6)`,
-ascending, in `O(depth)` memory. `H3RimEngine` is this with `(L, s) == (6, 0)`,
-which is the one state with no arc ends and therefore the one the census
-formulas describe — so this engine declares `SizeUnknown()` and no `length`.
+Iterate level-`target` descendants of `z` along exposed directions
+`s:s+L-1 (mod 6)`, in ascending id order and `O(depth)` memory. Unlike
+`H3RimEngine`, arbitrary arcs have no closed-form length and report
+`SizeUnknown()`.
 
-`pentagon` is the SEED CELL's own flag, not a subtree root's. A calibrated arc is
-seeded at a neighbour, which may itself be a pentagon, and dropping the flag
-would walk the deleted K axis and yield ids for cells that do not exist. It drops
-below the root frame for the usual reason: a rim suffix contains no zero digit,
-so no descendant reached from here is a pentagon.
+`pentagon` describes the seed cell. It suppresses the deleted K-axis digit at
+the root; descendants reached along a rim suffix are not pentagons.
 """
 struct H3ArcEngine
     z::UInt64
@@ -195,9 +179,8 @@ Base.iterate(e::H3ArcEngine, w::H3Walk) = _h3_rim_advance(e.res, e.target, w)
 """
     H3InteriorEngine(z, res, target, pentagon)
 
-The complement, off the same automaton: a branch the rim walk prunes is wholly
-interior, so this one descends it in full (digits `0:6`) instead of dropping it.
-No rim membership is ever tested or stored.
+Iterate interior descendants. Branches pruned by the rim automaton are wholly
+interior and are descended over digits `0:6` without storing a rim set.
 """
 struct H3InteriorEngine
     z::UInt64
@@ -266,7 +249,7 @@ function DGG.interior_engine(sys::H3System, c::H3Cell, target::Int,
 end
 
 # ---------------------------------------------------------------------------
-# The two lines the shared calibrated halo walk needs (`hex_halo_engine`)
+# Hexagonal halo support
 # ---------------------------------------------------------------------------
 
 # The ring position of the step from a cell's parent to the cell, read off the
@@ -280,18 +263,13 @@ function DGG.hex_child_direction(::H3System, c::H3Cell)
     return @inbounds _H3_DIGIT_DIR[digit]
 end
 
-# Unvalidated on purpose: `hex_halo_engine` owns the level guard and only ever
-# passes cells that came out of `neighbors`. `_h3_border_checked` is the entry
-# point for the public verbs, which do not know that.
+# `hex_halo_engine` validates the target level and supplies neighbouring cells.
 DGG.seeded_rim_engine(::H3System, c::H3Cell, target::Int, arclen::Int,
         start::Int) =
     H3ArcEngine(_h3_with_resolution(c.id, target), level(c), target,
         H3Native.is_pentagon(c.id), Int8(arclen), Int8(start))
 
-# The halo is approached from the neighbouring subtrees rather than from the
-# root's own, because a subtree's halo is not an interval of anything H3 can
-# name. See `hex_halo_engine` for the calibration, the containment argument, and
-# the guards that send a case back to the generic walk.
+# Generate a subtree halo from calibrated arcs of neighbouring subtrees.
 DGG.halo_engine(sys::H3System, c::H3Cell, target::Int,
     connectivity::Connectivity) =
     DGG.hex_halo_engine(sys, c, target, connectivity)

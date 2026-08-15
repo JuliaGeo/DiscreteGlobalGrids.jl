@@ -1,38 +1,5 @@
-# ---------------------------------------------------------------------------
-# T19 — the compressed cell collection, WITHOUT DimensionalData.
-#
-# `CellVector` is what `CellLookup` is made of: a strictly ascending run of
-# cells at one level, stored as leaf position windows and answering as the id
-# vector. T16 shipped that arithmetic inside the DimensionalData layer, which
-# meant a regridder, a chunker or any plain-`Array` caller had to materialise
-# the ids to get at it — 892,568 bytes where the cube got 33,024. This file is
-# the law that says the compression is available with no cube in sight.
-#
-# The module below deliberately does NOT import DimensionalData, and asserts
-# that it has not: everything is reached through `DiscreteGlobalGrids`' own
-# exports. `DimensionalData` is still a hard dependency of the package, so it IS
-# loaded in the session — what is being pinned is that no *caller* needs it, and
-# that no verb here is answered by a method in `src/dimensionaldata.jl`.
-#
-# The laws, in order:
-#
-#   * DD-FREEDOM — the type, its verbs and everything they return live under
-#     `src/fallbacks/`, and none of their methods come from the DD layer.
-#   * CONSTRUCTION — the five ways in (a multi-order set, a whole level, a
-#     rooted subtree, a `PartialGrid`, an explicit id vector) all agree, on
-#     every system, including A5's selection mode.
-#   * EQUIVALENCE — the lazy form answers exactly what the materialised leaf
-#     vector would, and `cellposition` is its inverse.
-#   * POINT AND REGION — `cellat`/`cellposition` on a lon/lat pair, `in` for
-#     membership, `covering` for a region: the three selector questions, asked
-#     without a selector.
-#   * MEMORY — re-expanding one set three levels deeper multiplies the cells by
-#     the aperture cubed and must not move `Base.summarysize`. Excluded on A5
-#     for the reason T16 states: selection mode walks the leaves to build.
-#   * THE PROBE — the motivating measurement, as an assertion: the compressed
-#     grid route costs O(#windows) where the `cellindices` route costs
-#     O(#cells), and the ratio on the fixture is pinned.
-# ---------------------------------------------------------------------------
+# Cross-system laws for `CellVector`, including expansion, indexing, selection,
+# iteration, and compact storage of multi-order cell sets.
 
 module CellVectorTests
 
@@ -230,8 +197,6 @@ end
             @test DGG.cellposition(cv, lon, lat) == k
             @test DGG.cellat(cv, lon, lat) == ids[k]
         end
-        # A point the vector does not reach answers `nothing`, not the cell of
-        # the level grid that happens to hold it.
         @test DGG.cellat(grid, FARAWAY...) !== nothing
         @test DGG.cellat(cv, FARAWAY...) === nothing
         @test DGG.cellposition(cv, FARAWAY...) === nothing
@@ -289,8 +254,6 @@ end
     @test isempty(intersect(big, DGG.CellVector(
         DGG.query(sys, DGG.MultiOrderCoverage(NOWHERE); level=leaf))))
 
-    # The point of doing it over intervals: the same operands three levels
-    # deeper name 343 times as many cells and cost the same to intersect.
     deepbig = DGG.CellVector(DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf); level=leaf + 3)
     deepsmall = DGG.CellVector(DGG.query(sys, DGG.MultiOrderCoverage(ZURICH); level=leaf); level=leaf + 3)
     @test length(deepbig) > 300 * length(big)
@@ -313,11 +276,6 @@ end
 
 @testset "memory is O(#windows): $(sysname(sys))" for (sys, leaf, deeper) in SWEEP
     if !DGG.has_sorted_subtrees(sys)
-        # EXCLUDED for the reason T16 pins on the lookup: selection mode
-        # materialises one position per leaf to BUILD, so nothing bounds its
-        # construction by the entry count even where the compression afterwards
-        # happens to. The A5 testset below states the decision from the other
-        # side.
         @test !DGG.has_sorted_subtrees(sys)
         continue
     end
@@ -345,12 +303,6 @@ end
     deep[1]
     @test @allocated(deep[length(deep)]) <= 64
 
-    # And so is the handshake, which is the whole point of it being O(1): the
-    # ascent check `PartialGrid` runs on an arbitrary id vector short-circuits
-    # here, so building a grid over twenty million cells costs what building one
-    # over sixty thousand costs. The invariance is the law; the absolute figure
-    # is a few hundred bytes of constructor and varies with the id codec, so it
-    # is bounded rather than pinned.
     DGG.PartialGrid(shallow)
     DGG.PartialGrid(deep)
     @test abs(@allocated(DGG.PartialGrid(deep)) -
@@ -385,15 +337,6 @@ end
     @test Base.summarysize(deep) <= 8 * length(deep)
 end
 
-# ---------------------------------------------------------------------------
-# The motivating probe, as a law
-#
-# Before T19 the only way to hand a coverage to something that is not a cube was
-# `cellindices(set, l)` — one typed id per leaf cell, and a `PartialGrid` over
-# it. The compressed route now gets there through `CellVector`, which is the
-# same grid, cell for cell, in a fraction of the memory. Both halves are
-# asserted: same answers, and the ratio.
-# ---------------------------------------------------------------------------
 
 @testset "the compressed grid route costs O(#windows), not O(#cells)" begin
     sys, leaf = DGG.IGeo7System(), 9
@@ -410,8 +353,6 @@ end
               for i in (1, 2, n ÷ 3, n ÷ 2, n))
     @test collect(DGG.CellVector(compressed)) == DGG.cellindices(set, leaf)
 
-    # The fixture, pinned so that a regression in the compression is visible as
-    # a number rather than as a slowdown: ~666 windows for ~60,000 leaf cells.
     windows = nwin(DGG.CellVector(set))
     @test n > 50_000
     @test windows < n ÷ 50
@@ -422,34 +363,11 @@ end
     @test big > 8 * n                    # O(#cells), one word per id at least
     @test big / small > 20               # measured 27.0x on this fixture
 
-    # The same claim in the direction that matters most: re-expanding to a level
-    # deep enough that materialising is out of the question costs the same.
     deep = DGG.PartialGrid(DGG.CellVector(set; level=leaf + 3))
     @test DGG.ncells(deep) == 343 * n
     @test Base.summarysize(deep) == small
 end
 
-# ---------------------------------------------------------------------------
-# Indexing follows Base, in the two places where "compressed" could quietly
-# stop meaning "vector"
-#
-# Both of these are inherited traps rather than invented ones: an index type
-# that is handled by a `_subset` fork gets whatever that fork does, and Base's
-# own contract is easy to lose on the way through.
-#
-#   * a LOGICAL MASK names positions by index, so `findall` on a mask of the
-#     wrong length reports the `true`s it was given and says nothing about the
-#     positions it was never asked about — a silently shorter answer where Base
-#     throws.
-#   * a SHAPED INDEX wants an answer of its own shape. While the window path
-#     caught matrices, an ascending matrix flattened to a `CellVector` and a
-#     non-ascending one came back as a proper `Matrix`: the same call answering
-#     in two different shapes depending on the values.
-#
-# The cube face is checked alongside the core because it is the same fork one
-# level up. Reaching `CellLookup` needs no DimensionalData import — that is the
-# point of the layering, and this file still has none.
-# ---------------------------------------------------------------------------
 
 @testset "indexing keeps Base's contract" begin
     sys, leaf = DGG.IGeo7System(), 5
@@ -474,7 +392,6 @@ end
             @test_throws BoundsError cv[bad]
             @test_throws BoundsError lk[bad]
         end
-        # And the error names what was indexed, so the two faces are told apart.
         @test (try
             cv[trues(n + 1)]
         catch e
@@ -513,8 +430,6 @@ end
             @test_throws ArgumentError lk[m]
         end
 
-        # A vector index is still the compressed path on both faces, which is
-        # what the narrowing had to preserve.
         @test cv[[1, 3, 5]] isa DGG.CellVector
         @test lk[[1, 3, 5]] isa DGG.CellLookup
         @test cv[2:5] isa DGG.CellVector

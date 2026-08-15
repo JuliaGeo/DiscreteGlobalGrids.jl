@@ -65,25 +65,20 @@ Number of base cells and icosahedron vertices.
 """
 const NBASE = 12
 
-# The per-base deleted (pentagon-chain) digit table has ONE definition,
-# `Z7_DELETED_DIGIT` in z7.jl, reached through `z7_deleted_digit(base)`; it is
-# a digit-alphabet fact, not spherical geometry, and z7.jl owns it.
+# Pentagon-chain digit deletion is defined by `Z7_DELETED_DIGIT` in `z7.jl`.
 
 """
     ISEA_LON0
 
-Longitude of the standard ISEA IGEO7 vertex 0, `11.25` degrees
-(`= π/16` rad, the value of PROJ's `ISEA_STD_LONG`)
-**[spec/isea-projection-spec.md §4.1]**.
+Longitude of standard ISEA vertex 0: `11.25` degrees (`π/16` radians).
 """
 const ISEA_LON0 = 11.25
 
 """
     ISEA_LAT_HI
 
-Latitude of the standard ISEA IGEO7 vertex 0, `atand(φ) =
-58.282525588538995` degrees (PROJ's `ISEA_STD_LAT`)
-**[spec/isea-projection-spec.md §4.1]**. The 12 vertices sit at latitudes
+Latitude of standard ISEA vertex 0: `atand(φ) = 58.282525588538995` degrees.
+The 12 vertices sit at latitudes
 `±ISEA_LAT_HI`, `±(90 - ISEA_LAT_HI)` and `0`.
 """
 const ISEA_LAT_HI = atand((1 + sqrt(5.0)) / 2)
@@ -180,9 +175,8 @@ nearest_vertex(lon::Real, lat::Real) = nearest_vertex(lonlat_to_xyz(lon, lat))
 """
     REFERENCE_EDGE
 
-Neighbor base at development-frame angle zero for each base **[fitted, not
-derived; spec/igeo7-geometry-diagnosis.md §4, validated on all 196,080 oracle
-cell centers res 1–5]**. The same chirality and digit map applies to all bases.
+Neighbor base at development-frame angle zero for each base. The same chirality
+and digit map applies to all bases.
 """
 const REFERENCE_EDGE = (1, 10, 6, 7, 8, 9, 11, 11, 11, 11, 11, 8)
 
@@ -229,7 +223,7 @@ Row-major rotation from world coordinates to the ISEA grid frame.
 struct Orientation
     R::NTuple{9,Float64}
     identity::Bool
-    # Derive the identity fast path so it cannot disagree with `R`.
+    # Cache whether `R` is exactly the identity rotation.
     Orientation(R::NTuple{9,Float64}) = new(R, R == _IDENTITY_R)
 end
 

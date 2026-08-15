@@ -1,33 +1,16 @@
-# ---------------------------------------------------------------------------
-# `halo(subset)` — what the walk costs, measured against an untouched control.
+# Benchmark `halo(subset)` against a stable `subtree_halo` control.
 #
 #     julia --project=test scripts/bench/halo_subset_scaling.jl
 #
-# PUBLIC API ONLY, so the same file runs unchanged on any commit and the two
-# runs are comparable. That is the whole point of it: every number this package
-# states about `halo`'s cost is a number this script prints.
+# The script uses only public APIs so results remain comparable across commits.
+# The `xctl` column normalizes timings by a HEALPix square-band walk and is more
+# stable across machines than the absolute millisecond columns.
 #
-# WHY THERE IS A CONTROL. `subtree_halo` on a HEALPix block takes the square
-# band walk, which no change to the subset path touches, so its time is this
-# machine's clock rather than the measurement. Absolute milliseconds move with
-# the machine's power state and with whatever else is running on it; the RATIO
-# to the control does not. Read the `xctl` column, not the `ms` column.
+# The cases cover the former 2,048-member batching boundary, a subtree with an
+# interior hole, and a subset scattered across the sphere.
 #
-# THREE CASES:
-#
-#   * THE BATCH CLIFF. A subset one cell over a bounding-cap batch limit used to
-#     fall back to a full-sphere cap, which prunes nothing, and the walk then
-#     descended the whole hierarchy. 2048 against 2049 members is the same
-#     question asked twice with the same answer either side.
-#   * THE SCALING. A rooted subtree with one interior cell punched out is the
-#     irregular chunk `halo` exists for — the hole law is exactly what
-#     `subtree_halo` cannot express. Its member count quadruples per level and
-#     its halo doubles, so the two exponents below separate cleanly: a walk
-#     sized by the input reads ~2.0 in the halo, one sized by the answer ~1.0.
-#   * THE SCATTERED SUBSET, which has no boundary to follow and is therefore the
-#     case a boundary-following walk could plausibly lose on. It is here so that
-#     the report is the whole cost and not the favourable half of it.
-# ---------------------------------------------------------------------------
+# For the holed subtree, members grow quadratically with the perimeter-sized
+# halo. Fitted exponents therefore distinguish input-sized from halo-sized work.
 
 using DiscreteGlobalGrids
 using Printf
@@ -41,11 +24,11 @@ end for _ in 1:reps)
 sys = HEALPixSystem()
 root = cellindex(levelgrid(sys, 0), 1)
 
-# The control: untouched by anything the subset path does.
+# Stable control that does not use the subset path.
 control = best(() -> subtree_halo(sys, root, 10))
 @printf("control  subtree_halo(HEALPix, level-0 root, l = 10)  %8.3f ms\n\n", control)
 
-# --- the batch cliff -------------------------------------------------------
+# Former batching boundary.
 
 println("the batch cliff — a contiguous block of the level-8 grid")
 @printf("%10s %10s %10s %8s\n", "members", "halo", "ms", "xctl")
@@ -57,13 +40,13 @@ for n in (2047, 2048, 2049, 4096)
     @printf("%10d %10d %10.3f %8.1f\n", n, h, ms, ms / control)
 end
 
-# --- the scaling law -------------------------------------------------------
+# Scaling for a subtree with one interior cell removed.
 
 function holed(sys, c, l)
     r = descendant_range(sys, c, l)
     g = levelgrid(sys, l)
     ids = [cellindex(g, p) for p in r]
-    deleteat!(ids, length(ids) ÷ 2)          # one interior cell, the hole law
+    deleteat!(ids, length(ids) ÷ 2)          # create an interior halo component
     return PartialGrid(sys, l, ids; root = c)
 end
 
@@ -95,11 +78,9 @@ println(" The two containers differ by their membership search: a `CellVector`")
 println(" keeps a holed subtree as two windows, so its search is O(1) here,")
 println(" while a `PartialGrid` binary-searches an id vector that is growing.)")
 
-# --- the case with no boundary to follow -----------------------------------
-#
+# Scattered subsets have no compact boundary to follow.
 # A subset scattered uniformly over the whole sphere has a halo of the same
-# order as the level, so `O(halo)` and `O(ncells)` are the same statement and
-# there is nothing to win.
+# order as the level grid, making `O(halo)` and `O(ncells)` equivalent here.
 
 using Random
 

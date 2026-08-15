@@ -1,16 +1,14 @@
 #!/usr/bin/env julia
-# Can the motivating workload -- "read a chunk by its contiguous position block,
-# fetch the margin with subtree_halo" -- actually be run on A5?
+# Measure subtree chunk addressing and halo construction on A5.
 #
 #   julia --project=test examples/geomorphometry/a5_chunking.jl
 #
-# Two separate obstacles, measured separately:
+# The report separates two operations:
 #
 #   1. `descendant_range` does not exist for A5 (`has_sorted_subtrees` is
 #      false), so there is no O(1) way to name the chunk's position block. The
-#      workaround is to materialise `descendants` and take the position hull,
-#      which is O(subtree) in time AND memory -- exactly what the range exists
-#      to avoid.
+#      fallback materializes `descendants`, takes their position hull, and
+#      verifies that the hull is contiguous, using O(subtree) time and memory.
 #   2. A5 has no specialised halo engine, so `subtree_halo` runs the generic
 #      outside-first geometry walk.
 

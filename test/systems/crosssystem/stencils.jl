@@ -1,46 +1,6 @@
-# ---------------------------------------------------------------------------
-# T21 — stencils on subsets.
-#
-# `neighbors` / `ring` on a subset of a level are the COMPLETE level's answer
-# clipped to membership. That is a decision, not a discovery: the generic
-# geometric path used to walk the subset's own adjacency graph, which agrees at
-# `k == 1` and disagrees from `k == 2` wherever the subset has a hole or a
-# concave boundary. This file is what makes the chosen reading executable.
-#
-# The laws, in order:
-#
-#   * CLIPPING — `ring(sub, c, k) == filter(in(sub), ring(complete, c, k))`,
-#     element for element, so the clip preserves the rotational order as well
-#     as the membership. Three subset SHAPES (a rooted subtree, a scattered
-#     non-rooted id set, a subtree with a hole punched in it), `k` in `0:3`,
-#     both connectivities, every system. Asserting the ORDER is what pins that
-#     the fast path routes through the system's automaton rather than through
-#     the geometric tree walk, which orders by a frame of its own.
-#   * DIVERGENCE — the k >= 2 disagreement with breadth-first distance INSIDE
-#     the subset, demonstrated on the hole rather than described. Stated as an
-#     assertion so that a future return to induced-subgraph semantics fails
-#     here instead of silently changing answers.
-#   * OUT OF SET — a cell the subset does not hold is an `ArgumentError` on
-#     both container types, never the complete level's answer.
-#   * FACES — `PartialGrid`, `CellVector` and `CellLookup` answer identically,
-#     and the position face is the id face resolved through `cellposition`.
-#   * HALO — `halo_table(sub, k)[p] == neighbors(sub, p, k)` for every `p`,
-#     including on the rooted-subtree fast path, which takes a different route
-#     (T20's rim/interior split) to the same answer.
-#   * COMPLETE ROWS — `stencil_table` against a `[chunk; halo]` buffer laid out
-#     by cell ID, which is the one claim `halo_table`'s law cannot make: no row
-#     is ever short. Its own section below says how the oracle avoids sharing
-#     arithmetic with the thing it checks.
-#   * MEMBER ADJACENCY — `member_neighbors` against a brute-force oracle that
-#     expands every member and shares no code with the rim walk: first with the
-#     level grid's own adjacency, then — on the systems whose children tile
-#     their parent — with the GEOMETRIC shared-vertex/shared-edge test on the
-#     boundary rings, which is what "share a boundary" means.
-#
-# Written against the generic interface only: no system module is imported, and
-# every law runs against every system in `systems()` plus an
-# `AuthalicSystem`-wrapped one.
-# ---------------------------------------------------------------------------
+# Cross-system laws for subset adjacency, halo tables, and stencil tables.
+# Brute-force oracles derive rows from native one-rings and explicit membership,
+# independently of the table implementations.
 
 module StencilTests
 
@@ -127,8 +87,6 @@ function probes(sub, n::Int)
     return [cellindex(sub, i) for i in 1:step:total]
 end
 
-# Breadth-first distance INSIDE the subset — the reading this task replaced.
-# Kept here as the oracle for DIVERGENCE, and for nothing else.
 function induced_ring(sub, complete, c, k::Int; connectivity = Vertex())
     seen = Set([c])
     frontier = [c]
@@ -164,9 +122,6 @@ end
             @test neighbors(sub, c, k; connectivity = conn) ==
                   reduce(vcat, rings; init = cellindextype(sys)[])
         end
-        # The law AS THE CONTRACT SPELLS IT, `filter(in(sub), ...)` and all —
-        # a docstring equation that does not run is a claim, not a contract, and
-        # `in` is the half of it that lives outside this file.
         cv = CellVector(sub)
         for c in probes(sub, 3), k in 0:2
             @test ring(sub, c, k) == filter(in(sub), ring(complete, c, k))
@@ -221,23 +176,13 @@ end
         @test halo_table(CellLookup(cv)) == halo_table(sub)
     end
 
-    # The rooted subtree is the one shape with a fast path of its own — T20's
-    # rim/interior split, which never tests membership on an interior cell. It
-    # has to reach the same table the generic route does, so both are asked.
     @testset "the rooted fast path agrees with the generic route" begin
         sub = rooted(sys, base, leaf)
         for conn in (Vertex(), Edge())
             @test halo_table(sub, 1; connectivity = conn) ==
                   [neighbors(sub, p, 1; connectivity = conn) for p in 1:ncells(sub)]
         end
-        # The split is only claimed for `k == 1`: a cell one step inside the rim
-        # still reaches outside at `k == 2`, so the deeper table must NOT take
-        # it. Same answer either way, which is what is asserted.
         @test halo_table(sub, 2) == [neighbors(sub, p, 2) for p in 1:ncells(sub)]
-        # Agreement alone cannot tell the two routes apart, so the gate itself
-        # is pinned: on a sorted-subtree system this shape MUST be recognised,
-        # and a regression that quietly stopped taking the split would leave
-        # every equality above green while losing the whole point of it.
         @test (FB._whole_subtree_range(sub) !== nothing) == has_sorted_subtrees(sys)
         @test FB._whole_subtree_range(scattered(sys, leaf)) === nothing
         # Rooted but not WHOLE: the root is there, one descendant is not, and
@@ -318,34 +263,6 @@ end
     @test divergences > 0
 end
 
-# ---------------------------------------------------------------------------
-# COMPLETE ROWS
-#
-# `halo_table` is IN-SET, so a rim cell's row is SHORT. `stencil_table` is those
-# same rows completed against a fetched halo and renumbered into the
-# `[chunk; halo]` buffer the two halves were read into. Two claims, and no other
-# law in this package can catch either failing:
-#
-#   * every row is the cell's WHOLE one-ring — same cells, same rotational order
-#     — as indices into that buffer; and
-#   * no row is ever short, which is the defect the verb exists to remove.
-#
-# THE ORACLE SHARES NO ARITHMETIC WITH THE IMPLEMENTATION. It lays the buffer
-# out by cell ID into a dictionary and looks each neighbour up as itself, where
-# `stencil_table` addresses the chunk half by integer range (or by
-# `cellposition`) and the halo half by binary search over positions. So a
-# neighbour the oracle cannot find is the completeness claim failing, and it is
-# recorded rather than thrown — hence `get(..., 0)` and the `uncovered` list.
-#
-# THE SWEEP is every root of every system at its shallowest level, at depths 0,
-# 1 and 2, plus a spread of roots one and two levels below that, at depth 2. At
-# the shallowest level a subtree is a whole face, so its halo lies entirely across
-# seams; that sweep therefore contains every HEALPix polar face, every IGeo7 and
-# A5 pentagon, H3's twelve and the S2 cube corners without any of them being
-# named here, and the deeper roots add the blocks that sit wholly inside a face.
-# Depth 0 is the chunk that is ALL rim: one cell, whose entire row comes out of
-# the halo half.
-# ---------------------------------------------------------------------------
 
 # `[chunk; halo]` as ids, and each neighbour looked up as itself. `0` means the
 # buffer does not contain it at all, which is the row that could not have been
@@ -416,14 +333,10 @@ end
             end
         end
     end
-    # Named rather than counted, as the neighbouring files do: a regression here
-    # should name a root to go and look at.
     @test isempty(uncovered)
     @test isempty(disagreed)
     @test isempty(layout)
     @test isempty(csr)
-    # The sweep itself, pinned: a refactor that quietly stopped building tables
-    # would leave every emptiness above green.
     @test tables == 1846
     @test cells == 38828
 end
@@ -433,9 +346,6 @@ end
     hole_in_halo = 0
     for (sys, base, leaf) in SWEEP
         grid = levelgrid(sys, leaf)
-        # `holed` has no root, so it takes the membership path whatever the
-        # system — and its punched-out cells are halo cells by `halo`'s hole
-        # law, which is what lets its rim rows complete at all.
         root = cellindex(levelgrid(sys, base), 3)
         ids = descendants(sys, root, leaf)
         n = length(ids)
@@ -453,9 +363,6 @@ end
         end
     end
     @test isempty(holes)
-    # The hole is not incidental to the above: it really is in the halo, on
-    # every system and both connectivities, which is what makes those rows
-    # completable at all.
     @test hole_in_halo == 2 * length(SWEEP)
 
     # The two membership routes are one function. A sorted-subtree system can
@@ -481,9 +388,6 @@ end
     end
     @test isempty(paths)
 
-    # The bridge the docstring offers a `CellVector` — wrap it as a
-    # `PartialGrid`'s ids, which copies nothing — reaches the same table. Pinned
-    # because it is documented: an unrunnable instruction is worse than none.
     bridged = Any[]
     for (sys, base, leaf) in SWEEP
         grid = levelgrid(sys, leaf)
@@ -497,14 +401,6 @@ end
     @test isempty(bridged)
 end
 
-# ---------------------------------------------------------------------------
-# WHAT IT REFUSES
-#
-# Every one of these would otherwise produce a SHORT row — the exact defect the
-# verb removes — and a short row is invisible at the call site. HEALPix at
-# level 3 is the fixture because its `Vertex()` and `Edge()` halos differ (19
-# cells against 16), which no hexagonal system can demonstrate.
-# ---------------------------------------------------------------------------
 
 @testset "stencil_table refuses what would come back short" begin
     sys = DGG.HEALPixSystem()
@@ -523,9 +419,6 @@ end
     @test_throws ArgumentError stencil_table(pg, halo(pg))
     # An unsorted fetch list would misaddress rows rather than fail.
     @test_throws ArgumentError stencil_table(pg, reverse(vertex_halo))
-    # Every halo cell touches the chunk by definition, so dropping ANY of them
-    # must be caught — not merely the ones at the ends, which is what a check
-    # written against the halo's endpoints would manage.
     @test all(j -> (try
             stencil_table(pg, deleteat!(copy(vertex_halo), j))
             false
@@ -545,19 +438,6 @@ end
     @test_throws BoundsError t[length(t)+1]
 end
 
-# ---------------------------------------------------------------------------
-# NOTHING IS SIZED BY THE HALO
-#
-# The house rule as an executable claim, with no threshold to argue about. A
-# margin only has to be ascending and to COVER, so everything of the level
-# outside the chunk is a valid one; and since the rows are the same rows, both
-# calls build output arrays of identical length. Allocation must therefore be
-# identical too — a `Dict` over the halo, a `sort` of it, or any copy would make
-# the wide call cost more, and here the wide halo is 179 times the real one.
-#
-# HEALPix is the fixture because its own `neighbors` allocates nothing, so what
-# is measured is this function rather than the system underneath it.
-# ---------------------------------------------------------------------------
 
 @testset "stencil_table allocates nothing sized by the halo" begin
     sys = DGG.HEALPixSystem()
@@ -579,13 +459,6 @@ end
     @test (@allocated stencil_table(pg, tight)) == (@allocated stencil_table(pg, wide))
 end
 
-# ---------------------------------------------------------------------------
-# MEMBER ADJACENCY on a multi-order set
-#
-# The fixture is the committed California outline the T15/T18 files use, plus
-# their synthetic donut — a box with a square hole, which is the shape that
-# produces genuinely mixed levels around a concave boundary.
-# ---------------------------------------------------------------------------
 
 const FIXTURE = joinpath(@__DIR__, "..", "..", "fixtures", "california.txt")
 
@@ -617,13 +490,6 @@ const DONUT = GI.Polygon([
     GI.LinearRing([(-121.0, 36.0), (-121.0, 38.0), (-119.0, 38.0), (-119.0, 36.0),
         (-121.0, 36.0)])])
 
-# The oracle: expand EVERY member to the reference level, own each leaf, then
-# walk `c`'s whole subtree — not its rim — and collect the members its leaves'
-# neighbours belong to. It materialises what the verb refuses to, and shares no
-# arithmetic with the rim walk.
-#
-# `adjacency` is the level's own relation by default and the GEOMETRIC one when
-# asked, so the same oracle states both laws.
 function oracle(set, c; connectivity = Vertex(), geometric = false)
     sys = system(set)
     L = set.reference_level
@@ -735,21 +601,6 @@ const MOC_SWEEP = [
     end
 end
 
-# ---------------------------------------------------------------------------
-# The rim walk is a rim walk
-#
-# The claim `member_neighbors` makes is that a member far above the reference
-# level costs its subtree's PERIMETER and not its area. Measured as the growth
-# between two coverages of the same cap two levels apart: the coarsest member
-# stays where it is, its subtree grows by the aperture squared — sixteenfold on
-# the quadtrees, forty-ninefold on IGEO7 — and the walk must not notice. An
-# implementation that expanded the subtree would grow with it, so the ratio is
-# the assertion and the absolute byte counts are not.
-#
-# A spherical cap rather than an outline: a short smooth boundary keeps the
-# traversal cheap while still leaving a deep level spread between the coarsest
-# member and the reference level, which is the whole shape being measured.
-# ---------------------------------------------------------------------------
 
 const CAP = GO.UnitSpherical.SphericalCap(
     GO.UnitSpherical.UnitSphereFromGeographic()((10.0, 46.0)), deg2rad(1.0))

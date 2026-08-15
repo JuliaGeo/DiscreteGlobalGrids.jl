@@ -1,15 +1,6 @@
-# The outside face of a subtree boundary: the level-`l` cells that are NOT
-# descendants of `c` but have a neighbour that is.
-#
-# One public type, one private ENGINE per system, exactly as the rim and
-# interior walks are built (`subtree_iterators.jl`). The engine is chosen once,
-# at construction, by `halo_engine` — private multiple dispatch, so an engine's
-# whole protocol is monomorphic and a system adds a fast path by adding one
-# method, not by setting a flag anyone can read.
-#
-# Every engine here is EXACT. A specialization may enumerate a conservative
-# candidate band, but it must run the adjacency test on every candidate before
-# yielding it: approximation never reaches this file's public surface.
+# Lazy iterators over cells outside a subtree or subset that touch it. Systems
+# specialize `halo_engine`; conservative candidate bands must be filtered by
+# the requested adjacency before yielding.
 
 """
     SubtreeHaloIterator(sys, c, l; connectivity = Vertex())
@@ -22,32 +13,16 @@ order, each cell exactly once.
 is `c`'s own one-ring, sorted. `l < level(c)` and `l > max_level(sys)` throw an
 `ArgumentError`.
 
-THE ORDER IS A CONTRACT, and it is worth naming the order precisely, because
-"canonical" is this package's word and a caller needs the operational one:
-`cellposition(levelgrid(sys, l), x)` is STRICTLY INCREASING over the walk. So a
-consumer indexing a position-ordered array — a chunk, a `Vector` laid out by
-`cellposition`, a cube axis — needs no `sort` and no `sortperm`, on any system
-and through any engine. [`halo_positions`](@ref) is that stream of positions
-directly.
+`cellposition(levelgrid(sys, l), x)` is strictly increasing over the walk.
+[`halo_positions`](@ref) exposes this position stream directly. This differs
+from the rotational ordering of [`neighbors`](@ref).
 
-NOT TO BE CONFUSED WITH ONE-RING ORDER, which is a different question with a
-different answer. `neighbors` is rotationally ordered on H3 and IGeo7, and
-ascending position holds for none of it: 0 of the 41,162 H3 level-3 cells have a
-one-ring that is already ascending. The guarantee here is about the HALO, which
-the engines emit in position order by construction — `RingHaloEngine` by
-selection emit at depth zero, everything deeper by walking a canonical
-enumeration it never has to repair.
+Construction does not materialize the halo. The iterator holds `O(depth)` walk
+state and bounded neighbour containers.
 
-Construction never materialises the halo: the iterator holds `O(depth)` walk
-state and bounded native neighbour containers, and nothing sized by the answer.
-Taking the first few cells of a deep halo therefore costs what those cells cost,
-not what the whole ring would.
-
-[`Base.IteratorSize`](@ref) is `SizeUnknown()` wherever no count is proved —
-face seams, poles and pentagons break perimeter formulas — and `HasLength()`
-only where an engine derives the count in closed form. There is no `length` that
-would silently cost a traversal. [`halo_sizehint`](@ref) is the separate,
-explicitly approximate answer for a caller who only wants to `sizehint!`.
+[`Base.IteratorSize`](@ref) is `HasLength()` only when an engine derives an
+exact count; otherwise it is `SizeUnknown()`. [`halo_sizehint`](@ref) provides
+an optional approximate allocation hint.
 
 See also [`halo`](@ref) for the same question about a subset,
 [`halo_positions`](@ref) for the same walk in position space, and
@@ -72,32 +47,17 @@ end
 Base.iterate(it::SubtreeHaloIterator) = iterate(it.engine)
 Base.iterate(it::SubtreeHaloIterator, state) = iterate(it.engine, state)
 
-# `C`, NOT `eltype(E)`, and the difference is inference. The engine parameter is
-# whatever `halo_engine` dispatched to, and that return type is a union over
-# every engine the call might pick — wide enough, once a system specializes,
-# that inference gives up rather than split it, leaving `eltype(E)` unresolved
-# and `collect_subtree`'s `eltype(it)[]` widened to `Vector{Any}`. `C` is the
-# cell that was asked about, which is the cell type the answer is in, so reading
-# it costs inference nothing. The engines still declare their own `eltype`; the
-# sweep "eltype is the system's cell index type, on every engine" pins the two
-# readings together, and "subtree_halo's return type is inferred, not just
-# correct" pins this one.
+# Derive `eltype` from the input cell type so engine dispatch unions do not
+# widen collected results to `Vector{Any}`.
 Base.eltype(::Type{<:SubtreeHaloIterator{S,C}}) where {S,C} = C
 Base.IteratorSize(::Type{<:SubtreeHaloIterator{S,C,K,E}}) where {S,C,K,E} =
     Base.IteratorSize(E)
 
-# Deliberately delegated rather than defined: an engine that cannot count
-# without walking defines no `length`, and the `MethodError` from here is the
-# contract being kept.
+# Engines without a constant-time count intentionally provide no `length`.
 Base.length(it::SubtreeHaloIterator) = length(it.engine)
 
-# `collect` must BE the guarded path, not merely parallel to it: `collect`'s own
-# `HasLength` route would size its vector from a miscounting engine and hand
-# back an `undef` tail as cell ids. See `collect_subtree`.
-#
-# The hint is the second argument and never the first: `collect_subtree` still
-# reads `IteratorSize` to decide whether the count guard arms, so an approximate
-# number reaches `sizehint!` and nothing else. See `halo_sizehint`.
+# Validate declared lengths during collection; approximate hints affect only
+# capacity allocation.
 Base.collect(it::SubtreeHaloIterator) = collect_subtree(it, halo_sizehint(it))
 
 Base.show(io::IO, it::SubtreeHaloIterator) = print(io, "SubtreeHaloIterator(",
@@ -108,22 +68,16 @@ Base.show(io::IO, it::SubtreeHaloIterator) = print(io, "SubtreeHaloIterator(",
 # The one-ring engine: `l == level(c)`
 # ===========================================================================
 
-# The ring comes back in ROTATIONAL order and the halo owes ascending order, so
-# the sort is a selection emit over a container of at most `max_neighbors`
-# elements: the state is the count emitted plus the last value, both isbits, and
-# nothing is copied or allocated. A `sort` here would have to leave the fixed
-# capacity container and heap-allocate (see `systems/H3/neighbors.jl`).
+# Emit the rotationally ordered native ring in ascending order without copying
+# its fixed-capacity container.
 """
     RingHaloEngine(ring)
 
 `c`'s own one-ring, ascending, by selection emit. `O(degree^2)` time with
 `degree <= max_neighbors(sys, connectivity)`, no allocation, isbits state.
 
-`length` is `length(ring)`, which is honest only because a native one-ring
-never lists the same cell twice — the selection emit yields each DISTINCT value
-once, so a repeated neighbour would make the engine yield fewer cells than it
-claims. No bundled system repeats; if one ever did, `collect_subtree` is the
-backstop that turns the miscount into an `error` rather than an `undef` tail.
+`length` equals `length(ring)`, requiring native one-rings to contain no
+duplicates. `collect_subtree` reports a count mismatch if this invariant fails.
 """
 struct RingHaloEngine{V,C}
     ring::V
@@ -168,16 +122,7 @@ end
 # Generic engine construction
 # ===========================================================================
 
-# The halo's level guard, factored out because it has to be CALLABLE from a
-# system's own engine. `interface/system.jl` promises that an engine's
-# `ArgumentError` is the one the eager verb raises, and a specialization that
-# validated through `descendant_range` instead answered the very same user error
-# in the very same call with different words than the generic engine did — on
-# systems the caller is meant to be able to swap. One guard, one wording.
-#
-# "past max_level" and not "below the deepest level": nothing is below the
-# deepest, and a reader parses "below 19" as "< 19". The rest of the package
-# already says "past max_level".
+# Shared level validation keeps generic and specialized engines consistent.
 function check_halo_level(sys::AbstractHierarchicalGridSystem,
         c::AbstractCellIndex, target::Int)
     lc = level(c)
@@ -191,14 +136,10 @@ end
 """
     generic_halo_engine(sys, c, target, connectivity)
 
-The engine every specialization's guards return to, and the one a newly
-registered system inherits: the level guard, then the one-ring at depth zero,
-then [`OutsideWalkEngine`](@ref) — or [`ScanHaloEngine`](@ref) on a system with
-no [`descendant_range`](@ref) to prune by.
-
-Named rather than inlined into `halo_engine` because a system's own method calls
-this when a guard fires, which is what makes a specialization a speed decision
-and never a correctness one.
+Return the generic halo engine after level validation: [`RingHaloEngine`](@ref)
+at depth zero, [`OutsideWalkEngine`](@ref) for sorted subtrees, or
+[`ScanHaloEngine`](@ref) when no descendant range is available. Specialized
+engines call this method when their preconditions fail.
 """
 function generic_halo_engine(sys::AbstractHierarchicalGridSystem,
         c::AbstractCellIndex, target::Int, connectivity::Connectivity)
@@ -213,43 +154,24 @@ halo_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
     target::Int, connectivity::Connectivity) =
     generic_halo_engine(sys, c, target, connectivity)
 
-# The ellipsoid wrapper is transparent: the halo of a subtree is a question about
-# the discrete hierarchy, which the authalic transform does not touch.
+# Authalic wrapping does not change the hierarchy or adjacency.
 halo_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
     connectivity::Connectivity) = halo_engine(sys.system, c, target, connectivity)
 
 """
     subtree_halo(sys, c, l; connectivity = Vertex()) -> Vector
 
-The level-`l` cells outside `c`'s subtree that touch it, ascending. The
-explicitly materialising form of [`SubtreeHaloIterator`](@ref) — the halo can be
-far larger than the subtree's rim, so collecting it is the caller's decision,
-never the constructor's. Ascending means ascending `cellposition` on
-`levelgrid(sys, l)`; see the iterator's docstring for the contract.
+Materialize the level-`l` cells outside `c`'s subtree that touch it, in ascending
+target-grid position order. This is `collect(SubtreeHaloIterator(...))`.
 
-THE MOTIVATING READ IS A CHUNK PLUS ITS STENCIL MARGIN, AND IT IS NOT THIS VERB.
-On the five systems with [`has_sorted_subtrees`](@ref) — every one but A5, which
-has no [`descendant_range`](@ref) method to call — `descendant_range(sys, c, l)`
-is the chunk's contiguous position block, and the extra fetch list a one-ring
-stencil needs is [`halo_positions`](@ref), which streams:
+Use [`halo_positions`](@ref) when positions rather than cell ids are required:
 
     for p in halo_positions(sys, c, l)
         margin[p] = source[p]
     end
 
-No halo table, no id `Vector`, no position `Vector`. Writing that read as
-`cellposition.(Ref(levelgrid(sys, l)), subtree_halo(sys, c, l))` would build both
-— for a 30-million-cell halo, 480 MB of ids to make 240 MB of positions and then
-drop the ids — which is spending the laziness this file is built out of in order
-to arrive at the same integers.
-
-Reach for `subtree_halo` when the IDS are the answer and are wanted all at once:
-naming cells to a system that indexes by id, or handing a halo to something that
-must index it more than once. `sizehint!` it with [`halo_sizehint`](@ref) if you
-are building the `Vector` yourself.
-
-The position stream is also the second argument of [`stencil_table`](@ref), which
-is how the two halves get addressed once they are laid end to end in one buffer.
+This avoids materializing ids before converting them to positions. The position
+stream can also be passed to [`stencil_table`](@ref).
 """
 subtree_halo(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
         l::Integer; connectivity::Connectivity = Vertex()) =
@@ -258,67 +180,36 @@ subtree_halo(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
 """
     halo(subset; connectivity = Vertex())
 
-The cells immediately outside a same-level subset — the subset face of
-[`SubtreeHaloIterator`](@ref). Defined for [`PartialGrid`](@ref),
-[`CellVector`](@ref) and
-[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup), whose methods
-live beside the other subset verbs in `stencil.jl` and `dimensionaldata.jl`.
+Return a lazy iterator over cells outside a same-level subset that touch a
+member, in ascending complete-level position order and without duplicates.
+Defined for [`PartialGrid`](@ref), [`CellVector`](@ref), and
+[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup). `Vertex()`
+counts vertex contact and `Edge()` requires a shared edge.
 
-The same definition a subtree gets, read against membership instead of ancestry:
-every cell of the subset's level that the subset does **not** hold but that has a
-neighbour the subset does, ascending, each cell once. `Vertex()` counts vertex
-contact, `Edge()` requires a shared edge.
+Positions refer to the complete level grid because halo cells are absent from
+the subset. [`halo_positions`](@ref) yields those positions.
 
-Ascending is the same contract [`SubtreeHaloIterator`](@ref) states, read on the
-COMPLETE level grid: `cellposition(subset, x)` is `nothing` for every cell of a
-halo by definition, so the grid a position can mean here is the complete one the
-subset was cut from. [`halo_positions`](@ref) of this iterator yields those.
+A removed interior cell belongs to the halo when it touches a remaining member.
 
-**A hole is part of the halo.** A cell removed from the middle of a subset is
-outside the subset and has in-subset neighbours, so it is a halo cell. That is
-the definition read literally rather than a special case, and it is the reason
-this verb answers something [`subtree_halo`](@ref) cannot.
+A rooted `PartialGrid` containing a complete subtree returns a
+[`SubtreeHaloIterator`](@ref); other inputs return a
+[`SubsetHaloIterator`](@ref). Both use `O(depth)` state beyond subset storage.
 
-ALWAYS AN ITERATOR, on every container and every path. A rooted `PartialGrid`
-holding a complete subtree returns a [`SubtreeHaloIterator`](@ref) — the subtree
-walk is the specialized one, and re-deriving it from membership would be slower
-for no gain — and anything else returns a [`SubsetHaloIterator`](@ref). Both are
-lazy, both hold `O(depth)` state beyond the subset's own storage, and the
-concrete type is settled once at construction, exactly as [`halo_table`](@ref)'s
-two branches are. So `for x in halo(sub)` gets the same laziness either way, and
-`collect` is the explicit materializing form.
+[`halo_table`](@ref) instead returns in-subset neighbour positions for each
+member. [`stencil_table`](@ref) combines a subset with its materialized halo to
+produce complete rows.
 
-Not to be confused with [`halo_table`](@ref), which is the IN-SET positional
-stencil: one row of in-set neighbour positions per cell of the subset. That verb
-answers "which of my own cells does each of my cells touch"; this one answers
-"which cells that I do not hold touch me". Neither replaces the other, and
-[`stencil_table`](@ref) is the verb that needs both — it takes this list, once
-materialised as ascending positions, and completes `halo_table`'s short rim rows
-against it.
-
-A [`MultiOrderCellSet`](@ref) has no method here and will not grow one: its
-members sit at different levels, so there is no one level for a halo to answer
-at. Mixed-level adjacency is [`member_neighbors`](@ref).
+[`MultiOrderCellSet`](@ref) has no `halo` method because its members may occupy
+different levels. Use [`member_neighbors`](@ref) for mixed-level adjacency.
 """
 function halo end
 
 """
     SubsetHaloIterator(subset, connectivity, engine)
 
-The halo of an arbitrary same-level subset, lazily — what [`halo`](@ref) returns
-whenever the subset is not a rooted complete subtree: a subset with a hole, a
-subset whose root was forgotten, a [`CellVector`](@ref), a
-[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup).
-
-Positional and built by [`halo`](@ref), which owns the engine choice. There is
-nothing a caller could pass here that `halo` does not already decide from the
-subset itself.
-
-Construction costs `O(1)` and materialises nothing — not the halo, and not a
-summary of the input either. The walk is [`OutsideWalkEngine`](@ref)'s, so the
-state is one `O(depth)` frame stack, and it prunes by the subset's own
-[`subset_span`](@ref)s. [`Base.IteratorSize`](@ref) is the engine's, which is
-`SizeUnknown()` — a subset's halo has no perimeter formula at all.
+Internal lazy wrapper returned by [`halo`](@ref) for a same-level subset that is
+not a rooted complete subtree. Construction is O(1); iteration uses an O(depth)
+frame stack and prunes with [`subset_span`](@ref). Its size is unknown.
 """
 struct SubsetHaloIterator{S,K<:Connectivity,E}
     subset::S
@@ -329,18 +220,12 @@ end
 Base.iterate(it::SubsetHaloIterator) = iterate(it.engine)
 Base.iterate(it::SubsetHaloIterator, state) = iterate(it.engine, state)
 
-# THE ONE ITERATOR THAT STILL DELEGATES, and it can: there is no cell here to
-# key off — the subject is a membership predicate over an arbitrary set, not a
-# root — and `subset_halo_engine` picks between exactly two engine types, so the
-# union is narrow enough for inference to resolve `eltype(E)`. If a third subset
-# engine ever appears, this line is what to re-measure: the comment on
-# `SubtreeHaloIterator` above is what happens when the union outgrows it.
+# The subset engine union is narrow enough for inference to resolve `eltype(E)`.
 Base.eltype(::Type{<:SubsetHaloIterator{S,K,E}}) where {S,K,E} = eltype(E)
 Base.IteratorSize(::Type{<:SubsetHaloIterator{S,K,E}}) where {S,K,E} =
     Base.IteratorSize(E)
 
-# Delegated rather than defined, for `SubtreeHaloIterator`'s reason: no subset
-# engine counts without walking, so the `MethodError` from here is the contract.
+# Subset engines do not provide a constant-time `length`.
 Base.length(it::SubsetHaloIterator) = length(it.engine)
 
 Base.collect(it::SubsetHaloIterator) = collect_subtree(it, halo_sizehint(it))
@@ -349,31 +234,7 @@ Base.show(io::IO, it::SubsetHaloIterator) = print(io, "SubsetHaloIterator(",
     it.subset, "; connectivity = ", it.connectivity, ")")
 
 # ===========================================================================
-# The same walk, in position space
-#
-# WHY THIS IS A VERB AND NOT A `map`. A halo is a fetch list, and a fetch list
-# is read against storage laid out by `cellposition` — a chunk, a cube axis, a
-# `Vector` the caller allocated `ncells` long. So the caller's last step is
-# almost always the position, and the id was a way station. Two of the engines
-# never needed it in the first place: `ScanHaloEngine` walks POSITIONS and calls
-# `cellindex` to make an id, and `SquareBandEngine` computes `face·n² + child`,
-# which is the position minus one, before wrapping it in a `LevelIndex`.
-#
-# Yielding positions therefore costs nothing worth measuring on HEALPix, S2 and
-# ISEA4R (a measured 0.64-0.71 ns per cell for `cellposition`, which on those
-# three is `index + 1` behind one type check) and is strictly cheaper on A5,
-# where the scan's own state IS the position and re-deriving it through
-# `cellposition` costs a measured 38 ns of Hilbert decode per cell. It genuinely
-# costs a conversion on the two aperture-7 systems — a measured 7.7 ns on IGeo7
-# and 16.6 ns on H3, whose `cellposition` is an FFI validity check plus a child
-# position — and that is the honest price of a system whose canonical id is not
-# its position. `test/systems/crosssystem/subtree_halos.jl` is where those six
-# numbers are reproduced.
-#
-# WHAT IT IS NOT. Not `cellposition.(collect(halo))`: that materialises the ids
-# to throw them away, which is the whole cost this exists to remove. The
-# iterator holds the halo iterator and the grid, threads the halo's own state,
-# and adds nothing sized by the answer.
+# The same walk in complete-grid position space, without first materializing ids.
 # ===========================================================================
 
 """
@@ -392,10 +253,8 @@ struct HaloPositionIterator{I,G}
     grid::G
 end
 
-# The grid a position is a position IN. For a subtree it is the target level;
-# for a subset it is the COMPLETE grid the walk enumerates from, which both
-# subset engines already carry as `grid` — the subset's own `cellposition`
-# answers `nothing` for every halo cell, so it cannot be the one meant.
+# Subtree positions refer to the target level; subset positions refer to the
+# complete grid from which the subset was drawn.
 _halo_grid(it::SubtreeHaloIterator) = levelgrid(it.system, it.level)
 _halo_grid(it::SubsetHaloIterator) = it.engine.grid
 
@@ -410,23 +269,15 @@ The one-argument form takes a halo iterator, so a subset's halo composes —
 `halo_positions(halo(pg))` — and the positions are then on the complete grid the
 subset was cut from, for the reason [`halo`](@ref) gives.
 
-The motivating read is a stencil margin against position-indexed storage:
+For example, read a stencil margin from position-indexed storage:
 
     for p in halo_positions(sys, chunk, l)
         margin[p] = source[p]
     end
 
-which is why this is a verb and not `cellposition.(subtree_halo(...))`. That
-expression materialises a `Vector` of ids in order to build a `Vector` of
-positions and then discards the first; this streams, in the walk's own
-`O(depth)` state.
-
-WHAT IT COSTS, per cell, on top of the walk. Nothing worth measuring on HEALPix,
-S2 and ISEA4R, where a position is the id plus one. Strictly less than nothing on
-A5, whose scan holds the position already and would otherwise pay a Hilbert
-decode to recover it. A real conversion on IGeo7 and H3, whose canonical ids are
-not dense — under 10% of what those systems' own halo walks cost per cell, but
-not free, and named here rather than glossed.
+The iterator streams positions with the underlying walk's O(depth) state.
+Engines that already track positions return them directly; others call
+`cellposition` per cell.
 """
 halo_positions(it::Union{SubtreeHaloIterator,SubsetHaloIterator}) =
     HaloPositionIterator(it, _halo_grid(it))
@@ -435,18 +286,15 @@ halo_positions(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
         l::Integer; connectivity::Connectivity = Vertex()) =
     halo_positions(SubtreeHaloIterator(sys, c, l; connectivity))
 
-# The conversion, dispatched on the ENGINE so each walk pays only what its own
-# state leaves undone. This is the default — one `cellposition`. The one
-# override lives beside `ScanHaloEngine`, whose state already IS the position.
+# Engines may override the default `cellposition` conversion when state already
+# contains the position.
 @inline _halo_position(::Any, grid, x, state) = cellposition(grid, x)::Int
 
 Base.eltype(::Type{<:HaloPositionIterator}) = Int
 Base.IteratorSize(::Type{<:HaloPositionIterator{I,G}}) where {I,G} =
     Base.IteratorSize(I)
 
-# Delegated for its wrapped walk's reason: an engine that cannot count without
-# walking defines no `length`, and reading positions instead of ids does not
-# make it countable.
+# Position conversion does not change the wrapped iterator's countability.
 Base.length(it::HaloPositionIterator) = length(it.halo)
 
 Base.collect(it::HaloPositionIterator) = collect_subtree(it, halo_sizehint(it))
@@ -475,77 +323,35 @@ end
 """
     halo_sizehint(it) -> Union{Int,Nothing}
 
-An APPROXIMATE upper bound on how many cells `it` yields, or `nothing` where no
-bound is known. For `sizehint!` and for nothing else.
+Return an approximate upper bound on the number of yielded cells, or `nothing`
+when no bound is available. The result is suitable only for `sizehint!`.
 
     h = halo_sizehint(it)
     out = eltype(it)[]
     h === nothing || sizehint!(out, h)
     for x in it; push!(out, x); end
 
-WHY THIS IS NOT A `length`, AND MUST NOT BECOME ONE. `length` is a promise a
-caller may allocate against and index into: `collect`'s sized route fills a
-vector of exactly that many slots by iterating, so a `length` that is one too
-large hands back an `undef` slot as a cell id. Five of the seven engines refuse
-to declare one for exactly that reason (see [`SubtreeHaloIterator`](@ref)), and
-`collect_subtree`'s miscount guard is meaningful only while they do. A HINT may
-be wrong in both directions and costs at most one reallocation either way, so it
-can answer where a count cannot — and it is threaded into `collect` as a
-`sizehint!` argument, never through [`Base.IteratorSize`](@ref). Refusing every
-size estimate as well as every count is what made `collect` of a `SizeUnknown`
-halo allocate several times its own answer while growing.
-
-WHERE THE NUMBERS COME FROM. Every one of them is measured by
-`test/systems/crosssystem/subtree_halos.jl`, and the sweep is described here
-rather than summarised as a case count so that the description stays true when
-the sweep is widened:
-
-  - the one-ring at depth zero, and the in-face square band, are EXACT — both
-    engines already declare a `length` and this returns it;
-  - the seam square band is `4·side + 8`. Over WHOLE GENERATIONS of all three
-    aperture-4 systems at bases 0-2 and depths 1-3, both connectivities, the
-    count is `4·side` under [`Edge`](@ref) and `4·side + e` under
-    [`Vertex`](@ref) with `e ∈ {0, 2, 3, 4, 5}`; `e == 5` is ISEA4R and only
-    ISEA4R, at a block whose corner sits at icosahedral vertex 0 or 11, where
-    five diamonds meet and the corner contributes two cells rather than one.
-    It is still exactly 5 at depth 12, i.e. at side 4096, so it is a fact about
-    the vertex and not about the perimeter. `+8` is two cells per corner, which
-    is the structural reading of that observation rather than the fitted
-    constant;
-  - the hexagonal walks are `3^(d+1) + 3` for `d = l - level(c)`, which is the
-    census around a hexagon exactly, and about 20% over around a pentagon
-    (`5(3^d + 1)/2`). Sampled across both systems at bases 0-1 and depths 1-4,
-    every halo has one of those two counts and none exceeds the hint;
-  - [`ScanHaloEngine`](@ref) and [`OutsideWalkEngine`](@ref) answer `nothing`.
-    A5's subtree perimeter does not follow the aperture-4 formula — measured 12,
-    22 and 42 at depths 1-3 from a level-1 root against `4·2^d + 5` of 13, 21
-    and 37, under at one depth and over at two — and the generic walk serves
-    subsets, whose halo has no perimeter at all. A guess there would be the one
-    kind of wrong this file does not ship.
+Unlike `length`, an approximate hint may over- or underestimate without
+exposing uninitialized elements. Exact-size engines return their length. Seam
+bands use `4·side + 8`; hexagonal walks use `3^(d+1) + 3`, which also bounds
+pentagon halos. [`ScanHaloEngine`](@ref) and [`OutsideWalkEngine`](@ref) return
+`nothing` because no general perimeter bound is available.
 """
 halo_sizehint(it::SubtreeHaloIterator) = _halo_sizehint(it.engine)
 halo_sizehint(it::SubsetHaloIterator) = _halo_sizehint(it.engine)
 halo_sizehint(it::HaloPositionIterator) = halo_sizehint(it.halo)
 
-# Nothing is the answer for a walk with no bound, and it is the answer a walk
-# gets by DEFAULT — `ScanHaloEngine` and `OutsideWalkEngine` land here, and so
-# does an engine added later, which is unbounded until someone measures it. The
-# four bounded engines answer beside their own definitions below, the way each
-# one's `IteratorSize` and emit rule already do.
+# New engines have no size hint unless they define one explicitly.
 _halo_sizehint(::Any) = nothing
 
-# The one-ring's count is exact and already declared, so the hint IS the
-# `length` rather than a second opinion about it.
+# A one-ring has an exact declared length.
 _halo_sizehint(e::RingHaloEngine) = length(e)
 
 # ===========================================================================
 # The adjacency providers
 #
-# Candidate enumeration and adjacency testing are kept apart on purpose: the
-# walk below decides WHICH cells to consider, a provider decides whether one of
-# them touches the subtree. The indexed provider is the DGGS's own one-ring; the
-# geometry provider compares unit-sphere boundaries and shares no topology with
-# it, which is what makes it an oracle rather than a second opinion.
+# Candidate enumeration is separate from adjacency testing. The indexed
+# provider uses native one-rings; the geometry provider compares boundaries.
 # ===========================================================================
 
 """
@@ -564,11 +370,9 @@ Adjacency by unit-sphere boundary comparison: `x` touches the subtree when its
 boundary shares a vertex ([`Vertex`](@ref)) or two ([`Edge`](@ref)) with the
 boundary of some target-level descendant of `root`.
 
-Descendants are visited through a second pruned hierarchy walk, so this costs
-`O(depth)` memory rather than the subtree. It shares no index arithmetic with
-[`IndexedNeighbors`](@ref) and is the oracle every specialized engine is tested
-against — never `neighbors`, and never [`subtree_border`](@ref), which do share
-it.
+Descendants are visited through a second pruned hierarchy walk using `O(depth)`
+memory. This provider is independent of [`IndexedNeighbors`](@ref)'s index
+arithmetic and can validate specialized engines.
 
 Comparison is against **target-level descendant** boundaries, not `root`'s own
 polygon: H3, IGeo7 and A5 descendants can overhang their parent.
@@ -585,20 +389,13 @@ subset does not hold it and does hold one of its neighbours,
         any(nb -> cellposition(subset, nb) !== nothing,
             neighbors(complete, x, 1; connectivity))
 
-Unlike the two providers above, this predicate is COMPLETE — it decides
-outside-ness as well as contact. It has to be: a subset has no descendant range
-for `_admit`'s skip to retire the subject by, and no ancestor for
-[`ScanHaloEngine`](@ref) to compare against. Folding both halves in here is also
-what makes a HOLE fall out: an absent interior cell fails the first test's
-negation nowhere and passes the second, so it is emitted like any other outside
-cell.
+This predicate tests both non-membership and contact because an arbitrary subset
+has no root ancestor or descendant range. Consequently, an absent interior cell
+is emitted when it touches a member.
 
-`complete` is `levelgrid(system, level)` — the grid the neighbours come from,
-since a subset's own `neighbors` is already clipped to membership and would hide
-exactly the cells being looked for. The subset supplies membership only, which
-is `O(log #windows)` on a [`CellVector`](@ref) and `O(log #cells)` on a
-[`PartialGrid`](@ref) — plus [`subset_span`](@ref), which is that same search
-asked about a whole block at once.
+`complete` is `levelgrid(system, level)`, because subset adjacency is clipped to
+membership. Membership costs O(log(number of windows)) for [`CellVector`](@ref)
+and O(log(number of cells)) for [`PartialGrid`](@ref).
 """
 struct SubsetMembership{S,G}
     subset::S
@@ -619,27 +416,20 @@ const _SPAN_ALL = 2
 How much of the position block `lo:hi` of the subset's own complete level the
 subset holds: `_SPAN_NONE`, `_SPAN_SOME` or `_SPAN_ALL`.
 
-The block is always a node's [`descendant_range`](@ref), so this is the
-membership search asked about a whole subtree at once instead of cell by cell —
-`O(log #windows)` on a [`CellVector`](@ref) and `O(log #cells)` on a
-[`PartialGrid`](@ref), the same searches [`cellposition`](@ref) runs, and never
-`O(hi - lo)`. It is what lets the subset walk retire a chunk's whole interior
-for the price of one lookup; see `_admit(::SubsetMembership, ...)`.
+The block is a node's [`descendant_range`](@ref). Classification costs
+O(log(number of windows)) for [`CellVector`](@ref) and O(log(number of cells))
+for [`PartialGrid`](@ref), without scanning the block.
 
-Both containers store cells in ascending position order, so "the subset holds
-every position of `lo:hi`" is decided by the two ENDPOINTS plus a count: the
+Both containers store cells in ascending position order, so full containment is
+decided by the endpoints plus a count: the
 stored entries between them number `hi - lo + 1` only if none is missing.
 """
 function subset_span end
 
 # --- the indexed test -------------------------------------------------------
 
-# The halo's own definition, as one free function: `x` is a halo cell of `root`'s
-# subtree exactly when the system's one-ring puts a descendant of `root` next to
-# it. Every engine in this file that filters candidates ends here — the outside
-# walk through the provider below, the seam band through `NativeCheck`, the
-# hexagonal walk through both its emit rule and its calibration — so there is one
-# definition to read and one to get wrong.
+# A candidate touches the subtree when its native one-ring contains a descendant
+# of the root.
 @inline function _touches_root(sys, grid, root, rootlevel::Int, x,
         connectivity::Connectivity)
     for nb in neighbors(grid, x, 1; connectivity)
@@ -653,8 +443,7 @@ end
 
 # --- the subset test --------------------------------------------------------
 
-# The same definition with membership in place of ancestry, and it carries the
-# outside half itself — see `SubsetMembership`.
+# For subsets, test non-membership and adjacency to a member.
 @inline function _touches_subtree(p::SubsetMembership, e, x)
     cellposition(p.subset, x) === nothing || return false
     for nb in neighbors(p.complete, x, 1; connectivity = e.connectivity)
@@ -676,11 +465,8 @@ function _touches_subtree(::ForcedGeometry, e, x)
     tol = _match_tolerance(xb)
     needed = _needed_contacts(e.connectivity)
     xcap = cell_cap(e.grid, x)
-    # Depth zero has no descent to make: `root` IS its own only target-level
-    # descendant, so the comparison is against the root's own boundary. Handled
-    # here rather than left to the cursor because a cursor seeded at the target
-    # level has no children to expand — it would descend past the target to
-    # `max_level` and throw.
+    # At depth zero, compare directly with the root; a descendant cursor has no
+    # target-level child to expand.
     if e.rootlevel == e.target
         intersects_cap(cell_cap(e.grid, e.root), xcap) || return false
         return _shared_vertices(xb, cell_boundary(e.grid, e.root), tol) >= needed
@@ -688,9 +474,8 @@ function _touches_subtree(::ForcedGeometry, e, x)
     return _descendant_touches(e, xb, tol, needed, xcap)
 end
 
-# A lazy cursor over `root`'s target-level descendants, pruned by the candidate's
-# own cap: a node whose extent misses `xcap` holds no descendant that can touch
-# `x`. `O(depth)` memory, and the descendants are never materialised.
+# Walk target-level descendants lazily and prune nodes whose extents miss the
+# candidate cap. Uses O(depth) memory.
 function _descendant_touches(e, xb, tol::Float64, needed::Int, xcap)
     sys = e.system
     st = _empty_walk_stack(e.root)
@@ -698,9 +483,8 @@ function _descendant_touches(e, xb, tol::Float64, needed::Int, xcap)
     while !isempty(st)
         k = length(st)
         f = @inbounds st[k]
-        # Defence in depth behind the depth-zero early return above: a frame at
-        # the target level is a leaf of THIS walk, whatever put it there.
-        # `children` of a `max_level` cell throws, so never ask.
+        # Treat target-level frames as leaves; `children` may reject max-level
+        # cells.
         if level(f.cell) == e.target
             st = Helpers.small_pop(st)
             continue
@@ -728,36 +512,24 @@ end
 # The outside-first walk
 # ===========================================================================
 
-# Why outside-first at all: a descendant-first algorithm (walk the rim, take
-# each rim cell's neighbours, drop the ones still inside) produces duplicates
-# out of order, and therefore needs a seen-set and a final sort — both sized by
-# the halo. Reversing the search removes both. Each outside cell is considered
-# at most once, so there is nothing to deduplicate and nothing to sort.
+# An outside-first walk considers each candidate once in canonical order, so it
+# needs neither a seen set nor a final sort.
 #
-# Why the cap prune is sound: a halo cell `x` shares at least a point with some
+# Cap pruning is sound when a halo cell `x` shares a point with some
 # descendant `d` of `root`. `node_extent(sys, root)` provably contains every
 # boundary point of every descendant of `root`, so that shared point lies in it;
 # `node_extent(sys, n)` likewise contains `x`'s boundary for any ancestor `n` of
 # `x`. So the two caps intersect, and a node whose cap misses the root cap can
 # contain no halo cell.
 #
-# THE ASSUMPTION THAT COUPLES THE TWO HALVES OF THIS FILE. That argument is
-# GEOMETRIC — it is the covering law over boundary POINTS — but the default
-# provider's adjacency is TOPOLOGICAL, the system's native one-ring. The step
-# "a halo cell shares at least a point with some descendant" is therefore an
-# assumption about `neighbors`, not a theorem: it holds only while every pair of
-# cells the system calls adjacent has boundaries that share a point. No bundled
-# system violates it (checked by the forced-geometry agreement testset). A
-# system that did — an adjacency defined by index arithmetic across a seam with
-# no shared drawn corner — would keep the prune's arithmetic intact and its
-# soundness not, and the walk would silently drop that halo cell. Such a system
-# needs its own `halo_engine`, or a rootcap widened to cover the discrepancy.
+# This requires native neighbours to share a boundary point. A system with
+# topological adjacency between geometrically disjoint cells must provide its
+# own `halo_engine` or widen the pruning cap.
 #
-# Why not lon/lat: longitude/latitude boxes are unusable at seams and poles, so
-# everything here stays in unit-sphere XYZ.
+# Unit-sphere caps avoid longitude/latitude seam and pole degeneracies.
 #
 # ---------------------------------------------------------------------------
-# THE SUBSET WALK PRUNES BY A DIFFERENT LAW, AND IT IS NOT GEOMETRIC
+# Subset pruning uses position spans rather than geometry.
 #
 # `SubsetMembership` has no root, so there is no root cap to compare against and
 # no covering law to lean on. What it has instead is the subset's own position
@@ -766,33 +538,18 @@ end
 #     for every pair of cells `x`, `y` that the system calls VERTEX-adjacent at
 #     level `l`, `parent(y)` is `parent(x)` or a vertex-neighbour of it.
 #
-# Applied down the generations it gives the statement the walk actually uses: a
+# This implies that a
 # neighbour of a level-`t` cell has its level-`lc` ancestor inside the CLOSED
-# one-ring of that cell's own level-`lc` ancestor. So if neither a node nor any
+# one-ring of that cell's own level-`lc` ancestor. If neither a node nor any
 # level-`lc` neighbour of it holds a member, no target-level descendant of it can
 # have a member neighbour, and none of them is a halo cell. That is what
-# `_near_subset` tests, and it is why the subset walk visits nodes in proportion
-# to the subset's BOUNDARY rather than to the area of a bounding cap.
+# `_near_subset` tests, so traversal follows the subset boundary.
 #
-# THE SAME KIND OF ASSUMPTION THE CAP PRUNE MAKES, and it fails the same way:
-# loudly in the differential tests, silently in production. A system whose
-# refinement moved a cell out from under its parent's neighbourhood — an
-# adjacency defined by index arithmetic that jumps a generation — would keep this
-# arithmetic intact and its soundness not, and the walk would drop that halo
-# cell. Every bundled system obeys it EXHAUSTIVELY: zero violations over every
-# adjacent pair at levels 1 through 6 on HEALPix, S2, ISEA4R and A5, 1 through 5
-# on IGeo7 and 1 through 4 on H3, which is what
-# `test/systems/crosssystem/subtree_halos.jl` re-runs on every suite. A system
-# that does not obey it must supply its own subset engine.
+# A system whose refinement violates this coarse-containment law must provide a
+# custom subset engine.
 #
-# THE PROBE IS `Vertex()` WHATEVER WAS REQUESTED, for `_seam_band_engine`'s
-# reason: the `Edge()` halo is a subset of the `Vertex()` one, so a superset
-# derived under `Vertex()` covers both, and the law above is stated — and
-# tested — under `Vertex()` only. NOTHING HERE RELIES ON AN `Edge()` READING OF
-# IT, and nothing should: narrowing the probe to the requested connectivity would
-# be assuming a second law this file has not written down and the testset does
-# not check, and a system that obeyed the `Vertex()` form while breaking the
-# `Edge()` one would then lose halo cells silently under `Edge()` alone.
+# Probe with `Vertex()` because an edge halo is a subset of the vertex halo and
+# the coarse-containment law is required only for vertex adjacency.
 
 # One frame per level strictly above the target, so a full-depth walk from the
 # root generation pushes at most `max_level` of them — 30 on S2, the deepest
@@ -865,16 +622,10 @@ const _HALO_SKIP = 0
 const _HALO_EMIT = 1
 const _HALO_DESCEND = 2
 
-# How expensive a cap prune is BEFORE the adjacency test, per SUBTREE provider —
-# the subset arm of `_admit` never asks, because its adjacency test opens with a
-# `cellposition` that retires an in-set candidate for less than a cap costs. The
-# indexed provider is one native `neighbors` call, cheaper than building a cap
-# from a boundary, so it declines too: at the target level it goes straight to
-# the test. The forced-geometry provider walks the ROOT's subtree once per
-# candidate, so a single cap comparison that retires the candidate outright is
-# worth many times its cost — and this is the oracle path, which the
-# differential tests hammer. Dispatch on the provider so the indexed path pays
-# nothing for the distinction, not a branch on a field.
+# Only the forced-geometry provider applies a target-level cap prune. Its
+# adjacency check walks the root subtree, so the cap comparison can avoid much
+# more work. Native indexed adjacency and subset membership are cheaper than
+# constructing the cap and proceed directly to their checks.
 #
 # Sound for the same reason the internal-node prune is: a halo cell shares a
 # boundary point with a descendant of `root`, that point is inside `rootcap` by
@@ -884,12 +635,8 @@ const _HALO_DESCEND = 2
 @inline _target_prune(::ForcedGeometry, e, c) =
     intersects_cap(cell_cap(e.grid, c), e.rootcap)
 
-# ONE VERDICT PER NODE, AND THE PROVIDER DECIDES IT. The subtree providers ask a
-# question about ANCESTRY and prune by geometry; `SubsetMembership` asks one
-# about MEMBERSHIP and prunes by the subset's own position spans. Those are
-# different rules, not one rule with a flag, so `_admit` dispatches on the
-# provider exactly as `_touches_subtree` and `_target_prune` do — each arm stays
-# monomorphic and neither pays for the other's fields.
+# Subtree providers prune by ancestry and geometry; `SubsetMembership` prunes
+# by position spans. Provider dispatch keeps each admission path monomorphic.
 @inline _admit(e::OutsideWalkEngine, c) = _admit(e.provider, e, c)
 
 # --- the subtree arm --------------------------------------------------------
@@ -898,14 +645,9 @@ const _HALO_DESCEND = 2
 # inside the subject's is the subject subtree itself (ranges nest or are
 # disjoint), and integer comparison retires it without touching geometry.
 #
-# That containment can only hold AT the root's own level, which is why the guard
-# is `==` and not `>=`. Deeper than the root there are two cases and neither can
-# be contained: a node that is one of the root's own descendants is unreachable,
-# because the root was already skipped whole and the walk never descended into
-# it; and a node that is not has a descendant range disjoint from the root's, so
-# the containment test is a `descendant_range` call that cannot succeed. On
-# IGeo7 with a level-2 root at `l = 5` that is 630 of the 689 nodes the walk
-# visits.
+# Containment is checked only at the root level. Root descendants are
+# unreachable because the root is skipped whole; every other deeper subtree
+# has a disjoint descendant range.
 @inline function _admit(p::Union{IndexedNeighbors,ForcedGeometry},
         e::OutsideWalkEngine, c)
     lc = level(c)
@@ -995,32 +737,10 @@ end
 # ===========================================================================
 # The linear scan: canonical order without a descendant range
 #
-# A5 AND WHY IT STAYS HERE. This is the engine A5 gets, at every root and every
-# depth, and it is the only system that takes it. The reason is one missing
-# primitive: `has_sorted_subtrees(A5System())` is false and A5 has no
-# `descendant_range` method at all, so `OutsideWalkEngine` has no integer range
-# to skip the subject subtree by and no ordering to make a pruned descent
-# canonical. Without those the honest walk is the scan: `O(ncells)` in time,
-# `O(1)` in memory, canonical by construction because it IS the canonical order.
-#
-# A5 DOES have native indexed one-rings, so it is worth saying what would NOT
-# justify a fast path. Its aperture and its Hilbert-like indexing are not
-# evidence of one: a subtree's boundary is not a shared square perimeter the way
-# HEALPix's, S2's and ISEA4R's are, and no validated directed-border automaton
-# exists for it — `has_sorted_subtrees` being false is the same fact seen from
-# the other side. `SquareBandEngine` would need `lattice_decode` / `lattice_cell`
-# / `face_orientation` on a lattice A5 does not have, and `HexArcHaloEngine`
-# would need `seeded_rim_engine` plus the descendant-range order that makes
-# concatenating neighbours a merge. Adding either by analogy would produce a
-# walk that is wrong in a way no test in this package currently asks about.
-#
-# A dedicated A5 engine belongs here only once two things are proved
-# INDEPENDENTLY, in the sense Tasks 4-6 proved them for the other five systems:
-# the boundary states of an A5 subtree (which cells of a neighbouring subtree can
-# touch it, and in what order), and a two-sided `descendant_range` contract that
-# makes those neighbours' streams concatenate into canonical order. Until then
-# the scan is not a placeholder, it is the correct answer at the price the
-# missing primitives set.
+# A5 uses the canonical-order scan because it does not provide
+# `descendant_range`. The scan costs O(ncells) time and O(1) memory. A faster
+# engine would require a validated boundary traversal and canonical ordering of
+# descendant streams.
 # ===========================================================================
 
 """
@@ -1056,15 +776,7 @@ Base.IteratorSize(::Type{<:ScanHaloEngine}) = Base.SizeUnknown()
     ancestor(e.system, x, e.rootlevel) != e.root
 @inline _scan_outside(::SubsetMembership, e, x) = true
 
-# The scan's state is the position it will resume at, so the cell just yielded
-# sat one before it and `halo_positions` needs no `cellposition` at all. That is
-# the largest per-cell saving the position walk makes anywhere: A5's
-# `cellposition` is a Hilbert decode, a measured 38 ns against the 0.64 ns the
-# three aperture-4 systems pay.
-#
-# The grid and the cell go unnamed for `_band_emit`'s reason — naming arguments
-# this ignores would suggest it consults them, and the whole point is that it
-# does not have to.
+# The scan state already contains the position following the emitted cell.
 @inline _halo_position(::ScanHaloEngine, ::Any, ::Any, state::Int) = state - 1
 
 Base.iterate(e::ScanHaloEngine) = iterate(e, 1)
@@ -1110,45 +822,18 @@ geometry_halo_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
 """
     subset_halo_engine(sys, subset, complete, target, connectivity)
 
-The engine behind [`halo`](@ref) for an arbitrary subset: the same outside-first
-walk the subtree fallback uses, with [`SubsetMembership`](@ref) in place of the
-subtree providers and with the SUBSET'S OWN SPANS in place of the subtree's
-root range and bounding cap.
-
-WHY THE SUBTREE'S SKIP IS SWITCHED OFF rather than pointed at the subset.
-`_admit`'s subtree arm retires a node whose whole target-level range sits inside
-the SUBJECT SUBTREE's, which is exactly what must not happen here: a cell punched
-out of the middle of a subset lies in that range and IS a halo cell. Setting
-`rootlevel` one below the system's shallowest level makes the branch unreachable
-— no level compares equal to it — so nothing on this path can reach it. `lo`/`hi`
-are an empty range so the skip would refuse even if some future edit made the
-branch live again, `rootcap` is the full sphere so a cap test would prune
-nothing, and `root` is a placeholder that fixes the frame stack's element type.
-All four are unread on this path; the subset arm of `_admit` reads none of them.
-
-WHAT IT PRUNES BY INSTEAD, and why there is no cap at all. A node is descended
-only when the subset touches it or touches one of its level-`lc` neighbours, so
-the walk follows the subset's BOUNDARY rather than filling a bounding region:
-`O(halo)` nodes rather than `O(cap area)`, and construction is `O(1)` rather
-than a boundary evaluation per member. See the coarse-containment law in the
-section comment above [`OutsideWalkEngine`](@ref) for why the neighbour probe is
-sound and what a system would have to violate to break it.
+Return the outside-first engine for an arbitrary subset. It uses
+[`SubsetMembership`](@ref) and subset position spans instead of a subtree root
+range or cap. The subtree-skip fields are inert so an absent cell inside the
+subset's span can still be emitted as a halo cell. Nodes are descended only when
+the subset touches them or one of their same-level neighbours.
 
 `O(depth)` memory beyond the subset's own storage. A system with no
 [`descendant_range`](@ref) gets [`ScanHaloEngine`](@ref), for the same reason it
 does at a subtree.
 
-NOT AN EXTENSION POINT, which is why it is not declared in `interface/system.jl`
-beside `rim_engine` / `interior_engine` / `halo_engine` and why its signature
-does not follow their `(sys, c, target, connectivity)` shape. Those three are
-dispatched on the SYSTEM type: a system ships a fast path by adding a method.
-This one has no cell to dispatch a subtree walk from — its subject is a
-membership predicate over an arbitrary set — and it takes `complete` and `cap`
-because the subset, not the system, is what decides them. A system that wants a
-faster subset halo has nowhere to put it here; it makes `neighbors` and
-`descendant_range` faster, and every subset in the package gets it. Should that
-ever stop being true, the thing to add is a declared method on the system, not a
-fourth shape of this one.
+This is not a system extension point because its subject is an arbitrary
+membership predicate rather than a root cell.
 """
 function subset_halo_engine(sys::AbstractHierarchicalGridSystem, subset,
         complete::AbstractGrid, target::Int, connectivity::Connectivity)
@@ -1170,19 +855,14 @@ end
 # face's (diamond's) square lattice, and its halo is the width-1 band around
 # it. Two cases, one walk.
 #
-# AWAY FROM THE FACE EDGE the band is entirely in-face, where adjacency is the
-# plain 3×3 lattice on all three systems, so band and halo are the SAME SET —
+# Away from a face edge the band uses the in-face 3×3 lattice and equals the halo,
 # with the four diagonal-contact corners dropped under `Edge()`. Nothing needs
 # checking and nothing needs a seam table.
 #
-# ACROSS A SEAM the halo leaves the face: cells on up to six other faces, whose
-# ids no in-face arithmetic can name. They are reached by generalising the walk
-# from one band to a short, FACE-ORDERED list of candidate rectangles, one per
-# face the halo can touch — see `_seam_band_engine` for how those rectangles are
-# derived and why they cover. That list is a conservative SUPERSET, so every
-# candidate is put through the native one-ring before it is yielded.
+# Across a seam, build one conservative candidate rectangle per touched face;
+# filter every candidate through the native one-ring before yielding.
 #
-# WHY CONCATENATION IS A MERGE. Each face occupies the contiguous id range
+# Each face occupies the contiguous id range
 # `[face·n², (face+1)·n²)` and faces are numbered ascending, so global canonical
 # order is (face ascending, in-face curve code ascending). Walking the rectangle
 # list in face order is therefore already a canonical merge of the face-local
@@ -1190,7 +870,7 @@ end
 # their bounding rectangle is what makes it one stream per face, which is what
 # makes it impossible to emit a cell twice.
 #
-# WHY A QUADTREE DESCENT AND NOT AN OFFSET WALK. The band is not a curve
+# The band is not one curve interval. The engine
 # interval of any one subtree, so there is no `base + offset` to run. The engine
 # descends each rectangle's whole FACE in curve order and prunes every quadrant
 # that misses the rectangle: curve order at each level is ascending id by
@@ -1200,7 +880,7 @@ end
 # descent tracks the running curve code and lattice origin and restores both on
 # pop by re-reading the parent's last step.
 #
-# DEPTH ZERO IS NOT HERE. `side == 1` routes to `RingHaloEngine` instead: a
+# At depth zero, `side == 1` routes to `RingHaloEngine`: a
 # one-cell band is the plain eight-cell lattice neighbourhood, which is wrong at
 # every seam (a cube-corner cell has seven neighbours, a HEALPix degree-3 vertex
 # seven, an ISEA4R cell at icosahedral vertex 0 or 11 nine), and the native
@@ -1537,73 +1217,22 @@ function square_halo_engine(sys::AbstractHierarchicalGridSystem, curve,
 end
 
 # ---------------------------------------------------------------------------
-# Deriving the candidate rectangles, with no seam table of this file's own
+# Deriving candidate rectangles without a local seam table
 #
-# WHAT HAS TO BE COVERED. A halo cell is a neighbour of a block cell. Block
-# cells with a neighbour off the face are exactly the rim cells of the sides
-# that are FLUSH with the face edge, and their off-face neighbours are the
-# images of the extended-lattice positions one step outside that edge. So for a
-# block flush on, say, `x = 0`, the foreign candidates are the images of
-# `(-1, y')` for `y'` running over `[y0 - 1, y0 + side]` clipped to the face,
-# plus — where a corner of the block is a corner of the face — the cells that a
-# DIAGONAL step off two edges at once reaches.
+# Only block sides flush with a face edge can have off-face halo cells. For each
+# flush side, the two endpoint cells provide the extreme foreign neighbours.
+# The S2, ISEA4R, and HEALPix seam maps are monotone along an edge, so all
+# interior images form a contiguous run bounded by those endpoint images.
 #
-# WHY TWO PROBES PER SIDE SUFFICE. All three systems' seam maps are edge-to-edge
-# affine with a sign: S2's `wrap_xyf` computes `k = (σ·b + n - 1) >> 1` from the
-# centred along-edge coordinate, which is `y` or `n - 1 - y`; ISEA4R's
-# `lattice_neighbors` reads the paired rim slot at `n - 1 - j`; HEALPix's
-# `nested_neighbors` applies the `NB_SWAPARRAY` mirrors and transpose. Each is
-# monotone along the edge AT EVERY `n`, so the images of an interval of `y'` are
-# a contiguous run lying between the images of its ENDPOINTS.
+# A block corner that meets a face corner is already an endpoint probe for both
+# incident sides. Its vertex-neighbour query also includes any cells reached on
+# a third face, so no separate corner rule is required. Probes always use
+# `Vertex()` to cover the `Edge()` subset; `NativeCheck` applies the requested
+# connectivity when candidates are emitted.
 #
-# The two extreme rim cells of a flush side see both endpoints directly: the
-# extreme cell at `(0, y0)` has `(-1, y0 - 1)` among its eight neighbours, and
-# the one at `(0, y0 + side - 1)` has `(-1, y0 + side)`. So the bounding box of
-# what the two probes see already contains the image of every interior rim cell
-# of that side, and nothing needs widening. That is not an argument this file
-# takes on trust — see the verification note below, and note that the tests
-# would fail if a bound were moved one cell inward.
-#
-# WHERE A THIRD FACE APPEARS. At a flush CORNER the block's corner cell is a
-# probe of both flush sides, and its own neighbour list already contains
-# whatever the diagonal step reaches: nothing on S2 (`wrap_xyf` returns
-# `nothing` at a cube corner) or at HEALPix's `-1` entries in `NB_FACEARRAY` —
-# which occur only for the double-out `nbnum`, i.e. only at a face corner, never
-# at a run endpoint — and the interior of `CORNER_FANS` on ISEA4R, which is the
-# two extra diamonds meeting at icosahedral vertex 0 or 11. So corners need no
-# separate rule; they need only that the corner cell is probed, which flushness
-# already guarantees.
-#
-# THE PROBE ASKS FOR `Vertex()` WHATEVER WAS REQUESTED, so one coverage argument
-# serves both connectivities: the `Edge()` halo is a subset of the `Vertex()`
-# one, and a superset of the larger is a superset of the smaller. The requested
-# connectivity is still what `NativeCheck` filters by.
-#
-# COVERAGE IS EXHAUSTIVELY VERIFIED, not merely argued: every flush block of
-# every size at every origin on every face, levels 1 through 6, both
-# connectivities, on all three systems — zero halo cells outside the derived
-# rectangles, worst case seven rectangles. Because the seam maps are affine at
-# every `n`, levels past 6 add no new structure, only longer runs. The
-# differential tests in `test/systems/crosssystem/subtree_halos.jl` re-run the
-# same claim through the forced-geometry oracle, which is the only oracle in
-# that file that can see a candidate this derivation never proposed.
-#
-# AND SO IS TIGHTNESS, which is a separate claim and the one a future edit is
-# likelier to break. Every rectangle is the bounding box of probe images, and a
-# probe image is a neighbour of a block rim cell on another face — a `Vertex()`
-# halo cell by definition — so the candidate stream is the `Vertex()` halo cell
-# for cell, with no surplus for `NativeCheck` to reject. Widening any bound by
-# one cell would still ANSWER correctly, because the check filters what the
-# rectangles over-propose, so no oracle comparison can see it; the test file
-# counts the candidate stream and requires the equality, which is what makes a
-# lazy bounding box here a failure rather than a silent slowdown.
-#
-# WHAT FALLS BACK. One configuration only: a system with more faces than
-# `_BAND_RECT_CAP`, which none of the three is. Everything else — every flush
-# side, every face corner, every whole-face block, both connectivities — is
-# walked. The guard is kept because it is the one assumption the derivation
-# cannot check itself, and a `small_push` past capacity would be a `BoundsError`
-# from inside an iterator rather than an honest fallback.
+# The derived rectangles are exact bounding boxes of probe images. If their
+# count exceeds `_BAND_RECT_CAP`, the implementation uses the generic halo
+# engine rather than overflowing the fixed-capacity list.
 # ---------------------------------------------------------------------------
 
 # The distinct probe positions of a block, at most four — a corner of a block
@@ -1715,79 +1344,27 @@ end
 # The calibrated directed walk, shared by the two aperture-7 systems
 # ===========================================================================
 
-# A subtree of H3 or IGeo7 is not a block of anything: its rim is a hexagonal
-# spiral, its halo wraps a shape with no lattice box, and the aperture is odd, so
-# nothing above applies. What both systems DO have is a subtree-rim automaton
-# over an arc of exposed lattice directions — `(L, s)` meaning the arc
-# `s, s+1, …, s+L-1 (mod 6)` — and the halo is reachable through it from the
-# OTHER side.
+# H3 and IGeo7 subtrees have hexagonal spiral rims rather than rectangular
+# lattice bounds. Their rim automata expose an arc `(L, s)` of lattice
+# directions, and the halo is reached by walking the arcs of neighbouring
+# subtrees that face `root`.
 #
-# THE IDEA. Every level-`target` halo cell of `root` lies in the subtree of one
-# of `root`'s same-level neighbours. So walk the neighbours, and inside each one
-# walk only the part of its subtree that faces `root` — which is a rim walk of
-# that neighbour, entered not at the fully exposed `(6, 0)` a subtree root gets
-# but at the short arc that points back at `root`.
+# Nested adjacency guarantees that every target-level halo cell descends from
+# a same-level neighbour of `root`: if two cells are adjacent, their parents
+# are equal or adjacent. `_hex_calibrate` determines the exposed arc from the
+# neighbour's children that touch `root`, avoiding parity-specific seed tables
+# for the two systems.
 #
-# WHY IT IS CONTAINED, which is the whole load-bearing claim. The NESTED
-# ADJACENCY LEMMA: if `y` is adjacent to `x` at level `l`, then `parent(y)` is
-# `parent(x)` or is adjacent to it. Induct: a halo cell `x` at level `l` touches
-# some descendant of `root`, so `parent(x)` touches `root`'s subtree at level
-# `l-1`; `parent(x)` is not a descendant of `root` (or `x` would be one), so by
-# induction it lies under a neighbour of `root`, and so does `x`. Verified
-# exhaustively over 910,560 adjacency pairs on both systems and both
-# connectivities, with zero violations.
+# Same-level neighbour subtrees are disjoint. Sorting neighbours by the first
+# position of their target-level descendant range therefore produces ascending,
+# non-overlapping candidate blocks, while each rim automaton emits its own block
+# in ascending id order.
 #
-# WHY THE ARC IS OBSERVED AND NEVER TABULATED. The two automata have EXCHANGED
-# parity branches — H3's even-level branch is IGeo7's odd-level one — and their
-# two `L < 6` guards are tested in the opposite order, so any table of seeds
-# fitted on one system is wrong on the other, and a table fitted per parity is
-# wrong at the other parity. The admission guard `o < L` is the one part that is
-# parity-independent in both files, so the set of children a seeded arc admits at
-# depth one is identical at both parities in both systems. `_hex_calibrate`
-# therefore derives the arc from the children that are OBSERVED to touch
-# `root` — one native check per child of one neighbour — and the asymmetry
-# becomes invisible. That is the single reason one driver serves both systems.
-#
-# WHY CONCATENATION IS A MERGE, again. Distinct same-level cells have disjoint
-# subtrees, so ordering the neighbours by `first(descendant_range(sys, nb,
-# target))` puts their candidate blocks in ascending, non-overlapping order;
-# within a neighbour the automaton is digit-lexicographic, which is ascending id.
-# No heap, no seen-set, no sort — 25,536 pairwise range comparisons across both
-# systems found zero overlaps.
-#
-# WHERE "OUTSIDE" IS STATED, because unlike every other engine in this file these
-# two never test it. `OutsideWalkEngine` retires the subject subtree by integer
-# range containment (`_admit`'s `_HALO_SKIP`), `ScanHaloEngine` compares
-# `ancestor` against the root, and `SquareBandEngine` prunes the block by lattice
-# box (`_inside_block`) — each an explicit "this candidate is not a descendant".
-# The hexagonal engines have no such line, and they need one: `_touches_root`
-# would ACCEPT a descendant of the root, since a descendant's neighbours are
-# descendants too. What carries it is the invariant that
-# `neighbors(grid, c, 1; connectivity)` never returns `c` itself. Every candidate
-# here is a descendant of a cell in `neighbors(levelgrid(sys, lc), c, 1)`, so if
-# that ring excluded nothing the root would be walked as its own neighbour and
-# its whole rim would be emitted as halo. No bundled system's one-ring lists the
-# cell it was asked about; a system whose did would need an explicit skip here,
-# not merely a wider guard.
-#
-# THE WALK IS EXACT, NOT CONSERVATIVE. Candidate-to-halo ratio is 1.0000 at every
-# depth from two down; run with the check disabled over 4,622 cases it produced
-# zero surplus candidates. The check is kept anyway, on every candidate, because
-# it is this file's exactness contract and it costs what the halo already costs.
-#
-# DEPTH ONE HAS NO AUTOMATON. At `target == rootlevel + 1` the calibration IS the
-# answer — the touching children are the halo — so `HexChildHaloEngine` emits
-# each neighbour's children filtered by the same check, and no arc is derived at
-# all. Seeding an automaton to walk one level is where the win thins to nothing,
-# which is the sign that the automaton would be doing no work there.
-#
-# WHAT IT BUYS, measured against the generic outside-first walk on a full halo:
-# 7-36x on H3 and 1.1-16x on IGeo7 over depths one to five, widening with depth
-# because the generic walk's cost grows with the target LEVEL while this one's
-# grows with the halo. The prefix is the sharper number: taking ten cells of an
-# IGeo7 depth-seven halo was 42 ms and 779 KB through the generic walk and is
-# 1.1 ms and 256 bytes here — and the 256 bytes do not move with the depth, which
-# is the design's laziness law rather than a speed-up.
+# Candidates cannot belong to `root` because a one-ring never contains its
+# subject and every candidate descends from a one-ring neighbour. The native
+# adjacency check still filters every candidate before emission. At depth one,
+# `HexChildHaloEngine` emits the touching children directly without starting a
+# rim automaton.
 
 # Six is a hexagon's neighbour count and five a pentagon's, so the list is never
 # more than six long on either system. Eight is that plus slack, so a system with
@@ -1909,47 +1486,10 @@ end
 """
     _hex_validate(sys, root, rootlevel, ring, connectivity) -> Bool
 
-Does every depth-two halo cell under each neighbour really lie on that
-neighbour's calibrated walk? The calibration only observes depth one, so this is
-the one direct check that one level of observation carries to the next.
-
-`O(1)` in the halo's size — at most seven grandchildren per child per
-neighbour — but that is still about 300 native checks, which EXCEEDS the entire
-directed walk at the shallow depths. `hex_halo_engine` therefore runs it only
-from depth three up; at depth two the generic engine is barely slower than the
-validation alone, so skipping the specialization there would cost more than
-trusting it does.
-
-NOT ONE NUMBER, which is why none is quoted. The cost rises with the neighbour
-ring — a six-neighbour root pays more than a five-neighbour one — and with the
-root's level. Quoting a point value for either system hides both, and a reader
-who measures one root will not reproduce it. To measure it, take construction at
-depth three minus construction at depth two: this is the only threshold it
-crosses, so that difference is the whole of it.
-
-The threshold rests on the RATIO to the walk, not on the absolute cost, and that
-ratio is the same on both systems: the validation exceeds the depth-three walk,
-falls below the depth-four walk, and is a small fraction of the depth-five walk.
-So it is not worth paying at depth two, where the generic engine is barely slower
-than the validation alone, and any change to the threshold is a change for both
-systems or for neither. Construction never grows with the halo, so the laziness
-law holds whatever the constant is.
-
-An earlier version of this paragraph asserted the opposite — a rounding error on
-H3 against a term that dominated on IGeo7 — on the grounds that IGeo7's
-`neighbors` was lattice arithmetic where H3's was a library call. That absolute
-gap was real and is now gone, closed by the ported GBT kernel, and even while it
-stood the RATIOS were never as far apart as the costs were. It was the ratios the
-argument needed. Do not reintroduce a per-system lever here without measuring
-them first.
-
-Deliberately NOT restricted to pentagons or to arc-3 neighbours, which would be
-question-begging: the premise under test is exactly that the ordinary cases need
-no test.
-
-Both sides are ascending — the automaton is digit-lexicographic, and nested
-`children` calls are ascending by contract — so containment is a two-pointer
-merge with no set and no allocation.
+Return whether every depth-two halo cell under each neighbour occurs in that
+neighbour's calibrated walk. `hex_halo_engine` runs this bounded validation for
+depths of at least three. Both sequences are ascending, so containment uses a
+two-pointer merge without allocation.
 """
 function _hex_validate(sys, root, rootlevel::Int, ring::HexRing{C},
         connectivity::Connectivity) where {C}
@@ -2040,33 +1580,10 @@ neighbour's calibrated arc, walked to `target`, every leaf native-checked before
 it is yielded. The ring is in descendant-range order and the blocks are disjoint,
 so concatenating the neighbours' streams is already the canonical merge.
 
-Memory is `O(depth)`: one seeded engine and its frame stack, both isbits, plus
-the fixed ring. Nothing sized by the halo is ever built, so a prefix costs what
-the prefix costs.
-
-[`Base.IteratorSize`](@ref) is `SizeUnknown()` and there is NO `length`, even
-though the counts are known: a CALIBRATED neighbour's stream is `(3^d + 1)/2`
-cells for both arc lengths — a calibrated arc-2 seed emits that many outright,
-and a calibrated arc-3 seed emits `3^d` but arc-3 happens only at a pentagon,
-whose deleted digit removes precisely the 4-arc branch and collapses the census
-back — so the halo is `3^(d+1) + 3` around a hexagon and `5(3^d + 1)/2` around a
-pentagon. CALIBRATED is load-bearing in that sentence and not a hedge: the census
-describes the arcs [`_hex_calibrate`](@ref) produces, over 13,692 of which the
-seeded walk emits exactly `(3^d + 1)/2` with pentagon neighbours included. It is
-NOT a statement about an arbitrary `(L, s)` — on an H3 level-3 pentagon an arc-2
-seed at `s = 0` emits 1, 3, 9 and 27 leaves for `d = 1…4`, not 2, 5, 14 and 41,
-and does so identically on all twelve of that level's pentagons —
-so nobody should reuse the formula to size a seeded walk of their own. That was
-verified in
-176/176 configurations (all twelve pentagons of each system, hexagons adjacent to
-them, hexagons far from them, both connectivities, root levels 0-3, depths 1-5)
-and end to end to depth six. It is still ENUMERATION, not a derivation from the
-transition recurrence, and the design admits a count as an API contract only once
-it is derived symbolically and validated around every pentagon and parity
-configuration. What remains to prove: that the seeded transition relation has the
-claimed leaf census at every parity, and that the pentagon deletion always
-removes the 4-arc branch rather than another. Until then the `MethodError` from
-`length` is the honest answer.
+Memory is `O(depth)`: one seeded engine and frame stack plus the fixed ring.
+[`Base.IteratorSize`](@ref) is `SizeUnknown()` and `length` is not defined. The
+formula used by [`halo_sizehint`](@ref) has not been derived for every seeded
+transition and therefore is not an exact-length contract.
 """
 struct HexArcHaloEngine{S,G,C,K}
     system::S
@@ -2081,19 +1598,8 @@ end
 Base.eltype(::Type{<:HexArcHaloEngine{S,G,C,K}}) where {S,G,C,K} = C
 Base.IteratorSize(::Type{<:HexArcHaloEngine}) = Base.SizeUnknown()
 
-# The census the docstring above refuses to declare as a `length`, offered as
-# the thing it IS good enough to be: a `sizehint!`. `3^(d+1) + 3` is the count
-# around a hexagon and an over-estimate of about 20% around a pentagon, whose
-# census is `5(3^d + 1)/2` — and the hexagon figure is the larger of the two, so
-# one formula bounds both. Both engines answer it, at depth one and deeper,
-# because the depth-one halo is the same census with `d == 1`.
-#
-# WHY THIS IS NOT THE `length` THE DOCSTRING WITHHOLDS. Nothing has changed
-# about the evidence: the census is still enumeration rather than a derivation
-# from the seeded transition relation. What changed is the promise. A `length`
-# that is 20% high hands a caller `undef` slots as cell ids through `collect`'s
-# sized route; a hint that is 20% high costs a `Vector` that is 20% roomier than
-# it needed to be, and is never read as a count by anything.
+# `3^(d+1) + 3` is exact around a hexagon and conservatively bounds the smaller
+# pentagon census. Use it only as an allocation hint.
 _halo_sizehint(e::HexChildHaloEngine) = _hex_sizehint(e.target - e.rootlevel)
 _halo_sizehint(e::HexArcHaloEngine) = _hex_sizehint(e.target - e.rootlevel)
 
@@ -2158,39 +1664,16 @@ end
 """
     hex_halo_engine(sys, c, target, connectivity)
 
-The halo engine for a system with a seeded rim automaton — H3 and IGeo7, whose
-`halo_engine` methods are this call and nothing else. Falls back to
-[`generic_halo_engine`](@ref) whenever a guard fires, so the specialization is
-never the reason an answer is wrong, only the reason it is fast.
+Return the calibrated halo engine used by H3 and IGeo7. Fall back to
+[`generic_halo_engine`](@ref) whenever a precondition fails.
 
-The guards, in order: the system must have sorted subtrees (the ring's
-descendant-range order is what makes concatenation a merge); the target must be
-strictly deeper than `c` and no deeper than the system (both level errors belong
-to the generic engine, and depth zero is its one-ring); the ring must fit; every
-neighbour must calibrate; and from depth three up the calibration must survive
-[`_hex_validate`](@ref). None of the last three was observed to fire anywhere in
-the spike that measured this design.
+The system must have sorted subtrees, the target must be deeper than `c`, the
+neighbour ring must fit its fixed capacity, every neighbour must calibrate, and
+depths of at least three must pass [`_hex_validate`](@ref).
 
-THE RING PROBE is ALWAYS `Vertex()`, whatever was requested, so one containment
-argument covers both connectivities: the `Edge()` halo is a subset of the
-`Vertex()` one, and a superset of the larger is a superset of the smaller. Only
-the ring is probed that way. [`_hex_calibrate`](@ref) and [`_hex_validate`](@ref)
-below are called with the REQUESTED connectivity, so on a system whose `Edge()`
-adjacency is strictly smaller than its `Vertex()` one an `Edge()` query can find
-fewer than two touching children under a neighbour, and `_hex_calibrate` answers
-`(0, 0)` — a whole-root fallback to [`generic_halo_engine`](@ref), which is
-correct and slower. The superset ring buys that system nothing under `Edge()`;
-what it buys is that the ring never has to be re-derived per connectivity.
-
-That asymmetry is deliberate rather than an oversight, and calibrating at
-`Vertex()` instead would be the riskier code. A `Vertex()`-calibrated arc IS a
-conservative band for the `Edge()` halo, and the emit check would filter it —
-but its coverage has never been measured, because all 52,182 calibrations behind
-this design ran on systems where the two connectivities coincide. So the choice
-is between a documented fallback that is merely slow and a fast path whose
-containment nobody has tested, and this file's rule is that an unproved band does
-not reach the caller. Moot on both shipped systems; written down because the
-first system where it is not moot should meet a fallback, not a surprise.
+The initial ring probe uses `Vertex()` because an edge halo is a subset of the
+vertex halo. Calibration and validation use the requested connectivity. If that
+connectivity produces an unsupported arc, the method returns the generic engine.
 """
 function hex_halo_engine(sys::AbstractHierarchicalGridSystem,
         c::AbstractCellIndex, target::Int, connectivity::Connectivity)

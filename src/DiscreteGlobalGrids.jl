@@ -19,32 +19,23 @@ four required grid methods to system-level counterparts.
 A bare `Int` is a position in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
 
-Adjacency is a verb on subsets, not only on complete levels. On a
-[`PartialGrid`](@ref), a [`CellVector`](@ref) or a [`CellLookup`](@ref),
-[`neighbors`](@ref) and [`ring`](@ref) are the system's own answer clipped to
-membership, in ids or in positions, and [`halo_table`](@ref) is a whole
-subset's stencil in one call. [`halo`](@ref) is the outward-facing question the
-same three containers answer — the cells they do *not* hold that touch cells
-they do, as a lazy iterator, with a punched hole counted like any other outside
-cell. [`stencil_table`](@ref) joins the two: a chunk read together with its
-halo, with every row COMPLETE and addressed into the concatenated buffer, which
-is what a chunked stencil pass needs and neither of the other two gives.
+On [`PartialGrid`](@ref), [`CellVector`](@ref), and [`CellLookup`](@ref),
+[`neighbors`](@ref) and [`ring`](@ref) return complete-level adjacency clipped
+to membership. [`halo`](@ref) lazily returns absent cells adjacent to the
+subset, including holes. [`stencil_table`](@ref) addresses complete adjacency
+rows into a concatenated `[subset; halo]` buffer.
 [`member_neighbors`](@ref) asks the adjacency question across the levels
 of a [`MultiOrderCellSet`](@ref), which has no `halo` because it has no single
 level to answer at.
 
-The two faces of a subtree boundary are verbs of their own.
 [`subtree_border`](@ref) and [`subtree_interior`](@ref) are its inside;
 [`subtree_halo`](@ref) is its outside — the level-`l` cells that are not
 descendants but touch one. All three are `collect` of a resumable
 `O(depth)`-memory iterator ([`EdgeCellIterator`](@ref),
-[`InnerCellIterator`](@ref), [`SubtreeHaloIterator`](@ref)), because a halo in
-particular can be far larger than the rim it wraps and materializing it is the
-caller's decision. A halo is emitted in ascending `cellposition` on the target
-grid — a contract, not an accident — so [`halo_positions`](@ref) can stream the
-fetch list a stencil margin needs without a sort and without materializing the
-ids first, and [`halo_sizehint`](@ref) answers approximately where the design
-refuses to answer exactly.
+[`InnerCellIterator`](@ref), [`SubtreeHaloIterator`](@ref)). Halos are emitted
+in ascending target-grid position. [`halo_positions`](@ref) streams those
+positions without materializing ids, and [`halo_sizehint`](@ref) provides an
+optional allocation hint where exact length is unavailable.
 
 Internal geometry uses `GeometryOps.UnitSphericalPoint`; explicitly named
 wrappers convert longitude and latitude at API boundaries.
@@ -75,48 +66,36 @@ import Extents
 import ConservativeRegridding
 import ConservativeRegridding: Trees
 import GeometryOps: SpatialTreeInterface as STI
-# The neighbour containers of `neighbors` / `ring`: fixed capacity (the
-# `max_neighbors` trait), variable length, no allocation. Only the type is
-# brought in; the non-mutating verbs stay qualified (`SmallCollections.push`).
+# `neighbors` and `ring` use variable-length, fixed-capacity containers bounded
+# by `max_neighbors`.
 import SmallCollections
 using SmallCollections: SmallVector
 
-# Imported qualified, then re-exported by name below: GeometryOps has an
-# unrelated internal `DE9IM` matrix struct, so the module name must never be
-# `using`-ed into this namespace. DE9IM.jl supplies the predicate *types* only
-# — every semantic behind them is implemented in this package.
+# Keep the module qualified because GeometryOps also defines a `DE9IM` name.
+# This package imports only DE9IM.jl's predicate types and defines their methods.
 import DE9IM
 using DE9IM: DE9IMPredicate,
     Intersects, Disjoint, Contains, Within, Covers, CoveredBy,
     Touches, Crosses, Overlaps, Equals
 
-# `import`, not `using`: these are extended for every `AbstractGrid` in
-# `src/fallbacks/`. They stay `Trees`' own bindings rather than wrappers, so
-# re-exporting them here cannot make a `using ConservativeRegridding` alongside
-# this package ambiguous.
+# Extend the original `Trees` bindings so re-exporting them does not introduce
+# wrapper functions or binding ambiguity.
 import ConservativeRegridding.Trees: treeify, ncells, getcell
 
 include("Helpers/Helpers.jl")
 
-# GeometryOps manifolds -> the authalic transform and the authalic-sphere
-# compute manifold. Lives here rather than in `Helpers` because `Helpers` is a
-# deliberately dependency-free leaf module.
+# GeometryOps adapters stay outside the dependency-free `Helpers` module.
 include("core/manifolds.jl")
 
-# The interface: types, then the base grid contract, then the hierarchical
-# system contract. Declarations and trait defaults only — no algorithms.
+# Interface declarations and trait defaults.
 include("interface/types.jl")
 include("interface/grid.jl")
 include("interface/system.jl")
 
-# Generic implementations of everything the interface declares.
+# Generic interface implementations.
 include("fallbacks/fallbacks.jl")
 
-# The concrete types the generic layer ships: the one complete-level grid, the
-# one subset grid, the ellipsoid wrapper pair, the one cursor, and the
-# multi-order coverage pair. Systems define none of these. Bound here rather
-# than beside their exports below because the system modules build on the first
-# of them.
+# Bind fallback types before including systems that extend them.
 using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSystem,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     cellindices, is_contained, coarsest_contained, cell_polygons,
@@ -126,16 +105,13 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     subtree_halo, halo, halo_positions, halo_sizehint,
     StencilTable, stencil_table
 
-# The lazy subtree walkers' extension point and the parts a system builds one
-# from. Not exported — a caller reaches the iterators, a system reaches these.
+# Internal extension points for system-specific subtree walkers.
 using .Fallbacks: collect_subtree,
     MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine,
     SquareBandEngine, square_halo_engine, generic_halo_engine, check_halo_level,
     HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine
 
-# Grid systems, all six ported. Include order never matters: the two ISEA-family
-# systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
-# first defines it behind an `isdefined` guard.
+# IGeo7 and ISEA4R share guarded definitions in `src/systems/ISEA/`.
 include("systems/IGeo7/IGeo7.jl")
 include("systems/H3/H3.jl")
 include("systems/HEALPix/HEALPix.jl")
@@ -150,15 +126,7 @@ using .A5: A5System, A5Cell
 using .S2: S2System
 using .ISEA4R: ISEA4RSystem
 
-# The DimensionalData layer. In-package rather than a package extension because
-# DimensionalData is a hard dependency, and because a cube axis is the shape
-# most consumers meet this package in — not an optional garnish. Included after
-# the systems so its cross-system tests can be written against `systems()`; it
-# depends on nothing any of them define.
-#
-# It is a thin face over `Fallbacks.CellVector`, above: the compression itself
-# is DimensionalData-free, and everything that is not a cube — regridding,
-# chunking, plain arrays — reaches it without going through this file.
+# DimensionalData wrappers over the dependency-free `Fallbacks.CellVector`.
 include("dimensionaldata.jl")
 
 using .CellLookups: CellLookup, Cells, Covering
@@ -311,35 +279,23 @@ export Intersects, Disjoint, Contains, Within, Covers, CoveredBy
 export Touches, Crosses, Overlaps, Equals
 
 # --- Fallback substrate ----------------------------------------------------
-# `using`-ed above the system includes, because `HierarchicalLevelGrid` is what
-# all six of them return from `levelgrid` and attach their fast paths to.
+# These fallback types are bound before system modules extend them.
 export HierarchicalLevelGrid, PartialGrid, HierarchicalGridCursor
 export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
 export is_contained, coarsest_contained, cell_polygons, member_neighbors
 
 # --- The compressed cell collection ----------------------------------------
-# A coverage read as a lazy id vector at one level, the region selector over
-# one, and the accessor for what either was built from. None of the three
-# involves DimensionalData: this is the compression, and `CellLookup` below is
-# its cube-shaped face. `covering_positions` is the position-space sibling of
-# `covering` and is reached as `DiscreteGlobalGrids.covering_positions`.
+# `CellVector` is the DimensionalData-independent compressed collection.
 export CellVector, covering, cellset
 
 # --- The DimensionalData layer ---------------------------------------------
-# A lookup and the dimension it goes in, plus the one selector DimensionalData
-# does not already have a spelling for. `At` and `Contains` are
-# DimensionalData's own and are not re-exported here: this package already
-# exports DE9IM's `Contains`, a predicate about geometries rather than a
-# selector about positions, and the two must never end up as the same name in a
-# caller's namespace.
+# Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM
+# geometry predicate exported above.
 export CellLookup, Cells, Covering
 
 # --- Grid systems ----------------------------------------------------------
-# System modules are not exported because their names collide with registered
-# packages. No system exports a grid type: all six return
-# `HierarchicalLevelGrid` from `levelgrid`. S2 and ISEA4R use `LevelIndex` over
-# their scaffold ordinals.
+# Export system types rather than modules whose names collide with packages.
 export systems
 export IGeo7System, Z7Cell
 export H3System, H3Cell

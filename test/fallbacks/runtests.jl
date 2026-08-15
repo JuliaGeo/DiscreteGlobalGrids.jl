@@ -10,7 +10,7 @@
 #   * `UnsortedMock` — the same geometry with the trait off and no
 #     `descendant_range` method at all, so the cursor must take SELECTION
 #     mode. Every traversal answer must match `SortedMock`'s exactly; that
-#     equality is the point of having two.
+#     equality verifies both cursor modes.
 #   * `OctantGrid` — eight spherical triangles, no system at all: the
 #     standalone-grid path (position-space tree, geometric neighbours) with
 #     areas that are known in closed form (pi/2 steradians each).
@@ -104,7 +104,7 @@ function DGG.children(::MockSystem, c::LevelIndex)
     return [LevelIndex(level(c) + 1, rawid(c) * RADIX + k) for k in 0:(RADIX-1)]
 end
 
-# Positions, not raw ids — the whole point of the T1 signature decision.
+# `descendant_range` returns one-based positions, not raw ids.
 function DGG.descendant_range(::Union{SortedMock,OverhangMock}, c::LevelIndex, l::Integer)
     Int(l) >= level(c) || throw(ArgumentError("level $l is above the cell's own"))
     span = RADIX^(Int(l) - level(c))
@@ -445,9 +445,8 @@ end
 end
 
 @testset "cellposition: `nothing`, never a throw" begin
-    # `cellposition(grid, c)::Union{Int,Nothing}` is a contract, and `reindex`
-    # — which the generic reaches through `_canonical` — is deliberately not
-    # nothing-contracted. Two ways that used to leak an ArgumentError out.
+    # `cellposition(grid, c)` returns `nothing` for unsupported ids even when
+    # the underlying `reindex` call throws an `ArgumentError`.
 
     # --- (a) a FOREIGN id type ------------------------------------------------
     # Taken at the grid's OWN level, so the level guard is not what saves it:
@@ -1264,9 +1263,8 @@ end
     @test query(grid, Within(FB.full_sphere_cap())) == all_cells(grid)
     @test query(grid, Within(US.SphericalCap(sph(0.0, 0.0), Float64(pi)))) == all_cells(grid)
 
-    # The coverage traversal is where this used to throw mid-descent. Both of
-    # its paths have to work: cells emitted whole from above the max level, and
-    # cells reached by recursing along the cap's boundary.
+    # Exercise both coverage paths: coarse cells emitted whole and boundary
+    # cells reached by recursive descent.
     set = query(SORTED, MultiOrderCoverage(wide); level=3)
     cells = collect(set)
     @test minimum(level, cells) < 3              # emitted coarse
@@ -1411,10 +1409,8 @@ end # module TestFallbacks
 # The allocation-free primitives the substrate is built out of
 # (`src/Helpers/small_list.jl`, `src/Helpers/ids.jl`).
 #
-# Ported here from `test/test_helpers.jl`, which T8 deleted. `Helpers` is
-# substrate for every system, so its own suite belongs with the substrate's.
-# The authalic half of that file went to `test/fallbacks/authalic.jl`, next to
-# the wrapper that uses it.
+# Tests for the allocation-free helper primitives shared by every system. The
+# authalic-math helpers are covered in `test/fallbacks/authalic.jl`.
 # ---------------------------------------------------------------------------
 
 module HelpersUtilTests

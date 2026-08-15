@@ -163,5 +163,5 @@ fig
 
 # Nothing above is HEALPix-specific — any system slots into `levelgrid` — but
 # the choice was deliberate: equal-area cells make the sums above areal means
-# without weights. The conservation caveat is also not system-uniform: a
-# destination whose rings are convex (IGEO7, S2) conserves today.
+# without weights. Conservation differs by system: destinations whose rings are
+# convex, such as IGEO7 and S2, conserve.

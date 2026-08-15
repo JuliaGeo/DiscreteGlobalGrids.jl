@@ -29,8 +29,7 @@ cell cap with inflation `1.75`; `subtree_border` also uses its fallback.
 """
 module A5
 
-# Generics implemented by this module. `node_extent` and `descendant_range` use
-# package fallbacks.
+# `node_extent` and `descendant_range` use the generic implementations.
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,
@@ -45,11 +44,10 @@ import GeometryOps as GO
 import SmallCollections
 using SmallCollections: SmallVector
 
-# The unit-sphere vocabulary, spelled the same way the fallback substrate
-# spells it.
+# Unit-sphere point type used by the public geometry methods.
 const USPoint = GO.UnitSphericalPoint{Float64}
 
-# The ported upstream arithmetic first: everything below is a wiring of it.
+# Low-level A5 arithmetic must be loaded before the interface definitions.
 include("native.jl")
 
 include("cell.jl")

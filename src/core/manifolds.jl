@@ -1,13 +1,8 @@
-# ---------------------------------------------------------------------------
-# GeometryOps manifold adapters. An ellipsoid supplies an `AuthalicTransform`
-# for latitude conversion and a `Spherical` compute manifold at authalic radius
-# `R_A`. Unit-sphere areas scaled by `R_A²` equal ellipsoidal areas.
-#
-# The compute manifold is never `Geodesic`: `ConservativeRegridding` and the
-# `cell_range_extent` methods dispatch on `Planar`/`Spherical` only, and GO
-# supports `Geodesic` for `area`/`arclength`/`segmentize` alone, so handing one
-# down is a `MethodError` today.
-# ---------------------------------------------------------------------------
+# GeometryOps manifold adapters. Ellipsoids use an `AuthalicTransform` for
+# latitude conversion and a `Spherical` compute manifold at authalic radius
+# `R_A`. Scaling unit-sphere areas by `R_A²` gives ellipsoidal areas.
+# `Geodesic` is not a compute manifold because downstream methods dispatch only
+# on `Planar` and `Spherical`.
 
 """
     AuthalicTransform(m::GeometryOpsCore.Manifold)
@@ -45,9 +40,7 @@ Helpers.AuthalicTransform(m::GOCore.Geodesic{T}) where {T} =
 Helpers.AuthalicTransform(m::GOCore.Spherical{T}) where {T} =
     Helpers.AuthalicTransform{float(T)}(m)
 
-# `Planar` and `AutoManifold` are rejected with a reason rather than left to a
-# `MethodError`, because the reason is the whole design argument and a caller
-# who reaches here is one defaulted constructor away from a 14 km offset.
+# Reject manifolds that do not specify an ellipsoid instead of guessing one.
 Helpers.AuthalicTransform{T}(m::GOCore.Manifold) where {T<:AbstractFloat} =
     throw(ArgumentError(lazy"""
     cannot derive an ellipsoid from $(typeof(m)).
@@ -86,7 +79,6 @@ authalic_sphere(t::Helpers.AuthalicTransform) =
 
 authalic_sphere(m::GOCore.Geodesic) = authalic_sphere(Helpers.AuthalicTransform(m))
 
-# Same reasoning as the `AuthalicTransform` fallback: name the problem.
 authalic_sphere(m::GOCore.Manifold) = throw(ArgumentError(lazy"""
     cannot derive an authalic sphere from $(typeof(m)).
 

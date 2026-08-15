@@ -1,6 +1,6 @@
 # Exact Eisenstein-lattice arithmetic for Z7 encoding and decoding.
-# Level chirality alternates `cbar`, `c`; digit directions follow the fitted
-# GBT cycle. Floating point is confined to the lattice/plane bridge.
+# Level chirality alternates `cbar`, `c`; digit directions follow the GBT cycle.
+# Floating point is confined to the lattice/plane bridge.
 
 # ---------------------------------------------------------------------------
 # 1. Eisenstein integers
@@ -117,29 +117,24 @@ function unitmul(a::Integer, b::Integer, g::Integer)
 end
 
 # ---------------------------------------------------------------------------
-# 2. Fitted IGEO7 digit conventions
+# 2. IGeo7 digit conventions
 # ---------------------------------------------------------------------------
 
 """
     chi_is_c(k) -> Bool
 
 Chirality of level `k`: `true` for `chi_k = c = 3 + omega`, `false` for
-`cbar = 2 - omega`. IGEO7 alternates, starting with `cbar` at level 1
-**[fitted; see `spec/igeo7-geometry-diagnosis.md` §3 — the measured per-res
-lattice angles alternate 49.1066°/30° in the face frame, matching the
-`cbar`-first sequence to 3.8e-10 deg while every uniform-chirality candidate
-misses by 21.8°; the res-5 dump pins the continuation]** — so even-res
-lattices are edge-aligned with the res-0 lattice and odd-res lattices are
-rotated by `+ALPHA_DEG` (counterclockwise seen from outside).
+`cbar = 2 - omega`. IGeo7 starts with `cbar` at level 1 and alternates. Even
+resolution lattices align with level 0; odd resolution lattices rotate by
+`+ALPHA_DEG` when viewed from outside.
 """
 chi_is_c(k::Integer) = iseven(k)
 
 """
     SIGMA_J
 
-Digit `d = 1:6` to unit index `j` (dev-frame angle `60j` degrees before the
-per-level rotation) **[fitted, A-gauge; see
-`spec/igeo7-geometry-diagnosis.md` §4]**: `5->0°, 4->60°,
+Digit `d = 1:6` to unit index `j` (development-frame angle `60j` degrees before
+the per-level rotation): `5->0°, 4->60°,
 6->120°, 2->180°, 3->240°, 1->300°`. The GBT complement pairs
 `(1,6), (2,5), (3,4)` are antipodal; up to the gauge rotation this is the
 published GBT digit cycle `4,6,2,3,1,5` running counterclockwise seen from
@@ -153,8 +148,8 @@ const DIGIT_OF_J = ntuple(j -> findfirst(==(j - 1), SIGMA_J), 6)
 """
     sigma(d) -> NTuple{2,Int}
 
-Axial offset contributed by digit `d ∈ 0:6` at its own level (digit 0 is the
-center child, offset `(0, 0)`) **[fitted; see [`SIGMA_J`](@ref)]**.
+Axial offset contributed by digit `d ∈ 0:6` at its own level. Digit 0 is the
+center child at offset `(0, 0)`.
 """
 function sigma(d::Integer)
     d == 0 && return (0, 0)
@@ -162,13 +157,13 @@ function sigma(d::Integer)
     return @inbounds UNITS[SIGMA_J[d]+1]
 end
 
-# residue -> digit under the fitted sigma
+# Residue to digit under `SIGMA_J`.
 _make_res_to_digit(rtj) = ntuple(i -> (j = rtj[i]; j < 0 ? 0 : DIGIT_OF_J[j+1]), 7)
 
-"Residue (`0:6`) to Z7 digit for a level of chirality `c` **[fitted]**."
+"Residue (`0:6`) to Z7 digit for a level of chirality `c`."
 const RES_TO_DIGIT_C = _make_res_to_digit(RES_TO_J_C)
 
-"Residue (`0:6`) to Z7 digit for a level of chirality `cbar` **[fitted]**."
+"Residue (`0:6`) to Z7 digit for a level of chirality `cbar`."
 const RES_TO_DIGIT_CBAR = _make_res_to_digit(RES_TO_J_CBAR)
 
 "Multiply by the chirality of level `k` (see [`chi_is_c`](@ref))."
@@ -180,7 +175,7 @@ divchi(a::Integer, b::Integer, k::Integer) = chi_is_c(k) ? div_c(a, b) : div_cba
 "Residue modulo the chirality of level `k`, in `0:6`."
 reschi(a::Integer, b::Integer, k::Integer) = chi_is_c(k) ? res_c(a, b) : res_cbar(a, b)
 
-"Digit of a level-`k` residue, under the fitted digit map."
+"Digit of a level-`k` residue under the IGeo7 digit map."
 digit_of_res(r::Integer, k::Integer) =
     chi_is_c(k) ? (@inbounds RES_TO_DIGIT_C[r+1]) : (@inbounds RES_TO_DIGIT_CBAR[r+1])
 
@@ -202,10 +197,10 @@ end
 
 `P_R[r+1] = prod_{k=1..r} chi_k`, the exact Eisenstein integer relating the
 res-`r` lattice to the res-0 lattice: a cell with res-`r` axial coordinates
-`X` sits at plane position `L * X / P_r`. With the fitted alternating
+`X` sits at plane position `L * X / P_r`. With alternating
 chirality `c*cbar = 7`, so `P_{2m} = 7^m` and `P_{2m+1} = 7^m * cbar` — the
-accumulated rotation never drifts (design section 6: never accumulate the
-angle in floating point).
+accumulated rotation is derived exactly instead of accumulated in floating
+point.
 """
 const P_R = _make_p_r()
 

@@ -15,7 +15,7 @@ digit-arc subtree rim. [`node_extent`](@ref) uses the generic inflated cap.
 """
 module H3
 
-# `node_extent` is omitted intentionally; H3 uses the inflated generic cap.
+# `node_extent` uses the generic inflated cell cap.
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,
@@ -30,11 +30,10 @@ import GeometryOps as GO
 import SmallCollections
 using SmallCollections: SmallVector
 
-# The unit-sphere vocabulary, spelled the same way the fallback substrate
-# spells it.
+# Unit-sphere point type used by the public geometry methods.
 const USPoint = GO.UnitSphericalPoint{Float64}
 
-# The libh3 ccall layer first: everything below is a wiring of it.
+# Load the libh3 call layer before the interface definitions.
 include("native.jl")
 
 include("cell.jl")

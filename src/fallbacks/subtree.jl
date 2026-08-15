@@ -1,26 +1,8 @@
-# The eager subtree verbs. Both are `collect` of the lazy iterators in
-# `subtree_iterators.jl`, which is also where the per-system fast paths hang —
-# so a system writes its walker once and both faces of it get faster.
+# Eager subtree operations collect the lazy, system-specializable iterators.
 
-# `collect`, plus the one check it cannot do for us. Given `HasLength`, `collect`
-# sizes its vector from `length` and fills by iterating; a walk that emits fewer
-# cells than its closed-form count claims therefore returns a tail of `undef` —
-# arbitrary integers handed back as cell ids, silently. HEALPix guarded exactly
-# this for its own rim; every automaton with a counted rim needs it, so it lives
-# here. One comparison against Θ(rim) work.
-#
-# Takes any counted walk, not just the two iterators — `border_descendants` runs
-# an engine directly — so the message names the walk by `show` rather than by
-# fields only the iterators have.
-#
-# `hint` is an APPROXIMATE size for a walk that declares none, and it is a
-# second positional argument rather than anything `IteratorSize` can see. That
-# separation is the point: `counted` still comes from `IteratorSize` alone, so
-# the guard below arms on exactly the walks that promise a count, and a number
-# that may be wrong reaches `sizehint!` and nothing else. A hint that is high
-# costs a roomier `Vector`; a hint that is low costs one reallocation. Neither
-# can put an `undef` slot in a caller's hands, which is what a wrong `length`
-# does. See `halo_sizehint`.
+# Collect an iterator while validating any declared length. An incorrect
+# `HasLength` count would otherwise leave uninitialized output slots. `hint` is
+# used only by `sizehint!` for iterators whose size is unknown.
 function collect_subtree(it, hint::Union{Int,Nothing} = nothing)
     counted = Base.IteratorSize(typeof(it)) isa Base.HasLength
     out = eltype(it)[]

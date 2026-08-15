@@ -12,7 +12,7 @@
 #
 # The position forms are the same answers read as indices into a data vector,
 # and `halo_table` is those for a whole subset at once. On a rooted subtree it
-# takes T20's split: an interior cell has no neighbour outside the subtree by
+# treats interior and rim cells separately: an interior cell has no neighbour outside the subtree by
 # definition, so its row needs no membership test at all.
 # ---------------------------------------------------------------------------
 
@@ -193,7 +193,7 @@ halo_table(cv::CellVector, k::Integer = 1;
 #   * the iterators must be built with the SAME connectivity the halo is asked
 #     for, since `Edge()`'s interior is strictly larger than `Vertex()`'s and
 #     using the wrong one would admit a neighbour that is not there; and
-#   * `k` must be 1. The T20 split proves a statement about the ONE-ring only:
+#   * `k` must be 1. The interior guarantee applies only to the one-ring:
 #     a cell two steps inside the rim can still reach outside at `k == 2`, and
 #     there is no "k-interior" iterator to ask.
 function halo_table(pg::PartialGrid, k::Integer = 1;
@@ -214,15 +214,9 @@ function _whole_subtree_range(pg::PartialGrid)
     return length(r) == ncells(pg) ? r : nothing
 end
 
-# Two passes rather than one merged walk. The two iterators are each ascending
-# and together the descendants, so interleaving them by head comparison would
-# make the row index a counter and save one `cellposition` per cell — but the
-# two engines have DIFFERENT state types, so the interleaved loop is a
-# union-typed `iterate` per step and measured 12x slower than the two walks
-# separately. The lookup is the cheaper of the two costs.
-#
-# One loop per engine keeps each monomorphic, which is the whole reason they are
-# written out twice instead of being parameterised over a membership predicate.
+# Separate loops keep each iterator state concrete. Interleaving the two
+# iterator types would introduce union-typed dispatch on every step; the
+# separate passes instead pay one `cellposition` lookup per cell.
 function _rooted_halo(pg::PartialGrid, r::UnitRange{Int}, connectivity::Connectivity)
     sys, root, complete = pg.system, pg.root_id, pg.complete
     l = pg.level
@@ -298,16 +292,9 @@ end
 """
     halo(pg::PartialGrid; connectivity = Vertex())
 
-The cells immediately outside a subset grid, lazily. See [`halo`](@ref) for the
-definition, the hole law, and why this is always an iterator.
-
-TWO PATHS, ONE VERB. A rooted grid holding a COMPLETE subtree is a subtree, so
-it delegates to [`SubtreeHaloIterator`](@ref) and gets whatever specialization
-its system ships — the square band walk, the calibrated directed walk. Anything
-else — a hole, a forgotten root, an arbitrary id list — takes the outside-first
-subset walk. `_whole_subtree_range` decides it, the same three conditions
-[`halo_table`](@ref) splits on one function below, so the two verbs cannot drift
-apart about what "is a subtree" means.
+Return cells immediately outside a subset grid, lazily. A rooted grid containing
+a complete subtree delegates to [`SubtreeHaloIterator`](@ref); other subsets use
+the outside-first subset walk. `_whole_subtree_range` determines the path.
 
 The subset walk prunes by the subset's own [`subset_span`](@ref)s — the root, if
 there is one, is not consulted at all. Construction is `O(1)`: nothing about the
@@ -327,11 +314,8 @@ end
 The cells immediately outside the compressed collection, lazily. See
 [`halo`](@ref).
 
-ALWAYS THE SUBSET WALK, even when the windows happen to be exactly a subtree: a
-[`CellVector`](@ref) stores windows and not an ancestor, so there is no root to
-recognise one by — the same thing `PartialGrid(cv)` loses and
-[`halo_table`](@ref)'s fast path asks for. The answer is identical, and the way
-to get the subtree walk is to build the grid from the root cell.
+A [`CellVector`](@ref) always uses the subset walk because it stores windows but
+no root ancestor. Build a grid from the root cell to enable the subtree engine.
 
 Membership is the window search, `O(log #windows)`, so the walk's per-candidate
 cost is lower here than on a `PartialGrid` over a bare id vector — and so is its
@@ -345,31 +329,20 @@ halo(cv::CellVector; connectivity::Connectivity = Vertex()) =
 # ===========================================================================
 # The chunk-plus-halo stencil: the two faces above, addressed together
 #
-# The two verbs before this one are the two SIDES of a subset's boundary, and a
-# chunked stencil pass needs both at once — the block to read, the halo to fetch
-# alongside it — laid end to end in `[chunk; halo]`. Neither verb addresses that
-# buffer. `halo_table` is in-set, so at the rim its rows are SHORT, which is the
-# honest answer to "which of my own cells does each of my cells touch" and the
-# wrong one for a read where those neighbours ARE present, just past the chunk's
-# end; and `halo` names the extra cells without saying which row wants which.
+# A chunked stencil addresses subset and halo cells in one `[chunk; halo]`
+# buffer. `halo_table` clips rows to the subset, while `halo` names exterior
+# cells without mapping them back to rows.
 #
-# So this is a third verb rather than a method of either, because every clause
-# of its contract differs from `halo_table`'s:
+# `stencil_table` therefore has a separate contract:
 #
 #   * rows are COMPLETE, never clipped, and that is checked rather than hoped;
 #   * entries index the CONCATENATED buffer, not the subset;
 #   * rows keep the system's ROTATIONAL order rather than ascending position;
 #   * the result is CSR, not a vector of row vectors.
 #
-# WHY ROTATIONAL, against the position form's ascending rule. That rule
-# (`src/interface/grid.jl`) is stated for a CLIPPED row, and its reason is that a
-# clipped row is a mutilated cycle: with neighbours missing there is no direction
-# left to preserve, so membership is all the order can mean and ascending is the
-# cheapest useful choice. A complete row has the cycle intact, and the cycle is
-# what the callers of this verb are after — slope, aspect, curvature, flow
-# direction all read the ring as directions, not as a set. Sorting here would
-# throw away the one thing completeness makes available, and a caller who wants
-# ascending has `sort!` on a row view.
+# Complete rows preserve rotational order because direction is meaningful when
+# the full cycle is present. Clipped position rows remain ascending by the base
+# grid contract.
 # ===========================================================================
 
 """
@@ -701,8 +674,8 @@ SYSTEMS, not about this walk.
 !!! note "A5 pays for its missing primitives here too"
     Without [`has_sorted_subtrees`](@ref) there are no curve keys to binary
     search, so the member lookup is a set built per call, `O(|set|)`; and the
-    rim iterator materialises the subtree rather than walking it, as T20
-    documents. The answer is the same one.
+    rim iterator materialises the subtree rather than walking it. The answer
+    is unchanged.
 """
 function member_neighbors(set::MultiOrderCellSet, c::AbstractCellIndex;
         connectivity::Connectivity = Vertex())

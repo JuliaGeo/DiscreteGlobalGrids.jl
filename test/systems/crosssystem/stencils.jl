@@ -396,17 +396,30 @@ function member_probes(set, n::Int)
     return unique(vcat(first(coarse, 3), collect(1:step:length(set))))
 end
 
-# The three systems whose four children tile their parent exactly, so that a
-# member's footprint IS its descendants' union and a statement about level-`L`
-# cells is a statement about the drawn polygons. IGEO7, H3 and A5 refine
-# non-congruently and are excluded from the GEOMETRIC law with that reason —
-# see `member_neighbors`' docstring; they keep every other law here.
-const CONGRUENT = (DGG.HEALPixSystem, DGG.S2System, DGG.ISEA4RSystem)
+# The systems whose children tile their parent exactly, so that a member's
+# footprint IS its descendants' union and a statement about level-`L` cells is a
+# statement about the drawn polygons. IGEO7, H3, A5 and the two central-place
+# hexagon systems refine non-congruently and are excluded from the GEOMETRIC law
+# with that reason — see `member_neighbors`' docstring; they keep every other law
+# here. Membership is a predicate rather than a type tuple because an
+# `AuthalicSystem` wrap keeps the wrapped system's refinement.
+base_system(sys) = sys isa AuthalicSystem ? parent(sys) : sys
+
+const CONGRUENT = (DGG.HEALPixSystem, DGG.S2System, DGG.ISEA4RSystem,
+    DGG.ISEA4TSystem, DGG.RHEALPixSystem, DGG.IVEA4RSystem, DGG.IVEA9RSystem,
+    DGG.RTEA4RSystem, DGG.RTEA9RSystem)
+
+congruent(sys) = any(T -> base_system(sys) isa T, CONGRUENT)
 
 # The last column is whether `Vertex()` and `Edge()` are different relations at
-# all: IGEO7 and H3 have only 3-valent vertices, so on those two they coincide
-# and "Edge drops the diagonal contacts" has nothing to drop. Stated rather than
-# left to a passing-by-vacuity test.
+# all: IGEO7, H3 and the ISEA3H/4H hexagons have only 3-valent vertices, so on
+# those the two coincide and "Edge drops the diagonal contacts" has nothing to
+# drop. Stated rather than left to a passing-by-vacuity test.
+#
+# The level column is chosen per system so the reference level lands in the same
+# cell-size band on every aperture — the coverage has to be genuinely mixed-level
+# for the laws below to say anything, and the oracle has to be able to expand
+# every member to it.
 const MOC_SWEEP = [
     (DGG.IGeo7System(), 6, DONUT, false),
     (DGG.H3System(), 5, DONUT, false),
@@ -414,8 +427,28 @@ const MOC_SWEEP = [
     (DGG.A5System(), 8, DONUT, true),
     (DGG.S2System(), 8, MAINLAND, true),
     (DGG.ISEA4RSystem(), 8, DONUT, true),
+    (DGG.ISEA3HSystem(), 10, DONUT, false),
+    (DGG.ISEA4HSystem(), 8, DONUT, false),
+    (DGG.ISEA4TSystem(), 8, DONUT, true),
+    (DGG.RHEALPixSystem(), 6, DONUT, true),
+    (DGG.AusPIXSystem(), 6, DONUT, true),
+    (DGG.IVEA4RSystem(), 8, DONUT, true),
+    (DGG.IVEA9RSystem(), 6, DONUT, true),
+    (DGG.RTEA4RSystem(), 8, DONUT, true),
+    (DGG.RTEA9RSystem(), 6, DONUT, true),
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, DONUT, false),
 ]
+
+# The same guard the subset sweep above carries. `member_neighbors` is a
+# registry-wide law, and the only thing that ever kept it from being tested on a
+# system was this list silently not growing when one was added.
+@testset "the member-adjacency sweep covers every registered system" begin
+    swept = Set(typeof(s) for (s, _, _, _) in MOC_SWEEP)
+    for s in systems()
+        @test typeof(s) in swept
+    end
+    @test any(s -> s isa AuthalicSystem, first.(MOC_SWEEP))
+end
 
 @testset "member_neighbors: $(sysname(sys))" for (sys, lvl, target, splits) in MOC_SWEEP
     set = query(sys, MultiOrderCoverage(target); level = lvl)
@@ -463,7 +496,7 @@ const MOC_SWEEP = [
         @test_throws ArgumentError member_neighbors(set, outside)
     end
 
-    if any(T -> sys isa T, CONGRUENT)
+    if congruent(sys)
         # The geometric law, and the reason the exclusions above are stated
         # rather than silently taken: `adjacent_cells` reads the boundary RINGS
         # and counts shared vertices, so this is "share a boundary" and "share

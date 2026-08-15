@@ -542,6 +542,18 @@ end
 # The ring position of the step from a cell's parent to the cell, read off the
 # cell's own last digit through the same table `_border_step` uses. Digit 0 is
 # the centre child, which has no direction, and a base cell has no parent.
+#
+# RAW `SIGMA_J`, carrying none of the encode rotation `g` that
+# `_encode_lattice_rot` documents, because this number is never geometry: the arc
+# `_hex_calibrate` builds out of it is handed straight back to `_border_step`,
+# which re-reads `SIGMA_J[digit]` for the very same children one call later. The
+# raw digit frame is the only frame either side names, so neither owes a
+# rotation. Putting one on one side alone would not cancel out on the other —
+# `g` follows a cell's own first nonzero digit and its angle against the cone
+# cut, so even siblings can disagree on it — and the seeded arc would face where
+# none of that neighbour's children lie: a SHORT halo, which is the one way this
+# walk answers wrong instead of falling back. `g` belongs where dev-frame order
+# is asked for, which is `_cell_neighbors_ccw` and nowhere on this path.
 function DGG.hex_child_direction(::IGeo7System, c::Z7Cell)
     res = z7_resolution(c.id)
     res == 0 && return -1

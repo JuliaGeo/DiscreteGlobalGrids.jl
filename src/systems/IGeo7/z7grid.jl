@@ -807,6 +807,10 @@ State a `digit` child at absolute resolution `level` inherits from a cell in
 `(L, s)`: the arc of exposed directions `s, s+1, ..., s+L-1` (mod 6), in
 `SIGMA_J`'s unit indices. `L == 6` is the subtree root, the one state with no
 arc ends.
+
+Those indices are RAW — no `_encode_lattice_rot` rotation — and
+`hex_child_direction` (system.jl) calibrates `hex_halo_engine`'s seeded arcs in
+that same raw frame. See the note there before putting a rotation on either side.
 """
 @inline function _border_step(state::NTuple{2,Int}, digit::Int, level::Int)
     L, s = state

@@ -44,6 +44,7 @@ const FROM_SPHERE = US.GeographicFromUnitSphere()
 
 include("bands.jl")
 include("system.jl")
+include("nesting.jl")
 
 export CopernicusDEMSystem
 

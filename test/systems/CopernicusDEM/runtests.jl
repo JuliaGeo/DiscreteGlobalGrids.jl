@@ -689,6 +689,171 @@ end
     end
 end
 
+# =========================================================================
+# (j) Cross-resolution nesting: one lattice inside another
+# =========================================================================
+
+# What research §5.4 measures is that the two products' pixel CENTRES coincide —
+# GLO-90 post `(j, i)` is GLO-30 post `(3j, 3i)`, to 8.9e-16 degrees — and that
+# the column counts divide exactly. That, and not a cell-box tiling, is what
+# `refine`/`coarsen` implement and what this testset pins: the k x k index block,
+# its ascending order, the round trip, and the co-location of the block's
+# north-west post with the coarse post.
+#
+# The cell BOXES are deliberately not asserted to tile the coarse box, because
+# they do not. Both products are pixel-is-point, so each outsets its box by half
+# of ITS OWN pixel, and the block's box is the coarse box translated south-east
+# by `Δ_coarse * (1 - 1/k) / 2` — 1.5" in longitude and 1" in latitude for the
+# shipped pair, one whole GLO-30 pixel. The block's areas therefore sum to that
+# translated box (asserted, `rtol = 1e-12`) and miss the coarse cell's own area
+# by about `tan(φ) * 1"`: measured worst 6.9e-5 at k = 3 and 4.1e-3 at k = 40,
+# and a factor of 1.8 / 2.9 in the ±90 tile rows, where the two systems' pole
+# clamps differ by half a pixel each. Those gaps are @info-logged, not asserted:
+# they are properties of the registration, not tolerances to tighten. See
+# `refine`'s docstring for why no index scheme fixes them.
+#
+# KILLS: a half-pixel registration shift between the two products — the
+# co-location probe sits ten orders inside the 2.8e-4 degrees the smallest such
+# shift moves a post, and measured 2.8e-3 against a `half_dlon = 0` mutant in
+# `cell_box`; hardcoding `k = 3`, which the k = 40 pair catches; an
+# off-by-one in the k-scaling, which breaks the round trip, the bitwise block
+# edges and the tile-corner extremes together; and a j/i transposition in the
+# block base, which lands in a different tile row entirely.
+@testset "one lattice nests k-fold inside another" begin
+    # One tile per band per hemisphere, plus both pole rows.
+    nest_lats = (89, 85, 80, 70, 60, 50, 0, -1, -51, -61, -71, -81, -86, -90)
+
+    # The shipped pair at k = 3, and the twin inside GLO-90 at k = 40 — the case
+    # that says the code is written in `k` and not in 3. `k = 40` is also even,
+    # so its block has no centre column: the block is an INDEX block, and only
+    # the post lattice nests.
+    for (coarse, fine) in ((GLO90, GLO30), (TWIN, GLO90))
+        k = CD.nesting_factor(coarse, fine)
+        Nc = CD.lat_intervals(coarse)
+        gc = levelgrid(coarse, 1)
+        gf = levelgrid(fine, 1)
+        rng = MersenneTwister(20260815)
+        bad = String[]
+        worst_post = 0.0        # coarse post vs the block's north-west post, degrees
+        worst_union = 0.0       # block area sum vs the block's own box
+        worst_coarse = 0.0      # block area sum vs the coarse cell, off the pole rows
+        worst_pole = 0.0        # the same, in the ±90 tile rows
+
+        for lat_s in nest_lats
+            CD.ncols_at(fine, lat_s) == k * CD.ncols_at(coarse, lat_s) ||
+                note!(bad, "row $lat_s: the column counts do not scale by $k")
+            nc = CD.ncols_at(coarse, lat_s)
+            for lon_w in PROBE_LONS
+                tc = CD.tilecell(coarse, lat_s, lon_w)
+                tf = CD.tilecell(fine, lat_s, lon_w)
+                # Level 0: the tile with the same lower-left corner, both ways.
+                CD.refine(coarse, fine, tc) == [tf] ||
+                    note!(bad, "tile ($lat_s, $lon_w): refine is not the same corner")
+                CD.coarsen(fine, coarse, tf) == tc ||
+                    note!(bad, "tile ($lat_s, $lon_w): coarsen is not the same corner")
+
+                for j in unique([0, Nc - 1, rand(rng, 0:(Nc - 1))]),
+                    i in unique([0, nc - 1, rand(rng, 0:(nc - 1))])
+
+                    label = "($lat_s, $lon_w) pixel ($j, $i)"
+                    p = CD.pixelcell(coarse, tc, j, i)
+                    fs = CD.refine(coarse, fine, p)
+                    length(fs) == k * k ||
+                        note!(bad, "$label: $(length(fs)) cells, not $(k * k)")
+                    # Ascending, but NOT contiguous: `k` runs of `k` ids, each run
+                    # `ncols(fine, r)` past the last.
+                    (issorted(fs) && allunique(fs)) ||
+                        note!(bad, "$label: not ascending and distinct")
+                    all(f -> CD.coarsen(fine, coarse, f) == p, fs) ||
+                        note!(bad, "$label: coarsen does not invert refine")
+                    all(f -> parent(fine, f) == tf, fs) ||
+                        note!(bad, "$label: the block left its tile")
+
+                    # The block tiles its own box BITWISE: inside a row the east
+                    # edge of one cell IS the west edge of the next, and between
+                    # rows the south edge of one IS the north edge of the one
+                    # below — the same `Float64`, so the same geodesic.
+                    boxes = [CD.cell_box(fine, f) for f in fs]
+                    for a in 0:(k - 1), b in 0:(k - 1)
+                        n = a * k + b + 1
+                        b < k - 1 && !(boxes[n][2] === boxes[n + 1][1]) &&
+                            note!(bad, "$label: column edge $b is not shared bitwise")
+                        a < k - 1 && !(boxes[n][3] === boxes[n + k][4]) &&
+                            note!(bad, "$label: row edge $a is not shared bitwise")
+                    end
+
+                    # ... so the union of the block is the box spanned by its
+                    # north-west and south-east cells, and the areas sum to it.
+                    west, north = boxes[1][1], boxes[1][4]
+                    east, south = boxes[end][2], boxes[end][3]
+                    union_area = deg2rad(east - west) * (sind(north) - sind(south))
+                    total = sum([cell_area(gf, f) for f in fs])
+                    worst_union = max(worst_union, abs(total - union_area) / union_area)
+
+                    cw, ce, cs, cn = CD.cell_box(coarse, p)
+                    gap = abs(total - cell_area(gc, p)) / cell_area(gc, p)
+                    if lat_s == 89 || lat_s == -90
+                        worst_pole = max(worst_pole, gap)
+                    else
+                        worst_coarse = max(worst_coarse, gap)
+                        # The co-location itself, on the box midpoints — which are
+                        # the posts, by testset (b). Skipped in the ±90 rows only
+                        # because `cell_box` clamps those to the pole by half of
+                        # the system's OWN pixel, which moves the midpoint off the
+                        # post by a different amount on each side; the posts there
+                        # are `lat_n - j/N` on both sides, as everywhere else.
+                        worst_post = max(worst_post,
+                            abs((cw + ce) / 2 - (boxes[1][1] + boxes[1][2]) / 2),
+                            abs((cs + cn) / 2 - (boxes[1][3] + boxes[1][4]) / 2))
+                    end
+                end
+            end
+        end
+
+        @info "$coarse inside $fine (k = $k)" worst_post worst_union worst_coarse worst_pole
+        @test bad == String[]
+        # Measured 2.8e-14 degrees, i.e. 3 nm on the ground, against the 4.2e-4
+        # degrees (1.5") a half-pixel registration slip would move a post.
+        @test worst_post < 1e-12
+        # Measured 3.6e-16 (k = 3) and, at k = 40, 9.7e-16 standalone against
+        # 8.2e-15 under `Pkg.test`'s `--check-bounds=yes`, which costs `sum` its
+        # SIMD path and so changes the order of the 1600 additions. The areas are
+        # materialised so Julia's pairwise `sum` reduces them, as `cell_area`'s
+        # docstring asks: a generator over the same terms lands at 2.6e-14.
+        @test worst_union < 1e-12
+
+        # The block decomposition IS the fine tile's raster cut into k x k
+        # blocks: the first coarse pixel's block starts at the fine tile's first
+        # child, the last one's ends at its last, and the counts agree.
+        for lat_s in (0, 50, 89, -90)
+            tc = CD.tilecell(coarse, lat_s, 7)
+            tf = CD.tilecell(fine, lat_s, 7)
+            nc = CD.ncols_at(coarse, lat_s)
+            ch = children(fine, tf)
+            @test first(CD.refine(coarse, fine, CD.pixelcell(coarse, tc, 0, 0))) == first(ch)
+            @test last(CD.refine(coarse, fine, CD.pixelcell(coarse, tc, Nc - 1, nc - 1))) ==
+                  last(ch)
+            @test k * k * length(children(coarse, tc)) == length(ch)
+        end
+    end
+
+    # Not an integer refinement, in both directions and for a lattice that is
+    # perfectly valid on its own: `N = 1800` is a legal twin (30 | 1800) but
+    # 1800/1200 is 1.5, so no GLO-90 cell is a whole number of its cells.
+    t30 = CD.tilecell(GLO30, 0, 0)
+    @test_throws ArgumentError CD.refine(GLO30, GLO90, t30)
+    @test_throws ArgumentError CD.coarsen(GLO90, GLO30, CD.tilecell(GLO90, 0, 0))
+    @test_throws ArgumentError CD.refine(GLO90, CD.CopernicusDEMSystem{1800}(),
+                                         CD.tilecell(GLO90, 0, 0))
+    # and it says which two lattices it is talking about
+    msg = sprint(showerror, try
+        CD.refine(GLO30, GLO90, t30)
+    catch err
+        err
+    end)
+    @test occursin("3600", msg) && occursin("1200", msg)
+end
+
 end # @testset "CopernicusDEM system"
 
 end # module CopernicusDEMSystemTests

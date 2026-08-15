@@ -575,6 +575,140 @@ const CLEAN = (0, "")
     end
 
     # =======================================================================
+    # 9b. The GBT digit kernel against the geometric oracle it replaced
+    #
+    # `_cell_neighbors_ccw` is ported arithmetic (see `src/systems/IGeo7/gbt.jl`
+    # for provenance); `_cell_neighbors_ccw_geometric` is this package's own
+    # oracle-validated lattice implementation, kept in the tree for exactly this
+    # comparison. The port is checked, not trusted: identical ids in identical
+    # order, on every cell of levels 0-3 and on the seams and deep samples where
+    # a digit-frame bug would live.
+    # =======================================================================
+
+    @testset "9b. GBT kernel vs geometric oracle" begin
+        # The port's own exclusion table and the package's independently fitted
+        # deleted-digit table are separate evidence; pin them equal rather than
+        # defining one as the other.
+        @test I.EXCLUDE_NEIGHBOURS == I.Z7_DELETED_DIGIT
+
+        agrees(z) = collect(I._cell_neighbors_ccw(z)) ==
+                    collect(I._cell_neighbors_ccw_geometric(z))
+
+        # every cell of every complete level to 3
+        for r in 0:3
+            g = DGG.levelgrid(S, r)
+            @test count(i -> !agrees(DGG.rawid(DGG.cellindex(g, i))), 1:DGG.ncells(g)) == 0
+        end
+
+        # deep samples, where the carry ripples further and the frame rotation
+        # has more digits to act on
+        rng = Random.MersenneTwister(20260815)
+        for r in (4, 6, 8, 10, 12, 15, 19)
+            nbad = 0
+            for _ in 1:400
+                z = (UInt64(rand(rng, 0:11)) << 60) | I.Z7_PAD_MASK
+                for _ in 1:r
+                    cs = collect(I.z7_children(z))
+                    z = cs[rand(rng, eachindex(cs))]
+                end
+                agrees(z) || (nbad += 1)
+            end
+            @test nbad == 0
+        end
+
+        # the twelve pentagon chains, and the two rings around each link: the
+        # exclusion-zone rotation only fires near a chain, so this is where it is
+        nbad = 0
+        for b in 0:11
+            z = (UInt64(b) << 60) | I.Z7_PAD_MASK
+            for r in 0:8
+                agrees(z) || (nbad += 1)
+                for n in I._cell_neighbors_ccw_geometric(z)
+                    agrees(n) || (nbad += 1)
+                    for m in I._cell_neighbors_ccw_geometric(n)
+                        agrees(m) || (nbad += 1)
+                    end
+                end
+                r < 8 && (z = I.z7_child(z, 0))
+            end
+        end
+        @test nbad == 0
+
+        # A cell's six raw steps are always distinct — the port skips the
+        # pentagon's missing direction rather than computing a duplicate, so a
+        # short list would mean a real collision, not a deduplication.
+        for r in 1:3
+            g = DGG.levelgrid(S, r)
+            @test all(1:DGG.ncells(g)) do i
+                c = DGG.cellindex(g, i)
+                ns = I._cell_neighbors_ccw(DGG.rawid(c))
+                allunique(ns) && length(ns) == (I.is_pentagon(c) ? 5 : 6)
+            end
+        end
+
+        # k = 1 stays allocation-free, which is what makes it usable as the
+        # primitive every halo and stencil is built from.
+        let g = DGG.levelgrid(S, 8), c = DGG.cellindex(g, 12345)
+            DGG.neighbors(g, c, 1)
+            @test (@allocated DGG.neighbors(g, c, 1)) == 0
+        end
+
+        # ---------------------------------------------------------------
+        # k > 1: the whole disc, against a reference walk built on the
+        # geometric primitive with the pre-port comparison sort. Same set and
+        # same order, both connectivities, k = 0:3.
+        # ---------------------------------------------------------------
+        function reference_shells(g, c, steps)
+            shells = Vector{Z7Cell}[]
+            one_ring(x) = [Z7Cell(z) for z in I._cell_neighbors_ccw_geometric(DGG.rawid(x))]
+            first_ring = one_ring(c)
+            isempty(first_ring) && return shells
+            push!(shells, first_ring)
+            reference = DGG.cell_centroid(g, first(first_ring))
+            centre = DGG.cell_centroid(g, c)
+            e1, e2 = I._tangent_frame(centre, reference)
+            seen = Set{Z7Cell}(first_ring)
+            push!(seen, c)
+            frontier = first_ring
+            for _ in 2:steps
+                next = Z7Cell[]
+                for x in frontier, y in one_ring(x)
+                    y in seen && continue
+                    push!(seen, y)
+                    push!(next, y)
+                end
+                isempty(next) && break
+                sort!(next; by=z -> (I._azimuth(centre, e1, e2,
+                        DGG.cell_centroid(g, z)), z))
+                push!(shells, next)
+                frontier = next
+            end
+            return shells
+        end
+
+        for r in 1:3
+            g = DGG.levelgrid(S, r)
+            nbad = 0
+            for i in 1:DGG.ncells(g)
+                c = DGG.cellindex(g, i)
+                shells = reference_shells(g, c, 3)
+                for k in 0:3, conn in (Vertex(), Edge())
+                    want = k == 0 ? Z7Cell[] :
+                           isempty(shells) ? Z7Cell[] :
+                           reduce(vcat, shells[1:min(k, length(shells))])
+                    collect(DGG.neighbors(g, c, k; connectivity=conn)) == want ||
+                        (nbad += 1)
+                    wantring = k == 0 ? [c] :
+                               k <= length(shells) ? shells[k] : Z7Cell[]
+                    collect(DGG.ring(g, c, k; connectivity=conn)) == wantring ||
+                        (nbad += 1)
+                end
+            end
+            @test nbad == 0
+        end
+    end
+
+    # =======================================================================
     # 10. Geometry: rings, winding, centroids, areas
     # =======================================================================
 

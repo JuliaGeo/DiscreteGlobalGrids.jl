@@ -29,10 +29,12 @@ using SmallCollections: SmallVector
 
 const USPoint = GO.UnitSphericalPoint{Float64}
 
-# Dependency order: identifiers, lattice arithmetic, geometry, interface.
+# Dependency order: identifiers, lattice arithmetic, geometry, adjacency,
+# interface. `gbt.jl` is the one ported (non-clean-room) file — see its header.
 include("z7.jl")
 include("engine.jl")
 include("z7grid.jl")
+include("gbt.jl")
 include("system.jl")
 
 # Public IGeo7 API.

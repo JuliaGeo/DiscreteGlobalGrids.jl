@@ -77,7 +77,28 @@ Digits are accumulated by Horner evaluation, the deleted pentagon sector is
 collapsed, and the result is wrapped into the `[0°, 300°)` cone. An all-zero
 pentagon prefix returns `(0, 0)`.
 """
-function _encode_lattice(z::UInt64, base::Int, res::Int)
+@inline function _encode_lattice(z::UInt64, base::Int, res::Int)
+    (a, b, _) = _encode_lattice_rot(z, base, res)
+    return (a, b)
+end
+
+"""
+    _encode_lattice_rot(z, base, res) -> (a, b, g)
+
+[`_encode_lattice`](@ref) with its own frame rotation exposed: `g` is the net
+number of 60° [`unitmul`](@ref) steps the collapse and the cone wrap applied to
+the Horner accumulator, so the returned representative sits `g` sixths of a turn
+counterclockwise of where the raw digit sum put it.
+
+That number is what relates the two descriptions of a cell's six neighbour
+directions. A digit's own direction is [`SIGMA_J`](@ref)'s, fixed; this
+function's `(a, b)` is in the rotated frame, so a neighbour reached by adding
+digit `d` sits at unit index `mod(SIGMA_J[d] + g, 6)`. That is the whole bridge
+between the GBT digit step of `gbt.jl` and this file's counterclockwise unit
+order — see `_cell_neighbors_ccw`. An all-zero prefix (a pentagon) never rotates:
+`g == 0`.
+"""
+function _encode_lattice_rot(z::UInt64, base::Int, res::Int)
     a = Int64(0)
     b = Int64(0)
     m = 0
@@ -98,7 +119,7 @@ function _encode_lattice(z::UInt64, base::Int, res::Int)
             end
         end
     end
-    m == 0 && return (Int64(0), Int64(0))
+    m == 0 && return (Int64(0), Int64(0), 0)
     # collapse at level `m`, the first nonzero digit: the deleted digit's 60°
     # sector is excised, so a subtree CCW-past it rotates back by 60° [fitted].
     thc = @inbounds THETA_DIR[m+1][dm]
@@ -112,10 +133,12 @@ function _encode_lattice(z::UInt64, base::Int, res::Int)
     psit = thslot + dd
     if psit < 0.0
         (a, b) = unitmul(a, b, -1)
+        shift -= 1
     elseif psit >= DEV_CONE_DEG
         (a, b) = unitmul(a, b, 1)
+        shift += 1
     end
-    return (a, b)
+    return (a, b, shift)
 end
 
 # ---------------------------------------------------------------------------
@@ -447,8 +470,8 @@ lonlat_to_cell(lon::Real, lat::Real, res::Integer; kwargs...) =
     _cell_neighbors(z7) -> SmallList{6,UInt64}
 
 Canonical ids of the cells sharing an edge with `z7`, ascending: 6 for a
-hexagon and 5 for a pentagon. Neighbor positions use exact lattice arithmetic
-and the standard position-to-id decoder.
+hexagon and 5 for a pentagon. `gbt.jl`'s digit step answers this; the sort is
+over [`_cell_neighbors_ccw`](@ref)'s rotational order.
 
 Throws [`InvalidZ7Error`](@ref) for invalid ids and for resolution-20 ids
 (valid for prefix arithmetic, no geometry — hence no neighbors).
@@ -458,13 +481,22 @@ function _cell_neighbors(z7::UInt64)
 end
 
 """
-    _cell_neighbors_ccw(z7) -> SmallList{6,UInt64}
+    _cell_neighbors_ccw_geometric(z7) -> SmallList{6,UInt64}
 
-Return the six neighbors, or five for a pentagon, counterclockwise from the
-development frame's `+1` direction. [`_cell_neighbors`](@ref) sorts this list
-by identifier.
+The neighbours by geometry: step one Eisenstein unit from the cell's physical
+lattice point in each of the six unit directions, project the result through
+`dev_to_xyz`, and re-decode it with [`_xyz_to_z7`](@ref). Counterclockwise from
+the development frame's `+1` direction, by construction — the loop *is* the
+unit order.
+
+This is the definition [`_cell_neighbors_ccw`](@ref) is checked against, and it
+is the oracle-validated decoder, so it stays in the tree as the differential
+reference (testset `9b` of `test/systems/IGeo7/runtests.jl`) even though nothing
+on the hot path calls it: a floating-point round trip with a three-base search in
+it, per neighbour, is roughly forty times the cost of the digit arithmetic that
+replaced it.
 """
-function _cell_neighbors_ccw(z7::UInt64)
+function _cell_neighbors_ccw_geometric(z7::UInt64)
     res = _geometry_checked(z7)
     base = z7_base_cell(z7)
     (a, b) = _encode_lattice(z7, base, res)

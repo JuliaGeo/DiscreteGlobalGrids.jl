@@ -40,7 +40,7 @@ using .HaloOracle
 
 export Failure, check_subtree_case, check_subset_case, fast_oracle,
     fast_subset_oracle, gridctx, describe, chunk_range, symmetry_failures,
-    whole_results, laziness_failures, classify_root
+    whole_results, whole_field, whole_metric, laziness_failures, classify_root
 
 # ---------------------------------------------------------------------------
 
@@ -156,19 +156,34 @@ The elevation field and every metric over the WHOLE level grid. Memoised on
 `(sys, level, conn, kind, spike_at)`, because a chunk sweep re-uses it for
 every root.
 """
-function whole_results(sys, level::Integer, conn::Connectivity, kind::Symbol;
-        spike_at::Int = 1, rng = nothing)
-    key = (sys, Int(level), conn, kind, kind === :spike ? spike_at : 0)
+function whole_field(sys, level::Integer, conn::Connectivity, kind::Symbol,
+        spike_at::Int)
+    key = (:z, sys, Int(level), conn, kind, kind === :spike ? spike_at : 0)
     get!(WHOLE_CACHE, key) do
         k = gridctx(sys, level, conn)
-        z = make_field(kind, k, Random.MersenneTwister(hash((key, :field))); spike_at)
-        w = WholeField(k, z)
-        res = Dict{Symbol,Any}()
-        for (name, fn) in METRICS
-            res[name] = fn(w)
-        end
-        (z, res)
+        make_field(kind, k, Random.MersenneTwister(hash((key, :field))); spike_at)
+    end::Vector{Float64}
+end
+
+"One whole-grid metric, memoised on its own so a case that only needs four of
+them does not pay for ten."
+function whole_metric(sys, level::Integer, conn::Connectivity, kind::Symbol,
+        spike_at::Int, name::Symbol, fn)
+    key = (:m, sys, Int(level), conn, kind, kind === :spike ? spike_at : 0, name)
+    get!(WHOLE_CACHE, key) do
+        z = whole_field(sys, level, conn, kind, spike_at)
+        fn(WholeField(gridctx(sys, level, conn), z))
     end
+end
+
+function whole_results(sys, level::Integer, conn::Connectivity, kind::Symbol;
+        spike_at::Int = 1)
+    z = whole_field(sys, level, conn, kind, spike_at)
+    res = Dict{Symbol,Any}()
+    for (name, fn) in METRICS
+        res[name] = whole_metric(sys, level, conn, kind, spike_at, name, fn)
+    end
+    return (z, res)
 end
 
 # ---------------------------------------------------------------------------
@@ -257,7 +272,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
 
     # -- 5. terrain, whole vs chunk ----------------------------------------
     sp = spike_in_halo && !isempty(hp) ? hp[1] : clamp(first(r), 1, length(k))
-    z, wres = whole_results(sys, level, conn, fieldkind; spike_at = sp)
+    z = whole_field(sys, level, conn, fieldkind, sp)
     chunk = ChunkField(k, sys, root, level, z)
     chunk.halopos == hp || push!(fails, Failure(:chunk_halo, tag,
         "ChunkField halo positions differ from subtree_halo"))
@@ -267,7 +282,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
     for (name, fn) in want
         cres = fn(chunk)
         nmetric += 1
-        wslice = wres[name][r]
+        wslice = whole_metric(sys, level, conn, fieldkind, sp, name, fn)[r]
         if !same(wslice, cres)
             i, x, y = first_difference(wslice, cres)
             push!(fails, Failure(:chunk_differs, tag,
@@ -447,12 +462,20 @@ function classify_root(sys, root, level::Integer, conn::Connectivity)
     for p in hp
         base(p) == b0 || (push!(tags, :seam); break)
     end
-    for p in r
-        z = k.centroids[p][3]
-        z > 0.999 && push!(tags, :npole)
-        z < -0.999 && push!(tags, :spole)
-    end
+    np, sp = pole_positions(k)
+    (np in r || np in hp) && push!(tags, :npole)
+    (sp in r || sp in hp) && push!(tags, :spole)
     return tags
+end
+
+const POLE_CACHE = Dict{Any,Tuple{Int,Int}}()
+
+"Grid positions of the cells containing the two geographic poles."
+function pole_positions(k::GridCtx)
+    get!(POLE_CACHE, objectid(k)) do
+        (DGG.cellposition(k.grid, DGG.cellat(k.grid, 0.0, 90.0)),
+         DGG.cellposition(k.grid, DGG.cellat(k.grid, 0.0, -90.0)))
+    end
 end
 
 end # module

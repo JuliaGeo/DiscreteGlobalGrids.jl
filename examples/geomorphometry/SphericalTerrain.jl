@@ -12,6 +12,7 @@ D8 flow direction and flow accumulation.
 Deliberately NOT ported: that PR's "relative cell" abstraction
 (`RelativeZ7Cell`, `neighbor - center`, `cell + dir`). Everything here keeps
 absolute cell ids and resolves them to array positions through `cellposition`.
+It cost nothing: no metric below wants to name a direction, only to visit one.
 
 Everything runs against one small interface, so that the *same* function body
 runs over a whole level grid and over a chunk-plus-halo read, and the two can

@@ -127,17 +127,22 @@ end
         @test DGG.system(lk) == sys
         @test FB.reference_level(lk) == L
         @test length(unique(DGG.level, ids)) > 1
-        # "Forward" in the container's own key — the reference-level interval
-        # STARTS — which is what every verb here searches in. Stated as the
-        # starts rather than as `issorted(ids)`, because `isless` on an id
-        # compares its level first and a mixed-level container is unsorted in
-        # THAT sense on most systems.
-        @test DD.Lookups.order(lk) === DD.Lookups.ForwardOrdered()
+        # `Unordered`, because `order` is a claim about the VALUES under
+        # `isless`, and `isless` on an id compares its level first — a
+        # mixed-level axis is unsorted in exactly the sense the claim is read
+        # in. DimensionalData's `cat` reads it: under an ordered claim its
+        # boundary check walks the ids and silently drops the whole axis at any
+        # split where the levels invert. The container's OWN order — interval
+        # starts — is asserted beside it, because that is what every verb here
+        # searches.
+        @test DD.Lookups.order(lk) === DD.Lookups.Unordered()
         starts = [first(DGG.descendant_range(sys, c, L)) for c in ids]
         @test issorted(starts) && allunique(starts)
         @test DD.Lookups.val(lk) === parent(lk)
         @test DD.Lookups.metadata(lk) === DD.Lookups.NoMetadata()
-        @test DD.Lookups.bounds(lk) == (first(ids), last(ids))
+        # The generic answer for an unordered lookup — a `(first, last)` pair
+        # here would be an inverted-`isless` pair masquerading as an interval.
+        @test DD.Lookups.bounds(lk) === (nothing, nothing)
         @test DD.name(M) === :lat
         @test length(M) == length(mov)
         # It really is a compression of the leaf axis, or the mesh is decoration.
@@ -227,19 +232,25 @@ end
         @test isempty(M[DGG.Cells(DGG.Covering(away))])
     end
 
-    # `vcat` arrives at the lookup through `rebuild`, not through `getindex`,
-    # and two ascending disjoint halves are one container again. Swept rather
-    # than left to the mechanics testset below because DimensionalData decides
-    # whether to even try by comparing the axes' VALUES, and mixed-level ids
-    # compare differently per system.
-    @testset "vcat of two disjoint ascending halves" begin
+    # `vcat` arrives at the lookup through `rebuild`, not through `getindex` —
+    # and only if DimensionalData's own pre-check lets it. That check reads the
+    # axes' VALUES, so it is swept over EVERY split, not spot-checked at one:
+    # under the old `ForwardOrdered` claim the axis silently degraded to a bare
+    # `Vector` at precisely the splits where a coarse id follows a deep one
+    # (HEALPix fixture: splits 17 and 34 of 37), and a single mid-split test
+    # passed by luck. Every split must come back a `MultiOrderLookup`.
+    @testset "vcat of two disjoint ascending halves, at every split" begin
         n = length(M)
-        joined = vcat(M[1:(n÷2)], M[(n÷2+1):n])
-        jlk = DD.lookup(joined, DGG.Cells)
-        @test jlk isa DGG.MultiOrderLookup
-        @test jlk == lk
-        @test collect(jlk) == ids
-        @test parent(joined) == vals
+        for s in 1:(n-1)
+            joined = vcat(M[1:s], M[(s+1):n])
+            @test joined isa DD.AbstractDimArray
+            jlk = DD.lookup(joined, DGG.Cells)
+            @test jlk isa DGG.MultiOrderLookup
+            if !(jlk isa DGG.MultiOrderLookup)
+                break   # one named split is diagnosis enough; n-1 repeats is noise
+            end
+            @test jlk == lk && parent(joined) == vals
+        end
     end
 end
 

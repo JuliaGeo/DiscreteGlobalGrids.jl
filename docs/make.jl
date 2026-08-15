@@ -19,8 +19,8 @@ DocMeta.setdocmeta!(DiscreteGlobalGrids, :DocTestSetup,
 # The tutorials are Literate.jl scripts; generate their markdown next to the
 # sources, where the `pages` list below expects it. Execution happens in
 # Documenter's @example blocks, not here.
-for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
-          "healpix_astronomy")
+for f in ("stencils", "zonal", "regridding", "multiorder", "moc_storage",
+          "hydrology", "healpix_astronomy")
     Literate.markdown(joinpath(@__DIR__, "src", "tutorials", f * ".jl"),
                       joinpath(@__DIR__, "src", "tutorials");
                       flavor = Literate.DocumenterFlavor(), execute = false)
@@ -44,6 +44,7 @@ makedocs(;
             "Zonal statistics" => "tutorials/zonal.md",
             "Regridding a time series" => "tutorials/regridding.md",
             "Multi-order coverage" => "tutorials/multiorder.md",
+            "Multi-order storage" => "tutorials/moc_storage.md",
             "Hydrology: a DEM on an IGEO7 grid" => "tutorials/hydrology.md",
             "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
         ],

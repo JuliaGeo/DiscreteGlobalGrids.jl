@@ -247,11 +247,16 @@ export CellVector, covering, cellset
 
 # --- Multi-order storage -----------------------------------------------------
 # The mixed-level DATA container (`MultiOrderVector`, an adaptively refined
-# mesh's cell axis), the aggregation verbs that build one (`aggregate` to a
-# fixed level, `coarsen` adaptively within a tolerance), the leaf-level
+# mesh's cell axis), the adaptive constructor (`coarsen`), the leaf-level
 # re-presentation (`expand`) and the sphere complement. Contract in
 # `docs/design/moc-storage.md`.
-export MultiOrderVector, aggregate, coarsen, expand, complement
+#
+# `aggregate` — the fixed-level verb — is deliberately NOT exported, for the
+# reason `Contains` is not: Rasters exports an `aggregate`, and Rasters is the
+# very package this feature's demos load data with, so exporting ours would
+# make the name unusable unqualified in exactly the sessions that want both.
+# Reach it as `DiscreteGlobalGrids.aggregate`.
+export MultiOrderVector, coarsen, expand, complement
 
 # --- The DimensionalData layer ---------------------------------------------
 # A lookup and the dimension it goes in, plus the one selector DimensionalData

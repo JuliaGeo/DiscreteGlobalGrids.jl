@@ -584,8 +584,10 @@ MultiOrderLookup(lk::MultiOrderLookup) = lk
 Base.parent(lk::MultiOrderLookup) = lk.cells
 Base.IndexStyle(::Type{<:MultiOrderLookup}) = Base.IndexLinear()
 
-Lookups.bounds(lk::MultiOrderLookup) =
-    isempty(lk) ? (nothing, nothing) : (first(lk), last(lk))
+# No `bounds` method: the lookup is `Unordered` (see `order` below), and
+# DimensionalData's generic answers `(nothing, nothing)` for exactly that
+# reason — a `(first, last)` pair here would be an inverted-`isless` pair
+# masquerading as an interval.
 
 Base.@propagate_inbounds Base.getindex(lk::MultiOrderLookup, k::Int) = parent(lk)[k]
 Base.@propagate_inbounds Base.getindex(lk::MultiOrderLookup, k::CartesianIndex{1}) =
@@ -654,19 +656,25 @@ covering_position(lk::MultiOrderLookup, c::AbstractCellIndex) =
 
 # --- DimensionalData plumbing ----------------------------------------------
 
-# Forward, in the container's own key: the reference-level interval STARTS
-# ascend strictly, which is the order every verb here searches in and the order
-# `vcat` has to respect.
+# Unordered, and deliberately so. The container IS ordered in its own key — the
+# reference-level interval starts ascend strictly, and every verb here searches
+# them — but `order` is DimensionalData's claim about the VALUES under `isless`,
+# and `isless` on an id compares its level first, so a mixed-level axis is
+# unsorted in exactly the sense the claim is read in. The reading is not
+# hypothetical: `cat`'s boundary check walks `last(l1) < first(l2)` on the ids
+# whenever the lookup claims an order, and a coarse cell following a deep one
+# then reads as an overlap — DimensionalData warns and silently hands back the
+# PARENT array, axis gone, at whichever split indices the levels happen to
+# invert. Under `Unordered` the same check asks the right question instead —
+# are the two id sets disjoint — and the join reaches `rebuild` below, where
+# the interval index decides.
 #
-# What is deliberately not claimed is that the ids ascend as Julia VALUES. They
-# do on a single level, which is why `CellLookup` says the same thing and means
-# both; across levels `isless` on an id compares its level first, so a
-# mixed-level container is unsorted in that sense on most systems. Nothing here
-# reads it — every selector goes through the interval index — but
-# DimensionalData's own value-ordered selectors (`Near`, `a .. b`) do, and are
-# therefore not part of this axis's contract. `At`, `Contains` and
-# [`Covering`](@ref) are.
-Lookups.order(::MultiOrderLookup) = Lookups.ForwardOrdered()
+# What the claim costs is only DimensionalData's value-ordered machinery
+# (`Near`, `a .. b`), which was never part of this axis's contract. `At`,
+# `Contains` and [`Covering`](@ref) resolve through the interval index and do
+# not read `order`. (`CellLookup` says `ForwardOrdered` and means it: on a
+# single level the ids do ascend as values.)
+Lookups.order(::MultiOrderLookup) = Lookups.Unordered()
 Lookups.metadata(::MultiOrderLookup) = Lookups.NoMetadata()
 
 function Lookups.rebuild(lk::MultiOrderLookup; data=nothing, kw...)

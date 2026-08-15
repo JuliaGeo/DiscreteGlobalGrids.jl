@@ -243,7 +243,13 @@ mov = parent(DD.lookup(M, DGG.Cells))
 
 # The result is a `DimArray` again, over a `MultiOrderLookup` this time: one
 # value per stored cell, and the cells are at whatever level the data stopped
-# at. Where they stopped is the whole story.
+# at. The lookup is a thin wrapper: `mov`, unwrapped above, is the
+# `MultiOrderVector` itself, a plain vector of cells usable with no datacube
+# library in sight — the rest of this page hands it straight to
+# `cell_polygons`, `cellat` and `summarysize`. The lookup is only what makes
+# it an axis.
+#
+# Where the levels stopped is the whole story.
 
 levs = DGG.level.(mov)
 for l in sort(unique(levs))

@@ -26,7 +26,10 @@ membership, in ids or in positions, and [`halo_table`](@ref) is a whole
 subset's stencil in one call. [`halo`](@ref) is the outward-facing question the
 same three containers answer — the cells they do *not* hold that touch cells
 they do, as a lazy iterator, with a punched hole counted like any other outside
-cell. [`member_neighbors`](@ref) asks the adjacency question across the levels
+cell. [`stencil_table`](@ref) joins the two: a chunk read together with its
+halo, with every row COMPLETE and addressed into the concatenated buffer, which
+is what a chunked stencil pass needs and neither of the other two gives.
+[`member_neighbors`](@ref) asks the adjacency question across the levels
 of a [`MultiOrderCellSet`](@ref), which has no `halo` because it has no single
 level to answer at.
 
@@ -115,7 +118,8 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     cellindices, is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
     EdgeCellIterator, InnerCellIterator, member_neighbors,
-    SubtreeHaloIterator, SubsetHaloIterator, subtree_halo, halo
+    SubtreeHaloIterator, SubsetHaloIterator, subtree_halo, halo,
+    StencilTable, stencil_table
 
 # The lazy subtree walkers' extension point and the parts a system builds one
 # from. Not exported — a caller reaches the iterators, a system reaches these.
@@ -242,6 +246,14 @@ Important cross-system traits:
     halo. A5 is again the exception to the delegation: without
     [`has_sorted_subtrees`](@ref) there is no way to recognise a held subtree, so
     even its rooted complete grid takes the subset walk — to the same answer.
+  - **[`stencil_table`](@ref).** The chunk-plus-halo addressing, and the only
+    verb here whose rows are guaranteed COMPLETE: given a subset and its halo
+    materialised as ascending positions, CSR rows of full one-rings indexed into
+    the concatenated `[chunk; halo]` buffer, in rotational order. `k == 1` only,
+    since a width-one halo completes nothing wider, and a neighbour in neither
+    half is an error rather than a short row. A rooted complete subtree resolves
+    membership by integer range and everything else — a hole, a scattered id
+    set, all of A5 — by `cellposition`.
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
     the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
     their parent exactly; the hierarchy's own relation on IGEO7, H3 and A5,
@@ -282,6 +294,7 @@ export ancestor, descendants, descendant_range
 export subtree_border, subtree_interior
 export EdgeCellIterator, InnerCellIterator
 export SubtreeHaloIterator, SubsetHaloIterator, subtree_halo, halo
+export StencilTable, stencil_table
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate

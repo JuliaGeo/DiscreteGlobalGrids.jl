@@ -363,6 +363,15 @@ intersected with membership, omitted rather than padded, so rows have varying
 length and a cell whose neighbours all lie outside gets an empty one.
 
 A stencil pass is then one comprehension over the table.
+
+**IN-SET, WHICH MAKES RIM ROWS SHORT.** That is the answer to the question this
+verb asks — "which of my own cells does each of my cells touch" — and it is the
+wrong one for a chunk read together with a halo, where a rim cell's missing
+neighbours are present after all, in the margin. Addressing those is
+[`stencil_table`](@ref): the same rows completed through a fetched halo and
+renumbered into the concatenated `[chunk; halo]` buffer. Reach for it whenever
+the alternative is building a neighbour table over the whole level to process
+one chunk of it.
 """
 function halo_table end
 

@@ -34,10 +34,14 @@ module CopernicusDEM
 import ..DiscreteGlobalGrids as DGG
 
 import GeometryOps as GO
+import GeometryOpsCore as GOCore
+import GeometryOps: SpatialTreeInterface as STI
+import ConservativeRegridding: Trees
 const US = GO.UnitSpherical
 # The UnionAll, never `SphericalCap{Float64}`: the two-argument `(point, radius)`
 # constructor is a method of the UnionAll.
 const SphericalCap = US.SphericalCap
+const Cap = US.SphericalCap{Float64}
 
 const TO_SPHERE = US.UnitSphereFromGeographic()
 const FROM_SPHERE = US.GeographicFromUnitSphere()
@@ -45,6 +49,7 @@ const FROM_SPHERE = US.GeographicFromUnitSphere()
 include("bands.jl")
 include("system.jl")
 include("nesting.jl")
+include("cursor.jl")
 
 export CopernicusDEMSystem
 

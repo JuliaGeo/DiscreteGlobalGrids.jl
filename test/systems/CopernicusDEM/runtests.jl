@@ -53,12 +53,15 @@ const CD = DiscreteGlobalGrids.CopernicusDEM
 
 using DiscreteGlobalGridsConformanceTesting
 # ... and by name as well, for `sample_positions` and `boundary_problems`, which
-# section (k) calls directly: the seed-away assertion there has to reproduce the
+# section (l) calls directly: the seed-away assertion there has to reproduce the
 # harness's own draw and the harness's own verdict, not an imitation of either.
 import DiscreteGlobalGridsConformanceTesting as CT
 
 import GeometryOps as GO
 import GeoInterface as GI
+# Section (k) checks the block cursor by building a regridder with it and with
+# the generic cursor, and demanding the two matrices agree bit for bit.
+import ConservativeRegridding as CR
 const US = GO.UnitSpherical
 using GeometryOps.UnitSpherical: spherical_orient
 
@@ -968,7 +971,142 @@ end
 end
 
 # =========================================================================
-# (k) Contract: the conformance suites
+# (k) The block cursor: an interior tree over a two-level lattice
+# =========================================================================
+
+# WHAT IS AT STAKE. `treeify` hands ConservativeRegridding a cursor, and the dual
+# tree search trusts three things about it: a node's cap COVERS every cell
+# beneath it (or pairs are silently dropped), a leaf's indices are GRID
+# POSITIONS (or the matrix is transposed cell-wise into nonsense), and the
+# leaves partition the grid exactly once (or a cell is regridded twice or not at
+# all). `CD.BlockCursor` asserts all three by arithmetic on the band tables
+# rather than by sampling, so all three are checked here by construction rather
+# than by spot check — and then the whole thing is checked at once by demanding
+# the intersection matrix be BIT-IDENTICAL to the generic cursor's.
+@testset "the block cursor is a tree over the lattice" begin
+    STI = GO.SpatialTreeInterface
+
+    # ---- which grids get it -------------------------------------------------
+    # KILLS: a `_block_cursor` that accepts a grid whose ids are not one
+    # rectangle held as one contiguous run. `position = id - origin` is false
+    # there, and every leaf index would be wrong by a growing offset.
+    tile90 = CD.tilecell(GLO90, 50, 6)
+    rect = PartialGrid(GLO90, tile90, 1)
+    ncols90 = CD.ncols_at(GLO90, 50)
+    first_id = cellindex(rect, 1).index
+    rows = PartialGrid(GLO90, 1, [LevelIndex(1, k)
+                                  for k in first_id:(first_id + 4 * ncols90 - 1)])
+    midrow = PartialGrid(GLO90, 1, [LevelIndex(1, k)
+                                    for k in (first_id + 3):(first_id + 500)])
+    scattered = PartialGrid(GLO90, 1, [LevelIndex(1, first_id + 2k) for k in 0:99])
+    @test treeify(levelgrid(GLO90, 0)) isa CD.BlockCursor
+    @test treeify(levelgrid(GLO90, 1)) isa CD.BlockCursor
+    @test treeify(rect) isa CD.BlockCursor
+    @test treeify(rows) isa CD.BlockCursor
+    # A window that starts mid-row is contiguous in id but is NOT a rectangle,
+    # and a scattered list is neither: both fall back, and stay correct.
+    @test treeify(midrow) isa DGG.HierarchicalGridCursor
+    @test treeify(scattered) isa DGG.HierarchicalGridCursor
+
+    # ---- the leaves partition the positions, exactly once each --------------
+    # KILLS: an off-by-one in the near-equal split (`_part`), which drops or
+    # repeats whole blocks; and a `_position` that forgets the band's `ncols` or
+    # the grid's own first id.
+    function leaf_positions(tree, n)
+        seen = falses(n)
+        stack = [tree]
+        nodes = 0
+        while !isempty(stack)
+            node = pop!(stack)
+            nodes += 1
+            if STI.isleaf(node)
+                for (i, _) in STI.child_indices_extents(node)
+                    (1 <= i <= n && !seen[i]) || return (false, nodes)
+                    seen[i] = true
+                end
+            else
+                append!(stack, collect(STI.getchild(node)))
+            end
+        end
+        return (all(seen), nodes)
+    end
+
+    twin_tile = PartialGrid(TWIN, CD.tilecell(TWIN, 50, 6), 1)
+    for (label, grid) in (("twin tile", twin_tile),
+                          ("4 GLO-90 rows", rows),
+                          ("GLO-90 tiles", levelgrid(GLO90, 0)))
+        for strategy in (CD.Blocked{3}(), CD.Bisected())
+            covered, nodes = leaf_positions(CD.BlockCursor(grid; strategy), ncells(grid))
+            @test covered
+            @test nodes > 1
+        end
+    end
+
+    # ---- the covering law, at every node ------------------------------------
+    # KILLS: a `_node_box` that takes one band's half-pixel longitude offset for
+    # a block spanning several — the tile lattice's west edges step at latitude
+    # 50/60/70/80/85 — or that drops the +90 clamp and the -90 extension. The
+    # level-0 globe below crosses every band boundary and both poles.
+    function covering_slack(tree, grid)
+        worst = -Inf
+        stack = [tree]
+        while !isempty(stack)
+            node = pop!(stack)
+            cap = STI.node_extent(node)
+            if STI.isleaf(node)
+                for (i, _) in STI.child_indices_extents(node),
+                    p in cell_boundary(grid, cellindex(grid, i))
+
+                    worst = max(worst, US.spherical_distance(cap.point, p) - cap.radius)
+                end
+            else
+                append!(stack, collect(STI.getchild(node)))
+            end
+        end
+        return worst
+    end
+
+    for (label, grid) in (("twin tile", twin_tile), ("GLO-90 tiles", levelgrid(GLO90, 0)))
+        slack = covering_slack(CD.BlockCursor(grid), grid)
+        @info "block cursor covering slack, $label" slack
+        @test slack < 0        # every leaf vertex strictly inside every ancestor cap
+    end
+
+    # ---- the index space ----------------------------------------------------
+    # `Trees.getcell(tree, i)` and `child_indices_extents`'s `i` are the same
+    # space, and it is the grid's, at every node — the contract the sparse
+    # matrix's row and column numbers are read out of.
+    root = CD.BlockCursor(twin_tile)
+    @test DGG.ncells(root) == ncells(twin_tile)
+    for i in (1, 2, ncells(twin_tile) ÷ 3, ncells(twin_tile))
+        @test getcell(root, i) == cell_polygon(twin_tile, cellindex(twin_tile, i))
+    end
+
+    # ---- and the whole thing at once ----------------------------------------
+    # KILLS: any cap that under-covers (pairs vanish), any position that is
+    # wrong (entries land in the wrong column), any leaf double-count (entries
+    # are added twice). The generic `HierarchicalGridCursor` is the oracle: it
+    # descends the SYSTEM's hierarchy and knows nothing about rectangles, so
+    # agreeing with it to the last bit is agreeing about the geometry, not about
+    # a shared implementation. Both strategies, both scales.
+    for (label, src, dst) in
+        (("twin tile -> HEALPix 5", twin_tile, levelgrid(DGG.HEALPixSystem(), 5)),
+         ("GLO-90 tiles -> HEALPix 2", levelgrid(GLO90, 0),
+          levelgrid(DGG.HEALPixSystem(), 2)))
+
+        reference = CR.Regridder(MANIFOLD, dst,
+            DGG.HierarchicalGridCursor(src)).intersections
+        @test length(reference.nzval) > 0
+        for strategy in (CD.Blocked{3}(), CD.Bisected())
+            blocked = CR.Regridder(MANIFOLD, dst,
+                CD.BlockCursor(src; strategy)).intersections
+            @test blocked == reference
+        end
+    end
+end
+
+# =========================================================================
+# (l) Contract: the conformance suites
 # =========================================================================
 
 # WHY THE TWIN. `test_hierarchical_system` calls `collect(children(sys, c))` for

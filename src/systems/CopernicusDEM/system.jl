@@ -273,11 +273,19 @@ function cell_box(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     return (west, east, south, north)
 end
 
-# The exact ±90 vertices. `UnitSphereFromGeographic()((lon, ±90))` is NOT this point:
-# it is `(≈6e-17·cos lon, ≈6e-17·sin lon, ±1.0)`, a different point per longitude, so
-# using it would silently make every pole cell a near-degenerate quad instead of a
-# triangle, leaving two consecutive vertices 1e-16 apart for every orientation and
-# convexity test downstream to resolve from noise.
+# The exact ±90 vertices, as shared literals. `UnitSphereFromGeographic()((lon, ±90))`
+# is not a substitute. It goes through `sincosd`, so `cosd(±90)` is exactly `0.0` and the
+# image is exactly `(±0.0, ±0.0, ±1.0)`: `x = sind(0 or 180) * cosd(lon)` carries a sign
+# bit wherever `cosd(lon) < 0`, and `y` wherever `sind(lon) < 0`. The separation from
+# this point is therefore ZERO, not 1e-16 — no orientation or convexity test can tell
+# the two apart, because `-0.0 == 0.0`.
+#
+# The hazard is identity, not magnitude. A signed zero is `===`-distinct and
+# `isequal`-distinct, so building each pole cell's apex from its own longitude would
+# hand out four bit patterns for one point: `Set`, `unique`, `Dict` keys and every
+# `===`-based dedup or identity check would count up to four distinct pole vertices
+# while `==` insists they are the same one. `atand` reads the sign bits too, which is
+# how the same pole would land in different tiles — see [`cellat`](@ref).
 const NORTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, 1.0)
 const SOUTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, -1.0)
 

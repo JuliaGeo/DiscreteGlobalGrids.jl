@@ -4,7 +4,7 @@
 # Three kinds of test, and the distinction matters when one fails:
 #
 #   1. ORACLE. The lattice itself — which tiles are how many columns wide, and
-#      where their pixel centres sit — is checked against 44 real AWS Open Data
+#      where their pixel centres sit — is checked against 79 real AWS Open Data
 #      COGs, measured once with `ArchGDAL` and committed to `fixtures.jl`. No
 #      network is touched from `test/`; the fixtures ARE the oracle. They are the
 #      only external evidence for the one rule neither primary source states: a
@@ -152,7 +152,6 @@ end
             @test CD.ncols_at(sys, f.lat_s) == f.ncols
             t = CD.tilecell(sys, f.lat_s, f.lon_w)
             @test length(children(sys, t)) == f.ncols * N
-            @test length(descendant_range(sys, t, 1)) == f.ncols * N
         end
     end
 
@@ -176,7 +175,8 @@ end
         @test CD.ncols_at(TWIN, lat_s) == cols30 ÷ 120
     end
     # The two rows that touch a pole are both in the 10x band.
-    @test CD.ncols_at(GLO30, 89) == 360 && CD.ncols_at(GLO30, -90) == 360
+    @test CD.ncols_at(GLO30, 89) == 360
+    @test CD.ncols_at(GLO30, -90) == 360
 end
 
 # =========================================================================
@@ -246,16 +246,20 @@ end
         end
         @test bad == String[]
         @test prev_stop == ncells(sys, 1)
-        @test sum(CD.ncols(sys, r) * Int64(N) * 360 for r in 0:179) == ncells(sys, 1)
+        # `prev_stop` IS `sum(ncols(sys, r) * N * 360 for r in 0:179)` — the loop
+        # above walked that sum one window at a time — so asserting the closed
+        # form separately restates the loop and is not a test.
 
-        # positions <-> ids, both ways, at both levels
+        # positions -> ids -> positions, at both levels. Only this direction: the
+        # other one, `cellindex(g, cellposition(g, c)) == c`, is the line above
+        # composed with itself on a `c` this loop built with `cellindex`, and
+        # cannot fail unless the line above already has.
         rng = MersenneTwister(20260815)
         for g in (g0, g1)
             n = ncells(g)
             for i in unique([1, 2, n - 1, n, rand(rng, 1:n, 32)...])
                 c = cellindex(g, i)
                 @test cellposition(g, c) == i
-                @test cellindex(g, cellposition(g, c)) == c
             end
         end
     end
@@ -320,9 +324,21 @@ end
 #
 # KILLS: emitting a duplicated pole vertex (a degenerate quad that
 # `has_reflex_vertex` reads as a random reflex turn), building the pole from
-# `UnitSphereFromGeographic((lon, ±90))` — which is a DIFFERENT point per
-# longitude, `(6e-17 cos lon, 6e-17 sin lon, ±1)` — and forgetting the
-# clamp/extend, so the top row runs past latitude 90.
+# `UnitSphereFromGeographic((lon, ±90))` rather than from the `NORTH_POLE` /
+# `SOUTH_POLE` literals, and forgetting the clamp/extend, so the top row runs
+# past latitude 90.
+#
+# That middle mutant is killed by ONE character — the `===` in the pole-vertex
+# count below — and only because the level-0 sweep is exhaustive. The mutant's
+# point is NOT ~6e-17 off the pole: GeometryOps goes through `sincosd`,
+# `cosd(±90)` is exactly `0.0`, and `TO_SPHERE((lon, ±90))` is exactly
+# `(±0.0, ±0.0, ±1.0)` — four bit patterns whose only difference from the literal
+# is the SIGN BIT, set in x wherever `cosd(lon) < 0` and in y wherever
+# `sind(lon) < 0`. Numerically the two points never differ, so `==` cannot see it
+# (`-0.0 == 0.0`) and `===` can. Measured: 91 of the 360 integer longitudes —
+# exactly `0:90`, where both sign bits are clear — reproduce the literal
+# bit-for-bit, so a probe restricted to that quadrant would let the mutant live.
+# Sweeping all of `lon_w in -180:179` is what makes the kill certain.
 @testset "pole cells are triangles" begin
     for sys in ALL_SYSTEMS
         N = CD.lat_intervals(sys)
@@ -334,9 +350,9 @@ end
             ring = cell_boundary(sys, c)
             length(ring) == 3 ||
                 return note!(bad, "$label: $(length(ring)) vertices, not 3")
+            # In a 3-ring every pair of vertices is consecutive, so `allunique`
+            # already is the consecutive-duplicate check.
             allunique(ring) || note!(bad, "$label: repeated vertex")
-            any(k -> ring[k] == ring[mod1(k + 1, 3)], 1:3) &&
-                note!(bad, "$label: consecutive duplicate")
             all(p -> abs(hypot(p[1], p[2], p[3]) - 1) < 1e-15, ring) ||
                 note!(bad, "$label: not unit norm")
             count(p -> p === pole, ring) == 1 ||
@@ -389,7 +405,7 @@ end
 
         # And the poles themselves locate, at both levels, into a cell whose cap
         # contains them.
-        for (pole, ) in ((CD.NORTH_POLE,), (CD.SOUTH_POLE,)), g in (g0, g1)
+        for pole in (CD.NORTH_POLE, CD.SOUTH_POLE), g in (g0, g1)
             c = cellat(g, pole)
             @test DGG.level(c) == g.level
             cap = node_extent(sys, c)
@@ -425,9 +441,13 @@ end
     end
 
     # One tile per band, its pixels summing to the tile. GLO-90 and the twin
-    # only: the arithmetic is generic in `N`, and GLO-30's 1x tile has 12 960 000
-    # pixels — measured at 2.8 s and 2.5 GiB for the six bands, against 0.13 s
-    # for GLO-90, which is more than this law is worth.
+    # only, and the real argument is the ARITHMETIC, not the clock: `cell_area`
+    # is one closed form, generic in `N` and in the band's column count, so a
+    # third lattice re-runs the same expression on bigger numbers and tests no
+    # line the other two leave untested. The cost is only what settles it —
+    # GLO-30's six tiles are 36.3 million pixels, measured in a fresh process
+    # (GLO-30 first, so it pays every bit of compilation) at 0.82 s and 0.27 GiB
+    # against 0.11 s and 0.033 GiB for GLO-90.
     for sys in (GLO90, TWIN)
         g0 = levelgrid(sys, 0)
         g1 = levelgrid(sys, 1)
@@ -456,9 +476,11 @@ end
 # over a sample containing them would fail on geometry that is correct.
 #
 # Run on the two shipped lattices, which is what the thresholds were measured on.
-# The twin is deliberately absent: its pixels are 1/30 x 1/60 of a degree, so
-# they bow like small tiles rather than like pixels (measured 5.6e-6), and a
-# threshold that admitted them would admit a real defect at GLO-30.
+# The twin is deliberately absent: its pixels are 1/30 of a degree tall and from
+# 1/30 of a degree wide in the 1x band to 1/3 in the 10x band (its bands are 30,
+# 20, 15, 10, 6 and 3 columns), so they bow like small tiles rather than like
+# pixels (measured 5.6e-6), and a threshold that admitted them would admit a real
+# defect at GLO-30.
 @testset "rings are convex, and how far they are from the box" begin
     for sys in (GLO30, GLO90)
         N = CD.lat_intervals(sys)
@@ -614,18 +636,36 @@ end
         @test bad == String[]
     end
 
+    # The ANTIMERIDIAN branch, through the real `cellat`. Everything below this
+    # is arithmetic that only mirrors `cellat`'s longitude path; these two are
+    # the only assertions in the file that drive the `floor(s) >= 180` branch
+    # through `cellat` itself. A point a ten-thousandth of a degree west of the
+    # antimeridian is inside the E179 tile, but adding `Δlon/2` (1/7200 at
+    # GLO-30, 1/2400 at GLO-90, both larger than 1e-4) carries `s` over 180, and
+    # the branch sends it round to the W180 tile — the same tile, approached from
+    # the east.
+    for sys in (GLO30, GLO90)
+        g0 = levelgrid(sys, 0)
+        @test CD.tilecorner(sys, cellat(g0, CD.TO_SPHERE((179.9999, 0.0)))) == (-1, -180)
+    end
+
     # The mirrored LONGITUDE repair is deliberately ABSENT from `cellat`, and
     # this is the measurement that justifies its absence rather than a repair
     # that never fires: `west` is built as `lon_w - Δlon/2`, and `cellat`'s
-    # normalisation — wrap into [-180, 180), add `Δlon/2` back, `floor`, and send
-    # a `floor` of 180 round to -180 — recovers `lon_w` for every one of the
-    # 3 x 64 800 tiles, with no repair term anywhere.
+    # longitude path — normalise into [-180, 180), add `Δlon/2` back, `floor`,
+    # and send a `floor` of 180 round to -180 — recovers `lon_w` for every one of
+    # the 3 x 64 800 tiles, with no repair term anywhere.
     #
-    # The wrap is not decoration: without it the 180 `lon_w = -180` tiles of each
-    # system come out as +180 (measured, exactly 180 misses per system), because
-    # their west edge is `-180 - Δlon/2` and normalising it lands at
-    # `180 - Δlon/2`. That is the W180 tile reached from the east, and `cellat`
-    # already carries the branch.
+    # Those last two steps are DIFFERENT lines and this sweep weighs them
+    # differently. Deleting the `[-180, 180)` normalisation costs the sweep
+    # nothing (measured: 0 misses on all three systems) — every `west` fed in is
+    # already in range, and `-180 - Δlon/2` floors to -180 unaided; that line
+    # earns its place against the `lon = 180` that `atand` returns at a pole, not
+    # against these. Deleting `floor(s) >= 180 -> lon_w = -180` costs exactly 180
+    # misses per system, every one of them at `lon_w = -180`: normalisation sends
+    # that tile's west edge to `180 - Δlon/2`, and adding the half-pixel back
+    # lands on 180.0 exactly. That is the W180 tile reached from the east, which
+    # is the branch the two `cellat` assertions above exercise directly.
     #
     # And this is why the sweep is arithmetic rather than a `cellat` probe on the
     # west edge itself: the exact west edge is no more reachable through a

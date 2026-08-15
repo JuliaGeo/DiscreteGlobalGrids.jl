@@ -4,10 +4,13 @@
 # that reads them never touches the network, and neither does anything else in
 # `test/`.
 #
-# Provenance: the research document's sections 9.3 (boundary probe, 38 tiles),
-# 9.4 (stratified random verification sweep, 33 GLO-30 tiles) and 9.5 (GLO-90
-# southern-boundary confirmation, 11 tiles), all produced by `ArchGDAL` against
-# `https://copernicus-dem-{30,90}m.s3.amazonaws.com/`. 44 distinct COGs in all.
+# Provenance: the research document's sections 9.3 (boundary probe, 36 rows — 28
+# GLO-30 and 8 GLO-90), 9.4 (stratified random verification sweep, 33 GLO-30
+# tiles) and 9.5 (GLO-90 southern-boundary confirmation, 11 rows), all produced
+# by `ArchGDAL` against `https://copernicus-dem-{30,90}m.s3.amazonaws.com/`.
+# 79 distinct COGs in all — 61 GLO-30 and 18 GLO-90, one fewer than the 80 rows
+# because 9.5 re-measures 9.3's `S85_00_E000_00`, and both readings are kept
+# below. The two arrays here are exactly those 61 and 18 tiles.
 #
 # These are the ONLY external evidence this system has. The band table in
 # `src/systems/CopernicusDEM/bands.jl` agrees with the Product Handbook's Table 3

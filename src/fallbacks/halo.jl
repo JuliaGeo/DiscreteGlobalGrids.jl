@@ -1920,15 +1920,28 @@ from depth three up; at depth two the generic engine is barely slower than the
 validation alone, so skipping the specialization there would cost more than
 trusting it does.
 
-MEASURED, because the number is not the same on the two systems: the validation
-is about 55 µs on H3 and about 0.92 ms on IGeo7, whose `neighbors` is
-lattice arithmetic rather than a library call. So on H3 it is the rounding error
-the design expected at every depth it runs, while on IGeo7 it still dominates
-construction at depths three and four (1.04 ms against a walk of roughly 0.3 ms)
-and only becomes cheap from depth five. It is constant either way — construction
-never grows with the halo — so the laziness law holds regardless, and the
-threshold is left where the design put it rather than tuned per system. Raising
-it to four on IGeo7 is the obvious lever if that constant ever matters.
+NOT ONE NUMBER, which is why none is quoted. The cost rises with the neighbour
+ring — a six-neighbour root pays more than a five-neighbour one — and with the
+root's level. Quoting a point value for either system hides both, and a reader
+who measures one root will not reproduce it. To measure it, take construction at
+depth three minus construction at depth two: this is the only threshold it
+crosses, so that difference is the whole of it.
+
+The threshold rests on the RATIO to the walk, not on the absolute cost, and that
+ratio is the same on both systems: the validation exceeds the depth-three walk,
+falls below the depth-four walk, and is a small fraction of the depth-five walk.
+So it is not worth paying at depth two, where the generic engine is barely slower
+than the validation alone, and any change to the threshold is a change for both
+systems or for neither. Construction never grows with the halo, so the laziness
+law holds whatever the constant is.
+
+An earlier version of this paragraph asserted the opposite — a rounding error on
+H3 against a term that dominated on IGeo7 — on the grounds that IGeo7's
+`neighbors` was lattice arithmetic where H3's was a library call. That absolute
+gap was real and is now gone, closed by the ported GBT kernel, and even while it
+stood the RATIOS were never as far apart as the costs were. It was the ratios the
+argument needed. Do not reintroduce a per-system lever here without measuring
+them first.
 
 Deliberately NOT restricted to pentagons or to arc-3 neighbours, which would be
 question-begging: the premise under test is exactly that the ordinary cases need

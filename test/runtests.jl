@@ -24,6 +24,10 @@ using DiscreteGlobalGrids
     include("systems/A5/runtests.jl")
     include("systems/S2/runtests.jl")
     include("systems/ISEA4R/runtests.jl")
+    # CopernicusDEM is NOT in `systems()` (deliberately — see the comment above
+    # that function), so none of the cross-system sweeps below see it and this is
+    # the only place its laws are stated.
+    include("systems/CopernicusDEM/runtests.jl")
     # Last on purpose: the cross-system laws sweep `systems()`, so they are the
     # suite that grows when a system is registered rather than when one is
     # written. Running them after every per-system suite means a failure here is

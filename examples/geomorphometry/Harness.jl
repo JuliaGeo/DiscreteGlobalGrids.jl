@@ -1,12 +1,11 @@
 """
     Harness
 
-Everything the deterministic checker and the fuzzer share: fast oracles built
-from the `GridCtx` neighbour cache, the per-case check bundles, and a small
-failure record.
+Shared halo verification utilities for deterministic and randomized checks.
+Oracles use the cached one-ring in `GridCtx` and do not call the halo APIs.
 
-A "case" is a `(system, root, level, connectivity, field)` tuple. For each one
-we check, in order:
+A "case" is a `(system, root, level, connectivity, field)` tuple. Each case
+checks:
 
 1. **shape**   — the halo is sorted, unique, outside the subtree, and tight
                  (every halo cell really does touch the subtree).
@@ -17,8 +16,7 @@ we check, in order:
 4. **terrain** — every metric computed over the chunk-plus-halo read equals the
                  whole-grid metric restricted to the chunk, and the chunk read
                  never touched a cell it did not hold.
-5. **control** — an intentionally-too-small halo DOES produce misses, so that
-                 check 4 passing means something.
+5. **control** — a narrower halo produces misses under a wider stencil.
 
 Adjacency symmetry (whether `b ∈ neighbors(a)` implies `a ∈ neighbors(b)`) is
 checked once per `(system, level, connectivity)` by `symmetry_failures`, not
@@ -58,9 +56,7 @@ describe(sys, root, level, conn, field = nothing) =
         " target=L", level, " ", nameof(typeof(conn)),
         field === nothing ? "" : string(" field=", field))
 
-# ---------------------------------------------------------------------------
-# oracles, straight off the cached one-ring
-# ---------------------------------------------------------------------------
+# Oracles derived directly from the cached one-ring.
 
 "Halo positions of the contiguous block `r`, inside-out. Ascending, unique."
 function fast_oracle(k::GridCtx, r::UnitRange{Int})
@@ -73,8 +69,7 @@ function fast_oracle(k::GridCtx, r::UnitRange{Int})
     return sort!(unique!(io))
 end
 
-"Halo positions of the contiguous block `r`, outside-in (the definition
-`halo.jl`'s indexed provider implements). O(ncells)."
+"Halo positions of contiguous block `r`, found by scanning outside cells. O(ncells)."
 function fast_oracle_outside_in(k::GridCtx, r::UnitRange{Int})
     lo, hi = first(r), last(r)
     oi = Int[]
@@ -118,9 +113,8 @@ const SYM_CACHE = Dict{Any,Vector{Failure}}()
 """
     symmetry_failures(sys, level, conn) -> Vector{Failure}
 
-Every ordered pair `(a, b)` with `b ∈ neighbors(a)` but `a ∉ neighbors(b)`.
-An asymmetric adjacency would make "the halo" ambiguous, so this is checked
-once per grid. Memoised.
+Return ordered pairs `(a, b)` for which `b ∈ neighbors(a)` but
+`a ∉ neighbors(b)`. Results are memoized per grid and connectivity.
 """
 function symmetry_failures(sys, level::Integer, conn::Connectivity)
     get!(SYM_CACHE, (sys, Int(level), conn)) do
@@ -142,9 +136,7 @@ function symmetry_failures(sys, level::Integer, conn::Connectivity)
     end
 end
 
-# ---------------------------------------------------------------------------
-# memoised whole-grid answers: they do not depend on the root
-# ---------------------------------------------------------------------------
+# Memoized whole-grid results, independent of the subtree root.
 
 const WHOLE_CACHE = Dict{Any,Any}()
 
@@ -152,9 +144,9 @@ const WHOLE_CACHE = Dict{Any,Any}()
     whole_results(sys, level, conn, kind; spike_at = 1)
         -> (z, Dict{Symbol,Vector})
 
-The elevation field and every metric over the WHOLE level grid. Memoised on
-`(sys, level, conn, kind, spike_at)`, because a chunk sweep re-uses it for
-every root.
+Return the elevation field and every metric over the complete level grid.
+Results are memoized by system, level, connectivity, field kind, and spike
+position.
 """
 function whole_field(sys, level::Integer, conn::Connectivity, kind::Symbol,
         spike_at::Int)
@@ -165,8 +157,7 @@ function whole_field(sys, level::Integer, conn::Connectivity, kind::Symbol,
     end::Vector{Float64}
 end
 
-"One whole-grid metric, memoised on its own so a case that only needs four of
-them does not pay for ten."
+"Return one memoized whole-grid metric."
 function whole_metric(sys, level::Integer, conn::Connectivity, kind::Symbol,
         spike_at::Int, name::Symbol, fn)
     key = (:m, sys, Int(level), conn, kind, kind === :spike ? spike_at : 0, name)
@@ -186,9 +177,7 @@ function whole_results(sys, level::Integer, conn::Connectivity, kind::Symbol;
     return (z, res)
 end
 
-# ---------------------------------------------------------------------------
-# subtree case
-# ---------------------------------------------------------------------------
+# Subtree cases.
 
 """
     check_subtree_case(sys, root, level, conn, fieldkind; kw...)
@@ -197,9 +186,9 @@ Returns `(failures, stats)`.
 
 Keywords:
 * `metrics`      — which metrics to compare (default all).
-* `outside_in`   — also compute the O(ncells) outside-in oracle (default false).
-* `control`      — run the deliberately-too-small-halo negative control.
-* `spike_in_halo`— place a `:spike` field on a halo cell (most adversarial).
+* `outside_in`   — also compute the O(ncells) outside-in oracle.
+* `control`      — run a narrower-halo negative control.
+* `spike_in_halo`— place a `:spike` field on the first halo cell.
 """
 function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
         fieldkind::Symbol; metrics = nothing, outside_in::Bool = false,
@@ -210,7 +199,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
     g = k.grid
     r = chunk_range(sys, root, level)
 
-    # -- 1. build the halo twice: reproducibility ---------------------------
+    # Reproducibility.
     halo1 = DGG.subtree_halo(sys, root, level; connectivity = conn)
     halo2 = DGG.subtree_halo(sys, root, level; connectivity = conn)
     halo1 == halo2 || push!(fails, Failure(:nondeterministic, tag,
@@ -218,7 +207,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
 
     hp = [DGG.cellposition(g, c) for c in halo1]
 
-    # -- 2. shape -----------------------------------------------------------
+    # Ordering, uniqueness, and ancestry.
     issorted(hp) || push!(fails, Failure(:unsorted, tag,
         "halo positions not ascending: " * string(hp)))
     length(unique(hp)) == length(hp) || push!(fails, Failure(:duplicate, tag,
@@ -237,7 +226,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
         end
     end
 
-    # -- 3. oracle ----------------------------------------------------------
+    # Independent one-ring oracle.
     io = fast_oracle(k, r)
     if hp != io
         push!(fails, Failure(:halo_mismatch, tag,
@@ -254,7 +243,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
             "only-oi=$(setdiff(oi, io))"))
     end
 
-    # -- 4. iterator contract ----------------------------------------------
+    # Iterator protocol.
     it = DGG.SubtreeHaloIterator(sys, root, level; connectivity = conn)
     collect(it) == halo1 || push!(fails, Failure(:collect_mismatch, tag,
         "collect(SubtreeHaloIterator) != subtree_halo"))
@@ -270,7 +259,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
             "IteratorSize is HasLength but length=$n and the walk yields $(length(halo1))"))
     end
 
-    # -- 5. terrain, whole vs chunk ----------------------------------------
+    # Whole-grid and chunk metric agreement.
     sp = spike_in_halo && !isempty(hp) ? hp[1] : clamp(first(r), 1, length(k))
     z = whole_field(sys, level, conn, fieldkind, sp)
     chunk = ChunkField(k, sys, root, level, z)
@@ -295,7 +284,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
         "the chunk read reached $(chunk.misses[]) times for a cell it did not " *
         "hold — the halo is missing at least one neighbour of a chunk cell"))
 
-    # -- 6. tightness -------------------------------------------------------
+    # Every halo cell must touch the chunk.
     slack = Int[]
     for p in hp
         touches = false
@@ -307,7 +296,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
     isempty(slack) || push!(fails, Failure(:halo_loose, tag,
         "$(length(slack)) halo cells have no neighbour inside the subtree: $slack"))
 
-    # -- 7. negative control ------------------------------------------------
+    # A narrower edge halo must miss inputs needed by a vertex stencil.
     if control && conn === Vertex()
         small = DGG.subtree_halo(sys, root, level; connectivity = Edge())
         if length(small) < length(halo1)
@@ -322,9 +311,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
     return fails, (; nhalo = length(halo1), nchunk = length(r), nmetric)
 end
 
-# ---------------------------------------------------------------------------
-# subset case
-# ---------------------------------------------------------------------------
+# Arbitrary subset cases.
 
 """
     check_subset_case(sys, level, conn, members; label = "")
@@ -376,16 +363,13 @@ function check_subset_case(sys, level::Integer, conn::Connectivity,
     return fails
 end
 
-# ---------------------------------------------------------------------------
-# laziness / allocation
-# ---------------------------------------------------------------------------
+# Iterator allocation checks.
 
 """
     laziness_failures(sys, root, shallow, deep, conn)
 
-The design doc's promise: constructing a halo iterator, and taking a short
-prefix of it, must cost the same whether the halo has tens or tens of
-thousands of cells. Compares allocation at two target levels.
+Compare allocations for iterator construction and a three-cell prefix at two
+target levels. Reports growth that tracks halo cardinality.
 """
 function laziness_failures(sys, root, shallow::Integer, deep::Integer,
         conn::Connectivity)
@@ -416,24 +400,22 @@ function laziness_failures(sys, root, shallow::Integer, deep::Integer,
     return fails, (; cs, ps, ns, cd, pd, nd)
 end
 
-# ---------------------------------------------------------------------------
-# labelling special positions, so coverage claims can be checked
-# ---------------------------------------------------------------------------
+# Geometry labels used in coverage reports.
 
 """
     classify_root(sys, root, level, conn) -> Set{Symbol}
 
-What kind of geometry this subtree's boundary actually touches. Used only to
-report coverage; the checks do not depend on it.
+Return geometry labels for the subtree boundary. Verification does not depend
+on these labels.
 
 * `:pentagon`   — a chunk or halo cell has fewer neighbours than the modal degree.
-* `:high_degree`— ... or more (S2/HEALPix corners, A5's 11-neighbour cells).
+* `:high_degree`— a chunk or halo cell has more neighbours than the modal degree.
 * `:seam`       — the halo crosses a level-0 (base cell / face / diamond) boundary.
 * `:npole` / `:spole` — the chunk contains the north / south pole.
 """
 const MODAL_CACHE = Dict{Any,Int}()
 
-"The most common neighbour degree on a grid — the yardstick for 'irregular'."
+"Return the most common neighbour degree on a grid."
 function modal_degree(k::GridCtx)
     get!(MODAL_CACHE, objectid(k)) do
         counts = Dict{Int,Int}()

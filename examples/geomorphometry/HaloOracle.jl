@@ -1,19 +1,17 @@
 """
     HaloOracle
 
-Brute-force reference implementations of the halo, built the naive way a user
-would build one if `subtree_halo` did not exist: walk every cell of the subset,
-take its one-ring, keep whatever falls outside.
+Brute-force halo reference implementations. They walk every subset cell, take
+its one-ring, and retain neighbours outside the subset.
 
 Two directions are computed separately, because they are only the same set if
 the native adjacency relation is symmetric:
 
 * `inside_out` — from each member, collect outside neighbours.
-* `outside_in` — for each cell of the whole grid that is outside, ask whether
-  any of ITS neighbours is a member. This is the definition `halo.jl`'s
-  `IndexedNeighbors` provider actually implements.
+* `outside_in` — scan cells outside the subset and retain cells with a member
+  neighbour.
 
-Any disagreement between the two is itself a finding.
+The two results differ when native adjacency is asymmetric.
 """
 module HaloOracle
 
@@ -67,7 +65,7 @@ end
 """
     oracle_subset_halo(g, members, connectivity) -> (inside_out, outside_in)
 
-Same, for an arbitrary same-level member set (a `Set` of cells).
+Return both halo directions for an arbitrary same-level set of cells.
 """
 function oracle_subset_halo(g, members::AbstractSet, connectivity::Connectivity)
     C = eltype(members)

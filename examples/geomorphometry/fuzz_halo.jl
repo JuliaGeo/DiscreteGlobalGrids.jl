@@ -3,21 +3,18 @@
 #
 #   julia --project=test examples/geomorphometry/fuzz_halo.jl [ncases] [seed]
 #
-# Randomises system, root level, root cell, depth, connectivity and elevation
-# field. Three families of case:
+# Randomizes system, root level, root cell, depth, connectivity, and elevation
+# field across three case families:
 #
-#   A. chunked terrain    — whole-grid metric vs chunk-plus-halo metric, plus
-#                           the "did the chunk read reach for a cell it does
-#                           not hold" counter. Needs a full grid, so it is
-#                           capped at MAXCELLS.
-#   B. deep subtree       — halo vs a brute-force one-ring halo built from the
-#                           subtree's OWN cells only, so it runs at levels
-#                           where the whole grid would not fit. Big halos.
+#   A. chunked terrain    — compare whole-grid and chunk-plus-halo metrics and
+#                           count unavailable reads. Full grids are capped at
+#                           `MAXCELLS`.
+#   B. deep subtree       — compare the halo with a one-ring oracle built only
+#                           from subtree cells, allowing larger target levels.
 #   C. random subset      — halo(PartialGrid|CellVector|CellLookup) over a
 #                           random member set, holes and all.
 #
-# Also watches heap growth over the run, and repeats one fixed case to check
-# per-call allocation is stable.
+# The script also reports heap growth and repeated-call allocation stability.
 
 include("Harness.jl")
 using .Harness
@@ -121,11 +118,9 @@ function main(ncases::Int, seed::UInt)
             depth = rand(rng, 3:6)
             target = min(rootlevel + depth, ml)
             target <= rootlevel && continue
-            # A5 has no fast halo engine: its generic geometry walk costs
-            # ~4x per extra level and reaches 246 s for an 82-cell halo at
-            # root L6 -> L10. Deep A5 is measured separately, not fuzzed.
+            # A5 uses the generic geometry walk, so keep randomized cases shallow.
             (sys isa DGG.A5System && target > 6) && continue
-            # keep the subtree itself affordable
+            # Limit the number of materialized subtree cells.
             sub = DGG.ncells(sys, target) ÷ max(DGG.ncells(sys, rootlevel), 1)
             sub > 120_000 && continue
             groot = DGG.levelgrid(sys, rootlevel)
@@ -153,9 +148,7 @@ function main(ncases::Int, seed::UInt)
 
     println("-"^78)
     println("### heap under a fixed configuration (no new harness cache keys)")
-    # The +MB above is the harness's own memo caches (GridCtx + whole-grid
-    # metrics), one entry per new (system, level, connectivity, field). Here
-    # everything is memoised already, so any growth is the API's.
+    # Cache keys are fixed here, so repeated calls do not add grid or metric entries.
     fixsys = DGG.HEALPixSystem()
     gridctx(fixsys, 5, Vertex()); whole_field(fixsys, 5, Vertex(), :noise, 1)
     groot = DGG.levelgrid(fixsys, 2)

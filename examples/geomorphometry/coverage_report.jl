@@ -1,11 +1,10 @@
 #!/usr/bin/env julia
-# What geometry did the sweep actually touch? Coverage claims need numbers, and
-# "we tested pentagons" is only true if some case's chunk or halo contained one.
+# Count the geometry labels reached by the deterministic sweep.
 #
 #   julia --project=test examples/geomorphometry/coverage_report.jl
 #
-# Re-walks exactly the case set `run_sweep.jl` PART 2 uses (every root at levels
-# 0 and 1, depths 0..3, both connectivities) and labels each case.
+# The case set includes every level-0 and level-1 root, depths 0–3, and both
+# connectivity modes.
 
 include("Harness.jl")
 using .Harness

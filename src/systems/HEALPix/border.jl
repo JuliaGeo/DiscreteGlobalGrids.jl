@@ -57,31 +57,43 @@ function DGG.interior_engine(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int,
 end
 
 # The halo — the outside face of the same boundary — is the width-1 band
-# around the block, walked lazily by the package's face-quadtree descent
-# wherever the block is nowhere flush with its face's edge: a non-flush block's
-# halo is entirely in-face, where adjacency is the plain 3×3 lattice (every
-# irregular neighbourhood in `NB_FACEARRAY` sits on a face edge), so the band
-# IS the halo, minus its four corners under `Edge()`. A flush block's halo
-# crosses the seam — `NB_SWAPARRAY` territory, ids on other faces — and takes
-# the generic outside-first engine instead. `nested_to_xyf` of the block's
-# first id names its lattice origin, because min-Morton is min-corner. (That
-# step is Morton-specific and does NOT generalise: see S2, where the Hilbert
-# curve's first id is any corner of the block and the origin has to come from
-# the parent's own lattice coordinates instead.)
+# around the block, walked lazily by the package's face-quadtree descent. Away
+# from the face edge that band is entirely in-face, where adjacency is the plain
+# 3×3 lattice (every irregular neighbourhood in `NB_FACEARRAY` sits on a face
+# edge), so the band IS the halo, minus its four corners under `Edge()`. Flush
+# with the edge it crosses the seam — `NB_SWAPARRAY` territory, ids on other
+# faces — and `square_halo_engine` derives the candidate rectangles by asking
+# `neighbors` about a few rim cells and filtering every candidate with the
+# native one-ring. Neither case needs a seam table here.
+#
+# `nested_to_xyf` of the block's first id names its lattice origin, because
+# min-Morton is min-corner. (That step is Morton-specific and does NOT
+# generalise: see S2, where the Hilbert curve's first id is any corner of the
+# block and the origin has to come from the parent's own lattice coordinates
+# instead.)
+#
+# `side == 1` is depth zero, which the generic engine answers with the cell's
+# own one-ring — exact at the degree-3 vertices, where a band of one is not.
 function DGG.halo_engine(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int,
         connectivity::DGG.Connectivity)
     lo, side = _healpix_square(sys, c, target)
-    if side > 1
-        n = _nside(target)
-        ix, iy, face = nested_to_xyf(lo, n)
-        x0, y0 = Int64(ix), Int64(iy)
-        if 1 <= x0 && x0 + side <= n - 1 && 1 <= y0 && y0 + side <= n - 1
-            return DGG.SquareBandEngine(DGG.MortonCurve(), Int64(face) * n * n,
-                target, n, 0x0, x0, y0, side, connectivity isa DGG.Vertex)
-        end
-    end
-    return DGG.generic_halo_engine(sys, c, target, connectivity)
+    side == 1 && return DGG.generic_halo_engine(sys, c, target, connectivity)
+    n = _nside(target)
+    ix, iy, face = nested_to_xyf(lo, n)
+    return DGG.square_halo_engine(sys, DGG.MortonCurve(), c, target, connectivity,
+        Int64(ix), Int64(iy), side, Int64(face), n)
 end
+
+# The three lines the shared square walk needs from a system. `_nside` is the
+# face's lattice side at a level, and the Morton curve's state never changes, so
+# every face root is read under `0x0`.
+DGG.lattice_decode(sys::HEALPixSystem, c::DGG.LevelIndex) =
+    nested_to_xyf(c.index, _nside(DGG.level(c)))
+
+DGG.lattice_cell(sys::HEALPixSystem, l::Int, ix::Integer, iy::Integer,
+    face::Integer) = DGG.LevelIndex(l, xyf_to_nested(ix, iy, face, _nside(l)))
+
+DGG.face_orientation(sys::HEALPixSystem, face::Integer) = 0x0
 
 """
     subtree_border(sys::HEALPixSystem, c::LevelIndex, leaf_level::Integer; connectivity = Vertex()) -> Vector{LevelIndex}

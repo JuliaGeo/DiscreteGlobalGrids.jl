@@ -403,62 +403,85 @@ Base.length(::MiscountingEngine) = 3
     # walk is index arithmetic on the same lattice those are built from, so they
     # would agree with a wrong band for the same reason it was wrong.
 
-    # Which roots the band walk claims is a fact about the lattice, not something a
-    # test should hard-code: a block is claimed exactly when it is nowhere flush
-    # with its face edge, which at base 2 is four of the sixteen cells per face on
-    # all three systems. So roots are CLASSIFIED by the engine the constructor
-    # actually chose, and both classes are checked — the claimed ones because that
-    # is the walk under test, the unclaimed ones because a fallback that quietly
-    # stopped agreeing would otherwise be invisible.
+    # Which walk a root gets is a fact about the lattice, not something a test
+    # should hard-code, so roots are CLASSIFIED by the engine the constructor
+    # actually chose. Three classes, because there are three walks:
     #
-    # A level-0 block is flush on all four sides and a level-1 block on two per
-    # axis, so the engine is reachable only for roots at level >= 2. Base 2 is
-    # therefore the shallowest base this section can use — and, on its own, not a
-    # sufficient one. See `BAND_BASES`.
+    #   `inface`   — `SquareBandEngine` under `NoCheck`: the block is nowhere
+    #                flush with its face edge, the band IS the halo, and the
+    #                count is closed form.
+    #   `seam`     — `SquareBandEngine` under `NativeCheck`: the block is flush
+    #                somewhere, the rectangles are a conservative superset, and
+    #                every candidate goes through the native one-ring.
+    #   `fallback` — anything else, i.e. the generic outside-first walk.
+    #
+    # All three are checked against the oracle. The claimed ones because they are
+    # the walks under test; the unclaimed ones because a fallback that quietly
+    # stopped agreeing would otherwise be invisible.
     function classify_roots(sys, base::Int, l::Int, conn)
         grid = levelgrid(sys, base)
         C = DGG.cellindextype(sys)
-        band, fallback = C[], C[]
+        inface, seam, fallback = C[], C[], C[]
         for i in 1:ncells(grid)
             c = cellindex(grid, i)
-            it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
-            push!(it.engine isa DGG.Fallbacks.SquareBandEngine ? band : fallback, c)
+            e = SubtreeHaloIterator(sys, c, l; connectivity = conn).engine
+            if e isa DGG.Fallbacks.SquareBandEngine
+                push!(e.check isa DGG.Fallbacks.NoCheck ? inface : seam, c)
+            else
+                push!(fallback, c)
+            end
         end
-        return band, fallback
+        return inface, seam, fallback
     end
 
-    # HOW MANY ROOTS THE GUARD MUST ADMIT, in closed form — and why that has to be
+    # Evenly spaced picks, so a sample of a face-ordered list crosses faces
+    # instead of staying on the first one.
+    function spread(v, n::Int)
+        isempty(v) && return v
+        length(v) <= n && return v
+        step = length(v) ÷ n
+        return [v[1 + (i - 1) * step] for i in 1:n]
+    end
+
+    # HOW MANY ROOTS EACH WALK MUST CLAIM, in closed form — and why that has to be
     # pinned separately from everything else in this section.
     #
-    # `classify_roots` reads the band class OFF THE CODE UNDER TEST: whatever the
-    # three `halo_engine` methods admit is what it calls `band`. So a guard that
-    # grows STRICTER is invisible to every other assertion in this section — the
-    # blocks it stops claiming go to the generic engine, which is also correct, so
-    # every oracle comparison still passes element for element. Only a count
-    # notices. Widening `side <= x0 && x0 + 2side <= n - 1` over HEALPix's real
-    # guard, say, keeps all 96 remaining band cases green and loses 16 blocks.
+    # `classify_roots` reads the classes OFF THE CODE UNDER TEST: whatever the
+    # three `halo_engine` methods do is what it reports. So a guard that grows
+    # STRICTER is invisible to every other assertion here — the blocks it stops
+    # claiming fall to the seam walk, which probes nothing on a non-flush block
+    # and so reduces to the same band box filtered by the native one-ring. Right
+    # answer, slower walk, and every oracle comparison still passes element for
+    # element. Only a count notices. Narrowing HEALPix's interval test to
+    # `side <= x0 && x0 + 2side <= n - 1`, say, misroutes 16 blocks per base and
+    # fails exactly the two counts below.
     #
     # A depth-`d` block at base `b` sits at lattice origin `(ix, iy) · 2^d` with
     # `ix, iy ∈ [0, 2^b)`, and the width-one band fits inside `[0, n-1]²` exactly
     # when `1 <= ix` and `ix <= 2^b - 2`, likewise `iy` — independent of `d`. So
-    # each face contributes `(2^b - 2)²` and the count is that times the number of
-    # faces, which is the level-0 generation: 12 on HEALPix, 6 on S2, 10 on ISEA4R.
+    # each face contributes `max(0, 2^b - 2)²` in-face blocks and the count is that
+    # times the number of faces, which is the level-0 generation: 12 on HEALPix, 6
+    # on S2, 10 on ISEA4R. At bases 0 and 1 that is ZERO — a level-0 block is the
+    # whole face and a level-1 block is flush on one side per axis — so those two
+    # bases are entirely the seam walk, which is the point of them being swept.
+    #
+    # Every remaining root is the seam walk and NOTHING falls back: that is the
+    # third assertion, and it is the one that would fail if a seam configuration
+    # were quietly handed to `generic_halo_engine`.
     #
     # (One mutation this CANNOT catch, because it is not one: tightening the guard
     # to `2 <= x0 && x0 + side <= n - 2` admits exactly the same blocks. `x0` is
     # `ix << d` with `d >= 1`, so `x0` and `x0 + side` are even and `n` is a power
     # of two — `x0 >= 1` and `x0 >= 2` are the same predicate here, as are
     # `<= n - 1` and `<= n - 2`. The guard has a spare parity of slack in it.)
-    band_root_count(sys, base::Int) =
-        ncells(levelgrid(sys, 0)) * (1 << base - 2)^2
+    inface_root_count(sys, base::Int) =
+        ncells(levelgrid(sys, 0)) * max(0, (1 << base) - 2)^2
 
-    # Both directions at once: the admitted count and its complement over the whole
-    # generation, so a guard that admits too few and one that admits too many are
-    # each a failure rather than a silent re-route.
-    function check_root_classes(sys, base::Int, band, fallback)
+    function check_root_classes(sys, base::Int, inface, seam, fallback)
         total = ncells(levelgrid(sys, base))
-        @test length(band) == band_root_count(sys, base)
-        @test length(fallback) == total - band_root_count(sys, base)
+        @test length(inface) == inface_root_count(sys, base)
+        @test length(seam) == total - inface_root_count(sys, base)
+        @test isempty(fallback)
     end
 
     SQUARE_SYSTEMS = (HEALPixSystem(), S2System(), ISEA4RSystem())
@@ -483,25 +506,19 @@ Base.length(::MiscountingEngine) = 3
         for base in BAND_BASES, d in 1:2, conn in (Vertex(), Edge())
             l = base + d
             l <= max_level(sys) || continue
-            band, fallback = classify_roots(sys, base, l, conn)
+            inface, seam, fallback = classify_roots(sys, base, l, conn)
             # The specialization was reached, and reached on exactly the blocks the
-            # lattice says it should be. See `band_root_count`.
-            check_root_classes(sys, base, band, fallback)
-            # Six claimed roots: enough to cross faces (four per face, so this
-            # reaches at least two of them) without paying for the oracle 64 times.
-            for c in band[1:min(6, length(band))]
+            # lattice says it should be. See `inface_root_count`.
+            check_root_classes(sys, base, inface, seam, fallback)
+            # Six claimed roots: enough to cross faces (four per face at base 2, so
+            # this reaches at least two of them) without paying for the oracle 64
+            # times.
+            for c in inface[1:min(6, length(inface))]
                 it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
                 @test it.engine isa DGG.Fallbacks.SquareBandEngine
+                @test it.engine.check isa DGG.Fallbacks.NoCheck
                 @test collect(it) == forced_geometry_halo(sys, c, l, conn)
                 check_halo_case(sys, c, l, conn)
-            end
-            # And three flush roots, which must still take the generic walk and must
-            # still agree with the oracle: the guard is a runtime interval test, and
-            # a guard that admitted a flush block would be caught here.
-            for c in fallback[1:min(3, length(fallback))]
-                it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
-                @test !(it.engine isa DGG.Fallbacks.SquareBandEngine)
-                @test collect(it) == forced_geometry_halo(sys, c, l, conn)
             end
         end
     end
@@ -517,8 +534,8 @@ Base.length(::MiscountingEngine) = 3
         for base in BAND_BASES, conn in (Vertex(), Edge())
             l = base + 2
             l <= max_level(sys) || continue
-            band, _ = classify_roots(sys, base, l, conn)
-            for c in band[1:min(4, length(band))]
+            inface, _, _ = classify_roots(sys, base, l, conn)
+            for c in inface[1:min(4, length(inface))]
                 @test collect(SubtreeHaloIterator(sys, c, l; connectivity = conn)) ==
                       law_halo(sys, c, l; connectivity = conn)
             end
@@ -538,9 +555,9 @@ Base.length(::MiscountingEngine) = 3
             l <= max_level(sys) || continue
             side = 1 << d
             for conn in (Vertex(), Edge())
-                band, _ = classify_roots(sys, base, l, conn)
-                isempty(band) && continue
-                for c in band[1:min(3, length(band))]
+                inface, _, _ = classify_roots(sys, base, l, conn)
+                isempty(inface) && continue
+                for c in inface[1:min(3, length(inface))]
                     it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
                     @test Base.IteratorSize(typeof(it)) isa Base.HasLength
                     @test length(it) == (conn isa Vertex ? 4side + 4 : 4side)
@@ -560,9 +577,9 @@ Base.length(::MiscountingEngine) = 3
     @testset "the band walk at 64x64" begin
         sys = S2System()
         l = 3 + 6
-        band, _ = classify_roots(sys, 3, l, Vertex())
-        @test !isempty(band)
-        for c in band[1:min(3, length(band))], conn in (Vertex(), Edge())
+        inface, _, _ = classify_roots(sys, 3, l, Vertex())
+        @test !isempty(inface)
+        for c in inface[1:min(3, length(inface))], conn in (Vertex(), Edge())
             it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
             @test it.engine isa DGG.Fallbacks.SquareBandEngine
             @test length(it) == (conn isa Vertex ? 260 : 256)
@@ -581,12 +598,114 @@ Base.length(::MiscountingEngine) = 3
     # the count would be three there and the law would read as broken.
     @testset "Edge drops exactly the four diagonal corners" begin
         sys = S2System()
-        band, _ = classify_roots(sys, 2, 4, Vertex())
-        c = first(band)
+        inface, _, _ = classify_roots(sys, 2, 4, Vertex())
+        c = first(inface)
         hv = collect(SubtreeHaloIterator(sys, c, 4; connectivity = Vertex()))
         he = collect(SubtreeHaloIterator(sys, c, 4; connectivity = Edge()))
         @test length(setdiff(Set(hv), Set(he))) == 4
         @test issubset(Set(he), Set(hv))
+    end
+
+    # -----------------------------------------------------------------------
+    # The seam walk — the same engine where the block touches a face edge
+    # -----------------------------------------------------------------------
+
+    # WHAT IS DIFFERENT HERE, AND WHY THE ORACLE MATTERS MORE.
+    #
+    # The in-face band is exact by construction: the band and the halo are the
+    # same set, so a comparison against geometry is checking arithmetic. The seam
+    # band is a conservative SUPERSET filtered by the native one-ring, so there
+    # are two ways to be wrong and only one of them is loud. Yielding a cell that
+    # is not a halo cell fails the filter and would fail everything below.
+    # MISSING one is silent: the rectangles simply never propose it, the filter
+    # never sees it, and `neighbors` and `subtree_border` would agree with the
+    # gap, because the missing cell is missing from the same index arithmetic
+    # they are built from. `forced_geometry_halo` is the only oracle in this file
+    # that can see a candidate the walk never considered, which is why every arm
+    # of this section goes through it, and why one arm goes through `law_halo` as
+    # well.
+    #
+    # BASES 0 AND 1 ARE THE POINT. A level-0 block is the whole face and is flush
+    # on all four sides; a level-1 block is flush on one side per axis and its
+    # corner cell is a face corner. Those are precisely the configurations the
+    # in-face guard used to send to the generic walk, so they are the surface
+    # this section exists to retire — and `check_root_classes` asserts that all
+    # of them are claimed, so a quiet re-routing back to the generic walk fails
+    # here rather than passing everywhere.
+    #
+    # DEPTH 3 rather than 2 because the derivation's monotonicity argument is
+    # about the INTERIOR rim cells of a flush side, and only two cells of each
+    # side are ever probed. At depth 1 a side is two cells and both are probed,
+    # so the argument is not exercised at all; at depth 2 it is two of four; at
+    # depth 3 it is two of eight, and six cells of every flush side reach faces
+    # no probe ever asked about.
+    seam_roots(sys, base::Int, seam) = unique(vcat(spread(seam, 6),
+        filter(in(Set(seam)), irregular_cells(levelgrid(sys, base), 4))))
+
+    @testset "$(nameof(typeof(sys))): the seam walk against forced geometry" for sys in
+            SQUARE_SYSTEMS
+        for base in (0, 1, 2, 3), d in 1:3, conn in (Vertex(), Edge())
+            l = base + d
+            l <= max_level(sys) || continue
+            inface, seam, fallback = classify_roots(sys, base, l, conn)
+            check_root_classes(sys, base, inface, seam, fallback)
+            @test !isempty(seam)                 # the seam path was reached
+            for c in seam_roots(sys, base, seam)
+                it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+                @test it.engine isa DGG.Fallbacks.SquareBandEngine
+                @test it.engine.check isa DGG.Fallbacks.NativeCheck
+                @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+                check_halo_case(sys, c, l, conn)
+            end
+        end
+    end
+
+    # And one arm against the O(ncells) brute force, which shares nothing with
+    # either the seam walk or the geometry walk. Bases 0 and 1 at depth 2, where
+    # the target grids are at most 3072 cells on all three systems.
+    @testset "$(nameof(typeof(sys))): the seam walk against the law" for sys in
+            SQUARE_SYSTEMS
+        for base in (0, 1), conn in (Vertex(), Edge())
+            l = base + 2
+            l <= max_level(sys) || continue
+            _, seam, _ = classify_roots(sys, base, l, conn)
+            for c in spread(seam, 4)
+                @test collect(SubtreeHaloIterator(sys, c, l; connectivity = conn)) ==
+                      law_halo(sys, c, l; connectivity = conn)
+            end
+        end
+    end
+
+    # The count contract, in the negative. No perimeter formula survives a seam —
+    # a cube corner is three cells where the in-face rule wants four, an ISEA4R
+    # icosahedral vertex is five — so the seam engine declares `SizeUnknown()`
+    # and defines NO `length`. The `MethodError` is the contract; a `length` that
+    # silently walked the halo to answer would be the thing the design forbids.
+    @testset "the seam walk declares no length" begin
+        for sys in SQUARE_SYSTEMS, base in (0, 1)
+            l = base + 2
+            l <= max_level(sys) || continue
+            _, seam, _ = classify_roots(sys, base, l, Vertex())
+            isempty(seam) && continue
+            it = SubtreeHaloIterator(sys, first(seam), l)
+            @test Base.IteratorSize(typeof(it)) isa Base.SizeUnknown
+            @test_throws MethodError length(it)
+        end
+    end
+
+    # Deeper than the sweep can afford at every root, on one root per system: a
+    # 32x32 whole-face block from a level-0 root, where each of the four flush
+    # sides is thirty-two cells long and only two of those were ever probed. If
+    # the monotonicity argument were wrong anywhere, this is where the gap would
+    # be widest.
+    @testset "the seam walk at depth five" begin
+        for sys in SQUARE_SYSTEMS, conn in (Vertex(), Edge())
+            c = cellindex(levelgrid(sys, 0), 1)
+            it = SubtreeHaloIterator(sys, c, 5; connectivity = conn)
+            @test it.engine isa DGG.Fallbacks.SquareBandEngine
+            @test collect(it) == forced_geometry_halo(sys, c, 5, conn)
+            check_halo_case(sys, c, 5, conn)
+        end
     end
 
     # -----------------------------------------------------------------------
@@ -620,9 +739,9 @@ Base.length(::MiscountingEngine) = 3
             for base in BAND_BASES
                 l = base + 2
                 l <= max_level(sys) || continue
-                band, _ = classify_roots(sys, base, l, Vertex())
-                isempty(band) && continue
-                c = first(band)
+                inface, _, _ = classify_roots(sys, base, l, Vertex())
+                isempty(inface) && continue
+                c = first(inface)
                 for conn in (Vertex(), Edge())
                     it = SubtreeHaloIterator(wrapped, c, l; connectivity = conn)
                     @test it.engine isa DGG.Fallbacks.SquareBandEngine

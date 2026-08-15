@@ -36,29 +36,40 @@ function _isea4r_square(sys::ISEA4RSystem, c::DGG.LevelIndex, target::Int)
 end
 
 # The halo — the outside face of the same boundary — is the width-1 band
-# around the block, walked lazily by the package's diamond-quadtree descent
-# wherever the block is nowhere flush with its diamond's edge: a non-flush
-# block's halo is entirely in-diamond, where adjacency is the plain 3×3 lattice
-# (every irregular neighbourhood — the corner fans, the valence-3 corners —
-# sits on a diamond edge), so the band IS the halo, minus its four corners
-# under `Edge()`. A flush block's halo crosses `EDGE_NEIGHBORS` onto other
-# diamonds and takes the generic outside-first engine instead. `morton_to_xyd`
-# of the block's first id names its lattice origin: min-Morton is min-corner.
-# (Morton-specific, and not true of S2's Hilbert curve — see its `border.jl`.)
+# around the block, walked lazily by the package's diamond-quadtree descent.
+# Away from the diamond edge that band is entirely in-diamond, where adjacency
+# is the plain 3×3 lattice (every irregular neighbourhood — the corner fans, the
+# valence-3 corners — sits on a diamond edge), so the band IS the halo, minus
+# its four corners under `Edge()`. Flush with the edge it crosses
+# `EDGE_NEIGHBORS` onto other diamonds, and at an icosahedral vertex
+# `CORNER_FANS` onto a third: `square_halo_engine` derives those candidates by
+# asking `neighbors` about a few rim cells, and filters every one of them with
+# the native one-ring. No seam table is read here.
+#
+# `morton_to_xyd` of the block's first id names its lattice origin: min-Morton
+# is min-corner. (Morton-specific, and not true of S2's Hilbert curve — see its
+# `border.jl`.) `side == 1` is depth zero, which the generic engine answers with
+# the cell's own one-ring — exact at vertices 0 and 11, where a nine-cell
+# neighbourhood is not a band of one.
 function DGG.halo_engine(sys::ISEA4RSystem, c::DGG.LevelIndex, target::Int,
         connectivity::DGG.Connectivity)
     lo, side = _isea4r_square(sys, c, target)
-    if side > 1
-        n = _nside(target)
-        ix, iy, diamond = morton_to_xyd(lo, n)
-        x0, y0 = Int64(ix), Int64(iy)
-        if 1 <= x0 && x0 + side <= n - 1 && 1 <= y0 && y0 + side <= n - 1
-            return DGG.SquareBandEngine(DGG.MortonCurve(), Int64(diamond) * n * n,
-                target, n, 0x0, x0, y0, side, connectivity isa DGG.Vertex)
-        end
-    end
-    return DGG.generic_halo_engine(sys, c, target, connectivity)
+    side == 1 && return DGG.generic_halo_engine(sys, c, target, connectivity)
+    n = _nside(target)
+    ix, iy, diamond = morton_to_xyd(lo, n)
+    return DGG.square_halo_engine(sys, DGG.MortonCurve(), c, target, connectivity,
+        Int64(ix), Int64(iy), side, Int64(diamond), n)
 end
+
+# The three lines the shared square walk needs from a system. The Morton curve's
+# state never changes, so every diamond root is read under `0x0`.
+DGG.lattice_decode(sys::ISEA4RSystem, c::DGG.LevelIndex) =
+    morton_to_xyd(c.index, _nside(DGG.level(c)))
+
+DGG.lattice_cell(sys::ISEA4RSystem, l::Int, ix::Integer, iy::Integer,
+    diamond::Integer) = DGG.LevelIndex(l, xyd_to_morton(ix, iy, diamond, _nside(l)))
+
+DGG.face_orientation(sys::ISEA4RSystem, diamond::Integer) = 0x0
 
 """
     subtree_border(ISEA4RSystem(), c, l; connectivity = Vertex()) -> Vector{LevelIndex}

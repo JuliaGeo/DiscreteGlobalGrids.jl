@@ -92,12 +92,16 @@ subtree_border(sys::S2System, c::DGG.LevelIndex, l::Integer;
     DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))
 
 # The halo — the outside face of the same boundary — is the width-1 band around
-# the block, walked lazily by the package's face-quadtree descent wherever the
-# block is nowhere flush with its face's edge: a non-flush block's halo is
-# entirely in-face, where adjacency is the plain 3×3 lattice, so the band IS
-# the halo (minus its four corners under `Edge()`). A flush block's halo
-# crosses the seam onto up to three other faces — `wrap_xyf` territory, ids in
-# other ordinal ranges — and takes the generic outside-first engine instead.
+# the block, walked lazily by the package's face-quadtree descent. Away from the
+# face edge that band is entirely in-face, where adjacency is the plain 3×3
+# lattice, so the band IS the halo (minus its four corners under `Edge()`).
+# Flush with the edge it crosses the seam onto up to four other faces —
+# `wrap_xyf` territory, ids in other ordinal ranges — and `square_halo_engine`
+# derives those candidates by asking `neighbors` about a few rim cells, then
+# filters every one of them with the native one-ring. At a cube corner
+# `wrap_xyf` returns `nothing` and there is simply no diagonal candidate to
+# find, which is exactly why the count is not `4·side + 4` there and why the
+# seam path declares no `length`.
 #
 # TWO THINGS HERE ARE NOT WHAT THE MORTON SYSTEMS DO, and both are Hilbert's
 # doing:
@@ -117,23 +121,27 @@ subtree_border(sys::S2System, c::DGG.LevelIndex, l::Integer;
 #     from a level-3 root at that: the four non-flush level-2 blocks per face
 #     are each fixed by the very square symmetry the wrong seed applies, so the
 #     error is invisible at level 2. `BAND_BASES` in
-#     `test/systems/crosssystem/subtree_halos.jl` is what covers it.
+#     `test/systems/crosssystem/subtree_halos.jl` is what covers it. That seed
+#     is now `face_orientation` below, which the shared walk reads for EVERY
+#     face it visits, not only the block's own.
 function DGG.halo_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
         connectivity::DGG.Connectivity)
     DGG.descendant_range(sys, c, target)   # the level guard, both ArgumentErrors
     _checked_index(c)
     d = target - DGG.level(c)
-    if d > 0
-        ix, iy, face = hilbert_to_xyf(c.index, _nside(DGG.level(c)))
-        s = Int64(1) << d
-        x0 = Int64(ix) << d
-        y0 = Int64(iy) << d
-        n = _nside(target)
-        if 1 <= x0 && x0 + s <= n - 1 && 1 <= y0 && y0 + s <= n - 1
-            return DGG.SquareBandEngine(HilbertCurve(), Int64(face) * n * n,
-                target, n, isodd(face) ? UInt8(SWAP_MASK) : 0x0,
-                x0, y0, s, connectivity isa DGG.Vertex)
-        end
-    end
-    return DGG.generic_halo_engine(sys, c, target, connectivity)
+    d == 0 && return DGG.generic_halo_engine(sys, c, target, connectivity)
+    ix, iy, face = hilbert_to_xyf(c.index, _nside(DGG.level(c)))
+    return DGG.square_halo_engine(sys, HilbertCurve(), c, target, connectivity,
+        Int64(ix) << d, Int64(iy) << d, Int64(1) << d, Int64(face),
+        _nside(target))
 end
+
+# The three lines the shared square walk needs from a system.
+DGG.lattice_decode(sys::S2System, c::DGG.LevelIndex) =
+    hilbert_to_xyf(c.index, _nside(DGG.level(c)))
+
+DGG.lattice_cell(sys::S2System, l::Int, ix::Integer, iy::Integer,
+    face::Integer) = DGG.LevelIndex(l, xyf_to_hilbert(ix, iy, face, _nside(l)))
+
+DGG.face_orientation(sys::S2System, face::Integer) =
+    isodd(face) ? UInt8(SWAP_MASK) : 0x0

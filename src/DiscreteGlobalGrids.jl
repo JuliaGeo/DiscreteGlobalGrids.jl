@@ -117,7 +117,7 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
 # from. Not exported — a caller reaches the iterators, a system reaches these.
 using .Fallbacks: collect_subtree,
     MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine,
-    SquareBandEngine, generic_halo_engine
+    SquareBandEngine, square_halo_engine, generic_halo_engine
 
 # Grid systems, all six ported. Include order never matters: the two ISEA-family
 # systems (IGeo7, ISEA4R) share `src/systems/ISEA/`, and whichever is included
@@ -195,10 +195,16 @@ Important cross-system traits:
     memory, of which [`subtree_border`](@ref) and [`subtree_interior`](@ref) are
     the `collect` forms.
   - **[`subtree_halo`](@ref).** The same boundary from outside, as a resumable
-    [`SubtreeHaloIterator`](@ref). The generic engine walks the hierarchy from
-    outside the subtree with cap pruning, in `O(depth)` memory; A5, having no
-    [`descendant_range`](@ref) to prune by, scans the target level in `O(1)`
-    memory and `O(ncells)` time instead.
+    [`SubtreeHaloIterator`](@ref). HEALPix, S2 and ISEA4R walk the band around
+    their square block directly, in `O(halo + depth)` time and `O(depth)`
+    memory — one pruned quadtree descent per face the halo touches, in face
+    order, which is canonical order; across a seam the band is a conservative
+    superset and every candidate is filtered by the native one-ring first, so
+    only the in-face case has a closed-form `length`. IGeo7 and H3 use the
+    generic engine, which walks the hierarchy from outside the subtree with cap
+    pruning, also in `O(depth)` memory. A5, having no [`descendant_range`](@ref)
+    to prune by, scans the target level in `O(1)` memory and `O(ncells)` time
+    instead.
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
     the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
     their parent exactly; the hierarchy's own relation on IGEO7, H3 and A5,

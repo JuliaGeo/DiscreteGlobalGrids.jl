@@ -352,6 +352,36 @@ function interior_engine end
 function halo_engine end
 
 """
+    lattice_decode(sys, c) -> (ix, iy, face)
+    lattice_cell(sys, level::Int, ix, iy, face) -> cell
+    face_orientation(sys, face) -> UInt8
+
+The three lines an aperture-4 system writes to let the shared square halo walk
+cross its seams. Only the systems whose cells ARE an aligned square lattice per
+face — HEALPix, S2, ISEA4R — implement them; there is no generic fallback,
+because there is no generic lattice.
+
+`lattice_decode` and `lattice_cell` are the system's existing face-lattice codec
+under one name (`nested_to_xyf`/`xyf_to_nested`, `hilbert_to_xyf`/
+`xyf_to_hilbert`, `morton_to_xyd`/`xyd_to_morton`), with `face` 0-based and
+`(ix, iy)` in `0:2^level - 1`. `face_orientation` is the curve state a face's
+ROOT is read under, before any position bits are consumed — `0x0` for the two
+Morton systems, and S2's odd-face swap for the Hilbert one.
+
+The walk needs no seam table of its own: it asks the system for the neighbours
+of a few rim cells and reads the answers back through `lattice_decode`. That is
+the whole per-system surface, which is why a fourth square system would need
+nothing else.
+"""
+function lattice_decode end
+
+@doc (@doc lattice_decode)
+function lattice_cell end
+
+@doc (@doc lattice_decode)
+function face_orientation end
+
+"""
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}
 
 The contiguous interval of **positions** in `levelgrid(sys, l)`'s canonical

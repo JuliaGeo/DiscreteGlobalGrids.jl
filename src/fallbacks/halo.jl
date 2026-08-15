@@ -547,33 +547,45 @@ geometry_halo_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
 # The exterior-perimeter walk, shared by the three aperture-4 systems
 # ===========================================================================
 
-# The halo of an aligned block that is nowhere flush with its face's edge is
-# the width-1 band around it — every band cell is on the block's own face, and
-# in-face adjacency is the plain 3×3 lattice on all three systems, so band and
-# halo coincide, with the four diagonal-contact corners dropped under `Edge()`.
+# A subtree of HEALPix, S2 or ISEA4R is an aligned `side x side` block in one
+# face's (diamond's) square lattice, and its halo is the width-1 band around
+# it. Two cases, one walk.
 #
-# Unlike the rim, the band is not a curve interval of any one subtree, so there
-# is no `base + offset` walk to run. Instead the engine descends the whole
-# FACE's quadtree in curve order and prunes every quadrant that misses the
-# band: curve order at each level is ascending id by construction, so whatever
-# survives arrives ascending with no sort and no dedup. A quadrant of side `h`
-# survives only if it intersects the band, and at most `O(perimeter / h + 1)`
-# of each size do, so the walk visits `O(halo + depth)` nodes in `O(depth)`
-# memory — the descent tracks the running curve code and lattice origin, and
-# restores both on pop by re-reading the parent's last step.
+# AWAY FROM THE FACE EDGE the band is entirely in-face, where adjacency is the
+# plain 3×3 lattice on all three systems, so band and halo are the SAME SET —
+# with the four diagonal-contact corners dropped under `Edge()`. Nothing needs
+# checking and nothing needs a seam table.
 #
-# A block flush with a face edge has halo cells across the seam, on other
-# faces, whose ids no in-face arithmetic can name — those blocks take the
-# generic outside-first engine instead, which is why this type needs no seam
-# machinery and no system tables, only the curve. That also means the engine is
-# reachable only for roots at level >= 2: a level-0 block IS the face and is
-# flush on all four sides, and a level-1 block is flush on two per axis.
+# ACROSS A SEAM the halo leaves the face: cells on up to six other faces, whose
+# ids no in-face arithmetic can name. They are reached by generalising the walk
+# from one band to a short, FACE-ORDERED list of candidate rectangles, one per
+# face the halo can touch — see `_seam_band_engine` for how those rectangles are
+# derived and why they cover. That list is a conservative SUPERSET, so every
+# candidate is put through the native one-ring before it is yielded.
 #
-# NOTHING HERE IS A CONSERVATIVE BAND. The design permits a specialization to
-# enumerate candidates and filter them with the native one-ring; this walk does
-# not need to, because on a non-flush block the band and the halo are the same
-# set. The interval guard in each system's `halo_engine` is what buys that, and
-# it is the only reason no `neighbors` call appears below.
+# WHY CONCATENATION IS A MERGE. Each face occupies the contiguous id range
+# `[face·n², (face+1)·n²)` and faces are numbered ascending, so global canonical
+# order is (face ascending, in-face curve code ascending). Walking the rectangle
+# list in face order is therefore already a canonical merge of the face-local
+# streams: no heap, no seen-set, no sort. Merging same-face rectangles into
+# their bounding rectangle is what makes it one stream per face, which is what
+# makes it impossible to emit a cell twice.
+#
+# WHY A QUADTREE DESCENT AND NOT AN OFFSET WALK. The band is not a curve
+# interval of any one subtree, so there is no `base + offset` to run. The engine
+# descends each rectangle's whole FACE in curve order and prunes every quadrant
+# that misses the rectangle: curve order at each level is ascending id by
+# construction, so survivors arrive ascending. A quadrant of side `h` survives
+# only if it meets the rectangle, and at most `O(perimeter/h + 1)` of each size
+# do, so the walk visits `O(halo + depth)` nodes in `O(depth)` memory — the
+# descent tracks the running curve code and lattice origin and restores both on
+# pop by re-reading the parent's last step.
+#
+# DEPTH ZERO IS NOT HERE. `side == 1` routes to `RingHaloEngine` instead: a
+# one-cell band is the plain eight-cell lattice neighbourhood, which is wrong at
+# every seam (a cube-corner cell has seven neighbours, a HEALPix degree-3 vertex
+# seven, an ISEA4R cell at icosahedral vertex 0 or 11 nine), and the native
+# one-ring answers it exactly in one call.
 
 # `mask` would be dead weight here — pruning is by lattice overlap, not by
 # flush sides — so the frame is the two bytes the descent actually needs.
@@ -590,60 +602,146 @@ const SquareBandStack = Helpers.SmallList{_SQUARE_CAP,SquareBandFrame}
     Helpers.empty_small_list(Val(_SQUARE_CAP), SquareBandFrame(0x0, 0x0))
 
 """
-    SquareBandEngine(curve, facebase, level, faceside, orientation, x0, y0, side, corners)
+    FaceRect(face, orientation, x0, y0, x1, y1)
 
-The halo of the `side x side` block at lattice origin `(x0, y0)` on the face
-whose first cell has raw index `facebase`, in ascending id: `4·side + 4` band
-cells, or `4·side` with `corners = false` ([`Edge`](@ref) drops the four
-diagonal-contact corners). Valid only for a block not flush with the face —
-`1 <= x0` and `x0 + side <= faceside - 1`, likewise `y0` — which the
-constructing system checks; `O(halo + depth)` time, `O(depth)` memory.
+One face's candidate rectangle: the inclusive lattice box `[x0, x1] x [y0, y1]`
+on 0-based `face`, to be descended under curve state `orientation` (the state
+that face's ROOT is read under, from [`face_orientation`](@ref)).
 
-`faceside` is the face's full lattice side at `level` and `orientation` the
-curve state its root is read under: the walk descends the face, not the block,
-because the band cells are outside the block's own curve interval. Yields
-[`LevelIndex`](@ref) on [`SquareRimEngine`](@ref)'s reasoning, and takes the
-same [`quadrant_step`](@ref) curves.
-
-The count is closed form, so [`Base.IteratorSize`](@ref) is `HasLength()`:
-the band of a non-flush block is its four sides plus, under `Vertex()`, its
-four corners, and no seam can shorten it.
+The rectangles of a [`SquareBandEngine`](@ref) are one per face and sorted by
+`face`, which is what makes walking them a canonical merge.
 """
-struct SquareBandEngine{V}
+struct FaceRect
+    face::Int32
+    orientation::UInt8
+    x0::Int32
+    y0::Int32
+    x1::Int32
+    y1::Int32
+end
+
+# Twelve is HEALPix's face count and the largest of the three (ISEA4R has ten
+# diamonds, S2 six faces); one rectangle per face is the hard ceiling, because
+# same-face rectangles are merged. Measured worst case is seven.
+const _BAND_RECT_CAP = 12
+const BandRects = Helpers.SmallList{_BAND_RECT_CAP,FaceRect}
+
+@inline _empty_band_rects() = Helpers.empty_small_list(Val(_BAND_RECT_CAP),
+    FaceRect(0, 0x0, 0, 0, 0, 0))
+
+# Merge by face, so each face appears once and no cell can be reached twice.
+function _merge_rect(rects::BandRects, r::FaceRect)
+    for i in 1:length(rects)
+        q = @inbounds rects[i]
+        q.face == r.face || continue
+        return Helpers.small_setindex(rects, FaceRect(q.face, q.orientation,
+            min(q.x0, r.x0), min(q.y0, r.y0),
+            max(q.x1, r.x1), max(q.y1, r.y1)), i)
+    end
+    return Helpers.small_push(rects, r)
+end
+
+# ---------------------------------------------------------------------------
+# Checked and unchecked, as a type rather than a flag
+#
+# The in-face band is EXACT — proved by the interval guard in
+# `square_halo_engine`, and the reason no `neighbors` call appears on that path.
+# The seam band is a conservative superset and every candidate owes the native
+# test. Carrying the difference as the engine's second type parameter keeps both
+# paths monomorphic: the exact path's emit rule inlines to the corner test and
+# the checked path's to the one-ring, with no branch on a field in either.
+# ---------------------------------------------------------------------------
+
+"""
+    NoCheck()
+
+The emit rule of an exact band: a surviving leaf IS a halo cell, subject only to
+`Edge()` dropping the four diagonal corners. Zero-size, so an engine carrying it
+costs nothing for the distinction.
+"""
+struct NoCheck end
+
+"""
+    NativeCheck(system, grid, root, rootlevel, connectivity)
+
+The emit rule of a conservative band: a candidate is a halo cell only if the
+system's own one-ring puts a descendant of `root` next to it,
+
+    any(nb -> ancestor(sys, nb, rootlevel) == root,
+        neighbors(grid, x, 1; connectivity))
+
+which is the exact definition, applied to every candidate before it is yielded.
+`O(degree · depth)` per candidate.
+"""
+struct NativeCheck{S,G,C,K}
+    system::S
+    grid::G
+    root::C
+    rootlevel::Int
+    connectivity::K
+end
+
+"""
+    SquareBandEngine(curve, check, level, faceside, homeface, x0, y0, side, corners, rects)
+
+The halo of the `side x side` block at lattice origin `(x0, y0)` of `homeface`,
+in ascending id, by one pruned quadtree descent per rectangle in `rects` — which
+are one per face and ascending by face, so the concatenation is already the
+canonical merge.
+
+`faceside` is a face's full lattice side at `level`. Yields [`LevelIndex`](@ref)
+on [`SquareRimEngine`](@ref)'s reasoning and takes the same
+[`quadrant_step`](@ref) curves. `O(candidates + depth)` time, `O(depth)` memory.
+
+`check` decides both the emit rule and the count contract:
+
+  - [`NoCheck`](@ref) — the block is nowhere flush with its face edge, the one
+    rectangle is the width-1 band, and band and halo are the same set. The count
+    is closed form, `4·side + 4` or `4·side` under `Edge()`, so
+    [`Base.IteratorSize`](@ref) is `HasLength()`.
+  - [`NativeCheck`](@ref) — the block is flush somewhere, the rectangles are a
+    conservative superset, and every candidate is tested before it is yielded.
+    No perimeter formula survives a seam (a cube corner is three cells, not
+    four; an ISEA4R icosahedral vertex is five), so `IteratorSize` is
+    `SizeUnknown()` and there is **no `length` method at all**.
+"""
+struct SquareBandEngine{V,K}
     curve::V
-    facebase::Int64
+    check::K
     level::Int
     faceside::Int64
-    orientation::UInt8
+    homeface::Int32
     x0::Int64
     y0::Int64
     side::Int64
     corners::Bool
+    rects::BandRects
 end
 
 """
-    SquareBandWalk(stack, code, x, y)
+    SquareBandWalk(rect, stack, code, x, y)
 
-The walk state: the frame stack, and the within-face curve code and lattice
-origin of the sub-square on top of it. Frame `k`'s node has side
-`faceside >> (k - 1)`, so none of the three needs storing per frame — all are
-restored on pop by replaying the parent's last [`quadrant_step`](@ref).
+The walk state: which rectangle is being descended, the frame stack, and the
+within-face curve code and lattice origin of the sub-square on top of it. Frame
+`k`'s node has side `faceside >> (k - 1)`, so none of the last three needs
+storing per frame — all are restored on pop by replaying the parent's last
+[`quadrant_step`](@ref).
 """
 struct SquareBandWalk
+    rect::Int
     stack::SquareBandStack
     code::Int64
     x::Int64
     y::Int64
 end
 
-# Does a node overlap the band's bounding square at all, and is it swallowed by
-# the block? A surviving node overlaps the outer square without sitting inside
-# the block, which forces it to overlap the band itself — the outer square
-# minus the block IS the band.
-@inline _halo_overlaps(e::SquareBandEngine, x::Int64, y::Int64, h::Int64) =
-    x <= e.x0 + e.side && x + h - 1 >= e.x0 - 1 &&
-    y <= e.y0 + e.side && y + h - 1 >= e.y0 - 1
+@inline _rect_overlaps(r::FaceRect, x::Int64, y::Int64, h::Int64) =
+    x <= r.x1 && x + h - 1 >= r.x0 && y <= r.y1 && y + h - 1 >= r.y0
 
+# The block is not its own halo. On the home face this prunes it whole — one
+# integer test retires a quadrant of any size — and it is needed on BOTH paths:
+# a block cell's neighbours include other block cells, so the native check would
+# happily admit one.
 @inline _inside_block(e::SquareBandEngine, x::Int64, y::Int64, h::Int64) =
     x >= e.x0 && x + h - 1 <= e.x0 + e.side - 1 &&
     y >= e.y0 && y + h - 1 <= e.y0 + e.side - 1
@@ -654,21 +752,53 @@ end
     (x == e.x0 - 1 || x == e.x0 + e.side) &&
     (y == e.y0 - 1 || y == e.y0 + e.side)
 
+@inline _band_emit(::NoCheck, e::SquareBandEngine, cell, cx::Int64, cy::Int64) =
+    e.corners || !_band_corner(e, cx, cy)
+
+@inline function _band_emit(chk::NativeCheck, e::SquareBandEngine, cell,
+        cx::Int64, cy::Int64)
+    for nb in neighbors(chk.grid, cell, 1; connectivity = chk.connectivity)
+        ancestor(chk.system, nb, chk.rootlevel) == chk.root && return true
+    end
+    return false
+end
+
 Base.eltype(::Type{<:SquareBandEngine}) = LevelIndex
-Base.IteratorSize(::Type{<:SquareBandEngine}) = Base.HasLength()
-Base.length(e::SquareBandEngine) =
+
+Base.IteratorSize(::Type{<:SquareBandEngine{V,NoCheck}}) where {V} =
+    Base.HasLength()
+Base.IteratorSize(::Type{<:SquareBandEngine{V,K}}) where {V,K<:NativeCheck} =
+    Base.SizeUnknown()
+
+# Declared only for the exact band. A seam engine has no closed-form count, so
+# the `MethodError` from here is the contract being kept — see the type's
+# docstring.
+Base.length(e::SquareBandEngine{V,NoCheck}) where {V} =
     e.corners ? Int(4 * e.side + 4) : Int(4 * e.side)
 
-Base.iterate(e::SquareBandEngine) = iterate(e, SquareBandWalk(
-    Helpers.small_push(_empty_band_stack(), SquareBandFrame(e.orientation, 0x0)),
-    Int64(0), Int64(0), Int64(0)))
+Base.iterate(e::SquareBandEngine) =
+    iterate(e, SquareBandWalk(0, _empty_band_stack(),
+        Int64(0), Int64(0), Int64(0)))
 
 function Base.iterate(e::SquareBandEngine, w::SquareBandWalk)
+    r = w.rect
     st = w.stack
     code = w.code
     x = w.x
     y = w.y
-    while !isempty(st)
+    while true
+        if isempty(st)
+            # One rectangle finished; start the next face's descent at its root.
+            r += 1
+            r > length(e.rects) && return nothing
+            st = Helpers.small_push(_empty_band_stack(),
+                SquareBandFrame((@inbounds e.rects[r]).orientation, 0x0))
+            code = Int64(0)
+            x = Int64(0)
+            y = Int64(0)
+            continue
+        end
+        rect = @inbounds e.rects[r]
         k = length(st)
         f = @inbounds st[k]
         if f.next > 0x3
@@ -693,21 +823,180 @@ function Base.iterate(e::SquareBandEngine, w::SquareBandWalk)
         half = e.faceside >> k
         cx = x + i * half
         cy = y + j * half
-        _halo_overlaps(e, cx, cy, half) || continue
-        _inside_block(e, cx, cy, half) && continue
+        _rect_overlaps(rect, cx, cy, half) || continue
+        rect.face == e.homeface && _inside_block(e, cx, cy, half) && continue
         child = code + p * half * half
         if half == 1
-            # A surviving leaf is a band cell; only the corner rule is left.
-            !e.corners && _band_corner(e, cx, cy) && continue
+            cell = LevelIndex(e.level,
+                Int64(rect.face) * e.faceside * e.faceside + child)
+            _band_emit(e.check, e, cell, cx, cy) || continue
             # Emitted without descending, so `code`/`x`/`y` still describe the
             # frame on top and need no restoring on the way back in.
-            return (LevelIndex(e.level, e.facebase + child),
-                SquareBandWalk(st, code, x, y))
+            return (cell, SquareBandWalk(r, st, code, x, y))
         end
         st = Helpers.small_push(st, SquareBandFrame(o, 0x0))
         code = child
         x = cx
         y = cy
     end
-    return nothing
+end
+
+# ===========================================================================
+# Building one: the interval guard, and the seam derivation
+# ===========================================================================
+
+"""
+    square_halo_engine(sys, curve, c, target, connectivity, x0, y0, side, face, n)
+
+The halo engine for the `side x side` block at lattice origin `(x0, y0)` of
+0-based `face`, on a face of side `n` at level `target`. The three aperture-4
+systems' `halo_engine` methods are this call plus their own lattice decode.
+
+Away from the face edge it is the exact width-1 band, unchecked and counted.
+Flush with it, `_seam_band_engine` takes over. `side == 1` never reaches here.
+"""
+function square_halo_engine(sys::AbstractHierarchicalGridSystem, curve,
+        c::AbstractCellIndex, target::Int, connectivity::Connectivity,
+        x0::Int64, y0::Int64, side::Int64, face::Int64, n::Int64)
+    home = FaceRect(face, face_orientation(sys, face),
+        max(Int64(0), x0 - 1), max(Int64(0), y0 - 1),
+        min(n - 1, x0 + side), min(n - 1, y0 + side))
+    # The width-1 band fits inside the face: every halo cell is in-face, the
+    # band IS the halo, and nothing below needs a neighbour query.
+    if 1 <= x0 && x0 + side <= n - 1 && 1 <= y0 && y0 + side <= n - 1
+        return SquareBandEngine(curve, NoCheck(), target, n, Int32(face),
+            x0, y0, side, connectivity isa Vertex,
+            Helpers.small_push(_empty_band_rects(), home))
+    end
+    return _seam_band_engine(sys, curve, c, target, connectivity,
+        x0, y0, side, face, n, home)
+end
+
+# ---------------------------------------------------------------------------
+# Deriving the candidate rectangles, with no seam table of this file's own
+#
+# WHAT HAS TO BE COVERED. A halo cell is a neighbour of a block cell. Block
+# cells with a neighbour off the face are exactly the rim cells of the sides
+# that are FLUSH with the face edge, and their off-face neighbours are the
+# images of the extended-lattice positions one step outside that edge. So for a
+# block flush on, say, `x = 0`, the foreign candidates are the images of
+# `(-1, y')` for `y'` running over `[y0 - 1, y0 + side]` clipped to the face,
+# plus — where a corner of the block is a corner of the face — the cells that a
+# DIAGONAL step off two edges at once reaches.
+#
+# WHY TWO PROBES PER SIDE SUFFICE. All three systems' seam maps are edge-to-edge
+# affine with a sign: S2's `wrap_xyf` computes `k = (σ·b + n - 1) >> 1` from the
+# centred along-edge coordinate, which is `y` or `n - 1 - y`; ISEA4R's
+# `lattice_neighbors` reads the paired rim slot at `n - 1 - j`; HEALPix's
+# `nested_neighbors` applies the `NB_SWAPARRAY` mirrors and transpose. Each is
+# monotone along the edge AT EVERY `n`, so the images of an interval of `y'` are
+# a contiguous run lying between the images of its ENDPOINTS.
+#
+# The two extreme rim cells of a flush side see both endpoints directly: the
+# extreme cell at `(0, y0)` has `(-1, y0 - 1)` among its eight neighbours, and
+# the one at `(0, y0 + side - 1)` has `(-1, y0 + side)`. So the bounding box of
+# what the two probes see already contains the image of every interior rim cell
+# of that side, and nothing needs widening. That is not an argument this file
+# takes on trust — see the verification note below, and note that the tests
+# would fail if a bound were moved one cell inward.
+#
+# WHERE A THIRD FACE APPEARS. At a flush CORNER the block's corner cell is a
+# probe of both flush sides, and its own neighbour list already contains
+# whatever the diagonal step reaches: nothing on S2 (`wrap_xyf` returns
+# `nothing` at a cube corner) or at HEALPix's `-1` entries in `NB_FACEARRAY` —
+# which occur only for the double-out `nbnum`, i.e. only at a face corner, never
+# at a run endpoint — and the interior of `CORNER_FANS` on ISEA4R, which is the
+# two extra diamonds meeting at icosahedral vertex 0 or 11. So corners need no
+# separate rule; they need only that the corner cell is probed, which flushness
+# already guarantees.
+#
+# THE PROBE ASKS FOR `Vertex()` WHATEVER WAS REQUESTED, so one coverage argument
+# serves both connectivities: the `Edge()` halo is a subset of the `Vertex()`
+# one, and a superset of the larger is a superset of the smaller. The requested
+# connectivity is still what `NativeCheck` filters by.
+#
+# COVERAGE IS EXHAUSTIVELY VERIFIED, not merely argued: every flush block of
+# every size at every origin on every face, levels 1 through 6, both
+# connectivities, on all three systems — zero halo cells outside the derived
+# rectangles, worst case seven rectangles. Because the seam maps are affine at
+# every `n`, levels past 6 add no new structure, only longer runs. The
+# differential tests in `test/systems/crosssystem/subtree_halos.jl` re-run the
+# same claim through the forced-geometry oracle, which is the only oracle in
+# that file that can see a candidate this derivation never proposed.
+#
+# WHAT FALLS BACK. One configuration only: a system with more faces than
+# `_BAND_RECT_CAP`, which none of the three is. Everything else — every flush
+# side, every face corner, every whole-face block, both connectivities — is
+# walked. The guard is kept because it is the one assumption the derivation
+# cannot check itself, and a `small_push` past capacity would be a `BoundsError`
+# from inside an iterator rather than an honest fallback.
+# ---------------------------------------------------------------------------
+
+# One probe: everything the native one-ring of the rim cell at `(sx, sy)` can
+# see, bucketed by face. In-face neighbours already inside the home band box are
+# dropped rather than merged, so the home rectangle stays the tight band;
+# anything else on the home face — a face adjacent to ITSELF across a seam,
+# which none of the three has — would widen it, and correctly.
+function _seam_probe(sys, grid, rects::BandRects, target::Int, face::Int64,
+        sx::Int64, sy::Int64, home::FaceRect)
+    for nb in neighbors(grid, lattice_cell(sys, target, sx, sy, face), 1;
+            connectivity = Vertex())
+        ix, iy, g = lattice_decode(sys, nb)
+        gx = Int64(ix)
+        gy = Int64(iy)
+        g == face && home.x0 <= gx <= home.x1 && home.y0 <= gy <= home.y1 &&
+            continue
+        rects = _merge_rect(rects, FaceRect(g, face_orientation(sys, g),
+            gx, gy, gx, gy))
+    end
+    return rects
+end
+
+function _seam_band_engine(sys::AbstractHierarchicalGridSystem, curve,
+        c::AbstractCellIndex, target::Int, connectivity::Connectivity,
+        x0::Int64, y0::Int64, side::Int64, face::Int64, n::Int64,
+        home::FaceRect)
+    nfaces = ncells(levelgrid(sys, 0))
+    nfaces <= _BAND_RECT_CAP ||
+        return generic_halo_engine(sys, c, target, connectivity)
+    grid = levelgrid(sys, target)
+    rects = Helpers.small_push(_empty_band_rects(), home)
+    # The two extreme rim cells of every flush side. At most eight probes, at
+    # most four distinct cells, and O(1) in the halo's size — construction stays
+    # a constant-time act however deep the target.
+    if x0 == 0
+        rects = _seam_probe(sys, grid, rects, target, face, x0, y0, home)
+        rects = _seam_probe(sys, grid, rects, target, face, x0, y0 + side - 1, home)
+    end
+    if x0 + side == n
+        rects = _seam_probe(sys, grid, rects, target, face, x0 + side - 1, y0, home)
+        rects = _seam_probe(sys, grid, rects, target, face, x0 + side - 1,
+            y0 + side - 1, home)
+    end
+    if y0 == 0
+        rects = _seam_probe(sys, grid, rects, target, face, x0, y0, home)
+        rects = _seam_probe(sys, grid, rects, target, face, x0 + side - 1, y0, home)
+    end
+    if y0 + side == n
+        rects = _seam_probe(sys, grid, rects, target, face, x0, y0 + side - 1, home)
+        rects = _seam_probe(sys, grid, rects, target, face, x0 + side - 1,
+            y0 + side - 1, home)
+    end
+    # Face order is canonical order, so the list is sorted once, here, by
+    # walking the faces rather than the rectangles. Faces are `0:nfaces-1` and
+    # there are at most twelve of them, so this is a fixed 144-comparison pass
+    # and not a sort in any sense that could grow.
+    ordered = _empty_band_rects()
+    for g in 0:(nfaces - 1)
+        for i in 1:length(rects)
+            q = @inbounds rects[i]
+            if q.face == g
+                ordered = Helpers.small_push(ordered, q)
+                break
+            end
+        end
+    end
+    return SquareBandEngine(curve,
+        NativeCheck(sys, grid, c, level(c), connectivity),
+        target, n, Int32(face), x0, y0, side, connectivity isa Vertex, ordered)
 end

@@ -79,6 +79,22 @@ small_setlast(list::SmallList{N,T}, item) where {N,T} =
     small_setlast(list, convert(T, item))
 
 """
+    small_setindex(list, item, i)
+
+Return `list` with element `i` replaced. [`small_setlast`](@ref) is the stack's
+version of this; this one is for the small ACCUMULATORS — a fixed-capacity table
+merged into by key, where the slot to update is found by a linear scan rather
+than being the top of a stack. Throws `BoundsError` outside `1:length(list)`.
+"""
+@inline function small_setindex(list::SmallList{N,T}, item::T, i::Int) where {N,T}
+    1 <= i <= list.len || throw(BoundsError(list, i))
+    return SmallList{N,T}(list.len, tuple_set(list.data, item, i))
+end
+
+small_setindex(list::SmallList{N,T}, item, i::Int) where {N,T} =
+    small_setindex(list, convert(T, item), i)
+
+"""
     small_sort(list)
 
 Return an ascending copy of a small list without heap allocation.

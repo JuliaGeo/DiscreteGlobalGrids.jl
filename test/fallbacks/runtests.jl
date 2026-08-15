@@ -1446,6 +1446,19 @@ using DiscreteGlobalGrids.Helpers
     @test collect(small_setlast(small_pop(full), 9)) == [2, 9]
     @test_throws BoundsError small_setlast(empty, 1)
 
+    # The accumulator half: a slot found by a linear scan rather than by being
+    # the top, which is how the halo walk's per-face rectangle table merges.
+    @test collect(small_setindex(full, 9, 1)) == [9, 1, 2]
+    @test collect(small_setindex(full, 9, 2)) == [2, 9, 2]
+    @test collect(small_setindex(full, 9, 3)) == [2, 1, 9]
+    @test_throws BoundsError small_setindex(full, 9, 0)
+    @test_throws BoundsError small_setindex(full, 9, 4)
+    @test_throws BoundsError small_setindex(empty, 9, 1)
+    let list = full
+        small_setindex(list, 9, 2)               # warm up
+        @test (@allocated small_setindex(list, 9, 2)) == 0
+    end
+
     # A pop leaves the dropped slot's contents in place; `len` is what puts it
     # out of reach, and a later push must overwrite rather than resurrect it.
     @test collect(small_push(small_pop(full), 7)) == [2, 1, 7]

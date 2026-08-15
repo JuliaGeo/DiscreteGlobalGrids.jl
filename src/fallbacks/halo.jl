@@ -85,6 +85,12 @@ Base.show(io::IO, it::SubtreeHaloIterator) = print(io, "SubtreeHaloIterator(",
 
 `c`'s own one-ring, ascending, by selection emit. `O(degree^2)` time with
 `degree <= max_neighbors(sys, connectivity)`, no allocation, isbits state.
+
+`length` is `length(ring)`, which is honest only because a native one-ring
+never lists the same cell twice — the selection emit yields each DISTINCT value
+once, so a repeated neighbour would make the engine yield fewer cells than it
+claims. No bundled system repeats; if one ever did, `collect_subtree` is the
+backstop that turns the miscount into an `error` rather than an `undef` tail.
 """
 struct RingHaloEngine{V,C}
     ring::V
@@ -174,8 +180,14 @@ subtree_halo(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
     halo(subset; connectivity = Vertex())
 
 The cells immediately outside a same-level subset — the subset face of
-[`SubtreeHaloIterator`](@ref). Methods arrive with the subset containers; the
-name is declared here so the two verbs live in one file.
+[`SubtreeHaloIterator`](@ref).
+
+**This function has no methods yet.** The name is declared and exported here so
+the two halo verbs live in one file and the docs can cross-reference them; the
+methods arrive with the subset containers (`PartialGrid`, `CellVector`,
+`CellLookup`). Until then every call is a `MethodError` — deliberately, because
+a stub returning `nothing` or an empty iterator would answer a question it
+cannot yet answer.
 """
 function halo end
 
@@ -238,6 +250,15 @@ function _touches_subtree(::ForcedGeometry, e, x)
     tol = _match_tolerance(xb)
     needed = _needed_contacts(e.connectivity)
     xcap = cell_cap(e.grid, x)
+    # Depth zero has no descent to make: `root` IS its own only target-level
+    # descendant, so the comparison is against the root's own boundary. Handled
+    # here rather than left to the cursor because a cursor seeded at the target
+    # level has no children to expand — it would descend past the target to
+    # `max_level` and throw.
+    if e.rootlevel == e.target
+        intersects_cap(cell_cap(e.grid, e.root), xcap) || return false
+        return _shared_vertices(xb, cell_boundary(e.grid, e.root), tol) >= needed
+    end
     return _descendant_touches(e, xb, tol, needed, xcap)
 end
 
@@ -251,6 +272,13 @@ function _descendant_touches(e, xb, tol::Float64, needed::Int, xcap)
     while !isempty(st)
         k = length(st)
         f = @inbounds st[k]
+        # Defence in depth behind the depth-zero early return above: a frame at
+        # the target level is a leaf of THIS walk, whatever put it there.
+        # `children` of a `max_level` cell throws, so never ask.
+        if level(f.cell) == e.target
+            st = Helpers.small_pop(st)
+            continue
+        end
         kids = children(sys, f.cell)
         if f.next > length(kids)
             st = Helpers.small_pop(st)
@@ -287,11 +315,24 @@ end
 # `x`. So the two caps intersect, and a node whose cap misses the root cap can
 # contain no halo cell.
 #
+# THE ASSUMPTION THAT COUPLES THE TWO HALVES OF THIS FILE. That argument is
+# GEOMETRIC — it is the covering law over boundary POINTS — but the default
+# provider's adjacency is TOPOLOGICAL, the system's native one-ring. The step
+# "a halo cell shares at least a point with some descendant" is therefore an
+# assumption about `neighbors`, not a theorem: it holds only while every pair of
+# cells the system calls adjacent has boundaries that share a point. No bundled
+# system violates it (checked by the forced-geometry agreement testset). A
+# system that did — an adjacency defined by index arithmetic across a seam with
+# no shared drawn corner — would keep the prune's arithmetic intact and its
+# soundness not, and the walk would silently drop that halo cell. Such a system
+# needs its own `halo_engine`, or a rootcap widened to cover the discrepancy.
+#
 # Why not lon/lat: longitude/latitude boxes are unusable at seams and poles, so
 # everything here stays in unit-sphere XYZ.
 
-# 32 frames is past every registered system's depth (S2's 30 is deepest), plus
-# two for the root generation and headroom.
+# One frame per level strictly above the target, so a full-depth walk from the
+# root generation pushes at most `max_level` of them — 30 on S2, the deepest
+# registered system. 34 is that plus four spare.
 const _HALO_STACK_CAP = 34
 
 struct HaloFrame{C}
@@ -319,8 +360,20 @@ may do more work than an indexed specialization — it is the correctness
 fallback, and with [`ForcedGeometry`](@ref) it is the independent oracle those
 specializations are checked against.
 
-Requires [`has_sorted_subtrees`](@ref): descending children in order is
-ascending canonical order only when sibling descendant ranges are ordered.
+Requires more than [`has_sorted_subtrees`](@ref), which promises only that a
+subtree's target-level descendants are CONTIGUOUS in position. This walk emits
+in the order it meets cells, with no sort to repair it, so it additionally
+requires that `children(sys, c)` and `rootcells(sys)` are each ordered by their
+elements' TARGET-LEVEL descendant ranges — sibling `i` before sibling `j`
+exactly when `first(descendant_range(sys, kids[i], target)) <
+first(descendant_range(sys, kids[j], target))`, at every level and for every
+target. Contiguity without that ordering still produces contiguous blocks, just
+visited out of order, and the walk would emit a mis-sorted halo with no error
+raised anywhere. Every bundled system satisfies it, and
+`test/systems/crosssystem/subtree_halos.jl` is what says so: its law compares
+this walk element for element against an ascending-POSITION scan of the target
+level. A system that does not satisfy it must supply its own `halo_engine`
+rather than inherit this one.
 """
 struct OutsideWalkEngine{S,G,C,R,P,K}
     system::S
@@ -348,19 +401,45 @@ const _HALO_SKIP = 0
 const _HALO_EMIT = 1
 const _HALO_DESCEND = 2
 
+# How expensive a cap prune is BEFORE the adjacency test, per provider. The
+# indexed provider is one native `neighbors` call, cheaper than building a cap
+# from a boundary, so it declines: at the target level it goes straight to the
+# test. The forced-geometry provider walks the ROOT's subtree once per
+# candidate, so a single cap comparison that retires the candidate outright is
+# worth many times its cost — and this is the oracle path, which the
+# differential tests hammer. Dispatch on the provider so the indexed path pays
+# nothing for the distinction, not a branch on a field.
+#
+# Sound for the same reason the internal-node prune is: a halo cell shares a
+# boundary point with a descendant of `root`, that point is inside `rootcap` by
+# the covering law, and it is one of the candidate's own corners, hence inside
+# the candidate's cap.
+@inline _target_prune(::IndexedNeighbors, e, c) = true
+@inline _target_prune(::ForcedGeometry, e, c) =
+    intersects_cap(cell_cap(e.grid, c), e.rootcap)
+
 # Three questions, cheapest first. A node whose whole descendant range sits
 # inside the subject's is the subject subtree itself (ranges nest or are
-# disjoint), and integer comparison retires it without touching geometry. At the
-# target level the provider is cheaper than a cap, so the cap prune is for
-# INTERNAL nodes only.
+# disjoint), and integer comparison retires it without touching geometry.
+#
+# That containment can only hold AT the root's own level, which is why the guard
+# is `==` and not `>=`. Deeper than the root there are two cases and neither can
+# be contained: a node that is one of the root's own descendants is unreachable,
+# because the root was already skipped whole and the walk never descended into
+# it; and a node that is not has a descendant range disjoint from the root's, so
+# the containment test is a `descendant_range` call that cannot succeed. On
+# IGeo7 with a level-2 root at `l = 5` that is 630 of the 689 nodes the walk
+# visits.
 @inline function _admit(e::OutsideWalkEngine, c)
     lc = level(c)
-    if lc >= e.rootlevel
+    if lc == e.rootlevel
         r = descendant_range(e.system, c, e.target)
         (first(r) >= e.lo && last(r) <= e.hi) && return _HALO_SKIP
     end
-    lc == e.target &&
+    if lc == e.target
+        _target_prune(e.provider, e, c) || return _HALO_SKIP
         return _touches_subtree(e.provider, e, c) ? _HALO_EMIT : _HALO_SKIP
+    end
     intersects_cap(node_extent(e.system, c), e.rootcap) || return _HALO_SKIP
     return _HALO_DESCEND
 end

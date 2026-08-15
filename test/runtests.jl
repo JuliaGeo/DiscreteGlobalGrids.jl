@@ -56,10 +56,12 @@ using DiscreteGlobalGrids
     # failure here is the clipping.
     include("systems/crosssystem/stencils.jl")
     # T22: the OUTSIDE face of the boundary `subtree_iterators.jl` walks the
-    # inside of. After both files above on purpose: the halo's laws are stated
-    # against `subtree_border` and against the subset adjacency the stencil file
-    # pins, so a failure upstream of here is the rim walk or the clipping, and a
-    # failure here is the halo walk itself.
+    # inside of. As committed it depends on neither file above — its laws are
+    # stated against an O(ncells) ascending-position scan of the target level
+    # and against forced unit-sphere geometry, so a failure here is the halo
+    # walk and nothing else. It sits here because that changes: the halo gains
+    # laws against `subtree_border` and against the subset adjacency the stencil
+    # file pins, and it should already be downstream of both when they land.
     include("systems/crosssystem/subtree_halos.jl")
     # T16: the DimensionalData cell axis, which is the multi-order set above
     # read as a cube dimension. After that file for the same reason it is after

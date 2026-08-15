@@ -79,6 +79,15 @@ jobs:
         env:
           DISPLAY: ':0'
           DATADEPS_ALWAYS_ACCEPT: 'true'
+      - name: Download WorldClim documentation data
+        run: |
+          mkdir -p "$RASTERDATASOURCES_PATH/zips"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --connect-timeout 30 --max-time 300 \
+            --output "$RASTERDATASOURCES_PATH/zips/wc2.1_10m_tavg.zip" \
+            https://geodata.ucdavis.edu/climate/worldclim/2_1/base/wc2.1_10m_tavg.zip
+        env:
+          RASTERDATASOURCES_PATH: ${{ runner.temp }}/rasterdatasources
       - uses: julia-actions/julia-docdeploy@v1
         with:
           prefix: xvfb-run
@@ -88,3 +97,4 @@ jobs:
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
           DISPLAY: ':0'
           DATADEPS_ALWAYS_ACCEPT: 'true'
+          RASTERDATASOURCES_PATH: ${{ runner.temp }}/rasterdatasources

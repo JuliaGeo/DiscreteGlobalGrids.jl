@@ -1243,6 +1243,100 @@ Base.length(::MiscountingEngine) = 3
     end
 
     # -----------------------------------------------------------------------
+    # Subset halos — `halo` on the three containers
+    # -----------------------------------------------------------------------
+
+    # `halo` IS AN ITERATOR ON ALL THREE CONTAINERS, which is the point of this
+    # section. PR #19 returned an iterator on one fast path and a `Vector`
+    # everywhere else and documented the instability; a caller who wrote
+    # `for x in halo(sub)` got laziness or a materialised ring depending on how
+    # the subset happened to be built. Both branches are iterators now — a
+    # `SubtreeHaloIterator` on the rooted-complete-subtree path and a
+    # `SubsetHaloIterator` everywhere else — and the concrete type is decided
+    # once, at construction, exactly as `halo_table`'s two branches are.
+    #
+    # WHAT EACH ARM IS FOR:
+    #
+    #   * the three containers agree — a `CellVector` forgets its root and a
+    #     `CellLookup` is a `CellVector` wearing a hat, so all three must reach
+    #     the same cells by different routes;
+    #   * the rooted complete subtree really does DELEGATE. It answers correctly
+    #     through the subset walk too, so nothing below would notice the fast
+    #     path being dropped: only a type assertion does;
+    #   * a root-forgotten `PartialGrid` holding the same ids gives the same
+    #     answer, which is what says the subset walk is not quietly leaning on
+    #     the root it happens to have;
+    #   * every element is out of the set, which is half the halo's definition
+    #     and the half a membership bug would break silently; and
+    #   * A PUNCHED INTERIOR CELL JOINS THE HALO. That is not a special case, it
+    #     is the definition read literally — the cell is outside the subset and
+    #     has in-subset neighbours — and it is the one law that distinguishes
+    #     `halo` from `subtree_halo` rather than merely relocating it.
+    @testset "$(nameof(typeof(sys))): halo on subsets" for sys in systems()
+        l = min(2, max_level(sys))
+        c = cellindex(levelgrid(sys, 0), 1)
+        pg = PartialGrid(sys, c, l)
+        cv = CellVector(pg)
+        expected = subtree_halo(sys, c, l)
+        @test collect(halo(pg)) == expected
+        @test collect(halo(cv)) == expected
+        @test collect(halo(CellLookup(cv))) == expected
+
+        # The rooted complete subtree delegates rather than re-deriving. Asserted
+        # by type, because every arm above passes either way.
+        #
+        # A5 IS THE EXCEPTION AND IT IS THE SAME ONE AS EVERYWHERE ELSE:
+        # `_whole_subtree_range` needs `has_sorted_subtrees` to know that holding
+        # `length(descendant_range)` cells means holding the whole subtree, and
+        # A5 has no `descendant_range` at all. So A5's rooted grid takes the
+        # subset walk — which is the scan, the same engine `subtree_halo` would
+        # have used — and the two arms above are what say the answer is identical.
+        @test halo(pg) isa (DGG.has_sorted_subtrees(sys) ? SubtreeHaloIterator :
+                            DGG.Fallbacks.SubsetHaloIterator)
+        @test halo(cv) isa DGG.Fallbacks.SubsetHaloIterator
+
+        # The same cells with the root forgotten must give the same answer.
+        loose = PartialGrid(sys, l, collect(pg.ids))
+        @test halo(loose) isa DGG.Fallbacks.SubsetHaloIterator
+        @test collect(halo(loose)) == expected
+
+        @test collect(halo(pg; connectivity = Edge())) ==
+              subtree_halo(sys, c, l; connectivity = Edge())
+        @test collect(halo(loose; connectivity = Edge())) ==
+              subtree_halo(sys, c, l; connectivity = Edge())
+        @test all(x -> cellposition(pg, x) === nothing, collect(halo(pg)))
+        @test all(x -> cellposition(loose, x) === nothing, collect(halo(loose)))
+
+        # A punched interior cell is outside the subset, so it joins the halo.
+        interior = first(DGG.subtree_interior(sys, c, l))
+        holed = PartialGrid(sys, l, filter(!=(interior), collect(pg.ids)))
+        hh = collect(halo(holed))
+        @test interior in hh
+        @test hh == collect(halo(CellVector(holed)))
+        @test hh == collect(halo(CellLookup(CellVector(holed))))
+        @test allunique(hh)
+        @test issorted([cellposition(levelgrid(sys, l), x) for x in hh])
+        @test all(x -> cellposition(holed, x) === nothing, hh)
+        # The hole is the only difference: everything else the whole subtree's
+        # halo held is still held, since removing a cell cannot un-touch one.
+        @test issubset(Set(expected), Set(hh))
+        @test setdiff(Set(hh), Set(expected)) == Set((interior,))
+
+        # ROOTED BUT NOT COMPLETE, which is the branch neither case above
+        # reaches: `_whole_subtree_range` refuses it on the count, so it takes
+        # the subset walk — but the walk prunes by the ROOT's `node_extent`
+        # rather than by `cells_cap`, and that is the only arm here that
+        # exercises that cap. Same ids, same root, same answer as the unrooted
+        # form, which is what says the two caps agree.
+        rooted_hole = PartialGrid(sys, l, filter(!=(interior), collect(pg.ids));
+            root = c)
+        @test halo(rooted_hole) isa DGG.Fallbacks.SubsetHaloIterator
+        @test collect(halo(rooted_hole)) == hh
+        @test collect(halo(rooted_hole; connectivity = Edge())) ==
+              collect(halo(holed; connectivity = Edge()))
+    end
+
+    # -----------------------------------------------------------------------
     # Resumability, on every engine this file can reach
     # -----------------------------------------------------------------------
 
@@ -1302,6 +1396,18 @@ Base.length(::MiscountingEngine) = 3
             inface, seam, _ = classify_roots(sys, 2, 4, Vertex())
             check_prefix(SubtreeHaloIterator(sys, first(inface), 4))
             check_prefix(SubtreeHaloIterator(sys, first(seam), 4))
+        end
+        # And the subset wrapper on both containers. `SubsetHaloIterator`
+        # forwards the whole protocol itself, so resumability is a property of
+        # the wrapper as much as of the engine inside it — and the engines it
+        # holds are already in the tag set, which is the point: the subset walk
+        # is the same two walks under a different provider.
+        for sys in systems()
+            l = min(2, max_level(sys))
+            c = cellindex(levelgrid(sys, 0), 1)
+            loose = PartialGrid(sys, l, collect(PartialGrid(sys, c, l).ids))
+            check_prefix(halo(loose))
+            check_prefix(halo(CellVector(loose)))
         end
         @test seen == Set((:RingHaloEngine, :OutsideWalkEngine, :ScanHaloEngine,
             :SquareBandNoCheck, :SquareBandNativeCheck, :HexChildHaloEngine,

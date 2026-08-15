@@ -180,16 +180,78 @@ subtree_halo(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
     halo(subset; connectivity = Vertex())
 
 The cells immediately outside a same-level subset — the subset face of
-[`SubtreeHaloIterator`](@ref).
+[`SubtreeHaloIterator`](@ref). Defined for [`PartialGrid`](@ref),
+[`CellVector`](@ref) and [`CellLookup`](@ref), whose methods live beside the
+other subset verbs in `stencil.jl` and `dimensionaldata.jl`.
 
-**This function has no methods yet.** The name is declared and exported here so
-the two halo verbs live in one file and the docs can cross-reference them; the
-methods arrive with the subset containers (`PartialGrid`, `CellVector`,
-`CellLookup`). Until then every call is a `MethodError` — deliberately, because
-a stub returning `nothing` or an empty iterator would answer a question it
-cannot yet answer.
+The same definition a subtree gets, read against membership instead of ancestry:
+every cell of the subset's level that the subset does **not** hold but that has a
+neighbour the subset does, ascending, each cell once. `Vertex()` counts vertex
+contact, `Edge()` requires a shared edge.
+
+**A hole is part of the halo.** A cell removed from the middle of a subset is
+outside the subset and has in-subset neighbours, so it is a halo cell. That is
+the definition read literally rather than a special case, and it is the reason
+this verb answers something [`subtree_halo`](@ref) cannot.
+
+ALWAYS AN ITERATOR, on every container and every path. A rooted `PartialGrid`
+holding a complete subtree returns a [`SubtreeHaloIterator`](@ref) — the subtree
+walk is the specialized one, and re-deriving it from membership would be slower
+for no gain — and anything else returns a [`SubsetHaloIterator`](@ref). Both are
+lazy, both hold `O(depth)` state beyond the subset's own storage, and the
+concrete type is settled once at construction, exactly as [`halo_table`](@ref)'s
+two branches are. So `for x in halo(sub)` gets the same laziness either way, and
+`collect` is the explicit materializing form.
+
+Not to be confused with [`halo_table`](@ref), which is the IN-SET positional
+stencil: one row of in-set neighbour positions per cell of the subset. That verb
+answers "which of my own cells does each of my cells touch"; this one answers
+"which cells that I do not hold touch me". Neither replaces the other.
+
+A [`MultiOrderCellSet`](@ref) has no method here and will not grow one: its
+members sit at different levels, so there is no one level for a halo to answer
+at. Mixed-level adjacency is [`member_neighbors`](@ref).
 """
 function halo end
+
+"""
+    SubsetHaloIterator(subset, connectivity, engine)
+
+The halo of an arbitrary same-level subset, lazily — what [`halo`](@ref) returns
+whenever the subset is not a rooted complete subtree: a subset with a hole, a
+subset whose root was forgotten, a [`CellVector`](@ref), a [`CellLookup`](@ref).
+
+Positional and built by [`halo`](@ref), which owns both the engine choice and
+the cap the walk prunes by. There is nothing a caller could pass here that
+`halo` does not already decide from the subset itself.
+
+Construction never materialises the halo. The walk is
+[`OutsideWalkEngine`](@ref)'s, so the state is one `O(depth)` frame stack; the
+only input-sized cost is the bounding cap, which is computed once and gives up
+to the full sphere past a fixed batch. [`Base.IteratorSize`](@ref) is the
+engine's, which is `SizeUnknown()` — a subset's halo has no perimeter formula at
+all.
+"""
+struct SubsetHaloIterator{S,K<:Connectivity,E}
+    subset::S
+    connectivity::K
+    engine::E
+end
+
+Base.iterate(it::SubsetHaloIterator) = iterate(it.engine)
+Base.iterate(it::SubsetHaloIterator, state) = iterate(it.engine, state)
+Base.eltype(::Type{<:SubsetHaloIterator{S,K,E}}) where {S,K,E} = eltype(E)
+Base.IteratorSize(::Type{<:SubsetHaloIterator{S,K,E}}) where {S,K,E} =
+    Base.IteratorSize(E)
+
+# Delegated rather than defined, for `SubtreeHaloIterator`'s reason: no subset
+# engine counts without walking, so the `MethodError` from here is the contract.
+Base.length(it::SubsetHaloIterator) = length(it.engine)
+
+Base.collect(it::SubsetHaloIterator) = collect_subtree(it)
+
+Base.show(io::IO, it::SubsetHaloIterator) = print(io, "SubsetHaloIterator(",
+    it.subset, "; connectivity = ", it.connectivity, ")")
 
 # ===========================================================================
 # The adjacency providers
@@ -228,6 +290,35 @@ polygon: H3, IGeo7 and A5 descendants can overhang their parent.
 """
 struct ForcedGeometry end
 
+"""
+    SubsetMembership(subset, complete)
+
+Adjacency to a SUBSET rather than to a subtree: `x` is a halo cell when the
+subset does not hold it and does hold one of its neighbours,
+
+    cellposition(subset, x) === nothing &&
+        any(nb -> cellposition(subset, nb) !== nothing,
+            neighbors(complete, x, 1; connectivity))
+
+Unlike the two providers above, this predicate is COMPLETE — it decides
+outside-ness as well as contact. It has to be: a subset has no descendant range
+for `_admit`'s skip to retire the subject by, and no ancestor for
+[`ScanHaloEngine`](@ref) to compare against. Folding both halves in here is also
+what makes a HOLE fall out: an absent interior cell fails the first test's
+negation nowhere and passes the second, so it is emitted like any other outside
+cell.
+
+`complete` is `levelgrid(system, level)` — the grid the neighbours come from,
+since a subset's own `neighbors` is already clipped to membership and would hide
+exactly the cells being looked for. The subset supplies membership only, which
+is `O(log #windows)` on a [`CellVector`](@ref) and `O(log #cells)` on a
+[`PartialGrid`](@ref).
+"""
+struct SubsetMembership{S,G}
+    subset::S
+    complete::G
+end
+
 # --- the indexed test -------------------------------------------------------
 
 # The halo's own definition, as one free function: `x` is a halo cell of `root`'s
@@ -246,6 +337,18 @@ end
 
 @inline _touches_subtree(::IndexedNeighbors, e, x) =
     _touches_root(e.system, e.grid, e.root, e.rootlevel, x, e.connectivity)
+
+# --- the subset test --------------------------------------------------------
+
+# The same definition with membership in place of ancestry, and it carries the
+# outside half itself — see `SubsetMembership`.
+@inline function _touches_subtree(p::SubsetMembership, e, x)
+    cellposition(p.subset, x) === nothing || return false
+    for nb in neighbors(p.complete, x, 1; connectivity = e.connectivity)
+        cellposition(p.subset, nb) === nothing || return true
+    end
+    return false
+end
 
 # --- the geometry test ------------------------------------------------------
 
@@ -427,6 +530,10 @@ const _HALO_DESCEND = 2
 @inline _target_prune(::IndexedNeighbors, e, c) = true
 @inline _target_prune(::ForcedGeometry, e, c) =
     intersects_cap(cell_cap(e.grid, c), e.rootcap)
+# Declines for the indexed provider's reason: the first half of the subset test
+# is one `cellposition`, a binary search over integers, which retires an in-set
+# candidate for far less than building a cap from a boundary would cost.
+@inline _target_prune(::SubsetMembership, e, c) = true
 
 # Three questions, cheapest first. A node whose whole descendant range sits
 # inside the subject's is the subject subtree itself (ranges nest or are
@@ -540,13 +647,23 @@ end
 Base.eltype(::Type{<:ScanHaloEngine{S,G,C,P,K}}) where {S,G,C,P,K} = C
 Base.IteratorSize(::Type{<:ScanHaloEngine}) = Base.SizeUnknown()
 
+# Outside-ness, stated because the scan has nothing structural to lean on: it
+# meets every cell of the level, the subject's own descendants included, where
+# `_admit` would already have retired the subject subtree by integer range
+# containment. `SubsetMembership` is the one provider whose `_touches_subtree`
+# decides outside-ness itself, so it answers `true` here rather than paying for
+# the membership search twice — and it must, since a subset has no ancestor to
+# compare and a `rootlevel` below the shallowest level would throw.
+@inline _scan_outside(::Union{IndexedNeighbors,ForcedGeometry}, e, x) =
+    ancestor(e.system, x, e.rootlevel) != e.root
+@inline _scan_outside(::SubsetMembership, e, x) = true
+
 Base.iterate(e::ScanHaloEngine) = iterate(e, 1)
 function Base.iterate(e::ScanHaloEngine, p::Int)
     n = ncells(e.grid)
     while p <= n
         x = cellindex(e.grid, p)
-        if ancestor(e.system, x, e.rootlevel) != e.root &&
-           _touches_subtree(e.provider, e, x)
+        if _scan_outside(e.provider, e, x) && _touches_subtree(e.provider, e, x)
             return (x, p + 1)
         end
         p += 1
@@ -580,6 +697,49 @@ build the oracle explicitly and hand it to the positional constructor.
 geometry_halo_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
         target::Int, connectivity::Connectivity) =
     outside_walk_engine(sys, c, target, connectivity, ForcedGeometry())
+
+"""
+    subset_halo_engine(sys, subset, complete, target, connectivity, cap)
+
+The engine behind [`halo`](@ref) for an arbitrary subset: the same outside-first
+walk the subtree fallback uses, with [`SubsetMembership`](@ref) in place of the
+subtree providers and the subject skip switched off.
+
+WHY THE SKIP IS SWITCHED OFF rather than pointed at the subset. `_admit` retires
+a node whose whole target-level range sits inside the subject's, which is exactly
+what must not happen here: a cell punched out of the middle of a subset lies in
+that range and IS a halo cell. Setting `rootlevel` one below the system's
+shallowest level makes the branch unreachable — no level compares equal to it —
+so the walk descends everywhere and every candidate is decided by membership
+alone. `lo`/`hi` are an empty range so the skip would refuse even if some future
+edit made the branch live again, and `root` is a placeholder that fixes the
+frame stack's element type and nothing else. Both are unread on this path.
+
+WHAT IT PRUNES BY. `cap`, and the prune is sound for the reason the subtree
+walk's rootcap is: a halo cell shares a boundary point with a member, that point
+lies in `cap`, and it is also one of the candidate's own corners, so the two caps
+intersect and a node whose cap misses `cap` holds no halo cell. [`halo`](@ref)
+supplies the root's [`node_extent`](@ref) when the grid is rooted — every member
+is a descendant, so the covering law carries — and otherwise [`cells_cap`](@ref)
+over the subset's own cells. That is an INPUT-sized cost paid once at
+construction, and bounded: past `UNION_CAP_BATCH_LIMIT` cells it answers the full
+sphere rather than growing. Nothing here is sized by the halo.
+
+`O(depth)` memory beyond the subset's own storage. A system with no
+[`descendant_range`](@ref) gets [`ScanHaloEngine`](@ref), for the same reason it
+does at a subtree.
+"""
+function subset_halo_engine(sys::AbstractHierarchicalGridSystem, subset,
+        complete::AbstractGrid, target::Int, connectivity::Connectivity, cap)
+    provider = SubsetMembership(subset, complete)
+    seed = first(rootcells(sys))
+    nolevel = first(levels(sys)) - 1
+    has_sorted_subtrees(sys) ||
+        return ScanHaloEngine(sys, complete, seed, nolevel, target, provider,
+            connectivity)
+    return OutsideWalkEngine(sys, complete, seed, nolevel, target, 1, 0, cap,
+        rootcells(sys), provider, connectivity)
+end
 
 # ===========================================================================
 # The exterior-perimeter walk, shared by the three aperture-4 systems

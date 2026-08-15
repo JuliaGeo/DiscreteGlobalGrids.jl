@@ -111,7 +111,7 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     cellindices, is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
     EdgeCellIterator, InnerCellIterator, member_neighbors,
-    SubtreeHaloIterator, subtree_halo, halo
+    SubtreeHaloIterator, SubsetHaloIterator, subtree_halo, halo
 
 # The lazy subtree walkers' extension point and the parts a system builds one
 # from. Not exported — a caller reaches the iterators, a system reaches these.
@@ -245,7 +245,7 @@ export node_extent, cap_inflation, max_neighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
 export subtree_border, subtree_interior
 export EdgeCellIterator, InnerCellIterator
-export SubtreeHaloIterator, subtree_halo, halo
+export SubtreeHaloIterator, SubsetHaloIterator, subtree_halo, halo
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate

@@ -285,6 +285,63 @@ function _rim_rows!(out, complete, rim, lo::Int, hi::Int, connectivity::Connecti
 end
 
 # ===========================================================================
+# The subset halo
+#
+# The OUTSIDE face of a subset, next to `halo_table`, which is its inside face
+# read as positions. The two are deliberately adjacent and deliberately not the
+# same verb: `halo_table` says which of a subset's OWN cells each of its cells
+# touches, and `halo` says which cells the subset does not hold touch it. A
+# stencil needs both — the table to gather from local storage, the halo to name
+# the extra fetch list — and neither can be derived from the other.
+# ===========================================================================
+
+"""
+    halo(pg::PartialGrid; connectivity = Vertex())
+
+The cells immediately outside a subset grid, lazily. See [`halo`](@ref) for the
+definition, the hole law, and why this is always an iterator.
+
+TWO PATHS, ONE VERB. A rooted grid holding a COMPLETE subtree is a subtree, so
+it delegates to [`SubtreeHaloIterator`](@ref) and gets whatever specialization
+its system ships — the square band walk, the calibrated directed walk. Anything
+else — a hole, a forgotten root, an arbitrary id list — takes the outside-first
+subset walk. `_whole_subtree_range` decides it, the same three conditions
+[`halo_table`](@ref) splits on one function below, so the two verbs cannot drift
+apart about what "is a subtree" means.
+
+The subset walk prunes by the root's [`node_extent`](@ref) when the grid is
+rooted and by [`cells_cap`](@ref) over the ids when it is not. Both are computed
+once; neither is sized by the answer.
+"""
+function halo(pg::PartialGrid; connectivity::Connectivity = Vertex())
+    _whole_subtree_range(pg) === nothing ||
+        return SubtreeHaloIterator(pg.system, pg.root_id, pg.level; connectivity)
+    cap = _is_rooted(pg) ? node_extent(pg.system, pg.root_id) :
+          cells_cap(pg.complete, pg.ids)
+    return SubsetHaloIterator(pg, connectivity, subset_halo_engine(pg.system, pg,
+        pg.complete, pg.level, connectivity, cap))
+end
+
+"""
+    halo(cv::CellVector; connectivity = Vertex())
+
+The cells immediately outside the compressed collection, lazily. See
+[`halo`](@ref).
+
+ALWAYS THE SUBSET WALK, even when the windows happen to be exactly a subtree: a
+[`CellVector`](@ref) stores windows and not an ancestor, so there is no root to
+recognise one by — the same thing `PartialGrid(cv)` loses and
+[`halo_table`](@ref)'s fast path asks for. The answer is identical, and the way
+to get the subtree walk is to build the grid from the root cell.
+
+Membership is the window search, `O(log #windows)`, so the walk's per-candidate
+cost is lower here than on a `PartialGrid` over a bare id vector.
+"""
+halo(cv::CellVector; connectivity::Connectivity = Vertex()) =
+    SubsetHaloIterator(cv, connectivity, subset_halo_engine(system(cv), cv,
+        cv.grid, level(cv), connectivity, cells_cap(cv.grid, cv)))
+
+# ===========================================================================
 # Cross-level adjacency on a multi-order set
 # ===========================================================================
 

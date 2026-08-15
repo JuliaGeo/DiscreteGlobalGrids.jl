@@ -88,7 +88,7 @@ jobs:
           docs_pid=$!
           while kill -0 "$docs_pid" 2>/dev/null; do
             sleep 60
-            echo "Documentation build is still running"
+            free -m | awk 'NR == 2 { print "Documentation build is still running; memory used: " $3 " MiB, available: " $7 " MiB" }'
           done
           wait "$docs_pid"
         env:
@@ -96,3 +96,4 @@ jobs:
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
           DISPLAY: ':0'
           DATADEPS_ALWAYS_ACCEPT: 'true'
+          JULIA_DEBUG: Documenter

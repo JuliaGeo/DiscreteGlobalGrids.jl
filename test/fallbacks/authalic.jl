@@ -1,34 +1,22 @@
-# ---------------------------------------------------------------------------
-# T9 — the ellipsoid wrapper (`src/fallbacks/authalic_grid.jl`).
+# Tests for the ellipsoid wrapper in `src/fallbacks/authalic_grid.jl`:
 #
-# Four kinds of test here, and the distinction matters when one fails:
-#
-#   1. THE BOUNDS. `authalic_shift` and `authalic_stretch` are derived
+#   1. Bounds. `authalic_shift` and `authalic_stretch` are derived
 #      analytically from the series coefficients, so they are checked against a
 #      dense sweep of the transform they claim to bound — and against the
 #      Lipschitz property itself, measured on point pairs rather than restated
 #      from the derivation.
 #   2. FORWARDING. Everything that is not geometry must come through the wrapper
 #      unchanged, ids and positions above all.
-#   3. THE COVERING LAW. The conformance harness is the oracle, but the
+#   3. Covering law. The conformance harness is the oracle, but the
 #      necessity of the inflation is shown separately: against the TIGHTEST
 #      sound base cap the warp really does push descendants out, so a wrapper
 #      that forwarded `node_extent` would under-cover.
-#   4. REGISTRATION. The point of the whole type: a wrapped grid regridded
+#   4. REGISTRATION. A wrapped grid regridded
 #      against a geodetic lon/lat grid lands where the data says it does, and an
 #      unwrapped one misses by the authalic shift.
 #
-# The harness used to skip `cellat`, `neighbors` and `ring` on this grid: its
-# "implemented?" guard tested module provenance, and these dispatch into
-# `DGG.Fallbacks`, which was its "not implemented" sentinel. T13 changed that
-# guard to test method SPECIFICITY instead — a method written for `AuthalicGrid`
-# is a method about `AuthalicGrid`, whoever's module it sits in — and the
-# harness now runs all three here (the eleven skips this suite used to report
-# are gone, and it exercises ~3800 more assertions on the wrapped paths).
-#
-# The direct collector calls below are kept anyway. They are cheap, and they
-# pin the warped geometry explicitly rather than by trusting the guard.
-# ---------------------------------------------------------------------------
+# Direct collector calls pin the warped geometry in addition to the conformance
+# harness's specialized-method checks.
 
 module AuthalicWrapperTests
 
@@ -49,10 +37,8 @@ const WGS84 = H.WGS84_AUTHALIC
 const BASE = HEALPixSystem()
 const SYS = AuthalicSystem(BASE)
 
-# A system that exists only to hand `AuthalicSystem` a node extent wide enough
-# that inflating it would leave the convex range. Nothing else about it is ever
-# asked, which is the point: the branch under test reads the base extent and
-# nothing else.
+# A stub whose node extent becomes non-convex if inflated. The test only uses
+# its `node_extent` method.
 struct WideExtentStub <: DGG.AbstractHierarchicalGridSystem
     radius::Float64
 end
@@ -196,12 +182,8 @@ end
         @test collect(neighbors(g, c)) == collect(neighbors(levelgrid(BASE, 3), c))
         @test collect(ring(g, c, 2)) == collect(ring(levelgrid(BASE, 3), c, 2))
 
-        # Forwarding the ids is only half the claim: the ORDER contract is
-        # rotational, and its winding is measured about the grid's own
-        # centroids — which here are the warped ones. The harness runs these
-        # laws itself since T13's specificity fix; the collectors are still
-        # called directly here so the warped winding is pinned outright rather
-        # than argued from the warp being orientation-preserving.
+        # The rotational order is measured about the wrapped grid's warped
+        # centroids, so run the order collectors directly on this geometry.
         @test CT.winding_problems(g, c, collect(ring(g, c, 1)); label="warped ring 1") == String[]
         @test CT.neighbor_order_problems(g, c; k=2) == String[]
         @test CT.neighbor_problems(g, c) == String[]
@@ -292,7 +274,7 @@ end
             for v in cell_boundary(g, c)
                 @test cellat(g, US.slerp(centroid, v, 0.5)) == c
             end
-            # The degree method takes GEODETIC lon/lat, which is the whole point.
+            # The degree method takes geodetic longitude and latitude.
             lon, lat = FB.lonlat(centroid)
             @test cellat(g, lon, lat) == c
         end
@@ -438,17 +420,9 @@ end
     @test ncells(pg) == length(ids)
     @test cell_boundary(pg, ids[3]) == cell_boundary(complete, ids[3])
 
-    # The tree descends the WRAPPED node extents over the subset's own position
-    # space, so a stored cell's own centroid must survive every prune on the way
-    # down to it.
-    #
-    # This was originally asserted on the tree alone, because the generic
-    # point-in-cell test that `cellat` finishes with misjudged the centroid of
-    # ~9% of HEALPix's densified rings. That was the substrate bug T13 traced to
-    # `spherical_ring_encloses`' near-half-turn test arc and fixed, so the
-    # end-to-end path is asserted too now: on a `PartialGrid` there is no native
-    # point location to hide the fallback, which makes this the wrapped
-    # descend-and-test path in full.
+    # The tree descends wrapped node extents in the subset's position space.
+    # Both the tree query and fallback `cellat` must retain each stored cell's
+    # centroid through every pruning step.
     tree = treeify(pg)
     for c in ids[1:13:end]
         hits = STI.query(tree, cap -> FB.cap_contains(cap, cell_centroid(pg, c)))
@@ -528,9 +502,8 @@ end # module AuthalicWrapperTests
 # ---------------------------------------------------------------------------
 # The authalic latitude math itself (`src/Helpers/authalic.jl`).
 #
-# Ported here from `test/test_helpers.jl`, which T8 deleted. The wrapper suite
-# above is about `AuthalicSystem`; this one is about the series it rides on, and
-# the two sealed oracles that fix it to something outside this package.
+# These tests cover the authalic-latitude series used by `AuthalicSystem` and
+# compare it with two independent reference sets.
 #
 # Two independent reference sets, deliberately kept separate:
 #

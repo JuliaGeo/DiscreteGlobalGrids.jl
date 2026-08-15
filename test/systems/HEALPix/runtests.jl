@@ -1,16 +1,11 @@
-# ---------------------------------------------------------------------------
-# T6 — HEALPix system tests.
+# HEALPix system tests:
 #
-# Three kinds of test, and the distinction matters when one fails:
-#
-#   1. ORACLE. Everything the port could have transcribed wrong is checked
+#   1. ORACLE. Codecs, point location, and pixel centers are checked
 #      against Healpix.jl, an independent implementation of the same standard:
-#      the nested/ring/xyf codecs both ways, point location, and pixel centres.
 #      The implementation itself never calls Healpix.jl — `src/systems/HEALPix/`
-#      is pure Julia — which is exactly what makes it an oracle rather than a
-#      tautology. Adapted from the pre-redesign `test/HEALPix/` suites.
+#      is pure Julia, so Healpix.jl provides an independent oracle.
 #
-#      HOW MUCH OF EACH LEVEL. The pixel-indexed suites iterate `pixel_sample`,
+#      Sample coverage. The pixel-indexed suites iterate `pixel_sample`,
 #      which is EXHAUSTIVE only at the levels whose whole pixel count fits under
 #      the cap it is called with, and a seeded, reproducible draw of that many
 #      pixels above it. At the default cap of 64 that means levels 0 (12 pixels)
@@ -19,8 +14,8 @@
 #      up: at `n = 512` (the subtree-cap suite) levels 0-2 are exhaustive and
 #      3-6 are sampled. So read these as a fixed, re-runnable cross-section of a
 #      level, not as a proof over it. Where a property IS checked over a whole
-#      level or a whole subtree the testset iterates the range directly and says
-#      so — `neighbours`, the level sums in `cell_area`, `the full sphere is
+#      level or a whole subtree the testset iterates the range directly —
+#      `neighbours`, the level sums in `cell_area`, `the full sphere is
 #      partitioned`, and `subtree_border`'s brute-force comparison.
 #
 #   2. CONTRACT. The two conformance suites from
@@ -33,7 +28,6 @@
 #
 # `test/runtests.jl` includes this file; it also runs standalone:
 #     julia --project=test --startup-file=no test/systems/HEALPix/runtests.jl
-# ---------------------------------------------------------------------------
 
 module HEALPixSystemTests
 
@@ -147,8 +141,8 @@ DEGENERATE_POINTS = [
     (359.9, 89.99), (0.0, BELT + 1e-9), (0.0, BELT - 1e-9)]
 
 @testset "cellat vs Healpix.vec2pixNest (interior points)" begin
-    # `vec2pixNest`, not `ang2pixNest`, is the sharp oracle: it takes the SAME
-    # Cartesian point this port does, so the two implementations see
+    # `vec2pixNest`, not `ang2pixNest`, is the sharp oracle: it takes the same
+    # Cartesian point as the package implementation, so both see
     # bit-identical input and no difference can be blamed on the (lon, lat)
     # conversion. Points in the interior of a cell must agree exactly.
     rng = MersenneTwister(20260813)
@@ -185,8 +179,8 @@ end
             @test DGG.level(c) == level
             @test cellat(grid, p) == c                    # deterministic
             @test cellposition(grid, c) !== nothing       # a real cell of the grid
-            # incident: the point is inside the cell's own extent, and the cell
-            # is the one this port's centre round-trips to.
+            # The point lies inside the selected cell's extent, and that cell's
+            # center round-trips through `cellat`.
             cap = node_extent(SYS, c)
             @test US.spherical_distance(cap.point, p) <= cap.radius
             @test cellat(grid, cell_centroid(grid, c)) == c
@@ -198,8 +192,8 @@ end
     # The (lon, lat) wrapper against Healpix.jl's own (θ, φ) entry point. Only
     # the random sample: a point placed exactly on a pixel boundary is a tie
     # that the two paths' different roundings of `z` may break differently, and
-    # that is a property of the input conversion, not of the port. Ties are
-    # covered above, where both sides get the identical Cartesian point.
+    # that is a property of input conversion, not point-location behavior. Ties
+    # are covered above, where both sides get the identical Cartesian point.
     rng = MersenneTwister(31337)
     for level in 0:8
         res = Healpix.Resolution(1 << level)
@@ -282,10 +276,8 @@ end
     # Hashing raw boundary points is safe here, which is not true everywhere:
     # S2 and ISEA4R must normalise through a `vkey` because a coordinate of
     # `-0.0` is `==` but not `isequal` to `0.0`, so a hashed container splits a
-    # coincident pair. Checked at T13 across every registered system: HEALPix
-    # emits no signed zero at all (0 of 294912 level-4 coordinates), and these
-    # tests are face-interior besides. S2 is the only system that produces them
-    # (192 of 4608), and it is the one that normalises.
+    # coincident pair. HEALPix emits no signed zero at level 4, and these tests
+    # use face-interior cells. S2 normalizes its signed-zero coordinates.
     level = 4
     nside = 1 << level
     grid = levelgrid(SYS, level)
@@ -615,7 +607,7 @@ end
 end
 
 @testset "Edge() neighbours share an edge, corner-only ones share a point" begin
-    # THE test that actually decides which four of the eight `Edge()` keeps.
+    # This test identifies which four of the eight vertex neighbours share edges.
     # Every other property asserted in this section — Edge() ⊆ Vertex(),
     # allunique, symmetry, cardinality, CCW winding, and even the slot-tuple
     # test above, which reads its expectation from the same literal it is

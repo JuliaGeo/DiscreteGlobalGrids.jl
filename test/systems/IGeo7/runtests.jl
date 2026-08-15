@@ -1,14 +1,10 @@
-# ---------------------------------------------------------------------------
-# IGeo7 (ISEA7H + Z7) — the sealed-oracle suites plus both conformance suites.
+# IGeo7 (ISEA7H + Z7) oracle and conformance tests.
 #
-# The oracle vectors in `vectors/` are recorded DGGRID output and are the
-# authority for every geometric and combinatorial claim here: the old suites'
-# assertions are ported, with the call shapes adapted from the retired
-# `(system, level, id)` triple to typed `Z7Cell`s.
+# The vectors in `vectors/` contain recorded DGGRID output and independently
+# constrain the package's geometry and combinatorics.
 #
 # Wrapped in a module so the system's names cannot collide with another system's
-# in a shared test namespace (T7 includes all three from `test/runtests.jl`).
-# ---------------------------------------------------------------------------
+# in the shared test namespace.
 
 module IGeo7SystemTests
 
@@ -28,13 +24,13 @@ const US = GO.UnitSpherical
 
 const S = I.IGeo7System()
 
-# The sealed DGGRID vectors, moved here from the retired suite in T8.
+# Recorded DGGRID oracle vectors.
 const VECTORS = joinpath(@__DIR__, "vectors")
 
 const Z7Cell = I.Z7Cell
 
 # ---------------------------------------------------------------------------
-# Helpers (parsers ported from the retired suite)
+# Oracle-vector parsers
 # ---------------------------------------------------------------------------
 
 "Read a headered CSV into a header vector and a vector of row vectors."
@@ -69,14 +65,8 @@ pentagon(b::Integer, r::Integer) =
     Z7Cell(I.z7_from_string(lpad(string(b), 2, '0') * repeat("0", r)))
 
 # ---------------------------------------------------------------------------
-# Sweeping thousands of oracle rows one `@test` at a time buries a real failure
-# in a wall of passes, so these loops accumulate instead. A bare counter, on
-# the other hand, fails as `nbad == 0` and leaves you to go find the offending
-# row yourself — which for a 168,072-cell sweep is the actual work.
-#
-# `Tally` counts AND remembers the first offender. `@test verdict(t) == CLEAN`
-# then prints `Evaluated: (3, "row 91: children of 0512") == (0, "")`, naming
-# the row to look at.
+# `Tally` aggregates large oracle sweeps while retaining the first failing row
+# for the test report.
 # ---------------------------------------------------------------------------
 mutable struct Tally
     n::Int
@@ -513,16 +503,9 @@ const CLEAN = (0, "")
         @test ntested > 0
         @test nccw == ntested
 
-        # ORACLE PIN on the documented START of the rotational order.
-        #
-        # The conformance harness's winding law is deliberately start-invariant
-        # — it checks that a ring is one CCW cycle, which every rotation of
-        # that ring satisfies. So nothing else in the suite would notice if
-        # IGeo7's ring 1 quietly began at a different unit step. That matters
-        # because the whole point of a rotational order is that position `j`
-        # names a fixed direction: once a stencil bakes "slot 1 is the +1 dev
-        # direction" into a weight vector, rotating the start silently rotates
-        # every consumer's weights. Hence a literal.
+        # Pin the documented start of the rotational order. Winding is invariant
+        # under rotation, but each neighbour position must represent a fixed
+        # lattice direction for directional stencil weights.
         #
         # Values produced by the implementation and checked against the
         # documented rule (the six Eisenstein unit steps in lattice order from
@@ -548,10 +531,8 @@ const CLEAN = (0, "")
         @test isempty(DGG.neighbors(g1, c, 0))
         @test collect(DGG.ring(g1, c, 0)) == [c]
         @test collect(DGG.ring(g1, c, 1)) == collect(DGG.neighbors(g1, c, 1))
-        # The rotational contract, on the sequences and not merely on the sets:
-        # the disc IS the rings concatenated outward, so the ring is the disc's
-        # tail block element for element. Set equality alone passes happily for
-        # a disc that sorts by id, which is what this used to do.
+        # The sequence contract requires outward ring concatenation; set
+        # equality alone would also accept an id-sorted disc.
         for k in 1:3
             union_rings = reduce(vcat, [collect(DGG.ring(g1, c, j)) for j in 1:k])
             disc = collect(DGG.neighbors(g1, c, k))
@@ -575,14 +556,12 @@ const CLEAN = (0, "")
     end
 
     # =======================================================================
-    # 9b. The GBT digit kernel against the geometric oracle it replaced
+# 9b. The GBT digit kernel against an independent geometric oracle
     #
-    # `_cell_neighbors_ccw` is ported arithmetic (see `src/systems/IGeo7/gbt.jl`
-    # for provenance); `_cell_neighbors_ccw_geometric` is this package's own
-    # oracle-validated lattice implementation, kept in the tree for exactly this
-    # comparison. The port is checked, not trusted: identical ids in identical
-    # order, on every cell of levels 0-3 and on the seams and deep samples where
-    # a digit-frame bug would live.
+    # `_cell_neighbors_ccw` implements the GBT arithmetic documented in
+    # `src/systems/IGeo7/gbt.jl`. `_cell_neighbors_ccw_geometric` independently
+    # decodes, steps, and re-encodes the lattice. They must return identical ids
+    # in identical order for complete levels 0:3, seams, and deep samples.
     # =======================================================================
 
     @testset "9b. GBT kernel vs geometric oracle" begin
@@ -634,8 +613,8 @@ const CLEAN = (0, "")
         end
         @test nbad == 0
 
-        # A cell's six raw steps are always distinct — the port skips the
-        # pentagon's missing direction rather than computing a duplicate, so a
+        # A cell's six raw steps are distinct. Pentagon handling skips the
+        # missing direction rather than computing a duplicate, so a
         # short list would mean a real collision, not a deduplication.
         for r in 1:3
             g = DGG.levelgrid(S, r)

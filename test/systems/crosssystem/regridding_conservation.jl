@@ -81,9 +81,8 @@ cases() = [(sys, demo_level(sys)) for sys in DGG.systems()] ∪
             @test row <= TOL
             @test all(v -> isapprox(v, 1.0; atol = TOL), regrid_ones(forward))
 
-            # ---- the DGGS as the regridder's DESTINATION. THE SAME TWO GRIDS,
-            # the other way round. Correct exactly when the DGGS rings are
-            # convex, because the destination cell is the clip window.
+            # Use the same grids with the DGGS as the destination. This
+            # direction conserves when the DGGS ring is a convex clip window.
             reverse = CR.Regridder(MANIFOLD, grid, MESH)
             @test size(reverse.intersections) == (DGG.ncells(grid), MESH_CELLS)
             rrow, rcol = conservation_errors(reverse)

@@ -622,16 +622,10 @@ const _HALO_SKIP = 0
 const _HALO_EMIT = 1
 const _HALO_DESCEND = 2
 
-# How expensive a cap prune is BEFORE the adjacency test, per SUBTREE provider —
-# the subset arm of `_admit` never asks, because its adjacency test opens with a
-# `cellposition` that retires an in-set candidate for less than a cap costs. The
-# indexed provider is one native `neighbors` call, cheaper than building a cap
-# from a boundary, so it declines too: at the target level it goes straight to
-# the test. The forced-geometry provider walks the ROOT's subtree once per
-# candidate, so a single cap comparison that retires the candidate outright is
-# worth many times its cost — and this is the oracle path, which the
-# differential tests hammer. Dispatch on the provider so the indexed path pays
-# nothing for the distinction, not a branch on a field.
+# Only the forced-geometry provider applies a target-level cap prune. Its
+# adjacency check walks the root subtree, so the cap comparison can avoid much
+# more work. Native indexed adjacency and subset membership are cheaper than
+# constructing the cap and proceed directly to their checks.
 #
 # Sound for the same reason the internal-node prune is: a halo cell shares a
 # boundary point with a descendant of `root`, that point is inside `rootcap` by
@@ -641,12 +635,8 @@ const _HALO_DESCEND = 2
 @inline _target_prune(::ForcedGeometry, e, c) =
     intersects_cap(cell_cap(e.grid, c), e.rootcap)
 
-# ONE VERDICT PER NODE, AND THE PROVIDER DECIDES IT. The subtree providers ask a
-# question about ANCESTRY and prune by geometry; `SubsetMembership` asks one
-# about MEMBERSHIP and prunes by the subset's own position spans. Those are
-# different rules, not one rule with a flag, so `_admit` dispatches on the
-# provider exactly as `_touches_subtree` and `_target_prune` do — each arm stays
-# monomorphic and neither pays for the other's fields.
+# Subtree providers prune by ancestry and geometry; `SubsetMembership` prunes
+# by position spans. Provider dispatch keeps each admission path monomorphic.
 @inline _admit(e::OutsideWalkEngine, c) = _admit(e.provider, e, c)
 
 # --- the subtree arm --------------------------------------------------------
@@ -655,14 +645,9 @@ const _HALO_DESCEND = 2
 # inside the subject's is the subject subtree itself (ranges nest or are
 # disjoint), and integer comparison retires it without touching geometry.
 #
-# That containment can only hold AT the root's own level, which is why the guard
-# is `==` and not `>=`. Deeper than the root there are two cases and neither can
-# be contained: a node that is one of the root's own descendants is unreachable,
-# because the root was already skipped whole and the walk never descended into
-# it; and a node that is not has a descendant range disjoint from the root's, so
-# the containment test is a `descendant_range` call that cannot succeed. On
-# IGeo7 with a level-2 root at `l = 5` that is 630 of the 689 nodes the walk
-# visits.
+# Containment is checked only at the root level. Root descendants are
+# unreachable because the root is skipped whole; every other deeper subtree
+# has a disjoint descendant range.
 @inline function _admit(p::Union{IndexedNeighbors,ForcedGeometry},
         e::OutsideWalkEngine, c)
     lc = level(c)
@@ -1232,73 +1217,22 @@ function square_halo_engine(sys::AbstractHierarchicalGridSystem, curve,
 end
 
 # ---------------------------------------------------------------------------
-# Deriving the candidate rectangles, with no seam table of this file's own
+# Deriving candidate rectangles without a local seam table
 #
-# WHAT HAS TO BE COVERED. A halo cell is a neighbour of a block cell. Block
-# cells with a neighbour off the face are exactly the rim cells of the sides
-# that are FLUSH with the face edge, and their off-face neighbours are the
-# images of the extended-lattice positions one step outside that edge. So for a
-# block flush on, say, `x = 0`, the foreign candidates are the images of
-# `(-1, y')` for `y'` running over `[y0 - 1, y0 + side]` clipped to the face,
-# plus — where a corner of the block is a corner of the face — the cells that a
-# DIAGONAL step off two edges at once reaches.
+# Only block sides flush with a face edge can have off-face halo cells. For each
+# flush side, the two endpoint cells provide the extreme foreign neighbours.
+# The S2, ISEA4R, and HEALPix seam maps are monotone along an edge, so all
+# interior images form a contiguous run bounded by those endpoint images.
 #
-# WHY TWO PROBES PER SIDE SUFFICE. All three systems' seam maps are edge-to-edge
-# affine with a sign: S2's `wrap_xyf` computes `k = (σ·b + n - 1) >> 1` from the
-# centred along-edge coordinate, which is `y` or `n - 1 - y`; ISEA4R's
-# `lattice_neighbors` reads the paired rim slot at `n - 1 - j`; HEALPix's
-# `nested_neighbors` applies the `NB_SWAPARRAY` mirrors and transpose. Each is
-# monotone along the edge AT EVERY `n`, so the images of an interval of `y'` are
-# a contiguous run lying between the images of its ENDPOINTS.
+# A block corner that meets a face corner is already an endpoint probe for both
+# incident sides. Its vertex-neighbour query also includes any cells reached on
+# a third face, so no separate corner rule is required. Probes always use
+# `Vertex()` to cover the `Edge()` subset; `NativeCheck` applies the requested
+# connectivity when candidates are emitted.
 #
-# The two extreme rim cells of a flush side see both endpoints directly: the
-# extreme cell at `(0, y0)` has `(-1, y0 - 1)` among its eight neighbours, and
-# the one at `(0, y0 + side - 1)` has `(-1, y0 + side)`. So the bounding box of
-# what the two probes see already contains the image of every interior rim cell
-# of that side, and nothing needs widening. That is not an argument this file
-# takes on trust — see the verification note below, and note that the tests
-# would fail if a bound were moved one cell inward.
-#
-# WHERE A THIRD FACE APPEARS. At a flush CORNER the block's corner cell is a
-# probe of both flush sides, and its own neighbour list already contains
-# whatever the diagonal step reaches: nothing on S2 (`wrap_xyf` returns
-# `nothing` at a cube corner) or at HEALPix's `-1` entries in `NB_FACEARRAY` —
-# which occur only for the double-out `nbnum`, i.e. only at a face corner, never
-# at a run endpoint — and the interior of `CORNER_FANS` on ISEA4R, which is the
-# two extra diamonds meeting at icosahedral vertex 0 or 11. So corners need no
-# separate rule; they need only that the corner cell is probed, which flushness
-# already guarantees.
-#
-# THE PROBE ASKS FOR `Vertex()` WHATEVER WAS REQUESTED, so one coverage argument
-# serves both connectivities: the `Edge()` halo is a subset of the `Vertex()`
-# one, and a superset of the larger is a superset of the smaller. The requested
-# connectivity is still what `NativeCheck` filters by.
-#
-# COVERAGE IS EXHAUSTIVELY VERIFIED, not merely argued: every flush block of
-# every size at every origin on every face, levels 1 through 6, both
-# connectivities, on all three systems — zero halo cells outside the derived
-# rectangles, worst case seven rectangles. Because the seam maps are affine at
-# every `n`, levels past 6 add no new structure, only longer runs. The
-# differential tests in `test/systems/crosssystem/subtree_halos.jl` re-run the
-# same claim through the forced-geometry oracle, which is the only oracle in
-# that file that can see a candidate this derivation never proposed.
-#
-# AND SO IS TIGHTNESS, which is a separate claim and the one a future edit is
-# likelier to break. Every rectangle is the bounding box of probe images, and a
-# probe image is a neighbour of a block rim cell on another face — a `Vertex()`
-# halo cell by definition — so the candidate stream is the `Vertex()` halo cell
-# for cell, with no surplus for `NativeCheck` to reject. Widening any bound by
-# one cell would still ANSWER correctly, because the check filters what the
-# rectangles over-propose, so no oracle comparison can see it; the test file
-# counts the candidate stream and requires the equality, which is what makes a
-# lazy bounding box here a failure rather than a silent slowdown.
-#
-# WHAT FALLS BACK. One configuration only: a system with more faces than
-# `_BAND_RECT_CAP`, which none of the three is. Everything else — every flush
-# side, every face corner, every whole-face block, both connectivities — is
-# walked. The guard is kept because it is the one assumption the derivation
-# cannot check itself, and a `small_push` past capacity would be a `BoundsError`
-# from inside an iterator rather than an honest fallback.
+# The derived rectangles are exact bounding boxes of probe images. If their
+# count exceeds `_BAND_RECT_CAP`, the implementation uses the generic halo
+# engine rather than overflowing the fixed-capacity list.
 # ---------------------------------------------------------------------------
 
 # The distinct probe positions of a block, at most four — a corner of a block
@@ -1410,79 +1344,27 @@ end
 # The calibrated directed walk, shared by the two aperture-7 systems
 # ===========================================================================
 
-# A subtree of H3 or IGeo7 is not a block of anything: its rim is a hexagonal
-# spiral, its halo wraps a shape with no lattice box, and the aperture is odd, so
-# nothing above applies. What both systems DO have is a subtree-rim automaton
-# over an arc of exposed lattice directions — `(L, s)` meaning the arc
-# `s, s+1, …, s+L-1 (mod 6)` — and the halo is reachable through it from the
-# OTHER side.
+# H3 and IGeo7 subtrees have hexagonal spiral rims rather than rectangular
+# lattice bounds. Their rim automata expose an arc `(L, s)` of lattice
+# directions, and the halo is reached by walking the arcs of neighbouring
+# subtrees that face `root`.
 #
-# THE IDEA. Every level-`target` halo cell of `root` lies in the subtree of one
-# of `root`'s same-level neighbours. So walk the neighbours, and inside each one
-# walk only the part of its subtree that faces `root` — which is a rim walk of
-# that neighbour, entered not at the fully exposed `(6, 0)` a subtree root gets
-# but at the short arc that points back at `root`.
+# Nested adjacency guarantees that every target-level halo cell descends from
+# a same-level neighbour of `root`: if two cells are adjacent, their parents
+# are equal or adjacent. `_hex_calibrate` determines the exposed arc from the
+# neighbour's children that touch `root`, avoiding parity-specific seed tables
+# for the two systems.
 #
-# WHY IT IS CONTAINED, which is the whole load-bearing claim. The NESTED
-# ADJACENCY LEMMA: if `y` is adjacent to `x` at level `l`, then `parent(y)` is
-# `parent(x)` or is adjacent to it. Induct: a halo cell `x` at level `l` touches
-# some descendant of `root`, so `parent(x)` touches `root`'s subtree at level
-# `l-1`; `parent(x)` is not a descendant of `root` (or `x` would be one), so by
-# induction it lies under a neighbour of `root`, and so does `x`. Verified
-# exhaustively over 910,560 adjacency pairs on both systems and both
-# connectivities, with zero violations.
+# Same-level neighbour subtrees are disjoint. Sorting neighbours by the first
+# position of their target-level descendant range therefore produces ascending,
+# non-overlapping candidate blocks, while each rim automaton emits its own block
+# in ascending id order.
 #
-# WHY THE ARC IS OBSERVED AND NEVER TABULATED. The two automata have EXCHANGED
-# parity branches — H3's even-level branch is IGeo7's odd-level one — and their
-# two `L < 6` guards are tested in the opposite order, so any table of seeds
-# fitted on one system is wrong on the other, and a table fitted per parity is
-# wrong at the other parity. The admission guard `o < L` is the one part that is
-# parity-independent in both files, so the set of children a seeded arc admits at
-# depth one is identical at both parities in both systems. `_hex_calibrate`
-# therefore derives the arc from the children that are OBSERVED to touch
-# `root` — one native check per child of one neighbour — and the asymmetry
-# becomes invisible. That is the single reason one driver serves both systems.
-#
-# WHY CONCATENATION IS A MERGE, again. Distinct same-level cells have disjoint
-# subtrees, so ordering the neighbours by `first(descendant_range(sys, nb,
-# target))` puts their candidate blocks in ascending, non-overlapping order;
-# within a neighbour the automaton is digit-lexicographic, which is ascending id.
-# No heap, no seen-set, no sort — 25,536 pairwise range comparisons across both
-# systems found zero overlaps.
-#
-# WHERE "OUTSIDE" IS STATED, because unlike every other engine in this file these
-# two never test it. `OutsideWalkEngine` retires the subject subtree by integer
-# range containment (`_admit`'s `_HALO_SKIP`), `ScanHaloEngine` compares
-# `ancestor` against the root, and `SquareBandEngine` prunes the block by lattice
-# box (`_inside_block`) — each an explicit "this candidate is not a descendant".
-# The hexagonal engines have no such line, and they need one: `_touches_root`
-# would ACCEPT a descendant of the root, since a descendant's neighbours are
-# descendants too. What carries it is the invariant that
-# `neighbors(grid, c, 1; connectivity)` never returns `c` itself. Every candidate
-# here is a descendant of a cell in `neighbors(levelgrid(sys, lc), c, 1)`, so if
-# that ring excluded nothing the root would be walked as its own neighbour and
-# its whole rim would be emitted as halo. No bundled system's one-ring lists the
-# cell it was asked about; a system whose did would need an explicit skip here,
-# not merely a wider guard.
-#
-# THE WALK IS EXACT, NOT CONSERVATIVE. Candidate-to-halo ratio is 1.0000 at every
-# depth from two down; run with the check disabled over 4,622 cases it produced
-# zero surplus candidates. The check is kept anyway, on every candidate, because
-# it is this file's exactness contract and it costs what the halo already costs.
-#
-# DEPTH ONE HAS NO AUTOMATON. At `target == rootlevel + 1` the calibration IS the
-# answer — the touching children are the halo — so `HexChildHaloEngine` emits
-# each neighbour's children filtered by the same check, and no arc is derived at
-# all. Seeding an automaton to walk one level is where the win thins to nothing,
-# which is the sign that the automaton would be doing no work there.
-#
-# WHAT IT BUYS, measured against the generic outside-first walk on a full halo:
-# 7-36x on H3 and 1.1-16x on IGeo7 over depths one to five, widening with depth
-# because the generic walk's cost grows with the target LEVEL while this one's
-# grows with the halo. The prefix is the sharper number: taking ten cells of an
-# IGeo7 depth-seven halo was 42 ms and 779 KB through the generic walk and is
-# 1.1 ms and 256 bytes here — and the 256 bytes do not move with the depth, which
-# is the design's laziness law rather than a speed-up.
+# Candidates cannot belong to `root` because a one-ring never contains its
+# subject and every candidate descends from a one-ring neighbour. The native
+# adjacency check still filters every candidate before emission. At depth one,
+# `HexChildHaloEngine` emits the touching children directly without starting a
+# rim automaton.
 
 # Six is a hexagon's neighbour count and five a pentagon's, so the list is never
 # more than six long on either system. Eight is that plus slack, so a system with

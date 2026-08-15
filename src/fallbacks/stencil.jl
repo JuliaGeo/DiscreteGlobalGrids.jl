@@ -12,7 +12,7 @@
 #
 # The position forms are the same answers read as indices into a data vector,
 # and `halo_table` is those for a whole subset at once. On a rooted subtree it
-# takes T20's split: an interior cell has no neighbour outside the subtree by
+# treats interior and rim cells separately: an interior cell has no neighbour outside the subtree by
 # definition, so its row needs no membership test at all.
 # ---------------------------------------------------------------------------
 
@@ -193,7 +193,7 @@ halo_table(cv::CellVector, k::Integer = 1;
 #   * the iterators must be built with the SAME connectivity the halo is asked
 #     for, since `Edge()`'s interior is strictly larger than `Vertex()`'s and
 #     using the wrong one would admit a neighbour that is not there; and
-#   * `k` must be 1. The T20 split proves a statement about the ONE-ring only:
+#   * `k` must be 1. The interior guarantee applies only to the one-ring:
 #     a cell two steps inside the rim can still reach outside at `k == 2`, and
 #     there is no "k-interior" iterator to ask.
 function halo_table(pg::PartialGrid, k::Integer = 1;
@@ -214,15 +214,9 @@ function _whole_subtree_range(pg::PartialGrid)
     return length(r) == ncells(pg) ? r : nothing
 end
 
-# Two passes rather than one merged walk. The two iterators are each ascending
-# and together the descendants, so interleaving them by head comparison would
-# make the row index a counter and save one `cellposition` per cell — but the
-# two engines have DIFFERENT state types, so the interleaved loop is a
-# union-typed `iterate` per step and measured 12x slower than the two walks
-# separately. The lookup is the cheaper of the two costs.
-#
-# One loop per engine keeps each monomorphic, which is the whole reason they are
-# written out twice instead of being parameterised over a membership predicate.
+# Separate loops keep each iterator state concrete. Interleaving the two
+# iterator types would introduce union-typed dispatch on every step; the
+# separate passes instead pay one `cellposition` lookup per cell.
 function _rooted_halo(pg::PartialGrid, r::UnitRange{Int}, connectivity::Connectivity)
     sys, root, complete = pg.system, pg.root_id, pg.complete
     l = pg.level
@@ -680,8 +674,8 @@ SYSTEMS, not about this walk.
 !!! note "A5 pays for its missing primitives here too"
     Without [`has_sorted_subtrees`](@ref) there are no curve keys to binary
     search, so the member lookup is a set built per call, `O(|set|)`; and the
-    rim iterator materialises the subtree rather than walking it, as T20
-    documents. The answer is the same one.
+    rim iterator materialises the subtree rather than walking it. The answer
+    is unchanged.
 """
 function member_neighbors(set::MultiOrderCellSet, c::AbstractCellIndex;
         connectivity::Connectivity = Vertex())

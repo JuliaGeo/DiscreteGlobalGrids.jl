@@ -680,8 +680,8 @@ end
 A right-handed orthonormal basis of the tangent plane at the unit vector `p`,
 oriented so that `east × north == p`.
 
-That orientation is the whole point: with the outward normal completing the
-basis, an azimuth `atan(d ⋅ north, d ⋅ east)` **increases counter-clockwise seen
+With the outward normal completing the basis, an azimuth
+`atan(d ⋅ north, d ⋅ east)` **increases counter-clockwise seen
 from outside the sphere**, which is the direction the [`neighbors`](@ref)
 contract is written in.
 

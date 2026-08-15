@@ -1168,6 +1168,45 @@ Base.length(::MiscountingEngine) = 3
     end
 
     # -----------------------------------------------------------------------
+    # A5 — the one system with no specialization, and the assertion that says so
+    # -----------------------------------------------------------------------
+
+    # Five systems now route every root to a specialization, and the classifying
+    # arms above (`check_root_classes`, `check_hex_classes`) assert exactly that.
+    # A5 is the sixth, and it is supposed to route NOWHERE: no `descendant_range`
+    # means no range to skip the subject subtree by and no ordering to make a
+    # pruned descent canonical, so the scan is the walk. See the comment above
+    # `ScanHaloEngine` for what a dedicated A5 engine would have to prove first.
+    #
+    # This is a POSITIVE assertion about the engine, not an absence of one, and
+    # it is the mirror of the other two classifiers: it fails if A5 ever quietly
+    # acquires a fast path by analogy — from its aperture, from its Hilbert-like
+    # indexing — instead of from a proved boundary automaton. And because "took
+    # the right path" is worthless without "and answered correctly", the same
+    # loop runs the forced-geometry oracle and the whole contract bundle.
+    #
+    # Targets stop at level 2 (192 cells): the oracle is a scan whose per-cell
+    # cost is a pruned geometry walk, so level 3 would cost more than every other
+    # A5 arm in this file put together and pin nothing they do not. Depth is
+    # covered for A5 by `law_halo` and by "geometry agrees with topology", both
+    # of which sweep it at full width.
+    @testset "A5 stays on the linear scan" begin
+        sys = A5System()
+        for base in (0, 1), conn in (Vertex(), Edge())
+            grid = levelgrid(sys, base)
+            for c in sample_cells(grid, 2), l in base:2
+                it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
+                # Depth zero is the native one-ring on every system, A5 included;
+                # everything deeper is the scan.
+                @test it.engine isa (l == level(c) ? DGG.Fallbacks.RingHaloEngine :
+                                     DGG.Fallbacks.ScanHaloEngine)
+                @test collect(it) == forced_geometry_halo(sys, c, l, conn)
+                check_halo_case(sys, c, l, conn)
+            end
+        end
+    end
+
+    # -----------------------------------------------------------------------
     # The generic walk, still oracled where it is still the walk
     # -----------------------------------------------------------------------
 

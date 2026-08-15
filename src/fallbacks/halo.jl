@@ -489,6 +489,33 @@ end
 
 # ===========================================================================
 # The linear scan: canonical order without a descendant range
+#
+# A5 AND WHY IT STAYS HERE. This is the engine A5 gets, at every root and every
+# depth, and it is the only system that takes it. The reason is one missing
+# primitive: `has_sorted_subtrees(A5System())` is false and A5 has no
+# `descendant_range` method at all, so `OutsideWalkEngine` has no integer range
+# to skip the subject subtree by and no ordering to make a pruned descent
+# canonical. Without those the honest walk is the scan: `O(ncells)` in time,
+# `O(1)` in memory, canonical by construction because it IS the canonical order.
+#
+# A5 DOES have native indexed one-rings, so it is worth saying what would NOT
+# justify a fast path. Its aperture and its Hilbert-like indexing are not
+# evidence of one: a subtree's boundary is not a shared square perimeter the way
+# HEALPix's, S2's and ISEA4R's are, and no validated directed-border automaton
+# exists for it — `has_sorted_subtrees` being false is the same fact seen from
+# the other side. `SquareBandEngine` would need `lattice_decode` / `lattice_cell`
+# / `face_orientation` on a lattice A5 does not have, and `HexArcHaloEngine`
+# would need `seeded_rim_engine` plus the descendant-range order that makes
+# concatenating neighbours a merge. Adding either by analogy would produce a
+# walk that is wrong in a way no test in this package currently asks about.
+#
+# A dedicated A5 engine belongs here only once two things are proved
+# INDEPENDENTLY, in the sense Tasks 4-6 proved them for the other five systems:
+# the boundary states of an A5 subtree (which cells of a neighbouring subtree can
+# touch it, and in what order), and a two-sided `descendant_range` contract that
+# makes those neighbours' streams concatenate into canonical order. Until then
+# the scan is not a placeholder, it is the correct answer at the price the
+# missing primitives set.
 # ===========================================================================
 
 """
@@ -497,7 +524,8 @@ end
 Every cell of the target level in position order, the descendants skipped and
 the rest tested. `O(1)` memory and canonical by construction, but `O(ncells)`
 time — the price of a system with no [`descendant_range`](@ref) to prune by, and
-A5 is the only one.
+A5 is the only one. See the comment above this type for what a dedicated A5
+engine would have to prove first.
 """
 struct ScanHaloEngine{S,G,C,P,K}
     system::S

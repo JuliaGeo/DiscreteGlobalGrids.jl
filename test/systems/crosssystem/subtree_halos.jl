@@ -2685,7 +2685,10 @@ fixture_collect_bytes(sys, c, l) =
     # The authalic transform moves where a cell is DRAWN, not which cells are
     # adjacent, so the halo through the wrapper must be the halo without it — the
     # same ids, in the same order. `halo_engine(::AuthalicSystem, ...)` is one
-    # forwarding line, and this says the line is there.
+    # forwarding line, and this says the line is there — on all seven engines,
+    # which the closing tag set is what asserts. The seventh is not reached by
+    # that line at all: see the generic arm below for the other half of the
+    # forwarding it exercises.
     @testset "AuthalicSystem forwards the halo walk" begin
         seen = Set{Symbol}()
         for sys in systems()
@@ -2701,13 +2704,44 @@ fixture_collect_bytes(sys, c, l) =
         # A level-0 root is flush on all four sides of its face and is nobody's
         # ordinary cell, so the loop above reaches the one-ring, the SEAM band,
         # both hexagonal walks and A5's scan — but never the counted in-face
-        # band. That one is picked up explicitly below, and the tag set is what
-        # says which of the seven this testset actually forwarded.
-        @test seen == Set((:RingHaloEngine, :SquareBandNativeCheck,
-            :HexChildHaloEngine, :HexArcHaloEngine, :ScanHaloEngine))
+        # band and never the generic walk. Those two are picked up explicitly
+        # below, and the tag set at the end of the testset is what says all
+        # seven were forwarded rather than five.
+        #
+        # THE GENERIC WALK HAS TO BE ASKED FOR BY NAME, and that is a fact about
+        # the six systems, not about the wrapper: every root any of them has is
+        # claimed by a specialization, so no constructor returns
+        # `OutsideWalkEngine` any more. It is built through
+        # `generic_halo_engine` exactly as "the walk is resumable, not
+        # restarted" builds it — AGAINST THE WRAPPED SYSTEM, which is the point.
+        # The arms either side of this one exercise `halo_engine`'s single
+        # forwarding line and nothing else; the engine built here CLOSES OVER
+        # the system it was handed and then reads `descendant_range`,
+        # `node_extent`, `levelgrid` and `neighbors` off it at every node it
+        # prunes, so this is the other half of the wrapper's forwarding, the
+        # half no `halo_engine` arm can reach. On A5 the same call is the scan,
+        # for the reason it is everywhere else in this file.
+        for sys in systems()
+            wrapped = DGG.AuthalicSystem(sys)
+            c = cellindex(levelgrid(sys, 0), 1)
+            l = min(2, max_level(sys))
+            it = SubtreeHaloIterator(wrapped, c, l, Vertex(),
+                DGG.Fallbacks.generic_halo_engine(wrapped, c, l, Vertex()))
+            push!(seen, engine_tag(it.engine))
+            @test collect(it) == collect(SubtreeHaloIterator(sys, c, l, Vertex(),
+                DGG.Fallbacks.generic_halo_engine(sys, c, l, Vertex())))
+        end
         # And on a root the SPECIALIZATION claims. Forwarding that only ever ran
         # on a level-0 root would be forwarding that only ever reached the
         # generic walk — the wrapper would be free to lose the fast path.
+        #
+        # THE ENGINE IS PINNED BY TAG, NOT BY TYPE. `SquareBandEngine` is two
+        # walks wearing one name, and an `isa` cannot tell them apart: the seam
+        # walk the level-0 loop above already reaches answers it too, so a
+        # wrapper that lost the in-face emit rule and fell back to `NativeCheck`
+        # would return the same cells in the same order and satisfy an `isa`
+        # with nothing red anywhere. `engine_tag` reads the emit rule, which is
+        # the thing this arm exists to say arrived through the wrapper.
         for sys in SQUARE_SYSTEMS
             wrapped = DGG.AuthalicSystem(sys)
             for base in BAND_BASES
@@ -2718,7 +2752,8 @@ fixture_collect_bytes(sys, c, l) =
                 c = last(spread(inface, 5))
                 for conn in (Vertex(), Edge())
                     it = SubtreeHaloIterator(wrapped, c, l; connectivity = conn)
-                    @test it.engine isa DGG.Fallbacks.SquareBandEngine
+                    push!(seen, engine_tag(it.engine))
+                    @test engine_tag(it.engine) === :SquareBandNoCheck
                     @test collect(it) ==
                           collect(SubtreeHaloIterator(sys, c, l; connectivity = conn))
                 end
@@ -2730,12 +2765,19 @@ fixture_collect_bytes(sys, c, l) =
             c = cellindex(levelgrid(sys, 1), 1)
             for d in 1:2, conn in (Vertex(), Edge())
                 it = SubtreeHaloIterator(wrapped, c, 1 + d; connectivity = conn)
+                push!(seen, engine_tag(it.engine))
                 @test it.engine isa (d == 1 ? DGG.Fallbacks.HexChildHaloEngine :
                                      DGG.Fallbacks.HexArcHaloEngine)
                 @test collect(it) ==
                       collect(SubtreeHaloIterator(sys, c, 1 + d; connectivity = conn))
             end
         end
+        # ALL SEVEN, and the reason this is a SET rather than seven separate
+        # claims is the reason it is one everywhere else in this file: an engine
+        # that stopped being reachable through the wrapper drops out of the set
+        # and fails the equality, where a per-arm assertion would keep passing on
+        # whatever engine it was handed instead.
+        @test seen == ALL_ENGINE_TAGS
         # AND THE SUBSET VERB, which reaches the wrapper by a different route:
         # `halo(pg)` reads `pg.system`, carrying it into `subset_halo_engine`
         # and into `_whole_subtree_range`'s `has_sorted_subtrees` question.

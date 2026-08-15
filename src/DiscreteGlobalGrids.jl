@@ -118,12 +118,17 @@ include("systems/A5/A5.jl")
 include("systems/S2/S2.jl")
 include("systems/ISEA4R/ISEA4R.jl")
 
+# The seventh system, included but not registered — see the comment above
+# `systems()` for why it stays out of the tuple.
+include("systems/CopernicusDEM/CopernicusDEM.jl")
+
 using .IGeo7: IGeo7System, Z7Cell
 using .H3: H3System, H3Cell
 using .HEALPix: HEALPixSystem, HEALPixRingIndex
 using .A5: A5System, A5Cell
 using .S2: S2System
 using .ISEA4R: ISEA4RSystem
+using .CopernicusDEM: CopernicusDEMSystem
 
 # The DimensionalData layer. In-package rather than a package extension because
 # DimensionalData is a hard dependency, and because a cube axis is the shape
@@ -200,6 +205,10 @@ Important cross-system traits:
 Use [`levels`](@ref) and [`levelgrid`](@ref) to construct queryable grids. Each
 system module documents its identifier codec and optimized operations.
 """
+# CopernicusDEM is deliberately absent: registering a system enrols it in every
+# cross-system sweep (`test/systems/crosssystem/*`), whose hardcoded automaton/fallback
+# partitions and regridding cases would all need editing, and whose level choices assume
+# a globally uniform cell size. Reach for it by name: `DGG.CopernicusDEMSystem(90)`.
 systems() = (IGeo7System(), H3System(), HEALPixSystem(),
              A5System(), S2System(), ISEA4RSystem())
 
@@ -265,6 +274,8 @@ export HEALPixSystem, HEALPixRingIndex
 export A5System, A5Cell
 export S2System
 export ISEA4RSystem
+# Exported and reachable by name, but not in `systems()` — see the comment there.
+export CopernicusDEMSystem
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere

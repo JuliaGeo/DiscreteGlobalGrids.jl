@@ -131,6 +131,26 @@ include("dimensionaldata.jl")
 
 using .CellLookups: CellLookup, Cells, Covering
 
+# The store-IO layer. Encodings and the chunked lookup own layout mechanics;
+# conventions are plain-data metadata logic with no Zarr and no arrays.
+# Order matters: errors.jl defines DGGSFormatError for the submodules'
+# `import ..DGGSFormatError`, and description.jl types its encoding field
+# with encodings.jl's CellEncoding.
+include("io/errors.jl")
+include("io/encodings.jl")
+include("io/chunked_lookup.jl")
+
+using .Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
+    ENCODING_REGISTRY, encodingname, cellaxis,
+    idrank, idselect, idcount_between, idvalid, idcell, idtype,
+    idranges, write_eligible, validate_ranges
+using .ChunkedLookups: ChunkManifest, nchunks, ChunkedCellVector, axisposition,
+    chunkmanifest, ChunkedCellLookup
+
+include("io/description.jl")
+include("io/conventions.jl")
+include("io/api.jl")
+
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
 
@@ -307,5 +327,16 @@ export ISEA4RSystem
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere
+
+# --- Store IO --------------------------------------------------------------
+# `detect`, `decode`, `encode!` and `gridname` stay qualified: they are
+# extension points, and the names are too generic to export.
+export dggread, dggwrite
+export StoreSnapshot, ArrayEntry, StoreDescription, DGGSFormatError
+export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
+    LegacyHealpixConvention, DKRZConvention
+export CONVENTION_REGISTRY, DEFAULT_WRITE_CONVENTIONS, register_convention!
+export describe_store
+export ChunkedCellLookup, ChunkManifest
 
 end # module DiscreteGlobalGrids

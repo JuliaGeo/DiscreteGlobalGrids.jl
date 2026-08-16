@@ -277,6 +277,44 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test block.denom == zeros(64)
     end
 
+    @testset "one tile's cell geometry, synthesized once" begin
+        # A destination cell's polygon is asked for once per candidate pair, so
+        # a tile's builds pay for the same synthesis many times over. The store
+        # is only correct if it answers *exactly* what the space answers, cell
+        # for cell — a slipped index would silently clip the wrong cell and
+        # produce weights that are wrong rather than absent.
+        space = RasterGrid(DD.DimArray(zeros(12, 6),
+            (DD.X(range(-165.0, 165.0; length = 12)),
+                DD.Y(range(-75.0, 75.0; length = 6)))); chunks = ([1:6, 7:12], [1:3, 4:6]))
+        inds = cellindices(space, 3)
+        tc = GR.TileCells(space, inds)
+        tree = GR.subtree(tc, inds)
+        @test tree isa GR.CachedCellTree
+        @test all(getcell(tree, i) == getcell(space, i) for i in inds)
+
+        # Every other index falls through to the space, so a tree asked outside
+        # its tile is still answering about the same cells.
+        outside = setdiff(1:ncells(space), inds)
+        @test all(getcell(tree, i) == getcell(space, i) for i in outside)
+
+        # The store is a property of the tree, not of the space: `getcell` of
+        # the decorated space is the space's own, which is what keeps a space of
+        # any size constructible without materializing it. An index set that is
+        # not the tile's gets the space's own tree, unstored.
+        @test all(getcell(tc, i) == getcell(space, i) for i in 1:ncells(space))
+        @test !(GR.subtree(tc, cellindices(space, 1)) isa GR.CachedCellTree)
+
+        # And the weights are the weights: the same block, entry for entry,
+        # whether the builder was handed the space or the store.
+        other = cellindices(space, 2)
+        plain = conservative_block(space, inds, space, other)
+        stored = conservative_block(tc, inds, space, other)
+        @test plain.weights.colptr == stored.weights.colptr
+        @test plain.weights.rowval == stored.weights.rowval
+        @test all(plain.weights.nzval .=== stored.weights.nzval)
+        @test all(plain.denom .=== stored.denom)
+    end
+
     @testset "disjoint chunks and mismatched manifolds" begin
         north = ToyLonLatSpace(2, 1; lat = (60.0, 90.0))
         south = ToyLonLatSpace(2, 1; lat = (-90.0, -60.0))

@@ -491,7 +491,7 @@ Base.show(io::IO, plan::ChunkedPlan) =
         ncells(plan.src_space), " cells / ", nchunks(plan.src_space), " chunks)")
 
 """
-    blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds) -> CachedBlock
+    blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds[, dst_space]) -> CachedBlock
     blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) -> CachedBlock
 
 The [`WeightBlock`](@ref) of one pair, from the plan's storage, built on first
@@ -502,12 +502,20 @@ that tile owns; the second form is the special case where the tile is the
 destination space's chunk of the same number. The key is what the storage
 addresses, so a plan's tiling must not change over its lifetime.
 
+`dst_space` is the destination the block is built against, defaulting to one
+[`TileCells`](@ref) of the plan's destination per call. A caller producing a
+whole tile passes one across the tile's pairs instead, so the tile's cell
+geometry is synthesized once for all of them.
+
 Building is geometry-only and reads no data, so a block is as cheap to rebuild
 after eviction as it was to build.
 """
-function blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds)
+blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds) =
+    blockfor(plan, key, dinds, TileCells(plan.dst_space, dinds))
+
+function blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, dst_space::RegridSpace)
     return getblock!(plan.storage, key,
-        () -> buildblock(plan, dinds, cellindices(plan.src_space, key[2])))
+        () -> buildblock(plan, dinds, cellindices(plan.src_space, key[2]), dst_space))
 end
 
 blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
@@ -515,15 +523,18 @@ blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
         cellindices(plan.dst_space, Int(dstchunk)))
 
 """
-    buildblock(plan::ChunkedPlan, dinds, sinds) -> WeightBlock
+    buildblock(plan::ChunkedPlan, dinds, sinds[, dst_space]) -> WeightBlock
     buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) -> WeightBlock
 
 One pair's weights, built unconditionally — the storage decides whether this is
 called.
 """
-function buildblock(plan::ChunkedPlan, dinds, sinds)
+buildblock(plan::ChunkedPlan, dinds, sinds) =
+    buildblock(plan, dinds, sinds, TileCells(plan.dst_space, dinds))
+
+function buildblock(plan::ChunkedPlan, dinds, sinds, dst_space::RegridSpace)
     coo = WeightCOO(length(dinds))
-    build_weights!(coo, plan.method, plan.dst_space, dinds, plan.src_space, sinds)
+    build_weights!(coo, plan.method, dst_space, dinds, plan.src_space, sinds)
     return WeightBlock(coo, length(dinds), length(sinds))
 end
 

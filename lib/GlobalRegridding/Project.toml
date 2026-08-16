@@ -13,6 +13,12 @@ GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
+[weakdeps]
+Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
+
+[extensions]
+GlobalRegriddingRastersExt = "Rasters"
+
 [sources]
 ConservativeRegridding = {rev = "agent/use-geometryops-main-cache", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 GeometryOps = {rev = "main", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
@@ -26,12 +32,14 @@ GeoInterface = "1"
 GeometryOps = "0.1.43"
 GeometryOpsCore = "0.1.11"
 LinearAlgebra = "1"
+Rasters = "0.15"
 SparseArrays = "1"
 Test = "1"
 julia = "1.11"
 
 [extras]
+Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test"]
+test = ["Rasters", "Test"]

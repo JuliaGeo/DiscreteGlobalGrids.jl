@@ -45,7 +45,7 @@ GR.support_radius(m::T7CountingMethod, space::RegridSpace) =
 
 function build_weights!(coo::WeightCOO, m::T7CountingMethod,
     dst::RegridSpace, dst_inds, src::RegridSpace, src_inds)
-    m.builds += 1
+    countbuild!(m)
     return build_weights!(coo, m.inner, dst, dst_inds, src, src_inds)
 end
 
@@ -200,6 +200,28 @@ end
         @test A[17:32] == vec(field)[17:32]
         @test t7_spatial(source) ==
               sort([GR.chunkranges(srcspace, s, (8, 4)) for s in t7_pairwise(dstspace, 2, srcspace)])
+    end
+
+    @testset "the wave of concurrent builds is bounded by the weight budget" begin
+        # A tile's pairs are built a wave at a time and the wave's blocks are
+        # held until it is applied, so a wave that ignored the budget would put
+        # every one of a fan-in's blocks in memory at once — the failure L3
+        # exists to rule out. The bound is a block's floor: its column pointers
+        # and its reference vector, which are known before any build.
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
+        srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
+        nd = length(cellindices(dstspace, 1))
+        @test length(srcchunks) > 1
+
+        tiny = t7_plan(ToyDiagonalMethod(), dstspace, srcspace; budget = 2^10)
+        @test GR._wavesize(tiny, nd, srcchunks, srcranges) == 1
+        @test GR._wavesize(plan, nd, srcchunks, srcranges) ==
+              min(Threads.nthreads(), length(srcchunks))
+
+        # One pair is one build whatever the threads: a wave never spawns for a
+        # tile it cannot split.
+        @test GR._wavesize(plan, nd, srcchunks[1:1], srcranges[1:1]) == 1
     end
 
     @testset "L4 — plan reuse" begin

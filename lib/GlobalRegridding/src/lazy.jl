@@ -469,9 +469,14 @@ end
 The lazy path's one loop, into an `ncells × nslices` view of the output block.
 
 Residency at any moment: the source chunks the budget lets the call hold, one
-streamed source chunk beyond them, one `WeightBlock` (plus whatever the
-storage's bound keeps), and the destination **tile's** accumulators — never the
-destination space's, and never the source array's.
+streamed source chunk beyond them, the weight blocks of one wave (see
+[`_wavesize`](@ref), plus whatever the storage's bound keeps), and the
+destination **tile's** accumulators — never the destination space's, and never
+the source array's.
+
+A tile's blocks are built a wave at a time and applied in chunk order, so the
+accumulation order — and therefore every `Float64` in the answer — does not
+depend on the thread count.
 """
 function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
     cellr::UnitRange{Int}, others::NTuple{NO,UnitRange{Int}}, nslices::Int) where {T,N,NS,NO}
@@ -483,6 +488,7 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
     hold = SourceHold(_emptybuffer(A), databudget(plan.budget), A.stats)
     srcchunks = Int[]
     srcranges = NTuple{NS,UnitRange{Int}}[]
+    wave = CachedBlock[]
     num = Matrix{Float64}(undef, 0, nslices)
     cover = Matrix{Float64}(undef, 0, nslices)
     total = Float64[]
@@ -500,26 +506,96 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         _connectedsource!(srcchunks, A, t)
         _sourceranges!(srcranges, A, srcchunks)
         keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
+        # One store of the tile's cell geometry for every pair of this tile,
+        # empty unless a pair actually has to be built.
+        dstcells = TileCells(plan.dst_space, dinds)
+        w = _wavesize(plan, nd, srcchunks, srcranges)
         denominated = false
-        for (i, s) in enumerate(srcchunks)
-            entry = blockfor(plan, (t, s), dinds)
-            addreference!(total, entry.block)
-            denominated |= hasdenom(entry.block)
-            sr = srcranges[i]
-            ncell = prod(map(length, sr))
-            for (gi, pos) in enumerate(groups)
-                gr = _grouprange(others, pos)
-                if knownempty(A.source, (sr..., gr...))
-                    A.stats.skipped += 1
-                    continue
+        i = 1
+        while i <= length(srcchunks)
+            j = min(i + w - 1, length(srcchunks))
+            _fillwave!(wave, plan, t, srcchunks, i, j, dinds, dstcells)
+            for k in i:j
+                entry = wave[k-i+1]
+                s = srcchunks[k]
+                addreference!(total, entry.block)
+                denominated |= hasdenom(entry.block)
+                sr = srcranges[k]
+                ncell = prod(map(length, sr))
+                for (gi, pos) in enumerate(groups)
+                    gr = _grouprange(others, pos)
+                    if knownempty(A.source, (sr..., gr...))
+                        A.stats.skipped += 1
+                        continue
+                    end
+                    buf = _sourcefor!(hold, A, (s, gi), sr, gr, pos, keep)
+                    _applygroup!(num, cover, entry.block, entry.ref, buf, ncell, pos, strides, mv)
                 end
-                buf = _sourcefor!(hold, A, (s, gi), sr, gr, pos, keep)
-                _applygroup!(num, cover, entry.block, entry.ref, buf, ncell, pos, strides, mv)
             end
+            # Applied, so let go of them: what the storage keeps is the
+            # storage's bound to answer for, and only one wave is ever held.
+            empty!(wave)
+            i = j + 1
         end
         _writechunk!(out, vals, num, cover, total, policy, denominated, dinds, cellr)
     end
     return out
+end
+
+"""
+    _wavesize(plan, nd, srcchunks, srcranges) -> Int
+
+How many of one destination tile's chunk pairs are built before any of them is
+applied.
+
+A tile's pairs are independent geometry — `build_weights!` keeps no state
+outside the call and the storage resolves a duplicate build by keeping one — so
+they can be built concurrently. What bounds the wave is memory: its blocks are
+held until the wave is applied, so a wave must fit the same weight budget the
+storage is bounded by. A block's floor is its column pointers and its reference
+vector, which are known before the build; its nonzeros are not, so the wave is
+sized against that floor and against the widest connected chunk.
+
+One at a time on a single-threaded session, which is the loop this replaced.
+"""
+function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges::Vector)
+    n = length(srcchunks)
+    nt = Threads.nthreads()
+    (nt > 1 && n > 1) || return 1
+    ncols = 0
+    for sr in srcranges
+        ncols = max(ncols, prod(map(length, sr)))
+    end
+    floorbytes = 8 * (ncols + 1) + 16 * nd + 64
+    fits = max(1, weightbudget(plan.budget) ÷ floorbytes)
+    return Int(min(nt, n, fits))
+end
+
+# One wave of blocks, in chunk order. Building is what is spawned; the storage
+# is reached through `blockfor` exactly as the serial path reaches it, so a
+# block already resident is not rebuilt and a block built here is inserted the
+# same way. Nothing is read from the source: weights are geometry only.
+#
+# The builds keep their own threading (`_intersectionareas`), so the two levels
+# nest. Measured on both shapes it is asked for: on a twelve-pair fan-in the
+# nested form reads in 0.26 s against 0.28 s with the inner descent forced
+# serial, and on a two-pair tile 0.038 s against 0.047 s — a wave narrower than
+# the session's threads leaves them idle otherwise.
+function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
+    srcchunks::Vector{Int}, i::Int, j::Int, dinds, dstcells)
+    empty!(wave)
+    if i == j
+        push!(wave, blockfor(plan, (t, srcchunks[i]), dinds, dstcells))
+        return wave
+    end
+    tasks = map(i:j) do k
+        s = srcchunks[k]
+        Threads.@spawn blockfor(plan, (t, s), dinds, dstcells)
+    end
+    for task in tasks
+        push!(wave, fetch(task)::CachedBlock)
+    end
+    return wave
 end
 
 # The destination tiles whose cells can fall in `cellr`. Runs bound a tile's

@@ -411,6 +411,21 @@ end
 ToyDiagonalMethod(; scale::Real = 1.0, withdenom::Bool = true) =
     ToyDiagonalMethod(Float64(scale), withdenom)
 
+"""
+    countbuild!(method)
+
+Add one to `method.builds`, from any task.
+
+The lazy path builds a destination tile's chunk pairs concurrently, so a
+counting double's `+=` is a read-modify-write that two tasks can interleave and
+lose. The counts are what L2 and L4 are asserted on, so they are taken under a
+lock rather than trusted to happen not to race. Reading is unsynchronized on
+purpose: every count is read after the reads that produced it have returned.
+"""
+const TOY_COUNT_LOCK = ReentrantLock()
+
+countbuild!(method) = @lock TOY_COUNT_LOCK method.builds += 1
+
 function build_weights!(coo::WeightCOO, method::ToyDiagonalMethod,
     ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
     local_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))

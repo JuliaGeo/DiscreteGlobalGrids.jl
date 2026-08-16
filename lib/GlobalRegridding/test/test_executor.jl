@@ -6,6 +6,10 @@
 
 import DimensionalData as DD
 import SparseArrays
+# A test dependency for one reason: it is what loads
+# `GlobalRegriddingRastersExt`, and an extension nothing loads is an extension
+# nothing tests.
+import Rasters
 
 # A method that counts the weight builds it is asked for.
 mutable struct CountingMethod <: AbstractRegriddingMethod
@@ -17,7 +21,7 @@ CountingMethod(; kw...) = CountingMethod(ToyDiagonalMethod(; kw...), 0)
 
 function build_weights!(coo::WeightCOO, method::CountingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
-    method.builds += 1
+    countbuild!(method)
     return build_weights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
@@ -166,6 +170,36 @@ end
         @test flat(regrid(declared; to = space, from = space,
             method = ToyDiagonalMethod(), missingpolicy = Extensive(),
             missingval = nothing)) == plain
+
+        # A `Rasters.Raster` carries its sentinel in a field, not in metadata, so
+        # the metadata route above answers `nothing` for every raster and the
+        # extension is the only thing that reads one. Its two "no sentinel"
+        # spellings both become `nothing`: `missing` is already rejected by
+        # `isvalidvalue` on its own, and `nothing` is the spelling that keeps the
+        # comparison out of the element loop.
+        let dims = (DD.X(1:6), DD.Y(1:3))
+            @test GR.sourcemissingval(Rasters.Raster(sentinel, dims;
+                missingval = -9999.0)) == -9999.0
+            @test GR.sourcemissingval(Rasters.Raster(nanned, dims;
+                missingval = NaN)) === NaN
+            @test GR.sourcemissingval(Rasters.Raster(sentinel, dims;
+                missingval = nothing)) === nothing
+            @test GR.sourcemissingval(Rasters.Raster(
+                convert(Matrix{Union{Missing,Float64}}, sentinel), dims;
+                missingval = missing)) === nothing
+            # …and a raster answers from its field even when its metadata says
+            # something else, which is the whole reason the extension exists.
+            @test GR.sourcemissingval(Rasters.Raster(sentinel, dims;
+                missingval = -9999.0, metadata = DD.Metadata(Dict("_FillValue" => 0.0)))) ==
+                  -9999.0
+            # The declaration reaches a plan through `regrid`'s default, with no
+            # keyword: a raster of sentinels answers what the same field with
+            # NaN answers.
+            rkw = (; to = space, from = space,
+                method = ToyDiagonalMethod(; scale = 3.0), missingpolicy = Extensive())
+            @test all(isequal.(flat(regrid(Rasters.Raster(sentinel, dims;
+                    missingval = -9999.0); rkw...)), flat(regrid(nanned; rkw...))))
+        end
 
         # An integer field cannot hold NaN or `missing`, so a sentinel is the
         # only way it can carry nodata at all: the element-type shortcut that

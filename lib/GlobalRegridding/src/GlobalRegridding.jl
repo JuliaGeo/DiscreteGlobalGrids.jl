@@ -109,4 +109,11 @@ export DirectPlan, ChunkedPlan, PerChunk, Spilled
 export regrid, regrid!, plan_regrid
 export LazyRegridArray
 
+# --- Public, not exported --------------------------------------------------
+# Extension points and observability: API-stable names reached by
+# qualification, kept out of `using`'s namespace.
+public knownempty, isvalidvalue, sourcemissingval, chunkat
+public residency, LazyStats
+public weightbudget, databudget, spilledfiles, usesreference
+
 end # module GlobalRegridding

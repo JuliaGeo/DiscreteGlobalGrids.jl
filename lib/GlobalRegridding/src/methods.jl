@@ -210,6 +210,11 @@ divisor nor the result.
 
 `threshold` is a fraction in `[0, 1]`. `0` keeps every destination that saw any
 valid source at all; `1` keeps only fully covered destinations.
+
+The reference is the **covered** measure, not the destination cell's own area:
+a destination the source footprint barely clips reports the mean of the clipped
+part rather than blanking. Mask against the source extent first when
+footprint-edge cells should be missing instead.
 """
 struct Weighted <: AbstractMissingPolicy
     threshold::Float64

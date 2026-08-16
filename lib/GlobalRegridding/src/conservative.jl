@@ -168,6 +168,160 @@ getcell(tree::CellCapTree) =
 GOCore.best_manifold(tree::CellCapTree) = manifold(tree.space)
 
 # ===========================================================================
+# One destination tile's cell geometry, synthesized once
+# ===========================================================================
+
+# A destination cell's polygon is asked for once per candidate cell *pair*, and a
+# chunk pair has far more pairs than cells. Measured on an IGEO7 level-7 chunk of
+# 2401 cells against the twelve 300² source tiles that meet it: 269 600 candidate
+# pairs, so 269 600 syntheses of 2401 distinct polygons. The geometry does not
+# depend on the source chunk, so one pass over the tile serves every build of it,
+# and a cold read of that chunk loses a fifth of its time to the difference.
+
+# How large a tile the cache is worth building for. The store is one polygon per
+# cell of the tile and lives only while that tile is being produced, so the
+# ceiling is what bounds it; above it the space's own on-demand synthesis is
+# kept, which is what makes a space of any size constructible in O(1).
+const _TILE_CELL_CACHE_MAX = 1 << 16
+
+"""
+    TileCells(space, inds)
+
+`space` with the cell geometry of `inds` synthesized once instead of per block
+build — the decoration a chunked plan puts on its destination while it produces
+one tile.
+
+Every accessor forwards, including [`getcell`](@ref): nothing is materialized
+by constructing this, and a read that builds no weights synthesizes nothing.
+The store is built on the first [`subtree`](@ref) over `inds` — the tree the
+weight builders clip against — and is then shared, read-only, by every
+concurrent build over the same tile. It dies with the tile.
+
+Tiles larger than $(_TILE_CELL_CACHE_MAX) cells decline the store and behave
+exactly like the space they wrap.
+"""
+mutable struct TileCells{S<:RegridSpace,I,M} <: RegridSpace
+    space::S
+    inds::I
+    map::M
+    # `nothing` until the first `subtree`, `false` once declined, and a
+    # `Vector` of cell geometry after that; read through a function barrier.
+    cells::Any
+    lock::ReentrantLock
+end
+
+TileCells(space::RegridSpace, inds) =
+    TileCells(space, inds, indexmap(inds), nothing, ReentrantLock())
+
+Base.show(io::IO, tc::TileCells) =
+    print(io, "TileCells(", tc.space, ", ", length(tc.inds), " cells)")
+
+# The contract, forwarded. `getcell` among them: the cache is a property of the
+# tree handed to a weight builder, not of the space, so a caller holding this
+# space sees the same lazy synthesis it would see without it.
+ncells(tc::TileCells) = ncells(tc.space)
+getcell(tc::TileCells, i::Int) = getcell(tc.space, i)
+manifold(tc::TileCells) = manifold(tc.space)
+nchunks(tc::TileCells) = nchunks(tc.space)
+cellindices(tc::TileCells, chunk::Int) = cellindices(tc.space, chunk)
+chunkat(tc::TileCells, i::Integer) = chunkat(tc.space, i)
+chunkat(tc::TileCells, p::US.UnitSphericalPoint) = chunkat(tc.space, p)
+cellat(tc::TileCells, p::US.UnitSphericalPoint) = cellat(tc.space, p)
+cellcentroid(tc::TileCells, i::Int) = cellcentroid(tc.space, i)
+hascellchart(tc::TileCells) = hascellchart(tc.space)
+celltree(tc::TileCells) = celltree(tc.space)
+chunktree(tc::TileCells) = chunktree(tc.space)
+
+"""
+    subtree(tc::TileCells, inds)
+
+The wrapped space's own subtree, serving [`getcell`](@ref) of the tile's cells
+from one synthesis pass.
+
+Only the tile's own index set is served; any other falls through to the space
+unchanged. The pass runs at most once per `TileCells`, under a lock, so
+concurrent builds of different chunk pairs over one tile share it rather than
+repeat it.
+"""
+function subtree(tc::TileCells, inds)
+    inds == tc.inds || return subtree(tc.space, inds)
+    tree = subtree(tc.space, inds)
+    cells = _tilecells!(tc)
+    cells === false && return tree
+    return _cachedtree(tree, tc.map, cells)
+end
+
+function _tilecells!(tc::TileCells)
+    lock(tc.lock)
+    try
+        if tc.cells === nothing
+            tc.cells = length(tc.inds) > _TILE_CELL_CACHE_MAX ? false :
+                       _synthesizecells(tc.space, tc.inds)
+        end
+        return tc.cells
+    finally
+        unlock(tc.lock)
+    end
+end
+
+function _synthesizecells(space::RegridSpace, inds)
+    cells = [getcell(space, Int(i)) for i in inds]
+    # A space whose cells are not one concrete type would put a dynamic
+    # dispatch in the clip loop for every candidate pair; it keeps the
+    # on-demand path, which has the same cost it always had.
+    return isconcretetype(eltype(cells)) ? cells : false
+end
+
+# The function barrier: `cells` is read out of an untyped field once per block
+# build, and everything below this sees a concrete element type.
+_cachedtree(tree::T, map::M, cells::Vector{P}) where {T,M,P} =
+    CachedCellTree{T,M,P}(tree, map, cells)
+
+"""
+    CachedCellTree(tree, map, cells)
+
+`tree` with `ConservativeRegridding.Trees.getcell` answered from `cells` instead
+of from the space.
+
+Every `SpatialTreeInterface` method forwards untouched, so the descent visits
+exactly the nodes it would visit without this and prunes by exactly the same
+extents; only the cell geometry the clip is handed comes from the store.
+Immutable, so concurrent assembly tasks share one.
+"""
+struct CachedCellTree{T,M,P}
+    tree::T
+    map::M
+    cells::Vector{P}
+end
+
+Base.show(io::IO, t::CachedCellTree) =
+    print(io, "CachedCellTree(", t.tree, ", ", length(t.cells), " cells)")
+
+STI.isspatialtree(::Type{<:CachedCellTree{T}}) where {T} = STI.isspatialtree(T)
+STI.node_extent_is_expensive(::Type{<:CachedCellTree{T}}) where {T} =
+    STI.node_extent_is_expensive(T)
+STI.isleaf(t::CachedCellTree) = STI.isleaf(t.tree)
+STI.nchild(t::CachedCellTree) = STI.nchild(t.tree)
+STI.getchild(t::CachedCellTree) = STI.getchild(t.tree)
+STI.getchild(t::CachedCellTree, i::Int) = STI.getchild(t.tree, i)
+STI.node_extent(t::CachedCellTree) = STI.node_extent(t.tree)
+STI.child_indices_extents(t::CachedCellTree) = STI.child_indices_extents(t.tree)
+
+GOCore.best_manifold(t::CachedCellTree) = GOCore.best_manifold(t.tree)
+ncells(t::CachedCellTree) = ncells(t.tree)
+getcell(t::CachedCellTree) = getcell(t.tree)
+
+@inline function getcell(t::CachedCellTree, i::Int)
+    k = _cachedposition(t.map, i)
+    k == 0 && return getcell(t.tree, i)
+    return @inbounds t.cells[k]
+end
+
+@inline _cachedposition(m::OffsetIndexMap, i::Int) =
+    (k = i - m.offset; 1 <= k <= m.n ? k : 0)
+@inline _cachedposition(m::LookupIndexMap, i::Int) = get(m.lookup, i, 0)
+
+# ===========================================================================
 # The intersection operator
 # ===========================================================================
 
@@ -287,9 +441,13 @@ of the session.
 
 Threading is inside one block build — the dual-tree descent that finds the
 candidate pairs and the clip that measures them — so a whole-domain plan, which
-is one block, is threaded too. The candidate pairs come back in descent order
-either way and no pair is emitted twice, so the assembled matrix is the serial
-matrix bit for bit.
+is one block, is threaded too. It stays on inside the lazy path's wave of
+concurrent builds, where the two levels nest: a wave is at most as wide as the
+session's threads and its pairs are uneven, so the threads a finished pair
+leaves idle go to the ones still running.
+
+The candidate pairs come back in descent order either way and no pair is
+emitted twice, so the assembled matrix is the serial matrix bit for bit.
 
 **The empty pair.** CR's threaded dual query ends in `reduce(vcat, map(fetch,
 tasks))` with no `init`, and `tasks` is empty exactly when no pair of nodes

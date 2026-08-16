@@ -858,7 +858,7 @@ end
 """
     _rectcap(space, ix0, ix1, iy0, iy1) -> SphericalCap
 
-The extent of an index rectangle — a tree node, a chunk.
+The extent of a tree node's index rectangle.
 
 Both constructions cover, so the tighter one is taken: sampling the box boundary
 ([`_sampledcap`](@ref)) wins on a compact box, and the chart's own bound
@@ -866,17 +866,48 @@ Both constructions cover, so the tighter one is taken: sampling the box boundary
 to reach around the sphere — a full-longitude band above all, which is how a
 global raster is normally chunked and which `_boxcap` alone answers with the
 whole sphere.
+
+This is the per-node form, called once per visited node pair; a chunk extent is
+[`_chunkcap`](@ref), which spends more samples on a better centre.
 """
 function _rectcap(space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
     xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
     ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
     sampled = _sampledcap(space.tables, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi)
-    # A cap about a pole reaches at least to the near end of the box's latitude
-    # span and the bow only widens that, while the mid-meridian cap is built on
-    # the bowed box and so never beats a sampled cap that survived at all — a
-    # surviving cap tighter than `90° − |φ|` therefore settles it for nothing.
-    # Every deep node of a large raster takes this exit, and there are hundreds
-    # of thousands of them against a couple of dozen that do not.
+    return _tighterof(space, xlo, xhi, ylo, yhi, sampled)
+end
+
+"""
+    _chunkcap(space, ix0, ix1, iy0, iy1) -> SphericalCap
+
+The extent of a **chunk's** index rectangle — [`_rectcap`](@ref) with the
+sixteen-sample [`_boxcap`](@ref) in place of [`_sampledcap`](@ref)'s
+four-corner form.
+
+Both cover; the extra twelve samples buy a better centre and so a smaller
+radius, and a chunk cap is what discovery compares pairwise, where every degree
+of slack becomes a source chunk read for nothing. A 60°-wide destination tile
+gets 37.76° here against 38.50° from the corner construction, which is the
+difference between 205 and 210 discovered pairs on a 3600×1800 → 360×180 pair.
+
+Affordable because it is `O(nchunks)` per space and cold: a plan builds these
+once, against the hundreds of thousands of node extents `_rectcap` builds inside
+every block build.
+"""
+function _chunkcap(space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
+    xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
+    ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
+    sampled = _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
+    return _tighterof(space, xlo, xhi, ylo, yhi, sampled)
+end
+
+# A cap about a pole reaches at least to the near end of the box's latitude span
+# and the bow only widens that, while the mid-meridian cap is built on the bowed
+# box and so never beats a sampled cap that survived at all — a surviving cap
+# tighter than `90° − |φ|` therefore settles it for nothing. Every deep node of a
+# large raster takes this exit, and there are hundreds of thousands of them
+# against a couple of dozen that do not.
+@inline function _tighterof(space::RasterGrid, xlo, xhi, ylo, yhi, sampled::Cap)
     sampled.radius < Float64(pi) &&
         sampled.radius <= deg2rad(min(90.0 - ylo, 90.0 + yhi)) && return sampled
     wide = _widecap(space, xlo, xhi, ylo, yhi)
@@ -1049,7 +1080,7 @@ function chunktree(space::RasterGrid)
     caps = Vector{Cap}(undef, n)
     for c in 1:n
         xr, yr = chunkbox(space, c)
-        caps[c] = _rectcap(space, first(xr), last(xr), first(yr), last(yr))
+        caps[c] = _chunkcap(space, first(xr), last(xr), first(yr), last(yr))
     end
     return RasterFlatTree(space, 1:n, caps)
 end

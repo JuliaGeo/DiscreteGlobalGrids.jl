@@ -1626,11 +1626,23 @@ end
         end
     end
 
+    # The negative control for the three allocation laws above: wrap the real
+    # engine in one that materializes, and check the laws REFUSE it. Without it
+    # they could be passing because nothing measurable is allocated either way.
+    #
+    # Three systems and not `systems()`. Eagerness is a property of the wrapper,
+    # not of the system under it — an eager engine over IVEA4R fails for the
+    # same reason it fails over S2 — so the only axis worth spanning is the
+    # engine being wrapped: a square specialization, a hex one, and a system on
+    # the generic walk. Sweeping all fifteen re-proved that at depth 7 on
+    # 4.8M-cell aperture-9 subtrees, which was 170 of the 230 minutes the suite
+    # took when this file first met the literature registry.
+    EAGER_CONTROL_SYSTEMS = (S2System(), IGeo7System(), IVEA4RSystem())
+
     @testset "an eager engine with the same surface fails every allocation law" begin
-        for sys in systems()
+        for sys in EAGER_CONTROL_SYSTEMS
             c = law_root(sys)
-            depths = filter(l -> l <= max_level(sys),
-                sys isa DGG.A5System ? (1, 2, 3) : law_depths(sys, (3, 5, 7)))
+            depths = filter(l -> l <= max_level(sys), law_depths(sys, (3, 5, 7)))
             @test collect(fixture_iterator(sys, c, last(depths))) ==
                   subtree_halo(sys, c, last(depths))
             ctor = [fixture_construct_bytes(sys, c, l) for l in depths]

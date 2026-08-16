@@ -373,6 +373,10 @@ then this table's rows completed through that fetched halo and renumbered into
 the concatenated `[chunk; halo]` buffer. Reach for the pair whenever the
 alternative is building a neighbour table over the whole level to process one
 chunk of it; none of the three replaces another, and each says so from its side.
+
+[`HaloTable`](@ref) is the `k == 1` content of this table in CSR — two flat
+arrays instead of a vector per cell, rows in ring order instead of ascending —
+for a consumer that reads every row.
 """
 function halo_table end
 

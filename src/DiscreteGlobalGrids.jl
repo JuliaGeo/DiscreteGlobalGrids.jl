@@ -104,7 +104,8 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator,
     subtree_halo, halo, halo_positions, halo_sizehint,
     StencilTable, stencil_table,
-    SubsetPositionedCell, cellid
+    SubsetPositionedCell, cellid,
+    mapneighbors, foreachneighbors, StorageOrder, HaloTable
 
 # Internal extension points for system-specific subtree walkers.
 using .Fallbacks: collect_subtree,
@@ -274,6 +275,7 @@ export SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator
 export subtree_halo, halo, halo_positions, halo_sizehint
 export StencilTable, stencil_table
 export SubsetPositionedCell, cellid
+export mapneighbors, foreachneighbors, StorageOrder, HaloTable
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate

@@ -189,9 +189,22 @@ halo_table(grid::AbstractGrid, k::Integer = 1;
         connectivity::Connectivity = Vertex()) =
     [neighbors(grid, p, Int(k); connectivity) for p in 1:ncells(grid)]
 
-halo_table(cv::CellVector, k::Integer = 1;
-        connectivity::Connectivity = Vertex()) =
-    [neighbors(cv, p, Int(k); connectivity) for p in 1:length(cv)]
+# The one-ring rows come out of the cursor sweep (`_swept_rows`, in
+# `neighborhood.jl`) rather than one resolved call per cell — same ascending
+# rows, without the per-neighbour window search. A vector still backed by the
+# rooted grid it was built from takes that grid's interior/rim path.
+function halo_table(cv::CellVector, k::Integer = 1;
+        connectivity::Connectivity = Vertex())
+    steps = Int(k)
+    steps == 1 ||
+        return [neighbors(cv, p, steps; connectivity) for p in 1:length(cv)]
+    b = cv.backing
+    if b isa PartialGrid
+        r = _whole_subtree_range(b)
+        r === nothing || return _rooted_halo(b, r, connectivity)
+    end
+    return _swept_rows(cv, connectivity)
+end
 
 # The rooted-subtree fast path. A subtree's INTERIOR is exactly the descendants
 # with no neighbour outside it, so an interior cell's whole row is in-set by
@@ -212,8 +225,13 @@ halo_table(cv::CellVector, k::Integer = 1;
 function halo_table(pg::PartialGrid, k::Integer = 1;
         connectivity::Connectivity = Vertex())
     steps = Int(k)
-    r = steps == 1 ? _whole_subtree_range(pg) : nothing
-    r === nothing && return [neighbors(pg, p, steps; connectivity) for p in 1:ncells(pg)]
+    steps == 1 ||
+        return [neighbors(pg, p, steps; connectivity) for p in 1:ncells(pg)]
+    r = _whole_subtree_range(pg)
+    # A grid that is not a whole rooted subtree still gets the sweep: its
+    # vector reading is position-identical, and the cursor beats one
+    # membership search per neighbour on every subset shape.
+    r === nothing && return _swept_rows(CellVector(pg), connectivity)
     return _rooted_halo(pg, r, connectivity)
 end
 

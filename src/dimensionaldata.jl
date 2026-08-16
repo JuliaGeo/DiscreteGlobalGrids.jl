@@ -33,7 +33,7 @@ import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
 # Core collection operations delegated to `CellVector`.
 import ..DiscreteGlobalGrids.Fallbacks: CellVector, cellset, covering,
     covering_positions, windows, nwindows, RangeWindows, CellWindows, _derive,
-    _windows, SubsetPositionedCell
+    _windows, SubsetPositionedCell, mapneighbors, foreachneighbors, HaloTable
 
 import SmallCollections
 import DimensionalData as DD
@@ -261,6 +261,16 @@ halo(lk::CellLookup; connectivity::Connectivity=Vertex()) =
 # The one-arg positioned iterator; positions on the lookup are the vector's.
 neighbors(lk::CellLookup; connectivity::Connectivity=Vertex()) =
     neighbors(parent(lk); connectivity)
+
+# The closure form and its materialization, likewise.
+mapneighbors(f, lk::CellLookup; kw...) = mapneighbors(f, parent(lk); kw...)
+mapneighbors(f, lk::CellLookup, data::AbstractVector; kw...) =
+    mapneighbors(f, parent(lk), data; kw...)
+foreachneighbors(f, lk::CellLookup; kw...) = foreachneighbors(f, parent(lk); kw...)
+foreachneighbors(f, lk::CellLookup, data::AbstractVector; kw...) =
+    foreachneighbors(f, parent(lk), data; kw...)
+HaloTable(lk::CellLookup; connectivity::Connectivity=Vertex()) =
+    HaloTable(parent(lk); connectivity)
 
 """
     PartialGrid(lk::CellLookup) -> PartialGrid

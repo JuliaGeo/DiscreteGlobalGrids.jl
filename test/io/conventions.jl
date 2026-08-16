@@ -628,14 +628,24 @@ end
 # The stubs
 # ---------------------------------------------------------------------------
 
-@testset "dggread and dggwrite ask for Zarr" begin
+@testset "dggread and dggwrite ask for Zarr, or the extension has them" begin
+    # The stub message is only true before the extension loads, and
+    # `test/io/runtests.jl` includes this file first so that it usually is. When
+    # Zarr came in ahead of the suite the claim to check is the other one: the
+    # stub has been taken over rather than left in place.
+    ext = Base.get_extension(parentmodule(IO.dggread), :DiscreteGlobalGridsZarrExt)
+    fromext(m) = m.module === ext || parentmodule(m.module) === ext
     for f in (IO.dggread, IO.dggwrite)
-        err = try
-            f("store.zarr")
-        catch e
-            e
+        if ext === nothing
+            err = try
+                f("store.zarr")
+            catch e
+                e
+            end
+            @test err isa ErrorException && occursin("using Zarr", err.msg)
+        else
+            @test any(fromext, methods(f))
         end
-        @test err isa ErrorException && occursin("using Zarr", err.msg)
     end
 end
 

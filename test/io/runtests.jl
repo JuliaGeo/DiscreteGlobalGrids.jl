@@ -32,6 +32,9 @@ using .ChunkedLookups
     # The conventions suite carries its own namespace and its own source
     # loading, so it is only run from here, never wired into this one.
     isfile(joinpath(@__DIR__, "conventions.jl")) && include("conventions.jl")
+    # The Zarr-extension suites need `using Zarr` and self-skip when absent.
+    isfile(joinpath(@__DIR__, "read.jl")) && include("read.jl")
+    isfile(joinpath(@__DIR__, "write.jl")) && include("write.jl")
 end
 
 end # module DGGIOTests

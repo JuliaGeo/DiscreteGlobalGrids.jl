@@ -75,7 +75,7 @@ function regrid(data, plan::DirectPlan)
 end
 
 regrid(data, plan::AbstractRegriddingPlan) =
-    error("applying a $(typeof(plan).name.name) is implemented in T7 (the lazy path)")
+    error("$(typeof(plan).name.name) defines no `regrid` application")
 
 """
     regrid!(dest, data; to, from = nothing, method = Conservative(),
@@ -112,7 +112,7 @@ function regrid!(dest, data, plan::DirectPlan)
 end
 
 regrid!(dest, data, plan::AbstractRegriddingPlan) =
-    error("applying a $(typeof(plan).name.name) is implemented in T7 (the lazy path)")
+    error("$(typeof(plan).name.name) defines no `regrid!` application")
 
 """
     plan_regrid(data; to, from = nothing, method = Conservative(),
@@ -140,13 +140,14 @@ function plan_regrid(data; to, from = nothing,
     missingpolicy::AbstractMissingPolicy = Weighted(0.5),
     lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30)
     dst_space = _asspace(to, "to")
-    src_space = from === nothing ? RasterGrid(data) : _asspace(from, "from")
+    src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
     _checkchunks(chunks)
     budget > 0 || throw(ArgumentError("budget must be positive, got $budget"))
-    lazy && error("`lazy = true` is implemented in T7 (the lazy path)")
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *
         "is on $(manifold(src_space)) and the destination on $(manifold(dst_space))"))
+    lazy && return ChunkedPlan(method, missingpolicy, dst_space, src_space,
+        PerChunk(), Int(budget), chunks)
     return DirectPlan(method, missingpolicy, dst_space, src_space,
         wholeblock(method, dst_space, src_space))
 end
@@ -166,6 +167,15 @@ function wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
     build_weights!(coo, method, dst_space, 1:ndst, src_space, 1:nsrc)
     return WeightBlock(coo, ndst, nsrc)
 end
+
+# The source space when `from` was not given. Only a dimensional raster carries
+# enough geometry to derive one; a plain array is numbers with no coordinates on
+# them, and guessing an extent for it would be worse than saying so.
+_sourcespace(data::DD.AbstractDimArray) = RasterGrid(data)
+_sourcespace(data) = throw(ArgumentError(
+    "`from` was not given, and a source space cannot be derived from a " *
+    "$(typeof(data)): it carries no coordinates. Pass `from = ` a RegridSpace, " *
+    "or a DimensionalData array whose dimensions describe the raster."))
 
 function _asspace(space, name)
     space isa RegridSpace || throw(ArgumentError(

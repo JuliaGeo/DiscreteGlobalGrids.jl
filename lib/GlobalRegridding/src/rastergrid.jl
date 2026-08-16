@@ -60,6 +60,26 @@ otherwise.
 chartlimits(::Any) = (nothing, nothing)
 chartlimits(::LonLatToSphere) = (360.0, (-90.0, 90.0))
 
+"""
+    chartarcs(transform, dx, dy) -> (Δx, Δy)
+
+An upper bound, in radians of arc, on the sphere distance a chart step of `dx`
+in the first native coordinate or `dy` in the second can span.
+
+The one place a chart's native units are converted to angle. `chartspacing` of a
+[`RasterGrid`](@ref) is this applied to its largest edge steps, and its only
+consumer is [`support_radius`](@ref), so an over-estimate costs chunk-discovery
+work and an under-estimate silently truncates stencils.
+"""
+chartarcs(t::Any, dx, dy) = throw(ArgumentError(
+    "a RasterGrid on a $(typeof(t)) chart cannot bound its cell spacing in " *
+    "radians of arc; define GlobalRegridding.chartarcs(::$(typeof(t)), dx, dy) " *
+    "to use BilinearPoint with it."))
+
+# A step of Δλ along a parallel spans Δλ·cos φ ≤ Δλ radians, and a step of Δφ
+# along a meridian spans exactly Δφ.
+chartarcs(::LonLatToSphere, dx, dy) = (deg2rad(Float64(dx)), deg2rad(Float64(dy)))
+
 # ===========================================================================
 # The space
 # ===========================================================================
@@ -345,7 +365,10 @@ ncells(space::RasterGrid) = _nx(space) * _ny(space)
 
 manifold(::RasterGrid) = GOCore.Spherical(; radius = 1.0)
 
-hascellchart(::RasterGrid) = true
+# The chart an interpolating method writes its stencil against is the lattice of
+# cell centres, and placing a destination centroid on it needs the inverse
+# transform. A raster built without one still has cells, just no chart.
+hascellchart(space::RasterGrid) = space.inverse !== nothing
 
 """
     cellsubscript(space::RasterGrid, i::Int) -> (ix, iy)
@@ -732,3 +755,120 @@ function chunktree(space::RasterGrid)
     end
     return RasterFlatTree(space, 1:n, caps)
 end
+
+"""
+    subtree(space::RasterGrid, inds)
+
+The raster's own tree restricted to `inds`.
+
+An index set that is a rectangle of the lattice — every chunk, and the whole
+space — keeps the `O(1)` [`RasterCellTree`](@ref); anything else falls back to a
+flat tree with one analytic cap per listed cell. Leaf indices are cell positions
+either way, as the generic [`subtree`](@ref) requires.
+"""
+function subtree(space::RasterGrid, inds)
+    rect = _indexrect(space, inds)
+    rect === nothing && return celltree(space, inds)
+    return RasterCellTree(space, rect...)
+end
+
+# The number of cells along the dimension that varies fastest in cell positions.
+_nfast(space::RasterGrid) = space.xfast ? _nx(space) : _ny(space)
+
+"""
+    _indexrect(space::RasterGrid, inds) -> (ix0, ix1, iy0, iy1) or nothing
+
+The index rectangle `inds` enumerates, or `nothing` when it is not one.
+
+`inds` is a rectangle when it lists exactly the cells of a lattice box in the
+space's own position order, which is what [`cellindices`](@ref) produces for a
+chunk and what a whole-space `1:ncells` is.
+"""
+function _indexrect(space::RasterGrid, inds)
+    n = ncells(space)
+    (isempty(inds) || length(inds) > n) && return nothing
+    nfast = _nfast(space)
+    lo, hi = Int(first(inds)), Int(last(inds))
+    (1 <= lo <= n && 1 <= hi <= n) || return nothing
+    b0, a0 = fldmod1(lo, nfast)
+    b1, a1 = fldmod1(hi, nfast)
+    (a1 >= a0 && b1 >= b0) || return nothing
+    length(inds) == (a1 - a0 + 1) * (b1 - b0 + 1) || return nothing
+    k = 0
+    for b in b0:b1, a in a0:a1
+        Int(inds[k+=1]) == a + (b - 1) * nfast || return nothing
+    end
+    return space.xfast ? (a0, a1, b0, b1) : (b0, b1, a0, a1)
+end
+
+# ===========================================================================
+# The cell chart
+# ===========================================================================
+#
+# `chartaxes` and its companions are declared in `interpolation.jl`, which the
+# module includes after this file; these methods therefore precede the generic
+# declarations they extend. Nothing is called at load time, so the order is a
+# reading inconvenience only.
+
+"""
+    chartaxes(space::RasterGrid)
+
+The cell-centre coordinates along each spatial dimension, in **lookup order** —
+descending for a reverse-ordered lookup, which the stencil locator handles.
+Cell `(ix, iy)` is centred at `(xs[ix], ys[iy])`, the same subscripting
+[`cellposition`](@ref) inverts.
+"""
+chartaxes(space::RasterGrid) = (_centres(space.xedges), _centres(space.yedges))
+
+_centres(e::Vector{Float64}) = [(e[k] + e[k+1]) / 2 for k in 1:(length(e)-1)]
+
+"""
+    chartcoords(space::RasterGrid, p)
+
+`p` in the raster's native coordinates, or `nothing` when the chart cannot be
+inverted. A periodic native X is answered on the branch the edge vector is
+written on, so a raster spanning `0:360` places a point at 350 rather than -10.
+"""
+function chartcoords(space::RasterGrid, p)
+    space.inverse === nothing && return nothing
+    x, y = space.inverse(p)
+    return (_onbranch(space.xedges, Float64(x), space.xperiod), Float64(y))
+end
+
+function _onbranch(edges::Vector{Float64}, v::Float64, period)
+    period === nothing && return v
+    lo = min(edges[1], edges[end])
+    return lo + mod(v - lo, period::Float64)
+end
+
+chartposition(space::RasterGrid, ix::Int, iy::Int) = cellposition(space, ix, iy)
+
+"""
+    chartperiod(space::RasterGrid)
+
+`(360.0, nothing)` for a raster whose X edges span the chart's whole period, and
+`(nothing, nothing)` otherwise.
+
+The chart being periodic is not enough: a regional raster on a longitude chart
+does not close, and reporting a period would wrap its stencils onto the far edge
+of the domain.
+"""
+function chartperiod(space::RasterGrid)
+    p = space.xperiod
+    p === nothing && return (nothing, nothing)
+    span = abs(space.xedges[end] - space.xedges[1])
+    return (isapprox(span, p; rtol = 1e-9) ? p : nothing, nothing)
+end
+
+"""
+    chartspacing(space::RasterGrid)
+
+The largest edge step along each dimension, converted to radians of arc by
+[`chartarcs`](@ref). Adjacent cell centres are `(e[k+2] - e[k]) / 2` apart in
+native units, which the largest edge step bounds.
+"""
+chartspacing(space::RasterGrid) =
+    chartarcs(space.transform, _maxstep(space.xedges), _maxstep(space.yedges))
+
+_maxstep(e::Vector{Float64}) =
+    maximum(abs(e[k+1] - e[k]) for k in 1:(length(e)-1))

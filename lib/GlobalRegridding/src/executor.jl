@@ -236,21 +236,23 @@ accumulated.
 `num` is the weighted sum with invalid sources contributing zero, `cover` the
 weight of the sources that were valid, and `total` the accumulated reference
 weight from [`blockreference!`](@ref) — the denominator the method reported, or
-the row sums when it reported none. `hasdenom` says which of those two `total`
-is, and is the whole of the distinction below; the second form reads it off a
-block.
+the row sums when it reported none.
 
-| block | [`Extensive`](@ref) | [`Weighted`](@ref)`(t)` |
-|---|---|---|
-| with a denominator | `num` | `num / cover`, blank where `cover ≤ 0` or `cover < t · total` |
-| without one | `num` | `num`, blank where `cover ≤ 0` or `cover < t · total` |
+  - [`Extensive`](@ref): `num`.
+  - [`Weighted`](@ref)`(t)`: `num / cover`, blank where `cover ≤ 0` or
+    `cover < t · total`.
 
-A method's denominator is its declaration of what full coverage weighs, and only
-a block that declares one is normalized: weights that already sum to one are
-returned as they are rather than silently renormalized over the part of a
-stencil that survived. A point method that wants a truncated stencil rescaled
-rather than blanked reports a denominator ([`adddenom!`](@ref)) and gets the
-first row.
+`Weighted` divides by the valid coverage whatever the method built, which is
+what makes it invariant to how the source is padded: a destination whose sources
+were all valid divides by the same weight it accumulated and is unchanged, and
+one that lost part of its support to missing data is renormalized over what
+survived rather than returned scaled down. Whether a truncated support is
+rescaled or discarded is `threshold`'s decision, not the block's — a method that
+wants only whole supports asks for `Weighted(1)`.
+
+`hasdenom` records whether the block declared a denominator. It selects nothing
+here: a denominator's whole effect is on what `total` is, which the caller has
+already accumulated. The second form reads it off a block.
 
 Blanked destinations are written as `missing` when `eltype(out)` admits it and
 NaN otherwise. `Extensive` blanks nothing: a destination no valid source reached
@@ -274,7 +276,7 @@ end
 
 function finalize!(out::AbstractVector, num::AbstractVector{Float64},
     cover::AbstractVector{Float64}, total::AbstractVector{Float64},
-    policy::Weighted, hasdenom::Bool)
+    policy::Weighted, ::Bool)
     blank = _maskedvalue(eltype(out))
     t = policy.threshold
     @inbounds for j in eachindex(out, num, cover, total)
@@ -282,7 +284,7 @@ function finalize!(out::AbstractVector, num::AbstractVector{Float64},
         if c <= 0 || c < t * total[j]
             out[j] = blank
         else
-            out[j] = hasdenom ? num[j] / c : num[j]
+            out[j] = num[j] / c
         end
     end
     return out

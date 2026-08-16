@@ -103,14 +103,146 @@ Where a [`ChunkedPlan`](@ref) keeps the blocks it has built:
 abstract type AbstractBlockStorage end
 
 """
-    PerChunk(capacity)
+    CachedBlock(block, ref, bytes)
 
-Keep built [`WeightBlock`](@ref)s in memory, evicting least-recently-used
-blocks past `capacity`.
+A built [`WeightBlock`](@ref) together with the data-independent quantities worth
+keeping beside it: its reference vector (`blockreference!`) and its approximate
+size in bytes. `used` is the storage's recency stamp.
 """
-struct PerChunk <: AbstractBlockStorage
+mutable struct CachedBlock
+    block::WeightBlock
+    ref::Vector{Float64}
+    bytes::Int
+    used::Int
+end
+
+# Approximate resident bytes of a block and its reference vector. Sparse storage
+# is counted from its own arrays rather than by `summarysize`, which walks.
+function _blockbytes(block::WeightBlock, ref::Vector{Float64})
+    W = block.weights
+    w = W isa SparseMatrixCSC ?
+        16 * SparseArrays.nnz(W) + 8 * (size(W, 2) + 1) :
+        8 * length(W)
+    d = block.denom === nothing ? 0 : 8 * length(block.denom)
+    return w + d + 8 * length(ref) + 64
+end
+
+"""
+    PerChunk(capacity)
+    PerChunk(; capacity = typemax(Int), maxbytes = typemax(Int))
+
+Keep built [`WeightBlock`](@ref)s in memory, keyed by
+`(destination chunk, source chunk)`, evicting least-recently-used blocks once
+either bound is exceeded.
+
+`capacity` bounds the number of resident blocks and `maxbytes` their approximate
+total size; the most recently touched block is never evicted, so a bound of one
+still applies. Eviction costs correctness nothing — an evicted block is rebuilt
+from geometry on its next touch — so the bounds are a residency knob and never
+change the answer.
+
+Concurrent readers of **different** keys are safe: the dictionary is guarded by a
+lock that is never held across a weight build. Two tasks racing on one key may
+both build it, and the loser's block is discarded.
+"""
+mutable struct PerChunk <: AbstractBlockStorage
     capacity::Int
-    PerChunk(::Integer) = error("PerChunk is not yet implemented")
+    maxbytes::Int
+    blocks::Dict{Tuple{Int,Int},CachedBlock}
+    bytes::Int
+    clock::Int
+    builds::Int
+    lock::ReentrantLock
+end
+
+function PerChunk(; capacity::Integer = typemax(Int), maxbytes::Integer = typemax(Int))
+    capacity >= 1 || throw(ArgumentError("PerChunk capacity must be at least one block, got $capacity"))
+    maxbytes >= 1 || throw(ArgumentError("PerChunk maxbytes must be positive, got $maxbytes"))
+    return PerChunk(Int(capacity), Int(maxbytes), Dict{Tuple{Int,Int},CachedBlock}(),
+        0, 0, 0, ReentrantLock())
+end
+
+PerChunk(capacity::Integer) = PerChunk(; capacity)
+
+Base.show(io::IO, s::PerChunk) =
+    print(io, "PerChunk(", length(s.blocks), " blocks, ", s.bytes, " bytes)")
+
+"""
+    nblocks(storage) -> Int
+
+How many [`WeightBlock`](@ref)s `storage` currently holds.
+"""
+nblocks(s::PerChunk) = length(s.blocks)
+
+"""
+    storagebytes(storage) -> Int
+
+The approximate resident size in bytes of the blocks `storage` holds.
+"""
+storagebytes(s::PerChunk) = s.bytes
+
+"""
+    getblock!(storage, key, build) -> CachedBlock
+
+The cached block for `key`, building it with `build()` on first touch.
+
+`build` runs **outside** the storage lock, so a slow weight construction never
+blocks a reader of another key; a duplicate build racing on one key is resolved
+by keeping the block already inserted.
+"""
+function getblock!(storage::PerChunk, key::Tuple{Int,Int}, build::F) where {F}
+    hit = _touch!(storage, key)
+    hit === nothing || return hit
+    block = build()
+    ref = blockreference!(Vector{Float64}(undef, size(block, 1)), block)
+    entry = CachedBlock(block, ref, _blockbytes(block, ref), 0)
+    return _insert!(storage, key, entry)
+end
+
+function _touch!(storage::PerChunk, key::Tuple{Int,Int})
+    @lock storage.lock begin
+        entry = get(storage.blocks, key, nothing)
+        entry === nothing && return nothing
+        entry.used = (storage.clock += 1)
+        return entry
+    end
+end
+
+function _insert!(storage::PerChunk, key::Tuple{Int,Int}, entry::CachedBlock)
+    @lock storage.lock begin
+        existing = get(storage.blocks, key, nothing)
+        if existing !== nothing
+            existing.used = (storage.clock += 1)
+            return existing
+        end
+        entry.used = (storage.clock += 1)
+        storage.blocks[key] = entry
+        storage.bytes += entry.bytes
+        storage.builds += 1
+        _evict!(storage, key)
+        return entry
+    end
+end
+
+# Drop least-recently-used entries until both bounds hold, never the one just
+# touched. Called under the lock.
+function _evict!(storage::PerChunk, keep::Tuple{Int,Int})
+    while length(storage.blocks) > 1 &&
+          (length(storage.blocks) > storage.capacity || storage.bytes > storage.maxbytes)
+        victim = keep
+        oldest = typemax(Int)
+        for (k, e) in storage.blocks
+            k == keep && continue
+            if e.used < oldest
+                oldest = e.used
+                victim = k
+            end
+        end
+        victim == keep && break
+        storage.bytes -= storage.blocks[victim].bytes
+        delete!(storage.blocks, victim)
+    end
+    return storage
 end
 
 """
@@ -128,7 +260,9 @@ struct Spilled <: AbstractBlockStorage
 end
 
 """
-    ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, budget)
+    ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, budget, chunks)
+    ChunkedPlan(method, missingpolicy, dst_space, src_space;
+                storage = PerChunk(), budget = 2^30, chunks = nothing)
 
 A plan whose weights are [`WeightBlock`](@ref)s keyed by
 `(destination chunk, source chunk)` and built on first touch.
@@ -137,15 +271,58 @@ The lazy and streaming case: reading a destination chunk discovers its
 connected source chunks, takes each pair's block from `storage`, and
 accumulates. `budget` is a performance knob only — it decides whether the
 connected source chunks are held together or streamed one at a time — and never
-changes the answer.
+changes the answer. `chunks` is the chunking the destination array reports, as a
+`DiskArrays.GridChunks`, a tuple of chunk sizes, or `nothing` to derive it from
+the destination space's own chunks and the source's non-spatial chunking.
+
+Constructing a plan builds no weights and reads no data.
 """
 struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
-                   D<:RegridSpace,S<:RegridSpace,T<:AbstractBlockStorage} <: AbstractRegriddingPlan
+                   D<:RegridSpace,S<:RegridSpace,T<:AbstractBlockStorage,C} <: AbstractRegriddingPlan
     method::M
     missingpolicy::P
     dst_space::D
     src_space::S
     storage::T
     budget::Int
-    ChunkedPlan(args...) = error("ChunkedPlan is not yet implemented")
+    chunks::C
+end
+
+ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
+    dst_space::RegridSpace, src_space::RegridSpace;
+    storage::AbstractBlockStorage = PerChunk(), budget::Integer = 2^30, chunks = nothing) =
+    ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget), chunks)
+
+Base.show(io::IO, plan::ChunkedPlan) =
+    print(io, "ChunkedPlan(", typeof(plan.method).name.name, ", ",
+        ncells(plan.dst_space), " cells / ", nchunks(plan.dst_space), " chunks ← ",
+        ncells(plan.src_space), " cells / ", nchunks(plan.src_space), " chunks)")
+
+"""
+    blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) -> CachedBlock
+
+The [`WeightBlock`](@ref) of one chunk pair, from the plan's storage, built on
+first touch by one [`build_weights!`](@ref) call over the two chunks' cell
+indices.
+
+Building is geometry-only and reads no data, so a block is as cheap to rebuild
+after eviction as it was to build.
+"""
+function blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer)
+    key = (Int(dstchunk), Int(srcchunk))
+    return getblock!(plan.storage, key, () -> buildblock(plan, key[1], key[2]))
+end
+
+"""
+    buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) -> WeightBlock
+
+One chunk pair's weights, built unconditionally — the storage decides whether
+this is called.
+"""
+function buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer)
+    dinds = cellindices(plan.dst_space, Int(dstchunk))
+    sinds = cellindices(plan.src_space, Int(srcchunk))
+    coo = WeightCOO(length(dinds))
+    build_weights!(coo, plan.method, plan.dst_space, dinds, plan.src_space, sinds)
+    return WeightBlock(coo, length(dinds), length(sinds))
 end

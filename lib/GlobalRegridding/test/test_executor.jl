@@ -86,14 +86,15 @@ end
         field = rand(6, 3) .+ 1
         method = ToyDiagonalMethod(; scale = 2.0, withdenom = false)
 
-        # No denominator means the method declares its weights already
-        # normalized: both policies return the raw sum.
+        # `Weighted` divides by the accumulated valid weight whether or not the
+        # block declared a denominator, so a block with none still returns the
+        # mean; `Extensive` returns the undivided sum.
         weighted = regrid(field; to = space, from = space, method,
             missingpolicy = Weighted(0.5))
         extensive = regrid(field; to = space, from = space, method,
             missingpolicy = Extensive())
-        @test weighted ≈ 2 .* vec(field)
-        @test extensive ≈ weighted
+        @test weighted ≈ vec(field)
+        @test extensive ≈ 2 .* weighted
 
         # `Weighted` still blanks a destination whose stencil lost its mass to
         # invalid data, measured against the row sum rather than a denominator.
@@ -104,7 +105,7 @@ end
             missingpolicy = Weighted(0.5))
         rest = setdiff(1:n, (h,))
         @test isnan(blanked[h])
-        @test blanked[rest] ≈ (2 .* vec(field))[rest]
+        @test blanked[rest] ≈ vec(field)[rest]
         @test regrid(holed; to = space, from = space, method,
             missingpolicy = Extensive())[h] == 0.0
     end
@@ -166,9 +167,9 @@ end
 
         # `to` is a space at this layer, and says so.
         @test_throws ArgumentError plan_regrid(field; to = (6, 3), from = space, method)
-        # The lazy path is not this task's.
-        @test_throws ErrorException plan_regrid(field; to = space, from = space,
-            method, lazy = true)
+        # `lazy = true` plans to a chunked plan and builds no weights doing so.
+        @test plan_regrid(field; to = space, from = space,
+            method, lazy = true) isa ChunkedPlan
         # A source that does not flatten to the space's cells is caught before
         # any weight is applied.
         @test_throws DimensionMismatch regrid(rand(5, 3); to = space, from = space, method)

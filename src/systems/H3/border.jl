@@ -9,19 +9,13 @@
 #
 # All pentagon base cells delete digit 1 (the K axis). The pentagon flag drops
 # after the root because a rim suffix contains no zero digit.
-# The transition table is fitted and parity-dependent. Its parity roles are
-# swapped relative to IGeo7: the branch H3 takes
-# at an even child level is the one IGeo7 takes at an odd one.
+# The transition table depends on child-level parity. H3's even-level rule
+# corresponds to IGeo7's odd-level rule.
 #
-# The walk is a resumable iterator: an explicit frame stack, one inline value, so
-# a partial rim costs nothing beyond `O(depth)`. The interior comes off the same
-# walk — where the automaton PRUNES, the whole branch below is interior, so
-# `H3InteriorEngine` descends it in full instead of dropping it, and never needs
-# a rim membership set.
+# The resumable iterator stores an inline frame stack in `O(depth)` memory.
+# `H3InteriorEngine` fully descends branches that the rim iterator prunes.
 
-# Extended, not shadowed: this file defines H3's method on the package generic,
-# so `H3.subtree_border` and `DiscreteGlobalGrids.subtree_border` are one
-# function and generic code reaches the automaton without knowing it exists.
+# Extend the package-level `subtree_border` generic.
 import ..DiscreteGlobalGrids: subtree_border
 
 """
@@ -76,10 +70,8 @@ const H3Stack = DGG.Helpers.SmallList{_H3_STACK_CAP,H3Frame}
 """
     H3Walk(z, stack)
 
-The walk state. `z` carries the digits of the current path — each descent
-overwrites one digit slot, so the parent's id needs no restoring — and already
-holds `target` in its resolution field, which is what makes every leaf come out
-fully formed and in ascending order by construction.
+Iterator state containing the current path id and inline frame stack. `z`
+already contains the target resolution; descending overwrites one digit slot.
 """
 struct H3Walk
     z::UInt64
@@ -127,7 +119,10 @@ function Base.iterate(e::H3RimEngine)
     return iterate(e, _h3_root_walk(e, Int8(1)))
 end
 
-function Base.iterate(e::H3RimEngine, w::H3Walk)
+Base.iterate(e::H3RimEngine, w::H3Walk) = _h3_rim_advance(e.res, e.target, w)
+
+# Advance either a full-rim or seeded-arc walk from its current frame stack.
+function _h3_rim_advance(res0::Int, target::Int, w::H3Walk)
     z = w.z
     st = w.stack
     while !isempty(st)
@@ -140,12 +135,12 @@ function Base.iterate(e::H3RimEngine, w::H3Walk)
         digit = Int(f.next)
         st = DGG.Helpers.small_setlast(st, _h3_bump(f))
         f.pentagon && digit == 1 && continue   # the K axis, deleted under a pentagon
-        res = e.res + k - 1
+        res = res0 + k - 1
         child = _h3_border_step((Int(f.L), Int(f.s)), digit, res + 1)
         child[1] == 0 && continue
         shift = _h3_digit_shift(res + 1)
         z = (z & ~(UInt64(7) << shift)) | (UInt64(digit) << shift)
-        res + 1 == e.target && return (H3Cell(z), H3Walk(z, st))
+        res + 1 == target && return (H3Cell(z), H3Walk(z, st))
         st = DGG.Helpers.small_push(st,
             H3Frame(Int8(child[1]), Int8(child[2]), Int8(1), false, false))
     end
@@ -153,11 +148,39 @@ function Base.iterate(e::H3RimEngine, w::H3Walk)
 end
 
 """
+    H3ArcEngine(z, res, target, pentagon, L, s)
+
+Iterate level-`target` descendants of `z` along exposed directions
+`s:s+L-1 (mod 6)`, in ascending id order and `O(depth)` memory. Unlike
+`H3RimEngine`, arbitrary arcs have no closed-form length and report
+`SizeUnknown()`.
+
+`pentagon` describes the seed cell. It suppresses the deleted K-axis digit at
+the root; descendants reached along a rim suffix are not pentagons.
+"""
+struct H3ArcEngine
+    z::UInt64
+    res::Int
+    target::Int
+    pentagon::Bool
+    L::Int8
+    s::Int8
+end
+
+Base.eltype(::Type{H3ArcEngine}) = H3Cell
+Base.IteratorSize(::Type{H3ArcEngine}) = Base.SizeUnknown()
+
+Base.iterate(e::H3ArcEngine) = iterate(e, H3Walk(e.z,
+    DGG.Helpers.small_push(_h3_empty_stack(),
+        H3Frame(e.L, e.s, Int8(1), e.pentagon, false))))
+
+Base.iterate(e::H3ArcEngine, w::H3Walk) = _h3_rim_advance(e.res, e.target, w)
+
+"""
     H3InteriorEngine(z, res, target, pentagon)
 
-The complement, off the same automaton: a branch the rim walk prunes is wholly
-interior, so this one descends it in full (digits `0:6`) instead of dropping it.
-No rim membership is ever tested or stored.
+Iterate interior descendants. Branches pruned by the rim automaton are wholly
+interior and are descended over digits `0:6` without storing a rim set.
 """
 struct H3InteriorEngine
     z::UInt64
@@ -224,6 +247,32 @@ function DGG.interior_engine(sys::H3System, c::H3Cell, target::Int,
     lvl, pentagon = _h3_border_checked(c, target)
     return H3InteriorEngine(_h3_with_resolution(c.id, target), lvl, target, pentagon)
 end
+
+# ---------------------------------------------------------------------------
+# Hexagonal halo support
+# ---------------------------------------------------------------------------
+
+# The ring position of the step from a cell's parent to the cell, read off the
+# cell's own last digit through the same table `_h3_border_step` uses. Digit 0 is
+# the centre child, which has no direction, and a base cell has no parent.
+function DGG.hex_child_direction(::H3System, c::H3Cell)
+    res = level(c)
+    res == 0 && return -1
+    digit = Int((c.id >> _h3_digit_shift(res)) & UInt64(7))
+    digit == 0 && return -1
+    return @inbounds _H3_DIGIT_DIR[digit]
+end
+
+# `hex_halo_engine` validates the target level and supplies neighbouring cells.
+DGG.seeded_rim_engine(::H3System, c::H3Cell, target::Int, arclen::Int,
+        start::Int) =
+    H3ArcEngine(_h3_with_resolution(c.id, target), level(c), target,
+        H3Native.is_pentagon(c.id), Int8(arclen), Int8(start))
+
+# Generate a subtree halo from calibrated arcs of neighbouring subtrees.
+DGG.halo_engine(sys::H3System, c::H3Cell, target::Int,
+    connectivity::Connectivity) =
+    DGG.hex_halo_engine(sys, c, target, connectivity)
 
 # libh3 validates neither `cellToChildren` nor `cellToChildrenSize`, so a
 # malformed index would otherwise come back as a confidently enumerated rim

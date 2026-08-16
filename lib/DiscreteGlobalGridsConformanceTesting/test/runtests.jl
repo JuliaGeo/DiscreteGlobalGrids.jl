@@ -1,20 +1,6 @@
-# Self-test of the conformance harness.
-#
-# A harness that only ever runs against correct implementations is untested: it
-# would pass just as happily if every one of its assertions were `@test true`.
-# So this suite does two things. It runs both suites against a small, correct,
-# inline mock system — a cube-face quadtree — and it then runs them against
-# deliberately broken variants of that same mock and asserts that the harness
-# *catches* each one. The mock and its bugs differ in exactly one method, so a
-# caught failure is attributable to the law it violates.
-#
-# The mock implements the REQUIRED interface surface and nothing else (plus
-# `cellposition`, which the T2 fallbacks will provide generically but which
-# does not exist yet on this branch, and neighbours/ring, which are cheap on a
-# quadtree). That is deliberate: it proves the harness does not secretly depend
-# on optional methods. A second variant adds `cellat`, `ancestor` and
-# `descendants` so the guarded branches are exercised rather than merely
-# skipped.
+# The harness is tested against a conforming cube-face quadtree and variants
+# that each violate one contract. The base mock implements the required
+# interface; an `Extras` variant adds optional methods so guarded checks run.
 
 module TestConformance
 
@@ -27,7 +13,7 @@ import GeometryOps as GO
 
 const USph = GO.UnitSpherical
 # ===========================================================================
-# The mock: a cube-face quadtree
+# Cube-face quadtree mock
 #
 # Six root faces of the circumscribed cube, each subdivided 2x2 in face
 # coordinates and radially projected onto the sphere. Cell ids are
@@ -101,9 +87,8 @@ The (u, v) box of a cell: `(f, u0, v0, u1, v1)`.
 which matters because the neighbour relation below identifies shared cube-edge
 vertices by exact equality across two different faces' formulas.
 
-The `:deep_drift` bug slides every cell at level ≥ 2 out from under its
-ancestors while leaving its own geometry self-consistent — the one violation
-that only the recursive, every-ancestor covering walk can see.
+With `bug = :deep_drift`, cells at level 2 and deeper move outside their
+ancestors while retaining internally consistent cell geometry.
 """
 function _cell_box(level::Int, idx::Int, bug::Symbol = :none)
     f, x, y = _decode(level, idx)
@@ -184,10 +169,9 @@ function DGG.children(s::CubeSystem, c::LevelIndex)
     return s.bug === :unsorted_children ? reverse(kids) : kids
 end
 
-# The cap around the cell's own centroid, inflated by `cap_inflation`. Sound
-# because a child's (u, v) box is a quadrant of its parent's, so the whole
-# subtree stays inside the parent's spherical quad, whose farthest point from
-# the centroid is a corner.
+# Inflate the cap from the cell centroid to its farthest corner. Each child box
+# is a quadrant of its parent, so the parent's spherical quad contains its
+# subtree.
 function DGG.node_extent(s::CubeSystem, c::LevelIndex)
     l = level(c)
     idx = Int(rawid(c))
@@ -207,11 +191,9 @@ end
 
 # --- neighbours ------------------------------------------------------------
 #
-# Computed from shared boundary vertices rather than from lattice arithmetic,
-# which keeps cross-face adjacency correct for free: the vertices along a cube
-# edge are produced by identical arithmetic on both faces, so they compare
-# equal exactly. Two cells are `Vertex()` neighbours when they share at least
-# one corner and `Edge()` neighbours when they share two.
+# Adjacency is derived from shared boundary vertices. Cube-edge vertices use
+# identical arithmetic on both faces and therefore compare exactly. Vertex
+# neighbours share at least one corner; edge neighbours share two.
 
 const INCIDENCE = Dict{Int,Dict{NTuple{3,Float64},Vector{Int}}}()
 
@@ -253,18 +235,12 @@ end
 
 # --- rotational order ------------------------------------------------------
 #
-# The contract's order is ROTATIONAL: each ring runs counter-clockwise seen from
-# OUTSIDE the sphere, and `neighbors(c, k)` is the rings 1..k concatenated
-# outward. A cube quadtree has no lattice direction to read a ring off — a
-# neighbourhood straddles faces, and a cube corner is shared by three of them —
-# so the mock realises the contract the way the interface docstring recommends
-# for exactly that case: by measurement. Each ring is ordered by azimuth about
-# the subject's centroid in a right-handed tangent frame, with the first ring-1
-# neighbour as the zero direction so every ring starts on the same spoke, and
-# exact ties broken by ascending id.
-#
-# This is written out here rather than borrowed from the harness, so that the
-# order laws test the mock's order instead of restating the harness's formula.
+# Rings run counter-clockwise as seen from outside the sphere, and
+# `neighbors(c, k)` concatenates rings 1:k. Because a cube neighbourhood can
+# cross several faces, the mock orders each ring by azimuth in a right-handed
+# tangent frame. Every ring starts on the spoke through the first ring-1
+# neighbour, with equal azimuths ordered by cell id. This implementation is
+# independent of the harness's order checks.
 
 "A right-handed tangent basis at `p`, with `east × north == p` (outward)."
 function _frame(p)
@@ -316,14 +292,12 @@ function DGG.neighbors(g::CubeGrid, c::LevelIndex, k::Int = 1;
     ids = Int[]
     for j in 1:k
         shell = _ring_ids(g.level, idx, j, connectivity)
-        # The old, wrong order: each ring by ascending id. The disc is still the
-        # rings concatenated, so this breaks the ROTATIONAL law and nothing else.
+        # Sorting each ring by id preserves membership but violates rotational order.
         g.sys.bug === :sorted_neighbors && sort!(shell)
         append!(ids, shell)
     end
     out = [LevelIndex(g.level, i) for i in ids]
-    # The injected asymmetry: cell 0 forgets one of its neighbours, which still
-    # remembers cell 0.
+    # Cell 0 omits one neighbour that still reports cell 0.
     g.sys.bug === :asymmetric_neighbors && idx == 0 && !isempty(out) && pop!(out)
     return out
 end
@@ -334,10 +308,8 @@ function DGG.ring(g::CubeGrid, c::LevelIndex, k::Int;
     k == 0 && return [c]
     ids = _ring_ids(g.level, Int(rawid(c)), k, connectivity)
     g.sys.bug === :sorted_neighbors && sort!(ids)
-    # A ring computed by an independent walk that agrees with `neighbors` as a
-    # SET and starts somewhere else: still counter-clockwise, still the right
-    # cells, no longer the tail block of the disc. This is the way the two are
-    # usually broken apart, and the set-level laws cannot see it.
+    # Rotating the independently computed ring preserves membership and winding
+    # but breaks the requirement that it be the disc's tail block.
     g.sys.bug === :rotated_ring && length(ids) > 1 && (ids = circshift(ids, 1))
     return [LevelIndex(g.level, i) for i in ids]
 end
@@ -380,12 +352,8 @@ end
 # ===========================================================================
 # Failure capture
 #
-# The `check_*` predicates are the primary way this suite asserts that a broken
-# mock is caught, but they share code with the `@testset` layer rather than
-# being it. So one test drives the real `@testset` entry point against a broken
-# mock inside a captured test set and counts the failures, with output silenced
-# because a `DefaultTestSet` reports failures as they happen and these are
-# expected ones.
+# Captured test sets verify that the public `@testset` entry points report the
+# same deliberate failures as the boolean `check_*` predicates.
 # ===========================================================================
 
 function count_results(ts)
@@ -440,8 +408,7 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
             test_grid_interface(DGG.levelgrid(MINIMAL, l);
                 n_samples = 12, label = "CubeGrid level $l")
         end
-        # The `Extras` variant implements `cellat`, so the guarded test set runs
-        # for real here rather than being skipped.
+        # `Extras` implements `cellat`, enabling the guarded lookup checks.
         test_grid_interface(DGG.levelgrid(FULL, 2);
             n_samples = 12, label = "CubeGrid+cellat level 2")
     end
@@ -459,10 +426,8 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         @test all(contains("covering law"), problems)
     end
 
-    # The covering law is the one contract a cell cannot violate on its own: a
-    # drifting descendant's geometry is self-consistent and its own node extent
-    # covers it, so every check that looks at one cell in isolation passes. Only
-    # walking the subtree and testing against EVERY ancestor's extent sees it.
+    # The drifting descendant is internally consistent but falls outside an
+    # ancestor's extent, so only the recursive covering check detects it.
     @testset "harness catches: descendant drifting out of its ancestors' extents" begin
         drifted = broken(:deep_drift)
         @test Conf.check_grid_interface(DGG.levelgrid(drifted, 2))   # invisible here
@@ -471,10 +436,8 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         problems = Conf.covering_law_problems(drifted)
         @test any(contains("ancestor at level 0, descendant at level 2"), problems)
 
-        # The chain-to-max_level probe earns its keep: with the bounded bushy
-        # walk switched off the chain alone still catches the drift, and with
-        # the chain switched off too, nothing does. Without this pair, deleting
-        # `_covering_chain!` would leave the whole suite green.
+        # With branch descent disabled, the chain to `max_level` still detects
+        # deep drift; disabling the chain removes that coverage.
         @test !Conf.check_covering_law(drifted; descent_depth = 0)
         @test Conf.check_covering_law(drifted; descent_depth = 0, deep_chain = false)
     end
@@ -534,43 +497,37 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         @test any(contains("not symmetric"), problems)
     end
 
-    # The one-directional sweep only fires when the sampled cell is the VICTIM,
-    # and a sampler that draws 8 cells out of a level almost never draws it. The
-    # two-hop closure sees the same omission from the cell that COMMITTED it,
-    # which is the cell an implementor is most likely to be looking at.
+    # The direct sweep detects an omission only from the omitted cell. The
+    # two-hop closure also detects it from the cell that omitted the neighbour.
     @testset "harness catches: asymmetry from the forgetful cell (two-hop closure)" begin
         grid = DGG.levelgrid(broken(:asymmetric_neighbors), 1)
         culprit = LevelIndex(1, 0)   # the cell that drops one of its neighbours
 
-        # One-directional only: everything cell 0 still lists lists cell 0 back,
-        # so this is silent. That silence is the reason the closure exists.
+        # Cell 0's remaining neighbours are symmetric, so the direct check passes.
         @test Conf.neighbor_problems(grid, culprit; two_hop = false) == String[]
 
-        # Two hops out and back: the forgotten cell is a neighbour of one of the
-        # survivors, it names cell 0, and cell 0 does not name it.
+        # The omitted cell is reachable through a reported neighbour and names cell 0.
         problems = Conf.neighbor_problems(grid, culprit)
         @test any(contains("two-hop closure"), problems)
         @test any(contains("not symmetric"), problems)
 
-        # And it is the *right* cell that is named: the one the mock popped.
+        # The reported problem identifies the omitted cell.
         dropped = last(DGG.neighbors(DGG.levelgrid(MINIMAL, 1), culprit))
         @test any(contains(string(dropped)), problems)
 
-        # No false positives on the correct mock, from either form.
+        # Both forms accept the conforming mock.
         @test Conf.neighbor_problems(DGG.levelgrid(MINIMAL, 1), culprit) == String[]
         @test Conf.check_neighbors(DGG.levelgrid(MINIMAL, 2); n_samples = 12)
     end
 
-    # The order is ROTATIONAL, and the set-level laws cannot see it: an id-sorted
-    # neighbourhood is the same cells, the same shells, the same disc.
+    # Set equality cannot distinguish rotational order from id order.
     @testset "harness catches: neighbours sorted by id instead of wound CCW" begin
         good = DGG.levelgrid(MINIMAL, 2)
         bad = DGG.levelgrid(broken(:sorted_neighbors), 2)
         @test Conf.check_neighbor_order(good; n_samples = 12)
         @test !Conf.check_neighbor_order(bad; n_samples = 12)
 
-        # Sorting by id keeps every set law: the cells, the shells and their
-        # disjointness are untouched, which is why this needed a new check.
+        # Sorting by id preserves shell membership and disjointness.
         @test Conf.check_neighbors(bad; n_samples = 12)
         c = DGG.cellindex(bad, 40)
         @test Set(DGG.neighbors(bad, c, 2)) == Set(DGG.neighbors(good, c, 2))
@@ -593,8 +550,7 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         @test isempty(Conf.neighbor_order_problems(good, c; require_rotational_rings = false))
     end
 
-    # A ring that is right as a set, right as a cycle, and simply starts
-    # somewhere else: the tail-block law is the only thing that sees it.
+    # A rotated ring preserves its set and winding but is not the disc's tail block.
     @testset "harness catches: ring that is not the tail block of the disc" begin
         good = DGG.levelgrid(MINIMAL, 2)
         bad = DGG.levelgrid(broken(:rotated_ring), 2)
@@ -612,8 +568,7 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         @test !any(contains("counter-clockwise cycle"), problems)
     end
 
-    # The predicates above share their implementation with the `@testset` layer,
-    # so this confirms the layer itself reports rather than swallows a failure.
+    # The public testset entry point must surface collector failures.
     @testset "the @testset entry points fail on a broken mock" begin
         good_passes, good_fails = capture() do
             test_hierarchical_system(MINIMAL; n_samples = 4)

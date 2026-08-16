@@ -2,16 +2,13 @@
 # counter-clockwise in a tangent frame. Ring 1 starts at the smallest id; outer
 # rings use the same spoke. `edge_only=true` implements `Edge()` connectivity.
 
-# The `Vertex()` bound, which is also the container capacity for both
-# connectivities so that `neighbors` has one concrete return type at k <= 1.
+# Container capacity for one-step results under either connectivity.
 const MAX_NEIGHBORS = 11
 
 _edge_only(::Vertex) = false
 _edge_only(::Edge) = true
 
-# a5's adjacency for one cell, as raw ids. Guarded, because `deserialize` raises
-# a `BoundsError` out of `ORIGINS` for an id that names no face and the lattice
-# walk would otherwise answer for a cell that does not exist.
+# Return one-step adjacency as raw ids after validating the cell and grid level.
 function _native_neighbors(grid::LevelGrid, c::A5Cell, connectivity::Connectivity)
     level(c) == grid.level || throw(ArgumentError(
         "A5 cell $c is at resolution $(level(c)), not this grid's $(grid.level)"))
@@ -19,8 +16,6 @@ function _native_neighbors(grid::LevelGrid, c::A5Cell, connectivity::Connectivit
     return A5Native._get_global_cell_neighbors(c.id; edge_only=_edge_only(connectivity))
 end
 
-# The native adjacency walk allocates internally through a `Set{UInt64}` even
-# for `k == 1`: 3.0 KB at res 2, plateauing at 6.4 KB from res 6 down.
 """
     neighbors(grid::LevelGrid, c::A5Cell, k = 1; connectivity = Vertex())
 
@@ -34,8 +29,7 @@ does not. See [`max_neighbors`](@ref).
 `k <= 1` returns a `SmallVector{11,A5Cell}` — sized by the `Vertex()` bound
 under both connectivities. `k >= 2` returns a `Vector{A5Cell}`.
 
-Throws `ArgumentError` unless `c` is valid at the grid resolution. The native
-adjacency walk allocates internally.
+Throws `ArgumentError` unless `c` is valid at the grid resolution.
 """
 function neighbors(grid::LevelGrid, c::A5Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
@@ -59,10 +53,7 @@ end
 The cells at grid distance **exactly** `k` from `c`, counter-clockwise seen from
 outside. `ring(grid, c, 0)` is `[c]`.
 
-Identical, element for element, to the last `length` entries of
-[`neighbors`](@ref)`(grid, c, k)` — the two share one breadth-first walk and one
-winding step, so the disc really is its shells concatenated rather than merely
-agreeing with them as a set.
+The result is the final shell returned by [`neighbors`](@ref)`(grid, c, k)`.
 """
 function ring(grid::LevelGrid, c::A5Cell, k::Integer;
         connectivity::Connectivity=Vertex())
@@ -70,14 +61,13 @@ function ring(grid::LevelGrid, c::A5Cell, k::Integer;
     steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
     steps == 0 && return A5Cell[c]
     shells = _shells(grid, c, steps, connectivity)
-    # A walk that ran out of cells before reaching `steps` has an empty shell
-    # there: the ring is genuinely empty, not missing.
+    # No shell exists after the traversal exhausts the connected component.
     steps <= length(shells) || return A5Cell[]
     return @inbounds shells[steps]
 end
 
 # ===========================================================================
-# The breadth-first walk both entry points are reads of
+# Breadth-first shells
 # ===========================================================================
 
 # Shell `j` contains cells at distance `j`, already wound for both callers.
@@ -86,8 +76,7 @@ function _shells(grid::LevelGrid, c::A5Cell, steps::Int, connectivity::Connectiv
     seen = Set{UInt64}((c.id,))
     frontier = UInt64[c.id]
     centre = cell_centroid(grid, c)
-    # Fixed once, from ring 1, and reused by every outer shell: one spoke for
-    # the whole disc is what makes position `j` of a ring mean a direction.
+    # Use one ring-1 reference direction for every shell.
     frame = nothing
     for _ in 1:steps
         next = UInt64[]
@@ -113,16 +102,12 @@ end
 # ===========================================================================
 # Rotational shell order
 #
-# Written out here rather than borrowed from `Fallbacks`: a system module may
-# not reach into the fallback substrate, and the arithmetic is six lines.
 # ===========================================================================
 
-# The frame every shell's azimuth is measured in, built once from ring 1: the
-# tangent basis at `centre` whose zero direction points at the ring-1 neighbour
-# with the smallest canonical id.
+# Tangent frame whose zero direction points at the smallest ring-1 id.
 #
-# Store the measured anchor azimuth so a negative rounding error cannot rotate
-# the anchor to the end via `mod(-eps, 2pi)`.
+# Store the anchor azimuth so a small negative rounding error cannot wrap it to
+# the end of the ordered shell.
 function _spoke_frame(grid::LevelGrid, centre, shell::AbstractVector{A5Cell})
     anchor = cell_centroid(grid, minimum(shell))
     e1, e2 = _tangent_basis(centre, anchor)
@@ -132,7 +117,7 @@ end
 # Order one shell counter-clockwise about `centre`, from the frame's spoke.
 # Exact ties go to the smaller canonical id, so the result is total.
 #
-# Cache keys to avoid recomputing projected centroids during comparisons.
+# Compute each projected-centroid key once before sorting.
 function _wind!(shell::AbstractVector{A5Cell}, grid::LevelGrid, centre, frame)
     length(shell) <= 1 && return shell
     e1, e2, spoke = frame
@@ -153,9 +138,8 @@ function _tangent_basis(centre, toward)
     radial = u[1] * centre[1] + u[2] * centre[2] + u[3] * centre[3]
     t = (u[1] - radial * centre[1], u[2] - radial * centre[2], u[3] - radial * centre[3])
     n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
-    # A neighbour whose centroid coincides with the subject's, or sits exactly
-    # antipodal to it, names no tangential direction. Neither can happen in a
-    # real tessellation, but an arbitrary-but-valid basis keeps this total.
+    # Use a deterministic tangent direction when the reference has no tangent
+    # component.
     if n <= eps(Float64)
         t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)
         radial = t[1] * centre[1] + t[2] * centre[2] + t[3] * centre[3]

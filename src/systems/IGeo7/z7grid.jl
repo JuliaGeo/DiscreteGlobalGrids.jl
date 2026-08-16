@@ -14,8 +14,8 @@ const CIS_M60 = cis(-deg2rad(60.0))
     CELL_SCALE
 
 `CELL_SCALE[r+1] = L / P_r :: ComplexF64` — the res-`r` lattice-to-dev
-scale: a cell with physical lattice coordinates `X` sits at dev position
-`u = ecpx(X) * CELL_SCALE[r+1]` **[design Section 11]**.
+scale: a cell with physical lattice coordinates `X` sits at development-frame
+position `u = ecpx(X) * CELL_SCALE[r+1]`.
 """
 const CELL_SCALE = ntuple(i -> L_PLANE / ecpx(P_R[i]), MAX_DIGITS + 1)
 
@@ -27,7 +27,7 @@ const INV_CELL_SCALE = ntuple(i -> ecpx(P_R[i]) / L_PLANE, MAX_DIGITS + 1)
 
 `THETA_DIR[m+1][d]` = dev direction (degrees in `[0, 360)`) of digit `d`'s
 Horner contribution at level `m`: `mod(60·σ(d) − arg P_m, 360)` — the digit's
-unit direction rotated into the res-`m` lattice **[a7; fitted]**.
+unit direction rotated into the resolution-`m` lattice.
 Level 0 (`m = 0`) is the res-0 lattice itself (used by pentagon corners).
 """
 const THETA_DIR = ntuple(mi -> ntuple(d -> mod(60.0 * SIGMA_J[d] - ARGP_DEG[mi], 360.0), 6),
@@ -38,18 +38,17 @@ const THETA_DIR = ntuple(mi -> ntuple(d -> mod(60.0 * SIGMA_J[d] - ARGP_DEG[mi],
 
 Hexagon corner offsets in lattice units: corner `j` of the cell at lattice
 point `X` is `(X + (e_j + e_{j+1})/3) * L/P_r` — the circumradius of a unit
-hexagon is `1/√3` and its corners bisect adjacent neighbor directions
-**[design Section 4.1; first-principles hex geometry]**.
+hexagon is `1/√3` and its corners bisect adjacent neighbor directions.
 """
 const CORNER_OFFS = ntuple(i -> (ecpx(UNITS[i]) + ecpx(UNITS[mod1(i + 1, 6)])) / 3, 6)
 
-"Closed-form cell areas: `HEX_AREA[r+1] = 4πR²/(10·7^r)` m² **[contract]**."
+"Closed-form cell areas: `HEX_AREA[r+1] = 4πR²/(10·7^r)` m²."
 const HEX_AREA = ntuple(i -> 4pi * R_AUTHALIC^2 / (10 * 7.0^(i - 1)), MAX_DIGITS)
 
 "`SIGMA_AB[d]` = axial offset of digit `d ∈ 1:6` (fused `UNITS[SIGMA_J[d]+1]`)."
 const SIGMA_AB = ntuple(d -> UNITS[SIGMA_J[d]+1], 6)
 
-"FP guard band (degrees) for dev angles on the cone cut **[design Section 7]**."
+"Floating-point guard band in degrees for angles on the cone cut."
 const CUT_EPS_DEG = 1e-9
 
 """
@@ -121,7 +120,7 @@ function _encode_lattice_rot(z::UInt64, base::Int, res::Int)
     end
     m == 0 && return (Int64(0), Int64(0), 0)
     # collapse at level `m`, the first nonzero digit: the deleted digit's 60°
-    # sector is excised, so a subtree CCW-past it rotates back by 60° [fitted].
+    # sector is excised, so a subtree counter-clockwise past it rotates back 60°.
     thc = @inbounds THETA_DIR[m+1][dm]
     thdel = @inbounds THETA_DIR[m+1][z7_deleted_digit(base)]
     shift = thc > thdel ? -1 : 0
@@ -271,8 +270,7 @@ end
 cell_area(z7::Unsigned) = cell_area(UInt64(z7))
 
 # ---------------------------------------------------------------------------
-# Decode (spec/igeo7-geometry-diagnosis.md §6; ported from the verified
-# prototype fit of that document's §4)
+# Decode
 # ---------------------------------------------------------------------------
 
 """
@@ -489,13 +487,8 @@ lattice point in each of the six unit directions, project the result through
 the development frame's `+1` direction, by construction — the loop *is* the
 unit order.
 
-Nothing on the hot path calls this — a floating-point round trip with a
-three-base search in it, per neighbour, is roughly forty times the cost of
-`gbt.jl`'s digit arithmetic. It stays because it is the **differential oracle**:
-it answers adjacency from this package's own oracle-validated lattice and
-decoder, sharing no reasoning with the ported digit kernel, so agreement between
-the two is real evidence rather than a restatement. Testset `9b` of
-`test/systems/IGeo7/runtests.jl` is that comparison.
+This geometric implementation is slower than the GBT digit kernel and is used
+as an independent adjacency check.
 """
 function _cell_neighbors_ccw_geometric(z7::UInt64)
     res = _geometry_checked(z7)
@@ -625,8 +618,7 @@ Return the `index`-th cell at resolution `res`, inverse to
 [`cell_to_index`](@ref). The greedy mixed-radix walk is `O(res)` and
 allocation-free.
 
-Throws `BoundsError` for `index ∉ 1:num_cells(res)` **[contract — the
-`BoundsError` is part of the API shape and is kept]** and
+Throws `BoundsError` for `index ∉ 1:num_cells(res)` and
 [`InvalidZ7Error`](@ref) (`:resolution_range`, via `num_cells`) for
 `res ∉ 0:$MAX_RESOLUTION`.
 """
@@ -807,6 +799,10 @@ State a `digit` child at absolute resolution `level` inherits from a cell in
 `(L, s)`: the arc of exposed directions `s, s+1, ..., s+L-1` (mod 6), in
 `SIGMA_J`'s unit indices. `L == 6` is the subtree root, the one state with no
 arc ends.
+
+Those indices use the raw digit frame, without `_encode_lattice_rot`, and
+`hex_child_direction` (system.jl) calibrates `hex_halo_engine`'s seeded arcs in
+that same raw frame.
 """
 @inline function _border_step(state::NTuple{2,Int}, digit::Int, level::Int)
     L, s = state
@@ -856,9 +852,7 @@ function border_descendants(z7::UInt64, res::Integer)
     own = _geometry_checked(z7)
     own <= res <= MAX_RESOLUTION ||
         throw(InvalidZ7Error(:descendant_res, z7, _z7_int(res), own))
-    # Through the guard, not a comprehension: a comprehension over a `HasLength`
-    # walk preallocates from the count and would leave an `undef` tail if the two
-    # ever disagreed. `collect_subtree` is the one place that comparison lives.
+    # `collect_subtree` checks that the iterator's declared length is exact.
     return [c.id for c in DGG.collect_subtree(Z7RimEngine(z7, own, Int(res)))]
 end
 
@@ -929,7 +923,10 @@ function Base.iterate(e::Z7RimEngine)
     return iterate(e, _z7_root_walk(e))
 end
 
-function Base.iterate(e::Z7RimEngine, w::Z7Walk)
+Base.iterate(e::Z7RimEngine, w::Z7Walk) = _z7_rim_advance(e.res, e.target, w)
+
+# Advance either a full-rim or seeded-arc walk from its current frame stack.
+function _z7_rim_advance(res0::Int, target::Int, w::Z7Walk)
     z = w.z
     st = w.stack
     while !isempty(st)
@@ -941,14 +938,14 @@ function Base.iterate(e::Z7RimEngine, w::Z7Walk)
         end
         digit = Int(f.next)
         st = Helpers.small_setlast(st, _z7_bump(f))
-        res = e.res + k - 1
+        res = res0 + k - 1
         deleted, pentagon = _z7_node(z, res)
         pentagon && digit == deleted && continue
         child = _border_step((Int(f.L), Int(f.s)), digit, res + 1)
         child[1] == 0 && continue
         shift = _z7_shift(res + 1)
         z = (z & ~(UInt64(7) << shift)) | (UInt64(digit) << shift)
-        res + 1 == e.target && return (Z7Cell(z), Z7Walk(z, st))
+        res + 1 == target && return (Z7Cell(z), Z7Walk(z, st))
         st = Helpers.small_push(st,
             Z7Frame(Int8(child[1]), Int8(child[2]), Int8(0), false))
     end
@@ -956,11 +953,36 @@ function Base.iterate(e::Z7RimEngine, w::Z7Walk)
 end
 
 """
+    Z7ArcEngine(z, res, target, L, s)
+
+Iterate res-`target` descendants of `z` along exposed directions
+`s:s+L-1 (mod 6)`, in ascending id order and `O(depth)` memory. Arbitrary arcs
+have no closed-form length and report `SizeUnknown()`.
+
+`_z7_node` derives pentagon deletion state from `z` at each depth, including
+when the seed cell is a pentagon.
+"""
+struct Z7ArcEngine
+    z::UInt64
+    res::Int
+    target::Int
+    L::Int8
+    s::Int8
+end
+
+Base.eltype(::Type{Z7ArcEngine}) = Z7Cell
+Base.IteratorSize(::Type{Z7ArcEngine}) = Base.SizeUnknown()
+
+Base.iterate(e::Z7ArcEngine) = iterate(e, Z7Walk(e.z,
+    Helpers.small_push(_z7_empty_stack(), Z7Frame(e.L, e.s, Int8(0), false))))
+
+Base.iterate(e::Z7ArcEngine, w::Z7Walk) = _z7_rim_advance(e.res, e.target, w)
+
+"""
     Z7InteriorEngine(z, res, target)
 
-The complement, off the same automaton: where the rim walk prunes, the whole
-branch below is interior, so this one descends it in full instead of dropping
-it. No rim membership is ever tested or stored.
+Iterate interior descendants. Branches pruned by the rim automaton are wholly
+interior and are descended without storing a rim set.
 """
 struct Z7InteriorEngine
     z::UInt64

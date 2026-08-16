@@ -164,6 +164,27 @@ function cellposition(grid::PartialGrid, c::AbstractCellIndex)
     return i
 end
 
+# [`subset_span`](@ref) over a sorted id vector. Ids ascend with positions on
+# every system here — the same fact `_check_rooted` decides a whole vector's
+# ancestry by — so the block `lo:hi` maps to the id interval `[idlo, idhi]` and
+# one `searchsortedfirst` answers all three verdicts. The `ALL` case needs no
+# scan: the ids are strictly ascending, so `hi - lo + 1` of them between the two
+# endpoints inclusive is exactly the block with nothing missing.
+function subset_span(grid::PartialGrid, lo::Int, hi::Int)
+    ids = grid.ids
+    isempty(ids) && return _SPAN_NONE
+    idlo = cellindex(grid.complete, lo)
+    i = searchsortedfirst(ids, idlo)
+    i <= length(ids) || return _SPAN_NONE
+    idhi = cellindex(grid.complete, hi)
+    isless(idhi, @inbounds ids[i]) && return _SPAN_NONE
+    if @inbounds(ids[i]) == idlo
+        j = i + (hi - lo)
+        (j <= length(ids) && @inbounds(ids[j]) == idhi) && return _SPAN_ALL
+    end
+    return _SPAN_SOME
+end
+
 _is_rooted(grid::PartialGrid) = grid.root_level >= first(levels(grid.system))
 
 function Base.show(io::IO, grid::PartialGrid)

@@ -4,7 +4,8 @@
 # catchment area are all areal quantities, and on a lon/lat raster every one of
 # them is a function of latitude. This page moves a Copernicus 30 m DEM tile
 # over the Alps onto IGEO7 — hexagons, equal-area by construction — and does
-# the first step of a flow-routing model on it.
+# the first step of a flow-routing model on it. The worked example averages
+# the source to 120 m so it also fits comfortably on a standard CI runner.
 #
 # Three calls carry the page: `coarsest_contained` picks the cell to work in,
 # `PartialGrid` names its subtree as a grid, and `halo_table` routes water out
@@ -14,6 +15,7 @@ ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpa
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
+import Geomorphometry as GM
 using Rasters, RasterDataSources
 import ArchGDAL
 import GeometryOps as GO, Extents
@@ -44,7 +46,7 @@ root, DGG.level(root)
 # an ordinary grid: positions run `1:ncells`, so a data vector indexes straight
 # through it.
 
-leaf = 13                                          # ≈ 430 m cells
+leaf = 12                                          # ≈ 1.1 km cells
 grid = DGG.PartialGrid(sys, root, leaf)
 #
 DGG.ncells(grid)
@@ -53,14 +55,15 @@ DGG.ncells(grid)
 #
 # The download asks for a point inside the tile rather than the tile itself:
 # `getraster` fetches every 1° tile an extent touches, and a closed 1° box
-# touches four. The source stays at its native 30 m resolution; the source
-# quadtree keeps intersection work localized while the matrix is built.
+# touches four. Averaging the native 30 m source to 120 m keeps this worked
+# example compact; the source quadtree keeps intersection work localized while
+# the matrix is built.
 
-Rasters.checkmem!(false)                           # the tile is bigger than free RAM
 centre = Extents.Extent(X = (10.5, 10.5), Y = (46.5, 46.5))
 path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
 dem = Raster(path; lazy = false)
 dem = set(dem, X => Rasters.Intervals(Rasters.Start()), Y => Rasters.Intervals(Rasters.Start()))
+dem = aggregate(mean, dem, 4; progress = false)
 # ConservativeRegridding wants the source's cell corners on the unit sphere.
 # The destination needs no adapter: `treeify`, `ncells` and `getcell` are
 # extended for every `AbstractGrid`.
@@ -139,6 +142,40 @@ p2 = poly!(ax2, cells; color = drop[shown], colormap = :magma,
 Colorbar(fig[2, 2], p2; vertical = false)
 fig
 
-# Only the singleton on the first line was IGEO7: `MultiOrderCoverage`,
-# `PartialGrid`, the regridder and `halo_table` are interface methods, so
-# swapping the system reruns the page unchanged.
+# ## Terrain analysis with Geomorphometry
+#
+# A `CellLookup` gives the raster canonical IGEO7 cell identities while keeping
+# its vector storage positional. Geomorphometry can then use the DGGS
+# neighbourhood and physical cell geometry directly. TPI is a single local
+# call; flow accumulation uses D8 here, with each result expressed as upstream
+# area in square metres.
+
+igeo7_dem = Raster(elevation,
+    (DGG.Cells(DGG.CellLookup(DGG.CellVector(grid))),);
+    name = :height)
+
+tpi = GM.topographic_position_index(igeo7_dem)
+accumulation, directions = GM.flowaccumulation(igeo7_dem; method = GM.D8())
+
+cell_area = GM.cellarea(igeo7_dem, first(eachindex(igeo7_dem)))
+log_cells = log10.(accumulation ./ cell_area)
+
+fig = Figure(size = (900, 430))
+ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
+    title = "topographic position index (m)")
+p1 = poly!(ax1, polys[shown]; color = vec(tpi[shown]), colorrange = (-25, 25),
+    colormap = :delta, strokewidth = 0)
+Colorbar(fig[2, 1], p1; vertical = false)
+ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84",
+    title = "D8 flow accumulation")
+p2 = poly!(ax2, polys[shown]; color = vec(log_cells[shown]),
+    colormap = :devon, strokewidth = 0)
+Colorbar(fig[2, 2], p2; vertical = false,
+    label = "log₁₀(upstream cell equivalents)")
+save("geomorphometry_igeo7.png", fig)
+fig
+
+# `MultiOrderCoverage`, `PartialGrid`, the regridder and `halo_table` are
+# interface methods, so the regridding and routing portions can use another
+# system. `RelativeZ7Cell` and the lazy cell-index iterator provide the
+# IGEO7-specific Geomorphometry integration.

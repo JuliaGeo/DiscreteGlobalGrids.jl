@@ -16,7 +16,8 @@ Four required methods — `ncells`, `cellindex`, `cell_boundary`, `cell_centroid
 `cellat`, `neighbors`, `ring`, `halo_table`, `treeify`, `query`. On a SUBSET of
 a level the topology verbs mean the complete level's answer clipped to
 membership — omitted, not padded — so a stencil on a region is the same call it
-is on the globe.
+is on the globe, and `halo` names the cells just outside it that the clipping
+dropped.
 
 `AbstractHierarchicalGridSystem` adds analytic parent/child structure. It is the
 fast-path tier: tree pruning under the covering law of `node_extent`, contiguous
@@ -75,6 +76,14 @@ DGG.children(sys, c)
 parent(sys, c)
 DGG.descendant_range(sys, c, 6)                   # positions in levelgrid(sys, 6)
 DGG.subtree_border(sys, c, 6)                     # the rim, O(rim)
+DGG.subtree_halo(sys, c, 6)                       # the cells just OUTSIDE the rim
+
+# The halo can dwarf the rim, so collecting it is always the caller's call:
+# `SubtreeHaloIterator` is the lazy form, and `halo` asks the same of a subset.
+for x in DGG.SubtreeHaloIterator(sys, c, 6)       # O(depth) memory, resumable
+    break
+end
+DGG.halo(DGG.PartialGrid(sys, c, 6))              # ... of a region, with holes counted
 ```
 
 Swapping `HEALPixSystem()` for `IGeo7System()`, `H3System()`, `A5System()`,
@@ -235,6 +244,22 @@ the branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
 `InnerCellIterator` in `O(depth)` memory. A5 is also the one system without
 `has_sorted_subtrees`, so `level_ranges` throws there and everything that would
 use it takes the selection branch instead.
+
+`subtree_halo` is the outside of that same boundary and is built the same way:
+`collect` of a resumable `SubtreeHaloIterator` in `O(depth)` memory, so a prefix
+of a deep halo costs what the prefix costs and not what the ring would. HEALPix,
+S2 and ISEA4R walk the band around their square block, one pruned quadtree
+descent per face the halo touches; IGeo7 and H3 seed each neighbour's rim
+automaton with a calibrated arc and walk that; A5, again for want of
+`descendant_range`, scans the target level. Only two of the seven engines count
+in closed form — depth zero, which is the one-ring already in hand, and the
+square in-face band, which is `4·side + 4` — so only those declare a `length`;
+everywhere else `IteratorSize` is `SizeUnknown()` and there is no `length`
+method at all, deliberately, because a `length` that walked the halo to answer
+is the thing the design forbids. `halo`
+asks the same question of a `PartialGrid`, `CellVector` or `CellLookup`, always
+lazily; a cell punched out of the middle of a subset joins that subset's halo,
+which is `halo` doing something `subtree_halo` cannot.
 
 The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
 **not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of

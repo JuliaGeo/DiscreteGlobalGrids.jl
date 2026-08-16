@@ -32,10 +32,10 @@ and at most `360 + 2` for a level-0 pole tile.
 `Edge()` asks for two shared vertices, which a shared apex alone is not, so a pole pixel
 has three there and the von Neumann four stands.
 
-The bound is attained, not merely respected, and `"max_neighbors is a true bound"` in
-`test/systems/CopernicusDEM/runtests.jl` puts both pole rows of both shipped lattices and
-of the scaled twin to the generic walk, then sweeps the band boundaries, the antimeridian,
-the tile edges and both levels for anything larger.
+The `Vertex()` bound is attained, not merely respected: `"max_neighbors is a true bound"`
+in `test/systems/CopernicusDEM/runtests.jl` asserts equality at both pole rows of all
+three lattices, and sweeps the band boundaries, the antimeridian, the tile edges and both
+levels for anything larger.
 """
 DGG.max_neighbors(sys::CopernicusDEMSystem, ::DGG.Vertex) =
     360 * Int(max(ncols(sys, 0), ncols(sys, NROWS - 1))) + 2
@@ -60,12 +60,12 @@ end
 
 All 64 800 level-0 tiles, `LevelIndex(0, 0:64799)`, ascending, as a **lazy** vector.
 
-Lazy on purpose: `PartialGrid` reads `first(rootcells(sys))` on every construction
+Lazy because `PartialGrid` reads `first(rootcells(sys))` on every construction
 (`src/fallbacks/partial_grid.jl`), and a materialised 64 800-element vector would
-allocate about a megabyte per chunk built. The count is far above the "small, cheap
-collection" the contract has in mind (12 for HEALPix), which costs the generic tree
-descent one cap evaluation per tile at the synthetic root; that is the price of a grid
-whose base tessellation is the 1° graticule.
+allocate about a megabyte per chunk built. The count is far above the small, cheap
+collection the contract has in mind (12 for HEALPix), and it costs the generic tree
+descent one cap evaluation per tile at the synthetic root — the price of a grid whose
+base tessellation is the 1° graticule.
 """
 DGG.rootcells(::CopernicusDEMSystem) = IdRange(Int32(0), Int64(0), NTILES)
 
@@ -188,14 +188,13 @@ materialising.
 
 !!! warning "This diverges from the interface"
     The interface docstring for [`descendants`](@ref) says the call *materializes*
-    `O(subtree)` ids, and on every other system it hands back a freshly allocated
-    `Vector` the caller owns. **This method does not.** It returns a **lazy, read-only
-    `AbstractVector`** that computes each id on indexing. Reading is complete — `length`,
-    `getindex`, iteration, `collect` — but nothing that writes works, because there is no
-    array to write into: no `setindex!`, no `push!`, no `sort!`, and no passing it to an
-    API that mutates its argument. **`collect` it first if you need any of those.** The
-    divergence is deliberate: one GLO-30 tile has 12 960 000 level-1 descendants, and a
-    `Vector{LevelIndex}` of them is 16 bytes apiece.
+    `O(subtree)` ids, and every other system hands back a freshly allocated `Vector` the
+    caller owns. This method returns a lazy, read-only `AbstractVector` instead, which
+    computes each id on indexing. Reading it is complete — `length`, `getindex`,
+    iteration, `collect` — but nothing that writes to it works: no `setindex!`, no
+    `push!`, no `sort!`, and no passing it to an API that mutates its argument. `collect`
+    it first for any of those. The divergence buys the memory: one GLO-30 tile has
+    12 960 000 level-1 descendants, at 16 bytes apiece in a `Vector{LevelIndex}`.
 """
 function DGG.descendants(sys::CopernicusDEMSystem, c::DGG.LevelIndex, l::Integer)
     r = DGG.descendant_range(sys, c, l)     # validates `l` both ways
@@ -309,18 +308,15 @@ counter-clockwise seen from outside the sphere, in the order
 
 A parallel is a small circle, not a great circle, so the ring's north and south edges
 bow poleward of the true box edge by about `(Δλ²/8)·sin φ·cos φ` — 1.9e-5 rad (120 m)
-for a 1° tile and about 10 μm for a 1-arcsec pixel. That small-angle expression is an
-estimate, not a bound, and it errs low: the exact bow of a 1° edge at latitude 45 is
-1.9038830e-5 rad against the formula's 1.9038589e-5.
+for a 1° tile, about 10 μm for a 1-arcsec pixel. That small-angle expression is an
+estimate rather than a bound, and it errs low.
 
 The two bows nearly cancel, so ring and box differ in area only slightly. The
-`"ring vs box"` testset in `test/systems/CopernicusDEM/runtests.jl` measures that gap
-over every band and both pole rows, `@info`s it as `worst_tile` / `worst_pixel` /
-`worst_pole_pixel`, and bounds each: worst over tiles `< 1e-4` (5.1e-5, at the ±90
-rows), worst over pixels outside the ±90 tile rows `< 1e-8` (8.1e-10 GLO-30, 3.8e-9
-GLO-90), and worst over pixels inside them `< 1e-4` (1.4e-5 GLO-30, 1.2e-6 GLO-90) —
-those cells being half-pixel slivers and pole triangles. Run it for the current
-numbers rather than trusting these.
+`"ring vs box"` testset in `test/systems/CopernicusDEM/runtests.jl` sweeps that
+relative gap over every band and both pole rows, logs it as `worst_tile` /
+`worst_pixel` / `worst_pole_pixel`, and bounds each: below 1e-8 for pixels outside the
+±90 tile rows, below 1e-4 for tiles and for the pixels inside those rows, which are
+half-pixel slivers and pole triangles.
 
 Densifying would close that gap and cost this system its convexity: a densified
 poleward edge reads as a chain of REFLEX vertices, which is exactly why HEALPix,
@@ -334,11 +330,10 @@ Adjacent cells share their corner POINTS bit-identically within a band, so the s
 edge is literally the same geodesic and the quads tile the sphere with no gaps. Across
 a band boundary (latitude 50/60/70/80/85) the two sides cut the shared parallel at
 different longitudes, so their bows differ and the quads leave slivers of width
-`|Δλ_below² − Δλ_above²|/8 · sin φ cos φ`: in GLO-30 that is 1.8e-12 rad (11.5 μm) at
-latitude 50, about 4e-7 of that pixel's own height, rising to 1.9e-11 rad (122 μm) at
-latitude 85. Those are values of the small-angle formula, not measurements of the
-emitted rings. The box tessellation is exact there; the quad tessellation is exact to
-that order.
+`|Δλ_below² − Δλ_above²|/8 · sin φ cos φ` — by that expression, 1.8e-12 rad (11.5 μm)
+at latitude 50 in GLO-30, about 4e-7 of that pixel's own height, rising to 1.9e-11 rad
+(122 μm) at latitude 85. The box tessellation is exact there; the quad tessellation is
+exact to that order.
 
 # Poles
 
@@ -383,15 +378,14 @@ the two differ in area by the bow [`cell_boundary`](@ref) describes and the
 `"ring vs box"` testset measures.
 
 Both regions tile the sphere, so both sum to 4π — but this closed form does **not**
-telescope exactly. 890 of the 64 800 GLO-90 tiles have `east - west !== 1.0`, by up to
-1.4e-14, so consecutive terms do not cancel to the last bit. The sum is accurate
-because those errors are tiny and because pairwise summation stops them accumulating,
-not because anything cancels: **materialise** the 64 800 tile areas into a `Vector` and
-Julia's pairwise `sum` lands 3.6e-15 from 4π, while a generator — or any sequential
-accumulation — lands 2.9e-12 (GLO-30) or 1.4e-12 (GLO-90) away and fails the
-`rtol = 1e-14` the suite asserts. That assertion, and those figures, are
-`"the boxes partition the sphere"` in `test/systems/CopernicusDEM/runtests.jl`; do not
-loosen its tolerance to accommodate a generator.
+telescope exactly: not every tile has `east - west === 1.0`, so consecutive terms do
+not cancel to the last bit. The sum is accurate because those errors are tiny and
+because pairwise summation stops them accumulating, not because anything cancels.
+**Materialise** the 64 800 tile areas into a `Vector` so Julia's pairwise `sum`
+reduces them; a generator argument — or any other sequential accumulation — lands
+orders further from 4π and fails the `rtol = 1e-14` that
+`"the boxes partition the sphere"` in `test/systems/CopernicusDEM/runtests.jl`
+asserts. Do not loosen that tolerance to accommodate a generator.
 
 `ConservativeRegridding` never reads this — it measures the ring itself
 (`ConservativeRegridding/src/regridder/regridder.jl:102-103`) — so no conservation

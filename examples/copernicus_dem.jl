@@ -19,16 +19,14 @@
 # reuses it if it is already there. It ends in PASS/FAIL assertions and exits non-zero
 # if any of them fail.
 #
-# Cost of this script, ONE run on an M-series laptop with `-t auto` (8 threads):
-# 38.4 s wall for the whole tile — 960 000 pixels — onto BOTH destinations at
-# MATCHED cell size, of which 11.0 s and 8.3 s are the two `Regridder` builds and
-# 4.5 s is the GLO-30 section. Those are machine-local and they move a few percent
-# from run to run: `scripts/bench_copdem_cursor.jl`, which is the reproducer for
-# this pair and for the source-tree table in `src/systems/CopernicusDEM/cursor.jl`,
-# measured the same two builds at 11.5 s and 9.2 s in its own run — against
-# 105.7 s and 83.9 s for the generic cursor. `COPDEM_ROWS=n` cuts the source to the
-# northernmost `n` raster rows if you want it faster; the default is the whole
-# tile, because that is the claim.
+# Cost, ONE run on an M-series laptop with `-t auto` (8 threads): 38.4 s wall for
+# the whole tile — 960 000 pixels — onto BOTH destinations at MATCHED cell size,
+# of which 11.0 s and 8.3 s are the two `Regridder` builds and 4.5 s is the GLO-30
+# section. Machine-local figures. `scripts/bench_copdem_cursor.jl` reproduces the
+# two builds and puts them beside the generic cursor's, which is about an order of
+# magnitude slower. `COPDEM_ROWS=n` cuts the source to the northernmost `n` raster
+# rows if you want it faster; the default is the whole tile, because that is the
+# claim.
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
@@ -126,7 +124,7 @@ note("origin ($(gt[1]), $(gt[4]))  dlon $(gt[2])  dlat $(gt[6])")
 
 src = DGG.PartialGrid(sys, tile, 1)
 
-# THE FLATTENING. Our position `k` for pixel `(j, i)` is `j*ncols + i + 1`, and
+# THE FLATTENING. This system's position `k` for pixel `(j, i)` is `j*ncols + i + 1`, and
 # `vec` of an `(ncols, nrows)` matrix gives linear index `j*ncols + i + 1` — so
 # `vec(A)` is already in the chunk's position order, with no `permutedims` and
 # no copy. The whole demo rests on that line, so it is asserted, not assumed.
@@ -149,8 +147,8 @@ check("the axis names level-1 cells of this system",
 check("PartialGrid(lk) round-trips the chunk",
     DGG.ncells(DGG.PartialGrid(lk)) == DGG.ncells(src))
 
-# Requirement (b) of the brief: select a region out of the cube by covering, and
-# land back on a `CellLookup` — the view's axis is still cells, not integers.
+# Select a region out of the cube by covering, and land back on a `CellLookup`:
+# the view's axis is still cells, not integers.
 window = Extents.Extent(X=(6.10, 6.11), Y=(50.50, 50.51))
 sub = dem[DGG.Cells(DGG.Covering(window))]
 sublk = DD.lookup(sub, DGG.Cells)
@@ -219,11 +217,10 @@ end
 # search would cost O(n_src x dst-depth). `src/systems/CopernicusDEM/cursor.jl`
 # gives the lattice a real tree instead, by recursively bisecting the pixel
 # rectangle, and `treeify` picks it up with nothing named here. The two build
-# times this file prints below are the payoff: the same two builds cost 105.7 s
-# and 83.9 s on the generic cursor, for an intersection matrix identical to the
-# last bit. `scripts/bench_copdem_cursor.jl` is the reproducer for that pair and
-# for the whole fanout table in that file's `BlockStrategy` docstring; those
-# numbers are one run on the machine named at the top of this file.
+# times this file prints below are the payoff, for an intersection matrix
+# identical to the generic cursor's to the last bit;
+# `scripts/bench_copdem_cursor.jl` runs both routes side by side, and the fanout
+# table in `BlockStrategy`'s docstring is its output.
 const ROWS = let n = parse(Int, get(ENV, "COPDEM_ROWS", string(NROWS)))
     1 <= n <= NROWS || error("COPDEM_ROWS=$n is outside 1:$NROWS — this tile has " *
                              "$NROWS raster rows and the chunk is its northernmost `n`")
@@ -259,15 +256,14 @@ end
 #     `EXTENT_STEP_DEGREES = 2.0`, i.e. one segment across a 1-degree tile, and
 #     at this tile's latitude that bow is 1.87e-5 rad = 0.00107 degrees — 1.3
 #     GLO-90 pixel rows. The southernmost raster row then falls OUTSIDE the
-#     covering near mid-longitude and regrids to nothing: measured on a 64-row
-#     band handed to `query` as a bare `Extents.Extent`, 898 of its 51 200
-#     columns came back short of their own area by more than 1e-9 relative, and
-#     the worst lost all of it. At 64 segments per degree the same bow is
-#     4.58e-9 rad = 2.62e-7 degrees, 3.1e-4 of one pixel row.
+#     covering near mid-longitude and regrids to nothing, which the column-sum
+#     check below reports as whole columns short of their own area. At 64
+#     segments per degree the same bow is 4.58e-9 rad = 2.62e-7 degrees, 3.1e-4
+#     of one pixel row.
 #  2. PAD. The published pixel rings bow poleward of their own boxes too, by
 #     about 3e-11 rad. A covering of the box exactly would clip those slivers
-#     off the outermost rows — 1.2e-5 of a boundary pixel's area, five orders
-#     above the interior noise floor. One pixel of pad swallows them.
+#     off the outermost rows, well above the interior noise floor. One pixel of
+#     pad swallows them.
 const DENSIFY_PER_DEGREE = 64
 
 function box_polygon(w, e, s, n; pad_lon=0.0, pad_lat=0.0)
@@ -293,8 +289,8 @@ or `:reflex` (it turns both ways).
 
 ORIENTATION is why this is not the one-line "does it turn right anywhere" test
 this repo's regridding suites carry: that test reads a clockwise CONVEX ring as
-reflex, so a destination system that emitted its rings clockwise would take the
-loose branch below without anything saying which of the two defects it had.
+reflex, so a destination system emitting clockwise rings would take the loose
+branch below with nothing saying which of the two defects it had.
 """
 function ring_shape(poly)
     pts = collect(GI.getpoint(GI.getexterior(poly)))
@@ -372,9 +368,8 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     elseif shape === :cw_convex
         note("$label: destination rings are CONVEX but wound CLOCKWISE " *
              "($nvert-vertex rings), which Sutherland-Hodgman cannot use as a clip " *
-             "window either — the loose bounds below are taken for that reason, " *
-             "which is a different defect from a reflex vertex and is said here " *
-             "rather than passed over.")
+             "window either — a different defect from a reflex vertex, and the " *
+             "reason the bounds below are the loose ones.")
     else
         note("$label: destination rings have REFLEX vertices ($nvert-vertex rings, " *
              "eight arcs per densified chart edge, so every vertex on a bowed side " *

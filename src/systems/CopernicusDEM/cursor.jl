@@ -14,11 +14,10 @@
 # cells, with nothing materialised. A node is eight integers, and no node is
 # ever built that the search does not visit.
 #
-# Building the whole 960 000-pixel `N50_00_E006_00` tile's matched-resolution
-# regridder goes from 105.7 s to 11.5 s onto IGEO7 and from 83.9 s to 9.2 s onto
-# HEALPix, with the intersection matrix identical to the last bit. How a node
-# splits changes only the speed, and [`BlockStrategy`](@ref) has that table and
-# the script that reproduces it.
+# The intersection matrix this produces is the generic cursor's, identical to the
+# last bit; what changes is the time to reach it, by about an order of magnitude
+# on a whole tile. How a node splits changes the speed and nothing else —
+# [`BlockStrategy`](@ref) has the comparison and the script that reproduces it.
 #
 # # The generic seam
 #
@@ -47,15 +46,14 @@ const LEAF_CELLS = 9
     BlockStrategy
 
 How a [`BlockCursor`](@ref) node partitions its rectangle: [`Bisected`](@ref),
-which `treeify` uses, or [`Blocked`](@ref), which it was measured against.
+which `treeify` uses, or [`Blocked`](@ref).
 
-# Which one, and why it was measured rather than argued
+# Which one, and what the fanout costs
 
-Every strategy here produces the SAME intersection matrix, bit for bit — they
+Every strategy here produces the SAME intersection matrix, bit for bit; they
 differ only in how fast the dual tree search reaches it. Building the
 matched-resolution regridder for the whole `N50_00_E006_00` GLO-90 tile
-(960 000 pixels), by `scripts/bench_copdem_cursor.jl`, which is the reproducer
-for every number in this table:
+(960 000 pixels), which `scripts/bench_copdem_cursor.jl` reproduces:
 
 | source tree                        | onto IGEO7 12 | onto HEALPix 16 |
 |:-----------------------------------|--------------:|----------------:|
@@ -64,9 +62,9 @@ for every number in this table:
 | `Blocked{2}` — 4 children a node   |      24.1 s   |        25.1 s   |
 | `Bisected`   — 2 children a node   |      11.5 s   |         9.2 s   |
 
-MACHINE-LOCAL, and measured once: an M-series laptop on 8 threads, in the `docs`
-project, which is the environment `examples/copernicus_dem.jl` runs in and quotes
-its own two builds from. The ratios are the claim; the seconds are this machine's.
+MACHINE-LOCAL: one run on an M-series laptop, 8 threads, in the `docs` project,
+which is also the environment `examples/copernicus_dem.jl` runs in. The ratios
+are the claim; the seconds are that machine's.
 
 Monotone in the fanout, and the mechanism is the dual search's shape rather than
 this tree's: when neither node is a leaf it tests `nchild(src) x nchild(dst)`
@@ -103,10 +101,9 @@ The parts are `ceil`-divided, so an edge block can be one cell narrower than its
 siblings. Nothing here needs them uniform: a node carries a box and a cap, not a
 shape.
 
-Not the default — see [`BlockStrategy`](@ref) for the measurement that decided
-against it. Kept because it is the natural quadtree-style shape, because it is
-the baseline the default is quoted against, and because a different destination
-system with a much wider fanout could turn the table back.
+Not the default; [`BlockStrategy`](@ref) has the comparison. It is the natural
+quadtree-style shape, it is the baseline the default is quoted against, and a
+destination system with a much wider fanout could make it the faster of the two.
 """
 struct Blocked{K} <: BlockStrategy end
 
@@ -118,8 +115,8 @@ stay near-square — in INDEX space, which is the only space this arithmetic see
 a block of equal row and column counts spans `N/ncols` times as many degrees of
 longitude as of latitude, ten times as many in the 10x reduction band above
 latitude 85, of which the cosine of the latitude then takes most back on the
-ground. What [`treeify`](@ref) builds; [`BlockStrategy`](@ref) carries the
-measurement that chose it.
+ground. What [`treeify`](@ref) builds; [`BlockStrategy`](@ref) has the
+comparison behind that choice.
 """
 struct Bisected <: BlockStrategy end
 
@@ -133,7 +130,7 @@ A `GeometryOps.SpatialTreeInterface` cursor over a Copernicus DEM grid, built by
 recursive splitting of the lattice rectangle. Prefer [`treeify`](@ref) to direct
 construction; it falls back to the generic cursor for grids this cannot
 represent. [`BlockStrategy`](@ref) is how a node splits, and carries the
-measurement that picked the default.
+comparison behind the default.
 
 A node is a rectangle at one of two scales, and `inpixels` says which:
 
@@ -228,25 +225,23 @@ so a cell's north and south edges bow poleward by about
 `Δλ` — at level 1 a pixel of the block's COARSEST band, the largest `Δλ` any
 leaf beneath the node can have, and at level 0 a whole tile.
 
-# What the pad is actually doing, which is not bounding that bow
+# What the pad is doing, which is not bounding that bow
 
 The cap's radius is set by the box's CORNERS ([`_box_cap`](@ref)), and a corner
-is farther from the box centre than any point on a bowed edge. So with `pad = 0`
-a leaf's ring is still inside its own cap, and that is measured over leaves
-sampled in every band and both pole rows: no point in the INTERIOR of a ring
-edge — which is where the bow lives — leaves the unpadded cap at all
-(`worst_interior`, asserted `< 0`, measured `-2.4e-15` rad), and the only
-overshoot is at the ring VERTICES, which are the corners the radius was built
-from (`worst_vertex`, asserted `< 1e-15`, measured `+3.2e-17` rad). That is
-float rounding in `spherical_distance`, not geometry, and it is asserted rather
-than merely measured in `test/systems/CopernicusDEM/runtests.jl`, "the block
-cursor is a tree over the lattice".
+is farther from the box centre than any point on a bowed edge, so a leaf's ring
+lies inside its own cap even at `pad = 0`. `"the block cursor is a tree over the
+lattice"` in `test/systems/CopernicusDEM/runtests.jl` asserts that over leaves in
+every band and both pole rows: no point in the INTERIOR of a ring edge — which is
+where the bow lives — leaves the unpadded cap (`worst_interior < 0`), and the only
+overshoot is at the ring VERTICES, which are the corners the radius was built from
+(`worst_vertex < 1e-15`, float rounding in `spherical_distance` rather than
+geometry).
 
 So the pad is belt-and-braces against rounding at the corners, and the `Δλ²/16`
-expression is an ESTIMATE rather than a bound, in exactly the sense
-`cell_boundary`'s own bow figure is (`system.jl:302-305`) — small angle, and it
-errs low. Nothing here relies on it being tight; the covering law it serves is
-asserted by sampling in that same testset, not derived from this number.
+expression is an ESTIMATE rather than a bound — small angle, and it errs low — in
+the same sense as [`cell_boundary`](@ref)'s own bow figure. Nothing here relies on
+it being tight: the covering law it serves is asserted by sampling in that same
+testset, not derived from this number.
 """
 function _leaf_pad(c::BlockCursor)
     c.level == 0 && return deg2rad(1.0)^2 / 16

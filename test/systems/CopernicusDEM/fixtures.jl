@@ -1,26 +1,23 @@
 # ---------------------------------------------------------------------------
-# Measured fixtures for the Copernicus DEM suite. NO NETWORK: every number here
-# was read off a real AWS Open Data COG once, by hand, and committed. The suite
-# that reads them never touches the network, and neither does anything else in
+# Measured fixtures for the Copernicus DEM suite. Every number here was read off
+# a real AWS Open Data COG with `ArchGDAL`, against
+# `https://copernicus-dem-{30,90}m.s3.amazonaws.com/`, and committed. NO NETWORK:
+# the suite that reads them never touches it, and neither does anything else in
 # `test/`.
 #
-# Provenance: the research document's sections 9.3 (boundary probe, 36 rows — 28
-# GLO-30 and 8 GLO-90), 9.4 (stratified random verification sweep, 33 GLO-30
-# tiles) and 9.5 (GLO-90 southern-boundary confirmation, 11 rows), all produced
-# by `ArchGDAL` against `https://copernicus-dem-{30,90}m.s3.amazonaws.com/`.
-# 79 distinct COGs in all — 61 GLO-30 and 18 GLO-90, one fewer than the 80 rows
-# because 9.5 re-measures 9.3's `S85_00_E000_00`, and both readings are kept
-# below. The two arrays here are exactly those tiles, as 61 GLO-30 rows and 19
-# GLO-90 rows — 19 rather than 18 because the re-measured tile keeps both of its
-# readings.
+# 79 distinct COGs, 61 GLO-30 and 18 GLO-90, over three probes: the band
+# boundaries in both hemispheres, a stratified random sweep of GLO-30 tiles, and
+# a GLO-90 confirmation of the southern boundaries. The arrays below hold 61
+# GLO-30 rows and 19 GLO-90 rows — 19 rather than 18 because `S85_00_E000_00` was
+# measured twice and both readings are kept.
 #
 # These are the ONLY external evidence this system has. The band table in
 # `src/systems/CopernicusDEM/bands.jl` agrees with the Product Handbook's Table 3
 # and with the AWS bucket readme on the six reduction factors, but neither source
 # states which side of a band boundary a SOUTHERN tile falls on — and the answer
 # is not the one a reader of the tile label expects (`S50` is 1x and full width;
-# `S51` is the 1.5x tile). That asymmetry is measurement, and only measurement,
-# which is why these rows are here rather than derived.
+# `S51` is the 1.5x tile). That asymmetry rests on these rows alone, which is why
+# they are committed rather than derived.
 # ---------------------------------------------------------------------------
 
 """
@@ -76,8 +73,8 @@ const GLO30_TILES = [
 """
 Measured GLO-90 (`N = 1200`) tiles, same shape as [`GLO30_TILES`](@ref).
 
-`S85_00_E000_00` appears twice because it was measured twice, in section 9.3 and
-again in section 9.5, and both readings are kept verbatim: 240 columns each.
+`S85_00_E000_00` appears twice because it was measured twice, and both readings
+are kept verbatim: 240 columns each.
 """
 const GLO90_TILES = [
     (lat_s =   0, lon_w =   10, ncols = 1200), (lat_s =  50, lon_w =    6, ncols =  800),
@@ -98,9 +95,9 @@ Six measured GDAL geotransforms, at the full precision `ArchGDAL` printed them.
 A geotransform is `(origin_x, Δlon, 0, origin_y, 0, -Δlat)`; the origin is the
 **outer corner** of the first pixel, which for these `AREA_OR_POINT=Point` rasters
 is half a pixel WEST and half a pixel NORTH of the first pixel centre. `Δlon` is
-recorded in arcseconds, exactly as the probe printed it, so the conversion to
-degrees is visible in the test rather than pre-baked here; `Δlat` is `3600 / N`
-arcseconds — 1″ at GLO-30, 3″ at GLO-90 — for every tile on Earth.
+recorded in arcseconds, so the conversion to degrees is visible in the test
+rather than pre-baked here; `Δlat` is `3600 / N` arcseconds — 1″ at GLO-30, 3″ at
+GLO-90 — for every tile on Earth.
 """
 const GEOTRANSFORMS = [
     (N = 3600, lat_s =   0, lon_w =   10,

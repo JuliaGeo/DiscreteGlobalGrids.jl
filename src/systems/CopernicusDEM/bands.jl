@@ -14,9 +14,9 @@ The Copernicus DEM lattice as a two-level `AbstractHierarchicalGridSystem`.
 
 The type parameter is the number of **latitude intervals per degree** — 3600 for
 GLO-30, 1200 for GLO-90 — not the nominal metre figure, because every formula in
-this module is written in it. Any `N` divisible by 30 is structurally valid (all
-six reduction factors then divide exactly); the test suite instantiates
-`CopernicusDEMSystem{30}()` as a scaled twin of the shipped pair.
+this module is written in it. Any `N` divisible by 30 is structurally valid, since
+all six reduction factors then divide it exactly; `CopernicusDEMSystem{30}()` is the
+scaled twin the conformance suite runs on.
 
 `levels(sys) == 0:1`: level 0 is a 1°x1° tile, level 1 is a pixel.
 """
@@ -43,9 +43,8 @@ lat_intervals(::CopernicusDEMSystem{N}) where {N} = N
 # ===========================================================================
 
 # The DGED longitude reduction factors, by the latitude band of a tile's
-# EQUATOR-WARD edge. Stored doubled so `ncols = 2N / factor2` is exact integer
-# division for every band: 1.5x and 5x were chosen by the product spec precisely
-# so that 3600 and 1200 divide without remainder.
+# EQUATOR-WARD edge. Stored doubled so that `ncols = 2N / factor2` is exact
+# integer division in every band, including the 1.5x and 5x ones.
 #
 #   band (deg)   factor   GLO-30 cols   GLO-90 cols
 #   [ 0, 50)     1x       3600          1200
@@ -55,10 +54,9 @@ lat_intervals(::CopernicusDEMSystem{N}) where {N} = N
 #   [80, 85)     5x        720           240
 #   [85, 90)     10x       360           120
 #
-# Three independent confirmations: Product Handbook Table 3, the AWS bucket readme,
-# and direct measurement of real COGs — 79 distinct ones, 61 GLO-30 and 18 GLO-90,
-# read off AWS by hand and committed as `test/systems/CopernicusDEM/fixtures.jl`,
-# whose header carries their provenance.
+# Three sources agree on it: the Copernicus DEM Product Handbook's Table 3, the
+# AWS bucket readme, and the tiles measured off those buckets and committed as
+# `test/systems/CopernicusDEM/fixtures.jl`.
 #
 # This is the DGED table. DTED (`.dt1`/`.dt2`) has five bands with factors
 # 1, 2, 3, 4, 6 and is not implemented here; the AWS buckets ship DGED.
@@ -75,10 +73,10 @@ the integer `lat_s`, i.e. the tile spanning `lat_s` to `lat_s + 1`.
 with half-open intervals. In the northern hemisphere the label is the equator-ward
 edge; in the southern hemisphere it is the pole-ward one. So `N50` (50 -> 51, edge 50)
 is 1.5x and 2400 columns wide, while `S50` (-50 -> -49, edge **49**) is 1x and **3600**
-columns wide. That asymmetry is not stated in either primary source; it was
-established by measuring real tiles, and `test/systems/CopernicusDEM/fixtures.jl`
-is those measurements — the 79 COGs its header accounts for — which the suite
-checks this function against tile by tile.
+columns wide. Neither the Product Handbook nor the AWS bucket readme states that
+asymmetry; the measured tiles in `test/systems/CopernicusDEM/fixtures.jl` do, and
+`"the band is the equator-ward edge"` in `test/systems/CopernicusDEM/runtests.jl`
+checks this function against them tile by tile.
 """
 function band_factor2(lat_s::Integer)
     -90 <= lat_s <= 89 || throw(ArgumentError(
@@ -131,8 +129,8 @@ end
 
 const GLO30_TABLES = build_tables(3600)::BandTables
 const GLO90_TABLES = build_tables(1200)::BandTables
-# `CopernicusDEMSystem{30}()` is the test suite's conformance workhorse — the scaled twin
-# the whole harness runs on — so it gets a table of its own rather than a locked lookup.
+# `CopernicusDEMSystem{30}()` is the lattice the conformance suite runs on
+# (`test/systems/CopernicusDEM/runtests.jl`), so its table is a constant too.
 const TWIN30_TABLES = build_tables(30)::BandTables
 const OTHER_TABLES = Dict{Int,BandTables}()
 const OTHER_LOCK = ReentrantLock()
@@ -140,9 +138,8 @@ const OTHER_LOCK = ReentrantLock()
 @inline tables(::CopernicusDEMSystem{3600}) = GLO30_TABLES
 @inline tables(::CopernicusDEMSystem{1200}) = GLO90_TABLES
 @inline tables(::CopernicusDEMSystem{30}) = TWIN30_TABLES
-# Any other `N` is a scaled twin, used by the test suite so the conformance harness's
-# `collect(children(...))` stays affordable. Looked up rather than dispatched, because
-# there is no reason to compile a table into the method table for a one-off.
+# Any other `N` builds its table on first use and caches it. Looked up rather than
+# dispatched: a one-off lattice does not need a table in the method table.
 function tables(::CopernicusDEMSystem{N}) where {N}
     return lock(OTHER_LOCK) do
         get!(() -> build_tables(Int(N)), OTHER_TABLES, Int(N))

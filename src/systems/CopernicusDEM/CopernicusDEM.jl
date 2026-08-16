@@ -29,17 +29,17 @@ This module ships no grid type: `levelgrid(sys, l)` returns the package's
     The DTED profile (`.dt1`/`.dt2`) has a different table — five bands with factors
     1, 2, 3, 4, 6 — and this system does not implement it.
 
-!!! note "Dropping the far-south tiles is a lookup, not a lattice"
+!!! note "A holding without the far-south tiles is still this lattice"
     The 64 800 tiles are numbered north to south, row-major:
     `tileordinal(r, q) = r*360 + q` with `r = 89 - lat_s`. The six southernmost
     tile rows — `S90` through `S85`, `lat_s in -90:-85` — are therefore the last
     `6*360 = 2 160` ids, the contiguous TAIL of the order, and level 1 inherits
     that because its ids are tile-major in the same order.
 
-    So a holding that does not carry those tiles needs no second lattice and no
-    renumbering. It is this lattice minus ONE contiguous window — which a
-    `PartialGrid` names directly, and which `treeify` still recognises as a
-    rectangle and gives the block cursor:
+    A holding that omits those tiles is this lattice minus ONE contiguous
+    window, so it needs no second lattice and no renumbering: a `PartialGrid`
+    names it directly, and `treeify` still recognises it as a rectangle and
+    gives it the block cursor.
 
     ```julia
     import DiscreteGlobalGrids as DGG
@@ -52,9 +52,9 @@ This module ships no grid type: `levelgrid(sys, l)` returns the package's
     DGG.treeify(kept) isa DGG.CopernicusDEM.BlockCursor     # true
     ```
 
-    Keep the two apart: this changes which cells a grid NAMES, not what a cell
-    IS. `ncells(sys, l)`, [`cell_box`](@ref), the nesting pair and every id in
-    this module go on describing the whole globe.
+    Such a subset changes which cells a grid NAMES, not what a cell IS:
+    `ncells(sys, l)`, [`cell_box`](@ref), the nesting pair and every id in this
+    module go on describing the whole globe.
 
 !!! note "`refine` and `coarsen` here are module-local"
     They are defined in this module and reachable only as
@@ -62,13 +62,9 @@ This module ships no grid type: `levelgrid(sys, l)` returns the package's
     not methods of any `DiscreteGlobalGrids` generic. An unqualified `refine(…)`
     will not resolve for a reader who has only `using DiscreteGlobalGrids`, so
     every mention of them — here, in docs, at a call site — must carry the
-    module.
-
-    Flag for whoever adds a package-level `refine`/`coarsen` later: the names
-    collide, and this pair would have to become methods of it or be renamed.
-    They relate two SYSTEMS at a fixed level (GLO-30 inside GLO-90), which is
-    not the relation a hierarchy `refine` would name — that one is `children`
-    and `parent`, which this system already has.
+    module. They relate two SYSTEMS at a fixed level (GLO-30 inside GLO-90),
+    which is not the relation a hierarchy `refine` would name; that relation is
+    `children`/`parent`, which this system already has.
 """
 module CopernicusDEM
 

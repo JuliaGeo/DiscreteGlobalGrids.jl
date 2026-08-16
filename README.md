@@ -228,10 +228,9 @@ IGEO7 is a clean-room implementation but for one ported adjacency kernel (see
 ISEA4R are closed-form charts with no external dependency.
 
 No system defines a grid type. All seven return `HierarchicalLevelGrid` from
-`levelgrid` and attach their fast paths to `HierarchicalLevelGrid{TheSystem}` —
+`levelgrid` and attach their fast paths to `HierarchicalLevelGrid{TheSystem}`:
 `cellat`, `neighbors`, `ring` and `cell_area` for the six `systems()` entries,
-`cellat`, `neighbors` and `cell_area` — but not `ring` — for
-`CopernicusDEMSystem`. Among the six,
+and the same minus `ring` for `CopernicusDEMSystem`. Among the six,
 `subtree_border` is an `O(rim)` automaton on every one but A5, which walks the
 whole subtree; `subtree_interior` shares that walk and emits the branches it
 prunes. Both are `collect` of a resumable `EdgeCellIterator` /

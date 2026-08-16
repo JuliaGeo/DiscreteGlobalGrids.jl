@@ -6,7 +6,7 @@ once.
 
 `DGG.CopernicusDEMSystem` implements that same interface for the Copernicus DEM
 raster lattice, but is a raster rather than a DGGS and so stays outside
-`DGG.systems()`; `examples/copernicus_dem.jl` is where it is put to work.
+`DGG.systems()`; `examples/copernicus_dem.jl` puts it to work.
 
 The mental model is two tiers. A **grid** is one finite collection of cells on
 the sphere — a complete level, or a regional subset of one — and geometry,

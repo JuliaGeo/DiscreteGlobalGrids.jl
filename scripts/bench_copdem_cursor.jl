@@ -11,8 +11,8 @@
 # named from the band table rather than read from AWS. About six minutes of timed
 # builds on 8 threads, most of it the generic cursor, plus the two coverings.
 # `COPDEM_ROWS=n` cuts the source to the northernmost `n` raster rows (clamped to
-# the tile) for a quick smoke run. Timings are machine-local and measured once;
-# the two files that quote them say on what.
+# the tile) for a quick smoke run. Timings are machine-local; `BlockStrategy`'s
+# docstring names the machine the table it carries was produced on.
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR

@@ -1,14 +1,9 @@
-# The strategy comparison `BlockStrategy`'s docstring points at: the whole
-# `N50_00_E006_00` GLO-90 tile (960 000 pixels) onto IGEO7 and HEALPix at
-# matched cell size, once per source tree shape, with the intersection matrices
-# compared against the generic cursor's.
+# Compare source-tree strategies for one GLO-90 tile regridded to IGEO7 and HEALPix.
 #
 #     julia -t auto --project=docs scripts/bench_copdem_cursor.jl
 #
-# No network and no raster: a `Regridder` build is geometry, so the tile is
-# named from the band table. About six minutes of timed builds on 8 threads,
-# most of it the generic cursor. `COPDEM_ROWS=n` cuts the source to the
-# northernmost `n` raster rows for a quick smoke run. Timings are machine-local.
+# No network or raster data. `COPDEM_ROWS=n` limits the source to its northernmost
+# `n` raster rows. Timings are machine-local.
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
@@ -27,9 +22,7 @@ rowband(rows) = rows == NROWS ? DGG.PartialGrid(SYS, TILE, 1) :
                 DGG.PartialGrid(SYS, 1, [DGG.LevelIndex(1, k) for k in
                                          CD.pixelcell(SYS, TILE, 0, 0).index .+ (0:(rows * NCOLS - 1))])
 
-# The example's footprint, in shape: the chunk's box densified at 64 segments a
-# degree, so the south edge's poleward bow cannot clip a raster row, padded one
-# pixel for the rings' own bow.
+# Densify the footprint and pad it by one pixel for bowed geodesic edges.
 function footprint(chunk)
     w1, e1, s1, n1 = CD.cell_box(SYS, DGG.cellindex(chunk, 1))
     w2, e2, s2, n2 = CD.cell_box(SYS, DGG.cellindex(chunk, DGG.ncells(chunk)))
@@ -43,8 +36,7 @@ function footprint(chunk)
     return GI.Polygon([GI.LinearRing(pts)])
 end
 
-# The destination level, the way the example picks it: closest mean cell area to
-# a pixel's, on a log scale.
+# Destination level with closest mean cell area on a log scale.
 matched(dstsys, chunk) = argmin(
     l -> abs(log(4π / DGG.ncells(dstsys, l) /
                  DGG.cell_area(DGG.levelgrid(SYS, 1), DGG.cellindex(chunk, 1)))),

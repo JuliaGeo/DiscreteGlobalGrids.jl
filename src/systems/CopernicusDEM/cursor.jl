@@ -1,14 +1,4 @@
-# A spatial tree over the Copernicus DEM lattice, built by recursively
-# splitting index rectangles — 180 x 360 tiles, then N x ncols pixels inside a
-# tile — down to single cells. Nothing is materialised; a node is eight
-# integers. The generic `HierarchicalGridCursor` has no interior levels here
-# (`levels(sys) == 0:1`), which makes dual tree search about an order of
-# magnitude slower on a whole tile; the intersection matrix is identical.
-#
-# Only [`_node_box`](@ref), [`_leaf_pad`](@ref), [`_position`](@ref), and
-# [`_childspace`](@ref) know the rectangle is a Copernicus DEM one. The rest is
-# rectangle arithmetic that belongs in `ConservativeRegridding.Trees` long-term;
-# it lives here because CR is pinned by `[sources]` in this repo's `Project.toml`.
+# A lazy spatial tree over tile and pixel index rectangles.
 
 # Cells at or below which a node stops splitting and yields its cells directly.
 const LEAF_CELLS = 9
@@ -16,27 +6,23 @@ const LEAF_CELLS = 9
 """
     BlockStrategy
 
-How a [`BlockCursor`](@ref) node partitions its rectangle: [`Bisected`](@ref)
-(the default) or [`Blocked`](@ref). Every strategy produces the same
-intersection matrix; they differ only in dual-tree search speed, where the
-smallest fanout won — see `scripts/bench_copdem_cursor.jl`.
+How a [`BlockCursor`](@ref) partitions rectangles: [`Bisected`](@ref) by default,
+or [`Blocked`](@ref). Both produce the same intersections; see the benchmark script.
 """
 abstract type BlockStrategy end
 
 """
     Blocked{K}()
 
-Split both axes into `K` near-equal parts, giving up to `K²` children. An edge
-block can be one cell narrower than its siblings. Not the default — bisection
-benched faster; see [`BlockStrategy`](@ref).
+Split both axes into `K` near-equal parts, giving up to `K²` children. Edge blocks
+may be one cell narrower. Bisection benchmarked faster.
 """
 struct Blocked{K} <: BlockStrategy end
 
 """
     Bisected()
 
-Split the longer axis in two, so the axis alternates and blocks stay
-near-square in index space. What [`treeify`](@ref) builds.
+Split the longer axis in two. This is what [`treeify`](@ref) builds.
 """
 struct Bisected <: BlockStrategy end
 
@@ -46,24 +32,16 @@ const DEFAULT_STRATEGY = Bisected()
 """
     BlockCursor(grid; strategy = DEFAULT_STRATEGY)
 
-A `GeometryOps.SpatialTreeInterface` cursor over a Copernicus DEM grid, built by
-recursive splitting of the lattice rectangle. Prefer [`treeify`](@ref) to direct
-construction; it falls back to the generic cursor for grids this cannot
-represent. [`BlockStrategy`](@ref) is how a node splits.
+A spatial-tree cursor over a Copernicus DEM rectangle. Prefer [`treeify`](@ref),
+which falls back for grids this cursor cannot represent.
 
-A node is a rectangle at one of two scales, and `inpixels` says which:
+A node is either:
 
-  - `false`: tile rows `r0:r1` by tile columns `q0:q1`. At a level-0 grid its
-    cells are those tiles; at a level-1 grid it is an interior node, and a node
-    covering ONE tile descends straight into that tile's pixel rectangle rather
-    than spending a level on itself.
-  - `true`: raster rows `j0:j1` by raster columns `i0:i1` of the single tile
-    `(r0, q0)`.
+  - a tile rectangle (`inpixels == false`), or
+  - a raster rectangle within tile `(r0, q0)` (`inpixels == true`).
 
-`origin` turns a lattice id into a grid position: `position = id - origin`. It is
-`-1` for a complete level grid and `first_id - 1` for a partial one, which is why
-this cursor is only built for grids whose ids are one contiguous run over one
-rectangle — see [`treeify`](@ref).
+`position = id - origin`; therefore partial grids must be one contiguous id run
+forming one rectangle.
 """
 struct BlockCursor{G<:DGG.AbstractGrid,S<:CopernicusDEMSystem,F<:BlockStrategy}
     grid::G
@@ -95,10 +73,8 @@ end
 """
     _node_box(cursor) -> (west, east, south, north)
 
-The node's lon/lat box in degrees, containing every cell box beneath it. A 1x1
-pixel node reproduces [`cell_box`](@ref) exactly; a tile rectangle over-covers
-by up to half a pixel, since west-edge offsets differ across band boundaries
-and the box takes the westernmost.
+The node's longitude/latitude box in degrees. It contains every descendant box;
+tile rectangles use the westernmost band offset.
 """
 function _node_box(c::BlockCursor{G,S}) where {G,S}
     N = lat_intervals(c.sys)
@@ -176,9 +152,7 @@ end
 # Rectangles: splitting, counting, and the cap
 # ===========================================================================
 
-# Part `t` of `parts` near-equal pieces of `lo:lo+len-1`. The first `len % parts`
-# pieces are one longer, so the pieces differ by at most one cell and none is
-# empty.
+# Part `t` of a non-empty, near-equal partition of `lo:lo+len-1`.
 @inline function _part(lo::Int, len::Int, parts::Int, t::Int)
     base, rem = divrem(len, parts)
     off = (t - 1) * base + min(t - 1, rem)
@@ -209,9 +183,8 @@ const NODE_SOUTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, -1.0)
 """
     _box_cap(west, east, south, north, pad) -> SphericalCap
 
-A cap containing the lon/lat box, plus `pad` radians. For boxes at most 180°
-wide the farthest point from the box centre is a corner, so four distances
-suffice; a wider box — only the whole-globe root — gets a polar cap instead.
+A cap containing the lon/lat box plus `pad` radians. Boxes wider than 180° use
+a polar cap.
 """
 function _box_cap(west::Float64, east::Float64, south::Float64, north::Float64,
         pad::Float64)
@@ -235,15 +208,14 @@ end
 
 STI.isspatialtree(::Type{<:BlockCursor}) = true
 
-# The cap is derived on demand rather than stored, so a node stays eight integers.
+# Derive caps on demand to keep nodes compact.
 STI.node_extent_is_expensive(::Type{<:BlockCursor}) = true
 
 function STI.isleaf(c::BlockCursor)
     # A tile block of a level-1 grid is never a leaf: its cells are pixels.
     c.level == 1 && !c.inpixels && return false
     _node_cells(c) <= LEAF_CELLS && return true
-    # A node that would be its own only child is a leaf — insurance against a
-    # strategy that stalls, which would otherwise recurse forever.
+    # A stalled split must terminate.
     _, nr, _, nc, _ = _childspace(c)
     pr, pc = _parts(c.strategy, nr, nc)
     return pr * pc <= 1
@@ -278,8 +250,7 @@ end
 """
     STI.child_indices_extents(cursor) -> Vector{Tuple{Int,SphericalCap{Float64}}}
 
-A leaf's cells as (grid position, cap) pairs, each cap the 1x1 case of
-[`_box_cap`](@ref).
+A leaf's cells as `(grid position, cap)` pairs.
 """
 function STI.child_indices_extents(c::BlockCursor)
     STI.isleaf(c) ||
@@ -327,18 +298,15 @@ end
     treeify(grid::HierarchicalLevelGrid{<:CopernicusDEMSystem})
     treeify(grid::PartialGrid{<:CopernicusDEMSystem})
 
-Give a Copernicus DEM grid the [`BlockCursor`](@ref) tree instead of the
-generic [`HierarchicalGridCursor`](@ref).
+Use a [`BlockCursor`](@ref) when the grid has a rectangular contiguous id run.
 
-A `PartialGrid` gets it only when its cells are one axis-aligned rectangle of
-the lattice held as one contiguous id run, so `position = id - origin` holds:
+A `PartialGrid` qualifies only for:
 
   * level 0 — one segment of a tile row, or whole tile rows;
   * level 1 — one tile's whole raster rows, or a run of whole tiles that is a
     tile rectangle by the level-0 rule.
 
-Anything else falls back to the generic cursor, which is correct for every grid
-and merely slower here.
+Anything else falls back to [`HierarchicalGridCursor`](@ref).
 """
 DGG.treeify(::GOCore.Manifold, grid::LevelGrid) = BlockCursor(grid)
 DGG.treeify(::GOCore.Manifold, c::BlockCursor) = c
@@ -379,18 +347,15 @@ function _block_cursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem},
     n == 0 && return nothing
     lo = DGG.cellindex(grid, 1)
     hi = DGG.cellindex(grid, n)
-    # `PartialGrid` ids are strictly ascending, so `n` ids spanning `n` values
-    # are exactly the run `lo:hi`.
+    # Strictly ascending ids form a run iff their span equals their count.
     hi.index - lo.index + 1 == n || return nothing
-    # A `PartialGrid` does not range-check its ids; `cellposition` answers
-    # `nothing` where `decode` would throw, so a miss falls back cleanly.
+    # `PartialGrid` does not range-check ids.
     (DGG.cellposition(sys, lo) === nothing || DGG.cellposition(sys, hi) === nothing) &&
         return nothing
     origin = Int64(lo.index) - 1
     ra, qa, ja, ia = decode(sys, lo)
     rb, qb, jb, ib = decode(sys, hi)
-    # One tile row segment, or whole tile rows: the only contiguous tile runs
-    # that are rectangles of the tile lattice.
+    # Rectangular tile runs are one row segment or whole rows.
     tilerect = ra == rb || (qa == 0 && qb == NCOLS_TILES - 1)
     if l == 0
         tilerect || return nothing
@@ -404,8 +369,7 @@ function _block_cursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem},
         return BlockCursor(grid, sys, strategy, 1, origin, ra, ra, qa, qa,
             ja, jb, 0, nc - 1, true)
     end
-    # A run of whole tiles: first pixel of the first tile through last pixel of
-    # the last, held as a level-1 tile node.
+    # A run of whole tiles, represented as a level-1 tile node.
     N = Int(lat_intervals(sys))
     (ja == 0 && ia == 0 && jb == N - 1 && ib == Int(ncols(sys, rb)) - 1) ||
         return nothing

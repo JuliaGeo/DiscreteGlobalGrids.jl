@@ -1,28 +1,12 @@
-# Demo: one real Copernicus DEM tile as a DGGS chunk, regridded onto IGEO7 and HEALPix.
+# Regrid one Copernicus DEM tile onto IGEO7 and HEALPix.
 #
-# The claim: a Copernicus DEM tile is an ordinary `AbstractGrid`, so the same three
-# lines that move a HEALPix level onto a lon/lat mesh move a 90 m DEM tile onto an
-# equal-area DGGS —
-#
-#     src = DGG.PartialGrid(DGG.CopernicusDEMSystem(90), tile, 1)
-#     r   = CR.Regridder(GO.Spherical(; radius = 1.0), dst, src)
-#     CR.regrid!(field, r, vec(dem))
-#
-# — with no `CellBasedGrid` adapter, no corner matrix, and no per-system tree.
-#
-# Environment: the DOCS project, because reading a COG needs ArchGDAL:
+# Run in the docs environment for ArchGDAL:
 #
 #     julia -t auto --project=docs examples/copernicus_dem.jl
 #
-# It downloads ONE ~3.5 MB GLO-90 tile over plain HTTPS with `Downloads` (not GDAL's
-# /vsicurl, whose libcurl does not see the macOS trust store) into `tempdir()`, and
-# reuses it if it is already there. It ends in PASS/FAIL assertions and exits non-zero
-# if any of them fail.
+# Downloads one GLO-90 tile to `tempdir()` over HTTPS and reuses it when cached.
 #
-# About 40 s wall on 8 threads for the whole tile onto both destinations at
-# matched cell size; `scripts/bench_copdem_cursor.jl` reproduces the two builds
-# beside the generic cursor's. `COPDEM_ROWS=n` cuts the source to the
-# northernmost `n` raster rows for a faster run.
+# `COPDEM_ROWS=n` limits regridding to the northernmost `n` raster rows.
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
@@ -44,8 +28,7 @@ function check(name, ok; detail="")
 end
 note(text) = println("      ", text)
 
-# Every grid in this package computes on the UNIT sphere; see
-# `examples/regridding.jl` for why naming it is not optional.
+# All package grids use the unit sphere.
 const MANIFOLD = GO.Spherical(; radius=1.0)
 const R_EARTH = 6_371_008.0                # for printing areas in m^2
 
@@ -57,12 +40,9 @@ println("julia $(VERSION)  threads=$(Threads.nthreads())")
 println("="^78)
 
 # --------------------------------------------------------------------------
-# 1. Fetch the tile, and check the file against the lattice.
+# 1. Fetch the tile and check its registration.
 #
-# The band rule says a GLO-90 tile whose equator-ward edge is at latitude 50 is
-# 1.5x reduced: 800 columns of 1200 rows. The geotransform says where its
-# pixel-is-point raster sits. Both are predictions this system makes from a
-# static table, and the COG on AWS is the oracle.
+# At latitude 50, GLO-90 has 800 columns by 1200 rows.
 # --------------------------------------------------------------------------
 
 const TILE_LAT, TILE_LON = 50, 6          # N50_00_E006_00 — band [50,60), 1.5x
@@ -72,8 +52,7 @@ const TIF = joinpath(tempdir(), "$STEM.tif")
 
 if !isfile(TIF)
     println("  downloading $URL")
-    # To a scratch name and then an atomic `mv`, so an interrupted download
-    # cannot leave a truncated file at the cached path.
+    # Atomic replacement prevents caching a partial download.
     part = "$TIF.part-$(getpid())"
     Downloads.download(URL, part)
     mv(part, TIF; force=true)
@@ -97,8 +76,7 @@ check("COG size is the band table's (ncols, nrows)",
     tifsize == (NCOLS, NROWS) == size(A);
     detail="$(tifsize) in a 1.5x band")
 
-# `cell_box` of the TILE is the raster's outer frame, which is exactly GDAL's
-# origin convention for a pixel-is-point COG.
+# A tile's `cell_box` is the pixel-is-point raster's outer frame.
 expected_gt = [TILE_W, (TILE_E - TILE_W) / NCOLS, 0.0,
     TILE_N, 0.0, -(TILE_N - TILE_S) / NROWS]
 gt_err = maximum(abs.(gt .- expected_gt))
@@ -109,17 +87,12 @@ note("origin ($(gt[1]), $(gt[4]))  dlon $(gt[2])  dlat $(gt[6])")
 # --------------------------------------------------------------------------
 # 2. The chunk, and the cube axis.
 #
-# `PartialGrid(sys, tile, 1)` is O(1): sorted subtrees make a tile's pixels a
-# lazy window over the level-1 ids, so nothing is materialised. `CellLookup` is
-# that window wearing a DimensionalData hat.
+# The chunk and its `CellLookup` axis are lazy windows over level-1 ids.
 # --------------------------------------------------------------------------
 
 src = DGG.PartialGrid(sys, tile, 1)
 
-# THE FLATTENING. This system's position `k` for pixel `(j, i)` is `j*ncols + i + 1`, and
-# `vec` of an `(ncols, nrows)` matrix gives linear index `j*ncols + i + 1` — so
-# `vec(A)` is already in the chunk's position order, with no `permutedims` and
-# no copy. The whole demo rests on that line, so it is asserted, not assumed.
+# `vec` of the `(ncols, nrows)` raster already matches chunk position order.
 values = vec(A)
 check("vec(A) is the chunk's position order",
     all(values[DGG.cellposition(src, CD.pixelcell(sys, tile, j, i))] == A[i+1, j+1]
@@ -139,8 +112,7 @@ check("the axis names level-1 cells of this system",
 check("PartialGrid(lk) round-trips the chunk",
     DGG.ncells(DGG.PartialGrid(lk)) == DGG.ncells(src))
 
-# Select a region out of the cube by covering, and land back on a `CellLookup`:
-# the view's axis is still cells, not integers.
+# Covering preserves a cell-valued lookup axis.
 window = Extents.Extent(X=(6.10, 6.11), Y=(50.50, 50.51))
 sub = dem[DGG.Cells(DGG.Covering(window))]
 sublk = DD.lookup(sub, DGG.Cells)
@@ -153,8 +125,7 @@ check("selected values are those cells' own values",
 check("every selected cell meets the window",
     all(Extents.intersects(DGG.cell_extent(g1, c), window) for c in subids))
 
-# The axis is windows, not an id vector: `CellVector` stores the chunk's
-# position ranges, so the whole 960 000-cell axis is a few hundred bytes.
+# `CellVector` stores position windows, not a materialised id vector.
 note("axis memory: Base.summarysize(lk) = $(Base.summarysize(lk)) B, against " *
      "$(8 * DGG.ncells(src)) B for one Int64 id per cell " *
      "($(round(Int, 8 * DGG.ncells(src) / Base.summarysize(lk)))x)")
@@ -162,9 +133,7 @@ note("axis memory: Base.summarysize(lk) = $(Base.summarysize(lk)) B, against " *
 # --------------------------------------------------------------------------
 # 3. Choosing the destination level.
 #
-# "At comparable cell size" is a question the systems answer themselves: take
-# the level whose mean cell area is closest to a pixel's, on a log scale so the
-# candidates either side are compared fairly.
+# Choose the destination level with closest mean cell area on a log scale.
 # --------------------------------------------------------------------------
 
 pixel_area = DGG.cell_area(g1, DGG.cellindex(src, 1))
@@ -184,9 +153,7 @@ for (name, dstsys) in DESTINATIONS
         lpad(round(mean_area * R_EARTH^2; digits=1), 18),
         lpad(round(pixel_area * R_EARTH^2; digits=1), 14),
         lpad(round(ratio; digits=4), 9))
-    # "Within a factor of 2" is not reachable: a `k`-fold system's closest
-    # level can be off by `sqrt(k)`. What IS assertable is that no
-    # neighbouring level is closer.
+    # No neighbouring level may be closer.
     k = DGG.ncells(dstsys, l + 1) / DGG.ncells(dstsys, l)
     check("$name level $l is the closest level to a pixel",
         1 / sqrt(k) <= ratio <= sqrt(k);
@@ -198,11 +165,7 @@ end
 # 4. The coverings, the regrids, and what they must conserve.
 # --------------------------------------------------------------------------
 
-# How many raster rows the regrids use; the default is the whole tile, because
-# that is the claim. `treeify` hands the chunk the block cursor from
-# `src/systems/CopernicusDEM/cursor.jl` — about an order of magnitude faster to
-# build than the generic cursor, for an identical intersection matrix;
-# `scripts/bench_copdem_cursor.jl` runs both routes side by side.
+# Regrid the whole tile unless `COPDEM_ROWS` limits it.
 const ROWS = let n = parse(Int, get(ENV, "COPDEM_ROWS", string(NROWS)))
     1 <= n <= NROWS || error("COPDEM_ROWS=$n is outside 1:$NROWS — this tile has " *
                              "$NROWS raster rows and the chunk is its northernmost `n`")
@@ -227,15 +190,10 @@ function chunk_box(grid)
     return (min(w1, w2), max(e1, e2), min(s1, s2), max(n1, n2))
 end
 
-# A lon/lat box, as a spherical polygon that really contains the box. Two
-# corrections, and both are needed — an `Extents.Extent` handed straight to
-# `query` gets neither, and the regrid then loses whole pixels:
+# Convert a lon/lat box to a spherical polygon that contains it:
 #
-#  1. DENSIFY: at one segment per tile the south edge's poleward bow exceeds a
-#     pixel row and the southernmost row regrids to nothing; at 64 segments per
-#     degree it is 3e-4 of one.
-#  2. PAD: the published pixel rings bow poleward of their own boxes too; one
-#     pixel of pad swallows them.
+#  1. Densify to control the south edge's poleward bow.
+#  2. Pad by one pixel to include bowed pixel rings.
 const DENSIFY_PER_DEGREE = 64
 
 function box_polygon(w, e, s, n; pad_lon=0.0, pad_lat=0.0)
@@ -298,15 +256,8 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     println("  $label: $n_src pixels -> $n_dst $(nameof(typeof(dstsys))) level-$L " *
             "cells, Regridder built in $(round(build; digits=2)) s")
 
-    # WHICH ARM the laws below are checked on is derived, not chosen: only a
-    # counter-clockwise CONVEX clip window makes Sutherland-Hodgman's clip the
-    # intersection. IGEO7 cells are plain spherical polygons; HEALPix densifies
-    # each chart edge, so every vertex on a bowed side is reflex and the
-    # clipper loses area — the destination's defect, the same one as the
-    # twelve `@test_broken` cases in
-    # `test/systems/crosssystem/regridding_conservation.jl`. The constants are
-    # one per law, each a decade or more above what the whole tile measures on
-    # that arm.
+    # Conservation requires counter-clockwise convex clip windows. HEALPix's
+    # densified chart edges are reflex, so its affected checks remain broken.
     shape = ring_shape(DGG.cell_polygon(dstgrid, DGG.cellindex(dst, 1)))
     convex = shape === :ccw_convex
     col_tol = convex ? 1e-9 : 1e-4
@@ -337,20 +288,16 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     check("$label: matrix is (dst cells, src cells)", size(M) == (n_dst, n_src);
         detail="$(size(M)), nnz=$(length(M.nzval))")
 
-    # THE conservation assertion. The covering OVER-covers the chunk, so only
-    # the columns are exact: every source pixel must be fully consumed.
+    # Every source pixel must be fully consumed.
     col_err = maximum(abs.(vec(sum(M; dims=1)) .- r.src_areas) ./ r.src_areas)
     check("$label: column sums == source cell areas", col_err <= col_tol;
         detail="max rel err $col_err (tolerance $col_tol)")
-    # The same law summed: a sign error or a lost block would survive the
-    # maximum above and not this.
+    # Also check the summed conservation law.
     check("$label: total intersection area == total source area",
         abs(sum(M) - sum(r.src_areas)) / sum(r.src_areas) <= col_tol;
         detail="$(sum(M)) vs $(sum(r.src_areas)) sr")
 
-    # The area budget against the closed form: `src_areas` measures the
-    # published QUADS, `cell_area` the exact BOX solid angle. Materialised,
-    # not a generator — `cell_area`'s docstring has why.
+    # Compare published-quad area with exact box area; materialise for pairwise sum.
     boxes = [DGG.cell_area(g1, DGG.cellindex(chunk, i)) for i in 1:n_src]
     box_sum = sum(boxes)
     ring_gap = abs(sum(r.src_areas) - box_sum) / box_sum
@@ -362,19 +309,15 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
             detail="rel gap $tile_gap over $(round(box_sum; sigdigits=8)) sr")
     end
 
-    # `regrid!` divides by `dst_areas`, so a regridded field of ones IS each
-    # destination cell's covered fraction.
+    # Regridded ones give each destination cell's covered fraction.
     cover = zeros(n_dst)
     CR.regrid!(cover, r, ones(n_src))
-    # A different law: a destination cell being handed MORE than its own area,
-    # not a source pixel being fully consumed.
+    # No destination may receive more than its own area.
     check("$label: no destination cell is over-covered", maximum(cover) <= 1 + over_tol;
         detail="max cover - 1 = $(maximum(cover) - 1) (tolerance $over_tol), " *
                "cover in $(round.(extrema(cover); digits=6))")
 
-    # Orientation. Two analytic fields, not one: a row flip and a column flip
-    # are different mistakes. Sampled at SOURCE centroids against the
-    # DESTINATION cell's own centroid; a flip puts the error near half the tile.
+    # Separate analytic fields catch row and column flips.
     src_lat = [lat_of(DGG.cell_centroid(g1, DGG.cellindex(chunk, i))) for i in 1:n_src]
     src_lon = [lon_of(DGG.cell_centroid(g1, DGG.cellindex(chunk, i))) for i in 1:n_src]
     got_lat, got_lon = zeros(n_dst), zeros(n_dst)
@@ -393,8 +336,7 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     check("$label: regridded longitude is the cell's own longitude", lon_err < 5 * width;
         detail="max err $(round(lon_err; sigdigits=4)) deg over $(length(inside)) covered cells")
 
-    # A cell well inside the footprint must be covered exactly: a gap in the
-    # source tessellation would show here and nowhere else.
+    # An interior destination cell must be covered exactly.
     margin = 5 * width
     if n - s > 4 * margin
         deep = [k for (k, p) in zip(inside, centroids)
@@ -410,7 +352,7 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
              "cells to check coverage on; run with COPDEM_ROWS unset")
     end
 
-    # The elevation the whole exercise is for: the cover-weighted mean of the DEM.
+    # Cover-weighted mean elevation.
     elevation = zeros(n_dst)
     CR.regrid!(elevation, r, Float64.(chunkvalues))
     elevation[inside] ./= cover[inside]
@@ -422,8 +364,7 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     return build
 end
 
-# This system's own rings are the convex 4-corner quads it promises — the
-# premise the IGEO7 arm above rests on, checked here rather than assumed.
+# Copernicus DEM rings must remain convex four-corner quads.
 check("source pixel rings are convex quads",
     all(ring_shape(DGG.cell_polygon(g1, CD.pixelcell(sys, tile, j, i))) === :ccw_convex &&
         length(DGG.cell_boundary(g1, CD.pixelcell(sys, tile, j, i))) == 4
@@ -443,9 +384,7 @@ builds = Dict(name => regrid_onto(name, dstsys, LEVELS[name], chunk, chunkvalues
 # --------------------------------------------------------------------------
 # 5. The GLO-30 call shape, without a download.
 #
-# Nothing above is specific to GLO-90. `CopernicusDEMSystem(30)` is the same
-# code at N = 3600, its pixels nest 3x3 inside GLO-90's, and a sub-window of one
-# is a `PartialGrid` like any other.
+# GLO-30 uses the same API; its posts nest 3x3 within GLO-90.
 # --------------------------------------------------------------------------
 
 sys30 = DGG.CopernicusDEMSystem(30)
@@ -465,8 +404,7 @@ check("the 9 fine boxes tile a box of the coarse box's size",
 note("dlon: GLO-90 $(coarse_box[2] - coarse_box[1]) deg, " *
      "GLO-30 $(fine_boxes[1][2] - fine_boxes[1][1]) deg")
 
-# A 256x256 sub-window of the GLO-30 tile: 256 runs of 256 consecutive ids,
-# ascending, which is a legal `PartialGrid` like any other.
+# A 256x256 GLO-30 sub-window as an ascending `PartialGrid`.
 const WIN = 256
 base30 = CD.pixelcell(sys30, tile30, 0, 0).index
 nc30 = Int(CD.ncols_at(sys30, TILE_LAT))

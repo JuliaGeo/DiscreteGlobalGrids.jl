@@ -1,6 +1,4 @@
-# The lattice: the system singleton, the DGED band table, the per-`N` column and
-# prefix-sum tables, and the id codec that turns a tile label or a raster
-# (row, column) into a `LevelIndex` and back.
+# System, band tables, and the tile/raster id codec.
 
 # ===========================================================================
 # The system
@@ -12,11 +10,8 @@
 
 The Copernicus DEM lattice as a two-level `AbstractHierarchicalGridSystem`.
 
-The type parameter is the number of **latitude intervals per degree** — 3600 for
-GLO-30, 1200 for GLO-90 — not the nominal metre figure, because every formula in
-this module is written in it. Any `N` divisible by 30 is structurally valid, since
-all six reduction factors then divide it exactly; `CopernicusDEMSystem{30}()` is the
-scaled twin the conformance suite runs on.
+The type parameter is the number of **latitude intervals per degree**: 3600 for
+GLO-30 and 1200 for GLO-90. Any positive `N` divisible by 30 is structurally valid.
 
 `levels(sys) == 0:1`: level 0 is a 1°x1° tile, level 1 is a pixel.
 """
@@ -42,9 +37,7 @@ lat_intervals(::CopernicusDEMSystem{N}) where {N} = N
 # The band table
 # ===========================================================================
 
-# The DGED longitude reduction factors, by the latitude band of a tile's
-# EQUATOR-WARD edge. Stored doubled so that `ncols = 2N / factor2` is exact
-# integer division in every band, including the 1.5x and 5x ones.
+# DGED factors by the tile's equatorward edge, doubled for exact integer division.
 #
 #   band (deg)   factor   GLO-30 cols   GLO-90 cols
 #   [ 0, 50)     1x       3600          1200
@@ -54,8 +47,7 @@ lat_intervals(::CopernicusDEMSystem{N}) where {N} = N
 #   [80, 85)     5x        720           240
 #   [85, 90)     10x       360           120
 #
-# Matches the Product Handbook's Table 3 and the measured tiles in
-# `test/systems/CopernicusDEM/fixtures.jl`.
+# See Product Handbook Table 3 and `test/systems/CopernicusDEM/fixtures.jl`.
 const BAND_EDGES   = (0, 50, 60, 70, 80, 85)
 const BAND_FACTOR2 = (2, 3, 4, 6, 10, 20)
 
@@ -64,10 +56,9 @@ const BAND_FACTOR2 = (2, 3, 4, 6, 10, 20)
 
 Twice the longitude reduction factor for the tile spanning `lat_s` to `lat_s + 1`.
 
-**The band is chosen by the tile's EQUATOR-WARD edge**, `min(|lat_s|, |lat_s + 1|)`,
-with half-open intervals: `N50` (edge 50) is 1.5x while `S50` (edge 49) is 1x. The
-handbooks do not state that asymmetry; the measured tiles in
-`test/systems/CopernicusDEM/fixtures.jl` do.
+The band uses the tile's **equatorward edge**, `min(|lat_s|, |lat_s + 1|)`, and
+half-open intervals: `N50` is 1.5x while `S50` is 1x — a rule no handbook states;
+the measured fixtures in `test/systems/CopernicusDEM/fixtures.jl` pin it.
 """
 function band_factor2(lat_s::Integer)
     -90 <= lat_s <= 89 || throw(ArgumentError(
@@ -118,7 +109,7 @@ end
 
 const GLO30_TABLES = build_tables(3600)::BandTables
 const GLO90_TABLES = build_tables(1200)::BandTables
-# The lattice the conformance suite runs on, so its table is a constant too.
+# Scaled conformance lattice.
 const TWIN30_TABLES = build_tables(30)::BandTables
 const OTHER_TABLES = Dict{Int,BandTables}()
 const OTHER_LOCK = ReentrantLock()
@@ -126,7 +117,7 @@ const OTHER_LOCK = ReentrantLock()
 @inline tables(::CopernicusDEMSystem{3600}) = GLO30_TABLES
 @inline tables(::CopernicusDEMSystem{1200}) = GLO90_TABLES
 @inline tables(::CopernicusDEMSystem{30}) = TWIN30_TABLES
-# Any other `N` builds its table on first use and caches it.
+# Other tables are built once on first use.
 function tables(::CopernicusDEMSystem{N}) where {N}
     return lock(OTHER_LOCK) do
         get!(() -> build_tables(Int(N)), OTHER_TABLES, Int(N))
@@ -154,9 +145,8 @@ and tile column `q` (west to east, `q = lon_w + 180`): `r * 360 + q`.
 """
     tilebase(sys, r, q) -> Int64
 
-The 0-based level-1 id of the first (north-west) pixel of the tile at tile row `r`
-and tile column `q`. O(1) via the `rowbase` prefix sum. Callers must supply a
-decoded `(r, q)`; it validates nothing.
+The 0-based level-1 id of tile `(r, q)`'s north-west pixel. Callers must supply
+a decoded `(r, q)`; no validation is performed.
 """
 tilebase(sys::CopernicusDEMSystem{N}, r::Integer, q::Integer) where {N} =
     tables(sys).rowbase[Int(r) + 1] + Int64(q) * ncols(sys, r) * Int64(N)
@@ -164,9 +154,8 @@ tilebase(sys::CopernicusDEMSystem{N}, r::Integer, q::Integer) where {N} =
 """
     tilecell(sys, lat_s, lon_w) -> LevelIndex
 
-The level-0 cell of the tile whose lower-left corner is the integer degree pair
-`(lat_s, lon_w)` — the pair the AWS file name carries, e.g. `N50_00_E006_00` is
-`(50, 6)` and `S90_00_W180_00` is `(-90, -180)`.
+The level-0 tile whose lower-left integer-degree corner is `(lat_s, lon_w)`, as
+encoded by AWS filenames: `N50_00_E006_00` is `(50, 6)`.
 """
 function tilecell(::CopernicusDEMSystem, lat_s::Integer, lon_w::Integer)
     -90 <= lat_s <= 89 || throw(ArgumentError("tile latitude $lat_s is outside -90:89"))
@@ -223,8 +212,7 @@ function decode(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     return (Int(r), Int(q), Int(j), Int(i))
 end
 
-# Rejects ids no cell has and levels outside `0:1`. `cellposition` deliberately
-# does NOT use this — there, a miss is `nothing`.
+# Reject invalid ids and levels; `cellposition` returns `nothing` instead.
 @inline function _checked_index(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
     n = DGG.ncells(sys, l)

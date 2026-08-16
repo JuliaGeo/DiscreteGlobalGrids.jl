@@ -1,19 +1,13 @@
 # ---------------------------------------------------------------------------
-# Measured fixtures for the Copernicus DEM suite: every number was read off a real
-# AWS Open Data COG with `ArchGDAL` and committed. NO NETWORK: nothing in `test/`
-# touches it.
+# Committed ArchGDAL measurements from AWS Open Data COGs; tests use no network.
 #
-# 79 distinct COGs over the band boundaries in both hemispheres, a stratified
-# random sweep of GLO-30 tiles, and a GLO-90 confirmation of the southern
-# boundaries. These rows are the only evidence for which side of a band boundary
-# a SOUTHERN tile falls on (`S50` is 1x and full width; `S51` is the 1.5x tile) —
-# no handbook states it.
+# The boundary samples establish the southern convention: `S50` is 1x and `S51`
+# is 1.5x, a distinction absent from the handbooks.
 # ---------------------------------------------------------------------------
 
 """
-Measured GLO-30 (`N = 3600`) tiles: the lower-left integer degree corner the AWS
-file name carries, and the tile's column count. Grouped by band; the southern rows
-straddling a band edge are the ones that pin the equator-ward-edge rule.
+Measured GLO-30 tile corners and column counts, grouped by band. Southern boundary
+rows pin the equatorward-edge rule.
 """
 const GLO30_TILES = [
     # 1x, 3600 columns: band [0, 50)
@@ -57,10 +51,8 @@ const GLO30_TILES = [
 ]
 
 """
-Measured GLO-90 (`N = 1200`) tiles, same shape as [`GLO30_TILES`](@ref).
-
-`S85_00_E000_00` appears twice because it was measured twice, and both readings
-are kept verbatim: 240 columns each.
+Measured GLO-90 tiles in the same format. `S85_00_E000_00` appears twice because
+both measurements are retained.
 """
 const GLO90_TILES = [
     (lat_s =   0, lon_w =   10, ncols = 1200), (lat_s =  50, lon_w =    6, ncols =  800),
@@ -76,10 +68,8 @@ const GLO90_TILES = [
 ]
 
 """
-Six measured GDAL geotransforms, at the full precision `ArchGDAL` printed them.
-A geotransform is `(origin_x, Δlon, 0, origin_y, 0, -Δlat)`; the origin is the
-**outer corner** of the first pixel — half a pixel west and north of the first
-pixel centre for these `AREA_OR_POINT=Point` rasters. `Δlon` is in arcseconds.
+Measured GDAL geotransforms at ArchGDAL's printed precision. The origin is the
+first pixel's outer corner; `Δlon` is in arcseconds.
 """
 const GEOTRANSFORMS = [
     (N = 3600, lat_s =   0, lon_w =   10,

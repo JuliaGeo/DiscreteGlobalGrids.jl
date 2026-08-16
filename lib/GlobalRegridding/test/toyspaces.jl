@@ -1,7 +1,4 @@
-# Fully analytic test doubles: a coarse lon–lat space implementing the whole
-# `RegridSpace` contract, and a method whose weights are a diagonal. Everything
-# here is closed-form and small enough to check by hand — this is a stand-in for
-# a real space, not a grid implementation.
+# Analytic test spaces and methods.
 
 using GlobalRegridding
 import GlobalRegridding as GR
@@ -17,19 +14,16 @@ import ConservativeRegridding: Trees
 
 const US = GO.UnitSpherical
 const USPoint = GO.UnitSphericalPoint{Float64}
-# The UnionAll is what constructs (its two-argument outer constructor derives
-# `radiuslike`); the parametrized alias is what annotates.
+# Generic constructor and concrete annotation aliases.
 const SphericalCap = GO.UnitSpherical.SphericalCap
 const Cap = GO.UnitSpherical.SphericalCap{Float64}
 
-# ===========================================================================
 # Unit-sphere helpers
-# ===========================================================================
 
 """
     toy_point(lon, lat) -> UnitSphericalPoint
 
-Longitude/latitude in **degrees** onto the unit sphere.
+Convert longitude and latitude in degrees to the unit sphere.
 """
 function toy_point(lon::Real, lat::Real)
     coslat = cosd(Float64(lat))
@@ -40,7 +34,7 @@ end
 """
     toy_lonlat(p) -> (lon, lat)
 
-A unit-sphere point back to longitude/latitude in **degrees**.
+Convert a unit-sphere point to longitude and latitude in degrees.
 """
 toy_lonlat(p) = (atand(p[2], p[1]), asind(clamp(p[3], -1.0, 1.0)))
 
@@ -49,9 +43,7 @@ const TOY_FULL_SPHERE = SphericalCap(USPoint(0.0, 0.0, 1.0), nextfloat(Float64(p
 """
     toy_cap(points) -> SphericalCap
 
-A cap covering `points`, centred on their normalized mean. Returns the full
-sphere past radius `π/2`, where the cap stops being convex and would no longer
-be guaranteed to contain the great-circle arcs between the points.
+Return a cap around `points`, or the full sphere when the radius exceeds `π/2`.
 """
 function toy_cap(points)
     sx = sy = sz = 0.0
@@ -76,19 +68,8 @@ end
 """
     toy_bandcap(lat0, lat1, dlon) -> SphericalCap
 
-A cap covering every cell of the latitude band `[lat0, lat1]`, whatever longitude
-span the band covers.
-
-`{lat ≥ a}` **is** a cap of radius `90° − a` about the north pole and `{lat ≤ b}`
-one of radius `90° + b` about the south, so no convexity argument is needed and a
-full-longitude band is bounded as tightly as a narrow one. `a` and `b` widen
-`lat0`/`lat1` by the poleward bow of a `dlon`-wide cell's great-circle east–west
-edge, `atan(tan φ / cos(Δλ/2))`, at whichever end faces away from the equator.
-The full sphere comes back only for a band reaching both poles.
-
-This is the bound [`toy_cap`](@ref) cannot give: a cap through the cells' corners
-stops being convex past `π/2`, so a band of every longitude degenerates to the
-whole sphere there and every chunk of a banded space appears to touch every other.
+Return a polar cap covering the bowed latitude band `[lat0, lat1]` for cells of
+width `dlon`. This remains valid for full-longitude bands.
 """
 function toy_bandcap(lat0::Real, lat1::Real, dlon::Real)
     h = min(abs(Float64(dlon)), 360.0) / 2
@@ -108,20 +89,13 @@ function toy_bandcap(lat0::Real, lat1::Real, dlon::Real)
     return SphericalCap(centre, radius)
 end
 
-# ===========================================================================
-# A flat spatial tree
-# ===========================================================================
+# Flat spatial tree
 
 """
     ToyCapTree(space, indices)
 
-A one-node `SpatialTreeInterface` tree over `indices` of `space`, with stored
-`SphericalCap` extents — a brute-force leaf, which is all a handful of cells
-needs.
-
-`indices` are cell positions for a cell tree and chunk numbers for a chunk
-tree; `caps` are the corresponding extents. The subset constructor is the
-chunk-restricted cell tree a weight builder works against.
+A one-node spatial tree with stored caps. Indices are cell positions for cell
+trees and chunk numbers for chunk trees.
 """
 struct ToyCapTree{S}
     space::S
@@ -150,35 +124,19 @@ GO.SpatialTreeInterface.node_extent(tree::ToyCapTree) = tree.extent
 GO.SpatialTreeInterface.child_indices_extents(tree::ToyCapTree) =
     zip(tree.indices, tree.caps)
 
-# `ConservativeRegridding` addresses a cell tree as a cell source. A chunk tree
-# is never handed to it, so these read the space's cells unconditionally.
+# Cell-tree access uses the wrapped space's global positions.
 GOCore.best_manifold(tree::ToyCapTree) = manifold(tree.space)
 Trees.ncells(tree::ToyCapTree) = ncells(tree.space)
 Trees.getcell(tree::ToyCapTree, i::Int) = getcell(tree.space, i)
 Trees.getcell(tree::ToyCapTree) = (getcell(tree.space, i) for i in tree.indices)
 
-# ===========================================================================
-# The lon–lat space
-# ===========================================================================
+# Lon/lat test space
 
 """
     ToyLonLatSpace(nlon, nlat; lon = (-180, 180), lat = (-90, 90), chunks = (nlon, nlat))
 
-A regular `nlon × nlat` lon–lat cell grid on the unit sphere.
-
-Cells are geodesic quadrilaterals through the four graticule corners, in
-**degrees** over the half-open longitude span `lon` and the closed latitude
-span `lat`. Position `i` of cell `(ix, iy)` is `ix + (iy - 1) * nlon`:
-longitude varies fastest, so a full-width chunk is a contiguous range.
-
-`chunks` is the chunk **size** in cells, `(along lon, along lat)`; the default
-is a single chunk over everything. Chunk `c = cx + (cy - 1) * nchunklon` holds
-the cells of the corresponding cell block, and `cellindices` returns a
-`UnitRange` exactly when chunks span the full longitude row.
-
-Everything is closed-form: [`graticule_area`](@ref) is the exact area of the
-cell's parallel-bounded footprint, and a global space's graticule areas sum to
-`4π` steradians.
+A regular `nlon × nlat` geodesic lon/lat grid on the unit sphere. Longitude
+varies fastest. `chunks` gives `(longitude, latitude)` chunk sizes.
 """
 struct ToyLonLatSpace <: RegridSpace
     nlon::Int
@@ -219,8 +177,7 @@ nchunklat(space::ToyLonLatSpace) = cld(space.nlat, space.chunklat)
     cellsubscript(space::ToyLonLatSpace, i::Int) -> (ix, iy)
     cellposition(space::ToyLonLatSpace, ix::Int, iy::Int) -> Int
 
-The lattice coordinates of a cell position, and their inverse. This is the
-space's chart, which an interpolation stencil is written against.
+Convert between cell positions and lattice coordinates.
 """
 function cellsubscript(space::ToyLonLatSpace, i::Int)
     1 <= i <= ncells(space) || throw(BoundsError(space, i))
@@ -237,7 +194,7 @@ end
 """
     cellbounds(space::ToyLonLatSpace, i::Int) -> (lon_lo, lon_hi, lat_lo, lat_hi)
 
-The cell's graticule box, in degrees.
+Return the cell's lon/lat bounds in degrees.
 """
 function cellbounds(space::ToyLonLatSpace, i::Int)
     ix, iy = cellsubscript(space, i)
@@ -248,23 +205,15 @@ end
 """
     graticule_area(space::ToyLonLatSpace, i::Int) -> Float64
 
-The exact area in steradians of the cell's parallel-bounded footprint,
-`Δλ (sin φ_hi − sin φ_lo)`. A global space's graticule areas sum to `4π`.
-
-This is **not** the area of [`getcell`](@ref)'s polygon, whose east–west edges
-are great-circle arcs through the corners rather than parallels. Such an arc
-bows toward the nearer pole, adding area along the cell's poleward edge and
-removing it along the equatorward one, so the difference has no fixed sign and
-vanishes only for an edge on the equator or a degenerate polar edge. The
-polygons still tile the sphere exactly — neighbouring cells share an edge — so
-their areas sum to `4π` as well.
+Return the parallel-bounded area `Δλ (sin φ_hi − sin φ_lo)` in steradians.
+This differs from the geodesic polygon area used by [`getcell`](@ref).
 """
 function graticule_area(space::ToyLonLatSpace, i::Int)
     _, _, lat_lo, lat_hi = cellbounds(space, i)
     return deg2rad(dlon(space)) * (sind(lat_hi) - sind(lat_lo))
 end
 
-# --- The contract ----------------------------------------------------------
+# `RegridSpace` interface
 
 ncells(space::ToyLonLatSpace) = space.nlon * space.nlat
 
@@ -275,8 +224,7 @@ hascellchart(::ToyLonLatSpace) = true
 """
     cellcorners(space::ToyLonLatSpace, i::Int) -> NTuple{4,UnitSphericalPoint}
 
-The cell's four graticule corners, counter-clockwise seen from outside: south-
-west, south-east, north-east, north-west. A polar cell repeats a corner.
+Return counter-clockwise graticule corners. Polar cells repeat one corner.
 """
 function cellcorners(space::ToyLonLatSpace, i::Int)
     lon_lo, lon_hi, lat_lo, lat_hi = cellbounds(space, i)
@@ -287,8 +235,7 @@ end
 getcell(space::ToyLonLatSpace, i::Int) =
     GI.Polygon([GI.LinearRing(_closed_ring(cellcorners(space, i)))])
 
-# A polar cell's two upper (or lower) corners coincide; dropping the repeat
-# keeps every edge non-degenerate.
+# Drop repeated polar corners.
 function _closed_ring(corners)
     ring = USPoint[]
     for p in corners
@@ -307,12 +254,8 @@ end
 """
     cellat(space::ToyLonLatSpace, p) -> Union{Int,Nothing}
 
-The cell containing `p`, by closed-form inversion. Longitude is wrapped into
-the space's span; a point outside the latitude span, or outside a partial
-longitude span, is `nothing`.
-
-A point on a shared boundary goes to the cell east and north of it, except on
-the space's own outer boundary, which goes inward.
+Return the cell containing `p`, wrapping global longitude. Return `nothing`
+outside partial coverage. Shared boundaries select the east/north cell.
 """
 function cellat(space::ToyLonLatSpace, p)
     lon, lat = toy_lonlat(p)
@@ -344,8 +287,7 @@ function cellindices(space::ToyLonLatSpace, chunk::Int)
     ix1 = min(space.nlon, cx * space.chunklon)
     iy0 = (cy - 1) * space.chunklat + 1
     iy1 = min(space.nlat, cy * space.chunklat)
-    # A full-width chunk is contiguous in position space; say so, since callers
-    # are allowed to exploit it.
+    # Full-width chunks are contiguous in position order.
     nchunklon(space) == 1 &&
         return cellposition(space, 1, iy0):cellposition(space, space.nlon, iy1)
     out = Vector{Int}(undef, (ix1 - ix0 + 1) * (iy1 - iy0 + 1))
@@ -362,10 +304,7 @@ ToyCapTree(space::ToyLonLatSpace, indices) =
     ToyCapTree(space, collect(Int, indices),
         [toy_cap(cellcorners(space, i)) for i in indices])
 
-# A chunk's extent is bounded by its cells' corners rather than its own box
-# corners, so it covers every cell `cellindices` assigns to it — and by its
-# latitude band instead where that construction degenerates, which is any chunk
-# more than a quadrant across, a full-longitude row above all.
+# Fall back to a latitude-band cap when a corner cap becomes non-convex.
 function chunktree(space::ToyLonLatSpace)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)
@@ -384,24 +323,13 @@ function chunktree(space::ToyLonLatSpace)
     return ToyCapTree(space, collect(1:n), caps)
 end
 
-# ===========================================================================
-# A geometry-free method
-# ===========================================================================
+# Geometry-free test method
 
 """
     ToyDiagonalMethod(; scale = 1.0, withdenom = true)
 
-A method whose weight matrix is a diagonal: source cell `p` contributes `scale`
-to destination cell `p`, for every position `p` the two chunks share.
-
-It pairs cells by position and reads no geometry at all, so it exercises the
-executor — accumulation, missing handling, finalize, N-D slicing — without
-depending on any weight-construction task. Over a space regridded onto itself
-it is `scale` times the identity: with [`Weighted`](@ref) the result is the
-source field unchanged, with [`Extensive`](@ref) it is the field times `scale`.
-
-`withdenom = false` emits no denominators, which is how a block that finalizes
-as a raw sum under either policy is produced.
+Build diagonal weights of `scale` for shared cell positions. `withdenom = false`
+omits denominators. This isolates executor behavior from geometry.
 """
 struct ToyDiagonalMethod <: AbstractRegriddingMethod
     scale::Float64
@@ -414,13 +342,7 @@ ToyDiagonalMethod(; scale::Real = 1.0, withdenom::Bool = true) =
 """
     countbuild!(method)
 
-Add one to `method.builds`, from any task.
-
-The lazy path builds a destination tile's chunk pairs concurrently, so a
-counting double's `+=` is a read-modify-write that two tasks can interleave and
-lose. The counts are what L2 and L4 are asserted on, so they are taken under a
-lock rather than trusted to happen not to race. Reading is unsynchronized on
-purpose: every count is read after the reads that produced it have returned.
+Increment `method.builds` under a lock for concurrent test builds.
 """
 const TOY_COUNT_LOCK = ReentrantLock()
 

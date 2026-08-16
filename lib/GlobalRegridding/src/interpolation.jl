@@ -1,19 +1,8 @@
-# `build_weights!` for the point-sampling methods — `NearestCell()` and
-# `BilinearPoint()` — and the chart accessor a bilinear stencil is written
-# against. Owned by task T4.
-#
-# Both methods sample the source *at a point* (the destination centroid) rather
-# than integrating over the destination cell, so neither reports a denominator:
-# there is no covered area to divide by, and the block finalizes as the raw
-# weighted value.
+# Point-sampling methods and their source-chart interface.
 
-# ===========================================================================
 # Chunk-local index lookup
-# ===========================================================================
 
-# Membership in `src_inds` is asked once per destination cell (four times, for a
-# bilinear stencil), so it must not be a linear scan. A contiguous chunk answers
-# by arithmetic; anything else pays for one dictionary per block.
+# Use arithmetic for ranges and a dictionary for other index collections.
 struct _RangeLocalIndex{R<:AbstractUnitRange{<:Integer}}
     inds::R
 end
@@ -28,31 +17,20 @@ _localindexer(inds) = _DictLocalIndex(Dict{Int,Int}(Int(p) => k for (k, p) in en
 """
     _localindex(indexer, position::Integer) -> Int
 
-The chunk-local index of cell `position`, or `0` when the cell is not in this
-chunk — the partition invariant's test, in O(1).
+Return the chunk-local index of `position`, or `0` when absent.
 """
 _localindex(l::_RangeLocalIndex, position::Integer) =
     position in l.inds ? Int(position - first(l.inds)) + 1 : 0
 _localindex(l::_DictLocalIndex, position::Integer) = get(l.map, Int(position), 0)
 
-# ===========================================================================
-# NearestCell
-# ===========================================================================
+# Nearest-cell weights
 
 """
     build_weights!(coo, ::NearestCell, dst_space, dst_inds, src_space, src_inds)
 
-One weight-1 entry per destination cell, at the source cell containing that
-destination cell's centroid.
-
-Requires [`cellcentroid`](@ref) of `dst_space` and [`cellat`](@ref) of
-`src_space`. A destination cell emits nothing when its centroid falls outside
-the source's coverage, and nothing *here* when the containing source cell
-belongs to another chunk — that chunk's own block emits it. So a destination
-row is empty in every block exactly when the centroid is a genuine miss, which
-is what the missing policy then decides.
-
-No denominator: a point sample is a value, not a coverage.
+Add weight 1 for the source cell containing each destination centroid. Emit no
+entry when the point is outside coverage or the source belongs to another
+chunk. Point samples have no coverage denominator.
 """
 function build_weights!(coo::WeightCOO, method::NearestCell,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
@@ -69,83 +47,46 @@ function build_weights!(coo::WeightCOO, method::NearestCell,
     return coo
 end
 
-# ===========================================================================
-# The cell chart
-# ===========================================================================
+# Cell-chart interface
 
 """
     chartaxes(space::RegridSpace) -> (xs, ys)
 
-The cell-centre coordinates of `space`'s chart along each lattice axis, in the
-space's own native coordinates.
-
-Required of any space answering `true` to [`hascellchart`](@ref).
-
-`xs` and `ys` are strictly monotonic vectors — either direction — and their
-lengths are the lattice size, so cell `(ix, iy)` has its centre at
-`(xs[ix], ys[iy])`. Separable axes are the whole assumption: the chart may be
-irregularly spaced along either axis, but not curvilinear.
-
-Called once per weight block, not once per cell, so materializing the vectors
-is acceptable.
+Return strictly monotonic cell-centre coordinates for each separable lattice
+axis. Required when [`hascellchart`](@ref) is `true`.
 """
 function chartaxes end
 
 """
     chartcoords(space::RegridSpace, p) -> Union{Tuple{Real,Real},Nothing}
 
-The unit-sphere point `p` in `space`'s native chart coordinates, or `nothing`
-when `p` does not lie on the chart at all.
-
-Required of any space answering `true` to [`hascellchart`](@ref).
-
-The result is in the same coordinates as [`chartaxes`](@ref) and on the same
-branch: a chart periodic in `x` may return any representative, since the
-periodic reduction is done for it, but a non-periodic chart must return the
-branch its axes are written on.
+Convert `p` to native chart coordinates, or return `nothing` outside the chart.
+Coordinates must use the same branch as [`chartaxes`](@ref), except on periodic
+axes.
 """
 function chartcoords end
 
 """
     chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
 
-The cell position of lattice cell `(ix, iy)`, inverting the subscripting
-[`chartaxes`](@ref) implies.
-
-Required of any space answering `true` to [`hascellchart`](@ref). Indices are
-always within `(1:length(xs), 1:length(ys))`; behaviour outside is the space's
-own business.
+Return the cell position at lattice index `(ix, iy)`. Required when
+[`hascellchart`](@ref) is `true`.
 """
 function chartposition end
 
 """
     chartperiod(space::RegridSpace) -> (px, py)
 
-The period of each chart axis, or `nothing` for an axis that does not wrap.
+Return each axis period in native coordinates, or `nothing` for no wrap.
 Defaults to `(nothing, nothing)`.
-
-A period is expressed in native chart coordinates — `360.0` for a global
-longitude axis in degrees — and means the lattice closes on itself: the last
-cell centre and the first are neighbours, separated by `xs[1] + px - xs[end]`.
-A stencil then spans the seam instead of degrading against it, and a point
-anywhere on the axis is reduced into range before it is located.
-
-Reporting a period for an axis that does not in fact close wraps the stencil
-onto the far edge of the domain, which is silent and wrong; reporting none for
-one that does leaves a seam of one-sided stencils.
 """
 chartperiod(::RegridSpace) = (nothing, nothing)
 
 """
     chartspacing(space::RegridSpace) -> (Δx, Δy)
 
-An upper bound, in **radians of arc**, on the angular distance between the
-centres of two lattice-adjacent cells, along each chart axis.
-
-Required of any space answering `true` to [`hascellchart`](@ref). This is the
-only place the chart's native units meet the sphere, and its only consumer is
-[`support_radius`](@ref) — an upper bound is always safe, a lower bound loses
-chunk pairs.
+Return upper bounds, in radians, on adjacent-centre distance along each axis.
+Required when [`hascellchart`](@ref) is `true`.
 """
 function chartspacing end
 
@@ -185,18 +126,13 @@ function _require_pointlocation(method, src_space::RegridSpace)
     return nothing
 end
 
-# ---------------------------------------------------------------------------
-# Locating a coordinate between cell centres
-# ---------------------------------------------------------------------------
+# Coordinate location
 
 """
     _ChartAxis(values, period)
 
-One chart axis prepared for repeated location queries: cell-centre coordinates
-ascending, with the flip back to lattice indices remembered.
-
-`values` may arrive in either direction — a raster whose latitudes run north to
-south is the ordinary case — and `period` is the axis period or `nothing`.
+Prepare a monotonic chart axis for repeated location queries. Input may be
+ascending or descending; `period` is `nothing` for a non-periodic axis.
 """
 struct _ChartAxis
     values::Vector{Float64}
@@ -232,14 +168,8 @@ _latticeindex(ax::_ChartAxis, k::Int) = ax.reversed ? ax.n + 1 - k : k
 """
     _locate(ax::_ChartAxis, x) -> (i0, i1, w0, w1)
 
-The two lattice indices bracketing `x` and their linear weights, `w0 + w1 == 1`.
-
-Inside the span of cell centres this is linear interpolation. Outside it the
-stencil degrades to the nearest centre (`i0 == i1`, `w1 == 0`) rather than
-extrapolating — so a stencil straddling one edge of the lattice is linear along
-the other axis, and one at a corner is nearest-neighbour. On a periodic axis
-there is no outside: `x` is reduced into range and the seam between the last
-centre and the first is an interval like any other.
+Return the two indices bracketing `x` and linear weights summing to one.
+Non-periodic axes clamp to the nearest centre; periodic axes wrap across the seam.
 """
 function _locate(ax::_ChartAxis, x::Float64)
     v = ax.values
@@ -265,32 +195,14 @@ function _locate(ax::_ChartAxis, x::Float64)
     return (_latticeindex(ax, n), _latticeindex(ax, 1), 1.0 - t, t)
 end
 
-# ===========================================================================
-# BilinearPoint
-# ===========================================================================
+# Bilinear weights
 
 """
     build_weights!(coo, ::BilinearPoint, dst_space, dst_inds, src_space, src_inds)
 
-Bilinear interpolation on the source cell-centre lattice, evaluated at each
-destination cell's centroid.
-
-The source must answer `true` to [`hascellchart`](@ref) and implement the chart
-accessor ([`chartaxes`](@ref), [`chartcoords`](@ref), [`chartposition`](@ref),
-[`chartperiod`](@ref)); the destination must provide [`cellcentroid`](@ref).
-
-Each destination centroid is placed fractionally between the four surrounding
-cell centres and given the product weights, which sum to `1`. At a lattice edge
-the stencil degrades rather than extrapolates — linear along the axis that
-still brackets the point, nearest-neighbour at a corner — and across a periodic
-axis it spans the seam instead. A centroid the chart cannot place at all emits
-nothing.
-
-A stencil may straddle source chunks. Only the points falling in `src_inds` are
-emitted here; the neighbouring chunk's block emits the rest, and accumulating
-over source chunks sums the stencil back to `1`.
-
-No denominator: a point sample is a value, not a coverage.
+Build bilinear weights at destination centroids. Edges clamp instead of
+extrapolating, while periodic axes wrap. Emit only stencil points in `src_inds`;
+other chunks emit their own shares. Point samples have no denominator.
 """
 function build_weights!(coo::WeightCOO, method::BilinearPoint,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
@@ -324,14 +236,8 @@ end
 """
     support_radius(::BilinearPoint, src_space) -> Float64
 
-One source cell-centre spacing, in radians: the largest angular distance a
-stencil point can lie from the source cell the destination centroid falls in.
-
-A destination centroid inside source chunk A can need cell centres from chunk B
-whenever it lies in the outermost half-cell of A, so chunk discovery must dilate
-source extents by this much or that pair is never built and the stencil is
-silently truncated. Taken as the larger of [`chartspacing`](@ref)'s two axes,
-which over-covers the half-cell the stencil actually reaches.
+Return the larger chart-axis spacing, in radians, as a safe stencil bound for
+chunk discovery.
 """
 function support_radius(method::BilinearPoint, src_space::RegridSpace)
     _require_chart(method, src_space)

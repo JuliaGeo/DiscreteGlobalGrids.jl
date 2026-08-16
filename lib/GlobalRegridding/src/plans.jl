@@ -1,21 +1,11 @@
-# Plans. A plan carries everything execution needs — method, spaces, missing
-# policy, weight storage — which is why applying one takes no keyword arguments.
-# `DirectPlan` is the whole-domain case; `ChunkedPlan` and the storage policies
-# below are declared here and implemented with the lazy path.
+# Reusable plans and weight-block storage.
 
 """
     AbstractRegriddingPlan
 
-A complete, reusable regridding operator: method, both spaces, missing policy,
-and the weights themselves.
-
-A plan is **self-contained** — applying one takes no keyword arguments, because
-there is nothing left to decide. It is also immutable in everything that
-affects the answer; only weight *storage* changes as blocks are built on first
-touch, so one plan may be applied concurrently to different slices.
-
-[`DirectPlan`](@ref) holds one whole-domain block; [`ChunkedPlan`](@ref) holds
-blocks per chunk pair.
+A self-contained regridding operator with method, spaces, missing policy, and
+weights. [`DirectPlan`](@ref) stores one whole-domain block;
+[`ChunkedPlan`](@ref) builds blocks by chunk pair. Only weight storage mutates.
 """
 abstract type AbstractRegriddingPlan end
 
@@ -23,22 +13,10 @@ abstract type AbstractRegriddingPlan end
     WeightBlock(weights, denom)
     WeightBlock(coo::WeightCOO, ndst::Integer, nsrc::Integer)
 
-The weights of one destination-chunk/source-chunk pair, immutable once built.
-
-`weights` is an `ndst × nsrc` sparse matrix in **chunk-local** indices:
-`weights[j, k]` is the weight of the `k`-th cell of the source chunk in the
-`j`-th cell of the destination chunk. `denom` is either a length-`ndst` vector
-of per-destination denominators — covered area, for [`Conservative`](@ref) —
-or `nothing` when the method reported none, in which case the block finalizes
-as a raw sum.
-
-Building from a [`WeightCOO`](@ref) sums duplicate entries.
-
-Blocks column-partition the operator by source chunk. That is what lets every
-method stream: applying a block to one loaded source chunk yields that chunk's
-partial contribution, and summing the partials over the connected source chunks
-reconstructs the whole, with no per-method streaming code and no mosaic
-container anywhere in the contract.
+Store one chunk pair's immutable weights. `weights` uses chunk-local indices;
+`denom` contains optional per-destination denominators. Construction from
+[`WeightCOO`](@ref) sums duplicate entries. Summing blocks across source chunks
+reconstructs the full operator.
 """
 struct WeightBlock{M<:AbstractMatrix{Float64},D<:Union{Nothing,Vector{Float64}}}
     weights::M
@@ -56,9 +34,7 @@ Base.size(block::WeightBlock, d::Integer) = size(block.weights, d)
 """
     hasdenom(block::WeightBlock) -> Bool
 
-Whether `block` carries a per-destination denominator, which is what decides
-whether [`Weighted`](@ref) normalizes its destinations or only blanks the
-under-covered ones. See `finalize!`.
+Return whether the block carries per-destination denominators.
 """
 hasdenom(block::WeightBlock) = block.denom !== nothing
 
@@ -69,20 +45,9 @@ Base.show(io::IO, block::WeightBlock) =
 """
     DirectPlan(method, missingpolicy, dst_space, src_space, block, missingval = nothing)
 
-A plan holding one [`WeightBlock`](@ref) over the whole of both spaces.
-
-The in-memory case: no chunk machinery, no discovery, no storage policy — the
-source is read once and the block applied once. This is what bare
-[`regrid`](@ref) builds for an in-memory source, and what
-[`plan_regrid`](@ref) returns when the source is not chunked.
-
-`block` spans both spaces entire: its size is
-`(ncells(dst_space), ncells(src_space))` and its indices are cell positions,
-the chunk-local addressing of a whole-domain pair. `chunks` and `budget` are
-absent because a whole-domain plan has nothing to decide with them.
-
-`missingval` is the source's nodata sentinel, or `nothing` when it has none;
-see [`isvalidvalue`](@ref).
+Store one [`WeightBlock`](@ref) over both complete spaces. The block size is
+`(ncells(dst_space), ncells(src_space))`; its local indices are cell positions.
+`missingval` is an optional source nodata sentinel.
 """
 struct DirectPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
                   D<:RegridSpace,S<:RegridSpace,B<:WeightBlock,V} <: AbstractRegriddingPlan
@@ -110,47 +75,29 @@ Where a [`ChunkedPlan`](@ref) keeps the blocks it has built:
 """
 abstract type AbstractBlockStorage end
 
-# ===========================================================================
-# The budget split
-# ===========================================================================
+# Memory-budget split
 
-# A plan's `budget` is its whole transient-memory target, and two consumers
-# share it: the weights built while a destination chunk is produced, and the
-# source data loaded to apply them. The split is fixed rather than adaptive —
-# an adaptive one would make a plan's residency depend on the order chunks were
-# touched in, which is exactly the property a budget exists to remove.
+# Fixed split between cached weights and loaded source data.
 const WEIGHT_BUDGET_SHARE = 0.25
 
 """
     weightbudget(budget::Integer) -> Int
 
-The bytes of a plan's `budget` given to built [`WeightBlock`](@ref)s — the
-default `maxbytes` of the [`PerChunk`](@ref) a plan builds for itself.
-
-A quarter of the budget: weights are rebuilt from geometry when evicted, while
-source data must be re-read from storage, so the cheaper-to-lose consumer gets
-the smaller share.
+Return the part of `budget` assigned to resident weight blocks.
 """
 weightbudget(budget::Integer) = max(1, floor(Int, WEIGHT_BUDGET_SHARE * budget))
 
 """
     databudget(budget::Integer) -> Int
 
-The bytes of a plan's `budget` available for loaded source chunks — the rest of
-it, after [`weightbudget`](@ref).
-
-This is what decides hold-versus-stream while a destination chunk is produced:
-a connected set that fits here may be held and reused, one that does not is
-streamed load-apply-drop, one chunk resident at a time.
+Return the part of `budget` available for loaded source chunks.
 """
 databudget(budget::Integer) = max(1, Int(budget) - weightbudget(budget))
 
 """
     CachedBlock(block, ref, bytes)
 
-A built [`WeightBlock`](@ref) together with the data-independent quantities worth
-keeping beside it: its reference vector (`blockreference!`) and its approximate
-size in bytes. `used` is the storage's recency stamp.
+A weight block with its reference vector, approximate size, and recency stamp.
 """
 mutable struct CachedBlock
     block::WeightBlock
@@ -159,8 +106,7 @@ mutable struct CachedBlock
     used::Int
 end
 
-# Approximate resident bytes of a block and its reference vector. Sparse storage
-# is counted from its own arrays rather than by `summarysize`, which walks.
+# Estimate resident bytes from the block's backing arrays.
 function _blockbytes(block::WeightBlock, ref::Vector{Float64})
     W = block.weights
     w = W isa SparseMatrixCSC ?
@@ -174,19 +120,9 @@ end
     PerChunk(capacity)
     PerChunk(; capacity = typemax(Int), maxbytes = typemax(Int))
 
-Keep built [`WeightBlock`](@ref)s in memory, keyed by
-`(destination chunk, source chunk)`, evicting least-recently-used blocks once
-either bound is exceeded.
-
-`capacity` bounds the number of resident blocks and `maxbytes` their approximate
-total size; the most recently touched block is never evicted, so a bound of one
-still applies. Eviction costs correctness nothing — an evicted block is rebuilt
-from geometry on its next touch — so the bounds are a residency knob and never
-change the answer.
-
-Concurrent readers of **different** keys are safe: the dictionary is guarded by a
-lock that is never held across a weight build. Two tasks racing on one key may
-both build it, and the loser's block is discarded.
+Cache blocks by `(destination chunk, source chunk)` and evict least-recently-used
+entries when `capacity` or `maxbytes` is exceeded. The newest block is retained.
+Builds run outside the lock; duplicate concurrent builds keep the first result.
 """
 mutable struct PerChunk <: AbstractBlockStorage
     capacity::Int
@@ -227,11 +163,8 @@ storagebytes(s::PerChunk) = s.bytes
 """
     getblock!(storage, key, build) -> CachedBlock
 
-The cached block for `key`, building it with `build()` on first touch.
-
-`build` runs **outside** the storage lock, so a slow weight construction never
-blocks a reader of another key; a duplicate build racing on one key is resolved
-by keeping the block already inserted.
+Return the cached block for `key`, calling `build()` on a miss. Builds run
+outside the storage lock.
 """
 function getblock!(storage::PerChunk, key::Tuple{Int,Int}, build::F) where {F}
     hit = _touch!(storage, key)
@@ -267,8 +200,7 @@ function _insert!(storage::PerChunk, key::Tuple{Int,Int}, entry::CachedBlock)
     end
 end
 
-# Drop least-recently-used entries until both bounds hold, never the one just
-# touched. Called under the lock.
+# Evict under the lock until both bounds hold; retain the latest entry.
 function _evict!(storage::PerChunk, keep::Tuple{Int,Int})
     while length(storage.blocks) > 1 &&
           (length(storage.blocks) > storage.capacity || storage.bytes > storage.maxbytes)
@@ -291,24 +223,10 @@ end
 """
     Spilled(dir; capacity = typemax(Int), maxbytes = typemax(Int))
 
-Serialize built [`WeightBlock`](@ref)s to scratch directory `dir` and reload
-them on demand, so a plan whose weights exceed memory still applies.
-
-A [`PerChunk`](@ref) cache sits in front, bounded by `capacity` and `maxbytes`,
-so a block in memory is answered without touching the filesystem; a block only
-on disk is deserialized and enters the cache; a block on neither is built,
-written, and cached. Correctness never depends on which of the three happens.
-
-Files are **not** shared between plans. Each `Spilled` stamps its own random tag
-into every file name at construction, so two plans pointed at one directory
-never read each other's weights — a plan's blocks are meaningless to a plan with
-different spaces, a different method, or different chunking, and there is no
-key that could tell those apart. Files are left behind when the plan is dropped;
-`dir` is a scratch directory the caller owns.
-
-The on-disk format is private, minimal, and **not durable**: raw CSC arrays with
-a version byte, valid for this package version on this machine and nothing more.
-It is not a weight-exchange format.
+Store blocks in scratch directory `dir` behind a [`PerChunk`](@ref) cache.
+Each storage instance uses unique filenames, so files are not shared between
+plans. Files remain after the plan is dropped. The format is private and not
+intended for durable or portable storage.
 """
 struct Spilled <: AbstractBlockStorage
     dir::String
@@ -320,8 +238,7 @@ function Spilled(dir::AbstractString; capacity::Integer = typemax(Int),
     maxbytes::Integer = typemax(Int))
     d = String(dir)
     isdir(d) || mkpath(d)
-    # Plan identity: a fresh tag per storage, so a directory reused by a second
-    # plan is a cold cache rather than a wrong one.
+    # Unique storage tag prevents cross-plan cache hits.
     tag = string(rand(UInt64); base = 16, pad = 16)
     return Spilled(d, tag, PerChunk(; capacity, maxbytes))
 end
@@ -332,8 +249,7 @@ Base.show(io::IO, s::Spilled) =
 """
     blockpath(storage::Spilled, key) -> String
 
-Where one chunk pair's block is spilled. The plan's tag is part of the name, so
-this can never name another plan's file.
+Return the spill path for one chunk pair.
 """
 blockpath(storage::Spilled, key::Tuple{Int,Int}) =
     joinpath(storage.dir, string("gr-", storage.tag, "-", key[1], "-", key[2], ".blk"))
@@ -341,8 +257,7 @@ blockpath(storage::Spilled, key::Tuple{Int,Int}) =
 """
     spilledfiles(storage::Spilled) -> Vector{String}
 
-The files this storage has written, by name. For inspection and tests; nothing
-in the executor calls it.
+Return the names of files written by this storage.
 """
 function spilledfiles(storage::Spilled)
     prefix = string("gr-", storage.tag, "-")
@@ -364,18 +279,14 @@ function getblock!(storage::Spilled, key::Tuple{Int,Int}, build::F) where {F}
     end)
 end
 
-# The spill format. Four bytes of magic, a version byte, then the CSC arrays and
-# the optional denominator, all little-endian native. `nothing` denom is a
-# distinct flag rather than a zero-length vector, because a block without a
-# denominator finalizes differently from one whose denominator is empty.
+# Private format: magic, version, CSC arrays, then an optional denominator.
 const SPILL_MAGIC = 0x42575247  # "GRWB"
 const SPILL_VERSION = 0x01
 
 """
     writeblockfile(path, block::WeightBlock) -> path
 
-Write `block` to `path` in the private spill format. Written to a temporary
-name and moved into place, so a reader never sees a half-written block.
+Atomically write `block` to `path` in the private spill format.
 """
 function writeblockfile(path::AbstractString, block::WeightBlock)
     W = block.weights
@@ -383,8 +294,7 @@ function writeblockfile(path::AbstractString, block::WeightBlock)
         "Spilled serializes sparse weight blocks; this block's weights are a " *
         "$(typeof(W)). Use PerChunk storage for a method that builds dense blocks."))
     nz = SparseArrays.nnz(W)
-    # Unique per writer, not merely per process: two tasks racing one key both
-    # build and both write, and a shared temporary name would interleave them.
+    # Concurrent writers need distinct temporary files.
     tmp = string(path, ".", getpid(), ".", rand(UInt32), ".tmp")
     open(tmp, "w") do io
         write(io, SPILL_MAGIC)
@@ -404,9 +314,8 @@ end
 """
     readblockfile(path) -> WeightBlock
 
-Read back a block [`writeblockfile`](@ref) wrote. The reference vector is not
-stored — it is derived from the block on reload, which costs one pass over the
-nonzeros and cannot disagree with the weights.
+Read a block written by [`writeblockfile`](@ref). Reference vectors are rebuilt
+from the weights.
 """
 function readblockfile(path::AbstractString)
     return open(path, "r") do io
@@ -435,29 +344,11 @@ end
     ChunkedPlan(method, missingpolicy, dst_space, src_space;
                 storage = nothing, budget = 2^30, chunks = nothing, missingval = nothing)
 
-A plan whose weights are [`WeightBlock`](@ref)s keyed by
-`(destination tile, source chunk)` and built on first touch.
-
-The lazy and streaming case: reading a destination tile discovers its connected
-source chunks, takes each pair's block from `storage`, and accumulates. A
-destination tile is the destination space's own chunk whenever those chunks
-partition the cell axis into ascending contiguous runs, and a run of cell
-positions from `chunks` otherwise — see [`LazyRegridArray`](@ref).
-
-`budget` is the plan's whole transient-memory target in bytes, and a performance
-knob only: it bounds the resident weights ([`weightbudget`](@ref)) and decides
-whether a destination tile's connected source chunks are held together or
-streamed one at a time ([`databudget`](@ref)). Neither changes the answer.
-`storage` defaults to a `PerChunk` bounded by the weight share of the budget;
-pass one explicitly to override, including an unbounded `PerChunk()`.
-
-`chunks` is the chunking the destination array reports — a
-`DiskArrays.GridChunks`, a tuple of chunk sizes, or `nothing` to derive it — and
-its cell axis is also the destination tiling when the destination space has no
-usable one. `missingval` is the source's nodata sentinel; see
-[`isvalidvalue`](@ref).
-
-Constructing a plan builds no weights and reads no data.
+Build and store [`WeightBlock`](@ref)s by `(destination tile, source chunk)` on
+first use. `budget` limits transient weight and source-data residency without
+changing results. `chunks` sets lazy destination tiling; `nothing` derives it.
+`missingval` is an optional source nodata sentinel. Construction reads no data
+and builds no weights.
 """
 struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
                    D<:RegridSpace,S<:RegridSpace,T<:AbstractBlockStorage,C,V} <: AbstractRegriddingPlan
@@ -494,21 +385,9 @@ Base.show(io::IO, plan::ChunkedPlan) =
     blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds[, dst_space]) -> CachedBlock
     blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) -> CachedBlock
 
-The [`WeightBlock`](@ref) of one pair, from the plan's storage, built on first
-touch by one [`build_weights!`](@ref) call over the two sides' cell indices.
-
-`key` is `(destination tile, source chunk)` and `dinds` the destination cells
-that tile owns; the second form is the special case where the tile is the
-destination space's chunk of the same number. The key is what the storage
-addresses, so a plan's tiling must not change over its lifetime.
-
-`dst_space` is the destination the block is built against, defaulting to one
-[`TileCells`](@ref) of the plan's destination per call. A caller producing a
-whole tile passes one across the tile's pairs instead, so the tile's cell
-geometry is synthesized once for all of them.
-
-Building is geometry-only and reads no data, so a block is as cheap to rebuild
-after eviction as it was to build.
+Return one cached chunk-pair block, building it on first use. `key` identifies
+the destination tile and source chunk; `dinds` lists the tile's destination
+cells. A shared `dst_space` can reuse tile geometry across several pairs.
 """
 blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds) =
     blockfor(plan, key, dinds, TileCells(plan.dst_space, dinds))
@@ -526,8 +405,7 @@ blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
     buildblock(plan::ChunkedPlan, dinds, sinds[, dst_space]) -> WeightBlock
     buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) -> WeightBlock
 
-One pair's weights, built unconditionally — the storage decides whether this is
-called.
+Build one chunk pair's weights without consulting storage.
 """
 buildblock(plan::ChunkedPlan, dinds, sinds) =
     buildblock(plan, dinds, sinds, TileCells(plan.dst_space, dinds))

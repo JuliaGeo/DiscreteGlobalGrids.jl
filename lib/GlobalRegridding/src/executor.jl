@@ -1,37 +1,24 @@
-# The apply core: sparse accumulation and missing-policy finalize, plus the N-D
-# shaping around them. A block, a loaded source vector, three accumulators and a
-# policy — nothing here knows about IO, chunk discovery, or which plan it serves,
-# which is why the eager path and the lazy one call the same functions.
+# Shared accumulation, finalization, and array-shaping logic.
 
-# ===========================================================================
 # Validity
-# ===========================================================================
 
-# A value is invalid when it is `missing` or a NaN; anything else counts, so an
-# integer or boolean source can never be invalid.
+# `missing` and NaN are invalid by default.
 @inline _isvalid(::Missing) = false
 @inline _isvalid(x::AbstractFloat) = !isnan(x)
 @inline _isvalid(::Any) = true
 
-# The contribution an entry makes to a weighted sum: itself, or zero when
-# invalid.
+# Invalid entries contribute zero.
 @inline _value(::Missing) = 0.0
 @inline _value(x::AbstractFloat) = isnan(x) ? 0.0 : Float64(x)
 @inline _value(x::Real) = Float64(x)
 
-# The contribution an entry makes to coverage: one when valid, zero when not.
-# A `Bool` is read as the flag it is, so an explicit validity mask works as well
-# as the data itself.
+# Valid entries contribute one to coverage; booleans act as explicit masks.
 @inline _validity(::Missing) = 0.0
 @inline _validity(x::Bool) = x ? 1.0 : 0.0
 @inline _validity(x::AbstractFloat) = isnan(x) ? 0.0 : 1.0
 @inline _validity(::Real) = 1.0
 
-# The sentinel forms. `missingval === nothing` is the whole of the fast path:
-# the extra clause is a compile-time `Nothing` branch that vanishes, so a source
-# without a sentinel pays nothing for the ones that have one. `isequal` rather
-# than `==` because it is total — a `missing` entry compared against a sentinel
-# must answer `false`, not `missing`.
+# `isequal` keeps sentinel comparisons total for `missing` values.
 @inline _isvalid(x, ::Nothing) = _isvalid(x)
 @inline _isvalid(x, missingval) = _isvalid(x) && !isequal(x, missingval)
 @inline _value(x, ::Nothing) = _value(x)
@@ -42,63 +29,29 @@
 """
     isvalidvalue(x, missingval = nothing) -> Bool
 
-Whether a source entry contributes to a regrid.
-
-`missing` and NaN are invalid natively, whatever the source is. `missingval`
-extends that to a sentinel — the nodata value a raster declares in its metadata
-— and `nothing` means the source declares none. A sentinel makes an otherwise
-invalid-free element type (an `Int` raster with `-9999` for nodata) hold invalid
-values, so it is the sentinel and not the element type that decides whether a
-scan is needed.
-
-Validity is **apply-time only**. Weights never see it: an invalid source cell
-contributes zero to both the weighted sum and the accumulated coverage, so its
-share of a destination is simply absent and [`Weighted`](@ref) renormalizes over
-what is left.
+Return whether `x` contributes. `missing`, NaN, and values equal to `missingval`
+are invalid. Validity is applied to values and coverage, not weight construction.
 """
 @inline isvalidvalue(x, missingval = nothing) = _isvalid(x, missingval)
 
 """
     knownempty(data, ndchunk::Tuple{Vararg{AbstractUnitRange}}) -> Bool
 
-Whether `data` can assert, **without reading it**, that the storage chunk
-covering `ndchunk` holds no valid value at all.
-
-`ndchunk` is a chunk of `data`'s own N-D chunk grid, as index ranges in `data`'s
-dimension order — every dimension, spatial and not. Defaults to `false`, which
-is always safe: the hook is an optimization, never a correctness input.
-
-`true` claims exactly what [`isvalidvalue`](@ref) would find: every element of
-that chunk is `missing`, NaN, or the declared sentinel. A missing Zarr chunk, an
-absent tile, a region masked out of a store — the cases where reading returns
-the fill value and nothing else. It is **not** a claim about zeros: a chunk of
-genuine zeros is dense data and contributes coverage.
-
-Emptiness is a property of the data, not of the geometry, and it varies along
-the non-spatial dimensions — a footprint empty in one time chunk can be dense in
-the next — which is why the key is the source array's N-D chunk and not a space
-chunk. The executor consumes it at two levels: it skips the load and the matvec
-for each (spatial chunk × non-spatial chunk) combination that answers `true`,
-and it drops a whole chunk pair before building its weights when every
-non-spatial chunk answers `true` and the missing policy does not read the
-reference weight ([`usesreference`](@ref)). Both are bit-identical to loading
-the chunk and masking it.
-
-DiskArrays exposes a chunk grid but no presence query, so this contract is this
-package's; backend adapters implement it.
+Return whether N-D storage chunk `ndchunk` contains no valid values, without
+reading it. Defaults to `false`. A `true` result permits skipping reads and
+matvecs; zeros are valid data and must not be reported empty. Backend adapters
+may specialize this hook.
 """
 knownempty(data, ndchunk::Tuple{Vararg{AbstractUnitRange}}) = false
 
-# Whether an element type can hold an invalid value at all. `false` skips the
-# scan and the coverage matvec outright.
+# Skip validity scans for element types that cannot hold invalid values.
 _canbeinvalid(::Type{T}) where {T} = !(T <: Real) || T <: AbstractFloat || Missing <: T
 
 """
     anyinvalid(src, missingval = nothing) -> Bool
 
-Whether `src` holds any entry that [`isvalidvalue`](@ref) rejects. `false`
-without reading `src` when its element type cannot hold one and no sentinel is
-declared.
+Return whether `src` contains an invalid value. Avoid scanning when its element
+type cannot contain one and no sentinel is declared.
 """
 anyinvalid(src::AbstractArray) =
     _canbeinvalid(eltype(src)) ? any(!_isvalid, src) : false
@@ -106,8 +59,7 @@ anyinvalid(src::AbstractArray) =
 anyinvalid(src::AbstractArray, ::Nothing) = anyinvalid(src)
 anyinvalid(src::AbstractArray, missingval) = any(x -> !_isvalid(x, missingval), src)
 
-# The sentinel a masked destination is written as: `missing` when the output
-# element type admits it, NaN otherwise.
+# Use `missing` when supported and NaN otherwise.
 @inline function _maskedvalue(::Type{T}) where {T}
     if Missing <: T
         return missing
@@ -120,19 +72,13 @@ anyinvalid(src::AbstractArray, missingval) = any(x -> !_isvalid(x, missingval), 
     end
 end
 
-# ===========================================================================
 # Accumulation
-# ===========================================================================
 
 """
     blockreference!(ref, block::WeightBlock) -> ref
 
-Overwrite `ref` with `block`'s per-destination reference weight: its stored
-denominator, or its row sums when it carries none.
-
-This is what a destination's accumulated valid coverage is compared against, and
-it is data-independent — computed once per block and reused across every slice
-and every read the block serves.
+Write each destination's reference weight to `ref`, using stored denominators or
+row sums. The result is data-independent and reusable.
 """
 function blockreference!(ref::AbstractVector{Float64}, block::WeightBlock)
     fill!(ref, 0.0)
@@ -142,9 +88,7 @@ end
 """
     addreference!(ref, block::WeightBlock) -> ref
 
-Add `block`'s per-destination reference weight to `ref`. Blocks over one
-destination chunk sum, so accumulating over the connected source chunks gives
-the destination's whole reference.
+Add `block`'s per-destination reference weight to `ref`.
 """
 function addreference!(ref::AbstractVector{Float64}, block::WeightBlock)
     d = block.denom
@@ -178,30 +122,11 @@ end
     applyblock!(num, cover, block::WeightBlock, src, valid = nothing, ref = nothing,
                 missingval = nothing)
 
-Accumulate one source chunk's contribution into the destination accumulators.
-
-`num[j] += Σₖ W[j,k] · src[k]`, with invalid `src` entries contributing zero, and
-`cover[j] += Σₖ W[j,k] · valid[k]`, the weight of the source cells that were not
-missing. Both accumulate: applying every block that meets a destination chunk
-sums to the whole, which is what lets any linear method stream.
-
-`src` is one source chunk's cells, flattened in `cellindices` order; its length
-must be the block's column count.
-
-`valid` is the validity mask. `nothing` asserts that every entry of `src` is
-valid, and takes the shortcut of crediting the block's full reference weight
-instead of a second matvec. Otherwise it is any vector the same length as `src`
-read entrywise as valid-or-not — `missing` and NaN are invalid, a `Bool` is
-itself, anything else is valid — so passing `src` itself derives the mask from
-the data without materializing one.
-
-`ref` is `block`'s reference weight from [`blockreference!`](@ref), used only on
-the `valid === nothing` path; passing it avoids recomputing row sums per slice.
-
-`missingval` is the source's nodata sentinel, folded into both readings of an
-entry; see [`isvalidvalue`](@ref).
-
-Allocates nothing.
+Accumulate one source chunk into weighted sums `num` and valid coverage `cover`.
+`src` follows source-chunk cell order. `valid = nothing` asserts all values are
+valid and uses `ref` when supplied; otherwise `valid` is a same-length mask or
+the source itself. `missingval` adds a nodata sentinel. This function allocates
+nothing.
 """
 function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64},
     block::WeightBlock, src::AbstractVector,
@@ -233,27 +158,14 @@ function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64
     return num
 end
 
-# How a sparse block's columns are walked. A block that touches only a few of
-# its columns — a chunk pair that meets at a boundary, or the empty block a
-# discovery superset produces — is walked nonzero-first, each column found from
-# the nonzero that opens it; anything denser is walked column by column, which
-# costs one comparison per column and no search.
-#
-# The crossover is measured, not guessed: a column-by-column walk costs about
-# 0.33 ns per column, and finding a column by binary search over `colptr` about
-# 78 ns, so the search pays for itself below roughly one nonzero column in 240.
-# Keying on `nnz` rather than on the number of nonzero columns over-estimates
-# the density of a real block, which errs toward the walk — the branch that has
-# no bad case.
+# Very sparse blocks locate columns from nonzeros; denser blocks scan columns.
 @inline _walknonzeros(W::SparseMatrixCSC) =
     SparseArrays.nnz(W) * 256 < size(W, 2)
 
-# The column owning nonzero `p`. `colptr` is non-decreasing and empty columns
-# repeat their predecessor's bound, so the last index not past `p` is the
-# column that opens at or before it and closes after it.
+# Locate the column owning nonzero position `p`.
 @inline _columnof(cols::Vector{Int}, p::Int) = searchsortedlast(cols, p)
 
-# Values only — every source entry is valid.
+# Accumulate values when all entries are valid.
 function _accumulate!(num::AbstractVector{Float64}, W::SparseMatrixCSC,
     src::AbstractVector, missingval = nothing)
     rows = SparseArrays.rowvals(W)
@@ -299,7 +211,7 @@ function _accumulate!(num::AbstractVector{Float64}, W::AbstractMatrix,
     return num
 end
 
-# Values and coverage in one pass over the nonzeros.
+# Accumulate values and coverage in one pass.
 function _accumulate!(num::AbstractVector{Float64}, cover::AbstractVector{Float64},
     W::SparseMatrixCSC, src::AbstractVector, valid::AbstractVector, missingval = nothing)
     rows = SparseArrays.rowvals(W)
@@ -356,17 +268,13 @@ function _accumulate!(num::AbstractVector{Float64}, cover::AbstractVector{Float6
     return num
 end
 
-# ===========================================================================
-# Finalize — the missing-data semantics
-# ===========================================================================
+# Finalization
 
 """
     finalize!(out, num, cover, total, policy, hasdenom::Bool) -> out
     finalize!(out, num, cover, total, block::WeightBlock, policy) -> out
 
-Turn the accumulators of one destination chunk into values, applying the missing
-policy. Called once per destination, after every connected source chunk has been
-accumulated.
+Finalize one destination chunk after all source blocks have accumulated.
 
 `num` is the weighted sum with invalid sources contributing zero, `cover` the
 weight of the sources that were valid, and `total` the accumulated reference
@@ -377,21 +285,10 @@ the row sums when it reported none.
   - [`Weighted`](@ref)`(t)`: `num / cover`, blank where `cover ≤ 0` or
     `cover < t · total`.
 
-`Weighted` divides by the valid coverage whatever the method built, which is
-what makes it invariant to how the source is padded: a destination whose sources
-were all valid divides by the same weight it accumulated and is unchanged, and
-one that lost part of its support to missing data is renormalized over what
-survived rather than returned scaled down. Whether a truncated support is
-rescaled or discarded is `threshold`'s decision, not the block's — a method that
-wants only whole supports asks for `Weighted(1)`.
-
-`hasdenom` records whether the block declared a denominator. It selects nothing
-here: a denominator's whole effect is on what `total` is, which the caller has
-already accumulated. The second form reads it off a block.
-
-Blanked destinations are written as `missing` when `eltype(out)` admits it and
-NaN otherwise. `Extensive` blanks nothing: a destination no valid source reached
-is a raw sum of zero, which is the lost mass rather than an absence of one.
+`Weighted` always normalizes by valid coverage and applies its threshold against
+`total`. Blanked values use `missing` when supported and NaN otherwise.
+`Extensive` returns raw sums and never blanks. `hasdenom` is retained for API
+compatibility; `total` already reflects the selected reference.
 """
 function finalize! end
 
@@ -403,16 +300,10 @@ finalize!(out::AbstractVector, num::AbstractVector{Float64},
 """
     usesreference(policy::AbstractMissingPolicy) -> Bool
 
-Whether `policy` reads the accumulated reference weight (`total`) at all.
-
-`false` for [`Extensive`](@ref), which never divides or blanks, and for
-`Weighted(0)`, whose threshold clause can never fire. It is what licenses
-dropping a source chunk that is known to hold no valid data **before** its
-weights are built: an unbuilt block contributes no reference, and only a policy
-that reads the reference could tell the difference between that and a built
-block applied to all-missing data. When it is `true` the block is still built
-and its reference accumulated — every read and every matvec is still skipped,
-which is where the saving was.
+Return whether `policy` reads the accumulated reference weight. When false,
+known-empty chunks can be skipped before their weights are built. When true the
+skip is unsafe: a dropped pair's reference weight would be missing from the
+coverage [`Weighted`](@ref) blanks against, changing answers.
 """
 usesreference(::Extensive) = false
 usesreference(policy::Weighted) = policy.threshold > 0
@@ -442,42 +333,25 @@ function finalize!(out::AbstractVector, num::AbstractVector{Float64},
     return out
 end
 
-# ===========================================================================
 # Cell areas
-# ===========================================================================
 
 """
     cellarea(space::RegridSpace, i::Integer) -> Float64
 
-The area of cell `i` of `space` on its manifold.
-
-Generic and correct for any space, at the cost of building the cell polygon; a
-space with a closed-form area should say so by defining this.
-
-Nothing in the executor calls it: a destination's coverage threshold is measured
-against the denominator its method reported, not against the destination cell's
-own area. It exists for methods and callers that need an area the contract does
-not otherwise expose.
+Return cell `i`'s area on the space manifold. The fallback builds the polygon;
+spaces with a closed-form area should specialize it.
 """
 cellarea(space::RegridSpace, i::Integer) =
     Float64(GO.area(manifold(space), getcell(space, Int(i))))
 
-# ===========================================================================
 # N-D shaping
-# ===========================================================================
 
 """
     spatialdims(A) -> Tuple{Vararg{Int}}
 
-The dimensions of `A` that the regrid replaces, as dimension numbers.
-
-A `DimensionalData` array answers with the positions of its `XDim`/`YDim`
-dimensions; anything else answers `(1, 2)`, or `(1,)` when it is a vector. Every
-other dimension passes through a regrid untouched.
-
-The answer is a shape claim, not a certainty — [`regrid`](@ref) checks it
-against the source space's cell count and falls back to the other reading before
-erroring.
+Return the dimension numbers replaced by regridding. Dimensional arrays use
+their X/Y dimensions; other arrays use the first two dimensions, or one for a
+vector. The source cell count validates the result.
 """
 spatialdims(A::AbstractArray) = ndims(A) <= 1 ? (1,) : (1, 2)
 
@@ -494,8 +368,7 @@ function spatialdims(A::DD.AbstractDimArray)
                         "a regrid replaces at most two"))
 end
 
-# The spatial dimensions the source data is actually flattened over: the trait's
-# answer when it matches the space, the other reading when that one does.
+# Resolve spatial dimensions against the source space's cell count.
 function resolvespatialdims(data::AbstractArray, nsrc::Integer)
     sd = spatialdims(data)
     _spatialsize(data, sd) == nsrc && return _checkleading(data, sd)
@@ -516,20 +389,18 @@ function _checkleading(data, sd)
     return sd
 end
 
-# The sizes of the dimensions a regrid passes through, in order.
+# Sizes of pass-through dimensions.
 _otherdimsizes(data, sd) =
     ntuple(i -> size(data, length(sd) + i), ndims(data) - length(sd))
 
-# The source as an `ncells × nslices` matrix: `vec` over the spatial dimensions
-# in memory order, which is the order the space numbers its cells in.
+# Reshape the source to `ncells × nslices` in memory order.
 function flatsource(data::AbstractArray, nsrc::Integer, nslices::Integer)
     raw = data isa DD.AbstractDimArray ? parent(data) : data
     isdiskbacked(raw) && (raw = Array(raw))
     return reshape(raw, Int(nsrc), Int(nslices))
 end
 
-# The element type a regrid of `Tin` produces: floating point, since weights are,
-# and carrying `missing` exactly when the source does.
+# Output is floating point and preserves the source's ability to hold `missing`.
 function outputeltype(::Type{Tin}) where {Tin}
     T = nonmissingtype(Tin)
     T <: Real || throw(ArgumentError("cannot regrid data of element type $Tin"))
@@ -537,8 +408,7 @@ function outputeltype(::Type{Tin}) where {Tin}
     return Missing <: Tin ? Union{Missing,F} : F
 end
 
-# Destination dimensions: the destination's own cell axis, then the source's
-# non-spatial dimensions unchanged. A plain array in, a plain array out.
+# Put the destination cell axis before the unchanged non-spatial dimensions.
 function wrapoutput(out::AbstractArray, data, sd)
     data isa DD.AbstractDimArray || return out
     ds = DD.dims(data)
@@ -546,19 +416,13 @@ function wrapoutput(out::AbstractArray, data, sd)
     return DD.DimArray(out, (DD.Dim{:Cell}(1:size(out, 1)), others...))
 end
 
-# ===========================================================================
 # Whole-domain apply
-# ===========================================================================
 
 """
     applyplan!(out, plan::DirectPlan, src) -> out
 
-Apply `plan`'s whole-domain block to every column of the `ncells × nslices`
-source matrix `src`, writing the `ndst × nslices` result into `out`.
-
-One plan, one set of accumulators, one reference vector, reused across the
-slices: an N-D regrid costs one weight construction and one reference pass, not
-one per field.
+Apply the whole-domain plan to each source column. Accumulators and the reference
+vector are reused across slices.
 """
 function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix)
     block = plan.block

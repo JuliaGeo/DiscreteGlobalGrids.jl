@@ -1,15 +1,9 @@
-# Chunk discovery, `LazyRegridArray`, streaming and spill. Owned by tasks T7, T8.
-#
-# These are the package's laziness laws (L1, L2, L4 of the task plan), and every
-# one of them is an assertion about *what was read* or *what was built*, not
-# about a number: the source is wrapped in a disk array that records each
-# `readblock!` call, and the method in a wrapper that counts weight builds.
-# Correctness is checked against the eager whole-domain answer on the same field.
+# Chunk discovery, lazy execution, streaming, and spill storage.
 
 import DiskArrays
 import DimensionalData as DD
 
-# --- A source that records every block read ---------------------------------
+# Source read counter
 
 mutable struct T7Counting{T,N,A<:AbstractArray{T,N}} <: DiskArrays.AbstractDiskArray{T,N}
     data::A
@@ -32,7 +26,7 @@ end
 t7_reset!(x::T7Counting) = (empty!(x.reads); x)
 t7_spatial(x::T7Counting) = sort([r[1:2] for r in x.reads])
 
-# --- A method that counts the weight builds it is asked for -----------------
+# Weight-build counter
 
 mutable struct T7CountingMethod{M<:AbstractRegriddingMethod} <: AbstractRegriddingMethod
     inner::M
@@ -49,11 +43,7 @@ function build_weights!(coo::WeightCOO, m::T7CountingMethod,
     return build_weights!(coo, m.inner, dst, dst_inds, src, src_inds)
 end
 
-# --- A method whose stencil reaches a fixed angular distance ----------------
-#
-# Destination `j` is the mean of every source cell whose centre lies within
-# `radius` of its centroid — a stencil that genuinely straddles a source chunk
-# boundary, and reports the radius that makes it discoverable.
+# Fixed-radius stencil used to test support discovery.
 
 struct T7RadiusMethod <: AbstractRegriddingMethod
     radius::Float64
@@ -78,11 +68,7 @@ t7_plan(method, dst, src; policy = Weighted(0.5), storage = PerChunk(),
     budget = 2^30, chunks = nothing, missingval = nothing) =
     ChunkedPlan(method, policy, dst, src, storage, budget, chunks, missingval)
 
-# --- A source that can assert a storage chunk holds nothing ------------------
-#
-# `oracle` answers over the array's own N-D chunk index ranges, which is the key
-# `knownempty` is defined on. `enabled = false` is the same source with the hook
-# switched off — the plain path every skip is asserted equal to.
+# Source with a configurable `knownempty` oracle.
 
 mutable struct T8Presence{T,N,A<:AbstractArray{T,N},F} <: DiskArrays.AbstractDiskArray{T,N}
     data::A
@@ -107,9 +93,7 @@ end
 GR.knownempty(x::T8Presence, nd::Tuple{Vararg{AbstractUnitRange}}) =
     x.enabled && x.oracle(nd)
 
-# Every chunk pair a flat pairwise cap test admits, from the caps the two spaces
-# report *now* — the reference connectivity, recomputed rather than written
-# down, so tightening a space's chunk extents cannot silently invalidate it.
+# Reference connectivity from current pairwise chunk caps.
 function t8_pairs(dst, src; radius = 0.0)
     dcaps, scaps = GR.chunkextents(dst), GR.chunkextents(src)
     return [(d, s) for d in eachindex(dcaps) for s in eachindex(scaps)
@@ -128,9 +112,7 @@ end
 
 @testset "Lazy path" begin
 
-    # A source chunked 4×2 into four chunks, a destination chunked by latitude
-    # band into two contiguous ones: the two chunkings deliberately disagree, so
-    # a destination chunk needs several source chunks.
+    # Source and destination use different chunk layouts.
     srcspace = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
         chunks = (4, 2))
     dstspace = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
@@ -138,9 +120,7 @@ end
     field = collect(reshape(1.0:32.0, 8, 4))
 
     @testset "discovery" begin
-        # The dual descent and a flat pairwise cap check agree, chunk for chunk.
-        # Over-reporting is allowed by the contract but not by this test: the
-        # descent must not prune what the caps say meets.
+        # Dual-tree discovery agrees with pairwise cap checks.
         for c in 1:nchunks(dstspace)
             @test GR.connectedchunks(dstspace, c, srcspace) == t7_pairwise(dstspace, c, srcspace)
         end
@@ -167,8 +147,7 @@ end
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
         A = LazyRegridArray(source, plan)
 
-        # Nothing was read and nothing was built: a plan and a lazy array are
-        # geometry and bookkeeping only.
+        # Construction reads no values and builds no weights.
         @test isempty(source.reads)
         @test GR.nblocks(plan.storage) == 0
         @test size(A) == (32,)
@@ -186,9 +165,7 @@ end
         connected = t7_pairwise(dstspace, 1, srcspace)
         values = A[1:16]
 
-        # Exactly the connected source chunks, each read exactly once, each read
-        # exactly one chunk's worth. A missed pair, a repeated read, or a read of
-        # the whole array all fail here.
+        # Read each connected source chunk exactly once.
         @test length(source.reads) == length(connected)
         @test t7_spatial(source) ==
               sort([GR.chunkranges(srcspace, s, (8, 4)) for s in connected])
@@ -203,11 +180,7 @@ end
     end
 
     @testset "the wave of concurrent builds is bounded by the weight budget" begin
-        # A tile's pairs are built a wave at a time and the wave's blocks are
-        # held until it is applied, so a wave that ignored the budget would put
-        # every one of a fan-in's blocks in memory at once — the failure L3
-        # exists to rule out. The bound is a block's floor: its column pointers
-        # and its reference vector, which are known before any build.
+        # Build waves respect the minimum block-size budget.
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
         srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
         srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
@@ -235,9 +208,7 @@ end
         @test builds == length(t7_pairwise(dstspace, 1, srcspace))
         @test GR.nblocks(plan.storage) == builds
 
-        # Re-reading the same destination chunk builds no weights. It does read
-        # the source again — the plan caches weights, never data — and that
-        # re-read is the documented cost of a second read.
+        # Repeated reads reuse weights but reload source data.
         t7_reset!(source)
         @test A[1:16] == first_read
         @test method.builds == builds
@@ -262,16 +233,13 @@ end
         @test method.builds == builds
         @test slice2 == reshape(10 .* vec(field)[1:16], 16, 1)
 
-        # All three slices of the same destination chunk at once: still no
-        # build, and one spatial plan carried across the slices.
+        # Multiple slices reuse the same spatial blocks.
         three = A[1:16, 1:3]
         @test method.builds == builds
         @test three == hcat(vec(field)[1:16], 10 .* vec(field)[1:16],
             100 .* vec(field)[1:16])
 
-        # The rest of the destination is new geometry, so it builds its own
-        # pairs — once, for all three slices — and the whole agrees with the
-        # eager N-D answer.
+        # New destination tiles build each pair once for all slices.
         every = A[1:32, 1:3]
         @test method.builds == builds + length(t7_pairwise(dstspace, 2, srcspace))
         eager = regrid(cube; to = dstspace, from = srcspace,
@@ -280,10 +248,7 @@ end
     end
 
     @testset "dilation" begin
-        # A destination cell sitting well inside the western source chunk, and a
-        # stencil reaching 50° — far enough to take in the first cell of the
-        # eastern chunk. The two chunks' extents do not meet, so undilated
-        # discovery drops the pair outright.
+        # A 50° stencil crosses a gap between source chunk extents.
         wide_src = ToyLonLatSpace(8, 1; lon = (-80.0, 80.0), lat = (-5.0, 5.0),
             chunks = (4, 1))
         point_dst = ToyLonLatSpace(1, 1; lon = (-40.0, -30.0), lat = (-5.0, 5.0))
@@ -297,10 +262,7 @@ end
         plan = t7_plan(method, point_dst, wide_src)
         A = LazyRegridArray(source, plan)
 
-        # Source centres are 20° apart from −70°; the destination centre is at
-        # −35°, so cells 1–5 lie within 50° and their mean is 3. Dropping the
-        # eastern chunk would renormalize over cells 1–4 and give 2.5 —
-        # plausible, silent, and wrong.
+        # Dilated discovery includes all five cells within the support radius.
         @test A[1:1] == [3.0]
         @test length(source.reads) == 2
         @test A[1:1] == regrid(line; to = point_dst, from = wide_src, method, lazy = false)
@@ -320,8 +282,7 @@ end
             @test A[1:32] == eager
         end
 
-        # A different source chunking is a different set of chunk pairs and the
-        # same answer — the invariance the dilated discovery exists to protect.
+        # Different source chunking preserves the result.
         coarse = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
             chunks = (8, 1))
         plan = t7_plan(ToyDiagonalMethod(), dstspace, coarse)
@@ -371,9 +332,7 @@ end
     end
 
     @testset "missing data" begin
-        # `Weighted` blanks a destination whose source went missing, and the
-        # lazy path reaches the same verdict as the eager one — the validity
-        # mask is derived per source chunk, not per domain.
+        # Lazy and eager paths agree on per-chunk missing data.
         holey = copy(field)
         holey[1, 1] = NaN
         source = T7Counting(holey, (4, 2))
@@ -386,11 +345,7 @@ end
     end
 
     @testset "raster source" begin
-        # A real `RasterGrid` source and real conservative weights, in both
-        # array orientations. A chunk is read as a rectangle of the *array*, so
-        # its ranges follow the array's dimension order and not the space's
-        # X-then-Y one; get that wrong and a `(Y, X)` raster reads out of bounds
-        # or transposed.
+        # Raster chunk reads follow array order in both orientations.
         xd = DD.X(-168.75:22.5:168.75)
         yd = DD.Y(-78.75:22.5:78.75)
         dst = ToyLonLatSpace(8, 4; chunks = (8, 2))
@@ -410,17 +365,13 @@ end
         @test_throws ArgumentError PerChunk(; maxbytes = 0)
     end
 
-    # =======================================================================
-    # T8 — budget, spill, nodata, destination chunking
-    # =======================================================================
+    # Budget, spill, nodata, and destination chunking
 
     reference = regrid(field; to = dstspace, from = srcspace,
         method = ToyDiagonalMethod(), lazy = false)
 
     @testset "L3 — the budget bounds residency" begin
-        # Fan-in: every destination band's extent passes π/2 and so meets every
-        # source chunk. This is the polar case — one destination unit against a
-        # whole row of source chunks — at a size where bytes are countable.
+        # Polar destination bands fan into every source chunk.
         bigsrc = ToyLonLatSpace(64, 32; chunks = (16, 8))
         bigdst = ToyLonLatSpace(64, 32; chunks = (64, 8))
         bigfield = collect(reshape(1.0:2048.0, 64, 32))
@@ -448,8 +399,7 @@ end
         @test held == eager
         @test streamed == held
 
-        # Holding reuses a source chunk across destination tiles; streaming
-        # re-reads it, and never holds more than the one chunk in flight.
+        # Holding reuses chunks; streaming keeps one chunk in flight.
         @test stats_held.hits > 0
         @test stats_streamed.hits == 0
         @test stats_held.loads + stats_held.hits ==
@@ -457,8 +407,7 @@ end
         @test stats_streamed.peakbytes <= 2 * chunkbytes
         @test stats_held.peakbytes >= 8 * chunkbytes
 
-        # Weights, the other half of the budget and the half P1 measured as
-        # unbounded: a budget that admits one block keeps one block.
+        # The weight cache respects its byte budget.
         @test GR.nblocks(plan_streamed.storage) == 1
         @test GR.nblocks(plan_held.storage) == length(t8_pairs(bigdst, bigsrc))
     end
@@ -466,8 +415,7 @@ end
     @testset "Spilled storage" begin
         dir = mktempdir()
         method = T7CountingMethod(ToyDiagonalMethod())
-        # A one-byte memory bound spills every block the moment the next is
-        # built, so every read after the first comes off disk.
+        # A one-byte memory cache forces disk spill.
         storage = Spilled(dir; maxbytes = 1)
         plan = t7_plan(method, dstspace, srcspace; storage)
         A = LazyRegridArray(T7Counting(field, (4, 2)), plan)
@@ -492,9 +440,7 @@ end
               regrid(field; to = dstspace, from = srcspace,
             method = ToyDiagonalMethod(; withdenom = false), lazy = false)
 
-        # A fresh plan on the same directory is a cold cache, not a wrong one:
-        # weights are meaningless without the spaces and method that built them,
-        # and nothing in a file says which those were.
+        # Separate plans do not share spill files.
         again = T7CountingMethod(ToyDiagonalMethod())
         second = t7_plan(again, dstspace, srcspace; storage = Spilled(dir; maxbytes = 1))
         @test LazyRegridArray(T7Counting(field, (4, 2)), second)[1:32] == reference
@@ -516,9 +462,7 @@ end
     end
 
     @testset "knownempty — per non-spatial chunk" begin
-        # Four spatial chunks × two time chunks. Spatial chunk 1 is empty in the
-        # first time chunk only, spatial chunk 4 in both — the time-varying case
-        # the hook exists for.
+        # Emptiness varies across spatial and time chunks.
         cube = cat(field, 10 .* field, 100 .* field, 1000 .* field; dims = 3)
         cube[1:4, 1:2, 1:2] .= NaN
         cube[5:8, 3:4, :] .= NaN
@@ -539,7 +483,7 @@ end
             skipping, source, method, stats = t8_cube(policy, true)
             plain, plainsource, plainmethod, plainstats = t8_cube(policy, false)
 
-            # The whole point: skipping is invisible in the answer.
+            # Skipping preserves the result.
             @test all(isequal.(skipping, plain))
             # And visible in the reads — an empty combination is never asked for.
             @test !any(oracle, source.reads)
@@ -548,16 +492,13 @@ end
             @test stats.skipped > 0
         end
 
-        # Under a policy that reads the reference weight, the all-times-empty
-        # pair is still weighted — its denominator is part of what coverage is
-        # measured against — while every read of it is still skipped.
+        # Reference-using policies retain weights for all-times-empty chunks.
         _, weighted_source, weighted_method, weighted_stats = t8_cube(Weighted(0.5), true)
         _, _, plainmethod, _ = t8_cube(Weighted(0.5), false)
         @test weighted_stats.dropped == 0
         @test weighted_method.builds == plainmethod.builds
 
-        # Under a policy that does not, it is dropped outright: never read, never
-        # weighted, same answer.
+        # Policies without references drop all-times-empty chunks.
         _, ext_source, ext_method, ext_stats = t8_cube(Extensive(), true)
         _, _, ext_plain, _ = t8_cube(Extensive(), false)
         @test ext_stats.dropped > 0
@@ -566,11 +507,7 @@ end
     end
 
     @testset "knownempty — dropping is licensed, not assumed" begin
-        # A destination whose stencil reaches into an all-empty source chunk.
-        # Its valid coverage is one cell of five, so `Weighted(0.5)` blanks it —
-        # but only because the empty chunk's block was still built and its
-        # denominator counted. Drop that pair and the destination looks fully
-        # covered and comes back with a value.
+        # Empty-chunk reference weights still affect coverage thresholds.
         wide_src = ToyLonLatSpace(8, 1; lon = (-80.0, 80.0), lat = (-5.0, 5.0),
             chunks = (4, 1))
         point_dst = ToyLonLatSpace(1, 1; lon = (20.0, 30.0), lat = (-5.0, 5.0))
@@ -602,9 +539,7 @@ end
     end
 
     @testset "destination chunking" begin
-        # A destination space with one chunk over everything has no read
-        # granularity of its own; `chunks` gives it one, and the tiles it names
-        # are the units the read loop computes.
+        # Explicit `chunks` tiles a destination with one space chunk.
         whole = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0))
         undivided = LazyRegridArray(T7Counting(field, (4, 2)),
             t7_plan(ToyDiagonalMethod(), whole, srcspace))
@@ -617,9 +552,7 @@ end
         expected = regrid(field; to = whole, from = srcspace,
             method = ToyDiagonalMethod(), lazy = false)
         @test divided[1:32] == expected
-        # Each declared chunk is computable on its own, and only its own cells
-        # come back — a tile that computed the whole destination and threw most
-        # of it away would still pass the whole-array read above.
+        # Each declared destination chunk computes only its cells.
         @test divided[9:16] == expected[9:16]
 
         # `regrid!` drives the chunk loop, so the same tiling is what gets
@@ -637,9 +570,7 @@ end
     end
 
     @testset "law 5 — chunking invariance" begin
-        # The same field, the same destination, real conservative weights, and
-        # two source chunkings that share no chunk boundary. A pair the dilated
-        # discovery missed under either chunking shows up here as a difference.
+        # Conservative results are invariant to incompatible source chunkings.
         xd = DD.X(-168.75:22.5:168.75)
         yd = DD.Y(-78.75:22.5:78.75)
         dst = ToyLonLatSpace(8, 4; chunks = (8, 2))

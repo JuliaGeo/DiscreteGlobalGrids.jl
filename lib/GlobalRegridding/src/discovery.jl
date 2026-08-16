@@ -1,21 +1,17 @@
-# Connected chunk-pair discovery over the two chunk trees. Owned by task T7.
-#
-# The lazy path needs one question answered: which source chunks can contribute
-# to this destination chunk? It is answered by a dual depth-first descent over
-# the two chunk trees, whose node extents are spherical caps, with the
-# destination side dilated by the method's support radius. Dilation is what
-# keeps an interpolation stencil that reaches past a source chunk's boundary
-# discoverable; without it the pair is dropped and the missing policy silently
-# renormalizes a truncated stencil.
+# Discover connected source and destination chunks from their cap trees.
 
 """
     CapQuery(cap)
 
-A one-leaf spatial tree holding a single [`SphericalCap`] extent, so that a
-query about one chunk is the same dual descent as a query about a whole tree.
+A one-leaf spatial tree for querying one spherical cap. Its leaf index is `1`.
 
-Its leaf index is always `1`; callers care only about the opposing tree's
-indices.
+# Example
+
+```julia
+cap = SphericalCap(USPoint(0.0, 0.0, 1.0), 0.1)
+query = CapQuery(cap)
+STI.node_extent(query) == cap
+```
 """
 struct CapQuery
     cap::Cap
@@ -32,16 +28,17 @@ STI.child_indices_extents(q::CapQuery) = ((1, q.cap),)
 """
     DilatedIntersects(radius)
 
-The descent predicate: whether two spherical caps come within `radius` angular
-radians of each other, i.e. whether the first cap **dilated by `radius`** meets
-the second.
+Test whether two caps are within `radius` radians. Dilation applies at every
+tree level, so pruning remains valid for methods with nonzero support.
 
-Dilating rather than testing bare intersection is the whole of the support-radius
-contract, and it is applied at every level of the descent rather than only at the
-leaves: a node's cap dilated by `radius` contains every child's cap dilated by
-`radius`, so a pair pruned here has no descendant pair that would have survived.
-Over-reporting is free — an extra chunk pair yields an all-zero block — while
-under-reporting is silent data loss.
+# Example
+
+```julia
+cap_a = SphericalCap(USPoint(1.0, 0.0, 0.0), 0.1)
+cap_b = SphericalCap(USPoint(cos(0.2), sin(0.2), 0.0), 0.1)
+intersects = DilatedIntersects(0.05)
+intersects(cap_a, cap_b)
+```
 """
 struct DilatedIntersects
     radius::Float64
@@ -53,10 +50,7 @@ end
 """
     chunkextents(space::RegridSpace) -> Vector{SphericalCap}
 
-Every chunk's extent, indexed by chunk number, collected from
-[`chunktree`](@ref)'s leaves.
-
-Geometry only: no cell polygon is built and no data is read.
+Collect each chunk's spherical-cap extent from [`chunktree`](@ref).
 """
 function chunkextents(space::RegridSpace)
     caps = Vector{Cap}(undef, Int(nchunks(space)))
@@ -87,25 +81,15 @@ end
 """
     chunkextent(space::RegridSpace, chunk::Integer) -> SphericalCap
 
-One chunk's extent. The generic implementation walks [`chunktree`](@ref); a
-space that can answer in O(1) should say so by defining this.
+Return one chunk extent. Spaces may specialize this to avoid walking the tree.
 """
 chunkextent(space::RegridSpace, chunk::Integer) = chunkextents(space)[Int(chunk)]
 
 """
     connectedchunks(dst_space, dstchunk, src_space; radius = 0.0) -> Vector{Int}
 
-The source chunks that can contribute to `dstchunk`: those whose extent comes
-within `radius` angular radians of `dstchunk`'s, ascending.
-
-`radius` is `support_radius(method, src_space)` — zero for a method whose
-weights are pure overlap, positive for one whose stencil reaches beyond the cell
-it is centred on.
-
-The answer is a superset, never a subset: extents bound their geometry, so a
-pair that is dropped cannot contribute, while a pair reported in error costs one
-empty block. Every method is linear and every block accumulates, so a superset
-gives the same numbers as the exact set.
+Return ascending source chunks within `radius` radians of `dstchunk`. The result
+may include false positives, but must include every contributing chunk.
 """
 connectedchunks(dst_space::RegridSpace, dstchunk::Integer, src_space::RegridSpace;
     radius::Real = 0.0) =
@@ -115,17 +99,8 @@ connectedchunks(dst_space::RegridSpace, dstchunk::Integer, src_space::RegridSpac
     connectedchunks!(out, dstcap::SphericalCap, src_space; radius = 0.0) -> out
     connectedchunks!(out, dstcap::SphericalCap, srctree; radius = 0.0) -> out
 
-[`connectedchunks`](@ref) against a destination extent already in hand, into a
-reused vector.
-
-The descent is `GeometryOps.SpatialTreeInterface`'s dual depth-first search with
-the destination as a one-node tree, so a hierarchical source chunk tree is
-pruned level by level and a flat one degrades to the pairwise cap scan that is
-all a flat tree can offer.
-
-The second form takes the source's chunk tree directly, for a caller that queries
-one source repeatedly: [`chunktree`](@ref) may cost O(nchunks) to build, and that
-cost belongs once per plan and not once per destination chunk.
+Write connected source chunks for `dstcap` into `out`. Passing a prebuilt source
+tree avoids rebuilding it for repeated queries.
 """
 connectedchunks!(out::Vector{Int}, dstcap::Cap, src_space::RegridSpace;
     radius::Real = 0.0) =
@@ -142,15 +117,8 @@ end
 """
     connectedchunks!(out, dstcaps::AbstractVector{<:SphericalCap}, srctree; radius = 0.0)
 
-The union of [`connectedchunks!`](@ref) over several destination extents, into a
-reused vector.
-
-A destination unit that is a run of cell positions rather than one of the
-destination space's own chunks is bounded by the extents of every chunk it draws
-cells from. Descending against each of those in turn and taking the union is
-tighter than merging them into one cap — a merge of two distant caps can cover
-half the sphere, while the union of their descents cannot report a source chunk
-neither of them meets.
+Write the union of connected chunks for several destination extents into `out`.
+Querying caps separately avoids the loose bound from merging distant caps.
 """
 function connectedchunks!(out::Vector{Int}, dstcaps::AbstractVector{<:SphericalCap},
     srctree; radius::Real = 0.0)
@@ -175,12 +143,8 @@ end
 """
     connectedchunkpairs(f, dst_space, src_space; radius = 0.0)
 
-Call `f(dstchunk, srcchunk)` for every chunk pair that can contribute, in one
-dual descent over both chunk trees.
-
-The batched form of [`connectedchunks`](@ref), for callers that want every
-destination chunk's connections at once: two hierarchical chunk trees prune each
-other here, which a per-destination query cannot do.
+Call `f(dstchunk, srcchunk)` for every potentially contributing pair using one
+dual-tree descent.
 """
 function connectedchunkpairs(f::F, dst_space::RegridSpace, src_space::RegridSpace;
     radius::Real = 0.0) where {F}

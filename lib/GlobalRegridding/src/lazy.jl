@@ -1,33 +1,14 @@
-# `LazyRegridArray`, the lazy destination array. Owned by task T7.
-#
-# The whole lazy path is one function — `readblock!` — and it is generic over
-# methods, spaces and storage: requested range → covering destination chunks →
-# connected source chunks (dilated discovery) → per pair, a block from the plan's
-# storage → load that one source chunk → accumulate → finalize once per
-# destination chunk. Nothing here knows what a method is; the blocks column-
-# partition the operator by source chunk, and that is what makes every linear
-# method stream without a line of per-method code.
+# Lazy destination array and chunked execution.
 
-# ===========================================================================
 # Source addressing
-# ===========================================================================
 
 """
     chunkranges(space::RegridSpace, chunk, spatialsize::NTuple{NS,Int})
         -> NTuple{NS,UnitRange{Int}}
 
-The index ranges of `chunk` in the **array's** spatial dimensions, in array
-dimension order, for an array whose spatial dimensions have size `spatialsize`.
-
-This is what turns a chunk number into one contiguous read. Its contract is that
-`vec(A[chunkranges(space, chunk, size)...])` is the chunk's cells in
-`cellindices` order — the same flattening the executor uses, column-major over
-the array's spatial dimensions.
-
-The generic implementation recovers the ranges from [`cellindices`](@ref) and
-verifies that the chunk really is a rectangle of the lattice; a space that knows
-its own rectangle should say so by defining this, and one whose chunks are not
-lattice rectangles must.
+Return a chunk's array-index ranges in spatial dimension order. Flattening this
+array block must match [`cellindices`](@ref). The fallback verifies that cells
+form a lattice rectangle; non-rectangular spaces must specialize this function.
 """
 function chunkranges end
 
@@ -65,33 +46,22 @@ _notrectangular(space, chunk) = throw(ArgumentError(
     "so it cannot be read in one block; define " *
     "`GlobalRegridding.chunkranges(::$(typeof(space)), chunk, spatialsize)`"))
 
-# `RasterGrid` holds its chunk rectangle outright; `chunkbox` is (X, Y) and the
-# array's spatial dimensions are in `xfast` order.
+# `chunkbox` is `(X, Y)`; array dimensions follow `xfast` order.
 chunkranges(space::RasterGrid, chunk::Integer, ::NTuple{2,Int}) =
     space.xfast ? chunkbox(space, Int(chunk)) : reverse(chunkbox(space, Int(chunk)))
 
-# ===========================================================================
 # Destination tiling
-# ===========================================================================
 
-# The destination side of a read costs, per cell and per slice, four Float64
-# accumulators and one output value; an eighth of the budget is what a derived
-# tile is allowed to spend on them.
+# Reserve one eighth of the budget for per-cell destination buffers.
 const DEST_BUDGET_SHARE = 8
 const DEST_BYTES_PER_CELL = 40
 
 """
     DestTiling(runs, capsof, spacetiled)
 
-How the destination is cut up for reading: tile `t` owns the cells `runs[t]`
-names, and is bounded by the extents of the destination chunks `capsof[t]`.
-
-`spacetiled` says tile `t` **is** destination chunk `t`, in which case `runs[t]`
-is only the span of its cell positions and its cells come from
-[`cellindices`](@ref) — the case a destination space with real chunking gets,
-and the one whose blocks are keyed the way [`ChunkedPlan`](@ref) describes.
-Otherwise a tile is exactly the contiguous run of cell positions `runs[t]`, cut
-from the requested chunking or derived from the budget.
+Describe destination tiles by cell-position runs and bounding space chunks.
+When `spacetiled` is true, tile `t` is destination chunk `t`; otherwise the tile
+is the corresponding contiguous run.
 """
 struct DestTiling
     runs::Vector{UnitRange{Int}}
@@ -101,10 +71,7 @@ end
 
 ntiles(tiling::DestTiling) = length(tiling.runs)
 
-# A destination space can tile the read only when its chunks partition the cell
-# axis into ascending contiguous runs — and only when it has more than one, since
-# a single chunk is a declaration that the space has no chunking to speak of and
-# is exactly the case that must not collapse a whole destination into one read.
+# Use space chunks as tiles only when multiple chunks partition the cell axis.
 function _spacetileable(spans::Vector{UnitRange{Int}}, contiguous::Bool, ndst::Int)
     (contiguous && length(spans) > 1) || return false
     next = 1
@@ -126,18 +93,14 @@ function _desttiling(dst_space::RegridSpace, ndst::Int, spans::Vector{UnitRange{
     return DestTiling(runs, [_overlappingchunks(spans, r) for r in runs], false)
 end
 
-# A derived tile is budget-sized, but never coarser than the destination's own
-# chunks: a space whose chunks interleave in position space cannot tile the read
-# itself, and giving it one tile per chunk's worth of cells keeps the read
-# granularity it meant to offer.
+# Derived tiles honor both the budget and the destination's chunk granularity.
 function _defaulttilesizes(ndst::Int, nchunk::Int, budget::Int)
     frombudget = max(1, fld(budget, DEST_BUDGET_SHARE * DEST_BYTES_PER_CELL))
     fromchunks = cld(ndst, max(nchunk, 1))
     return [clamp(min(frombudget, fromchunks), 1, ndst)]
 end
 
-# Cell-position runs from chunk sizes: one size repeats to cover the axis, a
-# full list is taken as given.
+# Convert repeated or explicit chunk sizes to cell-position runs.
 function _runs(sizes::Vector{Int}, ndst::Int)
     all(>(0), sizes) || throw(ArgumentError(
         "destination chunk sizes must be positive, got $sizes"))
@@ -155,9 +118,7 @@ function _runs(sizes::Vector{Int}, ndst::Int)
     return out
 end
 
-# The destination chunks a run of cell positions can draw cells from. Spans
-# bound a chunk's positions, so this is a superset for a space whose chunks
-# interleave and exact for one whose chunks are contiguous.
+# Return space chunks whose position spans overlap `run`.
 function _overlappingchunks(spans::Vector{UnitRange{Int}}, run::UnitRange{Int})
     out = Int[]
     for (c, sp) in enumerate(spans)
@@ -168,21 +129,13 @@ function _overlappingchunks(spans::Vector{UnitRange{Int}}, run::UnitRange{Int})
     return out
 end
 
-# ===========================================================================
 # Residency accounting
-# ===========================================================================
 
 """
     LazyStats()
 
-What one [`LazyRegridArray`](@ref) has done: source chunk loads issued, loads
-answered from a held chunk instead, `(spatial × non-spatial)` chunk combinations
-skipped as known-empty, chunk pairs dropped before their weights were built, and
-the source bytes resident now and at their peak.
-
-Accounting only — nothing here changes an answer, and nothing is updated per
-element. It is how the bounded-residency law is checked without reading
-`Sys.maxrss()`.
+Track source loads, cache hits, skipped empty chunks, dropped pairs, and current
+and peak source bytes. Statistics do not affect results.
 """
 mutable struct LazyStats
     loads::Int
@@ -199,10 +152,7 @@ Base.show(io::IO, s::LazyStats) =
     print(io, "LazyStats(loads=", s.loads, ", hits=", s.hits, ", skipped=", s.skipped,
         ", dropped=", s.dropped, ", peak=", s.peakbytes, " bytes)")
 
-# The loaded source chunks one `readblock!` call may keep. Holding is what
-# `budget` buys: a source chunk reached by several destination tiles of one
-# request is read once rather than once per tile. Nothing survives the call —
-# weights are cached across reads, data never is.
+# Source chunks held during one `readblock!` call. Data is not cached across reads.
 mutable struct SourceHold{A<:AbstractArray}
     held::Dict{Tuple{Int,Int},A}
     used::Dict{Tuple{Int,Int},Int}
@@ -262,37 +212,16 @@ function _evictoldest!(hold::SourceHold)
     return hold
 end
 
-# ===========================================================================
-# The array
-# ===========================================================================
+# Lazy array
 
 """
     LazyRegridArray(data, plan::ChunkedPlan)
 
-The regrid of `data` under `plan`, as a chunked `DiskArrays.AbstractDiskArray`
-that computes each block on demand.
-
-Dimensions are `(destination cells, data's non-spatial dims...)`, and chunks are
-the destination tiling against the source's own chunking of the pass-through
-dimensions — so one chunk of this array is one destination tile of one slice
-group, which is exactly the unit `readblock!` computes.
-
-The **destination tiling** is the destination space's own chunks when they
-partition the cell axis into more than one ascending contiguous run, the plan's
-`chunks` when it declares one, and a budget-sized partition of the cell axis
-otherwise. A destination that reports a single whole-domain chunk therefore
-still streams, which it cannot do if the space's chunking is taken as the last
-word.
-
-**Constructing one reads no source data.** Weights are built on first touch and
-kept in the plan's storage, so the second read of a destination tile, and every
-further non-spatial slice, builds nothing.
-
-Reading a block loads only the source chunks discovered to reach it, and holds
-several of them at once only while the plan's [`databudget`](@ref) allows;
-otherwise it streams load-apply-drop, one source chunk resident at a time.
-Accumulators are sized to the destination **tile**, never to the destination
-space, and the source array is never materialized.
+Return a chunked disk array that computes destination tiles on demand.
+Dimensions are destination cells followed by the source's non-spatial
+dimensions. Tiling uses compatible destination chunks, declared `chunks`, or a
+budget-derived fallback. Construction reads no source data. Reads load only
+connected source chunks and keep them within [`databudget`](@ref).
 """
 struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,K,C} <: DiskArrays.AbstractDiskArray{T,N}
     source::A
@@ -328,8 +257,7 @@ function LazyRegridArray(data, plan::ChunkedPlan)
     chunks, tiling = _outputgrid(plan, source, ndst, spans, contiguous, nspatial, othersizes)
     otherchunks = _sourceotherchunks(source, nspatial, othersizes)
     othergroups = _groupgrid(otherchunks)
-    # The source's chunk tree is descended once per destination tile per read;
-    # building it is O(nchunks) for a flat tree, so it is built once here.
+    # Build the source chunk tree once for all tile queries.
     srctree = chunktree(src_space)
     T = outputeltype(eltype(data))
     return LazyRegridArray{T,length(othersizes) + 1,nspatial,length(othersizes),
@@ -352,13 +280,11 @@ DiskArrays.eachchunk(A::LazyRegridArray) = A.chunks
 """
     residency(A::LazyRegridArray) -> LazyStats
 
-What `A` has read, held, skipped and dropped so far. Accounting only.
+Return `A`'s load, cache, skip, drop, and residency statistics.
 """
 residency(A::LazyRegridArray) = A.stats
 
-# The span of cell positions each destination chunk owns, plus whether every
-# chunk is contiguous — which decides whether the destination space can tile the
-# read itself.
+# Return chunk spans and whether every chunk is contiguous.
 function _chunkspans(space::RegridSpace)
     nc = Int(nchunks(space))
     spans = Vector{UnitRange{Int}}(undef, nc)
@@ -376,8 +302,7 @@ function _chunkspans(space::RegridSpace)
     return spans, contiguous
 end
 
-# The chunk grid the lazy array reports, and the destination tiling that has to
-# agree with it: one chunk of the output is one tile of one slice group.
+# Build the reported chunk grid and matching destination tiling.
 function _outputgrid(plan::ChunkedPlan, source, ndst::Int, spans::Vector{UnitRange{Int}},
     contiguous::Bool, nspatial::Int, othersizes::Tuple)
     nd = length(othersizes) + 1
@@ -410,8 +335,7 @@ function _outputgrid(plan::ChunkedPlan, source, ndst::Int, spans::Vector{UnitRan
     return DiskArrays.GridChunks(cells, passthrough...), tiling
 end
 
-# Pass-through dimensions keep the source's chunking, so a slice group is read
-# whole rather than in pieces.
+# Preserve source chunking on pass-through dimensions.
 function _passthroughchunks(source, nspatial::Int, othersizes::Tuple)
     if DiskArrays.haschunks(source) isa DiskArrays.Chunked
         ec = DiskArrays.eachchunk(source)
@@ -423,9 +347,7 @@ function _passthroughchunks(source, nspatial::Int, othersizes::Tuple)
         length(othersizes))
 end
 
-# The source's own chunking of its non-spatial dimensions, as index ranges. This
-# is the grid `knownempty` is keyed on, and the grid a read is split along so a
-# known-empty combination can be skipped without splitting anything else.
+# Source non-spatial chunk ranges used by `knownempty` and grouped reads.
 function _sourceotherchunks(source, nspatial::Int, othersizes::NTuple{NO,Int}) where {NO}
     if DiskArrays.haschunks(source) isa DiskArrays.Chunked
         ec = DiskArrays.eachchunk(source)
@@ -437,8 +359,7 @@ function _sourceotherchunks(source, nspatial::Int, othersizes::NTuple{NO,Int}) w
     return ntuple(i -> UnitRange{Int}[1:othersizes[i]], NO)
 end
 
-# Every combination of one chunk per non-spatial dimension, in column-major
-# order. A purely spatial source has exactly one, the empty tuple.
+# Cartesian product of non-spatial chunks in column-major order.
 function _groupgrid(splits::NTuple{NO,Vector{UnitRange{Int}}}) where {NO}
     counts = map(length, splits)
     out = Vector{NTuple{NO,UnitRange{Int}}}(undef, prod(counts; init = 1))
@@ -449,9 +370,7 @@ function _groupgrid(splits::NTuple{NO,Vector{UnitRange{Int}}}) where {NO}
     return out
 end
 
-# ===========================================================================
-# readblock!
-# ===========================================================================
+# Block reads
 
 function DiskArrays.readblock!(A::LazyRegridArray, aout::AbstractArray,
     r::AbstractUnitRange...)
@@ -466,17 +385,9 @@ end
 """
     _readdestination!(out, A, cellr, others, nslices)
 
-The lazy path's one loop, into an `ncells × nslices` view of the output block.
-
-Residency at any moment: the source chunks the budget lets the call hold, one
-streamed source chunk beyond them, the weight blocks of one wave (see
-[`_wavesize`](@ref), plus whatever the storage's bound keeps), and the
-destination **tile's** accumulators — never the destination space's, and never
-the source array's.
-
-A tile's blocks are built a wave at a time and applied in chunk order, so the
-accumulation order — and therefore every `Float64` in the answer — does not
-depend on the thread count.
+Read destination cells and slices into `out`. Source residency is limited to
+held chunks plus one streamed chunk. Blocks are built in waves but applied in
+chunk order, keeping results independent of thread count.
 """
 function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
     cellr::UnitRange{Int}, others::NTuple{NO,UnitRange{Int}}, nslices::Int) where {T,N,NS,NO}
@@ -506,8 +417,7 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         _connectedsource!(srcchunks, A, t)
         _sourceranges!(srcranges, A, srcchunks)
         keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
-        # One store of the tile's cell geometry for every pair of this tile,
-        # empty unless a pair actually has to be built.
+        # Share tile geometry across blocks built for this tile.
         dstcells = TileCells(plan.dst_space, dinds)
         w = _wavesize(plan, nd, srcchunks, srcranges)
         denominated = false
@@ -532,8 +442,7 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
                     _applygroup!(num, cover, entry.block, entry.ref, buf, ncell, pos, strides, mv)
                 end
             end
-            # Applied, so let go of them: what the storage keeps is the
-            # storage's bound to answer for, and only one wave is ever held.
+            # Retain at most one local wave; storage manages its own cache.
             empty!(wave)
             i = j + 1
         end
@@ -545,18 +454,9 @@ end
 """
     _wavesize(plan, nd, srcchunks, srcranges) -> Int
 
-How many of one destination tile's chunk pairs are built before any of them is
-applied.
-
-A tile's pairs are independent geometry — `build_weights!` keeps no state
-outside the call and the storage resolves a duplicate build by keeping one — so
-they can be built concurrently. What bounds the wave is memory: its blocks are
-held until the wave is applied, so a wave must fit the same weight budget the
-storage is bounded by. A block's floor is its column pointers and its reference
-vector, which are known before the build; its nonzeros are not, so the wave is
-sized against that floor and against the widest connected chunk.
-
-One at a time on a single-threaded session, which is the loop this replaced.
+Return the number of chunk-pair blocks to build concurrently. The wave is
+bounded by thread count and the minimum estimated block size within the weight
+budget. Single-threaded sessions return one.
 """
 function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges::Vector)
     n = length(srcchunks)
@@ -571,16 +471,7 @@ function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges
     return Int(min(nt, n, fits))
 end
 
-# One wave of blocks, in chunk order. Building is what is spawned; the storage
-# is reached through `blockfor` exactly as the serial path reaches it, so a
-# block already resident is not rebuilt and a block built here is inserted the
-# same way. Nothing is read from the source: weights are geometry only.
-#
-# The builds keep their own threading (`_intersectionareas`), so the two levels
-# nest. Measured on both shapes it is asked for: on a twelve-pair fan-in the
-# nested form reads in 0.26 s against 0.28 s with the inner descent forced
-# serial, and on a two-pair tile 0.038 s against 0.047 s — a wave narrower than
-# the session's threads leaves them idle otherwise.
+# Build one wave concurrently and preserve chunk order in `wave`.
 function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
     srcchunks::Vector{Int}, i::Int, j::Int, dinds, dstcells)
     empty!(wave)
@@ -598,9 +489,7 @@ function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
     return wave
 end
 
-# The destination tiles whose cells can fall in `cellr`. Runs bound a tile's
-# positions, so this over-reports only for a destination space whose chunks
-# interleave, and never misses one.
+# Return destination tiles whose position spans overlap `cellr`.
 function _coveringtiles(A::LazyRegridArray, cellr::UnitRange{Int})
     out = Int[]
     lo, hi = first(cellr), last(cellr)
@@ -613,13 +502,11 @@ function _coveringtiles(A::LazyRegridArray, cellr::UnitRange{Int})
     return out
 end
 
-# The cells a tile owns: the destination chunk's own, or the run itself.
+# Return cells owned by a tile.
 _tileindices(A::LazyRegridArray, t::Int) =
     A.tiling.spacetiled ? cellindices(A.plan.dst_space, t) : A.tiling.runs[t]
 
-# The source chunks that can reach a tile: the union of the descents against
-# every destination chunk bounding it, minus the ones the source asserts hold no
-# valid data at any non-spatial chunk.
+# Discover source chunks for a tile and optionally drop known-empty chunks.
 function _connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int)
     caps = A.tiling.capsof[t]
     if length(caps) == 1
@@ -635,10 +522,7 @@ function _connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int)
     return out
 end
 
-# Whether the source asserts that a spatial chunk holds no valid data at **any**
-# non-spatial chunk — the only case in which a pair may be dropped before its
-# weights are built. Memoized per source chunk: it is a property of the data's
-# storage, not of the request.
+# Memoize whether a spatial chunk is empty across all non-spatial chunks.
 function _allempty(A::LazyRegridArray, s::Int)
     memo = A.emptymemo
     m = memo[s]
@@ -661,9 +545,7 @@ function _sourceranges!(out::Vector{NTuple{NS,UnitRange{Int}}}, A::LazyRegridArr
     return out
 end
 
-# Hold or stream. Holding a tile's whole connected set is what lets the next
-# tile of the same request reuse it; a set that does not fit is streamed
-# load-apply-drop instead, whose floor is one source chunk and one block.
+# Return whether all needed source groups fit in the hold budget.
 function _canhold(hold::SourceHold, srcranges::Vector, groups::Vector, elbytes::Int)
     total = 0
     for sr in srcranges
@@ -676,8 +558,7 @@ function _canhold(hold::SourceHold, srcranges::Vector, groups::Vector, elbytes::
     return true
 end
 
-# One source chunk over one non-spatial chunk, from the hold if it is there and
-# from storage otherwise.
+# Load one spatial/non-spatial source chunk combination, using the hold when possible.
 function _sourcefor!(hold::SourceHold, A::LazyRegridArray{T,N,NS,NO}, key::Tuple{Int,Int},
     sr::NTuple{NS,UnitRange{Int}}, gr::NTuple{NO,UnitRange{Int}},
     pos::NTuple{NO,UnitRange{Int}}, keep::Bool) where {T,N,NS,NO}
@@ -697,9 +578,7 @@ function _sourcefor!(hold::SourceHold, A::LazyRegridArray{T,N,NS,NO}, key::Tuple
     return hold.scratch
 end
 
-# One block against the slices of one loaded chunk combination. This is the
-# function barrier: the block's concrete type is recovered here, once per
-# combination, so the accumulation kernels below it are statically dispatched.
+# Apply one block to every slice in a loaded chunk combination.
 function _applygroup!(num::Matrix{Float64}, cover::Matrix{Float64}, block::WeightBlock,
     ref::Vector{Float64}, buf::AbstractArray, ncell::Int,
     pos::NTuple{NO,UnitRange{Int}}, strides::NTuple{NO,Int}, missingval) where {NO}
@@ -719,8 +598,7 @@ function _applygroup!(num::Matrix{Float64}, cover::Matrix{Float64}, block::Weigh
     return num
 end
 
-# Finalize once per destination tile per slice, then scatter the cells the
-# request actually asked for.
+# Finalize each tile slice and scatter requested cells.
 function _writechunk!(out::AbstractMatrix, vals::Vector, num::Matrix{Float64},
     cover::Matrix{Float64}, total::Vector{Float64}, policy::AbstractMissingPolicy,
     denominated::Bool, dinds, cellr::AbstractUnitRange)
@@ -736,14 +614,9 @@ function _writechunk!(out::AbstractMatrix, vals::Vector, num::Matrix{Float64},
     return out
 end
 
-# ===========================================================================
 # Slice groups
-# ===========================================================================
 
-# The requested slices, split along the source's own non-spatial chunking, as
-# positions within the requested ranges. Splitting there and nowhere else is
-# what makes a known-empty chunk skippable without changing how anything else is
-# read: a request that lies inside one source chunk is one group, as before.
+# Split requested slices along source non-spatial chunk boundaries.
 _slicegroups(A::LazyRegridArray{T,N,NS,NO}, others::NTuple{NO,UnitRange{Int}}) where {T,N,NS,NO} =
     _groupgrid(ntuple(d -> _splitpositions(others[d], A.otherchunks[d]), NO))
 
@@ -758,23 +631,20 @@ function _splitpositions(r::UnitRange{Int}, chunks::Vector{UnitRange{Int}})
         push!(out, (a-lo+1):(b-lo+1))
         covered += b - a + 1
     end
-    # A grid that does not cover the request is not a partition of it; read the
-    # request whole rather than silently dropping the uncovered part.
+    # Fall back to one group when the chunk grid does not cover the request.
     covered == length(r) || return [1:length(r)]
     return out
 end
 
-# The linear stride of each non-spatial dimension in the flattened slice index.
+# Linear strides for flattened non-spatial slices.
 _slicestrides(others::NTuple{NO,UnitRange{Int}}) where {NO} =
     ntuple(d -> prod(ntuple(i -> length(others[i]), d - 1); init = 1), NO)
 
-# A group's positions back to index ranges of the source array.
+# Convert group-relative positions to source ranges.
 _grouprange(others::NTuple{NO,UnitRange{Int}}, pos::NTuple{NO,UnitRange{Int}}) where {NO} =
     ntuple(d -> (first(others[d])+first(pos[d])-1):(first(others[d])+last(pos[d])-1), NO)
 
-# ===========================================================================
 # Source loading
-# ===========================================================================
 
 _emptybuffer(::LazyRegridArray{T,N,NS,NO,A}) where {T,N,NS,NO,A} =
     Array{eltype(A),NS + NO}(undef, ntuple(_ -> 0, NS + NO))
@@ -786,9 +656,7 @@ function _fitbuffer(buf::Array{S,M}, shape::NTuple{M,Int}) where {S,M}
     return size(buf) == shape ? buf : Array{S,M}(undef, shape)
 end
 
-# One chunk-aligned read into the given buffer. A disk-backed source is asked
-# through `readblock!`, which is one read per source chunk combination by
-# construction.
+# Read one aligned source chunk combination into `buf`.
 function _readsource!(buf::Array, source, sr::Tuple, others::Tuple)
     if _isdisksource(source)
         DiskArrays.readblock!(source, buf, sr..., others...)
@@ -800,15 +668,12 @@ end
 
 _isdisksource(x) = x isa DiskArrays.AbstractDiskArray || DiskArrays.isdisk(x)
 
-# ===========================================================================
 # API
-# ===========================================================================
 
 """
     regrid(data, plan::ChunkedPlan) -> LazyRegridArray
 
-The lazy application of a chunked plan: a disk array that computes destination
-tiles on demand and reads no source data until one is asked for.
+Return a disk array that computes destination tiles on demand.
 """
 regrid(data, plan::ChunkedPlan) = LazyRegridArray(data, plan)
 
@@ -816,10 +681,6 @@ regrid(data, plan::ChunkedPlan) = LazyRegridArray(data, plan)
     regrid!(dest, data, plan::ChunkedPlan) -> dest
 
 Materialize a chunked plan into `dest`, one destination tile at a time.
-
-Each tile's source chunks are loaded, applied and dropped before the next
-tile's, so peak residency is a tile's worth of source and not the source
-array.
 """
 function regrid!(dest, data, plan::ChunkedPlan)
     A = LazyRegridArray(data, plan)

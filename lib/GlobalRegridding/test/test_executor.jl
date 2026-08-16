@@ -1,17 +1,11 @@
-# Plans, the eager executor, and the user API. Owned by task T5.
-#
-# Everything here runs against `toyspaces.jl`: the toy lon–lat space and the toy
-# diagonal method, whose weights are `scale * I` and hand-checkable, so nothing
-# in this file depends on a weight-construction task.
+# Eager plans, execution, and public API.
 
 import DimensionalData as DD
 import SparseArrays
-# A test dependency for one reason: it is what loads
-# `GlobalRegriddingRastersExt`, and an extension nothing loads is an extension
-# nothing tests.
+# Load and test `GlobalRegriddingRastersExt`.
 import Rasters
 
-# A method that counts the weight builds it is asked for.
+# Weight-build counter.
 mutable struct CountingMethod <: AbstractRegriddingMethod
     inner::ToyDiagonalMethod
     builds::Int
@@ -33,10 +27,7 @@ end
         field = rand(6, 3)
         method = ToyDiagonalMethod(; scale = 3.0)
 
-        # `scale * I` with a denominator: the coverage-normalized mean is the
-        # field itself, the raw sum is the field times the weight. Swapping the
-        # numerator and the denominator, or the two policies, breaks one of
-        # these two.
+        # Weighted returns means; Extensive returns scaled sums.
         mean = regrid(field; to = space, from = space, method,
             missingpolicy = Weighted())
         @test mean ≈ vec(field)
@@ -66,12 +57,10 @@ end
         holed[5, 1] = NaN
         punched = regrid(holed; kw...)
 
-        # A destination fed only by valid sources is untouched by NaNs
-        # elsewhere: the divisor is the valid weight, not the total weight.
+        # Unrelated NaNs do not affect valid destinations.
         kept = setdiff(1:n, holes)
         @test punched[kept] ≈ whole[kept]
-        # A destination fed only by invalid sources is blanked, not zero and not
-        # a division by zero.
+        # All-invalid destinations are blanked.
         @test all(isnan, punched[holes])
 
         # `missing` in, `missing` out.
@@ -91,9 +80,7 @@ end
         field = rand(6, 3) .+ 1
         method = ToyDiagonalMethod(; scale = 2.0, withdenom = false)
 
-        # `Weighted` divides by the accumulated valid weight whether or not the
-        # block declared a denominator, so a block with none still returns the
-        # mean; `Extensive` returns the undivided sum.
+        # Blocks without denominators still normalize by valid row weight.
         weighted = regrid(field; to = space, from = space, method,
             missingpolicy = Weighted(0.5))
         extensive = regrid(field; to = space, from = space, method,
@@ -101,8 +88,7 @@ end
         @test weighted ≈ vec(field)
         @test extensive ≈ 2 .* weighted
 
-        # `Weighted` still blanks a destination whose stencil lost its mass to
-        # invalid data, measured against the row sum rather than a denominator.
+        # Row sums provide coverage thresholds without denominators.
         holed = copy(field)
         holed[3, 2] = NaN
         h = cellposition(space, 3, 2)
@@ -116,11 +102,7 @@ end
     end
 
     @testset "missingval sentinel" begin
-        # A sentinel is nothing but a third spelling of invalid, so a field
-        # holding one must give exactly what the same field gives with its
-        # sentinels replaced by NaN — bit for bit, under either policy. A
-        # sentinel folded into the weights, or into the coverage but not the
-        # numerator, breaks one of these.
+        # Declared sentinels behave exactly like NaN under both policies.
         field = rand(6, 3) .+ 1
         holes = [cellposition(space, 2, 2), cellposition(space, 5, 1)]
         sentinel = copy(field)
@@ -137,18 +119,12 @@ end
                 regrid(nanned; kw...)))
         end
 
-        # Without the declaration the sentinel is just data — the guard against
-        # a `missingval` that leaks into a plan that was never given one.
+        # Undeclared sentinels remain ordinary data.
         plain = regrid(sentinel; to = space, from = space,
             method = ToyDiagonalMethod(), missingpolicy = Extensive())
         @test plain[holes] == [-9999.0, -9999.0]
 
-        # A source that declares its own sentinel needs no keyword: the default
-        # of `missingval` is what the source says, so a reader that carries
-        # nodata in its metadata is handled the same as one whose caller
-        # repeats it. Both CF spellings and the normalized one are read, under
-        # a String key or a Symbol one; a source that declares nothing answers
-        # nothing, which is what keeps the sentinel-as-data case above honest.
+        # Metadata detects normalized and CF nodata keys as strings or symbols.
         withmeta(key) = DD.DimArray(sentinel, (DD.X(1:6), DD.Y(1:3));
             metadata = DD.Metadata(Dict(key => -9999.0)))
         @test all(GR.sourcemissingval(withmeta(k)) == -9999.0
@@ -164,19 +140,12 @@ end
             missingpolicy = Extensive())
         @test all(isequal.(flat(regrid(declared; dkw...)), flat(regrid(nanned; dkw...))))
 
-        # …and the caller still overrides it, back to the sentinel-as-data
-        # answer. Without this the default could be an unconditional read of the
-        # metadata and nothing would notice.
+        # Explicit `missingval` overrides metadata.
         @test flat(regrid(declared; to = space, from = space,
             method = ToyDiagonalMethod(), missingpolicy = Extensive(),
             missingval = nothing)) == plain
 
-        # A `Rasters.Raster` carries its sentinel in a field, not in metadata, so
-        # the metadata route above answers `nothing` for every raster and the
-        # extension is the only thing that reads one. Its two "no sentinel"
-        # spellings both become `nothing`: `missing` is already rejected by
-        # `isvalidvalue` on its own, and `nothing` is the spelling that keeps the
-        # comparison out of the element loop.
+        # The Rasters extension reads field-based sentinels and normalizes absence.
         let dims = (DD.X(1:6), DD.Y(1:3))
             @test GR.sourcemissingval(Rasters.Raster(sentinel, dims;
                 missingval = -9999.0)) == -9999.0
@@ -187,23 +156,18 @@ end
             @test GR.sourcemissingval(Rasters.Raster(
                 convert(Matrix{Union{Missing,Float64}}, sentinel), dims;
                 missingval = missing)) === nothing
-            # …and a raster answers from its field even when its metadata says
-            # something else, which is the whole reason the extension exists.
+            # Raster fields take precedence over metadata.
             @test GR.sourcemissingval(Rasters.Raster(sentinel, dims;
                 missingval = -9999.0, metadata = DD.Metadata(Dict("_FillValue" => 0.0)))) ==
                   -9999.0
-            # The declaration reaches a plan through `regrid`'s default, with no
-            # keyword: a raster of sentinels answers what the same field with
-            # NaN answers.
+            # Raster sentinels reach plans without an explicit keyword.
             rkw = (; to = space, from = space,
                 method = ToyDiagonalMethod(; scale = 3.0), missingpolicy = Extensive())
             @test all(isequal.(flat(regrid(Rasters.Raster(sentinel, dims;
                     missingval = -9999.0); rkw...)), flat(regrid(nanned; rkw...))))
         end
 
-        # An integer field cannot hold NaN or `missing`, so a sentinel is the
-        # only way it can carry nodata at all: the element-type shortcut that
-        # skips the validity scan must not fire when one is declared.
+        # Declared integer sentinels force a validity scan.
         ints = rand(1:100, 6, 3)
         ints[2, 2] = -9999
         out = regrid(ints; to = space, from = space, method = ToyDiagonalMethod(),
@@ -225,8 +189,7 @@ end
         @test collect(DD.lookup(out, DD.Ti)) == 1:12
         @test !DD.hasdim(out, DD.X) && !DD.hasdim(out, DD.Y)
 
-        # Every slice is what the 2-D call on that slice gives, through the very
-        # same plan: the slice loop neither transposes nor reorders.
+        # N-D slices match independent 2-D applications.
         for k in 1:12
             @test Array(out)[:, k] ≈ regrid(parent(cube)[:, :, k], plan)
         end
@@ -243,7 +206,7 @@ end
         twice = regrid(field, plan)
         @test once == twice
         @test once ≈ 1.5 .* vec(field)
-        # Applying a plan builds no weights, however often it is applied.
+        # Reusing a plan does not rebuild weights.
         @test method.builds == 1
     end
 
@@ -264,11 +227,7 @@ end
     end
 
     @testset "sparse column walks agree" begin
-        # The accumulation walks a near-empty block nonzero-first and a denser
-        # one column-by-column. Both must give the dense answer, and the
-        # nonzero-first walk has to recover a column from a nonzero's position
-        # through repeated `colptr` entries — leading, interior and trailing
-        # empty columns are exactly where that goes wrong.
+        # Sparse and dense traversal paths agree across empty columns.
         rows = [1, 3, 1, 2]
         colvals = [4, 4, 9, 12]
         vals = [2.0, 5.0, 1.5, 0.5]
@@ -316,9 +275,7 @@ end
         # silently dropped by a plan that holds one whole-domain block.
         @test_throws ArgumentError plan_regrid(field; to = space, from = space,
             method, storage = PerChunk())
-        # A lazy plan bounds its weights by the budget's weight share unless the
-        # caller names a storage. This is the L3 failure P1 measured: an
-        # unbounded default accumulates the whole operator.
+        # Default lazy storage is bounded by the weight budget.
         bounded = plan_regrid(field; to = space, from = space, method, lazy = true,
             budget = 2^16)
         @test bounded.storage.maxbytes == GR.weightbudget(2^16)

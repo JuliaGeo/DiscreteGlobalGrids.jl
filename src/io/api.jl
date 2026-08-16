@@ -58,7 +58,7 @@ dggread(args...; kwargs...) = _needs_zarr("dggread")
 """
     dggwrite(dest, stack_or_array; encoding = :auto,
              conventions = DEFAULT_WRITE_CONVENTIONS, chunks = :auto,
-             merge = :rank, chunk_target = 1_000_000) -> dest
+             merge = :step, chunk_target = 1_000_000) -> dest
 
 Write a `DimStack` or `DimArray` over a `Cells` dimension to a DGGS store.
 `dest` is a local directory path or a writeable `Zarr.ZGroup`; remote stores
@@ -69,9 +69,10 @@ single-level — and dense otherwise; `encoding = :dense` is the interop escape
 for readers that cannot expand ranges. `conventions` stamps the store, dual by
 default so that both a convention-aware reader and xdggs can open it.
 
-`merge` picks the ranges run rule: `:rank` (default) merges rank-adjacent cells
-for the fewest rows; `:step` merges unit-increment ids, which a structural
-reader also counts correctly. `chunks = :auto` aims each chunk at
+`merge` picks the ranges run rule: `:step` (default) merges unit-increment ids,
+which a structural reader also counts correctly; `:rank` merges rank-adjacent
+cells for the fewest rows, and is read back correctly only by a rank-aware
+reader such as this package. `chunks = :auto` aims each chunk at
 `chunk_target` as a whole number of complete coarse-ancestor subtree runs; an
 `Integer` fixes the chunk length in cells instead. `chunk_target` counts the
 ELEMENTS of a chunk — cells times the extents of the non-cell dimensions, which

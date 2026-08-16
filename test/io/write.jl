@@ -139,7 +139,10 @@ else
         DGG.dggwrite(path, demostack())
         g = Zarr.zopen(path)
 
-        @test size(g["cell_id_ranges"]) == (2, 1)   # store shape (1, 2)
+        # Written under the default `:step` rule: a run breaks at every digit
+        # rollover, so each of the 21 level-2 sibling sets in these three subtrees
+        # is its own row. `merge = :rank` would make the same cells one row.
+        @test size(g["cell_id_ranges"]) == (2, 21)   # store shape (21, 2)
         R = rows(g["cell_id_ranges"])
         grid = levelgrid(SYS, LEVEL)
         axis = DGG.cellaxis(DGG.RangesEncoding(), grid, R; declared_length=NCELL)

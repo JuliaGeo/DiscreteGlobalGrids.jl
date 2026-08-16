@@ -90,10 +90,17 @@ region = store[:elevation][DGG.Cells(DGG.Covering(target))]
 # recovered from them by rank/select arithmetic, so opening one costs no data
 # IO at all however many cells it names. `encoding = :dense` is the interop
 # escape for readers that cannot expand intervals; it writes one id per cell.
-# The axis above is eligible — and rank-contiguous besides, so the 629 cells
-# went to disk as a single `[start, stop]` row:
+#
+# `merge` chooses what an interval is allowed to hold. The default `:step`
+# merges ids that are adjacent AS INTEGERS, so no interval encloses an id naming
+# no cell and a reader that counts well-formed ids rather than cells recovers
+# the same axis. `merge = :rank` merges consecutive CELLS instead: the fewest
+# rows — this axis is rank-contiguous, so a single `[start, stop]` row — read
+# back correctly only by a rank-aware reader. The axis above is eligible, and
+# went to disk under the default:
 
-DD.metadata(store)["encoding"]
+(; encoding = DD.metadata(store)["encoding"],
+   rows = size(Zarr.zopen(path)["cell_id_ranges"], 2))
 
 # ## Reading a store by URL
 #

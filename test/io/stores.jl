@@ -85,9 +85,10 @@ const CORPUS = Ref{Any}(nothing)
     corpus() -> NamedTuple
 
 The twin corpus, written once per test run into a temporary directory: the same
-150 IGEO7 cells as a dense store, a `:rank`-merged ranges store and a
-`:step`-merged one, and the same complete HEALPix level four ways — ranges,
-dense, this package's own implicit store, and a hand-stamped DKRZ one.
+150 IGEO7 cells as a dense store, a `:rank`-merged ranges store, a `:step`-merged
+one and one written with no `merge` keyword at all, and the same complete HEALPix
+level four ways — ranges, dense, this package's own implicit store, and a
+hand-stamped DKRZ one.
 
 Every path names a store this package wrote except `hpx_dkrz`, which is another
 producer's dialect and the reason the implicit read path exists.
@@ -103,9 +104,11 @@ function corpus()
     paths = (dense=dggwrite(joinpath(dir, "dense.zarr"), stack;
             encoding=:dense, chunks=CHUNK),
         ranges=dggwrite(joinpath(dir, "ranges.zarr"), stack;
-            encoding=:ranges, chunks=CHUNK),
+            encoding=:ranges, merge=:rank, chunks=CHUNK),
         step=dggwrite(joinpath(dir, "step.zarr"), stack;
             encoding=:ranges, merge=:step, chunks=CHUNK),
+        default=dggwrite(joinpath(dir, "default.zarr"), stack;
+            encoding=:ranges, chunks=CHUNK),
         hpx_ranges=dggwrite(joinpath(dir, "healpix.zarr"), hpx; chunks=64),
         hpx_dense=dggwrite(joinpath(dir, "healpix_dense.zarr"), hpx;
             encoding=:dense, chunks=64),
@@ -212,6 +215,19 @@ end
     stepped = dggread(c.step)
     sametwin(dggread(c.ranges), stepped)
     @test collect(DD.lookup(stepped[:elevation], Cells)) == CELLS
+end
+
+@testset "a write that names no merge rule is step-merged" begin
+    # The default is interop, not compactness: a caller who names no rule gets
+    # the intervals a structural-count reader also counts correctly, which is
+    # what the published stores hold. Kills a default of `:rank`, which for these
+    # cells writes 3 rows enclosing ids that name no cell — same cube, but only
+    # for a reader that expands an interval by rank.
+    c = corpus()
+    @test Zarr.zopen(c.default)["cell_id_ranges"][:, :] ==
+          Zarr.zopen(c.step)["cell_id_ranges"][:, :]
+    @test size(Zarr.zopen(c.default)["cell_id_ranges"], 2) == 24
+    sametwin(dggread(c.dense), dggread(c.default))
 end
 
 @testset "an implicit axis is the same complete level, ours and theirs" begin

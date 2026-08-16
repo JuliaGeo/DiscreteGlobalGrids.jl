@@ -73,7 +73,7 @@ const Cube = Union{DD.AbstractDimArray,DD.AbstractDimStack}
 """
     dggwrite(dest, stack_or_array; encoding = :auto,
              conventions = DEFAULT_WRITE_CONVENTIONS, chunks = :auto,
-             merge = :rank, chunk_target = DEFAULT_CHUNK_TARGET) -> dest
+             merge = :step, chunk_target = DEFAULT_CHUNK_TARGET) -> dest
 
 Write a `DimStack` or `DimArray` over a cell axis to a **Zarr v2 directory
 store**, consolidated metadata included. `dest` is a local path or an open
@@ -88,10 +88,11 @@ this package's way of saying the axis is still sorted, unique and at one level;
     otherwise. `:dense` is the interop escape for readers that cannot expand
     ranges, `:ranges` forces the compact form, and `:implicit` writes no cell
     coordinate at all — position is the cell — which needs a whole level.
-  - `merge = :rank` merges runs of consecutive CELLS, giving the fewest rows;
-    `merge = :step` merges only ids adjacent as integers, so no interval can
-    enclose an id that names no cell. `:step` is the interop setting and what
-    the published IGEO7 range stores hold; see [`idranges`](@ref).
+  - `merge = :step` merges only ids adjacent as integers, so no interval can
+    enclose an id that names no cell — what a structural-count reader needs, and
+    what the published IGEO7 range stores hold. `merge = :rank` merges runs of
+    consecutive CELLS instead, giving the fewest rows, and is read back correctly
+    only by a rank-aware reader such as this package; see [`idranges`](@ref).
   - `chunks = :auto` groups whole coarse-ancestor subtree runs into chunks of
     about `chunk_target` elements; an integer is a fixed chunk length in CELLS.
     See `ChunkPlan` for what that guarantees and what it only aims at.
@@ -167,7 +168,7 @@ end
 # ===========================================================================
 
 function _write(identifier, opengroup, src; encoding=:auto,
-    conventions=DEFAULT_WRITE_CONVENTIONS, chunks=:auto, merge::Symbol=:rank,
+    conventions=DEFAULT_WRITE_CONVENTIONS, chunks=:auto, merge::Symbol=:step,
     chunk_target::Integer=DEFAULT_CHUNK_TARGET)
 
     # Both keywords are checked whatever the encoding: `merge` only reaches the

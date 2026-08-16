@@ -27,18 +27,84 @@
 @inline _validity(x::AbstractFloat) = isnan(x) ? 0.0 : 1.0
 @inline _validity(::Real) = 1.0
 
+# The sentinel forms. `missingval === nothing` is the whole of the fast path:
+# the extra clause is a compile-time `Nothing` branch that vanishes, so a source
+# without a sentinel pays nothing for the ones that have one. `isequal` rather
+# than `==` because it is total — a `missing` entry compared against a sentinel
+# must answer `false`, not `missing`.
+@inline _isvalid(x, ::Nothing) = _isvalid(x)
+@inline _isvalid(x, missingval) = _isvalid(x) && !isequal(x, missingval)
+@inline _value(x, ::Nothing) = _value(x)
+@inline _value(x, missingval) = isequal(x, missingval) ? 0.0 : _value(x)
+@inline _validity(x, ::Nothing) = _validity(x)
+@inline _validity(x, missingval) = isequal(x, missingval) ? 0.0 : _validity(x)
+
+"""
+    isvalidvalue(x, missingval = nothing) -> Bool
+
+Whether a source entry contributes to a regrid.
+
+`missing` and NaN are invalid natively, whatever the source is. `missingval`
+extends that to a sentinel — the nodata value a raster declares in its metadata
+— and `nothing` means the source declares none. A sentinel makes an otherwise
+invalid-free element type (an `Int` raster with `-9999` for nodata) hold invalid
+values, so it is the sentinel and not the element type that decides whether a
+scan is needed.
+
+Validity is **apply-time only**. Weights never see it: an invalid source cell
+contributes zero to both the weighted sum and the accumulated coverage, so its
+share of a destination is simply absent and [`Weighted`](@ref) renormalizes over
+what is left.
+"""
+@inline isvalidvalue(x, missingval = nothing) = _isvalid(x, missingval)
+
+"""
+    knownempty(data, ndchunk::Tuple{Vararg{AbstractUnitRange}}) -> Bool
+
+Whether `data` can assert, **without reading it**, that the storage chunk
+covering `ndchunk` holds no valid value at all.
+
+`ndchunk` is a chunk of `data`'s own N-D chunk grid, as index ranges in `data`'s
+dimension order — every dimension, spatial and not. Defaults to `false`, which
+is always safe: the hook is an optimization, never a correctness input.
+
+`true` claims exactly what [`isvalidvalue`](@ref) would find: every element of
+that chunk is `missing`, NaN, or the declared sentinel. A missing Zarr chunk, an
+absent tile, a region masked out of a store — the cases where reading returns
+the fill value and nothing else. It is **not** a claim about zeros: a chunk of
+genuine zeros is dense data and contributes coverage.
+
+Emptiness is a property of the data, not of the geometry, and it varies along
+the non-spatial dimensions — a footprint empty in one time chunk can be dense in
+the next — which is why the key is the source array's N-D chunk and not a space
+chunk. The executor consumes it at two levels: it skips the load and the matvec
+for each (spatial chunk × non-spatial chunk) combination that answers `true`,
+and it drops a whole chunk pair before building its weights when every
+non-spatial chunk answers `true` and the missing policy does not read the
+reference weight ([`usesreference`](@ref)). Both are bit-identical to loading
+the chunk and masking it.
+
+DiskArrays exposes a chunk grid but no presence query, so this contract is this
+package's; backend adapters implement it.
+"""
+knownempty(data, ndchunk::Tuple{Vararg{AbstractUnitRange}}) = false
+
 # Whether an element type can hold an invalid value at all. `false` skips the
 # scan and the coverage matvec outright.
 _canbeinvalid(::Type{T}) where {T} = !(T <: Real) || T <: AbstractFloat || Missing <: T
 
 """
-    anyinvalid(src) -> Bool
+    anyinvalid(src, missingval = nothing) -> Bool
 
-Whether `src` holds any `missing` or NaN. `false` for an element type that
-cannot hold one, without reading `src`.
+Whether `src` holds any entry that [`isvalidvalue`](@ref) rejects. `false`
+without reading `src` when its element type cannot hold one and no sentinel is
+declared.
 """
 anyinvalid(src::AbstractArray) =
     _canbeinvalid(eltype(src)) ? any(!_isvalid, src) : false
+
+anyinvalid(src::AbstractArray, ::Nothing) = anyinvalid(src)
+anyinvalid(src::AbstractArray, missingval) = any(x -> !_isvalid(x, missingval), src)
 
 # The sentinel a masked destination is written as: `missing` when the output
 # element type admits it, NaN otherwise.
@@ -109,7 +175,8 @@ function _addrowsums!(ref::AbstractVector{Float64}, W::AbstractMatrix)
 end
 
 """
-    applyblock!(num, cover, block::WeightBlock, src, valid = nothing, ref = nothing)
+    applyblock!(num, cover, block::WeightBlock, src, valid = nothing, ref = nothing,
+                missingval = nothing)
 
 Accumulate one source chunk's contribution into the destination accumulators.
 
@@ -131,12 +198,16 @@ the data without materializing one.
 `ref` is `block`'s reference weight from [`blockreference!`](@ref), used only on
 the `valid === nothing` path; passing it avoids recomputing row sums per slice.
 
+`missingval` is the source's nodata sentinel, folded into both readings of an
+entry; see [`isvalidvalue`](@ref).
+
 Allocates nothing.
 """
 function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64},
     block::WeightBlock, src::AbstractVector,
     valid::Union{Nothing,AbstractVector} = nothing,
-    ref::Union{Nothing,AbstractVector{Float64}} = nothing)
+    ref::Union{Nothing,AbstractVector{Float64}} = nothing,
+    missingval = nothing)
     W = block.weights
     Base.require_one_based_indexing(num, cover, src)
     size(W, 1) == length(num) == length(cover) || throw(DimensionMismatch(
@@ -145,7 +216,7 @@ function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64
     size(W, 2) == length(src) || throw(DimensionMismatch(
         "block expects $(size(W, 2)) source cells, got $(length(src))"))
     if valid === nothing
-        _accumulate!(num, W, src)
+        _accumulate!(num, W, src, missingval)
         if ref === nothing
             addreference!(cover, block)
         else
@@ -157,28 +228,69 @@ function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64
         Base.require_one_based_indexing(valid)
         length(valid) == length(src) || throw(DimensionMismatch(
             "validity mask has $(length(valid)) entries, source has $(length(src))"))
-        _accumulate!(num, cover, W, src, valid)
+        _accumulate!(num, cover, W, src, valid, missingval)
     end
     return num
 end
 
+# How a sparse block's columns are walked. A block that touches only a few of
+# its columns — a chunk pair that meets at a boundary, or the empty block a
+# discovery superset produces — is walked nonzero-first, each column found from
+# the nonzero that opens it; anything denser is walked column by column, which
+# costs one comparison per column and no search.
+#
+# The crossover is measured, not guessed: a column-by-column walk costs about
+# 0.33 ns per column, and finding a column by binary search over `colptr` about
+# 78 ns, so the search pays for itself below roughly one nonzero column in 240.
+# Keying on `nnz` rather than on the number of nonzero columns over-estimates
+# the density of a real block, which errs toward the walk — the branch that has
+# no bad case.
+@inline _walknonzeros(W::SparseMatrixCSC) =
+    SparseArrays.nnz(W) * 256 < size(W, 2)
+
+# The column owning nonzero `p`. `colptr` is non-decreasing and empty columns
+# repeat their predecessor's bound, so the last index not past `p` is the
+# column that opens at or before it and closes after it.
+@inline _columnof(cols::Vector{Int}, p::Int) = searchsortedlast(cols, p)
+
 # Values only — every source entry is valid.
-function _accumulate!(num::AbstractVector{Float64}, W::SparseMatrixCSC, src::AbstractVector)
+function _accumulate!(num::AbstractVector{Float64}, W::SparseMatrixCSC,
+    src::AbstractVector, missingval = nothing)
     rows = SparseArrays.rowvals(W)
     vals = SparseArrays.nonzeros(W)
+    cols = SparseArrays.getcolptr(W)
+    if _walknonzeros(W)
+        p = 1
+        nz = SparseArrays.nnz(W)
+        @inbounds while p <= nz
+            k = _columnof(cols, p)
+            p2 = cols[k+1] - 1
+            x = _value(src[k], missingval)
+            if !iszero(x)
+                for q in p:p2
+                    num[rows[q]] += vals[q] * x
+                end
+            end
+            p = p2 + 1
+        end
+        return num
+    end
     @inbounds for k in axes(W, 2)
-        x = _value(src[k])
+        p1, p2 = cols[k], cols[k+1] - 1
+        p1 > p2 && continue
+        x = _value(src[k], missingval)
         iszero(x) && continue
-        for p in SparseArrays.nzrange(W, k)
+        for p in p1:p2
             num[rows[p]] += vals[p] * x
         end
     end
     return num
 end
 
-function _accumulate!(num::AbstractVector{Float64}, W::AbstractMatrix, src::AbstractVector)
+function _accumulate!(num::AbstractVector{Float64}, W::AbstractMatrix,
+    src::AbstractVector, missingval = nothing)
     @inbounds for k in axes(W, 2)
-        x = _value(src[k])
+        x = _value(src[k], missingval)
         iszero(x) && continue
         for j in axes(W, 1)
             num[j] += W[j, k] * x
@@ -189,14 +301,37 @@ end
 
 # Values and coverage in one pass over the nonzeros.
 function _accumulate!(num::AbstractVector{Float64}, cover::AbstractVector{Float64},
-    W::SparseMatrixCSC, src::AbstractVector, valid::AbstractVector)
+    W::SparseMatrixCSC, src::AbstractVector, valid::AbstractVector, missingval = nothing)
     rows = SparseArrays.rowvals(W)
     vals = SparseArrays.nonzeros(W)
+    cols = SparseArrays.getcolptr(W)
+    if _walknonzeros(W)
+        p = 1
+        nz = SparseArrays.nnz(W)
+        @inbounds while p <= nz
+            k = _columnof(cols, p)
+            p2 = cols[k+1] - 1
+            x = _value(src[k], missingval)
+            m = _validity(valid[k], missingval)
+            if !(iszero(x) && iszero(m))
+                for q in p:p2
+                    j = rows[q]
+                    v = vals[q]
+                    num[j] += v * x
+                    cover[j] += v * m
+                end
+            end
+            p = p2 + 1
+        end
+        return num
+    end
     @inbounds for k in axes(W, 2)
-        x = _value(src[k])
-        m = _validity(valid[k])
+        p1, p2 = cols[k], cols[k+1] - 1
+        p1 > p2 && continue
+        x = _value(src[k], missingval)
+        m = _validity(valid[k], missingval)
         (iszero(x) && iszero(m)) && continue
-        for p in SparseArrays.nzrange(W, k)
+        for p in p1:p2
             j = rows[p]
             v = vals[p]
             num[j] += v * x
@@ -207,10 +342,10 @@ function _accumulate!(num::AbstractVector{Float64}, cover::AbstractVector{Float6
 end
 
 function _accumulate!(num::AbstractVector{Float64}, cover::AbstractVector{Float64},
-    W::AbstractMatrix, src::AbstractVector, valid::AbstractVector)
+    W::AbstractMatrix, src::AbstractVector, valid::AbstractVector, missingval = nothing)
     @inbounds for k in axes(W, 2)
-        x = _value(src[k])
-        m = _validity(valid[k])
+        x = _value(src[k], missingval)
+        m = _validity(valid[k], missingval)
         (iszero(x) && iszero(m)) && continue
         for j in axes(W, 1)
             v = W[j, k]
@@ -264,6 +399,23 @@ finalize!(out::AbstractVector, num::AbstractVector{Float64},
     cover::AbstractVector{Float64}, total::AbstractVector{Float64},
     block::WeightBlock, policy::AbstractMissingPolicy) =
     finalize!(out, num, cover, total, policy, block.denom !== nothing)
+
+"""
+    usesreference(policy::AbstractMissingPolicy) -> Bool
+
+Whether `policy` reads the accumulated reference weight (`total`) at all.
+
+`false` for [`Extensive`](@ref), which never divides or blanks, and for
+`Weighted(0)`, whose threshold clause can never fire. It is what licenses
+dropping a source chunk that is known to hold no valid data **before** its
+weights are built: an unbuilt block contributes no reference, and only a policy
+that reads the reference could tell the difference between that and a built
+block applied to all-missing data. When it is `true` the block is still built
+and its reference accumulated — every read and every matvec is still skipped,
+which is where the saving was.
+"""
+usesreference(::Extensive) = false
+usesreference(policy::Weighted) = policy.threshold > 0
 
 function finalize!(out::AbstractVector, num::AbstractVector{Float64},
     cover::AbstractVector{Float64}, total::AbstractVector{Float64},
@@ -422,11 +574,12 @@ function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix)
     ref = blockreference!(Vector{Float64}(undef, ndst), block)
     hasdenom = block.denom !== nothing
     policy = plan.missingpolicy
+    mv = plan.missingval
     for s in axes(src, 2)
         fill!(num, 0.0)
         fill!(cover, 0.0)
         x = view(src, :, s)
-        applyblock!(num, cover, block, x, anyinvalid(x) ? x : nothing, ref)
+        applyblock!(num, cover, block, x, anyinvalid(x, mv) ? x : nothing, ref, mv)
         finalize!(view(out, :, s), num, cover, ref, policy, hasdenom)
     end
     return out

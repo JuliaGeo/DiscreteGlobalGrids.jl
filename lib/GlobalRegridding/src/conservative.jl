@@ -268,12 +268,35 @@ function build_weights!(coo::WeightCOO, ::Conservative,
         m, GOCore.False(), subtree(dst_space, dst_inds), subtree(src_space, src_inds);
         intersection_operator = op)
 
-    rows, cols, vals = SparseArrays.findnz(block)
-    @inbounds for t in eachindex(vals)
+    return _fillcoo!(coo, block)
+end
+
+# CR's assembled block, read straight into the `WeightCOO`.
+#
+# Column-major over the stored entries, which is the order `findnz` would have
+# produced, so the weights and the accumulated denominators are the same
+# `Float64`s to the bit. Reading the matrix in place is what keeps them the same
+# *and* keeps the triple `findnz` allocates — three vectors as long as the
+# block has nonzeros, live at once with both matrices and the COO — out of the
+# build's peak.
+function _fillcoo!(coo::WeightCOO, block::SparseArrays.AbstractSparseMatrixCSC)
+    rows = SparseArrays.rowvals(block)
+    vals = SparseArrays.nonzeros(block)
+    @inbounds for col in axes(block, 2), t in SparseArrays.nzrange(block, col)
         w = vals[t]
         w > 0 || continue
-        addweight!(coo, rows[t], cols[t], w)
+        addweight!(coo, rows[t], col, w)
         adddenom!(coo, rows[t], w)
+    end
+    return coo
+end
+
+function _fillcoo!(coo::WeightCOO, block::AbstractMatrix)
+    @inbounds for col in axes(block, 2), row in axes(block, 1)
+        w = block[row, col]
+        w > 0 || continue
+        addweight!(coo, row, col, w)
+        adddenom!(coo, row, w)
     end
     return coo
 end

@@ -133,12 +133,42 @@ connectedchunks!(out::Vector{Int}, dstcap::Cap, src_space::RegridSpace;
 
 function connectedchunks!(out::Vector{Int}, dstcap::Cap, srctree; radius::Real = 0.0)
     empty!(out)
-    STI.dual_depth_first_search(DilatedIntersects(Float64(radius)),
-        CapQuery(dstcap), srctree) do _, s
-        push!(out, s)
+    _descend!(out, dstcap, srctree, Float64(radius))
+    sort!(out)
+    unique!(out)
+    return out
+end
+
+"""
+    connectedchunks!(out, dstcaps::AbstractVector{<:SphericalCap}, srctree; radius = 0.0)
+
+The union of [`connectedchunks!`](@ref) over several destination extents, into a
+reused vector.
+
+A destination unit that is a run of cell positions rather than one of the
+destination space's own chunks is bounded by the extents of every chunk it draws
+cells from. Descending against each of those in turn and taking the union is
+tighter than merging them into one cap — a merge of two distant caps can cover
+half the sphere, while the union of their descents cannot report a source chunk
+neither of them meets.
+"""
+function connectedchunks!(out::Vector{Int}, dstcaps::AbstractVector{<:SphericalCap},
+    srctree; radius::Real = 0.0)
+    empty!(out)
+    r = Float64(radius)
+    for cap in dstcaps
+        _descend!(out, cap, srctree, r)
     end
     sort!(out)
     unique!(out)
+    return out
+end
+
+function _descend!(out::Vector{Int}, dstcap::Cap, srctree, radius::Float64)
+    STI.dual_depth_first_search(DilatedIntersects(radius),
+        CapQuery(dstcap), srctree) do _, s
+        push!(out, s)
+    end
     return out
 end
 

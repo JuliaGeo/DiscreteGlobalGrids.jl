@@ -73,6 +73,41 @@ function toy_cap(points)
     return SphericalCap(centre, nextfloat(radius * 1.0001 + 1e-12))
 end
 
+"""
+    toy_bandcap(lat0, lat1, dlon) -> SphericalCap
+
+A cap covering every cell of the latitude band `[lat0, lat1]`, whatever longitude
+span the band covers.
+
+`{lat ≥ a}` **is** a cap of radius `90° − a` about the north pole and `{lat ≤ b}`
+one of radius `90° + b` about the south, so no convexity argument is needed and a
+full-longitude band is bounded as tightly as a narrow one. `a` and `b` widen
+`lat0`/`lat1` by the poleward bow of a `dlon`-wide cell's great-circle east–west
+edge, `atan(tan φ / cos(Δλ/2))`, at whichever end faces away from the equator.
+The full sphere comes back only for a band reaching both poles.
+
+This is the bound [`toy_cap`](@ref) cannot give: a cap through the cells' corners
+stops being convex past `π/2`, so a band of every longitude degenerates to the
+whole sphere there and every chunk of a banded space appears to touch every other.
+"""
+function toy_bandcap(lat0::Real, lat1::Real, dlon::Real)
+    h = min(abs(Float64(dlon)), 360.0) / 2
+    c = h >= 90 ? 0.0 : cosd(h)
+    a = lat0 < 0 ? (c <= 0 ? -90.0 : max(-90.0, atand(tand(Float64(lat0)) / c))) :
+        Float64(lat0)
+    b = lat1 > 0 ? (c <= 0 ? 90.0 : min(90.0, atand(tand(Float64(lat1)) / c))) :
+        Float64(lat1)
+    centre = USPoint(0.0, 0.0, 1.0)
+    radius = deg2rad(90.0 - a)
+    if deg2rad(90.0 + b) < radius
+        centre = USPoint(0.0, 0.0, -1.0)
+        radius = deg2rad(90.0 + b)
+    end
+    radius = nextfloat(radius * 1.0001 + 1e-12)
+    radius >= Float64(pi) && return TOY_FULL_SPHERE
+    return SphericalCap(centre, radius)
+end
+
 # ===========================================================================
 # A flat spatial tree
 # ===========================================================================
@@ -328,17 +363,23 @@ ToyCapTree(space::ToyLonLatSpace, indices) =
         [toy_cap(cellcorners(space, i)) for i in indices])
 
 # A chunk's extent is bounded by its cells' corners rather than its own box
-# corners, so it covers every cell `cellindices` assigns to it.
+# corners, so it covers every cell `cellindices` assigns to it — and by its
+# latitude band instead where that construction degenerates, which is any chunk
+# more than a quadrant across, a full-longitude row above all.
 function chunktree(space::ToyLonLatSpace)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)
     points = USPoint[]
     for c in 1:n
         empty!(points)
+        lat0, lat1 = 90.0, -90.0
         for i in cellindices(space, c)
             append!(points, cellcorners(space, i))
+            _, _, a, b = cellbounds(space, i)
+            lat0, lat1 = min(lat0, a), max(lat1, b)
         end
-        caps[c] = toy_cap(points)
+        cap = toy_cap(points)
+        caps[c] = cap.radius >= Float64(pi) ? toy_bandcap(lat0, lat1, dlon(space)) : cap
     end
     return ToyCapTree(space, collect(1:n), caps)
 end

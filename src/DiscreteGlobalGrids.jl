@@ -56,6 +56,12 @@ wrappers convert longitude and latitude at API boundaries.
 [`query`](@ref) uses DE9IM.jl predicate types with spherical semantics defined
 here. `treeify`, `ncells`, and `getcell` extend and re-export
 `ConservativeRegridding.Trees` bindings.
+
+[`regrid`](@ref), [`regrid!`](@ref) and [`plan_regrid`](@ref) are
+`GlobalRegridding`'s, extended in `src/regridding.jl` so that a grid, a
+[`CellVector`](@ref), a [`CellLookup`](@ref), a [`MultiOrderCellSet`](@ref), or a
+bare system spells a destination. `cellat` and `cellindices` are that package's
+bindings for the same reason the `Trees` ones are.
 """
 module DiscreteGlobalGrids
 
@@ -82,6 +88,13 @@ using DE9IM: DE9IMPredicate,
 # wrapper functions or binding ambiguity.
 import ConservativeRegridding.Trees: treeify, ncells, getcell
 
+# `GlobalRegridding` owns the regridding verbs and the space contract, and has no
+# dependency on this package; `src/regridding.jl` implements the contract for the
+# grids here. `cellat` and `cellindices` are its bindings for the same reason the
+# `Trees` ones are: extending them rather than shadowing them keeps one function
+# per name for a session that holds both surfaces.
+import GlobalRegridding: cellat, cellindices, regrid, regrid!, plan_regrid
+
 include("Helpers/Helpers.jl")
 
 # GeometryOps adapters stay outside the dependency-free `Helpers` module.
@@ -98,7 +111,7 @@ include("fallbacks/fallbacks.jl")
 # Bind fallback types before including systems that extend them.
 using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSystem,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
-    cellindices, is_contained, coarsest_contained, cell_polygons,
+    is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
     EdgeCellIterator, InnerCellIterator, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator,
@@ -130,6 +143,10 @@ using .ISEA4R: ISEA4RSystem
 include("dimensionaldata.jl")
 
 using .CellLookups: CellLookup, Cells, Covering
+
+# Last: the regridding face reads the grids, the compressed collection, and the
+# cube axis alike.
+include("regridding.jl")
 
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
@@ -307,5 +324,10 @@ export ISEA4RSystem
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere
+
+# --- Regridding ------------------------------------------------------------
+# The verbs are `GlobalRegridding`'s, extended for this package's targets;
+# `DGGSpace` is the space they resolve to, and the place chunking is tuned.
+export regrid, regrid!, plan_regrid, DGGSpace
 
 end # module DiscreteGlobalGrids

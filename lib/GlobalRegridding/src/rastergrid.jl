@@ -80,6 +80,48 @@ chartarcs(t::Any, dx, dy) = throw(ArgumentError(
 # along a meridian spans exactly Δφ.
 chartarcs(::LonLatToSphere, dx, dy) = (deg2rad(Float64(dx)), deg2rad(Float64(dy)))
 
+"""
+    LonLatEdgeTables(xedges, yedges)
+
+`cos` and `sin` of every cell edge of a [`LonLatToSphere`](@ref) raster, plus the
+widest longitude step.
+
+The corner at edge coordinates `(xedges[i], yedges[j])` is
+`(cy[j]·cx[i], cy[j]·sx[i], sy[j])` — the same three products the chart itself
+performs on the same arguments, so a table lookup returns the chart's own
+`Float64`s. `maxdx` bounds how far a cell's east–west edge bows poleward of its
+parallel, which is what lets a wide box be bounded by something short of the
+whole sphere.
+"""
+struct LonLatEdgeTables
+    cx::Vector{Float64}
+    sx::Vector{Float64}
+    cy::Vector{Float64}
+    sy::Vector{Float64}
+    maxdx::Float64
+end
+
+LonLatEdgeTables(xe::Vector{Float64}, ye::Vector{Float64}) =
+    LonLatEdgeTables(cosd.(xe), sind.(xe), cosd.(ye), sind.(ye), _maxstep(xe))
+
+@inline _tablecorner(t::LonLatEdgeTables, i::Int, j::Int) =
+    @inbounds USPoint(t.cy[j] * t.cx[i], t.cy[j] * t.sx[i], t.sy[j])
+
+"""
+    chartedgetables(transform, xedges, yedges) -> tables or nothing
+
+Per-edge trigonometric tables for a chart whose corners factor through the two
+coordinates separately, or `nothing` for a chart that has to be evaluated.
+
+Every corner, cap and polygon a [`RasterGrid`](@ref) synthesizes stands on a pair
+of cell edges, so a chart that can be tabulated once per edge — `O(nx + ny)` —
+never has to be evaluated per cell. `nothing` keeps the general path, in which
+`transform` is called for every point.
+"""
+chartedgetables(::Any, xedges, yedges) = nothing
+chartedgetables(::LonLatToSphere, xedges::Vector{Float64}, yedges::Vector{Float64}) =
+    LonLatEdgeTables(xedges, yedges)
+
 # ===========================================================================
 # The space
 # ===========================================================================
@@ -137,7 +179,7 @@ neighbouring cells share an edge exactly and the polygons of a global raster
 tile the sphere. Rings are counter-clockwise seen from outside whatever the
 lookup order and whatever the handedness of the chart.
 """
-struct RasterGrid{XD,YD,F,G} <: RegridSpace
+struct RasterGrid{XD,YD,F,G,T} <: RegridSpace
     xdim::XD
     ydim::YD
     "cell edges along the X dimension, in lookup order, strictly monotone"
@@ -158,6 +200,8 @@ struct RasterGrid{XD,YD,F,G} <: RegridSpace
     xfast::Bool
     "whether `(xlo, ylo), (xhi, ylo), (xhi, yhi), (xlo, yhi)` is already counter-clockwise from outside"
     ccw::Bool
+    "the chart's per-edge tables ([`chartedgetables`](@ref)), or `nothing`"
+    tables::T
 end
 
 const _XNAMES = (:x, :lon, :long, :longitude)
@@ -207,7 +251,7 @@ function _rastergrid(xd, yd, chunks, xfast::Bool;
              (_chunkranges(chunks[1], nx, "X"), _chunkranges(chunks[2], ny, "Y"))
     return RasterGrid(xd, yd, xe, ye, xc, yc, transform, inverse,
         xperiod === nothing ? nothing : Float64(xperiod), xfast,
-        _chartorientation(transform, xe, ye))
+        _chartorientation(transform, xe, ye), chartedgetables(transform, xe, ye))
 end
 
 function _dimnums(ds, xd, yd)
@@ -410,23 +454,75 @@ end
 
 function getcell(space::RasterGrid, i::Int)
     ix, iy = cellsubscript(space, i)
-    xlo, xhi, ylo, yhi = cellbox(space, ix, iy)
-    t = space.transform
-    c = (t(xlo, ylo), t(xhi, ylo), t(xhi, yhi), t(xlo, yhi))
+    c = _cellcorners(space, ix, iy)
     ring = _cellring(space.ccw ? c : (c[4], c[3], c[2], c[1]))
     return GI.Polygon([GI.LinearRing(ring)])
 end
 
+"""
+    _cellcorners(space::RasterGrid, ix, iy) -> NTuple{4,UnitSphericalPoint}
+
+The cell's four corners in ascending-native order —
+`(xlo, ylo), (xhi, ylo), (xhi, yhi), (xlo, yhi)` — from the chart's edge tables
+where it has them and from the chart itself otherwise.
+
+The order discards the edge vectors' own sense, which is what keeps ring winding
+independent of lookup order; `space.ccw` says whether it needs reversing.
+"""
+@inline function _cellcorners(space::RasterGrid, ix::Integer, iy::Integer)
+    t = space.tables
+    if t === nothing
+        xlo, xhi, ylo, yhi = cellbox(space, ix, iy)
+        f = space.transform
+        return (f(xlo, ylo), f(xhi, ylo), f(xhi, yhi), f(xlo, yhi))
+    end
+    ilo, ihi = _edgeorder(space.xedges, ix)
+    jlo, jhi = _edgeorder(space.yedges, iy)
+    return (_tablecorner(t, ilo, jlo), _tablecorner(t, ihi, jlo),
+        _tablecorner(t, ihi, jhi), _tablecorner(t, ilo, jhi))
+end
+
+# The edge-vector positions of a cell's lower and upper native bound: the index
+# form of the `minmax` in `cellbox`, so the two agree on a descending axis.
+@inline function _edgeorder(e::Vector{Float64}, k::Integer)
+    i = Int(k)
+    return @inbounds e[i] <= e[i+1] ? (i, i + 1) : (i + 1, i)
+end
+
 # A cell against a pole has two coincident corners; dropping the repeat keeps
 # every edge of the ring non-degenerate.
+#
+# The distinct corners are counted before anything is allocated, so the ring is
+# built at its final length: a cell polygon is synthesized once per candidate
+# pair in a plan build, and growing a vector by `push!` there is most of what the
+# build allocates.
 function _cellring(corners::NTuple{4,USPoint})
-    ring = USPoint[]
-    for p in corners
-        (isempty(ring) || ring[end] != p) && push!(ring, p)
+    n = _ringlength(corners)
+    ring = Vector{USPoint}(undef, n + 1)
+    @inbounds begin
+        ring[1] = corners[1]
+        k = 1
+        for j in 2:4
+            k == n && break
+            corners[j] == ring[k] && continue
+            ring[k+=1] = corners[j]
+        end
+        ring[n+1] = corners[1]
     end
-    length(ring) > 1 && ring[end] == ring[1] && pop!(ring)
-    push!(ring, ring[1])
     return ring
+end
+
+# How many of the four corners survive dropping consecutive repeats and a tail
+# equal to the head — the length of the open ring.
+@inline function _ringlength(c::NTuple{4,USPoint})
+    n = 1
+    last = c[1]
+    for j in 2:4
+        c[j] == last && continue
+        n += 1
+        last = c[j]
+    end
+    return n > 1 && last == c[1] ? n - 1 : n
 end
 
 function cellcentroid(space::RasterGrid, i::Int)
@@ -543,12 +639,19 @@ end
 A cap covering every cell whose native box lies inside `[xlo, xhi] × [ylo, yhi]`.
 
 The cap is centred on the mean of `4(nsamp + 1)` boundary samples and sized to
-reach the farthest of them, then returned as the full sphere if that radius
-passes `π/2`. Covering follows from convexity: under a lon–lat chart the point
-of the box farthest from any centre is a corner, so the cap contains every cell
-corner in the box, and a cap of radius at most `π/2` is convex and therefore
-also contains the geodesic arcs between them — that is, the cell polygons
-themselves, which bow outside the box.
+reach the farthest of them. Covering follows from convexity: under a lon–lat
+chart the point of the box farthest from any centre is a corner, so the cap
+contains every cell corner in the box, and a cap of radius at most `π/2` is
+convex and therefore also contains the geodesic arcs between them — that is, the
+cell polygons themselves, which bow outside the box.
+
+Past `π/2` that argument lapses, as it does when the samples average to nothing
+and leave no centre; both cases report the whole sphere here, and [`_rectcap`](@ref)
+is where a box too wide for this construction gets a bound worth having.
+
+Kept free of that fallback deliberately: this is the innermost function of a plan
+build, and a call to anything more than arithmetic in either bail branch costs the
+600 000 nodes that never take it more than the 22 that do ever save.
 """
 function _boxcap(space::RasterGrid, xlo, xhi, ylo, yhi, nsamp::Int)
     t = space.transform
@@ -576,13 +679,141 @@ function _boxcap(space::RasterGrid, xlo, xhi, ylo, yhi, nsamp::Int)
     return SphericalCap(centre, r)
 end
 
-_rastercellcap(space::RasterGrid, ix::Integer, iy::Integer) =
-    _boxcap(space, cellbox(space, ix, iy)..., _CELL_CAP_SAMPLES)
+# The cell cap of `_boxcap(space, cellbox(space, ix, iy)..., 0)`, taken from the
+# chart's edge tables when it has them: `_CELL_CAP_SAMPLES == 0` means all four
+# sample points are corners, and a corner is a pair of edge coordinates.
+function _rastercellcap(space::RasterGrid, ix::Integer, iy::Integer)
+    space.tables === nothing &&
+        return _boxcap(space, cellbox(space, ix, iy)..., _CELL_CAP_SAMPLES)
+    return _cornercap(_cellcorners(space, ix, iy))
+end
 
+# `_boxcap`'s construction over four corners already in hand — the same sums in
+# the same order over the same points, and the same bail, so the cap is the
+# chart-evaluating path's cap bit for bit.
+function _cornercap(c::NTuple{4,USPoint})
+    sx = sy = sz = 0.0
+    for p in c
+        sx += p[1]
+        sy += p[2]
+        sz += p[3]
+    end
+    nrm = sqrt(sx^2 + sy^2 + sz^2)
+    nrm <= eps(Float64) && return _WHOLE_SPHERE
+    centre = USPoint(sx / nrm, sy / nrm, sz / nrm)
+    r = 0.0
+    for p in c
+        r = max(r, US.spherical_distance(centre, p))
+    end
+    r = nextfloat(r * 1.0001 + 1e-12)
+    r > Float64(pi) / 2 && return _WHOLE_SPHERE
+    return SphericalCap(centre, r)
+end
+
+"""
+    _widecap(space::RasterGrid, xlo, xhi, ylo, yhi) -> SphericalCap
+
+A cap covering the box's cells without the convexity argument [`_boxcap`](@ref)
+rests on — the answer for a box too wide to be bounded by a cap through its own
+boundary samples.
+
+A chart that cannot bound its own boxes reports the whole sphere, which is what
+a general `transform` gets. Under [`LonLatToSphere`](@ref) the box's cells lie in
+a latitude band: an east–west cell edge is a great-circle arc, so it bows to
+`atan(tan φ / cos(Δλ/2))` for a cell `Δλ` wide, while the meridians bounding the
+box do not bow at all. Two constructions contain that band — a cap about a pole
+([`_polarcap`](@ref)), which holds for a box of any longitude span including a
+full row, and, for a box narrower than 180° of longitude, a cap on the box's
+mid-meridian, whose farthest point is a corner because the distance from a centre
+on that meridian falls off monotonically in both coordinates. The tighter is
+taken. The whole sphere comes back only when neither beats it, which a band
+reaching from pole to pole genuinely does not.
+"""
+_widecap(space::RasterGrid, xlo, xhi, ylo, yhi) =
+    _widecap(space.tables, xlo, xhi, ylo, yhi)
+
+_widecap(::Nothing, xlo, xhi, ylo, yhi) = _WHOLE_SPHERE
+
+function _widecap(t::LonLatEdgeTables, xlo, xhi, ylo, yhi)
+    polar = _polarcap(t, ylo, yhi)
+    abs(xhi - xlo) / 2 < 90.0 || return polar
+    a, b = _bowedband(Float64(ylo), Float64(yhi), t.maxdx)
+    chart = LonLatToSphere()
+    centre = chart((xlo + xhi) / 2, (a + b) / 2)
+    r = 0.0
+    for x in (xlo, xhi), y in (a, b)
+        r = max(r, US.spherical_distance(centre, chart(x, y)))
+    end
+    r = nextfloat(r * 1.0001 + 1e-12)
+    (r >= Float64(pi) || polar.radius <= r) && return polar
+    return SphericalCap(centre, r)
+end
+
+"""
+    _polarcap(tables, ylo, yhi) -> SphericalCap
+
+The tighter of the two caps that bound the box's latitude band by a pole, or the
+whole sphere when neither is tighter.
+
+`{lat ≥ a}` **is** a cap of radius `90° − a` about the north pole and `{lat ≤ b}`
+one of radius `90° + b` about the south, so this covers a box of any longitude
+span at all — including a full row, which is exactly where a cap through the
+box's own boundary has to reach around the sphere. `a` and `b` come from
+[`_bowedband`](@ref), so the poleward bow of the cells' east–west edges is inside
+them. Cheap enough to offer against every node extent: two `tan`s and a `cos`.
+"""
+function _polarcap(t::LonLatEdgeTables, ylo, yhi)
+    a, b = _bowedband(Float64(ylo), Float64(yhi), t.maxdx)
+    centre = USPoint(0.0, 0.0, 1.0)
+    r = deg2rad(90.0 - a)
+    rs = deg2rad(90.0 + b)
+    if rs < r
+        centre = USPoint(0.0, 0.0, -1.0)
+        r = rs
+    end
+    r = nextfloat(r * 1.0001 + 1e-12)
+    r >= Float64(pi) && return _WHOLE_SPHERE
+    return SphericalCap(centre, r)
+end
+
+# The latitude band the cells of a box `[ylo, yhi]` tall actually occupy, given
+# the widest cell in the raster. A great-circle arc between two points of a
+# parallel bows toward the nearer pole, so the band grows outward at whichever
+# end faces away from the equator, and not at all at an end on it.
+function _bowedband(ylo::Float64, yhi::Float64, dxmax::Float64)
+    h = min(abs(dxmax), 360.0) / 2
+    c = h >= 90.0 ? 0.0 : cosd(h)
+    hi = yhi > 0 ? (c <= 0.0 ? 90.0 : min(90.0, atand(tand(yhi) / c))) : yhi
+    lo = ylo < 0 ? (c <= 0.0 ? -90.0 : max(-90.0, atand(tand(ylo) / c))) : ylo
+    return (lo, hi)
+end
+
+"""
+    _rectcap(space, ix0, ix1, iy0, iy1) -> SphericalCap
+
+The extent of an index rectangle — a tree node, a chunk.
+
+Both constructions cover, so the tighter one is taken: sampling the box boundary
+([`_boxcap`](@ref)) wins on a compact box, and the chart's own bound
+([`_widecap`](@ref)) wins on one wide enough that a cap through its boundary has
+to reach around the sphere — a full-longitude band above all, which is how a
+global raster is normally chunked and which `_boxcap` alone answers with the
+whole sphere.
+"""
 function _rectcap(space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
     xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
     ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
-    return _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
+    sampled = _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
+    # A cap about a pole reaches at least to the near end of the box's latitude
+    # span and the bow only widens that, while the mid-meridian cap is built on
+    # the bowed box and so never beats a sampled cap that survived at all — a
+    # surviving cap tighter than `90° − |φ|` therefore settles it for nothing.
+    # Every deep node of a large raster takes this exit, and there are hundreds
+    # of thousands of them against a couple of dozen that do not.
+    sampled.radius < Float64(pi) &&
+        sampled.radius <= deg2rad(min(90.0 - ylo, 90.0 + yhi)) && return sampled
+    wide = _widecap(space, xlo, xhi, ylo, yhi)
+    return wide.radius < sampled.radius ? wide : sampled
 end
 
 # The winding of `(xlo, ylo), (xhi, ylo), (xhi, yhi), (xlo, yhi)` under the

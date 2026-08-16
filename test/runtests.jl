@@ -31,5 +31,8 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/subtree_halos.jl")
     include("systems/crosssystem/dimensionaldata.jl")
     include("systems/crosssystem/regridding_conservation.jl")
+    # The GlobalRegridding face reads the grids, the cell containers, and the
+    # cube axis, so it runs after all three.
+    include("systems/crosssystem/regrid.jl")
     include("plotting/runtests.jl")
 end

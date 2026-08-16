@@ -14,6 +14,7 @@ Extents = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
 GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
 GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
 GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
+GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
 H3_jll = "60c8821e-da38-5dbd-93c7-983f1e6d69be"
 Healpix = "9f4e344d-96bc-545a-84a3-ae6b9e1b672b"
 SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
@@ -28,6 +29,9 @@ MakieExt = ["Makie"]
 ConservativeRegridding = {rev = "agent/use-geometryops-main-cache", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 GeometryOps = {rev = "main", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+# Not a workspace member: it resolves its own Manifest, so
+# `julia --project=lib/GlobalRegridding` stays self-contained.
+GlobalRegridding = {path = "lib/GlobalRegridding"}
 
 [compat]
 DE9IM = "0.1"

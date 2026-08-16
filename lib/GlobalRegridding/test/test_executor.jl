@@ -5,6 +5,7 @@
 # in this file depends on a weight-construction task.
 
 import DimensionalData as DD
+import SparseArrays
 
 # A method that counts the weight builds it is asked for.
 mutable struct CountingMethod <: AbstractRegriddingMethod
@@ -110,6 +111,45 @@ end
             missingpolicy = Extensive())[h] == 0.0
     end
 
+    @testset "missingval sentinel" begin
+        # A sentinel is nothing but a third spelling of invalid, so a field
+        # holding one must give exactly what the same field gives with its
+        # sentinels replaced by NaN — bit for bit, under either policy. A
+        # sentinel folded into the weights, or into the coverage but not the
+        # numerator, breaks one of these.
+        field = rand(6, 3) .+ 1
+        holes = [cellposition(space, 2, 2), cellposition(space, 5, 1)]
+        sentinel = copy(field)
+        sentinel[2, 2] = -9999.0
+        sentinel[5, 1] = -9999.0
+        nanned = copy(field)
+        nanned[2, 2] = NaN
+        nanned[5, 1] = NaN
+
+        for policy in (Weighted(0.5), Extensive())
+            kw = (; to = space, from = space,
+                method = ToyDiagonalMethod(; scale = 3.0), missingpolicy = policy)
+            @test all(isequal.(regrid(sentinel; kw..., missingval = -9999.0),
+                regrid(nanned; kw...)))
+        end
+
+        # Without the declaration the sentinel is just data — the guard against
+        # a `missingval` that leaks into a plan that was never given one.
+        plain = regrid(sentinel; to = space, from = space,
+            method = ToyDiagonalMethod(), missingpolicy = Extensive())
+        @test plain[holes] == [-9999.0, -9999.0]
+
+        # An integer field cannot hold NaN or `missing`, so a sentinel is the
+        # only way it can carry nodata at all: the element-type shortcut that
+        # skips the validity scan must not fire when one is declared.
+        ints = rand(1:100, 6, 3)
+        ints[2, 2] = -9999
+        out = regrid(ints; to = space, from = space, method = ToyDiagonalMethod(),
+            missingpolicy = Weighted(0.5), missingval = -9999)
+        @test isnan(out[holes[1]])
+        @test out[setdiff(1:n, holes[1])] ≈ vec(ints)[setdiff(1:n, holes[1])]
+    end
+
     @testset "N-D pass-through" begin
         cube = DD.DimArray(rand(6, 3, 12), (DD.X(1:6), DD.Y(1:3), DD.Ti(1:12)))
         plan = plan_regrid(cube; to = space, from = space,
@@ -161,6 +201,38 @@ end
         @test (@allocated GR.applyblock!(num, cover, block, x, x, ref)) <= 128
     end
 
+    @testset "sparse column walks agree" begin
+        # The accumulation walks a near-empty block nonzero-first and a denser
+        # one column-by-column. Both must give the dense answer, and the
+        # nonzero-first walk has to recover a column from a nonzero's position
+        # through repeated `colptr` entries — leading, interior and trailing
+        # empty columns are exactly where that goes wrong.
+        rows = [1, 3, 1, 2]
+        colvals = [4, 4, 9, 12]
+        vals = [2.0, 5.0, 1.5, 0.5]
+        for ncols in (20, 20_000)
+            W = SparseArrays.sparse(rows, colvals, vals, 3, ncols)
+            @test GR._walknonzeros(W) == (ncols == 20_000)
+            block = WeightBlock(W, nothing)
+            src = collect(1.0:ncols)
+            src[9] = NaN
+            num = zeros(3)
+            cover = zeros(3)
+            GR.applyblock!(num, cover, block, src, src)
+            dense = Matrix(W)
+            @test num ≈ dense * map(x -> isnan(x) ? 0.0 : x, src)
+            @test cover ≈ dense * map(x -> isnan(x) ? 0.0 : 1.0, src)
+
+            # And the no-mask path, whose coverage comes off the reference.
+            n2 = zeros(3)
+            c2 = zeros(3)
+            clean = collect(1.0:ncols)
+            GR.applyblock!(n2, c2, block, clean)
+            @test n2 ≈ dense * clean
+            @test c2 ≈ vec(sum(dense; dims = 2))
+        end
+    end
+
     @testset "API surface" begin
         field = rand(6, 3)
         method = ToyDiagonalMethod()
@@ -178,5 +250,16 @@ end
             budget = 2^10) ≈ vec(field)
         @test_throws ArgumentError plan_regrid(field; to = space, from = space,
             method, budget = 0)
+        # Weight storage is a lazy-path knob and says so rather than being
+        # silently dropped by a plan that holds one whole-domain block.
+        @test_throws ArgumentError plan_regrid(field; to = space, from = space,
+            method, storage = PerChunk())
+        # A lazy plan bounds its weights by the budget's weight share unless the
+        # caller names a storage. This is the L3 failure P1 measured: an
+        # unbounded default accumulates the whole operator.
+        bounded = plan_regrid(field; to = space, from = space, method, lazy = true,
+            budget = 2^16)
+        @test bounded.storage.maxbytes == GR.weightbudget(2^16)
+        @test GR.weightbudget(2^16) + GR.databudget(2^16) == 2^16
     end
 end

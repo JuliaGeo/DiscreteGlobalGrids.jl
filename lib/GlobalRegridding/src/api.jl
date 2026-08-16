@@ -8,8 +8,9 @@ isdiskbacked(data) = DiskArrays.haschunks(data) isa DiskArrays.Chunked
 
 """
     regrid(data; to, from = nothing, method = Conservative(),
-           missingpolicy = Weighted(0.5), lazy = isdiskbacked(data),
-           chunks = nothing, budget = 2^30)
+           missingpolicy = Weighted(0.5), missingval = nothing,
+           lazy = isdiskbacked(data), chunks = nothing, budget = 2^30,
+           storage = nothing)
     regrid(data, plan::AbstractRegriddingPlan)
 
 Regrid `data` onto the cells named by `to`.
@@ -39,17 +40,26 @@ Values are floating point, and destinations blanked by [`Weighted`](@ref) are
     default, the only exactly conservative choice.
   - `missingpolicy`: [`Weighted`](@ref) — coverage-normalized mean, blanking
     destinations below the threshold — or [`Extensive`](@ref) — raw sums.
+  - `missingval`: the source's nodata sentinel, invalid on top of `missing` and
+    NaN, which are always invalid. `nothing` means the source declares none.
+    Apply-time only: weights stay geometry-blind, and a sentinel field gives
+    exactly what the same field with its sentinels replaced by NaN gives.
   - `lazy`: return a [`LazyRegridArray`](@ref) instead of a materialized array.
     Defaults to whether `data` is chunked storage. Constructing one reads no
     source data at all.
   - `chunks`: the destination's chunking, as a `DiskArrays.GridChunks` or a
-    tuple of chunk sizes. `nothing` derives it from the destination space. A
-    lazy-path knob: an eager regrid produces one whole array and ignores it.
-  - `budget`: approximate bytes of source data that may be resident while one
-    destination chunk is produced. Purely a performance knob — connected source
-    chunks are held together when they fit and streamed one at a time when they
-    do not, to the same answer either way — and likewise ignored by the eager
-    path.
+    tuple of chunk sizes. `nothing` derives it from the destination space, or
+    from `budget` when the destination space has no chunking of its own. It is
+    also the destination tiling the lazy path computes one tile at a time — a
+    lazy-path knob, ignored by the eager path, which produces one whole array.
+  - `budget`: the bytes of transient memory a lazy read aims to stay within,
+    shared between the weights it holds and the source data it loads. Purely a
+    performance knob — connected source chunks are held together when they fit
+    and streamed one at a time when they do not, to the same answer either way —
+    and likewise ignored by the eager path.
+  - `storage`: where a lazy plan keeps built weights — [`PerChunk`](@ref) in
+    memory, [`Spilled`](@ref) on disk. `nothing` takes a `PerChunk` bounded by
+    the weight share of `budget`.
 
 The one-argument-plus-plan form takes no keyword arguments: a plan already
 carries the method, both spaces, the missing policy, and the storage and budget
@@ -60,9 +70,11 @@ function regrid end
 
 function regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
-    lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30)
-    plan = plan_regrid(data; to, from, method, missingpolicy, lazy, chunks, budget)
+    missingpolicy::AbstractMissingPolicy = Weighted(0.5), missingval = nothing,
+    lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30,
+    storage::Union{Nothing,AbstractBlockStorage} = nothing)
+    plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
+        chunks, budget, storage)
     return regrid(data, plan)
 end
 
@@ -79,8 +91,9 @@ regrid(data, plan::AbstractRegriddingPlan) =
 
 """
     regrid!(dest, data; to, from = nothing, method = Conservative(),
-            missingpolicy = Weighted(0.5), lazy = isdiskbacked(data),
-            chunks = nothing, budget = 2^30)
+            missingpolicy = Weighted(0.5), missingval = nothing,
+            lazy = isdiskbacked(data), chunks = nothing, budget = 2^30,
+            storage = nothing)
     regrid!(dest, data, plan::AbstractRegriddingPlan)
 
 Regrid `data` into the preallocated `dest` and return `dest`.
@@ -94,9 +107,11 @@ function regrid! end
 
 function regrid!(dest, data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
-    lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30)
-    plan = plan_regrid(data; to, from, method, missingpolicy, lazy, chunks, budget)
+    missingpolicy::AbstractMissingPolicy = Weighted(0.5), missingval = nothing,
+    lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30,
+    storage::Union{Nothing,AbstractBlockStorage} = nothing)
+    plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
+        chunks, budget, storage)
     return regrid!(dest, data, plan)
 end
 
@@ -116,8 +131,9 @@ regrid!(dest, data, plan::AbstractRegriddingPlan) =
 
 """
     plan_regrid(data; to, from = nothing, method = Conservative(),
-                missingpolicy = Weighted(0.5), lazy = isdiskbacked(data),
-                chunks = nothing, budget = 2^30) -> AbstractRegriddingPlan
+                missingpolicy = Weighted(0.5), missingval = nothing,
+                lazy = isdiskbacked(data), chunks = nothing, budget = 2^30,
+                storage = nothing) -> AbstractRegriddingPlan
 
 Build the regridding operator from `data`'s space onto `to` without applying it,
 for reuse across fields, slices, and repeated reads.
@@ -134,11 +150,18 @@ construction — the reason to reach for `plan_regrid` over bare
 
 An in-memory source plans to a [`DirectPlan`](@ref): one whole-domain block over
 both spaces entire.
+
+A lazy plan's default `storage` is a [`PerChunk`](@ref) bounded by the weight
+share of `budget` ([`weightbudget`](@ref)) — so a plan's resident weights are
+bounded by what the caller asked for rather than by how much of the destination
+has been touched. Pass `storage = PerChunk()` for the unbounded cache, or
+`storage = Spilled(dir)` to keep the weights on disk instead.
 """
 function plan_regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
-    lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30)
+    missingpolicy::AbstractMissingPolicy = Weighted(0.5), missingval = nothing,
+    lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30,
+    storage::Union{Nothing,AbstractBlockStorage} = nothing)
     dst_space = _asspace(to, "to")
     src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
     _checkchunks(chunks)
@@ -146,10 +169,13 @@ function plan_regrid(data; to, from = nothing,
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *
         "is on $(manifold(src_space)) and the destination on $(manifold(dst_space))"))
-    lazy && return ChunkedPlan(method, missingpolicy, dst_space, src_space,
-        PerChunk(), Int(budget), chunks)
+    lazy && return ChunkedPlan(method, missingpolicy, dst_space, src_space;
+        storage, budget, chunks, missingval)
+    storage === nothing || throw(ArgumentError(
+        "`storage` is a lazy-path knob: an eager plan holds one whole-domain " *
+        "block and has nothing to store it in. Pass `lazy = true` to use it."))
     return DirectPlan(method, missingpolicy, dst_space, src_space,
-        wholeblock(method, dst_space, src_space))
+        wholeblock(method, dst_space, src_space), missingval)
 end
 
 """

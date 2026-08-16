@@ -1,5 +1,7 @@
 # `Conservative()` weight construction. Owned by task T3.
 
+import ConservativeRegridding as CR
+
 """
     DensifiedCellSpace(lon, lat, n)
 
@@ -162,6 +164,62 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         # DGGS cells wrong.
         as_destination = conservative_block(dense, 1:1, tiling, tiling_inds)
         @test_broken isapprox(sum(as_destination.weights), exact; rtol = 1e-6)
+    end
+
+    @testset "the block is the assembled matrix, entry for entry" begin
+        # `build_weights!` reads `ConservativeRegridding`'s assembled block
+        # straight into the `WeightCOO`, in the order the entries are stored,
+        # rather than through a `findnz` triple. That is a memory economy only,
+        # and this is what says so: the block a whole-domain build produces is
+        # the matrix the descent assembled, with no tolerance.
+        coarse = ToyLonLatSpace(4, 2)
+        fine = ToyLonLatSpace(8, 4)
+        dst_inds, src_inds = cellindices(coarse, 1), cellindices(fine, 1)
+        block = conservative_block(coarse, dst_inds, fine, src_inds)
+        areas = CR.intersection_areas(manifold(coarse), GOCore.False(),
+            GR.subtree(coarse, dst_inds), GR.subtree(fine, src_inds); progress = false)
+        @test block.weights == areas
+        # And the denominator is the same sum over the same entries.
+        @test block.denom == vec(sum(areas; dims = 2))
+    end
+
+    @testset "banded chunk extents" begin
+        # A toy space chunked into full-longitude rows — the shape a global grid
+        # is normally stored in. A cap through the chunk's cell corners loses
+        # convexity past π/2 and degenerates to the whole sphere, at which point
+        # every band appears to touch every other; the band cap does not.
+        banded = ToyLonLatSpace(16, 8; chunks = (16, 2))
+        caps = chunktree(banded).caps
+        @test all(cap.radius < Float64(pi) for cap in caps)
+
+        # Covering, against the arcs and not only the corners.
+        function samples(space, i, nseg = 6)
+            ring = collect(GI.getpoint(GI.getexterior(getcell(space, i))))
+            out = USPoint[]
+            for k in 1:(length(ring)-1)
+                p, q = ring[k], ring[k+1]
+                for t in range(0, 1; length = nseg + 1)
+                    v = (1 - t) .* Tuple(p) .+ t .* Tuple(q)
+                    n = sqrt(sum(v .^ 2))
+                    n > 0 && push!(out, USPoint(v[1] / n, v[2] / n, v[3] / n))
+                end
+            end
+            return out
+        end
+        @test all(US._contains(caps[c], p)
+                  for c in 1:nchunks(banded)
+                  for i in cellindices(banded, c)
+                  for p in samples(banded, i))
+
+        # The southern band does not reach the north pole, which is exactly what
+        # a whole-sphere extent did.
+        @test !US._contains(caps[1], toy_point(0.0, 90.0))
+        @test !US._contains(caps[4], toy_point(0.0, -90.0))
+
+        # A regional space's chunks never degenerate, and keep the cap they had.
+        region = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
+            chunks = (4, 2))
+        @test all(c -> c.radius < Float64(pi) / 2, chunktree(region).caps)
     end
 
     @testset "disjoint chunks and mismatched manifolds" begin

@@ -6,9 +6,44 @@
 # `DiskArrays.haschunks` is total, so this is total.
 isdiskbacked(data) = DiskArrays.haschunks(data) isa DiskArrays.Chunked
 
+# The metadata keys a nodata sentinel is written under, in the order they are
+# consulted. `_FillValue` and `missing_value` are the CF spellings a NetCDF or
+# GRIB reader carries through; `missingval` is what a reader that has already
+# normalized them says.
+const MISSINGVAL_KEYS = ("missingval", "_FillValue", "missing_value")
+
+"""
+    sourcemissingval(data) -> value or nothing
+
+The nodata sentinel `data` declares of itself, or `nothing` when it declares
+none. This is the default of [`regrid`](@ref)'s `missingval`, so a source that
+carries its sentinel is handled without the caller repeating it; an explicit
+`missingval =` always wins.
+
+A `DimensionalData` array is asked for its metadata and answers with the first
+of `$(MISSINGVAL_KEYS)` it carries, under a `String` or a `Symbol` key.
+Anything else answers `nothing`.
+
+The extension point for a reader whose sentinel lives somewhere else — a struct
+field rather than metadata, as `Rasters.missingval` does — is a method of this
+function on that reader's array type.
+"""
+sourcemissingval(::Any) = nothing
+
+function sourcemissingval(data::DD.AbstractDimArray)
+    md = DD.metadata(data)
+    md isa DD.NoMetadata && return nothing
+    for k in MISSINGVAL_KEYS
+        haskey(md, k) && return md[k]
+        s = Symbol(k)
+        haskey(md, s) && return md[s]
+    end
+    return nothing
+end
+
 """
     regrid(data; to, from = nothing, method = Conservative(),
-           missingpolicy = Weighted(0.5), missingval = nothing,
+           missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
            lazy = isdiskbacked(data), chunks = nothing, budget = 2^30,
            storage = nothing)
     regrid(data, plan::AbstractRegriddingPlan)
@@ -41,9 +76,12 @@ Values are floating point, and destinations blanked by [`Weighted`](@ref) are
   - `missingpolicy`: [`Weighted`](@ref) — coverage-normalized mean, blanking
     destinations below the threshold — or [`Extensive`](@ref) — raw sums.
   - `missingval`: the source's nodata sentinel, invalid on top of `missing` and
-    NaN, which are always invalid. `nothing` means the source declares none.
-    Apply-time only: weights stay geometry-blind, and a sentinel field gives
-    exactly what the same field with its sentinels replaced by NaN gives.
+    NaN, which are always invalid. `nothing` means there is none; the default
+    is whatever the source declares of itself ([`sourcemissingval`](@ref)), so a
+    reader that carries its sentinel needs no keyword here, and passing one
+    overrides what it says. Apply-time only: weights stay geometry-blind, and a
+    sentinel field gives exactly what the same field with its sentinels replaced
+    by NaN gives.
   - `lazy`: return a [`LazyRegridArray`](@ref) instead of a materialized array.
     Defaults to whether `data` is chunked storage. Constructing one reads no
     source data at all.
@@ -70,7 +108,8 @@ function regrid end
 
 function regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5), missingval = nothing,
+    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
+    missingval = sourcemissingval(data),
     lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30,
     storage::Union{Nothing,AbstractBlockStorage} = nothing)
     plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
@@ -91,7 +130,7 @@ regrid(data, plan::AbstractRegriddingPlan) =
 
 """
     regrid!(dest, data; to, from = nothing, method = Conservative(),
-            missingpolicy = Weighted(0.5), missingval = nothing,
+            missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
             lazy = isdiskbacked(data), chunks = nothing, budget = 2^30,
             storage = nothing)
     regrid!(dest, data, plan::AbstractRegriddingPlan)
@@ -107,7 +146,8 @@ function regrid! end
 
 function regrid!(dest, data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5), missingval = nothing,
+    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
+    missingval = sourcemissingval(data),
     lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30,
     storage::Union{Nothing,AbstractBlockStorage} = nothing)
     plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
@@ -131,7 +171,7 @@ regrid!(dest, data, plan::AbstractRegriddingPlan) =
 
 """
     plan_regrid(data; to, from = nothing, method = Conservative(),
-                missingpolicy = Weighted(0.5), missingval = nothing,
+                missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
                 lazy = isdiskbacked(data), chunks = nothing, budget = 2^30,
                 storage = nothing) -> AbstractRegriddingPlan
 
@@ -159,7 +199,8 @@ has been touched. Pass `storage = PerChunk()` for the unbounded cache, or
 """
 function plan_regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5), missingval = nothing,
+    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
+    missingval = sourcemissingval(data),
     lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30,
     storage::Union{Nothing,AbstractBlockStorage} = nothing)
     dst_space = _asspace(to, "to")

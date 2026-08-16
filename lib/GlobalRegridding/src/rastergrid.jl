@@ -594,6 +594,40 @@ function chunkbox(space::RasterGrid, chunk::Int)
     return (space.xchunks[cx], space.ychunks[cy])
 end
 
+"""
+    chunkposition(space::RasterGrid, cx::Integer, cy::Integer) -> Int
+
+The chunk number of the chunk lattice coordinates `(cx, cy)` —
+[`chunksubscript`](@ref) inverted.
+"""
+function chunkposition(space::RasterGrid, cx::Integer, cy::Integer)
+    1 <= cx <= length(space.xchunks) && 1 <= cy <= length(space.ychunks) ||
+        throw(BoundsError(space, (cx, cy)))
+    return space.xfast ? Int(cx) + (Int(cy) - 1) * length(space.xchunks) :
+           Int(cy) + (Int(cx) - 1) * length(space.ychunks)
+end
+
+# The chunk holding lattice index `k`, by binary search over ascending index
+# ranges that partition `1:n`. `searchsortedlast` over `first.(ranges)` would
+# allocate the key vector on every call.
+function _chunkofindex(ranges::Vector{UnitRange{Int}}, k::Int)
+    lo, hi = 1, length(ranges)
+    while lo < hi
+        mid = (lo + hi + 1) >> 1
+        first(ranges[mid]) <= k ? (lo = mid) : (hi = mid - 1)
+    end
+    return lo
+end
+
+# A raster chunk is an index rectangle of the lattice, so the owning chunk is
+# one binary search per axis — the cell's own subscript decides it, with no
+# `cellindices` vector built anywhere.
+function chunkat(space::RasterGrid, i::Integer)
+    ix, iy = cellsubscript(space, Int(i))
+    return chunkposition(space, _chunkofindex(space.xchunks, ix),
+        _chunkofindex(space.ychunks, iy))
+end
+
 function cellindices(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
     nx, ny = _nx(space), _ny(space)
@@ -788,13 +822,46 @@ function _bowedband(ylo::Float64, yhi::Float64, dxmax::Float64)
     return (lo, hi)
 end
 
+# The four corners of an index rectangle, read off the chart's edge tables:
+# a box corner is a cell corner, so it is a pair of edge-vector entries.
+@inline _boxcorners(t::LonLatEdgeTables, ix0::Int, ix1::Int, iy0::Int, iy1::Int) =
+    (_tablecorner(t, ix0, iy0), _tablecorner(t, ix1 + 1, iy0),
+        _tablecorner(t, ix1 + 1, iy1 + 1), _tablecorner(t, ix0, iy1 + 1))
+
+"""
+    _sampledcap(tables, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi) -> SphericalCap
+
+The boundary-sampled half of [`_rectcap`](@ref) — [`_boxcap`](@ref), or its
+four-corner special case where the chart licenses one.
+
+`_boxcap` covers because the point of a box farthest from any centre is a
+corner, so its `4(nsamp + 1)` samples buy a better *centre* and not a safer
+bound. Under [`LonLatToSphere`](@ref) the centre through the four corners alone
+is already on the box's mid-meridian, where that monotonicity is exact — as
+long as the box is under 180° wide, past which the corners average toward the
+meridian *opposite* the box and the argument inverts. A box that wide, and any
+chart with no [`chartedgetables`](@ref), keeps the sampled construction.
+
+This is the innermost function of a plan build — one node extent per visited
+node pair, hundreds of thousands of them — and the corner form reads its four
+points out of the tables instead of evaluating the chart sixteen times.
+"""
+@inline _sampledcap(::Nothing, space::RasterGrid, ix0::Int, ix1::Int, iy0::Int,
+    iy1::Int, xlo, xhi, ylo, yhi) = _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
+
+@inline function _sampledcap(t::LonLatEdgeTables, space::RasterGrid, ix0::Int, ix1::Int,
+    iy0::Int, iy1::Int, xlo, xhi, ylo, yhi)
+    xhi - xlo < 180.0 || return _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
+    return _cornercap(_boxcorners(t, ix0, ix1, iy0, iy1))
+end
+
 """
     _rectcap(space, ix0, ix1, iy0, iy1) -> SphericalCap
 
 The extent of an index rectangle — a tree node, a chunk.
 
 Both constructions cover, so the tighter one is taken: sampling the box boundary
-([`_boxcap`](@ref)) wins on a compact box, and the chart's own bound
+([`_sampledcap`](@ref)) wins on a compact box, and the chart's own bound
 ([`_widecap`](@ref)) wins on one wide enough that a cap through its boundary has
 to reach around the sphere — a full-longitude band above all, which is how a
 global raster is normally chunked and which `_boxcap` alone answers with the
@@ -803,7 +870,7 @@ whole sphere.
 function _rectcap(space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
     xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
     ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
-    sampled = _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
+    sampled = _sampledcap(space.tables, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi)
     # A cap about a pole reaches at least to the near end of the box's latitude
     # span and the bow only widens that, while the mid-meridian cap is built on
     # the bowed box and so never beats a sampled cap that survived at all — a

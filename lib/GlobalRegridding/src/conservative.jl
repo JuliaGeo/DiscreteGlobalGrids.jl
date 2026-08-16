@@ -244,6 +244,11 @@ rather than a silent reprojection.
 
 Geometry only — no data, no IO, no missing-value logic — and no state outside
 the call, so concurrent builds of different chunk pairs are independent.
+
+One block is built on every thread of the session: the dual-tree descent and
+the clip both run in parallel, so a whole-domain plan — which is one block — is
+parallel too. The weights do not depend on the thread count; see
+`_intersectionareas`.
 """
 function build_weights!(coo::WeightCOO, ::Conservative,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
@@ -261,14 +266,52 @@ function build_weights!(coo::WeightCOO, ::Conservative,
 
     op = BlockAreaOperator(ConservativeRegridding.DefaultIntersectionOperator(m),
         indexmap(dst_inds), indexmap(src_inds))
-    # Serial within a block: the executor's parallelism is over chunk pairs,
-    # and CR's threaded dual query reduces over its task list without an
-    # initial value, so a chunk pair whose cells turn out not to meet errors.
-    block = ConservativeRegridding.intersection_areas(
-        m, GOCore.False(), subtree(dst_space, dst_inds), subtree(src_space, src_inds);
-        intersection_operator = op)
+    block = _intersectionareas(m, subtree(dst_space, dst_inds),
+        subtree(src_space, src_inds), op)
 
     return _fillcoo!(coo, block)
+end
+
+# The empty-reduction `ArgumentError` `Base.reduce` raises with no `init`, which
+# is how CR's threaded dual query reports a chunk pair whose cells do not meet.
+# Matched on the message because that is what distinguishes it: the type alone
+# is `ArgumentError`, which a genuine argument fault also is.
+_isemptyreduction(err) = err isa ArgumentError &&
+                         occursin("reducing over an empty collection", err.msg)
+
+"""
+    _intersectionareas(manifold, dst_tree, src_tree, op) -> SparseMatrixCSC
+
+`ConservativeRegridding.intersection_areas` over the two trees, on every thread
+of the session.
+
+Threading is inside one block build — the dual-tree descent that finds the
+candidate pairs and the clip that measures them — so a whole-domain plan, which
+is one block, is threaded too. The candidate pairs come back in descent order
+either way and no pair is emitted twice, so the assembled matrix is the serial
+matrix bit for bit.
+
+**The empty pair.** CR's threaded dual query ends in `reduce(vcat, map(fetch,
+tasks))` with no `init`, and `tasks` is empty exactly when no pair of nodes
+survives the descent — two chunks that do not meet, which is an answer here and
+not a fault. That reduction's `ArgumentError` is caught and the pair rebuilt
+serially. The classification is a routing hint and never a correctness
+argument: the serial rebuild computes the same block from the same trees, so a
+misread exception costs one cheap recomputation, and anything the threaded run
+failed on for another reason is raised again by the serial one. It is cheap
+because an empty reduction means no descent work was done.
+"""
+function _intersectionareas(m::GOCore.Manifold, dst_tree, src_tree, op)
+    Threads.nthreads() > 1 || return ConservativeRegridding.intersection_areas(
+        m, GOCore.False(), dst_tree, src_tree; intersection_operator = op)
+    try
+        return ConservativeRegridding.intersection_areas(
+            m, GOCore.True(), dst_tree, src_tree; intersection_operator = op)
+    catch err
+        _isemptyreduction(err) || rethrow()
+        return ConservativeRegridding.intersection_areas(
+            m, GOCore.False(), dst_tree, src_tree; intersection_operator = op)
+    end
 end
 
 # CR's assembled block, read straight into the `WeightCOO`.

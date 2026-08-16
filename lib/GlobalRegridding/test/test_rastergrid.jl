@@ -278,6 +278,26 @@ end
         @test nchunks(rg_forward()) == 1
         @test cellindices(rg_forward(), 1) == 1:32
 
+        # `chunkat` inverts `cellindices` — every cell of every chunk is placed
+        # back in the chunk it came from, on all three chunkings, so a lattice
+        # arithmetic slip cannot hide behind a symmetric case. It answers
+        # without building a `cellindices` vector, so the disk-backed parent is
+        # still untouched.
+        for s in (space, rows, cols, rg_forward())
+            @test all(GR.chunkat(s, i) == c
+                      for c in 1:nchunks(s) for i in cellindices(s, c))
+        end
+        @test parent_x.reads == 0
+        @test_throws BoundsError GR.chunkat(space, 0)
+        @test_throws BoundsError GR.chunkat(space, ncells(space) + 1)
+
+        # The point form is `cellat` composed with it, and answers nothing
+        # exactly where `cellat` does.
+        @test GR.chunkat(space, cellcentroid(space, 12)) == GR.chunkat(space, 12)
+        patch = RasterGrid(DD.DimArray(zeros(4, 2),
+            (DD.X(0.0:10.0:30.0), DD.Y(0.0:10.0:10.0))))
+        @test GR.chunkat(patch, GR.LonLatToSphere()(0.0, -80.0)) === nothing
+
         # Every chunk extent covers the geometry of its own cells. Discovery
         # prunes on these, so a cap that does not cover silently drops pairs.
         # Checked on a regional raster, where the caps are tight enough that the

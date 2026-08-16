@@ -71,12 +71,32 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
         @test GR.manifold(space) == GR.manifold(SRC)
         i = DGG.ncells(space) ÷ 2
         @test GR.cellat(space, GR.cellcentroid(space, i)) == i
+        # `chunkat` inverts `cellindices`: every cell is placed back in the
+        # chunk it came from, by binary search over the windows rather than by
+        # a scan. A subset's windows are the ones that can disagree, since they
+        # are the ancestor's descendant range intersected with the grid.
+        @test all(GR.chunkat(space, j) == c
+                  for c in 1:GR.nchunks(space) for j in DGG.cellindices(space, c))
+        # The point form is `cellat` composed with it, and answers nothing
+        # outside the space's coverage exactly as `cellat` does.
+        @test GR.chunkat(space, GR.cellcentroid(space, i)) == GR.chunkat(space, i)
+        @test_throws BoundsError GR.chunkat(space, DGG.ncells(space) + 1)
     end
     # No sorted subtrees, so no ancestor level to chunk by, and one chunk holds
     # everything rather than the space refusing to exist.
     a5 = DGG.DGGSpace(DGG.levelgrid(DGG.A5System(), 2))
     @test GR.nchunks(a5) == 1
     @test DGG.cellindices(a5, 1) == 1:DGG.ncells(a5)
+
+    # A system that answers the level-grid contract with a grid type of its own
+    # rather than with `ncells(sys, l)` — the escape hatch `AbstractGrid`
+    # documents, and the one shipped system that takes it. Sizing a chunk level
+    # and area-matching a level both have to go through `levelgrid` to see it.
+    auth = DGG.AuthalicSystem(DGG.IGeo7System())
+    authspace = DGG.DGGSpace(DGG.levelgrid(auth, 3); chunkcells = 32)
+    @test GR.nchunks(authspace) > 1
+    @test chunkcells(authspace) == 1:DGG.ncells(authspace)
+    @test DGG.arealevel(auth, SRC) == DGG.arealevel(DGG.IGeo7System(), SRC)
 end
 
 @testset "every spelling of `to` names the same cells" begin
@@ -124,6 +144,25 @@ end
         total = sum(GR.cellarea(SRC, i) * slice[i] for i in 1:GR.ncells(SRC))
         @test sum(view(parent(out), :, m)) ≈ total rtol = 1e-10
     end
+end
+
+@testset "a source's declared sentinel reaches the plan" begin
+    # `to = ` resolution goes through a `plan_regrid` method of this package's
+    # own, which forwards the rest of the keywords. A sentinel the source
+    # declares of itself is one of the defaults that forwarding must not
+    # swallow, so the same field with the sentinel spelled NaN is the oracle.
+    holed = collect(parent(RASTER))
+    holed[3, 4, :] .= -9999.0
+    nanned = replace(holed, -9999.0 => NaN)
+    ds = DD.dims(RASTER)
+    declared = DD.DimArray(holed, ds; metadata = DD.Metadata(Dict("_FillValue" => -9999.0)))
+
+    @test GR.sourcemissingval(declared) == -9999.0
+    @test DGG.plan_regrid(declared; to = GRID).missingval == -9999.0
+    @test isequal(parent(DGG.regrid(declared; to = GRID)),
+        parent(DGG.regrid(DD.DimArray(nanned, ds); to = GRID)))
+    # And the caller still overrides what the source says.
+    @test DGG.plan_regrid(declared; to = GRID, missingval = nothing).missingval === nothing
 end
 
 @testset "a plan, and the lazy array, give the bare answer" begin

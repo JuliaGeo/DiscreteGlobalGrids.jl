@@ -26,7 +26,7 @@
 
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
-import ConservativeRegridding as CR
+import GlobalRegridding as GR
 import GeometryOps as GO
 import GeoInterface as GI
 
@@ -187,24 +187,21 @@ check("memory is the windows, not the cells",
 note("the materialised level-12 vector would be " *
      "$(round(Int, 343 * nleaf * sizeof(eltype(lk)) / 1024)) KiB")
 
-# The regridder, on the cube's own axis. A ratio of two fields through the same
-# matrix is a weighted mean whatever the row sums are, so this checks alignment
-# rather than conservativity — which is the property the axis is responsible
-# for.
-const TO_SPHERE = GO.UnitSpherical.UnitSphereFromGeographic()
-const DST = [TO_SPHERE((x, y)) for x in range(6.0, 10.5; length=10),
-             y in range(45.8, 47.8; length=6)]
-regridder = CR.Regridder(GO.Spherical(), DST, DGG.PartialGrid(lk))
+# Regridding off the cube's own axis. `DGGSpace` is how a grid names itself as a
+# regridding SOURCE, and a lon/lat destination is a `RasterGrid` over two axes of
+# cell centres — here a 9x5 box on the region. `Weighted(0)` divides each
+# destination by the source area it actually saw, so the answer is a mean
+# whatever the coverage was: this checks alignment rather than conservativity,
+# which is the property the axis is responsible for.
+const DST = GR.RasterGrid(DD.X(DD.Sampled(range(6.25, 10.25; length=9))),
+    DD.Y(DD.Sampled(range(46.0, 47.6; length=5))))
 elevation = [40.0 + 20 * sinpi(k / nleaf) for k in 1:nleaf]
-mean_field = zeros(45)
-coverage = zeros(45)
-CR.regrid!(mean_field, regridder, elevation)
-CR.regrid!(coverage, regridder, ones(nleaf))
-zonal = mean_field ./ coverage
+zonal = DGG.regrid(elevation; to=DST, from=DGG.DGGSpace(DGG.PartialGrid(lk)),
+    missingpolicy=GR.Weighted(0))
 check("regridding the cube's data through its own axis",
     all(isfinite, zonal) && minimum(zonal) >= minimum(elevation) &&
     maximum(zonal) <= maximum(elevation);
-    detail="45 destination cells, means in " *
+    detail="$(length(zonal)) destination cells, means in " *
            "$(round(minimum(zonal); digits=2))..$(round(maximum(zonal); digits=2))")
 
 # --------------------------------------------------------------------------

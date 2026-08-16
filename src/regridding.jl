@@ -91,13 +91,19 @@ Base.show(io::IO, space::DGGSpace) =
     print(io, "DGGSpace(", ncells(space.grid), " cells, ", length(space.ranges),
         _ischunked(space) ? " chunks at level $(space.chunklevel))" : " chunk)")
 
+# The size of a complete level, asked of the level grid rather than of the
+# system: `ncells(sys, l)` is required only of a system that lets
+# `HierarchicalLevelGrid` describe its levels, and one with a grid type of its
+# own — `AuthalicSystem` — answers there instead. `levelgrid` is O(1).
+_levelcells(sys::AbstractHierarchicalGridSystem, l::Integer) = ncells(levelgrid(sys, l))
+
 # The ancestor level whose subtrees hold about `target` of this grid's cells
 # each. Density is the grid's own, so a sparse subset chunks coarser than the
 # complete level it is drawn from rather than into slivers.
 function _chunklevel(sys::AbstractHierarchicalGridSystem, lvl::Int, n::Int, target::Int)
     best, bestscore = lvl, Inf
     for a in first(levels(sys)):lvl
-        score = abs(log(n / ncells(sys, a)) - log(target))
+        score = abs(log(n / _levelcells(sys, a)) - log(target))
         score < bestscore && ((best, bestscore) = (a, score))
     end
     return best
@@ -108,7 +114,7 @@ end
 # every cell, which is the single-chunk fallback's job to absorb.
 function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
         lvl::Int, a::Int)
-    complete = ncells(grid) == ncells(sys, lvl)
+    complete = ncells(grid) == _levelcells(sys, lvl)
     (complete || grid isa PartialGrid) || return nothing
     ancestors = levelgrid(sys, a)
     ID = cellindextype(sys)
@@ -147,6 +153,18 @@ GOCore.manifold(space::DGGSpace) = GOCore.best_manifold(space.grid)
 GR.nchunks(space::DGGSpace) = length(space.ranges)
 
 cellindices(space::DGGSpace, chunk::Int) = space.ranges[chunk]
+
+# A chunk is one ancestor cell's window of positions and the windows ascend, so
+# the chunk holding a position is one binary search over their starts. The
+# hierarchy is not walked: positions already carry the ancestry.
+function GR.chunkat(space::DGGSpace, i::Integer)
+    p = Int(i)
+    1 <= p <= ncells(space) || throw(BoundsError(space, p))
+    k = searchsortedlast(space.starts, p)
+    (1 <= k <= length(space.ranges) && p in space.ranges[k]) || throw(ArgumentError(
+        "cell position $p belongs to no chunk of $space"))
+    return k
+end
 
 GR.cellcentroid(space::DGGSpace, i::Int) =
     cell_centroid(space.grid, cellindex(space.grid, i))
@@ -285,7 +303,7 @@ function arealevel(sys::AbstractHierarchicalGridSystem, space::GR.RegridSpace;
     target = _mediancellarea(space, Int(samples))
     best, bestscore = first(levels(sys)), Inf
     for l in levels(sys)
-        area = 4 * pi / ncells(sys, l)
+        area = 4 * pi / _levelcells(sys, l)
         score = abs(log(area) - log(target))
         score < bestscore && ((best, bestscore) = (l, score))
         # Cell areas shrink with depth, so the first level at or below the

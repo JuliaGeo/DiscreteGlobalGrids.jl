@@ -122,6 +122,46 @@ themselves; see [`build_weights!`](@ref).
 function cellindices end
 
 """
+    chunkat(space::RegridSpace, i::Integer) -> Int
+    chunkat(space::RegridSpace, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
+
+The chunk that owns cell position `i`, or the chunk that owns the cell
+containing `p`.
+
+The inverse of [`cellindices`](@ref), and the accessor anything reading one
+destination chunk needs: without it a caller that knows *where* it wants to read
+must either scan the chunks or reach into the space's own fields.
+
+Chunks partition the cell positions, so the position form always answers, and it
+answers for every space — the fallback here scans `cellindices` of each chunk in
+turn. A space whose chunking has structure — a lattice of index rectangles, a
+run of positions per ancestor cell — should answer in `O(1)` or
+`O(log nchunks)` and define its own method.
+
+The point form is [`cellat`](@ref) composed with the position form, so it needs
+`cellat` of the space and is `nothing` exactly where `cellat` is: a point
+outside the space's coverage lies in no chunk.
+"""
+function chunkat end
+
+function chunkat(space::RegridSpace, i::Integer)
+    p = Int(i)
+    1 <= p <= ncells(space) || throw(BoundsError(space, p))
+    for c in 1:nchunks(space)
+        p in cellindices(space, c) && return c
+    end
+    throw(ArgumentError(
+        "cell position $p of $(typeof(space)) belongs to no chunk; chunks must " *
+        "partition 1:ncells(space)"))
+end
+
+function chunkat(space::RegridSpace, p::US.UnitSphericalPoint)
+    i = cellat(space, p)
+    i === nothing && return nothing
+    return chunkat(space, i)
+end
+
+"""
     manifold(space::RegridSpace) -> GeometryOpsCore.Manifold
 
 The manifold `space`'s geometry lives on, which for every space here is a

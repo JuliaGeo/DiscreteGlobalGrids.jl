@@ -1,6 +1,8 @@
 # `Conservative()` weight construction. Owned by task T3.
 
 import ConservativeRegridding as CR
+import DimensionalData as DD
+import GeometryOps: SpatialTreeInterface as STI
 
 """
     DensifiedCellSpace(lon, lat, n)
@@ -220,6 +222,59 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         region = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
             chunks = (4, 2))
         @test all(c -> c.radius < Float64(pi) / 2, chunktree(region).caps)
+    end
+
+    @testset "threaded and serial builds agree bit for bit" begin
+        # One block is built on every thread of the session, so the answer must
+        # not depend on how many there are. Candidate pairs come back in descent
+        # order either way and no pair is emitted twice, which is what makes the
+        # assembled matrix — and the denominators `_fillcoo!` accumulates from
+        # it, column by column — the same `Float64`s.
+        #
+        # The reference is `False()` through the same operator and the same
+        # trees, so the only difference between the two sides is the threading.
+        # Run under `-t1` this compares serial with serial and still passes; it
+        # is the multi-threaded run that can fail.
+        dst = RasterGrid(DD.DimArray(zeros(30, 15), (DD.X(range(-174.0, 174.0; length = 30)),
+            DD.Y(range(-84.0, 84.0; length = 15)))))
+        src = RasterGrid(DD.DimArray(zeros(48, 24), (DD.X(range(-176.25, 176.25; length = 48)),
+            DD.Y(range(-86.25, 86.25; length = 24)))))
+        ndst, nsrc = ncells(dst), ncells(src)
+        block = conservative_block(dst, 1:ndst, src, 1:nsrc)
+
+        m = manifold(dst)
+        op = GR.BlockAreaOperator(CR.DefaultIntersectionOperator(m),
+            GR.indexmap(1:ndst), GR.indexmap(1:nsrc))
+        serial = CR.intersection_areas(m, GOCore.False(),
+            GR.subtree(dst, 1:ndst), GR.subtree(src, 1:nsrc);
+            intersection_operator = op, progress = false)
+        reference = WeightBlock(GR._fillcoo!(WeightCOO(ndst), serial), ndst, nsrc)
+
+        @test GR.SparseArrays.nnz(block.weights) > 2000
+        @test block.weights.colptr == reference.weights.colptr
+        @test block.weights.rowval == reference.weights.rowval
+        @test all(block.weights.nzval .=== reference.weights.nzval)
+        @test all(block.denom .=== reference.denom)
+    end
+
+    @testset "a pair whose descent finds nothing" begin
+        # `ConservativeRegridding`'s threaded dual query reduces over its task
+        # list with no initial value, so a pair whose descent spawns no task at
+        # all is where it errors rather than answering. A tree whose root is
+        # already a leaf spawns one task unconditionally and hides the case, so
+        # both sides here are deep enough to have children — without that
+        # assertion this test passes against a build that cannot survive an
+        # empty pair.
+        north = RasterGrid(DD.DimArray(zeros(8, 8),
+            (DD.X(range(-3.5, 3.5; length = 8)), DD.Y(range(66.5, 73.5; length = 8)))))
+        south = RasterGrid(DD.DimArray(zeros(8, 8),
+            (DD.X(range(-3.5, 3.5; length = 8)), DD.Y(range(-73.5, -66.5; length = 8)))))
+        @test !STI.isleaf(celltree(north))
+        @test !STI.isleaf(celltree(south))
+
+        block = conservative_block(north, 1:64, south, 1:64)
+        @test GR.SparseArrays.nnz(block.weights) == 0
+        @test block.denom == zeros(64)
     end
 
     @testset "disjoint chunks and mismatched manifolds" begin

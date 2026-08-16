@@ -35,6 +35,15 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
         patch = ToyLonLatSpace(4, 2; lat = (0.0, 40.0))
         @test cellat(patch, toy_point(0, -10)) === nothing
 
+        # `chunkat` inverts `cellindices` for a space that defines no method of
+        # its own — the fallback scans the chunks, and this is the space that
+        # exercises it. The point form is `cellat` composed with it and is
+        # `nothing` exactly where `cellat` is.
+        @test all(GR.chunkat(space, i) == c
+                  for c in 1:nchunks(space) for i in cellindices(space, c))
+        @test GR.chunkat(space, cellcentroid(space, 5)) == GR.chunkat(space, 5)
+        @test GR.chunkat(patch, toy_point(0, -10)) === nothing
+
         # A global space is exactly the sphere, by its analytic areas and by its
         # polygons, which tile without gap or overlap.
         global_space = ToyLonLatSpace(8, 4)

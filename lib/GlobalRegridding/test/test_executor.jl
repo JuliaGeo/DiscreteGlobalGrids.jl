@@ -139,6 +139,34 @@ end
             method = ToyDiagonalMethod(), missingpolicy = Extensive())
         @test plain[holes] == [-9999.0, -9999.0]
 
+        # A source that declares its own sentinel needs no keyword: the default
+        # of `missingval` is what the source says, so a reader that carries
+        # nodata in its metadata is handled the same as one whose caller
+        # repeats it. Both CF spellings and the normalized one are read, under
+        # a String key or a Symbol one; a source that declares nothing answers
+        # nothing, which is what keeps the sentinel-as-data case above honest.
+        withmeta(key) = DD.DimArray(sentinel, (DD.X(1:6), DD.Y(1:3));
+            metadata = DD.Metadata(Dict(key => -9999.0)))
+        @test all(GR.sourcemissingval(withmeta(k)) == -9999.0
+                  for k in ("missingval", "_FillValue", "missing_value",
+            :missingval, :_FillValue, :missing_value))
+        @test GR.sourcemissingval(sentinel) === nothing
+        @test GR.sourcemissingval(DD.DimArray(sentinel, (DD.X(1:6), DD.Y(1:3)))) === nothing
+        @test GR.sourcemissingval(withmeta("units")) === nothing
+
+        declared = withmeta("_FillValue")
+        flat(x) = vec(x isa DD.AbstractDimArray ? parent(x) : x)
+        dkw = (; to = space, from = space, method = ToyDiagonalMethod(; scale = 3.0),
+            missingpolicy = Extensive())
+        @test all(isequal.(flat(regrid(declared; dkw...)), flat(regrid(nanned; dkw...))))
+
+        # …and the caller still overrides it, back to the sentinel-as-data
+        # answer. Without this the default could be an unconditional read of the
+        # metadata and nothing would notice.
+        @test flat(regrid(declared; to = space, from = space,
+            method = ToyDiagonalMethod(), missingpolicy = Extensive(),
+            missingval = nothing)) == plain
+
         # An integer field cannot hold NaN or `missing`, so a sentinel is the
         # only way it can carry nodata at all: the element-type shortcut that
         # skips the validity scan must not fire when one is declared.

@@ -213,13 +213,15 @@ them and `docs/src/all_dggs.md` draws every system.
 `CopernicusDEMSystem` is the odd row: it is the Copernicus DEM raster lattice —
 1°×1° tiles over pixel-is-point rasters whose longitude spacing steps down at
 latitude 50/60/70/80/85 — rather than a tessellation designed to be a DGGS, so
-it is **not** in `systems()`, and its `neighbors` is a fast path only where the
-lattice is regular: a pixel interior to its tile is index arithmetic, and every
-other cell — tile edges, band boundaries, the pole rows — is the generic
-fallback's. It is here because it is the *source* side of a DEM-to-DGGS
-regrid: `PartialGrid(CopernicusDEMSystem(90), tile, 1)` is one AWS COG tile as
-an ordinary `AbstractGrid`, with no `CellBasedGrid` adapter and no corner
-matrix. `examples/copernicus_dem.jl` moves one real tile onto IGEO7 and HEALPix
+it is **not** in `systems()`. Its `neighbors` and `ring` are closed form at
+every cell of both levels all the same — tile interiors, tile edges and
+corners, the antimeridian, the band boundaries where two rows of unequal column
+count meet, and the ±90 pole rows — decided in exact integer arithmetic on the
+lattice rather than by matching corners within a tolerance, so nothing here
+falls through to the generic walk. It is here because it is the *source* side
+of a DEM-to-DGGS regrid: `PartialGrid(CopernicusDEMSystem(90), tile, 1)` is one
+AWS COG tile as an ordinary `AbstractGrid`, with no `CellBasedGrid` adapter and
+no corner matrix. `examples/copernicus_dem.jl` moves one real tile onto IGEO7 and HEALPix
 and checks every conservation law the move owes.
 
 Native layers: H3 calls libh3 through `H3_jll`; every other system is pure Julia.
@@ -229,11 +231,10 @@ ISEA4R are closed-form charts with no external dependency.
 
 No system defines a grid type. All seven return `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths to `HierarchicalLevelGrid{TheSystem}`:
-`cellat`, `neighbors`, `ring` and `cell_area` for the six `systems()` entries,
-and the same minus `ring` for `CopernicusDEMSystem`. Among the six,
-`subtree_border` is an `O(rim)` automaton on every one but A5, which walks the
-whole subtree; `subtree_interior` shares that walk and emits the branches it
-prunes. Both are `collect` of a resumable `EdgeCellIterator` /
+`cellat`, `neighbors`, `ring` and `cell_area`, all four on all seven. Among the
+six in `systems()`, `subtree_border` is an `O(rim)` automaton on every one but
+A5, which walks the whole subtree; `subtree_interior` shares that walk and
+emits the branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
 `InnerCellIterator` in `O(depth)` memory. A5 is also the one system without
 `has_sorted_subtrees`, so `level_ranges` throws there and everything that would
 use it takes the selection branch instead.

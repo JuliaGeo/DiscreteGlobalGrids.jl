@@ -1442,7 +1442,8 @@ end
     # No run here skips anything the harness offers this system. `neighbors` and
     # `ring` are both closed form, so its whole neighbour and ring families run —
     # the shell, concatenation, tail-block and winding laws included. A default
-    # `Pkg.test()` reports 17 broken, none of them from this file.
+    # `Pkg.test()` reports 17 broken; none of them is a `@test_broken` written
+    # here.
     #
     # WHAT A DEFAULT RUN THEREFORE NEVER RUNS ON THE SHIPPED LATTICES, listed in
     # full rather than by the two laws that are easiest to defend: the
@@ -1521,6 +1522,43 @@ function oracle_lon(sys, level, row, k)
     nc = CD.ncols(sys, row)
     return level == 1 ? ((2k - 1)//(2nc), (2k + 1)//(2nc)) :
                         ((2nc * k - 1)//(2nc), (2nc * (k + 1) - 1)//(2nc))
+end
+
+# AND ITS REGISTRATION IS `cell_box`'s, checked rather than assumed. The formula
+# above writes the registration out a second time, so a wrong one in BOTH would
+# survive every comparison this oracle makes. These five cells tie it back to
+# `cell_box` — which the 79 measured geotransforms pin — one kind at a time: a
+# pixel interior to its tile, the pixel straddling +-180, a band-boundary tile,
+# and the two pole cells whose north and south edges are corrected. `cell_box`
+# reaches a longitude in three roundings where this is one exact rational, so a
+# PIXEL edge can land one Float64 step off; tiles and pole cells are bit-exact,
+# and one step is the whole tolerance. Latitudes are not in scope here: the
+# oracle decides adjacency on longitude and row index alone.
+@testset "the oracle is registered as cell_box is" begin
+    N = CD.lat_intervals(TWIN)
+    # Representable `Float64` steps apart, which is 0 for a bit-exact match.
+    ulps(a, b) = a == b ? 0 :
+        signbit(a) == signbit(b) ?
+            Int(abs(reinterpret(Int64, a) - reinterpret(Int64, b))) : typemax(Int)
+    bad = String[]
+    for (label, level, x) in
+            (("tile interior pixel", 1, CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, 0), 15, 15)),
+             ("antimeridian pixel", 1, CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, -180), 15, 0)),
+             ("band-boundary tile", 0, CD.tilecell(TWIN, 50, 0)),
+             ("lat_s = 89 sliver pixel", 1, CD.pixelcell(TWIN, CD.tilecell(TWIN, 89, 0), 0, 0)),
+             ("lat_s = -90 extension pixel", 1,
+              CD.pixelcell(TWIN, CD.tilecell(TWIN, -90, 0), N - 1, 0)))
+        r, q, _, i = CD.decode(TWIN, x)
+        K = level == 0 ? q : q * CD.ncols(TWIN, r) + i
+        a1, a2 = oracle_lon(TWIN, level, r, K)
+        west, east = CD.cell_box(TWIN, x)[1:2]
+        for (side, got, want) in (("west", west, Float64(-180 + a1)),
+                                  ("east", east, Float64(-180 + a2)))
+            d = ulps(got, want)
+            d <= 1 || note!(bad, "$label $side: $got is $d ulps from $want")
+        end
+    end
+    @test bad == String[]
 end
 
 # How two closed arcs of the 360-degree circle meet.
@@ -1748,8 +1786,12 @@ end
     # `ring` AND `neighbors` ARE ONE ANSWER, which is the interface's law and
     # not a convenience: ring 1 IS `neighbors(c, 1)`, the disc is the rings
     # concatenated outward, the shells are disjoint, and ring 2 is wound too.
+    # The level-1 pole cell is in the list because its ring 1 is the whole apex
+    # row, so ring 2 is the first shell here that the winding has to order with
+    # no lattice order to inherit.
     for (g, x) in ((g1, c),
                    (g1, CD.pixelcell(TWIN, CD.tilecell(TWIN, 50, 0), N - 1, 7)),
+                   (g1, CD.pixelcell(TWIN, CD.tilecell(TWIN, 89, 0), 0, 0)),
                    (g0, CD.tilecell(TWIN, 50, 0)),
                    (g0, CD.tilecell(TWIN, 89, 0)))
         for conn in (DGG.Vertex(), DGG.Edge())
@@ -1820,6 +1862,10 @@ end
     west_a, east_a = CD.cell_box(TWIN, tile)[1:2]
     west_b, east_b = CD.cell_box(TWIN, below)[1:2]
     @test min(east_a, east_b) - max(west_a, west_b) > 0.99
+    # THE WALKED COUNTS HERE AND IN THE TABLE BELOW PIN A WRONG ANSWER ON
+    # PURPOSE: teaching `adjacent_cells` that a shared segment counts would turn
+    # them into the closed form's 7, 7, 7 and 8, so red on a walked count after
+    # such a fix means DELETE THESE PINS, not that anything regressed.
     @test length(fallback_neighbors(g0, tile)) == 5
     @test length(DGG.neighbors(g0, tile)) == 7
     @test issubset(Set(fallback_neighbors(g0, tile)), Set(DGG.neighbors(g0, tile)))

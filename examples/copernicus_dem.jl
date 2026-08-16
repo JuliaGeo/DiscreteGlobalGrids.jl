@@ -19,14 +19,10 @@
 # reuses it if it is already there. It ends in PASS/FAIL assertions and exits non-zero
 # if any of them fail.
 #
-# Cost, ONE run on an M-series laptop with `-t auto` (8 threads): 38.4 s wall for
-# the whole tile — 960 000 pixels — onto BOTH destinations at MATCHED cell size,
-# of which 11.0 s and 8.3 s are the two `Regridder` builds and 4.5 s is the GLO-30
-# section. Machine-local figures. `scripts/bench_copdem_cursor.jl` reproduces the
-# two builds and puts them beside the generic cursor's, which is about an order of
-# magnitude slower. `COPDEM_ROWS=n` cuts the source to the northernmost `n` raster
-# rows if you want it faster; the default is the whole tile, because that is the
-# claim.
+# About 40 s wall on 8 threads for the whole tile onto both destinations at
+# matched cell size; `scripts/bench_copdem_cursor.jl` reproduces the two builds
+# beside the generic cursor's. `COPDEM_ROWS=n` cuts the source to the
+# northernmost `n` raster rows for a faster run.
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR
@@ -48,8 +44,7 @@ function check(name, ok; detail="")
 end
 note(text) = println("      ", text)
 
-# THE MANIFOLD, declared once: every grid in this package computes on the UNIT
-# sphere, so that is the manifold the regridder must work on. See
+# Every grid in this package computes on the UNIT sphere; see
 # `examples/regridding.jl` for why naming it is not optional.
 const MANIFOLD = GO.Spherical(; radius=1.0)
 const R_EARTH = 6_371_008.0                # for printing areas in m^2
@@ -77,9 +72,8 @@ const TIF = joinpath(tempdir(), "$STEM.tif")
 
 if !isfile(TIF)
     println("  downloading $URL")
-    # To a scratch name and then `mv`: a download interrupted halfway would
-    # otherwise leave a truncated file at the cached path, and every later run
-    # would read that instead of re-fetching. `mv` within one directory is atomic.
+    # To a scratch name and then an atomic `mv`, so an interrupted download
+    # cannot leave a truncated file at the cached path.
     part = "$TIF.part-$(getpid())"
     Downloads.download(URL, part)
     mv(part, TIF; force=true)
@@ -103,10 +97,8 @@ check("COG size is the band table's (ncols, nrows)",
     tifsize == (NCOLS, NROWS) == size(A);
     detail="$(tifsize) in a 1.5x band")
 
-# `cell_box` of the TILE is the raster's outer frame — a half pixel outside the
-# corner posts — which is exactly GDAL's origin convention for a pixel-is-point
-# COG. So the geotransform is not an independent number to look up: it is four
-# `cell_box` values and two divisions.
+# `cell_box` of the TILE is the raster's outer frame, which is exactly GDAL's
+# origin convention for a pixel-is-point COG.
 expected_gt = [TILE_W, (TILE_E - TILE_W) / NCOLS, 0.0,
     TILE_N, 0.0, -(TILE_N - TILE_S) / NROWS]
 gt_err = maximum(abs.(gt .- expected_gt))
@@ -192,11 +184,9 @@ for (name, dstsys) in DESTINATIONS
         lpad(round(mean_area * R_EARTH^2; digits=1), 18),
         lpad(round(pixel_area * R_EARTH^2; digits=1), 14),
         lpad(round(ratio; digits=4), 9))
-    # "Within a factor of 2" is not the right bar, and it is not reachable: a
-    # `k`-fold system's levels are `k` apart in area, so the closest one can be
-    # off by `sqrt(k)` — 2.65 for IGEO7's 7-fold refinement, 2 for HEALPix's
-    # 4-fold. What IS assertable is that no neighbouring level is closer, which
-    # is what `sqrt(k)` states and what a broken level search would violate.
+    # "Within a factor of 2" is not reachable: a `k`-fold system's closest
+    # level can be off by `sqrt(k)`. What IS assertable is that no
+    # neighbouring level is closer.
     k = DGG.ncells(dstsys, l + 1) / DGG.ncells(dstsys, l)
     check("$name level $l is the closest level to a pixel",
         1 / sqrt(k) <= ratio <= sqrt(k);
@@ -208,19 +198,11 @@ end
 # 4. The coverings, the regrids, and what they must conserve.
 # --------------------------------------------------------------------------
 
-# How many raster rows of the tile the matched-resolution regrids use. The
-# default is the whole tile, because "one AWS tile onto a DGGS at comparable
-# cell size" is the claim and a fraction of a tile does not make it.
-#
-# `levels(sys) == 0:1` leaves the generic cursor no interior structure to
-# descend — the tile node's children ARE its 960 000 pixels — so the dual tree
-# search would cost O(n_src x dst-depth). `src/systems/CopernicusDEM/cursor.jl`
-# gives the lattice a real tree instead, by recursively bisecting the pixel
-# rectangle, and `treeify` picks it up with nothing named here. The two build
-# times this file prints below are the payoff, for an intersection matrix
-# identical to the generic cursor's to the last bit;
-# `scripts/bench_copdem_cursor.jl` runs both routes side by side, and the fanout
-# table in `BlockStrategy`'s docstring is its output.
+# How many raster rows the regrids use; the default is the whole tile, because
+# that is the claim. `treeify` hands the chunk the block cursor from
+# `src/systems/CopernicusDEM/cursor.jl` — about an order of magnitude faster to
+# build than the generic cursor, for an identical intersection matrix;
+# `scripts/bench_copdem_cursor.jl` runs both routes side by side.
 const ROWS = let n = parse(Int, get(ENV, "COPDEM_ROWS", string(NROWS)))
     1 <= n <= NROWS || error("COPDEM_ROWS=$n is outside 1:$NROWS — this tile has " *
                              "$NROWS raster rows and the chunk is its northernmost `n`")
@@ -245,25 +227,15 @@ function chunk_box(grid)
     return (min(w1, w2), max(e1, e2), min(s1, s2), max(n1, n2))
 end
 
-# A lon/lat box, as a spherical polygon that really contains the box.
-#
-# Two corrections, and both are needed — an `Extents.Extent` handed straight to
+# A lon/lat box, as a spherical polygon that really contains the box. Two
+# corrections, and both are needed — an `Extents.Extent` handed straight to
 # `query` gets neither, and the regrid then loses whole pixels:
 #
-#  1. DENSIFY. A parallel is not a great circle, so the arc joining a box's two
-#     south corners bows POLEWARD of the parallel by about `(dlam^2/8) sin(phi)
-#     cos(phi)`. `query`'s own extent conversion samples at
-#     `EXTENT_STEP_DEGREES = 2.0`, i.e. one segment across a 1-degree tile, and
-#     at this tile's latitude that bow is 1.87e-5 rad = 0.00107 degrees — 1.3
-#     GLO-90 pixel rows. The southernmost raster row then falls OUTSIDE the
-#     covering near mid-longitude and regrids to nothing, which the column-sum
-#     check below reports as whole columns short of their own area. At 64
-#     segments per degree the same bow is 4.58e-9 rad = 2.62e-7 degrees, 3.1e-4
-#     of one pixel row.
-#  2. PAD. The published pixel rings bow poleward of their own boxes too, by
-#     about 3e-11 rad. A covering of the box exactly would clip those slivers
-#     off the outermost rows, well above the interior noise floor. One pixel of
-#     pad swallows them.
+#  1. DENSIFY: at one segment per tile the south edge's poleward bow exceeds a
+#     pixel row and the southernmost row regrids to nothing; at 64 segments per
+#     degree it is 3e-4 of one.
+#  2. PAD: the published pixel rings bow poleward of their own boxes too; one
+#     pixel of pad swallows them.
 const DENSIFY_PER_DEGREE = 64
 
 function box_polygon(w, e, s, n; pad_lon=0.0, pad_lat=0.0)
@@ -282,15 +254,10 @@ function box_polygon(w, e, s, n; pad_lon=0.0, pad_lat=0.0)
 end
 
 """
-How a ring turns, which is what says whether Sutherland-Hodgman can use it as a
-clip window: `:ccw_convex` (every turn left, seen from outside the sphere — a
-valid window), `:cw_convex` (convex, but wound the other way, which is NOT one),
-or `:reflex` (it turns both ways).
-
-ORIENTATION is why this is not the one-line "does it turn right anywhere" test
-this repo's regridding suites carry: that test reads a clockwise CONVEX ring as
-reflex, so a destination system emitting clockwise rings would take the loose
-branch below with nothing saying which of the two defects it had.
+How a ring turns: `:ccw_convex` (a valid Sutherland-Hodgman clip window),
+`:cw_convex` (convex but wound the other way, which is NOT one), or `:reflex`.
+Not the one-line "does it turn right anywhere" test, which reads a clockwise
+convex ring as reflex.
 """
 function ring_shape(poly)
     pts = collect(GI.getpoint(GI.getexterior(poly)))
@@ -331,30 +298,15 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     println("  $label: $n_src pixels -> $n_dst $(nameof(typeof(dstsys))) level-$L " *
             "cells, Regridder built in $(round(build; digits=2)) s")
 
-    # WHICH ARM the laws below are checked on is derived, not chosen.
-    # Sutherland-Hodgman clips the SOURCE cell against the DESTINATION cell's
-    # ring, and only a counter-clockwise CONVEX clip window makes that clip the
-    # intersection. IGEO7 cells are plain spherical polygons; HEALPix
-    # `cell_boundary` densifies each curved chart edge into eight arcs, so every
-    # vertex on a bowed side is reflex and the clipper silently loses area. Same
-    # defect as the twelve `@test_broken` cases in
-    # `test/systems/crosssystem/regridding_conservation.jl:197-205`, and it
-    # belongs to the destination, not to this system — whose own 4-corner quads
-    # are convex, which is checked once before the regrids begin.
-    #
-    # The CONSTANTS are chosen, one per law rather than one reused, each a
-    # decade or more above what the whole tile measures on that arm:
-    #
-    #   law                             exact arm (IGEO7)   clipped arm (HEALPix)
-    #   column sums == source areas      2.6e-10 -> 1e-9      6.0e-5 -> 1e-4
-    #   no destination over-covered      5.7e-11 -> 1e-9      1.5e-5 -> 1e-4
-    #   interior cells covered exactly   5.7e-11 -> 1e-9      5.1e-5 -> 1e-4
-    #
-    # The three land on the same pair of decades and are not the same number for
-    # the same reason: on the exact arm every residue is float rounding over the
-    # handful of pieces a pixel is cut into, and on the clipped arm each is a
-    # different aggregate of the destination's own bow — which is the defect
-    # being reported, not a tolerance being granted.
+    # WHICH ARM the laws below are checked on is derived, not chosen: only a
+    # counter-clockwise CONVEX clip window makes Sutherland-Hodgman's clip the
+    # intersection. IGEO7 cells are plain spherical polygons; HEALPix densifies
+    # each chart edge, so every vertex on a bowed side is reflex and the
+    # clipper loses area — the destination's defect, the same one as the
+    # twelve `@test_broken` cases in
+    # `test/systems/crosssystem/regridding_conservation.jl`. The constants are
+    # one per law, each a decade or more above what the whole tile measures on
+    # that arm.
     shape = ring_shape(DGG.cell_polygon(dstgrid, DGG.cellindex(dst, 1)))
     convex = shape === :ccw_convex
     col_tol = convex ? 1e-9 : 1e-4
@@ -385,27 +337,20 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     check("$label: matrix is (dst cells, src cells)", size(M) == (n_dst, n_src);
         detail="$(size(M)), nnz=$(length(M.nzval))")
 
-    # THE conservation assertion. The covering OVER-covers the chunk, so the row
-    # sums are NOT the destination areas — only the columns are exact. Every
-    # source pixel must be fully consumed, and that is the statement that would
-    # fail if this system's rings were non-convex, or did not tile, or if the
-    # covering left a sliver.
+    # THE conservation assertion. The covering OVER-covers the chunk, so only
+    # the columns are exact: every source pixel must be fully consumed.
     col_err = maximum(abs.(vec(sum(M; dims=1)) .- r.src_areas) ./ r.src_areas)
     check("$label: column sums == source cell areas", col_err <= col_tol;
         detail="max rel err $col_err (tolerance $col_tol)")
-    # The same law summed. Not an independent bound — the per-column errors
-    # cancel, so this can only be tighter — but a sign error or a lost block
-    # would survive the maximum above and not this.
+    # The same law summed: a sign error or a lost block would survive the
+    # maximum above and not this.
     check("$label: total intersection area == total source area",
         abs(sum(M) - sum(r.src_areas)) / sum(r.src_areas) <= col_tol;
         detail="$(sum(M)) vs $(sum(r.src_areas)) sr")
 
-    # The area budget against the closed form. `src_areas` measures the published
-    # geodesic QUADS; `cell_area` is the exact solid angle of the BOXes those
-    # quads approximate. Materialised, not a generator — `cell_area`'s docstring
-    # has why: this closed form does not telescope, and Julia's pairwise `sum`
-    # over a `Vector` lands some 400x closer to the truth than a generator's
-    # sequential accumulation.
+    # The area budget against the closed form: `src_areas` measures the
+    # published QUADS, `cell_area` the exact BOX solid angle. Materialised,
+    # not a generator — `cell_area`'s docstring has why.
     boxes = [DGG.cell_area(g1, DGG.cellindex(chunk, i)) for i in 1:n_src]
     box_sum = sum(boxes)
     ring_gap = abs(sum(r.src_areas) - box_sum) / box_sum
@@ -421,19 +366,15 @@ function regrid_onto(label, dstsys, L, chunk, chunkvalues)
     # destination cell's covered fraction.
     cover = zeros(n_dst)
     CR.regrid!(cover, r, ones(n_src))
-    # Its own bound, and its own physics: this one is about a destination cell
-    # being handed MORE than its own area, which the source tessellation's
-    # overlaps and the destination's own area formula decide — not about a
-    # source pixel being fully consumed.
+    # A different law: a destination cell being handed MORE than its own area,
+    # not a source pixel being fully consumed.
     check("$label: no destination cell is over-covered", maximum(cover) <= 1 + over_tol;
         detail="max cover - 1 = $(maximum(cover) - 1) (tolerance $over_tol), " *
                "cover in $(round.(extrema(cover); digits=6))")
 
-    # Orientation. Two analytic fields, not one: a row flip and a column flip are
-    # different mistakes and a single tilted field would confound them. Both are
-    # sampled at SOURCE cell centroids and compared against the DESTINATION
-    # cell's own centroid, so nothing in between is trusted. A flip puts the
-    # error near half the tile — three orders above the threshold.
+    # Orientation. Two analytic fields, not one: a row flip and a column flip
+    # are different mistakes. Sampled at SOURCE centroids against the
+    # DESTINATION cell's own centroid; a flip puts the error near half the tile.
     src_lat = [lat_of(DGG.cell_centroid(g1, DGG.cellindex(chunk, i))) for i in 1:n_src]
     src_lon = [lon_of(DGG.cell_centroid(g1, DGG.cellindex(chunk, i))) for i in 1:n_src]
     got_lat, got_lon = zeros(n_dst), zeros(n_dst)

@@ -30,41 +30,18 @@ This module ships no grid type: `levelgrid(sys, l)` returns the package's
     1, 2, 3, 4, 6 — and this system does not implement it.
 
 !!! note "A holding without the far-south tiles is still this lattice"
-    The 64 800 tiles are numbered north to south, row-major:
-    `tileordinal(r, q) = r*360 + q` with `r = 89 - lat_s`. The six southernmost
-    tile rows — `S90` through `S85`, `lat_s in -90:-85` — are therefore the last
-    `6*360 = 2 160` ids, the contiguous TAIL of the order, and level 1 inherits
-    that because its ids are tile-major in the same order.
-
-    A holding that omits those tiles is this lattice minus ONE contiguous
-    window, so it needs no second lattice and no renumbering: a `PartialGrid`
-    names it directly, and `treeify` still recognises it as a rectangle and
-    gives it the block cursor.
-
-    ```julia
-    import DiscreteGlobalGrids as DGG
-
-    sys = DGG.CopernicusDEMSystem(90)
-    south = [DGG.CopernicusDEM.tilecell(sys, lat_s, lon_w)
-             for lat_s in -90:-85 for lon_w in -180:179]
-    cut = minimum(c.index for c in south)      # the tail runs cut : ncells(sys, 0) - 1
-    kept = DGG.PartialGrid(sys, 0, [DGG.LevelIndex(0, i) for i in 0:(cut - 1)])
-    DGG.treeify(kept) isa DGG.CopernicusDEM.BlockCursor     # true
-    ```
-
-    Such a subset changes which cells a grid NAMES, not what a cell IS:
-    `ncells(sys, l)`, [`cell_box`](@ref), the nesting pair and every id in this
-    module go on describing the whole globe.
+    Tiles are numbered north to south, so the far-south rows `S90`–`S85` are
+    the contiguous tail of the id order (at both levels). A holding that omits
+    them is a `PartialGrid` over one contiguous run, and `treeify` still gives
+    it the block cursor. Such a subset changes which cells the grid names, not
+    what a cell is: `ncells(sys, l)`, [`cell_box`](@ref) and the nesting pair
+    keep describing the whole globe.
 
 !!! note "`refine` and `coarsen` here are module-local"
-    They are defined in this module and reachable only as
-    `DiscreteGlobalGrids.CopernicusDEM.refine` / `.coarsen`: not exported, and
-    not methods of any `DiscreteGlobalGrids` generic. An unqualified `refine(…)`
-    will not resolve for a reader who has only `using DiscreteGlobalGrids`, so
-    every mention of them — here, in docs, at a call site — must carry the
-    module. They relate two SYSTEMS at a fixed level (GLO-30 inside GLO-90),
-    which is not the relation a hierarchy `refine` would name; that relation is
-    `children`/`parent`, which this system already has.
+    Reachable only as `DiscreteGlobalGrids.CopernicusDEM.refine` / `.coarsen`,
+    so every mention must carry the module. They relate two systems at a fixed
+    level (GLO-30 inside GLO-90), not levels within a hierarchy — that relation
+    is `children`/`parent`.
 """
 module CopernicusDEM
 

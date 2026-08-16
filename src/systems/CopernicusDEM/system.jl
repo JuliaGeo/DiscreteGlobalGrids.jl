@@ -18,31 +18,9 @@ DGG.has_sorted_subtrees(::CopernicusDEMSystem) = true
 """
     max_neighbors(CopernicusDEMSystem{N}(), connectivity) -> Int
 
-`360 * ncols(pole row) + 2`, which is `36N + 2`, under `Vertex()`; `6` under `Edge()`.
-Both bound every cell of both levels, and both are attained.
-
-A pole row sets the `Vertex()` bound, not the lattice interior. Raster row 0 of a
-`lat_s = 89` tile and row `N - 1` of a `lat_s = -90` tile are the spherical triangles
-[`cell_boundary`](@ref) emits, and their apex is the one exact ±90 vertex every cell of
-the row shares — so each such pixel touches the whole pole ring of `360 * ncols` pixels,
-plus the three pixels below it. Everything else is far under that: eight for a pixel
-interior to its tile, for a tile edge within a band and for the wide side of a band
-boundary, and at most `360 + 2` for a level-0 pole tile.
-
-A band boundary sets the `Edge()` bound, which is why it exceeds the von Neumann four.
-The two sides of a boundary parallel carry different column counts, so a cell on the
-wide side faces the narrow side across a segment that up to three of its cells divide:
-with the reduced ratio `p:q` written wide side first, every one the band table produces
-(3:2, 4:3, 3:2, 5:3, 2:1) leaves `ceil(p/q) <= 2` narrow-side breakpoints strictly
-inside that segment, hence at most three overlaps of positive length. Two laterals and
-the one cell facing the other way bring the total to six. A level-0 tile reaches five
-the same way. Under `Edge()` a shared apex is a point rather than a segment, so a pole
-cell has three and never approaches the `Vertex()` figure.
-
-Both bounds are attained, not merely respected: `"max_neighbors is attained"` in
-`test/systems/CopernicusDEM/runtests.jl` asserts equality at the pole rows and at the
-±85 boundary of all three lattices, and sweeps the boundaries, the antimeridian, the
-tile edges and both levels for anything larger.
+`36N + 2` under `Vertex()` — a pole-row pixel touches the whole pole ring plus the
+three pixels below it — and `6` under `Edge()`, attained on the wide side of a band
+boundary. Both bound every cell of both levels, and both are attained.
 """
 DGG.max_neighbors(sys::CopernicusDEMSystem, ::DGG.Vertex) =
     360 * Int(max(ncols(sys, 0), ncols(sys, NROWS - 1))) + 2
@@ -65,14 +43,9 @@ end
 """
     rootcells(CopernicusDEMSystem(...))
 
-All 64 800 level-0 tiles, `LevelIndex(0, 0:64799)`, ascending, as a **lazy** vector.
-
-Lazy because `PartialGrid` reads `first(rootcells(sys))` on every construction
-(`src/fallbacks/partial_grid.jl`), and a materialised 64 800-element vector would
-allocate about a megabyte per chunk built. The count is far above the small, cheap
-collection the contract has in mind (12 for HEALPix), and it costs the generic tree
-descent one cap evaluation per tile at the synthetic root — the price of a grid whose
-base tessellation is the 1° graticule.
+All 64 800 level-0 tiles, `LevelIndex(0, 0:64799)`, ascending, as a **lazy** vector —
+`PartialGrid` reads `first(rootcells(sys))` on every construction, and materialising
+would allocate about a megabyte each time.
 """
 DGG.rootcells(::CopernicusDEMSystem) = IdRange(Int32(0), Int64(0), NTILES)
 
@@ -226,44 +199,15 @@ end
 The cell's longitude/latitude box in **degrees**, closed on every side — the region
 the DEM post samples. Every other geometric method here is a function of it.
 
-# The registration, and why the box is offset
-
 The AWS COGs are `RasterPixelIsPoint` (`AREA_OR_POINT=Point`): pixel CENTRES sit on
-the integer-degree lattice. For a tile labelled `(lat_s, lon_w)` with `Δlat = 1/N` and
-`Δlon = 1/ncols` degrees, centres are
+the integer-degree lattice, so a pixel's box is its centre ± half a pixel and a tile's
+box is the nominal 1°x1° box shifted **half a pixel west and half a pixel north**.
+Tiles abut exactly in latitude and, within a band, in longitude.
 
-    lon = lon_w + i*Δlon    i = 0 : ncols-1
-    lat = lat_n - j*Δlat    j = 0 : N-1,  lat_n = lat_s + 1
-
-so the first centre is exactly `(lon_w, lat_n)` and the GDAL geotransform origin is a
-HALF PIXEL outside it: `(lon_w - Δlon/2, lat_n + Δlat/2)`. AWS deleted the east column
-and south row of the original 3601-post DGED tile, so adjacent COG tiles abut with no
-overlap and the pixel-centre lattice partitions the globe cleanly. That is the
-convention this system indexes.
-
-A pixel's box is its centre ± half a pixel. A tile's box is the union of its pixels'
-boxes, which comes out as the nominal 1°x1° box shifted **half a pixel west and half a
-pixel north**:
-
-    lon in [lon_w - Δlon/2, lon_w + 1 - Δlon/2]
-    lat in [lat_s + Δlat/2, lat_s + 1 + Δlat/2]
-
-Tiles therefore abut exactly in latitude (Δlat is global) and in longitude within a
-band (Δlon depends only on latitude), and the 64 800 tiles tile the sphere.
-
-# The poles
-
-Two corrections make that tiling exact rather than nearly so:
-
-  - The top row of the `lat_s = 89` tiles would reach `90 + Δlat/2`. Its north edge is
-    **clamped to +90**.
-  - The bottom row of the `lat_s = -90` tiles stops at `-90 + Δlat/2`, leaving a
-    half-pixel gap ring. Its south edge is **extended to -90**, making that row one and
-    a half pixels tall.
-
-Both give a cell one degenerate edge — every longitude at latitude ±90 is the same
-point — so those cells are spherical TRIANGLES, and [`cell_boundary`](@ref) emits three
-vertices for them, never four with a duplicate.
+Two pole corrections keep the tiling exact: the top row of the `lat_s = 89` tiles is
+clamped to +90, and the bottom row of the `lat_s = -90` tiles is extended to -90 (one
+and a half pixels tall). Those cells have one degenerate edge and are spherical
+TRIANGLES; [`cell_boundary`](@ref) emits three vertices for them.
 """
 function cell_box(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     r, q, j, i = decode(sys, c)
@@ -273,9 +217,8 @@ function cell_box(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     # A tile is its pixel grid's outer frame, so both levels are the same expression
     # over a column and a row interval.
     i_w, i_e, j_n, j_s = DGG.level(c) == 0 ? (0, Int(nc), 0, N) : (i, i + 1, j, j + 1)
-    # `k / nc` and `k / N`, never `k * Δlon`: at the far edge `nc / nc` is exactly
-    # `1.0`, so a cell's east edge is the same `Float64` as its neighbour's west edge
-    # and the quads share a geodesic rather than nearly sharing one.
+    # `k / nc`, never `k * Δlon`: a cell's east edge must be the same `Float64`
+    # as its neighbour's west edge so the quads share a geodesic exactly.
     half_dlon = (1 / nc) / 2
     half_dlat = (1 / N) / 2
     west = (lon_w + i_w / nc) - half_dlon
@@ -288,19 +231,9 @@ function cell_box(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     return (west, east, south, north)
 end
 
-# The exact ±90 vertices, as shared literals. `UnitSphereFromGeographic()((lon, ±90))`
-# is not a substitute. It goes through `sincosd`, so `cosd(±90)` is exactly `0.0` and the
-# image is exactly `(±0.0, ±0.0, ±1.0)`: `x = sind(0 or 180) * cosd(lon)` carries a sign
-# bit wherever `cosd(lon) < 0`, and `y` wherever `sind(lon) < 0`. The separation from
-# this point is therefore ZERO, not 1e-16 — no orientation or convexity test can tell
-# the two apart, because `-0.0 == 0.0`.
-#
-# The hazard is identity, not magnitude. A signed zero is `===`-distinct and
-# `isequal`-distinct, so building each pole cell's apex from its own longitude would
-# hand out four bit patterns for one point: `Set`, `unique`, `Dict` keys and every
-# `===`-based dedup or identity check would count up to four distinct pole vertices
-# while `==` insists they are the same one. `atand` reads the sign bits too, which is
-# how the same pole would land in different tiles — see [`cellat`](@ref).
+# The exact ±90 vertices, as shared literals. `TO_SPHERE((lon, ±90))` carries signed
+# zeros in x and y that vary with `lon`: `==`-equal but `===`- and `isequal`-distinct,
+# and `atand` reads the sign bits — see [`cellat`](@ref).
 const NORTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, 1.0)
 const SOUTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, -1.0)
 
@@ -311,44 +244,13 @@ The cell's box as a **plain 4-corner great-circle quadrilateral**, implicitly cl
 counter-clockwise seen from outside the sphere, in the order
 `(W,S) -> (E,S) -> (E,N) -> (W,N)`.
 
-# Why there is no densification
+Not densified: undensified lat/lon quads are convex, which keeps this system exact as
+a regridding destination, and the poleward bow off the true box edge is only about
+`Δλ²/16` rad. Adjacent cells within a band share their corner points bit-identically,
+so the quads tile the sphere with no gaps.
 
-A parallel is a small circle, not a great circle, so the ring's north and south edges
-bow poleward of the true box edge by about `(Δλ²/8)·sin φ·cos φ` — 1.9e-5 rad (120 m)
-for a 1° tile, about 10 μm for a 1-arcsec pixel. That small-angle expression is an
-estimate rather than a bound, and it errs low.
-
-The two bows nearly cancel, so ring and box differ in area only slightly. The
-`"ring vs box"` testset in `test/systems/CopernicusDEM/runtests.jl` sweeps that
-relative gap over every band and both pole rows, logs it as `worst_tile` /
-`worst_pixel` / `worst_pole_pixel`, and bounds each: below 1e-8 for pixels outside the
-±90 tile rows, below 1e-4 for tiles and for the pixels inside those rows, which are
-half-pixel slivers and pole triangles.
-
-Densifying would close that gap and cost this system its convexity: a densified
-poleward edge reads as a chain of REFLEX vertices, which is exactly why HEALPix,
-ISEA4R and A5 are non-conservative as regridding DESTINATIONS
-(`test/systems/crosssystem/regridding_conservation.jl`, header). Undensified lat/lon
-quads are convex, so this system is exact in both directions. [`cell_area`](@ref)
-returns the exact box area rather than this ring's, and [`node_extent`](@ref) pads for
-the bow analytically rather than by sampling.
-
-Adjacent cells share their corner POINTS bit-identically within a band, so the shared
-edge is literally the same geodesic and the quads tile the sphere with no gaps. Across
-a band boundary (latitude 50/60/70/80/85) the two sides cut the shared parallel at
-different longitudes, so their bows differ and the quads leave slivers of width
-`|Δλ_below² − Δλ_above²|/8 · sin φ cos φ` — by that expression, 1.8e-12 rad (11.5 μm)
-at latitude 50 in GLO-30, about 4e-7 of that pixel's own height, rising to 1.9e-11 rad
-(122 μm) at latitude 85. The box tessellation is exact there; the quad tessellation is
-exact to that order.
-
-# Poles
-
-A cell touching ±90 has two coincident corners and is emitted as a TRIANGLE, on the
-same cyclic order with the duplicate dropped. The pole vertex is the exact literal
-`UnitSphericalPoint(0.0, 0.0, ±1.0)`, not the image of `(lon, ±90)` under
-`UnitSphereFromGeographic`, which would differ in x and y per longitude and turn a
-triangle into a degenerate quad.
+A cell touching ±90 is emitted as a TRIANGLE, same cyclic order with the duplicate
+dropped, its apex the exact literal `UnitSphericalPoint(0.0, 0.0, ±1.0)`.
 """
 function DGG.cell_boundary(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     west, east, south, north = cell_box(sys, c)
@@ -363,11 +265,8 @@ end
 """
     cell_centroid(grid, c) -> UnitSphericalPoint
 
-The midpoint of the cell's box, which is the DEM post itself for a pixel.
-
-Strictly inside the published quad, as the contract requires: the quad's poleward edge
-bows off the box's parallel by about `(Δλ²/8)·sin φ·cos φ` — 1.9e-5 rad for a 1° tile,
-against a half-height of 8.7e-3 rad — so the midpoint clears it by a factor of 458.
+The midpoint of the cell's box — the DEM post itself for a pixel — strictly inside
+the published quad.
 """
 function DGG.cell_centroid(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     west, east, south, north = cell_box(sys, c)
@@ -378,25 +277,9 @@ end
     cell_area(grid, c) -> Float64
 
 The exact solid angle of the cell's lat/lon BOX, `Δλ · (sin φ_N − sin φ_S)` steradians,
-in O(1).
-
-The box, not the published ring: the ring is the box's undensified geodesic quad, and
-the two differ in area by the bow [`cell_boundary`](@ref) describes and the
-`"ring vs box"` testset measures.
-
-Both regions tile the sphere, so both sum to 4π — but this closed form does **not**
-telescope exactly: not every tile has `east - west === 1.0`, so consecutive terms do
-not cancel to the last bit. The sum is accurate because those errors are tiny and
-because pairwise summation stops them accumulating, not because anything cancels.
-**Materialise** the 64 800 tile areas into a `Vector` so Julia's pairwise `sum`
-reduces them; a generator argument — or any other sequential accumulation — lands
-orders further from 4π and fails the `rtol = 1e-14` that
-`"the boxes partition the sphere"` in `test/systems/CopernicusDEM/runtests.jl`
-asserts. Do not loosen that tolerance to accommodate a generator.
-
-`ConservativeRegridding` never reads this — it measures the ring itself
-(`ConservativeRegridding/src/regridder/regridder.jl:102-103`) — so no conservation
-assertion anywhere depends on the choice.
+in O(1) — the box, not the published ring, which differs by the bow
+[`cell_boundary`](@ref) describes. Summing every cell's area to 4π needs pairwise
+summation: materialise into a `Vector` before `sum`, not a generator.
 """
 function DGG.cell_area(g::LevelGrid, c::DGG.LevelIndex)
     _checked_index(g, c)
@@ -407,16 +290,9 @@ end
 """
     cell_extent(grid, c) -> Extents.Extent{(:X, :Y)}
 
-The cell's [`cell_box`](@ref), verbatim. Same rationale as [`cell_area`](@ref): the cell
-IS the box, and the published ring is a slightly different region.
-
-The generic fallback (`src/fallbacks/geometry.jl`) derives the extent from the ring, and
-that is wrong here in a way that matters. The ring's poleward edge bows past the box's
-parallel by the `(Δλ²/8)·sin φ·cos φ` [`cell_boundary`](@ref) quantifies — 0.00107° for
-a 1° tile at mid latitudes, four GLO-30 pixel rows — so the derived `Y` upper bound
-overshoots the box's north edge by that much and vertically adjacent tiles report
-OVERLAPPING extents. Extents of a partition must abut, because callers use them to
-decide which cells a query region can touch.
+The cell's [`cell_box`](@ref), verbatim — not derived from the ring as the generic
+fallback would, whose poleward bow makes vertically adjacent tiles report overlapping
+extents.
 """
 function DGG.cell_extent(g::LevelGrid, c::DGG.LevelIndex)
     _checked_index(g, c)
@@ -428,31 +304,9 @@ end
     node_extent(CopernicusDEMSystem(...), c) -> SphericalCap
 
 The cap centred on the cell centre, with radius the largest corner distance plus an
-analytic pad for the great-circle bow, and one outward ULP.
-
-Sound without sampling and without densification, in three steps.
-
- 1. **The corners bound the box.** The farthest point of a lat/lon box from its midpoint
-    centroid `(λ_c, φ_c)` is a corner, and all four corners are measured. Fix `φ`:
-    `cos d = sin φ_c sin φ + cos φ_c cos φ cos(λ − λ_c)` falls as `|λ − λ_c|` grows, so
-    the distance peaks at `λ ∈ {W, E}`. Now fix that `λ`: as a function of `φ` the same
-    expression is `A sin φ + B cos φ` with `B = cos φ_c cos Δλ ≥ 0`, a sinusoid whose
-    trough sits outside `[−90°, 90°]`; it is therefore unimodal on `[φ_S, φ_N]` and its
-    minimum — the maximal distance — is at `φ ∈ {S, N}`. So `rmax` bounds every point of
-    the box, hence every box vertex of every descendant.
- 2. **The cell's own ring is already inside that cap.** Its vertices are the box corners,
-    each within `rmax`, and a spherical cap is convex — it contains the geodesic between
-    any two points it contains — so it contains the whole ring, bow and all.
- 3. **The pad covers the descendants' bows.** The only geometry that leaves a descendant's
-    box is that descendant's own ring, bowing poleward by about `(Δλ_child²/8)·sin φ·cos φ`.
-    With `|sin φ cos φ| ≤ 1/2` the pad `Δλ²/16` — 1.9e-5 rad (120 m) for a 1° tile —
-    already covers a bow at the CELL's own span; a child's span is at most `Δλ/120` on the
-    shipped lattices (GLO-90's 10x band above latitude 85 is the coarsest, at 120 columns),
-    so its bow is at least 14 400x inside the pad. The pad is belt-and-braces; steps 1 and
-    2 are the proof.
-
-Radii are far below 90°, so `require_convex_extents = true` holds and the harness's
-vertex-sampling proxy is sound.
+analytic `Δλ²/16` pad for the bow of descendants' rings, and one outward ULP. The
+farthest point of a lat/lon box from its midpoint is a corner, so four distances
+suffice. Radii stay far below 90°, so `require_convex_extents = true` holds.
 """
 function DGG.node_extent(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     centre = DGG.cell_centroid(sys, c)
@@ -470,35 +324,16 @@ end
 """
     cellat(grid, p::UnitSphericalPoint) -> LevelIndex
 
-The cell containing `p`, by closed-form inversion: point -> (lon, lat) -> tile row ->
-band -> tile column -> raster row and column. The steps are ordered because each needs
-the previous one — the longitude spacing depends on the band, which depends on the
-latitude row. A complete level grid covers the sphere, so this never returns `nothing`.
+The cell containing `p`, by closed-form inversion. A complete level grid covers the
+sphere, so this never returns `nothing`.
 
-Ties on a shared boundary are decided by `floor` and are deterministic. A tile owns
-`[west, east) x [south, north)`; within a tile the raster row is measured downward from
-the north edge, so a point exactly on an interior row boundary goes to the row south of
-it instead. Either way the level-0 answer is [`parent`](@ref) of the level-1 answer,
-because the tile is chosen first and the raster indices are clamped into it.
-
-The tie only decides anything when the point's latitude really is the edge, and the unit
-sphere is a lossy carrier for that: `asind ∘ cosd(90 - ·)` moves a latitude by up to 10
-ulps, and it is expansive near the equator, so a third of the 180 tile-row south edges —
-60 of them, pinned as `found == 120` by `"cellat agrees with cell_box on south edges"` —
-are not in its image at all and cannot be probed through a `UnitSphericalPoint`. What
-this method guarantees for the ones that survive is exactness against
-[`cell_box`](@ref): the south edge is `Float64(lat_s) + Δlat/2`, and
-because `(x + h) - h` is not a `Float64` identity the `floor` below is repaired against
-that expression rather than trusted.
-
-At a pole the longitude is whatever `atan` makes of a signed zero, and that depends on
-which longitude the point was BUILT from. `TO_SPHERE((lon, ±90))` has
-`x = sind(0 or 180) * cosd(lon)`, which is `-0.0` whenever `cosd(lon) < 0`, and
-`atand(±0.0, -0.0)` is `±180`. So a pole point built from `|lon| > 90` lands in the W180
-tile of the pole row, and one built from `|lon| <= 90` — including the exact
-`UnitSphericalPoint(0.0, 0.0, ±1.0)` literals that [`cell_boundary`](@ref) emits — lands
-in the `lon_w = 0` tile. Deterministic either way, and the pole is on the boundary of all
-360 tiles of the row regardless.
+Ties on a shared boundary are deterministic: a tile owns
+`[west, east) x [south, north)`, and a point exactly on an interior raster-row
+boundary goes to the row south of it. The level-0 answer is [`parent`](@ref) of the
+level-1 answer. At a pole the longitude is whatever `atan` makes of the point's
+signed zeros, so which pole-row tile answers depends on the longitude the point was
+built from — deterministic either way, and the pole is on the boundary of all 360
+tiles of the row regardless.
 """
 function DGG.cellat(g::LevelGrid{N}, p::GO.UnitSphericalPoint) where {N}
     sys = g.system
@@ -510,18 +345,15 @@ function DGG.cellat(g::LevelGrid{N}, p::GO.UnitSphericalPoint) where {N}
     # A tile spans latitudes `[lat_s + Δlat/2, lat_s + 1 + Δlat/2)`. At `lat = 90` the
     # floor is 89; at `lat = -90` it is -91, and the clamp is the extended bottom row.
     lat_s = clamp(floor(Int, lat - half_dlat), -90, 89)
-    # `cell_box` builds the south edge as `Float64(lat_s) + half_dlat`; adding then
-    # subtracting `half_dlat` is not a Float64 identity, so repair against the edge itself.
-    # The two branches are mutually exclusive — the first leaves `lat` at or above the new
-    # tile's south edge, which is exactly what the second tests for — so each fires once.
+    # `(x + h) - h` is not a Float64 identity, so repair the floor against the south
+    # edge exactly as `cell_box` builds it. The two branches are mutually exclusive.
     lat_s <  89 && lat >= Float64(lat_s + 1) + half_dlat && (lat_s += 1)
     lat_s > -90 && lat <  Float64(lat_s)     + half_dlat && (lat_s -= 1)
     r = _row(lat_s)
     nc = ncols(sys, r)
     half_dlon = (1 / nc) / 2
-    # `[-180, 180)`, then the same half-pixel offset in longitude. `lon >= 180 - Δlon/2`
-    # floors to 180, which is the W180 tile reached from the east; shifting `s` with it
-    # keeps the within-tile fraction below in that tile's own frame.
+    # `[-180, 180)`, then the same half-pixel offset. `lon >= 180 - Δlon/2` floors to
+    # 180 — the W180 tile reached from the east — so shift `s` into that tile's frame.
     s = (lon - 360 * floor((lon + 180) / 360)) + half_dlon
     lon_w = floor(s)
     if lon_w >= 180
@@ -539,28 +371,13 @@ end
 # Topology
 # ===========================================================================
 
-# WHERE ADJACENCY IS DECIDED. A cell of either level IS its [`cell_box`](@ref), so two
-# cells meet exactly where their boxes do, and each axis is settled in integers.
-#
-# LATITUDE. Level-1 rows are global: `J = r * N + j`, north to south over `180 * N` of
-# them. Row `J`'s south edge and row `J + 1`'s north edge are the same rational — at a
-# tile seam, `(lat_s(r) + 1) - N/N + 1/(2N)` against `(lat_s(r + 1) + 1) + 1/(2N)`,
-# equal because `lat_s(r + 1) = lat_s(r) - 1` — so consecutive rows abut and rows two
-# apart are separated by a whole row. Level-0 tile rows say the same one level up. A
-# cell can therefore only meet cells in its own row and in the two beside it, and the
-# pole clamps do not change that: they alter a row's HEIGHT, never which rows abut.
-#
-# LONGITUDE. A row with `nc` columns per degree puts its breakpoints at
-# `(P k - 1) / (2 nc)` degrees east of -180: `P = 2` for a pixel row, whose cell `K`
-# runs `(2K - 1)/(2nc) .. (2K + 1)/(2nc)`, and `P = 2 nc` for a tile row, whose tile `q`
-# runs `(2 nc q - 1)/(2 nc) .. (2 nc (q + 1) - 1)/(2 nc)`. Both are the half-pixel
-# registration `cell_box` describes — which is why a TILE's corners are not on integer
-# degrees either, and why they move with the band — and both partition the circle.
-#
-# Comparing a row of `a` columns with one of `b` clears both denominators at once by
-# scaling into units of `1/(2ab)` degrees, where every endpoint is an integer and the
-# circle is `720 a b` long. `_facing` is that comparison and the only place adjacency is
-# decided; nothing here reads a `Float64` or a tolerance.
+# WHERE ADJACENCY IS DECIDED. A cell IS its [`cell_box`](@ref), so two cells meet
+# exactly where their boxes do, and each axis is settled in integers. Rows abut only
+# with their immediate neighbours, so a cell can only meet cells in its own row and
+# the two beside it. Longitude endpoints of two rows are cross-multiplied into units
+# of `1/(2ab)` degrees, where every endpoint is an integer; `_facing` is that
+# comparison and the only place adjacency is decided — nothing here reads a `Float64`
+# or a tolerance.
 
 # The two shapes of longitude lattice, as the breakpoint stride and the row length.
 @inline _stride(nc::Int64, level::Int) = level == 0 ? 2 * nc : Int64(2)
@@ -578,10 +395,8 @@ POSITIVE length and the flanking `lo - 1` / `hi + 1` meet it in a single POINT w
 matching flag is set. Indices are unreduced; callers take them modulo the row length.
 
 `lo` is the facing cell holding `K`'s west edge and `hi` the last one starting before
-its east edge, both by integer division on the cross-multiplied endpoints. The run
-holds `1 + ceil(b/a)` cells at most — one more than the facing breakpoints that fit
-strictly inside `K` — so it never exceeds three: the widest ratio the band table puts
-side by side is 2:1, at latitude ±85.
+its east edge. The run never exceeds three cells: the widest ratio the band table puts
+side by side is 2:1.
 """
 function _facing(a::Int64, b::Int64, level::Int, K::Int64)
     pa, pb = _stride(a, level), _stride(b, level)
@@ -644,9 +459,8 @@ function _ring1(sys::CopernicusDEMSystem{N}, level::Int, c::DGG.LevelIndex,
     north = DGG.LevelIndex[]                    # the north side, EAST to WEST
     south = DGG.LevelIndex[]                    # the south side, WEST to EAST
     if apex_n
-        # From a cell of the pole ring, the ring runs counter-clockwise in increasing
-        # eastward offset: the eastern lateral first, over the pole, the western lateral
-        # last. The cell half the ring away is the one that lies due north.
+        # The pole ring runs counter-clockwise in increasing eastward offset:
+        # eastern lateral first, over the pole, western lateral last.
         apex_ring && (north = [_gridcell(sys, level, J, mod(K + t, m)) for t in 1:(m - 1)])
     else
         north = _across(sys, level, J - 1, a, K, edge_only)
@@ -704,64 +518,24 @@ end
     ring(grid, c, k; connectivity = Vertex()) -> Vector{LevelIndex}
 
 Cells within, or at exactly, `k` adjacency steps of `c`, excluding `c`, in the
-interface's rotational order. Closed form at every cell of both levels: tile interiors,
-tile edges and corners, the antimeridian, the band boundaries, the ±90 pole rows and
-their half-pixel slivers, and the tile lattice itself.
-
-# What adjacent means
+interface's rotational order. Closed form at every cell of both levels, including band
+boundaries, the antimeridian, and the ±90 pole rows.
 
 Cells are neighbours under `Vertex()` when their closed [`cell_box`](@ref)es share at
-least one point, and under `Edge()` when they share a segment of positive length. Both
-are decided in exact integer arithmetic on the lattice — the rational endpoints of two
-rows cross-multiplied to a common denominator — never by comparing coordinates within a
-tolerance. Adjacency is therefore symmetric by construction, and a cell whose corner
-falls strictly inside a longer edge of its neighbour is a `Vertex()` neighbour of it.
+least one point, and under `Edge()` when they share a segment of positive length —
+decided in exact integer arithmetic, never by tolerance. Across a band boundary a cell
+faces up to three cells of the other side; a pole-row cell's apex is shared by the
+whole pole ring, which is what [`max_neighbors`](@ref) is sized for.
 
-# The cases the lattice produces
-
-  - **Interior to a tile**, and **tile edges and corners within a band**: eight under
-    `Vertex()`, four under `Edge()`. The antimeridian is a tile edge like any other; the
-    tiles either side of ±180 abut, at ids 359 tile columns apart.
-  - **Band boundaries** (latitude 50/60/70/80/85) face two rows of different column
-    count at one parallel. Every cell still meets the other side — the two rows tile the
-    same parallel — but across a reduced ratio `p:q`, so a cell on the narrow side faces
-    one or two of the wide side's and a cell on the wide side faces two or three of the
-    narrow side's. Six to eight under `Vertex()`, four to six under `Edge()`. Corners
-    coincide only where `p` and `q` are both odd, true of 5:3 alone among the five
-    ratios (3:2, 4:3, 3:2, 5:3, 2:1) and so of latitude ±80 alone; elsewhere a corner
-    lands strictly inside the facing edge, which is still a shared point and still a
-    `Vertex()` neighbour.
-  - **Pole rows** — raster row 0 of a `lat_s = 89` tile, row `N - 1` of a `lat_s = -90`
-    one — are the triangles [`cell_boundary`](@ref) emits, and their apex is one point
-    shared by the whole ring. So `Vertex()` gives the entire ring plus the three cells
-    equatorward, which is what [`max_neighbors`](@ref) is sized for, while `Edge()` gives
-    the two laterals and the one overlap equatorward: three.
-  - **Level 0** is the same statement over tile rows. A tile's box is offset half a
-    PIXEL, so tiles across a band boundary are offset by different amounts and their
-    corners never coincide: eight neighbours within a band, seven across one, and 362 on
-    a pole tile row.
-
-# Order
-
-Raster rows run north to south. The cycle is counter-clockwise seen from outside the
-sphere — the north-side neighbours from east to west, the western lateral, the
-south-side neighbours from west to east, the eastern lateral — and the list starts at
-the north side's last member, the neighbour immediately west across the north edge. For
-a cell interior to its tile that is the familiar
-
-    Vertex()   NW, W, SW, S, SE, E, NE, N
-    Edge()     N, W, S, E
-
-and it stays that at a tile edge, where the same eight cells live in other tiles.
-Where a side carries more or fewer cells the block grows or shrinks in place. On a pole
-row the apex ring is that cell's north (or south) side and holds the laterals itself, so
-it is enumerated over the pole from the eastern lateral to the western one; under
-`Edge()`, where the apex carries nothing, the north side is empty and the list starts at
-the western lateral instead.
-
-`ring(c, k)` is the final block of `neighbors(c, k)`, and `neighbors(c, k)` is the rings
-concatenated outward, as the interface requires. Rings past the first carry no lattice
-order and are wound by measured azimuth about `cell_centroid(grid, c)`.
+The 1-ring is counter-clockwise seen from outside the sphere — north side east to
+west, western lateral, south side west to east, eastern lateral — starting at the
+neighbour immediately west across the north edge: `NW, W, SW, S, SE, E, NE, N` for an
+interior cell, `N, W, S, E` under `Edge()`. On a pole row the apex ring is the cell's
+north (or south) side and is enumerated over the pole from the eastern lateral to the
+western; under `Edge()` the apex carries nothing and the list starts at the western
+lateral. Rings past the first carry no lattice order and are wound by measured
+azimuth about `cell_centroid(grid, c)`; `ring(c, k)` is the final block of
+`neighbors(c, k)`.
 """
 function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())

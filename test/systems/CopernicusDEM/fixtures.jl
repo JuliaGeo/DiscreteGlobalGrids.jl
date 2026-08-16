@@ -1,33 +1,19 @@
 # ---------------------------------------------------------------------------
-# Measured fixtures for the Copernicus DEM suite. Every number here was read off
-# a real AWS Open Data COG with `ArchGDAL`, against
-# `https://copernicus-dem-{30,90}m.s3.amazonaws.com/`, and committed. NO NETWORK:
-# the suite that reads them never touches it, and neither does anything else in
-# `test/`.
+# Measured fixtures for the Copernicus DEM suite: every number was read off a real
+# AWS Open Data COG with `ArchGDAL` and committed. NO NETWORK: nothing in `test/`
+# touches it.
 #
-# 79 distinct COGs, 61 GLO-30 and 18 GLO-90, over three probes: the band
-# boundaries in both hemispheres, a stratified random sweep of GLO-30 tiles, and
-# a GLO-90 confirmation of the southern boundaries. The arrays below hold 61
-# GLO-30 rows and 19 GLO-90 rows — 19 rather than 18 because `S85_00_E000_00` was
-# measured twice and both readings are kept.
-#
-# These are the ONLY external evidence this system has. The band table in
-# `src/systems/CopernicusDEM/bands.jl` agrees with the Product Handbook's Table 3
-# and with the AWS bucket readme on the six reduction factors, but neither source
-# states which side of a band boundary a SOUTHERN tile falls on — and the answer
-# is not the one a reader of the tile label expects (`S50` is 1x and full width;
-# `S51` is the 1.5x tile). That asymmetry rests on these rows alone, which is why
-# they are committed rather than derived.
+# 79 distinct COGs over the band boundaries in both hemispheres, a stratified
+# random sweep of GLO-30 tiles, and a GLO-90 confirmation of the southern
+# boundaries. These rows are the only evidence for which side of a band boundary
+# a SOUTHERN tile falls on (`S50` is 1x and full width; `S51` is the 1.5x tile) —
+# no handbook states it.
 # ---------------------------------------------------------------------------
 
 """
 Measured GLO-30 (`N = 3600`) tiles: the lower-left integer degree corner the AWS
-file name carries, and the tile's column count.
-
-`S49_00` is `lat_s = -49`, `W002` is `lon_w = -2`. Grouped by band, and within
-each band the northern rows come before the southern ones — the southern rows
-straddling a band edge (`-50`/`-51`, `-60`/`-61`, `-70`/`-71`, `-80` … `-85`/`-86`)
-are the ones that separate the equator-ward-edge rule from the tile label.
+file name carries, and the tile's column count. Grouped by band; the southern rows
+straddling a band edge are the ones that pin the equator-ward-edge rule.
 """
 const GLO30_TILES = [
     # 1x, 3600 columns: band [0, 50)
@@ -91,13 +77,9 @@ const GLO90_TILES = [
 
 """
 Six measured GDAL geotransforms, at the full precision `ArchGDAL` printed them.
-
 A geotransform is `(origin_x, Δlon, 0, origin_y, 0, -Δlat)`; the origin is the
-**outer corner** of the first pixel, which for these `AREA_OR_POINT=Point` rasters
-is half a pixel WEST and half a pixel NORTH of the first pixel centre. `Δlon` is
-recorded in arcseconds, so the conversion to degrees is visible in the test
-rather than pre-baked here; `Δlat` is `3600 / N` arcseconds — 1″ at GLO-30, 3″ at
-GLO-90 — for every tile on Earth.
+**outer corner** of the first pixel — half a pixel west and north of the first
+pixel centre for these `AREA_OR_POINT=Point` rasters. `Δlon` is in arcseconds.
 """
 const GEOTRANSFORMS = [
     (N = 3600, lat_s =   0, lon_w =   10,

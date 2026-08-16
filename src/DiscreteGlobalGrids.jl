@@ -144,12 +144,9 @@ include("dimensionaldata.jl")
 using .CellLookups: CellLookup, Cells, Covering
 
 # CopernicusDEM is deliberately absent: registering a system enrols it in every
-# cross-system sweep (`test/systems/crosssystem/*`), whose hardcoded automaton/fallback
-# partitions and regridding cases would all need editing, and whose level choices assume
-# a globally uniform cell size. Reach for it by name: `DGG.CopernicusDEMSystem(90)`.
-# (This note lives ABOVE the docstring on purpose: a comment between a docstring and the
-# thing it documents silently detaches it — see `test/interface/runtests.jl`'s
-# `DetachedDocProbe`.)
+# cross-system sweep, whose hardcoded cases and level choices assume a globally
+# uniform cell size. Reach for it by name: `DGG.CopernicusDEMSystem(90)`.
+# (Kept ABOVE the docstring — a comment between docstring and function detaches it.)
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
 

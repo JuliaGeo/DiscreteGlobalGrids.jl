@@ -54,29 +54,20 @@ lat_intervals(::CopernicusDEMSystem{N}) where {N} = N
 #   [80, 85)     5x        720           240
 #   [85, 90)     10x       360           120
 #
-# Three sources agree on it: the Copernicus DEM Product Handbook's Table 3, the
-# AWS bucket readme, and the tiles measured off those buckets and committed as
+# Matches the Product Handbook's Table 3 and the measured tiles in
 # `test/systems/CopernicusDEM/fixtures.jl`.
-#
-# This is the DGED table. DTED (`.dt1`/`.dt2`) has five bands with factors
-# 1, 2, 3, 4, 6 and is not implemented here; the AWS buckets ship DGED.
 const BAND_EDGES   = (0, 50, 60, 70, 80, 85)
 const BAND_FACTOR2 = (2, 3, 4, 6, 10, 20)
 
 """
     band_factor2(lat_s) -> Int
 
-Twice the longitude reduction factor for the tile whose lower-left corner latitude is
-the integer `lat_s`, i.e. the tile spanning `lat_s` to `lat_s + 1`.
+Twice the longitude reduction factor for the tile spanning `lat_s` to `lat_s + 1`.
 
 **The band is chosen by the tile's EQUATOR-WARD edge**, `min(|lat_s|, |lat_s + 1|)`,
-with half-open intervals. In the northern hemisphere the label is the equator-ward
-edge; in the southern hemisphere it is the pole-ward one. So `N50` (50 -> 51, edge 50)
-is 1.5x and 2400 columns wide, while `S50` (-50 -> -49, edge **49**) is 1x and **3600**
-columns wide. Neither the Product Handbook nor the AWS bucket readme states that
-asymmetry; the measured tiles in `test/systems/CopernicusDEM/fixtures.jl` do, and
-`"the band is the equator-ward edge"` in `test/systems/CopernicusDEM/runtests.jl`
-checks this function against them tile by tile.
+with half-open intervals: `N50` (edge 50) is 1.5x while `S50` (edge 49) is 1x. The
+handbooks do not state that asymmetry; the measured tiles in
+`test/systems/CopernicusDEM/fixtures.jl` do.
 """
 function band_factor2(lat_s::Integer)
     -90 <= lat_s <= 89 || throw(ArgumentError(
@@ -108,9 +99,7 @@ const NROWS = 180
 const NCOLS_TILES = 360
 const NTILES = NROWS * NCOLS_TILES       # 64 800
 
-# Every product is widened to `Int64` before it is taken: `ncells(sys, 1)` is
-# 620 524 800 000 at GLO-30, so a 32-bit `Int` build would wrap silently here and
-# nowhere else.
+# Products are widened to `Int64`: `ncells(sys, 1)` overflows a 32-bit `Int`.
 function build_tables(N::Integer)
     N > 0 || throw(ArgumentError("N must be positive, got $N"))
     ncols = Vector{Int64}(undef, NROWS)
@@ -129,8 +118,7 @@ end
 
 const GLO30_TABLES = build_tables(3600)::BandTables
 const GLO90_TABLES = build_tables(1200)::BandTables
-# `CopernicusDEMSystem{30}()` is the lattice the conformance suite runs on
-# (`test/systems/CopernicusDEM/runtests.jl`), so its table is a constant too.
+# The lattice the conformance suite runs on, so its table is a constant too.
 const TWIN30_TABLES = build_tables(30)::BandTables
 const OTHER_TABLES = Dict{Int,BandTables}()
 const OTHER_LOCK = ReentrantLock()
@@ -138,8 +126,7 @@ const OTHER_LOCK = ReentrantLock()
 @inline tables(::CopernicusDEMSystem{3600}) = GLO30_TABLES
 @inline tables(::CopernicusDEMSystem{1200}) = GLO90_TABLES
 @inline tables(::CopernicusDEMSystem{30}) = TWIN30_TABLES
-# Any other `N` builds its table on first use and caches it. Looked up rather than
-# dispatched: a one-off lattice does not need a table in the method table.
+# Any other `N` builds its table on first use and caches it.
 function tables(::CopernicusDEMSystem{N}) where {N}
     return lock(OTHER_LOCK) do
         get!(() -> build_tables(Int(N)), OTHER_TABLES, Int(N))
@@ -168,12 +155,8 @@ and tile column `q` (west to east, `q = lon_w + 180`): `r * 360 + q`.
     tilebase(sys, r, q) -> Int64
 
 The 0-based level-1 id of the first (north-west) pixel of the tile at tile row `r`
-and tile column `q`.
-
-The prefix sum makes this O(1): `rowbase[r + 1]` counts every pixel in the tile rows
-north of `r`, and within a row every tile has the same `ncols * N` pixels.
-
-Callers must supply a decoded `(r, q)`; it validates nothing.
+and tile column `q`. O(1) via the `rowbase` prefix sum. Callers must supply a
+decoded `(r, q)`; it validates nothing.
 """
 tilebase(sys::CopernicusDEMSystem{N}, r::Integer, q::Integer) where {N} =
     tables(sys).rowbase[Int(r) + 1] + Int64(q) * ncols(sys, r) * Int64(N)
@@ -224,10 +207,6 @@ end
 
 Tile row, tile column, and — for a level-1 cell — raster row and column within the
 tile. A level-0 cell returns `(r, q, 0, 0)`.
-
-The level-1 inverse is a binary search for the tile row followed by two `divrem`s,
-because the pixels of a tile row are `360 * ncols(r) * N` consecutive ids and `ncols`
-varies only by row.
 """
 function decode(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     index = _checked_index(sys, c)
@@ -244,10 +223,8 @@ function decode(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     return (Int(r), Int(q), Int(j), Int(i))
 end
 
-# The id guard every decoder needs: `decode` would happily search the prefix table
-# with an id no cell has and hand back a tile that does not exist rather than an
-# error. (`cellposition` deliberately does NOT use this — there, a miss is
-# `nothing`.) The `ncells` call is also what rejects a level outside `0:1`.
+# Rejects ids no cell has and levels outside `0:1`. `cellposition` deliberately
+# does NOT use this — there, a miss is `nothing`.
 @inline function _checked_index(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
     n = DGG.ncells(sys, l)

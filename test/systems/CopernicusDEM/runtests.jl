@@ -1,39 +1,10 @@
 # ---------------------------------------------------------------------------
 # Copernicus DEM system tests.
 #
-# Four kinds of test, and the distinction matters when one fails:
-#
-#   1. ORACLE. The lattice itself — which tiles are how many columns wide, and
-#      where their pixel centres sit — is checked against 79 real AWS Open Data
-#      COGs read with `ArchGDAL` and committed to `fixtures.jl`. No network is
-#      touched from `test/`; the fixtures ARE the oracle. They are the only
-#      external evidence for the one rule neither primary source states: a
-#      tile's band is chosen by its EQUATOR-WARD edge, so `S50` is 1x and full
-#      width while `N50` is 1.5x.
-#
-#      HOW MUCH OF EACH SWEEP. The tile lattice is 64 800 cells, which is small
-#      enough to walk exhaustively in seconds even at GLO-30, so the prefix-sum,
-#      pole-row and 4-pi testsets below iterate all of it rather than sampling —
-#      they say so where they do. Level 1 is 620 524 800 000 cells at GLO-30 and
-#      is always sampled, from a seeded `MersenneTwister`, or swept along one
-#      structural line (a raster row, a tile's pixels, the 180 tile rows).
-#
-#   2. STRUCTURAL. Ids, prefix sums, raster order, and the pole degeneracies:
-#      this package's own design, which no oracle has an opinion about.
-#
-#   3. GEOMETRY. That the boxes partition the sphere, that the published rings
-#      are convex and how far they sit from their boxes, that `node_extent`
-#      covers the subtree, and that `cellat` inverts `cell_box` on the edges
-#      where floating point makes the two disagree.
-#
-#   4. CONTRACT. The two conformance suites, in section (k): in full on a scaled
-#      twin of the shipped lattices, and — because the harness materialises a
-#      cell's whole child list, and reduces one range per child quadratically —
-#      at the interface level on GLO-30 and GLO-90 themselves, with their
-#      hierarchical runs behind `DGG_COPDEM_FULL` (`90`, `30` or `all`; off by
-#      default). That section carries the seed the harness's absolute
-#      `area_atol` forces on this system's pole rows, and the assertion that the
-#      seed still does what it claims.
+# The oracle is `fixtures.jl`: 79 real AWS COGs measured with `ArchGDAL` and
+# committed — no network is touched from `test/`. The 64 800-tile lattice is
+# walked exhaustively where a sweep says so; level 1 is always sampled from a
+# seeded rng or swept along one structural line.
 #
 # Every testset names the mutant it kills. A test that kills no mutant no other
 # test already kills does not belong here.
@@ -52,29 +23,23 @@ import DiscreteGlobalGrids as DGG
 const CD = DiscreteGlobalGrids.CopernicusDEM
 
 using DiscreteGlobalGridsConformanceTesting
-# ... and by name as well, for `sample_positions` and `boundary_problems`, which
-# section (l) calls directly: the seed-away assertion there has to reproduce the
-# harness's own draw and the harness's own verdict, not an imitation of either.
+# ... and by name too, for `sample_positions` and `boundary_problems`, which
+# section (l) calls directly.
 import DiscreteGlobalGridsConformanceTesting as CT
 
 import GeometryOps as GO
 import GeoInterface as GI
-# Section (k) checks the block cursor by building a regridder with it and with
-# the generic cursor, and demanding the two matrices agree bit for bit.
 import ConservativeRegridding as CR
 const US = GO.UnitSpherical
 using GeometryOps.UnitSpherical: spherical_orient
 
-# The manifold every grid in this package computes on. Named once: a bare vector
-# of `UnitSphericalPoint`s carries no manifold, and `best_manifold` would guess
-# the WGS84 sphere for it, which is a factor of R^2 in every area.
+# Named once: a bare vector of points carries no manifold, and `best_manifold`
+# would guess the WGS84 sphere, a factor of R^2 in every area.
 const MANIFOLD = GO.Spherical(; radius = 1.0)
 
 const GLO30 = DGG.CopernicusDEMSystem(30)
 const GLO90 = DGG.CopernicusDEMSystem(90)
-# The scaled twin: the same code, the same band table, the same pole clamps, at
-# 1/120 the pixel count. Section (l) runs the conformance harness on it; the
-# testsets before that use it as a third independent `N` for every law stated in `N`.
+# The scaled twin: the same code and band table at 1/120 the pixel count.
 const TWIN = CD.CopernicusDEMSystem{30}()
 const ALL_SYSTEMS = (GLO30, GLO90, TWIN)
 
@@ -85,30 +50,19 @@ include("fixtures.jl")
 # --------------------------------------------------------------------------
 
 # Tile rows that straddle every band edge in both hemispheres, plus the equator
-# and both pole rows. This is the latitude axis of every geometry sweep below:
-# the band edges are where the column count changes, and the pole rows are where
-# the cells degenerate.
+# and both pole rows: the latitude axis of every geometry sweep below.
 const PROBE_LATS = (89, 88, 85, 84, 80, 79, 70, 69, 60, 59, 50, 49, 0, -1,
                     -50, -51, -60, -61, -70, -71, -80, -81, -85, -86, -89, -90)
 # The antimeridian tile from both sides, and the prime meridian.
 const PROBE_LONS = (-180, 0, 179)
 
-"""
-A sweep's failures, capped. These loops run to 64 800 iterations and the
-assertion is "none of them failed", not "each of them passed" — one `@test` per
-cell would be 200 000 test results for no extra information. The cap keeps a
-failure message readable while still naming the first few offenders.
-"""
+"A sweep's failures, capped so a failure message names the first few offenders."
 note!(bad::Vector{String}, msg) = (length(bad) < 5 && push!(bad, string(msg)); bad)
 
-# Does this ring turn right anywhere, i.e. is it non-convex? Copied VERBATIM
-# from `test/systems/crosssystem/regridding_conservation.jl:120-132` — copied
-# rather than `include`d, because the two suites are separate modules and neither
-# should be able to break the other by editing a shared helper. Consecutive
-# repeated vertices are skipped: a zero-length edge has no turn to measure, and
-# `spherical_orient` goes through `robust_cross_product`, which returns an
-# arbitrary perpendicular for two identical points, so a duplicated vertex would
-# otherwise read as a random reflex turn.
+# Does this ring turn right anywhere, i.e. is it non-convex? Copied verbatim
+# from `test/systems/crosssystem/regridding_conservation.jl`, since the two
+# suites are separate modules. Consecutive repeated vertices are skipped: a
+# duplicated vertex would otherwise read as a random reflex turn.
 function has_reflex_vertex(poly)
     pts = collect(GI.getpoint(GI.getexterior(poly)))
     while length(pts) > 1 && pts[end] == pts[1]
@@ -127,15 +81,9 @@ _walk(z, k) = (for _ in 1:abs(k); z = k > 0 ? nextfloat(z) : prevfloat(z); end; 
 
 """
 The `UnitSphericalPoint` on the prime meridian whose decoded latitude is EXACTLY
-`lat`, or `nothing` when no such point exists.
-
-`GeographicFromUnitSphere ∘ UnitSphereFromGeographic` is not the identity on
-latitude — it is `asind ∘ cosd(90 - ·)` in the third coordinate, which moves a
-value by up to 10 ulps and, being expansive near the equator, SKIPS values
-entirely. So the naive `TO_SPHERE((0, lat))` usually decodes to a neighbouring
-`Float64`, and testing `cellat` on an exact box edge means searching a few ulps
-of `z` around the naive image for one that decodes back exactly. 40 steps each
-way is ample; a third of all tile-row south edges have no such point at all.
+`lat`, or `nothing` when no such point exists. The round trip through the sphere
+moves a latitude by up to 10 ulps and skips some values entirely, so this
+searches a few ulps of `z` around the naive image.
 """
 function exact_latitude_point(lon, lat)
     p0 = CD.TO_SPHERE((lon, lat))
@@ -150,23 +98,16 @@ function exact_latitude_point(lon, lat)
     return nothing
 end
 
-# The seed section (k)'s conformance calls run on, and the sample size they run
-# it at. Both are named here rather than left to the harness's defaults because
-# `sampled_tile_lats` below has to reproduce the harness's draw EXACTLY — see
-# section (k) for what the reproduction is for.
+# The seed and sample size section (l)'s conformance calls run on, named here
+# because `sampled_tile_lats` has to reproduce the harness's draw exactly.
 const CONFORMANCE_SEED = 20260815
 const GI_SAMPLES = 32
 
 """
-The tile-row latitudes `test_grid_interface(levelgrid(sys, l); n_samples, rng =
-MersenneTwister(seed))` will sample: the harness's own draw, reproduced.
-
-`sample_positions` is the whole of the harness's sampling — `sample_cells` is it
-composed with `cellindex` — and `test_grid_interface` calls it once, before any
-law runs, so a caller can predict the cells from the seed alone. Calling the
-harness's own function rather than reimplementing `rand` is the point: an
-upstream change to how positions are drawn moves this too, and section (k)'s
-assertion goes red instead of silently testing different cells.
+The tile-row latitudes `test_grid_interface` will sample: the harness's own
+draw, reproduced by calling the harness's own `sample_positions` — so an
+upstream change to the sampling moves this too and section (l)'s assertion
+goes red instead of silently testing different cells.
 """
 function sampled_tile_lats(sys, l, seed, n_samples)
     g = levelgrid(sys, l)
@@ -194,9 +135,7 @@ end
     end
 
     # The six half-open band intervals, read off at the pair of rows that
-    # straddles each edge. The southern member of each pair is the one the tile
-    # LABEL gets wrong: `S50` spans -50 to -49, so its equator-ward edge is 49
-    # and it is a 1x tile, while `N50` spans 50 to 51 and is 1.5x.
+    # straddles each edge; the southern member is the one the tile label gets wrong.
     for (lat_s, cols30, cols90) in (( 49, 3600, 1200), ( 50, 2400,  800),
                                     ( 59, 2400,  800), ( 60, 1800,  600),
                                     ( 69, 1800,  600), ( 70, 1200,  400),
@@ -230,23 +169,17 @@ end
         sys = CD.CopernicusDEMSystem{f.N}()
         t = CD.tilecell(sys, f.lat_s, f.lon_w)
         west, _, _, north = CD.cell_box(sys, t)
-        # The raster SPACINGS are read off an interior pixel row, not off the
-        # tile box's own height. `cell_box` extends the `lat_s = -90` bottom row
-        # down to -90 to close the half-pixel gap ring at the pole (and clamps
-        # the `lat_s = 89` top row up to +90), so those two tile rows are N + 1/2
-        # pixels tall BY THIS SYSTEM'S OWN CONVENTION and `(north - south) / N`
-        # is half a pixel out: measured 3.86e-8 deg at GLO-30 and 3.47e-7 at
-        # GLO-90. The COG has no such row — its south edge is -89.99986111111112
-        # — so the fixture's Δlat is the ordinary row height, and row 1 is
-        # unaffected by either correction in both rows.
+        # The raster spacings are read off an interior pixel row, not the tile
+        # box's own height: `cell_box`'s pole clamp/extension makes the ±90
+        # tile rows N + 1/2 pixels tall, while the COG's Δlat is the ordinary
+        # row height.
         pw, pe, ps, pn = CD.cell_box(sys, CD.pixelcell(sys, t, 1, 0))
         gt = (west, pe - pw, 0.0, north, 0.0, -(pn - ps))
         expected = (f.origin_x, f.dlon_arcsec / 3600, 0.0, f.origin_y, 0.0, -1 / f.N)
         @test all(abs.(gt .- expected) .<= 1e-12)
 
-        # The first pixel CENTRE is the integer degree pair the file name carries,
-        # exactly — this is what "pixel-is-point" means and it is not an
-        # approximation, so `==` and not `isapprox`.
+        # The first pixel CENTRE is the integer degree pair the file name
+        # carries, exactly — so `==` and not `isapprox`.
         cw, ce, cs, cn = CD.cell_box(sys, CD.pixelcell(sys, t, 0, 0))
         @test (cw + ce) / 2 == Float64(f.lon_w)
         @test (cs + cn) / 2 == Float64(f.lat_s + 1)
@@ -285,14 +218,9 @@ end
         end
         @test bad == String[]
         @test prev_stop == ncells(sys, 1)
-        # `prev_stop` IS `sum(ncols(sys, r) * N * 360 for r in 0:179)` — the loop
-        # above walked that sum one window at a time — so asserting the closed
-        # form separately restates the loop and is not a test.
 
-        # positions -> ids -> positions, at both levels. Only this direction: the
-        # other one, `cellindex(g, cellposition(g, c)) == c`, is the line above
-        # composed with itself on a `c` this loop built with `cellindex`, and
-        # cannot fail unless the line above already has.
+        # positions -> ids -> positions, at both levels. Only this direction:
+        # the other one cannot fail unless this one already has.
         rng = MersenneTwister(20260815)
         for g in (g0, g1)
             n = ncells(g)
@@ -302,17 +230,10 @@ end
             end
         end
 
-        # children -> parent, AT REAL `N`. `children` numbers a tile's pixels
-        # from `tilebase`, `parent` reads the tile back out of an id through
-        # `decode`, and both go through the same `N`-dependent prefix sums — so
-        # a disagreement between them (a base off by a row, a decode that
-        # searches on the wrong side) shows up here and — outside section (k)'s
-        # OPT-IN hierarchical runs — in nothing else that starts from a real
-        # tile's `children`; testset (i) closes the same loop from `cellat`,
-        # which shares the decode but not the base arithmetic. Every
-        # band-edge and pole row, at the three probe longitudes in turn, three
-        # children each: the range is LAZY, so `ch[k]` is O(1) and the
-        # 12 960 000-element child list is never built.
+        # children -> parent, AT REAL `N`: `children` numbers pixels from
+        # `tilebase`, `parent` decodes the tile back out, and both go through
+        # the same `N`-dependent prefix sums. The range is LAZY, so `ch[k]` is
+        # O(1) and the 12 960 000-element child list is never built.
         bad = String[]
         for (i, lat_s) in enumerate(PROBE_LATS)
             lon_w = PROBE_LONS[mod1(i, length(PROBE_LONS))]
@@ -358,10 +279,8 @@ end
 
                 _, east, south, north = CD.cell_box(sys, c)
                 if i < nc - 1
-                    # `===`, not `==`: the east edge of column `i` and the west
-                    # edge of column `i+1` are the SAME Float64, which is what
-                    # makes the two quads share a geodesic rather than nearly
-                    # share one.
+                    # `===`, not `==`: adjacent cells' shared edge must be the
+                    # SAME Float64, so the quads share a geodesic exactly.
                     @test east === CD.cell_box(sys, CD.pixelcell(sys, t, j, i + 1))[1]
                 end
                 if j < N - 1
@@ -378,30 +297,15 @@ end
 # (e) The pole rows
 # =========================================================================
 
-# This testset carries the pole rows ON ITS OWN. The conformance harness cannot:
-# `boundary_problems` judges a ring degenerate against an ABSOLUTE `1e-12`
-# steradian floor that no caller can reach, and a GLO-30 `lat_s = 89` top-row
-# pixel is a legitimate 1.4e-16 sr. Section (l) samples those rows away, so
-# everything asserted about them is asserted here, which is why the level-0
-# sweep below is exhaustive rather than sampled.
+# This testset carries the pole rows ON ITS OWN: the conformance harness's
+# absolute degeneracy floor rejects legitimately tiny pole-row rings, so
+# section (l) samples those rows away and everything asserted about them is
+# asserted here — exhaustively at level 0.
 #
-# KILLS: emitting a duplicated pole vertex (a degenerate quad that
-# `has_reflex_vertex` reads as a random reflex turn), building the pole from
-# `UnitSphereFromGeographic((lon, ±90))` rather than from the `NORTH_POLE` /
-# `SOUTH_POLE` literals, and forgetting the clamp/extend, so the top row runs
-# past latitude 90.
-#
-# That middle mutant is killed by ONE character — the `===` in the pole-vertex
-# count below — and only because the level-0 sweep is exhaustive. The mutant's
-# point is NOT ~6e-17 off the pole: GeometryOps goes through `sincosd`,
-# `cosd(±90)` is exactly `0.0`, and `TO_SPHERE((lon, ±90))` is exactly
-# `(±0.0, ±0.0, ±1.0)` — four bit patterns whose only difference from the literal
-# is the SIGN BIT, set in x wherever `cosd(lon) < 0` and in y wherever
-# `sind(lon) < 0`. Numerically the two points never differ, so `==` cannot see it
-# (`-0.0 == 0.0`) and `===` can. Only the 91 longitudes `0:90`, where both sign
-# bits are clear, reproduce the literal bit for bit, so a probe restricted to that
-# quadrant would let the mutant live; sweeping all of `lon_w in -180:179` is what
-# makes the kill certain.
+# KILLS: emitting a duplicated pole vertex, forgetting the clamp/extend, and
+# building the pole from `TO_SPHERE((lon, ±90))` rather than the literals —
+# that one differs only in sign bits, which `==` cannot see and `===` can, and
+# only the full `lon_w in -180:179` sweep reaches the bit patterns that differ.
 @testset "pole cells are triangles" begin
     for sys in ALL_SYSTEMS
         N = CD.lat_intervals(sys)
@@ -487,12 +391,8 @@ end
 @testset "the boxes partition the sphere" begin
     for sys in ALL_SYSTEMS
         g0 = levelgrid(sys, 0)
-        # MATERIALISE, then let Julia's pairwise `sum` reduce it. This is not
-        # decoration: the closed form does not telescope, because not every tile
-        # has `east - west === 1.0`, so a generator argument — summed strictly
-        # left to right — lands orders further from 4π than the pairwise
-        # reduction of the same numbers and fails this `rtol`. Do not loosen the
-        # tolerance to accommodate a generator; the areas are fine.
+        # MATERIALISE, then let Julia's pairwise `sum` reduce it: a generator
+        # argument lands orders further from 4π and fails this `rtol`.
         areas = [cell_area(g0, cellindex(g0, i)) for i in 1:ncells(g0)]
         @test sum(areas) ≈ 4π rtol = 1e-14
 
@@ -503,10 +403,7 @@ end
     end
 
     # One tile per band, its pixels summing to the tile. GLO-90 and the twin
-    # only: `cell_area` is one closed form, generic in `N` and in the band's
-    # column count, so a third lattice re-runs the same expression on bigger
-    # numbers and tests no line the other two leave untested. GLO-30's six
-    # tiles would be 36.3 million pixels for that.
+    # only: GLO-30's six tiles would be 36.3 million pixels for the same closed form.
     for sys in (GLO90, TWIN)
         g0 = levelgrid(sys, 0)
         g1 = levelgrid(sys, 1)
@@ -523,22 +420,12 @@ end
 # (g) The published rings: convex, and how far from the box
 # =========================================================================
 
-# KILLS: any future densification of the edges — the change that would silently
-# put this system in the same broken-as-a-regridding-DESTINATION class as
-# HEALPix, ISEA4R and A5 — and a corner order that is clockwise or crossed.
-#
-# The thresholds are two-scoped on purpose. The gap between the box (what
-# `cell_area` returns) and the published geodesic quad (what `GO.area` measures)
-# is strongly latitude-dependent, and the `lat_s = ±90` rows are half-pixel
-# slivers and pole triangles whose gap is four orders above every other row: one
-# flat threshold over a sample containing them would fail on geometry that is
-# correct.
-#
-# Run on the two shipped lattices, whose pixel sizes the thresholds are for. The
-# twin is deliberately absent: its pixels are 1/30 of a degree tall and from 1/30
-# of a degree wide in the 1x band to 1/3 in the 10x band (its bands are 30, 20,
-# 15, 10, 6 and 3 columns), so they bow like small tiles rather than like pixels,
-# and a threshold loose enough to admit them would admit a real defect at GLO-30.
+# KILLS: any future densification of the edges — which would cost this system
+# its convexity as a regridding destination — and a corner order that is
+# clockwise or crossed. Two thresholds because the ±90 rows' ring-vs-box gap is
+# four orders above every other row's. The twin is deliberately absent: its
+# pixels bow like small tiles, and a threshold loose enough for them would
+# admit a real defect at GLO-30.
 @testset "rings are convex, and how far they are from the box" begin
     for sys in (GLO30, GLO90)
         N = CD.lat_intervals(sys)
@@ -595,10 +482,8 @@ end
             cap = node_extent(sys, t)
             max_radius = max(max_radius, cap.radius)
             west, east, south, north = CD.cell_box(sys, t)
-            # The tile's own box perimeter, re-sampled 256 points to an edge
-            # straight from `cell_box`. This is a TEST-ONLY densification of the
-            # continuous truth the cap has to bound; the published ring stays
-            # undensified, which is the whole point of the system.
+            # A TEST-ONLY densification of the continuous truth the cap has to
+            # bound; the published ring stays undensified.
             for k in 0:255
                 f = k / 256
                 for p in (CD.TO_SPHERE((west + f * (east - west), south)),
@@ -615,11 +500,9 @@ end
         @test max_radius <= π / 2            # convex, as `require_convex_extents` asserts
     end
 
-    # The covering law itself, over EVERY child of every probe tile. Only on the
-    # twin: a GLO-30 tile has 12 960 000 children and a GLO-90 tile 1 440 000,
-    # and the perimeter probe above is the sharper statement anyway — a child's
-    # box vertices all lie on or inside the parent's box, which is the region
-    # that probe bounds.
+    # The covering law itself, over EVERY child of every probe tile. Only on
+    # the twin: a GLO-30 tile has 12 960 000 children, and the perimeter probe
+    # above is the sharper statement anyway.
     worst_child = -Inf
     checked = 0
     for lat_s in PROBE_LATS, lon_w in PROBE_LONS
@@ -646,9 +529,8 @@ end
 # twin's — so both are here.
 @testset "cellat agrees with cell_box on south edges" begin
     # PROBE 1: a point whose decoded latitude is EXACTLY the tile's south edge.
-    # Not every edge is reachable — `asind` skips values — so the reachable count
-    # is pinned rather than assumed: if an upstream change to the coordinate
-    # conversion moves it, this goes red instead of quietly testing less.
+    # Not every edge is reachable — `asind` skips values — so the reachable
+    # count is pinned rather than assumed.
     for (sys, reachable) in ((GLO30, 120), (GLO90, 120), (TWIN, 125))
         g0 = levelgrid(sys, 0)
         g1 = levelgrid(sys, 1)
@@ -692,43 +574,19 @@ end
         @test bad == String[]
     end
 
-    # The ANTIMERIDIAN branch, through the real `cellat`. Everything below this
-    # is arithmetic that only mirrors `cellat`'s longitude path; these two are
-    # the only assertions in the file that drive the `floor(s) >= 180` branch
-    # through `cellat` itself. A point a ten-thousandth of a degree west of the
-    # antimeridian is inside the E179 tile, but adding `Δlon/2` (1/7200 at
-    # GLO-30, 1/2400 at GLO-90, both larger than 1e-4) carries `s` over 180, and
-    # the branch sends it round to the W180 tile — the same tile, approached from
-    # the east.
+    # The ANTIMERIDIAN branch, through the real `cellat`: a point just west of
+    # ±180 is inside the E179 tile, but adding `Δlon/2` carries `s` over 180
+    # and the branch sends it round to the W180 tile.
     for sys in (GLO30, GLO90)
         g0 = levelgrid(sys, 0)
         @test CD.tilecorner(sys, cellat(g0, CD.TO_SPHERE((179.9999, 0.0)))) == (-1, -180)
     end
 
-    # The mirrored LONGITUDE repair is deliberately ABSENT from `cellat`, and
-    # this is the measurement that justifies its absence rather than a repair
-    # that never fires: `west` is built as `lon_w - Δlon/2`, and `cellat`'s
-    # longitude path — normalise into [-180, 180), add `Δlon/2` back, `floor`,
-    # and send a `floor` of 180 round to -180 — recovers `lon_w` for every one of
-    # the 3 x 64 800 tiles, with no repair term anywhere.
-    #
-    # Those last two steps are DIFFERENT lines and this sweep weighs them
-    # differently. Deleting the `[-180, 180)` normalisation costs this sweep
-    # nothing — every `west` fed in is already in range, and `-180 - Δlon/2`
-    # floors to -180 unaided; that line
-    # earns its place against the `lon = 180` that `atand` returns at a pole, not
-    # against these. Deleting `floor(s) >= 180 -> lon_w = -180` costs exactly 180
-    # misses per system, every one of them at `lon_w = -180`: normalisation sends
-    # that tile's west edge to `180 - Δlon/2`, and adding the half-pixel back
-    # lands on 180.0 exactly. That is the W180 tile reached from the east, which
-    # is the branch the two `cellat` assertions above exercise directly.
-    #
-    # And this is why the sweep is arithmetic rather than a `cellat` probe on the
-    # west edge itself: the exact west edge is no more reachable through a
-    # `UnitSphericalPoint` than the exact south edge was. Feeding
-    # `TO_SPHERE((west, mid))` to `cellat` lands on the WEST neighbour for
-    # thousands of the 64 800 tiles on every lattice — a property of the round
-    # trip, not of the inversion.
+    # The mirrored LONGITUDE repair is deliberately ABSENT from `cellat`; this
+    # sweep is the measurement behind that: the longitude path recovers `lon_w`
+    # for every tile of all three lattices with no repair term. Arithmetic
+    # rather than a `cellat` probe because the exact west edge is not reachable
+    # through a `UnitSphericalPoint`.
     for sys in ALL_SYSTEMS
         misses = 0
         for lat_s in -90:89
@@ -749,48 +607,23 @@ end
 # (j) Cross-resolution nesting: one lattice inside another
 # =========================================================================
 
-# The two products' pixel CENTRES coincide — GLO-90 post `(j, i)` is GLO-30 post
-# `(3j, 3i)` — and their column counts divide exactly. That, and not a cell-box
-# tiling, is what `refine`/`coarsen` implement and what this testset pins: the
-# k x k index block, its ascending order, the round trip, and the co-location of
-# the block's north-west post with the coarse post.
+# What `refine`/`coarsen` implement and what this testset pins: the k x k index
+# block, its ascending order, the round trip, and the co-location of the
+# block's north-west post with the coarse post. The cell BOXES are deliberately
+# not asserted to tile the coarse box — they do not; see `refine`'s docstring.
+# The area gaps are @info-logged, not asserted: properties of the registration,
+# not tolerances to tighten.
 #
-# The cell BOXES are deliberately not asserted to tile the coarse box, because
-# they do not. Both products are pixel-is-point, so each outsets its box by half
-# of ITS OWN pixel, and the block's box is the coarse box translated south-east,
-# on each axis, by `Δ_coarse * (1 - 1/k) / 2` — half a coarse pixel less half a
-# fine one, which at k = 3 is one whole GLO-30 pixel. That is a FRACTION of a
-# coarse pixel, so the arcsecond figure is per-band (in longitude 1.0" in
-# [0,50), 1.5" in [50,60), 10" in [85,90); in latitude 1.0" everywhere), and it
-# is the fraction, not the arcseconds, that `worst_shift` asserts below.
-#
-# The block's areas therefore sum to that translated box (asserted, via
-# `worst_union`) and miss the coarse cell's own area by about `tan(φ) * 1"`. In
-# the pole tile rows, where the two systems' pole clamps differ by half a pixel
-# each, that miss is of order one instead. Every gap quoted here and in
-# `refine`'s docstring is the relative gap `|block - coarse| / coarse`, which is
-# the one convention both use. These gaps are @info-logged, not asserted: they
-# are properties of the registration, not tolerances to tighten. See `refine`'s
-# docstring for why no uniform, tile-local index scheme fixes them.
-#
-# KILLS: a half-pixel registration shift between the two products — the
-# co-location probe sits eight orders inside the 2.8e-4 degrees the smallest
-# such shift moves a post; hardcoding `k = 3`, which the k = 40 pair catches;
-# an off-by-one
-# in the k-scaling, which breaks the round trip and the tile-corner extremes
-# together; a block anchored anywhere but `(k*j, k*i)` — the "centred" block
-# `refine`'s docstring rules out reads a shift of 0 rather than `(1 - 1/k) / 2`,
-# and an off-by-one fine column reads `1/k` off, both far above the 1e-10
-# `worst_shift` asserts; and a j/i transposition in the block base, which lands
-# in a different tile row entirely.
+# KILLS: a half-pixel registration shift between the two products; hardcoding
+# `k = 3`, which the k = 40 pair catches; an off-by-one in the k-scaling; a
+# block anchored anywhere but `(k*j, k*i)`; and a j/i transposition in the
+# block base.
 @testset "one lattice nests k-fold inside another" begin
     # One tile per band per hemisphere, plus both pole rows.
     nest_lats = (89, 85, 80, 70, 60, 50, 0, -1, -51, -61, -71, -81, -86, -90)
 
-    # The shipped pair at k = 3, and the twin inside GLO-90 at k = 40 — the case
-    # that says the code is written in `k` and not in 3. `k = 40` is also even,
-    # so its block has no centre column: the block is an INDEX block, and only
-    # the post lattice nests.
+    # The shipped pair at k = 3, and the twin inside GLO-90 at k = 40 — the
+    # case that says the code is written in `k` and not in 3.
     for (coarse, fine) in ((GLO90, GLO30), (TWIN, GLO90))
         k = CD.nesting_factor(coarse, fine)
         Nc = CD.lat_intervals(coarse)
@@ -834,19 +667,10 @@ end
                         note!(bad, "$label: not ascending and distinct")
                     all(f -> CD.coarsen(fine, coarse, f) == p, fs) ||
                         note!(bad, "$label: coarsen does not invert refine")
-                    # `parent(fine, f) == tf` for every `f` is NOT re-asserted:
-                    # `coarsen` reads its tile straight out of `decode(fine, f)`,
-                    # so a block that left its tile could not round-trip back to
-                    # `p` above.
 
-                    # The block tiles its own box bitwise — inside a row the east
-                    # edge of one cell IS the west edge of the next, and between
-                    # rows the south edge of one IS the north edge of the one
-                    # below — so the union of the block is just the box spanned
-                    # by its north-west and south-east cells, and the areas sum
-                    # to it. That shared-edge identity is testset (d)'s, on the
-                    # fine lattice itself and for every system; re-checking it on
-                    # these blocks tests `cell_box`, not `refine`.
+                    # The block tiles its own box bitwise (testset (d)'s
+                    # shared-edge identity), so its union is the box spanned by
+                    # its north-west and south-east cells.
                     boxes = [CD.cell_box(fine, f) for f in fs]
                     west, north = boxes[1][1], boxes[1][4]
                     east, south = boxes[end][2], boxes[end][3]
@@ -856,22 +680,11 @@ end
 
                     cw, ce, cs, cn = CD.cell_box(coarse, p)
 
-                    # The shift the docstring documents: the block's box is the
-                    # coarse box translated south-east by `Δ_coarse * (1-1/k)/2`
-                    # on each axis. Measured as a FRACTION of the coarse pixel,
-                    # which makes the assertion band-free and k-free.
-                    #
-                    # The pole rows: the longitude form holds there unchanged —
-                    # the clamps touch only north and south — and in fact reads
-                    # tighter, the [85,90) and [-90,-89) columns being 10" wide.
-                    # The latitude form does NOT: at
-                    # `lat_s = 89, j = 0` both systems clamp their north edge to
-                    # exactly 90.0, so the block is not shifted at all there and
-                    # the ratio reads 0 against a target of 0.333 (k = 3) or
-                    # 0.4875 (k = 40); at `lat_s = -90, j = Nc - 1` the coarse
-                    # cell is one and a half pixels tall, so the same ratio comes
-                    # out at 2/3 of the target. Those two pixels, and only those
-                    # two, are skipped in latitude.
+                    # The documented south-east shift, measured as a FRACTION
+                    # of the coarse pixel, which makes the assertion band- and
+                    # k-free. The two pixels where a pole clamp moves the
+                    # latitude edge — `(89, j = 0)` and `(-90, j = Nc - 1)` —
+                    # are skipped in latitude only.
                     target = (1 - 1 / k) / 2
                     worst_shift = max(worst_shift,
                         abs((boxes[1][1] - cw) / (ce - cw) - target))
@@ -887,15 +700,11 @@ end
                         worst_pole_s = max(worst_pole_s, gap)
                     else
                         worst_coarse = max(worst_coarse, gap)
-                        # The two rows `refine`'s docstring quotes `tan(φ)·1"` at.
                         lat_s == 50 && (gap_lat50 = max(gap_lat50, gap))
                         lat_s == 0 && (gap_equator = max(gap_equator, gap))
-                        # The co-location itself, on the box midpoints — which are
-                        # the posts, by testset (b). Skipped in the ±90 rows only
-                        # because `cell_box` clamps those to the pole by half of
-                        # the system's OWN pixel, which moves the midpoint off the
-                        # post by a different amount on each side; the posts there
-                        # are `lat_n - j/N` on both sides, as everywhere else.
+                        # The co-location itself, on the box midpoints — the
+                        # posts, by testset (b). Skipped in the ±90 rows, where
+                        # the clamps move the midpoints off the posts.
                         worst_post = max(worst_post,
                             abs((cw + ce) / 2 - (boxes[1][1] + boxes[1][2]) / 2),
                             abs((cs + cn) / 2 - (boxes[1][3] + boxes[1][4]) / 2))
@@ -911,26 +720,16 @@ end
         # A half-pixel registration slip would move a post by 4.2e-4 degrees
         # (1.5"), eight orders above this threshold.
         @test worst_post < 1e-12
-        # The documented south-east shift, as a fraction of a coarse pixel. What
-        # this threshold has to clear is cancellation rather than registration:
-        # `boxes[1][1] - cw` differences two values near ±180, whose ulp is
-        # 2.8e-14, while the shift itself is only 2.8e-4 degrees at k = 3 in the
-        # widest band. What it has to catch is far above it — a block centred on
-        # the coarse box reads 0.333 (k = 3) or 0.4875 (k = 40), an off-by-one
-        # fine column reads `1/k`, which is 0.025 even at k = 40.
+        # What this threshold must clear is cancellation near ±180; what it
+        # must catch — a centred block or an off-by-one column — is far above it.
         @test worst_shift < 1e-10
-        # This one has to hold under `Pkg.test`'s `--check-bounds=yes`, which
-        # costs `sum` its SIMD path and so reorders the 1600 additions. The areas
-        # are materialised so Julia's pairwise `sum` reduces them, as `cell_area`'s
-        # docstring asks; a generator over the same terms lands orders worse.
+        # The areas are materialised so pairwise `sum` reduces them, as
+        # `cell_area`'s docstring asks.
         @test worst_union < 1e-12
 
         # The block decomposition IS the fine tile's raster cut into k x k
-        # blocks: the first coarse pixel's block starts at the fine tile's first
-        # child, and the last one's ends at its last. The count identity
-        # `k^2 * length(children(coarse, tc)) == length(ch)` is not asserted —
-        # both sides are `ncols * N` scaled by k, so it restates the per-row
-        # `ncols_at(fine) == k * ncols_at(coarse)` check at the top of the loop.
+        # blocks: the first coarse pixel's block starts at the fine tile's
+        # first child, and the last one's ends at its last.
         for lat_s in (0, 50, 89, -90)
             tc = CD.tilecell(coarse, lat_s, 7)
             tf = CD.tilecell(fine, lat_s, 7)
@@ -963,15 +762,11 @@ end
 # (k) The block cursor: an interior tree over a two-level lattice
 # =========================================================================
 
-# WHAT IS AT STAKE. `treeify` hands ConservativeRegridding a cursor, and the dual
-# tree search trusts three things about it: a node's cap COVERS every cell
-# beneath it (or pairs are silently dropped), a leaf's indices are GRID
-# POSITIONS (or the matrix is transposed cell-wise into nonsense), and the
-# leaves partition the grid exactly once (or a cell is regridded twice or not at
-# all). `CD.BlockCursor` asserts all three by arithmetic on the band tables
-# rather than by sampling, so all three are checked here by construction rather
-# than by spot check — and then the whole thing is checked at once by demanding
-# the intersection matrix be BIT-IDENTICAL to the generic cursor's.
+# The dual tree search trusts three things about a cursor: a node's cap COVERS
+# every cell beneath it, a leaf's indices are GRID POSITIONS, and the leaves
+# partition the grid exactly once. All three are checked here — and then the
+# whole thing at once, by demanding the intersection matrix be BIT-IDENTICAL
+# to the generic cursor's.
 @testset "the block cursor is a tree over the lattice" begin
     STI = GO.SpatialTreeInterface
 
@@ -997,13 +792,10 @@ end
     @test treeify(midrow) isa DGG.HierarchicalGridCursor
     @test treeify(scattered) isa DGG.HierarchicalGridCursor
 
-    # A level-1 run of WHOLE tiles is a rectangle too — one tile row segment, or
-    # whole tile rows, the same two shapes the level-0 rule admits — and it gets
-    # the tile-node machinery a level-1 level grid already uses.
-    # KILLS: a dispatch that reads "more than one tile" as "not a rectangle" and
-    # sends the window down the generic cursor's 64 800-child root; and one that
-    # reads it as a rectangle without checking that the END tile is whole, which
-    # would claim positions the grid does not hold.
+    # A level-1 run of WHOLE tiles is a rectangle too.
+    # KILLS: a dispatch that reads "more than one tile" as "not a rectangle";
+    # and one that skips checking that the END tile is whole, which would claim
+    # positions the grid does not hold.
     ntwin = Int(CD.lat_intervals(TWIN))
     nc_twin = Int(CD.ncols_at(TWIN, 50))
     two_lo = CD.pixelcell(TWIN, CD.tilecell(TWIN, 50, 6), 0, 0).index
@@ -1020,22 +812,17 @@ end
     @test treeify(pole_rows) isa CD.BlockCursor
     @test treeify(part_end) isa DGG.HierarchicalGridCursor
 
-    # An id no cell has. `decode` throws on one and `PartialGrid` does not
-    # range-check its ids, while `treeify` is documented to answer for every
-    # grid. KILLS: dropping the range check in `_block_cursor`, which turns a
-    # fallback into an `ArgumentError` out of `treeify`.
+    # An id no cell has. KILLS: dropping the range check in `_block_cursor`,
+    # which turns a fallback into an `ArgumentError` out of `treeify`.
     beyond = ncells(TWIN, 1)
     @test treeify(PartialGrid(TWIN, 1, [LevelIndex(1, beyond + k) for k in 0:3])) isa
           DGG.HierarchicalGridCursor
 
     # ---- the leaves partition the positions, exactly once each --------------
     # KILLS: an off-by-one in the near-equal split (`_part`), which drops or
-    # repeats whole blocks; and a `_position` that forgets the band's `ncols` or
-    # the grid's own first id.
-    # The counts are kept rather than short-circuited: "some position was wrong"
-    # and "position 7 was yielded twice by two different leaves" are different
-    # bugs, and the failure message should say which — with the grid and the
-    # strategy that produced it, since every case below runs the same assertion.
+    # repeats whole blocks; and a `_position` that forgets the band's `ncols`
+    # or the grid's own first id. The counts are kept so the failure message
+    # says which bug it was.
     function leaf_positions(tree, n)
         seen = falses(n)
         stack = [tree]
@@ -1099,9 +886,8 @@ end
         return worst
     end
 
-    # Both strategies: the caps are derived from a node's rectangle, and the two
-    # strategies cut different rectangles out of the same grid — `Blocked{3}`'s
-    # edge blocks are the ceil-divided ones, which is where an off-by-one in
+    # Both strategies: they cut different rectangles out of the same grid, and
+    # `Blocked{3}`'s ceil-divided edge blocks are where an off-by-one in
     # `_part` would put a cell outside its own node's box.
     for (label, grid) in (("twin tile", twin_tile), ("GLO-90 tiles", levelgrid(GLO90, 0))),
         strategy in (CD.Blocked{3}(), CD.Bisected())
@@ -1114,16 +900,11 @@ end
     end
 
     # ---- and the caps against the BOX, not just the corners it was built from --
-    # The walk above bottoms out at leaf cells whose ring vertices ARE the box
-    # corners the cap radius came from, so its leaf arm can only re-derive
-    # `_leaf_pad`. This samples the node's own box perimeter instead — 65 points
-    # to an edge, a TEST-ONLY densification of the continuous truth a cap has to
-    # bound, as in section (h) — at both scales, in three bands and both pole
-    # rows, with the two TILE blocks straddling the band edges at latitude 50 and
-    # 85 where the column count steps.
+    # Samples the node's own box perimeter — a TEST-ONLY densification, as in
+    # section (h) — at both scales, with the TILE blocks straddling band edges.
     # KILLS: a `_box_cap` centred anywhere but the box midpoint, and a
-    # `_node_box` tile branch that takes one band's half-pixel west offset for a
-    # block spanning several.
+    # `_node_box` tile branch that takes one band's half-pixel west offset for
+    # a block spanning several.
     g0_90, g1_90 = levelgrid(GLO90, 0), levelgrid(GLO90, 1)
     n90 = Int(CD.lat_intervals(GLO90))
     worst_box = -Inf
@@ -1152,15 +933,11 @@ end
     @info "block cursor caps vs the densely sampled node box" worst_box
     @test worst_box < 0
 
-    # ---- what `_leaf_pad` is, which is not a bound on the bow ---------------
-    # Its docstring says the CORNER sets the cap radius and a bowed edge never
-    # reaches it, so the pad is belt-and-braces against rounding rather than the
-    # thing that keeps a ring inside. This is that statement as an assertion:
-    # rebuild each leaf's cap with pad ZERO and sample its ring's edges, at both
-    # scales and in both pole rows.
-    # KILLS: a rationale that has drifted from the code. If `cell_boundary` ever
-    # densified its rings, or a band's Δλ grew enough for the bow to matter, this
-    # goes red and `_leaf_pad`'s docstring needs rewriting.
+    # ---- the corner cap alone contains the ring -----------------------------
+    # Rebuild each leaf's cap with pad ZERO and sample its ring's edges: the
+    # bow never leaves the unpadded corner cap, so the pad only absorbs corner
+    # rounding. KILLS: a `cell_boundary` that starts densifying, or a bow that
+    # grows enough to matter.
     worst_vertex = -Inf
     worst_interior = -Inf
     for lat_s in (89, 86, 50, 0, -60, -90), lon_w in (-180, 6)
@@ -1200,14 +977,10 @@ end
     @test worst_vertex < 1e-15      # and the corners leave it by float rounding
 
     # ---- the level-1 TILE node path ----------------------------------------
-    # A level-1 grid over more than one tile descends TILE nodes before it ever
-    # reaches a raster, and that is a separate arm in three places: `isleaf` (a
-    # tile block of a level-1 grid is never a leaf, however few tiles it holds),
-    # `_childspace` (a one-tile block descends straight into that tile's raster,
-    # spending no level on itself), and `_node_box` (the tile-rectangle branch).
-    # KILLS: `isleaf` reading a one-tile level-1 node as a leaf, which would
-    # yield one position where a whole raster belongs; and a `_childspace` that
-    # descends into the wrong tile's column count.
+    # A level-1 grid over more than one tile descends TILE nodes before it
+    # reaches a raster. KILLS: `isleaf` reading a one-tile level-1 node as a
+    # leaf, which would yield one position where a whole raster belongs; and a
+    # `_childspace` that descends into the wrong tile's column count.
     g1twin = levelgrid(TWIN, 1)
     root = treeify(g1twin)
     @test root isa CD.BlockCursor
@@ -1232,12 +1005,9 @@ end
                 cap = STI.node_extent(node)
                 for p in ring
                     s = US.spherical_distance(cap.point, p) - cap.radius
-                    # The root spans the globe, so `_box_cap` takes its POLAR
-                    # branch and clamps the radius at π — and the pole opposite
-                    # that cap's centre then sits exactly ON it. A cap of radius
-                    # π IS the whole sphere, so 0.0 is the right answer there and
-                    # only there; every narrower cap must contain the ring
-                    # strictly, which is what the pad is for.
+                    # A cap of radius π IS the whole sphere, so 0.0 is the right
+                    # answer at the globe root and only there; every narrower
+                    # cap must contain the ring strictly.
                     if cap.radius >= Float64(π)
                         worst_globe = max(worst_globe, s)
                     else
@@ -1262,8 +1032,7 @@ end
 
     # ---- the index space ----------------------------------------------------
     # `Trees.getcell(tree, i)` and `child_indices_extents`'s `i` are the same
-    # space, and it is the grid's, at every node — the contract the sparse
-    # matrix's row and column numbers are read out of.
+    # space, and it is the grid's, at every node.
     root = CD.BlockCursor(twin_tile)
     @test DGG.ncells(root) == ncells(twin_tile)
     for i in (1, 2, ncells(twin_tile) ÷ 3, ncells(twin_tile))
@@ -1271,16 +1040,11 @@ end
     end
 
     # ---- and the whole thing at once ----------------------------------------
-    # KILLS: any cap that under-covers (pairs vanish), any position that is
-    # wrong (entries land in the wrong column), any leaf double-count (entries
-    # are added twice). The generic `HierarchicalGridCursor` is the oracle: it
-    # descends the SYSTEM's hierarchy and knows nothing about rectangles, so
-    # agreeing with it to the last bit is agreeing about the geometry, not about
-    # a shared implementation. Both strategies, both scales.
-    # Two destinations, because they descend differently: HEALPix bisects a
-    # 4-fold hierarchy and IGEO7 a 7-fold one, so the pairs the dual search puts
-    # this cursor's nodes against are not the same pairs. And a multi-tile
-    # level-1 source, which is the only case whose root is a level-1 TILE node.
+    # KILLS: any cap that under-covers, any wrong position, any leaf double
+    # count. The generic `HierarchicalGridCursor` is the oracle — it knows
+    # nothing about rectangles. Two destinations because they descend
+    # differently (4-fold vs 7-fold), and a multi-tile level-1 source, the only
+    # case whose root is a level-1 TILE node.
     for (label, src, dst) in
         (("twin tile -> HEALPix 5", twin_tile, levelgrid(DGG.HEALPixSystem(), 5)),
          ("twin tile -> IGEO7 4", twin_tile, levelgrid(DGG.IGeo7System(), 4)),
@@ -1304,35 +1068,21 @@ end
 # (l) Contract: the conformance suites
 # =========================================================================
 
-# WHY THE TWIN. Bare line numbers in this section are into the conformance
-# harness, `lib/DiscreteGlobalGridsConformanceTesting/src/DiscreteGlobalGridsConformanceTesting.jl`.
-# `test_hierarchical_system` calls `collect(children(sys, c))` for every sampled
-# cell, materialises `descendants_at` by recursion, and builds
-# `reduce(vcat, collect.(ranges))` over every sibling range (`:1610`). A GLO-30
-# tile has up to 12 960 000 children and a GLO-90 tile 1 440 000, and the last of
-# those three is quadratic in that count, so the default `n_samples = 8` is not
-# affordable on either shipped lattice at any budget: ONE sampled tile of GLO-90
-# allocates over 3 TiB, by the closed form the opt-in note below gives.
-# `CopernicusDEMSystem{30}()` is the SAME CODE at a different `N` — same band
-# table, same six reduction factors, same tile lattice, same pole clamps, 900
-# children per tile — so every law the harness states is checked on the code
-# that ships. The real lattices are then checked where they differ from the
-# twin, which is arithmetic: by `test_grid_interface` at both levels below; by
-# the fixture, prefix-sum and geometry testsets above; and — only when
-# `DGG_COPDEM_FULL` asks for them, which nothing routine does — by the OPT-IN
-# hierarchical runs below that, which a default `Pkg.test()` never reaches and
-# which therefore defend nothing on their own.
+# WHY THE TWIN. The harness materialises a cell's whole child list and reduces
+# one range per child quadratically, so its hierarchical run is not affordable
+# on either shipped lattice — one sampled GLO-90 tile allocates over 3 TiB.
+# `CopernicusDEMSystem{30}()` is the SAME CODE at a different `N`, so every law
+# the harness states runs on the code that ships; the real lattices are checked
+# where they differ from the twin — which is arithmetic — by the testsets above
+# and by `test_grid_interface` at both levels below.
 @testset "conformance (scaled twin)" begin
     test_grid_interface(levelgrid(TWIN, 0); label = "CopernicusDEM twin level 0")
     test_grid_interface(levelgrid(TWIN, 1); label = "CopernicusDEM twin level 1")
     test_hierarchical_system(TWIN; label = "CopernicusDEM twin")
 
-    # And the property that lets the twin run unseeded where the shipped pair
-    # cannot: its pole-most rings clear the harness's absolute degeneracy floor.
-    # Put to `boundary_problems` itself rather than re-derived from an area, so
-    # this is the harness's own verdict on the harness's own threshold.
-    # Drop the twin's `N` far enough and this goes red HERE, deterministically,
-    # instead of turning the run above into a one-draw-in-many flake.
+    # The property that lets the twin run unseeded: its pole-most rings clear
+    # the harness's absolute degeneracy floor. Put to `boundary_problems`
+    # itself, so this is the harness's own verdict on its own threshold.
     N = CD.lat_intervals(TWIN)
     for (lat_s, j) in ((89, 0), (-90, N - 1))
         c = CD.pixelcell(TWIN, CD.tilecell(TWIN, lat_s, 0), j, 0)
@@ -1340,71 +1090,31 @@ end
     end
 end
 
-# THE SEED, AND WHAT IT IS FOR. `boundary_problems` (`:287-311`) calls a
-# ring degenerate when `abs(spherical_signed_area(pts)) <= area_atol`, and
-# `area_atol` is an ABSOLUTE steradian tolerance defaulting to `1e-12` that no
-# caller can reach: both call sites (`:385`, `:1231`) invoke
-# `boundary_problems(pts; unit_atol)`, and neither `test_grid_interface` nor
-# `test_hierarchical_system` forwards it. This system's pole-most level-1 rings
-# are legitimately smaller than that — a GLO-30 `lat_s = 89` top-row pixel is
-# 1/360 degrees wide and 1/7200 tall, i.e. 1.4e-16 sr — so a level-1 draw that
-# lands in a ±90 tile row reports a conformance failure on correct geometry.
-# Counting raster rows from the pole inward until the ring area clears `1e-12`:
+# THE SEED. `boundary_problems` judges degeneracy against an ABSOLUTE `1e-12`
+# steradian floor no caller can reach, and this system's pole-most level-1
+# rings are legitimately smaller — so a level-1 draw landing in a ±90 tile row
+# reports a conformance failure on correct geometry, about one seed in eighty
+# at the default draw. The level-1 calls below therefore pass an explicit seed
+# and ASSERT what it buys, by reproducing the harness's own `sample_positions`
+# and checking no sampled cell lies in a ±90 tile row. The pole rows are NOT
+# sampled away from the suite — testset (e) carries them.
 #
-#   system   N89 top rows   S90 bottom rows   smallest ring area (sr)
-#   GLO-30   878            877               1.4e-16 / 1.3e-15
-#   GLO-90    33             32               3.8e-15 / 3.5e-14
-#   twin       0              0               2.5e-10 / 2.2e-09
-#
-# That is 3.7e-4 of GLO-30's level 1, so the default draw of 32 fails about one
-# seed in eighty. The lever the harness does give a caller is `rng`, and the
-# sample is a pure function of it — so the level-1 calls below pass an explicit
-# `MersenneTwister` and ASSERT what it buys, by reproducing the harness's own
-# `sample_positions` at the same `n_samples` and checking that no sampled cell
-# lies in a ±90 tile row at all. (That is the wider property: it implies the
-# narrower "no cell in a sub-`1e-12` row", and unlike it, it does not have to be
-# restated when the threshold or the geometry moves.) A seed that stops working
-# after an upstream change to the sampling then goes red instead of quietly
-# re-introducing the flake. The pole rows themselves are NOT sampled away from
-# the suite — testset (e) carries them, exhaustively at level 0.
-#
-# ONE PIECE OF EVIDENCE, NOT TWO. The loop below asserts the seed-away on both
-# shipped lattices, but at this seed the two draws land on the SAME tile rows —
-# the positions differ, the latitudes do not. `rand(rng, 1:n, 32)` turns each
-# raw word of the stream into `floor(u * n)` for a `u` that does not depend on
-# `n`, and GLO-30's row prefix sums are exactly 9x GLO-90's (3x the columns, 3x
-# the rows), so both lattices cut `1:n` into rows at the same fractions of `n`
-# and the row sequence is invariant in `N`. So this is one piece of evidence
-# read twice, not two: a seed safe for GLO-90 is safe for GLO-30 for that
-# reason and not for an independent one, and the second assertion earns its
-# place as a guard on the invariance, not as a second sample.
-#
-# UPSTREAM: `boundary_problems` should judge degeneracy against the ring's own
-# scale — `max(area_atol, unit_atol^2)`, say — or take a floor threaded through
-# `grid_interface_problems`/`test_grid_interface`, because an absolute steradian
-# floor is wrong for any system with legitimately tiny cells and will bite the
-# next one too. Not fixed here: the harness is shared by six other systems.
+# UPSTREAM: the harness should judge degeneracy against the ring's own scale.
+# Not fixed here: the harness is shared by six other systems.
 @testset "conformance (GLO-30 and GLO-90)" begin
     for sys in (GLO90, GLO30)
         test_grid_interface(levelgrid(sys, 0); label = "$sys level 0")
 
-        # The seed-away, asserted before it is leaned on. `n_samples` is passed
-        # explicitly rather than left to the harness's default so that the draw
-        # reproduced here and the draw the call makes are the same draw.
+        # The seed-away, asserted before it is leaned on; `n_samples` is
+        # explicit so the reproduced draw and the call's draw are the same draw.
         @test !any(in((89, -90)),
                    sampled_tile_lats(sys, 1, CONFORMANCE_SEED, GI_SAMPLES))
 
-        # ...and that the harness really did make THAT draw. The line above
-        # predicts the sampled cells from the seed, which is only sound while
-        # `test_grid_interface` consumes its `rng` in exactly one
-        # `sample_positions(rng, ncells(g), n_samples)` before any law runs
-        # (`:1178`). That is a fact about upstream, not a promise, so it
-        # is asserted here rather than assumed: `ref` is advanced by the
-        # reproduction alone, `r` by the harness alone, and the two generators
-        # must end in the same state. One extra draw upstream, a different
-        # `n_samples`, or sampling moved after a law that itself draws, and this
-        # goes red — instead of the seed-away above quietly guarding cells the
-        # suite does not actually visit.
+        # ...and that the harness really did make THAT draw: `ref` is advanced
+        # by the reproduction alone, `r` by the harness alone, and the two
+        # generators must end in the same state. An extra upstream draw and
+        # this goes red instead of the seed-away quietly guarding cells the
+        # suite never visits.
         r = MersenneTwister(CONFORMANCE_SEED)
         ref = MersenneTwister(CONFORMANCE_SEED)
         CT.sample_positions(ref, ncells(levelgrid(sys, 1)), GI_SAMPLES)
@@ -1413,59 +1123,18 @@ end
         @test r == ref
     end
 
-    # THE HIERARCHICAL RUNS ARE OPT-IN, and the cost is the harness's, not this
-    # system's. `test_hierarchical_system`'s sibling-partition check (`:1610`)
-    # evaluates `reduce(vcat, collect.(ranges); init = Int[])` over one range per
-    # child; the `init` keyword takes it off `Base`'s `_typed_vcat` fast path and
-    # onto `foldl`, which rebuilds the accumulator at every step. The children
-    # are at `max_level`, so each of those ranges holds ONE position and the
-    # foldl writes 1 + 2 + ... + n `Int`s for n children — `8 * n^2 / 2` bytes,
-    # a closed form that needs no machine to state. At n = 960 000 it is
-    # 3.353 TiB; the per-range `collect`s add the rest.
-    #
-    # So even at `n_samples = 1` this is not cheap. GLO-90 at the seed below
-    # draws the tile at (-54, 158), 960 000 children, and allocates 3.36 TiB —
-    # over half the run in GC — for 51 passes and 2 broken, in minutes rather
-    # than seconds. GLO-30 draws the same tile with 8 640 000 children, 9x as
-    # many, so the quadratic makes it about 81x the work; that is a ratio and
-    # nothing more, since no GLO-30 run is on record as having finished. Neither
-    # belongs in a routine `Pkg.test()`.
-    #
-    # SO THE GATE IS BY VALUE:
+    # THE HIERARCHICAL RUNS ARE OPT-IN: the harness's sibling-partition check
+    # is quadratic in the child count, so one sampled GLO-90 tile allocates
+    # over 3 TiB and GLO-30 is ~81x that. The gate, by value:
     #
     #   unset, or "0"   neither. The default, and what CI runs.
-    #   "90"            GLO-90 only: 51 pass, 2 broken; minutes, not seconds.
-    #   "1"             the same as "90".
-    #   "30"            GLO-30 only. Not known to have completed; see above.
+    #   "90" / "1"      GLO-90 only: 51 pass, 2 broken; minutes, not seconds.
+    #   "30"            GLO-30 only. Not known to have completed.
     #   "all"           both.
     #
-    # No run here skips anything the harness offers this system. `neighbors` and
-    # `ring` are both closed form, so the harness's whole neighbour and ring
-    # families run — the shell, concatenation, tail-block and winding laws
-    # included. A default `Pkg.test()` reports 17 broken; none of them is a
-    # `@test_broken` written here.
-    #
-    # WHAT A DEFAULT RUN THEREFORE NEVER RUNS ON THE SHIPPED LATTICES, listed in
-    # full rather than by the two laws that are easiest to defend: the
-    # parent/child inverses (`hierarchy_problems`), the `rootcells` laws,
-    # `ancestor` and `descendants`, `node_extent` well-formedness and its
-    # convexity proxy, the covering law under a real descent, the sibling
-    # partition, the `ArgumentError` guards on `parent`/`children`/`levelgrid`,
-    # and the trait block. None of the harness's own versions of those laws runs
-    # at `N = 1200` or `N = 3600` unless the gate is set.
-    #
-    # The defence is not that those laws are minor — it is that they are not
-    # about `N`. Of the interface, only `children`, `descendant_range`,
-    # `cell_box` and `cellat` have `N` in their method bodies; everything in the
-    # list above reaches the lattice through the shared `tables` / `decode` /
-    # `pixelcell` helpers and is otherwise `N`-free, so the twin above runs THE
-    # SAME CODE, not an analogue of it. What that leaves is the four parametric
-    # bodies and those three helpers, which do have to be right at the shipped
-    # `N`s — and that is what testsets (a), (c), (d), (h), (i) and (j) do at
-    # real `N`: the band table and child counts, the prefix sums exhaustively
-    # and the children -> parent round trip, the raster order, `node_extent`
-    # over real subtrees, `cellat` on real box edges, and the cross-lattice
-    # nesting.
+    # No run here skips anything the harness offers this system. A default
+    # `Pkg.test()` reports 17 broken; none of them is a `@test_broken` written
+    # here.
     gate = get(ENV, "DGG_COPDEM_FULL", "0")
     gated = gate in ("0", "")   ? () :
             gate in ("1", "90") ? (GLO90,) :
@@ -1483,13 +1152,10 @@ end
 # (m) `neighbors` and `ring`: the closed form, and the bounds it forces
 # =========================================================================
 
-# WHY THE GENERIC WALK IS NOT THE ORACLE HERE. The walk of
-# `src/fallbacks/locate.jl` decides adjacency by counting COINCIDENT RING
-# VERTICES within a tolerance. That model cannot see two cells that share a
-# boundary SEGMENT without sharing an endpoint, and this lattice makes those at
-# every band boundary, where the two sides carry different half-pixel
-# registrations. So the walk is a comparator below, not a definition, and the
-# oracle is an independent reimplementation of the geometry itself.
+# The generic walk decides adjacency by counting coincident ring vertices,
+# which cannot see two cells sharing a boundary SEGMENT without an endpoint —
+# and this lattice makes those at every band boundary. So the walk is a
+# comparator below, not the oracle.
 fallback_neighbors(g, c, k = 1; connectivity = DGG.Vertex()) =
     invoke(DGG.neighbors, Tuple{DGG.AbstractGrid,DGG.AbstractCellIndex,Integer},
            g, c, k; connectivity)
@@ -1499,18 +1165,12 @@ fallback_neighbors(g, c, k = 1; connectivity = DGG.Vertex()) =
 _neighbor_bytes(g, c) = (DGG.neighbors(g, c, 1); @allocated DGG.neighbors(g, c, 1))
 
 # -------------------------------------------------------------------------
-# THE ORACLE: adjacency from first principles, in exact `Rational{Int}`.
-#
-# A cell is a longitude interval on one of `180N` latitude rows — `180` tile
-# rows at level 0. Consecutive rows abut and rows two apart are a whole row
-# apart, so two cells meet exactly where their intervals meet on a shared
-# parallel, plus the one point a pole row's triangles share at their apex.
-#
-# Written against the REGISTRATION `cell_box` documents — a pixel centre plus
-# or minus half a column, a tile `ncols` of those — and not against any helper
-# `neighbors` uses; and it SCANS a window of candidate columns where the
-# implementation solves for one. The id codec is the only thing shared, because
-# naming a cell is testset (c)'s subject rather than this one's.
+# THE ORACLE: adjacency from first principles, in exact `Rational{Int}`. A
+# cell is a longitude interval on one of `180N` latitude rows; two cells meet
+# where their intervals meet on a shared parallel, plus the pole apex. Written
+# against the registration `cell_box` documents, not against any helper
+# `neighbors` uses; it SCANS a window of candidate columns where the
+# implementation solves for one.
 # -------------------------------------------------------------------------
 
 oracle_row(sys, level, J) = level == 1 ? fld(J, CD.lat_intervals(sys)) : J
@@ -1524,16 +1184,10 @@ function oracle_lon(sys, level, row, k)
                         ((2nc * k - 1)//(2nc), (2nc * (k + 1) - 1)//(2nc))
 end
 
-# AND ITS REGISTRATION IS `cell_box`'s, checked rather than assumed. The formula
-# above writes the registration out a second time, so a wrong one in BOTH would
-# survive every comparison this oracle makes. These five cells tie it back to
-# `cell_box` — which testset (b) pins against the measured geotransforms — one
-# kind at a time: a pixel interior to its tile, the pixel straddling +-180, a
-# band-boundary tile, and the two pole cells whose north and south edges are
-# corrected. `cell_box` reaches a longitude in three roundings where this is one
-# exact rational, so a PIXEL edge can land one Float64 step off; tiles and pole
-# cells are bit-exact, and one step is the whole tolerance. Latitudes are not in
-# scope here: the oracle decides adjacency on longitude and row index alone.
+# The oracle writes the registration out a second time, so a wrong one in
+# BOTH would survive every comparison it makes. These five cells tie it back
+# to `cell_box`, which testset (b) pins against the measured geotransforms; a
+# PIXEL edge can land one Float64 step off, and one step is the whole tolerance.
 @testset "the oracle is registered as cell_box is" begin
     N = CD.lat_intervals(TWIN)
     # Representable `Float64` steps apart, which is 0 for a bit-exact match.
@@ -1629,12 +1283,9 @@ function oracle_problem(sys, level, J, K)
     return nothing
 end
 
-# `b in neighbors(a)` iff `a in neighbors(b)`. Pure geometry is symmetric, so
-# what this kills is a case gate that fires on one side of a seam and not the
-# other. Quadratic in the neighbour count, which is why the pole rings get four
-# columns rather than all of them: the ring is one set shared by the whole row,
-# and the link a gate could break there is the one to the row below, which each
-# of the four exercises.
+# `b in neighbors(a)` iff `a in neighbors(b)`. What this kills is a case gate
+# that fires on one side of a seam and not the other. Quadratic in the
+# neighbour count, which is why the pole rings get four columns rather than all.
 function symmetry_problem(sys, level, J, K)
     g = levelgrid(sys, level)
     c = oracle_id(sys, level, J, K)
@@ -1653,11 +1304,9 @@ end
     g0 = levelgrid(TWIN, 0)
 
     # THE ANCHOR. Every other check here compares two implementations, so a
-    # mutant that moved BOTH would survive all of them. These ids are written
-    # out instead of computed: tile `lat_s = 0, lon_w = 0` is tile row 89, tile
-    # column 180, thirty columns wide, and the subject is its raster
-    # `(j, i) = (15, 15)`. Killed here: any wrong offset, a row and column
-    # stride transposed, and the winding started elsewhere or run backwards.
+    # mutant that moved BOTH would survive all of them; these ids are written
+    # out instead of computed. KILLS: any wrong offset, a transposed stride,
+    # and the winding started elsewhere or run backwards.
     c = CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, 0), 15, 15)
     @test c == DGG.LevelIndex(1, 21384465)
     @test DGG.neighbors(g1, c, 1) == DGG.LevelIndex.(1,
@@ -1672,11 +1321,9 @@ end
            for x in DGG.neighbors(g1, c, 1; connectivity = DGG.Edge())] ==
           [(14, 15), (15, 14), (16, 15), (15, 16)]
 
-    # NOTHING REACHES A TREE. A tile edge, the antimeridian, a band boundary and
-    # a level-0 tile each cost what the tile interior costs. A method that
-    # delegated any of them to the generic walk would allocate orders of
-    # magnitude more, because the walk builds and queries a spatial tree over
-    # the level — so this separates the two structurally, without timing either.
+    # NOTHING REACHES A TREE: a method that delegated any of these to the
+    # generic walk would allocate orders of magnitude more, because the walk
+    # builds a spatial tree over the level.
     for x in (c,
               CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, 0), 15, 0),        # west tile edge
               CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, -180), 0, 0),      # antimeridian corner
@@ -1685,16 +1332,11 @@ end
     end
     @test _neighbor_bytes(g0, CD.tilecell(TWIN, 50, 0)) < 1024
 
-    # WHY SWEEPING THE TWIN SWEEPS THE SHIPPED LATTICES. Across a boundary the
-    # two rows' breakpoints interleave on a pattern fixed by the REDUCED ratio
-    # of their column counts — shift the narrow side by `p` columns and the wide
-    # side by `q` and both move the same longitude, so the alignment repeats
-    # with period `p`, and `p` divides a tile's column count. Every alignment
-    # the lattice has therefore appears in one boundary row's columns. And
-    # `ncols = 2N / factor`, so that ratio is a ratio of two band factors and is
-    # the SAME at every `N`: asserted here rather than argued, so a change to
-    # the band table takes this with it. Both terms odd — the only way two
-    # corners can coincide across a boundary — happens at +-80 alone.
+    # WHY SWEEPING THE TWIN SWEEPS THE SHIPPED LATTICES: the breakpoint
+    # alignment across a boundary repeats with the reduced ratio's period,
+    # which divides a tile's column count, so one boundary row's columns hold
+    # every alignment the lattice has — and the ratios are the same at every
+    # `N`, asserted here rather than argued.
     reduced(sys) = [(CD.ncols(sys, r), CD.ncols(sys, r + 1)) .÷
                     gcd(CD.ncols(sys, r), CD.ncols(sys, r + 1))
                     for r in 0:(CD.NROWS - 2) if CD.ncols(sys, r) != CD.ncols(sys, r + 1)]
@@ -1717,10 +1359,8 @@ end
     end
     @test bad == String[]
 
-    # BOTH POLE ROWS IN FULL, and the rows facing them. Row 0 is a half-pixel
-    # sliver of triangles, row `180N - 1` is one and a half pixels tall, and the
-    # oracle gets the same interval machinery for them as for anything else —
-    # the slivers are not special-cased on either side of this comparison.
+    # BOTH POLE ROWS IN FULL, and the rows facing them; the slivers are not
+    # special-cased on either side of this comparison.
     bad = String[]
     for J in (0, 1, 180N - 2, 180N - 1), K in 0:(360 * CD.ncols(TWIN, fld(J, N)) - 1)
         p = oracle_problem(TWIN, 1, J, K)
@@ -1734,9 +1374,7 @@ end
     end
     @test bad == String[]
 
-    # THE TILE SEAMS AND THE ANTIMERIDIAN, at every probe latitude. Column 0 of
-    # a row is the cell that STRADDLES +-180, and a tile's east neighbour is 359
-    # tile columns away across it; neither is an offset from anything. Four
+    # THE TILE SEAMS AND THE ANTIMERIDIAN, at every probe latitude: four
     # corners and the edge midpoints of each probe tile.
     bad = String[]
     for lat_s in PROBE_LATS, lon_w in PROBE_LONS
@@ -1750,10 +1388,9 @@ end
     end
     @test bad == String[]
 
-    # LEVEL 0, all 64 800 tiles. The tile lattice is small enough to walk
-    # exhaustively, and it is its own case: a tile's box is offset half a PIXEL,
-    # so the offset MOVES with the band and tiles across a boundary have no
-    # corner in common at all.
+    # LEVEL 0, all 64 800 tiles, exhaustively. Its own case: a tile's
+    # half-pixel offset moves with the band, so tiles across a boundary have
+    # no corner in common at all.
     bad = String[]
     for r in 0:(CD.NROWS - 1), q in 0:(CD.NCOLS_TILES - 1)
         p = oracle_problem(TWIN, 0, r, q)
@@ -1768,9 +1405,8 @@ end
     end
     @test bad == String[]
 
-    # GLO-90 SPOT CHECK: the same code where the row stride is 40 times wider
-    # and the column counts are 40 times larger, so the integers `_facing`
-    # multiplies are too. One cell of each kind, against the same oracle.
+    # GLO-90 SPOT CHECK: the same code on 40x larger integers, one cell of
+    # each kind, against the same oracle.
     N90 = CD.lat_intervals(GLO90)
     bad = String[]
     for (J, K) in ((89N90 + 600, 180 * CD.ncols(GLO90, 89) + 600),        # tile interior
@@ -1783,12 +1419,10 @@ end
     end
     @test bad == String[]
 
-    # `ring` AND `neighbors` ARE ONE ANSWER, which is the interface's law:
-    # ring 1 IS `neighbors(c, 1)`, the disc is the rings concatenated outward,
-    # the shells are disjoint, and ring 2 is wound too.
-    # The level-1 pole cell is in the list because its ring 1 is the whole apex
-    # row, so ring 2 is the first shell here that the winding has to order with
-    # no lattice order to inherit.
+    # `ring` AND `neighbors` ARE ONE ANSWER: ring 1 IS `neighbors(c, 1)`, the
+    # disc is the rings concatenated outward, the shells are disjoint, and
+    # ring 2 is wound too. The level-1 pole cell's ring 1 is the whole apex
+    # row, so its ring 2 has no lattice order to inherit.
     for (g, x) in ((g1, c),
                    (g1, CD.pixelcell(TWIN, CD.tilecell(TWIN, 50, 0), N - 1, 7)),
                    (g1, CD.pixelcell(TWIN, CD.tilecell(TWIN, 89, 0), 0, 0)),
@@ -1817,10 +1451,8 @@ end
     g1 = levelgrid(TWIN, 1)
     g0 = levelgrid(TWIN, 0)
 
-    # THE WALK IS ALWAYS A SUBSET, and away from a band boundary it is the whole
-    # set. Both halves matter: the first says the closed form never drops a
-    # neighbour the vertex-matching model can see, the second says the two
-    # disagree in exactly one place and not diffusely.
+    # THE WALK IS ALWAYS A SUBSET, and away from a band boundary it is the
+    # whole set: the two disagree in exactly one place and not diffusely.
     inside = String[]
     outside = String[]
     for lat_s in PROBE_LATS, lon_w in PROBE_LONS
@@ -1843,15 +1475,9 @@ end
     @test outside == String[]
     @test inside == String[]
 
-    # THE MECHANISM, at a level-0 band boundary tile. `N50_00_E000_00` and the
-    # tile below it share more than 0.99 degrees of the parallel half a pixel
-    # north of latitude 50 — a segment, not a point — and NO corner, because a
-    # tile's box is offset half a pixel and the pixel is 1/20 of a degree above
-    # the boundary against 1/30 below. The walk counts coincident ring vertices
-    # within a thousandth of the cell's shortest edge; the nearest pair of
-    # corners is more than eight times that tolerance apart, so it counts none
-    # and reports the five neighbours inside the tile's own band. The lattice
-    # has seven.
+    # THE MECHANISM, at a level-0 band boundary tile: `N50_00_E000_00` and the
+    # tile below share a SEGMENT of the parallel and NO corner, so the
+    # vertex-matching walk reports five neighbours where the lattice has seven.
     tile = CD.tilecell(TWIN, 50, 0)
     below = CD.tilecell(TWIN, 49, 0)
     ring_a = DGG.cell_boundary(TWIN, tile)
@@ -1874,9 +1500,8 @@ end
     # the corner offset and the same two rings match.
     @test DGG.Fallbacks._shared_vertices(ring_a, ring_b, 1e-3) == 2
 
-    # THE SAME AT LEVEL 1, on both sides of the same boundary, and at +-80 where
-    # some corners DO coincide (5:3, the one ratio with two odd terms) so the
-    # walk finds part of the answer rather than none of it.
+    # THE SAME AT LEVEL 1, on both sides of the same boundary, and at +-80
+    # where some corners DO coincide so the walk finds part of the answer.
     for (lat_s, j, i, walked, closed) in ((50, N - 1, 5, 5, 7), (49, 0, 5, 5, 7),
                                           (80, N - 1, 2, 7, 8))
         x = CD.pixelcell(TWIN, CD.tilecell(TWIN, lat_s, 0), j, i)
@@ -1886,15 +1511,10 @@ end
 end
 
 @testset "max_neighbors is attained" begin
-    # WHAT SETS THE `Vertex()` BOUND, and it is not the lattice interior. Raster
-    # row 0 of a `lat_s = 89` tile and row `N - 1` of a `lat_s = -90` tile are
-    # triangles sharing one apex — the exact +-90 vertex — with every other cell
-    # of their ring, so each is adjacent to the whole ring: `360 * ncols - 1` of
-    # them and the three below. WHAT SETS THE `Edge()` BOUND is a band boundary,
-    # where a cell on the wide side faces up to three on the narrow side; the
-    # 2:1 ratio at +-85 is where three is reached. Both are ATTAINED on all
-    # three lattices, which is what makes `==` the assertion — a bound merely
-    # respected would survive being raised, and these would not.
+    # The `Vertex()` bound is set by a pole-row pixel (adjacent to its whole
+    # ring plus the three below), the `Edge()` bound by the wide side of the
+    # ±85 boundary. Both ATTAINED on all three lattices, which is what makes
+    # `==` the assertion — a bound merely respected would survive being raised.
     for sys in ALL_SYSTEMS
         N = CD.lat_intervals(sys)
         g = levelgrid(sys, 1)
@@ -1920,11 +1540,9 @@ end
     g1 = levelgrid(TWIN, 1)
     g0 = levelgrid(TWIN, 0)
 
-    # BAND BOUNDARIES, column by column, because the count there depends on the
-    # column: how many of the far side's cells a cell spans is a function of
-    # where its edges fall between theirs. Both extremes are pinned, so a mutant
-    # that dropped the touch cases or double-counted an overlap moves one of
-    # them. Six is the smallest `Vertex()` count any of the ten produces.
+    # BAND BOUNDARIES, column by column, because the count there depends on
+    # the column. Both extremes are pinned, so a mutant that dropped the touch
+    # cases or double-counted an overlap moves one of them.
     span = Dict{Int,NTuple{4,Int}}()
     for r in 0:(CD.NROWS - 2)
         a, b = CD.ncols(TWIN, r), CD.ncols(TWIN, r + 1)
@@ -1945,11 +1563,9 @@ end
           [-85, -80, -70, -60, -50, 50, 60, 70, 80, 85]
     @test all(==((6, 8, 4, 6)), values(span))
 
-    # AND NOTHING OFF A POLE ROW COMES NEAR THE `Vertex()` BOUND. The tile edges
-    # and corners of every probe latitude, on the antimeridian from both sides
-    # and on the prime meridian: the sweep that goes red if a tile edge, a band
-    # boundary or the seam could produce a ninth `Vertex()` neighbour or a
-    # seventh `Edge()` one.
+    # AND NOTHING OFF A POLE ROW COMES NEAR THE `Vertex()` BOUND: the sweep
+    # that goes red if anything could produce a ninth `Vertex()` neighbour or
+    # a seventh `Edge()` one.
     bad = String[]
     worst_v = 0
     worst_e = 0
@@ -1972,11 +1588,9 @@ end
     @test worst_v == 8
     @test worst_e == 6
 
-    # LEVEL 0 is the same geometry one level up — 360 tiles to a pole ring
-    # rather than `360 * ncols` pixels, and seven neighbours across a band
-    # boundary rather than eight, because a tile's half-pixel offset moves with
-    # the band and no corner survives the crossing. Swept over every tile row,
-    # so this is a claim about the lattice and not about three of its rows.
+    # LEVEL 0 is the same geometry one level up: seven across a band boundary
+    # rather than eight, because no corner survives the crossing. Swept over
+    # every tile row.
     counts0 = [(length(DGG.neighbors(g0, DGG.LevelIndex(0, CD.tileordinal(r, 180)))),
                 length(DGG.neighbors(g0, DGG.LevelIndex(0, CD.tileordinal(r, 180));
                                      connectivity = DGG.Edge())))

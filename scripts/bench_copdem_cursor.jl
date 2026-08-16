@@ -1,18 +1,14 @@
-# The reproducer for the fanout table in `BlockStrategy`'s docstring
-# (`src/systems/CopernicusDEM/cursor.jl`) and for the two build times quoted in
-# `examples/copernicus_dem.jl`'s header: the whole `N50_00_E006_00` GLO-90 tile
-# (960 000 pixels) onto IGEO7 and HEALPix at matched cell size, once per source
-# tree shape, with the intersection matrices compared against the generic
-# cursor's.
+# The strategy comparison `BlockStrategy`'s docstring points at: the whole
+# `N50_00_E006_00` GLO-90 tile (960 000 pixels) onto IGEO7 and HEALPix at
+# matched cell size, once per source tree shape, with the intersection matrices
+# compared against the generic cursor's.
 #
 #     julia -t auto --project=docs scripts/bench_copdem_cursor.jl
 #
 # No network and no raster: a `Regridder` build is geometry, so the tile is
-# named from the band table rather than read from AWS. About six minutes of timed
-# builds on 8 threads, most of it the generic cursor, plus the two coverings.
-# `COPDEM_ROWS=n` cuts the source to the northernmost `n` raster rows (clamped to
-# the tile) for a quick smoke run. Timings are machine-local; `BlockStrategy`'s
-# docstring names the machine the table it carries was produced on.
+# named from the band table. About six minutes of timed builds on 8 threads,
+# most of it the generic cursor. `COPDEM_ROWS=n` cuts the source to the
+# northernmost `n` raster rows for a quick smoke run. Timings are machine-local.
 
 import DiscreteGlobalGrids as DGG
 import ConservativeRegridding as CR

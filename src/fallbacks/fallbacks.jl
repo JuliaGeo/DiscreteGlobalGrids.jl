@@ -76,9 +76,8 @@ include("locate.jl")
 include("query.jl")
 include("multiorder.jl")
 include("cell_vector.jl")
-# The mixed-level STORAGE container over the coverage machinery above, and the
-# aggregation verbs that construct one from leaf data. See
-# `docs/design/moc-storage.md` for the contract both files implement.
+# The mixed-level storage container, and the aggregation verbs that construct
+# one from leaf data.
 include("multiorder_vector.jl")
 include("aggregate.jl")
 # Last: the stencil layer reads every collection above it — the subset grid, the

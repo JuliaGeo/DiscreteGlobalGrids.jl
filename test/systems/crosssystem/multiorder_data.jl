@@ -1,41 +1,20 @@
 # ---------------------------------------------------------------------------
-# MOC storage — the DimensionalData face of the mixed-level container.
+# The DimensionalData face of the mixed-level container: `MultiOrderLookup`
+# and the cube methods of `aggregate`, `coarsen` and `expand`.
 #
-# `MultiOrderLookup` claims to BE the container's id vector while answering a
-# cube's questions about it, and `expand` claims to present every leaf while
-# storing only the mesh. Everything below is one of those two claims:
+#   * selectors: `At` is exact membership, `Contains` is covering — including
+#     cells deeper than the reference level, via their ancestor there.
+#   * subsets: an ascending subset stays a `MultiOrderLookup`; a reordered one
+#     falls back to `Categorical`. `vcat` is swept over every split — an
+#     ordered-lookup claim would let DimensionalData's cat pre-check silently
+#     drop the axis at level-inverting splits.
+#   * `expand` is lazy: a deeper presentation level grows the element count
+#     but not `Base.summarysize`. `expand(coarsen(A; atol), L)` is within
+#     `atol` of `A`, and exact where the data was piecewise constant.
+#   * the verbs are 1-D over `Cells`, and each refuses the other's axis shape.
 #
-#   * TWO KINDS OF MEMBERSHIP, AS SELECTORS — `At` is EXACT and `Contains` is
-#     COVERING. A leaf strictly under a stored coarse cell must therefore be a
-#     `SelectorError` for the first and that cell's value for the second, and a
-#     cell DEEPER than the reference level must answer the second too, through
-#     its reference-level ancestor. Confusing the two is the mistake the
-#     container exists to make impossible; here it is the mistake a selector
-#     table can quietly reintroduce.
-#   * THE SUBSET FORK — an ascending subset is a sorted disjoint interval list
-#     again and stays a `MultiOrderLookup`; a reordered one is not, and takes
-#     the `Categorical` fallback `CellLookup` takes. Stated through `getindex`,
-#     through `vcat` (which arrives by `rebuild`, not by `getindex`) and through
-#     a DISORDERED `vcat`, which is the one that tells a real check from a
-#     rubber stamp.
-#   * EXPAND IS LAZY — the deliverable. Presenting the same mesh one level
-#     deeper multiplies the elements and must not move `Base.summarysize` at
-#     all, because what is stored is the values and one leaf count per stored
-#     cell. Materialising it fills runs, and must agree element for element with
-#     the elementwise reads it replaces.
-#   * THE ROUND-TRIP BOUND — `expand(coarsen(A; atol), L)` is within `atol` of
-#     `A` everywhere, and EXACTLY `A` where the data was piecewise constant.
-#   * THE VERBS' RESTRICTION — one dimension over `Cells` in v1, and the right
-#     lookup for the verb. Each of the three refuses the other's axis.
-#
-# Swept on one radix-4 system (HEALPix) and one radix-7 system (IGeo7), for the
-# reason `aggregate.jl` gives: sibling subtrees of unequal size are what tell a
-# per-cell leaf count apart from a constant one. A5 has no container at all —
-# `multiorder_vector.jl` owns that exclusion.
-#
-# No tolerance is pinned here. The fixture sweeps candidates and keeps the first
-# that produces a genuinely MIXED-level axis, because an axis that happened to
-# be flat would make every law above vacuous — and it asserts that it found one.
+# Swept on HEALPix (radix 4) and IGeo7 (radix 7); see aggregate.jl. Tolerances
+# are swept and the first mixed-level fixture kept, asserted to exist.
 # ---------------------------------------------------------------------------
 
 module MultiOrderDataTests
@@ -55,25 +34,20 @@ const SWEEP = [
     (system=DGG.IGeo7System(), leaf=3),
 ]
 
-# Inputs, not tuning: the fixture keeps the first that leaves a mixed-level
-# container, so a change to the merge criterion moves which one is chosen rather
-# than breaking a number typed into this file.
+# The fixture keeps the first tolerance that yields a mixed-level container.
 const TOLERANCES = (2.0, 5.0, 8.0, 12.0, 20.0, 45.0)
 
 sysname(sys) = string(nameof(typeof(sys)))
 
-# A whole rooted subtree: complete by construction, so every stored cell of the
-# coarsened container covers a full sibling family and the covering law below
-# has something to say about every leaf.
+# A whole rooted subtree — complete, so every stored cell covers a full
+# sibling family.
 subtree(sys, l) = DGG.CellVector(DGG.PartialGrid(sys, first(DGG.rootcells(sys)), l))
 
-# The latitude of each cell's centroid, in degrees — a smooth field that is a
-# fact about the grid rather than a number typed into this file.
+# Centroid latitude in degrees: a smooth, grid-derived field.
 centroid_lat(cv) = (g = DGG.levelgrid(DGG.system(cv), DGG.level(cv));
 [LONLAT(DGG.cell_centroid(g, c))[2] for c in cv])
 
-# The whole fixture: a leaf axis, its data, and the coarsest tolerance-driven
-# mesh over it that is genuinely mixed-level.
+# Leaf axis, its data, and the first tolerance whose mesh is mixed-level.
 function fixture(sys, L)
     cv = subtree(sys, L)
     lat = centroid_lat(cv)
@@ -87,9 +61,8 @@ function fixture(sys, L)
     return nothing
 end
 
-# `Covering`'s oracle, spelled leaf by leaf: every leaf the coverage names,
-# resolved through the compression verb. The implementation compares INTERVALS
-# instead, so this is a different sentence about the same set.
+# Leaf-by-leaf oracle for `Covering`; the implementation compares intervals
+# instead.
 function covering_byhand(mov, sys, L, target)
     grid = DGG.levelgrid(sys, L)
     set = DGG.query(sys, DGG.MultiOrderCoverage(target); level=L)
@@ -108,7 +81,6 @@ end
 @testset "a mixed-level cell axis: $(sysname(f.system))" for f in SWEEP
     sys, L = f.system, f.leaf
     fx = fixture(sys, L)
-    # The premise of everything below, asserted rather than assumed.
     @test fx !== nothing
     cv, lat, A, M, mov, atol = fx.cv, fx.lat, fx.A, fx.M, fx.mov, fx.atol
     lk = DD.lookup(M, DGG.Cells)
@@ -118,8 +90,7 @@ end
     @testset "what it is" begin
         @test lk isa DD.Lookups.Lookup
         @test lk isa DGG.MultiOrderLookup
-        # `parent` is the VALUES — the container — for the reason the
-        # `CellLookup` file spells out at its own `parent`.
+        # `parent` is the container, as for `CellLookup`.
         @test parent(lk) === mov
         @test collect(lk) == ids
         @test length(lk) == length(mov)
@@ -127,30 +98,24 @@ end
         @test DGG.system(lk) == sys
         @test FB.reference_level(lk) == L
         @test length(unique(DGG.level, ids)) > 1
-        # `Unordered`, because `order` is a claim about the VALUES under
-        # `isless`, and `isless` on an id compares its level first — a
-        # mixed-level axis is unsorted in exactly the sense the claim is read
-        # in. DimensionalData's `cat` reads it: under an ordered claim its
-        # boundary check walks the ids and silently drops the whole axis at any
-        # split where the levels invert. The container's OWN order — interval
-        # starts — is asserted beside it, because that is what every verb here
-        # searches.
+        # `Unordered`: ids compare level-first under `isless`, so a mixed-level
+        # axis is unsorted in the sense DimensionalData reads — an ordered
+        # claim makes cat silently drop the axis. The container's own
+        # interval-start order is asserted beside it.
         @test DD.Lookups.order(lk) === DD.Lookups.Unordered()
         starts = [first(DGG.descendant_range(sys, c, L)) for c in ids]
         @test issorted(starts) && allunique(starts)
         @test DD.Lookups.val(lk) === parent(lk)
         @test DD.Lookups.metadata(lk) === DD.Lookups.NoMetadata()
-        # The generic answer for an unordered lookup — a `(first, last)` pair
-        # here would be an inverted-`isless` pair masquerading as an interval.
+        # The generic unordered answer; a `(first, last)` pair here would not
+        # be an interval.
         @test DD.Lookups.bounds(lk) === (nothing, nothing)
         @test DD.name(M) === :lat
         @test length(M) == length(mov)
-        # It really is a compression of the leaf axis, or the mesh is decoration.
+        # Really a compression: fewer stored cells than leaves.
         @test length(M) < length(A)
     end
 
-    # The two verbs, on the axis itself, before any selector plumbing can
-    # confuse them.
     @testset "At is exact and Contains is covering" begin
         @test all(DGG.cellposition(lk, ids[k]) == k for k in eachindex(ids))
         @test all(FB.covering_position(lk, ids[k]) == k for k in eachindex(ids))
@@ -162,13 +127,11 @@ end
         @test leaf != coarse
         @test DGG.cellposition(lk, leaf) === nothing
         @test FB.covering_position(lk, leaf) == j
-        # Deeper than the reference level: keyed through its reference-level
-        # ancestor, which is the deliberate half of `covering_position`.
+        # Deeper than the reference level: resolved through its ancestor there.
         deeper = first(DGG.descendants(sys, coarse, L + 1))
         @test DGG.cellposition(lk, deeper) === nothing
         @test FB.covering_position(lk, deeper) == j
-        # And an ANCESTOR of a stored cell is held by neither: a container is
-        # not its own coarsening.
+        # An ancestor of a stored cell is neither stored nor covered.
         up = DGG.ancestor(sys, coarse, DGG.level(coarse) - 1)
         @test DGG.cellposition(lk, up) === nothing
         @test FB.covering_position(lk, up) === nothing
@@ -184,8 +147,8 @@ end
         coarse = ids[j]
         leaf = first(DGG.descendants(sys, coarse, L))
         deeper = first(DGG.descendants(sys, coarse, L + 1))
-        # The pairing, as selectors: `At` refuses a cell the axis does not
-        # store, `Contains` resolves it to the cell that speaks for it.
+        # `At` refuses an unstored cell; `Contains` resolves it to its
+        # covering cell.
         @test_throws DD.Lookups.SelectorError M[DGG.Cells(DD.At(leaf))]
         @test M[DGG.Cells(DD.Contains(leaf))] == vals[j]
         @test M[DGG.Cells(DD.Contains(deeper))] == vals[j]
@@ -193,9 +156,7 @@ end
         @test !DD.Lookups.hasselection(lk, DD.At(leaf))
         @test DD.Lookups.hasselection(lk, DD.Contains(leaf))
 
-        # A point falls INSIDE a cell rather than naming one, so both point
-        # selectors are the covering question — read at whatever level the cell
-        # it lands in happens to sit.
+        # Both point selectors ask the covering question.
         for k in (1, j, length(ids))
             grid = DGG.levelgrid(sys, DGG.level(ids[k]))
             lon, y = LONLAT(DGG.cell_centroid(grid, ids[k]))
@@ -232,13 +193,9 @@ end
         @test isempty(M[DGG.Cells(DGG.Covering(away))])
     end
 
-    # `vcat` arrives at the lookup through `rebuild`, not through `getindex` —
-    # and only if DimensionalData's own pre-check lets it. That check reads the
-    # axes' VALUES, so it is swept over EVERY split, not spot-checked at one:
-    # under the old `ForwardOrdered` claim the axis silently degraded to a bare
-    # `Vector` at precisely the splits where a coarse id follows a deep one
-    # (HEALPix fixture: splits 17 and 34 of 37), and a single mid-split test
-    # passed by luck. Every split must come back a `MultiOrderLookup`.
+    # Swept over every split: DimensionalData's cat pre-check reads the axis
+    # values, and an ordered-lookup claim would silently drop the axis exactly
+    # at splits where a coarse id follows a deep one.
     @testset "vcat of two disjoint ascending halves, at every split" begin
         n = length(M)
         for s in 1:(n-1)
@@ -247,7 +204,7 @@ end
             jlk = DD.lookup(joined, DGG.Cells)
             @test jlk isa DGG.MultiOrderLookup
             if !(jlk isa DGG.MultiOrderLookup)
-                break   # one named split is diagnosis enough; n-1 repeats is noise
+                break   # one failing split is diagnosis enough
             end
             @test jlk == lk && parent(joined) == vals
         end
@@ -295,15 +252,13 @@ end
         @test collect(data) isa Vector{eltype(data)}
     end
 
-    # The deliverable. One mesh, two presentation levels: the deeper names many
-    # more cells and stores the same values and the same one leaf count per
-    # stored cell, so nothing moves.
+    # One mesh at two presentation levels: the deeper names more cells and
+    # stores the same bytes.
     @testset "memory is O(#stored cells), not O(#leaves)" begin
         deep = DGG.expand(M, L + 1)
         @test length(deep) > length(E)
         @test Base.summarysize(parent(deep)) == Base.summarysize(data)
-        # Against the thing it replaces: one word per presented element is the
-        # floor for a materialised vector, and this is under it.
+        # Under the one-word-per-element floor of a materialised vector.
         @test Base.summarysize(parent(deep)) < 8 * length(deep)
         # The values it presents are still the covering cell's, one level down.
         deepcv = parent(DD.lookup(deep, DGG.Cells))
@@ -312,8 +267,8 @@ end
     end
 
     @testset "where the data was flat, the round trip is exact" begin
-        # Constant on each level-`L-1` sibling group and different between them,
-        # so `atol = 0` merges exactly those groups and nothing above them.
+        # Constant per level-`L-1` sibling group, so `atol = 0` merges exactly
+        # those groups.
         coarse = DGG.levelgrid(sys, L - 1)
         piece = [Float64(DGG.cellposition(coarse, DGG.ancestor(sys, c, L - 1)))
                  for c in cv]
@@ -355,9 +310,8 @@ end
         mov, want = DGG.coarsen(cv, lat; atol)
         @test parent(DD.lookup(M, DGG.Cells)) == mov
         @test parent(M) == want
-        # The keywords reach the core rather than being dropped on the way:
-        # stopping the climb at the leaf level is the identity, and a `by` that
-        # is not the mean says so in the values.
+        # Keywords reach the core: `minlevel = L` is the identity, and `by`
+        # changes the values.
         flat = DGG.coarsen(A; atol, minlevel=L)
         @test length(flat) == length(A)
         @test parent(flat) == lat
@@ -372,14 +326,12 @@ end
     @test fx !== nothing
     A, M = fx.A, fx.M
 
-    # Each verb has ONE axis shape it reads, and says which when handed the
-    # other: a mesh cannot be aggregated to a fixed level, a leaf axis cannot be
-    # expanded.
+    # Each verb reads one axis shape and refuses the other.
     @test_throws ArgumentError DGG.aggregate(sum, M, L - 1)
     @test_throws ArgumentError DGG.coarsen(M; atol=1.0)
     @test_throws ArgumentError DGG.expand(A, L)
 
-    # One dimension in v1, and a `Cells` dimension at that.
+    # Only one dimension, and it must be `Cells`.
     lat = parent(A)
     two = DD.DimArray(hcat(lat, lat), (DGG.Cells(DD.lookup(A, DGG.Cells)), DD.X(1:2)))
     @test_throws ArgumentError DGG.aggregate(sum, two, L - 1)
@@ -406,8 +358,7 @@ end
         @test lk[:] === lk
         @test lk[[1, 3, 5]] isa DGG.MultiOrderLookup
         @test collect(lk[[1, 3, 5]]) == ids[[1, 3, 5]]
-        # A reordered subset is not a sorted disjoint interval list, and says so
-        # by wearing the ordinary lookup instead of lying about it.
+        # A reordered subset falls back to `Categorical`.
         @test !(lk[[3, 1]] isa DGG.MultiOrderLookup)
         @test lk[[3, 1]] isa DD.Lookups.Categorical
         @test collect(lk[[3, 1]]) == ids[[3, 1]]
@@ -415,9 +366,8 @@ end
         mask[2] = mask[4] = true
         @test collect(lk[mask]) == ids[[2, 4]]
         @test_throws BoundsError lk[falses(length(lk) + 1)]
-        # A neighbour list is a `SmallVector`; indexing an axis by one is
-        # ambiguous unless the tie against SmallCollections' own method is
-        # broken, exactly as it is for `CellLookup`.
+        # Indexing by a `SmallVector` (a neighbour list) needs the
+        # SmallCollections ambiguity tie-break, as for `CellLookup`.
         @test collect(lk[SmallCollections.SmallVector{8,Int}([3, 4, 5])]) == ids[3:5]
         @test collect(reverse(lk)) == reverse(ids)
         @test reverse(lk) isa DD.Lookups.Lookup
@@ -437,8 +387,8 @@ end
             catch err
                 err
             end))
-        # A cell deeper than the reference level has no interval to be keyed by,
-        # and that is an error rather than a silently deeper container.
+        # A cell deeper than the reference level cannot be rebuilt in; it
+        # throws.
         deep = first(DGG.descendants(sys, ids[1], L + 1))
         @test_throws ArgumentError DD.Lookups.rebuild(lk; data=[deep])
     end
@@ -453,18 +403,15 @@ end
             @test collect(jlk) == ids
             @test parent(joined) == vals
         end
-        # Disjoint with a GAP between them, which is the case a rebuild that
-        # only handled adjacency would get wrong: the two halves no longer tile
-        # anything, and the join is still a container.
+        # Halves with a gap between them still join to a container.
         gapped = vcat(M[1:(n÷2)], M[(n÷2+2):n])
         glk = DD.lookup(gapped, DGG.Cells)
         @test glk isa DGG.MultiOrderLookup
         @test collect(glk) == ids[[1:(n÷2); (n÷2+2):n]]
         @test glk != lk
 
-        # A disordered join is not an ascending interval list, and `rebuild` is
-        # where that is decided — `vcat` never gets there, because
-        # DimensionalData refuses misaligned ordered lookups one layer above.
+        # A disordered join is decided at `rebuild` and falls back to
+        # `Categorical`.
         @test DD.Lookups.rebuild(lk; data=vcat(ids[(n÷2+1):n], ids[1:(n÷2)])) isa
               DD.Lookups.Categorical
 
@@ -494,8 +441,7 @@ end
         @test_throws DimensionMismatch DD.DimArray(zeros(3), DGG.Cells(lk))
     end
 
-    # The other way in: a coverage read as an axis directly, with no data verb
-    # in between. A multi-order query is already the shape this lookup wants.
+    # A coverage becomes an axis directly, with no data verb in between.
     @testset "a coverage is an axis in its own right" begin
         set = DGG.query(sys, DGG.MultiOrderCoverage(
                 GO.UnitSpherical.SphericalCap(FB.unit_point(8.0, 46.5), 0.05));

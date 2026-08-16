@@ -26,10 +26,8 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/multiorder_budget.jl")
     # Test the compressed cell container before the lookup that wraps it.
     include("systems/crosssystem/cell_vector.jl")
-    # MOC storage: the mixed-level container over the coverage machinery, then
-    # the aggregation verbs that build one, then its cube face. In dependency
-    # order for the same reason cell_vector precedes dimensionaldata: a failure
-    # should name the lowest layer that owns it.
+    # MOC storage, in dependency order: the mixed-level container, the
+    # aggregation verbs that build one, then its cube face.
     include("systems/crosssystem/multiorder_vector.jl")
     include("systems/crosssystem/aggregate.jl")
     include("systems/crosssystem/multiorder_data.jl")

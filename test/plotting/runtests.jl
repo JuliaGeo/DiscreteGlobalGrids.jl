@@ -67,9 +67,8 @@ end
 @testset "multi-order container Makie conversion" begin
     system = DGG.HEALPixSystem()
     root = first(DGG.rootcells(system))
-    # One child refined a level further than its siblings, so the container is
-    # genuinely mixed-level: a conversion that read it through a single level's
-    # grid would name the wrong cells here and only here.
+    # One child refined further than its siblings, so a conversion reading the
+    # container through a single level's grid would name the wrong cells.
     kids = DGG.children(system, root)
     mixed = vcat(DGG.children(system, first(kids)), kids[2:end])
     vector = DGG.MultiOrderVector(system, mixed)

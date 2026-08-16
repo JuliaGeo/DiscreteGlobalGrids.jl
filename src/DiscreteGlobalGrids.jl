@@ -71,8 +71,7 @@ import GeometryOps: SpatialTreeInterface as STI
 import SmallCollections
 using SmallCollections: SmallVector
 
-# `@public` declares a name public-but-unexported. Exactly one name in this
-# package needs that: `aggregate`, beside the export list below.
+# `@public` marks a name public but unexported; used only for `aggregate`.
 using SciMLPublic: @public
 
 # Keep the module qualified because GeometryOps also defines a `DE9IM` name.
@@ -295,26 +294,18 @@ export is_contained, coarsest_contained, cell_polygons, member_neighbors
 export CellVector, covering, cellset
 
 # --- Multi-order storage -----------------------------------------------------
-# The mixed-level DATA container (`MultiOrderVector`, an adaptively refined
-# mesh's cell axis), the adaptive constructor (`coarsen`), the leaf-level
-# re-presentation (`expand`) and the sphere complement. Contract in
-# `docs/design/moc-storage.md`.
+# The mixed-level cell container, its adaptive constructor, the leaf-level
+# re-presentation, and the sphere complement.
 export MultiOrderVector, coarsen, expand, complement
 
-# `aggregate` — the fixed-level verb — is deliberately NOT exported, for the
-# reason `Contains` is not: Rasters exports an `aggregate`, and Rasters is the
-# very package this feature's demos load data with, so exporting ours would
-# make the name unusable unqualified in exactly the sessions that want both.
-# Reach it as `DiscreteGlobalGrids.aggregate`. Unexported is not private,
-# though: `@public` marks it as documented, stable API a caller may rely on.
+# Public but unexported: Rasters also exports an `aggregate`. Reach it as
+# `DiscreteGlobalGrids.aggregate`.
 @public aggregate
 
 # --- The DimensionalData layer ---------------------------------------------
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM
 # geometry predicate exported above.
 export CellLookup, Cells, Covering
-# The mixed-level lookup joins in wave 2 of the MOC-storage work; the export
-# binds when `CellLookups` defines it and the `using` above gains the name.
 export MultiOrderLookup
 
 # --- Grid systems ----------------------------------------------------------

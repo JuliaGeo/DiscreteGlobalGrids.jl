@@ -1,34 +1,15 @@
 # ---------------------------------------------------------------------------
-# MOC storage — the two aggregation verbs, WITHOUT DimensionalData.
+# The two aggregation verbs, without DimensionalData.
 #
 # `aggregate` reduces a `(CellVector, values)` pair to one fixed coarser level;
-# `coarsen` merges complete sibling groups within a tolerance and hands back the
-# mixed-level container. Contract: docs/design/moc-storage.md §2.
+# `coarsen` merges complete sibling groups within a tolerance and returns the
+# mixed-level container.
 #
-# Both are swept on one radix-4 system (HEALPix, whose four children tile their
-# parent) and one radix-7 system (IGeo7, whose root cells have six children and
-# whose sibling subtrees are of UNEQUAL size). The second is not decoration: a
-# mean of child means equals a mean of leaves exactly when the siblings are
-# equinumerous, so an implementation that summarised the children instead of the
-# leaves would pass on HEALPix alone.
-#
-# The oracles are written against `ancestor` and a `Dict` — the route the
-# implementations deliberately do not take, which walks descendant ranges and
-# window lookups instead. An oracle sharing the implementation's idiom would be
-# a restatement rather than a check.
-#
-# The laws, in order:
-#
-#   * AGGREGATE — the grouping is `ancestor` at the target level over the cells
-#     that are PRESENT; partial groups reduce over what is there; the value
-#     segments tile the data array once each, contiguously; and reducing twice
-#     with an associative `f` is reducing once.
-#   * COARSEN — the merge criterion (complete AND within tolerance, `missing`
-#     read three ways), the value stored (`by` of the LEAF values), the error
-#     bound the default `by` buys, and the cell-set recovery that completeness
-#     exists for.
-#   * THE CONTAINER — the wrapper is thin: cells and values still line up, and
-#     the recovery law holds through `CellVector(mov; level = ...)`.
+# Swept on a radix-4 system (HEALPix) and a radix-7 one (IGeo7): IGeo7's
+# sibling subtrees have unequal sizes, so a mean of child means differs from a
+# mean of leaves there — an implementation that summarised children instead of
+# leaves would pass on HEALPix alone. The oracles group with `ancestor` and a
+# `Dict`, not the implementations' descendant-range walks.
 # ---------------------------------------------------------------------------
 
 module AggregateTests
@@ -42,8 +23,7 @@ import Statistics: mean
 const FB = DGG.Fallbacks
 const LONLAT = GO.UnitSpherical.GeographicFromUnitSphere()
 
-# The Switzerland box the coverage suites use, so the fixtures read against each
-# other.
+# The same Switzerland box the coverage suites use.
 const REGION = GI.Polygon([GI.LinearRing([(6.0, 45.8), (10.5, 45.8), (10.5, 47.8),
     (6.0, 47.8), (6.0, 45.8)])])
 
@@ -54,22 +34,18 @@ const SWEEP = [
     (system=DGG.IGeo7System(), dense=2, coarse=1, deep=6, shallow=4, sub=3),
 ]
 
-# Tolerances are INPUTS, so they are swept rather than tuned: the laws below
-# hold at every one of them, and the fixture picks whichever produces a
-# genuinely mixed-level answer instead of this file pinning a number.
+# Swept, not tuned; fixtures pick the first that yields a mixed-level answer.
 const TOLERANCES = (0.0, 2.0, 5.0, 8.0, 10.0, 25.0, 45.0)
 
 sysname(sys) = string(nameof(typeof(sys)))
 
 # --- fixtures --------------------------------------------------------------
 
-# A whole rooted subtree: complete by construction, so the completeness rule is
-# exercised by REMOVING cells from it rather than by whatever a coverage
-# happened to leave ragged.
+# A whole rooted subtree — complete by construction; completeness is broken by
+# removing cells.
 subtree(sys, l) = DGG.CellVector(DGG.PartialGrid(sys, first(DGG.rootcells(sys)), l))
 
-# The latitude of each cell's centroid, in degrees — a smooth field that is a
-# fact about the grid rather than a number typed into this file.
+# Centroid latitude in degrees: a smooth, grid-derived field.
 centroid_lat(cv) = (g = DGG.levelgrid(DGG.system(cv), DGG.level(cv));
 [LONLAT(DGG.cell_centroid(g, c))[2] for c in cv])
 
@@ -79,7 +55,7 @@ Dict(DGG.cellposition(g, c) => k for (k, c) in enumerate(cv)))
 
 # --- oracles ---------------------------------------------------------------
 
-# `aggregate`, spelled as the `Dict` grouping the implementation avoids.
+# Dict-grouping oracle for `aggregate`.
 function brute_aggregate(f, sys, ids, values, l)
     grid = DGG.levelgrid(sys, l)
     groups = Dict{Any,Vector{Int}}()
@@ -93,9 +69,9 @@ function brute_aggregate(f, sys, ids, values, l)
     return order, [f(values[groups[a]]) for a in order], groups
 end
 
-# `coarsen`, spelled bottom-up per leaf: climb from `minlevel` and take the
-# first ancestor that is both complete in the present set and within tolerance.
-# The criterion is monotone, so the first hit on the way up is the coarsest one.
+# Per-leaf oracle for `coarsen`: climb from `minlevel`, take the first
+# complete-and-within-tolerance ancestor (the criterion is monotone, so the
+# first hit is the coarsest).
 function brute_coarsen(sys, cv, values, atol, by, minlevel)
     L = DGG.level(cv)
     index = dataindex(cv)
@@ -125,8 +101,8 @@ function brute_coarsen(sys, cv, values, atol, by, minlevel)
     return cells, vals
 end
 
-# For every leaf of `cv`, the value stored for the cell covering it. Only
-# meaningful where every stored cell is complete, which a whole subtree is.
+# Per leaf, the value stored for its covering cell. Requires every stored cell
+# complete.
 function covering_values(sys, cells, vals, cv)
     L = DGG.level(cv)
     index = dataindex(cv)
@@ -154,13 +130,11 @@ end
         @test cells isa DGG.CellVector
         @test DGG.level(cells) == coarse
         @test DGG.system(cells) == sys
-        # A whole level aggregates to a whole level: every coarse cell has a
-        # present descendant, so nothing is dropped.
+        # A whole level aggregates to a whole level — no coarse cell dropped.
         @test length(cells) == DGG.ncells(DGG.levelgrid(sys, coarse))
         @test collect(cells) == want
         @test out == wantvals
-        # Every leaf value is counted exactly once — which `sum` reports and a
-        # skipped or double-counted group boundary would not.
+        # `sum` totals agree only if every leaf is counted exactly once.
         @test sum(out) == sum(values)
     end
 
@@ -178,8 +152,7 @@ end
         # A coarse cell with no present descendant is ABSENT, not reduced over
         # nothing.
         @test length(cells) < DGG.ncells(DGG.levelgrid(sys, shallow))
-        # And the fixture must really be ragged, or the law above is the whole
-        # level's law wearing a subset's name.
+        # The fixture must contain partial groups.
         @test count(a -> length(groups[a]) <
                          length(DGG.descendant_range(sys, a, deep)), want) > 0
     end
@@ -191,10 +164,9 @@ end
         seen = Any[]
         DGG.aggregate(v -> (push!(seen, v); sum(v)), cv, values, shallow)
 
-        # A view into the caller's array, never a copy and never a gather, and
-        # the segments tile it in order. A group whose leaves straddle a window
-        # gap is still ONE range here, because the data array counts only the
-        # cells `cv` holds.
+        # Views into the caller's array, tiling it contiguously in order. A
+        # group straddling a window gap is still one range, since the data
+        # array indexes only the cells `cv` holds.
         @test all(v -> v isa SubArray && parent(v) === values, seen)
         spans = [only(parentindices(v)) for v in seen]
         @test all(s -> s isa AbstractUnitRange, spans)
@@ -204,9 +176,7 @@ end
     end
 
     @testset "aggregating twice is aggregating once" begin
-        # `sum` is associative over a partition and the level-`shallow` groups
-        # refine the level-`coarse` ones, so the two routes agree exactly. A
-        # segmentation that lost or duplicated a boundary would not.
+        # Associative `f` plus refining groups: two-step equals one-step.
         set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=deep)
         cv = DGG.CellVector(set)
         values = Float64.(eachindex(cv))
@@ -223,17 +193,14 @@ end
     cv = DGG.CellVector(DGG.levelgrid(sys, leaf))
     values = Float64.(eachindex(cv))
 
-    # Aggregating to a vector's own level is the identity; saying so is more
-    # useful than a slow copy, and aggregating DOWN is a mistake either way.
+    # Same-level and deeper targets throw.
     @test_throws ArgumentError DGG.aggregate(sum, cv, values, leaf)
     @test_throws ArgumentError DGG.aggregate(sum, cv, values, leaf + 1)
     @test_throws ArgumentError DGG.aggregate(sum, cv, values, -1)
-    # Values that do not line up with the cells are an error, not a silently
-    # truncated answer.
+    # A values length that does not match the cells throws.
     @test_throws ArgumentError DGG.aggregate(sum, cv, values[1:end-1], leaf - 1)
 
-    # A5 has no descendant ranges, so a sibling group is not a slice of
-    # anything — the same refusal `level_ranges` makes.
+    # A5 has no descendant ranges, so `aggregate` refuses it.
     a5 = DGG.A5System()
     @test !DGG.has_sorted_subtrees(a5)
     a5cv = DGG.CellVector(DGG.levelgrid(a5, 1))
@@ -252,8 +219,8 @@ end
     top = first(DGG.levels(sys))
     parents = DGG.descendants(sys, root, L - 1)
 
-    # Deterministic, no RNG: a field constant on each level-`L-1` sibling group
-    # and different between them, a field of distinct values, and a banded one.
+    # Deterministic fields: constant per level-`L-1` sibling group, all
+    # distinct, and banded.
     parentgroup = [Float64(DGG.cellposition(DGG.levelgrid(sys, L - 1),
         DGG.ancestor(sys, c, L - 1))) for c in cv]
     distinct = Float64.(eachindex(cv))
@@ -275,8 +242,8 @@ end
 
     @testset "piecewise-constant data collapses to its pieces" begin
         cells, vals = FB._coarsen(cv, parentgroup; atol=0.0)
-        # Exactly the level-`L-1` cells: each is constant, and no level-`L-2`
-        # cell is, because the pieces were built to differ.
+        # Exactly the level-`L-1` cells: constant within each, differing
+        # between them.
         @test cells == parents
         @test vals ≈ unique(parentgroup)
         @test length(cells) < n
@@ -286,9 +253,8 @@ end
         cells, vals = FB._coarsen(cv, distinct; atol=0.0)
         @test cells == collect(cv)
         @test vals == distinct
-        # A leaf keeps its OWN value rather than a one-element summary of it,
-        # so an integer field survives as one: a leaf routed through the default
-        # `by` would come back `Float64`.
+        # An unmerged leaf keeps its own value, so an integer field stays `Int`
+        # (routing through `by = mean` would make it `Float64`).
         ints = collect(1:n)
         _, intvals = FB._coarsen(cv, ints; atol=0)
         @test intvals == ints
@@ -300,8 +266,7 @@ end
         cells, vals = FB._coarsen(cv, flat; atol=0.0)
         @test cells == [root]
         @test vals == [7.0]
-        # The climb stops where it is told to, and what stops there is the whole
-        # level under the root.
+        # `minlevel` stops the climb at that level.
         for stop in (L - 1, L)
             cells, vals = FB._coarsen(cv, flat; atol=0.0, minlevel=stop)
             @test cells == DGG.descendants(sys, root, stop)
@@ -310,10 +275,8 @@ end
     end
 
     @testset "`by` summarises the LEAVES, not the children" begin
-        # Merging the whole subtree at the root: the stored value is the mean of
-        # every leaf. On IGeo7 the root's children hold unequal numbers of
-        # leaves, so a mean of child means is a DIFFERENT number — which is the
-        # assertion that tells the two implementations apart.
+        # The stored value is the mean of every leaf. On IGeo7 sibling subtree
+        # sizes differ, so a mean of child means is a different number.
         cells, vals = FB._coarsen(cv, distinct; atol=Float64(n))
         @test cells == [root]
         @test only(vals) ≈ mean(distinct)
@@ -332,8 +295,7 @@ end
             @test !(only(vals) ≈ mean(childmeans))
         end
 
-        # `by` is honoured, and the package's default is the arithmetic mean it
-        # says it is.
+        # `by` is honoured; the default is `mean`.
         _, maxvals = FB._coarsen(cv, distinct; atol=Float64(n), by=maximum)
         @test only(maxvals) == maximum(distinct)
         @test isequal(FB._coarsen(cv, banded; atol=2.0, by=mean),
@@ -347,25 +309,21 @@ end
             cells, vals = FB._coarsen(cv, lat; atol)
             push!(lengths, length(cells))
             stored = covering_values(sys, cells, vals, cv)
-            # The pinned bound: with `by = mean` between the extremes, and the
-            # extremes no more than `atol` apart, no leaf is further than `atol`
-            # from what is stored for it.
+            # With `by = mean` and extremes within `atol`, every leaf is within
+            # `atol` of its stored value.
             @test all(abs(lat[k] - stored[k]) <= atol for k in eachindex(lat))
         end
-        # A larger tolerance never stores more, and over this sweep it stores
-        # strictly fewer — so the bound above is not being met by refusing to
-        # merge anything.
+        # A larger tolerance never stores more; over this sweep, strictly
+        # fewer — so the bound is not met by refusing to merge.
         @test issorted(lengths; rev=true)
         @test first(lengths) == n
         @test last(lengths) < n
     end
 
     @testset "completeness is what makes the cell set recoverable" begin
-        # Punch holes by GROUP, not by stride: the first leaf of every third
-        # sibling group is gone. A position stride reads the same but is vacuous
-        # on radix 7 — five or more consecutive positions always contain a
-        # multiple of five, so a `% 5` stride breaks EVERY IGeo7 group and the
-        # mixed-level guard below would have nothing left to guard.
+        # Holes are punched per sibling group (first leaf of every third), not
+        # by position stride: a small stride hits every radix-7 group and would
+        # leave the mixed-level assertions below vacuous.
         grid = DGG.levelgrid(sys, L)
         dropped = Set(first(DGG.descendant_range(sys, a, L))
                       for (j, a) in enumerate(parents) if j % 3 == 0)
@@ -378,28 +336,19 @@ end
         @test isequal(vals, wantvals)
         @test root ∉ cells
 
-        # The recovery law, stated where it lives: the stored subtrees name
-        # exactly the positions the input held, no more and no fewer.
+        # The stored subtrees name exactly the input's positions.
         named = sort!(reduce(vcat,
             [collect(DGG.descendant_range(sys, c, L)) for c in cells]))
         @test named == sort!([DGG.cellposition(grid, c) for c in sub])
-        # Not vacuous in either direction: the holes left some groups whole and
-        # broke others.
+        # The holes left some groups whole and broke others.
         @test any(c -> DGG.level(c) < L, cells)
         @test any(c -> DGG.level(c) == L, cells)
     end
 
     @testset "the position-list window shape answers the same" begin
-        # Every fixture above stores `RangeWindows`: the compression picks that
-        # shape whenever the cells run in long blocks, which a whole subtree and
-        # a group-punched one both do. So the OTHER shape — a bare sorted
-        # position list, and the window lookups written for it — went unread by
-        # this file, and `_next_position(::PositionWindows, ...)` could search
-        # from the wrong end without a single assertion noticing.
-        #
-        # This keeps the first sibling group whole and thins everything after it
-        # to every other cell: gaps enough that the heuristic stores positions,
-        # and one complete group so the MERGE path is reached on that shape too.
+        # Every fixture above stores `RangeWindows`; this one forces
+        # `PositionWindows` — first sibling group kept whole, the rest thinned
+        # to every other cell — so the merge path runs on that shape too.
         g = length(DGG.descendant_range(sys, parents[1], L))
         thin = cv[[k for k in 1:n if k <= g || isodd(k)]]
         @test FB.windows(thin) isa FB.PositionWindows
@@ -411,14 +360,13 @@ end
         want, wantvals = brute_coarsen(sys, thin, values, 0.0, mean, top)
         @test cells == want
         @test isequal(vals, wantvals)
-        # Not vacuous in either direction, which is what makes the comparison
-        # above worth making: the whole group merged, the thinned ones did not,
-        # and nothing outside `thin` was named.
+        # The whole group merged, the thinned cells did not, and nothing
+        # outside `thin` was named.
         @test parents[1] in cells
         @test any(c -> DGG.level(c) == L, cells)
         @test all(c -> DGG.level(c) == L ? c in thin : true, cells)
 
-        # And the fixed-level verb, which reads the same windows as intervals.
+        # The fixed-level verb on the same window shape.
         acells, avals = DGG.aggregate(sum, thin, values, L - 1)
         awant, awantvals, _ = brute_aggregate(sum, sys, collect(thin), values, L - 1)
         @test collect(acells) == awant
@@ -427,8 +375,7 @@ end
     end
 
     @testset "`missing` is read three ways" begin
-        # The first level-`L-1` group all `missing`, the second mixed, the rest
-        # data.
+        # First level-`L-1` group all `missing`, second mixed, rest data.
         index = dataindex(cv)
         values = Vector{Union{Float64,Missing}}(fill(4.0, n))
         for p in DGG.descendant_range(sys, parents[1], L)
@@ -441,11 +388,10 @@ end
         @test cells == want
         @test isequal(vals, wantvals)
 
-        # An all-`missing` region is perfectly flat, and merges to `missing`.
+        # An all-`missing` group merges to `missing`.
         @test parents[1] in cells
         @test ismissing(vals[findfirst(==(parents[1]), cells)])
-        # A mixed one never merges, whatever its data half looks like — which is
-        # what keeps a coastline from averaging ocean into land.
+        # A mixed group never merges (ocean is never averaged into land).
         @test parents[2] ∉ cells
         @test any(c -> DGG.level(c) == L && DGG.ancestor(sys, c, L - 1) == parents[2],
             cells)
@@ -477,9 +423,7 @@ end
     n = length(cv)
     lat = centroid_lat(cv)
 
-    # The tolerance the fixture chooses rather than one this file pins: the
-    # first that leaves a genuinely MIXED-level container, which is the only
-    # shape that can catch a wrapper flattening one.
+    # First tolerance that yields a genuinely mixed-level container.
     atol = nothing
     for a in TOLERANCES
         cells, _ = FB._coarsen(cv, lat; atol=a)
@@ -498,19 +442,14 @@ end
     @test FB.reference_level(mov) == L
     @test length(vals) == length(mov)
     @test length(unique(DGG.level.(collect(mov)))) > 1
-    # The wrapper is thin: the container's order IS the core's, so the values
-    # still name the cells they were computed from. A constructor that permuted
-    # would break exactly here.
+    # Container order equals the core's, so values still name their cells.
     @test collect(mov) == cells
     @test vals == corevals
 
-    # The recovery law through the bridge: the container expanded back to the
-    # leaf level is the input, window for window.
+    # Expanded back to the leaf level, the container is the input.
     @test DGG.CellVector(mov; level=L) == cv
 
-    # And the compression story end to end: every leaf is covered by exactly one
-    # stored cell, and what is stored there is within `atol` of the leaf's own
-    # value.
+    # Every leaf is covered by one stored cell whose value is within `atol`.
     for k in (1, n ÷ 3, n ÷ 2, n)
         j = FB.covering_position(mov, cv[k])
         @test j !== nothing

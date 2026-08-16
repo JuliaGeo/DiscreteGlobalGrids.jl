@@ -52,10 +52,9 @@ function Makie.convert_arguments(P::Type{<:Makie.Poly}, lookup::DGG.CellLookup)
     Makie.convert_arguments(P, parent(lookup))
 end
 
-# A mixed-level container is read cell by cell rather than through a grid: each
-# of its cells belongs to a different level's grid, which is what
-# `cell_polygons` already resolves — the same route the `MultiOrderCellSet`
-# conversions above take, for the same reason.
+# A mixed-level container has no single grid to read through; `cell_polygons`
+# resolves each cell at its own level, as the `MultiOrderCellSet` conversions
+# above do.
 function Makie.convert_arguments(P::Makie.PointBased, vector::DGG.MultiOrderVector)
     Makie.convert_arguments(P,
         GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(vector)))

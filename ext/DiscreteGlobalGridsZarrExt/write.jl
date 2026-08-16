@@ -94,7 +94,7 @@ this package's way of saying the axis is still sorted, unique and at one level;
     the published IGEO7 range stores hold; see [`idranges`](@ref).
   - `chunks = :auto` groups whole coarse-ancestor subtree runs into chunks of
     about `chunk_target` elements; an integer is a fixed chunk length in CELLS.
-    See [`ChunkPlan`](@ref) for what that guarantees and what it only aims at.
+    See `ChunkPlan` for what that guarantees and what it only aims at.
     `chunk_target` counts the elements of a chunk — cells times the extents of
     the non-cell dimensions, which are one chunk each — so a layer with a
     40-step time axis gets a fortieth of the cells per chunk.
@@ -340,15 +340,16 @@ _encoding(enc::CellEncoding, grid, cells) = enc
 
 What the encoding stores for the axis: the `(n, 2)` inclusive-range array, the
 raw ids, or — for an implicit axis, which stores nothing — the length alone.
-Computed once, and both written and read back through [`_axis`](@ref).
+Computed once, and both written and read back through `_axis`.
 
-The dense coordinate is the id vector [`_cellaxis`](@ref) already materialized,
+The dense coordinate is the id vector `_cellaxis` already materialized,
 handed on rather than copied: one vector of ids exists between the lookup and
 the bytes on disk.
 """
 _coordinate(::RangesEncoding, grid, cells, merge) = idranges(grid, cells; merge=merge)
 _coordinate(::DenseEncoding, grid, cells, merge) = cells
 _coordinate(::ImplicitEncoding, grid, cells, merge) = length(cells)
+_coordinate(enc::CellEncoding, grid, cells, merge) = _nowritepath(enc)
 
 """
     _axis(enc, grid, coord, plan, n) -> ChunkedCellVector
@@ -365,6 +366,41 @@ _axis(::DenseEncoding, grid, coord, plan, n) =
 
 _axis(::ImplicitEncoding, grid, coord, plan, n) =
     cellaxis(ImplicitEncoding(), grid, coord)
+
+_axis(enc::CellEncoding, grid, coord, plan, n) = _nowritepath(enc)
+
+"""
+    _nowritepath(enc)
+
+Refuse an encoding this writer has no verbs for, by name.
+
+The write pipeline is four private verbs on the encoding — `_coordinate`,
+`_axis`, `_coordinate!` and `_coordinatename` — and a downstream encoding
+that registers itself without them would otherwise fall off the end of dispatch
+into a `MethodError` about a private function. This is the write-side twin of
+the read half's `storedaxis` fallback: same check, same shape of message, from
+the other direction.
+"""
+@noinline function _nowritepath(enc::CellEncoding)
+    registered = sort!(collect(keys(ENCODING_REGISTRY)))
+    throw(DGGSFormatError(check=:unsupported_encoding, observed=_encodinglabel(enc),
+        detail="dggwrite writes the dense (`none`), `ranges` and `implicit` " *
+               "layouts; `$(_encodinglabel(enc))` names an encoding it has no " *
+               "write path for. A downstream encoding is written by implementing " *
+               "this extension's `_coordinate`, `_axis`, `_coordinate!` and " *
+               "`_coordinatename` for it. Registered encodings: " *
+               join(registered, ", ") * "."))
+end
+
+# An encoding's own name where it has one, and its registry key where it does
+# not: `encodingname` is the encoding's to define, and a type that has skipped
+# the write verbs may well have skipped that too.
+function _encodinglabel(enc::CellEncoding)
+    for (name, registered) in ENCODING_REGISTRY
+        registered === enc && return name
+    end
+    return string(nameof(typeof(enc)))
+end
 
 # ===========================================================================
 # The chunk plan
@@ -525,7 +561,14 @@ function _block(s::CellStream, r)
     return s.perm === nothing ? block : permutedims(block, s.perm)
 end
 
+# The names this writer owns, whatever the encoding chosen: the dense
+# coordinate, the range array, and the manifest sidecar. They are reserved
+# together rather than one encoding at a time, so that renaming a layer is not
+# something `encoding = :dense` asks for and `:auto` does not.
+const RESERVED_ARRAYS = (CELL_IDS_ARRAY, CELL_RANGES_ARRAY, MANIFEST_ARRAY)
+
 function _arrayplan(enc, coord, layers, celldim, plan, manifest, desc)
+    _checklayernames(layers)
     out = ArrayWrite[]
     _coordinate!(out, enc, coord, plan)
     seen = Set{String}()
@@ -539,8 +582,44 @@ function _arrayplan(enc, coord, layers, celldim, plan, manifest, desc)
             w === nothing || push!(out, w)
         end
     end
+    # Every store gets a manifest, including the ranges and implicit ones whose
+    # axis is arithmetic and whose reader never opens the sidecar. That is
+    # deliberate: it is a kilobyte-scale table that records the chunk grid and
+    # the level and grid the axis was validated at, which is what a later
+    # encoding, an aggregation reading chunk boundaries, or a reader of a
+    # partially rewritten store would otherwise have to recompute or assume.
     push!(out, _manifestwrite(manifest, plan, desc))
-    return sort!(out; by=a -> a.entry.name)
+    sort!(out; by=a -> a.entry.name)
+    _checkunique(out)
+    return out
+end
+
+# One Zarr array per name, checked before the destination is touched. `zcreate`
+# would find the collision too, but only on the second array of that name — by
+# which time the group has been created and stamped and some of its arrays
+# written, and what is on disk is neither the old store nor the new one.
+@noinline function _checklayernames(layers)
+    taken = sort!(String[String(n) for (n, _) in layers if String(n) in RESERVED_ARRAYS])
+    isempty(taken) && return nothing
+    throw(DGGSFormatError(check=:reserved_array_name, declared=taken,
+        observed=collect(RESERVED_ARRAYS),
+        detail="the layer " * join(taken, ", ") * " would take an array name this " *
+               "writer owns: a DGGS store keeps its cell coordinate and its chunk " *
+               "manifest in " * join(RESERVED_ARRAYS, ", ") * ", whichever encoding " *
+               "it is written in. Rename the layer."))
+end
+
+@noinline function _checkunique(out)
+    for i in 2:length(out)
+        name = out[i].entry.name
+        name == out[i-1].entry.name || continue
+        throw(DGGSFormatError(check=:duplicate_array_name, declared=name,
+            observed=String[a.entry.name for a in out],
+            detail="two arrays of this store would be called `$name`. A layer and " *
+                   "a dimension of one name are one Zarr array and not two; rename " *
+                   "the layer, or the dimension."))
+    end
+    return nothing
 end
 
 # The cell coordinate. Grid attributes are stamped onto it later by the flat
@@ -558,6 +637,8 @@ _coordinate!(out, ::DenseEncoding, ids::AbstractVector, plan) =
 
 # An implicit axis stores nothing: position IS the cell.
 _coordinate!(out, ::ImplicitEncoding, n::Integer, plan) = out
+
+_coordinate!(out, enc::CellEncoding, coord, plan) = _nowritepath(enc)
 
 function _push!(out, name, values, shape, dims, chunks)
     entry = ArrayEntry(name=name,
@@ -681,6 +762,7 @@ end
 _coordinatename(::RangesEncoding) = CELL_RANGES_ARRAY
 _coordinatename(::DenseEncoding) = CELL_IDS_ARRAY
 _coordinatename(::ImplicitEncoding) = nothing
+_coordinatename(enc::CellEncoding) = _nowritepath(enc)
 
 # The reference table read backwards: a grid name pins the id packing, so a
 # system with no registered name has no store spelling either.
@@ -691,7 +773,8 @@ function _gridname(sys)
     throw(DGGSFormatError(check=:unknown_grid_name, observed=nameof(typeof(sys)),
         detail="$(nameof(typeof(sys))) has no canonical store name; registered " *
                "names are " * join(sort!(collect(keys(DGG.GRID_REFERENCE))), ", ") *
-               ". Add a GridReference for it before writing."))
+               ". Add one with `register_grid!(name, GridReference(...))` before " *
+               "writing."))
 end
 
 end # module DGGSZarrWrite

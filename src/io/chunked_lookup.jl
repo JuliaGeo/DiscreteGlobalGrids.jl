@@ -36,7 +36,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex,
 import ..Encodings
 using ..Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
     cellaxis, idrank, idselect, idcount_between, idvalid, idcell, idtype, idlevel,
-    rangeindex, checkcount
+    rangeindex, checkcount, storedid
 # From `errors.jl`, which the including module reads before this file.
 import ..DGGSFormatError
 
@@ -356,7 +356,7 @@ DenseSource(ids, manifest::ChunkManifest{I}, cached, block) where {I} =
 function _chunkblock(s::DenseSource{V,I}, c::Int) where {V,I}
     s.cached[] == c && return s.block[]
     r = chunkbounds(s.manifest, c)
-    block = I[convert(I, x) for x in s.ids[first(r):last(r)]]
+    block = I[storedid(I, x) for x in s.ids[first(r):last(r)]]
     # The spot check that bounds a trusted manifest: the two ids the manifest
     # published for this chunk are the two the chunk begins and ends with. Two
     # comparisons, on data that was being read anyway.
@@ -448,7 +448,10 @@ function Encodings.cellaxis(::DenseEncoding, grid::AbstractGrid,
     for c in 1:nc
         lo = (c - 1) * cl + 1
         hi = min(c * cl, n)
-        block = I[convert(I, x) for x in ids[lo:hi]]
+        # `storedid` and not `convert`: width and signedness are the writer's
+        # choice, and an id whose top bit is set reads back negative from a
+        # signed coordinate without being another cell.
+        block = I[storedid(I, x) for x in ids[lo:hi]]
         length(block) == hi - lo + 1 || throw(DGGSFormatError(
             check=:short_chunk_read, declared=hi - lo + 1, observed=length(block),
             detail="reading chunk $c of the cell axis returned $(length(block)) " *

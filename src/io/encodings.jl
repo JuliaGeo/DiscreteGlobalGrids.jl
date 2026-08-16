@@ -41,9 +41,9 @@ import ..DGGSFormatError
 # with `with_store_context`.
 
 export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
-export ENCODING_REGISTRY, encodingname
+export ENCODING_REGISTRY, encodingname, register_encoding!
 export idrank, idselect, idcount_between, idvalid, idcell, idtype, idlevel
-export idranges, write_eligible, validate_ranges, cellaxis
+export idranges, write_eligible, validate_ranges, cellaxis, storedid
 
 # ===========================================================================
 # The grid side: id arithmetic over one complete level
@@ -148,6 +148,52 @@ asks the first cell, which is exact but not free; grids with a fixed width
 should say so directly.
 """
 idtype(grid::AbstractGrid) = typeof(rawid(cellindex(grid, 1)))
+
+"""
+    storedid(::Type{I}, x) -> I
+
+A value out of a store's cell coordinate as the grid's own id type `I`.
+
+**A stored id is REINTERPRETED, not converted.** Integer width and signedness
+are a writer's choice and no part of a cell's identity: an IGEO7 id in base cell
+8 or above sets the top bit, so a store whose coordinate is `Int64` — which is
+what a producer gets by letting the ids through any signed dtype — holds those
+cells as negative integers whose bits are exactly the same cells. A signed value
+of `I`'s own width is therefore read as those bits.
+
+Nothing downstream takes that on trust: a bit pattern naming no cell is what
+[`idvalid`](@ref) rejects in the scan, and this function decides only whether
+the bits fit. Anything that fits neither the reinterpretation nor a plain
+conversion — a fractional float, a value of another width — is a malformed
+coordinate and raises `DGGSFormatError(check = :coordinate_width)` naming the
+value, rather than the `InexactError` a bare `convert` raises with no store in
+it.
+
+A persisted chunk manifest is deliberately stricter: one written at another
+width is DECLINED rather than reinterpreted, because declining it costs a scan
+and nothing else, where declining the coordinate would make the store
+unreadable.
+"""
+function storedid(::Type{I}, x::Integer) where {I<:Integer}
+    typemin(I) <= x <= typemax(I) && return x % I
+    # The same width read with the other signedness: the bits are the id.
+    (x isa Signed && sizeof(x) == sizeof(I)) && return x % I
+    return _coordinate_width(I, x)
+end
+
+# A coordinate stored as something other than an integer. Zarr keeps whatever
+# dtype the writer chose, and a float array is an id array only where each of
+# its values is exactly one id.
+function storedid(::Type{I}, x) where {I<:Integer}
+    (isinteger(x) && typemin(I) <= x <= typemax(I)) && return convert(I, x)
+    return _coordinate_width(I, x)
+end
+
+@noinline _coordinate_width(::Type{I}, x) where {I<:Integer} =
+    throw(DGGSFormatError(check=:coordinate_width, declared=I, observed=x,
+        detail="the stored value $x is no cell id of type $I. A cell coordinate " *
+               "holds the grid's own ids: at $I, or at the same width read with " *
+               "the other signedness, which is read as the same bits."))
 
 @noinline function _no_arithmetic(grid)
     throw(DGGSFormatError(check=:no_id_arithmetic, observed=typeof(grid),
@@ -313,13 +359,27 @@ struct ImplicitEncoding <: CellEncoding end
 Store vocabulary (`"none"`, `"ranges"`, `"implicit"`) to [`CellEncoding`](@ref)
 instance. Conventions resolve an attribute's string through this table, and
 keyword symbols are sugar over the same entries, so a downstream encoding
-becomes usable by adding one pair.
+becomes usable by adding one pair — [`register_encoding!`](@ref).
 """
-const ENCODING_REGISTRY = Dict{String,Any}(
+const ENCODING_REGISTRY = Dict{String,CellEncoding}(
     "none" => DenseEncoding(),
     "ranges" => RangesEncoding(),
     "implicit" => ImplicitEncoding(),
 )
+
+"""
+    register_encoding!(name::AbstractString, enc::CellEncoding) -> ENCODING_REGISTRY
+
+Register `enc` under the vocabulary string `name`, the way a store spells it.
+
+A store's `compression` attribute, and `dggwrite`'s `encoding` keyword, are both
+resolved through [`ENCODING_REGISTRY`](@ref), so this is what makes a downstream
+encoding reachable by name. Reading it also needs [`cellaxis`](@ref) and writing
+it the write path's own verbs; an encoding that registers without them is
+refused by name rather than by `MethodError`.
+"""
+register_encoding!(name::AbstractString, enc::CellEncoding) =
+    setindex!(ENCODING_REGISTRY, enc, String(name))
 
 """
     encodingname(enc::CellEncoding) -> String
@@ -474,8 +534,8 @@ function rangeindex(grid::AbstractGrid, ranges::AbstractMatrix)
                "$(size(ranges, 1))x$(size(ranges, 2))."))
     I = idtype(grid)
     n = size(ranges, 1)
-    starts = I[convert(I, ranges[i, 1]) for i in 1:n]
-    stops = I[convert(I, ranges[i, 2]) for i in 1:n]
+    starts = I[storedid(I, ranges[i, 1]) for i in 1:n]
+    stops = I[storedid(I, ranges[i, 2]) for i in 1:n]
     rstart = Vector{Int}(undef, n)
     offsets = Vector{Int}(undef, n + 1)
     offsets[1] = 0

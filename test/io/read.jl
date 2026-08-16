@@ -119,29 +119,34 @@ function write_data!(g, ids=IDS)
     return g
 end
 
-"A dense store: one stored id per cell, `zarr-conventions/dggs` only."
+"""
+A dense store: one stored id per cell, `zarr-conventions/dggs` only. `T` is the
+integer width the coordinate itself is written at, which a store chooses and a
+reader does not: `Int64` holds the same ids as `UInt64` with the top bit read as
+a sign.
+"""
 function dense_store(dir; name="dense.zarr", group=dggs_attrs(), coord=adims("cell_ids"),
-    ids=IDS)
+    ids=IDS, T=UInt64)
     path = joinpath(dir, name)
     g = Zarr.zgroup(path; attrs=group)
-    c = Zarr.zcreate(UInt64, g, "cell_ids", length(ids); chunks=(COORD_CHUNK,), attrs=coord)
-    c[:] = ids
+    c = Zarr.zcreate(T, g, "cell_ids", length(ids); chunks=(COORD_CHUNK,), attrs=coord)
+    c[:] = map(x -> x % T, ids)
     write_data!(g, ids)
     return path
 end
 
 "The same cells as `dense_store`, as an `(n, 2)` inclusive-range coordinate."
-function ranges_store(dir; name="ranges.zarr")
+function ranges_store(dir; name="ranges.zarr", ids=IDS, T=UInt64)
     path = joinpath(dir, name)
     g = Zarr.zgroup(path; attrs=dggs_attrs(compression="ranges",
         coordinate="cell_id_ranges"))
-    rows = idranges(GRID, IDS)
+    rows = idranges(GRID, ids)
     # Zarr declares shapes outermost-first, Julia innermost-first: an `(m, 2)`
     # array is `(2, m)` here.
-    c = Zarr.zcreate(UInt64, g, "cell_id_ranges", 2, size(rows, 1);
+    c = Zarr.zcreate(T, g, "cell_id_ranges", 2, size(rows, 1);
         chunks=(2, size(rows, 1)), attrs=adims("ranges", "bounds"))
-    c[:, :] = permutedims(rows)
-    write_data!(g)
+    c[:, :] = map(x -> x % T, permutedims(rows))
+    write_data!(g, ids)
     return path
 end
 
@@ -417,6 +422,83 @@ end
         st = dggread(narrow)
         @test reads(narrow, "cell_ids") == nc
         @test collect(DD.lookup(st[:elevation], Cells)) == [Z7Cell(x) for x in HIGH_IDS]
+    end
+end
+
+@testset "a coordinate written as Int64 is the same axis as one written UInt64" begin
+    # The one normative rule about integer width: a reader REINTERPRETS a stored
+    # id, it does not convert it. Base-cell-8 Z7 ids set the top bit, so a store
+    # that wrote its coordinate as `Int64` — which xarray does whenever the ids
+    # went through a signed dtype — holds negative integers that are exactly
+    # these cells' bits. Kills a reader that converts and raises `InexactError`
+    # on a store half the earth's cells cannot avoid.
+    #
+    # The sidecar is the deliberate asymmetry: `narrow.zarr` above declines a
+    # MANIFEST of another width, because declining one costs a scan and nothing
+    # else, while declining the coordinate would make the store unreadable.
+    mktempdir() do dir
+        @test all(>=(UInt64(1) << 63), HIGH_IDS)
+        for (wide, narrow) in ((dense_store(dir; name="wide_dense.zarr", ids=HIGH_IDS),
+                dense_store(dir; name="narrow_dense.zarr", ids=HIGH_IDS, T=Int64)),
+            (ranges_store(dir; name="wide_ranges.zarr", ids=HIGH_IDS),
+                ranges_store(dir; name="narrow_ranges.zarr", ids=HIGH_IDS, T=Int64)))
+            w, n = dggread(wide), dggread(narrow)
+            @test collect(DD.lookup(n[:elevation], Cells)) == [Z7Cell(x) for x in HIGH_IDS]
+            @test DD.lookup(n[:elevation], Cells) == DD.lookup(w[:elevation], Cells)
+            # And a cell still resolves to its own value, which is the half of
+            # the bijection a sign-flipped id would break silently.
+            @test n[:elevation][Cells(DD.At(Z7Cell(HIGH_IDS[137])))] == ELEVATION[137]
+        end
+    end
+end
+
+@testset "a coordinate value that is no id of this width is named, not InexactError" begin
+    # The other side of the same rule. Reinterpretation is for ids that fit the
+    # grid's width; a stored value that fits neither that nor a plain conversion
+    # is a malformed coordinate, and saying so beats an `InexactError` from four
+    # frames down with no store in it.
+    mktempdir() do dir
+        grid = levelgrid(HEALPixSystem(), 2)
+        n = ncells(grid)
+        path = joinpath(dir, "fractional.zarr")
+        g = Zarr.zgroup(path; attrs=d())
+        c = Zarr.zcreate(Float64, g, "cell_ids", n; chunks=(64,),
+            attrs=merge(adims("cell_ids"), d("grid_name" => "healpix",
+                "level" => 2, "indexing_scheme" => "nested")))
+        values = Float64.(0:n-1)
+        values[5] = 3.5
+        c[:] = values
+        v = Zarr.zcreate(Float32, g, "t2m", n; chunks=(64,), attrs=adims("cell_ids"))
+        v[:] = Float32.(1:n)
+
+        err = try
+            dggread(path)
+        catch e
+            e
+        end
+        @test err isa DGGSFormatError && err.check === :coordinate_width
+        msg = sprint(showerror, err)
+        @test occursin("3.5", msg) && occursin("Int64", msg)
+        @test occursin("fractional.zarr", err.store)
+    end
+end
+
+@testset "the stub says so when the extension is loaded and the call is wrong" begin
+    # `dggread`/`dggwrite` are stubs in the main package and methods in the
+    # extension, so everything that does not match a method falls back to the
+    # stub. Telling a caller to run `using Zarr` when Zarr is already loaded
+    # sends them to fix the one thing that is not wrong; kills a stub message
+    # that never looks.
+    @test Base.get_extension(DGG, :DiscreteGlobalGridsZarrExt) !== nothing
+    for call in (() -> dggread(42), () -> dggwrite(42, cube()))
+        err = try
+            call()
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        @test occursin("extension is loaded", err.msg)
+        @test !occursin("using Zarr", err.msg)
     end
 end
 

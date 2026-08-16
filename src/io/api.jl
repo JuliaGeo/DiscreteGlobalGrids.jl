@@ -2,12 +2,26 @@
 # live in `DiscreteGlobalGridsZarrExt`, so the store types, keyword defaults
 # and IO all stay behind the Zarr weak dependency.
 
-_needs_zarr(f) = error("""
-    `$f` requires Zarr.jl. Run
+# Everything that matches no method of the extension lands back on the stub, so
+# what it says has to depend on whether the extension is there: telling a caller
+# to run `using Zarr` when Zarr is already loaded sends them to fix the one thing
+# that is not wrong.
+_needs_zarr(f) = error(_no_zarr_method(f,
+    Base.get_extension(DiscreteGlobalGrids, :DiscreteGlobalGridsZarrExt) !== nothing))
 
-        using Zarr
+function _no_zarr_method(f, loaded::Bool)
+    loaded && return """
+        no `$f` method matches these arguments; the Zarr extension is loaded, so \
+        this is an argument-type problem and not a missing package. A store is a \
+        `Zarr.ZGroup`, a `Zarr.AbstractStore`, a path or a URL, and the cube \
+        `dggwrite` takes is a `DimArray` or `DimStack` over a cell dimension."""
+    return """
+        `$f` requires Zarr.jl. Run
 
-    to load `DiscreteGlobalGridsZarrExt`, which provides the store methods.""")
+            using Zarr
+
+        to load `DiscreteGlobalGridsZarrExt`, which provides the store methods."""
+end
 
 """
     dggread(store; vars, lazy = true, validate = :strict,
@@ -15,8 +29,11 @@ _needs_zarr(f) = error("""
     dggread(store, var::Symbol; kwargs...) -> DimArray
 
 Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
-every layer, carrying a `CellLookup` that holds grid, level and orientation in
-its types.
+every layer, carrying a [`ChunkedCellLookup`](@ref) — the lookup over an axis a
+store wrote, which resolves a cell without scanning it. The grid SYSTEM is in
+that lookup's type, the level is a field of the grid it holds, and what is
+neither — orientation, ellipsoid, the layout the store keeps its axis in — rides
+in the [`StoreDescription`](@ref) under the stack's `metadata["description"]`.
 
 `store` is a `Zarr.ZGroup`, a local path, or a URL (`gs://`, `s3://`,
 `https://`). Data arrays are lazy by default; `lazy = false` materializes them.

@@ -141,11 +141,11 @@ include("io/encodings.jl")
 include("io/chunked_lookup.jl")
 
 using .Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
-    ENCODING_REGISTRY, encodingname, cellaxis,
+    ENCODING_REGISTRY, encodingname, register_encoding!, cellaxis,
     idrank, idselect, idcount_between, idvalid, idcell, idtype,
     idranges, write_eligible, validate_ranges
-using .ChunkedLookups: ChunkManifest, nchunks, ChunkedCellVector, axisposition,
-    chunkmanifest, ChunkedCellLookup
+using .ChunkedLookups: ChunkManifest, nchunks, chunkof, chunkbounds,
+    ChunkedCellVector, axisposition, chunkmanifest, ChunkedCellLookup
 
 include("io/description.jl")
 include("io/conventions.jl")
@@ -332,11 +332,12 @@ export authalic_sphere
 # `detect`, `decode`, `encode!` and `gridname` stay qualified: they are
 # extension points, and the names are too generic to export.
 export dggread, dggwrite
-export StoreSnapshot, ArrayEntry, StoreDescription, DGGSFormatError
+export StoreSnapshot, ArrayEntry, StoreDescription, Detection, DGGSFormatError
 export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
     LegacyHealpixConvention, DKRZConvention
 export CONVENTION_REGISTRY, DEFAULT_WRITE_CONVENTIONS, register_convention!
+export register_encoding!, register_grid!
 export describe_store
-export ChunkedCellLookup, ChunkManifest
+export ChunkedCellLookup, ChunkManifest, nchunks, chunkof, chunkbounds
 
 end # module DiscreteGlobalGrids

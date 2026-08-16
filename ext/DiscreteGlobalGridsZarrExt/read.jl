@@ -44,7 +44,7 @@ was written; its `grid` and `level` fields say what it was checked AGAINST, sinc
 the same ids are a clean axis at one level and nothing but phantoms at another;
 its `spatial_dimension`, `chunk_length` and `length` fields say which chunk grid
 of which axis it describes. All eight have to agree with the store in hand before
-[`persistedmanifest`](@ref) hands one over.
+`persistedmanifest` hands one over.
 """
 const MANIFEST_MARKER = "dggs_chunk_manifest"
 
@@ -82,13 +82,13 @@ extension (`using AWSS3`) and says so otherwise.
   - `lazy`: leave the data as the store's own chunked arrays (the default), or
     materialize them.
   - `validate`: `:strict` (the default) checks that every stored id names a cell
-    of the declared level; `:lazy` checks [`LAZY_SAMPLES`](@ref) per chunk
+    of the declared level; `:lazy` checks `LAZY_SAMPLES` per chunk
     instead. Sortedness, uniqueness and the length checks are not optional and
     run either way. None of the three reaches a store carrying a chunk manifest
     this package wrote: its axis is built from the manifest without a scan, so
     no id is checked at all, and what bounds that trust is a per-chunk
     comparison of first id, last id and length as the ids are read
-    ([`persistedmanifest`](@ref)). `:scan` is how that trust is declined — the
+    (`persistedmanifest`). `:scan` is how that trust is declined — the
     sidecar is ignored, the ids are scanned, and every check runs on every
     store.
   - `conventions`: the conventions to try, in order.
@@ -135,7 +135,7 @@ end
 
 How many ids per chunk the scan checks for existence under `validate`, and
 `nothing` for all of them. `:scan` differs from `:strict` only in what it does
-to a store this reader would otherwise trust ([`storedaxis`](@ref)); once the
+to a store this reader would otherwise trust (`storedaxis`); once the
 scan is running, the two ask it for exactly the same work.
 """
 function validation_samples(validate::Symbol)
@@ -306,12 +306,19 @@ the id array, the small range array read whole, or no read at all.
 
 A dense store that persisted its own chunk grid is the fourth case and the
 cheapest: the manifest stands in for the pass, and no id is read until one is
-asked for ([`persistedmanifest`](@ref)).
+asked for (`persistedmanifest`).
 
 `validate` is consulted before the encoding is: `:scan` refuses the fourth case
 outright, so a store this reader would have trusted is read the way a foreign
 one is. The arithmetic encodings scan nothing under any setting — there is no id
 array to scan — so the keyword reaches only the dense path.
+
+**This is the read-side extension point**, and the only one: a downstream
+encoding is read by registering an instance in `ENCODING_REGISTRY`, implementing
+`cellaxis` for it — the axis constructor, which sees ids and never a store — and
+adding one method here to say what to hand it, which array to open and how much
+of it to read. An encoding with no method of this function is refused by name
+below rather than by `MethodError`.
 """
 function storedaxis(enc::DenseEncoding, grid, group, snap, desc, n, validate, samples)
     z = coordinatearray(group, snap, desc, 1)
@@ -377,7 +384,7 @@ may be built from it instead of scanned — and `nothing` whenever it may not,
 which is never an error: a manifest this reader cannot use is an extra array and
 is ignored like any other.
 
-Trust is granted on the marker ([`MANIFEST_MARKER`](@ref)) and on what the store
+Trust is granted on the marker (`MANIFEST_MARKER`) and on what the store
 in hand can be checked against: our own `writer`, a `format` this reader knows,
 `validated == "strict"`, the level and grid name the description resolved to,
 the description's spatial dimension, the coordinate array's own chunk length,

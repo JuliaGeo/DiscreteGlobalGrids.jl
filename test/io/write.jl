@@ -51,6 +51,10 @@ else
     # asked of the planner directly.
     const WRITE = Base.get_extension(DGG, :DiscreteGlobalGridsZarrExt).DGGSZarrWrite
 
+    # A downstream encoding that exists and does nothing else: it implements
+    # none of the write verbs and is deliberately left out of the registry.
+    struct Sketched <: DGG.CellEncoding end
+
     demostack() = DD.DimStack((elevation=copy(ELEV), slope=copy(SLOPE)), (Cells(LOOKUP),))
     dest(name) = joinpath(mktempdir(), name)
 
@@ -571,6 +575,60 @@ else
         @test DD.metadata(after)["encoding"] == "ranges"
         @test collect(DD.lookup(after[:elevation], Cells)) == CELLS
         @test collect(parent(after[:elevation])) == ELEV
+    end
+
+    @testset "an encoding with no write path is named, not a MethodError" begin
+        # The write pipeline is a set of private verbs on the encoding, and a
+        # downstream encoding that registers itself without implementing them
+        # used to fall off the end of dispatch — a MethodError on a private name
+        # that says nothing about what is missing. The read half already answers
+        # this case by name (`storedaxis`), and this is the same answer on the
+        # other side. Kills a write path with no fallback.
+        err = try
+            DGG.dggwrite(dest("noencoding.zarr"), demostack(); encoding=Sketched())
+        catch e
+            e
+        end
+        @test err isa DGGSFormatError && err.check === :unsupported_encoding
+        msg = sprint(showerror, err)
+        @test occursin("Sketched", msg)
+        # And what a downstream encoding has to do about it: the layouts that
+        # are implemented are named, so the message is actionable.
+        @test occursin("ranges", msg) && occursin("none", msg)
+    end
+
+    @testset "a layer that takes one of the writer's own array names is refused" begin
+        # The cell coordinate, the range array and the manifest have fixed names,
+        # and a layer called `cell_ids` collides with one of them. Refused before
+        # anything is created: the alternative is `zcreate` failing partway
+        # through and leaving a directory that holds some of a store. Kills a
+        # writer that discovers the collision from Zarr.
+        A = DD.DimArray(copy(ELEV), (Cells(LOOKUP),); name=:cell_ids)
+        for enc in (:auto, :dense)
+            path = dest("reserved_$enc.zarr")
+            err = try
+                DGG.dggwrite(path, A; encoding=enc)
+            catch e
+                e
+            end
+            @test err isa DGGSFormatError && err.check === :reserved_array_name
+            msg = sprint(showerror, err)
+            @test occursin("cell_ids", msg) && occursin(MANIFEST, msg)
+            @test !isdir(path)
+        end
+
+        # The same check across the layers themselves: a `time` dimension writes
+        # its own coordinate array, and a layer of that name would be a second
+        # array with one name.
+        B = DD.DimArray(Float32[10i + t for i in 1:NCELL, t in 1:3],
+            (Cells(LOOKUP), DD.Dim{:time}(1:3)); name=:time)
+        err = try
+            DGG.dggwrite(dest("dupname.zarr"), B)
+        catch e
+            e
+        end
+        @test err isa DGGSFormatError && err.check === :duplicate_array_name
+        @test occursin("time", sprint(showerror, err))
     end
 
     @testset "a remote destination is refused rather than half-written" begin

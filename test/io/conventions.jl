@@ -7,43 +7,10 @@ module DGGSIOConventionTests
 using Test
 import DiscreteGlobalGrids as DGG
 
-# `src/io/` is not yet included by `src/DiscreteGlobalGrids.jl`. Until those
-# include lines land the sources are loaded into a namespace of their own; the
-# `isdefined` branch picks the package's own bindings once they are wired, so
-# the suite does not change when they are.
-if isdefined(DGG, :ZarrDGGSConvention)
-    const IO = DGG
-else
-    # `@eval` because a `module` block may not appear inside an `if`.
-    @eval module IOLayer
-    # The grid reference table names systems the package binds before including
-    # `src/io/`; this standalone module imports them itself.
-    import DiscreteGlobalGrids
-    using DiscreteGlobalGrids: IGeo7System, HEALPixSystem
-    # `src/io/encodings.jl` defines a submodule that needs the package's own
-    # namespace, so it cannot be included here. The description and the
-    # conventions consult four of its bindings — the abstract type, the three
-    # instances' registry, and their names — restated as stand-ins; wiring
-    # makes these the real ones.
-    abstract type CellEncoding end
-    struct DenseEncoding <: CellEncoding end
-    struct RangesEncoding <: CellEncoding end
-    struct ImplicitEncoding <: CellEncoding end
-    const ENCODING_REGISTRY = Dict{String,Any}(
-        "none" => DenseEncoding(),
-        "ranges" => RangesEncoding(),
-        "implicit" => ImplicitEncoding())
-    encodingname(::DenseEncoding) = "none"
-    encodingname(::RangesEncoding) = "ranges"
-    encodingname(::ImplicitEncoding) = "implicit"
-    const IODIR = joinpath(pkgdir(DiscreteGlobalGrids), "src", "io")
-    include(joinpath(IODIR, "errors.jl"))
-    include(joinpath(IODIR, "description.jl"))
-    include(joinpath(IODIR, "conventions.jl"))
-    include(joinpath(IODIR, "api.jl"))
-    end
-    const IO = IOLayer
-end
+# The conventions are plain-data metadata logic: no Zarr, no arrays, and no
+# lookups. `IO` is the package itself, named here because these tests describe a
+# layer rather than a package.
+const IO = DGG
 const DENSE = IO.ENCODING_REGISTRY["none"]
 const RANGES = IO.ENCODING_REGISTRY["ranges"]
 const IMPLICIT = IO.ENCODING_REGISTRY["implicit"]
@@ -616,6 +583,28 @@ end
         filter!(c -> !(c isa AliasConvention), IO.CONVENTION_REGISTRY)
     end
     @test length(IO.CONVENTION_REGISTRY) == n
+end
+
+@testset "a downstream grid name joins the reference table" begin
+    # A grid name pins the id packing, so an unregistered one is refused rather
+    # than guessed — and the refusal has to point at the way in. Kills a
+    # reference table that only the package itself can extend.
+    err = try
+        IO.gridreference("isea7h")
+    catch e
+        e
+    end
+    @test err isa IO.DGGSFormatError && err.check === :unknown_grid_name
+    @test occursin("register_grid!", sprint(showerror, err))
+
+    ref = IO.GridReference("isea7h", DGG.IGeo7System(), :z7int, (:z7int,))
+    try
+        @test DGG.register_grid!("isea7h", ref) === IO.GRID_REFERENCE
+        @test IO.gridreference("isea7h") === ref
+    finally
+        delete!(IO.GRID_REFERENCE, "isea7h")
+    end
+    @test !haskey(IO.GRID_REFERENCE, "isea7h")
 end
 
 @testset "a read-only convention refuses to stamp" begin

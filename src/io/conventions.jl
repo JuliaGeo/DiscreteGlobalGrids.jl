@@ -87,12 +87,27 @@ end
     GRID_REFERENCE
 
 Canonical grid name → [`GridReference`](@ref). Shared by every convention;
-[`gridname`](@ref) is what maps a store's own spelling onto a key of this table.
+[`gridname`](@ref) is what maps a store's own spelling onto a key of this table,
+and [`register_grid!`](@ref) is how a downstream grid system gets one.
 """
 const GRID_REFERENCE = Dict{String,GridReference}(
     "igeo7" => GridReference("igeo7", IGeo7System(), :z7int, (:z7int,)),
     "healpix" => GridReference("healpix", HEALPixSystem(), :nested,
         (:nested, :ring, :nuniq, :zuniq)))
+
+"""
+    register_grid!(name::AbstractString, ref::GridReference) -> GRID_REFERENCE
+
+Register the canonical store spelling `name` for a grid system.
+
+Every convention resolves a store's grid name through [`GRID_REFERENCE`](@ref),
+and an unregistered name is refused rather than guessed, so this is what makes a
+downstream grid system readable and writeable. The name pins the id packing as
+well as the tessellation: register `"isea7h"` separately from `"igeo7"` if the
+ids differ, rather than aliasing one onto the other.
+"""
+register_grid!(name::AbstractString, ref::GridReference) =
+    setindex!(GRID_REFERENCE, ref, String(name))
 
 """
     gridname(c::DGGSConvention, name, attrs) -> String
@@ -125,7 +140,9 @@ function gridreference(canonical::AbstractString; store="", conventions=String[]
         conventions=conventions, declared=String(canonical),
         detail="registered canonical grid names: " *
                join(sort!(collect(keys(GRID_REFERENCE))), ", ") *
-               ". Register one with a GridReference, or give the convention a `gridname` method."))
+               ". Add one with `register_grid!(name, GridReference(...))`, or give " *
+               "the convention a `gridname` method that maps this spelling onto a " *
+               "registered name."))
 end
 
 # ===========================================================================

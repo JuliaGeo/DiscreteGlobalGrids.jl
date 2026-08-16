@@ -112,6 +112,34 @@ end
         keys(Encodings.ENCODING_REGISTRY))
 end
 
+# A downstream encoding, as far as the registry is concerned: a subtype and an
+# instance. What it does with a store is the registry's business no more than a
+# convention's implementation is `CONVENTION_REGISTRY`'s.
+struct GriddedRunsEncoding <: Encodings.CellEncoding end
+Encodings.encodingname(::GriddedRunsEncoding) = "gridded_runs"
+
+@testset "a downstream encoding joins the registry" begin
+    # The extension point the design promises: one pair added to the table and a
+    # store's vocabulary resolves to it. Kills a registry that only ever holds
+    # the three shipped layouts — and one typed loosely enough to hold anything.
+    @test Encodings.ENCODING_REGISTRY isa Dict{String,Encodings.CellEncoding}
+    n = length(Encodings.ENCODING_REGISTRY)
+    try
+        @test DGG.register_encoding!("gridded_runs", GriddedRunsEncoding()) ===
+              Encodings.ENCODING_REGISTRY
+        @test Encodings.ENCODING_REGISTRY["gridded_runs"] === GriddedRunsEncoding()
+        @test length(Encodings.ENCODING_REGISTRY) == n + 1
+        # And a store that names it decodes to it, which is the whole point.
+        @test DGG.encoding_for("gridded_runs") === GriddedRunsEncoding()
+    finally
+        delete!(Encodings.ENCODING_REGISTRY, "gridded_runs")
+    end
+    @test length(Encodings.ENCODING_REGISTRY) == n
+    # Only encodings: the table is what every `encodingname` and `cellaxis` call
+    # is dispatched from, so a bare string in it is a MethodError somewhere else.
+    @test_throws MethodError DGG.register_encoding!("bogus", "ranges")
+end
+
 @testset "the merge rule chooses between rank runs and step runs" begin
     L = 3
     grid = levelgrid(IGeo7System(), L)

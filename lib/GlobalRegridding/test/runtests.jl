@@ -6,6 +6,9 @@ import LinearAlgebra
 # The analytic test doubles every other file here builds on.
 include("toyspaces.jl")
 
+# A method that never implements `build_weights!`, for the fallback error path.
+struct UnimplementedMethod <: AbstractRegriddingMethod end
+
 @testset "GlobalRegridding" begin
 
     @testset "toy space contract" begin
@@ -80,9 +83,9 @@ include("toyspaces.jl")
         space = ToyLonLatSpace(4, 2)
         inds = cellindices(space, 1)
         # A method with no `build_weights!` says which method and which spaces.
-        @test_throws "Conservative" build_weights!(
-            WeightCOO(length(inds)), Conservative(), space, inds, space, inds)
-        @test support_radius(Conservative(), space) == 0.0
+        @test_throws "UnimplementedMethod" build_weights!(
+            WeightCOO(length(inds)), UnimplementedMethod(), space, inds, space, inds)
+        @test support_radius(UnimplementedMethod(), space) == 0.0
         @test_throws ArgumentError Weighted(1.5)
     end
 

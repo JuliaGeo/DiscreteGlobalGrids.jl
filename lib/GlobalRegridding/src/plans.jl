@@ -53,6 +53,15 @@ end
 Base.size(block::WeightBlock) = size(block.weights)
 Base.size(block::WeightBlock, d::Integer) = size(block.weights, d)
 
+"""
+    hasdenom(block::WeightBlock) -> Bool
+
+Whether `block` carries a per-destination denominator, which is what decides
+whether [`Weighted`](@ref) normalizes its destinations or only blanks the
+under-covered ones. See `finalize!`.
+"""
+hasdenom(block::WeightBlock) = block.denom !== nothing
+
 Base.show(io::IO, block::WeightBlock) =
     print(io, "WeightBlock(", size(block, 1), "×", size(block, 2),
         block.denom === nothing ? "" : ", denom", ")")
@@ -66,6 +75,11 @@ The in-memory case: no chunk machinery, no discovery, no storage policy — the
 source is read once and the block applied once. This is what bare
 [`regrid`](@ref) builds for an in-memory source, and what
 [`plan_regrid`](@ref) returns when the source is not chunked.
+
+`block` spans both spaces entire: its size is
+`(ncells(dst_space), ncells(src_space))` and its indices are cell positions,
+the chunk-local addressing of a whole-domain pair. `chunks` and `budget` are
+absent because a whole-domain plan has nothing to decide with them.
 """
 struct DirectPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
                   D<:RegridSpace,S<:RegridSpace,B<:WeightBlock} <: AbstractRegriddingPlan

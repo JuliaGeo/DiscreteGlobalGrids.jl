@@ -1440,10 +1440,10 @@ end
     #   "all"           both.
     #
     # No run here skips anything the harness offers this system. `neighbors` and
-    # `ring` are both closed form, so its whole neighbour and ring families run —
-    # the shell, concatenation, tail-block and winding laws included. A default
-    # `Pkg.test()` reports 17 broken; none of them is a `@test_broken` written
-    # here.
+    # `ring` are both closed form, so the harness's whole neighbour and ring
+    # families run — the shell, concatenation, tail-block and winding laws
+    # included. A default `Pkg.test()` reports 17 broken; none of them is a
+    # `@test_broken` written here.
     #
     # WHAT A DEFAULT RUN THEREFORE NEVER RUNS ON THE SHIPPED LATTICES, listed in
     # full rather than by the two laws that are easiest to defend: the
@@ -1527,13 +1527,13 @@ end
 # AND ITS REGISTRATION IS `cell_box`'s, checked rather than assumed. The formula
 # above writes the registration out a second time, so a wrong one in BOTH would
 # survive every comparison this oracle makes. These five cells tie it back to
-# `cell_box` — which the 79 measured geotransforms pin — one kind at a time: a
-# pixel interior to its tile, the pixel straddling +-180, a band-boundary tile,
-# and the two pole cells whose north and south edges are corrected. `cell_box`
-# reaches a longitude in three roundings where this is one exact rational, so a
-# PIXEL edge can land one Float64 step off; tiles and pole cells are bit-exact,
-# and one step is the whole tolerance. Latitudes are not in scope here: the
-# oracle decides adjacency on longitude and row index alone.
+# `cell_box` — which testset (b) pins against the measured geotransforms — one
+# kind at a time: a pixel interior to its tile, the pixel straddling +-180, a
+# band-boundary tile, and the two pole cells whose north and south edges are
+# corrected. `cell_box` reaches a longitude in three roundings where this is one
+# exact rational, so a PIXEL edge can land one Float64 step off; tiles and pole
+# cells are bit-exact, and one step is the whole tolerance. Latitudes are not in
+# scope here: the oracle decides adjacency on longitude and row index alone.
 @testset "the oracle is registered as cell_box is" begin
     N = CD.lat_intervals(TWIN)
     # Representable `Float64` steps apart, which is 0 for a bit-exact match.
@@ -1674,9 +1674,9 @@ end
 
     # NOTHING REACHES A TREE. A tile edge, the antimeridian, a band boundary and
     # a level-0 tile each cost what the tile interior costs. A method that
-    # delegated any of them to the generic walk would allocate orders more,
-    # because the walk builds and queries a spatial tree over the level — so this
-    # separates the routes structurally, without timing either.
+    # delegated any of them to the generic walk would allocate orders of
+    # magnitude more, because the walk builds and queries a spatial tree over
+    # the level — so this separates the two structurally, without timing either.
     for x in (c,
               CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, 0), 15, 0),        # west tile edge
               CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, -180), 0, 0),      # antimeridian corner
@@ -1783,9 +1783,9 @@ end
     end
     @test bad == String[]
 
-    # `ring` AND `neighbors` ARE ONE ANSWER, which is the interface's law and
-    # not a convenience: ring 1 IS `neighbors(c, 1)`, the disc is the rings
-    # concatenated outward, the shells are disjoint, and ring 2 is wound too.
+    # `ring` AND `neighbors` ARE ONE ANSWER, which is the interface's law:
+    # ring 1 IS `neighbors(c, 1)`, the disc is the rings concatenated outward,
+    # the shells are disjoint, and ring 2 is wound too.
     # The level-1 pole cell is in the list because its ring 1 is the whole apex
     # row, so ring 2 is the first shell here that the winding has to order with
     # no lattice order to inherit.
@@ -1818,7 +1818,7 @@ end
     g0 = levelgrid(TWIN, 0)
 
     # THE WALK IS ALWAYS A SUBSET, and away from a band boundary it is the whole
-    # set. Both halves matter: the first says the closed form never invents a
+    # set. Both halves matter: the first says the closed form never drops a
     # neighbour the vertex-matching model can see, the second says the two
     # disagree in exactly one place and not diffusely.
     inside = String[]
@@ -1844,13 +1844,14 @@ end
     @test inside == String[]
 
     # THE MECHANISM, at a level-0 band boundary tile. `N50_00_E000_00` and the
-    # tile below it share 0.9917 degrees of the parallel at latitude 50.0167 —
-    # a segment, not a point — and NO corner, because a tile's box is offset
-    # half a pixel and the pixel is 1/20 of a degree above the boundary against
-    # 1/30 below. The walk counts coincident ring vertices within a thousandth
-    # of the cell's shortest edge; the nearest pair of corners is 8.5 times that
-    # tolerance apart, so it counts none and reports the five neighbours inside
-    # the tile's own band. The lattice has seven.
+    # tile below it share more than 0.99 degrees of the parallel half a pixel
+    # north of latitude 50 — a segment, not a point — and NO corner, because a
+    # tile's box is offset half a pixel and the pixel is 1/20 of a degree above
+    # the boundary against 1/30 below. The walk counts coincident ring vertices
+    # within a thousandth of the cell's shortest edge; the nearest pair of
+    # corners is more than eight times that tolerance apart, so it counts none
+    # and reports the five neighbours inside the tile's own band. The lattice
+    # has seven.
     tile = CD.tilecell(TWIN, 50, 0)
     below = CD.tilecell(TWIN, 49, 0)
     ring_a = DGG.cell_boundary(TWIN, tile)
@@ -1923,7 +1924,7 @@ end
     # column: how many of the far side's cells a cell spans is a function of
     # where its edges fall between theirs. Both extremes are pinned, so a mutant
     # that dropped the touch cases or double-counted an overlap moves one of
-    # them. Six is the smallest a cell anywhere on this lattice has.
+    # them. Six is the smallest `Vertex()` count any of the ten produces.
     span = Dict{Int,NTuple{4,Int}}()
     for r in 0:(CD.NROWS - 2)
         a, b = CD.ncols(TWIN, r), CD.ncols(TWIN, r + 1)

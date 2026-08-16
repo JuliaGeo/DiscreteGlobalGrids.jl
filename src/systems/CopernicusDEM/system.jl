@@ -29,14 +29,15 @@ plus the three pixels below it. Everything else is far under that: eight for a p
 interior to its tile, for a tile edge within a band and for the wide side of a band
 boundary, and at most `360 + 2` for a level-0 pole tile.
 
-A band boundary sets the `Edge()` bound, and it is **six**, not the von Neumann four.
+A band boundary sets the `Edge()` bound, which is why it exceeds the von Neumann four.
 The two sides of a boundary parallel carry different column counts, so a cell on the
-wide side faces the narrow side across a segment that up to three of its cells divide —
-`ceil(p/q) <= 2` interior breakpoints for every reduced column ratio the table produces
-(3:2, 4:3, 3:2, 5:3, 2:1), hence at most three overlaps of positive length. Two
-laterals and the one cell facing the other way bring the total to six. A level-0 tile
-reaches five the same way. Under `Edge()` a shared apex is a point rather than a
-segment, so a pole cell has three and never approaches the `Vertex()` figure.
+wide side faces the narrow side across a segment that up to three of its cells divide:
+with the reduced ratio `p:q` written wide side first, every one the band table produces
+(3:2, 4:3, 3:2, 5:3, 2:1) leaves `ceil(p/q) <= 2` narrow-side breakpoints strictly
+inside that segment, hence at most three overlaps of positive length. Two laterals and
+the one cell facing the other way bring the total to six. A level-0 tile reaches five
+the same way. Under `Edge()` a shared apex is a point rather than a segment, so a pole
+cell has three and never approaches the `Vertex()` figure.
 
 Both bounds are attained, not merely respected: `"max_neighbors is attained"` in
 `test/systems/CopernicusDEM/runtests.jl` asserts equality at the pole rows and at the
@@ -626,7 +627,7 @@ function _across(sys::CopernicusDEMSystem, level::Int, J2::Int64, a::Int64, K::I
     return out
 end
 
-# The 1-ring, in the documented order. Everything above is called from here and from
+# The 1-ring, in the documented order. The helpers above are called from here and from
 # nowhere else.
 function _ring1(sys::CopernicusDEMSystem{N}, level::Int, c::DGG.LevelIndex,
         connectivity::DGG.Connectivity) where {N}
@@ -726,9 +727,10 @@ falls strictly inside a longer edge of its neighbour is a `Vertex()` neighbour o
     same parallel — but across a reduced ratio `p:q`, so a cell on the narrow side faces
     one or two of the wide side's and a cell on the wide side faces two or three of the
     narrow side's. Six to eight under `Vertex()`, four to six under `Edge()`. Corners
-    coincide only where `p` and `q` are both odd, which of the five ratios (3:2, 4:3,
-    3:2, 5:3, 2:1) holds at ±80 alone; elsewhere a corner lands strictly inside the
-    facing edge, which is still a shared point and still a `Vertex()` neighbour.
+    coincide only where `p` and `q` are both odd, true of 5:3 alone among the five
+    ratios (3:2, 4:3, 3:2, 5:3, 2:1) and so of latitude ±80 alone; elsewhere a corner
+    lands strictly inside the facing edge, which is still a shared point and still a
+    `Vertex()` neighbour.
   - **Pole rows** — raster row 0 of a `lat_s = 89` tile, row `N - 1` of a `lat_s = -90`
     one — are the triangles [`cell_boundary`](@ref) emits, and their apex is one point
     shared by the whole ring. So `Vertex()` gives the entire ring plus the three cells
@@ -743,14 +745,14 @@ falls strictly inside a longer edge of its neighbour is a `Vertex()` neighbour o
 
 Raster rows run north to south. The cycle is counter-clockwise seen from outside the
 sphere — the north-side neighbours from east to west, the western lateral, the
-south-side neighbours from west to east, the eastern lateral — and the list is read from
+south-side neighbours from west to east, the eastern lateral — and the list starts at
 the north side's last member, the neighbour immediately west across the north edge. For
 a cell interior to its tile that is the familiar
 
     Vertex()   NW, W, SW, S, SE, E, NE, N
     Edge()     N, W, S, E
 
-and it stays that at a tile edge, where the same eight cells simply live in other tiles.
+and it stays that at a tile edge, where the same eight cells live in other tiles.
 Where a side carries more or fewer cells the block grows or shrinks in place. On a pole
 row the apex ring is that cell's north (or south) side and holds the laterals itself, so
 it is enumerated over the pole from the eastern lateral to the western one; under

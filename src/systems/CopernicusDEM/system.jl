@@ -2,9 +2,9 @@
 # Every relation here is arithmetic on the dense 0-based ordinals of `bands.jl`.
 
 # `levelgrid(CopernicusDEMSystem(...), l)` is the package's `HierarchicalLevelGrid`:
-# all 64 800 tiles, or every pixel on Earth, in ordinal order. This system's fast
-# paths hang off the alias, and the five primitives it forwards to are the
-# `(sys, ...)` methods below.
+# all 64 800 tiles, or every pixel on Earth, in ordinal order. The methods this system
+# takes over from the generic grid hang off the alias, and the primitives they forward
+# to are the `(sys, ...)` methods below.
 const LevelGrid{N} = DGG.HierarchicalLevelGrid{CopernicusDEMSystem{N}}
 
 # ===========================================================================
@@ -18,28 +18,34 @@ DGG.has_sorted_subtrees(::CopernicusDEMSystem) = true
 """
     max_neighbors(CopernicusDEMSystem{N}(), connectivity) -> Int
 
-`360 * ncols(pole row) + 2`, which is `36N + 2`, under `Vertex()`; `4` under `Edge()`.
-Both bound every cell of both levels.
+`360 * ncols(pole row) + 2`, which is `36N + 2`, under `Vertex()`; `6` under `Edge()`.
+Both bound every cell of both levels, and both are attained.
 
 A pole row sets the `Vertex()` bound, not the lattice interior. Raster row 0 of a
 `lat_s = 89` tile and row `N - 1` of a `lat_s = -90` tile are the spherical triangles
 [`cell_boundary`](@ref) emits, and their apex is the one exact ±90 vertex every cell of
 the row shares — so each such pixel touches the whole pole ring of `360 * ncols` pixels,
 plus the three pixels below it. Everything else is far under that: eight for a pixel
-interior to its tile and for a tile edge within a band, fewer across a band boundary,
-and at most `360 + 2` for a level-0 pole tile.
+interior to its tile, for a tile edge within a band and for the wide side of a band
+boundary, and at most `360 + 2` for a level-0 pole tile.
 
-`Edge()` asks for two shared vertices, which a shared apex alone is not, so a pole pixel
-has three there and the von Neumann four stands.
+A band boundary sets the `Edge()` bound, and it is **six**, not the von Neumann four.
+The two sides of a boundary parallel carry different column counts, so a cell on the
+wide side faces the narrow side across a segment that up to three of its cells divide —
+`ceil(p/q) <= 2` interior breakpoints for every reduced column ratio the table produces
+(3:2, 4:3, 3:2, 5:3, 2:1), hence at most three overlaps of positive length. Two
+laterals and the one cell facing the other way bring the total to six. A level-0 tile
+reaches five the same way. Under `Edge()` a shared apex is a point rather than a
+segment, so a pole cell has three and never approaches the `Vertex()` figure.
 
-The `Vertex()` bound is attained, not merely respected: `"max_neighbors is a true bound"`
-in `test/systems/CopernicusDEM/runtests.jl` asserts equality at both pole rows of all
-three lattices, and sweeps the band boundaries, the antimeridian, the tile edges and both
-levels for anything larger.
+Both bounds are attained, not merely respected: `"max_neighbors is attained"` in
+`test/systems/CopernicusDEM/runtests.jl` asserts equality at the pole rows and at the
+±85 boundary of all three lattices, and sweeps the boundaries, the antimeridian, the
+tile edges and both levels for anything larger.
 """
 DGG.max_neighbors(sys::CopernicusDEMSystem, ::DGG.Vertex) =
     360 * Int(max(ncols(sys, 0), ncols(sys, NROWS - 1))) + 2
-DGG.max_neighbors(::CopernicusDEMSystem, ::DGG.Edge) = 4
+DGG.max_neighbors(::CopernicusDEMSystem, ::DGG.Edge) = 6
 
 "Lazy 0-based ids at one level; `rootcells` and `children` are windows over it."
 struct IdRange <: AbstractVector{DGG.LevelIndex}
@@ -532,79 +538,252 @@ end
 # Topology
 # ===========================================================================
 
+# WHERE ADJACENCY IS DECIDED. A cell of either level IS its [`cell_box`](@ref), so two
+# cells meet exactly where their boxes do, and each axis is settled in integers.
+#
+# LATITUDE. Level-1 rows are global: `J = r * N + j`, north to south over `180 * N` of
+# them. Row `J`'s south edge and row `J + 1`'s north edge are the same rational — at a
+# tile seam, `(lat_s(r) + 1) - N/N + 1/(2N)` against `(lat_s(r + 1) + 1) + 1/(2N)`,
+# equal because `lat_s(r + 1) = lat_s(r) - 1` — so consecutive rows abut and rows two
+# apart are separated by a whole row. Level-0 tile rows say the same one level up. A
+# cell can therefore only meet cells in its own row and in the two beside it, and the
+# pole clamps do not change that: they alter a row's HEIGHT, never which rows abut.
+#
+# LONGITUDE. A row with `nc` columns per degree puts its breakpoints at
+# `(P k - 1) / (2 nc)` degrees east of -180: `P = 2` for a pixel row, whose cell `K`
+# runs `(2K - 1)/(2nc) .. (2K + 1)/(2nc)`, and `P = 2 nc` for a tile row, whose tile `q`
+# runs `(2 nc q - 1)/(2 nc) .. (2 nc (q + 1) - 1)/(2 nc)`. Both are the half-pixel
+# registration `cell_box` describes — which is why a TILE's corners are not on integer
+# degrees either, and why they move with the band — and both partition the circle.
+#
+# Comparing a row of `a` columns with one of `b` clears both denominators at once by
+# scaling into units of `1/(2ab)` degrees, where every endpoint is an integer and the
+# circle is `720 a b` long. `_facing` is that comparison and the only place adjacency is
+# decided; nothing here reads a `Float64` or a tolerance.
+
+# The two shapes of longitude lattice, as the breakpoint stride and the row length.
+@inline _stride(nc::Int64, level::Int) = level == 0 ? 2 * nc : Int64(2)
+@inline _rowlen(nc::Int64, level::Int) =
+    level == 0 ? Int64(NCOLS_TILES) : Int64(NCOLS_TILES) * nc
+@inline _nrows(::CopernicusDEMSystem{N}, level::Int) where {N} =
+    level == 0 ? Int64(NROWS) : Int64(NROWS) * Int64(N)
+@inline _gridrow(::CopernicusDEMSystem{N}, level::Int, J::Int64) where {N} =
+    level == 0 ? Int(J) : Int(fld(J, Int64(N)))
+
+"""
+The cells of a row with `b` columns that meet cell `K` of a row with `a` columns:
+`(lo, hi, touch_lo, touch_hi)`, where `lo:hi` overlap `K`'s longitude interval in
+POSITIVE length and the flanking `lo - 1` / `hi + 1` meet it in a single POINT when the
+matching flag is set. Indices are unreduced; callers take them modulo the row length.
+
+`lo` is the facing cell holding `K`'s west edge and `hi` the last one starting before
+its east edge, both by integer division on the cross-multiplied endpoints. The run
+holds `1 + ceil(b/a)` cells at most — one more than the facing breakpoints that fit
+strictly inside `K` — so it never exceeds three: the widest ratio the band table puts
+side by side is 2:1, at latitude ±85.
+"""
+function _facing(a::Int64, b::Int64, level::Int, K::Int64)
+    pa, pb = _stride(a, level), _stride(b, level)
+    s_w = (pa * K - 1) * b              # K's west edge, in units of 1/(2ab) degrees
+    s_e = (pa * (K + 1) - 1) * b        # and its east edge
+    step = pb * a                       # one whole cell of the facing row
+    lo = fld(s_w + a, step)
+    hi = cld(s_e + a, step) - 1
+    return (lo, hi, (pb * lo - 1) * a == s_w, (pb * (hi + 1) - 1) * a == s_e)
+end
+
+# `(row, column)` <-> id, at whichever level. Level 0 counts tile rows and tile columns,
+# level 1 counts raster rows and columns globally, and `_facing` does not care which.
+function _gridcell(sys::CopernicusDEMSystem{N}, level::Int, J::Int64, K::Int64) where {N}
+    level == 0 && return DGG.LevelIndex(0, tileordinal(Int(J), Int(K)))
+    r = fld(J, Int64(N))
+    nc = ncols(sys, r)
+    q, i = divrem(K, nc)
+    return DGG.LevelIndex(1, tilebase(sys, Int(r), Int(q)) + (J - r * Int64(N)) * nc + i)
+end
+
+function _gridcoords(sys::CopernicusDEMSystem{N}, level::Int, c::DGG.LevelIndex) where {N}
+    r, q, j, i = decode(sys, c)
+    level == 0 && return (Int64(r), Int64(q))
+    nc = ncols(sys, r)
+    return (Int64(r) * Int64(N) + j, Int64(q) * nc + i)
+end
+
+# The neighbours across one of the cell's two parallels, WEST to EAST. Point contacts
+# are dropped under `Edge()`, which is the whole of the difference between the two
+# connectivities away from a pole.
+function _across(sys::CopernicusDEMSystem, level::Int, J2::Int64, a::Int64, K::Int64,
+        edge_only::Bool)
+    b = ncols(sys, _gridrow(sys, level, J2))
+    m = _rowlen(b, level)
+    lo, hi, touch_lo, touch_hi = _facing(a, b, level, K)
+    out = DGG.LevelIndex[]
+    (touch_lo && !edge_only) && push!(out, _gridcell(sys, level, J2, mod(lo - 1, m)))
+    for l in lo:hi
+        push!(out, _gridcell(sys, level, J2, mod(l, m)))
+    end
+    (touch_hi && !edge_only) && push!(out, _gridcell(sys, level, J2, mod(hi + 1, m)))
+    return out
+end
+
+# The 1-ring, in the documented order. Everything above is called from here and from
+# nowhere else.
+function _ring1(sys::CopernicusDEMSystem{N}, level::Int, c::DGG.LevelIndex,
+        connectivity::DGG.Connectivity) where {N}
+    edge_only = connectivity isa DGG.Edge
+    J, K = _gridcoords(sys, level, c)
+    a = ncols(sys, _gridrow(sys, level, J))
+    m = _rowlen(a, level)
+    apex_n = J == 0                             # this cell's north edge is the +90 apex
+    apex_s = J == _nrows(sys, level) - 1        # its south edge is the -90 apex
+    # An apex is one point, so it carries the ring under `Vertex()` and nothing under
+    # `Edge()`. When it carries the ring, the ring already holds the two laterals.
+    apex_ring = !edge_only && (apex_n || apex_s)
+
+    north = DGG.LevelIndex[]                    # the north side, EAST to WEST
+    south = DGG.LevelIndex[]                    # the south side, WEST to EAST
+    if apex_n
+        # From a cell of the pole ring, the ring runs counter-clockwise in increasing
+        # eastward offset: the eastern lateral first, over the pole, the western lateral
+        # last. The cell half the ring away is the one that lies due north.
+        apex_ring && (north = [_gridcell(sys, level, J, mod(K + t, m)) for t in 1:(m - 1)])
+    else
+        north = _across(sys, level, J - 1, a, K, edge_only)
+        reverse!(north)
+    end
+    if apex_s
+        apex_ring && (south = [_gridcell(sys, level, J, mod(K - t, m)) for t in 1:(m - 1)])
+    else
+        south = _across(sys, level, J + 1, a, K, edge_only)
+    end
+
+    out = DGG.LevelIndex[]
+    sizehint!(out, length(north) + length(south) + 2)
+    isempty(north) || push!(out, north[end])
+    apex_ring || push!(out, _gridcell(sys, level, J, mod(K - 1, m)))
+    append!(out, south)
+    apex_ring || push!(out, _gridcell(sys, level, J, mod(K + 1, m)))
+    isempty(north) || append!(out, view(north, 1:(length(north) - 1)))
+    return out
+end
+
+# Outward shells, breadth-first over the 1-ring. Shell 1 IS the 1-ring and keeps its
+# lattice order; the outer shells have no lattice order to keep and are wound by
+# measured azimuth in the frame the generic walk fixes from ring 1, so `ring(c, k)` is
+# the tail block of `neighbors(c, k)` at every `k`.
+function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
+        connectivity::DGG.Connectivity)
+    sys = g.system
+    shells = Vector{DGG.LevelIndex}[]
+    seen = Set{DGG.LevelIndex}((c,))
+    frontier = DGG.LevelIndex[c]
+    centre = DGG.cell_centroid(sys, c)
+    frame = nothing
+    for step in 1:steps
+        next = DGG.LevelIndex[]
+        for x in frontier, y in _ring1(sys, g.level, x, connectivity)
+            y in seen && continue
+            push!(seen, y)
+            push!(next, y)
+        end
+        if step == 1
+            isempty(next) || (frame = DGG.Fallbacks._ring_frame(g, centre, next))
+        elseif frame !== nothing
+            DGG.Fallbacks._wind!(next, g, centre, frame)
+        end
+        push!(shells, next)
+        isempty(next) && break
+        frontier = next
+    end
+    return shells
+end
+
 """
     neighbors(grid, c, k = 1; connectivity = Vertex()) -> Vector{LevelIndex}
+    ring(grid, c, k; connectivity = Vertex()) -> Vector{LevelIndex}
 
-Cells within `k` adjacency steps of `c`, excluding `c`, in the interface's rotational
-order.
+Cells within, or at exactly, `k` adjacency steps of `c`, excluding `c`, in the
+interface's rotational order. Closed form at every cell of both levels: tile interiors,
+tile edges and corners, the antimeridian, the band boundaries, the ±90 pole rows and
+their half-pixel slivers, and the tile lattice itself.
 
-# The split
+# What adjacent means
 
-A **pixel interior to its tile**, at `k == 1`, is answered by index arithmetic on `c`'s
-own id. Interior means level 1 with raster row `1 <= j <= N - 2` and raster column
-`1 <= i <= nc - 2`, where `nc = ncols(sys, r)` is the tile's column count: exactly the
-condition that puts all eight Moore neighbours inside `c`'s own tile, where the column
-count is `nc` and nothing else.
+Cells are neighbours under `Vertex()` when their closed [`cell_box`](@ref)es share at
+least one point, and under `Edge()` when they share a segment of positive length. Both
+are decided in exact integer arithmetic on the lattice — the rational endpoints of two
+rows cross-multiplied to a common denominator — never by comparing coordinates within a
+tolerance. Adjacency is therefore symmetric by construction, and a cell whose corner
+falls strictly inside a longer edge of its neighbour is a `Vertex()` neighbour of it.
 
-Every other cell is answered by the generic `AbstractGrid` walk of
-`src/fallbacks/locate.jl`, called directly — level 0, any `k != 1`, the four tile-edge
-rows and columns with their corners, any connectivity outside `Vertex()`/`Edge()`, and an
-id no cell has, which reaches the walk and raises the walk's error.
+# The cases the lattice produces
 
-The two routes are one answer: the walk is the definition and the arithmetic reproduces
-it element for element, which `"neighbors fast path against the fallback oracle"` in
-`test/systems/CopernicusDEM/runtests.jl` asserts cell by cell.
+  - **Interior to a tile**, and **tile edges and corners within a band**: eight under
+    `Vertex()`, four under `Edge()`. The antimeridian is a tile edge like any other; the
+    tiles either side of ±180 abut, at ids 359 tile columns apart.
+  - **Band boundaries** (latitude 50/60/70/80/85) face two rows of different column
+    count at one parallel. Every cell still meets the other side — the two rows tile the
+    same parallel — but across a reduced ratio `p:q`, so a cell on the narrow side faces
+    one or two of the wide side's and a cell on the wide side faces two or three of the
+    narrow side's. Six to eight under `Vertex()`, four to six under `Edge()`. Corners
+    coincide only where `p` and `q` are both odd, which of the five ratios (3:2, 4:3,
+    3:2, 5:3, 2:1) holds at ±80 alone; elsewhere a corner lands strictly inside the
+    facing edge, which is still a shared point and still a `Vertex()` neighbour.
+  - **Pole rows** — raster row 0 of a `lat_s = 89` tile, row `N - 1` of a `lat_s = -90`
+    one — are the triangles [`cell_boundary`](@ref) emits, and their apex is one point
+    shared by the whole ring. So `Vertex()` gives the entire ring plus the three cells
+    equatorward, which is what [`max_neighbors`](@ref) is sized for, while `Edge()` gives
+    the two laterals and the one overlap equatorward: three.
+  - **Level 0** is the same statement over tile rows. A tile's box is offset half a
+    PIXEL, so tiles across a band boundary are offset by different amounts and their
+    corners never coincide: eight neighbours within a band, seven across one, and 362 on
+    a pole tile row.
 
 # Order
 
-Raster rows run north to south, so `-nc` is the northern neighbour. Each list starts at
-its smallest id — the north-west neighbour under `Vertex()`, the northern one under
-`Edge()` — and turns counter-clockwise seen from outside the sphere, which is where and
-how the generic walk anchors its winding:
+Raster rows run north to south. The cycle is counter-clockwise seen from outside the
+sphere — the north-side neighbours from east to west, the western lateral, the
+south-side neighbours from west to east, the eastern lateral — and the list is read from
+the north side's last member, the neighbour immediately west across the north edge. For
+a cell interior to its tile that is the familiar
 
-    Vertex()   NW, W, SW, S, SE, E, NE, N     -nc-1, -1, nc-1, nc, nc+1, 1, -nc+1, -nc
-    Edge()     N, W, S, E                     -nc, -1, nc, 1
+    Vertex()   NW, W, SW, S, SE, E, NE, N
+    Edge()     N, W, S, E
 
-Both are constant offsets *because* of the gate. Outside it they are not offsets at all.
+and it stays that at a tile edge, where the same eight cells simply live in other tiles.
+Where a side carries more or fewer cells the block grows or shrinks in place. On a pole
+row the apex ring is that cell's north (or south) side and holds the laterals itself, so
+it is enumerated over the pole from the eastern lateral to the western one; under
+`Edge()`, where the apex carries nothing, the north side is empty and the list starts at
+the western lateral instead.
 
-# What the gate excludes, and why each case is the walk's
-
-  - **Tile edges within a band** do have eight neighbours, but the east-west ones belong
-    to the neighbouring tile and the north-south ones to the neighbouring tile row, at
-    ids no fixed offset from `c` gives. The antimeridian is this case: the tiles either
-    side of longitude ±180 abut, and their ids are 359 tile columns apart.
-  - **Band boundaries** (latitude 50/60/70/80/85) put a different column count on the far
-    side, and the two sides' pixel corners land on the same parallel at different
-    longitudes. Vertex adjacency therefore does not cross a band boundary at all unless
-    the two column counts reduce to a ratio of two odd terms, which of the five
-    boundaries happens at latitude ±80 alone. So a boundary-row pixel sees only its own
-    side — five neighbours — at the other four, and five or seven at ±80. Fewer than
-    eight either way, and never more.
-  - **Pole rows** — raster row 0 of a `lat_s = 89` tile, row `N - 1` of a `lat_s = -90`
-    one — are triangles sharing one apex with every other cell of their ring, so each is
-    adjacent to all of it. That case is what [`max_neighbors`](@ref) is sized for.
-
-No `ring` method accompanies this one, so `ring` stays the generic walk's; the two agree
-because this returns the walk's own order rather than a sorted one.
+`ring(c, k)` is the final block of `neighbors(c, k)`, and `neighbors(c, k)` is the rings
+concatenated outward, as the interface requires. Rings past the first carry no lattice
+order and are wound by measured azimuth about `cell_centroid(grid, c)`.
 """
-function DGG.neighbors(g::LevelGrid{N}, c::DGG.LevelIndex, k::Integer = 1;
-        connectivity::DGG.Connectivity = DGG.Vertex()) where {N}
-    if Int(k) == 1 && g.level == 1 && DGG.level(c) == 1 &&
-            0 <= c.index < DGG.ncells(g.system, 1)
-        r, _, j, i = decode(g.system, c)
-        nc = ncols(g.system, r)
-        if 1 <= j <= N - 2 && 1 <= i <= nc - 2
-            b = c.index
-            connectivity isa DGG.Vertex && return [
-                DGG.LevelIndex(1, b - nc - 1), DGG.LevelIndex(1, b - 1),
-                DGG.LevelIndex(1, b + nc - 1), DGG.LevelIndex(1, b + nc),
-                DGG.LevelIndex(1, b + nc + 1), DGG.LevelIndex(1, b + 1),
-                DGG.LevelIndex(1, b - nc + 1), DGG.LevelIndex(1, b - nc)]
-            connectivity isa DGG.Edge && return [
-                DGG.LevelIndex(1, b - nc), DGG.LevelIndex(1, b - 1),
-                DGG.LevelIndex(1, b + nc), DGG.LevelIndex(1, b + 1)]
-        end
-    end
-    return invoke(DGG.neighbors,
-        Tuple{DGG.AbstractGrid,DGG.AbstractCellIndex,Integer}, g, c, k; connectivity)
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+        connectivity::DGG.Connectivity = DGG.Vertex())
+    steps = Int(k)
+    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    _checked_index(g, c)
+    steps == 0 && return DGG.LevelIndex[]
+    steps == 1 && return _ring1(g.system, g.level, c, connectivity)
+    return reduce(vcat, _shells(g, c, steps, connectivity))
+end
+
+"""
+    ring(grid, c, k; connectivity = Vertex()) -> Vector{LevelIndex}
+
+The cells at adjacency distance exactly `k`, on the same closed-form adjacency and the
+same rotational order [`neighbors`](@ref) documents; `k == 0` is `[c]`.
+"""
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+        connectivity::DGG.Connectivity = DGG.Vertex())
+    steps = Int(k)
+    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    _checked_index(g, c)
+    steps == 0 && return DGG.LevelIndex[c]
+    steps == 1 && return _ring1(g.system, g.level, c, connectivity)
+    shells = _shells(g, c, steps, connectivity)
+    return steps <= length(shells) ? shells[steps] : DGG.LevelIndex[]
 end

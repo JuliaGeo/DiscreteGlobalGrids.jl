@@ -67,6 +67,12 @@ dem = aggregate(mean, dem, 4; progress = false)
 # ConservativeRegridding wants the source's cell corners on the unit sphere.
 # The destination needs no adapter: `treeify`, `ncells` and `getcell` are
 # extended for every `AbstractGrid`.
+#
+# The source could skip the adapter too: with `demtile` the level-0 id of the
+# tile a DEM came from, `DGG.PartialGrid(DGG.CopernicusDEMSystem(30), demtile, 1)`
+# is that whole tile as an ordinary grid. This page takes the hand-built route
+# because it works for *any* raster; `examples/copernicus_dem.jl` is the
+# tile-native one.
 
 xbounds, ybounds = Rasters.intervalbounds(dem, (X, Y))
 # `intervalbounds` follows array-index order while each pair remains `(low,

@@ -4,6 +4,10 @@ Six discrete global grid systems — IGEO7, H3, HEALPix, A5, S2, ISEA4R — behi
 one small interface, with every algorithm written against the interface exactly
 once.
 
+`DGG.CopernicusDEMSystem` implements that same interface for the Copernicus DEM
+raster lattice, but is a raster rather than a DGGS and so stays outside
+`DGG.systems()`; `examples/copernicus_dem.jl` puts it to work.
+
 The mental model is two tiers. A **grid** is one finite collection of cells on
 the sphere — a complete level, or a regional subset of one — and geometry,
 stencils and queries are all answered there. A **system** adds the parent/child

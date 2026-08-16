@@ -34,5 +34,8 @@ using DiscreteGlobalGrids
     # The GlobalRegridding face reads the grids, the cell containers, and the
     # cube axis, so it runs after all three.
     include("systems/crosssystem/regrid.jl")
+    # Acceptance: the tiled-DEM, south-pole, streaming-and-spill case, on the
+    # face the file above unit-tests.
+    include("systems/crosssystem/regrid_acceptance.jl")
     include("plotting/runtests.jl")
 end

@@ -118,17 +118,10 @@ end
 # ## Putting data on the cells
 #
 # A coverage names a region; it does not carry values. `CellLookup` reads the
-# set as a one-level cell axis, `PartialGrid` reads that axis as a grid, and
-# `ConservativeRegridding` fills it from anything with cell corners — here a
-# deterministic temperature-like field on a regular lon/lat raster.
-#
-# One honesty note: conservative regridding *onto* a DGGS is exact only where
-# the destination cells' rings are convex, because the clipper intersects
-# correctly only against a convex window. IGEO7's rings are convex at every
-# level — H3's are not at odd levels — so the conservation check below comes
-# out at machine precision.
+# set as a one-level cell axis, and `regrid` fills it from anything with cell
+# corners — here a deterministic temperature-like field on a regular lon/lat
+# raster.
 
-import ConservativeRegridding as CR
 import DimensionalData as DD
 import Extents
 using Rasters
@@ -136,16 +129,13 @@ using Statistics
 
 region = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 6)
 lk = DGG.CellLookup(region)
-destination = DGG.PartialGrid(lk)
 
 # 400-odd mixed-level entries stand for a thousand-odd level-6 cells, and the
 # lookup stores the entries, not the cells.
 
 (; entries = length(region), leaf_cells = length(lk), level = DGG.level(lk))
 
-# The source covers a box larger than the coverage and is represented by an
-# indexed quadtree over its cell-corner points on the unit sphere.
-# `CR.Regridder(manifold, dst, src)` takes the destination first.
+# The source covers a box larger than the coverage.
 
 lon = -127.95:0.1:-110.05
 lat = 44.95:-0.1:30.05
@@ -157,45 +147,18 @@ box = Raster(
      Y(lat; sampling = Rasters.Intervals(Rasters.Center()))),
 )
 
-xbounds, ybounds = Rasters.intervalbounds(box, (X, Y))
-# Build corner sequences in array-index order: X runs west-to-east while Y
-# runs north-to-south. The resulting cell `(i, j)` corresponds directly to
-# `box[i, j]`, so the data needs no reversal before flattening.
-xrange = [first(first(xbounds)); last.(xbounds)]
-yrange = [last(first(ybounds)); first.(ybounds)]
-latlong_point_matrix = [GO.UnitSphericalPoint((x, y)) for x in xrange, y in yrange]
-latlong_grid = CR.Trees.CellBasedGrid(GO.Spherical(), latlong_point_matrix) |>
-    CR.Trees.TopDownQuadtreeCursor
-
-manifold = GO.Spherical(; radius = 1.0)
-regridder = @time CR.Regridder(manifold, destination, latlong_grid)
-
-# Conservation check: regrid a field of ones, and every destination cell must
-# come back holding exactly one.
-
-ones_out = zeros(DGG.ncells(destination))
-CR.regrid!(ones_out, regridder, ones(size(regridder.intersections, 2)))
-maximum(abs, ones_out .- 1)
-
-# Regrid the field and a 0/1 data indicator, then divide. The analytic field is
-# complete, but this normalization is also the pattern for real rasters with
-# gaps: coastal cells are not dragged down by missing source values. (`values`
-# is flattened in the same order as the source grid was built.)
-
-values = vec(replace_missing(box, NaN))
-field = zeros(DGG.ncells(destination))
-cover = zeros(DGG.ncells(destination))
-CR.regrid!(field, regridder, replace(values, NaN => 0.0))
-CR.regrid!(cover, regridder, Float64.(.!isnan.(values)))
-tavg = field ./ cover
-extrema(tavg)
-
 # ## The set as a cube axis
 #
-# `Cells(lk)` is the DimensionalData dimension, and the array over it is an
-# ordinary `DimArray` whose axis happens to be a compressed multi-order set.
+# `to` takes the lookup as it stands. The result is an ordinary `DimArray` whose
+# axis is a `Cells` dimension over the same cells, so nothing has to be looked
+# up again to plot it or to slice it.
 
-A = DD.DimArray(tavg, DGG.Cells(lk))
+A = @time DGG.regrid(box; to = lk)
+tavg = parent(A)
+extrema(tavg)
+
+# Slicing it is DimensionalData's business, and the selectors read cells.
+
 A[DGG.Cells(DD.Contains((-118.24, 34.05)))]  # July mean at Los Angeles
 
 # (`DD.Contains` is DimensionalData's point selector, reached through `DD`

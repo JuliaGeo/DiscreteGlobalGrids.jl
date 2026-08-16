@@ -36,6 +36,16 @@ function neighbors(grid::LevelGrid, c::H3Cell, k::Integer=1;
 end
 
 """
+    neighborcount(grid::LevelGrid, c::H3Cell; connectivity = Vertex()) -> Int
+
+`length(neighbors(grid, c))` without the ring: 5 at the twelve pentagons of
+the resolution, 6 everywhere else, either connectivity. O(1) — one libh3
+pentagon test.
+"""
+DGG.neighborcount(grid::LevelGrid, c::H3Cell;
+    connectivity::Connectivity=Vertex()) = ispentagon(c) ? 5 : 6
+
+"""
     ring(grid::LevelGrid, c::H3Cell, k; connectivity = Vertex())
 
 The cells at grid distance **exactly** `k` from `c`, counter-clockwise seen

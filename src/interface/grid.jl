@@ -380,6 +380,24 @@ for a consumer that reads every row.
 """
 function halo_table end
 
+"""
+    neighborcount(grid::AbstractGrid, c::AbstractCellIndex; connectivity::Connectivity = Vertex()) -> Int
+
+The length of `grid`'s own [`neighbors`](@ref)`(grid, c)` answer, without
+computing the ring where the answer is structural. On a complete level grid
+this is the cell's degree — IGEO7 and H3 answer in O(1): 5 at the twelve
+pentagons of a level, 6 everywhere else, either connectivity. Systems whose
+degree is not O(1)-knowable, and every subset — whose ring is clipped to
+membership, so the count is the clipped one and an out-of-set `c` throws as
+`neighbors` does — measure the ring instead.
+
+The rim test is the reason the verb exists: a subset cell is interior exactly
+when its clipped ring is full-length —
+`length(neighbors(sub, c)) == neighborcount(complete, c)` — so a rim scan
+needs one ring and one count, not two rings.
+"""
+function neighborcount end
+
 # ===========================================================================
 # Trees
 # ===========================================================================

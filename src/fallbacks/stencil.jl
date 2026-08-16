@@ -112,6 +112,23 @@ function ring(cv::CellVector, c::AbstractCellIndex, k::Integer;
 end
 
 # ===========================================================================
+# The count without the ring
+#
+# The generic route measures the ring — correctness first; a system whose
+# degree is structural overrides on its own level grid (IGeo7 and H3: 5 at
+# the twelve pentagons, else 6). Subsets inherit the fallback, so their count
+# is the clipped ring's and an out-of-set cell throws as `neighbors` does.
+# ===========================================================================
+
+neighborcount(grid::AbstractGrid, c::AbstractCellIndex;
+        connectivity::Connectivity = Vertex()) =
+    length(neighbors(grid, c, 1; connectivity))
+
+neighborcount(cv::CellVector, c::AbstractCellIndex;
+        connectivity::Connectivity = Vertex()) =
+    length(neighbors(cv, c, 1; connectivity))
+
+# ===========================================================================
 # The position forms
 #
 # A bare `Int` is a position, so these are the same two verbs read as indices

@@ -261,7 +261,7 @@ export Connectivity, Vertex, Edge
 export ncells, cellindex, cell_boundary, cell_centroid
 export cellposition, rawid, reindex, cellindextypes
 export cell_polygon, cell_area, cell_extent, getcell
-export cellat, neighbors, ring, halo_table
+export cellat, neighbors, ring, halo_table, neighborcount
 export treeify, query
 export system, level
 

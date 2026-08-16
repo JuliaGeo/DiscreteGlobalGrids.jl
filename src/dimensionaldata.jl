@@ -26,7 +26,7 @@ import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, ncells, cellindex, cellposition, cellat, level, system,
     levelgrid, cellindextype, has_sorted_subtrees, descendants, query,
-    neighbors, ring, halo_table, halo, Connectivity, Vertex
+    neighbors, ring, halo_table, halo, neighborcount, Connectivity, Vertex
 import ..DiscreteGlobalGrids: Helpers
 import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
@@ -251,6 +251,9 @@ neighbors(lk::CellLookup, p::Int, k::Integer=1;
 
 ring(lk::CellLookup, p::Int, k::Integer;
     connectivity::Connectivity=Vertex()) = ring(parent(lk), p, k; connectivity)
+
+neighborcount(lk::CellLookup, c::AbstractCellIndex;
+    connectivity::Connectivity=Vertex()) = neighborcount(parent(lk), c; connectivity)
 
 halo_table(lk::CellLookup, k::Integer=1; connectivity::Connectivity=Vertex()) =
     halo_table(parent(lk), k; connectivity)

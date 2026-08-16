@@ -7,7 +7,6 @@
 # time series regridded onto just the cells that cover Texas.
 
 import DiscreteGlobalGrids as DGG
-import GlobalRegridding as GR
 using Rasters
 import NaturalEarth
 import GeometryOps as GO
@@ -57,7 +56,7 @@ grid = DGG.levelgrid(DGG.HEALPixSystem(), 6)
 # blanks a cell covered less than `t`. `Extensive()` is the other choice: raw
 # conservative sums, no normalization.
 
-plan = @time DGG.plan_regrid(temps; to = grid, missingpolicy = GR.Weighted(0.01))
+plan = @time DGG.plan_regrid(temps; to = grid, missingpolicy = DGG.Weighted(0.01))
 tavg = @time DGG.regrid(temps, plan)
 
 # The spatial dimensions are replaced by the destination's cells and every other
@@ -139,4 +138,4 @@ fig
 # cells' rings are convex. IGEO7 and S2 conserve; HEALPix does not, pending an
 # upstream clipper fix in GeometryOps. The README and
 # `test/systems/crosssystem/regridding_conservation.jl` carry the full account,
-# and `missingpolicy = GR.Weighted(t)` is the normalization that survives it.
+# and `missingpolicy = DGG.Weighted(t)` is the normalization that survives it.

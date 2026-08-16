@@ -94,6 +94,11 @@ import ConservativeRegridding.Trees: treeify, ncells, getcell
 # `Trees` ones are: extending them rather than shadowing them keeps one function
 # per name for a session that holds both surfaces.
 import GlobalRegridding: cellat, cellindices, regrid, regrid!, plan_regrid
+# The method and policy names ride along re-exported: they appear in the verbs'
+# keyword arguments, so a session that can call `regrid` can also spell
+# `method = Conservative()` without a second import.
+using GlobalRegridding: Conservative, NearestCell, BilinearPoint,
+    Weighted, Extensive, PerChunk, Spilled
 
 include("Helpers/Helpers.jl")
 
@@ -328,6 +333,10 @@ export authalic_sphere
 # --- Regridding ------------------------------------------------------------
 # The verbs are `GlobalRegridding`'s, extended for this package's targets;
 # `DGGSpace` is the space they resolve to, and the place chunking is tuned.
+# Methods, policies, and storage flavors are re-exported so the verbs' keyword
+# arguments are spellable without importing `GlobalRegridding`.
 export regrid, regrid!, plan_regrid, DGGSpace
+export Conservative, NearestCell, BilinearPoint, Weighted, Extensive
+export PerChunk, Spilled
 
 end # module DiscreteGlobalGrids

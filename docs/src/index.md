@@ -46,3 +46,7 @@ shortest honest path to one result:
     data on a regional subset, and flow routing across it.
   - [The sky in HEALPix](tutorials/healpix_astronomy.md) — nested order, cone
     searches, and a galactic-plane cut.
+
+[Subtree and subset boundaries](api/boundaries.md) is the rendered reference for
+the boundary family — `subtree_border`, `subtree_halo`, `halo`,
+`halo_positions`, `halo_sizehint` and the engines behind them.

@@ -27,10 +27,13 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     cell_polygon, cell_area, cell_extent, getcell,
     cellat, neighbors, ring, halo_table, treeify, query, system, level,
     cellindextype, levels, max_level, levelgrid, rootcells, children,
-    node_extent, cap_inflation, max_neighbors, has_sorted_subtrees,
+    node_extent, cap_inflation, coarse_probe_rings, max_neighbors,
+    has_sorted_subtrees,
     ancestor, descendants, descendant_range,
     subtree_border, subtree_interior,
-    rim_engine, interior_engine
+    rim_engine, interior_engine, halo_engine,
+    lattice_decode, lattice_cell, face_orientation,
+    hex_child_direction, seeded_rim_engine
 import ..DiscreteGlobalGrids: Helpers
 
 import GeometryOps as GO
@@ -62,6 +65,12 @@ include("authalic_grid.jl")
 # After `authalic_grid.jl`: the wrapper forwards both engines, so it must be a
 # type by the time those methods are defined.
 include("subtree_iterators.jl")
+# Straight after: the halo is the outside face of the boundary the file above
+# walks the inside of, and it reuses that file's stack vocabulary. Its geometry
+# provider calls `_match_tolerance` / `_shared_vertices` from `locate.jl`, which
+# is included below — a forward reference between function bodies in one module,
+# which Julia resolves at call time.
+include("halo.jl")
 include("cursor.jl")
 include("position_tree.jl")
 include("locate.jl")

@@ -292,6 +292,32 @@ index rather than an optimisation, and the aperture-9 pair would need a nonary
 curve and a 3×3 generalisation of the two square engines before the family could
 be consistent.
 
+**None of the nine has a specialized halo engine.** Found when main's subtree
+halo work was merged in, which is why it is not in the table above: the shipped
+walk on these systems *is* the generic one, and the generic one costs what the
+full-grid reference scan costs. At depth 7 from a level-0 root, collecting the
+halo takes 4.46s on rHEALPix against 4.46s for the brute-force scan it is
+supposed to beat — while S2, which has an engine, does the same job in 0.006s
+against its own 0.72s scan. The cost is structural rather than per-call, so it
+lands on every halo law at once: the cross-system halo suite went from minutes
+to 222 of the 230-minute merge run before its depth ladders were sized by
+subtree size rather than by level number.
+
+The four aperture-9 systems are worst, and for a compounding reason. Level 7 is
+a 16k-cell subtree at aperture 4 and a 4.8M-cell one at aperture 9, and IVEA9R
+and RTEA9R also lack `descendant_range`, so the subset walk cannot prune by
+range *and* has no engine. One complete subset walk asks 535,818 questions on
+IVEA9R where rHEALPix — same aperture, same subset size, but with sorted
+subtrees — asks 9,612, and S2 asks 1,572. Those counts are now pinned in
+`test/systems/crosssystem/subtree_halos.jl`, so closing the gap shows up as a
+failing pin rather than as an unnoticed improvement.
+
+The two square families already have the engines to copy: `SquareRimEngine` and
+`SquareInteriorEngine` for the aperture-4 rhombic systems under the Morton
+reindexing described above, and rHEALPix's own square blocks for the aperture-9
+ones once a nonary curve exists. ISEA3H/4H would need a hex-arc engine of the
+kind `HexArcHaloEngine` already provides at aperture 7.
+
 ## Recommended order of further work
 
 1. **Digit-space adjacency for ISEA3H/4H.** Largest single win: it removes

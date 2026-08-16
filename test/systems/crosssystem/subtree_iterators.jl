@@ -1,47 +1,16 @@
-# ---------------------------------------------------------------------------
-# T20 — the lazy subtree walkers.
+# Cross-system laws for lazy subtree-border and subtree-interior iterators.
 #
-# `EdgeCellIterator` and `InnerCellIterator` are the resumable form of
-# `subtree_border` / `subtree_interior`, and since T20 they are also the only
-# form: the eager verbs are `collect` of them, so a system writes ONE walk and
-# both faces of it are that walk. That is what makes this file's first law worth
-# stating even though it looks tautological — it pins that the two faces cannot
-# drift apart, because there is nothing left for them to drift between.
+# The tests compare each public iterator and eager collector with a brute-force
+# definition, exercise the generic fallback directly, verify that border and
+# interior partition the descendants, and check the iterator-size contract.
 #
-# Written against the generic interface only, like its neighbours here: no
-# system module is imported, and every law runs against every system in
-# `systems()` plus an `AuthalicSystem`-wrapped one.
-#
-# The laws, in order:
-#
-#   * AGREEMENT — `collect` of each iterator is the eager verb, and both are
-#     the brute-force definition. Hexagon AND pentagon / face-corner roots,
-#     depths 0-3, both connectivities.
-#   * GENERIC AGREEMENT — the same, against the generic engine reached by
-#     `invoke`. Every system but A5 overrides the walk, so without this the
-#     fallback in `src/fallbacks/subtree_iterators.jl` would be unreachable
-#     code on every system that overrides it; with it, each automaton is tested against
-#     a walk that shares none of its arithmetic. This is the oracle for S2's
-#     new Hilbert fast path in particular.
-#   * PARTITION — rim and interior are disjoint, ascending, and together the
-#     descendants.
-#   * COUNTED — `length` agrees with the walk wherever `IteratorSize` promises
-#     one, and the `HasLength`/`SizeUnknown` split is where it claims to be.
-#   * LAZY — the measurement the whole task is for: taking four cells off a
-#     deep rim allocates a bounded amount that does NOT grow with the rim,
-#     while `collect` of it grows linearly. Asserted as a ratio, not as bytes.
-#     Excluded on A5 — see below.
-#
-# A5 is the one system with no rim automaton, and structurally so: its four
-# Hilbert children cover the parent's area but not its footprint, so there is no
-# child-adjacency predicate to prune on, and `has_sorted_subtrees` is false so
-# there is no position range to walk instead. Its iterators are honest
-# iterators over an internally materialised vector — correct, `HasLength`, and
-# `O(subtree)` in memory. Every law here applies to it except LAZY, which is
-# excluded for systems without sorted subtrees because their fallback builds
-# the subtree in the constructor. Iterating that result would allocate zero and
-# make the ratio look favourable after the memory was already spent.
-# ---------------------------------------------------------------------------
+# Systems without sorted subtrees — A5 and the IVEA/RTEA rhombic family —
+# materialize the subtree in the constructor, having neither sorted subtree
+# ranges nor a boundary automaton. Their value and iterator-size laws are
+# tested, but they are excluded from prefix-allocation checks because
+# construction has already paid the output-sized allocation. The exclusion is
+# keyed on `has_sorted_subtrees`, not on a system name, so registering another
+# materializing system does not silently make the law measure nothing.
 
 module SubtreeIteratorTests
 
@@ -52,11 +21,8 @@ using DiscreteGlobalGrids: systems, levels, max_level, levelgrid, ncells,
     subtree_border, subtree_interior, EdgeCellIterator, InnerCellIterator,
     AuthalicSystem, Vertex, Edge, Connectivity
 
-# The rim of `c`'s subtree at `l`, straight from the definition: a descendant
-# with a neighbour that is not a descendant. Slow and obviously correct — the
-# whole point is that it shares no code with the walks it checks. Deliberately
-# a copy of the one in `runtests.jl` rather than an import: these two files must
-# be able to disagree.
+# Brute-force subtree rim: descendants with at least one outside neighbour.
+# This implementation does not share traversal code with the iterators.
 function brute_force_border(sys, c, l; connectivity = Vertex())
     lc = level(c)
     l == lc && return [c]
@@ -73,10 +39,7 @@ function sample_cells(grid, n::Int)
     return [cellindex(grid, i) for i in 1:step:total]
 end
 
-# The cells whose one-ring is not the modal size: IGeo7's and H3's twelve
-# pentagons, S2's 24 face corners, ISEA4R's icosahedral vertices. Stated by
-# degree rather than by name so the sweep finds them without knowing what a
-# pentagon is, and finds nothing (harmlessly) on a system that has none.
+# Select cells whose one-ring size differs from the grid's modal degree.
 function irregular_cells(grid, limit::Int)
     cells = [cellindex(grid, i) for i in 1:ncells(grid)]
     degrees = [length(neighbors(grid, c, 1)) for c in cells]
@@ -89,16 +52,11 @@ function irregular_cells(grid, limit::Int)
     return odd[1:min(limit, length(odd))]
 end
 
-# The generic engine, reached past every system's override. `invoke` on the
-# least-specific signature is the only way to ask a system "what would the
-# fallback have said?", which is exactly the question a differential test on an
-# automaton needs answered.
+# Call the least-specific method to bypass system-specific engines.
 const GENERIC = Tuple{DGG.AbstractHierarchicalGridSystem,DGG.AbstractCellIndex,
     Int,Connectivity}
 
-# The generic engine, wrapped back into the public iterator through its
-# positional constructor, so the fallback can be asked every question the fast
-# path is asked — including the ones about `IteratorSize` and `length`.
+# Wrap the generic engine in the public iterator to test the same protocol.
 generic_edge(sys, c, l, conn = Vertex()) = EdgeCellIterator(sys, c, Int(l), conn,
     invoke(DGG.rim_engine, GENERIC, sys, c, Int(l), conn))
 generic_inner(sys, c, l, conn = Vertex()) = InnerCellIterator(sys, c, Int(l), conn,
@@ -107,7 +65,7 @@ generic_inner(sys, c, l, conn = Vertex()) = InnerCellIterator(sys, c, Int(l), co
 generic_rim(sys, c, l, conn) = collect(generic_edge(sys, c, l, conn))
 generic_interior(sys, c, l, conn) = collect(generic_inner(sys, c, l, conn))
 
-# Iterating without collecting: the shape the LAZY law measures.
+# Consume the first `n` elements without materializing the full iterator.
 function take_n(it, n::Int)
     seen = 0
     for _ in it
@@ -117,11 +75,7 @@ function take_n(it, n::Int)
     return seen
 end
 
-# CONSTRUCTION IS INSIDE THE MEASUREMENT, deliberately. Measuring only the
-# iteration of an already-built iterator cannot fail: an engine that materialises
-# its subtree in the constructor — which is exactly the regression this law
-# exists to catch, and exactly what A5 does — then walks a ready vector and
-# measures zero. Building and taking four is the whole claim.
+# Include iterator construction so eager materialization is measured.
 function build_and_take(T, sys, c, l, n::Int)
     return take_n(T(sys, c, l), n)
 end
@@ -130,8 +84,7 @@ function build_and_collect(T, sys, c, l)
     return length(collect(T(sys, c, l)))
 end
 
-# `@allocated` behind a function barrier, and always after a warm-up call, so
-# what is measured is the walk rather than its compilation.
+# Warm each function before measuring allocations.
 function lazy_bytes(T, sys, c, l, n::Int)
     build_and_take(T, sys, c, l, n)
     return @allocated build_and_take(T, sys, c, l, n)
@@ -142,12 +95,8 @@ function eager_bytes(T, sys, c, l)
     return @allocated build_and_collect(T, sys, c, l)
 end
 
-# BOTH base levels, because they are different shapes of problem. A level-0 root
-# is a whole face or base cell: its block is flush with every seam the system
-# has, every mask bit stays set the whole way down, and on the square systems the
-# rim is the face boundary whose neighbours live on another face. A level-1 root
-# is an interior block with seams on some sides and siblings on others. Level 1
-# alone would leave the flush-everywhere arithmetic unexercised.
+# Level-0 roots exercise whole-face seams; level-1 roots exercise blocks with a
+# mixture of seam and sibling boundaries.
 sweep_bases(sys) = filter(b -> b <= max_level(sys), (0, 1))
 
 function sweep_roots(sys, base::Int)
@@ -155,9 +104,7 @@ function sweep_roots(sys, base::Int)
     return unique(vcat(sample_cells(grid, 4), irregular_cells(grid, 2)))
 end
 
-# The deepest subtree under `base` that stays under a cell budget — derived from
-# the system's own aperture rather than hardcoded, so aperture 4 gets depth 8 and
-# aperture 7 gets depth 5 without this file knowing either number.
+# Select the deepest subtree that remains within the cell budget.
 function deep_depth(sys, base::Int, budget::Int = 70_000)
     # A scan fallback pays for every descendant's topology while collecting.
     # Keep that oracle large enough to demonstrate depth/resumability without
@@ -241,9 +188,9 @@ end
                 l <= max_level(sys) || continue
                 for it in (EdgeCellIterator(sys, c, l), InnerCellIterator(sys, c, l))
                     @test eltype(it) == cellindextype(sys)
-                    # Closed-form automata and materialised fallbacks are
-                    # counted. A lazy generic scan advertises SizeUnknown and
-                    # deliberately has no traversal-cost `length` method.
+                    # Closed-form automata and materialized fallbacks are counted;
+                    # a lazy generic scan advertises SizeUnknown and carries no
+                    # traversal-cost `length`.
                     size_trait = Base.IteratorSize(typeof(it))
                     @test size_trait isa Union{Base.HasLength,Base.SizeUnknown}
                     if size_trait isa Base.HasLength
@@ -251,19 +198,17 @@ end
                     else
                         @test_throws MethodError length(it)
                     end
-                    # Type stability where there is anything to yield.
+                    # `first` is defined only for nonempty iterators.
                     isempty(collect(it)) || @test (@inferred first(it)) isa
                                                   cellindextype(sys)
                 end
             end
         end
 
-        # The other half of COUNTED. The generic walk is a lazy scan with no
-        # closed-form count, and the contract is that such a walk carries NO
-        # `length` rather than one that would traverse to answer — so the
-        # `MethodError` is the assertion, not an accident. Unsorted systems are
-        # excluded because their fallback materialises instead of scanning,
-        # which makes it legitimately counted.
+        # The generic lazy scan has no closed-form count and therefore no
+        # `length`; the `MethodError` is the assertion, not an accident. Systems
+        # without sorted subtrees materialize the fallback instead of scanning,
+        # which makes it legitimately counted, so they are excluded.
         if DGG.has_sorted_subtrees(sys) && base + 2 <= max_level(sys)
             @testset "$name: the generic walk is uncounted" begin
                 l = base + 2
@@ -272,7 +217,7 @@ end
                         @test Base.IteratorSize(typeof(git)) isa Base.SizeUnknown
                         @test_throws MethodError length(git)
                     end
-                    # ...and it still answers what the fast path answers.
+                    # Generic and specialized walks return the same cells.
                     @test collect(generic_edge(sys, c, l)) ==
                           collect(EdgeCellIterator(sys, c, l))
                     @test collect(generic_inner(sys, c, l)) ==
@@ -296,14 +241,13 @@ end
             @test isempty(collect(InnerCellIterator(sys, c, lc)))
         end
 
-        # Systems without sorted subtrees use a materialised fallback, so these
-        # assertions would measure iteration after construction rather than a
-        # resumable walk. See this file's header.
+        # Systems without sorted subtrees materialize during construction, so
+        # iteration-only allocation is not a valid laziness measurement there.
         if DGG.has_sorted_subtrees(sys)
             @testset "$name: lazy" begin
                 c = first(roots)
                 deep = deep_depth(sys, base)
-                @test deep >= 4                    # or the measurement is not one
+                @test deep >= 4                    # provides a three-level comparison
                 shallow_l = base + deep - 3
                 deep_l = base + deep
 
@@ -314,21 +258,18 @@ end
                     lazy = lazy_bytes(T, sys, c, deep_l, 4)
                     eager = eager_bytes(T, sys, c, deep_l)
 
-                    # The point of the whole task, as a ratio rather than a byte
-                    # count: building the walk and taking four cells off the
-                    # front costs a fraction of the walk they are the front of.
+                    # A four-cell prefix must allocate much less than collection.
                     @test lazy * 8 < eager
 
-                    # ...and the sharper form of it. Between these two depths the
-                    # rim grows by the aperture cubed. Closed-form automata are
-                    # effectively constant-sized; the generic DFS scan may add
-                    # a small O(depth) stack, but never O(subtree) storage.
+                    # Prefix allocation stays flat as the rim grows by the
+                    # aperture cubed over three levels. Closed-form automata are
+                    # effectively constant-sized; a generic DFS scan may add a
+                    # small O(depth) stack, but never O(subtree) storage.
                     slack = Base.IteratorSize(typeof(deep_it)) isa Base.SizeUnknown ?
                             2_048 : 64
                     @test lazy <= lazy_bytes(T, sys, c, shallow_l, 4) + slack
 
-                    # The walk is resumable, not restarted: the prefix agrees
-                    # with the collected form element for element.
+                    # Incremental iteration returns the same prefix as collection.
                     prefix = eltype(deep_it)[]
                     for x in deep_it
                         push!(prefix, x)
@@ -340,9 +281,7 @@ end
         end
     end
 
-    # The wrapper is a system too, and the rim of a subtree is a question about
-    # the hierarchy that the ellipsoid does not touch — so both walks must
-    # forward to the wrapped system and answer identically.
+    # Authalic wrapping changes geometry but not subtree hierarchy.
     @testset "AuthalicSystem forwards both walks" begin
         for sys in systems()
             sys isa DGG.AuthalicSystem && continue

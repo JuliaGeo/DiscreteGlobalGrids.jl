@@ -1,56 +1,25 @@
-# ---------------------------------------------------------------------------
-# T15 — multi-order coverage of REAL polygons, on every system.
+# Cross-system laws for depth-limited multi-order polygon coverage. Oracles use
+# expanded target-level cells rather than the compressed representation.
 #
-# `test/fallbacks/runtests.jl` already exercises `MultiOrderCoverage` against
-# the mocks, where the hierarchy is a lon/lat quadtree and the target is a
-# four-vertex box. This file asks the same laws of every registered system plus
-# an `AuthalicSystem` wrap, with the targets that a real coverage meets:
-# a 617-vertex admin outline, its offshore islands, a hole, an
-# antimeridian-crossing ring, and a target larger than a hemisphere.
-#
-# The polygon is committed, not downloaded: `test/fixtures/california.txt` is
+# The fixture is committed, not downloaded: `test/fixtures/california.txt` is
 # Natural Earth's 10 m California, Douglas-Peucker simplified at 0.005 degrees,
-# eight parts (mainland plus seven Channel Islands). No network dependency.
+# 617 vertices in eight parts (mainland plus seven Channel Islands). The sweep
+# also covers a hole, an antimeridian-crossing ring, and a target larger than a
+# hemisphere.
 #
-# The laws, and what each is worth:
+# Two laws are deliberately conditional. COMPACTION holds everywhere only in the
+# form "a complete sibling family is emitted below the maximum depth only when
+# the parent could not have stood for it"; the stronger "no complete family is
+# ever emitted" is false wherever children cover their parent's area without
+# covering its footprint. THE UNION OF THE DRAWN CELLS tiles the target only on
+# the congruent systems, because replacing a subtree by its root swaps the
+# subtree's footprint for the root's — the testset pins 0% there and bounds the
+# slivers elsewhere, so the difference is recorded rather than discovered by
+# someone plotting a coverage.
 #
-#   * COVERING — every point inside the target has its LEAF CELL in the set, or
-#     under a member of it. Checked by point sampling, densely over the interior
-#     and adversarially at four offsets either side of every boundary vertex and
-#     edge midpoint, with the SAME spherical containment oracle the engine uses.
-#     That is not circular: the oracle answers about a point, the traversal
-#     answers about a cell, and they agree only if the descent found every cell
-#     it had to.
-#   * NO ANCESTOR DUPLICATION — no emitted cell has an emitted ancestor. A
-#     violation double-counts a region in every downstream sum.
-#   * CURVE ORDER — the emitted cells' reference-level intervals ascend and are
-#     pairwise disjoint. Disjointness is the geometric restatement of the law
-#     above, arrived at from the other side.
-#   * COMPACTION — a complete sibling family is emitted below the maximum depth
-#     only when the parent could NOT have stood for it. Stated that way it is a
-#     law everywhere; stated as "no complete family is ever emitted" it is false
-#     on IGEO7 and A5, whose children cover their parent's area without
-#     covering its footprint, and the testset below pins which of the two is
-#     meant — the strong form where the refinement is congruent, the weak one
-#     everywhere else.
-#   * PROVENANCE — `is_contained` is a record of what the traversal PROVED. It
-#     is exact above the leaf level and blind at it, because `Within` is never
-#     asked of a leaf-level emission, and the testset asserts both arms of that
-#     over the whole set rather than sampling the `true` one.
-#   * EXPANSION — `level_ranges` is sorted, disjoint and merged, and its leaf
-#     set contains the single-level `Intersects` query at that level, equalling
-#     it where the refinement is congruent.
-#   * THE UNION OF THE DRAWN CELLS — and this one is deliberately NOT a law
-#     everywhere. Replacing a subtree by its root replaces the subtree's
-#     footprint by the root's, so the emitted polygons tile the target only on
-#     the congruent systems. The testset that measures it pins 0% there and
-#     bounds the slivers elsewhere, so that the difference is recorded rather
-#     than discovered by someone plotting a coverage.
-#
-# `has_sorted_subtrees(A5System()) == false`, so A5 has no `descendant_range`
-# and no `level_ranges`; the two laws that read them are stated as exclusions
-# with that reason and A5 is checked against `descendants` instead.
-# ---------------------------------------------------------------------------
+# Systems without sorted subtrees have no `descendant_range` and no
+# `level_ranges`; the two laws that read them are stated as exclusions with that
+# reason and those systems are checked against `descendants` instead.
 
 module MultiOrderPolygonTests
 
@@ -104,37 +73,17 @@ const HOLE = GI.Polygon([GI.LinearRing([(-121.0, 36.0), (-119.0, 36.0), (-119.0,
 const SEAM = GI.Polygon([GI.LinearRing([(176.0, -19.0), (-178.0, -19.0), (-178.0, -16.0),
     (176.0, -16.0), (176.0, -19.0)])])
 
-# Two polar caps whose union is 66% of the sphere: bigger than a hemisphere, and
-# therefore a target whose own bounding cap is the whole sphere and prunes
-# nothing. A single ring cannot express this — the spherical point-in-polygon
-# rule reads any one ring as its smaller side — so it takes two.
 parallel_ring(lat) = GI.Polygon([GI.LinearRing([(lon, lat) for lon in 0.0:5.0:360.0])])
 const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 
-# ---------------------------------------------------------------------------
-# Systems, and the depth each is swept to
-#
-# Levels are chosen so that leaf cells are comparable across the sweep, which is
-# what makes the cell counts comparable: the apertures are 7, 7, 4, 4, 4, 4, so
-# a fixed level is not.
-#
-# The `AuthalicSystem` wrap is over IGEO7 deliberately. It is the composition
-# that stresses `node_extent` hardest — the aperture-7 overhang inflation and
-# the warp's Lipschitz inflation multiply — and California sits at 37 N, where
-# the geodetic/authalic latitude difference is within 20 km of its maximum.
-# ---------------------------------------------------------------------------
+# Levels are chosen so leaf cells are comparable across the sweep, which is what
+# makes the cell counts comparable; the apertures differ, so a fixed level would
+# not be. The `AuthalicSystem` wrap is over IGeo7 deliberately: it is the
+# composition that stresses `node_extent` hardest, since the aperture-7 overhang
+# inflation and the warp's Lipschitz inflation multiply, and California sits at
+# 37 N, where the geodetic/authalic latitude difference is within 20 km of its
+# maximum.
 
-# The last column is CONGRUENCE: whether a cell's children exactly tile it.
-# It is not a trait — nothing in the interface asks for it — but it is what
-# decides two of the laws below, so it is written down here with its reason
-# rather than left implicit:
-#
-#   * HEALPix, S2 and ISEA4R are aperture-4 quadtrees on a chart, and four
-#     children tile their parent exactly.
-#   * IGEO7 and H3 are aperture 7: seven children form a rotated rosette with
-#     the parent's area and not its footprint.
-#   * A5's four Hilbert children cover their parent's area without covering its
-#     footprint either — the same failure, further along.
 const SWEEP = [
     (DGG.IGeo7System(), 7, 5, false),
     (DGG.H3System(), 6, 4, false),
@@ -167,13 +116,6 @@ sysname(sys) = sys isa DGG.AuthalicSystem ?
     @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
 end
 
-# ---------------------------------------------------------------------------
-# The oracle: point-in-target, spherically
-#
-# `_query_target` is the engine's own preparation of the geometry, so this asks
-# the same question of the same lifted geometry that the traversal asks — of a
-# POINT, where the traversal asks of a CELL.
-# ---------------------------------------------------------------------------
 
 prepare(geom) = FB._query_target(geom)
 inside(t, lon, lat) = GO.relate_predicate(t.prepared, GO.pred_contains(),
@@ -215,7 +157,6 @@ function boundary_samples(geom, t; stride::Int=1)
     return out
 end
 
-# A point is covered when its own leaf cell is emitted, or an ancestor of it is.
 function uncovered(sys, set, leaf, samples)
     grid = DGG.levelgrid(sys, leaf)
     emitted = Set(collect(set))
@@ -275,8 +216,6 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
     @test !isempty(set)
     cells = collect(set)
     @test allunique(cells)
-    # Mixed levels is the point of the thing: an interior emitted whole well
-    # above the leaves, a boundary refined down to them.
     @test minimum(DGG.level, cells) < leaf
     @test maximum(DGG.level, cells) == leaf
 
@@ -317,10 +256,6 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
         grid_of(c) = DGG.levelgrid(sys, DGG.level(c))
         families = complete_families(sys, set, leaf)
         if congruent
-            # Where the children tile the parent, the comment above is the
-            # stronger claim and the test says it: children all inside the
-            # target means the parent is too, so the traversal emitted the
-            # parent and never reached them.
             @test isempty(families)
         end
         for p in families
@@ -332,12 +267,6 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
         @test length(FB.curve_keys(set)) == length(set)
         contained = [i for i in eachindex(set) if DGG.is_contained(set, i)]
         @test !isempty(contained)
-        # `is_contained` records what the traversal PROVED, not what is true. A
-        # cell above the leaf level is emitted only through the `Within` arm, so
-        # there the flag is exact both ways; a leaf-level cell is never asked —
-        # `Within` is the expensive predicate — and reads `false` whether or not
-        # it fits. Both arms are asserted over the WHOLE set, so a permutation
-        # bug in `_sorted_cell_set` cannot hide inside the blind spot.
         @test all(i -> DGG.is_contained(set, i) == (DGG.level(set[i]) < leaf), eachindex(set))
         # And where the flag is exact, it agrees with the predicate it stands for.
         for i in Iterators.take(contained, 12)
@@ -384,26 +313,16 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
             # ancestor, which covers more than the set does.
             @test_throws ArgumentError DGG.level_ranges(coarse_set, first(DGG.levels(sys)))
         else
-            # EXCLUDED, with its reason: `has_sorted_subtrees(A5System())` is
-            # false, so there are no position intervals to merge and this throws
-            # rather than degrading. `descendants` is the always-available form,
-            # and it is what `expand` used above.
             @test_throws ArgumentError DGG.level_ranges(coarse_set, coarse)
         end
     end
 end
 
-# ---------------------------------------------------------------------------
-# The union of the drawn cells: a law on three systems and a measurement on four
-# ---------------------------------------------------------------------------
 
 # Fraction of the target's interior that lies in NO emitted cell's polygon.
 function sliver_fraction(sys, set, geom, n::Int)
     t = prepare(geom)
     rings = [FB.open_ring(DGG.cell_boundary(set, c)) for c in set]
-    # One cap per cell, so that the quadratic scan below is a distance
-    # comparison per (point, cell) and a point-in-polygon only for the handful
-    # of cells whose cap the point falls in.
     caps = [FB.points_cap(view(r[1], 1:r[2])) for r in rings]
     ext = GI.extent(geom)
     x0, x1 = ext.X
@@ -440,19 +359,11 @@ end
         # same footprint and the mixed-level set is a genuine cover.
         @test missed == 0
     else
-        # They do not, so the set has slivers in it. This is a MEASUREMENT of
-        # documented behaviour rather than a law: the bound is loose enough that
-        # only a change in kind trips it, and the point of pinning it is that
-        # somebody plotting a coverage should find it written down here rather
-        # than in their figure.
         @test missed > 0
         @test missed / total < 0.25
     end
 end
 
-# ---------------------------------------------------------------------------
-# What real polygons add: parts, holes, seams, and half the planet
-# ---------------------------------------------------------------------------
 
 @testset "multipolygon: the offshore islands: $(sysname(sys))" for (sys, leaf, _, _) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(CALIFORNIA); level=leaf)

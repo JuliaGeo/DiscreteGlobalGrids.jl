@@ -210,6 +210,26 @@ correctness bug — see the covering law in [`node_extent`](@ref).
 cap_inflation(::AbstractHierarchicalGridSystem) = 1.2
 
 """
+    coarse_probe_rings(sys::AbstractHierarchicalGridSystem) -> Int
+
+How many rings the subset halo walk probes around a coarse node before pruning
+its whole subtree away.
+
+Defaults to `1`.
+
+The walk descends a level-`l` node that misses the subset only when a level-`l`
+neighbour within this many rings hits it. One ring is sound when a node's
+descendants stay inside its own footprint, which is the usual case; a refinement
+whose descendants overhang the parent needs as many rings as the overhang
+crosses, expressed in coarse cells. It is the same property [`cap_inflation`](@ref)
+measures for `node_extent`, counted in cells rather than in cap radii.
+
+Raising it costs query time (the prune retires less). Setting it too low is a
+correctness bug: the walk silently omits halo cells.
+"""
+coarse_probe_rings(::AbstractHierarchicalGridSystem) = 1
+
+"""
     max_neighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Int
 
 A **static** upper bound on the number of `connectivity`-neighbours of any cell
@@ -319,23 +339,96 @@ function subtree_interior end
 """
     rim_engine(sys, c, target::Int, connectivity)
     interior_engine(sys, c, target::Int, connectivity)
+    halo_engine(sys, c, target::Int, connectivity)
 
-The iteration engine `EdgeCellIterator` / `InnerCellIterator` forwards the whole
-iteration protocol to — the single place a system overrides to ship an `O(rim)`
-subtree walk, and the single place both the lazy and the eager
-([`subtree_border`](@ref) / [`subtree_interior`](@ref)) faces of it read.
+Return the iteration engine used by `EdgeCellIterator`, `InnerCellIterator`, or
+`SubtreeHaloIterator`. A system may override these methods with an `O(rim)` or
+`O(halo)` traversal; eager operations collect the same engine.
 
-An engine is any iterator over `cellindextype(sys)`. Both methods own the level
-validation, so their `ArgumentError`s are the ones the eager verbs raise.
+An engine is any iterator over `cellindextype(sys)`. All three methods own their
+level validation, so their `ArgumentError`s are the ones the eager verbs raise.
 
-The generic implementations walk [`descendant_range`](@ref) with one
-[`ancestor`](@ref) test per cell, and materialize where
-[`has_sorted_subtrees`](@ref) is `false`.
+Engine selection uses private dispatch on the system type and is not part of
+the public compatibility surface.
+
+The generic rim and interior engines scan [`descendant_range`](@ref), or
+materialize descendants when [`has_sorted_subtrees`](@ref) is `false`. The
+generic halo engine walks cells outside the subtree because a halo is not a
+single descendant interval.
+
+Specializations may enumerate conservative candidates, but must filter them by
+the requested adjacency. If their preconditions cannot be verified, they must
+return `generic_halo_engine(sys, c, target, connectivity)`.
 """
 function rim_engine end
 
 @doc (@doc rim_engine)
 function interior_engine end
+
+@doc (@doc rim_engine)
+function halo_engine end
+
+"""
+    lattice_decode(sys, c) -> (ix, iy, face)
+    lattice_cell(sys, level::Int, ix, iy, face) -> cell
+    face_orientation(sys, face) -> UInt8
+
+Define the face-lattice operations used by the shared square halo traversal.
+Only systems with an aligned square lattice per face implement these methods.
+
+`lattice_decode` and `lattice_cell` convert between cell ids and face-local
+coordinates, with `face` 0-based and
+`(ix, iy)` in `0:2^level - 1`. `face_orientation` is the curve state a face's
+root uses before consuming position bits.
+
+The traversal derives seam rectangles by decoding neighbours of rim cells.
+
+`SquareBandEngine` also requires these invariants:
+
+ 1. `cellindextype(sys) === LevelIndex`. The engine emits `LevelIndex` and
+    declares it as its `eltype`, unconditionally.
+ 2. Ids follow `face * faceside^2 + curvecode`, with 0-based face and curve
+    code. The emit step constructs ids with this arithmetic.
+ 3. Interior face adjacency is the 3×3 lattice, so an in-face band requires no
+    additional adjacency check.
+
+A fourth square system holding all three writes only the three methods above. One
+that does not writes its own [`halo_engine`](@ref rim_engine) instead.
+"""
+function lattice_decode end
+
+@doc (@doc lattice_decode)
+function lattice_cell end
+
+@doc (@doc lattice_decode)
+function face_orientation end
+
+"""
+    hex_child_direction(sys, c) -> Int
+    seeded_rim_engine(sys, c, target::Int, arclen::Int, start::Int)
+
+Define the operations used by the calibrated aperture-7 halo traversal. H3 and
+IGeo7 implement them using their subtree-rim automata.
+
+`hex_child_direction` returns the position `0:5` of the parent-to-child step on
+the direction ring, or `-1` for a centre child or root cell.
+
+`seeded_rim_engine` enters the system's rim automaton at an arbitrary arc
+`(arclen, start)` rather than at the fully exposed `(6, 0)` a subtree root gets:
+`c`'s level-`target` descendants reachable along the arc of exposed directions
+`start, start+1, …, start+arclen-1 (mod 6)`, ascending, in `O(depth)` memory. It
+must carry `c`'s own pentagon deletion on the root frame, since a calibrated arc
+is seeded at a cell that may be a pentagon. It declares `SizeUnknown()`: the
+closed-form rim census counts the `(6, 0)` walk and does not describe a seeded
+one.
+
+Neither method validates `c`; `hex_halo_engine` supplies cells returned by
+`neighbors` and `children` and performs level validation.
+"""
+function hex_child_direction end
+
+@doc (@doc hex_child_direction)
+function seeded_rim_engine end
 
 """
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}

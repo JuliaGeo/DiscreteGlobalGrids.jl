@@ -36,11 +36,8 @@ end
 """
     _PINNED_DIAMOND_VERTS
 
-The corner tuple `(v00, v10, v11, v01)` of each of the ten diamonds, written
-out. [`_make_diamonds`](@ref) derives the same table from `ISEA`'s icosahedron
-tables and `@assert`s equality against this literal, so drift in an upstream
-`ISEA` table fails at package load rather than silently renumbering a shipped
-grid.
+The corner tuple `(v00, v10, v11, v01)` for each diamond. Package loading
+asserts that the generated layout matches this stable numbering.
 """
 const _PINNED_DIAMOND_VERTS = (
     (1, 6, 2, 0), (2, 7, 3, 0), (3, 8, 4, 0), (4, 9, 5, 0), (5, 10, 1, 0),
@@ -79,12 +76,7 @@ const _CIS30 = (
 """
     _diamond_corner(f, v) -> ComplexF64
 
-Planar corner position of base vertex `v` on face `f` (build-time helper).
-
-A three-line local clone of `ISEA`'s `snyder.jl`'s `_corner_pos` written against
-the exported [`ISEA.FACES`](@ref) table: `_corner_pos` is an `ISEA` build
-helper and deliberately private, and reaching into another module's private
-build surface is exactly the coupling this package avoids.
+Planar corner position of base vertex `v` on face `f`.
 """
 function _diamond_corner(f::Int, v::Int)
     fc = FACES[f+1]

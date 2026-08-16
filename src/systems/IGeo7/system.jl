@@ -49,9 +49,7 @@ The two text codecs of a cell id, on the typed wrapper: the Z7 string form
 """
 z7_string(c::Z7Cell) = z7_to_string(c.id)
 
-# The docstring above documents both codecs, but Julia attaches it to the
-# binding on the line that follows it — so `z7_hex` needs the attachment made
-# explicitly, or the exported name ships undocumented.
+# Attach the shared codec docstring to the second method.
 @doc (@doc z7_string)
 z7_hex(c::Z7Cell; prefix::Bool=false) = z7_to_hex(c.id; prefix)
 
@@ -71,10 +69,8 @@ Whether `c` names a cell that exists: a well-formed Z7 id at a level in
 `0:$(MAX_RESOLUTION)` whose digit chain does not take one of the twelve
 pentagons' deleted branches.
 
-This is the total, non-throwing test — the same one [`cellposition`](@ref)
-answers `nothing` from. The geometry entry points instead throw
-[`InvalidZ7Error`](@ref), because a caller asking for the boundary of a cell
-that does not exist has a bug rather than a miss.
+This is a non-throwing validity check. Geometry methods instead throw
+[`InvalidZ7Error`](@ref) for invalid ids.
 """
 is_valid_cell(c::Z7Cell) = is_valid_cell(c.id)
 
@@ -105,9 +101,8 @@ DGG.has_sorted_subtrees(::IGeo7System) = true
 # bound is 6 under either connectivity (a pentagon reaches 5).
 DGG.max_neighbors(::IGeo7System, ::Connectivity) = 6
 
-# The default `cap_inflation == 1.2` covers descendant overhang: the covering
-# ratio was measured exhaustively for depths 1-5 and over pentagon
-# neighbourhoods, worst case 1.0482.
+# The default `cap_inflation == 1.2` covers the observed maximum descendant
+# overhang ratio of `1.0482`.
 
 """
     rootcells(::IGeo7System) -> SmallVector{12,Z7Cell}
@@ -143,7 +138,7 @@ end
 """
     children(sys::IGeo7System, c::Z7Cell) -> SmallVector{7,Z7Cell}
 
-The immediate children of `c`, ascending: **seven** for a hexagon, **six** for a
+The immediate children of `c`, ascending: seven for a hexagon and six for a
 pentagon, whose base's deleted digit (2 for bases 0–5, 5 for bases 6–11) has no
 subtree while the digit prefix is still all zero. Appending a digit is one shift
 and one or, so ascending digit order is ascending id order and the result needs
@@ -240,12 +235,7 @@ end
 # The level grid
 # ---------------------------------------------------------------------------
 
-# `levelgrid(IGeo7System(), l)` is the package's `HierarchicalLevelGrid`: all
-# `10·7^l + 2` cells in the canonical dense order (ascending Z7 id, which is the
-# space-filling curve order). It stores the level and nothing else, so building
-# one is O(1) and `cellindex` / `cellposition` stay O(level) digit walks rather
-# than table lookups. IGeo7's fast paths hang off this alias, and the five
-# primitives it forwards to are the `(sys, ...)` methods below.
+# Grid descriptor for all `10·7^l + 2` cells in ascending Z7 order.
 const LevelGrid = DGG.HierarchicalLevelGrid{IGeo7System}
 
 """
@@ -322,8 +312,8 @@ floating-point platforms.
 DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
     Z7Cell(_xyz_to_z7((Float64(p[1]), Float64(p[2]), Float64(p[3])), g.level))
 
-# `cell_area` is deliberately NOT overridden — see `equal_area_steradians` for
-# why the closed form is not the same quantity.
+# `cell_area` uses the boundary ring; `equal_area_steradians` reports the
+# distinct Snyder-chart area.
 
 """
     equal_area_steradians(c::Z7Cell) -> Float64
@@ -378,10 +368,8 @@ function _neighbors1(c::Z7Cell)
     return out
 end
 
-# The breadth-first walk BOTH `neighbors` and `ring` read, so that the disc is
-# the shells concatenated by construction rather than by coincidence. Shell `j`
-# is the cells at adjacency distance exactly `j`, in the contract's rotational
-# order.
+# Breadth-first shells in rotational order. Shell `j` contains cells at
+# adjacency distance exactly `j`.
 function _shells(g::LevelGrid, c::Z7Cell, steps::Int)
     shells = Vector{Z7Cell}[]
     steps >= 1 || return shells
@@ -431,8 +419,7 @@ function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
     steps == 0 && return Z7Cell[c]
     steps == 1 && return _neighbors1(c)
     shells = _shells(g, c, steps)
-    # A walk that ran out of cells before reaching `steps` has no shell there:
-    # the ring is genuinely empty, not missing.
+    # Return an empty ring after the traversal exhausts the component.
     steps <= length(shells) || return Z7Cell[]
     return shells[steps]
 end
@@ -442,7 +429,7 @@ end
 #
 # An orthonormal frame in the tangent plane at the subject cell's centroid, with
 # `u` pointing at the reference direction (ring 1's first entry) and `v` chosen
-# so that the rotation u -> v is counter-clockwise SEEN FROM OUTSIDE. That is
+# so that the rotation u -> v is counter-clockwise when viewed from outside. That is
 # `v = p x u` and not `u x p`: for a point `p` on the unit sphere, `p x u`
 # leads `u` by a quarter turn in the right-handed sense about the outward
 # normal, which is what "counter-clockwise from outside" means.
@@ -454,9 +441,8 @@ function _tangent_frame(centre, toward)
     t = (d[1] - radial * centre[1], d[2] - radial * centre[2],
          d[3] - radial * centre[3])
     n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
-    # A degenerate reference means the zero direction coincides with the centre
-    # or its antipode, which a distinct neighbouring cell centre cannot do. The
-    # fallback only keeps this total.
+    # Use a deterministic tangent direction when the reference has no tangent
+    # component.
     if n <= eps(Float64)
         t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)
         n = 1.0
@@ -480,11 +466,7 @@ function _sort_ccw!(shell::Vector{Z7Cell}, g::LevelGrid, c::Z7Cell,
     length(shell) <= 1 && return shell
     centre = DGG.cell_centroid(g, c)
     e1, e2 = _tangent_frame(centre, reference)
-    # Keys first, then sort. `sort!(; by)` recomputes the key on every
-    # comparison, and a key here is a centroid — an `_encode_lattice` and a
-    # Snyder inverse — so keying up front turns O(n log n) projections into n.
-    # Ties by ascending id, per the contract: azimuth is the key, the id is the
-    # tiebreak, so the order is total and reproducible.
+    # Compute each centroid projection once. Ascending id breaks azimuth ties.
     keyed = Vector{Tuple{Float64,Z7Cell}}(undef, length(shell))
     @inbounds for i in eachindex(shell)
         z = shell[i]
@@ -534,6 +516,48 @@ function DGG.interior_engine(::IGeo7System, c::Z7Cell, target::Int,
         connectivity::Connectivity)
     return Z7InteriorEngine(c.id, _z7_subtree_checked(c, target), target)
 end
+
+# ---------------------------------------------------------------------------
+# Hexagonal halo support
+# ---------------------------------------------------------------------------
+
+# The ring position of the step from a cell's parent to the cell, read off the
+# cell's own last digit through the same table `_border_step` uses. Digit 0 is
+# the centre child, which has no direction, and a base cell has no parent.
+#
+# RAW `SIGMA_J`, carrying none of the encode rotation `g` that
+# `_encode_lattice_rot` documents, because this number is never geometry: the arc
+# `_hex_calibrate` builds out of it is handed straight back to `_border_step`,
+# which re-reads `SIGMA_J[digit]` for the very same children one call later. The
+# raw digit frame is the only frame either side names, so neither owes a
+# rotation. Putting one on one side alone would not cancel out on the other —
+# `g` follows a cell's own first nonzero digit and its angle against the cone
+# cut, so even siblings can disagree on it — and the seeded arc would face where
+# none of that neighbour's children lie: a SHORT halo, which is the one way this
+# walk answers wrong instead of falling back. `g` belongs where dev-frame order
+# is asked for, which is `_cell_neighbors_ccw` and nowhere on this path.
+function DGG.hex_child_direction(::IGeo7System, c::Z7Cell)
+    res = z7_resolution(c.id)
+    res == 0 && return -1
+    digit = _z7_digit(c.id, res)
+    digit == 0 && return -1
+    return @inbounds SIGMA_J[digit]
+end
+
+# Unvalidated on purpose: `hex_halo_engine` owns the level guard and only ever
+# passes cells that came out of `neighbors`. `_z7_subtree_checked` is the entry
+# point for the public verbs, which do not know that.
+DGG.seeded_rim_engine(::IGeo7System, c::Z7Cell, target::Int, arclen::Int,
+        start::Int) = Z7ArcEngine(c.id, z7_resolution(c.id), target,
+    Int8(arclen), Int8(start))
+
+# The halo is approached from the neighbouring subtrees rather than from the
+# root's own, because a subtree's halo is not an interval of anything Z7 can
+# name. See `hex_halo_engine` for the calibration, the containment argument, and
+# the guards that send a case back to the generic walk.
+DGG.halo_engine(sys::IGeo7System, c::Z7Cell, target::Int,
+    connectivity::Connectivity) =
+    DGG.hex_halo_engine(sys, c, target, connectivity)
 
 # The one level guard both walks share, and the cell's own resolution.
 function _z7_subtree_checked(c::Z7Cell, target::Int)

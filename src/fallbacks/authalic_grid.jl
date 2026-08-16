@@ -259,6 +259,8 @@ reindex(::Type{T}, sys::AuthalicSystem, c::AbstractCellIndex) where {T<:Abstract
 
 # The warp preserves refinement geometry; `node_extent` is overridden below.
 cap_inflation(sys::AuthalicSystem) = cap_inflation(sys.system)
+# Likewise a hierarchy property, so the wrapped system's answer is the answer.
+coarse_probe_rings(sys::AuthalicSystem) = coarse_probe_rings(sys.system)
 
 levelgrid(sys::AuthalicSystem, l::Integer) =
     AuthalicGrid(levelgrid(sys.system, l), sys.transform)

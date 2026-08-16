@@ -19,7 +19,7 @@ const R_EA = sqrt(4pi / (15 * sqrt(3.0)))
 
 Planar icosahedron edge length `L = √3 · R_EA` — the lattice scale: res-`r`
 cell centers sit at `u = L · X / P_r` for Eisenstein integers `X` in the
-dev frame **[design Section 11]**.
+development frame.
 """
 const L_PLANE = sqrt(3.0) * R_EA
 
@@ -55,7 +55,7 @@ const SQRT3 = sqrt(3.0)
 "`tan² g` — used by the half-angle form of `sin(q/2)` (see [`_sin_half_q`](@ref))."
 const TAN_LG_SQ = TAN_LG * TAN_LG
 
-"Spec §7.1's area coefficient `R_EA²·sin 30° / 2 = R_EA²/4`."
+"Area coefficient `R_EA²·sin 30° / 2 = R_EA²/4`."
 const SNY_AG_COEF = R_EA2 / 4
 
 "`cos 30° = √3/2` (exact-component sector rotations, `sin(· + 30°)` expansion)."
@@ -72,8 +72,8 @@ const ROT_SECTOR = (complex(1.0, 0.0), complex(-0.5, COS_30), complex(-0.5, -COS
 
 `sin(q/2)` for Snyder's `q = atan(tan g, den)` with `den = cos Az + sin Az·cot θ`
 (> 0 on the face, so `q ∈ (0, π/2)`): `cos q = den / √(tan²g + den²)` and the
-half-angle identity `sin(q/2) = √((1 − cos q)/2)` — no trig calls
-**[first-principles identities; spec §6/§7 define q]**.
+half-angle identity `sin(q/2) = √((1 − cos q)/2)`, without trigonometric
+calls.
 """
 @inline function _sin_half_q(den::Float64)
     cq = den / sqrt(TAN_LG_SQ + den * den)
@@ -90,7 +90,7 @@ end
 Total planar angle of the development around a base vertex, `300°`: the five
 faces at a vertex carry `5·72° = 360°` of spherical angle but only
 `5·60° = 300°` of planar angle — the `60°` deficit is why the res-0 cells
-are pentagons **[spec/isea-projection-spec.md 8.5]**. Canonical dev-frame
+are pentagons. Canonical development-frame
 positions live on `[0°, 300°)`.
 """
 const DEV_CONE_DEG = 300.0
@@ -101,8 +101,7 @@ const DEV_CONE_DEG = 300.0
 Planar angles above this are read as the FP shadow of dev angle 0 (a planar
 `-ε`) rather than as a continuation past the cone cut. `345°` is the guard
 used by the decoder's collapse-order heuristic; [`dev_slot_index`](@ref)
-uses `330°`, the midpoint of the missing 60° wedge **[fitted guard bands,
-design Section 7]**.
+uses `330°`, the midpoint of the missing 60° wedge.
 """
 const DEV_CUT_GUARD_DEG = 345.0
 
@@ -112,7 +111,7 @@ const DEV_CUT_GUARD_DEG = 345.0
 Planar angle of `u` in degrees, wrapped to `[0, 360)` and then folded to a
 small negative value above `cut`, so that the FP shadow of dev angle 0
 (a planar `-ε`, which `mod` turns into `360 − ε`) is not mistaken for a
-continuation past the cone cut **[design Section 7 guard bands]**.
+continuation past the cone cut.
 """
 @inline function dev_angle_deg(u::ComplexF64, cut::Float64=DEV_CUT_GUARD_DEG)
     p = mod(rad2deg(angle(u)), 360.0)
@@ -123,8 +122,7 @@ end
 # Faces and face frames (spec §5; triples hard-coded from table T2)
 # ---------------------------------------------------------------------------
 
-"The 20 icosahedron faces as base-id triples **[spec/isea-projection-spec.md
-§5.2 T2]**; face index is 0-based position in this tuple."
+"The 20 icosahedron faces as base-id triples; face index is 0-based."
 const FACE_TRIPLES = (
     (0, 1, 5), (0, 1, 2), (0, 4, 5), (1, 5, 10), (1, 2, 6),
     (0, 2, 3), (0, 3, 4), (1, 6, 10), (4, 5, 9), (5, 9, 10),
@@ -142,8 +140,6 @@ One icosahedron face of the Snyder chart:
 - `u`, `w`  orthonormal tangent frame at `c`; planar angle 0 points at the
             lowest-numbered corner, `w = c × u` (CCW seen from outside)
 - `corner`  planar corner positions `R_EA·cis(0/±120°)`, aligned with `verts`
-
-**[spec/isea-projection-spec.md §5.3–§5.5]**
 """
 struct Face
     verts::NTuple{3,Int}
@@ -234,8 +230,8 @@ end
     snyder_inv_xyz(face, w) -> NTuple{3,Float64}
 
 Map planar Snyder coordinate `w` on `face` back to a grid-frame unit vector.
-The azimuth solve uses Newton iteration capped at 10 steps, which spec §7.1
-bounds at 4. Coordinates beyond the face triangle are valid for
+The azimuth solve uses at most 10 Newton iterations. Coordinates beyond the
+face triangle are valid for
 development-frame fringe cells.
 """
 function snyder_inv_xyz(f::Int, w::ComplexF64)
@@ -281,7 +277,7 @@ onto face `f`'s planar triangle by `w = cb + rot·u`, where `cb` is the
 base's planar corner position on `f` and `rot = cis(φ)` a multiple of 30°.
 `irot = cis(−φ)` is the inverse (decode) rotation. Corner-anchored and a
 multiple of 60° between adjacent slots, so the maps are exact
-lattice-to-lattice **[fitted; see `spec/igeo7-geometry-diagnosis.md` §4]**.
+lattice-to-lattice.
 """
 struct DevSlot
     f::Int
@@ -339,9 +335,8 @@ const DEV_SLOT_OF_FACE = _DEV_SLOT_TABLES[2]
     dev_slot_index(u) -> Int
 
 Dev-frame slot `j ∈ 0:4` of the dev position `u`: `floor(angle/60°)`, with a
-planar angle above `330°` read as the FP shadow of dev angle 0 (canonical
-dev positions live on `[0°, 300°)`; see [`DEV_CUT_GUARD_DEG`](@ref))
-**[fitted guard; see `spec/igeo7-geometry-diagnosis.md` §4]**.
+planar angle above `330°` read as the floating-point shadow of development
+angle 0. Canonical positions lie in `[0°, 300°)`.
 
 Computed by half-plane tests instead of `atan`: each 60° boundary ray is the
 line `y = ±√3·x` (or the x-axis), so the sector falls out of sign

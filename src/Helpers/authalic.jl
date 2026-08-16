@@ -3,11 +3,7 @@
 #
 # The order-6 forward and inverse series use Karney (2024), eqs. (A19–A20),
 # with exact rational coefficients. `authalic_q` and `authalic_radius` use
-# Snyder (1987), eqs. (3-12–3-13). test/fallbacks/authalic.jl compares both
-# with PROJ and 300-bit closed-form evaluations.
-#
-# `src/systems/A5/native.jl` carries its own WGS84-hardcoded copy of the same
-# series; the two must be changed together.
+# Snyder (1987), eqs. (3-12–3-13).
 #
 # Unsuffixed functions use radians; `d`-suffixed functions use degrees and
 # preserve the poles and equator exactly.
@@ -101,9 +97,8 @@ end
     AuthalicTransform{T}
 
 Precomputed forward and inverse authalic-latitude series and authalic radius for
-one ellipsoid of revolution. Build one per ellipsoid and reuse it: the
-constructor does the only transcendental work, leaving each transform a
-`sincos` and a handful of `muladd`s.
+one ellipsoid of revolution. Latitude conversions evaluate the stored
+coefficients without recomputing ellipsoid constants.
 
 # Constructors
 
@@ -181,15 +176,10 @@ function AuthalicTransform{T}(;
     given == 1 || throw(EllipsoidShapeError(given))
 
     W = promote_type(T, Float64)
-    # Derive (e², n) in the working precision. `n` is taken from `f` directly
-    # when `f` is what we were given — `f/(2 − f)` has no cancellation — and
-    # from `e²/(1 + √(1 − e²))²` otherwise, which is the cancellation-free
-    # rewrite of `(1 − b/a)/(1 + b/a)` and stays exact as `e² → 0`.
+    # Compute `n` from the supplied parameter without cancellation near a sphere.
     if eccentricity_squared === nothing
         f = flattening === nothing ? inv(W(inverse_flattening)) : W(flattening)
-        # Prolate shapes (f < 0) give e² < 0, where `q`'s `atanh(e)/e` turns
-        # into `atan`; supporting that is a separate exercise, so reject it
-        # rather than return a NaN radius.
+        # The closed form below supports oblate and spherical shapes only.
         (0 <= f < 1) || throw(DomainError(f,
             "flattening must lie in [0, 1) — an oblate ellipsoid of revolution"))
         e2 = f * (2 - f)
@@ -212,10 +202,8 @@ end
 
 AuthalicTransform(; kwargs...) = AuthalicTransform{Float64}(; kwargs...)
 
-# Reprecision. The `e²` route is used, so the result can differ from a
-# transform built from the same ellipsoid's `f` by an ulp or two (they are
-# different roundings of the same `n`); same-`T` is therefore a genuine no-op
-# rather than a rebuild.
+# Reprecision uses `e²`; converting to the existing element type returns the
+# original transform and preserves its stored coefficient rounding.
 AuthalicTransform{T}(t::AuthalicTransform{T}) where {T<:AbstractFloat} = t
 
 AuthalicTransform{T}(t::AuthalicTransform) where {T<:AbstractFloat} =
@@ -230,9 +218,8 @@ end
 """
     WGS84_AUTHALIC
 
-The [`AuthalicTransform`](@ref) for WGS84. Its authalic radius is
-`6.371007180918474e6` m, one ulp below the `ISEA.R_AUTHALIC` literal;
-`test/fallbacks/authalic.jl` pins this numerically negligible difference.
+The [`AuthalicTransform`](@ref) for WGS84, with authalic radius
+`6.371007180918474e6` m.
 """
 const WGS84_AUTHALIC = AuthalicTransform{Float64}(;
     semimajor_axis=WGS84_SEMIMAJOR_AXIS,

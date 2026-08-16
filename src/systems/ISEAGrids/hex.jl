@@ -72,6 +72,40 @@ DGG.ncells(::ISEA4HSystem, l::Integer) = Int(_hexcount(4, Int(l)))
 
 const CentralPlaceHexSystem = Union{ISEA3HSystem,ISEA4HSystem}
 
+# The subset halo walk's coarse prune needs two rings on ISEA3H, and only there.
+#
+# It descends a level-`l` node that misses the subset only when a level-`l`
+# neighbour within `coarse_probe_rings` hits, which at one ring assumes that a
+# target cell adjacent to a node's descendant descends from that node or from
+# its one-ring.  Central-place refinement need not honour that: by the covering
+# factors derived above a descendant reaches 2 ancestor circumradii at aperture
+# 3, which is past the one-ring reach, so the probe can miss the coarse node the
+# adjacent cell actually came from and the walk silently drops halo cells.
+#
+# Which aperture fails is not a judgement call, and the two do not agree.
+# Counting, over every target cell, the neighbours whose ancestor is neither the
+# cell's own nor in its ancestor's `k`-ring:
+#
+#   ISEA3H  target 2 / coarse 1:   20 escape at k=1, 0 at k=2
+#           target 4 / coarse 3:  180 escape at k=1, 0 at k=2
+#           target 6 / coarse 5: 1620 escape at k=1, 0 at k=2
+#   ISEA4H  every pair to target 7:  0 escape at k=1
+#
+# So aperture 4 stays at the default 1: its overhang is `sqrt(3)`, short of the
+# one-ring reach, and widening it would only make the prune retire less for no
+# correctness gain — the same slack this file just finished removing from
+# `cap_inflation`.  Aperture 3 escapes only from ODD coarse levels, which is the
+# parity the alternating-digit maximiser predicts: the even-depth ancestors are
+# the ones that reach the full factor 2, the odd-depth ones only `sqrt(3)`.
+# `test/systems/crosssystem/subtree_halos.jl` reproduces both rows and fails if
+# this returns 1.
+#
+# Two rings and not the whole level: the prune still retires distant subtrees,
+# so the walk stays `O(halo)` rather than `O(ncells(target))`. The ROOTED
+# subtree halo never used this prune — it prunes by `node_extent`, which
+# `cap_inflation` above is derived to cover — and is unchanged.
+DGG.coarse_probe_rings(::ISEA3HSystem) = 2
+
 function _checked_multiorder(sys::CentralPlaceHexSystem, coverage::DGG.MultiOrderCoverage;
         level::Union{Integer,Nothing}=nothing,
         maxcells::Union{Integer,Nothing}=nothing,

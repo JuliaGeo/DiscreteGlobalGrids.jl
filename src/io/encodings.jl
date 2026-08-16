@@ -42,7 +42,7 @@ import ..DGGSFormatError
 
 export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
 export ENCODING_REGISTRY, encodingname
-export idrank, idselect, idcount_between, idvalid, idcell, idtype
+export idrank, idselect, idcount_between, idvalid, idcell, idtype, idlevel
 export idranges, write_eligible, validate_ranges, cellaxis
 
 # ===========================================================================
@@ -110,6 +110,27 @@ name nothing (the twelve pentagons delete one child digit each), and DGGRID
 itself does not reject those, so a reader must.
 """
 function idvalid end
+
+"""
+    idlevel(grid::AbstractGrid, id::Integer) -> Union{Int,Nothing}
+
+The level `id` names a cell of, read out of the id ITSELF, or `nothing` where
+the id scheme carries no level to read.
+
+**Optional**, and informational only: a stored axis is read at the level the
+store declares, and this never overrides it. What it is for is the error a
+level-lying store produces — "names no cell of level 3" is more useful with
+"and is a cell of level 4" after it, and that second half is the id's own claim,
+not a second opinion about the store's.
+
+Z7 pads its digit slots to a fixed width, so the level is the count of leading
+non-pad digits and every well-formed id answers. HEALPix nested ids carry
+nothing: `0:12*4^L-1` is a prefix of `0:12*4^(L+1)-1`, so a level-2 id is a
+structurally valid level-3 id and the honest answer is `nothing` rather than a
+guess. A grid that does not implement this gets the default, which is the same
+answer.
+"""
+idlevel(::AbstractGrid, ::Integer) = nothing
 
 """
     idcell(grid::AbstractGrid, id::Integer) -> AbstractCellIndex
@@ -202,6 +223,15 @@ idvalid(grid::_Z7Grid, id::Integer) =
     id >= 0 && IGeo7.is_valid_z7(UInt64(id)) &&
     IGeo7._z7_leading_resolution(UInt64(id)) == grid.level
 
+# The leading-resolution walk is the level: the padding tail says where the
+# digits stop. A structurally invalid id has none to report — a broken padding
+# tail or a deleted-digit prefix names no cell at ANY level, so there is nothing
+# to tell the reader about it.
+function idlevel(::_Z7Grid, id::Integer)
+    id >= 0 && IGeo7.is_valid_z7(UInt64(id)) || return nothing
+    return Int(IGeo7._z7_leading_resolution(UInt64(id)))
+end
+
 # --- HEALPix nested: the contiguous model ----------------------------------
 
 const _HPXGrid = HierarchicalLevelGrid{HEALPixSystem}
@@ -226,6 +256,10 @@ function idselect(grid::_HPXGrid, r::Integer)
 end
 
 idvalid(grid::_HPXGrid, id::Integer) = 0 <= id < ncells(grid)
+
+# No `idlevel`: the default `nothing` is the correct answer here and not a gap.
+# Every level-L nested id is also a well-formed level-(L+1) id, so an id names
+# no level of its own and a reader cannot be told one.
 
 # ===========================================================================
 # The encoding side

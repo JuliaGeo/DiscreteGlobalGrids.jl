@@ -72,6 +72,13 @@ else
         return v
     end
 
+    # The two stages that own the cell ids, behind one function so `@allocated`
+    # counts their work and nothing around it.
+    function idbytes(A, grid)
+        _, _, cells = WRITE._cellaxis(A)
+        return WRITE._coordinate(DGG.DenseEncoding(), grid, cells, :rank)
+    end
+
     # The `(n, 2)` arrays are written so the STORE's shape is `(n, 2)`; Zarr.jl
     # reverses between JSON and Julia, so what comes back here is `(2, n)`.
     rows(z) = permutedims(z[:, :])
@@ -229,6 +236,13 @@ else
         @test marker["length"] == NCELL
         @test marker["ancestor_level"] == 1
         @test marker["ancestor_aligned"]
+        # What the manifest was validated AGAINST, and not only how it is
+        # shaped: a reader that skips the scan on this marker is reading the
+        # ids at the level and in the id arithmetic named here, so a store
+        # whose attributes were edited afterwards no longer matches its own
+        # sidecar. Kills a marker that says only how big the chunks are.
+        @test marker["level"] == LEVEL
+        @test marker["grid"] == "igeo7"
     end
 
     @testset "partial coarse subtrees get the plan, not the guarantee" begin
@@ -425,6 +439,12 @@ else
         # values, the axis, the layer attributes and the group attributes all
         # survive dggread -> dggwrite -> dggread. Kills an encode/decode
         # asymmetry and every attribute the write path drops on the floor.
+        #
+        # The `:dense` arm reads both stores back through the TRUSTED path —
+        # `dggwrite` persists a manifest and `dggread` believes it — so the ids
+        # are not rescanned here. They were scanned before either store was
+        # committed, by the write path's own `cellaxis` call, which is what the
+        # marker's `validated = "strict"` records.
         for enc in (:dense, :ranges)
             elev = DD.DimArray(copy(ELEV), (Cells(LOOKUP),); name=:elevation,
                 metadata=Dict{String,Any}("units" => "m", "long_name" => "elevation"))
@@ -494,6 +514,33 @@ else
         g = Zarr.zopen(out)
         @test g["elevation"][:] == ELEV
         @test g["slope"][:] == SLOPE
+    end
+
+    @testset "the cell ids are materialized once, and they are the bytes on disk" begin
+        # The axis of a cube on its way to disk used to be copied twice: once out
+        # of the lookup as typed cells, once again as the raw ids the coordinate
+        # writes. That is 160 MB at ten million cells, for a write whose premise
+        # is that it never holds the axis twice. Kills the second copy: the ids
+        # come out of the lookup ONCE, raw, and every stage after that passes the
+        # same array along.
+        n = 50_000
+        grid = levelgrid(SYS, 6)
+        lk = CellLookup(CellVector(SYS, 6, [Z7Cell(DGG.idselect(grid, r)) for r in 0:n-1]))
+        A = DD.DimArray(Float32.(1:n), Cells(lk); name=:v)
+
+        celldim, axisgrid, cells = WRITE._cellaxis(A)
+        @test DD.name(celldim) === :Cells
+        @test (DGG.system(axisgrid), DGG.level(axisgrid)) == (SYS, 6)
+        # Raw ids, not typed cells: one vector, of what the store holds.
+        @test cells isa Vector{UInt64}
+        @test cells == DGG.rawid.(collect(lk))
+        # Identity, not equality: the dense coordinate IS that vector, so nothing
+        # between the lookup and the bytes copies it again.
+        @test WRITE._coordinate(DGG.DenseEncoding(), grid, cells, :rank) === cells
+
+        onecopy = 8 * n
+        idbytes(A, grid)        # compile before measuring
+        @test onecopy <= @allocated(idbytes(A, grid)) < 3 * onecopy ÷ 2
     end
 
     @testset "a group that already holds these arrays is refused, not half-stamped" begin

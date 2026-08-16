@@ -35,6 +35,7 @@ using .ChunkedLookups
     # The Zarr-extension suites need `using Zarr` and self-skip when absent.
     isfile(joinpath(@__DIR__, "read.jl")) && include("read.jl")
     isfile(joinpath(@__DIR__, "write.jl")) && include("write.jl")
+    isfile(joinpath(@__DIR__, "stores.jl")) && include("stores.jl")
 end
 
 end # module DGGIOTests

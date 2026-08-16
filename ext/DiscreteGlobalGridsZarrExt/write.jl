@@ -20,13 +20,14 @@
 module DGGSZarrWrite
 
 import DiscreteGlobalGrids as DGG
-using ..DiscreteGlobalGridsZarrExt: storeidentifier
+using ..DiscreteGlobalGridsZarrExt: storeidentifier,
+    MANIFEST_MARKER, MANIFEST_WRITER, MANIFEST_FORMAT, MANIFEST_VALIDATED
 using DiscreteGlobalGrids: AbstractCellIndex, ArrayEntry,
     CellEncoding, CellLookup, ChunkedCellLookup, DGGSFormatError,
     DEFAULT_WRITE_CONVENTIONS, DenseEncoding, ENCODING_REGISTRY, ImplicitEncoding,
     RangesEncoding, StoreDescription, StoreSnapshot,
     ancestor, cellaxis, chunkmanifest, encodingname, has_sorted_subtrees,
-    idranges, idtype, level, levelgrid, rawid, system, write_eligible
+    idcell, idranges, idtype, level, levelgrid, rawid, system, write_eligible
 import DimensionalData as DD
 import Zarr
 
@@ -43,7 +44,6 @@ const SPATIAL_DIMENSION = "cell_ids"
 const RANGES_DIMS = ["ranges", "bounds"]
 const MANIFEST_ARRAY = "cell_chunk_manifest"
 const MANIFEST_DIMS = ["chunks", "bounds"]
-const MANIFEST_MARKER = "dggs_chunk_manifest"
 const ARRAY_DIMENSIONS = "_ARRAY_DIMENSIONS"
 
 """
@@ -182,10 +182,9 @@ function _write(identifier, opengroup, src; encoding=:auto,
 
     names = String[DGG.conventionname(c) for c in conventions]
     return DGG.with_store_context(identifier; conventions=names) do
-        celldim, sys, lev, cells = _cellaxis(src)
+        celldim, grid, cells = _cellaxis(src)
         isempty(cells) && throw(ArgumentError(
             "dggwrite has nothing to write: the cell axis is empty."))
-        grid = levelgrid(sys, lev)
         enc = _encoding(encoding, grid, cells)
         layers = _layers(src, celldim)
         target = _celltarget(Int(chunk_target), layers, celldim)
@@ -200,10 +199,13 @@ function _write(identifier, opengroup, src; encoding=:auto,
         axis = _axis(enc, grid, coord, plan, length(cells))
         manifest = chunkmanifest(axis, plan.chunklength)
 
-        arrays = _arrayplan(enc, coord, layers, celldim, plan, manifest)
+        # The description first: the manifest marker records the level and the
+        # grid name the axis was validated at, and those are the description's
+        # to say, not the plan's.
+        desc = _description(system(grid), level(grid), enc, layers)
+        arrays = _arrayplan(enc, coord, layers, celldim, plan, manifest, desc)
         snapshot = StoreSnapshot(identifier=identifier, attrs=_groupattrs(src),
             arrays=[a.entry for a in arrays])
-        desc = _description(sys, lev, enc, layers)
         for c in conventions
             DGG.encode!(c, snapshot, desc)
         end
@@ -251,9 +253,17 @@ _attrs(md::DD.Metadata) = _attrs(DD.val(md))
 # ===========================================================================
 
 """
-    _cellaxis(src) -> (dim, system, level, cells)
+    _cellaxis(src) -> (dim, grid, ids)
 
-The cube's cell dimension and the typed ids on it.
+The cube's cell dimension, the complete level grid its cells live at, and the
+RAW ids on it.
+
+The ids are read out of the lookup exactly ONCE, and as the integers a store
+holds rather than as typed cells, because that vector is the one the dense
+coordinate writes: everything downstream — eligibility, the chunk plan, the
+coordinate itself — works from this array, and a write of tens of millions of
+cells never holds the axis twice. Where a typed cell is wanted, `idcell` puts
+the wrapper back on for the one id in hand.
 
 Only this package's own cell lookups are accepted, and that is the canonicity
 check rather than a restriction: an ascending, unique subset of a cell axis is
@@ -265,9 +275,15 @@ function _cellaxis(src)
     for d in DD.dims(src)
         lk = DD.val(d)
         lk isa Union{CellLookup,ChunkedCellLookup} || continue
-        return d, system(lk), level(lk), collect(lk)
+        grid = levelgrid(system(lk), level(lk))
+        return d, grid, _rawids(grid, lk)
     end
     return _nocellaxis(src)
+end
+
+function _rawids(grid, cells)
+    I = idtype(grid)
+    return I[convert(I, rawid(c)) for c in cells]
 end
 
 @noinline function _nocellaxis(src)
@@ -325,9 +341,13 @@ _encoding(enc::CellEncoding, grid, cells) = enc
 What the encoding stores for the axis: the `(n, 2)` inclusive-range array, the
 raw ids, or — for an implicit axis, which stores nothing — the length alone.
 Computed once, and both written and read back through [`_axis`](@ref).
+
+The dense coordinate is the id vector [`_cellaxis`](@ref) already materialized,
+handed on rather than copied: one vector of ids exists between the lookup and
+the bytes on disk.
 """
 _coordinate(::RangesEncoding, grid, cells, merge) = idranges(grid, cells; merge=merge)
-_coordinate(::DenseEncoding, grid, cells, merge) = _rawids(grid, cells)
+_coordinate(::DenseEncoding, grid, cells, merge) = cells
 _coordinate(::ImplicitEncoding, grid, cells, merge) = length(cells)
 
 """
@@ -345,8 +365,6 @@ _axis(::DenseEncoding, grid, coord, plan, n) =
 
 _axis(::ImplicitEncoding, grid, coord, plan, n) =
     cellaxis(ImplicitEncoding(), grid, coord)
-
-_rawids(grid, cells) = idtype(grid)[convert(idtype(grid), rawid(c)) for c in cells]
 
 # ===========================================================================
 # The chunk plan
@@ -407,14 +425,14 @@ function _chunkplan(chunks::Symbol, grid, cells, target)
 
     # Runs at level L-1 cost one `ancestor` per cell; every coarser level is then
     # a merge over the runs already found, so the whole descent is one pass.
-    ends = _runends(sys, cells, L - 1, 1:n)
+    ends = _runends(grid, cells, L - 1, 1:n)
     best, bestlevel = nothing, nothing
     A = L - 1
     while _maxrun(ends) <= target
         best, bestlevel = ends, A
         A == 0 && break
         A -= 1
-        ends = _runends(sys, cells, A, _runstarts(ends))
+        ends = _runends(grid, cells, A, _runstarts(ends))
     end
     best === nothing && return plain
 
@@ -429,12 +447,15 @@ end
 
 # End positions of the maximal runs of cells sharing a level-`A` ancestor.
 # `starts` names the positions to look at: every cell for the first pass, one
-# representative per known run for each coarsening after it.
-function _runends(sys, cells, A::Int, starts)
+# representative per known run for each coarsening after it. The axis is raw
+# ids, so the typed cell `ancestor` wants is put back together one at a time —
+# a wrapper around an integer already in hand, and nothing is allocated.
+function _runends(grid, cells, A::Int, starts)
+    sys = system(grid)
     ends = Int[]
     previous = nothing
     for k in starts
-        a = ancestor(sys, cells[k], A)
+        a = ancestor(sys, idcell(grid, cells[k]), A)
         previous === nothing || a == previous || push!(ends, k - 1)
         previous = a
     end
@@ -504,7 +525,7 @@ function _block(s::CellStream, r)
     return s.perm === nothing ? block : permutedims(block, s.perm)
 end
 
-function _arrayplan(enc, coord, layers, celldim, plan, manifest)
+function _arrayplan(enc, coord, layers, celldim, plan, manifest, desc)
     out = ArrayWrite[]
     _coordinate!(out, enc, coord, plan)
     seen = Set{String}()
@@ -518,7 +539,7 @@ function _arrayplan(enc, coord, layers, celldim, plan, manifest)
             w === nothing || push!(out, w)
         end
     end
-    push!(out, _manifestwrite(manifest, plan))
+    push!(out, _manifestwrite(manifest, plan, desc))
     return sort!(out; by=a -> a.entry.name)
 end
 
@@ -599,13 +620,18 @@ end
 # `writer`/`format`/`validated` are what a consumer decides how far to trust a
 # stale sidecar by: `validated` is always `"strict"`, because the axis is
 # rebuilt through the reader's own `cellaxis` before a byte is committed.
-function _manifestwrite(manifest, plan)
+# `grid`/`level` say what it was validated AGAINST — a claim of strictness is
+# empty without them, since the same ids are a clean axis at the level they were
+# written at and name no cell at all at any other.
+function _manifestwrite(manifest, plan, desc)
     rows = permutedims(hcat(manifest.firstids, manifest.lastids))
     n = size(rows, 2)
     marker = Dict{String,Any}(
-        "writer" => "DiscreteGlobalGrids.jl",
-        "format" => 1,
-        "validated" => "strict",
+        "writer" => MANIFEST_WRITER,
+        "format" => MANIFEST_FORMAT,
+        "validated" => MANIFEST_VALIDATED,
+        "grid" => desc.gridname,
+        "level" => desc.level,
         "spatial_dimension" => SPATIAL_DIMENSION,
         "chunk_length" => manifest.chunklength,
         "length" => length(manifest))

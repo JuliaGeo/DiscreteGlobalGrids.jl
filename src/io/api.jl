@@ -24,6 +24,12 @@ The detected convention, the verbatim original attributes and the source
 encoding ride in the stack's `metadata`, which is enough to regenerate a
 value-identical store.
 
+`validate = :strict` checks that every stored id names a cell of the declared
+level and `:lazy` samples instead. Neither reaches a store carrying a chunk
+manifest this package wrote: that axis is built from the manifest and no id is
+scanned, which is what opens a store of tens of millions of cells at all.
+`validate = :scan` declines the manifest and runs the full scan on any store.
+
 `description` bypasses detection: pass a [`StoreDescription`](@ref) and the
 caller asserts grid, level, encoding and array names, leaving only the
 mechanical checks. That is how an attribute-less store is read.

@@ -25,8 +25,8 @@ if HAS_ZARR
 import DimensionalData as DD
 using DimensionalData: Lookups
 using DiscreteGlobalGrids: IGeo7System, HEALPixSystem, Z7Cell, LevelIndex,
-    levelgrid, ncells, cellindex, Cells, DGGSFormatError, dggread,
-    StoreDescription
+    levelgrid, ncells, cellindex, Cells, CellVector, CellLookup, DGGSFormatError,
+    dggread, dggwrite, StoreDescription
 using DiscreteGlobalGrids.Encodings: idselect, idranges, DenseEncoding,
     RangesEncoding, ImplicitEncoding
 
@@ -86,6 +86,12 @@ const COORD_CHUNK = 64
 # names no cell. It sits between the level-4 cells of ranks 1 and 2.
 const PHANTOM = (UInt64(2) << 48) | ((UInt64(1) << 48) - 1)
 
+# The same axis shape in base cell 8, whose ids set the top bit: written into an
+# `Int64` sidecar they are NEGATIVE integers that wrap back to exactly these
+# ids, which is the one case where reinterpreting a foreign width would silently
+# work and is why the width guard refuses to.
+const HIGH_IDS = UInt64[idselect(GRID, r) for r in 16008:(16008+N-1)]
+
 zarr_conventions() = Any[deepcopy(DGG.ZARR_DGGS_DECLARATION)]
 
 function dggs_attrs(; level=4, compression="none", coordinate="cell_ids")
@@ -137,6 +143,46 @@ function ranges_store(dir; name="ranges.zarr")
     c[:, :] = permutedims(rows)
     write_data!(g)
     return path
+end
+
+"The cube the dense fixtures hold, over this package's own compressed lookup."
+cube() = DD.DimStack((elevation=copy(ELEVATION), slope=copy(SLOPE)),
+    (Cells(CellLookup(CellVector(IGeo7System(), 4, CELLS))),))
+
+"""
+A dense store carrying a chunk-manifest sidecar whose MARKER the caller shapes:
+`marker` overrides fields and `drop` removes them. The rows are otherwise the
+truth about the ids, so what a fixture varies is trust alone; `rows` is the one
+exception and rewrites the table itself — as Julia holds it, `(2, n_chunks)` —
+and `T` the integer width it is written at.
+"""
+function manifest_store(dir; name, ids=IDS, chunk=COORD_CHUNK,
+    marker=d(), drop=String[], rows=identity, T=UInt64)
+    path = dense_store(dir; name=name, ids=ids)
+    n = length(ids)
+    nc = cld(n, chunk)
+    table = rows(permutedims(hcat(UInt64[ids[(c-1)*chunk+1] for c in 1:nc],
+        UInt64[ids[min(c * chunk, n)] for c in 1:nc])))
+    data = map(x -> x % T, table)
+    m = merge(d("writer" => "DiscreteGlobalGrids.jl", "format" => 1,
+            "validated" => "strict", "spatial_dimension" => "cell_ids",
+            "chunk_length" => chunk, "length" => n,
+            "level" => 4, "grid" => "igeo7"), marker)
+    for k in drop
+        delete!(m, k)
+    end
+    g = Zarr.zopen(path, "w")
+    z = Zarr.zcreate(T, g, "cell_chunk_manifest", size(data)...; chunks=size(data),
+        attrs=merge(adims("chunks", "bounds"), d("dggs_chunk_manifest" => m)))
+    z[:, :] = data
+    return path
+end
+
+"Chunk `c`'s first and last id, the wrong way round."
+function swaprow(R, c)
+    S = copy(R)
+    S[1, c], S[2, c] = S[2, c], S[1, c]
+    return S
 end
 
 "A nextGEMS-style store: a `crs` variable, no cell array, position is the id."
@@ -216,6 +262,218 @@ end
         @test parent(st2[:elevation]) isa Array
         @test reads(g2, "elevation") > 0
         @test collect(parent(st2[:slope])) == SLOPE
+    end
+end
+
+# ---------------------------------------------------------------------------
+# The persisted manifest
+# ---------------------------------------------------------------------------
+
+@testset "a store we wrote opens from its manifest instead of scanning" begin
+    # The design's trust model: our own marker means the chunk grid on disk IS
+    # the chunk grid, so opening a store of tens of millions of cells reads no
+    # ids at all. Kills a reader that scans anyway, and a manifest whose rows
+    # are read but whose chunk boundaries are not the store's.
+    mktempdir() do dir
+        path = joinpath(dir, "written.zarr")
+        dggwrite(path, cube(); encoding=:dense, chunks=COORD_CHUNK)
+
+        g = counting(path)
+        st = dggread(g)
+        @test reads(g, "cell_ids") == 0
+        @test length(DD.lookup(st[:elevation], Cells)) == N
+
+        resetreads!(g)
+        @test st[:elevation][Cells(DD.At(CELLS[137]))] == ELEVATION[137]
+        # Exactly the one chunk the manifest named — and, being decoded, the one
+        # chunk the spot check was able to verify.
+        @test reads(g, "cell_ids") == 1
+        @test collect(DD.lookup(st[:elevation], Cells)) == CELLS
+    end
+end
+
+@testset "a stale manifest is caught on the chunk it lies about" begin
+    # A sidecar is only as true as the ids under it. Another writer rewrote them
+    # and left the manifest behind: the reader trusts it at open, because that
+    # is the whole point, and refuses on the first chunk it actually decodes.
+    # Kills trust without the spot check, and a check that fires at open.
+    mktempdir() do dir
+        path = joinpath(dir, "stale.zarr")
+        dggwrite(path, cube(); encoding=:dense, chunks=COORD_CHUNK)
+        z = Zarr.zopen(path, "w")["cell_ids"]
+        z[:] = UInt64[idselect(GRID, r) for r in 2000:(2000+N-1)]
+
+        g = counting(path)
+        st = dggread(g)
+        @test reads(g, "cell_ids") == 0
+
+        err = try
+            st[:elevation][Cells(DD.At(CELLS[137]))]
+        catch e
+            e
+        end
+        @test err isa DGGSFormatError && err.check === :stale_manifest
+        @test occursin("stale.zarr", err.store)
+    end
+end
+
+@testset "a manifest is trusted only as far as its marker says" begin
+    # Everything the marker has to agree about before a scan is skipped. Each
+    # row is a store whose manifest ROWS are correct and whose marker is not
+    # ours to trust: the manifest is then an extra array and nothing else, so
+    # the reader scans and gets the same axis. Kills a trust check that reads
+    # the rows and forgets to read the marker.
+    mktempdir() do dir
+        nc = cld(N, COORD_CHUNK)
+        # Trusted, as the reference the fallbacks are compared against.
+        good = counting(manifest_store(dir; name="good.zarr"))
+        trusted = dggread(good)
+        @test reads(good, "cell_ids") == 0
+
+        cases = (("foreign", d("writer" => "xarray-dggs"), String[]),
+            ("format", d("format" => 2), String[]),
+            ("sampled", d("validated" => "lazy"), String[]),
+            ("unvalidated", d(), ["validated"]),
+            ("otherdim", d("spatial_dimension" => "cells"), String[]),
+            ("regridded", d("chunk_length" => 32), String[]),
+            ("shortened", d("length" => N - 1), String[]),
+            ("otherlevel", d("level" => 3), String[]),
+            ("othergrid", d("grid" => "healpix"), String[]))
+        for (name, marker, drop) in cases
+            g = counting(manifest_store(dir; name="$name.zarr", marker, drop))
+            st = dggread(g)
+            @test reads(g, "cell_ids") == nc
+            @test DD.lookup(st[:elevation], Cells) ==
+                  DD.lookup(trusted[:elevation], Cells)
+        end
+        # The rows are read with the same suspicion. The two-level search binary
+        # searches them, so chunk intervals that do not ascend and stay disjoint
+        # would resolve an id into the wrong chunk — or into none — rather than
+        # fail; this reader scans instead.
+        g = counting(manifest_store(dir;
+            name="descending.zarr", rows=R -> R[:, end:-1:1]))
+        st = dggread(g)
+        @test reads(g, "cell_ids") == nc
+        @test DD.lookup(st[:elevation], Cells) == DD.lookup(trusted[:elevation], Cells)
+
+        # A foreign manifest that sorts BEFORE ours does not shadow it. The
+        # sidecar is found by the marker it carries, so the search is for a
+        # marker this reader can trust and not for the first array wearing one;
+        # kills a first-hit lookup, which costs the store its fast open on the
+        # strength of somebody else's array name.
+        shadowed = manifest_store(dir; name="shadowed.zarr")
+        h = Zarr.zopen(shadowed, "w")
+        foreign = Zarr.zcreate(UInt64, h, "aaa_manifest", 2, 1; chunks=(2, 1),
+            attrs=merge(adims("chunks", "bounds"),
+                d("dggs_chunk_manifest" => d("writer" => "xarray-dggs"))))
+        foreign[:, :] = zeros(UInt64, 2, 1)
+        g = counting(shadowed)
+        st = dggread(g)
+        @test reads(g, "cell_ids") == 0
+        @test DD.lookup(st[:elevation], Cells) == DD.lookup(trusted[:elevation], Cells)
+
+        # And the trusted axis is the axis a scan would have built.
+        @test collect(DD.lookup(trusted[:elevation], Cells)) == CELLS
+    end
+end
+
+@testset "a sidecar the rows themselves disqualify is ignored, not an error" begin
+    # Three ways a table can fail before it is believed, one fixture each. All
+    # three are the same verdict — a manifest this reader cannot use is an extra
+    # array, so the scan runs and the store opens — and each is the ONLY thing
+    # wrong with its store, so deleting any one of the three guards is caught
+    # here and nowhere else.
+    mktempdir() do dir
+        nc = cld(N, COORD_CHUNK)
+        trusted = DD.lookup(dggread(manifest_store(dir; name="ref.zarr"))[:elevation],
+            Cells)
+
+        # One row more than the chunk grid has chunks, and a row that ascends
+        # away from the last one so that nothing but the SHAPE is wrong with it:
+        # the table describes some other store's axis, however well formed.
+        tall = counting(manifest_store(dir; name="tallrows.zarr",
+            rows=R -> hcat(R, [R[2, end] + 0x1, R[2, end] + 0x2])))
+
+        # One row whose two entries are the wrong way round. The rows still
+        # ascend and stay disjoint ACROSS rows — the existing descending fixture
+        # is what kills that condition — so only the per-row `first <= last`
+        # comparison rejects this one, and a chunk whose interval runs backwards
+        # answers `nothing` for every id genuinely inside it.
+        swapped = counting(manifest_store(dir; name="swapped.zarr",
+            rows=R -> swaprow(R, 2)))
+
+        # A sidecar written at another width. These ids sit in base cell 8, so
+        # as `Int64` they are negative — and wrap back to exactly the right
+        # `UInt64` ids, which is what makes reinterpreting them look harmless.
+        @test all(>=(UInt64(1) << 63), HIGH_IDS)
+        narrow = counting(manifest_store(dir; name="narrow.zarr", ids=HIGH_IDS,
+            T=Int64))
+
+        for g in (tall, swapped)
+            st = dggread(g)
+            @test reads(g, "cell_ids") == nc
+            @test DD.lookup(st[:elevation], Cells) == trusted
+        end
+        st = dggread(narrow)
+        @test reads(narrow, "cell_ids") == nc
+        @test collect(DD.lookup(st[:elevation], Cells)) == [Z7Cell(x) for x in HIGH_IDS]
+    end
+end
+
+@testset "a marker that does not name this store's level is not its manifest" begin
+    # The store `dggwrite` produced, with both halves of the dual stamp edited
+    # from level 4 to level 3 — the Ifremer failure under a sidecar. Every
+    # GEOMETRY field of the marker still agrees: same dimension, same chunk
+    # length, same length. A marker that carries no level and no grid is
+    # therefore still trusted, and the store opens claiming a level none of its
+    # ids names. Kills exactly that: the marker has to say what it validated.
+    mktempdir() do dir
+        path = joinpath(dir, "relevelled.zarr")
+        dggwrite(path, cube(); encoding=:dense, chunks=COORD_CHUNK)
+        group = joinpath(path, ".zattrs")
+        coord = joinpath(path, "cell_ids", ".zattrs")
+        write(group, replace(read(group, String),
+            "\"refinement_level\":4" => "\"refinement_level\":3"))
+        write(coord, replace(read(coord, String), "\"level\":4" => "\"level\":3"))
+        # The edits landed: a fixture that quietly stopped lying would pass for
+        # the wrong reason.
+        @test occursin("\"refinement_level\":3", read(group, String))
+        @test occursin("\"level\":3", read(coord, String))
+
+        g = counting(path)
+        err = try
+            dggread(g)
+        catch e
+            e
+        end
+        @test err isa DGGSFormatError && err.check === :id_names_no_cell
+        @test err.declared == 3
+        # It fell back rather than raising on the marker: the ids were read.
+        @test reads(g, "cell_ids") > 0
+        # And the error names the level the ids themselves are at.
+        @test occursin("level 4", sprint(showerror, err))
+    end
+end
+
+@testset "validate = :scan declines a sidecar this reader would trust" begin
+    # The switch that puts a store this package wrote back on the ordinary
+    # scanning path: the sidecar is ignored, every chunk of ids is read, and
+    # every id is checked. Kills a `validate` that only ever chooses between
+    # sample counts, leaving a trusted store with no way to be checked at all.
+    mktempdir() do dir
+        path = joinpath(dir, "scanned.zarr")
+        dggwrite(path, cube(); encoding=:dense, chunks=COORD_CHUNK)
+
+        g = counting(path)
+        st = dggread(g; validate=:scan)
+        @test reads(g, "cell_ids") == cld(N, COORD_CHUNK)
+        @test collect(DD.lookup(st[:elevation], Cells)) == CELLS
+
+        # The same store on the default setting reads no id at all, which is
+        # what makes the two settings a choice rather than a spelling.
+        h = counting(path)
+        @test length(DD.lookup(dggread(h)[:elevation], Cells)) == N
+        @test reads(h, "cell_ids") == 0
     end
 end
 
@@ -375,24 +633,30 @@ end
 # The validation pair
 # ---------------------------------------------------------------------------
 
-@testset "strict verifies every id where lazy samples" begin
+@testset "strict verifies every id where lazy samples, on a scanned store" begin
     mktempdir() do dir
         # One chunk of 100 ids with a phantom at slot 3 — where an even sample
         # spread does not look. The array stays sorted, so only validity can
-        # reject it.
+        # reject it. This store carries no manifest, so the scan is what runs;
+        # a store whose sidecar this reader trusts checks no id at all until
+        # `:scan` asks it to.
         ids = UInt64[idselect(GRID, r) for r in 0:99]
         ids[3] = PHANTOM
         @test issorted(ids) && allunique(ids)
         path = dense_store(dir; name="phantom.zarr", ids=ids)
 
-        err = try
-            dggread(path)
-        catch e
-            e
+        # `:scan` is `:strict` on a store with nothing to decline, which is what
+        # makes it safe to reach for: it never checks less.
+        for validate in (:strict, :scan)
+            err = try
+                dggread(path; validate)
+            catch e
+                e
+            end
+            @test err isa DGGSFormatError && err.check === :id_names_no_cell
+            @test occursin("phantom.zarr", err.store)
+            @test err.conventions == ["zarr-conventions/dggs"]
         end
-        @test err isa DGGSFormatError && err.check === :id_names_no_cell
-        @test occursin("phantom.zarr", err.store)
-        @test err.conventions == ["zarr-conventions/dggs"]
 
         st = dggread(path; validate=:lazy)
         @test length(DD.lookup(st[:elevation], Cells)) == 100
@@ -401,12 +665,12 @@ end
     end
 end
 
-@testset "a duplicated id is refused whatever the validation setting" begin
+@testset "a duplicated id is refused whatever the validation setting, when scanned" begin
     mktempdir() do dir
         ids = copy(IDS)
         ids[130] = ids[129]
         path = dense_store(dir; name="dup.zarr", ids=ids)
-        for validate in (:strict, :lazy)
+        for validate in (:strict, :lazy, :scan)
             err = try
                 dggread(path; validate)
             catch e

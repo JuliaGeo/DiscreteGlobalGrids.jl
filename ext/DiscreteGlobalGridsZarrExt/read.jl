@@ -14,9 +14,9 @@ import DimensionalData as DD
 using DimensionalData: Lookups
 
 using DiscreteGlobalGrids: StoreDescription, DGGSFormatError, Cells,
-    ChunkedCellLookup, with_store_context, arrays_on, getarray
+    ChunkManifest, ChunkedCellLookup, with_store_context, arrays_on, getarray
 using DiscreteGlobalGrids.Encodings: CellEncoding, DenseEncoding, RangesEncoding,
-    ImplicitEncoding, cellaxis, encodingname
+    ImplicitEncoding, cellaxis, encodingname, idtype
 
 """
     LAZY_SAMPLES
@@ -29,6 +29,33 @@ const LAZY_SAMPLES = 8
 
 "What `dggread` will open: an already-open group, a store, or a path or URL."
 const StoreLike = Union{Zarr.ZGroup,Zarr.AbstractStore,AbstractString}
+
+# The persisted chunk manifest's TRUST contract, spelled once for both halves of
+# the extension: the write half imports these to stamp what this half reads.
+# The array's own name and dimensions are the write half's business — a manifest
+# is found by the marker it carries, not by what it is called.
+
+"""
+    MANIFEST_MARKER
+
+The attribute a chunk-manifest sidecar carries. Its `writer`, `format` and
+`validated` fields say whose manifest it is and how far it was checked when it
+was written; its `grid` and `level` fields say what it was checked AGAINST, since
+the same ids are a clean axis at one level and nothing but phantoms at another;
+its `spatial_dimension`, `chunk_length` and `length` fields say which chunk grid
+of which axis it describes. All eight have to agree with the store in hand before
+[`persistedmanifest`](@ref) hands one over.
+"""
+const MANIFEST_MARKER = "dggs_chunk_manifest"
+
+"The only `writer` this reader builds an axis from without scanning it."
+const MANIFEST_WRITER = "DiscreteGlobalGrids.jl"
+
+"The sidecar layout version this reader understands."
+const MANIFEST_FORMAT = 1
+
+"The `validated` level that attests every id was checked when it was written."
+const MANIFEST_VALIDATED = "strict"
 
 # ===========================================================================
 # The API surface
@@ -54,10 +81,16 @@ extension (`using AWSS3`) and says so otherwise.
     unknown name raises, listing what the store holds.
   - `lazy`: leave the data as the store's own chunked arrays (the default), or
     materialize them.
-  - `validate`: `:strict` checks that every stored id names a cell of the
-    declared level; `:lazy` checks [`LAZY_SAMPLES`](@ref) per chunk instead.
-    Sortedness, uniqueness and the length checks are not optional and run
-    either way.
+  - `validate`: `:strict` (the default) checks that every stored id names a cell
+    of the declared level; `:lazy` checks [`LAZY_SAMPLES`](@ref) per chunk
+    instead. Sortedness, uniqueness and the length checks are not optional and
+    run either way. None of the three reaches a store carrying a chunk manifest
+    this package wrote: its axis is built from the manifest without a scan, so
+    no id is checked at all, and what bounds that trust is a per-chunk
+    comparison of first id, last id and length as the ids are read
+    ([`persistedmanifest`](@ref)). `:scan` is how that trust is declined — the
+    sidecar is ignored, the ids are scanned, and every check runs on every
+    store.
   - `conventions`: the conventions to try, in order.
   - `description`: a [`StoreDescription`](@ref) that bypasses detection. The
     caller then asserts grid, level, encoding and array names, and only the
@@ -85,7 +118,7 @@ function DiscreteGlobalGrids.dggread(store::StoreLike; vars=DD.All(), lazy::Bool
         snap = snapshot(group; identifier)
         desc, names = describe(snap, conventions, description)
         with_store_context(identifier; conventions=names) do
-            assemble(group, snap, desc, names, vars, lazy, samples)
+            assemble(group, snap, desc, names, vars, lazy, validate, samples)
         end
     end
 end
@@ -97,11 +130,21 @@ function DiscreteGlobalGrids.dggread(store::StoreLike, var::Symbol; kwargs...)
     return DiscreteGlobalGrids.dggread(store; vars=(var,), kwargs...)[var]
 end
 
+"""
+    validation_samples(validate) -> Union{Int,Nothing}
+
+How many ids per chunk the scan checks for existence under `validate`, and
+`nothing` for all of them. `:scan` differs from `:strict` only in what it does
+to a store this reader would otherwise trust ([`storedaxis`](@ref)); once the
+scan is running, the two ask it for exactly the same work.
+"""
 function validation_samples(validate::Symbol)
-    validate === :strict && return nothing
+    (validate === :strict || validate === :scan) && return nothing
     validate === :lazy && return LAZY_SAMPLES
     throw(ArgumentError(
-        "`validate` is `:strict` (every id checked) or `:lazy` (sampled), not $(repr(validate))"))
+        "`validate` is `:strict` (every id checked, and a chunk manifest this " *
+        "package wrote taken on its word), `:scan` (the same checks, on every " *
+        "store, sidecar or not) or `:lazy` (sampled), not $(repr(validate))"))
 end
 
 # ===========================================================================
@@ -179,11 +222,11 @@ end
 # Assembly
 # ===========================================================================
 
-function assemble(group, snap, desc, names, vars, lazy, samples)
+function assemble(group, snap, desc, names, vars, lazy, validate, samples)
     grid = describedgrid(desc)
     dim = desc.spatial_dimension
     n = axislength(snap, dim)
-    axis = storedaxis(desc.encoding, grid, group, snap, desc, n, samples)
+    axis = storedaxis(desc.encoding, grid, group, snap, desc, n, validate, samples)
     lookup = ChunkedCellLookup(axis)
 
     available = desc.variables === nothing ?
@@ -255,20 +298,38 @@ end
 # --- the axis ---------------------------------------------------------------
 
 """
-    storedaxis(encoding, grid, group, snapshot, desc, n, samples) -> ChunkedCellVector
+    storedaxis(encoding, grid, group, snapshot, desc, n, validate, samples)
+        -> ChunkedCellVector
 
 The store's cell axis, read the way its encoding keeps it: a chunked pass over
 the id array, the small range array read whole, or no read at all.
+
+A dense store that persisted its own chunk grid is the fourth case and the
+cheapest: the manifest stands in for the pass, and no id is read until one is
+asked for ([`persistedmanifest`](@ref)).
+
+`validate` is consulted before the encoding is: `:scan` refuses the fourth case
+outright, so a store this reader would have trusted is read the way a foreign
+one is. The arithmetic encodings scan nothing under any setting — there is no id
+array to scan — so the keyword reaches only the dense path.
 """
-function storedaxis(enc::DenseEncoding, grid, group, snap, desc, n, samples)
+function storedaxis(enc::DenseEncoding, grid, group, snap, desc, n, validate, samples)
     z = coordinatearray(group, snap, desc, 1)
+    cl = chunklength(z)
+    # A manifest this package persisted is the chunk grid, and skipping the scan
+    # for it is what makes a store of tens of millions of cells open at all —
+    # which is also exactly what `:scan` is for declining.
+    if validate !== :scan
+        found = persistedmanifest(group, snap, desc, grid, Int(n), Int(cl))
+        found === nothing || return cellaxis(enc, grid, z, found.manifest;
+            store=snap.identifier, sidecar=found.sidecar)
+    end
     # One block per stored chunk, so the scan reads each chunk exactly once and
     # the lookup's later per-chunk reads land on the same boundaries.
-    return cellaxis(enc, grid, z; chunklength=chunklength(z),
-        declared_length=n, samples)
+    return cellaxis(enc, grid, z; chunklength=cl, declared_length=n, samples)
 end
 
-function storedaxis(enc::RangesEncoding, grid, group, snap, desc, n, samples)
+function storedaxis(enc::RangesEncoding, grid, group, snap, desc, n, validate, samples)
     z = coordinatearray(group, snap, desc, 2)
     # Kilobytes even for a store of tens of millions of cells, and the axis is
     # arithmetic over it from there: `(n, 2)` as Zarr declares it, which is
@@ -276,10 +337,10 @@ function storedaxis(enc::RangesEncoding, grid, group, snap, desc, n, samples)
     return cellaxis(enc, grid, permutedims(Array(z)); declared_length=n)
 end
 
-storedaxis(enc::ImplicitEncoding, grid, group, snap, desc, n, samples) =
+storedaxis(enc::ImplicitEncoding, grid, group, snap, desc, n, validate, samples) =
     cellaxis(enc, grid, n)
 
-function storedaxis(enc::CellEncoding, grid, group, snap, desc, n, samples)
+function storedaxis(enc::CellEncoding, grid, group, snap, desc, n, validate, samples)
     throw(DGGSFormatError(check=:unsupported_encoding, observed=encodingname(enc),
         detail="the Zarr reader implements the dense, ranges and implicit " *
                "layouts; `$(encodingname(enc))` names an encoding it has no " *
@@ -304,6 +365,109 @@ function coordinatearray(group, snap, desc, n::Int)
 end
 
 chunklength(z::Zarr.ZArray) = first(z.metadata.chunks)
+
+# --- the persisted manifest -------------------------------------------------
+
+"""
+    persistedmanifest(group, snapshot, desc, grid, n, chunklength)
+        -> Union{NamedTuple, Nothing}
+
+The chunk manifest a store PERSISTED and the array it came out of, when the axis
+may be built from it instead of scanned — and `nothing` whenever it may not,
+which is never an error: a manifest this reader cannot use is an extra array and
+is ignored like any other.
+
+Trust is granted on the marker ([`MANIFEST_MARKER`](@ref)) and on what the store
+in hand can be checked against: our own `writer`, a `format` this reader knows,
+`validated == "strict"`, the level and grid name the description resolved to,
+the description's spatial dimension, the coordinate array's own chunk length,
+and the length every array on the axis declares. The rows are then read —
+kilobytes — and checked for the ascending, disjoint chunk intervals the
+two-level search needs; anything else falls back to the scan.
+
+The level and the grid are as load-bearing as the geometry. A manifest says the
+ids under it were validated, and validated AGAINST something: the same bytes are
+a valid axis at one level and a phantom-ridden one at another, so a marker that
+does not name the level it was written at cannot be trusted by a reader that
+believes the store's attributes about it.
+
+What is NOT checked is what the scan would have proved: that the ids are sorted,
+unique and cells of this level. `validated == "strict"` is the writer's
+attestation of exactly that, and the bound on believing it is the spot check
+[`cellaxis`](@ref) makes on each chunk it later decodes — first id, last id,
+length, and nothing about a chunk's interior.
+"""
+function persistedmanifest(group, snap, desc, grid, n::Int, cl::Int)
+    (n >= 1 && cl >= 1) || return nothing
+    entry = manifestentry(snap, desc, n, cl)
+    entry === nothing && return nothing
+    nc = cld(n, cl)
+    # Zarr's `(n_chunks, 2)` as the snapshot reports it, which is the shape the
+    # array really has: `arrayentry` reads it off the same `ZArray` the rows are
+    # then read from.
+    (entry.shape == (nc, 2) && entry.eltype <: Integer) || return nothing
+    haskey(group, entry.name) || return nothing
+    rows = group[entry.name][:, :]      # `(2, n_chunks)` in Julia's own order
+    I = idtype(grid)
+    firstids = storedids(I, view(rows, 1, :))
+    lastids = storedids(I, view(rows, 2, :))
+    (firstids === nothing || lastids === nothing) && return nothing
+    disjointrows(firstids, lastids) || return nothing
+    # Zarr chunks are uniform by format, so the shape of the grid follows from
+    # the two numbers the marker was believed on.
+    lengths = Int[c == nc ? n - (nc - 1) * cl : cl for c in 1:nc]
+    offsets = Int[(c - 1) * cl for c in 1:nc]
+    return (manifest=ChunkManifest(firstids, lastids, lengths, offsets, cl),
+        sidecar=entry.name)
+end
+
+# The sidecar, found by the marker it carries rather than by its name: the name
+# is one writer's spelling and the marker is the contract. EVERY marked array is
+# tried, because "the first one" is a name-order accident — a foreign manifest
+# called `aaa_manifest` would otherwise shadow ours and cost the store its fast
+# open.
+function manifestentry(snap, desc, n::Int, cl::Int)
+    for a in snap.arrays
+        marker = get(a.attrs, MANIFEST_MARKER, nothing)
+        marker === nothing && continue
+        trustedmarker(marker, desc, n, cl) && return a
+    end
+    return nothing
+end
+
+function trustedmarker(marker, desc, n::Int, cl::Int)
+    marker isa AbstractDict || return false
+    for (key, want) in (("writer", MANIFEST_WRITER), ("format", MANIFEST_FORMAT),
+        ("validated", MANIFEST_VALIDATED),
+        ("spatial_dimension", desc.spatial_dimension),
+        ("grid", desc.gridname), ("level", desc.level),
+        ("chunk_length", cl), ("length", n))
+        get(marker, key, nothing) == want || return false
+    end
+    return true
+end
+
+# Stored ids as the grid's own integer type, or `nothing` where one of them does
+# not fit it — a manifest of another width describes another store.
+function storedids(::Type{I}, values) where {I<:Integer}
+    out = Vector{I}(undef, length(values))
+    for (i, x) in pairs(values)
+        typemin(I) <= x <= typemax(I) || return nothing
+        out[i] = x % I
+    end
+    return out
+end
+
+# The two-level search binary-searches `lastids`, so a manifest whose chunk
+# intervals do not ascend and stay disjoint would resolve ids into the wrong
+# chunk rather than fail.
+function disjointrows(firstids, lastids)
+    for c in eachindex(firstids)
+        firstids[c] <= lastids[c] || return false
+        c == 1 || lastids[c-1] < firstids[c] || return false
+    end
+    return true
+end
 
 # --- the layers -------------------------------------------------------------
 

@@ -35,7 +35,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex,
 
 import ..Encodings
 using ..Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
-    cellaxis, idrank, idselect, idcount_between, idvalid, idcell, idtype,
+    cellaxis, idrank, idselect, idcount_between, idvalid, idcell, idtype, idlevel,
     rangeindex, checkcount
 # From `errors.jl`, which the including module reads before this file.
 import ..DGGSFormatError
@@ -72,9 +72,9 @@ manifest per chunk length; each is built by the same call.
 
 The constructor reads only the axis's chunk boundaries, so on a computed axis
 ([`RangesEncoding`](@ref), [`ImplicitEncoding`](@ref)) it is closed-form
-arithmetic and touches no store at all: a 706-chunk manifest over 11.8 million
-cells is a few tens of milliseconds from a 65 KB range array. On a dense axis it
-costs the two boundary reads per chunk that the cache usually already holds.
+arithmetic over the stored intervals and touches no store at all, however many
+cells the axis holds. On a dense axis it costs the two boundary reads per chunk
+that the cache usually already holds.
 
 The final chunk is short whenever the length is not a multiple of
 `chunklength`; Zarr pads it on disk and the manifest does not. Every other
@@ -332,20 +332,57 @@ end
 # The cache holds one decoded chunk. A read walks positions in order and a
 # selector resolves inside one chunk, so a single slot serves both without a
 # policy.
+#
+# `verify` is set when the manifest was READ rather than built: the ids behind a
+# persisted sidecar may have been rewritten since, so every chunk that is
+# decoded is checked against the row that described it. `store` is the label
+# that error carries, because a lazy axis is touched long after the boundary
+# that would otherwise have named the store had returned, and `sidecar` the name
+# of the array the manifest came out of — a manifest is found by its marker, so
+# the array it was found in is the only spelling the message can name.
 struct DenseSource{V,I<:Integer}
     ids::V
     manifest::ChunkManifest{I}
     cached::Base.RefValue{Int}
     block::Base.RefValue{Vector{I}}
+    verify::Bool
+    store::Union{String,Nothing}
+    sidecar::Union{String,Nothing}
 end
+
+DenseSource(ids, manifest::ChunkManifest{I}, cached, block) where {I} =
+    DenseSource(ids, manifest, cached, block, false, nothing, nothing)
 
 function _chunkblock(s::DenseSource{V,I}, c::Int) where {V,I}
     s.cached[] == c && return s.block[]
     r = chunkbounds(s.manifest, c)
     block = I[convert(I, x) for x in s.ids[first(r):last(r)]]
+    # The spot check that bounds a trusted manifest: the two ids the manifest
+    # published for this chunk are the two the chunk begins and ends with. Two
+    # comparisons, on data that was being read anyway.
+    if s.verify
+        m = s.manifest
+        (length(block) == m.lengths[c] && first(block) == m.firstids[c] &&
+         last(block) == m.lastids[c]) || _stalemanifest(s, c, block)
+    end
     s.cached[] = c
     s.block[] = block
     return block
+end
+
+@noinline function _stalemanifest(s::DenseSource, c::Int, block)
+    m = s.manifest
+    throw(DGGSFormatError(check=:stale_manifest, store=s.store,
+        declared=(m.firstids[c], m.lastids[c], m.lengths[c]),
+        observed=isempty(block) ? (nothing, nothing, 0) :
+                 (first(block), last(block), length(block)),
+        detail="chunk $c of the cell axis does not hold the ids the store's " *
+               "persisted chunk manifest says it does: they have been rewritten " *
+               "since the manifest was written. Rewrite the store with " *
+               "`dggwrite`, delete its " *
+               (s.sidecar === nothing ? "chunk-manifest array" : "`$(s.sidecar)` array") *
+               " to make the reader scan the ids instead, or read it once with " *
+               "`validate = :scan`."))
 end
 
 function _rawcell(s::DenseSource, axis::ChunkedCellVector, k::Int)
@@ -435,7 +472,8 @@ function Encodings.cellaxis(::DenseEncoding, grid::AbstractGrid,
             idvalid(grid, block[j]) || throw(DGGSFormatError(
                 check=:id_names_no_cell, declared=level(grid), observed=block[j],
                 detail="the id $(block[j]) at position $(lo + j - 1) of the cell " *
-                       "axis names no cell of level $(level(grid))."))
+                       "axis names no cell of level $(level(grid))." *
+                       _ownlevel(grid, block[j])))
         end
         firstids[c] = first(block)
         lastids[c] = last(block)
@@ -449,6 +487,65 @@ function Encodings.cellaxis(::DenseEncoding, grid::AbstractGrid,
     manifest = ChunkManifest(firstids, lastids, lengths, offsets, cl)
     source = DenseSource(ids, manifest, Ref(0), Ref(I[]))
     return ChunkedCellVector(grid, source, n)
+end
+
+"""
+    cellaxis(DenseEncoding(), grid, ids::AbstractVector, manifest::ChunkManifest;
+             store = nothing, sidecar = nothing)
+
+Build the axis of a dense store whose chunk grid was PERSISTED with it, from
+that manifest alone. No id is read: this is the constructor that lets a store of
+tens of millions of cells open in constant time, and the reason a writer
+persists a manifest at all.
+
+Everything the scanning method PROVES — strictly ascending, no duplicates, every
+id a cell of this level — this one takes on the writer's word, which is what the
+marker's `validated = "strict"` attests to. **Nothing here checks any of it**,
+not in a chunk that is decoded and not in one that is not: what the spot check
+below compares is a chunk's first id, its last id and its length, so ids
+duplicated or unsorted or naming no cell strictly INSIDE a chunk pass through it
+untouched. Declining the sidecar — `dggread(store; validate = :scan)` — is what
+puts those checks back.
+
+The word is not taken forever. Every chunk this axis later decodes — a lazy id
+access, the fine search inside a selector — has those three numbers checked
+against the row that described it, and a store whose ids were rewritten behind
+the sidecar throws `DGGSFormatError(check = :stale_manifest)` on the first chunk
+it is wrong about rather than answering out of a stale map. `store` labels that
+error, because a lazy axis is touched long after the reader that opened it has
+returned and no boundary is left to name the store; `sidecar` names the array
+the manifest was read from, which the message tells the caller to delete.
+"""
+function Encodings.cellaxis(::DenseEncoding, grid::AbstractGrid,
+    ids::AbstractVector, manifest::ChunkManifest;
+    store::Union{AbstractString,Nothing}=nothing,
+    sidecar::Union{AbstractString,Nothing}=nothing)
+    I = idtype(grid)
+    n = length(manifest)
+    n <= length(ids) || throw(DGGSFormatError(check=:declared_length_mismatch,
+        declared=n, observed=length(ids),
+        detail="the persisted chunk manifest describes $n cells but the id " *
+               "array holds $(length(ids))."))
+    source = DenseSource(ids, manifest, Ref(0), Ref(I[]), true,
+        store === nothing ? nothing : String(store),
+        sidecar === nothing ? nothing : String(sidecar))
+    return ChunkedCellVector(grid, source, n)
+end
+
+# What the offending id says about its OWN level, where the id scheme carries
+# one ([`idlevel`](@ref)). It is information and not a ruling: the store names
+# the level and this reader reads at that one, so the sentence reports a
+# disagreement rather than resolving it. Empty where the scheme says nothing,
+# which is most of them.
+function _ownlevel(grid, x)
+    own = idlevel(grid, x)
+    (own === nothing || own == level(grid)) && return ""
+    return " That id is itself well formed at level $own, so the store's " *
+           "attributes and its ids name different levels. Ids kept at their " *
+           "own level against a coarser declared one are the reference level " *
+           "pattern, which a single-level axis does not express; a store " *
+           "meaning level $own says so in its attributes, or is read through " *
+           "an asserted `description`."
 end
 
 # Which slots of a block have their validity checked: all of them, or the
@@ -569,8 +666,13 @@ differs in where the answer comes from: the axis is what a store wrote, so a
 selector is resolved by the manifest first and by at most one chunk of ids
 after, never by a scan.
 
-`ForwardOrdered` is claimed, and earned: the axis is verified sorted, unique and
-single-level when it is opened.
+`ForwardOrdered` is claimed on every axis, and how far it is EARNED depends on
+where the axis came from. A scanned store proves it: sorted, unique and
+single-level are verified id by id at open. A store opened on a persisted
+manifest ([`cellaxis`](@ref)) does not — there the three are the writer's
+attestation, and all that is verified per chunk, as chunks are decoded, is the
+first id, the last id and the length. `dggread(store; validate = :scan)` declines
+the attestation and scans.
 
 A SUBSET is no longer a stored axis — indexing or selecting materialises the
 cells it names. A sorted, unique subset becomes the package's own compressed

@@ -28,6 +28,7 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/cell_vector.jl")
     include("systems/crosssystem/subtree_iterators.jl")
     include("systems/crosssystem/stencils.jl")
+    include("systems/crosssystem/neighborhood.jl")
     include("systems/crosssystem/subtree_halos.jl")
     include("systems/crosssystem/dimensionaldata.jl")
     include("systems/crosssystem/regridding_conservation.jl")

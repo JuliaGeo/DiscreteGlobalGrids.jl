@@ -33,7 +33,7 @@ import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
 # Core collection operations delegated to `CellVector`.
 import ..DiscreteGlobalGrids.Fallbacks: CellVector, cellset, covering,
     covering_positions, windows, nwindows, RangeWindows, CellWindows, _derive,
-    _windows
+    _windows, SubsetPositionedCell
 
 import SmallCollections
 import DimensionalData as DD
@@ -258,6 +258,10 @@ halo_table(lk::CellLookup, k::Integer=1; connectivity::Connectivity=Vertex()) =
 halo(lk::CellLookup; connectivity::Connectivity=Vertex()) =
     halo(parent(lk); connectivity)
 
+# The one-arg positioned iterator; positions on the lookup are the vector's.
+neighbors(lk::CellLookup; connectivity::Connectivity=Vertex()) =
+    neighbors(parent(lk); connectivity)
+
 """
     PartialGrid(lk::CellLookup) -> PartialGrid
 
@@ -345,6 +349,24 @@ A[Cells(Covering(county))]
 ```
 """
 DD.@dim Cells "Cells"
+
+# ---------------------------------------------------------------------------
+# Positioned handles on a cell-axis array.
+#
+# A `SubsetPositionedCell` carries the position the minting collection
+# resolved, and its contract is that the position is TRUSTED against that
+# collection's axis: indexing reads storage directly, with no membership
+# check and no search. A bare cell keeps the resolved path through the
+# selector machinery above. The methods are on the 1-d cell-axis shape,
+# where a position names a storage slot and nothing else.
+# ---------------------------------------------------------------------------
+
+const CellsArray = DD.AbstractDimArray{T,1,<:Tuple{<:Cells}} where {T}
+
+Base.@propagate_inbounds Base.getindex(A::CellsArray, h::SubsetPositionedCell) =
+    parent(A)[h.position]
+Base.@propagate_inbounds Base.setindex!(A::CellsArray, x, h::SubsetPositionedCell) =
+    setindex!(parent(A), x, h.position)
 
 # ===========================================================================
 # Selectors

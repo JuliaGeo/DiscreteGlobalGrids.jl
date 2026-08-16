@@ -1,0 +1,37 @@
+name = "GlobalRegridding"
+uuid = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
+authors = ["Anshul Singhvi <anshulsinghvi@gmail.com>", "Fabian Gans <fabian.gans@bgc-jena.mpi.de>", "and contributors"]
+version = "0.1.0"
+
+[deps]
+ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
+DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
+DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
+GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
+GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
+GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+
+[sources]
+ConservativeRegridding = {rev = "agent/use-geometryops-main-cache", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+GeometryOps = {rev = "main", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+
+[compat]
+ConservativeRegridding = "0.2.8"
+DimensionalData = "0.30"
+DiskArrays = "0.4"
+GeoInterface = "1"
+GeometryOps = "0.1.43"
+GeometryOpsCore = "0.1.11"
+LinearAlgebra = "1"
+SparseArrays = "1"
+Test = "1"
+julia = "1.11"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

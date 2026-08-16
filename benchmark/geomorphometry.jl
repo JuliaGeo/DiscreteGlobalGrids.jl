@@ -5,8 +5,11 @@
 # The env holds this package plus `Geomorphometry` and `Rasters`:
 #
 #   pkg> dev <path-to-DiscreteGlobalGrids.jl>
-#   pkg> add Geomorphometry#feat/generic     # https://github.com/Deltares/Geomorphometry.jl.git
+#   pkg> add Geomorphometry#clipped-neighbors   # https://github.com/asinghvi17/GeoArrayOps.jl.git
 #   pkg> add Rasters
+#
+# (The baseline below predates the fork rev and was measured against
+# `Geomorphometry#feat/generic` from Deltares/Geomorphometry.jl.)
 #
 # No downloads, no plotting: the elevation field is synthetic (the same
 # dome-and-ripple `test/integration/geomorphometry_synthetic.jl` uses), and the
@@ -26,6 +29,21 @@
 #     topographic_position_index    1.3839 s   (0.0 s gc, 15.0 MB)
 #     flowaccumulation(D8)          4.4336 s   (0.01 s gc, 112.5 MB)
 #     halo_table                    0.9216 s   (0.11 s gc, 405.8 MB)
+#
+# Output on the branch pair — this tree paired with the fork's
+# `clipped-neighbors` @ 9a4e053 — Julia 1.12.6, 8 threads, same machine,
+# 2026-08-17. TPI rides the threaded `mapneighbors` sweep; D8 settles in
+# position space over one `HaloTable`; `halo_table` is the same sweep
+# materialized:
+#
+#   one rooted subtree: 343 cells, 1 window(s)
+#     topographic_position_index    0.0001 s   (0.0 s gc, 0.0 MB)
+#     flowaccumulation(D8)          0.0001 s   (0.0 s gc, 0.0 MB)
+#     halo_table                    0.0001 s   (0.0 s gc, 0.1 MB)
+#   multi-order coverage: 2313802 cells, 3715 window(s)
+#     topographic_position_index    0.057  s   (0.0 s gc, 8.8 MB)
+#     flowaccumulation(D8)          1.3891 s   (0.022 s gc, 192.5 MB)
+#     halo_table                    0.5016 s   (0.022 s gc, 264.7 MB)
 
 import DiscreteGlobalGrids as DGG
 import Geomorphometry as GM

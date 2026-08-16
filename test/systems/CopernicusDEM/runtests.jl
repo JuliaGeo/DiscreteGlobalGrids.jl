@@ -1460,9 +1460,10 @@ end
     #   "30"            GLO-30 only. Never completed; see above.
     #   "all"           both, i.e. the combination nobody has waited out.
     #
-    # Each gated run adds the harness's `neighbors` and `ring` skips, so the
-    # broken column rises with the gate: a full `Pkg.test()` reports 19 broken by
-    # default and 21 under `90`.
+    # Each gated run adds the harness's `ring` skip — and only that one, since
+    # `neighbors` is a fast path here and is no longer skipped — so the broken
+    # column still rises with the gate, by one now rather than by two: a full
+    # `Pkg.test()` reports 18 broken by default and 19 under `90`.
     #
     # WHAT A DEFAULT RUN THEREFORE NEVER RUNS ON THE SHIPPED LATTICES, listed in
     # full rather than by the two laws that are easiest to defend: the
@@ -1496,6 +1497,220 @@ end
                                  rng = MersenneTwister(CONFORMANCE_SEED),
                                  label = "CopernicusDEM $sys")
     end
+end
+
+# =========================================================================
+# (m) `neighbors`: the fast path, and the bound it forces
+# =========================================================================
+
+# `neighbors` answers a tile-interior pixel by index arithmetic and hands every
+# other cell to the generic walk of `src/fallbacks/locate.jl`. That walk is the
+# DEFINITION of the answer, so it is the oracle for both testsets below — and
+# reaching it now means getting past the method that shadows it, which is what
+# `invoke` on the `AbstractGrid` signature does. Calling the generic by its
+# signature rather than reimplementing it is the point: if the walk's adjacency
+# or its winding ever moves, these go red instead of checking a stale copy.
+fallback_neighbors(g, c, k = 1; connectivity = DGG.Vertex()) =
+    invoke(DGG.neighbors, Tuple{DGG.AbstractGrid,DGG.AbstractCellIndex,Integer},
+           g, c, k; connectivity)
+
+# Bytes one warmed-up `neighbors` call allocates. Used to tell the two routes
+# apart WITHOUT comparing their answers — see "the branch is taken" below.
+_neighbor_bytes(g, c) = (DGG.neighbors(g, c, 1); @allocated DGG.neighbors(g, c, 1))
+
+@testset "neighbors fast path against the fallback oracle" begin
+    N = CD.lat_intervals(TWIN)
+    g1 = levelgrid(TWIN, 1)
+    g0 = levelgrid(TWIN, 0)
+
+    # THE ANCHOR. Every other check here compares two implementations, so a
+    # mutant that moved BOTH would survive all of them. These ids are written
+    # out instead of computed: tile `lat_s = 0, lon_w = 0` is tile row 89, tile
+    # column 180, thirty columns wide, and the subject is its raster
+    # `(j, i) = (15, 15)`. Killed here: any wrong offset, a row and column
+    # stride transposed, and the winding started elsewhere or run backwards.
+    c = CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, 0), 15, 15)
+    @test c == DGG.LevelIndex(1, 21384465)
+    @test DGG.neighbors(g1, c, 1) == DGG.LevelIndex.(1,
+        [21384434, 21384464, 21384494, 21384495, 21384496, 21384466, 21384436, 21384435])
+    @test DGG.neighbors(g1, c, 1; connectivity = DGG.Edge()) ==
+          DGG.LevelIndex.(1, [21384435, 21384464, 21384495, 21384466])
+    # The same ids as raster positions, so the literals above are legible as the
+    # documented NW, W, SW, S, SE, E, NE, N rather than as eight numbers.
+    @test [CD.decode(TWIN, x)[3:4] for x in DGG.neighbors(g1, c, 1)] ==
+          [(14, 14), (15, 14), (16, 14), (16, 15), (16, 16), (15, 16), (14, 16), (14, 15)]
+    @test [CD.decode(TWIN, x)[3:4]
+           for x in DGG.neighbors(g1, c, 1; connectivity = DGG.Edge())] ==
+          [(14, 15), (15, 14), (16, 15), (15, 16)]
+
+    # THE BRANCH IS TAKEN. A fast path DELETED — the method left as pure
+    # delegation — passes every oracle comparison in this file, because the
+    # oracle is then what it returns. What separates the routes without
+    # re-asserting their answers is what they touch: the arithmetic fills one
+    # vector, the walk builds and queries a tree. The two are a factor of thirty
+    # apart and this asserts four, so it is a structural claim, not a timing one.
+    west_edge = CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, 0), 15, 0)
+    @test _neighbor_bytes(g1, c) < 1024
+    @test _neighbor_bytes(g1, west_edge) > 4 * _neighbor_bytes(g1, c)
+
+    # THE GATE. Four tile edges and four corners of a mid-band tile. Each has
+    # eight neighbours, but at ids no fixed offset from the subject gives, so
+    # each must leave the arithmetic alone and come back with the walk's answer.
+    # A gate written `<` for `<=`, or with `i` and `j` transposed, sends one of
+    # these down the arithmetic path and returns ids from the wrong tile.
+    tile = CD.tilecell(TWIN, 0, 0)
+    nc = CD.ncols_at(TWIN, 0)
+    rim = [(0, nc ÷ 2), (N - 1, nc ÷ 2), (N ÷ 2, 0), (N ÷ 2, nc - 1),
+           (0, 0), (0, nc - 1), (N - 1, 0), (N - 1, nc - 1)]
+    for (j, i) in rim, conn in (DGG.Vertex(), DGG.Edge())
+        x = CD.pixelcell(TWIN, tile, j, i)
+        @test DGG.neighbors(g1, x, 1; connectivity = conn) ==
+              fallback_neighbors(g1, x, 1; connectivity = conn)
+    end
+
+    # STRADDLING. Every band boundary from both sides, column by column: the
+    # rows where the far side's column count is a different number and the
+    # arithmetic would be wrong even about how MANY neighbours there are.
+    bad = String[]
+    for r in 0:(CD.NROWS - 2)
+        ncr, ncr1 = CD.ncols(TWIN, r), CD.ncols(TWIN, r + 1)
+        ncr == ncr1 && continue
+        for (t, j, n) in ((DGG.LevelIndex(0, CD.tileordinal(r, 180)), N - 1, ncr),
+                          (DGG.LevelIndex(0, CD.tileordinal(r + 1, 180)), 0, ncr1))
+            for i in 0:(n - 1), conn in (DGG.Vertex(), DGG.Edge())
+                x = CD.pixelcell(TWIN, t, j, i)
+                DGG.neighbors(g1, x, 1; connectivity = conn) ==
+                    fallback_neighbors(g1, x, 1; connectivity = conn) ||
+                    note!(bad, "band row $r pixel ($j, $i) under $conn")
+            end
+        end
+    end
+    @test bad == String[]
+
+    # THE ANTIMERIDIAN from both sides, and BOTH POLE ROWS in full. The
+    # antimeridian is a tile edge whose partner is 359 tile columns away; a pole
+    # row is a ring of triangles sharing one apex. Neither is describable by an
+    # offset, and both must be the walk's verbatim.
+    seam = String[]
+    for (lat_s, lon_w, j) in ((0, -180, N ÷ 2), (0, 179, N ÷ 2),
+                              (89, -180, 0), (89, 0, 0), (89, 179, 0),
+                              (-90, -180, N - 1), (-90, 0, N - 1), (-90, 179, N - 1))
+        t = CD.tilecell(TWIN, lat_s, lon_w)
+        for i in 0:(CD.ncols_at(TWIN, lat_s) - 1), conn in (DGG.Vertex(), DGG.Edge())
+            x = CD.pixelcell(TWIN, t, j, i)
+            DGG.neighbors(g1, x, 1; connectivity = conn) ==
+                fallback_neighbors(g1, x, 1; connectivity = conn) ||
+                note!(seam, "($lat_s, $lon_w) pixel ($j, $i) under $conn")
+        end
+    end
+    @test seam == String[]
+
+    # LEVEL 0 AND `k != 1` are the walk's entire. The tile lattice has its own
+    # column count and its own band behaviour, and a multi-step disc is a
+    # traversal rather than an offset table.
+    for lat_s in (89, 50, 0, -90), lon_w in (-180, 0)
+        t = CD.tilecell(TWIN, lat_s, lon_w)
+        @test DGG.neighbors(g0, t, 1) == fallback_neighbors(g0, t, 1)
+    end
+    for k in (0, 2)
+        @test DGG.neighbors(g1, c, k) == fallback_neighbors(g1, c, k)
+    end
+
+    # GLO-90 SPOT CHECK: the same code at `N = 1200`, where the row stride is 40
+    # times wider. What changes with `N` is that stride, and the stride is the
+    # whole of the arithmetic — so one interior pixel and two edge pixels carry
+    # it, on a lattice this file otherwise reaches only through the twin.
+    h1 = levelgrid(GLO90, 1)
+    ht = CD.tilecell(GLO90, 0, 0)
+    for (j, i) in ((600, 600), (600, 0), (0, 600))
+        x = CD.pixelcell(GLO90, ht, j, i)
+        @test DGG.neighbors(h1, x, 1) == fallback_neighbors(h1, x, 1)
+    end
+    @test _neighbor_bytes(h1, CD.pixelcell(GLO90, ht, 600, 600)) < 1024
+end
+
+@testset "max_neighbors is a true bound" begin
+    # WHAT SETS IT, and it is not the lattice interior. Raster row 0 of a
+    # `lat_s = 89` tile and row `N - 1` of a `lat_s = -90` tile are triangles
+    # sharing one apex — the exact ±90 vertex — with every other cell of their
+    # ring, so each is adjacent to the whole ring: `360 * ncols - 1` of them and
+    # the three below it. The bound is ATTAINED on all three lattices, which is
+    # what makes `==` the assertion. A bound merely respected would survive
+    # being raised; this one would not.
+    for sys in ALL_SYSTEMS
+        N = CD.lat_intervals(sys)
+        g = levelgrid(sys, 1)
+        for (lat_s, j) in ((89, 0), (-90, N - 1))
+            c = CD.pixelcell(sys, CD.tilecell(sys, lat_s, 0), j, 0)
+            @test length(fallback_neighbors(g, c)) == DGG.max_neighbors(sys, DGG.Vertex())
+            # `Edge()` wants two shared vertices and a shared apex is one, so a
+            # pole ring collapses to the two cells beside the subject and the
+            # one below: three, inside the von Neumann four.
+            @test length(fallback_neighbors(g, c; connectivity = DGG.Edge())) == 3
+        end
+        @test DGG.max_neighbors(sys, DGG.Vertex()) == 36 * N + 2
+        @test DGG.max_neighbors(sys, DGG.Edge()) == 4
+    end
+
+    N = CD.lat_intervals(TWIN)
+    g1 = levelgrid(TWIN, 1)
+
+    # BAND BOUNDARIES, column by column, because the count there depends on the
+    # column. Vertex adjacency crosses a boundary only where the two column
+    # counts reduce to a ratio of two ODD terms — of the five boundaries that is
+    # latitude 80 alone, at 6 : 10 on the twin. Elsewhere the two sides cut the
+    # shared parallel at different longitudes, no corner coincides, and a
+    # boundary-row pixel sees only its own side. So the counts fall BELOW eight
+    # here; they never rise above it, which is the half that matters.
+    edges = Dict{Int,Int}()
+    for r in 0:(CD.NROWS - 2)
+        ncr, ncr1 = CD.ncols(TWIN, r), CD.ncols(TWIN, r + 1)
+        ncr == ncr1 && continue
+        tA = DGG.LevelIndex(0, CD.tileordinal(r, 180))
+        tB = DGG.LevelIndex(0, CD.tileordinal(r + 1, 180))
+        edges[89 - r] = max(
+            maximum(length(fallback_neighbors(g1, CD.pixelcell(TWIN, tA, N - 1, i)))
+                    for i in 0:(ncr - 1)),
+            maximum(length(fallback_neighbors(g1, CD.pixelcell(TWIN, tB, 0, i)))
+                    for i in 0:(ncr1 - 1)))
+    end
+    @test edges == Dict(85 => 5, 80 => 7, 70 => 5, 60 => 5, 50 => 5,
+                        -50 => 5, -60 => 5, -70 => 5, -80 => 7, -85 => 5)
+
+    # AND NOTHING OFF A POLE ROW COMES NEAR THE BOUND. The tile edges and
+    # corners of every probe latitude, on the antimeridian from both sides and
+    # on the prime meridian: this is the sweep that goes red if a tile edge, a
+    # band boundary or the seam could produce a ninth `Vertex()` neighbour or a
+    # fifth `Edge()` one — the case an interior-lattice bound of eight assumes
+    # away rather than checks.
+    bad = String[]; worst_v = 0; worst_e = 0
+    for lat_s in PROBE_LATS, lon_w in PROBE_LONS
+        t = CD.tilecell(TWIN, lat_s, lon_w)
+        nc = CD.ncols_at(TWIN, lat_s)
+        for j in (0, N - 1), i in (0, nc - 1)
+            (lat_s == 89 && j == 0) && continue          # the north pole row
+            (lat_s == -90 && j == N - 1) && continue     # the south pole row
+            x = CD.pixelcell(TWIN, t, j, i)
+            v = length(fallback_neighbors(g1, x))
+            e = length(fallback_neighbors(g1, x; connectivity = DGG.Edge()))
+            worst_v = max(worst_v, v); worst_e = max(worst_e, e)
+            (v <= 8 && e <= 4) ||
+                note!(bad, "($lat_s, $lon_w) pixel ($j, $i): $v vertex, $e edge")
+        end
+    end
+    @test bad == String[]
+    @test worst_v == 8
+    @test worst_e == 4
+
+    # LEVEL 0 is bounded by the same pole geometry one level up — 360 tiles to a
+    # pole ring rather than `360 * ncols` pixels — so it is far inside the
+    # system's bound. Swept over every tile row, so this is a claim about the
+    # lattice and not about three of its rows.
+    g0 = levelgrid(TWIN, 0)
+    counts0 = [length(fallback_neighbors(g0, DGG.LevelIndex(0, CD.tileordinal(r, 180))))
+               for r in 0:(CD.NROWS - 1)]
+    @test sort(unique(counts0)) == [5, 8, 362]
+    @test maximum(counts0) < DGG.max_neighbors(TWIN, DGG.Vertex())
 end
 
 end # @testset "CopernicusDEM system"

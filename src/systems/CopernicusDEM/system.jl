@@ -16,25 +16,29 @@ DGG.levels(::CopernicusDEMSystem) = 0:1
 DGG.has_sorted_subtrees(::CopernicusDEMSystem) = true
 
 """
-    max_neighbors(CopernicusDEMSystem(...), connectivity) -> Int
+    max_neighbors(CopernicusDEMSystem{N}(), connectivity) -> Int
 
-`8` under `Vertex()` and `4` under `Edge()`: the Moore and von Neumann bounds of a
-raster lattice.
+`360 * ncols(pole row) + 2`, which is `36N + 2`, under `Vertex()`; `4` under `Edge()`.
+Both bound every cell of both levels.
 
-!!! warning "No fast-path `neighbors`; the generic fallback answers"
-    There is no `neighbors` method for this system, so a call resolves to the
-    generic `AbstractGrid` walk in `src/fallbacks/locate.jl` — not a `MethodError`.
-    That walk goes through `treeify` and does return an answer: at level 0 it gives
-    an interior tile its eight Moore neighbours.
+A pole row sets the `Vertex()` bound, not the lattice interior. Raster row 0 of a
+`lat_s = 89` tile and row `N - 1` of a `lat_s = -90` tile are the spherical triangles
+[`cell_boundary`](@ref) emits, and their apex is the one exact ±90 vertex every cell of
+the row shares — so each such pixel touches the whole pole ring of `360 * ncols` pixels,
+plus the three pixels below it. Everything else is far under that: eight for a pixel
+interior to its tile and for a tile edge within a band, fewer across a band boundary,
+and at most `360 + 2` for a level-0 pole tile.
 
-    The bound above is the *interior lattice* bound, and it is stated because
-    [`max_neighbors`](@ref) has no default. It is **not** a claim about the whole
-    sphere: a pixel in the top row of a pole tile meets every other pixel of the pole
-    ring at the pole itself, and a pixel just below a band boundary meets up to ten
-    coarser pixels above it. Anyone adding a fast-path [`neighbors`](@ref) to this
-    system must revisit this number first.
+`Edge()` asks for two shared vertices, which a shared apex alone is not, so a pole pixel
+has three there and the von Neumann four stands.
+
+The bound is attained, not merely respected, and `"max_neighbors is a true bound"` in
+`test/systems/CopernicusDEM/runtests.jl` puts both pole rows of both shipped lattices and
+of the scaled twin to the generic walk, then sweeps the band boundaries, the antimeridian,
+the tile edges and both levels for anything larger.
 """
-DGG.max_neighbors(::CopernicusDEMSystem, ::DGG.Vertex) = 8
+DGG.max_neighbors(sys::CopernicusDEMSystem, ::DGG.Vertex) =
+    360 * Int(max(ncols(sys, 0), ncols(sys, NROWS - 1))) + 2
 DGG.max_neighbors(::CopernicusDEMSystem, ::DGG.Edge) = 4
 
 "Lazy 0-based ids at one level; `rootcells` and `children` are windows over it."
@@ -528,4 +532,85 @@ function DGG.cellat(g::LevelGrid{N}, p::GO.UnitSphericalPoint) where {N}
     i = clamp(floor(Int, (s - lon_w) * nc), 0, Int(nc) - 1)
     j = clamp(floor(Int, ((lat_s + 1 + half_dlat) - lat) * N), 0, N - 1)
     return DGG.LevelIndex(1, tilebase(sys, r, q) + Int64(j) * nc + Int64(i))
+end
+
+# ===========================================================================
+# Topology
+# ===========================================================================
+
+"""
+    neighbors(grid, c, k = 1; connectivity = Vertex()) -> Vector{LevelIndex}
+
+Cells within `k` adjacency steps of `c`, excluding `c`, in the interface's rotational
+order.
+
+# The split
+
+A **pixel interior to its tile**, at `k == 1`, is answered by index arithmetic on `c`'s
+own id. Interior means level 1 with raster row `1 <= j <= N - 2` and raster column
+`1 <= i <= nc - 2`, where `nc = ncols(sys, r)` is the tile's column count: exactly the
+condition that puts all eight Moore neighbours inside `c`'s own tile, where the column
+count is `nc` and nothing else.
+
+Every other cell is answered by the generic `AbstractGrid` walk of
+`src/fallbacks/locate.jl`, called directly — level 0, any `k != 1`, the four tile-edge
+rows and columns with their corners, any connectivity outside `Vertex()`/`Edge()`, and an
+id no cell has, which reaches the walk and raises the walk's error.
+
+The two routes are one answer: the walk is the definition and the arithmetic reproduces
+it element for element, which `"neighbors fast path against the fallback oracle"` in
+`test/systems/CopernicusDEM/runtests.jl` asserts cell by cell.
+
+# Order
+
+Raster rows run north to south, so `-nc` is the northern neighbour. Each list starts at
+its smallest id — the north-west neighbour under `Vertex()`, the northern one under
+`Edge()` — and turns counter-clockwise seen from outside the sphere, which is where and
+how the generic walk anchors its winding:
+
+    Vertex()   NW, W, SW, S, SE, E, NE, N     -nc-1, -1, nc-1, nc, nc+1, 1, -nc+1, -nc
+    Edge()     N, W, S, E                     -nc, -1, nc, 1
+
+Both are constant offsets *because* of the gate. Outside it they are not offsets at all.
+
+# What the gate excludes, and why each case is the walk's
+
+  - **Tile edges within a band** do have eight neighbours, but the east-west ones belong
+    to the neighbouring tile and the north-south ones to the neighbouring tile row, at
+    ids no fixed offset from `c` gives. The antimeridian is this case: the tiles either
+    side of longitude ±180 abut, and their ids are 359 tile columns apart.
+  - **Band boundaries** (latitude 50/60/70/80/85) put a different column count on the far
+    side, and the two sides' pixel corners land on the same parallel at different
+    longitudes. Vertex adjacency therefore does not cross a band boundary at all unless
+    the two column counts reduce to a ratio of two odd terms, which of the five
+    boundaries happens at latitude ±80 alone. So a boundary-row pixel sees only its own
+    side — five neighbours — at the other four, and five or seven at ±80. Fewer than
+    eight either way, and never more.
+  - **Pole rows** — raster row 0 of a `lat_s = 89` tile, row `N - 1` of a `lat_s = -90`
+    one — are triangles sharing one apex with every other cell of their ring, so each is
+    adjacent to all of it. That case is what [`max_neighbors`](@ref) is sized for.
+
+No `ring` method accompanies this one, so `ring` stays the generic walk's; the two agree
+because this returns the walk's own order rather than a sorted one.
+"""
+function DGG.neighbors(g::LevelGrid{N}, c::DGG.LevelIndex, k::Integer = 1;
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {N}
+    if Int(k) == 1 && g.level == 1 && DGG.level(c) == 1 &&
+            0 <= c.index < DGG.ncells(g.system, 1)
+        r, _, j, i = decode(g.system, c)
+        nc = ncols(g.system, r)
+        if 1 <= j <= N - 2 && 1 <= i <= nc - 2
+            b = c.index
+            connectivity isa DGG.Vertex && return [
+                DGG.LevelIndex(1, b - nc - 1), DGG.LevelIndex(1, b - 1),
+                DGG.LevelIndex(1, b + nc - 1), DGG.LevelIndex(1, b + nc),
+                DGG.LevelIndex(1, b + nc + 1), DGG.LevelIndex(1, b + 1),
+                DGG.LevelIndex(1, b - nc + 1), DGG.LevelIndex(1, b - nc)]
+            connectivity isa DGG.Edge && return [
+                DGG.LevelIndex(1, b - nc), DGG.LevelIndex(1, b - 1),
+                DGG.LevelIndex(1, b + nc), DGG.LevelIndex(1, b + 1)]
+        end
+    end
+    return invoke(DGG.neighbors,
+        Tuple{DGG.AbstractGrid,DGG.AbstractCellIndex,Integer}, g, c, k; connectivity)
 end

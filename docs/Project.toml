@@ -29,7 +29,7 @@ DiscreteGlobalGrids = {path = ".."}
 DocumenterVitepress = {rev = "as/bonito-plugin", url = "https://github.com/LuxDL/DocumenterVitepress.jl.git"}
 GeometryOps = {rev = "main", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-Geomorphometry = {rev = "fix/printable-boundserror", url = "https://github.com/asinghvi17/GeoArrayOps.jl.git"}
+Geomorphometry = {rev = "clipped-neighbors", url = "https://github.com/asinghvi17/GeoArrayOps.jl.git"}
 
 [compat]
 Bonito = "4, 5"

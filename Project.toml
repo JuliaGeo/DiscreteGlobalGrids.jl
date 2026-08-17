@@ -21,9 +21,11 @@ SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
 
 [weakdeps]
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [extensions]
 MakieExt = ["Makie"]
+DiscreteGlobalGridsZarrExt = ["Zarr"]
 
 [sources]
 ConservativeRegridding = {rev = "agent/use-geometryops-main-cache", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
@@ -37,4 +39,5 @@ GlobalRegridding = {path = "lib/GlobalRegridding"}
 DE9IM = "0.1"
 GeometryOpsCore = "0.1.11"
 SmallCollections = "0.6.3"
+Zarr = "0.10"
 julia = "1.11"

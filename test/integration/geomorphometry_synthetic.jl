@@ -1,55 +1,30 @@
-# The sibling script's question without the sibling's inputs:
-#
 #   julia --project=<integration-env> test/integration/geomorphometry_synthetic.jl
 #
-# `geomorphometry_igeo7.jl` needs a Copernicus GeoTIFF, ArchGDAL and a
-# conservative regridder, so it can only be run by hand on a machine that has
-# all three. Everything it proves about the DGGS side, though, is independent of
-# where the elevations came from: what is under test is the cell iterator, the
-# neighbour ring, `cellposition` addressing, and the relative-cell direction
-# codec the flow routers encode with. So this file synthesises the field
-# instead, and needs only an environment holding `Geomorphometry` (the
-# `feat/generic` rev that `docs/Project.toml` pins) and `Rasters` alongside this
-# package.
+# Run the synthetic Geomorphometry integration battery on IGeo7, HEALPix,
+# ISEA4R, and H3. Each system is tested with a rooted subtree and a multi-window
+# coverage. IGeo7 exercises every router, HAND, and relative-cell directions;
+# the other systems exercise D8 with ring-slot directions and reject
+# operations that require relative-cell arithmetic. No system supports the
+# stream-mask HAND entry.
 #
-# It runs the whole battery over TWO cell sets, because they are different code
-# underneath and only one of them is easy:
-#
-#   * one rooted subtree (`PartialGrid`), which compresses to a SINGLE position
-#     window. `cellposition` is then one subtraction and `halo` delegates to the
-#     system's own `SubtreeHaloIterator`. This is the shape `hydrology.jl` ends
-#     up with, and it is the fast path in every direction.
-#   * a `MultiOrderCoverage` of a real 1°×1° extent expanded to a working level,
-#     which is a few hundred DISJOINT windows. `cellposition` is a binary search
-#     over them, membership likewise, and nothing can be recognised as a subtree.
-#     This is the shape an arbitrary area of interest produces, and none of the
-#     fast paths above apply to it.
-#
-# A metric that works on the first and not the second is the normal way this
-# integration breaks, and testing only the first would not show it.
+# The environment needs this package, `Rasters`, and `Geomorphometry` at the
+# `clipped-neighbors` rev of https://github.com/asinghvi17/GeoArrayOps.jl.git.
 
 using Test
 import DiscreteGlobalGrids as DGG
 import Geomorphometry as GM
 using Rasters
 
-const Extents = Rasters.Extents          # a Rasters dep, so no extra import
+const Extents = Rasters.Extents          # Available through Rasters.
 
-sys = DGG.IGeo7System()
-
-# The DEM tile `hydrology.jl` works over, and the same two calls it uses to pick
-# a cell to work in.
+# Each system covers the same Alpine tile at a suitable working level.
 tile = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
-coverage = DGG.query(sys, DGG.MultiOrderCoverage(tile); level=10)
-root = DGG.coarsest_contained(coverage)
 
 """
-A single dome with a small ripple on it, sampled at cell centroids. The dome
-gives the flow routers one real drainage tree instead of a plateau of ties; the
-ripple keeps the D8 tie-break off the degenerate path where every neighbour is
-equidistant in elevation.
+Return a cell-axis raster sampled from a dome with a small ripple. The field has
+a non-flat drainage surface and avoids uniformly tied neighbours.
 """
-function make_dem(cells)
+function make_dem(sys, root, cells)
     complete = DGG.levelgrid(sys, DGG.level(cells))
     apex = DGG.cell_centroid(DGG.levelgrid(sys, DGG.level(root)), root)
     elevation = [
@@ -63,8 +38,91 @@ function make_dem(cells)
     return Raster(elevation, (DGG.Cells(DGG.CellLookup(cells)),); name=:height)
 end
 
-function battery(label, cells)
-    dem = make_dem(cells)
+nwindows(cells) = DGG.Fallbacks.nwindows(DGG.Fallbacks.windows(cells))
+
+# --- flow routing, per backend ----------------------------------------------
+
+# IGeo7 supports all routers and stores relative-cell directions.
+function flow_battery(sys::DGG.IGeo7System, dem, cells, complete)
+    cell_area = GM.cellarea(dem, first(cells))
+
+    @testset "flow routing: $(nameof(typeof(method)))" for method in
+                                                           (GM.D8(), GM.DInf(), GM.FD8())
+        accumulation, directions = GM.flowaccumulation(dem; method)
+        @test size(accumulation) == size(directions) == size(dem)
+        @test all(isfinite, parent(accumulation))
+        @test all(>=(0.99cell_area), parent(accumulation))
+
+        hand = GM.height_above_nearest_drainage(dem; method, threshold=5cell_area)
+        @test size(hand) == size(dem)
+        @test all(isfinite, parent(hand))
+        @test all(>=(0), parent(hand))
+
+        # Every decoded direction must stay at the source or reach a neighbour.
+        bad = 0
+        for (i, c) in enumerate(cells)
+            iszero(directions[i]) && continue
+            for rel in GM.decompose(DGG.RelativeZ7Cell, directions[i], c)
+                target = c + rel
+                target == c || target in DGG.neighbors(complete, c) || (bad += 1)
+            end
+        end
+        @test bad == 0
+    end
+
+    # Even IGeo7 refuses the stream-mask entry: DGGS rasters support only the
+    # threshold form exercised above.
+    @test_throws "use the threshold form" GM.height_above_nearest_drainage(
+        dem, falses(size(dem)))
+end
+
+# Other systems support D8 and store one set bit for the downstream ring slot
+# (slot `k` as bit `k - 1` of a `UInt16`; the checks below decode it
+# independently of the extension). HAND needs IGeo7 relative-cell arithmetic,
+# so here it refuses; asserted with DInf/FD8 below.
+function flow_battery(sys, dem, cells, complete)
+    @testset "flow routing: D8" begin
+        accumulation, directions = GM.flowaccumulation(dem; method=GM.D8())
+        @test size(accumulation) == size(directions) == size(dem)
+        @test all(isfinite, parent(accumulation))
+        # Each cell starts with its own area, which may vary across the tile.
+        @test all(1:length(cells)) do i
+            accumulation[i] >= 0.99 * GM.cellarea(dem, cells[i])
+        end
+
+        # A nonzero direction names one in-subset ring slot whose accumulation
+        # is greater than the donor's.
+        nonzero = 0
+        bad = 0
+        for (i, c) in enumerate(cells)
+            bits = Int(directions[i])
+            iszero(bits) && continue
+            nonzero += 1
+            ring = DGG.neighbors(complete, c)
+            slot = trailing_zeros(bits) + 1
+            if !ispow2(bits) || slot > length(ring)
+                bad += 1
+                continue
+            end
+            p = DGG.cellposition(cells, ring[slot])
+            (p === nothing || !(accumulation[i] < accumulation[p])) && (bad += 1)
+        end
+        @test nonzero > 0               # Require at least one routed cell.
+        @test bad == 0
+    end
+
+    # Unsupported operations name the backend that could answer; without the
+    # guard, HAND would die on cell subtraction with a bare `MethodError`.
+    @testset "DInf, FD8 and HAND refuse, and say why" begin
+        for method in (GM.DInf(), GM.FD8())
+            @test_throws "only the IGeo7 backend provides" GM.flowaccumulation(dem; method)
+        end
+        @test_throws "needs relative-cell arithmetic" GM.height_above_nearest_drainage(dem)
+    end
+end
+
+function battery(sys, root, label, cells)
+    dem = make_dem(sys, root, cells)
     complete = DGG.levelgrid(sys, DGG.level(cells))
 
     @testset "$label" begin
@@ -76,9 +134,7 @@ function battery(label, cells)
             @test c in indices
             @test dem[c] == parent(dem)[1]
 
-            # `neighbors` on the subset is the system's answer clipped to
-            # membership, so it is a SUBSET of the complete level's answer and
-            # never a different set.
+            # Subset neighbours are the complete ring clipped to membership.
             clipped = GM.neighbors(dem, c)
             @test !isempty(clipped)
             @test all(in(indices), clipped)
@@ -87,30 +143,29 @@ function battery(label, cells)
             outside = DGG.cellindex(complete, DGG.ncells(complete))
             @test outside ∉ indices
             # String form on purpose: the type form never renders the message,
-            # so it cannot catch an unprintable error.
-            @test_throws "at index [Z7Cell" dem[outside]
+            # so it cannot catch an unprintable cell in the error.
+            @test_throws ("at index [" * String(first(split(repr(outside), '(')))) dem[outside]
         end
 
-        # Neither the axis nor the ring may put anything on the heap. The axis is
-        # compressed windows, so iterating it computes ids rather than reading
-        # them; the ring is clipped into the same static container the system
-        # answered in. Both are per-cell costs in every loop Geomorphometry runs,
-        # and a `Vector` in either place is invisible to every other assertion
-        # here — it returns the right cells, just not for free.
-        @testset "the hot path allocates nothing" begin
-            axisloop(cs) = (n = 0; for c in cs
-                n += 1
-            end; n)
-            ringloop(sub, cs) = (n = 0; for c in cs, _ in DGG.neighbors(sub, c)
-                n += 1
-            end; n)
-            lookup = DGG.CellLookup(cells)
-            axisloop(cells)
-            ringloop(cells, cells)
-            ringloop(lookup, cells)
-            @test @allocated(axisloop(cells)) == 0
-            @test @allocated(ringloop(cells, cells)) == 0
-            @test @allocated(ringloop(lookup, cells)) == 0
+        # The cell-axis and clipped-ring loops allocate nothing. IGeo7 only:
+        # the machinery is system-generic, so one backend's zero is every
+        # backend's zero.
+        if sys isa DGG.IGeo7System
+            @testset "the hot path allocates nothing" begin
+                axisloop(cs) = (n = 0; for c in cs
+                    n += 1
+                end; n)
+                ringloop(sub, cs) = (n = 0; for c in cs, _ in DGG.neighbors(sub, c)
+                    n += 1
+                end; n)
+                lookup = DGG.CellLookup(cells)
+                axisloop(cells)
+                ringloop(cells, cells)
+                ringloop(lookup, cells)
+                @test @allocated(axisloop(cells)) == 0
+                @test @allocated(ringloop(cells, cells)) == 0
+                @test @allocated(ringloop(lookup, cells)) == 0
+            end
         end
 
         @testset "local metrics" begin
@@ -123,10 +178,7 @@ function battery(label, cells)
             @test all(>=(0), parent(rough))
         end
 
-        # A MEMBER neighbour: these three take two cells and resolve both through
-        # `cellposition`, so on a scattered set the complete level's first
-        # neighbour is frequently outside and the call is a `BoundsError` by
-        # design. Only the subtree case is forgiving enough to hide that.
+        # Geometry operations use an in-subset neighbour.
         @testset "cell geometry" begin
             neighbor = first(GM.neighbors(dem, first(cells)))
             @test GM.cellarea(dem, first(cells)) > 0
@@ -135,67 +187,62 @@ function battery(label, cells)
             @test GM.cellbearing(dem, first(cells), first(cells)) == 0
         end
 
-        cell_area = GM.cellarea(dem, first(cells))
-
-        @testset "flow routing: $(nameof(typeof(method)))" for method in
-                                                               (GM.D8(), GM.DInf(), GM.FD8())
-            accumulation, directions = GM.flowaccumulation(dem; method)
-            @test size(accumulation) == size(directions) == size(dem)
-            @test all(isfinite, parent(accumulation))
-            @test all(>=(0.99cell_area), parent(accumulation))
-
-            hand = GM.height_above_nearest_drainage(dem; method, threshold=5cell_area)
-            @test size(hand) == size(dem)
-            @test all(isfinite, parent(hand))
-            @test all(>=(0), parent(hand))
-
-            # The codec closing: every direction the router wrote back decomposes
-            # into relative cells that land on real neighbours. A wrong entry in
-            # either conversion table shows up here and nowhere in the metrics
-            # above, which never read a direction back out.
-            bad = 0
-            for (i, c) in enumerate(cells)
-                iszero(directions[i]) && continue
-                for rel in GM.decompose(DGG.RelativeZ7Cell, directions[i], c)
-                    target = c + rel
-                    target == c || target in DGG.neighbors(complete, c) || (bad += 1)
-                end
-            end
-            @test bad == 0
-        end
+        flow_battery(sys, dem, cells, complete)
 
         @test !isempty(GM.outlets(dem))
     end
     return dem
 end
 
-nwindows(cells) = DGG.Fallbacks.nwindows(DGG.Fallbacks.windows(cells))
+@testset "Geomorphometry on synthetic DGGS fields" begin
+    @testset "IGeo7System" begin
+        sys = DGG.IGeo7System()
+        coverage = DGG.query(sys, DGG.MultiOrderCoverage(tile); level=10)
+        root = DGG.coarsest_contained(coverage)
+        subtree = DGG.CellVector(DGG.PartialGrid(sys, root, DGG.level(root) + 3))
+        scattered = DGG.CellVector(coverage; level=10)
 
-@testset "Geomorphometry on a synthetic IGeo7 field" begin
-    subtree = DGG.CellVector(DGG.PartialGrid(sys, root, DGG.level(root) + 3))
-    scattered = DGG.CellVector(coverage; level=10)
+        # Exercise both one-window and multi-window storage.
+        @test nwindows(subtree) == 1
+        @test nwindows(scattered) > 100
+        @test DGG.level(root) == 5
 
-    # The two shapes really are different underneath; without this the second
-    # case could silently become a rerun of the first.
-    @test nwindows(subtree) == 1
-    @test nwindows(scattered) > 100
-    @test DGG.level(root) == 5
+        battery(sys, root, "one rooted subtree ($(length(subtree)) cells, 1 window)",
+            subtree)
+        battery(sys, root,
+            "multi-order coverage ($(length(scattered)) cells, $(nwindows(scattered)) windows)",
+            scattered)
 
-    battery("one rooted subtree ($(length(subtree)) cells, 1 window)", subtree)
-    battery("multi-order coverage ($(length(scattered)) cells, $(nwindows(scattered)) windows)",
-        scattered)
-
-    # The subset's rim is where a clipped ring makes a local metric answer from
-    # fewer samples than the interior. This is not a defect of the walk, it is
-    # what `halo` exists to supply — pinned on the small case so that a change in
-    # either direction is visible.
-    @testset "the rim a halo would complete" begin
-        complete = DGG.levelgrid(sys, DGG.level(subtree))
-        clipped = count(subtree) do c
-            length(DGG.neighbors(subtree, c)) < length(DGG.neighbors(complete, c))
+        # The halo contains the neighbours omitted from clipped rim rings.
+        @testset "the rim a halo would complete" begin
+            complete = DGG.levelgrid(sys, DGG.level(subtree))
+            clipped = count(subtree) do c
+                length(DGG.neighbors(subtree, c)) < length(DGG.neighbors(complete, c))
+            end
+            @test length(subtree) == 343
+            @test clipped == 78
+            @test length(collect(DGG.halo(subtree))) == 84
         end
-        @test length(subtree) == 343
-        @test clipped == 78
-        @test length(collect(DGG.halo(subtree))) == 84
+    end
+
+    # Coverage level and subtree depth keep each system's test sets comparable.
+    @testset "$(nameof(typeof(sys)))" for (sys, covlvl, depth) in (
+        (DGG.HEALPixSystem(), 11, 4),
+        (DGG.ISEA4RSystem(), 11, 4),
+        (DGG.H3System(), 7, 3),
+    )
+        coverage = DGG.query(sys, DGG.MultiOrderCoverage(tile); level=covlvl)
+        root = DGG.coarsest_contained(coverage)
+        subtree = DGG.CellVector(DGG.PartialGrid(sys, root, DGG.level(root) + depth))
+        scattered = DGG.CellVector(coverage; level=covlvl)
+
+        @test nwindows(subtree) == 1
+        @test nwindows(scattered) > 1
+
+        battery(sys, root, "one rooted subtree ($(length(subtree)) cells, 1 window)",
+            subtree)
+        battery(sys, root,
+            "multi-order coverage ($(length(scattered)) cells, $(nwindows(scattered)) windows)",
+            scattered)
     end
 end

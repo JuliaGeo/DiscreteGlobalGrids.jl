@@ -12,6 +12,7 @@ Healpix = "9f4e344d-96bc-545a-84a3-ae6b9e1b672b"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"

@@ -15,15 +15,18 @@ DocMeta.setdocmeta!(DiscreteGlobalGrids, :DocTestSetup,
 
 # Generate Markdown beside each Literate source without executing its examples.
 for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
-          "healpix_astronomy")
+          "healpix_astronomy", "store_io")
     Literate.markdown(joinpath(@__DIR__, "src", "tutorials", f * ".jl"),
                       joinpath(@__DIR__, "src", "tutorials");
                       flavor = Literate.DocumenterFlavor(), execute = false)
 end
 
 makedocs(;
-    # Register `Fallbacks` so Documenter can render its boundary API docstrings.
-    modules = [DiscreteGlobalGrids, DiscreteGlobalGrids.Fallbacks],
+    # Register `Fallbacks` so Documenter can render its boundary API docstrings,
+    # and `Encodings`/`ChunkedLookups` for the store-IO ones: the main module
+    # re-binds those names, but the docstrings belong to the submodules.
+    modules = [DiscreteGlobalGrids, DiscreteGlobalGrids.Fallbacks,
+               DiscreteGlobalGrids.Encodings, DiscreteGlobalGrids.ChunkedLookups],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",
     repo = Documenter.Remotes.GitHub("JuliaGeo", "DiscreteGlobalGrids.jl"),
@@ -42,9 +45,11 @@ makedocs(;
             "Multi-order coverage" => "tutorials/multiorder.md",
             "Hydrology: a DEM on an IGEO7 grid" => "tutorials/hydrology.md",
             "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
+            "A round trip through a DGGS store" => "tutorials/store_io.md",
         ],
         "API" => [
             "Subtree and subset boundaries" => "api/boundaries.md",
+            "Reading and writing DGGS stores" => "api/store-io.md",
         ],
     ],
     plugins = [DocumenterVitepress.BonitoPlugin()],

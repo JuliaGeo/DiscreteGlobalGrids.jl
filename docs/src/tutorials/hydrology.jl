@@ -69,6 +69,12 @@ path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = cent
 dem = Raster(path; lazy = false)
 dem = aggregate(mean, dem, 4; progress = false)
 
+# The source could be named as a grid too: with `demtile` the level-0 id of the
+# tile, `DGG.PartialGrid(DGG.CopernicusDEMSystem(30), demtile, 1)` is that whole
+# tile as an ordinary grid, and a grid is a `from` as it stands —
+# `examples/copernicus_dem.jl` takes that route. This page reads the raster
+# because it works for any raster.
+#
 # `regrid` takes the grid as its destination and the raster as its source, and
 # hands back a cube whose axis is the cells. The coverage overhangs the tile at
 # the rim; a cell the raster covers less than half of comes back `NaN` rather

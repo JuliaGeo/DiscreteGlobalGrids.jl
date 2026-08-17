@@ -232,3 +232,47 @@ end
     @test_throws DGGSFormatError Encodings.validate_ranges(grid,
         [ranges[1:1, 1] ranges[1:1, 1] .- 1], 0)
 end
+
+@testset "the compacted axis: two columns to a validated MultiOrderVector" begin
+    # Round-trip identity on both radices, and each malformed column refused by
+    # name. Kills a reader that sorts the columns into container order — which
+    # would silently misalign the data arrays — and one that admits a phantom,
+    # a foreign level, or an ancestor overlapping its own descendants.
+    for sys in (HEALPixSystem(), IGeo7System())
+        l1 = levelgrid(sys, 1)
+        a = cellindex(l1, 2)
+        b = cellindex(l1, 4)
+        kids = collect(DGG.children(sys, b))
+        mov = DGG.MultiOrderVector(sys, [a; kids])
+        lv = Int8[level(c) for c in mov]
+        ids = [rawid(c) for c in mov]
+
+        m2 = Encodings.cellaxis(CompactedEncoding(), sys, lv, ids;
+            declared_length=length(mov))
+        @test m2 isa DGG.MultiOrderVector
+        @test collect(m2) == collect(mov) && m2 == mov
+
+        grab(f) = try
+            f()
+            nothing
+        catch e
+            e
+        end
+        checkof(f) = (e = grab(f); e isa DGGSFormatError ? e.check : e)
+
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            lv[1:end-1], ids)) === :compacted_column_mismatch
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys, lv, ids;
+            declared_length=length(mov) + 1)) === :count_mismatch
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            reverse(lv), reverse(ids))) === :compacted_axis_order
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            [lv; lv[end]], [ids; ids[end]])) === :invalid_compacted_axis
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            [lv; Int8(level(b))], [ids; rawid(b)])) === :invalid_compacted_axis
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            Int8[99; lv[2:end]], ids)) === :invalid_stored_level
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys, lv,
+            [typemax(Int64); ids[2:end]])) === :id_names_no_cell
+    end
+end

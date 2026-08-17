@@ -8,7 +8,9 @@ import DimensionalData as DD
 import Extents
 
 using DiscreteGlobalGrids: levelgrid, ncells, cellindex, cellposition,
-    neighbors, level, has_sorted_subtrees, cellindextype, PartialGrid,
+    neighbors, ring, neighborcount, level, rawid, has_sorted_subtrees,
+    cellindextype, cell_centroid, cell_boundary, cell_area, cell_extent,
+    cell_polygon, PartialGrid,
     CellVector, CellLookup, MultiOrderCoverage, AuthalicSystem, Vertex, Edge,
     query, system, SubsetPositionedCell, cellid, Cells
 
@@ -104,9 +106,25 @@ end
     @test h == c && c == h && h == first(neighbors(cv))[1]
     @test hash(h) == hash(c)
     @test convert(typeof(c), h) === c
-    @test sprint(show, h) == sprint(show, c)
     @test level(h) == level(c)
     @test isbitstype(typeof(h)) && sizeof(typeof(h)) == 16
+
+    # `show` names the wrapper and the position: printing as the bare cell is
+    # what leaves a caller with no way to guess what it is holding.
+    s = sprint(show, h)
+    @test occursin("SubsetPositionedCell", s) && occursin(sprint(show, c), s)
+    @test occursin("position $(cellposition(h))", s)
+    @test sprint(show, MIME"text/plain"(), h) == s
+
+    # Read-only verbs answer for the cell, so a handle needs no unwrapping.
+    grid = levelgrid(sys, level(c))
+    @test all((cell_centroid, cell_boundary, cell_area, cell_extent,
+        cell_polygon, cellposition, neighbors, neighborcount)) do f
+        f(grid, h) == f(grid, c)
+    end
+    @test cellposition(cv, h) == cellposition(cv, c)
+    @test ring(grid, h, 2) == ring(grid, c, 2)
+    @test rawid(h) == rawid(c)
 
     A = DD.DimArray(collect(1.0:length(cv)), (Cells(CellLookup(cv)),))
     # Handles read and write their stored position.

@@ -14,7 +14,7 @@ preserve the generic methods' semantics.
 
 A system needs no grid type of its own. [`levelgrid`](@ref) defaults to
 [`HierarchicalLevelGrid`](@ref), which holds `(system, level)` and forwards the
-four required grid methods to system-level counterparts.
+base grid interface to the five level-grid primitives a system writes instead.
 
 A bare `Int` is a position in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
@@ -37,8 +37,9 @@ in ascending target-grid position. [`halo_positions`](@ref) streams those
 positions without materializing ids, and [`halo_sizehint`](@ref) provides an
 optional allocation hint where exact length is unavailable.
 
-Internal geometry uses `GeometryOps.UnitSphericalPoint`; explicitly named
-wrappers convert longitude and latitude at API boundaries.
+Internal geometry uses `UnitSphericalPoint` — `GeometryOps`', re-exported here
+so the type the contract asks an implementor to return needs no module path;
+explicitly named wrappers convert longitude and latitude at API boundaries.
 
 # Layout
 
@@ -66,6 +67,9 @@ bindings for the same reason the `Trees` ones are.
 module DiscreteGlobalGrids
 
 import GeometryOps as GO
+# The unit-sphere point type is in every geometry signature the interface asks
+# an implementor to write, so it is re-exported rather than left behind `GO`.
+using GeometryOps: UnitSphericalPoint
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
@@ -123,7 +127,8 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     subtree_halo, halo, halo_positions, halo_sizehint,
     StencilTable, stencil_table,
     SubsetPositionedCell, cellid,
-    mapneighbors, foreachneighbors, StorageOrder, HaloTable
+    mapneighbors, foreachneighbors, StorageOrder, HaloTable,
+    NeighborCallbackError
 
 # Internal extension points for system-specific subtree walkers, shell winding,
 # and cursor parallelization.
@@ -184,6 +189,9 @@ include("io/api.jl")
 # cube axis alike.
 include("regridding.jl")
 
+# After it: a target resolution may be spelled as a raster or a regrid space.
+include("sizing.jl")
+
 # CopernicusDEM is deliberately absent: registering a system enrols it in every
 # cross-system sweep, whose hardcoded cases and level choices assume a globally
 # uniform cell size. Reach for it by name: `DGG.CopernicusDEMSystem(90)`.
@@ -203,14 +211,19 @@ interface dispatch. Tuple order has no semantic meaning.
 
 # The six, and how they differ
 
-| system | cells at level `l` | cell shape | equal-area |
-|---|---|---|---|
-| [`IGeo7System`](@ref) | `10·7^l + 2` | hexagons + 12 pentagons | by construction; see `IGeo7.equal_area_steradians` |
-| [`H3System`](@ref) | `120·7^l + 2` | hexagons + 12 pentagons | no (libh3's gnomonic faces) |
-| [`HEALPixSystem`](@ref) | `12·4^l` | curvilinear diamonds | yes, exactly `4π/(12·4^l)` |
-| [`A5System`](@ref) | `12`, `60`, then `60·4^(l-1)` | pentagons (Cairo-style) | yes |
-| [`S2System`](@ref) | `6·4^l` | geodesic quadrilaterals | no; ~2.08× within-level spread |
-| [`ISEA4RSystem`](@ref) | `10·4^l` | rhombi on ten diamonds | yes, exactly `4π/(10·4^l)` |
+The size column is [`cellsize`](@ref) in km at levels 0, 4 and 8 — the side of a
+square with the median cell's area, which is the only size a system whose cells
+differ in shape and area has. Ask [`levelfor`](@ref) for the level a given
+resolution wants rather than reading a level off this table.
+
+| system | cells at level `l` | ≈ size (km) at `l` = 0 / 4 / 8 | cell shape | equal-area |
+|---|---|---|---|---|
+| [`IGeo7System`](@ref) | `10·7^l + 2` | 6520 / 146 / 3.0 | hexagons + 12 pentagons | by construction; see `IGeo7.equal_area_steradians` |
+| [`H3System`](@ref) | `120·7^l + 2` | 2026 / 42.6 / 0.87 | hexagons + 12 pentagons | no (libh3's gnomonic faces) |
+| [`HEALPixSystem`](@ref) | `12·4^l` | 6520 / 408 / 25.5 | curvilinear diamonds | yes, exactly `4π/(12·4^l)` |
+| [`A5System`](@ref) | `12`, `60`, then `60·4^(l-1)` | 6524 / 365 / 22.8 | pentagons (Cairo-style) | yes |
+| [`S2System`](@ref) | `6·4^l` | 9220 / 584 / 36.1 | geodesic quadrilaterals | no; ~2.08× within-level spread |
+| [`ISEA4RSystem`](@ref) | `10·4^l` | 7142 / 446 / 27.9 | rhombi on ten diamonds | yes, exactly `4π/(10·4^l)` |
 
 Important cross-system traits:
 
@@ -311,6 +324,9 @@ systems() = (IGeo7System(), H3System(), HEALPixSystem(),
 export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
 export LevelIndex
 export Connectivity, Vertex, Edge
+# `GeometryOps.UnitSphericalPoint`, re-exported: every boundary and centroid
+# method in the contract is written in it.
+export UnitSphericalPoint
 
 # --- Base grid interface ---------------------------------------------------
 export ncells, cellindex, cell_boundary, cell_centroid
@@ -320,7 +336,12 @@ export cellat, neighbors, ring, halo_table, neighborcount
 export treeify, query
 export system, level
 
+# --- Cell size and level choice --------------------------------------------
+export cellsize, levelfor
+
 # --- Hierarchical system interface -----------------------------------------
+# `Base.parent(sys, c)` belongs to this list and is absent from it deliberately:
+# the hierarchy's parent is a method on Base's function, not a name to re-export.
 export cellindextype, levels, max_level, levelgrid, rootcells, children
 export node_extent, cap_inflation, max_neighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
@@ -331,6 +352,8 @@ export subtree_halo, halo, halo_positions, halo_sizehint
 export StencilTable, stencil_table
 export SubsetPositionedCell, cellid
 export mapneighbors, foreachneighbors, StorageOrder, HaloTable
+# Caught, not called.
+public NeighborCallbackError
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate
@@ -346,7 +369,7 @@ export is_contained, coarsest_contained, cell_polygons, member_neighbors
 
 # --- The compressed cell collection ----------------------------------------
 # `CellVector` is the DimensionalData-independent compressed collection.
-export CellVector, covering, cellset
+export CellVector, covering, covering_positions, cellset
 
 # --- The DimensionalData layer ---------------------------------------------
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM

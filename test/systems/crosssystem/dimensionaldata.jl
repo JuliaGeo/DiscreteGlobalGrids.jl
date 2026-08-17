@@ -457,4 +457,37 @@ end
     end
 end
 
+# ---------------------------------------------------------------------------
+# What a failed selection says. One system is enough: the messages are written
+# once, in the lookup, and read the axis through the same accessors everywhere.
+# ---------------------------------------------------------------------------
+
+@testset "a failed cell selection is a sentence, not a type" begin
+    sys = DGG.HEALPixSystem()
+    grid = DGG.levelgrid(sys, 4)
+    lk = DGG.CellLookup(DGG.CellVector(grid))
+    A = DD.DimArray(collect(1.0:DGG.ncells(grid)), DGG.Cells(lk))
+    coarse = DGG.cellindex(DGG.levelgrid(sys, 3), 1)
+    foreign = DGG.cellindex(DGG.levelgrid(DGG.IGeo7System(), 4), 5)
+
+    @test_throws "not the axis's level 4" A[DGG.Cells(DD.At(coarse))]
+    @test_throws "names cells as LevelIndex" A[DGG.Cells(DD.At(foreign))]
+    # The regression: `SelectorError`'s own message prints the lookup's full
+    # parameterised type instead of what it holds.
+    message = try
+        A[DGG.Cells(DD.At(coarse))]
+    catch err
+        sprint(showerror, err)
+    end
+    @test !occursin("CellLookup{", message)
+
+    # A cell of another system reaching a geometry verb names both systems
+    # rather than surfacing as a `MethodError` about a verb nobody called.
+    @test_throws "is a cell of IGeo7System, not of HEALPixSystem" DGG.cell_centroid(grid, foreign)
+    @test_throws "is a cell of IGeo7System, not of HEALPixSystem" DGG.children(sys, foreign)
+
+    # `Near` is refused rather than answered in id order.
+    @test_throws "nearest id is not the nearest cell" A[DGG.Cells(DD.Near(lk[3]))]
+end
+
 end # module DimensionalDataTests

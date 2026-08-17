@@ -422,6 +422,17 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     end
 
     # =======================================================================
+    # The native layer's refusals carry the value that caused them: without it
+    # a caller has a bare sentence and no way to reproduce the failure.
+    @testset "native errors name the point they failed on" begin
+        @test_throws "(lon, lat) = (180.0, 0.0)" A5N.lonlat_to_cell(180.0, 0.0, 30)
+        clockwise = [(1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
+        @test A5N._shape_area(clockwise) < 0
+        @test_throws "containment of (0.5, 0.5)" A5N._contains_point(clockwise,
+            (0.5, 0.5))
+    end
+
+    # =======================================================================
     @testset "cellat vs lonlat_to_cell" begin
         for l in (0, 1, 4, 9, 20)
             grid = DGG.levelgrid(S, l)

@@ -648,8 +648,19 @@ _scale(vertices, s) = map(v -> _scale2(v, s), vertices)
 _rotate(vertices, theta) = map(v -> _rotate2(v, theta), vertices)
 _center(vertices) = (sum(v[1] for v in vertices) / length(vertices), sum(v[2] for v in vertices) / length(vertices))
 
-function _contains_point(vertices, point)
-    _shape_area(vertices) < 0 && error("Pentagon is not counter-clockwise")
+# `cell` is carried only so a winding failure can name the cell it came from.
+@noinline function _clockwise_pentagon(vertices, point, cell)
+    where_ = cell === nothing ? "" :
+             " of the cell at origin $(cell.origin.id), segment " *
+             "$(cell.segment), resolution $(cell.resolution)"
+    throw(ArgumentError(
+        "A5 pentagon$where_ winds clockwise (signed area " *
+        "$(_shape_area(vertices)), centred at $(_center(vertices))), so " *
+        "containment of $point cannot be tested"))
+end
+
+function _contains_point(vertices, point, cell=nothing)
+    _shape_area(vertices) < 0 && _clockwise_pentagon(vertices, point, cell)
     dmax = 1.0
     n = length(vertices)
     for i in 1:n
@@ -1159,7 +1170,8 @@ function _make_crs_vertices()
             add_vertex(_quat_rotate(origin.quat, _to_cartesian((theta, phi_midpoint))))
         end
     end
-    length(vertices) == 62 || error("Failed to construct CRS: vertices length is $(length(vertices))")
+    length(vertices) == 62 || error(
+        "A5 CRS construction produced $(length(vertices)) distinct vertices, not 62")
     return Tuple(vertices)
 end
 
@@ -1172,7 +1184,7 @@ function _crs_get_vertex(point)
     for vertex in CRS_VERTICES
         _norm3(_sub3(normalized, vertex)) < 1e-5 && return vertex
     end
-    error("Failed to find vertex in CRS")
+    throw(ArgumentError("no A5 CRS vertex lies within 1e-5 of $normalized"))
 end
 
 function _safe_acos(x)
@@ -1354,7 +1366,7 @@ end
 function _a5cell_contains_point(cell::A5Cell, spherical)
     pentagon = _get_pentagon(cell)
     projected = _dodeca_forward(spherical, cell.origin.id)
-    return _contains_point(pentagon, projected)
+    return _contains_point(pentagon, projected, cell)
 end
 
 const FACE_ADJACENCY = (
@@ -1650,8 +1662,9 @@ function lonlat_to_cell(lon::Real, lat::Real, resolution::Integer)
     -1 <= res <= MAX_RESOLUTION ||
         throw(ArgumentError("A5 resolution must be in -1:$MAX_RESOLUTION"))
     id = _spherical_to_cell(_from_lonlat((Float64(lon), Float64(lat))), res)
-    get_resolution(id) == res ||
-        throw(ArgumentError("A5 resolution $res is not representable at this location"))
+    get_resolution(id) == res || throw(ArgumentError(
+        "A5 resolution $res is not representable at (lon, lat) = ($lon, $lat); " *
+        "the located cell is at resolution $(get_resolution(id))"))
     return id
 end
 

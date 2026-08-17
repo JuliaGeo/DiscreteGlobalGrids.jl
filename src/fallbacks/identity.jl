@@ -64,6 +64,52 @@ function cellposition(grid::AbstractGrid, c::AbstractCellIndex)
     return nothing
 end
 
+# `BoundsError` on a grid names the valid position range instead of the grid's
+# type parameters.
+function Base.summary(io::IO, grid::AbstractGrid)
+    sys = system(grid)
+    sys === nothing || print(io, nameof(typeof(sys)), " ")
+    l = level(grid)
+    l === nothing || print(io, "level-", l, " ")
+    print(io, nameof(typeof(grid)), " over positions 1:", ncells(grid))
+    return nothing
+end
+
+# The registered systems that name their cells with `typeof(c)`. Empty for a
+# cell type no shipped system claims. Only the error path below calls it.
+_owning_systems(c::AbstractCellIndex) =
+    filter(s -> typeof(c) in cellindextypes(s), collect(DGG.systems()))
+
+"""
+    _foreign_cell(f, sys, c)
+
+Report `c` as belonging to another system, or re-raise the `MethodError` when it
+does not: a scheme `sys` declares in [`cellindextypes`](@ref) but has no method
+for is unimplemented, not foreign.
+"""
+@noinline function _foreign_cell(f, sys::AbstractHierarchicalGridSystem,
+        c::AbstractCellIndex)
+    typeof(c) in cellindextypes(sys) && throw(MethodError(f, (sys, c)))
+    owners = _owning_systems(c)
+    owner = isempty(owners) ? "a system not registered here" :
+            join((string(nameof(typeof(s))) for s in owners), " or ")
+    throw(ArgumentError(
+        "$c is a cell of $owner, not of $(nameof(typeof(sys))), which names " *
+        "cells as $(nameof(cellindextype(sys))). Cell ids do not convert " *
+        "between systems: locate the cell by coordinate with `cellat`, or " *
+        "move data across systems with `regrid`."))
+end
+
+# The system verbs a cell id reaches directly. Each shipped system defines a
+# more specific method, so these are hit only by a cell the system cannot name.
+for f in (:cell_boundary, :cell_centroid, :cellposition, :children)
+    @eval $f(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
+        _foreign_cell($f, sys, c)
+end
+
+Base.parent(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
+    _foreign_cell(Base.parent, sys, c)
+
 # Convert to the grid's canonical id, returning `nothing` for a wrong level,
 # unsupported input scheme, or rejected value. Only `ArgumentError` from
 # `reindex` denotes an absent value; other exceptions remain visible.

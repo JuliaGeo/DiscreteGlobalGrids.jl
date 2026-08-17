@@ -402,6 +402,20 @@ end
     @test dateline.Y[2] > 20.0           # great-circle bulge again
 end
 
+@testset "a grid's BoundsError names its valid positions" begin
+    grid = levelgrid(SORTED, 3)
+    n = ncells(grid)
+    message = try
+        cellindex(grid, n + 1)
+    catch err
+        sprint(showerror, err)
+    end
+    # The regression: `summary` falls back to the grid's parameterised type and
+    # the range the position had to be in never appears.
+    @test occursin("1:$n", message)
+    @test occursin("level-3", message)
+end
+
 @testset "identity generics" begin
     grid = levelgrid(SORTED, 3)
     @test cellindextypes(grid) == (LevelIndex,)

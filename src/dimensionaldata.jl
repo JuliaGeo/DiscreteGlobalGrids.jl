@@ -105,6 +105,11 @@ produces carries a `CellLookup` again. Outside a cube those three are
 re-exported because this package exports DE9IM's unrelated [`Contains`](@ref)
 geometry predicate. [`Covering`](@ref) is exported by this package.
 
+`DD.Near` throws: cell ids ascend along a space-filling curve, so snapping to
+the nearest id is not snapping to the nearest cell on the sphere, and this
+lookup has no nearest-member search to offer instead. `Contains(lon, lat)`
+answers the question `Near` is usually reached for.
+
 # What the cube's own operations do to it
 
 Indexing, concatenation, and reductions preserve the most specific valid lookup:
@@ -690,5 +695,62 @@ Lookups.selectindices(lk::CellLookup, sel::Lookups.At{<:Tuple{Real,Real}}; kw...
 
 _found(lk::CellLookup, k::Int, sel) = k
 _found(lk::CellLookup, ::Nothing, sel) = throw(Lookups.SelectorError(lk, sel))
+
+# `Near` on a cell axis would have to mean "nearest on the sphere". Cell ids
+# ascend along a space-filling curve, so the generic order-based snap is not
+# that, and there is no cheap nearest-member search over an arbitrary subset.
+@noinline _no_near(lk, sel) = throw(ArgumentError(
+    "Near is not defined on a cell axis: cell ids run along a space-filling " *
+    "curve, so the nearest id is not the nearest cell on the sphere. Use " *
+    "At(cell) for one cell, Contains(lon, lat) for the cell holding a point, " *
+    "or Covering(region) for a region."))
+
+Lookups.selectindices(lk::CellLookup, sel::Lookups.Near; kw...) = _no_near(lk, sel)
+Lookups.selectindices(lk::CellLookup, sel::Lookups.Near{<:AbstractVector}; kw...) =
+    _no_near(lk, sel)
+
+# ===========================================================================
+# Selector failures
+#
+# The default `SelectorError` prints the lookup's full type. A cell lookup can
+# say what it holds in one line, and name the mismatch — wrong level, wrong
+# system — that usually explains the miss.
+# ===========================================================================
+
+"""
+    show_selector_error(io, lk, sel)
+
+Print a failed cell-axis selection: the value that matched nothing, the axis it
+was applied to, and the level or system mismatch behind it, if any.
+
+`sel` is whatever `DimensionalData` put in the error — a selector or the bare
+value it was carrying.
+"""
+function show_selector_error(io::IO, lk, sel)
+    print(io, "SelectorError: ", sel, " selects no cell of ", lk)
+    lo, hi = Lookups.bounds(lk)
+    lo === nothing || print(io, ", whose ids run ", lo, " to ", hi)
+    _mismatch(io, lk, sel isa Lookups.Selector ? Lookups.val(sel) : sel)
+    println(io)
+    return nothing
+end
+
+function _mismatch(io::IO, lk, c::AbstractCellIndex)
+    sys = system(lk)
+    if !(typeof(c) in DGG.cellindextypes(sys))
+        print(io, "\n  ", nameof(typeof(c)), " is not a ",
+            nameof(typeof(sys)), " id; this axis names cells as ",
+            nameof(cellindextype(sys)))
+    elseif level(c) != level(lk)
+        print(io, "\n  the cell is at level ", level(c), ", not the axis's ",
+            "level ", level(lk))
+    end
+    return nothing
+end
+
+_mismatch(io::IO, lk, val) = nothing
+
+Base.showerror(io::IO, e::Lookups.SelectorError{<:CellLookup}) =
+    show_selector_error(io, e.lookup, e.selector)
 
 end # module CellLookups

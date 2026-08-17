@@ -5,7 +5,8 @@
 # ---------------------------------------------------------------------------
 
 # ===========================================================================
-# Required
+# The implementor surface. Each entry states whether it is required or
+# defaulted; `AbstractHierarchicalGridSystem` tabulates the split.
 # ===========================================================================
 
 """
@@ -85,7 +86,8 @@ minus the two things the grid method has already settled:
     an id in an alternate scheme at the right level is forwarded as it stands,
     so a system that wants to accept one must say so with its own method. Left
     alone, the fallthrough is a `MethodError`, exactly as it is on the system
-    method itself.
+    method itself — except for an id in a scheme the system does not claim at
+    all, which is an `ArgumentError` naming both systems.
 
 The geometry pair takes **no level argument**: an [`AbstractCellIndex`](@ref)
 is self-describing, so a level beside it would only be a second source of truth
@@ -146,7 +148,10 @@ function children end
 
 The covering region of the entire subtree rooted at `c`.
 
-**Required.**
+**Defaulted**: the generic implementation inflates the cell's own bounding cap
+by [`cap_inflation(sys)`](@ref cap_inflation), and a system able to compute a
+tighter covering cap overrides it. The covering law below holds either way, and
+validating it is the system's responsibility.
 
 > `node_extent(sys, c)` contains the geometry of **every descendant of `c`, at
 > every depth** — every point of every cell boundary in the subtree, all the
@@ -160,10 +165,6 @@ arcs. Non-convex extents must establish containment of the full geometry.
 A cell's own boundary need not cover its descendants; aperture-7 children, for
 example, can extend beyond the parent boundary.
 
-The generic implementation inflates the cell's bounding cap by
-[`cap_inflation(sys)`](@ref cap_inflation). Systems may provide a tighter
-covering cap.
-
 The result must cover through `max_level(sys)`, independent of a caller's
 planned traversal depth.
 
@@ -172,8 +173,26 @@ tree, which is what lets one predicate vocabulary serve all of them.
 """
 function node_extent end
 
+"""
+    max_neighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Int
+
+A **static** upper bound on the number of `connectivity`-neighbours of any cell
+of `sys`, at any level.
+
+**Required for the neighbourhood family.** There is no default: a system that
+has not thought about the bound gets a `MethodError` rather than a silently
+wrong capacity. It is what sizes the fixed-capacity containers behind
+[`neighbors`](@ref) and [`ring`](@ref) on a subset, [`halo_table`](@ref) and
+[`stencil_table`](@ref); the complete-level verbs and the subtree family never
+ask for it, so a system without it is usable until the first subset neighbour
+query. Individual cells may have fewer neighbours than the bound.
+"""
+function max_neighbors end
+
+max_neighbors(sys::AbstractHierarchicalGridSystem) = max_neighbors(sys, Vertex())
+
 # ===========================================================================
-# Traits
+# Traits with defaults
 # ===========================================================================
 
 """
@@ -208,22 +227,6 @@ Raising it costs query time (looser pruning). Setting it too low is a
 correctness bug — see the covering law in [`node_extent`](@ref).
 """
 cap_inflation(::AbstractHierarchicalGridSystem) = 1.2
-
-"""
-    max_neighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Int
-
-A **static** upper bound on the number of `connectivity`-neighbours of any cell
-of `sys`, at any level.
-
-The static bound permits fixed-capacity neighbour containers. Individual cells
-may have fewer neighbours.
-
-There is no default: a system that has not thought about the bound gets a
-`MethodError` rather than a silently wrong capacity.
-"""
-function max_neighbors end
-
-max_neighbors(sys::AbstractHierarchicalGridSystem) = max_neighbors(sys, Vertex())
 
 """
     max_level(sys::AbstractHierarchicalGridSystem) -> Int

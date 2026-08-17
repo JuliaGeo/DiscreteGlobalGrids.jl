@@ -28,7 +28,8 @@ wrong, not fast.
 A bare `Int` argument is always a **position** in `1:ncells(grid)`. A typed
 `AbstractCellIndex` is always an **identity**, self-describing about its level,
 so no call passes a level and an id side by side. All internal geometry is on
-the unit sphere, as `GeometryOps.UnitSphericalPoint`; longitude and latitude
+the unit sphere, as `UnitSphericalPoint` — `GeometryOps`', re-exported here so
+an implementor writes it with no module path; longitude and latitude
 appear only in explicitly named converting wrappers, in degrees.
 
 ## Setup
@@ -257,10 +258,12 @@ ISEA4R are closed-form charts with no external dependency.
 
 No system defines a grid type. All seven return `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths to `HierarchicalLevelGrid{TheSystem}`:
-`cellat`, `neighbors`, `ring` and `cell_area`, all four on all seven. Among the
-six in `systems()`, `subtree_border` is an `O(rim)` automaton on every one but
-A5, which walks the whole subtree; `subtree_interior` shares that walk and emits
-the branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
+`cellat`, `neighbors` and `ring` on all seven, and `cell_area` on the three
+whose exact area is a closed form the published boundary only approximates
+(HEALPix, ISEA4R, CopernicusDEM); the other four take the generic spherical area
+of that boundary. Among the six in `systems()`, `subtree_border` is an `O(rim)`
+automaton on every one but A5, which walks the whole subtree; `subtree_interior`
+shares that walk and emits the branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
 `InnerCellIterator` in `O(depth)` memory. A5 is also the one system without
 `has_sorted_subtrees`, so `level_ranges` throws there and everything that would
 use it takes the selection branch instead.

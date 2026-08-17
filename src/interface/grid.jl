@@ -1,11 +1,13 @@
 # ---------------------------------------------------------------------------
 # Base-grid interface contracts. `Int` arguments are dense positions;
 # `AbstractCellIndex` arguments are cell identities. Geometry uses
-# `GO.UnitSphericalPoint` unless a converting wrapper states otherwise.
+# `GO.UnitSphericalPoint` unless a converting wrapper states otherwise: `GO` is
+# `GeometryOps`, and this package re-exports the point type, so an implementor
+# writes `UnitSphericalPoint` with no module path.
 #
-# A hierarchical system implements the four required primitives as system-level
-# methods instead; see `src/interface/system.jl`. `levelgrid` returns a
-# `HierarchicalLevelGrid`, which forwards to them.
+# A hierarchical system implements the five level-grid primitives as
+# system-level methods instead; see `src/interface/system.jl`. `levelgrid`
+# returns a `HierarchicalLevelGrid`, which forwards to them.
 # ---------------------------------------------------------------------------
 
 # ===========================================================================

@@ -30,8 +30,9 @@ end
 
 Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
 every layer, carrying a [`ChunkedCellLookup`](@ref) — the lookup over an axis a
-store wrote, which resolves a cell without scanning it. The grid SYSTEM is in
-that lookup's type, the level is a field of the grid it holds, and what is
+store wrote, which resolves a cell without scanning it — or, for a `compacted`
+store, a [`MultiOrderLookup`](@ref) over its mixed-level cells. The grid SYSTEM
+is in that lookup's type, the level is a field of the grid it holds, and what is
 neither — orientation, ellipsoid, the layout the store keeps its axis in — rides
 in the [`StoreDescription`](@ref) under the stack's `metadata["description"]`.
 
@@ -64,13 +65,14 @@ Write a `DimStack` or `DimArray` over a `Cells` dimension to a DGGS store.
 `dest` is a local directory path or a writeable `Zarr.ZGroup`; remote stores
 are not written in v1 — write locally and upload.
 
-`encoding = :auto` picks ranges where the axis is eligible — sorted, unique,
-single-level — and dense otherwise; `encoding = :dense` is the interop escape
-for readers that cannot expand ranges. A mixed-level axis (a
-[`MultiOrderLookup`](@ref)) is refused — no registered encoding writes one;
-present it at a single level with [`expand`](@ref) first. `conventions` stamps
-the store, dual by default so that both a convention-aware reader and xdggs
-can open it.
+`encoding = :auto` picks compacted for a mixed-level axis (a
+[`MultiOrderLookup`](@ref)), ranges where a single-level axis is eligible —
+sorted, unique — and dense otherwise; `encoding = :dense` is the interop
+escape for readers that cannot expand ranges. A single-level encoding
+requested for a mixed-level axis is refused; present the cube at one level
+with [`expand`](@ref) to write it that way. `conventions` stamps the store,
+dual by default so that both a convention-aware reader and xdggs can open it;
+a compacted store carries no xdggs stamp, which cannot say mixed-level.
 
 `merge` picks the ranges run rule: `:step` (default) merges unit-increment ids,
 which a structural reader also counts correctly; `:rank` merges rank-adjacent

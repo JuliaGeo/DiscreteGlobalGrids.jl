@@ -29,11 +29,14 @@ sys = DGG.IGeo7System()
 #
 # Copernicus DEM ships in 1°×1° tiles. Which single IGEO7 cell fits inside one?
 # Cover the tile with `MultiOrderCoverage` — the coarsest cells that cover it,
-# refined only where its outline cuts through — and `coarsest_contained` reads
-# off the shallowest cell the traversal proved inside.
+# refined only where its outline cuts through, down to the working level — and
+# `coarsest_contained` reads off the shallowest cell the traversal proved
+# inside.
 
 tile = Extents.Extent(X = (10.0, 11.0), Y = (46.0, 47.0))
-root = DGG.coarsest_contained(DGG.query(sys, DGG.MultiOrderCoverage(tile); level = 10))
+leaf = 10                                          # ≈ 455 m cells
+region = DGG.query(sys, DGG.MultiOrderCoverage(tile); level = leaf)
+root = DGG.coarsest_contained(region)
 f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
 poly!(DGG.PartialGrid(sys, root, DGG.level(root)); strokewidth = 2)
 f
@@ -42,13 +45,10 @@ root, DGG.level(root)
 
 # ## The tile's coverage as a grid
 #
-# One contained cell gives up the tile's rim. The destination that keeps it is
-# the tile's own coverage at the working level: every cell the tile touches.
-# The set itself stays small — the interior comes back whole, at whatever level
-# it fit — and only the outline is refined all the way down.
+# One contained cell gives up the tile's rim. The coverage keeps it: every cell
+# the tile touches. The set itself stays small — the interior comes back whole,
+# at whatever level it fit — and only the outline is refined all the way down.
 
-leaf = 10                                          # ≈ 455 m cells
-region = DGG.query(sys, DGG.MultiOrderCoverage(tile); level = leaf)
 f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
 poly!(region; color = :transparent, strokewidth = 1)
 f

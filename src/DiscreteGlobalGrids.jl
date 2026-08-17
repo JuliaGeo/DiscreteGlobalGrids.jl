@@ -119,12 +119,17 @@ include("systems/A5/A5.jl")
 include("systems/S2/S2.jl")
 include("systems/ISEA4R/ISEA4R.jl")
 
+# The seventh system, included but not registered — see the comment above
+# `systems()` for why it stays out of the tuple.
+include("systems/CopernicusDEM/CopernicusDEM.jl")
+
 using .IGeo7: IGeo7System, Z7Cell, RelativeZ7Cell, directioncode
 using .H3: H3System, H3Cell
 using .HEALPix: HEALPixSystem, HEALPixRingIndex
 using .A5: A5System, A5Cell
 using .S2: S2System
 using .ISEA4R: ISEA4RSystem
+using .CopernicusDEM: CopernicusDEMSystem
 
 # DimensionalData wrappers over the dependency-free `Fallbacks.CellVector`.
 include("dimensionaldata.jl")
@@ -151,6 +156,10 @@ include("io/description.jl")
 include("io/conventions.jl")
 include("io/api.jl")
 
+# CopernicusDEM is deliberately absent: registering a system enrols it in every
+# cross-system sweep, whose hardcoded cases and level choices assume a globally
+# uniform cell size. Reach for it by name: `DGG.CopernicusDEMSystem(90)`.
+# (Kept ABOVE the docstring — a comment between docstring and function detaches it.)
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
 
@@ -316,6 +325,7 @@ export CellLookup, Cells, Covering
 
 # --- Grid systems ----------------------------------------------------------
 # Export system types rather than modules whose names collide with packages.
+# All seven systems return `HierarchicalLevelGrid` from `levelgrid`.
 export systems
 export IGeo7System, Z7Cell, RelativeZ7Cell
 export directioncode
@@ -324,6 +334,8 @@ export HEALPixSystem, HEALPixRingIndex
 export A5System, A5Cell
 export S2System
 export ISEA4RSystem
+# Exported and reachable by name, but not in `systems()` — see the comment there.
+export CopernicusDEMSystem
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere

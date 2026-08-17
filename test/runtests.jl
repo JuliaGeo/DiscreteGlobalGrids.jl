@@ -19,6 +19,9 @@ using DiscreteGlobalGrids
     include("systems/A5/runtests.jl")
     include("systems/S2/runtests.jl")
     include("systems/ISEA4R/runtests.jl")
+    # CopernicusDEM is not in `systems()`, so the cross-system sweeps below
+    # never see it; its laws are stated only here.
+    include("systems/CopernicusDEM/runtests.jl")
     # Run interface-wide laws after each system's implementation tests.
     include("systems/crosssystem/runtests.jl")
     # Multi-order suites share the committed California outline fixture.

@@ -135,12 +135,15 @@ end
                                                             shapes(sys, base, leaf)
         for p in 1:max(1, ncells(sub) ÷ 6):ncells(sub), conn in (Vertex(), Edge()), k in 0:2
             c = cellindex(sub, p)
+            # Element for element, not as sets: the position form IS the id
+            # form read through `cellposition`, and it carries the same
+            # counter-clockwise order.
             @test neighbors(sub, p, k; connectivity = conn) ==
-                  sort([cellposition(sub, x)
-                        for x in neighbors(sub, c, k; connectivity = conn)])
+                  [cellposition(sub, x)
+                   for x in neighbors(sub, c, k; connectivity = conn)]
             @test ring(sub, p, k; connectivity = conn) ==
-                  sort([cellposition(sub, x)
-                        for x in ring(sub, c, k; connectivity = conn)])
+                  [cellposition(sub, x)
+                   for x in ring(sub, c, k; connectivity = conn)]
         end
     end
 
@@ -174,6 +177,12 @@ end
         cv = CellVector(sub)
         @test halo_table(cv) == halo_table(sub)
         @test halo_table(CellLookup(cv)) == halo_table(sub)
+        # The rows are ROTATIONAL, and that is only visible as an absence of
+        # sorting: a `sort!` put back anywhere on this path would pass every
+        # other assertion in this file. Some row of a real subset is out of
+        # ascending order on every system.
+        @test any(!issorted, halo_table(sub))
+        @test any(!issorted, halo_table(cv))
     end
 
     @testset "the rooted fast path agrees with the generic route" begin
@@ -528,6 +537,35 @@ const DONUT = GI.Polygon([
     GI.LinearRing([(-121.0, 36.0), (-121.0, 38.0), (-119.0, 38.0), (-119.0, 36.0),
         (-121.0, 36.0)])])
 
+# How many times a sequence of members steps backwards in azimuth about `c`,
+# each read on its own level's grid because a coarse member has no centroid at
+# the reference level. One for a single counter-clockwise turn, `n - 1` for a
+# clockwise one, arbitrary for an id-sorted sequence. Written out here rather
+# than taken from the conformance harness, whose `winding_problems` reads one
+# grid and so cannot answer about a mixed-level set.
+function azimuth_wraps(sys, c, members)
+    centroid(x) = DGG.cell_centroid(levelgrid(sys, level(x)), x)
+    p = centroid(c)
+    ax = abs(p[1]) <= abs(p[2]) ?
+         (abs(p[1]) <= abs(p[3]) ? (1.0, 0.0, 0.0) : (0.0, 0.0, 1.0)) :
+         (abs(p[2]) <= abs(p[3]) ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0))
+    s = ax[1] * p[1] + ax[2] * p[2] + ax[3] * p[3]
+    t = (ax[1] - s * p[1], ax[2] - s * p[2], ax[3] - s * p[3])
+    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
+    e1 = (t[1] / n, t[2] / n, t[3] / n)
+    e2 = (p[2] * e1[3] - p[3] * e1[2], p[3] * e1[1] - p[1] * e1[3],
+        p[1] * e1[2] - p[2] * e1[1])
+    az = map(members) do m
+        q = centroid(m)
+        d = (q[1] - p[1], q[2] - p[2], q[3] - p[3])
+        r = d[1] * p[1] + d[2] * p[2] + d[3] * p[3]
+        u = (d[1] - r * p[1], d[2] - r * p[2], d[3] - r * p[3])
+        atan(u[1] * e2[1] + u[2] * e2[2] + u[3] * e2[3],
+            u[1] * e1[1] + u[2] * e1[2] + u[3] * e1[3])
+    end
+    return count(i -> az[mod1(i + 1, length(az))] < az[i] - 1e-9, eachindex(az))
+end
+
 function oracle(set, c; connectivity = Vertex(), geometric = false)
     sys = system(set)
     L = set.reference_level
@@ -595,11 +633,17 @@ const MOC_SWEEP = [
         end
     end
 
-    @testset "ascending (level, position)" begin
-        for i in member_probes(set, 6)
-            got = member_neighbors(set, set[i])
-            key(m) = (level(m), cellposition(levelgrid(sys, level(m)), m))
-            @test issorted(got; by = key)
+    # The order is the package's one order on a mixed-level set: a single
+    # counter-clockwise turn about the member, each neighbour read on its own
+    # level's grid. `issorted` by `(level, position)` — what this used to be —
+    # is exactly the ascending order the contract now refuses.
+    @testset "one counter-clockwise turn about the member" begin
+        for i in member_probes(set, 6), conn in (Vertex(), Edge())
+            c = set[i]
+            got = member_neighbors(set, c; connectivity = conn)
+            @test got == member_neighbors(set, c; connectivity = conn)
+            length(got) < 3 && continue
+            @test azimuth_wraps(sys, c, got) == 1
         end
     end
 

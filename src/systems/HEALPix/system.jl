@@ -340,13 +340,13 @@ DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
 # ===========================================================================
 
 """
-    _one_ring(grid, c, connectivity) -> SmallVector{8,LevelIndex}
+    one_ring(grid, c, connectivity) -> SmallVector{8,LevelIndex}
 
 Return immediate neighbours counter-clockwise from `SW`, as seen from outside
 the sphere. Missing entries are omitted and level-0 duplicates keep their
 first occurrence to preserve the cycle.
 """
-function _one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     _checked_index(g, c)
     raw = nested_neighbors(c.index, g.level)
     out = SmallVector{8,DGG.LevelIndex}()
@@ -366,19 +366,18 @@ end
 Return rings `1:k` concatenated outward, excluding `c`. Each ring is ordered
 counter-clockwise as seen from outside the sphere. `Vertex()` uses all eight
 lattice directions, except the missing neighbour at degree-3 vertices;
-`Edge()` uses the edge-sharing `SW, NW, NE, SE` directions. The first ring
-starts at `SW`; outer rings use azimuth about the cell centre.
+`Edge()` uses the edge-sharing `SW, NW, NE, SE` directions. Every ring starts on
+the `SW` spoke; outer rings use azimuth about the cell centre.
 
 `k == 0` returns an empty container. `k == 1` returns a fixed-capacity
 `SmallVector` without allocation.
 """
 function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{8,DGG.LevelIndex}()
-    steps == 1 && return _one_ring(g, c, connectivity)
-    shells = _shells(g, c, steps, connectivity)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     isempty(shells) && return DGG.LevelIndex[]
     return reduce(vcat, shells)
 end
@@ -388,82 +387,15 @@ end
 
 Return cells at lattice distance exactly `k`, counter-clockwise as seen from
 outside the sphere. `k == 0` returns `[c]`; `k == 1` uses the lattice cycle.
-Outer rings are sorted by azimuth about the cell centre from its west-corner
-direction, with canonical ids breaking ties.
+Outer rings are sorted by azimuth about the cell centre from the spoke through
+the `SW` neighbour, with canonical ids breaking ties.
 """
 function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
-    shells = _shells(g, c, steps, connectivity)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     steps <= length(shells) || return DGG.LevelIndex[]
     return shells[steps]
-end
-
-# Breadth-first lattice expansion; shell `j` contains cells at distance `j` in
-# counter-clockwise rotational order.
-function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
-        connectivity::DGG.Connectivity)
-    shells = Vector{DGG.LevelIndex}[]
-    steps == 0 && return shells
-    seen = Set{DGG.LevelIndex}((c,))
-    frontier = DGG.LevelIndex[c]
-    for j in 1:steps
-        next = DGG.LevelIndex[]
-        for x in frontier
-            for y in _one_ring(g, x, connectivity)
-                y in seen && continue
-                push!(seen, y)
-                push!(next, y)
-            end
-        end
-        # Shell 1 is already cyclic; sort outer shells geometrically.
-        j > 1 && _sort_ccw!(next, g, c)
-        push!(shells, next)
-        isempty(next) && break
-        frontier = next
-    end
-    return shells
-end
-
-# Sort counter-clockwise from the west-corner azimuth. The tangent basis is
-# right-handed when viewed from outside the sphere.
-function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::LevelGrid, c::DGG.LevelIndex)
-    length(cells) <= 1 && return cells
-    centre = DGG.cell_centroid(g, c)
-    ring = DGG.cell_boundary(g, c)
-    west = ring[1 + BOUNDARY_SEGMENTS]          # the ring's second corner
-    e1, e2 = _tangent_basis(centre, west)
-    ref = _azimuth(centre, e1, e2, west)
-    key(x) = begin
-        p = DGG.cell_centroid(g, x)
-        (mod(_azimuth(centre, e1, e2, p) - ref, 2 * Float64(π)), x)
-    end
-    sort!(cells; by = key)
-    return cells
-end
-
-# A right-handed-from-outside tangent basis at `centre`, with `e1` pointing at
-# `toward` (projected into the tangent plane).
-function _tangent_basis(centre, toward)
-    u = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
-    dot = u[1] * centre[1] + u[2] * centre[2] + u[3] * centre[3]
-    t = (u[1] - dot * centre[1], u[2] - dot * centre[2], u[3] - dot * centre[3])
-    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
-    # Use a deterministic tangent direction if the reference has no tangent
-    # component.
-    n <= eps(Float64) && (t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0);
-                          n = 1.0)
-    e1 = (t[1] / n, t[2] / n, t[3] / n)
-    e2 = (centre[2] * e1[3] - centre[3] * e1[2],
-          centre[3] * e1[1] - centre[1] * e1[3],
-          centre[1] * e1[2] - centre[2] * e1[1])
-    return e1, e2
-end
-
-function _azimuth(centre, e1, e2, p)
-    u = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
-    return atan(u[1] * e2[1] + u[2] * e2[2] + u[3] * e2[3],
-                u[1] * e1[1] + u[2] * e1[2] + u[3] * e1[3])
 end

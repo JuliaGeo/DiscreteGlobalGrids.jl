@@ -602,7 +602,9 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test typeof(DGG.neighbors(grid, c, 1; connectivity=DGG.Edge())) ===
               SmallVector{11,A5.A5Cell}
         @test typeof(DGG.neighbors(grid, c, 2)) === Vector{A5.A5Cell}
-        @test typeof(DGG.ring(grid, c, 1)) === Vector{A5.A5Cell}
+        # `ring(c, 1)` IS `neighbors(c, 1)`, container included: both are the
+        # one-ring hook's answer.
+        @test typeof(DGG.ring(grid, c, 1)) === SmallVector{11,A5.A5Cell}
         @test typeof(DGG.children(S, c)) === SmallVector{5,A5.A5Cell}
         DGG.children(S, c)
         @test @allocated(DGG.children(S, c)) == 0

@@ -86,7 +86,7 @@ naive(cv; connectivity = Vertex()) =
         @test a == collect(1:n)
         @test b == [Float64(length(neighbors(cv, c))) for c in cv]
 
-        # `HaloTable` preserves ring order; sorted rows match `halo_table`.
+        # `HaloTable` is `halo_table` in CSR form: same rows, same ring order.
         t = HaloTable(cv)
         rows = halo_table(cv)
         @test length(t) == n
@@ -94,7 +94,7 @@ naive(cv; connectivity = Vertex()) =
         @test all(zip(1:n, neighbors(cv))) do (p, (c, nbrs))
             collect(t[p]) == [cellposition(h) for h in nbrs]
         end
-        @test all(p -> sort(collect(t[p])) == rows[p], 1:n)
+        @test all(p -> collect(t[p]) == rows[p], 1:n)
         @test rows == [neighbors(cv, p, 1) for p in 1:n]
 
         # Threaded and sequential builds have identical storage.

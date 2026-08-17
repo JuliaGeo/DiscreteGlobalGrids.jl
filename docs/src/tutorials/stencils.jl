@@ -32,8 +32,11 @@ values = [field(lonlat(DGG.cell_centroid(grid, c))...) for c in cells] .+
 
 # ## Smoothing in three lines
 #
-# Row `p` of the table is `neighbors(grid, p)`: in-set positions, ascending.
-# Averaging the neighbourhood smooths.
+# Row `p` of the table is `neighbors(grid, p)`: the in-set positions of `p`'s
+# neighbours, counter-clockwise seen from outside the sphere. Every neighbour
+# idiom in the package uses that one order, so slot `j` of a row always names a
+# direction and an oriented stencil — a gradient, an upwind scheme — can be
+# written against it. Averaging ignores the order and just smooths.
 
 halo = DGG.halo_table(grid)
 stencil(f, v) = [f(v[i], v[halo[i]]) for i in eachindex(v)]

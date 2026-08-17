@@ -35,7 +35,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,
     ncells, cellindex, cell_boundary, cell_centroid,
     cellposition, rawid,
-    cellat, neighbors, ring, system, level,
+    cellat, neighbors, ring, one_ring, system, level,
     cellindextype, levels, levelgrid, rootcells, children,
     cap_inflation, max_neighbors, has_sorted_subtrees,
     ancestor, descendants

@@ -286,16 +286,44 @@ diamonds meet an icosahedral vertex.
 
 # Order
 
-Order is part of the contract. Results concatenate rings outward:
+Order is part of the contract, and it is ONE order: every verb in this package
+that hands back a neighbourhood hands it back counter-clockwise. Results
+concatenate rings outward:
 
     neighbors(grid, c, k) == vcat(ring(grid, c, 1), ring(grid, c, 2), ..., ring(grid, c, k))
 
-Within each ring, cells run counter-clockwise in the tangent plane at
-`cell_centroid(grid, c)`, viewed from outside the sphere, from a system-defined
-start. Results are not id-sorted. The geometric fallback uses the first ring-1
-neighbour as zero azimuth and breaks exact azimuth ties by canonical id.
+**Counter-clockwise, exactly.** Take `n = cell_centroid(grid, c)` as the outward
+normal and project each ring member's centroid into the tangent plane at `n`.
+Read in order, the azimuths of those projections in a right-handed frame
+`(e₁, e₂ = n × e₁)` increase and wrap through `2π` **exactly once**. That is the
+same rotational sense [`cell_boundary`](@ref)`(grid, c)` winds in: the package
+has one handedness, fixed by the boundary contract, and every ring agrees with
+it. A ring read backwards wraps `length - 1` times; an id-sorted one wraps some
+arbitrary number of times. Neither is this order.
 
-Cells with fewer neighbours yield shorter rings without padding.
+**Start.** The direction is guaranteed everywhere; the phase is guaranteed only
+*within* a system. Ring 1 begins at the system's own documented direction — `+s`
+for S2, `SW` for HEALPix, `NW` for CopernicusDEM, the development frame's `+1`
+for IGeo7, the smallest-id neighbour for A5 and for the geometric fallback — and
+rings `2:k` of the same call begin on the **same spoke** as ring 1, the azimuth
+of `ring(grid, c, 1)[1]`. So a disc reads as concentric rings all starting in
+one direction, but which cell that is differs by system and is not a portable
+fact. Exact azimuth ties break by canonical id.
+
+Cells with fewer neighbours yield shorter rings without padding, and an omitted
+neighbour leaves no gap in the sequence.
+
+# The idioms that carry this order
+
+[`ring`](@ref), the position forms below, [`halo_table`](@ref), `HaloTable`,
+`stencil_table`, [`member_neighbors`](@ref), the one-argument
+[`neighbors`](@ref) iterator, and the rings `mapneighbors` and
+`foreachneighbors` pass to their callbacks — all of them. Nothing in this
+package answers a neighbourhood question in ascending id or position.
+
+The two verbs that are ascending are `halo` and [`subtree_halo`](@ref), and they
+are not rings: they are fetch lists, ordered so that a read is sequential. They
+say so where they are documented.
 
 # Container
 
@@ -324,10 +352,15 @@ the cells at *exactly* distance `k`.
 
 # Positions
 
-Given a position, both verbs answer with **in-set positions in ascending order**
-— the form a stencil table is indexed by. Ids keep the rotational order above;
-positions do not, because an index list is read by membership rather than by
-direction. [`halo_table`](@ref) is this form for a whole grid at once.
+Given a position, both verbs answer with **in-set positions in the rotational
+order above**: `neighbors(grid, p, k)` is `neighbors(grid, cellindex(grid, p),
+k)` mapped through [`cellposition`](@ref), element for element, with non-members
+dropped. [`halo_table`](@ref) is this form for a whole grid at once.
+
+The result is therefore not sorted. An index list read only by membership does
+not care, and one read by direction — a gradient, an upwind stencil — cannot be
+written at all against a sorted list, which is why the position forms carry the
+same order the id forms do.
 """
 function neighbors end
 
@@ -343,29 +376,48 @@ The cells at adjacency distance exactly `k` from `c`. `ring(grid, c, 0)` is
 so ring `k` is the final ordered block of `neighbors(grid, c, k)`. Overrides
 must preserve this equality.
 
-`ring` carries the same order (counter-clockwise seen from outside the sphere,
-from the system's documented start), container, coverage and subset-clipping
-contracts as [`neighbors`](@ref), including the position form's ascending order.
+`ring` carries [`neighbors`](@ref)' order, container, coverage and
+subset-clipping contracts unchanged — including the position form's, which is
+the same counter-clockwise order read through [`cellposition`](@ref).
 """
 function ring end
+
+"""
+    one_ring(grid, c, connectivity) -> ordered neighbours of `c`
+
+The `k == 1` primitive: `c`'s immediate neighbours in one counter-clockwise turn
+from the system's own start direction, as [`neighbors`](@ref) documents. An
+internal hook, not part of the public API.
+
+A system implements this one method and inherits `neighbors`, `ring`, and the
+shell walk behind both from `Fallbacks.adjacency_shells`. The generic method is
+the geometric one — `Fallbacks.adjacent_cells` wound about the cell's centroid —
+and a system with native adjacency overrides it.
+
+The return may be any ordered, indexable collection with the grid's cell-index
+`eltype`; a fixed-capacity `SmallVector` sized by [`max_neighbors`](@ref) is
+what keeps the one-ring sweeps allocation-free.
+"""
+function one_ring end
 
 """
     halo_table(grid::AbstractGrid, k::Integer = 1; connectivity::Connectivity = Vertex()) -> Vector{Vector{Int}}
     halo_table(cv::CellVector, k::Integer = 1; connectivity = Vertex(), threaded = true)
     halo_table(lk::CellLookup, k::Integer = 1; connectivity = Vertex(), threaded = true)
 
-Return the in-set neighbours of every cell as ascending position vectors.
-Entry `p` equals `neighbors(grid, p, k)`.
+Return the in-set neighbours of every cell as position vectors, each row in the
+counter-clockwise order [`neighbors`](@ref) states. Entry `p` equals
+`neighbors(grid, p, k)`.
 
     halo_table(sub, k)[p] == neighbors(sub, p, k)
 
-Subset rows contain only members and may be shorter at the rim. [`halo`](@ref)
-returns the missing cells outside the subset, while [`stencil_table`](@ref)
-combines a subset and its fetched halo into complete rows over a `[chunk; halo]`
-buffer.
+Subset rows contain only members and may be shorter at the rim; clipping drops
+cells and never reorders the survivors, so a short row is still a counter-
+clockwise arc. [`halo`](@ref) returns the missing cells outside the subset,
+while [`stencil_table`](@ref) combines a subset and its fetched halo into
+complete rows over a `[chunk; halo]` buffer.
 
-[`HaloTable`](@ref) stores the same `k == 1` neighbours in CSR form and preserves
-ring order.
+[`HaloTable`](@ref) stores the same `k == 1` rows in CSR form.
 
 On subsets, `threaded` controls the `k == 1` sweep and accepts `Bool` or
 GeometryOps' `True()`/`False()`. Threaded and sequential calls return identical

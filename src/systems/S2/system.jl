@@ -301,13 +301,13 @@ end
 # ===========================================================================
 
 """
-    _one_ring(grid, c, connectivity) -> SmallVector{8,LevelIndex}
+    one_ring(grid, c, connectivity) -> SmallVector{8,LevelIndex}
 
 The immediate neighbours of `c` in **counter-clockwise rotational order seen
 from outside the sphere, starting at the `+s` lattice direction**
 ([`NEIGHBOR_OFFSETS`](@ref)), with cube-corner steps and repeats dropped.
 """
-function _one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     _checked_index(g, c)
     out = SmallVector{8,DGG.LevelIndex}()
     for h in lattice_neighbors(c.index, g.level, connectivity)
@@ -351,11 +351,10 @@ spoke through the first ring-1 neighbour; see [`ring`](@ref).
 """
 function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{8,DGG.LevelIndex}()
-    steps == 1 && return _one_ring(g, c, connectivity)
-    shells = _shells(g, c, steps, connectivity)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     isempty(shells) && return DGG.LevelIndex[]
     return reduce(vcat, shells)
 end
@@ -372,83 +371,10 @@ canonical id.
 """
 function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
-    shells = _shells(g, c, steps, connectivity)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     steps <= length(shells) || return DGG.LevelIndex[]
     return shells[steps]
-end
-
-# Breadth-first expansion over the lattice one-ring; shell `j` is the set at
-# distance exactly `j`, each returned in CCW rotational order. Shared by
-# `neighbors` and `ring` so the two cannot disagree about what a shell is or
-# what order it is in.
-function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
-        connectivity::DGG.Connectivity)
-    shells = Vector{DGG.LevelIndex}[]
-    steps == 0 && return shells
-    seen = Set{DGG.LevelIndex}((c,))
-    frontier = DGG.LevelIndex[c]
-    for j in 1:steps
-        next = DGG.LevelIndex[]
-        for x in frontier
-            for y in _one_ring(g, x, connectivity)
-                y in seen && continue
-                push!(seen, y)
-                push!(next, y)
-            end
-        end
-        # Shell 1 is already the lattice cycle, in order. Outer shells come out
-        # of the breadth-first walk in whatever order the frontier happened to
-        # reach them, so they are wound geometrically — from the spoke through
-        # shell 1's first entry, which is what keeps every ring on one start.
-        j > 1 && _sort_ccw!(next, g, c, shells[1])
-        push!(shells, next)
-        isempty(next) && break
-        frontier = next
-    end
-    return shells
-end
-
-# Order a shell counter-clockwise about `c`'s centre, from the azimuth of the
-# first ring-1 neighbour. `e1 x e2 == centre` makes `(e1, e2)` right-handed SEEN
-# FROM OUTSIDE, which is what puts increasing `atan(u.e2, u.e1)` counter-
-# clockwise from outside rather than from inside.
-function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::LevelGrid, c::DGG.LevelIndex,
-        ring1::Vector{DGG.LevelIndex})
-    length(cells) <= 1 && return cells
-    centre = DGG.cell_centroid(g, c)
-    e1, e2 = _tangent_basis(centre)
-    ref = isempty(ring1) ? 0.0 :
-        _azimuth(centre, e1, e2, DGG.cell_centroid(g, first(ring1)))
-    key(x) = begin
-        p = DGG.cell_centroid(g, x)
-        (mod(_azimuth(centre, e1, e2, p) - ref, 2 * Float64(π)), x)
-    end
-    sort!(cells; by = key)
-    return cells
-end
-
-# A right-handed-from-outside tangent basis at `centre`. The seed axis is the
-# one `centre` leans on least, so the Gram-Schmidt step stays well-conditioned
-# everywhere, poles included.
-function _tangent_basis(centre)
-    ax = abs(centre[1]) <= abs(centre[2]) ?
-        (abs(centre[1]) <= abs(centre[3]) ? (1.0, 0.0, 0.0) : (0.0, 0.0, 1.0)) :
-        (abs(centre[2]) <= abs(centre[3]) ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0))
-    s = _dot3(ax, centre)
-    t = (ax[1] - s * centre[1], ax[2] - s * centre[2], ax[3] - s * centre[3])
-    n = sqrt(_dot3(t, t))
-    e1 = (t[1] / n, t[2] / n, t[3] / n)
-    e2 = (centre[2] * e1[3] - centre[3] * e1[2],
-          centre[3] * e1[1] - centre[1] * e1[3],
-          centre[1] * e1[2] - centre[2] * e1[1])
-    return e1, e2
-end
-
-function _azimuth(centre, e1, e2, p)
-    u = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
-    return atan(u[1] * e2[1] + u[2] * e2[2] + u[3] * e2[3],
-                u[1] * e1[1] + u[2] * e1[2] + u[3] * e1[3])
 end

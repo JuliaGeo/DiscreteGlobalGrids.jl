@@ -7,9 +7,9 @@
 # the first step of a flow-routing model on it. The worked example averages
 # the source to 120 m so it also fits comfortably on a standard CI runner.
 #
-# Three calls carry the page: `coarsest_contained` picks the cell to work in,
-# `PartialGrid` names its subtree as a grid, and `halo_table` routes water out
-# of every cell.
+# Three calls carry the page: `MultiOrderCoverage` names the cells the tile
+# touches, `regrid` fills them from the raster, and `halo_table` routes water
+# out of every cell.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 
@@ -36,18 +36,25 @@ root = DGG.coarsest_contained(DGG.query(sys, DGG.MultiOrderCoverage(tile); level
 f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
 poly!(DGG.PartialGrid(sys, root, DGG.level(root)); strokewidth = 2)
 f
-# This is the actual cell we have:
+# The cell, and its level:
 root, DGG.level(root)
 
-# ## One subtree as a grid
+# ## The tile's coverage as a grid
 #
-# `PartialGrid(sys, cell, level)` is that cell's subtree at a working level, as
-# an ordinary grid: positions run `1:ncells`, so a data vector indexes straight
-# through it.
+# One contained cell gives up the tile's rim. The destination that keeps it is
+# the tile's own coverage at the working level: every cell the tile touches.
 
 leaf = 12                                          # ≈ 1.1 km cells
-grid = DGG.PartialGrid(sys, root, leaf)
-#
+region = DGG.query(sys, DGG.MultiOrderCoverage(tile); level = leaf)
+f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
+poly!(region; color = :transparent, strokewidth = 1)
+f
+
+# `CellLookup` reads the set as a one-level cell axis, and `PartialGrid` reads
+# that as an ordinary grid: positions run `1:ncells`, so a data vector indexes
+# straight through it.
+
+grid = DGG.PartialGrid(DGG.CellLookup(region))
 DGG.ncells(grid)
 
 # ## Regridding the DEM
@@ -63,9 +70,9 @@ dem = Raster(path; lazy = false)
 dem = aggregate(mean, dem, 4; progress = false)
 
 # `regrid` takes the grid as its destination and the raster as its source, and
-# hands back a cube whose axis is the cells. The tile does not cover every rim
-# cell of the subtree; a cell it covers less than half of comes back `NaN`
-# rather than as a number standing for ground that was never seen.
+# hands back a cube whose axis is the cells. The coverage overhangs the tile at
+# the rim; a cell the raster covers less than half of comes back `NaN` rather
+# than as a number standing for ground that was never seen.
 
 igeo7_dem = @time DGG.regrid(dem; to = grid)
 elevation = parent(igeo7_dem)
@@ -120,8 +127,8 @@ fig
 
 terrain = Raster(igeo7_dem; name = :height)
 
-tpi = GM.topographic_position_index(terrain)
-accumulation, directions = GM.flowaccumulation(terrain; method = GM.D8())
+tpi = @time GM.topographic_position_index(terrain)
+accumulation, directions = @time GM.flowaccumulation(terrain; method = GM.D8())
 
 cell_area = GM.cellarea(terrain, first(eachindex(terrain)))
 log_cells = log10.(accumulation ./ cell_area)

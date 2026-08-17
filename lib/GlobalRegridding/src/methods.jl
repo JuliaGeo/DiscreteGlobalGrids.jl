@@ -46,6 +46,16 @@ This point sample does not preserve integrals.
 """
 struct BilinearPoint <: AbstractRegriddingMethod end
 
+"""
+    outputsampling(method::AbstractRegriddingMethod) -> DimensionalData.Lookups.Sampling
+
+Return the sampling a method gives the destination it writes. Area-based methods
+report `Intervals(Center())`, the default; point samples report `Points()`.
+"""
+outputsampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Center())
+outputsampling(::NearestCell) = DD.Lookups.Points()
+outputsampling(::BilinearPoint) = DD.Lookups.Points()
+
 # Weight construction
 
 """

@@ -43,6 +43,16 @@ function build_weights!(coo::WeightCOO, method::T6CountingMethod,
     return build_weights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
+# A lookup that names cells of its own, as a DGGS cell axis does.
+struct T6Grid end
+Base.show(io::IO, ::T6Grid) = print(io, "T6Grid()")
+
+struct T6Cell
+    id::Int
+end
+
+GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
+
 @testset "Integration" begin
 
     @testset "conservation" begin
@@ -126,16 +136,68 @@ end
 
         # Twelve monthly fields cost one weight construction, not twelve.
         @test method.builds == 1
-        # Destination cells first, the month dimension after it unchanged.
-        @test size(out) == (ncells(dst), 12)
+        # The destination's own axes first, the month dimension after them
+        # unchanged.
+        @test size(out) == (8, 4, 12)
         @test collect(DD.lookup(out, DD.Ti)) == 1:12
         # Each slice is that slice's own 2-D regrid: the slice loop neither
         # transposes nor reorders.
         for k in 1:12
-            @test Array(out)[:, k] ≈
-                  regrid(cube[:, :, k]; to = dst, method = Conservative())
+            @test Array(out)[:, :, k] ≈
+                  Array(regrid(cube[:, :, k]; to = dst, method = Conservative()))
         end
         @test method.builds == 1
+    end
+
+    @testset "destination labelling" begin
+        f(lon, lat) = 2.0 + sind(2 * lat) + 0.25 * cosd(lon)
+        src = t6_raster(f, t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
+        dst = t6_space(t6_centres(-180, 180, 9), t6_centres(-90, 90, 6))
+
+        # An area method returns the destination's own axes, sampled as the
+        # cells it integrated over, with the space's edges as their bounds.
+        area = regrid(src; to = dst, method = Conservative())
+        @test DD.dims(area) isa Tuple{<:DD.X,<:DD.Y}
+        @test collect(DD.lookup(area, DD.X)) == t6_centres(-180, 180, 9)
+        @test DD.sampling(DD.lookup(area, DD.X)) isa DD.Lookups.Intervals
+        @test DD.sampling(DD.lookup(area, DD.Y)) isa DD.Lookups.Intervals
+        @test DD.intervalbounds(DD.lookup(area, DD.X))[1] == (-180.0, -140.0)
+        @test DD.intervalbounds(DD.lookup(area, DD.Y))[1] == (-90.0, -60.0)
+
+        # Labelling only reshapes: the values are the cell-position vector the
+        # same regrid off a bare array returns.
+        @test vec(parent(area)) == regrid(parent(src); to = dst,
+            from = RasterGrid(src), method = Conservative())
+
+        # A point sample says so instead, over the same cell centres.
+        point = regrid(src; to = dst, method = NearestCell())
+        @test DD.sampling(DD.lookup(point, DD.X)) isa DD.Lookups.Points
+        @test collect(DD.lookup(point, DD.X)) == collect(DD.lookup(area, DD.X))
+
+        # `sampling` overrides the method's rule in both directions, and
+        # changes nothing but the label.
+        forced = regrid(src; to = dst, method = Conservative(),
+            sampling = DD.Lookups.Points())
+        @test DD.sampling(DD.lookup(forced, DD.X)) isa DD.Lookups.Points
+        @test parent(forced) == parent(area)
+        @test DD.sampling(DD.lookup(regrid(src; to = dst, method = NearestCell(),
+                sampling = DD.Lookups.Intervals(DD.Lookups.Center())), DD.X)) isa
+              DD.Lookups.Intervals
+
+        # A `(Y, X)` destination labels in its own array order.
+        yfirst = RasterGrid(DD.DimArray(zeros(6, 9),
+            (DD.Y(t6_centres(-90, 90, 6)), DD.X(t6_centres(-180, 180, 9)))))
+        @test DD.dims(regrid(src; to = yfirst)) isa Tuple{<:DD.Y,<:DD.X}
+    end
+
+    @testset "a cell axis names its own source" begin
+        data = DD.DimArray(zeros(32), (DD.Dim{:Cells}(DD.Lookups.Categorical(
+            [T6Cell(i) for i in 1:32]; order = DD.Lookups.Unordered())),))
+        dst = t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
+
+        # Without `from` the source space is derived from the data, and a cell
+        # axis is not a raster lattice: name the grid it holds, not `xdim`.
+        @test_throws "from = T6Grid()" regrid(data; to = dst)
     end
 
     @testset "cross-method agreement" begin

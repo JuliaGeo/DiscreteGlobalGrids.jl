@@ -43,25 +43,30 @@ Base.show(io::IO, block::WeightBlock) =
         block.denom === nothing ? "" : ", denom", ")")
 
 """
-    DirectPlan(method, missingpolicy, dst_space, src_space, block, missingval = nothing)
+    DirectPlan(method, missingpolicy, dst_space, src_space, block, missingval = nothing,
+               sampling = nothing)
 
 Store one [`WeightBlock`](@ref) over both complete spaces. The block size is
 `(ncells(dst_space), ncells(src_space))`; its local indices are cell positions.
-`missingval` is an optional source nodata sentinel.
+`missingval` is an optional source nodata sentinel. `sampling` overrides the
+destination lookup sampling the method would imply ([`outputsampling`](@ref)).
 """
 struct DirectPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
-                  D<:RegridSpace,S<:RegridSpace,B<:WeightBlock,V} <: AbstractRegriddingPlan
+                  D<:RegridSpace,S<:RegridSpace,B<:WeightBlock,V,
+                  L<:Union{Nothing,DD.Lookups.Sampling}} <: AbstractRegriddingPlan
     method::M
     missingpolicy::P
     dst_space::D
     src_space::S
     block::B
     missingval::V
+    sampling::L
 end
 
 DirectPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
-    dst_space::RegridSpace, src_space::RegridSpace, block::WeightBlock) =
-    DirectPlan(method, missingpolicy, dst_space, src_space, block, nothing)
+    dst_space::RegridSpace, src_space::RegridSpace, block::WeightBlock,
+    missingval = nothing) =
+    DirectPlan(method, missingpolicy, dst_space, src_space, block, missingval, nothing)
 
 Base.show(io::IO, plan::DirectPlan) =
     print(io, "DirectPlan(", typeof(plan.method).name.name, ", ",

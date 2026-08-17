@@ -289,8 +289,7 @@ Trees.ncells(cursor::HierarchicalGridCursor) = _stored_count(cursor)
 # collects are valid arguments here. (At the root, where every consumer calls
 # it, the node-local and grid position spaces coincide anyway.)
 function Trees.getcell(cursor::HierarchicalGridCursor, i::Int)
-    total = ncells(cursor.grid)
-    1 <= i <= total || throw(BoundsError(1:total, i))
+    1 <= i <= ncells(cursor.grid) || throw(BoundsError(cursor.grid, i))
     return cell_polygon(cursor.grid, cellindex(cursor.grid, i))
 end
 

@@ -159,32 +159,29 @@ end
 end
 
 # The whole-array entry points resolve the cell dimension and hand back the
-# caller's own wrapper. One system: the resolution, slicing and pass-form
-# code is system-generic and the numbers are pinned to the CellVector
-# layer's.
+# caller's own wrapper. One system suffices: the code is system-generic and
+# the numbers are pinned to the CellVector layer's.
 @testset "any dimarray in, the same lookups out" begin
     sys = DGG.IGeo7System()
     cv = CellVector(rooted_pg(sys, 1, 3))
     n = length(cv)
     data = collect(1.0:n)
     A = DD.DimArray(copy(data), (Cells(CellLookup(cv)),))
-    # The cell dim SECOND: auto-detection must find it there, and each time
-    # slice carries its own numbers.
+    # Put the cell dimension second to exercise automatic detection; each
+    # time slice carries its own numbers.
     cubedata = [j * data[k] + 0.1j for j in 1:3, k in 1:n]
     cube = DD.DimArray(copy(cubedata), (DD.Dim{:time}(1:3), Cells(CellLookup(cv))))
 
-    # The DEFAULT is the handles form: `probe` reads handle positions and has
-    # no three-argument method, so a default that flipped to Values() errors
-    # rather than matching the CellVector layer's numbers.
+    # The default passes positioned handles: `probe` has no three-argument
+    # method, so a default flipped to Values() errors instead of matching
+    # the CellVector layer's numbers.
     out = mapneighbors(probe, A; threaded = false)
     @test out isa DD.AbstractDimArray
     @test parent(out) == mapneighbors(probe, cv; threaded = false)
     @test DD.dims(out) === DD.dims(A)
     @test parent(DD.lookup(out, 1)) === cv
 
-    # A handle on an N-D array names its slice — the kernel reads the array
-    # it was given — and the one-per-cell output sits on the cell dim with
-    # the lookup intact.
+    # An N-D handle selects a view, while the output retains the cell lookup.
     colsum = mapneighbors((c, nbrs) -> sum(cube[c]), cube; threaded = false)
     @test size(colsum) == (n,)
     @test parent(DD.lookup(colsum, 1)) === cv
@@ -194,9 +191,9 @@ end
     @test map(DD.name, DD.dims(cube[h])) == (:time,)
     @test view(cube, h) == cubedata[:, 5]
 
-    # Values(): the bare data call's numbers in the caller's wrapper, and on
-    # N-D each time slice equals its own 1-D call — a slicer along the wrong
-    # dim or with interacting slices fails here.
+    # Values() matches the bare data call, and each time slice equals its
+    # own 1-D call — a slicer along the wrong dim or with interacting slices
+    # fails here.
     metric = (c, v, vals) ->
         3.0v + sum(i * vals[i] for i in eachindex(vals); init = 0.0)
     outV = mapneighbors(metric, A; pass = Values(), threaded = false)
@@ -209,9 +206,9 @@ end
             mapneighbors(metric, cv, cubedata[j, :]; threaded = false)
     end
 
-    # NeighborSlices(): `f` sees one-dimension-smaller views — the ndims
-    # guard poisons the value on any other shape — lands one value per cell
-    # on the cell dim, and refuses a 1-D array by naming Values().
+    # NeighborSlices() passes one-dimension-smaller views — the ndims guard
+    # poisons the value on any other shape — and refuses a 1-D array by
+    # naming Values().
     sliced = (c, s, ns) ->
         ndims(s) == 1 && all(x -> ndims(x) == 1, ns) ?
         sum(s) + sum(sum, ns; init = 0.0) : NaN
@@ -224,15 +221,13 @@ end
         for k in 1:n]
     @test_throws "use Values()" mapneighbors(sliced, A; pass = NeighborSlices())
 
-    # Explicit spatialdim, by dim type and by name, agrees with detection.
+    # Explicit dimension selectors agree with automatic detection.
     @test parent(mapneighbors(metric, cube; spatialdim = Cells, pass = Values(),
         threaded = false)) == parent(coutV)
     @test parent(mapneighbors(metric, cube; spatialdim = :Cells, pass = Values(),
         threaded = false)) == parent(coutV)
 
-    # The refusals say what is wrong: no cell dimension anywhere, a named
-    # dimension the array does not have, a named dimension that is not
-    # cell-valued, a pass that is not a selector.
+    # Invalid dimensions and pass modes report the failing condition.
     @test_throws "carries a CellLookup" mapneighbors(probe,
         DD.DimArray(collect(1.0:4), (DD.X(1:4),)))
     @test_throws "no dimension matching" mapneighbors(probe, cube;
@@ -241,17 +236,15 @@ end
         spatialdim = :time)
     @test_throws "pass must be" mapneighbors(probe, cube; pass = :values)
 
-    # A concrete tuple return rebuilds one wrapper per component, in every
-    # pass form's output shape.
+    # Concrete tuple results produce one wrapped array per component.
     two = (c, v, vals) -> (v, Float64(length(vals)))
     a, b = mapneighbors(two, cube; pass = Values(), threaded = false)
     @test a isa DD.AbstractDimArray && b isa DD.AbstractDimArray
     @test parent(a) == cubedata
     @test DD.dims(b) === DD.dims(cube)
 
-    # foreachneighbors takes the same selector — handles by default — and
-    # the one-arg iterator resolves the same way. Sums are ≈ where the visit
-    # order differs from `sum`'s.
+    # foreachneighbors and neighbors use the same cell-dimension resolution.
+    # Sums are ≈ where the visit order differs from `sum`'s.
     accH = Ref(0)
     foreachneighbors((c, nbrs) -> (accH[] += length(nbrs)), cube)
     @test accH[] == sum(length(r[2]) for r in rings)

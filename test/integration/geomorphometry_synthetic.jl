@@ -2,9 +2,10 @@
 #
 # Run the synthetic Geomorphometry integration battery on IGeo7, HEALPix,
 # ISEA4R, and H3. Each system is tested with a rooted subtree and a multi-window
-# coverage. IGeo7 exercises D8, DInf, FD8, HAND, and relative-cell directions;
-# the other systems exercise D8 with ring-slot directions and reject DInf, FD8,
-# and HAND. The stream-mask HAND entry refuses on every system.
+# coverage. IGeo7 exercises every router, HAND, and relative-cell directions;
+# the other systems exercise D8 with ring-slot directions and reject
+# operations that require relative-cell arithmetic. No system supports the
+# stream-mask HAND entry.
 #
 # The environment needs this package, `Rasters`, and `Geomorphometry` at the
 # `clipped-neighbors` rev of https://github.com/asinghvi17/GeoArrayOps.jl.git.
@@ -69,16 +70,16 @@ function flow_battery(sys::DGG.IGeo7System, dem, cells, complete)
         @test bad == 0
     end
 
-    # The stream-mask entry is not implemented for any DGGS raster, IGeo7
-    # included; it must redirect to the threshold form exercised above.
+    # Even IGeo7 refuses the stream-mask entry: DGGS rasters support only the
+    # threshold form exercised above.
     @test_throws "use the threshold form" GM.height_above_nearest_drainage(
         dem, falses(size(dem)))
 end
 
 # Other systems support D8 and store one set bit for the downstream ring slot
 # (slot `k` as bit `k - 1` of a `UInt16`; the checks below decode it
-# independently of the extension). Their `height_above_nearest_drainage`
-# refuses and names the backend that could answer, asserted with DInf/FD8.
+# independently of the extension). HAND needs IGeo7 relative-cell arithmetic,
+# so here it refuses; asserted with DInf/FD8 below.
 function flow_battery(sys, dem, cells, complete)
     @testset "flow routing: D8" begin
         accumulation, directions = GM.flowaccumulation(dem; method=GM.D8())
@@ -110,7 +111,7 @@ function flow_battery(sys, dem, cells, complete)
         @test bad == 0
     end
 
-    # Unsupported operations identify the available backend. Without its
+    # Unsupported operations name the backend that could answer; without the
     # guard, HAND would die on cell subtraction with a bare `MethodError`.
     @testset "DInf, FD8 and HAND refuse, and say why" begin
         for method in (GM.DInf(), GM.FD8())

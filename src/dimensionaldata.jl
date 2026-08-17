@@ -376,7 +376,7 @@ Base.@propagate_inbounds Base.getindex(A::CellsArray, h::SubsetPositionedCell) =
 Base.@propagate_inbounds Base.setindex!(A::CellsArray, x, h::SubsetPositionedCell) =
     setindex!(parent(A), x, h.position)
 
-# The first `Cells` dimension's number, for handle indexing on any shape.
+# Find the first `Cells` dimension for positioned-handle indexing.
 function _handle_dimnum(A::DD.AbstractDimArray)
     for (i, d) in enumerate(DD.dims(A))
         d isa Cells && return i
@@ -389,9 +389,9 @@ end
 @inline _handle_slice(A::DD.AbstractDimArray, ::Val{D}, p::Int) where {D} =
     view(A, ntuple(i -> i == D ? p : Colon(), Val(ndims(A)))...)
 
-# On more than one dimension a handle names the whole slice at its position
-# along the first `Cells` dimension, as a view; the 1-D methods above stay
-# the scalar fast path, position trusted either way.
+# On an N-D array, a positioned handle selects the slice at its position
+# along the first `Cells` dimension, as a view. The 1-D methods above keep
+# the scalar fast path; the position is trusted either way.
 Base.getindex(A::DD.AbstractDimArray, h::SubsetPositionedCell) =
     _handle_slice(A, Val(_handle_dimnum(A)), h.position)
 Base.view(A::DD.AbstractDimArray, h::SubsetPositionedCell) =
@@ -400,14 +400,11 @@ Base.view(A::DD.AbstractDimArray, h::SubsetPositionedCell) =
 # ===========================================================================
 # Whole-array entry points
 #
-# The neighborhood forms accept any `AbstractDimArray` and resolve the cell
-# dimension themselves, so a downstream package never unwraps a lookup or
-# slices by hand.
+# Neighborhood operations locate the cell dimension in any `AbstractDimArray`.
 # ===========================================================================
 
-# The cell dimension's number: the first `CellLookup` dim when `spatialdim` is
-# `nothing`, otherwise whatever `DD.dims` accepts — informative errors both
-# ways.
+# Use the first `CellLookup` dimension unless `spatialdim` selects one
+# explicitly; failures throw an informative `ArgumentError` either way.
 function _cells_dimnum(A::DD.AbstractDimArray, ::Nothing)
     for (i, d) in enumerate(DD.dims(A))
         DD.lookup(d) isa CellLookup && return i
@@ -435,35 +432,31 @@ _rebuilt(A::DD.AbstractDimArray, out) = DD.rebuild(A; data = out)
 """
     Neighbors()
 
-The default `pass` of [`mapneighbors`](@ref) and [`foreachneighbors`](@ref)
-over an `AbstractDimArray`: `f(cell, nbrs)` receives positioned handles —
-exactly the [`CellVector`](@ref) form — and reads data by indexing the array
-with them. One result per cell, returned on the cell dimension.
+Pass positioned cell handles to `f(cell, neighbors)`; the handles read data
+by indexing the array. This is the default for [`mapneighbors`](@ref) and
+[`foreachneighbors`](@ref) on dimensional arrays. `mapneighbors` returns one
+result per cell, on the cell dimension.
 """
 struct Neighbors end
 
 """
     Values()
 
-`pass` form of [`mapneighbors`](@ref) over an `AbstractDimArray`:
-`f(cell, value, values)` receives the cell's scalar and its neighbours'
-scalars. On an array with other dimensions the stencil runs independently on
-every cell-dimension slice — the `mapslices` semantic — and the output keeps
-all of the array's dims.
+Pass scalar values to `f(cell, value, neighbor_values)`. On an N-D array,
+[`mapneighbors`](@ref) runs the stencil independently along the cell
+dimension for each index of the other dimensions, and keeps `A`'s dimensions.
 """
 struct Values end
 
 """
     NeighborSlices()
 
-`pass` form of [`mapneighbors`](@ref) for arrays of two or more dimensions:
-`f(cell, slice, slices)` receives the array's views at the cell's and its
-neighbours' positions along the cell dimension, each one dimension smaller
-than the array. One result per cell, on the cell dimension. A
-one-dimensional array is refused — its per-cell slice is a scalar, which is
-[`Values`](@ref).
+Pass views to `f(cell, slice, neighbor_slices)`, with the cell dimension
+removed from each view. [`mapneighbors`](@ref) returns one result per cell,
+on the cell dimension. A one-dimensional array is refused — its per-cell
+slice is a scalar, which is [`Values`](@ref).
 """
-struct NeighborSlices end
+struct NeighborSlices end   # Not `Slices`: Base exports that name.
 
 @noinline _bad_pass(pass) = throw(ArgumentError(
     "pass must be Neighbors(), Values() or NeighborSlices(), " *
@@ -473,7 +466,7 @@ _need_slices(A) = ndims(A) >= 2 || throw(ArgumentError(
     "NeighborSlices() needs at least two dimensions; a one-dimensional " *
     "array's per-cell slice is its scalar — use Values()"))
 
-# One result per cell lands on the cell dimension alone, lookup and all.
+# Rebuild one-result-per-cell outputs with the original cell dimension.
 _rebuilt_on_cells(A, d, out::Tuple) =
     map(o -> DD.rebuild(A; data = o, dims = (d,)), out)
 _rebuilt_on_cells(A, d, out) = DD.rebuild(A; data = out, dims = (d,))
@@ -482,22 +475,21 @@ _rebuilt_on_cells(A, d, out) = DD.rebuild(A; data = out, dims = (d,))
     mapneighbors(f, A::AbstractDimArray; spatialdim = nothing, pass = Neighbors(),
                  order = StorageOrder(), threaded = true, connectivity = Vertex())
 
-[`mapneighbors`](@ref) over a whole array: the cell dimension is resolved,
-the sweep runs on its [`CellLookup`](@ref)'s vector, and the result is `A`'s
-own wrapper rebuilt with the lookups intact — a concrete-tuple-returning `f`
-gets one rebuilt array per component.
+Apply `f` to each cell and its neighbors. The result uses `A`'s wrapper and
+lookups. If `f` returns a concrete tuple, each component becomes an array.
 
-`spatialdim` names the cell dimension in any form `DimensionalData.dims`
-accepts; `nothing` selects the first dimension carrying a `CellLookup`. An
-array without one, or a named dimension that is missing or not cell-valued,
+`spatialdim` accepts any selector supported by `DimensionalData.dims`.
+By default, the first dimension with a [`CellLookup`](@ref) is used. An
+array without one, or a selector that misses or names a non-cell dimension,
 is an `ArgumentError`.
 
-`pass` selects what `f` sees: [`Neighbors`](@ref) (the default) hands
-`f(cell, nbrs)` positioned handles and returns one value per cell on the
-cell dimension; [`Values`](@ref) hands `f(cell, value, values)` scalars,
-slice by independent slice on arrays with other dimensions, and returns
-`A`'s full shape; [`NeighborSlices`](@ref) hands `f(cell, slice, slices)`
-the views along the cell dimension and returns one value per cell.
+`pass` controls the callback arguments and output shape:
+
+- [`Neighbors`](@ref): positioned handles; one result per cell, on the cell
+  dimension.
+- [`Values`](@ref): scalar values; the same dimensions as `A`.
+- [`NeighborSlices`](@ref): views across the other dimensions; one result per
+  cell, on the cell dimension.
 """
 function mapneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
         pass = Neighbors(), order = StorageOrder(), threaded = true,
@@ -531,7 +523,7 @@ end
 
 _map_dimarray(pass, f, A, dnum, order, threaded, conn) = _bad_pass(pass)
 
-# Function barrier making the cell dimension's number a constant, so the
+# Function barrier: the cell dimension's number becomes a constant, so the
 # slice views are concretely typed.
 function _map_cell_slices(f::F, A, ::Val{D}, cv, order, threaded,
         conn) where {F,D}
@@ -540,8 +532,8 @@ function _map_cell_slices(f::F, A, ::Val{D}, cv, order, threaded,
     return mapneighbors(g, cv; order, threaded, connectivity = conn)
 end
 
-# The slice loop: each other-dim index gets its own buffered 1-D sweep, so
-# the CellVector kernels own all traversal and the slices cannot interact.
+# Run a separate buffered 1-D sweep for each non-cell index, so the
+# CellVector kernels own all traversal and the slices cannot interact.
 function _map_slices(f::F, A, dnum::Int, cv::CellVector, order, threaded,
         connectivity::Connectivity) where {F}
     data = parent(A)
@@ -574,8 +566,8 @@ _slice_store!(out::AbstractArray, res::AbstractVector, jpre, jpost) =
                      order = StorageOrder(), threaded = false,
                      connectivity = Vertex())
 
-[`mapneighbors`](@ref)' whole-array form without the output: same
-`spatialdim` resolution, same `pass` forms, `f` called for its side effects.
+Call `f` for each cell and its neighbors without collecting results.
+`spatialdim` and `pass` behave as in [`mapneighbors`](@ref).
 """
 function foreachneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
         pass = Neighbors(), order = StorageOrder(), threaded = false,
@@ -627,9 +619,9 @@ end
 """
     neighbors(A::AbstractDimArray; spatialdim = nothing, connectivity = Vertex())
 
-The one-arg positioned iterator over `A`'s cell dimension, resolved as in
-[`mapneighbors`](@ref); the minted positions are that dimension's axis
-positions.
+Iterate over each cell and its positioned neighbor handles. The cell
+dimension is selected as in [`mapneighbors`](@ref); the minted positions are
+that dimension's axis positions.
 """
 function neighbors(A::DD.AbstractDimArray; spatialdim = nothing,
         connectivity::Connectivity = Vertex())

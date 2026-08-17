@@ -346,4 +346,6 @@ fig
 #
 # The multi-order coverage page builds the same structure as a *region* — the
 # query side. The regridding page replaces this page's nearest-neighbour
-# sampling with conservative, area-exact regridding.
+# sampling with conservative, area-exact regridding. The store round-trip page
+# writes a single-level axis to Zarr with `dggwrite`; a mixed-level array
+# reaches a store through `expand`.

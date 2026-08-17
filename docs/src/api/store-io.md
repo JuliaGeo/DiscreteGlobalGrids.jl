@@ -32,6 +32,11 @@ fourth dialect calls [`register_convention!`](@ref); one that stores its ids
 some fifth way calls [`register_encoding!`](@ref). Neither requires a change
 here.
 
+Both halves are single-level: the mixed-level axis [`coarsen`](@ref) builds is
+refused — by `dggwrite` on the container (`MultiOrderLookup`), by `dggread` on
+the vocabulary (`compression: "compacted"` names no registered encoding) — and
+[`expand`](@ref) is the bridge to a writable level.
+
 What a reader gets back is a [`ChunkedCellLookup`](@ref): the axis a store
 wrote, which answers `At`, `Contains` and `Covering` the way an ordinary
 `CellLookup` does but resolves them through the [`ChunkManifest`](@ref) — the

@@ -25,7 +25,7 @@ using ..DiscreteGlobalGridsZarrExt: storeidentifier,
 using DiscreteGlobalGrids: AbstractCellIndex, ArrayEntry,
     CellEncoding, CellLookup, ChunkedCellLookup, DGGSFormatError,
     DEFAULT_WRITE_CONVENTIONS, DenseEncoding, ENCODING_REGISTRY, ImplicitEncoding,
-    RangesEncoding, StoreDescription, StoreSnapshot,
+    MultiOrderLookup, RangesEncoding, StoreDescription, StoreSnapshot,
     ancestor, cellaxis, chunkmanifest, encodingname, has_sorted_subtrees,
     idcell, idranges, idtype, level, levelgrid, rawid, system, write_eligible
 import DimensionalData as DD
@@ -266,11 +266,13 @@ coordinate itself — works from this array, and a write of tens of millions of
 cells never holds the axis twice. Where a typed cell is wanted, `idcell` puts
 the wrapper back on for the one id in hand.
 
-Only this package's own cell lookups are accepted, and that is the canonicity
-check rather than a restriction: an ascending, unique subset of a cell axis is
-a `CellLookup` again, and one that is neither is exactly what DimensionalData
-degrades to a `Categorical` — so a cell dimension that is not a cell lookup is
-a cell dimension that is no longer sorted and unique.
+Only this package's own single-level cell lookups are accepted, and that is
+the canonicity check rather than a restriction: an ascending, unique subset of
+a cell axis is a `CellLookup` again, and one that is neither is exactly what
+DimensionalData degrades to a `Categorical` — so a cell dimension that is not
+a cell lookup is a cell dimension that is no longer sorted and unique. The one
+exception is a `MultiOrderLookup`, sorted and unique but at mixed levels,
+which is refused by name: no registered encoding writes one.
 """
 function _cellaxis(src)
     for d in DD.dims(src)
@@ -289,7 +291,18 @@ end
 
 @noinline function _nocellaxis(src)
     for d in DD.dims(src)
-        eltype(DD.val(d)) <: AbstractCellIndex || continue
+        lk = DD.val(d)
+        if lk isa MultiOrderLookup
+            throw(DGGSFormatError(check=:mixed_level_axis,
+                declared=string(DD.name(d)), observed=nameof(typeof(lk)),
+                detail="the $(DD.name(d)) dimension is a `MultiOrderLookup`: cells " *
+                       "at mixed refinement levels, which no registered encoding " *
+                       "writes (`compacted` in the zarr-conventions/dggs " *
+                       "vocabulary). Present the cube at one level with " *
+                       "`expand(A, level)` and write that, or register a " *
+                       "mixed-level encoding."))
+        end
+        eltype(lk) <: AbstractCellIndex || continue
         throw(DGGSFormatError(check=:noncanonical_cell_axis,
             declared=string(DD.name(d)), observed=nameof(typeof(DD.val(d))),
             detail="the $(DD.name(d)) dimension holds cell ids in a lookup this " *

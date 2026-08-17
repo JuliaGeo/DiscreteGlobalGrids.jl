@@ -66,8 +66,11 @@ are not written in v1 — write locally and upload.
 
 `encoding = :auto` picks ranges where the axis is eligible — sorted, unique,
 single-level — and dense otherwise; `encoding = :dense` is the interop escape
-for readers that cannot expand ranges. `conventions` stamps the store, dual by
-default so that both a convention-aware reader and xdggs can open it.
+for readers that cannot expand ranges. A mixed-level axis (a
+[`MultiOrderLookup`](@ref)) is refused — no registered encoding writes one;
+present it at a single level with [`expand`](@ref) first. `conventions` stamps
+the store, dual by default so that both a convention-aware reader and xdggs
+can open it.
 
 `merge` picks the ranges run rule: `:step` (default) merges unit-increment ids,
 which a structural reader also counts correctly; `:rank` merges rank-adjacent

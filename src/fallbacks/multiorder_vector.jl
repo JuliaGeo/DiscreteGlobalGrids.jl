@@ -15,7 +15,9 @@
 An immutable `AbstractVector` of cells at mixed refinement levels of one
 hierarchical system, pairwise disjoint as subtrees (no member is an ancestor
 of another, none repeats), ordered by the position intervals their subtrees
-occupy at a **reference level**. Semantically it is that id vector; what is
+occupy at a **reference level** — depth-first order, the order a sorted
+single-level axis has and coarse-ancestor store chunking assumes
+([`dggwrite`](@ref)). Semantically it is that id vector; what is
 stored beside the ids is the interval index (`starts`, `stops`, cumulative
 `offsets`) that answers every query below in O(log n).
 

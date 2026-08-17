@@ -260,11 +260,11 @@ halo_table(lk::CellLookup, k::Integer=1; kw...) = halo_table(parent(lk), k; kw..
 halo(lk::CellLookup; connectivity::Connectivity=Vertex()) =
     halo(parent(lk); connectivity)
 
-# The one-arg positioned iterator; positions on the lookup are the vector's.
+# Positioned handles use the parent vector's positions.
 neighbors(lk::CellLookup; connectivity::Connectivity=Vertex()) =
     neighbors(parent(lk); connectivity)
 
-# The closure form and its materialization, likewise.
+# Delegate neighbourhood sweeps to the parent vector.
 mapneighbors(f, lk::CellLookup; kw...) = mapneighbors(f, parent(lk); kw...)
 mapneighbors(f, lk::CellLookup, data::AbstractVector; kw...) =
     mapneighbors(f, parent(lk), data; kw...)
@@ -362,14 +362,9 @@ A[Cells(Covering(county))]
 DD.@dim Cells "Cells"
 
 # ---------------------------------------------------------------------------
-# Positioned handles on a cell-axis array.
-#
-# A `SubsetPositionedCell` carries the position the minting collection
-# resolved, and its contract is that the position is TRUSTED against that
-# collection's axis: indexing reads storage directly, with no membership
-# check and no search. A bare cell keeps the resolved path through the
-# selector machinery above. The methods are on the 1-d cell-axis shape,
-# where a position names a storage slot and nothing else.
+# Positioned handles index one-dimensional cell arrays directly by storage
+# position, with no membership check — the trusted-position contract. Bare
+# cells keep the resolved path through the selector machinery above.
 # ---------------------------------------------------------------------------
 
 const CellsArray = DD.AbstractDimArray{T,1,<:Tuple{<:Cells}} where {T}

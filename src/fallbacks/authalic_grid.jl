@@ -170,7 +170,7 @@ neighbors(grid::AuthalicGrid, c::AbstractCellIndex, k::Integer=1;
     connectivity::Connectivity=Vertex()) =
     neighbors(grid.grid, c, k; connectivity)
 
-# ...and therefore the degree, so the wrapped grid's O(1) answer is this one's.
+# The latitude warp also preserves degree.
 neighborcount(grid::AuthalicGrid, c::AbstractCellIndex;
     connectivity::Connectivity=Vertex()) =
     neighborcount(grid.grid, c; connectivity)

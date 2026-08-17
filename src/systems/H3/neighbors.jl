@@ -38,9 +38,8 @@ end
 """
     neighborcount(grid::LevelGrid, c::H3Cell; connectivity = Vertex()) -> Int
 
-`length(neighbors(grid, c))` without the ring: 5 at the twelve pentagons of
-the resolution, 6 everywhere else, either connectivity. O(1) — one libh3
-pentagon test.
+Return 5 for pentagons and 6 for other cells, for either connectivity. The
+count uses one libh3 pentagon test and does not construct the ring.
 """
 DGG.neighborcount(grid::LevelGrid, c::H3Cell;
     connectivity::Connectivity=Vertex()) = ispentagon(c) ? 5 : 6

@@ -226,12 +226,8 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# The count without the ring. Exhaustive over the swept levels, because the
-# cells a fast path forgets are the exceptional ones — the twelve pentagons,
-# a face corner, an icosahedral vertex — and a sample can miss all of them.
-# The second assertion is the vacuity guard: every system's sweep must
-# actually contain cells below the Vertex() degree bound, or the equality
-# above said nothing about the exceptional class.
+# Compare `neighborcount` with every ring, including cells below the maximum
+# degree.
 # ---------------------------------------------------------------------------
 
 @testset "neighborcount is the ring's length, exceptional cells included" begin
@@ -254,8 +250,7 @@ end
         @test mismatched == 0
         @test offdegree > 0
     end
-    # The subset forms answer with THEIR ring — the clipped one — and refuse
-    # an out-of-set cell exactly as `neighbors` does.
+    # Subsets count clipped rings and reject cells outside the subset.
     sys, base, leaf = SWEEP[1]
     sub = rooted(sys, base, leaf)
     cv = CellVector(sub)

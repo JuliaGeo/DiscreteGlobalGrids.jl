@@ -1,7 +1,4 @@
-# Cross-system laws for the closure form — `mapneighbors`, `foreachneighbors`
-# — and the materialized sweep, `HaloTable`. The oracle is again the two-arg
-# `neighbors`: the frame promises the same rings, delivered to `f` instead of
-# yielded, with outputs landing by position no matter how the loop ran.
+# Compare closure-based and materialized sweeps with per-cell `neighbors`.
 
 module MapNeighborsTests
 
@@ -20,8 +17,7 @@ const FB = DGG.Fallbacks
 sysname(sys) = sys isa AuthalicSystem ?
                "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
 
-# The same sweep as `neighborhood.jl`: one shape whose cursor never moves and
-# one that crosses a window boundary every few cells.
+# Cover one-window subtrees and multi-window coverages.
 const SWEEP = [
     (DGG.IGeo7System(), 1, 3, 8),
     (DGG.H3System(), 1, 3, 7),
@@ -37,10 +33,7 @@ const TILE = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
 rooted_pg(sys, base, depth) =
     PartialGrid(sys, cellindex(levelgrid(sys, base), 3), base + depth)
 
-# A probe that reads everything the frame hands over — the cell's position,
-# the ring's positions, and the ring's ORDER — so a frame that stores at the
-# wrong slot, clips against the wrong window, or reorders a ring cannot match
-# the oracle built from per-cell calls.
+# Include cell position, neighbour positions, and ring order in one result.
 probe(c, nbrs) =
     cellposition(c) * 31 + sum(i * cellposition(h) for (i, h) in enumerate(nbrs);
         init = 0)
@@ -61,8 +54,7 @@ naive(cv; connectivity = Vertex()) =
         n = length(cv)
         for conn in (Vertex(), Edge())
             want = naive(cv; connectivity = conn)
-            # The frame is the per-cell calls: sequential, threaded, and under
-            # a permutation the outputs land by position, bit for bit.
+            # Traversal mode does not change position-ordered results.
             @test mapneighbors(probe, cv; threaded = false,
                 connectivity = conn) == want
             @test mapneighbors(probe, cv; threaded = true,
@@ -74,9 +66,7 @@ naive(cv; connectivity = Vertex()) =
                 connectivity = conn) == want
         end
 
-        # The data form: `f` gets its own sample and the ring's, gathered by
-        # the frame, aligned with the ring — the weight by slot index is what
-        # catches a gather that reorders or drops one.
+        # Weight by ring slot to detect reordered or missing gathered values.
         data = collect(1.0:n)
         metric = (c, v, vals) ->
             3.0v + sum(i * vals[i] for i in eachindex(vals); init = 0.0)
@@ -87,17 +77,14 @@ naive(cv; connectivity = Vertex()) =
         @test mapneighbors(metric, cv, data; threaded = false) == want_data
         @test mapneighbors(metric, cv, data; threaded = true) == want_data
 
-        # A concrete tuple return is the multi-output frame: one vector per
-        # component, each in position order.
+        # Concrete tuple results split into position-ordered vectors.
         pair(c, nbrs) = (cellposition(c), Float64(length(nbrs)))
         a, b = mapneighbors(pair, cv)
         @test a isa Vector{Int} && b isa Vector{Float64}
         @test a == collect(1:n)
         @test b == [Float64(length(neighbors(cv, c))) for c in cv]
 
-        # The materialized sweep is the iterator, row for row and slot for
-        # slot — ring order, not ascending — and its sorted rows are
-        # `halo_table`'s.
+        # `HaloTable` preserves ring order; sorted rows match `halo_table`.
         t = HaloTable(cv)
         rows = halo_table(cv)
         @test length(t) == n
@@ -108,11 +95,7 @@ naive(cv; connectivity = Vertex()) =
         @test all(p -> sort(collect(t[p])) == rows[p], 1:n)
         @test rows == [neighbors(cv, p, 1) for p in 1:n]
 
-        # `t` and `rows` above are the default THREADED builds, so the laws
-        # already ran against the chunked sweep. What remains is that the
-        # stitch adds nothing and loses nothing: the sequential build's
-        # arrays, field for field — a seam that shifted an offset, or a chunk
-        # landing out of range order, breaks equality at the boundary row.
+        # Threaded and sequential builds have identical storage.
         s = HaloTable(cv; threaded = false)
         @test t.offsets == s.offsets && t.nbrs == s.nbrs
         @test halo_table(cv; threaded = false) == rows
@@ -127,10 +110,7 @@ naive(cv; connectivity = Vertex()) =
         @test HaloTable(CellLookup(subtree)) == HaloTable(subtree)
     end
 
-    # The root survives the vector round trip, so `halo_table` on a
-    # subtree-built vector reaches the interior/rim fast path again; a
-    # derived subset still reports an unrooted grid, because its windows
-    # remember no ancestor.
+    # Rooted vectors preserve their grid; derived subsets do not retain a root.
     @testset "the root survives the round trip" begin
         pg = rooted_pg(sys, base, depth)
         cv = CellVector(pg)
@@ -150,22 +130,19 @@ end
     visits = Int[]
     foreachneighbors((c, nbrs) -> push!(visits, cellposition(c)), cv; order = perm)
     @test visits == perm
-    # A duplicate would overwrite one cell's output and leave another's
-    # undefined, so every non-permutation is refused up front.
+    # Orders must visit every cell exactly once.
     bad = copy(perm); bad[2] = bad[1]
     @test_throws ArgumentError mapneighbors(probe, cv; order = bad)
     @test_throws ArgumentError mapneighbors(probe, cv; order = perm[1:(n-1)])
     @test_throws ArgumentError mapneighbors(probe, cv;
         order = vcat(perm[1:(n-1)], n + 1))
     @test_throws ArgumentError mapneighbors(probe, cv; order = :storage)
-    # ...and data that is not laid out against the collection likewise.
+    # Data must share the collection's axis.
     @test_throws ArgumentError mapneighbors((c, v, vals) -> v, cv,
         collect(1.0:(n-1)))
 end
 
-# The frame's own cost is three integers of cursor state and the closure it
-# was handed: a sequential sweep touches the heap not at all. The functor
-# keeps the accumulator out of the closure so the measurement is the frame's.
+# Keep mutable state in the functor while measuring sweep allocations.
 struct PositionSum <: Function
     acc::Base.RefValue{Int}
 end

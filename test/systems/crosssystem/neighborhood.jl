@@ -1,7 +1,4 @@
-# Cross-system laws for the one-arg `neighbors` iterator and the positioned
-# handles it mints. The oracle is the two-arg form: the iterator promises the
-# SAME cells in the SAME order with positions attached, so every law here is
-# an equality against per-cell calls that never see the window cursor.
+# Compare the positioned `neighbors` iterator with per-cell neighbour calls.
 
 module NeighborhoodTests
 
@@ -21,14 +18,7 @@ sysname(sys) = sys isa AuthalicSystem ?
                "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
 
 # ---------------------------------------------------------------------------
-# Systems, and the two shapes each is swept over
-#
-# The subtree compresses to ONE window, so the cursor never moves; the
-# coverage of a 1°×1° tile is DOZENS of disjoint windows, so the walk crosses
-# a boundary every few cells — which is where a cursor that resolves against
-# a stale window would pair a cell with a wrong position, and where a walk
-# that advances wrongly would skip or duplicate a cell. The coverage level is
-# per-system so every set stays in the hundreds-to-thousands.
+# Systems and subset shapes covered by the sweep.
 # ---------------------------------------------------------------------------
 
 const SWEEP = [
@@ -58,18 +48,14 @@ nwindows(cv) = FB.nwindows(FB.windows(cv))
 @testset "$(sysname(sys))" for (sys, base, depth, covlvl) in SWEEP
     subtree = rooted(sys, base, depth)
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=covlvl))
-    # The second shape must genuinely be the many-window case, or the cursor
-    # laws below degenerate into a rerun of the first.
+    # The coverage must exercise window transitions.
     @test nwindows(coverage) > 1
 
     @testset "$label" for (label, cv) in
                           ("one rooted subtree" => subtree,
                            "multi-window coverage" => coverage)
         for conn in (Vertex(), Edge())
-            # The iterator is the two-arg calls, cell for cell and ring for
-            # ring — a cursor that skips or duplicates at a window boundary,
-            # or clips against the wrong window, breaks this at the first
-            # affected cell.
+            # Cells and ring order match the per-cell form.
             res = collect(neighbors(cv; connectivity = conn))
             @test length(res) == length(cv)
             @test all(eachindex(res)) do k
@@ -78,8 +64,7 @@ nwindows(cv) = FB.nwindows(FB.windows(cv))
                     [cellid(h) for h in res[k][2]] ==
                     collect(neighbors(cv, c; connectivity = conn))
             end
-            # Every minted handle re-resolves to the position it carries — a
-            # minting site pairing a cell with any other position breaks this.
+            # Every handle carries the position resolved from its cell.
             @test all(neighbors(cv; connectivity = conn)) do (c, nbrs)
                 cellposition(cv, cellid(c)) == cellposition(c) &&
                     all(h -> cellposition(cv, cellid(h)) == cellposition(h), nbrs)
@@ -87,8 +72,7 @@ nwindows(cv) = FB.nwindows(FB.windows(cv))
         end
     end
 
-    # Handle `==` delegates to the cell, so agreement is checked position by
-    # position — the part plain equality would wave through.
+    # Compare stored positions explicitly because handle equality uses cell ids.
     @testset "the grid and lookup forms are the vector's" begin
         same(a, b) = cellid(a) == cellid(b) && cellposition(a) == cellposition(b)
         agree(x, y) = length(x) == length(y) &&
@@ -108,7 +92,7 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# The handle surface: one system, because it is system-generic code
+# System-generic handle behavior.
 # ---------------------------------------------------------------------------
 
 @testset "a handle is its cell everywhere but at the fast path" begin
@@ -125,25 +109,18 @@ end
     @test isbitstype(typeof(h)) && sizeof(typeof(h)) == 16
 
     A = DD.DimArray(collect(1.0:length(cv)), (Cells(CellLookup(cv)),))
-    # The fast path reads storage at the minted position...
+    # Handles read and write their stored position.
     @test A[h] == parent(A)[cellposition(h)]
     A[h] = -1.0
     @test parent(A)[cellposition(h)] == -1.0
-    # ...trusting it unconditionally: a wrong-but-in-range position reads that
-    # slot, not the cell's. This is the documented contract, not a defect — an
-    # indexing path that silently re-resolved the cell would hide the cost the
-    # handle exists to remove.
+    # An in-range position is used without resolving the cell id.
     wrong = SubsetPositionedCell(c, 7)
     @test A[wrong] == parent(A)[7]
-    # A bare cell keeps the resolved path.
+    # Bare cells use the selector path.
     @test A[DD.At(c)] == A[h]
 end
 
-# The whole sweep stays off the heap: the yielded pair is a bits handle and a
-# fixed-capacity ring of them, and the cursor is three integers of state. A
-# `Vector` anywhere in the loop is invisible to every equality above — the
-# cells would still be right, just not for free. Multi-window on purpose: the
-# fallback search path must also be free.
+# The multi-window sweep allocates nothing after warmup.
 @testset "the sweep allocates nothing" begin
     sys = DGG.IGeo7System()
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=8))

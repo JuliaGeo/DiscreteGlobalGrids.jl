@@ -494,20 +494,14 @@ subset_span(cv::CellVector, lo::Int, hi::Int) = span_windows(cv.windows, lo, hi)
 Return a grid whose position `k` is `cv[k]`. Construction is O(1) and keeps the
 ids lazy, so data indexed by the vector needs no permutation.
 
-A vector built **from a rooted** `PartialGrid` hands that grid back — root,
-bucket size and all — so a rooted subtree survives the round trip and keeps
-[`halo_table`](@ref)'s interior/rim fast path. Any other vector — built from
-a set or an unrooted grid, or derived by indexing or [`covering`](@ref) —
-stores windows and no ancestor, so its grid is unrooted; build the grid from
-the root cell when the stencil matters there.
+A vector built from a rooted `PartialGrid` returns that grid, preserving its
+root and bucket size. Other vectors return an unrooted grid because their
+windows do not identify an ancestor.
 """
 PartialGrid(cv::CellVector) = _partial_grid(cv, cv.backing)
 
-# A ROOTED backing grid is the answer itself: `CellVector(grid)` read its
-# positions, so positions and cells already agree, and the root is the one
-# thing the windows cannot re-derive. An unrooted grid backing takes the
-# generic path instead — handing it back would swap the O(log #windows)
-# membership the bare vector answers for an id search over its raw vector.
+# Preserve a rooted backing grid. Rebuild unrooted grids around the compressed
+# vector so membership continues to use its windows.
 _partial_grid(cv::CellVector, pg::PartialGrid) =
     _is_rooted(pg) ? pg : PartialGrid(system(cv), cv.level, _bare(cv, pg))
 _partial_grid(cv::CellVector, backing) =

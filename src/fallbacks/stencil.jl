@@ -112,12 +112,8 @@ function ring(cv::CellVector, c::AbstractCellIndex, k::Integer;
 end
 
 # ===========================================================================
-# The count without the ring
-#
-# The generic route measures the ring — correctness first; a system whose
-# degree is structural overrides on its own level grid (IGeo7 and H3: 5 at
-# the twelve pentagons, else 6). Subsets inherit the fallback, so their count
-# is the clipped ring's and an out-of-set cell throws as `neighbors` does.
+# Neighbour counts default to the length of the clipped one-ring. Systems with
+# structural degree information may specialize this method.
 # ===========================================================================
 
 neighborcount(grid::AbstractGrid, c::AbstractCellIndex;
@@ -206,14 +202,8 @@ halo_table(grid::AbstractGrid, k::Integer = 1;
         connectivity::Connectivity = Vertex()) =
     [neighbors(grid, p, Int(k); connectivity) for p in 1:ncells(grid)]
 
-# The one-ring rows come out of the cursor sweep (`_swept_rows`, in
-# `neighborhood.jl`) rather than one resolved call per cell — same ascending
-# rows, without the per-neighbour window search. A vector still backed by the
-# rooted grid it was built from takes that grid's interior/rim path.
-# `threaded` (`Bool` or GeometryOps' `True()`/`False()`) chunks the sweep as
-# `mapneighbors` does; rows land in their own slots, so the answer is the
-# sequential one. It governs the swept build only — the rooted path and the
-# `k != 1` rows are single calls per cell either way.
+# Use the cursor sweep for one-ring rows unless the vector retains a rooted
+# grid. Other radii use the per-cell implementation.
 function halo_table(cv::CellVector, k::Integer = 1;
         connectivity::Connectivity = Vertex(), threaded = true)
     steps = Int(k)
@@ -249,9 +239,7 @@ function halo_table(pg::PartialGrid, k::Integer = 1;
     steps == 1 ||
         return [neighbors(pg, p, steps; connectivity) for p in 1:ncells(pg)]
     r = _whole_subtree_range(pg)
-    # A grid that is not a whole rooted subtree still gets the sweep: its
-    # vector reading is position-identical, and the cursor beats one
-    # membership search per neighbour on every subset shape.
+    # Unrooted subsets use the position-identical vector sweep.
     r === nothing &&
         return _swept_rows(CellVector(pg), connectivity, GOCore.booltype(threaded))
     return _rooted_halo(pg, r, connectivity)

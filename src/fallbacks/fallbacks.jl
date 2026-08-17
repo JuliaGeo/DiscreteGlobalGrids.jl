@@ -79,7 +79,7 @@ include("cell_vector.jl")
 # Last: the stencil layer reads every collection above it — the subset grid, the
 # compressed vector, the multi-order set — and the lazy rim walkers besides.
 include("stencil.jl")
-# ...and the positioned iterator over it, which reads the vector's windows.
+# The positioned iterator depends on the stencil and window helpers.
 include("neighborhood.jl")
 
 end # module Fallbacks

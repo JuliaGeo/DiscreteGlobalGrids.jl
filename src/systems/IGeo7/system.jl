@@ -362,8 +362,8 @@ end
 """
     neighborcount(g::LevelGrid, c::Z7Cell; connectivity = Vertex()) -> Int
 
-`length(neighbors(g, c))` without the ring: 5 at the twelve pentagons of the
-level, 6 everywhere else, either connectivity. O(1).
+Return 5 for pentagons and 6 for other cells, for either connectivity, without
+constructing the ring.
 """
 function DGG.neighborcount(g::LevelGrid, c::Z7Cell;
         connectivity::Connectivity=Vertex())

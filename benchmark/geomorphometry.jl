@@ -1,25 +1,19 @@
-# Baseline driver for the Geomorphometry kernels over the two subset shapes.
+# Benchmark Geomorphometry kernels over rooted and multi-window subsets.
 #
 #   julia --project=<bench-env> benchmark/geomorphometry.jl
 #
-# The env holds this package plus `Geomorphometry` and `Rasters`:
+# The environment needs this package, `Geomorphometry`, and `Rasters`:
 #
 #   pkg> dev <path-to-DiscreteGlobalGrids.jl>
 #   pkg> add Geomorphometry#clipped-neighbors   # https://github.com/asinghvi17/GeoArrayOps.jl.git
 #   pkg> add Rasters
 #
-# (The baseline below predates the fork rev and was measured against
-# `Geomorphometry#feat/generic` from Deltares/Geomorphometry.jl.)
+# The synthetic elevation field matches the integration test. Each timing uses
+# `@timed` after a warmup with the same subset shape.
 #
-# No downloads, no plotting: the elevation field is synthetic (the same
-# dome-and-ripple `test/integration/geomorphometry_synthetic.jl` uses), and the
-# two shapes are the ones every stencil claim in this package is measured on —
-# the 343-cell rooted subtree (one position window; `cellposition` is a
-# subtraction) and the level-12 multi-order coverage of a 1°×1° Alpine tile
-# (2,313,802 cells over 3,715 disjoint windows; `cellposition` is a binary
-# search over them). Timings are `@timed` after one same-shape warmup run.
-#
-# Output on unmodified main (980e34d), Julia 1.12.6, M-series macOS, 2026-08-16:
+# Output on unmodified main (980e34d), Julia 1.12.6, M-series macOS, 2026-08-16;
+# this baseline predates the fork rev and was measured against
+# `Geomorphometry#feat/generic` from Deltares/Geomorphometry.jl:
 #
 #   one rooted subtree: 343 cells, 1 window(s)
 #     topographic_position_index    0.0001 s   (0.0 s gc, 0.0 MB)
@@ -30,12 +24,9 @@
 #     flowaccumulation(D8)          4.4336 s   (0.01 s gc, 112.5 MB)
 #     halo_table                    0.9216 s   (0.11 s gc, 405.8 MB)
 #
-# Output on the branch pair — this tree paired with the fork's
-# `clipped-neighbors` @ 9a4e053 — Julia 1.12.6, 8 threads, same machine,
-# 2026-08-17. TPI rides the threaded `mapneighbors` sweep; D8 settles in
-# position space over one `HaloTable`; `halo_table` and the `HaloTable` the
-# router builds both use the chunked sweep (one cursor per task, stitched in
-# range order, arrays identical to the sequential build's):
+# Output with `clipped-neighbors` @ 9a4e053, Julia 1.12.6, 8 threads,
+# M-series macOS, 2026-08-17. TPI uses `mapneighbors`; D8 uses a `HaloTable`.
+# Both table builds use contiguous chunks and match their sequential arrays:
 #
 #   one rooted subtree: 343 cells, 1 window(s)
 #     topographic_position_index    0.0001 s   (0.0 s gc, 0.0 MB)
@@ -50,16 +41,16 @@ import DiscreteGlobalGrids as DGG
 import Geomorphometry as GM
 using Rasters
 
-const Extents = Rasters.Extents          # a Rasters dep, so no extra import
+const Extents = Rasters.Extents          # Available through Rasters.
 
 sys = DGG.IGeo7System()
 
 tile = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
 root = DGG.coarsest_contained(DGG.query(sys, DGG.MultiOrderCoverage(tile); level=10))
 
-# A single dome with a small ripple on it, sampled at cell centroids — one real
-# drainage tree instead of a plateau of ties, with the tie-break kept off the
-# degenerate path. Copied from `test/integration/geomorphometry_synthetic.jl`.
+# Sample a dome and small ripple at cell centroids: the dome gives the routers
+# one real drainage tree, the ripple keeps the D8 tie-break off the
+# all-neighbours-equidistant path.
 function make_dem(cells)
     complete = DGG.levelgrid(sys, DGG.level(cells))
     apex = DGG.cell_centroid(DGG.levelgrid(sys, DGG.level(root)), root)
@@ -84,7 +75,7 @@ function bench(label, cells)
         ("flowaccumulation(D8)", () -> GM.flowaccumulation(dem; method=GM.D8())),
         ("halo_table", () -> DGG.halo_table(cells)),
     )
-        f()                                       # warmup, same shape and types
+        f()                                       # Warm up this shape and type.
         t = @timed f()
         println("  ", rpad(name, 30),
             round(t.time; digits=4), " s   (",

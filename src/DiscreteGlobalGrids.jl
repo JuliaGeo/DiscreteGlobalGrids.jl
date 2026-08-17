@@ -56,6 +56,12 @@ wrappers convert longitude and latitude at API boundaries.
 [`query`](@ref) uses DE9IM.jl predicate types with spherical semantics defined
 here. `treeify`, `ncells`, and `getcell` extend and re-export
 `ConservativeRegridding.Trees` bindings.
+
+[`regrid`](@ref), [`regrid!`](@ref) and [`plan_regrid`](@ref) are
+`GlobalRegridding`'s, extended in `src/regridding.jl` so that a grid, a
+[`CellVector`](@ref), a [`CellLookup`](@ref), a [`MultiOrderCellSet`](@ref), or a
+bare system spells a destination. `cellat` and `cellindices` are that package's
+bindings for the same reason the `Trees` ones are.
 """
 module DiscreteGlobalGrids
 
@@ -85,6 +91,18 @@ using DE9IM: DE9IMPredicate,
 # wrapper functions or binding ambiguity.
 import ConservativeRegridding.Trees: treeify, ncells, getcell
 
+# `GlobalRegridding` owns the regridding verbs and the space contract, and has no
+# dependency on this package; `src/regridding.jl` implements the contract for the
+# grids here. `cellat` and `cellindices` are its bindings for the same reason the
+# `Trees` ones are: extending them rather than shadowing them keeps one function
+# per name for a session that holds both surfaces.
+import GlobalRegridding: cellat, cellindices, regrid, regrid!, plan_regrid
+# The method and policy names ride along re-exported: they appear in the verbs'
+# keyword arguments, so a session that can call `regrid` can also spell
+# `method = Conservative()` without a second import.
+using GlobalRegridding: Conservative, NearestCell, BilinearPoint,
+    Weighted, Extensive, PerChunk, Spilled
+
 include("Helpers/Helpers.jl")
 
 # GeometryOps adapters stay outside the dependency-free `Helpers` module.
@@ -101,12 +119,14 @@ include("fallbacks/fallbacks.jl")
 # Bind fallback types before including systems that extend them.
 using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSystem,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
-    cellindices, is_contained, coarsest_contained, cell_polygons,
+    is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
     EdgeCellIterator, InnerCellIterator, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator,
     subtree_halo, halo, halo_positions, halo_sizehint,
     StencilTable, stencil_table,
+    SubsetPositionedCell, cellid,
+    mapneighbors, foreachneighbors, StorageOrder, HaloTable,
     MultiOrderVector, aggregate, coarsen, expand, complement
 
 # Internal extension points for system-specific subtree walkers.
@@ -123,18 +143,52 @@ include("systems/A5/A5.jl")
 include("systems/S2/S2.jl")
 include("systems/ISEA4R/ISEA4R.jl")
 
-using .IGeo7: IGeo7System, Z7Cell
+# The seventh system, included but not registered — see the comment above
+# `systems()` for why it stays out of the tuple.
+include("systems/CopernicusDEM/CopernicusDEM.jl")
+
+using .IGeo7: IGeo7System, Z7Cell, RelativeZ7Cell, directioncode
 using .H3: H3System, H3Cell
 using .HEALPix: HEALPixSystem, HEALPixRingIndex
 using .A5: A5System, A5Cell
 using .S2: S2System
 using .ISEA4R: ISEA4RSystem
+using .CopernicusDEM: CopernicusDEMSystem
 
 # DimensionalData wrappers over the dependency-free `Fallbacks.CellVector`.
 include("dimensionaldata.jl")
 
-using .CellLookups: CellLookup, Cells, Covering, MultiOrderLookup
+using .CellLookups: CellLookup, Cells, Covering, Neighbors, Values,
+    NeighborSlices, MultiOrderLookup
 
+# The store-IO layer. Encodings and the chunked lookup own layout mechanics;
+# conventions are plain-data metadata logic with no Zarr and no arrays.
+# Order matters: errors.jl defines DGGSFormatError for the submodules'
+# `import ..DGGSFormatError`, and description.jl types its encoding field
+# with encodings.jl's CellEncoding.
+include("io/errors.jl")
+include("io/encodings.jl")
+include("io/chunked_lookup.jl")
+
+using .Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
+    ENCODING_REGISTRY, encodingname, register_encoding!, cellaxis,
+    idrank, idselect, idcount_between, idvalid, idcell, idtype,
+    idranges, write_eligible, validate_ranges
+using .ChunkedLookups: ChunkManifest, nchunks, chunkof, chunkbounds,
+    ChunkedCellVector, axisposition, chunkmanifest, ChunkedCellLookup
+
+include("io/description.jl")
+include("io/conventions.jl")
+include("io/api.jl")
+
+# Last: the regridding face reads the grids, the compressed collection, and the
+# cube axis alike.
+include("regridding.jl")
+
+# CopernicusDEM is deliberately absent: registering a system enrols it in every
+# cross-system sweep, whose hardcoded cases and level choices assume a globally
+# uniform cell size. Reach for it by name: `DGG.CopernicusDEMSystem(90)`.
+# (Kept ABOVE the docstring — a comment between docstring and function detaches it.)
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
 
@@ -263,7 +317,7 @@ export Connectivity, Vertex, Edge
 export ncells, cellindex, cell_boundary, cell_centroid
 export cellposition, rawid, reindex, cellindextypes
 export cell_polygon, cell_area, cell_extent, getcell
-export cellat, neighbors, ring, halo_table
+export cellat, neighbors, ring, halo_table, neighborcount
 export treeify, query
 export system, level
 
@@ -276,6 +330,8 @@ export EdgeCellIterator, InnerCellIterator
 export SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator
 export subtree_halo, halo, halo_positions, halo_sizehint
 export StencilTable, stencil_table
+export SubsetPositionedCell, cellid
+export mapneighbors, foreachneighbors, StorageOrder, HaloTable
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate
@@ -306,19 +362,47 @@ export MultiOrderVector, coarsen, expand, complement
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM
 # geometry predicate exported above.
 export CellLookup, Cells, Covering
+export Neighbors, Values, NeighborSlices
 export MultiOrderLookup
 
 # --- Grid systems ----------------------------------------------------------
 # Export system types rather than modules whose names collide with packages.
+# All seven systems return `HierarchicalLevelGrid` from `levelgrid`.
 export systems
-export IGeo7System, Z7Cell
+export IGeo7System, Z7Cell, RelativeZ7Cell
+export directioncode
 export H3System, H3Cell
 export HEALPixSystem, HEALPixRingIndex
 export A5System, A5Cell
 export S2System
 export ISEA4RSystem
+# Exported and reachable by name, but not in `systems()` — see the comment there.
+export CopernicusDEMSystem
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere
+
+# --- Regridding ------------------------------------------------------------
+# The verbs are `GlobalRegridding`'s, extended for this package's targets;
+# `DGGSpace` is the space they resolve to, and the place chunking is tuned.
+# Methods, policies, and storage flavors are re-exported so the verbs' keyword
+# arguments are spellable without importing `GlobalRegridding`.
+export regrid, regrid!, plan_regrid, DGGSpace
+export Conservative, NearestCell, BilinearPoint, Weighted, Extensive
+export PerChunk, Spilled
+
+# --- Store IO --------------------------------------------------------------
+# `detect`, `decode`, `encode!` and `gridname` stay qualified: they are
+# extension points, and the names are too generic to export.
+export dggread, dggwrite
+export StoreSnapshot, ArrayEntry, StoreDescription, Detection, DGGSFormatError
+export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
+    LegacyHealpixConvention, DKRZConvention
+export CONVENTION_REGISTRY, DEFAULT_WRITE_CONVENTIONS, register_convention!
+export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
+export ENCODING_REGISTRY, register_encoding!
+export GridReference, GRID_REFERENCE, register_grid!
+export describe_store
+export ChunkedCellLookup, ChunkManifest, nchunks, chunkof, chunkbounds
 
 end # module DiscreteGlobalGrids

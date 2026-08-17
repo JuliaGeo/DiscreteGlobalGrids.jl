@@ -359,6 +359,18 @@ function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
     return reduce(vcat, shells)
 end
 
+"""
+    neighborcount(g::LevelGrid, c::Z7Cell; connectivity = Vertex()) -> Int
+
+Return 5 for pentagons and 6 for other cells, for either connectivity, without
+constructing the ring.
+"""
+function DGG.neighborcount(g::LevelGrid, c::Z7Cell;
+        connectivity::Connectivity=Vertex())
+    _level_checked(g, c)
+    return is_pentagon(c) ? 5 : 6
+end
+
 # The k == 1 primitive, in CCW order and in the static-capacity container.
 function _neighbors1(c::Z7Cell)
     out = SmallVector{6,Z7Cell}()

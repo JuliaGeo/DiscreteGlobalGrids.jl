@@ -7,17 +7,17 @@
 # the first step of a flow-routing model on it. The worked example averages
 # the source to 120 m so it also fits comfortably on a standard CI runner.
 #
-# Three calls carry the page: `coarsest_contained` picks the cell to work in,
-# `PartialGrid` names its subtree as a grid, and `halo_table` routes water out
-# of every cell.
+# Three calls carry the page: `MultiOrderCoverage` names the cells the tile
+# touches, `regrid` fills them from the raster, and `halo_table` routes water
+# out of every cell.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 
 import DiscreteGlobalGrids as DGG
-import ConservativeRegridding as CR
+import Geomorphometry as GM
 using Rasters, RasterDataSources
 import ArchGDAL
-import GeometryOps as GO, Extents
+import Extents
 using Statistics
 using GLMakie, GeoMakie
 GLMakie.activate!(inline = true)
@@ -36,18 +36,25 @@ root = DGG.coarsest_contained(DGG.query(sys, DGG.MultiOrderCoverage(tile); level
 f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
 poly!(DGG.PartialGrid(sys, root, DGG.level(root)); strokewidth = 2)
 f
-# This is the actual cell we have:
+# The cell, and its level:
 root, DGG.level(root)
 
-# ## One subtree as a grid
+# ## The tile's coverage as a grid
 #
-# `PartialGrid(sys, cell, level)` is that cell's subtree at a working level, as
-# an ordinary grid: positions run `1:ncells`, so a data vector indexes straight
-# through it.
+# One contained cell gives up the tile's rim. The destination that keeps it is
+# the tile's own coverage at the working level: every cell the tile touches.
 
-leaf = 12                                          # ≈ 1.1 km cells
-grid = DGG.PartialGrid(sys, root, leaf)
-#
+leaf = 12                                          # ≈ 65 m cells
+region = DGG.query(sys, DGG.MultiOrderCoverage(tile); level = leaf)
+f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
+poly!(region; color = :transparent, strokewidth = 1)
+f
+
+# `CellLookup` reads the set as a one-level cell axis, and `PartialGrid` reads
+# that as an ordinary grid: positions run `1:ncells`, so a data vector indexes
+# straight through it.
+
+grid = DGG.PartialGrid(DGG.CellLookup(region))
 DGG.ncells(grid)
 
 # ## Regridding the DEM
@@ -55,46 +62,27 @@ DGG.ncells(grid)
 # The download asks for a point inside the tile rather than the tile itself:
 # `getraster` fetches every 1° tile an extent touches, and a closed 1° box
 # touches four. Averaging the native 30 m source to 120 m keeps this worked
-# example compact; the source quadtree keeps intersection work localized while
-# the matrix is built.
+# example compact.
 
 centre = Extents.Extent(X = (10.5, 10.5), Y = (46.5, 46.5))
 path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
 dem = Raster(path; lazy = false)
-dem = set(dem, X => Rasters.Intervals(Rasters.Start()), Y => Rasters.Intervals(Rasters.Start()))
 dem = aggregate(mean, dem, 4; progress = false)
-# ConservativeRegridding wants the source's cell corners on the unit sphere.
-# The destination needs no adapter: `treeify`, `ncells` and `getcell` are
-# extended for every `AbstractGrid`.
 
-xbounds, ybounds = Rasters.intervalbounds(dem, (X, Y))
-# `intervalbounds` follows array-index order while each pair remains `(low,
-# high)`. The raster's X lookup runs west-to-east, so its corner sequence starts
-# at the first low edge. Its Y lookup runs north-to-south, so that sequence
-# starts at the first high edge. Cell `(i, j)` then describes `dem[i, j]`
-# directly, without copying or reordering the DEM.
-xrange = [first(first(xbounds)); last.(xbounds)]
-yrange = [last(first(ybounds)); first.(ybounds)]
-latlong_point_matrix = [GO.UnitSphericalPoint((x, y)) for x in xrange, y in yrange]
-latlong_grid = CR.Trees.CellBasedGrid(GO.Spherical(), latlong_point_matrix) |> CR.Trees.TopDownQuadtreeCursor
+# The source could be named as a grid too: with `demtile` the level-0 id of the
+# tile, `DGG.PartialGrid(DGG.CopernicusDEMSystem(30), demtile, 1)` is that whole
+# tile as an ordinary grid, and a grid is a `from` as it stands —
+# `examples/copernicus_dem.jl` takes that route. This page reads the raster
+# because it works for any raster.
+#
+# `regrid` takes the grid as its destination and the raster as its source, and
+# hands back a cube whose axis is the cells. The coverage overhangs the tile at
+# the rim; a cell the raster covers less than half of comes back `NaN` rather
+# than as a number standing for ground that was never seen.
 
-regridder = @time CR.Regridder(GO.Spherical(; radius = 1.0), grid, latlong_grid)
-# Just for fun, let's look at the sparsity pattern of the regridder matrix:
-spy(regridder.intersections; axis = (; aspect = DataAspect(), title = "Sparsity pattern of lat-long -> IGEO7 regridder"))
-
-# The tile need not cover every rim cell of the subtree, so regrid the field
-# and a 0/1 indicator with the same matrix and divide. The ratio is a weighted
-# mean of the source values — right for a partly covered cell, where the raw
-# number is not.
-
-source = vec(dem)
-raw = zeros(DGG.ncells(grid))
-cover = zeros(DGG.ncells(grid))
-CR.regrid!(raw, regridder, source)
-CR.regrid!(cover, regridder, ones(length(source)))
-covered = cover .> 0.5
-elevation = fill(NaN, DGG.ncells(grid))
-elevation[covered] .= raw[covered] ./ cover[covered]
+igeo7_dem = @time DGG.regrid(dem; to = grid)
+elevation = parent(igeo7_dem)
+covered = .!isnan.(elevation)
 extrema(elevation[covered])
 
 # ## Flow direction
@@ -135,6 +123,38 @@ p2 = poly!(ax2, cells; color = drop[shown], colormap = :magma,
 Colorbar(fig[2, 2], p2; vertical = false)
 fig
 
-# Only the singleton on the first line was IGEO7: `MultiOrderCoverage`,
-# `PartialGrid`, the regridder and `halo_table` are interface methods, so
-# swapping the system reruns the page unchanged.
+# ## Terrain analysis with Geomorphometry
+#
+# The cube's axis is already a `CellLookup`: canonical IGEO7 cell identities
+# over positional vector storage. Geomorphometry reads the DGGS neighbourhood
+# and physical cell geometry off it directly. TPI is a single local call; flow
+# accumulation uses D8 here, with each result expressed as upstream area in
+# square metres.
+
+terrain = Raster(igeo7_dem; name = :height)
+
+tpi = GM.topographic_position_index(terrain)
+accumulation, directions = GM.flowaccumulation(terrain; method = GM.D8())
+
+cell_area = GM.cellarea(terrain, first(eachindex(terrain)))
+log_cells = log10.(accumulation ./ cell_area)
+
+fig = Figure(size = (900, 430))
+ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
+    title = "topographic position index (m)")
+p1 = poly!(ax1, cells; color = vec(tpi[shown]), colorrange = (-25, 25),
+    colormap = :delta, strokewidth = 0)
+Colorbar(fig[2, 1], p1; vertical = false)
+ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84",
+    title = "D8 flow accumulation")
+p2 = poly!(ax2, cells; color = vec(log_cells[shown]),
+    colormap = :devon, strokewidth = 0)
+Colorbar(fig[2, 2], p2; vertical = false,
+    label = "log₁₀(upstream cell equivalents)")
+save("geomorphometry_igeo7.png", fig)
+fig
+
+# `MultiOrderCoverage`, `PartialGrid`, `regrid` and `halo_table` are interface
+# methods, so the regridding and routing portions can use another system.
+# `RelativeZ7Cell` and the lazy cell-index iterator provide the IGEO7-specific
+# Geomorphometry integration.

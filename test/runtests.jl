@@ -19,6 +19,9 @@ using DiscreteGlobalGrids
     include("systems/A5/runtests.jl")
     include("systems/S2/runtests.jl")
     include("systems/ISEA4R/runtests.jl")
+    # CopernicusDEM is not in `systems()`, so the cross-system sweeps below
+    # never see it; its laws are stated only here.
+    include("systems/CopernicusDEM/runtests.jl")
     # Run interface-wide laws after each system's implementation tests.
     include("systems/crosssystem/runtests.jl")
     # Multi-order suites share the committed California outline fixture.
@@ -33,8 +36,17 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/multiorder_data.jl")
     include("systems/crosssystem/subtree_iterators.jl")
     include("systems/crosssystem/stencils.jl")
+    include("systems/crosssystem/neighborhood.jl")
+    include("systems/crosssystem/mapneighbors.jl")
     include("systems/crosssystem/subtree_halos.jl")
     include("systems/crosssystem/dimensionaldata.jl")
     include("systems/crosssystem/regridding_conservation.jl")
+    # The GlobalRegridding face reads the grids, the cell containers, and the
+    # cube axis, so it runs after all three.
+    include("systems/crosssystem/regrid.jl")
+    # Acceptance: the tiled-DEM, south-pole, streaming-and-spill case, on the
+    # face the file above unit-tests.
+    include("systems/crosssystem/regrid_acceptance.jl")
+    include("io/runtests.jl")
     include("plotting/runtests.jl")
 end

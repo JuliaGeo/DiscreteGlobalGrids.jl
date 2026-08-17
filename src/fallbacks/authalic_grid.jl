@@ -170,6 +170,11 @@ neighbors(grid::AuthalicGrid, c::AbstractCellIndex, k::Integer=1;
     connectivity::Connectivity=Vertex()) =
     neighbors(grid.grid, c, k; connectivity)
 
+# The latitude warp also preserves degree.
+neighborcount(grid::AuthalicGrid, c::AbstractCellIndex;
+    connectivity::Connectivity=Vertex()) =
+    neighborcount(grid.grid, c; connectivity)
+
 ring(grid::AuthalicGrid, c::AbstractCellIndex, k::Integer;
     connectivity::Connectivity=Vertex()) =
     ring(grid.grid, c, k; connectivity)

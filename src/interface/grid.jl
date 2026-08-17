@@ -349,32 +349,40 @@ function ring end
 
 """
     halo_table(grid::AbstractGrid, k::Integer = 1; connectivity::Connectivity = Vertex()) -> Vector{Vector{Int}}
-    halo_table(cv::CellVector, k::Integer = 1; connectivity::Connectivity = Vertex())
-    halo_table(lk::CellLookup, k::Integer = 1; connectivity::Connectivity = Vertex())
+    halo_table(cv::CellVector, k::Integer = 1; connectivity = Vertex(), threaded = true)
+    halo_table(lk::CellLookup, k::Integer = 1; connectivity = Vertex(), threaded = true)
 
-The whole stencil at once: entry `p` is `neighbors(grid, p, k)`, the in-set
-positions within `k` adjacency steps of position `p`, ascending.
+Return the in-set neighbours of every cell as ascending position vectors.
+Entry `p` equals `neighbors(grid, p, k)`.
 
     halo_table(sub, k)[p] == neighbors(sub, p, k)
 
-is the law, so this is never a second answer — only a faster route to the same
-one. On a subset the clipping is [`neighbors`](@ref)'s: system adjacency
-intersected with membership, omitted rather than padded, so rows have varying
-length and a cell whose neighbours all lie outside gets an empty one.
+Subset rows contain only members and may be shorter at the rim. [`halo`](@ref)
+returns the missing cells outside the subset, while [`stencil_table`](@ref)
+combines a subset and its fetched halo into complete rows over a `[chunk; halo]`
+buffer.
 
-A stencil pass is then one comprehension over the table.
+[`HaloTable`](@ref) stores the same `k == 1` neighbours in CSR form and preserves
+ring order.
 
-**IN-SET, WHICH MAKES RIM ROWS SHORT.** That is the answer to the question this
-verb asks — "which of my own cells does each of my cells touch" — and two other
-verbs answer the rest of it. [`halo`](@ref), despite the name, answers the
-opposite question: the cells the subset does **not** hold that touch it, which is
-what a stencil pass has to FETCH before it can run. [`stencil_table`](@ref) is
-then this table's rows completed through that fetched halo and renumbered into
-the concatenated `[chunk; halo]` buffer. Reach for the pair whenever the
-alternative is building a neighbour table over the whole level to process one
-chunk of it; none of the three replaces another, and each says so from its side.
+On subsets, `threaded` controls the `k == 1` sweep and accepts `Bool` or
+GeometryOps' `True()`/`False()`. Threaded and sequential calls return identical
+rows. Rooted subsets and `k != 1` use the same path regardless of this option.
 """
 function halo_table end
+
+"""
+    neighborcount(grid::AbstractGrid, c::AbstractCellIndex; connectivity::Connectivity = Vertex()) -> Int
+
+Return `length(neighbors(grid, c))`. Systems may compute structural degrees
+without constructing the ring. Subsets count only neighbours within the subset,
+and an out-of-set cell throws as [`neighbors`](@ref) does.
+
+A subset cell is interior exactly when
+`length(neighbors(sub, c)) == neighborcount(complete, c)`, so a rim scan needs
+one ring and one count rather than two rings.
+"""
+function neighborcount end
 
 # ===========================================================================
 # Trees

@@ -44,7 +44,7 @@ root, DGG.level(root)
 # One contained cell gives up the tile's rim. The destination that keeps it is
 # the tile's own coverage at the working level: every cell the tile touches.
 
-leaf = 12                                          # ≈ 1.1 km cells
+leaf = 12                                          # ≈ 65 m cells
 region = DGG.query(sys, DGG.MultiOrderCoverage(tile); level = leaf)
 f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
 poly!(region; color = :transparent, strokewidth = 1)
@@ -127,8 +127,8 @@ fig
 
 terrain = Raster(igeo7_dem; name = :height)
 
-tpi = @time GM.topographic_position_index(terrain)
-accumulation, directions = @time GM.flowaccumulation(terrain; method = GM.D8())
+tpi = GM.topographic_position_index(terrain)
+accumulation, directions = GM.flowaccumulation(terrain; method = GM.D8())
 
 cell_area = GM.cellarea(terrain, first(eachindex(terrain)))
 log_cells = log10.(accumulation ./ cell_area)

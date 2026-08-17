@@ -27,14 +27,6 @@
 @inline _validity(x, missingval) = isequal(x, missingval) ? 0.0 : _validity(x)
 
 """
-    isvalidvalue(x, missingval = nothing) -> Bool
-
-Return whether `x` contributes. `missing`, NaN, and values equal to `missingval`
-are invalid. Validity is applied to values and coverage, not weight construction.
-"""
-@inline isvalidvalue(x, missingval = nothing) = _isvalid(x, missingval)
-
-"""
     knownempty(data, ndchunk::Tuple{Vararg{AbstractUnitRange}}) -> Bool
 
 Return whether N-D storage chunk `ndchunk` contains no valid values, without
@@ -271,8 +263,7 @@ end
 # Finalization
 
 """
-    finalize!(out, num, cover, total, policy, hasdenom::Bool) -> out
-    finalize!(out, num, cover, total, block::WeightBlock, policy) -> out
+    finalize!(out, num, cover, total, policy) -> out
 
 Finalize one destination chunk after all source blocks have accumulated.
 
@@ -287,15 +278,9 @@ the row sums when it reported none.
 
 `Weighted` always normalizes by valid coverage and applies its threshold against
 `total`. Blanked values use `missing` when supported and NaN otherwise.
-`Extensive` returns raw sums and never blanks. `hasdenom` is retained for API
-compatibility; `total` already reflects the selected reference.
+`Extensive` returns raw sums and never blanks.
 """
 function finalize! end
-
-finalize!(out::AbstractVector, num::AbstractVector{Float64},
-    cover::AbstractVector{Float64}, total::AbstractVector{Float64},
-    block::WeightBlock, policy::AbstractMissingPolicy) =
-    finalize!(out, num, cover, total, policy, block.denom !== nothing)
 
 """
     usesreference(policy::AbstractMissingPolicy) -> Bool
@@ -310,7 +295,7 @@ usesreference(policy::Weighted) = policy.threshold > 0
 
 function finalize!(out::AbstractVector, num::AbstractVector{Float64},
     cover::AbstractVector{Float64}, total::AbstractVector{Float64},
-    ::Extensive, ::Bool)
+    ::Extensive)
     @inbounds for j in eachindex(out, num)
         out[j] = num[j]
     end
@@ -319,7 +304,7 @@ end
 
 function finalize!(out::AbstractVector, num::AbstractVector{Float64},
     cover::AbstractVector{Float64}, total::AbstractVector{Float64},
-    policy::Weighted, ::Bool)
+    policy::Weighted)
     blank = _maskedvalue(eltype(out))
     t = policy.threshold
     @inbounds for j in eachindex(out, num, cover, total)
@@ -436,7 +421,6 @@ function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix)
     num = zeros(Float64, ndst)
     cover = zeros(Float64, ndst)
     ref = blockreference!(Vector{Float64}(undef, ndst), block)
-    hasdenom = block.denom !== nothing
     policy = plan.missingpolicy
     mv = plan.missingval
     for s in axes(src, 2)
@@ -444,7 +428,7 @@ function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix)
         fill!(cover, 0.0)
         x = view(src, :, s)
         applyblock!(num, cover, block, x, anyinvalid(x, mv) ? x : nothing, ref, mv)
-        finalize!(view(out, :, s), num, cover, ref, policy, hasdenom)
+        finalize!(view(out, :, s), num, cover, ref, policy)
     end
     return out
 end

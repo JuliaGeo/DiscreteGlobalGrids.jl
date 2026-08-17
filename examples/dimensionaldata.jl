@@ -187,8 +187,8 @@ check("memory is the windows, not the cells",
 note("the materialised level-12 vector would be " *
      "$(round(Int, 343 * nleaf * sizeof(eltype(lk)) / 1024)) KiB")
 
-# Regridding off the cube's own axis. `DGGSpace` is how a grid names itself as a
-# regridding SOURCE, and a lon/lat destination is a `RasterGrid` over two axes of
+# Regridding off the cube's own axis. The lookup is a regridding SOURCE as it
+# stands, and a lon/lat destination is a `RasterGrid` over two axes of
 # cell centres — here a 9x5 box on the region. `Weighted(0)` divides each
 # destination by the source area it actually saw, so the answer is a mean
 # whatever the coverage was: this checks alignment rather than conservativity,
@@ -196,8 +196,7 @@ note("the materialised level-12 vector would be " *
 const DST = GR.RasterGrid(DD.X(DD.Sampled(range(6.25, 10.25; length=9))),
     DD.Y(DD.Sampled(range(46.0, 47.6; length=5))))
 elevation = [40.0 + 20 * sinpi(k / nleaf) for k in 1:nleaf]
-zonal = DGG.regrid(elevation; to=DST, from=DGG.DGGSpace(DGG.PartialGrid(lk)),
-    missingpolicy=GR.Weighted(0))
+zonal = DGG.regrid(elevation; to=DST, from=lk, missingpolicy=GR.Weighted(0))
 check("regridding the cube's data through its own axis",
     all(isfinite, zonal) && minimum(zonal) >= minimum(elevation) &&
     maximum(zonal) <= maximum(elevation);

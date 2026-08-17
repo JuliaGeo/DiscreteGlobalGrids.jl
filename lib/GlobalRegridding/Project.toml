@@ -10,7 +10,6 @@ DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
 GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
 GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
 GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
-LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
 [weakdeps]
@@ -38,8 +37,9 @@ Test = "1"
 julia = "1.11"
 
 [extras]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Rasters", "Test"]
+test = ["LinearAlgebra", "Rasters", "Test"]

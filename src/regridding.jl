@@ -227,9 +227,12 @@ GR._asspace(target::RegridTarget, name::AbstractString) = DGGSpace(regridgrid(ta
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
     throw(ArgumentError(
         "`$name = $(typeof(sys).name.name)()` names no cells until a level is " *
-        "chosen, and the level is chosen by matching the source's cell areas. " *
-        "Pass a dimensional raster to `regrid` so the source can be measured, " *
-        "or name the level yourself with `levelgrid(sys, l)`."))
+        "chosen. As a destination the level is matched to the source's cell " *
+        "areas, but as a source you must name it with `levelgrid(sys, l)`."))
+
+# A bare system as the destination takes the level closest to the source's cells.
+GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
+    src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, arealevel(sys, src_space)))
 
 """
     arealevel(sys::AbstractHierarchicalGridSystem, space; samples = 256) -> Int
@@ -271,18 +274,6 @@ function _mediancellarea(space::GR.RegridSpace, samples::Int)
 end
 
 # API integration
-
-# A bare system needs the source geometry to choose its destination level.
-function GR.plan_regrid(data::DD.AbstractDimArray; to, from=nothing, kwargs...)
-    return invoke(GR.plan_regrid, Tuple{Any}, data;
-        to=_resolvetarget(to, data, from), from, kwargs...)
-end
-
-_resolvetarget(to, data, from) = to
-
-_resolvetarget(sys::AbstractHierarchicalGridSystem, data, from) =
-    DGGSpace(levelgrid(sys, arealevel(sys,
-        from === nothing ? GR._sourcespace(data) : from)))
 
 # DGGS destination plans return a cell-indexed cube. Explicit leading bounds
 # keep these aliases within the plan types' declared bounds.

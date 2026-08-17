@@ -223,10 +223,10 @@ end
 """
     Spilled(dir; capacity = typemax(Int), maxbytes = typemax(Int))
 
-Store blocks in scratch directory `dir` behind a [`PerChunk`](@ref) cache.
-Each storage instance uses unique filenames, so files are not shared between
-plans. Files remain after the plan is dropped. The format is private and not
-intended for durable or portable storage.
+Store blocks in scratch directory `dir` behind a [`PerChunk`](@ref) cache. The
+caller owns `dir` and its lifetime. Filenames carry a per-instance tag, so only
+this storage can read them: once the plan is dropped they are unreadable
+garbage, and deleting the directory is the caller's job.
 """
 struct Spilled <: AbstractBlockStorage
     dir::String
@@ -322,8 +322,8 @@ function readblockfile(path::AbstractString)
         read(io, UInt32) == SPILL_MAGIC || throw(ArgumentError(
             "$path is not a GlobalRegridding weight spill"))
         read(io, UInt8) == SPILL_VERSION || throw(ArgumentError(
-            "$path was written by a different version of the spill format; " *
-            "the format is private and not durable, so delete the scratch directory"))
+            "$path was written by another version of the private spill format; " *
+            "delete the scratch directory"))
         m = Int(read(io, Int64))
         n = Int(read(io, Int64))
         nz = Int(read(io, Int64))

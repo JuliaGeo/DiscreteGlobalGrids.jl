@@ -99,6 +99,16 @@ function adddenom!(coo::WeightCOO, dst_local::Int, d::Real)
 end
 
 """
+    markdenominated!(coo::WeightCOO)
+
+Declare that `coo` carries denominators, without adding to any of them.
+"""
+function markdenominated!(coo::WeightCOO)
+    coo.hasdenom = true
+    return coo
+end
+
+"""
     build_weights!(coo, method, dst_space, dst_inds, src_space, src_inds)
 
 Append chunk-local weights for `dst_inds` and `src_inds`, then return `coo`.

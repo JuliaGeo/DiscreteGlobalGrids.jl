@@ -1,36 +1,6 @@
 # Conservative weights from spherical intersection areas.
 
-# Chunk-local index maps
-
-# Contiguous chunks use arithmetic; other chunks use a lookup table.
-
-struct OffsetIndexMap
-    offset::Int
-    n::Int
-end
-
-struct LookupIndexMap
-    lookup::Dict{Int,Int}
-    n::Int
-end
-
-indexmap(inds::AbstractUnitRange{<:Integer}) =
-    OffsetIndexMap(Int(first(inds)) - 1, length(inds))
-indexmap(inds) =
-    LookupIndexMap(Dict{Int,Int}(Int(p) => k for (k, p) in enumerate(inds)), length(inds))
-
-@inline localindex(m::OffsetIndexMap, i::Int) = i - m.offset
-@inline localindex(m::LookupIndexMap, i::Int) = m.lookup[i]
-
-Base.length(m::OffsetIndexMap) = m.n
-Base.length(m::LookupIndexMap) = m.n
-
 # Chunk-restricted cell trees
-
-const _FULL_SPHERE = SphericalCap(USPoint(0.0, 0.0, 1.0), nextfloat(Float64(pi)))
-
-# Maximum cells per fallback-tree leaf.
-const _SUBTREE_LEAFSIZE = 16
 
 """
     subtree(space::RegridSpace, inds) -> tree
@@ -52,7 +22,7 @@ _iswholespace(::RegridSpace, inds) = false
     CellCapTree(space, inds)
 
 Build the fallback balanced cap tree for `inds`. Nodes store their extents and
-leaves contain at most $(_SUBTREE_LEAFSIZE) cells.
+leaves contain at most $(_CELL_TREE_LEAF) cells.
 """
 struct CellCapTree{S}
     space::S
@@ -73,7 +43,7 @@ end
 function _cellcapnode(space::S, ix::Vector{Int}, caps::Vector{Cap},
     lo::Int, hi::Int) where {S}
     children = CellCapTree{S}[]
-    if hi - lo + 1 > _SUBTREE_LEAFSIZE
+    if hi - lo + 1 > _CELL_TREE_LEAF
         mid = (lo + hi) >> 1
         push!(children, _cellcapnode(space, ix, caps, lo, mid))
         push!(children, _cellcapnode(space, ix, caps, mid + 1, hi))
@@ -97,17 +67,16 @@ function _mergecaps(caps)
         sz += c.point[3]
         n += 1
     end
-    n == 0 && return _FULL_SPHERE
+    n == 0 && return _WHOLE_SPHERE
     norm = sqrt(sx^2 + sy^2 + sz^2)
-    norm <= eps(Float64) && return _FULL_SPHERE
+    norm <= eps(Float64) && return _WHOLE_SPHERE
     centre = USPoint(sx / norm, sy / norm, sz / norm)
     radius = 0.0
     for c in caps
         radius = max(radius, US.spherical_distance(centre, c.point) + c.radius)
     end
-    radius > Float64(pi) / 2 && return _FULL_SPHERE
-    # Nudged outward past dot-product rounding noise, so containment stays closed.
-    return SphericalCap(centre, nextfloat(radius * 1.0001 + 1e-12))
+    radius > Float64(pi) / 2 && return _WHOLE_SPHERE
+    return SphericalCap(centre, _padcap(radius))
 end
 
 _cellcap(space::RegridSpace, i::Int) = _mergecaps(
@@ -125,6 +94,8 @@ STI.child_indices_extents(tree::CellCapTree) =
     ((tree.inds[k], tree.caps[k]) for k in tree.lo:tree.hi)
 
 # Tree leaves and cell access both use global space positions.
+# ConservativeRegridding fetches matrix sizes and polygons through these
+# bindings during `intersection_areas`.
 ncells(tree::CellCapTree) = ncells(tree.space)
 getcell(tree::CellCapTree, i::Int) = getcell(tree.space, i)
 getcell(tree::CellCapTree) =
@@ -147,13 +118,14 @@ mutable struct TileCells{S<:RegridSpace,I,M} <: RegridSpace
     space::S
     inds::I
     map::M
-    # `nothing` before initialization, `false` when caching is disabled.
-    cells::Any
+    initialized::Bool
+    "the tile's cached geometry, or `nothing` when caching is off"
+    cells::Union{Nothing,Vector}
     lock::ReentrantLock
 end
 
 TileCells(space::RegridSpace, inds) =
-    TileCells(space, inds, indexmap(inds), nothing, ReentrantLock())
+    TileCells(space, inds, indexmap(inds), false, nothing, ReentrantLock())
 
 Base.show(io::IO, tc::TileCells) =
     print(io, "TileCells(", tc.space, ", ", length(tc.inds), " cells)")
@@ -182,16 +154,17 @@ function subtree(tc::TileCells, inds)
     inds == tc.inds || return subtree(tc.space, inds)
     tree = subtree(tc.space, inds)
     cells = _tilecells!(tc)
-    cells === false && return tree
+    cells === nothing && return tree
     return _cachedtree(tree, tc.map, cells)
 end
 
 function _tilecells!(tc::TileCells)
     lock(tc.lock)
     try
-        if tc.cells === nothing
-            tc.cells = length(tc.inds) > _TILE_CELL_CACHE_MAX ? false :
+        if !tc.initialized
+            tc.cells = length(tc.inds) > _TILE_CELL_CACHE_MAX ? nothing :
                        _synthesizecells(tc.space, tc.inds)
+            tc.initialized = true
         end
         return tc.cells
     finally
@@ -201,11 +174,11 @@ end
 
 function _synthesizecells(space::RegridSpace, inds)
     cells = [getcell(space, Int(i)) for i in inds]
-    # Avoid dynamic dispatch in the clipping loop.
-    return isconcretetype(eltype(cells)) ? cells : false
+    # Dynamic dispatch in the clipping loop costs more than the cache saves.
+    return isconcretetype(eltype(cells)) ? cells : nothing
 end
 
-# Function barrier for the untyped cache field.
+# Function barrier for the cache field's abstract element type.
 _cachedtree(tree::T, map::M, cells::Vector{P}) where {T,M,P} =
     CachedCellTree{T,M,P}(tree, map, cells)
 
@@ -239,14 +212,10 @@ ncells(t::CachedCellTree) = ncells(t.tree)
 getcell(t::CachedCellTree) = getcell(t.tree)
 
 @inline function getcell(t::CachedCellTree, i::Int)
-    k = _cachedposition(t.map, i)
+    k = localindex(t.map, i)
     k == 0 && return getcell(t.tree, i)
     return @inbounds t.cells[k]
 end
-
-@inline _cachedposition(m::OffsetIndexMap, i::Int) =
-    (k = i - m.offset; 1 <= k <= m.n ? k : 0)
-@inline _cachedposition(m::LookupIndexMap, i::Int) = get(m.lookup, i, 0)
 
 # Intersection operator
 
@@ -272,15 +241,18 @@ ConservativeRegridding.task_local_operator(op::BlockAreaOperator) =
     BlockAreaOperator(ConservativeRegridding.task_local_operator(op.inner),
         op.dstmap, op.srcmap)
 
-# The source is the subject and the destination is the clip ring.
+# The source is the subject and the destination is the clip ring. A block emits
+# weights only for the pairs both of its chunks contain.
 @inline function (op::BlockAreaOperator)(rows, cols, vals, item, src_tree, dst_tree)
     i1, i2 = item
+    row = localindex(op.dstmap, i2)
+    col = localindex(op.srcmap, i1)
+    (row == 0 || col == 0) && return nothing
     area = op.inner(Trees.getcell(src_tree, i1), Trees.getcell(dst_tree, i2))
-    if area > 0
-        push!(rows, localindex(op.dstmap, i2))
-        push!(cols, localindex(op.srcmap, i1))
-        push!(vals, area)
-    end
+    area > 0 || return nothing
+    push!(rows, row)
+    push!(cols, col)
+    push!(vals, area)
     return nothing
 end
 
@@ -297,8 +269,7 @@ must match. Intersection discovery and clipping may run in parallel.
 function build_weights!(coo::WeightCOO, ::Conservative,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     isempty(dst_inds) && return coo
-    # Zero coverage still requires a denominator.
-    adddenom!(coo, 1, 0.0)
+    markdenominated!(coo)
     isempty(src_inds) && return coo
 
     m = manifold(dst_space)

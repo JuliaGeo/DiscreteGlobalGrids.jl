@@ -170,9 +170,9 @@ sub  = DGG.regrid(temps; to = cv)                   # onto the region above
 auto = DGG.regrid(temps; to = DGG.HEALPixSystem())  # level matched by cell area
 
 # The other direction. `from` is required whenever the source is not a lon/lat
-# raster: a DGGS names itself as a source with `DGGSpace`, and `RasterGrid` is
-# the lon/lat destination.
-back = DGG.regrid(tavg; to = GR.RasterGrid(DD.dims(temps)), from = DGG.DGGSpace(grid))
+# raster: a grid, a `CellVector` or a `CellLookup` is a source as it stands, and
+# `RasterGrid` is the lon/lat destination.
+back = DGG.regrid(tavg; to = GR.RasterGrid(DD.dims(temps)), from = grid)
 
 plan = DGG.plan_regrid(temps; to = grid)            # the operator alone, reusable
 DGG.regrid(temps, plan)                             # ... applied, no keywords left
@@ -219,6 +219,7 @@ them and `docs/src/all_dggs.md` draws every system.
 | `src/dimensionaldata.jl` | the cube face of `CellVector`: `CellLookup`, `Cells`, `Covering` |
 | `src/systems/` | one directory per system, plus `src/systems/ISEA/` — the Snyder/icosahedron basis IGEO7 and ISEA4R share |
 | `src/core/`, `src/Helpers/` | the authalic manifold pair, and shared allocation-free primitives |
+| `lib/GlobalRegridding/` | the generic regridding engine — spaces, weights, plans, the lazy executor — consumed by the main package for `regrid`/`plan_regrid` |
 | `lib/DiscreteGlobalGridsConformanceTesting/` | the test-only workspace package that makes the contracts executable |
 
 ## The systems
@@ -303,9 +304,12 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**945,225 assertions, ~2m55s warm**, with 14 broken: A5's documented
+**968,931 assertions, ~4m35s warm**, with 14 broken: A5's documented
 `has_sorted_subtrees` skips, and the destination-direction conservation arms
 that wait on the upstream clipper fix.
+
+`lib/GlobalRegridding/` carries its own suite, which the root `Pkg.test()` does
+not run: `julia --project=lib/GlobalRegridding -e 'using Pkg; Pkg.test()'`.
 
 ## Provenance
 

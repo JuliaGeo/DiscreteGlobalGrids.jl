@@ -153,7 +153,7 @@ box = Raster(
 # axis is a `Cells` dimension over the same cells, so nothing has to be looked
 # up again to plot it or to slice it.
 
-A = @time DGG.regrid(box; to = lk)
+A = DGG.regrid(box; to = lk)
 tavg = parent(A)
 extrema(tavg)
 

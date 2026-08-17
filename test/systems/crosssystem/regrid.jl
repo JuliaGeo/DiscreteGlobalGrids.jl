@@ -108,10 +108,13 @@ end
         @test parent(out) == parent(reference)
         @test collect(DD.lookup(out, 1)) == collect(DGG.CellVector(GRID))
     end
-    # A bare system needs the source to choose a level, so it is not resolvable
-    # from the target alone.
-    @test_throws ArgumentError GR.plan_regrid(vec(parent(RASTER)[:, :, 1]);
-        to = SYS, from = SRC)
+    # A bare system needs the source to choose a level, and any `from` that
+    # names cells is a measurable source — the data itself need not carry them.
+    bare = GR.plan_regrid(vec(parent(RASTER)[:, :, 1]); to = SYS, from = SRC)
+    @test DGG.level(bare.dst_space.grid) == DGG.arealevel(SYS, SRC) == LEVEL
+    # And a grid is one of those spellings, not only a `RegridSpace`.
+    fromgrid = GR.plan_regrid(zeros(DGG.ncells(GRID)); to = SYS, from = GRID)
+    @test DGG.level(fromgrid.dst_space.grid) == LEVEL
 end
 
 @testset "a bare system takes the area-matched level" begin

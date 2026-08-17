@@ -1,28 +1,5 @@
 # Point-sampling methods and their source-chart interface.
 
-# Chunk-local index lookup
-
-# Use arithmetic for ranges and a dictionary for other index collections.
-struct _RangeLocalIndex{R<:AbstractUnitRange{<:Integer}}
-    inds::R
-end
-
-struct _DictLocalIndex
-    map::Dict{Int,Int}
-end
-
-_localindexer(inds::AbstractUnitRange{<:Integer}) = _RangeLocalIndex(inds)
-_localindexer(inds) = _DictLocalIndex(Dict{Int,Int}(Int(p) => k for (k, p) in enumerate(inds)))
-
-"""
-    _localindex(indexer, position::Integer) -> Int
-
-Return the chunk-local index of `position`, or `0` when absent.
-"""
-_localindex(l::_RangeLocalIndex, position::Integer) =
-    position in l.inds ? Int(position - first(l.inds)) + 1 : 0
-_localindex(l::_DictLocalIndex, position::Integer) = get(l.map, Int(position), 0)
-
 # Nearest-cell weights
 
 """
@@ -32,15 +9,13 @@ Add weight 1 for the source cell containing each destination centroid. Emit no
 entry when the point is outside coverage or the source belongs to another
 chunk. Point samples have no coverage denominator.
 """
-function build_weights!(coo::WeightCOO, method::NearestCell,
+function build_weights!(coo::WeightCOO, ::NearestCell,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
-    _require_centroids(method, dst_space)
-    _require_pointlocation(method, src_space)
-    indexer = _localindexer(src_inds)
+    indexer = indexmap(src_inds)
     for (j, i) in enumerate(dst_inds)
         source = cellat(src_space, cellcentroid(dst_space, Int(i)))
         source === nothing && continue
-        k = _localindex(indexer, source)
+        k = localindex(indexer, source)
         k == 0 && continue
         addweight!(coo, j, k, 1.0)
     end
@@ -90,39 +65,22 @@ Required when [`hascellchart`](@ref) is `true`.
 """
 function chartspacing end
 
-function _chart_required(f::Symbol, method, space::RegridSpace)
+function _chart_required(f::Symbol, space::RegridSpace)
     throw(ArgumentError(
-        "$(nameof(typeof(method))) needs a cell chart, but " *
-        "$(f)(::$(typeof(space))) is not defined. A space that answers " *
-        "hascellchart = true must implement chartaxes, chartcoords, " *
-        "chartposition and chartspacing (chartperiod defaults to no wrap)."))
+        "$(typeof(space)) claims a cell chart but supplies no $(f), so " *
+        "BilinearPoint cannot write a stencil on it."))
 end
 
-chartaxes(space::RegridSpace) = _chart_required(:chartaxes, BilinearPoint(), space)
-chartcoords(space::RegridSpace, _) = _chart_required(:chartcoords, BilinearPoint(), space)
-chartposition(space::RegridSpace, ::Int, ::Int) =
-    _chart_required(:chartposition, BilinearPoint(), space)
-chartspacing(space::RegridSpace) = _chart_required(:chartspacing, BilinearPoint(), space)
+chartaxes(space::RegridSpace) = _chart_required(:chartaxes, space)
+chartcoords(space::RegridSpace, _) = _chart_required(:chartcoords, space)
+chartposition(space::RegridSpace, ::Int, ::Int) = _chart_required(:chartposition, space)
+chartspacing(space::RegridSpace) = _chart_required(:chartspacing, space)
 
 function _require_chart(method, src_space::RegridSpace)
     hascellchart(src_space) || throw(ArgumentError(
         "$(nameof(typeof(method))) interpolates on the source chart, but " *
-        "hascellchart(::$(typeof(src_space))) is false. Use Conservative() or " *
-        "NearestCell() for a source with no chart."))
-    return nothing
-end
-
-function _require_centroids(method, dst_space::RegridSpace)
-    hasmethod(cellcentroid, Tuple{typeof(dst_space),Int}) || throw(ArgumentError(
-        "$(nameof(typeof(method))) samples at destination centroids, but " *
-        "cellcentroid(::$(typeof(dst_space)), ::Int) is not defined."))
-    return nothing
-end
-
-function _require_pointlocation(method, src_space::RegridSpace)
-    hasmethod(cellat, Tuple{typeof(src_space),USPoint}) || throw(ArgumentError(
-        "$(nameof(typeof(method))) locates points in the source, but " *
-        "cellat(::$(typeof(src_space)), ::UnitSphericalPoint) is not defined."))
+        "hascellchart(::$(typeof(src_space))) is false; use Conservative() or " *
+        "NearestCell() on a source with no chart."))
     return nothing
 end
 
@@ -207,12 +165,11 @@ other chunks emit their own shares. Point samples have no denominator.
 function build_weights!(coo::WeightCOO, method::BilinearPoint,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     _require_chart(method, src_space)
-    _require_centroids(method, dst_space)
     xs, ys = chartaxes(src_space)
     px, py = chartperiod(src_space)
     xax = _ChartAxis(xs, px)
     yax = _ChartAxis(ys, py)
-    indexer = _localindexer(src_inds)
+    indexer = indexmap(src_inds)
     for (j, i) in enumerate(dst_inds)
         coords = chartcoords(src_space, cellcentroid(dst_space, Int(i)))
         coords === nothing && continue
@@ -225,7 +182,7 @@ function build_weights!(coo::WeightCOO, method::BilinearPoint,
 
             w = wx * wy
             iszero(w) && continue
-            k = _localindex(indexer, chartposition(src_space, ix, iy))
+            k = localindex(indexer, chartposition(src_space, ix, iy))
             k == 0 && continue
             addweight!(coo, j, k, w)
         end

@@ -146,10 +146,6 @@ const _YNAMES = (:y, :lat, :latitude)
 const _CELL_CAP_SAMPLES = 0
 # Extra boundary samples for multi-cell boxes.
 const _BOX_CAP_SAMPLES = 3
-# Maximum cells per recursive-tree leaf.
-const _CELL_TREE_LEAF = 16
-
-const _WHOLE_SPHERE = SphericalCap(USPoint(0.0, 0.0, 1.0), nextfloat(Float64(pi)))
 
 function RasterGrid(A::DD.AbstractDimArray;
     xdim = nothing, ydim = nothing, chunks = nothing, kwargs...)
@@ -587,8 +583,8 @@ function _boxcap(space::RasterGrid, xlo, xhi, ylo, yhi, nsamp::Int)
         r = max(r, US.spherical_distance(centre,
             _boxpoint(t, xlo, xhi, ylo, yhi, m, j)))
     end
-    # Expand slightly for rounding; caps beyond π/2 lose the convexity bound.
-    r = nextfloat(r * 1.0001 + 1e-12)
+    # Caps beyond π/2 lose the convexity bound.
+    r = _padcap(r)
     r > Float64(pi) / 2 && return _WHOLE_SPHERE
     return SphericalCap(centre, r)
 end
@@ -615,7 +611,7 @@ function _cornercap(c::NTuple{4,USPoint})
     for p in c
         r = max(r, US.spherical_distance(centre, p))
     end
-    r = nextfloat(r * 1.0001 + 1e-12)
+    r = _padcap(r)
     r > Float64(pi) / 2 && return _WHOLE_SPHERE
     return SphericalCap(centre, r)
 end
@@ -642,7 +638,7 @@ function _widecap(t::LonLatEdgeTables, xlo, xhi, ylo, yhi)
     for x in (xlo, xhi), y in (a, b)
         r = max(r, US.spherical_distance(centre, chart(x, y)))
     end
-    r = nextfloat(r * 1.0001 + 1e-12)
+    r = _padcap(r)
     (r >= Float64(pi) || polar.radius <= r) && return polar
     return SphericalCap(centre, r)
 end
@@ -662,7 +658,7 @@ function _polarcap(t::LonLatEdgeTables, ylo, yhi)
         centre = USPoint(0.0, 0.0, -1.0)
         r = rs
     end
-    r = nextfloat(r * 1.0001 + 1e-12)
+    r = _padcap(r)
     r >= Float64(pi) && return _WHOLE_SPHERE
     return SphericalCap(centre, r)
 end
@@ -807,6 +803,8 @@ STI.child_indices_extents(t::RasterCellTree) =
     ((cellposition(t.space, ix, iy), _rastercellcap(t.space, ix, iy))
      for iy in t.iy0:t.iy1, ix in t.ix0:t.ix1)
 
+# ConservativeRegridding fetches matrix sizes and polygons through these
+# bindings during `intersection_areas`.
 GOCore.best_manifold(t::RasterCellTree) = manifold(t.space)
 Trees.ncells(t::RasterCellTree) = ncells(t.space)
 Trees.getcell(t::RasterCellTree, i::Int) = getcell(t.space, i)
@@ -897,9 +895,30 @@ _nfast(space::RasterGrid) = space.xfast ? _nx(space) : _ny(space)
 """
     _indexrect(space::RasterGrid, inds) -> (ix0, ix1, iy0, iy1) or nothing
 
-Return the lattice rectangle enumerated by `inds`, or `nothing`.
+Return the lattice rectangle enumerated by `inds`, or `nothing`. A contiguous
+range needs no scan: matching the corner subscripts' cell count already proves
+the rectangle, so only scattered index sets are walked.
 """
 function _indexrect(space::RasterGrid, inds)
+    corners = _cornersubscripts(space, inds)
+    corners === nothing && return nothing
+    a0, a1, b0, b1 = corners
+    nfast = _nfast(space)
+    k = 0
+    for b in b0:b1, a in a0:a1
+        Int(inds[k+=1]) == a + (b - 1) * nfast || return nothing
+    end
+    return _lattice(space, corners)
+end
+
+function _indexrect(space::RasterGrid, inds::AbstractUnitRange{<:Integer})
+    corners = _cornersubscripts(space, inds)
+    corners === nothing && return nothing
+    return _lattice(space, corners)
+end
+
+# Return the candidate rectangle's fast/slow bounds, or `nothing`.
+function _cornersubscripts(space::RasterGrid, inds)
     n = ncells(space)
     (isempty(inds) || length(inds) > n) && return nothing
     nfast = _nfast(space)
@@ -909,12 +928,11 @@ function _indexrect(space::RasterGrid, inds)
     b1, a1 = fldmod1(hi, nfast)
     (a1 >= a0 && b1 >= b0) || return nothing
     length(inds) == (a1 - a0 + 1) * (b1 - b0 + 1) || return nothing
-    k = 0
-    for b in b0:b1, a in a0:a1
-        Int(inds[k+=1]) == a + (b - 1) * nfast || return nothing
-    end
-    return space.xfast ? (a0, a1, b0, b1) : (b0, b1, a0, a1)
+    return (a0, a1, b0, b1)
 end
+
+_lattice(space::RasterGrid, (a0, a1, b0, b1)) =
+    space.xfast ? (a0, a1, b0, b1) : (b0, b1, a0, a1)
 
 # Cell chart
 

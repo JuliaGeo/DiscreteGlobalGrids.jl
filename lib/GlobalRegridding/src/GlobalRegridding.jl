@@ -3,8 +3,9 @@
 
 Regrid spherical cell collections eagerly or in chunks.
 
-Both inputs implement [`RegridSpace`](@ref). Regridding methods build
-geometry-only sparse [`WeightBlock`](@ref)s through [`build_weights!`](@ref).
+The source and destination spaces both implement [`RegridSpace`](@ref).
+Regridding methods build geometry-only sparse [`WeightBlock`](@ref)s through
+[`build_weights!`](@ref).
 Plans contain the method, spaces, missing-data policy, storage, and memory
 budget, so applying a plan takes no keywords:
 
@@ -30,7 +31,6 @@ import GeometryOpsCore: manifold
 
 import DimensionalData as DD
 import DiskArrays
-import LinearAlgebra
 import SparseArrays
 using SparseArrays: SparseMatrixCSC, sparse
 
@@ -40,6 +40,7 @@ const USPoint = GO.UnitSphericalPoint{Float64}
 const SphericalCap = GO.UnitSpherical.SphericalCap
 const Cap = GO.UnitSpherical.SphericalCap{Float64}
 
+include("shared.jl")
 include("spaces.jl")
 include("rastergrid.jl")
 include("methods.jl")
@@ -77,8 +78,8 @@ export regrid, regrid!, plan_regrid
 export LazyRegridArray
 
 # Qualified extension and observability APIs.
-public knownempty, isvalidvalue, sourcemissingval, chunkat
+public knownempty, sourcemissingval, chunkat, cellarea
 public residency, LazyStats
-public weightbudget, databudget, spilledfiles, usesreference
+public spilledfiles, usesreference
 
 end # module GlobalRegridding

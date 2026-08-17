@@ -307,6 +307,8 @@ function _outputgrid(plan::ChunkedPlan, source, ndst::Int, spans::Vector{UnitRan
     contiguous::Bool, nspatial::Int, othersizes::Tuple)
     nd = length(othersizes) + 1
     declared = plan.chunks
+    # Plans built without `plan_regrid` have not passed the API-boundary check.
+    _checkchunks(declared)
     cellsizes = nothing
     others = nothing
     if declared isa DiskArrays.GridChunks
@@ -318,15 +320,9 @@ function _outputgrid(plan::ChunkedPlan, source, ndst::Int, spans::Vector{UnitRan
     elseif declared isa Tuple{Vararg{Integer}}
         length(declared) == nd || throw(ArgumentError(
             "the plan's chunk sizes $declared do not cover the regrid's $nd dimensions"))
-        all(>(0), declared) || throw(ArgumentError(
-            "chunk sizes must be positive, got $declared"))
         cellsizes = [Int(declared[1])]
         others = ntuple(i -> DiskArrays.RegularChunks(Int(declared[i+1]), 0, othersizes[i]),
             nd - 1)
-    elseif declared !== nothing
-        throw(ArgumentError(
-            "`chunks` must be a tuple of chunk sizes, a DiskArrays.GridChunks, or " *
-            "nothing, got $(typeof(declared))"))
     end
     tiling = _desttiling(plan.dst_space, ndst, spans, contiguous, cellsizes, plan.budget)
     cells = DiskArrays.IrregularChunks(; chunksizes = [length(r) for r in tiling.runs])
@@ -420,7 +416,6 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         # Share tile geometry across blocks built for this tile.
         dstcells = TileCells(plan.dst_space, dinds)
         w = _wavesize(plan, nd, srcchunks, srcranges)
-        denominated = false
         i = 1
         while i <= length(srcchunks)
             j = min(i + w - 1, length(srcchunks))
@@ -429,7 +424,6 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
                 entry = wave[k-i+1]
                 s = srcchunks[k]
                 addreference!(total, entry.block)
-                denominated |= hasdenom(entry.block)
                 sr = srcranges[k]
                 ncell = prod(map(length, sr))
                 for (gi, pos) in enumerate(groups)
@@ -446,7 +440,7 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
             empty!(wave)
             i = j + 1
         end
-        _writechunk!(out, vals, num, cover, total, policy, denominated, dinds, cellr)
+        _writechunk!(out, vals, num, cover, total, policy, dinds, cellr)
     end
     return out
 end
@@ -601,11 +595,11 @@ end
 # Finalize each tile slice and scatter requested cells.
 function _writechunk!(out::AbstractMatrix, vals::Vector, num::Matrix{Float64},
     cover::Matrix{Float64}, total::Vector{Float64}, policy::AbstractMissingPolicy,
-    denominated::Bool, dinds, cellr::AbstractUnitRange)
+    dinds, cellr::AbstractUnitRange)
     lo, hi = first(cellr), last(cellr)
     off = lo - 1
     for t in axes(num, 2)
-        finalize!(vals, view(num, :, t), view(cover, :, t), total, policy, denominated)
+        finalize!(vals, view(num, :, t), view(cover, :, t), total, policy)
         @inbounds for (j, p) in enumerate(dinds)
             lo <= p <= hi || continue
             out[p-off, t] = vals[j]

@@ -266,15 +266,14 @@ end
         # A source that does not flatten to the space's cells is caught before
         # any weight is applied.
         @test_throws DimensionMismatch regrid(rand(5, 3); to = space, from = space, method)
-        # Lazy-path knobs are accepted and ignored by the eager path.
-        @test regrid(field; to = space, from = space, method, chunks = (3, 3),
-            budget = 2^10) ≈ vec(field)
-        @test_throws ArgumentError plan_regrid(field; to = space, from = space,
-            method, budget = 0)
-        # Weight storage is a lazy-path knob and says so rather than being
-        # silently dropped by a plan that holds one whole-domain block.
-        @test_throws ArgumentError plan_regrid(field; to = space, from = space,
+        # The eager path names the lazy-only knobs it was handed rather than
+        # dropping them silently.
+        @test_throws "`chunks` or `budget`" plan_regrid(field; to = space,
+            from = space, method, chunks = (3, 3), budget = 2^10)
+        @test_throws "`storage`" plan_regrid(field; to = space, from = space,
             method, storage = PerChunk())
+        @test_throws ArgumentError plan_regrid(field; to = space, from = space,
+            method, lazy = true, budget = 0)
         # Default lazy storage is bounded by the weight budget.
         bounded = plan_regrid(field; to = space, from = space, method, lazy = true,
             budget = 2^16)

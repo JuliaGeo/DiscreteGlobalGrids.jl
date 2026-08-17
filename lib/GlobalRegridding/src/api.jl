@@ -29,7 +29,7 @@ end
 """
     regrid(data; to, from = nothing, method = Conservative(),
            missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
-           lazy = isdiskbacked(data), chunks = nothing, budget = 2^30,
+           lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
            storage = nothing)
     regrid(data, plan::AbstractRegriddingPlan)
 
@@ -49,10 +49,11 @@ by the source element type, and `NaN` otherwise.
   - `missingval`: additional nodata sentinel. `missing` and `NaN` are always invalid.
   - `lazy`: return a [`LazyRegridArray`](@ref); defaults to chunked sources.
   - `chunks`: lazy destination tiling. `nothing` derives it automatically.
-  - `budget`: target bytes for transient lazy-read data and weights.
+  - `budget`: target bytes for lazy reads and weights, default `2^30`.
   - `storage`: lazy weight storage, [`PerChunk`](@ref) or [`Spilled`](@ref).
 
-The plan form accepts no keywords because the plan contains all settings.
+`chunks`, `budget` and `storage` apply only to `lazy = true`. The plan form
+accepts no keywords because the plan contains all settings.
 """
 function regrid end
 
@@ -60,7 +61,8 @@ function regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
     missingpolicy::AbstractMissingPolicy = Weighted(0.5),
     missingval = sourcemissingval(data),
-    lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30,
+    lazy::Bool = isdiskbacked(data), chunks = nothing,
+    budget::Union{Nothing,Integer} = nothing,
     storage::Union{Nothing,AbstractBlockStorage} = nothing)
     plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
         chunks, budget, storage)
@@ -81,7 +83,7 @@ regrid(data, plan::AbstractRegriddingPlan) =
 """
     regrid!(dest, data; to, from = nothing, method = Conservative(),
             missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
-            lazy = isdiskbacked(data), chunks = nothing, budget = 2^30,
+            lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
             storage = nothing)
     regrid!(dest, data, plan::AbstractRegriddingPlan)
 
@@ -96,7 +98,8 @@ function regrid!(dest, data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
     missingpolicy::AbstractMissingPolicy = Weighted(0.5),
     missingval = sourcemissingval(data),
-    lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30,
+    lazy::Bool = isdiskbacked(data), chunks = nothing,
+    budget::Union{Nothing,Integer} = nothing,
     storage::Union{Nothing,AbstractBlockStorage} = nothing)
     plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
         chunks, budget, storage)
@@ -120,35 +123,48 @@ regrid!(dest, data, plan::AbstractRegriddingPlan) =
 """
     plan_regrid(data; to, from = nothing, method = Conservative(),
                 missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
-                lazy = isdiskbacked(data), chunks = nothing, budget = 2^30,
+                lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
                 storage = nothing) -> AbstractRegriddingPlan
 
 Build a reusable regridding plan without reading source values. In-memory data
 uses one whole-domain [`DirectPlan`](@ref). Lazy plans build blocks on demand
 and default to a budget-limited [`PerChunk`](@ref) cache. Use `PerChunk()` for
 an unlimited cache or `Spilled(dir)` for disk storage. Keywords match
-[`regrid`](@ref).
+[`regrid`](@ref); `chunks`, `budget` and `storage` apply only to `lazy = true`.
 """
 function plan_regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
     missingpolicy::AbstractMissingPolicy = Weighted(0.5),
     missingval = sourcemissingval(data),
-    lazy::Bool = isdiskbacked(data), chunks = nothing, budget::Integer = 2^30,
+    lazy::Bool = isdiskbacked(data), chunks = nothing,
+    budget::Union{Nothing,Integer} = nothing,
     storage::Union{Nothing,AbstractBlockStorage} = nothing)
-    dst_space = _asspace(to, "to")
     src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
-    _checkchunks(chunks)
-    budget > 0 || throw(ArgumentError("budget must be positive, got $budget"))
+    dst_space = _asspace(to, "to", src_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *
         "is on $(manifold(src_space)) and the destination on $(manifold(dst_space))"))
-    lazy && return ChunkedPlan(method, missingpolicy, dst_space, src_space;
-        storage, budget, chunks, missingval)
-    storage === nothing || throw(ArgumentError(
-        "`storage` is a lazy-path knob: an eager plan holds one whole-domain " *
-        "block and has nothing to store it in. Pass `lazy = true` to use it."))
-    return DirectPlan(method, missingpolicy, dst_space, src_space,
-        wholeblock(method, dst_space, src_space), missingval)
+    if !lazy
+        _rejectlazykeywords(chunks, budget, storage)
+        return DirectPlan(method, missingpolicy, dst_space, src_space,
+            wholeblock(method, dst_space, src_space), missingval)
+    end
+    _checkchunks(chunks)
+    budget === nothing || budget > 0 ||
+        throw(ArgumentError("budget must be positive, got $budget"))
+    return ChunkedPlan(method, missingpolicy, dst_space, src_space;
+        storage, budget = something(budget, 2^30), chunks, missingval)
+end
+
+function _rejectlazykeywords(chunks, budget, storage)
+    named = String[]
+    chunks === nothing || push!(named, "`chunks`")
+    budget === nothing || push!(named, "`budget`")
+    storage === nothing || push!(named, "`storage`")
+    isempty(named) && return nothing
+    throw(ArgumentError(
+        "an eager plan holds one whole-domain block and takes no " *
+        "$(join(named, ", ", " or ")); pass `lazy = true` for the chunked path."))
 end
 
 """
@@ -168,16 +184,26 @@ end
 # Only dimensional arrays carry enough geometry to infer a source space.
 _sourcespace(data::DD.AbstractDimArray) = RasterGrid(data)
 _sourcespace(data) = throw(ArgumentError(
-    "`from` was not given, and a source space cannot be derived from a " *
-    "$(typeof(data)): it carries no coordinates. Pass `from = ` a RegridSpace, " *
-    "or a DimensionalData array whose dimensions describe the raster."))
+    "a $(typeof(data)) carries no coordinates, so no source space can be " *
+    "derived from it; pass `from = ` a RegridSpace."))
 
+"""
+    _asspace(space, name) -> RegridSpace
+    _asspace(space, name, src_space) -> RegridSpace
+
+Resolve a `to` or `from` argument into a [`RegridSpace`](@ref). Packages that
+supply spaces extend the two-argument form for their own target spellings, and
+the three-argument form when the destination depends on the resolved source
+space. `name` names the keyword in error messages.
+"""
 function _asspace(space, name)
     space isa RegridSpace || throw(ArgumentError(
         "`$name` must be a RegridSpace, got $(typeof(space)). A package that " *
         "supplies spaces resolves its own target spellings into one."))
     return space
 end
+
+_asspace(space, name, src_space) = _asspace(space, name)
 
 _checkchunks(::Nothing) = nothing
 _checkchunks(chunks::Tuple{Vararg{Integer}}) =

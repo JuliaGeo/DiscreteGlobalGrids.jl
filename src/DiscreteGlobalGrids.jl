@@ -136,6 +136,7 @@ using .Fallbacks: collect_subtree,
     MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine,
     SquareBandEngine, square_halo_engine, generic_halo_engine, check_halo_level,
     HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine,
+    adjacency_shells, checked_steps,
     _ring_frame, _wind!, PARALLELIZE_CHUNKS_PER_THREAD
 
 # The Snyder/icosahedron basis IGeo7 and ISEA4R share, before either of them.

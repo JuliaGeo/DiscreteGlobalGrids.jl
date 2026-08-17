@@ -407,7 +407,8 @@ Apply `f` to each cell and its clipped one-ring. `cv` may be a
 Without `data`, `f(cell, nbrs)` receives the same positioned handles yielded
 by the one-argument [`neighbors`](@ref) iterator. With a vector laid out
 against the subset, `f(cell, value, values)` receives the cell value and its
-neighbour values in ring order.
+neighbour values in the counter-clockwise order [`neighbors`](@ref) states, so
+slot `j` of the callback's ring names a direction.
 
 Results are stored in subset position order. A concrete tuple result produces
 a tuple of vectors, one per component. `order` accepts [`StorageOrder`](@ref)
@@ -507,12 +508,13 @@ foreachneighbors(f::F, pg::PartialGrid, data::AbstractVector; kw...) where {F} =
     HaloTable(lk::CellLookup; connectivity = Vertex(), threaded = true)
 
 Materialize the one-argument [`neighbors`](@ref) sweep as a CSR table of
-subset positions. `t[p]` is the clipped one-ring of cell `p` in the system's
-ring order — `t[p][i]` is the cell's `i`-th surviving ring member, so
-direction survives the materialization. It is a non-allocating view into
-`t.nbrs`, bounded by `t.offsets[p]` and `t.offsets[p + 1] - 1`.
+subset positions. `t[p]` is the clipped one-ring of cell `p` in the
+counter-clockwise order [`neighbors`](@ref) states — `t[p][i]` is the cell's
+`i`-th surviving ring member, so direction survives the materialization. It is
+a non-allocating view into `t.nbrs`, bounded by `t.offsets[p]` and
+`t.offsets[p + 1] - 1`.
 
-[`halo_table`](@ref) contains the same neighbours in ascending rows and also
+[`halo_table`](@ref) contains the same rows as a vector of vectors and also
 supports `k != 1`. When `threaded` is true, contiguous chunks are built by
 separate tasks; the resulting arrays match the sequential build.
 """
@@ -609,8 +611,8 @@ end
 
 HaloTable(pg::PartialGrid; kw...) = HaloTable(CellVector(pg); kw...)
 
-# Build the ascending vector rows used by `halo_table`. Each row writes to its
-# final slot, so threaded chunks need no stitching.
+# Build the vector rows used by `halo_table`, in ring order. Each row writes to
+# its final slot, so threaded chunks need no stitching.
 function _swept_rows(cv::CellVector, conn::Connectivity, thr = GOCore.False())
     n = length(cv)
     out = Vector{Vector{Int}}(undef, n)
@@ -621,7 +623,7 @@ function _swept_rows(cv::CellVector, conn::Connectivity, thr = GOCore.False())
             for (i, h) in enumerate(ring)
                 @inbounds row[i] = h.position
             end
-            @inbounds out[k] = sort!(row)
+            @inbounds out[k] = row
         end
     end
     return out

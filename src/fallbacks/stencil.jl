@@ -128,30 +128,32 @@ neighborcount(cv::CellVector, c::AbstractCellIndex;
 # The position forms
 #
 # A bare `Int` is a position, so these are the same two verbs read as indices
-# into a data vector laid out against the collection. ASCENDING rather than
-# rotational: an index list is consumed by membership, and sorting it here is
-# what lets a stencil table be built without a round trip through ids.
+# into a data vector laid out against the collection — the id answer mapped
+# through `cellposition`, element for element. The ROTATIONAL order is carried
+# across: slot `i` of a row names the same direction as slot `i` of the ring,
+# which is the whole content of the order contract and the thing an oriented
+# stencil reads.
 # ===========================================================================
 
 # The generic route, for a grid with no faster membership test than its own
 # `cellposition`. A complete level grid lands here too, where the clip is a
-# no-op and the sort is the only work.
+# no-op.
 function _positions(sub, cells)
     out = Int[]
     for nb in cells
         p = cellposition(sub, nb)
         p === nothing || push!(out, p)
     end
-    return sort!(out)
+    return out
 end
 
 """
     neighbors(grid::AbstractGrid, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
     ring(grid::AbstractGrid, p::Int, k; connectivity = Vertex()) -> Vector{Int}
 
-The neighbourhood of the cell at **position** `p`, as in-set positions in
-ascending order. `p` outside `1:ncells(grid)` is a `BoundsError`, from
-[`cellindex`](@ref).
+The neighbourhood of the cell at **position** `p`, as in-set positions in the
+same counter-clockwise order the id form answers in. `p` outside
+`1:ncells(grid)` is a `BoundsError`, from [`cellindex`](@ref).
 
 See [`neighbors`](@ref) for the contract these keep, and [`halo_table`](@ref)
 for the whole grid's worth at once.
@@ -170,8 +172,8 @@ ring(grid::AbstractGrid, p::Int, k::Integer;
     neighbors(cv::CellVector, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
     ring(cv::CellVector, p::Int, k; connectivity = Vertex()) -> Vector{Int}
 
-The position forms on the two subset collections: positions in the subset,
-ascending.
+The position forms on the two subset collections: positions in the subset, in
+the ring order [`neighbors`](@ref) states.
 
 The complete level's candidates are clipped ONCE here rather than by going
 through the id form and testing membership again on the way back — a position
@@ -299,7 +301,7 @@ function _inner_rows!(out, complete, inner, lo::Int, hi::Int,
         end
         p = cellposition(complete, d)::Int
         @boundscheck (lo <= p <= hi) || _outside(d)
-        out[p-lo+1] = sort!(row)
+        out[p-lo+1] = row
     end
     return out
 end
@@ -314,7 +316,7 @@ function _rim_rows!(out, complete, rim, lo::Int, hi::Int, connectivity::Connecti
         end
         p = cellposition(complete, d)::Int
         @boundscheck (lo <= p <= hi) || _outside(d)
-        out[p-lo+1] = sort!(row)
+        out[p-lo+1] = row
     end
     return out
 end
@@ -378,12 +380,11 @@ halo(cv::CellVector; connectivity::Connectivity = Vertex()) =
 #
 #   * rows are COMPLETE, never clipped, and that is checked rather than hoped;
 #   * entries index the CONCATENATED buffer, not the subset;
-#   * rows keep the system's ROTATIONAL order rather than ascending position;
 #   * the result is CSR, not a vector of row vectors.
 #
-# Complete rows preserve rotational order because direction is meaningful when
-# the full cycle is present. Clipped position rows remain ascending by the base
-# grid contract.
+# Rows carry the same counter-clockwise order every other neighbour verb here
+# does; what is special is that they are never short, so the cycle is not just
+# ordered but closed.
 # ===========================================================================
 
 """
@@ -668,8 +669,12 @@ in a set whose cells sit at different levels, so a neighbour may be COARSER than
 one), and this is the one call that finds both.
 
 `c` must be a member; anything else is an `ArgumentError`. `c` itself is never
-in the result. The order is ascending `(level, position)`, deterministic and
-independent of how the walk found them.
+in the result. The order is the package's one order — counter-clockwise about
+`cell_centroid(system(set), c)` seen from outside, as [`neighbors`](@ref)
+states — measured on each neighbour's own centroid, whatever level it sits at.
+The start is the smallest-`(level, position)` neighbour, and exact azimuth ties
+break the same way, so the answer is deterministic and independent of how the
+walk found them.
 
 # The algorithm
 
@@ -738,9 +743,21 @@ function member_neighbors(set::MultiOrderCellSet, c::AbstractCellIndex;
             push!(hits, i)
         end
     end
+    length(hits) <= 1 && return [set.cells[i] for i in hits]
     # `(level, key)` IS ascending `(level, position)`: within one level the keys
-    # are that level's own order, whichever branch built them.
-    sort!(hits; by = i -> (level(set.cells[i]), set.keys[i]))
+    # are that level's own order, whichever branch built them. It is the tie
+    # break and the start anchor, not the order — the order is the ring's.
+    rank(i) = (level(set.cells[i]), set.keys[i])
+    sort!(hits; by = rank)
+    # Each member is read on its own level's grid, because a coarse neighbour
+    # has no centroid at `L`.
+    centroid(x) = cell_centroid(levelgrid(sys, level(x)), x)
+    centre = centroid(c)
+    anchor = centroid(set.cells[first(hits)])
+    e1, e2 = _tangent_basis(centre, anchor)
+    spoke = _azimuth(centre, e1, e2, anchor)
+    sort!(hits; by = i -> (_phase(_azimuth(centre, e1, e2,
+            centroid(set.cells[i])) - spoke), rank(i)))
     return [set.cells[i] for i in hits]
 end
 

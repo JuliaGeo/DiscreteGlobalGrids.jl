@@ -34,8 +34,8 @@ cellat(grid::AbstractGrid, lon::Real, lat::Real) = cellat(grid, unit_point(lon, 
     adjacent_cells(grid, c, connectivity = Vertex(), tree = treeify(grid))
 
 Return cells sharing at least one vertex, or two under [`Edge()`](@ref Edge),
-with `c`, excluding `c`. Results are sorted by canonical id; public rotational
-ordering is applied by [`neighbors`](@ref) and [`ring`](@ref).
+with `c`, excluding `c`. Results are sorted by canonical id; the public
+rotational ordering is applied by [`one_ring`](@ref).
 
 The fallback assumes a conforming tessellation with coincident shared vertices.
 Cap intersection safely prunes candidates because touching cells have
@@ -92,12 +92,101 @@ function _shared_vertices(a, b, tol::Float64)
 end
 
 """
+    one_ring(grid, c, connectivity, tree = treeify(grid))
+
+The geometric one-ring: [`adjacent_cells`](@ref) wound counter-clockwise about
+`c`'s centroid, starting at the smallest-id neighbour. `tree` is the traversal
+pruner, taken as an argument so a shell walk builds one tree rather than one per
+cell.
+
+This is the generic method of the `one_ring` hook; a system with native adjacency
+overrides the three-argument form.
+"""
+function one_ring(grid::AbstractGrid, c::AbstractCellIndex,
+        connectivity::Connectivity=Vertex(), tree=treeify(grid))
+    shell = adjacent_cells(grid, c, connectivity, tree)
+    length(shell) <= 1 && return shell
+    centre = cell_centroid(grid, c)
+    return _wind!(shell, grid, centre, _ring_frame(grid, centre, first(shell)))
+end
+
+"""
+    checked_steps(k) -> Int
+
+`k` as an `Int`, or an `ArgumentError` naming it. The one place the neighbourhood
+family's non-negativity precondition is written.
+"""
+function checked_steps(k::Integer)
+    steps = Int(k)
+    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    return steps
+end
+
+"""
+    adjacency_shells(walk, grid, c, steps) -> Vector{Vector{eltype}}
+    adjacency_shells(grid, c, steps, connectivity)
+
+The shared breadth-first shell walk: entry `j` holds the cells at adjacency
+distance exactly `j`, counter-clockwise, so that `ring(grid, c, k)` is the exact
+tail of `neighbors(grid, c, k)` and neither can drift from the other.
+
+`walk(x)` supplies one cell's ordered one-ring; the four-argument form uses
+`one_ring`. Ring 1 arrives already wound and keeps the system's own start; rings
+`2:steps` come out of the frontier in whatever order it reached them and are
+wound about `c`'s centroid from the spoke through ring 1's first cell.
+
+A walk that exhausts the component stops early, so a shell past the end is
+absent rather than empty.
+"""
+function adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex,
+        steps::Int) where {W}
+    T = typeof(c)
+    shells = Vector{T}[]
+    steps == 0 && return shells
+    seen = Set{T}((c,))
+    frontier = T[c]
+    # Fixed once, from ring 1, and reused by every outer shell: one spoke for
+    # the whole disc is what makes position `j` of a ring mean a direction.
+    centre = nothing
+    frame = nothing
+    for j in 1:steps
+        next = T[]
+        for x in frontier
+            for y in walk(x)
+                y in seen && continue
+                push!(seen, y)
+                push!(next, y)
+            end
+        end
+        if j > 1 && frame === nothing
+            centre = cell_centroid(grid, c)
+            frame = _ring_frame(grid, centre, first(first(shells)))
+        end
+        frame === nothing || _wind!(next, grid, centre, frame)
+        push!(shells, next)
+        isempty(next) && break
+        frontier = next
+    end
+    return shells
+end
+
+adjacency_shells(grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
+    connectivity::Connectivity) =
+    adjacency_shells(x -> one_ring(grid, x, connectivity), grid, c, steps)
+
+# The geometric walk hoists the spatial tree out of the per-cell one-ring.
+function _geometric_shells(grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
+        connectivity::Connectivity)
+    tree = treeify(grid)
+    return adjacency_shells(x -> one_ring(grid, x, connectivity, tree), grid, c, steps)
+end
+
+"""
     neighbors(grid, c, k = 1; connectivity = Vertex())
 
 Return cells within `k` adjacency steps, excluding `c`, as outward-concatenated
-rings. A breadth-first traversal orders each ring counter-clockwise by measured
-azimuth from the smallest-id ring-1 neighbor; exact ties use canonical id.
-Cells outside grid coverage are omitted.
+rings in the counter-clockwise order [`neighbors`](@ref) states, starting at the
+smallest-id ring-1 neighbour. Cells outside grid coverage are omitted.
 
 This walk measures distance INSIDE the grid it is given, so on a subset it
 answers induced-subgraph distance rather than the clipped-to-membership law
@@ -108,44 +197,12 @@ which override this method; a new subset grid owes its own override.
 """
 function neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer=1;
         connectivity::Connectivity=Vertex())
-    shells = _adjacency_shells(grid, c, Int(k), connectivity)
+    steps = checked_steps(k)
+    steps == 0 && return typeof(c)[]
+    steps == 1 && return one_ring(grid, c, connectivity)
+    shells = _geometric_shells(grid, c, steps, connectivity)
     isempty(shells) && return typeof(c)[]
     return reduce(vcat, shells)
-end
-
-# Shared breadth-first traversal producing already wound distance shells. It
-# builds one tree and makes `ring(..., k)` the exact tail of `neighbors(..., k)`.
-function _adjacency_shells(grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
-        connectivity::Connectivity)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
-    T = typeof(c)
-    shells = Vector{T}[]
-    steps == 0 && return shells
-    tree = treeify(grid)
-    seen = Set{T}((c,))
-    frontier = T[c]
-    centre = cell_centroid(grid, c)
-    # Fixed once, from ring 1, and reused by every outer shell: one spoke for
-    # the whole disc is what makes position `j` of a ring mean a direction.
-    frame = nothing
-    for _ in 1:steps
-        next = T[]
-        for x in frontier
-            for y in adjacent_cells(grid, x, connectivity, tree)
-                y in seen && continue
-                push!(seen, y)
-                push!(next, y)
-            end
-        end
-        if frame === nothing && !isempty(next)
-            frame = _ring_frame(grid, centre, next)
-        end
-        frame === nothing || _wind!(next, grid, centre, frame)
-        push!(shells, next)
-        isempty(next) && break
-        frontier = next
-    end
-    return shells
 end
 
 """
@@ -156,10 +213,9 @@ matches the corresponding tail block of [`neighbors`](@ref).
 """
 function ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer;
         connectivity::Connectivity=Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = checked_steps(k)
     steps == 0 && return typeof(c)[c]
-    shells = _adjacency_shells(grid, c, steps, connectivity)
+    shells = _geometric_shells(grid, c, steps, connectivity)
     # A walk that ran out of cells before reaching `steps` has an empty shell
     # there: the ring is genuinely empty, not missing.
     steps <= length(shells) || return typeof(c)[]
@@ -169,21 +225,21 @@ end
 # Rotational shell ordering by measured azimuth.
 
 """
-    _ring_frame(grid, centre, shell) -> (e1, e2, zero)
+    _ring_frame(grid, centre, anchor) -> (e1, e2, zero)
 
-Tangent basis at `centre` whose zero azimuth points at `shell`'s smallest-id
-cell. Anchoring on a shell member keeps `mod(-eps, 2π)` from winding that member
-to the end of the order.
+Tangent basis at `centre` whose zero azimuth points at the cell `anchor`.
+Storing the anchor's own azimuth keeps `mod(-eps, 2π)` from winding it to the
+end of the order.
 
 An internal extension point, re-exported as
 `DiscreteGlobalGrids._ring_frame`: a system walking its own adjacency shells
 pairs it with `_wind!` to get the package's ring ordering rather than a private
 one.
 """
-function _ring_frame(grid::AbstractGrid, centre, shell::AbstractVector)
-    anchor = cell_centroid(grid, minimum(shell))
-    e1, e2 = _tangent_basis(centre, anchor)
-    return (e1, e2, _azimuth(centre, e1, e2, anchor))
+function _ring_frame(grid, centre, anchor::AbstractCellIndex)
+    p = cell_centroid(grid, anchor)
+    e1, e2 = _tangent_basis(centre, p)
+    return (e1, e2, _azimuth(centre, e1, e2, p))
 end
 
 """
@@ -193,15 +249,43 @@ Sort `shell` in place counter-clockwise about `centre` from `frame`'s zero
 spoke, `frame` being a `_ring_frame` triple. Exact azimuth ties go to the
 smaller canonical id, so the order is total.
 
+A cell lying ON the spoke begins the ring rather than ends it: `mod` sends an
+azimuth a hair below the spoke to nearly a full turn, and which side of an
+exactly-aligned cell falls on is decided by the last bit of an `atan`. Phases
+within [`SPOKE_ATOL`](@ref) of a full turn are therefore read as zero. This is
+the only tolerance in the order contract, and it is far below the angular
+separation of two distinct cells at any level.
+
 An internal extension point, re-exported as `DiscreteGlobalGrids._wind!`.
 """
-function _wind!(shell::AbstractVector, grid::AbstractGrid, centre, frame)
+function _wind!(shell::AbstractVector, grid, centre, frame)
     length(shell) <= 1 && return shell
     e1, e2, zero = frame
-    turn = 2 * Float64(pi)
-    sort!(shell; by=d -> (mod(_azimuth(centre, e1, e2, cell_centroid(grid, d)) - zero,
-            turn), d))
+    # One centroid per member, not one per comparison: an outer shell has O(k)
+    # members and `sort!(by = ...)` would project each of them O(log k) times.
+    keyed = [(_phase(_azimuth(centre, e1, e2, cell_centroid(grid, d)) - zero), d)
+             for d in shell]
+    sort!(keyed)
+    for i in eachindex(shell, keyed)
+        @inbounds shell[i] = keyed[i][2]
+    end
     return shell
+end
+
+"""
+    SPOKE_ATOL
+
+How close to a full turn a phase must be to count as sitting on the ring's
+starting spoke: `1e-9` radians, orders of magnitude below the angular separation
+of two distinct cells and orders of magnitude above the `atan` noise it exists
+to absorb.
+"""
+const SPOKE_ATOL = 1e-9
+
+@inline function _phase(a::Float64)
+    turn = 2 * Float64(pi)
+    p = mod(a, turn)
+    return p >= turn - SPOKE_ATOL ? 0.0 : p
 end
 
 # Right-handed tangent basis at `centre`, with `e1` toward the anchor and

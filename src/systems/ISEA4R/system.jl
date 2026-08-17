@@ -348,7 +348,7 @@ DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint) =
 # ===========================================================================
 
 """
-    _one_ring(grid, c, connectivity) -> SmallVector{9,LevelIndex}
+    one_ring(grid, c, connectivity) -> SmallVector{9,LevelIndex}
 
 The immediate neighbours of `c` in **counter-clockwise rotational order seen
 from outside the sphere, starting at the `(+1, 0)` chart direction**, from
@@ -361,7 +361,7 @@ lookup and they cannot be off the lattice. Re-deriving `ispow2(nside)` and two
 range tests per neighbour is the whole cost of this function otherwise, and this
 is the inner loop of every breadth-first shell walk.
 """
-function _one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     nside = _nside(g.level)
     ix, iy, d = morton_to_xyd(_checked_index(g, c), nside)
     out = SmallVector{9,DGG.LevelIndex}()
@@ -391,11 +391,10 @@ corner cells at finer levels.
 """
 function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{9,DGG.LevelIndex}()
-    steps == 1 && return _one_ring(g, c, connectivity)
-    shells = _shells(g, c, steps, connectivity)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     isempty(shells) && return DGG.LevelIndex[]
     return reduce(vcat, shells)
 end
@@ -408,92 +407,10 @@ direction. `k == 0` returns `[c]`; outer-ring azimuth ties use canonical order.
 """
 function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
-    shells = _shells(g, c, steps, connectivity)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     steps <= length(shells) || return DGG.LevelIndex[]
     return shells[steps]
-end
-
-# Breadth-first expansion over the lattice one-ring; shell `j` is the set at
-# distance exactly `j`, each returned in CCW rotational order. Shared by
-# `neighbors` and `ring` so the two cannot disagree about what a shell is or
-# what order it is in.
-function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
-        connectivity::DGG.Connectivity)
-    shells = Vector{DGG.LevelIndex}[]
-    steps == 0 && return shells
-    seen = Set{DGG.LevelIndex}((c,))
-    frontier = DGG.LevelIndex[c]
-    for j in 1:steps
-        next = DGG.LevelIndex[]
-        for x in frontier
-            for y in _one_ring(g, x, connectivity)
-                y in seen && continue
-                push!(seen, y)
-                push!(next, y)
-            end
-        end
-        # Shell 1 is already the lattice cycle, in order. Outer shells come out
-        # of the breadth-first walk in whatever order the frontier happened to
-        # reach them, so they are wound geometrically, from the spoke shell 1
-        # starts on.
-        if j > 1 && !isempty(first(shells))
-            _sort_ccw!(next, g, c, first(first(shells)))
-        end
-        push!(shells, next)
-        isempty(next) && break
-        frontier = next
-    end
-    return shells
-end
-
-# Order a shell counter-clockwise about `c`'s centre, from the azimuth of the
-# first ring-1 neighbour. `e1 × e2 == centre` makes `(e1, e2)` right-handed SEEN
-# FROM OUTSIDE, which is what puts increasing `atan(u·e2, u·e1)`
-# counter-clockwise from outside rather than from inside.
-function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::LevelGrid,
-        c::DGG.LevelIndex, reference::DGG.LevelIndex)
-    length(cells) <= 1 && return cells
-    centre = DGG.cell_centroid(g, c)
-    e1, e2 = _tangent_basis(centre, DGG.cell_centroid(g, reference))
-    # Family-wide observation, not a defect: an outer-ring cell whose azimuth
-    # falls within floating-point noise BELOW the starting spoke sorts to the
-    # END of the ring, because `mod(-ε, 2π)` is `~2π`. That is a start rotation
-    # only — the single-CCW-cycle law the contract states is cyclic and holds
-    # either way — and HEALPix and IGeo7 share the construction and the
-    # behaviour. Nothing here depends on which side of the spoke such a cell
-    # lands, so it is left alone rather than nudged by a tolerance that would
-    # itself need a documented width.
-    key(x) = begin
-        p = DGG.cell_centroid(g, x)
-        (mod(_azimuth(centre, e1, e2, p), 2 * Float64(π)), x)
-    end
-    sort!(cells; by = key)
-    return cells
-end
-
-# A right-handed-from-outside tangent basis at `centre`, with `e1` pointing at
-# `toward` (projected into the tangent plane).
-function _tangent_basis(centre, toward)
-    u = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
-    dot = u[1] * centre[1] + u[2] * centre[2] + u[3] * centre[3]
-    t = (u[1] - dot * centre[1], u[2] - dot * centre[2], u[3] - dot * centre[3])
-    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
-    # A degenerate reference (a neighbour whose centroid projects onto the cell
-    # centre) cannot happen for a real cell, but a fallback keeps this total.
-    n <= eps(Float64) && (t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0);
-                          n = 1.0)
-    e1 = (t[1] / n, t[2] / n, t[3] / n)
-    e2 = (centre[2] * e1[3] - centre[3] * e1[2],
-          centre[3] * e1[1] - centre[1] * e1[3],
-          centre[1] * e1[2] - centre[2] * e1[1])
-    return e1, e2
-end
-
-function _azimuth(centre, e1, e2, p)
-    u = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
-    return atan(u[1] * e2[1] + u[2] * e2[2] + u[3] * e2[3],
-                u[1] * e1[1] + u[2] * e1[2] + u[3] * e1[3])
 end

@@ -349,12 +349,11 @@ identifier order.
 """
 function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
     connectivity::Connectivity=Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     _level_checked(g, c)
     steps == 0 && return SmallVector{6,Z7Cell}()
-    steps == 1 && return _neighbors1(c)
-    shells = _shells(g, c, steps)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     isempty(shells) && return Z7Cell[]
     return reduce(vcat, shells)
 end
@@ -371,46 +370,18 @@ function DGG.neighborcount(g::LevelGrid, c::Z7Cell;
     return is_pentagon(c) ? 5 : 6
 end
 
-# The k == 1 primitive, in CCW order and in the static-capacity container.
-function _neighbors1(c::Z7Cell)
+"""
+    one_ring(grid, c, connectivity) -> SmallVector{6,Z7Cell}
+
+The immediate neighbours of `c`, counter-clockwise from the development frame's
+`+1` direction. Five entries at a pentagon, six elsewhere.
+"""
+function DGG.one_ring(::LevelGrid, c::Z7Cell, ::Connectivity)
     out = SmallVector{6,Z7Cell}()
     for z in _cell_neighbors_ccw(c.id)
         out = SmallCollections.push(out, Z7Cell(z))
     end
     return out
-end
-
-# Breadth-first shells in rotational order. Shell `j` contains cells at
-# adjacency distance exactly `j`.
-function _shells(g::LevelGrid, c::Z7Cell, steps::Int)
-    shells = Vector{Z7Cell}[]
-    steps >= 1 || return shells
-
-    # Ring 1 comes out of the lattice already in CCW order, and its first entry
-    # is the zero direction every outer ring is measured against.
-    first_ring = collect(_neighbors1(c))
-    isempty(first_ring) && return shells
-    push!(shells, first_ring)
-    reference = DGG.cell_centroid(g, first(first_ring))
-
-    seen = Set{Z7Cell}(first_ring)
-    push!(seen, c)
-    frontier = first_ring
-    for _ in 2:steps
-        next = Z7Cell[]
-        for x in frontier
-            for y in _neighbors1(x)
-                y in seen && continue
-                push!(seen, y)
-                push!(next, y)
-            end
-        end
-        isempty(next) && break
-        _sort_ccw!(next, g, c, reference)
-        push!(shells, next)
-        frontier = next
-    end
-    return shells
 end
 
 """
@@ -425,70 +396,14 @@ order contract is the one stated there.
 """
 function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
     connectivity::Connectivity=Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     _level_checked(g, c)
     steps == 0 && return Z7Cell[c]
-    steps == 1 && return _neighbors1(c)
-    shells = _shells(g, c, steps)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     # Return an empty ring after the traversal exhausts the component.
     steps <= length(shells) || return Z7Cell[]
     return shells[steps]
-end
-
-# ---------------------------------------------------------------------------
-# Rotational ordering of the outer shells
-#
-# An orthonormal frame in the tangent plane at the subject cell's centroid, with
-# `u` pointing at the reference direction (ring 1's first entry) and `v` chosen
-# so that the rotation u -> v is counter-clockwise when viewed from outside. That is
-# `v = p x u` and not `u x p`: for a point `p` on the unit sphere, `p x u`
-# leads `u` by a quarter turn in the right-handed sense about the outward
-# normal, which is what "counter-clockwise from outside" means.
-# ---------------------------------------------------------------------------
-
-function _tangent_frame(centre, toward)
-    d = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
-    radial = d[1] * centre[1] + d[2] * centre[2] + d[3] * centre[3]
-    t = (d[1] - radial * centre[1], d[2] - radial * centre[2],
-         d[3] - radial * centre[3])
-    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
-    # Use a deterministic tangent direction when the reference has no tangent
-    # component.
-    if n <= eps(Float64)
-        t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)
-        n = 1.0
-    end
-    e1 = (t[1] / n, t[2] / n, t[3] / n)
-    e2 = (centre[2] * e1[3] - centre[3] * e1[2],
-          centre[3] * e1[1] - centre[1] * e1[3],
-          centre[1] * e1[2] - centre[2] * e1[1])
-    return e1, e2
-end
-
-function _azimuth(centre, e1, e2, p)
-    d = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
-    a = atan(d[1] * e2[1] + d[2] * e2[2] + d[3] * e2[3],
-             d[1] * e1[1] + d[2] * e1[2] + d[3] * e1[3])
-    return a < 0 ? a + 2 * Float64(π) : a
-end
-
-function _sort_ccw!(shell::Vector{Z7Cell}, g::LevelGrid, c::Z7Cell,
-        reference)
-    length(shell) <= 1 && return shell
-    centre = DGG.cell_centroid(g, c)
-    e1, e2 = _tangent_frame(centre, reference)
-    # Compute each centroid projection once. Ascending id breaks azimuth ties.
-    keyed = Vector{Tuple{Float64,Z7Cell}}(undef, length(shell))
-    @inbounds for i in eachindex(shell)
-        z = shell[i]
-        keyed[i] = (_azimuth(centre, e1, e2, DGG.cell_centroid(g, z)), z)
-    end
-    sort!(keyed)
-    @inbounds for i in eachindex(shell)
-        shell[i] = keyed[i][2]
-    end
-    return shell
 end
 
 # A cell handed to a grid operation must belong to that grid's level; otherwise

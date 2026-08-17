@@ -903,10 +903,15 @@ end
             p = cell_centroid(g, c)
             spoke = cell_centroid(g, first(r1))
             @test ccw_angle(p, spoke, spoke) == 0.0
+            # A cell lying ON the spoke begins its ring rather than ending
+            # it: `FB.SPOKE_ATOL` is the package's rule and it is mirrored here
+            # because it is the order policy under test, not an implementation
+            # detail of it. Ring 2 of this mock has such a cell.
+            phase(q) = (a = ccw_angle(p, spoke, q);
+                a >= 2 * Float64(pi) - FB.SPOKE_ATOL ? 0.0 : a)
             for k in 1:2
                 shell = ring(g, c, k; connectivity=conn)
-                @test issorted([ccw_angle(p, spoke, cell_centroid(g, d))
-                                for d in shell])
+                @test issorted([phase(cell_centroid(g, d)) for d in shell])
             end
         end
     end

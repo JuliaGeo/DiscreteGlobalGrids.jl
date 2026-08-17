@@ -712,6 +712,36 @@ function tangent_offset(p, q)
     return (q[1] - r * p[1], q[2] - r * p[2], q[3] - r * p[3])
 end
 
+# Azimuths of `points` about `p`, in one right-handed frame, with the ones that
+# name no direction dropped. Returns the azimuths, their tangent offsets, and
+# which inputs survived.
+function _azimuths_about(p, points, proj_atol::Real)
+    east, north = tangent_frame(p)
+    azimuths = Float64[]
+    offsets = NTuple{3,Float64}[]
+    kept = Int[]
+    for (i, q) in enumerate(points)
+        d = tangent_offset(p, q)
+        _norm(d) <= proj_atol && continue
+        push!(azimuths, atan(_dot(d, north), _dot(d, east)))
+        push!(offsets, d)
+        push!(kept, i)
+    end
+    return azimuths, offsets, kept
+end
+
+# How many times a cyclic azimuth sequence steps backwards. One for a single
+# counter-clockwise turn, `n - 1` for a clockwise one.
+function _wrap_count(azimuths::Vector{Float64}, ang_atol::Real)
+    n = length(azimuths)
+    wraps = 0
+    for i in 1:n
+        j = i == n ? 1 : i + 1
+        azimuths[j] < azimuths[i] - ang_atol && (wraps += 1)
+    end
+    return wraps
+end
+
 """
     winding_problems(grid, c, shell; label, proj_atol, ang_atol) -> Vector{String}
 
@@ -719,6 +749,14 @@ Whether `shell` — one ring of cells about `c`, in the order the grid returned
 them — is a single **counter-clockwise cycle seen from outside the sphere**.
 This is the rotational half of the [`neighbors`](@ref)/[`ring`](@ref) contract,
 and the property that sorting by id destroys.
+
+**Which counter-clockwise.** The package has one handedness and
+[`cell_boundary`](@ref) fixes it: a boundary ring winds counter-clockwise seen
+from outside, and a neighbour ring turns the same way. So the check measures
+both in the SAME frame — `c`'s own boundary vertices and the shell's centroids —
+and holds them to the same wrap count. A shell that turns against its own cell's
+boundary is reported here rather than left to the reader to reconcile against
+[`boundary_problems`](@ref).
 
 # Method
 
@@ -749,6 +787,8 @@ to name the offending step in the report.
     counted as a wraparound in either direction.
   - A shell left with fewer than three usable directions is not checked: two
     points have no winding, and the contract's order is vacuous there.
+  - The boundary comparison is skipped when the boundary itself does not wrap
+    once about the centroid, which is a defect [`boundary_problems`](@ref) owns.
 """
 function winding_problems(grid, c, shell;
         label::AbstractString = "ring",
@@ -759,43 +799,85 @@ function winding_problems(grid, c, shell;
     length(members) < 3 && return problems
 
     p = DGG.cell_centroid(grid, c)
-    east, north = tangent_frame(p)
-    azimuths = Float64[]
-    offsets = NTuple{3,Float64}[]
-    kept = similar(members, 0)
-    for m in members
-        d = tangent_offset(p, DGG.cell_centroid(grid, m))
-        _norm(d) <= proj_atol && continue
-        push!(azimuths, atan(_dot(d, north), _dot(d, east)))
-        push!(offsets, d)
-        push!(kept, m)
-    end
+    azimuths, offsets, keptix = _azimuths_about(p,
+        (DGG.cell_centroid(grid, m) for m in members), proj_atol)
     n = length(azimuths)
     n < 3 && return problems
+    kept = members[keptix]
 
-    wraps = 0
-    for i in 1:n
-        j = i == n ? 1 : i + 1
-        azimuths[j] < azimuths[i] - ang_atol && (wraps += 1)
+    wraps = _wrap_count(azimuths, ang_atol)
+    if wraps != 1
+        # Name a step that turns the wrong way, if there is one. There need not
+        # be: a sequence that winds twice turns counter-clockwise at every step.
+        culprit = ""
+        for i in 1:n
+            j = i == n ? 1 : i + 1
+            v = _dot(_cross(offsets[i], offsets[j]), p)
+            if v <= 0 && abs(azimuths[j] - azimuths[i]) > ang_atol
+                culprit = "; the step $(kept[i]) → $(kept[j]) turns clockwise " *
+                          "(signed volume $v ≤ 0)"
+                break
+            end
+        end
+        push!(problems,
+            "$label about $c is not a single counter-clockwise cycle: its members' azimuths " *
+            "about cell_centroid($c) wrap $wraps times, not once (a clockwise ring wraps " *
+            "$(n - 1) times, an id-sorted one arbitrarily)$culprit")
+        return problems
     end
-    wraps == 1 && return problems
 
-    # Name a step that turns the wrong way, if there is one. There need not be:
-    # a sequence that winds twice turns counter-clockwise at every step.
+    # The sense the ring just passed is the sense the cell's own boundary winds
+    # in, measured the same way.
+    bnd, _, _ = _azimuths_about(p, DGG.cell_boundary(grid, c), proj_atol)
+    length(bnd) < 3 && return problems
+    bwraps = _wrap_count(bnd, ang_atol)
+    bwraps == length(bnd) - 1 &&
+        push!(problems,
+            "$label about $c turns the opposite way from cell_boundary($c): measured in " *
+            "one frame about cell_centroid($c), the ring is a counter-clockwise cycle " *
+            "and the boundary is a clockwise one. Both must wind counter-clockwise seen " *
+            "from outside the sphere")
+    return problems
+end
+
+"""
+    ring_cycle_problems(grid, c, shell) -> Vector{String}
+
+Whether `shell` walks *around* `c` rather than jumping about it: consecutive
+members, cyclically, must be neighbours of one another. A complete one-ring
+closes, so it has no break; a ring clipped by coverage is an arc, so it has one.
+Anything with two or more breaks is not a rotational order at all — an id-sorted
+ring of degree `n` typically has `n` of them.
+
+This is the adjacency half of the order contract, and it catches what winding
+alone cannot: a sequence whose centroids happen to sweep counter-clockwise while
+stepping across the cell rather than around it.
+
+Vertex connectivity only. Under [`Edge()`](@ref Edge) the ring members are
+generally not edge-adjacent to one another — the four edge-neighbours of a
+lattice cell touch only at corners — so the law does not apply.
+"""
+function ring_cycle_problems(grid, c, shell)
+    problems = String[]
+    members = collect(shell)
+    length(members) < 3 && return problems
+    breaks = 0
     culprit = ""
-    for i in 1:n
-        j = i == n ? 1 : i + 1
-        v = _dot(_cross(offsets[i], offsets[j]), p)
-        if v <= 0 && abs(azimuths[j] - azimuths[i]) > ang_atol
-            culprit = "; the step $(kept[i]) → $(kept[j]) turns clockwise " *
-                      "(signed volume $v ≤ 0)"
-            break
+    for i in eachindex(members)
+        j = i == lastindex(members) ? firstindex(members) : i + 1
+        a, b = members[i], members[j]
+        if !(b in DGG.neighbors(grid, a, 1; connectivity = Vertex()))
+            breaks += 1
+            isempty(culprit) && (culprit = "$a → $b")
         end
     end
+    breaks <= 1 && return problems
     push!(problems,
-        "$label about $c is not a single counter-clockwise cycle: its members' azimuths " *
-        "about cell_centroid($c) wrap $wraps times, not once (a clockwise ring wraps " *
-        "$(n - 1) times, an id-sorted one arbitrarily)$culprit")
+        "ring 1 about $c is not a walk around the cell: $breaks of its " *
+        "$(length(members)) consecutive pairs are not neighbours of each other " *
+        "(first at $culprit). A closed one-ring has none and a coverage-clipped " *
+        "arc has one; more means the members are in some order other than " *
+        "rotational")
     return problems
 end
 
@@ -814,7 +896,14 @@ The **order** laws of [`neighbors`](@ref)/[`ring`](@ref) at one cell, for every
     law, and checked separately because it is the form callers rely on and the
     form an independent-walk implementation breaks first.
   - **rotational winding** — each ring is a single counter-clockwise cycle seen
-    from outside the sphere ([`winding_problems`](@ref)).
+    from outside the sphere, turning the same way the cell's own
+    [`cell_boundary`](@ref) winds ([`winding_problems`](@ref)).
+  - **adjacency** — ring 1 walks around `c`: consecutive members are neighbours
+    of one another, with at most the one break a coverage-clipped arc has
+    ([`ring_cycle_problems`](@ref), `Vertex()` only).
+  - **idiom agreement** — the position forms answer the id forms read through
+    [`cellposition`](@ref), element for element, so the two idioms cannot
+    present the same neighbourhood in two orders.
 
 At `j = 1` the concatenation law collapses to an identity every implementation
 gets right, so it is `j ≥ 2` that carries the weight there; conversely the
@@ -827,6 +916,11 @@ irregular — a lattice whose distance-`k` shell is not a simple cycle at all �
 can conform to the contract's spirit without the outer rings reading as one
 turn. Opting out is a documented claim about that system's shells, not a way to
 silence a failure: ring 1 is not negotiable.
+
+None of these laws says where a ring *starts*: the contract guarantees the
+direction everywhere and leaves the phase to each system, so every check here is
+invariant under rotating a ring. A system that wants its start pinned owes its
+own oracle vector.
 """
 function neighbor_order_problems(grid, c;
         connectivity::Connectivity = Vertex(),
@@ -836,6 +930,9 @@ function neighbor_order_problems(grid, c;
         ang_atol::Real = DEFAULT_ANGLE_ATOL)
     problems = String[]
     rings = [collect(DGG.ring(grid, c, j; connectivity)) for j in 1:Int(k)]
+    connectivity isa Vertex && !isempty(rings) &&
+        append!(problems, ring_cycle_problems(grid, c, first(rings)))
+    append!(problems, _position_form_problems(grid, c, rings; connectivity))
     for j in 1:Int(k)
         disc = collect(DGG.neighbors(grid, c, j; connectivity))
         shell = rings[j]
@@ -862,6 +959,28 @@ function neighbor_order_problems(grid, c;
             append!(problems, winding_problems(grid, c, shell;
                 label = "ring $j", proj_atol, ang_atol))
         end
+    end
+    return problems
+end
+
+# The position form is the id form read through `cellposition`, element for
+# element. Written once, here, so no system can present one neighbourhood in two
+# orders — the drift that makes an oriented stencil silently change meaning when
+# a caller moves from ids to indices.
+function _position_form_problems(grid, c, rings; connectivity::Connectivity)
+    problems = String[]
+    p = DGG.cellposition(grid, c)
+    p isa Int || return problems
+    for (j, shell) in enumerate(rings)
+        want = Int[]
+        for x in shell
+            q = DGG.cellposition(grid, x)
+            q isa Int && push!(want, q)
+        end
+        got = DGG.ring(grid, p, j; connectivity)
+        collect(got) == want || push!(problems,
+            "ring(grid, $p, $j) is not ring(grid, $c, $j) read through cellposition: " *
+            "got $got, the ids map to $want. The position and id forms are one order")
     end
     return problems
 end

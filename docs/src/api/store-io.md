@@ -23,9 +23,9 @@ logic over a [`StoreSnapshot`](@ref) — attribute dictionaries and an array
 listing, no chunks and no values — which is why a
 [`DGGSConvention`](@ref) is written and tested without a store existing at all.
 Deciding **how the ids are stored** is the other axis entirely, and it is a
-[`DiscreteGlobalGrids.CellEncoding`](@ref): encodings own layout mechanics and
-the grid owns id arithmetic, so a new grid makes every encoding work and a new
-encoding works on every grid.
+[`CellEncoding`](@ref): encodings own layout mechanics and the grid owns id
+arithmetic, so a new grid makes every encoding work and a new encoding works on
+every grid.
 
 Both are registries rather than closed sets. A downstream package that speaks a
 fourth dialect calls [`register_convention!`](@ref); one that stores its ids
@@ -120,17 +120,19 @@ DiscreteGlobalGrids.gridname
 An encoding is how the cell ids reach the disk; the grid reference table is how
 a store's spelling of a grid becomes a system this package can compute on. Both
 are lookup tables with a registration function, and both are deliberately
-strict about what they do not recognise.
+strict about what they do not recognise. The types and the two tables are
+exported, so a downstream package registers an encoding or a grid without
+qualifying a name; the verbs it implements stay qualified, as a convention's do.
 
 ```@docs
-DiscreteGlobalGrids.CellEncoding
-DiscreteGlobalGrids.DenseEncoding
-DiscreteGlobalGrids.RangesEncoding
-DiscreteGlobalGrids.ImplicitEncoding
-DiscreteGlobalGrids.ENCODING_REGISTRY
+CellEncoding
+DenseEncoding
+RangesEncoding
+ImplicitEncoding
+ENCODING_REGISTRY
 register_encoding!
-DiscreteGlobalGrids.GridReference
-DiscreteGlobalGrids.GRID_REFERENCE
+GridReference
+GRID_REFERENCE
 register_grid!
 DiscreteGlobalGrids.gridreference
 ```

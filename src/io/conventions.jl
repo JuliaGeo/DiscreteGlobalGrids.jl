@@ -539,9 +539,9 @@ end
 ship.
 
 The trio is also within [`XdggsConvention`](@ref)'s alias set, so both fire on
-such a store and merge to the same description. This one exists to name the
-dialect in provenance and errors, and as the place a healpix-specific reading
-of the trio would go.
+such a store and merge to the same description. This convention is the named
+extension point for the dialect: it is what provenance and error messages call
+it, and it is where a healpix-specific reading of the trio dispatches.
 """
 struct LegacyHealpixConvention <: DGGSConvention end
 

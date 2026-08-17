@@ -336,7 +336,9 @@ export StoreSnapshot, ArrayEntry, StoreDescription, Detection, DGGSFormatError
 export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
     LegacyHealpixConvention, DKRZConvention
 export CONVENTION_REGISTRY, DEFAULT_WRITE_CONVENTIONS, register_convention!
-export register_encoding!, register_grid!
+export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
+export ENCODING_REGISTRY, register_encoding!
+export GridReference, GRID_REFERENCE, register_grid!
 export describe_store
 export ChunkedCellLookup, ChunkManifest, nchunks, chunkof, chunkbounds
 

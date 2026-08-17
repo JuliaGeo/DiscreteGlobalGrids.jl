@@ -321,9 +321,9 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**968,931 assertions, ~4m35s warm**, with 14 broken: A5's documented
-`has_sorted_subtrees` skips, and the destination-direction conservation arms
-that wait on the upstream clipper fix.
+**985,901 assertions, ~5m30s warm**, with 17 broken — all of them
+destination-direction conservation arms in `regridding_conservation.jl`,
+measured per system and level, waiting on the upstream clipper fix.
 
 `lib/GlobalRegridding/` carries its own suite, which the root `Pkg.test()` does
 not run: `julia --project=lib/GlobalRegridding -e 'using Pkg; Pkg.test()'`.

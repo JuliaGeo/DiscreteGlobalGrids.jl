@@ -139,6 +139,26 @@ include("dimensionaldata.jl")
 using .CellLookups: CellLookup, Cells, Covering, Neighbors, Values,
     NeighborSlices
 
+# The store-IO layer. Encodings and the chunked lookup own layout mechanics;
+# conventions are plain-data metadata logic with no Zarr and no arrays.
+# Order matters: errors.jl defines DGGSFormatError for the submodules'
+# `import ..DGGSFormatError`, and description.jl types its encoding field
+# with encodings.jl's CellEncoding.
+include("io/errors.jl")
+include("io/encodings.jl")
+include("io/chunked_lookup.jl")
+
+using .Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
+    ENCODING_REGISTRY, encodingname, register_encoding!, cellaxis,
+    idrank, idselect, idcount_between, idvalid, idcell, idtype,
+    idranges, write_eligible, validate_ranges
+using .ChunkedLookups: ChunkManifest, nchunks, chunkof, chunkbounds,
+    ChunkedCellVector, axisposition, chunkmanifest, ChunkedCellLookup
+
+include("io/description.jl")
+include("io/conventions.jl")
+include("io/api.jl")
+
 # CopernicusDEM is deliberately absent: registering a system enrols it in every
 # cross-system sweep, whose hardcoded cases and level choices assume a globally
 # uniform cell size. Reach for it by name: `DGG.CopernicusDEMSystem(90)`.
@@ -325,5 +345,19 @@ export CopernicusDEMSystem
 
 # --- Manifolds -------------------------------------------------------------
 export authalic_sphere
+
+# --- Store IO --------------------------------------------------------------
+# `detect`, `decode`, `encode!` and `gridname` stay qualified: they are
+# extension points, and the names are too generic to export.
+export dggread, dggwrite
+export StoreSnapshot, ArrayEntry, StoreDescription, Detection, DGGSFormatError
+export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
+    LegacyHealpixConvention, DKRZConvention
+export CONVENTION_REGISTRY, DEFAULT_WRITE_CONVENTIONS, register_convention!
+export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
+export ENCODING_REGISTRY, register_encoding!
+export GridReference, GRID_REFERENCE, register_grid!
+export describe_store
+export ChunkedCellLookup, ChunkManifest, nchunks, chunkof, chunkbounds
 
 end # module DiscreteGlobalGrids

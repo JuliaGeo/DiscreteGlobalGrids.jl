@@ -36,5 +36,6 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/subtree_halos.jl")
     include("systems/crosssystem/dimensionaldata.jl")
     include("systems/crosssystem/regridding_conservation.jl")
+    include("io/runtests.jl")
     include("plotting/runtests.jl")
 end

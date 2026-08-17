@@ -349,8 +349,8 @@ function ring end
 
 """
     halo_table(grid::AbstractGrid, k::Integer = 1; connectivity::Connectivity = Vertex()) -> Vector{Vector{Int}}
-    halo_table(cv::CellVector, k::Integer = 1; connectivity::Connectivity = Vertex())
-    halo_table(lk::CellLookup, k::Integer = 1; connectivity::Connectivity = Vertex())
+    halo_table(cv::CellVector, k::Integer = 1; connectivity = Vertex(), threaded = true)
+    halo_table(lk::CellLookup, k::Integer = 1; connectivity = Vertex(), threaded = true)
 
 The whole stencil at once: entry `p` is `neighbors(grid, p, k)`, the in-set
 positions within `k` adjacency steps of position `p`, ascending.
@@ -377,6 +377,11 @@ chunk of it; none of the three replaces another, and each says so from its side.
 [`HaloTable`](@ref) is the `k == 1` content of this table in CSR — two flat
 arrays instead of a vector per cell, rows in ring order instead of ascending —
 for a consumer that reads every row.
+
+On subsets, `threaded` (`Bool` or GeometryOps' `True()`/`False()`) chunks the
+`k == 1` sweep as [`mapneighbors`](@ref) does; every row lands in its own slot,
+so the rows are the sequential ones. The rooted fast path and `k != 1` are
+unaffected by it.
 """
 function halo_table end
 

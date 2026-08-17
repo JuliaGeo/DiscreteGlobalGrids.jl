@@ -210,8 +210,12 @@ halo_table(grid::AbstractGrid, k::Integer = 1;
 # `neighborhood.jl`) rather than one resolved call per cell — same ascending
 # rows, without the per-neighbour window search. A vector still backed by the
 # rooted grid it was built from takes that grid's interior/rim path.
+# `threaded` (`Bool` or GeometryOps' `True()`/`False()`) chunks the sweep as
+# `mapneighbors` does; rows land in their own slots, so the answer is the
+# sequential one. It governs the swept build only — the rooted path and the
+# `k != 1` rows are single calls per cell either way.
 function halo_table(cv::CellVector, k::Integer = 1;
-        connectivity::Connectivity = Vertex())
+        connectivity::Connectivity = Vertex(), threaded = true)
     steps = Int(k)
     steps == 1 ||
         return [neighbors(cv, p, steps; connectivity) for p in 1:length(cv)]
@@ -220,7 +224,7 @@ function halo_table(cv::CellVector, k::Integer = 1;
         r = _whole_subtree_range(b)
         r === nothing || return _rooted_halo(b, r, connectivity)
     end
-    return _swept_rows(cv, connectivity)
+    return _swept_rows(cv, connectivity, GOCore.booltype(threaded))
 end
 
 # The rooted-subtree fast path. A subtree's INTERIOR is exactly the descendants
@@ -240,7 +244,7 @@ end
 #     a cell two steps inside the rim can still reach outside at `k == 2`, and
 #     there is no "k-interior" iterator to ask.
 function halo_table(pg::PartialGrid, k::Integer = 1;
-        connectivity::Connectivity = Vertex())
+        connectivity::Connectivity = Vertex(), threaded = true)
     steps = Int(k)
     steps == 1 ||
         return [neighbors(pg, p, steps; connectivity) for p in 1:ncells(pg)]
@@ -248,7 +252,8 @@ function halo_table(pg::PartialGrid, k::Integer = 1;
     # A grid that is not a whole rooted subtree still gets the sweep: its
     # vector reading is position-identical, and the cursor beats one
     # membership search per neighbour on every subset shape.
-    r === nothing && return _swept_rows(CellVector(pg), connectivity)
+    r === nothing &&
+        return _swept_rows(CellVector(pg), connectivity, GOCore.booltype(threaded))
     return _rooted_halo(pg, r, connectivity)
 end
 

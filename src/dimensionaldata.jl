@@ -255,8 +255,7 @@ ring(lk::CellLookup, p::Int, k::Integer;
 neighborcount(lk::CellLookup, c::AbstractCellIndex;
     connectivity::Connectivity=Vertex()) = neighborcount(parent(lk), c; connectivity)
 
-halo_table(lk::CellLookup, k::Integer=1; connectivity::Connectivity=Vertex()) =
-    halo_table(parent(lk), k; connectivity)
+halo_table(lk::CellLookup, k::Integer=1; kw...) = halo_table(parent(lk), k; kw...)
 
 halo(lk::CellLookup; connectivity::Connectivity=Vertex()) =
     halo(parent(lk); connectivity)
@@ -272,8 +271,7 @@ mapneighbors(f, lk::CellLookup, data::AbstractVector; kw...) =
 foreachneighbors(f, lk::CellLookup; kw...) = foreachneighbors(f, parent(lk); kw...)
 foreachneighbors(f, lk::CellLookup, data::AbstractVector; kw...) =
     foreachneighbors(f, parent(lk), data; kw...)
-HaloTable(lk::CellLookup; connectivity::Connectivity=Vertex()) =
-    HaloTable(parent(lk); connectivity)
+HaloTable(lk::CellLookup; kw...) = HaloTable(parent(lk); kw...)
 
 """
     PartialGrid(lk::CellLookup) -> PartialGrid

@@ -284,13 +284,17 @@ end
 # Contiguous ranges, one task and one cursor each. The split point does not
 # touch the answer — every chunk writes only its own positions — so no
 # window alignment is needed; a chunk starting mid-window pays one
-# `_window_at` search and walks on.
+# `_window_at` search and walks on. The ranges partition `1:n` in order, so
+# anything assembled chunk-by-chunk in range order is the sequential result.
+function _chunk_ranges(n::Int)
+    step = cld(n, min(n, 2 * Threads.nthreads()))
+    return [lo:min(lo + step - 1, n) for lo in 1:step:n]
+end
+
 function _foreach_chunk(body!::F, n::Int, ::GOCore.True) where {F}
     n == 0 && return nothing
-    step = cld(n, min(n, 2 * Threads.nthreads()))
-    @sync for lo in 1:step:n
-        hi = min(lo + step - 1, n)
-        Threads.@spawn body!(lo:hi)
+    @sync for r in _chunk_ranges(n)
+        Threads.@spawn body!(r)
     end
     return nothing
 end
@@ -468,9 +472,9 @@ foreachneighbors(f::F, pg::PartialGrid, data::AbstractVector; kw...) where {F} =
 # ===========================================================================
 
 """
-    HaloTable(cv; connectivity = Vertex())
-    HaloTable(pg::PartialGrid; connectivity = Vertex())
-    HaloTable(lk::CellLookup; connectivity = Vertex())
+    HaloTable(cv; connectivity = Vertex(), threaded = true)
+    HaloTable(pg::PartialGrid; connectivity = Vertex(), threaded = true)
+    HaloTable(lk::CellLookup; connectivity = Vertex(), threaded = true)
 
 The one-arg [`neighbors`](@ref) sweep materialized as positions, in CSR:
 `t[p]` is the clipped one-ring of the subset's `p`-th cell as in-set
@@ -487,6 +491,12 @@ every row wants: one flat array instead of a vector per cell, and ring order
 instead of ascending — position `t[p][i]` is the cell's `i`-th surviving
 ring member, so direction survives the materialization. `halo_table` remains
 the ascending row-vector form, and the only one answering `k != 1`.
+
+`threaded` (`Bool` or GeometryOps' `True()`/`False()`) builds the table in
+[`mapneighbors`](@ref)' contiguous chunks, one cursor per task: each chunk
+sweeps its range once into a local CSR, then one offset shift and one copy
+per chunk stitch the pieces. Rows never interleave, so `offsets` and `nbrs`
+come out identical to the sequential build's, whatever the chunking.
 """
 struct HaloTable <: AbstractVector{SubArray{Int,1,Vector{Int},Tuple{UnitRange{Int}},true}}
     offsets::Vector{Int}
@@ -515,16 +525,20 @@ Base.show(io::IO, t::HaloTable) =
     print(io, "HaloTable(ncells=", length(t), ", entries=", length(t.nbrs), ")")
 Base.show(io::IO, ::MIME"text/plain", t::HaloTable) = show(io, t)
 
-function HaloTable(cv::CellVector; connectivity::Connectivity = Vertex())
+HaloTable(cv::CellVector; connectivity::Connectivity = Vertex(),
+    threaded = true) =
+    _halo_table(cv, connectivity, GOCore.booltype(threaded))
+
+function _halo_table(cv::CellVector, conn::Connectivity, ::GOCore.False)
     n = length(cv)
     offsets = Vector{Int}(undef, n + 1)
     @inbounds offsets[1] = 1
     nbrs = Int[]
-    M = max_neighbors(system(cv), connectivity)
+    M = max_neighbors(system(cv), conn)
     # The degree ceiling as the append hint, as in `_stencil_rows`: the
     # output's own size to within the clip, asked for once.
     sizehint!(nbrs, n * M)
-    _sweep!(cv, connectivity, 1:n, Val(M)) do k, c, ring
+    _sweep!(cv, conn, 1:n, Val(M)) do k, c, ring
         for h in ring
             push!(nbrs, h.position)
         end
@@ -533,22 +547,77 @@ function HaloTable(cv::CellVector; connectivity::Connectivity = Vertex())
     return HaloTable(offsets, nbrs)
 end
 
-HaloTable(pg::PartialGrid; connectivity::Connectivity = Vertex()) =
-    HaloTable(CellVector(pg); connectivity)
+# The chunked build. Each task sweeps its contiguous range with its own
+# cursor into a LOCAL flat array, writing each of its rows' end positions
+# into the global `offsets` as if its chunk began the table. Rings are
+# computed once, here; what remains is arithmetic and copying.
+function _halo_table(cv::CellVector, conn::Connectivity, ::GOCore.True)
+    n = length(cv)
+    n == 0 && return _halo_table(cv, conn, GOCore.False())
+    M = max_neighbors(system(cv), conn)
+    ranges = _chunk_ranges(n)
+    parts = Vector{Vector{Int}}(undef, length(ranges))
+    offsets = Vector{Int}(undef, n + 1)
+    @inbounds offsets[1] = 1
+    @sync for (i, r) in enumerate(ranges)
+        Threads.@spawn @inbounds parts[i] = _halo_chunk(cv, conn, r, offsets,
+            Val(M))
+    end
+    # One shift per chunk closes the seams: adding the entries that precede a
+    # chunk turns its local end positions into global ones, and because the
+    # ranges partition `1:n` in order, the result is the sequential build's
+    # `offsets` exactly.
+    total = 0
+    @inbounds for (i, r) in enumerate(ranges)
+        if total != 0
+            for k in r
+                offsets[k+1] += total
+            end
+        end
+        total += length(parts[i])
+    end
+    # The stitch: the local arrays back to back, in range order.
+    nbrs = Vector{Int}(undef, total)
+    pos = 1
+    for part in parts
+        copyto!(nbrs, pos, part, 1, length(part))
+        pos += length(part)
+    end
+    return HaloTable(offsets, nbrs)
+end
+
+function _halo_chunk(cv::CellVector, conn::Connectivity, r::UnitRange{Int},
+        offsets::Vector{Int}, ::Val{M}) where {M}
+    loc = Int[]
+    sizehint!(loc, length(r) * M)
+    _sweep!(cv, conn, r, Val(M)) do k, c, ring
+        for h in ring
+            push!(loc, h.position)
+        end
+        @inbounds offsets[k+1] = length(loc) + 1
+    end
+    return loc
+end
+
+HaloTable(pg::PartialGrid; kw...) = HaloTable(CellVector(pg); kw...)
 
 # `halo_table`'s generic one-ring rows, produced by the sweep instead of one
 # resolved call per cell: the same ascending `Vector{Int}` rows, with the
-# per-neighbour window search amortized by the cursor.
-function _swept_rows(cv::CellVector, conn::Connectivity)
+# per-neighbour window search amortized by the cursor. Every row is its own
+# allocation landing in its own slot, so the chunked sweep needs no stitch:
+# `thr` only decides how many cursors walk.
+function _swept_rows(cv::CellVector, conn::Connectivity, thr = GOCore.False())
     n = length(cv)
     out = Vector{Vector{Int}}(undef, n)
     M = max_neighbors(system(cv), conn)
-    _sweep!(cv, conn, 1:n, Val(M)) do k, c, ring
-        row = Vector{Int}(undef, length(ring))
-        for (i, h) in enumerate(ring)
-            @inbounds row[i] = h.position
+    _foreach_chunk(n, thr) do r
+        _sweep!(cv, conn, r, Val(M)) do k, c, ring
+            row = Vector{Int}(undef, length(ring))
+            for (i, h) in enumerate(ring)
+                @inbounds row[i] = h.position
+            end
+            @inbounds out[k] = sort!(row)
         end
-        @inbounds out[k] = sort!(row)
     end
     return out
 end

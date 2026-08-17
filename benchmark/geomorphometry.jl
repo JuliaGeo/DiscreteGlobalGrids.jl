@@ -33,17 +33,18 @@
 # Output on the branch pair — this tree paired with the fork's
 # `clipped-neighbors` @ 9a4e053 — Julia 1.12.6, 8 threads, same machine,
 # 2026-08-17. TPI rides the threaded `mapneighbors` sweep; D8 settles in
-# position space over one `HaloTable`; `halo_table` is the same sweep
-# materialized:
+# position space over one `HaloTable`; `halo_table` and the `HaloTable` the
+# router builds both use the chunked sweep (one cursor per task, stitched in
+# range order, arrays identical to the sequential build's):
 #
 #   one rooted subtree: 343 cells, 1 window(s)
 #     topographic_position_index    0.0001 s   (0.0 s gc, 0.0 MB)
-#     flowaccumulation(D8)          0.0001 s   (0.0 s gc, 0.0 MB)
+#     flowaccumulation(D8)          0.0002 s   (0.0 s gc, 0.1 MB)
 #     halo_table                    0.0001 s   (0.0 s gc, 0.1 MB)
 #   multi-order coverage: 2313802 cells, 3715 window(s)
-#     topographic_position_index    0.057  s   (0.0 s gc, 8.8 MB)
-#     flowaccumulation(D8)          1.3891 s   (0.022 s gc, 192.5 MB)
-#     halo_table                    0.5016 s   (0.022 s gc, 264.7 MB)
+#     topographic_position_index    0.0653 s   (0.0 s gc, 8.8 MB)
+#     flowaccumulation(D8)          1.1874 s   (0.041 s gc, 307.2 MB)
+#     halo_table                    0.1894 s   (0.104 s gc, 264.7 MB)
 
 import DiscreteGlobalGrids as DGG
 import Geomorphometry as GM

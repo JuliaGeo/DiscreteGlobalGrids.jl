@@ -107,6 +107,15 @@ naive(cv; connectivity = Vertex()) =
         end
         @test all(p -> sort(collect(t[p])) == rows[p], 1:n)
         @test rows == [neighbors(cv, p, 1) for p in 1:n]
+
+        # `t` and `rows` above are the default THREADED builds, so the laws
+        # already ran against the chunked sweep. What remains is that the
+        # stitch adds nothing and loses nothing: the sequential build's
+        # arrays, field for field — a seam that shifted an offset, or a chunk
+        # landing out of range order, breaks equality at the boundary row.
+        s = HaloTable(cv; threaded = false)
+        @test t.offsets == s.offsets && t.nbrs == s.nbrs
+        @test halo_table(cv; threaded = false) == rows
     end
 
     @testset "the grid and lookup forms are the vector's" begin

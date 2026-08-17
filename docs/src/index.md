@@ -49,6 +49,8 @@ shortest honest path to one result:
     data on a regional subset, and flow routing across it.
   - [The sky in HEALPix](tutorials/healpix_astronomy.md) — nested order, cone
     searches, and a galactic-plane cut.
+  - [A round trip through a DGGS store](tutorials/store_io.md) — `dggwrite` and
+    `dggread` over a Zarr store, with the grid carried in the lookup type.
 
 [Subtree and subset boundaries](api/boundaries.md) is the rendered reference for
 the boundary family — `subtree_border`, `subtree_halo`, `halo`,

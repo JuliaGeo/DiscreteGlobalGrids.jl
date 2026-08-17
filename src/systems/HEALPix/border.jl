@@ -27,9 +27,6 @@
 # `SquareRimEngine` descends this block in Morton order and prunes quadrants
 # that inherit none of the square's exposed sides.
 
-# Extend the package-level `subtree_border` generic.
-import ..DiscreteGlobalGrids: subtree_border
-
 # `descendant_range` validates the target level and returns the subtree's first
 # nested position.
 function _healpix_square(sys::HEALPixSystem, c::DGG.LevelIndex, target::Int)
@@ -85,23 +82,3 @@ DGG.lattice_cell(sys::HEALPixSystem, l::Int, ix::Integer, iy::Integer,
     face::Integer) = DGG.LevelIndex(l, xyf_to_nested(ix, iy, face, _nside(l)))
 
 DGG.face_orientation(sys::HEALPixSystem, face::Integer) = 0x0
-
-"""
-    subtree_border(sys::HEALPixSystem, c::LevelIndex, leaf_level::Integer; connectivity = Vertex()) -> Vector{LevelIndex}
-
-The **rim** of `c`'s subtree at `leaf_level`: the descendants that have at
-least one neighbour outside the subtree, ascending by canonical id.
-
-`4 * 2^Δ - 4` cells for `Δ = leaf_level - level(c) > 0`, and `[c]` at `Δ == 0`.
-Θ(rim) time and one allocation — the rim is read straight off the leaf lattice,
-with no neighbour query at any level. `collect` of
-[`EdgeCellIterator`](@ref), which is the same walk without the allocation.
-
-`connectivity` does not change the result: edge adjacency already identifies
-every boundary cell of the square lattice block.
-
-Positions are `rawid + 1`.
-"""
-subtree_border(sys::HEALPixSystem, c::DGG.LevelIndex, leaf_level::Integer;
-    connectivity::DGG.Connectivity=DGG.Vertex()) =
-    DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, leaf_level; connectivity))

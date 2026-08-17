@@ -286,7 +286,7 @@ Trees.getcell(c::BlockCursor) = DGG.getcell(c.grid)
 
 function Trees.should_parallelize(c::BlockCursor, ::US.SphericalCap)
     threshold = max(Int64(1), Int64(DGG.ncells(c.grid)) ÷
-                              (Int64(Threads.nthreads()) * DGG.Fallbacks.PARALLELIZE_CHUNKS_PER_THREAD))
+                              (Int64(Threads.nthreads()) * DGG.PARALLELIZE_CHUNKS_PER_THREAD))
     return _node_cells(c) <= threshold
 end
 

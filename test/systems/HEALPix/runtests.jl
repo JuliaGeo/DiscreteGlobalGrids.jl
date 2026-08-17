@@ -729,10 +729,10 @@ end
 @testset "subtree_border" begin
     for level in 0:2, p in pixel_sample(level, 12)
         c = LevelIndex(level, p)
-        @test HP.subtree_border(SYS, c, level) == [c]
+        @test DGG.subtree_border(SYS, c, level) == [c]
         for depth in 1:5
             target = level + depth
-            rim = HP.subtree_border(SYS, c, target)
+            rim = DGG.subtree_border(SYS, c, target)
             s = 1 << depth
             @test length(rim) == 4s - 4
             @test issorted(rim) && allunique(rim)
@@ -759,7 +759,7 @@ end
             @test rim == sort!(brute_e)
         end
     end
-    @test_throws ArgumentError HP.subtree_border(SYS, LevelIndex(3, 0), 2)
+    @test_throws ArgumentError DGG.subtree_border(SYS, LevelIndex(3, 0), 2)
 end
 
 # =========================================================================

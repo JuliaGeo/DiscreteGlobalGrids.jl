@@ -11,7 +11,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
 DiscreteGlobalGrids = {path = "../.."}
-GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/dualdfs-carry-extents"}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "main"}
 
 [compat]
 DiscreteGlobalGrids = "0.1"

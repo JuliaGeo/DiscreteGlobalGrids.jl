@@ -1345,10 +1345,10 @@ end
 end
 
 @testset "generic subtree_border / subtree_interior" begin
-    # The three shipped systems all override `subtree_border` with an
-    # automaton, so this testset is the ONLY exercise the generic in
-    # `src/fallbacks/subtree.jl` gets. Without it, the correct-for-everyone
-    # implementation that a fourth system will inherit is dead code.
+    # Every shipped system specializes `rim_engine`, so this testset and A5's
+    # are the only exercises the generic scan in `src/fallbacks/subtree.jl`
+    # gets. Without it, the correct-for-everyone implementation a new system
+    # inherits before it writes an automaton is dead code.
     #
     # The mock's subtree at depth `d` is a `2^d x 2^d` block of the lon/lat
     # lattice, so its rim is contained in the block's boundary ring — at most

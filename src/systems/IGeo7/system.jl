@@ -502,23 +502,6 @@ end
 
 # Subtree borders are derived directly from Z7 digits.
 
-"""
-    subtree_border(sys::IGeo7System, c::Z7Cell, l::Integer; connectivity = Vertex()) -> Vector{Z7Cell}
-
-Return the level-`l` descendants on the subtree rim, in ascending order;
-`l == level(c)` returns `[c]`. Vertex and edge connectivity coincide. A
-six-state digit automaton runs in `O(result)`; at depth `d` the rim contains
-`3^(d+1)-3` cells for a hexagon and `5*(3^d-1)/2` for a pentagon.
-
-`collect` of [`EdgeCellIterator`](@ref), which is the same automaton resumable
-and in `O(depth)` memory.
-
-Throws an `ArgumentError` for `l` outside `level(c):max_level`.
-"""
-subtree_border(sys::IGeo7System, c::Z7Cell, l::Integer;
-    connectivity::Connectivity=Vertex()) =
-    DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))
-
 function DGG.rim_engine(::IGeo7System, c::Z7Cell, target::Int,
         connectivity::Connectivity)
     return Z7RimEngine(c.id, _z7_subtree_checked(c, target), target)

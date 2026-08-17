@@ -435,9 +435,9 @@ function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
             push!(next, y)
         end
         if step == 1
-            isempty(next) || (frame = DGG.Fallbacks._ring_frame(g, centre, next))
+            isempty(next) || (frame = DGG._ring_frame(g, centre, next))
         elseif frame !== nothing
-            DGG.Fallbacks._wind!(next, g, centre, frame)
+            DGG._wind!(next, g, centre, frame)
         end
         push!(shells, next)
         isempty(next) && break

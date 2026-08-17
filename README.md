@@ -211,7 +211,7 @@ Every script under `examples/` is an assertion-checked demo that exits non-zero
 if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The one
 exception is `examples/copernicus_dem.jl`, which reads a COG and so needs the
 docs environment: `julia -t auto --project=docs examples/copernicus_dem.jl`. The
-six tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
+seven tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
 build, each the shortest honest path to one result; `docs/src/index.md` lists
 them and `docs/src/all_dggs.md` draws every system.
 

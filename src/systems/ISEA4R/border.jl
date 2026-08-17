@@ -68,17 +68,3 @@ DGG.lattice_cell(sys::ISEA4RSystem, l::Int, ix::Integer, iy::Integer,
     diamond::Integer) = DGG.LevelIndex(l, xyd_to_morton(ix, iy, diamond, _nside(l)))
 
 DGG.face_orientation(sys::ISEA4RSystem, diamond::Integer) = 0x0
-
-"""
-    subtree_border(ISEA4RSystem(), c, l; connectivity = Vertex()) -> Vector{LevelIndex}
-
-Return the boundary of the `2^Δ × 2^Δ` descendant block in ascending order:
-`4*2^Δ - 4` cells. Connectivity does not change this rim. Cost is `O(rim)`.
-`collect` of [`EdgeCellIterator`](@ref), which is the same walk lazily.
-
-`subtree_border(sys, c, level(c))` is `[c]`; `l < level(c)` throws an
-`ArgumentError`, uniformly with every other system.
-"""
-DGG.subtree_border(sys::ISEA4RSystem, c::DGG.LevelIndex, l::Integer;
-    connectivity::DGG.Connectivity = DGG.Vertex()) =
-    DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))

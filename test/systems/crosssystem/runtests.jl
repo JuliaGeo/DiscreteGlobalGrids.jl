@@ -97,7 +97,7 @@ end
         for sys in systems()
             n = nameof(typeof(sys))
             c = cellindex(levelgrid(sys, first(levels(sys))), 1)
-            m = which(subtree_border, Base.typesof(sys, c, level(c)))
+            m = which(DGG.rim_engine, Base.typesof(sys, c, level(c), Vertex()))
             overrides = m.module !== DGG.Fallbacks
             @test (n in automaton) ⊻ (n in fallback)   # nobody unaccounted for
             @test overrides == (n in automaton)

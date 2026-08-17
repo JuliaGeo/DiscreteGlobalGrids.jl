@@ -125,13 +125,16 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     SubsetPositionedCell, cellid,
     mapneighbors, foreachneighbors, StorageOrder, HaloTable
 
-# Internal extension points for system-specific subtree walkers.
+# Internal extension points for system-specific subtree walkers, shell winding,
+# and cursor parallelization.
 using .Fallbacks: collect_subtree,
     MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine,
     SquareBandEngine, square_halo_engine, generic_halo_engine, check_halo_level,
-    HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine
+    HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine,
+    _ring_frame, _wind!, PARALLELIZE_CHUNKS_PER_THREAD
 
-# IGeo7 and ISEA4R share guarded definitions in `src/systems/ISEA/`.
+# The Snyder/icosahedron basis IGeo7 and ISEA4R share, before either of them.
+include("systems/ISEA/ISEA.jl")
 include("systems/IGeo7/IGeo7.jl")
 include("systems/H3/H3.jl")
 include("systems/HEALPix/HEALPix.jl")

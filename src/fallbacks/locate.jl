@@ -168,16 +168,33 @@ end
 
 # Rotational shell ordering by measured azimuth.
 
-# Tangent frame anchored at the smallest-id ring-1 neighbor. Subtract its
-# measured azimuth to prevent `mod(-eps, 2π)` from moving the anchor to the end.
+"""
+    _ring_frame(grid, centre, shell) -> (e1, e2, zero)
+
+Tangent basis at `centre` whose zero azimuth points at `shell`'s smallest-id
+cell. Anchoring on a shell member keeps `mod(-eps, 2π)` from winding that member
+to the end of the order.
+
+An internal extension point, re-exported as
+`DiscreteGlobalGrids._ring_frame`: a system walking its own adjacency shells
+pairs it with `_wind!` to get the package's ring ordering rather than a private
+one.
+"""
 function _ring_frame(grid::AbstractGrid, centre, shell::AbstractVector)
     anchor = cell_centroid(grid, minimum(shell))
     e1, e2 = _tangent_basis(centre, anchor)
     return (e1, e2, _azimuth(centre, e1, e2, anchor))
 end
 
-# Order one shell counter-clockwise about `centre`, from the frame's spoke.
-# Exact ties go to the smaller canonical id, so the result is total.
+"""
+    _wind!(shell, grid, centre, frame) -> shell
+
+Sort `shell` in place counter-clockwise about `centre` from `frame`'s zero
+spoke, `frame` being a `_ring_frame` triple. Exact azimuth ties go to the
+smaller canonical id, so the order is total.
+
+An internal extension point, re-exported as `DiscreteGlobalGrids._wind!`.
+"""
 function _wind!(shell::AbstractVector, grid::AbstractGrid, centre, frame)
     length(shell) <= 1 && return shell
     e1, e2, zero = frame

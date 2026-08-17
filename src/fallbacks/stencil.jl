@@ -45,6 +45,19 @@ end
 # The membership check is the CALLER's, not this function's: an argument is
 # evaluated before the call, so checking here would compute a whole `k == 3`
 # disc for a cell the subset does not hold and throw afterwards.
+# The clip keeps the container it was handed. A clipped ring is a subset of the
+# unclipped one, so `k == 1` stays in the `SmallVector` the system answered in
+# rather than moving to the heap for the membership test; `k >= 2` has no static
+# bound, arrives in a `Vector`, and leaves in one.
+function _clip(sub, cells::SmallCollections.SmallVector{N,T}) where {N,T}
+    out = SmallCollections.SmallVector{N,T}()
+    for nb in cells
+        cellposition(sub, nb) === nothing ||
+            (out = SmallCollections.push(out, nb))
+    end
+    return out
+end
+
 function _clip(sub, cells)
     out = Vector{eltype(cells)}()
     for nb in cells
@@ -97,6 +110,19 @@ function ring(cv::CellVector, c::AbstractCellIndex, k::Integer;
     _member_or_throw(cv, c)
     return _clip(cv, ring(cv.grid, c, Int(k); connectivity))
 end
+
+# ===========================================================================
+# Neighbour counts default to the length of the clipped one-ring. Systems with
+# structural degree information may specialize this method.
+# ===========================================================================
+
+neighborcount(grid::AbstractGrid, c::AbstractCellIndex;
+        connectivity::Connectivity = Vertex()) =
+    length(neighbors(grid, c, 1; connectivity))
+
+neighborcount(cv::CellVector, c::AbstractCellIndex;
+        connectivity::Connectivity = Vertex()) =
+    length(neighbors(cv, c, 1; connectivity))
 
 # ===========================================================================
 # The position forms
@@ -176,9 +202,20 @@ halo_table(grid::AbstractGrid, k::Integer = 1;
         connectivity::Connectivity = Vertex()) =
     [neighbors(grid, p, Int(k); connectivity) for p in 1:ncells(grid)]
 
-halo_table(cv::CellVector, k::Integer = 1;
-        connectivity::Connectivity = Vertex()) =
-    [neighbors(cv, p, Int(k); connectivity) for p in 1:length(cv)]
+# Use the cursor sweep for one-ring rows unless the vector retains a rooted
+# grid. Other radii use the per-cell implementation.
+function halo_table(cv::CellVector, k::Integer = 1;
+        connectivity::Connectivity = Vertex(), threaded = true)
+    steps = Int(k)
+    steps == 1 ||
+        return [neighbors(cv, p, steps; connectivity) for p in 1:length(cv)]
+    b = cv.backing
+    if b isa PartialGrid
+        r = _whole_subtree_range(b)
+        r === nothing || return _rooted_halo(b, r, connectivity)
+    end
+    return _swept_rows(cv, connectivity, GOCore.booltype(threaded))
+end
 
 # The rooted-subtree fast path. A subtree's INTERIOR is exactly the descendants
 # with no neighbour outside it, so an interior cell's whole row is in-set by
@@ -197,10 +234,14 @@ halo_table(cv::CellVector, k::Integer = 1;
 #     a cell two steps inside the rim can still reach outside at `k == 2`, and
 #     there is no "k-interior" iterator to ask.
 function halo_table(pg::PartialGrid, k::Integer = 1;
-        connectivity::Connectivity = Vertex())
+        connectivity::Connectivity = Vertex(), threaded = true)
     steps = Int(k)
-    r = steps == 1 ? _whole_subtree_range(pg) : nothing
-    r === nothing && return [neighbors(pg, p, steps; connectivity) for p in 1:ncells(pg)]
+    steps == 1 ||
+        return [neighbors(pg, p, steps; connectivity) for p in 1:ncells(pg)]
+    r = _whole_subtree_range(pg)
+    # Unrooted subsets use the position-identical vector sweep.
+    r === nothing &&
+        return _swept_rows(CellVector(pg), connectivity, GOCore.booltype(threaded))
     return _rooted_halo(pg, r, connectivity)
 end
 

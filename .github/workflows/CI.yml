@@ -17,6 +17,10 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
+    env:
+      # The regridding suite compares threaded weight assembly against serial,
+      # which only compares two things above one thread.
+      JULIA_NUM_THREADS: '2'
     strategy:
       fail-fast: false
       matrix:

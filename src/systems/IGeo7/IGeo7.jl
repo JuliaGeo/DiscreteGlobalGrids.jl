@@ -35,12 +35,16 @@ include("engine.jl")
 include("z7grid.jl")
 include("gbt.jl")
 include("system.jl")
+include("indexing.jl")
 
 export IGeo7System,
     Z7Cell,
+    RelativeZ7Cell,
     InvalidZ7Error,
+    RelativeZ7Error,
     MAX_RESOLUTION,
     equal_area_steradians,
+    directioncode,
     is_pentagon,
     is_valid_cell,
     subtree_border,

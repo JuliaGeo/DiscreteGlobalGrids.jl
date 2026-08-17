@@ -1,0 +1,523 @@
+# ---------------------------------------------------------------------------
+# Iterate clipped one-rings in storage order while reusing position lookups.
+# ---------------------------------------------------------------------------
+
+"""
+    SubsetPositionedCell{C}
+
+A cell and its position in the subset that created the handle. The one-argument
+[`neighbors`](@ref) iterator yields these handles.
+
+The position is valid only for that subset and is trusted unconditionally
+wherever a handle is accepted: indexing a `Cells`-lookup raster with one reads
+storage at that position directly, with no membership check. Use
+[`cellid`](@ref) and resolve the bare cell when working with another
+collection.
+
+`==`, `hash`, `show` and `convert(::Type{C})` delegate to the cell, so a
+handle compares, hashes, and prints as its cell. [`cellposition`](@ref)`(h)`
+returns the stored position.
+"""
+struct SubsetPositionedCell{C<:AbstractCellIndex}
+    cell::C
+    position::Int
+end
+
+"""
+    cellid(h::SubsetPositionedCell)
+    cellid(c::AbstractCellIndex)
+
+Return the bare cell from a positioned handle, or return a bare cell unchanged.
+The escape from a handle's single-axis contract: `cellposition(other,
+cellid(h))` resolves against any axis, where the handle's own position is valid
+only against the collection that minted it.
+"""
+cellid(h::SubsetPositionedCell) = h.cell
+cellid(c::AbstractCellIndex) = c
+
+"""
+    cellposition(h::SubsetPositionedCell) -> Int
+
+Return the handle's position in the collection that created it.
+"""
+cellposition(h::SubsetPositionedCell) = h.position
+
+level(h::SubsetPositionedCell) = level(h.cell)
+
+Base.:(==)(a::SubsetPositionedCell, b::SubsetPositionedCell) = a.cell == b.cell
+Base.:(==)(a::SubsetPositionedCell, b::AbstractCellIndex) = a.cell == b
+Base.:(==)(a::AbstractCellIndex, b::SubsetPositionedCell) = a == b.cell
+Base.hash(h::SubsetPositionedCell, u::UInt) = hash(h.cell, u)
+Base.show(io::IO, h::SubsetPositionedCell) = show(io, h.cell)
+Base.convert(::Type{C}, h::SubsetPositionedCell{C}) where {C<:AbstractCellIndex} =
+    h.cell
+
+# ===========================================================================
+# The window cursor
+#
+# The cursor tracks the storage position, its window, and the last window that
+# contained a neighbour. A returned position of zero means the cell is absent.
+# ===========================================================================
+
+@inline _wbase(w::RangeWindows, j::Int) = j == 1 ? 0 : @inbounds w.offsets[j-1]
+
+@inline function _advance(w::RangeWindows, wj::Int, k::Int)
+    @inbounds while k > w.offsets[wj]
+        wj += 1
+    end
+    return wj
+end
+@inline _advance(::PositionWindows, wj::Int, k::Int) = k
+
+@inline _leaf_at(w::RangeWindows, wj::Int, k::Int) =
+    @inbounds w.starts[wj] + (k - _wbase(w, wj)) - 1
+@inline _leaf_at(w::PositionWindows, ::Int, k::Int) = @inbounds w.positions[k]
+
+# Leaf position -> (concatenation position or 0, updated hint).
+@inline function _cursor_find(w::RangeWindows, wj::Int, hj::Int, p::Int)
+    @inbounds if w.starts[wj] <= p <= w.stops[wj]
+        return _wbase(w, wj) + (p - w.starts[wj]) + 1, hj
+    end
+    @inbounds if hj != wj && w.starts[hj] <= p <= w.stops[hj]
+        return _wbase(w, hj) + (p - w.starts[hj]) + 1, hj
+    end
+    j = searchsortedfirst(w.stops, p)
+    (j <= length(w.stops) && p >= @inbounds w.starts[j]) || return 0, hj
+    return _wbase(w, j) + (p - @inbounds w.starts[j]) + 1, j
+end
+
+# Check the previous match before searching a position list.
+@inline function _cursor_find(w::PositionWindows, ::Int, hj::Int, p::Int)
+    ps = w.positions
+    @inbounds if hj <= length(ps) && ps[hj] == p
+        return hj, hj
+    end
+    j = searchsortedfirst(ps, p)
+    (j <= length(ps) && @inbounds(ps[j]) == p) || return 0, hj
+    return j, j
+end
+
+# Clip a ring to the subset and attach each surviving cell's position. The
+# system's degree bound keeps the result statically sized.
+@inline function _positioned(cv::CellVector, wj::Int, hj::Int, cells,
+        ::Val{M}) where {M}
+    w = cv.windows
+    out = SmallCollections.SmallVector{M,SubsetPositionedCell{eltype(cells)}}()
+    for nb in cells
+        q, hj = _cursor_find(w, wj, hj, cellposition(cv.grid, nb)::Int)
+        q == 0 || (out = SmallCollections.push(out, SubsetPositionedCell(nb, q)))
+    end
+    return out, hj
+end
+
+# ===========================================================================
+# The iterator
+# ===========================================================================
+
+"""
+    neighbors(cv::CellVector; connectivity = Vertex())
+    neighbors(pg::PartialGrid; connectivity = Vertex())
+
+Iterate a subset in storage order as `(cell, nbrs)`. Both the cell and its
+one-ring, clipped to membership, are [`SubsetPositionedCell`](@ref) handles:
+`nbrs` holds the same cells `neighbors(cv, cell)` answers, in the same order.
+
+The iterator reuses window lookups across the sweep and allocates nothing
+beyond the system's native one-ring operation. A `PartialGrid` uses its
+`CellVector` representation without changing positions.
+"""
+neighbors(cv::CellVector; connectivity::Connectivity = Vertex()) =
+    NeighborhoodIterator(cv, connectivity)
+
+neighbors(pg::PartialGrid; connectivity::Connectivity = Vertex()) =
+    NeighborhoodIterator(CellVector(pg), connectivity)
+
+# `M` is the static capacity of every yielded ring.
+struct NeighborhoodIterator{M,CV<:CellVector,CN<:Connectivity}
+    cv::CV
+    connectivity::CN
+end
+
+NeighborhoodIterator(cv::CellVector, conn::Connectivity) =
+    NeighborhoodIterator{max_neighbors(system(cv), conn),typeof(cv),typeof(conn)}(
+        cv, conn)
+
+Base.length(it::NeighborhoodIterator) = length(it.cv)
+Base.IteratorSize(::Type{<:NeighborhoodIterator}) = Base.HasLength()
+Base.IteratorEltype(::Type{<:NeighborhoodIterator}) = Base.EltypeUnknown()
+
+Base.show(io::IO, it::NeighborhoodIterator) =
+    print(io, "neighbors(", it.cv, "; connectivity=", it.connectivity, ")")
+Base.show(io::IO, ::MIME"text/plain", it::NeighborhoodIterator) = show(io, it)
+
+Base.iterate(it::NeighborhoodIterator) = _neighborhood_next(it, 1, 1, 1)
+Base.iterate(it::NeighborhoodIterator, st::NTuple{3,Int}) =
+    _neighborhood_next(it, st[1], st[2], st[3])
+
+function _neighborhood_next(it::NeighborhoodIterator{M}, k::Int, wj::Int,
+        hj::Int) where {M}
+    cv = it.cv
+    k > length(cv) && return nothing
+    w = cv.windows
+    wj = _advance(w, wj, k)
+    c = cellindex(cv.grid, _leaf_at(w, wj, k))
+    nbrs, hj = _positioned(cv, wj, hj,
+        neighbors(cv.grid, c, 1; connectivity = it.connectivity), Val(M))
+    return (SubsetPositionedCell(c, k), nbrs), (k + 1, wj, hj)
+end
+
+# ===========================================================================
+# Closure-based neighbourhood sweeps.
+# ===========================================================================
+
+# Find the window containing storage position `k`.
+@inline _window_at(w::RangeWindows, k::Int) = searchsortedfirst(w.offsets, k)
+@inline _window_at(::PositionWindows, k::Int) = k
+
+"""
+    StorageOrder()
+
+Traverse cells in storage order. This is the default for
+[`mapneighbors`](@ref) and [`foreachneighbors`](@ref).
+"""
+struct StorageOrder end
+
+# Call `g(k, cell, nbrs)` in storage order with one cursor for the range.
+function _sweep!(g::G, cv::CellVector, conn::Connectivity, r::UnitRange{Int},
+        ::Val{M}) where {G,M}
+    isempty(r) && return nothing
+    w = cv.windows
+    wj = _window_at(w, first(r))
+    hj = wj
+    for k in r
+        wj = _advance(w, wj, k)
+        c = cellindex(cv.grid, _leaf_at(w, wj, k))
+        nbrs, hj = _positioned(cv, wj, hj,
+            neighbors(cv.grid, c, 1; connectivity = conn), Val(M))
+        g(k, SubsetPositionedCell(c, k), nbrs)
+    end
+    return nothing
+end
+
+# Visit the positions selected by `perm`; each visit starts with a fresh window
+# lookup because permutations provide no locality guarantee.
+function _sweep_perm!(g::G, cv::CellVector, conn::Connectivity,
+        perm::AbstractVector{<:Integer}, r::UnitRange{Int}, ::Val{M}) where {G,M}
+    w = cv.windows
+    for j in r
+        k = Int(@inbounds perm[j])
+        wj = _window_at(w, k)
+        c = cellindex(cv.grid, _leaf_at(w, wj, k))
+        nbrs, _ = _positioned(cv, wj, wj,
+            neighbors(cv.grid, c, 1; connectivity = conn), Val(M))
+        g(k, SubsetPositionedCell(c, k), nbrs)
+    end
+    return nothing
+end
+
+# Reject orders that do not visit every output position exactly once.
+function _check_permutation(perm::AbstractVector{<:Integer}, n::Int)
+    length(perm) == n || throw(ArgumentError(
+        "order must be a permutation of 1:$n, got length $(length(perm))"))
+    seen = falses(n)
+    for x in perm
+        k = Int(x)
+        1 <= k <= n || throw(ArgumentError(
+            "order must be a permutation of 1:$n, got entry $k"))
+        @inbounds seen[k] && throw(ArgumentError(
+            "order must be a permutation of 1:$n, but it visits $k twice"))
+        @inbounds seen[k] = true
+    end
+    return nothing
+end
+
+# Split `1:n` into contiguous ranges, one cursor per task.
+function _chunk_ranges(n::Int)
+    step = cld(n, min(n, 2 * Threads.nthreads()))
+    return [lo:min(lo + step - 1, n) for lo in 1:step:n]
+end
+
+function _foreach_chunk(body!::F, n::Int, ::GOCore.True) where {F}
+    n == 0 && return nothing
+    @sync for r in _chunk_ranges(n)
+        Threads.@spawn body!(r)
+    end
+    return nothing
+end
+
+_foreach_chunk(body!::F, n::Int, ::GOCore.False) where {F} = body!(1:n)
+
+_run!(g::G, cv::CellVector, conn::Connectivity, ::StorageOrder, thr,
+    ::Val{M}) where {G,M} =
+    _foreach_chunk(r -> _sweep!(g, cv, conn, r, Val(M)), length(cv), thr)
+
+function _run!(g::G, cv::CellVector, conn::Connectivity,
+        perm::AbstractVector{<:Integer}, thr, ::Val{M}) where {G,M}
+    _check_permutation(perm, length(cv))
+    return _foreach_chunk(r -> _sweep_perm!(g, cv, conn, perm, r, Val(M)),
+        length(perm), thr)
+end
+
+@noinline _run!(g, cv::CellVector, conn, order, thr, v) = throw(ArgumentError(
+    "order must be StorageOrder() or a permutation of 1:length(cv), " *
+    "got $(typeof(order))"))
+
+# --- output storage ---------------------------------------------------------
+
+# Concrete tuple results use one output vector per component.
+_outputs(::Type{T}, n::Int) where {T} =
+    T <: Tuple && isconcretetype(T) ?
+    ntuple(j -> Vector{fieldtype(T, j)}(undef, n), fieldcount(T)) :
+    Vector{T}(undef, n)
+
+@inline _store!(out::Vector, k::Int, v) = (@inbounds out[k] = v; nothing)
+@inline function _store!(outs::Tuple, k::Int, v::Tuple)
+    map((o, x) -> (@inbounds o[k] = x), outs, v)
+    return nothing
+end
+
+# Gather neighbour values in ring order.
+@inline function _gather(data::AbstractVector,
+        nbrs::SmallCollections.SmallVector{M,H}) where {M,H}
+    out = SmallCollections.SmallVector{M,eltype(data)}()
+    for h in nbrs
+        out = SmallCollections.push(out, @inbounds data[h.position])
+    end
+    return out
+end
+
+@noinline _data_mismatch(nd, n) = throw(ArgumentError(
+    "data must be laid out against the collection: expected a vector with " *
+    "axis 1:$n, got axis $(nd)"))
+
+_check_data(data::AbstractVector, n::Int) =
+    eachindex(data) == Base.OneTo(n) || _data_mismatch(eachindex(data), n)
+
+"""
+    mapneighbors(f, cv; order = StorageOrder(), threaded = true,
+                 connectivity = Vertex())
+    mapneighbors(f, cv, data::AbstractVector; ...)
+
+Apply `f` to each cell and its clipped one-ring. `cv` may be a
+[`CellVector`](@ref), [`PartialGrid`](@ref), or [`CellLookup`](@ref).
+
+Without `data`, `f(cell, nbrs)` receives the same positioned handles yielded
+by the one-argument [`neighbors`](@ref) iterator. With a vector laid out
+against the subset, `f(cell, value, values)` receives the cell value and its
+neighbour values in ring order.
+
+Results are stored in subset position order. A concrete tuple result produces
+a tuple of vectors, one per component. `order` accepts [`StorageOrder`](@ref)
+or a permutation of `1:length(cv)`; invalid permutations throw
+`ArgumentError`.
+
+When `threaded` is true, contiguous ranges run in separate tasks and write to
+disjoint output positions — legal exactly when `f` is order-independent, and
+the results are then identical to the sequential ones.
+[`foreachneighbors`](@ref) provides the side-effecting form and defaults to
+sequential execution.
+"""
+function mapneighbors(f::F, cv::CellVector; order = StorageOrder(),
+        threaded = true, connectivity::Connectivity = Vertex()) where {F}
+    M = max_neighbors(system(cv), connectivity)
+    H = SubsetPositionedCell{eltype(cv)}
+    T = Base.promote_op(f, H, SmallCollections.SmallVector{M,H})
+    outs = _outputs(T, length(cv))
+    return _mapstore!(f, outs, cv, connectivity, order, GOCore.booltype(threaded),
+        Val(M))
+end
+
+function mapneighbors(f::F, cv::CellVector, data::AbstractVector;
+        order = StorageOrder(), threaded = true,
+        connectivity::Connectivity = Vertex()) where {F}
+    _check_data(data, length(cv))
+    M = max_neighbors(system(cv), connectivity)
+    H = SubsetPositionedCell{eltype(cv)}
+    T = Base.promote_op(f, H, eltype(data),
+        SmallCollections.SmallVector{M,eltype(data)})
+    outs = _outputs(T, length(cv))
+    return _mapstore!(f, outs, cv, data, connectivity, order,
+        GOCore.booltype(threaded), Val(M))
+end
+
+# Build the store closure after the output container type is known.
+function _mapstore!(f::F, outs::O, cv::CellVector, conn::Connectivity, order,
+        thr, ::Val{M}) where {F,O,M}
+    _run!((k, c, nbrs) -> _store!(outs, k, f(c, nbrs)), cv, conn, order, thr,
+        Val(M))
+    return outs
+end
+
+function _mapstore!(f::F, outs::O, cv::CellVector, data::AbstractVector,
+        conn::Connectivity, order, thr, ::Val{M}) where {F,O,M}
+    _run!((k, c, nbrs) -> _store!(outs, k,
+            f(c, (@inbounds data[k]), _gather(data, nbrs))),
+        cv, conn, order, thr, Val(M))
+    return outs
+end
+
+"""
+    foreachneighbors(f, cv; order = StorageOrder(), threaded = false,
+                     connectivity = Vertex())
+    foreachneighbors(f, cv, data::AbstractVector; ...)
+
+Call `f` for each cell and clipped one-ring, discarding its return value. The
+calling forms and `order` contract match [`mapneighbors`](@ref). Threading is
+disabled by default; enabling it requires `f` to be order-independent.
+"""
+function foreachneighbors(f::F, cv::CellVector; order = StorageOrder(),
+        threaded = false, connectivity::Connectivity = Vertex()) where {F}
+    M = max_neighbors(system(cv), connectivity)
+    _run!((k, c, nbrs) -> (f(c, nbrs); nothing), cv, connectivity, order,
+        GOCore.booltype(threaded), Val(M))
+    return nothing
+end
+
+function foreachneighbors(f::F, cv::CellVector, data::AbstractVector;
+        order = StorageOrder(), threaded = false,
+        connectivity::Connectivity = Vertex()) where {F}
+    _check_data(data, length(cv))
+    M = max_neighbors(system(cv), connectivity)
+    _run!((k, c, nbrs) -> (f(c, (@inbounds data[k]), _gather(data, nbrs)); nothing),
+        cv, connectivity, order, GOCore.booltype(threaded), Val(M))
+    return nothing
+end
+
+mapneighbors(f::F, pg::PartialGrid; kw...) where {F} =
+    mapneighbors(f, CellVector(pg); kw...)
+mapneighbors(f::F, pg::PartialGrid, data::AbstractVector; kw...) where {F} =
+    mapneighbors(f, CellVector(pg), data; kw...)
+foreachneighbors(f::F, pg::PartialGrid; kw...) where {F} =
+    foreachneighbors(f, CellVector(pg); kw...)
+foreachneighbors(f::F, pg::PartialGrid, data::AbstractVector; kw...) where {F} =
+    foreachneighbors(f, CellVector(pg), data; kw...)
+
+# ===========================================================================
+# Materialized one-rings in CSR form.
+# ===========================================================================
+
+"""
+    HaloTable(cv; connectivity = Vertex(), threaded = true)
+    HaloTable(pg::PartialGrid; connectivity = Vertex(), threaded = true)
+    HaloTable(lk::CellLookup; connectivity = Vertex(), threaded = true)
+
+Materialize the one-argument [`neighbors`](@ref) sweep as a CSR table of
+subset positions. `t[p]` is the clipped one-ring of cell `p` in the system's
+ring order — `t[p][i]` is the cell's `i`-th surviving ring member, so
+direction survives the materialization. It is a non-allocating view into
+`t.nbrs`, bounded by `t.offsets[p]` and `t.offsets[p + 1] - 1`.
+
+[`halo_table`](@ref) contains the same neighbours in ascending rows and also
+supports `k != 1`. When `threaded` is true, contiguous chunks are built by
+separate tasks; the resulting arrays match the sequential build.
+"""
+struct HaloTable <: AbstractVector{SubArray{Int,1,Vector{Int},Tuple{UnitRange{Int}},true}}
+    offsets::Vector{Int}
+    nbrs::Vector{Int}
+end
+
+Base.size(t::HaloTable) = (length(t.offsets) - 1,)
+Base.IndexStyle(::Type{HaloTable}) = Base.IndexLinear()
+
+# Keep the public neighbour storage checked while reading validated offsets.
+Base.@propagate_inbounds function Base.getindex(t::HaloTable, p::Int)
+    @boundscheck checkbounds(t, p)
+    lo = @inbounds t.offsets[p]
+    hi = @inbounds t.offsets[p+1] - 1
+    return view(t.nbrs, lo:hi)
+end
+
+# Equal fields define equal rows.
+Base.:(==)(a::HaloTable, b::HaloTable) =
+    a.offsets == b.offsets && a.nbrs == b.nbrs
+
+Base.show(io::IO, t::HaloTable) =
+    print(io, "HaloTable(ncells=", length(t), ", entries=", length(t.nbrs), ")")
+Base.show(io::IO, ::MIME"text/plain", t::HaloTable) = show(io, t)
+
+HaloTable(cv::CellVector; connectivity::Connectivity = Vertex(),
+    threaded = true) =
+    _halo_table(cv, connectivity, GOCore.booltype(threaded))
+
+function _halo_table(cv::CellVector, conn::Connectivity, ::GOCore.False)
+    n = length(cv)
+    offsets = Vector{Int}(undef, n + 1)
+    @inbounds offsets[1] = 1
+    nbrs = Int[]
+    M = max_neighbors(system(cv), conn)
+    # Reserve the maximum possible number of entries.
+    sizehint!(nbrs, n * M)
+    _sweep!(cv, conn, 1:n, Val(M)) do k, c, ring
+        for h in ring
+            push!(nbrs, h.position)
+        end
+        @inbounds offsets[k+1] = length(nbrs) + 1
+    end
+    return HaloTable(offsets, nbrs)
+end
+
+# Each task writes a contiguous range to a local neighbour array.
+function _halo_table(cv::CellVector, conn::Connectivity, ::GOCore.True)
+    n = length(cv)
+    n == 0 && return _halo_table(cv, conn, GOCore.False())
+    M = max_neighbors(system(cv), conn)
+    ranges = _chunk_ranges(n)
+    parts = Vector{Vector{Int}}(undef, length(ranges))
+    offsets = Vector{Int}(undef, n + 1)
+    @inbounds offsets[1] = 1
+    @sync for (i, r) in enumerate(ranges)
+        Threads.@spawn @inbounds parts[i] = _halo_chunk(cv, conn, r, offsets,
+            Val(M))
+    end
+    # Shift local row ends by the number of preceding entries.
+    total = 0
+    @inbounds for (i, r) in enumerate(ranges)
+        if total != 0
+            for k in r
+                offsets[k+1] += total
+            end
+        end
+        total += length(parts[i])
+    end
+    # Concatenate chunk arrays in row order.
+    nbrs = Vector{Int}(undef, total)
+    pos = 1
+    for part in parts
+        copyto!(nbrs, pos, part, 1, length(part))
+        pos += length(part)
+    end
+    return HaloTable(offsets, nbrs)
+end
+
+function _halo_chunk(cv::CellVector, conn::Connectivity, r::UnitRange{Int},
+        offsets::Vector{Int}, ::Val{M}) where {M}
+    loc = Int[]
+    sizehint!(loc, length(r) * M)
+    _sweep!(cv, conn, r, Val(M)) do k, c, ring
+        for h in ring
+            push!(loc, h.position)
+        end
+        @inbounds offsets[k+1] = length(loc) + 1
+    end
+    return loc
+end
+
+HaloTable(pg::PartialGrid; kw...) = HaloTable(CellVector(pg); kw...)
+
+# Build the ascending vector rows used by `halo_table`. Each row writes to its
+# final slot, so threaded chunks need no stitching.
+function _swept_rows(cv::CellVector, conn::Connectivity, thr = GOCore.False())
+    n = length(cv)
+    out = Vector{Vector{Int}}(undef, n)
+    M = max_neighbors(system(cv), conn)
+    _foreach_chunk(n, thr) do r
+        _sweep!(cv, conn, r, Val(M)) do k, c, ring
+            row = Vector{Int}(undef, length(ring))
+            for (i, h) in enumerate(ring)
+                @inbounds row[i] = h.position
+            end
+            @inbounds out[k] = sort!(row)
+        end
+    end
+    return out
+end

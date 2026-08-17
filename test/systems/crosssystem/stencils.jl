@@ -235,6 +235,44 @@ end
 end
 
 # ---------------------------------------------------------------------------
+# Compare `neighborcount` with every ring, including cells below the maximum
+# degree.
+# ---------------------------------------------------------------------------
+
+@testset "neighborcount is the ring's length, exceptional cells included" begin
+    for (sys, base, leaf) in SWEEP
+        mismatched = 0
+        offdegree = 0
+        bound = DGG.max_neighbors(sys, Vertex())
+        for l in base:leaf
+            grid = levelgrid(sys, l)
+            for i in 1:ncells(grid)
+                c = cellindex(grid, i)
+                for conn in (Vertex(), Edge())
+                    DGG.neighborcount(grid, c; connectivity = conn) ==
+                        length(neighbors(grid, c, 1; connectivity = conn)) ||
+                        (mismatched += 1)
+                end
+                DGG.neighborcount(grid, c) < bound && (offdegree += 1)
+            end
+        end
+        @test mismatched == 0
+        @test offdegree > 0
+    end
+    # Subsets count clipped rings and reject cells outside the subset.
+    sys, base, leaf = SWEEP[1]
+    sub = rooted(sys, base, leaf)
+    cv = CellVector(sub)
+    onrim = first(c for c in (cellindex(sub, i) for i in 1:ncells(sub))
+                  if length(neighbors(sub, c)) < DGG.neighborcount(levelgrid(sys, leaf), c))
+    @test DGG.neighborcount(sub, onrim) == length(neighbors(sub, onrim))
+    @test DGG.neighborcount(cv, onrim) == length(neighbors(cv, onrim))
+    @test DGG.neighborcount(CellLookup(cv), onrim) == length(neighbors(cv, onrim))
+    outside = cellindex(levelgrid(sys, leaf), ncells(levelgrid(sys, leaf)))
+    @test_throws ArgumentError DGG.neighborcount(cv, outside)
+end
+
+# ---------------------------------------------------------------------------
 # DIVERGENCE
 #
 # The concrete case: a subtree with its middle third removed. A cell in the

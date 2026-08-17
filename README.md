@@ -4,7 +4,10 @@ Discrete global grid systems (DGGS) for the Julia geo ecosystem: fifteen
 registered systems and profiles behind one small interface, with every
 algorithm written against the interface exactly once. Alongside IGEO7, H3,
 HEALPix, A5, S2 and ISEA4R, the package includes ISEA3H/4H/4T,
-rHEALPix/AusPIX, and rhombic IVEA/RTEA aperture-4/9 systems.
+rHEALPix/AusPIX, and rhombic IVEA/RTEA aperture-4/9 systems. One more,
+`CopernicusDEMSystem`, wears the same interface so a DEM tile can be a regrid
+*source* without an adapter; it is a raster lattice, not a DGGS, and is not in
+`systems()`.
 
 ## The two tiers
 
@@ -161,23 +164,42 @@ spelling for, is exported.
 
 ## Regridding
 
-`treeify`, `ncells` and `getcell` are `ConservativeRegridding.Trees`' own
-bindings, extended here, so any grid is a regridding source or destination with
-no wrapper:
+`regrid` moves a field from one cell collection onto another, first-order
+conservative by default. A grid, a `CellVector`, a `CellLookup`, a
+`MultiOrderCellSet` or a bare system is a destination as it stands:
 
 ```julia
-import ConservativeRegridding as CR
-import GeometryOps as GO
+import GlobalRegridding as GR
 
-manifold = GO.Spherical(; radius = 1.0)
-source = DGG.levelgrid(DGG.HEALPixSystem(), 3)
-destination = DGG.PartialGrid(cv)
-regridder = CR.Regridder(manifold, destination, source)
+grid = DGG.levelgrid(DGG.HEALPixSystem(), 6)
+temps = DD.DimArray(rand(360, 180), (DD.X(-179.5:179.5), DD.Y(-89.5:89.5)))
+
+tavg = DGG.regrid(temps; to = grid)                 # onto a whole level
+sub  = DGG.regrid(temps; to = cv)                   # onto the region above
+auto = DGG.regrid(temps; to = DGG.HEALPixSystem())  # level matched by cell area
+
+# The other direction. `from` is required whenever the source is not a lon/lat
+# raster: a grid, a `CellVector` or a `CellLookup` is a source as it stands, and
+# `RasterGrid` is the lon/lat destination.
+back = DGG.regrid(tavg; to = GR.RasterGrid(DD.dims(temps)), from = grid)
+
+plan = DGG.plan_regrid(temps; to = grid)            # the operator alone, reusable
+DGG.regrid(temps, plan)                             # ... applied, no keywords left
 ```
 
-The manifold is named rather than inferred: geometry here is on the unit sphere,
-and `best_manifold` would guess a WGS84 radius, which is a factor of `R^2` in
-every area.
+Weights are geometry: building the plan is the expensive half and reads no data,
+and a plan carries the method, both spaces and the missing policy, so applying
+one takes no keyword arguments. `missingpolicy` says what a partly covered
+destination cell holds — `GR.Weighted(t)` the coverage-normalised mean, blanking
+cells covered less than `t`, `GR.Extensive()` the raw conservative sum. The
+destination's cells replace the source's spatial dimensions and every other
+dimension passes through. Each space carries the manifold it computes on — the
+unit sphere, everywhere here — and a pair that disagrees is an error rather than
+a silent rescaling by `R^2`.
+
+`treeify`, `ncells` and `getcell` are `ConservativeRegridding.Trees`' own
+bindings, extended here, so the cell tree a regrid descends is the grid's own
+with nothing wrapped around it.
 
 The cross-system regridding suite measures conservation over the registered
 systems and authalic profiles. A DGGS as the **destination** conserves only where the
@@ -192,7 +214,9 @@ rest `@test_broken`, and names the upstream fix that closes them.
 ## Going further
 
 Every script under `examples/` is an assertion-checked demo that exits non-zero
-if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The
+if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The one
+exception is `examples/copernicus_dem.jl`, which reads a COG and so needs the
+docs environment: `julia -t auto --project=docs examples/copernicus_dem.jl`. The
 tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
 build, each the shortest honest path to one result; `docs/src/index.md` lists
 them and `docs/src/all_dggs.md` draws a representative gallery.
@@ -206,6 +230,7 @@ them and `docs/src/all_dggs.md` draws a representative gallery.
 | `src/dimensionaldata.jl` | the cube face of `CellVector`: `CellLookup`, `Cells`, `Covering` |
 | `src/systems/` | one directory per system, plus `src/systems/ISEA/` — the Snyder/icosahedron basis IGEO7 and ISEA4R share |
 | `src/core/`, `src/Helpers/` | the authalic manifold pair, and shared allocation-free primitives |
+| `lib/GlobalRegridding/` | the generic regridding engine — spaces, weights, plans, the lazy executor — consumed by the main package for `regrid`/`plan_regrid` |
 | `lib/DiscreteGlobalGridsConformanceTesting/` | the test-only workspace package that makes the contracts executable |
 
 ## The systems
@@ -225,6 +250,18 @@ them and `docs/src/all_dggs.md` draws a representative gallery.
 | `AusPIXSystem()` | `0:19` | `6·9^l` | WGS84 rHEALPix profile | yes | `RHEALPixCell` |
 | `IVEA4RSystem` / `RTEA4RSystem` | `0:25` | `10·4^l` | rhombi | yes | `LevelIndex` |
 | `IVEA9RSystem` / `RTEA9RSystem` | `0:16` | `10·9^l` | rhombi | yes | `LevelIndex` |
+| `CopernicusDEMSystem` | `0:1` | `64 800` tiles, then `360·N·Σ_r ncols(r)` pixels | lon/lat boxes | no | `LevelIndex` |
+
+`CopernicusDEMSystem` is the odd row: the Copernicus DEM raster lattice —
+1°×1° tiles over pixel-is-point rasters whose longitude spacing steps down at
+latitude 50/60/70/80/85 — not a tessellation designed to be a DGGS, so it is
+**not** in `systems()`. Its `neighbors` and `ring` are closed form at every
+cell of both levels, decided in exact integer arithmetic rather than by
+matching corners within a tolerance. It is here as the *source* side of a
+DEM-to-DGGS regrid: `PartialGrid(CopernicusDEMSystem(90), tile, 1)` is one AWS
+COG tile as an ordinary `AbstractGrid`, with no adapter and no corner matrix.
+`examples/copernicus_dem.jl` moves one real tile onto IGEO7 and HEALPix and
+checks every conservation law the move owes.
 
 Native layers: H3 calls libh3 through `H3_jll`; every other system is pure
 Julia. IGEO7 is a clean-room implementation but for one ported adjacency kernel
@@ -232,8 +269,8 @@ Julia. IGEO7 is a clean-room implementation but for one ported adjacency kernel
 remaining systems are closed-form charts with package-owned indexing kernels and
 no runtime dependency on their reference implementations.
 
-No system defines a grid type. All fifteen registry entries return
-`HierarchicalLevelGrid` from
+No system defines a grid type. All fifteen registry entries — and
+`CopernicusDEMSystem` with them — return `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
 `cell_area` — to `HierarchicalLevelGrid{TheSystem}`. `subtree_border` is an
 `O(rim)` automaton on IGEO7, H3, HEALPix, S2 and ISEA4R; every other system
@@ -305,9 +342,12 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**945,225 assertions, ~2m55s warm**, with 14 broken: A5's documented
-`has_sorted_subtrees` skips, and the destination-direction conservation arms
-that wait on the upstream clipper fix.
+**986,332 assertions, ~5m30s warm**, with 17 broken — all of them
+destination-direction conservation arms in `regridding_conservation.jl`,
+measured per system and level, waiting on the upstream clipper fix.
+
+`lib/GlobalRegridding/` carries its own suite, which the root `Pkg.test()` does
+not run: `julia --project=lib/GlobalRegridding -e 'using Pkg; Pkg.test()'`.
 
 ## Provenance
 

@@ -1,12 +1,9 @@
 # ---------------------------------------------------------------------------
 # Edge neighbours by GBT digit arithmetic — the geometry-free one-ring kernel
 #
-# PROVENANCE — ported, not clean-room.
-#
-# The rest of this module is clean-room (paper, first principles, or fitted to
-# black-box oracle output; see `IGeo7`'s docstring). This file is not. Ported
-# from IGEO7.jl (https://github.com/allixender/IGEO7.jl, `src/IGEO7.jl`) by
-# **Alexander Kmoch**:
+# Ported from IGEO7.jl (https://github.com/allixender/IGEO7.jl, `src/IGEO7.jl`) by Alexander Kmoch:
+# with permission from the author to relicense to MIT.
+# Ported from IGEO7.jl:
 #
 #   * `get_neighbour` — the direction step and its carry ripple, here `_gbt_step`
 #   * `get_neighbours` — the six-direction pass, the base crossing and the
@@ -18,13 +15,7 @@
 #     `GBT_CCW_1` — which upstream's own comments trace to `cpp_source/library.h`
 #
 # The reuse is covered by a **licence grant from Alexander Kmoch** to this
-# package. The grant settles which terms apply; the credit is owed either way,
-# and that is what this header is for.
-#
-# TODO(Anshul): record the grant's actual terms next to the LICENSE file this
-# repo still lacks. Whether it is a relicence, a dual licence or something else
-# is not known to this file, so nothing beyond the fact of the grant is stated
-# here.
+# package.
 #
 # Z7's digits are Generalized Balanced Ternary: the seven digits
 # at a level are the centre plus the six unit directions of a hexagonal lattice,

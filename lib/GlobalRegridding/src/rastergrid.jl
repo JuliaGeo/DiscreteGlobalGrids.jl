@@ -215,6 +215,41 @@ Return spatial dimensions in array order.
 DD.dims(space::RasterGrid) =
     space.xfast ? (space.xdim, space.ydim) : (space.ydim, space.xdim)
 
+"""
+    destinationdims(space::RasterGrid, sampling)
+
+Return [`DimensionalData.dims`](@ref) relabelled to carry `sampling`. A
+dimension whose lookup already samples that way is returned untouched;
+otherwise its lookup is rebuilt, with `Intervals` bounds taken from the cell
+edges and `Points` values from the cell centres.
+"""
+destinationdims(space::RasterGrid, sampling::DD.Lookups.Sampling) =
+    space.xfast ?
+    (_withsampling(space.xdim, space.xedges, sampling),
+        _withsampling(space.ydim, space.yedges, sampling)) :
+    (_withsampling(space.ydim, space.yedges, sampling),
+        _withsampling(space.xdim, space.xedges, sampling))
+
+function _withsampling(dim, edges::Vector{Float64}, sampling::DD.Lookups.Points)
+    lk = DD.lookup(dim)
+    DD.sampling(lk) isa DD.Lookups.Points && return dim
+    return DD.rebuild(dim, DD.Lookups.Sampled(_centres(edges); order = DD.order(lk),
+        sampling, metadata = DD.metadata(lk)))
+end
+
+function _withsampling(dim, edges::Vector{Float64}, sampling::DD.Lookups.Intervals)
+    lk = DD.lookup(dim)
+    DD.sampling(lk) isa DD.Lookups.Intervals && return dim
+    n = length(edges) - 1
+    bounds = Matrix{Float64}(undef, 2, n)
+    for k in 1:n
+        bounds[1, k] = edges[k]
+        bounds[2, k] = edges[k+1]
+    end
+    return DD.rebuild(dim, DD.Lookups.Sampled(DD.val(lk); order = DD.order(lk),
+        span = DD.Lookups.Explicit(bounds), sampling, metadata = DD.metadata(lk)))
+end
+
 # Dimension and edge extraction
 
 function _resolvedim(ds, given, D::Type, names, what)

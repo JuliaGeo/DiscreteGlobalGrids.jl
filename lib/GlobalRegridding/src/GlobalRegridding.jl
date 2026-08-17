@@ -81,8 +81,9 @@ export LazyRegridArray
 public knownempty, sourcemissingval, chunkat, cellarea
 public residency, LazyStats
 public spilledfiles, usesreference
+public outputsampling, destinationdims, dimsource
 
-# Extension surface. These four are unexported but load-bearing from outside:
+# Extension surface. These five are unexported but load-bearing from outside:
 # a package that supplies a `RegridSpace` extends or calls them, so their
 # signatures are as fixed as the exported ones.
 #
@@ -92,7 +93,8 @@ public spilledfiles, usesreference
 #   * `chunkextents(space)` — per-chunk spherical caps (discovery.jl).
 #   * `resolvespatialdims(data, nsrc)` — which array dimensions a regrid
 #     replaces (executor.jl).
+#   * `dimsource(lookup)` — the `from` a lookup already names (spaces.jl).
 #
-# DiscreteGlobalGrids' `src/regridding.jl` extends the first three.
+# DiscreteGlobalGrids' `src/regridding.jl` extends the first three and the last.
 
 end # module GlobalRegridding

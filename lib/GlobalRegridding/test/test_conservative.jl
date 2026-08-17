@@ -229,7 +229,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
     end
 
     @testset "a pair whose descent finds nothing" begin
-        # Deep disjoint trees exercise the threaded empty-task fallback.
+        # Deep disjoint trees assemble an empty block.
         north = RasterGrid(DD.DimArray(zeros(8, 8),
             (DD.X(range(-3.5, 3.5; length = 8)), DD.Y(range(66.5, 73.5; length = 8)))))
         south = RasterGrid(DD.DimArray(zeros(8, 8),

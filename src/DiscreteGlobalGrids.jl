@@ -103,7 +103,9 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     EdgeCellIterator, InnerCellIterator, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator,
     subtree_halo, halo, halo_positions, halo_sizehint,
-    StencilTable, stencil_table
+    StencilTable, stencil_table,
+    SubsetPositionedCell, cellid,
+    mapneighbors, foreachneighbors, StorageOrder, HaloTable
 
 # Internal extension points for system-specific subtree walkers.
 using .Fallbacks: collect_subtree,
@@ -134,7 +136,8 @@ using .CopernicusDEM: CopernicusDEMSystem
 # DimensionalData wrappers over the dependency-free `Fallbacks.CellVector`.
 include("dimensionaldata.jl")
 
-using .CellLookups: CellLookup, Cells, Covering
+using .CellLookups: CellLookup, Cells, Covering, Neighbors, Values,
+    NeighborSlices
 
 # CopernicusDEM is deliberately absent: registering a system enrols it in every
 # cross-system sweep, whose hardcoded cases and level choices assume a globally
@@ -268,7 +271,7 @@ export Connectivity, Vertex, Edge
 export ncells, cellindex, cell_boundary, cell_centroid
 export cellposition, rawid, reindex, cellindextypes
 export cell_polygon, cell_area, cell_extent, getcell
-export cellat, neighbors, ring, halo_table
+export cellat, neighbors, ring, halo_table, neighborcount
 export treeify, query
 export system, level
 
@@ -281,6 +284,8 @@ export EdgeCellIterator, InnerCellIterator
 export SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator
 export subtree_halo, halo, halo_positions, halo_sizehint
 export StencilTable, stencil_table
+export SubsetPositionedCell, cellid
+export mapneighbors, foreachneighbors, StorageOrder, HaloTable
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate
@@ -302,6 +307,7 @@ export CellVector, covering, cellset
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM
 # geometry predicate exported above.
 export CellLookup, Cells, Covering
+export Neighbors, Values, NeighborSlices
 
 # --- Grid systems ----------------------------------------------------------
 # Export system types rather than modules whose names collide with packages.

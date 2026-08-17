@@ -494,15 +494,18 @@ subset_span(cv::CellVector, lo::Int, hi::Int) = span_windows(cv.windows, lo, hi)
 Return a grid whose position `k` is `cv[k]`. Construction is O(1) and keeps the
 ids lazy, so data indexed by the vector needs no permutation.
 
-The grid keeps the windows but drops the backing object.
-
-The **root does not survive** the round trip: a `CellVector` stores windows, not
-an ancestor, so a grid that came back through one is unrooted even when its
-windows are exactly a subtree. Cells and positions are identical; what is lost
-is [`halo_table`](@ref)'s interior/rim fast path, which asks for a root. Build
-the grid from the root cell when the stencil matters.
+A vector built from a rooted `PartialGrid` returns that grid, preserving its
+root and bucket size. Other vectors return an unrooted grid because their
+windows do not identify an ancestor.
 """
-PartialGrid(cv::CellVector) = PartialGrid(system(cv), cv.level, _bare(cv, cv.backing))
+PartialGrid(cv::CellVector) = _partial_grid(cv, cv.backing)
+
+# Preserve a rooted backing grid. Rebuild unrooted grids around the compressed
+# vector so membership continues to use its windows.
+_partial_grid(cv::CellVector, pg::PartialGrid) =
+    _is_rooted(pg) ? pg : PartialGrid(system(cv), cv.level, _bare(cv, pg))
+_partial_grid(cv::CellVector, backing) =
+    PartialGrid(system(cv), cv.level, _bare(cv, backing))
 
 # Delegate membership to the compressed vector to avoid decoding one id per
 # binary-search probe. Spell the system parameter with its declared bound to

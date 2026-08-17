@@ -26,14 +26,16 @@ import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, ncells, cellindex, cellposition, cellat, level, system,
     levelgrid, cellindextype, has_sorted_subtrees, descendants, query,
-    neighbors, ring, halo_table, halo, neighborcount, Connectivity, Vertex
+    neighbors, ring, halo_table, halo, neighborcount, Connectivity, Vertex,
+    max_neighbors
 import ..DiscreteGlobalGrids: Helpers
 import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
 # Core collection operations delegated to `CellVector`.
 import ..DiscreteGlobalGrids.Fallbacks: CellVector, cellset, covering,
     covering_positions, windows, nwindows, RangeWindows, CellWindows, _derive,
-    _windows, SubsetPositionedCell, mapneighbors, foreachneighbors, HaloTable
+    _windows, SubsetPositionedCell, mapneighbors, foreachneighbors, HaloTable,
+    StorageOrder
 
 import SmallCollections
 import DimensionalData as DD
@@ -373,6 +375,267 @@ Base.@propagate_inbounds Base.getindex(A::CellsArray, h::SubsetPositionedCell) =
     parent(A)[h.position]
 Base.@propagate_inbounds Base.setindex!(A::CellsArray, x, h::SubsetPositionedCell) =
     setindex!(parent(A), x, h.position)
+
+# The first `Cells` dimension's number, for handle indexing on any shape.
+function _handle_dimnum(A::DD.AbstractDimArray)
+    for (i, d) in enumerate(DD.dims(A))
+        d isa Cells && return i
+    end
+    throw(ArgumentError(
+        "cannot index with a SubsetPositionedCell: no Cells dimension in " *
+        "dims $(map(DD.name, DD.dims(A)))"))
+end
+
+@inline _handle_slice(A::DD.AbstractDimArray, ::Val{D}, p::Int) where {D} =
+    view(A, ntuple(i -> i == D ? p : Colon(), Val(ndims(A)))...)
+
+# On more than one dimension a handle names the whole slice at its position
+# along the first `Cells` dimension, as a view; the 1-D methods above stay
+# the scalar fast path, position trusted either way.
+Base.getindex(A::DD.AbstractDimArray, h::SubsetPositionedCell) =
+    _handle_slice(A, Val(_handle_dimnum(A)), h.position)
+Base.view(A::DD.AbstractDimArray, h::SubsetPositionedCell) =
+    _handle_slice(A, Val(_handle_dimnum(A)), h.position)
+
+# ===========================================================================
+# Whole-array entry points
+#
+# The neighborhood forms accept any `AbstractDimArray` and resolve the cell
+# dimension themselves, so a downstream package never unwraps a lookup or
+# slices by hand.
+# ===========================================================================
+
+# The cell dimension's number: the first `CellLookup` dim when `spatialdim` is
+# `nothing`, otherwise whatever `DD.dims` accepts — informative errors both
+# ways.
+function _cells_dimnum(A::DD.AbstractDimArray, ::Nothing)
+    for (i, d) in enumerate(DD.dims(A))
+        DD.lookup(d) isa CellLookup && return i
+    end
+    throw(ArgumentError(
+        "no cell dimension found: none of the dims $(map(DD.name, DD.dims(A))) " *
+        "carries a CellLookup; pass spatialdim to name one"))
+end
+
+function _cells_dimnum(A::DD.AbstractDimArray, spatialdim)
+    d = DD.dims(A, spatialdim)
+    d === nothing && throw(ArgumentError(
+        "array has no dimension matching spatialdim = $spatialdim; its dims " *
+        "are $(map(DD.name, DD.dims(A)))"))
+    lk = DD.lookup(d)
+    lk isa CellLookup || throw(ArgumentError(
+        "dimension $(DD.name(d)) carries a $(nameof(typeof(lk))) lookup, " *
+        "not a CellLookup"))
+    return DD.dimnum(A, spatialdim)
+end
+
+_rebuilt(A::DD.AbstractDimArray, out::Tuple) = map(o -> DD.rebuild(A; data = o), out)
+_rebuilt(A::DD.AbstractDimArray, out) = DD.rebuild(A; data = out)
+
+"""
+    Neighbors()
+
+The default `pass` of [`mapneighbors`](@ref) and [`foreachneighbors`](@ref)
+over an `AbstractDimArray`: `f(cell, nbrs)` receives positioned handles —
+exactly the [`CellVector`](@ref) form — and reads data by indexing the array
+with them. One result per cell, returned on the cell dimension.
+"""
+struct Neighbors end
+
+"""
+    Values()
+
+`pass` form of [`mapneighbors`](@ref) over an `AbstractDimArray`:
+`f(cell, value, values)` receives the cell's scalar and its neighbours'
+scalars. On an array with other dimensions the stencil runs independently on
+every cell-dimension slice — the `mapslices` semantic — and the output keeps
+all of the array's dims.
+"""
+struct Values end
+
+"""
+    NeighborSlices()
+
+`pass` form of [`mapneighbors`](@ref) for arrays of two or more dimensions:
+`f(cell, slice, slices)` receives the array's views at the cell's and its
+neighbours' positions along the cell dimension, each one dimension smaller
+than the array. One result per cell, on the cell dimension. A
+one-dimensional array is refused — its per-cell slice is a scalar, which is
+[`Values`](@ref).
+"""
+struct NeighborSlices end
+
+@noinline _bad_pass(pass) = throw(ArgumentError(
+    "pass must be Neighbors(), Values() or NeighborSlices(), " *
+    "got $(typeof(pass))"))
+
+_need_slices(A) = ndims(A) >= 2 || throw(ArgumentError(
+    "NeighborSlices() needs at least two dimensions; a one-dimensional " *
+    "array's per-cell slice is its scalar — use Values()"))
+
+# One result per cell lands on the cell dimension alone, lookup and all.
+_rebuilt_on_cells(A, d, out::Tuple) =
+    map(o -> DD.rebuild(A; data = o, dims = (d,)), out)
+_rebuilt_on_cells(A, d, out) = DD.rebuild(A; data = out, dims = (d,))
+
+"""
+    mapneighbors(f, A::AbstractDimArray; spatialdim = nothing, pass = Neighbors(),
+                 order = StorageOrder(), threaded = true, connectivity = Vertex())
+
+[`mapneighbors`](@ref) over a whole array: the cell dimension is resolved,
+the sweep runs on its [`CellLookup`](@ref)'s vector, and the result is `A`'s
+own wrapper rebuilt with the lookups intact — a concrete-tuple-returning `f`
+gets one rebuilt array per component.
+
+`spatialdim` names the cell dimension in any form `DimensionalData.dims`
+accepts; `nothing` selects the first dimension carrying a `CellLookup`. An
+array without one, or a named dimension that is missing or not cell-valued,
+is an `ArgumentError`.
+
+`pass` selects what `f` sees: [`Neighbors`](@ref) (the default) hands
+`f(cell, nbrs)` positioned handles and returns one value per cell on the
+cell dimension; [`Values`](@ref) hands `f(cell, value, values)` scalars,
+slice by independent slice on arrays with other dimensions, and returns
+`A`'s full shape; [`NeighborSlices`](@ref) hands `f(cell, slice, slices)`
+the views along the cell dimension and returns one value per cell.
+"""
+function mapneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
+        pass = Neighbors(), order = StorageOrder(), threaded = true,
+        connectivity::Connectivity = Vertex()) where {F}
+    dnum = _cells_dimnum(A, spatialdim)
+    return _map_dimarray(pass, f, A, dnum, order, threaded, connectivity)
+end
+
+function _map_dimarray(::Neighbors, f::F, A, dnum, order, threaded,
+        conn) where {F}
+    cv = parent(DD.lookup(A, dnum))
+    out = mapneighbors(f, cv; order, threaded, connectivity = conn)
+    return _rebuilt_on_cells(A, DD.dims(A)[dnum], out)
+end
+
+function _map_dimarray(::Values, f::F, A, dnum, order, threaded,
+        conn) where {F}
+    cv = parent(DD.lookup(A, dnum))
+    ndims(A) == 1 && return _rebuilt(A,
+        mapneighbors(f, cv, parent(A); order, threaded, connectivity = conn))
+    return _rebuilt(A, _map_slices(f, A, dnum, cv, order, threaded, conn))
+end
+
+function _map_dimarray(::NeighborSlices, f::F, A, dnum, order, threaded,
+        conn) where {F}
+    _need_slices(A)
+    cv = parent(DD.lookup(A, dnum))
+    out = _map_cell_slices(f, A, Val(dnum), cv, order, threaded, conn)
+    return _rebuilt_on_cells(A, DD.dims(A)[dnum], out)
+end
+
+_map_dimarray(pass, f, A, dnum, order, threaded, conn) = _bad_pass(pass)
+
+# Function barrier making the cell dimension's number a constant, so the
+# slice views are concretely typed.
+function _map_cell_slices(f::F, A, ::Val{D}, cv, order, threaded,
+        conn) where {F,D}
+    g = (c, nbrs) -> f(c, _handle_slice(A, Val(D), cellposition(c)),
+        [_handle_slice(A, Val(D), cellposition(h)) for h in nbrs])
+    return mapneighbors(g, cv; order, threaded, connectivity = conn)
+end
+
+# The slice loop: each other-dim index gets its own buffered 1-D sweep, so
+# the CellVector kernels own all traversal and the slices cannot interact.
+function _map_slices(f::F, A, dnum::Int, cv::CellVector, order, threaded,
+        connectivity::Connectivity) where {F}
+    data = parent(A)
+    pre = CartesianIndices(axes(data)[1:(dnum-1)])
+    post = CartesianIndices(axes(data)[(dnum+1):end])
+    M = max_neighbors(system(cv), connectivity)
+    H = SubsetPositionedCell{eltype(cv)}
+    T = Base.promote_op(f, H, eltype(A),
+        SmallCollections.SmallVector{M,eltype(A)})
+    outs = T <: Tuple && isconcretetype(T) ?
+           ntuple(j -> similar(data, fieldtype(T, j)), fieldcount(T)) :
+           similar(data, T)
+    buf = Vector{eltype(A)}(undef, size(data, dnum))
+    for jpost in post, jpre in pre
+        copyto!(buf, view(data, jpre, :, jpost))
+        _slice_store!(outs,
+            mapneighbors(f, cv, buf; order, threaded, connectivity),
+            jpre, jpost)
+    end
+    return outs
+end
+
+_slice_store!(outs::Tuple, res::Tuple, jpre, jpost) =
+    (map((o, r) -> copyto!(view(o, jpre, :, jpost), r), outs, res); nothing)
+_slice_store!(out::AbstractArray, res::AbstractVector, jpre, jpost) =
+    (copyto!(view(out, jpre, :, jpost), res); nothing)
+
+"""
+    foreachneighbors(f, A::AbstractDimArray; spatialdim = nothing, pass = Neighbors(),
+                     order = StorageOrder(), threaded = false,
+                     connectivity = Vertex())
+
+[`mapneighbors`](@ref)' whole-array form without the output: same
+`spatialdim` resolution, same `pass` forms, `f` called for its side effects.
+"""
+function foreachneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
+        pass = Neighbors(), order = StorageOrder(), threaded = false,
+        connectivity::Connectivity = Vertex()) where {F}
+    dnum = _cells_dimnum(A, spatialdim)
+    _foreach_dimarray(pass, f, A, dnum, order, threaded, connectivity)
+    return nothing
+end
+
+_foreach_dimarray(::Neighbors, f::F, A, dnum, order, threaded, conn) where {F} =
+    foreachneighbors(f, parent(DD.lookup(A, dnum)); order, threaded,
+        connectivity = conn)
+
+function _foreach_dimarray(::Values, f::F, A, dnum, order, threaded,
+        conn) where {F}
+    cv = parent(DD.lookup(A, dnum))
+    data = parent(A)
+    if ndims(A) == 1
+        foreachneighbors(f, cv, data; order, threaded, connectivity = conn)
+        return nothing
+    end
+    pre = CartesianIndices(axes(data)[1:(dnum-1)])
+    post = CartesianIndices(axes(data)[(dnum+1):end])
+    buf = Vector{eltype(A)}(undef, size(data, dnum))
+    for jpost in post, jpre in pre
+        copyto!(buf, view(data, jpre, :, jpost))
+        foreachneighbors(f, cv, buf; order, threaded, connectivity = conn)
+    end
+    return nothing
+end
+
+function _foreach_dimarray(::NeighborSlices, f::F, A, dnum, order, threaded,
+        conn) where {F}
+    _need_slices(A)
+    return _foreach_cell_slices(f, A, Val(dnum), parent(DD.lookup(A, dnum)),
+        order, threaded, conn)
+end
+
+_foreach_dimarray(pass, f, A, dnum, order, threaded, conn) = _bad_pass(pass)
+
+function _foreach_cell_slices(f::F, A, ::Val{D}, cv, order, threaded,
+        conn) where {F,D}
+    g = (c, nbrs) -> (f(c, _handle_slice(A, Val(D), cellposition(c)),
+        [_handle_slice(A, Val(D), cellposition(h)) for h in nbrs]); nothing)
+    foreachneighbors(g, cv; order, threaded, connectivity = conn)
+    return nothing
+end
+
+"""
+    neighbors(A::AbstractDimArray; spatialdim = nothing, connectivity = Vertex())
+
+The one-arg positioned iterator over `A`'s cell dimension, resolved as in
+[`mapneighbors`](@ref); the minted positions are that dimension's axis
+positions.
+"""
+function neighbors(A::DD.AbstractDimArray; spatialdim = nothing,
+        connectivity::Connectivity = Vertex())
+    dnum = _cells_dimnum(A, spatialdim)
+    return neighbors(parent(DD.lookup(A, dnum)); connectivity)
+end
 
 # ===========================================================================
 # Selectors

@@ -131,7 +131,8 @@ using .ISEA4R: ISEA4RSystem
 # DimensionalData wrappers over the dependency-free `Fallbacks.CellVector`.
 include("dimensionaldata.jl")
 
-using .CellLookups: CellLookup, Cells, Covering
+using .CellLookups: CellLookup, Cells, Covering, Neighbors, Values,
+    NeighborSlices
 
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
@@ -297,6 +298,7 @@ export CellVector, covering, cellset
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM
 # geometry predicate exported above.
 export CellLookup, Cells, Covering
+export Neighbors, Values, NeighborSlices
 
 # --- Grid systems ----------------------------------------------------------
 # Export system types rather than modules whose names collide with packages.

@@ -15,9 +15,6 @@
 # The resumable iterator stores an inline frame stack in `O(depth)` memory.
 # `H3InteriorEngine` fully descends branches that the rim iterator prunes.
 
-# Extend the package-level `subtree_border` generic.
-import ..DiscreteGlobalGrids: subtree_border
-
 """
     _H3_DIGIT_DIR[digit] -> Int
 
@@ -287,18 +284,3 @@ function _h3_border_checked(c::H3Cell, target::Int)
         "H3 cell $c is not a valid cell"))
     return lvl, H3Native.is_pentagon(c.id)
 end
-
-"""
-    subtree_border(sys::H3System, c::H3Cell, l::Integer; connectivity = Vertex()) -> Vector{H3Cell}
-
-Return, in ascending order, level-`l` descendants with a neighbour outside
-`c`'s subtree. Complexity is `O(3^depth)` rather than full-subtree
-`O(7^depth)`. Counts are `3^(depth+1) - 3` for hexagons and
-`5(3^depth - 1)/2` for pentagons; depth zero returns `[c]`. H3 vertex and edge
-adjacency coincide, so `connectivity` does not affect the result.
-
-`collect` of [`EdgeCellIterator`](@ref), which is the same automaton lazily.
-"""
-subtree_border(sys::H3System, c::H3Cell, l::Integer;
-    connectivity::Connectivity=Vertex()) =
-    DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))

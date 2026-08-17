@@ -17,8 +17,6 @@
 # same two tables `hilbert_to_xyf` descends with. Pure index arithmetic — no
 # geometry, and no neighbour query at any level.
 
-import ..DiscreteGlobalGrids: subtree_border
-
 """
     HilbertCurve()
 
@@ -74,21 +72,6 @@ function DGG.interior_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
     lo, side, orientation = _s2_square(sys, c, target)
     return DGG.SquareInteriorEngine(HilbertCurve(), lo, target, side, orientation)
 end
-
-"""
-    subtree_border(S2System(), c, l; connectivity = Vertex()) -> Vector{LevelIndex}
-
-The **rim** of `c`'s subtree at level `l`: the perimeter of the `2^Δ × 2^Δ`
-lattice block, `4*2^Δ - 4` cells in ascending ordinal order, and `[c]` at
-`Δ == 0`. `O(rim)` time in `O(Δ)` memory, by index arithmetic alone.
-`collect` of [`EdgeCellIterator`](@ref), which is the same walk lazily.
-
-`connectivity` does not change the result: a perimeter cell already has an axis
-neighbour outside the block.
-"""
-subtree_border(sys::S2System, c::DGG.LevelIndex, l::Integer;
-    connectivity::DGG.Connectivity = DGG.Vertex()) =
-    DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))
 
 # The halo — the outside face of the same boundary — is the width-1 band around
 # the block, walked lazily by the package's face-quadtree descent. Away from the

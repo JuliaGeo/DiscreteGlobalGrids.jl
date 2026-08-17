@@ -683,16 +683,13 @@ resolution-20 id (`:res20_geometry`, no geometry), for
 (`:no_parent`).
 """
 @inline function cell_to_parent(z7::UInt64, res::Integer)
-    current = _geometry_checked(z7)
-    0 <= res <= current ||
-        throw(InvalidZ7Error(:parent_res, z7, _z7_int(res), current))
-    return z7 | _z7_tail_mask(res)
+    _geometry_checked(z7)
+    return z7_parent(z7, res)
 end
 
 @inline function cell_to_parent(z7::UInt64)
-    current = _geometry_checked(z7)
-    current > 0 || throw(InvalidZ7Error(:no_parent, z7, 0, 0))
-    return z7 | _z7_tail_mask(current - 1)
+    _geometry_checked(z7)
+    return z7_parent(z7)
 end
 
 @inline cell_to_parent(z7::Unsigned) = cell_to_parent(UInt64(z7))

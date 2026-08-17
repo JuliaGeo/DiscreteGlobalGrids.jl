@@ -69,8 +69,6 @@ struct DestTiling
     spacetiled::Bool
 end
 
-ntiles(tiling::DestTiling) = length(tiling.runs)
-
 # Use space chunks as tiles only when multiple chunks partition the cell axis.
 function _spacetileable(spans::Vector{UnitRange{Int}}, contiguous::Bool, ndst::Int)
     (contiguous && length(spans) > 1) || return false

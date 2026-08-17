@@ -41,7 +41,6 @@ const WORLD_CELL = UInt64(0)
 const LONGITUDE_OFFSET = 93.0
 
 const PHI = (1 + sqrt(5.0)) / 2
-const TWO_PI = 2pi
 const TWO_PI_OVER_5 = 2pi / 5
 const PI_OVER_5 = pi / 5
 const PI_OVER_10 = pi / 10
@@ -100,7 +99,6 @@ struct Anchor
     flips::NTuple{2,Int}
 end
 
-_mod1zero(i::Integer) = Int(i) + 1
 _clamp1(x) = clamp(x, -1.0, 1.0)
 _add2(a, b) = (a[1] + b[1], a[2] + b[2])
 _sub2(a, b) = (a[1] - b[1], a[2] - b[2])

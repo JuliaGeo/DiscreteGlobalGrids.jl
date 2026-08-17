@@ -34,11 +34,6 @@ jobs:
             version: '1.12'
     steps:
       - uses: actions/checkout@v6
-      # Project.toml resolves ConservativeRegridding through a `[sources]` path
-      # entry pointing at the sibling checkout (its `Trees` submodule is not in a
-      # registered release yet), so CI has to materialise that sibling itself.
-      - name: Clone sibling ConservativeRegridding.jl
-        run: git clone --depth 1 --branch main https://github.com/JuliaGeo/ConservativeRegridding.jl.git "${{ github.workspace }}/../ConservativeRegridding.jl"
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}

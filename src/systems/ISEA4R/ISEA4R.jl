@@ -1,7 +1,3 @@
-# Load the shared ISEA geometry once, independent of system include order.
-
-isdefined(@__MODULE__, :ISEA) || include("../ISEA/ISEA.jl")
-
 """
     DiscreteGlobalGrids.ISEA4R
 

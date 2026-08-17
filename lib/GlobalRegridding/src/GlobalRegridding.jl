@@ -82,4 +82,17 @@ public knownempty, sourcemissingval, chunkat, cellarea
 public residency, LazyStats
 public spilledfiles, usesreference
 
+# Extension surface. These four are unexported but load-bearing from outside:
+# a package that supplies a `RegridSpace` extends or calls them, so their
+# signatures are as fixed as the exported ones.
+#
+#   * `_asspace(target, name)` / `_asspace(target, name, src_space)` — resolve a
+#     `to`/`from` argument spelling into a `RegridSpace` (api.jl).
+#   * `subtree(space, inds)` — cell tree restricted to a chunk (conservative.jl).
+#   * `chunkextents(space)` — per-chunk spherical caps (discovery.jl).
+#   * `resolvespatialdims(data, nsrc)` — which array dimensions a regrid
+#     replaces (executor.jl).
+#
+# DiscreteGlobalGrids' `src/regridding.jl` extends the first three.
+
 end # module GlobalRegridding

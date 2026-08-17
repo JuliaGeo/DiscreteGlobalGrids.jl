@@ -2,8 +2,9 @@
 #
 # Run the synthetic Geomorphometry integration battery on IGeo7, HEALPix,
 # ISEA4R, and H3. Each system is tested with a rooted subtree and a multi-window
-# coverage. IGeo7 exercises D8, DInf, FD8, and relative-cell directions; the
-# other systems exercise D8 with ring-slot directions and reject DInf and FD8.
+# coverage. IGeo7 exercises D8, DInf, FD8, HAND, and relative-cell directions;
+# the other systems exercise D8 with ring-slot directions and reject DInf, FD8,
+# and HAND. The stream-mask HAND entry refuses on every system.
 #
 # The environment needs this package, `Rasters`, and `Geomorphometry` at the
 # `clipped-neighbors` rev of https://github.com/asinghvi17/GeoArrayOps.jl.git.
@@ -67,13 +68,17 @@ function flow_battery(sys::DGG.IGeo7System, dem, cells, complete)
         end
         @test bad == 0
     end
+
+    # The stream-mask entry is not implemented for any DGGS raster, IGeo7
+    # included; it must redirect to the threshold form exercised above.
+    @test_throws "use the threshold form" GM.height_above_nearest_drainage(
+        dem, falses(size(dem)))
 end
 
 # Other systems support D8 and store one set bit for the downstream ring slot
 # (slot `k` as bit `k - 1` of a `UInt16`; the checks below decode it
-# independently of the extension). Their `height_above_nearest_drainage` fails
-# with a bare `MethodError` on cell subtraction — not a contract worth pinning,
-# so it is skipped here rather than asserted.
+# independently of the extension). Their `height_above_nearest_drainage`
+# refuses and names the backend that could answer, asserted with DInf/FD8.
 function flow_battery(sys, dem, cells, complete)
     @testset "flow routing: D8" begin
         accumulation, directions = GM.flowaccumulation(dem; method=GM.D8())
@@ -105,11 +110,13 @@ function flow_battery(sys, dem, cells, complete)
         @test bad == 0
     end
 
-    # Unsupported routers identify the available backend.
-    @testset "DInf and FD8 refuse, and say why" begin
+    # Unsupported operations identify the available backend. Without its
+    # guard, HAND would die on cell subtraction with a bare `MethodError`.
+    @testset "DInf, FD8 and HAND refuse, and say why" begin
         for method in (GM.DInf(), GM.FD8())
             @test_throws "only the IGeo7 backend provides" GM.flowaccumulation(dem; method)
         end
+        @test_throws "needs relative-cell arithmetic" GM.height_above_nearest_drainage(dem)
     end
 end
 

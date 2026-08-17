@@ -230,48 +230,15 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
         "chosen. As a destination the level is matched to the source's cell " *
         "areas, but as a source you must name it with `levelgrid(sys, l)`."))
 
+# Resolving `from`
+
+# A `Cells` axis already names the cells a regrid would otherwise look for a
+# raster lattice in, so a source given no `from` can point at the grid itself.
+GR.dimsource(lk::CellLookup) = cellset(lk)
+
 # A bare system as the destination takes the level closest to the source's cells.
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
-    src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, arealevel(sys, src_space)))
-
-"""
-    arealevel(sys::AbstractHierarchicalGridSystem, space; samples = 256) -> Int
-
-Return the level whose mean cell area is closest to the sampled median cell
-area of `space`.
-"""
-function arealevel(sys::AbstractHierarchicalGridSystem, space::GR.RegridSpace;
-        samples::Integer=256)
-    target = _mediancellarea(space, Int(samples))
-    best, bestscore = first(levels(sys)), Inf
-    for l in levels(sys)
-        area = 4 * pi / _levelcells(sys, l)
-        score = abs(log(area) - log(target))
-        score < bestscore && ((best, bestscore) = (l, score))
-        # Areas decrease with depth; the first value below the target brackets it.
-        area <= target && break
-    end
-    return best
-end
-
-# Sample with an irrational stride to avoid aliasing regular raster columns.
-function _mediancellarea(space::GR.RegridSpace, samples::Int)
-    n = Int(ncells(space))
-    n > 0 || throw(ArgumentError("cannot match cell areas against an empty space"))
-    k = clamp(samples, 1, n)
-    areas = Vector{Float64}(undef, k)
-    if k == n
-        for i in 1:n
-            areas[i] = GR.cellarea(space, i)
-        end
-    else
-        for j in 1:k
-            areas[j] = GR.cellarea(space, mod1(round(Int, j * n * 0.6180339887498949), n))
-        end
-    end
-    sort!(areas)
-    return isodd(k) ? areas[(k + 1) ÷ 2] : (areas[k ÷ 2] + areas[k ÷ 2 + 1]) / 2
-end
+    src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, levelfor(sys, src_space)))
 
 # API integration
 

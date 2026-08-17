@@ -158,23 +158,42 @@ spelling for, is exported.
 
 ## Regridding
 
-`treeify`, `ncells` and `getcell` are `ConservativeRegridding.Trees`' own
-bindings, extended here, so any grid is a regridding source or destination with
-no wrapper:
+`regrid` moves a field from one cell collection onto another, first-order
+conservative by default. A grid, a `CellVector`, a `CellLookup`, a
+`MultiOrderCellSet` or a bare system is a destination as it stands:
 
 ```julia
-import ConservativeRegridding as CR
-import GeometryOps as GO
+import GlobalRegridding as GR
 
-manifold = GO.Spherical(; radius = 1.0)
-source = DGG.levelgrid(DGG.HEALPixSystem(), 3)
-destination = DGG.PartialGrid(cv)
-regridder = CR.Regridder(manifold, destination, source)
+grid = DGG.levelgrid(DGG.HEALPixSystem(), 6)
+temps = DD.DimArray(rand(360, 180), (DD.X(-179.5:179.5), DD.Y(-89.5:89.5)))
+
+tavg = DGG.regrid(temps; to = grid)                 # onto a whole level
+sub  = DGG.regrid(temps; to = cv)                   # onto the region above
+auto = DGG.regrid(temps; to = DGG.HEALPixSystem())  # level matched by cell area
+
+# The other direction. `from` is required whenever the source is not a lon/lat
+# raster: a grid, a `CellVector` or a `CellLookup` is a source as it stands, and
+# `RasterGrid` is the lon/lat destination.
+back = DGG.regrid(tavg; to = GR.RasterGrid(DD.dims(temps)), from = grid)
+
+plan = DGG.plan_regrid(temps; to = grid)            # the operator alone, reusable
+DGG.regrid(temps, plan)                             # ... applied, no keywords left
 ```
 
-The manifold is named rather than inferred: geometry here is on the unit sphere,
-and `best_manifold` would guess a WGS84 radius, which is a factor of `R^2` in
-every area.
+Weights are geometry: building the plan is the expensive half and reads no data,
+and a plan carries the method, both spaces and the missing policy, so applying
+one takes no keyword arguments. `missingpolicy` says what a partly covered
+destination cell holds — `GR.Weighted(t)` the coverage-normalised mean, blanking
+cells covered less than `t`, `GR.Extensive()` the raw conservative sum. The
+destination's cells replace the source's spatial dimensions and every other
+dimension passes through. Each space carries the manifold it computes on — the
+unit sphere, everywhere here — and a pair that disagrees is an error rather than
+a silent rescaling by `R^2`.
+
+`treeify`, `ncells` and `getcell` are `ConservativeRegridding.Trees`' own
+bindings, extended here, so the cell tree a regrid descends is the grid's own
+with nothing wrapped around it.
 
 A DGGS as the **source** conserves to `1e-13` on all six systems and on the
 authalic wrap. A DGGS as the **destination** conserves only where the
@@ -205,6 +224,7 @@ them and `docs/src/all_dggs.md` draws every system.
 | `src/dimensionaldata.jl` | the cube face of `CellVector`: `CellLookup`, `Cells`, `Covering` |
 | `src/systems/` | one directory per system, plus `src/systems/ISEA/` — the Snyder/icosahedron basis IGEO7 and ISEA4R share |
 | `src/core/`, `src/Helpers/` | the authalic manifold pair, and shared allocation-free primitives |
+| `lib/GlobalRegridding/` | the generic regridding engine — spaces, weights, plans, the lazy executor — consumed by the main package for `regrid`/`plan_regrid` |
 | `lib/DiscreteGlobalGridsConformanceTesting/` | the test-only workspace package that makes the contracts executable |
 
 ## The systems
@@ -301,9 +321,12 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**945,225 assertions, ~2m55s warm**, with 14 broken: A5's documented
-`has_sorted_subtrees` skips, and the destination-direction conservation arms
-that wait on the upstream clipper fix.
+**985,901 assertions, ~5m30s warm**, with 17 broken — all of them
+destination-direction conservation arms in `regridding_conservation.jl`,
+measured per system and level, waiting on the upstream clipper fix.
+
+`lib/GlobalRegridding/` carries its own suite, which the root `Pkg.test()` does
+not run: `julia --project=lib/GlobalRegridding -e 'using Pkg; Pkg.test()'`.
 
 ## Provenance
 

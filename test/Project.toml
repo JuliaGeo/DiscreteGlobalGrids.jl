@@ -1,10 +1,12 @@
 [deps]
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
+DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
 Extents = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
 GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
 GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
 GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
+GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
 H3_jll = "60c8821e-da38-5dbd-93c7-983f1e6d69be"
 Healpix = "9f4e344d-96bc-545a-84a3-ae6b9e1b672b"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"

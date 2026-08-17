@@ -285,29 +285,15 @@ function build_weights!(coo::WeightCOO, ::Conservative,
     return _fillcoo!(coo, block)
 end
 
-# Work around ConservativeRegridding.jl#132 until the pinned version includes it.
-# Other failures recur in the serial retry and are rethrown.
-_isemptyreduction(err) = err isa ArgumentError &&
-                         occursin("reducing over an empty collection", err.msg)
-
 """
     _intersectionareas(manifold, dst_tree, src_tree, op) -> SparseMatrixCSC
 
-Compute intersection areas using all available threads. When the threaded API
-reports an empty task reduction for disjoint trees, retry serially to obtain the
-empty block. Other errors are rethrown.
+Compute intersection areas, threaded when more than one thread is available.
 """
 function _intersectionareas(m::GOCore.Manifold, dst_tree, src_tree, op)
-    Threads.nthreads() > 1 || return ConservativeRegridding.intersection_areas(
-        m, GOCore.False(), dst_tree, src_tree; intersection_operator = op)
-    try
-        return ConservativeRegridding.intersection_areas(
-            m, GOCore.True(), dst_tree, src_tree; intersection_operator = op)
-    catch err
-        _isemptyreduction(err) || rethrow()
-        return ConservativeRegridding.intersection_areas(
-            m, GOCore.False(), dst_tree, src_tree; intersection_operator = op)
-    end
+    threaded = Threads.nthreads() > 1 ? GOCore.True() : GOCore.False()
+    return ConservativeRegridding.intersection_areas(
+        m, threaded, dst_tree, src_tree; intersection_operator = op)
 end
 
 # Copy stored entries directly to avoid `findnz` allocations.

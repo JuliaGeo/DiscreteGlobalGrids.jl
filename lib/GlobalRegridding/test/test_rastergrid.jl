@@ -54,21 +54,18 @@ end
 
 # Direct chart constructions used as references for edge-table fast paths.
 
-@noinline function reference_boxpoint(t, xlo, xhi, ylo, yhi, m::Int, j::Int)
-    e, k = divrem(j, m)
-    u = k / m
-    return e == 0 ? t(xlo + u * (xhi - xlo), ylo) :
-           e == 1 ? t(xhi, ylo + u * (yhi - ylo)) :
-           e == 2 ? t(xhi - u * (xhi - xlo), yhi) :
-           t(xlo, yhi - u * (yhi - ylo))
+# The cell-cap fast paths sample the four box corners and nothing between them
+# (`_CELL_CAP_SAMPLES` is zero), so a corner reference is the whole reference.
+@noinline function reference_corners(space, ix, iy)
+    xlo, xhi, ylo, yhi = GR.cellbox(space, ix, iy)
+    t = space.transform
+    return (t(xlo, ylo), t(xhi, ylo), t(xhi, yhi), t(xlo, yhi))
 end
 
 @noinline function reference_cellcap(space, ix, iy)
-    xlo, xhi, ylo, yhi = GR.cellbox(space, ix, iy)
-    t = space.transform
+    corners = reference_corners(space, ix, iy)
     sx = sy = sz = 0.0
-    for j in 0:3
-        p = reference_boxpoint(t, xlo, xhi, ylo, yhi, 1, j)
+    for p in corners
         sx += p[1]
         sy += p[2]
         sz += p[3]
@@ -77,9 +74,8 @@ end
     nrm <= eps(Float64) && return GR._WHOLE_SPHERE
     centre = USPoint(sx / nrm, sy / nrm, sz / nrm)
     r = 0.0
-    for j in 0:3
-        r = max(r, GR.US.spherical_distance(centre,
-            reference_boxpoint(t, xlo, xhi, ylo, yhi, 1, j)))
+    for p in corners
+        r = max(r, GR.US.spherical_distance(centre, p))
     end
     r = nextfloat(r * 1.0001 + 1e-12)
     r > Float64(pi) / 2 && return GR._WHOLE_SPHERE
@@ -98,9 +94,7 @@ end
 
 @noinline function reference_cell(space, i)
     ix, iy = GR.cellsubscript(space, i)
-    xlo, xhi, ylo, yhi = GR.cellbox(space, ix, iy)
-    t = space.transform
-    c = (t(xlo, ylo), t(xhi, ylo), t(xhi, yhi), t(xlo, yhi))
+    c = reference_corners(space, ix, iy)
     return reference_cellring(space.ccw ? c : (c[4], c[3], c[2], c[1]))
 end
 

@@ -123,7 +123,8 @@ end
         # touch, so planning a regrid of a grid this size costs no IO at all.
         @test isempty(reads(DEM))
         @test PLAN isa GR.ChunkedPlan
-        @test DGG.level(DST.grid) == DGG.arealevel(SYS, GR.RasterGrid(DEM))
+        # A 0.1° source area-matches IGeo7 level 7.
+        @test DGG.level(DST.grid) == 7
         A = parent(DGG.regrid(DEM; to = SYS, lazy = true))
         @test size(A) == (DGG.ncells(DST),)
         @test isempty(reads(DEM))
@@ -168,12 +169,13 @@ end
 
     @testset "weights spill to disk" begin
         # A one-byte memory bound evicts every block as the next is built, so
-        # the second read reloads all twelve from the filesystem.
+        # each of the destination chunk's pairs — one per source tile across the
+        # southernmost row — leaves a file behind for the second read to reload.
         dir = mktempdir()
         storage = GR.Spilled(dir; maxbytes = 1)
         A = parent(DGG.regrid(DEM; to = SYS, lazy = true, storage, budget = 2^20))
         @test isequal(A[POLARCELLS], held)
-        @test length(GR.spilledfiles(storage)) == heldstats.loads
+        @test length(GR.spilledfiles(storage)) == NX ÷ CHUNK
         @test isequal(A[POLARCELLS], held)
     end
 

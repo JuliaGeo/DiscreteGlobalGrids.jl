@@ -1,4 +1,11 @@
 # Chunk discovery, lazy execution, streaming, and spill storage.
+#
+# The five laws the `L1`–`L5` testsets below stand for:
+# L1 construction is free: a lazy array reads no values and builds no weights.
+# L2 locality: a destination chunk reads its connected source chunks, once each.
+# L3 residency: the budget bounds what is held at once and changes nothing else.
+# L4 plan reuse: each chunk pair is built once and reused by every later read.
+# L5 chunking invariance: the answer does not depend on the source's chunking.
 
 import DiskArrays
 import DimensionalData as DD
@@ -215,7 +222,7 @@ end
         @test length(source.reads) == length(t7_pairwise(dstspace, 1, srcspace))
     end
 
-    @testset "L4 — non-spatial slices reuse blocks" begin
+    @testset "non-spatial slices reuse blocks" begin
         cube = cat(field, 10 .* field, 100 .* field; dims = 3)
         source = T7Counting(cube, (4, 2, 1))
         method = T7CountingMethod(ToyDiagonalMethod())
@@ -569,7 +576,7 @@ end
             t7_plan(ToyDiagonalMethod(), whole, srcspace; chunks = (8, 2)))
     end
 
-    @testset "law 5 — chunking invariance" begin
+    @testset "L5 — chunking invariance" begin
         # Conservative results are invariant to incompatible source chunkings.
         xd = DD.X(-168.75:22.5:168.75)
         yd = DD.Y(-78.75:22.5:78.75)

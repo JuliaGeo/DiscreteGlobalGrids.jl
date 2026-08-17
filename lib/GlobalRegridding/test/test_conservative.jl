@@ -205,18 +205,27 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         block = conservative_block(dst, 1:ndst, src, 1:nsrc)
 
         m = manifold(dst)
-        op = GR.BlockAreaOperator(CR.DefaultIntersectionOperator(m),
+        # One operator per call: the inner one carries a mutable clipping cache.
+        blockop() = GR.BlockAreaOperator(CR.DefaultIntersectionOperator(m),
             GR.indexmap(1:ndst), GR.indexmap(1:nsrc))
-        serial = CR.intersection_areas(m, GOCore.False(),
-            GR.subtree(dst, 1:ndst), GR.subtree(src, 1:nsrc);
-            intersection_operator = op, progress = false)
-        reference = WeightBlock(GR._fillcoo!(WeightCOO(ndst), serial), ndst, nsrc)
+        assemble(threaded) = WeightBlock(
+            GR._fillcoo!(WeightCOO(ndst),
+                CR.intersection_areas(m, threaded,
+                    GR.subtree(dst, 1:ndst), GR.subtree(src, 1:nsrc);
+                    intersection_operator = blockop(), progress = false)),
+            ndst, nsrc)
+        reference = assemble(GOCore.False())
 
         @test GR.SparseArrays.nnz(block.weights) > 2000
-        @test block.weights.colptr == reference.weights.colptr
-        @test block.weights.rowval == reference.weights.rowval
-        @test all(block.weights.nzval .=== reference.weights.nzval)
-        @test all(block.denom .=== reference.denom)
+
+        # The explicitly threaded build and the production build — whichever way
+        # the thread count sends the latter — both equal the serial reference.
+        for other in (assemble(GOCore.True()), block)
+            @test other.weights.colptr == reference.weights.colptr
+            @test other.weights.rowval == reference.weights.rowval
+            @test all(other.weights.nzval .=== reference.weights.nzval)
+            @test all(other.denom .=== reference.denom)
+        end
     end
 
     @testset "a pair whose descent finds nothing" begin
@@ -262,7 +271,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test all(plain.denom .=== stored.denom)
     end
 
-    @testset "disjoint chunks and mismatched manifolds" begin
+    @testset "disjoint chunks keep zero denominators" begin
         north = ToyLonLatSpace(2, 1; lat = (60.0, 90.0))
         south = ToyLonLatSpace(2, 1; lat = (-90.0, -60.0))
         block = conservative_block(north, 1:2, south, 1:2)

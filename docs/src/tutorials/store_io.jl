@@ -116,6 +116,8 @@ region = store[:elevation][DGG.Cells(DGG.Covering(target))]
 # Writing goes the other way round: `dggwrite` writes locally, and a remote
 # store is an upload of what it produced.
 #
-# A store axis is single-level. The mixed-level arrays of the multi-order
-# storage page reach a store through `expand`, which presents them at one
-# level; `dggwrite` refuses a `MultiOrderLookup` axis directly.
+# A mixed-level array from the multi-order storage page writes as the
+# `compacted` layout — two aligned columns, `cell_ids` and `cell_levels`,
+# under `refinement_level: null` — and reads back as a `MultiOrderLookup`
+# axis. Requesting a single-level encoding for one is refused; `expand`
+# presents it at one level to write dense or as ranges.

@@ -144,6 +144,31 @@ end
         collect(1.0:(n-1)))
 end
 
+# A threaded sweep fans the callback out over tasks; one failure must not come
+# back as one exception per task.
+@testset "a threaded callback failure is reported once, with its cell" begin
+    sys = DGG.IGeo7System()
+    cv = CellVector(rooted_pg(sys, 1, 3))
+    bad = 5
+    boom(c, nbrs) = cellposition(c) == bad ? error("callback said no") : 1.0
+
+    err = try
+        mapneighbors(boom, cv; threaded = true)
+        nothing
+    catch e
+        e
+    end
+    @test err isa DGG.NeighborCallbackError
+    msg = sprint(showerror, err)
+    @test occursin(sprint(show, cv[bad]), msg)
+    @test occursin("position $bad", msg)
+    @test occursin("threaded = false", msg)
+    # The callback's own exception is the cause, not something swallowed.
+    @test occursin("callback said no", msg)
+    # And the sequential path still raises exactly what the callback threw.
+    @test_throws "callback said no" mapneighbors(boom, cv; threaded = false)
+end
+
 # Keep mutable state in the functor while measuring sweep allocations.
 struct PositionSum <: Function
     acc::Base.RefValue{Int}

@@ -87,12 +87,12 @@ interface for the complete level:
 | [`cell_boundary(sys, c)`](@ref cell_boundary) | exact boundary ring, unit-sphere points |
 | [`cell_centroid(sys, c)`](@ref cell_centroid) | representative interior point |
 
-[`max_neighbors(sys, connectivity)`](@ref max_neighbors) has no default and is
-**required for the neighbourhood family**: [`neighbors`](@ref),
-[`ring`](@ref), [`halo_table`](@ref) and [`stencil_table`](@ref) on a subset
-size their fixed-capacity containers with it. The complete-level verbs and the
-subtree family answer without it, so a system that omits it fails only where
-the bound is consumed.
+[`max_neighbors(sys, connectivity)`](@ref max_neighbors) **sizes the
+neighbourhood family**: [`neighbors`](@ref), [`ring`](@ref),
+[`halo_table`](@ref) and [`stencil_table`](@ref) on a subset use it for their
+fixed-capacity containers. It defaults to `nothing` — no bound declared — and
+the same verbs then buffer in heap `Vector`s: identical answers, one
+allocation per cell. Declaring the bound is the fast path.
 
 # Defaults an implementor may override
 

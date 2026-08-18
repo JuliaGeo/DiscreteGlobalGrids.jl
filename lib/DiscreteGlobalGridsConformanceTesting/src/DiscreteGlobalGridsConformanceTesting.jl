@@ -661,7 +661,9 @@ function neighbor_problems(grid, c; connectivity::Connectivity = Vertex(),
         eltype(ns) === T ||
             push!(problems, "neighbors($c) has eltype $(eltype(ns)), not the system's $T")
         bound = DGG.max_neighbors(sys, connectivity)
-        length(ns) <= bound ||
+        # `nothing` means the system declares no static bound, so there is no
+        # ceiling to check against.
+        bound === nothing || length(ns) <= bound ||
             push!(problems, "neighbors($c) returned $(length(ns)) cells, over max_neighbors of $bound")
     end
 
@@ -1650,13 +1652,22 @@ function test_hierarchical_system(sys;
             @test !DGG.has_sorted_subtrees(sys) ||
                   has_nonfallback_method(DGG.descendant_range, sys,
                       first(DGG.rootcells(sys)), first(levelrange))
+            # A declared bound must be a usable capacity; `nothing` is the
+            # legal "no static bound declared" answer, which costs the system
+            # the fixed-capacity neighbour buffers and nothing else — said out
+            # loud below rather than passed in silence.
             for conn in connectivities
-                @test DGG.max_neighbors(sys, conn) >= 1
+                mn = DGG.max_neighbors(sys, conn)
+                @test mn === nothing || mn >= 1
+                mn === nothing && push!(skips,
+                    "note: max_neighbors — $label declares no bound for $conn; subset neighbour buffers will be heap Vectors")
             end
             @test DGG.max_neighbors(sys) == DGG.max_neighbors(sys, Vertex())
             if Vertex() in connectivities && Edge() in connectivities
                 # Edge() is a restriction of Vertex(), so its bound cannot be larger.
-                @test DGG.max_neighbors(sys, Edge()) <= DGG.max_neighbors(sys, Vertex())
+                mv = DGG.max_neighbors(sys, Vertex())
+                me = DGG.max_neighbors(sys, Edge())
+                @test mv === nothing || me === nothing || me <= mv
             end
             @test_throws ArgumentError DGG.levelgrid(sys, first(levelrange) - 1)
             @test_throws ArgumentError DGG.levelgrid(sys, maxl + 1)

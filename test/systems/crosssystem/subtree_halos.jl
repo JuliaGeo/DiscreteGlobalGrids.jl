@@ -850,7 +850,10 @@ fixture_collect_bytes(sys, c, l) =
         gen()
         dir = () -> prefix10(SubtreeHaloIterator(sys, root, 12))
         dir()
-        @test @allocated(gen()) > 100 * @allocated(dir())
+        # Time, not bytes: IGEO7's boundary is inline storage, so the generic
+        # engine's O(halo) scan no longer shows on the heap. It still costs it.
+        @test minimum(@elapsed(gen()) for _ in 1:3) >
+              10 * maximum(@elapsed(dir()) for _ in 1:3)
     end
 
     # -----------------------------------------------------------------------

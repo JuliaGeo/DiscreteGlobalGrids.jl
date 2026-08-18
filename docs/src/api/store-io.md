@@ -142,7 +142,7 @@ DiscreteGlobalGrids.gridreference
 An encoding implements three things here: build the axis, declare write
 eligibility, and name itself for the store's vocabulary. It asks the grid for
 everything about the ids themselves, which is the layering rule — a grid that
-answers the four id functions below works under every encoding, and an encoding
+answers the five id functions below works under every encoding, and an encoding
 written against them works on every grid.
 
 Reaching a *store* takes two more, both in the Zarr extension and both still
@@ -161,6 +161,7 @@ DiscreteGlobalGrids.idrank
 DiscreteGlobalGrids.idselect
 DiscreteGlobalGrids.idcount_between
 DiscreteGlobalGrids.idvalid
+DiscreteGlobalGrids.idcell
 ```
 
 ## Errors

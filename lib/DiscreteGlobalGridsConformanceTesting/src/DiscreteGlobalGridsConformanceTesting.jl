@@ -15,7 +15,7 @@ import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge
 
-export test_grid_interface, test_hierarchical_system
+export test_grid_interface, test_hierarchical_system, test_generic_fallbacks
 
 """Seed used for reproducible default sampling."""
 const DEFAULT_SEED = 20260813
@@ -42,6 +42,9 @@ const DEFAULT_PROJ_ATOL = 1e-9
 const DEFAULT_ANGLE_ATOL = 1e-9
 
 _default_rng() = Random.MersenneTwister(DEFAULT_SEED)
+
+"""The subjects a specialized grid or system method dispatches on."""
+const DISPATCH_SUBJECTS = (DGG.AbstractGrid, DGG.AbstractHierarchicalGridSystem)
 
 """
     has_nonfallback_method(f, args...) -> Bool
@@ -74,11 +77,11 @@ function has_nonfallback_method(f, args...)
 end
 
 """
-    has_specific_subject(m::Method) -> Bool
+    has_specific_subject(m::Method, bases = (AbstractGrid, AbstractHierarchicalGridSystem)) -> Bool
 
-Whether `m` takes a grid or a system argument **strictly narrower** than
-`AbstractGrid` / `AbstractHierarchicalGridSystem` — the specificity test behind
-[`has_nonfallback_method`](@ref).
+Whether `m` takes an argument **strictly narrower** than one of `bases` — the
+specificity test behind [`has_nonfallback_method`](@ref), whose subjects are a
+grid and a system.
 
 Each parameter of the signature is rewrapped in the method's own `where`
 clauses before the comparison, so a parametric subject type
@@ -91,7 +94,7 @@ type variables make subtyping undecidable.
 has a parameter that is *equal* to `AbstractGrid` without being `===` to it,
 and that method is the interface-wide generic, not an implementation.
 """
-function has_specific_subject(m::Method)
+function has_specific_subject(m::Method, bases = DISPATCH_SUBJECTS)
     sig = m.sig
     body = Base.unwrap_unionall(sig)
     body isa DataType || return false
@@ -100,13 +103,34 @@ function has_specific_subject(m::Method)
     for i in 2:length(params)
         T = Base.rewrap_unionall(params[i], sig)
         T isa Type || continue
-        (_strictly_narrower(T, DGG.AbstractGrid) ||
-         _strictly_narrower(T, DGG.AbstractHierarchicalGridSystem)) && return true
+        any(base -> _strictly_narrower(T, base), bases) && return true
     end
     return false
 end
 
 _strictly_narrower(T, base) = T <: base && !(base <: T)
+
+"""
+    dispatches_generically(f, args...) -> Bool
+
+Whether `f(args...)` is answered by an interface-wide method: one specialized
+for no grid, system **or cell index** type.
+
+Stricter than `!has_nonfallback_method(f, args...)`, which is a statement about
+gate labels and reads a method dispatching on a system's cell id type alone as
+generic. This is the assertion [`test_generic_fallbacks`](@ref) makes before it
+runs a law, so "the fallback was tested" is checked rather than assumed.
+"""
+function dispatches_generically(f, args...)
+    applicable(f, args...) || return false
+    m = try
+        which(f, Base.typesof(args...))
+    catch err
+        (err isa ArgumentError || err isa MethodError) || rethrow()
+        return false
+    end
+    return !has_specific_subject(m, (DISPATCH_SUBJECTS..., DGG.AbstractCellIndex))
+end
 
 # ===========================================================================
 # Small vector helpers
@@ -606,11 +630,26 @@ neighbours in turn. Symmetry is therefore total over whatever the grid returns.
 `two_hop` (default `true`) adds the closure described below; passing `false`
 leaves only the one-directional sweep, which is what the harness's own tests use
 to show that the closure catches strictly more.
+
+`require_nonempty` (default `false`) adds the one law here that is not
+relational: on a grid of more than one cell, a cell has at least one neighbour.
+It is off by default because a system answering for its own cells knows its own
+degrees. [`test_generic_fallbacks`](@ref) turns it on, because an empty answer
+is exactly how the geometric fallback fails — a tessellation whose neighbouring
+cells do not compute identical corner coordinates has no adjacency at all under
+it, and every relational law above then passes vacuously.
 """
 function neighbor_problems(grid, c; connectivity::Connectivity = Vertex(),
-        sys = DGG.system(grid), two_hop::Bool = true)
+        sys = DGG.system(grid), two_hop::Bool = true,
+        require_nonempty::Bool = false)
     problems = String[]
     ns = collect(DGG.neighbors(grid, c, 1; connectivity))
+
+    if require_nonempty && isempty(ns) && DGG.ncells(grid) > 1
+        push!(problems,
+            "neighbors($c) is empty on a grid of $(DGG.ncells(grid)) cells; every cell " *
+            "of a tessellation has at least one $(nameof(typeof(connectivity)))-neighbour")
+    end
 
     collect(DGG.neighbors(grid, c, 1; connectivity)) == ns ||
         push!(problems, "neighbors($c) is not deterministic across calls")
@@ -1145,12 +1184,130 @@ Whether `sys` satisfies the hierarchical laws.
 check_hierarchical_system(sys; kwargs...) = isempty(hierarchical_system_problems(sys; kwargs...))
 
 # ===========================================================================
+# Skip reporting
+# ===========================================================================
+
+"""
+    skip!(skips, reason) -> nothing
+
+Record one skipped law group as a `Broken` result and keep its `reason` for the
+end-of-run report. `Test` never displays a `@test_skip` message, and a summary
+cannot tell a skip from a known failure, so an unreported skip is a law the
+caller believes was checked.
+"""
+function skip!(skips::Vector{String}, reason::AbstractString)
+    push!(skips, reason)
+    @test_skip reason
+    return nothing
+end
+
+"""
+    unimplemented_skip(what, subject, signature) -> String
+
+The reason string for a law group that `subject` does not open: what was
+skipped, the method whose absence skipped it, and where the law is checked
+instead.
+"""
+unimplemented_skip(what::AbstractString, subject, signature::AbstractString) =
+    "skipped: $what — $(subject_name(subject)) does not implement `$signature`. " *
+    "A generic fallback answers it; its laws run under test_generic_fallbacks."
+
+"""The name a message calls a system or grid by; a wrapper names what it wraps."""
+subject_name(x) = string(nameof(typeof(x)))
+
+# The `@info` is the only place a skip states itself. It goes inside the test
+# set so it is emitted whether or not a later law fails.
+function report_skips(skips::Vector{String}, label::AbstractString)
+    isempty(skips) && return nothing
+    @info "conformance: $(length(skips)) law group(s) skipped for $label\n" *
+          join(("  " * s for s in skips), "\n")
+    return nothing
+end
+
+# ===========================================================================
+# Forcing the generic fallbacks
+# ===========================================================================
+
+"""
+    GenericFallbackSystem(sys) <: AbstractHierarchicalGridSystem
+
+`sys` with its optional fast paths hidden: the same cells, ids, geometry,
+hierarchy and traits, presented to dispatch as a system type that no
+specialization was written for.
+
+The required surface is forwarded through `sys`'s own
+[`levelgrid`](@ref) — so a system that answers the grid contract with a grid
+type of its own is wrapped as faithfully as one that implements the five
+system-level primitives — and so are the traits and the two covering methods
+([`node_extent`](@ref), [`cap_inflation`](@ref)) and
+[`descendant_range`](@ref). Nothing else is: [`cellat`](@ref),
+[`neighbors`](@ref), [`ring`](@ref), `one_ring`, [`ancestor`](@ref) and
+[`descendants`](@ref) are left to the interface-wide implementations, and the
+traversal engines to the generic ones.
+
+Hiding by *type* rather than by `invoke` is what makes this total. A system's
+fast paths hang on `HierarchicalLevelGrid{TheSystem}` or on `TheSystem`, and a
+wrapped system appears as `HierarchicalLevelGrid{GenericFallbackSystem{TheSystem}}`
+— outside every one of those signatures, including ones written for a family
+supertype, and including any this package has not seen. There is no argument
+form that reaches a specialization from here, so a fallback law cannot silently
+be answered by the specialized path.
+
+[`test_generic_fallbacks`](@ref) additionally asserts
+[`dispatches_generically`](@ref) for each verb before running its laws.
+"""
+struct GenericFallbackSystem{S<:AbstractHierarchicalGridSystem} <: AbstractHierarchicalGridSystem
+    system::S
+end
+
+# The wrapped system's own complete-level grid: the entry point every consumer
+# uses, so both implementor styles forward identically.
+_inner(w::GenericFallbackSystem, l::Integer) = DGG.levelgrid(w.system, Int(l))
+
+DGG.cellindextype(w::GenericFallbackSystem) = DGG.cellindextype(w.system)
+DGG.levels(w::GenericFallbackSystem) = DGG.levels(w.system)
+DGG.rootcells(w::GenericFallbackSystem) = DGG.rootcells(w.system)
+Base.parent(w::GenericFallbackSystem, c::AbstractCellIndex) = Base.parent(w.system, c)
+DGG.children(w::GenericFallbackSystem, c::AbstractCellIndex) = DGG.children(w.system, c)
+
+DGG.node_extent(w::GenericFallbackSystem, c::AbstractCellIndex) =
+    DGG.node_extent(w.system, c)
+DGG.cap_inflation(w::GenericFallbackSystem) = DGG.cap_inflation(w.system)
+DGG.has_sorted_subtrees(w::GenericFallbackSystem) = DGG.has_sorted_subtrees(w.system)
+DGG.descendant_range(w::GenericFallbackSystem, c::AbstractCellIndex, l::Integer) =
+    DGG.descendant_range(w.system, c, l)
+DGG.max_neighbors(w::GenericFallbackSystem, conn::Connectivity) =
+    DGG.max_neighbors(w.system, conn)
+
+DGG.ncells(w::GenericFallbackSystem, l::Integer) = DGG.ncells(_inner(w, l))
+DGG.cellindex(w::GenericFallbackSystem, l::Integer, i::Int) = DGG.cellindex(_inner(w, l), i)
+DGG.cellposition(w::GenericFallbackSystem, c::AbstractCellIndex) =
+    DGG.cellposition(_inner(w, DGG.level(c)), c)
+DGG.cell_boundary(w::GenericFallbackSystem, c::AbstractCellIndex) =
+    DGG.cell_boundary(_inner(w, DGG.level(c)), c)
+DGG.cell_centroid(w::GenericFallbackSystem, c::AbstractCellIndex) =
+    DGG.cell_centroid(_inner(w, DGG.level(c)), c)
+
+Base.show(io::IO, w::GenericFallbackSystem) =
+    print(io, "GenericFallbackSystem(", w.system, ")")
+
+subject_name(w::GenericFallbackSystem) = subject_name(w.system)
+
+# The coarsest five levels: enough for the geometric fallbacks, and above the
+# cell size at which the harness's own area and closure tolerances give out.
+function _coarse_levels(sys)
+    ls = DGG.levels(sys)
+    return first(ls):min(last(ls), first(ls) + 4)
+end
+
+# ===========================================================================
 # The two entry points
 # ===========================================================================
 
 """
     test_grid_interface(grid; n_samples = 32, rng = MersenneTwister(20260813),
-                        unit_atol = 1e-9, label = <grid type>)
+                        unit_atol = 1e-9, fallback_laws = false,
+                        label = <grid type>)
 
 Property-test `grid` against the base-interface contracts, as a labelled
 `Test.@testset`: the [`cellindex`](@ref)/[`cellposition`](@ref) bijection over
@@ -1172,7 +1329,24 @@ deduplicated, so a large request may yield somewhat fewer), or every position
 when the grid is smaller than that.
 
 Optional methods are skipped, not failed: a grid that does not implement
-[`cellat`](@ref) reports that test set as skipped and conforms regardless.
+[`cellat`](@ref) reports that test set as skipped and conforms regardless. Every
+skip states its reason in an `@info` at the end of the run, because a `Broken`
+count alone cannot be told from a known failure.
+
+# Keyword arguments
+
+  - `n_samples` — how many distinct positions to draw (see above).
+  - `rng` — the sampling generator; a fresh seeded one per call by default, so
+    two identical calls examine identical cells.
+  - `unit_atol` — how far a boundary vertex or a centroid may sit off the unit
+    sphere; forwarded to [`boundary_problems`](@ref) and
+    [`centroid_problems`](@ref).
+  - `fallback_laws` — whether to run the [`cellat`](@ref) law group even when a
+    generic fallback is what answers. `false` (the default) tests what this grid
+    implements; `true` tests whatever dispatch selects. Forcing the fallback
+    *path* as well is [`test_generic_fallbacks`](@ref)' job — set here alone,
+    this only stops the gate from skipping.
+  - `label` — the name in the test-set header and in the skip report.
 
 !!! note "The `cellat` probe assumes star-shaped cells"
     `cellat(grid, cell_centroid(grid, c)) == c` is a law of the interface. The
@@ -1210,10 +1384,12 @@ function test_grid_interface(grid;
         n_samples::Integer = 32,
         rng::Random.AbstractRNG = _default_rng(),
         unit_atol::Real = DEFAULT_UNIT_ATOL,
+        fallback_laws::Bool = false,
         label::AbstractString = string(nameof(typeof(grid))))
     n = DGG.ncells(grid)
     positions, cells = sample_cells(rng, grid, n_samples)
     sys = DGG.system(grid)
+    skips = String[]
 
     @testset "grid interface: $label" begin
         @testset "ncells" begin
@@ -1255,7 +1431,9 @@ function test_grid_interface(grid;
             # A cell one level down is, by the level contract, not in this grid.
             other = _foreign_cell(grid, sys, cells)
             if other === nothing
-                @test_skip "no foreign cell constructible from the interface alone"
+                skip!(skips, "skipped: cellposition of a cell outside the grid — no such " *
+                    "cell is constructible from the interface alone (no system provenance, " *
+                    "or the grid is a complete deepest level)")
             else
                 @test DGG.cellposition(grid, other) === nothing
             end
@@ -1275,10 +1453,13 @@ function test_grid_interface(grid;
         end
 
         @testset "cellat(cell_centroid(c)) == c" begin
-            if isempty(cells) ||
-                    !has_nonfallback_method(DGG.cellat, grid,
-                        DGG.cell_centroid(grid, first(cells)))
-                @test_skip "cellat is not implemented for this grid"
+            if isempty(cells)
+                skip!(skips, "skipped: cellat(cell_centroid(c)) == c — the grid has no cells")
+            elseif !(fallback_laws || has_nonfallback_method(DGG.cellat, grid,
+                        DGG.cell_centroid(grid, first(cells))))
+                skip!(skips, unimplemented_skip("cellat(cell_centroid(c)) == c",
+                    sys === nothing ? grid : sys,
+                    "cellat(::$(typeof(grid)), ::UnitSphericalPoint)"))
             else
                 for c in cells
                     centroid = DGG.cell_centroid(grid, c)
@@ -1300,6 +1481,8 @@ function test_grid_interface(grid;
                 @test DGG.cellposition(grid, c) == DGG.cellposition(grid, c)
             end
         end
+
+        report_skips(skips, label)
     end
 end
 
@@ -1340,7 +1523,7 @@ end
                              require_convex_extents = true,
                              neighbor_k = 2, require_rotational_rings = true,
                              connectivities = (Vertex(), Edge()),
-                             label = <system type>)
+                             fallback_laws = false, label = <system type>)
 
 Property-test `sys` against the hierarchical contracts, as a labelled
 `Test.@testset`.
@@ -1371,13 +1554,29 @@ The laws, each its own nested test set:
   - **`descendant_range`** — when [`has_sorted_subtrees`](@ref) is `true`, the
     positions of the actual descendants exactly fill the returned range.
 
-`levels` selects the levels to test; when it has more than `n_levels` entries a
-seeded sample of that many is used, always including the coarsest and deepest.
 Derived methods that a system has not implemented (`ancestor`, `descendants`,
-[`neighbors`](@ref), [`ring`](@ref)) are skipped rather than failed.
+[`neighbors`](@ref), [`ring`](@ref)) are skipped rather than failed — the
+generic fallbacks answer them, and [`test_generic_fallbacks`](@ref) is what
+holds those answers to the same laws. Every skip states its reason in an
+`@info` at the end of the run.
 
 # Keyword arguments
 
+  - `levels` — which levels to test. Defaults to all of them.
+  - `n_levels` — how many of `levels` to keep when it holds more: a seeded
+    sample of that many, always including the coarsest and the deepest, where
+    level-dependent arithmetic breaks.
+  - `n_samples` — how many cells to draw per tested level. Every law in one run
+    examines the same drawn cells, so a covering failure names a cell the
+    hierarchy laws saw too.
+  - `rng` — the sampling generator; a fresh seeded one per call by default, so
+    two identical calls examine identical cells and levels. An RNG advances as
+    it is drawn from: reproducing a run means a *new* generator on the same
+    seed.
+  - `descent_depth`, `branch_samples` — the shape of the covering law's subtree
+    walk: how many levels down, and how many children followed at each step.
+    Forwarded to [`covering_law_problems`](@ref), which also follows one chain
+    to [`max_level`](@ref) regardless of the depth.
   - `atol` — angular slack, in radians, before a boundary point counts as
     *outside* an ancestor's [`node_extent`](@ref); forwarded to
     [`covering_law_problems`](@ref). A system whose subtree caps are exact
@@ -1401,6 +1600,16 @@ Derived methods that a system has not implemented (`ancestor`, `descendants`,
     a single counter-clockwise cycle. Ring 1 is checked unconditionally. A
     system whose outer shells are genuinely irregular can pass `false`, with the
     reason documented on its side; it does not exempt ring 1.
+  - `connectivities` — the adjacencies to test the neighbour and ring laws
+    under. Both of them by default; a system with one meaningful adjacency
+    passes just that one, and the `Edge() ⊆ Vertex()` law then does not apply.
+  - `fallback_laws` — whether to run the gated law groups (`ancestor`,
+    `descendants`, [`neighbors`](@ref), [`ring`](@ref) and the order laws) even
+    when a generic fallback is what answers. `false` (the default) tests what
+    this system implements. Forcing the fallback *path* as well is
+    [`test_generic_fallbacks`](@ref)' job — set here alone, this only stops the
+    gates from skipping.
+  - `label` — the name in the test-set header and in the skip report.
 
 See also [`check_hierarchical_system`](@ref) and [`check_covering_law`](@ref),
 the same laws as `Bool`s.
@@ -1418,12 +1627,14 @@ function test_hierarchical_system(sys;
         neighbor_k::Integer = 2,
         require_rotational_rings::Bool = true,
         connectivities = (Vertex(), Edge()),
+        fallback_laws::Bool = false,
         label::AbstractString = string(nameof(typeof(sys))))
     levelrange = DGG.levels(sys)
     tested = sample_levels(rng, levels, n_levels)
     maxl = DGG.max_level(sys)
     grids = Dict{Int,Any}(l => DGG.levelgrid(sys, l) for l in tested)
     samples = Dict{Int,Any}(l => sample_cells(rng, grids[l], n_samples) for l in tested)
+    skips = String[]
 
     @testset "hierarchical system: $label" begin
         @testset "levels and traits" begin
@@ -1433,6 +1644,12 @@ function test_hierarchical_system(sys;
             @test DGG.cellindextype(sys) <: AbstractCellIndex
             @test DGG.cap_inflation(sys) >= 1
             @test DGG.has_sorted_subtrees(sys) isa Bool
+            # The trait obliges the method. Declaring one without the other is
+            # caught here rather than deep inside a pruned traversal, and the
+            # interface-wide method that reports it does not count as one.
+            @test !DGG.has_sorted_subtrees(sys) ||
+                  has_nonfallback_method(DGG.descendant_range, sys,
+                      first(DGG.rootcells(sys)), first(levelrange))
             for conn in connectivities
                 @test DGG.max_neighbors(sys, conn) >= 1
             end
@@ -1488,8 +1705,10 @@ function test_hierarchical_system(sys;
 
         @testset "ancestor/descendants" begin
             probe = last(samples[first(tested)])
-            if isempty(probe) || !has_nonfallback_method(DGG.ancestor, sys, first(probe), 0)
-                @test_skip "ancestor is not implemented for this system"
+            if isempty(probe) || !(fallback_laws ||
+                    has_nonfallback_method(DGG.ancestor, sys, first(probe), 0))
+                skip!(skips, unimplemented_skip("ancestor", sys,
+                    "ancestor(::$(subject_name(sys)), ::$(DGG.cellindextype(sys)), ::Integer)"))
             else
                 for l in tested, c in last(samples[l])
                     @test DGG.ancestor(sys, c, l) == c
@@ -1503,8 +1722,10 @@ function test_hierarchical_system(sys;
                     l < maxl && @test_throws ArgumentError DGG.ancestor(sys, c, l + 1)
                 end
             end
-            if isempty(probe) || !has_nonfallback_method(DGG.descendants, sys, first(probe), 0)
-                @test_skip "descendants is not implemented for this system"
+            if isempty(probe) || !(fallback_laws ||
+                    has_nonfallback_method(DGG.descendants, sys, first(probe), 0))
+                skip!(skips, unimplemented_skip("descendants", sys,
+                    "descendants(::$(subject_name(sys)), ::$(DGG.cellindextype(sys)), ::Integer)"))
             else
                 for l in tested, c in last(samples[l])
                     @test collect(DGG.descendants(sys, c, l)) == [c]
@@ -1530,7 +1751,9 @@ function test_hierarchical_system(sys;
             # For caps with radius at most 90°, containing a boundary's vertices
             # also contains its arcs. Wider caps require densified boundary checks.
             if !require_convex_extents
-                @test_skip "convex node extents not required; the covering check densifies"
+                skip!(skips, "skipped: node_extent convexity — require_convex_extents = false. " *
+                    "The covering check densifies boundaries instead, which strengthens it " *
+                    "without making vertex sampling sound")
             else
                 for l in tested, c in last(samples[l])
                     # Match the threshold used to select boundary densification.
@@ -1548,14 +1771,17 @@ function test_hierarchical_system(sys;
 
         @testset "neighbors" begin
             probe = last(samples[first(tested)])
-            if isempty(probe) ||
-                    !has_nonfallback_method(DGG.neighbors, grids[first(tested)], first(probe), 1)
-                @test_skip "neighbors is not implemented for this system"
+            if isempty(probe) || !(fallback_laws ||
+                    has_nonfallback_method(DGG.neighbors, grids[first(tested)], first(probe), 1))
+                skip!(skips, unimplemented_skip("neighbors", sys,
+                    "neighbors(::$(typeof(grids[first(tested)])), " *
+                    "::$(DGG.cellindextype(sys)), ::Integer)"))
             else
                 for conn in connectivities, l in tested
                     grid = grids[l]
                     for c in last(samples[l])
-                        @test neighbor_problems(grid, c; connectivity = conn, sys) == String[]
+                        @test neighbor_problems(grid, c; connectivity = conn, sys,
+                            require_nonempty = fallback_laws) == String[]
                         # Ring 1 is `neighbors(c, 1)`, so its winding can be
                         # checked even when `ring` is not implemented.
                         @test winding_problems(grid, c,
@@ -1576,14 +1802,17 @@ function test_hierarchical_system(sys;
 
         @testset "ring" begin
             probe = last(samples[first(tested)])
-            if isempty(probe) ||
-                    !has_nonfallback_method(DGG.ring, grids[first(tested)], first(probe), 0)
-                @test_skip "ring is not implemented for this system"
+            if isempty(probe) || !(fallback_laws ||
+                    has_nonfallback_method(DGG.ring, grids[first(tested)], first(probe), 0))
+                skip!(skips, unimplemented_skip("ring", sys,
+                    "ring(::$(typeof(grids[first(tested)])), " *
+                    "::$(DGG.cellindextype(sys)), ::Integer)"))
             else
-                # Sequence-order checks require specialized `ring` and
-                # `neighbors` implementations.
-                ordered = has_nonfallback_method(DGG.neighbors, grids[first(tested)],
-                    first(probe), 1)
+                # The order laws relate `ring` to `neighbors`, so they need both
+                # to come from the same implementation — either both specialized
+                # or, in fallback mode, both generic.
+                ordered = fallback_laws || has_nonfallback_method(DGG.neighbors,
+                    grids[first(tested)], first(probe), 1)
                 for conn in connectivities, l in tested
                     grid = grids[l]
                     for c in last(samples[l])
@@ -1604,13 +1833,16 @@ function test_hierarchical_system(sys;
                         end
                     end
                 end
-                ordered || @test_skip "neighbors is a fallback; the ring/disc order laws are its own"
+                ordered || skip!(skips, unimplemented_skip("the ring/disc order laws", sys,
+                    "neighbors(::$(typeof(grids[first(tested)])), " *
+                    "::$(DGG.cellindextype(sys)), ::Integer)"))
             end
         end
 
         @testset "descendant_range" begin
             if !DGG.has_sorted_subtrees(sys)
-                @test_skip "has_sorted_subtrees(sys) is false; descendant_range is not offered"
+                skip!(skips, "skipped: descendant_range — $(subject_name(sys)) declares " *
+                    "has_sorted_subtrees = false, so it offers no range to check")
             else
                 for l in tested, c in last(samples[l])
                     if l > first(levelrange)
@@ -1634,6 +1866,81 @@ function test_hierarchical_system(sys;
                 end
             end
         end
+
+        report_skips(skips, label)
+    end
+end
+
+"""
+    test_generic_fallbacks(sys; levels = <coarsest five>, n_levels = 3, n_samples = 4,
+                           rng = MersenneTwister(20260813), label = <system type>,
+                           kwargs...)
+
+Property-test the **generic fallbacks** against `sys`'s geometry: the same laws
+[`test_grid_interface`](@ref) and [`test_hierarchical_system`](@ref) check, run
+against the implementations that answer when a system implements no fast path.
+
+Default mode tests what a system implemented; this tests what the package will
+actually answer for anyone who reaches it through a path the specializations do
+not cover, and what a minimal implementation of the interface gets. The two
+questions are different, and a system can pass one and fail the other: a
+tessellation whose neighbouring cells do not share vertex coordinates, or whose
+centroid is far enough off-centre to reorder a ring, breaks the geometric
+fallbacks while its own closed-form `neighbors` stays right.
+
+`sys` is wrapped in a [`GenericFallbackSystem`](@ref), which hides every
+specialization by type, and each forced verb is asserted
+[`dispatches_generically`](@ref) before its laws run — so a specialization that
+found its way through the wrapper fails the run instead of quietly answering
+for the fallback. The laws themselves run with `fallback_laws = true`, which is
+what stops the gates from skipping a group because the answer comes from a
+fallback.
+
+This is expensive. The generic adjacency is a spatial-tree query and a
+boundary-vertex comparison per cell, against a system's own `O(1)` arithmetic,
+so it belongs in a certification run rather than in the loop a system is
+developed in. Extra keywords (`atol`, `neighbor_k`, `connectivities`, …) are
+forwarded to [`test_hierarchical_system`](@ref).
+
+`levels` defaults to the **coarsest five**, not to all of them, because these
+laws are about geometry that does not change with depth while two of the
+harness's own tolerances do: a cell smaller than `1e-12` sr reads as a
+degenerate boundary ring, and one whose diameter is under `unit_atol` reads as
+explicitly closed. Deep levels are id arithmetic, which is what default mode
+samples the deepest level for.
+"""
+function test_generic_fallbacks(sys;
+        levels = _coarse_levels(sys),
+        n_levels::Integer = 3,
+        n_samples::Integer = 4,
+        rng::Random.AbstractRNG = _default_rng(),
+        label::AbstractString = string(nameof(typeof(sys))),
+        kwargs...)
+    wrapped = GenericFallbackSystem(sys)
+    tested = sample_levels(rng, levels, n_levels)
+    grid = DGG.levelgrid(wrapped, first(tested))
+    probe = DGG.cellindex(grid, 1)
+
+    @testset "generic fallbacks: $label" begin
+        @testset "the wrapper reaches no specialization" begin
+            @test dispatches_generically(DGG.cellat, grid, DGG.cell_centroid(grid, probe))
+            @test dispatches_generically(DGG.neighbors, grid, probe, 1)
+            @test dispatches_generically(DGG.ring, grid, probe, 1)
+            @test dispatches_generically(DGG.ancestor, wrapped, probe, 0)
+            @test dispatches_generically(DGG.descendants, wrapped, probe, 0)
+            # ...while the contract the fallbacks consume is still the system's.
+            @test DGG.cell_boundary(grid, probe) ==
+                  DGG.cell_boundary(DGG.levelgrid(sys, first(tested)), probe)
+            @test DGG.node_extent(wrapped, probe) == DGG.node_extent(sys, probe)
+        end
+
+        for l in tested
+            test_grid_interface(DGG.levelgrid(wrapped, l); n_samples, rng,
+                fallback_laws = true, label = "$label level $l (generic fallbacks)")
+        end
+        test_hierarchical_system(wrapped; levels = tested, n_levels = length(tested),
+            n_samples, rng, fallback_laws = true,
+            label = "$label (generic fallbacks)", kwargs...)
     end
 end
 

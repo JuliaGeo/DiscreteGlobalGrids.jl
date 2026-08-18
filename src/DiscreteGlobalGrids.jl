@@ -122,6 +122,7 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     is_contained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
+    grow, expand, compact,
     EdgeCellIterator, InnerCellIterator, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator,
     subtree_halo, halo, halo_positions, halo_sizehint,
@@ -138,6 +139,13 @@ using .Fallbacks: collect_subtree,
     HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine,
     adjacency_shells, checked_steps,
     _ring_frame, _wind!, PARALLELIZE_CHUNKS_PER_THREAD
+
+# The radix-4 quad-face family: the declarations its members write, and the
+# shared arithmetic and geometry their own files call.
+using .Fallbacks: nbasefaces, systemname, idname,
+    subtree_curve, subtree_orientation,
+    nside, checked_id, chart_perimeter, sampled_cap,
+    morton_encode, morton_decode
 
 # The Snyder/icosahedron basis IGeo7 and ISEA4R share, before either of them.
 include("systems/ISEA/ISEA.jl")
@@ -323,6 +331,7 @@ systems() = (IGeo7System(), H3System(), HEALPixSystem(),
 
 # --- Type vocabulary -------------------------------------------------------
 export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
+export AbstractQuadFaceGridSystem
 export LevelIndex
 export Connectivity, Vertex, Edge
 # `GeometryOps.UnitSphericalPoint`, re-exported: every boundary and centroid
@@ -371,6 +380,11 @@ export is_contained, coarsest_contained, cell_polygons, member_neighbors
 # --- The compressed cell collection ----------------------------------------
 # `CellVector` is the DimensionalData-independent compressed collection.
 export CellVector, covering, covering_positions, cellset
+
+# --- Region algebra --------------------------------------------------------
+# Growth, bulk level movement, and compaction over the region types; `union`,
+# `vcat`, `intersect` and `issubset` are Base's and carry no name of their own.
+export grow, expand, compact
 
 # --- The DimensionalData layer ---------------------------------------------
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM

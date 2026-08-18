@@ -848,7 +848,7 @@ function subset_halo_engine(sys::AbstractHierarchicalGridSystem, subset,
 end
 
 # ===========================================================================
-# The exterior-perimeter walk, shared by the three aperture-4 systems
+# The exterior-perimeter walk, shared by the quad-face family
 # ===========================================================================
 
 # A subtree of HEALPix, S2 or ISEA4R is an aligned `side x side` block in one
@@ -1193,8 +1193,8 @@ end
     square_halo_engine(sys, curve, c, target, connectivity, x0, y0, side, face, n)
 
 The halo engine for the `side x side` block at lattice origin `(x0, y0)` of
-0-based `face`, on a face of side `n` at level `target`. The three aperture-4
-systems' `halo_engine` methods are this call plus their own lattice decode.
+0-based `face`, on a face of side `n` at level `target`. The quad-face family's
+[`halo_engine`](@ref rim_engine) is this call plus [`lattice_decode`](@ref).
 
 Away from the face edge it is the exact width-1 band, unchecked and counted.
 Flush with it, `_seam_band_engine` takes over. `side == 1` never reaches here.

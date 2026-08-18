@@ -124,9 +124,38 @@ alias:
 Every fast path is optional, and must return what the generic implementation
 would have returned.
 
-See also [`AbstractGrid`](@ref), [`node_extent`](@ref).
+See also [`AbstractGrid`](@ref), [`AbstractQuadFaceGridSystem`](@ref),
+[`node_extent`](@ref).
 """
 abstract type AbstractHierarchicalGridSystem end
+
+"""
+    abstract type AbstractQuadFaceGridSystem <: AbstractHierarchicalGridSystem
+
+A system whose cells are an aligned `2^level × 2^level` lattice on each of
+`nbasefaces(sys)` congruent faces, named by the dense 0-based id
+`face * 4^level + curvecode` and positioned at `id + 1`. S2, HEALPix and ISEA4R
+are that one family.
+
+A subtype inherits every method that identity alone determines: the hierarchy
+block ([`rootcells`](@ref), [`parent`](@ref), [`children`](@ref),
+[`ancestor`](@ref), [`descendant_range`](@ref), [`descendants`](@ref)), the
+level-grid arithmetic ([`ncells`](@ref), [`cellindex`](@ref),
+[`cellposition`](@ref), [`cellindextype`](@ref),
+[`has_sorted_subtrees`](@ref)), and the subtree engines
+([`rim_engine`](@ref)/`interior_engine`/`halo_engine`), which read a subtree as
+the square lattice block it is.
+
+It must still provide its own face layout and projection: [`levels`](@ref),
+[`max_neighbors`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref),
+[`node_extent`](@ref), [`cellat`](@ref), [`one_ring`](@ref), the lattice codec
+hooks [`lattice_decode`](@ref)/`lattice_cell`/`face_orientation`, and the three
+declarations `nbasefaces`, `systemname`, `idname`. A system whose curve carries
+orientation state also overrides `subtree_curve` and `subtree_orientation`.
+
+See also [`AbstractHierarchicalGridSystem`](@ref).
+"""
+abstract type AbstractQuadFaceGridSystem <: AbstractHierarchicalGridSystem end
 
 """
     abstract type AbstractCellIndex

@@ -98,7 +98,11 @@ end
             n = nameof(typeof(sys))
             c = cellindex(levelgrid(sys, first(levels(sys))), 1)
             m = which(DGG.rim_engine, Base.typesof(sys, c, level(c), Vertex()))
-            overrides = m.module !== DGG.Fallbacks
+            # "Ships an automaton" is "the selected method is not the generic
+            # descendant scan" — not "the method lives in the system's own
+            # module", which the shared quad-face engine would fail while still
+            # being an automaton.
+            overrides = m.sig.parameters[2] !== DGG.AbstractHierarchicalGridSystem
             @test (n in automaton) ⊻ (n in fallback)   # nobody unaccounted for
             @test overrides == (n in automaton)
         end

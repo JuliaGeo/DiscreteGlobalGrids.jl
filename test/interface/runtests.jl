@@ -195,6 +195,23 @@ end
     @test Vertex() != Edge()
 end
 
+@testset "the radix-4 quad-face family" begin
+    # S2, HEALPix and ISEA4R get their hierarchy, level-grid arithmetic and
+    # subtree engines from `AbstractQuadFaceGridSystem` alone. A system that
+    # silently detached from the supertype would keep compiling and start
+    # answering with the generic fallbacks instead.
+    @test AbstractQuadFaceGridSystem <: AbstractHierarchicalGridSystem
+    for s in (S2System(), HEALPixSystem(), ISEA4RSystem())
+        @test s isa AbstractQuadFaceGridSystem
+    end
+
+    # No other registered system claims the family's arithmetic.
+    for s in DGG.systems()
+        s isa AbstractQuadFaceGridSystem && continue
+        @test !(nameof(typeof(s)) in (:S2System, :HEALPixSystem, :ISEA4RSystem))
+    end
+end
+
 @testset "trait defaults" begin
     s = UnimplementedSystem()
     g = UnimplementedGrid()

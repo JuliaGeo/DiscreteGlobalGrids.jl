@@ -98,11 +98,11 @@ extrema(elevation[covered])
 # positions into `elevation`, in one call; keeping only the covered ones is
 # this page's filter, not the grid's. A cell with no lower neighbour is a pit.
 
-halo = [filter(p -> covered[p], row) for row in DGG.halo_table(grid)]
+nbrs = [filter(p -> covered[p], row) for row in DGG.halo_table(grid)]
 
 function downhill(i)
-    isempty(halo[i]) && return 0
-    j = halo[i][argmin(elevation[halo[i]])]
+    isempty(nbrs[i]) && return 0
+    j = nbrs[i][argmin(elevation[nbrs[i]])]
     return elevation[j] < elevation[i] ? j : 0
 end
 

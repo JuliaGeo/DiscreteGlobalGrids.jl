@@ -93,6 +93,13 @@ and following those links to closure means rendering 530 entries, which is the
 whole package and then some. Those stay dead until a full reference exists to
 catch them.
 
+!!! note "Three names print someone else's docstring first"
+
+    `ncells`, `treeify` and `getcell` are `ConservativeRegridding.Trees`
+    bindings this package extends rather than owns. `?ncells` in the REPL prints
+    the upstream docstring above this package's; both are there, and the second
+    is the one that describes a grid.
+
 ```@docs
 Connectivity
 Vertex

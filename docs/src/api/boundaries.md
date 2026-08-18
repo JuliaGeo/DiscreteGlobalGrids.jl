@@ -17,7 +17,7 @@ fetches.
 instead of a subtree, so a cell punched out of the middle of a subset is part of
 its halo. All of these are `collect` of a lazy, resumable, `O(depth)`-memory
 iterator; materialising is the caller's decision, because a halo can be far
-larger than the rim it wraps.
+larger than the border it wraps.
 
 Two properties of the walk are contracts rather than accidents, and both are
 worth knowing before writing any code against these verbs:
@@ -111,7 +111,7 @@ descendant_range
 descendants
 has_sorted_subtrees
 node_extent
-max_neighbors
+maxneighbors
 LevelIndex
 PartialGrid
 CellVector
@@ -159,7 +159,7 @@ DiscreteGlobalGrids.Fallbacks.NativeCheck
 ### The aperture-7 directed walk
 
 IGeo7 and H3: a subtree's halo lies under the root's own same-level neighbours,
-and is reached by seeding each neighbour's rim automaton with the arc that faces
+and is reached by seeding each neighbour's border automaton with the arc that faces
 the root.
 
 ```@docs
@@ -187,12 +187,12 @@ DiscreteGlobalGrids.Fallbacks.ForcedGeometry
 DiscreteGlobalGrids.Fallbacks.SubsetMembership
 ```
 
-### The rim automata the halo walks borrow
+### The border automata the halo walks borrow
 
 ```@docs
-DiscreteGlobalGrids.Fallbacks.SquareRimEngine
+DiscreteGlobalGrids.Fallbacks.SquareBorderEngine
 DiscreteGlobalGrids.Fallbacks.SquareInteriorEngine
-DiscreteGlobalGrids.Fallbacks.ScanRimEngine
+DiscreteGlobalGrids.Fallbacks.ScanBorderEngine
 DiscreteGlobalGrids.Fallbacks.MortonCurve
 DiscreteGlobalGrids.Fallbacks.quadrant_step
 DiscreteGlobalGrids.Fallbacks.face_orientation

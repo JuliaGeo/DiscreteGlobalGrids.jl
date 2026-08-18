@@ -104,7 +104,7 @@ check("cellat outside the chunk is nothing",
 # 3. Halo exchange needs BOTH faces of the chunk boundary.
 #
 # `subtree_border` is the cells this chunk SENDS: its own cells with a
-# neighbour somewhere else, and H3 walks them in O(rim). `subtree_halo` is the
+# neighbour somewhere else, and H3 walks them in O(border). `subtree_halo` is the
 # other half — the cells this chunk FETCHES, which belong to the neighbouring
 # chunks and are not in this grid at all. Neither derives the other: the border
 # is inside, the halo is outside, and an exchange that only knew the border
@@ -116,14 +116,14 @@ check("cellat outside the chunk is nothing",
 # sort of its own.
 # --------------------------------------------------------------------------
 
-rim = DGG.subtree_border(SYS, CHUNK, LEAF_LEVEL)
-check("rim is a strict subset of the chunk", 0 < length(rim) < expected;
-    detail="$(length(rim)) of $expected cells ($(round(100 * length(rim) / expected; digits=1))%)")
-check("every rim cell has a neighbour outside the chunk",
+border = DGG.subtree_border(SYS, CHUNK, LEAF_LEVEL)
+check("border is a strict subset of the chunk", 0 < length(border) < expected;
+    detail="$(length(border)) of $expected cells ($(round(100 * length(border) / expected; digits=1))%)")
+check("every border cell has a neighbour outside the chunk",
     all(any(DGG.ancestor(SYS, nb, CHUNK_LEVEL) != CHUNK
-            for nb in DGG.neighbors(globe, c)) for c in rim))
-check("rim and interior partition the chunk",
-    length(rim) + length(DGG.subtree_interior(SYS, CHUNK, LEAF_LEVEL)) == expected)
+            for nb in DGG.neighbors(globe, c)) for c in border))
+check("border and interior partition the chunk",
+    length(border) + length(DGG.subtree_interior(SYS, CHUNK, LEAF_LEVEL)) == expected)
 
 fetch_positions = collect(DGG.halo_positions(SYS, CHUNK, LEAF_LEVEL))
 check("the halo is outside the chunk, and reaches it",
@@ -136,8 +136,8 @@ check("the halo is outside the chunk, and reaches it",
 check("the fetch list is ascending, so no receiver has to sort it",
     issorted(fetch_positions) && allunique(fetch_positions))
 check("the send and fetch lists are disjoint and adjacent",
-    isempty(intersect(Set(rim), Set(DGG.cellindex(globe, p) for p in fetch_positions))) &&
-    all(any(DGG.cellindex(globe, p) in Set(DGG.neighbors(globe, c)) for c in rim)
+    isempty(intersect(Set(border), Set(DGG.cellindex(globe, p) for p in fetch_positions))) &&
+    all(any(DGG.cellindex(globe, p) in Set(DGG.neighbors(globe, c)) for c in border)
         for p in fetch_positions))
 halo_it = DGG.SubtreeHaloIterator(SYS, CHUNK, LEAF_LEVEL)
 check("halo_sizehint bounds it, and is not a count",

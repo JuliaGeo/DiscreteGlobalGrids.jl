@@ -150,8 +150,8 @@ end
 DGG.cellindextype(::CubeSystem) = LevelIndex
 DGG.levels(s::CubeSystem) = 0:s.maxlevel
 DGG.has_sorted_subtrees(::CubeSystem) = true
-DGG.max_neighbors(::CubeSystem, ::Vertex) = 8
-DGG.max_neighbors(::CubeSystem, ::Edge) = 4
+DGG.maxneighbors(::CubeSystem, ::Vertex) = 8
+DGG.maxneighbors(::CubeSystem, ::Edge) = 4
 
 function DGG.levelgrid(s::CubeSystem, l::Integer)
     l in DGG.levels(s) || throw(ArgumentError("level $l is outside $(DGG.levels(s))"))
@@ -167,7 +167,7 @@ end
 
 function DGG.children(s::CubeSystem, c::LevelIndex)
     level(c) == s.maxlevel &&
-        throw(ArgumentError("$c is at max_level $(s.maxlevel) and has no children"))
+        throw(ArgumentError("$c is at maxlevel $(s.maxlevel) and has no children"))
     kids = [LevelIndex(level(c) + 1, 4 * rawid(c) + k) for k in 0:3]
     return s.bug === :unsorted_children ? reverse(kids) : kids
 end
@@ -439,7 +439,7 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         problems = Conf.covering_law_problems(drifted)
         @test any(contains("ancestor at level 0, descendant at level 2"), problems)
 
-        # With branch descent disabled, the chain to `max_level` still detects
+        # With branch descent disabled, the chain to `maxlevel` still detects
         # deep drift; disabling the chain removes that coverage.
         @test !Conf.check_covering_law(drifted; descent_depth = 0)
         @test Conf.check_covering_law(drifted; descent_depth = 0, deep_chain = false)
@@ -689,7 +689,7 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
     end
 
     # `atol` and `unit_atol` exist because a system with exact (uninflated)
-    # subtree caps puts cell corners exactly ON the cap rim, where containment is
+    # subtree caps puts cell corners exactly ON the cap border, where containment is
     # a floating-point coin toss — HEALPix, in this package. A caller that cannot
     # reach the tolerance cannot use the harness at all, so these assert that the
     # kwargs really reach the checks rather than being decoration.

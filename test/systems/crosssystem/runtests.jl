@@ -93,14 +93,14 @@ end
         end
     end
 
-    @testset "who ships a subtree-rim automaton" begin
+    @testset "who ships a subtree-border automaton" begin
         automaton = Set([:IGeo7System, :H3System, :HEALPixSystem, :ISEA4RSystem,
             :S2System])
         fallback = Set([:A5System])
         for sys in systems()
             n = nameof(typeof(sys))
             c = cellindex(levelgrid(sys, first(levels(sys))), 1)
-            m = which(DGG.rim_engine, Base.typesof(sys, c, level(c), Vertex()))
+            m = which(DGG.border_engine, Base.typesof(sys, c, level(c), Vertex()))
             # "Ships an automaton" is "the selected method is not the generic
             # descendant scan" — not "the method lives in the system's own
             # module", which the shared quad-face engine would fail while still
@@ -184,14 +184,14 @@ end
             isempty(missed) || @info "$name: cellat missed its own cell" first(missed, 5)
         end
 
-        @testset "$name: subtree rim hook" begin
+        @testset "$name: subtree border hook" begin
             root_level = first(levels(sys))
             grid0 = levelgrid(sys, root_level)
             probes = sample_cells(grid0, 6)
             for c in probes
                 lc = level(c)
 
-                # A depth-0 subtree is the cell itself, and it is all rim.
+                # A depth-0 subtree is the cell itself, and it is all border.
                 @test collect(subtree_border(sys, c, lc)) == [c]
                 @test isempty(collect(subtree_interior(sys, c, lc)))
 
@@ -210,7 +210,7 @@ end
                     @test union(Set(border), Set(interior)) == Set(kids)
                     @test length(border) + length(interior) == length(kids)
 
-                    # The rim is a small minority once there is any depth to
+                    # The border is a small minority once there is any depth to
                     # speak of — the property that makes the hook worth having.
                     depth >= 2 && @test length(border) < length(kids)
 
@@ -221,12 +221,12 @@ end
                     # canonical order unless a system says otherwise, and none
                     # of the six does. Verified across all four automatons
                     # before pinning it here: the Z7 digit automaton, H3's
-                    # digit-arc automaton, HEALPix's Morton rim walk and
+                    # digit-arc automaton, HEALPix's Morton border walk and
                     # ISEA4R's edge walk all emit ascending by construction
                     # (the Morton walk visits quadrants in id order precisely
                     # so that it can). A5 and S2 inherit it from the fallback,
                     # which preserves `descendants` order. Left unpinned, an
-                    # automaton could start emitting a rim in walk order and
+                    # automaton could start emitting a border in walk order and
                     # only the docs would be wrong.
                     @test issorted(border)
                     @test issorted(interior)

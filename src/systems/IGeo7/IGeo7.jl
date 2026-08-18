@@ -5,7 +5,7 @@ An aperture-7 hexagonal hierarchy on the icosahedron (ISEA7H) with Z7 indexing.
 Use [`IGeo7System`](@ref) for the system and [`Z7Cell`](@ref) for canonical
 cell identifiers. Integer lattice arithmetic and Z7 codecs are combined with
 the shared [`ISEA`](@ref) geometry.
-Subtree borders are generated in `O(rim)`; `subtree_border_count` returns their
+Subtree borders are generated in `O(border)`; `subtree_border_count` returns their
 size in closed form.
 """
 module IGeo7

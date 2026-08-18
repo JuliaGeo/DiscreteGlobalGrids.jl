@@ -507,7 +507,7 @@ end
                 @test allunique(border)
                 @test all(c -> DGG.level(c) == lvl + depth, border)
                 @test all(c -> H3N.is_valid_cell(DGG.rawid(c)), border)
-                # The closed-form rim size.
+                # The closed-form border size.
                 expected = H3N.is_pentagon(DGG.rawid(root)) ?
                            (5 * (3^depth - 1)) ÷ 2 : 3^(depth + 1) - 3
                 @test length(border) == expected
@@ -526,7 +526,7 @@ end
             end
         end
 
-        # A deep rim is O(3^d) where the subtree is O(7^d): 1_594_320 cells
+        # A deep border is O(3^d) where the subtree is O(7^d): 1_594_320 cells
         # against 13_841_287_201, which is why the automaton exists.
         deep = roots[3][2]
         @test length(DGG.subtree_border(S, deep, 15)) == 3^13 - 3
@@ -571,13 +571,13 @@ end
         end
         # The 1.10 threshold leaves the bounded beam search inexpensive while
         # still detecting a materially unsound inflation factor. The
-        # covering-law walk validates the extent contract through `max_level`.
+        # covering-law walk validates the extent contract through `maxlevel`.
         @test measured < 1.10
         @test measured < DGG.cap_inflation(S)
         @test DGG.cap_inflation(S) == 1.2
 
         # The covering law itself, spot-checked deep: a cell's node extent
-        # contains every descendant vertex, all the way to max_level.
+        # contains every descendant vertex, all the way to maxlevel.
         for res in (0, 1, 3)
             for c in sample_cells(res; stride=max(1, DGG.ncells(DGG.levelgrid(S, res)) ÷ 4))
                 cap = DGG.node_extent(S, c)
@@ -599,11 +599,11 @@ end
     @testset "traits" begin
         @test DGG.cellindextype(S) === H3.H3Cell
         @test DGG.levels(S) === 0:15
-        @test DGG.max_level(S) == 15
+        @test DGG.maxlevel(S) == 15
         @test DGG.has_sorted_subtrees(S)
-        @test DGG.max_neighbors(S) == 6
-        @test DGG.max_neighbors(S, DGG.Vertex()) == 6
-        @test DGG.max_neighbors(S, DGG.Edge()) == 6
+        @test DGG.maxneighbors(S) == 6
+        @test DGG.maxneighbors(S, DGG.Vertex()) == 6
+        @test DGG.maxneighbors(S, DGG.Edge()) == 6
         @test DGG.cellindextypes(S) === (H3.H3Cell,)
         for l in 0:15
             g = DGG.levelgrid(S, l)

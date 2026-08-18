@@ -1,43 +1,43 @@
-# Benchmark the hexagonal subtree automata on H3 and IGeo7: rim, interior, halo.
+# Benchmark the hexagonal subtree automata on H3 and IGeo7: border, interior, halo.
 #
-#   julia --project=test benchmark/hex_rim.jl
+#   julia --project=test benchmark/hex_border.jl
 #
 # Each cell reports the minimum wall time over nine runs and the bytes one run
 # allocates, both after a warmup. The engines are consumed by a counting loop,
 # so the only allocations reported are the walk's own.
 #
 # Roots are one hexagon and one pentagon per system at level 1, walked to a mid
-# depth and a deep one. The interior walk is `O(7^d)` where the rim is `O(3^d)`,
+# depth and a deep one. The interior walk is `O(7^d)` where the border is `O(3^d)`,
 # so it uses shallower depths to keep the run under a minute.
 #
 # This script exists because the two hexagonal automata — H3's `_h3_border_step`
 # stack walk and IGeo7's `_border_step` stack walk — are the same automaton with
-# different digit tables, and unifying them behind one `HexRimEngine{C}` was
+# different digit tables, and unifying them behind one `HexBorderEngine{C}` was
 # tried and measured. Minimum wall time in microseconds, Julia 1.12.6, M-series
 # macOS, 2026-08-17, eight interleaved A/B rounds against `f4bce1d`, per-cell
 # minimum. Allocations were 0 B in every cell of both columns.
 #
 #                            separate   unified
-#   H3       hex rim d=5        34.75     15.12   -56.5%
-#   H3       hex rim d=9      3109.12   1211.96   -61.0%
+#   H3       hex border d=5        34.75     15.12   -56.5%
+#   H3       hex border d=9      3109.12   1211.96   -61.0%
 #   H3       hex interior d=4   66.79     25.96   -61.1%
 #   H3       hex interior d=6 3626.96   1292.83   -64.4%
 #   H3       hex halo d=4       79.71     70.71   -11.3%
 #   H3       hex halo d=6      467.29    392.71   -16.0%
-#   H3       pent rim d=5       28.83     11.25   -61.0%
-#   H3       pent rim d=9     2622.83   1041.71   -60.3%
+#   H3       pent border d=5       28.83     11.25   -61.0%
+#   H3       pent border d=9     2622.83   1041.71   -60.3%
 #   H3       pent interior d=4  55.00     21.71   -60.5%
 #   H3       pent interior d=6 2994.17  1078.67   -64.0%
 #   H3       pent halo d=4      65.42     60.29    -7.8%
 #   H3       pent halo d=6     340.12    295.96   -13.0%
-#   IGeo7    hex rim d=5        16.92     14.88   -12.1%
-#   IGeo7    hex rim d=9      1392.88   1389.83    -0.2%
+#   IGeo7    hex border d=5        16.92     14.88   -12.1%
+#   IGeo7    hex border d=9      1392.88   1389.83    -0.2%
 #   IGeo7    hex interior d=4   27.42     30.08    +9.7%
 #   IGeo7    hex interior d=6 1497.17   1550.08    +3.5%
 #   IGeo7    hex halo d=4       58.75     60.33    +2.7%
 #   IGeo7    hex halo d=6      351.12    354.17    +0.9%
-#   IGeo7    pent rim d=5       14.21     12.42   -12.6%
-#   IGeo7    pent rim d=9     1108.38   1154.08    +4.1%
+#   IGeo7    pent border d=5       14.21     12.42   -12.6%
+#   IGeo7    pent border d=9     1108.38   1154.08    +4.1%
 #   IGeo7    pent interior d=4  23.25     24.79    +6.6%
 #   IGeo7    pent interior d=6 1186.50  1309.54   +10.4%
 #   IGeo7    pent halo d=4      46.25     45.58    -1.4%
@@ -72,7 +72,7 @@ function drain(e)
     return n
 end
 
-rim(sys, c, target) = drain(DGG.rim_engine(sys, c, target, Vertex()))
+border(sys, c, target) = drain(DGG.border_engine(sys, c, target, Vertex()))
 interior(sys, c, target) = drain(DGG.interior_engine(sys, c, target, Vertex()))
 halo(sys, c, target) = drain(DGG.halo_engine(sys, c, target, Vertex()))
 
@@ -99,11 +99,11 @@ function roots(sys, pentagon)
     return (("hex", hex), ("pentagon", pentagon))
 end
 
-function sweep(name, sys, pentagon, rimdepths, interiordepths, halodepths)
+function sweep(name, sys, pentagon, borderdepths, interiordepths, halodepths)
     for (kind, c) in roots(sys, pentagon)
         base = level(c)
-        for d in rimdepths
-            report("$name $kind rim d=$d", rim, sys, c, base + d)
+        for d in borderdepths
+            report("$name $kind border d=$d", border, sys, c, base + d)
         end
         for d in interiordepths
             report("$name $kind interior d=$d", interior, sys, c, base + d)

@@ -12,6 +12,7 @@ include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, sweepcovers
 
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 # The same Switzerland/Zurich fixture the DimensionalData suite uses, so the
 # two files can be read against each other.
@@ -44,7 +45,7 @@ function expand(sys, set, l::Int)
     return sort!(reduce(vcat, [DGG.descendants(sys, c, l) for c in set]))
 end
 
-nwin(cv) = FB.nwindows(FB.windows(cv))
+nwin(cv) = EN.nwindows(EN.windows(cv))
 
 @testset "the sweep covers every registered system" begin
     sweepcovers(SWEEP)
@@ -63,8 +64,8 @@ end
     @test !isdefined(@__MODULE__, :DimensionalData)
     @test !isdefined(@__MODULE__, :DD)
 
-    # The type and its verbs live in the fallback substrate, not in the DD layer.
-    @test parentmodule(DGG.CellVector) === DGG.Fallbacks
+    # The type and its verbs live in the engine substrate, not in the DD layer.
+    @test parentmodule(DGG.CellVector) === DGG.Engine
     @test DGG.CellVector <: AbstractVector
     @test !(DGG.CellVector <: DGG.CellLookup)
     for f in (DGG.covering, DGG.covering_positions, DGG.cellset)
@@ -181,7 +182,7 @@ end
         back = DGG.CellVector(pg)
         @test back == cv
         @test collect(back) == ids
-        @test FB.windows(back) === FB.windows(cv)
+        @test EN.windows(back) === EN.windows(cv)
     end
 
     @testset "a point, and a region" begin

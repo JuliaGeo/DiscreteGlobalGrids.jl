@@ -10,7 +10,7 @@ The halo of `c`'s subtree at level `l`, lazily: every level-`l` cell that is
 order, each cell exactly once.
 
 `collect` of this is [`subtree_halo`](@ref), element for element. `l == level(c)`
-is `c`'s own one-ring, sorted. `l < level(c)` and `l > max_level(sys)` throw an
+is `c`'s own one-ring, sorted. `l < level(c)` and `l > maxlevel(sys)` throw an
 `ArgumentError`.
 
 `cellposition(levelgrid(sys, l), x)` is strictly increasing over the walk.
@@ -74,7 +74,7 @@ Base.show(io::IO, it::SubtreeHaloIterator) = print(io, "SubtreeHaloIterator(",
     RingHaloEngine(ring)
 
 `c`'s own one-ring, ascending, by selection emit. `O(degree^2)` time with
-`degree <= max_neighbors(sys, connectivity)`, no allocation, isbits state.
+`degree <= maxneighbors(sys, connectivity)`, no allocation, isbits state.
 
 `length` equals `length(ring)`, requiring native one-rings to contain no
 duplicates. `collect_subtree` reports a count mismatch if this invariant fails.
@@ -128,8 +128,8 @@ function check_halo_level(sys::AbstractHierarchicalGridSystem,
     lc = level(c)
     target >= lc || throw(ArgumentError(
         "subtree_halo: level $target is above the cell's own level $lc"))
-    target <= max_level(sys) || throw(ArgumentError(
-        "subtree_halo: level $target is past max_level $(max_level(sys))"))
+    target <= maxlevel(sys) || throw(ArgumentError(
+        "subtree_halo: level $target is past maxlevel $(maxlevel(sys))"))
     return nothing
 end
 
@@ -552,7 +552,7 @@ end
 # the coarse-containment law is required only for vertex adjacency.
 
 # One frame per level strictly above the target, so a full-depth walk from the
-# root generation pushes at most `max_level` of them — 30 on S2, the deepest
+# root generation pushes at most `maxlevel` of them — 30 on S2, the deepest
 # registered system. 34 is that plus four spare.
 const _HALO_STACK_CAP = 34
 
@@ -910,17 +910,17 @@ that face's ROOT is read under, from [`face_orientation`](@ref)).
 The rectangles of a [`SquareBandEngine`](@ref) are one per face and sorted by
 `face`, which is what makes walking them a canonical merge.
 
-`Int32` BOUNDS BIND AT LEVEL 32, NOT AT `max_level`. A level-`l` lattice
+`Int32` BOUNDS BIND AT LEVEL 32, NOT AT `maxlevel`. A level-`l` lattice
 coordinate runs to `2^l - 1`, so `Int32` holds one through level 31
-(`2^31 - 1 == typemax(Int32)`) and overflows at level 32. S2's `max_level` of 30
+(`2^31 - 1 == typemax(Int32)`) and overflows at level 32. S2's `maxlevel` of 30
 is the deepest registered system, so there is exactly ONE level of headroom, and
-the quantity to compare a future `max_level` bump against is 31 — not 30, and
+the quantity to compare a future `maxlevel` bump against is 31 — not 30, and
 not `_SQUARE_CAP`. Past it the failure is an `InexactError` raised by this
 constructor from inside `square_halo_engine`, i.e. from iterator construction,
 which is loud but says nothing about the cause; widen these six fields to
 `Int64` (they are `Int32` only to keep `_BAND_RECT_CAP` rectangles inline and
 cheap to copy) rather than clamping. `test/systems/crosssystem/subtree_halos.jl`
-walks a `max_level` block on all three systems, so the level-31 boundary is
+walks a `maxlevel` block on all three systems, so the level-31 boundary is
 approached from one level below on every run.
 """
 struct FaceRect
@@ -1012,7 +1012,7 @@ are one per face and ascending by face, so the concatenation is already the
 canonical merge.
 
 `faceside` is a face's full lattice side at `level`. Yields [`LevelIndex`](@ref)
-on [`SquareRimEngine`](@ref)'s reasoning and takes the same
+on [`SquareBorderEngine`](@ref)'s reasoning and takes the same
 [`quadrant_step`](@ref) curves. `O(candidates + depth)` time, `O(depth)` memory.
 
 `check` decides both the emit rule and the count contract:
@@ -1194,7 +1194,7 @@ end
 
 The halo engine for the `side x side` block at lattice origin `(x0, y0)` of
 0-based `face`, on a face of side `n` at level `target`. The quad-face family's
-[`halo_engine`](@ref rim_engine) is this call plus [`lattice_decode`](@ref).
+[`halo_engine`](@ref border_engine) is this call plus [`lattice_decode`](@ref).
 
 Away from the face edge it is the exact width-1 band, unchecked and counted.
 Flush with it, `_seam_band_engine` takes over. `side == 1` never reaches here.
@@ -1214,6 +1214,33 @@ function square_halo_engine(sys::AbstractHierarchicalGridSystem, curve,
     end
     return _seam_band_engine(sys, curve, c, target, connectivity,
         x0, y0, side, face, n, home)
+end
+
+# The quad-face family's wiring. The halo — the outside face of the subtree
+# boundary — is the width-1 band around the block, walked lazily by the
+# face-quadtree descent. Away from the face edge that band is entirely in-face,
+# where adjacency is the plain 3x3 lattice, so the band IS the halo (minus its
+# four corners under `Edge()`). Flush with the edge it crosses the seam onto
+# other faces, and `square_halo_engine` derives those candidates by asking
+# `neighbors` about a few border cells, then filters every one of them with the
+# native one-ring. No seam table is read here.
+#
+# The block's origin comes from the PARENT's `(ix, iy)` shifted left by `d`, not
+# from decoding the block's first id: min-Morton is the min corner, but a Hilbert
+# block's first position is whichever corner the curve enters by, so decoding it
+# would name a different corner per orientation.
+#
+# `d == 0` is depth zero, which the generic engine answers with the cell's own
+# one-ring — exact at the irregular vertices, where a band of one is not.
+function halo_engine(sys::AbstractQuadFaceGridSystem, c::LevelIndex, target::Int,
+        connectivity::Connectivity)
+    check_halo_level(sys, c, target)
+    checked_id(sys, c)
+    d = target - level(c)
+    d == 0 && return generic_halo_engine(sys, c, target, connectivity)
+    ix, iy, face = lattice_decode(sys, c)
+    return square_halo_engine(sys, subtree_curve(sys), c, target, connectivity,
+        Int64(ix) << d, Int64(iy) << d, Int64(1) << d, Int64(face), nside(target))
 end
 
 # ---------------------------------------------------------------------------
@@ -1252,7 +1279,7 @@ const ProbeList = Helpers.SmallList{_PROBE_CAP,NTuple{2,Int64}}
     return Helpers.small_push(probes, (sx, sy))
 end
 
-# One probe: everything the native one-ring of the rim cell at `(sx, sy)` can
+# One probe: everything the native one-ring of the border cell at `(sx, sy)` can
 # see, bucketed by face. In-face neighbours already inside the home band box are
 # dropped rather than merged, so the home rectangle stays the tight band;
 # anything else on the home face — a face adjacent to ITSELF across a seam,
@@ -1283,7 +1310,7 @@ function _seam_band_engine(sys::AbstractHierarchicalGridSystem, curve,
         return generic_halo_engine(sys, c, target, connectivity)
     grid = levelgrid(sys, target)
     rects = Helpers.small_push(_empty_band_rects(), home)
-    # The two extreme rim cells of every flush side — eight positions naming at
+    # The two extreme border cells of every flush side — eight positions naming at
     # most four distinct cells, because a flush CORNER is an endpoint of both of
     # its sides and a whole-face block names each of its four corners twice.
     # `_merge_rect` already makes a repeat idempotent, so the deduplication is
@@ -1344,8 +1371,8 @@ end
 # The calibrated directed walk, shared by the two aperture-7 systems
 # ===========================================================================
 
-# H3 and IGeo7 subtrees have hexagonal spiral rims rather than rectangular
-# lattice bounds. Their rim automata expose an arc `(L, s)` of lattice
+# H3 and IGeo7 subtrees have hexagonal spiral borders rather than rectangular
+# lattice bounds. Their border automata expose an arc `(L, s)` of lattice
 # directions, and the halo is reached by walking the arcs of neighbouring
 # subtrees that face `root`.
 #
@@ -1357,14 +1384,14 @@ end
 #
 # Same-level neighbour subtrees are disjoint. Sorting neighbours by the first
 # position of their target-level descendant range therefore produces ascending,
-# non-overlapping candidate blocks, while each rim automaton emits its own block
+# non-overlapping candidate blocks, while each border automaton emits its own block
 # in ascending id order.
 #
 # Candidates cannot belong to `root` because a one-ring never contains its
 # subject and every candidate descends from a one-ring neighbour. The native
 # adjacency check still filters every candidate before emission. At depth one,
 # `HexChildHaloEngine` emits the touching children directly without starting a
-# rim automaton.
+# border automaton.
 
 # Six is a hexagon's neighbour count and five a pentagon's, so the list is never
 # more than six long on either system. Eight is that plus slack, so a system with
@@ -1497,7 +1524,7 @@ function _hex_validate(sys, root, rootlevel::Int, ring::HexRing{C},
     grid = levelgrid(sys, target)
     for i in 1:length(ring)
         e = @inbounds ring[i]
-        arc = seeded_rim_engine(sys, e.cell, target, Int(e.arclen), Int(e.start))
+        arc = seeded_border_engine(sys, e.cell, target, Int(e.arclen), Int(e.start))
         r = iterate(arc)
         for k in children(sys, e.cell), x in children(sys, k)
             _touches_root(sys, grid, root, rootlevel, x, connectivity) || continue
@@ -1575,7 +1602,7 @@ end
 """
     HexArcHaloEngine(system, grid, root, rootlevel, target, connectivity, ring)
 
-`target > rootlevel + 1`: the system's own rim automaton seeded with each
+`target > rootlevel + 1`: the system's own border automaton seeded with each
 neighbour's calibrated arc, walked to `target`, every leaf native-checked before
 it is yielded. The ring is in descendant-range order and the blocks are disjoint,
 so concatenating the neighbours' streams is already the canonical merge.
@@ -1621,7 +1648,7 @@ end
 
 @inline function _hex_arc_engine(e::HexArcHaloEngine, slot::Int)
     nb = @inbounds e.ring[slot]
-    return seeded_rim_engine(e.system, nb.cell, e.target, Int(nb.arclen),
+    return seeded_border_engine(e.system, nb.cell, e.target, Int(nb.arclen),
         Int(nb.start))
 end
 
@@ -1678,7 +1705,7 @@ connectivity produces an unsupported arc, the method returns the generic engine.
 function hex_halo_engine(sys::AbstractHierarchicalGridSystem,
         c::AbstractCellIndex, target::Int, connectivity::Connectivity)
     lc = level(c)
-    (has_sorted_subtrees(sys) && lc < target <= max_level(sys)) ||
+    (has_sorted_subtrees(sys) && lc < target <= maxlevel(sys)) ||
         return generic_halo_engine(sys, c, target, connectivity)
     nbs = neighbors(levelgrid(sys, lc), c, 1; connectivity = Vertex())
     length(nbs) <= _HEX_RING_CAP ||

@@ -13,7 +13,7 @@
 """
     HilbertCurve()
 
-S2's per-face Hilbert curve, as the quadrant order [`DGG.SquareRimEngine`](@ref)
+S2's per-face Hilbert curve, as the quadrant order [`DGG.SquareBorderEngine`](@ref)
 descends by. Unlike Morton, its state advances with depth.
 """
 struct HilbertCurve end

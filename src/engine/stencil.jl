@@ -12,7 +12,7 @@
 #
 # The position forms are the same answers read as indices into a data vector,
 # and `halo_table` is those for a whole subset at once. On a rooted subtree it
-# treats interior and rim cells separately: an interior cell has no neighbour outside the subtree by
+# treats interior and border cells separately: an interior cell has no neighbour outside the subtree by
 # definition, so its row needs no membership test at all.
 # ---------------------------------------------------------------------------
 
@@ -222,7 +222,7 @@ end
 # The rooted-subtree fast path. A subtree's INTERIOR is exactly the descendants
 # with no neighbour outside it, so an interior cell's whole row is in-set by
 # definition and its positions are the complete grid's minus the block offset —
-# no membership test, no search. Only the rim, which is O(sqrt(subtree)) of the
+# no membership test, no search. Only the border, which is O(sqrt(subtree)) of the
 # cells, has anything to decide.
 #
 # Three conditions, all load-bearing:
@@ -233,7 +233,7 @@ end
 #     for, since `Edge()`'s interior is strictly larger than `Vertex()`'s and
 #     using the wrong one would admit a neighbour that is not there; and
 #   * `k` must be 1. The interior guarantee applies only to the one-ring:
-#     a cell two steps inside the rim can still reach outside at `k == 2`, and
+#     a cell two steps inside the border can still reach outside at `k == 2`, and
 #     there is no "k-interior" iterator to ask.
 function halo_table(pg::PartialGrid, k::Integer = 1;
         connectivity::Connectivity = Vertex(), threaded = true)
@@ -266,7 +266,7 @@ function _rooted_halo(pg::PartialGrid, r::UnitRange{Int}, connectivity::Connecti
     out = Vector{Vector{Int}}(undef, ncells(pg))
     _inner_rows!(out, complete, InnerCellIterator(sys, root, l; connectivity),
         first(r), last(r), connectivity)
-    _rim_rows!(out, complete, EdgeCellIterator(sys, root, l; connectivity),
+    _border_rows!(out, complete, EdgeCellIterator(sys, root, l; connectivity),
         first(r), last(r), connectivity)
     return out
 end
@@ -284,11 +284,11 @@ end
 # are told to write is only as trustworthy as the walk that named it.
 @noinline _escaped(d, nb) = error(
     "interior cell $d has neighbour $nb outside its own subtree: the " *
-    "interior/rim split is wrong, and the halo table would be silently bad")
+    "interior/border split is wrong, and the halo table would be silently bad")
 
 @noinline _outside(d) = error(
     "walked cell $d is outside the subtree it was walked from: the " *
-    "interior/rim split is wrong, and the halo table would be silently bad")
+    "interior/border split is wrong, and the halo table would be silently bad")
 
 function _inner_rows!(out, complete, inner, lo::Int, hi::Int,
         connectivity::Connectivity)
@@ -306,8 +306,8 @@ function _inner_rows!(out, complete, inner, lo::Int, hi::Int,
     return out
 end
 
-function _rim_rows!(out, complete, rim, lo::Int, hi::Int, connectivity::Connectivity)
-    for d in rim
+function _border_rows!(out, complete, border, lo::Int, hi::Int, connectivity::Connectivity)
+    for d in border
         row = Int[]
         for nb in neighbors(complete, d, 1; connectivity)
             q = cellposition(complete, nb)::Int
@@ -496,7 +496,7 @@ as indices into the concatenated `[chunk; halo]` buffer: `1:ncells(pg)` names a
 cell of the chunk and `ncells(pg)+j` names `halo_positions[j]`.
 
 This is the addressing [`halo_table`](@ref) does not give. That verb is IN-SET,
-so at the rim its rows are short; here the missing neighbours are exactly the
+so at the border its rows are short; here the missing neighbours are exactly the
 halo, and pointing at them is the whole content of this function.
 
 `halo_positions` is the halo's positions on `levelgrid(system(pg), level(pg))`,
@@ -684,10 +684,10 @@ its REFERENCE LEVEL `L`, the depth its covering guarantee is stated at and no
 shallower than any member. So the question becomes a question about level `L`,
 and it is answered without expanding anything:
 
- 1. walk `c`'s subtree RIM at `L` — [`EdgeCellIterator`](@ref), `O(rim)` time
-    and `O(depth)` memory, and the rim is where every contact with the outside
+ 1. walk `c`'s subtree BORDER at `L` — [`EdgeCellIterator`](@ref), `O(border)` time
+    and `O(depth)` memory, and the border is where every contact with the outside
     lives by its own definition;
- 2. take each rim cell's one-ring at `L`, under the requested connectivity;
+ 2. take each border cell's one-ring at `L`, under the requested connectivity;
  3. map each of those cells to the member that contains it, if any. Members are
     disjoint subtrees, so there is at most one, and on a sorted-subtree system
     it is found by binary search over the set's own curve keys: the keys are the
@@ -695,8 +695,8 @@ and it is answered without expanding anything:
     `searchsortedlast` plus one range test decides it. A neighbour inside `c`'s
     own subtree maps back to `c` and is dropped.
 
-`O(|rim(c, L)| · degree · log|set|)` time and `O(|answer|)` memory beyond the
-rim walk's own `O(depth)`. The rim is the square root of the subtree, so a
+`O(|border(c, L)| · degree · log|set|)` time and `O(|answer|)` memory beyond the
+border walk's own `O(depth)`. The border is the square root of the subtree, so a
 member many levels above `L` costs the perimeter of its block and never its
 area.
 
@@ -720,7 +720,7 @@ SYSTEMS, not about this walk.
 !!! note "A5 pays for its missing primitives here too"
     Without [`has_sorted_subtrees`](@ref) there are no curve keys to binary
     search, so the member lookup is a set built per call, `O(|set|)`; and the
-    rim iterator materialises the subtree rather than walking it. The answer
+    border iterator materialises the subtree rather than walking it. The answer
     is unchanged.
 """
 function member_neighbors(set::MultiOrderCellSet, c::AbstractCellIndex;

@@ -77,7 +77,7 @@ import ConservativeRegridding
 import ConservativeRegridding: Trees
 import GeometryOps: SpatialTreeInterface as STI
 # `neighbors` and `ring` use variable-length, fixed-capacity containers bounded
-# by `max_neighbors`.
+# by `maxneighbors`.
 import SmallCollections
 using SmallCollections: SmallVector
 
@@ -114,16 +114,19 @@ include("interface/types.jl")
 include("interface/grid.jl")
 include("interface/system.jl")
 
-# Generic interface implementations.
+# The overridable generic defaults, then the machinery that reads them.
 include("fallbacks/fallbacks.jl")
+include("engine/engine.jl")
 
 # Bind fallback types before including systems that extend them.
-using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSystem,
+using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
+    EdgeCellIterator, InnerCellIterator
+
+using .Engine: PartialGrid,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
-    is_contained, coarsest_contained, cell_polygons,
+    iscontained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
-    grow, expand, compact,
-    EdgeCellIterator, InnerCellIterator, member_neighbors,
+    grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator,
     subtree_halo, halo, halo_positions, halo_sizehint,
     StencilTable, stencil_table,
@@ -134,11 +137,11 @@ using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSyst
 # Internal extension points for system-specific subtree walkers, shell winding,
 # and cursor parallelization.
 using .Fallbacks: collect_subtree,
-    MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine,
-    SquareBandEngine, square_halo_engine, generic_halo_engine, check_halo_level,
-    HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine,
-    adjacency_shells, checked_steps,
-    _ring_frame, _wind!, PARALLELIZE_CHUNKS_PER_THREAD
+    MortonCurve, quadrant_step, SquareBorderEngine, SquareInteriorEngine,
+    adjacency_shells, checked_steps, _ring_frame, _wind!
+using .Engine: SquareBandEngine, square_halo_engine, generic_halo_engine,
+    check_halo_level, HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine,
+    PARALLELIZE_CHUNKS_PER_THREAD
 
 # The radix-4 quad-face family: the declarations its members write, and the
 # shared arithmetic and geometry their own files call.
@@ -237,11 +240,11 @@ resolution wants rather than reading a level off this table.
 Important cross-system traits:
 
   - **Neighbour degree varies, and [`Vertex`](@ref)/[`Edge`](@ref) need not
-    coincide.** [`max_neighbors`](@ref) is an upper bound. IGeo7/H3 have degree
+    coincide.** [`maxneighbors`](@ref) is an upper bound. IGeo7/H3 have degree
     6 except for 12 pentagons of degree 5, with identical connectivities. A5's
     4-valent corners give
-    `max_neighbors(A5System(), Vertex()) == 11` against
-    `max_neighbors(A5System(), Edge()) == 5`; at resolution 1, some cells have
+    `maxneighbors(A5System(), Vertex()) == 11` against
+    `maxneighbors(A5System(), Edge()) == 5`; at resolution 1, some cells have
     11 vertex-neighbours and 3 edge-neighbours. Above level 1, ISEA4R has ten
     degree-9 cells at icosahedral vertices 0 and 11, thirty degree-7 cells, and
     degree 8 elsewhere; level 0 is 6-regular.
@@ -251,7 +254,7 @@ Important cross-system traits:
   - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
     has not established the two-sided [`descendant_range`](@ref) contract.
   - **[`subtree_border`](@ref).** IGeo7, H3, HEALPix, ISEA4R, and S2 provide
-    `O(rim)` walkers; A5 uses the `O(subtree)` fallback. Each is a resumable
+    `O(border)` walkers; A5 uses the `O(subtree)` fallback. Each is a resumable
     [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in `O(depth)`
     memory, of which [`subtree_border`](@ref) and [`subtree_interior`](@ref) are
     the `collect` forms.
@@ -271,7 +274,7 @@ Important cross-system traits:
         `SizeUnknown()`.
       + **IGeo7 and H3** approach the halo from the root's own same-level
         neighbours. One level down the calibration is already the answer; deeper,
-        each neighbour's subtree-rim automaton is seeded with an exposed-direction
+        each neighbour's subtree-border automaton is seeded with an exposed-direction
         arc calibrated by observation and walked to the target. Neighbouring
         subtrees occupy disjoint [`descendant_range`](@ref)s, so walking them in
         range order is canonical without a heap or a seen-set, and every
@@ -352,16 +355,30 @@ export cellsize, levelfor
 # --- Hierarchical system interface -----------------------------------------
 # `Base.parent(sys, c)` belongs to this list and is absent from it deliberately:
 # the hierarchy's parent is a method on Base's function, not a name to re-export.
-export cellindextype, levels, max_level, levelgrid, rootcells, children
-export node_extent, cap_inflation, max_neighbors, has_sorted_subtrees
+export cellindextype, levels, maxlevel, levelgrid, rootcells, children
+export node_extent, maxneighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
 export subtree_border, subtree_interior
-export EdgeCellIterator, InnerCellIterator
-export SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator
 export subtree_halo, halo, halo_positions, halo_sizehint
 export StencilTable, stencil_table
-export SubsetPositionedCell, cellid
-export mapneighbors, foreachneighbors, StorageOrder, HaloTable
+export cellid
+export mapneighbors, foreachneighbors, HaloTable
+
+# --- Reachable by name, not exported ---------------------------------------
+# The lazy walk types: an argument of the verbs above, never a name a caller
+# spells to get an answer.
+public EdgeCellIterator
+public InnerCellIterator
+public SubtreeHaloIterator
+public SubsetHaloIterator
+public HaloPositionIterator
+public SubsetPositionedCell
+public HierarchicalGridCursor
+# A traversal order, not a traversal.
+public StorageOrder
+# A tuning knob for the default `node_extent`, read by no caller that does not
+# implement a system.
+public cap_inflation
 # Caught, not called.
 public NeighborCallbackError
 
@@ -372,10 +389,10 @@ export Touches, Crosses, Overlaps, Equals
 
 # --- Fallback substrate ----------------------------------------------------
 # These fallback types are bound before system modules extend them.
-export HierarchicalLevelGrid, PartialGrid, HierarchicalGridCursor
+export HierarchicalLevelGrid, PartialGrid
 export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
-export is_contained, coarsest_contained, cell_polygons, member_neighbors
+export iscontained, coarsest_contained, cell_polygons, member_neighbors
 
 # --- The compressed cell collection ----------------------------------------
 # `CellVector` is the DimensionalData-independent compressed collection.
@@ -397,7 +414,8 @@ export Neighbors, Values, NeighborSlices
 # All seven systems return `HierarchicalLevelGrid` from `levelgrid`.
 export systems
 export IGeo7System, Z7Cell, RelativeZ7Cell
-export directioncode
+# The Z7 development-frame direction of a child, which only IGeo7 code reads.
+public directioncode
 export H3System, H3Cell
 export HEALPixSystem, HEALPixRingIndex
 export A5System, A5Cell
@@ -407,7 +425,9 @@ export ISEA4RSystem
 export CopernicusDEMSystem
 
 # --- Manifolds -------------------------------------------------------------
-export authalic_sphere
+# The manifold pair behind `AuthalicSystem`; reached through the wrapper, not
+# by name.
+public authalic_sphere
 
 # --- Regridding ------------------------------------------------------------
 # The verbs are `GlobalRegridding`'s, extended for this package's targets;
@@ -422,14 +442,27 @@ export PerChunk, Spilled
 # `detect`, `decode`, `encode!` and `gridname` stay qualified: they are
 # extension points, and the names are too generic to export.
 export dggread, dggwrite
-export StoreSnapshot, ArrayEntry, StoreDescription, Detection, DGGSFormatError
+export Detection, DGGSFormatError
 export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
     LegacyHealpixConvention, DKRZConvention
-export CONVENTION_REGISTRY, DEFAULT_WRITE_CONVENTIONS, register_convention!
+export register_convention!
 export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
-export ENCODING_REGISTRY, register_encoding!
-export GridReference, GRID_REFERENCE, register_grid!
+export register_encoding!
+export register_grid!
 export describe_store
-export ChunkedCellLookup, ChunkManifest, nchunks, chunkof, chunkbounds
+export ChunkedCellLookup, nchunks, chunkof, chunkbounds
+
+# The store description vocabulary: what `describe_store` hands back and what a
+# convention writer reads, never a name a reader or writer has to spell.
+public StoreSnapshot
+public StoreDescription
+public ArrayEntry
+public ChunkManifest
+public GridReference
+# The three mutable registries, reached through their `register_*!` verbs.
+public CONVENTION_REGISTRY
+public DEFAULT_WRITE_CONVENTIONS
+public ENCODING_REGISTRY
+public GRID_REFERENCE
 
 end # module DiscreteGlobalGrids

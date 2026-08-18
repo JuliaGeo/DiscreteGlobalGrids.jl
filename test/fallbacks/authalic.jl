@@ -148,7 +148,7 @@ end
             @test cellposition(g, c) == i
         end
         # A cell that is not in the grid is a `nothing`, never an error.
-        l < max_level(SYS) && @test cellposition(g, first(children(SYS, cellindex(g, 1)))) === nothing
+        l < maxlevel(SYS) && @test cellposition(g, first(children(SYS, cellindex(g, 1)))) === nothing
         @test_throws BoundsError cellindex(g, 0)
         @test_throws BoundsError cellindex(g, ncells(g) + 1)
     end
@@ -165,12 +165,12 @@ end
     @test cellindextype(SYS) === cellindextype(BASE)
     @test cellindextypes(SYS) === cellindextypes(BASE)
     @test levels(SYS) == levels(BASE)
-    @test max_level(SYS) == max_level(BASE)
+    @test maxlevel(SYS) == maxlevel(BASE)
     @test collect(rootcells(SYS)) == collect(rootcells(BASE))
     @test has_sorted_subtrees(SYS) == has_sorted_subtrees(BASE)
-    @test cap_inflation(SYS) == cap_inflation(BASE)
-    @test max_neighbors(SYS) == max_neighbors(BASE)
-    @test max_neighbors(SYS, Edge()) == max_neighbors(BASE, Edge())
+    @test DGG.cap_inflation(SYS) == DGG.cap_inflation(BASE)
+    @test maxneighbors(SYS) == maxneighbors(BASE)
+    @test maxneighbors(SYS, Edge()) == maxneighbors(BASE, Edge())
     g = levelgrid(SYS, 3)
     for c in spread(g, 12)
         @test collect(children(SYS, c)) == collect(children(BASE, c))

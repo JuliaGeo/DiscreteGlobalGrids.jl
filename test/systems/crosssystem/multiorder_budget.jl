@@ -6,6 +6,7 @@ module MultiOrderBudgetTests
 using Test
 import DiscreteGlobalGrids as DGG
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 import GeoInterface as GI
 import GeometryOps as GO
 import DimensionalData as DD
@@ -102,7 +103,7 @@ end
 # Oracles — the engine's own preparation, asked about POINTS
 # ---------------------------------------------------------------------------
 
-prepare(geom) = FB._query_target(geom)
+prepare(geom) = EN._query_target(geom)
 inside(t, lon, lat) = GO.relate_predicate(t.prepared, GO.pred_contains(),
     FB.unit_point(lon, lat))
 
@@ -210,9 +211,9 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
     # `level` mode is untouched by any of it.
     @test length(DGG.query(sys, cov; level=5)) > 0
     # The type constructor is the same two modes and the same errors.
-    @test FB.MultiOrderCellSet(sys, cov; maxcells=12) isa DGG.MultiOrderCellSet
-    @test_throws ArgumentError FB.MultiOrderCellSet(sys, cov)
-    @test_throws ArgumentError FB.MultiOrderCellSet(sys, cov; level=5, maxcells=10)
+    @test EN.MultiOrderCellSet(sys, cov; maxcells=12) isa DGG.MultiOrderCellSet
+    @test_throws ArgumentError EN.MultiOrderCellSet(sys, cov)
+    @test_throws ArgumentError EN.MultiOrderCellSet(sys, cov; level=5, maxcells=10)
 end
 
 # ---------------------------------------------------------------------------
@@ -243,7 +244,7 @@ end
                 intervals = [DGG.descendant_range(sys, c, set.reference_level) for c in cells]
                 @test issorted(intervals; by=first)
                 @test all(k -> first(intervals[k]) > last(intervals[k-1]), 2:length(intervals))
-                @test FB.curve_keys(set) == first.(intervals)
+                @test EN.curve_keys(set) == first.(intervals)
             else
                 @test !DGG.has_sorted_subtrees(sys)
                 @test issorted(cells; by=c -> (DGG.level(c), c))
@@ -271,7 +272,7 @@ end
             c = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=b)
             @test collect(a) == collect(c)
             @test a.contained == c.contained
-            @test FB.curve_keys(a) == FB.curve_keys(c)
+            @test EN.curve_keys(a) == EN.curve_keys(c)
             @test a.reference_level == c.reference_level
         end
     end
@@ -284,15 +285,15 @@ end
         @test set.reference_level < last(DGG.levels(sys))
         @test all(eachindex(set)) do i
             c = set[i]
-            DGG.is_contained(set, i) == FB._matches(DGG.Within(nothing), TARGET,
+            DGG.iscontained(set, i) == EN._matches(DGG.Within(nothing), TARGET,
                 DGG.levelgrid(sys, DGG.level(c)), c)
         end
         best = DGG.coarsest_contained(set)
         @test best !== nothing
-        @test FB._matches(DGG.Within(nothing), TARGET,
+        @test EN._matches(DGG.Within(nothing), TARGET,
             DGG.levelgrid(sys, DGG.level(best)), best)
         @test DGG.level(best) ==
-              minimum(DGG.level(set[i]) for i in eachindex(set) if DGG.is_contained(set, i))
+              minimum(DGG.level(set[i]) for i in eachindex(set) if DGG.iscontained(set, i))
     end
 
     @testset "a maxlevel the refinement reaches restores the blind spot" begin
@@ -310,12 +311,12 @@ end
         @test set.reference_level == cap
         stranded = [i for i in eachindex(set) if DGG.level(set[i]) == cap]
         @test !isempty(stranded)
-        @test all(i -> !DGG.is_contained(set, i), stranded)
+        @test all(i -> !DGG.iscontained(set, i), stranded)
         # And it IS a blind spot rather than a negative fact: ask `Within` of
         # the same cells and some of them say yes. The flag does not, because
         # nobody asked it.
         grid = DGG.levelgrid(sys, cap)
-        fits = count(i -> FB._matches(DGG.Within(nothing), TARGET, grid, set[i]), stranded)
+        fits = count(i -> EN._matches(DGG.Within(nothing), TARGET, grid, set[i]), stranded)
         @test fits > 0
     end
 
@@ -417,11 +418,11 @@ end
     # crosses into two of.
     one = DGG.query(sys, DGG.MultiOrderCoverage(BLOCK); maxcells=1)
     @test length(one) == 1
-    @test !DGG.is_contained(one, 1)
+    @test !DGG.iscontained(one, 1)
     @test DGG.coarsest_contained(one) === nothing
     @test one.reference_level == DGG.level(one[1])
     t = prepare(BLOCK)
-    @test FB._matches(DGG.Intersects(nothing), t,
+    @test EN._matches(DGG.Intersects(nothing), t,
         DGG.levelgrid(sys, DGG.level(one[1])), one[1])
     # More budget can only go deeper or wider, never fewer.
     more = DGG.query(sys, DGG.MultiOrderCoverage(BLOCK); maxcells=8)
@@ -431,7 +432,7 @@ end
 
 @testset "an empty answer is still a set" begin
     sys = DGG.S2System()
-    empty = FB._sorted_cell_set(sys, DGG.cellindextype(sys)[], falses(0),
+    empty = EN._sorted_cell_set(sys, DGG.cellindextype(sys)[], falses(0),
         first(DGG.levels(sys)))
     @test isempty(empty)
     @test length(empty) == 0
@@ -474,7 +475,7 @@ end
             # The seed cell of each part is coarse enough that SOME emitted cell
             # meets it, whatever depth the budget reached elsewhere.
             hit = any(set) do c
-                FB._matches(DGG.Intersects(nothing), t,
+                EN._matches(DGG.Intersects(nothing), t,
                     DGG.levelgrid(sys, DGG.level(c)), c)
             end
             @test hit || error("part $k of $(syslabel(sys)) met no emitted cell")

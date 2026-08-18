@@ -76,10 +76,10 @@ sys = DGG.HEALPixSystem()
 DGG.children(sys, c)
 parent(sys, c)
 DGG.descendant_range(sys, c, 6)                   # positions in levelgrid(sys, 6)
-DGG.subtree_border(sys, c, 6)                     # the rim, O(rim)
-DGG.subtree_halo(sys, c, 6)                       # the cells just OUTSIDE the rim
+DGG.subtree_border(sys, c, 6)                     # the border, O(border)
+DGG.subtree_halo(sys, c, 6)                       # the cells just OUTSIDE the border
 
-# The halo can dwarf the rim, so collecting it is always the caller's call:
+# The halo can dwarf the border, so collecting it is always the caller's call:
 # `SubtreeHaloIterator` is the lazy form, and `halo` asks the same of a subset.
 for x in DGG.SubtreeHaloIterator(sys, c, 6)       # O(depth) memory, resumable
     break
@@ -261,7 +261,7 @@ No system defines a grid type. All seven return `HierarchicalLevelGrid` from
 `cellat`, `neighbors` and `ring` on all seven, and `cell_area` on the three
 whose exact area is a closed form the published boundary only approximates
 (HEALPix, ISEA4R, CopernicusDEM); the other four take the generic spherical area
-of that boundary. Among the six in `systems()`, `subtree_border` is an `O(rim)`
+of that boundary. Among the six in `systems()`, `subtree_border` is an `O(border)`
 automaton on every one but A5, which walks the whole subtree; `subtree_interior`
 shares that walk and emits the branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
 `InnerCellIterator` in `O(depth)` memory. A5 is also the one system without
@@ -272,7 +272,7 @@ use it takes the selection branch instead.
 `collect` of a resumable `SubtreeHaloIterator` in `O(depth)` memory, so a prefix
 of a deep halo costs what the prefix costs and not what the ring would. HEALPix,
 S2 and ISEA4R walk the band around their square block, one pruned quadtree
-descent per face the halo touches; IGeo7 and H3 seed each neighbour's rim
+descent per face the halo touches; IGeo7 and H3 seed each neighbour's border
 automaton with a calibrated arc and walk that; A5, again for want of
 `descendant_range`, scans the target level. Only two of the seven engines count
 in closed form — depth zero, which is the one-ring already in hand, and the

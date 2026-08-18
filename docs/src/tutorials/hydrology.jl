@@ -41,7 +41,7 @@ root, DGG.level(root)
 
 # ## The tile's coverage as a grid
 #
-# One contained cell gives up the tile's rim. The destination that keeps it is
+# One contained cell gives up the tile's border. The destination that keeps it is
 # the tile's own coverage at the working level: every cell the tile touches.
 
 leaf = 12                                          # ≈ 65 m cells
@@ -77,7 +77,7 @@ dem = aggregate(mean, dem, 4; progress = false)
 #
 # `regrid` takes the grid as its destination and the raster as its source, and
 # hands back a cube whose axis is the cells. The coverage overhangs the tile at
-# the rim; a cell the raster covers less than half of comes back `NaN` rather
+# the border; a cell the raster covers less than half of comes back `NaN` rather
 # than as a number standing for ground that was never seen.
 
 igeo7_dem = @time DGG.regrid(dem; to = grid)

@@ -98,7 +98,7 @@ function main(ncases::Int, seed::UInt)
         family = rand(rng, (:A, :A, :B, :C))
         sys = rand(rng, syslist)
         conn = rand(rng, CONNS)
-        ml = DGG.max_level(sys)
+        ml = DGG.maxlevel(sys)
 
         if family === :A
             rootlevel = rand(rng, 0:3)

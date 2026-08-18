@@ -18,6 +18,7 @@ include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, sweepcovers
 
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 # ---------------------------------------------------------------------------
 # Systems and subset shapes covered by the sweep.
@@ -42,7 +43,7 @@ const TILE = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
 rooted(sys, base, depth) =
     CellVector(PartialGrid(sys, cellindex(levelgrid(sys, base), 3), base + depth))
 
-nwindows(cv) = FB.nwindows(FB.windows(cv))
+nwindows(cv) = EN.nwindows(EN.windows(cv))
 
 @testset "$(syslabel(sys))" for (sys, base, depth, covlvl) in SWEEP
     subtree = rooted(sys, base, depth)

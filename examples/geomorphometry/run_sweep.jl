@@ -50,7 +50,7 @@ function main()
             roots = [DGG.cellindex(groot, p) for p in 1:DGG.ncells(groot)]
             for depth in 0:3
                 target = rootlevel + depth
-                target > DGG.max_level(sys) && continue
+                target > DGG.maxlevel(sys) && continue
                 DGG.ncells(sys, target) > MAXCELLS && continue
                 for conn in (Vertex(), Edge()), field in FIELDS
                     for root in roots
@@ -120,7 +120,7 @@ function main()
     println("="^78)
     for sys in DGG.systems(), conn in (Vertex(), Edge())
         root = DGG.cellindex(DGG.levelgrid(sys, 0), 1)
-        deep = min(DGG.max_level(sys), 9)
+        deep = min(DGG.maxlevel(sys), 9)
         f, s = laziness_failures(sys, root, 2, deep, conn)
         append!(allfails, f)
         @printf("  %-16s %-6s  L2: %6d cells %6d B ctor %6d B prefix | L%-2d: %8d cells %6d B ctor %6d B prefix\n",
@@ -135,7 +135,7 @@ function main()
     for sys in DGG.systems()
         root = DGG.cellindex(DGG.levelgrid(sys, 2), 1)
         for (what, l) in (("level below the cell", 1),
-                          ("level above max_level", DGG.max_level(sys) + 1))
+                          ("level above maxlevel", DGG.maxlevel(sys) + 1))
             try
                 DGG.SubtreeHaloIterator(sys, root, l)
                 push!(allfails, Failure(:no_error,

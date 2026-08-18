@@ -18,6 +18,7 @@ include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, sweepcovers
 
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 # Cover one-window subtrees and multi-window coverages.
 const SWEEP = [
@@ -122,8 +123,8 @@ naive(cv; connectivity = Vertex()) =
         cv = CellVector(pg)
         back = PartialGrid(cv)
         @test back === pg
-        @test FB._is_rooted(back)
-        @test !FB._is_rooted(PartialGrid(cv[1:(length(cv)-1)]))
+        @test EN._is_rooted(back)
+        @test !EN._is_rooted(PartialGrid(cv[1:(length(cv)-1)]))
         @test halo_table(cv) == halo_table(pg)
     end
 end

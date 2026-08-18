@@ -123,7 +123,7 @@ at that level; a region with no complete sibling group stops after one pass. A
 group counts as complete against `length(children(sys, parent))`, the parent's
 own child count — pentagon parents are not assumed to have the hexagonal one.
 
-[`is_contained`](@ref) is `false` on every member: compaction has no coverage
+[`iscontained`](@ref) is `false` on every member: compaction has no coverage
 target, so nothing was proven to lie inside anything.
 """
 function compact(cv::CellVector)

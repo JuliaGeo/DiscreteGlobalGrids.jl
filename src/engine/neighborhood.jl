@@ -131,7 +131,7 @@ end
 # ===========================================================================
 # Ring buffer capacity
 #
-# `max_neighbors` is the system's static degree bound. A system that declares
+# `maxneighbors` is the system's static degree bound. A system that declares
 # one buys stack-allocated `SmallVector` rings; a system that declares none
 # (the trait defaults to `nothing`) gets heap `Vector` rings with the same
 # contents and the same order. The capacity travels as a singleton VALUE —
@@ -140,7 +140,7 @@ end
 # was.
 # ===========================================================================
 
-_capacity(sys, conn::Connectivity) = _capacity(max_neighbors(sys, conn))
+_capacity(sys, conn::Connectivity) = _capacity(maxneighbors(sys, conn))
 _capacity(M::Integer) = Val(Int(M))
 _capacity(::Nothing) = nothing
 

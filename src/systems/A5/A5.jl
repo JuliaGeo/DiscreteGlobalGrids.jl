@@ -37,7 +37,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     cellposition, rawid,
     cellat, neighbors, ring, one_ring, system, level,
     cellindextype, levels, levelgrid, rootcells, children,
-    cap_inflation, max_neighbors, has_sorted_subtrees,
+    cap_inflation, maxneighbors, has_sorted_subtrees,
     ancestor, descendants
 
 import GeometryOps as GO

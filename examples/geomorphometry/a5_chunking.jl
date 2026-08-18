@@ -74,7 +74,7 @@ function main()
         print(rpad("  " * nm, 18))
         for d in 1:6
             tl = rl + d
-            tl > DGG.max_level(sys) && continue
+            tl > DGG.maxlevel(sys) && continue
             t = @elapsed h = DGG.subtree_halo(sys, root, tl)
             @printf(" d%d:%d/%.3fs", d, length(h), t)
             t > 60 && (print(" [stopped: over a minute]"); break)

@@ -891,7 +891,7 @@ end
     @info "level-1 tile descent" worst_ancestor worst_globe
     @test reached == 10          # every target found, in its own leaf
     @test worst_ancestor < 0     # and strictly inside every cap on the way down
-    @test worst_globe <= 0       # the whole-sphere root included, on its rim
+    @test worst_globe <= 0       # the whole-sphere root included, on its border
 
     # ---- the index space ----------------------------------------------------
     # Tree and leaf indices both use grid-position space.
@@ -1316,14 +1316,14 @@ end
     end
 end
 
-@testset "max_neighbors is attained" begin
+@testset "maxneighbors is attained" begin
     # Both advertised neighbour bounds must be attained on every lattice.
     for sys in ALL_SYSTEMS
         N = CD.lat_intervals(sys)
         g = levelgrid(sys, 1)
         for (lat_s, j) in ((89, 0), (-90, N - 1))
             c = CD.pixelcell(sys, CD.tilecell(sys, lat_s, 0), j, 0)
-            @test length(DGG.neighbors(g, c)) == DGG.max_neighbors(sys, DGG.Vertex())
+            @test length(DGG.neighbors(g, c)) == DGG.maxneighbors(sys, DGG.Vertex())
             # Under `Edge()`, a pole cell has two laterals and one equatorward overlap.
             @test length(DGG.neighbors(g, c; connectivity = DGG.Edge())) == 3
         end
@@ -1332,10 +1332,10 @@ end
             nc = CD.ncols_at(sys, lat_s)
             @test maximum(length(DGG.neighbors(g, CD.pixelcell(sys, t, j, i);
                                                connectivity = DGG.Edge()))
-                          for i in 0:(nc - 1)) == DGG.max_neighbors(sys, DGG.Edge())
+                          for i in 0:(nc - 1)) == DGG.maxneighbors(sys, DGG.Edge())
         end
-        @test DGG.max_neighbors(sys, DGG.Vertex()) == 36 * N + 2
-        @test DGG.max_neighbors(sys, DGG.Edge()) == 6
+        @test DGG.maxneighbors(sys, DGG.Vertex()) == 36 * N + 2
+        @test DGG.maxneighbors(sys, DGG.Edge()) == 6
     end
 
     N = CD.lat_intervals(TWIN)
@@ -1393,8 +1393,8 @@ end
                for r in 0:(CD.NROWS - 1)]
     @test sort(unique(first.(counts0))) == [7, 8, 362]
     @test sort(unique(last.(counts0))) == [3, 4, 5]
-    @test maximum(first.(counts0)) < DGG.max_neighbors(TWIN, DGG.Vertex())
-    @test maximum(last.(counts0)) < DGG.max_neighbors(TWIN, DGG.Edge())
+    @test maximum(first.(counts0)) < DGG.maxneighbors(TWIN, DGG.Vertex())
+    @test maximum(last.(counts0)) < DGG.maxneighbors(TWIN, DGG.Edge())
 end
 
 end # @testset "CopernicusDEM system"

@@ -22,10 +22,12 @@ for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
 end
 
 makedocs(;
-    # Register `Fallbacks` so Documenter can render its boundary API docstrings,
-    # and `Encodings`/`ChunkedLookups` for the store-IO ones: the main module
-    # re-binds those names, but the docstrings belong to the submodules.
+    # Register `Fallbacks` and `Engine` so Documenter can render their boundary
+    # API docstrings, and `Encodings`/`ChunkedLookups` for the store-IO ones: the
+    # main module re-binds those names, but the docstrings belong to the
+    # submodules.
     modules = [DiscreteGlobalGrids, DiscreteGlobalGrids.Fallbacks,
+               DiscreteGlobalGrids.Engine,
                DiscreteGlobalGrids.Encodings, DiscreteGlobalGrids.ChunkedLookups],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",

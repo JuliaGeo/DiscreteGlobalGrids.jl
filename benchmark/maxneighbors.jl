@@ -21,7 +21,7 @@
 
 using Printf
 import DiscreteGlobalGrids as DGG
-const F = DGG.Fallbacks
+const F = DGG.Engine
 include(joinpath(@__DIR__, "toys.jl"))
 
 subset(sys, lvl, n) = DGG.PartialGrid(sys, lvl,
@@ -68,7 +68,7 @@ for (sysname, sys, lvl, n) in (("HEALPix L6", DGG.HEALPixSystem(), 6, 40_000),
     pg = subset(sys, lvl, n)
     cv = F.CellVector(pg)
     conn = DGG.Vertex()
-    M = DGG.max_neighbors(sys, conn)
+    M = DGG.maxneighbors(sys, conn)
     @assert sweepsum(cv, conn, Val(M)) == sweepsum(cv, conn, nothing)
     @assert chunkbuild(cv, conn, Val(M)) == chunkbuild(cv, conn, nothing)
     println("--- ", sysname, "  (", length(cv), " cells, M=", M, ") ---")
@@ -96,8 +96,8 @@ for (name, sys) in (("Octant-declared", OctantDeclared()),
     pg = subset(sys, lvl, n)
     cv = F.CellVector(pg)
     data = collect(1.0:length(cv))
-    println("--- ", name, "  (", length(cv), " cells, max_neighbors=",
-        repr(DGG.max_neighbors(sys, DGG.Vertex())), ") ---")
+    println("--- ", name, "  (", length(cv), " cells, maxneighbors=",
+        repr(DGG.maxneighbors(sys, DGG.Vertex())), ") ---")
     measure("$name  neighbors(cv) sweep",
         () -> (s = 0; for (_, nb) in DGG.neighbors(cv); s += length(nb); end; s))
     measure("$name  mapneighbors deg (serial)",
@@ -119,7 +119,7 @@ for (sysname, sys, lvl, n) in (("HEALPix L6", DGG.HEALPixSystem(), 6, 40_000),
     pg = subset(sys, lvl, n)
     cv = F.CellVector(pg)
     conn = DGG.Vertex()
-    M = DGG.max_neighbors(sys, conn)
+    M = DGG.maxneighbors(sys, conn)
     c = cv[1000]
     ring = DGG.neighbors(cv.grid, c, 1; connectivity = conn)
     f1() = F._positioned(cv, 1, 1, ring, Val(M))

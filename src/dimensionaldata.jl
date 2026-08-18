@@ -27,12 +27,12 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, ncells, cellindex, cellposition, cellat, level, system,
     levelgrid, cellindextype, has_sorted_subtrees, descendants, query,
     neighbors, ring, halo_table, halo, neighborcount, Connectivity, Vertex,
-    max_neighbors
+    maxneighbors
 import ..DiscreteGlobalGrids: Helpers
-import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
+import ..DiscreteGlobalGrids.Engine: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
 # Core collection operations delegated to `CellVector`.
-import ..DiscreteGlobalGrids.Fallbacks: CellVector, cellset, covering,
+import ..DiscreteGlobalGrids.Engine: CellVector, cellset, covering,
     covering_positions, windows, nwindows, RangeWindows, CellWindows, _derive,
     _windows, SubsetPositionedCell, mapneighbors, foreachneighbors, HaloTable,
     StorageOrder, _capacity, _ringtype

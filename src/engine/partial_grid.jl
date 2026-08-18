@@ -116,6 +116,12 @@ end
 
 _placeholder_root(sys::AbstractHierarchicalGridSystem) = first(rootcells(sys))
 
+# `AuthalicGrid`'s wrappability check, stated here because the subset type is.
+Fallbacks._check_wrappable(::PartialGrid) = throw(ArgumentError(
+    "wrap the SYSTEM, not the subset: `PartialGrid(AuthalicSystem(sys), level, ids)`. \
+A subset is a property of the id set and the warp is a property of the system, and \
+only that order keeps the tree cursor's position windows correct."))
+
 function _check_rooted(sys, complete, ids, root, l)
     if has_sorted_subtrees(sys)
         # The sorted endpoints bound every id, so two comparisons decide the

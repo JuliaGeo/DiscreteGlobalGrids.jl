@@ -10,9 +10,10 @@ import GeoInterface as GI
 import GeometryOps as GO
 
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 using DiscreteGlobalGrids: systems, levelgrid, ncells, cellindex, cellposition,
-    neighbors, ring, halo_table, level, levels, max_level, descendants,
+    neighbors, ring, halo_table, level, levels, maxlevel, descendants,
     descendant_range, has_sorted_subtrees, PartialGrid, CellVector, CellLookup,
     MultiOrderCoverage, member_neighbors, Vertex, Edge,
     Connectivity, cellindextype, query, system,
@@ -25,7 +26,7 @@ using .DGGTestHelpers: syslabel, isquadface, sweepcovers
 # Systems, and the depths each is swept at
 #
 # A root two levels above the leaf gives a subtree big enough to have an
-# interior and a rim, and small enough that the brute-force oracles below can
+# interior and a border, and small enough that the brute-force oracles below can
 # expand everything. The `AuthalicSystem` wrap is over IGEO7, as in the
 # neighbouring files.
 # ---------------------------------------------------------------------------
@@ -188,15 +189,15 @@ end
                   [neighbors(sub, p, 1; connectivity = conn) for p in 1:ncells(sub)]
         end
         @test halo_table(sub, 2) == [neighbors(sub, p, 2) for p in 1:ncells(sub)]
-        @test (FB._whole_subtree_range(sub) !== nothing) == has_sorted_subtrees(sys)
-        @test FB._whole_subtree_range(scattered(sys, leaf)) === nothing
+        @test (EN._whole_subtree_range(sub) !== nothing) == has_sorted_subtrees(sys)
+        @test EN._whole_subtree_range(scattered(sys, leaf)) === nothing
         # Rooted but not WHOLE: the root is there, one descendant is not, and
         # "interior" stops meaning "every neighbour is present". The generic
         # route is the only correct one, and the gate has to say so.
         root = cellindex(levelgrid(sys, base), 3)
         ids = descendants(sys, root, leaf)
         part = PartialGrid(sys, leaf, ids[1:(end-1)]; root)
-        @test FB._whole_subtree_range(part) === nothing
+        @test EN._whole_subtree_range(part) === nothing
         @test halo_table(part) == [neighbors(part, p, 1) for p in 1:ncells(part)]
         # `k == 0` is the empty neighbourhood, one row per cell — the table's
         # shape is the grid's, never the answer's.
@@ -239,7 +240,7 @@ end
     for (sys, base, leaf) in SWEEP
         mismatched = 0
         offdegree = 0
-        bound = DGG.max_neighbors(sys, Vertex())
+        bound = DGG.maxneighbors(sys, Vertex())
         for l in base:leaf
             grid = levelgrid(sys, l)
             for i in 1:ncells(grid)
@@ -259,11 +260,11 @@ end
     sys, base, leaf = SWEEP[1]
     sub = rooted(sys, base, leaf)
     cv = CellVector(sub)
-    onrim = first(c for c in (cellindex(sub, i) for i in 1:ncells(sub))
+    onborder = first(c for c in (cellindex(sub, i) for i in 1:ncells(sub))
                   if length(neighbors(sub, c)) < DGG.neighborcount(levelgrid(sys, leaf), c))
-    @test DGG.neighborcount(sub, onrim) == length(neighbors(sub, onrim))
-    @test DGG.neighborcount(cv, onrim) == length(neighbors(cv, onrim))
-    @test DGG.neighborcount(CellLookup(cv), onrim) == length(neighbors(cv, onrim))
+    @test DGG.neighborcount(sub, onborder) == length(neighbors(sub, onborder))
+    @test DGG.neighborcount(cv, onborder) == length(neighbors(cv, onborder))
+    @test DGG.neighborcount(CellLookup(cv), onborder) == length(neighbors(cv, onborder))
     outside = cellindex(levelgrid(sys, leaf), ncells(levelgrid(sys, leaf)))
     @test_throws ArgumentError DGG.neighborcount(cv, outside)
 end
@@ -419,8 +420,8 @@ end
         root = cellindex(levelgrid(sys, base), 3)
         blocked = PartialGrid(sys, root, leaf)
         member = PartialGrid(sys, leaf, descendants(sys, root, leaf))
-        (FB._whole_subtree_range(blocked) !== nothing &&
-         FB._whole_subtree_range(member) === nothing) || push!(paths, (syslabel(sys), :gate))
+        (EN._whole_subtree_range(blocked) !== nothing &&
+         EN._whole_subtree_range(member) === nothing) || push!(paths, (syslabel(sys), :gate))
         for conn in (Vertex(), Edge())
             halo_pos = [cellposition(grid, x)::Int
                         for x in halo(blocked; connectivity = conn)]
@@ -583,7 +584,7 @@ function oracle(set, c; connectivity = Vertex(), geometric = false)
 end
 
 # The members to ask about: the coarsest few, which are the ones with a subtree
-# and therefore with a rim, plus a spread over the rest.
+# and therefore with a border, plus a spread over the rest.
 function member_probes(set, n::Int)
     shallowest = minimum(level, set)
     coarse = [i for i in eachindex(set) if level(set[i]) == shallowest]
@@ -691,7 +692,7 @@ function walk_bytes(set)
     return @allocated member_neighbors(set, c)
 end
 
-@testset "the walk is the rim, not the subtree" begin
+@testset "the walk is the border, not the subtree" begin
     for (sys, shallow) in ((DGG.HEALPixSystem(), 9), (DGG.S2System(), 9),
         (DGG.ISEA4RSystem(), 9), (DGG.IGeo7System(), 7))
         near = query(sys, MultiOrderCoverage(CAP); level = shallow)

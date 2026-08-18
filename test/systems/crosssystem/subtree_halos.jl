@@ -10,7 +10,7 @@ module SubtreeHaloTests
 
 using Test
 using DiscreteGlobalGrids
-using DiscreteGlobalGrids: systems, levelgrid, level, max_level, ncells,
+using DiscreteGlobalGrids: systems, levelgrid, level, maxlevel, ncells,
     cellindex, cellposition, neighbors, ancestor, subtree_border, Vertex, Edge,
     SubtreeHaloIterator, subtree_halo, halo_positions, halo_sizehint
 import DiscreteGlobalGrids as DGG
@@ -58,13 +58,13 @@ CountingSubset(inner) = CountingSubset{typeof(inner)}(inner, 0)
 DGG.cellposition(cs::CountingSubset, c::DGG.AbstractCellIndex) =
     (cs.calls += 1; DGG.cellposition(cs.inner, c))
 
-DGG.Fallbacks.subset_span(cs::CountingSubset, lo::Int, hi::Int) =
-    (cs.calls += 1; DGG.Fallbacks.subset_span(cs.inner, lo, hi))
+DGG.Engine.subset_span(cs::CountingSubset, lo::Int, hi::Int) =
+    (cs.calls += 1; DGG.Engine.subset_span(cs.inner, lo, hi))
 
 # `wrap` optionally replaces the shipped walk with its eager equivalent.
 counting_iterator(sys, cs::CountingSubset, complete, l, conn, wrap = identity) =
-    DGG.Fallbacks.SubsetHaloIterator(cs, conn, wrap(
-        DGG.Fallbacks.subset_halo_engine(sys, cs, complete, Int(l), conn)))
+    DGG.Engine.SubsetHaloIterator(cs, conn, wrap(
+        DGG.Engine.subset_halo_engine(sys, cs, complete, Int(l), conn)))
 
 counting_halo(sys, cs::CountingSubset, complete, l, conn) =
     DGG.collect_subtree(counting_iterator(sys, cs, complete, l, conn))
@@ -104,7 +104,7 @@ subset_construct_bytes(sub) =
 # Build the generic outside-first walk explicitly; specialized constructors do
 # not select it.
 generic_iterator(sys, c, l) = SubtreeHaloIterator(sys, c, Int(l), Vertex(),
-    DGG.Fallbacks.generic_halo_engine(sys, c, Int(l), Vertex()))
+    DGG.Engine.generic_halo_engine(sys, c, Int(l), Vertex()))
 
 generic_take(sys, c, l, n::Int) = take_n(generic_iterator(sys, c, l), n)
 generic_collect(sys, c, l) = DGG.collect_subtree(generic_iterator(sys, c, l))
@@ -114,7 +114,7 @@ generic_construct_bytes(sys, c, l) =
 
 # Apply the same measurements to the eager fixture.
 fixture_iterator(sys, c, l) = SubtreeHaloIterator(sys, c, Int(l), Vertex(),
-    EagerHaloEngine(DGG.Fallbacks.halo_engine(sys, c, Int(l), Vertex())))
+    EagerHaloEngine(DGG.Engine.halo_engine(sys, c, Int(l), Vertex())))
 
 fixture_collect(sys, c, l) = DGG.collect_subtree(fixture_iterator(sys, c, l))
 fixture_construct!(sys, c, l) = (SINK[] = fixture_iterator(sys, c, l); nothing)
@@ -154,11 +154,11 @@ fixture_collect_bytes(sys, c, l) =
         for sys in systems()
             grid = levelgrid(sys, 1)
             c = cellindex(grid, 1)
-            mx = max_level(sys)
+            mx = maxlevel(sys)
             @test msg(() -> SubtreeHaloIterator(sys, c, 0)) ==
                 "subtree_halo: level 0 is above the cell's own level 1"
             @test msg(() -> SubtreeHaloIterator(sys, c, mx + 1)) ==
-                "subtree_halo: level $(mx + 1) is past max_level $mx"
+                "subtree_halo: level $(mx + 1) is past maxlevel $mx"
         end
     end
 
@@ -203,7 +203,7 @@ fixture_collect_bytes(sys, c, l) =
     @testset "$(syslabel(sys)): the defining law" for sys in systems()
         grid0 = levelgrid(sys, 0)
         n0 = ncells(grid0)
-        mx = max_level(sys)
+        mx = maxlevel(sys)
 
         for i in 1:n0, conn in (Vertex(), Edge())
             check_law(sys, cellindex(grid0, i), 1, conn)
@@ -229,7 +229,7 @@ fixture_collect_bytes(sys, c, l) =
                 @test collect(SubtreeHaloIterator(sys, c, 4; connectivity = conn)) ==
                       want
                 @test collect(SubtreeHaloIterator(sys, c, 4, conn,
-                    DGG.Fallbacks.generic_halo_engine(sys, c, 4, conn))) == want
+                    DGG.Engine.generic_halo_engine(sys, c, 4, conn))) == want
             end
         end
 
@@ -253,7 +253,7 @@ fixture_collect_bytes(sys, c, l) =
     # the system ships.
     forced_geometry_halo(sys, c, l, conn) = DGG.collect_subtree(
         DGG.SubtreeHaloIterator(sys, c, Int(l), conn,
-            DGG.Fallbacks.geometry_halo_engine(sys, c, Int(l), conn)))
+            DGG.Engine.geometry_halo_engine(sys, c, Int(l), conn)))
 
 
     @testset "forced geometry at depth zero" begin
@@ -277,7 +277,7 @@ fixture_collect_bytes(sys, c, l) =
             @test forced_geometry_halo(sys, c, 1, conn) ==
                   collect(SubtreeHaloIterator(sys, c, 1; connectivity = conn))
         end
-        if max_level(sys) >= 2
+        if maxlevel(sys) >= 2
             for i in 1:max(1, n0 ÷ 4):n0, conn in (Vertex(), Edge())
                 c = cellindex(grid0, i)
                 @test forced_geometry_halo(sys, c, 2, conn) ==
@@ -298,7 +298,7 @@ fixture_collect_bytes(sys, c, l) =
     end
 
 
-    sweep_bases(sys) = filter(b -> b <= max_level(sys),
+    sweep_bases(sys) = filter(b -> b <= maxlevel(sys),
         hassortedsubtrees(sys) ? (0, 1, 2) : (0, 1))
 
     sweep_roots(sys, base::Int) = (grid = levelgrid(sys, base);
@@ -309,7 +309,7 @@ fixture_collect_bytes(sys, c, l) =
     # system rather than the same number of levels.
     function deep_depth(sys, base::Int, budget::Int = 70_000)
         d = 0
-        while base + d + 1 <= max_level(sys) &&
+        while base + d + 1 <= maxlevel(sys) &&
             ncells(levelgrid(sys, base + d + 1)) ÷ ncells(levelgrid(sys, base)) <= budget
             d += 1
         end
@@ -340,7 +340,7 @@ fixture_collect_bytes(sys, c, l) =
 
     @testset "$(syslabel(sys)) at level $base" for sys in systems(),
             base in sweep_bases(sys)
-        for c in sweep_roots(sys, base), l in base:min(base + 2, max_level(sys))
+        for c in sweep_roots(sys, base), l in base:min(base + 2, maxlevel(sys))
             hv = check_halo_case(sys, c, l, Vertex())
             he = check_halo_case(sys, c, l, Edge())
             @test issubset(Set(he), Set(hv))
@@ -366,8 +366,8 @@ fixture_collect_bytes(sys, c, l) =
         for i in 1:ncells(grid)
             c = cellindex(grid, i)
             e = SubtreeHaloIterator(sys, c, l; connectivity = conn).engine
-            if e isa DGG.Fallbacks.SquareBandEngine
-                push!(e.check isa DGG.Fallbacks.NoCheck ? inface : seam, c)
+            if e isa DGG.Engine.SquareBandEngine
+                push!(e.check isa DGG.Engine.NoCheck ? inface : seam, c)
             else
                 push!(fallback, c)
             end
@@ -400,15 +400,15 @@ fixture_collect_bytes(sys, c, l) =
             SQUARE_SYSTEMS
         for base in BAND_BASES, d in 1:2, conn in (Vertex(), Edge())
             l = base + d
-            l <= max_level(sys) || continue
+            l <= maxlevel(sys) || continue
             inface, seam, fallback = classify_roots(sys, base, l, conn)
             # The specialization was reached, and reached on exactly the blocks the
             # lattice says it should be. See `inface_root_count`.
             check_root_classes(sys, base, inface, seam, fallback)
             for c in spread(inface, 6)
                 it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
-                @test it.engine isa DGG.Fallbacks.SquareBandEngine
-                @test it.engine.check isa DGG.Fallbacks.NoCheck
+                @test it.engine isa DGG.Engine.SquareBandEngine
+                @test it.engine.check isa DGG.Engine.NoCheck
                 @test collect(it) == forced_geometry_halo(sys, c, l, conn)
                 check_halo_case(sys, c, l, conn)
             end
@@ -422,7 +422,7 @@ fixture_collect_bytes(sys, c, l) =
             SQUARE_SYSTEMS
         for base in BAND_BASES, conn in (Vertex(), Edge())
             l = base + 2
-            l <= max_level(sys) || continue
+            l <= maxlevel(sys) || continue
             inface, _, _ = classify_roots(sys, base, l, conn)
             for c in spread(inface, 4)
                 @test collect(SubtreeHaloIterator(sys, c, l; connectivity = conn)) ==
@@ -435,7 +435,7 @@ fixture_collect_bytes(sys, c, l) =
             SQUARE_SYSTEMS
         for base in BAND_BASES, d in 1:4
             l = base + d
-            l <= max_level(sys) || continue
+            l <= maxlevel(sys) || continue
             side = 1 << d
             for conn in (Vertex(), Edge())
                 inface, _, _ = classify_roots(sys, base, l, conn)
@@ -463,7 +463,7 @@ fixture_collect_bytes(sys, c, l) =
         @test !isempty(inface)
         for c in spread(inface, 3), conn in (Vertex(), Edge())
             it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
-            @test it.engine isa DGG.Fallbacks.SquareBandEngine
+            @test it.engine isa DGG.Engine.SquareBandEngine
             @test length(it) == (conn isa Vertex ? 260 : 256)
             @test collect(it) == forced_geometry_halo(sys, c, l, conn)
             # The contract bundle at nine levels of descent too: sortedness and
@@ -497,7 +497,7 @@ fixture_collect_bytes(sys, c, l) =
 
     function band_candidate_count(e)
         n = 0
-        for _ in DGG.Fallbacks.SquareBandEngine(e.curve, DGG.Fallbacks.NoCheck(),
+        for _ in DGG.Engine.SquareBandEngine(e.curve, DGG.Engine.NoCheck(),
                 e.level, e.faceside, e.homeface, e.x0, e.y0, e.side, true, e.rects)
             n += 1
         end
@@ -508,14 +508,14 @@ fixture_collect_bytes(sys, c, l) =
             SQUARE_SYSTEMS
         for base in (0, 1, 2, 3), d in 1:3, conn in (Vertex(), Edge())
             l = base + d
-            l <= max_level(sys) || continue
+            l <= maxlevel(sys) || continue
             inface, seam, fallback = classify_roots(sys, base, l, conn)
             check_root_classes(sys, base, inface, seam, fallback)
             @test !isempty(seam)                 # the seam path was reached
             for c in seam_roots(sys, base, seam)
                 it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
-                @test it.engine isa DGG.Fallbacks.SquareBandEngine
-                @test it.engine.check isa DGG.Fallbacks.NativeCheck
+                @test it.engine isa DGG.Engine.SquareBandEngine
+                @test it.engine.check isa DGG.Engine.NativeCheck
                 h = collect(it)
                 @test h == forced_geometry_halo(sys, c, l, conn)
                 @test band_candidate_count(it.engine) ==
@@ -531,7 +531,7 @@ fixture_collect_bytes(sys, c, l) =
             SQUARE_SYSTEMS
         for base in (0, 1), conn in (Vertex(), Edge())
             l = base + 2
-            l <= max_level(sys) || continue
+            l <= maxlevel(sys) || continue
             _, seam, _ = classify_roots(sys, base, l, conn)
             for c in spread(seam, 4)
                 @test collect(SubtreeHaloIterator(sys, c, l; connectivity = conn)) ==
@@ -548,7 +548,7 @@ fixture_collect_bytes(sys, c, l) =
     @testset "the seam walk declares no length" begin
         for sys in SQUARE_SYSTEMS, base in (0, 1)
             l = base + 2
-            l <= max_level(sys) || continue
+            l <= maxlevel(sys) || continue
             _, seam, _ = classify_roots(sys, base, l, Vertex())
             isempty(seam) && continue
             it = SubtreeHaloIterator(sys, first(seam), l)
@@ -565,7 +565,7 @@ fixture_collect_bytes(sys, c, l) =
         for sys in SQUARE_SYSTEMS, conn in (Vertex(), Edge())
             c = cellindex(levelgrid(sys, 0), 1)
             it = SubtreeHaloIterator(sys, c, 5; connectivity = conn)
-            @test it.engine isa DGG.Fallbacks.SquareBandEngine
+            @test it.engine isa DGG.Engine.SquareBandEngine
             @test collect(it) == forced_geometry_halo(sys, c, 5, conn)
             # And still tight thirty-two cells along a flush side, which is
             # where a bound taken lazily would have the most room to be slack.
@@ -574,9 +574,9 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
-    @testset "the band walk at max_level and at level 20" begin
+    @testset "the band walk at maxlevel and at level 20" begin
         for sys in SQUARE_SYSTEMS
-            mx = max_level(sys)
+            mx = maxlevel(sys)
             for base in (mx - 1, 19), conn in (Vertex(), Edge())
                 l = base + 1
                 # Position 1 is lattice (0, 0) of face 0 under both curves: the
@@ -584,8 +584,8 @@ fixture_collect_bytes(sys, c, l) =
                 # Hilbert curve enters face 0 at its origin.
                 c = cellindex(levelgrid(sys, base), 1)
                 it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
-                @test it.engine isa DGG.Fallbacks.SquareBandEngine
-                @test it.engine.check isa DGG.Fallbacks.NativeCheck
+                @test it.engine isa DGG.Engine.SquareBandEngine
+                @test it.engine.check isa DGG.Engine.NativeCheck
                 @test collect(it) == forced_geometry_halo(sys, c, l, conn)
                 # And tight at level 30, where the rectangles' `Int32` bounds
                 # are one level from overflowing: a bound derived a level too
@@ -596,7 +596,7 @@ fixture_collect_bytes(sys, c, l) =
         end
         for (sys, nv) in ((HEALPixSystem(), 12), (S2System(), 11),
                           (ISEA4RSystem(), 11))
-            mx = max_level(sys)
+            mx = maxlevel(sys)
             c = cellindex(levelgrid(sys, mx - 1), 1)
             @test length(collect(SubtreeHaloIterator(sys, c, mx))) == nv
             @test length(collect(SubtreeHaloIterator(sys, c, mx;
@@ -650,9 +650,9 @@ fixture_collect_bytes(sys, c, l) =
         child, arc, fallback = C[], C[], C[]
         for c in roots
             e = SubtreeHaloIterator(sys, c, l; connectivity = conn).engine
-            if e isa DGG.Fallbacks.HexChildHaloEngine
+            if e isa DGG.Engine.HexChildHaloEngine
                 push!(child, c)
-            elseif e isa DGG.Fallbacks.HexArcHaloEngine
+            elseif e isa DGG.Engine.HexArcHaloEngine
                 push!(arc, c)
             else
                 push!(fallback, c)
@@ -678,7 +678,7 @@ fixture_collect_bytes(sys, c, l) =
         for base in (0, 1), conn in (Vertex(), Edge())
             grid = levelgrid(sys, base)
             roots = [cellindex(grid, i) for i in 1:ncells(grid)]
-            for l in (base + 1):min(base + 4, max_level(sys))
+            for l in (base + 1):min(base + 4, maxlevel(sys))
                 check_hex_classes(sys, roots, base, l, conn)
             end
         end
@@ -691,10 +691,10 @@ fixture_collect_bytes(sys, c, l) =
         # them, and a positional spread. Depth 4 is in every base because it is
         # the first at which a seeded arc has been through three transitions.
         base = 8
-        if base + 1 <= max_level(sys)
+        if base + 1 <= maxlevel(sys)
             roots = hex_roots(sys, base, 4)
             for conn in (Vertex(), Edge()),
-                    l in (base + 1):min(base + 4, max_level(sys))
+                    l in (base + 1):min(base + 4, maxlevel(sys))
                 check_hex_classes(sys, roots, base, l, conn)
             end
         end
@@ -703,11 +703,11 @@ fixture_collect_bytes(sys, c, l) =
     @testset "$(syslabel(sys)): the directed walk against forced geometry" for
             sys in HEX_SYSTEMS
         for base in (0, 1, 5, 8)
-            base + 1 <= max_level(sys) || continue
+            base + 1 <= maxlevel(sys) || continue
             roots = hex_roots(sys, base, 4)
             for c in roots, d in 1:3, conn in (Vertex(), Edge())
                 l = base + d
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
                 @test collect(it) == forced_geometry_halo(sys, c, l, conn)
             end
@@ -719,10 +719,10 @@ fixture_collect_bytes(sys, c, l) =
         for i in 1:length(ring)
             h = ring[i]
             ring = DGG.Helpers.small_setindex(ring,
-                DGG.Fallbacks.HexNeighbour(h.cell, h.lo, h.arclen + Int8(1),
+                DGG.Engine.HexNeighbour(h.cell, h.lo, h.arclen + Int8(1),
                     Int8(mod(Int(h.start) - 1, 6))), i)
         end
-        return DGG.Fallbacks.HexArcHaloEngine(e.system, e.grid, e.root,
+        return DGG.Engine.HexArcHaloEngine(e.system, e.grid, e.root,
             e.rootlevel, e.target, e.connectivity, ring)
     end
 
@@ -730,7 +730,7 @@ fixture_collect_bytes(sys, c, l) =
         n = 0
         for i in 1:length(e.ring)
             nb = e.ring[i]
-            for _ in DGG.seeded_rim_engine(e.system, nb.cell, e.target,
+            for _ in DGG.seeded_border_engine(e.system, nb.cell, e.target,
                     Int(nb.arclen), Int(nb.start))
                 n += 1
             end
@@ -742,11 +742,11 @@ fixture_collect_bytes(sys, c, l) =
             HEX_SYSTEMS
         for base in (0, 1, 2), d in 2:3, conn in (Vertex(), Edge())
             l = base + d
-            l <= max_level(sys) || continue
+            l <= maxlevel(sys) || continue
             for c in spread(hex_roots(sys, base, 3), 5)
                 it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
-                @test it.engine isa DGG.Fallbacks.HexArcHaloEngine
-                it.engine isa DGG.Fallbacks.HexArcHaloEngine || continue
+                @test it.engine isa DGG.Engine.HexArcHaloEngine
+                it.engine isa DGG.Engine.HexArcHaloEngine || continue
                 wide = widen_hex_arcs(it.engine)
                 @test hex_candidate_count(wide) > hex_candidate_count(it.engine)
                 @test collect(SubtreeHaloIterator(sys, c, l, conn, wide)) ==
@@ -760,9 +760,9 @@ fixture_collect_bytes(sys, c, l) =
     @testset "$(syslabel(sys)): the directed walk keeps the contract" for sys in
             HEX_SYSTEMS
         for base in (0, 2), conn in (Vertex(), Edge())
-            base + 1 <= max_level(sys) || continue
+            base + 1 <= maxlevel(sys) || continue
             for c in spread(hex_roots(sys, base, 2), 6),
-                    l in (base + 1):min(base + 3, max_level(sys))
+                    l in (base + 1):min(base + 3, maxlevel(sys))
                 check_halo_case(sys, c, l, conn)
             end
         end
@@ -780,7 +780,7 @@ fixture_collect_bytes(sys, c, l) =
             collect(neighbors(grid, pent, 1))))
         for c in (pent, hex), conn in (Vertex(), Edge())
             it = SubtreeHaloIterator(sys, c, 6; connectivity = conn)
-            @test it.engine isa DGG.Fallbacks.HexArcHaloEngine
+            @test it.engine isa DGG.Engine.HexArcHaloEngine
             @test collect(it) == forced_geometry_halo(sys, c, 6, conn)
         end
     end
@@ -805,7 +805,7 @@ fixture_collect_bytes(sys, c, l) =
             # at base 0 there is no hexagon to take; base 3 supplies both.
             cells = isempty(hexes) ? [first(pents)] : [first(pents), first(hexes)]
             for d in 1:4
-                base + d <= max_level(sys) || continue
+                base + d <= maxlevel(sys) || continue
                 for c in cells
                     n = length(collect(SubtreeHaloIterator(sys, c, base + d)))
                     @test n == (hex_ispentagon(sys, c) ? (5 * (3^d + 1)) ÷ 2 :
@@ -832,7 +832,7 @@ fixture_collect_bytes(sys, c, l) =
             base = 5
             grid = levelgrid(sys, base)
             root = cellindex(grid, ncells(grid) ÷ 2 + 1)
-            depths = filter(d -> base + d <= max_level(sys), [3, 5, 7])
+            depths = filter(d -> base + d <= maxlevel(sys), [3, 5, 7])
             allocs = map(depths) do d
                 prefix10(SubtreeHaloIterator(sys, root, base + d))     # compile
                 @allocated prefix10(SubtreeHaloIterator(sys, root, base + d))
@@ -846,7 +846,7 @@ fixture_collect_bytes(sys, c, l) =
         grid = levelgrid(sys, 5)
         root = cellindex(grid, ncells(grid) ÷ 2 + 1)
         gen = () -> prefix10(SubtreeHaloIterator(sys, root, 12, Vertex(),
-            DGG.Fallbacks.generic_halo_engine(sys, root, 12, Vertex())))
+            DGG.Engine.generic_halo_engine(sys, root, 12, Vertex())))
         gen()
         dir = () -> prefix10(SubtreeHaloIterator(sys, root, 12))
         dir()
@@ -868,8 +868,8 @@ fixture_collect_bytes(sys, c, l) =
                 it = SubtreeHaloIterator(sys, c, l; connectivity = conn)
                 # Depth zero is the native one-ring on every system, A5 included;
                 # everything deeper is the scan.
-                @test it.engine isa (l == level(c) ? DGG.Fallbacks.RingHaloEngine :
-                                     DGG.Fallbacks.ScanHaloEngine)
+                @test it.engine isa (l == level(c) ? DGG.Engine.RingHaloEngine :
+                                     DGG.Engine.ScanHaloEngine)
                 @test collect(it) == forced_geometry_halo(sys, c, l, conn)
                 check_halo_case(sys, c, l, conn)
             end
@@ -887,8 +887,8 @@ fixture_collect_bytes(sys, c, l) =
             l = base + 1
             for c in roots
                 it = SubtreeHaloIterator(sys, c, l, conn,
-                    DGG.Fallbacks.generic_halo_engine(sys, c, l, conn))
-                @test it.engine isa DGG.Fallbacks.OutsideWalkEngine
+                    DGG.Engine.generic_halo_engine(sys, c, l, conn))
+                @test it.engine isa DGG.Engine.OutsideWalkEngine
                 h = collect(it)
                 @test h == forced_geometry_halo(sys, c, l, conn)
                 @test h == law_halo(sys, c, l; connectivity = conn)
@@ -914,7 +914,7 @@ fixture_collect_bytes(sys, c, l) =
     end
 
     @testset "$(syslabel(sys)): halo on subsets" for sys in systems()
-        l = min(2, max_level(sys))
+        l = min(2, maxlevel(sys))
         c = cellindex(levelgrid(sys, 0), 1)
         pg = PartialGrid(sys, c, l)
         cv = CellVector(pg)
@@ -932,12 +932,12 @@ fixture_collect_bytes(sys, c, l) =
         end
 
         @test halo(pg) isa (DGG.has_sorted_subtrees(sys) ? SubtreeHaloIterator :
-                            DGG.Fallbacks.SubsetHaloIterator)
-        @test halo(cv) isa DGG.Fallbacks.SubsetHaloIterator
+                            DGG.Engine.SubsetHaloIterator)
+        @test halo(cv) isa DGG.Engine.SubsetHaloIterator
 
         # The same cells with the root forgotten must give the same answer.
         loose = PartialGrid(sys, l, collect(pg.ids))
-        @test halo(loose) isa DGG.Fallbacks.SubsetHaloIterator
+        @test halo(loose) isa DGG.Engine.SubsetHaloIterator
         @test collect(halo(loose)) == expected
 
         @test collect(halo(pg; connectivity = Edge())) == geom[Edge()]
@@ -961,7 +961,7 @@ fixture_collect_bytes(sys, c, l) =
                 @test allunique(hh)
                 @test all(x -> cellposition(holed, x) === nothing, hh)
                 rooted = PartialGrid(sys, l, ids; root = c)
-                @test halo(rooted) isa DGG.Fallbacks.SubsetHaloIterator
+                @test halo(rooted) isa DGG.Engine.SubsetHaloIterator
                 @test collect(halo(rooted; connectivity = conn)) == hh
             end
         end
@@ -971,7 +971,7 @@ fixture_collect_bytes(sys, c, l) =
         for sys in systems()
             escaped = Tuple{Int,Int}[]
             for l in 1:6
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 grid = levelgrid(sys, l)
                 ncells(grid) <= 300_000 || continue
                 coarse = levelgrid(sys, l - 1)
@@ -1008,7 +1008,7 @@ fixture_collect_bytes(sys, c, l) =
             c = cellindex(levelgrid(sys, 0), 1)
             # Choose depths with comparable subtree sizes across apertures.
             depths = sys in HEX_SYSTEMS ? (3, 6) : (4, 9)
-            all(l -> l <= max_level(sys), depths) || continue
+            all(l -> l <= maxlevel(sys), depths) || continue
             calls = Int[]; members = Int[]; halos = Int[]
             for l in depths
                 cv = CellVector(holed_subtree(sys, c, l))
@@ -1037,8 +1037,8 @@ fixture_collect_bytes(sys, c, l) =
     end
 
 
-    engine_tag(e) = e isa DGG.Fallbacks.SquareBandEngine ?
-        (e.check isa DGG.Fallbacks.NoCheck ? :SquareBandNoCheck :
+    engine_tag(e) = e isa DGG.Engine.SquareBandEngine ?
+        (e.check isa DGG.Engine.NoCheck ? :SquareBandNoCheck :
          :SquareBandNativeCheck) : nameof(typeof(e))
 
     ALL_ENGINE_TAGS = Set((:RingHaloEngine, :OutsideWalkEngine, :ScanHaloEngine,
@@ -1066,7 +1066,7 @@ fixture_collect_bytes(sys, c, l) =
         end
         for sys in systems()
             c = cellindex(levelgrid(sys, 1), 1)
-            l = min(level(c) + 2, max_level(sys))
+            l = min(level(c) + 2, maxlevel(sys))
             check_prefix(SubtreeHaloIterator(sys, c, l))              # shipped
             check_prefix(SubtreeHaloIterator(sys, c, level(c)))       # one-ring
             # The generic walk is no longer reachable through the keyword
@@ -1074,7 +1074,7 @@ fixture_collect_bytes(sys, c, l) =
             # that same call is the scan, which covers both fallbacks without
             # naming either system.
             check_prefix(SubtreeHaloIterator(sys, c, l, Vertex(),
-                DGG.Fallbacks.generic_halo_engine(sys, c, l, Vertex())))
+                DGG.Engine.generic_halo_engine(sys, c, l, Vertex())))
         end
         # Depth one on the aperture-7 systems is the automaton-free child walk,
         # which the `l = level(c) + 2` cases above never reach.
@@ -1090,7 +1090,7 @@ fixture_collect_bytes(sys, c, l) =
         # forwards the whole protocol itself, so resumability is a property of
         # the wrapper as much as of the engine inside it.
         for sys in systems()
-            l = min(2, max_level(sys))
+            l = min(2, maxlevel(sys))
             c = cellindex(levelgrid(sys, 0), 1)
             loose = PartialGrid(sys, l, collect(PartialGrid(sys, c, l).ids))
             check_prefix(halo(loose))
@@ -1116,7 +1116,7 @@ fixture_collect_bytes(sys, c, l) =
             @test collect(it) isa Vector{C}
         end
         for sys in systems()
-            mx = max_level(sys)
+            mx = maxlevel(sys)
             c0 = cellindex(levelgrid(sys, 0), 1)
             check_eltype(sys, SubtreeHaloIterator(sys, c0, 0))       # the one-ring
             for l in 1:min(2, mx)
@@ -1170,7 +1170,7 @@ fixture_collect_bytes(sys, c, l) =
             end
         end
         for sys in systems()
-            mx = max_level(sys)
+            mx = maxlevel(sys)
             c0 = cellindex(levelgrid(sys, 0), 1)
             check_count(SubtreeHaloIterator(sys, c0, 0))
             for l in 1:min(2, mx)
@@ -1185,7 +1185,7 @@ fixture_collect_bytes(sys, c, l) =
         for sys in SQUARE_SYSTEMS
             for d in 1:3
                 l = 2 + d
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 check_count(SubtreeHaloIterator(sys, inface_root(sys, 2, l), l))
             end
         end
@@ -1230,7 +1230,7 @@ fixture_collect_bytes(sys, c, l) =
             @test collect(hp) == ps
         end
         for sys in systems()
-            mx = max_level(sys)
+            mx = maxlevel(sys)
             c0 = cellindex(levelgrid(sys, 0), 1)
             for l in 0:min(2, mx)
                 check_positions(levelgrid(sys, l), SubtreeHaloIterator(sys, c0, l))
@@ -1250,7 +1250,7 @@ fixture_collect_bytes(sys, c, l) =
         # The three-argument form is the two-argument one, and reaches the same
         # walk the id verb does.
         for sys in systems()
-            l = min(2, max_level(sys))
+            l = min(2, maxlevel(sys))
             c0 = cellindex(levelgrid(sys, 0), 1)
             @test collect(halo_positions(sys, c0, l)) ==
                   [cellposition(levelgrid(sys, l), x)
@@ -1273,7 +1273,7 @@ fixture_collect_bytes(sys, c, l) =
             s = Set{Int}()
             for base in 0:2, d in 1:3
                 l = base + d
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 g = levelgrid(sys, base)
                 for i in 1:ncells(g)
                     it = SubtreeHaloIterator(sys, cellindex(g, i), l;
@@ -1307,7 +1307,7 @@ fixture_collect_bytes(sys, c, l) =
         # --- the aperture-7 census -----------------------------------------
         for sys in HEX_SYSTEMS, base in 0:1, d in 1:4
             l = base + d
-            l <= max_level(sys) || continue
+            l <= maxlevel(sys) || continue
             g = levelgrid(sys, base)
             step = max(1, ncells(g) ÷ 8)
             for i in 1:step:ncells(g)
@@ -1321,7 +1321,7 @@ fixture_collect_bytes(sys, c, l) =
 
         # --- where nothing is known ----------------------------------------
         for sys in systems()
-            l = min(2, max_level(sys))
+            l = min(2, maxlevel(sys))
             c0 = cellindex(levelgrid(sys, 0), 1)
             @test halo_sizehint(generic_iterator(sys, c0, l)) === nothing
             loose = PartialGrid(sys, l, collect(PartialGrid(sys, c0, l).ids))
@@ -1391,7 +1391,7 @@ fixture_collect_bytes(sys, c, l) =
             end
         end
         for sys in systems()
-            l = min(2, max_level(sys))
+            l = min(2, maxlevel(sys))
             c0 = cellindex(levelgrid(sys, 0), 1)
             check_batches(SubtreeHaloIterator(sys, c0, l))
             check_batches(generic_iterator(sys, c0, l))
@@ -1415,7 +1415,7 @@ fixture_collect_bytes(sys, c, l) =
             @test p !== nothing
             for d in 1:2, conn in (Vertex(), Edge())
                 l = base + d
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 @test collect(SubtreeHaloIterator(sys, p, l; connectivity = conn)) ==
                       forced_geometry_halo(sys, p, l, conn)
                 check_halo_case(sys, p, l, conn)
@@ -1439,7 +1439,7 @@ fixture_collect_bytes(sys, c, l) =
             # A5's targets stop at 3: its `subtree_halo` at level 4 is a
             # 3840-cell scan whose per-cell cost is a `Set`-allocating
             # `neighbors`, and the law here needs only two comparable points.
-            depths = filter(l -> l <= max_level(sys),
+            depths = filter(l -> l <= maxlevel(sys),
                 hassortedsubtrees(sys) ? (3, 5, 7) : (1, 2, 3))
             ship = [construct_bytes(sys, c, l) for l in depths]
             gen = [generic_construct_bytes(sys, c, l) for l in depths]
@@ -1453,7 +1453,7 @@ fixture_collect_bytes(sys, c, l) =
     @testset "the specialized prefix costs the same at every depth" begin
         for sys in DEPTH_FLAT_SYSTEMS
             c = cellindex(levelgrid(sys, 0), 1)
-            depths = filter(l -> l <= max_level(sys), (3, 5, 7))
+            depths = filter(l -> l <= maxlevel(sys), (3, 5, 7))
             allocs = [lazy_bytes(sys, c, l, 4) for l in depths]
             sizes = [length(subtree_halo(sys, c, l)) for l in depths]
             # Halo cardinality increases substantially across these levels.
@@ -1464,7 +1464,7 @@ fixture_collect_bytes(sys, c, l) =
         end
         for sys in SQUARE_SYSTEMS
             c = inface_root(sys, 3, 4)
-            depths = filter(l -> l <= max_level(sys), (4, 6, 9))
+            depths = filter(l -> l <= maxlevel(sys), (4, 6, 9))
             allocs = [lazy_bytes(sys, c, l, 4) for l in depths]
             sizes = [length(subtree_halo(sys, c, l)) for l in depths]
             @test last(sizes) >= 8 * first(sizes)
@@ -1476,7 +1476,7 @@ fixture_collect_bytes(sys, c, l) =
         for sys in systems()
             c = cellindex(levelgrid(sys, 0), 1)
             depths = hassortedsubtrees(sys) ? (3, 7) : (1, 4)
-            all(l -> l <= max_level(sys), depths) || continue
+            all(l -> l <= maxlevel(sys), depths) || continue
             fracs = [lazy_bytes(sys, c, l, 4) / eager_bytes(sys, c, l)
                      for l in depths]
             sizes = [length(subtree_halo(sys, c, l)) for l in depths]
@@ -1493,7 +1493,7 @@ fixture_collect_bytes(sys, c, l) =
             hassortedsubtrees(sys) || continue
             c = cellindex(levelgrid(sys, 0), 1)
             depths = (3, 6)
-            all(l -> l <= max_level(sys), depths) || continue
+            all(l -> l <= maxlevel(sys), depths) || continue
             fracs = Float64[]
             sizes = Int[]
             for l in depths
@@ -1514,7 +1514,7 @@ fixture_collect_bytes(sys, c, l) =
     @testset "an eager engine with the same surface fails every allocation law" begin
         for sys in systems()
             c = cellindex(levelgrid(sys, 0), 1)
-            depths = filter(l -> l <= max_level(sys),
+            depths = filter(l -> l <= maxlevel(sys),
                 hassortedsubtrees(sys) ? (3, 5, 7) : (1, 2, 3))
             @test collect(fixture_iterator(sys, c, last(depths))) ==
                   subtree_halo(sys, c, last(depths))
@@ -1533,7 +1533,7 @@ fixture_collect_bytes(sys, c, l) =
 
     @testset "the subset walk is lazy, and its construction is O(1)" begin
         for sys in systems()
-            mx = max_level(sys)
+            mx = maxlevel(sys)
             ctor = (grid = Int[], vector = Int[])
             sizes = Int[]
             for l in unique((1, min(4, mx)))
@@ -1615,7 +1615,7 @@ fixture_collect_bytes(sys, c, l) =
             wrapped = DGG.AuthalicSystem(sys)
             grid0 = levelgrid(sys, 0)
             c = cellindex(grid0, 1)
-            for l in level(c):min(level(c) + 2, max_level(sys))
+            for l in level(c):min(level(c) + 2, maxlevel(sys))
                 it = SubtreeHaloIterator(wrapped, c, l)
                 push!(seen, engine_tag(it.engine))
                 @test collect(it) == collect(SubtreeHaloIterator(sys, c, l))
@@ -1624,18 +1624,18 @@ fixture_collect_bytes(sys, c, l) =
         for sys in systems()
             wrapped = DGG.AuthalicSystem(sys)
             c = cellindex(levelgrid(sys, 0), 1)
-            l = min(2, max_level(sys))
+            l = min(2, maxlevel(sys))
             it = SubtreeHaloIterator(wrapped, c, l, Vertex(),
-                DGG.Fallbacks.generic_halo_engine(wrapped, c, l, Vertex()))
+                DGG.Engine.generic_halo_engine(wrapped, c, l, Vertex()))
             push!(seen, engine_tag(it.engine))
             @test collect(it) == collect(SubtreeHaloIterator(sys, c, l, Vertex(),
-                DGG.Fallbacks.generic_halo_engine(sys, c, l, Vertex())))
+                DGG.Engine.generic_halo_engine(sys, c, l, Vertex())))
         end
         for sys in SQUARE_SYSTEMS
             wrapped = DGG.AuthalicSystem(sys)
             for base in BAND_BASES
                 l = base + 2
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 inface, _, _ = classify_roots(sys, base, l, Vertex())
                 isempty(inface) && continue
                 c = last(spread(inface, 5))
@@ -1655,8 +1655,8 @@ fixture_collect_bytes(sys, c, l) =
             for d in 1:2, conn in (Vertex(), Edge())
                 it = SubtreeHaloIterator(wrapped, c, 1 + d; connectivity = conn)
                 push!(seen, engine_tag(it.engine))
-                @test it.engine isa (d == 1 ? DGG.Fallbacks.HexChildHaloEngine :
-                                     DGG.Fallbacks.HexArcHaloEngine)
+                @test it.engine isa (d == 1 ? DGG.Engine.HexChildHaloEngine :
+                                     DGG.Engine.HexArcHaloEngine)
                 @test collect(it) ==
                       collect(SubtreeHaloIterator(sys, c, 1 + d; connectivity = conn))
             end
@@ -1664,13 +1664,13 @@ fixture_collect_bytes(sys, c, l) =
         @test seen == ALL_ENGINE_TAGS
         for sys in systems()
             wrapped = DGG.AuthalicSystem(sys)
-            l = min(2, max_level(sys))
+            l = min(2, maxlevel(sys))
             c = cellindex(levelgrid(sys, 0), 1)
             pg = PartialGrid(wrapped, c, l)
             loose = PartialGrid(wrapped, l, collect(pg.ids))
             expected = subtree_halo(sys, c, l)
             @test halo(pg) isa (DGG.has_sorted_subtrees(sys) ? SubtreeHaloIterator :
-                                DGG.Fallbacks.SubsetHaloIterator)
+                                DGG.Engine.SubsetHaloIterator)
             @test collect(halo(pg)) == expected
             @test collect(halo(loose)) == expected
             @test collect(halo(CellVector(pg))) == expected

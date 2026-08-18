@@ -496,9 +496,9 @@ const CLEAN = (0, "")
     # =======================================================================
 
     @testset "9. neighbours" begin
-        @test DGG.max_neighbors(S) == 6
-        @test DGG.max_neighbors(S, Vertex()) == 6
-        @test DGG.max_neighbors(S, Edge()) == 6
+        @test DGG.maxneighbors(S) == 6
+        @test DGG.maxneighbors(S, Vertex()) == 6
+        @test DGG.maxneighbors(S, Edge()) == 6
 
         for r in 1:3
             g = DGG.levelgrid(S, r)
@@ -874,7 +874,7 @@ const CLEAN = (0, "")
     # =======================================================================
 
     @testset "12. subtree border" begin
-        # the rim, cross-checked against a definition that uses adjacency
+        # the border, cross-checked against a definition that uses adjacency
         # instead of digits: a descendant is on the border iff one of its edge
         # neighbours is not in the subtree
         for (lvl, i, depth) in ((0, 1, 3), (1, 5, 3), (2, 100, 2))
@@ -883,14 +883,14 @@ const CLEAN = (0, "")
             for d in 1:depth
                 leaf = lvl + d
                 leafgrid = DGG.levelgrid(S, leaf)
-                rim = I.subtree_border(S, c, leaf)
-                @test ascending(rim)
-                @test length(rim) == I.subtree_border_count(S, c, leaf)
+                border = I.subtree_border(S, c, leaf)
+                @test ascending(border)
+                @test length(border) == I.subtree_border_count(S, c, leaf)
                 inside = Set(DGG.descendants(S, c, leaf))
-                @test issubset(Set(rim), inside)
+                @test issubset(Set(border), inside)
                 brute = [x for x in DGG.descendants(S, c, leaf)
                          if any(nb -> !(nb in inside), DGG.neighbors(leafgrid, x))]
-                @test rim == brute
+                @test border == brute
             end
         end
         # depth 0 is the cell itself ("015" is at level 1)
@@ -916,7 +916,7 @@ const CLEAN = (0, "")
     @testset "13. tree and query integration" begin
         g = DGG.levelgrid(S, 3)
         tree = DGG.treeify(g)
-        @test tree isa HierarchicalGridCursor
+        @test tree isa DGG.HierarchicalGridCursor
 
         cap = US.SphericalCap(GO.UnitSphericalPoint(0.0, 0.0, 1.0), 0.15)
         hits = DGG.query(g, Intersects(cap))

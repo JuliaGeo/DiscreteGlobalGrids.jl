@@ -38,7 +38,7 @@ function make_dem(sys, root, cells)
     return Raster(elevation, (DGG.Cells(DGG.CellLookup(cells)),); name=:height)
 end
 
-nwindows(cells) = DGG.Fallbacks.nwindows(DGG.Fallbacks.windows(cells))
+nwindows(cells) = DGG.Engine.nwindows(DGG.Engine.windows(cells))
 
 # --- flow routing, per backend ----------------------------------------------
 
@@ -213,8 +213,8 @@ end
             "multi-order coverage ($(length(scattered)) cells, $(nwindows(scattered)) windows)",
             scattered)
 
-        # The halo contains the neighbours omitted from clipped rim rings.
-        @testset "the rim a halo would complete" begin
+        # The halo contains the neighbours omitted from clipped border rings.
+        @testset "the border a halo would complete" begin
             complete = DGG.levelgrid(sys, DGG.level(subtree))
             clipped = count(subtree) do c
                 length(DGG.neighbors(subtree, c)) < length(DGG.neighbors(complete, c))

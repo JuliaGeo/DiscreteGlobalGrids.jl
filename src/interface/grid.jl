@@ -404,7 +404,7 @@ the geometric one — `Fallbacks.adjacent_cells` wound about the cell's centroid
 and a system with native adjacency overrides it.
 
 The return may be any ordered, indexable collection with the grid's cell-index
-`eltype`; a fixed-capacity `SmallVector` sized by [`max_neighbors`](@ref) is
+`eltype`; a fixed-capacity `SmallVector` sized by [`maxneighbors`](@ref) is
 what keeps the one-ring sweeps allocation-free.
 """
 function one_ring end
@@ -420,7 +420,7 @@ counter-clockwise order [`neighbors`](@ref) states. Entry `p` equals
 
     halo_table(sub, k)[p] == neighbors(sub, p, k)
 
-Subset rows contain only members and may be shorter at the rim; clipping drops
+Subset rows contain only members and may be shorter at the border; clipping drops
 cells and never reorders the survivors, so a short row is still a counter-
 clockwise arc. [`halo`](@ref) returns the missing cells outside the subset,
 while [`stencil_table`](@ref) combines a subset and its fetched halo into
@@ -442,7 +442,7 @@ without constructing the ring. Subsets count only neighbours within the subset,
 and an out-of-set cell throws as [`neighbors`](@ref) does.
 
 A subset cell is interior exactly when
-`length(neighbors(sub, c)) == neighborcount(complete, c)`, so a rim scan needs
+`length(neighbors(sub, c)) == neighborcount(complete, c)`, so a border scan needs
 one ring and one count rather than two rings.
 """
 function neighborcount end

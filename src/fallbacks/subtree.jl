@@ -25,7 +25,7 @@ end
 
 Return level-`l` descendants of `c` with a neighbor outside the subtree, in
 ascending canonical order. `collect` of [`EdgeCellIterator`](@ref); the generic
-walk costs `O(subtree · degree)`, a system's automaton `O(rim)`.
+walk costs `O(subtree · degree)`, a system's automaton `O(border)`.
 """
 subtree_border(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
     l::Integer; connectivity::Connectivity=Vertex()) =
@@ -36,7 +36,7 @@ subtree_border(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
 
 Return level-`l` descendants of `c` excluding [`subtree_border`](@ref), in
 ascending canonical order. `collect` of [`InnerCellIterator`](@ref), which
-generates the interior from the rim walk's pruned branches rather than by
+generates the interior from the border walk's pruned branches rather than by
 subtracting a border set.
 """
 subtree_interior(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,

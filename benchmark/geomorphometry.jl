@@ -65,7 +65,7 @@ function make_dem(cells)
     return Raster(elevation, (DGG.Cells(DGG.CellLookup(cells)),); name=:height)
 end
 
-nwindows(cells) = DGG.Fallbacks.nwindows(DGG.Fallbacks.windows(cells))
+nwindows(cells) = DGG.Engine.nwindows(DGG.Engine.windows(cells))
 
 function bench(label, cells)
     dem = make_dem(cells)

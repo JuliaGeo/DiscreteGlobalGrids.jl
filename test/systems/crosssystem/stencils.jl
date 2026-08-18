@@ -14,9 +14,12 @@ const FB = DGG.Fallbacks
 using DiscreteGlobalGrids: systems, levelgrid, ncells, cellindex, cellposition,
     neighbors, ring, halo_table, level, levels, max_level, descendants,
     descendant_range, has_sorted_subtrees, PartialGrid, CellVector, CellLookup,
-    MultiOrderCoverage, member_neighbors, AuthalicSystem, Vertex, Edge,
+    MultiOrderCoverage, member_neighbors, Vertex, Edge,
     Connectivity, cellindextype, query, system,
     halo, stencil_table, StencilTable
+
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, isquadface, sweepcovers
 
 # ---------------------------------------------------------------------------
 # Systems, and the depths each is swept at
@@ -37,15 +40,8 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 1, 3),
 ]
 
-sysname(sys) = sys isa AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
-
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _) in SWEEP)
-    for s in systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 # ---------------------------------------------------------------------------
@@ -106,7 +102,7 @@ end
 # CLIPPING, and the faces that must agree with it
 # ---------------------------------------------------------------------------
 
-@testset "$(sysname(sys))" for (sys, base, leaf) in SWEEP
+@testset "$(syslabel(sys))" for (sys, base, leaf) in SWEEP
     complete = levelgrid(sys, leaf)
 
     @testset "$label: ring is the complete level's, clipped" for (label, sub) in
@@ -358,14 +354,14 @@ end
                 cells += ncells(pg)
 
                 any(row -> any(iszero, row), want) &&
-                    push!(uncovered, (sysname(sys), root, l, conn))
+                    push!(uncovered, (syslabel(sys), root, l, conn))
                 (length(t) == ncells(pg) &&
                  all(p -> collect(t[p]) == want[p], 1:ncells(pg))) ||
-                    push!(disagreed, (sysname(sys), root, l, conn))
+                    push!(disagreed, (syslabel(sys), root, l, conn))
                 (t.offsets[1] == 1 && t.offsets[end] == length(t.indices) + 1 &&
                  all(s -> 1 <= s <= t.nchunk + t.nhalo, t.indices) &&
                  reduce(vcat, t; init = Int[]) == t.indices) ||
-                    push!(csr, (sysname(sys), root, l, conn))
+                    push!(csr, (syslabel(sys), root, l, conn))
 
                 # The link between "row i" and "buffer slot i" that nothing else
                 # states: the chunk half is read as `descendant_range`, so row i
@@ -375,7 +371,7 @@ end
                 # caller's buffer would then be shifted under a correct table.
                 if has_sorted_subtrees(sys)
                     ids == [cellindex(grid, q) for q in descendant_range(sys, root, l)] ||
-                        push!(layout, (sysname(sys), root, l))
+                        push!(layout, (syslabel(sys), root, l))
                 end
             end
         end
@@ -405,7 +401,7 @@ end
             want = buffer_rows(sys, leaf, [cellindex(sub, p) for p in 1:ncells(sub)],
                 halo_ids, conn)
             all(p -> collect(t[p]) == want[p], 1:ncells(sub)) ||
-                push!(holes, (sysname(sys), conn))
+                push!(holes, (syslabel(sys), conn))
             any(x -> x in punched, halo_ids) && (hole_in_halo += 1)
         end
     end
@@ -424,13 +420,13 @@ end
         blocked = PartialGrid(sys, root, leaf)
         member = PartialGrid(sys, leaf, descendants(sys, root, leaf))
         (FB._whole_subtree_range(blocked) !== nothing &&
-         FB._whole_subtree_range(member) === nothing) || push!(paths, (sysname(sys), :gate))
+         FB._whole_subtree_range(member) === nothing) || push!(paths, (syslabel(sys), :gate))
         for conn in (Vertex(), Edge())
             halo_pos = [cellposition(grid, x)::Int
                         for x in halo(blocked; connectivity = conn)]
             stencil_table(blocked, halo_pos; connectivity = conn) ==
             stencil_table(member, halo_pos; connectivity = conn) ||
-                push!(paths, (sysname(sys), conn))
+                push!(paths, (syslabel(sys), conn))
         end
     end
     @test isempty(paths)
@@ -443,7 +439,7 @@ end
         wrapped = PartialGrid(system(cv), level(cv), cv)
         halo_pos = [cellposition(grid, x)::Int for x in halo(sub)]
         stencil_table(sub, halo_pos) == stencil_table(wrapped, halo_pos) ||
-            push!(bridged, sysname(sys))
+            push!(bridged, syslabel(sys))
     end
     @test isempty(bridged)
 end
@@ -595,12 +591,12 @@ function member_probes(set, n::Int)
     return unique(vcat(first(coarse, 3), collect(1:step:length(set))))
 end
 
-# The three systems whose four children tile their parent exactly, so that a
-# member's footprint IS its descendants' union and a statement about level-`L`
-# cells is a statement about the drawn polygons. IGEO7, H3 and A5 refine
-# non-congruently and are excluded from the GEOMETRIC law with that reason —
-# see `member_neighbors`' docstring; they keep every other law here.
-const CONGRUENT = (DGG.HEALPixSystem, DGG.S2System, DGG.ISEA4RSystem)
+# The quad-face family is the family whose four children tile their parent
+# exactly, so that a member's footprint IS its descendants' union and a
+# statement about level-`L` cells is a statement about the drawn polygons.
+# IGEO7, H3 and A5 refine non-congruently and are excluded from the GEOMETRIC
+# law with that reason — see `member_neighbors`' docstring; they keep every
+# other law here.
 
 # The last column is whether `Vertex()` and `Edge()` are different relations at
 # all: IGEO7 and H3 have only 3-valent vertices, so on those two they coincide
@@ -616,7 +612,7 @@ const MOC_SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, DONUT, false),
 ]
 
-@testset "member_neighbors: $(sysname(sys))" for (sys, lvl, target, splits) in MOC_SWEEP
+@testset "member_neighbors: $(syslabel(sys))" for (sys, lvl, target, splits) in MOC_SWEEP
     set = query(sys, MultiOrderCoverage(target); level = lvl)
 
     @testset "the set is genuinely mixed-level" begin
@@ -668,7 +664,7 @@ const MOC_SWEEP = [
         @test_throws ArgumentError member_neighbors(set, outside)
     end
 
-    if any(T -> sys isa T, CONGRUENT)
+    if isquadface(sys)
         # The geometric law, and the reason the exclusions above are stated
         # rather than silently taken: `adjacent_cells` reads the boundary RINGS
         # and counts shared vertices, so this is "share a boundary" and "share

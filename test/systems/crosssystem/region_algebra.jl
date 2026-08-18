@@ -8,6 +8,9 @@ module RegionAlgebraTests
 using Test
 import DiscreteGlobalGrids as DGG
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel
+
 # (system, root level, leaf level). The leaf level is shallow on purpose: every
 # oracle here materializes the subtree it compares against.
 const SWEEP = [
@@ -15,8 +18,6 @@ const SWEEP = [
     (DGG.HEALPixSystem(), 2, 4),
     (DGG.A5System(), 1, 3),
 ]
-
-sysname(sys) = string(nameof(typeof(sys)))
 
 # A handful of cells of `l` that are not descendants of `c`, taken from the far
 # end of the level so no accidental sibling group is complete.
@@ -49,7 +50,7 @@ end
         @test_throws ArgumentError DGG.expand(DGG.expand(cv, 2), 1)
     end
 
-    @testset "$(sysname(sys))" for (sys, rootlevel, leaflevel) in SWEEP
+    @testset "$(syslabel(sys))" for (sys, rootlevel, leaflevel) in SWEEP
         root = DGG.cellindex(DGG.levelgrid(sys, rootlevel), 3)
         pg = DGG.PartialGrid(sys, root, leaflevel)
         cv = DGG.CellVector(pg)

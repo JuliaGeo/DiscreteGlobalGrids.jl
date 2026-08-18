@@ -10,6 +10,10 @@ import DimensionalData as DD
 import GeoInterface as GI
 import GeometryOps as GO
 import SmallCollections
+
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, sweepcovers
+
 const CL = DGG.CellLookups
 
 
@@ -31,15 +35,8 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, 3),
 ]
 
-sysname(sys) = sys isa DGG.AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
-
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _) in SWEEP)
-    for s in DGG.systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 function expand(sys, set, l::Int)
@@ -53,7 +50,7 @@ end
 # The laws, once per system
 # ---------------------------------------------------------------------------
 
-@testset "a multi-order cell axis: $(sysname(sys))" for (sys, leaf, deeper) in SWEEP
+@testset "a multi-order cell axis: $(syslabel(sys))" for (sys, leaf, deeper) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
     grid = DGG.levelgrid(sys, leaf)
     lk = DGG.CellLookup(set)
@@ -140,7 +137,7 @@ end
 # Selectors, and the cube they run against
 # ---------------------------------------------------------------------------
 
-@testset "selectors on a cell axis: $(sysname(sys))" for (sys, leaf, _) in SWEEP
+@testset "selectors on a cell axis: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
     grid = DGG.levelgrid(sys, leaf)
     lk = DGG.CellLookup(set)
@@ -222,7 +219,7 @@ end
 # number on it.
 # ---------------------------------------------------------------------------
 
-@testset "memory is O(#entries), not O(#leaf cells): $(sysname(sys))" for
+@testset "memory is O(#entries), not O(#leaf cells): $(syslabel(sys))" for
     (sys, leaf, deeper) in SWEEP
 
     if !DGG.has_sorted_subtrees(sys)

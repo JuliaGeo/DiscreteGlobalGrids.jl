@@ -174,20 +174,21 @@ tree, which is what lets one predicate vocabulary serve all of them.
 function node_extent end
 
 """
-    max_neighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Int
+    max_neighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
 
 A **static** upper bound on the number of `connectivity`-neighbours of any cell
-of `sys`, at any level.
+of `sys`, at any level, or `nothing` when the system declares no bound.
 
-**Required for the neighbourhood family.** There is no default: a system that
-has not thought about the bound gets a `MethodError` rather than a silently
-wrong capacity. It is what sizes the fixed-capacity containers behind
-[`neighbors`](@ref) and [`ring`](@ref) on a subset, [`halo_table`](@ref) and
-[`stencil_table`](@ref); the complete-level verbs and the subtree family never
-ask for it, so a system without it is usable until the first subset neighbour
-query. Individual cells may have fewer neighbours than the bound.
+**Sizes the neighbourhood family.** An `Int` bound permits the fixed-capacity
+stack containers behind [`neighbors`](@ref) and [`ring`](@ref) on a subset,
+[`halo_table`](@ref) and [`stencil_table`](@ref); the complete-level verbs and
+the subtree family never ask for it. Defaults to `nothing` — never a guessed
+capacity — and the same machinery then buffers one-rings in a heap `Vector`,
+allocating once per cell: identical answers, the slow path. Declaring the bound
+is a speed decision, not a correctness requirement. Individual cells may have
+fewer neighbours than the bound.
 """
-function max_neighbors end
+max_neighbors(::AbstractHierarchicalGridSystem, ::Connectivity) = nothing
 
 max_neighbors(sys::AbstractHierarchicalGridSystem) = max_neighbors(sys, Vertex())
 

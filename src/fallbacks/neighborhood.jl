@@ -128,16 +128,63 @@ end
     return j, j
 end
 
-# Clip a ring to the subset and attach each surviving cell's position. The
-# system's degree bound keeps the result statically sized.
-@inline function _positioned(cv::CellVector, wj::Int, hj::Int, cells,
-        ::Val{M}) where {M}
+# ===========================================================================
+# Ring buffer capacity
+#
+# `max_neighbors` is the system's static degree bound. A system that declares
+# one buys stack-allocated `SmallVector` rings; a system that declares none
+# (the trait defaults to `nothing`) gets heap `Vector` rings with the same
+# contents and the same order. The capacity travels as a singleton VALUE —
+# `Val(M)` or `nothing` — so every function below specializes on which of the
+# two containers it is building, and the declared path stays exactly what it
+# was.
+# ===========================================================================
+
+_capacity(sys, conn::Connectivity) = _capacity(max_neighbors(sys, conn))
+_capacity(M::Integer) = Val(Int(M))
+_capacity(::Nothing) = nothing
+
+_ringtype(::Val{M}, ::Type{T}) where {M,T} = SmallCollections.SmallVector{M,T}
+_ringtype(::Nothing, ::Type{T}) where {T} = Vector{T}
+
+@inline _newring(::Val{M}, ::Type{T}) where {M,T} =
+    SmallCollections.SmallVector{M,T}()
+
+@inline _pushring(v::SmallCollections.SmallVector, x) =
+    SmallCollections.push(v, x)
+
+# Row-length guess for `sizehint!`. With no declared bound this is only a
+# reservation hint, never a capacity: the buffers grow if it is wrong.
+_hint_degree(::Val{M}) where {M} = M
+_hint_degree(::Nothing) = 8
+
+# Clip a ring to the subset and attach each surviving cell's position. A
+# declared degree bound keeps the result statically sized and off the heap.
+@inline function _positioned(cv::CellVector, wj::Int, hj::Int, cells, cap)
     w = cv.windows
-    out = SmallCollections.SmallVector{M,SubsetPositionedCell{eltype(cells)}}()
+    out = _newring(cap, SubsetPositionedCell{eltype(cells)})
     for nb in cells
         q, hj = _cursor_find(w, wj, hj, cellposition(cv.grid, nb)::Int)
-        q == 0 || (out = SmallCollections.push(out, SubsetPositionedCell(nb, q)))
+        q == 0 || (out = _pushring(out, SubsetPositionedCell(nb, q)))
     end
+    return out, hj
+end
+
+# Undeclared: the unclipped ring is an exact upper bound on the clipped one, so
+# the row is allocated once at that size and trimmed. `push!`-from-empty would
+# reallocate on the way to a degree-12 neighbourhood.
+@inline function _positioned(cv::CellVector, wj::Int, hj::Int, cells, ::Nothing)
+    w = cv.windows
+    out = Vector{SubsetPositionedCell{eltype(cells)}}(undef, length(cells))
+    m = 0
+    for nb in cells
+        q, hj = _cursor_find(w, wj, hj, cellposition(cv.grid, nb)::Int)
+        if q != 0
+            m += 1
+            @inbounds out[m] = SubsetPositionedCell(nb, q)
+        end
+    end
+    m == length(out) || resize!(out, m)
     return out, hj
 end
 
@@ -163,15 +210,17 @@ neighbors(cv::CellVector; connectivity::Connectivity = Vertex()) =
 neighbors(pg::PartialGrid; connectivity::Connectivity = Vertex()) =
     NeighborhoodIterator(CellVector(pg), connectivity)
 
-# `M` is the static capacity of every yielded ring.
-struct NeighborhoodIterator{M,CV<:CellVector,CN<:Connectivity}
+# `CAP` is the ring capacity witness: `Val{M}` for a declared bound, `Nothing`
+# for a system that declares none.
+struct NeighborhoodIterator{CAP,CV<:CellVector,CN<:Connectivity}
     cv::CV
     connectivity::CN
 end
 
-NeighborhoodIterator(cv::CellVector, conn::Connectivity) =
-    NeighborhoodIterator{max_neighbors(system(cv), conn),typeof(cv),typeof(conn)}(
-        cv, conn)
+function NeighborhoodIterator(cv::CellVector, conn::Connectivity)
+    cap = _capacity(system(cv), conn)
+    return NeighborhoodIterator{typeof(cap),typeof(cv),typeof(conn)}(cv, conn)
+end
 
 Base.length(it::NeighborhoodIterator) = length(it.cv)
 Base.IteratorSize(::Type{<:NeighborhoodIterator}) = Base.HasLength()
@@ -185,15 +234,15 @@ Base.iterate(it::NeighborhoodIterator) = _neighborhood_next(it, 1, 1, 1)
 Base.iterate(it::NeighborhoodIterator, st::NTuple{3,Int}) =
     _neighborhood_next(it, st[1], st[2], st[3])
 
-function _neighborhood_next(it::NeighborhoodIterator{M}, k::Int, wj::Int,
-        hj::Int) where {M}
+function _neighborhood_next(it::NeighborhoodIterator{CAP}, k::Int, wj::Int,
+        hj::Int) where {CAP}
     cv = it.cv
     k > length(cv) && return nothing
     w = cv.windows
     wj = _advance(w, wj, k)
     c = cellindex(cv.grid, _leaf_at(w, wj, k))
     nbrs, hj = _positioned(cv, wj, hj,
-        neighbors(cv.grid, c, 1; connectivity = it.connectivity), Val(M))
+        neighbors(cv.grid, c, 1; connectivity = it.connectivity), CAP())
     return (SubsetPositionedCell(c, k), nbrs), (k + 1, wj, hj)
 end
 
@@ -215,7 +264,7 @@ struct StorageOrder end
 
 # Call `g(k, cell, nbrs)` in storage order with one cursor for the range.
 function _sweep!(g::G, cv::CellVector, conn::Connectivity, r::UnitRange{Int},
-        ::Val{M}) where {G,M}
+        cap::CAP) where {G,CAP}
     isempty(r) && return nothing
     w = cv.windows
     wj = _window_at(w, first(r))
@@ -224,7 +273,7 @@ function _sweep!(g::G, cv::CellVector, conn::Connectivity, r::UnitRange{Int},
         wj = _advance(w, wj, k)
         c = cellindex(cv.grid, _leaf_at(w, wj, k))
         nbrs, hj = _positioned(cv, wj, hj,
-            neighbors(cv.grid, c, 1; connectivity = conn), Val(M))
+            neighbors(cv.grid, c, 1; connectivity = conn), cap)
         g(k, SubsetPositionedCell(c, k), nbrs)
     end
     return nothing
@@ -233,14 +282,15 @@ end
 # Visit the positions selected by `perm`; each visit starts with a fresh window
 # lookup because permutations provide no locality guarantee.
 function _sweep_perm!(g::G, cv::CellVector, conn::Connectivity,
-        perm::AbstractVector{<:Integer}, r::UnitRange{Int}, ::Val{M}) where {G,M}
+        perm::AbstractVector{<:Integer}, r::UnitRange{Int},
+        cap::CAP) where {G,CAP}
     w = cv.windows
     for j in r
         k = Int(@inbounds perm[j])
         wj = _window_at(w, k)
         c = cellindex(cv.grid, _leaf_at(w, wj, k))
         nbrs, _ = _positioned(cv, wj, wj,
-            neighbors(cv.grid, c, 1; connectivity = conn), Val(M))
+            neighbors(cv.grid, c, 1; connectivity = conn), cap)
         g(k, SubsetPositionedCell(c, k), nbrs)
     end
     return nothing
@@ -348,16 +398,16 @@ end
 _foreach_chunk(body!::F, n::Int, ::GOCore.False) where {F} = body!(1:n)
 
 function _run!(g::G, cv::CellVector, conn::Connectivity, ::StorageOrder, thr,
-        ::Val{M}) where {G,M}
+        cap::CAP) where {G,CAP}
     h = _reporting(g, thr)
-    return _foreach_chunk(r -> _sweep!(h, cv, conn, r, Val(M)), length(cv), thr)
+    return _foreach_chunk(r -> _sweep!(h, cv, conn, r, cap), length(cv), thr)
 end
 
 function _run!(g::G, cv::CellVector, conn::Connectivity,
-        perm::AbstractVector{<:Integer}, thr, ::Val{M}) where {G,M}
+        perm::AbstractVector{<:Integer}, thr, cap::CAP) where {G,CAP}
     _check_permutation(perm, length(cv))
     h = _reporting(g, thr)
-    return _foreach_chunk(r -> _sweep_perm!(h, cv, conn, perm, r, Val(M)),
+    return _foreach_chunk(r -> _sweep_perm!(h, cv, conn, perm, r, cap),
         length(perm), thr)
 end
 
@@ -379,12 +429,21 @@ _outputs(::Type{T}, n::Int) where {T} =
     return nothing
 end
 
-# Gather neighbour values in ring order.
+# Gather neighbour values in ring order, into the same container shape the
+# handles arrived in.
 @inline function _gather(data::AbstractVector,
-        nbrs::SmallCollections.SmallVector{M,H}) where {M,H}
+        nbrs::SmallCollections.SmallVector{M}) where {M}
     out = SmallCollections.SmallVector{M,eltype(data)}()
     for h in nbrs
         out = SmallCollections.push(out, @inbounds data[h.position])
+    end
+    return out
+end
+
+@inline function _gather(data::AbstractVector, nbrs::Vector)
+    out = Vector{eltype(data)}(undef, length(nbrs))
+    for (i, h) in enumerate(nbrs)
+        @inbounds out[i] = data[h.position]
     end
     return out
 end
@@ -425,40 +484,39 @@ sequential execution.
 """
 function mapneighbors(f::F, cv::CellVector; order = StorageOrder(),
         threaded = true, connectivity::Connectivity = Vertex()) where {F}
-    M = max_neighbors(system(cv), connectivity)
+    cap = _capacity(system(cv), connectivity)
     H = SubsetPositionedCell{eltype(cv)}
-    T = Base.promote_op(f, H, SmallCollections.SmallVector{M,H})
+    T = Base.promote_op(f, H, _ringtype(cap, H))
     outs = _outputs(T, length(cv))
     return _mapstore!(f, outs, cv, connectivity, order, GOCore.booltype(threaded),
-        Val(M))
+        cap)
 end
 
 function mapneighbors(f::F, cv::CellVector, data::AbstractVector;
         order = StorageOrder(), threaded = true,
         connectivity::Connectivity = Vertex()) where {F}
     _check_data(data, length(cv))
-    M = max_neighbors(system(cv), connectivity)
+    cap = _capacity(system(cv), connectivity)
     H = SubsetPositionedCell{eltype(cv)}
-    T = Base.promote_op(f, H, eltype(data),
-        SmallCollections.SmallVector{M,eltype(data)})
+    T = Base.promote_op(f, H, eltype(data), _ringtype(cap, eltype(data)))
     outs = _outputs(T, length(cv))
     return _mapstore!(f, outs, cv, data, connectivity, order,
-        GOCore.booltype(threaded), Val(M))
+        GOCore.booltype(threaded), cap)
 end
 
 # Build the store closure after the output container type is known.
 function _mapstore!(f::F, outs::O, cv::CellVector, conn::Connectivity, order,
-        thr, ::Val{M}) where {F,O,M}
+        thr, cap::CAP) where {F,O,CAP}
     _run!((k, c, nbrs) -> _store!(outs, k, f(c, nbrs)), cv, conn, order, thr,
-        Val(M))
+        cap)
     return outs
 end
 
 function _mapstore!(f::F, outs::O, cv::CellVector, data::AbstractVector,
-        conn::Connectivity, order, thr, ::Val{M}) where {F,O,M}
+        conn::Connectivity, order, thr, cap::CAP) where {F,O,CAP}
     _run!((k, c, nbrs) -> _store!(outs, k,
             f(c, (@inbounds data[k]), _gather(data, nbrs))),
-        cv, conn, order, thr, Val(M))
+        cv, conn, order, thr, cap)
     return outs
 end
 
@@ -473,9 +531,8 @@ disabled by default; enabling it requires `f` to be order-independent.
 """
 function foreachneighbors(f::F, cv::CellVector; order = StorageOrder(),
         threaded = false, connectivity::Connectivity = Vertex()) where {F}
-    M = max_neighbors(system(cv), connectivity)
     _run!((k, c, nbrs) -> (f(c, nbrs); nothing), cv, connectivity, order,
-        GOCore.booltype(threaded), Val(M))
+        GOCore.booltype(threaded), _capacity(system(cv), connectivity))
     return nothing
 end
 
@@ -483,9 +540,9 @@ function foreachneighbors(f::F, cv::CellVector, data::AbstractVector;
         order = StorageOrder(), threaded = false,
         connectivity::Connectivity = Vertex()) where {F}
     _check_data(data, length(cv))
-    M = max_neighbors(system(cv), connectivity)
     _run!((k, c, nbrs) -> (f(c, (@inbounds data[k]), _gather(data, nbrs)); nothing),
-        cv, connectivity, order, GOCore.booltype(threaded), Val(M))
+        cv, connectivity, order, GOCore.booltype(threaded),
+        _capacity(system(cv), connectivity))
     return nothing
 end
 
@@ -551,10 +608,10 @@ function _halo_table(cv::CellVector, conn::Connectivity, ::GOCore.False)
     offsets = Vector{Int}(undef, n + 1)
     @inbounds offsets[1] = 1
     nbrs = Int[]
-    M = max_neighbors(system(cv), conn)
+    cap = _capacity(system(cv), conn)
     # Reserve the maximum possible number of entries.
-    sizehint!(nbrs, n * M)
-    _sweep!(cv, conn, 1:n, Val(M)) do k, c, ring
+    sizehint!(nbrs, n * _hint_degree(cap))
+    _sweep!(cv, conn, 1:n, cap) do k, c, ring
         for h in ring
             push!(nbrs, h.position)
         end
@@ -567,14 +624,14 @@ end
 function _halo_table(cv::CellVector, conn::Connectivity, ::GOCore.True)
     n = length(cv)
     n == 0 && return _halo_table(cv, conn, GOCore.False())
-    M = max_neighbors(system(cv), conn)
+    cap = _capacity(system(cv), conn)
     ranges = _chunk_ranges(n)
     parts = Vector{Vector{Int}}(undef, length(ranges))
     offsets = Vector{Int}(undef, n + 1)
     @inbounds offsets[1] = 1
     @sync for (i, r) in enumerate(ranges)
         Threads.@spawn @inbounds parts[i] = _halo_chunk(cv, conn, r, offsets,
-            Val(M))
+            cap)
     end
     # Shift local row ends by the number of preceding entries.
     total = 0
@@ -597,10 +654,10 @@ function _halo_table(cv::CellVector, conn::Connectivity, ::GOCore.True)
 end
 
 function _halo_chunk(cv::CellVector, conn::Connectivity, r::UnitRange{Int},
-        offsets::Vector{Int}, ::Val{M}) where {M}
+        offsets::Vector{Int}, cap::CAP) where {CAP}
     loc = Int[]
-    sizehint!(loc, length(r) * M)
-    _sweep!(cv, conn, r, Val(M)) do k, c, ring
+    sizehint!(loc, length(r) * _hint_degree(cap))
+    _sweep!(cv, conn, r, cap) do k, c, ring
         for h in ring
             push!(loc, h.position)
         end
@@ -616,9 +673,9 @@ HaloTable(pg::PartialGrid; kw...) = HaloTable(CellVector(pg); kw...)
 function _swept_rows(cv::CellVector, conn::Connectivity, thr = GOCore.False())
     n = length(cv)
     out = Vector{Vector{Int}}(undef, n)
-    M = max_neighbors(system(cv), conn)
+    cap = _capacity(system(cv), conn)
     _foreach_chunk(n, thr) do r
-        _sweep!(cv, conn, r, Val(M)) do k, c, ring
+        _sweep!(cv, conn, r, cap) do k, c, ring
             row = Vector{Int}(undef, length(ring))
             for (i, h) in enumerate(ring)
                 @inbounds row[i] = h.position

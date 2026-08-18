@@ -635,7 +635,7 @@ function _stencil_rows(pg::PartialGrid, chunk, halo_positions::AbstractVector,
     # asking for it once is what keeps the append from reallocating on the way
     # up. Deliberately not a second pass to count exactly — that pass would have
     # to compute every neighbourhood twice.
-    sizehint!(indices, n * max_neighbors(pg.system, connectivity))
+    sizehint!(indices, n * _hint_degree(_capacity(pg.system, connectivity)))
     for i in 1:n
         d = cellindex(pg, i)
         for nb in neighbors(complete, d, 1; connectivity)

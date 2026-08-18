@@ -14,10 +14,10 @@ using DiscreteGlobalGrids: levelgrid, cellindex, cellposition, neighbors,
     AuthalicSystem, Vertex, Edge, query, system, cellid, level,
     Neighbors, Values, NeighborSlices
 
-const FB = DGG.Fallbacks
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, sweepcovers
 
-sysname(sys) = sys isa AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
+const FB = DGG.Fallbacks
 
 # Cover one-window subtrees and multi-window coverages.
 const SWEEP = [
@@ -29,6 +29,10 @@ const SWEEP = [
     (DGG.ISEA4RSystem(), 1, 4, 11),
     (AuthalicSystem(DGG.IGeo7System()), 1, 3, 8),
 ]
+
+@testset "the sweep covers every registered system" begin
+    sweepcovers(SWEEP)
+end
 
 const TILE = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
 
@@ -46,7 +50,7 @@ naive(cv; connectivity = Vertex()) =
           init = 0)
      for k in eachindex(cv)]
 
-@testset "$(sysname(sys))" for (sys, base, depth, covlvl) in SWEEP
+@testset "$(syslabel(sys))" for (sys, base, depth, covlvl) in SWEEP
     subtree = CellVector(rooted_pg(sys, base, depth))
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=covlvl))
 

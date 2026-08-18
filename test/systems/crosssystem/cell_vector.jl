@@ -8,6 +8,9 @@ import DiscreteGlobalGrids as DGG
 import GeoInterface as GI
 import GeometryOps as GO
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, sweepcovers
+
 const FB = DGG.Fallbacks
 
 # The same Switzerland/Zurich fixture the DimensionalData suite uses, so the
@@ -32,9 +35,6 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, 3),
 ]
 
-sysname(sys) = sys isa DGG.AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
-
 # The oracle, computed without the type under test and through the same trait
 # branch it takes, but by a different route.
 function expand(sys, set, l::Int)
@@ -47,11 +47,7 @@ end
 nwin(cv) = FB.nwindows(FB.windows(cv))
 
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _) in SWEEP)
-    for s in DGG.systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 # ---------------------------------------------------------------------------
@@ -97,7 +93,7 @@ end
 # The laws, once per system
 # ---------------------------------------------------------------------------
 
-@testset "a compressed cell vector: $(sysname(sys))" for (sys, leaf, _) in SWEEP
+@testset "a compressed cell vector: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
     grid = DGG.levelgrid(sys, leaf)
     cv = DGG.CellVector(set)
@@ -274,7 +270,7 @@ end
 # Memory: the reason the type exists, restated without a cube
 # ---------------------------------------------------------------------------
 
-@testset "memory is O(#windows): $(sysname(sys))" for (sys, leaf, deeper) in SWEEP
+@testset "memory is O(#windows): $(syslabel(sys))" for (sys, leaf, deeper) in SWEEP
     if !DGG.has_sorted_subtrees(sys)
         @test !DGG.has_sorted_subtrees(sys)
         continue

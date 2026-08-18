@@ -10,6 +10,9 @@ using DiscreteGlobalGrids: systems, levels, levelgrid, ncells, cellindex,
     cell_boundary, cell_centroid, cellat, neighbors, ring, level, children,
     descendants, subtree_border, subtree_interior, Vertex, Edge, PartialGrid
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel
+
 # A deterministic spread of cells: no RNG, so a failure names the same cell on
 # every run and on every machine.
 function sample_cells(grid, n::Int)
@@ -109,7 +112,7 @@ end
     end
 
     for sys in systems()
-        name = string(nameof(typeof(sys)))
+        name = syslabel(sys)
 
         @testset "$name: rotational neighbour contract" begin
             # A level deep enough that a k=3 disc is not most of the sphere,

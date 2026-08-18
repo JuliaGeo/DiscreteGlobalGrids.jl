@@ -205,10 +205,14 @@ end
         @test s isa AbstractQuadFaceGridSystem
     end
 
-    # No other registered system claims the family's arithmetic.
+    # No other registered system reaches the family's arithmetic: a non-member
+    # selects its own `rootcells`, never the supertype's. Asked of the method
+    # table rather than of the type names, so a system renamed or added is
+    # covered without anyone editing a list.
     for s in DGG.systems()
         s isa AbstractQuadFaceGridSystem && continue
-        @test !(nameof(typeof(s)) in (:S2System, :HEALPixSystem, :ISEA4RSystem))
+        m = which(DGG.rootcells, Base.typesof(s))
+        @test m.sig.parameters[2] !== AbstractQuadFaceGridSystem
     end
 end
 

@@ -168,6 +168,33 @@ end
             t6_centres(-20, 20, 4))) == (nothing, nothing)
     end
 
+    @testset "bilinear west of a regional raster" begin
+        # A point just west of a regional raster stays just west on its chart;
+        # folded a period east, the non-periodic axis clamps it to the east column.
+        xs, ys = t6_centres(0, 120, 24), t6_centres(-30, 30, 12)
+        region = t6_space(xs, ys)
+        @test GR._onbranch(region.xedges, -1.0, 360.0) ≈ -1.0
+        @test GR._onbranch(region.xedges, 61.0, 360.0) ≈ 61.0
+        @test GR._onbranch(region.xedges, -1.0, nothing) == -1.0
+        @test GR.chartcoords(region, GR.LonLatToSphere()(-1.0, 10.0))[1] ≈ -1.0
+
+        # Pad cells clamp to the adjacent edge column, and destination tiling
+        # changes nothing: the pad tile discovers the stencil's source chunk.
+        f(lon, lat) = 2.0 + 0.01 * lon + 0.03 * lat
+        data = t6_raster(f, xs, ys)
+        src = RasterGrid(data; chunks = ([1:8, 9:16, 17:24], [1:12]))
+        dxs = t6_centres(-5, 125, 26)
+        dst = RasterGrid(DD.DimArray(zeros(12, 26), (DD.Y(ys), DD.X(dxs)));
+            chunks = ([1:7, 8:14, 15:20, 21:26], [1:12]))
+        untiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
+            lazy = false)
+        tiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
+            lazy = true)
+        @test untiled[GR.cellposition(dst, 1, 6)] ≈ f(xs[1], ys[6])
+        @test untiled[GR.cellposition(dst, 26, 6)] ≈ f(xs[end], ys[6])
+        @test all(isequal.(Array(tiled), Array(untiled)))
+    end
+
     @testset "raster subtrees" begin
         space = RasterGrid(DD.DimArray(zeros(8, 6),
                 (DD.X(t6_centres(-180, 180, 8)), DD.Y(t6_centres(-90, 90, 6))));

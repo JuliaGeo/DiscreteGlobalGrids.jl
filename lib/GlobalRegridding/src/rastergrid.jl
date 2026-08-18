@@ -950,7 +950,7 @@ _centres(e::Vector{Float64}) = [(e[k] + e[k+1]) / 2 for k in 1:(length(e)-1)]
     chartcoords(space::RasterGrid, p)
 
 Return `p` in native coordinates, or `nothing` without an inverse. Periodic X
-uses the edge vector's branch.
+returns the representative nearest the edge span.
 """
 function chartcoords(space::RasterGrid, p)
     space.inverse === nothing && return nothing
@@ -958,10 +958,12 @@ function chartcoords(space::RasterGrid, p)
     return (_onbranch(space.xedges, Float64(x), space.xperiod), Float64(y))
 end
 
+# nearest periodic representative: folding to [lo, lo+p) throws points just west of lo a period east
 function _onbranch(edges::Vector{Float64}, v::Float64, period)
     period === nothing && return v
-    lo = min(edges[1], edges[end])
-    return lo + mod(v - lo, period::Float64)
+    p = period::Float64
+    mid = (edges[1] + edges[end]) / 2
+    return v - p * round((v - mid) / p)
 end
 
 chartposition(space::RasterGrid, ix::Int, iy::Int) = cellposition(space, ix, iy)

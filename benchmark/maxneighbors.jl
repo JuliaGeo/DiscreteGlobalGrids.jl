@@ -55,11 +55,11 @@ function sweepsum(cv, conn, cap)
     return s[]
 end
 
-# `_halo_chunk` is the CSR row builder; it takes the capacity explicitly.
+# `_adjacency_chunk` is the CSR row builder; it takes the capacity explicitly.
 function chunkbuild(cv, conn, cap)
     offsets = Vector{Int}(undef, length(cv) + 1)
     offsets[1] = 1
-    return F._halo_chunk(cv, conn, 1:length(cv), offsets, cap)
+    return F._adjacency_chunk(cv, conn, 1:length(cv), F.ClippedRows(), offsets, cap)
 end
 
 println("\n=== Part 1: declared vs forced-Vector, same system ===")
@@ -74,8 +74,8 @@ for (sysname, sys, lvl, n) in (("HEALPix L6", DGG.HEALPixSystem(), 6, 40_000),
     println("--- ", sysname, "  (", length(cv), " cells, M=", M, ") ---")
     measure("$sysname  _sweep! SmallVector{$M}", () -> sweepsum(cv, conn, Val(M)))
     measure("$sysname  _sweep! Vector (fallback)", () -> sweepsum(cv, conn, nothing))
-    measure("$sysname  _halo_chunk SmallVector{$M}", () -> chunkbuild(cv, conn, Val(M)))
-    measure("$sysname  _halo_chunk Vector (fallback)", () -> chunkbuild(cv, conn, nothing))
+    measure("$sysname  _adjacency_chunk SmallVector{$M}", () -> chunkbuild(cv, conn, Val(M)))
+    measure("$sysname  _adjacency_chunk Vector (fallback)", () -> chunkbuild(cv, conn, nothing))
     # Threaded: allocation in parallel tasks is where GC pressure bites.
     thr = F.GOCore.booltype(true)
     mapdeg(cap) = F._mapstore!((c, nb) -> length(nb), Vector{Int}(undef, length(cv)),
@@ -106,8 +106,8 @@ for (name, sys) in (("Octant-declared", OctantDeclared()),
         () -> DGG.mapneighbors((c, v, vs) -> (v + sum(vs; init = 0.0)) /
                                              (1 + length(vs)), cv, data;
             threaded = false))
-    measure("$name  HaloTable (serial)", () -> F.HaloTable(cv; threaded = false))
-    measure("$name  halo_table", () -> DGG.halo_table(cv))
+    measure("$name  adjacency (serial)", () -> DGG.adjacency(cv; threaded = false))
+    measure("$name  adjacency (threaded)", () -> DGG.adjacency(cv))
     println()
 end
 

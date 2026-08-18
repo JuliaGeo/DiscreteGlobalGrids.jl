@@ -228,7 +228,7 @@ end
             t = CD.tilecell(sys, lat_s, lon_w)
             r, q, _, _ = CD.decode(sys, t)
             nc = Int(CD.ncols(sys, r))
-            pg = PartialGrid(sys, t, 1)
+            pg = subtree(sys, t, 1)
             @test ncells(pg) == nc * N
             _, _, tile_s, tile_n = CD.cell_box(sys, t)
 
@@ -665,7 +665,7 @@ end
     # ---- which grids get it -------------------------------------------------
     # Only rectangular contiguous id runs qualify for `_block_cursor`.
     tile90 = CD.tilecell(GLO90, 50, 6)
-    rect = PartialGrid(GLO90, tile90, 1)
+    rect = subtree(GLO90, tile90, 1)
     ncols90 = CD.ncols_at(GLO90, 50)
     first_id = cellindex(rect, 1).index
     rows = PartialGrid(GLO90, 1, [LevelIndex(1, k)
@@ -730,7 +730,7 @@ end
         return (nodes = nodes, seen = count(seen), dup = dup, oob = oob)
     end
 
-    twin_tile = PartialGrid(TWIN, CD.tilecell(TWIN, 50, 6), 1)
+    twin_tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
     for (label, grid) in (("twin tile", twin_tile),
                           ("4 GLO-90 rows", rows),
                           ("GLO-90 tiles", levelgrid(GLO90, 0)),

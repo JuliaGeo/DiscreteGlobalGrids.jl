@@ -18,13 +18,14 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     ncells, cellindex, cell_boundary, cell_centroid,
     cellposition, rawid, reindex, cellindextypes,
     cell_polygon, cell_area, cell_extent, getcell,
-    cellat, cellindices, neighbors, ring, one_ring, halo_table, neighborcount,
+    cellat, cellindices, neighbors, ring, one_ring, neighborcount,
+    halo, border, interior, adjacency,
     treeify, query,
     system, level,
     cellindextype, levels, maxlevel, levelgrid, rootcells, children,
     node_extent, cap_inflation, maxneighbors, has_sorted_subtrees,
     ancestor, descendants, descendant_range,
-    subtree_border, subtree_interior,
+    subtree,
     border_engine, interior_engine, halo_engine,
     lattice_decode, lattice_cell, face_orientation,
     hex_child_direction, seeded_border_engine
@@ -73,6 +74,10 @@ include("cell_vector.jl")
 include("stencil.jl")
 # The positioned iterator depends on the stencil and window helpers.
 include("neighborhood.jl")
+# The region verbs read every container above and the cursor the sweeps use.
+include("region.jl")
+# The cached table reads the region verbs and the same cursor.
+include("adjacency.jl")
 # The algebra composes everything above it: the halo walk grows a region, the
 # window helpers merge one, and the multi-order set is what compaction answers.
 include("region_algebra.jl")

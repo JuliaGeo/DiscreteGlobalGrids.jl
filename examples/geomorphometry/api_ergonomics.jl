@@ -8,39 +8,43 @@ using DiscreteGlobalGrids: Vertex, Edge
 using Printf
 
 function iterator_size()
-    println("### 1. IteratorSize / length: HasLength only at depth 0")
+    println("### 1. IteratorSize / length / sizehint: HasLength only at depth 0")
     for sys in DGG.systems()
         r = DGG.cellindex(DGG.levelgrid(sys, 2), 1)
         line = String[]
         for l in (2, 3, 6)
-            it = DGG.SubtreeHaloIterator(sys, r, l)
+            it = DGG.halo(DGG.subtree(sys, r, l); cells = true)
             len = try string(length(it)) catch e; string(nameof(typeof(e))) end
-            push!(line, "L$l:$(Base.IteratorSize(typeof(it)))/$len")
+            push!(line, "L$l:$(Base.IteratorSize(typeof(it)))/$len/$(DGG.sizehint(it))")
         end
         @printf("  %-16s %s\n", nameof(typeof(sys)), join(line, "  "))
     end
-    println("  => a caller cannot pre-size a read buffer for any real chunk.")
+    println("  => `length` is exact only at depth 0, so a read buffer is reserved")
+    println("     against `sizehint`, which may over- or undershoot.")
 end
 
 function id_to_position()
     println()
-    println("### 2. the halo yields cell ids; arrays want positions")
+    println("### 2. the halo answers in positions; ids cost a conversion")
     for (sys, rl, tl) in ((DGG.IGeo7System(), 4, 10), (DGG.H3System(), 4, 10),
                           (DGG.HEALPixSystem(), 4, 12), (DGG.S2System(), 4, 12),
                           (DGG.ISEA4RSystem(), 4, 12))
         g = DGG.levelgrid(sys, tl)
         root = DGG.cellindex(DGG.levelgrid(sys, rl), 3)
-        DGG.subtree_halo(sys, root, tl)
-        tw = @elapsed h = DGG.subtree_halo(sys, root, tl)
+        pg = DGG.subtree(sys, root, tl)
+        collect(DGG.halo(pg; cells = true))
+        tw = @elapsed h = collect(DGG.halo(pg; cells = true))
         DGG.cellposition.(Ref(g), h)
         tp = @elapsed DGG.cellposition.(Ref(g), h)
         ap = @allocated DGG.cellposition.(Ref(g), h)
-        @printf("  %-16s halo=%4d  walk %8.1f us   id->pos %6.1f us (%4.1f%%, %d B)\n",
+        collect(DGG.halo(pg))
+        tn = @elapsed collect(DGG.halo(pg))
+        @printf("  %-16s halo=%4d  ids %8.1f us   id->pos %6.1f us (%4.1f%%, %d B)   positions %8.1f us\n",
             nameof(typeof(sys)), length(h), tw * 1e6, tp * 1e6,
-            100 * tp / (tw + tp), ap)
+            100 * tp / (tw + tp), ap, tn * 1e6)
     end
-    println("  => cheap, so ids are defensible on cost; the friction is that every")
-    println("     caller writes the same cellposition broadcast and its own sorted map.")
+    println("  => the conversion is cheap, and the position walk folds it in, so a")
+    println("     caller indexing an array writes no broadcast and no sorted map.")
 end
 
 function wider_k()
@@ -52,15 +56,16 @@ function wider_k()
         g = DGG.levelgrid(sys, tl)
         root = DGG.cellindex(DGG.levelgrid(sys, 2), 1)
         r = DGG.descendant_range(sys, root, tl)
+        pg = DGG.subtree(sys, root, tl)
         build() = begin
-            h1 = DGG.subtree_halo(sys, root, tl)
-            ids = vcat([DGG.cellindex(g, p) for p in r], h1)
+            ids = vcat([DGG.cellindex(g, p) for p in r],
+                collect(DGG.halo(pg; cells = true)))
             sort!(ids; by = c -> DGG.cellposition(g, c))
-            (h1, ids)
+            ids
         end
-        h1, ids = build(); collect(DGG.halo(DGG.CellVector(sys, tl, ids)))   # warm
-        t1 = @elapsed h1 = DGG.subtree_halo(sys, root, tl)
-        _, ids = build()
+        ids = build(); collect(DGG.halo(DGG.CellVector(sys, tl, ids)))   # warm
+        t1 = @elapsed h1 = collect(DGG.halo(pg))
+        ids = build()
         t2 = @elapsed h2 = collect(DGG.halo(DGG.CellVector(sys, tl, ids)))
         # The first and second rings together equal the chunk's two-ring halo.
         want = Set{Int}()
@@ -68,7 +73,7 @@ function wider_k()
             q = DGG.cellposition(g, m)
             (first(r) <= q <= last(r)) || push!(want, q)
         end
-        got = Set(DGG.cellposition(g, c) for c in vcat(h1, h2))
+        got = Set(vcat(h1, h2))
         @printf("  %-16s L6  k=1: %4d cells %8.2f ms | k=2 extra: %4d cells %9.2f ms (%.0fx)  correct=%s\n",
             nameof(typeof(sys)), length(h1), t1 * 1e3, length(h2), t2 * 1e3,
             t2 / t1, got == want)

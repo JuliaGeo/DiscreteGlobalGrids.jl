@@ -178,7 +178,8 @@ end
         @test ancestor(SYS, c, 1) == ancestor(BASE, c, 1)
         @test collect(descendants(SYS, c, 5)) == collect(descendants(BASE, c, 5))
         @test descendant_range(SYS, c, 5) == descendant_range(BASE, c, 5)
-        @test collect(subtree_border(SYS, c, 5)) == collect(subtree_border(BASE, c, 5))
+        @test collect(border(subtree(SYS, c, 5); cells = true)) ==
+              collect(border(subtree(BASE, c, 5); cells = true))
         @test collect(neighbors(g, c)) == collect(neighbors(levelgrid(BASE, 3), c))
         @test collect(ring(g, c, 2)) == collect(ring(levelgrid(BASE, 3), c, 2))
 
@@ -432,12 +433,13 @@ end
 
     # The subtree form, which is where `descendant_range` has to survive the wrap.
     root = cellindex(levelgrid(SYS, 1), 5)
-    sub = PartialGrid(SYS, root, 4)
+    sub = subtree(SYS, root, 4)
     @test ncells(sub) == length(descendants(SYS, root, 4))
     @test system(sub) === SYS
-    subtree = treeify(sub)
+    subtree_tree = treeify(sub)
     for i in (1, 7, ncells(sub))
-        hits = STI.query(subtree, cap -> FB.cap_contains(cap, cell_centroid(sub, cellindex(sub, i))))
+        hits = STI.query(subtree_tree,
+            cap -> FB.cap_contains(cap, cell_centroid(sub, cellindex(sub, i))))
         @test i in hits
     end
 end

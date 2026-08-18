@@ -50,7 +50,7 @@ makedocs(;
             "A round trip through a DGGS store" => "tutorials/store_io.md",
         ],
         "API" => [
-            "Subtree and subset boundaries" => "api/boundaries.md",
+            "Region boundaries" => "api/boundaries.md",
             "Reading and writing DGGS stores" => "api/store-io.md",
         ],
     ],

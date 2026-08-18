@@ -19,23 +19,20 @@ base grid interface to the five level-grid primitives a system writes instead.
 A bare `Int` is a position in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
 
-On [`PartialGrid`](@ref), [`CellVector`](@ref), and [`CellLookup`](@ref),
+A **region** is a subset of one complete level — [`PartialGrid`](@ref),
+[`CellVector`](@ref), [`CellLookup`](@ref) — or a complete level itself, and
+[`subtree`](@ref) is the reifier that makes a subtree one. On a region,
 [`neighbors`](@ref) and [`ring`](@ref) return complete-level adjacency clipped
-to membership. [`halo`](@ref) lazily returns absent cells adjacent to the
-subset, including holes. [`stencil_table`](@ref) addresses complete adjacency
-rows into a concatenated `[subset; halo]` buffer.
-[`member_neighbors`](@ref) asks the adjacency question across the levels
-of a [`MultiOrderCellSet`](@ref), which has no `halo` because it has no single
-level to answer at.
-
-[`subtree_border`](@ref) and [`subtree_interior`](@ref) are its inside;
-[`subtree_halo`](@ref) is its outside — the level-`l` cells that are not
-descendants but touch one. All three are `collect` of a resumable
-`O(depth)`-memory iterator ([`EdgeCellIterator`](@ref),
-[`InnerCellIterator`](@ref), [`SubtreeHaloIterator`](@ref)). Halos are emitted
-in ascending target-grid position. [`halo_positions`](@ref) streams those
-positions without materializing ids, and [`halo_sizehint`](@ref) provides an
-optional allocation hint where exact length is unavailable.
+to membership, and four verbs answer about the region as a whole:
+[`halo`](@ref) walks what is outside it, including the cells punched out of its
+middle; [`border`](@ref) and [`interior`](@ref) split what is inside;
+[`adjacency`](@ref) tables every one-ring at once, clipped, completed over a
+`[region; halo]` buffer, or marked in place. The three walks are lazy, serial
+and `O(depth)` in memory; `adjacency` is the cached, threaded product, and the
+one that keeps its halo ([`halopositions`](@ref)).
+[`member_neighbors`](@ref) asks the adjacency question across the levels of a
+[`MultiOrderCellSet`](@ref), which has no `halo` because it has no single level
+to answer at.
 
 Internal geometry uses `UnitSphericalPoint` — `GeometryOps`', re-exported here
 so the type the contract asks an implementor to return needs no module path;
@@ -44,7 +41,10 @@ explicitly named wrappers convert longitude and latitude at API boundaries.
 # Layout
 
   - `src/interface/`: abstract types and generic contracts.
-  - `src/fallbacks/`: generic implementations and wrapper types.
+  - `src/fallbacks/`: the overridable generic defaults — identity, location,
+    geometry, the subtree walkers, and the level-grid and authalic wrappers.
+  - `src/engine/`: the machinery no system overrides — the region containers,
+    the cursor and position tree, the query planner, and the walks over them.
   - `src/dimensionaldata.jl`: the cube face of [`CellVector`](@ref) —
     [`CellLookup`](@ref), [`Cells`](@ref), [`Covering`](@ref).
   - `src/systems/`: grid-system implementations.
@@ -127,11 +127,11 @@ using .Engine: PartialGrid,
     iscontained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
     grow, expand, compact, member_neighbors,
-    SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator,
-    subtree_halo, halo, halo_positions, halo_sizehint,
-    StencilTable, stencil_table,
+    SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator, RegionSide,
+    halo_positions, sizehint,
+    AdjacencyTable, halocells, halopositions,
     SubsetPositionedCell, cellid,
-    mapneighbors, foreachneighbors, StorageOrder, HaloTable,
+    mapneighbors, foreachneighbors, StorageOrder,
     NeighborCallbackError
 
 # Internal extension points for system-specific subtree walkers, shell winding,
@@ -253,12 +253,11 @@ Important cross-system traits:
     [`cap_inflation`](@ref) to `1.75`.
   - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
     has not established the two-sided [`descendant_range`](@ref) contract.
-  - **[`subtree_border`](@ref).** IGeo7, H3, HEALPix, ISEA4R, and S2 provide
-    `O(border)` walkers; A5 uses the `O(subtree)` fallback. Each is a resumable
-    [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in `O(depth)`
-    memory, of which [`subtree_border`](@ref) and [`subtree_interior`](@ref) are
-    the `collect` forms.
-  - **[`subtree_halo`](@ref).** The same boundary from outside, as a resumable
+  - **[`border`](@ref) on a subtree region.** IGeo7, H3, HEALPix, ISEA4R, and
+    S2 provide `O(border)` walkers; A5 uses the `O(subtree)` fallback. Each is a
+    resumable [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in
+    `O(depth)` memory, which is what `border` and [`interior`](@ref) read.
+  - **[`halo`](@ref) on a subtree region.** The same boundary from outside, as a resumable
     [`SubtreeHaloIterator`](@ref) in `O(depth)` memory. `l == level(c)` is the
     cell's own one-ring on every system, emitted ascending without a sort.
     Deeper, five of the six take a specialization and A5 does not:
@@ -290,9 +289,9 @@ Important cross-system traits:
     The generic outside-first hierarchy walk — canonical-order candidates with
     [`node_extent`](@ref) cap pruning — is still what every specialization's
     guards return to and what a newly registered system inherits.
-  - **[`halo`](@ref).** The same question about a SUBSET rather than a subtree,
-    on [`PartialGrid`](@ref), [`CellVector`](@ref) and [`CellLookup`](@ref), and
-    always an iterator. A rooted grid holding a complete subtree delegates to
+  - **[`halo`](@ref) on any other region.** The same question about an
+    arbitrary subset, and always an iterator. A rooted grid holding a complete
+    subtree delegates to
     [`SubtreeHaloIterator`](@ref) and keeps its system's specialization;
     everything else — a hole, a forgotten root, an arbitrary id list — takes an
     outside-first walk against membership, pruned by the subset's own position
@@ -304,14 +303,14 @@ Important cross-system traits:
     halo. A5 is again the exception to the delegation: without
     [`has_sorted_subtrees`](@ref) there is no way to recognise a held subtree, so
     even its rooted complete grid takes the subset walk — to the same answer.
-  - **[`stencil_table`](@ref).** The chunk-plus-halo addressing, and the only
-    verb here whose rows are guaranteed COMPLETE: given a subset and its halo
-    materialised as ascending positions, CSR rows of full one-rings indexed into
-    the concatenated `[chunk; halo]` buffer, in rotational order. `k == 1` only,
-    since a width-one halo completes nothing wider, and a neighbour in neither
-    half is an error rather than a short row. A rooted complete subtree resolves
-    membership by integer range and everything else — a hole, a scattered id
-    set, all of A5 — by `cellposition`.
+  - **[`adjacency`](@ref).** Every one-ring of a region at once, CSR and
+    counter-clockwise, with the out-of-region members dropped (`halo = 0`),
+    addressed into a `[region; halo]` buffer (`halo = 1`), or marked with `0`
+    in place (`halo = :mark`). The two complete-width shapes preserve slot
+    indices against the canonical `one_ring`, so a direction code is a property
+    of the cell; the clipped shape preserves order only. Rows exist for
+    in-region positions alone, so `halo` above 1 throws and points at
+    [`grow`](@ref).
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
     the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
     their parent exactly; the hierarchy's own relation on IGEO7, H3 and A5,
@@ -345,7 +344,7 @@ export UnitSphericalPoint
 export ncells, cellindex, cell_boundary, cell_centroid
 export cellposition, rawid, reindex, cellindextypes
 export cell_polygon, cell_area, cell_extent, getcell
-export cellat, neighbors, ring, halo_table, neighborcount
+export cellat, neighbors, ring, neighborcount
 export treeify, query
 export system, level
 
@@ -358,11 +357,15 @@ export cellsize, levelfor
 export cellindextype, levels, maxlevel, levelgrid, rootcells, children
 export node_extent, maxneighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
-export subtree_border, subtree_interior
-export subtree_halo, halo, halo_positions, halo_sizehint
-export StencilTable, stencil_table
+export subtree
 export cellid
-export mapneighbors, foreachneighbors, HaloTable
+export mapneighbors, foreachneighbors
+
+# --- The region verbs ------------------------------------------------------
+# A region is a subset of one complete level, or a complete level itself: the
+# outside, the two insides, and the whole adjacency at once.
+export halo, border, interior
+export adjacency, AdjacencyTable, halocells, halopositions
 
 # --- Reachable by name, not exported ---------------------------------------
 # The lazy walk types: an argument of the verbs above, never a name a caller
@@ -372,6 +375,11 @@ public InnerCellIterator
 public SubtreeHaloIterator
 public SubsetHaloIterator
 public HaloPositionIterator
+public RegionSide
+# The inexact size estimate `Base.IteratorSize` has no slot for.
+public sizehint
+# The positions view of an id halo walk; `halo` already answers in positions.
+public halo_positions
 public SubsetPositionedCell
 public HierarchicalGridCursor
 # A traversal order, not a traversal.

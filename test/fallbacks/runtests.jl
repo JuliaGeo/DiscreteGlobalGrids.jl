@@ -37,6 +37,12 @@ import GeometryOps: SpatialTreeInterface as STI
 const US = GO.UnitSpherical
 const P = GO.UnitSphericalPoint
 
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(border(subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(interior(subtree(sys, c, l); cells = true, kw...))
+
 # ===========================================================================
 # Mock hierarchical system: an equirectangular quadtree
 #
@@ -664,15 +670,18 @@ end
     @test_throws ArgumentError PartialGrid(SORTED, 1, ids; root=LevelIndex(2, 0))
 
     # --- the subtree constructor: lazy where the system allows it ----------
-    subtree = PartialGrid(SORTED, LevelIndex(1, 5), 4)
-    @test ncells(subtree) == RADIX^3
-    @test subtree.ids isa EN.SubtreeIds
-    @test collect(subtree.ids) == descendants(SORTED, LevelIndex(1, 5), 4)
-    @test cellindex(subtree, 1) === LevelIndex(4, 5 * 64)
+    sub = subtree(SORTED, LevelIndex(1, 5), 4)
+    @test ncells(sub) == RADIX^3
+    @test sub.ids isa EN.SubtreeIds
+    @test collect(sub.ids) == descendants(SORTED, LevelIndex(1, 5), 4)
+    @test cellindex(sub, 1) === LevelIndex(4, 5 * 64)
 
-    materialised = PartialGrid(UNSORTED, LevelIndex(1, 5), 4)
+    materialised = subtree(UNSORTED, LevelIndex(1, 5), 4)
     @test materialised.ids isa Vector
-    @test collect(materialised.ids) == collect(subtree.ids)
+    @test collect(materialised.ids) == collect(sub.ids)
+
+    # The subtree level cannot be above the root's own.
+    @test_throws ArgumentError subtree(SORTED, LevelIndex(2, 5), 1)
 end
 
 @testset "cursor over a PartialGrid" begin
@@ -720,14 +729,14 @@ end
     end
 
     # A rooted chunk starts descent at its own root, not at the sphere.
-    chunk = PartialGrid(SORTED, LevelIndex(1, 5), 4)
+    chunk = subtree(SORTED, LevelIndex(1, 5), 4)
     rooted = treeify(chunk)
     @test rooted.level == 1
     @test rooted.id === LevelIndex(1, 5)
     @test leaf_positions(rooted) == collect(1:ncells(chunk))
 
     # Bucketed descent stops early and scans.
-    bucketed = treeify(PartialGrid(SORTED, LevelIndex(1, 5), 4; bucket_size=16))
+    bucketed = treeify(subtree(SORTED, LevelIndex(1, 5), 4; bucket_size=16))
     @test leaf_positions(bucketed) == collect(1:ncells(chunk))
     leaves = 0
     walk(bucketed) do node
@@ -1364,7 +1373,7 @@ end
     @test witness ⊆ expanded
 end
 
-@testset "generic subtree_border / subtree_interior" begin
+@testset "the generic border and interior scans" begin
     # Every shipped system specializes `border_engine`, so this testset and A5's
     # are the only exercises the generic scan in `src/fallbacks/subtree.jl`
     # gets. Without it, the correct-for-everyone implementation a new system
@@ -1382,44 +1391,44 @@ end
         root = LevelIndex(0, 3)
 
         # A depth-0 subtree is the cell itself, and it is all border.
-        @test subtree_border(sys, root, 0) == [root]
-        @test isempty(subtree_interior(sys, root, 0))
+        @test eager_border(sys, root, 0) == [root]
+        @test isempty(eager_interior(sys, root, 0))
 
         for d in 1:2
-            border = subtree_border(sys, root, d)
-            interior = subtree_interior(sys, root, d)
+            bnd = eager_border(sys, root, d)
+            inner = eager_interior(sys, root, d)
             kids = descendants(sys, root, d)
 
-            @test !isempty(border)
-            @test length(border) <= 4 * 2^d - 4
-            @test allunique(border)
-            @test issorted(border)
+            @test !isempty(bnd)
+            @test length(bnd) <= 4 * 2^d - 4
+            @test allunique(bnd)
+            @test issorted(bnd)
 
             # Border and interior partition the subtree, disjointly.
-            @test isempty(intersect(Set(border), Set(interior)))
-            @test union(Set(border), Set(interior)) == Set(kids)
-            @test length(border) + length(interior) == length(kids)
+            @test isempty(intersect(Set(bnd), Set(inner)))
+            @test union(Set(bnd), Set(inner)) == Set(kids)
+            @test length(bnd) + length(inner) == length(kids)
 
             # Every border cell really does have a neighbour outside the subtree,
             # and no interior cell does — the definition, spelled out.
             inside = Set(kids)
             grid = levelgrid(sys, d)
-            for c in border
+            for c in bnd
                 @test any(nb -> !(nb in inside), neighbors(grid, c, 1))
             end
-            for c in interior
+            for c in inner
                 @test all(nb -> nb in inside, neighbors(grid, c, 1))
             end
         end
 
         # Edge() is the narrower adjacency, so its border can only be a subset of
         # Vertex()'s — a cell exposed only diagonally drops out.
-        @test issubset(Set(subtree_border(sys, root, 2; connectivity=Edge())),
-            Set(subtree_border(sys, root, 2)))
+        @test issubset(Set(eager_border(sys, root, 2; connectivity=Edge())),
+            Set(eager_border(sys, root, 2)))
 
         # Asking below the cell's own level is an error, not an empty answer.
-        @test_throws ArgumentError subtree_border(sys, LevelIndex(2, 0), 1)
-        @test_throws ArgumentError subtree_interior(sys, LevelIndex(2, 0), 1)
+        @test_throws ArgumentError eager_border(sys, LevelIndex(2, 0), 1)
+        @test_throws ArgumentError eager_interior(sys, LevelIndex(2, 0), 1)
     end
 end
 

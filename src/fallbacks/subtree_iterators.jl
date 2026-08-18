@@ -1,5 +1,5 @@
-# Lazy subtree border and interior iterators. `subtree_border` and
-# `subtree_interior` collect them. Systems specialize `border_engine` and
+# Lazy subtree border and interior iterators, which `border` and `interior` read
+# for a region that is a whole rooted subtree. Systems specialize `border_engine` and
 # `interior_engine`; iteration state is returned by `iterate`, so engines remain
 # restartable.
 
@@ -13,7 +13,7 @@
 The border of `c`'s subtree at level `l`, lazily: every level-`l` descendant of `c`
 with a neighbour that is not one, in ascending canonical order.
 
-`collect` of this is [`subtree_border`](@ref), element for element.
+The walk `border(subtree(sys, c, l))` reads.
 `l == level(c)` yields exactly `c` — a cell is its own border. `l < level(c)` and
 `l > maxlevel(sys)` throw an `ArgumentError`, as the eager verb does.
 
@@ -51,7 +51,7 @@ end
 The interior of `c`'s subtree at level `l`, lazily: the level-`l` descendants
 that are **not** on the border, in ascending canonical order.
 
-`collect` of this is [`subtree_interior`](@ref), element for element, and
+The walk `interior(subtree(sys, c, l))` reads, and
 together with [`EdgeCellIterator`](@ref) it partitions
 [`descendants`](@ref)`(sys, c, l)`. `l == level(c)` is empty.
 
@@ -211,7 +211,7 @@ function border_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex
         target::Int, connectivity::Connectivity)
     lc = level(c)
     target >= lc || throw(ArgumentError(
-        "subtree_border: level $target is above the cell's own level $lc"))
+        "border: level $target is above the cell's own level $lc"))
     C = cellindextype(sys)
     target == lc && return EagerEngine(C[c])
     has_sorted_subtrees(sys) || return EagerEngine(
@@ -225,7 +225,7 @@ function interior_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellInd
         target::Int, connectivity::Connectivity)
     lc = level(c)
     target >= lc || throw(ArgumentError(
-        "subtree_interior: level $target is above the cell's own level $lc"))
+        "interior: level $target is above the cell's own level $lc"))
     C = cellindextype(sys)
     target == lc && return EagerEngine(C[])
     has_sorted_subtrees(sys) || return EagerEngine(

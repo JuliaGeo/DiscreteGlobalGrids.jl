@@ -4,7 +4,7 @@
 # a grid per chunk: built in O(1), numbered 1:ncells so a position is an index
 # into the chunk's data array, and never naming a cell the chunk does not own.
 #
-#     grid = DGG.PartialGrid(DGG.H3System(), chunk, LEAF_LEVEL)
+#     grid = DGG.subtree(DGG.H3System(), chunk, LEAF_LEVEL)
 #
 # is the whole constructor. On a system with sorted subtrees the ids are the
 # lazy `descendant_range` window, so nothing is materialised at all.
@@ -46,7 +46,7 @@ println("="^78)
 # 1. The grid holds exactly the chunk, and numbers it from 1.
 # --------------------------------------------------------------------------
 
-grid = DGG.PartialGrid(SYS, CHUNK, LEAF_LEVEL)
+grid = DGG.subtree(SYS, CHUNK, LEAF_LEVEL)
 tree = DGG.treeify(grid)
 
 expected = length(DGG.descendant_range(SYS, CHUNK, LEAF_LEVEL))
@@ -103,29 +103,28 @@ check("cellat outside the chunk is nothing",
 # --------------------------------------------------------------------------
 # 3. Halo exchange needs BOTH faces of the chunk boundary.
 #
-# `subtree_border` is the cells this chunk SENDS: its own cells with a
-# neighbour somewhere else, and H3 walks them in O(border). `subtree_halo` is the
-# other half — the cells this chunk FETCHES, which belong to the neighbouring
-# chunks and are not in this grid at all. Neither derives the other: the border
-# is inside, the halo is outside, and an exchange that only knew the border
-# would know what to pack and not what to unpack.
+# `border` is the cells this chunk SENDS: its own cells with a neighbour
+# somewhere else, and H3 walks them in O(border). `halo` is the other half —
+# the cells this chunk FETCHES, which belong to the neighbouring chunks and are
+# not in this grid at all. Neither derives the other: the border is inside, the
+# halo is outside, and an exchange that only knew the border would know what to
+# pack and not what to unpack.
 #
-# `halo_positions` is the same walk read as positions on the GLOBE, which is
-# what a fetch list is: no ids are materialised on the way there, and the walk
-# is ascending, so a receiver can merge it against sorted storage without a
-# sort of its own.
+# `halo` answers in positions on the GLOBE, which is exactly what a fetch list
+# is: no ids are materialised on the way there, and the walk is ascending, so a
+# receiver can merge it against sorted storage without a sort of its own.
 # --------------------------------------------------------------------------
 
-border = DGG.subtree_border(SYS, CHUNK, LEAF_LEVEL)
+border = collect(DGG.border(grid; cells=true))
 check("border is a strict subset of the chunk", 0 < length(border) < expected;
     detail="$(length(border)) of $expected cells ($(round(100 * length(border) / expected; digits=1))%)")
 check("every border cell has a neighbour outside the chunk",
     all(any(DGG.ancestor(SYS, nb, CHUNK_LEVEL) != CHUNK
             for nb in DGG.neighbors(globe, c)) for c in border))
 check("border and interior partition the chunk",
-    length(border) + length(DGG.subtree_interior(SYS, CHUNK, LEAF_LEVEL)) == expected)
+    length(border) + length(collect(DGG.interior(grid))) == expected)
 
-fetch_positions = collect(DGG.halo_positions(SYS, CHUNK, LEAF_LEVEL))
+fetch_positions = collect(DGG.halo(grid))
 check("the halo is outside the chunk, and reaches it",
     all(DGG.cellposition(grid, DGG.cellindex(globe, p)) === nothing
         for p in fetch_positions) &&
@@ -139,10 +138,10 @@ check("the send and fetch lists are disjoint and adjacent",
     isempty(intersect(Set(border), Set(DGG.cellindex(globe, p) for p in fetch_positions))) &&
     all(any(DGG.cellindex(globe, p) in Set(DGG.neighbors(globe, c)) for c in border)
         for p in fetch_positions))
-halo_it = DGG.SubtreeHaloIterator(SYS, CHUNK, LEAF_LEVEL)
-check("halo_sizehint bounds it, and is not a count",
-    DGG.halo_sizehint(halo_it) >= length(fetch_positions);
-    detail="hint $(DGG.halo_sizehint(halo_it)) for $(length(fetch_positions)) cells")
+halo_it = DGG.halo(grid)
+check("sizehint bounds it, and is not a count",
+    DGG.sizehint(halo_it) >= length(fetch_positions);
+    detail="hint $(DGG.sizehint(halo_it)) for $(length(fetch_positions)) cells")
 
 # --------------------------------------------------------------------------
 # 4. O(chunk), not O(globe).
@@ -152,8 +151,8 @@ check("halo_sizehint bounds it, and is not a count",
 # --------------------------------------------------------------------------
 
 coarse = parent(SYS, CHUNK)
-build_fine = () -> DGG.PartialGrid(SYS, CHUNK, LEAF_LEVEL)
-build_coarse = () -> DGG.PartialGrid(SYS, coarse, LEAF_LEVEL)
+build_fine = () -> DGG.subtree(SYS, CHUNK, LEAF_LEVEL)
+build_coarse = () -> DGG.subtree(SYS, coarse, LEAF_LEVEL)
 build_fine();
 build_coarse();                       # warm up
 
@@ -174,7 +173,7 @@ check("build cost does not scale with the chunk", coarse_bytes <= 4 * fine_bytes
 # --------------------------------------------------------------------------
 # 5. The same two lines on every system.
 #
-# `PartialGrid(sys, cell, leaf)` is generic: sorted-subtree systems get the O(1)
+# `subtree(sys, cell, leaf)` is generic: sorted-subtree systems get the O(1)
 # lazy window, and A5 — which does not claim sorted subtrees — falls back to
 # materialising `descendants`. The call site does not change either way.
 # --------------------------------------------------------------------------
@@ -185,7 +184,7 @@ for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.H3System()))
     base = sys isa DGG.AuthalicSystem ? parent(sys) : sys
     root_level, leaf_level = 2, base isa Union{DGG.H3System,DGG.IGeo7System} ? 5 : 6
     chunk = DGG.cellat(DGG.levelgrid(sys, root_level), 10.0, 45.0)
-    g = DGG.PartialGrid(sys, chunk, leaf_level)
+    g = DGG.subtree(sys, chunk, leaf_level)
     lazy = !DGG.has_sorted_subtrees(sys)
     name = sys isa DGG.AuthalicSystem ?
            "Authalic($(nameof(typeof(base))))" : string(nameof(typeof(sys)))
@@ -195,7 +194,7 @@ for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.H3System()))
 end
 
 println()
-note("call site, verbatim:  grid = DGG.PartialGrid(sys, chunk, LEAF_LEVEL)")
+note("call site, verbatim:  grid = DGG.subtree(sys, chunk, LEAF_LEVEL)")
 note("`treeify(grid)` is the tree; `cellposition(grid, c)` is the data index")
 
 println()

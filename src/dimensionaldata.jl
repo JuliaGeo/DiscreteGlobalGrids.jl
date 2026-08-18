@@ -26,15 +26,15 @@ import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, ncells, cellindex, cellposition, cellat, level, system,
     levelgrid, cellindextype, has_sorted_subtrees, descendants, query,
-    neighbors, ring, halo_table, halo, neighborcount, Connectivity, Vertex,
-    maxneighbors
+    neighbors, ring, neighborcount, Connectivity, Vertex, maxneighbors,
+    halo, border, interior, adjacency
 import ..DiscreteGlobalGrids: Helpers
 import ..DiscreteGlobalGrids.Engine: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
 # Core collection operations delegated to `CellVector`.
 import ..DiscreteGlobalGrids.Engine: CellVector, cellset, covering,
     covering_positions, windows, nwindows, RangeWindows, CellWindows, _derive,
-    _windows, SubsetPositionedCell, mapneighbors, foreachneighbors, HaloTable,
+    _windows, SubsetPositionedCell, mapneighbors, foreachneighbors,
     StorageOrder, _capacity, _ringtype
 
 import SmallCollections
@@ -238,12 +238,15 @@ cellposition(lk::CellLookup, c::AbstractCellIndex) = cellposition(parent(lk), c)
     ring(lk::CellLookup, c, k; connectivity = Vertex())
     neighbors(lk::CellLookup, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
     ring(lk::CellLookup, p::Int, k; connectivity = Vertex()) -> Vector{Int}
-    halo_table(lk::CellLookup, k = 1; connectivity = Vertex()) -> Vector{Vector{Int}}
-    halo(lk::CellLookup; connectivity = Vertex())
+    halo(lk::CellLookup; connectivity = Vertex(), cells = false)
+    border(lk::CellLookup; connectivity = Vertex(), cells = false)
+    interior(lk::CellLookup; connectivity = Vertex(), cells = false)
+    adjacency(lk::CellLookup; halo = 0, connectivity = Vertex(), threaded = true)
 
-Return the backing vector's adjacency operations. Neighbour and ring results
-are clipped to lookup membership; [`halo_table`](@ref) returns in-set positions
-and [`halo`](@ref) lazily returns adjacent cells outside the lookup.
+Return the backing vector's adjacency operations. Neighbour and ring results are
+clipped to lookup membership, and the lookup is a region for the four region
+verbs: [`halo`](@ref) walks outside it, [`border`](@ref) and [`interior`](@ref)
+split what is inside, and [`adjacency`](@ref) tables the lot.
 """
 neighbors(lk::CellLookup, c::AbstractCellIndex, k::Integer=1;
     connectivity::Connectivity=Vertex()) =
@@ -262,10 +265,12 @@ ring(lk::CellLookup, p::Int, k::Integer;
 neighborcount(lk::CellLookup, c::AbstractCellIndex;
     connectivity::Connectivity=Vertex()) = neighborcount(parent(lk), c; connectivity)
 
-halo_table(lk::CellLookup, k::Integer=1; kw...) = halo_table(parent(lk), k; kw...)
-
-halo(lk::CellLookup; connectivity::Connectivity=Vertex()) =
-    halo(parent(lk); connectivity)
+halo(lk::CellLookup; kw...) = halo(parent(lk); kw...)
+border(lk::CellLookup; kw...) = border(parent(lk); kw...)
+interior(lk::CellLookup; kw...) = interior(parent(lk); kw...)
+adjacency(lk::CellLookup; kw...) = adjacency(parent(lk); kw...)
+adjacency(lk::CellLookup, hpos::AbstractVector{<:Integer}; kw...) =
+    adjacency(parent(lk), hpos; kw...)
 
 # Positioned handles use the parent vector's positions.
 neighbors(lk::CellLookup; connectivity::Connectivity=Vertex()) =
@@ -278,7 +283,6 @@ mapneighbors(f, lk::CellLookup, data::AbstractVector; kw...) =
 foreachneighbors(f, lk::CellLookup; kw...) = foreachneighbors(f, parent(lk); kw...)
 foreachneighbors(f, lk::CellLookup, data::AbstractVector; kw...) =
     foreachneighbors(f, parent(lk), data; kw...)
-HaloTable(lk::CellLookup; kw...) = HaloTable(parent(lk); kw...)
 
 """
     PartialGrid(lk::CellLookup) -> PartialGrid

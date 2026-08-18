@@ -24,13 +24,19 @@ const US = GO.UnitSpherical
 
 const S = I.IGeo7System()
 
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(DGG.border(DGG.subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(DGG.interior(DGG.subtree(sys, c, l); cells = true, kw...))
+
 # Recorded DGGRID oracle vectors.
 const VECTORS = joinpath(@__DIR__, "vectors")
 
 const Z7Cell = I.Z7Cell
 
 @testset "relative Z7 cells" begin
-    grid = DGG.PartialGrid(S, Z7Cell("023"), 4)
+    grid = DGG.subtree(S, Z7Cell("023"), 4)
     c = DGG.cellindex(grid, 10)
     ns = DGG.neighbors(DGG.levelgrid(S, 4), c)
     ds = ns .- Ref(c)
@@ -883,7 +889,7 @@ const CLEAN = (0, "")
             for d in 1:depth
                 leaf = lvl + d
                 leafgrid = DGG.levelgrid(S, leaf)
-                border = I.subtree_border(S, c, leaf)
+                border = eager_border(S, c, leaf)
                 @test ascending(border)
                 @test length(border) == I.subtree_border_count(S, c, leaf)
                 inside = Set(DGG.descendants(S, c, leaf))
@@ -895,13 +901,13 @@ const CLEAN = (0, "")
         end
         # depth 0 is the cell itself ("015" is at level 1)
         @test DGG.level(Z7Cell("015")) == 1
-        @test I.subtree_border(S, Z7Cell("015"), 1) == [Z7Cell("015")]
+        @test eager_border(S, Z7Cell("015"), 1) == [Z7Cell("015")]
         # the closed forms: 3^(d+1)-3 for a hexagon, 5*(3^d-1)/2 for a pentagon,
         # with d the depth BELOW the cell (level 1 -> level 6 is d = 5)
         @test I.subtree_border_count(S, Z7Cell("015"), 6) == 3 * 3^5 - 3
         @test I.subtree_border_count(S, pentagon(0, 3), 6) == (5 * (3^3 - 1)) ÷ 2
         # a target coarser than the cell is an ArgumentError
-        @test_throws ArgumentError I.subtree_border(S, Z7Cell("015"), 0)
+        @test_throws ArgumentError eager_border(S, Z7Cell("015"), 0)
         @test_throws ArgumentError I.subtree_border_count(S, Z7Cell("015"), 0)
     end
 

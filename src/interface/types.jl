@@ -88,9 +88,8 @@ interface for the complete level:
 | [`cell_centroid(sys, c)`](@ref cell_centroid) | representative interior point |
 
 [`maxneighbors(sys, connectivity)`](@ref maxneighbors) **sizes the
-neighbourhood family**: [`neighbors`](@ref), [`ring`](@ref),
-[`halo_table`](@ref) and [`stencil_table`](@ref) on a subset use it for their
-fixed-capacity containers. It defaults to `nothing` — no bound declared — and
+neighbourhood family**: [`neighbors`](@ref), [`ring`](@ref) on a subset and
+[`adjacency`](@ref) use it for their fixed-capacity containers. It defaults to `nothing` — no bound declared — and
 the same verbs then buffer in heap `Vector`s: identical answers, one
 allocation per cell. Declaring the bound is the fast path.
 

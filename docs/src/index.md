@@ -68,8 +68,7 @@ shortest honest path to one result:
     `dggread` over a Zarr store, with the grid carried in the lookup type.
 
 Two API pages are rendered so far.
-[Subtree and subset boundaries](api/boundaries.md) covers the boundary family —
-`subtree_border`, `subtree_halo`, `halo`, `halo_positions`, `halo_sizehint` and
-the engines behind them — and
+[Region boundaries](api/boundaries.md) covers the boundary family —
+`halo`, `border`, `interior`, `adjacency` and the engines behind them — and
 [Reading and writing DGGS stores](api/store-io.md) covers `dggread`, `dggwrite`
 and the conventions, encodings and chunked axis they are built on.

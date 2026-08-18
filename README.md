@@ -13,7 +13,7 @@ algorithm written against the interface exactly once. A seventh,
 level, a regional subset of one, or a standalone grid with no hierarchy at all.
 Four required methods — `ncells`, `cellindex`, `cell_boundary`, `cell_centroid`
 — buy the whole generic surface: `cell_polygon`, `cell_area`, `cell_extent`,
-`cellat`, `neighbors`, `ring`, `halo_table`, `treeify`, `query`. On a SUBSET of
+`cellat`, `neighbors`, `ring`, `adjacency`, `treeify`, `query`. On a SUBSET of
 a level the topology verbs mean the complete level's answer clipped to
 membership — omitted, not padded — so a stencil on a region is the same call it
 is on the globe, and `halo` names the cells just outside it that the clipping
@@ -65,7 +65,7 @@ DGG.cell_area(grid, c)                            # steradians
 DGG.cellat(grid, 8.5, 47.4)
 DGG.neighbors(grid, c)                            # ring 1, CCW seen from outside
 DGG.ring(grid, c, 2)                              # exactly distance 2
-DGG.halo_table(grid)                              # every cell's stencil, as positions
+DGG.adjacency(grid)                               # every cell's stencil, as positions
 
 # Spatial queries, with DE9IM predicate types and spherical semantics.
 import Extents
@@ -76,15 +76,17 @@ sys = DGG.HEALPixSystem()
 DGG.children(sys, c)
 parent(sys, c)
 DGG.descendant_range(sys, c, 6)                   # positions in levelgrid(sys, 6)
-DGG.subtree_border(sys, c, 6)                     # the border, O(border)
-DGG.subtree_halo(sys, c, 6)                       # the cells just OUTSIDE the border
+region = DGG.subtree(sys, c, 6)                   # the subtree as an ordinary grid
+DGG.border(region)                                # the border, O(border)
+DGG.halo(region)                                  # the cells just OUTSIDE it
+DGG.interior(region)                              # and the complement of the border
 
-# The halo can dwarf the border, so collecting it is always the caller's call:
-# `SubtreeHaloIterator` is the lazy form, and `halo` asks the same of a subset.
-for x in DGG.SubtreeHaloIterator(sys, c, 6)       # O(depth) memory, resumable
+# All three are lazy: a halo can dwarf the border it wraps, so collecting is
+# always the caller's call, and holes in the middle of a region count.
+for p in DGG.halo(region)                         # O(depth) memory, resumable
     break
 end
-DGG.halo(DGG.PartialGrid(sys, c, 6))              # ... of a region, with holes counted
+DGG.halo(region; cells = true)                    # ids rather than positions
 ```
 
 Swapping `HEALPixSystem()` for `IGeo7System()`, `H3System()`, `A5System()`,
@@ -261,16 +263,16 @@ No system defines a grid type. All seven return `HierarchicalLevelGrid` from
 `cellat`, `neighbors` and `ring` on all seven, and `cell_area` on the three
 whose exact area is a closed form the published boundary only approximates
 (HEALPix, ISEA4R, CopernicusDEM); the other four take the generic spherical area
-of that boundary. Among the six in `systems()`, `subtree_border` is an `O(border)`
-automaton on every one but A5, which walks the whole subtree; `subtree_interior`
-shares that walk and emits the branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
-`InnerCellIterator` in `O(depth)` memory. A5 is also the one system without
+of that boundary. Among the six in `systems()`, `border` over a rooted subtree is
+an `O(border)` automaton on every one but A5, which walks the whole subtree;
+`interior` shares that walk and emits the branches it prunes. Both are resumable
+`EdgeCellIterator` / `InnerCellIterator` walks in `O(depth)` memory. A5 is also the one system without
 `has_sorted_subtrees`, so `level_ranges` throws there and everything that would
 use it takes the selection branch instead.
 
-`subtree_halo` is the outside of that same boundary and is built the same way:
-`collect` of a resumable `SubtreeHaloIterator` in `O(depth)` memory, so a prefix
-of a deep halo costs what the prefix costs and not what the ring would. HEALPix,
+`halo` is the outside of that same boundary and is built the same way: a
+resumable `SubtreeHaloIterator` in `O(depth)` memory, so a prefix of a deep halo
+costs what the prefix costs and not what the ring would. HEALPix,
 S2 and ISEA4R walk the band around their square block, one pruned quadtree
 descent per face the halo touches; IGeo7 and H3 seed each neighbour's border
 automaton with a calibrated arc and walk that; A5, again for want of
@@ -279,10 +281,9 @@ in closed form — depth zero, which is the one-ring already in hand, and the
 square in-face band, which is `4·side + 4` — so only those declare a `length`;
 everywhere else `IteratorSize` is `SizeUnknown()` and there is no `length`
 method at all, deliberately, because a `length` that walked the halo to answer
-is the thing the design forbids. `halo`
-asks the same question of a `PartialGrid`, `CellVector` or `CellLookup`, always
-lazily; a cell punched out of the middle of a subset joins that subset's halo,
-which is `halo` doing something `subtree_halo` cannot.
+is the thing the design forbids. The same verb asks the same question of any
+region — a `PartialGrid`, a `CellVector`, a `CellLookup` or a complete grid — so
+a cell punched out of the middle of a subset joins that subset's halo.
 
 The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
 **not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of

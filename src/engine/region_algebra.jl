@@ -47,7 +47,7 @@ _walkable(grid::AbstractGrid) = CellVector(grid)
 
 function _grow_once(walkable, cv::CellVector, connectivity::Connectivity)
     ivs = intervals(cv.windows)
-    for p in halo_positions(halo(walkable; connectivity))
+    for p in halo(walkable; connectivity)
         push!(ivs, (p, p))
     end
     sort!(ivs)

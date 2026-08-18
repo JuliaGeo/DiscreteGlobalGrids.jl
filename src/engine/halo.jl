@@ -1,6 +1,6 @@
-# Lazy iterators over cells outside a subtree or subset that touch it. Systems
-# specialize `halo_engine`; conservative candidate bands must be filtered by
-# the requested adjacency before yielding.
+# The engines behind `halo`: lazy walks over the cells outside a subtree or a
+# subset that touch it. Systems specialize `halo_engine`; conservative candidate
+# bands must be filtered by the requested adjacency before yielding.
 
 """
     SubtreeHaloIterator(sys, c, l; connectivity = Vertex())
@@ -9,24 +9,20 @@ The halo of `c`'s subtree at level `l`, lazily: every level-`l` cell that is
 **not** a descendant of `c` but has a neighbour that is, in ascending canonical
 order, each cell exactly once.
 
-`collect` of this is [`subtree_halo`](@ref), element for element. `l == level(c)`
-is `c`'s own one-ring, sorted. `l < level(c)` and `l > maxlevel(sys)` throw an
-`ArgumentError`.
+What [`halo`](@ref) returns for a region that is a whole rooted subtree, with
+`cells = true`. `l == level(c)` is `c`'s own one-ring, sorted. `l < level(c)`
+and `l > maxlevel(sys)` throw an `ArgumentError`.
 
-`cellposition(levelgrid(sys, l), x)` is strictly increasing over the walk.
-[`halo_positions`](@ref) exposes this position stream directly. This differs
-from the rotational ordering of [`neighbors`](@ref).
+`cellposition(levelgrid(sys, l), x)` is strictly increasing over the walk, which
+is what `halo`'s position form reads. This differs from the rotational ordering
+of [`neighbors`](@ref).
 
 Construction does not materialize the halo. The iterator holds `O(depth)` walk
 state and bounded neighbour containers.
 
 [`Base.IteratorSize`](@ref) is `HasLength()` only when an engine derives an
-exact count; otherwise it is `SizeUnknown()`. [`halo_sizehint`](@ref) provides
-an optional approximate allocation hint.
-
-See also [`halo`](@ref) for the same question about a subset,
-[`halo_positions`](@ref) for the same walk in position space, and
-[`EdgeCellIterator`](@ref) for the inside face of the same boundary.
+exact count; otherwise it is `SizeUnknown()`, and
+[`sizehint`](@ref DiscreteGlobalGrids.sizehint) is the inexact estimate.
 """
 struct SubtreeHaloIterator{S<:AbstractHierarchicalGridSystem,C<:AbstractCellIndex,
         K<:Connectivity,E}
@@ -55,10 +51,6 @@ Base.IteratorSize(::Type{<:SubtreeHaloIterator{S,C,K,E}}) where {S,C,K,E} =
 
 # Engines without a constant-time count intentionally provide no `length`.
 Base.length(it::SubtreeHaloIterator) = length(it.engine)
-
-# Validate declared lengths during collection; approximate hints affect only
-# capacity allocation.
-Base.collect(it::SubtreeHaloIterator) = collect_subtree(it, halo_sizehint(it))
 
 Base.show(io::IO, it::SubtreeHaloIterator) = print(io, "SubtreeHaloIterator(",
     it.system, ", ", it.cell, ", ", it.level, "; connectivity = ",
@@ -127,9 +119,9 @@ function check_halo_level(sys::AbstractHierarchicalGridSystem,
         c::AbstractCellIndex, target::Int)
     lc = level(c)
     target >= lc || throw(ArgumentError(
-        "subtree_halo: level $target is above the cell's own level $lc"))
+        "halo: level $target is above the cell's own level $lc"))
     target <= maxlevel(sys) || throw(ArgumentError(
-        "subtree_halo: level $target is past maxlevel $(maxlevel(sys))"))
+        "halo: level $target is past maxlevel $(maxlevel(sys))"))
     return nothing
 end
 
@@ -158,57 +150,12 @@ halo_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
 halo_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
     connectivity::Connectivity) = halo_engine(sys.system, c, target, connectivity)
 
-"""
-    subtree_halo(sys, c, l; connectivity = Vertex()) -> Vector
-
-Materialize the level-`l` cells outside `c`'s subtree that touch it, in ascending
-target-grid position order. This is `collect(SubtreeHaloIterator(...))`.
-
-Use [`halo_positions`](@ref) when positions rather than cell ids are required:
-
-    for p in halo_positions(sys, c, l)
-        margin[p] = source[p]
-    end
-
-This avoids materializing ids before converting them to positions. The position
-stream can also be passed to [`stencil_table`](@ref).
-"""
-subtree_halo(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
-        l::Integer; connectivity::Connectivity = Vertex()) =
-    collect(SubtreeHaloIterator(sys, c, l; connectivity))
-
-"""
-    halo(subset; connectivity = Vertex())
-
-Return a lazy iterator over cells outside a same-level subset that touch a
-member, in ascending complete-level position order and without duplicates.
-Defined for [`PartialGrid`](@ref), [`CellVector`](@ref), and
-[`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup). `Vertex()`
-counts vertex contact and `Edge()` requires a shared edge.
-
-Positions refer to the complete level grid because halo cells are absent from
-the subset. [`halo_positions`](@ref) yields those positions.
-
-A removed interior cell belongs to the halo when it touches a remaining member.
-
-A rooted `PartialGrid` containing a complete subtree returns a
-[`SubtreeHaloIterator`](@ref); other inputs return a
-[`SubsetHaloIterator`](@ref). Both use `O(depth)` state beyond subset storage.
-
-[`halo_table`](@ref) instead returns in-subset neighbour positions for each
-member. [`stencil_table`](@ref) combines a subset with its materialized halo to
-produce complete rows.
-
-[`MultiOrderCellSet`](@ref) has no `halo` method because its members may occupy
-different levels. Use [`member_neighbors`](@ref) for mixed-level adjacency.
-"""
-function halo end
 
 """
     SubsetHaloIterator(subset, connectivity, engine)
 
-Internal lazy wrapper returned by [`halo`](@ref) for a same-level subset that is
-not a rooted complete subtree. Construction is O(1); iteration uses an O(depth)
+What [`halo`](@ref) returns, with `cells = true`, for a region that is not a
+rooted complete subtree. Construction is O(1); iteration uses an O(depth)
 frame stack and prunes with [`subset_span`](@ref). Its size is unknown.
 """
 struct SubsetHaloIterator{S,K<:Connectivity,E}
@@ -228,8 +175,6 @@ Base.IteratorSize(::Type{<:SubsetHaloIterator{S,K,E}}) where {S,K,E} =
 # Subset engines do not provide a constant-time `length`.
 Base.length(it::SubsetHaloIterator) = length(it.engine)
 
-Base.collect(it::SubsetHaloIterator) = collect_subtree(it, halo_sizehint(it))
-
 Base.show(io::IO, it::SubsetHaloIterator) = print(io, "SubsetHaloIterator(",
     it.subset, "; connectivity = ", it.connectivity, ")")
 
@@ -240,8 +185,8 @@ Base.show(io::IO, it::SubsetHaloIterator) = print(io, "SubsetHaloIterator(",
 """
     HaloPositionIterator(halo, grid)
 
-A halo walk read as `cellposition`s on `grid`, lazily — what
-[`halo_positions`](@ref) returns.
+A halo walk read as `cellposition`s on `grid`, lazily — what [`halo`](@ref)
+returns by default, and what [`halo_positions`](@ref) wraps an id walk in.
 
 Yields `Int`, strictly increasing, one per cell of the underlying walk and in
 the same order. Everything else is the wrapped iterator's:
@@ -259,32 +204,15 @@ _halo_grid(it::SubtreeHaloIterator) = levelgrid(it.system, it.level)
 _halo_grid(it::SubsetHaloIterator) = it.engine.grid
 
 """
-    halo_positions(sys, c, l; connectivity = Vertex()) -> HaloPositionIterator
     halo_positions(it) -> HaloPositionIterator
 
-The halo as POSITIONS rather than ids: `cellposition` on `levelgrid(sys, l)` for
-every cell [`SubtreeHaloIterator`](@ref) would yield, strictly increasing, lazily.
-
-The one-argument form takes a halo iterator, so a subset's halo composes —
-`halo_positions(halo(pg))` — and the positions are then on the complete grid the
-subset was cut from, for the reason [`halo`](@ref) gives.
-
-For example, read a stencil margin from position-indexed storage:
-
-    for p in halo_positions(sys, chunk, l)
-        margin[p] = source[p]
-    end
-
-The iterator streams positions with the underlying walk's O(depth) state.
-Engines that already track positions return them directly; others call
-`cellposition` per cell.
+An id halo walk read as POSITIONS on the grid it was cut from: strictly
+increasing, lazily, with the walk's own `O(depth)` state. `halo(region)` already
+answers in positions; this is the wrapper it uses, for a walk obtained with
+`cells = true`.
 """
 halo_positions(it::Union{SubtreeHaloIterator,SubsetHaloIterator}) =
     HaloPositionIterator(it, _halo_grid(it))
-
-halo_positions(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
-        l::Integer; connectivity::Connectivity = Vertex()) =
-    halo_positions(SubtreeHaloIterator(sys, c, l; connectivity))
 
 # Engines may override the default `cellposition` conversion when state already
 # contains the position.
@@ -296,8 +224,6 @@ Base.IteratorSize(::Type{<:HaloPositionIterator{I,G}}) where {I,G} =
 
 # Position conversion does not change the wrapped iterator's countability.
 Base.length(it::HaloPositionIterator) = length(it.halo)
-
-Base.collect(it::HaloPositionIterator) = collect_subtree(it, halo_sizehint(it))
 
 Base.show(io::IO, it::HaloPositionIterator) =
     print(io, "halo_positions(", it.halo, ")")
@@ -320,28 +246,8 @@ end
 # An approximate size, which is deliberately not a `length`
 # ===========================================================================
 
-"""
-    halo_sizehint(it) -> Union{Int,Nothing}
-
-Return an approximate upper bound on the number of yielded cells, or `nothing`
-when no bound is available. The result is suitable only for `sizehint!`.
-
-    h = halo_sizehint(it)
-    out = eltype(it)[]
-    h === nothing || sizehint!(out, h)
-    for x in it; push!(out, x); end
-
-Unlike `length`, an approximate hint may over- or underestimate without
-exposing uninitialized elements. Exact-size engines return their length. Seam
-bands use `4·side + 8`; hexagonal walks use `3^(d+1) + 3`, which also bounds
-pentagon halos. [`ScanHaloEngine`](@ref) and [`OutsideWalkEngine`](@ref) return
-`nothing` because no general perimeter bound is available.
-"""
-halo_sizehint(it::SubtreeHaloIterator) = _halo_sizehint(it.engine)
-halo_sizehint(it::SubsetHaloIterator) = _halo_sizehint(it.engine)
-halo_sizehint(it::HaloPositionIterator) = halo_sizehint(it.halo)
-
-# New engines have no size hint unless they define one explicitly.
+# The per-engine half of `sizehint`, which is where the estimates live. A new
+# engine has none unless it defines one explicitly.
 _halo_sizehint(::Any) = nothing
 
 # A one-ring has an exact declared length.
@@ -1114,7 +1020,7 @@ Base.length(e::SquareBandEngine{V,NoCheck}) where {V} =
 # The exact band's hint is its own count. The seam band's is the band plus two
 # cells per corner: a seam corner can contribute a second cell where more than
 # three faces meet, which is ISEA4R at icosahedral vertex 0 or 11 and nowhere
-# else measured. See `halo_sizehint` for the sweep those two sentences come
+# else measured. See `sizehint` for the sweep those two sentences come
 # from, and note that a hint three cells generous of the worst case measured is
 # a `sizehint!` and not a `length` — the count contract above is untouched.
 _halo_sizehint(e::SquareBandEngine{V,NoCheck}) where {V} = length(e)
@@ -1609,7 +1515,8 @@ so concatenating the neighbours' streams is already the canonical merge.
 
 Memory is `O(depth)`: one seeded engine and frame stack plus the fixed ring.
 [`Base.IteratorSize`](@ref) is `SizeUnknown()` and `length` is not defined. The
-formula used by [`halo_sizehint`](@ref) has not been derived for every seeded
+formula used by [`sizehint`](@ref DiscreteGlobalGrids.sizehint) has not been
+derived for every seeded
 transition and therefore is not an exact-length contract.
 """
 struct HexArcHaloEngine{S,G,C,K}

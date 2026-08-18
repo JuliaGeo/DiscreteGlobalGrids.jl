@@ -318,15 +318,15 @@ neighbour leaves no gap in the sequence.
 
 # The idioms that carry this order
 
-[`ring`](@ref), the position forms below, [`halo_table`](@ref), `HaloTable`,
-`stencil_table`, [`member_neighbors`](@ref), the one-argument
-[`neighbors`](@ref) iterator, and the rings `mapneighbors` and
-`foreachneighbors` pass to their callbacks — all of them. Nothing in this
-package answers a neighbourhood question in ascending id or position.
+[`ring`](@ref), the position forms below, [`adjacency`](@ref),
+[`member_neighbors`](@ref), the one-argument [`neighbors`](@ref) iterator, and
+the rings `mapneighbors` and `foreachneighbors` pass to their callbacks — all of
+them. Nothing in this package answers a neighbourhood question in ascending id
+or position.
 
-The two verbs that are ascending are `halo` and [`subtree_halo`](@ref), and they
-are not rings: they are fetch lists, ordered so that a read is sequential. They
-say so where they are documented.
+The verb that is ascending is [`halo`](@ref), and it is not a ring: it is a
+fetch list, ordered so that a read is sequential. It says so where it is
+documented.
 
 # Container
 
@@ -364,7 +364,7 @@ the cells at *exactly* distance `k`.
 Given a position, both verbs answer with **in-set positions in the rotational
 order above**: `neighbors(grid, p, k)` is `neighbors(grid, cellindex(grid, p),
 k)` mapped through [`cellposition`](@ref), element for element, with non-members
-dropped. [`halo_table`](@ref) is this form for a whole grid at once.
+dropped. [`adjacency`](@ref) is this form for a whole region at once.
 
 The result is therefore not sorted. An index list read only by membership does
 not care, and one read by direction — a gradient, an upwind stencil — cannot be
@@ -410,29 +410,111 @@ what keeps the one-ring sweeps allocation-free.
 function one_ring end
 
 """
-    halo_table(grid::AbstractGrid, k::Integer = 1; connectivity::Connectivity = Vertex()) -> Vector{Vector{Int}}
-    halo_table(cv::CellVector, k::Integer = 1; connectivity = Vertex(), threaded = true)
-    halo_table(lk::CellLookup, k::Integer = 1; connectivity = Vertex(), threaded = true)
+    halo(region; connectivity = Vertex(), cells = false)
 
-Return the in-set neighbours of every cell as position vectors, each row in the
-counter-clockwise order [`neighbors`](@ref) states. Entry `p` equals
-`neighbors(grid, p, k)`.
+The cells immediately OUTSIDE `region` that touch one of its members, lazily,
+each exactly once, in ascending complete-level position.
 
-    halo_table(sub, k)[p] == neighbors(sub, p, k)
+A **region** is a subset of one complete level — [`PartialGrid`](@ref),
+[`CellVector`](@ref), `CellLookup` — or a complete [`AbstractGrid`](@ref), which
+has no outside and therefore an empty halo. `Vertex()` counts vertex contact,
+`Edge()` requires a shared edge.
 
-Subset rows contain only members and may be shorter at the border; clipping drops
-cells and never reorders the survivors, so a short row is still a counter-
-clockwise arc. [`halo`](@ref) returns the missing cells outside the subset,
-while [`stencil_table`](@ref) combines a subset and its fetched halo into
-complete rows over a `[chunk; halo]` buffer.
+Yields **positions on the complete level grid**: a halo cell is by definition
+absent from the region and has no position in it. `cells = true` yields cell ids
+instead.
 
-[`HaloTable`](@ref) stores the same `k == 1` rows in CSR form.
+A cell punched out of the middle of a region is outside it and touches it, so it
+joins the halo.
 
-On subsets, `threaded` controls the `k == 1` sweep and accepts `Bool` or
-GeometryOps' `True()`/`False()`. Threaded and sequential calls return identical
-rows. Rooted subsets and `k != 1` use the same path regardless of this option.
+`collect` gives a `Vector` and `Set` gives a membership-queryable set — both are
+Base's contracts over an iterator, and neither is overloaded to reach some other
+product. [`sizehint`](@ref DiscreteGlobalGrids.sizehint) gives a cheap size
+estimate where one exists.
+
+The walk is serial; [`adjacency`](@ref) is the verb that threads.
+
+A [`MultiOrderCellSet`](@ref) has no `halo`: its members may sit at different
+levels, so there is no single level to answer at. Use
+[`member_neighbors`](@ref).
+
+See also [`border`](@ref) and [`interior`](@ref), the same boundary from inside.
 """
-function halo_table end
+function halo end
+
+"""
+    border(region; connectivity = Vertex(), cells = false)
+    interior(region; connectivity = Vertex(), cells = false)
+
+The members of `region` that do (`border`) or do not (`interior`) have a
+neighbour outside it, lazily, in ascending in-region position. The two are
+disjoint and together are the region.
+
+Yields **in-region positions** — `1:length(region)`, the index a data vector
+laid out against the region is read by. `cells = true` yields cell ids instead.
+([`halo`](@ref) yields complete-level positions instead, for the reason it
+gives.) The region types are `halo`'s; a complete grid has no cell with an
+absent neighbour, so its border is empty and its interior is all of it.
+
+A region holding a whole rooted subtree walks its system's `O(border)`
+automaton. Every other region scans its own cells and compares each clipped
+one-ring against the complete one, `O(cells · degree)`.
+
+Both walks are serial; [`adjacency`](@ref) is the verb that threads.
+"""
+function border end
+
+@doc (@doc border)
+function interior end
+
+"""
+    adjacency(region; halo = 0, connectivity = Vertex(), threaded = true) -> AdjacencyTable
+    adjacency(region, hpos::AbstractVector{<:Integer}; connectivity = Vertex(), threaded = true)
+
+The one-ring of every cell of `region` at once, cached: `adj[p]` is the ring of
+in-region position `p` as a non-allocating view, in the counter-clockwise order
+[`neighbors`](@ref) states. `length(adj)` is the region size, which is what an
+entry is compared against to tell a region slot from a halo slot.
+
+The region types are [`halo`](@ref)'s, the complete grid included —
+`adjacency(levelgrid(sys, l))` is a whole level's adjacency.
+
+# The three row shapes
+
+  - `halo = 0` — rings CLIPPED to the region. Members outside it are dropped,
+    the survivors keep their order, and the row length is the in-region degree.
+  - `halo = 1` — rings COMPLETE, addressing a `[region; halo]` buffer: `1:n`
+    names a cell of the region and `n + j` the `j`-th cell of `halo(region)`
+    under the same connectivity. The halo is walked once, here, and the table
+    keeps it — see [`halopositions`](@ref).
+  - `halo = :mark` — rings COMPLETE, with `0` where a member is outside the
+    region. Slot geometry with no halo to walk, materialise or fetch, which is
+    what a direction codec reads.
+
+`halo` above 1 throws. A row exists only for an in-region position, so a wider
+receptive field is a wider region: `adjacency(grow(region, n); halo = 1)`.
+
+# The anchor
+
+Every row is a window onto the canonical ring the COMPLETE level answers —
+`neighbors(levelgrid(system, level), cell)` — whose start is a deterministic
+property of the system and the cell alone. The
+complete-width shapes preserve SLOT INDICES — slot `k` of a row is ring member
+`k`, in every table of every region containing that cell — so a direction code
+is a property of the cell, persistable and stable across tables. The clipped
+shape preserves ORDER but not slots: dropping a member shifts the ones after it,
+and recovering slot identity from a clipped row is deliberately impossible.
+Reach for `:mark` when the slot is the answer.
+
+The second form takes a halo the caller already walked, as strictly ascending
+complete-level positions, and builds the `halo = 1` table against it. A
+neighbour in neither half is an `ArgumentError` naming the cell, not a short
+row. The list need not be minimal, only ascending and covering.
+
+`threaded` builds contiguous chunks in separate tasks and accepts `Bool` or
+GeometryOps' `True()`/`False()`; the result is identical either way.
+"""
+function adjacency end
 
 """
     neighborcount(grid::AbstractGrid, c::AbstractCellIndex; connectivity::Connectivity = Vertex()) -> Int

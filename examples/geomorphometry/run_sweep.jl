@@ -137,10 +137,10 @@ function main()
         for (what, l) in (("level below the cell", 1),
                           ("level above maxlevel", DGG.maxlevel(sys) + 1))
             try
-                DGG.SubtreeHaloIterator(sys, root, l)
+                DGG.halo(DGG.subtree(sys, root, l))
                 push!(allfails, Failure(:no_error,
                     string(nameof(typeof(sys))),
-                    "SubtreeHaloIterator accepted $what (l=$l) without throwing"))
+                    "subtree accepted $what (l=$l) without throwing"))
             catch e
                 e isa ArgumentError || push!(allfails, Failure(:wrong_error,
                     string(nameof(typeof(sys))),

@@ -37,6 +37,12 @@ import ConservativeRegridding: Trees
 const A5 = DGG.A5
 const A5N = A5.A5Native
 const S = A5.A5System()
+
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(DGG.border(DGG.subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(DGG.interior(DGG.subtree(sys, c, l); cells = true, kw...))
 const SD = GO.UnitSpherical.spherical_distance
 
 # Complete levels, built by expanding the hierarchy one level at a time — never
@@ -701,7 +707,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     end
 
     # =======================================================================
-    @testset "subtree_border (generic fallback) vs brute force" begin
+    @testset "the border walk (generic fallback) vs brute force" begin
         # A5 keeps the generic fallback — an A5 subtree is four Hilbert children
         # that cover their parent's area but not its footprint, so there is no
         # digit predicate to read a border off. What is checked is that the
@@ -716,21 +722,21 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         for (root, depths) in ((ROOTS[1], 0:3), (RES1[7], 0:3), (RES2[33], 0:2))
             l = DGG.level(root)
             for d in depths, conn in CONNECTIVITIES
-                border = DGG.subtree_border(S, root, l + d; connectivity=conn)
+                border = eager_border(S, root, l + d; connectivity=conn)
                 @test border == brute_border(root, l + d, conn)
                 @test issorted(border)
                 @test border ⊆ DGG.descendants(S, root, l + d)
-                interior = DGG.subtree_interior(S, root, l + d; connectivity=conn)
+                interior = eager_interior(S, root, l + d; connectivity=conn)
                 @test sort(vcat(border, interior)) == DGG.descendants(S, root, l + d)
                 @test isempty(intersect(Set(border), Set(interior)))
             end
         end
-        @test DGG.subtree_border(S, RES1[3], 1) == [RES1[3]]
-        @test isempty(DGG.subtree_interior(S, RES1[3], 1))
+        @test eager_border(S, RES1[3], 1) == [RES1[3]]
+        @test isempty(eager_interior(S, RES1[3], 1))
         # Every quintant of a face is on its border: each has a neighbour in
         # another face.
-        @test DGG.subtree_border(S, ROOTS[1], 1) == collect(DGG.children(S, ROOTS[1]))
-        @test_throws ArgumentError DGG.subtree_border(S, RES2[1], 1)
+        @test eager_border(S, ROOTS[1], 1) == collect(DGG.children(S, ROOTS[1]))
+        @test_throws ArgumentError eager_border(S, RES2[1], 1)
     end
 
     # =======================================================================
@@ -925,7 +931,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
 
         # A subtree-rooted chunk answers in chunk-local indices, and its root is
         # the chunk's own cell rather than the synthetic whole-sphere node.
-        chunk = DGG.PartialGrid(S, RES1[20], 4)
+        chunk = DGG.subtree(S, RES1[20], 4)
         chunk_tree = DGG.treeify(chunk)
         @test DGG.Engine.node_cell(chunk_tree) == RES1[20]
         @test Trees.ncells(chunk_tree) == 64

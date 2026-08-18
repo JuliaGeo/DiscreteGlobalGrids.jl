@@ -180,9 +180,9 @@ A **static** upper bound on the number of `connectivity`-neighbours of any cell
 of `sys`, at any level, or `nothing` when the system declares no bound.
 
 **Sizes the neighbourhood family.** An `Int` bound permits the fixed-capacity
-stack containers behind [`neighbors`](@ref) and [`ring`](@ref) on a subset,
-[`halo_table`](@ref) and [`stencil_table`](@ref); the complete-level verbs and
-the subtree family never ask for it. Defaults to `nothing` — never a guessed
+stack containers behind [`neighbors`](@ref) and [`ring`](@ref) on a subset and
+behind [`adjacency`](@ref); the complete-level verbs and the subtree family
+never ask for it. Defaults to `nothing` — never a guessed
 capacity — and the same machinery then buffers one-rings in a heap `Vector`,
 allocating once per cell: identical answers, the slow path. Declaring the bound
 is a speed decision, not a correctness requirement. Individual cells may have
@@ -269,56 +269,28 @@ Every descendant of `c` at level `l`, in ascending canonical order, for
 `ArgumentError` (uniformly across systems, so generic code can catch it).
 
 This materializes `O(subtree)` ids. Use [`descendant_range`](@ref) when
-available, or [`subtree_border`](@ref) when only the border is needed.
+available, or [`border`](@ref)`(subtree(sys, c, l))` when only the border is
+needed.
 """
 function descendants end
 
 """
-    subtree_border(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer; connectivity::Connectivity = Vertex())
+    subtree(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer; bucket_size = 0) -> PartialGrid
 
-The **border** of `c`'s subtree at level `l`: every level-`l` descendant of `c`
-that has a neighbour which is *not* a descendant of `c`.
+`c`'s subtree at level `l`, as a region: the [`PartialGrid`](@ref) holding every
+level-`l` descendant of `c`, rooted at `c`.
 
-`subtree_border(sys, c, level(c))` is `[c]` — a depth-0 subtree is the cell
-itself, and its entire neighbourhood lies outside it. `l < level(c)` throws an
-`ArgumentError`, as it does for [`descendants`](@ref).
+This is the one spelling of a subtree. It is what gives the subtree family the
+same currency every other region has — `halo(subtree(sys, c, l))`,
+`border(subtree(sys, c, l))`, `adjacency(subtree(sys, c, l); halo = 1)` — rather
+than a parallel set of verbs taking `(sys, c, l)` argument tuples.
 
-`connectivity` selects which adjacency defines "has a neighbour outside", with
-the same meaning as in [`neighbors`](@ref). It changes nothing where the two
-adjacencies coincide (H3 and IGeo7, whose vertices are all 3-valent) or where
-the border comes out the same set either way (HEALPix); A5's 4-valent corners make
-them genuinely different relations, so assume nothing.
-
-The generic fallback walks [`descendant_range`](@ref) and tests each cell's
-[`neighbors`](@ref). Systems may override with an `O(border)` algorithm. Order is
-ascending canonical order unless documented otherwise.
-
-This is `collect` of `EdgeCellIterator(sys, c, l; connectivity)`, which is the
-same walk resumable and in `O(depth)` memory — reach for the iterator when the
-border is large or a prefix of it will do.
-
-See also [`subtree_interior`](@ref), the complement.
+`l < level(c)` throws an `ArgumentError`. Construction is `O(1)` where
+[`has_sorted_subtrees`](@ref) holds, since the ids are then the level grid's own
+over a known position range; elsewhere it materialises
+[`descendants`](@ref). `bucket_size` is [`PartialGrid`](@ref)'s.
 """
-function subtree_border end
-
-"""
-    subtree_interior(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer; connectivity::Connectivity = Vertex())
-
-The level-`l` descendants of `c` that are **not** on the border — the complement of
-[`subtree_border`](@ref) within [`descendants`](@ref), in ascending canonical
-order.
-
-    subtree_border(sys, c, l) ∪ subtree_interior(sys, c, l) == descendants(sys, c, l)
-
-with the two disjoint. `subtree_interior(sys, c, level(c))` is empty: the cell
-itself is its own border.
-
-This materializes most of the subtree. It is `collect` of
-`InnerCellIterator(sys, c, l; connectivity)`, which generates the interior from
-the border walk's pruned branches — never a border set, never the border materialized
-— in `O(depth)` memory. For large subtrees, use the iterator.
-"""
-function subtree_interior end
+function subtree end
 
 """
     border_engine(sys, c, target::Int, connectivity)

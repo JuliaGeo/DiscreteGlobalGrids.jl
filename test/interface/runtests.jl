@@ -82,19 +82,21 @@ end
     # Required interface names are exported.
     for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :cellposition,
               :rawid, :reindex, :cellindextypes, :cell_polygon, :cell_area,
-              :cell_extent, :getcell, :cellat, :neighbors, :ring, :halo_table, :treeify,
+              :cell_extent, :getcell, :cellat, :neighbors, :ring, :treeify,
               :query, :system, :level, :cellindextype, :levels, :maxlevel,
               :levelgrid, :rootcells, :children, :node_extent,
               :maxneighbors, :has_sorted_subtrees, :ancestor, :descendants,
               :descendant_range, :LevelIndex, :Connectivity, :Vertex, :Edge,
-              :cellsize, :levelfor)
+              :cellsize, :levelfor, :subtree, :halo, :border, :interior,
+              :adjacency, :AdjacencyTable, :halocells, :halopositions)
         @test n in EXPORTED
     end
 
     # The `public` tier: documented and reachable by module path, deliberately
     # absent from `using`. Machinery a caller names only to talk ABOUT it.
     for n in (:EdgeCellIterator, :InnerCellIterator, :SubtreeHaloIterator,
-              :SubsetHaloIterator, :HaloPositionIterator, :SubsetPositionedCell,
+              :SubsetHaloIterator, :HaloPositionIterator, :RegionSide,
+              :sizehint, :halo_positions, :SubsetPositionedCell,
               :HierarchicalGridCursor, :StorageOrder, :NeighborCallbackError,
               :cap_inflation, :directioncode, :authalic_sphere,
               :StoreSnapshot, :StoreDescription, :ArrayEntry, :ChunkManifest,
@@ -114,7 +116,10 @@ end
     # Retired interface names are not defined.
     for n in (:AbstractDGGS, :all_systems, :DGGSGrid, :DGGSCursor, :cell_neighbors,
               :cell_children, :cell_parent, :has_exact_subtree_cap,
-              :supports_prefix_ranges, :subtree_grid, :HEALPixDGGS)
+              :supports_prefix_ranges, :subtree_grid, :HEALPixDGGS,
+              :subtree_halo, :subtree_border, :subtree_interior, :halo_table,
+              :stencil_table, :HaloTable, :StencilTable, :halo_sizehint,
+              :is_contained, :max_level, :max_neighbors)
         @test !isdefined(DiscreteGlobalGrids, n)
     end
 

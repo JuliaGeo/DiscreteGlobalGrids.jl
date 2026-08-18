@@ -13,8 +13,7 @@ module IGeo7
 import ..DiscreteGlobalGrids as DGG
 # Interface methods qualify package-level generics with `DGG.`.
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
-    AbstractCellIndex, Connectivity, Vertex, Edge, level, rawid,
-    subtree_border
+    AbstractCellIndex, Connectivity, Vertex, Edge, level, rawid
 import ..Helpers
 using ..ISEA
 
@@ -43,7 +42,6 @@ export IGeo7System,
     directioncode,
     is_pentagon,
     is_valid_cell,
-    subtree_border,
     subtree_border_count,
     z7_hex,
     z7_string

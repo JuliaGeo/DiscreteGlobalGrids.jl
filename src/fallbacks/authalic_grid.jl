@@ -250,12 +250,6 @@ descendants(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer) =
     descendants(sys.system, c, l)
 descendant_range(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer) =
     descendant_range(sys.system, c, l)
-subtree_border(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer;
-    connectivity::Connectivity=Vertex()) =
-    subtree_border(sys.system, c, l; connectivity)
-subtree_interior(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer;
-    connectivity::Connectivity=Vertex()) =
-    subtree_interior(sys.system, c, l; connectivity)
 reindex(::Type{T}, sys::AuthalicSystem, c::AbstractCellIndex) where {T<:AbstractCellIndex} =
     reindex(T, sys.system, c)
 

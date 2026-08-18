@@ -8,7 +8,7 @@
 # the source to 120 m so it also fits comfortably on a standard CI runner.
 #
 # Three calls carry the page: `MultiOrderCoverage` names the cells the tile
-# touches, `regrid` fills them from the raster, and `halo_table` routes water
+# touches, `regrid` fills them from the raster, and `adjacency` routes water
 # out of every cell.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
@@ -34,7 +34,7 @@ sys = DGG.IGeo7System()
 tile = Extents.Extent(X = (10.0, 11.0), Y = (46.0, 47.0))
 root = DGG.coarsest_contained(DGG.query(sys, DGG.MultiOrderCoverage(tile); level = 10))
 f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
-poly!(DGG.PartialGrid(sys, root, DGG.level(root)); strokewidth = 2)
+poly!(DGG.subtree(sys, root, DGG.level(root)); strokewidth = 2)
 f
 # The cell, and its level:
 root, DGG.level(root)
@@ -70,7 +70,7 @@ dem = Raster(path; lazy = false)
 dem = aggregate(mean, dem, 4; progress = false)
 
 # The source could be named as a grid too: with `demtile` the level-0 id of the
-# tile, `DGG.PartialGrid(DGG.CopernicusDEMSystem(30), demtile, 1)` is that whole
+# tile, `DGG.subtree(DGG.CopernicusDEMSystem(30), demtile, 1)` is that whole
 # tile as an ordinary grid, and a grid is a `from` as it stands —
 # `examples/copernicus_dem.jl` takes that route. This page reads the raster
 # because it works for any raster.
@@ -88,11 +88,11 @@ extrema(elevation[covered])
 # ## Flow direction
 #
 # Each cell sends its water to the lowest of its neighbours — the first step of
-# every flow-routing model. `halo_table(grid)` is every cell's neighbours, as
+# every flow-routing model. `adjacency(grid)` is every cell's neighbours, as
 # positions into `elevation`, in one call; keeping only the covered ones is
 # this page's filter, not the grid's. A cell with no lower neighbour is a pit.
 
-nbrs = [filter(p -> covered[p], row) for row in DGG.halo_table(grid)]
+nbrs = [filter(p -> covered[p], row) for row in DGG.adjacency(grid)]
 
 function downhill(i)
     isempty(nbrs[i]) && return 0
@@ -154,7 +154,7 @@ Colorbar(fig[2, 2], p2; vertical = false,
 save("geomorphometry_igeo7.png", fig)
 fig
 
-# `MultiOrderCoverage`, `PartialGrid`, `regrid` and `halo_table` are interface
+# `MultiOrderCoverage`, `subtree`, `regrid` and `adjacency` are interface
 # methods, so the regridding and routing portions can use another system.
 # `RelativeZ7Cell` and the lazy cell-index iterator provide the IGEO7-specific
 # Geomorphometry integration.

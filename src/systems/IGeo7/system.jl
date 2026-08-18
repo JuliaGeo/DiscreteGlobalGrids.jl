@@ -480,7 +480,7 @@ end
 """
     subtree_border_count(sys::IGeo7System, c::Z7Cell, l::Integer) -> Int
 
-The size of [`subtree_border`](@ref) without enumerating it: `3^(d+1) − 3` for a
+The size of `border(subtree(sys, c, l))` without enumerating it: `3^(d+1) − 3` for a
 hexagon subtree and `5·(3^d − 1)/2` for a pentagon one, `d = l - level(c)`.
 """
 function subtree_border_count(::IGeo7System, c::Z7Cell, l::Integer)

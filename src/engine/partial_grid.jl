@@ -36,14 +36,12 @@ Helpers.strictly_increasing(::SubtreeIds) = true
 
 """
     PartialGrid(sys, level, ids; bucket_size = 0, root = nothing)
-    PartialGrid(sys, c::AbstractCellIndex, level; bucket_size = 0)
 
 A subset of `levelgrid(sys, level)`. `ids` must be strictly ascending canonical
 ids at `level` and is stored by reference without copying or reordering.
 
-The second form contains all level-`level` descendants of `c` and stores `c` as
-the tree root. Sorted-subtree systems use [`SubtreeIds`](@ref), making
-construction `O(1)`.
+[`subtree`](@ref) is the constructor for the subtree case, and the one spelling
+of it.
 
 # Keywords
 
@@ -101,17 +99,17 @@ struct PartialGrid{S<:AbstractHierarchicalGridSystem,V<:AbstractVector,ID,G<:Abs
     end
 end
 
-function PartialGrid(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
-        lvl::Integer; bucket_size::Integer=0)
-    l = Int(lvl)
-    l >= level(c) || throw(ArgumentError(
-        "subtree level $l is above the root cell's own level $(level(c))"))
+function subtree(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
+        l::Integer; bucket_size::Integer=0)
+    target = Int(l)
+    target >= level(c) || throw(ArgumentError(
+        "subtree level $target is above the root cell's own level $(level(c))"))
     if has_sorted_subtrees(sys)
-        range = descendant_range(sys, c, l)
-        ids = SubtreeIds(levelgrid(sys, l), first(range), length(range))
-        return PartialGrid(sys, l, ids; bucket_size, root=c)
+        range = descendant_range(sys, c, target)
+        ids = SubtreeIds(levelgrid(sys, target), first(range), length(range))
+        return PartialGrid(sys, target, ids; bucket_size, root=c)
     end
-    return PartialGrid(sys, l, descendants(sys, c, l); bucket_size, root=c)
+    return PartialGrid(sys, target, descendants(sys, c, target); bucket_size, root=c)
 end
 
 _placeholder_root(sys::AbstractHierarchicalGridSystem) = first(rootcells(sys))

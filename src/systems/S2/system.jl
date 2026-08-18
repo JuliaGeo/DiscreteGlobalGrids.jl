@@ -44,7 +44,7 @@ overflow `Int64`.
 
 `has_sorted_subtrees` is `true`. [`maxneighbors`](@ref) is 8 for `Vertex()` and
 4 for `Edge()`. [`node_extent`](@ref) uses the exact four-corner subtree cap.
-[`subtree_border`](@ref) is an `O(border)` walk over the subtree's square block.
+[`border`](@ref) on a subtree is an `O(border)` walk over its square block.
 """
 struct S2System <: DGG.AbstractQuadFaceGridSystem end
 

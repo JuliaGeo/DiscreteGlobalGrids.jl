@@ -15,11 +15,17 @@ using Test
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: systems, levels, maxlevel, levelgrid, ncells,
     cellindex, neighbors, level, descendants, rootcells, cellindextype,
-    subtree_border, subtree_interior, EdgeCellIterator, InnerCellIterator,
+    subtree, border, interior, EdgeCellIterator, InnerCellIterator,
     AuthalicSystem, Vertex, Edge, Connectivity
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, hassortedsubtrees
+
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(border(subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(interior(subtree(sys, c, l); cells = true, kw...))
 
 # Brute-force subtree border: descendants with at least one outside neighbour.
 # This implementation does not share traversal code with the iterators.
@@ -128,9 +134,9 @@ end
                     border = collect(EdgeCellIterator(sys, c, l; connectivity = conn))
                     inner = collect(InnerCellIterator(sys, c, l; connectivity = conn))
 
-                    # The eager verbs ARE these, so this pins the wrapper.
-                    @test border == subtree_border(sys, c, l; connectivity = conn)
-                    @test inner == subtree_interior(sys, c, l; connectivity = conn)
+                    # The region verbs ARE these, so this pins the wrapper.
+                    @test border == eager_border(sys, c, l; connectivity = conn)
+                    @test inner == eager_interior(sys, c, l; connectivity = conn)
 
                     # ...and both are the definition.
                     oracle = brute_force_border(sys, c, l; connectivity = conn)
@@ -269,8 +275,8 @@ end
                       collect(EdgeCellIterator(sys, c, l))
                 @test collect(InnerCellIterator(wrapped, c, l)) ==
                       collect(InnerCellIterator(sys, c, l))
-                @test subtree_border(wrapped, c, l) == subtree_border(sys, c, l)
-                @test subtree_interior(wrapped, c, l) == subtree_interior(sys, c, l)
+                @test eager_border(wrapped, c, l) == eager_border(sys, c, l)
+                @test eager_interior(wrapped, c, l) == eager_interior(sys, c, l)
             end
         end
     end

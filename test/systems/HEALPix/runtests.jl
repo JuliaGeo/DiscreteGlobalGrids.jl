@@ -16,7 +16,7 @@
 #      level, not as a proof over it. Where a property IS checked over a whole
 #      level or a whole subtree the testset iterates the range directly —
 #      `neighbours`, the level sums in `cell_area`, `the full sphere is
-#      partitioned`, and `subtree_border`'s brute-force comparison.
+#      partitioned`, and the border walk's brute-force comparison.
 #
 #   2. CONTRACT. The two conformance suites from
 #      `DiscreteGlobalGridsConformanceTesting`, with default kwargs.
@@ -48,6 +48,12 @@ const US = GO.UnitSpherical
 import Healpix
 
 const SYS = HP.HEALPixSystem()
+
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(DGG.border(DGG.subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(DGG.interior(DGG.subtree(sys, c, l); cells = true, kw...))
 
 """
 A deterministic pixel sample: ALL `12 * 4^level` pixels when the level fits
@@ -737,13 +743,13 @@ end
 # 7. Structural: the Morton border walk
 # =========================================================================
 
-@testset "subtree_border" begin
+@testset "the Morton border walk" begin
     for level in 0:2, p in pixel_sample(level, 12)
         c = LevelIndex(level, p)
-        @test DGG.subtree_border(SYS, c, level) == [c]
+        @test eager_border(SYS, c, level) == [c]
         for depth in 1:5
             target = level + depth
-            border = DGG.subtree_border(SYS, c, target)
+            border = eager_border(SYS, c, target)
             s = 1 << depth
             @test length(border) == 4s - 4
             @test issorted(border) && allunique(border)
@@ -770,7 +776,7 @@ end
             @test border == sort!(brute_e)
         end
     end
-    @test_throws ArgumentError DGG.subtree_border(SYS, LevelIndex(3, 0), 2)
+    @test_throws ArgumentError eager_border(SYS, LevelIndex(3, 0), 2)
 end
 
 # =========================================================================

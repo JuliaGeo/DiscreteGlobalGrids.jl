@@ -18,7 +18,7 @@ const NCOLS = Int(CD.ncols_at(SYS, 50))
 const NROWS = Int(CD.lat_intervals(SYS))
 const ROWS = clamp(parse(Int, get(ENV, "COPDEM_ROWS", string(NROWS))), 1, NROWS)
 
-rowband(rows) = rows == NROWS ? DGG.PartialGrid(SYS, TILE, 1) :
+rowband(rows) = rows == NROWS ? DGG.subtree(SYS, TILE, 1) :
                 DGG.PartialGrid(SYS, 1, [DGG.LevelIndex(1, k) for k in
                                          CD.pixelcell(SYS, TILE, 0, 0).index .+ (0:(rows * NCOLS - 1))])
 

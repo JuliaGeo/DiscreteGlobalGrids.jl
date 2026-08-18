@@ -199,7 +199,7 @@ end
         sys = DGG.IGeo7System()
         coverage = DGG.query(sys, DGG.MultiOrderCoverage(tile); level=10)
         root = DGG.coarsest_contained(coverage)
-        subtree = DGG.CellVector(DGG.PartialGrid(sys, root, DGG.level(root) + 3))
+        subtree = DGG.CellVector(DGG.subtree(sys, root, DGG.level(root) + 3))
         scattered = DGG.CellVector(coverage; level=10)
 
         # Exercise both one-window and multi-window storage.
@@ -233,7 +233,7 @@ end
     )
         coverage = DGG.query(sys, DGG.MultiOrderCoverage(tile); level=covlvl)
         root = DGG.coarsest_contained(coverage)
-        subtree = DGG.CellVector(DGG.PartialGrid(sys, root, DGG.level(root) + depth))
+        subtree = DGG.CellVector(DGG.subtree(sys, root, DGG.level(root) + depth))
         scattered = DGG.CellVector(coverage; level=covlvl)
 
         @test nwindows(subtree) == 1

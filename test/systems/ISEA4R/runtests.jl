@@ -43,6 +43,12 @@ const US = GO.UnitSpherical
 
 const SYS = I4.ISEA4RSystem()
 
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(DGG.border(DGG.subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(DGG.interior(DGG.subtree(sys, c, l); cells = true, kw...))
+
 # Retain the largest measurement for each key in the test log.
 const MEASURED = Dict{String,Float64}()
 record!(key, value) = (MEASURED[key] = max(get(MEASURED, key, -Inf), value))
@@ -882,7 +888,7 @@ end
 # 8. The subtree border
 # =========================================================================
 
-@testset "subtree_border is the lattice block's boundary ring" begin
+@testset "the border is the lattice block's boundary ring" begin
     # The automaton against the definition, brute-forced independently: a
     # level-`l` descendant is on the border iff one of its neighbours is not a
     # descendant. Exhaustive over the level-0 and level-1 subtrees at depths
@@ -900,28 +906,28 @@ end
             c = LevelIndex(lvl, p)
             l = lvl + depth
             for conn in (Vertex(), Edge())
-                border = subtree_border(SYS, c, l; connectivity = conn)
+                border = eager_border(SYS, c, l; connectivity = conn)
                 @test border == brute_border(c, l, conn)      # order included
                 @test issorted(border)
                 @test eltype(border) === LevelIndex
                 @test length(border) == 4 * (1 << depth) - 4
             end
             # `Vertex()` and `Edge()` give the same border; the docstring says so.
-            @test subtree_border(SYS, c, l) ==
-                  subtree_border(SYS, c, l; connectivity = Edge())
+            @test eager_border(SYS, c, l) ==
+                  eager_border(SYS, c, l; connectivity = Edge())
             # Border and interior partition the subtree.
-            interior = subtree_interior(SYS, c, l)
+            interior = eager_interior(SYS, c, l)
             kids = descendants(SYS, c, l)
             @test issorted(interior)
-            @test isempty(intersect(Set(interior), Set(subtree_border(SYS, c, l))))
-            @test sort!(vcat(collect(interior), collect(subtree_border(SYS, c, l)))) == kids
+            @test isempty(intersect(Set(interior), Set(eager_border(SYS, c, l))))
+            @test sort!(vcat(collect(interior), collect(eager_border(SYS, c, l)))) == kids
         end
     end
     # A depth-0 subtree is the cell itself, and it is all border.
-    @test subtree_border(SYS, LevelIndex(2, 7), 2) == [LevelIndex(2, 7)]
-    @test isempty(subtree_interior(SYS, LevelIndex(2, 7), 2))
-    @test_throws ArgumentError subtree_border(SYS, LevelIndex(2, 7), 1)
-    @test_throws ArgumentError subtree_border(SYS, LevelIndex(2, 7), 30)
+    @test eager_border(SYS, LevelIndex(2, 7), 2) == [LevelIndex(2, 7)]
+    @test isempty(eager_interior(SYS, LevelIndex(2, 7), 2))
+    @test_throws ArgumentError eager_border(SYS, LevelIndex(2, 7), 1)
+    @test_throws ArgumentError eager_border(SYS, LevelIndex(2, 7), 30)
 end
 
 @testset "the generic substrate reaches ISEA4R" begin
@@ -949,10 +955,10 @@ end
     @test issubset(Set(brute), Set(hits))
     @test length(hits) < ncells(g)                 # and it really did prune
 
-    # The subtree grid: `PartialGrid(sys, cell, level)` takes the
+    # The subtree grid: `subtree(sys, cell, level)` takes the
     # `descendant_range` path when `has_sorted_subtrees` is true, which is the
     # trait's payoff.
-    sub = PartialGrid(SYS, LevelIndex(0, 0), 3)
+    sub = subtree(SYS, LevelIndex(0, 0), 3)
     @test ncells(sub) == 4^3
     @test system(sub) === SYS
     @test level(sub) == 3

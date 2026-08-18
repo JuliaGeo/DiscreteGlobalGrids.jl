@@ -308,7 +308,10 @@ for IGeo7, the smallest-id neighbour for A5 and for the geometric fallback — a
 rings `2:k` of the same call begin on the **same spoke** as ring 1, the azimuth
 of `ring(grid, c, 1)[1]`. So a disc reads as concentric rings all starting in
 one direction, but which cell that is differs by system and is not a portable
-fact. Exact azimuth ties break by canonical id.
+fact. Exact azimuth ties break by canonical id. The start is deterministic — a
+property of the system and the cell alone, the same first member every time the
+cell is asked, in every idiom, independent of any region or table the ring is
+read through.
 
 Cells with fewer neighbours yield shorter rings without padding, and an omitted
 neighbour leaves no gap in the sequence.

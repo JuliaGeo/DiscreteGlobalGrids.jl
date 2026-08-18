@@ -421,7 +421,9 @@ The contiguous interval of **positions** in `levelgrid(sys, l)`'s canonical
 dense order occupied by the descendants of `c` at level `l`.
 
 Available only when [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) is
-`true`; otherwise there is no method and the call is a `MethodError`.
+`true`; otherwise there is no method and the call is a `MethodError`. A system
+that declares the trait and implements nothing gets an `ArgumentError` naming
+both at the first call, rather than that `MethodError`.
 
 Both directions are required:
 
@@ -437,3 +439,13 @@ Sibling ranges are disjoint and partition the parent's range in canonical order.
 `l < level(c)` throws an `ArgumentError`.
 """
 function descendant_range end
+
+# The trait's obligation, diagnosed where it is first broken. Without this the
+# consumer sees a `MethodError` whose candidate list is other systems' methods.
+function descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
+        l::Integer)
+    has_sorted_subtrees(sys) && throw(ArgumentError(
+        "$(nameof(typeof(sys))) declares has_sorted_subtrees = true, which obliges " *
+        "descendant_range(::$(typeof(sys)), ::$(typeof(c)), ::Integer); it is not implemented"))
+    throw(MethodError(descendant_range, (sys, c, l)))
+end

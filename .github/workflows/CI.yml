@@ -52,6 +52,26 @@ jobs:
           files: lcov.info
           slug: JuliaGeo/DiscreteGlobalGrids.jl
 
+  conformance-fallbacks:
+    # The conformance suite's default mode tests what a system implemented; this
+    # runs the same laws against the generic fallbacks, which is what answers
+    # for a system that implemented none of them. It is its own job because the
+    # geometric adjacency costs a tree query and a boundary comparison per cell
+    # and has no business slowing the suite everything else waits on.
+    name: Conformance (generic fallbacks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v3
+      - name: Certify the generic fallbacks
+        run: |
+          julia --project=lib/DiscreteGlobalGridsConformanceTesting -e 'using Pkg; Pkg.instantiate()'
+          julia --project=lib/DiscreteGlobalGridsConformanceTesting \
+            lib/DiscreteGlobalGridsConformanceTesting/test/generic_fallbacks.jl
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest

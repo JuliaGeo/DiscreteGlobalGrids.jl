@@ -266,7 +266,7 @@ interior_engine(sys::AuthalicSystem, c::AbstractCellIndex, target::Int,
     connectivity::Connectivity) = interior_engine(sys.system, c, target, connectivity)
 
 # ===========================================================================
-# The square-block walk, shared by the three aperture-4 systems
+# The square-block walk, shared by the quad-face family
 # ===========================================================================
 
 # A subtree of an aperture-4 system is an aligned `2^d x 2^d` lattice block whose

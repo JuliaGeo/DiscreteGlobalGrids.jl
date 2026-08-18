@@ -15,10 +15,6 @@ import ..DiscreteGlobalGrids as DGG
 using ..ISEA
 
 import GeometryOps as GO
-const US = GO.UnitSpherical
-# Preserve the UnionAll so the two-argument `(point, radius)` constructor is
-# selected.
-const SphericalCap = US.SphericalCap
 
 import SmallCollections
 using SmallCollections: SmallVector

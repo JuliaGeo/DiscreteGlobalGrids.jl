@@ -375,7 +375,8 @@ The traversal derives seam rectangles by decoding neighbours of rim cells.
  3. Interior face adjacency is the 3×3 lattice, so an in-face band requires no
     additional adjacency check.
 
-A fourth square system holding all three writes only the three methods above. One
+A fourth square system holding all three subtypes
+[`AbstractQuadFaceGridSystem`](@ref) and writes only the three methods above. One
 that does not writes its own [`halo_engine`](@ref rim_engine) instead.
 """
 function lattice_decode end

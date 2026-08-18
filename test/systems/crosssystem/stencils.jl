@@ -703,4 +703,20 @@ end
     end
 end
 
+# The cross-idiom laws compare the subset idioms with each other, which a
+# consistent re-anchoring would survive. This compares them with the complete
+# level's canonical ring: a clipped ring is that ring with non-members dropped
+# in place, rotation pinned.
+@testset "clipped rings are pinned-rotation subsequences: $(syslabel(sys))" for (sys, base, leaf) in SWEEP
+    pg = PartialGrid(sys, cellindex(levelgrid(sys, base), 3), leaf)
+    complete = levelgrid(sys, leaf)
+    c = first(c for c in (cellindex(pg, i) for i in 1:ncells(pg))
+              if length(neighbors(pg, c, 1)) < length(neighbors(complete, c, 1)))
+    for k in 1:2
+        @test neighbors(pg, c, k) == filter(in(pg), neighbors(complete, c, k))
+    end
+    @test halo_table(pg)[cellposition(pg, c)] ==
+          [cellposition(pg, x) for x in filter(in(pg), neighbors(complete, c, 1))]
+end
+
 end # module StencilTests

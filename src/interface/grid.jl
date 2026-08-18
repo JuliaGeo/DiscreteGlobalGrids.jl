@@ -348,6 +348,12 @@ cell reachable only by leaving the subset and coming back keeps the distance the
 complete level gives it. The two readings coincide at `k == 1` and part company
 from `k == 2`, which is why this is stated rather than left to the reader.
 
+The filter also pins the rotation: a clipped ring is the complete ring, read
+from its canonical start, with non-members dropped in place. Its length is the
+in-set degree, and which absolute slot a surviving member occupied is
+deliberately not recoverable from the clipped ring — a consumer that needs slot
+identity reads the complete level's ring.
+
 `c` outside the subset is an `ArgumentError`, not a complete-grid answer.
 
 `k` must be ≥ 0; `k == 0` returns an empty collection. See [`ring`](@ref) for

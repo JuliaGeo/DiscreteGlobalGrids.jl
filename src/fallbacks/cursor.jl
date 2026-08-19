@@ -289,19 +289,28 @@ Trees.ncells(cursor::HierarchicalGridCursor) = _stored_count(cursor)
 # collects are valid arguments here. (At the root, where every consumer calls
 # it, the node-local and grid position spaces coincide anyway.)
 function Trees.getcell(cursor::HierarchicalGridCursor, i::Int)
-    total = ncells(cursor.grid)
-    1 <= i <= total || throw(BoundsError(1:total, i))
+    1 <= i <= ncells(cursor.grid) || throw(BoundsError(cursor.grid, i))
     return cell_polygon(cursor.grid, cellindex(cursor.grid, i))
 end
 
 Trees.getcell(cursor::HierarchicalGridCursor) =
     (Trees.getcell(cursor, i) for i in node_indices(cursor))
 
-# Parallelize below `total / (nthreads * chunks_per_thread)` stored leaves,
-# mirroring `Trees.AbstractQuadtreeCursor`'s policy. Without this method
-# ConservativeRegridding's `::Any` fallback decides on cap area, not work.
+"""
+    PARALLELIZE_CHUNKS_PER_THREAD
+
+Work chunks per thread that `Trees.should_parallelize` aims for: a dual-tree
+walk keeps splitting while a node holds more than
+`ncells(grid) ÷ (nthreads * PARALLELIZE_CHUNKS_PER_THREAD)` stored leaves.
+
+An internal extension point, re-exported as
+`DiscreteGlobalGrids.PARALLELIZE_CHUNKS_PER_THREAD`, so a system writing its own
+cursor splits on the same threshold.
+"""
 const PARALLELIZE_CHUNKS_PER_THREAD = 32
 
+# Mirrors `Trees.AbstractQuadtreeCursor`'s policy. Without this method
+# ConservativeRegridding's `::Any` fallback decides on cap area, not work.
 function Trees.should_parallelize(cursor::HierarchicalGridCursor, ::US.SphericalCap)
     threshold = max(1, ncells(cursor.grid) ÷
                        (Threads.nthreads() * PARALLELIZE_CHUNKS_PER_THREAD))

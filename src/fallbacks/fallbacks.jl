@@ -21,11 +21,13 @@ module Fallbacks
 
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
+    AbstractQuadFaceGridSystem,
     AbstractCellIndex, LevelIndex, Connectivity, Vertex, Edge,
     ncells, cellindex, cell_boundary, cell_centroid,
     cellposition, rawid, reindex, cellindextypes,
     cell_polygon, cell_area, cell_extent, getcell,
-    cellat, cellindices, neighbors, ring, halo_table, neighborcount, treeify, query,
+    cellat, cellindices, neighbors, ring, one_ring, halo_table, neighborcount,
+    treeify, query,
     system, level,
     cellindextype, levels, max_level, levelgrid, rootcells, children,
     node_extent, cap_inflation, max_neighbors, has_sorted_subtrees,
@@ -71,6 +73,9 @@ include("subtree_iterators.jl")
 # is included below — a forward reference between function bodies in one module,
 # which Julia resolves at call time.
 include("halo.jl")
+# After both engine files: the radix-4 quad-face family wires the square rim,
+# interior, and halo engines to one supertype.
+include("quad_face.jl")
 include("cursor.jl")
 include("position_tree.jl")
 include("locate.jl")
@@ -82,5 +87,8 @@ include("cell_vector.jl")
 include("stencil.jl")
 # The positioned iterator depends on the stencil and window helpers.
 include("neighborhood.jl")
+# The algebra composes everything above it: the halo walk grows a region, the
+# window helpers merge one, and the multi-order set is what compaction answers.
+include("region_algebra.jl")
 
 end # module Fallbacks

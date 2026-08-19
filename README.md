@@ -28,7 +28,8 @@ wrong, not fast.
 A bare `Int` argument is always a **position** in `1:ncells(grid)`. A typed
 `AbstractCellIndex` is always an **identity**, self-describing about its level,
 so no call passes a level and an id side by side. All internal geometry is on
-the unit sphere, as `GeometryOps.UnitSphericalPoint`; longitude and latitude
+the unit sphere, as `UnitSphericalPoint` — `GeometryOps`', re-exported here so
+an implementor writes it with no module path; longitude and latitude
 appear only in explicitly named converting wrappers, in degrees.
 
 ## Setup
@@ -211,7 +212,7 @@ Every script under `examples/` is an assertion-checked demo that exits non-zero
 if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The one
 exception is `examples/copernicus_dem.jl`, which reads a COG and so needs the
 docs environment: `julia -t auto --project=docs examples/copernicus_dem.jl`. The
-six tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
+seven tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
 build, each the shortest honest path to one result; `docs/src/index.md` lists
 them and `docs/src/all_dggs.md` draws every system.
 
@@ -257,10 +258,12 @@ ISEA4R are closed-form charts with no external dependency.
 
 No system defines a grid type. All seven return `HierarchicalLevelGrid` from
 `levelgrid` and attach their fast paths to `HierarchicalLevelGrid{TheSystem}`:
-`cellat`, `neighbors`, `ring` and `cell_area`, all four on all seven. Among the
-six in `systems()`, `subtree_border` is an `O(rim)` automaton on every one but
-A5, which walks the whole subtree; `subtree_interior` shares that walk and emits
-the branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
+`cellat`, `neighbors` and `ring` on all seven, and `cell_area` on the three
+whose exact area is a closed form the published boundary only approximates
+(HEALPix, ISEA4R, CopernicusDEM); the other four take the generic spherical area
+of that boundary. Among the six in `systems()`, `subtree_border` is an `O(rim)`
+automaton on every one but A5, which walks the whole subtree; `subtree_interior`
+shares that walk and emits the branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
 `InnerCellIterator` in `O(depth)` memory. A5 is also the one system without
 `has_sorted_subtrees`, so `level_ranges` throws there and everything that would
 use it takes the selection branch instead.
@@ -321,7 +324,7 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**986,332 assertions, ~5m30s warm**, with 17 broken — all of them
+**986,750 assertions, ~7m30s**, with 17 broken — all of them
 destination-direction conservation arms in `regridding_conservation.jl`,
 measured per system and level, waiting on the upstream clipper fix.
 

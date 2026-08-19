@@ -682,6 +682,17 @@ end
     # starting on the same spoke.
     @test [rawid(x) for x in neighbors(grid, c, 1; connectivity = Edge())] ==
           [98, 97, 102, 105]
+
+    # ORACLE PIN on the OUTER rings' start, which the winding law cannot see
+    # either. Ring 2 begins on the SAME spoke ring 1 does — the direction
+    # through the SW neighbour, not this cell's own west corner, which is what
+    # it used to be. Hand-checked for this cell: ring 1's compass bearings run
+    # SW(221.3) S(180) SE(138.7) E(86.7) NE(33.9) N(350.2) NW(326.1) W(273.3),
+    # decreasing through one turn, which is counter-clockwise seen from
+    # outside and the same sense `cell_boundary` winds in here; ring 2's first
+    # entry sits at 198.5, the first bearing counter-clockwise past 221.3.
+    @test [rawid(x) for x in ring(grid, c, 2)] ==
+          [373, 351, 74, 75, 78, 79, 101, 103, 109, 111, 110, 107, 106, 383, 381, 375]
 end
 
 @testset "ring is the tail block of neighbors" begin
@@ -729,10 +740,10 @@ end
 @testset "subtree_border" begin
     for level in 0:2, p in pixel_sample(level, 12)
         c = LevelIndex(level, p)
-        @test HP.subtree_border(SYS, c, level) == [c]
+        @test DGG.subtree_border(SYS, c, level) == [c]
         for depth in 1:5
             target = level + depth
-            rim = HP.subtree_border(SYS, c, target)
+            rim = DGG.subtree_border(SYS, c, target)
             s = 1 << depth
             @test length(rim) == 4s - 4
             @test issorted(rim) && allunique(rim)
@@ -759,7 +770,7 @@ end
             @test rim == sort!(brute_e)
         end
     end
-    @test_throws ArgumentError HP.subtree_border(SYS, LevelIndex(3, 0), 2)
+    @test_throws ArgumentError DGG.subtree_border(SYS, LevelIndex(3, 0), 2)
 end
 
 # =========================================================================

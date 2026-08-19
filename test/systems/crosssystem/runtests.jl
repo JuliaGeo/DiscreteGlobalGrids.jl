@@ -10,6 +10,9 @@ using DiscreteGlobalGrids: systems, levels, levelgrid, ncells, cellindex,
     cell_boundary, cell_centroid, cellat, neighbors, ring, level, children,
     descendants, subtree_border, subtree_interior, Vertex, Edge, PartialGrid
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel
+
 # A deterministic spread of cells: no RNG, so a failure names the same cell on
 # every run and on every machine.
 function sample_cells(grid, n::Int)
@@ -97,15 +100,19 @@ end
         for sys in systems()
             n = nameof(typeof(sys))
             c = cellindex(levelgrid(sys, first(levels(sys))), 1)
-            m = which(subtree_border, Base.typesof(sys, c, level(c)))
-            overrides = m.module !== DGG.Fallbacks
+            m = which(DGG.rim_engine, Base.typesof(sys, c, level(c), Vertex()))
+            # "Ships an automaton" is "the selected method is not the generic
+            # descendant scan" — not "the method lives in the system's own
+            # module", which the shared quad-face engine would fail while still
+            # being an automaton.
+            overrides = m.sig.parameters[2] !== DGG.AbstractHierarchicalGridSystem
             @test (n in automaton) ⊻ (n in fallback)   # nobody unaccounted for
             @test overrides == (n in automaton)
         end
     end
 
     for sys in systems()
-        name = string(nameof(typeof(sys)))
+        name = syslabel(sys)
 
         @testset "$name: rotational neighbour contract" begin
             # A level deep enough that a k=3 disc is not most of the sphere,

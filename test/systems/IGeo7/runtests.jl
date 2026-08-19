@@ -575,6 +575,19 @@ const CLEAN = (0, "")
             @test I.is_pentagon(pent)
             @test [I.z7_string(x) for x in DGG.neighbors(g2, pent, 1)] ==
                   ["0405", "0404", "0406", "0403", "0401"]
+
+            # ORACLE PIN on the OUTER rings' start, and on the tolerance that
+            # decides it. This pentagon's ring 2 has a cell lying EXACTLY on
+            # ring 1's spoke — both sit at compass bearing 198.0 — so which end
+            # of the ring it lands on is otherwise a last-bit coin flip.
+            # `SPOKE_ATOL` says it starts the ring. Hand-checked: ring 1's
+            # bearings are 198, 126, 54, 342, 270 and the five boundary corners
+            # are 306, 234, 162, 90, 18, so each neighbour bisects one edge and
+            # both sequences decrease by a fifth of a turn — counter-clockwise
+            # seen from outside. Ring 2 then steps by 36 degrees.
+            @test [I.z7_string(x) for x in DGG.ring(g2, pent, 2)] ==
+                  ["0453", "0452", "0441", "0443", "0465",
+                      "0461", "0436", "0434", "0412", "0416"]
         end
 
         # k = 0, and the ring/neighbours relation
@@ -689,27 +702,50 @@ const CLEAN = (0, "")
         # geometric primitive with the pre-port comparison sort. Same set and
         # same order, both connectivities, k = 0:3.
         # ---------------------------------------------------------------
+        # An independent right-handed tangent frame, written out here so the
+        # outer-ring order is compared against arithmetic this file owns rather
+        # than against the package's own winding helper.
+        function ref_frame(centre, toward)
+            d = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
+            r = d[1] * centre[1] + d[2] * centre[2] + d[3] * centre[3]
+            t = (d[1] - r * centre[1], d[2] - r * centre[2], d[3] - r * centre[3])
+            n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
+            e1 = (t[1] / n, t[2] / n, t[3] / n)
+            return e1, (centre[2] * e1[3] - centre[3] * e1[2],
+                centre[3] * e1[1] - centre[1] * e1[3],
+                centre[1] * e1[2] - centre[2] * e1[1])
+        end
+        # A cell exactly on the starting spoke begins the ring: the package's
+        # own `SPOKE_ATOL` rule, mirrored here because it is order policy, not
+        # neighbour arithmetic, and this oracle is about the arithmetic.
+        function ref_azimuth(centre, e1, e2, p)
+            d = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
+            a = atan(d[1] * e2[1] + d[2] * e2[2] + d[3] * e2[3],
+                d[1] * e1[1] + d[2] * e1[2] + d[3] * e1[3])
+            a < 0 && (a += 2 * Float64(π))
+            return a >= 2 * Float64(π) - DGG.Fallbacks.SPOKE_ATOL ? 0.0 : a
+        end
+
         function reference_shells(g, c, steps)
             shells = Vector{Z7Cell}[]
-            one_ring(x) = [Z7Cell(z) for z in I._cell_neighbors_ccw_geometric(DGG.rawid(x))]
-            first_ring = one_ring(c)
+            ring1(x) = [Z7Cell(z) for z in I._cell_neighbors_ccw_geometric(DGG.rawid(x))]
+            first_ring = ring1(c)
             isempty(first_ring) && return shells
             push!(shells, first_ring)
-            reference = DGG.cell_centroid(g, first(first_ring))
             centre = DGG.cell_centroid(g, c)
-            e1, e2 = I._tangent_frame(centre, reference)
+            e1, e2 = ref_frame(centre, DGG.cell_centroid(g, first(first_ring)))
             seen = Set{Z7Cell}(first_ring)
             push!(seen, c)
             frontier = first_ring
             for _ in 2:steps
                 next = Z7Cell[]
-                for x in frontier, y in one_ring(x)
+                for x in frontier, y in ring1(x)
                     y in seen && continue
                     push!(seen, y)
                     push!(next, y)
                 end
                 isempty(next) && break
-                sort!(next; by=z -> (I._azimuth(centre, e1, e2,
+                sort!(next; by=z -> (ref_azimuth(centre, e1, e2,
                         DGG.cell_centroid(g, z)), z))
                 push!(shells, next)
                 frontier = next

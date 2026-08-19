@@ -251,17 +251,7 @@ function xyf_to_nested(ix::Integer, iy::Integer, face::Integer, nside::Integer)
     (0 <= ix < nside && 0 <= iy < nside) || throw(ArgumentError(
         "lattice coordinates ($ix, $iy) out of range for nside=$nside (expected 0:$(nside - 1))"))
     0 <= face <= 11 || throw(ArgumentError("face $face out of range (expected 0:11)"))
-    x = Int64(ix)
-    y = Int64(iy)
-    morton = Int64(0)
-    shift = 0
-    while (x | y) != 0
-        morton |= ((x & 1) << shift) | ((y & 1) << (shift + 1))
-        x >>= 1
-        y >>= 1
-        shift += 2
-    end
-    return Int64(face) * Int64(nside)^2 + morton
+    return Int64(face) * Int64(nside)^2 + DGG.morton_encode(ix, iy)
 end
 
 """
@@ -282,17 +272,8 @@ function nested_to_xyf(p::Integer, nside::Integer)
     pid = Int64(p)
     0 <= pid < 12npface || throw(ArgumentError(
         "nested id $pid out of range for nside=$nside (expected 0:$(12npface - 1))"))
-    face = pid ÷ npface
-    code = pid - face * npface
-    ix = Int64(0)
-    iy = Int64(0)
-    shift = 0
-    while code != 0
-        ix |= (code & 1) << shift
-        iy |= ((code >> 1) & 1) << shift
-        code >>= 2
-        shift += 1
-    end
+    face, code = divrem(pid, npface)
+    ix, iy = DGG.morton_decode(code)
     return (Int(ix), Int(iy), Int(face))
 end
 

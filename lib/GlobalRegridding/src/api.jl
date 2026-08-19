@@ -30,12 +30,16 @@ end
     regrid(data; to, from = nothing, method = Conservative(),
            missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
            lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
-           storage = nothing)
+           storage = nothing, sampling = nothing)
     regrid(data, plan::AbstractRegriddingPlan)
 
 Regrid `data` onto `to`. Spatial dimensions must come first and flatten in the
 source space's cell order. Non-spatial dimensions retain their order. One plan
 is reused for all non-spatial slices.
+
+A dimensional source comes back labelled with the destination's own axes — a
+[`RasterGrid`](@ref) gives `(X, Y)` — followed by its unchanged non-spatial
+dimensions. Destinations without axes of their own keep a flat `Cell` axis.
 
 Results are floating point. [`Weighted`](@ref) writes `missing` when supported
 by the source element type, and `NaN` otherwise.
@@ -51,9 +55,13 @@ by the source element type, and `NaN` otherwise.
   - `chunks`: lazy destination tiling. `nothing` derives it automatically.
   - `budget`: target bytes for lazy reads and weights, default `2^30`.
   - `storage`: lazy weight storage, [`PerChunk`](@ref) or [`Spilled`](@ref).
+  - `sampling`: destination lookup sampling. `nothing` follows the method —
+    area-based methods give `Intervals`, point samples give `Points`
+    ([`outputsampling`](@ref)).
 
-`chunks`, `budget` and `storage` apply only to `lazy = true`. The plan form
-accepts no keywords because the plan contains all settings.
+`chunks`, `budget` and `storage` apply only to `lazy = true`, and `sampling`
+only to `lazy = false`. The plan form accepts no keywords because the plan
+contains all settings.
 """
 function regrid end
 
@@ -63,9 +71,10 @@ function regrid(data; to, from = nothing,
     missingval = sourcemissingval(data),
     lazy::Bool = isdiskbacked(data), chunks = nothing,
     budget::Union{Nothing,Integer} = nothing,
-    storage::Union{Nothing,AbstractBlockStorage} = nothing)
+    storage::Union{Nothing,AbstractBlockStorage} = nothing,
+    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing)
     plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
-        chunks, budget, storage)
+        chunks, budget, storage, sampling)
     return regrid(data, plan)
 end
 
@@ -74,23 +83,33 @@ function regrid(data, plan::DirectPlan)
     ndst = size(plan.block, 1)
     out = Array{outputeltype(eltype(data))}(undef, ndst, othersizes...)
     applyplan!(reshape(out, ndst, prod(othersizes)), plan, src)
-    return wrapoutput(out, data, sd)
+    return wrapoutput(out, data, sd, destinationdims(plan))
 end
 
 regrid(data, plan::AbstractRegriddingPlan) =
     error("$(typeof(plan).name.name) defines no `regrid` application")
 
 """
+    destinationdims(plan::DirectPlan) -> Tuple or nothing
+
+Return the dimensions labelling this plan's results, under the plan's own
+`sampling` when it declares one and the method's otherwise.
+"""
+destinationdims(plan::DirectPlan) = destinationdims(plan.dst_space,
+    something(plan.sampling, outputsampling(plan.method)))
+
+"""
     regrid!(dest, data; to, from = nothing, method = Conservative(),
             missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
             lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
-            storage = nothing)
+            storage = nothing, sampling = nothing)
     regrid!(dest, data, plan::AbstractRegriddingPlan)
 
 Regrid `data` into the preallocated `dest` and return `dest`.
 
-`dest` starts with the destination cell dimension, followed by `data`'s
-non-spatial dimensions. Keywords match [`regrid`](@ref); the plan form takes none.
+`dest` starts with the destination's own axes, or one flat cell dimension,
+followed by `data`'s non-spatial dimensions; either leading shape is accepted.
+Keywords match [`regrid`](@ref); the plan form takes none.
 """
 function regrid! end
 
@@ -100,18 +119,22 @@ function regrid!(dest, data; to, from = nothing,
     missingval = sourcemissingval(data),
     lazy::Bool = isdiskbacked(data), chunks = nothing,
     budget::Union{Nothing,Integer} = nothing,
-    storage::Union{Nothing,AbstractBlockStorage} = nothing)
+    storage::Union{Nothing,AbstractBlockStorage} = nothing,
+    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing)
     plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
-        chunks, budget, storage)
+        chunks, budget, storage, sampling)
     return regrid!(dest, data, plan)
 end
 
 function regrid!(dest, data, plan::DirectPlan)
     _, othersizes, src = _flatten(data, plan)
     ndst = size(plan.block, 1)
-    size(dest) == (ndst, othersizes...) || throw(DimensionMismatch(
-        "destination of size $(size(dest)) cannot hold a regrid of size " *
-        "$((ndst, othersizes...))"))
+    dstdims = destinationdims(plan)
+    shaped = dstdims === nothing ? (ndst, othersizes...) :
+             (map(length, dstdims)..., othersizes...)
+    size(dest) == shaped || size(dest) == (ndst, othersizes...) ||
+        throw(DimensionMismatch(
+            "destination of size $(size(dest)) cannot hold a regrid of size $shaped"))
     raw = dest isa DD.AbstractDimArray ? parent(dest) : dest
     applyplan!(reshape(raw, ndst, prod(othersizes)), plan, src)
     return dest
@@ -124,13 +147,14 @@ regrid!(dest, data, plan::AbstractRegriddingPlan) =
     plan_regrid(data; to, from = nothing, method = Conservative(),
                 missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
                 lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
-                storage = nothing) -> AbstractRegriddingPlan
+                storage = nothing, sampling = nothing) -> AbstractRegriddingPlan
 
 Build a reusable regridding plan without reading source values. In-memory data
 uses one whole-domain [`DirectPlan`](@ref). Lazy plans build blocks on demand
 and default to a budget-limited [`PerChunk`](@ref) cache. Use `PerChunk()` for
 an unlimited cache or `Spilled(dir)` for disk storage. Keywords match
-[`regrid`](@ref); `chunks`, `budget` and `storage` apply only to `lazy = true`.
+[`regrid`](@ref); `chunks`, `budget` and `storage` apply only to `lazy = true`,
+and `sampling` only to `lazy = false`.
 """
 function plan_regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
@@ -138,7 +162,8 @@ function plan_regrid(data; to, from = nothing,
     missingval = sourcemissingval(data),
     lazy::Bool = isdiskbacked(data), chunks = nothing,
     budget::Union{Nothing,Integer} = nothing,
-    storage::Union{Nothing,AbstractBlockStorage} = nothing)
+    storage::Union{Nothing,AbstractBlockStorage} = nothing,
+    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing)
     src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
     dst_space = _asspace(to, "to", src_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
@@ -147,8 +172,11 @@ function plan_regrid(data; to, from = nothing,
     if !lazy
         _rejectlazykeywords(chunks, budget, storage)
         return DirectPlan(method, missingpolicy, dst_space, src_space,
-            wholeblock(method, dst_space, src_space), missingval)
+            wholeblock(method, dst_space, src_space), missingval, sampling)
     end
+    sampling === nothing || throw(ArgumentError(
+        "a lazy regrid returns an unlabelled disk array, so there is no lookup " *
+        "for `sampling` to describe; pass `lazy = false` to label the destination."))
     _checkchunks(chunks)
     budget === nothing || budget > 0 ||
         throw(ArgumentError("budget must be positive, got $budget"))
@@ -182,7 +210,21 @@ function wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
 end
 
 # Only dimensional arrays carry enough geometry to infer a source space.
-_sourcespace(data::DD.AbstractDimArray) = RasterGrid(data)
+# A dimension that already names cells ([`dimsource`](@ref)) is not a raster
+# axis, so name it rather than ask for the raster axis it does not have.
+function _sourcespace(data::DD.AbstractDimArray)
+    for d in DD.dims(data)
+        named = dimsource(DD.lookup(d))
+        named === nothing && continue
+        throw(ArgumentError("""
+        no `from` was given, so the source space was derived from the data, but \
+        its $(DD.name(d)) dimension names cells rather than a raster lattice. \
+        Pass `from = $(named)`.
+        """))
+    end
+    return RasterGrid(data)
+end
+
 _sourcespace(data) = throw(ArgumentError(
     "a $(typeof(data)) carries no coordinates, so no source space can be " *
     "derived from it; pass `from = ` a RegridSpace."))

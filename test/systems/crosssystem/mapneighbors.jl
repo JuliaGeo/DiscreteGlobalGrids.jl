@@ -14,10 +14,10 @@ using DiscreteGlobalGrids: levelgrid, cellindex, cellposition, neighbors,
     AuthalicSystem, Vertex, Edge, query, system, cellid, level,
     Neighbors, Values, NeighborSlices
 
-const FB = DGG.Fallbacks
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, sweepcovers
 
-sysname(sys) = sys isa AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
+const FB = DGG.Fallbacks
 
 # Cover one-window subtrees and multi-window coverages.
 const SWEEP = [
@@ -29,6 +29,10 @@ const SWEEP = [
     (DGG.ISEA4RSystem(), 1, 4, 11),
     (AuthalicSystem(DGG.IGeo7System()), 1, 3, 8),
 ]
+
+@testset "the sweep covers every registered system" begin
+    sweepcovers(SWEEP)
+end
 
 const TILE = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
 
@@ -46,7 +50,7 @@ naive(cv; connectivity = Vertex()) =
           init = 0)
      for k in eachindex(cv)]
 
-@testset "$(sysname(sys))" for (sys, base, depth, covlvl) in SWEEP
+@testset "$(syslabel(sys))" for (sys, base, depth, covlvl) in SWEEP
     subtree = CellVector(rooted_pg(sys, base, depth))
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=covlvl))
 
@@ -86,7 +90,7 @@ naive(cv; connectivity = Vertex()) =
         @test a == collect(1:n)
         @test b == [Float64(length(neighbors(cv, c))) for c in cv]
 
-        # `HaloTable` preserves ring order; sorted rows match `halo_table`.
+        # `HaloTable` is `halo_table` in CSR form: same rows, same ring order.
         t = HaloTable(cv)
         rows = halo_table(cv)
         @test length(t) == n
@@ -94,7 +98,7 @@ naive(cv; connectivity = Vertex()) =
         @test all(zip(1:n, neighbors(cv))) do (p, (c, nbrs))
             collect(t[p]) == [cellposition(h) for h in nbrs]
         end
-        @test all(p -> sort(collect(t[p])) == rows[p], 1:n)
+        @test all(p -> collect(t[p]) == rows[p], 1:n)
         @test rows == [neighbors(cv, p, 1) for p in 1:n]
 
         # Threaded and sequential builds have identical storage.
@@ -142,6 +146,31 @@ end
     # Data must share the collection's axis.
     @test_throws ArgumentError mapneighbors((c, v, vals) -> v, cv,
         collect(1.0:(n-1)))
+end
+
+# A threaded sweep fans the callback out over tasks; one failure must not come
+# back as one exception per task.
+@testset "a threaded callback failure is reported once, with its cell" begin
+    sys = DGG.IGeo7System()
+    cv = CellVector(rooted_pg(sys, 1, 3))
+    bad = 5
+    boom(c, nbrs) = cellposition(c) == bad ? error("callback said no") : 1.0
+
+    err = try
+        mapneighbors(boom, cv; threaded = true)
+        nothing
+    catch e
+        e
+    end
+    @test err isa DGG.NeighborCallbackError
+    msg = sprint(showerror, err)
+    @test occursin(sprint(show, cv[bad]), msg)
+    @test occursin("position $bad", msg)
+    @test occursin("threaded = false", msg)
+    # The callback's own exception is the cause, not something swallowed.
+    @test occursin("callback said no", msg)
+    # And the sequential path still raises exactly what the callback threw.
+    @test_throws "callback said no" mapneighbors(boom, cv; threaded = false)
 end
 
 # Keep mutable state in the functor while measuring sweep allocations.

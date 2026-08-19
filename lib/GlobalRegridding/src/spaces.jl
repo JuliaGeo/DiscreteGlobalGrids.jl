@@ -127,3 +127,21 @@ Return whether cells have a structured chart suitable for interpolation.
 Defaults to `false`; chart-based methods require `true` from the source space.
 """
 hascellchart(::RegridSpace) = false
+
+"""
+    destinationdims(space::RegridSpace, sampling) -> Tuple or nothing
+
+Return the `DimensionalData` dimensions that label a result over this space,
+fastest dimension first, with lookups carrying `sampling`. The default is
+`nothing`: the result keeps one flat `Cell` axis over `1:ncells(space)`.
+"""
+destinationdims(::RegridSpace, ::DD.Lookups.Sampling) = nothing
+
+"""
+    dimsource(lookup) -> `from` target or nothing
+
+Return the source a lookup already names, or `nothing`. A lookup that carries
+its own cells is not a raster axis, so a package that supplies one extends this
+and a regrid given no `from` names it instead of asking for `xdim`.
+"""
+dimsource(::Any) = nothing

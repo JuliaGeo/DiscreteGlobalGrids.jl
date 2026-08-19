@@ -14,9 +14,16 @@ storage at that position directly, with no membership check. Use
 [`cellid`](@ref) and resolve the bare cell when working with another
 collection.
 
-`==`, `hash`, `show` and `convert(::Type{C})` delegate to the cell, so a
-handle compares, hashes, and prints as its cell. [`cellposition`](@ref)`(h)`
-returns the stored position.
+`==`, `hash` and `convert(::Type{C})` delegate to the cell, so a handle
+compares and hashes as its cell; `show` prints the wrapper and the position
+as well. [`cellposition`](@ref)`(h)` returns the stored position.
+
+The read-only cell verbs — [`cell_boundary`](@ref), [`cell_centroid`](@ref),
+[`cell_polygon`](@ref), [`cell_area`](@ref), [`cell_extent`](@ref),
+[`node_extent`](@ref), [`cellposition`](@ref), [`neighbors`](@ref),
+[`ring`](@ref), [`neighborcount`](@ref), [`reindex`](@ref), [`level`](@ref)
+and [`rawid`](@ref) — accept a handle wherever they accept a cell, and answer
+for the cell.
 """
 struct SubsetPositionedCell{C<:AbstractCellIndex}
     cell::C
@@ -43,12 +50,36 @@ Return the handle's position in the collection that created it.
 cellposition(h::SubsetPositionedCell) = h.position
 
 level(h::SubsetPositionedCell) = level(h.cell)
+rawid(h::SubsetPositionedCell) = rawid(h.cell)
+
+# The read-only cell verbs answer for the underlying cell, so a handle works
+# wherever the cell it prints does. The collection stays untyped because grids,
+# systems, `CellVector`s and `CellLookup`s all take a cell in this slot.
+cellposition(x, h::SubsetPositionedCell) = cellposition(x, h.cell)
+cell_boundary(x, h::SubsetPositionedCell) = cell_boundary(x, h.cell)
+cell_centroid(x, h::SubsetPositionedCell) = cell_centroid(x, h.cell)
+cell_polygon(x, h::SubsetPositionedCell) = cell_polygon(x, h.cell)
+cell_area(x, h::SubsetPositionedCell) = cell_area(x, h.cell)
+cell_extent(x, h::SubsetPositionedCell) = cell_extent(x, h.cell)
+node_extent(x, h::SubsetPositionedCell) = node_extent(x, h.cell)
+neighbors(x, h::SubsetPositionedCell, k::Integer = 1;
+    connectivity::Connectivity = Vertex()) = neighbors(x, h.cell, k; connectivity)
+ring(x, h::SubsetPositionedCell, k::Integer;
+    connectivity::Connectivity = Vertex()) = ring(x, h.cell, k; connectivity)
+neighborcount(x, h::SubsetPositionedCell;
+    connectivity::Connectivity = Vertex()) = neighborcount(x, h.cell; connectivity)
+reindex(T::Type{<:AbstractCellIndex}, sys, h::SubsetPositionedCell) =
+    reindex(T, sys, h.cell)
 
 Base.:(==)(a::SubsetPositionedCell, b::SubsetPositionedCell) = a.cell == b.cell
 Base.:(==)(a::SubsetPositionedCell, b::AbstractCellIndex) = a.cell == b
 Base.:(==)(a::AbstractCellIndex, b::SubsetPositionedCell) = a == b.cell
 Base.hash(h::SubsetPositionedCell, u::UInt) = hash(h.cell, u)
-Base.show(io::IO, h::SubsetPositionedCell) = show(io, h.cell)
+# Print what it is: a bare cell here would hide both the wrapper and the
+# position, which is the pair every handle question turns on.
+Base.show(io::IO, h::SubsetPositionedCell) =
+    print(io, "SubsetPositionedCell(", h.cell, ", position ", h.position, ")")
+Base.show(io::IO, ::MIME"text/plain", h::SubsetPositionedCell) = show(io, h)
 Base.convert(::Type{C}, h::SubsetPositionedCell{C}) where {C<:AbstractCellIndex} =
     h.cell
 
@@ -237,24 +268,96 @@ function _chunk_ranges(n::Int)
     return [lo:min(lo + step - 1, n) for lo in 1:step:n]
 end
 
+"""
+    NeighborCallbackError
+
+A [`mapneighbors`](@ref) or [`foreachneighbors`](@ref) callback that threw
+during a threaded sweep, naming the `cell` and subset `position` it was called
+with. The callback's own exception is `err` and is shown as the cause.
+
+One callback failure raises one of these: the sweep waits for every chunk, then
+reports the failure at the lowest position and drops the rest. The sequential
+path lets the callback's exception through untouched.
+"""
+struct NeighborCallbackError <: Exception
+    cell::AbstractCellIndex
+    position::Int
+    err::Any
+    backtrace::Any
+end
+
+function Base.showerror(io::IO, e::NeighborCallbackError)
+    print(io, "NeighborCallbackError: the callback failed at cell ", e.cell,
+        ", subset position ", e.position, ".",
+        "\nRerun with `threaded = false` to raise it on its own.",
+        "\ncaused by: ")
+    showerror(io, e.err, e.backtrace)
+    return nothing
+end
+
+# Name the cell a failing callback was called with. Only the threaded path is
+# wrapped, so the sequential sweep keeps its bare stack trace.
+struct _ReportingCallback{G}
+    g::G
+end
+
+@inline function (cb::_ReportingCallback)(k::Int, c, nbrs)
+    try
+        return cb.g(k, c, nbrs)
+    catch err
+        err isa NeighborCallbackError && rethrow()
+        throw(NeighborCallbackError(cellid(c), k, err, catch_backtrace()))
+    end
+end
+
+_reporting(g::G, ::GOCore.False) where {G} = g
+_reporting(g::G, ::GOCore.True) where {G} = _ReportingCallback(g)
+
+# Every chunk is waited on before anything is reported, so no task outlives the
+# call and the reported failure is the earliest in position order rather than
+# the first to be scheduled.
 function _foreach_chunk(body!::F, n::Int, ::GOCore.True) where {F}
     n == 0 && return nothing
-    @sync for r in _chunk_ranges(n)
-        Threads.@spawn body!(r)
+    ranges = _chunk_ranges(n)
+    tasks = Vector{Task}(undef, length(ranges))
+    for (i, r) in enumerate(ranges)
+        @inbounds tasks[i] = Threads.@spawn body!(r)
     end
-    return nothing
+    failed = 0
+    for (i, t) in enumerate(tasks)
+        try
+            wait(t)
+        catch
+            failed == 0 && (failed = i)
+        end
+    end
+    failed == 0 && return nothing
+    return _report_chunk_failure(@inbounds tasks[failed])
+end
+
+@noinline function _report_chunk_failure(t::Task)
+    stack = Base.current_exceptions(t)
+    if !isempty(stack)
+        err = last(stack).exception
+        err isa NeighborCallbackError && throw(err)
+    end
+    # Machinery failures are not the callback's to explain.
+    return wait(t)
 end
 
 _foreach_chunk(body!::F, n::Int, ::GOCore.False) where {F} = body!(1:n)
 
-_run!(g::G, cv::CellVector, conn::Connectivity, ::StorageOrder, thr,
-    ::Val{M}) where {G,M} =
-    _foreach_chunk(r -> _sweep!(g, cv, conn, r, Val(M)), length(cv), thr)
+function _run!(g::G, cv::CellVector, conn::Connectivity, ::StorageOrder, thr,
+        ::Val{M}) where {G,M}
+    h = _reporting(g, thr)
+    return _foreach_chunk(r -> _sweep!(h, cv, conn, r, Val(M)), length(cv), thr)
+end
 
 function _run!(g::G, cv::CellVector, conn::Connectivity,
         perm::AbstractVector{<:Integer}, thr, ::Val{M}) where {G,M}
     _check_permutation(perm, length(cv))
-    return _foreach_chunk(r -> _sweep_perm!(g, cv, conn, perm, r, Val(M)),
+    h = _reporting(g, thr)
+    return _foreach_chunk(r -> _sweep_perm!(h, cv, conn, perm, r, Val(M)),
         length(perm), thr)
 end
 
@@ -304,7 +407,8 @@ Apply `f` to each cell and its clipped one-ring. `cv` may be a
 Without `data`, `f(cell, nbrs)` receives the same positioned handles yielded
 by the one-argument [`neighbors`](@ref) iterator. With a vector laid out
 against the subset, `f(cell, value, values)` receives the cell value and its
-neighbour values in ring order.
+neighbour values in the counter-clockwise order [`neighbors`](@ref) states, so
+slot `j` of the callback's ring names a direction.
 
 Results are stored in subset position order. A concrete tuple result produces
 a tuple of vectors, one per component. `order` accepts [`StorageOrder`](@ref)
@@ -313,7 +417,9 @@ or a permutation of `1:length(cv)`; invalid permutations throw
 
 When `threaded` is true, contiguous ranges run in separate tasks and write to
 disjoint output positions — legal exactly when `f` is order-independent, and
-the results are then identical to the sequential ones.
+the results are then identical to the sequential ones. A callback that throws
+there raises one [`NeighborCallbackError`](@ref) naming the cell and position
+it failed at, not one exception per task.
 [`foreachneighbors`](@ref) provides the side-effecting form and defaults to
 sequential execution.
 """
@@ -402,12 +508,13 @@ foreachneighbors(f::F, pg::PartialGrid, data::AbstractVector; kw...) where {F} =
     HaloTable(lk::CellLookup; connectivity = Vertex(), threaded = true)
 
 Materialize the one-argument [`neighbors`](@ref) sweep as a CSR table of
-subset positions. `t[p]` is the clipped one-ring of cell `p` in the system's
-ring order — `t[p][i]` is the cell's `i`-th surviving ring member, so
-direction survives the materialization. It is a non-allocating view into
-`t.nbrs`, bounded by `t.offsets[p]` and `t.offsets[p + 1] - 1`.
+subset positions. `t[p]` is the clipped one-ring of cell `p` in the
+counter-clockwise order [`neighbors`](@ref) states — `t[p][i]` is the cell's
+`i`-th surviving ring member, so direction survives the materialization. It is
+a non-allocating view into `t.nbrs`, bounded by `t.offsets[p]` and
+`t.offsets[p + 1] - 1`.
 
-[`halo_table`](@ref) contains the same neighbours in ascending rows and also
+[`halo_table`](@ref) contains the same rows as a vector of vectors and also
 supports `k != 1`. When `threaded` is true, contiguous chunks are built by
 separate tasks; the resulting arrays match the sequential build.
 """
@@ -504,8 +611,8 @@ end
 
 HaloTable(pg::PartialGrid; kw...) = HaloTable(CellVector(pg); kw...)
 
-# Build the ascending vector rows used by `halo_table`. Each row writes to its
-# final slot, so threaded chunks need no stitching.
+# Build the vector rows used by `halo_table`, in ring order. Each row writes to
+# its final slot, so threaded chunks need no stitching.
 function _swept_rows(cv::CellVector, conn::Connectivity, thr = GOCore.False())
     n = length(cv)
     out = Vector{Vector{Int}}(undef, n)
@@ -516,7 +623,7 @@ function _swept_rows(cv::CellVector, conn::Connectivity, thr = GOCore.False())
             for (i, h) in enumerate(ring)
                 @inbounds row[i] = h.position
             end
-            @inbounds out[k] = sort!(row)
+            @inbounds out[k] = row
         end
     end
     return out

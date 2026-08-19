@@ -14,9 +14,12 @@ const FB = DGG.Fallbacks
 using DiscreteGlobalGrids: systems, levelgrid, ncells, cellindex, cellposition,
     neighbors, ring, halo_table, level, levels, max_level, descendants,
     descendant_range, has_sorted_subtrees, PartialGrid, CellVector, CellLookup,
-    MultiOrderCoverage, member_neighbors, AuthalicSystem, Vertex, Edge,
+    MultiOrderCoverage, member_neighbors, Vertex, Edge,
     Connectivity, cellindextype, query, system,
     halo, stencil_table, StencilTable
+
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, isquadface, sweepcovers
 
 # ---------------------------------------------------------------------------
 # Systems, and the depths each is swept at
@@ -37,15 +40,8 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 1, 3),
 ]
 
-sysname(sys) = sys isa AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
-
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _) in SWEEP)
-    for s in systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 # ---------------------------------------------------------------------------
@@ -106,7 +102,7 @@ end
 # CLIPPING, and the faces that must agree with it
 # ---------------------------------------------------------------------------
 
-@testset "$(sysname(sys))" for (sys, base, leaf) in SWEEP
+@testset "$(syslabel(sys))" for (sys, base, leaf) in SWEEP
     complete = levelgrid(sys, leaf)
 
     @testset "$label: ring is the complete level's, clipped" for (label, sub) in
@@ -135,12 +131,15 @@ end
                                                             shapes(sys, base, leaf)
         for p in 1:max(1, ncells(sub) ÷ 6):ncells(sub), conn in (Vertex(), Edge()), k in 0:2
             c = cellindex(sub, p)
+            # Element for element, not as sets: the position form IS the id
+            # form read through `cellposition`, and it carries the same
+            # counter-clockwise order.
             @test neighbors(sub, p, k; connectivity = conn) ==
-                  sort([cellposition(sub, x)
-                        for x in neighbors(sub, c, k; connectivity = conn)])
+                  [cellposition(sub, x)
+                   for x in neighbors(sub, c, k; connectivity = conn)]
             @test ring(sub, p, k; connectivity = conn) ==
-                  sort([cellposition(sub, x)
-                        for x in ring(sub, c, k; connectivity = conn)])
+                  [cellposition(sub, x)
+                   for x in ring(sub, c, k; connectivity = conn)]
         end
     end
 
@@ -174,6 +173,12 @@ end
         cv = CellVector(sub)
         @test halo_table(cv) == halo_table(sub)
         @test halo_table(CellLookup(cv)) == halo_table(sub)
+        # The rows are ROTATIONAL, and that is only visible as an absence of
+        # sorting: a `sort!` put back anywhere on this path would pass every
+        # other assertion in this file. Some row of a real subset is out of
+        # ascending order on every system.
+        @test any(!issorted, halo_table(sub))
+        @test any(!issorted, halo_table(cv))
     end
 
     @testset "the rooted fast path agrees with the generic route" begin
@@ -349,14 +354,14 @@ end
                 cells += ncells(pg)
 
                 any(row -> any(iszero, row), want) &&
-                    push!(uncovered, (sysname(sys), root, l, conn))
+                    push!(uncovered, (syslabel(sys), root, l, conn))
                 (length(t) == ncells(pg) &&
                  all(p -> collect(t[p]) == want[p], 1:ncells(pg))) ||
-                    push!(disagreed, (sysname(sys), root, l, conn))
+                    push!(disagreed, (syslabel(sys), root, l, conn))
                 (t.offsets[1] == 1 && t.offsets[end] == length(t.indices) + 1 &&
                  all(s -> 1 <= s <= t.nchunk + t.nhalo, t.indices) &&
                  reduce(vcat, t; init = Int[]) == t.indices) ||
-                    push!(csr, (sysname(sys), root, l, conn))
+                    push!(csr, (syslabel(sys), root, l, conn))
 
                 # The link between "row i" and "buffer slot i" that nothing else
                 # states: the chunk half is read as `descendant_range`, so row i
@@ -366,7 +371,7 @@ end
                 # caller's buffer would then be shifted under a correct table.
                 if has_sorted_subtrees(sys)
                     ids == [cellindex(grid, q) for q in descendant_range(sys, root, l)] ||
-                        push!(layout, (sysname(sys), root, l))
+                        push!(layout, (syslabel(sys), root, l))
                 end
             end
         end
@@ -396,7 +401,7 @@ end
             want = buffer_rows(sys, leaf, [cellindex(sub, p) for p in 1:ncells(sub)],
                 halo_ids, conn)
             all(p -> collect(t[p]) == want[p], 1:ncells(sub)) ||
-                push!(holes, (sysname(sys), conn))
+                push!(holes, (syslabel(sys), conn))
             any(x -> x in punched, halo_ids) && (hole_in_halo += 1)
         end
     end
@@ -415,13 +420,13 @@ end
         blocked = PartialGrid(sys, root, leaf)
         member = PartialGrid(sys, leaf, descendants(sys, root, leaf))
         (FB._whole_subtree_range(blocked) !== nothing &&
-         FB._whole_subtree_range(member) === nothing) || push!(paths, (sysname(sys), :gate))
+         FB._whole_subtree_range(member) === nothing) || push!(paths, (syslabel(sys), :gate))
         for conn in (Vertex(), Edge())
             halo_pos = [cellposition(grid, x)::Int
                         for x in halo(blocked; connectivity = conn)]
             stencil_table(blocked, halo_pos; connectivity = conn) ==
             stencil_table(member, halo_pos; connectivity = conn) ||
-                push!(paths, (sysname(sys), conn))
+                push!(paths, (syslabel(sys), conn))
         end
     end
     @test isempty(paths)
@@ -434,7 +439,7 @@ end
         wrapped = PartialGrid(system(cv), level(cv), cv)
         halo_pos = [cellposition(grid, x)::Int for x in halo(sub)]
         stencil_table(sub, halo_pos) == stencil_table(wrapped, halo_pos) ||
-            push!(bridged, sysname(sys))
+            push!(bridged, syslabel(sys))
     end
     @test isempty(bridged)
 end
@@ -528,6 +533,35 @@ const DONUT = GI.Polygon([
     GI.LinearRing([(-121.0, 36.0), (-121.0, 38.0), (-119.0, 38.0), (-119.0, 36.0),
         (-121.0, 36.0)])])
 
+# How many times a sequence of members steps backwards in azimuth about `c`,
+# each read on its own level's grid because a coarse member has no centroid at
+# the reference level. One for a single counter-clockwise turn, `n - 1` for a
+# clockwise one, arbitrary for an id-sorted sequence. Written out here rather
+# than taken from the conformance harness, whose `winding_problems` reads one
+# grid and so cannot answer about a mixed-level set.
+function azimuth_wraps(sys, c, members)
+    centroid(x) = DGG.cell_centroid(levelgrid(sys, level(x)), x)
+    p = centroid(c)
+    ax = abs(p[1]) <= abs(p[2]) ?
+         (abs(p[1]) <= abs(p[3]) ? (1.0, 0.0, 0.0) : (0.0, 0.0, 1.0)) :
+         (abs(p[2]) <= abs(p[3]) ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0))
+    s = ax[1] * p[1] + ax[2] * p[2] + ax[3] * p[3]
+    t = (ax[1] - s * p[1], ax[2] - s * p[2], ax[3] - s * p[3])
+    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
+    e1 = (t[1] / n, t[2] / n, t[3] / n)
+    e2 = (p[2] * e1[3] - p[3] * e1[2], p[3] * e1[1] - p[1] * e1[3],
+        p[1] * e1[2] - p[2] * e1[1])
+    az = map(members) do m
+        q = centroid(m)
+        d = (q[1] - p[1], q[2] - p[2], q[3] - p[3])
+        r = d[1] * p[1] + d[2] * p[2] + d[3] * p[3]
+        u = (d[1] - r * p[1], d[2] - r * p[2], d[3] - r * p[3])
+        atan(u[1] * e2[1] + u[2] * e2[2] + u[3] * e2[3],
+            u[1] * e1[1] + u[2] * e1[2] + u[3] * e1[3])
+    end
+    return count(i -> az[mod1(i + 1, length(az))] < az[i] - 1e-9, eachindex(az))
+end
+
 function oracle(set, c; connectivity = Vertex(), geometric = false)
     sys = system(set)
     L = set.reference_level
@@ -557,12 +591,12 @@ function member_probes(set, n::Int)
     return unique(vcat(first(coarse, 3), collect(1:step:length(set))))
 end
 
-# The three systems whose four children tile their parent exactly, so that a
-# member's footprint IS its descendants' union and a statement about level-`L`
-# cells is a statement about the drawn polygons. IGEO7, H3 and A5 refine
-# non-congruently and are excluded from the GEOMETRIC law with that reason —
-# see `member_neighbors`' docstring; they keep every other law here.
-const CONGRUENT = (DGG.HEALPixSystem, DGG.S2System, DGG.ISEA4RSystem)
+# The quad-face family is the family whose four children tile their parent
+# exactly, so that a member's footprint IS its descendants' union and a
+# statement about level-`L` cells is a statement about the drawn polygons.
+# IGEO7, H3 and A5 refine non-congruently and are excluded from the GEOMETRIC
+# law with that reason — see `member_neighbors`' docstring; they keep every
+# other law here.
 
 # The last column is whether `Vertex()` and `Edge()` are different relations at
 # all: IGEO7 and H3 have only 3-valent vertices, so on those two they coincide
@@ -578,7 +612,7 @@ const MOC_SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, DONUT, false),
 ]
 
-@testset "member_neighbors: $(sysname(sys))" for (sys, lvl, target, splits) in MOC_SWEEP
+@testset "member_neighbors: $(syslabel(sys))" for (sys, lvl, target, splits) in MOC_SWEEP
     set = query(sys, MultiOrderCoverage(target); level = lvl)
 
     @testset "the set is genuinely mixed-level" begin
@@ -595,11 +629,17 @@ const MOC_SWEEP = [
         end
     end
 
-    @testset "ascending (level, position)" begin
-        for i in member_probes(set, 6)
-            got = member_neighbors(set, set[i])
-            key(m) = (level(m), cellposition(levelgrid(sys, level(m)), m))
-            @test issorted(got; by = key)
+    # The order is the package's one order on a mixed-level set: a single
+    # counter-clockwise turn about the member, each neighbour read on its own
+    # level's grid. `issorted` by `(level, position)` — what this used to be —
+    # is exactly the ascending order the contract now refuses.
+    @testset "one counter-clockwise turn about the member" begin
+        for i in member_probes(set, 6), conn in (Vertex(), Edge())
+            c = set[i]
+            got = member_neighbors(set, c; connectivity = conn)
+            @test got == member_neighbors(set, c; connectivity = conn)
+            length(got) < 3 && continue
+            @test azimuth_wraps(sys, c, got) == 1
         end
     end
 
@@ -624,7 +664,7 @@ const MOC_SWEEP = [
         @test_throws ArgumentError member_neighbors(set, outside)
     end
 
-    if any(T -> sys isa T, CONGRUENT)
+    if isquadface(sys)
         # The geometric law, and the reason the exclusions above are stated
         # rather than silently taken: `adjacent_cells` reads the boundary RINGS
         # and counts shared vertices, so this is "share a boundary" and "share
@@ -661,6 +701,22 @@ end
         @test grow >= 16                        # or the measurement is not one
         @test walk_bytes(far) <= 4 * walk_bytes(near)
     end
+end
+
+# The cross-idiom laws compare the subset idioms with each other, which a
+# consistent re-anchoring would survive. This compares them with the complete
+# level's canonical ring: a clipped ring is that ring with non-members dropped
+# in place, rotation pinned.
+@testset "clipped rings are pinned-rotation subsequences: $(syslabel(sys))" for (sys, base, leaf) in SWEEP
+    pg = PartialGrid(sys, cellindex(levelgrid(sys, base), 3), leaf)
+    complete = levelgrid(sys, leaf)
+    c = first(c for c in (cellindex(pg, i) for i in 1:ncells(pg))
+              if length(neighbors(pg, c, 1)) < length(neighbors(complete, c, 1)))
+    for k in 1:2
+        @test neighbors(pg, c, k) == filter(in(pg), neighbors(complete, c, k))
+    end
+    @test halo_table(pg)[cellposition(pg, c)] ==
+          [cellposition(pg, x) for x in filter(in(pg), neighbors(complete, c, 1))]
 end
 
 end # module StencilTests

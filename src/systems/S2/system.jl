@@ -1,13 +1,13 @@
 # ---------------------------------------------------------------------------
 # S2 system interface. At level `l`, scaffold ordinals are `0:6*4^l-1` and
 # complete-grid position is ordinal plus one. Two Hilbert bits per level make
-# parent `p ÷ 4`, children `4p:4p+3`, and subtrees contiguous.
+# parent `p ÷ 4`, children `4p:4p+3`, and subtrees contiguous — so the hierarchy,
+# the level-grid arithmetic, and the subtree engines are the quad-face family's,
+# and this file writes only what the cube-face chart decides:
 #
 #   * `cellat` is closed-form (`point_to_xyf`) — no tree descent.
-#   * `descendant_range` is `[p*4^Δ, (p+1)*4^Δ)` shifted into position space.
 #   * `node_extent` is the exact four-corner cap.
 #   * `neighbors` / `ring` walk the lattice and the seam table, not the geometry.
-#   * `ancestor` drops `2Δ` bits in one shift.
 #
 # Native `s2_cellid` reindexing is unavailable because compatibility has not
 # been verified against s2geometry fixtures.
@@ -18,7 +18,7 @@
 # ===========================================================================
 
 """
-    S2System() <: AbstractHierarchicalGridSystem
+    S2System() <: AbstractQuadFaceGridSystem
 
 The [S2](https://s2geometry.io) discrete global grid system on the unit sphere:
 six cube-face charts, each refined by aperture-4 quadrant subdivision, with
@@ -46,7 +46,7 @@ overflow `Int64`.
 4 for `Edge()`. [`node_extent`](@ref) uses the exact four-corner subtree cap.
 [`subtree_border`](@ref) is an `O(rim)` walk over the subtree's square block.
 """
-struct S2System <: DGG.AbstractHierarchicalGridSystem end
+struct S2System <: DGG.AbstractQuadFaceGridSystem end
 
 # Grid descriptor for all `6 * 4^l` cells in face-major Hilbert order.
 const LevelGrid = DGG.HierarchicalLevelGrid{S2System}
@@ -59,144 +59,20 @@ count `6 * 4^level` fits in a signed 64-bit integer.
 """
 const MAX_LEVEL = 30
 
-# Callers validate levels before these unchecked conversions.
-@inline _nside(level::Integer) = Int64(1) << Int(level)
-@inline _ncells(level::Integer) = 6 * (Int64(1) << (2 * Int(level)))
-
 # ===========================================================================
 # System interface
 # ===========================================================================
 
-DGG.cellindextype(::S2System) = DGG.LevelIndex
+# The six cube faces, which `rootcells` names `LevelIndex(0, 0:5)` in the
+# s2geometry face order `+x, +y, +z, -x, -y, -z` (see `FACE_NORMAL`).
+DGG.nbasefaces(::S2System) = 6
+DGG.systemname(::S2System) = "S2"
+DGG.idname(::S2System) = "scaffold ordinal"
+
 DGG.levels(::S2System) = 0:MAX_LEVEL
-DGG.has_sorted_subtrees(::S2System) = true
 
 DGG.max_neighbors(::S2System, ::DGG.Vertex) = 8
 DGG.max_neighbors(::S2System, ::DGG.Edge) = 4
-
-"""
-    rootcells(S2System())
-
-The six cube faces, as level-0 cells `LevelIndex(0, 0:5)` in face order — the
-s2geometry face numbering `+x, +y, +z, -x, -y, -z` (see `FACE_NORMAL`).
-"""
-DGG.rootcells(::S2System) = [DGG.LevelIndex(0, i) for i in 0:5]
-
-"""
-    parent(S2System(), c) -> LevelIndex
-
-The scaffold-ordinal parent `index ÷ 4`, one level up. Throws `ArgumentError`
-for a level-0 cell.
-"""
-function Base.parent(::S2System, c::DGG.LevelIndex)
-    l = DGG.level(c)
-    l > 0 || throw(ArgumentError(
-        "level-0 S2 cell $c is a root and has no parent"))
-    return DGG.LevelIndex(l - 1, c.index >> 2)
-end
-
-"""
-    children(S2System(), c)
-
-The four children `4*index .+ (0:3)`, ascending at the next level. Throws
-`ArgumentError` at `max_level`.
-"""
-function DGG.children(sys::S2System, c::DGG.LevelIndex)
-    l = DGG.level(c)
-    l < DGG.max_level(sys) || throw(ArgumentError(
-        "S2 cell $c is at max_level $(DGG.max_level(sys)) and has no children"))
-    base = c.index << 2
-    return [DGG.LevelIndex(l + 1, base + k) for k in 0:3]
-end
-
-"""
-    ancestor(S2System(), c, l) -> LevelIndex
-
-The ancestor at level `l`: `index >> 2Δ`, equivalent to applying
-[`parent`](@ref) `Δ` times.
-"""
-function DGG.ancestor(sys::S2System, c::DGG.LevelIndex, l::Integer)
-    target = Int(l)
-    lc = DGG.level(c)
-    target <= lc || throw(ArgumentError(
-        "ancestor level $target is deeper than the cell's own level $lc"))
-    target >= 0 || throw(ArgumentError(
-        "ancestor level $target is above the root level 0"))
-    return DGG.LevelIndex(target, c.index >> (2 * (lc - target)))
-end
-
-"""
-    descendant_range(S2System(), c, l) -> UnitRange{Int}
-
-The contiguous **positions** in `levelgrid(sys, l)` occupied by `c`'s level-`l`
-descendants: `index * 4^Δ` through `(index + 1) * 4^Δ - 1` in 0-based scaffold
-ordinals, shifted into 1-based positions.
-
-The range is exact and hole-free; sibling ranges partition the parent's range.
-"""
-function DGG.descendant_range(sys::S2System, c::DGG.LevelIndex, l::Integer)
-    target = Int(l)
-    lc = DGG.level(c)
-    target >= lc || throw(ArgumentError(
-        "descendant level $target is above the cell's own level $lc"))
-    target <= DGG.max_level(sys) || throw(ArgumentError(
-        "descendant level $target is past max_level $(DGG.max_level(sys))"))
-    shift = 2 * (target - lc)
-    lo = c.index << shift
-    hi = ((c.index + 1) << shift) - 1
-    return Int(lo + 1):Int(hi + 1)
-end
-
-"""
-    descendants(S2System(), c, l)
-
-Every level-`l` descendant of `c`, ascending.
-
-Reads the dense, subtree-contiguous [`descendant_range`](@ref) as consecutive
-ids.
-"""
-function DGG.descendants(sys::S2System, c::DGG.LevelIndex, l::Integer)
-    r = DGG.descendant_range(sys, c, l)      # validates `l` both ways
-    target = Int(l)
-    return [DGG.LevelIndex(target, i - 1) for i in r]
-end
-
-# ===========================================================================
-# The level grid: size, and positions <-> ids
-# ===========================================================================
-
-DGG.ncells(::S2System, l::Integer) = Int(_ncells(l))
-
-# The grid bounds-checks `i`, so this is the bijection and nothing else.
-DGG.cellindex(::S2System, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
-
-"""
-    cellposition(S2System(), c) -> Union{Int,Nothing}
-
-Returns `index + 1` for an in-range ordinal, otherwise `nothing`. The grid has
-already rejected a cell from another level.
-"""
-function DGG.cellposition(::S2System, c::DGG.LevelIndex)
-    0 <= c.index < _ncells(DGG.level(c)) || return nothing
-    return Int(c.index + 1)
-end
-
-# Validate the ordinal against its own level. `hilbert_to_xyf` would otherwise
-# un-Hilbert an ordinal no cell has, yielding the geometry of a cell that does
-# not exist.
-@inline function _checked_index(c::DGG.LevelIndex)
-    l = DGG.level(c)
-    0 <= c.index < _ncells(l) || throw(ArgumentError(
-        "scaffold ordinal $(c.index) is out of range 0:$(_ncells(l) - 1) at level $l"))
-    return c.index
-end
-
-# The grid-level form, which additionally pins the cell to this grid's level.
-@inline function _checked_index(g::LevelGrid, c::DGG.LevelIndex)
-    DGG.level(c) == g.level || throw(ArgumentError(
-        "cell $c is at level $(DGG.level(c)), not the grid's level $(g.level)"))
-    return _checked_index(c)
-end
 
 # ===========================================================================
 # Geometry
@@ -214,9 +90,9 @@ The ring starts at the `(s+, t+)` corner and runs `(s+, t+)`, `(s-, t+)`,
 Chart lines map to great-circle arcs, so the four-corner polygon is the cell and
 requires no densification. Generic `cell_area` therefore returns its true area.
 """
-function DGG.cell_boundary(::S2System, c::DGG.LevelIndex)
-    nside = _nside(DGG.level(c))
-    ix, iy, face = hilbert_to_xyf(_checked_index(c), nside)
+function DGG.cell_boundary(sys::S2System, c::DGG.LevelIndex)
+    nside = DGG.nside(DGG.level(c))
+    ix, iy, face = hilbert_to_xyf(DGG.checked_id(sys, c), nside)
     corners = cell_corners(ix, iy, face, nside)
     return GO.UnitSphericalPoint{Float64}[corners[1], corners[2], corners[3], corners[4]]
 end
@@ -230,9 +106,9 @@ The S2 cell centre: the chart evaluated at the lattice cell's midpoint
 This matches `S2CellId::ToPoint` and is strictly interior. It is not the
 spherical quadrilateral's area centroid.
 """
-function DGG.cell_centroid(::S2System, c::DGG.LevelIndex)
-    nside = _nside(DGG.level(c))
-    ix, iy, face = hilbert_to_xyf(_checked_index(c), nside)
+function DGG.cell_centroid(sys::S2System, c::DGG.LevelIndex)
+    nside = DGG.nside(DGG.level(c))
+    ix, iy, face = hilbert_to_xyf(DGG.checked_id(sys, c), nside)
     return cell_center(ix, iy, face, nside)
 end
 
@@ -265,7 +141,7 @@ The maximum radius is `acos(1/√3) ≈ 0.9553` rad, below `π/2`, so every exte
 geodesically convex.
 """
 function DGG.node_extent(::S2System, c::DGG.LevelIndex)
-    nside = _nside(DGG.level(c))
+    nside = DGG.nside(DGG.level(c))
     ix, iy, face = hilbert_to_xyf(c.index, nside)
     return _cell_cap(ix, iy, face, nside)
 end
@@ -291,7 +167,7 @@ self-consistent — the returned cell's own centroid maps back to it:
     on the higher side of it.
 """
 function DGG.cellat(g::LevelGrid, p::GO.UnitSphericalPoint)
-    nside = _nside(g.level)
+    nside = DGG.nside(g.level)
     ix, iy, face = point_to_xyf(p, nside)
     return DGG.LevelIndex(g.level, xyf_to_hilbert(ix, iy, face, nside))
 end
@@ -301,14 +177,14 @@ end
 # ===========================================================================
 
 """
-    _one_ring(grid, c, connectivity) -> SmallVector{8,LevelIndex}
+    one_ring(grid, c, connectivity) -> SmallVector{8,LevelIndex}
 
 The immediate neighbours of `c` in **counter-clockwise rotational order seen
 from outside the sphere, starting at the `+s` lattice direction**
 ([`NEIGHBOR_OFFSETS`](@ref)), with cube-corner steps and repeats dropped.
 """
-function _one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
-    _checked_index(g, c)
+function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
+    DGG.checked_id(g, c)
     out = SmallVector{8,DGG.LevelIndex}()
     for h in lattice_neighbors(c.index, g.level, connectivity)
         out = SmallCollections.push(out, DGG.LevelIndex(g.level, h))
@@ -351,11 +227,10 @@ spoke through the first ring-1 neighbour; see [`ring`](@ref).
 """
 function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{8,DGG.LevelIndex}()
-    steps == 1 && return _one_ring(g, c, connectivity)
-    shells = _shells(g, c, steps, connectivity)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     isempty(shells) && return DGG.LevelIndex[]
     return reduce(vcat, shells)
 end
@@ -372,83 +247,10 @@ canonical id.
 """
 function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
-    shells = _shells(g, c, steps, connectivity)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     steps <= length(shells) || return DGG.LevelIndex[]
     return shells[steps]
-end
-
-# Breadth-first expansion over the lattice one-ring; shell `j` is the set at
-# distance exactly `j`, each returned in CCW rotational order. Shared by
-# `neighbors` and `ring` so the two cannot disagree about what a shell is or
-# what order it is in.
-function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
-        connectivity::DGG.Connectivity)
-    shells = Vector{DGG.LevelIndex}[]
-    steps == 0 && return shells
-    seen = Set{DGG.LevelIndex}((c,))
-    frontier = DGG.LevelIndex[c]
-    for j in 1:steps
-        next = DGG.LevelIndex[]
-        for x in frontier
-            for y in _one_ring(g, x, connectivity)
-                y in seen && continue
-                push!(seen, y)
-                push!(next, y)
-            end
-        end
-        # Shell 1 is already the lattice cycle, in order. Outer shells come out
-        # of the breadth-first walk in whatever order the frontier happened to
-        # reach them, so they are wound geometrically — from the spoke through
-        # shell 1's first entry, which is what keeps every ring on one start.
-        j > 1 && _sort_ccw!(next, g, c, shells[1])
-        push!(shells, next)
-        isempty(next) && break
-        frontier = next
-    end
-    return shells
-end
-
-# Order a shell counter-clockwise about `c`'s centre, from the azimuth of the
-# first ring-1 neighbour. `e1 x e2 == centre` makes `(e1, e2)` right-handed SEEN
-# FROM OUTSIDE, which is what puts increasing `atan(u.e2, u.e1)` counter-
-# clockwise from outside rather than from inside.
-function _sort_ccw!(cells::Vector{DGG.LevelIndex}, g::LevelGrid, c::DGG.LevelIndex,
-        ring1::Vector{DGG.LevelIndex})
-    length(cells) <= 1 && return cells
-    centre = DGG.cell_centroid(g, c)
-    e1, e2 = _tangent_basis(centre)
-    ref = isempty(ring1) ? 0.0 :
-        _azimuth(centre, e1, e2, DGG.cell_centroid(g, first(ring1)))
-    key(x) = begin
-        p = DGG.cell_centroid(g, x)
-        (mod(_azimuth(centre, e1, e2, p) - ref, 2 * Float64(π)), x)
-    end
-    sort!(cells; by = key)
-    return cells
-end
-
-# A right-handed-from-outside tangent basis at `centre`. The seed axis is the
-# one `centre` leans on least, so the Gram-Schmidt step stays well-conditioned
-# everywhere, poles included.
-function _tangent_basis(centre)
-    ax = abs(centre[1]) <= abs(centre[2]) ?
-        (abs(centre[1]) <= abs(centre[3]) ? (1.0, 0.0, 0.0) : (0.0, 0.0, 1.0)) :
-        (abs(centre[2]) <= abs(centre[3]) ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0))
-    s = _dot3(ax, centre)
-    t = (ax[1] - s * centre[1], ax[2] - s * centre[2], ax[3] - s * centre[3])
-    n = sqrt(_dot3(t, t))
-    e1 = (t[1] / n, t[2] / n, t[3] / n)
-    e2 = (centre[2] * e1[3] - centre[3] * e1[2],
-          centre[3] * e1[1] - centre[1] * e1[3],
-          centre[1] * e1[2] - centre[2] * e1[1])
-    return e1, e2
-end
-
-function _azimuth(centre, e1, e2, p)
-    u = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
-    return atan(u[1] * e2[1] + u[2] * e2[2] + u[3] * e2[3],
-                u[1] * e1[1] + u[2] * e1[2] + u[3] * e1[3])
 end

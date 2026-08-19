@@ -15,6 +15,9 @@ using DiscreteGlobalGrids: systems, levelgrid, level, max_level, ncells,
     SubtreeHaloIterator, subtree_halo, halo_positions, halo_sizehint
 import DiscreteGlobalGrids as DGG
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, ishexwalk, hassortedsubtrees, forsystems
+
 # Fixture types must be declared outside the local scope of the outer testset.
 
 struct MiscountingEngine end
@@ -197,7 +200,7 @@ fixture_collect_bytes(sys, c, l) =
     end
 
 
-    @testset "$(nameof(typeof(sys))): the defining law" for sys in systems()
+    @testset "$(syslabel(sys)): the defining law" for sys in systems()
         grid0 = levelgrid(sys, 0)
         n0 = ncells(grid0)
         mx = max_level(sys)
@@ -220,7 +223,7 @@ fixture_collect_bytes(sys, c, l) =
                 check_law(sys, c, 3, conn)
             end
         end
-        if (sys isa DGG.IGeo7System || sys isa DGG.H3System) && mx >= 4
+        if ishexwalk(sys) && mx >= 4
             for c in sample_cells(grid0, 2), conn in (Vertex(), Edge())
                 want = law_halo(sys, c, 4; connectivity = conn)
                 @test collect(SubtreeHaloIterator(sys, c, 4; connectivity = conn)) ==
@@ -266,7 +269,7 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
-    @testset "$(nameof(typeof(sys))): geometry agrees with topology" for sys in systems()
+    @testset "$(syslabel(sys)): geometry agrees with topology" for sys in systems()
         grid0 = levelgrid(sys, 0)
         n0 = ncells(grid0)
         for i in 1:n0, conn in (Vertex(), Edge())
@@ -296,7 +299,7 @@ fixture_collect_bytes(sys, c, l) =
 
 
     sweep_bases(sys) = filter(b -> b <= max_level(sys),
-        sys isa DGG.A5System ? (0, 1) : (0, 1, 2))
+        hassortedsubtrees(sys) ? (0, 1, 2) : (0, 1))
 
     sweep_roots(sys, base::Int) = (grid = levelgrid(sys, base);
         unique(vcat(sample_cells(grid, 4), irregular_cells(grid, 2))))
@@ -335,7 +338,7 @@ fixture_collect_bytes(sys, c, l) =
         return h
     end
 
-    @testset "$(nameof(typeof(sys))) at level $base" for sys in systems(),
+    @testset "$(syslabel(sys)) at level $base" for sys in systems(),
             base in sweep_bases(sys)
         for c in sweep_roots(sys, base), l in base:min(base + 2, max_level(sys))
             hv = check_halo_case(sys, c, l, Vertex())
@@ -344,8 +347,8 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
-    @testset "$(nameof(typeof(sys))) at depth" for sys in
-            filter(s -> !(s isa DGG.A5System), systems())
+    @testset "$(syslabel(sys)) at depth" for sys in
+            forsystems(sortedsubtrees = true)
         d = deep_depth(sys, 0)
         d >= 1 || continue
         check_halo_case(sys, cellindex(levelgrid(sys, 0), 1), d, Vertex())
@@ -389,11 +392,11 @@ fixture_collect_bytes(sys, c, l) =
         @test isempty(fallback)
     end
 
-    SQUARE_SYSTEMS = (HEALPixSystem(), S2System(), ISEA4RSystem())
+    SQUARE_SYSTEMS = forsystems(quadface = true)
 
     BAND_BASES = (2, 3)
 
-    @testset "$(nameof(typeof(sys))): the band walk against forced geometry" for sys in
+    @testset "$(syslabel(sys)): the band walk against forced geometry" for sys in
             SQUARE_SYSTEMS
         for base in BAND_BASES, d in 1:2, conn in (Vertex(), Edge())
             l = base + d
@@ -415,7 +418,7 @@ fixture_collect_bytes(sys, c, l) =
     # One arm against the `O(ncells)` brute force as well: the one check a wrong
     # band and a wrong oracle cannot pass together. Depth 2 only, where a visit
     # to every cell of the target level is still cheap.
-    @testset "$(nameof(typeof(sys))): the band walk against the law" for sys in
+    @testset "$(syslabel(sys)): the band walk against the law" for sys in
             SQUARE_SYSTEMS
         for base in BAND_BASES, conn in (Vertex(), Edge())
             l = base + 2
@@ -428,7 +431,7 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
-    @testset "$(nameof(typeof(sys))): the band count is closed form" for sys in
+    @testset "$(syslabel(sys)): the band count is closed form" for sys in
             SQUARE_SYSTEMS
         for base in BAND_BASES, d in 1:4
             l = base + d
@@ -501,7 +504,7 @@ fixture_collect_bytes(sys, c, l) =
         return n
     end
 
-    @testset "$(nameof(typeof(sys))): the seam walk against forced geometry" for sys in
+    @testset "$(syslabel(sys)): the seam walk against forced geometry" for sys in
             SQUARE_SYSTEMS
         for base in (0, 1, 2, 3), d in 1:3, conn in (Vertex(), Edge())
             l = base + d
@@ -524,7 +527,7 @@ fixture_collect_bytes(sys, c, l) =
 
     # And one arm against the `O(ncells)` brute force. Bases 0 and 1 at depth 2,
     # where the target grids are at most 3072 cells on all three systems.
-    @testset "$(nameof(typeof(sys))): the seam walk against the law" for sys in
+    @testset "$(syslabel(sys)): the seam walk against the law" for sys in
             SQUARE_SYSTEMS
         for base in (0, 1), conn in (Vertex(), Edge())
             l = base + 2
@@ -606,7 +609,7 @@ fixture_collect_bytes(sys, c, l) =
     # -----------------------------------------------------------------------
 
 
-    HEX_SYSTEMS = (H3System(), IGeo7System())
+    HEX_SYSTEMS = forsystems(hexwalk = true)
 
     hex_ispentagon(sys, c) = sys isa DGG.H3System ?
         DGG.H3.ispentagon(c) : DGG.IGeo7.z7_is_pentagon(c.id)
@@ -670,7 +673,7 @@ fixture_collect_bytes(sys, c, l) =
         @test isempty(fallback)
     end
 
-    @testset "$(nameof(typeof(sys))): every root takes the directed walk" for sys in
+    @testset "$(syslabel(sys)): every root takes the directed walk" for sys in
             HEX_SYSTEMS
         for base in (0, 1), conn in (Vertex(), Edge())
             grid = levelgrid(sys, base)
@@ -697,7 +700,7 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
-    @testset "$(nameof(typeof(sys))): the directed walk against forced geometry" for
+    @testset "$(syslabel(sys)): the directed walk against forced geometry" for
             sys in HEX_SYSTEMS
         for base in (0, 1, 5, 8)
             base + 1 <= max_level(sys) || continue
@@ -735,7 +738,7 @@ fixture_collect_bytes(sys, c, l) =
         return n
     end
 
-    @testset "$(nameof(typeof(sys))): the check filters a widened arc" for sys in
+    @testset "$(syslabel(sys)): the check filters a widened arc" for sys in
             HEX_SYSTEMS
         for base in (0, 1, 2), d in 2:3, conn in (Vertex(), Edge())
             l = base + d
@@ -754,7 +757,7 @@ fixture_collect_bytes(sys, c, l) =
 
     # The contract bundle on a smaller spread, because it builds two `Set`s and
     # a `subtree_border` per case. Pentagons first.
-    @testset "$(nameof(typeof(sys))): the directed walk keeps the contract" for sys in
+    @testset "$(syslabel(sys)): the directed walk keeps the contract" for sys in
             HEX_SYSTEMS
         for base in (0, 2), conn in (Vertex(), Edge())
             base + 1 <= max_level(sys) || continue
@@ -769,7 +772,7 @@ fixture_collect_bytes(sys, c, l) =
     # pentagon, and a seeded arc has been through three transitions rather than
     # one. The oracle costs about 50 ms a call, so this is two roots — a
     # pentagon and a hexagon — per system rather than a sweep.
-    @testset "$(nameof(typeof(sys))): the directed walk at depth four" for sys in
+    @testset "$(syslabel(sys)): the directed walk at depth four" for sys in
             HEX_SYSTEMS
         grid = levelgrid(sys, 2)
         pent = first(hex_pentagons(sys, 2))
@@ -784,7 +787,7 @@ fixture_collect_bytes(sys, c, l) =
 
     # One arm against the `O(ncells)` brute force: level-0 roots at depths 1 and
     # 2, where the target grids are at most 5882 cells on H3 and 492 on IGeo7.
-    @testset "$(nameof(typeof(sys))): the directed walk against the law" for sys in
+    @testset "$(syslabel(sys)): the directed walk against the law" for sys in
             HEX_SYSTEMS
         for c in spread(hex_roots(sys, 0, 4), 6), d in 1:2, conn in (Vertex(), Edge())
             @test collect(SubtreeHaloIterator(sys, c, d; connectivity = conn)) ==
@@ -792,7 +795,7 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
-    @testset "$(nameof(typeof(sys))): the directed walk's census" for sys in HEX_SYSTEMS
+    @testset "$(syslabel(sys)): the directed walk's census" for sys in HEX_SYSTEMS
         for base in (0, 3)
             grid = levelgrid(sys, base)
             pents = hex_pentagons(sys, base)
@@ -910,7 +913,7 @@ fixture_collect_bytes(sys, c, l) =
         return out
     end
 
-    @testset "$(nameof(typeof(sys))): halo on subsets" for sys in systems()
+    @testset "$(syslabel(sys)): halo on subsets" for sys in systems()
         l = min(2, max_level(sys))
         c = cellindex(levelgrid(sys, 0), 1)
         pg = PartialGrid(sys, c, l)
@@ -1004,7 +1007,7 @@ fixture_collect_bytes(sys, c, l) =
             DGG.has_sorted_subtrees(sys) || continue
             c = cellindex(levelgrid(sys, 0), 1)
             # Choose depths with comparable subtree sizes across apertures.
-            depths = any(h -> sys isa typeof(h), HEX_SYSTEMS) ? (3, 6) : (4, 9)
+            depths = sys in HEX_SYSTEMS ? (3, 6) : (4, 9)
             all(l -> l <= max_level(sys), depths) || continue
             calls = Int[]; members = Int[]; halos = Int[]
             for l in depths
@@ -1428,8 +1431,7 @@ fixture_collect_bytes(sys, c, l) =
 
 
 
-    DEPTH_FLAT_SYSTEMS = (HEALPixSystem(), S2System(), ISEA4RSystem(),
-        H3System(), IGeo7System())
+    DEPTH_FLAT_SYSTEMS = forsystems(sortedsubtrees = true)
 
     @testset "construction does not allocate in proportion to the halo" begin
         for sys in systems()
@@ -1438,7 +1440,7 @@ fixture_collect_bytes(sys, c, l) =
             # 3840-cell scan whose per-cell cost is a `Set`-allocating
             # `neighbors`, and the law here needs only two comparable points.
             depths = filter(l -> l <= max_level(sys),
-                sys isa DGG.A5System ? (1, 2, 3) : (3, 5, 7))
+                hassortedsubtrees(sys) ? (3, 5, 7) : (1, 2, 3))
             ship = [construct_bytes(sys, c, l) for l in depths]
             gen = [generic_construct_bytes(sys, c, l) for l in depths]
             sizes = [length(subtree_halo(sys, c, l)) for l in depths]
@@ -1473,7 +1475,7 @@ fixture_collect_bytes(sys, c, l) =
     @testset "a short prefix is a small, non-growing fraction of the collect" begin
         for sys in systems()
             c = cellindex(levelgrid(sys, 0), 1)
-            depths = sys isa DGG.A5System ? (1, 4) : (3, 7)
+            depths = hassortedsubtrees(sys) ? (3, 7) : (1, 4)
             all(l -> l <= max_level(sys), depths) || continue
             fracs = [lazy_bytes(sys, c, l, 4) / eager_bytes(sys, c, l)
                      for l in depths]
@@ -1488,7 +1490,7 @@ fixture_collect_bytes(sys, c, l) =
 
     @testset "the generic walk obeys the same fraction law" begin
         for sys in systems()
-            sys isa DGG.A5System && continue
+            hassortedsubtrees(sys) || continue
             c = cellindex(levelgrid(sys, 0), 1)
             depths = (3, 6)
             all(l -> l <= max_level(sys), depths) || continue
@@ -1513,7 +1515,7 @@ fixture_collect_bytes(sys, c, l) =
         for sys in systems()
             c = cellindex(levelgrid(sys, 0), 1)
             depths = filter(l -> l <= max_level(sys),
-                sys isa DGG.A5System ? (1, 2, 3) : (3, 5, 7))
+                hassortedsubtrees(sys) ? (3, 5, 7) : (1, 2, 3))
             @test collect(fixture_iterator(sys, c, last(depths))) ==
                   subtree_halo(sys, c, last(depths))
             ctor = [fixture_construct_bytes(sys, c, l) for l in depths]

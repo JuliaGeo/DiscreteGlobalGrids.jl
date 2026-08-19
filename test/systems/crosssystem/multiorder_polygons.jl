@@ -9,6 +9,9 @@ const FB = DGG.Fallbacks
 import GeoInterface as GI
 import GeometryOps as GO
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, isquadface, sweepcovers
+
 # ---------------------------------------------------------------------------
 # The fixture
 # ---------------------------------------------------------------------------
@@ -57,27 +60,22 @@ parallel_ring(lat) = GI.Polygon([GI.LinearRing([(lon, lat) for lon in 0.0:5.0:36
 const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 
 
+# (system, leaf level, coarse level). Congruence — whether a cell's children
+# tile it exactly, which two of the laws below branch on — is `isquadface`.
 const SWEEP = [
-    (DGG.IGeo7System(), 7, 5, false),
-    (DGG.H3System(), 6, 4, false),
-    (DGG.HEALPixSystem(), 10, 7, true),
-    (DGG.A5System(), 10, 7, false),
-    (DGG.S2System(), 10, 7, true),
-    (DGG.ISEA4RSystem(), 10, 7, true),
-    (DGG.AuthalicSystem(DGG.IGeo7System()), 7, 5, false),
+    (DGG.IGeo7System(), 7, 5),
+    (DGG.H3System(), 6, 4),
+    (DGG.HEALPixSystem(), 10, 7),
+    (DGG.A5System(), 10, 7),
+    (DGG.S2System(), 10, 7),
+    (DGG.ISEA4RSystem(), 10, 7),
+    (DGG.AuthalicSystem(DGG.IGeo7System()), 7, 5),
 ]
-
-sysname(sys) = sys isa DGG.AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
 
 # Every registered system is swept, so a system added to `systems()` without
 # being added here fails this rather than being silently untested.
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _, _) in SWEEP)
-    for s in DGG.systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 
@@ -170,7 +168,8 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
 # The laws, per system
 # ---------------------------------------------------------------------------
 
-@testset "coverage of a real outline: $(sysname(sys))" for (sys, leaf, coarse, congruent) in SWEEP
+@testset "coverage of a real outline: $(syslabel(sys))" for (sys, leaf, coarse) in SWEEP
+    congruent = isquadface(sys)
     target = prepare(MAINLAND)
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=leaf)
 
@@ -312,8 +311,10 @@ function sliver_fraction(sys, set, geom, n::Int)
     return missed, total
 end
 
-@testset "the drawn cells tile the target only where the refinement does: $(sysname(sys))" for
-    (sys, leaf, _, congruent) in SWEEP
+@testset "the drawn cells tile the target only where the refinement does: $(syslabel(sys))" for
+    (sys, leaf, _) in SWEEP
+
+    congruent = isquadface(sys)
 
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=leaf)
     missed, total = sliver_fraction(sys, set, MAINLAND, 90)
@@ -329,7 +330,7 @@ end
 end
 
 
-@testset "multipolygon: the offshore islands: $(sysname(sys))" for (sys, leaf, _, _) in SWEEP
+@testset "multipolygon: the offshore islands: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(CALIFORNIA); level=leaf)
     @test isempty(emitted_ancestors(sys, set))
     # Every one of the eight parts has to be covered, not just the big one. The
@@ -346,7 +347,7 @@ end
     @test length(set) > length(DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=leaf))
 end
 
-@testset "hole: $(sysname(sys))" for (sys, leaf, _, _) in SWEEP
+@testset "hole: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     t = prepare(DONUT)
     set = DGG.query(sys, DGG.MultiOrderCoverage(DONUT); level=leaf)
     @test isempty(emitted_ancestors(sys, set))
@@ -364,7 +365,7 @@ end
     end
 end
 
-@testset "antimeridian: $(sysname(sys))" for (sys, leaf, _, _) in SWEEP
+@testset "antimeridian: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     # Nothing in the engine works in longitude — a ring becomes unit-sphere
     # points at the boundary of the call and its edges are great-circle arcs —
     # so a seam-crossing target is not a special case. This asserts that it
@@ -384,7 +385,7 @@ end
     @test isempty(uncovered(sys, set, leaf, samples))
 end
 
-@testset "a target larger than a hemisphere: $(sysname(sys))" for (sys, _, coarse, _) in SWEEP
+@testset "a target larger than a hemisphere: $(syslabel(sys))" for (sys, _, coarse) in SWEEP
     # 66% of the sphere. Its bounding cap is the whole sphere — the antipode of
     # any cap enclosing the boundary is interior to the target — so the cheap
     # cap prune prunes nothing, and the traversal stays output-sensitive only

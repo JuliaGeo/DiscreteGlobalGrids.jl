@@ -982,10 +982,13 @@ end
 # (m) `neighbors` and `ring`: the closed form, and the bounds it forces
 # =========================================================================
 
-# The generic vertex-matching walk misses endpoint-free shared segments at band boundaries.
-fallback_neighbors(g, c, k = 1; connectivity = DGG.Vertex()) =
-    invoke(DGG.neighbors, Tuple{DGG.AbstractGrid,DGG.AbstractCellIndex,Integer},
-           g, c, k; connectivity)
+# The generic vertex-matching walk misses endpoint-free shared segments at band
+# boundaries. Reached through the generic `one_ring` method, since dispatching
+# `neighbors` on the level grid now lands on this system's own hook.
+fallback_neighbors(g, c; connectivity = DGG.Vertex()) =
+    invoke(DGG.one_ring,
+           Tuple{DGG.AbstractGrid,DGG.AbstractCellIndex,DGG.Connectivity},
+           g, c, connectivity)
 
 # Warmed-call allocations detect accidental spatial-tree fallback.
 _neighbor_bytes(g, c) = (DGG.neighbors(g, c, 1); @allocated DGG.neighbors(g, c, 1))
@@ -1129,6 +1132,22 @@ end
            for x in DGG.neighbors(g1, c, 1; connectivity = DGG.Edge())] ==
           [(14, 15), (15, 14), (16, 15), (15, 16)]
 
+    # ORACLE PIN on the OUTER rings' start. The winding law is start-invariant
+    # by construction, so nothing else here would notice ring 2 rotating.
+    # Ring 2 begins on the SAME spoke ring 1 does — the `NW` direction.
+    # Hand-checked at this cell: its ring-1 compass bearings run NW(320.96)
+    # W(270.28) SW(219.94) S(180) SE(140.06) E(89.72) NE(39.04) N(360),
+    # decreasing through one turn, which is counter-clockwise seen from outside
+    # and the sense its four boundary corners wind in (219.72, 140.28, 39.27,
+    # 320.73); ring 2's first entry sits at 301.97, the first bearing
+    # counter-clockwise past 320.96.
+    let d = DGG.cellindex(g0, 20000)
+        @test d == DGG.LevelIndex(0, 19999)
+        @test DGG.ring(g0, d, 2) == DGG.LevelIndex.(0,
+            [19637, 19997, 20357, 20717, 20718, 20719, 20720, 20721,
+                20361, 20001, 19641, 19281, 19280, 19279, 19278, 19277])
+    end
+
     # Closed-form adjacency must not build a spatial tree.
     for x in (c,
               CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, 0), 15, 0),        # west tile edge
@@ -1255,7 +1274,7 @@ end
                 conn in (DGG.Vertex(), DGG.Edge())
             x = CD.pixelcell(TWIN, DGG.LevelIndex(0, CD.tileordinal(row, q)), j, i)
             got = Set(DGG.neighbors(g1, x, 1; connectivity = conn))
-            walk = Set(fallback_neighbors(g1, x, 1; connectivity = conn))
+            walk = Set(fallback_neighbors(g1, x; connectivity = conn))
             issubset(walk, got) || note!(outside, "($lat_s, $lon_w, $j, $i) under $conn")
             J = row * N + j
             straddles = (J > 0 && CD.ncols(TWIN, fld(J - 1, N)) != nc) ||

@@ -18,6 +18,9 @@ using DiscreteGlobalGrids: systems, levels, max_level, levelgrid, ncells,
     subtree_border, subtree_interior, EdgeCellIterator, InnerCellIterator,
     AuthalicSystem, Vertex, Edge, Connectivity
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, hassortedsubtrees
+
 # Brute-force subtree rim: descendants with at least one outside neighbour.
 # This implementation does not share traversal code with the iterators.
 function brute_force_border(sys, c, l; connectivity = Vertex())
@@ -114,8 +117,7 @@ end
 @testset "subtree iterators" begin
 
     for sys in systems(), base in sweep_bases(sys)
-        sysname = string(nameof(typeof(sys)))
-        name = "$sysname at level $base"
+        name = "$(syslabel(sys)) at level $base"
         roots = sweep_roots(sys, base)
 
         @testset "$name: agreement with the eager verbs and the definition" begin
@@ -220,9 +222,9 @@ end
             @test isempty(collect(InnerCellIterator(sys, c, lc)))
         end
 
-        # A5 materializes during construction, so iteration-only allocation is
-        # not a valid laziness measurement for that system.
-        if sysname != "A5System"
+        # Without sorted subtrees the walk materializes during construction, so
+        # iteration-only allocation is not a valid laziness measurement.
+        if hassortedsubtrees(sys)
             @testset "$name: lazy" begin
                 c = first(roots)
                 deep = deep_depth(sys, base)

@@ -402,6 +402,20 @@ end
     @test dateline.Y[2] > 20.0           # great-circle bulge again
 end
 
+@testset "a grid's BoundsError names its valid positions" begin
+    grid = levelgrid(SORTED, 3)
+    n = ncells(grid)
+    message = try
+        cellindex(grid, n + 1)
+    catch err
+        sprint(showerror, err)
+    end
+    # The regression: `summary` falls back to the grid's parameterised type and
+    # the range the position had to be in never appears.
+    @test occursin("1:$n", message)
+    @test occursin("level-3", message)
+end
+
 @testset "identity generics" begin
     grid = levelgrid(SORTED, 3)
     @test cellindextypes(grid) == (LevelIndex,)
@@ -889,10 +903,15 @@ end
             p = cell_centroid(g, c)
             spoke = cell_centroid(g, first(r1))
             @test ccw_angle(p, spoke, spoke) == 0.0
+            # A cell lying ON the spoke begins its ring rather than ending
+            # it: `FB.SPOKE_ATOL` is the package's rule and it is mirrored here
+            # because it is the order policy under test, not an implementation
+            # detail of it. Ring 2 of this mock has such a cell.
+            phase(q) = (a = ccw_angle(p, spoke, q);
+                a >= 2 * Float64(pi) - FB.SPOKE_ATOL ? 0.0 : a)
             for k in 1:2
                 shell = ring(g, c, k; connectivity=conn)
-                @test issorted([ccw_angle(p, spoke, cell_centroid(g, d))
-                                for d in shell])
+                @test issorted([phase(cell_centroid(g, d)) for d in shell])
             end
         end
     end
@@ -1345,10 +1364,10 @@ end
 end
 
 @testset "generic subtree_border / subtree_interior" begin
-    # The three shipped systems all override `subtree_border` with an
-    # automaton, so this testset is the ONLY exercise the generic in
-    # `src/fallbacks/subtree.jl` gets. Without it, the correct-for-everyone
-    # implementation that a fourth system will inherit is dead code.
+    # Every shipped system specializes `rim_engine`, so this testset and A5's
+    # are the only exercises the generic scan in `src/fallbacks/subtree.jl`
+    # gets. Without it, the correct-for-everyone implementation a new system
+    # inherits before it writes an automaton is dead code.
     #
     # The mock's subtree at depth `d` is a `2^d x 2^d` block of the lon/lat
     # lattice, so its rim is contained in the block's boundary ring — at most

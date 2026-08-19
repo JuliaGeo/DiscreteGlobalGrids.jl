@@ -26,8 +26,11 @@ worth knowing before writing any code against these verbs:
     increasing, on every system and through every engine. A consumer indexing
     position-ordered storage needs no `sort` and no `sortperm`.
     [`halo_positions`](@ref) hands that stream over directly, without
-    materialising the ids on the way. This is *not* a statement about
-    [`neighbors`](@ref), whose one-ring is rotationally ordered on H3 and IGeo7.
+    materialising the ids on the way. These two verbs are fetch lists, and they
+    are the *only* neighbourhood verbs here that are ascending: [`neighbors`](@ref),
+    [`ring`](@ref), [`halo_table`](@ref) and [`member_neighbors`](@ref) all
+    answer counter-clockwise seen from outside the sphere, in ids and in
+    positions alike.
   - **`length` is refused wherever the count is unproved.** Face seams, poles
     and pentagons break perimeter formulas, so most engines declare
     `SizeUnknown()` and define no `length` at all. [`halo_sizehint`](@ref) is the
@@ -89,6 +92,13 @@ interface docstrings pulled in below cross-reference the rest of the package,
 and following those links to closure means rendering 530 entries, which is the
 whole package and then some. Those stay dead until a full reference exists to
 catch them.
+
+!!! note "Three names print someone else's docstring first"
+
+    `ncells`, `treeify` and `getcell` are `ConservativeRegridding.Trees`
+    bindings this package extends rather than owns. `?ncells` in the REPL prints
+    the upstream docstring above this package's; both are there, and the second
+    is the one that describes a grid.
 
 ```@docs
 Connectivity

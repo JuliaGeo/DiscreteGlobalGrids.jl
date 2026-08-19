@@ -134,14 +134,13 @@ using .Engine: PartialGrid,
     mapneighbors, foreachneighbors, StorageOrder,
     NeighborCallbackError
 
-# Internal extension points for system-specific subtree walkers, shell winding,
-# and cursor parallelization.
+# Internal extension points for system-specific subtree walkers and shell
+# winding.
 using .Fallbacks: collect_subtree,
     MortonCurve, quadrant_step, SquareBorderEngine, SquareInteriorEngine,
     adjacency_shells, checked_steps, _ring_frame, _wind!
 using .Engine: SquareBandEngine, square_halo_engine, generic_halo_engine,
-    check_halo_level, HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine,
-    PARALLELIZE_CHUNKS_PER_THREAD
+    check_halo_level, HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine
 
 # The radix-4 quad-face family: the declarations its members write, and the
 # shared arithmetic and geometry their own files call.

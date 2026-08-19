@@ -147,12 +147,10 @@ Trees.ncells(node::PositionTreeNode) = ncells(node.tree.grid)
 Trees.getcell(node::PositionTreeNode, i::Int) = getcell(node.tree.grid, i)
 Trees.getcell(node::PositionTreeNode) = getcell(node.tree.grid)
 
-function Trees.should_parallelize(node::PositionTreeNode, ::US.SphericalCap)
-    tree = node.tree
-    threshold = max(1, length(tree.order) ÷
-                       (Threads.nthreads() * PARALLELIZE_CHUNKS_PER_THREAD))
-    return tree.node_last[node.index] - tree.node_first[node.index] + 1 <= threshold
-end
+# `Trees.ncells` answers for the whole grid, so the frontier's default estimate
+# would be wrong here; the node's stored leaf window is exact.
+Trees.split_weight(node::PositionTreeNode) =
+    node.tree.node_last[node.index] - node.tree.node_first[node.index] + 1
 
 # --------------------------------------------------------------------------
 # treeify

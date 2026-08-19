@@ -591,10 +591,10 @@ end
     @test collect(GI.getpoint(GI.getexterior(Trees.getcell(tree, 5)))) ==
           collect(GI.getpoint(GI.getexterior(getcell(grid, 5))))
     @test_throws BoundsError Trees.getcell(tree, ncells(grid) + 1)
-    # Parallelising is a question about chunk size, so the answer has to differ
-    # between the whole grid and a single leaf however many threads are around.
-    @test !Trees.should_parallelize(tree, FB.full_sphere_cap())
-    @test Trees.should_parallelize(leaf, FB.full_sphere_cap())
+    # The frontier's work estimate is the node's own leaf window, not the
+    # whole grid `Trees.ncells` answers for.
+    @test Trees.split_weight(tree) == ncells(grid)
+    @test Trees.split_weight(leaf) == 1
 end
 
 @testset "cursor: selection mode" begin

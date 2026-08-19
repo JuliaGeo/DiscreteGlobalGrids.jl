@@ -6,7 +6,7 @@
 # ---------------------------------------------------------------------------
 
 """
-    cell_boundary(::H3System, c::H3Cell) -> SmallVector{10,UnitSphericalPoint}
+    cell_boundary(::H3System, c::H3Cell) -> Helpers.SmallList{10,UnitSphericalPoint}
 
 The libh3 `cellToBoundary` ring on the unit sphere, implicitly closed and
 counter-clockwise seen from outside.
@@ -16,10 +16,10 @@ Cells crossing an icosahedron edge include distortion vertices, so the ring has
 """
 function cell_boundary(::H3System, c::H3Cell)
     verts, n = H3Native.boundary_verts(c.id)
-    out = SmallVector{10,USPoint}()
+    out = DGG.Helpers.empty_small_list(Val(10), USPoint(1.0, 0.0, 0.0))
     for i in 1:n
         v = @inbounds verts[i]
-        out = SmallCollections.push(out, USPoint(v[1], v[2], v[3]))
+        out = DGG.Helpers.small_push(out, USPoint(v[1], v[2], v[3]))
     end
     return out
 end

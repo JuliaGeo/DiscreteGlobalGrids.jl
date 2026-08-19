@@ -80,6 +80,35 @@ function counted_walk(it, cs::CountingSubset, n::Int)
     return (prefix, cs.calls, h)
 end
 
+# Grid wrapper that counts native one-ring queries. A halo engine reaches its
+# target grid only through `neighbors`, so an engine rebuilt on one of these
+# reports the candidates it native-checks, with no time or byte proxy.
+mutable struct CountingGrid{G}
+    inner::G
+    calls::Int
+end
+
+CountingGrid(g) = CountingGrid{typeof(g)}(g, 0)
+
+DGG.neighbors(cg::CountingGrid, x, k::Int; kwargs...) =
+    (cg.calls += 1; DGG.neighbors(cg.inner, x, k; kwargs...))
+
+# The same engine, field for field, reading a counting grid.
+on_counting_grid(e::DGG.Fallbacks.OutsideWalkEngine, cg) =
+    DGG.Fallbacks.OutsideWalkEngine(e.system, cg, e.root, e.rootlevel, e.target,
+        e.lo, e.hi, e.rootcap, e.roots, e.provider, e.connectivity)
+
+on_counting_grid(e::DGG.Fallbacks.HexArcHaloEngine, cg) =
+    DGG.Fallbacks.HexArcHaloEngine(e.system, cg, e.root, e.rootlevel, e.target,
+        e.connectivity, e.ring)
+
+# One-ring queries the engine makes to yield an `n`-cell prefix.
+function counted_prefix(e, grid, n::Int)
+    cg = CountingGrid(grid)
+    take_n(on_counting_grid(e, cg), n)
+    return cg.calls
+end
+
 
 take_n(it, n::Int) = (seen = 0; for _ in it
     seen += 1
@@ -845,12 +874,14 @@ fixture_collect_bytes(sys, c, l) =
         sys = IGeo7System()
         grid = levelgrid(sys, 5)
         root = cellindex(grid, ncells(grid) ÷ 2 + 1)
-        gen = () -> prefix10(SubtreeHaloIterator(sys, root, 12, Vertex(),
-            DGG.Fallbacks.generic_halo_engine(sys, root, 12, Vertex())))
-        gen()
-        dir = () -> prefix10(SubtreeHaloIterator(sys, root, 12))
-        dir()
-        @test @allocated(gen()) > 100 * @allocated(dir())
+        target = levelgrid(sys, 12)
+        gen = DGG.Fallbacks.generic_halo_engine(sys, root, 12, Vertex())
+        dir = SubtreeHaloIterator(sys, root, 12).engine
+        @test collect(Iterators.take(gen, 10)) == collect(Iterators.take(dir, 10))
+        # The arc walk native-checks one candidate per emitted cell; the generic
+        # engine scans the halo to find the same ten.
+        @test counted_prefix(dir, target, 10) == 10
+        @test counted_prefix(gen, target, 10) > 100 * counted_prefix(dir, target, 10)
     end
 
     # -----------------------------------------------------------------------

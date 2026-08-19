@@ -196,7 +196,7 @@ cell_center(z7::Unsigned; kwargs...) = cell_center(UInt64(z7); kwargs...)
 
 """
     cell_boundary_cartesian(z7; closed_ring=true, orientation=ORIENT_IDENTITY)
-        -> Vector{NTuple{3,Float64}}
+        -> Helpers.SmallList{7,NTuple{3,Float64}}
 
 Boundary of `z7` as unit-sphere `xyz` tuples: six corners for a hexagon and
 five for a pentagon. Rings wind counterclockwise (seen from outside the sphere)
@@ -207,8 +207,9 @@ function cell_boundary_cartesian(z7::UInt64; closed_ring::Bool=true,
     res = _geometry_checked(z7)
     base = z7_base_cell(z7)
     pent = z7_is_pentagon(z7)
-    n = pent ? 5 : 6
-    out = Vector{NTuple{3,Float64}}(undef, n + (closed_ring ? 1 : 0))
+    # Inline storage: at most six corners plus the closing repeat, and this runs
+    # once per cell on the regridding hot path.
+    out = Helpers.empty_small_list(Val(7), (0.0, 0.0, 0.0))
     if pent
         # corner directions live in the res-r lattice (rotation arg P_r)
         thdel = THETA_DIR[res+1][z7_deleted_digit(base)]
@@ -216,7 +217,7 @@ function cell_boundary_cartesian(z7::UInt64; closed_ring::Bool=true,
         for k in 1:5
             ang = thdel + 60.0 * k - 30.0            # bisector between slots
             u = rho * cis(deg2rad(mod(ang, DEV_CONE_DEG)))
-            out[k] = from_grid(orientation, dev_to_xyz(base, u))
+            out = Helpers.small_push(out, from_grid(orientation, dev_to_xyz(base, u)))
         end
     else
         (a, b) = _encode_lattice(z7, base, res)
@@ -231,10 +232,10 @@ function cell_boundary_cartesian(z7::UInt64; closed_ring::Bool=true,
                 # the cell center sits on (cone angle ψ−300 CCW / ψ−60 CW)
                 u *= (thc > 150.0 ? CIS_P60 : CIS_M60)
             end
-            out[j+1] = from_grid(orientation, dev_to_xyz(base, u))
+            out = Helpers.small_push(out, from_grid(orientation, dev_to_xyz(base, u)))
         end
     end
-    closed_ring && (out[end] = out[1])
+    closed_ring && (out = Helpers.small_push(out, @inbounds out[1]))
     return out
 end
 cell_boundary_cartesian(z7::Unsigned; kwargs...) =

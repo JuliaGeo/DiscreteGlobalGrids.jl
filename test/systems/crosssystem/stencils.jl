@@ -23,9 +23,6 @@ using DiscreteGlobalGrids: systems, levelgrid, ncells, cellindex, cellposition,
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, isquadface, sweepcovers
 
-include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
-using .DGGTestHelpers: syslabel, isquadface, sweepcovers
-
 # ---------------------------------------------------------------------------
 # Systems, and the depths each is swept at
 #

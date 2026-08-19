@@ -922,13 +922,13 @@ end
 """
     subtree(space::RasterGrid, inds)
 
-Return a recursive tree when `inds` form a lattice rectangle, otherwise a flat
-tree with one cap per cell.
+Return a memoized recursive tree when `inds` form a lattice rectangle,
+otherwise a flat tree with one cap per cell.
 """
 function subtree(space::RasterGrid, inds)
     rect = _indexrect(space, inds)
     rect === nothing && return celltree(space, inds)
-    return RasterCellTree(space, rect...)
+    return MemoRasterTree(RasterCellTree(space, rect...))
 end
 
 # The number of cells along the dimension that varies fastest in cell positions.

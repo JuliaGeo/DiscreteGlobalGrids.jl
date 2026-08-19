@@ -237,16 +237,60 @@ end
 # Intersection operator
 
 """
-    BlockAreaOperator(inner, dstmap, srcmap)
+    CellMemo(::Type{P}; slots)
+
+A task-local direct-mapped memo of cell polygons by tree position. Candidate
+pairs leave a leaf pairing in position runs — the destination repeats within a
+pairing and the source's few leaf cells cycle across consecutive pairings — so
+a handful of slots serves most `getcell` calls with the value already built.
+"""
+struct CellMemo{P}
+    keys::Vector{Int}
+    vals::Vector{P}
+end
+
+CellMemo(::Type{P}; slots::Int = 64) where {P} =
+    CellMemo{P}(zeros(Int, slots), Vector{P}(undef, slots))
+
+# A fresh, empty memo of the same shape, for one assembly task.
+_fresh(memo::CellMemo{P}) where {P} = CellMemo(P; slots = length(memo.keys))
+_fresh(::Nothing) = nothing
+
+@inline function _memocell(memo::CellMemo, tree, i::Int)
+    slot = (i & (length(memo.keys) - 1)) + 1
+    @inbounds memo.keys[slot] == i && return @inbounds memo.vals[slot]
+    cell = Trees.getcell(tree, i)
+    @inbounds memo.keys[slot] = i
+    @inbounds memo.vals[slot] = cell
+    return cell
+end
+
+@inline _memocell(::Nothing, tree, i::Int) = Trees.getcell(tree, i)
+
+# A concretely typed memo where one probe names the polygon type; otherwise none.
+function _cellmemo(space::RegridSpace, inds)
+    P = typeof(getcell(space, Int(first(inds))))
+    return isconcretetype(P) ? CellMemo(P) : nothing
+end
+
+"""
+    BlockAreaOperator(inner, dstmap, srcmap, srcmemo, dstmemo)
 
 Measure intersections with `inner` and map global tree positions to block-local
-indices. Each assembly task receives its own mutable clipping cache.
+indices. Each assembly task receives its own mutable clipping cache and its own
+cell memos.
 """
-struct BlockAreaOperator{O,DM,SM}
+struct BlockAreaOperator{O,DM,SM,MS,MD}
     inner::O
     dstmap::DM
     srcmap::SM
+    srcmemo::MS
+    dstmemo::MD
 end
+
+# Memo-free form: every `getcell` synthesizes. The production path passes memos.
+BlockAreaOperator(inner, dstmap, srcmap) =
+    BlockAreaOperator(inner, dstmap, srcmap, nothing, nothing)
 
 ConservativeRegridding.IntersectionReturnStyle(::BlockAreaOperator) =
     ConservativeRegridding.InPlace()
@@ -256,7 +300,7 @@ ConservativeRegridding.output_matrix_size(op::BlockAreaOperator, src_tree, dst_t
 
 ConservativeRegridding.task_local_operator(op::BlockAreaOperator) =
     BlockAreaOperator(ConservativeRegridding.task_local_operator(op.inner),
-        op.dstmap, op.srcmap)
+        op.dstmap, op.srcmap, _fresh(op.srcmemo), _fresh(op.dstmemo))
 
 # The source is the subject and the destination is the clip ring. A block emits
 # weights only for the pairs both of its chunks contain.
@@ -265,7 +309,8 @@ ConservativeRegridding.task_local_operator(op::BlockAreaOperator) =
     row = localindex(op.dstmap, i2)
     col = localindex(op.srcmap, i1)
     (row == 0 || col == 0) && return nothing
-    area = op.inner(Trees.getcell(src_tree, i1), Trees.getcell(dst_tree, i2))
+    area = op.inner(_memocell(op.srcmemo, src_tree, i1),
+        _memocell(op.dstmemo, dst_tree, i2))
     area > 0 || return nothing
     push!(rows, row)
     push!(cols, col)
@@ -295,7 +340,8 @@ function build_weights!(coo::WeightCOO, ::Conservative,
         "$(m), source is $(manifold(src_space))"))
 
     op = BlockAreaOperator(_intersectionoperator(m),
-        indexmap(dst_inds), indexmap(src_inds))
+        indexmap(dst_inds), indexmap(src_inds),
+        _cellmemo(src_space, src_inds), _cellmemo(dst_space, dst_inds))
     block = _intersectionareas(m, subtree(dst_space, dst_inds),
         subtree(src_space, src_inds), op)
 

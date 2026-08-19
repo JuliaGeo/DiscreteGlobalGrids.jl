@@ -313,6 +313,23 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         end
     end
 
+    @testset "cell memos change nothing, and hits return the built value" begin
+        space = ToyLonLatSpace(16, 8)
+        memo = GR._cellmemo(space, 1:ncells(space))
+        @test memo isa GR.CellMemo
+        tree = GR.subtree(space, 1:ncells(space))
+        a = GR._memocell(memo, tree, 5)
+        @test a == CR.Trees.getcell(tree, 5)
+        # A hit returns the stored object; a colliding key rebuilds.
+        @test GR._memocell(memo, tree, 5) === a
+        b = GR._memocell(memo, tree, 5 + length(memo.keys))
+        @test b == CR.Trees.getcell(tree, 5 + length(memo.keys))
+        @test GR._memocell(memo, tree, 5) == a
+        # The memo-free operator spelling still assembles (covered above by the
+        # threaded-vs-serial testset, whose reference uses it).
+        @test GR.BlockAreaOperator(1, 2, 3).srcmemo === nothing
+    end
+
     @testset "the area-only clip matches the default operator, bit for bit" begin
         m = GOCore.Spherical(; radius = 1.0)
         default = CR.task_local_operator(CR.DefaultIntersectionOperator(m))

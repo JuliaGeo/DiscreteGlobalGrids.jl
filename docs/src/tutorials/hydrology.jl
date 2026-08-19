@@ -16,6 +16,7 @@ ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpa
 
 import DiscreteGlobalGrids as DGG
 import Geomorphometry as GM
+import GeoInterface as GI, GeometryOps as GO
 using Rasters, RasterDataSources
 import ArchGDAL
 import Extents
@@ -23,35 +24,38 @@ using Statistics
 using GLMakie, GeoMakie
 GLMakie.activate!(inline = true)
 
+# ## Acquiring data
+
+# Let's first get a DEM tile and regrid it to IGeo7.
+# We'll use a Copernicus DEM 30m-tile over the Alps for this example.
+
+centre = GI.extent((10.5, 46.5))
+path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
+Sys.isapple() && Rasters.checkmem!(false)
+dem = Raster(path; lazy = false)
+## dem = aggregate(mean, dem, 8; progress = false)
+# This is what the raster looks like:
+plot(dem; axis = (; aspect = DataAspect()))
+# Now, let's regrid it to IGeo7.  First
 sys = DGG.IGeo7System()
-
-# ## The coarsest cell inside a DEM tile
-#
-# Copernicus DEM ships in 1°×1° tiles. Which single IGEO7 cell fits inside one?
-# Cover the tile with `MultiOrderCoverage` — the coarsest cells that cover it,
-# refined only where its outline cuts through, down to the working level — and
-# `coarsest_contained` reads off the shallowest cell the traversal proved
-# inside.
-
-tile = Extents.Extent(X = (10.0, 11.0), Y = (46.0, 47.0))
-leaf = 10                                          # ≈ 455 m cells
-region = DGG.query(sys, DGG.MultiOrderCoverage(tile); level = leaf)
-root = DGG.coarsest_contained(region)
-f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
-poly!(DGG.subtree(sys, root, DGG.level(root)); strokewidth = 2)
+# We can get the grid of IGeo7 cells that would cover the DEM tile,
+# using a `MultiOrderCoverage` query:
+leaf_level = 13
+region = DGG.query(sys, DGG.MultiOrderCoverage(Rasters.extent(dem)); level = leaf_level)
+# Here's what this looks like:
+f, a, p = plot(dem; axis = (; aspect = DataAspect()))
+poly!(a, region; color = :transparent, strokewidth = 1, strokecolor = (:black, 0.5))
 f
-# The cell, and its level:
-root, DGG.level(root)
-
-# ## The tile's coverage as a grid
-#
-# One contained cell gives up the tile's border. The coverage keeps it: every cell
-# the tile touches. The set itself stays small — the interior comes back whole,
-# at whatever level it fit — and only the outline is refined all the way down.
-
-f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
-poly!(region; color = :transparent, strokewidth = 1)
-f
+# This is a nice way to compress the set of cells that would be covered in memory.
+# Note that `region` says it has ~44,424 cells.  But when you look at the number of 
+# cells at level 13,
+DGG.CellLookup(region) |> length
+# That's a lot of cells!  This optimization helps to decrease memory pressure,
+# especially on datasets that don't fit in memory in the first place.
+# 
+# If you want, you can also choose the largest cell in the region to run this
+# analysis on:
+largest_contained_cell = DGG.coarsest_contained(region)
 
 # `CellLookup` reads the set as a one-level cell axis, and `PartialGrid` reads
 # that as an ordinary grid: positions run `1:ncells`, so a data vector indexes
@@ -60,7 +64,6 @@ f
 # level and it, not the set, sizes everything below.
 
 grid = DGG.PartialGrid(DGG.CellLookup(region))
-DGG.ncells(grid)
 
 # ## Regridding the DEM
 #
@@ -70,27 +73,19 @@ DGG.ncells(grid)
 # example compact and leaves the source a little finer than the destination,
 # so every hexagon averages several pixels.
 
-centre = Extents.Extent(X = (10.5, 10.5), Y = (46.5, 46.5))
-path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
-dem = Raster(path; lazy = false)
-dem = aggregate(mean, dem, 8; progress = false)
+# [`regrid`](@ref) takes the grid as its destination and the raster as its source, and
+# hands back a cube whose axis is the cells. The coverage overhangs the tile by
+# a bit at the border.
 
-# The source could be named as a grid too: with `demtile` the level-0 id of the
-# tile, `DGG.subtree(DGG.CopernicusDEMSystem(30), demtile, 1)` is that whole
-# tile as an ordinary grid, and a grid is a `from` as it stands —
-# `examples/copernicus_dem.jl` takes that route. This page reads the raster
-# because it works for any raster.
-#
-# `regrid` takes the grid as its destination and the raster as its source, and
-# hands back a cube whose axis is the cells. The coverage overhangs the tile at
-# the border; a cell the raster covers less than half of comes back `NaN` rather
-# than as a number standing for ground that was never seen.
-
-igeo7_dem = @time DGG.regrid(dem; to = grid)
-elevation = parent(igeo7_dem)
-covered = .!isnan.(elevation)
-extrema(elevation[covered])
-
+igeo7_dem = @time DGG.regrid(dem; to = region)
+# Let's now plot this too:
+poly(lookup(igeo7_dem, DGG.Cells); color = vec(igeo7_dem); axis = (; aspect = DataAspect()))
+# and we can compute the elevation of the cells:
+covered = .!isnan.(igeo7_dem)
+extrema(igeo7_dem[covered])
+# Finally, let's extract the grid backing the lookup,
+# which we can pass to the DGG neighbors API.
+grid = DGG.PartialGrid(lookup(igeo7_dem, DGG.Cells))
 # ## Flow direction
 #
 # Each cell sends its water to the lowest of its neighbours — the first step of
@@ -107,7 +102,7 @@ function downhill(i)
 end
 
 flow = [covered[i] ? downhill(i) : 0 for i in 1:DGG.ncells(grid)]
-drop = [flow[i] == 0 ? NaN : elevation[i] - elevation[flow[i]] for i in eachindex(flow)]
+drop = [flow[i] == 0 ? NaN : igeo7_dem[i] - igeo7_dem[flow[i]] for i in eachindex(flow)]
 (; n_pits = count(i -> covered[i] && flow[i] == 0, eachindex(flow)),
    max_drop = maximum(filter(!isnan, drop)))
 
@@ -121,7 +116,7 @@ cells = DGG.CellVector(grid)[shown]
 
 fig = Figure(size = (900, 430))
 ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84", title = "elevation (m)")
-p1 = poly!(ax1, cells; color = elevation[shown], colormap = :terrain, strokewidth = 0)
+p1 = poly!(ax1, cells; color = igeo7_dem[shown], colormap = :terrain, strokewidth = 0)
 Colorbar(fig[2, 1], p1; vertical = false)
 ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84", title = "drop to downhill neighbour (m)")
 p2 = poly!(ax2, cells; color = drop[shown], colormap = :magma,
@@ -139,10 +134,10 @@ fig
 
 terrain = Raster(igeo7_dem; name = :height)
 
-tpi = GM.topographic_position_index(terrain)
-accumulation, directions = GM.flowaccumulation(terrain; method = GM.D8())
+tpi = @time GM.topographic_position_index(terrain)
+accumulation, directions = @time GM.flowaccumulation(terrain; method = GM.D8())
 
-cell_area = GM.cellarea(terrain, first(eachindex(terrain)))
+cell_area = @time GM.cellarea(terrain, first(eachindex(terrain)))
 log_cells = log10.(accumulation ./ cell_area)
 
 fig = Figure(size = (900, 430))

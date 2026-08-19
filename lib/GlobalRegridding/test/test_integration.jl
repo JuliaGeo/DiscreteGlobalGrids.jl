@@ -288,8 +288,8 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
                 (DD.X(t6_centres(-180, 180, 8)), DD.Y(t6_centres(-90, 90, 6))));
             chunks = ([1:4, 5:8], [1:3, 4:6]))
 
-        # Chunk rectangles retain the recursive tree in either array orientation.
-        @test all(GR.subtree(space, cellindices(space, c)) isa GR.RasterCellTree
+        # Chunk rectangles retain the recursive (memoized) tree in either orientation.
+        @test all(GR.subtree(space, cellindices(space, c)) isa GR.MemoRasterTree
                   for c in 1:nchunks(space))
         @test GR.subtree(space, [1, 5, 30]) isa GR.RasterFlatTree
     end

@@ -270,7 +270,7 @@ function DGG.cellposition(::IGeo7System, c::Z7Cell)
 end
 
 """
-    cell_boundary(::IGeo7System, c::Z7Cell) -> Vector{UnitSphericalPoint}
+    cell_boundary(::IGeo7System, c::Z7Cell) -> Helpers.SmallList{6,UnitSphericalPoint}
 
 The exact boundary ring of `c` on the unit sphere: six corners for a hexagon,
 five for a pentagon, **implicitly closed** (the first vertex is not repeated)
@@ -283,11 +283,9 @@ are straight in the Snyder chart and are reported as their endpoints, which the
 package then reads as great-circle arcs.
 """
 function DGG.cell_boundary(::IGeo7System, c::Z7Cell)
-    ring = cell_boundary_cartesian(c.id; closed_ring=false)
-    out = Vector{USPoint}(undef, length(ring))
-    @inbounds for i in eachindex(ring)
-        p = ring[i]
-        out[i] = USPoint(p[1], p[2], p[3])
+    out = Helpers.empty_small_list(Val(6), USPoint(1.0, 0.0, 0.0))
+    for p in cell_boundary_cartesian(c.id; closed_ring=false)
+        out = Helpers.small_push(out, USPoint(p[1], p[2], p[3]))
     end
     return out
 end

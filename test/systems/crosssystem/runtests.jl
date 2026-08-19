@@ -13,6 +13,9 @@ using DiscreteGlobalGrids: systems, levels, levelgrid, ncells, cellindex,
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel
+
 # A deterministic spread of cells: no RNG, so a failure names the same cell on
 # every run and on every machine.
 function sample_cells(grid, n::Int)

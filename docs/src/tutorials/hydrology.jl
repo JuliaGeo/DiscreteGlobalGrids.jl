@@ -5,7 +5,8 @@
 # them is a function of latitude. This page moves a Copernicus 30 m DEM tile
 # over the Alps onto IGEO7 — hexagons, equal-area by construction — and does
 # the first step of a flow-routing model on it. The worked example averages
-# the source to 120 m so it also fits comfortably on a standard CI runner.
+# the source to 240 m and works at a level whose cells are a little coarser
+# again, so a tile's worth of them fits comfortably on a standard CI runner.
 #
 # Three calls carry the page: `MultiOrderCoverage` names the cells the tile
 # touches, `regrid` fills them from the raster, and `adjacency` routes water
@@ -28,11 +29,14 @@ sys = DGG.IGeo7System()
 #
 # Copernicus DEM ships in 1°×1° tiles. Which single IGEO7 cell fits inside one?
 # Cover the tile with `MultiOrderCoverage` — the coarsest cells that cover it,
-# refined only where its outline cuts through — and `coarsest_contained` reads
-# off the shallowest cell the traversal proved inside.
+# refined only where its outline cuts through, down to the working level — and
+# `coarsest_contained` reads off the shallowest cell the traversal proved
+# inside.
 
 tile = Extents.Extent(X = (10.0, 11.0), Y = (46.0, 47.0))
-root = DGG.coarsest_contained(DGG.query(sys, DGG.MultiOrderCoverage(tile); level = 10))
+leaf = 10                                          # ≈ 455 m cells
+region = DGG.query(sys, DGG.MultiOrderCoverage(tile); level = leaf)
+root = DGG.coarsest_contained(region)
 f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
 poly!(DGG.subtree(sys, root, DGG.level(root)); strokewidth = 2)
 f
@@ -41,18 +45,19 @@ root, DGG.level(root)
 
 # ## The tile's coverage as a grid
 #
-# One contained cell gives up the tile's border. The destination that keeps it is
-# the tile's own coverage at the working level: every cell the tile touches.
+# One contained cell gives up the tile's border. The coverage keeps it: every cell
+# the tile touches. The set itself stays small — the interior comes back whole,
+# at whatever level it fit — and only the outline is refined all the way down.
 
-leaf = 12                                          # ≈ 65 m cells
-region = DGG.query(sys, DGG.MultiOrderCoverage(tile); level = leaf)
 f, a, p = poly(Rect2f([tile.X[1], tile.Y[1]], [-(-)(tile.X...), -(-)(tile.Y...)]))
 poly!(region; color = :transparent, strokewidth = 1)
 f
 
 # `CellLookup` reads the set as a one-level cell axis, and `PartialGrid` reads
 # that as an ordinary grid: positions run `1:ncells`, so a data vector indexes
-# straight through it.
+# straight through it. This is where the leaf level is paid for: the axis is
+# every level-`leaf` cell under the set, so its length grows sevenfold per
+# level and it, not the set, sizes everything below.
 
 grid = DGG.PartialGrid(DGG.CellLookup(region))
 DGG.ncells(grid)
@@ -61,13 +66,14 @@ DGG.ncells(grid)
 #
 # The download asks for a point inside the tile rather than the tile itself:
 # `getraster` fetches every 1° tile an extent touches, and a closed 1° box
-# touches four. Averaging the native 30 m source to 120 m keeps this worked
-# example compact.
+# touches four. Averaging the native 30 m source to 240 m keeps this worked
+# example compact and leaves the source a little finer than the destination,
+# so every hexagon averages several pixels.
 
 centre = Extents.Extent(X = (10.5, 10.5), Y = (46.5, 46.5))
 path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
 dem = Raster(path; lazy = false)
-dem = aggregate(mean, dem, 4; progress = false)
+dem = aggregate(mean, dem, 8; progress = false)
 
 # The source could be named as a grid too: with `demtile` the level-0 id of the
 # tile, `DGG.subtree(DGG.CopernicusDEMSystem(30), demtile, 1)` is that whole

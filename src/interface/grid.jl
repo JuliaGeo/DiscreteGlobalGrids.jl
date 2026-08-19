@@ -186,7 +186,9 @@ function cellposition end
 
 Cell `c` as a GeoInterface polygon on the unit sphere: the
 [`cell_boundary`](@ref) ring, explicitly closed, wrapped in a
-`GI.LinearRing` inside a `GI.Polygon`.
+`GI.LinearRing` inside a `GI.Polygon`. Neither wrapper allocates, so a system
+whose `cell_boundary` uses inline storage gets an `isbits` polygon; read the
+polygon through GeoInterface rather than depending on its container types.
 
 Coordinates are unit-sphere `(x, y, z)`, not longitude/latitude — this polygon
 is meant for spherical predicates, spherical area, and

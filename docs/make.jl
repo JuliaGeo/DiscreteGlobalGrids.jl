@@ -6,6 +6,7 @@ using GeoMakie
 using Makie
 using WGLMakie
 using Literate
+using Zarr
 
 WGLMakie.activate!()
 
@@ -28,7 +29,11 @@ makedocs(;
     # submodules.
     modules = [DiscreteGlobalGrids, DiscreteGlobalGrids.Fallbacks,
                DiscreteGlobalGrids.Engine,
-               DiscreteGlobalGrids.Encodings, DiscreteGlobalGrids.ChunkedLookups],
+               DiscreteGlobalGrids.Encodings, DiscreteGlobalGrids.ChunkedLookups,
+               # Documenter filters docstrings by module, so the Zarr
+               # extension's dggread/dggwrite methods render only if it is
+               # listed here.
+               Base.get_extension(DiscreteGlobalGrids, :DiscreteGlobalGridsZarrExt)],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",
     repo = Documenter.Remotes.GitHub("JuliaGeo", "DiscreteGlobalGrids.jl"),

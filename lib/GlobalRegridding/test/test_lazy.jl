@@ -368,10 +368,10 @@ end
     end
 
     @testset "budget tiles build one restricted tree each" begin
-        # Non-aligned tiles hit the CellCapTree fallback; blocks share it per tile.
+        # Non-aligned tiles hit the fallback tree; blocks share it per tile.
         xd = DD.X(-168.75:22.5:168.75)
         yd = DD.Y(-78.75:22.5:78.75)
-        dst = ToyLonLatSpace(8, 4; chunks = (8, 2))
+        dst = CountingSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
         raster = DD.DimArray(T7Counting(collect(reshape(1.0:128, 16, 8)), (8, 4)),
             (xd, yd))
         src = RasterGrid(raster)
@@ -380,11 +380,11 @@ end
         @test !A.tiling.spacetiled
         ntile = length(A.tiling.runs)
         @test ntile == 3
-        b0 = GR.cellcaptree_builds()
+        b0 = dst.builds[]
         out = A[1:32]
         blocks = GR.residency(A).loads + GR.residency(A).hits
         @test blocks > ntile
-        @test GR.cellcaptree_builds() - b0 == ntile
+        @test dst.builds[] - b0 == ntile
         @test out == regrid(raster; to = dst, from = src, method = Conservative(),
             lazy = false)
     end

@@ -287,22 +287,22 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         yd = DD.Y(-78.75:22.5:78.75)
         src = RasterGrid(DD.DimArray(zeros(16, 8), (xd, yd));
             chunks = ([1:8, 9:16], [1:4, 5:8]))
-        dst = ToyLonLatSpace(8, 4; chunks = (8, 2))
+        dst = CountingSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
         inds = 5:20
         s1, s2 = cellindices(src, 1), cellindices(src, 4)
 
         # One shared wrapper builds the destination tree once for both blocks.
         tc = GR.TileCells(dst, inds)
-        b0 = GR.cellcaptree_builds()
+        b0 = dst.builds[]
         sh1 = conservative_block(tc, inds, src, s1)
         sh2 = conservative_block(tc, inds, src, s2)
-        @test GR.cellcaptree_builds() - b0 == 1
+        @test dst.builds[] - b0 == 1
 
         # Fresh wrappers rebuild per block: the uncached reference.
-        b1 = GR.cellcaptree_builds()
+        b1 = dst.builds[]
         fr1 = conservative_block(GR.TileCells(dst, inds), inds, src, s1)
         fr2 = conservative_block(GR.TileCells(dst, inds), inds, src, s2)
-        @test GR.cellcaptree_builds() - b1 == 2
+        @test dst.builds[] - b1 == 2
 
         # The memoized tree changes nothing, bit for bit.
         for (a, b) in ((sh1, fr1), (sh2, fr2))

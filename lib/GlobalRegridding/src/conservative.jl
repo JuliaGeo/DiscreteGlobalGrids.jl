@@ -294,7 +294,7 @@ function build_weights!(coo::WeightCOO, ::Conservative,
         "conservative weights need one manifold on both sides: destination is " *
         "$(m), source is $(manifold(src_space))"))
 
-    op = BlockAreaOperator(ConservativeRegridding.DefaultIntersectionOperator(m),
+    op = BlockAreaOperator(_intersectionoperator(m),
         indexmap(dst_inds), indexmap(src_inds))
     block = _intersectionareas(m, subtree(dst_space, dst_inds),
         subtree(src_space, src_inds), op)

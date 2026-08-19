@@ -199,6 +199,7 @@ include("io/api.jl")
 # Last: the regridding face reads the grids, the compressed collection, and the
 # cube axis alike.
 include("regridding.jl")
+include("cap_cached_tree.jl")
 
 # After it: a target resolution may be spelled as a raster or a regrid space.
 include("sizing.jl")

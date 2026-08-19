@@ -338,6 +338,51 @@ function build_weights!(coo::WeightCOO, ::Conservative,
 end
 
 """
+    wholeblock(::Conservative, dst_space, src_space) -> WeightBlock
+
+The eager whole-domain block, adopting the assembled sparse matrix directly.
+The generic path copies every entry into a [`WeightCOO`](@ref) and builds a
+second, identical CSC from it; here only the denominators are read off. The
+values, their CSC layout, and the denominator accumulation order are the
+generic path's, bit for bit.
+"""
+function wholeblock(::Conservative, dst_space::RegridSpace, src_space::RegridSpace)
+    ndst = Int(ncells(dst_space))
+    nsrc = Int(ncells(src_space))
+    # Degenerate sides keep the generic path's exact semantics.
+    (ndst == 0 || nsrc == 0) &&
+        return invoke(wholeblock, Tuple{AbstractRegriddingMethod,RegridSpace,RegridSpace},
+            Conservative(), dst_space, src_space)
+
+    m = manifold(dst_space)
+    m == manifold(src_space) || throw(ArgumentError(
+        "conservative weights need one manifold on both sides: destination is " *
+        "$(m), source is $(manifold(src_space))"))
+
+    op = BlockAreaOperator(_intersectionoperator(m),
+        indexmap(1:ndst), indexmap(1:nsrc),
+        _cellmemo(src_space, 1:nsrc), _cellmemo(dst_space, 1:ndst))
+    block = _intersectionareas(m, subtree(dst_space, 1:ndst),
+        subtree(src_space, 1:nsrc), op)
+
+    return WeightBlock(block, _blockdenom(block, ndst))
+end
+
+# `_fillcoo!`'s denominator pass, without the COO round trip. Assembly types the
+# block only as `SparseMatrixCSC`, so the loop needs its own dispatch to specialise.
+function _blockdenom(block::SparseArrays.AbstractSparseMatrixCSC, ndst::Int)
+    denom = zeros(Float64, ndst)
+    rows = SparseArrays.rowvals(block)
+    vals = SparseArrays.nonzeros(block)
+    @inbounds for col in axes(block, 2), t in SparseArrays.nzrange(block, col)
+        w = vals[t]
+        w > 0 || continue
+        denom[rows[t]] += w
+    end
+    return denom
+end
+
+"""
     _intersectionareas(manifold, dst_tree, src_tree, op) -> SparseMatrixCSC
 
 Compute intersection areas, threaded when more than one thread is available

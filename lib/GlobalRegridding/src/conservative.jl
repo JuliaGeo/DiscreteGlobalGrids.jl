@@ -34,18 +34,7 @@ struct CellCapTree{S}
     children::Vector{CellCapTree{S}}
 end
 
-# Deterministic build counter: a test seam for tree-reuse assertions, not a statistic.
-const _CELLCAPTREE_BUILDS = Threads.Atomic{Int}(0)
-
-"""
-    cellcaptree_builds() -> Int
-
-Return the number of `CellCapTree` constructions in this session.
-"""
-cellcaptree_builds() = _CELLCAPTREE_BUILDS[]
-
 function CellCapTree(space::S, inds) where {S<:RegridSpace}
-    Threads.atomic_add!(_CELLCAPTREE_BUILDS, 1)
     ix = collect(Int, inds)
     caps = [_cellcap(space, i) for i in ix]
     return _cellcapnode(space, ix, caps, 1, length(ix))

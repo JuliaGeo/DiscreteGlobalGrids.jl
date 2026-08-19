@@ -18,6 +18,12 @@ methods, `Points` for point samples, or whatever `sampling` says.
 `DGGSpace` for its grid systems, and is the reference for what a space package
 has to provide.
 
+Regridding is threaded, and at high thread counts it wants `--gcthreads=8,1` as
+well: at `-t 64` the default GC thread count leaves the serial tail spinning at
+~300 % CPU, and pinning it cuts wall time a further ~7 %. The flag sets 8
+parallel mark threads and one concurrent sweep thread, in place of the default
+of one mark thread per worker thread.
+
 ## Extension surface
 
 A package that supplies its own space implements the `RegridSpace` interface —

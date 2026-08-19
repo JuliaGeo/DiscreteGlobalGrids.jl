@@ -271,6 +271,38 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test all(plain.denom .=== stored.denom)
     end
 
+    @testset "one tile's restricted tree, built once" begin
+        # A non-chunk range on a fallback space forces the CellCapTree path.
+        xd = DD.X(-168.75:22.5:168.75)
+        yd = DD.Y(-78.75:22.5:78.75)
+        src = RasterGrid(DD.DimArray(zeros(16, 8), (xd, yd));
+            chunks = ([1:8, 9:16], [1:4, 5:8]))
+        dst = ToyLonLatSpace(8, 4; chunks = (8, 2))
+        inds = 5:20
+        s1, s2 = cellindices(src, 1), cellindices(src, 4)
+
+        # One shared wrapper builds the destination tree once for both blocks.
+        tc = GR.TileCells(dst, inds)
+        b0 = GR.cellcaptree_builds()
+        sh1 = conservative_block(tc, inds, src, s1)
+        sh2 = conservative_block(tc, inds, src, s2)
+        @test GR.cellcaptree_builds() - b0 == 1
+
+        # Fresh wrappers rebuild per block: the uncached reference.
+        b1 = GR.cellcaptree_builds()
+        fr1 = conservative_block(GR.TileCells(dst, inds), inds, src, s1)
+        fr2 = conservative_block(GR.TileCells(dst, inds), inds, src, s2)
+        @test GR.cellcaptree_builds() - b1 == 2
+
+        # The memoized tree changes nothing, bit for bit.
+        for (a, b) in ((sh1, fr1), (sh2, fr2))
+            @test a.weights.colptr == b.weights.colptr
+            @test a.weights.rowval == b.weights.rowval
+            @test all(a.weights.nzval .=== b.weights.nzval)
+            @test all(a.denom .=== b.denom)
+        end
+    end
+
     @testset "disjoint chunks keep zero denominators" begin
         north = ToyLonLatSpace(2, 1; lat = (60.0, 90.0))
         south = ToyLonLatSpace(2, 1; lat = (-90.0, -60.0))

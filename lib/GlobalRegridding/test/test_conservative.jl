@@ -313,6 +313,30 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         end
     end
 
+    @testset "the area-only clip matches the default operator, bit for bit" begin
+        m = GOCore.Spherical(; radius = 1.0)
+        default = CR.task_local_operator(CR.DefaultIntersectionOperator(m))
+        streaming = CR.task_local_operator(GR.SphericalClipAreaOperator(m))
+        @test GR._intersectionoperator(m) isa GR.SphericalClipAreaOperator
+        @test GR._intersectionoperator(GOCore.Planar()) isa CR.DefaultIntersectionOperator
+
+        coarse = ToyLonLatSpace(4, 2)
+        fine = ToyLonLatSpace(8, 4)
+        dense = DensifiedCellSpace((10.0, 30.0), (20.0, 40.0), 5)
+        cells = vcat([getcell(coarse, i) for i in 1:8],
+            [getcell(fine, i) for i in 1:32], [getcell(dense, 1)])
+        # Overlapping, contained, identical, and disjoint pairs, one value each:
+        # every branch of the streaming kernel against the materializing one.
+        checked = 0
+        for a in cells, b in cells
+            va = default(a, b)
+            vb = streaming(a, b)
+            @test va === vb
+            checked += 1
+        end
+        @test checked == length(cells)^2
+    end
+
     @testset "disjoint chunks keep zero denominators" begin
         north = ToyLonLatSpace(2, 1; lat = (60.0, 90.0))
         south = ToyLonLatSpace(2, 1; lat = (-90.0, -60.0))

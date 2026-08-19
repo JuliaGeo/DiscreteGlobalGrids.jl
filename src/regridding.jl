@@ -3,8 +3,6 @@
 import GlobalRegridding as GR
 import DimensionalData as DD
 
-const _Cap = GO.UnitSpherical.SphericalCap{Float64}
-
 # Target cell count for automatic chunking. This affects memory use, not accuracy.
 const DEFAULT_CHUNK_CELLS = 4096
 
@@ -19,13 +17,13 @@ Chunks are non-empty ancestor subtrees at `chunklevel`. By default, the level
 is chosen to keep roughly `chunkcells` cells per chunk. Grids without sorted
 subtrees use one chunk. Construction computes only one covering cap per chunk.
 """
-struct DGGSpace{G<:AbstractGrid,ID} <: GR.RegridSpace
+struct DGGSpace{G<:AbstractGrid,ID,C} <: GR.RegridSpace
     grid::G
     chunklevel::Int              # `< 0` means the single-chunk fallback
     chunkids::Vector{ID}         # empty in the single-chunk fallback
     ranges::Vector{UnitRange{Int}}
     starts::Vector{Int}          # `first.(ranges)`, for locating a chunk by its cells
-    caps::Vector{_Cap}
+    caps::Vector{C}
 end
 
 function DGGSpace(grid::AbstractGrid; chunklevel::Union{Nothing,Integer}=nothing,
@@ -43,7 +41,7 @@ function DGGSpace(grid::AbstractGrid; chunklevel::Union{Nothing,Integer}=nothing
     windows = _chunkwindows(grid, sys, lvl, a)
     windows === nothing && return _wholechunk(grid)
     ids, ranges = windows
-    return DGGSpace{typeof(grid),eltype(ids)}(grid, a, ids, ranges,
+    return DGGSpace(grid, a, ids, ranges,
         [first(r) for r in ranges], [node_extent(sys, id) for id in ids])
 end
 
@@ -53,7 +51,7 @@ function _wholechunk(grid::AbstractGrid)
     sys = system(grid)
     ID = sys === nothing ? Any : cellindextype(sys)
     n = ncells(grid)
-    return DGGSpace{typeof(grid),ID}(grid, -1, ID[], [1:n], [1],
+    return DGGSpace(grid, -1, ID[], [1:n], [1],
         [Fallbacks.full_sphere_cap()])
 end
 
@@ -180,9 +178,9 @@ end
 A one-node spatial tree whose leaves are chunk numbers. Each stored ancestor
 extent covers all cells in its chunk.
 """
-struct DGGChunkTree{S<:DGGSpace}
+struct DGGChunkTree{S<:DGGSpace,E}
     space::S
-    extent::_Cap
+    extent::E
 end
 
 DGGChunkTree(space::DGGSpace) = DGGChunkTree(space,

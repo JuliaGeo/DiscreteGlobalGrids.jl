@@ -8,16 +8,16 @@ once per build. The dual-tree search otherwise re-derives each leaf's cap — an
 inverse projection over its boundary — once per opposing leaf, and then a
 second time in `child_indices_extents` for the same visit.
 """
-struct CapCachedTree{C<:HierarchicalGridCursor}
+struct CapCachedTree{C<:HierarchicalGridCursor,E}
     node::C
-    caps::Vector{_Cap}
+    caps::Vector{E}
 end
 
 Base.show(io::IO, t::CapCachedTree) =
     print(io, "CapCachedTree(", t.node, ", ", length(t.caps), " caps)")
 
 STI.isspatialtree(::Type{<:CapCachedTree}) = true
-STI.node_extent_is_expensive(::Type{CapCachedTree{C}}) where {C} =
+STI.node_extent_is_expensive(::Type{<:CapCachedTree{C}}) where {C} =
     STI.node_extent_is_expensive(C)
 STI.isleaf(t::CapCachedTree) = STI.isleaf(t.node)
 STI.nchild(t::CapCachedTree) = STI.nchild(t.node)
@@ -35,12 +35,12 @@ function STI.node_extent(t::CapCachedTree)
     return STI.node_extent(c)
 end
 
-function STI.child_indices_extents(t::CapCachedTree)
+function STI.child_indices_extents(t::CapCachedTree{<:Any,E}) where {E}
     c = t.node
     STI.isleaf(c) ||
         throw(ArgumentError("child_indices_extents is only valid for leaf nodes"))
     count = Engine._stored_count(c)
-    entries = Vector{Tuple{Int,_Cap}}(undef, count)
+    entries = Vector{Tuple{Int,E}}(undef, count)
     for k in 1:count
         index = Engine._stored_index(c, k)
         entries[k] = (index, @inbounds t.caps[index])
@@ -72,7 +72,8 @@ _decodedgrid(grid::AbstractGrid) = grid
 # One tight cap per cell, in parallel at top level ("outer parallelism wins").
 function _leafcaps(grid::AbstractGrid)
     n = ncells(grid)
-    caps = Vector{_Cap}(undef, n)
+    n == 0 && return [_cellcap(grid, i) for i in 1:n]
+    caps = Vector{typeof(_cellcap(grid, 1))}(undef, n)
     nt = GR._innerthreaded() isa GOCore.True ?
         min(Threads.nthreads(), max(1, n >> 14)) : 1
     if nt > 1
@@ -89,9 +90,11 @@ function _leafcaps(grid::AbstractGrid)
     return caps
 end
 
-function _fillcaps!(caps::Vector{_Cap}, grid::AbstractGrid, lo::Int, hi::Int)
+_cellcap(grid::AbstractGrid, i::Int) = Fallbacks.cell_cap(grid, cellindex(grid, i))
+
+function _fillcaps!(caps::Vector, grid::AbstractGrid, lo::Int, hi::Int)
     for i in lo:hi
-        @inbounds caps[i] = Fallbacks.cell_cap(grid, cellindex(grid, i))
+        @inbounds caps[i] = _cellcap(grid, i)
     end
     return nothing
 end

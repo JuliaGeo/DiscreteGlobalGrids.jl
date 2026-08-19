@@ -3,7 +3,7 @@
 #
 # The suite compares halo iterators with an ascending full-grid scan and a
 # forced-geometry oracle. It also checks ordering, uniqueness, adjacency,
-# container delegation, iterator protocol, and allocation behavior. Generic
+# container delegation, iterator protocol, and counted query behavior. Generic
 # laws sweep `systems()`; specialization-specific laws use explicit system sets.
 
 module SubtreeHaloTests
@@ -102,6 +102,11 @@ CountingGrid(g) = CountingGrid{typeof(g)}(g, 0)
 DGG.neighbors(cg::CountingGrid, x, k::Int; kwargs...) =
     (cg.calls += 1; DGG.neighbors(cg.inner, x, k; kwargs...))
 
+# Uncounted forwards: the scan engine walks positions off the grid itself.
+DGG.ncells(cg::CountingGrid) = DGG.ncells(cg.inner)
+DGG.cellindex(cg::CountingGrid, i) = DGG.cellindex(cg.inner, i)
+DGG.level(cg::CountingGrid) = DGG.level(cg.inner)
+
 # The same engine, field for field, reading a counting grid.
 on_counting_grid(e::DGG.Engine.OutsideWalkEngine, cg) =
     DGG.Engine.OutsideWalkEngine(e.system, cg, e.root, e.rootlevel, e.target,
@@ -111,6 +116,23 @@ on_counting_grid(e::DGG.Engine.HexArcHaloEngine, cg) =
     DGG.Engine.HexArcHaloEngine(e.system, cg, e.root, e.rootlevel, e.target,
         e.connectivity, e.ring)
 
+on_counting_grid(e::DGG.Engine.ScanHaloEngine, cg) =
+    DGG.Engine.ScanHaloEngine(e.system, cg, e.root, e.rootlevel, e.target,
+        e.provider, e.connectivity)
+
+# The band walk asks the grid only through its `NativeCheck`; `NoCheck` never asks.
+on_counting_check(chk::DGG.Engine.NativeCheck, cg) =
+    DGG.Engine.NativeCheck(chk.system, cg, chk.root, chk.rootlevel, chk.connectivity)
+on_counting_check(chk::DGG.Engine.NoCheck, cg) = chk
+
+on_counting_grid(e::DGG.Engine.SquareBandEngine, cg) =
+    DGG.Engine.SquareBandEngine(e.curve, on_counting_check(e.check, cg), e.level,
+        e.faceside, e.homeface, e.x0, e.y0, e.side, e.corners, e.rects)
+
+# The fixture's inner walk is where its queries happen.
+on_counting_grid(e::EagerHaloEngine, cg) =
+    EagerHaloEngine(on_counting_grid(e.inner, cg), e.cells)
+
 # One-ring queries the engine makes to yield an `n`-cell prefix.
 function counted_prefix(e, grid, n::Int)
     cg = CountingGrid(grid)
@@ -118,53 +140,41 @@ function counted_prefix(e, grid, n::Int)
     return cg.calls
 end
 
+# One-ring queries a fresh full walk of the engine makes.
+function counted_collect(e, grid)
+    cg = CountingGrid(grid)
+    DGG.collect_subtree(on_counting_grid(e, cg))
+    return cg.calls
+end
 
 take_n(it, n::Int) = (seen = 0; for _ in it
     seen += 1
     seen >= n && break
 end; seen)
 
-build_and_take(sys, c, l, n::Int) = take_n(SubtreeHaloIterator(sys, c, l), n)
-
-lazy_bytes(sys, c, l, n::Int) =
-    (build_and_take(sys, c, l, n); @allocated build_and_take(sys, c, l, n))
-eager_collect(sys, c, l) = collect(SubtreeHaloIterator(sys, c, l))
-eager_bytes(sys, c, l) =
-    (eager_collect(sys, c, l); @allocated eager_collect(sys, c, l))
-
-const SINK = Ref{Any}(nothing)
-
-construct!(sys, c, l) = (SINK[] = SubtreeHaloIterator(sys, c, l); nothing)
-construct_bytes(sys, c, l) = (construct!(sys, c, l); @allocated construct!(sys, c, l))
-
-subset_construct!(sub) = (SINK[] = hcells(sub); nothing)
-subset_construct_bytes(sub) =
-    (subset_construct!(sub); @allocated subset_construct!(sub))
-
 # Build the generic outside-first walk explicitly; specialized constructors do
 # not select it.
 generic_iterator(sys, c, l) = SubtreeHaloIterator(sys, c, Int(l), Vertex(),
     DGG.Engine.generic_halo_engine(sys, c, Int(l), Vertex()))
 
-generic_take(sys, c, l, n::Int) = take_n(generic_iterator(sys, c, l), n)
 generic_collect(sys, c, l) = DGG.collect_subtree(generic_iterator(sys, c, l))
-generic_construct!(sys, c, l) = (SINK[] = generic_iterator(sys, c, l); nothing)
-generic_construct_bytes(sys, c, l) =
-    (generic_construct!(sys, c, l); @allocated generic_construct!(sys, c, l))
 
-# Apply the same measurements to the eager fixture.
+# The eager fixture with the same surface as the shipped walks.
 fixture_iterator(sys, c, l) = SubtreeHaloIterator(sys, c, Int(l), Vertex(),
     EagerHaloEngine(DGG.Engine.halo_engine(sys, c, Int(l), Vertex())))
 
-fixture_collect(sys, c, l) = DGG.collect_subtree(fixture_iterator(sys, c, l))
-fixture_construct!(sys, c, l) = (SINK[] = fixture_iterator(sys, c, l); nothing)
-fixture_take(sys, c, l, n::Int) = take_n(fixture_iterator(sys, c, l), n)
-fixture_construct_bytes(sys, c, l) =
-    (fixture_construct!(sys, c, l); @allocated fixture_construct!(sys, c, l))
-fixture_prefix_bytes(sys, c, l, n::Int) =
-    (fixture_take(sys, c, l, n); @allocated fixture_take(sys, c, l, n))
-fixture_collect_bytes(sys, c, l) =
-    (fixture_collect(sys, c, l); @allocated fixture_collect(sys, c, l))
+# Queries fixture construction itself makes, exposed by building the eager
+# engine on a counting grid.
+function fixture_ctor_queries(sys, c, l)
+    cg = CountingGrid(levelgrid(sys, l))
+    EagerHaloEngine(on_counting_grid(
+        DGG.Engine.halo_engine(sys, c, Int(l), Vertex()), cg))
+    return cg.calls
+end
+
+# Structural size of a walk, the deterministic stand-in for the retired
+# construction-allocation laws: state that grew with the halo would show here.
+state_size(it) = Base.summarysize(it)
 
 # One outer testset records failures while allowing later nested testsets to run.
 @testset "subtree halos" begin
@@ -873,12 +883,14 @@ fixture_collect_bytes(sys, c, l) =
             grid = levelgrid(sys, base)
             root = cellindex(grid, ncells(grid) ÷ 2 + 1)
             depths = filter(d -> base + d <= maxlevel(sys), [3, 5, 7])
-            allocs = map(depths) do d
-                prefix10(SubtreeHaloIterator(sys, root, base + d))     # compile
-                @allocated prefix10(SubtreeHaloIterator(sys, root, base + d))
+            # The arc walk native-checks one candidate per emitted cell at
+            # every depth, so a ten-cell prefix asks ten one-ring questions
+            # however large the halo underneath is.
+            counts = map(depths) do d
+                counted_prefix(SubtreeHaloIterator(sys, root, base + d).engine,
+                    levelgrid(sys, base + d), 10)
             end
-            @test all(a -> a <= 4096, allocs)
-            @test length(unique(allocs)) == 1
+            @test all(==(10), counts)
             @test all(d -> prefix10(SubtreeHaloIterator(sys, root, base + d)) == 10,
                 depths)
         end
@@ -1474,7 +1486,7 @@ fixture_collect_bytes(sys, c, l) =
 
     DEPTH_FLAT_SYSTEMS = forsystems(sortedsubtrees = true)
 
-    @testset "construction does not allocate in proportion to the halo" begin
+    @testset "construction state does not grow with the halo" begin
         for sys in systems()
             c = cellindex(levelgrid(sys, 0), 1)
             # A5's targets stop at 3: its halo at level 4 is a
@@ -1482,8 +1494,8 @@ fixture_collect_bytes(sys, c, l) =
             # `neighbors`, and the law here needs only two comparable points.
             depths = filter(l -> l <= maxlevel(sys),
                 hassortedsubtrees(sys) ? (3, 5, 7) : (1, 2, 3))
-            ship = [construct_bytes(sys, c, l) for l in depths]
-            gen = [generic_construct_bytes(sys, c, l) for l in depths]
+            ship = [state_size(SubtreeHaloIterator(sys, c, l)) for l in depths]
+            gen = [state_size(generic_iterator(sys, c, l)) for l in depths]
             sizes = [length(eager_halo(sys, c, l)) for l in depths]
             @test last(sizes) >= 2 * first(sizes)
             @test maximum(ship) - minimum(ship) <= 64
@@ -1495,21 +1507,31 @@ fixture_collect_bytes(sys, c, l) =
         for sys in DEPTH_FLAT_SYSTEMS
             c = cellindex(levelgrid(sys, 0), 1)
             depths = filter(l -> l <= maxlevel(sys), (3, 5, 7))
-            allocs = [lazy_bytes(sys, c, l, 4) for l in depths]
+            # One native check per emitted cell, at every depth: a four-cell
+            # prefix asks four one-ring questions however deep the target is,
+            # and asking at all means the walk is not precomputed.
+            counts = map(depths) do l
+                counted_prefix(SubtreeHaloIterator(sys, c, l).engine,
+                    levelgrid(sys, l), 4)
+            end
             sizes = [length(eager_halo(sys, c, l)) for l in depths]
             # Halo cardinality increases substantially across these levels.
             @test last(sizes) >= 8 * first(sizes)
-            # Four-cell prefix allocation remains level-independent.
-            @test maximum(allocs) - minimum(allocs) <= 64
-            @test all(>(0), allocs)
+            @test all(==(4), counts)
         end
         for sys in SQUARE_SYSTEMS
             c = inface_root(sys, 3, 4)
             depths = filter(l -> l <= maxlevel(sys), (4, 6, 9))
-            allocs = [lazy_bytes(sys, c, l, 4) for l in depths]
+            # An in-face block keeps the closed-form band at every depth,
+            # which never asks the grid a one-ring question at all.
+            engines = [SubtreeHaloIterator(sys, c, l).engine for l in depths]
+            counts = [counted_prefix(e, levelgrid(sys, l), 4)
+                      for (e, l) in zip(engines, depths)]
             sizes = [length(eager_halo(sys, c, l)) for l in depths]
             @test last(sizes) >= 8 * first(sizes)
-            @test maximum(allocs) - minimum(allocs) <= 64
+            @test all(e -> e isa DGG.Engine.SquareBandEngine &&
+                               e.check isa DGG.Engine.NoCheck, engines)
+            @test all(==(0), counts)
         end
     end
 
@@ -1518,12 +1540,15 @@ fixture_collect_bytes(sys, c, l) =
             c = cellindex(levelgrid(sys, 0), 1)
             depths = hassortedsubtrees(sys) ? (3, 7) : (1, 4)
             all(l -> l <= maxlevel(sys), depths) || continue
-            fracs = [lazy_bytes(sys, c, l, 4) / eager_bytes(sys, c, l)
-                     for l in depths]
+            fracs = map(depths) do l
+                e = SubtreeHaloIterator(sys, c, l).engine
+                g = levelgrid(sys, l)
+                counted_prefix(e, g, 4) / counted_collect(e, g)
+            end
             sizes = [length(eager_halo(sys, c, l)) for l in depths]
             # The complete halo grows across these target levels.
             @test last(sizes) >= 5 * first(sizes)
-            # Prefix allocation remains bounded.
+            # Prefix querying remains a bounded sliver of the full walk.
             @test last(fracs) <= first(fracs)
             @test last(fracs) < 0.15
         end
@@ -1538,12 +1563,10 @@ fixture_collect_bytes(sys, c, l) =
             fracs = Float64[]
             sizes = Int[]
             for l in depths
-                h = generic_collect(sys, c, l)             # warm up, and count
-                eb = @allocated generic_collect(sys, c, l)
-                generic_take(sys, c, l, 4)                 # warm up
-                lb = @allocated generic_take(sys, c, l, 4)
-                push!(fracs, lb / eb)
-                push!(sizes, length(h))
+                e = DGG.Engine.generic_halo_engine(sys, c, Int(l), Vertex())
+                g = levelgrid(sys, l)
+                push!(fracs, counted_prefix(e, g, 4) / counted_collect(e, g))
+                push!(sizes, length(generic_collect(sys, c, l)))
             end
             # Collection size grows substantially between target levels.
             @test last(sizes) >= 5 * first(sizes)
@@ -1552,19 +1575,24 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
-    @testset "an eager engine with the same surface fails every allocation law" begin
+    @testset "an eager engine with the same surface fails every laziness law" begin
         for sys in systems()
             c = cellindex(levelgrid(sys, 0), 1)
             depths = filter(l -> l <= maxlevel(sys),
                 hassortedsubtrees(sys) ? (3, 5, 7) : (1, 2, 3))
             @test collect(fixture_iterator(sys, c, last(depths))) ==
                   eager_halo(sys, c, last(depths))
-            ctor = [fixture_construct_bytes(sys, c, l) for l in depths]
-            pref = [fixture_prefix_bytes(sys, c, l, 4) for l in depths]
-            @test maximum(ctor) - minimum(ctor) > 64      # arm 1 refuses it
-            @test maximum(pref) - minimum(pref) > 64      # arm 2 refuses it
-            @test fixture_prefix_bytes(sys, c, last(depths), 4) >=
-                  0.15 * fixture_collect_bytes(sys, c, last(depths))   # arm 3
+            ctor = [fixture_ctor_queries(sys, c, l) for l in depths]
+            state = [state_size(fixture_iterator(sys, c, l)) for l in depths]
+            pref = [counted_prefix(fixture_iterator(sys, c, l).engine,
+                levelgrid(sys, l), 4) for l in depths]
+            coll = counted_collect(fixture_iterator(sys, c, last(depths)).engine,
+                levelgrid(sys, last(depths)))
+            @test last(ctor) > 2 * first(ctor)            # arm 1 refuses it
+            @test maximum(state) - minimum(state) > 64    # and its state grows
+            @test last(pref) > 2 * first(pref)            # arm 2 refuses it
+            @test last(pref) >= coll                      # arm 3: the prefix
+            # pays the whole walk, nothing like a bounded sliver of it.
         end
     end
 
@@ -1583,12 +1611,13 @@ fixture_collect_bytes(sys, c, l) =
                 push!(sizes, ncells(loose))
                 for (built, sub) in ((ctor.grid, loose),
                         (ctor.vector, CellVector(loose)))
-                    push!(built, subset_construct_bytes(sub))
+                    # The walk's own state, netting out the subset it reads.
+                    push!(built, state_size(hcells(sub)) - Base.summarysize(sub))
                 end
             end
             # The larger subset has over ten times as many members.
             @test last(sizes) >= 10 * first(sizes)
-            # Construction allocation remains independent of member count.
+            # The walk's own state remains independent of member count.
             @test maximum(ctor.grid) - minimum(ctor.grid) <= 64
             @test maximum(ctor.vector) - minimum(ctor.vector) <= 64
             # Check traversal work on the larger subset.
@@ -1612,35 +1641,26 @@ fixture_collect_bytes(sys, c, l) =
         end
     end
 
-    @testset "the size hint is what preallocates the collect" begin
-        function hint_bytes(sys, c, l)
+    @testset "the size hint covers the collect, tightly" begin
+        # A hint below the answer would leave the hinted collect regrowing,
+        # and a slack one would overpay: it must bracket the count it is
+        # hinting at, and honoring it must not change the answer.
+        function check_hint(sys, c, l)
             it = SubtreeHaloIterator(sys, c, l)
             h = sizehint(it)
             @test h !== nothing
-            DGG.collect_subtree(it, nothing)
-            DGG.collect_subtree(it, h)
-            grown = @allocated DGG.collect_subtree(it, nothing)
-            hinted = @allocated DGG.collect_subtree(it, h)
             out = DGG.collect_subtree(it, h)
-            return (grown, hinted, length(out) * sizeof(eltype(it)))
+            @test out == DGG.collect_subtree(it, nothing)
+            @test length(out) <= h <= 1.4 * length(out)
         end
-        # A seam block on two of the three aperture-4 systems, and a depth-8
-        # halo on both aperture-7 ones: 16387, 16389, 19686 and 16405 cells,
-        # which is large enough that the growth doubling has happened many
-        # times over.
+        # A seam block on three of the aperture-4 systems, and a depth-8 halo
+        # on both aperture-7 ones: 16387, 16389, 16387, 19686 and 16405 cells.
         for (sys, base, i, l) in ((HEALPixSystem(), 2, 6, 14),
                                   (ISEA4RSystem(), 2, 11, 14),
+                                  (S2System(), 2, 6, 14),
                                   (H3System(), 0, 1, 8),
                                   (IGeo7System(), 0, 1, 8))
-            c = cellindex(levelgrid(sys, base), i)
-            grown, hinted, answer = hint_bytes(sys, c, l)
-            @test 2 * hinted < grown
-            @test hinted < 1.4 * answer
-            @test grown > 2 * answer
-        end
-        let sys = S2System()
-            grown, hinted, _ = hint_bytes(sys, cellindex(levelgrid(sys, 2), 6), 14)
-            @test hinted < grown
+            check_hint(sys, cellindex(levelgrid(sys, base), i), l)
         end
     end
 

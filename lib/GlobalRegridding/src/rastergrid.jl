@@ -844,6 +844,9 @@ STI.child_indices_extents(t::RasterCellTree) =
 # bindings during `intersection_areas`.
 GOCore.best_manifold(t::RasterCellTree) = manifold(t.space)
 Trees.ncells(t::RasterCellTree) = ncells(t.space)
+# `Trees.ncells` answers for the whole space, so the frontier's default estimate
+# would be wrong here; the node's index rectangle is exact.
+Trees.split_weight(t::RasterCellTree) = _treecells(t)
 Trees.getcell(t::RasterCellTree, i::Int) = getcell(t.space, i)
 Trees.getcell(t::RasterCellTree) =
     (getcell(t.space, cellposition(t.space, ix, iy))
@@ -882,6 +885,8 @@ STI.child_indices_extents(t::RasterFlatTree) = zip(t.indices, t.caps)
 
 GOCore.best_manifold(t::RasterFlatTree) = manifold(t.space)
 Trees.ncells(t::RasterFlatTree) = ncells(t.space)
+# Same whole-space `Trees.ncells` caveat; the stored entries are the node.
+Trees.split_weight(t::RasterFlatTree) = length(t.indices)
 Trees.getcell(t::RasterFlatTree, i::Int) = getcell(t.space, i)
 Trees.getcell(t::RasterFlatTree) = (getcell(t.space, i) for i in t.indices)
 

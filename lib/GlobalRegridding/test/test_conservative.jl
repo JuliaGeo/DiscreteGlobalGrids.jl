@@ -271,6 +271,16 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test all(plain.denom .=== stored.denom)
     end
 
+    @testset "cap tree split weights are the node windows" begin
+        space = ToyLonLatSpace(8, 4)
+        tree = GR.CellCapTree(space, 1:ncells(space))
+
+        # Split weights are the node's own window: children partition the parent.
+        @test CR.Trees.split_weight(tree) == ncells(space)
+        @test sum(CR.Trees.split_weight, STI.getchild(tree)) == CR.Trees.split_weight(tree)
+        @test all(c -> CR.Trees.split_weight(c) < CR.Trees.split_weight(tree), STI.getchild(tree))
+    end
+
     @testset "one tile's restricted tree, built once" begin
         # A non-chunk range on a fallback space forces the CellCapTree path.
         xd = DD.X(-168.75:22.5:168.75)

@@ -292,6 +292,12 @@ end
         @test Trees.getcell(tree, 3) == getcell(space, 3)
         @test GOCore.best_manifold(tree) == manifold(space)
 
+        # Split weights are the node's own window: children partition the parent.
+        @test Trees.split_weight(tree) == ncells(space)
+        @test sum(Trees.split_weight, STI.getchild(tree)) == Trees.split_weight(tree)
+        @test all(c -> Trees.split_weight(c) < Trees.split_weight(tree), STI.getchild(tree))
+        @test Trees.split_weight(celltree(space, [1, 9, 17, 25])) == 4
+
         # Tree intersections account for every fine cell exactly once.
         coarse = RasterGrid(DD.DimArray(zeros(4, 2), (DD.X(-135.0:90.0:135.0), DD.Y(-45.0:90.0:45.0))))
         areas = CR.intersection_areas(manifold(space), GOCore.False(),

@@ -97,6 +97,9 @@ STI.child_indices_extents(tree::CellCapTree) =
 # ConservativeRegridding fetches matrix sizes and polygons through these
 # bindings during `intersection_areas`.
 ncells(tree::CellCapTree) = ncells(tree.space)
+# `ncells` answers for the whole space, so the frontier's default estimate
+# would be wrong here; the node's cap window is exact.
+Trees.split_weight(tree::CellCapTree) = tree.hi - tree.lo + 1
 getcell(tree::CellCapTree, i::Int) = getcell(tree.space, i)
 getcell(tree::CellCapTree) =
     (getcell(tree.space, i) for i in view(tree.inds, tree.lo:tree.hi))

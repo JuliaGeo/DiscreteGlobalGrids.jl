@@ -103,12 +103,12 @@ DGG.neighbors(cg::CountingGrid, x, k::Int; kwargs...) =
     (cg.calls += 1; DGG.neighbors(cg.inner, x, k; kwargs...))
 
 # The same engine, field for field, reading a counting grid.
-on_counting_grid(e::DGG.Fallbacks.OutsideWalkEngine, cg) =
-    DGG.Fallbacks.OutsideWalkEngine(e.system, cg, e.root, e.rootlevel, e.target,
+on_counting_grid(e::DGG.Engine.OutsideWalkEngine, cg) =
+    DGG.Engine.OutsideWalkEngine(e.system, cg, e.root, e.rootlevel, e.target,
         e.lo, e.hi, e.rootcap, e.roots, e.provider, e.connectivity)
 
-on_counting_grid(e::DGG.Fallbacks.HexArcHaloEngine, cg) =
-    DGG.Fallbacks.HexArcHaloEngine(e.system, cg, e.root, e.rootlevel, e.target,
+on_counting_grid(e::DGG.Engine.HexArcHaloEngine, cg) =
+    DGG.Engine.HexArcHaloEngine(e.system, cg, e.root, e.rootlevel, e.target,
         e.connectivity, e.ring)
 
 # One-ring queries the engine makes to yield an `n`-cell prefix.
@@ -886,7 +886,7 @@ fixture_collect_bytes(sys, c, l) =
         grid = levelgrid(sys, 5)
         root = cellindex(grid, ncells(grid) ÷ 2 + 1)
         target = levelgrid(sys, 12)
-        gen = DGG.Fallbacks.generic_halo_engine(sys, root, 12, Vertex())
+        gen = DGG.Engine.generic_halo_engine(sys, root, 12, Vertex())
         dir = SubtreeHaloIterator(sys, root, 12).engine
         @test collect(Iterators.take(gen, 10)) == collect(Iterators.take(dir, 10))
         # The arc walk native-checks one candidate per emitted cell; the generic

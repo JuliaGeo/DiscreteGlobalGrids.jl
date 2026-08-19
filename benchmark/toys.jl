@@ -34,8 +34,8 @@ end
 
 function DGG.children(sys::AnyOctant, c::DGG.LevelIndex)
     l = DGG.level(c)
-    l == DGG.max_level(sys) &&
-        throw(ArgumentError("cells at max_level have no children"))
+    l == DGG.maxlevel(sys) &&
+        throw(ArgumentError("cells at maxlevel have no children"))
     i4 = DGG.rawid(c) << 2
     [DGG.LevelIndex(l + 1, i4 + d) for d in 0:3]
 end

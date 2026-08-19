@@ -47,3 +47,13 @@ const _WHOLE_SPHERE = SphericalCap(USPoint(0.0, 0.0, 1.0), nextfloat(Float64(pi)
 
 # Maximum cells per tree leaf.
 const _CELL_TREE_LEAF = 16
+
+# Threading policy
+
+# True while an outer loop already runs one task per block, so nested weight
+# builds must not spawn their own.
+const OUTER_PARALLEL = ScopedValue(false)
+
+# Outer parallelism wins: thread inner weight builds only at top level.
+_innerthreaded() =
+    Threads.nthreads() > 1 && !OUTER_PARALLEL[] ? GOCore.True() : GOCore.False()

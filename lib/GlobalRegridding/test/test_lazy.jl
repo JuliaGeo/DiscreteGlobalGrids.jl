@@ -598,6 +598,19 @@ end
             t7_plan(ToyDiagonalMethod(), whole, srcspace; chunks = (8, 2)))
     end
 
+    @testset "outer parallelism wins" begin
+        # Top level threads exactly when the session has threads.
+        top = Threads.nthreads() > 1 ? GOCore.True() : GOCore.False()
+        @test GR._innerthreaded() === top
+        # Inside a declared outer wave the inner build stays serial, spawned
+        # tasks included, because they inherit the scope.
+        Base.ScopedValues.@with GR.OUTER_PARALLEL => true begin
+            @test GR._innerthreaded() === GOCore.False()
+            @test fetch(Threads.@spawn GR._innerthreaded()) === GOCore.False()
+        end
+        @test GR._innerthreaded() === top
+    end
+
     @testset "L5 — chunking invariance" begin
         # Conservative results are invariant to incompatible source chunkings.
         xd = DD.X(-168.75:22.5:168.75)

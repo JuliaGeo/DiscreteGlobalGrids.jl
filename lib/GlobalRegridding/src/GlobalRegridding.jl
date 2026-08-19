@@ -31,6 +31,7 @@ import GeometryOpsCore: manifold
 
 import DimensionalData as DD
 import DiskArrays
+using Base.ScopedValues: ScopedValue, @with
 import SparseArrays
 using SparseArrays: SparseMatrixCSC, sparse
 

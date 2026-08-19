@@ -284,11 +284,8 @@ DGG.levels(::IdentifiedSystem) = 0:2
     @test_throws Exception cell_boundary(s, c)
     @test_throws Exception cell_centroid(s, c)
 
-    # Required, deliberately without a default, and filed apart from the traits
-    # for that reason.
-    @test_throws Exception max_neighbors(s, Vertex())
-
     # Defaulted, and answering for a system that declared none of them.
+    @test max_neighbors(s, Vertex()) === nothing
     @test levelgrid(s, 1) === HierarchicalLevelGrid(s, 1)
     @test cap_inflation(s) === 1.2
     @test max_level(s) == 2
@@ -319,8 +316,13 @@ end
     # The derived trait defaults are total only once their primitive is wired.
     @test_throws MethodError max_level(s)          # -> levels(s)
     @test_throws MethodError cellindextypes(s)     # -> cellindextype(s)
-    @test_throws MethodError max_neighbors(s)      # -> max_neighbors(s, Vertex())
-    @test_throws MethodError max_neighbors(s, Vertex())
+
+    # `max_neighbors` is total: a system that declares no static degree bound
+    # answers `nothing`, and the subset neighbour machinery buffers its
+    # one-rings in a `Vector` instead of a `SmallVector`.
+    @test max_neighbors(s) === nothing             # -> max_neighbors(s, Vertex())
+    @test max_neighbors(s, Vertex()) === nothing
+    @test max_neighbors(s, Edge()) === nothing
 end
 
 end # module InterfaceTests

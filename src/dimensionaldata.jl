@@ -35,7 +35,7 @@ import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
 import ..DiscreteGlobalGrids.Fallbacks: CellVector, cellset, covering,
     covering_positions, windows, nwindows, RangeWindows, CellWindows, _derive,
     _windows, SubsetPositionedCell, mapneighbors, foreachneighbors, HaloTable,
-    StorageOrder
+    StorageOrder, _capacity, _ringtype
 
 import SmallCollections
 import DimensionalData as DD
@@ -544,10 +544,9 @@ function _map_slices(f::F, A, dnum::Int, cv::CellVector, order, threaded,
     data = parent(A)
     pre = CartesianIndices(axes(data)[1:(dnum-1)])
     post = CartesianIndices(axes(data)[(dnum+1):end])
-    M = max_neighbors(system(cv), connectivity)
+    cap = _capacity(system(cv), connectivity)
     H = SubsetPositionedCell{eltype(cv)}
-    T = Base.promote_op(f, H, eltype(A),
-        SmallCollections.SmallVector{M,eltype(A)})
+    T = Base.promote_op(f, H, eltype(A), _ringtype(cap, eltype(A)))
     outs = T <: Tuple && isconcretetype(T) ?
            ntuple(j -> similar(data, fieldtype(T, j)), fieldcount(T)) :
            similar(data, T)

@@ -12,6 +12,11 @@ import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
 import DimensionalData as DD
 import Extents
+import GeometryOps as GO
+using GeometryOps: SpatialTreeInterface as STI
+import ConservativeRegridding as CR
+import ConservativeRegridding: Trees
+import GeometryOpsCore as GOCore
 
 const SYS = DGG.S2System()
 const LEVEL = 3
@@ -167,6 +172,46 @@ end
         parent(DGG.regrid(DD.DimArray(nanned, ds); to = GRID)))
     # And the caller still overrides what the source says.
     @test DGG.plan_regrid(declared; to = GRID, missingval = nothing).missingval === nothing
+end
+
+@testset "the whole-space tree caches caps without changing them" begin
+    samecap(a, b) = a.point == b.point && a.radius == b.radius
+
+    # Extents, leaf entries and polygons must be the raw cursor's, bit for bit.
+    function checktree(a, b)
+        samecap(STI.node_extent(a), STI.node_extent(b)) || return false
+        STI.isleaf(a) == STI.isleaf(b) || return false
+        if STI.isleaf(a)
+            va, vb = STI.child_indices_extents(a), collect(STI.child_indices_extents(b))
+            length(va) == length(vb) || return false
+            all(x[1] == y[1] && samecap(x[2], y[2]) for (x, y) in zip(va, vb)) || return false
+            return all(Trees.getcell(a, i) == Trees.getcell(b, i) for (i, _) in va)
+        end
+        return all(checktree(x, y) for (x, y) in zip(STI.getchild(a), STI.getchild(b)))
+    end
+
+    for space in (DGG.DGGSpace(DGG.PartialGrid(REGION)), DGG.DGGSpace(GRID))
+        n = DGG.ncells(space.grid)
+        cached = GR.subtree(space, 1:n)
+        @test cached isa DGG.CapCachedTree
+        cursor = GR.celltree(space)
+        @test Trees.ncells(cached) == Trees.ncells(cursor) == n
+        @test checktree(cached, cursor)
+        # The weight matrix the two trees build is identical, entry for entry.
+        m = GR.manifold(space)
+        op = CR.DefaultIntersectionOperator(m)
+        src = GR.subtree(SRC, 1:GR.ncells(SRC))
+        wa = CR.intersection_areas(m, GOCore.False(), cached, src; intersection_operator = op)
+        wb = CR.intersection_areas(m, GOCore.False(), cursor, src; intersection_operator = op)
+        @test wa == wb
+    end
+
+    # A partial grid's ids are decoded once: the tree's grid stores a plain
+    # vector with the same cells.
+    space = DGG.DGGSpace(DGG.PartialGrid(REGION))
+    cached = GR.subtree(space, 1:DGG.ncells(space.grid))
+    @test cached.node.grid.ids isa Vector
+    @test cached.node.grid.ids == collect(space.grid.ids)
 end
 
 @testset "a plan, and the lazy array, give the bare answer" begin

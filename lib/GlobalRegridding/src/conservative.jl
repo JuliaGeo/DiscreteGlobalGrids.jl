@@ -288,10 +288,11 @@ end
 """
     _intersectionareas(manifold, dst_tree, src_tree, op) -> SparseMatrixCSC
 
-Compute intersection areas, threaded when more than one thread is available.
+Compute intersection areas, threaded when more than one thread is available
+and no outer loop is already parallel ([`OUTER_PARALLEL`](@ref)).
 """
 function _intersectionareas(m::GOCore.Manifold, dst_tree, src_tree, op)
-    threaded = Threads.nthreads() > 1 ? GOCore.True() : GOCore.False()
+    threaded = _innerthreaded()
     return ConservativeRegridding.intersection_areas(
         m, threaded, dst_tree, src_tree; intersection_operator = op)
 end

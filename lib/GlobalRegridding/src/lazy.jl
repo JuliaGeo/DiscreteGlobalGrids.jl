@@ -473,7 +473,8 @@ function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
     end
     tasks = map(i:j) do k
         s = srcchunks[k]
-        Threads.@spawn blockfor(plan, (t, s), dinds, dstcells)
+        # Tasks inherit the scope, so nested builds see the wave and stay serial.
+        @with OUTER_PARALLEL => true Threads.@spawn blockfor(plan, (t, s), dinds, dstcells)
     end
     for task in tasks
         push!(wave, fetch(task)::CachedBlock)

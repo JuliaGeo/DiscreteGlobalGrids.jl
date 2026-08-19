@@ -8,7 +8,7 @@ using Test
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: systems, levels, levelgrid, ncells, cellindex,
     cell_boundary, cell_centroid, cellat, neighbors, ring, level, children,
-    descendants, subtree_border, subtree_interior, Vertex, Edge, PartialGrid
+    descendants, subtree, border, interior, Vertex, Edge, PartialGrid
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel
@@ -75,6 +75,12 @@ function brute_force_border(sys, c, l; connectivity = Vertex())
             if any(nb -> !(nb in inside), neighbors(grid, d, 1; connectivity))]
 end
 
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(border(subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(interior(subtree(sys, c, l); cells = true, kw...))
+
 # ---------------------------------------------------------------------------
 
 @testset "cross-system" begin
@@ -93,14 +99,14 @@ end
         end
     end
 
-    @testset "who ships a subtree-rim automaton" begin
+    @testset "who ships a subtree-border automaton" begin
         automaton = Set([:IGeo7System, :H3System, :HEALPixSystem, :ISEA4RSystem,
             :S2System])
         fallback = Set([:A5System])
         for sys in systems()
             n = nameof(typeof(sys))
             c = cellindex(levelgrid(sys, first(levels(sys))), 1)
-            m = which(DGG.rim_engine, Base.typesof(sys, c, level(c), Vertex()))
+            m = which(DGG.border_engine, Base.typesof(sys, c, level(c), Vertex()))
             # "Ships an automaton" is "the selected method is not the generic
             # descendant scan" — not "the method lives in the system's own
             # module", which the shared quad-face engine would fail while still
@@ -184,58 +190,58 @@ end
             isempty(missed) || @info "$name: cellat missed its own cell" first(missed, 5)
         end
 
-        @testset "$name: subtree rim hook" begin
+        @testset "$name: subtree border hook" begin
             root_level = first(levels(sys))
             grid0 = levelgrid(sys, root_level)
             probes = sample_cells(grid0, 6)
             for c in probes
                 lc = level(c)
 
-                # A depth-0 subtree is the cell itself, and it is all rim.
-                @test collect(subtree_border(sys, c, lc)) == [c]
-                @test isempty(collect(subtree_interior(sys, c, lc)))
+                # A depth-0 subtree is the cell itself, and it is all border.
+                @test eager_border(sys, c, lc) == [c]
+                @test isempty(eager_interior(sys, c, lc))
 
                 for depth in 1:2
                     l = lc + depth
                     l <= last(levels(sys)) || continue
 
-                    border = collect(subtree_border(sys, c, l))
-                    interior = collect(subtree_interior(sys, c, l))
+                    bnd = eager_border(sys, c, l)
+                    inner = eager_interior(sys, c, l)
                     kids = collect(descendants(sys, c, l))
 
-                    @test Set(border) == Set(brute_force_border(sys, c, l))
+                    @test Set(bnd) == Set(brute_force_border(sys, c, l))
 
                     # Border and interior partition the subtree.
-                    @test isempty(intersect(Set(border), Set(interior)))
-                    @test union(Set(border), Set(interior)) == Set(kids)
-                    @test length(border) + length(interior) == length(kids)
+                    @test isempty(intersect(Set(bnd), Set(inner)))
+                    @test union(Set(bnd), Set(inner)) == Set(kids)
+                    @test length(bnd) + length(inner) == length(kids)
 
-                    # The rim is a small minority once there is any depth to
+                    # The border is a small minority once there is any depth to
                     # speak of — the property that makes the hook worth having.
-                    depth >= 2 && @test length(border) < length(kids)
+                    depth >= 2 && @test length(bnd) < length(kids)
 
-                    @test allunique(border)
-                    @test eltype(border) === DGG.cellindextype(sys)
+                    @test allunique(bnd)
+                    @test eltype(bnd) === DGG.cellindextype(sys)
 
                     # The interface documents the border's order as ascending
                     # canonical order unless a system says otherwise, and none
                     # of the six does. Verified across all four automatons
                     # before pinning it here: the Z7 digit automaton, H3's
-                    # digit-arc automaton, HEALPix's Morton rim walk and
+                    # digit-arc automaton, HEALPix's Morton border walk and
                     # ISEA4R's edge walk all emit ascending by construction
                     # (the Morton walk visits quadrants in id order precisely
                     # so that it can). A5 and S2 inherit it from the fallback,
                     # which preserves `descendants` order. Left unpinned, an
-                    # automaton could start emitting a rim in walk order and
+                    # automaton could start emitting a border in walk order and
                     # only the docs would be wrong.
-                    @test issorted(border)
-                    @test issorted(interior)
+                    @test issorted(bnd)
+                    @test issorted(inner)
                 end
 
                 # Asking for a level above the cell's own is an error, not an
                 # empty answer, and uniformly so across systems.
                 lc > first(levels(sys)) &&
-                    @test_throws ArgumentError subtree_border(sys, c, lc - 1)
+                    @test_throws ArgumentError subtree(sys, c, lc - 1)
             end
         end
     end

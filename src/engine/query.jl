@@ -19,7 +19,7 @@ abstract type QueryTarget end
 
 A prepared query target: the geometry lifted to the unit sphere once, a
 `RelateNG` preparation of it, a bounding cap for tree pruning, and its boundary
-arcs for the rim sandwich.
+arcs for the border sandwich.
 """
 struct GeometryTarget{P,G,A} <: QueryTarget
     prepared::P
@@ -144,7 +144,7 @@ end
 _geometry_cap(_, geom::GO.UnitSphericalPoint) = SphericalCap(
     USPoint(geom[1], geom[2], geom[3]), 0.0)
 
-# The rim sandwich compares centroid-to-target-boundary distance `d` with cell
+# The border sandwich compares centroid-to-target-boundary distance `d` with cell
 # radius bounds:
 #
 #   * `d > r_out` proves disjointness when the centroid is outside the target.
@@ -397,7 +397,7 @@ function _check_predicate(pred::DE9IM.DE9IMPredicate)
 end
 
 # `Intersects` against a prepared geometry: the centroid fast accept, then the
-# rim sandwich, then the exact polygon predicate. The other predicates go
+# border sandwich, then the exact polygon predicate. The other predicates go
 # straight to their exact test — a cell whose centroid is inside the target is
 # not thereby within/covering/touching it.
 function _matches(pred::DE9IM.Intersects, target::GeometryTarget, grid, c)

@@ -34,7 +34,7 @@ fixed depth, a `maxcells` set the best a fixed cardinality can say, with the
 deepest level it reached as its reference level. The keywords are mutually
 exclusive; [`query`](@ref) states the rules.
 
-[`is_contained`](@ref) reports which emissions were *proven* to fit — a cell
+[`iscontained`](@ref) reports which emissions were *proven* to fit — a cell
 emitted at the deepest level is never asked; [`coarsest_contained`](@ref) is the
 accessor that uses it.
 
@@ -73,7 +73,7 @@ typed ids in descendant-range order at the reference level; systems without
 sorted subtrees use `(level, id)` order. [`level_ranges`](@ref level_ranges)
 expands it to sorted, disjoint ranges at one level.
 
-[`is_contained`](@ref) reports which cells were *proven* to fit inside the
+[`iscontained`](@ref) reports which cells were *proven* to fit inside the
 target — not which ones do; that docstring draws the line.
 [`cell_polygon`](@ref) and [`cell_polygons`](@ref) read mixed-level geometry
 without the caller resolving a level grid per cell.
@@ -186,7 +186,7 @@ pinned per system, at three budgets and on four targets, in
 
 What a budget does NOT buy is a tight picture of the target: at ten cells the
 set over-covers California by a wide margin, and it says so through
-[`is_contained`](@ref) rather than by pretending otherwise.
+[`iscontained`](@ref) rather than by pretending otherwise.
 
 # Composition
 
@@ -231,7 +231,7 @@ function _multi_order(sys::AbstractHierarchicalGridSystem, target_value, maxleve
     cells = cellindextype(sys)[]
     # Parallel to `cells`: `true` exactly where `Within` was asked and held.
     # Emissions at `maxlevel` are never asked, so `false` there means unproven,
-    # not outside. `is_contained` documents the asymmetry.
+    # not outside. `iscontained` documents the asymmetry.
     contained = BitVector()
     # One level grid per level, built once rather than per visited cell: the
     # traversal touches every level from the roots down, and `levelgrid` is
@@ -260,7 +260,7 @@ function _coverage_visit!(cells, contained, sys, target, c, maxlevel::Int, grids
     if lc >= maxlevel
         # Emitted to cover, and flagged unproven WITHOUT asking `Within`: many
         # of these cells do fit, and asking costs one ~48 KB call per boundary
-        # cell to label cells the traversal is done with. See `is_contained`.
+        # cell to label cells the traversal is done with. See `iscontained`.
         meets && (push!(cells, c); push!(contained, false))
         return nothing
     end
@@ -368,7 +368,7 @@ end
 # Classify one candidate cell, or reject it. Both prunes and both predicates are
 # the ones `_coverage_visit!` uses, in the same order and for the same reasons —
 # including the `maxlevel` arm, where `Within` is not asked because no decision
-# depends on the answer and the call is the expensive one. `is_contained`
+# depends on the answer and the call is the expensive one. `iscontained`
 # documents what that leaves unproven.
 function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
         maxlevel::Int)
@@ -442,7 +442,7 @@ system(set::MultiOrderCellSet) = set.system
 # --- which cells fit inside the target -------------------------------------
 
 """
-    is_contained(set::MultiOrderCellSet, i::Integer) -> Bool
+    iscontained(set::MultiOrderCellSet, i::Integer) -> Bool
 
 Whether the set's `i`th cell was **proven** to lie inside the coverage target.
 `true` means `Within` was asked of it and held. `false` means one of two things,
@@ -469,13 +469,13 @@ cells it cares about.
 `argmin(level, set)` is therefore not "the coarsest cell inside the target":
 every emission can be unproven. [`coarsest_contained`](@ref) reads this flag.
 """
-is_contained(set::MultiOrderCellSet, i::Integer) = set.contained[i]
+iscontained(set::MultiOrderCellSet, i::Integer) = set.contained[i]
 
 """
     coarsest_contained(set::MultiOrderCellSet) -> cell id or `nothing`
 
 The shallowest cell of `set` **proven** inside the coverage target, or `nothing`
-when no cell of it was — see [`is_contained`](@ref) for what "proven" leaves
+when no cell of it was — see [`iscontained`](@ref) for what "proven" leaves
 out. Maximum-depth cells are never tested, so a set of nothing but those answers
 `nothing` even where some fit; a target smaller than one cell is the clearest
 way there, not the only one.

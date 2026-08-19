@@ -43,6 +43,12 @@ const US = GO.UnitSpherical
 
 const SYS = I4.ISEA4RSystem()
 
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(DGG.border(DGG.subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(DGG.interior(DGG.subtree(sys, c, l); cells = true, kw...))
+
 # Retain the largest measurement for each key in the test log.
 const MEASURED = Dict{String,Float64}()
 record!(key, value) = (MEASURED[key] = max(get(MEASURED, key, -Inf), value))
@@ -136,11 +142,11 @@ vkey(p) = (p[1] + 0.0, p[2] + 0.0, p[3] + 0.0)
 How many boundary points two cells share, to a tolerance.
 
 A tolerance rather than a `Set` intersection is required: shared lattice points
-are bit-identical only within a diamond. Across a diamond rim the
+are bit-identical only within a diamond. Across a diamond border the
 two sides are two independent developments of the same icosahedron edge and
 agree to ~4e-15 rad but not bit-for-bit, so an exact set intersection would
 report a seam neighbour as sharing nothing. The measured worst mismatch across a
-rim is recorded by `cross-diamond borders line up point for point` below, three
+border is recorded by `cross-diamond borders line up point for point` below, three
 orders under this tolerance.
 """
 function shared_boundary_points(g, a, b; tol = 1e-12)
@@ -373,11 +379,11 @@ end
     @test DGG.cellindextype(SYS) === LevelIndex
     @test cellindextypes(SYS) == (LevelIndex,)
     @test levels(SYS) == 0:29
-    @test max_level(SYS) == 29
+    @test maxlevel(SYS) == 29
     @test rootcells(SYS) == [LevelIndex(0, d) for d in 0:9]
-    @test max_neighbors(SYS, Vertex()) == 9
-    @test max_neighbors(SYS, Edge()) == 4
-    @test max_neighbors(SYS) == 9
+    @test maxneighbors(SYS, Vertex()) == 9
+    @test maxneighbors(SYS, Edge()) == 4
+    @test maxneighbors(SYS) == 9
     @test has_sorted_subtrees(SYS)
 
     for lvl in 0:4
@@ -557,7 +563,7 @@ end
     end
     # `cap_inflation` is never consulted; it keeps its default and the override
     # is tighter than what it would have produced.
-    @test cap_inflation(SYS) == 1.2
+    @test DGG.cap_inflation(SYS) == 1.2
     for lvl in 1:3, p in cell_sample(lvl, 32)
         c = LevelIndex(lvl, p)
         g = levelgrid(SYS, lvl)
@@ -571,10 +577,10 @@ end
 # 6. Topology: the seam tables
 # =========================================================================
 
-@testset "the seam tables are an involution over the twenty rim edges" begin
+@testset "the seam tables are an involution over the twenty border edges" begin
     # Restated independently of `topology.jl`'s own build asserts: a diamond's
-    # four rim edges are icosahedron edges, the ten seams are the other ten, and
-    # forty rim slots pair up into twenty joins.
+    # four border edges are icosahedron edges, the ten seams are the other ten, and
+    # forty border slots pair up into twenty joins.
     pairs = Set{Tuple{Int,Int}}()
     for d in 0:9, e in 1:4
         a, b = I4._edge_pair(d, e)
@@ -585,7 +591,7 @@ end
         @test I4.EDGE_NEIGHBORS[d2 + 1][e2] == (d, e)     # involutive
         @test (d2, e2) != (d, e)
     end
-    @test length(pairs) == 20                             # twenty rim edges
+    @test length(pairs) == 20                             # twenty border edges
     seams = Set(minmax(dm.verts[1], dm.verts[3]) for dm in I4.DIAMONDS)
     @test length(seams) == 10                             # ten seams
     @test isempty(intersect(pairs, seams))                # and they are disjoint
@@ -631,8 +637,8 @@ end
             counts[k] = get(counts, k, 0) + 1
         end
         @test counts == expected[lvl]
-        # `Edge()` is uniformly four: every cell has four rim segments, and a
-        # rim segment always has exactly one cell on the other side.
+        # `Edge()` is uniformly four: every cell has four border segments, and a
+        # border segment always has exactly one cell on the other side.
         @test all(p -> length(neighbors(g, LevelIndex(lvl, p), 1; connectivity = Edge())) == 4,
                   0:(ncells(g) - 1))
     end
@@ -674,7 +680,7 @@ end
     # corner-only ones — the OPPOSITE of HEALPix, whose pixel is rotated 45°
     # against its lattice. Only geometry can tell the two apart.
     #
-    # Exhaustive over levels 1-3, so the rim and vertex cells are all in it: a
+    # Exhaustive over levels 1-3, so the border and vertex cells are all in it: a
     # tolerance-based count (see `shared_boundary_points`) rather than a set
     # intersection, because bit-identity holds only within a diamond.
     for lvl in 1:3
@@ -753,7 +759,7 @@ end
         return sum(wrap(as[mod1(i + 1, length(as))] - as[i]) for i in eachindex(as))
     end
 
-    # Exhaustive over levels 0-3, so every rim, corner and vertex cell is wound.
+    # Exhaustive over levels 0-3, so every border, corner and vertex cell is wound.
     for lvl in 0:3, conn in (Vertex(), Edge())
         g = levelgrid(SYS, lvl)
         for p in 0:(ncells(g) - 1)
@@ -879,14 +885,14 @@ end
 end
 
 # =========================================================================
-# 8. The subtree rim
+# 8. The subtree border
 # =========================================================================
 
-@testset "subtree_border is the lattice block's boundary ring" begin
+@testset "the border is the lattice block's boundary ring" begin
     # The automaton against the definition, brute-forced independently: a
-    # level-`l` descendant is on the rim iff one of its neighbours is not a
+    # level-`l` descendant is on the border iff one of its neighbours is not a
     # descendant. Exhaustive over the level-0 and level-1 subtrees at depths
-    # 1-3, so blocks against a diamond rim and blocks at icosahedron vertices
+    # 1-3, so blocks against a diamond border and blocks at icosahedron vertices
     # are both in it.
     function brute_border(c, l, conn)
         g = levelgrid(SYS, l)
@@ -900,28 +906,28 @@ end
             c = LevelIndex(lvl, p)
             l = lvl + depth
             for conn in (Vertex(), Edge())
-                border = subtree_border(SYS, c, l; connectivity = conn)
+                border = eager_border(SYS, c, l; connectivity = conn)
                 @test border == brute_border(c, l, conn)      # order included
                 @test issorted(border)
                 @test eltype(border) === LevelIndex
                 @test length(border) == 4 * (1 << depth) - 4
             end
-            # `Vertex()` and `Edge()` give the same rim; the docstring says so.
-            @test subtree_border(SYS, c, l) ==
-                  subtree_border(SYS, c, l; connectivity = Edge())
+            # `Vertex()` and `Edge()` give the same border; the docstring says so.
+            @test eager_border(SYS, c, l) ==
+                  eager_border(SYS, c, l; connectivity = Edge())
             # Border and interior partition the subtree.
-            interior = subtree_interior(SYS, c, l)
+            interior = eager_interior(SYS, c, l)
             kids = descendants(SYS, c, l)
             @test issorted(interior)
-            @test isempty(intersect(Set(interior), Set(subtree_border(SYS, c, l))))
-            @test sort!(vcat(collect(interior), collect(subtree_border(SYS, c, l)))) == kids
+            @test isempty(intersect(Set(interior), Set(eager_border(SYS, c, l))))
+            @test sort!(vcat(collect(interior), collect(eager_border(SYS, c, l)))) == kids
         end
     end
-    # A depth-0 subtree is the cell itself, and it is all rim.
-    @test subtree_border(SYS, LevelIndex(2, 7), 2) == [LevelIndex(2, 7)]
-    @test isempty(subtree_interior(SYS, LevelIndex(2, 7), 2))
-    @test_throws ArgumentError subtree_border(SYS, LevelIndex(2, 7), 1)
-    @test_throws ArgumentError subtree_border(SYS, LevelIndex(2, 7), 30)
+    # A depth-0 subtree is the cell itself, and it is all border.
+    @test eager_border(SYS, LevelIndex(2, 7), 2) == [LevelIndex(2, 7)]
+    @test isempty(eager_interior(SYS, LevelIndex(2, 7), 2))
+    @test_throws ArgumentError eager_border(SYS, LevelIndex(2, 7), 1)
+    @test_throws ArgumentError eager_border(SYS, LevelIndex(2, 7), 30)
 end
 
 @testset "the generic substrate reaches ISEA4R" begin
@@ -949,10 +955,10 @@ end
     @test issubset(Set(brute), Set(hits))
     @test length(hits) < ncells(g)                 # and it really did prune
 
-    # The subtree grid: `PartialGrid(sys, cell, level)` takes the
+    # The subtree grid: `subtree(sys, cell, level)` takes the
     # `descendant_range` path when `has_sorted_subtrees` is true, which is the
     # trait's payoff.
-    sub = PartialGrid(SYS, LevelIndex(0, 0), 3)
+    sub = subtree(SYS, LevelIndex(0, 0), 3)
     @test ncells(sub) == 4^3
     @test system(sub) === SYS
     @test level(sub) == 3
@@ -989,7 +995,7 @@ end
     # The `BOUNDARY_SEGMENTS` schedule, measured: the relative error is flat
     # across levels and falls as segments^-2, which is why the shipped count
     # does not depend on the level. LEVEL 0 IS EXACT and is not evidence about
-    # any other level — a diamond's rim edges are icosahedron edges, hence
+    # any other level — a diamond's border edges are icosahedron edges, hence
     # great circles, so a level-0 cell IS its 4-gon.
     for nseg in (2, 4, 8, 16)
         worst = 0.0
@@ -1042,7 +1048,7 @@ end
 @testset "shared edges are bit-identical within a diamond" begin
     # What makes the tessellation exact rather than merely consistent to
     # rounding — and the reason the densification count is a power of two. Only
-    # WITHIN a diamond: across a rim the two sides are two developments of one
+    # WITHIN a diamond: across a border the two sides are two developments of one
     # icosahedron edge, which `cross-diamond borders line up point for point`
     # measures instead.
     for lvl in 2:3
@@ -1073,7 +1079,7 @@ end
     #     with a zero component), which is why the fact is worth pinning rather
     #     than assuming.
     #
-    # (2) Across a diamond rim there is NO bit-identity to lose in the first
+    # (2) Across a diamond border there is NO bit-identity to lose in the first
     #     place: the two sides are independent developments of one icosahedron
     #     edge and agree to ~4e-15 rad but on no coordinate exactly. That is why
     #     every cross-seam incidence test above is written with a tolerance, and

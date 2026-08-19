@@ -395,10 +395,10 @@ function hierarchy_problems(sys, c)
         c in kids || push!(problems, "children(parent($c)) does not contain $c")
     end
 
-    if l < DGG.max_level(sys)
+    if l < DGG.maxlevel(sys)
         kids = collect(DGG.children(sys, c))
         if isempty(kids)
-            push!(problems, "$c has no children below max_level")
+            push!(problems, "$c has no children below maxlevel")
         end
         allunique(kids) || push!(problems, "children($c) contains duplicates")
         issorted(kids) || push!(problems, "children($c) is not in ascending canonical order")
@@ -490,7 +490,7 @@ still violating the law.
 Depth alone is not the whole law — an extent that covers three levels and fails
 at four still violates it — so alongside the bounded bushy walk each sampled
 cell also follows one random chain of children all the way to
-[`max_level`](@ref), which costs `O(max_level)` cells. Pass `deep_chain =
+[`maxlevel`](@ref), which costs `O(maxlevel)` cells. Pass `deep_chain =
 false` to skip it, or `cells` (a `level => cells` mapping) to check exactly the
 cells another law sampled.
 
@@ -532,7 +532,7 @@ function covering_law_problems(sys;
             _covering_descend!(problems, sys, c, root, getgrid, rng,
                 Int(descent_depth), Int(branch_samples), densify, Int(arc_samples), atol)
             # The sampled branches are depth-limited. One additional chain
-            # reaches `max_level` so deeper extent failures remain observable.
+            # reaches `maxlevel` so deeper extent failures remain observable.
             deep_chain && _covering_chain!(problems, sys, c, root, getgrid, rng,
                 densify, Int(arc_samples), atol)
         end
@@ -570,7 +570,7 @@ function _covering_descend!(problems, sys, c, ancestors, getgrid, rng,
         depth, branch_samples, densify, arc_samples, atol)
     _covering_check!(problems, sys, c, ancestors, getgrid, densify, arc_samples, atol)
 
-    (depth <= 0 || DGG.level(c) >= DGG.max_level(sys)) && return problems
+    (depth <= 0 || DGG.level(c) >= DGG.maxlevel(sys)) && return problems
 
     kids = collect(DGG.children(sys, c))
     isempty(kids) && return problems
@@ -583,11 +583,11 @@ function _covering_descend!(problems, sys, c, ancestors, getgrid, rng,
     return problems
 end
 
-"Follow a single random child per level to `max_level`, checking all the way down."
+"Follow a single random child per level to `maxlevel`, checking all the way down."
 function _covering_chain!(problems, sys, c, ancestors, getgrid, rng, densify, arc_samples, atol)
     cur = c
     chain = ancestors
-    while DGG.level(cur) < DGG.max_level(sys)
+    while DGG.level(cur) < DGG.maxlevel(sys)
         kids = collect(DGG.children(sys, cur))
         isempty(kids) && break
         cur = kids[rand(rng, 1:length(kids))]
@@ -612,7 +612,7 @@ check_covering_law(sys; kwargs...) = isempty(covering_law_problems(sys; kwargs..
 
 The [`neighbors`](@ref) laws at one cell: determinism across calls, exclusion of
 `c` itself, distinctness, a container typed at the system's cell index type, a
-count within [`max_neighbors`](@ref), membership in the grid, a common level,
+count within [`maxneighbors`](@ref), membership in the grid, a common level,
 and symmetry — `c′ ∈ neighbors(c)` implies `c ∈ neighbors(c′)`, checked in both
 directions (see `two_hop` below).
 
@@ -660,11 +660,11 @@ function neighbor_problems(grid, c; connectivity::Connectivity = Vertex(),
         T = DGG.cellindextype(sys)
         eltype(ns) === T ||
             push!(problems, "neighbors($c) has eltype $(eltype(ns)), not the system's $T")
-        bound = DGG.max_neighbors(sys, connectivity)
+        bound = DGG.maxneighbors(sys, connectivity)
         # `nothing` means the system declares no static bound, so there is no
         # ceiling to check against.
         bound === nothing || length(ns) <= bound ||
-            push!(problems, "neighbors($c) returned $(length(ns)) cells, over max_neighbors of $bound")
+            push!(problems, "neighbors($c) returned $(length(ns)) cells, over maxneighbors of $bound")
     end
 
     lc = DGG.level(c)
@@ -1137,7 +1137,7 @@ function check_descendant_ranges(sys;
         rng::Random.AbstractRNG = _default_rng(),
         depth::Integer = 2)
     DGG.has_sorted_subtrees(sys) || return true
-    maxl = DGG.max_level(sys)
+    maxl = DGG.maxlevel(sys)
     for l in levels
         grid = DGG.levelgrid(sys, l)
         _, cells = sample_cells(rng, grid, n_samples)
@@ -1278,8 +1278,8 @@ DGG.cap_inflation(w::GenericFallbackSystem) = DGG.cap_inflation(w.system)
 DGG.has_sorted_subtrees(w::GenericFallbackSystem) = DGG.has_sorted_subtrees(w.system)
 DGG.descendant_range(w::GenericFallbackSystem, c::AbstractCellIndex, l::Integer) =
     DGG.descendant_range(w.system, c, l)
-DGG.max_neighbors(w::GenericFallbackSystem, conn::Connectivity) =
-    DGG.max_neighbors(w.system, conn)
+DGG.maxneighbors(w::GenericFallbackSystem, conn::Connectivity) =
+    DGG.maxneighbors(w.system, conn)
 
 DGG.ncells(w::GenericFallbackSystem, l::Integer) = DGG.ncells(_inner(w, l))
 DGG.cellindex(w::GenericFallbackSystem, l::Integer, i::Int) = DGG.cellindex(_inner(w, l), i)
@@ -1512,7 +1512,7 @@ function _foreign_cell(grid, sys, cells)
         end
     end
 
-    l >= DGG.max_level(sys) && return nothing
+    l >= DGG.maxlevel(sys) && return nothing
     kids = collect(DGG.children(sys, first(cells)))
     return isempty(kids) ? nothing : first(kids)
 end
@@ -1533,13 +1533,13 @@ Property-test `sys` against the hierarchical contracts, as a labelled
 The laws, each its own nested test set:
 
   - **`levels`/`rootcells`** — a non-empty level range whose last element is
-    [`max_level`](@ref); roots all at the first level, ascending and distinct,
+    [`maxlevel`](@ref); roots all at the first level, ascending and distinct,
     and exactly the cells of the coarsest level grid.
   - **`levelgrid` consistency** — `system`/`level` agree with the system,
     `cellindex`/`cellposition` round-trip, and cell counts increase with level.
   - **`parent`/`children`** — mutual inverses; children distinct, non-empty,
     ascending and one level deeper; `parent` throws an `ArgumentError` on a
-    root and `children` throws one at `max_level`.
+    root and `children` throws one at `maxlevel`.
   - **the covering law** — see [`covering_law_problems`](@ref): sampled
     subtrees walked `descent_depth` levels down, every descendant's boundary
     contained in *every* ancestor's [`node_extent`](@ref). Node extents are
@@ -1578,11 +1578,11 @@ holds those answers to the same laws. Every skip states its reason in an
   - `descent_depth`, `branch_samples` — the shape of the covering law's subtree
     walk: how many levels down, and how many children followed at each step.
     Forwarded to [`covering_law_problems`](@ref), which also follows one chain
-    to [`max_level`](@ref) regardless of the depth.
+    to [`maxlevel`](@ref) regardless of the depth.
   - `atol` — angular slack, in radians, before a boundary point counts as
     *outside* an ancestor's [`node_extent`](@ref); forwarded to
     [`covering_law_problems`](@ref). A system whose subtree caps are exact
-    rather than inflated puts cell corners *on* the cap rim, where the covering
+    rather than inflated puts cell corners *on* the cap border, where the covering
     test is a floating-point coin toss — HEALPix is the case in this package —
     and such a system must loosen this rather than inflate its extents to hide
     the rounding.
@@ -1633,7 +1633,7 @@ function test_hierarchical_system(sys;
         label::AbstractString = string(nameof(typeof(sys))))
     levelrange = DGG.levels(sys)
     tested = sample_levels(rng, levels, n_levels)
-    maxl = DGG.max_level(sys)
+    maxl = DGG.maxlevel(sys)
     grids = Dict{Int,Any}(l => DGG.levelgrid(sys, l) for l in tested)
     samples = Dict{Int,Any}(l => sample_cells(rng, grids[l], n_samples) for l in tested)
     skips = String[]
@@ -1657,16 +1657,16 @@ function test_hierarchical_system(sys;
             # the fixed-capacity neighbour buffers and nothing else — said out
             # loud below rather than passed in silence.
             for conn in connectivities
-                mn = DGG.max_neighbors(sys, conn)
+                mn = DGG.maxneighbors(sys, conn)
                 @test mn === nothing || mn >= 1
                 mn === nothing && push!(skips,
-                    "note: max_neighbors — $label declares no bound for $conn; subset neighbour buffers will be heap Vectors")
+                    "note: maxneighbors — $label declares no bound for $conn; subset neighbour buffers will be heap Vectors")
             end
-            @test DGG.max_neighbors(sys) == DGG.max_neighbors(sys, Vertex())
+            @test DGG.maxneighbors(sys) == DGG.maxneighbors(sys, Vertex())
             if Vertex() in connectivities && Edge() in connectivities
                 # Edge() is a restriction of Vertex(), so its bound cannot be larger.
-                mv = DGG.max_neighbors(sys, Vertex())
-                me = DGG.max_neighbors(sys, Edge())
+                mv = DGG.maxneighbors(sys, Vertex())
+                me = DGG.maxneighbors(sys, Edge())
                 @test mv === nothing || me === nothing || me <= mv
             end
             @test_throws ArgumentError DGG.levelgrid(sys, first(levelrange) - 1)
@@ -1708,7 +1708,7 @@ function test_hierarchical_system(sys;
             end
         end
 
-        @testset "parent throws on roots, children throws at max_level" begin
+        @testset "parent throws on roots, children throws at maxlevel" begin
             @test_throws ArgumentError Base.parent(sys, first(DGG.rootcells(sys)))
             deepest = DGG.levelgrid(sys, maxl)
             @test_throws ArgumentError DGG.children(sys, DGG.cellindex(deepest, 1))

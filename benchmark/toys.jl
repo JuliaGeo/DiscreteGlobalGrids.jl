@@ -1,5 +1,5 @@
 # Two copies of the audit's OctantSystem toy (audit/dev-experience/toygrid.jl):
-# one that DECLARES `max_neighbors`, one that does not. Everything else — the
+# one that DECLARES `maxneighbors`, one that does not. Everything else — the
 # geometry, the hierarchy, the id scheme — is shared, so a declared/undeclared
 # comparison isolates exactly the neighbour-buffer choice.
 #
@@ -34,8 +34,8 @@ end
 
 function DGG.children(sys::AnyOctant, c::DGG.LevelIndex)
     l = DGG.level(c)
-    l == DGG.max_level(sys) &&
-        throw(ArgumentError("cells at max_level have no children"))
+    l == DGG.maxlevel(sys) &&
+        throw(ArgumentError("cells at maxlevel have no children"))
     i4 = DGG.rawid(c) << 2
     [DGG.LevelIndex(l + 1, i4 + d) for d in 0:3]
 end
@@ -98,8 +98,8 @@ end
 # --- traits -----------------------------------------------------------------
 
 # THE difference between the two systems: OctantBare declares no bound.
-DGG.max_neighbors(::OctantDeclared, ::DGG.Vertex) = 12
-DGG.max_neighbors(::OctantDeclared, ::DGG.Edge) = 3
+DGG.maxneighbors(::OctantDeclared, ::DGG.Vertex) = 12
+DGG.maxneighbors(::OctantDeclared, ::DGG.Edge) = 3
 
 DGG.has_sorted_subtrees(::AnyOctant) = true
 

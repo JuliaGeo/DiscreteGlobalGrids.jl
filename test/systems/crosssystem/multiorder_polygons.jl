@@ -6,6 +6,7 @@ module MultiOrderPolygonTests
 using Test
 import DiscreteGlobalGrids as DGG
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 import GeoInterface as GI
 import GeometryOps as GO
 
@@ -79,7 +80,7 @@ const SWEEP = [
 end
 
 
-prepare(geom) = FB._query_target(geom)
+prepare(geom) = EN._query_target(geom)
 inside(t, lon, lat) = GO.relate_predicate(t.prepared, GO.pred_contains(),
     FB.unit_point(lon, lat))
 
@@ -198,7 +199,7 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
             intervals = [DGG.descendant_range(sys, c, leaf) for c in cells]
             @test issorted(intervals; by=first)
             @test all(k -> first(intervals[k]) > last(intervals[k-1]), 2:length(intervals))
-            @test FB.curve_keys(set) == first.(intervals)
+            @test EN.curve_keys(set) == first.(intervals)
         else
             # EXCLUDED, with its reason: no descendant ranges, so no curve
             # intervals to order by. The documented fallback is `(level, id)`,
@@ -222,23 +223,23 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
             @test isempty(families)
         end
         for p in families
-            @test !FB._matches(DGG.Within(nothing), target, grid_of(p), p)
+            @test !EN._matches(DGG.Within(nothing), target, grid_of(p), p)
         end
     end
 
     @testset "contained vs crossed" begin
-        @test length(FB.curve_keys(set)) == length(set)
-        contained = [i for i in eachindex(set) if DGG.is_contained(set, i)]
+        @test length(EN.curve_keys(set)) == length(set)
+        contained = [i for i in eachindex(set) if DGG.iscontained(set, i)]
         @test !isempty(contained)
-        @test all(i -> DGG.is_contained(set, i) == (DGG.level(set[i]) < leaf), eachindex(set))
+        @test all(i -> DGG.iscontained(set, i) == (DGG.level(set[i]) < leaf), eachindex(set))
         # And where the flag is exact, it agrees with the predicate it stands for.
         for i in Iterators.take(contained, 12)
             c = set[i]
-            @test FB._matches(DGG.Within(nothing), target, DGG.levelgrid(sys, DGG.level(c)), c)
+            @test EN._matches(DGG.Within(nothing), target, DGG.levelgrid(sys, DGG.level(c)), c)
         end
         best = DGG.coarsest_contained(set)
         @test best !== nothing
-        @test FB._matches(DGG.Within(nothing), target,
+        @test EN._matches(DGG.Within(nothing), target,
             DGG.levelgrid(sys, DGG.level(best)), best)
         @test DGG.level(best) == minimum(DGG.level(set[i]) for i in contained)
     end
@@ -361,7 +362,7 @@ end
     # hole's edge are emitted, and must be: they meet the target.
     for c in set
         g = DGG.levelgrid(sys, DGG.level(c))
-        @test !FB._matches(DGG.Within(nothing), prepare(HOLE), g, c)
+        @test !EN._matches(DGG.Within(nothing), prepare(HOLE), g, c)
     end
 end
 
@@ -424,7 +425,7 @@ end
     # coverage exactly. This runs the traversal both ways on the mainland and
     # compares, on the two systems whose refinements are furthest apart.
     function unpruned(sys, geom, maxlevel)
-        target = FB._query_target(geom)
+        target = EN._query_target(geom)
         cells = DGG.cellindextype(sys)[]
         top = first(DGG.levels(sys))
         grids = [DGG.levelgrid(sys, l) for l in top:maxlevel]
@@ -432,12 +433,12 @@ end
             FB.intersects_cap(target.cap, DGG.node_extent(sys, c)) || return nothing
             lc = DGG.level(c)
             grid = grids[lc-top+1]
-            meets = FB._matches(DGG.Intersects(nothing), target, grid, c)
+            meets = EN._matches(DGG.Intersects(nothing), target, grid, c)
             if lc >= maxlevel
                 meets && push!(cells, c)
                 return nothing
             end
-            if meets && FB._matches(DGG.Within(nothing), target, grid, c)
+            if meets && EN._matches(DGG.Within(nothing), target, grid, c)
                 push!(cells, c)
                 return nothing
             end
@@ -459,15 +460,15 @@ end
 
     # And it really does prune: the node extent of a cell on the far side of the
     # planet is provably outside California.
-    target = FB._query_target(MAINLAND)
+    target = EN._query_target(MAINLAND)
     far = DGG.cellat(DGG.levelgrid(DGG.S2System(), 3), 60.0, 20.0)
-    @test FB._subtree_outside(target, DGG.node_extent(DGG.S2System(), far))
+    @test EN._subtree_outside(target, DGG.node_extent(DGG.S2System(), far))
     near = DGG.cellat(DGG.levelgrid(DGG.S2System(), 6), -120.0, 37.0)
-    @test !FB._subtree_outside(target, DGG.node_extent(DGG.S2System(), near))
+    @test !EN._subtree_outside(target, DGG.node_extent(DGG.S2System(), near))
     # A cap target carries no boundary arcs, so no proof is available and the
     # traversal keeps its cap prune alone.
     cap = GO.UnitSpherical.SphericalCap(FB.unit_point(0.0, 0.0), 0.1)
-    @test !FB._subtree_outside(FB._query_target(cap),
+    @test !EN._subtree_outside(EN._query_target(cap),
         DGG.node_extent(DGG.S2System(), far))
 end
 

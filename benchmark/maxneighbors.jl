@@ -21,7 +21,7 @@
 
 using Printf
 import DiscreteGlobalGrids as DGG
-const F = DGG.Fallbacks
+const F = DGG.Engine
 include(joinpath(@__DIR__, "toys.jl"))
 
 subset(sys, lvl, n) = DGG.PartialGrid(sys, lvl,
@@ -55,11 +55,11 @@ function sweepsum(cv, conn, cap)
     return s[]
 end
 
-# `_halo_chunk` is the CSR row builder; it takes the capacity explicitly.
+# `_adjacency_chunk` is the CSR row builder; it takes the capacity explicitly.
 function chunkbuild(cv, conn, cap)
     offsets = Vector{Int}(undef, length(cv) + 1)
     offsets[1] = 1
-    return F._halo_chunk(cv, conn, 1:length(cv), offsets, cap)
+    return F._adjacency_chunk(cv, conn, 1:length(cv), F.ClippedRows(), offsets, cap)
 end
 
 println("\n=== Part 1: declared vs forced-Vector, same system ===")
@@ -68,14 +68,14 @@ for (sysname, sys, lvl, n) in (("HEALPix L6", DGG.HEALPixSystem(), 6, 40_000),
     pg = subset(sys, lvl, n)
     cv = F.CellVector(pg)
     conn = DGG.Vertex()
-    M = DGG.max_neighbors(sys, conn)
+    M = DGG.maxneighbors(sys, conn)
     @assert sweepsum(cv, conn, Val(M)) == sweepsum(cv, conn, nothing)
     @assert chunkbuild(cv, conn, Val(M)) == chunkbuild(cv, conn, nothing)
     println("--- ", sysname, "  (", length(cv), " cells, M=", M, ") ---")
     measure("$sysname  _sweep! SmallVector{$M}", () -> sweepsum(cv, conn, Val(M)))
     measure("$sysname  _sweep! Vector (fallback)", () -> sweepsum(cv, conn, nothing))
-    measure("$sysname  _halo_chunk SmallVector{$M}", () -> chunkbuild(cv, conn, Val(M)))
-    measure("$sysname  _halo_chunk Vector (fallback)", () -> chunkbuild(cv, conn, nothing))
+    measure("$sysname  _adjacency_chunk SmallVector{$M}", () -> chunkbuild(cv, conn, Val(M)))
+    measure("$sysname  _adjacency_chunk Vector (fallback)", () -> chunkbuild(cv, conn, nothing))
     # Threaded: allocation in parallel tasks is where GC pressure bites.
     thr = F.GOCore.booltype(true)
     mapdeg(cap) = F._mapstore!((c, nb) -> length(nb), Vector{Int}(undef, length(cv)),
@@ -96,8 +96,8 @@ for (name, sys) in (("Octant-declared", OctantDeclared()),
     pg = subset(sys, lvl, n)
     cv = F.CellVector(pg)
     data = collect(1.0:length(cv))
-    println("--- ", name, "  (", length(cv), " cells, max_neighbors=",
-        repr(DGG.max_neighbors(sys, DGG.Vertex())), ") ---")
+    println("--- ", name, "  (", length(cv), " cells, maxneighbors=",
+        repr(DGG.maxneighbors(sys, DGG.Vertex())), ") ---")
     measure("$name  neighbors(cv) sweep",
         () -> (s = 0; for (_, nb) in DGG.neighbors(cv); s += length(nb); end; s))
     measure("$name  mapneighbors deg (serial)",
@@ -106,8 +106,8 @@ for (name, sys) in (("Octant-declared", OctantDeclared()),
         () -> DGG.mapneighbors((c, v, vs) -> (v + sum(vs; init = 0.0)) /
                                              (1 + length(vs)), cv, data;
             threaded = false))
-    measure("$name  HaloTable (serial)", () -> F.HaloTable(cv; threaded = false))
-    measure("$name  halo_table", () -> DGG.halo_table(cv))
+    measure("$name  adjacency (serial)", () -> DGG.adjacency(cv; threaded = false))
+    measure("$name  adjacency (threaded)", () -> DGG.adjacency(cv))
     println()
 end
 
@@ -119,7 +119,7 @@ for (sysname, sys, lvl, n) in (("HEALPix L6", DGG.HEALPixSystem(), 6, 40_000),
     pg = subset(sys, lvl, n)
     cv = F.CellVector(pg)
     conn = DGG.Vertex()
-    M = DGG.max_neighbors(sys, conn)
+    M = DGG.maxneighbors(sys, conn)
     c = cv[1000]
     ring = DGG.neighbors(cv.grid, c, 1; connectivity = conn)
     f1() = F._positioned(cv, 1, 1, ring, Val(M))

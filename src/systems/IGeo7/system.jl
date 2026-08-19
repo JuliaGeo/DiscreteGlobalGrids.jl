@@ -99,7 +99,7 @@ DGG.has_sorted_subtrees(::IGeo7System) = true
 
 # Hexagons and pentagons: vertex adjacency and edge adjacency coincide, so the
 # bound is 6 under either connectivity (a pentagon reaches 5).
-DGG.max_neighbors(::IGeo7System, ::Connectivity) = 6
+DGG.maxneighbors(::IGeo7System, ::Connectivity) = 6
 
 # The default `cap_inflation == 1.2` covers the observed maximum descendant
 # overhang ratio of `1.0482`.
@@ -144,13 +144,13 @@ subtree while the digit prefix is still all zero. Appending a digit is one shift
 and one or, so ascending digit order is ascending id order and the result needs
 no sort.
 
-Throws an `ArgumentError` at `max_level`, where a child would need a
+Throws an `ArgumentError` at `maxlevel`, where a child would need a
 twenty-first digit slot that has no geometry.
 """
 function DGG.children(::IGeo7System, c::Z7Cell)
     res = _geometry_checked(c.id)
     res < MAX_RESOLUTION || throw(ArgumentError(
-        "IGeo7 cell $(z7_to_string(c.id)) is at max_level $MAX_RESOLUTION and has no children"))
+        "IGeo7 cell $(z7_to_string(c.id)) is at maxlevel $MAX_RESOLUTION and has no children"))
     out = SmallVector{7,Z7Cell}()
     for z in z7_children(c.id)
         out = SmallCollections.push(out, Z7Cell(z))
@@ -182,7 +182,7 @@ digit-lexicographic depth-first, which *is* ascending id order, so the result
 needs no sort. The count is `7^d` for a hexagon and `(5·7^d + 1)/6` for a
 pentagon, `d = l - level(c)`.
 
-Throws an `ArgumentError` for `l` outside `level(c):max_level`. This
+Throws an `ArgumentError` for `l` outside `level(c):maxlevel`. This
 materialises — reach for [`descendant_range`](@ref) when positions will do.
 """
 function DGG.descendants(::IGeo7System, c::Z7Cell, l::Integer)
@@ -219,7 +219,7 @@ The contiguous position interval of `c`'s level-`l` descendants. Prefix order
 makes this an `O(level)` calculation; the size is `7^d` for a hexagon and
 `(5·7^d + 1)/6` for a pentagon.
 
-Throws an `ArgumentError` for `l` outside `level(c):max_level`.
+Throws an `ArgumentError` for `l` outside `level(c):maxlevel`.
 """
 function DGG.descendant_range(::IGeo7System, c::Z7Cell, l::Integer)
     res = _geometry_checked(c.id)
@@ -415,9 +415,9 @@ end
 
 # Subtree borders are derived directly from Z7 digits.
 
-function DGG.rim_engine(::IGeo7System, c::Z7Cell, target::Int,
+function DGG.border_engine(::IGeo7System, c::Z7Cell, target::Int,
         connectivity::Connectivity)
-    return Z7RimEngine(c.id, _z7_subtree_checked(c, target), target)
+    return Z7BorderEngine(c.id, _z7_subtree_checked(c, target), target)
 end
 
 function DGG.interior_engine(::IGeo7System, c::Z7Cell, target::Int,
@@ -455,7 +455,7 @@ end
 # Unvalidated on purpose: `hex_halo_engine` owns the level guard and only ever
 # passes cells that came out of `neighbors`. `_z7_subtree_checked` is the entry
 # point for the public verbs, which do not know that.
-DGG.seeded_rim_engine(::IGeo7System, c::Z7Cell, target::Int, arclen::Int,
+DGG.seeded_border_engine(::IGeo7System, c::Z7Cell, target::Int, arclen::Int,
         start::Int) = Z7ArcEngine(c.id, z7_resolution(c.id), target,
     Int8(arclen), Int8(start))
 
@@ -478,7 +478,7 @@ end
 """
     subtree_border_count(sys::IGeo7System, c::Z7Cell, l::Integer) -> Int
 
-The size of [`subtree_border`](@ref) without enumerating it: `3^(d+1) − 3` for a
+The size of `border(subtree(sys, c, l))` without enumerating it: `3^(d+1) − 3` for a
 hexagon subtree and `5·(3^d − 1)/2` for a pentagon one, `d = l - level(c)`.
 """
 function subtree_border_count(::IGeo7System, c::Z7Cell, l::Integer)

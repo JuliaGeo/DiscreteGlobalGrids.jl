@@ -9,7 +9,7 @@ import Extents
 using Random: shuffle, Xoshiro
 
 using DiscreteGlobalGrids: levelgrid, cellindex, cellposition, neighbors,
-    mapneighbors, foreachneighbors, StorageOrder, HaloTable, halo_table,
+    mapneighbors, foreachneighbors, StorageOrder, adjacency, subtree,
     PartialGrid, CellVector, CellLookup, Cells, MultiOrderCoverage,
     AuthalicSystem, Vertex, Edge, query, system, cellid, level,
     Neighbors, Values, NeighborSlices
@@ -18,6 +18,7 @@ include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, sweepcovers
 
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 # Cover one-window subtrees and multi-window coverages.
 const SWEEP = [
@@ -37,7 +38,7 @@ end
 const TILE = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
 
 rooted_pg(sys, base, depth) =
-    PartialGrid(sys, cellindex(levelgrid(sys, base), 3), base + depth)
+    subtree(sys, cellindex(levelgrid(sys, base), 3), base + depth)
 
 # Include cell position, neighbour positions, and ring order in one result.
 probe(c, nbrs) =
@@ -51,11 +52,11 @@ naive(cv; connectivity = Vertex()) =
      for k in eachindex(cv)]
 
 @testset "$(syslabel(sys))" for (sys, base, depth, covlvl) in SWEEP
-    subtree = CellVector(rooted_pg(sys, base, depth))
+    sub = CellVector(rooted_pg(sys, base, depth))
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=covlvl))
 
     @testset "$label" for (label, cv) in
-                          ("one rooted subtree" => subtree,
+                          ("one rooted subtree" => sub,
                            "multi-window coverage" => coverage)
         n = length(cv)
         for conn in (Vertex(), Edge())
@@ -90,30 +91,26 @@ naive(cv; connectivity = Vertex()) =
         @test a == collect(1:n)
         @test b == [Float64(length(neighbors(cv, c))) for c in cv]
 
-        # `HaloTable` is `halo_table` in CSR form: same rows, same ring order.
-        t = HaloTable(cv)
-        rows = halo_table(cv)
+        # `adjacency` is the same rows in CSR form, in the same ring order.
+        t = adjacency(cv)
         @test length(t) == n
-        @test t.offsets[1] == 1 && t.offsets[end] == length(t.nbrs) + 1
+        @test t.offsets[1] == 1 && t.offsets[end] == length(t.indices) + 1
         @test all(zip(1:n, neighbors(cv))) do (p, (c, nbrs))
             collect(t[p]) == [cellposition(h) for h in nbrs]
         end
-        @test all(p -> collect(t[p]) == rows[p], 1:n)
-        @test rows == [neighbors(cv, p, 1) for p in 1:n]
+        @test all(p -> collect(t[p]) == neighbors(cv, p, 1), 1:n)
 
         # Threaded and sequential builds have identical storage.
-        s = HaloTable(cv; threaded = false)
-        @test t.offsets == s.offsets && t.nbrs == s.nbrs
-        @test halo_table(cv; threaded = false) == rows
+        @test adjacency(cv; threaded = false) == t
     end
 
     @testset "the grid and lookup forms are the vector's" begin
         pg = rooted_pg(sys, base, depth)
-        want = naive(subtree)
+        want = naive(sub)
         @test mapneighbors(probe, pg; threaded = false) == want
-        @test mapneighbors(probe, CellLookup(subtree); threaded = false) == want
-        @test HaloTable(pg) == HaloTable(subtree)
-        @test HaloTable(CellLookup(subtree)) == HaloTable(subtree)
+        @test mapneighbors(probe, CellLookup(sub); threaded = false) == want
+        @test adjacency(pg) == adjacency(sub)
+        @test adjacency(CellLookup(sub)) == adjacency(sub)
     end
 
     # Rooted vectors preserve their grid; derived subsets do not retain a root.
@@ -122,9 +119,9 @@ naive(cv; connectivity = Vertex()) =
         cv = CellVector(pg)
         back = PartialGrid(cv)
         @test back === pg
-        @test FB._is_rooted(back)
-        @test !FB._is_rooted(PartialGrid(cv[1:(length(cv)-1)]))
-        @test halo_table(cv) == halo_table(pg)
+        @test EN._is_rooted(back)
+        @test !EN._is_rooted(PartialGrid(cv[1:(length(cv)-1)]))
+        @test adjacency(cv) == adjacency(pg)
     end
 end
 

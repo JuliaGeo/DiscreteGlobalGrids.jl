@@ -10,7 +10,7 @@ import Extents
 using DiscreteGlobalGrids: levelgrid, ncells, cellindex, cellposition,
     neighbors, ring, neighborcount, level, rawid, has_sorted_subtrees,
     cellindextype, cell_centroid, cell_boundary, cell_area, cell_extent,
-    cell_polygon, PartialGrid,
+    cell_polygon, PartialGrid, subtree,
     CellVector, CellLookup, MultiOrderCoverage, AuthalicSystem, Vertex, Edge,
     query, system, SubsetPositionedCell, cellid, Cells
 
@@ -18,6 +18,7 @@ include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, sweepcovers
 
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 # ---------------------------------------------------------------------------
 # Systems and subset shapes covered by the sweep.
@@ -40,18 +41,18 @@ end
 const TILE = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
 
 rooted(sys, base, depth) =
-    CellVector(PartialGrid(sys, cellindex(levelgrid(sys, base), 3), base + depth))
+    CellVector(subtree(sys, cellindex(levelgrid(sys, base), 3), base + depth))
 
-nwindows(cv) = FB.nwindows(FB.windows(cv))
+nwindows(cv) = EN.nwindows(EN.windows(cv))
 
 @testset "$(syslabel(sys))" for (sys, base, depth, covlvl) in SWEEP
-    subtree = rooted(sys, base, depth)
+    sub = rooted(sys, base, depth)
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=covlvl))
     # The coverage must exercise window transitions.
     @test nwindows(coverage) > 1
 
     @testset "$label" for (label, cv) in
-                          ("one rooted subtree" => subtree,
+                          ("one rooted subtree" => sub,
                            "multi-window coverage" => coverage)
         for conn in (Vertex(), Edge())
             # Cells and ring order match the per-cell form.
@@ -78,9 +79,9 @@ nwindows(cv) = FB.nwindows(FB.windows(cv))
                       all(same(cx, cy) && length(nx) == length(ny) &&
                           all(splat(same), zip(nx, ny))
                           for ((cx, nx), (cy, ny)) in zip(x, y))
-        pg = PartialGrid(sys, cellindex(levelgrid(sys, base), 3), base + depth)
-        @test agree(collect(neighbors(pg)), collect(neighbors(subtree)))
-        @test agree(collect(neighbors(CellLookup(subtree))), collect(neighbors(subtree)))
+        pg = subtree(sys, cellindex(levelgrid(sys, base), 3), base + depth)
+        @test agree(collect(neighbors(pg)), collect(neighbors(sub)))
+        @test agree(collect(neighbors(CellLookup(sub))), collect(neighbors(sub)))
     end
 end
 

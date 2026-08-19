@@ -40,7 +40,7 @@ DGG.idname(::ISEA4RSystem) = "ISEA4R id"
 DGG.levels(::ISEA4RSystem) = 0:MAX_LEVEL
 
 """
-    max_neighbors(ISEA4RSystem(), connectivity) -> Int
+    maxneighbors(ISEA4RSystem(), connectivity) -> Int
 
 `9` under `Vertex()`, `4` under `Edge()`.
 
@@ -48,8 +48,8 @@ Interior cells have eight vertex neighbours. At vertices 0 and 11, five
 diamond corners meet and a cell can have nine. Other valence-3 icosahedron
 vertices give seven. At level zero every diamond has six vertex neighbours.
 """
-DGG.max_neighbors(::ISEA4RSystem, ::DGG.Vertex) = 9
-DGG.max_neighbors(::ISEA4RSystem, ::DGG.Edge) = 4
+DGG.maxneighbors(::ISEA4RSystem, ::DGG.Vertex) = 9
+DGG.maxneighbors(::ISEA4RSystem, ::DGG.Edge) = 4
 
 # Row-major codecs remain internal; only the canonical Morton index is exposed.
 DGG.cellindextypes(::ISEA4RSystem) = (DGG.LevelIndex,)
@@ -211,7 +211,7 @@ At level zero each diamond has six vertex-neighbors; the 7–9 counts apply to
 corner cells at finer levels.
 
 `k == 0` returns an empty container; `k == 1` returns a
-`SmallCollections.SmallVector` sized by [`max_neighbors`](@ref).
+`SmallCollections.SmallVector` sized by [`maxneighbors`](@ref).
 """
 function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())

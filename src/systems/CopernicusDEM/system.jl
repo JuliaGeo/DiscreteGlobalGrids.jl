@@ -12,13 +12,13 @@ DGG.levels(::CopernicusDEMSystem) = 0:1
 DGG.has_sorted_subtrees(::CopernicusDEMSystem) = true
 
 """
-    max_neighbors(CopernicusDEMSystem{N}(), connectivity) -> Int
+    maxneighbors(CopernicusDEMSystem{N}(), connectivity) -> Int
 
 `36N + 2` under `Vertex()` and `6` under `Edge()`. Both bounds are attained.
 """
-DGG.max_neighbors(sys::CopernicusDEMSystem, ::DGG.Vertex) =
+DGG.maxneighbors(sys::CopernicusDEMSystem, ::DGG.Vertex) =
     360 * Int(max(ncols(sys, 0), ncols(sys, NROWS - 1))) + 2
-DGG.max_neighbors(::CopernicusDEMSystem, ::DGG.Edge) = 6
+DGG.maxneighbors(::CopernicusDEMSystem, ::DGG.Edge) = 6
 
 "Lazy 0-based ids at one level; `rootcells` and `children` are windows over it."
 struct IdRange <: AbstractVector{DGG.LevelIndex}
@@ -93,7 +93,7 @@ raster order.
 function DGG.children(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     l = DGG.level(c)
     l == 0 || throw(ArgumentError(l == 1 ?
-        "level-1 Copernicus DEM cell $c is a pixel, at max_level 1, and has no children" :
+        "level-1 Copernicus DEM cell $c is a pixel, at maxlevel 1, and has no children" :
         "level $l is outside $(DGG.levels(sys))"))
     r, q, _, _ = decode(sys, c)
     return IdRange(Int32(1), tilebase(sys, r, q), Int(ncols(sys, r)) * N)
@@ -131,8 +131,8 @@ function DGG.descendant_range(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex,
     index = _checked_index(sys, c)          # also rejects a level outside 0:1
     target >= lc || throw(ArgumentError(
         "descendant level $target is above the cell's own level $lc"))
-    target <= DGG.max_level(sys) || throw(ArgumentError(
-        "descendant level $target is past max_level $(DGG.max_level(sys))"))
+    target <= DGG.maxlevel(sys) || throw(ArgumentError(
+        "descendant level $target is past maxlevel $(DGG.maxlevel(sys))"))
     if target == lc
         pos = Int(index + 1)
         return pos:pos

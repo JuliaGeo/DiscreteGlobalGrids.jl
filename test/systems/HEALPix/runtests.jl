@@ -16,14 +16,14 @@
 #      level, not as a proof over it. Where a property IS checked over a whole
 #      level or a whole subtree the testset iterates the range directly —
 #      `neighbours`, the level sums in `cell_area`, `the full sphere is
-#      partitioned`, and `subtree_border`'s brute-force comparison.
+#      partitioned`, and the border walk's brute-force comparison.
 #
 #   2. CONTRACT. The two conformance suites from
 #      `DiscreteGlobalGridsConformanceTesting`, with default kwargs.
 #
 #   3. STRUCTURAL. The things the oracle has no opinion about because they are
 #      this package's own design: the exact subtree cap's covering margin, the
-#      Morton rim walk, the `Edge()` restriction, and the 0-based/1-based
+#      Morton border walk, the `Edge()` restriction, and the 0-based/1-based
 #      conventions.
 #
 # `test/runtests.jl` includes this file; it also runs standalone:
@@ -48,6 +48,12 @@ const US = GO.UnitSpherical
 import Healpix
 
 const SYS = HP.HEALPixSystem()
+
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(DGG.border(DGG.subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(DGG.interior(DGG.subtree(sys, c, l); cells = true, kw...))
 
 """
 A deterministic pixel sample: ALL `12 * 4^level` pixels when the level fits
@@ -358,11 +364,11 @@ end
     @test length(rootcells(SYS)) == 12
     @test issorted(rootcells(SYS))
     @test levels(SYS) == 0:29
-    @test max_level(SYS) == 29
+    @test maxlevel(SYS) == 29
     @test has_sorted_subtrees(SYS)
-    @test max_neighbors(SYS) == 8
-    @test max_neighbors(SYS, Vertex()) == 8
-    @test max_neighbors(SYS, Edge()) == 4
+    @test maxneighbors(SYS) == 8
+    @test maxneighbors(SYS, Vertex()) == 8
+    @test maxneighbors(SYS, Edge()) == 4
 
     @test_throws ArgumentError parent(SYS, LevelIndex(0, 0))
     @test_throws ArgumentError children(SYS, LevelIndex(29, 0))
@@ -493,7 +499,7 @@ end
             @test issubset(Set(es), Set(vs))        # Edge() restricts Vertex()
             # `<=` and not `==`, deliberately: the Vertex() degree genuinely
             # varies (6 at every level-0 base pixel, 7 at the 24 degree-3
-            # pixels, 8 everywhere else), so 8 is the `max_neighbors` bound
+            # pixels, 8 everywhere else), so 8 is the `maxneighbors` bound
             # restated per cell. The exact distribution is pinned by the
             # `counts` histogram at the end of this testset, which is the real
             # assertion; this line only catches an over-long list.
@@ -734,23 +740,23 @@ end
 end
 
 # =========================================================================
-# 7. Structural: the Morton rim walk
+# 7. Structural: the Morton border walk
 # =========================================================================
 
-@testset "subtree_border" begin
+@testset "the Morton border walk" begin
     for level in 0:2, p in pixel_sample(level, 12)
         c = LevelIndex(level, p)
-        @test DGG.subtree_border(SYS, c, level) == [c]
+        @test eager_border(SYS, c, level) == [c]
         for depth in 1:5
             target = level + depth
-            rim = DGG.subtree_border(SYS, c, target)
+            border = eager_border(SYS, c, target)
             s = 1 << depth
-            @test length(rim) == 4s - 4
-            @test issorted(rim) && allunique(rim)
+            @test length(border) == 4s - 4
+            @test issorted(border) && allunique(border)
 
-            # Against the definition: a descendant is on the rim iff it has a
+            # Against the definition: a descendant is on the border iff it has a
             # neighbour outside the subtree. Computed here by neighbour query,
-            # which is precisely what the rim walk exists not to do.
+            # which is precisely what the border walk exists not to do.
             grid = levelgrid(SYS, target)
             inside = Set(descendant_range(SYS, c, target))
             brute = LevelIndex[]
@@ -759,7 +765,7 @@ end
                 any(n -> !(cellposition(grid, n) in inside),
                     neighbors(grid, d, 1)) && push!(brute, d)
             end
-            @test rim == sort!(brute)
+            @test border == sort!(brute)
             # and the same answer under Edge() connectivity
             brute_e = LevelIndex[]
             for pos in inside
@@ -767,10 +773,10 @@ end
                 any(n -> !(cellposition(grid, n) in inside),
                     neighbors(grid, d, 1; connectivity = Edge())) && push!(brute_e, d)
             end
-            @test rim == sort!(brute_e)
+            @test border == sort!(brute_e)
         end
     end
-    @test_throws ArgumentError DGG.subtree_border(SYS, LevelIndex(3, 0), 2)
+    @test_throws ArgumentError eager_border(SYS, LevelIndex(3, 0), 2)
 end
 
 # =========================================================================

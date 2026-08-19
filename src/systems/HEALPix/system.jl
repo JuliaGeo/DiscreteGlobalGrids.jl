@@ -61,8 +61,8 @@ DGG.idname(::HEALPixSystem) = "nested id"
 DGG.cellindextypes(::HEALPixSystem) = (DGG.LevelIndex, HEALPixRingIndex)
 DGG.levels(::HEALPixSystem) = 0:MAX_LEVEL
 
-DGG.max_neighbors(::HEALPixSystem, ::DGG.Vertex) = 8
-DGG.max_neighbors(::HEALPixSystem, ::DGG.Edge) = 4
+DGG.maxneighbors(::HEALPixSystem, ::DGG.Vertex) = 8
+DGG.maxneighbors(::HEALPixSystem, ::DGG.Edge) = 4
 
 # ===========================================================================
 # Alternate index scheme

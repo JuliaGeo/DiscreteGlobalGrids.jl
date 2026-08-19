@@ -100,12 +100,12 @@ end
 
 The four children `4*index .+ (0:3)`, ascending at the next level. Refinement is
 a uniform quadtree, so every cell has exactly four. Throws an `ArgumentError` at
-`max_level`.
+`maxlevel`.
 """
 function children(sys::AbstractQuadFaceGridSystem, c::LevelIndex)
     l = level(c)
-    l < max_level(sys) || throw(ArgumentError(
-        "$(systemname(sys)) cell $c is at max_level $(max_level(sys)) and has no children"))
+    l < maxlevel(sys) || throw(ArgumentError(
+        "$(systemname(sys)) cell $c is at maxlevel $(maxlevel(sys)) and has no children"))
     base = c.index << 2
     return [LevelIndex(l + 1, base + k) for k in 0:3]
 end
@@ -147,8 +147,8 @@ function descendant_range(sys::AbstractQuadFaceGridSystem, c::LevelIndex, l::Int
     lc = level(c)
     target >= lc || throw(ArgumentError(
         "descendant level $target is above the cell's own level $lc"))
-    target <= max_level(sys) || throw(ArgumentError(
-        "descendant level $target is past max_level $(max_level(sys))"))
+    target <= maxlevel(sys) || throw(ArgumentError(
+        "descendant level $target is past maxlevel $(maxlevel(sys))"))
     shift = 2 * (target - lc)
     lo = c.index << shift
     hi = ((c.index + 1) << shift) - 1
@@ -195,7 +195,7 @@ end
 # A subtree at depth Δ is the aligned `2^Δ x 2^Δ` lattice block on one face, and
 # a descendant's offset within the subtree's contiguous id range IS its position
 # along the curve inside that block. Ascending id order over the subtree is
-# therefore curve order over the block, and the rim is the block's perimeter,
+# therefore curve order over the block, and the border is the block's perimeter,
 # `4*2^Δ - 4` cells. Both connectivities agree: a perimeter cell has an axis
 # neighbour outside the block already, and a block flush against a face edge is
 # no special case, because its neighbours across the seam are on another face and
@@ -209,10 +209,10 @@ function _quad_block(sys::AbstractQuadFaceGridSystem, c::LevelIndex, target::Int
     return Int64(first(r)) - 1, Int64(1) << (target - level(c))
 end
 
-function rim_engine(sys::AbstractQuadFaceGridSystem, c::LevelIndex, target::Int,
+function border_engine(sys::AbstractQuadFaceGridSystem, c::LevelIndex, target::Int,
         connectivity::Connectivity)
     lo, side = _quad_block(sys, c, target)
-    return SquareRimEngine(subtree_curve(sys), lo, target, side,
+    return SquareBorderEngine(subtree_curve(sys), lo, target, side,
         subtree_orientation(sys, c))
 end
 
@@ -223,31 +223,8 @@ function interior_engine(sys::AbstractQuadFaceGridSystem, c::LevelIndex, target:
         subtree_orientation(sys, c))
 end
 
-# The halo — the outside face of the same boundary — is the width-1 band around
-# the block, walked lazily by the face-quadtree descent. Away from the face edge
-# that band is entirely in-face, where adjacency is the plain 3x3 lattice, so the
-# band IS the halo (minus its four corners under `Edge()`). Flush with the edge it
-# crosses the seam onto other faces, and `square_halo_engine` derives those
-# candidates by asking `neighbors` about a few rim cells, then filters every one
-# of them with the native one-ring. No seam table is read here.
-#
-# The block's origin comes from the PARENT's `(ix, iy)` shifted left by `d`, not
-# from decoding the block's first id: min-Morton is the min corner, but a Hilbert
-# block's first position is whichever corner the curve enters by, so decoding it
-# would name a different corner per orientation.
-#
-# `d == 0` is depth zero, which the generic engine answers with the cell's own
-# one-ring — exact at the irregular vertices, where a band of one is not.
-function halo_engine(sys::AbstractQuadFaceGridSystem, c::LevelIndex, target::Int,
-        connectivity::Connectivity)
-    check_halo_level(sys, c, target)
-    checked_id(sys, c)
-    d = target - level(c)
-    d == 0 && return generic_halo_engine(sys, c, target, connectivity)
-    ix, iy, face = lattice_decode(sys, c)
-    return square_halo_engine(sys, subtree_curve(sys), c, target, connectivity,
-        Int64(ix) << d, Int64(iy) << d, Int64(1) << d, Int64(face), nside(target))
-end
+# The family's `halo_engine` is `Engine`'s: it is the band walk's wiring, and
+# the band walk lives beside the other halo engines.
 
 # ===========================================================================
 # Chart-independent geometry

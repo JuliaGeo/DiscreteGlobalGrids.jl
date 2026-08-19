@@ -119,7 +119,7 @@ end
 
         # A rooted subtree, which is the one shape both backings can hold.
         root = DGG.ancestor(sys, first(ids), leaf - 1)
-        rooted = DGG.CellLookup(DGG.PartialGrid(sys, root, leaf))
+        rooted = DGG.CellLookup(DGG.subtree(sys, root, leaf))
         @test collect(rooted) == DGG.descendants(sys, root, leaf)
         @test DGG.cellposition(rooted, first(ids)) !== nothing
     end
@@ -266,7 +266,7 @@ end
     @test_throws ArgumentError DGG.level_ranges(set, leaf)
 
     # The decision: the lookup exists anyway, and it is exactly the
-    # `descendants` expansion — the pattern `PartialGrid(sys, cell, level)`
+    # `descendants` expansion — the pattern `subtree(sys, cell, level)`
     # already uses.
     lk = DGG.CellLookup(set)
     ids = sort!(reduce(vcat, [DGG.descendants(sys, c, leaf) for c in set]))

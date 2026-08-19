@@ -42,9 +42,9 @@ overflow `Int64`.
 
 # Traits
 
-`has_sorted_subtrees` is `true`. [`max_neighbors`](@ref) is 8 for `Vertex()` and
+`has_sorted_subtrees` is `true`. [`maxneighbors`](@ref) is 8 for `Vertex()` and
 4 for `Edge()`. [`node_extent`](@ref) uses the exact four-corner subtree cap.
-[`subtree_border`](@ref) is an `O(rim)` walk over the subtree's square block.
+[`border`](@ref) on a subtree is an `O(border)` walk over its square block.
 """
 struct S2System <: DGG.AbstractQuadFaceGridSystem end
 
@@ -71,8 +71,8 @@ DGG.idname(::S2System) = "scaffold ordinal"
 
 DGG.levels(::S2System) = 0:MAX_LEVEL
 
-DGG.max_neighbors(::S2System, ::DGG.Vertex) = 8
-DGG.max_neighbors(::S2System, ::DGG.Edge) = 4
+DGG.maxneighbors(::S2System, ::DGG.Vertex) = 8
+DGG.maxneighbors(::S2System, ::DGG.Edge) = 4
 
 # ===========================================================================
 # Geometry
@@ -223,7 +223,7 @@ Rings beyond the first are ordered by azimuth about the cell centre, from the
 spoke through the first ring-1 neighbour; see [`ring`](@ref).
 
 `k == 0` returns an empty container; `k == 1` returns a
-`SmallCollections.SmallVector` sized by `max_neighbors`.
+`SmallCollections.SmallVector` sized by `maxneighbors`.
 """
 function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())

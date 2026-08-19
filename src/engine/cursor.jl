@@ -219,7 +219,7 @@ STI.getchild(cursor::SelectionCursor) = _selection_children(cursor)
 # iterator keeps one definition of "which children exist".
 function STI.getchild(cursor::HierarchicalGridCursor, i::Int)
     # A leaf has no children to index, and asking `children(sys, id)` for them
-    # at `max_level` would raise the system's own error instead of a BoundsError.
+    # at `maxlevel` would raise the system's own error instead of a BoundsError.
     (i >= 1 && !STI.isleaf(cursor)) || throw(BoundsError(cursor, i))
     seen = 0
     for child in STI.getchild(cursor)

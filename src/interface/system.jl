@@ -26,7 +26,7 @@ function cellindextype end
 
 The valid refinement levels of `sys`, coarsest first: `first(levels(sys))` is
 the level of [`rootcells`](@ref) and `last(levels(sys))` is
-[`max_level`](@ref).
+[`maxlevel`](@ref).
 
 **Required.**
 
@@ -139,7 +139,7 @@ canonical order.
 Child count may vary by cell; generic code must not assume it equals the nominal
 aperture.
 
-Calling it on a cell at `max_level(sys)` throws an `ArgumentError`.
+Calling it on a cell at `maxlevel(sys)` throws an `ArgumentError`.
 """
 function children end
 
@@ -155,7 +155,7 @@ validating it is the system's responsibility.
 
 > `node_extent(sys, c)` contains the geometry of **every descendant of `c`, at
 > every depth** — every point of every cell boundary in the subtree, all the
-> way down to `max_level(sys)`.
+> way down to `maxlevel(sys)`.
 
 Tree pruning depends on this covering law. Over-coverage only reduces pruning;
 under-coverage can omit valid results. For a convex cap of angular radius at
@@ -165,7 +165,7 @@ arcs. Non-convex extents must establish containment of the full geometry.
 A cell's own boundary need not cover its descendants; aperture-7 children, for
 example, can extend beyond the parent boundary.
 
-The result must cover through `max_level(sys)`, independent of a caller's
+The result must cover through `maxlevel(sys)`, independent of a caller's
 planned traversal depth.
 
 Extents are `SphericalCap`s throughout this package, at every node of every
@@ -174,23 +174,23 @@ tree, which is what lets one predicate vocabulary serve all of them.
 function node_extent end
 
 """
-    max_neighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
+    maxneighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
 
 A **static** upper bound on the number of `connectivity`-neighbours of any cell
 of `sys`, at any level, or `nothing` when the system declares no bound.
 
 **Sizes the neighbourhood family.** An `Int` bound permits the fixed-capacity
-stack containers behind [`neighbors`](@ref) and [`ring`](@ref) on a subset,
-[`halo_table`](@ref) and [`stencil_table`](@ref); the complete-level verbs and
-the subtree family never ask for it. Defaults to `nothing` — never a guessed
+stack containers behind [`neighbors`](@ref) and [`ring`](@ref) on a subset and
+behind [`adjacency`](@ref); the complete-level verbs and the subtree family
+never ask for it. Defaults to `nothing` — never a guessed
 capacity — and the same machinery then buffers one-rings in a heap `Vector`,
 allocating once per cell: identical answers, the slow path. Declaring the bound
 is a speed decision, not a correctness requirement. Individual cells may have
 fewer neighbours than the bound.
 """
-max_neighbors(::AbstractHierarchicalGridSystem, ::Connectivity) = nothing
+maxneighbors(::AbstractHierarchicalGridSystem, ::Connectivity) = nothing
 
-max_neighbors(sys::AbstractHierarchicalGridSystem) = max_neighbors(sys, Vertex())
+maxneighbors(sys::AbstractHierarchicalGridSystem) = maxneighbors(sys, Vertex())
 
 # ===========================================================================
 # Traits with defaults
@@ -230,12 +230,12 @@ correctness bug — see the covering law in [`node_extent`](@ref).
 cap_inflation(::AbstractHierarchicalGridSystem) = 1.2
 
 """
-    max_level(sys::AbstractHierarchicalGridSystem) -> Int
+    maxlevel(sys::AbstractHierarchicalGridSystem) -> Int
 
 The deepest valid level of `sys`: `last(levels(sys))`, which is the default
 implementation.
 """
-max_level(sys::AbstractHierarchicalGridSystem) = last(levels(sys))
+maxlevel(sys::AbstractHierarchicalGridSystem) = last(levels(sys))
 
 cellindextypes(sys::AbstractHierarchicalGridSystem) = (cellindextype(sys),)
 
@@ -263,70 +263,42 @@ function ancestor end
     descendants(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer)
 
 Every descendant of `c` at level `l`, in ascending canonical order, for
-`level(c) <= l <= max_level(sys)`.
+`level(c) <= l <= maxlevel(sys)`.
 
 `descendants(sys, c, level(c))` is `[c]`. `l < level(c)` throws an
 `ArgumentError` (uniformly across systems, so generic code can catch it).
 
 This materializes `O(subtree)` ids. Use [`descendant_range`](@ref) when
-available, or [`subtree_border`](@ref) when only the rim is needed.
+available, or [`border`](@ref)`(subtree(sys, c, l))` when only the border is
+needed.
 """
 function descendants end
 
 """
-    subtree_border(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer; connectivity::Connectivity = Vertex())
+    subtree(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer; bucket_size = 0) -> PartialGrid
 
-The **rim** of `c`'s subtree at level `l`: every level-`l` descendant of `c`
-that has a neighbour which is *not* a descendant of `c`.
+`c`'s subtree at level `l`, as a region: the [`PartialGrid`](@ref) holding every
+level-`l` descendant of `c`, rooted at `c`.
 
-`subtree_border(sys, c, level(c))` is `[c]` — a depth-0 subtree is the cell
-itself, and its entire neighbourhood lies outside it. `l < level(c)` throws an
-`ArgumentError`, as it does for [`descendants`](@ref).
+This is the one spelling of a subtree. It is what gives the subtree family the
+same currency every other region has — `halo(subtree(sys, c, l))`,
+`border(subtree(sys, c, l))`, `adjacency(subtree(sys, c, l); halo = 1)` — rather
+than a parallel set of verbs taking `(sys, c, l)` argument tuples.
 
-`connectivity` selects which adjacency defines "has a neighbour outside", with
-the same meaning as in [`neighbors`](@ref). It changes nothing where the two
-adjacencies coincide (H3 and IGeo7, whose vertices are all 3-valent) or where
-the rim comes out the same set either way (HEALPix); A5's 4-valent corners make
-them genuinely different relations, so assume nothing.
-
-The generic fallback walks [`descendant_range`](@ref) and tests each cell's
-[`neighbors`](@ref). Systems may override with an `O(rim)` algorithm. Order is
-ascending canonical order unless documented otherwise.
-
-This is `collect` of `EdgeCellIterator(sys, c, l; connectivity)`, which is the
-same walk resumable and in `O(depth)` memory — reach for the iterator when the
-rim is large or a prefix of it will do.
-
-See also [`subtree_interior`](@ref), the complement.
+`l < level(c)` throws an `ArgumentError`. Construction is `O(1)` where
+[`has_sorted_subtrees`](@ref) holds, since the ids are then the level grid's own
+over a known position range; elsewhere it materialises
+[`descendants`](@ref). `bucket_size` is [`PartialGrid`](@ref)'s.
 """
-function subtree_border end
+function subtree end
 
 """
-    subtree_interior(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer; connectivity::Connectivity = Vertex())
-
-The level-`l` descendants of `c` that are **not** on the rim — the complement of
-[`subtree_border`](@ref) within [`descendants`](@ref), in ascending canonical
-order.
-
-    subtree_border(sys, c, l) ∪ subtree_interior(sys, c, l) == descendants(sys, c, l)
-
-with the two disjoint. `subtree_interior(sys, c, level(c))` is empty: the cell
-itself is its own rim.
-
-This materializes most of the subtree. It is `collect` of
-`InnerCellIterator(sys, c, l; connectivity)`, which generates the interior from
-the rim walk's pruned branches — never a border set, never the rim materialized
-— in `O(depth)` memory. For large subtrees, use the iterator.
-"""
-function subtree_interior end
-
-"""
-    rim_engine(sys, c, target::Int, connectivity)
+    border_engine(sys, c, target::Int, connectivity)
     interior_engine(sys, c, target::Int, connectivity)
     halo_engine(sys, c, target::Int, connectivity)
 
 Return the iteration engine used by `EdgeCellIterator`, `InnerCellIterator`, or
-`SubtreeHaloIterator`. A system may override these methods with an `O(rim)` or
+`SubtreeHaloIterator`. A system may override these methods with an `O(border)` or
 `O(halo)` traversal; eager operations collect the same engine.
 
 An engine is any iterator over `cellindextype(sys)`. All three methods own their
@@ -335,7 +307,7 @@ level validation, so their `ArgumentError`s are the ones the eager verbs raise.
 Engine selection uses private dispatch on the system type and is not part of
 the public compatibility surface.
 
-The generic rim and interior engines scan [`descendant_range`](@ref), or
+The generic border and interior engines scan [`descendant_range`](@ref), or
 materialize descendants when [`has_sorted_subtrees`](@ref) is `false`. The
 generic halo engine walks cells outside the subtree because a halo is not a
 single descendant interval.
@@ -344,12 +316,12 @@ Specializations may enumerate conservative candidates, but must filter them by
 the requested adjacency. If their preconditions cannot be verified, they must
 return `generic_halo_engine(sys, c, target, connectivity)`.
 """
-function rim_engine end
+function border_engine end
 
-@doc (@doc rim_engine)
+@doc (@doc border_engine)
 function interior_engine end
 
-@doc (@doc rim_engine)
+@doc (@doc border_engine)
 function halo_engine end
 
 """
@@ -365,7 +337,7 @@ coordinates, with `face` 0-based and
 `(ix, iy)` in `0:2^level - 1`. `face_orientation` is the curve state a face's
 root uses before consuming position bits.
 
-The traversal derives seam rectangles by decoding neighbours of rim cells.
+The traversal derives seam rectangles by decoding neighbours of border cells.
 
 `SquareBandEngine` also requires these invariants:
 
@@ -378,7 +350,7 @@ The traversal derives seam rectangles by decoding neighbours of rim cells.
 
 A fourth square system holding all three subtypes
 [`AbstractQuadFaceGridSystem`](@ref) and writes only the three methods above. One
-that does not writes its own [`halo_engine`](@ref rim_engine) instead.
+that does not writes its own [`halo_engine`](@ref border_engine) instead.
 """
 function lattice_decode end
 
@@ -390,21 +362,21 @@ function face_orientation end
 
 """
     hex_child_direction(sys, c) -> Int
-    seeded_rim_engine(sys, c, target::Int, arclen::Int, start::Int)
+    seeded_border_engine(sys, c, target::Int, arclen::Int, start::Int)
 
 Define the operations used by the calibrated aperture-7 halo traversal. H3 and
-IGeo7 implement them using their subtree-rim automata.
+IGeo7 implement them using their subtree-border automata.
 
 `hex_child_direction` returns the position `0:5` of the parent-to-child step on
 the direction ring, or `-1` for a centre child or root cell.
 
-`seeded_rim_engine` enters the system's rim automaton at an arbitrary arc
+`seeded_border_engine` enters the system's border automaton at an arbitrary arc
 `(arclen, start)` rather than at the fully exposed `(6, 0)` a subtree root gets:
 `c`'s level-`target` descendants reachable along the arc of exposed directions
 `start, start+1, …, start+arclen-1 (mod 6)`, ascending, in `O(depth)` memory. It
 must carry `c`'s own pentagon deletion on the root frame, since a calibrated arc
 is seeded at a cell that may be a pentagon. It declares `SizeUnknown()`: the
-closed-form rim census counts the `(6, 0)` walk and does not describe a seeded
+closed-form border census counts the `(6, 0)` walk and does not describe a seeded
 one.
 
 Neither method validates `c`; `hex_halo_engine` supplies cells returned by
@@ -413,7 +385,7 @@ Neither method validates `c`; `hex_halo_engine` supplies cells returned by
 function hex_child_direction end
 
 @doc (@doc hex_child_direction)
-function seeded_rim_engine end
+function seeded_border_engine end
 
 """
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}

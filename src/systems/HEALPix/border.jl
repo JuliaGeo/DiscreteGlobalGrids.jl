@@ -9,14 +9,14 @@
 #
 # So the subtree is the contiguous id range `[id * 4^Δ, (id+1) * 4^Δ)` and a
 # descendant's offset within it *is* `morton(dx, dy)` — the quad-face family's
-# premise, which supplies the rim, interior, and halo engines. Seam crossings
+# premise, which supplies the border, interior, and halo engines. Seam crossings
 # leave the subtree face (no non-centre row of `NB_FACEARRAY` maps a face to
-# itself), and missing diagonals at degree-3 vertices do not affect rim
-# membership, so both connectivities yield the same rim.
+# itself), and missing diagonals at degree-3 vertices do not affect border
+# membership, so both connectivities yield the same border.
 #
 # The seam band is `NB_SWAPARRAY` territory — ids on other faces — but no seam
 # table is read here: `square_halo_engine` derives the candidate rectangles by
-# asking `neighbors` about a few rim cells and filtering every candidate with the
+# asking `neighbors` about a few border cells and filtering every candidate with the
 # native one-ring.
 
 # Square-walk hooks. Morton orientation is `0x0` on every face, which is the

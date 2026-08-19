@@ -87,10 +87,9 @@ interface for the complete level:
 | [`cell_boundary(sys, c)`](@ref cell_boundary) | exact boundary ring, unit-sphere points |
 | [`cell_centroid(sys, c)`](@ref cell_centroid) | representative interior point |
 
-[`max_neighbors(sys, connectivity)`](@ref max_neighbors) **sizes the
-neighbourhood family**: [`neighbors`](@ref), [`ring`](@ref),
-[`halo_table`](@ref) and [`stencil_table`](@ref) on a subset use it for their
-fixed-capacity containers. It defaults to `nothing` — no bound declared — and
+[`maxneighbors(sys, connectivity)`](@ref maxneighbors) **sizes the
+neighbourhood family**: [`neighbors`](@ref), [`ring`](@ref) on a subset and
+[`adjacency`](@ref) use it for their fixed-capacity containers. It defaults to `nothing` — no bound declared — and
 the same verbs then buffer in heap `Vector`s: identical answers, one
 allocation per cell. Declaring the bound is the fast path.
 
@@ -101,7 +100,7 @@ allocation per cell. Declaring the bound is the fast path.
 | [`levelgrid(sys, l)`](@ref levelgrid) | `HierarchicalLevelGrid(sys, l)`, checked against [`levels`](@ref) |
 | [`node_extent(sys, c)`](@ref node_extent) | the cell's bounding cap, inflated — see the covering law |
 | [`cap_inflation(sys)`](@ref cap_inflation) | `1.2` |
-| [`max_level(sys)`](@ref max_level) | `last(levels(sys))` |
+| [`maxlevel(sys)`](@ref maxlevel) | `last(levels(sys))` |
 | [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) | `false`; declaring it `true` obliges [`descendant_range`](@ref) |
 
 # Grid methods and system methods
@@ -143,11 +142,11 @@ block ([`rootcells`](@ref), [`parent`](@ref), [`children`](@ref),
 level-grid arithmetic ([`ncells`](@ref), [`cellindex`](@ref),
 [`cellposition`](@ref), [`cellindextype`](@ref),
 [`has_sorted_subtrees`](@ref)), and the subtree engines
-([`rim_engine`](@ref)/`interior_engine`/`halo_engine`), which read a subtree as
+([`border_engine`](@ref)/`interior_engine`/`halo_engine`), which read a subtree as
 the square lattice block it is.
 
 It must still provide its own face layout and projection: [`levels`](@ref),
-[`max_neighbors`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref),
+[`maxneighbors`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref),
 [`node_extent`](@ref), [`cellat`](@ref), [`one_ring`](@ref), the lattice codec
 hooks [`lattice_decode`](@ref)/`lattice_cell`/`face_orientation`, and the three
 declarations `nbasefaces`, `systemname`, `idname`. A system whose curve carries
@@ -200,7 +199,7 @@ julia> c = LevelIndex(3, 17); (level(c), rawid(c))
 struct LevelIndex <: AbstractCellIndex
     # `Int32` rather than `Int8`: a level is compared and incremented against
     # `Int`s everywhere, and an 8-bit field would silently wrap at 127 for a
-    # system with no `max_level`. The struct is 8-byte aligned either way, so
+    # system with no `maxlevel`. The struct is 8-byte aligned either way, so
     # the two narrower choices cost exactly the same 16 bytes.
     level::Int32
     index::Int64

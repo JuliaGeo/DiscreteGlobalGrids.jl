@@ -47,7 +47,7 @@ _walkable(grid::AbstractGrid) = CellVector(grid)
 
 function _grow_once(walkable, cv::CellVector, connectivity::Connectivity)
     ivs = intervals(cv.windows)
-    for p in halo_positions(halo(walkable; connectivity))
+    for p in halo(walkable; connectivity)
         push!(ivs, (p, p))
     end
     sort!(ivs)
@@ -123,7 +123,7 @@ at that level; a region with no complete sibling group stops after one pass. A
 group counts as complete against `length(children(sys, parent))`, the parent's
 own child count — pentagon parents are not assumed to have the hexagonal one.
 
-[`is_contained`](@ref) is `false` on every member: compaction has no coverage
+[`iscontained`](@ref) is `false` on every member: compaction has no coverage
 target, so nothing was proven to lie inside anything.
 """
 function compact(cv::CellVector)

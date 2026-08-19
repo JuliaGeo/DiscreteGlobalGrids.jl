@@ -13,15 +13,21 @@ module SubtreeIteratorTests
 
 using Test
 import DiscreteGlobalGrids as DGG
-using DiscreteGlobalGrids: systems, levels, max_level, levelgrid, ncells,
+using DiscreteGlobalGrids: systems, levels, maxlevel, levelgrid, ncells,
     cellindex, neighbors, level, descendants, rootcells, cellindextype,
-    subtree_border, subtree_interior, EdgeCellIterator, InnerCellIterator,
+    subtree, border, interior, EdgeCellIterator, InnerCellIterator,
     AuthalicSystem, Vertex, Edge, Connectivity
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, hassortedsubtrees
 
-# Brute-force subtree rim: descendants with at least one outside neighbour.
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(border(subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(interior(subtree(sys, c, l); cells = true, kw...))
+
+# Brute-force subtree border: descendants with at least one outside neighbour.
 # This implementation does not share traversal code with the iterators.
 function brute_force_border(sys, c, l; connectivity = Vertex())
     lc = level(c)
@@ -58,11 +64,11 @@ const GENERIC = Tuple{DGG.AbstractHierarchicalGridSystem,DGG.AbstractCellIndex,
 
 # Wrap the generic engine in the public iterator to test the same protocol.
 generic_edge(sys, c, l, conn = Vertex()) = EdgeCellIterator(sys, c, Int(l), conn,
-    invoke(DGG.rim_engine, GENERIC, sys, c, Int(l), conn))
+    invoke(DGG.border_engine, GENERIC, sys, c, Int(l), conn))
 generic_inner(sys, c, l, conn = Vertex()) = InnerCellIterator(sys, c, Int(l), conn,
     invoke(DGG.interior_engine, GENERIC, sys, c, Int(l), conn))
 
-generic_rim(sys, c, l, conn) = collect(generic_edge(sys, c, l, conn))
+generic_border(sys, c, l, conn) = collect(generic_edge(sys, c, l, conn))
 generic_interior(sys, c, l, conn) = collect(generic_inner(sys, c, l, conn))
 
 # Consume the first `n` elements without materializing the full iterator.
@@ -97,7 +103,7 @@ end
 
 # Level-0 roots exercise whole-face seams; level-1 roots exercise blocks with a
 # mixture of seam and sibling boundaries.
-sweep_bases(sys) = filter(b -> b <= max_level(sys), (0, 1))
+sweep_bases(sys) = filter(b -> b <= maxlevel(sys), (0, 1))
 
 function sweep_roots(sys, base::Int)
     grid = levelgrid(sys, base)
@@ -107,7 +113,7 @@ end
 # Select the deepest subtree that remains within the cell budget.
 function deep_depth(sys, base::Int, budget::Int = 70_000)
     d = 0
-    while base + d + 1 <= max_level(sys) &&
+    while base + d + 1 <= maxlevel(sys) &&
         ncells(levelgrid(sys, base + d + 1)) ÷ ncells(levelgrid(sys, base)) <= budget
         d += 1
     end
@@ -123,18 +129,18 @@ end
         @testset "$name: agreement with the eager verbs and the definition" begin
             for c in roots, d in 0:3
                 l = base + d
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 for conn in (Vertex(), Edge())
-                    rim = collect(EdgeCellIterator(sys, c, l; connectivity = conn))
+                    border = collect(EdgeCellIterator(sys, c, l; connectivity = conn))
                     inner = collect(InnerCellIterator(sys, c, l; connectivity = conn))
 
-                    # The eager verbs ARE these, so this pins the wrapper.
-                    @test rim == subtree_border(sys, c, l; connectivity = conn)
-                    @test inner == subtree_interior(sys, c, l; connectivity = conn)
+                    # The region verbs ARE these, so this pins the wrapper.
+                    @test border == eager_border(sys, c, l; connectivity = conn)
+                    @test inner == eager_interior(sys, c, l; connectivity = conn)
 
                     # ...and both are the definition.
                     oracle = brute_force_border(sys, c, l; connectivity = conn)
-                    @test rim == oracle
+                    @test border == oracle
                     @test inner == [x for x in descendants(sys, c, l)
                                     if !(x in Set(oracle))]
                 end
@@ -144,10 +150,10 @@ end
         @testset "$name: agreement with the generic engine" begin
             for c in roots, d in 0:3
                 l = base + d
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 for conn in (Vertex(), Edge())
                     @test collect(EdgeCellIterator(sys, c, l; connectivity = conn)) ==
-                          generic_rim(sys, c, l, conn)
+                          generic_border(sys, c, l, conn)
                     @test collect(InnerCellIterator(sys, c, l; connectivity = conn)) ==
                           generic_interior(sys, c, l, conn)
                 end
@@ -157,17 +163,17 @@ end
         @testset "$name: partition" begin
             for c in roots, d in 0:3
                 l = base + d
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 for conn in (Vertex(), Edge())
-                    rim = collect(EdgeCellIterator(sys, c, l; connectivity = conn))
+                    border = collect(EdgeCellIterator(sys, c, l; connectivity = conn))
                     inner = collect(InnerCellIterator(sys, c, l; connectivity = conn))
                     all_of_them = descendants(sys, c, l)
 
-                    @test issorted(rim)
+                    @test issorted(border)
                     @test issorted(inner)
-                    @test isempty(intersect(Set(rim), Set(inner)))
-                    @test sort(vcat(rim, inner)) == sort(all_of_them)
-                    @test length(rim) + length(inner) == length(all_of_them)
+                    @test isempty(intersect(Set(border), Set(inner)))
+                    @test sort(vcat(border, inner)) == sort(all_of_them)
+                    @test length(border) + length(inner) == length(all_of_them)
                 end
             end
         end
@@ -175,7 +181,7 @@ end
         @testset "$name: counted, and inferred" begin
             for c in roots, d in 0:3
                 l = base + d
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 for it in (EdgeCellIterator(sys, c, l), InnerCellIterator(sys, c, l))
                     @test eltype(it) == cellindextype(sys)
                     # Specialized walks have closed-form counts; A5 counts its vector.
@@ -190,7 +196,7 @@ end
 
         # The generic lazy scan has no closed-form count and therefore no `length`.
         # A5 materializes the fallback and is legitimately counted.
-        if DGG.has_sorted_subtrees(sys) && base + 2 <= max_level(sys)
+        if DGG.has_sorted_subtrees(sys) && base + 2 <= maxlevel(sys)
             @testset "$name: the generic walk is uncounted" begin
                 l = base + 2
                 for c in roots
@@ -214,10 +220,10 @@ end
                 @test_throws ArgumentError EdgeCellIterator(sys, c, lc - 1)
                 @test_throws ArgumentError InnerCellIterator(sys, c, lc - 1)
             end
-            @test_throws ArgumentError EdgeCellIterator(sys, c, max_level(sys) + 1)
-            @test_throws ArgumentError InnerCellIterator(sys, c, max_level(sys) + 1)
+            @test_throws ArgumentError EdgeCellIterator(sys, c, maxlevel(sys) + 1)
+            @test_throws ArgumentError InnerCellIterator(sys, c, maxlevel(sys) + 1)
 
-            # Depth zero: a cell is its own rim, and has no interior at all.
+            # Depth zero: a cell is its own border, and has no interior at all.
             @test collect(EdgeCellIterator(sys, c, lc)) == [c]
             @test isempty(collect(InnerCellIterator(sys, c, lc)))
         end
@@ -242,7 +248,7 @@ end
                     # A four-cell prefix must allocate much less than collection.
                     @test lazy * 8 < eager
 
-                    # Prefix allocation remains flat as the rim grows over three levels.
+                    # Prefix allocation remains flat as the border grows over three levels.
                     @test lazy <= lazy_bytes(T, sys, c, shallow_l, 4) + 64
 
                     # Incremental iteration returns the same prefix as collection.
@@ -264,13 +270,13 @@ end
             roots = sweep_roots(sys, base)
             for c in roots, d in 0:2
                 l = base + d
-                l <= max_level(sys) || continue
+                l <= maxlevel(sys) || continue
                 @test collect(EdgeCellIterator(wrapped, c, l)) ==
                       collect(EdgeCellIterator(sys, c, l))
                 @test collect(InnerCellIterator(wrapped, c, l)) ==
                       collect(InnerCellIterator(sys, c, l))
-                @test subtree_border(wrapped, c, l) == subtree_border(sys, c, l)
-                @test subtree_interior(wrapped, c, l) == subtree_interior(sys, c, l)
+                @test eager_border(wrapped, c, l) == eager_border(sys, c, l)
+                @test eager_interior(wrapped, c, l) == eager_interior(sys, c, l)
             end
         end
     end

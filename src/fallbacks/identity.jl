@@ -165,8 +165,8 @@ function descendants(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, 
     lc = level(c)
     target >= lc || throw(ArgumentError(
         "descendant level $target is above the cell's own level $lc"))
-    target <= max_level(sys) || throw(ArgumentError(
-        "descendant level $target is past max_level $(max_level(sys))"))
+    target <= maxlevel(sys) || throw(ArgumentError(
+        "descendant level $target is past maxlevel $(maxlevel(sys))"))
     T = cellindextype(sys)
     target == lc && return T[c]
     if has_sorted_subtrees(sys)

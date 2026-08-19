@@ -25,7 +25,7 @@ twelve faces in origin order.
 [`has_sorted_subtrees`](@ref) is `false` because contiguity is not established
 across the level-0 fan-out. Location and topology use A5's native arithmetic;
 neighbours are wound counter-clockwise. [`node_extent`](@ref) uses the generic
-cell cap with inflation `1.75`; `subtree_border` also uses its fallback.
+cell cap with inflation `1.75`; the subtree border also uses its fallback.
 """
 module A5
 
@@ -37,7 +37,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     cellposition, rawid,
     cellat, neighbors, ring, one_ring, system, level,
     cellindextype, levels, levelgrid, rootcells, children,
-    cap_inflation, max_neighbors, has_sorted_subtrees,
+    cap_inflation, maxneighbors, has_sorted_subtrees,
     ancestor, descendants
 
 import GeometryOps as GO

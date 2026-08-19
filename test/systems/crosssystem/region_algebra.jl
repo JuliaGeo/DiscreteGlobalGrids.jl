@@ -52,17 +52,17 @@ end
 
     @testset "$(syslabel(sys))" for (sys, rootlevel, leaflevel) in SWEEP
         root = DGG.cellindex(DGG.levelgrid(sys, rootlevel), 3)
-        pg = DGG.PartialGrid(sys, root, leaflevel)
+        pg = DGG.subtree(sys, root, leaflevel)
         cv = DGG.CellVector(pg)
         strays = elsewhere(sys, root, leaflevel, 3)
 
         # GROWTH IS THE HALO MACHINERY. One ring is the subtree plus exactly the
-        # cells `subtree_halo` names, and rings nest.
+        # cells `halo` names, and rings nest.
         @testset "grow" begin
             @test DGG.grow(cv, 0) === cv
             @test Set(DGG.grow(pg, 1)) ==
                   union(Set(DGG.descendants(sys, root, leaflevel)),
-                        Set(DGG.subtree_halo(sys, root, leaflevel)))
+                        Set(DGG.halo(pg; cells = true)))
             @test issubset(DGG.grow(pg, 1), DGG.grow(pg, 2))
             @test length(DGG.grow(pg, 2)) > length(DGG.grow(pg, 1))
         end

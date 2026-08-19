@@ -1,9 +1,9 @@
 # # Stencil operations
 #
 # A stencil operation recomputes every cell from its own value and its
-# neighbours'. On any grid in this package that is three lines: `halo_table`
-# gives, for every position, the positions of the cells within `k` steps of it,
-# and a stencil is a comprehension over its rows. The same pass is the graph
+# neighbours'. On any grid in this package that is three lines: `adjacency`
+# gives, for every position, the positions of the cells it touches, and a
+# stencil is a comprehension over its rows. The same pass is the graph
 # convolution behind DeepSphere-style machine learning on spherical grids —
 # stacking `k` passes gives each cell a `k`-hop receptive field.
 
@@ -41,7 +41,7 @@ values = [field(lonlat(DGG.cell_centroid(grid, c))...) for c in cells] .+
 # stays the complete ring's, only the slots close up, so slot `j` alone no
 # longer names a fixed direction. Averaging ignores the order and just smooths.
 
-table = DGG.halo_table(grid)
+table = DGG.adjacency(grid)
 stencil(f, v) = [f(v[i], v[table[i]]) for i in eachindex(v)]
 smoothed = stencil((c, nbs) -> mean(vcat(c, nbs)), values)
 (var(values), var(smoothed))
@@ -97,8 +97,8 @@ fig
 
 sys = DGG.system(grid)
 face = DGG.cellindex(DGG.levelgrid(sys, 0), 5)     # one of the twelve base cells
-sub = DGG.PartialGrid(sys, face, 5)                # its level-5 subtree, 32 × 32
-subtable = DGG.halo_table(sub)
+sub = DGG.subtree(sys, face, 5)                # its level-5 subtree, 32 × 32
+subtable = DGG.adjacency(sub)
 (; n = DGG.ncells(sub), edge = count(<(8), length.(subtable)))
 
 # Position `i` of the subset is position `i` of its data vector, so the stencil
@@ -121,12 +121,12 @@ DGG.ring(sub, edgecell, 2) == filter(in(sub), DGG.ring(grid, edgecell, 2))
 
 # What the clipping dropped has a name: `halo` is the cells just outside the
 # subset that touch it — the extra fetch list a stencil on a tile needs, and
-# the other half of `halo_table`'s answer. It is lazy, so ask for as much of it
+# the other half of `adjacency`'s answer. It is lazy, so ask for as much of it
 # as you want.
 
 DGG.ncells(sub), length(collect(DGG.halo(sub)))
 
-# Nothing above named HEALPix except the singleton. `levelgrid`, `halo_table`
+# Nothing above named HEALPix except the singleton. `levelgrid`, `adjacency`
 # and the position forms of `neighbors` and `ring` are interface methods, so
 # the same three lines run unchanged on every registered system — only the
 # degree changes.

@@ -43,7 +43,7 @@ concatenated outward. Ring 1 starts at the smallest [`A5Cell`](@ref) id and all
 outer rings use the same spoke. [`ring`](@ref) is the final shell.
 
 [`Vertex()`](@ref Vertex) includes corner-only neighbours; [`Edge()`](@ref Edge)
-does not. See [`max_neighbors`](@ref).
+does not. See [`maxneighbors`](@ref).
 
 `k <= 1` returns a `SmallVector{11,A5Cell}` — sized by the `Vertex()` bound
 under both connectivities. `k >= 2` returns a `Vector{A5Cell}`.

@@ -34,7 +34,18 @@ struct CellCapTree{S}
     children::Vector{CellCapTree{S}}
 end
 
+# Deterministic build counter: a test seam for tree-reuse assertions, not a statistic.
+const _CELLCAPTREE_BUILDS = Threads.Atomic{Int}(0)
+
+"""
+    cellcaptree_builds() -> Int
+
+Return the number of `CellCapTree` constructions in this session.
+"""
+cellcaptree_builds() = _CELLCAPTREE_BUILDS[]
+
 function CellCapTree(space::S, inds) where {S<:RegridSpace}
+    Threads.atomic_add!(_CELLCAPTREE_BUILDS, 1)
     ix = collect(Int, inds)
     caps = [_cellcap(space, i) for i in ix]
     return _cellcapnode(space, ix, caps, 1, length(ix))
@@ -124,11 +135,13 @@ mutable struct TileCells{S<:RegridSpace,I,M} <: RegridSpace
     initialized::Bool
     "the tile's cached geometry, or `nothing` when caching is off"
     cells::Union{Nothing,Vector}
+    "the tile's restricted tree, built once and shared by every block build"
+    tree::Any
     lock::ReentrantLock
 end
 
 TileCells(space::RegridSpace, inds) =
-    TileCells(space, inds, indexmap(inds), false, nothing, ReentrantLock())
+    TileCells(space, inds, indexmap(inds), false, nothing, nothing, ReentrantLock())
 
 Base.show(io::IO, tc::TileCells) =
     print(io, "TileCells(", tc.space, ", ", length(tc.inds), " cells)")
@@ -150,26 +163,27 @@ chunktree(tc::TileCells) = chunktree(tc.space)
 """
     subtree(tc::TileCells, inds)
 
-Return the wrapped subtree, using cached cell geometry for the tile's exact
-index set. Initialization runs once under a lock.
+Return the memoized restricted tree for the tile's exact index set, wrapped
+with cached cell geometry where available. Initialization runs once under a
+lock; the immutable tree is then shared by concurrent block builds.
 """
 function subtree(tc::TileCells, inds)
     inds == tc.inds || return subtree(tc.space, inds)
-    tree = subtree(tc.space, inds)
-    cells = _tilecells!(tc)
+    tree, cells = _tiletree!(tc)
     cells === nothing && return tree
     return _cachedtree(tree, tc.map, cells)
 end
 
-function _tilecells!(tc::TileCells)
+function _tiletree!(tc::TileCells)
     lock(tc.lock)
     try
         if !tc.initialized
+            tc.tree = subtree(tc.space, tc.inds)
             tc.cells = length(tc.inds) > _TILE_CELL_CACHE_MAX ? nothing :
                        _synthesizecells(tc.space, tc.inds)
             tc.initialized = true
         end
-        return tc.cells
+        return tc.tree, tc.cells
     finally
         unlock(tc.lock)
     end

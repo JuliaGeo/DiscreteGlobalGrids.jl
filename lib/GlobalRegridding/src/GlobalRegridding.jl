@@ -79,7 +79,7 @@ export LazyRegridArray
 
 # Qualified extension and observability APIs.
 public knownempty, sourcemissingval, chunkat, cellarea
-public residency, LazyStats
+public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource
 

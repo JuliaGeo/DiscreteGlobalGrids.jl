@@ -210,7 +210,8 @@ rastersize(space::RasterGrid) =
 """
     DimensionalData.dims(space::RasterGrid)
 
-Return spatial dimensions in array order.
+Return spatial dimensions in array order — the order the space was
+constructed with, whichever of X and Y comes first.
 """
 DD.dims(space::RasterGrid) =
     space.xfast ? (space.xdim, space.ydim) : (space.ydim, space.xdim)
@@ -218,8 +219,9 @@ DD.dims(space::RasterGrid) =
 """
     destinationdims(space::RasterGrid, sampling)
 
-Return [`DimensionalData.dims`](@ref) relabelled to carry `sampling`. A
-dimension whose lookup already samples that way is returned untouched;
+Return [`DimensionalData.dims`](@ref) relabelled to carry `sampling`, so
+regrid output echoes the space's construction order. A dimension whose
+lookup already samples that way is returned untouched;
 otherwise its lookup is rebuilt, with `Intervals` bounds taken from the cell
 edges and `Points` values from the cell centres.
 """

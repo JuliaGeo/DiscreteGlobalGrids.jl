@@ -38,8 +38,10 @@ source space's cell order. Non-spatial dimensions retain their order. One plan
 is reused for all non-spatial slices.
 
 A dimensional source comes back labelled with the destination's own axes — a
-[`RasterGrid`](@ref) gives `(X, Y)` — followed by its unchanged non-spatial
-dimensions. Destinations without axes of their own keep a flat `Cell` axis.
+[`RasterGrid`](@ref) echoes the dimension order it was constructed with —
+followed by its unchanged non-spatial dimensions. Destinations without axes of
+their own keep a flat `Cell` axis. Lazy results carry the same labels and
+shape over a disk-backed array.
 
 Results are floating point. [`Weighted`](@ref) writes `missing` when supported
 by the source element type, and `NaN` otherwise.
@@ -51,7 +53,7 @@ by the source element type, and `NaN` otherwise.
   - `method`: weight-building method; defaults to [`Conservative`](@ref).
   - `missingpolicy`: [`Weighted`](@ref) means or [`Extensive`](@ref) sums.
   - `missingval`: additional nodata sentinel. `missing` and `NaN` are always invalid.
-  - `lazy`: return a [`LazyRegridArray`](@ref); defaults to chunked sources.
+  - `lazy`: compute on demand ([`LazyRegridArray`](@ref)); defaults to chunked sources.
   - `chunks`: lazy destination tiling. `nothing` derives it automatically.
   - `budget`: target bytes for lazy reads and weights, default `2^30`.
   - `storage`: lazy weight storage, [`PerChunk`](@ref) or [`Spilled`](@ref).
@@ -91,12 +93,17 @@ regrid(data, plan::AbstractRegriddingPlan) =
 
 """
     destinationdims(plan::DirectPlan) -> Tuple or nothing
+    destinationdims(plan::ChunkedPlan) -> Tuple or nothing
 
 Return the dimensions labelling this plan's results, under the plan's own
-`sampling` when it declares one and the method's otherwise.
+`sampling` when it declares one and the method's otherwise. Chunked plans
+declare no sampling, so the method's always applies.
 """
 destinationdims(plan::DirectPlan) = destinationdims(plan.dst_space,
     something(plan.sampling, outputsampling(plan.method)))
+
+destinationdims(plan::ChunkedPlan) =
+    destinationdims(plan.dst_space, outputsampling(plan.method))
 
 """
     regrid!(dest, data; to, from = nothing, method = Conservative(),

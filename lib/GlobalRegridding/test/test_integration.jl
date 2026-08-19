@@ -254,8 +254,33 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
             lazy = true)
         @test untiled[GR.cellposition(dst, 1, 6)] ≈ f(xs[1], ys[6])
         @test untiled[GR.cellposition(dst, 26, 6)] ≈ f(xs[end], ys[6])
-        # Eager output is shaped by the destination's axes, lazy output is flat.
+        # Lazy and eager output share the destination's axes and values.
+        @test DD.dims(tiled) == DD.dims(untiled)
         @test all(isequal.(vec(Array(tiled)), vec(Array(untiled))))
+    end
+
+    @testset "destination dims echo construction order, lazy and eager" begin
+        f(lon, lat) = 1.0 + 0.02 * lon - 0.01 * lat
+        data = t6_raster(f, t6_centres(-180, 180, 24), t6_centres(-90, 90, 12))
+        dxs, dys = t6_centres(-180, 180, 12), t6_centres(-90, 90, 6)
+        xfirst = RasterGrid(DD.DimArray(zeros(12, 6), (DD.X(dxs), DD.Y(dys))))
+        yfirst = RasterGrid(DD.DimArray(zeros(6, 12), (DD.Y(dys), DD.X(dxs))))
+
+        # A (Y, X)-constructed destination comes back (Y, X)-shaped.
+        eagery = regrid(data; to = yfirst, lazy = false)
+        @test DD.dims(eagery, 1) isa DD.Y
+        @test DD.dims(eagery, 2) isa DD.X
+        @test size(eagery) == (6, 12)
+
+        # The lazy result carries the same dims and values in either order.
+        for dst in (xfirst, yfirst)
+            eager = regrid(data; to = dst, lazy = false)
+            lazy = regrid(data; to = dst, lazy = true)
+            @test parent(lazy) isa GR.ShapedRegridArray
+            @test DD.dims(lazy) == DD.dims(eager)
+            @test size(lazy) == size(eager)
+            @test all(isequal.(Array(parent(lazy)), parent(eager)))
+        end
     end
 
     @testset "raster subtrees" begin

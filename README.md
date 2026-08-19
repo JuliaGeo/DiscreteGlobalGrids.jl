@@ -325,7 +325,7 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**986,750 assertions, ~7m30s**, with 17 broken — all of them
+**987,153 assertions, ~7m30s**, with 17 broken — all of them
 destination-direction conservation arms in `regridding_conservation.jl`,
 measured per system and level, waiting on the upstream clipper fix.
 

@@ -254,7 +254,8 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
             lazy = true)
         @test untiled[GR.cellposition(dst, 1, 6)] ≈ f(xs[1], ys[6])
         @test untiled[GR.cellposition(dst, 26, 6)] ≈ f(xs[end], ys[6])
-        @test all(isequal.(Array(tiled), Array(untiled)))
+        # Eager output is shaped by the destination's axes, lazy output is flat.
+        @test all(isequal.(vec(Array(tiled)), vec(Array(untiled))))
     end
 
     @testset "raster subtrees" begin

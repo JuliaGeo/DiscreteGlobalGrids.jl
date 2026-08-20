@@ -354,6 +354,20 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test checked == length(cells)^2
     end
 
+    @testset "the eager whole block adopts the assembled matrix unchanged" begin
+        dst = ToyLonLatSpace(4, 2)
+        src = ToyLonLatSpace(8, 4)
+        fast = GR.wholeblock(Conservative(), dst, src)
+        slow = invoke(GR.wholeblock,
+            Tuple{AbstractRegriddingMethod,RegridSpace,RegridSpace},
+            Conservative(), dst, src)
+        @test fast.weights.colptr == slow.weights.colptr
+        @test fast.weights.rowval == slow.weights.rowval
+        @test all(fast.weights.nzval .=== slow.weights.nzval)
+        @test all(fast.denom .=== slow.denom)
+        @test GR.hasdenom(fast) == GR.hasdenom(slow) == true
+    end
+
     @testset "disjoint chunks keep zero denominators" begin
         north = ToyLonLatSpace(2, 1; lat = (60.0, 90.0))
         south = ToyLonLatSpace(2, 1; lat = (-90.0, -60.0))

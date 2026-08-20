@@ -19,8 +19,8 @@ Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
 GlobalRegriddingRastersExt = "Rasters"
 
 [sources]
-ConservativeRegridding = {rev = "claude/budget-frontier", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-GeometryOps = {rev = "as/intersection_area", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+ConservativeRegridding = {rev = "6a4b997ab2e66dea45b5b62b5b2f32f0a3b279b0", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+GeometryOps = {rev = "2825c476647cfe6791dbb89fffb8592697b46995", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 
 [compat]

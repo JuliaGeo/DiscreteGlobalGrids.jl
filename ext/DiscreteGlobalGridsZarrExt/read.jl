@@ -14,9 +14,10 @@ import DimensionalData as DD
 using DimensionalData: Lookups
 
 using DiscreteGlobalGrids: StoreDescription, DGGSFormatError, Cells,
-    ChunkManifest, ChunkedCellLookup, with_store_context, arrays_on, getarray
+    ChunkManifest, ChunkedCellLookup, MultiOrderLookup, with_store_context,
+    arrays_on, getarray
 using DiscreteGlobalGrids.Encodings: CellEncoding, DenseEncoding, RangesEncoding,
-    ImplicitEncoding, cellaxis, encodingname, idtype
+    ImplicitEncoding, CompactedEncoding, cellaxis, encodingname, idtype
 
 """
     LAZY_SAMPLES
@@ -57,6 +58,15 @@ const MANIFEST_FORMAT = 1
 "The `validated` level that attests every id was checked when it was written."
 const MANIFEST_VALIDATED = "strict"
 
+"""
+    COMPACTED_LEVELS_ARRAY
+
+The second column of a `compacted` cell axis: one integer level per stored
+cell, aligned with the id coordinate. It sits on a dimension of its own so
+that no convention reads it as a data variable.
+"""
+const COMPACTED_LEVELS_ARRAY = "cell_levels"
+
 # ===========================================================================
 # The API surface
 # ===========================================================================
@@ -68,9 +78,10 @@ const MANIFEST_VALIDATED = "strict"
 
 Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
 every layer, carrying a [`ChunkedCellLookup`](@ref) that resolves a cell to a
-position without scanning the axis. Any other dimension of the store — time,
-bands — becomes an ordinary `Dim`, with the values of the like-named coordinate
-array where the store has one.
+position without scanning the axis — or, for a `compacted` store, a
+`MultiOrderLookup` over its mixed-level cells. Any other dimension of the
+store — time, bands — becomes an ordinary `Dim`, with the values of the
+like-named coordinate array where the store has one.
 
 `store` is a `Zarr.ZGroup`, a `Zarr.AbstractStore`, a local path, or a URL. A
 `gs://BUCKET/PATH` URL is read as `https://storage.googleapis.com/BUCKET/PATH`,
@@ -223,11 +234,9 @@ end
 # ===========================================================================
 
 function assemble(group, snap, desc, names, vars, lazy, validate, samples)
-    grid = describedgrid(desc)
     dim = desc.spatial_dimension
     n = axislength(snap, dim)
-    axis = storedaxis(desc.encoding, grid, group, snap, desc, n, validate, samples)
-    lookup = ChunkedCellLookup(axis)
+    lookup = storedlookup(desc.encoding, group, snap, desc, n, validate, samples)
 
     available = desc.variables === nothing ?
                 arrays_on(snap, dim; exclude=(desc.coordinate,)) : desc.variables
@@ -253,7 +262,7 @@ end
 
 # --- the grid ---------------------------------------------------------------
 
-function describedgrid(desc::StoreDescription)
+function describedsystem(desc::StoreDescription)
     ref = get(DiscreteGlobalGrids.GRID_REFERENCE, desc.gridname, nothing)
     # A description that names the system and the scheme itself needs no table
     # entry: that is what the escape hatch is for. Anything less is looked up,
@@ -269,6 +278,11 @@ function describedgrid(desc::StoreDescription)
         detail="the id arithmetic of `$(desc.gridname)` is implemented for the " *
                "`$(ref.idscheme)` scheme; ids written in `$scheme` have to be " *
                "reindexed before they can be read as a cell axis."))
+    return system
+end
+
+function describedgrid(desc::StoreDescription)
+    system = describedsystem(desc)
     desc.level === nothing && throw(DGGSFormatError(check=:missing_level,
         declared=desc.gridname,
         detail="the store declares no refinement level, and a stored cell axis " *
@@ -298,6 +312,52 @@ end
 # --- the axis ---------------------------------------------------------------
 
 """
+    storedlookup(encoding, group, snapshot, desc, n, validate, samples) -> Lookup
+
+The cube axis of the store: a [`ChunkedCellLookup`](@ref) over the
+single-level axis `storedaxis` builds, or — for a `compacted` store — a
+`MultiOrderLookup` over the validated `MultiOrderVector` its two columns name.
+"""
+storedlookup(enc::CellEncoding, group, snap, desc, n, validate, samples) =
+    ChunkedCellLookup(storedaxis(enc, describedgrid(desc), group, snap, desc, n,
+        validate, samples))
+
+function storedlookup(enc::CompactedEncoding, group, snap, desc, n, validate, samples)
+    # `refinement_level: null` is the compacted declaration; a level beside it
+    # is two answers to one question.
+    desc.level === nothing || throw(DGGSFormatError(check=:level_with_compacted,
+        declared=desc.level,
+        detail="a compacted store's cells carry their own levels and it " *
+               "declares `refinement_level: null`; this one also declares " *
+               "level $(desc.level), and the two cannot both hold."))
+    sys = describedsystem(desc)
+    z = coordinatearray(group, snap, desc, 1)
+    lv = levelscolumn(group, snap, n)
+    # A compacted axis is small by construction, so it is materialized and
+    # every pair is validated whatever `validate` says.
+    mov = cellaxis(enc, sys, lv, Array(z); declared_length=n)
+    return MultiOrderLookup(mov)
+end
+
+# The level column, found by its fixed name — the on-disk contract, like the
+# manifest's marker.
+function levelscolumn(group, snap, n)
+    entry = getarray(snap, COMPACTED_LEVELS_ARRAY)
+    (entry === nothing || !haskey(group, COMPACTED_LEVELS_ARRAY)) &&
+        throw(DGGSFormatError(check=:missing_levels_array,
+            declared=COMPACTED_LEVELS_ARRAY,
+            observed=sort!(String[a.name for a in snap.arrays]),
+            detail="a compacted store keeps each cell's level in " *
+                   "`$COMPACTED_LEVELS_ARRAY`, and this one has no such array."))
+    (entry.shape == (n,) && entry.eltype <: Integer) || throw(DGGSFormatError(
+        check=:invalid_levels_array, declared=(n,), observed=entry.shape,
+        detail="`$COMPACTED_LEVELS_ARRAY` holds one integer level per cell " *
+               "of the axis; expected $n of them, found shape $(entry.shape) " *
+               "of $(entry.eltype)."))
+    return Int.(Array(group[COMPACTED_LEVELS_ARRAY]))
+end
+
+"""
     storedaxis(encoding, grid, group, snapshot, desc, n, validate, samples)
         -> ChunkedCellVector
 
@@ -313,12 +373,14 @@ outright, so a store this reader would have trusted is read the way a foreign
 one is. The arithmetic encodings scan nothing under any setting — there is no id
 array to scan — so the keyword reaches only the dense path.
 
-**This is the read-side extension point**, and the only one: a downstream
-encoding is read by registering an instance in `ENCODING_REGISTRY`, implementing
-`cellaxis` for it — the axis constructor, which sees ids and never a store — and
-adding one method here to say what to hand it, which array to open and how much
-of it to read. An encoding with no method of this function is refused by name
-below rather than by `MethodError`.
+**This is the read-side extension point** for single-level layouts: a
+downstream encoding is read by registering an instance in `ENCODING_REGISTRY`,
+implementing `cellaxis` for it — the axis constructor, which sees ids and
+never a store — and adding one method here to say what to hand it, which array
+to open and how much of it to read. An encoding whose axis is not a
+single-level vector adds a `storedlookup` method instead, as the compacted one
+does. An encoding with no method of either is refused by name below rather
+than by `MethodError`.
 """
 function storedaxis(enc::DenseEncoding, grid, group, snap, desc, n, validate, samples)
     z = coordinatearray(group, snap, desc, 1)

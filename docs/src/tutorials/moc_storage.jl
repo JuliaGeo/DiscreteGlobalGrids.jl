@@ -347,5 +347,7 @@ fig
 # The multi-order coverage page builds the same structure as a *region* — the
 # query side. The regridding page replaces this page's nearest-neighbour
 # sampling with conservative, area-exact regridding. The store round-trip page
-# writes a single-level axis to Zarr with `dggwrite`; a mixed-level array
-# reaches a store through `expand`.
+# writes cell axes to Zarr with `dggwrite`; a mixed-level array like `M` goes
+# to disk as the `compacted` layout and reads back as the same axis. (This
+# page's `M` itself cannot be written yet: it carries `missing` over the
+# ocean, and the writer has no fill-value story in any encoding.)

@@ -191,6 +191,7 @@ include("io/encodings.jl")
 include("io/chunked_lookup.jl")
 
 using .Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
+    CompactedEncoding,
     ENCODING_REGISTRY, encodingname, register_encoding!, cellaxis,
     idrank, idselect, idcount_between, idvalid, idcell, idtype,
     idranges, write_eligible, validate_ranges
@@ -471,7 +472,8 @@ export Detection, DGGSFormatError
 export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
     LegacyHealpixConvention, DKRZConvention
 export register_convention!
-export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
+export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
+    CompactedEncoding
 export register_encoding!
 export register_grid!
 export describe_store

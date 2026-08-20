@@ -34,10 +34,14 @@ fourth dialect calls [`register_convention!`](@ref); one that stores its ids
 some fifth way calls [`register_encoding!`](@ref). Neither requires a change
 here.
 
-Both halves are single-level: the mixed-level axis [`coarsen`](@ref) builds is
-refused — by `dggwrite` on the container (`MultiOrderLookup`), by `dggread` on
-the vocabulary (`compression: "compacted"` names no registered encoding) — and
-[`expand`](@ref) is the bridge to a writable level.
+The mixed-level axis [`coarsen`](@ref) builds writes and reads as the
+`compacted` layout: two aligned columns, `cell_ids` and `cell_levels` — the
+second named by `refinement_levels` — under `refinement_level: null`, coming
+back as a `MultiOrderLookup` axis. That layout is this package's extension:
+v1 of `zarr-conventions/dggs` requires `compression: "none"` wherever
+`refinement_level` is null, so only this package reads a compacted store. Requesting
+a single-level encoding for one is refused, with [`expand`](@ref) as the
+bridge to a writable level.
 
 What a reader gets back is a [`ChunkedCellLookup`](@ref): the axis a store
 wrote, which answers `At`, `Contains` and `Covering` the way an ordinary

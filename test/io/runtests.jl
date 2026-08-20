@@ -29,6 +29,7 @@ using .ChunkedLookups
     include("read.jl")
     include("write.jl")
     include("stores.jl")
+    include("subzone_store.jl")
 end
 
 end # module DGGIOTests

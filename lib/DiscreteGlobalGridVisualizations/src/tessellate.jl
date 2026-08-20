@@ -434,28 +434,35 @@ function _tessellate(target::PlotTarget, source, cells, ntasks::Int)
 
     # Chunks below a few hundred cells cost more to spawn than to run.
     nt = clamp(ntasks, 1, max(1, cld(n, 512)))
-    chunks = [MeshChunk{P}(cld(n, nt)) for _ in 1:nt]
+    # The slot is emptied as the merge consumes it, so that a large cell set is
+    # never held twice over: the union with `nothing` is what lets a chunk be
+    # dropped on the floor the moment it has been copied out.
+    chunks = Vector{Union{Nothing, MeshChunk{P}}}(undef, nt)
+    for t in 1:nt
+        chunks[t] = MeshChunk{P}(cld(n, nt))
+    end
     dropped = zeros(Int, nt)
 
     Threads.@sync for t in 1:nt
         lo = firstindex(cells) + div((t - 1) * n, nt)
         hi = firstindex(cells) + div(t * n, nt) - 1
-        Threads.@spawn dropped[t] = fill_chunk!(chunks[t], target, source, cells, lo, hi)
+        Threads.@spawn dropped[t] = fill_chunk!(chunks[t]::MeshChunk{P}, target, source, cells, lo, hi)
     end
 
     return merge_chunks(chunks, n, sum(dropped), target)
 end
 
-function merge_chunks(chunks::Vector{MeshChunk{P}}, ncells::Int, ndropped::Int,
-        target::PlotTarget) where {P}
+function merge_chunks(chunks::Vector{Union{Nothing, MeshChunk{P}}}, ncells::Int,
+        ndropped::Int, target::PlotTarget) where {P}
     nt = length(chunks)
     vertex_offset = zeros(Int, nt + 1)
     face_offset = zeros(Int, nt + 1)
     ring_offset = zeros(Int, nt + 1)
     for t in 1:nt
-        vertex_offset[t + 1] = vertex_offset[t] + length(chunks[t].positions)
-        face_offset[t + 1] = face_offset[t] + length(chunks[t].faces)
-        ring_offset[t + 1] = ring_offset[t] + length(chunks[t].ring_start)
+        chunk = chunks[t]::MeshChunk{P}
+        vertex_offset[t + 1] = vertex_offset[t] + length(chunk.positions)
+        face_offset[t + 1] = face_offset[t] + length(chunk.faces)
+        ring_offset[t + 1] = ring_offset[t] + length(chunk.ring_start)
     end
 
     positions = Vector{P}(undef, vertex_offset[end])
@@ -466,7 +473,7 @@ function merge_chunks(chunks::Vector{MeshChunk{P}}, ncells::Int, ndropped::Int,
 
     Threads.@sync for t in 1:nt
         Threads.@spawn begin
-            chunk = chunks[t]
+            chunk = chunks[t]::MeshChunk{P}
             voff = vertex_offset[t]
             foff = face_offset[t]
             roff = ring_offset[t]
@@ -480,6 +487,7 @@ function merge_chunks(chunks::Vector{MeshChunk{P}}, ncells::Int, ndropped::Int,
             @inbounds for j in eachindex(chunk.ring_start)
                 ring_start[roff + j] = chunk.ring_start[j] + shift
             end
+            chunks[t] = nothing
         end
     end
 

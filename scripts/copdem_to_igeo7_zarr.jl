@@ -483,6 +483,39 @@ end
 # ===========================================================================
 
 """
+    worker_groups(dstspace, sys, level) -> Vector{Vector{Int}}
+
+The destination chunks grouped by their level-`level` ancestor: the partition an
+outer, worker-parallel run would hand out, one group per worker task.
+
+Not wired up here — this spike writes one store from one `dggwrite` call — but
+the partition is the mechanical half of that design and belongs beside the
+chunking it depends on. Two properties make it the right unit:
+
+  - **Spatially clustered.** IGEO7 ids sort into contiguous subtrees, so the
+    chunks under one coarse ancestor are neighbours on the sphere. A worker's
+    DEM-tile LRU therefore stays hot: the mid-latitude runs here decoded 2 tiles
+    for their first chunk and 0 for the next three.
+  - **Disjoint on the write side.** Each group is a contiguous run of the cell
+    axis and an ancestor run in its own right, so a group is exactly one store
+    shard — no two workers ever touch the same Zarr chunk.
+
+`level` is the knob: coarser gives fewer, larger groups. See the spike record for
+the sizing rule (`workers x threads <= CPU threads`, and `workers x per-worker
+footprint <= RAM`).
+"""
+function worker_groups(dstspace, sys, level::Integer)
+    groups = Dict{Any,Vector{Int}}()
+    order = Any[]
+    for k in eachindex(dstspace.chunkids)
+        a = DGG.ancestor(sys, dstspace.chunkids[k], Int(level))
+        haskey(groups, a) || push!(order, a)
+        push!(get!(() -> Int[], groups, a), k)
+    end
+    return [groups[a] for a in order]
+end
+
+"""
     writestore(path, cube) -> path
 
 `chunk_target` is set to one ancestor subtree, so `chunks = :auto` picks exactly
@@ -864,6 +897,11 @@ function main()
     check("every ancestor run is a complete subtree", widths == [SUBTREE];
         detail = "run lengths $(widths), 7^($LEVEL-$ANCESTOR) = $SUBTREE")
     note(@sprintf("output %.2f MiB dense f32", 4 * DGG.ncells(dstgrid) / 2^20))
+    if ANCESTOR >= 2
+        g = worker_groups(dstspace, sys7, ANCESTOR - 2)
+        note("outer-parallel partition at level $(ANCESTOR - 2): $(length(g)) groups " *
+             "of $(extrema(length.(g))) chunks (not run here; see the spike record)")
+    end
 
     g0 = DGG.levelgrid(sys, 0)
     method = cfg("method")

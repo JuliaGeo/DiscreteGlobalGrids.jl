@@ -21,7 +21,9 @@ one of them.
 
 This is what ties a resampled cell back to the value the user passed: `color[i]`
 for `i = f(cell)`.  `CellVector`s and whole grids answer it themselves through
-`DiscreteGlobalGrids.cellposition`; a bare vector of ids is indexed here.
+`DiscreteGlobalGrids.cellposition`, in no space at all; a bare vector of ids has
+to be indexed here, which is the one place a large set costs something up front.
+Hand a `CellVector` rather than a `collect` of one when the set is large.
 """
 function celllocator end
 

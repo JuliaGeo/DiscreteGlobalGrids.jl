@@ -178,6 +178,22 @@ The docs' hydrology tutorial at its level 12, run stage by stage with
 Plotting stops being what sizes that page: regridding, at 5.2 GiB, becomes its
 peak.
 
+### Level 13, the whole page
+
+The same harness at level 13 — 16,172,725 IGEO7 cells, cells about 25 m across —
+with the two recipes, locally (8 threads):
+
+| stage | `dggpoly` | `dggresample` |
+| --- | --- | --- |
+| build the elevation figure | 44.6 s | 16.4 s |
+| save the elevation figure | 25.2 s | 9.1 s |
+| build and save the terrain figures | 100.7 s | 4.1 s |
+| **peak RSS for the page** | **33.6 GiB** | **10.2 GiB** |
+
+Three quarters of the page's memory was the figures.  With `dggresample` the
+peak is regridding, at 10.2 GiB, and the three figures together cost 30 seconds
+instead of 170.
+
 ### On a CI runner
 
 Measured rather than inferred, on a standard 4-core, 16 GB `ubuntu-latest`

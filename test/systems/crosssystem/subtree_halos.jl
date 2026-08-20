@@ -1163,7 +1163,11 @@ end
             DGG.has_sorted_subtrees(sys) || continue
             c = law_root(sys)
             # Choose depths with comparable subtree sizes across apertures.
-            depths = sys in HEX_SYSTEMS ? (3, 6) : (4, 9)
+            # `holed_subtree` materializes the whole descendant range, so the
+            # ladder has to be the capped one: level 9 is a 262k-cell subtree at
+            # aperture 4 and a 387-MILLION-cell one at aperture 9, which is tens
+            # of gigabytes of ids for a law about query counts.
+            depths = sys in HEX_SYSTEMS ? (3, 6) : law_depths(sys, (4, 9))
             all(l -> l <= maxlevel(sys), depths) || continue
             calls = Int[]; members = Int[]; halos = Int[]
             for l in depths

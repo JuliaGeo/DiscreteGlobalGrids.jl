@@ -333,8 +333,8 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
     @testset "the area-only clip matches the default operator, bit for bit" begin
         m = GOCore.Spherical(; radius = 1.0)
         default = CR.task_local_operator(CR.DefaultIntersectionOperator(m))
-        streaming = CR.task_local_operator(GR.SphericalClipAreaOperator(m))
-        @test GR._intersectionoperator(m) isa GR.SphericalClipAreaOperator
+        areaonly = CR.task_local_operator(GR.IntersectionAreaOperator(m))
+        @test GR._intersectionoperator(m) isa GR.IntersectionAreaOperator
         @test GR._intersectionoperator(GOCore.Planar()) isa CR.DefaultIntersectionOperator
 
         coarse = ToyLonLatSpace(4, 2)
@@ -343,11 +343,11 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         cells = vcat([getcell(coarse, i) for i in 1:8],
             [getcell(fine, i) for i in 1:32], [getcell(dense, 1)])
         # Overlapping, contained, identical, and disjoint pairs, one value each:
-        # every branch of the streaming kernel against the materializing one.
+        # every branch of the area-only kernel against the materializing one.
         checked = 0
         for a in cells, b in cells
             va = default(a, b)
-            vb = streaming(a, b)
+            vb = areaonly(a, b)
             @test va === vb
             checked += 1
         end

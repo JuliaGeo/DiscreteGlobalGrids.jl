@@ -149,7 +149,7 @@ end
     end; n)
     it = neighbors(coverage)
     sweeploop(it)
-    @test @allocated(sweeploop(it)) == 0
+    @test @allocated(sweeploop(it)) == 0 skip = VERSION < v"1.12"
 end
 
 end # module NeighborhoodTests

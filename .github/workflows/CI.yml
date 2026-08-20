@@ -4,7 +4,10 @@
 # measurements can only guess at:
 #
 #   1. does the page still need the 20 GB swap file at level 12 with `dggpoly`?
-#   2. does level 13 fit on a runner at all, with the swap file?
+#      — answered: no.  6.75 GiB peak, no swap, 2m30s of pipeline.
+#   2. does level 13 fit on a runner at all?  With `dggpoly` it reached 14.56 GiB
+#      and died drawing the last two figures, so the run below asks the same
+#      question of `dggresample`, with and without the swap file.
 #
 # `Sys.maxrss` counts resident pages, so once the kernel starts swapping it
 # stops describing the footprint.  A sampler records used memory plus used swap
@@ -15,16 +18,18 @@ on:
 
 jobs:
   hydrology:
-    name: "hydrology level ${{ matrix.level }} (swap: ${{ matrix.swap }})"
+    name: "hydrology level ${{ matrix.level }} ${{ matrix.draw }} (swap: ${{ matrix.swap }})"
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
         include:
-          - level: 12
+          - level: 13
+            draw: resample
             swap: 'no'
           - level: 13
+            draw: resample
             swap: 'yes'
     env:
       JULIA_NUM_THREADS: '4'
@@ -82,7 +87,7 @@ jobs:
       - name: Run the hydrology pipeline
         run: |
           xvfb-run -s '-screen 0 1024x768x24' julia --project=docs \
-            lib/DiscreteGlobalGridVisualizations/bench/hydrology_level.jl ${{ matrix.level }}
+            lib/DiscreteGlobalGridVisualizations/bench/hydrology_level.jl ${{ matrix.level }} ${{ matrix.draw }}
       - name: High-water mark
         if: always()
         run: |

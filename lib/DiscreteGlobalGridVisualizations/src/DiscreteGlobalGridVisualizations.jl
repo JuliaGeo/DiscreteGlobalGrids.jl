@@ -51,13 +51,17 @@ import DiscreteGlobalGrids as DGG
 import GeometryBasics
 using GeometryBasics: Point2d, Point3d, GLTriangleFace
 import Makie
-using Makie: @recipe
+using Makie: @recipe, on
 
 export dggpoly, dggpoly!
+export dggresample, dggresample!
 
 include("targets.jl")
 include("cellsets.jl")
 include("tessellate.jl")
 include("recipe.jl")
+include("pyramid.jl")
+include("resample.jl")
+include("resample_recipe.jl")
 
 end # module

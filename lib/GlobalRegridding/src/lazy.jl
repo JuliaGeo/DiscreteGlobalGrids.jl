@@ -228,6 +228,7 @@ struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,K,C} <: DiskArrays.AbstractDis
     size::NTuple{N,Int}
     srctree::K
     dstcaps::Vector{Cap}
+    srccaps::Vector{Cap}
     tiling::DestTiling
     radius::Float64
     chunks::C
@@ -257,10 +258,13 @@ function LazyRegridArray(data, plan::ChunkedPlan)
     othergroups = _groupgrid(otherchunks)
     # Build the source chunk tree once for all tile queries.
     srctree = chunktree(src_space)
+    # Source extents come along for the ride: `_wavesize` weighs a tile's
+    # chunks by how much of each one the tile can actually reach.
+    srccaps = chunkextents(src_space)
     T = outputeltype(eltype(data))
     return LazyRegridArray{T,length(othersizes) + 1,nspatial,length(othersizes),
         typeof(source),typeof(plan),typeof(srctree),typeof(chunks)}(
-        source, plan, srcsize, (ndst, othersizes...), srctree, caps, tiling, radius,
+        source, plan, srcsize, (ndst, othersizes...), srctree, caps, srccaps, tiling, radius,
         chunks, otherchunks, othergroups, zeros(Int8, Int(nchunks(src_space))),
         !usesreference(plan.missingpolicy), LazyStats())
 end
@@ -413,7 +417,8 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
         # Share tile geometry across blocks built for this tile.
         dstcells = TileCells(plan.dst_space, dinds)
-        w = _wavesize(plan, nd, srcchunks, srcranges)
+        w = _wavesize(plan, nd, srcchunks, srcranges,
+            view(A.dstcaps, A.tiling.capsof[t]), A.srccaps)
         i = 1
         while i <= length(srcchunks)
             j = min(i + w - 1, length(srcchunks))
@@ -444,13 +449,32 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
 end
 
 """
-    _wavesize(plan, nd, srcchunks, srcranges) -> Int
+    _wavesize(plan, nd, srcchunks, srcranges, dstcaps, srccaps) -> Int
 
 Return the number of chunk-pair blocks to build concurrently. The wave is
 bounded by thread count and the minimum estimated block size within the weight
 budget. Single-threaded sessions return one.
+
+A wave spawns one task per block and declares [`OUTER_PARALLEL`](@ref), which
+turns off the threading *inside* each build. The two are therefore alternatives,
+not additions, and the wider one should win:
+
+  * Under an outer loop that already declared `OUTER_PARALLEL` — a worker pool
+    over destination units, say — inner threading is off no matter what this
+    returns, so the wave is the only parallelism left inside the work unit and
+    the budget-bounded width stands.
+  * At top level the wave has to earn its width. Waves run back to back and
+    each costs its slowest block, so the wave's best case is
+    `sum(cost) / sum(wave maxima)`; inner threading delivers about
+    `$(_INNER_SPEEDUP_PER_THREAD) * nthreads()` on the same cores. A tile whose
+    work sits in one or two chunks — the common shape, since a destination tile
+    meets most of its connected chunks only at an edge — loses that comparison
+    and returns one, handing the threads to the build.
+
+See [`_blockcosts!`](@ref) for the cost estimate.
 """
-function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges::Vector)
+function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges::Vector,
+    dstcaps, srccaps::Vector{Cap})
     n = length(srcchunks)
     nt = Threads.nthreads()
     (nt > 1 && n > 1) || return 1
@@ -460,7 +484,59 @@ function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges
     end
     floorbytes = 8 * (ncols + 1) + 16 * nd + 64
     fits = max(1, weightbudget(plan.budget) ÷ floorbytes)
-    return Int(min(nt, n, fits))
+    w = Int(min(nt, n, fits))
+    # An outer loop already owns the cores; the wave is all that is left here.
+    OUTER_PARALLEL[] && return w
+    costs = _blockcosts!(Vector{Float64}(undef, n), srcchunks, srcranges, dstcaps, srccaps)
+    return _waveideal(costs, w) >= _INNER_SPEEDUP_PER_THREAD * nt ? w : 1
+end
+
+"""
+    _blockcosts!(costs, srcchunks, srcranges, dstcaps, srccaps) -> costs
+
+Estimate each chunk pair's build cost before building it, as the number of
+source cells the destination tile can reach: a chunk's cell count scaled by the
+fraction of its extent that a tile extent overlaps. Build cost tracks the pairs
+that actually intersect, and cell counts alone do not — chunks of one source are
+near enough the same size, while their overlap with a tile runs from all of the
+chunk to none of it.
+
+Extents are bounding caps, so the estimate is an upper bound on how evenly the
+work spreads: a chunk that touches only the tile's cap, and so contributes
+nothing, still scores above zero. The bias favours keeping the wave, which is
+the safe direction for a scheduling change.
+"""
+function _blockcosts!(costs::Vector{Float64}, srcchunks::Vector{Int}, srcranges::Vector,
+    dstcaps, srccaps::Vector{Cap})
+    @inbounds for k in eachindex(srcchunks)
+        scap = srccaps[srcchunks[k]]
+        area = _caparea(Float64(scap.radius))
+        ncell = prod(map(length, srcranges[k]))
+        shared = 0.0
+        for dcap in dstcaps
+            # Tile extents may overlap each other, so take the widest reach
+            # rather than summing and double counting the shared part.
+            shared = max(shared, _capoverlap(Float64(dcap.radius),
+                Float64(scap.radius), _capdistance(dcap, scap)))
+        end
+        costs[k] = area > 0 ? ncell * min(shared / area, 1.0) : 0.0
+    end
+    return costs
+end
+
+# The best speedup a wave of `w` can reach: waves run back to back and each one
+# takes as long as its slowest block.
+function _waveideal(costs::Vector{Float64}, w::Int)
+    total = sum(costs)
+    total > 0 || return 1.0
+    serial = 0.0
+    i = 1
+    @inbounds while i <= length(costs)
+        j = min(i + w - 1, length(costs))
+        serial += maximum(view(costs, i:j))
+        i = j + 1
+    end
+    return serial > 0 ? total / serial : 1.0
 end
 
 # Build one wave concurrently and preserve chunk order in `wave`.
@@ -468,6 +544,8 @@ function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
     srcchunks::Vector{Int}, i::Int, j::Int, dinds, dstcells)
     empty!(wave)
     if i == j
+        # No spawn and no declaration: a wave of one leaves the threads to the
+        # build itself, which is what `_wavesize` returning one is asking for.
         push!(wave, blockfor(plan, (t, srcchunks[i]), dinds, dstcells))
         return wave
     end

@@ -5,8 +5,8 @@
 # them is a function of latitude. This page moves a Copernicus 30 m DEM tile
 # over the Alps onto IGEO7 — hexagons, equal-area by construction — and does
 # the first step of a flow-routing model on it. The worked example reads the
-# native 30 m tile and works at a level whose cells are a few pixels across,
-# so a tile's worth of them fits comfortably on a standard CI runner.
+# native 30 m tile and works at a level whose cells are a couple of pixels
+# across — as fine as a tile's worth of them will go on a standard CI runner.
 #
 # Three calls carry the page: `MultiOrderCoverage` names the cells the tile
 # touches, `regrid` fills them from the raster, and `adjacency` routes water
@@ -40,15 +40,15 @@ plot(dem; axis = (; aspect = DataAspect()))
 sys = DGG.IGeo7System()
 # We can get the grid of IGeo7 cells that would cover the DEM tile,
 # using a `MultiOrderCoverage` query:
-leaf_level = 11
+leaf_level = 12
 region = DGG.query(sys, DGG.MultiOrderCoverage(Rasters.extent(dem)); level = leaf_level)
 # Here's what this looks like:
 f, a, p = plot(dem; axis = (; aspect = DataAspect()))
 poly!(a, region; color = :transparent, strokewidth = 1, strokecolor = (:black, 0.5))
 f
 # This is a nice way to compress the set of cells that would be covered in memory.
-# Note that `region` says it has ~6,246 cells.  But when you look at the number of
-# cells at level 11,
+# Note that `region` says it has ~16,728 cells.  But when you look at the number of
+# cells at level 12,
 DGG.CellLookup(region) |> length
 # That's a lot of cells!  This optimization helps to decrease memory pressure,
 # especially on datasets that don't fit in memory in the first place.
@@ -69,8 +69,9 @@ grid = DGG.PartialGrid(DGG.CellLookup(region))
 #
 # The download asks for a point inside the tile rather than the tile itself:
 # `getraster` fetches every 1° tile an extent touches, and a closed 1° box
-# touches four. The native 30 m source stays finer than the destination at this
-# level, so every hexagon averages a few dozen pixels.
+# touches four. A level-12 hexagon is about 65 m across, so the native 30 m
+# source stays the finer of the two and every hexagon averages a handful of
+# pixels.
 
 # `regrid` takes the coverage as its destination and the raster as its source, and
 # hands back a cube whose axis is the cells. The coverage overhangs the tile by

@@ -295,6 +295,206 @@ end
         @test saves(figure)
     end
 
+    # ------------------------------------------------------------------
+    # dggresample
+    # ------------------------------------------------------------------
+
+    "Bring `figure` up to date and hand back the frame `plot` settled on."
+    function frame(figure, plot)
+        Makie.update_state_before_display!(figure)
+        return plot.resampled[]
+    end
+
+    "Set an axis's limits to a square `width` degrees across, centred on the Alps."
+    function look!(axis, width)
+        xlims!(axis, 10.5 - width / 2, 10.5 + width / 2)
+        ylims!(axis, 46.5 - width / 2, 46.5 + width / 2)
+        return axis
+    end
+
+    @testset "a pyramid over a cell set" begin
+        cells = patch(9)
+        pyramid = DGGV.CellPyramid(DGGV.cellset(cells))
+
+        @test pyramid.leaflevel == 9
+        @test pyramid.rootlevel == first(DGG.levels(SYS))
+        @test pyramid.ncells == length(cells)
+
+        # The cap covers the data it was sampled from.
+        for c in cells[1:97:end]
+            @test DGGV._angle(pyramid.capcentre, DGG.cell_centroid(SYS, c)) <= pyramid.capradius
+        end
+
+        # A cell of the set finds itself; a cell on the far side of the world
+        # finds nothing, which is what makes a coarse view of a partial grid
+        # show the grid rather than its bounding box.
+        @test DGGV.nearest(pyramid, cells[1]) == 1
+        @test DGGV.nearest(pyramid, cells[end]) == length(cells)
+        antipode = DGG.cellat(DGG.levelgrid(SYS, 9), -169.5, -46.5)
+        @test DGGV.nearest(pyramid, antipode) == 0
+
+        # A coarse cell over the patch resolves to one of the leaves under it.
+        coarse = DGG.ancestor(SYS, cells[end ÷ 2], 6)
+        @test DGGV.nearest(pyramid, coarse) in 1:length(cells)
+
+        @test_throws ArgumentError DGGV.CellPyramid(DGGV.CellSet(SYS, empty(cells)))
+    end
+
+    @testset "locating a cell in its set" begin
+        cells = patch(7)
+        # Every way of naming a set can say where one of its cells sits.
+        @test DGGV.celllocator(cells)(cells[3]) == 3
+        @test DGGV.celllocator(collect(cells))(cells[3]) == 3
+        @test DGGV.celllocator(collect(cells))(DGG.cellat(DGG.levelgrid(SYS, 7), -169.5, -46.5)) == 0
+
+        grid = DGG.levelgrid(SYS, 2)
+        gridcells = DGGV.GridCells(grid)
+        @test DGGV.celllocator(gridcells)(DGG.cellindex(grid, 5)) == 5
+    end
+
+    @testset "the rim of a cap" begin
+        p = DGG.UnitSphericalPoint(cosd(20) * cosd(35), cosd(20) * sind(35), sind(20))
+        a, b = DGGV.rimpoints(p, 0.3)
+        @test DGGV._angle(p, a) ≈ 0.3
+        @test DGGV._angle(p, b) ≈ 0.3
+        # A quarter turn apart around the cap, so between them they see both
+        # of the ways a projection can stretch a circle.
+        @test DGGV._angle(a, b) ≈ acos(cos(0.3)^2) atol = 1e-12
+    end
+
+    @testset "the level follows the zoom" begin
+        cells = patch(11)
+        pyramid = DGGV.CellPyramid(DGGV.cellset(cells))
+
+        figure = Figure(size = (600, 400))
+        axis = Axis(figure[1, 1])
+        dggpoly!(axis, patch(4); color = :red)   # something to fix the limits
+        Makie.update_state_before_display!(figure)
+
+        levels = Int[]
+        counts = Int[]
+        for width in (2.0, 0.5, 0.125)
+            look!(axis, width)
+            Makie.update_state_before_display!(figure)
+            view = DGGV.ScreenView(planar(), axis.scene, 1.6)
+            drawn, level = DGGV.resample(pyramid, view)
+            push!(levels, level)
+            push!(counts, length(drawn))
+        end
+
+        # Zooming in shows a finer level, and never past the level stored.
+        @test issorted(levels)
+        @test levels[1] < levels[end] <= pyramid.leaflevel
+        # And the number of cells on screen stays of a size with the screen,
+        # rather than growing with the zoom.
+        @test all(n -> n < 200_000, counts)
+
+        # How many threads did the descent is not observable in its answer.
+        look!(axis, 0.5)
+        Makie.update_state_before_display!(figure)
+        view = DGGV.ScreenView(planar(), axis.scene, 1.6)
+        @test DGGV.resample(pyramid, view; ntasks = 1) ==
+            DGGV.resample(pyramid, view; ntasks = 4)
+    end
+
+    @testset "a resampled plot" begin
+        cells = patch(11)
+        values = Float64.(1:length(cells))
+
+        figure = Figure(size = (600, 400))
+        axis = Axis(figure[1, 1])
+        plot = dggresample!(axis, cells; color = values)
+        wide = frame(figure, plot)
+
+        # Far less is drawn than was handed in, and every drawn cell carries a
+        # value from the set.
+        @test 0 < length(wide) < length(cells) ÷ 5
+        @test wide.level <= 11
+        @test length(wide.cells.cells) == length(wide.index)
+        @test all(i -> 1 <= i <= length(cells), wide.index)
+        @test plot.cellcolor[] == values[wide.index]
+        @test saves(figure)
+
+        # Zooming in refines without drawing more than a screen's worth.
+        look!(axis, 0.05)
+        close = frame(figure, plot)
+        @test close.level > wide.level
+        @test length(close) < 200_000
+        @test saves(figure)
+    end
+
+    @testset "the limits do not follow the resampling" begin
+        # The camera drives the resampling, so if the resampling drove the
+        # limits the plot would chase itself.  What the axis is told is the
+        # whole data set, whatever is on screen.
+        figure = Figure(size = (600, 400))
+        axis = Axis(figure[1, 1])
+        plot = dggresample!(axis, patch(11); color = :grey)
+        wide = frame(figure, plot)
+        before = plot.datalimits[]
+
+        look!(axis, 0.05)
+        close = frame(figure, plot)
+        @test close !== wide
+        @test plot.datalimits[] == before
+    end
+
+    @testset "a build covers more than the viewport" begin
+        figure = Figure(size = (600, 400))
+        axis = Axis(figure[1, 1])
+        plot = dggresample!(axis, patch(10); color = :grey, buffer = 3.0)
+        look!(axis, 0.4)
+        built = frame(figure, plot)
+
+        # A pan well inside the buffer reuses what is already there.
+        xlims!(axis, 10.5 - 0.2 + 0.02, 10.5 + 0.2 + 0.02)
+        @test frame(figure, plot) === built
+
+        # Leaving it does not.
+        look!(axis, 0.02)
+        @test frame(figure, plot) !== built
+    end
+
+    @testset "dynamic = false builds once" begin
+        figure = Figure(size = (600, 400))
+        axis = Axis(figure[1, 1])
+        plot = dggresample!(axis, patch(10); color = :grey, dynamic = false)
+        built = frame(figure, plot)
+        look!(axis, 0.02)
+        @test frame(figure, plot) === built
+    end
+
+    @testset "resampling in every axis" begin
+        cells = DGG.CellVector(DGG.levelgrid(SYS, 5))
+        values = Float64.(1:length(cells))
+
+        figure = Figure(size = (400, 300))
+        geo = GeoAxis(figure[1, 1]; dest = "+proj=moll")
+        plot = dggresample!(geo, cells; color = values)
+        @test 0 < length(frame(figure, plot)) <= length(cells)
+        @test saves(figure)
+
+        figure = Figure(size = (400, 300))
+        globe = GlobeAxis(figure[1, 1])
+        plot = dggresample!(globe, cells; color = values)
+        drawn = frame(figure, plot)
+        # A globe only ever shows one side of itself.
+        @test 0 < length(drawn) < length(cells)
+        @test saves(figure)
+    end
+
+    @testset "recolouring a resampled plot keeps the frame" begin
+        cells = patch(10)
+        figure = Figure(size = (600, 400))
+        axis = Axis(figure[1, 1])
+        plot = dggresample!(axis, cells; color = Float64.(1:length(cells)))
+        built = frame(figure, plot)
+
+        plot.color = Float64.(length(cells):-1:1)
+        @test plot.resampled[] === built
+        @test plot.cellcolor[] == Float64.(length(cells):-1:1)[built.index]
+    end
+
     @testset "recolouring keeps the geometry" begin
         cells = patch(8)
         figure, axis, plot = dggpoly(cells; color = Float64.(1:length(cells)), primitive = :mesh)

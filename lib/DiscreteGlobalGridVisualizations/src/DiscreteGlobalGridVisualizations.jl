@@ -20,6 +20,17 @@ dggpoly(cells; color = values)
 `cells` is anything that names a set of DGGS cells — an `AbstractGrid`, a
 `CellVector`, a `CellLookup`, a `MultiOrderCellSet`, or a `(system, ids)` pair.
 
+## Drawing less than you were given
+
+[`dggresample`](@ref) takes the same arguments and answers the other half of the
+question.  Past a certain level every extra cell lands under a pixel another
+cell already owns, so instead of drawing the set it descends the system's own
+hierarchy — keeping only branches that are on screen and hold data — and stops
+at the level whose cells come out a few pixels across, colouring each of them by
+the leaf cell under its centre.  It follows the camera, so zooming in refines
+and zooming out coarsens, and neither costs anything proportional to the number
+of cells handed in.
+
 ## Where the mesh lives
 
 A DGGS cell is a spherical polygon, and where its corners land on screen depends

@@ -14,7 +14,14 @@ cells = DGG.CellVector(region)
 dggpoly(cells; color = elevation)                       # a plain Axis
 dggpoly!(GeoAxis(f[1, 1]; dest = "+proj=moll"), cells)  # a projected map
 dggpoly!(GlobeAxis(f[1, 1]), cells)                     # a globe
+
+dggresample(cells; color = elevation)                   # …or only what fits
 ```
+
+Two recipes, and the difference between them is how much they draw.  `dggpoly`
+draws every cell it is given, as fast as that can be done.  `dggresample` draws
+the level of the same hierarchy the screen can actually show, and follows the
+camera.
 
 `dggpoly` reads like `poly`: cells in, one filled patch per cell out, coloured
 by a vector as long as the cell set.  It accepts anything that names a set of
@@ -82,6 +89,56 @@ apart by how far longitude turns in going once around the cell's ring:
   shared by two cells, so this is not a corner case there — it is what makes the
   top and bottom of a global IGEO7 map close.
 
+## Drawing less: `dggresample`
+
+`dggpoly` makes drawing `n` cells cheap.  `dggresample` asks the other question:
+how few cells can be drawn without the picture changing?  A figure is on the
+order of a million pixels, so past a certain level every extra cell lands under
+a pixel another cell already owns.
+
+The hierarchy the data already lives in is the answer.  Rather than draw a
+level-13 cell set, draw the level of the *same* system whose cells come out
+about `cellpixels` across, and colour each of those by nearest neighbour — the
+value of the leaf cell under its centre.
+
+```julia
+dggresample(cells; color = elevation, cellpixels = 3, buffer = 1.6)
+```
+
+The cells to draw are found by descending the system from its root cells,
+keeping only branches that are both on screen and inside the data:
+
+* **On screen** — `node_extent` gives a spherical cap covering a cell *and every
+  cell beneath it*, so a cap that misses the viewport rules out a whole subtree
+  at once.  The cap is projected through the same target `dggpoly` uses and then
+  through the camera, which is what makes one descent work for a map, a globe
+  and a plain axis alike.  On a globe the far hemisphere is told from the near
+  one by depth, so only the side facing the viewer is built.
+* **Inside the data** — a second cap, measured over a sample of the cells handed
+  in, prunes the rest of the world.
+
+Which level to stop at is measured rather than assumed: the caps are projected
+anyway, so the pixels a radian comes out as is read off them, in two
+perpendicular directions because a circle on the sphere is not a circle on a
+map.  Their geometric mean is what makes a level come out at the right number of
+cells for the area of the screen.
+
+Neither half of a frame is proportional to the cells handed in.  The descent
+costs what is on screen; the resampling costs one point location per cell drawn.
+That is the whole point: a sixteen-million-cell set and a sixteen-thousand-cell
+set cost the same to look at.
+
+Rebuilding on every camera event would be its own kind of slow, so a build
+covers `buffer` times the viewport and stands until the view leaves it or the
+zoom drifts past `hysteresis` — panning inside the buffer and small zooms cost
+nothing.  `dynamic = false` builds once and stops following, which is what a
+figure being saved to a file wants.
+
+Nearest neighbour means a drawn cell shows one leaf value rather than a summary
+of the leaves under it: a coarse view of noisy data shows a sample of the noise
+instead of its mean.  That is what makes a frame cost what it does — averaging
+would have to read every leaf cell.
+
 ## Backends
 
 `primitive = automatic` gives CairoMakie one filled path per cell and every
@@ -119,9 +176,22 @@ The docs' hydrology tutorial at its level 12, run stage by stage with
 | peak RSS for the page | 15.4 GiB | 6.6 GiB |
 
 Plotting stops being what sizes that page: regridding, at 5.2 GiB, becomes its
-peak.  At level 13 (16.2 M cells) the page reaches 33.6 GiB and the recipe is no
-longer what stops it — regridding, adjacency and the terrain analysis together
-reach 18.8 GiB before the last two figures are built.
+peak.
+
+### On a CI runner
+
+Measured rather than inferred, on a standard 4-core, 16 GB `ubuntu-latest`
+runner (`.github/workflows/CI.yml` on the `claude/ci-level13-probe` branch):
+
+| run | outcome | peak RSS |
+| --- | --- | --- |
+| level 12, `dggpoly`, **no swap file** | finished in 2m30s | 6.75 GiB |
+| level 13, `dggpoly`, 20 GB swap file | died drawing the last two figures | 14.56 GiB before them |
+
+So the swap-file step the docs job carries today is no longer needed at level
+12.  And at level 13 the pipeline gets through regridding, adjacency, flow
+direction and the whole Geomorphometry chain inside 14.56 GiB — it is the two
+terrain figures, and only those, that take it past the runner.
 
 ## Status
 
@@ -136,6 +206,11 @@ Known gaps:
   drawn straight in the projected plane.  This is what `poly` does today as well,
   and it shows only for cells large enough for the projection to bend an edge
   visibly.
-* Nothing here reduces the *number* of things drawn.  Past a few million cells
-  the cost is the vertex buffer itself, and the answer is to resample cells onto
-  the screen rather than to draw them all — a second recipe, not a faster mesh.
+* `dggresample` picks its level from the middle of the view, so a projection
+  that changes scale sharply across the screen — a whole-world Mercator, say —
+  gets one level where it wants two.
+* A resampled cell whose centre falls in a hole is dropped, so the edge of a
+  ragged set erodes by up to half a drawn cell at coarse levels.
+* Nothing decides *when* to resample for you: `dggpoly` and `dggresample` are
+  separate calls, and a figure that wants exact cells at every zoom should use
+  the first.

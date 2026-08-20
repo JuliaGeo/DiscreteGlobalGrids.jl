@@ -194,6 +194,9 @@ using .ChunkedLookups: ChunkManifest, nchunks, chunkof, chunkbounds,
 
 include("io/description.jl")
 include("io/conventions.jl")
+# The two-dimensional ancestor-subzone layout: arithmetic and vocabulary only,
+# read after the conventions whose grid reference table it spells names out of.
+include("io/subzones.jl")
 include("io/api.jl")
 
 # Last: the regridding face reads the grids, the compressed collection, and the
@@ -449,7 +452,7 @@ export PerChunk, Spilled
 # --- Store IO --------------------------------------------------------------
 # `detect`, `decode`, `encode!` and `gridname` stay qualified: they are
 # extension points, and the names are too generic to export.
-export dggread, dggwrite
+export dggread, dggwrite, dggwrite!
 export Detection, DGGSFormatError
 export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
     LegacyHealpixConvention, DKRZConvention
@@ -459,6 +462,19 @@ export register_encoding!
 export register_grid!
 export describe_store
 export ChunkedCellLookup, nchunks, chunkof, chunkbounds
+
+# --- The ancestor-subzone layout -------------------------------------------
+# The layout descriptor and the store handle its incremental writer hands back.
+# The arithmetic around them stays qualified: `columnpositions` and friends are
+# names a production script spells once, not vocabulary for every user.
+export SubzoneLayout, subzonestore
+public SUBZONE_LAYOUT, SubzoneRun
+public subzone_attrs, subzone_capacity, subzone_cellvector, subzone_columns,
+    subzone_coordinate, subzone_depth, subzone_layout, subzone_runs,
+    issubzonestore
+public SUBZONE_ORDER, SUBZONE_PADDING
+public columncell, columnindex, columnlength, columnpositions, positionindex,
+    subzoneindex, gridnamefor
 
 # The store description vocabulary: what `describe_store` hands back and what a
 # convention writer reads, never a name a reader or writer has to spell.

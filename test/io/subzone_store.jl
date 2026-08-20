@@ -282,6 +282,18 @@ end
     # A NamedTuple writes both layers of one column.
     dggwrite!(store, 10, (elevation=fill(1.0f0, CAPACITY), slope=fill(2.0, CAPACITY)))
     @test Array(dggread(path; ancestors=[10])[:slope]) == fill(2.0, CAPACITY)
+
+    # The one-shot path takes a stack, and each layer keeps its element type.
+    cube = democube(HEXCOLS[1:2])
+    values = DD.data(cube)
+    stacked = DD.DimStack((elevation=copy(values), slope=Float64.(values)),
+        (DD.dims(cube, Cells),))
+    both = dest("stack.zarr")
+    dggwrite(both, stacked; layout=:subzones, ancestor_level=ANCESTOR)
+    read_back = dggread(both; ancestors=HEXCOLS[1:2])
+    @test keys(read_back) == (:elevation, :slope)
+    @test eltype(read_back[:elevation]) === Float32
+    @test Array(read_back[:slope]) == Float64.(values)
 end
 
 @testset "what the writer refuses" begin

@@ -114,7 +114,7 @@ function _checked_multiorder(sys::CentralPlaceHexSystem, coverage::DGG.MultiOrde
         "budget MultiOrderCoverage is unavailable for $(nameof(typeof(sys))): " *
         "its canonical prefix parent is non-spatial and its children do not " *
         "cover the parent footprint; use the fixed `level` mode"))
-    return DGG.Fallbacks._multi_order_query(sys, coverage.target, level, maxcells, maxlevel)
+    return DGG.Engine._multi_order_query(sys, coverage.target, level, maxcells, maxlevel)
 end
 
 DGG.query(sys::CentralPlaceHexSystem, coverage::DGG.MultiOrderCoverage;

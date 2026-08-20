@@ -69,8 +69,9 @@ const DEFAULTS = Dict{String,String}(
     "land" => "",                  # land shapefile; "" -> <data>/naturalearth/ne_10m_land.shp
     "maskarcsec" => "15",          # land-mask resolution; 0 disables the mask
     "region" => "all",             # "all", or "box:w,e,s,n" joined by ";"
-    "workers" => "21",             # W: concurrent worker tasks
-    "threadsper" => "3",           # T: only reported, see `note` in `main`
+    "workers" => "0",              # W: concurrent worker tasks; 0 = size from `cores`
+    "cores" => "24",               # the core budget W is sized to hold
+    "shape" => "outer",            # "outer" or "inner"; see `workercount`
     "batch" => "8",                # columns handed out per pull
     "budget" => string(2^30),      # lazy regrid byte budget, per worker
     "cache" => "3072",             # decoded source tiles held across all workers
@@ -775,19 +776,63 @@ function heartbeat!(p::Progress, force = false)
 end
 
 """
+    workercount() -> (W, shape)
+
+The worker count `W`, sized from the `cores` budget rather than from a thread
+count, and the parallel `shape` it assumes. `workers` overrides `W` when set.
+
+A work unit is one column, and how many cores one worker can hold depends
+entirely on which of the two nested parallelisms is allowed to run:
+
+  - `shape = "outer"` sets [`GR.OUTER_PARALLEL`](@ref) in the worker body. The
+    weight build stays serial and the lazy plan's source-chunk wave is the only
+    parallelism inside a unit. Measured: **1.06 cores per worker**, flat in `W`
+    while `W` is well below `nthreads`, and **65 k cells per core-second** — the
+    most work per core of the two, but it needs `W ≈ cores` workers, and each
+    worker holds a column's weights, so resident memory scales with `W`.
+
+  - `shape = "inner"` leaves `OUTER_PARALLEL` unset, so a narrow wave stands
+    aside and ConservativeRegridding threads the weight build itself. Measured
+    at 12 threads: one worker reaches 7.0–7.3 cores, the pool saturates at
+    **`W ≈ nthreads/4`** holding ~78 % of it, and throughput is **60 k cells per
+    core-second** — about 8 % less work per core, for a third of the workers and
+    two thirds of the resident memory.
+
+So at a fixed core budget `outer` converts cores into cells slightly faster,
+while `inner` reaches the same cores with far fewer workers, and is the only
+shape that keeps scaling once `cores` exceeds what `W ≈ cores` workers can be
+given threads for. `outer` is the default because the standing budget is 24
+cores, where the throughput edge wins; switch to `inner` for a larger budget or
+when resident memory is the binding constraint.
+"""
+function workercount()
+    named = cfgint("workers")
+    shape = cfg("shape")
+    shape in ("outer", "inner") ||
+        error("shape must be \"outer\" or \"inner\", got $(repr(shape))")
+    named > 0 && return (named, shape)
+    c = cfgint("cores")
+    c > 0 || error("cores must be positive when workers is not set")
+    # Cores per worker, measured; see the docstring.
+    W = shape == "outer" ? cld(c, 1.06) : cld(c, 3.1)
+    return (max(1, Int(W)), shape)
+end
+
+"""
     runcolumns(cols, dem, srcspace, sys7, store, layout, done) -> Progress
 
 `W` worker tasks pulling contiguous batches of columns off one atomic cursor.
 
-`GR.OUTER_PARALLEL` is set inside each worker body, which is what section 10
-prescribes: the outer loop already runs one task per destination unit, so the
-nested weight builds must not spawn their own and oversubscribe the box. The
-lazy plan's own source-chunk wave still runs — it spawns without consulting the
-scoped value — so a polar column, which meets 200-360 tiles, keeps the
-parallelism it is the one case that can use.
+Under `shape = "outer"` each worker body sets `GR.OUTER_PARALLEL`, so the nested
+weight builds do not spawn their own tasks and oversubscribe the box; the lazy
+plan's source-chunk wave is then the only parallelism inside a unit. Under
+`shape = "inner"` the scoped value is left alone, and `_wavesize` weighs that
+wave against the threading inside the build — standing the wave down whenever
+one source chunk carries the column, which is almost always.
 """
 function runcolumns(cols, dem, srcspace, sys7, store, layout, done)
-    W = cfgint("workers")
+    W, shape = workercount()
+    outer = shape == "outer"
     B = cfgint("batch")
     budget = cfgint("budget")
     p = Progress(length(cols))
@@ -795,8 +840,10 @@ function runcolumns(cols, dem, srcspace, sys7, store, layout, done)
     donelock = ReentrantLock()
     donio = open(DONELOG, "a")
     try
+        # `false` is the scoped value's own default, so binding it is the same
+        # as leaving it unset — the worker is the outermost scope either way.
         Threads.@sync for w in 1:W
-            Threads.@spawn @with GR.OUTER_PARALLEL => true begin
+            Threads.@spawn @with GR.OUTER_PARALLEL => outer begin
                 while true
                     i = Threads.atomic_add!(cursor, B)
                     i > length(cols) && break
@@ -1155,9 +1202,12 @@ function main()
     end
 
     # --- the run ---------------------------------------------------------
-    W = cfgint("workers")
-    say("launching W=$W workers (threadsper=$(cfg("threadsper")), " *
-        "nthreads=$(Threads.nthreads())), batch=$(cfg("batch")), budget=$(cfg("budget"))")
+    W, shape = workercount()
+    say("launching W=$W workers, shape=$shape, sized to hold $(cfg("cores")) cores " *
+        "(nthreads=$(Threads.nthreads())), batch=$(cfg("batch")), budget=$(cfg("budget"))")
+    shape == "inner" && Threads.nthreads() < 4W &&
+        say("NOTE shape=inner saturates near W=nthreads/4; " *
+            "$(Threads.nthreads()) threads will not fill $W workers")
     t0 = time()
     p = runcolumns(cols, dem, srcspace, sys7, store, layout, done)
     wall = time() - t0

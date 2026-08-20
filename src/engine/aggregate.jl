@@ -293,11 +293,19 @@ function _merges(values::AbstractVector, ks::UnitRange{Int}, atol)
         # `min`/`max` so a `NaN` propagates into both ends and refuses the
         # merge, where `v < lo` would ignore it.
         lo, hi = min(lo, v), max(hi, v)
-        hi - lo <= atol || return false, false
+        _within(lo, hi, atol) || return false, false
     end
     # Settles the one-element group, which never enters the loop.
-    hi - lo <= atol || return false, false
+    _within(lo, hi, atol) || return false, false
     return true, false
+end
+
+# An integer span wider than its own type wraps negative, so the sign test
+# refuses that merge instead of reading the wrapped difference as small. `NaN`
+# fails it too, as it failed the bare comparison.
+function _within(lo, hi, atol)
+    d = hi - lo
+    return d >= zero(d) && d <= atol
 end
 
 # Narrow the accumulator to the eltype actually emitted — an `Int` field that

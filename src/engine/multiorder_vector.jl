@@ -24,9 +24,10 @@ stored beside the ids is the interval index (`starts`, `stops`, cumulative
 Construction from a [`MultiOrderCellSet`](@ref) is O(n) and keeps the set's
 reference level; from `sys, cells` the vector is sorted and validated, with
 `reference_level` defaulting to the deepest level present (a deeper one is
-legal). The reference level is a property of the container, not of the
-system: two containers of the same cells at different reference levels
-compare equal.
+legal). The sort discards the input order, so a parallel value vector must be
+permuted with it — `cellposition(mov, c)` gives each cell's stored position.
+The reference level is a property of the container, not of the system: two
+containers of the same cells at different reference levels compare equal.
 
 ```julia
 mov[k]                          # the kth cell id
@@ -37,13 +38,15 @@ cellat(mov, lon, lat)           # the stored cell a point falls in
 covering(mov, polygon)          # the sub-container a region names
 CellVector(mov; level = l)      # the leaf-level expansion, as windows
 union(a, b); intersect(a, b); setdiff(a, b); complement(a)
+issubset(a, b); isdisjoint(a, b); issetequal(a, b); symdiff(a, b)
 ```
 
 Membership and point queries are one binary search; the set operations are
 O(n + m) interval arithmetic and return **normalized minimal** containers —
 the coarsest cells tiling the result — so `union(a, a)` may be coarser than a
-non-minimal `a` (the two hold the same leaves, and `==` says so). The system
-must have [`has_sorted_subtrees`](@ref).
+non-minimal `a`. `==` compares the stored cells, so those two are unequal even
+though they hold the same leaves; `issetequal` is the leaf-set comparison. The
+system must have [`has_sorted_subtrees`](@ref).
 """
 struct MultiOrderVector{ID,S<:AbstractHierarchicalGridSystem} <: AbstractVector{ID}
     system::S
@@ -98,10 +101,16 @@ end
 function _check_multiorder(sys::AbstractHierarchicalGridSystem, cells, starts, stops,
     ref::Int)
     _check_reference(sys, cells, ref)
+    n = ncells(levelgrid(sys, ref))
     for i in eachindex(starts)
         starts[i] <= stops[i] || throw(ArgumentError(
             "the interval of $(cells[i]) at level $ref is empty: " *
             "$(starts[i]):$(stops[i])"))
+        # Catches an id outside the system here rather than at the first
+        # geometry call that decodes it.
+        1 <= starts[i] && stops[i] <= n || throw(ArgumentError(
+            "$(cells[i]) is not a cell of $(typeof(sys)): its level-$ref interval " *
+            "$(starts[i]):$(stops[i]) leaves the level's positions 1:$n"))
         i == 1 && continue
         # Overlapping reference-level intervals mean one cell contains the
         # other, or repeats it.
@@ -136,7 +145,9 @@ _default_reference_level(sys::AbstractHierarchicalGridSystem, cells) =
     isempty(cells) ? first(levels(sys)) : maximum(level, cells)
 
 function _multiorder_from_cells(sys::AbstractHierarchicalGridSystem, cells, ref::Int)
-    ID = eltype(cells) <: AbstractCellIndex ? eltype(cells) : cellindextype(sys)
+    # An abstract input eltype would make every downstream cell call dynamic.
+    E = eltype(cells)
+    ID = isconcretetype(E) && E <: AbstractCellIndex ? E : cellindextype(sys)
     cs = collect(ID, cells)
     _check_reference(sys, cs, ref)
     ranges = [descendant_range(sys, c, ref) for c in cs]
@@ -219,7 +230,7 @@ system(mov::MultiOrderVector) = mov.system
 
 The level the container's intervals are stated at, no shallower than any
 stored cell. A property of the container, not of the system, and not part of
-equality. Unexported: `DiscreteGlobalGrids.Engine.reference_level(mov)`.
+equality. Public but unexported: `DiscreteGlobalGrids.reference_level(mov)`.
 """
 reference_level(mov::MultiOrderVector) = mov.reference_level
 
@@ -420,6 +431,32 @@ Base.intersect(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector.
     foldl(intersect, rest; init=intersect(a, b))
 Base.setdiff(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector...) =
     foldl(setdiff, rest; init=setdiff(a, b))
+
+# The predicates Base would otherwise answer by scanning the stored ids, which
+# reads a parent and its children as disjoint. Across systems only an empty
+# left operand is a subset, as in `CellVector`.
+function Base.issubset(a::MultiOrderVector, b::MultiOrderVector)
+    system(a) == system(b) || return isempty(a)
+    ref = max(a.reference_level, b.reference_level)
+    return isempty(_setdiff_intervals(intervals(_rekey(a, ref)),
+        intervals(_rekey(b, ref))))
+end
+
+function Base.isdisjoint(a::MultiOrderVector, b::MultiOrderVector)
+    system(a) == system(b) || return true
+    ref = max(a.reference_level, b.reference_level)
+    return isempty(_intersect_intervals(intervals(_rekey(a, ref)),
+        intervals(_rekey(b, ref))))
+end
+
+Base.issetequal(a::MultiOrderVector, b::MultiOrderVector) =
+    issubset(a, b) && issubset(b, a)
+
+Base.symdiff(a::MultiOrderVector, b::MultiOrderVector) =
+    union(setdiff(a, b), setdiff(b, a))
+
+Base.symdiff(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector...) =
+    foldl(symdiff, rest; init=symdiff(a, b))
 
 """
     complement(mov::MultiOrderVector) -> MultiOrderVector

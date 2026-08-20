@@ -276,6 +276,9 @@ end
         @test_throws ArgumentError DGG.MultiOrderVector(sys, cells; reference_level=leaf - 1)
         @test_throws ArgumentError DGG.MultiOrderVector(sys, cells;
             reference_level=last(DGG.levels(sys)) + 1)
+        # An abstract input eltype does not become the container's.
+        @test eltype(DGG.MultiOrderVector(sys, DGG.AbstractCellIndex[cells...])) ==
+              DGG.cellindextype(sys)
     end
 
     @testset "geometry of a mixed-level container" begin
@@ -349,6 +352,25 @@ end
         @test EN.complement(c) == a
     end
 
+    @testset "the predicates read leaves, not stored ids" begin
+        @test issubset(a, b) == issubset(A, B)
+        @test isdisjoint(a, b) == isdisjoint(A, B)
+        @test issetequal(a, b) == issetequal(A, B)
+        @test leafset(symdiff(a, b), l) == symdiff(A, B)
+        @test issubset(a, union(a, b))
+        @test issetequal(a, union(a, a))
+        @test isdisjoint(a, EN.complement(a))
+        # A parent and its children: exact-id scans read these as disjoint.
+        p = DGG.cellindex(DGG.levelgrid(sys, first(DGG.levels(sys)) + 1), 1)
+        kids = DGG.MultiOrderVector(sys, collect(DGG.children(sys, p)))
+        single = DGG.MultiOrderVector(sys, [kids[1]])
+        par = DGG.MultiOrderVector(sys, [p]; reference_level=DGG.level(kids[1]))
+        @test issubset(single, par)
+        @test !isdisjoint(par, single)
+        @test issetequal(kids, par)
+        @test isempty(symdiff(kids, par))
+    end
+
     # The n-ary forms fold the binary one (Base's would build a `Set`).
     @test union(a, b, a) == union(a, b)
     @test intersect(a, b, a) == intersect(a, b)
@@ -388,6 +410,20 @@ end
     @test_throws ArgumentError union(a, other)
     @test_throws ArgumentError intersect(a, other)
     @test_throws ArgumentError setdiff(a, other)
+    # The predicates answer instead of throwing, as `CellVector`'s do.
+    @test !issubset(a, other)
+    @test isdisjoint(a, other)
+    @test !issetequal(a, other)
+end
+
+# An id outside its level is refused at construction, not at the first geometry
+# call that decodes it. `LevelIndex` positions are zero-based, so `ncells` is
+# one past the end.
+@testset "an id past the end of its level is refused" begin
+    sys = DGG.HEALPixSystem()
+    n = DGG.ncells(DGG.levelgrid(sys, 0))
+    @test_throws ArgumentError DGG.MultiOrderVector(sys, [DGG.LevelIndex(0, n)])
+    @test DGG.MultiOrderVector(sys, [DGG.LevelIndex(0, n - 1)]) isa DGG.MultiOrderVector
 end
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ module DGGTestHelpers
 using Test
 import DiscreteGlobalGrids as DGG
 
-export syslabel, basesystem, isquadface, iscongruent, ishexwalk,
+export syslabel, basesystem, isquadface, iscongruent, ishexwalk, hashalowalk,
     hassortedsubtrees, forsystems, sweepcovers
 
 """
@@ -53,10 +53,11 @@ subtree and its root cover the same area.
 The quad-face family has this, and so do the literature systems whose aperture
 is a square on their own face shape — triangular ISEA4T, the rHEALPix
 nonuple quads, and the IVEA/RTEA rhombi. It is a geometric fact per refinement
-with no other trait standing for it, so it is declared here.
+with no other trait standing for it, so it is declared here. AusPIX is absent
+because it is an `AuthalicSystem` over rHEALPix, which `basesystem` unwraps.
 """
 iscongruent(sys) = isquadface(sys) || basesystem(sys) isa Union{
-    DGG.ISEA4TSystem,DGG.RHEALPixSystem,DGG.AusPIXSystem,
+    DGG.ISEA4TSystem,DGG.RHEALPixSystem,
     DGG.IVEA4RSystem,DGG.IVEA9RSystem,DGG.RTEA4RSystem,DGG.RTEA9RSystem}
 
 "`sys` supplies the hex hooks the calibrated directed halo walk needs."
@@ -66,11 +67,29 @@ function ishexwalk(sys)
                      Tuple{typeof(b),DGG.cellindextype(b)})
 end
 
+"""
+    hashalowalk(sys) -> Bool
+
+`sys` ships a subtree-halo engine of its own rather than taking the generic
+walk. An `AuthalicSystem` forwards the call, so the question is asked of the
+system underneath the wrap.
+
+Not the same as [`hassortedsubtrees`](@ref hassortedsubtrees): the two coincide
+over the quad-face and hex systems and part company over the literature ones,
+which name contiguous subtrees and still walk their halos generically.
+"""
+function hashalowalk(sys)
+    b = basesystem(sys)
+    c = DGG.cellindex(DGG.levelgrid(b, first(DGG.levels(b))), 1)
+    m = which(DGG.halo_engine, Base.typesof(b, c, DGG.level(c) + 1, DGG.Vertex()))
+    return m.sig.parameters[2] !== DGG.AbstractHierarchicalGridSystem
+end
+
 "`sys` names a subtree as a contiguous ascending id range."
 hassortedsubtrees(sys) = DGG.has_sorted_subtrees(basesystem(sys))
 
 """
-    forsystems(; quadface, hexwalk, sortedsubtrees) -> Tuple
+    forsystems(; quadface, hexwalk, halowalk, sortedsubtrees) -> Tuple
     forsystems(f; kwargs...)
 
 The registered systems matching every trait given, in registry order; each
@@ -78,11 +97,12 @@ keyword left out is not constrained. The one-argument form applies `f` to each.
 
     @testset "\$(syslabel(sys))" for sys in forsystems(quadface = true)
 """
-function forsystems(; quadface = nothing, hexwalk = nothing,
+function forsystems(; quadface = nothing, hexwalk = nothing, halowalk = nothing,
                     sortedsubtrees = nothing)
     matches(sys) =
         (quadface === nothing || isquadface(sys) == quadface) &&
         (hexwalk === nothing || ishexwalk(sys) == hexwalk) &&
+        (halowalk === nothing || hashalowalk(sys) == halowalk) &&
         (sortedsubtrees === nothing || hassortedsubtrees(sys) == sortedsubtrees)
     return filter(matches, DGG.systems())
 end

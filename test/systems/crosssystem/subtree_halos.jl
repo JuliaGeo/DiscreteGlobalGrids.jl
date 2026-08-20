@@ -1120,19 +1120,8 @@ end
             escaped = Tuple{Int,Int}[]
             for l in 1:6
                 l <= maxlevel(sys) || continue
-                grid = levelgrid(sys, l)
-                ncells(grid) <= 300_000 || continue
-                coarse = levelgrid(sys, l - 1)
-                out = 0
-                for p in 1:ncells(grid)
-                    x = cellindex(grid, p)
-                    a = ancestor(sys, x, l - 1)
-                    ring = neighbors(coarse, a, 1; connectivity = Vertex())
-                    for y in neighbors(grid, x, 1; connectivity = Vertex())
-                        b = ancestor(sys, y, l - 1)
-                        (b == a || any(==(b), ring)) || (out += 1)
-                    end
-                end
+                ncells(levelgrid(sys, l)) <= 300_000 || continue
+                out = escape_count(sys, l, l - 1, k)
                 out == 0 || push!(escaped, (l, out))
             end
             @test escaped == Tuple{Int,Int}[]
@@ -1608,7 +1597,7 @@ end
 
 
 
-    DEPTH_FLAT_SYSTEMS = forsystems(sortedsubtrees = true)
+    DEPTH_FLAT_SYSTEMS = forsystems(halowalk = true)
 
     @testset "construction state does not grow with the halo" begin
         for sys in systems()
@@ -1715,8 +1704,10 @@ end
     @testset "an eager engine with the same surface fails every laziness law" begin
         for sys in EAGER_CONTROL_SYSTEMS
             c = law_root(sys)
-            depths = filter(l -> l <= maxlevel(sys),
-                hassortedsubtrees(sys) ? law_depths(sys, (3, 5, 7)) : (1, 2, 3))
+            # The control has to SEE the walk grow before it can refuse it, so
+            # the ladder is the deep one on all three. The shallow arm the laws
+            # above take is A5's cost dodge, and A5 is not one of these.
+            depths = filter(l -> l <= maxlevel(sys), law_depths(sys, (3, 5, 7)))
             @test collect(fixture_iterator(sys, c, last(depths))) ==
                   eager_halo(sys, c, last(depths))
             ctor = [fixture_ctor_queries(sys, c, l) for l in depths]

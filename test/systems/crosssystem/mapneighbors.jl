@@ -29,6 +29,18 @@ const SWEEP = [
     (DGG.S2System(), 1, 4, 11),
     (DGG.ISEA4RSystem(), 1, 4, 11),
     (AuthalicSystem(DGG.IGeo7System()), 1, 3, 8),
+    # The literature families, on `neighborhood.jl`'s levels: chosen per
+    # aperture so each row's rooted subtree and tile coverage come out the size
+    # of the rows above rather than the same level number.
+    (DGG.ISEA3HSystem(), 1, 5, 13),
+    (DGG.ISEA4HSystem(), 1, 4, 10),
+    (DGG.ISEA4TSystem(), 1, 4, 10),
+    (DGG.RHEALPixSystem(), 1, 3, 7),
+    (DGG.AusPIXSystem(), 1, 3, 7),
+    (DGG.IVEA4RSystem(), 1, 4, 10),
+    (DGG.IVEA9RSystem(), 1, 3, 7),
+    (DGG.RTEA4RSystem(), 1, 4, 10),
+    (DGG.RTEA9RSystem(), 1, 3, 7),
 ]
 
 @testset "the sweep covers every registered system" begin

@@ -19,7 +19,7 @@ using DiscreteGlobalGrids: systems, levels, levelgrid, ncells, cellindex,
     descendants, subtree, border, interior, Vertex, Edge, PartialGrid
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
-using .DGGTestHelpers: syslabel
+using .DGGTestHelpers: syslabel, basesystem
 
 # A deterministic spread of cells: no RNG, so a failure names the same cell on
 # every run and on every machine.
@@ -115,8 +115,12 @@ eager_interior(sys, c, l; kw...) =
             :RTEA4RSystem, :RTEA9RSystem])
         for sys in systems()
             n = nameof(typeof(sys))
-            c = cellindex(levelgrid(sys, first(levels(sys))), 1)
-            m = which(DGG.border_engine, Base.typesof(sys, c, level(c), Vertex()))
+            # An `AuthalicSystem` forwards `border_engine` to its parent, so the
+            # question is about the system underneath the wrap; asking the
+            # wrapper would see the forwarder and call every wrap an automaton.
+            b = basesystem(sys)
+            c = cellindex(levelgrid(b, first(levels(b))), 1)
+            m = which(DGG.border_engine, Base.typesof(b, c, level(c), Vertex()))
             # "Ships an automaton" is "the selected method is not the generic
             # descendant scan" — not "the method lives in the system's own
             # module", which the shared quad-face engine would fail while still

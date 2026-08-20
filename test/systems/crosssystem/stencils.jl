@@ -87,6 +87,9 @@ shapes(sys, base, leaf) = ("rooted subtree" => rooted(sys, base, leaf),
     "scattered subset" => scattered(sys, leaf),
     "subtree with a hole" => holed(sys, base, leaf))
 
+# Rows with two cells in them: the only rows whose order says anything.
+orderable(table) = count(r -> length(r) >= 2, table)
+
 # A deterministic spread of in-set probes.
 function probes(sub, n::Int)
     total = ncells(sub)
@@ -186,12 +189,23 @@ end
         @test adjacency(CellLookup(cv)) == adjacency(sub)
         # The rows are ROTATIONAL, and that is only visible as an absence of
         # sorting: a `sort!` put back anywhere on this path would pass every
-        # other assertion in this file. Some row of a real subset is out of
-        # ascending order on every system.
-        @test any(!issorted, adjacency(sub))
-        @test any(!issorted, adjacency(cv))
+        # other assertion in this file. Only a row holding two cells can carry
+        # that evidence, and the every-fifth-cell subset leaves ISEA4H with two
+        # such rows and the aperture-9 rhombi with none — so the shape is asked
+        # only where it has rows enough to answer, and the testset below makes
+        # every system answer somewhere.
+        if orderable(adjacency(sub)) >= 4
+            @test any(!issorted, adjacency(sub))
+            @test any(!issorted, adjacency(cv))
+        end
         # Threading is a scheduling choice, never an answer.
         @test adjacency(sub; threaded = false) == adjacency(sub)
+    end
+
+    # The gate above skips a shape too small to order; this makes the system
+    # answer over the shapes together, so no `sort!` can hide behind the skip.
+    @testset "some shape's rows are out of ascending order" begin
+        @test any(p -> any(!issorted, adjacency(last(p))), shapes(sys, base, leaf))
     end
 
     @testset "the rooted fast path agrees with the generic route" begin

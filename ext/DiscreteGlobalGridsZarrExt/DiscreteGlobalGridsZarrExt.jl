@@ -11,5 +11,9 @@ using Zarr
 include("snapshot.jl")
 include("read.jl")
 include("write.jl")
+# The two-dimensional ancestor-subzone layout, which shares `dggread`'s and
+# `dggwrite`'s entry points and neither of their pipelines. Last, because both
+# of those route into it by name.
+include("subzones.jl")
 
 end # module DiscreteGlobalGridsZarrExt

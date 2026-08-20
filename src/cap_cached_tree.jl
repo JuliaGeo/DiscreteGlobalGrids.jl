@@ -71,8 +71,8 @@ function _cachedcelltree(space::DGGSpace)
     return CapCachedTree(root, _leafcaps(root.grid, 1:ncells(root.grid)))
 end
 
-# Above this a chunk's cap vector costs more to fill than the revisits it saves;
-# a destination tile of $(_CHUNK_CAP_CACHE_MAX) cells holds 2 MiB of caps.
+# Above this a chunk's cap vector costs more to fill than the revisits it saves.
+# A chunk at the limit holds 2 MiB of caps.
 const _CHUNK_CAP_CACHE_MAX = 1 << 16
 
 # A chunk's cursor with its own cap vector. `subtree` calls this once per block

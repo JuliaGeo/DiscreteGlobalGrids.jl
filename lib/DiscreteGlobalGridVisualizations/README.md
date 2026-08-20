@@ -108,6 +108,21 @@ IGEO7 level 12  n= 2313802   convert   26.146 ->   3.889 s (  6.7x)   plot   27.
 
 `convert` is the part this package replaces and is backend-independent.
 
+The docs' hydrology tutorial at its level 12, run stage by stage with
+`bench/hydrology_level.jl`:
+
+| stage | `poly` | `dggpoly` |
+| --- | --- | --- |
+| build the elevation figure | 37.9 s | 19.4 s |
+| save the elevation figure | 13.2 s | 10.3 s |
+| build and save the terrain figures | 60.2 s | 15.8 s |
+| peak RSS for the page | 15.4 GiB | 6.6 GiB |
+
+Plotting stops being what sizes that page: regridding, at 5.2 GiB, becomes its
+peak.  At level 13 (16.2 M cells) the page reaches 33.6 GiB and the recipe is no
+longer what stops it — regridding, adjacency and the terrain analysis together
+reach 18.8 GiB before the last two figures are built.
+
 ## Status
 
 This is a proof of concept living in `lib/`; names and behaviour are not stable.

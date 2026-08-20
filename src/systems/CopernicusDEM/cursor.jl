@@ -337,20 +337,44 @@ function _level_cursor(grid::LevelGrid, strategy::BlockStrategy)
 end
 
 # `nothing` when the grid is not one rectangle held as one contiguous id run.
-function _block_cursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem},
-        strategy::BlockStrategy)
+_block_cursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem}, strategy::BlockStrategy) =
+    _window_cursor(grid, strategy, 1:DGG.ncells(grid))
+
+"""
+    subcursor(grid, inds) -> BlockCursor or `nothing`
+
+The node covering grid positions `inds`, or `nothing` when they are not one
+contiguous id run forming one lattice rectangle by [`treeify`](@ref)'s rules.
+
+Positions stay `grid`'s own, so a source chunk keeps this index-rectangle tree —
+whose node cap is an exact O(1) box — instead of the regridder's bounding-cap
+fallback over one polygon per pixel. A tile-sized chunk qualifies whether the
+grid is the complete level grid or a partial one holding only the tiles that
+exist: the run test is over the window, not the whole grid.
+"""
+DGG.subcursor(grid::Union{LevelGrid,DGG.PartialGrid{<:CopernicusDEMSystem}},
+    inds::AbstractUnitRange{<:Integer}) = _window_cursor(grid, DEFAULT_STRATEGY, inds)
+
+# `nothing` unless `inds` is one contiguous id run forming one rectangle.
+function _window_cursor(grid, strategy::BlockStrategy, inds::AbstractUnitRange{<:Integer})
+    isempty(inds) && return nothing
+    lo_p, hi_p = Int(first(inds)), Int(last(inds))
+    (1 <= lo_p && hi_p <= DGG.ncells(grid)) || return nothing
+    lo = DGG.cellindex(grid, lo_p)
+    hi = DGG.cellindex(grid, hi_p)
+    # Strictly ascending ids form a run iff their span equals their count.
+    hi.index - lo.index + 1 == hi_p - lo_p + 1 || return nothing
+    return _run_cursor(grid, strategy, Int64(lo.index) - lo_p, lo, hi)
+end
+
+# The node covering the id run `lo:hi`, whose grid position is `id - origin`.
+function _run_cursor(grid, strategy::BlockStrategy, origin::Int64,
+        lo::DGG.LevelIndex, hi::DGG.LevelIndex)
     sys = DGG.system(grid)
     l = DGG.level(grid)
-    n = DGG.ncells(grid)
-    n == 0 && return nothing
-    lo = DGG.cellindex(grid, 1)
-    hi = DGG.cellindex(grid, n)
-    # Strictly ascending ids form a run iff their span equals their count.
-    hi.index - lo.index + 1 == n || return nothing
     # `PartialGrid` does not range-check ids.
     (DGG.cellposition(sys, lo) === nothing || DGG.cellposition(sys, hi) === nothing) &&
         return nothing
-    origin = Int64(lo.index) - 1
     ra, qa, ja, ia = decode(sys, lo)
     rb, qb, jb, ib = decode(sys, hi)
     # Rectangular tile runs are one row segment or whole rows.

@@ -19,8 +19,12 @@ using DiscreteGlobalGridsConformanceTesting
 import DiscreteGlobalGridsConformanceTesting as CT
 
 import GeometryOps as GO
+import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import ConservativeRegridding as CR
+# Section (k) checks the tree the regridder gets for one source chunk.
+import GlobalRegridding as GR
+import Extents
 const US = GO.UnitSpherical
 using GeometryOps.UnitSpherical: spherical_orient
 
@@ -919,6 +923,103 @@ end
             @test (label, string(typeof(strategy)), blocked == reference) ==
                   (label, string(typeof(strategy)), true)
         end
+    end
+end
+
+# =========================================================================
+# (k2) The chunked source: `GR.subtree` windows the cursor
+# =========================================================================
+
+# `DGGSpace` chunks a Copernicus source by tile, and the regridder asks for one
+# tree per chunk. Without `subcursor` those trees are `GR.CellCapTree`s, whose
+# nodes bisect the linear index range — row-major order makes every shallow node
+# a band of complete pixel rows spanning the tile's whole longitude, so nothing
+# prunes on longitude. `subcursor` hands back the index rectangle instead.
+@testset "a source chunk keeps the block cursor" begin
+    STI = GO.SpatialTreeInterface
+
+    # Every leaf position under `tree`, ascending.
+    function leafpositions(tree)
+        out = Int[]
+        stack = Any[tree]
+        while !isempty(stack)
+            node = pop!(stack)
+            if STI.isleaf(node)
+                append!(out, first(e) for e in STI.child_indices_extents(node))
+            else
+                append!(stack, (STI.getchild(node, k) for k in 1:STI.nchild(node)))
+            end
+        end
+        return sort!(out)
+    end
+
+    # ---- the complete level grid --------------------------------------------
+    # The spike's source shape: every pixel on the planet, one chunk per tile.
+    # 97 M cells, but nothing here materializes them.
+    g1twin = levelgrid(TWIN, 1)
+    dense = DGG.DGGSpace(g1twin; chunklevel = 0)
+    @test GR.nchunks(dense) == 64_800
+    # A pole tile, a band edge on both sides, the equator, and the south pole.
+    for lat_s in (89, 50, 49, 0, -90), lon_w in (-180, 7)
+        tile = CD.tilecell(TWIN, lat_s, lon_w)
+        k = GR.chunkat(dense, cellposition(g1twin, CD.pixelcell(TWIN, tile, 0, 0)))
+        inds = DGG.cellindices(dense, k)
+        @test length(inds) == Int(CD.lat_intervals(TWIN)) * Int(CD.ncols_at(TWIN, lat_s))
+        tree = GR.subtree(dense, inds)
+        @test tree isa CD.BlockCursor
+        # The window is the chunk exactly — no cell of another tile leaks in.
+        @test leafpositions(tree) == collect(inds)
+    end
+
+    # Any window of whole raster rows is a rectangle too; a mid-row window is
+    # not one, and takes the bounding-cap fallback.
+    r = DGG.cellindices(dense, GR.chunkat(dense,
+        cellposition(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
+    nc = Int(CD.ncols_at(TWIN, 12))
+    rows = (first(r) + nc):(first(r) + 3nc - 1)
+    @test GR.subtree(dense, rows) isa CD.BlockCursor
+    @test leafpositions(GR.subtree(dense, rows)) == collect(rows)
+    @test GR.subtree(dense, (first(r) + 1):(first(r) + nc)) isa GR.CellCapTree
+    # And a run spanning two tiles is not one rectangle either.
+    @test GR.subtree(dense, (last(r) - 1):(last(r) + 1)) isa GR.CellCapTree
+
+    # ---- a sparse holding ---------------------------------------------------
+    # Copernicus ships land tiles only, so the production source is a
+    # `PartialGrid` over a scattered subset. Its whole-grid tree is the generic
+    # cursor, but each chunk is still one tile and still windows.
+    tiles = [CD.tilecell(TWIN, 89, 10),     # polemost band, 3 columns
+             CD.tilecell(TWIN, 50, -3),     # band edge, west of the prime meridian
+             CD.tilecell(TWIN, 12, 40)]     # full-width equatorial tile
+    ids = sort!(reduce(vcat, [collect(children(TWIN, t)) for t in tiles]))
+    holding = PartialGrid(TWIN, 1, ids)
+    @test treeify(holding) isa DGG.HierarchicalGridCursor
+    src = DGG.DGGSpace(holding; chunklevel = 0)
+    @test GR.nchunks(src) == length(tiles)
+
+    # One destination covering the three tiles, at a level fine enough that most
+    # of its cells take weight from the source.
+    tilebox(t) = let (lat_s, lon_w) = CD.tilecorner(TWIN, t)
+        Extents.Extent(X = (Float64(lon_w), lon_w + 1.0), Y = (Float64(lat_s), lat_s + 1.0))
+    end
+    sys7 = DGG.IGeo7System()
+    dstgrid = PartialGrid(sys7, 7, sort!(unique(reduce(vcat,
+        [query(sys7, Intersects(tilebox(t)); level = 7) for t in tiles]))))
+    dsttree = GR.subtree(DGG.DGGSpace(dstgrid), 1:ncells(dstgrid))
+
+    op = CR.DefaultIntersectionOperator(MANIFOLD)
+    for k in 1:GR.nchunks(src)
+        inds = DGG.cellindices(src, k)
+        tree = GR.subtree(src, inds)
+        @test tree isa CD.BlockCursor
+        @test leafpositions(tree) == collect(inds)
+        # The weights are the fallback's, entry for entry: one tree is faster to
+        # descend than the other and that is the whole of the difference.
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, tree;
+            intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree,
+            GR.CellCapTree(src, inds); intersection_operator = op)
+        @test length(fast.nzval) > 0
+        @test (k, fast == slow) == (k, true)
     end
 end
 

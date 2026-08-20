@@ -201,13 +201,18 @@ runner (`.github/workflows/CI.yml` on the `claude/ci-level13-probe` branch):
 
 | run | outcome | peak RSS |
 | --- | --- | --- |
-| level 12, `dggpoly`, **no swap file** | finished in 2m30s | 6.75 GiB |
-| level 13, `dggpoly`, 20 GB swap file | died drawing the last two figures | 14.56 GiB before them |
+| level 12, `dggpoly`, no swap file | finished, 2m30s | 6.75 GiB |
+| level 13, `dggpoly`, 20 GB swap file | **died** drawing the last two figures | 14.56 GiB before them |
+| level 13, `dggresample`, 20 GB swap file | finished, 4m50s | 9.52 GiB |
+| level 13, `dggresample`, **no swap file** | finished, 4m45s | 9.51 GiB |
 
-So the swap-file step the docs job carries today is no longer needed at level
-12.  And at level 13 the pipeline gets through regridding, adjacency, flow
-direction and the whole Geomorphometry chain inside 14.56 GiB — it is the two
-terrain figures, and only those, that take it past the runner.
+Three things follow.  The swap-file step the docs job carries today is not
+needed at level 12.  Level 13 with `dggpoly` gets through regridding, adjacency,
+flow direction and the whole Geomorphometry chain inside 14.56 GiB — it is the
+two terrain figures, and only those, that take it past the runner.  And with
+`dggresample` level 13 fits on a stock runner **with no swap file at all**: the
+sampler's high-water mark for memory plus swap was 10.21 GiB of the runner's 15,
+and the three figures cost 36 seconds of the 285.
 
 ## Status
 

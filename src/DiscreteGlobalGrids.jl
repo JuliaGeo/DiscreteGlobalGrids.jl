@@ -14,36 +14,37 @@ preserve the generic methods' semantics.
 
 A system needs no grid type of its own. [`levelgrid`](@ref) defaults to
 [`HierarchicalLevelGrid`](@ref), which holds `(system, level)` and forwards the
-four required grid methods to system-level counterparts.
+base grid interface to the five level-grid primitives a system writes instead.
 
 A bare `Int` is a position in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
 
-On [`PartialGrid`](@ref), [`CellVector`](@ref), and [`CellLookup`](@ref),
+A **region** is a subset of one complete level — [`PartialGrid`](@ref),
+[`CellVector`](@ref), [`CellLookup`](@ref) — or a complete level itself, and
+[`subtree`](@ref) is the reifier that makes a subtree one. On a region,
 [`neighbors`](@ref) and [`ring`](@ref) return complete-level adjacency clipped
-to membership. [`halo`](@ref) lazily returns absent cells adjacent to the
-subset, including holes. [`stencil_table`](@ref) addresses complete adjacency
-rows into a concatenated `[subset; halo]` buffer.
-[`member_neighbors`](@ref) asks the adjacency question across the levels
-of a [`MultiOrderCellSet`](@ref), which has no `halo` because it has no single
-level to answer at.
+to membership, and four verbs answer about the region as a whole:
+[`halo`](@ref) walks what is outside it, including the cells punched out of its
+middle; [`border`](@ref) and [`interior`](@ref) split what is inside;
+[`adjacency`](@ref) tables every one-ring at once, clipped, completed over a
+`[region; halo]` buffer, or marked in place. The three walks are lazy, serial
+and `O(depth)` in memory; `adjacency` is the cached, threaded product, and the
+one that keeps its halo ([`halopositions`](@ref)).
+[`member_neighbors`](@ref) asks the adjacency question across the levels of a
+[`MultiOrderCellSet`](@ref), which has no `halo` because it has no single level
+to answer at.
 
-[`subtree_border`](@ref) and [`subtree_interior`](@ref) are its inside;
-[`subtree_halo`](@ref) is its outside — the level-`l` cells that are not
-descendants but touch one. All three are `collect` of a resumable
-`O(depth)`-memory iterator ([`EdgeCellIterator`](@ref),
-[`InnerCellIterator`](@ref), [`SubtreeHaloIterator`](@ref)). Halos are emitted
-in ascending target-grid position. [`halo_positions`](@ref) streams those
-positions without materializing ids, and [`halo_sizehint`](@ref) provides an
-optional allocation hint where exact length is unavailable.
-
-Internal geometry uses `GeometryOps.UnitSphericalPoint`; explicitly named
-wrappers convert longitude and latitude at API boundaries.
+Internal geometry uses `UnitSphericalPoint` — `GeometryOps`', re-exported here
+so the type the contract asks an implementor to return needs no module path;
+explicitly named wrappers convert longitude and latitude at API boundaries.
 
 # Layout
 
   - `src/interface/`: abstract types and generic contracts.
-  - `src/fallbacks/`: generic implementations and wrapper types.
+  - `src/fallbacks/`: the overridable generic defaults — identity, location,
+    geometry, the subtree walkers, and the level-grid and authalic wrappers.
+  - `src/engine/`: the machinery no system overrides — the region containers,
+    the cursor and position tree, the query planner, and the walks over them.
   - `src/dimensionaldata.jl`: the cube face of [`CellVector`](@ref) —
     [`CellLookup`](@ref), [`Cells`](@ref), [`Covering`](@ref).
   - `src/systems/`: grid-system implementations.
@@ -66,6 +67,9 @@ bindings for the same reason the `Trees` ones are.
 module DiscreteGlobalGrids
 
 import GeometryOps as GO
+# The unit-sphere point type is in every geometry signature the interface asks
+# an implementor to write, so it is re-exported rather than left behind `GO`.
+using GeometryOps: UnitSphericalPoint
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import Extents
@@ -73,7 +77,7 @@ import ConservativeRegridding
 import ConservativeRegridding: Trees
 import GeometryOps: SpatialTreeInterface as STI
 # `neighbors` and `ring` use variable-length, fixed-capacity containers bounded
-# by `max_neighbors`.
+# by `maxneighbors`.
 import SmallCollections
 using SmallCollections: SmallVector
 
@@ -113,29 +117,44 @@ include("interface/types.jl")
 include("interface/grid.jl")
 include("interface/system.jl")
 
-# Generic interface implementations.
+# The overridable generic defaults, then the machinery that reads them.
 include("fallbacks/fallbacks.jl")
+include("engine/engine.jl")
 
 # Bind fallback types before including systems that extend them.
-using .Fallbacks: HierarchicalLevelGrid, PartialGrid, AuthalicGrid, AuthalicSystem,
+using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
+    EdgeCellIterator, InnerCellIterator
+
+using .Engine: PartialGrid,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
-    is_contained, coarsest_contained, cell_polygons,
+    iscontained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_positions,
-    EdgeCellIterator, InnerCellIterator, member_neighbors,
-    SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator,
-    subtree_halo, halo, halo_positions, halo_sizehint,
-    StencilTable, stencil_table,
+    grow, expand, compact, member_neighbors,
+    SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator, RegionSide,
+    halo_positions, sizehint,
+    AdjacencyTable, halocells, halopositions,
     SubsetPositionedCell, cellid,
-    mapneighbors, foreachneighbors, StorageOrder, HaloTable,
-    MultiOrderVector, aggregate, coarsen, expand, complement
+    mapneighbors, foreachneighbors, StorageOrder,
+    NeighborCallbackError,
+    MultiOrderVector, aggregate, coarsen, complement
 
-# Internal extension points for system-specific subtree walkers.
+# Internal extension points for system-specific subtree walkers and shell
+# winding.
 using .Fallbacks: collect_subtree,
-    MortonCurve, quadrant_step, SquareRimEngine, SquareInteriorEngine,
-    SquareBandEngine, square_halo_engine, generic_halo_engine, check_halo_level,
-    HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine
+    MortonCurve, quadrant_step, SquareBorderEngine, SquareInteriorEngine,
+    adjacency_shells, checked_steps, _ring_frame, _wind!
+using .Engine: SquareBandEngine, square_halo_engine, generic_halo_engine,
+    check_halo_level, HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine
 
-# IGeo7 and ISEA4R share guarded definitions in `src/systems/ISEA/`.
+# The radix-4 quad-face family: the declarations its members write, and the
+# shared arithmetic and geometry their own files call.
+using .Fallbacks: nbasefaces, systemname, idname,
+    subtree_curve, subtree_orientation,
+    nside, checked_id, chart_perimeter, sampled_cap,
+    morton_encode, morton_decode
+
+# The Snyder/icosahedron basis IGeo7 and ISEA4R share, before either of them.
+include("systems/ISEA/ISEA.jl")
 include("systems/IGeo7/IGeo7.jl")
 include("systems/H3/H3.jl")
 include("systems/HEALPix/HEALPix.jl")
@@ -185,6 +204,10 @@ include("io/api.jl")
 # Last: the regridding face reads the grids, the compressed collection, and the
 # cube axis alike.
 include("regridding.jl")
+include("cap_cached_tree.jl")
+
+# After it: a target resolution may be spelled as a raster or a regrid space.
+include("sizing.jl")
 
 # CopernicusDEM is deliberately absent: registering a system enrols it in every
 # cross-system sweep, whose hardcoded cases and level choices assume a globally
@@ -205,23 +228,28 @@ interface dispatch. Tuple order has no semantic meaning.
 
 # The six, and how they differ
 
-| system | cells at level `l` | cell shape | equal-area |
-|---|---|---|---|
-| [`IGeo7System`](@ref) | `10·7^l + 2` | hexagons + 12 pentagons | by construction; see `IGeo7.equal_area_steradians` |
-| [`H3System`](@ref) | `120·7^l + 2` | hexagons + 12 pentagons | no (libh3's gnomonic faces) |
-| [`HEALPixSystem`](@ref) | `12·4^l` | curvilinear diamonds | yes, exactly `4π/(12·4^l)` |
-| [`A5System`](@ref) | `12`, `60`, then `60·4^(l-1)` | pentagons (Cairo-style) | yes |
-| [`S2System`](@ref) | `6·4^l` | geodesic quadrilaterals | no; ~2.08× within-level spread |
-| [`ISEA4RSystem`](@ref) | `10·4^l` | rhombi on ten diamonds | yes, exactly `4π/(10·4^l)` |
+The size column is [`cellsize`](@ref) in km at levels 0, 4 and 8 — the side of a
+square with the median cell's area, which is the only size a system whose cells
+differ in shape and area has. Ask [`levelfor`](@ref) for the level a given
+resolution wants rather than reading a level off this table.
+
+| system | cells at level `l` | ≈ size (km) at `l` = 0 / 4 / 8 | cell shape | equal-area |
+|---|---|---|---|---|
+| [`IGeo7System`](@ref) | `10·7^l + 2` | 6520 / 146 / 3.0 | hexagons + 12 pentagons | by construction; see `IGeo7.equal_area_steradians` |
+| [`H3System`](@ref) | `120·7^l + 2` | 2026 / 42.6 / 0.87 | hexagons + 12 pentagons | no (libh3's gnomonic faces) |
+| [`HEALPixSystem`](@ref) | `12·4^l` | 6520 / 408 / 25.5 | curvilinear diamonds | yes, exactly `4π/(12·4^l)` |
+| [`A5System`](@ref) | `12`, `60`, then `60·4^(l-1)` | 6524 / 365 / 22.8 | pentagons (Cairo-style) | yes |
+| [`S2System`](@ref) | `6·4^l` | 9220 / 584 / 36.1 | geodesic quadrilaterals | no; ~2.08× within-level spread |
+| [`ISEA4RSystem`](@ref) | `10·4^l` | 7142 / 446 / 27.9 | rhombi on ten diamonds | yes, exactly `4π/(10·4^l)` |
 
 Important cross-system traits:
 
   - **Neighbour degree varies, and [`Vertex`](@ref)/[`Edge`](@ref) need not
-    coincide.** [`max_neighbors`](@ref) is an upper bound. IGeo7/H3 have degree
+    coincide.** [`maxneighbors`](@ref) is an upper bound. IGeo7/H3 have degree
     6 except for 12 pentagons of degree 5, with identical connectivities. A5's
     4-valent corners give
-    `max_neighbors(A5System(), Vertex()) == 11` against
-    `max_neighbors(A5System(), Edge()) == 5`; at resolution 1, some cells have
+    `maxneighbors(A5System(), Vertex()) == 11` against
+    `maxneighbors(A5System(), Edge()) == 5`; at resolution 1, some cells have
     11 vertex-neighbours and 3 edge-neighbours. Above level 1, ISEA4R has ten
     degree-9 cells at icosahedral vertices 0 and 11, thirty degree-7 cells, and
     degree 8 elsewhere; level 0 is 6-regular.
@@ -230,12 +258,11 @@ Important cross-system traits:
     [`cap_inflation`](@ref) to `1.75`.
   - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
     has not established the two-sided [`descendant_range`](@ref) contract.
-  - **[`subtree_border`](@ref).** IGeo7, H3, HEALPix, ISEA4R, and S2 provide
-    `O(rim)` walkers; A5 uses the `O(subtree)` fallback. Each is a resumable
-    [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in `O(depth)`
-    memory, of which [`subtree_border`](@ref) and [`subtree_interior`](@ref) are
-    the `collect` forms.
-  - **[`subtree_halo`](@ref).** The same boundary from outside, as a resumable
+  - **[`border`](@ref) on a subtree region.** IGeo7, H3, HEALPix, ISEA4R, and
+    S2 provide `O(border)` walkers; A5 uses the `O(subtree)` fallback. Each is a
+    resumable [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in
+    `O(depth)` memory, which is what `border` and [`interior`](@ref) read.
+  - **[`halo`](@ref) on a subtree region.** The same boundary from outside, as a resumable
     [`SubtreeHaloIterator`](@ref) in `O(depth)` memory. `l == level(c)` is the
     cell's own one-ring on every system, emitted ascending without a sort.
     Deeper, five of the six take a specialization and A5 does not:
@@ -251,7 +278,7 @@ Important cross-system traits:
         `SizeUnknown()`.
       + **IGeo7 and H3** approach the halo from the root's own same-level
         neighbours. One level down the calibration is already the answer; deeper,
-        each neighbour's subtree-rim automaton is seeded with an exposed-direction
+        each neighbour's subtree-border automaton is seeded with an exposed-direction
         arc calibrated by observation and walked to the target. Neighbouring
         subtrees occupy disjoint [`descendant_range`](@ref)s, so walking them in
         range order is canonical without a heap or a seen-set, and every
@@ -267,9 +294,9 @@ Important cross-system traits:
     The generic outside-first hierarchy walk — canonical-order candidates with
     [`node_extent`](@ref) cap pruning — is still what every specialization's
     guards return to and what a newly registered system inherits.
-  - **[`halo`](@ref).** The same question about a SUBSET rather than a subtree,
-    on [`PartialGrid`](@ref), [`CellVector`](@ref) and [`CellLookup`](@ref), and
-    always an iterator. A rooted grid holding a complete subtree delegates to
+  - **[`halo`](@ref) on any other region.** The same question about an
+    arbitrary subset, and always an iterator. A rooted grid holding a complete
+    subtree delegates to
     [`SubtreeHaloIterator`](@ref) and keeps its system's specialization;
     everything else — a hole, a forgotten root, an arbitrary id list — takes an
     outside-first walk against membership, pruned by the subset's own position
@@ -281,14 +308,14 @@ Important cross-system traits:
     halo. A5 is again the exception to the delegation: without
     [`has_sorted_subtrees`](@ref) there is no way to recognise a held subtree, so
     even its rooted complete grid takes the subset walk — to the same answer.
-  - **[`stencil_table`](@ref).** The chunk-plus-halo addressing, and the only
-    verb here whose rows are guaranteed COMPLETE: given a subset and its halo
-    materialised as ascending positions, CSR rows of full one-rings indexed into
-    the concatenated `[chunk; halo]` buffer, in rotational order. `k == 1` only,
-    since a width-one halo completes nothing wider, and a neighbour in neither
-    half is an error rather than a short row. A rooted complete subtree resolves
-    membership by integer range and everything else — a hole, a scattered id
-    set, all of A5 — by `cellposition`.
+  - **[`adjacency`](@ref).** Every one-ring of a region at once, CSR and
+    counter-clockwise, with the out-of-region members dropped (`halo = 0`),
+    addressed into a `[region; halo]` buffer (`halo = 1`), or marked with `0`
+    in place (`halo = :mark`). The two complete-width shapes preserve slot
+    indices against the canonical `one_ring`, so a direction code is a property
+    of the cell; the clipped shape preserves order only. Rows exist for
+    in-region positions alone, so `halo` above 1 throws and points at
+    [`grow`](@ref).
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
     the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
     their parent exactly; the hierarchy's own relation on IGEO7, H3 and A5,
@@ -311,28 +338,62 @@ systems() = (IGeo7System(), H3System(), HEALPixSystem(),
 
 # --- Type vocabulary -------------------------------------------------------
 export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
+export AbstractQuadFaceGridSystem
 export LevelIndex
 export Connectivity, Vertex, Edge
+# `GeometryOps.UnitSphericalPoint`, re-exported: every boundary and centroid
+# method in the contract is written in it.
+export UnitSphericalPoint
 
 # --- Base grid interface ---------------------------------------------------
 export ncells, cellindex, cell_boundary, cell_centroid
 export cellposition, rawid, reindex, cellindextypes
 export cell_polygon, cell_area, cell_extent, getcell
-export cellat, neighbors, ring, halo_table, neighborcount
+export cellat, neighbors, ring, neighborcount
 export treeify, query
 export system, level
 
+# --- Cell size and level choice --------------------------------------------
+export cellsize, levelfor
+
 # --- Hierarchical system interface -----------------------------------------
-export cellindextype, levels, max_level, levelgrid, rootcells, children
-export node_extent, cap_inflation, max_neighbors, has_sorted_subtrees
+# `Base.parent(sys, c)` belongs to this list and is absent from it deliberately:
+# the hierarchy's parent is a method on Base's function, not a name to re-export.
+export cellindextype, levels, maxlevel, levelgrid, rootcells, children
+export node_extent, maxneighbors, has_sorted_subtrees
 export ancestor, descendants, descendant_range
-export subtree_border, subtree_interior
-export EdgeCellIterator, InnerCellIterator
-export SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator
-export subtree_halo, halo, halo_positions, halo_sizehint
-export StencilTable, stencil_table
-export SubsetPositionedCell, cellid
-export mapneighbors, foreachneighbors, StorageOrder, HaloTable
+export subtree
+export cellid
+export mapneighbors, foreachneighbors
+
+# --- The region verbs ------------------------------------------------------
+# A region is a subset of one complete level, or a complete level itself: the
+# outside, the two insides, and the whole adjacency at once.
+export halo, border, interior
+export adjacency, AdjacencyTable, halocells, halopositions
+
+# --- Reachable by name, not exported ---------------------------------------
+# The lazy walk types: an argument of the verbs above, never a name a caller
+# spells to get an answer.
+public EdgeCellIterator
+public InnerCellIterator
+public SubtreeHaloIterator
+public SubsetHaloIterator
+public HaloPositionIterator
+public RegionSide
+# The inexact size estimate `Base.IteratorSize` has no slot for.
+public sizehint
+# The positions view of an id halo walk; `halo` already answers in positions.
+public halo_positions
+public SubsetPositionedCell
+public HierarchicalGridCursor
+# A traversal order, not a traversal.
+public StorageOrder
+# A tuning knob for the default `node_extent`, read by no caller that does not
+# implement a system.
+public cap_inflation
+# Caught, not called.
+public NeighborCallbackError
 
 # --- Query predicates (DE9IM.jl types, our semantics) ----------------------
 export DE9IMPredicate
@@ -341,14 +402,19 @@ export Touches, Crosses, Overlaps, Equals
 
 # --- Fallback substrate ----------------------------------------------------
 # These fallback types are bound before system modules extend them.
-export HierarchicalLevelGrid, PartialGrid, HierarchicalGridCursor
+export HierarchicalLevelGrid, PartialGrid
 export AuthalicGrid, AuthalicSystem
 export MultiOrderCoverage, MultiOrderCellSet, level_ranges, cellindices
-export is_contained, coarsest_contained, cell_polygons, member_neighbors
+export iscontained, coarsest_contained, cell_polygons, member_neighbors
 
 # --- The compressed cell collection ----------------------------------------
 # `CellVector` is the DimensionalData-independent compressed collection.
-export CellVector, covering, cellset
+export CellVector, covering, covering_positions, cellset
+
+# --- Region algebra --------------------------------------------------------
+# Growth, bulk level movement, and compaction over the region types; `union`,
+# `vcat`, `intersect` and `issubset` are Base's and carry no name of their own.
+export grow, expand, compact
 
 # --- Multi-order storage -----------------------------------------------------
 # The mixed-level cell container, its adaptive constructor, the leaf-level
@@ -371,7 +437,8 @@ export MultiOrderLookup
 # All seven systems return `HierarchicalLevelGrid` from `levelgrid`.
 export systems
 export IGeo7System, Z7Cell, RelativeZ7Cell
-export directioncode
+# The Z7 development-frame direction of a child, which only IGeo7 code reads.
+public directioncode
 export H3System, H3Cell
 export HEALPixSystem, HEALPixRingIndex
 export A5System, A5Cell
@@ -381,7 +448,9 @@ export ISEA4RSystem
 export CopernicusDEMSystem
 
 # --- Manifolds -------------------------------------------------------------
-export authalic_sphere
+# The manifold pair behind `AuthalicSystem`; reached through the wrapper, not
+# by name.
+public authalic_sphere
 
 # --- Regridding ------------------------------------------------------------
 # The verbs are `GlobalRegridding`'s, extended for this package's targets;
@@ -396,15 +465,28 @@ export PerChunk, Spilled
 # `detect`, `decode`, `encode!` and `gridname` stay qualified: they are
 # extension points, and the names are too generic to export.
 export dggread, dggwrite
-export StoreSnapshot, ArrayEntry, StoreDescription, Detection, DGGSFormatError
+export Detection, DGGSFormatError
 export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
     LegacyHealpixConvention, DKRZConvention
-export CONVENTION_REGISTRY, DEFAULT_WRITE_CONVENTIONS, register_convention!
+export register_convention!
 export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
     CompactedEncoding
-export ENCODING_REGISTRY, register_encoding!
-export GridReference, GRID_REFERENCE, register_grid!
+export register_encoding!
+export register_grid!
 export describe_store
-export ChunkedCellLookup, ChunkManifest, nchunks, chunkof, chunkbounds
+export ChunkedCellLookup, nchunks, chunkof, chunkbounds
+
+# The store description vocabulary: what `describe_store` hands back and what a
+# convention writer reads, never a name a reader or writer has to spell.
+public StoreSnapshot
+public StoreDescription
+public ArrayEntry
+public ChunkManifest
+public GridReference
+# The three mutable registries, reached through their `register_*!` verbs.
+public CONVENTION_REGISTRY
+public DEFAULT_WRITE_CONVENTIONS
+public ENCODING_REGISTRY
+public GRID_REFERENCE
 
 end # module DiscreteGlobalGrids

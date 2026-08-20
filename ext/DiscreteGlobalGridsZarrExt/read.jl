@@ -203,7 +203,7 @@ end
 requiregroup(g::Zarr.ZGroup, identifier) = (g, String(identifier))
 
 requiregroup(x, identifier) = throw(DGGSFormatError(check=:not_a_group,
-    store=String(identifier), observed=typeof(x),
+    store=String(identifier), observed=string(nameof(typeof(x))),
     detail="a DGGS store is a GROUP of arrays sharing one cell dimension; " *
            "this path names a single array."))
 

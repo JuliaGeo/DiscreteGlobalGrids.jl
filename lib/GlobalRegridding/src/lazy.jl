@@ -69,8 +69,6 @@ struct DestTiling
     spacetiled::Bool
 end
 
-ntiles(tiling::DestTiling) = length(tiling.runs)
-
 # Use space chunks as tiles only when multiple chunks partition the cell axis.
 function _spacetileable(spans::Vector{UnitRange{Int}}, contiguous::Bool, ndst::Int)
     (contiguous && length(spans) > 1) || return false
@@ -475,7 +473,8 @@ function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
     end
     tasks = map(i:j) do k
         s = srcchunks[k]
-        Threads.@spawn blockfor(plan, (t, s), dinds, dstcells)
+        # Tasks inherit the scope, so nested builds see the wave and stay serial.
+        @with OUTER_PARALLEL => true Threads.@spawn blockfor(plan, (t, s), dinds, dstcells)
     end
     for task in tasks
         push!(wave, fetch(task)::CachedBlock)
@@ -662,27 +661,141 @@ end
 
 _isdisksource(x) = x isa DiskArrays.AbstractDiskArray || DiskArrays.isdisk(x)
 
+# Shaped view
+
+"""
+    ShapedRegridArray(parent::LazyRegridArray, shape)
+
+Lazily split `parent`'s leading cell axis into `shape`, column-major, so cell
+positions keep their order. Reads forward to `parent` without materializing it.
+"""
+struct ShapedRegridArray{T,N,ND,P<:LazyRegridArray} <: DiskArrays.AbstractDiskArray{T,N}
+    parent::P
+    shape::NTuple{ND,Int}
+    size::NTuple{N,Int}
+end
+
+function ShapedRegridArray(A::LazyRegridArray{T}, shape::Tuple{Vararg{Int}}) where {T}
+    prod(shape) == size(A, 1) || throw(DimensionMismatch(
+        "$(size(A, 1)) cells do not reshape to $shape"))
+    sz = (shape..., Base.tail(size(A))...)
+    return ShapedRegridArray{T,length(sz),length(shape),typeof(A)}(A, shape, sz)
+end
+
+Base.size(A::ShapedRegridArray) = A.size
+Base.parent(A::ShapedRegridArray) = A.parent
+residency(A::ShapedRegridArray) = residency(A.parent)
+
+Base.show(io::IO, ::MIME"text/plain", A::ShapedRegridArray) = show(io, A)
+Base.show(io::IO, A::ShapedRegridArray{T}) where {T} =
+    print(io, "ShapedRegridArray{", T, "}(", join(size(A), "×"), ")")
+
+DiskArrays.haschunks(::ShapedRegridArray) = DiskArrays.Chunked()
+
+function DiskArrays.eachchunk(A::ShapedRegridArray{T,N,ND}) where {T,N,ND}
+    pc = DiskArrays.eachchunk(A.parent).chunks
+    return DiskArrays.GridChunks(_shapedchunks(pc[1], A.shape)..., Base.tail(pc)...)
+end
+
+# Full leading axes; the parent's cell tiling projects onto the last spatial
+# axis where its run boundaries land on whole columns.
+function _shapedchunks(cells, shape::NTuple{ND,Int}) where {ND}
+    lead = ntuple(d -> DiskArrays.RegularChunks(shape[d], 0, shape[d]), ND - 1)
+    ncol = prod(Base.front(shape); init = 1)
+    offs = Int[0]
+    for r in cells
+        q, rem = divrem(last(r), ncol)
+        rem == 0 && last(offs) < q < shape[ND] && push!(offs, q)
+    end
+    push!(offs, shape[ND])
+    return (lead..., DiskArrays.IrregularChunks(; chunksizes = diff(offs)))
+end
+
+# A request is one contiguous cell run when partial axes trail only singletons.
+function _iscontiguous(shape::NTuple{ND,Int}, rs::NTuple{ND,UnitRange{Int}}) where {ND}
+    partial = false
+    for d in 1:ND
+        partial && length(rs[d]) > 1 && return false
+        partial |= length(rs[d]) != shape[d]
+    end
+    return true
+end
+
+function DiskArrays.readblock!(A::ShapedRegridArray{T,N,ND}, aout::AbstractArray,
+    r::AbstractUnitRange...) where {T,N,ND}
+    length(r) == N || throw(DimensionMismatch(
+        "$(length(r)) ranges requested from a $N-dimensional regrid"))
+    rs = ntuple(d -> UnitRange{Int}(r[d]), ND)
+    others = ntuple(d -> UnitRange{Int}(r[ND+d]), N - ND)
+    strides = ntuple(d -> prod(ntuple(i -> A.shape[i], d - 1); init = 1), ND)
+    lo = 1 + sum(ntuple(d -> (first(rs[d]) - 1) * strides[d], ND); init = 0)
+    hi = 1 + sum(ntuple(d -> (last(rs[d]) - 1) * strides[d], ND); init = 0)
+    if _iscontiguous(A.shape, rs)
+        DiskArrays.readblock!(A.parent,
+            reshape(aout, hi - lo + 1, map(length, others)...), lo:hi, others...)
+        return aout
+    end
+    # Rectangles that span partial columns read the covering cell run once and
+    # keep the requested lattice rows.
+    tmp = Array{T}(undef, hi - lo + 1, map(length, others)...)
+    DiskArrays.readblock!(A.parent, tmp, lo:hi, others...)
+    tmp2 = reshape(tmp, hi - lo + 1, :)
+    out2 = reshape(aout, prod(map(length, rs)), :)
+    row = 0
+    for I in CartesianIndices(rs)
+        row += 1
+        flat = 1 + sum(ntuple(d -> (I[d] - 1) * strides[d], ND); init = 0)
+        out2[row, :] = view(tmp2, flat - lo + 1, :)
+    end
+    return aout
+end
+
+# Mirror `wrapoutput` without materializing: label a dimensional source's
+# regrid with the destination's own axes, or one flat `Cell` axis.
+function wraplazy(A::LazyRegridArray{T,N,NS}, data, dstdims) where {T,N,NS}
+    data isa DD.AbstractDimArray || return A
+    ds = DD.dims(data)
+    others = ntuple(i -> ds[NS+i], ndims(data) - NS)
+    dstdims === nothing &&
+        return DD.DimArray(A, (DD.Dim{:Cell}(1:size(A, 1)), others...))
+    shaped = ShapedRegridArray(A, map(length, dstdims))
+    return DD.DimArray(shaped, (dstdims..., others...))
+end
+
 # API
 
 """
-    regrid(data, plan::ChunkedPlan) -> LazyRegridArray
+    regrid(data, plan::ChunkedPlan) -> lazy array
 
-Return a disk array that computes destination tiles on demand.
+Return a disk-backed array that computes destination tiles on demand. Labels
+and shape match the eager result ([`wrapoutput`](@ref)): a dimensional source
+comes back as a `DimArray` carrying the destination's own axes in their
+construction order, or a flat `Cell` axis; other sources stay a flat
+[`LazyRegridArray`](@ref).
 """
-regrid(data, plan::ChunkedPlan) = LazyRegridArray(data, plan)
+function regrid(data, plan::ChunkedPlan)
+    A = LazyRegridArray(data, plan)
+    return wraplazy(A, data, destinationdims(plan))
+end
 
 """
     regrid!(dest, data, plan::ChunkedPlan) -> dest
 
-Materialize a chunked plan into `dest`, one destination tile at a time.
+Materialize a chunked plan into `dest`, one destination tile at a time. As for
+[`DirectPlan`](@ref), `dest` may lead with the destination's own axes or one
+flat cell dimension.
 """
 function regrid!(dest, data, plan::ChunkedPlan)
     A = LazyRegridArray(data, plan)
-    size(dest) == size(A) || throw(DimensionMismatch(
-        "destination of size $(size(dest)) cannot hold a regrid of size $(size(A))"))
+    dstdims = destinationdims(plan)
+    shaped = dstdims === nothing ? size(A) :
+             (map(length, dstdims)..., Base.tail(size(A))...)
+    size(dest) == shaped || size(dest) == size(A) || throw(DimensionMismatch(
+        "destination of size $(size(dest)) cannot hold a regrid of size $shaped"))
     raw = dest isa DD.AbstractDimArray ? parent(dest) : dest
+    flat = reshape(raw, size(A))
     for ranges in DiskArrays.eachchunk(A)
-        raw[ranges...] = A[ranges...]
+        flat[ranges...] = A[ranges...]
     end
     return dest
 end

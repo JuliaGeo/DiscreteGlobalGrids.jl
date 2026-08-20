@@ -323,6 +323,36 @@ function chunktree(space::ToyLonLatSpace)
     return ToyCapTree(space, collect(1:n), caps)
 end
 
+# Tree-build counting wrapper
+
+"""
+    CountingSpace(space)
+
+Wrap a `RegridSpace` and count restricted-tree builds at the `GR.subtree`
+seam, delegating every other space verb unchanged. Read `cs.builds[]`; block
+builders may run on `Threads.@spawn` tasks, hence the atomic counter.
+"""
+struct CountingSpace{S<:RegridSpace} <: RegridSpace
+    space::S
+    builds::Threads.Atomic{Int}
+end
+
+CountingSpace(space::RegridSpace) = CountingSpace(space, Threads.Atomic{Int}(0))
+
+GR.subtree(cs::CountingSpace, inds) =
+    (Threads.atomic_add!(cs.builds, 1); GR.subtree(cs.space, inds))
+
+ncells(cs::CountingSpace) = ncells(cs.space)
+getcell(cs::CountingSpace, i::Int) = getcell(cs.space, i)
+manifold(cs::CountingSpace) = manifold(cs.space)
+hascellchart(cs::CountingSpace) = hascellchart(cs.space)
+cellcentroid(cs::CountingSpace, i::Int) = cellcentroid(cs.space, i)
+cellat(cs::CountingSpace, p) = cellat(cs.space, p)
+nchunks(cs::CountingSpace) = nchunks(cs.space)
+cellindices(cs::CountingSpace, chunk::Int) = cellindices(cs.space, chunk)
+celltree(cs::CountingSpace) = celltree(cs.space)
+chunktree(cs::CountingSpace) = chunktree(cs.space)
+
 # Geometry-free test method
 
 """

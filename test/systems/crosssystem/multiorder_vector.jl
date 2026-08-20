@@ -24,7 +24,7 @@ import DiscreteGlobalGrids as DGG
 import GeoInterface as GI
 import GeometryOps as GO
 
-const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 # Same fixture regions as the `CellVector` suite.
 const REGION = GI.Polygon([GI.LinearRing([(6.0, 45.8), (10.5, 45.8), (10.5, 47.8),
@@ -74,7 +74,7 @@ leafset(mov, l) = Set(p for c in mov for p in DGG.descendant_range(DGG.system(mo
 
 # Intervals sorted and pairwise disjoint.
 function disjoint_and_sorted(mov)
-    ivs = [DGG.descendant_range(DGG.system(mov), c, FB.reference_level(mov)) for c in mov]
+    ivs = [DGG.descendant_range(DGG.system(mov), c, EN.reference_level(mov)) for c in mov]
     return issorted(ivs; by=first) &&
            all(k -> first(ivs[k]) > last(ivs[k-1]), 2:length(ivs))
 end
@@ -124,7 +124,7 @@ end
     @testset "what it is" begin
         @test mov isa AbstractVector{DGG.cellindextype(sys)}
         @test DGG.system(mov) === sys
-        @test FB.reference_level(mov) == leaf
+        @test EN.reference_level(mov) == leaf
         @test length(mov) == length(set)
         @test collect(mov) == cells
         @test mov[:] === mov
@@ -148,8 +148,8 @@ end
             @test bridged == direct
             # Same windows, not just same cells: unmerged adjacent subtrees
             # would still compare equal.
-            @test FB.windows(bridged).starts == FB.windows(direct).starts
-            @test FB.windows(bridged).stops == FB.windows(direct).stops
+            @test EN.windows(bridged).starts == EN.windows(direct).starts
+            @test EN.windows(bridged).stops == EN.windows(direct).stops
         end
         @test DGG.cellset(DGG.CellVector(mov)) === mov
         # Expanding above the deepest stored cell would need ancestors, which
@@ -173,13 +173,13 @@ end
         deepest = argmax(k -> DGG.level(mov[k]), eachindex(mov))
         anc = DGG.ancestor(sys, mov[deepest], DGG.level(mov[deepest]) - 1)
         @test DGG.cellposition(mov, anc) === nothing
-        @test FB.covering_position(mov, anc) === nothing
+        @test EN.covering_position(mov, anc) === nothing
 
         # A leaf-grid cell outside the container entirely.
         outside = DGG.cellat(grid, FARAWAY...)
         @test outside !== nothing
         @test DGG.cellposition(mov, outside) === nothing
-        @test FB.covering_position(mov, outside) === nothing
+        @test EN.covering_position(mov, outside) === nothing
     end
 
     @testset "the covering ancestor" begin
@@ -188,14 +188,14 @@ end
         for i in ks
             r = DGG.descendant_range(sys, mov[i], leaf)
             for p in (first(r), (first(r) + last(r)) ÷ 2, last(r))
-                @test FB.covering_position(mov, DGG.cellindex(grid, p)) == i
+                @test EN.covering_position(mov, DGG.cellindex(grid, p)) == i
             end
         end
         # A cell deeper than the reference level resolves through its
         # reference-level ancestor.
         deep = first(DGG.children(sys, DGG.cellindex(grid, mov.stops[end])))
         @test DGG.level(deep) == leaf + 1
-        @test FB.covering_position(mov, deep) == length(mov)
+        @test EN.covering_position(mov, deep) == length(mov)
         @test DGG.cellposition(mov, deep) === nothing
     end
 
@@ -222,7 +222,7 @@ end
             @test DGG.covering_positions(mov, target) == byhand
             sub = DGG.covering(mov, target)
             @test sub isa DGG.MultiOrderVector
-            @test FB.reference_level(sub) == leaf
+            @test EN.reference_level(sub) == leaf
             # The selection is a sub-vector of stored cells, never a re-cut of
             # the region.
             @test collect(sub) == [mov[i] for i in byhand]
@@ -253,7 +253,7 @@ end
 
     @testset "the reference level is a unit, not content" begin
         deeper = DGG.MultiOrderVector(sys, cells; reference_level=leaf + 1)
-        @test FB.reference_level(deeper) == leaf + 1
+        @test EN.reference_level(deeper) == leaf + 1
         @test deeper.starts != mov.starts        # ... different integers ...
         @test deeper == mov && mov == deeper     # ... same container
         @test collect(deeper) == cells
@@ -291,9 +291,9 @@ end
     @testset "an empty container is legal" begin
         empty = DGG.MultiOrderVector(sys, DGG.cellindextype(sys)[])
         @test isempty(empty)
-        @test FB.reference_level(empty) == top
+        @test EN.reference_level(empty) == top
         @test DGG.cellposition(empty, cells[1]) === nothing
-        @test FB.covering_position(empty, cells[1]) === nothing
+        @test EN.covering_position(empty, cells[1]) === nothing
         @test isempty(DGG.CellVector(empty))
         @test isempty(DGG.covering(empty, REGION))
         @test occursin("0 cells", sprint(show, empty))
@@ -320,33 +320,33 @@ end
         ("union", union(a, b), union(A, B)),
         ("intersect", intersect(a, b), intersect(A, B)),
         ("setdiff", setdiff(a, b), setdiff(A, B)),
-        ("complement", FB.complement(a), setdiff(Set(1:n), A)))
+        ("complement", EN.complement(a), setdiff(Set(1:n), A)))
 
         @test got isa DGG.MultiOrderVector
         @test DGG.system(got) === sys
-        @test FB.reference_level(got) == l
+        @test EN.reference_level(got) == l
         @test leafset(got, l) == want
         @test disjoint_and_sorted(got)
         # Coarsest decomposition: no complete sibling family survives.
         @test !has_complete_family(sys, got)
     end
 
-    c = FB.complement(a)
+    c = EN.complement(a)
     @test isempty(intersect(a, c))
     @test leafset(union(a, c), l) == Set(1:n)
     # The whole sphere normalizes to the root cells.
     @test collect(union(a, c)) == collect(DGG.rootcells(sys))
     # Double complement normalizes rather than round-trips: same leaves, as the
     # coarsest cells that name them.
-    @test leafset(FB.complement(c), l) == A
-    @test FB.complement(c) == union(a, a)
-    @test !has_complete_family(sys, FB.complement(c))
+    @test leafset(EN.complement(c), l) == A
+    @test EN.complement(c) == union(a, a)
+    @test !has_complete_family(sys, EN.complement(c))
     # Identity only when the operand was already minimal; aperture-7 coverages
     # can carry complete sibling families, which normalize away.
     if has_complete_family(sys, a)
-        @test length(FB.complement(c)) < length(a)
+        @test length(EN.complement(c)) < length(a)
     else
-        @test FB.complement(c) == a
+        @test EN.complement(c) == a
     end
 
     # The n-ary forms fold the binary one (Base's would build a `Set`).
@@ -356,9 +356,9 @@ end
 
     @testset "operands are re-keyed to the deeper reference level" begin
         deep = DGG.MultiOrderVector(DGG.query(sys, DGG.MultiOrderCoverage(BOXB); level=l + 1))
-        @test FB.reference_level(deep) == l + 1
+        @test EN.reference_level(deep) == l + 1
         u = union(a, deep)
-        @test FB.reference_level(u) == l + 1
+        @test EN.reference_level(u) == l + 1
         @test leafset(u, l + 1) == union(leafset(a, l + 1), leafset(deep, l + 1))
         @test leafset(intersect(a, deep), l + 1) ==
               intersect(leafset(a, l + 1), leafset(deep, l + 1))
@@ -376,8 +376,8 @@ end
     @testset "the empty container and its complement" begin
         rootgrid = DGG.levelgrid(sys, first(DGG.levels(sys)))
         empty = DGG.MultiOrderVector(sys, DGG.cellindextype(sys)[])
-        @test collect(FB.complement(empty)) == collect(DGG.rootcells(sys))
-        @test isempty(FB.complement(DGG.MultiOrderVector(sys, collect(DGG.rootcells(sys)))))
+        @test collect(EN.complement(empty)) == collect(DGG.rootcells(sys))
+        @test isempty(EN.complement(DGG.MultiOrderVector(sys, collect(DGG.rootcells(sys)))))
         @test DGG.ncells(rootgrid) == length(DGG.rootcells(sys))
     end
 

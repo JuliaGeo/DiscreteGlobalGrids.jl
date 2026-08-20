@@ -88,15 +88,18 @@ which matters because the neighbour relation below identifies shared cube-edge
 vertices by exact equality across two different faces' formulas.
 
 With `bug = :deep_drift`, cells at level 2 and deeper move outside their
-ancestors while retaining internally consistent cell geometry.
+ancestors while retaining internally consistent cell geometry. With
+`bug = :shrunken_cells`, every cell is pulled 1% off its own corners: each cell
+is a well-formed ring around its own centroid, and no two cells share a vertex.
 """
 function _cell_box(level::Int, idx::Int, bug::Symbol = :none)
     f, x, y = _decode(level, idx)
     w = 2.0 / (1 << level)
     drift = (bug === :deep_drift && level >= 2) ? 2w : 0.0
+    pad = bug === :shrunken_cells ? 0.005w : 0.0
     u0 = -1.0 + w * x + drift
     v0 = -1.0 + w * y + drift
-    return f, u0, v0, u0 + w, v0 + w
+    return f, u0 + pad, v0 + pad, u0 + w - pad, v0 + w - pad
 end
 
 function _corners(level::Int, idx::Int, bug::Symbol = :none)
@@ -147,8 +150,8 @@ end
 DGG.cellindextype(::CubeSystem) = LevelIndex
 DGG.levels(s::CubeSystem) = 0:s.maxlevel
 DGG.has_sorted_subtrees(::CubeSystem) = true
-DGG.max_neighbors(::CubeSystem, ::Vertex) = 8
-DGG.max_neighbors(::CubeSystem, ::Edge) = 4
+DGG.maxneighbors(::CubeSystem, ::Vertex) = 8
+DGG.maxneighbors(::CubeSystem, ::Edge) = 4
 
 function DGG.levelgrid(s::CubeSystem, l::Integer)
     l in DGG.levels(s) || throw(ArgumentError("level $l is outside $(DGG.levels(s))"))
@@ -164,7 +167,7 @@ end
 
 function DGG.children(s::CubeSystem, c::LevelIndex)
     level(c) == s.maxlevel &&
-        throw(ArgumentError("$c is at max_level $(s.maxlevel) and has no children"))
+        throw(ArgumentError("$c is at maxlevel $(s.maxlevel) and has no children"))
     kids = [LevelIndex(level(c) + 1, 4 * rawid(c) + k) for k in 0:3]
     return s.bug === :unsorted_children ? reverse(kids) : kids
 end
@@ -436,7 +439,7 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         problems = Conf.covering_law_problems(drifted)
         @test any(contains("ancestor at level 0, descendant at level 2"), problems)
 
-        # With branch descent disabled, the chain to `max_level` still detects
+        # With branch descent disabled, the chain to `maxlevel` still detects
         # deep drift; disabling the chain removes that coverage.
         @test !Conf.check_covering_law(drifted; descent_depth = 0)
         @test Conf.check_covering_law(drifted; descent_depth = 0, deep_chain = false)
@@ -568,6 +571,84 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         @test !any(contains("counter-clockwise cycle"), problems)
     end
 
+    # Default mode asks whether a system's own methods obey; full mode asks
+    # whether the methods that answer for a system without them obey. The two
+    # can disagree, and this is the disagreement that matters: a tessellation
+    # whose cells do not share corner coordinates keeps its own combinatorial
+    # adjacency and loses the geometric one entirely — and an empty answer
+    # satisfies every relational law there is.
+    @testset "full mode catches a fallback that the specialization hides" begin
+        gapped = CubeSystem(; maxlevel = 2, bug = :shrunken_cells, extras = true)
+
+        _, specialized = capture() do
+            test_hierarchical_system(gapped; n_samples = 4)
+        end
+        @test specialized == 0
+
+        _, generic = capture() do
+            test_generic_fallbacks(gapped; n_samples = 4)
+        end
+        @test generic > 0
+
+        # The report names the emptiness. Without `require_nonempty` the
+        # relational laws pass on the empty answer, which is why full mode
+        # turns it on.
+        wrapped = DGG.levelgrid(Conf.GenericFallbackSystem(gapped), 1)
+        c = DGG.cellindex(wrapped, 1)
+        @test isempty(DGG.neighbors(wrapped, c, 1))
+        @test Conf.neighbor_problems(wrapped, c) == String[]
+        @test any(contains("is empty on a grid"),
+            Conf.neighbor_problems(wrapped, c; require_nonempty = true))
+    end
+
+    # The wrapper is the mechanism: without it, full mode would re-test the
+    # specialized methods and report the fallbacks as certified.
+    @testset "the wrapper hides specializations and forwards the contract" begin
+        grid = DGG.levelgrid(FULL, 2)
+        c = DGG.cellindex(grid, 3)
+        p = DGG.cell_centroid(grid, c)
+        @test Conf.has_nonfallback_method(DGG.cellat, grid, p)
+        @test Conf.has_nonfallback_method(DGG.ancestor, FULL, c, 0)
+
+        wrapped = Conf.GenericFallbackSystem(FULL)
+        wgrid = DGG.levelgrid(wrapped, 2)
+        @test Conf.dispatches_generically(DGG.cellat, wgrid, p)
+        @test Conf.dispatches_generically(DGG.neighbors, wgrid, c, 1)
+        @test Conf.dispatches_generically(DGG.ring, wgrid, c, 1)
+        @test Conf.dispatches_generically(DGG.ancestor, wrapped, c, 0)
+        @test Conf.dispatches_generically(DGG.descendants, wrapped, c, 0)
+
+        # Everything the fallbacks consume is still the system's own answer.
+        @test DGG.cell_boundary(wgrid, c) == DGG.cell_boundary(grid, c)
+        @test DGG.cellposition(wgrid, c) == DGG.cellposition(grid, c)
+        @test collect(DGG.children(wrapped, c)) == collect(DGG.children(FULL, c))
+        @test DGG.node_extent(wrapped, c) == DGG.node_extent(FULL, c)
+        @test DGG.descendant_range(wrapped, c, 3) == DGG.descendant_range(FULL, c, 3)
+    end
+
+    # A skip that does not say what it skipped reads, in a summary, exactly like
+    # a known failure.
+    @testset "each skip states its reason" begin
+        logger = Test.TestLogger()
+        Base.CoreLogging.with_logger(logger) do
+            capture() do
+                test_hierarchical_system(MINIMAL; n_samples = 3)
+            end
+        end
+        msgs = [string(r.message) for r in logger.logs]
+        @test any(m -> contains(m, "skipped: ancestor") && contains(m, "does not implement"),
+            msgs)
+        @test any(m -> contains(m, "skipped: descendants"), msgs)
+        # ...and a system that implements them is not told anything.
+        empty!(logger.logs)
+        Base.CoreLogging.with_logger(logger) do
+            capture() do
+                test_hierarchical_system(FULL; n_samples = 3)
+            end
+        end
+        @test isempty(logger.logs)
+    end
+
     # The public testset entry point must surface collector failures.
     @testset "the @testset entry points fail on a broken mock" begin
         good_passes, good_fails = capture() do
@@ -608,7 +689,7 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
     end
 
     # `atol` and `unit_atol` exist because a system with exact (uninflated)
-    # subtree caps puts cell corners exactly ON the cap rim, where containment is
+    # subtree caps puts cell corners exactly ON the cap border, where containment is
     # a floating-point coin toss — HEALPix, in this package. A caller that cannot
     # reach the tolerance cannot use the harness at all, so these assert that the
     # kwargs really reach the checks rather than being decoration.

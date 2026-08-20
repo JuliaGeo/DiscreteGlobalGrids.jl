@@ -20,7 +20,7 @@ import GeoInterface as GI
 import GeometryOps as GO
 import Statistics: mean
 
-const FB = DGG.Fallbacks
+const EN = DGG.Engine
 const LONLAT = GO.UnitSpherical.GeographicFromUnitSphere()
 
 # The same Switzerland box the coverage suites use.
@@ -43,7 +43,7 @@ sysname(sys) = string(nameof(typeof(sys)))
 
 # A whole rooted subtree — complete by construction; completeness is broken by
 # removing cells.
-subtree(sys, l) = DGG.CellVector(DGG.PartialGrid(sys, first(DGG.rootcells(sys)), l))
+rooted_subtree(sys, l) = DGG.CellVector(DGG.subtree(sys, first(DGG.rootcells(sys)), l))
 
 # Centroid latitude in degrees: a smooth, grid-derived field.
 centroid_lat(cv) = (g = DGG.levelgrid(DGG.system(cv), DGG.level(cv));
@@ -213,7 +213,7 @@ end
 
 @testset "coarsen merges what the criterion allows: $(sysname(f.system))" for f in SWEEP
     sys, L = f.system, f.sub
-    cv = subtree(sys, L)
+    cv = rooted_subtree(sys, L)
     n = length(cv)
     root = first(DGG.rootcells(sys))
     top = first(DGG.levels(sys))
@@ -229,19 +229,19 @@ end
     @testset "against the per-leaf climb" begin
         for (values, atol) in ((parentgroup, 0.0), (distinct, 0.0),
             (banded, 2.0), (fill(7.0, n), 0.0))
-            cells, vals = FB._coarsen(cv, values; atol, by=mean, minlevel=top)
+            cells, vals = EN._coarsen(cv, values; atol, by=mean, minlevel=top)
             want, wantvals = brute_coarsen(sys, cv, values, atol, mean, top)
             @test cells == want
             @test isequal(vals, wantvals)
         end
         # The cells come out ready to be keyed by interval: ascending, disjoint.
-        cells, _ = FB._coarsen(cv, banded; atol=2.0)
+        cells, _ = EN._coarsen(cv, banded; atol=2.0)
         starts = [first(DGG.descendant_range(sys, c, L)) for c in cells]
         @test issorted(starts) && allunique(starts)
     end
 
     @testset "piecewise-constant data collapses to its pieces" begin
-        cells, vals = FB._coarsen(cv, parentgroup; atol=0.0)
+        cells, vals = EN._coarsen(cv, parentgroup; atol=0.0)
         # Exactly the level-`L-1` cells: constant within each, differing
         # between them.
         @test cells == parents
@@ -250,25 +250,25 @@ end
     end
 
     @testset "atol = 0 on distinct data is the identity" begin
-        cells, vals = FB._coarsen(cv, distinct; atol=0.0)
+        cells, vals = EN._coarsen(cv, distinct; atol=0.0)
         @test cells == collect(cv)
         @test vals == distinct
         # An unmerged leaf keeps its own value, so an integer field stays `Int`
         # (routing through `by = mean` would make it `Float64`).
         ints = collect(1:n)
-        _, intvals = FB._coarsen(cv, ints; atol=0)
+        _, intvals = EN._coarsen(cv, ints; atol=0)
         @test intvals == ints
         @test eltype(intvals) === Int
     end
 
     @testset "the flat field collapses to one cell, and `minlevel` stops it" begin
         flat = fill(7.0, n)
-        cells, vals = FB._coarsen(cv, flat; atol=0.0)
+        cells, vals = EN._coarsen(cv, flat; atol=0.0)
         @test cells == [root]
         @test vals == [7.0]
         # `minlevel` stops the climb at that level.
         for stop in (L - 1, L)
-            cells, vals = FB._coarsen(cv, flat; atol=0.0, minlevel=stop)
+            cells, vals = EN._coarsen(cv, flat; atol=0.0, minlevel=stop)
             @test cells == DGG.descendants(sys, root, stop)
             @test all(==(7.0), vals)
         end
@@ -277,7 +277,7 @@ end
     @testset "`by` summarises the LEAVES, not the children" begin
         # The stored value is the mean of every leaf. On IGeo7 sibling subtree
         # sizes differ, so a mean of child means is a different number.
-        cells, vals = FB._coarsen(cv, distinct; atol=Float64(n))
+        cells, vals = EN._coarsen(cv, distinct; atol=Float64(n))
         @test cells == [root]
         @test only(vals) ≈ mean(distinct)
 
@@ -296,17 +296,17 @@ end
         end
 
         # `by` is honoured; the default is `mean`.
-        _, maxvals = FB._coarsen(cv, distinct; atol=Float64(n), by=maximum)
+        _, maxvals = EN._coarsen(cv, distinct; atol=Float64(n), by=maximum)
         @test only(maxvals) == maximum(distinct)
-        @test isequal(FB._coarsen(cv, banded; atol=2.0, by=mean),
-            FB._coarsen(cv, banded; atol=2.0))
+        @test isequal(EN._coarsen(cv, banded; atol=2.0, by=mean),
+            EN._coarsen(cv, banded; atol=2.0))
     end
 
     @testset "the error bound the default `by` buys" begin
         lat = centroid_lat(cv)
         lengths = Int[]
         for atol in TOLERANCES
-            cells, vals = FB._coarsen(cv, lat; atol)
+            cells, vals = EN._coarsen(cv, lat; atol)
             push!(lengths, length(cells))
             stored = covering_values(sys, cells, vals, cv)
             # With `by = mean` and extremes within `atol`, every leaf is within
@@ -330,7 +330,7 @@ end
         keep = [k for (k, c) in enumerate(cv) if DGG.cellposition(grid, c) ∉ dropped]
         sub = cv[keep]
         flat = fill(2.0, length(sub))
-        cells, vals = FB._coarsen(sub, flat; atol=0.0)
+        cells, vals = EN._coarsen(sub, flat; atol=0.0)
         want, wantvals = brute_coarsen(sys, sub, flat, 0.0, mean, top)
         @test cells == want
         @test isequal(vals, wantvals)
@@ -351,12 +351,12 @@ end
         # to every other cell — so the merge path runs on that shape too.
         g = length(DGG.descendant_range(sys, parents[1], L))
         thin = cv[[k for k in 1:n if k <= g || isodd(k)]]
-        @test FB.windows(thin) isa FB.PositionWindows
+        @test EN.windows(thin) isa EN.PositionWindows
         @test length(thin) < n
 
         # Flat on the whole group, distinct after it.
         values = [k <= g ? 1.0 : Float64(k) for k in eachindex(thin)]
-        cells, vals = FB._coarsen(thin, values; atol=0.0)
+        cells, vals = EN._coarsen(thin, values; atol=0.0)
         want, wantvals = brute_coarsen(sys, thin, values, 0.0, mean, top)
         @test cells == want
         @test isequal(vals, wantvals)
@@ -383,7 +383,7 @@ end
         end
         values[index[first(DGG.descendant_range(sys, parents[2], L))]] = missing
 
-        cells, vals = FB._coarsen(cv, values; atol=0.0)
+        cells, vals = EN._coarsen(cv, values; atol=0.0)
         want, wantvals = brute_coarsen(sys, cv, values, 0.0, mean, top)
         @test cells == want
         @test isequal(vals, wantvals)
@@ -401,12 +401,12 @@ end
 
 @testset "coarsen refuses what it cannot answer" begin
     sys, L = DGG.HEALPixSystem(), 3
-    cv = subtree(sys, L)
+    cv = rooted_subtree(sys, L)
     values = Float64.(eachindex(cv))
 
-    @test_throws ArgumentError FB._coarsen(cv, values[1:end-1]; atol=0.0)
-    @test_throws ArgumentError FB._coarsen(cv, values; atol=0.0, minlevel=L + 1)
-    @test_throws ArgumentError FB._coarsen(cv, values; atol=0.0, minlevel=-1)
+    @test_throws ArgumentError EN._coarsen(cv, values[1:end-1]; atol=0.0)
+    @test_throws ArgumentError EN._coarsen(cv, values; atol=0.0, minlevel=L + 1)
+    @test_throws ArgumentError EN._coarsen(cv, values; atol=0.0, minlevel=-1)
 
     a5 = DGG.A5System()
     a5cv = DGG.CellVector(DGG.levelgrid(a5, 1))
@@ -419,14 +419,14 @@ end
 
 @testset "coarsen hands back a MultiOrderVector: $(sysname(f.system))" for f in SWEEP
     sys, L = f.system, f.sub
-    cv = subtree(sys, L)
+    cv = rooted_subtree(sys, L)
     n = length(cv)
     lat = centroid_lat(cv)
 
     # First tolerance that yields a genuinely mixed-level container.
     atol = nothing
     for a in TOLERANCES
-        cells, _ = FB._coarsen(cv, lat; atol=a)
+        cells, _ = EN._coarsen(cv, lat; atol=a)
         if length(unique(DGG.level.(cells))) > 1
             atol = a
             break
@@ -435,11 +435,11 @@ end
     @test atol !== nothing
 
     mov, vals = DGG.coarsen(cv, lat; atol)
-    cells, corevals = FB._coarsen(cv, lat; atol)
+    cells, corevals = EN._coarsen(cv, lat; atol)
 
     @test mov isa DGG.MultiOrderVector
     @test DGG.system(mov) == sys
-    @test FB.reference_level(mov) == L
+    @test EN.reference_level(mov) == L
     @test length(vals) == length(mov)
     @test length(unique(DGG.level.(collect(mov)))) > 1
     # Container order equals the core's, so values still name their cells.
@@ -451,7 +451,7 @@ end
 
     # Every leaf is covered by one stored cell whose value is within `atol`.
     for k in (1, n ÷ 3, n ÷ 2, n)
-        j = FB.covering_position(mov, cv[k])
+        j = EN.covering_position(mov, cv[k])
         @test j !== nothing
         @test abs(vals[j] - lat[k]) <= atol
     end

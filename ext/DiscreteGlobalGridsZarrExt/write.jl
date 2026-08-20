@@ -241,7 +241,7 @@ function _writemixed(opengroup, identifier, src, celldim, mov,
     desc = _description(system(mov), nothing, enc, layers)
     arrays = _arrayplan(enc, (lv, ids), layers, celldim, plan, manifest, desc)
     return _commit(opengroup, identifier, src, desc, conventions, arrays;
-        reference_level=DGG.Fallbacks.reference_level(mov))
+        reference_level=DGG.Engine.reference_level(mov))
 end
 
 # Stamp, create and fill: everything after the arrays are planned, shared by

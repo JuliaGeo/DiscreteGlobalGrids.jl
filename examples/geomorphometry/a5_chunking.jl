@@ -9,8 +9,8 @@
 #      false), so there is no O(1) way to name the chunk's position block. The
 #      fallback materializes `descendants`, takes their position hull, and
 #      verifies that the hull is contiguous, using O(subtree) time and memory.
-#   2. A5 has no specialised halo engine, so `subtree_halo` runs the generic
-#      outside-first geometry walk.
+#   2. A5 has no specialised halo engine, so `halo` on a subtree runs the
+#      generic outside-first geometry walk.
 
 include("SphericalTerrain.jl")
 using .SphericalTerrain: chunk_range
@@ -65,7 +65,7 @@ function main()
     end
 
     println()
-    println("### cost of the margin: subtree_halo, one root per system")
+    println("### cost of the margin: halo(subtree), one root per system")
     for (sys, rl) in ((DGG.HEALPixSystem(), 6), (DGG.S2System(), 6),
                       (DGG.ISEA4RSystem(), 6), (DGG.IGeo7System(), 6),
                       (DGG.H3System(), 6), (DGG.A5System(), 6))
@@ -74,8 +74,8 @@ function main()
         print(rpad("  " * nm, 18))
         for d in 1:6
             tl = rl + d
-            tl > DGG.max_level(sys) && continue
-            t = @elapsed h = DGG.subtree_halo(sys, root, tl)
+            tl > DGG.maxlevel(sys) && continue
+            t = @elapsed h = collect(DGG.halo(DGG.subtree(sys, root, tl)))
             @printf(" d%d:%d/%.3fs", d, length(h), t)
             t > 60 && (print(" [stopped: over a minute]"); break)
         end

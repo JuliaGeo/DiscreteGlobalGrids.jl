@@ -6,9 +6,13 @@ module MultiOrderBudgetTests
 using Test
 import DiscreteGlobalGrids as DGG
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 import GeoInterface as GI
 import GeometryOps as GO
 import DimensionalData as DD
+
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, isquadface, sweepcovers
 
 # ---------------------------------------------------------------------------
 # The fixture — the same committed outline the accuracy mode is tested against
@@ -58,27 +62,26 @@ const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 # ---------------------------------------------------------------------------
 # Systems
 #
-# The last column is CONGRUENCE — whether a cell's children exactly tile it —
-# for the same reason `multiorder_polygons.jl` carries it: it is not a trait,
-# nothing in the interface asks for it, and it decides which arm two of the
-# laws take. HEALPix, S2 and ISEA4R are aperture-4 quadtrees on a chart and
-# four children tile their parent; IGEO7 and H3 are aperture 7 and their seven
-# children are a rotated rosette with the parent's area and not its footprint;
-# A5's four Hilbert children do not even stay inside it.
+# CONGRUENCE — whether a cell's children exactly tile it — decides which arm two
+# of the laws take, and it is `isquadface`: the quad-face family are aperture-4
+# quadtrees on a chart and four children tile their parent; IGEO7 and H3 are
+# aperture 7 and their seven children are a rotated rosette with the parent's
+# area and not its footprint; A5's four Hilbert children do not even stay
+# inside it.
 #
-# The middle column is the level the equivalence law sweeps up to. It is
+# The second column is the level the equivalence law sweeps up to. It is
 # per-system because the apertures differ and the set sizes have to stay small
 # enough to run the accuracy mode repeatedly.
 # ---------------------------------------------------------------------------
 
 const SWEEP = [
-    (DGG.IGeo7System(), 5, false),
-    (DGG.H3System(), 4, false),
-    (DGG.HEALPixSystem(), 6, true),
-    (DGG.A5System(), 6, false),
-    (DGG.S2System(), 7, true),
-    (DGG.ISEA4RSystem(), 6, true),
-    (DGG.AuthalicSystem(DGG.IGeo7System()), 5, false),
+    (DGG.IGeo7System(), 5),
+    (DGG.H3System(), 4),
+    (DGG.HEALPixSystem(), 6),
+    (DGG.A5System(), 6),
+    (DGG.S2System(), 7),
+    (DGG.ISEA4RSystem(), 6),
+    (DGG.AuthalicSystem(DGG.IGeo7System()), 5),
 ]
 
 # The budgets the sampled laws run at, and the wider ladder the counting laws
@@ -86,28 +89,21 @@ const SWEEP = [
 const BUDGETS = (10, 40, 100)
 const LADDER = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377)
 
-sysname(sys) = sys isa DGG.AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
-
-
+# Measured miss rates, per system: the price the non-congruent refinements pay.
 const UNION_BOUND = Dict("IGeo7System" => 0.02, "Authalic(IGeo7System)" => 0.03,
     "H3System" => 0.15, "A5System" => 0.30)
 const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
     "H3System" => 0.02, "A5System" => 0.18)
 
 @testset "the budget sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _) in SWEEP)
-    for s in DGG.systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 # ---------------------------------------------------------------------------
 # Oracles — the engine's own preparation, asked about POINTS
 # ---------------------------------------------------------------------------
 
-prepare(geom) = FB._query_target(geom)
+prepare(geom) = EN._query_target(geom)
 inside(t, lon, lat) = GO.relate_predicate(t.prepared, GO.pred_contains(),
     FB.unit_point(lon, lat))
 
@@ -215,17 +211,19 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
     # `level` mode is untouched by any of it.
     @test length(DGG.query(sys, cov; level=5)) > 0
     # The type constructor is the same two modes and the same errors.
-    @test FB.MultiOrderCellSet(sys, cov; maxcells=12) isa DGG.MultiOrderCellSet
-    @test_throws ArgumentError FB.MultiOrderCellSet(sys, cov)
-    @test_throws ArgumentError FB.MultiOrderCellSet(sys, cov; level=5, maxcells=10)
+    @test EN.MultiOrderCellSet(sys, cov; maxcells=12) isa DGG.MultiOrderCellSet
+    @test_throws ArgumentError EN.MultiOrderCellSet(sys, cov)
+    @test_throws ArgumentError EN.MultiOrderCellSet(sys, cov; level=5, maxcells=10)
 end
 
 # ---------------------------------------------------------------------------
 # The laws, per system
 # ---------------------------------------------------------------------------
 
-@testset "a budget covering of a real outline: $(sysname(sys))" for
-    (sys, toplevel, congruent) in SWEEP
+@testset "a budget covering of a real outline: $(syslabel(sys))" for
+    (sys, toplevel) in SWEEP
+
+    congruent = isquadface(sys)
 
     sets = Dict(b => DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=b)
                 for b in BUDGETS)
@@ -246,7 +244,7 @@ end
                 intervals = [DGG.descendant_range(sys, c, set.reference_level) for c in cells]
                 @test issorted(intervals; by=first)
                 @test all(k -> first(intervals[k]) > last(intervals[k-1]), 2:length(intervals))
-                @test FB.curve_keys(set) == first.(intervals)
+                @test EN.curve_keys(set) == first.(intervals)
             else
                 @test !DGG.has_sorted_subtrees(sys)
                 @test issorted(cells; by=c -> (DGG.level(c), c))
@@ -274,7 +272,7 @@ end
             c = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=b)
             @test collect(a) == collect(c)
             @test a.contained == c.contained
-            @test FB.curve_keys(a) == FB.curve_keys(c)
+            @test EN.curve_keys(a) == EN.curve_keys(c)
             @test a.reference_level == c.reference_level
         end
     end
@@ -287,15 +285,15 @@ end
         @test set.reference_level < last(DGG.levels(sys))
         @test all(eachindex(set)) do i
             c = set[i]
-            DGG.is_contained(set, i) == FB._matches(DGG.Within(nothing), TARGET,
+            DGG.iscontained(set, i) == EN._matches(DGG.Within(nothing), TARGET,
                 DGG.levelgrid(sys, DGG.level(c)), c)
         end
         best = DGG.coarsest_contained(set)
         @test best !== nothing
-        @test FB._matches(DGG.Within(nothing), TARGET,
+        @test EN._matches(DGG.Within(nothing), TARGET,
             DGG.levelgrid(sys, DGG.level(best)), best)
         @test DGG.level(best) ==
-              minimum(DGG.level(set[i]) for i in eachindex(set) if DGG.is_contained(set, i))
+              minimum(DGG.level(set[i]) for i in eachindex(set) if DGG.iscontained(set, i))
     end
 
     @testset "a maxlevel the refinement reaches restores the blind spot" begin
@@ -313,18 +311,18 @@ end
         @test set.reference_level == cap
         stranded = [i for i in eachindex(set) if DGG.level(set[i]) == cap]
         @test !isempty(stranded)
-        @test all(i -> !DGG.is_contained(set, i), stranded)
+        @test all(i -> !DGG.iscontained(set, i), stranded)
         # And it IS a blind spot rather than a negative fact: ask `Within` of
         # the same cells and some of them say yes. The flag does not, because
         # nobody asked it.
         grid = DGG.levelgrid(sys, cap)
-        fits = count(i -> FB._matches(DGG.Within(nothing), TARGET, grid, set[i]), stranded)
+        fits = count(i -> EN._matches(DGG.Within(nothing), TARGET, grid, set[i]), stranded)
         @test fits > 0
     end
 
     @testset "covering: the union reading" begin
         @test length(SAMPLES) > 2000
-        bound = congruent ? 0.0 : UNION_BOUND[sysname(sys)]
+        bound = congruent ? 0.0 : UNION_BOUND[syslabel(sys)]
         for b in BUDGETS
             missed = union_misses(sets[b], SAMPLES)
             if congruent
@@ -338,7 +336,7 @@ end
     end
 
     @testset "covering: the leaf reading" begin
-        bound = congruent ? 0.0 : LEAF_BOUND[sysname(sys)]
+        bound = congruent ? 0.0 : LEAF_BOUND[syslabel(sys)]
         for b in BUDGETS
             missed = leaf_misses(sys, sets[b], SAMPLES)
             if congruent
@@ -391,8 +389,8 @@ end
 # The documented edges
 # ---------------------------------------------------------------------------
 
-@testset "a seed bigger than the budget comes back whole: $(sysname(sys))" for
-    (sys, _, _) in SWEEP
+@testset "a seed bigger than the budget comes back whole: $(syslabel(sys))" for
+    (sys, _) in SWEEP
 
     # Every root cell of every system meets a target covering 66% of the sphere,
     # so the seed IS the top level and no refinement of it can fit in three
@@ -414,17 +412,17 @@ end
     @test leaf_misses(sys, set, samples) == 0
 end
 
-@testset "a target smaller than one cell: $(sysname(sys))" for (sys, _, _) in SWEEP
+@testset "a target smaller than one cell: $(syslabel(sys))" for (sys, _) in SWEEP
     # A budget of one cannot split anything, so refinement can only follow the
     # single crossing child down — the chain stops at the first cell the target
     # crosses into two of.
     one = DGG.query(sys, DGG.MultiOrderCoverage(BLOCK); maxcells=1)
     @test length(one) == 1
-    @test !DGG.is_contained(one, 1)
+    @test !DGG.iscontained(one, 1)
     @test DGG.coarsest_contained(one) === nothing
     @test one.reference_level == DGG.level(one[1])
     t = prepare(BLOCK)
-    @test FB._matches(DGG.Intersects(nothing), t,
+    @test EN._matches(DGG.Intersects(nothing), t,
         DGG.levelgrid(sys, DGG.level(one[1])), one[1])
     # More budget can only go deeper or wider, never fewer.
     more = DGG.query(sys, DGG.MultiOrderCoverage(BLOCK); maxcells=8)
@@ -434,7 +432,7 @@ end
 
 @testset "an empty answer is still a set" begin
     sys = DGG.S2System()
-    empty = FB._sorted_cell_set(sys, DGG.cellindextype(sys)[], falses(0),
+    empty = EN._sorted_cell_set(sys, DGG.cellindextype(sys)[], falses(0),
         first(DGG.levels(sys)))
     @test isempty(empty)
     @test length(empty) == 0
@@ -466,7 +464,7 @@ end
 @testset "multipolygon and multipart budgets" begin
     # The offshore islands are separate components, and a budget spent on the
     # mainland must not lose them: every part has to meet some emitted cell.
-    for (sys, _, _) in SWEEP
+    for (sys, _) in SWEEP
         set = DGG.query(sys, DGG.MultiOrderCoverage(CALIFORNIA); maxcells=200)
         @test length(set) <= 200
         @test isempty(emitted_ancestors(sys, set))
@@ -477,10 +475,10 @@ end
             # The seed cell of each part is coarse enough that SOME emitted cell
             # meets it, whatever depth the budget reached elsewhere.
             hit = any(set) do c
-                FB._matches(DGG.Intersects(nothing), t,
+                EN._matches(DGG.Intersects(nothing), t,
                     DGG.levelgrid(sys, DGG.level(c)), c)
             end
-            @test hit || error("part $k of $(sysname(sys)) met no emitted cell")
+            @test hit || error("part $k of $(syslabel(sys)) met no emitted cell")
         end
     end
 end

@@ -32,7 +32,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex,
     ncells, cellindex, level, levels, levelgrid, rawid
 # The compacted layout's axis IS the mixed-level container; nothing else here
 # touches a collection type.
-import ..DiscreteGlobalGrids.Fallbacks: MultiOrderVector
+import ..DiscreteGlobalGrids.Engine: MultiOrderVector
 # The Z7 digit tables, validity predicate and inverse-rank walk are the system's
 # own; this file adds only the rank that is total on ids naming no cell.
 import ..DiscreteGlobalGrids: IGeo7
@@ -201,10 +201,11 @@ end
                "the other signedness, which is read as the same bits."))
 
 @noinline function _no_arithmetic(grid)
-    throw(DGGSFormatError(check=:no_id_arithmetic, observed=typeof(grid),
-        detail="$(typeof(grid)) has no id arithmetic: reading a DGGS store " *
-               "needs `idrank`, `idselect` and `idcount_between` on its " *
-               "complete level grid."))
+    name = string(nameof(typeof(grid)))
+    throw(DGGSFormatError(check=:no_id_arithmetic, observed=name,
+        detail="$name has no id arithmetic: reading a DGGS store needs " *
+               "`idrank`, `idselect` and `idcount_between` on its complete " *
+               "level grid."))
 end
 
 idrank(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)

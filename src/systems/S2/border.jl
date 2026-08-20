@@ -1,28 +1,19 @@
-# A subtree at depth Δ is the aligned `2^Δ x 2^Δ` lattice block on one face, and
-# the scaffold ordinal refines by `index * 4^Δ + pos`, so a descendant's offset
-# within the subtree's contiguous ordinal range IS its Hilbert position inside
-# the block (`descendant_range`, `xyf_to_hilbert`'s nesting note). Ascending
-# ordinal order over the subtree is therefore Hilbert order over the block.
+# The subtree engines are the quad-face family's; S2 supplies the curve they walk
+# in. The scaffold ordinal refines by `index * 4^Δ + pos`, so a descendant's
+# offset within the subtree's contiguous ordinal range IS its Hilbert position
+# inside the block (`descendant_range`, `xyf_to_hilbert`'s nesting note), and
+# ascending ordinal order over the subtree is Hilbert order over it.
 #
-# The rim is the block's perimeter, `4*2^Δ - 4` cells: in the 3x3 lattice
-# neighbourhood a descendant has every neighbour inside the block iff
-# `0 < dx < s-1` and `0 < dy < s-1`. Both connectivities agree — a perimeter cell
-# has an AXIS neighbour outside already — and a block flush against a face edge
-# is no special case, because its neighbours across the seam are on another face
-# and so outside the subtree regardless.
-#
-# `SquareRimEngine` performs the walk in Hilbert order. Hilbert's quadrant order
-# is orientation-dependent, which `quadrant_step` carries: `POS_TO_IJ` reads the curve
-# position back to a quadrant and `POS_TO_ORIENTATION` advances the state, the
-# same two tables `hilbert_to_xyf` descends with. Pure index arithmetic — no
-# geometry, and no neighbour query at any level.
-
-import ..DiscreteGlobalGrids: subtree_border
+# Hilbert's quadrant order is orientation-dependent, which `quadrant_step`
+# carries: `POS_TO_IJ` reads the curve position back to a quadrant and
+# `POS_TO_ORIENTATION` advances the state, the same two tables `hilbert_to_xyf`
+# descends with. Pure index arithmetic — no geometry, and no neighbour query at
+# any level.
 
 """
     HilbertCurve()
 
-S2's per-face Hilbert curve, as the quadrant order [`DGG.SquareRimEngine`](@ref)
+S2's per-face Hilbert curve, as the quadrant order [`DGG.SquareBorderEngine`](@ref)
 descends by. Unlike Morton, its state advances with depth.
 """
 struct HilbertCurve end
@@ -52,88 +43,23 @@ function _hilbert_orientation(index::Int64, nside::Int64)
     return UInt8(orientation)
 end
 
-# `descendant_range` validates the target level and returns the subtree's first
-# ordinal.
-function _s2_square(sys::S2System, c::DGG.LevelIndex, target::Int)
-    r = DGG.descendant_range(sys, c, target)
-    lc = DGG.level(c)
-    _checked_index(c)
-    lo = Int64(first(r)) - 1
-    orientation = _hilbert_orientation(Int64(c.index), _nside(lc))
-    return lo, Int64(1) << (target - lc), orientation
-end
+# The subtree block's own root is read under the state `xyf_to_hilbert` has
+# reached at that cell. The halo descent instead starts at the FACE root, before
+# any position bits are consumed, so `face_orientation` seeds it separately —
+# on a face the block crossed a seam onto, `_hilbert_orientation` of the subtree
+# cell would be the wrong state entirely.
+DGG.subtree_curve(::S2System) = HilbertCurve()
 
-function DGG.rim_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
-        connectivity::DGG.Connectivity)
-    lo, side, orientation = _s2_square(sys, c, target)
-    return DGG.SquareRimEngine(HilbertCurve(), lo, target, side, orientation)
-end
+DGG.subtree_orientation(::S2System, c::DGG.LevelIndex) =
+    _hilbert_orientation(Int64(c.index), DGG.nside(DGG.level(c)))
 
-function DGG.interior_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
-        connectivity::DGG.Connectivity)
-    lo, side, orientation = _s2_square(sys, c, target)
-    return DGG.SquareInteriorEngine(HilbertCurve(), lo, target, side, orientation)
-end
-
-"""
-    subtree_border(S2System(), c, l; connectivity = Vertex()) -> Vector{LevelIndex}
-
-The **rim** of `c`'s subtree at level `l`: the perimeter of the `2^Δ × 2^Δ`
-lattice block, `4*2^Δ - 4` cells in ascending ordinal order, and `[c]` at
-`Δ == 0`. `O(rim)` time in `O(Δ)` memory, by index arithmetic alone.
-`collect` of [`EdgeCellIterator`](@ref), which is the same walk lazily.
-
-`connectivity` does not change the result: a perimeter cell already has an axis
-neighbour outside the block.
-"""
-subtree_border(sys::S2System, c::DGG.LevelIndex, l::Integer;
-    connectivity::DGG.Connectivity = DGG.Vertex()) =
-    DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))
-
-# The halo — the outside face of the same boundary — is the width-1 band around
-# the block, walked lazily by the package's face-quadtree descent. Away from the
-# face edge that band is entirely in-face, where adjacency is the plain 3×3
-# lattice, so the band IS the halo (minus its four corners under `Edge()`).
-# Flush with the edge it crosses the seam onto up to four other faces —
-# `wrap_xyf` territory, ids in other ordinal ranges — and `square_halo_engine`
-# derives those candidates by asking `neighbors` about a few rim cells, then
-# filters every one of them with the native one-ring. At a cube corner
-# `wrap_xyf` returns `nothing` and there is simply no diagonal candidate to
-# find. The seam path therefore has no fixed `4·side + 4` count and declares no
-# `length`.
-#
-# Hilbert ordering requires two distinctions from Morton ordering:
-#
-#   * The origin comes from the PARENT's `(ix, iy)` shifted left by `d`, not
-#     from decoding the block's first id. HEALPix and ISEA4R can decode the
-#     first id because min-Morton is min-corner; Hilbert's first position is
-#     whichever corner the curve enters the block by, so `hilbert_to_xyf(lo)`
-#     would name a different corner per orientation and the guard would pass on
-#     blocks it should reject.
-#   * The orientation seed is the FACE ROOT's, `isodd(face) ? SWAP_MASK : 0x0`,
-#     not `_hilbert_orientation(c.index, ...)`. The descent starts at the face
-#     root, not at the block, so it must be seeded before any position bits are
-#     consumed. `face_orientation` supplies the root state for every face the
-#     walk visits.
-function DGG.halo_engine(sys::S2System, c::DGG.LevelIndex, target::Int,
-        connectivity::DGG.Connectivity)
-    # Apply the common halo-level validation before deriving the block.
-    DGG.check_halo_level(sys, c, target)
-    _checked_index(c)
-    d = target - DGG.level(c)
-    d == 0 && return DGG.generic_halo_engine(sys, c, target, connectivity)
-    ix, iy, face = hilbert_to_xyf(c.index, _nside(DGG.level(c)))
-    return DGG.square_halo_engine(sys, HilbertCurve(), c, target, connectivity,
-        Int64(ix) << d, Int64(iy) << d, Int64(1) << d, Int64(face),
-        _nside(target))
-end
-
-# Square-walk hooks.
+# Square-walk hooks. At a cube corner `wrap_xyf` returns `nothing` and there is
+# simply no diagonal candidate for the seam band to find.
 DGG.lattice_decode(sys::S2System, c::DGG.LevelIndex) =
-    hilbert_to_xyf(c.index, _nside(DGG.level(c)))
+    hilbert_to_xyf(c.index, DGG.nside(DGG.level(c)))
 
 DGG.lattice_cell(sys::S2System, l::Int, ix::Integer, iy::Integer,
-    face::Integer) = DGG.LevelIndex(l, xyf_to_hilbert(ix, iy, face, _nside(l)))
+    face::Integer) = DGG.LevelIndex(l, xyf_to_hilbert(ix, iy, face, DGG.nside(l)))
 
 DGG.face_orientation(sys::S2System, face::Integer) =
     isodd(face) ? UInt8(SWAP_MASK) : 0x0

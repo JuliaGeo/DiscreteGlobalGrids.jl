@@ -12,6 +12,11 @@ import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
 import DimensionalData as DD
 import Extents
+import GeometryOps as GO
+using GeometryOps: SpatialTreeInterface as STI
+import ConservativeRegridding as CR
+import ConservativeRegridding: Trees
+import GeometryOpsCore as GOCore
 
 const SYS = DGG.S2System()
 const LEVEL = 3
@@ -96,7 +101,7 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
     authspace = DGG.DGGSpace(DGG.levelgrid(auth, 3); chunkcells = 32)
     @test GR.nchunks(authspace) > 1
     @test chunkcells(authspace) == 1:DGG.ncells(authspace)
-    @test DGG.arealevel(auth, SRC) == DGG.arealevel(DGG.IGeo7System(), SRC)
+    @test DGG.levelfor(auth, SRC) == DGG.levelfor(DGG.IGeo7System(), SRC)
 end
 
 @testset "every spelling of `to` names the same cells" begin
@@ -111,21 +116,22 @@ end
     # A bare system needs the source to choose a level, and any `from` that
     # names cells is a measurable source — the data itself need not carry them.
     bare = GR.plan_regrid(vec(parent(RASTER)[:, :, 1]); to = SYS, from = SRC)
-    @test DGG.level(bare.dst_space.grid) == DGG.arealevel(SYS, SRC) == LEVEL
+    @test DGG.level(bare.dst_space.grid) == DGG.levelfor(SYS, SRC) == LEVEL
     # And a grid is one of those spellings, not only a `RegridSpace`.
     fromgrid = GR.plan_regrid(zeros(DGG.ncells(GRID)); to = SYS, from = GRID)
     @test DGG.level(fromgrid.dst_space.grid) == LEVEL
 end
 
-@testset "a bare system takes the area-matched level" begin
-    # The rule, restated independently: the level whose mean cell area is
-    # closest in ratio to the median source cell area.
+@testset "a bare system takes the size-matched level" begin
+    # The rule, restated independently: the level whose cell size is closest in
+    # ratio to the median source cell. `radius = 1` measures both in steradians.
     areas = sort!([GR.cellarea(SRC, i) for i in 1:GR.ncells(SRC)])
     median = (areas[length(areas) ÷ 2] + areas[length(areas) ÷ 2 + 1]) / 2
-    closest = argmin(l -> abs(log(4 * pi / DGG.ncells(SYS, l)) - log(median)), 0:8)
-    @test DGG.arealevel(SYS, SRC) == closest == LEVEL
+    closest = argmin(l -> abs(2 * log(DGG.cellsize(SYS, l; radius = 1.0)) -
+                              log(median)), 0:8)
+    @test DGG.levelfor(SYS, SRC) == closest == LEVEL
     # Ratio, not difference: a source four times as coarse drops a level.
-    @test DGG.arealevel(SYS, GR.RasterGrid(globalraster(30.0))) == LEVEL - 1
+    @test DGG.levelfor(SYS, GR.RasterGrid(globalraster(30.0))) == LEVEL - 1
 end
 
 @testset "the destination axis is the cells" begin
@@ -166,6 +172,46 @@ end
         parent(DGG.regrid(DD.DimArray(nanned, ds); to = GRID)))
     # And the caller still overrides what the source says.
     @test DGG.plan_regrid(declared; to = GRID, missingval = nothing).missingval === nothing
+end
+
+@testset "the whole-space tree caches caps without changing them" begin
+    samecap(a, b) = a.point == b.point && a.radius == b.radius
+
+    # Extents, leaf entries and polygons must be the raw cursor's, bit for bit.
+    function checktree(a, b)
+        samecap(STI.node_extent(a), STI.node_extent(b)) || return false
+        STI.isleaf(a) == STI.isleaf(b) || return false
+        if STI.isleaf(a)
+            va, vb = STI.child_indices_extents(a), collect(STI.child_indices_extents(b))
+            length(va) == length(vb) || return false
+            all(x[1] == y[1] && samecap(x[2], y[2]) for (x, y) in zip(va, vb)) || return false
+            return all(Trees.getcell(a, i) == Trees.getcell(b, i) for (i, _) in va)
+        end
+        return all(checktree(x, y) for (x, y) in zip(STI.getchild(a), STI.getchild(b)))
+    end
+
+    for space in (DGG.DGGSpace(DGG.PartialGrid(REGION)), DGG.DGGSpace(GRID))
+        n = DGG.ncells(space.grid)
+        cached = GR.subtree(space, 1:n)
+        @test cached isa DGG.CapCachedTree
+        cursor = GR.celltree(space)
+        @test Trees.ncells(cached) == Trees.ncells(cursor) == n
+        @test checktree(cached, cursor)
+        # The weight matrix the two trees build is identical, entry for entry.
+        m = GR.manifold(space)
+        op = CR.DefaultIntersectionOperator(m)
+        src = GR.subtree(SRC, 1:GR.ncells(SRC))
+        wa = CR.intersection_areas(m, GOCore.False(), cached, src; intersection_operator = op)
+        wb = CR.intersection_areas(m, GOCore.False(), cursor, src; intersection_operator = op)
+        @test wa == wb
+    end
+
+    # A partial grid's ids are decoded once: the tree's grid stores a plain
+    # vector with the same cells.
+    space = DGG.DGGSpace(DGG.PartialGrid(REGION))
+    cached = GR.subtree(space, 1:DGG.ncells(space.grid))
+    @test cached.node.grid.ids isa Vector
+    @test cached.node.grid.ids == collect(space.grid.ids)
 end
 
 @testset "a plan, and the lazy array, give the bare answer" begin

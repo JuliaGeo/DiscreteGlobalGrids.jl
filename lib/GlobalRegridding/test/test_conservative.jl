@@ -229,7 +229,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
     end
 
     @testset "a pair whose descent finds nothing" begin
-        # Deep disjoint trees exercise the threaded empty-task fallback.
+        # Deep disjoint trees assemble an empty block.
         north = RasterGrid(DD.DimArray(zeros(8, 8),
             (DD.X(range(-3.5, 3.5; length = 8)), DD.Y(range(66.5, 73.5; length = 8)))))
         south = RasterGrid(DD.DimArray(zeros(8, 8),
@@ -269,6 +269,103 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test plain.weights.rowval == stored.weights.rowval
         @test all(plain.weights.nzval .=== stored.weights.nzval)
         @test all(plain.denom .=== stored.denom)
+    end
+
+    @testset "cap tree split weights are the node windows" begin
+        space = ToyLonLatSpace(8, 4)
+        tree = GR.CellCapTree(space, 1:ncells(space))
+
+        # Split weights are the node's own window: children partition the parent.
+        @test CR.Trees.split_weight(tree) == ncells(space)
+        @test sum(CR.Trees.split_weight, STI.getchild(tree)) == CR.Trees.split_weight(tree)
+        @test all(c -> CR.Trees.split_weight(c) < CR.Trees.split_weight(tree), STI.getchild(tree))
+    end
+
+    @testset "one tile's restricted tree, built once" begin
+        # A non-chunk range on a fallback space forces the CellCapTree path.
+        xd = DD.X(-168.75:22.5:168.75)
+        yd = DD.Y(-78.75:22.5:78.75)
+        src = RasterGrid(DD.DimArray(zeros(16, 8), (xd, yd));
+            chunks = ([1:8, 9:16], [1:4, 5:8]))
+        dst = CountingSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
+        inds = 5:20
+        s1, s2 = cellindices(src, 1), cellindices(src, 4)
+
+        # One shared wrapper builds the destination tree once for both blocks.
+        tc = GR.TileCells(dst, inds)
+        b0 = dst.builds[]
+        sh1 = conservative_block(tc, inds, src, s1)
+        sh2 = conservative_block(tc, inds, src, s2)
+        @test dst.builds[] - b0 == 1
+
+        # Fresh wrappers rebuild per block: the uncached reference.
+        b1 = dst.builds[]
+        fr1 = conservative_block(GR.TileCells(dst, inds), inds, src, s1)
+        fr2 = conservative_block(GR.TileCells(dst, inds), inds, src, s2)
+        @test dst.builds[] - b1 == 2
+
+        # The memoized tree changes nothing, bit for bit.
+        for (a, b) in ((sh1, fr1), (sh2, fr2))
+            @test a.weights.colptr == b.weights.colptr
+            @test a.weights.rowval == b.weights.rowval
+            @test all(a.weights.nzval .=== b.weights.nzval)
+            @test all(a.denom .=== b.denom)
+        end
+    end
+
+    @testset "cell memos change nothing, and hits return the built value" begin
+        space = ToyLonLatSpace(16, 8)
+        memo = GR._cellmemo(space, 1:ncells(space))
+        @test memo isa GR.CellMemo
+        tree = GR.subtree(space, 1:ncells(space))
+        a = GR._memocell(memo, tree, 5)
+        @test a == CR.Trees.getcell(tree, 5)
+        # A hit returns the stored object; a colliding key rebuilds.
+        @test GR._memocell(memo, tree, 5) === a
+        b = GR._memocell(memo, tree, 5 + length(memo.keys))
+        @test b == CR.Trees.getcell(tree, 5 + length(memo.keys))
+        @test GR._memocell(memo, tree, 5) == a
+        # The memo-free operator spelling still assembles (covered above by the
+        # threaded-vs-serial testset, whose reference uses it).
+        @test GR.BlockAreaOperator(1, 2, 3).srcmemo === nothing
+    end
+
+    @testset "the area-only clip matches the default operator, bit for bit" begin
+        m = GOCore.Spherical(; radius = 1.0)
+        default = CR.task_local_operator(CR.DefaultIntersectionOperator(m))
+        areaonly = CR.task_local_operator(GR.IntersectionAreaOperator(m))
+        @test GR._intersectionoperator(m) isa GR.IntersectionAreaOperator
+        @test GR._intersectionoperator(GOCore.Planar()) isa CR.DefaultIntersectionOperator
+
+        coarse = ToyLonLatSpace(4, 2)
+        fine = ToyLonLatSpace(8, 4)
+        dense = DensifiedCellSpace((10.0, 30.0), (20.0, 40.0), 5)
+        cells = vcat([getcell(coarse, i) for i in 1:8],
+            [getcell(fine, i) for i in 1:32], [getcell(dense, 1)])
+        # Overlapping, contained, identical, and disjoint pairs, one value each:
+        # every branch of the area-only kernel against the materializing one.
+        checked = 0
+        for a in cells, b in cells
+            va = default(a, b)
+            vb = areaonly(a, b)
+            @test va === vb
+            checked += 1
+        end
+        @test checked == length(cells)^2
+    end
+
+    @testset "the eager whole block adopts the assembled matrix unchanged" begin
+        dst = ToyLonLatSpace(4, 2)
+        src = ToyLonLatSpace(8, 4)
+        fast = GR.wholeblock(Conservative(), dst, src)
+        slow = invoke(GR.wholeblock,
+            Tuple{AbstractRegriddingMethod,RegridSpace,RegridSpace},
+            Conservative(), dst, src)
+        @test fast.weights.colptr == slow.weights.colptr
+        @test fast.weights.rowval == slow.weights.rowval
+        @test all(fast.weights.nzval .=== slow.weights.nzval)
+        @test all(fast.denom .=== slow.denom)
+        @test GR.hasdenom(fast) == GR.hasdenom(slow) == true
     end
 
     @testset "disjoint chunks keep zero denominators" begin

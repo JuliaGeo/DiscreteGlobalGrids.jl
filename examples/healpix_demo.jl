@@ -8,7 +8,7 @@
 #
 # Positions `1:ncells(grid)` index the data vector; `query` selects zones in
 # that same index space through `cellposition`; `neighbors` gives the stencil
-# halo, with the slots outside the crop simply missing rather than padded.
+# ring, with the slots outside the crop simply missing rather than padded.
 #
 # Environment: needs nothing beyond DiscreteGlobalGrids and its dependencies
 # (Healpix.jl is one of them, and is used here as an independent oracle):
@@ -127,39 +127,39 @@ end
 # --------------------------------------------------------------------------
 # 4. Stencils on partial coverage.
 #
-# Adjacency is a property of the complete level, so the halo table is built
+# Adjacency is a property of the complete level, so the ring table is built
 # from the globe's neighbours and then filtered through `cellposition`: a
 # neighbour the crop does not own has no position, and is dropped rather than
 # padded. Cells that keep all eight are the interior of the crop.
 # --------------------------------------------------------------------------
 
-halo = [Int[p for p in (DGG.cellposition(grid, nb)
-                        for nb in DGG.neighbors(globe, DGG.cellindex(grid, i)))
-            if p !== nothing]
-        for i in 1:DGG.ncells(grid)]
+rings = [Int[p for p in (DGG.cellposition(grid, nb)
+                         for nb in DGG.neighbors(globe, DGG.cellindex(grid, i)))
+             if p !== nothing]
+         for i in 1:DGG.ncells(grid)]
 
-stencil(f) = [f(data[i], data[halo[i]]) for i in 1:DGG.ncells(grid)]
+stencil(f) = [f(data[i], data[rings[i]]) for i in 1:DGG.ncells(grid)]
 smoothed = stencil((c, nbs) -> mean(vcat(c, nbs)))
 laplacian = stencil((c, nbs) -> isempty(nbs) ? zero(c) : mean(nbs) - c)
 
-full = count(==(8), length.(halo))
+full = count(==(8), length.(rings))
 println()
 println("  field var $(round(var(data); digits=4)) -> smoothed $(round(var(smoothed); digits=4))")
-println("  cells with a full 8-neighbourhood: $full / $(length(halo))")
+println("  cells with a full 8-neighbourhood: $full / $(length(rings))")
 check("smoothing reduces variance", var(smoothed) < var(data))
 check("the field is smooth, so its Laplacian is small",
     maximum(abs, laplacian) < 1.0; detail="max |lap| = $(round(maximum(abs, laplacian); digits=5))")
-check("only crop-boundary cells lose neighbours", 0 < full < length(halo))
+check("only crop-boundary cells lose neighbours", 0 < full < length(rings))
 
 # `neighbors` on the crop answers the same question directly. Subset adjacency
 # is the complete level's adjacency clipped to membership, so the call uses
-# HEALPix's fast path and drops cells outside the crop. `DGG.halo_table(grid)`
-# returns the whole table in one call, up to row order: the rows above preserve
-# counter-clockwise winding, while halo-table rows use ascending positions.
+# HEALPix's fast path and drops cells outside the crop. `DGG.adjacency(grid)`
+# returns the whole table in one call: its rows are these same clipped rings,
+# in the same counter-clockwise order.
 sample = 1:50:DGG.ncells(grid)
-check("neighbors(crop, c) == the filtered globe halo",
+check("neighbors(crop, c) == the filtered globe ring",
     all(sort(Int[DGG.cellposition(grid, nb)
-                 for nb in DGG.neighbors(grid, DGG.cellindex(grid, i))]) == sort(halo[i])
+                 for nb in DGG.neighbors(grid, DGG.cellindex(grid, i))]) == sort(rings[i])
         for i in sample); detail="sampled $(length(sample)) cells")
 
 # --------------------------------------------------------------------------
@@ -167,7 +167,7 @@ check("neighbors(crop, c) == the filtered globe halo",
 # --------------------------------------------------------------------------
 
 println()
-println("  system              crop cells   within/touching   full-halo cells")
+println("  system              crop cells   within/touching   full-ring cells")
 for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.HEALPixSystem()))
     base = sys isa DGG.AuthalicSystem ? parent(sys) : sys
     l = base isa Union{DGG.H3System,DGG.IGeo7System} ? 5 : 6
@@ -182,7 +182,7 @@ for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.HEALPixSystem()))
            "Authalic($(nameof(typeof(base))))" : string(nameof(typeof(sys)))
     println("  ", rpad(name, 20), lpad(DGG.ncells(g), 10), lpad("$(length(within))/$(length(touching))", 18),
         lpad(count(==(maximum(degrees)), degrees), 18))
-    check("$name: crop, zonal and halo all work",
+    check("$name: crop, zonal and stencil all work",
         DGG.ncells(g) > 0 && issubset(within, touching) && maximum(degrees) > 0)
 end
 

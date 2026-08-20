@@ -926,7 +926,7 @@ end
 
         # Contains resolves a leaf cell to its stored ancestor's value.
         leaf = cv[1]
-        pos = DGG.Fallbacks.covering_position(parent(lk), leaf)
+        pos = DGG.Engine.covering_position(parent(lk), leaf)
         @test A[Cells(DD.Contains(leaf))] == vals[pos]
 
         # The read-back cube expands to the leaf level it was coarsened from.

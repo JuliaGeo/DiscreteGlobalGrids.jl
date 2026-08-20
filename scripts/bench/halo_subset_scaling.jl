@@ -1,4 +1,4 @@
-# Benchmark `halo(subset)` against a stable `subtree_halo` control.
+# Benchmark `halo(subset)` against a stable rooted-subtree control.
 #
 #     julia --project=test scripts/bench/halo_subset_scaling.jl
 #
@@ -25,8 +25,9 @@ sys = HEALPixSystem()
 root = cellindex(levelgrid(sys, 0), 1)
 
 # Stable control that does not use the subset path.
-control = best(() -> subtree_halo(sys, root, 10))
-@printf("control  subtree_halo(HEALPix, level-0 root, l = 10)  %8.3f ms\n\n", control)
+whole = subtree(sys, root, 10)
+control = best(() -> collect(halo(whole)))
+@printf("control  halo(subtree(HEALPix, level-0 root, l = 10))  %8.3f ms\n\n", control)
 
 # Former batching boundary.
 

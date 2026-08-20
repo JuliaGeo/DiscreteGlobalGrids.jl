@@ -491,7 +491,7 @@ end
     end
 
     # Interior points that are not the centre: the chart at a 5x5 sub-lattice of
-    # the cell, offset off the rim so no sample lands on a cut line.
+    # the cell, offset off the border so no sample lands on a cut line.
     for level in (0, 2, 4)
         nside = Int64(1) << level
         for h in cell_sample(level, 48)
@@ -528,11 +528,11 @@ end
     @test cellindextype(SYS) === LevelIndex
     @test cellindextypes(SYS) == (LevelIndex,)          # no alternate scheme yet
     @test levels(SYS) == 0:30
-    @test max_level(SYS) == 30
+    @test maxlevel(SYS) == 30
     @test has_sorted_subtrees(SYS)
-    @test max_neighbors(SYS, Vertex()) == 8
-    @test max_neighbors(SYS, Edge()) == 4
-    @test max_neighbors(SYS) == 8
+    @test maxneighbors(SYS, Vertex()) == 8
+    @test maxneighbors(SYS, Edge()) == 4
+    @test maxneighbors(SYS) == 8
 
     for l in (0, 1, 5, 30)
         g = levelgrid(SYS, l)
@@ -720,7 +720,7 @@ end
     # point of every sampled cell, several levels down, against the ancestor's
     # own cap. The margin is expected to be tiny and NEGATIVE — descendant
     # corners land on the ancestor's corners bit-identically, and `nextfloat` on
-    # the radius is what keeps them strictly inside instead of on the rim.
+    # the radius is what keeps them strictly inside instead of on the border.
     worst = -Inf
     for l in 0:3
         g = levelgrid(SYS, l)
@@ -783,7 +783,7 @@ end
     # Strictly tighter than the generic `cap_inflation`-scaled default the
     # override replaces. `cap_inflation` itself is never consulted, and stays at
     # the interface default.
-    @test cap_inflation(SYS) == 1.2
+    @test DGG.cap_inflation(SYS) == 1.2
     for l in 0:2
         g = levelgrid(SYS, l)
         for i in 1:ncells(g)
@@ -791,7 +791,7 @@ end
             cap = node_extent(SYS, c)
             centre = cell_centroid(g, c)
             r = maximum(US.spherical_distance(centre, p) for p in cell_boundary(g, c))
-            @test cap.radius < r * cap_inflation(SYS)
+            @test cap.radius < r * DGG.cap_inflation(SYS)
         end
     end
 end

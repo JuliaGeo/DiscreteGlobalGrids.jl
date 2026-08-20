@@ -32,6 +32,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex,
     level, system, cellindextype, rawid, query, descendants,
     has_sorted_subtrees, level_ranges, MultiOrderCoverage, CellVector,
     CellLookup, Covering, covering_positions
+import ..DiscreteGlobalGrids.CellLookups: show_selector_error
 
 import ..Encodings
 using ..Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
@@ -820,5 +821,20 @@ end
 
 _found(::ChunkedCellLookup, k::Int, sel) = k
 _found(lk::ChunkedCellLookup, ::Nothing, sel) = throw(Lookups.SelectorError(lk, sel))
+
+# `Near` is refused here for the reason it is refused on `CellLookup`: id order
+# is a space-filling curve, not sphere distance.
+@noinline _no_near(lk, sel) = throw(ArgumentError(
+    "Near is not defined on a stored cell axis: cell ids run along a " *
+    "space-filling curve, so the nearest id is not the nearest cell on the " *
+    "sphere. Use At(cell), Contains(lon, lat), or Covering(region)."))
+
+Lookups.selectindices(lk::ChunkedCellLookup, sel::Lookups.Near; kw...) =
+    _no_near(lk, sel)
+Lookups.selectindices(lk::ChunkedCellLookup, sel::Lookups.Near{<:AbstractVector};
+    kw...) = _no_near(lk, sel)
+
+Base.showerror(io::IO, e::Lookups.SelectorError{<:ChunkedCellLookup}) =
+    show_selector_error(io, e.lookup, e.selector)
 
 end # module ChunkedLookups

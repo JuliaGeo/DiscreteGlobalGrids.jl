@@ -32,6 +32,21 @@ Swap `IGeo7System()` for any of the six and nothing else changes. The
 [README](https://github.com/JuliaGeo/DiscreteGlobalGrids.jl) walks the whole
 surface; the docstring of `DGG.systems()` is the comparison table.
 
+## Installation
+
+The package is not in the General registry yet, so it installs from the
+repository:
+
+```julia
+using Pkg
+Pkg.add(url = "https://github.com/JuliaGeo/DiscreteGlobalGrids.jl")
+```
+
+`Pkg.develop(url = ...)` instead for a checkout you intend to edit. Julia 1.11
+or newer is required. Two capabilities ride in extensions and are loaded by
+their package: `using Makie` (or a backend) draws cells, and `using Zarr` turns
+`dggread`/`dggwrite` from stubs that only report their absence into methods.
+
 ## Where to go next
 
 The [DGGS gallery](all_dggs.md) draws every system. Each tutorial is the
@@ -49,7 +64,11 @@ shortest honest path to one result:
     data on a regional subset, and flow routing across it.
   - [The sky in HEALPix](tutorials/healpix_astronomy.md) — nested order, cone
     searches, and a galactic-plane cut.
+  - [A round trip through a DGGS store](tutorials/store_io.md) — `dggwrite` and
+    `dggread` over a Zarr store, with the grid carried in the lookup type.
 
-[Subtree and subset boundaries](api/boundaries.md) is the rendered reference for
-the boundary family — `subtree_border`, `subtree_halo`, `halo`,
-`halo_positions`, `halo_sizehint` and the engines behind them.
+Two API pages are rendered so far.
+[Region boundaries](api/boundaries.md) covers the boundary family —
+`halo`, `border`, `interior`, `adjacency` and the engines behind them — and
+[Reading and writing DGGS stores](api/store-io.md) covers `dggread`, `dggwrite`
+and the conventions, encodings and chunked axis they are built on.

@@ -24,7 +24,7 @@ lifetime of the grid object and consistent with [`cellindex`](@ref) /
 
 # Required interface
 
-An implementor writes exactly four methods:
+A grid type writes exactly four methods:
 
 | method | contract |
 |---|---|
@@ -37,7 +37,14 @@ Everything else—[`cellposition`](@ref), [`cell_polygon`](@ref),
 [`cell_area`](@ref), [`cell_extent`](@ref), [`getcell`](@ref),
 [`cellat`](@ref), [`neighbors`](@ref), [`ring`](@ref), [`treeify`](@ref),
 and [`query`](@ref)—is provided generically and may be optimized without
-changing semantics.
+changing semantics. The generic [`cellposition`](@ref) scans `1:ncells(grid)`
+linearly, so a grid that can search should override it.
+
+A hierarchical system needs no grid type: it answers this interface with the
+five level-grid primitives listed under
+[`AbstractHierarchicalGridSystem`](@ref), which [`HierarchicalLevelGrid`](@ref)
+forwards to. That list is five rather than four because a linear scan is not an
+acceptable [`cellposition`](@ref) for a complete level.
 
 A grid produced by a hierarchical system reports it through [`system`](@ref)
 and [`level`](@ref); a standalone grid returns `nothing` from both and stops at
@@ -56,24 +63,98 @@ methods accelerate base-grid operations without changing their results.
 
 # Required interface
 
+Identity and hierarchy:
+
 | method | contract |
 |---|---|
 | [`cellindextype(sys)`](@ref cellindextype) | canonical typed id type |
 | [`levels(sys)`](@ref levels) | valid level range |
-| [`levelgrid(sys, l)`](@ref levelgrid) | complete `AbstractGrid` at level `l` |
-| [`rootcells(sys)`](@ref rootcells) | top-level cells |
-| [`parent(sys, c)`](@ref parent) | analytic parent, no lookup tables |
+| [`rootcells(sys)`](@ref rootcells) | top-level cells, ascending |
+| [`Base.parent(sys, c)`](@ref parent) | analytic parent, no lookup tables |
 | [`children(sys, c)`](@ref children) | analytic children, no lookup tables |
-| [`node_extent(sys, c)`](@ref node_extent) | covering region — see the covering law |
 
-# Traits
+`parent` is a method on `Base.parent`, so it is spelled `Base.parent(sys, c)`
+at the definition site and reached unqualified from any session.
 
-[`has_sorted_subtrees`](@ref), [`cap_inflation`](@ref),
-[`max_neighbors`](@ref), and [`max_level`](@ref).
+The five level-grid primitives, which answer the [`AbstractGrid`](@ref)
+interface for the complete level:
 
-See also [`AbstractGrid`](@ref), [`node_extent`](@ref).
+| method | contract |
+|---|---|
+| [`ncells(sys, l)`](@ref ncells) | number of cells at level `l` |
+| [`cellindex(sys, l, i)`](@ref cellindex) | position → canonical typed id |
+| [`cellposition(sys, c)`](@ref cellposition) | id → position, or `nothing` |
+| [`cell_boundary(sys, c)`](@ref cell_boundary) | exact boundary ring, unit-sphere points |
+| [`cell_centroid(sys, c)`](@ref cell_centroid) | representative interior point |
+
+[`maxneighbors(sys, connectivity)`](@ref maxneighbors) **sizes the
+neighbourhood family**: [`neighbors`](@ref), [`ring`](@ref) on a subset and
+[`adjacency`](@ref) use it for their fixed-capacity containers. It defaults to `nothing` — no bound declared — and
+the same verbs then buffer in heap `Vector`s: identical answers, one
+allocation per cell. Declaring the bound is the fast path.
+
+# Defaults an implementor may override
+
+| method | default |
+|---|---|
+| [`levelgrid(sys, l)`](@ref levelgrid) | `HierarchicalLevelGrid(sys, l)`, checked against [`levels`](@ref) |
+| [`node_extent(sys, c)`](@ref node_extent) | the cell's bounding cap, inflated — see the covering law |
+| [`cap_inflation(sys)`](@ref cap_inflation) | `1.2` |
+| [`maxlevel(sys)`](@ref maxlevel) | `last(levels(sys))` |
+| [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) | `false`; declaring it `true` obliges [`descendant_range`](@ref) |
+
+# Grid methods and system methods
+
+Identity and geometry dispatch on the **system**: the tables above are all
+`(sys, ...)` methods, and the level-grid primitives are what
+[`HierarchicalLevelGrid`](@ref) forwards the base interface to.
+
+Everything else dispatches on the **grid**. A system's fast paths —
+[`cellat`](@ref), [`neighbors`](@ref), [`ring`](@ref), [`cell_area`](@ref),
+[`treeify`](@ref), the subtree engines — attach to
+`HierarchicalLevelGrid{typeof(sys)}`, for which each system here keeps a local
+alias:
+
+    import DiscreteGlobalGrids as DGG
+    const LevelGrid = DGG.HierarchicalLevelGrid{MySystem}
+
+    DGG.cellat(g::LevelGrid, p::DGG.UnitSphericalPoint) = ...
+
+Every fast path is optional, and must return what the generic implementation
+would have returned.
+
+See also [`AbstractGrid`](@ref), [`AbstractQuadFaceGridSystem`](@ref),
+[`node_extent`](@ref).
 """
 abstract type AbstractHierarchicalGridSystem end
+
+"""
+    abstract type AbstractQuadFaceGridSystem <: AbstractHierarchicalGridSystem
+
+A system whose cells are an aligned `2^level × 2^level` lattice on each of
+`nbasefaces(sys)` congruent faces, named by the dense 0-based id
+`face * 4^level + curvecode` and positioned at `id + 1`. S2, HEALPix and ISEA4R
+are that one family.
+
+A subtype inherits every method that identity alone determines: the hierarchy
+block ([`rootcells`](@ref), [`parent`](@ref), [`children`](@ref),
+[`ancestor`](@ref), [`descendant_range`](@ref), [`descendants`](@ref)), the
+level-grid arithmetic ([`ncells`](@ref), [`cellindex`](@ref),
+[`cellposition`](@ref), [`cellindextype`](@ref),
+[`has_sorted_subtrees`](@ref)), and the subtree engines
+([`border_engine`](@ref)/`interior_engine`/`halo_engine`), which read a subtree as
+the square lattice block it is.
+
+It must still provide its own face layout and projection: [`levels`](@ref),
+[`maxneighbors`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref),
+[`node_extent`](@ref), [`cellat`](@ref), [`one_ring`](@ref), the lattice codec
+hooks [`lattice_decode`](@ref)/`lattice_cell`/`face_orientation`, and the three
+declarations `nbasefaces`, `systemname`, `idname`. A system whose curve carries
+orientation state also overrides `subtree_curve` and `subtree_orientation`.
+
+See also [`AbstractHierarchicalGridSystem`](@ref).
+"""
+abstract type AbstractQuadFaceGridSystem <: AbstractHierarchicalGridSystem end
 
 """
     abstract type AbstractCellIndex
@@ -118,7 +199,7 @@ julia> c = LevelIndex(3, 17); (level(c), rawid(c))
 struct LevelIndex <: AbstractCellIndex
     # `Int32` rather than `Int8`: a level is compared and incremented against
     # `Int`s everywhere, and an 8-bit field would silently wrap at 127 for a
-    # system with no `max_level`. The struct is 8-byte aligned either way, so
+    # system with no `maxlevel`. The struct is 8-byte aligned either way, so
     # the two narrower choices cost exactly the same 16 bytes.
     level::Int32
     index::Int64

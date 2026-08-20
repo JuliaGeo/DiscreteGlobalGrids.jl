@@ -255,6 +255,20 @@ end
             @test !Lookups.hasselection(lookup, sel)
             @test_throws Lookups.SelectorError Lookups.selectindices(lookup, sel)
         end
+        # A stored axis reports itself in prose, not as its parameterised type,
+        # and names the level mismatch when there is one.
+        @test_throws "not the axis's level 4" Lookups.selectindices(lookup,
+            DD.At(ancestor(IGeo7System(), axis_cells[1], 3)))
+        message = try
+            Lookups.selectindices(lookup, first(misses))
+        catch err
+            sprint(showerror, err)
+        end
+        @test !occursin("ChunkedCellLookup{", message)
+        @test occursin("ChunkedCellLookup(IGeo7System, level=4", message)
+        # `Near` is refused here for the same reason it is on `CellLookup`.
+        @test_throws "nearest id is not the nearest cell" Lookups.selectindices(
+            lookup, DD.Near(axis_cells[1]))
     end
 
     # One chunk read per resolved selector: the manifest prunes, so the axis is

@@ -25,6 +25,7 @@ using Test
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
@@ -35,6 +36,12 @@ import GeometryOps: SpatialTreeInterface as STI
 
 const US = GO.UnitSpherical
 const P = GO.UnitSphericalPoint
+
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(border(subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(interior(subtree(sys, c, l); cells = true, kw...))
 
 # ===========================================================================
 # Mock hierarchical system: an equirectangular quadtree
@@ -66,7 +73,7 @@ mock_ncells(l::Int) = ROOTS * RADIX^l
 
 DGG.cellindextype(::MockSystem) = LevelIndex
 DGG.levels(::MockSystem) = 0:MAXLEVEL
-DGG.max_neighbors(::MockSystem, ::Connectivity) = 8
+DGG.maxneighbors(::MockSystem, ::Connectivity) = 8
 DGG.has_sorted_subtrees(::SortedMock) = true
 DGG.has_sorted_subtrees(::OverhangMock) = true
 
@@ -100,7 +107,7 @@ function Base.parent(::MockSystem, c::LevelIndex)
 end
 
 function DGG.children(::MockSystem, c::LevelIndex)
-    level(c) < MAXLEVEL || throw(ArgumentError("$c is at max_level"))
+    level(c) < MAXLEVEL || throw(ArgumentError("$c is at maxlevel"))
     return [LevelIndex(level(c) + 1, rawid(c) * RADIX + k) for k in 0:(RADIX-1)]
 end
 
@@ -402,6 +409,20 @@ end
     @test dateline.Y[2] > 20.0           # great-circle bulge again
 end
 
+@testset "a grid's BoundsError names its valid positions" begin
+    grid = levelgrid(SORTED, 3)
+    n = ncells(grid)
+    message = try
+        cellindex(grid, n + 1)
+    catch err
+        sprint(showerror, err)
+    end
+    # The regression: `summary` falls back to the grid's parameterised type and
+    # the range the position had to be in never appears.
+    @test occursin("1:$n", message)
+    @test occursin("level-3", message)
+end
+
 @testset "identity generics" begin
     grid = levelgrid(SORTED, 3)
     @test cellindextypes(grid) == (LevelIndex,)
@@ -518,7 +539,7 @@ end
 @testset "cursor: window mode" begin
     grid = levelgrid(SORTED, 3)
     tree = treeify(grid)
-    @test tree isa HierarchicalGridCursor
+    @test tree isa DGG.HierarchicalGridCursor
     @test STI.isspatialtree(typeof(tree))
     @test STI.node_extent_is_expensive(typeof(tree))
     @test Trees.ncells(tree) == ncells(grid)
@@ -533,10 +554,10 @@ end
         nodes += 1
         @test typeof(node) === typeof(tree)
         STI.isleaf(node) && return
-        window = FB.node_indices(node)
+        window = EN.node_indices(node)
         covered = Int[]
         for child in STI.getchild(node)
-            append!(covered, FB.node_indices(child))
+            append!(covered, EN.node_indices(child))
         end
         @test sort(covered) == collect(window)
         @test STI.nchild(node) == length(collect(STI.getchild(node)))
@@ -547,7 +568,7 @@ end
     # traversal rests on.
     walk(tree) do node
         extent = STI.node_extent(node)
-        for i in FB.node_indices(node)
+        for i in EN.node_indices(node)
             for p in cell_boundary(grid, cellindex(grid, i))
                 @test US._contains(extent, p)
             end
@@ -562,7 +583,7 @@ end
     entries = STI.child_indices_extents(leaf)
     @test length(entries) == 1
     index, cap = only(entries)
-    @test index == first(FB.node_indices(leaf))
+    @test index == first(EN.node_indices(leaf))
     @test cap == FB.cell_cap(grid, cellindex(grid, index))
     @test_throws ArgumentError STI.child_indices_extents(tree)
 
@@ -570,16 +591,16 @@ end
     @test collect(GI.getpoint(GI.getexterior(Trees.getcell(tree, 5)))) ==
           collect(GI.getpoint(GI.getexterior(getcell(grid, 5))))
     @test_throws BoundsError Trees.getcell(tree, ncells(grid) + 1)
-    # Parallelising is a question about chunk size, so the answer has to differ
-    # between the whole grid and a single leaf however many threads are around.
-    @test !Trees.should_parallelize(tree, FB.full_sphere_cap())
-    @test Trees.should_parallelize(leaf, FB.full_sphere_cap())
+    # The frontier's work estimate is the node's own leaf window, not the
+    # whole grid `Trees.ncells` answers for.
+    @test Trees.split_weight(tree) == ncells(grid)
+    @test Trees.split_weight(leaf) == 1
 end
 
 @testset "cursor: selection mode" begin
     sorted = treeify(levelgrid(SORTED, 2))
     unsorted = treeify(levelgrid(UNSORTED, 2))
-    @test unsorted isa HierarchicalGridCursor
+    @test unsorted isa DGG.HierarchicalGridCursor
     # Without `descendant_range` the cursor has to carry an explicit selection,
     # and at the root that selection is the whole grid, in position order.
     @test sorted.selection === nothing
@@ -595,7 +616,7 @@ end
     function levels_of(tree)
         out = Dict{Int,Vector{Vector{Int}}}()
         walk(tree) do node
-            push!(get!(out, node.level, Vector{Int}[]), sort(collect(FB.node_indices(node))))
+            push!(get!(out, node.level, Vector{Int}[]), sort(collect(EN.node_indices(node))))
         end
         return Dict(k => sort(v) for (k, v) in out)
     end
@@ -649,15 +670,18 @@ end
     @test_throws ArgumentError PartialGrid(SORTED, 1, ids; root=LevelIndex(2, 0))
 
     # --- the subtree constructor: lazy where the system allows it ----------
-    subtree = PartialGrid(SORTED, LevelIndex(1, 5), 4)
-    @test ncells(subtree) == RADIX^3
-    @test subtree.ids isa FB.SubtreeIds
-    @test collect(subtree.ids) == descendants(SORTED, LevelIndex(1, 5), 4)
-    @test cellindex(subtree, 1) === LevelIndex(4, 5 * 64)
+    sub = subtree(SORTED, LevelIndex(1, 5), 4)
+    @test ncells(sub) == RADIX^3
+    @test sub.ids isa EN.SubtreeIds
+    @test collect(sub.ids) == descendants(SORTED, LevelIndex(1, 5), 4)
+    @test cellindex(sub, 1) === LevelIndex(4, 5 * 64)
 
-    materialised = PartialGrid(UNSORTED, LevelIndex(1, 5), 4)
+    materialised = subtree(UNSORTED, LevelIndex(1, 5), 4)
     @test materialised.ids isa Vector
-    @test collect(materialised.ids) == collect(subtree.ids)
+    @test collect(materialised.ids) == collect(sub.ids)
+
+    # The subtree level cannot be above the root's own.
+    @test_throws ArgumentError subtree(SORTED, LevelIndex(2, 5), 1)
 end
 
 @testset "cursor over a PartialGrid" begin
@@ -665,7 +689,7 @@ end
     ids = [LevelIndex(4, i) for i in (0, 1, 2, 300, 1000, 2047)]
     grid = PartialGrid(SORTED, 4, ids)
     tree = treeify(grid)
-    @test tree isa HierarchicalGridCursor
+    @test tree isa DGG.HierarchicalGridCursor
     @test Trees.ncells(tree) == 6
     @test leaf_positions(tree) == collect(1:6)
 
@@ -674,9 +698,9 @@ end
         STI.isleaf(node) && return
         covered = Int[]
         for child in STI.getchild(node)
-            append!(covered, FB.node_indices(child))
+            append!(covered, EN.node_indices(child))
         end
-        @test sort(covered) == collect(FB.node_indices(node))
+        @test sort(covered) == collect(EN.node_indices(node))
     end
 
     # A sparse internal node tightens its extent past the system's own
@@ -685,7 +709,7 @@ end
     walk(tree) do node
         STI.isleaf(node) && return
         node.level < 0 && return
-        count = length(FB.node_indices(node))
+        count = length(EN.node_indices(node))
         if 0 < count < RADIX^(4 - node.level)
             if STI.node_extent(node).radius < node_extent(SORTED, node.id).radius
                 tightened = true
@@ -697,7 +721,7 @@ end
     # ... and it still covers what it claims to.
     walk(tree) do node
         extent = STI.node_extent(node)
-        for i in FB.node_indices(node)
+        for i in EN.node_indices(node)
             for p in cell_boundary(grid, cellindex(grid, i))
                 @test US._contains(extent, p)
             end
@@ -705,14 +729,14 @@ end
     end
 
     # A rooted chunk starts descent at its own root, not at the sphere.
-    chunk = PartialGrid(SORTED, LevelIndex(1, 5), 4)
+    chunk = subtree(SORTED, LevelIndex(1, 5), 4)
     rooted = treeify(chunk)
     @test rooted.level == 1
     @test rooted.id === LevelIndex(1, 5)
     @test leaf_positions(rooted) == collect(1:ncells(chunk))
 
     # Bucketed descent stops early and scans.
-    bucketed = treeify(PartialGrid(SORTED, LevelIndex(1, 5), 4; bucket_size=16))
+    bucketed = treeify(subtree(SORTED, LevelIndex(1, 5), 4; bucket_size=16))
     @test leaf_positions(bucketed) == collect(1:ncells(chunk))
     leaves = 0
     walk(bucketed) do node
@@ -730,7 +754,7 @@ end
 @testset "position-space fallback tree" begin
     grid = OctantGrid()
     tree = treeify(grid)
-    @test tree isa FB.PositionTreeNode
+    @test tree isa EN.PositionTreeNode
     @test STI.isspatialtree(typeof(tree))
     @test !STI.node_extent_is_expensive(typeof(tree))
     @test Trees.ncells(tree) == 8
@@ -754,7 +778,7 @@ end
     @test STI.nchild(big) > 0
 
     # `treeify` is idempotent and manifold-agnostic.
-    @test treeify(GO.Spherical(), grid) isa FB.PositionTreeNode
+    @test treeify(GO.Spherical(), grid) isa EN.PositionTreeNode
     @test treeify(tree) === tree
     @test treeify(GO.Spherical(), tree) === tree
 end
@@ -889,10 +913,15 @@ end
             p = cell_centroid(g, c)
             spoke = cell_centroid(g, first(r1))
             @test ccw_angle(p, spoke, spoke) == 0.0
+            # A cell lying ON the spoke begins its ring rather than ending
+            # it: `FB.SPOKE_ATOL` is the package's rule and it is mirrored here
+            # because it is the order policy under test, not an implementation
+            # detail of it. Ring 2 of this mock has such a cell.
+            phase(q) = (a = ccw_angle(p, spoke, q);
+                a >= 2 * Float64(pi) - FB.SPOKE_ATOL ? 0.0 : a)
             for k in 1:2
                 shell = ring(g, c, k; connectivity=conn)
-                @test issorted([ccw_angle(p, spoke, cell_centroid(g, d))
-                                for d in shell])
+                @test issorted([phase(cell_centroid(g, d)) for d in shell])
             end
         end
     end
@@ -965,12 +994,12 @@ end
         @test query(grid, Within(target)) ⊆ got
     end
 
-    # The rim sandwich is an optimisation, so switching it off must not change
+    # The border sandwich is an optimisation, so switching it off must not change
     # a single answer: this is the same query with the arcs suppressed.
     target = targets["triangle"]
     prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), target)
-    plain = FB.GeometryTarget(prepared, target, FB._geometry_cap(prepared, target), nothing)
-    @test FB._run_query(grid, Intersects(target), plain) == query(grid, Intersects(target))
+    plain = EN.GeometryTarget(prepared, target, EN._geometry_cap(prepared, target), nothing)
+    @test EN._run_query(grid, Intersects(target), plain) == query(grid, Intersects(target))
 
     # The system-level form answers at the requested level.
     @test query(SORTED, Intersects(targets["box"]); level=3) == query(grid, Intersects(targets["box"]))
@@ -1268,7 +1297,7 @@ end
     set = query(SORTED, MultiOrderCoverage(wide); level=3)
     cells = collect(set)
     @test minimum(level, cells) < 3              # emitted coarse
-    @test maximum(level, cells) == 3             # recursed to the rim
+    @test maximum(level, cells) == 3             # recursed to the border
     @test allunique(cells)
 
     covered = FB.cellindices(set, 3)
@@ -1344,62 +1373,62 @@ end
     @test witness ⊆ expanded
 end
 
-@testset "generic subtree_border / subtree_interior" begin
-    # The three shipped systems all override `subtree_border` with an
-    # automaton, so this testset is the ONLY exercise the generic in
-    # `src/fallbacks/subtree.jl` gets. Without it, the correct-for-everyone
-    # implementation that a fourth system will inherit is dead code.
+@testset "the generic border and interior scans" begin
+    # Every shipped system specializes `border_engine`, so this testset and A5's
+    # are the only exercises the generic scan in `src/fallbacks/subtree.jl`
+    # gets. Without it, the correct-for-everyone implementation a new system
+    # inherits before it writes an automaton is dead code.
     #
     # The mock's subtree at depth `d` is a `2^d x 2^d` block of the lon/lat
-    # lattice, so its rim is contained in the block's boundary ring — at most
+    # lattice, so its border is contained in the block's boundary ring — at most
     # `4 * 2^d - 4` cells. Not exactly that many: the mock's roots tile a
     # bounded lon/lat domain rather than a closed surface, so a block on the
     # domain's outer edge has cells with nothing beyond them, and those are not
     # exposed. The bound is still an independent geometric fact (an interior
-    # lattice cell cannot be on the rim), and the definitional loops below pin
+    # lattice cell cannot be on the border), and the definitional loops below pin
     # the exact answer.
     for sys in (SORTED, UNSORTED)
         root = LevelIndex(0, 3)
 
-        # A depth-0 subtree is the cell itself, and it is all rim.
-        @test subtree_border(sys, root, 0) == [root]
-        @test isempty(subtree_interior(sys, root, 0))
+        # A depth-0 subtree is the cell itself, and it is all border.
+        @test eager_border(sys, root, 0) == [root]
+        @test isempty(eager_interior(sys, root, 0))
 
         for d in 1:2
-            border = subtree_border(sys, root, d)
-            interior = subtree_interior(sys, root, d)
+            bnd = eager_border(sys, root, d)
+            inner = eager_interior(sys, root, d)
             kids = descendants(sys, root, d)
 
-            @test !isempty(border)
-            @test length(border) <= 4 * 2^d - 4
-            @test allunique(border)
-            @test issorted(border)
+            @test !isempty(bnd)
+            @test length(bnd) <= 4 * 2^d - 4
+            @test allunique(bnd)
+            @test issorted(bnd)
 
             # Border and interior partition the subtree, disjointly.
-            @test isempty(intersect(Set(border), Set(interior)))
-            @test union(Set(border), Set(interior)) == Set(kids)
-            @test length(border) + length(interior) == length(kids)
+            @test isempty(intersect(Set(bnd), Set(inner)))
+            @test union(Set(bnd), Set(inner)) == Set(kids)
+            @test length(bnd) + length(inner) == length(kids)
 
-            # Every rim cell really does have a neighbour outside the subtree,
+            # Every border cell really does have a neighbour outside the subtree,
             # and no interior cell does — the definition, spelled out.
             inside = Set(kids)
             grid = levelgrid(sys, d)
-            for c in border
+            for c in bnd
                 @test any(nb -> !(nb in inside), neighbors(grid, c, 1))
             end
-            for c in interior
+            for c in inner
                 @test all(nb -> nb in inside, neighbors(grid, c, 1))
             end
         end
 
-        # Edge() is the narrower adjacency, so its rim can only be a subset of
+        # Edge() is the narrower adjacency, so its border can only be a subset of
         # Vertex()'s — a cell exposed only diagonally drops out.
-        @test issubset(Set(subtree_border(sys, root, 2; connectivity=Edge())),
-            Set(subtree_border(sys, root, 2)))
+        @test issubset(Set(eager_border(sys, root, 2; connectivity=Edge())),
+            Set(eager_border(sys, root, 2)))
 
         # Asking below the cell's own level is an error, not an empty answer.
-        @test_throws ArgumentError subtree_border(sys, LevelIndex(2, 0), 1)
-        @test_throws ArgumentError subtree_interior(sys, LevelIndex(2, 0), 1)
+        @test_throws ArgumentError eager_border(sys, LevelIndex(2, 0), 1)
+        @test_throws ArgumentError eager_interior(sys, LevelIndex(2, 0), 1)
     end
 end
 

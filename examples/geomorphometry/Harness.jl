@@ -11,8 +11,8 @@ checks:
                  (every halo cell really does touch the subtree).
 2. **oracle**  — the halo equals a brute-force halo computed from `neighbors`
                  alone, inside-out.
-3. **iterator**— restartable, prefix-consistent, `collect` == `subtree_halo`,
-                 reproducible, and `length` (where advertised) truthful.
+3. **iterator**— restartable, prefix-consistent, reproducible across fresh
+                 walks, and `length` (where advertised) truthful.
 4. **terrain** — every metric computed over the chunk-plus-halo read equals the
                  whole-grid metric restricted to the chunk, and the chunk read
                  never touched a cell it did not hold.
@@ -196,16 +196,16 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
     fails = Failure[]
     tag = describe(sys, root, level, conn, fieldkind)
     k = gridctx(sys, level, conn)
-    g = k.grid
     r = chunk_range(sys, root, level)
+    pg = DGG.subtree(sys, root, level)
 
     # Reproducibility.
-    halo1 = DGG.subtree_halo(sys, root, level; connectivity = conn)
-    halo2 = DGG.subtree_halo(sys, root, level; connectivity = conn)
+    halo1 = collect(DGG.halo(pg; connectivity = conn, cells = true))
+    halo2 = collect(DGG.halo(pg; connectivity = conn, cells = true))
     halo1 == halo2 || push!(fails, Failure(:nondeterministic, tag,
-        "two subtree_halo calls differ: $(length(halo1)) vs $(length(halo2)) cells"))
+        "two halo walks differ: $(length(halo1)) vs $(length(halo2)) cells"))
 
-    hp = [DGG.cellposition(g, c) for c in halo1]
+    hp = collect(DGG.halo(pg; connectivity = conn))
 
     # Ordering, uniqueness, and ancestry.
     issorted(hp) || push!(fails, Failure(:unsorted, tag,
@@ -244,9 +244,9 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
     end
 
     # Iterator protocol.
-    it = DGG.SubtreeHaloIterator(sys, root, level; connectivity = conn)
+    it = DGG.halo(pg; connectivity = conn, cells = true)
     collect(it) == halo1 || push!(fails, Failure(:collect_mismatch, tag,
-        "collect(SubtreeHaloIterator) != subtree_halo"))
+        "a fresh halo walk does not collect to the same cells"))
     n3 = min(3, length(halo1))
     a = collect(Iterators.take(it, n3)); b = collect(Iterators.take(it, n3))
     (a == b == halo1[1:n3]) || push!(fails, Failure(:not_restartable, tag,
@@ -264,7 +264,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
     z = whole_field(sys, level, conn, fieldkind, sp)
     chunk = ChunkField(k, sys, root, level, z)
     chunk.halopos == hp || push!(fails, Failure(:chunk_halo, tag,
-        "ChunkField halo positions differ from subtree_halo"))
+        "ChunkField halo positions differ from halo(subtree)"))
     want = metrics === nothing ? METRICS :
         Tuple(m for m in METRICS if m[1] in metrics)
     nmetric = 0
@@ -298,7 +298,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
 
     # A narrower edge halo must miss inputs needed by a vertex stencil.
     if control && conn === Vertex()
-        small = DGG.subtree_halo(sys, root, level; connectivity = Edge())
+        small = collect(DGG.halo(pg; connectivity = Edge()))
         if length(small) < length(halo1)
             probe = ChunkField(k, sys, root, level, z; halo_connectivity = Edge())
             SphericalTerrain.roughness(probe)
@@ -318,14 +318,13 @@ end
 
 Checks `halo(PartialGrid)`, `halo(CellVector)` and `halo(CellLookup)` against
 the brute-force subset oracle, for an arbitrary member set (holes included).
-Also checks the rooted `PartialGrid(sys, root, level)` path where `members` is
+Also checks the rooted `subtree(sys, root, level)` path where `members` is
 exactly a subtree.
 """
 function check_subset_case(sys, level::Integer, conn::Connectivity,
         members::Vector{Int}; label::String = "")
     fails = Failure[]
     k = gridctx(sys, level, conn)
-    g = k.grid
     tag = string(nameof(typeof(sys)), " L", level, " ", nameof(typeof(conn)),
         " subset[", length(members), "] ", label)
 
@@ -340,24 +339,23 @@ function check_subset_case(sys, level::Integer, conn::Connectivity,
     for (nm, sub) in (("PartialGrid", DGG.PartialGrid(sys, level, ids)),
                       ("CellVector",  DGG.CellVector(sys, level, ids)),
                       ("CellLookup",  DGG.CellLookup(DGG.CellVector(sys, level, ids))))
-        h = try
+        hp = try
             collect(DGG.halo(sub; connectivity = conn))
         catch e
             push!(fails, Failure(:threw, tag,
                 "halo($nm) threw " * sprint(showerror, e)))
             continue
         end
-        hp = [DGG.cellposition(g, c) for c in h]
         issorted(hp) || push!(fails, Failure(:unsorted, tag, "halo($nm) not ascending"))
         length(unique(hp)) == length(hp) ||
             push!(fails, Failure(:duplicate, tag, "halo($nm) has duplicates"))
         hp == io || push!(fails, Failure(:halo_mismatch_subset, tag,
             "halo($nm) != oracle: missing=$(setdiff(io, hp)) extra=$(setdiff(hp, io))"))
         it = DGG.halo(sub; connectivity = conn)
-        n4 = min(4, length(h))
+        n4 = min(4, length(hp))
         collect(Iterators.take(it, n4)) == collect(Iterators.take(it, n4)) ||
             push!(fails, Failure(:not_restartable, tag, "halo($nm) prefix not stable"))
-        collect(it) == h ||
+        collect(it) == hp ||
             push!(fails, Failure(:nondeterministic, tag, "halo($nm) not reproducible"))
     end
     return fails
@@ -377,13 +375,14 @@ function laziness_failures(sys, root, shallow::Integer, deep::Integer,
     tag = string(nameof(typeof(sys)), " root=", root, " L", shallow, " vs L", deep,
         " ", nameof(typeof(conn)))
     probe(l) = begin
-        DGG.SubtreeHaloIterator(sys, root, l; connectivity = conn)  # warm
-        cons = @allocated DGG.SubtreeHaloIterator(sys, root, l; connectivity = conn)
-        it = DGG.SubtreeHaloIterator(sys, root, l; connectivity = conn)
+        pg = DGG.subtree(sys, root, l)
+        DGG.halo(pg; connectivity = conn)                           # warm
+        cons = @allocated DGG.halo(pg; connectivity = conn)
+        it = DGG.halo(pg; connectivity = conn)
         collect(Iterators.take(it, 3))
         pre = @allocated collect(Iterators.take(
-            DGG.SubtreeHaloIterator(sys, root, l; connectivity = conn), 3))
-        (cons, pre, length(DGG.subtree_halo(sys, root, l; connectivity = conn)))
+            DGG.halo(pg; connectivity = conn), 3))
+        (cons, pre, length(collect(DGG.halo(pg; connectivity = conn))))
     end
     cs, ps, ns = probe(shallow)
     cd, pd, nd = probe(deep)
@@ -430,8 +429,7 @@ end
 function classify_root(sys, root, level::Integer, conn::Connectivity)
     k = gridctx(sys, level, conn)
     r = chunk_range(sys, root, level)
-    hp = [DGG.cellposition(k.grid, c)
-          for c in DGG.subtree_halo(sys, root, level; connectivity = conn)]
+    hp = collect(DGG.halo(DGG.subtree(sys, root, level); connectivity = conn))
     tags = Set{Symbol}()
     modal = modal_degree(k)
     for p in vcat(collect(r), hp)

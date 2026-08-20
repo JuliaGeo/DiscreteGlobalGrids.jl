@@ -231,6 +231,8 @@ else
         @test g.attrs["dggs"]["compression"] == "compacted"
         @test g.attrs["dggs"]["refinement_level"] === nothing
         @test g.attrs["dggs"]["coordinate"] == "cell_ids"
+        # The level column names itself: nothing in the convention does.
+        @test g.attrs["dggs"]["refinement_levels"] == "cell_levels"
         @test !haskey(g["cell_ids"].attrs, "grid_name")
         @test g["cell_ids"][:] == [DGG.rawid(c) for c in mov]
         @test Int.(g["cell_levels"][:]) == [DGG.level(c) for c in mov]
@@ -265,14 +267,16 @@ else
             @test err isa DGGSFormatError && err.check === :mixed_level_axis
             @test occursin("expand", err.detail)
         end
-        err = try
-            DGG.dggwrite(dest("single-compacted.zarr"), demostack();
-                encoding=:compacted)
-            nothing
-        catch e
-            e
+        for (i, spec) in enumerate((:compacted, DGG.CompactedEncoding()))
+            err = try
+                DGG.dggwrite(dest("single-compacted-$i.zarr"), demostack();
+                    encoding=spec)
+                nothing
+            catch e
+                e
+            end
+            @test err isa DGGSFormatError && err.check === :not_write_eligible
         end
-        @test err isa DGGSFormatError && err.check === :not_write_eligible
     end
 
     @testset "the auto chunk plan breaks on coarse-ancestor boundaries" begin

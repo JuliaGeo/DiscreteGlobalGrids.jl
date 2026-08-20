@@ -274,5 +274,8 @@ end
             Int8[99; lv[2:end]], ids)) === :invalid_stored_level
         @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys, lv,
             [typemax(Int64); ids[2:end]])) === :id_names_no_cell
+        # A level no `Int` can hold is a malformed store, not an InexactError.
+        @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
+            [typemax(UInt64); UInt64.(lv[2:end])], ids)) === :invalid_stored_level
     end
 end

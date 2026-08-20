@@ -35,8 +35,11 @@ some fifth way calls [`register_encoding!`](@ref). Neither requires a change
 here.
 
 The mixed-level axis [`coarsen`](@ref) builds writes and reads as the
-`compacted` layout: two aligned columns, `cell_ids` and `cell_levels`, under
-`refinement_level: null`, coming back as a `MultiOrderLookup` axis. Requesting
+`compacted` layout: two aligned columns, `cell_ids` and `cell_levels` — the
+second named by `refinement_levels` — under `refinement_level: null`, coming
+back as a `MultiOrderLookup` axis. That layout is this package's extension:
+v1 of `zarr-conventions/dggs` requires `compression: "none"` wherever
+`refinement_level` is null, so only this package reads a compacted store. Requesting
 a single-level encoding for one is refused, with [`expand`](@ref) as the
 bridge to a writable level.
 

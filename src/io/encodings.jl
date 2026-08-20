@@ -364,10 +364,16 @@ struct ImplicitEncoding <: CellEncoding end
 
 One stored cell per position at MIXED refinement levels: two aligned columns,
 a level and a raw id at that level, in [`MultiOrderVector`](@ref) container
-order — ascending by subtree-interval start. The layout
-`zarr-conventions/dggs` names `compression: "compacted"`; such a store
-declares `refinement_level: null`, and its axis reads back as a
+order — ascending by subtree-interval start. Such a store declares
+`refinement_level: null` and `compression: "compacted"`, names its level
+column in `refinement_levels`, and its axis reads back as a
 `MultiOrderVector` rather than a single-level vector.
+
+This is an EXTENSION, not a conforming layout: v1 of `zarr-conventions/dggs`
+takes the vocabulary word `compacted` but requires `compression: "none"`
+wherever `refinement_level` is null, and for healpix it requires a `*uniq`
+indexing scheme there — a self-describing id with no level column at all. A
+conforming reader will reject these stores; only this package reads them.
 """
 struct CompactedEncoding <: CellEncoding end
 
@@ -442,8 +448,12 @@ and all cells of `grid`'s single level; [`ImplicitEncoding`](@ref) additionally
 requires them to be the whole level; [`DenseEncoding`](@ref) always is, which
 is what makes `:auto` total.
 
-`ids` may be raw integers or typed cell ids.
+`ids` may be raw integers or typed cell ids. A downstream encoding that states
+no restriction is eligible: the fallback is `true`, and the write path refuses
+it by name if it implements nothing else.
 """
+write_eligible(::CellEncoding, ::AbstractGrid, ::AbstractVector) = true
+
 write_eligible(::DenseEncoding, ::AbstractGrid, ::AbstractVector) = true
 
 write_eligible(::RangesEncoding, grid::AbstractGrid, ids::AbstractVector) =
@@ -646,11 +656,14 @@ function cellaxis(::CompactedEncoding, sys::AbstractHierarchicalGridSystem,
                "$declared_length; the axis and the data disagree."))
     grids = Dict{Int,Any}()
     cells = map(1:n) do k
-        l = Int(cell_levels[k])
-        l in levels(sys) || throw(DGGSFormatError(check=:invalid_stored_level,
-            declared=Int(first(levels(sys))):Int(last(levels(sys))), observed=l,
-            detail="position $k of the cell axis declares level $l, which " *
+        # Membership before narrowing: `Int` of a wild unsigned is an
+        # InexactError, not the format error a malformed store deserves.
+        raw = cell_levels[k]
+        raw in levels(sys) || throw(DGGSFormatError(check=:invalid_stored_level,
+            declared=Int(first(levels(sys))):Int(last(levels(sys))), observed=raw,
+            detail="position $k of the cell axis declares level $raw, which " *
                    "$(nameof(typeof(sys))) does not have."))
+        l = Int(raw)
         grid = get!(() -> levelgrid(sys, l), grids, l)
         id = storedid(idtype(grid), cell_ids[k])
         idvalid(grid, id) || throw(DGGSFormatError(check=:id_names_no_cell,

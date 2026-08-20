@@ -256,6 +256,7 @@ function _commit(opengroup, identifier, src, desc, conventions, arrays;
         _stampable(c, desc) || continue
         DGG.encode!(c, snapshot, desc)
     end
+    reference_level === nothing || _declarelevels!(snapshot.attrs)
 
     group = opengroup(snapshot.attrs, String[a.entry.name for a in arrays])
     for a in arrays
@@ -272,6 +273,16 @@ end
 # there.
 _stampable(::DGGSConvention, desc) = true
 _stampable(::XdggsConvention, desc) = desc.level !== nothing
+
+# `coordinate` names the id array; nothing in v1 of zarr-conventions/dggs names
+# the level array beside it, so the store says it itself — the one key an
+# independent reader needs to align `cell_levels[k]` with `cell_ids[k]`.
+function _declarelevels!(attrs)
+    dggs = get(attrs, "dggs", nothing)
+    dggs isa AbstractDict || return attrs
+    dggs["refinement_levels"] = COMPACTED_LEVELS_ARRAY
+    return attrs
+end
 
 function _markerreference!(arrays, reference_level::Int)
     for a in arrays
@@ -385,7 +396,8 @@ end
 `:auto` is [`RangesEncoding`](@ref) where the axis is eligible for it — sorted,
 unique, one level — and [`DenseEncoding`](@ref) otherwise, which is what makes
 it total. `:dense`, `:ranges` and `:implicit` are sugar over
-`ENCODING_REGISTRY`, and an encoding instance passes straight through.
+`ENCODING_REGISTRY`, and an encoding instance takes the same eligibility check
+its keyword would.
 """
 function _encoding(spec::Symbol, grid, cells)
     spec === :auto && return write_eligible(RangesEncoding(), grid, cells) ?
@@ -395,15 +407,18 @@ function _encoding(spec::Symbol, grid, cells)
         "unknown encoding $(repr(spec)); it is :auto, or one of " *
         join(sort!([repr(k) for k in keys(ENCODING_KEYWORDS)]), ", ") *
         ", or a CellEncoding instance."))
-    enc = ENCODING_REGISTRY[vocab]
+    return _encoding(ENCODING_REGISTRY[vocab], grid, cells)
+end
+
+# An instance is held to the same eligibility as its keyword: `write_eligible`
+# is part of the encoding interface, not of the keyword sugar.
+function _encoding(enc::CellEncoding, grid, cells)
     write_eligible(enc, grid, cells) || throw(DGGSFormatError(
         check=:not_write_eligible, declared=encodingname(enc), observed=length(cells),
         detail="this axis cannot be written as $(encodingname(enc)): " *
                _ineligible(enc, grid)))
     return enc
 end
-
-_encoding(enc::CellEncoding, grid, cells) = enc
 
 _ineligible(::ImplicitEncoding, grid) =
     "an implicit axis is the whole of one level, in order, and this one is not."

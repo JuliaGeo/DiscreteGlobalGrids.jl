@@ -48,6 +48,7 @@ include("bands.jl")
 include("system.jl")
 include("nesting.jl")
 include("cursor.jl")
+include("cursor_memo.jl")
 
 export CopernicusDEMSystem
 

@@ -677,10 +677,11 @@ end
     midrow = PartialGrid(GLO90, 1, [LevelIndex(1, k)
                                     for k in (first_id + 3):(first_id + 500)])
     scattered = PartialGrid(GLO90, 1, [LevelIndex(1, first_id + 2k) for k in 0:99])
-    @test treeify(levelgrid(GLO90, 0)) isa CD.BlockCursor
-    @test treeify(levelgrid(GLO90, 1)) isa CD.BlockCursor
-    @test treeify(rect) isa CD.BlockCursor
-    @test treeify(rows) isa CD.BlockCursor
+    # `treeify` hands the cursor back memoized; `BlockCursor` is the bare one.
+    @test treeify(levelgrid(GLO90, 0)) isa CD.MemoBlockCursor
+    @test treeify(levelgrid(GLO90, 1)) isa CD.MemoBlockCursor
+    @test treeify(rect) isa CD.MemoBlockCursor
+    @test treeify(rows) isa CD.MemoBlockCursor
     # Mid-row and scattered windows fall back to the generic cursor.
     @test treeify(midrow) isa DGG.HierarchicalGridCursor
     @test treeify(scattered) isa DGG.HierarchicalGridCursor
@@ -697,8 +698,8 @@ end
                            Int(CD.ncols_at(TWIN, 88)) - 1).index
     pole_rows = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in pole_lo:pole_hi])
     part_end = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in two_lo:(two_hi-2)])
-    @test treeify(two_tiles) isa CD.BlockCursor
-    @test treeify(pole_rows) isa CD.BlockCursor
+    @test treeify(two_tiles) isa CD.MemoBlockCursor
+    @test treeify(pole_rows) isa CD.MemoBlockCursor
     @test treeify(part_end) isa DGG.HierarchicalGridCursor
 
     # Out-of-range partial-grid ids must fall back cleanly.
@@ -852,11 +853,13 @@ end
     # Multi-tile level-1 grids descend through tile nodes into each raster.
     g1twin = levelgrid(TWIN, 1)
     root = treeify(g1twin)
-    @test root isa CD.BlockCursor
+    @test root isa CD.MemoBlockCursor
     @test !STI.isleaf(root)
-    holds(nd, r, q, j, i) = nd.inpixels ?
-                            (nd.r0 == r && nd.q0 == q && nd.j0 <= j <= nd.j1 && nd.i0 <= i <= nd.i1) :
-                            (nd.r0 <= r <= nd.r1 && nd.q0 <= q <= nd.q1)
+    holds(t, r, q, j, i) = let nd = t.node
+        nd.inpixels ?
+            (nd.r0 == r && nd.q0 == q && nd.j0 <= j <= nd.j1 && nd.i0 <= i <= nd.i1) :
+            (nd.r0 <= r <= nd.r1 && nd.q0 <= q <= nd.q1)
+    end
     worst_ancestor = -Inf
     worst_globe = -Inf
     reached = 0
@@ -966,7 +969,7 @@ end
         inds = DGG.cellindices(dense, k)
         @test length(inds) == Int(CD.lat_intervals(TWIN)) * Int(CD.ncols_at(TWIN, lat_s))
         tree = GR.subtree(dense, inds)
-        @test tree isa CD.BlockCursor
+        @test tree isa CD.MemoBlockCursor
         # The window is the chunk exactly — no cell of another tile leaks in.
         @test leafpositions(tree) == collect(inds)
     end
@@ -977,7 +980,7 @@ end
         cellposition(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
     nc = Int(CD.ncols_at(TWIN, 12))
     rows = (first(r) + nc):(first(r) + 3nc - 1)
-    @test GR.subtree(dense, rows) isa CD.BlockCursor
+    @test GR.subtree(dense, rows) isa CD.MemoBlockCursor
     @test leafpositions(GR.subtree(dense, rows)) == collect(rows)
     @test GR.subtree(dense, (first(r) + 1):(first(r) + nc)) isa GR.CellCapTree
     # And a run spanning two tiles is not one rectangle either.
@@ -1010,7 +1013,7 @@ end
     for k in 1:GR.nchunks(src)
         inds = DGG.cellindices(src, k)
         tree = GR.subtree(src, inds)
-        @test tree isa CD.BlockCursor
+        @test tree isa CD.MemoBlockCursor
         @test leafpositions(tree) == collect(inds)
         # The weights are the fallback's, entry for entry: one tree is faster to
         # descend than the other and that is the whole of the difference.
@@ -1021,6 +1024,148 @@ end
         @test length(fast.nzval) > 0
         @test (k, fast == slow) == (k, true)
     end
+end
+
+# =========================================================================
+# (k3) The extent memo: the same caps, no false hits, no shared state
+# =========================================================================
+
+# `treeify`/`subcursor` hand back a `MemoBlockCursor`, which answers
+# `node_extent` from a per-task direct-mapped table instead of re-deriving the
+# box and its cap. The table must be invisible: every answer is the bare
+# cursor's, bit for bit, whoever asks and in whatever order.
+@testset "the node-extent memo" begin
+    STI = GO.SpatialTreeInterface
+
+    tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
+    memoroot = treeify(tile)
+    @test memoroot isa CD.MemoBlockCursor
+    bareroot = CD.BlockCursor(tile)
+
+    # ---- the interface the bare cursor implements, all of it ----------------
+    @test STI.isspatialtree(typeof(memoroot))
+    # A hit is a compare and a load, so the search must not cache child extents.
+    @test !STI.node_extent_is_expensive(typeof(memoroot))
+    @test STI.isleaf(memoroot) == STI.isleaf(bareroot)
+    @test STI.nchild(memoroot) == STI.nchild(bareroot)
+    @test all(c isa CD.MemoBlockCursor for c in STI.getchild(memoroot))
+    @test [c.node for c in STI.getchild(memoroot)] ==
+          [STI.getchild(bareroot, k) for k in 1:STI.nchild(bareroot)]
+    @test STI.getchild(memoroot, 2).node == STI.getchild(bareroot, 2)
+    @test DGG.ncells(memoroot) == DGG.ncells(bareroot)
+    @test getcell(memoroot, 3) == getcell(bareroot, 3)
+    @test CR.Trees.split_weight(memoroot) == CR.Trees.split_weight(bareroot)
+    @test GOCore.best_manifold(memoroot) == GOCore.best_manifold(bareroot)
+    @test treeify(memoroot) === memoroot
+    @test sprint(show, memoroot) == "Memo" * sprint(show, bareroot)
+
+    # ---- (a) every answer is the unmemoized one, bit for bit ---------------
+    # `===` on an immutable cap compares the bits, so this is stricter than `==`.
+    function sameextents(a, b)
+        STI.node_extent(a) === STI.node_extent(b) || return false
+        STI.isleaf(a) == STI.isleaf(b) || return false
+        STI.isleaf(a) && return isequal(collect(STI.child_indices_extents(a)),
+                                        collect(STI.child_indices_extents(b)))
+        STI.nchild(a) == STI.nchild(b) || return false
+        return all(sameextents(STI.getchild(a, k), STI.getchild(b, k))
+                   for k in 1:STI.nchild(a))
+    end
+    @test sameextents(memoroot, bareroot)
+    # A second walk is served from the table and answers the same.
+    @test sameextents(memoroot, bareroot)
+
+    # The root's slot really does hold the root's cap after the first ask.
+    rootkey = CD._nodekey(bareroot)
+    slot = CD._nodeslot(rootkey, CD._MEMO_EXTENT_SLOTS)
+    rootcap = STI.node_extent(memoroot)
+    thememo = CD._taskmemo(bareroot)
+    @test thememo.keys[slot] == rootkey
+    @test thememo.vals[slot] === rootcap === STI.node_extent(bareroot)
+
+    # ---- (b) a slot collision is a miss, never a false hit ------------------
+    # The whole level-1 lattice, breadth-first, past the point where the table
+    # is full: with more live nodes than slots, collisions are the common case.
+    globe = treeify(levelgrid(TWIN, 1))
+    nodes = CD.MemoBlockCursor[globe]
+    k = 1
+    while k <= length(nodes) && length(nodes) < 4 * CD._MEMO_EXTENT_SLOTS
+        n = nodes[k]
+        k += 1
+        STI.isleaf(n) || append!(nodes, (STI.getchild(n, c) for c in 1:STI.nchild(n)))
+    end
+    @test length(nodes) > CD._MEMO_EXTENT_SLOTS   # more nodes than slots: real pressure
+
+    # Two distinct nodes, with distinct caps, that land in one slot.
+    seen = Dict{Int,CD.MemoBlockCursor}()
+    collide = nothing
+    for n in nodes
+        s = CD._nodeslot(CD._nodekey(n.node), CD._MEMO_EXTENT_SLOTS)
+        prev = get(seen, s, nothing)
+        if prev !== nothing && CD._nodekey(prev.node) != CD._nodekey(n.node) &&
+           STI.node_extent(prev.node) !== STI.node_extent(n.node)
+            collide = (prev, n)
+            break
+        end
+        seen[s] = n
+    end
+    @test collide !== nothing
+    a, b = collide
+    @test CD._nodeslot(CD._nodekey(a.node), CD._MEMO_EXTENT_SLOTS) ==
+          CD._nodeslot(CD._nodekey(b.node), CD._MEMO_EXTENT_SLOTS)
+    # Alternating evicts on every ask; each ask still gets its own node's cap.
+    for _ in 1:4
+        @test STI.node_extent(a) === STI.node_extent(a.node)
+        @test STI.node_extent(b) === STI.node_extent(b.node)
+    end
+    @test STI.node_extent(a) !== STI.node_extent(b)
+
+    # One tile rectangle is one key, but the cap depends on the lattice it sits
+    # in: the level-0 pad is a whole tile, the level-1 pad one pixel. The table
+    # is cleared when a task turns to another lattice, so neither answers for
+    # the other.
+    tr, tq, _, _ = CD.decode(TWIN, CD.tilecell(TWIN, 50, 6))
+    tilenode(g, l) = CD.MemoBlockCursor(CD.BlockCursor(g, TWIN, CD.Bisected(), l,
+        Int64(-1), tr, tr, tq, tq, 0, 0, 0, 0, false))
+    lvl0 = tilenode(levelgrid(TWIN, 0), 0)
+    lvl1 = tilenode(levelgrid(TWIN, 1), 1)
+    @test CD._nodekey(lvl0.node) == CD._nodekey(lvl1.node)
+    @test STI.node_extent(lvl0.node) !== STI.node_extent(lvl1.node)
+    for _ in 1:4
+        @test STI.node_extent(lvl0) === STI.node_extent(lvl0.node)
+        @test STI.node_extent(lvl1) === STI.node_extent(lvl1.node)
+    end
+    # And turning back to the tile grid still answers for the tile grid.
+    @test STI.node_extent(memoroot) === STI.node_extent(bareroot)
+
+    # ---- (c) concurrent readers of one shared grid --------------------------
+    # The table is task-local, so 8 tasks walking the same nodes share no slot.
+    bare = [n.node for n in nodes]
+    want = [STI.node_extent(n) for n in bare]
+    tasks = map(1:8) do _
+        Threads.@spawn begin
+            bad = 0
+            for (k, n) in enumerate(nodes)
+                STI.node_extent(n) === want[k] || (bad += 1)
+                k % 32 == 0 && yield()
+            end
+            bad
+        end
+    end
+    @test all(==(0), fetch.(tasks))
+    # Tasks that alternate between two lattices keep their own reset straight.
+    mixed = map(1:8) do t
+        Threads.@spawn begin
+            bad = 0
+            for _ in 1:8
+                STI.node_extent(lvl0) === STI.node_extent(lvl0.node) || (bad += 1)
+                yield()
+                STI.node_extent(lvl1) === STI.node_extent(lvl1.node) || (bad += 1)
+                yield()
+            end
+            bad
+        end
+    end
+    @test all(==(0), fetch.(mixed))
 end
 
 # =========================================================================

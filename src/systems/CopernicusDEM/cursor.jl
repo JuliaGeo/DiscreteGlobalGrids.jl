@@ -305,15 +305,18 @@ A `PartialGrid` qualifies only for:
     tile rectangle by the level-0 rule.
 
 Anything else falls back to [`HierarchicalGridCursor`](@ref).
+
+The cursor comes back wrapped in a [`MemoBlockCursor`](@ref), which memoizes
+derived node extents per task; `BlockCursor(grid)` gives the bare cursor.
 """
-DGG.treeify(::GOCore.Manifold, grid::LevelGrid) = BlockCursor(grid)
+DGG.treeify(::GOCore.Manifold, grid::LevelGrid) = _memoized(BlockCursor(grid))
 DGG.treeify(::GOCore.Manifold, c::BlockCursor) = c
 DGG.treeify(c::BlockCursor) = c
 
 function DGG.treeify(::GOCore.Manifold,
         grid::DGG.PartialGrid{<:CopernicusDEMSystem})
     cursor = _block_cursor(grid, DEFAULT_STRATEGY)
-    return cursor === nothing ? DGG.HierarchicalGridCursor(grid) : cursor
+    return cursor === nothing ? DGG.HierarchicalGridCursor(grid) : _memoized(cursor)
 end
 
 BlockCursor(grid::LevelGrid; strategy::BlockStrategy=DEFAULT_STRATEGY) =
@@ -341,7 +344,7 @@ _block_cursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem}, strategy::BlockStrat
     _window_cursor(grid, strategy, 1:DGG.ncells(grid))
 
 """
-    subcursor(grid, inds) -> BlockCursor or `nothing`
+    subcursor(grid, inds) -> MemoBlockCursor or `nothing`
 
 The node covering grid positions `inds`, or `nothing` when they are not one
 contiguous id run forming one lattice rectangle by [`treeify`](@ref)'s rules.
@@ -351,9 +354,13 @@ whose node cap is an exact O(1) box — instead of the regridder's bounding-cap
 fallback over one polygon per pixel. A tile-sized chunk qualifies whether the
 grid is the complete level grid or a partial one holding only the tiles that
 exist: the run test is over the window, not the whole grid.
+
+The window comes back wrapped in a [`MemoBlockCursor`](@ref): every block build
+re-walks its chunk's interior nodes, whose extents are derived, not stored.
 """
 DGG.subcursor(grid::Union{LevelGrid,DGG.PartialGrid{<:CopernicusDEMSystem}},
-    inds::AbstractUnitRange{<:Integer}) = _window_cursor(grid, DEFAULT_STRATEGY, inds)
+    inds::AbstractUnitRange{<:Integer}) =
+    _memoized(_window_cursor(grid, DEFAULT_STRATEGY, inds))
 
 # `nothing` unless `inds` is one contiguous id run forming one rectangle.
 function _window_cursor(grid, strategy::BlockStrategy, inds::AbstractUnitRange{<:Integer})

@@ -8,7 +8,11 @@ import DiscreteGlobalGrids as DGG
 import GeoInterface as GI
 import GeometryOps as GO
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, sweepcovers
+
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 # The same Switzerland/Zurich fixture the DimensionalData suite uses, so the
 # two files can be read against each other.
@@ -41,9 +45,6 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, 3),
 ]
 
-sysname(sys) = sys isa DGG.AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
-
 # The oracle, computed without the type under test and through the same trait
 # branch it takes, but by a different route.
 function expand(sys, set, l::Int)
@@ -53,14 +54,10 @@ function expand(sys, set, l::Int)
     return sort!(reduce(vcat, [DGG.descendants(sys, c, l) for c in set]))
 end
 
-nwin(cv) = FB.nwindows(FB.windows(cv))
+nwin(cv) = EN.nwindows(EN.windows(cv))
 
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _) in SWEEP)
-    for s in DGG.systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 # ---------------------------------------------------------------------------
@@ -76,8 +73,8 @@ end
     @test !isdefined(@__MODULE__, :DimensionalData)
     @test !isdefined(@__MODULE__, :DD)
 
-    # The type and its verbs live in the fallback substrate, not in the DD layer.
-    @test parentmodule(DGG.CellVector) === DGG.Fallbacks
+    # The type and its verbs live in the engine substrate, not in the DD layer.
+    @test parentmodule(DGG.CellVector) === DGG.Engine
     @test DGG.CellVector <: AbstractVector
     @test !(DGG.CellVector <: DGG.CellLookup)
     for f in (DGG.covering, DGG.covering_positions, DGG.cellset)
@@ -106,7 +103,7 @@ end
 # The laws, once per system
 # ---------------------------------------------------------------------------
 
-@testset "a compressed cell vector: $(sysname(sys))" for (sys, leaf, _) in SWEEP
+@testset "a compressed cell vector: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
     grid = DGG.levelgrid(sys, leaf)
     cv = DGG.CellVector(set)
@@ -175,7 +172,7 @@ end
 
         # A rooted subtree, which is the one shape both backings can hold.
         root = DGG.ancestor(sys, first(ids), leaf - 1)
-        rooted = DGG.CellVector(DGG.PartialGrid(sys, root, leaf))
+        rooted = DGG.CellVector(DGG.subtree(sys, root, leaf))
         @test collect(rooted) == DGG.descendants(sys, root, leaf)
         @test DGG.cellposition(rooted, first(ids)) !== nothing
 
@@ -194,7 +191,7 @@ end
         back = DGG.CellVector(pg)
         @test back == cv
         @test collect(back) == ids
-        @test FB.windows(back) === FB.windows(cv)
+        @test EN.windows(back) === EN.windows(cv)
     end
 
     @testset "a point, and a region" begin
@@ -283,7 +280,7 @@ end
 # Memory: the reason the type exists, restated without a cube
 # ---------------------------------------------------------------------------
 
-@testset "memory is O(#windows): $(sysname(sys))" for (sys, leaf, deeper) in SWEEP
+@testset "memory is O(#windows): $(syslabel(sys))" for (sys, leaf, deeper) in SWEEP
     if !DGG.has_sorted_subtrees(sys)
         @test !DGG.has_sorted_subtrees(sys)
         continue
@@ -329,7 +326,7 @@ end
     @test_throws ArgumentError DGG.level_ranges(set, leaf)
 
     # The decision: the vector exists anyway, and it is exactly the
-    # `descendants` expansion — the pattern `PartialGrid(sys, cell, level)`
+    # `descendants` expansion — the pattern `subtree(sys, cell, level)`
     # already uses.
     cv = DGG.CellVector(set)
     ids = sort!(reduce(vcat, [DGG.descendants(sys, c, leaf) for c in set]))

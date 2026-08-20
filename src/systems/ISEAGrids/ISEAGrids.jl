@@ -1,8 +1,6 @@
 # The three central-place/triangular ISEA grids share the package's Snyder
 # projection.  This module deliberately owns only the lattice, hierarchy and
 # index layers; the projection remains in ../ISEA.
-isdefined(@__MODULE__, :ISEA) || include("../ISEA/ISEA.jl")
-
 module ISEAGrids
 
 import ..DiscreteGlobalGrids as DGG

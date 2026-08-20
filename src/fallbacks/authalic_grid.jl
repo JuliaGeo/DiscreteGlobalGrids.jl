@@ -122,10 +122,7 @@ already, and warping it again would read those latitudes as authalic ones. Use \
 `parent(grid)` to get the unwarped grid back if you meant to re-wrap it on a \
 different ellipsoid."))
 
-_check_wrappable(::PartialGrid) = throw(ArgumentError(
-    "wrap the SYSTEM, not the subset: `PartialGrid(AuthalicSystem(sys), level, ids)`. \
-A subset is a property of the id set and the warp is a property of the system, and \
-only that order keeps the tree cursor's position windows correct."))
+# The subset refusal is `Engine`'s: it needs the subset type, which lives there.
 
 """
     Base.parent(grid::AuthalicGrid) -> AbstractGrid
@@ -240,25 +237,19 @@ Base.parent(sys::AuthalicSystem) = sys.system
 cellindextype(sys::AuthalicSystem) = cellindextype(sys.system)
 cellindextypes(sys::AuthalicSystem) = cellindextypes(sys.system)
 levels(sys::AuthalicSystem) = levels(sys.system)
-max_level(sys::AuthalicSystem) = max_level(sys.system)
+maxlevel(sys::AuthalicSystem) = maxlevel(sys.system)
 rootcells(sys::AuthalicSystem) = rootcells(sys.system)
 children(sys::AuthalicSystem, c::AbstractCellIndex) = children(sys.system, c)
 Base.parent(sys::AuthalicSystem, c::AbstractCellIndex) = Base.parent(sys.system, c)
 has_sorted_subtrees(sys::AuthalicSystem) = has_sorted_subtrees(sys.system)
-max_neighbors(sys::AuthalicSystem, connectivity::Connectivity) =
-    max_neighbors(sys.system, connectivity)
+maxneighbors(sys::AuthalicSystem, connectivity::Connectivity) =
+    maxneighbors(sys.system, connectivity)
 ancestor(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer) =
     ancestor(sys.system, c, l)
 descendants(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer) =
     descendants(sys.system, c, l)
 descendant_range(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer) =
     descendant_range(sys.system, c, l)
-subtree_border(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer;
-    connectivity::Connectivity=Vertex()) =
-    subtree_border(sys.system, c, l; connectivity)
-subtree_interior(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer;
-    connectivity::Connectivity=Vertex()) =
-    subtree_interior(sys.system, c, l; connectivity)
 reindex(::Type{T}, sys::AuthalicSystem, c::AbstractCellIndex) where {T<:AbstractCellIndex} =
     reindex(T, sys.system, c)
 

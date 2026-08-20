@@ -11,8 +11,10 @@ shared by every layer, lazy arrays behind it — and [`dggwrite`](@ref) turns it
 back. Neither introduces a container type: what a producer hands over is a
 `DimStack`, and what a consumer gets is a `DimStack`.
 
-Both methods live in an extension on Zarr.jl. Without `using Zarr` the two
-names are stubs whose error says so.
+Both methods live in an extension on Zarr.jl: until `using Zarr` loads it the
+two names are stubs, and calling one gets an error saying exactly that. What is
+rendered below is the stub's docstring; the extension's methods carry a longer
+one of their own, which `?dggread` prints once Zarr is loaded.
 
 Between the store's attributes and the cube stands one plain-data value, the
 [`StoreDescription`](@ref): grid name, level, encoding, array names, grid
@@ -140,7 +142,7 @@ DiscreteGlobalGrids.gridreference
 An encoding implements three things here: build the axis, declare write
 eligibility, and name itself for the store's vocabulary. It asks the grid for
 everything about the ids themselves, which is the layering rule — a grid that
-answers the four id functions below works under every encoding, and an encoding
+answers the five id functions below works under every encoding, and an encoding
 written against them works on every grid.
 
 Reaching a *store* takes two more, both in the Zarr extension and both still
@@ -159,6 +161,7 @@ DiscreteGlobalGrids.idrank
 DiscreteGlobalGrids.idselect
 DiscreteGlobalGrids.idcount_between
 DiscreteGlobalGrids.idvalid
+DiscreteGlobalGrids.idcell
 ```
 
 ## Errors

@@ -1,11 +1,11 @@
 # Integer topology for axis-aligned diamond cells. Axis offsets are edge
-# neighbors and diagonal offsets are vertex-only neighbors. Rim crossings pair
+# neighbors and diagonal offsets are vertex-only neighbors. Border crossings pair
 # reversed oriented edges; corner fans handle valence-3 vertices and the
 # valence-5 vertices 0 and 11. Results wind counterclockwise from `(+1,0)`; both
 # affine halves and `snyder_inv_xyz` preserve orientation, so chart-CCW is CCW
 # seen from outside the sphere, which is the order the interface asks for.
 
-# Rim edge slots, in boundary-walk order. `S, E, N, W` are the chart directions
+# Border edge slots, in boundary-walk order. `S, E, N, W` are the chart directions
 # `y = 0`, `x = 1`, `y = 1`, `x = 0` — chart directions, not compass ones: a
 # diamond is not aligned with anything on the globe.
 const EDGE_S = 1
@@ -23,7 +23,7 @@ const CORNER_01 = 4
 """
     _edge_pair(d, e) -> (a, b)
 
-The ordered base-vertex pair of rim edge slot `e` of diamond `d`, in the
+The ordered base-vertex pair of border edge slot `e` of diamond `d`, in the
 counterclockwise boundary walk of the chart square.
 """
 function _edge_pair(d::Int, e::Int)
@@ -37,7 +37,7 @@ end
 """
     EDGE_NEIGHBORS
 
-`EDGE_NEIGHBORS[d + 1][e] == (d', e')`: the diamond and rim edge slot on the
+`EDGE_NEIGHBORS[d + 1][e] == (d', e')`: the diamond and border edge slot on the
 other side of slot `e` of diamond `d`.
 
 Derived by matching reversed ordered vertex pairs and asserted at load time to
@@ -49,14 +49,14 @@ const EDGE_NEIGHBORS = let
         out[d+1] = ntuple(4) do e
             a, b = _edge_pair(d, e)
             hits = [(d2, e2) for d2 in 0:9 for e2 in 1:4 if _edge_pair(d2, e2) == (b, a)]
-            @assert length(hits) == 1 "rim edge ($a, $b) of diamond $d has $(length(hits)) partners, not 1"
+            @assert length(hits) == 1 "border edge ($a, $b) of diamond $d has $(length(hits)) partners, not 1"
             hits[1]
         end
     end
     for d in 0:9, e in 1:4
         d2, e2 = out[d+1][e]
-        @assert out[d2+1][e2] == (d, e) "the rim-edge pairing is not involutive at ($d, $e)"
-        @assert (d2, e2) != (d, e) "rim edge slot $e of diamond $d is paired with itself"
+        @assert out[d2+1][e2] == (d, e) "the border-edge pairing is not involutive at ($d, $e)"
+        @assert (d2, e2) != (d, e) "border edge slot $e of diamond $d is paired with itself"
     end
     ntuple(i -> out[i], 10)
 end
@@ -69,7 +69,7 @@ named for what it is.
 """
 _corner_vertex(d::Int, c::Int) = @inbounds DIAMONDS[d+1].verts[c]
 
-# The two rim edges meeting at corner slot `c`, in counterclockwise sweep order:
+# The two border edges meeting at corner slot `c`, in counterclockwise sweep order:
 # the one whose direction PRECEDES the corner's diagonal and the one that
 # FOLLOWS it. Corner `c` sits between edge slots `c-1` and `c` in the boundary
 # walk, and the walk is counterclockwise, so those are exactly the two.
@@ -92,7 +92,7 @@ const CORNER_FANS = let
             cur_d, via = d, _corner_edge_before(c)
             while true
                 nd, ne = EDGE_NEIGHBORS[cur_d+1][via]
-                # The corner of `nd` on the same icosahedron vertex. The rim
+                # The corner of `nd` on the same icosahedron vertex. The border
                 # edge we arrived through has `v` as an endpoint, so `nd` really
                 # does have a corner there, and a diamond's four corners are
                 # four distinct vertices, so it is unique.
@@ -100,7 +100,7 @@ const CORNER_FANS = let
                 @assert nc !== nothing "vertex $v is not a corner of diamond $nd"
                 (nd, nc) == (d, c) && break
                 push!(fan, (nd, nc))
-                # Leave through the OTHER rim edge at this corner.
+                # Leave through the OTHER border edge at this corner.
                 via = ne == _corner_edge_before(nc) ? _corner_edge_after(nc) :
                       _corner_edge_before(nc)
                 cur_d = nd
@@ -108,13 +108,13 @@ const CORNER_FANS = let
             end
             @assert length(fan) in (2, 4) "vertex $v carries $(length(fan) + 1) diamond-corners"
             @assert allunique(fan) "the fan around vertex $v repeats a diamond-corner"
-            # The walk STARTS across the preceding rim edge by construction; that
+            # The walk STARTS across the preceding border edge by construction; that
             # it also ENDS across the following one is the substantive claim, and
             # it is what makes the interior entries exactly the cells no axis
             # offset reaches.
             @assert fan[end] == let nd = first(EDGE_NEIGHBORS[d+1][_corner_edge_after(c)])
                 (nd, findfirst(==(v), DIAMONDS[nd+1].verts))
-            end "the fan around vertex $v does not end across the following rim edge"
+            end "the fan around vertex $v does not end across the following border edge"
             fan
         end
     end
@@ -131,7 +131,7 @@ end
 """
     _edge_cell(e, j, nside) -> (ix, iy)
 
-The rim cell of diamond-local slot `e` at boundary-walk position `j`, using
+The border cell of diamond-local slot `e` at boundary-walk position `j`, using
 `S: j=ix`, `E: j=iy`, `N: j=nside-1-ix`, and `W: j=nside-1-iy`.
 """
 @inline function _edge_cell(e::Int, j::Int, nside::Int)
@@ -211,7 +211,7 @@ function lattice_neighbors(ix::Integer, iy::Integer, diamond::Integer,
         if inx && iny
             out = _pushunique(out, (xx, yy, d))
         elseif inx || iny
-            # One rim crossing: read the extended square's edge index, mirror it
+            # One border crossing: read the extended square's edge index, mirror it
             # into the paired slot.
             e, j = xx >= n ? (EDGE_E, yy) :
                    xx < 0 ? (EDGE_W, n - 1 - yy) :

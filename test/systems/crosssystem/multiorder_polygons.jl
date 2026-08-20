@@ -26,8 +26,12 @@ module MultiOrderPolygonTests
 using Test
 import DiscreteGlobalGrids as DGG
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 import GeoInterface as GI
 import GeometryOps as GO
+
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, iscongruent, sweepcovers
 
 # ---------------------------------------------------------------------------
 # The fixture
@@ -84,40 +88,35 @@ const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 # 37 N, where the geodetic/authalic latitude difference is within 20 km of its
 # maximum.
 
+# (system, leaf level, coarse level). Congruence — whether a cell's children
+# tile it exactly, which two of the laws below branch on — is `iscongruent`.
 const SWEEP = [
-    (DGG.IGeo7System(), 7, 5, false),
-    (DGG.H3System(), 6, 4, false),
-    (DGG.HEALPixSystem(), 10, 7, true),
-    (DGG.A5System(), 10, 7, false),
-    (DGG.S2System(), 10, 7, true),
-    (DGG.ISEA4RSystem(), 10, 7, true),
-    (DGG.ISEA3HSystem(), 9, 7, false),
-    (DGG.ISEA4HSystem(), 7, 5, false),
-    (DGG.ISEA4TSystem(), 7, 5, true),
-    (DGG.RHEALPixSystem(), 6, 4, true),
-    (DGG.AusPIXSystem(), 6, 4, true),
-    (DGG.IVEA4RSystem(), 7, 5, true),
-    (DGG.IVEA9RSystem(), 5, 3, true),
-    (DGG.RTEA4RSystem(), 7, 5, true),
-    (DGG.RTEA9RSystem(), 5, 3, true),
-    (DGG.AuthalicSystem(DGG.IGeo7System()), 7, 5, false),
+    (DGG.IGeo7System(), 7, 5),
+    (DGG.H3System(), 6, 4),
+    (DGG.HEALPixSystem(), 10, 7),
+    (DGG.A5System(), 10, 7),
+    (DGG.S2System(), 10, 7),
+    (DGG.ISEA4RSystem(), 10, 7),
+    (DGG.ISEA3HSystem(), 9, 7),
+    (DGG.ISEA4HSystem(), 7, 5),
+    (DGG.ISEA4TSystem(), 7, 5),
+    (DGG.RHEALPixSystem(), 6, 4),
+    (DGG.AusPIXSystem(), 6, 4),
+    (DGG.IVEA4RSystem(), 7, 5),
+    (DGG.IVEA9RSystem(), 5, 3),
+    (DGG.RTEA4RSystem(), 7, 5),
+    (DGG.RTEA9RSystem(), 5, 3),
+    (DGG.AuthalicSystem(DGG.IGeo7System()), 7, 5),
 ]
-
-sysname(sys) = sys isa DGG.AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
 
 # Every registered system is swept, so a system added to `systems()` without
 # being added here fails this rather than being silently untested.
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _, _) in SWEEP)
-    for s in DGG.systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 
-prepare(geom) = FB._query_target(geom)
+prepare(geom) = EN._query_target(geom)
 inside(t, lon, lat) = GO.relate_predicate(t.prepared, GO.pred_contains(),
     FB.unit_point(lon, lat))
 
@@ -206,7 +205,8 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
 # The laws, per system
 # ---------------------------------------------------------------------------
 
-@testset "coverage of a real outline: $(sysname(sys))" for (sys, leaf, coarse, congruent) in SWEEP
+@testset "coverage of a real outline: $(syslabel(sys))" for (sys, leaf, coarse) in SWEEP
+    congruent = iscongruent(sys)
     target = prepare(MAINLAND)
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=leaf)
 
@@ -235,7 +235,7 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
             intervals = [DGG.descendant_range(sys, c, leaf) for c in cells]
             @test issorted(intervals; by=first)
             @test all(k -> first(intervals[k]) > last(intervals[k-1]), 2:length(intervals))
-            @test FB.curve_keys(set) == first.(intervals)
+            @test EN.curve_keys(set) == first.(intervals)
         else
             # EXCLUDED, with its reason: no descendant ranges, so no curve
             # intervals to order by. The documented fallback is `(level, id)`,
@@ -259,23 +259,23 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
             @test isempty(families)
         end
         for p in families
-            @test !FB._matches(DGG.Within(nothing), target, grid_of(p), p)
+            @test !EN._matches(DGG.Within(nothing), target, grid_of(p), p)
         end
     end
 
     @testset "contained vs crossed" begin
-        @test length(FB.curve_keys(set)) == length(set)
-        contained = [i for i in eachindex(set) if DGG.is_contained(set, i)]
+        @test length(EN.curve_keys(set)) == length(set)
+        contained = [i for i in eachindex(set) if DGG.iscontained(set, i)]
         @test !isempty(contained)
-        @test all(i -> DGG.is_contained(set, i) == (DGG.level(set[i]) < leaf), eachindex(set))
+        @test all(i -> DGG.iscontained(set, i) == (DGG.level(set[i]) < leaf), eachindex(set))
         # And where the flag is exact, it agrees with the predicate it stands for.
         for i in Iterators.take(contained, 12)
             c = set[i]
-            @test FB._matches(DGG.Within(nothing), target, DGG.levelgrid(sys, DGG.level(c)), c)
+            @test EN._matches(DGG.Within(nothing), target, DGG.levelgrid(sys, DGG.level(c)), c)
         end
         best = DGG.coarsest_contained(set)
         @test best !== nothing
-        @test FB._matches(DGG.Within(nothing), target,
+        @test EN._matches(DGG.Within(nothing), target,
             DGG.levelgrid(sys, DGG.level(best)), best)
         @test DGG.level(best) == minimum(DGG.level(set[i]) for i in contained)
     end
@@ -348,8 +348,10 @@ function sliver_fraction(sys, set, geom, n::Int)
     return missed, total
 end
 
-@testset "the drawn cells tile the target only where the refinement does: $(sysname(sys))" for
-    (sys, leaf, _, congruent) in SWEEP
+@testset "the drawn cells tile the target only where the refinement does: $(syslabel(sys))" for
+    (sys, leaf, _) in SWEEP
+
+    congruent = iscongruent(sys)
 
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=leaf)
     missed, total = sliver_fraction(sys, set, MAINLAND, 90)
@@ -365,7 +367,7 @@ end
 end
 
 
-@testset "multipolygon: the offshore islands: $(sysname(sys))" for (sys, leaf, _, _) in SWEEP
+@testset "multipolygon: the offshore islands: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(CALIFORNIA); level=leaf)
     @test isempty(emitted_ancestors(sys, set))
     # Every one of the eight parts has to be covered, not just the big one. The
@@ -382,7 +384,7 @@ end
     @test length(set) > length(DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=leaf))
 end
 
-@testset "hole: $(sysname(sys))" for (sys, leaf, _, _) in SWEEP
+@testset "hole: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     t = prepare(DONUT)
     set = DGG.query(sys, DGG.MultiOrderCoverage(DONUT); level=leaf)
     @test isempty(emitted_ancestors(sys, set))
@@ -396,11 +398,11 @@ end
     # hole's edge are emitted, and must be: they meet the target.
     for c in set
         g = DGG.levelgrid(sys, DGG.level(c))
-        @test !FB._matches(DGG.Within(nothing), prepare(HOLE), g, c)
+        @test !EN._matches(DGG.Within(nothing), prepare(HOLE), g, c)
     end
 end
 
-@testset "antimeridian: $(sysname(sys))" for (sys, leaf, _, _) in SWEEP
+@testset "antimeridian: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     # Nothing in the engine works in longitude — a ring becomes unit-sphere
     # points at the boundary of the call and its edges are great-circle arcs —
     # so a seam-crossing target is not a special case. This asserts that it
@@ -420,7 +422,7 @@ end
     @test isempty(uncovered(sys, set, leaf, samples))
 end
 
-@testset "a target larger than a hemisphere: $(sysname(sys))" for (sys, _, coarse, _) in SWEEP
+@testset "a target larger than a hemisphere: $(syslabel(sys))" for (sys, _, coarse) in SWEEP
     # 66% of the sphere. Its bounding cap is the whole sphere — the antipode of
     # any cap enclosing the boundary is interior to the target — so the cheap
     # cap prune prunes nothing, and the traversal stays output-sensitive only
@@ -459,7 +461,7 @@ end
     # coverage exactly. This runs the traversal both ways on the mainland and
     # compares, on the two systems whose refinements are furthest apart.
     function unpruned(sys, geom, maxlevel)
-        target = FB._query_target(geom)
+        target = EN._query_target(geom)
         cells = DGG.cellindextype(sys)[]
         top = first(DGG.levels(sys))
         grids = [DGG.levelgrid(sys, l) for l in top:maxlevel]
@@ -467,12 +469,12 @@ end
             FB.intersects_cap(target.cap, DGG.node_extent(sys, c)) || return nothing
             lc = DGG.level(c)
             grid = grids[lc-top+1]
-            meets = FB._matches(DGG.Intersects(nothing), target, grid, c)
+            meets = EN._matches(DGG.Intersects(nothing), target, grid, c)
             if lc >= maxlevel
                 meets && push!(cells, c)
                 return nothing
             end
-            if meets && FB._matches(DGG.Within(nothing), target, grid, c)
+            if meets && EN._matches(DGG.Within(nothing), target, grid, c)
                 push!(cells, c)
                 return nothing
             end
@@ -494,15 +496,15 @@ end
 
     # And it really does prune: the node extent of a cell on the far side of the
     # planet is provably outside California.
-    target = FB._query_target(MAINLAND)
+    target = EN._query_target(MAINLAND)
     far = DGG.cellat(DGG.levelgrid(DGG.S2System(), 3), 60.0, 20.0)
-    @test FB._subtree_outside(target, DGG.node_extent(DGG.S2System(), far))
+    @test EN._subtree_outside(target, DGG.node_extent(DGG.S2System(), far))
     near = DGG.cellat(DGG.levelgrid(DGG.S2System(), 6), -120.0, 37.0)
-    @test !FB._subtree_outside(target, DGG.node_extent(DGG.S2System(), near))
+    @test !EN._subtree_outside(target, DGG.node_extent(DGG.S2System(), near))
     # A cap target carries no boundary arcs, so no proof is available and the
     # traversal keeps its cap prune alone.
     cap = GO.UnitSpherical.SphericalCap(FB.unit_point(0.0, 0.0), 0.1)
-    @test !FB._subtree_outside(FB._query_target(cap),
+    @test !EN._subtree_outside(EN._query_target(cap),
         DGG.node_extent(DGG.S2System(), far))
 end
 

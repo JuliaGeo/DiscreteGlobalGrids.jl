@@ -8,14 +8,17 @@ import DimensionalData as DD
 import Extents
 
 using DiscreteGlobalGrids: levelgrid, ncells, cellindex, cellposition,
-    neighbors, level, has_sorted_subtrees, cellindextype, PartialGrid,
+    neighbors, ring, neighborcount, level, rawid, has_sorted_subtrees,
+    cellindextype, cell_centroid, cell_boundary, cell_area, cell_extent,
+    cell_polygon, PartialGrid, subtree,
     CellVector, CellLookup, MultiOrderCoverage, AuthalicSystem, Vertex, Edge,
     query, system, SubsetPositionedCell, cellid, Cells
 
-const FB = DGG.Fallbacks
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, sweepcovers
 
-sysname(sys) = sys isa AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
+const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 # ---------------------------------------------------------------------------
 # Systems and subset shapes covered by the sweep.
@@ -47,27 +50,24 @@ const SWEEP = [
 ]
 
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _, _) in SWEEP)
-    for s in DGG.systems()
-        @test typeof(s) in swept
-    end
+    sweepcovers(SWEEP)
 end
 
 const TILE = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
 
 rooted(sys, base, depth) =
-    CellVector(PartialGrid(sys, cellindex(levelgrid(sys, base), 3), base + depth))
+    CellVector(subtree(sys, cellindex(levelgrid(sys, base), 3), base + depth))
 
-nwindows(cv) = FB.nwindows(FB.windows(cv))
+nwindows(cv) = EN.nwindows(EN.windows(cv))
 
-@testset "$(sysname(sys))" for (sys, base, depth, covlvl) in SWEEP
-    subtree = rooted(sys, base, depth)
+@testset "$(syslabel(sys))" for (sys, base, depth, covlvl) in SWEEP
+    sub = rooted(sys, base, depth)
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=covlvl))
     # The coverage must exercise window transitions.
     @test nwindows(coverage) > 1
 
     @testset "$label" for (label, cv) in
-                          ("one rooted subtree" => subtree,
+                          ("one rooted subtree" => sub,
                            "multi-window coverage" => coverage)
         for conn in (Vertex(), Edge())
             # Cells and ring order match the per-cell form.
@@ -94,9 +94,9 @@ nwindows(cv) = FB.nwindows(FB.windows(cv))
                       all(same(cx, cy) && length(nx) == length(ny) &&
                           all(splat(same), zip(nx, ny))
                           for ((cx, nx), (cy, ny)) in zip(x, y))
-        pg = PartialGrid(sys, cellindex(levelgrid(sys, base), 3), base + depth)
-        @test agree(collect(neighbors(pg)), collect(neighbors(subtree)))
-        @test agree(collect(neighbors(CellLookup(subtree))), collect(neighbors(subtree)))
+        pg = subtree(sys, cellindex(levelgrid(sys, base), 3), base + depth)
+        @test agree(collect(neighbors(pg)), collect(neighbors(sub)))
+        @test agree(collect(neighbors(CellLookup(sub))), collect(neighbors(sub)))
     end
 end
 
@@ -119,9 +119,25 @@ end
     @test h == c && c == h && h == first(neighbors(cv))[1]
     @test hash(h) == hash(c)
     @test convert(typeof(c), h) === c
-    @test sprint(show, h) == sprint(show, c)
     @test level(h) == level(c)
     @test isbitstype(typeof(h)) && sizeof(typeof(h)) == 16
+
+    # `show` names the wrapper and the position: printing as the bare cell is
+    # what leaves a caller with no way to guess what it is holding.
+    s = sprint(show, h)
+    @test occursin("SubsetPositionedCell", s) && occursin(sprint(show, c), s)
+    @test occursin("position $(cellposition(h))", s)
+    @test sprint(show, MIME"text/plain"(), h) == s
+
+    # Read-only verbs answer for the cell, so a handle needs no unwrapping.
+    grid = levelgrid(sys, level(c))
+    @test all((cell_centroid, cell_boundary, cell_area, cell_extent,
+        cell_polygon, cellposition, neighbors, neighborcount)) do f
+        f(grid, h) == f(grid, c)
+    end
+    @test cellposition(cv, h) == cellposition(cv, c)
+    @test ring(grid, h, 2) == ring(grid, c, 2)
+    @test rawid(h) == rawid(c)
 
     A = DD.DimArray(collect(1.0:length(cv)), (Cells(CellLookup(cv)),))
     # Handles read and write their stored position.
@@ -148,7 +164,7 @@ end
     end; n)
     it = neighbors(coverage)
     sweeploop(it)
-    @test @allocated(sweeploop(it)) == 0
+    @test @allocated(sweeploop(it)) == 0 skip = VERSION < v"1.12"
 end
 
 end # module NeighborhoodTests

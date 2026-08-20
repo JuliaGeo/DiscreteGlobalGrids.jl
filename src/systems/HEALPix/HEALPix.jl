@@ -22,10 +22,6 @@ module HEALPix
 import ..DiscreteGlobalGrids as DGG
 
 import GeometryOps as GO
-const US = GO.UnitSpherical
-# Preserve the UnionAll so the two-argument `(point, radius)` constructor is
-# selected.
-const SphericalCap = US.SphericalCap
 
 import SmallCollections
 using SmallCollections: SmallVector

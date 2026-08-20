@@ -38,7 +38,7 @@ function main()
             groot = DGG.levelgrid(sys, rootlevel)
             for depth in 0:3
                 target = rootlevel + depth
-                (target > DGG.max_level(sys) || DGG.ncells(sys, target) > MAXCELLS) && continue
+                (target > DGG.maxlevel(sys) || DGG.ncells(sys, target) > MAXCELLS) && continue
                 for conn in (Vertex(), Edge()), p in 1:DGG.ncells(groot)
                     root = DGG.cellindex(groot, p)
                     n += 1

@@ -15,8 +15,8 @@ DGG.cellindextype(::ISEA4TSystem) = DGG.LevelIndex
 # numerically invalid geometry would violate the grid interface.
 DGG.levels(::ISEA4TSystem) = 0:12
 DGG.has_sorted_subtrees(::ISEA4TSystem) = true
-DGG.max_neighbors(::ISEA4TSystem, ::DGG.Edge) = 3
-DGG.max_neighbors(::ISEA4TSystem, ::DGG.Vertex) = 12
+DGG.maxneighbors(::ISEA4TSystem, ::DGG.Edge) = 3
+DGG.maxneighbors(::ISEA4TSystem, ::DGG.Vertex) = 12
 DGG.ncells(::ISEA4TSystem, l::Integer) = Int(20 * POW4[Int(l) + 1])
 DGG.rootcells(::ISEA4TSystem) = [DGG.LevelIndex(0, f) for f in 0:19]
 DGG.cellindex(::ISEA4TSystem, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
@@ -32,7 +32,7 @@ function Base.parent(::ISEA4TSystem, c::DGG.LevelIndex)
 end
 
 function DGG.children(sys::ISEA4TSystem, c::DGG.LevelIndex)
-    r = DGG.level(c); r < DGG.max_level(sys) || throw(ArgumentError("cell is at max level"))
+    r = DGG.level(c); r < DGG.maxlevel(sys) || throw(ArgumentError("cell is at max level"))
     return [DGG.LevelIndex(r + 1, 4c.index + d) for d in 0:3]
 end
 

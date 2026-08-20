@@ -17,8 +17,8 @@ DGG.cellindextype(::RhombicSystem)=DGG.LevelIndex
 DGG.cellindextypes(::RhombicSystem)=(DGG.LevelIndex,)
 DGG.levels(sys::RhombicSystem)=0:_maxlevel(sys)
 DGG.has_sorted_subtrees(::RhombicSystem)=false
-DGG.max_neighbors(::RhombicSystem,::DGG.Vertex)=9
-DGG.max_neighbors(::RhombicSystem,::DGG.Edge)=4
+DGG.maxneighbors(::RhombicSystem,::DGG.Vertex)=9
+DGG.maxneighbors(::RhombicSystem,::DGG.Edge)=4
 DGG.rootcells(::RhombicSystem)=[DGG.LevelIndex(0,r) for r in 0:9]
 
 DGG.ncells(sys::RhombicSystem,l::Integer)=Int(_ncells(sys,l))
@@ -42,7 +42,7 @@ function Base.parent(sys::RhombicSystem,c::DGG.LevelIndex)
 end
 
 function DGG.children(sys::RhombicSystem,c::DGG.LevelIndex)
-    l=DGG.level(c); l<DGG.max_level(sys) || throw(ArgumentError("$c is at max_level")); checked(sys,c)
+    l=DGG.level(c); l<DGG.maxlevel(sys) || throw(ArgumentError("$c is at maxlevel")); checked(sys,c)
     n=_nside(sys,l); ix,iy,r=from_rowmajor(c.index,n); s=_scale(sys); cn=n*s
     return [DGG.LevelIndex(l+1,rowmajor(s*ix+dx,s*iy+dy,r,cn)) for dy in 0:s-1 for dx in 0:s-1]
 end

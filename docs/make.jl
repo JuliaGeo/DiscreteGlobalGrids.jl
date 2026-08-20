@@ -6,6 +6,7 @@ using GeoMakie
 using Makie
 using WGLMakie
 using Literate
+using Zarr
 
 WGLMakie.activate!()
 
@@ -22,11 +23,17 @@ for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
 end
 
 makedocs(;
-    # Register `Fallbacks` so Documenter can render its boundary API docstrings,
-    # and `Encodings`/`ChunkedLookups` for the store-IO ones: the main module
-    # re-binds those names, but the docstrings belong to the submodules.
+    # Register `Fallbacks` and `Engine` so Documenter can render their boundary
+    # API docstrings, and `Encodings`/`ChunkedLookups` for the store-IO ones: the
+    # main module re-binds those names, but the docstrings belong to the
+    # submodules.
     modules = [DiscreteGlobalGrids, DiscreteGlobalGrids.Fallbacks,
-               DiscreteGlobalGrids.Encodings, DiscreteGlobalGrids.ChunkedLookups],
+               DiscreteGlobalGrids.Engine,
+               DiscreteGlobalGrids.Encodings, DiscreteGlobalGrids.ChunkedLookups,
+               # Documenter filters docstrings by module, so the Zarr
+               # extension's dggread/dggwrite methods render only if it is
+               # listed here.
+               Base.get_extension(DiscreteGlobalGrids, :DiscreteGlobalGridsZarrExt)],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",
     repo = Documenter.Remotes.GitHub("JuliaGeo", "DiscreteGlobalGrids.jl"),
@@ -48,7 +55,7 @@ makedocs(;
             "A round trip through a DGGS store" => "tutorials/store_io.md",
         ],
         "API" => [
-            "Subtree and subset boundaries" => "api/boundaries.md",
+            "Region boundaries" => "api/boundaries.md",
             "Reading and writing DGGS stores" => "api/store-io.md",
         ],
     ],

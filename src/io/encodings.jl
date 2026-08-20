@@ -196,10 +196,11 @@ end
                "the other signedness, which is read as the same bits."))
 
 @noinline function _no_arithmetic(grid)
-    throw(DGGSFormatError(check=:no_id_arithmetic, observed=typeof(grid),
-        detail="$(typeof(grid)) has no id arithmetic: reading a DGGS store " *
-               "needs `idrank`, `idselect` and `idcount_between` on its " *
-               "complete level grid."))
+    name = string(nameof(typeof(grid)))
+    throw(DGGSFormatError(check=:no_id_arithmetic, observed=name,
+        detail="$name has no id arithmetic: reading a DGGS store needs " *
+               "`idrank`, `idselect` and `idcount_between` on its complete " *
+               "level grid."))
 end
 
 idrank(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)

@@ -3,8 +3,6 @@
 import GlobalRegridding as GR
 import DimensionalData as DD
 
-const _Cap = GO.UnitSpherical.SphericalCap{Float64}
-
 # Target cell count for automatic chunking. This affects memory use, not accuracy.
 const DEFAULT_CHUNK_CELLS = 4096
 
@@ -19,13 +17,13 @@ Chunks are non-empty ancestor subtrees at `chunklevel`. By default, the level
 is chosen to keep roughly `chunkcells` cells per chunk. Grids without sorted
 subtrees use one chunk. Construction computes only one covering cap per chunk.
 """
-struct DGGSpace{G<:AbstractGrid,ID} <: GR.RegridSpace
+struct DGGSpace{G<:AbstractGrid,ID,C} <: GR.RegridSpace
     grid::G
     chunklevel::Int              # `< 0` means the single-chunk fallback
     chunkids::Vector{ID}         # empty in the single-chunk fallback
     ranges::Vector{UnitRange{Int}}
     starts::Vector{Int}          # `first.(ranges)`, for locating a chunk by its cells
-    caps::Vector{_Cap}
+    caps::Vector{C}
 end
 
 function DGGSpace(grid::AbstractGrid; chunklevel::Union{Nothing,Integer}=nothing,
@@ -43,7 +41,7 @@ function DGGSpace(grid::AbstractGrid; chunklevel::Union{Nothing,Integer}=nothing
     windows = _chunkwindows(grid, sys, lvl, a)
     windows === nothing && return _wholechunk(grid)
     ids, ranges = windows
-    return DGGSpace{typeof(grid),eltype(ids)}(grid, a, ids, ranges,
+    return DGGSpace(grid, a, ids, ranges,
         [first(r) for r in ranges], [node_extent(sys, id) for id in ids])
 end
 
@@ -53,7 +51,7 @@ function _wholechunk(grid::AbstractGrid)
     sys = system(grid)
     ID = sys === nothing ? Any : cellindextype(sys)
     n = ncells(grid)
-    return DGGSpace{typeof(grid),ID}(grid, -1, ID[], [1:n], [1],
+    return DGGSpace(grid, -1, ID[], [1:n], [1],
         [Fallbacks.full_sphere_cap()])
 end
 
@@ -150,11 +148,12 @@ GR.chunkranges(space::DGGSpace, chunk::Integer, ::NTuple{1,Int}) =
     GlobalRegridding.subtree(space::DGGSpace, inds)
 
 Return the cell tree restricted to `inds`, preserving global cell positions.
-Exact chunk ranges reuse the grid hierarchy in `O(1)`; other ranges use a
+The whole space gets a cursor with decoded ids and precomputed leaf caps;
+exact chunk ranges reuse the grid hierarchy in `O(1)`; other ranges use a
 bounding-cap tree.
 """
 function GR.subtree(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
-    GR._iswholespace(space, inds) && return GR.celltree(space)
+    GR._iswholespace(space, inds) && return _cachedcelltree(space)
     cursor = _chunkcursor(space, inds)
     cursor === nothing || return cursor
     return GR.CellCapTree(space, inds)
@@ -179,9 +178,9 @@ end
 A one-node spatial tree whose leaves are chunk numbers. Each stored ancestor
 extent covers all cells in its chunk.
 """
-struct DGGChunkTree{S<:DGGSpace}
+struct DGGChunkTree{S<:DGGSpace,E}
     space::S
-    extent::_Cap
+    extent::E
 end
 
 DGGChunkTree(space::DGGSpace) = DGGChunkTree(space,
@@ -230,48 +229,15 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
         "chosen. As a destination the level is matched to the source's cell " *
         "areas, but as a source you must name it with `levelgrid(sys, l)`."))
 
+# Resolving `from`
+
+# A `Cells` axis already names the cells a regrid would otherwise look for a
+# raster lattice in, so a source given no `from` can point at the grid itself.
+GR.dimsource(lk::CellLookup) = cellset(lk)
+
 # A bare system as the destination takes the level closest to the source's cells.
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
-    src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, arealevel(sys, src_space)))
-
-"""
-    arealevel(sys::AbstractHierarchicalGridSystem, space; samples = 256) -> Int
-
-Return the level whose mean cell area is closest to the sampled median cell
-area of `space`.
-"""
-function arealevel(sys::AbstractHierarchicalGridSystem, space::GR.RegridSpace;
-        samples::Integer=256)
-    target = _mediancellarea(space, Int(samples))
-    best, bestscore = first(levels(sys)), Inf
-    for l in levels(sys)
-        area = 4 * pi / _levelcells(sys, l)
-        score = abs(log(area) - log(target))
-        score < bestscore && ((best, bestscore) = (l, score))
-        # Areas decrease with depth; the first value below the target brackets it.
-        area <= target && break
-    end
-    return best
-end
-
-# Sample with an irrational stride to avoid aliasing regular raster columns.
-function _mediancellarea(space::GR.RegridSpace, samples::Int)
-    n = Int(ncells(space))
-    n > 0 || throw(ArgumentError("cannot match cell areas against an empty space"))
-    k = clamp(samples, 1, n)
-    areas = Vector{Float64}(undef, k)
-    if k == n
-        for i in 1:n
-            areas[i] = GR.cellarea(space, i)
-        end
-    else
-        for j in 1:k
-            areas[j] = GR.cellarea(space, mod1(round(Int, j * n * 0.6180339887498949), n))
-        end
-    end
-    sort!(areas)
-    return isodd(k) ? areas[(k + 1) ÷ 2] : (areas[k ÷ 2] + areas[k ÷ 2 + 1]) / 2
-end
+    src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, levelfor(sys, src_space)))
 
 # API integration
 

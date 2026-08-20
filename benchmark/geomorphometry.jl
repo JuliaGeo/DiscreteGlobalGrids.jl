@@ -18,24 +18,25 @@
 #   one rooted subtree: 343 cells, 1 window(s)
 #     topographic_position_index    0.0001 s   (0.0 s gc, 0.0 MB)
 #     flowaccumulation(D8)          0.0004 s   (0.0 s gc, 0.0 MB)
-#     halo_table                    0.0001 s   (0.0 s gc, 0.1 MB)
+#     adjacency                     0.0001 s   (0.0 s gc, 0.1 MB)
 #   multi-order coverage: 2313802 cells, 3715 window(s)
 #     topographic_position_index    1.3839 s   (0.0 s gc, 15.0 MB)
 #     flowaccumulation(D8)          4.4336 s   (0.01 s gc, 112.5 MB)
-#     halo_table                    0.9216 s   (0.11 s gc, 405.8 MB)
+#     adjacency                     0.9216 s   (0.11 s gc, 405.8 MB)
 #
 # Output with `clipped-neighbors` @ 9a4e053, Julia 1.12.6, 8 threads,
-# M-series macOS, 2026-08-17. TPI uses `mapneighbors`; D8 uses a `HaloTable`.
-# Both table builds use contiguous chunks and match their sequential arrays:
+# M-series macOS, 2026-08-17. TPI uses `mapneighbors`; D8 uses an
+# `AdjacencyTable`. Both table builds use contiguous chunks and match their
+# sequential arrays:
 #
 #   one rooted subtree: 343 cells, 1 window(s)
 #     topographic_position_index    0.0001 s   (0.0 s gc, 0.0 MB)
 #     flowaccumulation(D8)          0.0002 s   (0.0 s gc, 0.1 MB)
-#     halo_table                    0.0001 s   (0.0 s gc, 0.1 MB)
+#     adjacency                     0.0001 s   (0.0 s gc, 0.1 MB)
 #   multi-order coverage: 2313802 cells, 3715 window(s)
 #     topographic_position_index    0.0653 s   (0.0 s gc, 8.8 MB)
 #     flowaccumulation(D8)          1.1874 s   (0.041 s gc, 307.2 MB)
-#     halo_table                    0.1894 s   (0.104 s gc, 264.7 MB)
+#     adjacency                     0.1894 s   (0.104 s gc, 264.7 MB)
 
 import DiscreteGlobalGrids as DGG
 import Geomorphometry as GM
@@ -65,7 +66,7 @@ function make_dem(cells)
     return Raster(elevation, (DGG.Cells(DGG.CellLookup(cells)),); name=:height)
 end
 
-nwindows(cells) = DGG.Fallbacks.nwindows(DGG.Fallbacks.windows(cells))
+nwindows(cells) = DGG.Engine.nwindows(DGG.Engine.windows(cells))
 
 function bench(label, cells)
     dem = make_dem(cells)
@@ -73,7 +74,7 @@ function bench(label, cells)
     for (name, f) in (
         ("topographic_position_index", () -> GM.topographic_position_index(dem)),
         ("flowaccumulation(D8)", () -> GM.flowaccumulation(dem; method=GM.D8())),
-        ("halo_table", () -> DGG.halo_table(cells)),
+        ("adjacency", () -> DGG.adjacency(cells)),
     )
         f()                                       # Warm up this shape and type.
         t = @timed f()
@@ -86,6 +87,6 @@ function bench(label, cells)
 end
 
 bench("one rooted subtree",
-    DGG.CellVector(DGG.PartialGrid(sys, root, DGG.level(root) + 3)))
+    DGG.CellVector(DGG.subtree(sys, root, DGG.level(root) + 3)))
 bench("multi-order coverage",
     DGG.CellVector(DGG.query(sys, DGG.MultiOrderCoverage(tile); level=12)))

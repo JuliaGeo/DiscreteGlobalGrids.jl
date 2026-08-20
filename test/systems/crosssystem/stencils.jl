@@ -1,4 +1,5 @@
-# Cross-system laws for subset adjacency, halo tables, and stencil tables.
+# Cross-system laws for subset adjacency: clipped rings, and the cached
+# `adjacency` table in all three of its row shapes.
 # Brute-force oracles derive rows from native one-rings and explicit membership,
 # independently of the table implementations.
 
@@ -10,19 +11,23 @@ import GeoInterface as GI
 import GeometryOps as GO
 
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 
 using DiscreteGlobalGrids: systems, levelgrid, ncells, cellindex, cellposition,
-    neighbors, ring, halo_table, level, levels, max_level, descendants,
+    neighbors, ring, level, levels, maxlevel, descendants,
     descendant_range, has_sorted_subtrees, PartialGrid, CellVector, CellLookup,
-    MultiOrderCoverage, member_neighbors, AuthalicSystem, Vertex, Edge,
+    MultiOrderCoverage, member_neighbors, Vertex, Edge,
     Connectivity, cellindextype, query, system,
-    halo, stencil_table, StencilTable
+    subtree, halo, adjacency, AdjacencyTable, halopositions, halocells
+
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, iscongruent, sweepcovers
 
 # ---------------------------------------------------------------------------
 # Systems, and the depths each is swept at
 #
 # A root two levels above the leaf gives a subtree big enough to have an
-# interior and a rim, and small enough that the brute-force oracles below can
+# interior and a border, and small enough that the brute-force oracles below can
 # expand everything. The `AuthalicSystem` wrap is over IGEO7, as in the
 # neighbouring files.
 # ---------------------------------------------------------------------------
@@ -46,15 +51,8 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 1, 3),
 ]
 
-sysname(sys) = sys isa AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
-
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _) in SWEEP)
-    for s in systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 # ---------------------------------------------------------------------------
@@ -63,9 +61,9 @@ end
 
 held(sub, c) = cellposition(sub, c) !== nothing
 
-# A rooted subtree, the shape `PartialGrid(sys, cell, level)` builds.
+# A rooted subtree, the shape `subtree(sys, cell, level)` builds.
 rooted(sys, base, leaf) =
-    PartialGrid(sys, cellindex(levelgrid(sys, base), 3), leaf)
+    subtree(sys, cellindex(levelgrid(sys, base), 3), leaf)
 
 # A scattered set with no root at all: every fifth cell of the whole level.
 # Most neighbours are absent, which is the case the clip has to get right.
@@ -115,7 +113,7 @@ end
 # CLIPPING, and the faces that must agree with it
 # ---------------------------------------------------------------------------
 
-@testset "$(sysname(sys))" for (sys, base, leaf) in SWEEP
+@testset "$(syslabel(sys))" for (sys, base, leaf) in SWEEP
     complete = levelgrid(sys, leaf)
 
     @testset "$label: ring is the complete level's, clipped" for (label, sub) in
@@ -144,12 +142,15 @@ end
                                                             shapes(sys, base, leaf)
         for p in 1:max(1, ncells(sub) ÷ 6):ncells(sub), conn in (Vertex(), Edge()), k in 0:2
             c = cellindex(sub, p)
+            # Element for element, not as sets: the position form IS the id
+            # form read through `cellposition`, and it carries the same
+            # counter-clockwise order.
             @test neighbors(sub, p, k; connectivity = conn) ==
-                  sort([cellposition(sub, x)
-                        for x in neighbors(sub, c, k; connectivity = conn)])
+                  [cellposition(sub, x)
+                   for x in neighbors(sub, c, k; connectivity = conn)]
             @test ring(sub, p, k; connectivity = conn) ==
-                  sort([cellposition(sub, x)
-                        for x in ring(sub, c, k; connectivity = conn)])
+                  [cellposition(sub, x)
+                   for x in ring(sub, c, k; connectivity = conn)]
         end
     end
 
@@ -172,41 +173,43 @@ end
         end
     end
 
-    @testset "$label: halo table is the per-cell calls" for (label, sub) in
-                                                            shapes(sys, base, leaf)
-        for conn in (Vertex(), Edge()), k in (1, 2)
-            table = halo_table(sub, k; connectivity = conn)
+    @testset "$label: the clipped table is the per-cell calls" for (label, sub) in
+                                                                   shapes(sys, base, leaf)
+        for conn in (Vertex(), Edge())
+            table = adjacency(sub; connectivity = conn)
             @test length(table) == ncells(sub)
-            @test all(p -> table[p] == neighbors(sub, p, k; connectivity = conn),
+            @test all(p -> table[p] == neighbors(sub, p, 1; connectivity = conn),
                 1:ncells(sub))
         end
         cv = CellVector(sub)
-        @test halo_table(cv) == halo_table(sub)
-        @test halo_table(CellLookup(cv)) == halo_table(sub)
+        @test adjacency(cv) == adjacency(sub)
+        @test adjacency(CellLookup(cv)) == adjacency(sub)
+        # The rows are ROTATIONAL, and that is only visible as an absence of
+        # sorting: a `sort!` put back anywhere on this path would pass every
+        # other assertion in this file. Some row of a real subset is out of
+        # ascending order on every system.
+        @test any(!issorted, adjacency(sub))
+        @test any(!issorted, adjacency(cv))
+        # Threading is a scheduling choice, never an answer.
+        @test adjacency(sub; threaded = false) == adjacency(sub)
     end
 
     @testset "the rooted fast path agrees with the generic route" begin
         sub = rooted(sys, base, leaf)
         for conn in (Vertex(), Edge())
-            @test halo_table(sub, 1; connectivity = conn) ==
+            @test adjacency(sub; connectivity = conn) ==
                   [neighbors(sub, p, 1; connectivity = conn) for p in 1:ncells(sub)]
         end
-        @test halo_table(sub, 2) == [neighbors(sub, p, 2) for p in 1:ncells(sub)]
-        @test (FB._whole_subtree_range(sub) !== nothing) == has_sorted_subtrees(sys)
-        @test FB._whole_subtree_range(scattered(sys, leaf)) === nothing
+        @test (EN._whole_subtree_range(sub) !== nothing) == has_sorted_subtrees(sys)
+        @test EN._whole_subtree_range(scattered(sys, leaf)) === nothing
         # Rooted but not WHOLE: the root is there, one descendant is not, and
         # "interior" stops meaning "every neighbour is present". The generic
         # route is the only correct one, and the gate has to say so.
         root = cellindex(levelgrid(sys, base), 3)
         ids = descendants(sys, root, leaf)
         part = PartialGrid(sys, leaf, ids[1:(end-1)]; root)
-        @test FB._whole_subtree_range(part) === nothing
-        @test halo_table(part) == [neighbors(part, p, 1) for p in 1:ncells(part)]
-        # `k == 0` is the empty neighbourhood, one row per cell — the table's
-        # shape is the grid's, never the answer's.
-        table0 = halo_table(sub, 0)
-        @test length(table0) == ncells(sub)
-        @test all(isempty, table0)
+        @test EN._whole_subtree_range(part) === nothing
+        @test adjacency(part) == [neighbors(part, p, 1) for p in 1:ncells(part)]
     end
 
     @testset "a cell outside the subset has no neighbourhood" begin
@@ -243,7 +246,7 @@ end
     for (sys, base, leaf) in SWEEP
         mismatched = 0
         offdegree = 0
-        bound = DGG.max_neighbors(sys, Vertex())
+        bound = DGG.maxneighbors(sys, Vertex())
         for l in base:leaf
             grid = levelgrid(sys, l)
             for i in 1:ncells(grid)
@@ -263,11 +266,11 @@ end
     sys, base, leaf = SWEEP[1]
     sub = rooted(sys, base, leaf)
     cv = CellVector(sub)
-    onrim = first(c for c in (cellindex(sub, i) for i in 1:ncells(sub))
+    onborder = first(c for c in (cellindex(sub, i) for i in 1:ncells(sub))
                   if length(neighbors(sub, c)) < DGG.neighborcount(levelgrid(sys, leaf), c))
-    @test DGG.neighborcount(sub, onrim) == length(neighbors(sub, onrim))
-    @test DGG.neighborcount(cv, onrim) == length(neighbors(cv, onrim))
-    @test DGG.neighborcount(CellLookup(cv), onrim) == length(neighbors(cv, onrim))
+    @test DGG.neighborcount(sub, onborder) == length(neighbors(sub, onborder))
+    @test DGG.neighborcount(cv, onborder) == length(neighbors(cv, onborder))
+    @test DGG.neighborcount(CellLookup(cv), onborder) == length(neighbors(cv, onborder))
     outside = cellindex(levelgrid(sys, leaf), ncells(levelgrid(sys, leaf)))
     @test_throws ArgumentError DGG.neighborcount(cv, outside)
 end
@@ -327,7 +330,7 @@ function buffer_rows(sys, l, chunk_ids, halo_ids, conn)
             for d in chunk_ids]
 end
 
-@testset "stencil_table rows are complete and address [chunk; halo]" begin
+@testset "buffered rows are complete and address [region; halo]" begin
     uncovered = Any[]      # the halo did not cover some neighbour
     disagreed = Any[]      # the table is not the oracle's rows
     layout = Any[]         # row i is not `descendant_range` offset i
@@ -348,24 +351,23 @@ end
             step = rootlevel == top ? 1 : max(1, n ÷ 24)
             for i in 1:step:n, conn in (Vertex(), Edge())
                 root = cellindex(roots, i)
-                pg = PartialGrid(sys, root, l)
-                halo_ids = collect(halo(pg; connectivity = conn))
-                halo_pos = [cellposition(grid, x)::Int for x in halo_ids]
-                t = stencil_table(pg, halo_pos; connectivity = conn)
+                pg = subtree(sys, root, l)
+                halo_ids = collect(halo(pg; connectivity = conn, cells = true))
+                t = adjacency(pg; halo = 1, connectivity = conn)
                 ids = [cellindex(pg, p) for p in 1:ncells(pg)]
                 want = buffer_rows(sys, l, ids, halo_ids, conn)
                 tables += 1
                 cells += ncells(pg)
 
                 any(row -> any(iszero, row), want) &&
-                    push!(uncovered, (sysname(sys), root, l, conn))
+                    push!(uncovered, (syslabel(sys), root, l, conn))
                 (length(t) == ncells(pg) &&
                  all(p -> collect(t[p]) == want[p], 1:ncells(pg))) ||
-                    push!(disagreed, (sysname(sys), root, l, conn))
+                    push!(disagreed, (syslabel(sys), root, l, conn))
                 (t.offsets[1] == 1 && t.offsets[end] == length(t.indices) + 1 &&
-                 all(s -> 1 <= s <= t.nchunk + t.nhalo, t.indices) &&
+                 all(s -> 1 <= s <= length(t) + length(halopositions(t)), t.indices) &&
                  reduce(vcat, t; init = Int[]) == t.indices) ||
-                    push!(csr, (sysname(sys), root, l, conn))
+                    push!(csr, (syslabel(sys), root, l, conn))
 
                 # The link between "row i" and "buffer slot i" that nothing else
                 # states: the chunk half is read as `descendant_range`, so row i
@@ -375,7 +377,7 @@ end
                 # caller's buffer would then be shifted under a correct table.
                 if has_sorted_subtrees(sys)
                     ids == [cellindex(grid, q) for q in descendant_range(sys, root, l)] ||
-                        push!(layout, (sysname(sys), root, l))
+                        push!(layout, (syslabel(sys), root, l))
                 end
             end
         end
@@ -392,7 +394,7 @@ end
     @test cells == 90860
 end
 
-@testset "stencil_table: a hole is addressed, and both paths agree" begin
+@testset "a hole is addressed, and both paths agree" begin
     holes = Any[]
     hole_in_halo = 0
     for (sys, base, leaf) in SWEEP
@@ -403,13 +405,12 @@ end
         punched = Set(ids[(n÷3+1):(2n÷3)])
         sub = holed(sys, base, leaf)
         for conn in (Vertex(), Edge())
-            halo_ids = collect(halo(sub; connectivity = conn))
-            halo_pos = [cellposition(grid, x)::Int for x in halo_ids]
-            t = stencil_table(sub, halo_pos; connectivity = conn)
+            halo_ids = collect(halo(sub; connectivity = conn, cells = true))
+            t = adjacency(sub; halo = 1, connectivity = conn)
             want = buffer_rows(sys, leaf, [cellindex(sub, p) for p in 1:ncells(sub)],
                 halo_ids, conn)
             all(p -> collect(t[p]) == want[p], 1:ncells(sub)) ||
-                push!(holes, (sysname(sys), conn))
+                push!(holes, (syslabel(sys), conn))
             any(x -> x in punched, halo_ids) && (hole_in_halo += 1)
         end
     end
@@ -425,16 +426,15 @@ end
         has_sorted_subtrees(sys) || continue
         grid = levelgrid(sys, leaf)
         root = cellindex(levelgrid(sys, base), 3)
-        blocked = PartialGrid(sys, root, leaf)
+        blocked = subtree(sys, root, leaf)
         member = PartialGrid(sys, leaf, descendants(sys, root, leaf))
-        (FB._whole_subtree_range(blocked) !== nothing &&
-         FB._whole_subtree_range(member) === nothing) || push!(paths, (sysname(sys), :gate))
+        (EN._whole_subtree_range(blocked) !== nothing &&
+         EN._whole_subtree_range(member) === nothing) || push!(paths, (syslabel(sys), :gate))
         for conn in (Vertex(), Edge())
-            halo_pos = [cellposition(grid, x)::Int
-                        for x in halo(blocked; connectivity = conn)]
-            stencil_table(blocked, halo_pos; connectivity = conn) ==
-            stencil_table(member, halo_pos; connectivity = conn) ||
-                push!(paths, (sysname(sys), conn))
+            halo_pos = collect(halo(blocked; connectivity = conn))
+            adjacency(blocked, halo_pos; connectivity = conn) ==
+            adjacency(member, halo_pos; connectivity = conn) ||
+                push!(paths, (syslabel(sys), conn))
         end
     end
     @test isempty(paths)
@@ -445,69 +445,168 @@ end
         sub = rooted(sys, base, leaf)
         cv = CellVector(sub)
         wrapped = PartialGrid(system(cv), level(cv), cv)
-        halo_pos = [cellposition(grid, x)::Int for x in halo(sub)]
-        stencil_table(sub, halo_pos) == stencil_table(wrapped, halo_pos) ||
-            push!(bridged, sysname(sys))
+        halo_pos = collect(halo(sub))
+        adjacency(sub, halo_pos) == adjacency(wrapped, halo_pos) ||
+            push!(bridged, syslabel(sys))
     end
     @test isempty(bridged)
 end
 
 
-@testset "stencil_table refuses what would come back short" begin
+@testset "adjacency refuses what would come back short" begin
     sys = DGG.HEALPixSystem()
     leaf = 3
-    grid = levelgrid(sys, leaf)
-    pg = PartialGrid(sys, cellindex(levelgrid(sys, 1), 3), leaf)
-    vertex_halo = [cellposition(grid, x)::Int for x in halo(pg)]
-    edge_halo = [cellposition(grid, x)::Int for x in halo(pg; connectivity = Edge())]
+    pg = subtree(sys, cellindex(levelgrid(sys, 1), 3), leaf)
+    vertex_halo = collect(halo(pg))
+    edge_halo = collect(halo(pg; connectivity = Edge()))
     @test length(vertex_halo) == 19 && length(edge_halo) == 16
 
-    # A width-1 halo completes a one-ring and nothing wider.
-    @test_throws ArgumentError stencil_table(pg, vertex_halo, 2)
-    @test_throws ArgumentError stencil_table(pg, vertex_halo, 0)
+    # A row exists only for an in-region position, so a wider receptive field is
+    # a wider REGION and the message has to say so.
+    @test_throws ArgumentError adjacency(pg; halo = 2)
+    @test occursin("grow(region, 1)",
+        try
+            adjacency(pg; halo = 2)
+        catch e
+            e.msg
+        end)
+    @test_throws ArgumentError adjacency(pg; halo = :edge)
     # The lazy halo is not a buffer, and saying so is a method rather than a
     # `MethodError`, because passing it is the mistake the lazy design invites.
-    @test_throws ArgumentError stencil_table(pg, halo(pg))
+    @test_throws ArgumentError adjacency(pg, halo(pg))
     # An unsorted fetch list would misaddress rows rather than fail.
-    @test_throws ArgumentError stencil_table(pg, reverse(vertex_halo))
+    @test_throws ArgumentError adjacency(pg, reverse(vertex_halo))
     @test all(j -> (try
-            stencil_table(pg, deleteat!(copy(vertex_halo), j))
+            adjacency(pg, deleteat!(copy(vertex_halo), j))
             false
         catch e
             e isa ArgumentError
         end), eachindex(vertex_halo))
     # The connectivity has to be the halo's: an `Edge()` margin cannot complete
     # `Vertex()` rows, and it does complete `Edge()` ones.
-    @test_throws ArgumentError stencil_table(pg, edge_halo; connectivity = Vertex())
-    @test stencil_table(pg, edge_halo; connectivity = Edge()) isa StencilTable
+    @test_throws ArgumentError adjacency(pg, edge_halo; connectivity = Vertex())
+    @test adjacency(pg, edge_halo; connectivity = Edge()) isa AdjacencyTable
 
     # `offsets` is one longer than the table, so an unchecked position past the
     # end reads a real offset and returns a plausible row of somebody else's
     # neighbours.
-    t = stencil_table(pg, vertex_halo)
+    t = adjacency(pg, vertex_halo)
     @test_throws BoundsError t[0]
     @test_throws BoundsError t[length(t)+1]
 end
 
 
-@testset "stencil_table allocates nothing sized by the halo" begin
+# ---------------------------------------------------------------------------
+# The three guarantees a caller writes code against
+# ---------------------------------------------------------------------------
+
+# THE ANCHOR. Every row is a window onto the ring the COMPLETE level answers.
+# The complete-width shapes keep slot indices, so slot k names ring member k in
+# any table of any region holding the cell; the clipped shape keeps order and
+# drops, which is a different row and deliberately not slot-addressable. A
+# re-anchoring per region, or a `sort!`, or a clipped row that padded instead of
+# dropping, each breaks exactly one of the three comparisons below.
+@testset "every row is a window onto the canonical ring: $(syslabel(sys))" for (sys, base, leaf) in SWEEP
+    complete = levelgrid(sys, leaf)
+    for (label, sub) in shapes(sys, base, leaf), conn in (Vertex(), Edge())
+        n = ncells(sub)
+        clipped = adjacency(sub; connectivity = conn)
+        marked = adjacency(sub; halo = :mark, connectivity = conn)
+        buffered = adjacency(sub; halo = 1, connectivity = conn)
+        hpos = halopositions(buffered)
+        bad = Int[]
+        for p in 1:n
+            c = cellindex(sub, p)
+            canonical = collect(neighbors(complete, c, 1; connectivity = conn))
+            slots = [something(cellposition(sub, nb), 0) for nb in canonical]
+            buf = [q == 0 ?
+                   n + searchsortedfirst(hpos, cellposition(complete, canonical[j])) : q
+                   for (j, q) in enumerate(slots)]
+            (collect(marked[p]) == slots &&
+             collect(buffered[p]) == buf &&
+             collect(clipped[p]) == filter(!iszero, slots)) || push!(bad, p)
+        end
+        @test isempty(bad)
+    end
+end
+
+# THE SENTINEL. `:mark` is the slot geometry with NOTHING fetched: `0` is the
+# only value outside `1:length(t)`, no halo is walked, and a region that is a
+# complete level has no zeros to mark. A `:mark` table that quietly walked a
+# halo would still index correctly and would fail here.
+@testset "the :mark sentinel names the outside without walking it" begin
+    for (sys, base, leaf) in SWEEP
+        sub = holed(sys, base, leaf)
+        t = adjacency(sub; halo = :mark)
+        @test isempty(halopositions(t))
+        @test isempty(halocells(t))
+        @test all(q -> 0 <= q <= length(t), t.indices)
+        @test any(iszero, t.indices)
+        # Row width is the complete level's degree, border cells included.
+        complete = levelgrid(sys, leaf)
+        @test all(p -> length(t[p]) ==
+                       length(neighbors(complete, cellindex(sub, p), 1)), 1:length(t))
+        # A complete level is all interior, so nothing is marked and the marked
+        # table is the clipped one.
+        shallow = levelgrid(sys, first(levels(sys)))
+        whole = adjacency(shallow; halo = :mark)
+        @test !any(iszero, whole.indices)
+        @test whole == adjacency(shallow)
+    end
+end
+
+# THE BUFFER ORDER. Slot `length(t) + j` is the j-th element of `halo(region)`
+# under the table's connectivity — the one fact that lets a caller fetch the
+# halo separately and index the second half without a lookup table. A build that
+# walked the halo in a different order, or numbered it from a `Set`, breaks the
+# first comparison; one that renumbered per row breaks the second.
+@testset "slot n+j is the j-th halo cell: $(syslabel(sys))" for (sys, base, leaf) in SWEEP
+    for (label, sub) in shapes(sys, base, leaf), conn in (Vertex(), Edge())
+        t = adjacency(sub; halo = 1, connectivity = conn)
+        @test halopositions(t) == collect(halo(sub; connectivity = conn))
+        @test halocells(t) == collect(halo(sub; connectivity = conn, cells = true))
+        # The caller's own list, passed back in, is the same table.
+        @test adjacency(sub, halopositions(t); connectivity = conn) == t
+        # And every out-of-region slot resolves to the cell it names.
+        n = length(t)
+        complete = levelgrid(sys, leaf)
+        cells = halocells(t)
+        @test all(1:n) do p
+            row = collect(neighbors(complete, cellindex(sub, p), 1; connectivity = conn))
+            all(zip(t[p], row)) do (q, nb)
+                q <= n ? cellindex(sub, q) == nb : cells[q-n] == nb
+            end
+        end
+    end
+end
+
+@testset "the buffered table allocates nothing sized by the halo list" begin
     sys = DGG.HEALPixSystem()
     leaf = 5
     grid = levelgrid(sys, leaf)
     root = cellindex(levelgrid(sys, 1), 3)
-    pg = PartialGrid(sys, root, leaf)
+    pg = subtree(sys, root, leaf)
     block = descendant_range(sys, root, leaf)
-    tight = [cellposition(grid, x)::Int for x in halo(pg)]
+    tight = collect(halo(pg))
     wide = [q for q in 1:ncells(grid) if !(first(block) <= q <= last(block))]
     @test length(tight) == 67 && length(wide) == 12032
 
-    a = stencil_table(pg, tight)
-    b = stencil_table(pg, wide)
+    a = adjacency(pg, tight; threaded = false)
+    b = adjacency(pg, wide; threaded = false)
     @test length(a.indices) == length(b.indices)
     # ...and the two are NOT the same table: the halo half is numbered against
     # the list it was given, so this is two real answers, not one memoised.
     @test a != b
-    @test (@allocated stencil_table(pg, tight)) == (@allocated stencil_table(pg, wide))
+
+    # The rows themselves cost the same either way — the buffer's second half
+    # is addressed by search, never materialised per row. The only thing the
+    # public verb allocates in proportion to the list is the copy the table
+    # keeps for `halopositions`.
+    cv = CellVector(pg)
+    n = ncells(pg)
+    rows(list) = EN._adjacency_rows(cv, Vertex(), EN.BufferedRows(list, n), false)
+    rowbytes(list) = (rows(list); @allocated rows(list))
+    @test rowbytes(tight) == rowbytes(wide)
 end
 
 
@@ -541,6 +640,35 @@ const DONUT = GI.Polygon([
     GI.LinearRing([(-121.0, 36.0), (-121.0, 38.0), (-119.0, 38.0), (-119.0, 36.0),
         (-121.0, 36.0)])])
 
+# How many times a sequence of members steps backwards in azimuth about `c`,
+# each read on its own level's grid because a coarse member has no centroid at
+# the reference level. One for a single counter-clockwise turn, `n - 1` for a
+# clockwise one, arbitrary for an id-sorted sequence. Written out here rather
+# than taken from the conformance harness, whose `winding_problems` reads one
+# grid and so cannot answer about a mixed-level set.
+function azimuth_wraps(sys, c, members)
+    centroid(x) = DGG.cell_centroid(levelgrid(sys, level(x)), x)
+    p = centroid(c)
+    ax = abs(p[1]) <= abs(p[2]) ?
+         (abs(p[1]) <= abs(p[3]) ? (1.0, 0.0, 0.0) : (0.0, 0.0, 1.0)) :
+         (abs(p[2]) <= abs(p[3]) ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0))
+    s = ax[1] * p[1] + ax[2] * p[2] + ax[3] * p[3]
+    t = (ax[1] - s * p[1], ax[2] - s * p[2], ax[3] - s * p[3])
+    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
+    e1 = (t[1] / n, t[2] / n, t[3] / n)
+    e2 = (p[2] * e1[3] - p[3] * e1[2], p[3] * e1[1] - p[1] * e1[3],
+        p[1] * e1[2] - p[2] * e1[1])
+    az = map(members) do m
+        q = centroid(m)
+        d = (q[1] - p[1], q[2] - p[2], q[3] - p[3])
+        r = d[1] * p[1] + d[2] * p[2] + d[3] * p[3]
+        u = (d[1] - r * p[1], d[2] - r * p[2], d[3] - r * p[3])
+        atan(u[1] * e2[1] + u[2] * e2[2] + u[3] * e2[3],
+            u[1] * e1[1] + u[2] * e1[2] + u[3] * e1[3])
+    end
+    return count(i -> az[mod1(i + 1, length(az))] < az[i] - 1e-9, eachindex(az))
+end
+
 function oracle(set, c; connectivity = Vertex(), geometric = false)
     sys = system(set)
     L = set.reference_level
@@ -562,7 +690,7 @@ function oracle(set, c; connectivity = Vertex(), geometric = false)
 end
 
 # The members to ask about: the coarsest few, which are the ones with a subtree
-# and therefore with a rim, plus a spread over the rest.
+# and therefore with a border, plus a spread over the rest.
 function member_probes(set, n::Int)
     shallowest = minimum(level, set)
     coarse = [i for i in eachindex(set) if level(set[i]) == shallowest]
@@ -575,15 +703,7 @@ end
 # statement about the drawn polygons. IGEO7, H3, A5 and the two central-place
 # hexagon systems refine non-congruently and are excluded from the GEOMETRIC law
 # with that reason — see `member_neighbors`' docstring; they keep every other law
-# here. Membership is a predicate rather than a type tuple because an
-# `AuthalicSystem` wrap keeps the wrapped system's refinement.
-base_system(sys) = sys isa AuthalicSystem ? parent(sys) : sys
-
-const CONGRUENT = (DGG.HEALPixSystem, DGG.S2System, DGG.ISEA4RSystem,
-    DGG.ISEA4TSystem, DGG.RHEALPixSystem, DGG.IVEA4RSystem, DGG.IVEA9RSystem,
-    DGG.RTEA4RSystem, DGG.RTEA9RSystem)
-
-congruent(sys) = any(T -> base_system(sys) isa T, CONGRUENT)
+# here.
 
 # The last column is whether `Vertex()` and `Edge()` are different relations at
 # all: IGEO7, H3 and the ISEA3H/4H hexagons have only 3-valent vertices, so on
@@ -617,14 +737,10 @@ const MOC_SWEEP = [
 # registry-wide law, and the only thing that ever kept it from being tested on a
 # system was this list silently not growing when one was added.
 @testset "the member-adjacency sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _, _) in MOC_SWEEP)
-    for s in systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa AuthalicSystem, first.(MOC_SWEEP))
+    sweepcovers(MOC_SWEEP)
 end
 
-@testset "member_neighbors: $(sysname(sys))" for (sys, lvl, target, splits) in MOC_SWEEP
+@testset "member_neighbors: $(syslabel(sys))" for (sys, lvl, target, splits) in MOC_SWEEP
     set = query(sys, MultiOrderCoverage(target); level = lvl)
 
     @testset "the set is genuinely mixed-level" begin
@@ -641,11 +757,17 @@ end
         end
     end
 
-    @testset "ascending (level, position)" begin
-        for i in member_probes(set, 6)
-            got = member_neighbors(set, set[i])
-            key(m) = (level(m), cellposition(levelgrid(sys, level(m)), m))
-            @test issorted(got; by = key)
+    # The order is the package's one order on a mixed-level set: a single
+    # counter-clockwise turn about the member, each neighbour read on its own
+    # level's grid. `issorted` by `(level, position)` — what this used to be —
+    # is exactly the ascending order the contract now refuses.
+    @testset "one counter-clockwise turn about the member" begin
+        for i in member_probes(set, 6), conn in (Vertex(), Edge())
+            c = set[i]
+            got = member_neighbors(set, c; connectivity = conn)
+            @test got == member_neighbors(set, c; connectivity = conn)
+            length(got) < 3 && continue
+            @test azimuth_wraps(sys, c, got) == 1
         end
     end
 
@@ -670,7 +792,7 @@ end
         @test_throws ArgumentError member_neighbors(set, outside)
     end
 
-    if congruent(sys)
+    if iscongruent(sys)
         # The geometric law, and the reason the exclusions above are stated
         # rather than silently taken: `adjacent_cells` reads the boundary RINGS
         # and counts shared vertices, so this is "share a boundary" and "share
@@ -697,7 +819,7 @@ function walk_bytes(set)
     return @allocated member_neighbors(set, c)
 end
 
-@testset "the walk is the rim, not the subtree" begin
+@testset "the walk is the border, not the subtree" begin
     for (sys, shallow) in ((DGG.HEALPixSystem(), 9), (DGG.S2System(), 9),
         (DGG.ISEA4RSystem(), 9), (DGG.IGeo7System(), 7))
         near = query(sys, MultiOrderCoverage(CAP); level = shallow)
@@ -707,6 +829,22 @@ end
         @test grow >= 16                        # or the measurement is not one
         @test walk_bytes(far) <= 4 * walk_bytes(near)
     end
+end
+
+# The cross-idiom laws compare the subset idioms with each other, which a
+# consistent re-anchoring would survive. This compares them with the complete
+# level's canonical ring: a clipped ring is that ring with non-members dropped
+# in place, rotation pinned.
+@testset "clipped rings are pinned-rotation subsequences: $(syslabel(sys))" for (sys, base, leaf) in SWEEP
+    pg = subtree(sys, cellindex(levelgrid(sys, base), 3), leaf)
+    complete = levelgrid(sys, leaf)
+    c = first(c for c in (cellindex(pg, i) for i in 1:ncells(pg))
+              if length(neighbors(pg, c, 1)) < length(neighbors(complete, c, 1)))
+    for k in 1:2
+        @test neighbors(pg, c, k) == filter(in(pg), neighbors(complete, c, k))
+    end
+    @test adjacency(pg)[cellposition(pg, c)] ==
+          [cellposition(pg, x) for x in filter(in(pg), neighbors(complete, c, 1))]
 end
 
 end # module StencilTests

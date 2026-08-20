@@ -54,7 +54,9 @@ grid = DGG.levelgrid(DGG.HEALPixSystem(), 6)
 # `Weighted(t)` is the coverage-normalized mean of the source values that were
 # there — so a coastal cell is not dragged down by the empty gap fraction — and
 # blanks a cell covered less than `t`. `Extensive()` is the other choice: raw
-# conservative sums, no normalization.
+# conservative sums, no normalization. The default is `Weighted(0.5)` — blank
+# anything less than half covered; the 0.01 below keeps every cell that saw any
+# source data at all.
 
 plan = @time DGG.plan_regrid(temps; to = grid, missingpolicy = DGG.Weighted(0.01))
 tavg = @time DGG.regrid(temps, plan)

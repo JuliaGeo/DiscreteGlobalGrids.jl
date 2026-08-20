@@ -6,16 +6,19 @@ version = "0.1.0"
 [deps]
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
 GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
+GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
 DiscreteGlobalGrids = {path = "../.."}
-GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/dualdfs-carry-extents"}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/intersection_area"}
+GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 
 [compat]
 DiscreteGlobalGrids = "0.1"
 GeometryOps = "0.1.43"
+GeometryOpsCore = "0.1.11"
 Random = "1"
 Test = "1"
 julia = "1.11"

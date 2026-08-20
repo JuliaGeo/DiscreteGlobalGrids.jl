@@ -31,6 +31,7 @@ import GeometryOpsCore: manifold
 
 import DimensionalData as DD
 import DiskArrays
+using Base.ScopedValues: ScopedValue, @with
 import SparseArrays
 using SparseArrays: SparseMatrixCSC, sparse
 
@@ -43,8 +44,10 @@ const Cap = GO.UnitSpherical.SphericalCap{Float64}
 include("shared.jl")
 include("spaces.jl")
 include("rastergrid.jl")
+include("raster_tree_memo.jl")
 include("methods.jl")
 include("conservative.jl")
+include("intersection_area.jl")
 include("interpolation.jl")
 include("plans.jl")
 include("discovery.jl")
@@ -79,7 +82,22 @@ export LazyRegridArray
 
 # Qualified extension and observability APIs.
 public knownempty, sourcemissingval, chunkat, cellarea
-public residency, LazyStats
+public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
+public outputsampling, destinationdims, dimsource
+
+# Extension surface. These five are unexported but load-bearing from outside:
+# a package that supplies a `RegridSpace` extends or calls them, so their
+# signatures are as fixed as the exported ones.
+#
+#   * `_asspace(target, name)` / `_asspace(target, name, src_space)` — resolve a
+#     `to`/`from` argument spelling into a `RegridSpace` (api.jl).
+#   * `subtree(space, inds)` — cell tree restricted to a chunk (conservative.jl).
+#   * `chunkextents(space)` — per-chunk spherical caps (discovery.jl).
+#   * `resolvespatialdims(data, nsrc)` — which array dimensions a regrid
+#     replaces (executor.jl).
+#   * `dimsource(lookup)` — the `from` a lookup already names (spaces.jl).
+#
+# DiscreteGlobalGrids' `src/regridding.jl` extends the first three and the last.
 
 end # module GlobalRegridding

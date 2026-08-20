@@ -1,7 +1,3 @@
-# Load the shared ISEA geometry once, independent of system include order.
-
-isdefined(@__MODULE__, :ISEA) || include("../ISEA/ISEA.jl")
-
 """
     DiscreteGlobalGrids.ISEA4R
 
@@ -19,10 +15,6 @@ import ..DiscreteGlobalGrids as DGG
 using ..ISEA
 
 import GeometryOps as GO
-const US = GO.UnitSpherical
-# Preserve the UnionAll so the two-argument `(point, radius)` constructor is
-# selected.
-const SphericalCap = US.SphericalCap
 
 import SmallCollections
 using SmallCollections: SmallVector

@@ -48,8 +48,7 @@ function deep_subtree_failures(sys, root, level, conn)
         end
     end
     want = sort!(collect(seen))
-    got = [DGG.cellposition(g, c)
-           for c in DGG.subtree_halo(sys, root, level; connectivity = conn)]
+    got = collect(DGG.halo(DGG.subtree(sys, root, level); connectivity = conn))
     issorted(got) || push!(fails, Failure(:unsorted, tag, "halo not ascending"))
     length(unique(got)) == length(got) ||
         push!(fails, Failure(:duplicate, tag, "halo has duplicates"))
@@ -98,7 +97,7 @@ function main(ncases::Int, seed::UInt)
         family = rand(rng, (:A, :A, :B, :C))
         sys = rand(rng, syslist)
         conn = rand(rng, CONNS)
-        ml = DGG.max_level(sys)
+        ml = DGG.maxlevel(sys)
 
         if family === :A
             rootlevel = rand(rng, 0:3)
@@ -172,11 +171,11 @@ function main(ncases::Int, seed::UInt)
     println("### allocation stability (same case, 200 repeats)")
     sys = DGG.HEALPixSystem()
     root = DGG.cellindex(DGG.levelgrid(sys, 2), 7)
-    DGG.subtree_halo(sys, root, 8)      # warm
-    a1 = @allocated DGG.subtree_halo(sys, root, 8)
-    for _ in 1:200; DGG.subtree_halo(sys, root, 8); end
-    a2 = @allocated DGG.subtree_halo(sys, root, 8)
-    @printf("  subtree_halo allocations: first %d B, after 200 repeats %d B\n", a1, a2)
+    collect(DGG.halo(DGG.subtree(sys, root, 8)))      # warm
+    a1 = @allocated collect(DGG.halo(DGG.subtree(sys, root, 8)))
+    for _ in 1:200; collect(DGG.halo(DGG.subtree(sys, root, 8))); end
+    a2 = @allocated collect(DGG.halo(DGG.subtree(sys, root, 8)))
+    @printf("  halo(subtree) allocations: first %d B, after 200 repeats %d B\n", a1, a2)
     a1 == a2 || push!(fails, Failure(:alloc_drift, "HEALPix L2 root -> L8",
         "per-call allocation drifted from $a1 B to $a2 B over 200 identical calls"))
 

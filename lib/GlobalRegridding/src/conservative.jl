@@ -97,6 +97,9 @@ STI.child_indices_extents(tree::CellCapTree) =
 # ConservativeRegridding fetches matrix sizes and polygons through these
 # bindings during `intersection_areas`.
 ncells(tree::CellCapTree) = ncells(tree.space)
+# `ncells` answers for the whole space, so the frontier's default estimate
+# would be wrong here; the node's cap window is exact.
+Trees.split_weight(tree::CellCapTree) = tree.hi - tree.lo + 1
 getcell(tree::CellCapTree, i::Int) = getcell(tree.space, i)
 getcell(tree::CellCapTree) =
     (getcell(tree.space, i) for i in view(tree.inds, tree.lo:tree.hi))
@@ -121,11 +124,13 @@ mutable struct TileCells{S<:RegridSpace,I,M} <: RegridSpace
     initialized::Bool
     "the tile's cached geometry, or `nothing` when caching is off"
     cells::Union{Nothing,Vector}
+    "the tile's restricted tree, built once and shared by every block build"
+    tree::Any
     lock::ReentrantLock
 end
 
 TileCells(space::RegridSpace, inds) =
-    TileCells(space, inds, indexmap(inds), false, nothing, ReentrantLock())
+    TileCells(space, inds, indexmap(inds), false, nothing, nothing, ReentrantLock())
 
 Base.show(io::IO, tc::TileCells) =
     print(io, "TileCells(", tc.space, ", ", length(tc.inds), " cells)")
@@ -147,26 +152,27 @@ chunktree(tc::TileCells) = chunktree(tc.space)
 """
     subtree(tc::TileCells, inds)
 
-Return the wrapped subtree, using cached cell geometry for the tile's exact
-index set. Initialization runs once under a lock.
+Return the memoized restricted tree for the tile's exact index set, wrapped
+with cached cell geometry where available. Initialization runs once under a
+lock; the immutable tree is then shared by concurrent block builds.
 """
 function subtree(tc::TileCells, inds)
     inds == tc.inds || return subtree(tc.space, inds)
-    tree = subtree(tc.space, inds)
-    cells = _tilecells!(tc)
+    tree, cells = _tiletree!(tc)
     cells === nothing && return tree
     return _cachedtree(tree, tc.map, cells)
 end
 
-function _tilecells!(tc::TileCells)
+function _tiletree!(tc::TileCells)
     lock(tc.lock)
     try
         if !tc.initialized
+            tc.tree = subtree(tc.space, tc.inds)
             tc.cells = length(tc.inds) > _TILE_CELL_CACHE_MAX ? nothing :
                        _synthesizecells(tc.space, tc.inds)
             tc.initialized = true
         end
-        return tc.cells
+        return tc.tree, tc.cells
     finally
         unlock(tc.lock)
     end
@@ -220,16 +226,60 @@ end
 # Intersection operator
 
 """
-    BlockAreaOperator(inner, dstmap, srcmap)
+    CellMemo(::Type{P}; slots)
+
+A task-local direct-mapped memo of cell polygons by tree position. Candidate
+pairs leave a leaf pairing in position runs — the destination repeats within a
+pairing and the source's few leaf cells cycle across consecutive pairings — so
+a handful of slots serves most `getcell` calls with the value already built.
+"""
+struct CellMemo{P}
+    keys::Vector{Int}
+    vals::Vector{P}
+end
+
+CellMemo(::Type{P}; slots::Int = 64) where {P} =
+    CellMemo{P}(zeros(Int, slots), Vector{P}(undef, slots))
+
+# A fresh, empty memo of the same shape, for one assembly task.
+_fresh(memo::CellMemo{P}) where {P} = CellMemo(P; slots = length(memo.keys))
+_fresh(::Nothing) = nothing
+
+@inline function _memocell(memo::CellMemo, tree, i::Int)
+    slot = (i & (length(memo.keys) - 1)) + 1
+    @inbounds memo.keys[slot] == i && return @inbounds memo.vals[slot]
+    cell = Trees.getcell(tree, i)
+    @inbounds memo.keys[slot] = i
+    @inbounds memo.vals[slot] = cell
+    return cell
+end
+
+@inline _memocell(::Nothing, tree, i::Int) = Trees.getcell(tree, i)
+
+# A concretely typed memo where one probe names the polygon type; otherwise none.
+function _cellmemo(space::RegridSpace, inds)
+    P = typeof(getcell(space, Int(first(inds))))
+    return isconcretetype(P) ? CellMemo(P) : nothing
+end
+
+"""
+    BlockAreaOperator(inner, dstmap, srcmap, srcmemo, dstmemo)
 
 Measure intersections with `inner` and map global tree positions to block-local
-indices. Each assembly task receives its own mutable clipping cache.
+indices. Each assembly task receives its own mutable clipping cache and its own
+cell memos.
 """
-struct BlockAreaOperator{O,DM,SM}
+struct BlockAreaOperator{O,DM,SM,MS,MD}
     inner::O
     dstmap::DM
     srcmap::SM
+    srcmemo::MS
+    dstmemo::MD
 end
+
+# Memo-free form: every `getcell` synthesizes. The production path passes memos.
+BlockAreaOperator(inner, dstmap, srcmap) =
+    BlockAreaOperator(inner, dstmap, srcmap, nothing, nothing)
 
 ConservativeRegridding.IntersectionReturnStyle(::BlockAreaOperator) =
     ConservativeRegridding.InPlace()
@@ -239,7 +289,7 @@ ConservativeRegridding.output_matrix_size(op::BlockAreaOperator, src_tree, dst_t
 
 ConservativeRegridding.task_local_operator(op::BlockAreaOperator) =
     BlockAreaOperator(ConservativeRegridding.task_local_operator(op.inner),
-        op.dstmap, op.srcmap)
+        op.dstmap, op.srcmap, _fresh(op.srcmemo), _fresh(op.dstmemo))
 
 # The source is the subject and the destination is the clip ring. A block emits
 # weights only for the pairs both of its chunks contain.
@@ -248,7 +298,8 @@ ConservativeRegridding.task_local_operator(op::BlockAreaOperator) =
     row = localindex(op.dstmap, i2)
     col = localindex(op.srcmap, i1)
     (row == 0 || col == 0) && return nothing
-    area = op.inner(Trees.getcell(src_tree, i1), Trees.getcell(dst_tree, i2))
+    area = op.inner(_memocell(op.srcmemo, src_tree, i1),
+        _memocell(op.dstmemo, dst_tree, i2))
     area > 0 || return nothing
     push!(rows, row)
     push!(cols, col)
@@ -277,8 +328,9 @@ function build_weights!(coo::WeightCOO, ::Conservative,
         "conservative weights need one manifold on both sides: destination is " *
         "$(m), source is $(manifold(src_space))"))
 
-    op = BlockAreaOperator(ConservativeRegridding.DefaultIntersectionOperator(m),
-        indexmap(dst_inds), indexmap(src_inds))
+    op = BlockAreaOperator(_intersectionoperator(m),
+        indexmap(dst_inds), indexmap(src_inds),
+        _cellmemo(src_space, src_inds), _cellmemo(dst_space, dst_inds))
     block = _intersectionareas(m, subtree(dst_space, dst_inds),
         subtree(src_space, src_inds), op)
 
@@ -286,12 +338,58 @@ function build_weights!(coo::WeightCOO, ::Conservative,
 end
 
 """
+    wholeblock(::Conservative, dst_space, src_space) -> WeightBlock
+
+The eager whole-domain block, adopting the assembled sparse matrix directly.
+The generic path copies every entry into a [`WeightCOO`](@ref) and builds a
+second, identical CSC from it; here only the denominators are read off. The
+values, their CSC layout, and the denominator accumulation order are the
+generic path's, bit for bit.
+"""
+function wholeblock(::Conservative, dst_space::RegridSpace, src_space::RegridSpace)
+    ndst = Int(ncells(dst_space))
+    nsrc = Int(ncells(src_space))
+    # Degenerate sides keep the generic path's exact semantics.
+    (ndst == 0 || nsrc == 0) &&
+        return invoke(wholeblock, Tuple{AbstractRegriddingMethod,RegridSpace,RegridSpace},
+            Conservative(), dst_space, src_space)
+
+    m = manifold(dst_space)
+    m == manifold(src_space) || throw(ArgumentError(
+        "conservative weights need one manifold on both sides: destination is " *
+        "$(m), source is $(manifold(src_space))"))
+
+    op = BlockAreaOperator(_intersectionoperator(m),
+        indexmap(1:ndst), indexmap(1:nsrc),
+        _cellmemo(src_space, 1:nsrc), _cellmemo(dst_space, 1:ndst))
+    block = _intersectionareas(m, subtree(dst_space, 1:ndst),
+        subtree(src_space, 1:nsrc), op)
+
+    return WeightBlock(block, _blockdenom(block, ndst))
+end
+
+# `_fillcoo!`'s denominator pass, without the COO round trip. Assembly types the
+# block only as `SparseMatrixCSC`, so the loop needs its own dispatch to specialise.
+function _blockdenom(block::SparseArrays.AbstractSparseMatrixCSC, ndst::Int)
+    denom = zeros(Float64, ndst)
+    rows = SparseArrays.rowvals(block)
+    vals = SparseArrays.nonzeros(block)
+    @inbounds for col in axes(block, 2), t in SparseArrays.nzrange(block, col)
+        w = vals[t]
+        w > 0 || continue
+        denom[rows[t]] += w
+    end
+    return denom
+end
+
+"""
     _intersectionareas(manifold, dst_tree, src_tree, op) -> SparseMatrixCSC
 
-Compute intersection areas, threaded when more than one thread is available.
+Compute intersection areas, threaded when more than one thread is available
+and no outer loop is already parallel ([`OUTER_PARALLEL`](@ref)).
 """
 function _intersectionareas(m::GOCore.Manifold, dst_tree, src_tree, op)
-    threaded = Threads.nthreads() > 1 ? GOCore.True() : GOCore.False()
+    threaded = _innerthreaded()
     return ConservativeRegridding.intersection_areas(
         m, threaded, dst_tree, src_tree; intersection_operator = op)
 end

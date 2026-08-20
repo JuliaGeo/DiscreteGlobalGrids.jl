@@ -25,6 +25,14 @@ end
 @inline Base.iterate(list::SmallList, state::Int=1) =
     state > list.len ? nothing : (@inbounds list.data[state], state + 1)
 
+# Base's `map` would go through `similar`, which hands back an `Array`. Inline
+# storage has to survive a map for a warped boundary to stay off the heap.
+# `f` also runs on the unused slots, which hold the filler.
+function Base.map(f, list::SmallList{N,T}) where {N,T}
+    data = ntuple(i -> f(@inbounds list.data[i]), Val(N))
+    return SmallList{N,eltype(data)}(list.len, data)
+end
+
 """
     empty_small_list(Val(capacity), filler)
 

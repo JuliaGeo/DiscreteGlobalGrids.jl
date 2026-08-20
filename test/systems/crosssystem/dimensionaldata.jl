@@ -10,6 +10,10 @@ import DimensionalData as DD
 import GeoInterface as GI
 import GeometryOps as GO
 import SmallCollections
+
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, sweepcovers
+
 const CL = DGG.CellLookups
 
 
@@ -43,15 +47,8 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, 3),
 ]
 
-sysname(sys) = sys isa DGG.AuthalicSystem ?
-               "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
-
 @testset "the sweep covers every registered system" begin
-    swept = Set(typeof(s) for (s, _, _) in SWEEP)
-    for s in DGG.systems()
-        @test typeof(s) in swept
-    end
-    @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
+    sweepcovers(SWEEP)
 end
 
 function expand(sys, set, l::Int)
@@ -65,7 +62,7 @@ end
 # The laws, once per system
 # ---------------------------------------------------------------------------
 
-@testset "a multi-order cell axis: $(sysname(sys))" for (sys, leaf, deeper) in SWEEP
+@testset "a multi-order cell axis: $(syslabel(sys))" for (sys, leaf, deeper) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
     grid = DGG.levelgrid(sys, leaf)
     lk = DGG.CellLookup(set)
@@ -134,7 +131,7 @@ end
 
         # A rooted subtree, which is the one shape both backings can hold.
         root = DGG.ancestor(sys, first(ids), leaf - 1)
-        rooted = DGG.CellLookup(DGG.PartialGrid(sys, root, leaf))
+        rooted = DGG.CellLookup(DGG.subtree(sys, root, leaf))
         @test collect(rooted) == DGG.descendants(sys, root, leaf)
         @test DGG.cellposition(rooted, first(ids)) !== nothing
     end
@@ -152,7 +149,7 @@ end
 # Selectors, and the cube they run against
 # ---------------------------------------------------------------------------
 
-@testset "selectors on a cell axis: $(sysname(sys))" for (sys, leaf, _) in SWEEP
+@testset "selectors on a cell axis: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
     grid = DGG.levelgrid(sys, leaf)
     lk = DGG.CellLookup(set)
@@ -234,7 +231,7 @@ end
 # number on it.
 # ---------------------------------------------------------------------------
 
-@testset "memory is O(#entries), not O(#leaf cells): $(sysname(sys))" for
+@testset "memory is O(#entries), not O(#leaf cells): $(syslabel(sys))" for
     (sys, leaf, deeper) in SWEEP
 
     if !DGG.has_sorted_subtrees(sys)
@@ -281,7 +278,7 @@ end
     @test_throws ArgumentError DGG.level_ranges(set, leaf)
 
     # The decision: the lookup exists anyway, and it is exactly the
-    # `descendants` expansion — the pattern `PartialGrid(sys, cell, level)`
+    # `descendants` expansion — the pattern `subtree(sys, cell, level)`
     # already uses.
     lk = DGG.CellLookup(set)
     ids = sort!(reduce(vcat, [DGG.descendants(sys, c, leaf) for c in set]))
@@ -467,6 +464,39 @@ end
         @test parent(plain) == parent(A)
         @test plain[DGG.Cells(3)] == 3.0
     end
+end
+
+# ---------------------------------------------------------------------------
+# What a failed selection says. One system is enough: the messages are written
+# once, in the lookup, and read the axis through the same accessors everywhere.
+# ---------------------------------------------------------------------------
+
+@testset "a failed cell selection is a sentence, not a type" begin
+    sys = DGG.HEALPixSystem()
+    grid = DGG.levelgrid(sys, 4)
+    lk = DGG.CellLookup(DGG.CellVector(grid))
+    A = DD.DimArray(collect(1.0:DGG.ncells(grid)), DGG.Cells(lk))
+    coarse = DGG.cellindex(DGG.levelgrid(sys, 3), 1)
+    foreign = DGG.cellindex(DGG.levelgrid(DGG.IGeo7System(), 4), 5)
+
+    @test_throws "not the axis's level 4" A[DGG.Cells(DD.At(coarse))]
+    @test_throws "names cells as LevelIndex" A[DGG.Cells(DD.At(foreign))]
+    # The regression: `SelectorError`'s own message prints the lookup's full
+    # parameterised type instead of what it holds.
+    message = try
+        A[DGG.Cells(DD.At(coarse))]
+    catch err
+        sprint(showerror, err)
+    end
+    @test !occursin("CellLookup{", message)
+
+    # A cell of another system reaching a geometry verb names both systems
+    # rather than surfacing as a `MethodError` about a verb nobody called.
+    @test_throws "is a cell of IGeo7System, not of HEALPixSystem" DGG.cell_centroid(grid, foreign)
+    @test_throws "is a cell of IGeo7System, not of HEALPixSystem" DGG.children(sys, foreign)
+
+    # `Near` is refused rather than answered in id order.
+    @test_throws "nearest id is not the nearest cell" A[DGG.Cells(DD.Near(lk[3]))]
 end
 
 end # module DimensionalDataTests

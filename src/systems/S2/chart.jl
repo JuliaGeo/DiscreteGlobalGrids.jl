@@ -172,7 +172,7 @@ It applies `xyz → face/uv → st → lattice`, using [`xyz_to_face`](@ref),
 **Ties.** `floor` assigns chart cut lines to the higher-side cell; cube edges
 and corners use [`xyz_to_face`](@ref)'s face rule.
 
-Clamping corrects sub-ulp excursions outside `[0, 1]` on a face rim.
+Clamping corrects sub-ulp excursions outside `[0, 1]` on a face border.
 """
 function point_to_xyf(p, nside::Integer)
     face = xyz_to_face(p)

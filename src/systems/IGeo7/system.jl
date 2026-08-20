@@ -99,7 +99,7 @@ DGG.has_sorted_subtrees(::IGeo7System) = true
 
 # Hexagons and pentagons: vertex adjacency and edge adjacency coincide, so the
 # bound is 6 under either connectivity (a pentagon reaches 5).
-DGG.max_neighbors(::IGeo7System, ::Connectivity) = 6
+DGG.maxneighbors(::IGeo7System, ::Connectivity) = 6
 
 # The default `cap_inflation == 1.2` covers the observed maximum descendant
 # overhang ratio of `1.0482`.
@@ -144,13 +144,13 @@ subtree while the digit prefix is still all zero. Appending a digit is one shift
 and one or, so ascending digit order is ascending id order and the result needs
 no sort.
 
-Throws an `ArgumentError` at `max_level`, where a child would need a
+Throws an `ArgumentError` at `maxlevel`, where a child would need a
 twenty-first digit slot that has no geometry.
 """
 function DGG.children(::IGeo7System, c::Z7Cell)
     res = _geometry_checked(c.id)
     res < MAX_RESOLUTION || throw(ArgumentError(
-        "IGeo7 cell $(z7_to_string(c.id)) is at max_level $MAX_RESOLUTION and has no children"))
+        "IGeo7 cell $(z7_to_string(c.id)) is at maxlevel $MAX_RESOLUTION and has no children"))
     out = SmallVector{7,Z7Cell}()
     for z in z7_children(c.id)
         out = SmallCollections.push(out, Z7Cell(z))
@@ -182,7 +182,7 @@ digit-lexicographic depth-first, which *is* ascending id order, so the result
 needs no sort. The count is `7^d` for a hexagon and `(5·7^d + 1)/6` for a
 pentagon, `d = l - level(c)`.
 
-Throws an `ArgumentError` for `l` outside `level(c):max_level`. This
+Throws an `ArgumentError` for `l` outside `level(c):maxlevel`. This
 materialises — reach for [`descendant_range`](@ref) when positions will do.
 """
 function DGG.descendants(::IGeo7System, c::Z7Cell, l::Integer)
@@ -219,7 +219,7 @@ The contiguous position interval of `c`'s level-`l` descendants. Prefix order
 makes this an `O(level)` calculation; the size is `7^d` for a hexagon and
 `(5·7^d + 1)/6` for a pentagon.
 
-Throws an `ArgumentError` for `l` outside `level(c):max_level`.
+Throws an `ArgumentError` for `l` outside `level(c):maxlevel`.
 """
 function DGG.descendant_range(::IGeo7System, c::Z7Cell, l::Integer)
     res = _geometry_checked(c.id)
@@ -270,7 +270,7 @@ function DGG.cellposition(::IGeo7System, c::Z7Cell)
 end
 
 """
-    cell_boundary(::IGeo7System, c::Z7Cell) -> Vector{UnitSphericalPoint}
+    cell_boundary(::IGeo7System, c::Z7Cell) -> Helpers.SmallList{6,UnitSphericalPoint}
 
 The exact boundary ring of `c` on the unit sphere: six corners for a hexagon,
 five for a pentagon, **implicitly closed** (the first vertex is not repeated)
@@ -283,11 +283,9 @@ are straight in the Snyder chart and are reported as their endpoints, which the
 package then reads as great-circle arcs.
 """
 function DGG.cell_boundary(::IGeo7System, c::Z7Cell)
-    ring = cell_boundary_cartesian(c.id; closed_ring=false)
-    out = Vector{USPoint}(undef, length(ring))
-    @inbounds for i in eachindex(ring)
-        p = ring[i]
-        out[i] = USPoint(p[1], p[2], p[3])
+    out = Helpers.empty_small_list(Val(6), USPoint(1.0, 0.0, 0.0))
+    for p in cell_boundary_cartesian(c.id; closed_ring=false)
+        out = Helpers.small_push(out, USPoint(p[1], p[2], p[3]))
     end
     return out
 end
@@ -349,12 +347,11 @@ identifier order.
 """
 function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
     connectivity::Connectivity=Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     _level_checked(g, c)
     steps == 0 && return SmallVector{6,Z7Cell}()
-    steps == 1 && return _neighbors1(c)
-    shells = _shells(g, c, steps)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     isempty(shells) && return Z7Cell[]
     return reduce(vcat, shells)
 end
@@ -371,46 +368,18 @@ function DGG.neighborcount(g::LevelGrid, c::Z7Cell;
     return is_pentagon(c) ? 5 : 6
 end
 
-# The k == 1 primitive, in CCW order and in the static-capacity container.
-function _neighbors1(c::Z7Cell)
+"""
+    one_ring(grid, c, connectivity) -> SmallVector{6,Z7Cell}
+
+The immediate neighbours of `c`, counter-clockwise from the development frame's
+`+1` direction. Five entries at a pentagon, six elsewhere.
+"""
+function DGG.one_ring(::LevelGrid, c::Z7Cell, ::Connectivity)
     out = SmallVector{6,Z7Cell}()
     for z in _cell_neighbors_ccw(c.id)
         out = SmallCollections.push(out, Z7Cell(z))
     end
     return out
-end
-
-# Breadth-first shells in rotational order. Shell `j` contains cells at
-# adjacency distance exactly `j`.
-function _shells(g::LevelGrid, c::Z7Cell, steps::Int)
-    shells = Vector{Z7Cell}[]
-    steps >= 1 || return shells
-
-    # Ring 1 comes out of the lattice already in CCW order, and its first entry
-    # is the zero direction every outer ring is measured against.
-    first_ring = collect(_neighbors1(c))
-    isempty(first_ring) && return shells
-    push!(shells, first_ring)
-    reference = DGG.cell_centroid(g, first(first_ring))
-
-    seen = Set{Z7Cell}(first_ring)
-    push!(seen, c)
-    frontier = first_ring
-    for _ in 2:steps
-        next = Z7Cell[]
-        for x in frontier
-            for y in _neighbors1(x)
-                y in seen && continue
-                push!(seen, y)
-                push!(next, y)
-            end
-        end
-        isempty(next) && break
-        _sort_ccw!(next, g, c, reference)
-        push!(shells, next)
-        frontier = next
-    end
-    return shells
 end
 
 """
@@ -425,70 +394,14 @@ order contract is the one stated there.
 """
 function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
     connectivity::Connectivity=Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     _level_checked(g, c)
     steps == 0 && return Z7Cell[c]
-    steps == 1 && return _neighbors1(c)
-    shells = _shells(g, c, steps)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     # Return an empty ring after the traversal exhausts the component.
     steps <= length(shells) || return Z7Cell[]
     return shells[steps]
-end
-
-# ---------------------------------------------------------------------------
-# Rotational ordering of the outer shells
-#
-# An orthonormal frame in the tangent plane at the subject cell's centroid, with
-# `u` pointing at the reference direction (ring 1's first entry) and `v` chosen
-# so that the rotation u -> v is counter-clockwise when viewed from outside. That is
-# `v = p x u` and not `u x p`: for a point `p` on the unit sphere, `p x u`
-# leads `u` by a quarter turn in the right-handed sense about the outward
-# normal, which is what "counter-clockwise from outside" means.
-# ---------------------------------------------------------------------------
-
-function _tangent_frame(centre, toward)
-    d = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
-    radial = d[1] * centre[1] + d[2] * centre[2] + d[3] * centre[3]
-    t = (d[1] - radial * centre[1], d[2] - radial * centre[2],
-         d[3] - radial * centre[3])
-    n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
-    # Use a deterministic tangent direction when the reference has no tangent
-    # component.
-    if n <= eps(Float64)
-        t = abs(centre[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)
-        n = 1.0
-    end
-    e1 = (t[1] / n, t[2] / n, t[3] / n)
-    e2 = (centre[2] * e1[3] - centre[3] * e1[2],
-          centre[3] * e1[1] - centre[1] * e1[3],
-          centre[1] * e1[2] - centre[2] * e1[1])
-    return e1, e2
-end
-
-function _azimuth(centre, e1, e2, p)
-    d = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
-    a = atan(d[1] * e2[1] + d[2] * e2[2] + d[3] * e2[3],
-             d[1] * e1[1] + d[2] * e1[2] + d[3] * e1[3])
-    return a < 0 ? a + 2 * Float64(π) : a
-end
-
-function _sort_ccw!(shell::Vector{Z7Cell}, g::LevelGrid, c::Z7Cell,
-        reference)
-    length(shell) <= 1 && return shell
-    centre = DGG.cell_centroid(g, c)
-    e1, e2 = _tangent_frame(centre, reference)
-    # Compute each centroid projection once. Ascending id breaks azimuth ties.
-    keyed = Vector{Tuple{Float64,Z7Cell}}(undef, length(shell))
-    @inbounds for i in eachindex(shell)
-        z = shell[i]
-        keyed[i] = (_azimuth(centre, e1, e2, DGG.cell_centroid(g, z)), z)
-    end
-    sort!(keyed)
-    @inbounds for i in eachindex(shell)
-        shell[i] = keyed[i][2]
-    end
-    return shell
 end
 
 # A cell handed to a grid operation must belong to that grid's level; otherwise
@@ -502,26 +415,9 @@ end
 
 # Subtree borders are derived directly from Z7 digits.
 
-"""
-    subtree_border(sys::IGeo7System, c::Z7Cell, l::Integer; connectivity = Vertex()) -> Vector{Z7Cell}
-
-Return the level-`l` descendants on the subtree rim, in ascending order;
-`l == level(c)` returns `[c]`. Vertex and edge connectivity coincide. A
-six-state digit automaton runs in `O(result)`; at depth `d` the rim contains
-`3^(d+1)-3` cells for a hexagon and `5*(3^d-1)/2` for a pentagon.
-
-`collect` of [`EdgeCellIterator`](@ref), which is the same automaton resumable
-and in `O(depth)` memory.
-
-Throws an `ArgumentError` for `l` outside `level(c):max_level`.
-"""
-subtree_border(sys::IGeo7System, c::Z7Cell, l::Integer;
-    connectivity::Connectivity=Vertex()) =
-    DGG.collect_subtree(DGG.EdgeCellIterator(sys, c, l; connectivity))
-
-function DGG.rim_engine(::IGeo7System, c::Z7Cell, target::Int,
+function DGG.border_engine(::IGeo7System, c::Z7Cell, target::Int,
         connectivity::Connectivity)
-    return Z7RimEngine(c.id, _z7_subtree_checked(c, target), target)
+    return Z7BorderEngine(c.id, _z7_subtree_checked(c, target), target)
 end
 
 function DGG.interior_engine(::IGeo7System, c::Z7Cell, target::Int,
@@ -559,7 +455,7 @@ end
 # Unvalidated on purpose: `hex_halo_engine` owns the level guard and only ever
 # passes cells that came out of `neighbors`. `_z7_subtree_checked` is the entry
 # point for the public verbs, which do not know that.
-DGG.seeded_rim_engine(::IGeo7System, c::Z7Cell, target::Int, arclen::Int,
+DGG.seeded_border_engine(::IGeo7System, c::Z7Cell, target::Int, arclen::Int,
         start::Int) = Z7ArcEngine(c.id, z7_resolution(c.id), target,
     Int8(arclen), Int8(start))
 
@@ -582,7 +478,7 @@ end
 """
     subtree_border_count(sys::IGeo7System, c::Z7Cell, l::Integer) -> Int
 
-The size of [`subtree_border`](@ref) without enumerating it: `3^(d+1) − 3` for a
+The size of `border(subtree(sys, c, l))` without enumerating it: `3^(d+1) − 3` for a
 hexagon subtree and `5·(3^d − 1)/2` for a pentagon one, `d = l - level(c)`.
 """
 function subtree_border_count(::IGeo7System, c::Z7Cell, l::Integer)

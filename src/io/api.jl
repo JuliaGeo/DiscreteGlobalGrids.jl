@@ -24,9 +24,13 @@ function _no_zarr_method(f, loaded::Bool)
 end
 
 """
-    dggread(store; vars, lazy = true, validate = :strict,
+    dggread(store; vars = All(), lazy = true, validate = :strict,
             conventions = CONVENTION_REGISTRY, description = nothing) -> DimStack
     dggread(store, var::Symbol; kwargs...) -> DimArray
+
+**Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`;
+until it loads, this name is a stub whose only behaviour is to say so, and the
+extension's docstring — not this one — is the full keyword reference.
 
 Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
 every layer, carrying a [`ChunkedCellLookup`](@ref) — the lookup over an axis a
@@ -35,11 +39,12 @@ that lookup's type, the level is a field of the grid it holds, and what is
 neither — orientation, ellipsoid, the layout the store keeps its axis in — rides
 in the [`StoreDescription`](@ref) under the stack's `metadata["description"]`.
 
-`store` is a `Zarr.ZGroup`, a local path, or a URL (`gs://`, `s3://`,
-`https://`). Data arrays are lazy by default; `lazy = false` materializes them.
-The detected convention, the verbatim original attributes and the source
-encoding ride in the stack's `metadata`, which is enough to regenerate a
-value-identical store.
+`store` is a `Zarr.ZGroup`, a `Zarr.AbstractStore`, a local path, or a URL
+(`gs://`, `s3://`, `https://`). `vars = All()` reads every data variable, or
+name the `Symbol`s to read. Data arrays are lazy by default; `lazy = false`
+materializes them. The detected convention, the verbatim original attributes and
+the source encoding ride in the stack's `metadata`, which is enough to
+regenerate a value-identical store.
 
 `validate = :strict` checks that every stored id names a cell of the declared
 level and `:lazy` samples instead. Neither reaches a store carrying a chunk
@@ -50,8 +55,6 @@ scanned, which is what opens a store of tens of millions of cells at all.
 `description` bypasses detection: pass a [`StoreDescription`](@ref) and the
 caller asserts grid, level, encoding and array names, leaving only the
 mechanical checks. That is how an attribute-less store is read.
-
-Requires `using Zarr`.
 """
 dggread(args...; kwargs...) = _needs_zarr("dggread")
 
@@ -60,14 +63,23 @@ dggread(args...; kwargs...) = _needs_zarr("dggread")
              conventions = DEFAULT_WRITE_CONVENTIONS, chunks = :auto,
              merge = :step, chunk_target = 1_000_000) -> dest
 
-Write a `DimStack` or `DimArray` over a `Cells` dimension to a DGGS store.
-`dest` is a local directory path or a writeable `Zarr.ZGroup`; remote stores
-are not written in v1 — write locally and upload.
+**Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`;
+until it loads, this name is a stub whose only behaviour is to say so, and the
+extension's docstring — not this one — is the full keyword reference.
+
+Write a `DimStack` or `DimArray` over a `Cells` dimension to a Zarr v2 directory
+store. The cell dimension has to carry a `CellLookup` or a
+[`ChunkedCellLookup`](@ref) — this package's way of saying the axis is still
+sorted, unique and at one level. `dest` is a local directory path or a writeable
+`Zarr.ZGroup`; a remote URL is refused rather than half-written — write locally
+and upload.
 
 `encoding = :auto` picks ranges where the axis is eligible — sorted, unique,
-single-level — and dense otherwise; `encoding = :dense` is the interop escape
-for readers that cannot expand ranges. `conventions` stamps the store, dual by
-default so that both a convention-aware reader and xdggs can open it.
+single-level — and dense otherwise; `:dense` is the interop escape for readers
+that cannot expand ranges, `:ranges` forces the compact form, and `:implicit`
+writes no cell coordinate at all, which needs a whole level. `conventions`
+stamps the store, dual by default so that both a convention-aware reader and
+xdggs can open it.
 
 `merge` picks the ranges run rule: `:step` (default) merges unit-increment ids,
 which a structural reader also counts correctly; `:rank` merges rank-adjacent
@@ -85,7 +97,5 @@ store read and rewritten keeps its `units`, `long_name` and group vocabulary;
 convention-generated keys are stamped over the producer's. A round trip
 normalizes two things: layers are written in alphabetical order, and each
 layer's attributes carry the `_ARRAY_DIMENSIONS` this writer stamps.
-
-Requires `using Zarr`.
 """
 dggwrite(args...; kwargs...) = _needs_zarr("dggwrite")

@@ -26,16 +26,16 @@ import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, ncells, cellindex, cellposition, cellat, level, system,
     levelgrid, cellindextype, has_sorted_subtrees, descendants, query,
-    neighbors, ring, halo_table, halo, neighborcount, Connectivity, Vertex,
-    max_neighbors
+    neighbors, ring, neighborcount, Connectivity, Vertex, maxneighbors,
+    halo, border, interior, adjacency
 import ..DiscreteGlobalGrids: Helpers
-import ..DiscreteGlobalGrids.Fallbacks: PartialGrid, SubtreeIds,
+import ..DiscreteGlobalGrids.Engine: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
 # Core collection operations delegated to `CellVector`.
-import ..DiscreteGlobalGrids.Fallbacks: CellVector, cellset, covering,
+import ..DiscreteGlobalGrids.Engine: CellVector, cellset, covering,
     covering_positions, windows, nwindows, RangeWindows, CellWindows, _derive,
-    _windows, SubsetPositionedCell, mapneighbors, foreachneighbors, HaloTable,
-    StorageOrder
+    _windows, SubsetPositionedCell, mapneighbors, foreachneighbors,
+    StorageOrder, _capacity, _ringtype
 
 import SmallCollections
 import DimensionalData as DD
@@ -104,6 +104,11 @@ produces carries a `CellLookup` again. Outside a cube those three are
 `At` and `Contains` are referenced as `DD.At` and `DD.Contains`. They are not
 re-exported because this package exports DE9IM's unrelated [`Contains`](@ref)
 geometry predicate. [`Covering`](@ref) is exported by this package.
+
+`DD.Near` throws: cell ids ascend along a space-filling curve, so snapping to
+the nearest id is not snapping to the nearest cell on the sphere, and this
+lookup has no nearest-member search to offer instead. `Contains(lon, lat)`
+answers the question `Near` is usually reached for.
 
 # What the cube's own operations do to it
 
@@ -233,12 +238,15 @@ cellposition(lk::CellLookup, c::AbstractCellIndex) = cellposition(parent(lk), c)
     ring(lk::CellLookup, c, k; connectivity = Vertex())
     neighbors(lk::CellLookup, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
     ring(lk::CellLookup, p::Int, k; connectivity = Vertex()) -> Vector{Int}
-    halo_table(lk::CellLookup, k = 1; connectivity = Vertex()) -> Vector{Vector{Int}}
-    halo(lk::CellLookup; connectivity = Vertex())
+    halo(lk::CellLookup; connectivity = Vertex(), cells = false)
+    border(lk::CellLookup; connectivity = Vertex(), cells = false)
+    interior(lk::CellLookup; connectivity = Vertex(), cells = false)
+    adjacency(lk::CellLookup; halo = 0, connectivity = Vertex(), threaded = true)
 
-Return the backing vector's adjacency operations. Neighbour and ring results
-are clipped to lookup membership; [`halo_table`](@ref) returns in-set positions
-and [`halo`](@ref) lazily returns adjacent cells outside the lookup.
+Return the backing vector's adjacency operations. Neighbour and ring results are
+clipped to lookup membership, and the lookup is a region for the four region
+verbs: [`halo`](@ref) walks outside it, [`border`](@ref) and [`interior`](@ref)
+split what is inside, and [`adjacency`](@ref) tables the lot.
 """
 neighbors(lk::CellLookup, c::AbstractCellIndex, k::Integer=1;
     connectivity::Connectivity=Vertex()) =
@@ -257,10 +265,12 @@ ring(lk::CellLookup, p::Int, k::Integer;
 neighborcount(lk::CellLookup, c::AbstractCellIndex;
     connectivity::Connectivity=Vertex()) = neighborcount(parent(lk), c; connectivity)
 
-halo_table(lk::CellLookup, k::Integer=1; kw...) = halo_table(parent(lk), k; kw...)
-
-halo(lk::CellLookup; connectivity::Connectivity=Vertex()) =
-    halo(parent(lk); connectivity)
+halo(lk::CellLookup; kw...) = halo(parent(lk); kw...)
+border(lk::CellLookup; kw...) = border(parent(lk); kw...)
+interior(lk::CellLookup; kw...) = interior(parent(lk); kw...)
+adjacency(lk::CellLookup; kw...) = adjacency(parent(lk); kw...)
+adjacency(lk::CellLookup, hpos::AbstractVector{<:Integer}; kw...) =
+    adjacency(parent(lk), hpos; kw...)
 
 # Positioned handles use the parent vector's positions.
 neighbors(lk::CellLookup; connectivity::Connectivity=Vertex()) =
@@ -273,7 +283,6 @@ mapneighbors(f, lk::CellLookup, data::AbstractVector; kw...) =
 foreachneighbors(f, lk::CellLookup; kw...) = foreachneighbors(f, parent(lk); kw...)
 foreachneighbors(f, lk::CellLookup, data::AbstractVector; kw...) =
     foreachneighbors(f, parent(lk), data; kw...)
-HaloTable(lk::CellLookup; kw...) = HaloTable(parent(lk); kw...)
 
 """
     PartialGrid(lk::CellLookup) -> PartialGrid
@@ -539,10 +548,9 @@ function _map_slices(f::F, A, dnum::Int, cv::CellVector, order, threaded,
     data = parent(A)
     pre = CartesianIndices(axes(data)[1:(dnum-1)])
     post = CartesianIndices(axes(data)[(dnum+1):end])
-    M = max_neighbors(system(cv), connectivity)
+    cap = _capacity(system(cv), connectivity)
     H = SubsetPositionedCell{eltype(cv)}
-    T = Base.promote_op(f, H, eltype(A),
-        SmallCollections.SmallVector{M,eltype(A)})
+    T = Base.promote_op(f, H, eltype(A), _ringtype(cap, eltype(A)))
     outs = T <: Tuple && isconcretetype(T) ?
            ntuple(j -> similar(data, fieldtype(T, j)), fieldcount(T)) :
            similar(data, T)
@@ -690,5 +698,62 @@ Lookups.selectindices(lk::CellLookup, sel::Lookups.At{<:Tuple{Real,Real}}; kw...
 
 _found(lk::CellLookup, k::Int, sel) = k
 _found(lk::CellLookup, ::Nothing, sel) = throw(Lookups.SelectorError(lk, sel))
+
+# `Near` on a cell axis would have to mean "nearest on the sphere". Cell ids
+# ascend along a space-filling curve, so the generic order-based snap is not
+# that, and there is no cheap nearest-member search over an arbitrary subset.
+@noinline _no_near(lk, sel) = throw(ArgumentError(
+    "Near is not defined on a cell axis: cell ids run along a space-filling " *
+    "curve, so the nearest id is not the nearest cell on the sphere. Use " *
+    "At(cell) for one cell, Contains(lon, lat) for the cell holding a point, " *
+    "or Covering(region) for a region."))
+
+Lookups.selectindices(lk::CellLookup, sel::Lookups.Near; kw...) = _no_near(lk, sel)
+Lookups.selectindices(lk::CellLookup, sel::Lookups.Near{<:AbstractVector}; kw...) =
+    _no_near(lk, sel)
+
+# ===========================================================================
+# Selector failures
+#
+# The default `SelectorError` prints the lookup's full type. A cell lookup can
+# say what it holds in one line, and name the mismatch — wrong level, wrong
+# system — that usually explains the miss.
+# ===========================================================================
+
+"""
+    show_selector_error(io, lk, sel)
+
+Print a failed cell-axis selection: the value that matched nothing, the axis it
+was applied to, and the level or system mismatch behind it, if any.
+
+`sel` is whatever `DimensionalData` put in the error — a selector or the bare
+value it was carrying.
+"""
+function show_selector_error(io::IO, lk, sel)
+    print(io, "SelectorError: ", sel, " selects no cell of ", lk)
+    lo, hi = Lookups.bounds(lk)
+    lo === nothing || print(io, ", whose ids run ", lo, " to ", hi)
+    _mismatch(io, lk, sel isa Lookups.Selector ? Lookups.val(sel) : sel)
+    println(io)
+    return nothing
+end
+
+function _mismatch(io::IO, lk, c::AbstractCellIndex)
+    sys = system(lk)
+    if !(typeof(c) in DGG.cellindextypes(sys))
+        print(io, "\n  ", nameof(typeof(c)), " is not a ",
+            nameof(typeof(sys)), " id; this axis names cells as ",
+            nameof(cellindextype(sys)))
+    elseif level(c) != level(lk)
+        print(io, "\n  the cell is at level ", level(c), ", not the axis's ",
+            "level ", level(lk))
+    end
+    return nothing
+end
+
+_mismatch(io::IO, lk, val) = nothing
+
+Base.showerror(io::IO, e::Lookups.SelectorError{<:CellLookup}) =
+    show_selector_error(io, e.lookup, e.selector)
 
 end # module CellLookups

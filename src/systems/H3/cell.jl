@@ -47,8 +47,6 @@ const _H3_RESOLUTION_MASK = UInt64(0x0f) << 52
 # Bit offset of digit `k`, `k in 1:15`.
 _h3_digit_shift(k::Int) = 45 - 3k
 
-_h3_resolution(id::UInt64) = Int((id >> 52) & 0x0f)
-
 # The resolution field rewritten, digits left alone. Used when walking a
 # subtree: the id keeps its prefix and gains the target resolution once.
 _h3_with_resolution(id::UInt64, res::Int) =

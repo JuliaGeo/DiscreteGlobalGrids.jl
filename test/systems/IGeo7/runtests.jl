@@ -24,13 +24,19 @@ const US = GO.UnitSpherical
 
 const S = I.IGeo7System()
 
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(DGG.border(DGG.subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(DGG.interior(DGG.subtree(sys, c, l); cells = true, kw...))
+
 # Recorded DGGRID oracle vectors.
 const VECTORS = joinpath(@__DIR__, "vectors")
 
 const Z7Cell = I.Z7Cell
 
 @testset "relative Z7 cells" begin
-    grid = DGG.PartialGrid(S, Z7Cell("023"), 4)
+    grid = DGG.subtree(S, Z7Cell("023"), 4)
     c = DGG.cellindex(grid, 10)
     ns = DGG.neighbors(DGG.levelgrid(S, 4), c)
     ds = ns .- Ref(c)
@@ -496,9 +502,9 @@ const CLEAN = (0, "")
     # =======================================================================
 
     @testset "9. neighbours" begin
-        @test DGG.max_neighbors(S) == 6
-        @test DGG.max_neighbors(S, Vertex()) == 6
-        @test DGG.max_neighbors(S, Edge()) == 6
+        @test DGG.maxneighbors(S) == 6
+        @test DGG.maxneighbors(S, Vertex()) == 6
+        @test DGG.maxneighbors(S, Edge()) == 6
 
         for r in 1:3
             g = DGG.levelgrid(S, r)
@@ -575,6 +581,19 @@ const CLEAN = (0, "")
             @test I.is_pentagon(pent)
             @test [I.z7_string(x) for x in DGG.neighbors(g2, pent, 1)] ==
                   ["0405", "0404", "0406", "0403", "0401"]
+
+            # ORACLE PIN on the OUTER rings' start, and on the tolerance that
+            # decides it. This pentagon's ring 2 has a cell lying EXACTLY on
+            # ring 1's spoke — both sit at compass bearing 198.0 — so which end
+            # of the ring it lands on is otherwise a last-bit coin flip.
+            # `SPOKE_ATOL` says it starts the ring. Hand-checked: ring 1's
+            # bearings are 198, 126, 54, 342, 270 and the five boundary corners
+            # are 306, 234, 162, 90, 18, so each neighbour bisects one edge and
+            # both sequences decrease by a fifth of a turn — counter-clockwise
+            # seen from outside. Ring 2 then steps by 36 degrees.
+            @test [I.z7_string(x) for x in DGG.ring(g2, pent, 2)] ==
+                  ["0453", "0452", "0441", "0443", "0465",
+                      "0461", "0436", "0434", "0412", "0416"]
         end
 
         # k = 0, and the ring/neighbours relation
@@ -681,7 +700,7 @@ const CLEAN = (0, "")
         # primitive every halo and stencil is built from.
         let g = DGG.levelgrid(S, 8), c = DGG.cellindex(g, 12345)
             DGG.neighbors(g, c, 1)
-            @test (@allocated DGG.neighbors(g, c, 1)) == 0
+            @test (@allocated DGG.neighbors(g, c, 1)) == 0 skip = VERSION < v"1.12"
         end
 
         # ---------------------------------------------------------------
@@ -689,27 +708,50 @@ const CLEAN = (0, "")
         # geometric primitive with the pre-port comparison sort. Same set and
         # same order, both connectivities, k = 0:3.
         # ---------------------------------------------------------------
+        # An independent right-handed tangent frame, written out here so the
+        # outer-ring order is compared against arithmetic this file owns rather
+        # than against the package's own winding helper.
+        function ref_frame(centre, toward)
+            d = (toward[1] - centre[1], toward[2] - centre[2], toward[3] - centre[3])
+            r = d[1] * centre[1] + d[2] * centre[2] + d[3] * centre[3]
+            t = (d[1] - r * centre[1], d[2] - r * centre[2], d[3] - r * centre[3])
+            n = sqrt(t[1]^2 + t[2]^2 + t[3]^2)
+            e1 = (t[1] / n, t[2] / n, t[3] / n)
+            return e1, (centre[2] * e1[3] - centre[3] * e1[2],
+                centre[3] * e1[1] - centre[1] * e1[3],
+                centre[1] * e1[2] - centre[2] * e1[1])
+        end
+        # A cell exactly on the starting spoke begins the ring: the package's
+        # own `SPOKE_ATOL` rule, mirrored here because it is order policy, not
+        # neighbour arithmetic, and this oracle is about the arithmetic.
+        function ref_azimuth(centre, e1, e2, p)
+            d = (p[1] - centre[1], p[2] - centre[2], p[3] - centre[3])
+            a = atan(d[1] * e2[1] + d[2] * e2[2] + d[3] * e2[3],
+                d[1] * e1[1] + d[2] * e1[2] + d[3] * e1[3])
+            a < 0 && (a += 2 * Float64(π))
+            return a >= 2 * Float64(π) - DGG.Fallbacks.SPOKE_ATOL ? 0.0 : a
+        end
+
         function reference_shells(g, c, steps)
             shells = Vector{Z7Cell}[]
-            one_ring(x) = [Z7Cell(z) for z in I._cell_neighbors_ccw_geometric(DGG.rawid(x))]
-            first_ring = one_ring(c)
+            ring1(x) = [Z7Cell(z) for z in I._cell_neighbors_ccw_geometric(DGG.rawid(x))]
+            first_ring = ring1(c)
             isempty(first_ring) && return shells
             push!(shells, first_ring)
-            reference = DGG.cell_centroid(g, first(first_ring))
             centre = DGG.cell_centroid(g, c)
-            e1, e2 = I._tangent_frame(centre, reference)
+            e1, e2 = ref_frame(centre, DGG.cell_centroid(g, first(first_ring)))
             seen = Set{Z7Cell}(first_ring)
             push!(seen, c)
             frontier = first_ring
             for _ in 2:steps
                 next = Z7Cell[]
-                for x in frontier, y in one_ring(x)
+                for x in frontier, y in ring1(x)
                     y in seen && continue
                     push!(seen, y)
                     push!(next, y)
                 end
                 isempty(next) && break
-                sort!(next; by=z -> (I._azimuth(centre, e1, e2,
+                sort!(next; by=z -> (ref_azimuth(centre, e1, e2,
                         DGG.cell_centroid(g, z)), z))
                 push!(shells, next)
                 frontier = next
@@ -838,7 +880,7 @@ const CLEAN = (0, "")
     # =======================================================================
 
     @testset "12. subtree border" begin
-        # the rim, cross-checked against a definition that uses adjacency
+        # the border, cross-checked against a definition that uses adjacency
         # instead of digits: a descendant is on the border iff one of its edge
         # neighbours is not in the subtree
         for (lvl, i, depth) in ((0, 1, 3), (1, 5, 3), (2, 100, 2))
@@ -847,25 +889,25 @@ const CLEAN = (0, "")
             for d in 1:depth
                 leaf = lvl + d
                 leafgrid = DGG.levelgrid(S, leaf)
-                rim = I.subtree_border(S, c, leaf)
-                @test ascending(rim)
-                @test length(rim) == I.subtree_border_count(S, c, leaf)
+                border = eager_border(S, c, leaf)
+                @test ascending(border)
+                @test length(border) == I.subtree_border_count(S, c, leaf)
                 inside = Set(DGG.descendants(S, c, leaf))
-                @test issubset(Set(rim), inside)
+                @test issubset(Set(border), inside)
                 brute = [x for x in DGG.descendants(S, c, leaf)
                          if any(nb -> !(nb in inside), DGG.neighbors(leafgrid, x))]
-                @test rim == brute
+                @test border == brute
             end
         end
         # depth 0 is the cell itself ("015" is at level 1)
         @test DGG.level(Z7Cell("015")) == 1
-        @test I.subtree_border(S, Z7Cell("015"), 1) == [Z7Cell("015")]
+        @test eager_border(S, Z7Cell("015"), 1) == [Z7Cell("015")]
         # the closed forms: 3^(d+1)-3 for a hexagon, 5*(3^d-1)/2 for a pentagon,
         # with d the depth BELOW the cell (level 1 -> level 6 is d = 5)
         @test I.subtree_border_count(S, Z7Cell("015"), 6) == 3 * 3^5 - 3
         @test I.subtree_border_count(S, pentagon(0, 3), 6) == (5 * (3^3 - 1)) ÷ 2
         # a target coarser than the cell is an ArgumentError
-        @test_throws ArgumentError I.subtree_border(S, Z7Cell("015"), 0)
+        @test_throws ArgumentError eager_border(S, Z7Cell("015"), 0)
         @test_throws ArgumentError I.subtree_border_count(S, Z7Cell("015"), 0)
     end
 
@@ -880,7 +922,7 @@ const CLEAN = (0, "")
     @testset "13. tree and query integration" begin
         g = DGG.levelgrid(S, 3)
         tree = DGG.treeify(g)
-        @test tree isa HierarchicalGridCursor
+        @test tree isa DGG.HierarchicalGridCursor
 
         cap = US.SphericalCap(GO.UnitSphericalPoint(0.0, 0.0, 1.0), 0.15)
         hits = DGG.query(g, Intersects(cap))

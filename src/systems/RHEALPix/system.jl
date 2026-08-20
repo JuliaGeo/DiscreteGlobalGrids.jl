@@ -120,8 +120,8 @@ DGG.cellindextype(::RHEALPixSystem) = RHEALPixCell
 DGG.cellindextypes(::RHEALPixSystem) = (RHEALPixCell,)
 DGG.levels(::RHEALPixSystem) = 0:MAX_LEVEL
 DGG.has_sorted_subtrees(::RHEALPixSystem) = true
-DGG.max_neighbors(::RHEALPixSystem, ::DGG.Edge) = 4
-DGG.max_neighbors(::RHEALPixSystem, ::DGG.Vertex) = 8
+DGG.maxneighbors(::RHEALPixSystem, ::DGG.Edge) = 4
+DGG.maxneighbors(::RHEALPixSystem, ::DGG.Vertex) = 8
 DGG.rootcells(::RHEALPixSystem) = [RHEALPixCell(0, i) for i in 0:5]
 
 function Base.parent(::RHEALPixSystem, c::RHEALPixCell)
@@ -132,8 +132,8 @@ end
 
 function DGG.children(sys::RHEALPixSystem, c::RHEALPixCell)
     l = DGG.level(c)
-    l < DGG.max_level(sys) || throw(ArgumentError(
-        "rHEALPix cell $(suid(c)) is at max_level $(DGG.max_level(sys))"))
+    l < DGG.maxlevel(sys) || throw(ArgumentError(
+        "rHEALPix cell $(suid(c)) is at maxlevel $(DGG.maxlevel(sys))"))
     base = 9 * c.ordinal
     return [RHEALPixCell(l + 1, base + digit) for digit in 0:8]
 end
@@ -150,8 +150,8 @@ function DGG.descendant_range(sys::RHEALPixSystem, c::RHEALPixCell,
     target, own = Int(level), DGG.level(c)
     target >= own || throw(ArgumentError(
         "descendant level $target is above cell level $own"))
-    target <= DGG.max_level(sys) || throw(ArgumentError(
-        "descendant level $target exceeds max_level $(DGG.max_level(sys))"))
+    target <= DGG.maxlevel(sys) || throw(ArgumentError(
+        "descendant level $target exceeds maxlevel $(DGG.maxlevel(sys))"))
     scale = _pow9(target - own)
     lo = c.ordinal * scale
     hi = (c.ordinal + 1) * scale - 1

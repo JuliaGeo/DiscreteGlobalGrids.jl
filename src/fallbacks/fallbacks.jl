@@ -1,4 +1,8 @@
-# Generic implementations of the interfaces declared in `src/interface/`.
+# The overridable generic defaults of the interfaces declared in
+# `src/interface/`: identity, location, geometry, the subtree walkers, and the
+# level-grid and authalic wrappers. Each is a method a system may replace with
+# a faster one of its own. The machinery no system overrides — the region
+# containers and the walks over them — is `Engine`, in `src/engine/`.
 #
 # Required system contracts:
 #
@@ -12,7 +16,7 @@
 #     selection-mode descent binary-searches the child list.
 #   * `cell_centroid(grid, c)` is strictly interior to the cell.
 #   * `cell_boundary(grid, c)` is implicitly closed and counter-clockwise seen
-#     from outside; area, containment and the rim sandwich all read its winding.
+#     from outside; area, containment and the border sandwich all read its winding.
 #   * `node_extent(sys, c)` obeys the covering law.
 #
 # Performance-sensitive overrides are `cellposition`, `neighbors`, and `cellat`.
@@ -21,20 +25,21 @@ module Fallbacks
 
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
+    AbstractQuadFaceGridSystem,
     AbstractCellIndex, LevelIndex, Connectivity, Vertex, Edge,
     ncells, cellindex, cell_boundary, cell_centroid,
     cellposition, rawid, reindex, cellindextypes,
     cell_polygon, cell_area, cell_extent, getcell,
-    cellat, cellindices, neighbors, ring, halo_table, neighborcount, treeify, query,
+    cellat, cellindices, neighbors, ring, one_ring, neighborcount,
+    treeify, query,
     system, level,
-    cellindextype, levels, max_level, levelgrid, rootcells, children,
-    node_extent, cap_inflation, coarse_probe_rings, max_neighbors,
+    cellindextype, levels, maxlevel, levelgrid, rootcells, children,
+    node_extent, cap_inflation, coarse_probe_rings, maxneighbors,
     has_sorted_subtrees,
     ancestor, descendants, descendant_range,
-    subtree_border, subtree_interior,
-    rim_engine, interior_engine, halo_engine,
+    border_engine, interior_engine, halo_engine,
     lattice_decode, lattice_cell, face_orientation,
-    hex_child_direction, seeded_rim_engine
+    hex_child_direction, seeded_border_engine
 import ..DiscreteGlobalGrids: Helpers
 
 import GeometryOps as GO
@@ -61,27 +66,11 @@ include("geometry.jl")
 include("identity.jl")
 include("subtree.jl")
 include("level_grid.jl")
-include("partial_grid.jl")
 include("authalic_grid.jl")
-# After `authalic_grid.jl`: the wrapper forwards both engines, so it must be a
-# type by the time those methods are defined.
 include("subtree_iterators.jl")
-# Straight after: the halo is the outside face of the boundary the file above
-# walks the inside of, and it reuses that file's stack vocabulary. Its geometry
-# provider calls `_match_tolerance` / `_shared_vertices` from `locate.jl`, which
-# is included below — a forward reference between function bodies in one module,
-# which Julia resolves at call time.
-include("halo.jl")
-include("cursor.jl")
-include("position_tree.jl")
+# After the border and interior engines: the radix-4 quad-face family wires them
+# to one supertype.
+include("quad_face.jl")
 include("locate.jl")
-include("query.jl")
-include("multiorder.jl")
-include("cell_vector.jl")
-# Last: the stencil layer reads every collection above it — the subset grid, the
-# compressed vector, the multi-order set — and the lazy rim walkers besides.
-include("stencil.jl")
-# The positioned iterator depends on the stencil and window helpers.
-include("neighborhood.jl")
 
 end # module Fallbacks

@@ -90,7 +90,7 @@ note("origin ($(gt[1]), $(gt[4]))  dlon $(gt[2])  dlat $(gt[6])")
 # The chunk and its `CellLookup` axis are lazy windows over level-1 ids.
 # --------------------------------------------------------------------------
 
-src = DGG.PartialGrid(sys, tile, 1)
+src = DGG.subtree(sys, tile, 1)
 
 # `vec` of the `(ncols, nrows)` raster already matches chunk position order.
 values = vec(A)
@@ -447,7 +447,7 @@ check("GLO-30: the latitude ramp lands where it started",
 
 println()
 note("call site, verbatim:")
-note("  src = DGG.PartialGrid(DGG.CopernicusDEMSystem(90), tile, 1)")
+note("  src = DGG.subtree(DGG.CopernicusDEMSystem(90), tile, 1)")
 note("  set = DGG.query(dstsys, DGG.MultiOrderCoverage(footprint); level = L)")
 note("  dst = DGG.PartialGrid(DGG.CellVector(set; level = L))")
 note("  r   = CR.Regridder(GO.Spherical(; radius = 1.0), dst, src)")

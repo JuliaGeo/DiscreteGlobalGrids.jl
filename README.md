@@ -15,7 +15,7 @@ rHEALPix/AusPIX, and rhombic IVEA/RTEA aperture-4/9 systems. One more,
 level, a regional subset of one, or a standalone grid with no hierarchy at all.
 Four required methods — `ncells`, `cellindex`, `cell_boundary`, `cell_centroid`
 — buy the whole generic surface: `cell_polygon`, `cell_area`, `cell_extent`,
-`cellat`, `neighbors`, `ring`, `halo_table`, `treeify`, `query`. On a SUBSET of
+`cellat`, `neighbors`, `ring`, `adjacency`, `treeify`, `query`. On a SUBSET of
 a level the topology verbs mean the complete level's answer clipped to
 membership — omitted, not padded — so a stencil on a region is the same call it
 is on the globe, and `halo` names the cells just outside it that the clipping
@@ -30,7 +30,8 @@ wrong, not fast.
 A bare `Int` argument is always a **position** in `1:ncells(grid)`. A typed
 `AbstractCellIndex` is always an **identity**, self-describing about its level,
 so no call passes a level and an id side by side. All internal geometry is on
-the unit sphere, as `GeometryOps.UnitSphericalPoint`; longitude and latitude
+the unit sphere, as `UnitSphericalPoint` — `GeometryOps`', re-exported here so
+an implementor writes it with no module path; longitude and latitude
 appear only in explicitly named converting wrappers, in degrees.
 
 ## Setup
@@ -66,7 +67,7 @@ DGG.cell_area(grid, c)                            # steradians
 DGG.cellat(grid, 8.5, 47.4)
 DGG.neighbors(grid, c)                            # ring 1, CCW seen from outside
 DGG.ring(grid, c, 2)                              # exactly distance 2
-DGG.halo_table(grid)                              # every cell's stencil, as positions
+DGG.adjacency(grid)                               # every cell's stencil, as positions
 
 # Spatial queries, with DE9IM predicate types and spherical semantics.
 import Extents
@@ -77,15 +78,17 @@ sys = DGG.HEALPixSystem()
 DGG.children(sys, c)
 parent(sys, c)
 DGG.descendant_range(sys, c, 6)                   # positions in levelgrid(sys, 6)
-DGG.subtree_border(sys, c, 6)                     # the rim, O(rim)
-DGG.subtree_halo(sys, c, 6)                       # the cells just OUTSIDE the rim
+region = DGG.subtree(sys, c, 6)                   # the subtree as an ordinary grid
+DGG.border(region)                                # the border, O(border)
+DGG.halo(region)                                  # the cells just OUTSIDE it
+DGG.interior(region)                              # and the complement of the border
 
-# The halo can dwarf the rim, so collecting it is always the caller's call:
-# `SubtreeHaloIterator` is the lazy form, and `halo` asks the same of a subset.
-for x in DGG.SubtreeHaloIterator(sys, c, 6)       # O(depth) memory, resumable
+# All three are lazy: a halo can dwarf the border it wraps, so collecting is
+# always the caller's call, and holes in the middle of a region count.
+for p in DGG.halo(region)                         # O(depth) memory, resumable
     break
 end
-DGG.halo(DGG.PartialGrid(sys, c, 6))              # ... of a region, with holes counted
+DGG.halo(region; cells = true)                    # ids rather than positions
 ```
 
 Swapping `HEALPixSystem()` for another entry from `DGG.systems()` changes
@@ -217,7 +220,7 @@ Every script under `examples/` is an assertion-checked demo that exits non-zero
 if a check fails — `julia -t 4 --project=. examples/regridding.jl`. The one
 exception is `examples/copernicus_dem.jl`, which reads a COG and so needs the
 docs environment: `julia -t auto --project=docs examples/copernicus_dem.jl`. The
-tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
+seven tutorials under `docs/src/tutorials/` are Literate.jl sources run by the docs
 build, each the shortest honest path to one result; `docs/src/index.md` lists
 them and `docs/src/all_dggs.md` draws a representative gallery.
 
@@ -271,12 +274,15 @@ no runtime dependency on their reference implementations.
 
 No system defines a grid type. All fifteen registry entries — and
 `CopernicusDEMSystem` with them — return `HierarchicalLevelGrid` from
-`levelgrid` and attach their fast paths — `cellat`, `neighbors`, `ring`,
-`cell_area` — to `HierarchicalLevelGrid{TheSystem}`. `subtree_border` is an
-`O(rim)` automaton on IGEO7, H3, HEALPix, S2 and ISEA4R; every other system
-walks the whole subtree. `subtree_interior` shares that walk and emits the
-branches it prunes. Both are `collect` of a resumable `EdgeCellIterator` /
-`InnerCellIterator` in `O(depth)` memory.
+`levelgrid` and attach their fast paths to `HierarchicalLevelGrid{TheSystem}`:
+`cellat`, `neighbors` and `ring` on all of them, and `cell_area` on the ones
+whose exact area is a closed form the published boundary only approximates
+(HEALPix, ISEA4R, CopernicusDEM, ISEA3H/4H/4T, rHEALPix/AusPIX and the four
+IVEA/RTEA rhombic systems); the rest take the generic spherical area of that
+boundary. `border` over a rooted subtree is an `O(border)` automaton on IGeo7,
+H3, HEALPix, S2 and ISEA4R; every other system walks the whole subtree.
+`interior` shares that walk and emits the branches it prunes. Both are resumable
+`EdgeCellIterator` / `InnerCellIterator` walks in `O(depth)` memory.
 
 `has_sorted_subtrees` is false on A5 and on the four IVEA/RTEA rhombic systems,
 whose canonical order is row-major within a root rather than a space-filling
@@ -286,21 +292,20 @@ per-call member dictionary. An aperture-4 rhombic system in Morton order would
 have contiguous ranges, as ISEA4R does; that is the change these four have not
 made rather than a property they lack.
 
-`subtree_halo` is the outside of that same boundary and is built the same way:
-`collect` of a resumable `SubtreeHaloIterator` in `O(depth)` memory, so a prefix
-of a deep halo costs what the prefix costs and not what the ring would. HEALPix,
+`halo` is the outside of that same boundary and is built the same way: a
+resumable `SubtreeHaloIterator` in `O(depth)` memory, so a prefix of a deep halo
+costs what the prefix costs and not what the ring would. HEALPix,
 S2 and ISEA4R walk the band around their square block, one pruned quadtree
-descent per face the halo touches; IGeo7 and H3 seed each neighbour's rim
+descent per face the halo touches; IGeo7 and H3 seed each neighbour's border
 automaton with a calibrated arc and walk that; A5, again for want of
 `descendant_range`, scans the target level. Only two of the seven engines count
 in closed form — depth zero, which is the one-ring already in hand, and the
 square in-face band, which is `4·side + 4` — so only those declare a `length`;
 everywhere else `IteratorSize` is `SizeUnknown()` and there is no `length`
 method at all, deliberately, because a `length` that walked the halo to answer
-is the thing the design forbids. `halo`
-asks the same question of a `PartialGrid`, `CellVector` or `CellLookup`, always
-lazily; a cell punched out of the middle of a subset joins that subset's halo,
-which is `halo` doing something `subtree_halo` cannot.
+is the thing the design forbids. The same verb asks the same question of any
+region — a `PartialGrid`, a `CellVector`, a `CellLookup` or a complete grid — so
+a cell punched out of the middle of a subset joins that subset's halo.
 
 The system submodules (`DiscreteGlobalGrids.H3` and friends) are deliberately
 **not** exported: `H3`, `HEALPix`, `A5` and `S2` are also the names of
@@ -342,7 +347,7 @@ system, and a cross-system suite that sweeps `systems()` so registering a system
 grows it automatically. Each is wrapped in its own module, because the systems
 share generic vocabulary. The IGEO7 suite validates against recorded DGGRID
 output in `test/systems/IGeo7/vectors/` and dominates the count.
-**986,332 assertions, ~5m30s warm**, with 17 broken — all of them
+**987,153 assertions, ~7m30s**, with 17 broken — all of them
 destination-direction conservation arms in `regridding_conservation.jl`,
 measured per system and level, waiting on the upstream clipper fix.
 

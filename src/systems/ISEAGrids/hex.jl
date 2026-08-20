@@ -23,7 +23,7 @@ const POW4 = ntuple(k -> Int64(4)^(k - 1), 30)
 DGG.cellindextype(::ISEA3HSystem) = Z3Cell
 DGG.levels(::ISEA3HSystem) = 0:30
 DGG.has_sorted_subtrees(::ISEA3HSystem) = true
-DGG.max_neighbors(::ISEA3HSystem, ::DGG.Connectivity) = 6
+DGG.maxneighbors(::ISEA3HSystem, ::DGG.Connectivity) = 6
 # The primary prefix tree is not a spatial containment tree, so the covering cap
 # must reach past the cell.  It reaches exactly **2** ancestor circumradii, and
 # that is a supremum rather than a measurement.
@@ -58,7 +58,7 @@ DGG.ncells(::ISEA3HSystem, l::Integer) = Int(_hexcount(3, Int(l)))
 DGG.cellindextype(::ISEA4HSystem) = DGG.LevelIndex
 DGG.levels(::ISEA4HSystem) = 0:29
 DGG.has_sorted_subtrees(::ISEA4HSystem) = true
-DGG.max_neighbors(::ISEA4HSystem, ::DGG.Connectivity) = 6
+DGG.maxneighbors(::ISEA4HSystem, ::DGG.Connectivity) = 6
 # The same argument, one step simpler: aperture 4's digit directions do NOT
 # depend on depth or on the preceding digit, so the worst sequence is a single
 # direction repeated and `|sum q^j u_j| -> q/(1-q) = 1` with `q = 1/2`.  The
@@ -196,7 +196,7 @@ function Base.parent(::ISEA4HSystem, c::DGG.LevelIndex)
 end
 
 function DGG.children(sys::ISEA4HSystem, c::DGG.LevelIndex)
-    r = DGG.level(c); r < DGG.max_level(sys) || throw(ArgumentError("cell is at max level"))
+    r = DGG.level(c); r < DGG.maxlevel(sys) || throw(ArgumentError("cell is at max level"))
     root, path = _i4decode(c.index, r)
     ds = _polar(root) ? (0:0) : (0:3)
     return [DGG.LevelIndex(r + 1, _i4encode(root, 4path + d, r + 1)) for d in ds]

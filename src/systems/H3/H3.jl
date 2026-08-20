@@ -11,7 +11,7 @@ Canonical order is base-cell-major, then H3 child position with deleted
 pentagon paths omitted. It matches raw-id order within a resolution and makes
 subtrees contiguous, enabling exact [`descendant_range`](@ref) values. Geometry,
 location, hierarchy, and adjacency use libh3; `border.jl` implements the
-digit-arc subtree rim. [`node_extent`](@ref) uses the generic inflated cap.
+digit-arc subtree border. [`node_extent`](@ref) uses the generic inflated cap.
 """
 module H3
 
@@ -21,9 +21,9 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,
     ncells, cellindex, cell_boundary, cell_centroid,
     cellposition, rawid,
-    cellat, neighbors, ring, system, level,
+    cellat, neighbors, ring, one_ring, system, level,
     cellindextype, levels, levelgrid, rootcells, children,
-    cap_inflation, max_neighbors, has_sorted_subtrees,
+    cap_inflation, maxneighbors, has_sorted_subtrees,
     ancestor, descendants, descendant_range
 
 import GeometryOps as GO

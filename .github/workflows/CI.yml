@@ -1,99 +1,46 @@
+# Throwaway probe branch.  This file replaces CI on `claude/ci-level13-probe`
+# so that `gh workflow run CI.yml --ref claude/ci-level13-probe` runs *only*
+# the hydrology pipeline on a real runner, and answers two questions the local
+# measurements can only guess at:
+#
+#   1. does the page still need the 20 GB swap file at level 12 with `dggpoly`?
+#   2. does level 13 fit on a runner at all, with the swap file?
+#
+# `Sys.maxrss` counts resident pages, so once the kernel starts swapping it
+# stops describing the footprint.  A sampler records used memory plus used swap
+# every two seconds and the job reports the high-water mark.
 name: CI
 on:
-  push:
-    branches:
-      - main
-    tags: ['*']
-  pull_request:
   workflow_dispatch:
 
-concurrency:
-  # Skip intermediate builds: always.
-  # Cancel intermediate builds: only if it is a pull request build.
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
-
 jobs:
-  test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
-    env:
-      # The regridding suite compares threaded weight assembly against serial,
-      # which only compares two things above one thread.
-      JULIA_NUM_THREADS: '2'
+  hydrology:
+    name: "hydrology level ${{ matrix.level }} (swap: ${{ matrix.swap }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
-        version:
-          - '1.11'
-          - '1.12'
-        os:
-          - ubuntu-latest
         include:
-          - os: macos-latest
-            version: '1.12'
+          - level: 12
+            swap: 'no'
+          - level: 13
+            swap: 'yes'
+    env:
+      JULIA_NUM_THREADS: '4'
+      DATADEPS_ALWAYS_ACCEPT: 'true'
+      DISPLAY: ':0'
     steps:
-      - uses: actions/checkout@v6
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: ${{ matrix.version }}
-      - uses: julia-actions/cache@v3
-      - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
-      - name: Test conformance package
-        if: matrix.version == '1.12'
-        run: julia --project=lib/DiscreteGlobalGridsConformanceTesting -e 'using Pkg; Pkg.test()'
-      - uses: julia-actions/julia-processcoverage@v1
-        with:
-          directories: src
-      - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v7.0.0
-        with:
-          files: lcov.info
-          slug: JuliaGeo/DiscreteGlobalGrids.jl
-
-  conformance-fallbacks:
-    # The conformance suite's default mode tests what a system implemented; this
-    # runs the same laws against the generic fallbacks, which is what answers
-    # for a system that implemented none of them. It is its own job because the
-    # geometric adjacency costs a tree query and a boundary comparison per cell
-    # and has no business slowing the suite everything else waits on.
-    name: Conformance (generic fallbacks)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: '1.12'
-      - uses: julia-actions/cache@v3
-      - name: Certify the generic fallbacks
+      - name: Describe the runner
         run: |
-          julia --project=lib/DiscreteGlobalGridsConformanceTesting -e 'using Pkg; Pkg.instantiate()'
-          julia --project=lib/DiscreteGlobalGridsConformanceTesting \
-            lib/DiscreteGlobalGridsConformanceTesting/test/generic_fallbacks.jl
-
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      statuses: write
-      actions: write
-      pull-requests: write
-    steps:
-      # The hydrology tutorial's IGEO7 grid peaks past the runner's 16 GB: the
-      # Makie polygons and per-cell meshes behind its `poly` figures cost more
-      # than everything else on the page put together. /mnt is the runner's
-      # scratch disk and has the room for a swap file that covers the
-      # difference; the build is slower for it rather than smaller.
+          nproc; free -h; swapon --show; df -h / /mnt || true
       - name: Add swap space
+        if: matrix.swap == 'yes'
         run: |
           set -x
-          free -h; swapon --show; df -h / /mnt || true
           sudo swapoff -a
           sudo rm -f /mnt/swapfile
           dir=/mnt; [ -d "$dir" ] || dir=/var/tmp
-          # Leave a few GB on the disk for whatever else wants it.
           avail=$(df -BG --output=avail "$dir" | tail -1 | tr -dc '0-9')
           size=$(( avail > 26 ? 20 : avail - 6 ))
           [ "$size" -ge 8 ] || { echo "only ${avail}G free on $dir"; exit 1; }
@@ -101,11 +48,13 @@ jobs:
           sudo chmod 600 "$dir/dgg-swapfile"
           sudo mkswap "$dir/dgg-swapfile"
           sudo swapon "$dir/dgg-swapfile"
-          # Nothing here benefits from cache retention; let anonymous pages go.
           sudo sysctl vm.swappiness=100
-          free -h; swapon --show; df -h "$dir"
-      # Makie needs a GL stack and an X server even for CairoMakie-only builds,
-      # because GeoMakie/GLMakie may still be loaded by a doc page.
+          free -h; swapon --show
+      - name: Take the swap away
+        if: matrix.swap == 'no'
+        run: |
+          sudo swapoff -a || true
+          free -h; swapon --show || true
       - name: Install binary dependencies
         run: sudo apt-get update && sudo apt-get install -y xorg-dev mesa-utils xvfb libgl1 freeglut3-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
       - uses: actions/checkout@v6
@@ -118,20 +67,26 @@ jobs:
           xvfb-run -s '-screen 0 1024x768x24' julia --project=docs -e '
             using Pkg
             Pkg.instantiate(; workspace = true)'
-        env:
-          DISPLAY: ':0'
-          DATADEPS_ALWAYS_ACCEPT: 'true'
-      - uses: julia-actions/julia-docdeploy@v1
-        with:
-          prefix: xvfb-run
-          install-package: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
-          DISPLAY: ':0'
-          DATADEPS_ALWAYS_ACCEPT: 'true'
-      - name: Memory and swap after the build
+      - name: Start the memory sampler
+        run: |
+          cat > /tmp/sample.sh <<'SH'
+          while true; do
+            awk '/^MemTotal:/{mt=$2} /^MemAvailable:/{ma=$2} /^SwapTotal:/{st=$2} /^SwapFree:/{sf=$2}
+                 END {printf "%.2f\n", (mt-ma+st-sf)/1048576}' /proc/meminfo >> /tmp/mem.log
+            sleep 2
+          done
+          SH
+          chmod +x /tmp/sample.sh
+          nohup /tmp/sample.sh >/dev/null 2>&1 &
+          echo started
+      - name: Run the hydrology pipeline
+        run: |
+          xvfb-run -s '-screen 0 1024x768x24' julia --project=docs \
+            lib/DiscreteGlobalGridVisualizations/bench/hydrology_level.jl ${{ matrix.level }}
+      - name: High-water mark
         if: always()
         run: |
+          echo "peak (memory + swap) in use during the job:"
+          sort -g /tmp/mem.log | tail -1
           free -h
-          swapon --show
+          swapon --show || true

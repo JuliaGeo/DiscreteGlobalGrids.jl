@@ -150,7 +150,8 @@ GR.chunkranges(space::DGGSpace, chunk::Integer, ::NTuple{1,Int}) =
 Return the cell tree restricted to `inds`, preserving global cell positions.
 The whole space gets a cursor with decoded ids and precomputed leaf caps; a
 grid that can window its own tree ([`subcursor`](@ref)) does so; exact chunk
-ranges reuse the grid hierarchy in `O(1)`; other ranges use a bounding-cap
+ranges reuse the grid hierarchy in `O(1)`, with the same cap precomputation
+where the chunk is small enough to pay for it; other ranges use a bounding-cap
 tree.
 """
 function GR.subtree(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
@@ -159,7 +160,7 @@ function GR.subtree(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
     window = subcursor(space.grid, inds)
     window === nothing || return window
     cursor = _chunkcursor(space, inds)
-    cursor === nothing || return cursor
+    cursor === nothing || return _cachedchunktree(cursor, inds)
     return GR.CellCapTree(space, inds)
 end
 

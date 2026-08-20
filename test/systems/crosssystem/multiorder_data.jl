@@ -246,6 +246,16 @@ end
         @test E[DGG.Cells(DD.At(cv[3]))] == want[3]
     end
 
+    @testset "the pair form is the DimArray form without the wrapper" begin
+        pcv, pdata = DGG.expand(mov, vals, L)
+        @test pcv == cv
+        @test collect(pdata) == collect(data)
+        @test_throws ArgumentError DGG.expand(mov, vals[1:(end-1)], L)
+        # And the container's own leaf-level expansion, as `expand` reads it
+        # on the other region types.
+        @test DGG.expand(mov, L) == cv
+    end
+
     @testset "materialising fills runs, and agrees with reading" begin
         @test collect(data) == [data[k] for k in eachindex(data)]
         dest = Vector{eltype(data)}(undef, length(data))
@@ -388,10 +398,13 @@ end
             catch err
                 err
             end))
-        # A cell deeper than the reference level cannot be rebuilt in; it
-        # throws.
+        # A cell deeper than the reference level re-keys the axis rather than
+        # refusing it, so a concatenation of unequal depths still joins.
         deep = first(DGG.descendants(sys, ids[1], L + 1))
-        @test_throws ArgumentError DD.Lookups.rebuild(lk; data=[deep])
+        dlk = DD.Lookups.rebuild(lk; data=[deep])
+        @test dlk isa DGG.MultiOrderLookup
+        @test collect(dlk) == [deep]
+        @test DGG.reference_level(dlk) == L + 1
     end
 
     @testset "concatenation and reduction" begin
@@ -415,6 +428,17 @@ end
         # `Categorical`.
         @test DD.Lookups.rebuild(lk; data=vcat(ids[(n÷2+1):n], ids[1:(n÷2)])) isa
               DD.Lookups.Categorical
+
+        # Two axes at different reference levels join at the deeper one.
+        deeper = first(DGG.descendants(sys, ids[end], L + 1))
+        tail = DD.DimArray([one(eltype(vals))],
+            DGG.Cells(DGG.MultiOrderLookup(
+                DGG.MultiOrderVector(sys, [deeper]; reference_level=L + 1))))
+        mixed = vcat(M[1:(n-1)], tail)
+        mlk = DD.lookup(mixed, DGG.Cells)
+        @test mlk isa DGG.MultiOrderLookup
+        @test DGG.reference_level(mlk) == L + 1
+        @test collect(mlk) == vcat(ids[1:(n-1)], [deeper])
 
         r = sum(M; dims=DGG.Cells)
         @test size(r) == (1,)

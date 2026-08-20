@@ -81,7 +81,7 @@ import GeometryOps: SpatialTreeInterface as STI
 import SmallCollections
 using SmallCollections: SmallVector
 
-# `@public` marks a name public but unexported; used only for `aggregate`.
+# `@public` marks a name public but unexported.
 using SciMLPublic: @public
 
 # Keep the module qualified because GeometryOps also defines a `DE9IM` name.
@@ -128,7 +128,8 @@ using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
 using .Engine: PartialGrid,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
-    CellVector, cellset, covering, covering_positions,
+    CellVector, cellset, covering, covering_positions, covering_position,
+    reference_level,
     grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator, RegionSide,
     halo_positions, sizehint,
@@ -416,13 +417,15 @@ export CellVector, covering, covering_positions, cellset
 export grow, expand, compact
 
 # --- Multi-order storage -----------------------------------------------------
-# The mixed-level cell container, its adaptive constructor, the leaf-level
-# re-presentation, and the sphere complement.
-export MultiOrderVector, coarsen, expand, complement
+# The mixed-level cell container, its adaptive constructor, the covering
+# lookup, and the sphere complement. `expand` is exported above.
+export MultiOrderVector, coarsen, covering_position, complement
 
-# Public but unexported: Rasters also exports an `aggregate`. Reach it as
-# `DiscreteGlobalGrids.aggregate`.
+# Public but unexported: `aggregate` because Rasters also exports one,
+# `reference_level` because the name says nothing on its own. Reach them as
+# `DiscreteGlobalGrids.aggregate` and `.reference_level`.
 @public aggregate
+@public reference_level
 
 # --- The DimensionalData layer ---------------------------------------------
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM

@@ -815,8 +815,8 @@ system(lk::MultiOrderLookup) = system(parent(lk))
     reference_level(lk::MultiOrderLookup) -> Int
 
 The level the backing container's intervals are stated at — no shallower than
-any cell on the axis. Unexported; reach it as
-`DiscreteGlobalGrids.Engine.reference_level(lk)`.
+any cell on the axis. Public but unexported; reach it as
+`DiscreteGlobalGrids.reference_level(lk)`.
 """
 reference_level(lk::MultiOrderLookup) = reference_level(parent(lk))
 
@@ -862,13 +862,15 @@ _rebuild(lk::MultiOrderLookup, mov::MultiOrderVector) = MultiOrderLookup(mov)
 function _rebuild(lk::MultiOrderLookup, ids::AbstractVector{<:AbstractCellIndex})
     mov = parent(lk)
     sys = system(mov)
+    # A concatenated axis can hold cells deeper than this one's reference
+    # level; the result is keyed at the deepest level in play.
     ref = reference_level(mov)
+    for c in ids
+        ref = max(ref, level(c))
+    end
     ascending = true
     prev = 0
     for c in ids
-        level(c) <= ref || throw(ArgumentError(
-            "$c is at level $(level(c)), deeper than the axis's reference level " *
-            "$ref, so it has no interval to be keyed by"))
         s = first(descendant_range(sys, c, ref))
         s > prev || (ascending = false)
         prev = s
@@ -1079,11 +1081,24 @@ all(abs.(collect(parent(E)) .- parent(A)) .<= atol)   # the round-trip bound
 """
 function expand(A::DD.AbstractDimArray, l::Integer)
     lk = _cell_axis(A, MultiOrderLookup, "expand")
-    mov = parent(lk)
-    target = Int(l)
-    cv = CellVector(mov; level=target)
-    data = MultiOrderValues(parent(A), _leaf_offsets(mov, target))
+    cv, data = expand(parent(lk), parent(A), l)
     return DD.rebuild(A; data=data, dims=(Cells(CellLookup(cv)),))
+end
+
+"""
+    expand(mov::MultiOrderVector, values::AbstractVector, l::Integer) -> (CellVector, MultiOrderValues)
+
+The `(cells, values)` form, for the pair [`coarsen`](@ref) returns without a
+`DimArray`. `values` is indexed against `mov`; the answer is lazy, one stored
+value per multi-order cell however many leaves `l` names.
+"""
+function expand(mov::MultiOrderVector, values::AbstractVector, l::Integer)
+    length(values) == length(mov) || throw(ArgumentError(
+        "values must line up with the cells they belong to: got $(length(values)) " *
+        "values for $(length(mov)) cells"))
+    target = Int(l)
+    return CellVector(mov; level=target),
+        MultiOrderValues(values, _leaf_offsets(mov, target))
 end
 
 # Cumulative leaf counts at `l`, one per stored cell. The container's own

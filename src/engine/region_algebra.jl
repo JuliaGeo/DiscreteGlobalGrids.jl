@@ -57,6 +57,7 @@ end
 """
     expand(region, l::Integer) -> CellVector
     expand(set::MultiOrderCellSet, l::Integer) -> CellVector
+    expand(mov::MultiOrderVector, l::Integer) -> CellVector
 
 Every level-`l` descendant of the region's cells, as one [`CellVector`](@ref).
 `l` equal to the region's own level returns it unchanged; `l` above it throws.
@@ -67,8 +68,9 @@ the deeper level. Where [`has_sorted_subtrees`](@ref) holds it merges one
 [`descendants`](@ref) to positions and sorts them. Both paths visit every cell of
 the region, and the second visits every leaf it names.
 
-The set form is [`CellVector`](@ref)`(set; level = l)` — the same expansion, from
-the mixed-level side.
+The set and [`MultiOrderVector`](@ref) forms are [`CellVector`](@ref)`(x; level = l)`
+— the same expansion, from the mixed-level side. [`expand`](@ref)`(A, l)` on a
+`DimArray` carries the values along with it.
 
 Descendants of a member need not lie inside the member's own footprint under
 non-congruent refinement, so an expanded coverage over-covers exactly where the
@@ -87,6 +89,8 @@ end
 expand(region::AbstractGrid, l::Integer) = expand(CellVector(region), l)
 
 expand(set::MultiOrderCellSet, l::Integer) = CellVector(set; level = l)
+
+expand(mov::MultiOrderVector, l::Integer) = CellVector(mov; level = l)
 
 function _expand_windows(sys::AbstractHierarchicalGridSystem, cv::CellVector,
         grid::AbstractGrid, target::Int)

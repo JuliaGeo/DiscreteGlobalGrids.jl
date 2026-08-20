@@ -261,6 +261,17 @@ end
         @test eltype(intvals) === Int
     end
 
+    @testset "a span wider than its own integer type never merges" begin
+        # `typemax - typemin` wraps negative, which a bare `<= atol` reads as a
+        # flat group.
+        wide = fill(0, n)
+        wide[1] = typemin(Int)
+        wide[2] = typemax(Int)
+        cells, vals = EN._coarsen(cv, wide; atol=0)
+        @test cells[1] == cv[1] && cells[2] == cv[2]
+        @test vals[1] == typemin(Int) && vals[2] == typemax(Int)
+    end
+
     @testset "the flat field collapses to one cell, and `minlevel` stops it" begin
         flat = fill(7.0, n)
         cells, vals = EN._coarsen(cv, flat; atol=0.0)

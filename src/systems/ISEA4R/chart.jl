@@ -120,20 +120,9 @@ end
 Unchecked form of [`xyd_to_morton`](@ref). The caller must provide a
 power-of-two `nside`, valid coordinates, and `diamond in 0:9`.
 """
-@inline function xyd_to_morton_unchecked(ix::Integer, iy::Integer, diamond::Integer,
-        nside::Integer)
-    x = Int64(ix)
-    y = Int64(iy)
-    morton = Int64(0)
-    shift = 0
-    while (x | y) != 0
-        morton |= ((x & 1) << shift) | ((y & 1) << (shift + 1))
-        x >>= 1
-        y >>= 1
-        shift += 2
-    end
-    return Int64(diamond) * Int64(nside)^2 + morton
-end
+@inline xyd_to_morton_unchecked(ix::Integer, iy::Integer, diamond::Integer,
+        nside::Integer) =
+    Int64(diamond) * Int64(nside)^2 + DGG.morton_encode(ix, iy)
 
 """
     morton_to_xyd(p, nside) -> (ix, iy, diamond)
@@ -153,17 +142,8 @@ function morton_to_xyd(p::Integer, nside::Integer)
     pid = Int64(p)
     0 <= pid < 10npd || throw(ArgumentError(
         "Morton id $pid out of range for nside=$nside (expected 0:$(10npd - 1))"))
-    diamond = pid ÷ npd
-    code = pid - diamond * npd
-    ix = Int64(0)
-    iy = Int64(0)
-    shift = 0
-    while code != 0
-        ix |= (code & 1) << shift
-        iy |= ((code >> 1) & 1) << shift
-        code >>= 2
-        shift += 1
-    end
+    diamond, code = divrem(pid, npd)
+    ix, iy = DGG.morton_decode(code)
     return (Int(ix), Int(iy), Int(diamond))
 end
 

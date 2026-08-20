@@ -284,11 +284,9 @@ Trees.ncells(c::BlockCursor) = DGG.ncells(c.grid)
 Trees.getcell(c::BlockCursor, i::Int) = DGG.getcell(c.grid, i)
 Trees.getcell(c::BlockCursor) = DGG.getcell(c.grid)
 
-function Trees.should_parallelize(c::BlockCursor, ::US.SphericalCap)
-    threshold = max(Int64(1), Int64(DGG.ncells(c.grid)) ÷
-                              (Int64(Threads.nthreads()) * DGG.Fallbacks.PARALLELIZE_CHUNKS_PER_THREAD))
-    return _node_cells(c) <= threshold
-end
+# `Trees.ncells` answers for the whole grid, so the frontier's default estimate
+# would be wrong here; a block knows its own cell count.
+Trees.split_weight(c::BlockCursor) = Int(_node_cells(c))
 
 # ===========================================================================
 # treeify

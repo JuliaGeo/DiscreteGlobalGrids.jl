@@ -2,7 +2,7 @@
     SphericalTerrain
 
 Terrain analysis on a DGGS, written directly against `DiscreteGlobalGrids`'
-`neighbors` / `subtree_halo` / `halo` API.
+`neighbors` / `halo` API.
 
 The module provides maximum downward gradient, slope, aspect, curvature, TPI,
 TRI, roughness, prominence, D8 flow direction, and flow accumulation. Metrics
@@ -157,8 +157,8 @@ Store a subtree chunk and the halo needed by a one-ring stencil.
 
 * `descendant_range(sys, root, level)` is the contiguous position block a
   chunked store reads;
-* `subtree_halo(sys, root, level; connectivity)` supplies outside cell IDs,
-  which are converted to grid positions.
+* `halo(subtree(sys, root, level); connectivity)` supplies the outside grid
+  positions, ascending.
 
 Only chunk and halo values are copied from `z_whole`. Access elsewhere returns
 `NaN` and increments the miss counter.
@@ -181,12 +181,11 @@ end
 function ChunkField(k::GridCtx, sys, root, level::Integer, z_whole::Vector{Float64};
         halo_connectivity::Connectivity = k.connectivity, halo = nothing)
     r = chunk_range(sys, root, level)
-    hc = halo === nothing ?
-        DGG.subtree_halo(sys, root, level; connectivity = halo_connectivity) :
-        collect(halo)
-    hp = [DGG.cellposition(k.grid, c) for c in hc]
-    perm = sortperm(hp)
-    hp = hp[perm]; hc = hc[perm]
+    hp = halo === nothing ?
+        collect(DGG.halo(DGG.subtree(sys, root, level);
+            connectivity = halo_connectivity)) :
+        sort!([DGG.cellposition(k.grid, c) for c in halo])
+    hc = [k.cells[p] for p in hp]
     return ChunkField(k, root, r, z_whole[r], first(r) - 1, hp, z_whole[hp], hc, Ref(0))
 end
 

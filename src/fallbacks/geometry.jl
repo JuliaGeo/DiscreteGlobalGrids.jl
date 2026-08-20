@@ -3,10 +3,12 @@
 # may override any of these for speed, none of them for a different answer.
 
 """
-    closed_ring(points) -> Vector{UnitSphericalPoint{Float64}}
+    closed_ring(points) -> AbstractVector{UnitSphericalPoint{Float64}}
 
 Return a 1-based, explicitly closed copy of a boundary. An already repeated
-closing vertex is not duplicated.
+closing vertex is not duplicated. A `Helpers.SmallList` boundary closes into a
+`SmallList` one longer, so inline storage survives; anything else copies into a
+`Vector`.
 """
 function closed_ring(points)
     n = length(points)
@@ -21,6 +23,20 @@ function closed_ring(points)
     # Already closed: drop the duplicate we just introduced.
     n > 1 && out[n] == out[1] && return out[1:n]
     return out
+end
+
+# Inline storage in, inline storage out: a system that answers its boundary in a
+# `SmallList` must not have it spilled onto the heap just to close it.
+function closed_ring(points::Helpers.SmallList{N}) where {N}
+    out = Helpers.empty_small_list(Val(N + 1), USPoint(1.0, 0.0, 0.0))
+    for p in points
+        out = Helpers.small_push(out, USPoint(p[1], p[2], p[3]))
+    end
+    n = length(out)
+    n == 0 && return out
+    # Already closed: nothing to append.
+    n > 1 && @inbounds(out[n] == out[1]) && return out
+    return Helpers.small_push(out, @inbounds out[1])
 end
 
 """
@@ -167,10 +183,14 @@ end
     cell_polygon(grid, c) -> GI.Polygon
 
 See the interface docstring. One `LinearRing`, explicitly closed, unit-sphere
-`(x, y, z)` coordinates.
+`(x, y, z)` coordinates. The ring carries whatever [`closed_ring`](@ref) gives
+it, so a system with an inline boundary gets an `isbits` polygon.
 """
 cell_polygon(grid::AbstractGrid, c::AbstractCellIndex) =
-    GI.Polygon([GI.LinearRing(closed_ring(cell_boundary(grid, c)))])
+    GI.Polygon(_ring_list(GI.LinearRing(closed_ring(cell_boundary(grid, c)))))
+
+# `[ring]` would wrap a ring that is itself inline in a one-element heap vector.
+_ring_list(ring::T) where {T} = Helpers.SmallList{1,T}(1, (ring,))
 
 """
     getcell(grid, i) -> GI.Polygon

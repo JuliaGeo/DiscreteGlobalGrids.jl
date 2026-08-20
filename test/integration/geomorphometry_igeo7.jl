@@ -29,7 +29,7 @@ corners = [
 sys = DGG.IGeo7System()
 center = to_sphere(((west + east) / 2, (south + north) / 2))
 root = DGG.cellat(DGG.levelgrid(sys, 5), center)
-grid = DGG.PartialGrid(sys, root, 8)
+grid = DGG.subtree(sys, root, 8)
 
 regridder = CR.Regridder(GO.Spherical(; radius=1.0), grid, corners)
 source = vec(Float64.(reverse(parent(dem); dims=2)))

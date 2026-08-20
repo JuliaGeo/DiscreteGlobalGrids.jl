@@ -32,7 +32,7 @@ end
     system = DGG.HEALPixSystem()
     grid = DGG.levelgrid(system, 1)
     root = first(DGG.rootcells(system))
-    partial = DGG.PartialGrid(system, root, 1)
+    partial = DGG.subtree(system, root, 1)
     authalic = DGG.levelgrid(DGG.AuthalicSystem(system), 1)
 
     for candidate in (grid, partial, authalic)

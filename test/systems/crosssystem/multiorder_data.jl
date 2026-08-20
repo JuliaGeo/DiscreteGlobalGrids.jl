@@ -26,6 +26,7 @@ import GeometryOps as GO
 import SmallCollections
 
 const FB = DGG.Fallbacks
+const EN = DGG.Engine
 const CL = DGG.CellLookups
 const LONLAT = GO.UnitSpherical.GeographicFromUnitSphere()
 
@@ -41,7 +42,7 @@ sysname(sys) = string(nameof(typeof(sys)))
 
 # A whole rooted subtree — complete, so every stored cell covers a full
 # sibling family.
-subtree(sys, l) = DGG.CellVector(DGG.PartialGrid(sys, first(DGG.rootcells(sys)), l))
+rooted_subtree(sys, l) = DGG.CellVector(DGG.subtree(sys, first(DGG.rootcells(sys)), l))
 
 # Centroid latitude in degrees: a smooth, grid-derived field.
 centroid_lat(cv) = (g = DGG.levelgrid(DGG.system(cv), DGG.level(cv));
@@ -49,7 +50,7 @@ centroid_lat(cv) = (g = DGG.levelgrid(DGG.system(cv), DGG.level(cv));
 
 # Leaf axis, its data, and the first tolerance whose mesh is mixed-level.
 function fixture(sys, L)
-    cv = subtree(sys, L)
+    cv = rooted_subtree(sys, L)
     lat = centroid_lat(cv)
     A = DD.DimArray(lat, DGG.Cells(DGG.CellLookup(cv)); name=:lat)
     for atol in TOLERANCES
@@ -68,7 +69,7 @@ function covering_byhand(mov, sys, L, target)
     set = DGG.query(sys, DGG.MultiOrderCoverage(target); level=L)
     out = Int[]
     for r in DGG.level_ranges(set, L), p in r
-        k = FB.covering_position(mov, DGG.cellindex(grid, p))
+        k = EN.covering_position(mov, DGG.cellindex(grid, p))
         k === nothing || push!(out, k)
     end
     return unique!(sort!(out))
@@ -96,7 +97,7 @@ end
         @test length(lk) == length(mov)
         @test eltype(lk) === DGG.cellindextype(sys)
         @test DGG.system(lk) == sys
-        @test FB.reference_level(lk) == L
+        @test EN.reference_level(lk) == L
         @test length(unique(DGG.level, ids)) > 1
         # `Unordered`: ids compare level-first under `isless`, so a mixed-level
         # axis is unsorted in the sense DimensionalData reads — an ordered
@@ -118,7 +119,7 @@ end
 
     @testset "At is exact and Contains is covering" begin
         @test all(DGG.cellposition(lk, ids[k]) == k for k in eachindex(ids))
-        @test all(FB.covering_position(lk, ids[k]) == k for k in eachindex(ids))
+        @test all(EN.covering_position(lk, ids[k]) == k for k in eachindex(ids))
 
         j = findfirst(c -> DGG.level(c) < L, ids)
         @test j !== nothing                     # a mixed axis has a coarse cell
@@ -126,15 +127,15 @@ end
         leaf = first(DGG.descendants(sys, coarse, L))
         @test leaf != coarse
         @test DGG.cellposition(lk, leaf) === nothing
-        @test FB.covering_position(lk, leaf) == j
+        @test EN.covering_position(lk, leaf) == j
         # Deeper than the reference level: resolved through its ancestor there.
         deeper = first(DGG.descendants(sys, coarse, L + 1))
         @test DGG.cellposition(lk, deeper) === nothing
-        @test FB.covering_position(lk, deeper) == j
+        @test EN.covering_position(lk, deeper) == j
         # An ancestor of a stored cell is neither stored nor covered.
         up = DGG.ancestor(sys, coarse, DGG.level(coarse) - 1)
         @test DGG.cellposition(lk, up) === nothing
-        @test FB.covering_position(lk, up) === nothing
+        @test EN.covering_position(lk, up) === nothing
     end
 
     @testset "the selectors are those two verbs" begin
@@ -184,7 +185,7 @@ end
         sublk = DD.lookup(sub, DGG.Cells)
         @test sublk isa DGG.MultiOrderLookup
         @test collect(sublk) == ids[byhand]
-        @test FB.reference_level(sublk) == L
+        @test EN.reference_level(sublk) == L
         @test all(DGG.cellposition(sublk, sublk[k]) == k for k in eachindex(byhand))
 
         # A region no cell of the axis meets selects nothing at all.
@@ -237,7 +238,7 @@ end
     end
 
     @testset "every leaf reads the cell covering it" begin
-        want = [vals[FB.covering_position(mov, c)] for c in cv]
+        want = [vals[EN.covering_position(mov, c)] for c in cv]
         @test data == want
         @test all(data[k] == want[k] for k in eachindex(want))
         # The bound `coarsen` promises, read end to end through the cube.
@@ -262,7 +263,7 @@ end
         @test Base.summarysize(parent(deep)) < 8 * length(deep)
         # The values it presents are still the covering cell's, one level down.
         deepcv = parent(DD.lookup(deep, DGG.Cells))
-        @test all(parent(deep)[k] == vals[FB.covering_position(mov, deepcv[k])]
+        @test all(parent(deep)[k] == vals[EN.covering_position(mov, deepcv[k])]
                   for k in (1, length(deep) ÷ 2, length(deep)))
     end
 

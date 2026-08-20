@@ -17,7 +17,7 @@
 #
 # Two measurement batteries print their numbers rather than only asserting
 # them, because both are claims about A5's geometry that the docstrings quote:
-# NEIGHBOR-VALIDATION for the `max_neighbors` bounds and the Moore/von Neumann
+# NEIGHBOR-VALIDATION for the `maxneighbors` bounds and the Moore/von Neumann
 # split, CAP-VALIDATION for the raised `cap_inflation`.
 
 module A5TestSuite
@@ -37,6 +37,12 @@ import ConservativeRegridding: Trees
 const A5 = DGG.A5
 const A5N = A5.A5Native
 const S = A5.A5System()
+
+# The eager references: `border`/`interior` over a rooted subtree, collected.
+eager_border(sys, c, l; kw...) =
+    collect(DGG.border(DGG.subtree(sys, c, l); cells = true, kw...))
+eager_interior(sys, c, l; kw...) =
+    collect(DGG.interior(DGG.subtree(sys, c, l); cells = true, kw...))
 const SD = GO.UnitSpherical.spherical_distance
 
 # Complete levels, built by expanding the hierarchy one level at a time — never
@@ -422,6 +428,17 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     end
 
     # =======================================================================
+    # The native layer's refusals carry the value that caused them: without it
+    # a caller has a bare sentence and no way to reproduce the failure.
+    @testset "native errors name the point they failed on" begin
+        @test_throws "(lon, lat) = (180.0, 0.0)" A5N.lonlat_to_cell(180.0, 0.0, 30)
+        clockwise = [(1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
+        @test A5N._shape_area(clockwise) < 0
+        @test_throws "containment of (0.5, 0.5)" A5N._contains_point(clockwise,
+            (0.5, 0.5))
+    end
+
+    # =======================================================================
     @testset "cellat vs lonlat_to_cell" begin
         for l in (0, 1, 4, 9, 20)
             grid = DGG.levelgrid(S, l)
@@ -446,7 +463,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     end
 
     # =======================================================================
-    # NEIGHBOR-VALIDATION. Both halves of the `max_neighbors` docstring are
+    # NEIGHBOR-VALIDATION. Both halves of the `maxneighbors` docstring are
     # claims about A5's geometry, and both are measured here rather than read
     # off the cell shape:
     #
@@ -458,9 +475,9 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     #     inherited assumption this battery refutes.
     # =======================================================================
     @testset "NEIGHBOR-VALIDATION: the degree bounds are measured" begin
-        @test DGG.max_neighbors(S, DGG.Vertex()) == 11
-        @test DGG.max_neighbors(S, DGG.Edge()) == 5
-        @test DGG.max_neighbors(S) == 11
+        @test DGG.maxneighbors(S, DGG.Vertex()) == 11
+        @test DGG.maxneighbors(S, DGG.Edge()) == 5
+        @test DGG.maxneighbors(S) == 11
 
         println("\n  A5 NEIGHBOR-VALIDATION — degrees per level and connectivity")
         groups = (("res 0 (all 12)", 0, ROOTS), ("res 1 (all 60)", 1, RES1),
@@ -479,7 +496,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             @printf("  %-20s (%5d cells) Vertex: %-10s Edge: %s\n", label, length(cells),
                 join(observed[DGG.Vertex()], ", "), join(observed[DGG.Edge()], ", "))
             for conn in CONNECTIVITIES
-                @test maximum(observed[conn]) <= DGG.max_neighbors(S, conn)
+                @test maximum(observed[conn]) <= DGG.maxneighbors(S, conn)
                 worst[conn] = max(worst[conn], maximum(observed[conn]))
             end
             # Constant per regime, not merely bounded: 5 at res 0 (a
@@ -491,11 +508,11 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             @test observed[DGG.Vertex()] ⊆ (l == 0 ? [5] : l == 1 ? [11] : [6, 7, 8])
         end
         @printf("  worst observed — Vertex %d (bound %d), Edge %d (bound %d)\n\n",
-            worst[DGG.Vertex()], DGG.max_neighbors(S, DGG.Vertex()),
-            worst[DGG.Edge()], DGG.max_neighbors(S, DGG.Edge()))
+            worst[DGG.Vertex()], DGG.maxneighbors(S, DGG.Vertex()),
+            worst[DGG.Edge()], DGG.maxneighbors(S, DGG.Edge()))
         # Both bounds are attained, so neither has slack to trim.
-        @test worst[DGG.Vertex()] == DGG.max_neighbors(S, DGG.Vertex())
-        @test worst[DGG.Edge()] == DGG.max_neighbors(S, DGG.Edge())
+        @test worst[DGG.Vertex()] == DGG.maxneighbors(S, DGG.Vertex())
+        @test worst[DGG.Edge()] == DGG.maxneighbors(S, DGG.Edge())
     end
 
     @testset "Vertex() really is Moore and Edge() really is von Neumann" begin
@@ -591,10 +608,12 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test typeof(DGG.neighbors(grid, c, 1; connectivity=DGG.Edge())) ===
               SmallVector{11,A5.A5Cell}
         @test typeof(DGG.neighbors(grid, c, 2)) === Vector{A5.A5Cell}
-        @test typeof(DGG.ring(grid, c, 1)) === Vector{A5.A5Cell}
+        # `ring(c, 1)` IS `neighbors(c, 1)`, container included: both are the
+        # one-ring hook's answer.
+        @test typeof(DGG.ring(grid, c, 1)) === SmallVector{11,A5.A5Cell}
         @test typeof(DGG.children(S, c)) === SmallVector{5,A5.A5Cell}
         DGG.children(S, c)
-        @test @allocated(DGG.children(S, c)) == 0
+        @test @allocated(DGG.children(S, c)) == 0 skip = VERSION < v"1.12"
 
         # An id that is not a cell of this grid's resolution is an error, not a
         # confident answer about some other cell.
@@ -688,10 +707,10 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     end
 
     # =======================================================================
-    @testset "subtree_border (generic fallback) vs brute force" begin
+    @testset "the border walk (generic fallback) vs brute force" begin
         # A5 keeps the generic fallback — an A5 subtree is four Hilbert children
         # that cover their parent's area but not its footprint, so there is no
-        # digit predicate to read a rim off. What is checked is that the
+        # digit predicate to read a border off. What is checked is that the
         # fallback and the definition agree on this hierarchy.
         function brute_border(root, target, conn)
             grid = DGG.levelgrid(S, target)
@@ -703,21 +722,21 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         for (root, depths) in ((ROOTS[1], 0:3), (RES1[7], 0:3), (RES2[33], 0:2))
             l = DGG.level(root)
             for d in depths, conn in CONNECTIVITIES
-                border = DGG.subtree_border(S, root, l + d; connectivity=conn)
+                border = eager_border(S, root, l + d; connectivity=conn)
                 @test border == brute_border(root, l + d, conn)
                 @test issorted(border)
                 @test border ⊆ DGG.descendants(S, root, l + d)
-                interior = DGG.subtree_interior(S, root, l + d; connectivity=conn)
+                interior = eager_interior(S, root, l + d; connectivity=conn)
                 @test sort(vcat(border, interior)) == DGG.descendants(S, root, l + d)
                 @test isempty(intersect(Set(border), Set(interior)))
             end
         end
-        @test DGG.subtree_border(S, RES1[3], 1) == [RES1[3]]
-        @test isempty(DGG.subtree_interior(S, RES1[3], 1))
-        # Every quintant of a face is on its rim: each has a neighbour in
+        @test eager_border(S, RES1[3], 1) == [RES1[3]]
+        @test isempty(eager_interior(S, RES1[3], 1))
+        # Every quintant of a face is on its border: each has a neighbour in
         # another face.
-        @test DGG.subtree_border(S, ROOTS[1], 1) == collect(DGG.children(S, ROOTS[1]))
-        @test_throws ArgumentError DGG.subtree_border(S, RES2[1], 1)
+        @test eager_border(S, ROOTS[1], 1) == collect(DGG.children(S, ROOTS[1]))
+        @test_throws ArgumentError eager_border(S, RES2[1], 1)
     end
 
     # =======================================================================
@@ -813,7 +832,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     @testset "node_extent covers the subtree" begin
         # The covering law itself, checked directly and all the way down: a
         # cell's node extent contains every vertex of every descendant on a
-        # chain to max_level. This is the property `cap_inflation` exists to
+        # chain to maxlevel. This is the property `cap_inflation` exists to
         # buy, and the one a sampled ratio can only be evidence for.
         for c in vcat(ROOTS, RES1[1:11:end], RES2[1:53:end])
             cap = DGG.node_extent(S, c)
@@ -835,7 +854,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     @testset "traits" begin
         @test DGG.cellindextype(S) === A5.A5Cell
         @test DGG.levels(S) === 0:29
-        @test DGG.max_level(S) == 29
+        @test DGG.maxlevel(S) == 29
         @test !DGG.has_sorted_subtrees(S)
         # No `descendant_range` is offered, and asking is a MethodError rather
         # than a wrong answer.
@@ -865,13 +884,13 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
                      :cellposition, :cellat, :neighbors, :ring,
                      :parent, :children, :ancestor, :descendants, :rootcells,
                      # traits and validity
-                     :max_neighbors, :cap_inflation, :has_sorted_subtrees, :isvalid)
+                     :maxneighbors, :cap_inflation, :has_sorted_subtrees, :isvalid)
             @test name in documented
         end
         # And the docstring must be the A5 one, not the interface fallback
         # showing through: check the two whose text carries a claim this
         # module is on the hook for.
-        for (f, phrase) in ((DGG.neighbors, "smallest"), (DGG.max_neighbors, "Vertex"))
+        for (f, phrase) in ((DGG.neighbors, "smallest"), (DGG.maxneighbors, "Vertex"))
             md = Docs.meta(A5)[Docs.Binding(DGG, nameof(f))]
             @test any(occursin(phrase, string(d.text...)) for d in values(md.docs))
         end
@@ -912,14 +931,14 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
 
         # A subtree-rooted chunk answers in chunk-local indices, and its root is
         # the chunk's own cell rather than the synthetic whole-sphere node.
-        chunk = DGG.PartialGrid(S, RES1[20], 4)
+        chunk = DGG.subtree(S, RES1[20], 4)
         chunk_tree = DGG.treeify(chunk)
-        @test DGG.Fallbacks.node_cell(chunk_tree) == RES1[20]
+        @test DGG.Engine.node_cell(chunk_tree) == RES1[20]
         @test Trees.ncells(chunk_tree) == 64
         @test sort(STI.depth_first_search(Returns(true), chunk_tree)) == collect(1:64)
         for child in STI.getchild(chunk_tree)
-            @test DGG.level(DGG.Fallbacks.node_cell(child)) == 2
-            @test parent(S, DGG.Fallbacks.node_cell(child)) == RES1[20]
+            @test DGG.level(DGG.Engine.node_cell(child)) == 2
+            @test parent(S, DGG.Engine.node_cell(child)) == RES1[20]
         end
 
         # An empty grid is a leaf with no entries, not an error.
@@ -968,7 +987,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test issorted(cells; by=c -> (DGG.level(c), c))
         # ... and the reported keys are each cell's position within its own
         # level, which is what the fallback documents.
-        @test DGG.Fallbacks.curve_keys(set) ==
+        @test DGG.Engine.curve_keys(set) ==
               [DGG.cellposition(DGG.levelgrid(S, DGG.level(c)), c) for c in cells]
         # There are no position intervals to expand to, and asking says so.
         @test_throws ArgumentError DGG.level_ranges(set, 4)

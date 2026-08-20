@@ -12,13 +12,13 @@ DGG.levels(::CopernicusDEMSystem) = 0:1
 DGG.has_sorted_subtrees(::CopernicusDEMSystem) = true
 
 """
-    max_neighbors(CopernicusDEMSystem{N}(), connectivity) -> Int
+    maxneighbors(CopernicusDEMSystem{N}(), connectivity) -> Int
 
 `36N + 2` under `Vertex()` and `6` under `Edge()`. Both bounds are attained.
 """
-DGG.max_neighbors(sys::CopernicusDEMSystem, ::DGG.Vertex) =
+DGG.maxneighbors(sys::CopernicusDEMSystem, ::DGG.Vertex) =
     360 * Int(max(ncols(sys, 0), ncols(sys, NROWS - 1))) + 2
-DGG.max_neighbors(::CopernicusDEMSystem, ::DGG.Edge) = 6
+DGG.maxneighbors(::CopernicusDEMSystem, ::DGG.Edge) = 6
 
 "Lazy 0-based ids at one level; `rootcells` and `children` are windows over it."
 struct IdRange <: AbstractVector{DGG.LevelIndex}
@@ -93,7 +93,7 @@ raster order.
 function DGG.children(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     l = DGG.level(c)
     l == 0 || throw(ArgumentError(l == 1 ?
-        "level-1 Copernicus DEM cell $c is a pixel, at max_level 1, and has no children" :
+        "level-1 Copernicus DEM cell $c is a pixel, at maxlevel 1, and has no children" :
         "level $l is outside $(DGG.levels(sys))"))
     r, q, _, _ = decode(sys, c)
     return IdRange(Int32(1), tilebase(sys, r, q), Int(ncols(sys, r)) * N)
@@ -131,8 +131,8 @@ function DGG.descendant_range(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex,
     index = _checked_index(sys, c)          # also rejects a level outside 0:1
     target >= lc || throw(ArgumentError(
         "descendant level $target is above the cell's own level $lc"))
-    target <= DGG.max_level(sys) || throw(ArgumentError(
-        "descendant level $target is past max_level $(DGG.max_level(sys))"))
+    target <= DGG.maxlevel(sys) || throw(ArgumentError(
+        "descendant level $target is past maxlevel $(DGG.maxlevel(sys))"))
     if target == lc
         pos = Int(index + 1)
         return pos:pos
@@ -381,9 +381,17 @@ function _across(sys::CopernicusDEMSystem, level::Int, J2::Int64, a::Int64, K::I
     return out
 end
 
-# The 1-ring in the documented order.
-function _ring1(sys::CopernicusDEMSystem{N}, level::Int, c::DGG.LevelIndex,
-        connectivity::DGG.Connectivity) where {N}
+"""
+    one_ring(grid, c, connectivity) -> Vector{LevelIndex}
+
+The immediate neighbours of `c`, counter-clockwise seen from outside: `NW, W,
+SW, S, SE, E, NE, N` for an interior `Vertex()` cell and `N, W, S, E` for
+`Edge()`. A pole ring runs from the eastern lateral over the pole to the
+western.
+"""
+function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex,
+        connectivity::DGG.Connectivity)
+    sys, level = g.system, g.level
     edge_only = connectivity isa DGG.Edge
     J, K = _gridcoords(sys, level, c)
     a = ncols(sys, _gridrow(sys, level, J))
@@ -418,34 +426,6 @@ function _ring1(sys::CopernicusDEMSystem{N}, level::Int, c::DGG.LevelIndex,
     return out
 end
 
-# Breadth-first shells; only shell 1 has intrinsic lattice order.
-function _shells(g::LevelGrid, c::DGG.LevelIndex, steps::Int,
-        connectivity::DGG.Connectivity)
-    sys = g.system
-    shells = Vector{DGG.LevelIndex}[]
-    seen = Set{DGG.LevelIndex}((c,))
-    frontier = DGG.LevelIndex[c]
-    centre = DGG.cell_centroid(sys, c)
-    frame = nothing
-    for step in 1:steps
-        next = DGG.LevelIndex[]
-        for x in frontier, y in _ring1(sys, g.level, x, connectivity)
-            y in seen && continue
-            push!(seen, y)
-            push!(next, y)
-        end
-        if step == 1
-            isempty(next) || (frame = DGG.Fallbacks._ring_frame(g, centre, next))
-        elseif frame !== nothing
-            DGG.Fallbacks._wind!(next, g, centre, frame)
-        end
-        push!(shells, next)
-        isempty(next) && break
-        frontier = next
-    end
-    return shells
-end
-
 """
     neighbors(grid, c, k = 1; connectivity = Vertex()) -> Vector{LevelIndex}
     ring(grid, c, k; connectivity = Vertex()) -> Vector{LevelIndex}
@@ -459,16 +439,16 @@ pole apex is shared by its whole row under `Vertex()`.
 The 1-ring is counter-clockwise from outside: `NW, W, SW, S, SE, E, NE, N` for
 an interior `Vertex()` cell and `N, W, S, E` for `Edge()`. Pole rings run from
 the eastern lateral over the pole to the western. Later rings are ordered by
-azimuth; `ring(c, k)` is the final block of `neighbors(c, k)`.
+azimuth about the cell centre, from the spoke through the 1-ring's first entry;
+`ring(c, k)` is the final block of `neighbors(c, k)`.
 """
 function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     _checked_index(g, c)
     steps == 0 && return DGG.LevelIndex[]
-    steps == 1 && return _ring1(g.system, g.level, c, connectivity)
-    return reduce(vcat, _shells(g, c, steps, connectivity))
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    return reduce(vcat, DGG.adjacency_shells(g, c, steps, connectivity))
 end
 
 """
@@ -479,11 +459,10 @@ same rotational order [`neighbors`](@ref) documents; `k == 0` is `[c]`.
 """
 function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     _checked_index(g, c)
     steps == 0 && return DGG.LevelIndex[c]
-    steps == 1 && return _ring1(g.system, g.level, c, connectivity)
-    shells = _shells(g, c, steps, connectivity)
+    steps == 1 && return DGG.one_ring(g, c, connectivity)
+    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     return steps <= length(shells) ? shells[steps] : DGG.LevelIndex[]
 end

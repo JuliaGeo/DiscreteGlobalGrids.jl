@@ -72,7 +72,7 @@ cell, in ascending id order. The result uses a fixed-capacity vector.
 function children(::A5System, c::A5Cell)
     l = level(c)
     l < MAX_LEVEL || throw(ArgumentError(
-        "A5 cell $c is at max_level $MAX_LEVEL and has no children"))
+        "A5 cell $c is at maxlevel $MAX_LEVEL and has no children"))
     cell = _decode(c.id)
     cell === nothing && throw(ArgumentError("A5 cell $c is not a valid cell"))
     out = SmallVector{5,A5Cell}()
@@ -127,7 +127,7 @@ covering invariant.
 cap_inflation(::A5System) = 1.75
 
 """
-    max_neighbors(::A5System, connectivity) -> Int
+    maxneighbors(::A5System, connectivity) -> Int
 
 `11` under [`Vertex()`](@ref Vertex) and `5` under [`Edge()`](@ref Edge).
 
@@ -141,8 +141,8 @@ A5 has corner-only neighbours, so `Vertex()` and `Edge()` differ.
 
 The global bounds are therefore `5` and `11`; the latter occurs at level 1.
 """
-max_neighbors(::A5System, ::Vertex) = 11
-max_neighbors(::A5System, ::Edge) = 5
+maxneighbors(::A5System, ::Vertex) = 11
+maxneighbors(::A5System, ::Edge) = 5
 
 # ===========================================================================
 # The dense order: positions <-> ids
@@ -231,7 +231,7 @@ function descendants(::A5System, c::A5Cell, l::Integer)
     target >= lc || throw(ArgumentError(
         "descendant level $target is above the cell's own level $lc"))
     target <= MAX_LEVEL || throw(ArgumentError(
-        "descendant level $target is past max_level $MAX_LEVEL"))
+        "descendant level $target is past maxlevel $MAX_LEVEL"))
     # Invalid cells have no descendants, including at their reported level.
     isvalid(c) || throw(ArgumentError("A5 cell $c is not a valid cell"))
     target == lc && return A5Cell[c]

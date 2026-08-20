@@ -11,6 +11,9 @@ import GeoInterface as GI
 import GeometryOps as GO
 using GeometryOps.UnitSpherical: spherical_orient
 
+include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
+using .DGGTestHelpers: syslabel, basesystem
+
 const TOL = 1e-10
 
 # The manifold every grid in this package computes on. Named once: a bare
@@ -55,19 +58,17 @@ function regrid_ones(r)
     return out
 end
 
-base(sys) = sys isa DGG.AuthalicSystem ? parent(sys) : sys
-label(sys) = sys isa DGG.AuthalicSystem ?
-             "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
-
-demo_level(sys) = base(sys) isa DGG.H3System ? 2 :
-                  base(sys) isa DGG.IGeo7System ? 2 : 3
+# The demo level is a cost choice: the aperture-7 systems are already thousands
+# of cells at level 2 and the regridder builds every intersection.
+demo_level(sys) = basesystem(sys) isa DGG.H3System ? 2 :
+                  basesystem(sys) isa DGG.IGeo7System ? 2 : 3
 
 cases() = [(sys, demo_level(sys)) for sys in DGG.systems()] ∪
           [(DGG.AuthalicSystem(DGG.IGeo7System()), 2), (DGG.H3System(), 1)]
 
 @testset "regridding conserves in both directions" begin
     for (sys, l) in cases()
-        @testset "$(label(sys)) level $l" begin
+        @testset "$(syslabel(sys)) level $l" begin
             grid = DGG.levelgrid(sys, l)
             convex = all_rings_convex(grid)
 

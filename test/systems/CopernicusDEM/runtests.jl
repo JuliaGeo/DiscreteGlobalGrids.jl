@@ -228,7 +228,7 @@ end
             t = CD.tilecell(sys, lat_s, lon_w)
             r, q, _, _ = CD.decode(sys, t)
             nc = Int(CD.ncols(sys, r))
-            pg = PartialGrid(sys, t, 1)
+            pg = subtree(sys, t, 1)
             @test ncells(pg) == nc * N
             _, _, tile_s, tile_n = CD.cell_box(sys, t)
 
@@ -665,7 +665,7 @@ end
     # ---- which grids get it -------------------------------------------------
     # Only rectangular contiguous id runs qualify for `_block_cursor`.
     tile90 = CD.tilecell(GLO90, 50, 6)
-    rect = PartialGrid(GLO90, tile90, 1)
+    rect = subtree(GLO90, tile90, 1)
     ncols90 = CD.ncols_at(GLO90, 50)
     first_id = cellindex(rect, 1).index
     rows = PartialGrid(GLO90, 1, [LevelIndex(1, k)
@@ -730,7 +730,7 @@ end
         return (nodes = nodes, seen = count(seen), dup = dup, oob = oob)
     end
 
-    twin_tile = PartialGrid(TWIN, CD.tilecell(TWIN, 50, 6), 1)
+    twin_tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
     for (label, grid) in (("twin tile", twin_tile),
                           ("4 GLO-90 rows", rows),
                           ("GLO-90 tiles", levelgrid(GLO90, 0)),
@@ -891,7 +891,7 @@ end
     @info "level-1 tile descent" worst_ancestor worst_globe
     @test reached == 10          # every target found, in its own leaf
     @test worst_ancestor < 0     # and strictly inside every cap on the way down
-    @test worst_globe <= 0       # the whole-sphere root included, on its rim
+    @test worst_globe <= 0       # the whole-sphere root included, on its border
 
     # ---- the index space ----------------------------------------------------
     # Tree and leaf indices both use grid-position space.
@@ -982,10 +982,13 @@ end
 # (m) `neighbors` and `ring`: the closed form, and the bounds it forces
 # =========================================================================
 
-# The generic vertex-matching walk misses endpoint-free shared segments at band boundaries.
-fallback_neighbors(g, c, k = 1; connectivity = DGG.Vertex()) =
-    invoke(DGG.neighbors, Tuple{DGG.AbstractGrid,DGG.AbstractCellIndex,Integer},
-           g, c, k; connectivity)
+# The generic vertex-matching walk misses endpoint-free shared segments at band
+# boundaries. Reached through the generic `one_ring` method, since dispatching
+# `neighbors` on the level grid now lands on this system's own hook.
+fallback_neighbors(g, c; connectivity = DGG.Vertex()) =
+    invoke(DGG.one_ring,
+           Tuple{DGG.AbstractGrid,DGG.AbstractCellIndex,DGG.Connectivity},
+           g, c, connectivity)
 
 # Warmed-call allocations detect accidental spatial-tree fallback.
 _neighbor_bytes(g, c) = (DGG.neighbors(g, c, 1); @allocated DGG.neighbors(g, c, 1))
@@ -1129,6 +1132,22 @@ end
            for x in DGG.neighbors(g1, c, 1; connectivity = DGG.Edge())] ==
           [(14, 15), (15, 14), (16, 15), (15, 16)]
 
+    # ORACLE PIN on the OUTER rings' start. The winding law is start-invariant
+    # by construction, so nothing else here would notice ring 2 rotating.
+    # Ring 2 begins on the SAME spoke ring 1 does — the `NW` direction.
+    # Hand-checked at this cell: its ring-1 compass bearings run NW(320.96)
+    # W(270.28) SW(219.94) S(180) SE(140.06) E(89.72) NE(39.04) N(360),
+    # decreasing through one turn, which is counter-clockwise seen from outside
+    # and the sense its four boundary corners wind in (219.72, 140.28, 39.27,
+    # 320.73); ring 2's first entry sits at 301.97, the first bearing
+    # counter-clockwise past 320.96.
+    let d = DGG.cellindex(g0, 20000)
+        @test d == DGG.LevelIndex(0, 19999)
+        @test DGG.ring(g0, d, 2) == DGG.LevelIndex.(0,
+            [19637, 19997, 20357, 20717, 20718, 20719, 20720, 20721,
+                20361, 20001, 19641, 19281, 19280, 19279, 19278, 19277])
+    end
+
     # Closed-form adjacency must not build a spatial tree.
     for x in (c,
               CD.pixelcell(TWIN, CD.tilecell(TWIN, 0, 0), 15, 0),        # west tile edge
@@ -1255,7 +1274,7 @@ end
                 conn in (DGG.Vertex(), DGG.Edge())
             x = CD.pixelcell(TWIN, DGG.LevelIndex(0, CD.tileordinal(row, q)), j, i)
             got = Set(DGG.neighbors(g1, x, 1; connectivity = conn))
-            walk = Set(fallback_neighbors(g1, x, 1; connectivity = conn))
+            walk = Set(fallback_neighbors(g1, x; connectivity = conn))
             issubset(walk, got) || note!(outside, "($lat_s, $lon_w, $j, $i) under $conn")
             J = row * N + j
             straddles = (J > 0 && CD.ncols(TWIN, fld(J - 1, N)) != nc) ||
@@ -1297,14 +1316,14 @@ end
     end
 end
 
-@testset "max_neighbors is attained" begin
+@testset "maxneighbors is attained" begin
     # Both advertised neighbour bounds must be attained on every lattice.
     for sys in ALL_SYSTEMS
         N = CD.lat_intervals(sys)
         g = levelgrid(sys, 1)
         for (lat_s, j) in ((89, 0), (-90, N - 1))
             c = CD.pixelcell(sys, CD.tilecell(sys, lat_s, 0), j, 0)
-            @test length(DGG.neighbors(g, c)) == DGG.max_neighbors(sys, DGG.Vertex())
+            @test length(DGG.neighbors(g, c)) == DGG.maxneighbors(sys, DGG.Vertex())
             # Under `Edge()`, a pole cell has two laterals and one equatorward overlap.
             @test length(DGG.neighbors(g, c; connectivity = DGG.Edge())) == 3
         end
@@ -1313,10 +1332,10 @@ end
             nc = CD.ncols_at(sys, lat_s)
             @test maximum(length(DGG.neighbors(g, CD.pixelcell(sys, t, j, i);
                                                connectivity = DGG.Edge()))
-                          for i in 0:(nc - 1)) == DGG.max_neighbors(sys, DGG.Edge())
+                          for i in 0:(nc - 1)) == DGG.maxneighbors(sys, DGG.Edge())
         end
-        @test DGG.max_neighbors(sys, DGG.Vertex()) == 36 * N + 2
-        @test DGG.max_neighbors(sys, DGG.Edge()) == 6
+        @test DGG.maxneighbors(sys, DGG.Vertex()) == 36 * N + 2
+        @test DGG.maxneighbors(sys, DGG.Edge()) == 6
     end
 
     N = CD.lat_intervals(TWIN)
@@ -1374,8 +1393,8 @@ end
                for r in 0:(CD.NROWS - 1)]
     @test sort(unique(first.(counts0))) == [7, 8, 362]
     @test sort(unique(last.(counts0))) == [3, 4, 5]
-    @test maximum(first.(counts0)) < DGG.max_neighbors(TWIN, DGG.Vertex())
-    @test maximum(last.(counts0)) < DGG.max_neighbors(TWIN, DGG.Edge())
+    @test maximum(first.(counts0)) < DGG.maxneighbors(TWIN, DGG.Vertex())
+    @test maximum(last.(counts0)) < DGG.maxneighbors(TWIN, DGG.Edge())
 end
 
 end # @testset "CopernicusDEM system"

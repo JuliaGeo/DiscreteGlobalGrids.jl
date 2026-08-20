@@ -1,7 +1,3 @@
-# Load the shared ISEA geometry once, independent of system include order.
-
-isdefined(@__MODULE__, :ISEA) || include("../ISEA/ISEA.jl")
-
 """
     IGeo7
 
@@ -9,7 +5,7 @@ An aperture-7 hexagonal hierarchy on the icosahedron (ISEA7H) with Z7 indexing.
 Use [`IGeo7System`](@ref) for the system and [`Z7Cell`](@ref) for canonical
 cell identifiers. Integer lattice arithmetic and Z7 codecs are combined with
 the shared [`ISEA`](@ref) geometry.
-Subtree borders are generated in `O(rim)`; `subtree_border_count` returns their
+Subtree borders are generated in `O(border)`; `subtree_border_count` returns their
 size in closed form.
 """
 module IGeo7
@@ -17,8 +13,7 @@ module IGeo7
 import ..DiscreteGlobalGrids as DGG
 # Interface methods qualify package-level generics with `DGG.`.
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
-    AbstractCellIndex, Connectivity, Vertex, Edge, level, rawid,
-    subtree_border
+    AbstractCellIndex, Connectivity, Vertex, Edge, level, rawid
 import ..Helpers
 using ..ISEA
 
@@ -47,7 +42,6 @@ export IGeo7System,
     directioncode,
     is_pentagon,
     is_valid_cell,
-    subtree_border,
     subtree_border_count,
     z7_hex,
     z7_string

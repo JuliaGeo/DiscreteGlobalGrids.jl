@@ -14,6 +14,10 @@ struct UnimplementedGrid <: AbstractGrid end
 struct UnimplementedSystem <: AbstractHierarchicalGridSystem end
 struct UnimplementedIndex <: AbstractCellIndex end
 
+# A system that declares its id scheme and its levels, and stops there. Its
+# methods are below, beside the testset that reads them.
+struct IdentifiedSystem <: AbstractHierarchicalGridSystem end
+
 """
     DetachedDocProbe
 
@@ -24,7 +28,11 @@ the type as undocumented.
 # This comment must remain between the docstring and the type definition.
 struct DetachedDocProbe end
 
-const EXPORTED = filter(!=(:DiscreteGlobalGrids), names(DiscreteGlobalGrids))
+# `names` returns both tiers on Julia >= 1.11, so the split is made explicitly:
+# `EXPORTED` is what `using DiscreteGlobalGrids` brings in, `PUBLIC` is that
+# plus the names reachable only through the module path.
+const PUBLIC = filter(!=(:DiscreteGlobalGrids), names(DiscreteGlobalGrids))
+const EXPORTED = filter(n -> Base.isexported(DiscreteGlobalGrids, n), PUBLIC)
 
 # The public surface each shipped system contributes: its singleton, the grid
 # type `levelgrid` returns, and its canonical id type. Derived from the
@@ -74,19 +82,44 @@ end
     # Required interface names are exported.
     for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :cellposition,
               :rawid, :reindex, :cellindextypes, :cell_polygon, :cell_area,
-              :cell_extent, :getcell, :cellat, :neighbors, :ring, :halo_table, :treeify,
-              :query, :system, :level, :cellindextype, :levels, :max_level,
-              :levelgrid, :rootcells, :children, :node_extent, :cap_inflation,
-              :max_neighbors, :has_sorted_subtrees, :ancestor, :descendants,
+              :cell_extent, :getcell, :cellat, :neighbors, :ring, :treeify,
+              :query, :system, :level, :cellindextype, :levels, :maxlevel,
+              :levelgrid, :rootcells, :children, :node_extent,
+              :maxneighbors, :has_sorted_subtrees, :ancestor, :descendants,
               :descendant_range, :LevelIndex, :Connectivity, :Vertex, :Edge,
-              :authalic_sphere)
+              :cellsize, :levelfor, :subtree, :halo, :border, :interior,
+              :adjacency, :AdjacencyTable, :halocells, :halopositions)
         @test n in EXPORTED
     end
+
+    # The `public` tier: documented and reachable by module path, deliberately
+    # absent from `using`. Machinery a caller names only to talk ABOUT it.
+    for n in (:EdgeCellIterator, :InnerCellIterator, :SubtreeHaloIterator,
+              :SubsetHaloIterator, :HaloPositionIterator, :RegionSide,
+              :sizehint, :halo_positions, :SubsetPositionedCell,
+              :HierarchicalGridCursor, :StorageOrder, :NeighborCallbackError,
+              :cap_inflation, :directioncode, :authalic_sphere,
+              :StoreSnapshot, :StoreDescription, :ArrayEntry, :ChunkManifest,
+              :GridReference, :CONVENTION_REGISTRY, :DEFAULT_WRITE_CONVENTIONS,
+              :ENCODING_REGISTRY, :GRID_REFERENCE)
+        @test n in PUBLIC
+        @test !Base.isexported(DiscreteGlobalGrids, n)
+    end
+
+    # The type every boundary and centroid method returns, and the
+    # position-space covering verb the zonal recipe calls, are reachable from
+    # the top namespace — `using DiscreteGlobalGrids` and no module path.
+    @test :UnitSphericalPoint in EXPORTED
+    @test UnitSphericalPoint === DGG.GO.UnitSpherical.UnitSphericalPoint
+    @test :covering_positions in EXPORTED
 
     # Retired interface names are not defined.
     for n in (:AbstractDGGS, :all_systems, :DGGSGrid, :DGGSCursor, :cell_neighbors,
               :cell_children, :cell_parent, :has_exact_subtree_cap,
-              :supports_prefix_ranges, :subtree_grid, :HEALPixDGGS)
+              :supports_prefix_ranges, :subtree_grid, :HEALPixDGGS,
+              :subtree_halo, :subtree_border, :subtree_interior, :halo_table,
+              :stencil_table, :HaloTable, :StencilTable, :halo_sizehint,
+              :is_contained, :max_level, :max_neighbors)
         @test !isdefined(DiscreteGlobalGrids, n)
     end
 
@@ -102,9 +135,9 @@ end
     @test parent(Covers(:target)) === :target
     @test Intersects(:t) isa DE9IMPredicate
 
-    # Every exported name carries a docstring.
+    # Every name of either tier carries a docstring.
     @test docstring(@__MODULE__, :UnimplementedGrid) == ""  # the probe can fail
-    for n in EXPORTED
+    for n in PUBLIC
         @test !isempty(docstring(DiscreteGlobalGrids, n))
     end
 
@@ -184,13 +217,34 @@ end
     @test Vertex() != Edge()
 end
 
+@testset "the radix-4 quad-face family" begin
+    # S2, HEALPix and ISEA4R get their hierarchy, level-grid arithmetic and
+    # subtree engines from `AbstractQuadFaceGridSystem` alone. A system that
+    # silently detached from the supertype would keep compiling and start
+    # answering with the generic fallbacks instead.
+    @test AbstractQuadFaceGridSystem <: AbstractHierarchicalGridSystem
+    for s in (S2System(), HEALPixSystem(), ISEA4RSystem())
+        @test s isa AbstractQuadFaceGridSystem
+    end
+
+    # No other registered system reaches the family's arithmetic: a non-member
+    # selects its own `rootcells`, never the supertype's. Asked of the method
+    # table rather than of the type names, so a system renamed or added is
+    # covered without anyone editing a list.
+    for s in DGG.systems()
+        s isa AbstractQuadFaceGridSystem && continue
+        m = which(DGG.rootcells, Base.typesof(s))
+        @test m.sig.parameters[2] !== AbstractQuadFaceGridSystem
+    end
+end
+
 @testset "trait defaults" begin
     s = UnimplementedSystem()
     g = UnimplementedGrid()
 
     # Documented defaults, live.
     @test has_sorted_subtrees(s) === false
-    @test cap_inflation(s) === 1.2
+    @test DGG.cap_inflation(s) === 1.2
 
     # A standalone grid has no hierarchy, and says so rather than erroring.
     @test system(g) === nothing
@@ -223,6 +277,47 @@ end
     @test_throws MethodError rawid(UnimplementedIndex())
 end
 
+# `AbstractHierarchicalGridSystem`'s docstring splits the implementor surface
+# into a required half and a defaulted half, and `IdentifiedSystem` is the split
+# made executable: it declares identity and levels and nothing else, so every
+# required method must refuse to answer and every defaulted one must answer
+# anyway. A default handed to a required method, or taken from a defaulted one,
+# rewrites the documented contract without touching the documentation.
+DGG.cellindextype(::IdentifiedSystem) = LevelIndex
+DGG.levels(::IdentifiedSystem) = 0:2
+
+@testset "system required/defaulted split" begin
+    s = IdentifiedSystem()
+    c = LevelIndex(1, 0)
+
+    # Declared, so they answer.
+    @test cellindextype(s) === LevelIndex
+    @test levels(s) == 0:2
+
+    # Required: identity and hierarchy.
+    @test_throws Exception rootcells(s)
+    @test_throws Exception parent(s, c)
+    @test_throws Exception children(s, c)
+
+    # Required: the five level-grid primitives, in their system-level arity.
+    @test_throws Exception ncells(s, 1)
+    @test_throws Exception cellindex(s, 1, 1)
+    @test_throws Exception cellposition(s, c)
+    @test_throws Exception cell_boundary(s, c)
+    @test_throws Exception cell_centroid(s, c)
+
+    # Defaulted, and answering for a system that declared none of them.
+    @test maxneighbors(s, Vertex()) === nothing
+    @test levelgrid(s, 1) === HierarchicalLevelGrid(s, 1)
+    @test DGG.cap_inflation(s) === 1.2
+    @test maxlevel(s) == 2
+    @test has_sorted_subtrees(s) === false
+    # `node_extent`'s default needs the geometry this system does not have, so
+    # only its existence is pinned here; the covering law it must satisfy is in
+    # the fallbacks suite.
+    @test hasmethod(node_extent, Tuple{AbstractHierarchicalGridSystem,AbstractCellIndex})
+end
+
 @testset "unimplemented system generics throw MethodError" begin
     s = UnimplementedSystem()
     c = LevelIndex(1, 0)
@@ -241,10 +336,17 @@ end
     @test_throws MethodError reindex(LevelIndex, s, c)
 
     # The derived trait defaults are total only once their primitive is wired.
-    @test_throws MethodError max_level(s)          # -> levels(s)
+    @test_throws MethodError maxlevel(s)          # -> levels(s)
     @test_throws MethodError cellindextypes(s)     # -> cellindextype(s)
-    @test_throws MethodError max_neighbors(s)      # -> max_neighbors(s, Vertex())
-    @test_throws MethodError max_neighbors(s, Vertex())
+
+    # `maxneighbors` is total: a system that declares no static degree bound
+    # answers `nothing`, and the subset neighbour machinery buffers its
+    # one-rings in a `Vector` instead of a `SmallVector`.
+    @test maxneighbors(s) === nothing             # -> maxneighbors(s, Vertex())
+    @test maxneighbors(s, Vertex()) === nothing
+    @test maxneighbors(s, Edge()) === nothing
 end
 
 end # module InterfaceTests
+
+include("sizing.jl")

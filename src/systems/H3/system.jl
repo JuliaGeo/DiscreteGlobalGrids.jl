@@ -81,7 +81,7 @@ order. The result uses a fixed-capacity vector.
 function children(::H3System, c::H3Cell)
     l = level(c)
     l < MAX_RESOLUTION || throw(ArgumentError(
-        "H3 cell $c is at max_level $MAX_RESOLUTION and has no children"))
+        "H3 cell $c is at maxlevel $MAX_RESOLUTION and has no children"))
     out = SmallVector{7,H3Cell}()
     # `cellToChildren` emits ascending ids with deleted digits skipped. A
     # pentagon leaves the final slot as the invalid sentinel `0`.
@@ -111,7 +111,7 @@ covering invariant.
 cap_inflation(::H3System) = 1.2
 
 """
-    max_neighbors(::H3System, connectivity) -> Int
+    maxneighbors(::H3System, connectivity) -> Int
 
 `6`, for either connectivity.
 
@@ -120,7 +120,7 @@ edge are the same relation — three cells meet at every vertex and any two of
 them already share an edge — so [`Vertex()`](@ref Vertex) and [`Edge()`](@ref Edge)
 coincide, and the bound is the hexagon's six. The twelve pentagons have five.
 """
-max_neighbors(::H3System, ::Connectivity=Vertex()) = 6
+maxneighbors(::H3System, ::Connectivity=Vertex()) = 6
 
 # ===========================================================================
 # The dense order: positions <-> ids
@@ -200,7 +200,7 @@ function descendants(::H3System, c::H3Cell, l::Integer)
     target >= lc || throw(ArgumentError(
         "descendant level $target is above the cell's own level $lc"))
     target <= MAX_RESOLUTION || throw(ArgumentError(
-        "descendant level $target is past max_level $MAX_RESOLUTION"))
+        "descendant level $target is past maxlevel $MAX_RESOLUTION"))
     target == lc && return H3Cell[c]
     return [H3Cell(id) for id in H3Native.cell_to_children(c.id, target)]
 end
@@ -221,7 +221,7 @@ function descendant_range(sys::H3System, c::H3Cell, l::Integer)
     target >= lc || throw(ArgumentError(
         "descendant level $target is above the cell's own level $lc"))
     target <= MAX_RESOLUTION || throw(ArgumentError(
-        "descendant level $target is past max_level $MAX_RESOLUTION"))
+        "descendant level $target is past maxlevel $MAX_RESOLUTION"))
     grid = levelgrid(sys, target)
     # The `l == level(c)` case is the cell's own one-element range: window
     # descent in `HierarchicalGridCursor` asks for it at the level above the

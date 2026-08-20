@@ -42,13 +42,19 @@ _hascontext(::Nothing) = false
 _hascontext(x::AbstractString) = !isempty(x)
 _hascontext(x::AbstractVector) = !isempty(x)
 
+# A reconciled value can be a whole id array. Show enough of it to recognise it.
+function _brief(x)
+    s = repr(x)
+    return length(s) <= 120 ? s : first(s, 117) * "…"
+end
+
 function Base.showerror(io::IO, e::DGGSFormatError)
     print(io, "DGGSFormatError: ", e.check)
     _hascontext(e.store) && print(io, "\n  store: ", e.store)
     _hascontext(e.conventions) &&
         print(io, "\n  conventions fired: ", join(e.conventions, ", "))
-    e.declared === nothing || print(io, "\n  declared: ", repr(e.declared))
-    e.observed === nothing || print(io, "\n  observed: ", repr(e.observed))
+    e.declared === nothing || print(io, "\n  declared: ", _brief(e.declared))
+    e.observed === nothing || print(io, "\n  observed: ", _brief(e.observed))
     isempty(e.detail) || print(io, "\n  ", e.detail)
     return nothing
 end

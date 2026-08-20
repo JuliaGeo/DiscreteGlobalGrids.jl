@@ -23,12 +23,11 @@ including at pentagons.
 """
 function neighbors(grid::LevelGrid, c::H3Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{MAX_NEIGHBORS,H3Cell}()
-    steps == 1 && return _ring1(c)
+    steps == 1 && return one_ring(grid, c, connectivity)
     out = H3Cell[]
-    append!(out, _ring1(c))
+    append!(out, one_ring(grid, c, connectivity))
     for j in 2:steps
         append!(out, _ring_vector(c, j))
     end
@@ -57,19 +56,28 @@ azimuth.
 """
 function ring(grid::LevelGrid, c::H3Cell, k::Integer;
         connectivity::Connectivity=Vertex())
-    steps = Int(k)
-    steps >= 0 || throw(ArgumentError("k must be non-negative, got $steps"))
+    steps = DGG.checked_steps(k)
     steps == 0 && return H3Cell[c]
-    steps == 1 && return collect(_ring1(c))
+    steps == 1 && return collect(one_ring(grid, c, connectivity))
     return _ring_vector(c, steps)
 end
 
 # ===========================================================================
 # The shells
+#
+# libh3 walks its own shells, so this system implements the `one_ring` hook and
+# keeps its native `neighbors`/`ring` rather than the shared breadth-first walk.
 # ===========================================================================
 
-# The k = 1 ring, allocation-free on both paths.
-function _ring1(c::H3Cell)
+"""
+    one_ring(grid, c, connectivity) -> SmallVector{6,H3Cell}
+
+The immediate neighbours of `c`, counter-clockwise seen from outside, starting
+at libh3's deterministic per-cell direction. Allocation-free on both paths:
+`gridRingUnsafe` where it applies, and an azimuth-sorted disk at a pentagon
+seam.
+"""
+function one_ring(::LevelGrid, c::H3Cell, ::Connectivity)
     shell = H3Native.grid_ring_unsafe_1(c.id)
     out = SmallVector{MAX_NEIGHBORS,H3Cell}()
     if shell !== nothing

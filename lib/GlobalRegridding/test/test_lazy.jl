@@ -367,6 +367,28 @@ end
         end
     end
 
+    @testset "budget tiles build one restricted tree each" begin
+        # Non-aligned tiles hit the fallback tree; blocks share it per tile.
+        xd = DD.X(-168.75:22.5:168.75)
+        yd = DD.Y(-78.75:22.5:78.75)
+        dst = CountingSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
+        raster = DD.DimArray(T7Counting(collect(reshape(1.0:128, 16, 8)), (8, 4)),
+            (xd, yd))
+        src = RasterGrid(raster)
+        plan = t7_plan(Conservative(), dst, src; chunks = (12,))
+        A = LazyRegridArray(raster, plan)
+        @test !A.tiling.spacetiled
+        ntile = length(A.tiling.runs)
+        @test ntile == 3
+        b0 = dst.builds[]
+        out = A[1:32]
+        blocks = GR.residency(A).loads + GR.residency(A).hits
+        @test blocks > ntile
+        @test dst.builds[] - b0 == ntile
+        @test out == regrid(raster; to = dst, from = src, method = Conservative(),
+            lazy = false)
+    end
+
     @testset "storage policies" begin
         @test_throws ArgumentError PerChunk(0)
         @test_throws ArgumentError PerChunk(; maxbytes = 0)
@@ -574,6 +596,19 @@ end
         @test LazyRegridArray(T7Counting(field, (4, 2)), gridded)[1:32] == expected
         @test_throws ArgumentError LazyRegridArray(T7Counting(field, (4, 2)),
             t7_plan(ToyDiagonalMethod(), whole, srcspace; chunks = (8, 2)))
+    end
+
+    @testset "outer parallelism wins" begin
+        # Top level threads exactly when the session has threads.
+        top = Threads.nthreads() > 1 ? GOCore.True() : GOCore.False()
+        @test GR._innerthreaded() === top
+        # Inside a declared outer wave the inner build stays serial, spawned
+        # tasks included, because they inherit the scope.
+        Base.ScopedValues.@with GR.OUTER_PARALLEL => true begin
+            @test GR._innerthreaded() === GOCore.False()
+            @test fetch(Threads.@spawn GR._innerthreaded()) === GOCore.False()
+        end
+        @test GR._innerthreaded() === top
     end
 
     @testset "L5 — chunking invariance" begin

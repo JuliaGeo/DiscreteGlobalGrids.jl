@@ -43,6 +43,16 @@ function build_weights!(coo::WeightCOO, method::T6CountingMethod,
     return build_weights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
+# A lookup that names cells of its own, as a DGGS cell axis does.
+struct T6Grid end
+Base.show(io::IO, ::T6Grid) = print(io, "T6Grid()")
+
+struct T6Cell
+    id::Int
+end
+
+GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
+
 @testset "Integration" begin
 
     @testset "conservation" begin
@@ -126,16 +136,68 @@ end
 
         # Twelve monthly fields cost one weight construction, not twelve.
         @test method.builds == 1
-        # Destination cells first, the month dimension after it unchanged.
-        @test size(out) == (ncells(dst), 12)
+        # The destination's own axes first, the month dimension after them
+        # unchanged.
+        @test size(out) == (8, 4, 12)
         @test collect(DD.lookup(out, DD.Ti)) == 1:12
         # Each slice is that slice's own 2-D regrid: the slice loop neither
         # transposes nor reorders.
         for k in 1:12
-            @test Array(out)[:, k] ≈
-                  regrid(cube[:, :, k]; to = dst, method = Conservative())
+            @test Array(out)[:, :, k] ≈
+                  Array(regrid(cube[:, :, k]; to = dst, method = Conservative()))
         end
         @test method.builds == 1
+    end
+
+    @testset "destination labelling" begin
+        f(lon, lat) = 2.0 + sind(2 * lat) + 0.25 * cosd(lon)
+        src = t6_raster(f, t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
+        dst = t6_space(t6_centres(-180, 180, 9), t6_centres(-90, 90, 6))
+
+        # An area method returns the destination's own axes, sampled as the
+        # cells it integrated over, with the space's edges as their bounds.
+        area = regrid(src; to = dst, method = Conservative())
+        @test DD.dims(area) isa Tuple{<:DD.X,<:DD.Y}
+        @test collect(DD.lookup(area, DD.X)) == t6_centres(-180, 180, 9)
+        @test DD.sampling(DD.lookup(area, DD.X)) isa DD.Lookups.Intervals
+        @test DD.sampling(DD.lookup(area, DD.Y)) isa DD.Lookups.Intervals
+        @test DD.intervalbounds(DD.lookup(area, DD.X))[1] == (-180.0, -140.0)
+        @test DD.intervalbounds(DD.lookup(area, DD.Y))[1] == (-90.0, -60.0)
+
+        # Labelling only reshapes: the values are the cell-position vector the
+        # same regrid off a bare array returns.
+        @test vec(parent(area)) == regrid(parent(src); to = dst,
+            from = RasterGrid(src), method = Conservative())
+
+        # A point sample says so instead, over the same cell centres.
+        point = regrid(src; to = dst, method = NearestCell())
+        @test DD.sampling(DD.lookup(point, DD.X)) isa DD.Lookups.Points
+        @test collect(DD.lookup(point, DD.X)) == collect(DD.lookup(area, DD.X))
+
+        # `sampling` overrides the method's rule in both directions, and
+        # changes nothing but the label.
+        forced = regrid(src; to = dst, method = Conservative(),
+            sampling = DD.Lookups.Points())
+        @test DD.sampling(DD.lookup(forced, DD.X)) isa DD.Lookups.Points
+        @test parent(forced) == parent(area)
+        @test DD.sampling(DD.lookup(regrid(src; to = dst, method = NearestCell(),
+                sampling = DD.Lookups.Intervals(DD.Lookups.Center())), DD.X)) isa
+              DD.Lookups.Intervals
+
+        # A `(Y, X)` destination labels in its own array order.
+        yfirst = RasterGrid(DD.DimArray(zeros(6, 9),
+            (DD.Y(t6_centres(-90, 90, 6)), DD.X(t6_centres(-180, 180, 9)))))
+        @test DD.dims(regrid(src; to = yfirst)) isa Tuple{<:DD.Y,<:DD.X}
+    end
+
+    @testset "a cell axis names its own source" begin
+        data = DD.DimArray(zeros(32), (DD.Dim{:Cells}(DD.Lookups.Categorical(
+            [T6Cell(i) for i in 1:32]; order = DD.Lookups.Unordered())),))
+        dst = t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
+
+        # Without `from` the source space is derived from the data, and a cell
+        # axis is not a raster lattice: name the grid it holds, not `xdim`.
+        @test_throws "from = T6Grid()" regrid(data; to = dst)
     end
 
     @testset "cross-method agreement" begin
@@ -168,13 +230,66 @@ end
             t6_centres(-20, 20, 4))) == (nothing, nothing)
     end
 
+    @testset "bilinear west of a regional raster" begin
+        # A point just west of a regional raster stays just west on its chart;
+        # folded a period east, the non-periodic axis clamps it to the east column.
+        xs, ys = t6_centres(0, 120, 24), t6_centres(-30, 30, 12)
+        region = t6_space(xs, ys)
+        @test GR._onbranch(region.xedges, -1.0, 360.0) ≈ -1.0
+        @test GR._onbranch(region.xedges, 61.0, 360.0) ≈ 61.0
+        @test GR._onbranch(region.xedges, -1.0, nothing) == -1.0
+        @test GR.chartcoords(region, GR.LonLatToSphere()(-1.0, 10.0))[1] ≈ -1.0
+
+        # Pad cells clamp to the adjacent edge column, and destination tiling
+        # changes nothing: the pad tile discovers the stencil's source chunk.
+        f(lon, lat) = 2.0 + 0.01 * lon + 0.03 * lat
+        data = t6_raster(f, xs, ys)
+        src = RasterGrid(data; chunks = ([1:8, 9:16, 17:24], [1:12]))
+        dxs = t6_centres(-5, 125, 26)
+        dst = RasterGrid(DD.DimArray(zeros(12, 26), (DD.Y(ys), DD.X(dxs)));
+            chunks = ([1:7, 8:14, 15:20, 21:26], [1:12]))
+        untiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
+            lazy = false)
+        tiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
+            lazy = true)
+        @test untiled[GR.cellposition(dst, 1, 6)] ≈ f(xs[1], ys[6])
+        @test untiled[GR.cellposition(dst, 26, 6)] ≈ f(xs[end], ys[6])
+        # Lazy and eager output share the destination's axes and values.
+        @test DD.dims(tiled) == DD.dims(untiled)
+        @test all(isequal.(vec(Array(tiled)), vec(Array(untiled))))
+    end
+
+    @testset "destination dims echo construction order, lazy and eager" begin
+        f(lon, lat) = 1.0 + 0.02 * lon - 0.01 * lat
+        data = t6_raster(f, t6_centres(-180, 180, 24), t6_centres(-90, 90, 12))
+        dxs, dys = t6_centres(-180, 180, 12), t6_centres(-90, 90, 6)
+        xfirst = RasterGrid(DD.DimArray(zeros(12, 6), (DD.X(dxs), DD.Y(dys))))
+        yfirst = RasterGrid(DD.DimArray(zeros(6, 12), (DD.Y(dys), DD.X(dxs))))
+
+        # A (Y, X)-constructed destination comes back (Y, X)-shaped.
+        eagery = regrid(data; to = yfirst, lazy = false)
+        @test DD.dims(eagery, 1) isa DD.Y
+        @test DD.dims(eagery, 2) isa DD.X
+        @test size(eagery) == (6, 12)
+
+        # The lazy result carries the same dims and values in either order.
+        for dst in (xfirst, yfirst)
+            eager = regrid(data; to = dst, lazy = false)
+            lazy = regrid(data; to = dst, lazy = true)
+            @test parent(lazy) isa GR.ShapedRegridArray
+            @test DD.dims(lazy) == DD.dims(eager)
+            @test size(lazy) == size(eager)
+            @test all(isequal.(Array(parent(lazy)), parent(eager)))
+        end
+    end
+
     @testset "raster subtrees" begin
         space = RasterGrid(DD.DimArray(zeros(8, 6),
                 (DD.X(t6_centres(-180, 180, 8)), DD.Y(t6_centres(-90, 90, 6))));
             chunks = ([1:4, 5:8], [1:3, 4:6]))
 
-        # Chunk rectangles retain the recursive tree in either array orientation.
-        @test all(GR.subtree(space, cellindices(space, c)) isa GR.RasterCellTree
+        # Chunk rectangles retain the recursive (memoized) tree in either orientation.
+        @test all(GR.subtree(space, cellindices(space, c)) isa GR.MemoRasterTree
                   for c in 1:nchunks(space))
         @test GR.subtree(space, [1, 5, 30]) isa GR.RasterFlatTree
     end

@@ -196,7 +196,7 @@ cell_center(z7::Unsigned; kwargs...) = cell_center(UInt64(z7); kwargs...)
 
 """
     cell_boundary_cartesian(z7; closed_ring=true, orientation=ORIENT_IDENTITY)
-        -> Vector{NTuple{3,Float64}}
+        -> Helpers.SmallList{7,NTuple{3,Float64}}
 
 Boundary of `z7` as unit-sphere `xyz` tuples: six corners for a hexagon and
 five for a pentagon. Rings wind counterclockwise (seen from outside the sphere)
@@ -207,8 +207,9 @@ function cell_boundary_cartesian(z7::UInt64; closed_ring::Bool=true,
     res = _geometry_checked(z7)
     base = z7_base_cell(z7)
     pent = z7_is_pentagon(z7)
-    n = pent ? 5 : 6
-    out = Vector{NTuple{3,Float64}}(undef, n + (closed_ring ? 1 : 0))
+    # Inline storage: at most six corners plus the closing repeat, and this runs
+    # once per cell on the regridding hot path.
+    out = Helpers.empty_small_list(Val(7), (0.0, 0.0, 0.0))
     if pent
         # corner directions live in the res-r lattice (rotation arg P_r)
         thdel = THETA_DIR[res+1][z7_deleted_digit(base)]
@@ -216,7 +217,7 @@ function cell_boundary_cartesian(z7::UInt64; closed_ring::Bool=true,
         for k in 1:5
             ang = thdel + 60.0 * k - 30.0            # bisector between slots
             u = rho * cis(deg2rad(mod(ang, DEV_CONE_DEG)))
-            out[k] = from_grid(orientation, dev_to_xyz(base, u))
+            out = Helpers.small_push(out, from_grid(orientation, dev_to_xyz(base, u)))
         end
     else
         (a, b) = _encode_lattice(z7, base, res)
@@ -231,10 +232,10 @@ function cell_boundary_cartesian(z7::UInt64; closed_ring::Bool=true,
                 # the cell center sits on (cone angle ψ−300 CCW / ψ−60 CW)
                 u *= (thc > 150.0 ? CIS_P60 : CIS_M60)
             end
-            out[j+1] = from_grid(orientation, dev_to_xyz(base, u))
+            out = Helpers.small_push(out, from_grid(orientation, dev_to_xyz(base, u)))
         end
     end
-    closed_ring && (out[end] = out[1])
+    closed_ring && (out = Helpers.small_push(out, @inbounds out[1]))
     return out
 end
 cell_boundary_cartesian(z7::Unsigned; kwargs...) =
@@ -683,16 +684,13 @@ resolution-20 id (`:res20_geometry`, no geometry), for
 (`:no_parent`).
 """
 @inline function cell_to_parent(z7::UInt64, res::Integer)
-    current = _geometry_checked(z7)
-    0 <= res <= current ||
-        throw(InvalidZ7Error(:parent_res, z7, _z7_int(res), current))
-    return z7 | _z7_tail_mask(res)
+    _geometry_checked(z7)
+    return z7_parent(z7, res)
 end
 
 @inline function cell_to_parent(z7::UInt64)
-    current = _geometry_checked(z7)
-    current > 0 || throw(InvalidZ7Error(:no_parent, z7, 0, 0))
-    return z7 | _z7_tail_mask(current - 1)
+    _geometry_checked(z7)
+    return z7_parent(z7)
 end
 
 @inline cell_to_parent(z7::Unsigned) = cell_to_parent(UInt64(z7))
@@ -784,7 +782,7 @@ end
 
 # The subtree-border automaton tracks each cell's contiguous arc of exposed
 # lattice directions. Its mirrored transition table follows level chirality,
-# prunes interior children, and enumerates only the `O(rim)` result. Pruning is
+# prunes interior children, and enumerates only the `O(border)` result. Pruning is
 # sound because a child's neighbors descend only from its parent or the parent's
 # six edge neighbors (`|sigma(d) + u - sigma(d')| <= 3 < sqrt 7`). Census: an arc
 # of length `L` has exactly `L` border children — one 2-arc, one 3-arc, the rest
@@ -853,7 +851,7 @@ function border_descendants(z7::UInt64, res::Integer)
     own <= res <= MAX_RESOLUTION ||
         throw(InvalidZ7Error(:descendant_res, z7, _z7_int(res), own))
     # `collect_subtree` checks that the iterator's declared length is exact.
-    return [c.id for c in DGG.collect_subtree(Z7RimEngine(z7, own, Int(res)))]
+    return [c.id for c in DGG.collect_subtree(Z7BorderEngine(z7, own, Int(res)))]
 end
 
 border_descendants(z7::Unsigned, res::Integer) = border_descendants(UInt64(z7), res)
@@ -903,30 +901,30 @@ end
 end
 
 """
-    Z7RimEngine(z, res, target)
+    Z7BorderEngine(z, res, target)
 
 Digit-lexicographic walk over the border automaton, yielding every res-`target`
-rim descendant of `z` as a `Z7Cell`, ascending, in `O(depth)` memory.
+border descendant of `z` as a `Z7Cell`, ascending, in `O(depth)` memory.
 """
-struct Z7RimEngine
+struct Z7BorderEngine
     z::UInt64
     res::Int
     target::Int
 end
 
-Base.eltype(::Type{Z7RimEngine}) = Z7Cell
-Base.IteratorSize(::Type{Z7RimEngine}) = Base.HasLength()
-Base.length(e::Z7RimEngine) = Int(_border_count(e.z, e.res, e.target))
+Base.eltype(::Type{Z7BorderEngine}) = Z7Cell
+Base.IteratorSize(::Type{Z7BorderEngine}) = Base.HasLength()
+Base.length(e::Z7BorderEngine) = Int(_border_count(e.z, e.res, e.target))
 
-function Base.iterate(e::Z7RimEngine)
+function Base.iterate(e::Z7BorderEngine)
     e.target == e.res && return (Z7Cell(e.z), Z7Walk(e.z, _z7_empty_stack()))
     return iterate(e, _z7_root_walk(e))
 end
 
-Base.iterate(e::Z7RimEngine, w::Z7Walk) = _z7_rim_advance(e.res, e.target, w)
+Base.iterate(e::Z7BorderEngine, w::Z7Walk) = _z7_border_advance(e.res, e.target, w)
 
-# Advance either a full-rim or seeded-arc walk from its current frame stack.
-function _z7_rim_advance(res0::Int, target::Int, w::Z7Walk)
+# Advance either a full-border or seeded-arc walk from its current frame stack.
+function _z7_border_advance(res0::Int, target::Int, w::Z7Walk)
     z = w.z
     st = w.stack
     while !isempty(st)
@@ -976,13 +974,13 @@ Base.IteratorSize(::Type{Z7ArcEngine}) = Base.SizeUnknown()
 Base.iterate(e::Z7ArcEngine) = iterate(e, Z7Walk(e.z,
     Helpers.small_push(_z7_empty_stack(), Z7Frame(e.L, e.s, Int8(0), false))))
 
-Base.iterate(e::Z7ArcEngine, w::Z7Walk) = _z7_rim_advance(e.res, e.target, w)
+Base.iterate(e::Z7ArcEngine, w::Z7Walk) = _z7_border_advance(e.res, e.target, w)
 
 """
     Z7InteriorEngine(z, res, target)
 
-Iterate interior descendants. Branches pruned by the rim automaton are wholly
-interior and are descended without storing a rim set.
+Iterate interior descendants. Branches pruned by the border automaton are wholly
+interior and are descended without storing a border set.
 """
 struct Z7InteriorEngine
     z::UInt64
@@ -1022,7 +1020,7 @@ function Base.iterate(e::Z7InteriorEngine, w::Z7Walk)
         shift = _z7_shift(res + 1)
         z = (z & ~(UInt64(7) << shift)) | (UInt64(digit) << shift)
         if child[1] != 0
-            res + 1 == e.target && continue     # a rim cell: not ours
+            res + 1 == e.target && continue     # a border cell: not ours
             st = Helpers.small_push(st,
                 Z7Frame(Int8(child[1]), Int8(child[2]), Int8(0), false))
             continue

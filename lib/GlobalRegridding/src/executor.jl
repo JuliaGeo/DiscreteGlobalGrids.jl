@@ -393,12 +393,21 @@ function outputeltype(::Type{Tin}) where {Tin}
     return Missing <: Tin ? Union{Missing,F} : F
 end
 
-# Put the destination cell axis before the unchanged non-spatial dimensions.
-function wrapoutput(out::AbstractArray, data, sd)
+"""
+    wrapoutput(out, data, sd, dstdims) -> array
+
+Put the destination's own axes `dstdims`, or one flat `Cell` axis when it has
+none ([`destinationdims`](@ref)), before the source's unchanged non-spatial
+dimensions. Sources that are not dimensional are returned unlabelled.
+"""
+function wrapoutput(out::AbstractArray, data, sd, dstdims)
     data isa DD.AbstractDimArray || return out
     ds = DD.dims(data)
     others = Tuple(ds[i] for i in eachindex(ds) if !(i in sd))
-    return DD.DimArray(out, (DD.Dim{:Cell}(1:size(out, 1)), others...))
+    dstdims === nothing &&
+        return DD.DimArray(out, (DD.Dim{:Cell}(1:size(out, 1)), others...))
+    shaped = reshape(out, map(length, dstdims)..., Base.tail(size(out))...)
+    return DD.DimArray(shaped, (dstdims..., others...))
 end
 
 # Whole-domain apply

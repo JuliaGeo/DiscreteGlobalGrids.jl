@@ -1,9 +1,9 @@
 # # Stencil operations
 #
 # A stencil operation recomputes every cell from its own value and its
-# neighbours'. On any grid in this package that is three lines: `halo_table`
-# gives, for every position, the positions of the cells within `k` steps of it,
-# and a stencil is a comprehension over its rows. The same pass is the graph
+# neighbours'. On any grid in this package that is three lines: `adjacency`
+# gives, for every position, the positions of the cells it touches, and a
+# stencil is a comprehension over its rows. The same pass is the graph
 # convolution behind DeepSphere-style machine learning on spherical grids —
 # stacking `k` passes gives each cell a `k`-hop receptive field.
 
@@ -32,19 +32,27 @@ values = [field(lonlat(DGG.cell_centroid(grid, c))...) for c in cells] .+
 
 # ## Smoothing in three lines
 #
-# Row `p` of the table is `neighbors(grid, p)`: in-set positions, ascending.
-# Averaging the neighbourhood smooths.
+# Row `p` of the table is `neighbors(grid, p)`: the in-set positions of `p`'s
+# neighbours, counter-clockwise seen from outside the sphere, starting from the
+# same neighbour every time the cell is asked. Every neighbour idiom in the
+# package uses that one order, so on a complete grid like this one an oriented
+# stencil — a gradient, an upwind scheme — can be written against the rows. On
+# a subset, out-of-set members drop from a row without padding: the rotation
+# stays the complete ring's, only the slots close up, so slot `j` alone no
+# longer names a fixed direction. Averaging ignores the order and just smooths.
 
-halo = DGG.halo_table(grid)
-stencil(f, v) = [f(v[i], v[halo[i]]) for i in eachindex(v)]
+table = DGG.adjacency(grid)
+stencil(f, v) = [f(v[i], v[table[i]]) for i in eachindex(v)]
 smoothed = stencil((c, nbs) -> mean(vcat(c, nbs)), values)
 (var(values), var(smoothed))
 
 # The rows differ in length where the grid does: 8 neighbours nearly
 # everywhere, 7 at the 24 cells that sit on a degree-3 vertex of the base
-# tiling.
+# tiling. Eight because adjacency is `connectivity = Vertex()` by default —
+# touching at a corner counts — where `Edge()` would keep only the four cells
+# that share a side.
 
-extrema(length.(halo)), count(==(7), length.(halo))
+extrema(length.(table)), count(==(7), length.(table))
 
 # Two more stencils for free: the discrete Laplacian `mean(neighbours) - centre`
 # is an edge detector, and each smoothing pass mixes one hop further out, so
@@ -54,6 +62,11 @@ laplacian = stencil((c, nbs) -> mean(nbs) - c, values)
 diffused = foldl((v, _) -> stencil((c, nbs) -> mean(vcat(c, nbs)), v), 1:10; init = values)
 var(diffused)
 
+# The same pass without the intermediate table is `mapneighbors(f, cells)`,
+# which calls `f` per cell and threads by default (`threaded = true`); its
+# side-effect twin `foreachneighbors` defaults to `threaded = false`, because
+# what it writes into is the caller's to make safe.
+#
 # ## Plotting
 #
 # `poly!` draws `cells` directly, as lon/lat polygons in position order.
@@ -84,16 +97,16 @@ fig
 
 sys = DGG.system(grid)
 face = DGG.cellindex(DGG.levelgrid(sys, 0), 5)     # one of the twelve base cells
-sub = DGG.PartialGrid(sys, face, 5)                # its level-5 subtree, 32 × 32
-subhalo = DGG.halo_table(sub)
-(; n = DGG.ncells(sub), edge = count(<(8), length.(subhalo)))
+sub = DGG.subtree(sys, face, 5)                # its level-5 subtree, 32 × 32
+subtable = DGG.adjacency(sub)
+(; n = DGG.ncells(sub), edge = count(<(8), length.(subtable)))
 
 # Position `i` of the subset is position `i` of its data vector, so the stencil
 # is the same comprehension.
 
 subcells = DGG.CellVector(sub)
 subvalues = [field(lonlat(DGG.cell_centroid(sub, c))...) for c in subcells]
-substencil(f, v) = [f(v[i], v[subhalo[i]]) for i in eachindex(v)]
+substencil(f, v) = [f(v[i], v[subtable[i]]) for i in eachindex(v)]
 subsmoothed = substencil((c, nbs) -> mean(vcat(c, nbs)), subvalues)
 (var(subvalues), var(subsmoothed))
 
@@ -103,17 +116,17 @@ subsmoothed = substencil((c, nbs) -> mean(vcat(c, nbs)), subvalues)
 # and name different cells. (A cell the subset does not hold has no
 # neighbourhood here at all: asking is an `ArgumentError`.)
 
-edgecell = subcells[findfirst(<(8), length.(subhalo))]
+edgecell = subcells[findfirst(<(8), length.(subtable))]
 DGG.ring(sub, edgecell, 2) == filter(in(sub), DGG.ring(grid, edgecell, 2))
 
 # What the clipping dropped has a name: `halo` is the cells just outside the
 # subset that touch it — the extra fetch list a stencil on a tile needs, and
-# the other half of `halo_table`'s answer. It is lazy, so ask for as much of it
+# the other half of `adjacency`'s answer. It is lazy, so ask for as much of it
 # as you want.
 
 DGG.ncells(sub), length(collect(DGG.halo(sub)))
 
-# Nothing above named HEALPix except the singleton. `levelgrid`, `halo_table`
+# Nothing above named HEALPix except the singleton. `levelgrid`, `adjacency`
 # and the position forms of `neighbors` and `ring` are interface methods, so
 # the same three lines run unchanged on every registered system — only the
 # degree changes.

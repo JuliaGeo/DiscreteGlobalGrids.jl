@@ -210,10 +210,47 @@ rastersize(space::RasterGrid) =
 """
     DimensionalData.dims(space::RasterGrid)
 
-Return spatial dimensions in array order.
+Return spatial dimensions in array order — the order the space was
+constructed with, whichever of X and Y comes first.
 """
 DD.dims(space::RasterGrid) =
     space.xfast ? (space.xdim, space.ydim) : (space.ydim, space.xdim)
+
+"""
+    destinationdims(space::RasterGrid, sampling)
+
+Return [`DimensionalData.dims`](@ref) relabelled to carry `sampling`, so
+regrid output echoes the space's construction order. A dimension whose
+lookup already samples that way is returned untouched;
+otherwise its lookup is rebuilt, with `Intervals` bounds taken from the cell
+edges and `Points` values from the cell centres.
+"""
+destinationdims(space::RasterGrid, sampling::DD.Lookups.Sampling) =
+    space.xfast ?
+    (_withsampling(space.xdim, space.xedges, sampling),
+        _withsampling(space.ydim, space.yedges, sampling)) :
+    (_withsampling(space.ydim, space.yedges, sampling),
+        _withsampling(space.xdim, space.xedges, sampling))
+
+function _withsampling(dim, edges::Vector{Float64}, sampling::DD.Lookups.Points)
+    lk = DD.lookup(dim)
+    DD.sampling(lk) isa DD.Lookups.Points && return dim
+    return DD.rebuild(dim, DD.Lookups.Sampled(_centres(edges); order = DD.order(lk),
+        sampling, metadata = DD.metadata(lk)))
+end
+
+function _withsampling(dim, edges::Vector{Float64}, sampling::DD.Lookups.Intervals)
+    lk = DD.lookup(dim)
+    DD.sampling(lk) isa DD.Lookups.Intervals && return dim
+    n = length(edges) - 1
+    bounds = Matrix{Float64}(undef, 2, n)
+    for k in 1:n
+        bounds[1, k] = edges[k]
+        bounds[2, k] = edges[k+1]
+    end
+    return DD.rebuild(dim, DD.Lookups.Sampled(DD.val(lk); order = DD.order(lk),
+        span = DD.Lookups.Explicit(bounds), sampling, metadata = DD.metadata(lk)))
+end
 
 # Dimension and edge extraction
 
@@ -807,6 +844,9 @@ STI.child_indices_extents(t::RasterCellTree) =
 # bindings during `intersection_areas`.
 GOCore.best_manifold(t::RasterCellTree) = manifold(t.space)
 Trees.ncells(t::RasterCellTree) = ncells(t.space)
+# `Trees.ncells` answers for the whole space, so the frontier's default estimate
+# would be wrong here; the node's index rectangle is exact.
+Trees.split_weight(t::RasterCellTree) = _treecells(t)
 Trees.getcell(t::RasterCellTree, i::Int) = getcell(t.space, i)
 Trees.getcell(t::RasterCellTree) =
     (getcell(t.space, cellposition(t.space, ix, iy))
@@ -845,6 +885,8 @@ STI.child_indices_extents(t::RasterFlatTree) = zip(t.indices, t.caps)
 
 GOCore.best_manifold(t::RasterFlatTree) = manifold(t.space)
 Trees.ncells(t::RasterFlatTree) = ncells(t.space)
+# Same whole-space `Trees.ncells` caveat; the stored entries are the node.
+Trees.split_weight(t::RasterFlatTree) = length(t.indices)
 Trees.getcell(t::RasterFlatTree, i::Int) = getcell(t.space, i)
 Trees.getcell(t::RasterFlatTree) = (getcell(t.space, i) for i in t.indices)
 
@@ -880,13 +922,13 @@ end
 """
     subtree(space::RasterGrid, inds)
 
-Return a recursive tree when `inds` form a lattice rectangle, otherwise a flat
-tree with one cap per cell.
+Return a memoized recursive tree when `inds` form a lattice rectangle,
+otherwise a flat tree with one cap per cell.
 """
 function subtree(space::RasterGrid, inds)
     rect = _indexrect(space, inds)
     rect === nothing && return celltree(space, inds)
-    return RasterCellTree(space, rect...)
+    return MemoRasterTree(RasterCellTree(space, rect...))
 end
 
 # The number of cells along the dimension that varies fastest in cell positions.
@@ -950,7 +992,7 @@ _centres(e::Vector{Float64}) = [(e[k] + e[k+1]) / 2 for k in 1:(length(e)-1)]
     chartcoords(space::RasterGrid, p)
 
 Return `p` in native coordinates, or `nothing` without an inverse. Periodic X
-uses the edge vector's branch.
+returns the representative nearest the edge span.
 """
 function chartcoords(space::RasterGrid, p)
     space.inverse === nothing && return nothing
@@ -958,10 +1000,12 @@ function chartcoords(space::RasterGrid, p)
     return (_onbranch(space.xedges, Float64(x), space.xperiod), Float64(y))
 end
 
+# nearest periodic representative: folding to [lo, lo+p) throws points just west of lo a period east
 function _onbranch(edges::Vector{Float64}, v::Float64, period)
     period === nothing && return v
-    lo = min(edges[1], edges[end])
-    return lo + mod(v - lo, period::Float64)
+    p = period::Float64
+    mid = (edges[1] + edges[end]) / 2
+    return v - p * round((v - mid) / p)
 end
 
 chartposition(space::RasterGrid, ix::Int, iy::Int) = cellposition(space, ix, iy)

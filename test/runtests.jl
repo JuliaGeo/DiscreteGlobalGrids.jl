@@ -39,6 +39,8 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/neighborhood.jl")
     include("systems/crosssystem/mapneighbors.jl")
     include("systems/crosssystem/subtree_halos.jl")
+    # The algebra over regions reads the halo walk and both cell containers.
+    include("systems/crosssystem/region_algebra.jl")
     include("systems/crosssystem/dimensionaldata.jl")
     include("systems/crosssystem/regridding_conservation.jl")
     # The GlobalRegridding face reads the grids, the cell containers, and the

@@ -107,6 +107,37 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
     @test DGG.levelfor(auth, SRC) == DGG.levelfor(DGG.IGeo7System(), SRC)
 end
 
+@testset "a rooted subset chunks without scanning the level" begin
+    # `_chunkwindows` visits every level-`a` ancestor to find the non-empty
+    # ones, which at production sizes is a scan of the whole level per space
+    # built. A rooted `PartialGrid` holds nothing outside its root's subtree, so
+    # the visit narrows to that root's own descendants — and the answer has to
+    # be the same one, ancestor for ancestor and range for range.
+    sys = DGG.IGeo7System()
+    root = DGG.cellindex(DGG.levelgrid(sys, 2), 40)
+    grid = DGG.subtree(sys, root, 5)
+    unrooted = DGG.PartialGrid(sys, 5, collect(DGG.CellVector(grid)))
+    for a in 2:5
+        narrow = DGG.DGGSpace(grid; chunklevel = a)
+        wide = DGG.DGGSpace(unrooted; chunklevel = a)
+        @test narrow.chunkids == wide.chunkids
+        @test narrow.ranges == wide.ranges
+        @test GR.nchunks(narrow) == 7^(a - 2)
+    end
+    # A root DEEPER than the chunk level: the whole grid sits under one
+    # ancestor, which is the one chunk, and finding it is arithmetic rather
+    # than a scan.
+    deep = DGG.DGGSpace(DGG.subtree(sys, root, 4); chunklevel = 1)
+    @test GR.nchunks(deep) == 1
+    @test only(deep.chunkids) == DGG.ancestor(sys, root, 1)
+    @test only(deep.ranges) == 1:(7^2)
+    # An UNROOTED subset still scans, because nothing bounds it, and still
+    # partitions its cells.
+    scattered = DGG.DGGSpace(DGG.PartialGrid(REGION); chunklevel = 2)
+    @test GR.nchunks(scattered) > 1
+    @test chunkcells(scattered) == 1:DGG.ncells(scattered)
+end
+
 @testset "every spelling of `to` names the same cells" begin
     set = DGG.query(SYS, DGG.MultiOrderCoverage(GLOBE); level = LEVEL)
     reference = DGG.regrid(RASTER; to = GRID)

@@ -248,28 +248,95 @@ function STI.node_extent(c::BlockCursor)
 end
 
 """
-    STI.child_indices_extents(cursor) -> Vector{Tuple{Int,SphericalCap{Float64}}}
+    LeafCells(cursor::BlockCursor)
 
-A leaf's cells as `(grid position, cap)` pairs.
+A leaf's cells as `(grid position, cap)` pairs, in a fixed inline buffer.
+
+This is the return value of [`STI.child_indices_extents`](@ref
+GeometryOps.SpatialTreeInterface.child_indices_extents) for a
+[`BlockCursor`](@ref). It is a read-only `AbstractVector`, so it indexes,
+iterates and `collect`s exactly like the `Vector` it replaces.
+
+[`STI.isleaf`](@ref GeometryOps.SpatialTreeInterface.isleaf) bounds a leaf at
+`LEAF_CELLS` cells — a node above that always splits, and a node that cannot
+split holds one cell — so the entries fit an `NTuple{LEAF_CELLS}`. That makes
+the whole value `isbits`, which is the point: it lives in the caller's frame
+and never reaches the heap. The `Vector` it replaces was **71.6% of a
+production regrid's allocation**, because the dual-tree join rebuilds a leaf's
+cells once per opposing leaf and each rebuild grew a fresh vector by `push!`.
+
+Two designs were rejected:
+
+  * A **shared per-task buffer**. `dual_depth_first_search` binds both leaves'
+    entries and loops over them nested, so a self-join — a Copernicus grid
+    regridded onto a Copernicus grid — would read one leaf's cells out of the
+    other leaf's buffer. Callers also keep the result past the call without
+    copying it, which `MemoRasterTree` in `lib/GlobalRegridding` relies on.
+  * A **lazy view** deriving each cap in `getindex`. It allocates nothing
+    either, but the join reads the inner leaf's entries once per cell of the
+    outer leaf, so every cap would be re-derived up to `LEAF_CELLS` times —
+    trading allocation for the inverse projections the vector existed to hoist.
+
+Filling is eager and stops at the leaf's own cell count; the unused tail
+repeats entry one rather than deriving a cap that would be thrown away. Entry
+order is the old loop nest's: the column index varies fastest.
+"""
+struct LeafCells <: AbstractVector{Tuple{Int,Cap}}
+    entries::NTuple{LEAF_CELLS,Tuple{Int,Cap}}
+    len::Int
+end
+
+# (cells along the fast axis, cells in the leaf).
+@inline function _leafshape(c::BlockCursor)
+    c.inpixels && return (c.i1 - c.i0 + 1, (c.j1 - c.j0 + 1) * (c.i1 - c.i0 + 1))
+    return (c.q1 - c.q0 + 1, (c.r1 - c.r0 + 1) * (c.q1 - c.q0 + 1))
+end
+
+# Entry `k` of the leaf's row-major cell order, as the old loop nest built it.
+@inline function _leafcell(c::BlockCursor, nfast::Int, k::Int)
+    slow, fast = divrem(k - 1, nfast)
+    if c.inpixels
+        j = c.j0 + slow
+        i = c.i0 + fast
+        leaf = BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
+            c.r0, c.r0, c.q0, c.q0, j, j, i, i, true)
+        return (_position(c, c.r0, c.q0, j, i), STI.node_extent(leaf))
+    end
+    r = c.r0 + slow
+    q = c.q0 + fast
+    leaf = BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
+        r, r, q, q, 0, 0, 0, 0, false)
+    return (_position(c, r, q, 0, 0), STI.node_extent(leaf))
+end
+
+function LeafCells(c::BlockCursor)
+    nfast, n = _leafshape(c)
+    1 <= n <= LEAF_CELLS || throw(ArgumentError(
+        "a leaf holds 1 to $LEAF_CELLS cells; $c reports $n"))
+    head = _leafcell(c, nfast, 1)
+    entries = ntuple(Val(LEAF_CELLS)) do k
+        k == 1 ? head : (k <= n ? _leafcell(c, nfast, k) : head)
+    end
+    return LeafCells(entries, n)
+end
+
+Base.size(e::LeafCells) = (e.len,)
+Base.IndexStyle(::Type{LeafCells}) = IndexLinear()
+
+Base.@propagate_inbounds function Base.getindex(e::LeafCells, k::Int)
+    @boundscheck checkbounds(e, k)
+    return @inbounds e.entries[k]
+end
+
+"""
+    STI.child_indices_extents(cursor) -> LeafCells
+
+A leaf's cells as `(grid position, cap)` pairs. See [`LeafCells`](@ref).
 """
 function STI.child_indices_extents(c::BlockCursor)
     STI.isleaf(c) ||
         throw(ArgumentError("child_indices_extents is only valid for leaf nodes"))
-    entries = Tuple{Int,Cap}[]
-    if c.inpixels
-        for j in c.j0:c.j1, i in c.i0:c.i1
-            leaf = BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
-                c.r0, c.r0, c.q0, c.q0, j, j, i, i, true)
-            push!(entries, (_position(c, c.r0, c.q0, j, i), STI.node_extent(leaf)))
-        end
-    else
-        for r in c.r0:c.r1, q in c.q0:c.q1
-            leaf = BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
-                r, r, q, q, 0, 0, 0, 0, false)
-            push!(entries, (_position(c, r, q, 0, 0), STI.node_extent(leaf)))
-        end
-    end
-    return entries
+    return LeafCells(c)
 end
 
 # ===========================================================================

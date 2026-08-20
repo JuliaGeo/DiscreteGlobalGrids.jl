@@ -1169,6 +1169,151 @@ end
 end
 
 # =========================================================================
+# (k4) The leaf cells: the same pairs, in the same order, for nothing
+# =========================================================================
+
+# One warmed, type-stable pass over a leaf's cells. Kept out of the testset so
+# the node's type is concrete at the call, which is what `@allocated` needs to
+# mean anything: an inferred call to a heap-free build is the whole point.
+function _leafcell_sum(node)
+    s = 0
+    for (i, _) in GO.SpatialTreeInterface.child_indices_extents(node)
+        s += i
+    end
+    return s
+end
+
+# The `Ref` is allocated before the measurement and forces the call to happen.
+function leafcell_bytes(node)
+    warm = _leafcell_sum(node)
+    total = Ref(warm)
+    bytes = @allocated (total[] += _leafcell_sum(node))
+    return (bytes, total[] - warm)
+end
+
+# `child_indices_extents` hands back a `LeafCells` instead of a fresh
+# vector per call. It must behave as the vector did — indexable, iterable,
+# collectable, same length and eltype — and yield the same pairs, bit for bit.
+@testset "the leaf cells" begin
+    STI = GO.SpatialTreeInterface
+    Cap = US.SphericalCap{Float64}
+
+    # The materializing implementation `LeafCells` replaced, verbatim.
+    function materialized(c::CD.BlockCursor)
+        entries = Tuple{Int,Cap}[]
+        if c.inpixels
+            for j in c.j0:c.j1, i in c.i0:c.i1
+                leaf = CD.BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
+                    c.r0, c.r0, c.q0, c.q0, j, j, i, i, true)
+                push!(entries, (CD._position(c, c.r0, c.q0, j, i), STI.node_extent(leaf)))
+            end
+        else
+            for r in c.r0:c.r1, q in c.q0:c.q1
+                leaf = CD.BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
+                    r, r, q, q, 0, 0, 0, 0, false)
+                push!(entries, (CD._position(c, r, q, 0, 0), STI.node_extent(leaf)))
+            end
+        end
+        return entries
+    end
+
+    function someleaves(root, cap)
+        out = typeof(root)[]
+        stack = [root]
+        while !isempty(stack) && length(out) < cap
+            n = pop!(stack)
+            if STI.isleaf(n)
+                push!(out, n)
+            else
+                for k in 1:STI.nchild(n)
+                    push!(stack, STI.getchild(n, k))
+                end
+            end
+        end
+        return out
+    end
+
+    # Tile leaves, pixel leaves, pole rows, and both split strategies.
+    twin_tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
+    for (label, grid) in (("twin tile", twin_tile),
+                          ("twin tiles", levelgrid(TWIN, 0)),
+                          ("twin pixels", levelgrid(TWIN, 1)),
+                          ("GLO-90 tiles", levelgrid(GLO90, 0)),
+                          ("GLO-90 pixels", levelgrid(GLO90, 1))),
+        strategy in (CD.Blocked{3}(), CD.Bisected())
+
+        root = CD.BlockCursor(grid; strategy)
+        ls = someleaves(root, 400)
+        @test (label, isempty(ls)) == (label, false)
+        bad = 0
+        for l in ls
+            e = STI.child_indices_extents(l)
+            want = materialized(l)
+            # `===` on a tuple of `Int` and an immutable cap compares the bits.
+            (e isa AbstractVector && eltype(e) == Tuple{Int,Cap} &&
+             size(e) == (length(want),) && length(e) == length(want) &&
+             all(e[k] === want[k] for k in eachindex(want)) &&
+             collect(e) == want && all(x === want[k] for (k, x) in enumerate(e))) ||
+                (bad += 1)
+        end
+        @test (label, string(typeof(strategy)), bad) ==
+              (label, string(typeof(strategy)), 0)
+    end
+
+    # The whole value is `isbits`, which is why it never reaches the heap.
+    @test isbitstype(CD.LeafCells)
+    @test Base.IndexStyle(CD.LeafCells) === IndexLinear()
+
+    # An interior node is still an error, as it was for the vector.
+    globe = CD.BlockCursor(levelgrid(GLO90, 0))
+    @test !STI.isleaf(globe)
+    @test_throws ArgumentError STI.child_indices_extents(globe)
+
+    # ---- it allocates nothing: construction and a full pass -----------------
+    # This is the point of `LeafCells`. 71.6% of a production regrid's
+    # allocation was the per-leaf vector it replaces.
+    for grid in (levelgrid(GLO90, 0), levelgrid(GLO90, 1))
+        leaf = someleaves(CD.BlockCursor(grid), 1)[1]
+        bytes, sum1 = leafcell_bytes(leaf)
+        @test sum1 == sum(i for (i, _) in materialized(leaf))
+        @test bytes == 0
+        # A memoized cursor forwards the entries, so it allocates nothing either.
+        mbytes, sum2 = leafcell_bytes(CD.MemoBlockCursor(leaf))
+        @test sum2 == sum1
+        @test mbytes == 0
+    end
+
+    # ---- two leaves' entries live at once, which is how the search reads them
+    # `dual_depth_first_search` binds both leaves' entries and loops over them
+    # nested, so a shared per-task buffer would serve one leaf's cells from the
+    # other's. A self-join is exactly that shape: both sides are `BlockCursor`.
+    let root = CD.BlockCursor(levelgrid(TWIN, 0))
+        ls = someleaves(root, 3)
+        a, b = ls[1], ls[end]
+        @test a != b
+        ea, eb = STI.child_indices_extents(a), STI.child_indices_extents(b)
+        wa, wb = materialized(a), materialized(b)
+        # Holding both is safe: neither call disturbed the other's answers.
+        @test all(ea[k] === wa[k] for k in eachindex(wa))
+        @test all(eb[k] === wb[k] for k in eachindex(wb))
+
+        pairs = Tuple{Int,Int}[]
+        STI.dual_depth_first_search((_, _) -> true, a, b) do i1, i2
+            push!(pairs, (i1, i2))
+        end
+        @test pairs == [(i, j) for (i, _) in wa for (j, _) in wb]
+        # And the search's pruning still agrees with the materialized caps.
+        overlaps(x, y) =
+            US.spherical_distance(x.point, y.point) <= x.radius + y.radius
+        near = Tuple{Int,Int}[]
+        STI.dual_depth_first_search(overlaps, a, b) do i1, i2
+            push!(near, (i1, i2))
+        end
+        @test near == [(i, j) for (i, ca) in wa for (j, cb) in wb if overlaps(ca, cb)]
+    end
+end
+
+# =========================================================================
 # (l) Contract: the conformance suites
 # =========================================================================
 

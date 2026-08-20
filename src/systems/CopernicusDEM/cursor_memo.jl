@@ -20,8 +20,8 @@ Memory is `O(slots)` per task, not `O(tiles)`, so the wrap holds for the whole
 other's slots and no lock is taken. Same [`_box_cap`](@ref) values, bit for bit.
 
 Only interior geometry is memoized here: a leaf's per-cell
-`child_indices_extents` entries are rebuilt on every call, as for the bare
-cursor.
+`child_indices_extents` entries come back as the bare cursor's [`LeafCells`](@ref),
+which derives them into an inline buffer and never reaches the heap.
 """
 struct MemoBlockCursor{C<:BlockCursor}
     node::C

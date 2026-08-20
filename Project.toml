@@ -23,20 +23,29 @@ SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
-[extensions]
-MakieExt = ["Makie"]
-DiscreteGlobalGridsZarrExt = ["Zarr"]
+[sources.ConservativeRegridding]
+rev = "claude/budget-frontier"
+url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"
 
-[sources]
-ConservativeRegridding = {rev = "claude/budget-frontier", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-GeometryOps = {rev = "main", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-# Not a workspace member: it resolves its own Manifest, so
-# `julia --project=lib/GlobalRegridding` stays self-contained.
-GlobalRegridding = {path = "lib/GlobalRegridding"}
+[sources.GeometryOps]
+rev = "main"
+url = "https://github.com/JuliaGeo/GeometryOps.jl.git"
+
+[sources.GeometryOpsCore]
+rev = "main"
+subdir = "GeometryOpsCore"
+url = "https://github.com/JuliaGeo/GeometryOps.jl.git"
+
+[sources.GlobalRegridding]
+path = "lib/GlobalRegridding"
+
+[extensions]
+DiscreteGlobalGridsZarrExt = ["Zarr"]
+MakieExt = ["Makie"]
 
 [compat]
 DE9IM = "0.1"
+GeometryOps = "0.1"
 GeometryOpsCore = "0.1.11"
 SmallCollections = "0.6.3"
 Zarr = "0.10"

@@ -148,14 +148,18 @@ GR.chunkranges(space::DGGSpace, chunk::Integer, ::NTuple{1,Int}) =
     GlobalRegridding.subtree(space::DGGSpace, inds)
 
 Return the cell tree restricted to `inds`, preserving global cell positions.
-The whole space gets a cursor with decoded ids and precomputed leaf caps;
-exact chunk ranges reuse the grid hierarchy in `O(1)`; other ranges use a
-bounding-cap tree.
+In order: the whole space, a grid that can window its own tree
+([`subcursor`](@ref)), an exact chunk range (the grid hierarchy in `O(1)`), and
+otherwise a bounding-cap tree. The whole space and small enough chunks carry
+precomputed leaf caps.
 """
 function GR.subtree(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
     GR._iswholespace(space, inds) && return _cachedcelltree(space)
+    # Dispatch-only, so it costs nothing for the grids that have no method.
+    window = subcursor(space.grid, inds)
+    window === nothing || return window
     cursor = _chunkcursor(space, inds)
-    cursor === nothing || return cursor
+    cursor === nothing || return _cachedchunktree(cursor, inds)
     return GR.CellCapTree(space, inds)
 end
 

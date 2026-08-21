@@ -281,6 +281,34 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test all(c -> CR.Trees.split_weight(c) < CR.Trees.split_weight(tree), STI.getchild(tree))
     end
 
+    @testset "cap tree nodes bound their subtrees, and closely" begin
+        # Soundness: a node's cap must contain every cell below it, or the dual
+        # descent prunes a pair that does intersect.
+        space = ToyLonLatSpace(24, 12)
+        inside(cap, p) = US.spherical_distance(cap.point, p) <= cap.radius
+        function covers(node)
+            cap = STI.node_extent(node)
+            for i in view(node.inds, node.lo:node.hi)
+                all(inside(cap, USPoint(GI.x(p), GI.y(p), GI.z(p)))
+                    for p in GI.getpoint(getcell(space, i))) || return false
+            end
+            return all(covers, STI.getchild(node))
+        end
+        @test covers(GR.CellCapTree(space, 1:ncells(space)))
+
+        # Tightness: a covering cap's radius is at least half the widest
+        # distance between two vertices, and Jung's bound puts the smallest one
+        # below 1.16 of that.
+        for inds in (1:6, 25:30, [cellposition(space, ix, iy) for ix in 3:6, iy in 4:7])
+            points = [USPoint(GI.x(p), GI.y(p), GI.z(p))
+                      for i in vec(collect(inds)) for p in GI.getpoint(getcell(space, i))]
+            widest = maximum(US.spherical_distance(a, b) for a in points, b in points)
+            root = GR.CellCapTree(space, vec(collect(inds)))
+            @test root.extent.radius >= widest / 2
+            @test root.extent.radius < 1.3 * widest / 2
+        end
+    end
+
     @testset "one tile's restricted tree, built once" begin
         # A non-chunk range on a fallback space forces the CellCapTree path.
         xd = DD.X(-168.75:22.5:168.75)

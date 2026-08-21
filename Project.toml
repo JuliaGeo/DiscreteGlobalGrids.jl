@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Anshul Singhvi <anshulsinghvi@gmail.com>", "Fabian Gans <fabian.gans@bgc-jena.mpi.de>", "Maarten Pronk <git@evetion.nl>", "Alexander Kmoch <alexander.kmoch@ut.ee>", "and contributors"]
 
 [workspace]
-projects = ["test", "docs", "lib/DiscreteGlobalGridsConformanceTesting", "lib/GlobalRegridding", "lib/DiscreteGlobalGridVisualizations", "lib/DiscreteGlobalGridVisualizations/test"]
+projects = ["test", "docs", "bench", "lib/DiscreteGlobalGridsConformanceTesting", "lib/GlobalRegridding", "lib/DiscreteGlobalGridVisualizations", "lib/DiscreteGlobalGridVisualizations/test"]
 
 [deps]
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
@@ -28,8 +28,8 @@ MakieExt = ["Makie"]
 DiscreteGlobalGridsZarrExt = ["Zarr"]
 
 [sources]
-ConservativeRegridding = {rev = "claude/budget-frontier", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-GeometryOps = {rev = "as/intersection_area", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+ConservativeRegridding = {rev = "6a4b997ab2e66dea45b5b62b5b2f32f0a3b279b0", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+GeometryOps = {rev = "36c853e0de865251e1395ff01e9d34cda9e9bfa8", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 # Not a workspace member: it resolves its own Manifest, so
 # `julia --project=lib/GlobalRegridding` stays self-contained.

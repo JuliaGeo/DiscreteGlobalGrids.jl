@@ -1,0 +1,203 @@
+{
+  "schema": 1,
+  "source": "DGGRID CLI black-box output",
+  "dggrid_version": "9.0b",
+  "dggrid_commit_used_to_build_local_executable": "04bf5ed1372b174b9349faca8c265d112f6d8587",
+  "dggrid_executable_sha256": "5576fc87ee9cfb352bc883edae5685b889cf6425db5d6dc40a08063324d58045",
+  "implementation_reference": false,
+  "grid": "ISEA3H",
+  "orientation": {
+    "vertex_0_longitude_degrees": 11.25,
+    "vertex_0_latitude_degrees": 58.282525588538995,
+    "vertex_0_azimuth_degrees": 0.0
+  },
+  "sphere_radius": 1.0,
+  "precision_digits_after_decimal": 15,
+  "address_type": "HIERNDX",
+  "hierarchy": "Z3",
+  "levels": [
+    {
+      "level": 0,
+      "cell_count": 12,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 12 cells"
+    },
+    {
+      "level": 1,
+      "cell_count": 32,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 32 cells"
+    },
+    {
+      "level": 2,
+      "cell_count": 92,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 92 cells"
+    },
+    {
+      "level": 3,
+      "cell_count": 272,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 272 cells"
+    },
+    {
+      "level": 4,
+      "cell_count": 812,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 812 cells"
+    },
+    {
+      "level": 5,
+      "cell_count": 2432,
+      "stderr": "WARNING: in DGGRID version 9.0 the default padding digit for Z3 indexes has switched from 0 to 3.\nSet parameter z3_invalid_digit if you want a different digit used.",
+      "stdout_completion": "* generated 2,432 cells"
+    }
+  ],
+  "files": [
+    {
+      "path": "level-00-boundaries.geojson",
+      "bytes": 4159,
+      "sha256": "c38a925d354314339b9eed30dc0e35c343fd32c7ececfb0b89f98c2711170035"
+    },
+    {
+      "path": "level-00-centers.txt",
+      "bytes": 507,
+      "sha256": "760f3da6445fab1908fbc6eb0b09f487f31af617206c96d303b8a72062235260"
+    },
+    {
+      "path": "level-00-neighbors.txt",
+      "bytes": 216,
+      "sha256": "860173b72ab5519a1a1513a538f057e787581f876d8763923055a5c5438fa74f"
+    },
+    {
+      "path": "level-00-z3-int64-centers.txt",
+      "bytes": 675,
+      "sha256": "1e1151f111efaf51041f114a8e02d741b3cd0ca6d0ced24be8860e8ce9f79037"
+    },
+    {
+      "path": "level-01-boundaries.geojson",
+      "bytes": 11903,
+      "sha256": "2c5b28af6d44bc091884d6b054da42fac39578a34d2d3977017199a482e60a82"
+    },
+    {
+      "path": "level-01-centers.txt",
+      "bytes": 1384,
+      "sha256": "69e3811b9007c07be55afdf0cec54292aa014ae7d791d6bdeb0fc583eeff57cc"
+    },
+    {
+      "path": "level-01-neighbors.txt",
+      "bytes": 848,
+      "sha256": "15cf20922423febd2e7622fffb489367e34537035494566a33bfa8078e9edbba"
+    },
+    {
+      "path": "level-01-parents.txt",
+      "bytes": 224,
+      "sha256": "dbe43ca80a88d2887af2f03a31f1e7cc6b78da862e5db2bba3d4b61863841a66"
+    },
+    {
+      "path": "level-01-z3-int64-centers.txt",
+      "bytes": 1800,
+      "sha256": "b33f396c3d7cfa57d04ebcc903ed4928216559c66fff38e11aef48e7bda36993"
+    },
+    {
+      "path": "level-02-boundaries.geojson",
+      "bytes": 35137,
+      "sha256": "d1d5fdbe74cfd4d0570d0fa4b98bfb645cd5d34379e8c3d75fbddb6c3c3bb900"
+    },
+    {
+      "path": "level-02-centers.txt",
+      "bytes": 4077,
+      "sha256": "e92015c4ba9af38736e877efdeb6807a086857b88e88864d9089b88b08946c0d"
+    },
+    {
+      "path": "level-02-neighbors.txt",
+      "bytes": 3160,
+      "sha256": "aace1669ae5a3b90908cd2f7ba0fb9e47b94cda737ec92e1a307bc142a71ca11"
+    },
+    {
+      "path": "level-02-parents.txt",
+      "bytes": 828,
+      "sha256": "31111ce80b9c13a21d9a2cae9be59006deb9ef6223c6df90e94bfc258bb7b449"
+    },
+    {
+      "path": "level-02-z3-int64-centers.txt",
+      "bytes": 5181,
+      "sha256": "aaeef08c8152ab0486acb017a7d576e30811f5a16f2cc5f0c051ac3e1d6b3ed6"
+    },
+    {
+      "path": "level-03-boundaries.geojson",
+      "bytes": 104890,
+      "sha256": "ff5d4f1ca1803729b9353004bbc84d62eaa6a1248ff8b90c8a811f60207636d7"
+    },
+    {
+      "path": "level-03-centers.txt",
+      "bytes": 12320,
+      "sha256": "24f5285099cf645f09f5d0f84371fe75251b223526432a2072ae8adde095b3c1"
+    },
+    {
+      "path": "level-03-neighbors.txt",
+      "bytes": 11352,
+      "sha256": "e1c25a3cce1ca6f743d5f6320d7aa20c21d45d6d0eb36afb224030dd163916e3"
+    },
+    {
+      "path": "level-03-parents.txt",
+      "bytes": 2992,
+      "sha256": "896f41ccbebc57ace97ce1e8f5a1a0f5bd1d77a622c169c9e9a9b307e0cab563"
+    },
+    {
+      "path": "level-03-z3-int64-centers.txt",
+      "bytes": 15312,
+      "sha256": "73a6c07c1b99957ab5746c72b9887e475cbba0e70f80a89852569e38a936a6a6"
+    },
+    {
+      "path": "level-04-boundaries.geojson",
+      "bytes": 315018,
+      "sha256": "c6fff35fac705be47b22f6fcc7fdee2bf8466732e08dc66acad30074c1f890cc"
+    },
+    {
+      "path": "level-04-centers.txt",
+      "bytes": 37540,
+      "sha256": "1346fe5d7657489942d736aed1b6127f49866d96cb77619bf927a43f99454763"
+    },
+    {
+      "path": "level-04-neighbors.txt",
+      "bytes": 39704,
+      "sha256": "ce5e956bc4002d1ecd64f870338ff9dbc0aeecdc7df1485906ee09c1999f4617"
+    },
+    {
+      "path": "level-04-parents.txt",
+      "bytes": 10556,
+      "sha256": "16f56a911915cff5c8cf4667fd37a51959fd96f09fd831a71ea70a1fc7ef4bea"
+    },
+    {
+      "path": "level-04-z3-int64-centers.txt",
+      "bytes": 45660,
+      "sha256": "051cd36e54fd9d16543932dc4222a3da5959fb9fed480e6b1d10092f7716a873"
+    },
+    {
+      "path": "level-05-boundaries.geojson",
+      "bytes": 946611,
+      "sha256": "085f957abbeb8a8edfed9069ef45fa79e9474ce097ba85f263b427a0c55aea98"
+    },
+    {
+      "path": "level-05-centers.txt",
+      "bytes": 114851,
+      "sha256": "a5f50e3bfe87b5c574385823d85c6928e814c0a7bf8dbbdb86bf98e1f86a4e4e"
+    },
+    {
+      "path": "level-05-neighbors.txt",
+      "bytes": 136096,
+      "sha256": "e94b9f6584820fc08931fe54c2240534edf1cb0ca7b2f5958acb5444b5d308b1"
+    },
+    {
+      "path": "level-05-parents.txt",
+      "bytes": 36480,
+      "sha256": "ecfc0afff22a9b7d96f22f8716976023bed9a20b500c9295e0acfe7fb8eb97bf"
+    },
+    {
+      "path": "level-05-z3-int64-centers.txt",
+      "bytes": 136739,
+      "sha256": "be2b983ad1f1b1da168d2bd27036bc07d4148adc7a768ac481d2ce922456979f"
+    }
+  ]
+}

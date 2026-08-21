@@ -4,10 +4,13 @@
 # definition, exercise the generic fallback directly, verify that border and
 # interior partition the descendants, and check the iterator-size contract.
 #
-# A5 materializes its subtree because it has neither sorted subtree ranges nor
-# a boundary automaton. Its value and iterator-size laws are tested, but it is
-# excluded from prefix-allocation checks because construction has already paid
-# the output-sized allocation.
+# Systems without sorted subtrees — A5 and the IVEA/RTEA rhombic family —
+# materialize the subtree in the constructor, having neither sorted subtree
+# ranges nor a boundary automaton. Their value and iterator-size laws are
+# tested, but they are excluded from prefix-allocation checks because
+# construction has already paid the output-sized allocation. The exclusion is
+# keyed on `has_sorted_subtrees`, not on a system name, so registering another
+# materializing system does not silently make the law measure nothing.
 
 module SubtreeIteratorTests
 
@@ -112,6 +115,15 @@ end
 
 # Select the deepest subtree that remains within the cell budget.
 function deep_depth(sys, base::Int, budget::Int = 70_000)
+    # A scan fallback pays for every descendant's topology while collecting.
+    # Keep that oracle large enough to demonstrate depth/resumability without
+    # turning the cross-system law into a multi-minute geometry benchmark.
+    root = first(sweep_roots(sys, base))
+    probe_level = min(base + 1, maxlevel(sys))
+    probe = EdgeCellIterator(sys, root, probe_level)
+    if Base.IteratorSize(typeof(probe)) isa Base.SizeUnknown
+        budget = min(budget, 7_000)
+    end
     d = 0
     while base + d + 1 <= maxlevel(sys) &&
         ncells(levelgrid(sys, base + d + 1)) ÷ ncells(levelgrid(sys, base)) <= budget
@@ -184,9 +196,16 @@ end
                 l <= maxlevel(sys) || continue
                 for it in (EdgeCellIterator(sys, c, l), InnerCellIterator(sys, c, l))
                     @test eltype(it) == cellindextype(sys)
-                    # Specialized walks have closed-form counts; A5 counts its vector.
-                    @test Base.IteratorSize(typeof(it)) isa Base.HasLength
-                    @test length(it) == length(collect(it))
+                    # Closed-form automata and materialized fallbacks are counted;
+                    # a lazy generic scan advertises SizeUnknown and carries no
+                    # traversal-cost `length`.
+                    size_trait = Base.IteratorSize(typeof(it))
+                    @test size_trait isa Union{Base.HasLength,Base.SizeUnknown}
+                    if size_trait isa Base.HasLength
+                        @test length(it) == length(collect(it))
+                    else
+                        @test_throws MethodError length(it)
+                    end
                     # `first` is defined only for nonempty iterators.
                     isempty(collect(it)) || @test (@inferred first(it)) isa
                                                   cellindextype(sys)
@@ -194,8 +213,10 @@ end
             end
         end
 
-        # The generic lazy scan has no closed-form count and therefore no `length`.
-        # A5 materializes the fallback and is legitimately counted.
+        # The generic lazy scan has no closed-form count and therefore no
+        # `length`; the `MethodError` is the assertion, not an accident. Systems
+        # without sorted subtrees materialize the fallback instead of scanning,
+        # which makes it legitimately counted, so they are excluded.
         if DGG.has_sorted_subtrees(sys) && base + 2 <= maxlevel(sys)
             @testset "$name: the generic walk is uncounted" begin
                 l = base + 2
@@ -248,8 +269,13 @@ end
                     # A four-cell prefix must allocate much less than collection.
                     @test lazy * 8 < eager
 
-                    # Prefix allocation remains flat as the border grows over three levels.
-                    @test lazy <= lazy_bytes(T, sys, c, shallow_l, 4) + 64
+                    # Prefix allocation stays flat as the border grows by the
+                    # aperture cubed over three levels. Closed-form automata are
+                    # effectively constant-sized; a generic DFS scan may add a
+                    # small O(depth) stack, but never O(subtree) storage.
+                    slack = Base.IteratorSize(typeof(deep_it)) isa Base.SizeUnknown ?
+                            2_048 : 64
+                    @test lazy <= lazy_bytes(T, sys, c, shallow_l, 4) + slack
 
                     # Incremental iteration returns the same prefix as collection.
                     prefix = eltype(deep_it)[]
@@ -265,7 +291,9 @@ end
 
     # Authalic wrapping changes geometry but not subtree hierarchy.
     @testset "AuthalicSystem forwards both walks" begin
-        for sys in systems(), base in sweep_bases(sys)
+        for sys in systems()
+            sys isa DGG.AuthalicSystem && continue
+            for base in sweep_bases(sys)
             wrapped = AuthalicSystem(sys)
             roots = sweep_roots(sys, base)
             for c in roots, d in 0:2
@@ -277,6 +305,7 @@ end
                       collect(InnerCellIterator(sys, c, l))
                 @test eager_border(wrapped, c, l) == eager_border(sys, c, l)
                 @test eager_interior(wrapped, c, l) == eager_interior(sys, c, l)
+            end
             end
         end
     end

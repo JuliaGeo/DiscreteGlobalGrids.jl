@@ -1,8 +1,10 @@
 # DGGS gallery
 
-The six systems `systems()` returns, drawn the same way: `levelgrid(sys, level)`
-goes straight into `Makie.poly!`. The levels differ per panel only because
-apertures differ — each is chosen so the cells stay visible at figure size.
+Six representative systems, drawn the same way: `levelgrid(sys, level)` goes
+straight into `Makie.poly!`. The levels differ per panel only because apertures
+differ — each is chosen so the cells stay visible at figure size. `systems()`
+returns fifteen entries in all; the full registry comparison is in its
+docstring.
 
 ```@raw html
 <style>
@@ -55,13 +57,13 @@ figure
   - **ISEA4R** — rhombi on ten icosahedral diamonds, exactly `4π/(10·4^l)`
     steradians each.
 
-`AuthalicSystem` wraps any of the six to read geometry at geodetic latitude.
+`AuthalicSystem` wraps a unit-sphere system to read geometry at geodetic latitude.
 Ids, positions, hierarchy and ordering are untouched, so it draws the same
 picture and is not in the sweep.
 
 ## What differs
 
-At the *same* level the six disagree about almost everything — apertures 7 and 4
+At the *same* level DGGS families disagree about almost everything — apertures 9, 7, 4 and 3
 put their cell counts two orders of magnitude apart. The docstring of
 `systems()` is the full comparison table.
 

@@ -1,5 +1,25 @@
 # Cross-system laws for depth-limited multi-order polygon coverage. Oracles use
 # expanded target-level cells rather than the compressed representation.
+#
+# The fixture is committed, not downloaded: `test/fixtures/california.txt` is
+# Natural Earth's 10 m California, Douglas-Peucker simplified at 0.005 degrees,
+# 617 vertices in eight parts (mainland plus seven Channel Islands). The sweep
+# also covers a hole, an antimeridian-crossing ring, and a target larger than a
+# hemisphere.
+#
+# Two laws are deliberately conditional. COMPACTION holds everywhere only in the
+# form "a complete sibling family is emitted below the maximum depth only when
+# the parent could not have stood for it"; the stronger "no complete family is
+# ever emitted" is false wherever children cover their parent's area without
+# covering its footprint. THE UNION OF THE DRAWN CELLS tiles the target only on
+# the congruent systems, because replacing a subtree by its root swaps the
+# subtree's footprint for the root's — the testset pins 0% there and bounds the
+# slivers elsewhere, so the difference is recorded rather than discovered by
+# someone plotting a coverage.
+#
+# Systems without sorted subtrees have no `descendant_range` and no
+# `level_ranges`; the two laws that read them are stated as exclusions with that
+# reason and those systems are checked against `descendants` instead.
 
 module MultiOrderPolygonTests
 
@@ -11,7 +31,7 @@ import GeoInterface as GI
 import GeometryOps as GO
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
-using .DGGTestHelpers: syslabel, isquadface, sweepcovers
+using .DGGTestHelpers: syslabel, iscongruent, sweepcovers
 
 # ---------------------------------------------------------------------------
 # The fixture
@@ -60,9 +80,16 @@ const SEAM = GI.Polygon([GI.LinearRing([(176.0, -19.0), (-178.0, -19.0), (-178.0
 parallel_ring(lat) = GI.Polygon([GI.LinearRing([(lon, lat) for lon in 0.0:5.0:360.0])])
 const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 
+# Levels are chosen so leaf cells are comparable across the sweep, which is what
+# makes the cell counts comparable; the apertures differ, so a fixed level would
+# not be. The `AuthalicSystem` wrap is over IGeo7 deliberately: it is the
+# composition that stresses `node_extent` hardest, since the aperture-7 overhang
+# inflation and the warp's Lipschitz inflation multiply, and California sits at
+# 37 N, where the geodetic/authalic latitude difference is within 20 km of its
+# maximum.
 
 # (system, leaf level, coarse level). Congruence — whether a cell's children
-# tile it exactly, which two of the laws below branch on — is `isquadface`.
+# tile it exactly, which two of the laws below branch on — is `iscongruent`.
 const SWEEP = [
     (DGG.IGeo7System(), 7, 5),
     (DGG.H3System(), 6, 4),
@@ -70,6 +97,15 @@ const SWEEP = [
     (DGG.A5System(), 10, 7),
     (DGG.S2System(), 10, 7),
     (DGG.ISEA4RSystem(), 10, 7),
+    (DGG.ISEA3HSystem(), 9, 7),
+    (DGG.ISEA4HSystem(), 7, 5),
+    (DGG.ISEA4TSystem(), 7, 5),
+    (DGG.RHEALPixSystem(), 6, 4),
+    (DGG.AusPIXSystem(), 6, 4),
+    (DGG.IVEA4RSystem(), 7, 5),
+    (DGG.IVEA9RSystem(), 5, 3),
+    (DGG.RTEA4RSystem(), 7, 5),
+    (DGG.RTEA9RSystem(), 5, 3),
     (DGG.AuthalicSystem(DGG.IGeo7System()), 7, 5),
 ]
 
@@ -170,7 +206,7 @@ expand(sys, set, l) = DGG.has_sorted_subtrees(sys) ? DGG.cellindices(set, l) :
 # ---------------------------------------------------------------------------
 
 @testset "coverage of a real outline: $(syslabel(sys))" for (sys, leaf, coarse) in SWEEP
-    congruent = isquadface(sys)
+    congruent = iscongruent(sys)
     target = prepare(MAINLAND)
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=leaf)
 
@@ -315,7 +351,7 @@ end
 @testset "the drawn cells tile the target only where the refinement does: $(syslabel(sys))" for
     (sys, leaf, _) in SWEEP
 
-    congruent = isquadface(sys)
+    congruent = iscongruent(sys)
 
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=leaf)
     missed, total = sliver_fraction(sys, set, MAINLAND, 90)

@@ -593,14 +593,15 @@ end
     return _near_subset(p, e, c, lc) ? _HALO_DESCEND : _HALO_SKIP
 end
 
-# The one-ring of `c` at `c`'s OWN level, asked of the subset's spans. The probe
-# is `Vertex()` whatever connectivity was requested, for the seam band's reason:
-# the `Edge()` halo is a subset of the `Vertex()` one, so one conservative
-# superset serves both, and the requested connectivity is still what
-# `_touches_subtree` filters by at the target level.
+# The `coarse_probe_rings(sys)`-ring of `c` at `c`'s OWN level, asked of the
+# subset's spans. The probe is `Vertex()` whatever connectivity was requested,
+# for the seam band's reason: the `Edge()` halo is a subset of the `Vertex()`
+# one, so one conservative superset serves both, and the requested connectivity
+# is still what `_touches_subtree` filters by at the target level.
 @inline function _near_subset(p::SubsetMembership, e::OutsideWalkEngine, c, lc::Int)
     coarse = levelgrid(e.system, lc)
-    for nb in neighbors(coarse, c, 1; connectivity = Vertex())
+    for nb in neighbors(coarse, c, coarse_probe_rings(e.system);
+            connectivity = Vertex())
         r = descendant_range(e.system, nb, e.target)
         subset_span(p.subset, first(r), last(r)) == _SPAN_NONE || return true
     end

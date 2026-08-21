@@ -157,9 +157,12 @@ include("systems/HEALPix/HEALPix.jl")
 include("systems/A5/A5.jl")
 include("systems/S2/S2.jl")
 include("systems/ISEA4R/ISEA4R.jl")
+include("systems/ISEAGrids/ISEAGrids.jl")
+include("systems/RHEALPix/RHEALPix.jl")
+include("systems/IVEARTEA/IVEARTEA.jl")
 
-# The seventh system, included but not registered — see the comment above
-# `systems()` for why it stays out of the tuple.
+# Included but not registered — see the comment above `systems()` for why it
+# stays out of the tuple.
 include("systems/CopernicusDEM/CopernicusDEM.jl")
 
 using .IGeo7: IGeo7System, Z7Cell, RelativeZ7Cell, directioncode
@@ -168,6 +171,9 @@ using .HEALPix: HEALPixSystem, HEALPixRingIndex
 using .A5: A5System, A5Cell
 using .S2: S2System
 using .ISEA4R: ISEA4RSystem
+using .ISEAGrids: ISEA3HSystem, Z3Cell, ISEA4HSystem, ISEA4TSystem
+using .RHEALPix: RHEALPixSystem, AusPIXSystem, RHEALPixCell
+using .IVEARTEA: IVEA4RSystem, IVEA9RSystem, RTEA4RSystem, RTEA9RSystem
 using .CopernicusDEM: CopernicusDEMSystem
 
 # DimensionalData wrappers over the dependency-free `Fallbacks.CellVector`.
@@ -211,17 +217,21 @@ include("sizing.jl")
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
 
-The grid systems shipped by this package, as a stable-order tuple of singletons.
+The grid systems shipped by this package, as a stable-order tuple. `AusPIXSystem()`
+is the WGS84 [`AuthalicSystem`](@ref) wrap of rHEALPix, so that is how it prints.
 
     julia> using DiscreteGlobalGrids
 
     julia> systems()
-    (IGeo7System(), H3System(), HEALPixSystem(), A5System(), S2System(), ISEA4RSystem())
+    (IGeo7System(), H3System(), HEALPixSystem(), A5System(), S2System(),
+     ISEA4RSystem(), ISEA3HSystem(), ISEA4HSystem(), ISEA4TSystem(),
+     RHEALPixSystem(), AuthalicSystem(RHEALPixSystem(), e² = 0.0066943799901413165),
+     IVEA4RSystem(), IVEA9RSystem(), RTEA4RSystem(), RTEA9RSystem())
 
 This registry does not include externally defined systems and is not used for
 interface dispatch. Tuple order has no semantic meaning.
 
-# The six, and how they differ
+# The registered systems, and how they differ
 
 The size column is [`cellsize`](@ref) in km at levels 0, 4 and 8 — the side of a
 square with the median cell's area, which is the only size a system whose cells
@@ -236,6 +246,13 @@ resolution wants rather than reading a level off this table.
 | [`A5System`](@ref) | `12`, `60`, then `60·4^(l-1)` | 6524 / 365 / 22.8 | pentagons (Cairo-style) | yes |
 | [`S2System`](@ref) | `6·4^l` | 9220 / 584 / 36.1 | geodesic quadrilaterals | no; ~2.08× within-level spread |
 | [`ISEA4RSystem`](@ref) | `10·4^l` | 7142 / 446 / 27.9 | rhombi on ten diamonds | yes, exactly `4π/(10·4^l)` |
+| [`ISEA3HSystem`](@ref) | `10·3^l + 2` | 6520 / 794 / 88.2 | hexagons + 12 pentagons | yes |
+| [`ISEA4HSystem`](@ref) | `10·4^l + 2` | 6520 / 446 / 27.9 | hexagons + 12 pentagons | yes |
+| [`ISEA4TSystem`](@ref) | `20·4^l` | 5050 / 316 / 19.7 | triangles | yes, exactly `4π/(20·4^l)` |
+| [`RHEALPixSystem`](@ref) | `6·9^l` | 9220 / 114 / 1.41 | curvilinear quads/darts/caps | yes, exactly `2π/(3·9^l)` |
+| [`AusPIXSystem`](@ref) | `6·9^l` | 9240 / 114 / 1.41 | WGS84 rHEALPix profile | yes on the authalic sphere |
+| [`IVEA4RSystem`](@ref) / [`RTEA4RSystem`](@ref) | `10·4^l` | 7142 / 446 / 27.9 | rhombi | yes |
+| [`IVEA9RSystem`](@ref) / [`RTEA9RSystem`](@ref) | `10·9^l` | 7142 / 88.2 / 1.09 | rhombi | yes |
 
 Important cross-system traits:
 
@@ -247,16 +264,24 @@ Important cross-system traits:
     `maxneighbors(A5System(), Edge()) == 5`; at resolution 1, some cells have
     11 vertex-neighbours and 3 edge-neighbours. Above level 1, ISEA4R has ten
     degree-9 cells at icosahedral vertices 0 and 11, thirty degree-7 cells, and
-    degree 8 elsewhere; level 0 is 6-regular.
+    degree 8 elsewhere; level 0 is 6-regular. Among the literature families,
+    ISEA3H/4H are degree 6 with twelve degree-5 pentagons and the two
+    connectivities coincide; ISEA4T is 3-regular under `Edge()` and reaches 12
+    under `Vertex()`; rHEALPix/AusPIX and the IVEA/RTEA rhombi are 4-regular
+    under `Edge()` and reach 8 and 9 respectively under `Vertex()`.
   - **[`node_extent`](@ref).** S2, ISEA4R, and HEALPix provide exact uninflated
     subtree caps. IGeo7, H3, and A5 use inflated caps; A5 sets
-    [`cap_inflation`](@ref) to `1.75`.
-  - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
-    has not established the two-sided [`descendant_range`](@ref) contract.
+    [`cap_inflation`](@ref) to `1.75`. The ISEA3H/4H prefix trees are
+    deliberately non-spatial and may require caps wider than a hemisphere;
+    their documentation states that query-pruning tradeoff.
+  - **[`has_sorted_subtrees`](@ref).** True except for A5 and the IVEA/RTEA
+    rhombic systems, whose canonical orders have not established the two-sided
+    [`descendant_range`](@ref) contract.
   - **[`border`](@ref) on a subtree region.** IGeo7, H3, HEALPix, ISEA4R, and
-    S2 provide `O(border)` walkers; A5 uses the `O(subtree)` fallback. Each is a
-    resumable [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in
-    `O(depth)` memory, which is what `border` and [`interior`](@ref) read.
+    S2 provide `O(border)` walkers; A5 and the literature systems use the
+    `O(subtree)` fallback. Each is a resumable [`EdgeCellIterator`](@ref) /
+    [`InnerCellIterator`](@ref) in `O(depth)` memory, which is what `border`
+    and [`interior`](@ref) read.
   - **[`halo`](@ref) on a subtree region.** The same boundary from outside, as a resumable
     [`SubtreeHaloIterator`](@ref) in `O(depth)` memory. `l == level(c)` is the
     cell's own one-ring on every system, emitted ascending without a sort.
@@ -312,9 +337,10 @@ Important cross-system traits:
     in-region positions alone, so `halo` above 1 throws and points at
     [`grow`](@ref).
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
-    the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
-    their parent exactly; the hierarchy's own relation on IGEO7, H3 and A5,
-    where they do not and a member's footprint is not its descendants' union.
+    the geometric sense on HEALPix, S2, ISEA4R, ISEA4T, rHEALPix/AusPIX, and
+    the rhombic IVEA/RTEA systems, whose children tile their parent; the
+    hierarchy's own relation on IGEO7, H3, A5, ISEA3H and ISEA4H, where a
+    member's footprint is not its descendants' union.
 
 # Interoperability caveats
 
@@ -324,12 +350,35 @@ Important cross-system traits:
     fixture-derived permutation before interchange.
   - S2's native 64-bit `s2_cellid` is not an available [`reindex`](@ref) scheme.
     The scaffold ordinal is the canonical identifier.
+  - ISEA4T uses a package-defined face/path index; the sealed DGGRID corpus does
+    not establish a SEQNUM crosswalk. ISEA3H uses the documented Z3 prefix tree.
+    Because ISEA3H/4H prefix parents are non-spatial, fixed-level
+    `MultiOrderCoverage` is supported but budget mode throws rather than claim
+    a covering that the hierarchy cannot guarantee.
+  - IVEA/RTEA currently expose the aperture-4 and aperture-9 rhombic systems.
+    Exact 3H/7H atlas parity, pentagon mapping and corrected odd-level RI7
+    lookup require deeper post-fix oracle vectors and are not claimed here.
+  - ISEA3H/4H `cell_boundary` chooses a common Snyder face for each paired edge
+    when one exists, with eight samples and a great-circle fallback across the
+    five-face development cut. It is a finite polygon approximation; analytic
+    `cell_area` is the equal-area value and is independent of it.
+  - IVEA/RTEA `cell_boundary` densifies each chart edge to thirty-two segments
+    at every level — 128 points per cell, four times the density of the other
+    congruent systems — which holds midpoint-to-chord deviation under 2e-5 rad
+    at a level-0 root and far under it below. The count is level-INDEPENDENT on
+    purpose: chording a parent and its children at different steps opens a lens
+    between the two polylines that a mixed-level `MultiOrderCoverage` reads as a
+    sliver. `cell_area` is the analytic equal-area value and does not read the
+    polygon.
 
 Use [`levels`](@ref) and [`levelgrid`](@ref) to construct queryable grids. Each
 system module documents its identifier codec and optimized operations.
 """
 systems() = (IGeo7System(), H3System(), HEALPixSystem(),
-             A5System(), S2System(), ISEA4RSystem())
+             A5System(), S2System(), ISEA4RSystem(),
+             ISEA3HSystem(), ISEA4HSystem(), ISEA4TSystem(),
+             RHEALPixSystem(), AusPIXSystem(),
+             IVEA4RSystem(), IVEA9RSystem(), RTEA4RSystem(), RTEA9RSystem())
 
 # --- Type vocabulary -------------------------------------------------------
 export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
@@ -387,6 +436,7 @@ public StorageOrder
 # A tuning knob for the default `node_extent`, read by no caller that does not
 # implement a system.
 public cap_inflation
+public coarse_probe_rings
 # Caught, not called.
 public NeighborCallbackError
 
@@ -429,6 +479,9 @@ export HEALPixSystem, HEALPixRingIndex
 export A5System, A5Cell
 export S2System
 export ISEA4RSystem
+export ISEA3HSystem, Z3Cell, ISEA4HSystem, ISEA4TSystem
+export RHEALPixSystem, AusPIXSystem, RHEALPixCell
+export IVEA4RSystem, IVEA9RSystem, RTEA4RSystem, RTEA9RSystem
 # Exported and reachable by name, but not in `systems()` — see the comment there.
 export CopernicusDEMSystem
 

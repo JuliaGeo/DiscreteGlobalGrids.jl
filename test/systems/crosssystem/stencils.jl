@@ -21,7 +21,7 @@ using DiscreteGlobalGrids: systems, levelgrid, ncells, cellindex, cellposition,
     subtree, halo, adjacency, AdjacencyTable, halopositions, halocells
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
-using .DGGTestHelpers: syslabel, isquadface, sweepcovers
+using .DGGTestHelpers: syslabel, iscongruent, sweepcovers
 
 # ---------------------------------------------------------------------------
 # Systems, and the depths each is swept at
@@ -39,6 +39,15 @@ const SWEEP = [
     (DGG.A5System(), 1, 3),
     (DGG.S2System(), 1, 4),
     (DGG.ISEA4RSystem(), 1, 4),
+    (DGG.ISEA3HSystem(), 1, 3),
+    (DGG.ISEA4HSystem(), 1, 3),
+    (DGG.ISEA4TSystem(), 1, 4),
+    (DGG.RHEALPixSystem(), 1, 4),
+    (DGG.AusPIXSystem(), 1, 4),
+    (DGG.IVEA4RSystem(), 1, 4),
+    (DGG.IVEA9RSystem(), 1, 3),
+    (DGG.RTEA4RSystem(), 1, 4),
+    (DGG.RTEA9RSystem(), 1, 3),
     (DGG.AuthalicSystem(DGG.IGeo7System()), 1, 3),
 ]
 
@@ -77,6 +86,9 @@ end
 shapes(sys, base, leaf) = ("rooted subtree" => rooted(sys, base, leaf),
     "scattered subset" => scattered(sys, leaf),
     "subtree with a hole" => holed(sys, base, leaf))
+
+# Rows with two cells in them: the only rows whose order says anything.
+orderable(table) = count(r -> length(r) >= 2, table)
 
 # A deterministic spread of in-set probes.
 function probes(sub, n::Int)
@@ -177,12 +189,23 @@ end
         @test adjacency(CellLookup(cv)) == adjacency(sub)
         # The rows are ROTATIONAL, and that is only visible as an absence of
         # sorting: a `sort!` put back anywhere on this path would pass every
-        # other assertion in this file. Some row of a real subset is out of
-        # ascending order on every system.
-        @test any(!issorted, adjacency(sub))
-        @test any(!issorted, adjacency(cv))
+        # other assertion in this file. Only a row holding two cells can carry
+        # that evidence, and the every-fifth-cell subset leaves ISEA4H with two
+        # such rows and the aperture-9 rhombi with none — so the shape is asked
+        # only where it has rows enough to answer, and the testset below makes
+        # every system answer somewhere.
+        if orderable(adjacency(sub)) >= 4
+            @test any(!issorted, adjacency(sub))
+            @test any(!issorted, adjacency(cv))
+        end
         # Threading is a scheduling choice, never an answer.
         @test adjacency(sub; threaded = false) == adjacency(sub)
+    end
+
+    # The gate above skips a shape too small to order; this makes the system
+    # answer over the shapes together, so no `sort!` can hide behind the skip.
+    @testset "some shape's rows are out of ascending order" begin
+        @test any(p -> any(!issorted, adjacency(last(p))), shapes(sys, base, leaf))
     end
 
     @testset "the rooted fast path agrees with the generic route" begin
@@ -377,8 +400,12 @@ end
     @test isempty(disagreed)
     @test isempty(layout)
     @test isempty(csr)
-    @test tables == 1846
-    @test cells == 38828
+    # The work actually done, so that an empty sweep cannot pass the four
+    # `isempty` checks above. These scale with `SWEEP`: they were 1846 and 38828
+    # over the six systems this file swept before the literature families were
+    # registered, and are re-measured here over all fifteen.
+    @test tables == 3486
+    @test cells == 90860
 end
 
 @testset "a hole is addressed, and both paths agree" begin
@@ -685,17 +712,22 @@ function member_probes(set, n::Int)
     return unique(vcat(first(coarse, 3), collect(1:step:length(set))))
 end
 
-# The quad-face family is the family whose four children tile their parent
-# exactly, so that a member's footprint IS its descendants' union and a
-# statement about level-`L` cells is a statement about the drawn polygons.
-# IGEO7, H3 and A5 refine non-congruently and are excluded from the GEOMETRIC
-# law with that reason — see `member_neighbors`' docstring; they keep every
-# other law here.
+# The systems whose children tile their parent exactly, so that a member's
+# footprint IS its descendants' union and a statement about level-`L` cells is a
+# statement about the drawn polygons. IGEO7, H3, A5 and the two central-place
+# hexagon systems refine non-congruently and are excluded from the GEOMETRIC law
+# with that reason — see `member_neighbors`' docstring; they keep every other law
+# here.
 
 # The last column is whether `Vertex()` and `Edge()` are different relations at
-# all: IGEO7 and H3 have only 3-valent vertices, so on those two they coincide
-# and "Edge drops the diagonal contacts" has nothing to drop. Stated rather than
-# left to a passing-by-vacuity test.
+# all: IGEO7, H3 and the ISEA3H/4H hexagons have only 3-valent vertices, so on
+# those the two coincide and "Edge drops the diagonal contacts" has nothing to
+# drop. Stated rather than left to a passing-by-vacuity test.
+#
+# The level column is chosen per system so the reference level lands in the same
+# cell-size band on every aperture — the coverage has to be genuinely mixed-level
+# for the laws below to say anything, and the oracle has to be able to expand
+# every member to it.
 const MOC_SWEEP = [
     (DGG.IGeo7System(), 6, DONUT, false),
     (DGG.H3System(), 5, DONUT, false),
@@ -703,8 +735,24 @@ const MOC_SWEEP = [
     (DGG.A5System(), 8, DONUT, true),
     (DGG.S2System(), 8, MAINLAND, true),
     (DGG.ISEA4RSystem(), 8, DONUT, true),
+    (DGG.ISEA3HSystem(), 10, DONUT, false),
+    (DGG.ISEA4HSystem(), 8, DONUT, false),
+    (DGG.ISEA4TSystem(), 8, DONUT, true),
+    (DGG.RHEALPixSystem(), 6, DONUT, true),
+    (DGG.AusPIXSystem(), 6, DONUT, true),
+    (DGG.IVEA4RSystem(), 8, DONUT, true),
+    (DGG.IVEA9RSystem(), 6, DONUT, true),
+    (DGG.RTEA4RSystem(), 8, DONUT, true),
+    (DGG.RTEA9RSystem(), 6, DONUT, true),
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, DONUT, false),
 ]
+
+# The same guard the subset sweep above carries. `member_neighbors` is a
+# registry-wide law, and the only thing that ever kept it from being tested on a
+# system was this list silently not growing when one was added.
+@testset "the member-adjacency sweep covers every registered system" begin
+    sweepcovers(MOC_SWEEP)
+end
 
 @testset "member_neighbors: $(syslabel(sys))" for (sys, lvl, target, splits) in MOC_SWEEP
     set = query(sys, MultiOrderCoverage(target); level = lvl)
@@ -758,7 +806,7 @@ const MOC_SWEEP = [
         @test_throws ArgumentError member_neighbors(set, outside)
     end
 
-    if isquadface(sys)
+    if iscongruent(sys)
         # The geometric law, and the reason the exclusions above are stated
         # rather than silently taken: `adjacent_cells` reads the boundary RINGS
         # and counts shared vertices, so this is "share a boundary" and "share

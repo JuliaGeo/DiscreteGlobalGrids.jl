@@ -1,0 +1,21 @@
+# Sealed reference vectors: captured once from an external implementation
+# (DGGRID 9.0b, DGGAL, the rHEALPix Python package) and read by the suite as the
+# contract. They are checked in deliberately — the vectors ARE the oracle, not a
+# cache of one — and they dominate the line count of any diff that touches them:
+# the ISEA and rHEALPix sets alone are 73k lines.
+#
+# `linguist-generated` collapses them in review and drops them from the language
+# stats. It does NOT suppress `git diff`, which is the point: regenerating a
+# family with `scripts/oracles/` and reading exactly which cells moved is a
+# normal thing to want, and `-diff` would report "binary files differ" instead.
+test/oracles/**            linguist-generated=true
+test/systems/*/vectors/**  linguist-generated=true
+test/fixtures/**           linguist-generated=true
+
+# Coordinate text, so keep it byte-stable across platforms: a CRLF checkout
+# would change every parsed digit position and the oracle comparisons read
+# fixed-width fields in places.
+*.txt      text eol=lf
+*.csv      text eol=lf
+*.jsonl    text eol=lf
+*.geojson  text eol=lf

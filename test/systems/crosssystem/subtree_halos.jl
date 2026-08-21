@@ -176,6 +176,60 @@ end
 # construction-allocation laws: state that grew with the halo would show here.
 state_size(it) = Base.summarysize(it)
 
+# The level-0 cell these laws hang a subtree from.
+#
+# It is root 1 on thirteen of the fifteen systems, and has to be asked for
+# rather than written as `law_root(sys)` because of the other
+# two: ISEA3H and ISEA4H seal their two polar roots as single-child chains, so
+# root 1 has a ONE-cell subtree at every depth. Every law below that reads a
+# growth ratio, an allocation trend, or a halo big enough to slice reads it as
+# 5 — the pentagon's one-ring — at every level, and fails on a degeneracy
+# rather than on the property it means to test.
+#
+# Picking the first root whose subtree actually branches keeps all thirteen
+# unchanged (so the constants pinned against them still mean what they meant)
+# and gives the two hexagon systems a representative subtree.
+law_root(sys) = law_root(sys, 4)
+function law_root(sys, probe::Int)
+    g0 = levelgrid(sys, 0)
+    l = min(probe, maxlevel(sys))
+    for i in 1:ncells(g0)
+        c = cellindex(g0, i)
+        count(_ -> true, DGG.descendants(sys, c, l)) > 1 && return c
+    end
+    return cellindex(g0, 1)
+end
+
+# The depth ladders below are written as level NUMBERS, which silently means
+# wildly different amounts of WORK once the registry spans apertures 3 to 9:
+# level 7 is a 16k-cell subtree at aperture 4 and a 4.8M-cell one at aperture 9.
+# That matters here because the four aperture-9 systems have no specialized halo
+# engine — their walk is the generic one, which costs what the full-grid
+# reference scan costs (measured at depth 7 on rHEALPix: 4.46s for the scan,
+# 4.46s for the shipped walk, against 0.006s for S2, which has one) — so the
+# cost lands on every law in this file, and the ladders are walked repeatedly.
+#
+# Cap the ladder at the largest subtree these laws already walked before the
+# literature systems were registered: H3 at level 7. Every system main swept is
+# under it and keeps its exact depths; only the aperture-9 newcomers are pulled
+# in, and their ladders still grow by a factor of 9 per rung, which is more than
+# any growth ratio asserted here needs.
+const LAW_SUBTREE_BUDGET = 7^7
+
+function law_depths(sys, ladder)
+    b = max(2, length(children(sys, law_root(sys))))
+    top = floor(Int, log(LAW_SUBTREE_BUDGET) / log(b))
+    # The other end of the same problem. These ladders are written for aperture
+    # 4, and a level moves the halo by roughly `sqrt(aperture)`, so at aperture 3
+    # the same span of levels grows the halo 4.5x where the law asks for 5x —
+    # a fail on arithmetic rather than on behaviour. Stretch the top rung by the
+    # levels the coarser aperture needs to cover the same ground; systems at
+    # aperture 4 and above are already there and keep their exact ladders.
+    stretch = max(0, ceil(Int, (last(ladder) - first(ladder)) * (log(4) / log(b) - 1)))
+    stretched = (ladder[1:(end - 1)]..., last(ladder) + stretch)
+    return unique(min(d, top) for d in stretched)
+end
+
 # One outer testset records failures while allowing later nested testsets to run.
 @testset "subtree halos" begin
 
@@ -305,9 +359,25 @@ state_size(it) = Base.summarysize(it)
         DGG.SubtreeHaloIterator(sys, c, Int(l), conn,
             DGG.Engine.geometry_halo_engine(sys, c, Int(l), conn)))
 
+    # The geometry engine decides adjacency by counting shared boundary points,
+    # so it states a law about the DRAWN rings and not about the lattice. The
+    # two central-place hexagon systems draw their Snyder edges as a documented
+    # finite approximation (see `src/systems/IVEARTEA/system.jl` for the same
+    # tradeoff stated for the rhombic family, and the ISEA3H/4H note in
+    # `regridding_conservation.jl`), so on them the two relations are not the
+    # same relation and geometry comes out a strict subset of topology:
+    # measured over this file's own roots, ISEA4H disagrees in 6 of the level-1
+    # cases and 5 of the level-2 ones, ISEA3H in 1 level-2 case, and every
+    # disagreement is a cell topology holds and geometry drops. The other
+    # thirteen registered systems — the seven other literature ones included —
+    # agree exactly, which is what keeps this an exclusion rather than a
+    # weakened law. `stencils.jl` excludes the same two from its geometric
+    # member-adjacency law for the related reason that they refine
+    # non-congruently.
+    exact_rings(sys) = !(sys isa DGG.ISEA3HSystem || sys isa DGG.ISEA4HSystem)
 
     @testset "forced geometry at depth zero" begin
-        for sys in systems()
+        for sys in filter(exact_rings, systems())
             for base in 0:1
                 grid = levelgrid(sys, base)
                 for c in (cellindex(grid, 1), cellindex(grid, ncells(grid))),
@@ -319,7 +389,8 @@ state_size(it) = Base.summarysize(it)
         end
     end
 
-    @testset "$(syslabel(sys)): geometry agrees with topology" for sys in systems()
+    @testset "$(syslabel(sys)): geometry agrees with topology" for sys in
+                                                             filter(exact_rings, systems())
         grid0 = levelgrid(sys, 0)
         n0 = ncells(grid0)
         for i in 1:n0, conn in (Vertex(), Edge())
@@ -401,7 +472,7 @@ state_size(it) = Base.summarysize(it)
             forsystems(sortedsubtrees = true)
         d = deep_depth(sys, 0)
         d >= 1 || continue
-        check_halo_case(sys, cellindex(levelgrid(sys, 0), 1), d, Vertex())
+        check_halo_case(sys, law_root(sys), d, Vertex())
     end
 
     # -----------------------------------------------------------------------
@@ -613,7 +684,7 @@ state_size(it) = Base.summarysize(it)
     # monotonicity argument were wrong anywhere, the gap would be widest here.
     @testset "the seam walk at depth five" begin
         for sys in SQUARE_SYSTEMS, conn in (Vertex(), Edge())
-            c = cellindex(levelgrid(sys, 0), 1)
+            c = law_root(sys)
             it = SubtreeHaloIterator(sys, c, 5; connectivity = conn)
             @test it.engine isa DGG.Engine.SquareBandEngine
             @test collect(it) == forced_geometry_halo(sys, c, 5, conn)
@@ -969,7 +1040,7 @@ state_size(it) = Base.summarysize(it)
 
     @testset "$(syslabel(sys)): halo on subsets" for sys in systems()
         l = min(2, maxlevel(sys))
-        c = cellindex(levelgrid(sys, 0), 1)
+        c = law_root(sys)
         pg = subtree(sys, c, l)
         cv = CellVector(pg)
         expected = eager_halo(sys, c, l)
@@ -1021,28 +1092,59 @@ state_size(it) = Base.summarysize(it)
         end
     end
 
+    # The prune probes `coarse_probe_rings(sys)` rings, not always one, because
+    # on a non-congruent refinement a descendant can leave its ancestor's
+    # footprint. This is that trait's law: at the declared ring count nothing
+    # escapes. Counting the escapes rather than asserting a bare `false` is what
+    # makes the failure legible — and one below the declared count the counts
+    # are nonzero, so this kills a trait lowered under the geometry.
+    escape_count(sys, l, lc, k) = begin
+        grid = levelgrid(sys, l)
+        coarse = levelgrid(sys, lc)
+        out = 0
+        for p in 1:ncells(grid)
+            x = cellindex(grid, p)
+            a = ancestor(sys, x, lc)
+            ring = neighbors(coarse, a, k; connectivity = Vertex())
+            for y in neighbors(grid, x, 1; connectivity = Vertex())
+                b = ancestor(sys, y, lc)
+                (b == a || any(==(b), ring)) || (out += 1)
+            end
+        end
+        out
+    end
+
     @testset "the coarse-containment law the subset prune rests on" begin
         for sys in systems()
+            k = DGG.coarse_probe_rings(sys)
             escaped = Tuple{Int,Int}[]
             for l in 1:6
                 l <= maxlevel(sys) || continue
-                grid = levelgrid(sys, l)
-                ncells(grid) <= 300_000 || continue
-                coarse = levelgrid(sys, l - 1)
-                out = 0
-                for p in 1:ncells(grid)
-                    x = cellindex(grid, p)
-                    a = ancestor(sys, x, l - 1)
-                    ring = neighbors(coarse, a, 1; connectivity = Vertex())
-                    for y in neighbors(grid, x, 1; connectivity = Vertex())
-                        b = ancestor(sys, y, l - 1)
-                        (b == a || any(==(b), ring)) || (out += 1)
-                    end
-                end
+                ncells(levelgrid(sys, l)) <= 300_000 || continue
+                out = escape_count(sys, l, l - 1, k)
                 out == 0 || push!(escaped, (l, out))
             end
             @test escaped == Tuple{Int,Int}[]
         end
+    end
+
+    # The trait is a claim about geometry, so it has to be wrong to raise as
+    # well as to lower. ISEA3H is the one registered system that needs more than
+    # one ring; every other system is pinned at one so that a gratuitous raise —
+    # which costs query time, since the prune then retires less — fails here.
+    @testset "two rings on ISEA3H, and one everywhere else" begin
+        for sys in systems()
+            @test DGG.coarse_probe_rings(sys) == (sys isa DGG.ISEA3HSystem ? 2 : 1)
+        end
+        # The escapes ISEA3H would suffer at one ring, and the aperture-4
+        # counterpart that has none. Only ODD coarse levels escape: those are
+        # the even-depth ancestors, the ones the alternating-digit maximiser
+        # drives to the full covering factor 2 rather than to `sqrt(3)`.
+        s3 = DGG.ISEA3HSystem()
+        @test [escape_count(s3, l, l - 1, 1) for l in 2:6] == [20, 0, 180, 0, 1620]
+        @test all(escape_count(s3, l, l - 1, 2) == 0 for l in 2:6)
+        s4 = DGG.ISEA4HSystem()
+        @test all(escape_count(s4, l, lc, 1) == 0 for l in 1:5, lc in 0:4 if lc < l)
     end
 
     # A rooted subtree with one interior cell removed: the smallest departure
@@ -1059,9 +1161,13 @@ state_size(it) = Base.summarysize(it)
     @testset "the subset walk's cost follows the halo, not the subset" begin
         for sys in systems()
             DGG.has_sorted_subtrees(sys) || continue
-            c = cellindex(levelgrid(sys, 0), 1)
+            c = law_root(sys)
             # Choose depths with comparable subtree sizes across apertures.
-            depths = sys in HEX_SYSTEMS ? (3, 6) : (4, 9)
+            # `holed_subtree` materializes the whole descendant range, so the
+            # ladder has to be the capped one: level 9 is a 262k-cell subtree at
+            # aperture 4 and a 387-MILLION-cell one at aperture 9, which is tens
+            # of gigabytes of ids for a law about query counts.
+            depths = sys in HEX_SYSTEMS ? (3, 6) : law_depths(sys, (4, 9))
             all(l -> l <= maxlevel(sys), depths) || continue
             calls = Int[]; members = Int[]; halos = Int[]
             for l in depths
@@ -1075,10 +1181,21 @@ state_size(it) = Base.summarysize(it)
             end
             # Member count grows much faster than halo size.
             @test members[2] / members[1] >= 4 * (halos[2] / halos[1])
-            # Query growth follows halo size.
+            # Query growth follows halo size. This is the law's actual content,
+            # and it holds on every system including the two-ring one.
             @test calls[2] <= 1.6 * (halos[2] / halos[1]) * calls[1]
-            # The walk inspects only a fraction of members.
-            @test calls[2] <= 0.6 * members[2]
+            # The walk inspects only a fraction of members — an absolute bound,
+            # and one that a wider coarse probe cannot meet. ISEA3H at these
+            # depths: the one-ring probe makes 8987 calls, 0.46 of its members,
+            # and returns 596 of the 649 halo cells — it is cheap because it is
+            # wrong. Two rings makes it right at 43603 calls, 2.2 of its member
+            # count. So the fraction is pinned per probe width rather than
+            # dropped, and a regression to a third ring still fails here.
+            if DGG.coarse_probe_rings(sys) == 1
+                @test calls[2] <= 0.6 * members[2]
+            else
+                @test calls[2] <= 2.5 * members[2]
+            end
         end
     end
 
@@ -1145,7 +1262,7 @@ state_size(it) = Base.summarysize(it)
         # the wrapper as much as of the engine inside it.
         for sys in systems()
             l = min(2, maxlevel(sys))
-            c = cellindex(levelgrid(sys, 0), 1)
+            c = law_root(sys)
             loose = PartialGrid(sys, l, collect(subtree(sys, c, l).ids))
             check_prefix(hcells(loose))
             check_prefix(hcells(CellVector(loose)))
@@ -1171,7 +1288,7 @@ state_size(it) = Base.summarysize(it)
         end
         for sys in systems()
             mx = maxlevel(sys)
-            c0 = cellindex(levelgrid(sys, 0), 1)
+            c0 = law_root(sys)
             check_eltype(sys, SubtreeHaloIterator(sys, c0, 0))       # the one-ring
             for l in 1:min(2, mx)
                 check_eltype(sys, SubtreeHaloIterator(sys, c0, l))   # what it ships
@@ -1197,7 +1314,7 @@ state_size(it) = Base.summarysize(it)
 
     @testset "the collected halo's element type is inferred, not just correct" begin
         for sys in systems()
-            c = cellindex(levelgrid(sys, 0), 1)
+            c = law_root(sys)
             T = Tuple{typeof(SubtreeHaloIterator(sys, c, 1))}
             @test only(Base.return_types(collect, T)) ===
                 Vector{DGG.cellindextype(sys)}
@@ -1225,7 +1342,7 @@ state_size(it) = Base.summarysize(it)
         end
         for sys in systems()
             mx = maxlevel(sys)
-            c0 = cellindex(levelgrid(sys, 0), 1)
+            c0 = law_root(sys)
             check_count(SubtreeHaloIterator(sys, c0, 0))
             for l in 1:min(2, mx)
                 check_count(SubtreeHaloIterator(sys, c0, l))
@@ -1285,7 +1402,7 @@ state_size(it) = Base.summarysize(it)
         end
         for sys in systems()
             mx = maxlevel(sys)
-            c0 = cellindex(levelgrid(sys, 0), 1)
+            c0 = law_root(sys)
             for l in 0:min(2, mx)
                 check_positions(levelgrid(sys, l), SubtreeHaloIterator(sys, c0, l))
             end
@@ -1305,7 +1422,7 @@ state_size(it) = Base.summarysize(it)
         # connectivities.
         for sys in systems()
             l = min(2, maxlevel(sys))
-            pg = subtree(sys, cellindex(levelgrid(sys, 0), 1), l)
+            pg = subtree(sys, law_root(sys), l)
             for conn in (Vertex(), Edge())
                 @test collect(halo(pg; connectivity = conn)) ==
                       [cellposition(levelgrid(sys, l), x)
@@ -1375,7 +1492,7 @@ state_size(it) = Base.summarysize(it)
         # --- where nothing is known ----------------------------------------
         for sys in systems()
             l = min(2, maxlevel(sys))
-            c0 = cellindex(levelgrid(sys, 0), 1)
+            c0 = law_root(sys)
             @test sizehint(generic_iterator(sys, c0, l)) === nothing
             loose = PartialGrid(sys, l, collect(subtree(sys, c0, l).ids))
             @test sizehint(hcells(loose)) === nothing
@@ -1405,7 +1522,7 @@ state_size(it) = Base.summarysize(it)
             end
         end
         for sys in SQUARE_SYSTEMS
-            c0 = cellindex(levelgrid(sys, 0), 1)
+            c0 = law_root(sys)
             check_not_a_count(SubtreeHaloIterator(sys, c0, 0))     # the one-ring
             check_not_a_count(SubtreeHaloIterator(sys, c0, 3))     # the seam band
             check_not_a_count(SubtreeHaloIterator(sys, inface_root(sys, 2, 4), 4))
@@ -1445,7 +1562,7 @@ state_size(it) = Base.summarysize(it)
         end
         for sys in systems()
             l = min(2, maxlevel(sys))
-            c0 = cellindex(levelgrid(sys, 0), 1)
+            c0 = law_root(sys)
             check_batches(SubtreeHaloIterator(sys, c0, l))
             check_batches(generic_iterator(sys, c0, l))
             loose = PartialGrid(sys, l, collect(subtree(sys, c0, l).ids))
@@ -1484,16 +1601,16 @@ state_size(it) = Base.summarysize(it)
 
 
 
-    DEPTH_FLAT_SYSTEMS = forsystems(sortedsubtrees = true)
+    DEPTH_FLAT_SYSTEMS = forsystems(halowalk = true)
 
     @testset "construction state does not grow with the halo" begin
         for sys in systems()
-            c = cellindex(levelgrid(sys, 0), 1)
+            c = law_root(sys)
             # A5's targets stop at 3: its halo at level 4 is a
             # 3840-cell scan whose per-cell cost is a `Set`-allocating
             # `neighbors`, and the law here needs only two comparable points.
             depths = filter(l -> l <= maxlevel(sys),
-                hassortedsubtrees(sys) ? (3, 5, 7) : (1, 2, 3))
+                hassortedsubtrees(sys) ? law_depths(sys, (3, 5, 7)) : (1, 2, 3))
             ship = [state_size(SubtreeHaloIterator(sys, c, l)) for l in depths]
             gen = [state_size(generic_iterator(sys, c, l)) for l in depths]
             sizes = [length(eager_halo(sys, c, l)) for l in depths]
@@ -1505,7 +1622,7 @@ state_size(it) = Base.summarysize(it)
 
     @testset "the specialized prefix costs the same at every depth" begin
         for sys in DEPTH_FLAT_SYSTEMS
-            c = cellindex(levelgrid(sys, 0), 1)
+            c = law_root(sys)
             depths = filter(l -> l <= maxlevel(sys), (3, 5, 7))
             # One native check per emitted cell, at every depth: a four-cell
             # prefix asks four one-ring questions however deep the target is,
@@ -1537,8 +1654,8 @@ state_size(it) = Base.summarysize(it)
 
     @testset "a short prefix is a small, non-growing fraction of the collect" begin
         for sys in systems()
-            c = cellindex(levelgrid(sys, 0), 1)
-            depths = hassortedsubtrees(sys) ? (3, 7) : (1, 4)
+            c = law_root(sys)
+            depths = hassortedsubtrees(sys) ? law_depths(sys, (3, 7)) : (1, 4)
             all(l -> l <= maxlevel(sys), depths) || continue
             fracs = map(depths) do l
                 e = SubtreeHaloIterator(sys, c, l).engine
@@ -1557,8 +1674,8 @@ state_size(it) = Base.summarysize(it)
     @testset "the generic walk obeys the same fraction law" begin
         for sys in systems()
             hassortedsubtrees(sys) || continue
-            c = cellindex(levelgrid(sys, 0), 1)
-            depths = (3, 6)
+            c = law_root(sys)
+            depths = law_depths(sys, (3, 6))
             all(l -> l <= maxlevel(sys), depths) || continue
             fracs = Float64[]
             sizes = Int[]
@@ -1575,11 +1692,26 @@ state_size(it) = Base.summarysize(it)
         end
     end
 
+    # The negative control for the laws above: wrap the real engine in one that
+    # materializes, and check the laws REFUSE it. Without it they could be
+    # passing because nothing measurable happens either way.
+    #
+    # Three systems and not `systems()`. Eagerness is a property of the wrapper,
+    # not of the system under it — an eager engine over IVEA4R fails for the
+    # same reason it fails over S2 — so the only axis worth spanning is the
+    # engine being wrapped: a square specialization, a hex one, and a system on
+    # the generic walk. Sweeping all fifteen re-proved that at depth 7 on
+    # 4.8M-cell aperture-9 subtrees, which was 170 of the 230 minutes the suite
+    # took when this file first met the literature registry.
+    EAGER_CONTROL_SYSTEMS = (S2System(), IGeo7System(), IVEA4RSystem())
+
     @testset "an eager engine with the same surface fails every laziness law" begin
-        for sys in systems()
-            c = cellindex(levelgrid(sys, 0), 1)
-            depths = filter(l -> l <= maxlevel(sys),
-                hassortedsubtrees(sys) ? (3, 5, 7) : (1, 2, 3))
+        for sys in EAGER_CONTROL_SYSTEMS
+            c = law_root(sys)
+            # The control has to SEE the walk grow before it can refuse it, so
+            # the ladder is the deep one on all three. The shallow arm the laws
+            # above take is A5's cost dodge, and A5 is not one of these.
+            depths = filter(l -> l <= maxlevel(sys), law_depths(sys, (3, 5, 7)))
             @test collect(fixture_iterator(sys, c, last(depths))) ==
                   eager_halo(sys, c, last(depths))
             ctor = [fixture_ctor_queries(sys, c, l) for l in depths]
@@ -1597,9 +1729,23 @@ state_size(it) = Base.summarysize(it)
         end
     end
 
+    # The absolute query count of one complete subset walk, per system. A ratio
+    # cannot see a walk that gets uniformly more expensive, which is what these
+    # pin.
+    #
+    # The spread across the second group is the interesting part, and it is not
+    # noise: IVEA9R and RTEA9R ask over half a million questions where rHEALPix,
+    # at the same aperture and the same subset size, asks 9612. They are the
+    # systems with no specialized halo engine AND no sorted subtrees, so the
+    # walk cannot prune by descendant range and falls back to asking about
+    # cells one at a time. That is a standing performance gap, recorded here so
+    # that closing it shows up as a failure rather than passing unnoticed.
     SUBSET_QUESTION_TOTALS = Dict(
         :IGeo7System => 4622, :H3System => 6005, :HEALPixSystem => 2143,
-        :A5System => 28010, :S2System => 1572, :ISEA4RSystem => 1865)
+        :A5System => 28010, :S2System => 1572, :ISEA4RSystem => 1865,
+        :ISEA3HSystem => 2641, :ISEA4HSystem => 1162, :ISEA4TSystem => 3296,
+        :RHEALPixSystem => 9612, :AuthalicSystem => 9612, :IVEA4RSystem => 20548,
+        :IVEA9RSystem => 535818, :RTEA4RSystem => 20538, :RTEA9RSystem => 535821)
 
     @testset "the subset walk is lazy, and its construction is O(1)" begin
         for sys in systems()
@@ -1607,7 +1753,7 @@ state_size(it) = Base.summarysize(it)
             ctor = (grid = Int[], vector = Int[])
             sizes = Int[]
             for l in unique((1, min(4, mx)))
-                c = cellindex(levelgrid(sys, 0), 1)
+                c = law_root(sys)
                 loose = PartialGrid(sys, l, collect(subtree(sys, c, l).ids))
                 push!(sizes, ncells(loose))
                 for (built, sub) in ((ctor.grid, loose),
@@ -1623,7 +1769,7 @@ state_size(it) = Base.summarysize(it)
             @test maximum(ctor.vector) - minimum(ctor.vector) <= 64
             # Check traversal work on the larger subset.
             deep = min(4, mx)
-            root = cellindex(levelgrid(sys, 0), 1)
+            root = law_root(sys)
             cv = CellVector(PartialGrid(sys, deep,
                 collect(subtree(sys, root, deep).ids)))
             complete = levelgrid(sys, deep)
@@ -1671,21 +1817,26 @@ state_size(it) = Base.summarysize(it)
     # Last rather than first, because the wrapper test needs `classify_roots`.
     # -----------------------------------------------------------------------
 
+    # AusPIX is a registered `AuthalicSystem`, so the sweeps below have to skip
+    # the systems that are already wrapped: re-wrapping one throws by contract,
+    # and the law here is about what the wrapper forwards, which its own parent
+    # already covers.
+    rewrappable(sys) = !(sys isa DGG.AuthalicSystem)
+
     @testset "AuthalicSystem forwards the halo walk" begin
         seen = Set{Symbol}()
-        for sys in systems()
+        for sys in filter(rewrappable, systems())
             wrapped = DGG.AuthalicSystem(sys)
-            grid0 = levelgrid(sys, 0)
-            c = cellindex(grid0, 1)
+            c = law_root(sys)
             for l in level(c):min(level(c) + 2, maxlevel(sys))
                 it = SubtreeHaloIterator(wrapped, c, l)
                 push!(seen, engine_tag(it.engine))
                 @test collect(it) == collect(SubtreeHaloIterator(sys, c, l))
             end
         end
-        for sys in systems()
+        for sys in filter(rewrappable, systems())
             wrapped = DGG.AuthalicSystem(sys)
-            c = cellindex(levelgrid(sys, 0), 1)
+            c = law_root(sys)
             l = min(2, maxlevel(sys))
             it = SubtreeHaloIterator(wrapped, c, l, Vertex(),
                 DGG.Engine.generic_halo_engine(wrapped, c, l, Vertex()))
@@ -1724,10 +1875,10 @@ state_size(it) = Base.summarysize(it)
             end
         end
         @test seen == ALL_ENGINE_TAGS
-        for sys in systems()
+        for sys in filter(rewrappable, systems())
             wrapped = DGG.AuthalicSystem(sys)
             l = min(2, maxlevel(sys))
-            c = cellindex(levelgrid(sys, 0), 1)
+            c = law_root(sys)
             pg = subtree(wrapped, c, l)
             loose = PartialGrid(wrapped, l, collect(pg.ids))
             expected = eager_halo(sys, c, l)
@@ -1748,7 +1899,7 @@ state_size(it) = Base.summarysize(it)
     @testset "collect and Set are the walk, and nothing else" begin
         for sys in systems()
             l = min(2, maxlevel(sys))
-            c0 = cellindex(levelgrid(sys, 0), 1)
+            c0 = law_root(sys)
             pg = subtree(sys, c0, l)
             for walk in (hcells(pg), halo(pg), border(pg; cells = true),
                          border(pg), interior(pg; cells = true), interior(pg))

@@ -32,6 +32,21 @@ const SWEEP = [
     (DGG.S2System(), 1, 4, 11),
     (DGG.ISEA4RSystem(), 1, 4, 11),
     (AuthalicSystem(DGG.IGeo7System()), 1, 3, 8),
+    # The literature families. Levels are chosen per aperture rather than
+    # shared, so that each row's rooted subtree and tile coverage come out the
+    # same size as the rows above rather than the same level number: the
+    # coverages here run 213-873 cells over 19-49 windows, against 779-1035
+    # over 48-80 for the six above. A shared level number would make the
+    # aperture-9 rows two orders of magnitude larger than the aperture-3 one.
+    (DGG.ISEA3HSystem(), 1, 5, 13),
+    (DGG.ISEA4HSystem(), 1, 4, 10),
+    (DGG.ISEA4TSystem(), 1, 4, 10),
+    (DGG.RHEALPixSystem(), 1, 3, 7),
+    (DGG.AusPIXSystem(), 1, 3, 7),
+    (DGG.IVEA4RSystem(), 1, 4, 10),
+    (DGG.IVEA9RSystem(), 1, 3, 7),
+    (DGG.RTEA4RSystem(), 1, 4, 10),
+    (DGG.RTEA9RSystem(), 1, 3, 7),
 ]
 
 @testset "the sweep covers every registered system" begin

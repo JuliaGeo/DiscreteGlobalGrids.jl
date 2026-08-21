@@ -33,6 +33,15 @@ const SWEEP = [
     (DGG.A5System(), 9, 2),
     (DGG.S2System(), 9, 3),
     (DGG.ISEA4RSystem(), 9, 3),
+    (DGG.ISEA3HSystem(), 9, 2),
+    (DGG.ISEA4HSystem(), 7, 3),
+    (DGG.ISEA4TSystem(), 8, 3),
+    (DGG.RHEALPixSystem(), 7, 3),
+    (DGG.AusPIXSystem(), 7, 3),
+    (DGG.IVEA4RSystem(), 8, 3),
+    (DGG.IVEA9RSystem(), 5, 2),
+    (DGG.RTEA4RSystem(), 8, 3),
+    (DGG.RTEA9RSystem(), 5, 2),
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, 3),
 ]
 

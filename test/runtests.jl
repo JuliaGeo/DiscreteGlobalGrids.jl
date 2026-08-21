@@ -19,13 +19,19 @@ using DiscreteGlobalGrids
     include("systems/A5/runtests.jl")
     include("systems/S2/runtests.jl")
     include("systems/ISEA4R/runtests.jl")
+    include("systems/ISEAGrids/runtests.jl")
+    include("systems/RHEALPix/runtests.jl")
+    include("systems/IVEARTEA/runtests.jl")
     # CopernicusDEM is not in `systems()`, so the cross-system sweeps below
     # never see it; its laws are stated only here.
     include("systems/CopernicusDEM/runtests.jl")
-    # Run interface-wide laws after each system's implementation tests.
+    # Run interface-wide laws after each system's implementation tests: they
+    # sweep `systems()`, so a failure there is a contract failure, not a port
+    # that never worked.
     include("systems/crosssystem/runtests.jl")
     # Multi-order suites share the committed California outline fixture.
     include("systems/crosssystem/multiorder_polygons.jl")
+    # The budget mode of the same query, sharing that fixture and its samplers.
     include("systems/crosssystem/multiorder_budget.jl")
     # Test the compressed cell container before the lookup that wraps it.
     include("systems/crosssystem/cell_vector.jl")

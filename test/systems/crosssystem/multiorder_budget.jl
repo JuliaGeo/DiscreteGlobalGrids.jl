@@ -1,5 +1,23 @@
 # Cross-system laws for budget-limited multi-order coverage. The committed
 # California outline provides a non-rectangular geometry fixture.
+#
+# `maxcells` refines crossing cells coarsest first and stops when the next
+# replacement would not fit; `level` refines to a fixed depth instead. Same
+# predicates and prunes, a different schedule. A seed larger than the budget is
+# returned whole, since there is nothing to refine away. ISEA3H/4H are not
+# spatial prefix trees and are checked for explicit rejection rather than swept.
+#
+# Covering is exact only on the congruent systems, whose children tile their
+# parent. Elsewhere replacing a cell by its children swaps one footprint for
+# another, so both the union reading (every target point lies in some emitted
+# cell) and the leaf reading (every reference-level cell meeting the target is a
+# member or below one) are bounded measurements rather than zero. A bounded
+# lookahead past a child that misses the target does not fix this: two extra
+# levels take IGeo7, H3 and the authalic wrap to zero misses on these fixtures
+# and A5 to a handful, three extra levels leave A5 still failing, and
+# `_subtree_outside` never fires on a cell hugging the target's boundary from
+# outside at any level. No depth turns it into a proof, so no such constant
+# ships and the per-system bounds below are used instead.
 
 module MultiOrderBudgetTests
 
@@ -12,7 +30,7 @@ import GeometryOps as GO
 import DimensionalData as DD
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
-using .DGGTestHelpers: syslabel, isquadface, sweepcovers
+using .DGGTestHelpers: syslabel, iscongruent, sweepcovers
 
 # ---------------------------------------------------------------------------
 # The fixture — the same committed outline the accuracy mode is tested against
@@ -63,8 +81,9 @@ const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 # Systems
 #
 # CONGRUENCE — whether a cell's children exactly tile it — decides which arm two
-# of the laws take, and it is `isquadface`: the quad-face family are aperture-4
-# quadtrees on a chart and four children tile their parent; IGEO7 and H3 are
+# of the laws take, and it is `iscongruent`: the quad-face family are aperture-4
+# quadtrees on a chart and four children tile their parent, as do ISEA4T's four
+# triangles, rHEALPix's nine quads and the IVEA/RTEA rhombi; IGEO7 and H3 are
 # aperture 7 and their seven children are a rotated rosette with the parent's
 # area and not its footprint; A5's four Hilbert children do not even stay
 # inside it.
@@ -81,6 +100,13 @@ const SWEEP = [
     (DGG.A5System(), 6),
     (DGG.S2System(), 7),
     (DGG.ISEA4RSystem(), 6),
+    (DGG.ISEA4TSystem(), 6),
+    (DGG.RHEALPixSystem(), 5),
+    (DGG.AusPIXSystem(), 5),
+    (DGG.IVEA4RSystem(), 6),
+    (DGG.IVEA9RSystem(), 4),
+    (DGG.RTEA4RSystem(), 6),
+    (DGG.RTEA9RSystem(), 4),
     (DGG.AuthalicSystem(DGG.IGeo7System()), 5),
 ]
 
@@ -96,7 +122,15 @@ const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
     "H3System" => 0.02, "A5System" => 0.18)
 
 @testset "the budget sweep covers every registered system" begin
-    sweepcovers(SWEEP)
+    sweepcovers(SWEEP; except = (DGG.ISEA3HSystem, DGG.ISEA4HSystem))
+    # The two excluded systems reject the budget mode outright, and still answer
+    # the fixed-level one.
+    for sys in (DGG.ISEA3HSystem(), DGG.ISEA4HSystem())
+        @test_throws ArgumentError DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND);
+            maxcells=10)
+        @test DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); level=3) isa
+            DGG.MultiOrderCellSet
+    end
 end
 
 # ---------------------------------------------------------------------------
@@ -223,7 +257,7 @@ end
 @testset "a budget covering of a real outline: $(syslabel(sys))" for
     (sys, toplevel) in SWEEP
 
-    congruent = isquadface(sys)
+    congruent = iscongruent(sys)
 
     sets = Dict(b => DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=b)
                 for b in BUDGETS)
@@ -359,6 +393,11 @@ end
                 @test budgeted.contained == accurate.contained
                 @test budgeted.reference_level == accurate.reference_level
             else
+                # Excluded with its reason: the accuracy mode descends into
+                # cells that miss the target, because a child can overhang its
+                # parent, and emits what it finds beneath them. A budget cannot,
+                # so it is a subset of the same size or smaller. Asserting
+                # equality here would be asserting congruence.
                 @test length(budgeted) <= length(accurate)
                 @test !isempty(budgeted)
             end

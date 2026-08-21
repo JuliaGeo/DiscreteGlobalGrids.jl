@@ -1,8 +1,9 @@
 # DiscreteGlobalGrids.jl
 
-Six discrete global grid systems — IGEO7, H3, HEALPix, A5, S2, ISEA4R — behind
-one small interface, with every algorithm written against the interface exactly
-once.
+Fifteen discrete global grid systems and profiles behind one small interface,
+with every algorithm written against the interface exactly once: IGEO7, H3,
+HEALPix, A5, S2, ISEA4R, ISEA3H/4H/4T, rHEALPix/AusPIX, and rhombic
+IVEA/RTEA aperture-4/9.
 
 `DGG.CopernicusDEMSystem` implements that same interface for the Copernicus DEM
 raster lattice, but is a raster rather than a DGGS and so stays outside
@@ -28,7 +29,7 @@ import Extents
 DGG.query(grid, DGG.Intersects(Extents.Extent(X = (5, 12), Y = (45, 50))))
 ```
 
-Swap `IGeo7System()` for any of the six and nothing else changes. The
+Swap `IGeo7System()` for any entry in `DGG.systems()` and nothing else changes. The
 [README](https://github.com/JuliaGeo/DiscreteGlobalGrids.jl) walks the whole
 surface; the docstring of `DGG.systems()` is the comparison table.
 
@@ -49,7 +50,7 @@ their package: `using Makie` (or a backend) draws cells, and `using Zarr` turns
 
 ## Where to go next
 
-The [DGGS gallery](all_dggs.md) draws every system. Each tutorial is the
+The [DGGS gallery](all_dggs.md) draws representative systems. Each tutorial is the
 shortest honest path to one result:
 
   - [Stencil operations](tutorials/stencils.md) — smoothing, Laplacians and

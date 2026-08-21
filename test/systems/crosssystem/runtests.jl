@@ -1,6 +1,14 @@
 # Interface-wide laws run against every registered grid system. System-specific
 # suites supply oracle vectors; this file checks shared hierarchy, geometry, and
 # neighbour-order contracts without importing implementation modules.
+#
+# The subtree rim hook is checked against `brute_force_border` below. Five
+# systems override the border with an `O(rim)` automaton and are differentially
+# tested against it; the rest — A5, which has no `descendant_range`, and the
+# literature systems, which have no family-specific rim walker yet — exercise
+# `src/fallbacks/subtree.jl` instead. That is not circular: the fallback decides
+# membership by walking each neighbour up to the root with `ancestor`, while
+# `brute_force_border` materialises the descendant set and asks it.
 
 module CrossSystemTests
 
@@ -11,7 +19,7 @@ using DiscreteGlobalGrids: systems, levels, levelgrid, ncells, cellindex,
     descendants, subtree, border, interior, Vertex, Edge, PartialGrid
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
-using .DGGTestHelpers: syslabel
+using .DGGTestHelpers: syslabel, basesystem
 
 # A deterministic spread of cells: no RNG, so a failure names the same cell on
 # every run and on every machine.
@@ -102,11 +110,17 @@ eager_interior(sys, c, l; kw...) =
     @testset "who ships a subtree-border automaton" begin
         automaton = Set([:IGeo7System, :H3System, :HEALPixSystem, :ISEA4RSystem,
             :S2System])
-        fallback = Set([:A5System])
+        fallback = Set([:A5System, :ISEA3HSystem, :ISEA4HSystem, :ISEA4TSystem,
+            :RHEALPixSystem, :AuthalicSystem, :IVEA4RSystem, :IVEA9RSystem,
+            :RTEA4RSystem, :RTEA9RSystem])
         for sys in systems()
             n = nameof(typeof(sys))
-            c = cellindex(levelgrid(sys, first(levels(sys))), 1)
-            m = which(DGG.border_engine, Base.typesof(sys, c, level(c), Vertex()))
+            # An `AuthalicSystem` forwards `border_engine` to its parent, so the
+            # question is about the system underneath the wrap; asking the
+            # wrapper would see the forwarder and call every wrap an automaton.
+            b = basesystem(sys)
+            c = cellindex(levelgrid(b, first(levels(b))), 1)
+            m = which(DGG.border_engine, Base.typesof(b, c, level(c), Vertex()))
             # "Ships an automaton" is "the selected method is not the generic
             # descendant scan" — not "the method lives in the system's own
             # module", which the shared quad-face engine would fail while still
@@ -216,16 +230,19 @@ eager_interior(sys, c, l; kw...) =
                     @test union(Set(bnd), Set(inner)) == Set(kids)
                     @test length(bnd) + length(inner) == length(kids)
 
-                    # The border is a small minority once there is any depth to
-                    # speak of — the property that makes the hook worth having.
-                    depth >= 2 && @test length(bnd) < length(kids)
+                    # The border is a small minority once there is any depth
+                    # and more than one descendant. ISEA3H/4H's two polar roots
+                    # are intentionally singleton all-zero chains, so their
+                    # subtrees have no possible interior at any depth.
+                    depth >= 2 && length(kids) > 1 &&
+                        @test length(bnd) < length(kids)
 
                     @test allunique(bnd)
                     @test eltype(bnd) === DGG.cellindextype(sys)
 
                     # The interface documents the border's order as ascending
                     # canonical order unless a system says otherwise, and none
-                    # of the six does. Verified across all four automatons
+                    # of the registered systems does. Verified across the fast paths
                     # before pinning it here: the Z7 digit automaton, H3's
                     # digit-arc automaton, HEALPix's Morton border walk and
                     # ISEA4R's edge walk all emit ascending by construction

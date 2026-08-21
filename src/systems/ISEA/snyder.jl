@@ -203,9 +203,15 @@ function snyder_fwd(p::NTuple{3,Float64})
             f = k
         end
     end
+    return (f, snyder_fwd_face(f, p))
+end
+
+"""Map `p` into a specified Snyder face chart, including boundary ties."""
+function snyder_fwd_face(f::Int, p::NTuple{3,Float64})
+    0 <= f < 20 || throw(ArgumentError("Snyder face must lie in 0:19"))
     fc = @inbounds FACES[f+1]
     shz = vnorm(vsub(p, fc.c)) / 2           # sin(z/2) = half the chord to c
-    shz <= 0.5e-15 && return (f, complex(0.0, 0.0))   # z < 1e-15: the center
+    shz <= 0.5e-15 && return complex(0.0, 0.0)   # z < 1e-15: the center
     Az = atan(vdot(p, fc.w), vdot(p, fc.u))
     k = floor(Int, Az / SNY_SECTOR)
     Azs = Az - k * SNY_SECTOR
@@ -217,7 +223,7 @@ function snyder_fwd(p::NTuple{3,Float64})
     h = sqrt(sa * sa + ca * ca)
     dp = R_EA * h / (ca + sa * SNY_COTT)     # R_EA / (cos Az′s + sin Az′s·cot θ)
     rho = dp * shz / _sin_half_q(cs + ss * SNY_COTT)
-    return (f, rho * rot_sector(complex(ca, sa) / h, k))
+    return rho * rot_sector(complex(ca, sa) / h, k)
 end
 
 """

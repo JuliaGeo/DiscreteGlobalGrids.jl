@@ -45,7 +45,7 @@ level, in the system's canonical dense order.
 default is `HierarchicalLevelGrid(sys, l)`, checked against
 [`levels`](@ref) — so a system implements the five level-grid primitives below
 and never writes a grid type. Overriding this is the escape hatch for a system
-whose grid genuinely carries state beyond `(sys, l)`; none of the seven shipped
+whose grid genuinely carries state beyond `(sys, l)`; none of the shipped
 here does.
 
 `system(levelgrid(sys, l)) === sys` and `level(levelgrid(sys, l)) == l`. The
@@ -228,6 +228,26 @@ Raising it costs query time (looser pruning). Setting it too low is a
 correctness bug — see the covering law in [`node_extent`](@ref).
 """
 cap_inflation(::AbstractHierarchicalGridSystem) = 1.2
+
+"""
+    coarse_probe_rings(sys::AbstractHierarchicalGridSystem) -> Int
+
+How many rings the subset halo walk probes around a coarse node before pruning
+its whole subtree away.
+
+Defaults to `1`.
+
+The walk descends a level-`l` node that misses the subset only when a level-`l`
+neighbour within this many rings hits it. One ring is sound when a node's
+descendants stay inside its own footprint, which is the usual case; a refinement
+whose descendants overhang the parent needs as many rings as the overhang
+crosses, expressed in coarse cells. It is the same property [`cap_inflation`](@ref)
+measures for `node_extent`, counted in cells rather than in cap radii.
+
+Raising it costs query time (the prune retires less). Setting it too low is a
+correctness bug: the walk silently omits halo cells.
+"""
+coarse_probe_rings(::AbstractHierarchicalGridSystem) = 1
 
 """
     maxlevel(sys::AbstractHierarchicalGridSystem) -> Int

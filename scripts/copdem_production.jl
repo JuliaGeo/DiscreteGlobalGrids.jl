@@ -485,21 +485,101 @@ function regrid_chunk(dem, srcspace, sys7, layout, chunk::Int, config)
     return Float32.(vec(collect(out)))
 end
 
+"""
+    etaseconds(elapsed, computed, remaining) -> Float64
+
+How much longer the remaining chunks take at the rate THIS SESSION has computed
+chunks — `NaN` until the first one lands.
+
+`computed` deliberately excludes the chunks skipped at resume. Those cost a set
+lookup, not a regrid, so crediting them to the session's elapsed time makes the
+rate look arbitrarily fast: a resumed run of the GLO-90 store reported "ETA
+0.30 h" with about three hours left, because 54 k skips and 4.5 k real chunks
+were divided into one session's clock as if all 58 k had been computed in it.
+"""
+etaseconds(elapsed, computed, remaining) =
+    computed > 0 ? elapsed * remaining / computed : NaN
+
+"""
+    heartbeat!(p, force = false)
+
+One progress line, at most every `p.every` seconds.
+
+Every rate in it is SESSION-scoped and labelled so, because that is all a
+`Progress` knows: it counts what this process computed. Only the chunk count is
+store-wide, and it names both numbers — `d/t chunks (c computed this session)` —
+so neither reading can be mistaken for the other. Store-wide cells and NaNs come
+from the ledger instead, at the end of the run; see [`storetotals`](@ref).
+"""
 function heartbeat!(p::Progress, force = false)
     lock(p.lock) do
         now = time()
         (force || now - p.last >= p.every) || return nothing
         p.last = now
         el = now - p.started
-        done = p.done + p.skipped
-        rate = p.cells / max(el, 1e-9)
-        left = p.total - done
-        eta = done > 0 ? el * left / done : NaN
-        say(@sprintf("HEARTBEAT  %d/%d chunks (%d skipped) | %.3e cells | %.0f cells/s | elapsed %s | ETA %s | RSS %.1f GiB (peak %.1f) | NaN %.2f%%",
-            done, p.total, p.skipped, Float64(p.cells), rate, hours(el), hours(eta),
+        seen = p.done + p.skipped
+        eta = etaseconds(el, p.done, p.total - seen)
+        say(@sprintf("HEARTBEAT  %d/%d chunks (%d computed this session, %d skipped) | session %.3e cells, %.0f cells/s | elapsed %s | ETA %s | RSS %.1f GiB (peak %.1f) | session NaN %.2f%%",
+            seen, p.total, p.done, p.skipped, Float64(p.cells),
+            p.cells / max(el, 1e-9), hours(el), hours(eta),
             rssgib(), peakrssgib(), 100 * p.nan / max(p.cells, 1)))
         return nothing
     end
+end
+
+"""
+    reportchecks(donelog, written)
+
+Dry-run self-checks on the progress ARITHMETIC — the part of the run that has no
+regrid to verify it, and that a resumed run twice got wrong: an ETA that counted
+chunks skipped at resume as work this session, and a final banner whose totals
+were session-scoped without saying so. Both were cosmetic; both were believed.
+
+Cheap enough to run on every dry run, and it reads the run's real ledger, so it
+also says whether these totals can be trusted for THIS store.
+"""
+function reportchecks(donelog, written)
+    # 10 chunks computed in 10 s with 90 to go is 90 s. Crediting 100 skips to
+    # the same 10 s would say 5 s, which is the shape of the bug.
+    check("ETA counts only chunks computed this session",
+        etaseconds(10.0, 10, 90) ≈ 90.0;
+        detail = @sprintf("%.1f s, not the %.1f s that crediting 100 skips gives",
+            etaseconds(10.0, 10, 90), etaseconds(10.0, 110, 90)))
+    check("ETA is NaN until the first chunk lands", isnan(etaseconds(10.0, 0, 90)))
+
+    # A chunk logged twice — recomputed because a crash lost its file, not its
+    # line — is one chunk, at its LAST line's values.
+    tmp = tempname()
+    try
+        open(tmp, "w") do io
+            println(io, "{\"col\":7,\"cells\":100,\"nan\":10,\"secs\":1.00,\"w\":1,\"t\":\"x\"}")
+            println(io, "{\"col\":7,\"cells\":100,\"nan\":40,\"secs\":1.00,\"w\":2,\"t\":\"x\"}")
+            println(io, "{\"col\":9,\"cells\":100,\"nan\":0,\"secs\":1.00,\"w\":1,\"t\":\"x\"}")
+        end
+        t = storetotals(tmp, Set([7, 9, 11]))
+        check("a chunk logged twice counts once, at its last line",
+            length(doneledger(tmp)) == 2 && t.cells == 200 && t.nan == 40;
+            detail = "$(length(doneledger(tmp))) entries, $(t.cells) cells, $(t.nan) NaN")
+        check("a written chunk with no ledger line is unaccounted",
+            t.chunks == 3 && t.unaccounted == 1;
+            detail = "$(t.chunks) chunks, $(t.unaccounted) unaccounted")
+    finally
+        rm(tmp; force = true)
+    end
+
+    # And against the ledger this run will actually append to.
+    led = doneledger(donelog)
+    tot = storetotals(donelog, written)
+    check("store totals span the whole resume union",
+        tot.chunks == length(written) &&
+        tot.unaccounted == count(c -> !haskey(led, c) || led[c].cells < 0, written);
+        detail = "$(tot.chunks) chunks written, $(tot.unaccounted) with no ledger line")
+    check("store cells are the ledger sum over that union",
+        tot.cells == sum(Int[led[c].cells for c in written
+                             if haskey(led, c) && led[c].cells >= 0]; init = 0);
+        detail = @sprintf("%.4e cells, NaN %.3f%%", Float64(tot.cells),
+            100 * tot.nan / max(tot.cells, 1)))
+    return nothing
 end
 
 """
@@ -761,6 +841,7 @@ function main(config = CONFIG)
         "$(length(todochunks)) to do")
 
     if config.dryrun
+        reportchecks(donelog, done)
         say("dryrun: stopping before any regrid")
         return FAILURES[]
     end
@@ -775,19 +856,32 @@ function main(config = CONFIG)
     t0 = time()
     p = runchunks(todochunks, dem, srcspace, sys7, store, layout, done, donelog, config)
     wall = time() - t0
-    say(@sprintf("RUN DONE  %d chunks computed, %d skipped, %.4e cells in %s = %.0f cells/s aggregate",
+    # Two banners, never one. `p` counts what THIS process computed; the store
+    # holds what every session ever wrote. On a resumed run those differ by
+    # whatever the earlier sessions did, and the session numbers on their own
+    # read as the whole dataset: session 3 of the GLO-90 run signed off with
+    # "9.7606e9 cells ... 44.308% NaN" when the store held 5.4500e10 cells at
+    # 26.892% NaN. Same ledger the resume set came from, so the two agree.
+    written = donechunks(donelog, config.store, "elevation"; label = "store")
+    tot = storetotals(donelog, written)
+    say(@sprintf("RUN DONE  session: %d chunks computed, %d skipped, %.4e cells in %s = %.0f cells/s aggregate",
         p.done, p.skipped, Float64(p.cells), hours(wall), p.cells / max(wall, 1e-9)))
+    say(@sprintf("RUN DONE  session: NaN %.3f%% of the %.4e cells this session wrote",
+        100 * p.nan / max(p.cells, 1), Float64(p.cells)))
+    say(@sprintf("RUN DONE  store total: %d of %d chunks written, %.4e cells, NaN %.3f%%%s",
+        tot.chunks, length(todochunks), Float64(tot.cells),
+        100 * tot.nan / max(tot.cells, 1),
+        tot.unaccounted == 0 ? "" :
+            " — cells and NaN over the $(tot.chunks - tot.unaccounted) chunks the " *
+            "ledger accounts for; $(tot.unaccounted) written chunks have no ledger line"))
     say(@sprintf("source tiles decoded: %d real, %d synthetic; %.3e of %.3e pixels valid (%.2f%% land)",
         dem.nreal[], dem.nsynthetic[], Float64(dem.nland[]), Float64(dem.npixels[]),
         100 * dem.nland[] / max(dem.npixels[], 1)))
-    say(@sprintf("destination NaN fraction: %.3f%% of %.4e written cells",
-        100 * p.nan / max(p.cells, 1), Float64(p.cells)))
     say(@sprintf("RSS %.2f GiB now, %.2f GiB peak", rssgib(), peakrssgib()))
 
     if config.checks
         sm = SourceMask(mask, DGG.levelgrid(sys, 0), Set(tiles))
-        verify(config, sys7, layout, todochunks, sm, real, dem,
-            donechunks(donelog, config.store, "elevation"))
+        verify(config, sys7, layout, todochunks, sm, real, dem, written)
     end
 
     say("total wall $(hours(time() - STARTED[])), " *

@@ -1,11 +1,11 @@
-# DiscreteGlobalGridVisualizations
+# DiscreteGlobalGridsVisualization
 
 Fast Makie plotting for discrete global grids — a proof of concept for
 [JuliaGeo/DiscreteGlobalGrids.jl#12](https://github.com/JuliaGeo/DiscreteGlobalGrids.jl/issues/12).
 
 ```julia
 import DiscreteGlobalGrids as DGG
-using DiscreteGlobalGridVisualizations, GLMakie, GeoMakie
+using DiscreteGlobalGridsVisualization, GLMakie, GeoMakie
 
 sys = DGG.IGeo7System()
 region = DGG.query(sys, DGG.MultiOrderCoverage(extent); level = 12)

@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Anshul Singhvi <anshulsinghvi@gmail.com>", "Fabian Gans <fabian.gans@bgc-jena.mpi.de>", "Maarten Pronk <git@evetion.nl>", "Alexander Kmoch <alexander.kmoch@ut.ee>", "and contributors"]
 
 [workspace]
-projects = ["test", "docs", "benchmark", "lib/DiscreteGlobalGridsConformanceTesting", "lib/GlobalRegridding", "lib/DiscreteGlobalGridVisualizations", "lib/DiscreteGlobalGridVisualizations/test"]
+projects = ["test", "docs", "benchmark", "lib/DiscreteGlobalGridsConformanceTesting", "lib/GlobalRegridding", "lib/DiscreteGlobalGridsVisualization", "lib/DiscreteGlobalGridsVisualization/test"]
 
 [deps]
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"

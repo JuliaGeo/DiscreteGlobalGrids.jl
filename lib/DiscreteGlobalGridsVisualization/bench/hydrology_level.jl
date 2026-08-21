@@ -4,7 +4,7 @@
 # fitting on a CI runner, and is plotting still what decides it?
 #
 #     xvfb-run -a julia --project=docs -t8 \
-#         lib/DiscreteGlobalGridVisualizations/bench/hydrology_level.jl 13
+#         lib/DiscreteGlobalGridsVisualization/bench/hydrology_level.jl 13
 #
 # Pass `poly` as a second argument to draw with Makie's `poly` instead of
 # `dggpoly`, for the before-and-after, or `resample` to draw through
@@ -17,7 +17,7 @@ ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH",
 import DiscreteGlobalGrids as DGG
 import Geomorphometry as GM
 import GeoInterface as GI
-using DiscreteGlobalGridVisualizations
+using DiscreteGlobalGridsVisualization
 using Rasters, RasterDataSources
 import ArchGDAL
 using Statistics

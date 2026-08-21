@@ -1,25 +1,37 @@
 # Whole-space destination tree with per-cell work done once, not once per visit.
 
 """
-    CapCachedTree(node, caps, offset = 0)
+    CapCachedTree(node, caps)
 
-Wrap a grid cursor so leaf extents read a cap vector computed once per build:
-grid position `p` is `caps[p - offset]`. The dual-tree search otherwise
-re-derives each leaf's cap — an inverse projection over its boundary — once per
-opposing leaf, and then a second time in `child_indices_extents` for the same
-visit.
-
-`offset` is `0` for a whole-space tree and `first(inds) - 1` for a chunk's,
-whose cap vector covers only that chunk's positions.
+Wrap a grid cursor so a leaf's extent is `caps[p]` for grid position `p`, rather
+than re-derived from the cell boundary on every visit. `caps` is indexed by raw
+grid position; a chunk's vector covers only its own window and is wrapped in
+`_ShiftedCaps`.
 """
-struct CapCachedTree{C<:HierarchicalGridCursor,E}
+struct CapCachedTree{C<:HierarchicalGridCursor,V<:AbstractVector}
     node::C
-    caps::Vector{E}
+    caps::V
+end
+
+"""
+    _ShiftedCaps(data, offset)
+
+`data` addressed by grid position: element `i` is `data[i - offset]`, with axes
+`offset .+ axes(data, 1)`.
+"""
+struct _ShiftedCaps{E} <: AbstractVector{E}
+    data::Vector{E}
     offset::Int
 end
 
-CapCachedTree(node::HierarchicalGridCursor, caps::Vector) =
-    CapCachedTree(node, caps, 0)
+Base.size(v::_ShiftedCaps) = size(v.data)
+Base.axes(v::_ShiftedCaps) = (v.offset .+ axes(v.data, 1),)
+Base.IndexStyle(::Type{<:_ShiftedCaps}) = IndexLinear()
+Base.parent(v::_ShiftedCaps) = v.data
+Base.@propagate_inbounds function Base.getindex(v::_ShiftedCaps, i::Int)
+    @boundscheck checkbounds(v, i)
+    return @inbounds v.data[i - v.offset]
+end
 
 Base.show(io::IO, t::CapCachedTree) =
     print(io, "CapCachedTree(", t.node, ", ", length(t.caps), " caps)")
@@ -30,29 +42,29 @@ STI.node_extent_is_expensive(::Type{<:CapCachedTree{C}}) where {C} =
 STI.isleaf(t::CapCachedTree) = STI.isleaf(t.node)
 STI.nchild(t::CapCachedTree) = STI.nchild(t.node)
 STI.getchild(t::CapCachedTree) =
-    Iterators.map(n -> CapCachedTree(n, t.caps, t.offset), STI.getchild(t.node))
+    Iterators.map(n -> CapCachedTree(n, t.caps), STI.getchild(t.node))
 STI.getchild(t::CapCachedTree, i::Int) =
-    CapCachedTree(STI.getchild(t.node, i), t.caps, t.offset)
+    CapCachedTree(STI.getchild(t.node, i), t.caps)
 
 # A window node at the leaf level is exactly one stored cell; its position
 # indexes the cache. Everything else keeps the cursor's own extent logic.
 function STI.node_extent(t::CapCachedTree)
     c = t.node
     if !Engine._issynthetic(c) && c.level >= c.leaf_level
-        return @inbounds t.caps[c.first_index - t.offset]
+        return @inbounds t.caps[c.first_index]
     end
     return STI.node_extent(c)
 end
 
-function STI.child_indices_extents(t::CapCachedTree{<:Any,E}) where {E}
+function STI.child_indices_extents(t::CapCachedTree)
     c = t.node
     STI.isleaf(c) ||
         throw(ArgumentError("child_indices_extents is only valid for leaf nodes"))
     count = Engine._stored_count(c)
-    entries = Vector{Tuple{Int,E}}(undef, count)
+    entries = Vector{Tuple{Int,eltype(t.caps)}}(undef, count)
     for k in 1:count
         index = Engine._stored_index(c, k)
-        entries[k] = (index, @inbounds t.caps[index - t.offset])
+        entries[k] = (index, @inbounds t.caps[index])
     end
     return entries
 end
@@ -71,18 +83,17 @@ function _cachedcelltree(space::DGGSpace)
     return CapCachedTree(root, _leafcaps(root.grid, 1:ncells(root.grid)))
 end
 
-# Above this a chunk's cap vector costs more to fill than the revisits it saves.
-# A chunk at the limit holds 2 MiB of caps.
-const _CHUNK_CAP_CACHE_MAX = 1 << 16
+# Above this a chunk's cap vector costs more to fill than the revisits it saves
+# (2 MiB of caps at the limit).
+const _CHUNK_CAP_CACHE_MAX = 2^16
 
-# A chunk's cursor with its own cap vector. `subtree` calls this once per block
-# build, and the destination side reaches it through `GR.TileCells`, which keeps
-# one tree per tile — so the caps are filled once and read by every source chunk
-# paired with that tile.
+# A chunk's cursor with its own cap vector, or the plain cursor when the chunk is
+# too large to be worth caching.
 function _cachedchunktree(cursor::HierarchicalGridCursor,
         inds::AbstractUnitRange{<:Integer})
     length(inds) > _CHUNK_CAP_CACHE_MAX && return cursor
-    return CapCachedTree(cursor, _leafcaps(cursor.grid, inds), Int(first(inds)) - 1)
+    caps = _ShiftedCaps(_leafcaps(cursor.grid, inds), Int(first(inds)) - 1)
+    return CapCachedTree(cursor, caps)
 end
 
 # Decode a compressed id vector once so descent and geometry read O(1) ids.
@@ -92,8 +103,7 @@ _decodedgrid(grid::PartialGrid{<:AbstractHierarchicalGridSystem,<:CellVector}) =
         root = Engine._is_rooted(grid) ? grid.root_id : nothing)
 _decodedgrid(grid::AbstractGrid) = grid
 
-# One tight cap per cell of `inds`, in parallel at top level ("outer
-# parallelism wins"). Entry `k` holds the cap of position `first(inds) + k - 1`.
+# One tight cap per cell of `inds`; entry `k` is position `first(inds) + k - 1`.
 function _leafcaps(grid::AbstractGrid, inds::AbstractUnitRange{<:Integer})
     n = length(inds)
     n == 0 && return [_cellcap(grid, Int(i)) for i in inds]

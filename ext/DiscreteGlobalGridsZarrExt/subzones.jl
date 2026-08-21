@@ -1,16 +1,12 @@
-# The Zarr half of the ancestor-subzone layout: the store, the incremental
-# writer, and the lazy vector that makes a two-dimensional store look like the
+# The Zarr half of the ancestor-subzone layout (see `src/io/subzones.jl`, which
+# owns the arithmetic and the attribute vocabulary): Zarr calls, the chunk plan,
+# and the DiskArrays wrapper that makes the two-dimensional store look like the
 # one-dimensional cell axis it stands for.
 #
 #   create   subzonestore(dest, sys, level; ancestor_level, layers)
 #   fill     dggwrite!(store, ancestor, values)   |   dggwrite!(store, cube)
 #   one shot dggwrite(dest, cube; layout = :subzones, ancestor_level)
 #   read     dggread(store)  ->  a cell-axis DimStack over `SubzoneCellArray`s
-#
-# Everything format-semantic — the column arithmetic, the completeness rule, the
-# attribute vocabulary — is `src/io/subzones.jl`'s. What is here is the Zarr
-# calls, the chunk plan (which is not a plan: one column is one chunk), and the
-# DiskArrays wrapper.
 #
 # A submodule, like the write half, so its helper names cannot collide with the
 # extension's shared namespace.
@@ -455,15 +451,10 @@ _attrs(md::DD.Metadata) = _attrs(DD.val(md))
 # Reading: which columns the view spans
 # ===========================================================================
 
-# The cube position -> (column, row) map, in the two shapes it takes.
-#
-# `LevelColumns` is the whole store, and the reason it is its own type is that
-# it needs NO tables: the view's positions are the level grid's own positions,
-# so a column and a row are one `positionindex` call, and a store of 10^12 cells
-# is opened in constant time and constant memory.
-#
-# `SelectedColumns` is a subset, whose positions are the selected subtrees
-# concatenated; it carries the offsets that make that a binary search.
+# The cube position -> (column, row) map. `LevelColumns` is the whole store,
+# needing no tables: a position is the level grid's own, so column and row are
+# one `positionindex` call. `SelectedColumns` is a subset, whose positions are
+# the selected subtrees concatenated, with offsets for the binary search.
 struct LevelColumns end
 
 struct SelectedColumns
@@ -513,21 +504,14 @@ One layer of an ancestor-subzone store as the ONE-dimensional cell-axis vector
 it stands for: position `k` is the `k`th cell of the view's cell axis, and the
 two-dimensional store behind it is not visible.
 
-A `DiskArrays.AbstractDiskArray`, so it slices, iterates and materializes like
-any lazy array — and its chunks are the store's own columns, published as
-IRREGULAR chunks. That is the point of the layout: a hexagon subtree is `7^d`
-cells and a pentagon's is `(5*7^d + 1)/6`, which Zarr's uniform chunk grid
-cannot express and `DiskArrays.IrregularChunks` can. Anything that reads by
-chunk — `eachchunk`, a lazy regrid, a copy into another array — therefore reads
-whole subtrees, one chunk file per chunk, with the pentagon padding already
-dropped.
+A `DiskArrays.AbstractDiskArray` whose chunks are the store's own columns,
+published as `IrregularChunks`, so anything reading by chunk reads whole
+subtrees with the pentagon padding dropped. A read inside one column is one
+chunk read; a read spanning columns is one per column, in order. Nothing is
+cached.
 
-A read inside one column is one chunk read; a read spanning columns is one per
-column, in order. Nothing is cached: the chunk cache, where one is wanted, is
-`DiskArrays.cache`'s business and not this wrapper's.
-
-Writing is not supported here — a store is written through [`dggwrite!`](@ref),
-which writes whole columns and can therefore keep the padding rule.
+Read-only: a store is written through [`dggwrite!`](@ref), which writes whole
+columns and can therefore keep the padding rule.
 """
 struct SubzoneCellArray{T,L<:SubzoneLayout,I,Z} <: DiskArrays.AbstractDiskArray{T,1}
     z::Z

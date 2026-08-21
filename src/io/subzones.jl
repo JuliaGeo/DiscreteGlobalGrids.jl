@@ -1,29 +1,22 @@
 # The ancestor-subzone layout: one column per coarse cell, one row per subzone.
 #
-# Everything above this file keeps a store's cell axis in ONE dimension, and
-# chunks it by cutting that axis into equal pieces (`ChunkPlan`). Zarr chunks are
-# uniform by format, so a chunk grid that follows the tree exactly is not
-# expressible that way: a pentagon's subtree holds `p(d) = (5*7^d + 1)/6` cells
-# where a hexagon's holds `7^d`, and no single chunk length lands on both.
-#
-# This layout buys tree-aligned chunking by spending a dimension on it:
+# INTERIM. Zarr v2/v3 chunks are uniform, so a chunk grid that follows the tree
+# exactly is not expressible on a one-dimensional cell axis: a pentagon subtree
+# holds `p(d) = (5*7^d + 1)/6` cells where a hexagon's holds `7^d`. This layout
+# buys tree-aligned chunking by spending a dimension on it, and goes away once
+# Zarr supports variable chunk sizes.
 #
 #     dim 1 (fastest)   subzone position 1:capacity within one ancestor's subtree
 #     dim 2             the ancestor, at position `i` of the complete level-La grid
 #     chunks            (capacity, 1) — one chunk per ancestor column
 #
-# so a chunk IS a subtree, an unwritten ancestor is a chunk that was never
+# So a chunk is a subtree, an unwritten ancestor is a chunk that was never
 # stored (Zarr reads it back as fill), and the twelve pentagon columns carry
-# `p(d)` real values followed by fill. Position within a column is what OGC API-
-# DGGS calls the SUB-ZONE ORDER of a parent zone; the order here is ascending
-# cell id, which for a system with sorted subtrees is the same as ascending
-# position in the level grid.
+# `p(d)` real values followed by fill. Position within a column is OGC API-DGGS
+# SUB-ZONE ORDER, here ascending cell id.
 #
-# What lives here is the arithmetic and the vocabulary — no Zarr, no arrays, and
-# nothing that materializes a level-L id vector. The mapping in both directions
-# is `ancestor`/`cellposition`/`descendant_range`, which are O(level) digit
-# arithmetic on every system that has sorted subtrees, so a store of 10^12 cells
-# is described by three integers and read a column at a time.
+# Arithmetic and vocabulary only: no Zarr, no arrays, and nothing that
+# materializes a level-L id vector.
 #
 # Include order: after `conventions.jl`, whose `GRID_REFERENCE` this reads, and
 # before `api.jl`, whose stubs document the verbs the Zarr extension implements.
@@ -97,8 +90,7 @@ subtrees of the complete level-`ancestor_level` grid, one subtree per column.
     the twelve pentagon-rooted ones — hold their cells first and fill after
     ([`SUBZONE_PADDING`](@ref)).
 
-Both directions of the mapping are O(level) arithmetic on one cell id, so
-nothing here scales with the number of cells:
+Both directions of the mapping are O(level) arithmetic on one cell id:
 
 ```julia
 subzoneindex(layout, cell)      # (column, row)
@@ -110,9 +102,8 @@ Only systems with [`has_sorted_subtrees`](@ref) can be laid out this way: a
 column is a contiguous run of the level grid, and a system whose descendants are
 scattered has no such run.
 
-The default `capacity` is measured, not assumed — one pass over the ancestor
-grid taking the longest subtree — so pass it where it is already known (it is
-`subzone_count` in a store's attributes) to skip that pass.
+The default `capacity` is measured by one pass over the ancestor grid; pass it
+where it is already known (`subzone_count` in a store's attributes).
 """
 struct SubzoneLayout{S,G,A}
     system::S
@@ -498,19 +489,11 @@ end
 
 The group attributes an ancestor-subzone store carries: a `dggs` object naming
 the grid and the level, with everything the layout adds nested under
-`subzone_layout`.
-
-The spec's own keys keep their meaning — `name` and `refinement_level` describe
-the cells the store holds, whichever shape it holds them in — and everything
-that has no `zarr-conventions/dggs` spelling lives inside one nested object
-rather than being sprinkled through the one the schema validates. No
-`zarr_conventions` declaration is written: this store is not the convention's
-one-dimensional layout, and claiming to be it would send a convention-aware
-reader down a path that cannot open it. It fails with "no convention detected"
-instead, which is true.
+`subzone_layout`. No `zarr_conventions` declaration is written — this is not the
+convention's one-dimensional layout.
 
 `coordinate` names the array of level-`ancestor_level` ids where the store
-carries one; the column axis is implicit either way and is never READ through
+carries one. The column axis is implicit either way and is never read through
 it, so this is interop and provenance rather than structure.
 """
 function subzone_attrs(l::SubzoneLayout; variables=String[],

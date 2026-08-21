@@ -112,16 +112,11 @@ dggwrite(args...; kwargs...) = _needs_zarr("dggwrite")
 **Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`,
 whose docstring is the full keyword reference.
 
-Create — or reopen — an ancestor-subzone store for INCREMENTAL writing: the
+Create — or reopen — an ancestor-subzone store for incremental writing: the
 group, its arrays and its attributes are stamped once, and the columns are
-filled afterwards, one [`dggwrite!`](@ref) at a time. That is the production
-shape of a global regrid, where one ancestor subtree is one task's worth of work
-and the tasks finish in no particular order.
-
-A column is one Zarr chunk and therefore one file, so writes of DISJOINT columns
-do not touch a byte in common and need no coordination. Nothing shared is
-rewritten by a column write — not the attributes, not the consolidated metadata,
-not a manifest — which is what makes that true.
+filled afterwards, one [`dggwrite!`](@ref) at a time. A column is one chunk and
+therefore one file, and a column write rewrites nothing shared, so tasks writing
+disjoint columns need no coordination.
 
 See [`SubzoneLayout`](@ref) for the layout itself and [`dggwrite`](@ref)'s
 `layout = :subzones` for the one-shot form.

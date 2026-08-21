@@ -989,11 +989,9 @@ end
 # (k2) The chunked source: `GR.subtree` windows the cursor
 # =========================================================================
 
-# `DGGSpace` chunks a Copernicus source by tile, and the regridder asks for one
-# tree per chunk. Without `subcursor` those trees are `GR.CellCapTree`s, whose
-# nodes bisect the linear index range — row-major order makes every shallow node
-# a band of complete pixel rows spanning the tile's whole longitude, so nothing
-# prunes on longitude. `subcursor` hands back the index rectangle instead.
+# `DGGSpace` chunks a Copernicus source by tile and asks for one tree per chunk.
+# `subcursor` answers with the index rectangle rather than the bounding-cap
+# fallback, whose row-major bisection prunes nothing on longitude.
 @testset "a source chunk keeps the block cursor" begin
     STI = GO.SpatialTreeInterface
 
@@ -1012,9 +1010,7 @@ end
         return sort!(out)
     end
 
-    # ---- the complete level grid --------------------------------------------
-    # The spike's source shape: every pixel on the planet, one chunk per tile.
-    # 97 M cells, but nothing here materializes them.
+    # ---- the complete level grid: 97 M cells, none materialized here --------
     g1twin = levelgrid(TWIN, 1)
     dense = DGG.DGGSpace(g1twin; chunklevel = 0)
     @test GR.nchunks(dense) == 64_800
@@ -1042,10 +1038,7 @@ end
     # And a run spanning two tiles is not one rectangle either.
     @test GR.subtree(dense, (last(r) - 1):(last(r) + 1)) isa GR.CellCapTree
 
-    # ---- a sparse holding ---------------------------------------------------
-    # Copernicus ships land tiles only, so the production source is a
-    # `PartialGrid` over a scattered subset. Its whole-grid tree is the generic
-    # cursor, but each chunk is still one tile and still windows.
+    # ---- a sparse holding: a scattered `PartialGrid`, one tile per chunk ----
     tiles = [CD.tilecell(TWIN, 89, 10),     # polemost band, 3 columns
              CD.tilecell(TWIN, 50, -3),     # band edge, west of the prime meridian
              CD.tilecell(TWIN, 12, 40)]     # full-width equatorial tile
@@ -1071,8 +1064,7 @@ end
         tree = GR.subtree(src, inds)
         @test tree isa CD.MemoBlockCursor
         @test leafpositions(tree) == collect(inds)
-        # The weights are the fallback's, entry for entry: one tree is faster to
-        # descend than the other and that is the whole of the difference.
+        # The weights are the fallback's, entry for entry.
         fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, tree;
             intersection_operator = op)
         slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree,

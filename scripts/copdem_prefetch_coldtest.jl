@@ -3,11 +3,11 @@
 # The three phases deliberately run as separate Julia processes so cold/warm
 # wall times carry comparable JIT cost:
 #
-#   nice -n 10 julia --project=bench -t 8 --gcthreads=4 \
+#   nice -n 10 julia --project=benchmark -t 8 --gcthreads=4 \
 #       scripts/copdem_prefetch_coldtest.jl plan
-#   nice -n 10 julia --project=bench -t 8 --gcthreads=4 \
+#   nice -n 10 julia --project=benchmark -t 8 --gcthreads=4 \
 #       scripts/copdem_prefetch_coldtest.jl cold
-#   nice -n 10 julia --project=bench -t 8 --gcthreads=4 \
+#   nice -n 10 julia --project=benchmark -t 8 --gcthreads=4 \
 #       scripts/copdem_prefetch_coldtest.jl warm
 #
 # `cold` refuses an existing cache or output store. `warm` reuses that cache,

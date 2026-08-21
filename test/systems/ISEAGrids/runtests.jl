@@ -19,6 +19,24 @@ end
 
 angular_degrees(a, b) = ISEA.angdist(Tuple(a), Tuple(b))
 
+# The sealed boundary vectors, one `name => corners` row per feature. Each line
+# is one Polygon feature, so its only bracketed number pairs are the ring's;
+# GeoJSON repeats the first vertex to close it and the grid's rings do not.
+function boundary_rows(family, level)
+    file = joinpath(ORACLES, family, "dggrid-9.0b",
+        "level-$(lpad(level, 2, '0'))-boundaries.geojson")
+    rows = Pair{String,Vector{NTuple{3,Float64}}}[]
+    for line in eachline(file)
+        name = match(r"\"name\": \"([^\"]+)\"", line)
+        name === nothing && continue
+        corners = [ISEA.lonlat_to_xyz(parse(Float64, m[1]), parse(Float64, m[2]))
+            for m in eachmatch(r"\[(-?[\d.eE+-]+),(-?[\d.eE+-]+)\]", line)]
+        corners[end] == corners[1] && pop!(corners)
+        push!(rows, String(name[1]) => corners)
+    end
+    return rows
+end
+
 function i4h_cell(text)
     level = length(text) - 2
     root = parse(Int, text[1:2])
@@ -111,6 +129,40 @@ end
             # pin both global closure and the observed per-cell error envelope.
             @test sum(polygon_areas) ≈ 4pi rtol=5e-4
             @test maximum(abs.(polygon_areas .- analytic) ./ analytic) < 0.04
+        end
+
+        # Corner for corner against the sealed black-box rings. A corner whose
+        # planar representative lands in the five-face development's missing
+        # wedge has to be folded back into the cone, and the five southern roots
+        # are where that happens.
+        for (family, sys, parsecell, maxlevel) in (
+                ("ISEA3H", G.ISEA3HSystem(), G.Z3Cell, 5),
+                ("ISEA4H", G.ISEA4HSystem(), i4h_cell, 4))
+            for l in 0:maxlevel
+                grid = levelgrid(sys, l)
+                for (text, expected) in boundary_rows(family, l)
+                    ours = cell_boundary(grid, parsecell(text))[1:8:end]
+                    @test length(ours) == length(expected)
+                    @test all(minimum(angular_degrees(q, p) for q in ours) < 1.2e-6
+                        for p in expected)
+                end
+            end
+        end
+
+        # A paired edge is drawn once: the neighbour's ring carries all eight of
+        # its samples plus the corner the next edge starts at. A fold that put
+        # one cell's corner on the wrong side of the cut shows up here as a
+        # crack, whatever the oracle depth reaches.
+        for sys in (G.ISEA3HSystem(), G.ISEA4HSystem())
+            grid = levelgrid(sys, 2)
+            for i in 1:ncells(grid)
+                c = cellindex(grid, i); ring = cell_boundary(grid, c)
+                for n in neighbors(grid, c)
+                    other = cell_boundary(grid, n)
+                    @test count(p -> any(angular_degrees(p, q) < 1e-7 for q in other),
+                        ring) == 9
+                end
+            end
         end
 
         # Exact, exhaustive one-ring comparison with the sealed black-box

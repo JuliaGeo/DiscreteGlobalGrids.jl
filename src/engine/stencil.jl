@@ -256,20 +256,20 @@ area.
 
 Two members are neighbours here when their level-`L` cells are, which is
 *geometric* boundary sharing exactly where the system's refinement is congruent
-— HEALPix, S2 and ISEA4R, whose four children tile their parent, so a member's
-footprint is the union of its level-`L` descendants'. Under `Edge()` the same
-equivalence holds for shared edges, so vertex-only contact is excluded rather
-than approximated away.
+— HEALPix, S2, ISEA4R, ISEA4T, rHEALPix/AusPIX and the IVEA/RTEA rhombi, whose
+children tile their parent, so a member's footprint is the union of its level-`L`
+descendants'. Under `Edge()` the same equivalence holds for shared edges, so
+vertex-only contact is excluded rather than approximated away.
 
-Where children do not tile their parent — IGEO7 and H3 (aperture 7) and A5 —
-a member's footprint is NOT its descendants' union, and no level-`L` statement
-can be a statement about the drawn polygons; see [`MultiOrderCoverage`](@ref)
-for the size of that gap. The answer there is the hierarchy's, which is the
-same relation [`border`](@ref) is defined by, and it is consistent with
-every other subtree verb in this package. That is a carve-out about the
-SYSTEMS, not about this walk.
+Where children do not tile their parent — IGEO7 and H3 (aperture 7), A5, and the
+central-place ISEA3H and ISEA4H — a member's footprint is NOT its descendants'
+union, and no level-`L` statement can be a statement about the drawn polygons;
+see [`MultiOrderCoverage`](@ref) for the size of that gap. The answer there is
+the hierarchy's, which is the same relation [`border`](@ref) is defined by, and
+it is consistent with every other subtree verb in this package. That is a
+carve-out about the SYSTEMS, not about this walk.
 
-!!! note "A5 pays for its missing primitives here too"
+!!! note "A5 and the IVEA/RTEA rhombi pay for their missing primitives here too"
     Without [`has_sorted_subtrees`](@ref) there are no curve keys to binary
     search, so the member lookup is a set built per call, `O(|set|)`; and the
     border iterator materialises the subtree rather than walking it. The answer

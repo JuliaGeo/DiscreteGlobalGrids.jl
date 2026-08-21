@@ -217,15 +217,16 @@ include("sizing.jl")
 """
     systems() -> Tuple{Vararg{AbstractHierarchicalGridSystem}}
 
-The grid systems shipped by this package, as a stable-order tuple of singletons.
+The grid systems shipped by this package, as a stable-order tuple. `AusPIXSystem()`
+is the WGS84 [`AuthalicSystem`](@ref) wrap of rHEALPix, so that is how it prints.
 
     julia> using DiscreteGlobalGrids
 
     julia> systems()
     (IGeo7System(), H3System(), HEALPixSystem(), A5System(), S2System(),
      ISEA4RSystem(), ISEA3HSystem(), ISEA4HSystem(), ISEA4TSystem(),
-     RHEALPixSystem(), AusPIXSystem(), IVEA4RSystem(), IVEA9RSystem(),
-     RTEA4RSystem(), RTEA9RSystem())
+     RHEALPixSystem(), AuthalicSystem(RHEALPixSystem(), e² = 0.0066943799901413165),
+     IVEA4RSystem(), IVEA9RSystem(), RTEA4RSystem(), RTEA9RSystem())
 
 This registry does not include externally defined systems and is not used for
 interface dispatch. Tuple order has no semantic meaning.

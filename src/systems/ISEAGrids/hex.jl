@@ -7,12 +7,17 @@ struct ISEA3HSystem <: DGG.AbstractHierarchicalGridSystem
     orientation::Orientation
 end
 ISEA3HSystem() = ISEA3HSystem(ORIENT_IDENTITY)
+# Compact like the other systems' — the orientation prints only when it is set.
+Base.show(io::IO, sys::ISEA3HSystem) =
+    print(io, "ISEA3HSystem(", sys.orientation.identity ? "" : sys.orientation, ")")
 
 """`ISEA4HSystem`: aperture-4 Snyder ISEA hexagons with prefix `LevelIndex` ids."""
 struct ISEA4HSystem <: DGG.AbstractHierarchicalGridSystem
     orientation::Orientation
 end
 ISEA4HSystem() = ISEA4HSystem(ORIENT_IDENTITY)
+Base.show(io::IO, sys::ISEA4HSystem) =
+    print(io, "ISEA4HSystem(", sys.orientation.identity ? "" : sys.orientation, ")")
 
 const POW3 = ntuple(k -> Int64(3)^(k - 1), 31)
 const POW4 = ntuple(k -> Int64(4)^(k - 1), 30)
@@ -170,7 +175,8 @@ function DGG.cellposition(::ISEA3HSystem, c::Z3Cell)
 end
 
 DGG.cellindex(::ISEA4HSystem, l::Integer, pos::Int) = DGG.LevelIndex(l, pos - 1)
-function DGG.cellposition(::ISEA4HSystem, c::DGG.LevelIndex)
+function DGG.cellposition(sys::ISEA4HSystem, c::DGG.LevelIndex)
+    DGG.level(c) in DGG.levels(sys) || return nothing
     0 <= c.index < _hexcount(4, DGG.level(c)) || return nothing
     return Int(c.index + 1)
 end
@@ -364,7 +370,10 @@ function _hex_boundary(sys, c, A::Int)
             start + 60j
         end
         u = center + radius * cis(deg2rad(angledeg))
-        psi = dev_angle_deg(u)
+        # The raw planar angle, as `_dev_fold` and `_hex_neighbors1` use: a
+        # corner IS reachable in `(345, 360)`, which `dev_angle_deg`'s cut guard
+        # would fold to a small negative and so exempt from the wedge test.
+        psi = mod(rad2deg(angle(u)), 360.0)
         if !pent && psi >= 300.0 - 1e-10
             u *= cis(deg2rad(centerang > 150.0 ? 60.0 : -60.0))
         end

@@ -29,7 +29,8 @@
 #     H3                          convex at L0 and L2, NOT at
 #                                 L1 (21 of 120 sampled, and
 #                                 150 of all 842) or L3         -> L1 is broken
-#     HEALPix, ISEA4R, A5         non-convex at every level     -> broken
+#     HEALPix, ISEA4R, A5, and    non-convex at every level     -> broken
+#     the nine literature systems
 #
 # The non-convex systems are the curvilinear ones: `cell_boundary` densifies
 # each chart edge into eight great-circle segments, and a straight chart edge is
@@ -53,12 +54,6 @@
 # arm shows (`2.5e-13`, IGeo7 as the source), and eight orders below the
 # smallest defect (`2.2e-2`, A5 level 3). Nothing lies in between, so the number
 # is not load-bearing.
-#
-# ISEA3H/4H expose a documented finite approximation to their Snyder edges.
-# Their analytic areas are exact, but those polygons are not yet an
-# implementation-gating conservative-regridding surface. The broken arms below
-# pin that limitation, so a future crack-free canonical edge construction turns
-# into an Unexpectedly Pass instead of silently changing the contract.
 
 module RegriddingConservationTests
 
@@ -116,10 +111,6 @@ function regrid_ones(r)
     return out
 end
 
-# ISEA3H/4H publish a finite approximation to their Snyder edges, so neither
-# direction conserves on their polygons; see the header.
-approximate_boundary(sys) = basesystem(sys) isa Union{DGG.ISEA3HSystem,DGG.ISEA4HSystem}
-
 # The demo level is a cost choice: the aperture-7 systems are already thousands
 # of cells at level 2 and the regridder builds every intersection.
 demo_level(sys) = basesystem(sys) isa DGG.H3System ? 2 :
@@ -133,7 +124,6 @@ cases() = [(sys, demo_level(sys)) for sys in DGG.systems()] ∪
         @testset "$(syslabel(sys)) level $l" begin
             grid = DGG.levelgrid(sys, l)
             convex = all_rings_convex(grid)
-            approximate = approximate_boundary(sys)
 
             # ---- the DGGS as the regridder's SOURCE. Correct on every system:
             # the DGGS cell lands in the subject slot, where Sutherland-Hodgman
@@ -142,13 +132,8 @@ cases() = [(sys, demo_level(sys)) for sys in DGG.systems()] ∪
             @test size(forward.intersections) == (MESH_CELLS, DGG.ncells(grid))
             row, col = conservation_errors(forward)
             @test col <= TOL
-            if approximate
-                @test_broken row <= TOL
-                @test_broken all(v -> isapprox(v, 1.0; atol = TOL), regrid_ones(forward))
-            else
-                @test row <= TOL
-                @test all(v -> isapprox(v, 1.0; atol = TOL), regrid_ones(forward))
-            end
+            @test row <= TOL
+            @test all(v -> isapprox(v, 1.0; atol = TOL), regrid_ones(forward))
 
             # Use the same grids with the DGGS as the destination. This
             # direction conserves when the DGGS ring is a convex clip window.
@@ -156,7 +141,7 @@ cases() = [(sys, demo_level(sys)) for sys in DGG.systems()] ∪
             @test size(reverse.intersections) == (DGG.ncells(grid), MESH_CELLS)
             rrow, rcol = conservation_errors(reverse)
             ones_back = regrid_ones(reverse)
-            if convex && !approximate
+            if convex
                 @test rrow <= TOL
                 @test rcol <= TOL
                 @test all(v -> isapprox(v, 1.0; atol = TOL), ones_back)
@@ -168,15 +153,9 @@ cases() = [(sys, demo_level(sys)) for sys in DGG.systems()] ∪
 
             # Both directions agree about how much sphere there is, whatever the
             # clipper did to individual weights, so a failure above is never a
-            # disagreement about the grids themselves. The systems with
-            # approximate edges cannot close to 4pi and are pinned broken.
-            if approximate
-                @test_broken sum(forward.src_areas) ≈ 4pi rtol = 1e-12
-                @test_broken sum(reverse.dst_areas) ≈ 4pi rtol = 1e-12
-            else
-                @test sum(forward.src_areas) ≈ 4pi rtol = 1e-12
-                @test sum(reverse.dst_areas) ≈ 4pi rtol = 1e-12
-            end
+            # disagreement about the grids themselves.
+            @test sum(forward.src_areas) ≈ 4pi rtol = 1e-12
+            @test sum(reverse.dst_areas) ≈ 4pi rtol = 1e-12
             @test sum(forward.dst_areas) ≈ sum(reverse.src_areas) rtol = 1e-14
         end
     end

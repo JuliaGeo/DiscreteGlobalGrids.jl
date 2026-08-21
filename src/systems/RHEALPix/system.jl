@@ -103,6 +103,17 @@ RHEALPixSystem(north_square::Integer, south_square::Integer;
     longitude_origin::Real=0) = RHEALPixSystem(;
         north_square, south_square, longitude_origin)
 
+# Compact like the other systems' — the placement prints only when it is set.
+function Base.show(io::IO, sys::RHEALPixSystem)
+    print(io, "RHEALPixSystem(")
+    if (sys.north_square, sys.south_square, sys.longitude_origin) != (0x00, 0x00, 0.0)
+        print(io, "north_square=", Int(sys.north_square),
+            ", south_square=", Int(sys.south_square),
+            ", longitude_origin=", sys.longitude_origin)
+    end
+    print(io, ")")
+end
+
 """
     AusPIXSystem()
 

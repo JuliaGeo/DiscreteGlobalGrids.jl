@@ -8,6 +8,8 @@ struct ISEA4TSystem <: DGG.AbstractHierarchicalGridSystem
     orientation::Orientation
 end
 ISEA4TSystem() = ISEA4TSystem(ORIENT_IDENTITY)
+Base.show(io::IO, sys::ISEA4TSystem) =
+    print(io, "ISEA4TSystem(", sys.orientation.identity ? "" : sys.orientation, ")")
 
 DGG.cellindextype(::ISEA4TSystem) = DGG.LevelIndex
 # Float64 Snyder inversion and edge-crossing topology remain reliable through
@@ -21,7 +23,8 @@ DGG.ncells(::ISEA4TSystem, l::Integer) = Int(20 * POW4[Int(l) + 1])
 DGG.rootcells(::ISEA4TSystem) = [DGG.LevelIndex(0, f) for f in 0:19]
 DGG.cellindex(::ISEA4TSystem, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
 
-function DGG.cellposition(::ISEA4TSystem, c::DGG.LevelIndex)
+function DGG.cellposition(sys::ISEA4TSystem, c::DGG.LevelIndex)
+    DGG.level(c) in DGG.levels(sys) || return nothing
     0 <= c.index < 20 * POW4[DGG.level(c) + 1] || return nothing
     return Int(c.index + 1)
 end

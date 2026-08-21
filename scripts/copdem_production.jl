@@ -23,11 +23,12 @@
 #   budget  bytes of intersection weights a lazy regrid may hold at once, per
 #           worker.
 #
-# Elevations are FABRICATED — see `copdem_synthetic.jl`. What is real is the tile
-# LIST: Copernicus ships ~26 450 of the 64 800 tiles the 1x1-degree lattice has,
-# and the source is a `PartialGrid` over exactly those, so a destination chunk
-# over open ocean pairs with no source at all. Store I/O and resume live in
-# `copdem_store.jl`.
+# `CONFIG.source` selects real, lazily downloaded GLO-90 GeoTIFFs or the analytic
+# field in `copdem_synthetic.jl`. The tile LIST is real in both modes: Copernicus
+# ships ~26 450 of the 64 800 tiles in the 1x1-degree lattice, and the source is a
+# `PartialGrid` over exactly those. A destination chunk over open ocean therefore
+# pairs with no source at all and stays nodata without a network request. Store
+# I/O and resume live in `copdem_store.jl`.
 
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
@@ -40,6 +41,7 @@ import Extents
 import Zarr
 import Statistics
 import Dates
+import Downloads
 import Printf: @sprintf
 using Base.ScopedValues: @with
 
@@ -55,10 +57,17 @@ const CONFIG = (
     res         = 90,       # 90 for GLO-90, 30 for GLO-30
     level       = 12,       # IGeo7 output level
     ancestor    = 5,        # chunk root level
-    store       = "/home/asinghvi17/geo/dggstores/copdem90-igeo7-l12-synthetic.zarr",
+    source      = :real,    # :real (lazy AWS tiles) or :synthetic
+    store       = "/home/asinghvi17/geo/dggstores/copdem90-igeo7-l12-real.zarr",
     region      = nothing,  # nothing for the globe, or [(w, e, s, n), ...] boxes
     maskarcsec  = 15,       # land-mask lattice, arcseconds; 0 disables the mask
-    real        = :auto,    # :auto (every GeoTIFF found), :none, or ["stem", ...]
+    real        = :auto,    # local GeoTIFF overrides: :auto, :none, or ["stem", ...]
+    tilecache   = get(ENV, "COPDEM_TILE_CACHE",
+                      joinpath(@__DIR__, "..", "bench", "data", "CopernicusDEM", "tiles")),
+    tilebaseurl = "https://copernicus-dem-90m.s3.amazonaws.com",
+    retries     = 4,        # total GET attempts for a transient failure
+    backoff     = 1.0,      # seconds; doubled between attempts
+    timeout     = 600.0,    # seconds per tile GET
     workers     = 0,        # concurrent worker tasks; 0 = size from `cores`
     cores       = 24,       # the core budget `workers` is sized to hold
     shape       = :outer,   # :outer or :inner; see `workercount`
@@ -245,6 +254,122 @@ function realtiles(sys, dir, spec)
 end
 
 # ===========================================================================
+# Lazy real GLO-90 acquisition
+# ===========================================================================
+
+"The production AWS Open Data root for Copernicus DEM GLO-90 COGs."
+const COPDEM_GLO90_BASEURL = "https://copernicus-dem-90m.s3.amazonaws.com"
+
+"""
+    LazyCopernicusTiles(sys, listed; cachedir, baseurl, retries, backoff, timeout)
+
+A single-flight, persistent source for real Copernicus GLO-90 GeoTIFFs.
+
+No request is made by construction. On the first access to a listed tile,
+[`tilepath!`](@ref) downloads its COG to `cachedir/<stem>.tif.part` and renames
+it atomically to `cachedir/<stem>.tif`. A later access trusts only the final
+name. One lock per listed tile makes concurrent worker requests single-flight
+within the production process.
+
+An unlisted tile is ocean in this source. [`loadtile`](@ref) returns an all-NaN
+tile for it without constructing a URL or touching the network. The production
+`PartialGrid` omits these chunks altogether, which has the same downstream
+nodata semantics without allocating them.
+"""
+struct LazyCopernicusTiles{S<:DGG.CopernicusDEMSystem}
+    sys::S
+    listed::Set{Int}
+    cachedir::String
+    baseurl::String
+    retries::Int
+    backoff::Float64
+    timeout::Float64
+    locks::Dict{Int,ReentrantLock}
+    downloader::Downloads.Downloader
+    ndownloads::Threads.Atomic{Int}
+end
+
+function LazyCopernicusTiles(sys::DGG.CopernicusDEMSystem, listed;
+        cachedir::AbstractString,
+        baseurl::AbstractString = COPDEM_GLO90_BASEURL,
+        retries::Integer = 4, backoff::Real = 1.0, timeout::Real = 600.0)
+    CD.lat_intervals(sys) == 1200 || throw(ArgumentError(
+        "the lazy AWS provider is for GLO-90; got $sys"))
+    retries >= 1 || throw(ArgumentError("retries must be at least 1"))
+    backoff >= 0 || throw(ArgumentError("backoff must be non-negative"))
+    timeout > 0 || throw(ArgumentError("timeout must be positive"))
+    tiles = Set(Int.(listed))
+    locks = Dict(t => ReentrantLock() for t in tiles)
+    return LazyCopernicusTiles(sys, tiles, abspath(String(cachedir)),
+        String(rstrip(String(baseurl), '/')), Int(retries), Float64(backoff),
+        Float64(timeout), locks, Downloads.Downloader(), Threads.Atomic{Int}(0))
+end
+
+"The final local cache path of a tile; no filesystem or network access."
+function tilecachepath(provider::LazyCopernicusTiles, ordinal::Int)
+    stem = tilestem(provider.sys, DGG.LevelIndex(0, ordinal))
+    return joinpath(provider.cachedir, stem * ".tif")
+end
+
+"The verified public S3 URL of a tile."
+function tileurl(provider::LazyCopernicusTiles, ordinal::Int)
+    stem = tilestem(provider.sys, DGG.LevelIndex(0, ordinal))
+    return string(provider.baseurl, "/", stem, "/", stem, ".tif")
+end
+
+"Whether an HTTP status is worth retrying."
+_transientstatus(status::Integer) = status == 0 || status == 408 || status == 429 ||
+    500 <= status < 600
+
+"""
+    tilepath!(provider, ordinal) -> Union{String,Nothing}
+
+Return the cached path for a listed tile, downloading it atomically if needed.
+Return `nothing` immediately for an unlisted (ocean) tile.
+"""
+function tilepath!(provider::LazyCopernicusTiles, ordinal::Int)
+    ordinal in provider.listed || return nothing
+    path = tilecachepath(provider, ordinal)
+    isfile(path) && return path
+    return lock(provider.locks[ordinal]) do
+        isfile(path) && return path
+        mkpath(provider.cachedir)
+        part = path * ".part"
+        url = tileurl(provider, ordinal)
+        stem = splitext(basename(path))[1]
+        last_error = nothing
+        for attempt in 1:provider.retries
+            try
+                # `Downloads.download` truncates an existing output path, so a
+                # stale .part left by a killed run is safe to reuse.
+                Downloads.download(url, part; timeout = provider.timeout,
+                    downloader = provider.downloader)
+                filesize(part) > 0 || error("downloaded an empty object from $url")
+                Base.Filesystem.rename(part, path)
+                Threads.atomic_add!(provider.ndownloads, 1)
+                return path
+            catch err
+                last_error = err
+                status = err isa Downloads.RequestError ? err.response.status : 0
+                rm(part; force = true)
+                if status == 403 || status == 404
+                    error("listed Copernicus GLO-90 tile $stem returned HTTP $status from $url")
+                end
+                if !_transientstatus(status) || attempt == provider.retries
+                    break
+                end
+                delay = provider.backoff * 2.0^(attempt - 1)
+                @warn "Copernicus tile download failed; retrying" stem attempt attempts=provider.retries delay status exception=(err, catch_backtrace())
+                sleep(delay)
+            end
+        end
+        detail = sprint(showerror, last_error)
+        error("failed to download listed Copernicus GLO-90 tile $stem after " *
+              "$(provider.retries) attempt(s) from $url: $detail")
+    end
+end
+
+# ===========================================================================
 # The source: one lazy vector of pixels, one chunk per listed tile
 # ===========================================================================
 
@@ -298,27 +423,30 @@ DGG.Helpers.strictly_increasing(::TileIds) = true
 end
 
 """
-    TiledDEM(sys, ids, tiles; realtiles, mask, cachesize, stripes)
+    TiledDEM(sys, ids, tiles; realtiles, provider, mask, cachesize, stripes)
 
 Every listed tile's pixels as one `Float32` vector in the source grid's own
 position order, chunk `k` being listed tile `k` — so a read is always tile
 aligned and the regridder's source chunks are the DEM's own tiles.
 
-A tile named in `realtiles` decodes from its GeoTIFF and brings its own nodata.
-Every other tile is fabricated by `synthetic_tile` (see `copdem_synthetic.jl`).
-The two are indistinguishable downstream: `NaN` is the regridder's invalid
-sentinel whatever produced it.
+A tile named in `realtiles` decodes from its local GeoTIFF. Otherwise a non-null
+`provider` lazily fetches and decodes the public GLO-90 COG; with no provider it
+is fabricated by `synthetic_tile` (see `copdem_synthetic.jl`). The sources are
+indistinguishable downstream: `NaN` is the regridder's invalid sentinel whatever
+produced it. The Natural Earth mask remains exclusively in the synthetic path,
+exactly as before; real COGs bring their own values/nodata.
 
 The cache is striped — `stripes` independent LRUs under `stripes` locks — and a
 tile is built OUTSIDE its lock, so the workers do not serialise on one mutex for
 the ~15 ms a 1200x1200 tile takes.
 """
-struct TiledDEM{S<:DGG.CopernicusDEMSystem,I,C,M} <: DiskArrays.AbstractDiskArray{Float32,1}
+struct TiledDEM{S<:DGG.CopernicusDEMSystem,I,C,P,M} <: DiskArrays.AbstractDiskArray{Float32,1}
     sys::S
     ids::I
     tiles::Vector{Int}
     chunks::C
     realtiles::Dict{Int,String}
+    provider::P
     mask::M
     caches::Vector{Dict{Int,Vector{Float32}}}
     orders::Vector{Vector{Int}}
@@ -331,12 +459,12 @@ struct TiledDEM{S<:DGG.CopernicusDEMSystem,I,C,M} <: DiskArrays.AbstractDiskArra
 end
 
 function TiledDEM(sys, ids::TileIds, tiles::Vector{Int}; realtiles::Dict{Int,String},
-    mask, cachesize::Integer = 3072, stripes::Integer = 64)
+    provider = nothing, mask, cachesize::Integer = 3072, stripes::Integer = 64)
     widths = [ids.offsets[k + 1] - ids.offsets[k] for k in 1:(length(tiles) - 1)]
     push!(widths, ids.n - ids.offsets[end])
     chunks = DiskArrays.GridChunks(DiskArrays.IrregularChunks(; chunksizes = widths))
     ns = Int(stripes)
-    return TiledDEM(sys, ids, tiles, chunks, realtiles, mask,
+    return TiledDEM(sys, ids, tiles, chunks, realtiles, provider, mask,
         [Dict{Int,Vector{Float32}}() for _ in 1:ns], [Int[] for _ in 1:ns],
         [ReentrantLock() for _ in 1:ns], max(1, Int(cachesize) ÷ ns),
         Threads.Atomic{Int}(0), Threads.Atomic{Int}(0),
@@ -356,9 +484,29 @@ DiskArrays.haschunks(::TiledDEM) = DiskArrays.Chunked()
 # carry those tiles. It would have reached them ~1300 chunks later.)
 const GDALLOCK = ReentrantLock()
 
-"The decoded band of the GeoTIFF at `path`, flattened into position order."
-readtile(path) = lock(GDALLOCK) do
-    vec(ArchGDAL.read(ds -> ArchGDAL.read(ds, 1), path))
+"The decoded band of the GeoTIFF at `path`, validated and flattened into position order."
+function readtile(path, sys, tile::DGG.LevelIndex)
+    band = lock(GDALLOCK) do
+        ArchGDAL.read(ds -> ArchGDAL.read(ds, 1), path)
+    end
+    lat, _ = CD.tilecorner(sys, tile)
+    expected = (Int(CD.ncols_at(sys, lat)), Int(CD.lat_intervals(sys)))
+    size(band) == expected || error(
+        "Copernicus tile $(tilestem(sys, tile)) at $path has raster size " *
+        "$(size(band)); expected $expected")
+    return Float32.(vec(band))
+end
+
+"Decode a listed real tile, or return ocean nodata without a request."
+function loadtile(provider::LazyCopernicusTiles, ordinal::Int)
+    path = tilepath!(provider, ordinal)
+    tile = DGG.LevelIndex(0, ordinal)
+    if path === nothing
+        lat, _ = CD.tilecorner(provider.sys, tile)
+        return fill(NaN32, Int(CD.ncols_at(provider.sys, lat) *
+                               CD.lat_intervals(provider.sys)))
+    end
+    return readtile(path, provider.sys, tile)
 end
 
 "One tile's pixels, from the stripe cache or freshly built."
@@ -375,7 +523,13 @@ function tilevalues!(A::TiledDEM, ordinal::Int)
     # Built outside the lock: two tasks racing the same tile both build it and
     # the loser's copy is dropped, which is cheaper than blocking the pool.
     path = get(A.realtiles, ordinal, nothing)
-    v = if path === nothing
+    v = if path !== nothing
+        Threads.atomic_add!(A.nreal, 1)
+        vals = readtile(path, A.sys, DGG.LevelIndex(0, ordinal))
+        Threads.atomic_add!(A.nland, count(isfinite, vals))
+        Threads.atomic_add!(A.npixels, length(vals))
+        vals
+    elseif A.provider === nothing
         Threads.atomic_add!(A.nsynthetic, 1)
         vals, nland = synthetic_tile(A.sys, DGG.LevelIndex(0, ordinal), A.mask)
         Threads.atomic_add!(A.nland, nland)
@@ -383,7 +537,7 @@ function tilevalues!(A::TiledDEM, ordinal::Int)
         vals
     else
         Threads.atomic_add!(A.nreal, 1)
-        vals = readtile(path)
+        vals = loadtile(A.provider, ordinal)
         Threads.atomic_add!(A.nland, count(isfinite, vals))
         Threads.atomic_add!(A.npixels, length(vals))
         vals
@@ -669,8 +823,11 @@ end
 function main(config = CONFIG)
     gcguard(config)
     println("="^92)
+    config.source in (:real, :synthetic) || error(
+        "source must be :real or :synthetic, got $(repr(config.source))")
     println(stamp(), "  copdem_production.jl — GLO-$(config.res) -> IGEO7 level " *
-                     "$(config.level), level-$(config.ancestor) chunks, SYNTHETIC elevations")
+                     "$(config.level), level-$(config.ancestor) chunks, " *
+                     "$(uppercase(String(config.source))) elevations")
     println("  julia $(VERSION)  threads=$(Threads.nthreads())  " *
             "gcmark=$(Base.JLOptions().nmarkthreads)  " *
             "gcsweep=$(Base.JLOptions().nsweepthreads)  pid=$(getpid())")
@@ -701,17 +858,22 @@ function main(config = CONFIG)
     isempty(tiles) && error("the tile list and region select no tiles")
     real = realtiles(sys, tiledir, config.real)
     filter!(p -> p.first in Set(tiles), real)
+    provider = config.source === :real ? LazyCopernicusTiles(sys, tiles;
+        cachedir = config.tilecache, baseurl = config.tilebaseurl,
+        retries = config.retries, backoff = config.backoff,
+        timeout = config.timeout) : nothing
     ids = TileIds(sys, tiles)
     say("tile list: $(length(tiles)) listed tiles of $(DGG.ncells(sys, 0)) " *
         "($(round(100 * length(tiles) / DGG.ncells(sys, 0); digits = 1))%), " *
-        "$(length(real)) backed by a real GeoTIFF, " *
+        "$(length(real)) local GeoTIFF overrides, " *
         @sprintf("%.3e pixels, %s", Float64(ids.n), secs(time() - t0)))
+    provider === nothing || say("lazy GLO-90 source: $(provider.baseurl), cache $(provider.cachedir)")
     for (o, p) in sort!(collect(real))
         say("  real: $(tilestem(sys, DGG.LevelIndex(0, o)))  " *
             "$(round(filesize(p) / 2^10)) KiB")
     end
 
-    dem = TiledDEM(sys, ids, tiles; realtiles = real, mask = mask,
+    dem = TiledDEM(sys, ids, tiles; realtiles = real, provider = provider, mask = mask,
         cachesize = config.cache, stripes = config.stripes)
     t0 = time()
     srcgrid = DGG.PartialGrid(sys, 1, ids)
@@ -780,6 +942,7 @@ function main(config = CONFIG)
     say(@sprintf("source tiles decoded: %d real, %d synthetic; %.3e of %.3e pixels valid (%.2f%% land)",
         dem.nreal[], dem.nsynthetic[], Float64(dem.nland[]), Float64(dem.npixels[]),
         100 * dem.nland[] / max(dem.npixels[], 1)))
+    provider === nothing || say("source tile downloads this process: $(provider.ndownloads[])")
     say(@sprintf("destination NaN fraction: %.3f%% of %.4e written cells",
         100 * p.nan / max(p.cells, 1), Float64(p.cells)))
     say(@sprintf("RSS %.2f GiB now, %.2f GiB peak", rssgib(), peakrssgib()))
@@ -795,4 +958,6 @@ function main(config = CONFIG)
     return FAILURES[]
 end
 
-exit(main() == 0 ? 0 : 1)
+if abspath(PROGRAM_FILE) == @__FILE__
+    exit(main() == 0 ? 0 : 1)
+end

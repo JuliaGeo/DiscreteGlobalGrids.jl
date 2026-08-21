@@ -4,7 +4,7 @@
 # versions the package and its tests use. Adds only measurement tools and the
 # raster I/O needed to feed real Copernicus DEM data through the regridder.
 #
-#     julia -t auto --project=bench bench/regrid_bench.jl
+#     julia -t auto --project=benchmark bench/regrid_bench.jl
 
 [deps]
 ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"

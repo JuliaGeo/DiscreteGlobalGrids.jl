@@ -3,7 +3,7 @@
 #
 # Edit `CONFIG` below, then run it:
 #
-#     julia --project=bench -t 26 --gcthreads=8 scripts/copdem_production.jl
+#     julia --project=benchmark -t 26 --gcthreads=8 scripts/copdem_production.jl
 #
 # The GC thread count carries NO second field. `--gcthreads=N,1` turns on Julia's
 # concurrent page sweeper, which madvises freed pages from a background thread

@@ -4,7 +4,7 @@
 #
 #   RASTERDATASOURCES_PATH=/path/to/bench/data \
 #   COPDEM_COLUMNS=/path/to/copdem90-igeo7-l12.columns.txt \
-#     nice -n 10 julia --project=bench --threads=4 scripts/copdem_download_count.jl
+#     nice -n 10 julia --project=benchmark --threads=4 scripts/copdem_download_count.jl
 
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR

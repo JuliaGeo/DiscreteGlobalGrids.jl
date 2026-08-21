@@ -1,6 +1,6 @@
 # What DAG-driven scheduling costs and saves, measured two ways.
 #
-#     julia --project=bench -t 12 --gcthreads=4 scripts/copdem_dag_scale.jl OUTDIR
+#     julia --project=benchmark -t 12 --gcthreads=4 scripts/copdem_dag_scale.jl OUTDIR
 #
 # **Part 1, the whole globe, statically.** Build the real 66 178 x 26 475
 # dependency graph, take the tile-affinity walk order, and replay refcount

@@ -1,0 +1,11 @@
+{"allbytes":100528512000,"tiles":26475,"order":"affinity","workers":23,"peaktiles":1162,"peakbytes":2279040000,"loads":26475,"chunks":66178,"part":"globalreplay","edges":326392}
+{"allbytes":100528512000,"tiles":26475,"order":"canonical","workers":23,"peaktiles":1621,"peakbytes":4605120000,"loads":26475,"chunks":66178,"part":"globalreplay","edges":326392}
+{"slots":3072,"peakbytes":17694720000,"part":"lrubound"}
+{"slots":1024,"peakbytes":5898240000,"part":"lrubound"}
+{"taper":false,"fetchdelay":0.0,"tail":67.55722212791443,"batch":8,"prefetch":0,"peakbytes":-1,"schedule":"canonical","side":"legacy","cachepolicy":"lru","failures":0,"wall":384.3372220993042,"loads":279,"peaktiles":-1,"liveend":279,"part":"live","uncredited":0}
+{"taper":true,"fetchdelay":0.0,"tail":10.752512216567993,"batch":8,"prefetch":0,"peakbytes":403200000,"schedule":"affinity","side":"dag","cachepolicy":"refcount","failures":0,"wall":354.5925121307373,"loads":279,"peaktiles":73,"liveend":0,"part":"live","uncredited":0}
+{"taper":true,"fetchdelay":0.5,"tail":10.74074411392212,"batch":8,"prefetch":0,"peakbytes":343680000,"schedule":"affinity","side":"delay-nopf","cachepolicy":"refcount","failures":0,"wall":136.5207440853119,"loads":267,"peaktiles":61,"liveend":0,"part":"live","uncredited":0}
+{"taper":true,"fetchdelay":0.5,"tail":9.568902015686035,"batch":8,"prefetch":32,"peakbytes":1094400000,"schedule":"affinity","side":"delay-pf","cachepolicy":"refcount","failures":0,"wall":136.36890196800232,"loads":267,"peaktiles":193,"liveend":0,"part":"live","uncredited":0}
+{"peakbytes":243840000,"failures":0,"loads":233,"fetchdelay":3.0,"uncredited":0,"part":"prefetch","waits":5,"prefetch":0,"fetchconc":8,"side":"nopf","peaktiles":43,"wall":166.04931592941284}
+{"peakbytes":362880000,"failures":0,"loads":233,"fetchdelay":3.0,"uncredited":0,"part":"prefetch","waits":25,"prefetch":16,"fetchconc":8,"side":"pf16","peaktiles":64,"wall":105.49005508422852}
+{"peakbytes":389760000,"failures":0,"loads":233,"fetchdelay":3.0,"uncredited":0,"part":"prefetch","waits":28,"prefetch":48,"fetchconc":8,"side":"pf48","peaktiles":69,"wall":104.11636304855347}

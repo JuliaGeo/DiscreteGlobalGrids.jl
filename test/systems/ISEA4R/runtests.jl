@@ -179,6 +179,154 @@ const EXPECTED_FACES = (
 @testset "ISEA4R system (T12)" begin
 
 # =========================================================================
+# 0. The Snyder chart kernel itself
+#
+# Everything below this point reads `ISEA.snyder_inv_xyz`, so its own
+# accuracy is measured first, against the equation it claims to solve rather
+# than against a stored sample of what it used to return.
+#
+# The azimuth solve is closed form. Snyder's inverse states the equal-area
+# condition as Girard's excess,
+#     F(Az) = Az + G + acos(sin Az·sin G·cos g − cos Az·cos G) − π − AG = 0,
+# and the textbook recipe iterates it; the shipped kernel does not, because
+# the acos disappears under a cosine and what is left is linear in
+# (sin Az, cos Az). The three testsets here are the regression guard on that:
+# the residual test says the identity is actually satisfied, and the two
+# round-trips say the chart is still its own inverse. Their tolerances are
+# tighter than the superseded Newton iteration could pass — it stopped at
+# |δ| ≤ 1e-7 and left an O(δ²) ≈ 1e-14 residual behind, so it scored
+# 1.26e-14 on the sphere round-trip below against a 5e-15 bar.
+# =========================================================================
+
+"""
+`F(Az)` evaluated on what `snyder_inv_xyz` actually returned.
+
+Deliberately reads only the kernel's **output**: the spherical azimuth is
+recovered by projecting the returned unit vector onto the face's own tangent
+frame, so this re-derives nothing from the kernel's internals and would catch
+a solve that quietly converged to a different root.
+"""
+function girard_residual(f::Int, w::ComplexF64)
+    fc = ISEA.FACES[f + 1]
+    p = ISEA.snyder_inv_xyz(f, w)
+    k = floor(Int, angle(w) / ISEA.SNY_SECTOR)
+    # azimuth of the output, folded back into the same 120° sector as the input
+    Azs = atan(p[1] * fc.w[1] + p[2] * fc.w[2] + p[3] * fc.w[3],
+               p[1] * fc.u[1] + p[2] * fc.u[2] + p[3] * fc.u[3]) - k * ISEA.SNY_SECTOR
+    Azps = angle(w) - k * ISEA.SNY_SECTOR
+    sp, cp = sincos(Azps)
+    AG = ISEA.SNY_AG_COEF * sp / (sp * ISEA.COS_30 + cp * 0.5)
+    s, c = sincos(Azs)
+    H = acos(clamp(s * ISEA.SNY_SING_COSLG - c * ISEA.SNY_COSG, -1.0, 1.0))
+    return Azs + ISEA.SNY_G + H - pi - AG
+end
+
+@testset "the closed-form azimuth solves Girard's equation" begin
+    # Deterministic sweep: every face × 401 azimuths spanning a full 120°
+    # sector × radii out to 1.4·R_EA. Past ~1·R_EA the point is off the face
+    # triangle entirely — those are the development-frame fringe positions
+    # that `dev_to_xyz` really does hand this function, so they are swept too.
+    #
+    # Radii below 0.1·R_EA are excluded because *the measurement*, not the
+    # kernel, degrades there: recovering an azimuth from a point that sits
+    # 1e-2 rad from the face centre divides away most of the significand. The
+    # superseded Newton kernel scores identically at those radii (6.66e-15 at
+    # 0.02·R_EA, to the last bit), which is what identifies the error as the
+    # residual probe's rather than the solve's.
+    worst = 0.0
+    for f in 0:19, i in 0:400, r in (0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4)
+        w = (r * ISEA.R_EA) * cis(ISEA.SNY_SECTOR * i / 400)
+        worst = max(worst, abs(girard_residual(f, w)))
+    end
+    record!("Girard residual |F(Az)| over the face chart (rad)", worst)
+    @test worst < 2e-15
+end
+
+@testset "the chart is its own inverse" begin
+    # (f, w) -> xyz -> (f, w). Radii are a fraction of `dp`, the distance to
+    # the face edge along that azimuth, so every sample stays inside its own
+    # face triangle and `snyder_fwd` is obliged to return the same face —
+    # asserted, not skipped. (A fraction of R_EA would not: at azimuth 60° the
+    # edge is only R_EA/2 away, and two thirds of such a sweep lands on a
+    # neighbouring face, where round-tripping the coordinate is meaningless.)
+    worst = 0.0
+    for f in 0:19, i in 0:400, rf in (0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.999)
+        Azps = ISEA.SNY_SECTOR * i / 400
+        sp, cp = sincos(Azps)
+        dp = ISEA.R_EA / (cp + sp * ISEA.SNY_COTT)
+        w = (rf * dp) * cis(Azps)
+        f2, w2 = ISEA.snyder_fwd(ISEA.snyder_inv_xyz(f, w))
+        @test f2 == f
+        worst = max(worst, abs(w2 - w))
+    end
+    record!("chart round-trip (f,w) -> xyz -> (f,w) (chart units)", worst)
+    @test worst < 5e-15                     # Newton scored 9.76e-15 here
+
+    # xyz -> (f, w) -> xyz, over the whole sphere rather than one face: a
+    # quasi-uniform spiral plus the two hard families — the twelve icosahedron
+    # vertices (chart radius exactly R_EA, shared by five faces) and the
+    # twenty face centres (chart radius exactly 0, the degenerate branch).
+    worst = 0.0
+    phi = (sqrt(5.0) - 1) / 2
+    pts = NTuple{3,Float64}[]
+    for i in 0:19_999
+        z = 2 * (i + 0.5) / 20_000 - 1
+        r = sqrt(max(0.0, 1 - z * z))
+        th = 2pi * phi * i
+        push!(pts, (r * cos(th), r * sin(th), z))
+    end
+    append!(pts, ISEA.VERTICES)
+    append!(pts, [fc.c for fc in ISEA.FACES])
+    for p in pts
+        f, w = ISEA.snyder_fwd(p)
+        q = ISEA.snyder_inv_xyz(f, w)
+        worst = max(worst, sqrt(sum((q[i] - p[i])^2 for i in 1:3)))
+    end
+    record!("sphere round-trip xyz -> (f,w) -> xyz", worst)
+    @test worst < 5e-15                     # Newton scored 1.26e-14 here
+end
+
+@testset "pinned sample of the chart's output" begin
+    # A frozen handful, at full precision, so an accidental change to the
+    # kernel is loud even if it stays inside the tolerances above. These are
+    # NOT an oracle — there is no independent authority for them — they are a
+    # tripwire, and the equation tests above are the actual evidence. They
+    # were regenerated when the azimuth solve went closed form; the previous
+    # Newton values differed by up to 1.6e-14 (103 nm on Earth).
+    pinned = (
+        (0, complex(0.0, 0.0),
+         (-0.06961253639629994, 0.3499658533721666, 0.9341723589627157)),
+        (2, complex(1.0e-9, 1.0e-9),
+         (0.45362119688612784, 0.678892094707134, 0.5773502693164321)),
+        (3, complex(0.4, 0.0),
+         (-0.6185405056443469, 0.14648404298334416, 0.7719780230216982)),
+        (5, complex(0.5554277900830784, 0.41854486075674835),
+         (0.18183521541341724, -0.1332954526326259, 0.9742526760255881)),
+        (7, complex(-0.31, 0.22),
+         (-0.9991223295585875, 0.010890994941840426, 0.04044696288472249)),
+        (11, complex(0.0, -0.5),
+         (0.8159541318562165, -0.5173098125461837, 0.2580879938125765)),
+        (13, complex(-0.17251274515804838, 0.8875011359089005),
+         (-0.8674641419706276, 0.34115643994720146, 0.36210253503353784)),
+        (19, complex(0.123456789, 0.98765432),
+         (-0.7925853123541653, -0.4591336480273328, -0.40125405404751197)),
+    )
+    worst = 0.0
+    for (f, w, want) in pinned
+        got = ISEA.snyder_inv_xyz(f, w)
+        worst = max(worst, sqrt(sum((got[i] - want[i])^2 for i in 1:3)))
+    end
+    record!("pinned-sample deviation", worst)
+    @test worst == 0.0
+
+    # The degenerate branch: chart radius exactly zero returns the face centre
+    # itself, bit for bit and without entering the solve.
+    for f in 0:19
+        @test ISEA.snyder_inv_xyz(f, complex(0.0, 0.0)) === ISEA.FACES[f + 1].c
+    end
+end
+
+# =========================================================================
 # 1. Oracle: the ten-diamond layout table
 # =========================================================================
 

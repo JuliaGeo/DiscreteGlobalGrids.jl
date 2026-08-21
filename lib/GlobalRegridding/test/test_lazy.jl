@@ -192,16 +192,93 @@ end
         srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
         srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
         nd = length(cellindices(dstspace, 1))
+        dcaps = view(GR.chunkextents(dstspace), 1:1)
+        scaps = GR.chunkextents(srcspace)
+        nt = Threads.nthreads()
         @test length(srcchunks) > 1
 
-        tiny = t7_plan(ToyDiagonalMethod(), dstspace, srcspace; budget = 2^10)
-        @test GR._wavesize(tiny, nd, srcchunks, srcranges) == 1
-        @test GR._wavesize(plan, nd, srcchunks, srcranges) ==
-              min(Threads.nthreads(), length(srcchunks))
+        # Under a declared outer wave, inner threading is already off, so the
+        # wave is the only parallelism left and the budget alone bounds it.
+        Base.ScopedValues.@with GR.OUTER_PARALLEL => true begin
+            tiny = t7_plan(ToyDiagonalMethod(), dstspace, srcspace; budget = 2^10)
+            @test GR._wavesize(tiny, nd, srcchunks, srcranges, dcaps, scaps) == 1
+            @test GR._wavesize(plan, nd, srcchunks, srcranges, dcaps, scaps) ==
+                  min(nt, length(srcchunks))
 
-        # One pair is one build whatever the threads: a wave never spawns for a
-        # tile it cannot split.
-        @test GR._wavesize(plan, nd, srcchunks[1:1], srcranges[1:1]) == 1
+            # One pair is one build whatever the threads: a wave never spawns
+            # for a tile it cannot split.
+            @test GR._wavesize(plan, nd, srcchunks[1:1], srcranges[1:1], dcaps, scaps) == 1
+        end
+    end
+
+    @testset "a wave that loses a task still waits for the rest" begin
+        srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
+        j = min(3, length(srcchunks))
+        @test j > 1
+        dinds = cellindices(dstspace, 1)
+        # The first chunk of the wave throws; the others sleep. A `_fillwave!`
+        # that raises on the first `fetch` and abandons the rest would return
+        # with those tasks still running against a plan the caller is done with.
+        bad = Int(first(cellindices(srcspace, srcchunks[1])))
+        method = WaveFailMethod(bad, 0.25)
+        plan = t7_plan(method, dstspace, srcspace)
+        wave = GR.CachedBlock[]
+        @test_throws Exception GR._fillwave!(wave, plan, 1, srcchunks, 1, j,
+            dinds, GR.TileCells(plan.dst_space, dinds))
+        @test method.finished[] == j - 1
+    end
+
+    @testset "at top level the wave is weighed against inner threading" begin
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
+        srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
+        nd = length(cellindices(dstspace, 1))
+        nt = Threads.nthreads()
+
+        # Costs weigh the chunk by how much of it the tile can reach, so equal
+        # chunk sizes do not make an even wave.
+        wide = view([SphericalCap(toy_point(0, 0), 1.0)], 1:1)
+        near = SphericalCap(toy_point(0, 0), 0.2)
+        far = SphericalCap(toy_point(180, 0), 0.2)
+        n = max(nt, 4)
+        chunks = collect(1:n)
+        ranges = [srcranges[1] for _ in 1:n]
+        @test GR._blockcosts!(zeros(2), [1, 2], ranges[1:2], wide, [near, far]) ==
+              [Float64(prod(map(length, ranges[1]))), 0.0]
+
+        if nt > 1
+            # Every chunk sits inside the tile: the wave is worth its width.
+            @test GR._wavesize(plan, nd, chunks, ranges, wide, fill(near, n)) ==
+                  min(nt, n)
+            # One chunk carries all the work and the rest meet the tile only at
+            # its extent: the wave cannot beat the threading it would suppress.
+            lopsided = [i == 1 ? near : far for i in 1:n]
+            @test GR._wavesize(plan, nd, chunks, ranges, wide, lopsided) == 1
+            # Nothing to weigh at all still falls back to one build at a time.
+            @test GR._wavesize(plan, nd, chunks, ranges, wide, fill(far, n)) == 1
+        else
+            @test GR._wavesize(plan, nd, chunks, ranges, wide, fill(near, n)) == 1
+        end
+    end
+
+    @testset "cap overlap areas" begin
+        area(r) = 2pi * (1 - cos(r))
+        # Disjoint, nested, and identical caps are exact.
+        @test GR._capoverlap(0.3, 0.3, 1.0) == 0.0
+        @test GR._capoverlap(1.0, 0.2, 0.5) ≈ area(0.2)
+        @test GR._capoverlap(0.4, 0.4, 0.0) ≈ area(0.4)
+        # A cap against the whole sphere is the cap.
+        @test GR._capoverlap(Float64(GR._WHOLE_SPHERE.radius), 0.7, 2.0) ≈ area(0.7)
+        # Touching caps meet in nothing, and half-covered ones in half.
+        @test GR._capoverlap(0.3, 0.5, 0.8) ≈ 0.0 atol = 1e-12
+        @test GR._capoverlap(0.5, 0.5, 0.5) ≈ 0.307515 rtol = 1e-5
+        # Symmetric in its two caps, and monotone as they separate.
+        @test GR._capoverlap(0.9, 0.4, 0.7) ≈ GR._capoverlap(0.4, 0.9, 0.7)
+        @test GR._capoverlap(0.9, 0.4, 0.7) > GR._capoverlap(0.9, 0.4, 0.9)
+        # Caps wider than a quarter turn go through their complements.
+        @test GR._capoverlap(2.0, 0.5, 1.8) ≈ 0.585781 rtol = 1e-5
+        @test GR._capoverlap(1.7, 1.7, 3.0) ≈ 1.619108 rtol = 1e-5
+        @test GR._capoverlap(2.5, 2.0, 1.0) ≈ 8.402553 rtol = 1e-5
     end
 
     @testset "L4 — plan reuse" begin

@@ -32,6 +32,7 @@ import GeometryOpsCore: manifold
 import DimensionalData as DD
 import DiskArrays
 using Base.ScopedValues: ScopedValue, @with
+import Graphs
 import SparseArrays
 using SparseArrays: SparseMatrixCSC, sparse
 
@@ -51,6 +52,7 @@ include("intersection_area.jl")
 include("interpolation.jl")
 include("plans.jl")
 include("discovery.jl")
+include("chunkgraph.jl")
 include("executor.jl")
 include("lazy.jl")
 include("api.jl")
@@ -85,6 +87,14 @@ public knownempty, sourcemissingval, chunkat, cellarea
 public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource
+
+# The chunk dependency graph. Public but not exported: these names are generic
+# enough that exporting them into a user's namespace would be presumptuous.
+public ChunkDependencyGraph, chunk_dependency_graph
+public sourcesof, consumersof, sourcedegree, consumerdegree
+public srcvertex, dstvertex, srcchunk, dstchunk
+public issrcvertex, isdstvertex, srcvertices, dstvertices
+public nsourcechunks, ndestinationchunks, dependency_radius
 
 # Extension surface. These five are unexported but load-bearing from outside:
 # a package that supplies a `RegridSpace` extends or calls them, so their

@@ -4,6 +4,7 @@ authors = ["Anshul Singhvi <anshulsinghvi@gmail.com>"]
 version = "0.1.0"
 
 [deps]
+ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
 GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
 GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
@@ -11,6 +12,7 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
+ConservativeRegridding = {rev = "66ed54cbe8621018fc3c1df936c32f3f420cba57", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 DiscreteGlobalGrids = {path = "../.."}
 GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "36c853e0de865251e1395ff01e9d34cda9e9bfa8"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}

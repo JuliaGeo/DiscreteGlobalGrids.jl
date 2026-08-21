@@ -176,3 +176,23 @@ function probe_ellipsoid(tf, height::Real)
         throw(ArgumentError("could not probe the ellipsoid of $tf: got a = $a, b = $b"))
     return a, 1 - (b / a)^2
 end
+
+"""
+    project_probe(target, p::UnitSphericalPoint) -> Point2d or Point3d
+
+Where one unit-sphere point lands in the space the target draws in.
+
+The mesh builder projects whole buffers at once, which is what makes a large
+cell set affordable; this is the other case — a handful of probe points, asked
+about one at a time, when something needs to know where a cell would appear
+before deciding whether to build it.
+"""
+function project_probe end
+
+project_probe(target::GlobeTarget, p) = globe_vertex(target, p)
+
+function project_probe(target::PlanarTarget, p)
+    buffer = [Point2d(atand(p[2], p[1]), asind(clamp(p[3], -1.0, 1.0)))]
+    project!(target, buffer)
+    return buffer[1]
+end

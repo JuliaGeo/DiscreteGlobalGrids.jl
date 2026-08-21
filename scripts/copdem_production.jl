@@ -3,7 +3,13 @@
 #
 # Edit `CONFIG` below, then run it:
 #
-#     julia --project=bench -t 26 --gcthreads=8,1 scripts/copdem_production.jl
+#     julia --project=benchmark -t 26 --gcthreads=8 scripts/copdem_production.jl
+#
+# The GC thread count carries NO second field. `--gcthreads=N,1` turns on Julia's
+# concurrent page sweeper, which madvises freed pages from a background thread
+# while the workers run; the 2026-08-21 run died of a SIGSEGV that is exactly what
+# a page released out from under a live object looks like. `gcguard` below refuses
+# to start under it. See regrid-notes/2026-08-21-polar-segfault.md.
 #
 # The run is resumable: it skips every chunk the ledger or the store already has,
 # so re-running the same command continues where it stopped.
@@ -17,11 +23,12 @@
 #   budget  bytes of intersection weights a lazy regrid may hold at once, per
 #           worker.
 #
-# Elevations are FABRICATED — see `copdem_synthetic.jl`. What is real is the tile
-# LIST: Copernicus ships ~26 450 of the 64 800 tiles the 1x1-degree lattice has,
-# and the source is a `PartialGrid` over exactly those, so a destination chunk
-# over open ocean pairs with no source at all. Store I/O and resume live in
-# `copdem_store.jl`.
+# `CONFIG.source` selects real, lazily downloaded GLO-90 GeoTIFFs or the analytic
+# field in `copdem_synthetic.jl`. The tile LIST is real in both modes: Copernicus
+# ships ~26 450 of the 64 800 tiles in the 1x1-degree lattice, and the source is a
+# `PartialGrid` over exactly those. A destination chunk over open ocean therefore
+# pairs with no source at all and stays nodata without a network request. Store
+# I/O and resume live in `copdem_store.jl`.
 
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
@@ -34,6 +41,7 @@ import Extents
 import Zarr
 import Statistics
 import Dates
+import Downloads
 import Printf: @sprintf
 using Base.ScopedValues: @with
 
@@ -49,15 +57,31 @@ const CONFIG = (
     res         = 90,       # 90 for GLO-90, 30 for GLO-30
     level       = 12,       # IGeo7 output level
     ancestor    = 5,        # chunk root level
+    source      = :synthetic, # :real (lazy AWS tiles) or :synthetic
     store       = "/home/asinghvi17/geo/dggstores/copdem90-igeo7-l12-synthetic.zarr",
     region      = nothing,  # nothing for the globe, or [(w, e, s, n), ...] boxes
     maskarcsec  = 15,       # land-mask lattice, arcseconds; 0 disables the mask
-    real        = :auto,    # :auto (every GeoTIFF found), :none, or ["stem", ...]
-    workers     = 21,       # concurrent worker tasks
-    batch       = 8,        # chunks handed out per pull
+    real        = :none,    # local overrides; synthetic requires :none absolutely
+    tilecache   = get(ENV, "COPDEM_TILE_CACHE",
+                      joinpath(@__DIR__, "..", "bench", "data", "CopernicusDEM", "tiles")),
+    tilebaseurl = "https://copernicus-dem-90m.s3.amazonaws.com",
+    retries     = 4,        # total GET attempts for a transient failure
+    backoff     = 1.0,      # seconds; doubled between attempts
+    timeout     = 600.0,    # seconds per tile GET
+    workers     = 0,        # concurrent worker tasks; 0 = size from `cores`
+    cores       = 24,       # the core budget `workers` is sized to hold
+    shape       = :outer,   # :outer or :inner; see `workercount`
+    batch       = 8,        # chunks handed out per pull, at most; see `taper`
+    taper       = true,     # shrink the batch as the queue drains
     budget      = 2^30,     # lazy-regrid byte budget, per worker
-    cache       = 3072,     # decoded source tiles held across all workers
-    stripes     = 64,       # independent locks over that cache
+    schedule    = :affinity, # :affinity (tile-affinity walk) or :canonical
+    cachepolicy = :refcount, # :refcount (graph-driven) or :lru
+    cache       = 3072,     # tiles held across all workers, `cachepolicy = :lru` only
+    stripes     = 64,       # independent locks over that cache, ditto
+    refinegraph = false,    # narrow the graph past the regridder's own pairing
+    prefetch    = 0,        # columns of lookahead; 0 disables the prefetcher
+    fetchconc   = 0,        # concurrent source loads; 0 means "as many as workers"
+    fetchdelay  = 0.0,      # seconds of fake latency per tile build; a test knob
     resume      = true,     # skip chunks already written
     checks      = false,    # run the synthetic oracle after the run
     checkchunks = 6,        # chunks to verify when `checks`
@@ -65,6 +89,8 @@ const CONFIG = (
     maxchunks   = 0,        # 0 = no limit; a smoke-test knob
     chunks      = Int[],    # explicit chunk indices, overriding the covering
     dryrun      = false,    # plan and report, compute nothing
+    allowsweeper = false,   # run anyway under `--gcthreads=N,1`; see `gcguard`
+    malloctrim  = 32 * 2^20, # glibc M_TRIM_THRESHOLD; 0 leaves glibc alone
     data        = get(ENV, "RASTERDATASOURCES_PATH",
                       joinpath(@__DIR__, "..", "bench", "data")),
 )
@@ -75,7 +101,14 @@ const CONFIG = (
 
 const LOGLOCK = ReentrantLock()
 const STARTED = Ref(time())
-const FAILURES = Ref(0)
+# Atomic: workers report their own chunk failures, so `+= 1` would lose some.
+const FAILURES = Threads.Atomic{Int}(0)
+# The last run's cache statistics, for a harness that calls `main` in-process
+# and wants the numbers rather than the log line.
+const LASTCACHE = Ref{Any}(nothing)
+# Likewise the lazy provider: the cold-network harness reads its counters after
+# `main` returns. Production behavior does not depend on this observation seam.
+const LASTPROVIDER = Ref{Any}(nothing)
 
 stamp() = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
 
@@ -89,19 +122,78 @@ end
 "Report a claim and count the failures."
 function check(name, ok; detail = "")
     lock(LOGLOCK) do
-        ok || (FAILURES[] += 1)
+        ok || Threads.atomic_add!(FAILURES, 1)
         println(stamp(), "  ", ok ? "PASS  " : "FAIL  ", rpad(name, 56), detail)
         flush(stdout)
     end
     return ok
 end
 
-rssgib() = Sys.maxrss() / 2^30
+"""
+    rssgib() -> Float64
+
+CURRENT resident set size in GiB.
+
+Deliberately not `Sys.maxrss()`, which is `ru_maxrss`: a monotone high-water
+mark. A heartbeat printing that reports the largest transient the run has ever
+had and never comes back down, so it looks like a staircase of plateaus when it
+is really a record of peaks. On the GLO-90 run one sub-minute excursion to
+81.65 GiB made every heartbeat for the next half hour claim "83.7 GiB" while the
+true resident size was 64 GiB. Peaks are worth reporting — see
+[`peakrssgib`](@ref) — but they have to be labelled as peaks.
+"""
+function rssgib()
+    try
+        return parse(Int, split(read("/proc/self/statm", String))[2]) * 4096 / 2^30
+    catch
+        return Sys.maxrss() / 2^30   # non-Linux fallback: a peak, but better than nothing
+    end
+end
+
+"Peak resident set size in GiB since the process started."
+peakrssgib() = Sys.maxrss() / 2^30
+
 secs(t) = @sprintf("%.1f s", t)
 hours(t) = @sprintf("%.2f h", t / 3600)
 
+"""
+    tunemalloc(trim) -> Bool
+
+Freeze glibc's malloc thresholds at `trim` bytes; `false` if that did not take.
+
+glibc raises its `mmap` and `trim` thresholds every time a large mmapped block
+is freed — up to a 32 MiB cap — so that later allocations of that size come from
+arena heap rather than a fresh mapping. This pipeline's hot allocations sit
+squarely inside that range: a mid-latitude decoded GLO-90 tile is
+`1200 x 1200 x 4 B` = 5.49 MiB, and the lazy plan's weight blocks are the same
+order. Within seconds of starting, every one of them is served from arena heap,
+and freeing it returns nothing to the operating system.
+
+Measured (`regrid-notes/2026-08-21-memory-attribution.md`): resident memory
+settles at about three times the live Julia heap and stays there through two
+full `GC.gc(true)` passes — 15.9 GiB resident against 3.0 GiB live. It is not
+the garbage collector; `--heap-size-hint` buys 14 % of it for half the
+throughput.
+
+Setting any one of the thresholds explicitly sets glibc's `no_dyn_threshold`,
+which stops the growth, and that flag — not the number — is the whole effect:
+8 MiB and 32 MiB measure identically. So pass a large one, which trims just as
+well as the 128 KiB default with far fewer syscalls. `malloctrim = 0` opts out.
+"""
+function tunemalloc(trim::Integer)
+    (trim > 0 && Sys.islinux()) || return false
+    return try
+        # M_TRIM_THRESHOLD is -1 in glibc's malloc.h; mallopt returns 1 on success.
+        ccall(:mallopt, Cint, (Cint, Cint), Cint(-1), Cint(trim)) == 1
+    catch
+        false
+    end
+end
+
+include("copdem_source_mode.jl")
 include("copdem_store.jl")
 include("copdem_synthetic.jl")
+include("copdem_policy.jl")
 
 # ===========================================================================
 # The tile list: which tiles exist at all
@@ -177,156 +269,330 @@ function realtiles(sys, dir, spec)
 end
 
 # ===========================================================================
+# Lazy real GLO-90 acquisition
+# ===========================================================================
+
+"The production AWS Open Data root for Copernicus DEM GLO-90 COGs."
+const COPDEM_GLO90_BASEURL = "https://copernicus-dem-90m.s3.amazonaws.com"
+
+"""
+    LazyCopernicusTiles(sys, listed; cachedir, baseurl, retries, backoff, timeout)
+
+A single-flight, persistent source for real Copernicus GLO-90 GeoTIFFs.
+
+No request is made by construction. On the first access to a listed tile,
+[`tilepath!`](@ref) downloads its COG to `cachedir/<stem>.tif.part` and renames
+it atomically to `cachedir/<stem>.tif`. A later access trusts only the final
+name. One lock per listed tile makes concurrent worker requests single-flight
+within the production process.
+
+An unlisted tile is ocean in this source. [`loadtile`](@ref) returns an all-NaN
+tile for it without constructing a URL or touching the network. The production
+`PartialGrid` omits these chunks altogether, which has the same downstream
+nodata semantics without allocating them.
+"""
+struct LazyCopernicusTiles{S<:DGG.CopernicusDEMSystem}
+    sys::S
+    listed::Set{Int}
+    cachedir::String
+    baseurl::String
+    retries::Int
+    backoff::Float64
+    timeout::Float64
+    locks::Dict{Int,ReentrantLock}
+    downloader::Downloads.Downloader
+    ndownloads::Threads.Atomic{Int}
+    ncold::Threads.Atomic{Int}
+end
+
+function LazyCopernicusTiles(sys::DGG.CopernicusDEMSystem, listed;
+        cachedir::AbstractString,
+        baseurl::AbstractString = COPDEM_GLO90_BASEURL,
+        retries::Integer = 4, backoff::Real = 1.0, timeout::Real = 600.0)
+    CD.lat_intervals(sys) == 1200 || throw(ArgumentError(
+        "the lazy AWS provider is for GLO-90; got $sys"))
+    retries >= 1 || throw(ArgumentError("retries must be at least 1"))
+    backoff >= 0 || throw(ArgumentError("backoff must be non-negative"))
+    timeout > 0 || throw(ArgumentError("timeout must be positive"))
+    tiles = Set(Int.(listed))
+    locks = Dict(t => ReentrantLock() for t in tiles)
+    return LazyCopernicusTiles(sys, tiles, abspath(String(cachedir)),
+        String(rstrip(String(baseurl), '/')), Int(retries), Float64(backoff),
+        Float64(timeout), locks, Downloads.Downloader(), Threads.Atomic{Int}(0),
+        Threads.Atomic{Int}(0))
+end
+
+"The final local cache path of a tile; no filesystem or network access."
+function tilecachepath(provider::LazyCopernicusTiles, ordinal::Int)
+    stem = tilestem(provider.sys, DGG.LevelIndex(0, ordinal))
+    return joinpath(provider.cachedir, stem * ".tif")
+end
+
+"The verified public S3 URL of a tile."
+function tileurl(provider::LazyCopernicusTiles, ordinal::Int)
+    stem = tilestem(provider.sys, DGG.LevelIndex(0, ordinal))
+    return string(provider.baseurl, "/", stem, "/", stem, ".tif")
+end
+
+"Whether an HTTP status is worth retrying."
+_transientstatus(status::Integer) = status == 0 || status == 408 || status == 429 ||
+    500 <= status < 600
+
+"""
+    tilepath!(provider, ordinal; demand = true) -> Union{String,Nothing}
+
+Return the cached path for a listed tile, downloading it atomically if needed.
+Return `nothing` immediately for an unlisted (ocean) tile. A demand that has to
+start the network fetch increments `provider.ncold`; the prefetcher passes
+`demand = false`.
+"""
+function tilepath!(provider::LazyCopernicusTiles, ordinal::Int; demand::Bool = true)
+    ordinal in provider.listed || return nothing
+    path = tilecachepath(provider, ordinal)
+    isfile(path) && return path
+    return lock(provider.locks[ordinal]) do
+        isfile(path) && return path
+        demand && Threads.atomic_add!(provider.ncold, 1)
+        mkpath(provider.cachedir)
+        part = path * ".part"
+        url = tileurl(provider, ordinal)
+        stem = splitext(basename(path))[1]
+        last_error = nothing
+        for attempt in 1:provider.retries
+            try
+                # `Downloads.download` truncates an existing output path, so a
+                # stale .part left by a killed run is safe to reuse.
+                Downloads.download(url, part; timeout = provider.timeout,
+                    downloader = provider.downloader)
+                filesize(part) > 0 || error("downloaded an empty object from $url")
+                Base.Filesystem.rename(part, path)
+                Threads.atomic_add!(provider.ndownloads, 1)
+                return path
+            catch err
+                last_error = err
+                status = err isa Downloads.RequestError ? err.response.status : 0
+                rm(part; force = true)
+                if status == 403 || status == 404
+                    error("listed Copernicus GLO-90 tile $stem returned HTTP $status from $url")
+                end
+                if !_transientstatus(status) || attempt == provider.retries
+                    break
+                end
+                delay = provider.backoff * 2.0^(attempt - 1)
+                @warn "Copernicus tile download failed; retrying" stem attempt attempts=provider.retries delay status exception=(err, catch_backtrace())
+                sleep(delay)
+            end
+        end
+        detail = sprint(showerror, last_error)
+        error("failed to download listed Copernicus GLO-90 tile $stem after " *
+              "$(provider.retries) attempt(s) from $url: $detail")
+    end
+end
+
+# ===========================================================================
 # The source: one lazy vector of pixels, one chunk per listed tile
 # ===========================================================================
 
 """
-    TileIds(sys, tiles)
+    SubtreeIds(sys, parents, level)
 
-The pixel (level-1) cell ids of the listed tiles as one lazy ascending vector.
+The level-`level` descendants of `parents` as one lazy ascending vector of cell
+ids, subtree `k` being `parents[k]`.
 
-Lazy because the source grid stores its ids by reference and never materialises
-them, so 3.8e10 pixels cost an offsets table of 26 450 integers. It also declares
-itself sorted, which saves the O(n) scan the grid would otherwise run: the tiles
-are sorted and their descendant ranges are disjoint, so the concatenation ascends
-by construction.
+Lazy because a grid stores its ids by reference and never materialises them, so
+the source's 3.8e10 pixels cost an offsets table of 26 450 integers and the
+destination's 5.4e10 cells cost 66 178. It also declares itself sorted, which
+saves the O(n) scan the grid would otherwise run: `parents` is ascending and
+descendant ranges are disjoint, so the concatenation ascends by construction.
+
+Both sides of this run are built from it. The source is the listed 1x1-degree
+tiles resolved to pixels ([`TileIds`](@ref)); the destination is the covering
+level-`ancestor` chunks resolved to level-`level` cells, which is the space the
+chunk dependency graph is built against.
 """
-struct TileIds{G} <: AbstractVector{DGG.LevelIndex}
+struct SubtreeIds{G,ID} <: AbstractVector{ID}
     complete::G
-    starts::Vector{Int}      # first level-1 position of each tile
-    offsets::Vector{Int}     # cells before each tile; `offsets[1] == 0`
+    starts::Vector{Int}      # first level-`level` position of each subtree
+    offsets::Vector{Int}     # cells before each subtree; `offsets[1] == 0`
     n::Int
 end
 
-function TileIds(sys, tiles::Vector{Int})
-    complete = DGG.levelgrid(sys, 1)
-    starts = Vector{Int}(undef, length(tiles))
-    offsets = Vector{Int}(undef, length(tiles))
+function SubtreeIds(sys, parents::AbstractVector, level::Int)
+    complete = DGG.levelgrid(sys, level)
+    starts = Vector{Int}(undef, length(parents))
+    offsets = Vector{Int}(undef, length(parents))
     acc = 0
-    for (k, t) in enumerate(tiles)
-        r = DGG.descendant_range(sys, DGG.LevelIndex(0, t), 1)
+    for (k, p) in enumerate(parents)
+        r = DGG.descendant_range(sys, p, level)
         starts[k] = Int(first(r))
         offsets[k] = acc
         acc += length(r)
     end
-    return TileIds(complete, starts, offsets, acc)
+    # A grid only accepts its own system's cell type, and that differs by system
+    # — `LevelIndex` for Copernicus, `Z7Cell` for IGeo7 — so take it from the
+    # grid rather than naming one.
+    ID = typeof(DGG.cellindex(complete, first(starts)))
+    return SubtreeIds{typeof(complete),ID}(complete, starts, offsets, acc)
 end
 
-Base.size(v::TileIds) = (v.n,)
-Base.IndexStyle(::Type{<:TileIds}) = IndexLinear()
+"The pixel (level-1) cell ids of the listed tiles."
+TileIds(sys, tiles::Vector{Int}) =
+    SubtreeIds(sys, [DGG.LevelIndex(0, t) for t in tiles], 1)
 
-@inline function Base.getindex(v::TileIds, i::Int)
+Base.size(v::SubtreeIds) = (v.n,)
+Base.IndexStyle(::Type{<:SubtreeIds}) = IndexLinear()
+
+@inline function Base.getindex(v::SubtreeIds, i::Int)
     @boundscheck (1 <= i <= v.n) || throw(BoundsError(v, i))
     k = searchsortedlast(v.offsets, i - 1)
     return DGG.cellindex(v.complete, v.starts[k] + (i - 1 - v.offsets[k]))
 end
 
-DGG.Helpers.strictly_increasing(::TileIds) = true
+DGG.Helpers.strictly_increasing(::SubtreeIds) = true
 
-"Which listed tile holds source position `p`, and the offset within it."
-@inline function tileat(v::TileIds, p::Int)
+"Which subtree holds position `p`, and the offset within it."
+@inline function tileat(v::SubtreeIds, p::Int)
     k = searchsortedlast(v.offsets, p - 1)
     return k, p - v.offsets[k]
 end
 
 """
-    TiledDEM(sys, ids, tiles; realtiles, mask, cachesize, stripes)
+    TileBuilder(sys, tiles, realtiles, provider, mask, delay)
 
-Every listed tile's pixels as one `Float32` vector in the source grid's own
-position order, chunk `k` being listed tile `k` — so a read is always tile
-aligned and the regridder's source chunks are the DEM's own tiles.
+Where a source tile's pixels come from, and nothing about when.
 
-A tile named in `realtiles` decodes from its GeoTIFF and brings its own nodata.
-Every other tile is fabricated by `synthetic_tile` (see `copdem_synthetic.jl`).
-The two are indistinguishable downstream: `NaN` is the regridder's invalid
-sentinel whatever produced it.
+A tile named in `realtiles` decodes from its local GeoTIFF. Otherwise a non-null
+`provider` lazily fetches and decodes the public GLO-90 COG; with no provider it
+is fabricated by `synthetic_tile` (see `copdem_synthetic.jl`). The sources are
+indistinguishable downstream: `NaN` is the regridder's invalid sentinel whatever
+produced it. The Natural Earth mask remains exclusively in the synthetic path,
+exactly as before; real COGs bring their own values/nodata.
 
-The cache is striped — `stripes` independent LRUs under `stripes` locks — and a
-tile is built OUTSIDE its lock, so the workers do not serialise on one mutex for
-the ~15 ms a 1200x1200 tile takes.
+Split out from [`TiledDEM`](@ref) so the cache can hold the *loader* rather than
+the array that holds the cache. `delay` sleeps before every build, which is how
+the AWS run's fetch latency is imposed on the synthetic one for a scheduling
+measurement; it is a test knob and defaults to zero.
 """
-struct TiledDEM{S<:DGG.CopernicusDEMSystem,I,C,M} <: DiskArrays.AbstractDiskArray{Float32,1}
+struct TileBuilder{S<:DGG.CopernicusDEMSystem,P,M}
     sys::S
-    ids::I
     tiles::Vector{Int}
-    chunks::C
     realtiles::Dict{Int,String}
+    provider::P
     mask::M
-    caches::Vector{Dict{Int,Vector{Float32}}}
-    orders::Vector{Vector{Int}}
-    locks::Vector{ReentrantLock}
-    per::Int
+    delay::Float64
     nreal::Threads.Atomic{Int}
     nsynthetic::Threads.Atomic{Int}
     nland::Threads.Atomic{Int}
     npixels::Threads.Atomic{Int}
 end
 
-function TiledDEM(sys, ids::TileIds, tiles::Vector{Int}; realtiles::Dict{Int,String},
-    mask, cachesize::Integer = 3072, stripes::Integer = 64)
-    widths = [ids.offsets[k + 1] - ids.offsets[k] for k in 1:(length(tiles) - 1)]
-    push!(widths, ids.n - ids.offsets[end])
-    chunks = DiskArrays.GridChunks(DiskArrays.IrregularChunks(; chunksizes = widths))
-    ns = Int(stripes)
-    return TiledDEM(sys, ids, tiles, chunks, realtiles, mask,
-        [Dict{Int,Vector{Float32}}() for _ in 1:ns], [Int[] for _ in 1:ns],
-        [ReentrantLock() for _ in 1:ns], max(1, Int(cachesize) ÷ ns),
+TileBuilder(sys, tiles::Vector{Int}, realtiles::Dict{Int,String}, provider, mask;
+    delay::Real = 0.0) =
+    TileBuilder(sys, tiles, realtiles, provider, mask, Float64(delay),
         Threads.Atomic{Int}(0), Threads.Atomic{Int}(0),
         Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
+
+# GDAL is entered from whichever worker first wants a real tile, and the caches
+# deliberately build outside their locks, so several workers can be in `readtile`
+# at once. ArchGDAL states no thread-safety guarantee, and the whole holding is
+# four 1x1-degree tiles decoded once each, so serialising them costs nothing
+# measurable and removes the only native-library race in the run. (Not the
+# 2026-08-21 crash: the cursor never reached the chunks that carry those tiles.
+# It would have reached them ~1300 chunks later.)
+const GDALLOCK = ReentrantLock()
+
+"The decoded band of the GeoTIFF at `path`, validated and flattened into position order."
+function readtile(path, sys, tile::DGG.LevelIndex)
+    band = lock(GDALLOCK) do
+        ArchGDAL.read(ds -> ArchGDAL.read(ds, 1), path)
+    end
+    lat, _ = CD.tilecorner(sys, tile)
+    expected = (Int(CD.ncols_at(sys, lat)), Int(CD.lat_intervals(sys)))
+    size(band) == expected || error(
+        "Copernicus tile $(tilestem(sys, tile)) at $path has raster size " *
+        "$(size(band)); expected $expected")
+    return Float32.(vec(band))
+end
+
+"Decode a listed real tile, or return ocean nodata without a request."
+function loadtile(provider::LazyCopernicusTiles, ordinal::Int)
+    path = tilepath!(provider, ordinal)
+    tile = DGG.LevelIndex(0, ordinal)
+    if path === nothing
+        lat, _ = CD.tilecorner(provider.sys, tile)
+        return fill(NaN32, Int(CD.ncols_at(provider.sys, lat) *
+                               CD.lat_intervals(provider.sys)))
+    end
+    return readtile(path, provider.sys, tile)
+end
+
+"Build source chunk `k` — listed tile `k` — from a local, lazy, or synthetic source."
+function buildtile(b::TileBuilder, k::Int)
+    b.delay > 0 && sleep(b.delay)
+    ordinal = b.tiles[k]
+    path = get(b.realtiles, ordinal, nothing)
+    vals = if path !== nothing
+        Threads.atomic_add!(b.nreal, 1)
+        v = readtile(path, b.sys, DGG.LevelIndex(0, ordinal))
+        Threads.atomic_add!(b.nland, count(isfinite, v))
+        v
+    elseif b.provider === nothing
+        Threads.atomic_add!(b.nsynthetic, 1)
+        v, nland = synthetic_tile(b.sys, DGG.LevelIndex(0, ordinal), b.mask)
+        Threads.atomic_add!(b.nland, nland)
+        v
+    else
+        Threads.atomic_add!(b.nreal, 1)
+        v = loadtile(b.provider, ordinal)
+        Threads.atomic_add!(b.nland, count(isfinite, v))
+        v
+    end
+    Threads.atomic_add!(b.npixels, length(vals))
+    return vals
+end
+
+"""
+    TiledDEM(ids, builder, cache)
+
+Every listed tile's pixels as one `Float32` vector in the source grid's own
+position order, chunk `k` being listed tile `k` — so a read is always tile
+aligned and the regridder's source chunks are the DEM's own tiles, which is what
+makes the chunk dependency graph's source side the DEM's own tile list.
+
+`cache` decides which tiles are resident and for how long: a
+[`RefCountCache`](@ref) driven by that graph, or the [`StripedLRUCache`](@ref)
+this run used before it had one.
+"""
+struct TiledDEM{I,C,K} <: DiskArrays.AbstractDiskArray{Float32,1}
+    ids::I
+    builder::TileBuilder
+    cache::K
+    chunks::C
+end
+
+function TiledDEM(ids::SubtreeIds, builder::TileBuilder, cache)
+    n = length(builder.tiles)
+    widths = [ids.offsets[k + 1] - ids.offsets[k] for k in 1:(n - 1)]
+    push!(widths, ids.n - ids.offsets[end])
+    chunks = DiskArrays.GridChunks(DiskArrays.IrregularChunks(; chunksizes = widths))
+    return TiledDEM(ids, builder, cache, chunks)
 end
 
 Base.size(A::TiledDEM) = (A.ids.n,)
 DiskArrays.eachchunk(A::TiledDEM) = A.chunks
 DiskArrays.haschunks(::TiledDEM) = DiskArrays.Chunked()
 
-"The decoded band of the GeoTIFF at `path`, flattened into position order."
-readtile(path) = vec(ArchGDAL.read(ds -> ArchGDAL.read(ds, 1), path))
-
-"One tile's pixels, from the stripe cache or freshly built."
-function tilevalues!(A::TiledDEM, ordinal::Int)
-    s = mod(ordinal, length(A.locks)) + 1
-    lk, cache, order = A.locks[s], A.caches[s], A.orders[s]
-    hit = lock(lk) do
-        v = get(cache, ordinal, nothing)
-        v === nothing && return nothing
-        push!(order, splice!(order, findfirst(==(ordinal), order)))
-        return v
-    end
-    hit === nothing || return hit
-    # Built outside the lock: two tasks racing the same tile both build it and
-    # the loser's copy is dropped, which is cheaper than blocking the pool.
-    path = get(A.realtiles, ordinal, nothing)
-    v = if path === nothing
-        Threads.atomic_add!(A.nsynthetic, 1)
-        vals, nland = synthetic_tile(A.sys, DGG.LevelIndex(0, ordinal), A.mask)
-        Threads.atomic_add!(A.nland, nland)
-        Threads.atomic_add!(A.npixels, length(vals))
-        vals
-    else
-        Threads.atomic_add!(A.nreal, 1)
-        vals = readtile(path)
-        Threads.atomic_add!(A.nland, count(isfinite, vals))
-        Threads.atomic_add!(A.npixels, length(vals))
-        vals
-    end
-    return lock(lk) do
-        existing = get(cache, ordinal, nothing)
-        existing === nothing || return existing
-        length(cache) >= A.per && delete!(cache, popfirst!(order))
-        cache[ordinal] = v
-        push!(order, ordinal)
-        return v
-    end
-end
-
 function DiskArrays.readblock!(A::TiledDEM, out, r::AbstractUnitRange)
+    ntiles = length(A.builder.tiles)
     p = first(r)
     while p <= last(r)
         k, off = tileat(A.ids, p)
-        width = (k < length(A.tiles) ? A.ids.offsets[k + 1] : A.ids.n) - A.ids.offsets[k]
+        width = (k < ntiles ? A.ids.offsets[k + 1] : A.ids.n) - A.ids.offsets[k]
         stop = min(last(r), A.ids.offsets[k] + width)
         seg = (p - first(r) + 1):(stop - first(r) + 1)
-        v = tilevalues!(A, A.tiles[k])
+        # `k` is the source CHUNK number, which is what the dependency graph and
+        # both caches are keyed by; only the builder knows it is tile `tiles[k]`.
+        v = gettile!(A.cache, k)
         out[seg] .= view(v, off:(off + length(seg) - 1))
         p = stop + 1
     end
@@ -368,6 +634,121 @@ function covering_chunks(sys7, sys, tiles::Vector{Int}, ancestor::Int; nthreads 
 end
 
 # ===========================================================================
+# The dependency graph, and the walk order it implies
+# ===========================================================================
+
+# A conservative lon/lat narrow phase for this specific pair, available to
+# `chunk_dependency_graph` as its `refine` hook — and OFF by default. Read on.
+#
+# The broad phase is cap-versus-cap, and a circle circumscribing a square already
+# inflates by its half-diagonal, so on this workload the cap relation carries
+# 1.75x the edges the exact geometry has. A Copernicus tile is exactly a
+# 1-degree lon/lat box — always 1x1 in EXTENT; it is the pixel count that shrinks
+# poleward, not the footprint — and a spherical cap has an exact lon/lat bounding
+# box, so two boxes that do not overlap cannot intersect. That takes the
+# inflation to 1.35x for no measurable build cost, and it drops none of the
+# exact edges: the narrow phase was checked against an independently built exact
+# adjacency and kept all 186 069 of them.
+#
+# **And it is still the wrong graph to schedule on.** Refcount eviction does not
+# need a superset of the *true geometry*; it needs a superset of what the
+# *executor actually reads*, and the executor pairs its chunks by exactly the
+# cap test the broad phase uses. Every pair the narrow phase removes is a pair
+# the regridder will still read the tile for. Measured on eleven chunks: the
+# refined graph credited chunk 100 with one tile and the regrid then demanded
+# three, eight such demands over the eleven. No data was wrong — an uncredited
+# demand is served — but the tile had already been freed, so the reload the
+# design exists to prevent came back.
+#
+# So the narrow phase stays here, behind `refinegraph`, for the day the
+# regridder's own pairing gets tighter. Turning it on today trades the whole
+# at-most-once property for 25 % fewer edges.
+#
+# `PAD` absorbs the half-pixel outer frame `node_extent` adds to a tile box and
+# any rounding, so the test only ever errs toward keeping an edge.
+const PAD = 0.01
+
+"Half-width in longitude degrees of a cap's bounding box; 180 at a pole."
+function lonhalfwidth(latdeg::Float64, rdeg::Float64)
+    abs(latdeg) + rdeg >= 90 - PAD && return 180.0
+    s = sind(rdeg) / cosd(latdeg)
+    s >= 1 && return 180.0
+    return rad2deg(asin(s))
+end
+
+"Circular longitude separation, in degrees."
+circulardlon(a::Float64, b::Float64) = abs(mod(a - b + 180.0, 360.0) - 180.0)
+
+function boxesoverlap(dlat::Float64, dlon::Float64, dlathalf::Float64,
+        dlonhalf::Float64, tlat::Float64, tlon::Float64)
+    abs(dlat - tlat) <= dlathalf + 0.5 + PAD || return false
+    dlonhalf >= 180 - PAD && return true
+    return circulardlon(dlon, tlon) <= dlonhalf + 0.5 + PAD
+end
+
+"""
+    dagplan(sys, sys7, tiles, chunks, srcspace, config) -> NamedTuple
+
+The tile-to-chunk dependency graph over exactly the work this run will do, and
+the order to walk it in.
+
+The destination space is built over `chunks` in the order they are given, so
+graph destination `d` is `chunks[d]` and graph source `s` is `tiles[s]` — the
+same numbering the source space and both caches use. The order is a *separate*
+permutation, `order[p] -> d`, applied by the cursor; the graph itself is never
+built in it.
+
+Returns `(graph, order, seconds, edges, dstspace)`. Building it costs about a
+second on the real pair, almost all of it the destination space; the graph
+itself is 0.12 s for 66 178 x 26 475 chunks.
+"""
+function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, config)
+    t0 = time()
+    g5 = DGG.levelgrid(sys7, config.ancestor)
+    dstids = SubtreeIds(sys7, [DGG.cellindex(g5, c) for c in chunks], config.level)
+    dstgrid = DGG.PartialGrid(sys7, config.level, dstids)
+    dstspace = DGG.DGGSpace(dstgrid; chunklevel = config.ancestor)
+    tspace = time() - t0
+
+    # Tile centres, and each destination cap as a lon/lat box, for `refine`.
+    corner = [CD.tilecorner(sys, DGG.LevelIndex(0, t)) for t in tiles]
+    tlat = [Float64(c[1]) + 0.5 for c in corner]
+    tlon = [Float64(c[2]) + 0.5 for c in corner]
+    caps = GR.chunkextents(dstspace)
+    dlat = [rad2deg(atan(c.point[3], hypot(c.point[1], c.point[2]))) for c in caps]
+    dlon = [rad2deg(atan(c.point[2], c.point[1])) for c in caps]
+    drad = [rad2deg(c.radius) for c in caps]
+    dhalf = [lonhalfwidth(dlat[i], drad[i]) for i in eachindex(caps)]
+    refine = config.refinegraph ?
+             ((d, s) -> boxesoverlap(dlat[d], dlon[d], drad[d], dhalf[d],
+                 tlat[s], tlon[s])) : nothing
+
+    t1 = time()
+    radius = Float64(GR.support_radius(DGG.Conservative(), srcspace))
+    graph = GR.chunk_dependency_graph(dstspace, srcspace; radius, refine)
+    tgraph = time() - t1
+
+    # Sweep the tiles in Morton order over the 1-degree lattice and emit a chunk
+    # when its last tile is swept. `:canonical` keeps the ascending chunk order
+    # the run used before, as the control for an A/B.
+    t2 = time()
+    order = if config.schedule === :affinity
+        keys = [morton2(Int(c[2]) + 180, Int(c[1]) + 90) for c in corner]
+        affinity_order(length(chunks), d -> GR.sourcesof(graph, d), keys)
+    elseif config.schedule === :canonical
+        collect(1:length(chunks))
+    else
+        error("schedule must be :affinity or :canonical, got $(repr(config.schedule))")
+    end
+    torder = time() - t2
+
+    return (graph = graph, order = order, dstspace = dstspace, radius = radius,
+        tspace = tspace, tgraph = tgraph, torder = torder,
+        edges = length(order) == 0 ? 0 : sum(d -> GR.sourcedegree(graph, d),
+            1:length(chunks)))
+end
+
+# ===========================================================================
 # The run
 # ===========================================================================
 
@@ -380,11 +761,12 @@ mutable struct Progress
     const total::Int
     const started::Float64
     const every::Float64     # seconds between heartbeats
+    const cold::Union{Nothing,Threads.Atomic{Int}}
     last::Float64
 end
 
-Progress(total, every) =
-    Progress(ReentrantLock(), 0, 0, 0, 0, total, time(), Float64(every), time())
+Progress(total, every, cold = nothing) =
+    Progress(ReentrantLock(), 0, 0, 0, 0, total, time(), Float64(every), cold, time())
 
 """
     regrid_chunk(dem, srcspace, sys7, layout, chunk, config) -> Vector{Float32}
@@ -406,66 +788,206 @@ function regrid_chunk(dem, srcspace, sys7, layout, chunk::Int, config)
     return Float32.(vec(collect(out)))
 end
 
+"""
+    etaseconds(elapsed, computed, remaining) -> Float64
+
+How much longer the remaining chunks take at the rate THIS SESSION has computed
+chunks — `NaN` until the first one lands.
+
+`computed` deliberately excludes the chunks skipped at resume. Those cost a set
+lookup, not a regrid, so crediting them to the session's elapsed time makes the
+rate look arbitrarily fast: a resumed run of the GLO-90 store reported "ETA
+0.30 h" with about three hours left, because 54 k skips and 4.5 k real chunks
+were divided into one session's clock as if all 58 k had been computed in it.
+"""
+etaseconds(elapsed, computed, remaining) =
+    computed > 0 ? elapsed * remaining / computed : NaN
+
+"""
+    heartbeat!(p, force = false)
+
+One progress line, at most every `p.every` seconds.
+
+Every rate in it is SESSION-scoped and labelled so, because that is all a
+`Progress` knows: it counts what this process computed. Only the chunk count is
+store-wide, and it names both numbers — `d/t chunks (c computed this session)` —
+so neither reading can be mistaken for the other. Store-wide cells and NaNs come
+from the ledger instead, at the end of the run; see [`storetotals`](@ref).
+"""
 function heartbeat!(p::Progress, force = false)
     lock(p.lock) do
         now = time()
         (force || now - p.last >= p.every) || return nothing
         p.last = now
         el = now - p.started
-        done = p.done + p.skipped
-        rate = p.cells / max(el, 1e-9)
-        left = p.total - done
-        eta = done > 0 ? el * left / done : NaN
-        say(@sprintf("HEARTBEAT  %d/%d chunks (%d skipped) | %.3e cells | %.0f cells/s | elapsed %s | ETA %s | RSS %.1f GiB | NaN %.2f%%",
-            done, p.total, p.skipped, Float64(p.cells), rate, hours(el), hours(eta),
-            rssgib(), 100 * p.nan / max(p.cells, 1)))
+        seen = p.done + p.skipped
+        eta = etaseconds(el, p.done, p.total - seen)
+        cold = p.cold === nothing ? "" : " | demand-cold downloads $(p.cold[])"
+        say(@sprintf("HEARTBEAT  %d/%d chunks (%d computed this session, %d skipped) | session %.3e cells, %.0f cells/s | elapsed %s | ETA %s | RSS %.1f GiB (peak %.1f) | session NaN %.2f%%%s",
+            seen, p.total, p.done, p.skipped, Float64(p.cells),
+            p.cells / max(el, 1e-9), hours(el), hours(eta),
+            rssgib(), peakrssgib(), 100 * p.nan / max(p.cells, 1), cold))
         return nothing
     end
 end
 
 """
-    runchunks(chunks, dem, srcspace, sys7, store, layout, done, donelog, config) -> Progress
+    reportchecks(donelog, written)
 
-`config.workers` tasks pulling contiguous batches of chunks off one atomic
-cursor, each computing its chunk and writing it straight to its own Zarr file.
-Chunks are disjoint, so no two tasks ever touch the same file.
+Dry-run self-checks on the progress ARITHMETIC — the part of the run that has no
+regrid to verify it, and that a resumed run twice got wrong: an ETA that counted
+chunks skipped at resume as work this session, and a final banner whose totals
+were session-scoped without saying so. Both were cosmetic; both were believed.
 
-Batches are contiguous in canonical Z7 order, so a worker walks a geographically
-connected run and its tile cache stays hot; pulling dynamically keeps the polar
-chunks — which meet 200-360 tiles and cost ~5x a mid-latitude one — off the
-critical path.
-
-`GR.OUTER_PARALLEL` is set inside each worker body: the outer loop is already one
-task per chunk, so the nested weight builds must not spawn their own and
-oversubscribe the box. The lazy plan's own source wave still spawns, which is the
-parallelism a polar chunk can actually use.
+Cheap enough to run on every dry run, and it reads the run's real ledger, so it
+also says whether these totals can be trusted for THIS store.
 """
-function runchunks(chunks, dem, srcspace, sys7, store, layout, done, donelog, config)
-    W, B = config.workers, config.batch
-    W >= 1 || error("workers must be at least 1, got $W")
-    p = Progress(length(chunks), config.heartbeat)
-    cursor = Threads.Atomic{Int}(1)
+function reportchecks(donelog, written)
+    # 10 chunks computed in 10 s with 90 to go is 90 s. Crediting 100 skips to
+    # the same 10 s would say 5 s, which is the shape of the bug.
+    check("ETA counts only chunks computed this session",
+        etaseconds(10.0, 10, 90) ≈ 90.0;
+        detail = @sprintf("%.1f s, not the %.1f s that crediting 100 skips gives",
+            etaseconds(10.0, 10, 90), etaseconds(10.0, 110, 90)))
+    check("ETA is NaN until the first chunk lands", isnan(etaseconds(10.0, 0, 90)))
+
+    # A chunk logged twice — recomputed because a crash lost its file, not its
+    # line — is one chunk, at its LAST line's values.
+    tmp = tempname()
+    try
+        open(tmp, "w") do io
+            println(io, "{\"col\":7,\"cells\":100,\"nan\":10,\"secs\":1.00,\"w\":1,\"t\":\"x\"}")
+            println(io, "{\"col\":7,\"cells\":100,\"nan\":40,\"secs\":1.00,\"w\":2,\"t\":\"x\"}")
+            println(io, "{\"col\":9,\"cells\":100,\"nan\":0,\"secs\":1.00,\"w\":1,\"t\":\"x\"}")
+        end
+        t = storetotals(tmp, Set([7, 9, 11]))
+        check("a chunk logged twice counts once, at its last line",
+            length(doneledger(tmp)) == 2 && t.cells == 200 && t.nan == 40;
+            detail = "$(length(doneledger(tmp))) entries, $(t.cells) cells, $(t.nan) NaN")
+        check("a written chunk with no ledger line is unaccounted",
+            t.chunks == 3 && t.unaccounted == 1;
+            detail = "$(t.chunks) chunks, $(t.unaccounted) unaccounted")
+    finally
+        rm(tmp; force = true)
+    end
+
+    # And against the ledger this run will actually append to.
+    led = doneledger(donelog)
+    tot = storetotals(donelog, written)
+    check("store totals span the whole resume union",
+        tot.chunks == length(written) &&
+        tot.unaccounted == count(c -> !haskey(led, c) || led[c].cells < 0, written);
+        detail = "$(tot.chunks) chunks written, $(tot.unaccounted) with no ledger line")
+    check("store cells are the ledger sum over that union",
+        tot.cells == sum(Int[led[c].cells for c in written
+                             if haskey(led, c) && led[c].cells >= 0]; init = 0);
+        detail = @sprintf("%.4e cells, NaN %.3f%%", Float64(tot.cells),
+            100 * tot.nan / max(tot.cells, 1)))
+    return nothing
+end
+
+"""
+    workercount(config) -> (W, shape)
+
+The worker count `W`, sized from the `cores` budget rather than from a thread
+count, and the parallel `shape` it assumes. `config.workers` overrides `W` when
+set to something positive.
+
+A work unit is one chunk, and how many cores one worker can hold depends
+entirely on which of the two nested parallelisms is allowed to run:
+
+  - `shape = :outer` sets [`GR.OUTER_PARALLEL`](@ref) in the worker body. The
+    weight build stays serial and the lazy plan's source wave is the only
+    parallelism inside a unit. Measured: **1.06 cores per worker**, flat in `W`
+    while `W` is well below `nthreads`, and **65 k cells per core-second** — the
+    most work per core of the two, but it needs `W ≈ cores` workers, and each
+    worker holds a chunk's weights, so resident memory scales with `W`.
+
+  - `shape = :inner` leaves `OUTER_PARALLEL` unset, so a narrow wave stands
+    aside and ConservativeRegridding threads the weight build itself. Measured
+    at 12 threads: one worker reaches 7.0–7.3 cores, the pool saturates at
+    **`W ≈ nthreads/4`** holding ~78 % of it, and throughput is **60 k cells per
+    core-second** — about 8 % less work per core, for a third of the workers and
+    two thirds of the resident memory.
+
+So at a fixed core budget `:outer` converts cores into cells slightly faster,
+while `:inner` reaches the same cores with far fewer workers, and is the only
+shape that keeps scaling once `cores` exceeds what `W ≈ cores` workers can be
+given threads for. `:outer` is the default because the standing budget is 24
+cores, where the throughput edge wins; switch to `:inner` for a larger budget or
+when resident memory is the binding constraint.
+"""
+function workercount(config)
+    shape = config.shape
+    shape in (:outer, :inner) ||
+        error("shape must be :outer or :inner, got $(repr(shape))")
+    config.workers > 0 && return (config.workers, shape)
+    config.cores > 0 || error("cores must be positive when workers is not set")
+    # Cores per worker, measured; see above.
+    W = shape === :outer ? cld(config.cores, 1.06) : cld(config.cores, 3.1)
+    return (max(1, Int(W)), shape)
+end
+
+"""
+    runchunks(chunks, order, dem, srcspace, sys7, store, layout, skipped, donelog,
+              prefetcher, config) -> Progress
+
+`W` tasks — [`workercount`](@ref) — pulling batches of positions off one
+[`GuidedSchedule`](@ref), each computing its chunk and writing it straight to its
+own Zarr file. Chunks are disjoint, so no two tasks ever touch the same file.
+
+`order[p]` is the graph destination number to run at position `p`, and
+`chunks[order[p]]` is the level-`ancestor` chunk itself. The order is a priority
+sequence, never a partition: pulling dynamically is what keeps the polar chunks —
+which meet 200-360 tiles and cost ~5x a mid-latitude one — off the critical path,
+and tapering the batch is what keeps the last pull from handing one worker eight
+of them while everybody else is idle.
+
+Every chunk is retired from the cache exactly once, on every terminal outcome and
+before its result is written: the Zarr write reads no source data, so holding
+tiles across it only inflates residency. Chunks skipped on resume were retired
+before the run started and are not in `order` at all.
+
+Under `shape = :outer` each worker body sets `GR.OUTER_PARALLEL`, so the nested
+weight builds do not spawn their own tasks and oversubscribe the box; the lazy
+plan's source wave is then the only parallelism inside a unit. Under
+`shape = :inner` the scoped value is left alone, and `_wavesize` weighs that wave
+against the threading inside the build — standing the wave down whenever one
+source chunk carries the destination chunk, which is almost always.
+"""
+function runchunks(chunks, order, sched, dem, srcspace, sys7, store, layout, skipped,
+        donelog, prefetcher, config)
+    W, shape = workercount(config)
+    outer = shape === :outer
+    provider = dem.builder.provider
+    p = Progress(length(chunks), config.heartbeat,
+        provider === nothing ? nothing : provider.ncold)
+    p.skipped = skipped
     log = DoneLog(donelog)
     try
+        # `false` is the scoped value's own default, so binding it is the same
+        # as leaving it unset — the worker is the outermost scope either way.
         Threads.@sync for w in 1:W
-            Threads.@spawn @with GR.OUTER_PARALLEL => true begin
+            Threads.@spawn @with GR.OUTER_PARALLEL => outer begin
                 while true
-                    i = Threads.atomic_add!(cursor, B)
-                    i > length(chunks) && break
-                    for ch in chunks[i:min(i + B - 1, length(chunks))]
-                        if ch in done
-                            lock(p.lock) do; p.skipped += 1; end
-                            continue
-                        end
+                    batch = claim!(sched)
+                    batch === nothing && break
+                    advance!(prefetcher)
+                    for pos in batch
+                        d = order[pos]
+                        ch = chunks[d]
                         t0 = time()
                         vals = try
                             regrid_chunk(dem, srcspace, sys7, layout, ch, config)
                         catch err
                             say("ERROR worker $w chunk $ch: ",
                                 sprint(showerror, err, catch_backtrace())[1:min(end, 1500)])
-                            FAILURES[] += 1
-                            continue
+                            Threads.atomic_add!(FAILURES, 1)
+                            nothing
+                        finally
+                            retire_column!(dem.cache, d)
                         end
+                        vals === nothing && continue
                         DGG.dggwrite!(store, ch, vals)
                         el = time() - t0
                         nnan = count(isnan, vals)
@@ -490,18 +1012,131 @@ function runchunks(chunks, dem, srcspace, sys7, store, layout, done, donelog, co
     return p
 end
 
+"""
+    reportcache(cache, prefetcher, provider, nsrc, complete)
+
+What the tile cache did, and whether it did it lawfully.
+
+Three claims, in decreasing strength:
+
+  - **Every source chunk was loaded at most once.** This is the structural
+    property of refcount eviction and the reason it never reloads: a chunk can
+    only be freed when no destination chunk that may read it is left, so no
+    correct demand for it can follow. If this fails the refcounts are wrong.
+
+  - **Every demand was one the graph predicted.** The adjacency is a
+    conservative superset of the true geometry, so a read the graph did not
+    carry is a hole in the covering. Such a read is still served — the run does
+    not die over an accounting bug — but it is counted here.
+
+  - **Every source chunk was loaded at least once**, reported only for a fresh,
+    complete, failure-free run. This is a COVERAGE diagnostic, not a law: the
+    graph's 1.35x conservatism, a resumed run, and a failed chunk each leave
+    tiles legitimately untouched. The offline simulator could equate loads with
+    the tile count because it treated adjacency as demand; production reads an
+    unknown subset of it.
+"""
+function reportcache(cache, prefetcher, provider, nsrc::Int, complete::Bool)
+    s = cachestats(cache)
+    LASTCACHE[] = s
+    if s.policy === :refcount
+        say(@sprintf("tile cache: %d loads of %d source chunks, peak %.2f GiB / %d tiles, %d hits, %d joined loads, %d live at end",
+            s.loads, nsrc, s.peakbytes / 2^30, s.peaktiles, s.hits, s.waits, s.live))
+        check("every source chunk was loaded at most once", isempty(doubleloaded(cache));
+            detail = "$(length(doubleloaded(cache))) chunk(s) loaded twice")
+        check("every demand was a predicted edge", s.uncredited == 0;
+            detail = s.uncredited == 0 ? "" :
+                     "$(s.uncredited) uncredited demand(s), chunks " *
+                     string(s.uncreditedof))
+        check("every destination chunk was retired", s.pinned == 0 && s.live == 0;
+            detail = "$(s.pinned) source chunk(s) still pinned, $(s.live) still held")
+        complete && say(s.loads == nsrc ?
+            "coverage: every one of the $nsrc source chunks was read" :
+            "coverage: $(nsrc - s.loads) of $nsrc source chunks were never read " *
+            "(the graph is a conservative superset; this is not an error)")
+    else
+        say(@sprintf("tile cache: LRU, %d loads (%d reloads over %d source chunks), %d hits, %d live at end, %.2f GiB held",
+            s.loads, max(0, s.loads - nsrc), nsrc, s.hits, s.live, s.bytes / 2^30))
+    end
+    provider === nothing || say(
+        "source downloads: $(provider.ndownloads[]) total, " *
+        "$(provider.ncold[]) demand-cold")
+    pf = prefetchstats(prefetcher)
+    pf.depth == 0 && return nothing
+    say("prefetch: depth $(pf.depth), $(pf.issued) tile requests issued")
+    check("the prefetcher raised nothing", pf.failure === nothing;
+        detail = pf.failure === nothing ? "" : sprint(showerror, pf.failure))
+    return nothing
+end
+
 # ===========================================================================
 # Main
 # ===========================================================================
 
+"""
+    gcguard(config)
+
+Refuse to run under Julia's concurrent page sweeper.
+
+`--gcthreads=N,M` asks for `N` mark threads and `M` (0 or 1) threads for the
+*concurrent sweeping phase*. `M` defaults to 0; `M = 1` is an opt-in that hands a
+background thread the job of releasing swept pages — `jl_concurrent_gc_threadfun`
+→ `gc_free_pages` → `jl_gc_free_page` → `madvise` — while the worker threads keep
+running. `madvise(MADV_DONTNEED)` on anonymous memory does not unmap the page; it
+drops its contents, so the next read of anything still living there returns zeros.
+
+On 2026-08-21 this run died at chunk ~121700 with
+
+    [3718607] signal 11 (128): Segmentation fault
+    getindex at ./essentials.jl:920 [inlined]
+    _child_extent at GeometryOps .../dual_depth_first_search.jl:37 [inlined]
+    dual_depth_first_search at .../dual_depth_first_search.jl:78
+
+which is the `memoryrefget` *after* a `@boundscheck` that passed, on a freshly
+built seven-element `Vector{SphericalCap}` that no other task can reach — an
+`Array` whose length still read correctly while its data pointer did not. A page
+released under a live object produces precisely that, and the previous run's
+SIGTERM backtrace (same log, line 28153) caught the sweeper thread inside
+`madvise` in this very workload. Two independent audits and ~1000 Antarctic
+chunks re-run under `--check-bounds=yes` found no out-of-bounds access, no
+unsafe/`ccall` code, and no unsynchronized shared state on the path.
+
+So the configuration is the defect, and this is where the configuration is
+written down. `allowsweeper = true` overrides, for someone deliberately testing
+it.
+"""
+function gcguard(config)
+    nsweep = Base.JLOptions().nsweepthreads
+    nsweep == 0 && return nothing
+    config.allowsweeper && return say(
+        "WARNING: running with $nsweep concurrent GC sweep thread(s) by " *
+        "`allowsweeper = true`; this is the 2026-08-21 SIGSEGV configuration")
+    error("""
+        this run was launched with Julia's concurrent page sweeper enabled \
+        (--gcthreads=…,$nsweep). It released a page under a live object on \
+        2026-08-21 and killed the global run at chunk ~121700. Drop the second \
+        field: `--gcthreads=$(Base.JLOptions().nmarkthreads)`. Set \
+        `allowsweeper = true` to run under it anyway.""")
+end
+
 function main(config = CONFIG)
+    gcguard(config)
+    realspec = effective_realspec(config.source, config.real)
     println("="^92)
     println(stamp(), "  copdem_production.jl — GLO-$(config.res) -> IGEO7 level " *
-                     "$(config.level), level-$(config.ancestor) chunks, SYNTHETIC elevations")
-    println("  julia $(VERSION)  threads=$(Threads.nthreads())  gc=$(Threads.ngcthreads())  pid=$(getpid())")
+                     "$(config.level), level-$(config.ancestor) chunks, " *
+                     "$(uppercase(String(config.source))) elevations")
+    println("  julia $(VERSION)  threads=$(Threads.nthreads())  " *
+            "gcmark=$(Base.JLOptions().nmarkthreads)  " *
+            "gcsweep=$(Base.JLOptions().nsweepthreads)  pid=$(getpid())")
     println("  ", config)
     println("="^92)
     flush(stdout)
+
+    say(config.malloctrim > 0 ?
+        "malloc: M_TRIM_THRESHOLD frozen at $(config.malloctrim >> 20) MiB — " *
+        (tunemalloc(config.malloctrim) ? "ok" : "MALLOPT FAILED, expect ~3x resident memory") :
+        "malloc: left at glibc defaults (malloctrim = 0); expect ~3x resident memory")
 
     sys = DGG.CopernicusDEMSystem(config.res)
     sys7 = DGG.IGeo7System()
@@ -519,20 +1154,28 @@ function main(config = CONFIG)
     t0 = time()
     tiles = listedtiles(sys, tilelist, config.region)
     isempty(tiles) && error("the tile list and region select no tiles")
-    real = realtiles(sys, tiledir, config.real)
+    real = realtiles(sys, tiledir, realspec)
     filter!(p -> p.first in Set(tiles), real)
+    provider = config.source === :real ? LazyCopernicusTiles(sys, tiles;
+        cachedir = config.tilecache, baseurl = config.tilebaseurl,
+        retries = config.retries, backoff = config.backoff,
+        timeout = config.timeout) : nothing
+    LASTPROVIDER[] = provider
     ids = TileIds(sys, tiles)
     say("tile list: $(length(tiles)) listed tiles of $(DGG.ncells(sys, 0)) " *
         "($(round(100 * length(tiles) / DGG.ncells(sys, 0); digits = 1))%), " *
-        "$(length(real)) backed by a real GeoTIFF, " *
+        "$(length(real)) local GeoTIFF overrides, " *
         @sprintf("%.3e pixels, %s", Float64(ids.n), secs(time() - t0)))
+    provider === nothing || say("lazy GLO-90 source: $(provider.baseurl), cache $(provider.cachedir)")
     for (o, p) in sort!(collect(real))
         say("  real: $(tilestem(sys, DGG.LevelIndex(0, o)))  " *
             "$(round(filesize(p) / 2^10)) KiB")
     end
 
-    dem = TiledDEM(sys, ids, tiles; realtiles = real, mask = mask,
-        cachesize = config.cache, stripes = config.stripes)
+    builder = TileBuilder(sys, tiles, real, provider, mask; delay = config.fetchdelay)
+    config.fetchdelay > 0 && say(@sprintf(
+        "fetchdelay: every tile build sleeps %.3f s — a latency shim, not production",
+        config.fetchdelay))
     t0 = time()
     srcgrid = DGG.PartialGrid(sys, 1, ids)
     srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
@@ -580,30 +1223,120 @@ function main(config = CONFIG)
     say("resume: $(length(done)) chunks already written, $todo of " *
         "$(length(todochunks)) to do")
 
+    # --- the dependency graph, the walk order, the cache ------------------
+    W, shape = workercount(config)
+    plan = dagplan(sys, sys7, tiles, todochunks, srcspace, config)
+    say(@sprintf("graph: %d x %d chunks, %d edges (%.2f tiles per chunk), radius %g; dst space %s, graph %s, order %s",
+        GR.nsourcechunks(plan.graph), GR.ndestinationchunks(plan.graph), plan.edges,
+        plan.edges / max(length(todochunks), 1), plan.radius,
+        secs(plan.tspace), secs(plan.tgraph), secs(plan.torder)))
+    check("graph destination chunks are the work list",
+        GR.ndestinationchunks(plan.graph) == length(todochunks))
+    check("graph source chunks are the listed tiles",
+        GR.nsourcechunks(plan.graph) == length(tiles))
+    check("the walk order is a permutation of the work list",
+        length(plan.order) == length(todochunks) && isperm(plan.order))
+
+    cache = if config.cachepolicy === :refcount
+        RefCountCache{Vector{Float32}}(length(tiles), length(todochunks),
+            d -> GR.sourcesof(plan.graph, d),
+            s -> GR.consumerdegree(plan.graph, s),
+            k -> buildtile(builder, k);
+            permits = config.fetchconc > 0 ? config.fetchconc : W)
+    elseif config.cachepolicy === :lru
+        config.prefetch == 0 || error("prefetch needs cachepolicy = :refcount: a " *
+            "bounded LRU can evict a prefetched tile before it is used, and the " *
+            "churn that causes was never measured")
+        StripedLRUCache{Vector{Float32}}(k -> buildtile(builder, k);
+            slots = config.cache, stripes = config.stripes)
+    else
+        error("cachepolicy must be :refcount or :lru, got $(repr(config.cachepolicy))")
+    end
+    dem = TiledDEM(ids, builder, cache)
+
+    # A chunk skipped on resume is retired before anything starts, so its tiles
+    # are never credited to work that will not happen, and the run's hot loop
+    # never has to ask again whether a chunk is done.
+    order = plan.order
+    if !isempty(done)
+        keep = Int[]
+        for d in order                       # `order` holds destination numbers
+            if todochunks[d] in done
+                config.cachepolicy === :refcount && retire_column!(cache, d)
+            else
+                push!(keep, d)
+            end
+        end
+        order = keep
+    end
+    nskipped = length(plan.order) - length(order)
+    say("schedule: $(config.schedule) order over $(length(order)) chunks " *
+        "($nskipped retired on resume), cache=$(config.cachepolicy), " *
+        "taper=$(config.taper)")
+
     if config.dryrun
+        say(@sprintf("dryrun: max tiles per chunk %d, max chunks per tile %d",
+            maximum(d -> GR.sourcedegree(plan.graph, d), 1:length(todochunks); init = 0),
+            maximum(s -> GR.consumerdegree(plan.graph, s), 1:length(tiles); init = 0)))
+        reportchecks(donelog, done)
         say("dryrun: stopping before any regrid")
         return FAILURES[]
     end
 
     # --- the run ---------------------------------------------------------
-    say("launching $(config.workers) workers on $(Threads.nthreads()) threads, " *
-        "batch=$(config.batch), budget=$(config.budget)")
+    say("launching W=$W workers, shape=$shape, sized to hold $(config.cores) cores " *
+        "(nthreads=$(Threads.nthreads())), batch=$(config.batch), budget=$(config.budget)")
+    shape === :inner && Threads.nthreads() < 4W &&
+        say("NOTE shape=:inner saturates near W=nthreads/4; " *
+            "$(Threads.nthreads()) threads will not fill $W workers")
+    sched = GuidedSchedule(length(order), config.taper ? W : 1, config.batch)
+    prefetcher = nothing
     t0 = time()
-    p = runchunks(todochunks, dem, srcspace, sys7, store, layout, done, donelog, config)
+    p = try
+        if config.prefetch > 0
+            fc = config.fetchconc > 0 ? config.fetchconc : W
+            prepare = provider === nothing ? nothing :
+                s -> tilepath!(provider, tiles[s]; demand = false)
+            prefetcher = Prefetcher(cache, order, d -> GR.sourcesof(plan.graph, d),
+                length(tiles), sched; depth = config.prefetch, concurrency = fc,
+                prepare)
+            say("prefetch: depth $(config.prefetch) chunks, $fc concurrent fetches")
+        end
+        runchunks(todochunks, order, sched, dem, srcspace, sys7, store, layout,
+            nskipped, donelog, prefetcher, config)
+    finally
+        stop_prefetch!(prefetcher)
+    end
     wall = time() - t0
-    say(@sprintf("RUN DONE  %d chunks computed, %d skipped, %.4e cells in %s = %.0f cells/s aggregate",
+    # Two banners, never one. `p` counts what THIS process computed; the store
+    # holds what every session ever wrote. On a resumed run those differ by
+    # whatever the earlier sessions did, and the session numbers on their own
+    # read as the whole dataset: session 3 of the GLO-90 run signed off with
+    # "9.7606e9 cells ... 44.308% NaN" when the store held 5.4500e10 cells at
+    # 26.892% NaN. Same ledger the resume set came from, so the two agree.
+    written = donechunks(donelog, config.store, "elevation"; label = "store")
+    tot = storetotals(donelog, written)
+    say(@sprintf("RUN DONE  session: %d chunks computed, %d skipped, %.4e cells in %s = %.0f cells/s aggregate",
         p.done, p.skipped, Float64(p.cells), hours(wall), p.cells / max(wall, 1e-9)))
-    say(@sprintf("source tiles decoded: %d real, %d synthetic; %.3e of %.3e pixels valid (%.2f%% land)",
-        dem.nreal[], dem.nsynthetic[], Float64(dem.nland[]), Float64(dem.npixels[]),
-        100 * dem.nland[] / max(dem.npixels[], 1)))
-    say(@sprintf("destination NaN fraction: %.3f%% of %.4e written cells",
+    say(@sprintf("RUN DONE  session: NaN %.3f%% of the %.4e cells this session wrote",
         100 * p.nan / max(p.cells, 1), Float64(p.cells)))
-    say(@sprintf("peak RSS %.2f GiB", rssgib()))
+    say(@sprintf("RUN DONE  store total: %d of %d chunks written, %.4e cells, NaN %.3f%%%s",
+        tot.chunks, length(todochunks), Float64(tot.cells),
+        100 * tot.nan / max(tot.cells, 1),
+        tot.unaccounted == 0 ? "" :
+            " — cells and NaN over the $(tot.chunks - tot.unaccounted) chunks the " *
+            "ledger accounts for; $(tot.unaccounted) written chunks have no ledger line"))
+    say(@sprintf("source tiles decoded: %d real, %d synthetic; %.3e of %.3e pixels valid (%.2f%% land)",
+        builder.nreal[], builder.nsynthetic[], Float64(builder.nland[]),
+        Float64(builder.npixels[]),
+        100 * builder.nland[] / max(builder.npixels[], 1)))
+    reportcache(cache, prefetcher, provider, length(tiles),
+        FAILURES[] == 0 && nskipped == 0)
+    say(@sprintf("RSS %.2f GiB now, %.2f GiB peak", rssgib(), peakrssgib()))
 
     if config.checks
         sm = SourceMask(mask, DGG.levelgrid(sys, 0), Set(tiles))
-        verify(config, sys7, layout, todochunks, sm, real, dem,
-            donechunks(donelog, config.store, "elevation"))
+        verify(config, sys7, layout, todochunks, sm, real, dem, written)
     end
 
     say("total wall $(hours(time() - STARTED[])), " *
@@ -611,4 +1344,9 @@ function main(config = CONFIG)
     return FAILURES[]
 end
 
-exit(main() == 0 ? 0 : 1)
+# Run only when this file IS the program. `include`d — by the A/B harness in
+# `copdem_dag_validate.jl`, or by anything else that wants to call `main` with a
+# config of its own — it defines the run and starts nothing.
+if abspath(PROGRAM_FILE) == @__FILE__
+    exit(main() == 0 ? 0 : 1)
+end

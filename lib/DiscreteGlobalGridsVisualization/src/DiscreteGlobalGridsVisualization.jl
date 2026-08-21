@@ -1,5 +1,5 @@
 """
-    DiscreteGlobalGridVisualizations
+    DiscreteGlobalGridsVisualization
 
 Fast Makie plotting for discrete global grids.
 
@@ -19,6 +19,30 @@ dggpoly(cells; color = values)
 
 `cells` is anything that names a set of DGGS cells — an `AbstractGrid`, a
 `CellVector`, a `CellLookup`, a `MultiOrderCellSet`, or a `(system, ids)` pair.
+
+## Drawing the field instead of the cells
+
+[`dggsurface`](@ref) takes the same arguments and draws the same cells as the
+continuous field they sample: a vertex at each cell's **centroid**, carrying
+that cell's value, joined by the triangles of the grid's dual.  The value varies
+smoothly between cell centres rather than jumping at cell edges — the picture
+for elevation or temperature, not for a categorical field.
+
+It is the smaller mesh, one vertex and about two triangles per cell against six
+and four.  Its triangles come from adjacency alone, under a rule that gives each
+grid corner one owner, so none is emitted twice and none has to be de-duplicated
+afterwards; see `surface.jl`.
+
+## Drawing less than you were given
+
+[`dggresample`](@ref) takes the same arguments and answers the other half of the
+question.  Past a certain level every extra cell lands under a pixel another
+cell already owns, so instead of drawing the set it descends the system's own
+hierarchy — keeping only branches that are on screen and hold data — and stops
+at the level whose cells come out a few pixels across, colouring each of them by
+the leaf cell under its centre.  It follows the camera, so zooming in refines
+and zooming out coarsens, and neither costs anything proportional to the number
+of cells handed in.
 
 ## Where the mesh lives
 
@@ -45,19 +69,26 @@ implements.
     stable, and the pieces that earn their keep are meant to move into
     `DiscreteGlobalGrids`' own Makie extension.
 """
-module DiscreteGlobalGridVisualizations
+module DiscreteGlobalGridsVisualization
 
 import DiscreteGlobalGrids as DGG
 import GeometryBasics
 using GeometryBasics: Point2d, Point3d, GLTriangleFace
 import Makie
-using Makie: @recipe
+using Makie: @recipe, on
 
 export dggpoly, dggpoly!
+export dggsurface, dggsurface!
+export dggresample, dggresample!
 
 include("targets.jl")
 include("cellsets.jl")
 include("tessellate.jl")
 include("recipe.jl")
+include("surface.jl")
+include("surface_recipe.jl")
+include("pyramid.jl")
+include("resample.jl")
+include("resample_recipe.jl")
 
 end # module

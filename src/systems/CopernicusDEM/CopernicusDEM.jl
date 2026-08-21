@@ -31,6 +31,8 @@ west-to-east raster order. `levelgrid` returns a [`HierarchicalLevelGrid`](@ref)
 module CopernicusDEM
 
 import ..DiscreteGlobalGrids as DGG
+# The inline boundary storage IGeo7 already publishes its rings in.
+import ..Helpers
 
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
@@ -48,6 +50,7 @@ include("bands.jl")
 include("system.jl")
 include("nesting.jl")
 include("cursor.jl")
+include("cursor_memo.jl")
 
 export CopernicusDEMSystem
 

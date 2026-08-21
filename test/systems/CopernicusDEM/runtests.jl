@@ -412,6 +412,62 @@ end
     end
 end
 
+# The ring moved from a heap `Vector` to inline `Helpers.SmallList` storage, which
+# is a representation change and nothing else: the vertices, their order, and both
+# pole degeneracies have to be bit-for-bit what the heap version emitted.
+@testset "rings are inline, and identical to the heap version" begin
+    # Verbatim copy of the pre-inline body. It is the oracle; do not "fix" it.
+    function heap_cell_boundary(sys, c)
+        west, east, south, north = CD.cell_box(sys, c)
+        north == 90.0 && return [CD.TO_SPHERE((west, south)), CD.TO_SPHERE((east, south)),
+                                 CD.NORTH_POLE]
+        south == -90.0 && return [CD.SOUTH_POLE, CD.TO_SPHERE((east, north)),
+                                  CD.TO_SPHERE((west, north))]
+        return [CD.TO_SPHERE((west, south)), CD.TO_SPHERE((east, south)),
+                CD.TO_SPHERE((east, north)), CD.TO_SPHERE((west, north))]
+    end
+
+    differed = String[]
+    for sys in ALL_SYSTEMS
+        N = CD.lat_intervals(sys)
+        for lat_s in PROBE_LATS, lon_w in PROBE_LONS
+            t = CD.tilecell(sys, lat_s, lon_w)
+            nc = Int(CD.ncols_at(sys, lat_s))
+            cells = [CD.pixelcell(sys, t, j, i)
+                     for (j, i) in ((0, 0), (0, nc - 1), (1, 1), (N ÷ 2, nc ÷ 2),
+                                    (N - 1, 0), (N - 1, nc - 1))]
+            pushfirst!(cells, t)
+            for c in cells
+                got = cell_boundary(sys, c)
+                want = heap_cell_boundary(sys, c)
+                # `===` on an isbits point compares bits: a signed zero differs.
+                (length(got) == length(want) &&
+                 all(got[k] === want[k] for k in eachindex(want))) ||
+                    note!(differed, "$sys $c: $(collect(got)) != $want")
+            end
+        end
+    end
+    @test differed == String[]
+
+    # Inline end to end: the ring, its closed form, and the published polygon.
+    g1 = levelgrid(GLO90, 1)
+    quad = CD.pixelcell(GLO90, CD.tilecell(GLO90, 0, 0), 3, 3)
+    npole = CD.pixelcell(GLO90, CD.tilecell(GLO90, 89, 0), 0, 0)
+    spole = CD.pixelcell(GLO90, CD.tilecell(GLO90, -90, 0),
+                         CD.lat_intervals(GLO90) - 1, 0)
+    for c in (quad, npole, spole)
+        ring = cell_boundary(GLO90, c)
+        @test ring isa DGG.Helpers.SmallList
+        @test isbits(ring)
+        @test isbits(DGG.Fallbacks.closed_ring(ring))
+        @test isbits(cell_polygon(g1, c))
+    end
+    # The fourth slot is capacity, not a vertex: a pole cell still reports three.
+    @test length(cell_boundary(GLO90, quad)) == 4
+    @test length(cell_boundary(GLO90, npole)) == 3
+    @test length(cell_boundary(GLO90, spole)) == 3
+end
+
 # =========================================================================
 # (h) `node_extent` covers the subtree
 # =========================================================================
@@ -677,10 +733,11 @@ end
     midrow = PartialGrid(GLO90, 1, [LevelIndex(1, k)
                                     for k in (first_id + 3):(first_id + 500)])
     scattered = PartialGrid(GLO90, 1, [LevelIndex(1, first_id + 2k) for k in 0:99])
-    @test treeify(levelgrid(GLO90, 0)) isa CD.BlockCursor
-    @test treeify(levelgrid(GLO90, 1)) isa CD.BlockCursor
-    @test treeify(rect) isa CD.BlockCursor
-    @test treeify(rows) isa CD.BlockCursor
+    # `treeify` hands the cursor back memoized; `BlockCursor` is the bare one.
+    @test treeify(levelgrid(GLO90, 0)) isa CD.MemoBlockCursor
+    @test treeify(levelgrid(GLO90, 1)) isa CD.MemoBlockCursor
+    @test treeify(rect) isa CD.MemoBlockCursor
+    @test treeify(rows) isa CD.MemoBlockCursor
     # Mid-row and scattered windows fall back to the generic cursor.
     @test treeify(midrow) isa DGG.HierarchicalGridCursor
     @test treeify(scattered) isa DGG.HierarchicalGridCursor
@@ -697,8 +754,8 @@ end
                            Int(CD.ncols_at(TWIN, 88)) - 1).index
     pole_rows = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in pole_lo:pole_hi])
     part_end = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in two_lo:(two_hi-2)])
-    @test treeify(two_tiles) isa CD.BlockCursor
-    @test treeify(pole_rows) isa CD.BlockCursor
+    @test treeify(two_tiles) isa CD.MemoBlockCursor
+    @test treeify(pole_rows) isa CD.MemoBlockCursor
     @test treeify(part_end) isa DGG.HierarchicalGridCursor
 
     # Out-of-range partial-grid ids must fall back cleanly.
@@ -852,11 +909,13 @@ end
     # Multi-tile level-1 grids descend through tile nodes into each raster.
     g1twin = levelgrid(TWIN, 1)
     root = treeify(g1twin)
-    @test root isa CD.BlockCursor
+    @test root isa CD.MemoBlockCursor
     @test !STI.isleaf(root)
-    holds(nd, r, q, j, i) = nd.inpixels ?
-                            (nd.r0 == r && nd.q0 == q && nd.j0 <= j <= nd.j1 && nd.i0 <= i <= nd.i1) :
-                            (nd.r0 <= r <= nd.r1 && nd.q0 <= q <= nd.q1)
+    holds(t, r, q, j, i) = let nd = t.node
+        nd.inpixels ?
+            (nd.r0 == r && nd.q0 == q && nd.j0 <= j <= nd.j1 && nd.i0 <= i <= nd.i1) :
+            (nd.r0 <= r <= nd.r1 && nd.q0 <= q <= nd.q1)
+    end
     worst_ancestor = -Inf
     worst_globe = -Inf
     reached = 0
@@ -962,7 +1021,7 @@ end
         inds = DGG.cellindices(dense, k)
         @test length(inds) == Int(CD.lat_intervals(TWIN)) * Int(CD.ncols_at(TWIN, lat_s))
         tree = GR.subtree(dense, inds)
-        @test tree isa CD.BlockCursor
+        @test tree isa CD.MemoBlockCursor
         # The window is the chunk exactly — no cell of another tile leaks in.
         @test leafpositions(tree) == collect(inds)
     end
@@ -973,7 +1032,7 @@ end
         cellposition(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
     nc = Int(CD.ncols_at(TWIN, 12))
     rows = (first(r) + nc):(first(r) + 3nc - 1)
-    @test GR.subtree(dense, rows) isa CD.BlockCursor
+    @test GR.subtree(dense, rows) isa CD.MemoBlockCursor
     @test leafpositions(GR.subtree(dense, rows)) == collect(rows)
     @test GR.subtree(dense, (first(r) + 1):(first(r) + nc)) isa GR.CellCapTree
     # And a run spanning two tiles is not one rectangle either.
@@ -1003,7 +1062,7 @@ end
     for k in 1:GR.nchunks(src)
         inds = DGG.cellindices(src, k)
         tree = GR.subtree(src, inds)
-        @test tree isa CD.BlockCursor
+        @test tree isa CD.MemoBlockCursor
         @test leafpositions(tree) == collect(inds)
         # The weights are the fallback's, entry for entry.
         fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, tree;
@@ -1012,6 +1071,293 @@ end
             GR.CellCapTree(src, inds); intersection_operator = op)
         @test length(fast.nzval) > 0
         @test (k, fast == slow) == (k, true)
+    end
+end
+
+# =========================================================================
+# (k3) The extent memo: the same caps, no false hits, no shared state
+# =========================================================================
+
+# `treeify`/`subcursor` hand back a `MemoBlockCursor`, which answers
+# `node_extent` from a per-task direct-mapped table instead of re-deriving the
+# box and its cap. The table must be invisible: every answer is the bare
+# cursor's, bit for bit, whoever asks and in whatever order.
+@testset "the node-extent memo" begin
+    STI = GO.SpatialTreeInterface
+
+    tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
+    memoroot = treeify(tile)
+    @test memoroot isa CD.MemoBlockCursor
+    bareroot = CD.BlockCursor(tile)
+
+    # ---- the interface the bare cursor implements, all of it ----------------
+    @test STI.isspatialtree(typeof(memoroot))
+    # A hit is a compare and a load, so the search must not cache child extents.
+    @test !STI.node_extent_is_expensive(typeof(memoroot))
+    @test STI.isleaf(memoroot) == STI.isleaf(bareroot)
+    @test STI.nchild(memoroot) == STI.nchild(bareroot)
+    @test all(c isa CD.MemoBlockCursor for c in STI.getchild(memoroot))
+    @test [c.node for c in STI.getchild(memoroot)] ==
+          [STI.getchild(bareroot, k) for k in 1:STI.nchild(bareroot)]
+    @test STI.getchild(memoroot, 2).node == STI.getchild(bareroot, 2)
+    @test DGG.ncells(memoroot) == DGG.ncells(bareroot)
+    @test getcell(memoroot, 3) == getcell(bareroot, 3)
+    @test CR.Trees.split_weight(memoroot) == CR.Trees.split_weight(bareroot)
+    @test GOCore.best_manifold(memoroot) == GOCore.best_manifold(bareroot)
+    @test treeify(memoroot) === memoroot
+    @test sprint(show, memoroot) == "Memo" * sprint(show, bareroot)
+
+    # ---- (a) every answer is the unmemoized one, bit for bit ---------------
+    # `===` on an immutable cap compares the bits, so this is stricter than `==`.
+    function sameextents(a, b)
+        STI.node_extent(a) === STI.node_extent(b) || return false
+        STI.isleaf(a) == STI.isleaf(b) || return false
+        STI.isleaf(a) && return isequal(collect(STI.child_indices_extents(a)),
+                                        collect(STI.child_indices_extents(b)))
+        STI.nchild(a) == STI.nchild(b) || return false
+        return all(sameextents(STI.getchild(a, k), STI.getchild(b, k))
+                   for k in 1:STI.nchild(a))
+    end
+    @test sameextents(memoroot, bareroot)
+    # A second walk is served from the table and answers the same.
+    @test sameextents(memoroot, bareroot)
+
+    # The root's slot really does hold the root's cap after the first ask.
+    rootkey = CD._nodekey(bareroot)
+    slot = CD._nodeslot(rootkey, CD._MEMO_EXTENT_SLOTS)
+    rootcap = STI.node_extent(memoroot)
+    thememo = CD._taskmemo(bareroot)
+    @test thememo.keys[slot] == rootkey
+    @test thememo.vals[slot] === rootcap === STI.node_extent(bareroot)
+
+    # ---- (b) a slot collision is a miss, never a false hit ------------------
+    # The whole level-1 lattice, breadth-first, past the point where the table
+    # is full: with more live nodes than slots, collisions are the common case.
+    globe = treeify(levelgrid(TWIN, 1))
+    nodes = CD.MemoBlockCursor[globe]
+    k = 1
+    while k <= length(nodes) && length(nodes) < 4 * CD._MEMO_EXTENT_SLOTS
+        n = nodes[k]
+        k += 1
+        STI.isleaf(n) || append!(nodes, (STI.getchild(n, c) for c in 1:STI.nchild(n)))
+    end
+    @test length(nodes) > CD._MEMO_EXTENT_SLOTS   # more nodes than slots: real pressure
+
+    # Two distinct nodes, with distinct caps, that land in one slot.
+    seen = Dict{Int,CD.MemoBlockCursor}()
+    collide = nothing
+    for n in nodes
+        s = CD._nodeslot(CD._nodekey(n.node), CD._MEMO_EXTENT_SLOTS)
+        prev = get(seen, s, nothing)
+        if prev !== nothing && CD._nodekey(prev.node) != CD._nodekey(n.node) &&
+           STI.node_extent(prev.node) !== STI.node_extent(n.node)
+            collide = (prev, n)
+            break
+        end
+        seen[s] = n
+    end
+    @test collide !== nothing
+    a, b = collide
+    @test CD._nodeslot(CD._nodekey(a.node), CD._MEMO_EXTENT_SLOTS) ==
+          CD._nodeslot(CD._nodekey(b.node), CD._MEMO_EXTENT_SLOTS)
+    # Alternating evicts on every ask; each ask still gets its own node's cap.
+    for _ in 1:4
+        @test STI.node_extent(a) === STI.node_extent(a.node)
+        @test STI.node_extent(b) === STI.node_extent(b.node)
+    end
+    @test STI.node_extent(a) !== STI.node_extent(b)
+
+    # One tile rectangle is one key, but the cap depends on the lattice it sits
+    # in: the level-0 pad is a whole tile, the level-1 pad one pixel. The table
+    # is cleared when a task turns to another lattice, so neither answers for
+    # the other.
+    tr, tq, _, _ = CD.decode(TWIN, CD.tilecell(TWIN, 50, 6))
+    tilenode(g, l) = CD.MemoBlockCursor(CD.BlockCursor(g, TWIN, CD.Bisected(), l,
+        Int64(-1), tr, tr, tq, tq, 0, 0, 0, 0, false))
+    lvl0 = tilenode(levelgrid(TWIN, 0), 0)
+    lvl1 = tilenode(levelgrid(TWIN, 1), 1)
+    @test CD._nodekey(lvl0.node) == CD._nodekey(lvl1.node)
+    @test STI.node_extent(lvl0.node) !== STI.node_extent(lvl1.node)
+    for _ in 1:4
+        @test STI.node_extent(lvl0) === STI.node_extent(lvl0.node)
+        @test STI.node_extent(lvl1) === STI.node_extent(lvl1.node)
+    end
+    # And turning back to the tile grid still answers for the tile grid.
+    @test STI.node_extent(memoroot) === STI.node_extent(bareroot)
+
+    # ---- (c) concurrent readers of one shared grid --------------------------
+    # The table is task-local, so 8 tasks walking the same nodes share no slot.
+    bare = [n.node for n in nodes]
+    want = [STI.node_extent(n) for n in bare]
+    tasks = map(1:8) do _
+        Threads.@spawn begin
+            bad = 0
+            for (k, n) in enumerate(nodes)
+                STI.node_extent(n) === want[k] || (bad += 1)
+                k % 32 == 0 && yield()
+            end
+            bad
+        end
+    end
+    @test all(==(0), fetch.(tasks))
+    # Tasks that alternate between two lattices keep their own reset straight.
+    mixed = map(1:8) do t
+        Threads.@spawn begin
+            bad = 0
+            for _ in 1:8
+                STI.node_extent(lvl0) === STI.node_extent(lvl0.node) || (bad += 1)
+                yield()
+                STI.node_extent(lvl1) === STI.node_extent(lvl1.node) || (bad += 1)
+                yield()
+            end
+            bad
+        end
+    end
+    @test all(==(0), fetch.(mixed))
+end
+
+# =========================================================================
+# (k4) The leaf cells: the same pairs, in the same order, for nothing
+# =========================================================================
+
+# One warmed, type-stable pass over a leaf's cells. Kept out of the testset so
+# the node's type is concrete at the call, which is what `@allocated` needs to
+# mean anything: an inferred call to a heap-free build is the whole point.
+function _leafcell_sum(node)
+    s = 0
+    for (i, _) in GO.SpatialTreeInterface.child_indices_extents(node)
+        s += i
+    end
+    return s
+end
+
+# The `Ref` is allocated before the measurement and forces the call to happen.
+function leafcell_bytes(node)
+    warm = _leafcell_sum(node)
+    total = Ref(warm)
+    bytes = @allocated (total[] += _leafcell_sum(node))
+    return (bytes, total[] - warm)
+end
+
+# `child_indices_extents` hands back a `LeafCells` instead of a fresh
+# vector per call. It must behave as the vector did — indexable, iterable,
+# collectable, same length and eltype — and yield the same pairs, bit for bit.
+@testset "the leaf cells" begin
+    STI = GO.SpatialTreeInterface
+    Cap = US.SphericalCap{Float64}
+
+    # The materializing implementation `LeafCells` replaced, verbatim.
+    function materialized(c::CD.BlockCursor)
+        entries = Tuple{Int,Cap}[]
+        if c.inpixels
+            for j in c.j0:c.j1, i in c.i0:c.i1
+                leaf = CD.BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
+                    c.r0, c.r0, c.q0, c.q0, j, j, i, i, true)
+                push!(entries, (CD._position(c, c.r0, c.q0, j, i), STI.node_extent(leaf)))
+            end
+        else
+            for r in c.r0:c.r1, q in c.q0:c.q1
+                leaf = CD.BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
+                    r, r, q, q, 0, 0, 0, 0, false)
+                push!(entries, (CD._position(c, r, q, 0, 0), STI.node_extent(leaf)))
+            end
+        end
+        return entries
+    end
+
+    function someleaves(root, cap)
+        out = typeof(root)[]
+        stack = [root]
+        while !isempty(stack) && length(out) < cap
+            n = pop!(stack)
+            if STI.isleaf(n)
+                push!(out, n)
+            else
+                for k in 1:STI.nchild(n)
+                    push!(stack, STI.getchild(n, k))
+                end
+            end
+        end
+        return out
+    end
+
+    # Tile leaves, pixel leaves, pole rows, and both split strategies.
+    twin_tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
+    for (label, grid) in (("twin tile", twin_tile),
+                          ("twin tiles", levelgrid(TWIN, 0)),
+                          ("twin pixels", levelgrid(TWIN, 1)),
+                          ("GLO-90 tiles", levelgrid(GLO90, 0)),
+                          ("GLO-90 pixels", levelgrid(GLO90, 1))),
+        strategy in (CD.Blocked{3}(), CD.Bisected())
+
+        root = CD.BlockCursor(grid; strategy)
+        ls = someleaves(root, 400)
+        @test (label, isempty(ls)) == (label, false)
+        bad = 0
+        for l in ls
+            e = STI.child_indices_extents(l)
+            want = materialized(l)
+            # `===` on a tuple of `Int` and an immutable cap compares the bits.
+            (e isa AbstractVector && eltype(e) == Tuple{Int,Cap} &&
+             size(e) == (length(want),) && length(e) == length(want) &&
+             all(e[k] === want[k] for k in eachindex(want)) &&
+             collect(e) == want && all(x === want[k] for (k, x) in enumerate(e))) ||
+                (bad += 1)
+        end
+        @test (label, string(typeof(strategy)), bad) ==
+              (label, string(typeof(strategy)), 0)
+    end
+
+    # The whole value is `isbits`, which is why it never reaches the heap.
+    @test isbitstype(CD.LeafCells)
+    @test Base.IndexStyle(CD.LeafCells) === IndexLinear()
+
+    # An interior node is still an error, as it was for the vector.
+    globe = CD.BlockCursor(levelgrid(GLO90, 0))
+    @test !STI.isleaf(globe)
+    @test_throws ArgumentError STI.child_indices_extents(globe)
+
+    # ---- it allocates nothing: construction and a full pass -----------------
+    # This is the point of `LeafCells`. 71.6% of a production regrid's
+    # allocation was the per-leaf vector it replaces.
+    for grid in (levelgrid(GLO90, 0), levelgrid(GLO90, 1))
+        leaf = someleaves(CD.BlockCursor(grid), 1)[1]
+        bytes, sum1 = leafcell_bytes(leaf)
+        @test sum1 == sum(i for (i, _) in materialized(leaf))
+        @test bytes == 0
+        # A memoized cursor forwards the entries, so it allocates nothing either.
+        mbytes, sum2 = leafcell_bytes(CD.MemoBlockCursor(leaf))
+        @test sum2 == sum1
+        @test mbytes == 0
+    end
+
+    # ---- two leaves' entries live at once, which is how the search reads them
+    # `dual_depth_first_search` binds both leaves' entries and loops over them
+    # nested, so a shared per-task buffer would serve one leaf's cells from the
+    # other's. A self-join is exactly that shape: both sides are `BlockCursor`.
+    let root = CD.BlockCursor(levelgrid(TWIN, 0))
+        ls = someleaves(root, 3)
+        a, b = ls[1], ls[end]
+        @test a != b
+        ea, eb = STI.child_indices_extents(a), STI.child_indices_extents(b)
+        wa, wb = materialized(a), materialized(b)
+        # Holding both is safe: neither call disturbed the other's answers.
+        @test all(ea[k] === wa[k] for k in eachindex(wa))
+        @test all(eb[k] === wb[k] for k in eachindex(wb))
+
+        pairs = Tuple{Int,Int}[]
+        STI.dual_depth_first_search((_, _) -> true, a, b) do i1, i2
+            push!(pairs, (i1, i2))
+        end
+        @test pairs == [(i, j) for (i, _) in wa for (j, _) in wb]
+        # And the search's pruning still agrees with the materialized caps.
+        overlaps(x, y) =
+            US.spherical_distance(x.point, y.point) <= x.radius + y.radius
+        near = Tuple{Int,Int}[]
+        STI.dual_depth_first_search(overlaps, a, b) do i1, i2
+            push!(near, (i1, i2))
+        end
+        @test near == [(i, j) for (i, ca) in wa for (j, cb) in wb if overlaps(ca, cb)]
     end
 end
 

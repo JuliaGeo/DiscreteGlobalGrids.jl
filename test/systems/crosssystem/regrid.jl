@@ -240,14 +240,24 @@ end
         return all(checktree(x, y) for (x, y) in zip(STI.getchild(a), STI.getchild(b)))
     end
 
+    # A cached tree also carries the seam's leaf size, so the shape to compare
+    # its caps against is a bare cursor bucketed the same way. The field copy is
+    # written out here so the test pins the constructor's field order itself.
+    reshape_leaves(c) = typeof(c)(c.grid, c.system, c.top_level, c.leaf_level,
+        DGG._CACHED_BUCKET_SIZE, c.level, c.id, c.first_index, c.last_index,
+        c.selection)
+
     for space in (DGG.DGGSpace(DGG.PartialGrid(REGION)), DGG.DGGSpace(GRID))
         n = DGG.ncells(space.grid)
         cached = GR.subtree(space, 1:n)
         @test cached isa DGG.CapCachedTree
         cursor = GR.celltree(space)
         @test Trees.ncells(cached) == Trees.ncells(cursor) == n
-        @test checktree(cached, cursor)
-        # The weight matrix the two trees build is identical, entry for entry.
+        raw = DGG.treeify(DGG._decodedgrid(space.grid))
+        @test checktree(cached, reshape_leaves(raw))
+        # The weight matrix the two trees build is identical, entry for entry —
+        # and `cursor` here still has the default one-cell leaf, so this is also
+        # the statement that the seam's leaf size changes no weight.
         m = GR.manifold(space)
         op = CR.DefaultIntersectionOperator(m)
         src = GR.subtree(SRC, 1:GR.ncells(SRC))
@@ -269,7 +279,7 @@ end
             # `checktree` covers extents, leaf entries and polygons; a chunk
             # tree's `Trees.ncells` is its own count while its leaf indices are
             # global, so weights only come out of a block build's index maps.
-            @test checktree(cached, DGG._chunkcursor(space, inds))
+            @test checktree(cached, reshape_leaves(DGG._chunkcursor(space, inds)))
         end
     end
 
@@ -279,6 +289,69 @@ end
     cached = GR.subtree(space, 1:DGG.ncells(space.grid))
     @test cached.node.grid.ids isa Vector
     @test cached.node.grid.ids == collect(space.grid.ids)
+end
+
+@testset "the bigger leaf rides on the cap cache, and nowhere else" begin
+    # A leaf of `_CACHED_BUCKET_SIZE` cells is only cheap because `caps` already
+    # holds their extents; a bare cursor re-derives them on every visit, where
+    # the same leaf size is a large loss. So the size is attached to the two
+    # sites that return a `CapCachedTree`, and every plain-cursor return path
+    # keeps whatever the grid asked for.
+    @test DGG._CACHED_BUCKET_SIZE > 1
+
+    leaves(n) = STI.isleaf(n) ? [collect(STI.child_indices_extents(n))] :
+                reduce(vcat, (leaves(c) for c in STI.getchild(n)); init = Vector{Any}())
+
+    space = DGG.DGGSpace(GRID)
+    n = DGG.ncells(space.grid)
+    cached = GR.subtree(space, 1:n)
+    @test cached isa DGG.CapCachedTree
+    @test cached.node.bucket_size == DGG._CACHED_BUCKET_SIZE
+    # The leaves really did grow, and they still name every cell exactly once.
+    ls = leaves(cached)
+    @test maximum(length, ls) > 1
+    @test all(length(l) <= DGG._CACHED_BUCKET_SIZE for l in ls)
+    @test sort!([i for l in ls for (i, _) in l]) == 1:n
+
+    # Bare path 1: `celltree` hands back the plain cursor.
+    bare = GR.celltree(space)
+    @test !(bare isa DGG.CapCachedTree)
+    @test bare.bucket_size == 0
+    @test length(leaves(bare)) == n
+
+    # Bare path 2: a chunk too large to pay for its cap vector is returned
+    # untouched — same object, same leaf size.
+    @test DGG._cachedchunktree(bare, 1:(DGG._CHUNK_CAP_CACHE_MAX + 1)) === bare
+
+    # Bare path 3: a system without sorted subtrees uses a selection cursor,
+    # which the cache cannot index, so `_cachedcelltree` falls back.
+    a5 = DGG.DGGSpace(DGG.levelgrid(DGG.A5System(), 1))
+    a5tree = GR.subtree(a5, 1:DGG.ncells(a5.grid))
+    @test !(a5tree isa DGG.CapCachedTree)
+    @test a5tree.bucket_size == 0
+
+    # A caller that names a leaf size keeps it: `0` is the grid default, not a
+    # request, and is the only value the seam fills in.
+    explicit = DGG.DGGSpace(DGG.subtree(SYS, first(DGG.rootcells(SYS)), LEVEL;
+        bucket_size = 7))
+    etree = GR.subtree(explicit, 1:DGG.ncells(explicit.grid))
+    @test etree isa DGG.CapCachedTree
+    @test etree.node.bucket_size == 7
+
+    # The candidate pairs a dual search collects are the same set either way —
+    # a node's cap covers its descendants', so stopping early can neither add
+    # nor drop a pair.
+    src = GR.subtree(SRC, 1:GR.ncells(SRC))
+    function pairs(dst)
+        out = Tuple{Int,Int}[]
+        STI.dual_depth_first_search(GO.UnitSpherical._intersects, dst, src) do i, j
+            push!(out, (i, j))
+        end
+        return sort!(out)
+    end
+    @test pairs(cached) == pairs(bare)
+    # (the weight matrix off each of the two is compared entry for entry in the
+    # testset above, which is the same statement one level further on.)
 end
 
 @testset "a plan, and the lazy array, give the bare answer" begin

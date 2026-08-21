@@ -4,10 +4,10 @@
 # `GlobeTarget`, which reproduces what the transform would have done using
 # arithmetic on the unit-sphere corner we already have.
 
-module DiscreteGlobalGridVisualizationsGeoMakieExt
+module GeoMakieExt
 
-import DiscreteGlobalGridVisualizations as DGGV
-using DiscreteGlobalGridVisualizations: GlobeTarget, probe_ellipsoid
+import DiscreteGlobalGridsVisualization as DGGV
+using DiscreteGlobalGridsVisualization: GlobeTarget, probe_ellipsoid
 import GeoMakie
 
 """
@@ -18,7 +18,7 @@ The globe a `GlobeAxis` draws on.
 The ellipsoid is measured out of the transform rather than assumed, so a globe
 on WGS84, on a perfect sphere or in kilometres all come out at the same place
 the axis's own transform would have put them.  See
-[`DiscreteGlobalGridVisualizations.probe_ellipsoid`](@ref).
+[`DiscreteGlobalGridsVisualization.probe_ellipsoid`](@ref).
 """
 function DGGV.plot_target(tf::GeoMakie.GlobeTransform)
     height = Float64(tf.zlevel)

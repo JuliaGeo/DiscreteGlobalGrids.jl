@@ -389,3 +389,38 @@ function build_weights!(coo::WeightCOO, method::ToyDiagonalMethod,
     end
     return coo
 end
+
+"""
+    WaveFailMethod(bad, delay)
+
+Fail the build of the source chunk whose first cell position is `bad`, and make
+every other build take `delay` seconds before recording itself in `finished`.
+
+This exists to pin one thing: a wave that loses a task must still wait for the
+rest. Put the failing chunk first and the survivors sleep, so a `_fillwave!` that
+raises on the first `fetch` and walks away leaves `finished` short.
+"""
+struct WaveFailMethod <: AbstractRegriddingMethod
+    bad::Int
+    delay::Float64
+    finished::Threads.Atomic{Int}
+end
+
+WaveFailMethod(bad::Integer, delay::Real) =
+    WaveFailMethod(Int(bad), Float64(delay), Threads.Atomic{Int}(0))
+
+function build_weights!(coo::WeightCOO, method::WaveFailMethod,
+    ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
+    Int(first(src_inds)) == method.bad &&
+        error("WaveFailMethod: the chunk at position $(method.bad) fails by design")
+    sleep(method.delay)
+    local_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
+    for (j, p) in enumerate(dst_inds)
+        k = get(local_of, p, 0)
+        k == 0 && continue
+        addweight!(coo, j, k, 1.0)
+        adddenom!(coo, j, 1.0)
+    end
+    Threads.atomic_add!(method.finished, 1)
+    return coo
+end

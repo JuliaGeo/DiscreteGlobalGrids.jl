@@ -613,7 +613,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test typeof(DGG.ring(grid, c, 1)) === SmallVector{11,A5.A5Cell}
         @test typeof(DGG.children(S, c)) === SmallVector{5,A5.A5Cell}
         DGG.children(S, c)
-        @test @allocated(DGG.children(S, c)) == 0
+        @test @allocated(DGG.children(S, c)) == 0 skip = VERSION < v"1.12"
 
         # An id that is not a cell of this grid's resolution is an error, not a
         # confident answer about some other cell.

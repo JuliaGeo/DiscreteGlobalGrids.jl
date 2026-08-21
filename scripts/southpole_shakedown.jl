@@ -5,14 +5,14 @@
 # process from /proc every five seconds, and writes only to the campaign's
 # scratch-store directory and ndjson record.
 #
-#     nice -n 10 julia --project=bench -t 1  --gcthreads=1 scripts/southpole_shakedown.jl select
-#     nice -n 10 julia --project=bench -t 26 --gcthreads=4 scripts/southpole_shakedown.jl run A
-#     nice -n 10 julia --project=bench -t 26 --gcthreads=8 scripts/southpole_shakedown.jl run B
+#     nice -n 10 julia --project=benchmark -t 1  --gcthreads=1 scripts/southpole_shakedown.jl select
+#     nice -n 10 julia --project=benchmark -t 26 --gcthreads=4 scripts/southpole_shakedown.jl run A
+#     nice -n 10 julia --project=benchmark -t 26 --gcthreads=8 scripts/southpole_shakedown.jl run B
 #     # C is launched with whichever first-field mark count wins A/B:
-#     nice -n 10 julia --project=bench -t 26 --gcthreads=N scripts/southpole_shakedown.jl run C
-#     nice -n 10 julia --project=bench -t 26 --gcthreads=16 scripts/southpole_shakedown.jl run D
-#     nice -n 10 julia --project=bench -t 1  --gcthreads=1 scripts/southpole_shakedown.jl crosscheck
-#     nice -n 10 julia --project=bench -t 1  --gcthreads=1 scripts/southpole_shakedown.jl diagnose
+#     nice -n 10 julia --project=benchmark -t 26 --gcthreads=N scripts/southpole_shakedown.jl run C
+#     nice -n 10 julia --project=benchmark -t 26 --gcthreads=16 scripts/southpole_shakedown.jl run D
+#     nice -n 10 julia --project=benchmark -t 1  --gcthreads=1 scripts/southpole_shakedown.jl crosscheck
+#     nice -n 10 julia --project=benchmark -t 1  --gcthreads=1 scripts/southpole_shakedown.jl diagnose
 #
 # Never use a nonzero second --gcthreads field.  copdem_production.jl's gcguard
 # independently refuses that known-bad concurrent-sweeper configuration.

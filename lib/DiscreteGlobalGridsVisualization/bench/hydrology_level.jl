@@ -4,10 +4,12 @@
 # fitting on a CI runner, and is plotting still what decides it?
 #
 #     xvfb-run -a julia --project=docs -t8 \
-#         lib/DiscreteGlobalGridVisualizations/bench/hydrology_level.jl 13
+#         lib/DiscreteGlobalGridsVisualization/bench/hydrology_level.jl 13
 #
 # Pass `poly` as a second argument to draw with Makie's `poly` instead of
-# `dggpoly`, for the before-and-after.
+# `dggpoly`, for the before-and-after, or `resample` to draw through
+# `dggresample`, which shows the level the screen can carry rather than the
+# level the data is stored at.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH",
     joinpath(tempdir(), "rasterdatasources")))
@@ -15,7 +17,7 @@ ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH",
 import DiscreteGlobalGrids as DGG
 import Geomorphometry as GM
 import GeoInterface as GI
-using DiscreteGlobalGridVisualizations
+using DiscreteGlobalGridsVisualization
 using Rasters, RasterDataSources
 import ArchGDAL
 using Statistics
@@ -25,7 +27,8 @@ using Printf
 GLMakie.activate!()
 
 const LEVEL = isempty(ARGS) ? 12 : parse(Int, ARGS[1])
-const DRAW = any(==("poly"), ARGS) ? :poly : :dggpoly
+const DRAW = any(==("poly"), ARGS) ? :poly :
+    any(==("resample"), ARGS) ? :dggresample : :dggpoly
 const OUT = mktempdir()
 
 stage_start = time()
@@ -38,8 +41,14 @@ function stage(name)
     return nothing
 end
 
-draw!(axis, cells; kwargs...) =
-    DRAW === :poly ? poly!(axis, cells; kwargs...) : dggpoly!(axis, cells; kwargs...)
+function draw!(axis, cells; kwargs...)
+    DRAW === :poly && return poly!(axis, cells; kwargs...)
+    DRAW === :dggresample && return dggresample!(axis, cells; kwargs...)
+    return dggpoly!(axis, cells; kwargs...)
+end
+
+# `dggresample` draws no outlines at all, so it has no `strokewidth` to set.
+const stroke = DRAW === :dggresample ? (;) : (; strokewidth = 0)
 
 println("level $LEVEL, drawing with $DRAW, $(Threads.nthreads()) threads")
 
@@ -63,7 +72,7 @@ stage("select the covered cells ($(length(shown)))")
 
 figure = Figure(size = (900, 430))
 axis = GeoAxis(figure[1, 1]; dest = "+proj=longlat +datum=WGS84", title = "elevation (m)")
-plot = draw!(axis, cells; color = vec(igeo7_dem[shown]), colormap = :terrain, strokewidth = 0)
+plot = draw!(axis, cells; color = vec(igeo7_dem[shown]), colormap = :terrain, stroke...)
 stage("build the elevation figure")
 
 save(joinpath(OUT, "elevation.png"), figure)
@@ -93,9 +102,9 @@ stage("D8 flow accumulation")
 
 figure = Figure(size = (900, 430))
 axis = GeoAxis(figure[1, 1]; dest = "+proj=longlat +datum=WGS84", title = "topographic position index (m)")
-draw!(axis, cells; color = vec(tpi[shown]), colorrange = (-25, 25), colormap = :delta, strokewidth = 0)
+draw!(axis, cells; color = vec(tpi[shown]), colorrange = (-25, 25), colormap = :delta, stroke...)
 axis = GeoAxis(figure[1, 2]; dest = "+proj=longlat +datum=WGS84", title = "D8 flow accumulation")
-draw!(axis, cells; color = vec(log_cells[shown]), colormap = :devon, strokewidth = 0)
+draw!(axis, cells; color = vec(log_cells[shown]), colormap = :devon, stroke...)
 save(joinpath(OUT, "terrain.png"), figure)
 stage("build and save the terrain figures")
 

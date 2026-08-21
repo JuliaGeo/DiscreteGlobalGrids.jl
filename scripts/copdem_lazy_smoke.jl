@@ -2,7 +2,7 @@
 # Downloads at most three real tiles, then regrids one IGeo7 level-5 column.
 #
 #   RASTERDATASOURCES_PATH=/path/to/bench/data \
-#     nice -n 10 julia --project=bench --threads=8 scripts/copdem_lazy_smoke.jl
+#     nice -n 10 julia --project=benchmark --threads=8 scripts/copdem_lazy_smoke.jl
 
 include("copdem_production.jl")
 

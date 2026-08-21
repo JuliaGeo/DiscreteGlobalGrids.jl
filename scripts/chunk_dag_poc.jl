@@ -2,7 +2,7 @@
 # it. Extents only: no pixel is read, no weight is built, no regrid is run.
 #
 #   RASTERDATASOURCES_PATH=.../bench/data \
-#     julia --project=bench -t 4 --gcthreads=2 scripts/chunk_dag_poc.jl
+#     julia --project=benchmark -t 4 --gcthreads=2 scripts/chunk_dag_poc.jl
 #
 # The source space is one chunk per listed 1-degree tile; the destination is one
 # chunk per level-5 ancestor column of the level-12 grid. Both are built through

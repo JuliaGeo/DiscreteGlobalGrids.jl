@@ -554,9 +554,20 @@ function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
         # Tasks inherit the scope, so nested builds see the wave and stay serial.
         @with OUTER_PARALLEL => true Threads.@spawn blockfor(plan, (t, s), dinds, dstcells)
     end
+    # Every spawned task is waited for, whatever happens. A bare `fetch` loop
+    # abandons the tasks after the first failure: they keep building against a
+    # plan the caller has already moved on from, writing into its block storage
+    # while the next tile reads it. The first exception is still the one raised.
+    err = nothing
     for task in tasks
-        push!(wave, fetch(task)::CachedBlock)
+        try
+            block = fetch(task)::CachedBlock
+            err === nothing && push!(wave, block)
+        catch e
+            err === nothing && (err = e)
+        end
     end
+    err === nothing || throw(err)
     return wave
 end
 

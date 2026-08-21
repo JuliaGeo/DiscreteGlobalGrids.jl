@@ -85,6 +85,7 @@ const DEFAULTS = Dict{String,String}(
     "maxcolumns" => "0",           # 0 = no limit; a smoke-test knob
     "columns" => "",               # explicit column indices, overriding the covering
     "dryrun" => "false",           # plan and report, compute nothing
+    "malloctrim" => string(32 * 2^20),  # glibc M_TRIM_THRESHOLD; 0 leaves glibc alone
 )
 
 function parseargs(args)
@@ -156,9 +157,66 @@ function check(name, ok; detail = "")
     return ok
 end
 
-rssgib() = Sys.maxrss() / 2^30
+"""
+    rssgib() -> Float64
+
+CURRENT resident set size in GiB.
+
+Deliberately not `Sys.maxrss()`, which is `ru_maxrss`: a monotone high-water
+mark. A heartbeat printing that reports the largest transient the run has ever
+had and never comes back down, so it looks like a staircase of plateaus when it
+is really a record of peaks. On the GLO-90 run one sub-minute excursion to
+81.65 GiB made every heartbeat for the next half hour claim "83.7 GiB" while the
+true resident size was 64 GiB. Peaks are worth reporting — see
+[`peakrssgib`](@ref) — but they have to be labelled as peaks.
+"""
+function rssgib()
+    try
+        return parse(Int, split(read("/proc/self/statm", String))[2]) * 4096 / 2^30
+    catch
+        return Sys.maxrss() / 2^30   # non-Linux fallback: a peak, but better than nothing
+    end
+end
+
+"Peak resident set size in GiB since the process started."
+peakrssgib() = Sys.maxrss() / 2^30
+
 secs(t) = @sprintf("%.1f s", t)
 hours(t) = @sprintf("%.2f h", t / 3600)
+
+"""
+    tunemalloc(trim) -> Bool
+
+Freeze glibc's malloc thresholds at `trim` bytes; `false` if that did not take.
+
+glibc raises its `mmap` and `trim` thresholds every time a large mmapped block
+is freed — up to a 32 MiB cap — so that later allocations of that size come from
+arena heap rather than a fresh mapping. This pipeline's hot allocations sit
+squarely inside that range: a mid-latitude decoded GLO-90 tile is
+`1200 x 1200 x 4 B` = 5.49 MiB, and the lazy plan's weight blocks are the same
+order. Within seconds of starting, every one of them is served from arena heap,
+and freeing it returns nothing to the operating system.
+
+Measured (`regrid-notes/2026-08-21-memory-attribution.md`): resident memory
+settles at about three times the live Julia heap and stays there through two
+full `GC.gc(true)` passes — 15.9 GiB resident against 3.0 GiB live. It is not
+the garbage collector; `--heap-size-hint` buys 14 % of it for half the
+throughput.
+
+Setting any one of the thresholds explicitly sets glibc's `no_dyn_threshold`,
+which stops the growth, and that flag — not the number — is the whole effect:
+8 MiB and 32 MiB measure identically. So pass a large one, which trims just as
+well as the 128 KiB default with far fewer syscalls. `malloctrim=0` opts out.
+"""
+function tunemalloc(trim::Integer)
+    (trim > 0 && Sys.islinux()) || return false
+    return try
+        # M_TRIM_THRESHOLD is -1 in glibc's malloc.h; mallopt returns 1 on success.
+        ccall(:mallopt, Cint, (Cint, Cint), Cint(-1), Cint(trim)) == 1
+    catch
+        false
+    end
+end
 
 # ===========================================================================
 # The synthetic field
@@ -768,9 +826,9 @@ function heartbeat!(p::Progress, force = false)
         rate = p.cells / max(el, 1e-9)
         left = p.total - done
         eta = done > 0 ? el * left / done : NaN
-        say(@sprintf("HEARTBEAT  %d/%d columns (%d skipped) | %.3e cells | %.0f cells/s | elapsed %s | ETA %s | RSS %.1f GiB | NaN %.2f%%",
+        say(@sprintf("HEARTBEAT  %d/%d columns (%d skipped) | %.3e cells | %.0f cells/s | elapsed %s | ETA %s | RSS %.1f GiB (peak %.1f) | NaN %.2f%%",
             done, p.total, p.skipped, Float64(p.cells), rate, hours(el), hours(eta),
-            rssgib(), 100 * p.nan / max(p.cells, 1)))
+            rssgib(), peakrssgib(), 100 * p.nan / max(p.cells, 1)))
         return nothing
     end
 end
@@ -1097,6 +1155,12 @@ function main()
     println("="^92)
     flush(stdout)
 
+    trim = cfgint("malloctrim")
+    say(trim > 0 ?
+        "malloc: M_TRIM_THRESHOLD frozen at $(trim >> 20) MiB — " *
+        (tunemalloc(trim) ? "ok" : "MALLOPT FAILED, expect ~3x resident memory") :
+        "malloc: left at glibc defaults (malloctrim=0); expect ~3x resident memory")
+
     sys = DGG.CopernicusDEMSystem(RES)
     sys7 = DGG.IGeo7System()
     capacity = 7^(LEVEL - ANCESTOR)
@@ -1218,7 +1282,7 @@ function main()
         100 * dem.nland[] / max(dem.npixels[], 1)))
     say(@sprintf("destination NaN fraction: %.3f%% of %.4e written cells",
         100 * p.nan / max(p.cells, 1), Float64(p.cells)))
-    say(@sprintf("peak RSS %.2f GiB", rssgib()))
+    say(@sprintf("RSS %.2f GiB now, %.2f GiB peak", rssgib(), peakrssgib()))
 
     if cfgbool("checks")
         sm = SourceMask(mask, DGG.levelgrid(sys, 0), Set(tiles))

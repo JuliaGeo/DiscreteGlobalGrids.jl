@@ -20,6 +20,22 @@ dggpoly(cells; color = values)
 `cells` is anything that names a set of DGGS cells — an `AbstractGrid`, a
 `CellVector`, a `CellLookup`, a `MultiOrderCellSet`, or a `(system, ids)` pair.
 
+## Drawing the field instead of the cells
+
+[`dggsurface`](@ref) takes the same arguments and draws the same cells as the
+continuous field they sample: a vertex at each cell's **centroid**, carrying
+that cell's value, joined by the triangles of the grid's dual.  The value then
+varies smoothly between cell centres instead of jumping at cell edges, which is
+the right picture for elevation or temperature and the wrong one for a
+categorical field, where the cell boundaries are the point.
+
+It is also the cheaper mesh — one vertex and about two triangles per cell,
+against six and four — and the one whose colour costs nothing, because a
+per-cell colour vector already *is* the vertex buffer.  The dual's triangles are
+found from adjacency alone, with a rule that gives each grid corner exactly one
+owner, so no triangle is ever emitted twice and nothing has to be de-duplicated
+afterwards; see `surface.jl`.
+
 ## Drawing less than you were given
 
 [`dggresample`](@ref) takes the same arguments and answers the other half of the
@@ -65,12 +81,15 @@ import Makie
 using Makie: @recipe, on
 
 export dggpoly, dggpoly!
+export dggsurface, dggsurface!
 export dggresample, dggresample!
 
 include("targets.jl")
 include("cellsets.jl")
 include("tessellate.jl")
 include("recipe.jl")
+include("surface.jl")
+include("surface_recipe.jl")
 include("pyramid.jl")
 include("resample.jl")
 include("resample_recipe.jl")

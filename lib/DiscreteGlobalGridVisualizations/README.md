@@ -15,13 +15,15 @@ dggpoly(cells; color = elevation)                       # a plain Axis
 dggpoly!(GeoAxis(f[1, 1]; dest = "+proj=moll"), cells)  # a projected map
 dggpoly!(GlobeAxis(f[1, 1]), cells)                     # a globe
 
+dggsurface(cells; color = elevation)                    # …as a smooth field
 dggresample(cells; color = elevation)                   # …or only what fits
 ```
 
-Two recipes, and the difference between them is how much they draw.  `dggpoly`
-draws every cell it is given, as fast as that can be done.  `dggresample` draws
-the level of the same hierarchy the screen can actually show, and follows the
-camera.
+Three recipes.  `dggpoly` draws every cell it is given, as fast as that can be
+done.  `dggsurface` draws the same cells as the continuous field they sample,
+by putting a vertex at each cell centre instead of drawing its outline.
+`dggresample` draws the level of the same hierarchy the screen can actually
+show, and follows the camera.
 
 `dggpoly` reads like `poly`: cells in, one filled patch per cell out, coloured
 by a vector as long as the cell set.  It accepts anything that names a set of
@@ -88,6 +90,116 @@ apart by how far longitude turns in going once around the cell's ring:
   exactly gets the two pole corners inserted.  IGEO7 puts each pole on an edge
   shared by two cells, so this is not a corner case there — it is what makes the
   top and bottom of a global IGEO7 map close.
+
+
+## Drawing the field: `dggsurface`
+
+`dggpoly` draws the cells.  `dggsurface` draws what the cells are *measuring*:
+a vertex at each cell's centroid carrying that cell's value, joined by the
+triangles of the grid's dual, so the value varies continuously between cell
+centres rather than jumping at cell edges.  It is the right picture for a
+sampled field — elevation, temperature, a model output — and the wrong one for
+a categorical one, where the cell boundaries are the point.
+
+```julia
+dggsurface(cells; color = elevation)
+```
+
+It is also the cheaper of the two.  One vertex per cell and about two triangles
+per cell, against six vertices and four triangles for the same cells drawn as
+patches:
+
+| cells | `tessellate` | `triangulate` | vertices | triangles | GPU bytes |
+| --- | --- | --- | --- | --- | --- |
+| 168,072 | 0.070 s | 0.029 s | 1,010,172 → 173,401 | 673,156 → 337,664 | 23.1 → 6.5 MiB |
+| 1,176,492 | 0.466 s | 0.181 s | 7,063,552 → 1,190,931 | 4,708,266 → 2,357,106 | 161.7 → 45.1 MiB |
+| 8,235,432 | 2.310 s | 1.312 s | 49,424,976 → 8,272,583 | 32,947,918 → 16,481,476 | 1131.2 → 314.8 MiB |
+
+IGEO7 whole levels, 8 threads, longitude/latitude.  Recolouring is free rather
+than cheap: on a globe the first `ncells` vertices *are* the cells, in order, so
+a per-cell colour vector is handed to the GPU unchanged.
+
+### Finding the corners without a corner index
+
+The dual's triangles sit at the grid's *corners* — where `n` cells meet, their
+`n` centroids ring that corner and fan into `n - 2` triangles — and
+`DiscreteGlobalGrids` has no verb that lists corners.  Cell boundaries are
+floating-point rings that neighbouring cells do not agree on bit for bit, so
+matching coordinates is not an option either.
+
+What the package does state exactly is adjacency, counter-clockwise.  That is
+enough, because the cells meeting at a corner all touch one another, and such a
+set appears in each of its members' rings as a run of consecutive neighbours.
+So for a cell `a` and a consecutive pair `(b, c)` in its ring:
+
+1. `b` and `c` must touch each other, or the three share no corner.  On a
+   partial grid this is also what stops a triangle bridging a hole: two ring
+   members either side of a missing one come out consecutive, and this throws
+   the pair away.
+2. Widen `(b, c)` to the largest run of `a`'s neighbours that all touch one
+   another — that run plus `a` is the corner's cell set.
+3. Emit the triangle only if `a` is the **smallest** member of that set.
+
+Step 3 is the whole anti-duplication scheme, and it costs nothing: no shared
+hash set, no post-hoc `unique`, nothing that would serialise the loop.  Each
+corner is owned by one of the cells around it, that cell fans it, and the rest
+stay quiet.
+
+Step 2 is what makes one rule right for square cells as well as hexagons.
+Three cells to a corner (IGEO7, H3) gives runs of two and one triangle each;
+four (HEALPix, S2, ISEA4R) gives runs of three and a fan of two; five, where
+ISEA4R's diamonds meet an icosahedral vertex, gives three.  Without it a
+four-cell corner would emit all four of its triangles instead of two and the
+surface would be drawn twice over.
+
+None of this is asserted — it is measured.  The test suite adds up the *signed*
+spherical area of every triangle of a whole level and requires `4π`, which a
+gap would fail as surely as an overlap, and repeats it in longitude/latitude
+against the map rectangle, which also says the seam was split cleanly and both
+polar caps were filled.  Every system in `DGG.systems()`, levels 1 through 4,
+three different cut meridians.
+
+### The seam and the poles
+
+A triangle of centroids meets the same two problems a cell does, and the mesh
+tells them apart the same way — by how far longitude turns in going once around:
+
+* **`0`** — an ordinary triangle.  If it straddles the map's cut it is clipped
+  there and drawn as the two pieces it is, one against each edge of the map.
+* **`±360`** — the triangle *contains* a pole.  It is drawn as the band between
+  its outline and the pole, spanning the map and closed along the top or bottom
+  edge, one trapezoid per outline segment.
+
+The outline is the triangle's three corners and nothing else — no point is
+interpolated along an edge, because the triangle on the other side of that edge
+draws it as the straight segment between the same two corners, and bending one
+copy and not the other is what opens a gap.  The one thing worked out rather
+than read off is which way longitude sweeps along each edge, which for an edge
+running beside a pole is not the short way.  Longitude runs monotonically along
+any great circle that is not a meridian, and which way is the sign of
+`(a × b)ᶻ` — an exact answer, and an *anti-symmetric* one, so the triangle on
+the other side computes the same number negated bit for bit and the two always
+agree on the ground the edge covers.
+
+`(a × b)ᶻ` is exactly zero when the edge's great circle passes through both
+poles, and the two pole corners are then inserted.  Grids whose cells meet four
+to a corner put a pole on a dual edge exactly, so for them this is the ordinary
+case and not an exotic one.
+
+### What it will not draw
+
+`dggsurface` takes an `AbstractGrid`, a `PartialGrid`, a `CellVector` or a
+`CellLookup` — not the bare vector of ids or the `MultiOrderCellSet` that
+`dggpoly` accepts.  A surface is built out of which cells touch which; a list of
+ids names no set for a neighbour to be inside or outside of, and a multi-order
+set holds cells at several levels at once, so there is no one level for
+adjacency to be measured on.
+
+A partial grid comes out with a ragged edge: a cell whose neighbours are missing
+takes part in fewer triangles, and the surface stops where the data does — half
+a cell short of where `dggpoly` would draw, because a surface can only reach as
+far as the outermost centroid.  What it draws is exactly the complete dual
+restricted to the cells present, which the tests check triangle for triangle.
 
 ## Drawing less: `dggresample`
 
@@ -235,3 +347,11 @@ Known gaps:
 * Nothing decides *when* to resample for you: `dggpoly` and `dggresample` are
   separate calls, and a figure that wants exact cells at every zoom should use
   the first.
+* `dggsurface` reads adjacency as a proxy for the grid's corners, which is exact
+  wherever a set of mutually touching cells really does share one.  A5 at
+  resolution 1 is the one measured place it is not — 60 cells, each touching
+  eleven of the others — and its surface overdraws by about 13%.  Every other
+  system and level tested tiles exactly, and A5 from resolution 2 on does too.
+* `dggsurface` gives a vertex created by clipping at the map's seam the value of
+  the nearer cell rather than a blend of the two, so colour along that seam can
+  be off by up to half a cell.  A globe has no seam and no such vertex.

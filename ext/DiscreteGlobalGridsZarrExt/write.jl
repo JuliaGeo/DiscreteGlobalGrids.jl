@@ -20,6 +20,7 @@
 module DGGSZarrWrite
 
 import DiscreteGlobalGrids as DGG
+import ..DiscreteGlobalGridsZarrExt
 using ..DiscreteGlobalGridsZarrExt: storeidentifier,
     MANIFEST_MARKER, MANIFEST_WRITER, MANIFEST_FORMAT, MANIFEST_VALIDATED
 using DiscreteGlobalGrids: AbstractCellIndex, ArrayEntry,
@@ -121,20 +122,39 @@ so a stack read back carries it in each layer's `metadata`.
 Layers are never overwritten: a `ZGroup` destination that already holds an array
 this write would create raises before anything is stamped.
 """
-function DGG.dggwrite(dest::AbstractString, src::Cube; kw...)
+function DGG.dggwrite(dest::AbstractString, src::Cube; layout::Symbol=:cells, kw...)
     path = String(dest)
     _reject_remote(path)
+    layout === :cells || return (_otherlayout(layout, path, src; kw...); dest)
     # `zgroup` refuses a store that is not empty, so a path needs no name guard.
     _write(path, (attrs, names) -> Zarr.zgroup(path; attrs=attrs), src; kw...)
     return dest
 end
 
-function DGG.dggwrite(dest::Zarr.ZGroup, src::Cube; kw...)
+function DGG.dggwrite(dest::Zarr.ZGroup, src::Cube; layout::Symbol=:cells, kw...)
     dest.writeable || throw(ArgumentError(
         "dggwrite needs a writeable group; this one was opened read-only."))
+    layout === :cells || return (_otherlayout(layout, dest, src; kw...); dest)
     _write(storeidentifier(dest), (attrs, names) -> _stamp(dest, attrs, names),
         src; kw...)
     return dest
+end
+
+# `layout` chooses the SHAPE of the store where `encoding` chooses the shape of
+# its cell coordinate. `:cells` is everything in this file — one cell dimension,
+# cut into equal chunks — and `:subzones` is the two-dimensional
+# ancestor-subzone layout, which shares this entry point and none of the
+# pipeline below it. The module is named rather than imported because it is
+# included after this file: it needs the write half's error style, not the
+# other way round.
+@noinline function _otherlayout(layout::Symbol, dest, src; kw...)
+    layout === :subzones && return DiscreteGlobalGridsZarrExt.DGGSZarrSubzones.write_subzones(
+        dest, src; kw...)
+    throw(ArgumentError(
+        "dggwrite writes the `:cells` layout — one cell dimension, the default — " *
+        "and the `:subzones` layout, which is the two-dimensional " *
+        "ancestor-subzone store and takes an `ancestor_level`. " *
+        "$(repr(layout)) is neither."))
 end
 
 @noinline function _reject_remote(path)

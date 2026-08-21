@@ -11,6 +11,7 @@ module IGeo7SystemTests
 using Test
 using Random
 using Printf
+using CodecZstd: ZstdDecompressorStream
 
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
@@ -99,15 +100,39 @@ function read_csv(path)
     return header, rows
 end
 
-"rows (z7, lon, lat) of dggrid_true_res{r}_centers.txt"
+"""
+    load_true_centers(r) -> Vector{Tuple{UInt64,Float64,Float64}}
+
+Rows `(z7, lon, lat)` of the DGGRID centre dump for level `r`.
+
+Takes `dggrid_true_res{r}_centers.txt`, or the same name with `.zst` appended
+if that is what is on disk. The encoding is per file rather than per level
+because only one of these is big enough to be worth compressing: level 5 is
+168,072 rows and 7.6 MB of text against 2.8 MB as a zstd frame, where level 4
+is 1.1 MB and level 3 is 155 KB. Dispatching on the extension keeps the small
+ones readable and greppable and lets any of them be converted later without
+touching this function.
+
+The compressed form is the same bytes, not a re-export: `zstd -dc` on it
+reproduces the original file exactly, hash for hash.
+"""
 function load_true_centers(r::Int)
+    plain = joinpath(VECTORS, "dggrid_true_res$(r)_centers.txt")
+    packed = plain * ".zst"
+    isfile(plain) || isfile(packed) ||
+        error("no centre dump for level $r at $plain (with or without .zst)")
+    io = isfile(packed) ? ZstdDecompressorStream(open(packed)) : open(plain)
     rows = Tuple{UInt64,Float64,Float64}[]
-    for line in eachline(joinpath(VECTORS, "dggrid_true_res$(r)_centers.txt"))
-        s = strip(line)
-        isempty(s) && continue
-        p = split(s, ',')
-        push!(rows, (I.z7_from_string(String(p[1])), parse(Float64, p[2]),
-            parse(Float64, p[3])))
+    try
+        for line in eachline(io)
+            s = strip(line)
+            isempty(s) && continue
+            p = split(s, ',')
+            push!(rows, (I.z7_from_string(String(p[1])), parse(Float64, p[2]),
+                parse(Float64, p[3])))
+        end
+    finally
+        close(io)
     end
     return rows
 end

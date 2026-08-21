@@ -1,4 +1,5 @@
 [deps]
+CodecZstd = "6b39b394-51ab-5f42-8807-6242bab2b4c2"
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"

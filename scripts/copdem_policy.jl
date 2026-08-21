@@ -576,7 +576,7 @@ end
 # ===========================================================================
 
 """
-    Prefetcher(cache, order, sourcesof, schedule; depth, concurrency)
+    Prefetcher(cache, order, sourcesof, schedule; depth, concurrency, prepare)
 
 A pool that keeps the next `depth` positions of the walk order loaded before a
 worker asks for them.
@@ -603,10 +603,13 @@ an event the workers signal after each successful claim; the event is
 autoresetting and the cursor is monotone, so a coalesced or early wakeup is
 harmless and a missed one is impossible.
 
-A fetch task calls `gettile!(cache, s; speculative = true)`, which is a no-op
-when the chunk is resident, in flight, already failed, or already dead. It never
-throws: a failed speculative load is remembered by the cache and rethrown at the
-next demand. So a prefetch can waste work, but it cannot fail a run.
+A fetch task first calls optional `prepare(s)`, then calls
+`gettile!(cache, s; speculative = true)`. The real-tile driver uses that seam to
+put the GeoTIFF on disk before decode; synthetic mode leaves it unset. The cache
+call is a no-op when the chunk is resident, in flight, already failed, or already
+dead. It never throws: a failed speculative load is remembered by the cache and
+re-thrown at the next demand. So a prefetch can waste work, but it cannot fail a
+run.
 
 # Against the refcount cache
 
@@ -631,7 +634,8 @@ advance!(::Nothing) = nothing
 advance!(pf::Prefetcher) = notify(pf.advanced)
 
 function Prefetcher(cache::TileCache, order::Vector{Int}, sourcesof, nsrc::Integer,
-        schedule::GuidedSchedule; depth::Integer, concurrency::Integer)
+        schedule::GuidedSchedule; depth::Integer, concurrency::Integer,
+        prepare = nothing)
     d = Int(depth)
     d > 0 || throw(ArgumentError("prefetch depth must be positive, got $depth"))
     requests = Channel{Int}(max(1, Int(nsrc)))
@@ -640,7 +644,7 @@ function Prefetcher(cache::TileCache, order::Vector{Int}, sourcesof, nsrc::Integ
     push!(pf.tasks, Threads.@spawn _prefetch_driver(pf, order, sourcesof,
         Int(nsrc), schedule))
     for _ in 1:max(1, Int(concurrency))
-        push!(pf.tasks, Threads.@spawn _prefetch_worker(pf, cache))
+        push!(pf.tasks, Threads.@spawn _prefetch_worker(pf, cache, prepare))
     end
     return pf
 end
@@ -677,10 +681,11 @@ function _prefetch_driver(pf::Prefetcher, order::Vector{Int}, sourcesof, nsrc::I
     return nothing
 end
 
-function _prefetch_worker(pf::Prefetcher, cache::TileCache)
+function _prefetch_worker(pf::Prefetcher, cache::TileCache, prepare)
     for s in pf.requests
         pf.stop[] && continue          # drain the channel, do no more work
         try
+            prepare === nothing || prepare(s)
             gettile!(cache, s; speculative = true)
         catch err
             pf.failure === nothing && (pf.failure = err)

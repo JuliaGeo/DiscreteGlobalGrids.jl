@@ -57,6 +57,7 @@ makedocs(;
         "API" => [
             "Region boundaries" => "api/boundaries.md",
             "Reading and writing DGGS stores" => "api/store-io.md",
+            "The ancestor-subzone layout" => "api/subzone-layout.md",
         ],
     ],
     plugins = [DocumenterVitepress.BonitoPlugin()],

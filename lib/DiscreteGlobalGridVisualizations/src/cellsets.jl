@@ -80,3 +80,58 @@ cellset(iterator::SubtreeIterator) =
 # `cell_boundary` on a system covers ids of any level, so a system paired with a
 # bare vector of ids needs no level agreement.
 cellset(source, ids::AbstractVector) = CellSet(source, ids)
+
+# # Naming a set of cells with adjacency
+#
+# A [`CellSet`](@ref) is enough to draw cells one boundary at a time.  A surface
+# also needs which cells touch which, so its set must be one `adjacency` can
+# answer about: a single level, positions doubling as data indices.
+
+"""
+    CellRegion(region, source, cells)
+
+A set of DGGS cells whose adjacency can be read.
+
+  * `region` — what `DiscreteGlobalGrids.adjacency` is asked about; its positions
+    `1:length(region)` index a colour vector.
+  * `source` — what `cell_centroid` is asked of.
+  * `cells` — `cells[p]` is the cell at position `p`.
+
+Build one with [`cellregion`](@ref) rather than by hand.
+"""
+struct CellRegion{R, S, C <: AbstractVector}
+    region::R
+    source::S
+    cells::C
+end
+
+Base.length(cr::CellRegion) = length(cr.cells)
+
+"""
+    cellregion(x) -> CellRegion
+
+Read `x` as a set of cells with adjacency, for [`triangulate`](@ref).
+
+Accepts a `CellRegion`, an `AbstractGrid` — `PartialGrid` included — a
+`CellVector`, or a `CellLookup`.
+
+The rest of what [`cellset`](@ref) takes has no adjacency to read: a
+`MultiOrderCellSet` spans several levels, so there is no one level to measure it
+on, and a bare vector of ids names no set for a neighbour to be inside or
+outside of.
+"""
+function cellregion end
+
+cellregion(cr::CellRegion) = cr
+cellregion(grid::DGG.AbstractGrid) = CellRegion(grid, grid, GridCells(grid))
+
+# A `CellVector` is the region, but not a geometry source, so centroids come
+# from the level grid it indexes into.
+cellregion(cv::DGG.CellVector) =
+    CellRegion(cv, DGG.levelgrid(DGG.system(cv), DGG.level(cv)), cv)
+
+cellregion(lookup::DGG.CellLookup) = cellregion(parent(lookup))
+
+cellregion(x) = throw(ArgumentError("$(typeof(x)) names cells but not their \
+    adjacency, so it has no surface. `dggsurface` takes a grid, a `PartialGrid`, \
+    a `CellVector` or a `CellLookup`; `dggpoly` draws anything."))

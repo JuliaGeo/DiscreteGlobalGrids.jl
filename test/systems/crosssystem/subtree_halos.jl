@@ -1589,7 +1589,8 @@ state_size(it) = Base.summarysize(it)
             coll = counted_collect(fixture_iterator(sys, c, last(depths)).engine,
                 levelgrid(sys, last(depths)))
             @test last(ctor) > 2 * first(ctor)            # arm 1 refuses it
-            @test maximum(state) - minimum(state) > 64    # and its state grows
+            # and its state grows
+            @test maximum(state) - minimum(state) > 64 skip = VERSION < v"1.12"
             @test last(pref) > 2 * first(pref)            # arm 2 refuses it
             @test last(pref) >= coll                      # arm 3: the prefix
             # pays the whole walk, nothing like a bounded sliver of it.

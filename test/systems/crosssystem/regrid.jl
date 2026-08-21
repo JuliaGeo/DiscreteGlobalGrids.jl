@@ -71,8 +71,11 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
         # A chunk's cap covers every boundary vertex of every cell in it: the
         # covering law the lazy path's chunk discovery prunes on.
         @test capscover(space)
-        # A chunk keeps the hierarchy rather than falling back to a cap list.
-        @test GR.subtree(space, DGG.cellindices(space, 2)) isa DGG.HierarchicalGridCursor
+        # A chunk keeps the hierarchy rather than falling back to a cap list,
+        # and small enough chunks carry their leaf caps with them.
+        chunktree = GR.subtree(space, DGG.cellindices(space, 2))
+        @test chunktree isa DGG.CapCachedTree
+        @test chunktree.node isa DGG.HierarchicalGridCursor
         @test GR.manifold(space) == GR.manifold(SRC)
         i = DGG.ncells(space) ÷ 2
         @test GR.cellat(space, GR.cellcentroid(space, i)) == i
@@ -174,7 +177,23 @@ end
     @test DGG.plan_regrid(declared; to = GRID, missingval = nothing).missingval === nothing
 end
 
-@testset "the whole-space tree caches caps without changing them" begin
+@testset "a shifted cap vector is addressed by global position" begin
+    v = DGG._ShiftedCaps(collect(10:19), 100)
+    @test v isa AbstractVector{Int}
+    @test length(v) == 10
+    @test size(v) == (10,)
+    @test axes(v, 1) == 101:110
+    @test parent(v) === v.data
+    @test v[101] == 10
+    @test v[110] == 19
+    @test [v[i] for i in axes(v, 1)] == 10:19
+    @test_throws BoundsError v[100]
+    @test_throws BoundsError v[111]
+    # Offset zero is the whole-space case: a plain 1-based vector.
+    @test axes(DGG._ShiftedCaps(collect(1:3), 0), 1) == 1:3
+end
+
+@testset "the cached trees cache caps without changing them" begin
     samecap(a, b) = a.point == b.point && a.radius == b.radius
 
     # Extents, leaf entries and polygons must be the raw cursor's, bit for bit.
@@ -204,6 +223,23 @@ end
         wa = CR.intersection_areas(m, GOCore.False(), cached, src; intersection_operator = op)
         wb = CR.intersection_areas(m, GOCore.False(), cursor, src; intersection_operator = op)
         @test wa == wb
+    end
+
+    # A chunk's tree caches only its own positions, addressed by global
+    # position, and must answer the raw chunk cursor's caps and cells the same.
+    for space in (DGG.DGGSpace(GRID; chunkcells = 32),
+                  DGG.DGGSpace(DGG.PartialGrid(REGION); chunkcells = 8))
+        for c in (1, GR.nchunks(space) ÷ 2, GR.nchunks(space))
+            inds = DGG.cellindices(space, c)
+            cached = GR.subtree(space, inds)
+            @test cached isa DGG.CapCachedTree
+            @test length(cached.caps) == length(inds)
+            @test axes(cached.caps, 1) == inds
+            # `checktree` covers extents, leaf entries and polygons; a chunk
+            # tree's `Trees.ncells` is its own count while its leaf indices are
+            # global, so weights only come out of a block build's index maps.
+            @test checktree(cached, DGG._chunkcursor(space, inds))
+        end
     end
 
     # A partial grid's ids are decoded once: the tree's grid stores a plain

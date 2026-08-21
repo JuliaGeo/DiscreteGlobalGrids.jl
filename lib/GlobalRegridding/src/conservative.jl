@@ -40,6 +40,10 @@ function CellCapTree(space::S, inds) where {S<:RegridSpace}
     return _cellcapnode(space, ix, caps, 1, length(ix))
 end
 
+# Splits the linear index range, not space: on row-major positions a shallow
+# node is a band of whole rows, so nothing above the deepest levels prunes on
+# longitude. Nothing downstream reads `ix` in order, so a spatial split may
+# permute `ix` and `caps` together.
 function _cellcapnode(space::S, ix::Vector{Int}, caps::Vector{Cap},
     lo::Int, hi::Int) where {S}
     children = CellCapTree{S}[]
@@ -57,26 +61,30 @@ end
 Base.show(io::IO, tree::CellCapTree) =
     print(io, "CellCapTree(", tree.hi - tree.lo + 1, " cells)")
 
-# Merge caps around their mean centre. Use the full sphere beyond the convex range.
+# A cap containing all of `caps`, folded pairwise so a node is not inflated by
+# its children's spread. The full sphere beyond the convex range.
 function _mergecaps(caps)
-    sx = sy = sz = 0.0
-    n = 0
+    acc = _WHOLE_SPHERE
+    seen = false
     for c in caps
-        sx += c.point[1]
-        sy += c.point[2]
-        sz += c.point[3]
-        n += 1
+        acc = seen ? _mergecap(acc, c) : c
+        seen = true
+        acc.radius > Float64(pi) / 2 && return _WHOLE_SPHERE
     end
-    n == 0 && return _WHOLE_SPHERE
-    norm = sqrt(sx^2 + sy^2 + sz^2)
-    norm <= eps(Float64) && return _WHOLE_SPHERE
-    centre = USPoint(sx / norm, sy / norm, sz / norm)
-    radius = 0.0
-    for c in caps
-        radius = max(radius, US.spherical_distance(centre, c.point) + c.radius)
-    end
+    seen || return _WHOLE_SPHERE
+    return SphericalCap(acc.point, _padcap(acc.radius))
+end
+
+# The smallest cap containing both. Neither containment case leaves `d == 0`,
+# so the centre interpolation never divides by zero.
+function _mergecap(x::Cap, y::Cap)
+    d = US.spherical_distance(x.point, y.point)
+    d + y.radius <= x.radius && return x
+    d + x.radius <= y.radius && return y
+    radius = (x.radius + y.radius + d) / 2
     radius > Float64(pi) / 2 && return _WHOLE_SPHERE
-    return SphericalCap(centre, _padcap(radius))
+    return SphericalCap(US.slerp(x.point, y.point, 0.5 * (1 - (x.radius - y.radius) / d)),
+        radius)
 end
 
 _cellcap(space::RegridSpace, i::Int) = _mergecaps(

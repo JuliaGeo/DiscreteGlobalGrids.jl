@@ -205,7 +205,7 @@ const NORTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, 1.0)
 const SOUTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, -1.0)
 
 """
-    cell_boundary(grid, c) -> Vector{UnitSphericalPoint}
+    cell_boundary(grid, c) -> Helpers.SmallList{4,UnitSphericalPoint}
 
 The closed box as a 4-corner great-circle quadrilateral, counter-clockwise from
 outside the sphere, in the order
@@ -216,15 +216,27 @@ poleward bow of about `Δλ²/16` radians. Adjacent cells within a band share
 corners bit-identically.
 
 A pole cell is a triangle with the duplicate corner dropped and an exact pole apex.
+
+Storage is inline, as IGeo7's rings are: the ring, its [`closed_ring`](@ref), and
+the polygon built on it are `isbits`, so a boundary read never reaches the heap.
 """
 function DGG.cell_boundary(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     west, east, south, north = cell_box(sys, c)
-    north == 90.0 && return [TO_SPHERE((west, south)), TO_SPHERE((east, south)),
-                             NORTH_POLE]
-    south == -90.0 && return [SOUTH_POLE, TO_SPHERE((east, north)),
-                              TO_SPHERE((west, north))]
-    return [TO_SPHERE((west, south)), TO_SPHERE((east, south)),
-            TO_SPHERE((east, north)), TO_SPHERE((west, north))]
+    # A quad's worth of slots; a pole triangle leaves the fourth unused.
+    ring = Helpers.empty_small_list(Val(4), NORTH_POLE)
+    if north == 90.0
+        ring = Helpers.small_push(ring, TO_SPHERE((west, south)))
+        ring = Helpers.small_push(ring, TO_SPHERE((east, south)))
+        return Helpers.small_push(ring, NORTH_POLE)
+    elseif south == -90.0
+        ring = Helpers.small_push(ring, SOUTH_POLE)
+        ring = Helpers.small_push(ring, TO_SPHERE((east, north)))
+        return Helpers.small_push(ring, TO_SPHERE((west, north)))
+    end
+    ring = Helpers.small_push(ring, TO_SPHERE((west, south)))
+    ring = Helpers.small_push(ring, TO_SPHERE((east, south)))
+    ring = Helpers.small_push(ring, TO_SPHERE((east, north)))
+    return Helpers.small_push(ring, TO_SPHERE((west, north)))
 end
 
 """

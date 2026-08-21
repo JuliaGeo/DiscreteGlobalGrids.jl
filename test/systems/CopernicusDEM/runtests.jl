@@ -412,6 +412,62 @@ end
     end
 end
 
+# The ring moved from a heap `Vector` to inline `Helpers.SmallList` storage, which
+# is a representation change and nothing else: the vertices, their order, and both
+# pole degeneracies have to be bit-for-bit what the heap version emitted.
+@testset "rings are inline, and identical to the heap version" begin
+    # Verbatim copy of the pre-inline body. It is the oracle; do not "fix" it.
+    function heap_cell_boundary(sys, c)
+        west, east, south, north = CD.cell_box(sys, c)
+        north == 90.0 && return [CD.TO_SPHERE((west, south)), CD.TO_SPHERE((east, south)),
+                                 CD.NORTH_POLE]
+        south == -90.0 && return [CD.SOUTH_POLE, CD.TO_SPHERE((east, north)),
+                                  CD.TO_SPHERE((west, north))]
+        return [CD.TO_SPHERE((west, south)), CD.TO_SPHERE((east, south)),
+                CD.TO_SPHERE((east, north)), CD.TO_SPHERE((west, north))]
+    end
+
+    differed = String[]
+    for sys in ALL_SYSTEMS
+        N = CD.lat_intervals(sys)
+        for lat_s in PROBE_LATS, lon_w in PROBE_LONS
+            t = CD.tilecell(sys, lat_s, lon_w)
+            nc = Int(CD.ncols_at(sys, lat_s))
+            cells = [CD.pixelcell(sys, t, j, i)
+                     for (j, i) in ((0, 0), (0, nc - 1), (1, 1), (N ÷ 2, nc ÷ 2),
+                                    (N - 1, 0), (N - 1, nc - 1))]
+            pushfirst!(cells, t)
+            for c in cells
+                got = cell_boundary(sys, c)
+                want = heap_cell_boundary(sys, c)
+                # `===` on an isbits point compares bits: a signed zero differs.
+                (length(got) == length(want) &&
+                 all(got[k] === want[k] for k in eachindex(want))) ||
+                    note!(differed, "$sys $c: $(collect(got)) != $want")
+            end
+        end
+    end
+    @test differed == String[]
+
+    # Inline end to end: the ring, its closed form, and the published polygon.
+    g1 = levelgrid(GLO90, 1)
+    quad = CD.pixelcell(GLO90, CD.tilecell(GLO90, 0, 0), 3, 3)
+    npole = CD.pixelcell(GLO90, CD.tilecell(GLO90, 89, 0), 0, 0)
+    spole = CD.pixelcell(GLO90, CD.tilecell(GLO90, -90, 0),
+                         CD.lat_intervals(GLO90) - 1, 0)
+    for c in (quad, npole, spole)
+        ring = cell_boundary(GLO90, c)
+        @test ring isa DGG.Helpers.SmallList
+        @test isbits(ring)
+        @test isbits(DGG.Fallbacks.closed_ring(ring))
+        @test isbits(cell_polygon(g1, c))
+    end
+    # The fourth slot is capacity, not a vertex: a pole cell still reports three.
+    @test length(cell_boundary(GLO90, quad)) == 4
+    @test length(cell_boundary(GLO90, npole)) == 3
+    @test length(cell_boundary(GLO90, spole)) == 3
+end
+
 # =========================================================================
 # (h) `node_extent` covers the subtree
 # =========================================================================

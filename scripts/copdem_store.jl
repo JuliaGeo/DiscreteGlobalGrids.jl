@@ -227,13 +227,17 @@ function openstore(config, sys7, capacity)
     end
     mkpath(dirname(path))
     t0 = time()
+    sourcelabel = config.source === :real ? "REAL" : "SYNTHETIC"
+    sourcedescription = config.source === :real ?
+        "Copernicus DEM GLO-$(config.res) COGs from the public AWS Open Data bucket" :
+        "synthetic analytic field over the real Copernicus GLO-$(config.res) tile list"
     store = DGG.subzonestore(path, sys7, config.level;
         ancestor_level = config.ancestor,
         layers = ("elevation" => Float32,), capacity = capacity,
         fill_value = NaN, ancestor_coordinate = true,
         attrs = Dict{String,Any}(
-            "title" => "Copernicus DEM GLO-$(config.res) (SYNTHETIC) on IGEO7 level $(config.level)",
-            "source" => "synthetic analytic field over the real Copernicus GLO-$(config.res) tile list",
+            "title" => "Copernicus DEM GLO-$(config.res) ($sourcelabel) on IGEO7 level $(config.level)",
+            "source" => sourcedescription,
             "created" => stamp()))
     say("store: created $path, $(DGG.ncells(sys7, config.ancestor)) chunks of " *
         "$capacity, $(secs(time() - t0))")

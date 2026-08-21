@@ -25,6 +25,10 @@ docs/src/tutorials/*.md
 /dem_igeo7.png
 /seasonal_tavg.mp4
 
+# Lazily downloaded Copernicus DEM GeoTIFFs are a persistent local cache, not
+# repository data.
+/bench/data/CopernicusDEM/tiles/
+
 # macOS
 .DS_Store
 

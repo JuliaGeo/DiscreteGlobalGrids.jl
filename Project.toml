@@ -17,6 +17,7 @@ GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
 GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
 H3_jll = "60c8821e-da38-5dbd-93c7-983f1e6d69be"
 Healpix = "9f4e344d-96bc-545a-84a3-ae6b9e1b672b"
+SciMLPublic = "431bcebd-1456-4ced-9d72-93c2757fff0b"
 SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
 
 [weakdeps]
@@ -38,6 +39,7 @@ GlobalRegridding = {path = "lib/GlobalRegridding"}
 [compat]
 DE9IM = "0.1"
 GeometryOpsCore = "0.1.11"
+SciMLPublic = "1.2.4"
 SmallCollections = "0.6.3"
 Zarr = "0.10"
 julia = "1.11"

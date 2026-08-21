@@ -420,7 +420,8 @@ level(cv::CellVector) = cv.level
     cellset(cv::CellVector)
     cellset(lk::CellLookup)
 
-Return the [`MultiOrderCellSet`](@ref) or grid used to build the collection.
+Return the [`MultiOrderCellSet`](@ref), the [`MultiOrderVector`](@ref) expanded
+to one level, or the grid used to build the collection.
 
 A collection *derived* from another one, by indexing or by [`covering`](@ref),
 has no such origin and reports the [`PartialGrid`](@ref) describing it instead.

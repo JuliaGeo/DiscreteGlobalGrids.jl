@@ -210,7 +210,9 @@ Trees.getcell(t::DGGChunkTree) = (getcell(t.space.grid, i) for i in 1:ncells(t.s
     regridgrid(x) -> AbstractGrid
 
 Return the grid represented by a regridding target. Lookup, vector, and
-multi-order targets become a [`PartialGrid`](@ref).
+multi-order targets become a [`PartialGrid`](@ref); a mixed-level target is
+expanded to its reference level first, so the destination has one cell per
+leaf.
 """
 function regridgrid end
 
@@ -218,8 +220,13 @@ regridgrid(grid::AbstractGrid) = grid
 regridgrid(lk::CellLookup) = PartialGrid(lk)
 regridgrid(cv::CellVector) = PartialGrid(cv)
 regridgrid(set::MultiOrderCellSet) = PartialGrid(CellVector(set))
+# The storage container and its axis name the same cells the query-side set
+# does, so all three resolve alike: expanded to the reference level.
+regridgrid(mov::MultiOrderVector) = PartialGrid(CellVector(mov))
+regridgrid(lk::MultiOrderLookup) = regridgrid(parent(lk))
 
-const RegridTarget = Union{AbstractGrid,CellLookup,CellVector,MultiOrderCellSet}
+const RegridTarget = Union{AbstractGrid,CellLookup,CellVector,MultiOrderCellSet,
+    MultiOrderVector,MultiOrderLookup}
 
 GR._asspace(target::RegridTarget, name::AbstractString) = DGGSpace(regridgrid(target))
 

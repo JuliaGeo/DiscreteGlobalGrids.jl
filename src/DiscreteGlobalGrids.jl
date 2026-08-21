@@ -81,6 +81,9 @@ import GeometryOps: SpatialTreeInterface as STI
 import SmallCollections
 using SmallCollections: SmallVector
 
+# `@public` marks a name public but unexported.
+using SciMLPublic: @public
+
 # Keep the module qualified because GeometryOps also defines a `DE9IM` name.
 # This package imports only DE9IM.jl's predicate types and defines their methods.
 import DE9IM
@@ -125,14 +128,16 @@ using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
 using .Engine: PartialGrid,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
-    CellVector, cellset, covering, covering_positions,
+    CellVector, cellset, covering, covering_positions, covering_position,
+    reference_level,
     grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator, RegionSide,
     halo_positions, sizehint,
     AdjacencyTable, halocells, halopositions,
     SubsetPositionedCell, cellid,
     mapneighbors, foreachneighbors, StorageOrder,
-    NeighborCallbackError
+    NeighborCallbackError,
+    MultiOrderVector, aggregate, coarsen, complement
 
 # Internal extension points for system-specific subtree walkers and shell
 # winding.
@@ -174,7 +179,7 @@ using .CopernicusDEM: CopernicusDEMSystem
 include("dimensionaldata.jl")
 
 using .CellLookups: CellLookup, Cells, Covering, Neighbors, Values,
-    NeighborSlices
+    NeighborSlices, MultiOrderLookup
 
 # The store-IO layer. Encodings and the chunked lookup own layout mechanics;
 # conventions are plain-data metadata logic with no Zarr and no arrays.
@@ -411,11 +416,23 @@ export CellVector, covering, covering_positions, cellset
 # `vcat`, `intersect` and `issubset` are Base's and carry no name of their own.
 export grow, expand, compact
 
+# --- Multi-order storage -----------------------------------------------------
+# The mixed-level cell container, its adaptive constructor, the covering
+# lookup, and the sphere complement. `expand` is exported above.
+export MultiOrderVector, coarsen, covering_position, complement
+
+# Public but unexported: `aggregate` because Rasters also exports one,
+# `reference_level` because the name says nothing on its own. Reach them as
+# `DiscreteGlobalGrids.aggregate` and `.reference_level`.
+@public aggregate
+@public reference_level
+
 # --- The DimensionalData layer ---------------------------------------------
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM
 # geometry predicate exported above.
 export CellLookup, Cells, Covering
 export Neighbors, Values, NeighborSlices
+export MultiOrderLookup
 
 # --- Grid systems ----------------------------------------------------------
 # Export system types rather than modules whose names collide with packages.

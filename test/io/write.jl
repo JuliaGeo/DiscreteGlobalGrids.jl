@@ -215,6 +215,22 @@ else
             encoding=:dense)
     end
 
+    @testset "a mixed-level axis is refused by name" begin
+        # No registered encoding writes mixed levels. Kills a writer that
+        # routes a `MultiOrderLookup` into the unsorted-axis refusal, or one
+        # that writes it as if it were single-level.
+        mov = DGG.MultiOrderVector(SYS, [ROOTS[1]; collect(DGG.children(SYS, ROOTS[2]))])
+        M = DD.DimArray(Float32.(1:length(mov)), Cells(DGG.MultiOrderLookup(mov));
+            name=:elevation)
+        err = try
+            DGG.dggwrite(dest("moc.zarr"), M)
+            nothing
+        catch e
+            e
+        end
+        @test err isa DGGSFormatError && err.check === :mixed_level_axis
+    end
+
     @testset "the auto chunk plan breaks on coarse-ancestor boundaries" begin
         # 49 level-3 cells per level-1 subtree, so two whole subtrees is the
         # largest whole number of runs under a 100-cell target. Kills a plan

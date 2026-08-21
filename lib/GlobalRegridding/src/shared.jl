@@ -110,9 +110,3 @@ const OUTER_PARALLEL = ScopedValue(false)
 # Outer parallelism wins: thread inner weight builds only at top level.
 _innerthreaded() =
     Threads.nthreads() > 1 && !OUTER_PARALLEL[] ? GOCore.True() : GOCore.False()
-
-# Speedup one weight build reaches on its own, per thread. Measured on the
-# CopDEM GLO-90 -> IGeo7 L12 ladder: ConservativeRegridding's inner threading
-# runs 8.7x on 12 threads, about 92% per-core efficiency, and the wave has to
-# beat that to be worth choosing over it.
-const _INNER_SPEEDUP_PER_THREAD = 0.73

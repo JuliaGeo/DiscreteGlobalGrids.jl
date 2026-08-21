@@ -558,16 +558,12 @@ function treeify end
     subcursor(grid::AbstractGrid, inds::AbstractUnitRange) -> tree or `nothing`
 
 The [`treeify`](@ref) tree restricted to the grid positions `inds`, with leaf
-indices still in `grid`'s own position space, or `nothing` when this grid cannot
-express that restriction.
+indices still in `grid`'s own position space, or `nothing` (the default) when
+this grid cannot express that restriction. The result must cover exactly the
+cells at `inds`, no more.
 
-The default is `nothing`. A grid whose tree is a lattice rectangle rather than a
-cell hierarchy — a raster-backed system's — implements this so that a chunk of
-it keeps a prunable tree instead of the regridder's bounding-cap fallback. A
-hierarchical grid needs no method: regridding descends its own hierarchy to the
-chunk's ancestor.
-
-The result must cover exactly the cells at `inds`, no more.
+Implemented by grids whose tree is a lattice rectangle rather than a cell
+hierarchy; a hierarchical grid needs no method.
 """
 function subcursor end
 

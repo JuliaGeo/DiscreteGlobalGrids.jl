@@ -40,12 +40,10 @@ function CellCapTree(space::S, inds) where {S<:RegridSpace}
     return _cellcapnode(space, ix, caps, 1, length(ix))
 end
 
-# The split is on the linear index range, not on space. Where cell positions
-# run in raster row order, a shallow node is a band of complete rows spanning
-# the source's whole longitude range, and no descent can prune on longitude
-# above about the last third of the depth. A median split of the node's cap
-# centres on their widest axis would fix it; nothing downstream reads `ix` in
-# order, so permuting `ix` and `caps` together is enough.
+# Splits the linear index range, not space: on row-major positions a shallow
+# node is a band of whole rows, so nothing above the deepest levels prunes on
+# longitude. Nothing downstream reads `ix` in order, so a spatial split may
+# permute `ix` and `caps` together.
 function _cellcapnode(space::S, ix::Vector{Int}, caps::Vector{Cap},
     lo::Int, hi::Int) where {S}
     children = CellCapTree{S}[]
@@ -63,11 +61,8 @@ end
 Base.show(io::IO, tree::CellCapTree) =
     print(io, "CellCapTree(", tree.hi - tree.lo + 1, " cells)")
 
-# A cap containing all of `caps`, folded pairwise. Centring on the mean of the
-# centres instead — which is what this did — inflates a node by the spread of
-# its children and then compounds that inflation at every level above: measured
-# 4x on the root of a 1200x1200 tile, which is about two levels of lost pruning
-# depth. Use the full sphere beyond the convex range.
+# A cap containing all of `caps`, folded pairwise so a node is not inflated by
+# its children's spread. The full sphere beyond the convex range.
 function _mergecaps(caps)
     acc = _WHOLE_SPHERE
     seen = false

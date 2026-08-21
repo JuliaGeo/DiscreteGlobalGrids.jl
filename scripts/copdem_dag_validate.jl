@@ -6,7 +6,7 @@
 # one — tile-affinity order, refcount eviction, tapered batches, prefetcher —
 # must produce byte-identical Zarr chunk files.
 #
-#     julia --project=bench -t 8 --gcthreads=4 scripts/copdem_dag_validate.jl [outdir]
+#     julia --project=benchmark -t 8 --gcthreads=4 scripts/copdem_dag_validate.jl [outdir]
 #
 # Writes two scratch stores under `outdir` (default a fresh temp directory) and
 # compares them file by file. It never touches the production store: both stores

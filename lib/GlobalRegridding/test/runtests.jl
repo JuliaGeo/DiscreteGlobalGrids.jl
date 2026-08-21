@@ -90,6 +90,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
     include("test_conservative.jl")
     include("test_interpolation.jl")
     include("test_executor.jl")
+    include("test_chunkgraph.jl")
     include("test_lazy.jl")
     include("test_integration.jl")
 end

@@ -1,5 +1,5 @@
 """
-    DiscreteGlobalGridVisualizations
+    DiscreteGlobalGridsVisualization
 
 Fast Makie plotting for discrete global grids.
 
@@ -69,7 +69,7 @@ implements.
     stable, and the pieces that earn their keep are meant to move into
     `DiscreteGlobalGrids`' own Makie extension.
 """
-module DiscreteGlobalGridVisualizations
+module DiscreteGlobalGridsVisualization
 
 import DiscreteGlobalGrids as DGG
 import GeometryBasics

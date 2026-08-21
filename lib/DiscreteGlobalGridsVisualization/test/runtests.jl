@@ -1,7 +1,7 @@
 using Test
 import DiscreteGlobalGrids as DGG
-import DiscreteGlobalGridVisualizations as DGGV
-using DiscreteGlobalGridVisualizations
+import DiscreteGlobalGridsVisualization as DGGV
+using DiscreteGlobalGridsVisualization
 using GeometryBasics: Point2d, Point3d
 import GeometryBasics
 using Makie
@@ -55,7 +55,7 @@ function saves(figure)
     return isfile(path)
 end
 
-@testset "DiscreteGlobalGridVisualizations" begin
+@testset "DiscreteGlobalGridsVisualization" begin
 
     @testset "cellset" begin
         cells = patch(7)

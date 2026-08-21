@@ -1,7 +1,7 @@
 # Compare `dggpoly` against Makie's `poly` on IGEO7 cell sets of growing size.
 #
-#     xvfb-run -a julia --project=lib/DiscreteGlobalGridVisualizations/bench -t8 \
-#         lib/DiscreteGlobalGridVisualizations/bench/bench.jl gl --maxlevel=12
+#     xvfb-run -a julia --project=lib/DiscreteGlobalGridsVisualization/bench -t8 \
+#         lib/DiscreteGlobalGridsVisualization/bench/bench.jl gl --maxlevel=12
 #
 # Pass `cairo` (the default) or `gl` to pick a backend, and `--maxlevel=N` to
 # stop earlier.  Two numbers are reported for each size:
@@ -15,8 +15,8 @@
 #     numbers as an upper bound on that half.
 
 import DiscreteGlobalGrids as DGG
-import DiscreteGlobalGridVisualizations as DGGV
-using DiscreteGlobalGridVisualizations
+import DiscreteGlobalGridsVisualization as DGGV
+using DiscreteGlobalGridsVisualization
 using Printf
 
 const BACKEND = any(==("gl"), ARGS) ? :gl : :cairo

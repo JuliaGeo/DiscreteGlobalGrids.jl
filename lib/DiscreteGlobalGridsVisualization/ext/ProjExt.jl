@@ -3,10 +3,10 @@
 # generic callable cannot give: where the map's cut meridian is, and a way to
 # project a few million points without paying a `ccall` for each of them.
 
-module DiscreteGlobalGridVisualizationsProjExt
+module ProjExt
 
-import DiscreteGlobalGridVisualizations as DGGV
-using DiscreteGlobalGridVisualizations: PlanarTarget, plot_target, project!
+import DiscreteGlobalGridsVisualization as DGGV
+using DiscreteGlobalGridsVisualization: PlanarTarget, plot_target, project!
 using GeometryBasics: Point2d
 import Proj
 

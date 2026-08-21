@@ -106,6 +106,9 @@ const FAILURES = Threads.Atomic{Int}(0)
 # The last run's cache statistics, for a harness that calls `main` in-process
 # and wants the numbers rather than the log line.
 const LASTCACHE = Ref{Any}(nothing)
+# Likewise the lazy provider: the cold-network harness reads its counters after
+# `main` returns. Production behavior does not depend on this observation seam.
+const LASTPROVIDER = Ref{Any}(nothing)
 
 stamp() = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
 
@@ -1157,6 +1160,7 @@ function main(config = CONFIG)
         cachedir = config.tilecache, baseurl = config.tilebaseurl,
         retries = config.retries, backoff = config.backoff,
         timeout = config.timeout) : nothing
+    LASTPROVIDER[] = provider
     ids = TileIds(sys, tiles)
     say("tile list: $(length(tiles)) listed tiles of $(DGG.ncells(sys, 0)) " *
         "($(round(100 * length(tiles) / DGG.ncells(sys, 0); digits = 1))%), " *

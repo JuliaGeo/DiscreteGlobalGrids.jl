@@ -14,6 +14,16 @@
 #     nice -n 10 julia --project=benchmark -t 1  --gcthreads=1 scripts/southpole_shakedown.jl crosscheck
 #     nice -n 10 julia --project=benchmark -t 1  --gcthreads=1 scripts/southpole_shakedown.jl diagnose
 #
+# Follow-up thread-scaling campaign (fixed 24-core sizing budget):
+#
+#     nice -n 10 julia --project=benchmark -t 1  --gcthreads=1 scripts/southpole_shakedown.jl scale-select
+#     nice -n 10 julia --project=benchmark -t 32 --gcthreads=4 scripts/southpole_shakedown.jl scale-run outer-t32
+#     nice -n 10 julia --project=benchmark -t 32 --gcthreads=4 scripts/southpole_shakedown.jl scale-run inner-t32
+#     nice -n 10 julia --project=benchmark -t 32 --gcthreads=4 scripts/southpole_shakedown.jl scale-run inner-t32-Wboost
+#     nice -n 10 julia --project=benchmark -t 21 --gcthreads=4 scripts/southpole_shakedown.jl scale-run outer-t21
+#     nice -n 10 julia --project=benchmark -t 21 --gcthreads=4 scripts/southpole_shakedown.jl scale-run inner-t21
+#     nice -n 10 julia --project=benchmark -t 1  --gcthreads=1 scripts/southpole_shakedown.jl scale-crosscheck
+#
 # Never use a nonzero second --gcthreads field.  copdem_production.jl's gcguard
 # independently refuses that known-bad concurrent-sweeper configuration.
 
@@ -29,19 +39,34 @@ const DATA = "/home/asinghvi17/geo/DiscreteGlobalGrids.jl/bench/data"
 const RECORD = joinpath(
     "/home/asinghvi17/geo/DiscreteGlobalGrids.jl/regrid-notes",
     "2026-08-21-southpole-shakedown.ndjson")
+const SCALING_RECORD = joinpath(
+    "/home/asinghvi17/geo/DiscreteGlobalGrids.jl/regrid-notes",
+    "2026-08-21-inner-scaling.ndjson")
+const ACTIVE_RECORD = Ref(RECORD)
 const TARGET_COLUMNS = 2_000
+const TARGET_COLUMNS_SHA256 =
+    "62cef2b46fcac83f308f4a6314e8acd80ebae71f9b96b72fe8d3380184dd1635"
 const SAMPLE_SECONDS = 5.0
 const RUN_TAGS = Dict(
     "A" => (mark = 4, shape = :outer),
     "B" => (mark = 8, shape = :outer),
     "D" => (mark = 16, shape = :outer),
 )
+const SCALING_RUNS = Dict(
+    "outer-t32" => (threads = 32, shape = :outer, workers = 0),
+    "inner-t32" => (threads = 32, shape = :inner, workers = 0),
+    # The driver-supported override is round(2/3 * outer W) = round(2/3 * 23).
+    "inner-t32-Wboost" => (threads = 32, shape = :inner, workers = 15),
+    "outer-t21" => (threads = 21, shape = :outer, workers = 0),
+    "inner-t21" => (threads = 21, shape = :inner, workers = 0),
+)
 
 utcstamp() = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS.sss") * "Z"
 
 function appendrecord(record::Dict{String,Any})
-    mkpath(dirname(RECORD))
-    open(RECORD, "a") do io
+    path = ACTIVE_RECORD[]
+    mkpath(dirname(path))
+    open(path, "a") do io
         JSON3.write(io, record)
         write(io, '\n')
         flush(io)
@@ -76,6 +101,56 @@ function productionledger()
     return rows
 end
 
+"Recover the already-recorded canonical selection if its source sidecars are gone."
+function recordedcolumnset()
+    canonical = nothing
+    for line in eachline(RECORD)
+        row = try
+            JSON3.read(line)
+        catch
+            continue
+        end
+        if hasproperty(row, :kind) && String(row.kind) == "column_set"
+            canonical = row
+        end
+    end
+    canonical === nothing && error("canonical column_set record is missing from $RECORD")
+    columns = Int.(canonical.columns)
+    deep_full_land = Int.(canonical.deep_full_land_columns)
+    polar_pentagons = Int.(canonical.polar_pentagon_columns)
+    digest = bytes2hex(SHA.sha256(join(columns, ',')))
+    recorded_digest = String(canonical.columns_sha256)
+    digest == recorded_digest == TARGET_COLUMNS_SHA256 || error(
+        "canonical column set digest mismatch: computed=$digest, " *
+        "recorded=$recorded_digest, required=$TARGET_COLUMNS_SHA256")
+    length(columns) == TARGET_COLUMNS || error(
+        "canonical record has $(length(columns)) columns, expected $TARGET_COLUMNS")
+    allunique(columns) || error("canonical record has duplicate columns")
+
+    sys = DGG.IGeo7System()
+    layout = DGG.SubzoneLayout(sys, CONFIG.level, CONFIG.ancestor)
+    grid = DGG.levelgrid(sys, CONFIG.ancestor)
+    latitude(column) = asind(DGG.cell_centroid(
+        grid, DGG.columncell(layout, column))[3])
+    ispentagon(column) = DGG.IGeo7.z7_is_pentagon(
+        DGG.columncell(layout, column).id)
+    all(ispentagon, polar_pentagons) || error(
+        "canonical polar exceptions are not topological pentagons")
+    all(c -> c in columns, deep_full_land) || error(
+        "canonical deep full-land block is not contained in the selection")
+    all(c -> c in columns, polar_pentagons) || error(
+        "canonical polar pentagons are not contained in the selection")
+    return (columns = columns, sha256 = digest,
+        covering = Int(canonical.production_covering),
+        eligible = Int(canonical.eligible_south_of_60),
+        deep_full_land = deep_full_land,
+        polar_pentagons = polar_pentagons,
+        latitude = Dict(c => latitude(c) for c in columns),
+        eligible_latitude = (Float64(canonical.eligible_latitude_min),
+            Float64(canonical.eligible_latitude_max)),
+        selection_source = "canonical column_set in $RECORD; original source sidecars absent")
+end
+
 "Select exactly n evenly spaced positions, including both ends when n > 1."
 function evensample(values::AbstractVector, n::Integer)
     n == 0 && return eltype(values)[]
@@ -88,6 +163,9 @@ end
 
 "The production-covering Antarctic canary and the facts that define it."
 function columnset()
+    if !isfile(PRODUCTION * ".columns.txt") || !isfile(PRODUCTION * ".done.ndjson")
+        return recordedcolumnset()
+    end
     sys = DGG.IGeo7System()
     layout = DGG.SubzoneLayout(sys, CONFIG.level, CONFIG.ancestor)
     grid = DGG.levelgrid(sys, CONFIG.ancestor)
@@ -140,7 +218,8 @@ function columnset()
         eligible = length(eligible), deep_full_land = deep_full_land,
         polar_pentagons = polar_pentagons,
         latitude = Dict(c => latitude(c) for c in selected),
-        eligible_latitude = extrema(latitude.(eligible)))
+        eligible_latitude = extrema(latitude.(eligible)),
+        selection_source = "production column and completion sidecars")
 end
 
 function recordselection()
@@ -158,7 +237,8 @@ function recordselection()
         deep_full_land_columns = set.deep_full_land,
         polar_pentagon_columns = set.polar_pentagons,
         polar_pentagon_latitudes = [set.latitude[c] for c in set.polar_pentagons],
-        columns_sha256 = set.sha256, columns = set.columns)
+        columns_sha256 = set.sha256, columns = set.columns,
+        selection_source = set.selection_source)
     println("selected $(length(set.columns)) columns; sha256=$(set.sha256)")
     println("eligible=$(set.eligible), deep-full-land=$(length(set.deep_full_land)), " *
             "polar-pentagons=$(set.polar_pentagons)")
@@ -283,24 +363,37 @@ function runtimes(rows)
                       minimum(row.completed for row in tail))
 end
 
-function runconfig(tag::String)
+function runconfig(tag::String; scaling = false)
     nsweep = Base.JLOptions().nsweepthreads
     nsweep == 0 || error("refusing unsafe concurrent sweeper: nsweepthreads=$nsweep")
-    Threads.nthreads() == 26 || error("campaign runs require -t 26")
-    spec = if tag == "C"
-        Base.JLOptions().nmarkthreads in (4, 8, 16) || error(
-            "C must reuse a measured first-field mark count")
-        (mark = Int(Base.JLOptions().nmarkthreads), shape = :inner)
+    spec = if scaling
+        scaling_spec = get(SCALING_RUNS, tag, nothing)
+        scaling_spec === nothing && error(
+            "scaling run must be one of $(join(sort!(collect(keys(SCALING_RUNS))), ", "))")
+        Threads.nthreads() == scaling_spec.threads || error(
+            "$tag requires -t $(scaling_spec.threads), got $(Threads.nthreads())")
+        Base.JLOptions().nmarkthreads == 4 || error(
+            "$tag requires --gcthreads=4, got $(Base.JLOptions().nmarkthreads)")
+        (mark = 4, shape = scaling_spec.shape, workers = scaling_spec.workers)
     else
-        get(RUN_TAGS, tag, nothing)
+        Threads.nthreads() == 26 || error("shakedown runs require -t 26")
+        shakedown_spec = if tag == "C"
+            Base.JLOptions().nmarkthreads in (4, 8, 16) || error(
+                "C must reuse a measured first-field mark count")
+            (mark = Int(Base.JLOptions().nmarkthreads), shape = :inner)
+        else
+            get(RUN_TAGS, tag, nothing)
+        end
+        shakedown_spec === nothing && error("run tag must be A, B, C, or D")
+        (mark = shakedown_spec.mark, shape = shakedown_spec.shape, workers = 0)
     end
-    spec === nothing && error("run tag must be A, B, C, or D")
     Base.JLOptions().nmarkthreads == spec.mark || error(
         "$tag requires --gcthreads=$(spec.mark), got $(Base.JLOptions().nmarkthreads)")
 
     set = columnset()
-    config_name = "$tag-gc$(spec.mark)-$(spec.shape)"
-    store = joinpath(SCRATCH, "southpole-$config_name.zarr")
+    config_name = scaling ? tag : "$tag-gc$(spec.mark)-$(spec.shape)"
+    store = joinpath(SCRATCH,
+        scaling ? "innerscale-$config_name.zarr" : "southpole-$config_name.zarr")
     mkpath(SCRATCH)
     islink(SCRATCH) && error("scratch root must not be a symlink")
     abspath(dirname(store)) == SCRATCH || error("store escaped scratch root")
@@ -310,12 +403,14 @@ function runconfig(tag::String)
     save_chunklist(chunklistpath(store), CONFIG.ancestor, set.columns)
 
     config = merge(CONFIG, (source = :synthetic, store = store, region = nothing,
-        real = :none, data = DATA, workers = 0, cores = 24, shape = spec.shape,
+        real = :none, data = DATA, workers = spec.workers, cores = 24,
+        shape = spec.shape,
         schedule = :affinity, cachepolicy = :refcount, taper = true,
         prefetch = 0, fetchdelay = 0.0, resume = false, checks = false,
         heartbeat = 300, maxchunks = 0, chunks = set.columns, dryrun = false))
     workers, resolved_shape = workercount(config)
-    expected_workers = spec.shape === :outer ? 23 : 8
+    expected_workers = spec.workers > 0 ? spec.workers :
+        (spec.shape === :outer ? 23 : 8)
     workers == expected_workers || error(
         "expected $expected_workers workers for $(spec.shape), resolved $workers")
 
@@ -325,6 +420,7 @@ function runconfig(tag::String)
         pid = getpid(), julia = string(VERSION), threads = Threads.nthreads(),
         gc_mark_threads = spec.mark, gc_sweep_threads = nsweep,
         shape = String(resolved_shape), workers = workers, cores_budget = config.cores,
+        workers_override = spec.workers,
         source = String(config.source), prefetch = config.prefetch,
         store = store, columns = length(set.columns), columns_sha256 = set.sha256,
         nice = try Base.Libc.getpriority(0, 0) catch; 10 end)
@@ -374,15 +470,81 @@ function runconfig(tag::String)
         cache_peak_gib = cache === nothing ? nothing : cache.peakbytes / 2^30,
         cache_peak_tiles = cache === nothing ? nothing : cache.peaktiles,
         cache_loads = cache === nothing ? nothing : cache.loads,
+        cache_demanded = cache === nothing ? nothing : cache.demanded,
+        cache_reloads = cache === nothing ? nothing : cache.loads - cache.demanded,
+        cache_joined_loads = cache === nothing ? nothing : cache.waits,
         cache_uncredited = cache === nothing ? nothing : cache.uncredited,
         cache_live_end = cache === nothing ? nothing : cache.live,
+        cache_pinned_end = cache === nothing ? nothing : cache.pinned,
         cold_downloads = 0, last10_columns_span_s = timings.last10_span,
-        workers = workers, shape = String(resolved_shape), gc_mark_threads = spec.mark,
+        workers = workers, workers_override = spec.workers,
+        shape = String(resolved_shape), gc_mark_threads = spec.mark,
         regime = regime, columns_sha256 = set.sha256, store = store)
     println("FINAL $config_name: $(round(core_s_per_column; digits=3)) core-s/column, " *
             "$(round(cpu_seconds / wall; digits=2)) cores, " *
             "$(round(memory.hwm_gib; digits=2)) GiB peak, $regime")
     return failures == 0 && completed == TARGET_COLUMNS ? 0 : 1
+end
+
+"Bit-compare the scaling stores on a deterministic 12-column polar sample."
+function scalingcrosscheck()
+    set = columnset()
+    baseline_tag = "outer-t32"
+    baseline_store = joinpath(SCRATCH, "innerscale-$baseline_tag.zarr")
+    isdir(baseline_store) || error("scaling baseline store is missing: $baseline_store")
+    candidate_tags = [tag for tag in keys(SCALING_RUNS) if tag != baseline_tag]
+    sort!(candidate_tags)
+    candidate_stores = Dict(tag => joinpath(SCRATCH, "innerscale-$tag.zarr")
+        for tag in candidate_tags)
+    all(isdir, values(candidate_stores)) || error(
+        "scaling cross-check needs every configured store: $(candidate_stores)")
+
+    pentagons = set.polar_pentagons
+    deep = sort!([c for c in set.columns if set.latitude[c] < -80.0];
+        by = c -> (set.latitude[c], c))
+    band = sort!([c for c in set.columns
+        if set.latitude[c] >= -80.0 && !(c in pentagons)];
+        by = c -> (set.latitude[c], c))
+    sampled = sort!(unique([pentagons; evensample(deep, 5); evensample(band, 5)]))
+    length(sampled) >= 10 || error("scaling cross-check selected only $(length(sampled)) columns")
+    all(c -> c in sampled, pentagons) || error("scaling cross-check lacks a pentagon")
+
+    baseline = Zarr.zopen(baseline_store, "r")["elevation"]
+    total_differences = 0
+    comparisons = 0
+    all_passed = true
+    for tag in candidate_tags
+        candidate = Zarr.zopen(candidate_stores[tag], "r")["elevation"]
+        candidate_differences = 0
+        for column in sampled
+            expected = Vector{Float32}(baseline[:, column])
+            observed = Vector{Float32}(candidate[:, column])
+            length(expected) == length(observed) || error(
+                "$tag column $column length mismatch")
+            differences = count(i -> reinterpret(UInt32, expected[i]) !=
+                reinterpret(UInt32, observed[i]), eachindex(expected))
+            emit("scaling_bitcheck_column"; baseline = baseline_tag,
+                candidate = tag, column = column,
+                pentagon = column in pentagons, cells = length(expected),
+                non_bit_equal_float32 = differences)
+            candidate_differences += differences
+            comparisons += length(expected)
+        end
+        passed = candidate_differences == 0
+        emit("scaling_bitcheck_candidate"; baseline = baseline_tag,
+            candidate = tag, columns = sampled, column_count = length(sampled),
+            non_bit_equal_float32 = candidate_differences, passed = passed)
+        println("bitcheck $baseline_tag vs $tag: $(length(sampled)) columns, " *
+                "$candidate_differences differing Float32 values")
+        total_differences += candidate_differences
+        all_passed &= passed
+    end
+    emit("scaling_bitcheck_final"; baseline = baseline_tag,
+        candidates = candidate_tags, columns = sampled,
+        column_count = length(sampled), pentagons = pentagons,
+        compared_float32 = comparisons,
+        non_bit_equal_float32 = total_differences, passed = all_passed)
+    return all_passed ? 0 : 1
 end
 
 function crosscheck()
@@ -522,7 +684,8 @@ end
 
 function main_shakedown()
     isempty(ARGS) && error(
-        "usage: southpole_shakedown.jl select | run A|B|C|D | crosscheck | diagnose")
+        "usage: southpole_shakedown.jl select | run A|B|C|D | crosscheck | " *
+        "diagnose | scale-select | scale-run CONFIG | scale-crosscheck")
     if ARGS[1] == "select"
         length(ARGS) == 1 || error("select takes no arguments")
         recordselection()
@@ -536,6 +699,19 @@ function main_shakedown()
     elseif ARGS[1] == "diagnose"
         length(ARGS) == 1 || error("diagnose takes no arguments")
         return polediagnostic()
+    elseif ARGS[1] == "scale-select"
+        length(ARGS) == 1 || error("scale-select takes no arguments")
+        ACTIVE_RECORD[] = SCALING_RECORD
+        recordselection()
+        return 0
+    elseif ARGS[1] == "scale-run"
+        length(ARGS) == 2 || error("scale-run requires one config name")
+        ACTIVE_RECORD[] = SCALING_RECORD
+        return runconfig(ARGS[2]; scaling = true)
+    elseif ARGS[1] == "scale-crosscheck"
+        length(ARGS) == 1 || error("scale-crosscheck takes no arguments")
+        ACTIVE_RECORD[] = SCALING_RECORD
+        return scalingcrosscheck()
     end
     error("unknown mode $(repr(ARGS[1]))")
 end

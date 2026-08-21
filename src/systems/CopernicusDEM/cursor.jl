@@ -402,11 +402,9 @@ _block_cursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem}, strategy::BlockStrat
 The node covering grid positions `inds`, or `nothing` when they are not one
 contiguous id run forming one lattice rectangle by [`treeify`](@ref)'s rules.
 
-Positions stay `grid`'s own, so a source chunk keeps this index-rectangle tree —
-whose node cap is an exact O(1) box — instead of the regridder's bounding-cap
-fallback over one polygon per pixel. A tile-sized chunk qualifies whether the
-grid is the complete level grid or a partial one holding only the tiles that
-exist: the run test is over the window, not the whole grid.
+Leaf indices stay `grid`'s own positions. The run test is over the window, not
+the whole grid, so a tile-sized chunk qualifies on a complete level grid and on
+a partial one alike.
 
 The window comes back wrapped in a [`MemoBlockCursor`](@ref): every block build
 re-walks its chunk's interior nodes, whose extents are derived, not stored.

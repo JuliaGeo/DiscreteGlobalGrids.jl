@@ -296,12 +296,9 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         end
         @test covers(GR.CellCapTree(space, 1:ncells(space)))
 
-        # Tightness: any cap covering these cells has a radius of at least half
-        # the widest distance between two of their vertices, and Jung's bound
-        # puts the smallest one below 1.16 of that. Centring on the mean of the
-        # child centres instead — which is what this did — inflated a node by
-        # its children's spread and compounded that at every level above,
-        # measured at 3-4x on a Copernicus tile, or two levels of lost pruning.
+        # Tightness: a covering cap's radius is at least half the widest
+        # distance between two vertices, and Jung's bound puts the smallest one
+        # below 1.16 of that.
         for inds in (1:6, 25:30, [cellposition(space, ix, iy) for ix in 3:6, iy in 4:7])
             points = [USPoint(GI.x(p), GI.y(p), GI.z(p))
                       for i in vec(collect(inds)) for p in GI.getpoint(getcell(space, i))]

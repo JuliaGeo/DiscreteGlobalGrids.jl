@@ -84,7 +84,7 @@ function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
     ID = cellindextype(sys)
     ids = ID[]
     ranges = UnitRange{Int}[]
-    for j in 1:ncells(ancestors)
+    for j in _ancestorpositions(grid, sys, a, ancestors)
         id = cellindex(ancestors, j)
         r = descendant_range(sys, id, lvl)
         w = complete ? (Int(first(r)):Int(last(r))) : _subsetwindow(grid, r)
@@ -93,6 +93,26 @@ function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
         push!(ranges, w)
     end
     return ids, ranges
+end
+
+# The level-`a` ancestors that can hold any of `grid`'s cells. Every one of them
+# in general — the scan is what decides which are non-empty — but a ROOTED
+# `PartialGrid` holds nothing outside its root's subtree, so only that root's
+# level-`a` descendants can qualify and the rest of the level need never be
+# visited. That is exact, not a heuristic: the constructor checks the ancestry.
+_ancestorpositions(::AbstractGrid, ::AbstractHierarchicalGridSystem, ::Int,
+    ancestors::AbstractGrid) = 1:ncells(ancestors)
+
+function _ancestorpositions(grid::PartialGrid, sys::AbstractHierarchicalGridSystem,
+        a::Int, ancestors::AbstractGrid)
+    grid.root_level >= first(levels(sys)) || return 1:ncells(ancestors)
+    if grid.root_level <= a
+        r = descendant_range(sys, grid.root_id, a)
+        return Int(first(r)):Int(last(r))
+    end
+    # A root deeper than the chunk level puts the whole grid under one ancestor.
+    p = cellposition(ancestors, ancestor(sys, grid.root_id, a))
+    return p:p
 end
 
 # Sorted subset IDs make each ancestor's descendants a contiguous interval.

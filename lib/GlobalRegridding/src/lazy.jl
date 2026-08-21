@@ -451,30 +451,23 @@ end
 """
     _wavesize(plan, nd, srcchunks, srcranges, dstcaps, srccaps) -> Int
 
-Return the number of chunk-pair blocks to build concurrently. The wave is
-bounded by thread count and the minimum estimated block size within the weight
-budget. Single-threaded sessions return one.
+Return the number of chunk-pair blocks to build concurrently. Single-threaded
+sessions return one.
 
 A wave spawns one task per block and declares [`OUTER_PARALLEL`](@ref), which
-turns off the threading *inside* each build. The two are therefore alternatives,
-not additions, and the wider one should win:
+turns off threading *inside* each build, so the two are alternatives rather
+than additions. Under an outer loop that already declared `OUTER_PARALLEL` the
+wave is the only parallelism left and its width is bounded only by thread
+count, block count and the weight budget. At top level the wave must beat inner
+threading instead — [`_waveideal`](@ref) of [`_blockcosts!`](@ref) against
+`innerspeedup * nthreads()` — or this returns one and the build gets the
+threads.
 
-  * Under an outer loop that already declared `OUTER_PARALLEL` — a worker pool
-    over destination units, say — inner threading is off no matter what this
-    returns, so the wave is the only parallelism left inside the work unit and
-    the budget-bounded width stands.
-  * At top level the wave has to earn its width. Waves run back to back and
-    each costs its slowest block, so the wave's best case is
-    `sum(cost) / sum(wave maxima)`; inner threading delivers about
-    `$(_INNER_SPEEDUP_PER_THREAD) * nthreads()` on the same cores. A tile whose
-    work sits in one or two chunks — the common shape, since a destination tile
-    meets most of its connected chunks only at an edge — loses that comparison
-    and returns one, handing the threads to the build.
-
-See [`_blockcosts!`](@ref) for the cost estimate.
+`innerspeedup` is the per-thread speedup one weight build reaches on its own;
+the default is ConservativeRegridding's measured 8.7x on 12 threads.
 """
 function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges::Vector,
-    dstcaps, srccaps::Vector{Cap})
+    dstcaps, srccaps::Vector{Cap}; innerspeedup::Float64 = 0.73)
     n = length(srcchunks)
     nt = Threads.nthreads()
     (nt > 1 && n > 1) || return 1
@@ -488,7 +481,7 @@ function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges
     # An outer loop already owns the cores; the wave is all that is left here.
     OUTER_PARALLEL[] && return w
     costs = _blockcosts!(Vector{Float64}(undef, n), srcchunks, srcranges, dstcaps, srccaps)
-    return _waveideal(costs, w) >= _INNER_SPEEDUP_PER_THREAD * nt ? w : 1
+    return _waveideal(costs, w) >= innerspeedup * nt ? w : 1
 end
 
 """

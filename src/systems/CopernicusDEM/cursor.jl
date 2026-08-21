@@ -252,34 +252,20 @@ end
 
 A leaf's cells as `(grid position, cap)` pairs, in a fixed inline buffer.
 
-This is the return value of [`STI.child_indices_extents`](@ref
+The return value of [`STI.child_indices_extents`](@ref
 GeometryOps.SpatialTreeInterface.child_indices_extents) for a
-[`BlockCursor`](@ref). It is a read-only `AbstractVector`, so it indexes,
-iterates and `collect`s exactly like the `Vector` it replaces.
+[`BlockCursor`](@ref): a read-only `AbstractVector` that indexes, iterates and
+`collect`s like the `Vector` it replaces, but is `isbits`, so it lives in the
+caller's frame and never reaches the heap.
 
-[`STI.isleaf`](@ref GeometryOps.SpatialTreeInterface.isleaf) bounds a leaf at
-`LEAF_CELLS` cells — a node above that always splits, and a node that cannot
-split holds one cell — so the entries fit an `NTuple{LEAF_CELLS}`. That makes
-the whole value `isbits`, which is the point: it lives in the caller's frame
-and never reaches the heap. The `Vector` it replaces was **71.6% of a
-production regrid's allocation**, because the dual-tree join rebuilds a leaf's
-cells once per opposing leaf and each rebuild grew a fresh vector by `push!`.
-
-Two designs were rejected:
-
-  * A **shared per-task buffer**. `dual_depth_first_search` binds both leaves'
-    entries and loops over them nested, so a self-join — a Copernicus grid
-    regridded onto a Copernicus grid — would read one leaf's cells out of the
-    other leaf's buffer. Callers also keep the result past the call without
-    copying it, which `MemoRasterTree` in `lib/GlobalRegridding` relies on.
-  * A **lazy view** deriving each cap in `getindex`. It allocates nothing
-    either, but the join reads the inner leaf's entries once per cell of the
-    outer leaf, so every cap would be re-derived up to `LEAF_CELLS` times —
-    trading allocation for the inverse projections the vector existed to hoist.
+[`STI.isleaf`](@ref GeometryOps.SpatialTreeInterface.isleaf) splits any node
+holding more than `LEAF_CELLS` cells, so the entries fit an
+`NTuple{LEAF_CELLS}`. Every call must return its own value rather than share a
+buffer: callers keep the result past the call, and a dual-tree self-join loops
+over two leaves' entries at once.
 
 Filling is eager and stops at the leaf's own cell count; the unused tail
-repeats entry one rather than deriving a cap that would be thrown away. Entry
-order is the old loop nest's: the column index varies fastest.
+repeats entry one. Entry order is row-major: the column index varies fastest.
 """
 struct LeafCells <: AbstractVector{Tuple{Int,Cap}}
     entries::NTuple{LEAF_CELLS,Tuple{Int,Cap}}

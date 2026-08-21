@@ -46,4 +46,8 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/regrid_acceptance.jl")
     include("io/runtests.jl")
     include("plotting/runtests.jl")
+    # The production driver's scheduling policy. It is a script rather than a
+    # package, but the tile cache and the pull cursor are concurrent state with
+    # an invariant, and an invariant is what a test is for.
+    include("scripts/copdem_policy.jl")
 end

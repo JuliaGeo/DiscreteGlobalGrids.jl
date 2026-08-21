@@ -308,7 +308,7 @@ Read written chunks back out of the store and hold them against
 function verify(config, sys7, layout, chunks, sm, real, dem, written)
     level, ancestor, storepath = config.level, config.ancestor, config.store
     g12 = DGG.levelgrid(sys7, level)
-    g0 = DGG.levelgrid(dem.sys, 0)
+    g0 = DGG.levelgrid(dem.builder.sys, 0)
     n = min(config.checkchunks, length(chunks))
     picked = chunks[round.(Int, range(1, length(chunks); length = n))]
     say("verify: reading back $n of $(length(chunks)) chunks")
@@ -394,7 +394,7 @@ function verify(config, sys7, layout, chunks, sm, real, dem, written)
     # slivers meeting at a point — the one degenerate source geometry.
     for (o, _) in sort!(collect(real))
         t = DGG.LevelIndex(0, o)
-        lat, lon = CD.tilecorner(dem.sys, t)
+        lat, lon = CD.tilecorner(dem.builder.sys, t)
         c = DGG.cellat(g12, US.UnitSphereFromGeographic()((lon + 0.5, lat + 0.5)))
         c === nothing && continue
         ch = DGG.columnindex(layout, DGG.ancestor(sys7, c, ancestor))
@@ -402,7 +402,7 @@ function verify(config, sys7, layout, chunks, sm, real, dem, written)
         stack = DGG.dggread(storepath; ancestors = [DGG.columncell(layout, ch)])
         vals = collect(stack[:elevation])
         k = findfirst(==(c), collect(DD.lookup(stack[:elevation], DGG.Cells)))
-        check("real tile $(tilestem(dem.sys, t)) is finite at its centre",
+        check("real tile $(tilestem(dem.builder.sys, t)) is finite at its centre",
             k !== nothing && isfinite(vals[k]);
             detail = k === nothing ? "its centre cell is not in chunk $ch" :
                      @sprintf("%.2f m in chunk %d", vals[k], ch))

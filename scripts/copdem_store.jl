@@ -90,7 +90,67 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    donechunks(logpath, storepath, layer) -> Set{Int}
+    doneledger(logpath) -> Dict{Int,@NamedTuple{cells::Int, nan::Int}}
+
+Every chunk the ledger has a line for, mapped to the counts that line recorded.
+
+One entry per CHUNK, not per line: a chunk recomputed after a resume — because a
+crash lost the file but not the line, or because the ledger was truncated — has
+two lines, and the last one is the one whose values are in the store, so it
+wins. Counting lines instead would double a chunk's cells.
+
+Both [`donechunks`](@ref) and the store-wide totals of the final banner read
+this, so "which chunks are done" and "how many cells that is" cannot disagree.
+A field the line does not carry comes back as `-1`, which
+[`storetotals`](@ref) reports as unaccounted rather than as zero.
+"""
+function doneledger(logpath)
+    out = Dict{Int,@NamedTuple{cells::Int, nan::Int}}()
+    isfile(logpath) || return out
+    field(line, key) = (m = match(Regex("\"$key\":(\\d+)"), line);
+                        m === nothing ? -1 : parse(Int, m[1]))
+    for line in eachline(logpath)
+        col = field(line, "col")
+        col < 0 && continue
+        out[col] = (cells = field(line, "cells"), nan = field(line, "nan"))
+    end
+    return out
+end
+
+"""
+    storetotals(logpath, written) -> (; chunks, cells, nan, unaccounted)
+
+What the STORE holds, across every session that ever wrote to it — as against
+the [`Progress`](@ref) counters, which only ever describe the session printing
+them.
+
+`written` is the resume union from [`donechunks`](@ref), so `chunks` includes
+chunks this run never touched, and an all-`NaN` chunk — which Zarr stores as no
+file at all — still counts if the ledger saw it. Cells and NaNs can only be
+counted for chunks the ledger has a line for; `unaccounted` is how many of
+`written` it does not, so totals read off a truncated ledger are never mistaken
+for the whole store.
+"""
+function storetotals(logpath, written)
+    led = doneledger(logpath)
+    cells = 0
+    nan = 0
+    unaccounted = 0
+    for ch in written
+        r = get(led, ch, nothing)
+        if r === nothing || r.cells < 0 || r.nan < 0
+            unaccounted += 1
+        else
+            cells += r.cells
+            nan += r.nan
+        end
+    end
+    return (chunks = length(written), cells = cells, nan = nan,
+            unaccounted = unaccounted)
+end
+
+"""
+    donechunks(logpath, storepath, layer; label = "resume") -> Set{Int}
 
 Which chunks are already written: the done ledger UNION the chunk files the
 store itself holds.
@@ -102,26 +162,24 @@ normal outcome on the ocean side of the covering, leaves nothing behind and look
 exactly like one nobody computed. Skipping the union is therefore the safe
 choice: recomputing a written chunk only wastes time, skipping an unwritten one
 leaves a hole.
+
+`label` names the caller in the notes this prints; the final banner reads the
+same union the resume path did, and calling both of them "resume" would read as
+if the run were starting over.
 """
-function donechunks(logpath, storepath, layer)
-    fromlog = Set{Int}()
-    if isfile(logpath)
-        for line in eachline(logpath)
-            m = match(r"\"col\":(\d+)", line)
-            m === nothing || push!(fromlog, parse(Int, m[1]))
-        end
-    end
+function donechunks(logpath, storepath, layer; label = "resume")
+    fromlog = Set(keys(doneledger(logpath)))
     fromdisk = storechunks(storepath, layer)
     if fromdisk !== nothing
         only_log = length(setdiff(fromlog, fromdisk))
         only_disk = length(setdiff(fromdisk, fromlog))
         (only_log == 0 && only_disk == 0) ||
-            say("resume: $only_log logged chunks have no file (an all-NaN chunk is " *
+            say("$label: $only_log logged chunks have no file (an all-NaN chunk is " *
                 "stored as nothing at all), $only_disk files have no ledger line; " *
                 "taking the union")
         return union(fromlog, fromdisk)
     end
-    say("resume: no chunk listing available at $storepath, using the ledger alone")
+    say("$label: no chunk listing available at $storepath, using the ledger alone")
     return fromlog
 end
 

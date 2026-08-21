@@ -61,7 +61,7 @@ const CONFIG = (
     store       = "/home/asinghvi17/geo/dggstores/copdem90-igeo7-l12-synthetic.zarr",
     region      = nothing,  # nothing for the globe, or [(w, e, s, n), ...] boxes
     maskarcsec  = 15,       # land-mask lattice, arcseconds; 0 disables the mask
-    real        = :auto,    # local GeoTIFF overrides: :auto, :none, or ["stem", ...]
+    real        = :none,    # local overrides; synthetic requires :none absolutely
     tilecache   = get(ENV, "COPDEM_TILE_CACHE",
                       joinpath(@__DIR__, "..", "bench", "data", "CopernicusDEM", "tiles")),
     tilebaseurl = "https://copernicus-dem-90m.s3.amazonaws.com",
@@ -187,6 +187,7 @@ function tunemalloc(trim::Integer)
     end
 end
 
+include("copdem_source_mode.jl")
 include("copdem_store.jl")
 include("copdem_synthetic.jl")
 include("copdem_policy.jl")
@@ -1117,9 +1118,8 @@ end
 
 function main(config = CONFIG)
     gcguard(config)
+    realspec = effective_realspec(config.source, config.real)
     println("="^92)
-    config.source in (:real, :synthetic) || error(
-        "source must be :real or :synthetic, got $(repr(config.source))")
     println(stamp(), "  copdem_production.jl — GLO-$(config.res) -> IGEO7 level " *
                      "$(config.level), level-$(config.ancestor) chunks, " *
                      "$(uppercase(String(config.source))) elevations")
@@ -1151,7 +1151,7 @@ function main(config = CONFIG)
     t0 = time()
     tiles = listedtiles(sys, tilelist, config.region)
     isempty(tiles) && error("the tile list and region select no tiles")
-    real = realtiles(sys, tiledir, config.real)
+    real = realtiles(sys, tiledir, realspec)
     filter!(p -> p.first in Set(tiles), real)
     provider = config.source === :real ? LazyCopernicusTiles(sys, tiles;
         cachedir = config.tilecache, baseurl = config.tilebaseurl,

@@ -1,8 +1,14 @@
 # Copernicus DEM GLO-90 -> IGEO7 level 12, into ONE global ancestor-subzone Zarr
 # store, written by W worker tasks in one process.
 #
-#     julia --project=bench -t 63 --gcthreads=8,1 scripts/copdem_production.jl \
+#     julia --project=bench -t 63 --gcthreads=8 scripts/copdem_production.jl \
 #         workers=21 region=all store=/home/asinghvi17/geo/dggstores/copdem90.zarr
+#
+# The GC thread count carries NO second field. `--gcthreads=N,1` turns on Julia's
+# concurrent page sweeper, which madvises freed pages from a background thread
+# while the workers run; the 2026-08-21 run died of a SIGSEGV that is exactly what
+# a page released out from under a live object looks like. `gcguard` below refuses
+# to start under it. See regrid-notes/2026-08-21-polar-segfault.md.
 #
 # The DEM itself is never downloaded. What IS real is the tile LIST: Copernicus
 # ships ~26 450 land tiles of the 64 800 the 1x1-degree lattice has, and the
@@ -85,6 +91,7 @@ const DEFAULTS = Dict{String,String}(
     "maxcolumns" => "0",           # 0 = no limit; a smoke-test knob
     "columns" => "",               # explicit column indices, overriding the covering
     "dryrun" => "false",           # plan and report, compute nothing
+    "allowsweeper" => "false",     # run anyway under `--gcthreads=N,1`; see `gcguard`
 )
 
 function parseargs(args)
@@ -136,7 +143,8 @@ const COLUMNCACHE = isempty(cfg("columncache")) ? STORE * ".columns.txt" :
 
 const LOGLOCK = ReentrantLock()
 const STARTED = Ref(time())
-const FAILURES = Ref(0)
+# Atomic: workers report their own column failures, so `+= 1` would lose some.
+const FAILURES = Threads.Atomic{Int}(0)
 
 stamp() = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
 
@@ -149,7 +157,7 @@ end
 
 function check(name, ok; detail = "")
     lock(LOGLOCK) do
-        ok || (FAILURES[] += 1)
+        ok || Threads.atomic_add!(FAILURES, 1)
         println(stamp(), "  ", ok ? "PASS  " : "FAIL  ", rpad(name, 56), detail)
         flush(stdout)
     end
@@ -475,8 +483,19 @@ Base.size(A::TiledDEM) = (A.ids.n,)
 DiskArrays.eachchunk(A::TiledDEM) = A.chunks
 DiskArrays.haschunks(::TiledDEM) = DiskArrays.Chunked()
 
+# GDAL is entered from whichever worker first wants a real tile, and
+# `tilevalues!` deliberately builds outside the stripe lock, so several workers
+# can be in `readtile` at once. ArchGDAL states no thread-safety guarantee, and
+# the whole holding is four 1x1-degree tiles decoded once each, so serialising
+# them costs nothing measurable and removes the only native-library race in the
+# run. (Not the 2026-08-21 crash: the cursor never reached the columns that
+# carry those tiles. It would have reached them ~1300 columns later.)
+const GDALLOCK = ReentrantLock()
+
 "The decoded band of the GeoTIFF at `path`, flattened into position order."
-readtile(path) = vec(ArchGDAL.read(ds -> ArchGDAL.read(ds, 1), path))
+readtile(path) = lock(GDALLOCK) do
+    vec(ArchGDAL.read(ds -> ArchGDAL.read(ds, 1), path))
+end
 
 """
     synthetic_tile(sys, tile, mask) -> Vector{Float32}
@@ -858,7 +877,7 @@ function runcolumns(cols, dem, srcspace, sys7, store, layout, done)
                         catch err
                             say("ERROR worker $w column $col: ",
                                 sprint(showerror, err, catch_backtrace())[1:min(end, 1500)])
-                            FAILURES[] += 1
+                            Threads.atomic_add!(FAILURES, 1)
                             continue
                         end
                         DGG.dggwrite!(store, col, vals)
@@ -1085,11 +1104,59 @@ end
 # Main
 # ===========================================================================
 
+"""
+    gcguard()
+
+Refuse to run under Julia's concurrent page sweeper.
+
+`--gcthreads=N,M` asks for `N` mark threads and `M` (0 or 1) threads for the
+*concurrent sweeping phase*. `M` defaults to 0; `M = 1` is an opt-in that hands a
+background thread the job of releasing swept pages — `jl_concurrent_gc_threadfun`
+→ `gc_free_pages` → `jl_gc_free_page` → `madvise` — while the worker threads keep
+running. `madvise(MADV_DONTNEED)` on anonymous memory does not unmap the page; it
+drops its contents, so the next read of anything still living there returns zeros.
+
+On 2026-08-21 this run died at column ~121700 with
+
+    [3718607] signal 11 (128): Segmentation fault
+    getindex at ./essentials.jl:920 [inlined]
+    _child_extent at GeometryOps .../dual_depth_first_search.jl:37 [inlined]
+    dual_depth_first_search at .../dual_depth_first_search.jl:78
+
+which is the `memoryrefget` *after* a `@boundscheck` that passed, on a freshly
+built seven-element `Vector{SphericalCap}` that no other task can reach — an
+`Array` whose length still read correctly while its data pointer did not. A page
+released under a live object produces precisely that, and the previous run's
+SIGTERM backtrace (same log, line 28153) caught the sweeper thread inside
+`madvise` in this very workload. Two independent audits and ~1000 Antarctic
+columns re-run under `--check-bounds=yes` found no out-of-bounds access, no
+unsafe/`ccall` code, and no unsynchronized shared state on the path.
+
+So the configuration is the defect, and this is where the configuration is
+written down. `allowsweeper=true` overrides, for someone deliberately testing it.
+"""
+function gcguard()
+    nsweep = Base.JLOptions().nsweepthreads
+    nsweep == 0 && return nothing
+    cfgbool("allowsweeper") && return say(
+        "WARNING: running with $nsweep concurrent GC sweep thread(s) by " *
+        "`allowsweeper=true`; this is the 2026-08-21 SIGSEGV configuration")
+    error("""
+        this run was launched with Julia's concurrent page sweeper enabled \
+        (--gcthreads=…,$nsweep). It released a page under a live object on \
+        2026-08-21 and killed the global run at column ~121700. Drop the second \
+        field: `--gcthreads=$(Base.JLOptions().nmarkthreads)`. Pass \
+        `allowsweeper=true` to run under it anyway.""")
+end
+
 function main()
+    gcguard()
     println("="^92)
     println(stamp(), "  copdem_production.jl — GLO-$RES -> IGEO7 level $LEVEL, " *
                      "level-$ANCESTOR ancestor columns, SYNTHETIC data")
-    println("  julia $(VERSION)  threads=$(Threads.nthreads())  gc=$(Threads.ngcthreads())  pid=$(getpid())")
+    println("  julia $(VERSION)  threads=$(Threads.nthreads())  " *
+            "gcmark=$(Base.JLOptions().nmarkthreads)  " *
+            "gcsweep=$(Base.JLOptions().nsweepthreads)  pid=$(getpid())")
     for k in sort!(collect(keys(CONFIG)))
         print("  $k=$(CONFIG[k])")
     end

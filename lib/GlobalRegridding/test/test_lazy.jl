@@ -211,6 +211,23 @@ end
         end
     end
 
+    @testset "a wave that loses a task still waits for the rest" begin
+        srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
+        j = min(3, length(srcchunks))
+        @test j > 1
+        dinds = cellindices(dstspace, 1)
+        # The first chunk of the wave throws; the others sleep. A `_fillwave!`
+        # that raises on the first `fetch` and abandons the rest would return
+        # with those tasks still running against a plan the caller is done with.
+        bad = Int(first(cellindices(srcspace, srcchunks[1])))
+        method = WaveFailMethod(bad, 0.25)
+        plan = t7_plan(method, dstspace, srcspace)
+        wave = GR.CachedBlock[]
+        @test_throws Exception GR._fillwave!(wave, plan, 1, srcchunks, 1, j,
+            dinds, GR.TileCells(plan.dst_space, dinds))
+        @test method.finished[] == j - 1
+    end
+
     @testset "at top level the wave is weighed against inner threading" begin
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
         srcchunks = GR.connectedchunks(dstspace, 1, srcspace)

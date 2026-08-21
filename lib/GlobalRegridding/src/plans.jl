@@ -148,22 +148,25 @@ end
 
 PerChunk(capacity::Integer) = PerChunk(; capacity)
 
+# The three observers below take the lock like every other reader of `blocks`.
+# A wave builds concurrently, and `length(::Dict)` read while `_insert!` rehashes
+# is the one way a caller merely *looking* at the cache can see a torn table.
 Base.show(io::IO, s::PerChunk) =
-    print(io, "PerChunk(", length(s.blocks), " blocks, ", s.bytes, " bytes)")
+    @lock s.lock print(io, "PerChunk(", length(s.blocks), " blocks, ", s.bytes, " bytes)")
 
 """
     nblocks(storage) -> Int
 
 How many [`WeightBlock`](@ref)s `storage` currently holds.
 """
-nblocks(s::PerChunk) = length(s.blocks)
+nblocks(s::PerChunk) = @lock s.lock length(s.blocks)
 
 """
     storagebytes(storage) -> Int
 
 The approximate resident size in bytes of the blocks `storage` holds.
 """
-storagebytes(s::PerChunk) = s.bytes
+storagebytes(s::PerChunk) = @lock s.lock s.bytes
 
 """
     getblock!(storage, key, build) -> CachedBlock

@@ -41,6 +41,15 @@ const SNY_G = deg2rad(36.0)
 const SNY_SING = sind(36.0)
 const SNY_COSG = cosd(36.0)
 
+"""
+    SNY_SING_COSLG
+
+`sin G·cos g` — the `sin Az` coefficient of the cosine of Snyder's third
+spherical-triangle angle, `cos H = sin Az·sin G·cos g − cos Az·cos G`
+(see [`snyder_inv_xyz`](@ref)).
+"""
+const SNY_SING_COSLG = SNY_SING * COS_LG
+
 "`cot θ` with Snyder's `θ = 30°` (per-face sector half-angle): `√3`."
 const SNY_COTT = sqrt(3.0)
 
@@ -224,9 +233,9 @@ end
     snyder_inv_xyz(face, w) -> NTuple{3,Float64}
 
 Map planar Snyder coordinate `w` on `face` back to a grid-frame unit vector.
-The azimuth solve uses at most 10 Newton iterations. Coordinates beyond the
-face triangle are valid for
-development-frame fringe cells.
+The azimuth solve is closed form (Snyder's equal-area inverse iterates it;
+it need not — see the derivation in the body). Coordinates beyond the face
+triangle are valid for development-frame fringe cells.
 """
 function snyder_inv_xyz(f::Int, w::ComplexF64)
     fc = @inbounds FACES[f+1]
@@ -237,19 +246,27 @@ function snyder_inv_xyz(f::Int, w::ComplexF64)
     Azps = Azp - k * SNY_SECTOR
     sp, cp = sincos(Azps)
     AG = SNY_AG_COEF * sp / (sp * COS_30 + cp * 0.5)   # /sin(Azps + 30°), expanded
-    Az = Azps
-    sA, cA = sp, cp
-    for _ in 1:10
-        x = clamp(sA * SNY_SING * COS_LG - cA * SNY_COSG, -1.0, 1.0)
-        H = acos(x)
-        F = Az + SNY_G + H - pi - AG
-        Fp = 1 - (cA * SNY_SING * COS_LG + sA * SNY_COSG) / sqrt(1 - x * x)
-        dlt = -F / Fp
-        Az += dlt
-        abs(dlt) <= 1e-7 && break                # applied step: O(δ²) ≈ 1e-14 left
-        sA, cA = sincos(Az)
-    end
-    sA, cA = sincos(Az)
+    # Snyder's inverse states the equal-area condition as Girard's excess,
+    #   F(Az) = Az + G + H(Az) − π − AG = 0,
+    #   H(Az) = acos(sin Az·sin G·cos g − cos Az·cos G) ∈ [0, π],
+    # and solves it by Newton iteration. It does not need to be iterated. The
+    # condition is H = K − Az with K = π − G + AG; taking the cosine of both
+    # sides, with cos K = −cos(G−AG) and sin K = sin(G−AG), kills the acos:
+    #   sin Az·(sin(G−AG) − sin G·cos g) = cos Az·(cos(G−AG) − cos G).
+    # `AG` does not depend on `Az`, so this is *linear* in (sin Az, cos Az) —
+    # it fixes the direction (xx, yy) below up to sign. `cos(G−AG) ≥ cos G`
+    # for every reachable `AG` (0 ≤ AG ≤ 2G; the chart reaches AG ≤ π/15),
+    # hence `sin Az ≥ 0` and the *positive* multiple is unconditionally the
+    # root — no quadrant logic, no `atan`. It is the same root Newton found,
+    # and not merely on this domain: with `R = √(sin²G·cos²g + cos²G) ≈ 0.934`
+    # one gets `F′(Az) ∈ [1−R, 1+R] > 0` for every real `Az`, so `F` is
+    # strictly increasing and has exactly one root — there is no second branch
+    # to land on. The same `R` puts a floor under the radius below, `1−R`.
+    sd, cd = sincos(SNY_G - AG)
+    yy = cd - SNY_COSG                           # ∝ sin Az, ≥ 0
+    xx = sd - SNY_SING_COSLG                     # ∝ cos Az (either sign)
+    ir = 1 / sqrt(xx * xx + yy * yy)             # radius ≥ 0.0658 on the chart
+    sA, cA = yy * ir, xx * ir
     dp = R_EA / (cp + sp * SNY_COTT)
     t = clamp((rho / dp) * _sin_half_q(cA + sA * SNY_COTT), -1.0, 1.0)
     cz = 1 - 2 * t * t                           # cos z,  z = 2·asin t

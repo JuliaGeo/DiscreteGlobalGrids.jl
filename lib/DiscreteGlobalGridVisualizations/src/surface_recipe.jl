@@ -1,8 +1,7 @@
 # # The surface recipe
 #
-# `dggsurface` is `dggpoly`'s counterpart: same cells, same colour vector, but
-# drawn as the field the cells sample rather than as the cells themselves.  The
-# mesh comes from `surface.jl`; everything here is Makie plumbing.
+# `dggsurface` takes the same cells and the same colour vector `dggpoly` does,
+# and draws the field they sample.  The mesh comes from `surface.jl`.
 
 """
     dggsurface(cells; color = ..., kwargs...)
@@ -11,15 +10,15 @@ Draw a set of DGGS cells as one interpolated surface.
 
 Where [`dggpoly`](@ref) gives each cell its own patch of one flat colour, this
 puts a vertex at each cell's **centroid**, gives it that cell's value, and joins
-the centroids with the triangles of the grid's dual — so the value varies
-continuously between cell centres instead of jumping at cell edges.  It is the
-right picture for a sampled field (elevation, temperature, a model output) and
-the wrong one for a categorical one, where the cell boundaries are the point.
+the centroids with the triangles of the grid's dual, so the value varies
+continuously between cell centres instead of jumping at cell edges.  That is the
+picture for a sampled field — elevation, temperature, a model output — and not
+for a categorical one, where the cell boundaries are the point.
 
 `cells` is anything [`cellregion`](@ref) accepts: an `AbstractGrid`, a
-`PartialGrid`, a `CellVector` or a `CellLookup`.  Unlike `dggpoly` it will not
-take a bare list of ids or a `MultiOrderCellSet`, because a surface is built out
-of which cells touch which and neither of those says.
+`PartialGrid`, a `CellVector` or a `CellLookup`.  Unlike `dggpoly` it takes
+neither a bare list of ids nor a `MultiOrderCellSet`, neither of which says
+which cells touch which.
 
 `color` is a single colour, or one value or colour **per cell**.
 
@@ -29,36 +28,29 @@ cells = DGG.CellVector(DGG.query(sys, DGG.MultiOrderCoverage(extent); level = 9)
 dggsurface(cells; color = elevation)
 ```
 
-The mesh has one vertex per cell and about two triangles per cell, against
-`dggpoly`'s six vertices and four triangles, so it is also the cheaper of the
-two to draw — and a recolour costs nothing at all, because a per-cell colour
-vector *is* the vertex buffer.
-
 A partial grid comes out with a ragged edge: a cell whose neighbours are missing
-takes part in fewer triangles, and the surface simply stops where the data does.
-It stops half a cell short of where `dggpoly` would draw, because a surface can
-only reach as far as the outermost centroid.
+takes part in fewer triangles, and the surface stops where the data does — half
+a cell short of `dggpoly`, since it can reach no further than the outermost
+centroid.
 
-The plot adapts to the axis it is placed in, as `dggpoly` does.  In a
-`GeoMakie.GlobeAxis` the surface closes over the whole sphere with nothing to
-cut.  In an `Axis` or a `GeoAxis` it is built in longitude/latitude: triangles
-straddling the map's cut are split against it, and the one triangle over each
-pole is drawn as the polar cap it covers, so a global surface has no wedge
-missing at the top.
+The plot adapts to the axis it is placed in, as `dggpoly` does.  A
+`GeoMakie.GlobeAxis` has nothing to cut.  An `Axis` or `GeoAxis` is built in
+longitude/latitude, with triangles straddling the map's cut split against it and
+the one over each pole drawn as the cap it covers.
 """
 @recipe DGGSurface (cells,) begin
     """
-    Sets the colour of the surface.  Either a single colour, or a vector with
-    one entry per cell — numbers to be mapped through the colormap, or colours —
-    which is interpolated across the triangles between cell centres.
+    Sets the colour of the surface.  Either a single colour, or a vector with one
+    entry per cell — numbers to be mapped through the colormap, or colours —
+    interpolated across the triangles between cell centres.
     """
     color = @inherit patchcolor
-    "Controls whether lights affect the surface.  Off by default: the height of a DGGS surface is not a shape, it is a colour."
+    "Controls whether lights affect the surface.  Off by default: a DGGS surface carries a value, not a shape."
     shading = Makie.NoShading
     """
-    Whether to split triangles that straddle the map's cut meridian, and to fill
-    the polar caps.  Only planar targets have a cut; on a globe this attribute
-    does nothing.
+    Whether to split triangles that straddle the map's cut meridian and to fill
+    the polar caps.  Only planar targets have a cut; on a globe this does
+    nothing.
     """
     wrap = true
     "How many tasks build the mesh."
@@ -76,10 +68,9 @@ Makie.convert_arguments(::Type{<:DGGSurface}, x) = (cellregion(x),)
 
 Spread a per-cell colour over the mesh's vertices.
 
-The first `ncells` vertices *are* the cells, in order, so a colour vector as long
-as the cell set is already the vertex buffer and is handed on untouched — which
-is the usual case, and costs nothing.  It is only a mesh carrying extra vertices
-from a seam or a pole that needs the gather, and then only for those.
+The first `ncells` vertices are the cells in order, so a vector already as long
+as the vertex buffer is handed on untouched.  Only a mesh carrying extra
+vertices from a seam or a pole needs the gather.
 """
 function vertex_colors(mesh::SurfaceMesh, color)
     color isa AbstractVector || return color

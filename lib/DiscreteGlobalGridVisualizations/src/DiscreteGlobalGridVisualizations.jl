@@ -24,16 +24,13 @@ dggpoly(cells; color = values)
 
 [`dggsurface`](@ref) takes the same arguments and draws the same cells as the
 continuous field they sample: a vertex at each cell's **centroid**, carrying
-that cell's value, joined by the triangles of the grid's dual.  The value then
-varies smoothly between cell centres instead of jumping at cell edges, which is
-the right picture for elevation or temperature and the wrong one for a
-categorical field, where the cell boundaries are the point.
+that cell's value, joined by the triangles of the grid's dual.  The value varies
+smoothly between cell centres rather than jumping at cell edges — the picture
+for elevation or temperature, not for a categorical field.
 
-It is also the cheaper mesh — one vertex and about two triangles per cell,
-against six and four — and the one whose colour costs nothing, because a
-per-cell colour vector already *is* the vertex buffer.  The dual's triangles are
-found from adjacency alone, with a rule that gives each grid corner exactly one
-owner, so no triangle is ever emitted twice and nothing has to be de-duplicated
+It is the smaller mesh, one vertex and about two triangles per cell against six
+and four.  Its triangles come from adjacency alone, under a rule that gives each
+grid corner one owner, so none is emitted twice and none has to be de-duplicated
 afterwards; see `surface.jl`.
 
 ## Drawing less than you were given

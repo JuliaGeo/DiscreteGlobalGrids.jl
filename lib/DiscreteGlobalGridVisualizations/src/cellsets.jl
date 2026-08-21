@@ -81,22 +81,19 @@ cellset(iterator::SubtreeIterator) =
 # bare vector of ids needs no level agreement.
 cellset(source, ids::AbstractVector) = CellSet(source, ids)
 
-# # Naming a set of cells that has a shape
+# # Naming a set of cells with adjacency
 #
-# A [`CellSet`](@ref) is enough to *draw* cells, because a boundary ring can be
-# read for one cell at a time and no cell needs to know about any other.  A
-# surface needs more: it is built out of which cells touch which, so the set has
-# to be one the package can answer `adjacency` about — a single level, with
-# every member's position in the set being the index its value is stored at.
+# A [`CellSet`](@ref) is enough to draw cells one boundary at a time.  A surface
+# also needs which cells touch which, so its set must be one `adjacency` can
+# answer about: a single level, positions doubling as data indices.
 
 """
     CellRegion(region, source, cells)
 
-A set of DGGS cells whose *topology* can be read, which is what a surface is
-built from.
+A set of DGGS cells whose adjacency can be read.
 
-  * `region` — what `DiscreteGlobalGrids.adjacency` is asked about.  Its
-    positions `1:length(region)` are the index a colour vector is read by.
+  * `region` — what `DiscreteGlobalGrids.adjacency` is asked about; its positions
+    `1:length(region)` index a colour vector.
   * `source` — what `cell_centroid` is asked of.
   * `cells` — `cells[p]` is the cell at position `p`.
 
@@ -118,20 +115,18 @@ Read `x` as a set of cells with adjacency, for [`triangulate`](@ref).
 Accepts a `CellRegion`, an `AbstractGrid` — `PartialGrid` included — a
 `CellVector`, or a `CellLookup`.
 
-It does not accept the things [`cellset`](@ref) accepts on top of these: a
-`MultiOrderCellSet` holds cells at several levels at once, so there is no one
-level for adjacency to be measured on, and a bare vector of ids names no set for
-a neighbour to be inside or outside of.  Both draw perfectly well with
-[`dggpoly`](@ref); neither has a surface.
+The rest of what [`cellset`](@ref) takes has no adjacency to read: a
+`MultiOrderCellSet` spans several levels, so there is no one level to measure it
+on, and a bare vector of ids names no set for a neighbour to be inside or
+outside of.
 """
 function cellregion end
 
 cellregion(cr::CellRegion) = cr
 cellregion(grid::DGG.AbstractGrid) = CellRegion(grid, grid, GridCells(grid))
 
-# A `CellVector` is the region — its own positions are what `adjacency` answers
-# in — but it is not a geometry source, so centroids come from the level grid it
-# indexes into.
+# A `CellVector` is the region, but not a geometry source, so centroids come
+# from the level grid it indexes into.
 cellregion(cv::DGG.CellVector) =
     CellRegion(cv, DGG.levelgrid(DGG.system(cv), DGG.level(cv)), cv)
 

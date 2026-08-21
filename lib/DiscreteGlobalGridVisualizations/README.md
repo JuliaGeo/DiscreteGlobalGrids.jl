@@ -94,20 +94,19 @@ apart by how far longitude turns in going once around the cell's ring:
 
 ## Drawing the field: `dggsurface`
 
-`dggpoly` draws the cells.  `dggsurface` draws what the cells are *measuring*:
-a vertex at each cell's centroid carrying that cell's value, joined by the
+`dggpoly` draws the cells.  `dggsurface` draws what they are *measuring*: a
+vertex at each cell's centroid carrying that cell's value, joined by the
 triangles of the grid's dual, so the value varies continuously between cell
-centres rather than jumping at cell edges.  It is the right picture for a
-sampled field — elevation, temperature, a model output — and the wrong one for
-a categorical one, where the cell boundaries are the point.
+centres rather than jumping at cell edges.  The picture for a sampled field —
+elevation, temperature, a model output — and not for a categorical one, where
+the cell boundaries are the point.
 
 ```julia
 dggsurface(cells; color = elevation)
 ```
 
-It is also the cheaper of the two.  One vertex per cell and about two triangles
-per cell, against six vertices and four triangles for the same cells drawn as
-patches:
+It is also the cheaper of the two: one vertex and about two triangles per cell,
+against six and four for the same cells drawn as patches.
 
 | cells | `tessellate` | `triangulate` | vertices | triangles | GPU bytes |
 | --- | --- | --- | --- | --- | --- |
@@ -115,22 +114,20 @@ patches:
 | 1,176,492 | 0.466 s | 0.181 s | 7,063,552 → 1,190,931 | 4,708,266 → 2,357,106 | 161.7 → 45.1 MiB |
 | 8,235,432 | 2.310 s | 1.312 s | 49,424,976 → 8,272,583 | 32,947,918 → 16,481,476 | 1131.2 → 314.8 MiB |
 
-IGEO7 whole levels, 8 threads, longitude/latitude.  Recolouring is free rather
-than cheap: on a globe the first `ncells` vertices *are* the cells, in order, so
-a per-cell colour vector is handed to the GPU unchanged.
+IGEO7 whole levels, 8 threads, longitude/latitude.  On a globe the first
+`ncells` vertices are the cells in order, so a per-cell colour vector reaches
+the GPU unchanged.
 
 ### Finding the corners without a corner index
 
 The dual's triangles sit at the grid's *corners* — where `n` cells meet, their
-`n` centroids ring that corner and fan into `n - 2` triangles — and
-`DiscreteGlobalGrids` has no verb that lists corners.  Cell boundaries are
-floating-point rings that neighbouring cells do not agree on bit for bit, so
-matching coordinates is not an option either.
+centroids ring that corner and fan into `n - 2` triangles — and the package has
+no verb that lists corners.  Cell boundaries are floating-point rings that
+neighbours do not agree on bit for bit, so matching coordinates is out too.
 
-What the package does state exactly is adjacency, counter-clockwise.  That is
-enough, because the cells meeting at a corner all touch one another, and such a
-set appears in each of its members' rings as a run of consecutive neighbours.
-So for a cell `a` and a consecutive pair `(b, c)` in its ring:
+Adjacency, though, is stated exactly and counter-clockwise, and the cells at a
+corner all touch one another, which puts them in each other's rings as a run of
+consecutive neighbours.  For a cell `a` and a consecutive pair `(b, c)`:
 
 1. `b` and `c` must touch each other, or the three share no corner.  On a
    partial grid this is also what stops a triangle bridging a hole: two ring
@@ -140,24 +137,23 @@ So for a cell `a` and a consecutive pair `(b, c)` in its ring:
    another — that run plus `a` is the corner's cell set.
 3. Emit the triangle only if `a` is the **smallest** member of that set.
 
-Step 3 is the whole anti-duplication scheme, and it costs nothing: no shared
-hash set, no post-hoc `unique`, nothing that would serialise the loop.  Each
-corner is owned by one of the cells around it, that cell fans it, and the rest
-stay quiet.
+Step 3 gives each corner one owner, so no triangle is emitted twice — without a
+shared hash set, a later `unique`, or anything else that would serialise the
+loop.
 
 Step 2 is what makes one rule right for square cells as well as hexagons.
 Three cells to a corner (IGEO7, H3) gives runs of two and one triangle each;
-four (HEALPix, S2, ISEA4R) gives runs of three and a fan of two; five, where
-ISEA4R's diamonds meet an icosahedral vertex, gives three.  Without it a
-four-cell corner would emit all four of its triangles instead of two and the
-surface would be drawn twice over.
+four (HEALPix, S2, ISEA4R) runs of three and a fan of two; five, where ISEA4R's
+diamonds meet an icosahedral vertex, a fan of three.  Without it a four-cell
+corner would emit all four of its triangles and the surface would be drawn
+twice over.
 
-None of this is asserted — it is measured.  The test suite adds up the *signed*
-spherical area of every triangle of a whole level and requires `4π`, which a
-gap would fail as surely as an overlap, and repeats it in longitude/latitude
-against the map rectangle, which also says the seam was split cleanly and both
-polar caps were filled.  Every system in `DGG.systems()`, levels 1 through 4,
-three different cut meridians.
+This is measured rather than asserted.  The tests add up the *signed* spherical
+area of every triangle of a whole level and require `4π`, which a gap fails as
+surely as an overlap, then repeat it in longitude/latitude against the map
+rectangle, which also says the seam split cleanly and both polar caps were
+filled.  Every system in `DGG.systems()`, levels 1 through 4, three cut
+meridians.
 
 ### The seam and the poles
 
@@ -170,36 +166,32 @@ tells them apart the same way — by how far longitude turns in going once aroun
   its outline and the pole, spanning the map and closed along the top or bottom
   edge, one trapezoid per outline segment.
 
-The outline is the triangle's three corners and nothing else — no point is
-interpolated along an edge, because the triangle on the other side of that edge
-draws it as the straight segment between the same two corners, and bending one
-copy and not the other is what opens a gap.  The one thing worked out rather
-than read off is which way longitude sweeps along each edge, which for an edge
-running beside a pole is not the short way.  Longitude runs monotonically along
-any great circle that is not a meridian, and which way is the sign of
-`(a × b)ᶻ` — an exact answer, and an *anti-symmetric* one, so the triangle on
-the other side computes the same number negated bit for bit and the two always
-agree on the ground the edge covers.
+The outline is the three corners and nothing else: an edge is shared, the
+triangle across it draws that edge as the straight segment between the same two
+corners, and bending one copy and not the other opens a gap.  What is worked out
+rather than read off is which way longitude sweeps along each edge, which beside
+a pole is not the short way.  Longitude runs monotonically along any great
+circle that is not a meridian, and the direction is the sign of `(a × b)ᶻ` — an
+exact answer, and an anti-symmetric one, so the triangle across the edge gets
+the same number negated bit for bit and the two always agree.
 
 `(a × b)ᶻ` is exactly zero when the edge's great circle passes through both
 poles, and the two pole corners are then inserted.  Grids whose cells meet four
-to a corner put a pole on a dual edge exactly, so for them this is the ordinary
-case and not an exotic one.
+to a corner put a pole on a dual edge exactly.
 
 ### What it will not draw
 
 `dggsurface` takes an `AbstractGrid`, a `PartialGrid`, a `CellVector` or a
 `CellLookup` — not the bare vector of ids or the `MultiOrderCellSet` that
-`dggpoly` accepts.  A surface is built out of which cells touch which; a list of
-ids names no set for a neighbour to be inside or outside of, and a multi-order
-set holds cells at several levels at once, so there is no one level for
-adjacency to be measured on.
+`dggpoly` accepts.  A list of ids names no set for a neighbour to be inside or
+outside of, and a multi-order set spans several levels, so adjacency has no one
+level to be measured on.
 
 A partial grid comes out with a ragged edge: a cell whose neighbours are missing
 takes part in fewer triangles, and the surface stops where the data does — half
-a cell short of where `dggpoly` would draw, because a surface can only reach as
-far as the outermost centroid.  What it draws is exactly the complete dual
-restricted to the cells present, which the tests check triangle for triangle.
+a cell short of `dggpoly`, since it can reach no further than the outermost
+centroid.  What it draws is the complete dual restricted to the cells present,
+which the tests check triangle for triangle.
 
 ## Drawing less: `dggresample`
 

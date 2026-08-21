@@ -1,71 +1,51 @@
 # # Turning cells into one surface
 #
-# `tessellate.jl` draws the cells: every cell becomes its own little patch of a
-# single colour, and neighbouring cells share nothing.  This file draws the
-# *field* the cells sample.  A vertex is a cell **centroid**, it carries that
-# cell's value, and the triangles between centroids let the GPU interpolate —
-# which is what turns a discrete global grid into a continuous surface.
+# `tessellate.jl` draws the cells.  This file draws the field they sample: a
+# vertex per cell **centroid**, carrying that cell's value, joined by the
+# triangles of the grid's dual so that the GPU interpolates between cell
+# centres.  Where `n` cells meet at a grid corner their centroids ring it and
+# fan into `n - 2` triangles; over every corner, those triangles tile the sphere
+# exactly once.
 #
-# The mesh is the grid's topological dual.  Where `n` cells meet at a grid
-# corner, their `n` centroids form a small polygon around that corner, and
-# fanning it gives `n - 2` triangles.  Do that at every corner and the triangles
-# tile the sphere exactly once — no gap, no overlap.
+# ## Finding the corners
 #
-# ## Finding the corners without a corner index
+# There is no verb that lists corners, and cell boundaries are floating-point
+# rings that neighbours do not agree on bit for bit, so coordinates cannot be
+# matched either.  Adjacency is stated exactly, though, and the cells at a
+# corner all touch one another, which puts them in each other's rings as a run
+# of consecutive neighbours.  For a cell `a` and a consecutive ring pair
+# `(b, c)`:
 #
-# `DiscreteGlobalGrids` has no "list the corners" verb, and cell boundaries are
-# floating-point rings that neighbouring cells do not agree on bit for bit, so
-# corners cannot be recovered by matching coordinates.  What the package does
-# state exactly is adjacency: `neighbors` returns a cell's neighbours in one
-# counter-clockwise turn.  That is enough, because the cells meeting at a corner
-# are precisely a set of cells that all touch one another — a clique in the
-# adjacency graph — and each such clique appears in each of its members' rings
-# as a **run of consecutive neighbours**.
-#
-# So for a cell `a` and a consecutive pair `(b, c)` in its ring:
-#
-#  1. `b` and `c` must touch each other, or `a`, `b` and `c` do not share a
-#     corner at all.  On a partial grid this is also what stops a triangle from
-#     bridging a hole: two ring members either side of a missing one come out
-#     consecutive, and this test throws the pair away.
-#  2. Widen `(b, c)` to the largest run of neighbours of `a` that all touch one
+#  1. `b` and `c` must touch each other, or the three share no corner.  On a
+#     partial grid this also stops a triangle bridging a hole, where two members
+#     either side of a missing one come out consecutive.
+#  2. Widen `(b, c)` to the largest run of `a`'s neighbours that all touch one
 #     another.  That run plus `a` is the corner's cell set.
-#  3. Emit the triangle `(a, b, c)` only if `a` is the *smallest* member of that
-#     set.
+#  3. Emit only if `a` is the smallest member of that set.
 #
-# Step 3 is the anti-duplication rule, and it costs nothing: no shared hash set,
-# no post-hoc `unique`, nothing that would serialise the loop.  Each corner is
-# owned by one of its cells, that cell fans it, and every other cell around it
-# stays quiet.  Emitting per *pair* rather than per run matters too — in a
-# degenerate neighbourhood two different maximal runs can overlap, and a pair
-# belongs to at most one triangle whatever the runs do.
+# Step 3 gives each corner one owner, so no triangle is emitted twice without a
+# shared hash set or a later `unique`.  Emitting per pair rather than per run
+# keeps that true where two maximal runs overlap.
 #
-# Step 2 is what makes the same code right for square cells as for hexagons.
-# Three cells to a corner (IGeo7, H3) gives runs of two and one triangle each;
-# four (HEALPix, S2, ISEA4R) gives runs of three and a fan of two; five, where
-# ISEA4R's diamonds meet an icosahedral vertex, gives three.  Without step 2 a
-# four-cell corner would emit all four of its triangles instead of two, and the
-# surface would be drawn twice over.
-#
-# The result is checked, not asserted: the test suite sums the signed spherical
-# area of every triangle of a whole level and requires `4π`.
+# Step 2 is what makes one rule right for square cells as well as hexagons.  A
+# corner of `n` cells is a run of `n - 1`, fanned into `n - 2` triangles: one at
+# the three-cell corners of IGeo7 and H3, two at the four-cell corners of
+# HEALPix, S2 and ISEA4R, three where ISEA4R's diamonds meet an icosahedral
+# vertex.  Without the widening, a four-cell corner would be emitted as four
+# overlapping triangles instead of two.
 
 """
     SurfaceMesh(positions, faces, vertex_cell, ncells, nsplit)
 
 A set of DGGS cells as one interpolated surface in an axis's data space.
 
-  * `positions` — the vertices.  The first `ncells` are the cells' own
-    centroids, in cell order; anything after them belongs to a triangle that had
-    to be cut at the map's edge (see below).
+  * `positions` — the vertices.  The first `ncells` are the cells' centroids in
+    cell order; the rest belong to triangles cut at the map's edge.
   * `faces` — the triangles of the grid's dual, over `positions`.
-  * `vertex_cell` — the cell each vertex takes its value from.  For the first
-    `ncells` this is the identity, which is what lets a per-cell colour vector be
-    handed to the GPU untouched.
-  * `ncells` — how many cells went in, which is the length a colour vector must
-    have.
-  * `nsplit` — how many triangles needed cutting at the map's seam or filling in
-    at a pole.  Zero on a globe, and zero on a plot that does not reach either.
+  * `vertex_cell` — the cell each vertex takes its value from; the identity over
+    the first `ncells`.
+  * `ncells` — the length a colour vector must have.
+  * `nsplit` — triangles cut at the seam or capped at a pole.  Zero on a globe.
 
 Built by [`triangulate`](@ref).  Compare [`CellMesh`](@ref), which draws the
 same cells as flat patches.
@@ -80,16 +60,11 @@ end
 
 Base.isempty(m::SurfaceMesh) = isempty(m.faces)
 
-"How many triangles the surface is drawn from."
 ntriangles(m::SurfaceMesh) = length(m.faces)
 
-# ## Reading the adjacency graph
-#
-# `adjacency` hands back a CSR table of counter-clockwise rings addressed by
-# in-region position, which is the same index the vertex buffer and the colour
-# vector use.  Everything below is integers into that table.
+# `adjacency` gives counter-clockwise rings addressed by in-region position,
+# which is also the index the vertex buffer and the colour vector use.
 
-"Is `b` in the ring `r`?"
 @inline function inring(r, b::Int)
     @inbounds for x in r
         x == b && return true
@@ -102,10 +77,9 @@ end
 
 Does ring member `m` touch every member of the cyclic run `lo:hi`?
 
-The run is already known to be pairwise touching, so one member against the run
-is all that is left to check.  The scan runs from the far end inwards because
-the near end is the one most likely to touch — in a hexagonal ring the next
-neighbour round always does — and the answer wanted here is usually `false`.
+The run is already pairwise touching, so only the new member has to be checked.
+The scan starts at the far end, which is the one likely to answer `false`: in a
+hexagonal ring the near end always touches.
 """
 @inline function touches_all(adj, r, k::Int, lo::Int, hi::Int, m::Int)
     @inbounds y = r[mod1(m, k)]
@@ -119,13 +93,12 @@ end
 """
     corner_run(adj, r, k, i) -> (lo, hi)
 
-The corner that the consecutive ring pair `(i, i + 1)` belongs to, as the widest
-cyclic run of `r` whose members all touch one another.
+The corner that the consecutive ring pair `(i, i + 1)` belongs to: the widest
+cyclic run of the ring `r` whose members all touch one another.
 
-`r` is one cell's counter-clockwise ring and `k` its length.  The run is grown
-outwards from the pair, forwards first; a neighbourhood dense enough for two
-maximal runs to overlap therefore gets one of them rather than an argument, and
-the caller's per-pair emission keeps that from mattering.
+The run grows outwards from the pair, forwards first, so where two maximal runs
+overlap this picks one of them.  The caller emits per pair, which keeps that
+choice from mattering.
 """
 @inline function corner_run(adj, r, k::Int, i::Int)
     lo, hi = i, i + 1
@@ -142,8 +115,6 @@ end
     owns_corner(r, k, lo, hi, a) -> Bool
 
 Is `a` the smallest cell of the corner whose other members are `r[lo:hi]`?
-
-The one rule that keeps a corner from being drawn once per cell around it.
 """
 @inline function owns_corner(r, k::Int, lo::Int, hi::Int, a::Int)
     @inbounds for j in lo:hi
@@ -152,15 +123,10 @@ The one rule that keeps a corner from being drawn once per cell around it.
     return true
 end
 
-# ## Per-task output
-#
 # A task owns a contiguous block of cells and writes triangles for the corners
-# those cells own.  Face indices are into a buffer that is `[all centroids;
-# this task's extra vertices]`: an index of `n` or less names a centroid and
-# needs no fixing up at merge time, and a larger one is task-local and gets
-# shifted.  Since the overwhelming majority of triangles are three centroids,
-# the overwhelming majority of the merge is a `copyto!` of faces that are
-# already correct.
+# those cells own.  Face indices address `[all centroids; this task's extra
+# vertices]`, so an index of `n` or less names a centroid and needs no fixing up
+# at merge time, and a larger one is task-local and gets shifted.
 
 struct SurfaceChunk{P}
     faces::Vector{NTuple{3, Int32}}
@@ -191,8 +157,7 @@ end
 
 Add `m` vertices of a cut or polar triangle as this task's own, and fan them.
 
-`n` is the number of shared centroid vertices, which is where task-local vertex
-numbering starts.
+`n` is the number of shared centroid vertices, where task-local numbering starts.
 """
 function emit_private_fan!(chunk::SurfaceChunk{P}, pts::Vector{P}, tags::Vector{Int32},
         m::Int, n::Int) where {P}
@@ -208,20 +173,16 @@ function emit_private_fan!(chunk::SurfaceChunk{P}, pts::Vector{P}, tags::Vector{
     return m - 2
 end
 
-# ## The globe path
-#
-# Nothing to cut and nothing to fill: every triangle is three centroids, so the
-# whole task writes faces and no vertices at all.
+# Nothing to cut and nothing to cap, so every triangle is three shared
+# centroids and the task writes faces only.
 
 function fill_surface!(chunk::SurfaceChunk, ::GlobeTarget, adj, lo::Int, hi::Int, n::Int)
     @inbounds for a in lo:hi
         r = adj[a]
         k = length(r)
         k < 2 && continue
-        # A ring of two has one pair, not two: `(r₁, r₂)` and `(r₂, r₁)` are the
-        # same corner, and walking both would draw its triangle twice.  A cell
-        # left with two neighbours is a partial grid's edge, so this is the
-        # ragged-boundary case, not a curiosity.
+        # A ring of two has one pair: `(r₁, r₂)` and `(r₂, r₁)` are the same
+        # corner, and walking both would draw its triangle twice.
         npairs = k == 2 ? 1 : k
         for i in 1:npairs
             b = r[i]
@@ -235,13 +196,10 @@ function fill_surface!(chunk::SurfaceChunk, ::GlobeTarget, adj, lo::Int, hi::Int
     return 0
 end
 
-# ## The planar path
-#
-# The centroids are already in longitude and latitude inside the map's window,
-# so a triangle is shared-vertex work unless longitude says otherwise.  Two
-# things say otherwise, and they are told apart by how far longitude turns in
-# going once round the triangle: `0` for one that merely straddles the map's cut,
-# and `±360` for the one triangle at each pole that *contains* it.
+# The centroids already sit in the map's window, so a triangle is shared-vertex
+# work unless longitude says otherwise.  How far longitude turns in going once
+# round tells the two exceptions apart: `0` for one straddling the map's cut,
+# `±360` for the one at each pole that contains it.
 
 """
     outline_triangle!(pts, tags, u1, u2, u3, c1, c2, c3) -> winding
@@ -249,46 +207,23 @@ end
 Fill `pts` with the triangle's outline in longitude/latitude degrees and return
 how far longitude turned in going once around.
 
-The outline is the triangle's three corners and **nothing else** — no point is
-interpolated along an edge — because an edge here is shared with the triangle on
-its other side, which draws it as the straight lon/lat segment between the same
-two corners.  Bending one copy of a shared edge and not the other is what opens
-a gap between them, so the only thing this does that reading the corners would
-not is work out how far longitude sweeps along each edge, and insert the two
-pole corners when an edge runs exactly over a pole.
+The outline is the three corners and nothing else: every edge is shared, the
+triangle across it draws that edge as the straight lon/lat segment between the
+same two corners, and bending one copy and not the other opens a gap.  Only the
+longitude sweep along each edge is worked out rather than read off.
 
-## Which way an edge sweeps
-
-An edge is a great-circle arc between two neighbouring cell centroids, so it is
-short, and its longitude sweep is the short way round — unless it runs beside a
-pole, where a short arc can sweep almost half a turn either way and where the
-short way is not necessarily the true one.
-
-Longitude runs monotonically along any great circle that is not a meridian, and
-which way it runs is the sign of `(a × b)ᶻ`.  That is the exact answer, and more
-to the point it is an **anti-symmetric** one: the triangle on the other side of
-this edge computes `(b × a)ᶻ`, which is this number negated bit for bit however
-nearly zero it is.  So the two of them always sweep the shared edge in opposite
-directions and always agree on the ground it covers, which is the property that
-makes the drawn triangles meet rather than overlap or part.
-
-The sign is only consulted for a sweep of a quarter turn or more.  A short
-north-south edge has a nearly-zero cross product whose sign is noise, and it
-does not need it: the short way is right.
-
-## Edges over a pole
+For a sweep of a quarter turn or more, the direction is the sign of `(a × b)ᶻ`,
+longitude being monotonic along any great circle that is not a meridian.  The
+sign is anti-symmetric — the triangle across the edge gets it negated bit for
+bit, however nearly zero it is — so the two never disagree about the edge.
+Below a quarter turn the sign is noise and the short way is right anyway.
 
 `(a × b)ᶻ` is exactly zero when the edge's great circle passes through both
-poles, and if the corners are then half a turn apart in longitude the arc runs
-over one of them.  Longitude jumps half a turn at the pole and the two pole
-corners are inserted, which is what lets such a triangle close along the top of
-the map instead of leaving a wedge of it undrawn.  Grids whose cells meet four
-to a corner put a pole on a dual edge exactly, so this is the ordinary case for
-them, not an exotic one.
-
-Which half turn is decided by the triangle's own reference direction, and the
-triangle on the other side of the edge, lying the opposite way, chooses the
-other — so between them they cover the whole turn once.
+poles; if the corners are then half a turn apart, the arc runs over one, and the
+two pole corners are inserted so that the triangle closes along the top of the
+map.  Grids whose cells meet four to a corner put a pole on a dual edge exactly.
+The jump follows the triangle's reference longitude, so the triangle across the
+edge takes the other half turn and between them they cover it once.
 """
 function outline_triangle!(pts::Vector{Point2d}, tags::Vector{Int32}, u1, u2, u3,
         c1::Int32, c2::Int32, c3::Int32)
@@ -337,24 +272,16 @@ end
 
 Draw a triangle that *contains* a pole as the polar cap it is.
 
-Such a triangle winds a full turn in longitude, so no meridian separates its
-inside from its outside and there is nothing to cut it along.  What is true
-instead is that it is everything between its outline — the `m` points in
-`chunk.ring`, which went once around the pole and so run monotonically in
-longitude, increasing at the north pole and decreasing at the south — and the
-pole itself: a band spanning the whole width of the map, closed along the top or
-bottom edge.
+Such a triangle winds a full turn in longitude, so cutting it at the seam gives
+no cap.  It is instead the band between its outline — the `m` points of
+`chunk.ring`, monotonic in longitude, increasing at the north pole and
+decreasing at the south — and the pole, spanning the map and closed along the
+top or bottom edge.
 
-The band is built as one trapezoid per outline segment, each running from that
-segment up to the pole.  A trapezoid is convex whatever the latitudes do, which
-a fan from a single corner is not: with corners at 88°, 88° and 87° the fan
-turns one of its triangles inside out.
-
-Each trapezoid is emitted twice, one turn of longitude apart, and both copies
-are clipped to the map's window.  That is what keeps the band's lower edge lying
-exactly on top of the edges its neighbouring triangles draw: the corners stay at
-the longitudes they actually have, and the window decides which turn of each is
-the one on the map, rather than the band being slid bodily to the left margin.
+One trapezoid per outline segment rather than a fan from one corner: a trapezoid
+stays convex whatever the latitudes do, where a fan can turn a triangle inside
+out.  Each is emitted at two turns of longitude and clipped to the window, which
+leaves the band's lower edge on the longitudes its neighbours draw.
 """
 function emit_polar_band!(chunk::SurfaceChunk{Point2d}, m::Int, n::Int, north::Bool,
         left::Float64, cut::Float64)
@@ -420,12 +347,10 @@ end
 Draw an ordinary triangle whose outline, in `chunk.ring`, does not fit the map
 in one piece.
 
-The outline is emitted at three turns of longitude and each copy is clipped to
-the window, which is how a triangle straddling the cut comes out as the two
-pieces it is — one against each edge of the map — without either of them having
-to be identified as "the far side" first.  Three rather than two because the
-outline runs both ways from the corner the turns are measured off, so a copy
-either side of it can reach into the window.
+The outline is emitted at three turns of longitude and each copy clipped to the
+window, so a triangle straddling the cut comes out as its two pieces without
+either having to be identified as the far side.  Three, because the outline can
+run either way in longitude from the corner the turns are measured off.
 """
 function emit_traced_polygon!(chunk::SurfaceChunk{Point2d}, m::Int, n::Int,
         left::Float64, cut::Float64)
@@ -451,10 +376,8 @@ end
     emit_window_polygon!(chunk, m, n, left, cut) -> ntriangles
 
 Clip the `m`-gon in `chunk.poly` to the map's window `[left, cut]` and fan what
-survives.
-
-The two clips ping-pong between the chunk's two scratch buffers, so the finished
-polygon is back in `chunk.poly` and nothing was allocated.
+survives.  The two clips ping-pong between the chunk's scratch buffers, leaving
+the result in `chunk.poly`.
 """
 function emit_window_polygon!(chunk::SurfaceChunk{Point2d}, m::Int, n::Int,
         left::Float64, cut::Float64)
@@ -473,14 +396,12 @@ Sutherland–Hodgman against one vertical half-plane in longitude, carrying each
 vertex's cell along with it, with `shift` added to the surviving longitudes so
 that the far side of a cut triangle lands on the far edge of the map.
 
-A crossing that lands exactly on a corner is not added, because that corner is
-already there and the repeat would only put a zero-area triangle in the fan.
+A crossing landing exactly on a corner is skipped: the corner is already there,
+and repeating it would put a zero-area triangle in the fan.
 
-A vertex created *on* the cut is given the cell of whichever end of the edge it
-came out nearer to.  It is the one place in this file where a vertex's value is
-approximate rather than exact, it is confined to a strip one cell wide along the
-map's seam, and the alternative — carrying a blend of two cells' values through
-to the colour gather — would make every vertex in the mesh pay for it.
+A vertex created *on* the cut takes the cell of the nearer end of its edge.  This
+is the one approximate value in the mesh, confined to a strip one cell wide along
+the seam; carrying a blend of two cells instead would cost every vertex a lerp.
 """
 function clip_tagged!(out::Vector{Point2d}, outtag::Vector{Int32}, pts::Vector{Point2d},
         tags::Vector{Int32}, m::Int, cut::Float64, keep_below::Bool, shift::Float64)
@@ -522,10 +443,8 @@ function fill_surface!(chunk::SurfaceChunk{Point2d}, target::PlanarTarget, adj,
         r = adj[a]
         k = length(r)
         k < 2 && continue
-        # A ring of two has one pair, not two: `(r₁, r₂)` and `(r₂, r₁)` are the
-        # same corner, and walking both would draw its triangle twice.  A cell
-        # left with two neighbours is a partial grid's edge, so this is the
-        # ragged-boundary case, not a curiosity.
+        # A ring of two has one pair: `(r₁, r₂)` and `(r₂, r₁)` are the same
+        # corner, and walking both would draw its triangle twice.
         npairs = k == 2 ? 1 : k
         for i in 1:npairs
             b = r[i]
@@ -540,17 +459,15 @@ function fill_surface!(chunk::SurfaceChunk{Point2d}, target::PlanarTarget, adj,
             end
 
             l2, l3, span = unwrap_triangle(positions, a, b, c)
-            # The ordinary triangle: short in longitude, and its three corners
-            # already sit together in the window.  Three shared vertices, no
-            # geometry of its own, and nothing to clip.
+            # Short in longitude, with all three corners already together in
+            # the window: three shared vertices and nothing to clip.
             if span < 90.0 && l2 == positions[b][1] && l3 == positions[c][1]
                 push_face!(chunk, Int32(a), Int32(b), Int32(c))
                 continue
             end
 
-            # Everything else is drawn from its outline in longitude: it
-            # either straddles the map's cut, or it lies over a pole, and the
-            # winding is what says which.
+            # Everything else is drawn from its outline, and the winding says
+            # whether it straddles the cut or lies over a pole.
             winding = outline_triangle!(chunk.ring, chunk.ringtag,
                 DGG.cell_centroid(source, cells[a]),
                 DGG.cell_centroid(source, cells[b]),
@@ -573,14 +490,13 @@ end
 """
     unwrap_triangle(positions, a, b, c) -> (l2, l3, span)
 
-The longitudes of the triangle's second and third corners made continuous with
-its first, and the longest longitude step it took to get around.
+The triangle's second and third longitudes made continuous with its first, and
+the longest step taken to get around.
 
-`positions` holds each cell's centroid in the map's window, so a corner whose
-continuous longitude is not the one it is stored at belongs to a triangle
-straddling the cut.  A step of a quarter turn or more means an edge running
-beside a pole, where longitude is not to be trusted and
-[`outline_triangle!`](@ref) works the sweep out from the edge itself instead.
+`positions` holds centroids in the map's window, so a corner whose continuous
+longitude is not the one it is stored at belongs to a triangle straddling the
+cut.  A step of a quarter turn or more means an edge beside a pole, which
+[`outline_triangle!`](@ref) has to sweep from the edge itself.
 """
 @inline function unwrap_triangle(positions::Vector{Point2d}, a::Int, b::Int, c::Int)
     @inbounds l1 = positions[a][1]
@@ -596,12 +512,12 @@ end
 """
     surface_vertex(target, p) -> Point2d or Point3d
 
-Where a cell centroid `p` — a unit-sphere point — starts life in the mesh.
+A cell centroid `p`, a unit-sphere point, in the target's build space.
 
-On a [`GlobeTarget`](@ref) this is the finished vertex.  On a
-[`PlanarTarget`](@ref) it is longitude and latitude in degrees, moved into the
-map's drawable window `[cut - 360, cut]`, and the bulk projection at the end of
-[`triangulate`](@ref) is what turns it into the axis's coordinates.
+On a [`GlobeTarget`](@ref) that is the finished vertex.  On a
+[`PlanarTarget`](@ref) it is longitude and latitude in degrees inside the map's
+window `[cut - 360, cut]`, which [`triangulate`](@ref) projects in bulk at the
+end.
 """
 @inline surface_vertex(target::GlobeTarget, p) = globe_vertex(target, p)
 
@@ -625,34 +541,27 @@ function surface_vertices(target::PlotTarget, cr::CellRegion)
     return positions
 end
 
-# ## Driver
-
 """
     triangulate(target::PlotTarget, cells; ntasks = Threads.nthreads(),
                 connectivity = DiscreteGlobalGrids.Vertex()) -> SurfaceMesh
 
 Build the interpolated surface over `cells` in `target`'s coordinate space.
 
-`cells` is anything [`cellregion`](@ref) accepts — a grid, a `CellVector`, a
-`PartialGrid`, a `CellLookup` — which is to say, a set of cells that all sit at
-one level and whose adjacency the package can answer.  A cell's *neighbours* are
-what a surface is built out of, which is why this asks for more than
-[`tessellate`](@ref) does: a bare list of ids has no topology.
+`cells` is anything [`cellregion`](@ref) accepts: a set of cells at one level
+whose adjacency the package can answer.  That is more than [`tessellate`](@ref)
+needs, because a surface is built out of which cells touch which.
 
-The result has one vertex per cell, carrying that cell's value, and the
-triangles of the grid's dual between them.  Cells whose neighbours are absent
-from the set simply take part in fewer triangles, so a partial grid comes out
-with a ragged edge rather than a wrong one.
+The result has one vertex per cell and the triangles of the grid's dual between
+them.  A cell whose neighbours are absent takes part in fewer triangles, so a
+partial grid comes out with a ragged edge rather than a wrong one.
 
-`connectivity` is what counts as a neighbour.  The default,
-`DiscreteGlobalGrids.Vertex()`, is the one that produces a complete surface:
-`Edge()` would miss the corners of a square-celled grid entirely, because the
-four cells at such a corner touch only diagonally.
+`connectivity` is what counts as a neighbour.  `Vertex()`, the default, is the
+one that gives a complete surface; `Edge()` would miss every corner of a
+square-celled grid, whose four cells touch only diagonally.
 
-On a [`PlanarTarget`](@ref) two things need more than a triangle between three
-centroids, and both are counted in the result's `nsplit`: a triangle straddling
-the map's cut is split against it, and the single triangle at each pole is drawn
-as the polar cap it covers.
+On a [`PlanarTarget`](@ref) two cases need more than three centroids, both
+counted in `nsplit`: a triangle straddling the cut is split against it, and the
+one at each pole is drawn as the cap it covers.
 """
 function triangulate(target::PlotTarget, cr::CellRegion;
         ntasks::Int = Threads.nthreads(), connectivity = DGG.Vertex())
@@ -681,8 +590,8 @@ end
 
 triangulate(target::PlotTarget, x; kwargs...) = triangulate(target, cellregion(x); kwargs...)
 
-# The globe path has no `positions` to consult, but taking it keeps one call
-# site in the driver.
+# The globe path ignores the planar-only arguments, so that the driver has one
+# call site.
 fill_surface!(chunk::SurfaceChunk, target::GlobeTarget, adj, lo, hi, n, positions, cr) =
     fill_surface!(chunk, target, adj, lo, hi, n)
 
@@ -709,8 +618,8 @@ function merge_surface(chunks::Vector{SurfaceChunk{P}}, positions::Vector{P},
         Threads.@spawn begin
             chunk = chunks[t]
             foff = face_offset[t]
-            # A face index at or below `n` names a centroid and is already
-            # right; anything above it is this task's own vertex.
+            # An index at or below `n` names a centroid and is already right;
+            # above it is this task's own vertex.
             shift = Int32(extra_offset[t])
             cutoff = Int32(n)
             @inbounds for j in eachindex(chunk.faces)

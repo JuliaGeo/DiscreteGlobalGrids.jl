@@ -4,24 +4,23 @@
     MemoBlockCursor(node::BlockCursor)
 
 [`BlockCursor`](@ref) wrapped so [`node_extent`](@ref
-GeometryOps.SpatialTreeInterface.node_extent) consults a per-task direct-mapped
-memo instead of re-deriving `_node_box` → [`_box_cap`](@ref) — five `sincosd`
-pairs and four spherical distances — every time it is asked.
+GeometryOps.SpatialTreeInterface.node_extent) reads a cached cap instead of
+re-deriving `_node_box` → [`_box_cap`](@ref) — five `sincosd` pairs and four
+spherical distances — on every ask. The values are unchanged, bit for bit;
+repeat asks get cheaper.
 
-The dual-tree join derives a node's extent once per opposing node, and a tile's
-interior tree is walked again for every source-block build, every destination
-column and every worker, for a lattice that never changes. Each search task
-walks one spatially coherent subtree pair, so a thousand slots hold the working
-set of the nodes it revisits.
+The cache is a fixed table of `_MEMO_EXTENT_SLOTS` slots in
+`task_local_storage`, direct-mapped: a node's rectangle hashes to exactly one
+slot, a hit is a key compare plus a load, and a miss derives the extent and
+overwrites whatever sat there. Hence bounded memory per task whatever the
+lattice size, no eviction policy, no lock — tasks sharing a grid have separate
+tables — and a collision costs a re-derive, never a wrong extent. The hit rate
+comes from revisits: the dual-tree join asks each node's extent once per
+opposing node, and a tile's tree is rewalked for every source block,
+destination column and worker.
 
-Memory is `O(slots)` per task, not `O(tiles)`, so the wrap holds for the whole
-26 475-tile lattice with no eviction policy and no ceiling. The memo lives in
-`task_local_storage`, so concurrent readers of one shared grid never touch each
-other's slots and no lock is taken. Same [`_box_cap`](@ref) values, bit for bit.
-
-Only interior geometry is memoized here: a leaf's per-cell
-`child_indices_extents` entries come back as the bare cursor's [`LeafCells`](@ref),
-which derives them into an inline buffer and never reaches the heap.
+Interior nodes only: a leaf's `child_indices_extents` entries come back as the
+bare cursor's [`LeafCells`](@ref), which never reaches the heap.
 """
 struct MemoBlockCursor{C<:BlockCursor}
     node::C

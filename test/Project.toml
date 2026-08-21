@@ -25,4 +25,4 @@ DiscreteGlobalGridsConformanceTesting = "13a16fb4-09f9-4c22-804e-8e2836b6de9f"
 [sources]
 DiscreteGlobalGrids = {path = ".."}
 DiscreteGlobalGridsConformanceTesting = {path = "../lib/DiscreteGlobalGridsConformanceTesting"}
-GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "2825c476647cfe6791dbb89fffb8592697b46995"}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "36c853e0de865251e1395ff01e9d34cda9e9bfa8"}

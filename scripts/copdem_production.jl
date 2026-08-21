@@ -298,6 +298,7 @@ struct LazyCopernicusTiles{S<:DGG.CopernicusDEMSystem}
     locks::Dict{Int,ReentrantLock}
     downloader::Downloads.Downloader
     ndownloads::Threads.Atomic{Int}
+    ncold::Threads.Atomic{Int}
 end
 
 function LazyCopernicusTiles(sys::DGG.CopernicusDEMSystem, listed;
@@ -313,7 +314,8 @@ function LazyCopernicusTiles(sys::DGG.CopernicusDEMSystem, listed;
     locks = Dict(t => ReentrantLock() for t in tiles)
     return LazyCopernicusTiles(sys, tiles, abspath(String(cachedir)),
         String(rstrip(String(baseurl), '/')), Int(retries), Float64(backoff),
-        Float64(timeout), locks, Downloads.Downloader(), Threads.Atomic{Int}(0))
+        Float64(timeout), locks, Downloads.Downloader(), Threads.Atomic{Int}(0),
+        Threads.Atomic{Int}(0))
 end
 
 "The final local cache path of a tile; no filesystem or network access."
@@ -333,17 +335,20 @@ _transientstatus(status::Integer) = status == 0 || status == 408 || status == 42
     500 <= status < 600
 
 """
-    tilepath!(provider, ordinal) -> Union{String,Nothing}
+    tilepath!(provider, ordinal; demand = true) -> Union{String,Nothing}
 
 Return the cached path for a listed tile, downloading it atomically if needed.
-Return `nothing` immediately for an unlisted (ocean) tile.
+Return `nothing` immediately for an unlisted (ocean) tile. A demand that has to
+start the network fetch increments `provider.ncold`; the prefetcher passes
+`demand = false`.
 """
-function tilepath!(provider::LazyCopernicusTiles, ordinal::Int)
+function tilepath!(provider::LazyCopernicusTiles, ordinal::Int; demand::Bool = true)
     ordinal in provider.listed || return nothing
     path = tilecachepath(provider, ordinal)
     isfile(path) && return path
     return lock(provider.locks[ordinal]) do
         isfile(path) && return path
+        demand && Threads.atomic_add!(provider.ncold, 1)
         mkpath(provider.cachedir)
         part = path * ".part"
         url = tileurl(provider, ordinal)
@@ -752,11 +757,12 @@ mutable struct Progress
     const total::Int
     const started::Float64
     const every::Float64     # seconds between heartbeats
+    const cold::Union{Nothing,Threads.Atomic{Int}}
     last::Float64
 end
 
-Progress(total, every) =
-    Progress(ReentrantLock(), 0, 0, 0, 0, total, time(), Float64(every), time())
+Progress(total, every, cold = nothing) =
+    Progress(ReentrantLock(), 0, 0, 0, 0, total, time(), Float64(every), cold, time())
 
 """
     regrid_chunk(dem, srcspace, sys7, layout, chunk, config) -> Vector{Float32}
@@ -812,10 +818,11 @@ function heartbeat!(p::Progress, force = false)
         el = now - p.started
         seen = p.done + p.skipped
         eta = etaseconds(el, p.done, p.total - seen)
-        say(@sprintf("HEARTBEAT  %d/%d chunks (%d computed this session, %d skipped) | session %.3e cells, %.0f cells/s | elapsed %s | ETA %s | RSS %.1f GiB (peak %.1f) | session NaN %.2f%%",
+        cold = p.cold === nothing ? "" : " | demand-cold downloads $(p.cold[])"
+        say(@sprintf("HEARTBEAT  %d/%d chunks (%d computed this session, %d skipped) | session %.3e cells, %.0f cells/s | elapsed %s | ETA %s | RSS %.1f GiB (peak %.1f) | session NaN %.2f%%%s",
             seen, p.total, p.done, p.skipped, Float64(p.cells),
             p.cells / max(el, 1e-9), hours(el), hours(eta),
-            rssgib(), peakrssgib(), 100 * p.nan / max(p.cells, 1)))
+            rssgib(), peakrssgib(), 100 * p.nan / max(p.cells, 1), cold))
         return nothing
     end
 end
@@ -948,7 +955,9 @@ function runchunks(chunks, order, sched, dem, srcspace, sys7, store, layout, ski
         donelog, prefetcher, config)
     W, shape = workercount(config)
     outer = shape === :outer
-    p = Progress(length(chunks), config.heartbeat)
+    provider = dem.builder.provider
+    p = Progress(length(chunks), config.heartbeat,
+        provider === nothing ? nothing : provider.ncold)
     p.skipped = skipped
     log = DoneLog(donelog)
     try
@@ -1000,7 +1009,7 @@ function runchunks(chunks, order, sched, dem, srcspace, sys7, store, layout, ski
 end
 
 """
-    reportcache(cache, prefetcher, nsrc, complete)
+    reportcache(cache, prefetcher, provider, nsrc, complete)
 
 What the tile cache did, and whether it did it lawfully.
 
@@ -1023,7 +1032,7 @@ Three claims, in decreasing strength:
     the tile count because it treated adjacency as demand; production reads an
     unknown subset of it.
 """
-function reportcache(cache, prefetcher, nsrc::Int, complete::Bool)
+function reportcache(cache, prefetcher, provider, nsrc::Int, complete::Bool)
     s = cachestats(cache)
     LASTCACHE[] = s
     if s.policy === :refcount
@@ -1045,6 +1054,9 @@ function reportcache(cache, prefetcher, nsrc::Int, complete::Bool)
         say(@sprintf("tile cache: LRU, %d loads (%d reloads over %d source chunks), %d hits, %d live at end, %.2f GiB held",
             s.loads, max(0, s.loads - nsrc), nsrc, s.hits, s.live, s.bytes / 2^30))
     end
+    provider === nothing || say(
+        "source downloads: $(provider.ndownloads[]) total, " *
+        "$(provider.ncold[]) demand-cold")
     pf = prefetchstats(prefetcher)
     pf.depth == 0 && return nothing
     say("prefetch: depth $(pf.depth), $(pf.issued) tile requests issued")
@@ -1279,8 +1291,11 @@ function main(config = CONFIG)
     p = try
         if config.prefetch > 0
             fc = config.fetchconc > 0 ? config.fetchconc : W
+            prepare = provider === nothing ? nothing :
+                s -> tilepath!(provider, tiles[s]; demand = false)
             prefetcher = Prefetcher(cache, order, d -> GR.sourcesof(plan.graph, d),
-                length(tiles), sched; depth = config.prefetch, concurrency = fc)
+                length(tiles), sched; depth = config.prefetch, concurrency = fc,
+                prepare)
             say("prefetch: depth $(config.prefetch) chunks, $fc concurrent fetches")
         end
         runchunks(todochunks, order, sched, dem, srcspace, sys7, store, layout,
@@ -1311,8 +1326,8 @@ function main(config = CONFIG)
         builder.nreal[], builder.nsynthetic[], Float64(builder.nland[]),
         Float64(builder.npixels[]),
         100 * builder.nland[] / max(builder.npixels[], 1)))
-    provider === nothing || say("source tile downloads this process: $(provider.ndownloads[])")
-    reportcache(cache, prefetcher, length(tiles), FAILURES[] == 0 && nskipped == 0)
+    reportcache(cache, prefetcher, provider, length(tiles),
+        FAILURES[] == 0 && nskipped == 0)
     say(@sprintf("RSS %.2f GiB now, %.2f GiB peak", rssgib(), peakrssgib()))
 
     if config.checks

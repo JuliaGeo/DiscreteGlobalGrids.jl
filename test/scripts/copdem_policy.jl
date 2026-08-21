@@ -260,6 +260,24 @@ end
     @test_throws TileLoadError gettile!(cache, 1)
 end
 
+@testset "Prefetcher prepares a source before speculative decode" begin
+    rows = [[1]]
+    prepared = Threads.Atomic{Bool}(false)
+    cache, _ = toycache(rows, 1;
+        load = s -> (prepared[] || error("decoded before preparation"); fill(1.0f0, 4)))
+    sched = GuidedSchedule(1, 1, 1)
+    pf = Prefetcher(cache, [1], d -> rows[d], 1, sched;
+        depth = 1, concurrency = 1, prepare = s -> (prepared[] = true))
+    while !prepared[]
+        yield()
+    end
+    stop_prefetch!(pf)
+    @test prefetchstats(pf).failure === nothing
+    @test gettile!(cache, 1) == fill(1.0f0, 4)
+    retire_column!(cache, 1)
+    @test completed(cache)
+end
+
 @testset "Prefetcher: a result nobody wants any more is discarded" begin
     gate = Base.Event()
     rows = [[1]]

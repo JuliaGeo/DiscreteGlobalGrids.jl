@@ -44,11 +44,14 @@ function smoke()
     equatorial = ordinals[1]
     wascached = isfile(tilecachepath(provider, equatorial))
     before = provider.ndownloads[]
+    before_cold = provider.ncold[]
     tasks = [Threads.@spawn tilepath!(provider, equatorial) for _ in 1:4]
     paths = fetch.(tasks)
     check_smoke("concurrent requests return one cache path", all(==(paths[1]), paths))
     check_smoke("concurrent first access downloads exactly once",
         provider.ndownloads[] - before == (wascached ? 0 : 1))
+    check_smoke("concurrent demand records one cold download at most",
+        provider.ncold[] - before_cold == (wascached ? 0 : 1))
 
     println("\nDecoded real tiles:")
     for (stem, ordinal) in zip(stems, ordinals)
@@ -72,8 +75,10 @@ function smoke()
     # is one complete level-5 -> level-12 rooted destination column.
     tile = equatorial
     ids = TileIds(sys, [tile])
-    dem = TiledDEM(sys, ids, [tile]; realtiles = Dict{Int,String}(),
-        provider, mask = NOMASK, cachesize = 4, stripes = 1)
+    builder = TileBuilder(sys, [tile], Dict{Int,String}(), provider, NOMASK)
+    tilecache = StripedLRUCache{Vector{Float32}}(k -> buildtile(builder, k);
+        slots = 4, stripes = 1)
+    dem = TiledDEM(ids, builder, tilecache)
     srcgrid = DGG.PartialGrid(sys, 1, ids)
     srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
 

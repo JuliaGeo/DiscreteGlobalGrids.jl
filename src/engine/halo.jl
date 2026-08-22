@@ -374,7 +374,7 @@ function _touches_subtree(::ForcedGeometry, e, x)
     # At depth zero, compare directly with the root; a descendant cursor has no
     # target-level child to expand.
     if e.rootlevel == e.target
-        intersects_cap(cell_cap(e.grid, e.root), xcap) || return false
+        Extents.intersects(cell_cap(e.grid, e.root), xcap) || return false
         return _shared_vertices(xb, cell_boundary(e.grid, e.root), tol) >= needed
     end
     return _descendant_touches(e, xb, tol, needed, xcap)
@@ -403,12 +403,12 @@ function _descendant_touches(e, xb, tol::Float64, needed::Int, xcap)
         d = @inbounds kids[f.next]
         st = Helpers.small_setlast(st, HaloFrame(f.cell, f.next + 0x1))
         if level(d) == e.target
-            intersects_cap(cell_cap(e.grid, d), xcap) || continue
+            Extents.intersects(cell_cap(e.grid, d), xcap) || continue
             _shared_vertices(xb, cell_boundary(e.grid, d), tol) >= needed &&
                 return true
             continue
         end
-        intersects_cap(node_extent(sys, d), xcap) || continue
+        Extents.intersects(node_extent(sys, d), xcap) || continue
         st = Helpers.small_push(st, HaloFrame(d, 0x1))
     end
     return false
@@ -543,7 +543,7 @@ const _HALO_DESCEND = 2
 # the candidate's cap.
 @inline _target_prune(::IndexedNeighbors, e, c) = true
 @inline _target_prune(::ForcedGeometry, e, c) =
-    intersects_cap(cell_cap(e.grid, c), e.rootcap)
+    Extents.intersects(cell_cap(e.grid, c), e.rootcap)
 
 # Subtree providers prune by ancestry and geometry; `SubsetMembership` prunes
 # by position spans. Provider dispatch keeps each admission path monomorphic.
@@ -569,7 +569,7 @@ const _HALO_DESCEND = 2
         _target_prune(p, e, c) || return _HALO_SKIP
         return _touches_subtree(p, e, c) ? _HALO_EMIT : _HALO_SKIP
     end
-    intersects_cap(node_extent(e.system, c), e.rootcap) || return _HALO_SKIP
+    Extents.intersects(node_extent(e.system, c), e.rootcap) || return _HALO_SKIP
     return _HALO_DESCEND
 end
 

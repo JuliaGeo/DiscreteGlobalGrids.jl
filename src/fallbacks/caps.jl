@@ -18,16 +18,6 @@ The cap containing the full sphere.
 full_sphere_cap() = SphericalCap(USPoint(0.0, 0.0, 1.0), nextfloat(Float64(pi)))
 
 """
-    intersects_cap(a::SphericalCap, b::SphericalCap) -> Bool
-    intersects_cap(a::SphericalCap) -> predicate
-
-Test whether two caps intersect. The one-argument form returns a traversal
-predicate without exposing GeometryOps' private implementation.
-"""
-intersects_cap(a::US.SphericalCap, b::US.SphericalCap) = US._intersects(a, b)
-intersects_cap(a::US.SphericalCap) = Base.Fix1(intersects_cap, a)
-
-"""
     cap_contains(cap::SphericalCap, p::UnitSphericalPoint) -> Bool
 
 Whether a point lies in the closed cap.
@@ -107,20 +97,6 @@ function cells_cap(grid::AbstractGrid, ids)
     end
     return points_cap(points)
 end
-
-"""
-    merge_caps(a::SphericalCap, b::SphericalCap) -> SphericalCap
-
-A cap containing both. Used to build the fallback tree's internal extents
-bottom-up, where the leaf caps are in hand but their vertices are not.
-
-Merging bounds the caps, which is a looser and different object than bounding
-the geometry inside them: a merge of the children's caps is not
-[`node_extent`](@ref) of their parent and guarantees nothing below the level
-those caps came from. It is sound for the fallback tree because that tree's
-leaves are its deepest cells.
-"""
-merge_caps(a::US.SphericalCap, b::US.SphericalCap) = US._merge(a, b)
 
 """
     unit_point(lon, lat) -> UnitSphericalPoint

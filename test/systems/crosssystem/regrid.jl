@@ -386,7 +386,7 @@ end
     src = GR.subtree(SRC, 1:GR.ncells(SRC))
     function pairs(dst)
         out = Tuple{Int,Int}[]
-        STI.dual_depth_first_search(GO.UnitSpherical._intersects, dst, src) do i, j
+        STI.dual_depth_first_search(GO.Extents.intersects, dst, src) do i, j
             push!(out, (i, j))
         end
         return sort!(out)

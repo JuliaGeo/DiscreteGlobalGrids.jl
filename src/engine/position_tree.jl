@@ -76,7 +76,8 @@ function _build_node!(tree::PositionTree, lo::Int, hi::Int)
         stop = min(hi, start + per - 1)
         child = _build_node!(tree, start, stop)
         push!(tree.node_children[index], child)
-        cap = cap === nothing ? tree.node_cap[child] : merge_caps(cap, tree.node_cap[child])
+        cap = cap === nothing ? tree.node_cap[child] :
+              Extents.union(cap, tree.node_cap[child])
         start = stop + 1
     end
     tree.node_cap[index] = cap === nothing ? full_sphere_cap() : cap
@@ -87,7 +88,7 @@ function _merge_range(caps::Vector{Cap}, lo::Int, hi::Int)
     hi >= lo || return full_sphere_cap()
     cap = caps[lo]
     for k in (lo+1):hi
-        cap = merge_caps(cap, caps[k])
+        cap = Extents.union(cap, caps[k])
     end
     return cap
 end

@@ -962,7 +962,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             inside = [c for c in [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
                       if any(p -> SD(cap.point, p) < cap.radius, DGG.cell_boundary(grid, c))]
             @test issubset(Set(inside), Set(hits))
-            @test all(c -> DGG.Fallbacks.intersects_cap(cap, DGG.Fallbacks.cell_cap(grid, c)), hits)
+            @test all(c -> GO.Extents.intersects(cap, DGG.Fallbacks.cell_cap(grid, c)), hits)
             # The system-level form answers the same without a grid in hand.
             @test DGG.query(S, DGG.Intersects(cap); level=l) == hits
         end

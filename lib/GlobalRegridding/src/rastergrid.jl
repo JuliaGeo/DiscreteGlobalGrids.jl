@@ -902,7 +902,7 @@ end
 function RasterFlatTree(space::RasterGrid, indices, caps)
     ix = collect(Int, indices)
     cs = collect(Cap, caps)
-    extent = isempty(cs) ? _WHOLE_SPHERE : foldl(US._merge, cs)
+    extent = isempty(cs) ? _WHOLE_SPHERE : foldl(Extents.union, cs)
     return RasterFlatTree{typeof(space)}(space, ix, cs, extent)
 end
 

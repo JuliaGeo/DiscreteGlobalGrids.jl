@@ -21,8 +21,8 @@ struct DilatedIntersects
     radius::Float64
 end
 
-@inline (p::DilatedIntersects)(a, b) =
-    US.spherical_distance(a.point, b.point) <= a.radius + b.radius + p.radius
+@inline (p::DilatedIntersects)(a::Cap, b::Cap) =
+    Extents.intersects(_dilatedcap(a, p.radius), b)
 
 # --------------------------------------------------------------------------
 # Private chunk-candidate index
@@ -30,33 +30,10 @@ end
 
 struct EmptyChunkIndex end
 
-"""
-    cap_xyz_extent(cap) -> Extents.Extent{(:X, :Y, :Z)}
-
-Return an outward-rounded Cartesian bounding box for every unit-sphere point in
-`cap`. This is the leaf extent used by the generic packed R-tree.
-"""
-function cap_xyz_extent(cap::Cap)
-    r = cap.radius
-    if !(r < Float64(pi))
-        return Extents.Extent(X = (-1.0, 1.0), Y = (-1.0, 1.0), Z = (-1.0, 1.0))
-    end
-    cr, sr = cos(r), sin(r)
-    guard = 8 * eps(Float64)
-    bounds = ntuple(Val(3)) do i
-        x = clamp(Float64(cap.point[i]), -1.0, 1.0)
-        transverse = sqrt(max(0.0, (1.0 - x) * (1.0 + x)))
-        lo = x <= -cr ? -1.0 : x * cr - transverse * sr
-        hi = x >= cr ? 1.0 : x * cr + transverse * sr
-        (max(-1.0, prevfloat(lo - guard)), min(1.0, nextfloat(hi + guard)))
-    end
-    return Extents.Extent(X = bounds[1], Y = bounds[2], Z = bounds[3])
-end
-
 function _packedchunkindex(caps::AbstractVector{<:SphericalCap})
     isempty(caps) && return EmptyChunkIndex()
     data = collect(Cap, caps)
-    boxes = map(cap_xyz_extent, data)
+    boxes = map(Extents.extent, data)
     return FlexibleRTrees.RTree(FlexibleRTrees.HPR(), data; extents = boxes)
 end
 
@@ -71,6 +48,7 @@ chunkindex(space::RegridSpace) = _packedchunkindex(chunkextents(space))
 chunkindex(space::RasterGrid) = _rasterchunkcursor(space)
 
 @inline function _dilatedcap(cap::Cap, radius::Float64)
+    radius == 0.0 && return cap
     return SphericalCap(cap.point, min(Float64(pi), cap.radius + radius))
 end
 

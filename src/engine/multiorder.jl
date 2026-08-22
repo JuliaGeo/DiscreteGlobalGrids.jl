@@ -252,7 +252,7 @@ function _coverage_visit!(cells, contained, sys, target, c, maxlevel::Int, grids
     # then the boundary-arc proof, which is what keeps the traversal
     # output-sensitive when the cap is loose or the whole sphere.
     extent = node_extent(sys, c)
-    intersects_cap(target.cap, extent) || return nothing
+    Extents.intersects(target.cap, extent) || return nothing
     _subtree_outside(target, extent) && return nothing
     lc = level(c)
     grid = grids[lc-top+1]
@@ -373,7 +373,7 @@ end
 function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
         maxlevel::Int)
     extent = node_extent(sys, c)
-    intersects_cap(target.cap, extent) || return false
+    Extents.intersects(target.cap, extent) || return false
     _subtree_outside(target, extent) && return false
     lc = level(c)
     grid = grids[lc-top+1]

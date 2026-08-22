@@ -180,7 +180,7 @@ angular radius at most 90°, containing all boundary vertices also contains thei
 great-circle arcs. Non-convex extents must establish containment of the full
 geometry.
 
-A merge of the children's caps (`merge_caps` over `cell_cap`) is a bound over
+A merge of the children's caps (`Extents.union` over `cell_cap`) is a bound over
 caps — a different and looser object, and one that says nothing about levels
 below those children. It is not `node_extent` and does not substitute for it.
 

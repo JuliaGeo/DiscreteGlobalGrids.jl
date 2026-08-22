@@ -564,13 +564,12 @@ _query_tree(grid::AbstractGrid) = system(grid) === nothing ?
 
 function _descend!(out, node, grid, pred, target)
     extent = STI.node_extent(node)
-    intersects_cap(target.cap, extent) || return nothing
+    Extents.intersects(target.cap, extent) || return nothing
     if STI.isleaf(node)
         # A node whose whole extent sits inside the target's cap has no per-cell
         # cap prune left to win — every cell cap would pass — so it skips
         # straight to the exact tests.
-        interior = US.spherical_distance(target.cap.point, extent.point) +
-                   extent.radius <= target.cap.radius
+        interior = Extents.contains(target.cap, extent)
         _leaf_scan!(out, node, grid, pred, target, interior)
         return nothing
     end
@@ -585,7 +584,7 @@ end
 function _leaf_scan!(out, node::HierarchicalGridCursor, grid, pred, target, interior::Bool)
     for index in node_indices(node)
         c = cellindex(grid, index)
-        interior || intersects_cap(target.cap, cell_cap(grid, c)) || continue
+        interior || Extents.intersects(target.cap, cell_cap(grid, c)) || continue
         _matches(pred, target, grid, c) && push!(out, index)
     end
     return nothing
@@ -594,7 +593,7 @@ end
 function _leaf_scan!(out, node::PositionTreeNode, grid, pred, target, interior::Bool)
     tree = node.tree
     for k in tree.node_first[node.index]:tree.node_last[node.index]
-        interior || intersects_cap(target.cap, tree.caps[k]) || continue
+        interior || Extents.intersects(target.cap, tree.caps[k]) || continue
         index = tree.order[k]
         _matches(pred, target, grid, cellindex(grid, index)) && push!(out, index)
     end

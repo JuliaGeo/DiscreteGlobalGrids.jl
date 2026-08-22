@@ -13,6 +13,48 @@ graph_pairs(g) = Set((d, Int(s)) for d in 1:GR.ndestinationchunks(g)
 
 @testset "chunk dependency graph" begin
 
+    @testset "absolute support-radius dilation" begin
+        # Regridding support is an angle, not an Extents growth factor. The
+        # implementation constructs that absolute dilation once and delegates
+        # the decision to GeometryOps' guarded cap-cap predicate.
+        base = SphericalCap(toy_point(0.0, 0.0), 0.2)
+        @test GR._dilatedcap(base, 0.1).radius == base.radius + 0.1
+        @test GR._dilatedcap(base, 0.0) === base
+
+        cases = (
+            # Tiny caps whose centres are only picoradians apart.
+            (SphericalCap(USPoint(1.0, 0.0, 0.0), 1e-12),
+             SphericalCap(USPoint(cos(2.5e-12), sin(2.5e-12), 0.0), 1e-12),
+             1e-12, true),
+            # Just inside and just outside external contact.
+            (SphericalCap(toy_point(0.0, 0.0), 0.1),
+             SphericalCap(USPoint(cos(0.25 - 1e-10), sin(0.25 - 1e-10), 0.0), 0.1),
+             0.05, true),
+            (SphericalCap(toy_point(0.0, 0.0), 0.1),
+             SphericalCap(USPoint(cos(0.25 + 1e-10), sin(0.25 + 1e-10), 0.0), 0.1),
+             0.05, false),
+            # Polar and antimeridian pairs exercise coordinate-independent
+            # dilation; only the spherical centre distance matters.
+            (SphericalCap(toy_point(0.0, 89.9), 0.001),
+             SphericalCap(toy_point(180.0, 89.9), 0.001), 0.0016, true),
+            (SphericalCap(toy_point(179.9, 0.0), 0.001),
+             SphericalCap(toy_point(-179.9, 0.0), 0.001), 0.0014, false),
+        )
+        for (a, b, radius, expected) in cases
+            pred = GR.DilatedIntersects(radius)
+            public_result = GO.Extents.intersects(GR._dilatedcap(a, radius), b)
+            legacy_result = US.spherical_distance(a.point, b.point) <=
+                            a.radius + b.radius + radius
+            @test pred(a, b) == public_result == legacy_result == expected
+            @test pred(b, a) == expected
+        end
+
+        # Closed caps include exact tangency.
+        tangent_a = SphericalCap(toy_point(0.0, 0.0), 0.1)
+        tangent_b = SphericalCap(USPoint(cos(0.25), sin(0.25), 0.0), 0.1)
+        @test GR.DilatedIntersects(0.05)(tangent_a, tangent_b)
+    end
+
     @testset "matches brute force, and the prefilter changes nothing" begin
         # Offset grids so chunk caps genuinely straddle each other, and include
         # polar chunks, where the latitude band prunes least and caps are widest.

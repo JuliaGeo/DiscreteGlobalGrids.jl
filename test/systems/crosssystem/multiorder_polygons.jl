@@ -430,7 +430,7 @@ end
         top = first(DGG.levels(sys))
         grids = [DGG.levelgrid(sys, l) for l in top:maxlevel]
         function visit(c)
-            FB.intersects_cap(target.cap, DGG.node_extent(sys, c)) || return nothing
+            GO.Extents.intersects(target.cap, DGG.node_extent(sys, c)) || return nothing
             lc = DGG.level(c)
             grid = grids[lc-top+1]
             meets = EN._matches(DGG.Intersects(nothing), target, grid, c)

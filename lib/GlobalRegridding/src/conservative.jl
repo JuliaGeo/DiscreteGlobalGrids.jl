@@ -67,24 +67,12 @@ function _mergecaps(caps)
     acc = _WHOLE_SPHERE
     seen = false
     for c in caps
-        acc = seen ? _mergecap(acc, c) : c
+        acc = seen ? Extents.union(acc, c) : c
         seen = true
         acc.radius > Float64(pi) / 2 && return _WHOLE_SPHERE
     end
     seen || return _WHOLE_SPHERE
     return SphericalCap(acc.point, _padcap(acc.radius))
-end
-
-# The smallest cap containing both. Neither containment case leaves `d == 0`,
-# so the centre interpolation never divides by zero.
-function _mergecap(x::Cap, y::Cap)
-    d = US.spherical_distance(x.point, y.point)
-    d + y.radius <= x.radius && return x
-    d + x.radius <= y.radius && return y
-    radius = (x.radius + y.radius + d) / 2
-    radius > Float64(pi) / 2 && return _WHOLE_SPHERE
-    return SphericalCap(US.slerp(x.point, y.point, 0.5 * (1 - (x.radius - y.radius) / d)),
-        radius)
 end
 
 _cellcap(space::RegridSpace, i::Int) = _mergecaps(

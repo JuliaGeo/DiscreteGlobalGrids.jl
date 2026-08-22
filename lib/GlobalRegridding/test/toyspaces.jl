@@ -108,7 +108,7 @@ function ToyCapTree(space, indices, caps)
     ix = collect(Int, indices)
     cs = collect(Cap, caps)
     extent = isempty(cs) ? TOY_FULL_SPHERE :
-             foldl(US._merge, cs)
+             foldl(GO.Extents.union, cs)
     return ToyCapTree{typeof(space)}(space, ix, cs, extent)
 end
 

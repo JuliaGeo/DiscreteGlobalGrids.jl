@@ -48,7 +48,7 @@ function adjacent_cells(grid::AbstractGrid, c::AbstractCellIndex,
     tol = _match_tolerance(boundary)
     needed = connectivity isa Edge ? 2 : 1
     out = typeof(c)[]
-    for i in STI.query(tree, other -> intersects_cap(cap, other))
+    for i in STI.query(tree, Base.Fix1(Extents.intersects, cap))
         d = cellindex(grid, i)
         d == c && continue
         _shared_vertices(boundary, cell_boundary(grid, d), tol) >= needed && push!(out, d)

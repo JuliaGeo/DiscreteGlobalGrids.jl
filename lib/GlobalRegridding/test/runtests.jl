@@ -87,6 +87,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
     end
 
     include("test_rastergrid.jl")
+    include("test_proj.jl")
     include("test_conservative.jl")
     include("test_interpolation.jl")
     include("test_executor.jl")

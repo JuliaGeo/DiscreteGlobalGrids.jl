@@ -31,6 +31,23 @@ function _one_coordinate_unit_sphere_to_native(f)
 end
 
 """
+    _prepare_raster_transform_pair(native_to_unit_sphere, unit_sphere_to_native)
+
+Prepare the two callable transformations stored by `RasterGrid`.
+`unit_sphere_to_native` may be `_UNSET_RASTER_KEYWORD`, in which case the
+forward transformation's default inverse is used. Extensions may specialize
+this hook to return lightweight views which obtain task-local transformation
+resources when called.
+"""
+function _prepare_raster_transform_pair(forward, backward)
+    prepared_forward = _one_coordinate_native_to_unit_sphere(forward)
+    raw_backward = backward === _UNSET_RASTER_KEYWORD ?
+        _default_unit_sphere_to_native(forward) : backward
+    prepared_backward = _one_coordinate_unit_sphere_to_native(raw_backward)
+    return (prepared_forward, prepared_backward)
+end
+
+"""
     _default_unit_sphere_to_native(native_to_unit_sphere) -> callable or nothing
 
 Return the default inverse of a native-to-unit-sphere transformation, or
@@ -122,7 +139,11 @@ of a spatial slice matches cell position order. Chunk numbers use the same rule.
     unit sphere, returning a `UnitSphericalPoint{Float64}`. The default assumes
     geographic longitude/latitude in degrees. Projected native coordinates
     require an explicit transformation; generic dimensional metadata cannot
-    identify them. CRS construction is supplied separately by Proj integration.
+    identify them. With the Proj extension loaded, an explicit
+    `Proj.Transformation` is interpreted as native coordinates to geographic
+    longitude/latitude and composed with the unit-sphere conversion. Construct
+    raster templates with `always_xy = true`; the selected pipeline is cloned,
+    not reconstructed from CRS metadata.
   - `unit_sphere_to_native`: transform one unit-sphere point back to native
     coordinates; `nothing` disables `cellat`.
   - `transform`, `inverse`: compatibility spellings for the preceding two
@@ -205,11 +226,10 @@ function _rastergrid(xd, yd, chunks, xfast::Bool;
     raw_forward = native_to_unit_sphere !== _UNSET_RASTER_KEYWORD ?
         native_to_unit_sphere : transform !== _UNSET_RASTER_KEYWORD ?
         transform : US.UnitSphereFromGeographic()
-    forward = _one_coordinate_native_to_unit_sphere(raw_forward)
     raw_backward = unit_sphere_to_native !== _UNSET_RASTER_KEYWORD ?
         unit_sphere_to_native : inverse !== _UNSET_RASTER_KEYWORD ?
-        inverse : _default_unit_sphere_to_native(raw_forward)
-    backward = _one_coordinate_unit_sphere_to_native(raw_backward)
+        inverse : _UNSET_RASTER_KEYWORD
+    forward, backward = _prepare_raster_transform_pair(raw_forward, raw_backward)
     default_xperiod, default_ybounds = _native_coordinate_limits(raw_forward)
     xp = xperiod === _UNSET_RASTER_KEYWORD ? default_xperiod : xperiod
     yb = ybounds === _UNSET_RASTER_KEYWORD ? default_ybounds : ybounds

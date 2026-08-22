@@ -183,7 +183,12 @@ Actions:
 - In a Proj extension, cache one cloned context and forward/reverse
   transformation pair per Julia task and template.
 - Use only `Proj.proj_context_clone`, `Proj.proj_clone`,
-  `Proj.Transformation`, and `Proj.proj_context_destroy`.
+  `Proj.Transformation`, and `Proj.proj_context_destroy`. Use the exposed
+  `Proj.proj_destroy` only to release a non-null raw clone if construction fails
+  before ownership transfers to a `Proj.Transformation`.
+- Retain the mutable template in one shared chart state and serialize only the
+  brief clone-pair construction from it. Operational contexts and clones are
+  task-local and require no lock.
 - Release transformations before their context; make cleanup idempotent and
   correct under partial construction failure.
 - Construct projected raster pipelines with `always_xy = true` and compose
@@ -194,8 +199,9 @@ Verify task isolation, reuse within one task, concurrent numerical identity,
 round trips, failure cleanup, and absence of a direct PROJ `ccall` in this
 package.
 
-**Done when:** no shared `RasterGrid` stores a mutable Proj object and every
-task owns the complete lifetime of its clones.
+**Done when:** no operational Proj context or transformation clone is shared
+between tasks and every task owns the complete lifetime of its clones. The
+shared grid may retain the template through its locked chart state.
 **Commit:** `Add task-local Proj raster transformations`.
 
 ### Task A3 — converge the structured raster tree

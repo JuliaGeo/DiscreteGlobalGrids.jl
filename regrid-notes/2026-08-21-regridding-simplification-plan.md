@@ -8,7 +8,9 @@ Reduce the number of overlapping abstractions in `GlobalRegridding` while
 retaining the scalability and performance work already present. Dependency
 discovery should reuse the hierarchical indexes already provided by GeometryOps
 and DiscreteGlobalGrids, be planned once, and then be shared by lazy execution,
-scheduling, caching, and prefetch.
+scheduling, caching, and prefetch. Cell-tree fallbacks should likewise reuse one
+GeometryOps extent protocol and packed spatial index rather than maintaining
+package-local trees for each space type.
 
 The intended division of work is:
 
@@ -41,12 +43,19 @@ This plan covers:
 - thin adapters onto existing hierarchical chunk spatial indexes;
 - simplification of `RasterGrid`'s coordinate-transform and cell-tree layers,
   including task-local Proj transformations;
+- a public GeometryOps spherical-extent protocol that ConservativeRegridding
+  can use with cap and Cartesian-box tree nodes;
+- one packed fallback cell tree for arbitrary/scattered cell subsets;
+- consolidation and documentation of the actual cross-package `RegridSpace`
+  extension surface;
 - construction and ownership of the chunk dependency graph;
 - graph-backed lazy execution;
 - convergence of the two current dependency-discovery paths;
-- one weight-block construction interface for eager and chunked plans;
-- removal of DGG-specific output wrapping;
-- consolidation of overlapping conservative-geometry caches.
+- one final weight-block construction and reference-weight representation for
+  eager and chunked plans;
+- removal of DGG-specific output wrapping and target-conversion indirection;
+- consolidation of overlapping conservative-geometry caches; and
+- simplification of private lazy source-residency and DiskArrays metadata state.
 
 The nearest/bilinear/point-method interface is explicitly deferred. It will be
 redesigned separately rather than constrained by this refactor.
@@ -57,37 +66,56 @@ different. `ShapedRegridArray` also remains unless a later array-design change
 can preserve lazy multidimensional reads without moving equivalent complexity
 into `LazyRegridArray`.
 
+## Phase status and order
+
+Phases 0 and 1 are complete. The current execution point is Phase 1A. Finish
+the spatial/geometry layer through Phases 1A, 1B, and 1C before beginning graph
+ownership, so Phase 2 benchmarks and APIs exercise the representations intended
+to survive:
+
+```text
+0 baseline [complete] -> 1 native chunk indexes [complete]
+                       -> 1A raster geometry/CRS
+                       -> 1B spherical extents/fallback cell tree
+                       -> 1C RegridSpace extension surface
+                       -> 2 graph ownership -> 3 graph executor -> 4 retirement
+                       -> 5 weights -> 6 DGG/API -> 7 geometry cache -> 8 lazy state
+```
+
 ## Current state
 
 ### Lazy dependency discovery is repeated
 
-`LazyRegridArray` currently stores a source chunk tree and source cap vector.
-Each requested destination tile calls `_connectedsource!`, which runs a fresh
-tree query to rediscover its source chunks. Separately, production scheduling
-materializes `ChunkDependencyGraph` from the same chunk geometry.
+After Phase 1, `LazyRegridArray` stores the source space's native chunk index
+plus source and destination cap vectors. Each requested destination tile calls
+`_connectedsource!`, which runs a fresh native-index query to rediscover its
+source chunks. Separately, production scheduling materializes
+`ChunkDependencyGraph` with the latitude-sorted cap join.
 
-With `refine === nothing` the two paths evaluate the same `DilatedIntersects`
-predicate over the same cap vectors (`lazy.jl:585-591`; `chunkgraph.jl:444,
-460-461`; leaf caps equal `chunkextents` by `test_lazy.jl:141`) and cannot
-disagree. They disagree as soon as a narrow phase is supplied to one of them:
-the production driver's lon/lat-box `refine` was applied to the scheduling
-graph only, so the refcount cache released source chunks the executor still
-read — 8 uncredited demands over 11 chunks
+The two broad phases are both conservative but no longer necessarily identical.
+The native raster and DGG hierarchies may safely remove relations caused only by
+overlap between unused portions of covering caps; the first indexed graph
+prototype removed 322 such apparent edges, subject to Phase 2's geometric
+no-miss proof. More importantly, the two paths can express different policy: the
+production driver's lon/lat-box `refine` was applied to the scheduling graph
+only, so the refcount cache released source chunks the independent executor
+still read — 8 uncredited demands over 11 chunks
 (`regrid-notes/2026-08-21-dag-driver.md:81-119`;
 `scripts/copdem_production.jl:640-668`). `refinegraph = false` has been the
 default since (`copdem_production.jl:81`). The defect is that `refine` has two
 possible owners; Phase 2 gives it one.
 
-### Current chunk adapters ignore existing hierarchy
+### Phase 1 starting state: chunk adapters ignored existing hierarchy
 
-Here, "flat" describes the topology exposed to regridding, not the spatial
+The following was the starting state that Phase 1 removed. Here, "flat"
+describes the topology that was exposed to regridding, not the spatial
 infrastructure available in its dependencies.
 
-- `DGGChunkTree` is one leaf whose entries are every `(chunk number, cap)` pair.
-- `RasterGrid` constructs a `RasterFlatTree` containing every chunk cap, also as
+- `DGGChunkTree` was one leaf whose entries were every `(chunk number, cap)` pair.
+- `RasterGrid` constructed a `RasterFlatTree` containing every chunk cap, also as
   one leaf.
 
-This duplicates facilities that already exist:
+This duplicated facilities that already existed:
 
 - `RasterGrid` already has an implicit cell-lattice hierarchy and already reads
   its spatial storage ranges from `DiskArrays.eachchunk`. A lightweight
@@ -110,15 +138,16 @@ This duplicates facilities that already exist:
   a Cartesian XYZ box in both argument orders. Its contract is conservative:
   it may retain false positives but does not introduce false negatives.
 
-The current adapters therefore prevent hierarchical pruning and lead
+Those adapters prevented hierarchical pruning and led
 `chunk_dependency_graph` to maintain a separate latitude-sorted cap join.
 Regridding should adapt the existing indexes instead of implementing another
 raster tree, another DGG tree, or another generic cap tree.
 
-The generic `chunkextents` path also traverses the flat wrapper and copies its
+The generic `chunkextents` path also traversed the flat wrapper and copied its
 leaf caps back into a vector. `DGGSpace` avoids that copy with a specialization,
-but still exposes both a cap vector and a redundant one-node tree. The lazy
-executor then retains both tree and vector representations.
+and Phase 1 removed its redundant one-node chunk tree. `RasterFlatTree` remains
+only for scattered cell subsets and the legacy `chunktree` compatibility path,
+which Phases 1B and 4 address separately.
 
 ### Weight construction has two result paths
 
@@ -126,6 +155,39 @@ The public method seam appends entries to `WeightCOO`. Conservative assembly,
 however, already produces a sparse CSC matrix. Chunked construction copies that
 matrix into COO and sparsifies it again, while eager construction has a separate
 `wholeblock(::Conservative)` fast path solely to adopt the CSC directly.
+
+The final reference weights are also represented more than once. `WeightCOO`
+always allocates a denominator vector and separately records `hasdenom`;
+`WeightBlock` represents the same distinction with `denom === nothing`; and
+`CachedBlock` stores another `ref` vector which is a copy of the denominator for
+Conservative blocks. Eager application recomputes that reference on every plan
+application. Phase 5 makes the final block own it once.
+
+### Spherical extent operations are split across packages
+
+GeometryOps already implements conservative cap–Cartesian-box intersection in
+both argument orders and private cap–cap intersection and cap merging.
+GlobalRegridding nevertheless owns its own cap-to-XYZ bound, dilated cap
+predicate, cap merging and cell-cap construction. DiscreteGlobalGrids wraps the
+same private GeometryOps cap operations, while ConservativeRegridding selects a
+private cap predicate for every spherical search and therefore cannot accept a
+mixed cap/box tree even though GeometryOps can compare those extents.
+
+The missing abstraction is not another regridding tree. It is one public
+GeometryOps extent protocol that all three packages can call. Phase 1B promotes
+the required cap primitives and uses them to replace the package-local generic
+and scattered cell trees with one packed `FlexibleRTree` adapter.
+
+### The actual space extension interface is scattered
+
+`GlobalRegridding.jl` currently names five unexported functions as the external
+extension surface, but `DGGSpace` also extends `chunkindex`,
+`candidatechunks!`, and `chunkranges`. A method specialized by a different
+package is not private in the compatibility sense, even when it remains
+unexported. The declarations and contracts are spread across `spaces.jl`,
+`conservative.jl`, `discovery.jl`, `lazy.jl`, `executor.jl`, and `api.jl`.
+Phase 1C gathers and accurately documents that surface without adding an
+interface wrapper or trait hierarchy.
 
 ### Conservative destination geometry is cached through several wrappers
 
@@ -540,8 +602,8 @@ Make it the single structured raster geometry adapter:
 - whole-space and rectangular `celltree` requests return restricted
   `TopDownQuadtreeCursor`s over `RasterGridView`;
 - global cell numbering continues to follow storage dimension order;
-- scattered cell positions may retain `RasterFlatTree` until the Phase 4 API
-  cleanup; and
+- scattered cell positions may retain `RasterFlatTree` until Phase 1B replaces
+  the generic/scattered fallback; and
 - remove `RasterCellTree` once its leaf sizing, split-weight, and cell-access
   contracts are covered by the CR cursor.
 
@@ -594,15 +656,169 @@ all PROJ calls, every Proj object is task-local with explicit lifetime ordering,
 adapter replaces the duplicate structured raster trees without weakening extent
 coverage.
 
+## Phase 1B: converge spherical extents and fallback cell trees
+
+Phase 1 reused native hierarchy for **chunk** discovery. Conservative cell-pair
+discovery still has two package-local fallbacks: `CellCapTree` for a generic
+restricted cell set and `RasterFlatTree` for scattered raster positions. Both
+materialize per-cell caps and then implement another spatial tree. GeometryOps'
+packed `FlexibleRTrees.RTree` already provides the required hierarchy and stable
+original payload numbering, but ConservativeRegridding's spherical path
+currently insists that both sides expose cap extents.
+
+Resolve the protocol at its owner before replacing the trees.
+
+### Promote the GeometryOps cap operations actually used across packages
+
+Add public GeometryOps operations for:
+
+- conservative cap–cap intersection through `Extents.intersects`, delegating to
+  the existing numerically robust unit-spherical predicate;
+- the outward-rounded Cartesian `(:X, :Y, :Z)` extent of a `SphericalCap`;
+- cap containment and cap merging, which DiscreteGlobalGrids and
+  GlobalRegridding currently expose or reproduce around private GeometryOps
+  methods; and
+- cap dilation by an angular radius if retaining that named operation is clearer
+  than constructing a new cap at every caller.
+
+Adjudicate whether the Cartesian bound should be
+`Extents.extent(::SphericalCap)` or an explicitly named unit-spherical helper.
+Do not overload `Extents.extent` if that would imply that a cap is ordinary
+Cartesian geometry rather than a spherical query object. Whichever spelling is
+chosen becomes the one implementation of the outward-rounding rules currently
+in `cap_xyz_extent`.
+
+The exact cap-lens area calculation used only by lazy wave costing may also move
+to GeometryOps if it is a generally useful unit-spherical operation. It does
+not block the tree convergence; retaining one task-specific cost estimator is
+preferable to publishing an API solely to remove lines here.
+
+After the public operations exist:
+
+- `DilatedIntersects` delegates to a dilated cap plus the public robust cap–cap
+  predicate rather than recomputing spherical distance;
+- DiscreteGlobalGrids' `intersects_cap`, `cap_contains`, and `merge_caps`
+  wrappers either become thin public aliases with no private calls or disappear
+  where callers can use GeometryOps directly; and
+- GlobalRegridding removes its duplicate `_mergecap` implementation and uses
+  the GeometryOps cap builder for fallback leaf geometry.
+
+### Let ConservativeRegridding compare mixed extent types
+
+ConservativeRegridding currently chooses
+`GeometryOps.UnitSpherical._intersects` for every spherical manifold and
+`Extents.intersects` otherwise (`intersection_areas.jl:270-274`). Once
+GeometryOps defines cap–cap intersection in the extent protocol, use
+`Extents.intersects` uniformly. The dual search can then compare:
+
+- cap against cap;
+- cap against Cartesian XYZ box; and
+- Cartesian XYZ box against Cartesian XYZ box.
+
+This is an extent-protocol change, not a change to intersection geometry. Cell
+polygons remain unit-spherical and the clipping operator is unchanged. Add the
+mixed-extent combinations to ConservativeRegridding's dual-search tests before
+using them here.
+
+The multithreaded frontier's `pair_weight` has a cap-specific overlap estimate.
+A packed box tree would take its generic subtree-size fallback today. Either add
+a sound cheap mixed cap/box work estimate or establish by benchmark that the
+generic estimate does not materially harm task balance. Do not trade the custom
+tree's source complexity for an unmeasured production scheduling regression.
+
+### Replace the generic and scattered cell-tree implementations
+
+Introduce one small private adapter over `FlexibleRTrees.RTree` containing:
+
+- the owning `RegridSpace` for `getcell` and manifold access;
+- the packed tree;
+- stable original cell positions as leaf payloads; and
+- outward-rounded Cartesian extents derived by GeometryOps.
+
+Use it for arbitrary cell-index subsets for which a space cannot return a
+restricted native cursor. Then:
+
+- remove `CellCapTree`;
+- remove `RasterFlatTree`'s scattered-cell role after Phase 1A has moved
+  rectangular raster ranges to `TopDownQuadtreeCursor`;
+- let arbitrary non-windowable DGG ranges use the same fallback rather than a
+  DGG-specific tree; and
+- retain `RasterFlatTree` only as the temporary legacy `chunktree` adapter until
+  Phase 4 removes that surface.
+
+Do not replace the native structured cursors. Raster rectangles remain CR
+quadtree cursors, DGG ranges with native subtree/window support remain DGG
+cursors, and the packed tree is only the unstructured fallback.
+
+### Required laws and exit criterion
+
+- Public cap–cap results are identical to GeometryOps' existing robust private
+  predicate, including nearly coincident centres and radii within a few ULP of
+  contact.
+- Cap–box and box–cap comparisons retain their no-false-negative contract.
+- Cartesian cap extents contain extrema from tiny, polar, antimeridian,
+  hemisphere, and whole-sphere caps with outward rounding.
+- Packed fallback leaf positions equal the requested original cell positions,
+  independent of packing and node capacity.
+- Conservative blocks built from native cap cursors and packed box fallbacks
+  are numerically identical.
+- Serial and threaded candidate pairs and weights remain deterministic.
+- The committed Conservative production benchmark shows no material regression
+  in candidate count, task balance, construction time, or peak memory.
+
+Exit criterion: GeometryOps owns the reusable spherical extent primitives,
+ConservativeRegridding accepts mixed spatial extent types through one public
+predicate, and GlobalRegridding owns no general-purpose fallback cell tree
+other than a thin adapter over `FlexibleRTrees`.
+
+## Phase 1C: consolidate the `RegridSpace` extension surface
+
+Gather the cross-package declarations and contracts in `spaces.jl`, grouped by
+responsibility rather than by the file that happens to consume them:
+
+```text
+cell geometry:       ncells, getcell, celltree, subtree
+chunk geometry:      nchunks, cellindices, chunkextent,
+                     chunkindex, candidatechunks!
+array storage:       chunkranges
+point/chart methods: cellat, cellcentroid, hascellchart
+output/resolution:   destinationdims, dimsource, _asspace
+```
+
+Mark load-bearing qualified hooks `public` even when they remain unexported.
+In particular, `chunkindex`, `candidatechunks!`, and `chunkranges` are external
+interfaces because DiscreteGlobalGrids specializes them. Update the module
+comment and `RegridSpace` docstring so they no longer call these methods private.
+
+Do not introduce `AbstractChunkIndex`, `SpaceTraits`, a `PlanCore`, or a wrapper
+object merely to make the list look uniform. Dispatch on the query operation is
+the useful abstraction; each native index keeps its own representation.
+
+Keep the semantic distinction between:
+
+- `cellindices(space, chunk)`, which names the cells a chunk owns; and
+- `chunkranges(space, chunk, spatialsize)`, which names rectangular array ranges
+  that can be read from storage in one operation.
+
+`chunktree` remains only as a compatibility bridge until Phase 4. At that point,
+remove it if the repository and known downstream consumers use the query seam;
+do not translate the new index protocol back into a legacy cap tree.
+
+Exit criterion: one documented qualified interface explains every method
+DiscreteGlobalGrids extends, declarations live with the space contract, and no
+new interface type or forwarding wrapper has been added.
+
 ## Phase 2: build and own one authoritative dependency graph
 
-Build destination-major graph rows through the Phase 1 source index:
+Build destination-major graph rows through the Phase 1/1C chunk-query seam:
 
 ```julia
 radius = support_radius(method, src_space)
 index = chunkindex(src_space)
 for (d, dstcap) in pairs(chunkextents(dst_space))
-    rows[d] = candidatechunks(index, dstcap; radius)
+    row = Int[]
+    candidatechunks!(row, index, dstcap; radius)
+    rows[d] = row
 end
 dependencies = ChunkDependencyGraph(rows, nchunks(src_space))
 ```
@@ -878,6 +1094,14 @@ After indexed graph construction and graph-backed execution are established:
 - decide whether the public `chunktree` surface has remaining consumers. Do not
   preserve it merely as a wrapper over the private `chunkindex` query seam.
 
+Phase 1C makes `chunkindex`/`candidatechunks!` a documented qualified extension
+seam rather than a private implementation detail. If `chunktree` has no
+remaining downstream consumer, remove its export and declaration here, remove
+`RasterFlatTree`'s final compatibility role, and make `chunkextent` plus the
+query seam the only chunk-geometry interface. Phase 1B has already moved
+arbitrary **cell** subsets to the packed fallback, so this phase must not retain
+`RasterFlatTree` for a role it no longer serves.
+
 Keep leaf extent access, and make it cheap:
 
 ```julia
@@ -898,12 +1122,14 @@ metadata it needs into the immutable dependency object or make it request only
 the extents it actually uses before removing those vectors.
 
 `HierarchicalGridCursor` and the surviving ConservativeRegridding cell-tree
-integrations remain. Phase 1A separately converges `RasterCellTree` and
-`RasterGridView` onto one CR curvilinear-grid adapter; Phase 4 does not reopen
-that geometry decision.
+integrations remain. Phase 1A converges `RasterCellTree` and `RasterGridView`
+onto one CR curvilinear-grid adapter, and Phase 1B replaces only the
+generic/scattered fallback; Phase 4 does not reopen either geometry decision.
 
 Exit criterion: one candidate-query implementation defines graph edges, and the
-executor retains neither a second discovery algorithm nor redundant index state.
+executor retains neither a second discovery algorithm nor redundant index
+state; the documented space interface contains no compatibility tree that is
+immediately flattened or translated back into the query protocol.
 
 ## Phase 5: make `WeightBlock` the block-builder result
 
@@ -926,6 +1152,34 @@ Both eager whole-domain construction and chunked construction call this seam.
 Remove the separate `wholeblock(::Conservative)` optimization after the unified
 path preserves its allocation and timing behavior.
 
+### Make the final block own its reference weights
+
+Normalize the denominator/reference representation in the same phase:
+
+1. Change `WeightCOO` from an always-allocated `denom` plus `hasdenom::Bool` to
+   `denom::Union{Nothing,Vector{Float64}}`.
+2. `markdenominated!` or the first `adddenom!` allocates the zero-filled vector;
+   point methods leave it as `nothing`.
+3. Make `WeightBlock` own the final data-independent reference vector used by
+   accumulation. For a denominated block, `reference` aliases `denom`; for a
+   non-denominated block, construct the row sums once when the block is made.
+4. Remove `CachedBlock.ref`. Lazy application reads `entry.block.reference`,
+   and repeated eager application reuses the same stored reference rather than
+   recomputing it for every call.
+5. Preserve `blockreference!` and `addreference!` as executor operations, but
+   implement them from the block's stored reference rather than redispatching
+   over sparse/dense weights and denominators.
+
+This is one invariant, not another cache: every final block carries exactly the
+reference weights its values are normalized against. `denom === nothing` still
+records whether those weights were explicit denominators or row sums, so
+`hasdenom` remains derivable without a second boolean.
+
+`Spilled` need not serialize a second vector. Its existing matrix/denominator
+format reconstructs `WeightBlock.reference` on read; bump the private spill
+version only if the serialized bytes actually change. `_blockbytes` must count
+aliased `denom`/`reference` storage once.
+
 The motivation is memory, not tidiness. The round trip was measured at 0.17 %
 of time but a 1335 MiB `maxrss` delta, 8.4× the result, from the
 ConservativeRegridding matrix, the COO and the final matrix being live
@@ -946,7 +1200,7 @@ Facts the seam must respect:
   path. Select the override by trait or require wrappers to forward it;
 - carry the empty-side contract: `wholeblock(::Conservative)` `invoke`s the
   generic path when either side is empty (`conservative.jl:360-363`) so
-  `hasdenom` matches. Pin the present asymmetry first — empty `dst_inds`
+  denominator presence matches. Pin the present asymmetry first — empty `dst_inds`
   returns before `markdenominated!` (`:330`), empty `src_inds` after (`:331`);
 - `wholeblock` is private (`GlobalRegridding.jl:60-99`); its removal is
   internal;
@@ -968,12 +1222,21 @@ Required laws:
   positive intersected area summed by the executor (`lazy.jl:429`,
   `executor.jl:432`, thresholded at `executor.jl:305-320`), so per-block
   computation is the only correct design;
+- a denominated block's `reference` and `denom` are the same immutable-by-
+  convention vector, while a point block has `denom === nothing` and a stored
+  row-sum reference;
+- repeated eager applications and lazy cache hits allocate no new reference
+  vector;
+- spill round trips reconstruct identical denominator/reference semantics and
+  `_blockbytes` does not double-count aliased arrays;
 - no CSC-to-COO-to-CSC round trip occurs for Conservative; and
 - third-party incremental builders continue to work through the generic fallback.
 
 Exit criterion: one block-building path serves eager and lazy plans without
 regressing the measured eager Conservative optimization, and the chunked
-path's peak RSS drops by the re-measured round-trip delta.
+path's peak RSS drops by the re-measured round-trip delta; one final
+`WeightBlock` owns weights, optional denominator semantics, and its reusable
+reference vector, while caches add no duplicate numerical representation.
 
 ## Phase 6: remove DGG-specific output application
 
@@ -991,6 +1254,29 @@ Then remove:
 - `_ChunkedToDGG`;
 - the specialized eager and lazy `GR.regrid` methods; and
 - `_ascube`.
+
+Remove the adjacent DGG target-conversion layer as well. `regridgrid` is an open
+generic with four one-line conversions and a `RegridTarget` union whose only
+consumer immediately constructs `DGGSpace`. Replace it with direct `DGGSpace`
+forwarding constructors or direct `_asspace` methods for `AbstractGrid`,
+`CellLookup`, `CellVector`, and `MultiOrderCellSet`. Retain the separate bare
+`AbstractHierarchicalGridSystem` error and source-dependent destination-level
+resolution; those encode real behavior rather than conversion syntax.
+
+At the user API boundary, keep the complete documented keyword signature on
+`plan_regrid`, the one owner of defaults and validation. Let the convenience
+forms forward:
+
+```julia
+regrid(data; kwargs...) = regrid(data, plan_regrid(data; kwargs...))
+regrid!(dest, data; kwargs...) = regrid!(dest, data, plan_regrid(data; kwargs...))
+```
+
+This removes two duplicate copies of the keyword defaults and type constraints.
+Unknown-keyword and invalid-value errors still come from `plan_regrid`; test
+their messages so forwarding does not weaken the API boundary. The docstrings
+continue to spell out the supported keywords even though the forwarding methods
+do not repeat them in code.
 
 Generic `wrapoutput` and `wraplazy` must preserve the existing `Cells` lookup
 and all non-spatial dimensions. Avoid constructing a `ShapedRegridArray` for a
@@ -1010,7 +1296,9 @@ false for DGG destinations. `destinationdims(plan::ChunkedPlan)` ignores
 `plan.sampling` (`api.jl:105-106`), consistent with the method above dropping it.
 
 Exit criterion: all DGG target spellings return the same types, dimensions,
-lookups, and values through the generic path.
+lookups, and values through the generic path; there is no DGG-specific plan
+application or intermediate target-conversion generic, and `plan_regrid` is the
+single executable owner of regridding keyword defaults and validation.
 
 ## Phase 7: consolidate conservative destination-geometry caches
 
@@ -1078,16 +1366,77 @@ has no gate.
 Exit criterion: destination geometry follows one lookup/cache path rather than
 several nested wrappers.
 
-## Phase 8: private cache cleanup — dropped
+## Phase 8: simplify private lazy residency and chunk metadata
 
-`PerChunk` (`plans.jl:212-229`) and `SourceHold` (`lazy.jl:198-211`) share
-about eleven lines: the scan for the oldest stamp, the byte subtraction and
-the delete. Everything else differs — lock versus none, count-plus-bytes versus
-bytes only, a protected `keep` key versus none, insert-then-retain-newest
-versus refuse-oversized (`lazy.jl:187`), a struct field versus a parallel
-`Dict`. A shared helper would take more parameters than the lines it removes.
-`Spilled` wraps a `PerChunk` (`plans.jl:239-251`) and has an open fingerprint
-redesign that this plan does not cover. Leave both untouched.
+Do not introduce a generic LRU cache abstraction. `PerChunk`
+(`plans.jl:212-229`) and `SourceHold` (`lazy.jl:198-211`) differ in lifetime,
+locking, limits, duplicate-build behavior, oversize handling, and protected
+entry semantics. Their shared eviction scan is too small to justify a public or
+parameter-heavy cache framework.
+
+There are nevertheless two local representations worth simplifying.
+
+### Give `SourceHold` one entry dictionary
+
+`SourceHold` currently keeps source arrays in `held` and their recency stamps in
+a parallel `used` dictionary. Replace those with one private entry:
+
+```julia
+mutable struct HeldSource{A}
+    value::A
+    bytes::Int
+    used::Int
+end
+```
+
+The hold owns `Dict{Tuple{Int,Int},HeldSource}`. Touching and eviction update or
+inspect the entry directly; byte removal uses the stored size rather than
+recomputing it. This removes the invariant that `held` and `used` contain the
+same keys without trying to make source arrays and weight blocks share a value
+type. A tiny private oldest-entry helper may be shared with `PerChunk` only if
+the resulting call sites are shorter and preserve their different locking and
+`keep` rules.
+
+### Normalize DiskArrays chunk metadata once
+
+Lazy construction currently asks `DiskArrays.eachchunk(source)` separately in
+`_passthroughchunks` and `_sourceotherchunks`; deriving a source `RasterGrid`
+may already have inspected the same grid for its spatial ranges. Normalize the
+available `GridChunks` once per lazy-array construction and pass that immutable
+description to:
+
+- output pass-through chunk construction;
+- non-spatial source read groups; and
+- spatial source-space construction where the source is inferred in the same
+  call and doing so does not couple `RasterGrid` to a `LazyRegridArray`.
+
+Do not store a second chunk layout on the plan. Chunk metadata depends on the
+applied data array, while the plan is reusable across compatible arrays.
+
+Rename `isdiskbacked` to match its actual predicate: it tests
+`DiskArrays.haschunks(data) isa DiskArrays.Chunked`, not whether storage is on
+disk. A name such as `_haschunkedstorage` or `_ischunkedsource` keeps the current
+default-lazy behavior explicit. Preserve the distinct `_isdisksource` check
+where the executor genuinely needs to know whether a read must go through the
+DiskArrays interface.
+
+Required laws:
+
+- source load, hit, skipped, dropped, current-byte and peak-byte statistics are
+  identical for the same access sequence;
+- the hold never retains an oversized source array and remains within its byte
+  limit apart from the documented scratch buffer;
+- output chunking and non-spatial read grouping are identical for regular,
+  irregular, absent, and malformed/non-grid `eachchunk` results;
+- lazy construction still reads no source values; and
+- repeated `eachchunk` calls are absent from one lazy-array construction.
+
+`Spilled` still wraps `PerChunk` and has a separate open fingerprint redesign;
+that work remains outside this plan.
+
+Exit criterion: source residency has one dictionary and one recency/byte record
+per held array, DiskArrays chunk metadata is interpreted once per application,
+and no generic cache hierarchy has been added.
 
 ## Verification matrix
 
@@ -1098,13 +1447,16 @@ integration suites.
 |---|---|
 | Raster DiskArrays ownership, transformed-grid quadtree coverage, and candidate identity | `lib/GlobalRegridding/test/test_rastergrid.jl`, `lib/GlobalRegridding/test/test_lazy.jl`, brute-force geometry property tests |
 | Raster native-CRS transforms, Proj task isolation/lifetime, and unit-sphere naming | `lib/GlobalRegridding/test/test_rastergrid.jl`, Proj extension tests, concurrent-task projected-grid property tests |
-| Generic cap-to-XYZ extent and R-tree candidate identity | GeometryOps unit-spherical/FlexibleRTree tests, `lib/GlobalRegridding/test/test_lazy.jl` |
+| Public cap-cap/cap-box extent protocol and outward XYZ bounds | GeometryOps unit-spherical/Extents tests, ConservativeRegridding mixed dual-tree tests |
+| Packed chunk and fallback-cell R-tree identity | GeometryOps FlexibleRTree tests, `lib/GlobalRegridding/test/test_lazy.jl`, `lib/GlobalRegridding/test/test_conservative.jl` |
+| Complete qualified `RegridSpace` extension contract | interface conformance tests plus DGG method-coverage assertions |
 | DGG chunk frontier, descendant coverage, and compact numbering | system `node_extent` tests, `test/systems/crosssystem/regrid.jl` |
 | Graph construction and CSR laws | `lib/GlobalRegridding/test/test_chunkgraph.jl` |
 | Executor graph use and graph-miss policy | `lib/GlobalRegridding/test/test_lazy.jl`, `test/scripts/copdem_policy.jl` |
-| Weight-block identity and partition invariance | `lib/GlobalRegridding/test/test_conservative.jl`, `lib/GlobalRegridding/test/test_interpolation.jl` |
+| Weight-block identity, partition invariance, and one stored reference | `lib/GlobalRegridding/test/test_conservative.jl`, `lib/GlobalRegridding/test/test_interpolation.jl`, spill round trips |
 | Eager/lazy equivalence and destination dimensions | `lib/GlobalRegridding/test/test_integration.jl`, `test/systems/crosssystem/regrid.jl` |
 | Budget, residency, spilling, and empty chunks | `lib/GlobalRegridding/test/test_lazy.jl`, `test/systems/crosssystem/regrid_acceptance.jl` |
+| Single-dictionary source hold and one-time DiskArrays metadata normalization | `lib/GlobalRegridding/test/test_lazy.jl`, counting `eachchunk` fixture |
 | Production scheduling/cache compatibility | `scripts/copdem_dag_validate.jl`, production subset runs |
 | Synthetic-source absoluteness | `test/scripts/copdem_source_mode.jl` |
 | Every demand was a graph edge, against a real network | `scripts/copdem_prefetch_coldtest.jl:247-248` |
@@ -1141,6 +1493,10 @@ Standing acceptance laws:
    construction: one graph object per plan, its narrow phase set once.
 8. Provider/network metadata work remains driver policy, not regridding plan
    construction.
+9. Every final weight block owns one reusable reference vector; cache wrappers
+   do not copy it.
+10. Every external `RegridSpace` specialization is named by the documented
+    qualified extension contract.
 
 ## Commit strategy
 
@@ -1159,14 +1515,25 @@ cleanup:
    correctness tests; no direct PROJ calls.
 7. Convergence of `RasterCellTree`/`RasterGridView` and cap machinery after its
    correctness and performance gate.
-8. Indexed graph-builder correctness and performance comparison.
-9. Removal of the latitude join after that gate.
-10. Plan-owned dependency graph: `refine` moves to `plan_regrid`, the graph
+8. GeometryOps public spherical extent operations and ConservativeRegridding
+   mixed cap/box dual-search conformance.
+9. Packed fallback cell-tree adapter, followed by removal of `CellCapTree` and
+   the scattered-cell role of `RasterFlatTree` after its performance gate.
+10. Consolidated, documented qualified `RegridSpace` extension surface; no new
+    interface wrapper.
+11. Indexed graph-builder correctness and performance comparison.
+12. Removal of the latitude join after that gate.
+13. Plan-owned dependency graph: `refine` moves to `plan_regrid`, the graph
    gains its stamp, `restrict` row views; execution unchanged.
-11. Lazy executor switched to graph rows and duplicate discovery removed.
-12. Unified `weightblock` construction.
-13. DGG output-wrapper removal.
-14. Targeted stale-cache removal, then prepared destination geometry if earned.
+14. Lazy executor switched to graph rows and duplicate discovery removed,
+    including the legacy `chunktree` surface if it has no external consumers.
+15. Unified `weightblock` construction and one block-owned denominator/reference
+    representation.
+16. DGG output/target-conversion removal and keyword forwarding through
+    `plan_regrid`.
+17. Targeted stale-cache removal, then prepared destination geometry if earned.
+18. Single-entry-dictionary `SourceHold`, one-time DiskArrays chunk-metadata
+    normalization, and accurate chunked-storage naming.
 
 Record allocation, graph-size, planning-time, and execution-time changes with
 each performance-sensitive commit. Structural simplification is complete only
@@ -1183,7 +1550,15 @@ preserves the relevant scaling behavior.
   GeometryOps and projected conversion by task-local Proj.jl clones.
 - There is one structured raster lattice adapter, and generic projected-grid
   extent construction does not rely on geographic-only finite sampling.
-- No new general-purpose Raster or DGG tree duplicates existing infrastructure.
+- GeometryOps publicly owns cap-cap/cap-box intersection, Cartesian cap bounds,
+  containment, and merging; ConservativeRegridding consumes the common extent
+  predicate for mixed tree nodes.
+- One packed `FlexibleRTrees` adapter handles arbitrary cell subsets; no custom
+  general-purpose Raster, DGG, or fallback cell tree duplicates existing
+  infrastructure.
+- The documented qualified `RegridSpace` interface names every cross-package
+  specialization, and the legacy `chunktree` contract is absent unless a real
+  remaining consumer justifies it.
 - A logical `ChunkedPlan` owns or validates a reference to one reusable
   dependency graph rather than rebuilding it per destination column.
 - Lazy reads perform no geometric dependency discovery.
@@ -1191,9 +1566,14 @@ preserves the relevant scaling behavior.
 - Generic cap-box broad-phase queries and exact cap filtering match the cap
   reference; raster-quadtree and DGG-frontier queries satisfy the stronger
   geometric no-false-negative law for zero and nonzero support radii.
-- Conservative eager and chunked construction share one `WeightBlock` builder.
-- DGG output uses the generic destination-dimension path.
+- Conservative eager and chunked construction share one `WeightBlock` builder;
+  the final block owns one reusable reference vector and cache wrappers do not
+  copy it.
+- DGG output uses the generic destination-dimension path, DGG targets resolve
+  directly to `DGGSpace`, and `plan_regrid` alone owns keyword defaults.
 - Destination polygon caching has one prepared-tile abstraction.
+- Lazy source residency uses one entry dictionary, and each applied source's
+  DiskArrays chunk metadata is normalized once.
 - Point-method redesign remains untouched and independently actionable.
 - The complete regridding test matrix is green.
 - Representative production and small-spatial-chunk benchmarks show no material

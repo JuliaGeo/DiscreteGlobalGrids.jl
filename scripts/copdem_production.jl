@@ -70,7 +70,7 @@ const CONFIG = (
     retries     = 4,        # total GET attempts for a transient failure
     backoff     = 1.0,      # seconds; doubled between attempts
     timeout     = 600.0,    # seconds per tile GET
-    workers     = 0,        # concurrent worker tasks; 0 = size from `cores`
+    workers     = 40,       # concurrent worker tasks; 0 = size from `cores`
     cores       = 40,       # the core budget `workers` is sized to hold
     shape       = :outer,   # :outer or :inner; see `workercount`
     batch       = 8,        # chunks handed out per pull, at most; see `taper`

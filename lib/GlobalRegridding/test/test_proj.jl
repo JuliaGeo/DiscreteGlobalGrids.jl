@@ -52,6 +52,42 @@ end
     prepared_forward = GR._task_prepared_raster_transform(space.native_to_unit_sphere)
     @test prepared_forward.transformation === pair.forward
 
+    # Shared indexes retain the safe TLS chart. Synchronous traversal and
+    # serial conservative traversal prepare only private cursor copies.
+    retained = GR.chunkindex(space)
+    @test retained.grid.native_to_unit_sphere === space.native_to_unit_sphere
+    localcursor = GR._task_prepared_raster_tree(retained)
+    @test localcursor !== retained
+    @test localcursor.grid !== retained.grid
+    @test localcursor.grid.native_to_unit_sphere.transformation === pair.forward
+    @test retained.grid.native_to_unit_sphere === space.native_to_unit_sphere
+    prepared_vertex = CR.Trees.getvertex(localcursor.grid, 1, 1)
+    @test tuple_isapprox(Tuple(prepared_vertex),
+        Tuple(CR.Trees.getvertex(retained.grid, 1, 1)))
+    prepared_vertex_allocated =
+        @allocated(CR.Trees.getvertex(localcursor.grid, 1, 1))
+    @test prepared_vertex_allocated == 0
+
+    serial_dst, serial_src = GR._task_prepared_intersection_trees(
+        GOCore.False(), retained, retained)
+    @test serial_dst.grid.native_to_unit_sphere.transformation === pair.forward
+    @test serial_src.grid.native_to_unit_sphere.transformation === pair.forward
+    threaded_dst, threaded_src = GR._task_prepared_intersection_trees(
+        GOCore.True(), retained, retained)
+    @test threaded_dst === retained
+    @test threaded_src === retained
+
+    # A tile may retain its restricted tree and cached polygons across block
+    # tasks, so that stored tree also keeps the safe chart.
+    tile = GR.TileCells(space, 1:ncells(space))
+    cached = GR.subtree(tile, 1:ncells(space))
+    @test cached isa GR.CachedCellTree
+    @test cached.tree.grid.native_to_unit_sphere === space.native_to_unit_sphere
+    prepared_cached = GR._task_prepared_raster_tree(cached)
+    @test prepared_cached !== cached
+    @test prepared_cached.tree.grid.native_to_unit_sphere.transformation === pair.forward
+    @test tile.tree.grid.native_to_unit_sphere === space.native_to_unit_sphere
+
     to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
     xaxis, yaxis = GR.chartaxes(space)
     x, y = first(xaxis), first(yaxis)

@@ -106,6 +106,11 @@ end
 bitequal(a::USPoint, b::USPoint) = all(a[k] === b[k] for k in 1:3)
 bitequal(a, b) = bitequal(a.point, b.point) && a.radius === b.radius
 
+@noinline function child_construction_allocated(tree)
+    STI.getchild(tree, 1)
+    return @allocated STI.getchild(tree, 1)
+end
+
 # Wrapper that forces per-point chart evaluation.
 struct OpaqueChart end
 (::OpaqueChart)(x, y) = geographic_point(x, y)
@@ -374,7 +379,8 @@ end
 
         # `ConservativeRegridding` addresses a cell tree as a cell source.
         tree = celltree(space)
-        @test Trees.ncells(tree) == ncells(space)
+        @test Trees.ncells(tree) == GR.rastersize(space)
+        @test Trees.cell_index_count(tree) == ncells(space)
         @test Trees.getcell(tree, 3) == getcell(space, 3)
         @test GOCore.best_manifold(tree) == manifold(space)
 
@@ -403,62 +409,56 @@ end
         @test all(≈(4pi / ncells(coarse)), sum(flipped_areas; dims = 2))
     end
 
-    @testset "the memoized subtree is the lazy tree, bit for bit" begin
-        space = rg_forward()
-        samecap(a, b) = a.point == b.point && a.radius == b.radius
-        function sametree(a, b)
-            samecap(STI.node_extent(a), STI.node_extent(b)) || return false
-            STI.isleaf(a) == STI.isleaf(b) || return false
-            if STI.isleaf(a)
-                va = collect(STI.child_indices_extents(a))
-                vb = vec(collect(STI.child_indices_extents(b)))
-                length(va) == length(vb) || return false
-                return all(x[1] == y[1] && samecap(x[2], y[2]) for (x, y) in zip(va, vb))
+    @testset "restricted CR cursors keep global storage numbering" begin
+        function leafpositions!(out, node)
+            if STI.isleaf(node)
+                append!(out, first.(collect(STI.child_indices_extents(node))))
+            else
+                for child in STI.getchild(node)
+                    leafpositions!(out, child)
+                end
             end
-            ca, cb = collect(STI.getchild(a)), collect(STI.getchild(b))
-            length(ca) == length(cb) || return false
-            return all(sametree(x, y) for (x, y) in zip(ca, cb))
+            return out
         end
 
-        # The whole space, and a chunk rectangle.
-        whole = GR.subtree(space, 1:ncells(space))
-        @test whole isa GR.MemoRasterTree
-        @test sametree(whole, celltree(space))
-        rows = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (8, 2)),
+        xfast = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (4, 2)),
             (DD.X(raster_lon()), DD.Y(raster_lat()))))
-        chunk = GR.subtree(rows, cellindices(rows, 2))
-        @test chunk isa GR.MemoRasterTree
-        xr, yr = GR.chunkbox(rows, 2)
-        @test sametree(chunk,
-            GR.RasterCellTree(rows, first(xr), last(xr), first(yr), last(yr)))
+        yfast = RasterGrid(DD.DimArray(CountingChunked(zeros(4, 8), (2, 4)),
+            (DD.Y(raster_lat()), DD.X(raster_lon()))))
 
-        # The tree source contract carries over unchanged.
-        @test Trees.ncells(whole) == ncells(space)
-        @test Trees.split_weight(whole) == ncells(space)
-        @test sum(Trees.split_weight, STI.getchild(whole)) == Trees.split_weight(whole)
-        @test Trees.getcell(whole, 3) == getcell(space, 3)
-        @test GOCore.best_manifold(whole) == manifold(space)
+        for space in (xfast, yfast)
+            whole = GR.subtree(space, 1:ncells(space))
+            @test whole isa Trees.TopDownQuadtreeCursor
+            @test whole.grid isa GR.RasterGridView
+            @test whole.grid.space === space
+            @test whole.grid.native_to_unit_sphere === space.native_to_unit_sphere
+            @test whole.leafsize == (4, 4)
+            @test Trees.ncells(whole) == GR.rastersize(space)
+            @test Trees.cell_index_count(whole) == ncells(space)
+            @test Trees.split_weight(whole) == ncells(space)
+            @test sort!(leafpositions!(Int[], whole)) == collect(1:ncells(space))
+            @test Trees.getcell(whole, 3) == getcell(space, 3)
+            @test GOCore.best_manifold(whole) == manifold(space)
 
-        # Scattered indices still take the flat tree.
-        @test GR.subtree(space, [1, 4, 9, 25]) isa GR.RasterFlatTree
-
-        # A revisit in the same task hands back the memoized entry vector.
-        leaf = whole
-        while !STI.isleaf(leaf)
-            leaf = STI.getchild(leaf, 1)
+            # One rectangular DiskArrays chunk keeps global leaf IDs even
+            # though `ncells(cursor)` and split weight describe only its range.
+            inds = cellindices(space, 2)
+            chunk = GR.subtree(space, inds)
+            @test chunk isa Trees.TopDownQuadtreeCursor
+            @test chunk.grid.space === space
+            @test chunk.leafsize == (4, 4)
+            @test prod(Trees.ncells(chunk)) == length(inds)
+            @test Trees.cell_index_count(chunk) == ncells(space)
+            @test Trees.split_weight(chunk) == length(inds)
+            @test sort!(leafpositions!(Int[], chunk)) == sort!(collect(inds))
         end
-        @test STI.child_indices_extents(leaf) === STI.child_indices_extents(leaf)
-        @test STI.node_extent(leaf) == STI.node_extent(leaf.tree)
 
-        # Turning the task to another raster resets the memo; both stay right.
-        otherleaf = chunk
-        while !STI.isleaf(otherleaf)
-            otherleaf = STI.getchild(otherleaf, 1)
-        end
-        @test collect(STI.child_indices_extents(otherleaf)) ==
-              vec(collect(STI.child_indices_extents(otherleaf.tree)))
-        @test collect(STI.child_indices_extents(leaf)) ==
-              vec(collect(STI.child_indices_extents(leaf.tree)))
+        # Direct one-child construction is allocation-free once compiled.
+        whole = celltree(xfast)
+        @test child_construction_allocated(whole) == 0
+
+        # Scattered indices remain on the temporary flat fallback.
+        @test GR.subtree(xfast, [1, 4, 9, 25]) isa GR.RasterFlatTree
     end
 
 

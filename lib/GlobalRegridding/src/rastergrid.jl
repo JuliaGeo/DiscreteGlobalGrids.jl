@@ -494,10 +494,14 @@ Return corners in ascending native order, using edge tables when available.
 `space.ccw` records whether polygon construction must reverse them.
 """
 @inline function _cellcorners(space::RasterGrid, ix::Integer, iy::Integer)
+    f = _task_prepared_raster_transform(space.native_to_unit_sphere)
+    return _cellcorners(space, ix, iy, f)
+end
+
+@inline function _cellcorners(space::RasterGrid, ix::Integer, iy::Integer, f)
     t = space.tables
     if t === nothing
         xlo, xhi, ylo, yhi = cellbox(space, ix, iy)
-        f = _task_prepared_raster_transform(space.native_to_unit_sphere)
         return (f((xlo, ylo)), f((xhi, ylo)), f((xhi, yhi)), f((xlo, yhi)))
     end
     ilo, ihi = _edgeorder(space.xedges, ix)
@@ -678,6 +682,10 @@ sphere when no stable convex cap exists; [`_rectcap`](@ref) handles wide boxes.
 """
 function _boxcap(space::RasterGrid, xlo, xhi, ylo, yhi, nsamp::Int)
     t = _task_prepared_raster_transform(space.native_to_unit_sphere)
+    return _boxcap(t, space, xlo, xhi, ylo, yhi, nsamp)
+end
+
+function _boxcap(t, space::RasterGrid, xlo, xhi, ylo, yhi, nsamp::Int)
     m = nsamp + 1
     n = 4m
     sx = sy = sz = 0.0
@@ -792,15 +800,18 @@ end
 """
     _sampledcap(tables, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi) -> SphericalCap
 
-Return the sampled cap used by [`_rectcap`](@ref). Lon/lat boxes narrower than
-180° use four tabulated corners; wider or untabulated boxes sample the boundary.
+Return the sampled cap used by [`_rectcap`](@ref), using the supplied task-local
+chart when boundary samples are required. Lon/lat boxes narrower than 180° use
+four tabulated corners; wider or untabulated boxes sample the boundary.
 """
-@inline _sampledcap(::Nothing, space::RasterGrid, ix0::Int, ix1::Int, iy0::Int,
-    iy1::Int, xlo, xhi, ylo, yhi) = _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
+@inline _sampledcap(::Nothing, transform, space::RasterGrid, ix0::Int, ix1::Int,
+    iy0::Int, iy1::Int, xlo, xhi, ylo, yhi) =
+    _boxcap(transform, space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
 
-@inline function _sampledcap(t::GeographicEdgeTables, space::RasterGrid, ix0::Int, ix1::Int,
-    iy0::Int, iy1::Int, xlo, xhi, ylo, yhi)
-    xhi - xlo < 180.0 || return _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
+@inline function _sampledcap(t::GeographicEdgeTables, transform, space::RasterGrid,
+    ix0::Int, ix1::Int, iy0::Int, iy1::Int, xlo, xhi, ylo, yhi)
+    xhi - xlo < 180.0 ||
+        return _boxcap(transform, space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
     return _cornercap(_boxcorners(t, ix0, ix1, iy0, iy1))
 end
 
@@ -810,9 +821,15 @@ end
 Return the tighter sampled or wide-box cap for a tree-node rectangle.
 """
 function _rectcap(space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
+    transform = _task_prepared_raster_transform(space.native_to_unit_sphere)
+    return _rectcap(transform, space, ix0, ix1, iy0, iy1)
+end
+
+function _rectcap(transform, space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
     xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
     ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
-    sampled = _sampledcap(space.tables, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi)
+    sampled = _sampledcap(
+        space.tables, transform, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi)
     return _tighterof(space, xlo, xhi, ylo, yhi, sampled)
 end
 
@@ -875,61 +892,6 @@ end
 # Spatial trees
 
 """
-    RasterCellTree(space, ix0, ix1, iy0, iy1)
-
-A recursive spatial tree over a raster index rectangle. It splits the longer
-side and derives extents on demand, so construction is `O(1)`.
-"""
-struct RasterCellTree{S<:RasterGrid}
-    space::S
-    ix0::Int
-    ix1::Int
-    iy0::Int
-    iy1::Int
-end
-
-Base.show(io::IO, t::RasterCellTree) = print(io, "RasterCellTree(",
-    t.ix0, ":", t.ix1, ", ", t.iy0, ":", t.iy1, ")")
-
-_treecells(t::RasterCellTree) = (t.ix1 - t.ix0 + 1) * (t.iy1 - t.iy0 + 1)
-
-STI.isspatialtree(::Type{<:RasterCellTree}) = true
-STI.node_extent_is_expensive(::Type{<:RasterCellTree}) = true
-STI.isleaf(t::RasterCellTree) = _treecells(t) <= _CELL_TREE_LEAF
-STI.nchild(t::RasterCellTree) = STI.isleaf(t) ? 0 : 2
-STI.node_extent(t::RasterCellTree) = _rectcap(t.space, t.ix0, t.ix1, t.iy0, t.iy1)
-
-function STI.getchild(t::RasterCellTree)
-    if t.ix1 - t.ix0 >= t.iy1 - t.iy0
-        mid = (t.ix0 + t.ix1) ÷ 2
-        return (RasterCellTree(t.space, t.ix0, mid, t.iy0, t.iy1),
-            RasterCellTree(t.space, mid + 1, t.ix1, t.iy0, t.iy1))
-    else
-        mid = (t.iy0 + t.iy1) ÷ 2
-        return (RasterCellTree(t.space, t.ix0, t.ix1, t.iy0, mid),
-            RasterCellTree(t.space, t.ix0, t.ix1, mid + 1, t.iy1))
-    end
-end
-
-STI.getchild(t::RasterCellTree, i::Int) = STI.getchild(t)[i]
-
-STI.child_indices_extents(t::RasterCellTree) =
-    ((cellposition(t.space, ix, iy), _rastercellcap(t.space, ix, iy))
-     for iy in t.iy0:t.iy1, ix in t.ix0:t.ix1)
-
-# ConservativeRegridding fetches matrix sizes and polygons through these
-# bindings during `intersection_areas`.
-GOCore.best_manifold(t::RasterCellTree) = manifold(t.space)
-Trees.ncells(t::RasterCellTree) = ncells(t.space)
-# `Trees.ncells` answers for the whole space, so the frontier's default estimate
-# would be wrong here; the node's index rectangle is exact.
-Trees.split_weight(t::RasterCellTree) = _treecells(t)
-Trees.getcell(t::RasterCellTree, i::Int) = getcell(t.space, i)
-Trees.getcell(t::RasterCellTree) =
-    (getcell(t.space, cellposition(t.space, ix, iy))
-     for iy in t.iy0:t.iy1, ix in t.ix0:t.ix1)
-
-"""
     RasterGridView(space)
 
 A zero-copy `ConservativeRegridding` curvilinear-grid view of a `RasterGrid`.
@@ -939,12 +901,22 @@ as the regridding space. The wrapped space retains the actual
 native-to-unit-sphere transformation; raster storage chunking remains solely
 in `space.xchunks` and `space.ychunks`, populated from `DiskArrays.eachchunk`.
 """
-struct RasterGridView{M<:GOCore.Manifold,S<:RasterGrid} <: Trees.AbstractCurvilinearGrid{M}
+struct RasterGridView{M<:GOCore.Manifold,S<:RasterGrid,F} <: Trees.AbstractCurvilinearGrid{M}
     manifold::M
     space::S
+    "safe retained chart callable, or a task-owned callable on a private prepared copy"
+    native_to_unit_sphere::F
 end
 
-RasterGridView(space::RasterGrid) = RasterGridView(manifold(space), space)
+RasterGridView(space::RasterGrid) =
+    RasterGridView(manifold(space), space, space.native_to_unit_sphere)
+
+# Only short-lived, nonescaping copies receive a task-owned chart wrapper.
+function _task_prepared_raster_view(grid::RasterGridView)
+    transform = _task_prepared_raster_transform(grid.native_to_unit_sphere)
+    transform === grid.native_to_unit_sphere && return grid
+    return RasterGridView(grid.manifold, grid.space, transform)
+end
 
 GOCore.manifold(grid::RasterGridView) = grid.manifold
 
@@ -960,22 +932,30 @@ end
 
 function Trees.getcell(grid::RasterGridView, i::Int, j::Int)
     ix, iy = _viewsubscript(grid, i, j)
-    return getcell(grid.space, cellposition(grid.space, ix, iy))
+    space = grid.space
+    c = _cellcorners(space, ix, iy, grid.native_to_unit_sphere)
+    ring = _cellring(space.ccw ? c : (c[4], c[3], c[2], c[1]))
+    return GI.Polygon([GI.LinearRing(ring)])
 end
 
 function Trees.getvertex(grid::RasterGridView, i::Int, j::Int)
     ix, iy = _viewsubscript(grid, i, j)
     space = grid.space
     if space.tables === nothing
-        return space.native_to_unit_sphere((space.xedges[ix], space.yedges[iy]))
+        return grid.native_to_unit_sphere((space.xedges[ix], space.yedges[iy]))
     end
     return _tablecorner(space.tables, ix, iy)
 end
 
 function Trees.cell_range_extent(grid::RasterGridView, irange::UnitRange{Int},
         jrange::UnitRange{Int})
-    xr, yr = grid.space.xfast ? (irange, jrange) : (jrange, irange)
-    return _rectcap(grid.space, first(xr), last(xr), first(yr), last(yr))
+    # Threaded CR frontier nodes retain the safe view and cross tasks. Prepare
+    # one ephemeral view for this range calculation, so its perimeter loop does
+    # one TLS lookup rather than one lookup per transformed vertex.
+    localgrid = _task_prepared_raster_view(grid)
+    xr, yr = localgrid.space.xfast ? (irange, jrange) : (jrange, irange)
+    return _rectcap(localgrid.native_to_unit_sphere, localgrid.space,
+        first(xr), last(xr), first(yr), last(yr))
 end
 
 # The range cap is computed from the chart rather than read directly from axis
@@ -983,7 +963,29 @@ end
 # child extents when it is used in a dual search.
 Trees.extent_is_expensive(::Type{<:RasterGridView}) = true
 
-_rasterchunkcursor(space::RasterGrid) = Trees.TopDownQuadtreeCursor(RasterGridView(space))
+const _RASTER_CURSOR_LEAFSIZE = (4, 4)
+
+@inline _rasterviewranges(space::RasterGrid, xr::UnitRange{Int}, yr::UnitRange{Int}) =
+    space.xfast ? (xr, yr) : (yr, xr)
+
+function _rastercursor(space::RasterGrid, xr::UnitRange{Int}, yr::UnitRange{Int})
+    ranges = _rasterviewranges(space, xr, yr)
+    return Trees.TopDownQuadtreeCursor(
+        RasterGridView(space), ranges; leafsize = _RASTER_CURSOR_LEAFSIZE)
+end
+
+_rastercursor(space::RasterGrid) = _rastercursor(space, 1:_nx(space), 1:_ny(space))
+_rasterchunkcursor(space::RasterGrid) = _rastercursor(space)
+
+function _task_prepared_raster_tree(
+        tree::Trees.TopDownQuadtreeCursor{<:RasterGridView})
+    grid = _task_prepared_raster_view(tree.grid)
+    grid === tree.grid && return tree
+    return Trees.TopDownQuadtreeCursor(
+        grid, tree.leafranges; leafsize = tree.leafsize)
+end
+
+_task_prepared_raster_tree(tree) = tree
 
 """
     RasterFlatTree(space, indices, caps)
@@ -1023,21 +1025,27 @@ Trees.split_weight(t::RasterFlatTree) = length(t.indices)
 Trees.getcell(t::RasterFlatTree, i::Int) = getcell(t.space, i)
 Trees.getcell(t::RasterFlatTree) = (getcell(t.space, i) for i in t.indices)
 
-celltree(space::RasterGrid) = RasterCellTree(space, 1, _nx(space), 1, _ny(space))
+celltree(space::RasterGrid) = _rastercursor(space)
 
 """
     celltree(space::RasterGrid, chunk::Int)
     celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
 
-Return a recursive tree for a chunk rectangle or a flat tree for arbitrary cell
-positions. Leaves always use global cell positions.
+Return a restricted CR quadtree cursor for a chunk or other rectangular cell
+range, and a flat tree for scattered positions. Leaves always use global cell
+positions.
 """
 function celltree(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
-    return RasterCellTree(space, first(xr), last(xr), first(yr), last(yr))
+    return _rastercursor(space, xr, yr)
 end
 
 function celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
+    rect = _indexrect(space, indices)
+    if rect !== nothing
+        ix0, ix1, iy0, iy1 = rect
+        return _rastercursor(space, ix0:ix1, iy0:iy1)
+    end
     caps = [_rastercellcap(space, cellsubscript(space, Int(i))...) for i in indices]
     return RasterFlatTree(space, indices, caps)
 end
@@ -1059,14 +1067,10 @@ chunktree(space::RasterGrid) = RasterFlatTree(space, 1:nchunks(space), chunkexte
 """
     subtree(space::RasterGrid, inds)
 
-Return a memoized recursive tree when `inds` form a lattice rectangle,
+Return a restricted CR quadtree cursor when `inds` form a lattice rectangle,
 otherwise a flat tree with one cap per cell.
 """
-function subtree(space::RasterGrid, inds)
-    rect = _indexrect(space, inds)
-    rect === nothing && return celltree(space, inds)
-    return MemoRasterTree(RasterCellTree(space, rect...))
-end
+subtree(space::RasterGrid, inds) = celltree(space, inds)
 
 # The number of cells along the dimension that varies fastest in cell positions.
 _nfast(space::RasterGrid) = space.xfast ? _nx(space) : _ny(space)

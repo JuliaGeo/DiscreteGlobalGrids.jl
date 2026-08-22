@@ -47,7 +47,6 @@ const FlexibleRTrees = GO.FlexibleRTrees
 include("shared.jl")
 include("spaces.jl")
 include("rastergrid.jl")
-include("raster_tree_memo.jl")
 include("methods.jl")
 include("conservative.jl")
 include("intersection_area.jl")

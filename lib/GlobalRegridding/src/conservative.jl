@@ -223,7 +223,17 @@ STI.child_indices_extents(t::CachedCellTree) = STI.child_indices_extents(t.tree)
 
 GOCore.best_manifold(t::CachedCellTree) = GOCore.best_manifold(t.tree)
 ncells(t::CachedCellTree) = ncells(t.tree)
+Trees.cell_index_count(t::CachedCellTree) = Trees.cell_index_count(t.tree)
 getcell(t::CachedCellTree) = getcell(t.tree)
+
+# A CachedCellTree returned from a shared TileCells owns only a safe retained
+# cursor. Serial traversal may use a private wrapper copy with a prepared inner
+# cursor; the stored tile tree and the original wrapper remain unchanged.
+function _task_prepared_raster_tree(t::CachedCellTree)
+    tree = _task_prepared_raster_tree(t.tree)
+    tree === t.tree && return t
+    return CachedCellTree(tree, t.map, t.cells)
+end
 
 @inline function getcell(t::CachedCellTree, i::Int)
     k = localindex(t.map, i)
@@ -398,9 +408,19 @@ and no outer loop is already parallel ([`OUTER_PARALLEL`](@ref)).
 """
 function _intersectionareas(m::GOCore.Manifold, dst_tree, src_tree, op)
     threaded = _innerthreaded()
+    dst_tree, src_tree = _task_prepared_intersection_trees(
+        threaded, dst_tree, src_tree)
     return ConservativeRegridding.intersection_areas(
         m, threaded, dst_tree, src_tree; intersection_operator = op)
 end
+
+# CR's threaded frontier hands cursor nodes to spawned tasks, so its roots must
+# retain safe chart callables. A serial search and assembly stay in this task
+# and may hoist each raster chart once on private cursor copies.
+_task_prepared_intersection_trees(::GOCore.True, dst_tree, src_tree) =
+    (dst_tree, src_tree)
+_task_prepared_intersection_trees(::GOCore.False, dst_tree, src_tree) =
+    (_task_prepared_raster_tree(dst_tree), _task_prepared_raster_tree(src_tree))
 
 # Copy stored entries directly to avoid `findnz` allocations.
 function _fillcoo!(coo::WeightCOO, block::SparseArrays.AbstractSparseMatrixCSC)

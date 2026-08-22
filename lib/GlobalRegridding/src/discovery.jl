@@ -134,7 +134,11 @@ function candidatechunks!(out::Vector{Int},
         index::Trees.TopDownQuadtreeCursor{<:RasterGridView}, dstcap::Cap;
         radius::Real = 0.0)
     empty!(out)
-    _rastercandidates!(out, index, Base.Fix1(DilatedIntersects(Float64(radius)), dstcap))
+    # `index` may be retained by a LazyRegridArray. Traverse a private cursor
+    # copy so a task-owned chart wrapper never escapes into shared index state.
+    localindex = _task_prepared_raster_tree(index)
+    _rastercandidates!(out, localindex,
+        Base.Fix1(DilatedIntersects(Float64(radius)), dstcap))
     sort!(out)
     unique!(out)
     return out

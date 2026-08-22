@@ -899,7 +899,10 @@ function superviseutilrun(tag::String)
             max_hwm = max(max_hwm, sample.memory.hwm_gib)
             elapsed = time() - started
             if tag == "baseline" && !profile_sent && !isempty(juliamap) && elapsed >= 180.0
-                Base.kill(process, Base.SIGUSR1)
+                # Julia 1.12 exposes no Base.SIGUSR1 constant. This supervisor
+                # is Linux-only (/proc is its data source), where SIGUSR1 is 10.
+                ccall(:kill, Cint, (Cint, Cint), Cint(pid), Cint(10)) == 0 ||
+                    error("kill(SIGUSR1) failed for child $pid")
                 profile_sent = true
                 emit("profile_signal"; config = tag, child_pid = pid,
                     elapsed_s = elapsed, duration_s = 60.0)

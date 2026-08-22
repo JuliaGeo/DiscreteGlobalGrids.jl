@@ -51,9 +51,10 @@ const RECORD = joinpath(
 const SCALING_RECORD = joinpath(
     "/home/asinghvi17/geo/DiscreteGlobalGrids.jl/regrid-notes",
     "2026-08-21-inner-scaling.ndjson")
-const UTIL_RECORD = joinpath(
+const UTIL_RECORD = get(ENV, "DGG_UTIL_RECORD", joinpath(
     "/home/asinghvi17/geo/DiscreteGlobalGrids.jl/regrid-notes",
-    "2026-08-22-t21-utilization.ndjson")
+    "2026-08-22-t21-utilization.ndjson"))
+const UTIL_PREFIX = get(ENV, "DGG_UTIL_PREFIX", "t21util")
 const ACTIVE_RECORD = Ref(RECORD)
 const TARGET_COLUMNS = 2_000
 const UTIL_TARGET_COLUMNS = 800
@@ -556,7 +557,7 @@ function runconfig(tag::String; scaling = false, utilization = false)
     set = utilization ? utilcolumnset() : columnset()
     config_name = scaling || utilization ? tag : "$tag-gc$(spec.mark)-$(spec.shape)"
     store = joinpath(SCRATCH,
-        utilization ? "t21util-$config_name.zarr" :
+        utilization ? "$UTIL_PREFIX-$config_name.zarr" :
         scaling ? "innerscale-$config_name.zarr" : "southpole-$config_name.zarr")
     mkpath(SCRATCH)
     islink(SCRATCH) && error("scratch root must not be a symlink")
@@ -857,7 +858,7 @@ function superviseutilrun(tag::String)
     priority = procnice()
     priority >= 10 || error("util-run must be launched under nice -n 10 (got $priority)")
     mkpath(SCRATCH)
-    logpath = joinpath(SCRATCH, "t21util-$tag.log")
+    logpath = joinpath(SCRATCH, "$UTIL_PREFIX-$tag.log")
     ispath(logpath) && error("fresh-log requirement: $logpath already exists")
     project = Base.active_project()
     project === nothing && error("util-run requires --project=benchmark")
@@ -951,11 +952,11 @@ end
 function utilcrosscheck()
     set = utilcolumnset()
     baseline_tag = "baseline"
-    baseline_store = joinpath(SCRATCH, "t21util-$baseline_tag.zarr")
+    baseline_store = joinpath(SCRATCH, "$UTIL_PREFIX-$baseline_tag.zarr")
     isdir(baseline_store) || error("utilization baseline store is missing: $baseline_store")
     candidate_tags = sort!([tag for tag in keys(UTIL_RUNS)
-        if tag != baseline_tag && isdir(joinpath(SCRATCH, "t21util-$tag.zarr")) &&
-        length(ledgerrows(donelogpath(joinpath(SCRATCH, "t21util-$tag.zarr")))) ==
+        if tag != baseline_tag && isdir(joinpath(SCRATCH, "$UTIL_PREFIX-$tag.zarr")) &&
+        length(ledgerrows(donelogpath(joinpath(SCRATCH, "$UTIL_PREFIX-$tag.zarr")))) ==
             UTIL_TARGET_COLUMNS])
     isempty(candidate_tags) && error("no completed utilization variant store exists")
     sampled = sort!(unique([set.polar_pentagons;
@@ -967,7 +968,7 @@ function utilcrosscheck()
     comparisons = 0
     all_passed = true
     for tag in candidate_tags
-        candidate = Zarr.zopen(joinpath(SCRATCH, "t21util-$tag.zarr"), "r")["elevation"]
+        candidate = Zarr.zopen(joinpath(SCRATCH, "$UTIL_PREFIX-$tag.zarr"), "r")["elevation"]
         differences = 0
         for column in sampled
             expected = Vector{Float32}(baseline[:, column])

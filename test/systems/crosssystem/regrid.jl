@@ -85,6 +85,14 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
         # are the ancestor's descendant range intersected with the grid.
         @test all(GR.chunkat(space, j) == c
                   for c in 1:GR.nchunks(space) for j in DGG.cellindices(space, c))
+        # The DGG space itself is the private query index. A whole-sphere query
+        # reaches every chunk exactly once through the original grid hierarchy,
+        # and every chunk's own covering cap reaches itself.
+        @test GR.chunkindex(space) === space
+        whole = DGG.Fallbacks.full_sphere_cap()
+        @test GR.candidatechunks!(Int[], space, whole) == collect(1:GR.nchunks(space))
+        @test all(c in GR.candidatechunks!(Int[], space, GR.chunkextents(space)[c])
+                  for c in 1:GR.nchunks(space))
         # The point form is `cellat` composed with it, and answers nothing
         # outside the space's coverage exactly as `cellat` does.
         @test GR.chunkat(space, GR.cellcentroid(space, i)) == GR.chunkat(space, i)
@@ -105,6 +113,40 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
     @test GR.nchunks(authspace) > 1
     @test chunkcells(authspace) == 1:DGG.ncells(authspace)
     @test DGG.levelfor(auth, SRC) == DGG.levelfor(DGG.IGeo7System(), SRC)
+end
+
+@testset "the DGG chunk index is the existing hierarchy's frontier" begin
+    function frontier!(ids, ranges, node, chunklevel)
+        if node.level >= chunklevel
+            push!(ids, node.id)
+            push!(ranges, DGG.Engine.node_indices(node))
+            return
+        end
+        for child in STI.getchild(node)
+            frontier!(ids, ranges, child, chunklevel)
+        end
+    end
+
+    for grid in (DGG.levelgrid(DGG.IGeo7System(), 3), DGG.PartialGrid(REGION))
+        space = DGG.DGGSpace(grid; chunklevel = 2)
+        ids = eltype(space.chunkids)[]
+        ranges = AbstractVector{Int}[]
+        frontier!(ids, ranges, DGG.HierarchicalGridCursor(grid; bucket_size = 0),
+            space.chunklevel)
+        @test ids == space.chunkids
+        @test ranges == space.ranges
+    end
+
+    # CopernicusDEM's normal cell tree is a block cursor. Chunk discovery still
+    # reaches the system hierarchy directly and therefore needs no adapter for
+    # that separate cell-tree optimization.
+    cop = DGG.CopernicusDEM.CopernicusDEMSystem{30}()
+    root = first(DGG.rootcells(cop))
+    copgrid = DGG.subtree(cop, root, 1)
+    copspace = DGG.DGGSpace(copgrid; chunklevel = 1)
+    @test !(DGG.treeify(copgrid) isa DGG.HierarchicalGridCursor)
+    @test GR.candidatechunks!(Int[], copspace, DGG.Fallbacks.full_sphere_cap()) ==
+          collect(1:GR.nchunks(copspace))
 end
 
 @testset "a rooted subset chunks without scanning the level" begin

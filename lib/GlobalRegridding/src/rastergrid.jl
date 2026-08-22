@@ -853,6 +853,62 @@ Trees.getcell(t::RasterCellTree) =
      for iy in t.iy0:t.iy1, ix in t.ix0:t.ix1)
 
 """
+    RasterGridView(space)
+
+A zero-copy `ConservativeRegridding` curvilinear-grid view of a `RasterGrid`.
+Its first index is whichever spatial dimension is fastest in the source array,
+so the existing `TopDownQuadtreeCursor` reports the same linear cell positions
+as the regridding space. The wrapped space retains the actual task-local chart
+transform; raster storage chunking remains solely in `space.xchunks` and
+`space.ychunks`, populated from `DiskArrays.eachchunk`.
+"""
+struct RasterGridView{M<:GOCore.Manifold,S<:RasterGrid} <: Trees.AbstractCurvilinearGrid{M}
+    manifold::M
+    space::S
+end
+
+RasterGridView(space::RasterGrid) = RasterGridView(manifold(space), space)
+
+GOCore.manifold(grid::RasterGridView) = grid.manifold
+
+Trees.ncells(grid::RasterGridView, dim::Int) = if grid.space.xfast
+    dim == 1 ? _nx(grid.space) : dim == 2 ? _ny(grid.space) : throw(BoundsError(grid, dim))
+else
+    dim == 1 ? _ny(grid.space) : dim == 2 ? _nx(grid.space) : throw(BoundsError(grid, dim))
+end
+
+@inline function _viewsubscript(grid::RasterGridView, i::Int, j::Int)
+    return grid.space.xfast ? (i, j) : (j, i)
+end
+
+function Trees.getcell(grid::RasterGridView, i::Int, j::Int)
+    ix, iy = _viewsubscript(grid, i, j)
+    return getcell(grid.space, cellposition(grid.space, ix, iy))
+end
+
+function Trees.getvertex(grid::RasterGridView, i::Int, j::Int)
+    ix, iy = _viewsubscript(grid, i, j)
+    space = grid.space
+    if space.tables === nothing
+        return space.transform(space.xedges[ix], space.yedges[iy])
+    end
+    return _tablecorner(space.tables, ix, iy)
+end
+
+function Trees.cell_range_extent(grid::RasterGridView, irange::UnitRange{Int},
+        jrange::UnitRange{Int})
+    xr, yr = grid.space.xfast ? (irange, jrange) : (jrange, irange)
+    return _rectcap(grid.space, first(xr), last(xr), first(yr), last(yr))
+end
+
+# The range cap is computed from the chart rather than read directly from axis
+# coordinates. This lets ConservativeRegridding's own traversal policy cache
+# child extents when it is used in a dual search.
+Trees.extent_is_expensive(::Type{<:RasterGridView}) = true
+
+_rasterchunkcursor(space::RasterGrid) = Trees.TopDownQuadtreeCursor(RasterGridView(space))
+
+"""
     RasterFlatTree(space, indices, caps)
 
 A one-node spatial tree with stored extents for arbitrary cells or the chunk
@@ -909,15 +965,19 @@ function celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
     return RasterFlatTree(space, indices, caps)
 end
 
-function chunktree(space::RasterGrid)
+function chunkextents(space::RasterGrid)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)
     for c in 1:n
         xr, yr = chunkbox(space, c)
         caps[c] = _chunkcap(space, first(xr), last(xr), first(yr), last(yr))
     end
-    return RasterFlatTree(space, 1:n, caps)
+    return caps
 end
+
+# Compatibility for callers that still request the old public tree. Production
+# chunk discovery uses `_rasterchunkcursor` and never constructs this flat node.
+chunktree(space::RasterGrid) = RasterFlatTree(space, 1:nchunks(space), chunkextents(space))
 
 """
     subtree(space::RasterGrid, inds)

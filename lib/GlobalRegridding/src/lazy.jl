@@ -226,7 +226,7 @@ struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,K,C} <: DiskArrays.AbstractDis
     plan::P
     srcsize::NTuple{NS,Int}
     size::NTuple{N,Int}
-    srctree::K
+    srcindex::K
     dstcaps::Vector{Cap}
     srccaps::Vector{Cap}
     tiling::DestTiling
@@ -256,15 +256,15 @@ function LazyRegridArray(data, plan::ChunkedPlan)
     chunks, tiling = _outputgrid(plan, source, ndst, spans, contiguous, nspatial, othersizes)
     otherchunks = _sourceotherchunks(source, nspatial, othersizes)
     othergroups = _groupgrid(otherchunks)
-    # Build the source chunk tree once for all tile queries.
-    srctree = chunktree(src_space)
+    # Build the source space's native chunk index once for all tile queries.
+    srcindex = chunkindex(src_space)
     # Source extents come along for the ride: `_wavesize` weighs a tile's
     # chunks by how much of each one the tile can actually reach.
     srccaps = chunkextents(src_space)
     T = outputeltype(eltype(data))
     return LazyRegridArray{T,length(othersizes) + 1,nspatial,length(othersizes),
-        typeof(source),typeof(plan),typeof(srctree),typeof(chunks)}(
-        source, plan, srcsize, (ndst, othersizes...), srctree, caps, srccaps, tiling, radius,
+        typeof(source),typeof(plan),typeof(srcindex),typeof(chunks)}(
+        source, plan, srcsize, (ndst, othersizes...), srcindex, caps, srccaps, tiling, radius,
         chunks, otherchunks, othergroups, zeros(Int8, Int(nchunks(src_space))),
         !usesreference(plan.missingpolicy), LazyStats())
 end
@@ -585,9 +585,9 @@ _tileindices(A::LazyRegridArray, t::Int) =
 function _connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int)
     caps = A.tiling.capsof[t]
     if length(caps) == 1
-        connectedchunks!(out, A.dstcaps[caps[1]], A.srctree; radius = A.radius)
+        candidatechunks!(out, A.srcindex, A.dstcaps[caps[1]]; radius = A.radius)
     else
-        connectedchunks!(out, view(A.dstcaps, caps), A.srctree; radius = A.radius)
+        connectedchunks!(out, view(A.dstcaps, caps), A.srcindex; radius = A.radius)
     end
     if A.dropempty
         before = length(out)

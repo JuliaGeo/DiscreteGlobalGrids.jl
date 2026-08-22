@@ -13,10 +13,11 @@ scheduling, caching, and prefetch.
 The intended division of work is:
 
 ```text
-Raster and generic chunks                  DGGS chunks
-GeometryOps.FlexibleRTrees       treeify(original grid), stop at chunklevel
-              \                         /
-               +---- chunk query ------+
+Raster chunks              Generic chunks               DGGS chunks
+DiskArrays ranges +        GeometryOps packed      treeify(original grid),
+CR quadtree cursor         FlexibleRTree           stop at chunklevel
+              \                 |                 /
+               +---------- chunk query ----------+
                           |
                           v
           materialized ChunkDependencyGraph
@@ -86,9 +87,18 @@ infrastructure available in its dependencies.
 
 This duplicates facilities that already exist:
 
+- `RasterGrid` already has an implicit cell-lattice hierarchy and already reads
+  its spatial storage ranges from `DiskArrays.eachchunk`. A lightweight
+  `ConservativeRegridding.Trees.AbstractCurvilinearGrid` view can carry its
+  arbitrary task-local transform into the existing `TopDownQuadtreeCursor`;
+  traversal can stop as soon as a node is owned by one DiskArrays chunk. The
+  lookup supplies coordinates only. It must not become a second source of
+  raster storage chunking.
 - GeometryOps `FlexibleRTrees.RTree` is a packed hierarchical spatial index,
   implements `SpatialTreeInterface`, accepts precomputed XYZ extents for
   arbitrary payloads, and preserves original payload indices through packing.
+  It is the fallback for generic spaces without an implicit structured index,
+  not the structured-raster implementation.
 - A DGG chunk is already an ancestor cell. The original complete or
   `PartialGrid` can be traversed through `treeify` and
   `HierarchicalGridCursor`, stopping at `DGGSpace.chunklevel`. Those frontier
@@ -101,7 +111,7 @@ This duplicates facilities that already exist:
 The current adapters therefore prevent hierarchical pruning and lead
 `chunk_dependency_graph` to maintain a separate latitude-sorted cap join.
 Regridding should adapt the existing indexes instead of implementing another
-Raster tree or another generic cap tree.
+raster tree, another DGG tree, or another generic cap tree.
 
 The generic `chunkextents` path also traverses the flat wrapper and copies its
 leaf caps back into a vector. `DGGSpace` avoids that copy with a specialization,
@@ -122,10 +132,10 @@ responsibility for reusing destination polygons. Raster and DGG cap decorators
 cache a different kind of geometry and have measured performance justification;
 they should not be collapsed blindly with polygon caching.
 
-### The recorded test baselines were run against different trees
+### Phase 0 diagnosis: the recorded test baselines used different trees
 
-The local `Manifest.toml` is untracked (`.gitignore:2`) and stale in both git
-sources: it pairs GeometryOps `repo-rev = 36c853e0` with tree `c30ec910`, the
+The local `Manifest.toml` was untracked (`.gitignore:2`) and stale in both git
+sources: it paired GeometryOps `repo-rev = 36c853e0` with tree `c30ec910`, the
 tree of `02750768`, which predates `intersection_area`; and
 ConservativeRegridding `repo-rev = 66ed54c` with tree `873cc732`, the tree of
 `6a4b997`, which predates both the windowed assembly and the cached dual DFS.
@@ -153,7 +163,12 @@ and cannot precompile GlobalRegridding. CR `66ed54c` defines methods on
 `SpatialTreeInterface.node_extent_is_expensive`, which requires GeometryOps
 at or after PR #474; both candidate GeometryOps pins satisfy that.
 
-## Phase 0: reconcile and record the baseline
+This package-environment problem was resolved before Phase 1. Commits `f245a0b`
+and `3939dd8` also give the subpackages explicit test environments and correct
+the conformance test's root source. The Phase 1 verification below is therefore
+against the resolved sources, not the stale trees described here.
+
+## Phase 0: reconcile and record the baseline — complete 2026-08-22
 
 1. Repin GeometryOps from `36c853e0` to
    `32c60581afa09f19aeaefee26446d95693ec52c4` in the five `[sources]` blocks
@@ -189,11 +204,13 @@ Exit criterion: reachable pins, a re-resolved Manifest, a green regridding
 test gate, and the four artifacts, all recorded before any simplification
 commit. The pin commit is separate from every structural change.
 
-## Phase 1: reuse the existing chunk indexes
+## Phase 1: reuse the existing chunk indexes — complete 2026-08-22
 
-Introduce one private chunk-candidate interface used by both single queries and
-whole-graph construction. It should express the operation the regridder needs,
-not require every index to expose the same internal extent type:
+Introduce one private chunk-candidate interface for spatial discovery. Phase 1
+uses it for lazy single-tile queries; Phase 2 will move whole-graph construction
+onto it only after the production performance and geometric-miss gates pass. It
+should express the operation the regridder needs, not require every index to
+expose the same internal extent type:
 
 ```julia
 index = chunkindex(src_space)
@@ -205,10 +222,41 @@ The current `chunktree` contract assumes that internal and leaf extents are all
 a packed XYZ-box R-tree to impersonate a cap tree. Chunk indexing may be a
 private query abstraction over conservative extents.
 
-### Raster and generic spaces: `FlexibleRTrees`
+### Structured raster spaces: DiskArrays ranges over the existing quadtree
 
-Use GeometryOps' existing packed R-tree rather than adding `RasterChunkTree` or
-a new generic hierarchical cap tree.
+Raster storage chunking comes from `DiskArrays`, not from the coordinate
+lookup. `RasterGrid(A)` already records the spatial ranges returned by
+`DiskArrays.eachchunk(A)` as `xchunks` and `ychunks`; explicit `chunks = ...`
+on the dimension-only constructor is the test/manual equivalent. Preserve that
+single ownership rule.
+
+Expose the raster geometry through a lightweight
+`ConservativeRegridding.Trees.AbstractCurvilinearGrid` view with:
+
+- the existing X/Y cell-edge vectors;
+- the raster's actual native-to-unit-sphere transform, including closures and
+  other task-local callables;
+- cell numbering in the source array's fastest-dimension order; and
+- range extents delegated to the existing conservative raster rectangle-cap
+  calculation.
+
+Use ConservativeRegridding's existing `TopDownQuadtreeCursor` over that view.
+For a cap query, descend the implicit cell lattice and stop as soon as the
+cursor's cell rectangle lies wholly inside one `(xchunk, ychunk)` pair. Emit
+that pair's DiskArrays chunk number. If a quadtree node crosses a storage chunk
+boundary, keep descending; at the bottom, map the touched cells back to their
+owning chunks and deduplicate. This makes index construction independent of the
+number of chunks and does not materialize one extent per tiny chunk.
+
+The view is an adapter to an existing quadtree, not a second raster tree. It may
+later replace `RasterCellTree` as well, but Phase 1 changes chunk discovery only
+so conservative cell-tree behavior and its memoization remain independently
+testable.
+
+### Generic spaces: `FlexibleRTrees`
+
+For a `RegridSpace` without a structured chunk index, use GeometryOps' existing
+packed R-tree rather than adding a new generic hierarchical cap tree.
 
 1. Materialize the source chunk caps once.
 2. Convert each cap to an outward-rounded Cartesian XYZ bounding box with one
@@ -246,7 +294,8 @@ API details the helper must respect:
   so the box R-tree is only ever the private chunk index, never a cell tree.
 
 `RasterFlatTree` remains only where it is genuinely a cell-tree fallback for
-arbitrary scattered cell indices. Its chunk-lattice use can be removed.
+arbitrary scattered cell indices. Its chunk-lattice use is removed; raster
+chunk discovery consumes only the DiskArrays-derived ranges.
 
 ### DGG spaces: expose the existing tree's chunk frontier
 
@@ -268,7 +317,7 @@ at literal cell leaves, where there are no stored descendants left to cover.
 Constructing a new `PartialGrid` at `chunklevel` would incorrectly reclassify
 chunk ancestors as literal leaves and select the tight boundary cap. Traversing
 `treeify(space.grid)` preserves their role as internal ancestor nodes, so no
-extent-correcting cursor wrapper is needed.
+extent-correcting cursor wrapper is needed for ordinary hierarchical systems.
 
 At the chunk frontier:
 
@@ -290,11 +339,15 @@ fallback.
 Two cases the cursor path does not cover as written:
 
 - `treeify(space.grid)` is not always a `HierarchicalGridCursor`. CopernicusDEM
-  returns a `MemoBlockCursor` whose nodes are rectangular id blocks, not
-  ancestor cells (`src/systems/CopernicusDEM/cursor.jl:348-373`), and
-  `_chunkcursor` already refuses any other root type
-  (`src/regridding.jl:192`). Build `HierarchicalGridCursor(space.grid)`
-  directly for the chunk frontier; the block cursor stays the cell tree.
+  returns its existing `MemoBlockCursor`, whose rectangular spatial hierarchy
+  is essential: a sparse production grid has 26,475 selected level-0 tiles, so
+  a synthetic hierarchical root would scan that flat fanout for every query.
+  For its level-0 frontier, traverse `treeify(levelgrid(sys, chunklevel))` and
+  filter leaf IDs through the sorted `space.chunkids`. The block cursor's leaf
+  pad has the same descendant-geometry covering role as `node_extent`, and no
+  source pixels or second tree are materialized. Higher-level rooted cases can
+  use the ordinary cursor path. This is the same rule as for rasters: adapt the
+  system's existing spatial lattice rather than forcing one universal cursor.
 - The single-chunk case is the common one for rooted subtrees, not the rare
   one: the automatic `chunklevel` is chosen from cell counts independent of the
   root, so `DGGSpace(subtree(IGeo7, L2, 4))` gives `chunklevel = 0` and
@@ -321,15 +374,22 @@ chunk-specific extent adapter.
   need not contain their deliberately over-covering cap objects.
 - Broad-phase queries have no false negatives, including polar, antimeridian,
   tiny-cap, and whole-sphere cases.
-- R-tree exact-filtered candidates equal brute-force `DilatedIntersects`
-  results. DGG hierarchy queries may safely omit pairs caused only by overlap
-  between two caps' unused over-coverage, but may omit no geometrically possible
-  contribution.
-- Results are independent of R-tree packing, leaf capacity, and thread count.
+- Generic R-tree exact-filtered candidates equal brute-force
+  `DilatedIntersects` results. Raster and DGG hierarchy queries may safely omit
+  pairs caused only by overlap between two chunks' unused cap over-coverage,
+  but may omit no geometrically possible contribution.
+- Raster results are independent of DiskArrays chunk sizes and quadtree split
+  shape. Generic results are independent of R-tree packing and leaf capacity.
+  All results are independent of thread count.
 
-Exit criterion: Raster/generic queries use `FlexibleRTrees`, DGG queries expose
-the chunk-level frontier of `treeify(space.grid)`, and both satisfy the covering
-and no-false-negative laws without new general-purpose tree implementations.
+Exit criterion: raster queries use DiskArrays chunk ranges over the existing CR
+quadtree, generic queries use `FlexibleRTrees`, DGG queries expose the
+chunk-level frontier of `treeify(space.grid)`, and all satisfy the covering and
+no-false-negative laws without new general-purpose tree implementations.
+
+Completed in Phase 1. The production graph builder deliberately remains on its
+latitude-sorted cap join; the first indexed-graph measurement below did not
+justify combining that Phase 2 change with the hierarchy cutover.
 
 ## Phase 2: build and own one authoritative dependency graph
 
@@ -366,11 +426,22 @@ whose remainder is the destination space (`scripts/copdem_production.jl:701-702`
 - polar and antimeridian-heavy subsets; and
 - highly nonuniform chunk coverage.
 
-For the R-tree path, require adjacency identity with the flat brute-force cap
-predicate. For DGG hierarchies, treat that flat relation as an upper bound:
-subtree traversal may safely remove edges caused only by unused cap
-over-coverage. Verify small cases against actual cell geometry and all cases
-through covering laws, numerical equivalence, and graph-miss instrumentation.
+The first provisional production measurement on 2026-08-22 is a reason to keep
+this gate. With four Julia threads, the existing latitude join produced 326,386
+edges in a 3,352,520-byte graph with 0.0594 s median construction and 10,654,960
+minimum allocated bytes. A direct Phase 1 index-row prototype produced 326,064
+edges in 3,349,944 bytes but took 0.1500 s median and allocated at least
+13,973,280 bytes. The 322 removed edges appear to be pairs retained only by cap
+over-coverage, but that is not yet a correctness proof. The prototype was backed
+out; Phase 2 must add actual-cell no-miss instrumentation and recover the graph
+construction performance before cutover.
+
+For the generic R-tree path, require adjacency identity with the flat
+brute-force cap predicate. For raster and DGG hierarchies, treat that flat
+relation as an upper bound: hierarchical traversal may safely remove edges
+caused only by unused cap over-coverage. Verify small cases against actual cell
+geometry and all cases through covering laws, numerical equivalence, and
+graph-miss instrumentation.
 
 Once the indexed builder passes those gates, remove `_caplatitude`, the sorted
 latitude arrays, the global-radius band, and `_fillrow!`. There should be one
@@ -496,15 +567,14 @@ dependency relation.
 
 ## Phase 3: make lazy execution consume the graph
 
-Replace `_connectedsource!`'s repeated dual-tree query with graph adjacency.
+Replace `_connectedsource!`'s repeated native-index query with graph adjacency.
 
-That query is a `1 × nchunks` linear scan in practice — `CapQuery` and every
-current `chunktree` are single leaves, so `dual_depth_first_search` takes its
-leaf×leaf branch — and costs 0.5 ms per production column at 360 tiles against
-roughly 10 core-seconds of work
-(`regrid-notes/2026-08-21-polar-profile.md:124-136`). The payoff of this phase
-is one relation owned by the plan and consumed by scheduler and executor
-alike, not throughput.
+Before Phase 1 that query was a `1 × nchunks` linear scan in practice and cost
+0.5 ms per production column at 360 tiles against roughly 10 core-seconds of
+work (`regrid-notes/2026-08-21-polar-profile.md:124-136`). Phase 1 replaced it
+with each space's native hierarchy, but it still repeats the query. The payoff
+of this phase is one relation owned by the plan and consumed by scheduler and
+executor alike, not merely query throughput.
 
 For a destination tile aligned with one space chunk:
 
@@ -589,7 +659,9 @@ tests.
 
 After indexed graph construction and graph-backed execution are established:
 
-- remove `CapQuery` and the dual-tree `_descend!` implementation;
+- `CapQuery`, dual-tree `_descend!`, `DGGChunkTree`, and the production
+  chunk-lattice use of `RasterFlatTree` were already removed in Phase 1; the
+  old raster `chunktree` wrapper remains temporarily for compatibility;
 - remove `connectedchunks`, `connectedchunks!`, and `connectedchunkpairs`
   (`discovery.jl:88-154`); the multi-cap union survives as a private
   `_tilesources!(out, graph, capsof[t])`;
@@ -597,12 +669,8 @@ After indexed graph construction and graph-backed execution are established:
   `dependencies(plan)`, and `refine` from the space form; note
   `test/scripts/copdem_policy.jl:340-341` calls `_chunkgraph` positionally and
   breaks on any signature change;
-- remove the chunk-lattice construction of `RasterFlatTree` while retaining its
-  scattered-cell role;
-- remove `DGGChunkTree` in favor of the original grid tree's chunk-level
-  frontier;
 - remove the latitude cap join after the Phase 2 performance gate;
-- remove `LazyRegridArray.srctree` and any complete cap vectors retained solely
+- remove `LazyRegridArray.srcindex` and any complete cap vectors retained solely
   for per-read discovery; and
 - decide whether the public `chunktree` surface has remaining consumers. Do not
   preserve it merely as a wrapper over the private `chunkindex` query seam.
@@ -824,8 +892,8 @@ integration suites.
 
 | Concern | Primary coverage |
 |---|---|
-| Cap-to-XYZ extent and cap/box query coverage | GeometryOps unit-spherical/FlexibleRTree tests, `lib/GlobalRegridding/test/test_lazy.jl` |
-| Raster/generic R-tree candidate identity | `lib/GlobalRegridding/test/test_rastergrid.jl`, `lib/GlobalRegridding/test/test_lazy.jl`, brute-force property tests |
+| Raster DiskArrays ownership, transformed-grid quadtree coverage, and candidate identity | `lib/GlobalRegridding/test/test_rastergrid.jl`, `lib/GlobalRegridding/test/test_lazy.jl`, brute-force geometry property tests |
+| Generic cap-to-XYZ extent and R-tree candidate identity | GeometryOps unit-spherical/FlexibleRTree tests, `lib/GlobalRegridding/test/test_lazy.jl` |
 | DGG chunk frontier, descendant coverage, and compact numbering | system `node_extent` tests, `test/systems/crosssystem/regrid.jl` |
 | Graph construction and CSR laws | `lib/GlobalRegridding/test/test_chunkgraph.jl` |
 | Executor graph use and graph-miss policy | `lib/GlobalRegridding/test/test_lazy.jl`, `test/scripts/copdem_policy.jl` |
@@ -877,16 +945,17 @@ cleanup:
 1. Baseline: re-instantiate, repin both sources to reachable revisions,
    record tree SHAs in the commit message, create the missing baseline
    artifacts.
-2. Tested `cap_xyz_extent` and Raster/generic `FlexibleRTrees` chunk index.
-3. DGG original-tree chunk frontier and descendant-coverage tests.
-4. Indexed graph-builder correctness and performance comparison.
-5. Removal of the latitude join after that gate.
-6. Plan-owned dependency graph: `refine` moves to `plan_regrid`, the graph
+2. Tested DiskArrays-backed raster quadtree chunk index.
+3. Tested `cap_xyz_extent` and generic `FlexibleRTrees` chunk index.
+4. DGG original-tree chunk frontier and descendant-coverage tests.
+5. Indexed graph-builder correctness and performance comparison.
+6. Removal of the latitude join after that gate.
+7. Plan-owned dependency graph: `refine` moves to `plan_regrid`, the graph
    gains its stamp, `restrict` row views; execution unchanged.
-7. Lazy executor switched to graph rows and duplicate discovery removed.
-8. Unified `weightblock` construction.
-9. DGG output-wrapper removal.
-10. Targeted stale-cache removal, then prepared destination geometry if earned.
+8. Lazy executor switched to graph rows and duplicate discovery removed.
+9. Unified `weightblock` construction.
+10. DGG output-wrapper removal.
+11. Targeted stale-cache removal, then prepared destination geometry if earned.
 
 Record allocation, graph-size, planning-time, and execution-time changes with
 each performance-sensitive commit. Structural simplification is complete only
@@ -895,17 +964,17 @@ preserves the relevant scaling behavior.
 
 ## Definition of done
 
-- Raster/generic chunk queries use `FlexibleRTrees`; DGG queries expose the
-  chunk-level frontier of `treeify(space.grid)` and its existing
-  subtree-covering extents.
+- Raster chunk queries use DiskArrays ranges over an existing CR quadtree;
+  generic chunk queries use `FlexibleRTrees`; DGG queries expose the chunk-level
+  frontier of `treeify(space.grid)` and its existing subtree-covering extents.
 - No new general-purpose Raster or DGG tree duplicates existing infrastructure.
 - A logical `ChunkedPlan` owns or validates a reference to one reusable
   dependency graph rather than rebuilding it per destination column.
 - Lazy reads perform no geometric dependency discovery.
 - Production scheduling and lazy execution consume the same relation.
-- Cap-box broad-phase queries and exact cap filtering match the cap reference;
-  DGG frontier queries satisfy the stronger geometric no-false-negative law for
-  zero and nonzero support radii.
+- Generic cap-box broad-phase queries and exact cap filtering match the cap
+  reference; raster-quadtree and DGG-frontier queries satisfy the stronger
+  geometric no-false-negative law for zero and nonzero support radii.
 - Conservative eager and chunked construction share one `WeightBlock` builder.
 - DGG output uses the generic destination-dimension path.
 - Destination polygon caching has one prepared-tile abstraction.

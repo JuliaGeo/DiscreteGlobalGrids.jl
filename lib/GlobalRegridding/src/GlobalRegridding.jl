@@ -41,6 +41,8 @@ const US = GO.UnitSpherical
 const USPoint = GO.UnitSphericalPoint{Float64}
 const SphericalCap = GO.UnitSpherical.SphericalCap
 const Cap = GO.UnitSpherical.SphericalCap{Float64}
+const Extents = GO.Extents
+const FlexibleRTrees = GO.FlexibleRTrees
 
 include("shared.jl")
 include("spaces.jl")

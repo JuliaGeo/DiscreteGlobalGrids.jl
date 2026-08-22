@@ -156,9 +156,72 @@ end
 
 GR.celltree(space::DGGSpace) = treeify(space.grid)
 
-GR.chunktree(space::DGGSpace) = DGGChunkTree(space)
-
 GR.chunkextents(space::DGGSpace) = space.caps
+
+# The DGG space is its own private chunk index: candidate queries descend the
+# grid's existing hierarchy to `chunklevel`, with no second tree or extent
+# adapter. Construct the hierarchical cursor directly because some systems use
+# a different optimized tree for cell intersections.
+GR.chunkindex(space::DGGSpace) = space
+
+function GR.candidatechunks!(out::Vector{Int}, space::DGGSpace, dstcap::GR.Cap;
+        radius::Real = 0.0)
+    empty!(out)
+    intersects = GR.DilatedIntersects(Float64(radius))
+    if GR.nchunks(space) == 1
+        intersects(dstcap, only(space.caps)) && push!(out, 1)
+        return out
+    end
+    if space.chunklevel == 0 && system(space.grid) isa CopernicusDEM.CopernicusDEMSystem
+        frontier = levelgrid(system(space.grid), space.chunklevel)
+        _mappedfrontierchunks!(out, space, treeify(frontier), frontier, dstcap, intersects)
+        sort!(out)
+        unique!(out)
+        return out
+    end
+    root = HierarchicalGridCursor(space.grid; bucket_size = 0)
+    _dggcandidatechunks!(out, space, root, dstcap, intersects)
+    sort!(out)
+    unique!(out)
+    return out
+end
+
+# CopernicusDEM has tens of thousands of level-0 roots, so the generic
+# ancestor cursor would still scan a flat root fanout for every query. Its
+# existing BlockCursor is the spatial hierarchy over that lattice. Traverse a
+# complete grid at the requested frontier level and filter its leaf ids through
+# the selected `PartialGrid` chunk ids; no source pixels are materialized.
+function _mappedfrontierchunks!(out::Vector{Int}, space::DGGSpace, node, frontier,
+        dstcap, intersects)
+    intersects(dstcap, STI.node_extent(node)) || return out
+    if STI.isleaf(node)
+        for (position, cap) in STI.child_indices_extents(node)
+            intersects(dstcap, cap) || continue
+            id = cellindex(frontier, position)
+            k = searchsortedfirst(space.chunkids, id)
+            k <= length(space.chunkids) && space.chunkids[k] == id && push!(out, k)
+        end
+        return out
+    end
+    for child in STI.getchild(node)
+        _mappedfrontierchunks!(out, space, child, frontier, dstcap, intersects)
+    end
+    return out
+end
+
+function _dggcandidatechunks!(out::Vector{Int}, space::DGGSpace,
+        node::HierarchicalGridCursor, dstcap, intersects)
+    intersects(dstcap, STI.node_extent(node)) || return out
+    if node.level >= space.chunklevel
+        inds = Engine.node_indices(node)
+        isempty(inds) || push!(out, GR.chunkat(space, first(inds)))
+        return out
+    end
+    for child in STI.getchild(node)
+        _dggcandidatechunks!(out, space, child, dstcap, intersects)
+    end
+    return out
+end
 
 # DGGS chunks are one-dimensional position ranges.
 GR.chunkranges(space::DGGSpace, chunk::Integer, ::NTuple{1,Int}) =
@@ -195,38 +258,6 @@ function _chunkcursor(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
         root.bucket_size, space.chunklevel, space.chunkids[k],
         Int(first(inds)), Int(last(inds)), nothing)
 end
-
-"""
-    DGGChunkTree(space::DGGSpace)
-
-A one-node spatial tree whose leaves are chunk numbers. Each stored ancestor
-extent covers all cells in its chunk.
-"""
-struct DGGChunkTree{S<:DGGSpace,E}
-    space::S
-    extent::E
-end
-
-DGGChunkTree(space::DGGSpace) = DGGChunkTree(space,
-    isempty(space.caps) ? Fallbacks.full_sphere_cap() :
-    foldl(Fallbacks.merge_caps, space.caps))
-
-Base.show(io::IO, t::DGGChunkTree) =
-    print(io, "DGGChunkTree(", length(t.space.ranges), " chunks)")
-
-STI.isspatialtree(::Type{<:DGGChunkTree}) = true
-STI.node_extent_is_expensive(::Type{<:DGGChunkTree}) = false
-STI.isleaf(::DGGChunkTree) = true
-STI.nchild(::DGGChunkTree) = 0
-STI.getchild(::DGGChunkTree) = ()
-STI.node_extent(t::DGGChunkTree) = t.extent
-STI.child_indices_extents(t::DGGChunkTree) =
-    zip(eachindex(t.space.ranges), t.space.caps)
-
-GOCore.best_manifold(t::DGGChunkTree) = GOCore.best_manifold(t.space.grid)
-Trees.ncells(t::DGGChunkTree) = ncells(t.space.grid)
-Trees.getcell(t::DGGChunkTree, i::Int) = getcell(t.space.grid, i)
-Trees.getcell(t::DGGChunkTree) = (getcell(t.space.grid, i) for i in 1:ncells(t.space.grid))
 
 # Resolving `to`
 

@@ -127,7 +127,7 @@ end
     field = collect(reshape(1.0:32.0, 8, 4))
 
     @testset "discovery" begin
-        # Dual-tree discovery agrees with pairwise cap checks.
+        # The generic packed index agrees with pairwise cap checks.
         for c in 1:nchunks(dstspace)
             @test GR.connectedchunks(dstspace, c, srcspace) == t7_pairwise(dstspace, c, srcspace)
         end
@@ -140,13 +140,52 @@ end
         # descent's leaf indices mean.
         @test GR.chunkextents(srcspace) == chunktree(srcspace).caps
 
-        # The batched dual descent finds exactly the union of the per-chunk
-        # queries — the form a hierarchical destination tree will use.
+        # Batched queries find exactly the union of the per-chunk queries.
         pairs = Tuple{Int,Int}[]
         GR.connectedchunkpairs((d, s) -> push!(pairs, (d, s)), dstspace, srcspace)
         expected = sort([(d, s) for d in 1:nchunks(dstspace)
                          for s in GR.connectedchunks(dstspace, d, srcspace)])
         @test sort(pairs) == expected
+
+        # The generic index is GeometryOps' packed R-tree. Its leaf boxes are
+        # outward-rounded bounds of each cap, including tiny, polar,
+        # antimeridian and whole-sphere cases.
+        index = GR.chunkindex(srcspace)
+        @test index isa GR.FlexibleRTrees.RTree
+        srccaps = GR.chunkextents(srcspace)
+        srcboxes = map(GR.cap_xyz_extent, srccaps)
+        for capacity in (2, 3, 16)
+            packed = GR.FlexibleRTrees.RTree(GR.FlexibleRTrees.HPR(), srccaps;
+                extents = srcboxes, nodecapacity = capacity)
+            for c in 1:nchunks(dstspace)
+                dcap = GR.chunkextents(dstspace)[c]
+                @test GR.candidatechunks!(Int[], packed, dcap) ==
+                      t7_pairwise(dstspace, c, srcspace)
+            end
+        end
+        capcases = (
+            SphericalCap(toy_point(0, 90), 1e-12),
+            SphericalCap(toy_point(180, 0), 0.3),
+            SphericalCap(toy_point(25, -40), 1.2),
+            SphericalCap(toy_point(0, 0), Float64(pi)),
+        )
+        for cap in capcases
+            box = GR.cap_xyz_extent(cap)
+            @test keys(box) == (:X, :Y, :Z)
+            centre = cap.point
+            seed = abs(centre[3]) < 0.9 ? USPoint(0.0, 0.0, 1.0) : USPoint(1.0, 0.0, 0.0)
+            u = LinearAlgebra.normalize(seed - LinearAlgebra.dot(seed, centre) * centre)
+            v = USPoint(centre[2] * u[3] - centre[3] * u[2],
+                centre[3] * u[1] - centre[1] * u[3],
+                centre[1] * u[2] - centre[2] * u[1])
+            r = min(cap.radius, Float64(pi))
+            for θ in range(0.0, 2pi; length = 65)
+                p = cos(r) * centre + sin(r) * (cos(θ) * u + sin(θ) * v)
+                @test box.X[1] <= p[1] <= box.X[2]
+                @test box.Y[1] <= p[2] <= box.Y[2]
+                @test box.Z[1] <= p[3] <= box.Z[2]
+            end
+        end
     end
 
     @testset "L1 — construction is free" begin

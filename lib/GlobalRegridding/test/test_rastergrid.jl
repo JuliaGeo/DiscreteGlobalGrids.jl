@@ -219,6 +219,8 @@ end
         space = RasterGrid(DD.DimArray(parent_x, (DD.X(raster_lon()), DD.Y(raster_lat()))))
 
         @test nchunks(space) == 4
+        @test space.xchunks == [1:4, 5:8]
+        @test space.ychunks == [1:2, 3:4]
         # Chunks partition cell positions.
         covered = reduce(vcat, [collect(cellindices(space, c)) for c in 1:nchunks(space)])
         @test sort(covered) == collect(1:ncells(space))
@@ -273,6 +275,43 @@ end
                   for i in cellindices(region, c)
                   for p in cellring(region, i))
         @test maximum(cap.radius for cap in caps) < pi / 2
+
+        # Chunk discovery is an implicit CR quadtree over the raster geometry,
+        # while ownership comes from the DiskArrays ranges above. It neither
+        # builds nor queries the old flat chunk tree.
+        index = GR.chunkindex(space)
+        @test index isa CR.Trees.TopDownQuadtreeCursor
+        @test index.grid isa GR.RasterGridView
+        @test index.grid.space === space
+        whole = SphericalCap(GR.LonLatToSphere()(0.0, 0.0), Float64(pi))
+        @test GR.candidatechunks!(Int[], index, whole) == collect(1:nchunks(space))
+
+        # Any source boundary point reached by a query cap implies that its
+        # DiskArrays chunk survived the hierarchy. This is the geometric
+        # no-false-negative law, without demanding cap-overcoverage identity.
+        for dcap in GR.chunkextents(space)
+            candidates = GR.candidatechunks!(Int[], index, dcap)
+            for s in 1:nchunks(space)
+                touched = any(GR.US._contains(dcap, p)
+                    for i in cellindices(space, s) for p in cellring(space, i))
+                touched && @test s in candidates
+            end
+        end
+
+        # Y-major numbering follows the array, and arbitrary callable chart
+        # transforms stay attached to the zero-copy view rather than becoming
+        # global lookup state.
+        yindex = GR.chunkindex(cols)
+        @test GR.candidatechunks!(Int[], yindex, whole) == collect(1:nchunks(cols))
+        shift = 17.0
+        shifted = (x, y) -> GR.LonLatToSphere()(x + shift, y)
+        shiftedspace = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (2, 2)),
+            (DD.X(raster_lon()), DD.Y(raster_lat()))); transform = shifted)
+        shiftedindex = GR.chunkindex(shiftedspace)
+        @test shiftedindex.grid.space.transform === shifted
+        @test GR.candidatechunks!(Int[], shiftedindex, whole) ==
+              collect(1:nchunks(shiftedspace))
+        @test parent_x.reads == 0
     end
 
     @testset "trees" begin

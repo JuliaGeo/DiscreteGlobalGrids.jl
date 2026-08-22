@@ -5,9 +5,10 @@
 
 A source or destination cell collection.
 
-Implementations provide [`celltree`](@ref), [`chunktree`](@ref),
-[`ncells`](@ref), [`getcell`](@ref), [`cellindices`](@ref),
-[`nchunks`](@ref), and [`manifold`](@ref). [`cellat`](@ref) and
+Implementations provide [`celltree`](@ref), [`ncells`](@ref), [`getcell`](@ref),
+[`cellindices`](@ref), [`nchunks`](@ref), and [`manifold`](@ref). Generic spaces
+also provide [`chunktree`](@ref); structured packages may instead specialize
+the private chunk index and [`chunkextents`](@ref). [`cellat`](@ref) and
 [`cellcentroid`](@ref) are optional fast paths that some methods require;
 [`hascellchart`](@ref) is the trait that gates the interpolating ones.
 
@@ -29,7 +30,9 @@ function celltree end
     chunktree(space::RegridSpace)
 
 Return a spatial tree over chunk numbers `1:nchunks(space)`. Each chunk extent
-must cover every cell returned by [`cellindices`](@ref) for that chunk.
+must cover every cell returned by [`cellindices`](@ref) for that chunk. This is
+the generic `chunkextents`/packed-index fallback; a structured space may expose
+its existing hierarchy through the private chunk-index seam instead.
 """
 function chunktree end
 

@@ -23,7 +23,7 @@ DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
 DiscreteGlobalGridsConformanceTesting = "13a16fb4-09f9-4c22-804e-8e2836b6de9f"
 
 [sources]
-ConservativeRegridding = {rev = "dce7bb9f34596758613638ebaac5a21f6985d4cc", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+ConservativeRegridding = {rev = "da57524335e9fa413a160eddb1210bb949b42b6f", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 DiscreteGlobalGrids = {path = ".."}
 DiscreteGlobalGridsConformanceTesting = {path = "../lib/DiscreteGlobalGridsConformanceTesting"}
-GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "32c60581afa09f19aeaefee26446d95693ec52c4"}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "fc81bc8573834ff0d202dd9c0306f09df44b9723"}

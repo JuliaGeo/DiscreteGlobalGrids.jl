@@ -39,6 +39,8 @@ lazy about weight construction and source data.
 This plan covers:
 
 - thin adapters onto existing hierarchical chunk spatial indexes;
+- simplification of `RasterGrid`'s coordinate-transform and cell-tree layers,
+  including task-local Proj transformations;
 - construction and ownership of the chunk dependency graph;
 - graph-backed lazy execution;
 - convergence of the two current dependency-discovery paths;
@@ -391,6 +393,207 @@ Completed in Phase 1. The production graph builder deliberately remains on its
 latitude-sorted cap join; the first indexed-graph measurement below did not
 justify combining that Phase 2 change with the hierarchy cutover.
 
+## Phase 1A: simplify `RasterGrid` geometry and CRS transformations
+
+`RasterGrid` currently mixes four concerns in one file:
+
+1. extracting dimensions and DiskArrays chunk ranges;
+2. converting native raster coordinates onto the unit sphere;
+3. constructing spherical cells and caps; and
+4. implementing two separate spatial trees over the same raster lattice.
+
+That has produced both exact duplication and generic-looking APIs whose
+contracts are actually geographic or unit-spherical. Resolve this before the
+Phase 2 raster graph benchmarks, so those measurements exercise the intended
+long-term geometry layer.
+
+### Be precise about the supported geometry
+
+Global regridding is currently unit-spherical: `RasterGrid` returns
+`UnitSphericalPoint`s, its manifold is a unit `Spherical`, and chunk discovery
+uses `SphericalCap`s. It is therefore not yet manifold- or output-CRS-generic.
+
+The useful generic boundary is narrower and should be stated explicitly:
+
+- the raster's **native CRS** may be geographic or projected;
+- a forward transform maps native `(x, y)` coordinates to the unit sphere;
+- its inverse maps a unit-sphere point back to native coordinates; and
+- all cell polygons, spatial indexes, support radii, and intersections remain
+  unit-spherical.
+
+Rename ambiguous storage and helpers accordingly. In particular, prefer
+`native_to_unit_sphere` and `unit_sphere_to_native` over `transform` and
+`inverse`. A helper such as `chartspacing` that returns radians of spherical arc
+must say so in its name and documentation. Geographic-only types and helpers
+must also say `Geographic` rather than appearing to be valid for every chart.
+
+Full manifold-generic raster regridding would require replacing cap-based
+discovery and spherical intersection assumptions throughout the package. It is
+not part of this refactor and should not be implied by the `RasterGrid` API.
+
+### Reuse GeometryOps coordinate transformations
+
+Delete the local `LonLatToSphere` and `SphereToLonLat` transformations. They
+duplicate GeometryOps' existing:
+
+```julia
+GeometryOps.UnitSpherical.UnitSphereFromGeographic()
+GeometryOps.UnitSpherical.GeographicFromUnitSphere()
+```
+
+Those types already implement the `CoordinateTransformations.Transformation`
+interface and `inv`, and are already used elsewhere in this repository.
+Specialize the raster chart metadata directly on the GeometryOps types:
+
+- geographic X period and latitude bounds;
+- spherical step bounds in radians; and
+- optional geographic edge tables.
+
+Internally normalize forward transforms to the CoordinateTransformations
+single-coordinate calling convention, `transform((x, y))`. Preserve the
+currently documented two-argument closure form with one construction-time
+adapter, not conditional dispatch at every vertex. This allows plain callables,
+GeometryOps transformations, composed transformations, and Proj-backed
+transformations to pass through the same raster geometry code.
+
+The default remains geographic longitude/latitude in degrees for compatibility,
+but documentation must state that assumption. Projected X/Y dimensions must
+carry an explicit CRS or explicit native-to-sphere transformation; do not infer
+that arbitrary coordinates named `X` and `Y` are degrees.
+
+### Use Proj.jl's API for task-local transformations
+
+PROJ transformation objects and contexts may not be used concurrently. A Julia
+task may migrate between OS threads, so thread-indexed clones are the wrong
+ownership unit. Give each Julia `Task` its own context and its own transformations,
+cached in task-local storage and reused for that task's geometry work.
+
+Use only Proj.jl's exposed Julia API. Do not add a direct `ccall`, do not call
+`PROJ_jll`, and do not reproduce a binding in GlobalRegridding. Proj.jl 1.9
+provides the required operations:
+
+```julia
+ctx = Proj.proj_context_clone()
+
+forward = Proj.Transformation(
+    Proj.proj_clone(template.pj, ctx),
+    template.direction,
+)
+
+reverse = Proj.Transformation(
+    Proj.proj_clone(template.pj, ctx),
+    inv(template.direction),
+)
+```
+
+This exact sequence was validated locally against Proj.jl 1.9: the clone and
+template returned identical coordinates. `proj_context_clone()` is preferred
+to a fresh context because it inherits the configured default context. Cloning
+the pipeline also preserves its selected operation, axis normalization, area of
+use, and grid configuration instead of reconstructing it from incomplete CRS
+metadata.
+
+Implement this in a Proj extension. Core GlobalRegridding exposes a small
+task-local transform-pair preparation hook whose default returns immutable or
+ordinary Julia callables unchanged. The Proj specialization:
+
+1. obtains the calling task's cache;
+2. creates one cloned context on the first use of a template;
+3. clones distinct forward and reverse `Proj.Transformation`s into it;
+4. returns the cached pair on later calls from the same task; and
+5. owns cleanup as one idempotent resource.
+
+A `Proj.Transformation` owns and finalizes its cloned transformation pointer;
+the context remains caller-owned. Cleanup order is therefore mandatory:
+
+1. finalize or otherwise release both cloned transformations;
+2. call `Proj.proj_context_destroy(ctx)`; and
+3. mark the owner closed so repeated finalization is harmless.
+
+Construction failures must release any successfully created clone before
+destroying the context. No cloned transformation or context may be stored on the
+shared `RasterGrid`; it stores only the immutable/native chart description or
+template. No lock is needed because the cache and every clone belong to one
+task. Network and search-path policy are configured before cloning and remain
+outside the raster hot path.
+
+For projected rasters, the conceptual forward pipeline is:
+
+```text
+native CRS --Proj--> geographic longitude/latitude --GeometryOps--> unit sphere
+```
+
+and the inverse reverses those steps. Proj constructors already accept strings
+and `GeoFormatTypes` CRS values. Use `always_xy = true` when constructing raster
+pipelines so their coordinate order agrees with the raster's X/Y axes. A later
+multi-package Rasters/Proj extension may obtain the native CRS from raster
+metadata, but the core constructor must continue to accept an explicit
+transformation without depending on Proj or Rasters.
+
+### Remove duplicate raster lattice and cap implementations
+
+`RasterCellTree` and `RasterGridView` describe the same curvilinear lattice.
+The latter already implements ConservativeRegridding's
+`AbstractCurvilinearGrid` interface and is used by the Phase 1 chunk quadtree.
+Make it the single structured raster geometry adapter:
+
+- whole-space and rectangular `celltree` requests return restricted
+  `TopDownQuadtreeCursor`s over `RasterGridView`;
+- global cell numbering continues to follow storage dimension order;
+- scattered cell positions may retain `RasterFlatTree` until the Phase 4 API
+  cleanup; and
+- remove `RasterCellTree` once its leaf sizing, split-weight, and cell-access
+  contracts are covered by the CR cursor.
+
+`raster_tree_memo.jl` exists only around `RasterCellTree` and overlaps CR's
+cached dual-depth-first traversal. Delete it if the existing raster benchmark
+confirms no material regression. If a cache is still earned, adapt one small
+cache to the CR cursor rather than retaining a second tree implementation.
+
+The spherical cap machinery needs the same separation:
+
+- the general curvilinear path should delegate range extents to
+  ConservativeRegridding's existing `cell_range_extent`, which visits the
+  transformed perimeter vertices through `getvertex`;
+- the current finite `_boxcap` sampling must not be presented as conservative
+  for an arbitrary projected transform;
+- retain and clearly name the geographic wide-longitude/polar specialization
+  only where it proves a tighter sound cap or a material performance win; and
+- keep geographic sine/cosine edge tables only as a measured optimization,
+  renamed so they do not masquerade as a generic chart facility.
+
+Do not remove the wide-box fallback merely for line-count reduction. The generic
+CR cap builder must first pass full-longitude, polar, antimeridian, projected,
+and large-index-rectangle coverage laws. If those laws expose a generally useful
+gap, fix it in ConservativeRegridding or GeometryOps rather than adding another
+general cap builder here.
+
+### Required tests and exit criterion
+
+Add tests that establish:
+
+- the default geographic transform is the GeometryOps type and retains current
+  cell rings, lookups, and interpolation behavior;
+- the compatibility adapter accepts existing two-argument closures while the
+  internal contract is one-coordinate;
+- a projected native CRS round-trips through the unit sphere within the
+  projection's accuracy;
+- concurrent Julia tasks obtain distinct Proj contexts and transformation
+  clones, reuse them within a task, and return identical numerical results;
+- task cleanup releases transformations before their context, including partial
+  construction failure;
+- no GlobalRegridding source contains a direct `ccall` to PROJ;
+- general curvilinear and geographic-specialized node extents cover every
+  boundary point owned by their leaves; and
+- eager/lazy results, zero-source-read construction, allocation, and the
+  small-spatial-chunk traversal benchmark do not regress materially.
+
+Exit criterion: GeometryOps owns geographic/unit-sphere conversion, Proj.jl owns
+all PROJ calls, every Proj object is task-local with explicit lifetime ordering,
+`RasterGrid` names its unit-sphere contract honestly, and one CR curvilinear-grid
+adapter replaces the duplicate structured raster trees without weakening extent
+coverage.
+
 ## Phase 2: build and own one authoritative dependency graph
 
 Build destination-major graph rows through the Phase 1 source index:
@@ -694,9 +897,10 @@ cost estimation currently consumes source and destination cap vectors; move the
 metadata it needs into the immutable dependency object or make it request only
 the extents it actually uses before removing those vectors.
 
-`RasterCellTree`, `HierarchicalGridCursor`, and their ConservativeRegridding
-integrations remain. They are cell-level weight-search structures, not duplicate
-chunk discovery machinery.
+`HierarchicalGridCursor` and the surviving ConservativeRegridding cell-tree
+integrations remain. Phase 1A separately converges `RasterCellTree` and
+`RasterGridView` onto one CR curvilinear-grid adapter; Phase 4 does not reopen
+that geometry decision.
 
 Exit criterion: one candidate-query implementation defines graph edges, and the
 executor retains neither a second discovery algorithm nor redundant index state.
@@ -893,6 +1097,7 @@ integration suites.
 | Concern | Primary coverage |
 |---|---|
 | Raster DiskArrays ownership, transformed-grid quadtree coverage, and candidate identity | `lib/GlobalRegridding/test/test_rastergrid.jl`, `lib/GlobalRegridding/test/test_lazy.jl`, brute-force geometry property tests |
+| Raster native-CRS transforms, Proj task isolation/lifetime, and unit-sphere naming | `lib/GlobalRegridding/test/test_rastergrid.jl`, Proj extension tests, concurrent-task projected-grid property tests |
 | Generic cap-to-XYZ extent and R-tree candidate identity | GeometryOps unit-spherical/FlexibleRTree tests, `lib/GlobalRegridding/test/test_lazy.jl` |
 | DGG chunk frontier, descendant coverage, and compact numbering | system `node_extent` tests, `test/systems/crosssystem/regrid.jl` |
 | Graph construction and CSR laws | `lib/GlobalRegridding/test/test_chunkgraph.jl` |
@@ -948,14 +1153,20 @@ cleanup:
 2. Tested DiskArrays-backed raster quadtree chunk index.
 3. Tested `cap_xyz_extent` and generic `FlexibleRTrees` chunk index.
 4. DGG original-tree chunk frontier and descendant-coverage tests.
-5. Indexed graph-builder correctness and performance comparison.
-6. Removal of the latitude join after that gate.
-7. Plan-owned dependency graph: `refine` moves to `plan_regrid`, the graph
+5. GeometryOps transform reuse, precise native/unit-sphere naming, and the
+   backwards-compatible callable adapter.
+6. Proj extension with task-local context/clone ownership and projected-raster
+   correctness tests; no direct PROJ calls.
+7. Convergence of `RasterCellTree`/`RasterGridView` and cap machinery after its
+   correctness and performance gate.
+8. Indexed graph-builder correctness and performance comparison.
+9. Removal of the latitude join after that gate.
+10. Plan-owned dependency graph: `refine` moves to `plan_regrid`, the graph
    gains its stamp, `restrict` row views; execution unchanged.
-8. Lazy executor switched to graph rows and duplicate discovery removed.
-9. Unified `weightblock` construction.
-10. DGG output-wrapper removal.
-11. Targeted stale-cache removal, then prepared destination geometry if earned.
+11. Lazy executor switched to graph rows and duplicate discovery removed.
+12. Unified `weightblock` construction.
+13. DGG output-wrapper removal.
+14. Targeted stale-cache removal, then prepared destination geometry if earned.
 
 Record allocation, graph-size, planning-time, and execution-time changes with
 each performance-sensitive commit. Structural simplification is complete only
@@ -967,6 +1178,11 @@ preserves the relevant scaling behavior.
 - Raster chunk queries use DiskArrays ranges over an existing CR quadtree;
   generic chunk queries use `FlexibleRTrees`; DGG queries expose the chunk-level
   frontier of `treeify(space.grid)` and its existing subtree-covering extents.
+- `RasterGrid` accepts arbitrary native raster CRSs through explicitly named
+  native-to-unit-sphere transforms; geographic conversion is supplied by
+  GeometryOps and projected conversion by task-local Proj.jl clones.
+- There is one structured raster lattice adapter, and generic projected-grid
+  extent construction does not rely on geographic-only finite sampling.
 - No new general-purpose Raster or DGG tree duplicates existing infrastructure.
 - A logical `ChunkedPlan` owns or validates a reference to one reusable
   dependency graph rather than rebuilding it per destination column.

@@ -58,7 +58,8 @@ const CONFIG = (
     level       = 12,       # IGeo7 output level
     ancestor    = 5,        # chunk root level
     source      = :synthetic, # :real (lazy AWS tiles) or :synthetic
-    store       = "/home/asinghvi17/geo/dggstores/copdem90-igeo7-l12-synthetic.zarr",
+    authalic    = true,     # compute on the WGS84 authalic geometry
+    store       = "/home/asinghvi17/geo/scratch-stores/glo90-synthetic-authalic-phase1.zarr",
     region      = nothing,  # nothing for the globe, or [(w, e, s, n), ...] boxes
     maskarcsec  = 15,       # land-mask lattice, arcseconds; 0 disables the mask
     real        = :none,    # local overrides; synthetic requires :none absolutely
@@ -69,7 +70,7 @@ const CONFIG = (
     backoff     = 1.0,      # seconds; doubled between attempts
     timeout     = 600.0,    # seconds per tile GET
     workers     = 0,        # concurrent worker tasks; 0 = size from `cores`
-    cores       = 24,       # the core budget `workers` is sized to hold
+    cores       = 40,       # the core budget `workers` is sized to hold
     shape       = :outer,   # :outer or :inner; see `workercount`
     batch       = 8,        # chunks handed out per pull, at most; see `taper`
     taper       = true,     # shrink the batch as the queue drains
@@ -1139,7 +1140,8 @@ function main(config = CONFIG)
         "malloc: left at glibc defaults (malloctrim = 0); expect ~3x resident memory")
 
     sys = DGG.CopernicusDEMSystem(config.res)
-    sys7 = DGG.IGeo7System()
+    storesys7 = DGG.IGeo7System()
+    sys7 = config.authalic ? DGG.AuthalicSystem(storesys7) : storesys7
     capacity = 7^(config.level - config.ancestor)
 
     tiledir = joinpath(config.data, "CopernicusDEM", "$(config.res)m")
@@ -1210,12 +1212,15 @@ function main(config = CONFIG)
         length(todochunks), capacity, Float64(ncell), config.level, 4 * ncell / 2^30))
 
     # --- the store -------------------------------------------------------
-    store = openstore(config, sys7, capacity)
+    geometry_tag = config.authalic ? sprint(show, sys7) : nothing
+    store = openstore(config, storesys7, capacity; geometry_tag)
     layout = store.layout
     check("store layout is level $(config.level) over level-$(config.ancestor) chunks",
-        DGG.level(layout) == config.level && layout.ancestor_level == config.ancestor &&
+        DGG.system(layout) == storesys7 && DGG.level(layout) == config.level &&
+        layout.ancestor_level == config.ancestor &&
         layout.capacity == capacity;
-        detail = "level $(DGG.level(layout)), ancestor $(layout.ancestor_level), " *
+        detail = "system $(DGG.system(layout)), level $(DGG.level(layout)), " *
+                 "ancestor $(layout.ancestor_level), " *
                  "capacity $(layout.capacity)")
 
     done = config.resume ? donechunks(donelog, config.store, "elevation") : Set{Int}()

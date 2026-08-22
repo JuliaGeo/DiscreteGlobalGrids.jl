@@ -212,16 +212,21 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    openstore(config, sys7, capacity) -> store
+    openstore(config, sys7, capacity; geometry_tag=nothing) -> store
 
 Reopen the subzone store named by `config.store`, or create it if it is not
 there. One `Float32` layer, `elevation`, filled with `NaN`; one Zarr chunk per
 level-`config.ancestor` chunk, `capacity` cells wide.
 """
-function openstore(config, sys7, capacity)
+function openstore(config, sys7, capacity;
+        geometry_tag::Union{Nothing,String} = nothing)
     path = config.store
     if isdir(path)
         store = DGG.subzonestore(path)
+        observed = get(store.group.attrs, "destination_geometry", nothing)
+        observed == geometry_tag || error(
+            "store destination_geometry is $(repr(observed)), expected " *
+            "$(repr(geometry_tag)); refusing to mix spherical and authalic columns")
         say("store: reopened $path")
         return store
     end
@@ -231,14 +236,17 @@ function openstore(config, sys7, capacity)
     sourcedescription = config.source === :real ?
         "Copernicus DEM GLO-$(config.res) COGs from the public AWS Open Data bucket" :
         "synthetic analytic field over the real Copernicus GLO-$(config.res) tile list"
+    producerattrs = Dict{String,Any}(
+        "title" => "Copernicus DEM GLO-$(config.res) ($sourcelabel) on IGEO7 level $(config.level)",
+        "source" => sourcedescription,
+        "created" => stamp())
+    geometry_tag === nothing ||
+        (producerattrs["destination_geometry"] = geometry_tag)
     store = DGG.subzonestore(path, sys7, config.level;
         ancestor_level = config.ancestor,
         layers = ("elevation" => Float32,), capacity = capacity,
         fill_value = NaN, ancestor_coordinate = true,
-        attrs = Dict{String,Any}(
-            "title" => "Copernicus DEM GLO-$(config.res) ($sourcelabel) on IGEO7 level $(config.level)",
-            "source" => sourcedescription,
-            "created" => stamp()))
+        attrs = producerattrs)
     say("store: created $path, $(DGG.ncells(sys7, config.ancestor)) chunks of " *
         "$capacity, $(secs(time() - t0))")
     return store

@@ -42,6 +42,7 @@ import Zarr
 import Statistics
 import Dates
 import Downloads
+import Profile
 import Printf: @sprintf
 using Base.ScopedValues: @with
 
@@ -128,6 +129,32 @@ function check(name, ok; detail = "")
         flush(stdout)
     end
     return ok
+end
+
+"Enable Julia's SIGUSR1 profile peek and write each report to the requested path."
+function configureprofile()
+    request = get(ENV, "COPDEM_PROFILE_REQUEST", "")
+    isempty(request) && return false
+    Profile.init(n = 5_000_000, delay = 0.01)
+    Profile.set_peek_duration(60.0)
+    Profile.peek_report[] = () -> begin
+        try
+            target = strip(read(request, String))
+            isempty(target) && error("profile request file $request is empty")
+            open(target, "w") do io
+                println(io, "COPDEM_PROFILE_BEGIN duration_s=60 delay_s=0.01")
+                Profile.print(io; format = :flat, sortedby = :count,
+                    combine = true, mincount = 20)
+                println(io, "COPDEM_PROFILE_END")
+            end
+            say("profile: wrote $target")
+        catch err
+            println(stderr, "COPDEM_PROFILE_ERROR ", sprint(showerror, err))
+            flush(stderr)
+        end
+    end
+    say("profile: SIGUSR1 60-second peek armed; request file $request")
+    return true
 end
 
 """
@@ -1122,6 +1149,7 @@ end
 
 function main(config = CONFIG)
     gcguard(config)
+    configureprofile()
     realspec = effective_realspec(config.source, config.real)
     println("="^92)
     println(stamp(), "  copdem_production.jl — GLO-$(config.res) -> IGEO7 level " *

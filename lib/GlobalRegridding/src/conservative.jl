@@ -37,7 +37,7 @@ function CellSpaceRTree(space::S, inds; nodecapacity::Int = 16) where {S<:Regrid
     isempty(positions) && throw(ArgumentError(
         "cannot build a cell tree from an empty index set"))
     caps = [_packedcellcap(space, i) for i in positions]
-    boxes = map(Extents.extent, caps)
+    boxes = map(cap -> convert(Extents.Extent, cap), caps)
     packed = FlexibleRTrees.RTree(FlexibleRTrees.HPR(), positions;
         nodecapacity, extents = boxes)
     return CellSpaceRTree(space, packed, positions, caps, length(positions),

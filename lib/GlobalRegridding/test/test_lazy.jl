@@ -153,7 +153,7 @@ end
         index = GR.chunkindex(srcspace)
         @test index isa GR.FlexibleRTrees.RTree
         srccaps = GR.chunkextents(srcspace)
-        srcboxes = map(GR.Extents.extent, srccaps)
+        srcboxes = map(cap -> convert(GR.Extents.Extent, cap), srccaps)
         for capacity in (2, 3, 16)
             packed = GR.FlexibleRTrees.RTree(GR.FlexibleRTrees.HPR(), srccaps;
                 extents = srcboxes, nodecapacity = capacity)
@@ -170,7 +170,7 @@ end
             SphericalCap(toy_point(0, 0), Float64(pi)),
         )
         for cap in capcases
-            box = GR.Extents.extent(cap)
+            box = convert(GR.Extents.Extent, cap)
             @test keys(box) == (:X, :Y, :Z)
             centre = cap.point
             seed = abs(centre[3]) < 0.9 ? USPoint(0.0, 0.0, 1.0) : USPoint(1.0, 0.0, 0.0)

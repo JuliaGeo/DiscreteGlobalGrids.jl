@@ -33,7 +33,7 @@ struct EmptyChunkIndex end
 function _packedchunkindex(caps::AbstractVector{<:SphericalCap})
     isempty(caps) && return EmptyChunkIndex()
     data = collect(Cap, caps)
-    boxes = map(Extents.extent, data)
+    boxes = map(cap -> convert(Extents.Extent, cap), data)
     return FlexibleRTrees.RTree(FlexibleRTrees.HPR(), data; extents = boxes)
 end
 

@@ -1,6 +1,6 @@
 # Discover connected source and destination chunks through each space's native
-# spatial index. Chunk indexes are private query objects; unlike cell trees,
-# they need not expose one common node-extent representation.
+# spatial index. Unlike cell trees, chunk indexes need not expose one common
+# node-extent representation.
 
 """
     DilatedIntersects(radius)
@@ -25,7 +25,7 @@ end
     Extents.intersects(_dilatedcap(a, p.radius), b)
 
 # --------------------------------------------------------------------------
-# Private chunk-candidate index
+# Chunk-candidate index implementations
 # --------------------------------------------------------------------------
 
 struct EmptyChunkIndex end
@@ -37,13 +37,6 @@ function _packedchunkindex(caps::AbstractVector{<:SphericalCap})
     return FlexibleRTrees.RTree(FlexibleRTrees.HPR(), data; extents = boxes)
 end
 
-"""
-    chunkindex(space)
-
-Build the private source-chunk query object. Structured spaces specialize this
-to expose their implicit hierarchy; the fallback packs their covering caps in a
-GeometryOps `FlexibleRTree`.
-"""
 chunkindex(space::RegridSpace) = _packedchunkindex(chunkextents(space))
 chunkindex(space::RasterGrid) = _rasterchunkcursor(space)
 
@@ -135,12 +128,6 @@ function candidatechunks!(out::Vector{Int}, index, dstcap::Cap; radius::Real = 0
     return out
 end
 
-"""
-    chunkextents(space::RegridSpace) -> Vector{SphericalCap}
-
-Collect each chunk's spherical-cap extent from [`chunktree`](@ref). Structured
-spaces should specialize this when their query index is not a cap tree.
-"""
 function chunkextents(space::RegridSpace)
     caps = Vector{Cap}(undef, Int(nchunks(space)))
     filled = falses(length(caps))
@@ -167,11 +154,6 @@ function _collectextents!(caps::Vector{Cap}, filled::BitVector, node)
     return caps
 end
 
-"""
-    chunkextent(space::RegridSpace, chunk::Integer) -> SphericalCap
-
-Return one chunk extent. Spaces may specialize this to avoid walking the tree.
-"""
 chunkextent(space::RegridSpace, chunk::Integer) = chunkextents(space)[Int(chunk)]
 
 """

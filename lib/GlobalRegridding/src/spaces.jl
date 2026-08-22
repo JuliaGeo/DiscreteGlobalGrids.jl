@@ -5,17 +5,20 @@
 
 A source or destination cell collection.
 
-Implementations provide [`celltree`](@ref), [`ncells`](@ref), [`getcell`](@ref),
-[`cellindices`](@ref), [`nchunks`](@ref), and [`manifold`](@ref). Generic spaces
-also provide [`chunktree`](@ref); structured packages may instead specialize
-the private chunk index and [`chunkextents`](@ref). [`cellat`](@ref) and
-[`cellcentroid`](@ref) are optional fast paths that some methods require;
-[`hascellchart`](@ref) is the trait that gates the interpolating ones.
+The qualified extension contract is grouped below by responsibility. Every
+space provides cell geometry, chunk ownership, and a manifold. Restricted cell
+trees, native chunk indexes, rectangular storage reads, point lookup, charts,
+and labelled output have generic fallbacks or are required only by the methods
+that use them.
 
 Spaces contain geometry and structure, not field data. Construction should be
 cheap, with cell polygons generated on demand.
 """
 abstract type RegridSpace end
+
+# --------------------------------------------------------------------------
+# Cell geometry
+# --------------------------------------------------------------------------
 
 """
     celltree(space::RegridSpace)
@@ -27,14 +30,13 @@ Every node extent must be a `SphericalCap`. Define
 function celltree end
 
 """
-    chunktree(space::RegridSpace)
+    subtree(space::RegridSpace, inds) -> tree
 
-Return a spatial tree over chunk numbers `1:nchunks(space)`. Each chunk extent
-must cover every cell returned by [`cellindices`](@ref) for that chunk. This is
-the generic `chunkextents`/packed-index fallback; a structured space may expose
-its existing hierarchy through the private chunk-index seam instead.
+Return a spatial tree over `inds`, with leaves addressed by global cell
+position. The fallback packs GeometryOps' Cartesian cell extents in an R-tree.
+Spaces with a cheaper restricted tree should specialize this function.
 """
-function chunktree end
+function subtree end
 
 """
     ncells(space::RegridSpace) -> Int
@@ -53,6 +55,10 @@ Throw `BoundsError` for an invalid position.
 """
 function getcell end
 
+# --------------------------------------------------------------------------
+# Chunk ownership and spatial discovery
+# --------------------------------------------------------------------------
+
 """
     nchunks(space::RegridSpace) -> Int
 
@@ -69,6 +75,43 @@ Return a chunk's ascending cell positions. Chunks must partition
 Weight builders address entries by local position within this result.
 """
 function cellindices end
+
+"""
+    chunkextent(space::RegridSpace, chunk::Integer) -> SphericalCap
+
+Return the spherical cap covering every cell owned by `chunk`. Spaces should
+specialize this when one extent is cheaper to obtain than the complete
+[`chunkextents`](@ref) vector.
+"""
+function chunkextent end
+
+"""
+    chunkextents(space::RegridSpace) -> Vector{SphericalCap}
+
+Return the chunk extents in chunk-number order. The compatibility fallback
+collects them from [`chunktree`](@ref); structured spaces whose query index is
+not a cap tree should specialize this function.
+"""
+function chunkextents end
+
+"""
+    chunkindex(space::RegridSpace) -> index
+
+Build the source-chunk query object consumed by [`candidatechunks!`](@ref).
+The fallback packs [`chunkextents`](@ref) in a GeometryOps `FlexibleRTree`.
+Structured spaces may return any native hierarchy; indexes need not share a
+type or expose one common node-extent representation.
+"""
+function chunkindex end
+
+"""
+    candidatechunks!(out::Vector{Int}, index, dstcap; radius = 0.0) -> out
+
+Replace `out` with ascending unique chunk numbers from `index` that may lie
+within `radius` radians of `dstcap`. False positives are allowed; false
+negatives are not. A native index specializes this query operation directly.
+"""
+function candidatechunks! end
 
 """
     chunkat(space::RegridSpace, i::Integer) -> Int
@@ -96,6 +139,38 @@ function chunkat(space::RegridSpace, p::US.UnitSphericalPoint)
     i === nothing && return nothing
     return chunkat(space, i)
 end
+
+"""
+    chunktree(space::RegridSpace)
+
+Return a spatial tree over chunk numbers `1:nchunks(space)`, with each leaf cap
+covering every cell returned by [`cellindices`](@ref) for that chunk. This is a
+temporary compatibility bridge for the generic [`chunkextents`](@ref)
+fallback. New structured spaces should implement the
+[`chunkindex`](@ref)/[`candidatechunks!`](@ref) query seam instead; E2 decides
+whether to remove this bridge.
+"""
+function chunktree end
+
+# --------------------------------------------------------------------------
+# Array storage
+# --------------------------------------------------------------------------
+
+"""
+    chunkranges(space::RegridSpace, chunk, spatialsize::NTuple{NS,Int})
+        -> NTuple{NS,UnitRange{Int}}
+
+Return the rectangular array ranges that storage can read for `chunk` in one
+operation, in spatial-dimension order. Flattening that block must enumerate
+[`cellindices`](@ref) in the same order, but the two contracts are distinct:
+`cellindices` describes cell ownership and need not be a storage rectangle.
+Non-rectangular spaces must specialize this function.
+"""
+function chunkranges end
+
+# --------------------------------------------------------------------------
+# Manifold, point lookup, and cell charts
+# --------------------------------------------------------------------------
 
 """
     manifold(space::RegridSpace) -> GeometryOpsCore.Manifold
@@ -132,6 +207,51 @@ Defaults to `false`; chart-based methods require `true` from the source space.
 hascellchart(::RegridSpace) = false
 
 """
+    chartaxes(space::RegridSpace) -> (xs, ys)
+
+Return strictly monotonic cell-centre coordinates for each separable lattice
+axis. Required when [`hascellchart`](@ref) is `true`.
+"""
+function chartaxes end
+
+"""
+    chartcoords(space::RegridSpace, p) -> Union{Tuple{Real,Real},Nothing}
+
+Convert `p` to native chart coordinates, or return `nothing` outside the chart.
+Coordinates must use the same branch as [`chartaxes`](@ref), except on periodic
+axes.
+"""
+function chartcoords end
+
+"""
+    chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
+
+Return the cell position at lattice index `(ix, iy)`. Required when
+[`hascellchart`](@ref) is `true`.
+"""
+function chartposition end
+
+"""
+    chartperiod(space::RegridSpace) -> (px, py)
+
+Return each axis period in native coordinates, or `nothing` for no wrap.
+Defaults to `(nothing, nothing)`.
+"""
+function chartperiod end
+
+"""
+    chartspacing(space::RegridSpace) -> (Δx, Δy)
+
+Return upper bounds, in radians, on adjacent-centre distance along each axis.
+Required when [`hascellchart`](@ref) is `true`.
+"""
+function chartspacing end
+
+# --------------------------------------------------------------------------
+# Output labelling and target resolution
+# --------------------------------------------------------------------------
+
+"""
     destinationdims(space::RegridSpace, sampling) -> Tuple or nothing
 
 Return the `DimensionalData` dimensions that label a result over this space,
@@ -148,3 +268,14 @@ its own cells is not a raster axis, so a package that supplies one extends this
 and a regrid given no `from` names it instead of asking for `xdim`.
 """
 dimsource(::Any) = nothing
+
+"""
+    _asspace(space, name) -> RegridSpace
+    _asspace(space, name, src_space) -> RegridSpace
+
+Resolve a `to` or `from` argument into a [`RegridSpace`](@ref). Packages that
+supply spaces extend the two-argument form for their own target spellings, and
+the three-argument form when the destination depends on the resolved source
+space. `name` names the keyword in error messages.
+"""
+function _asspace end

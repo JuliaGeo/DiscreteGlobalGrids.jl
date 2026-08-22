@@ -11,6 +11,23 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
 
 @testset "GlobalRegridding" begin
 
+    @testset "qualified space extension contract" begin
+        hooks = (
+            :subtree,
+            :chunkextents, :chunkextent, :chunkindex, :candidatechunks!,
+            :chunkranges,
+            :chartaxes, :chartcoords, :chartposition, :chartperiod, :chartspacing,
+            :destinationdims, :dimsource, :_asspace,
+        )
+        integration_hooks = (
+            :resolvespatialdims,
+            :_prepare_raster_transform_pair, :_task_prepared_raster_transform,
+        )
+        @test all(name -> Base.ispublic(GR, name), (hooks..., integration_hooks...))
+        docs = Base.Docs.meta(GR)
+        @test all(name -> haskey(docs, Base.Docs.Binding(GR, name)), hooks)
+    end
+
     @testset "toy space contract" begin
         space = ToyLonLatSpace(8, 4; chunks = (4, 2))
 

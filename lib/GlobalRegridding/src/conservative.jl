@@ -2,13 +2,6 @@
 
 # Chunk-restricted cell trees
 
-"""
-    subtree(space::RegridSpace, inds) -> tree
-
-Return a spatial tree over `inds`, with leaves addressed by global cell
-position. The fallback packs GeometryOps' Cartesian cell extents in an R-tree.
-Spaces with a cheaper restricted tree should specialize this function.
-"""
 function subtree(space::RegridSpace, inds)
     _iswholespace(space, inds) && return celltree(space)
     return CellSpaceRTree(space, inds)

@@ -89,6 +89,19 @@ public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource
 
+# Qualified `RegridSpace` extension hooks. Their declarations and contracts are
+# grouped by responsibility in spaces.jl; they stay unexported to avoid generic
+# names in user namespaces.
+public subtree
+public chunkextents, chunkextent, chunkindex, candidatechunks!
+public chunkranges
+public chartaxes, chartcoords, chartposition, chartperiod, chartspacing
+public _asspace
+
+# Other qualified extension hooks used by package integrations.
+public resolvespatialdims
+public _prepare_raster_transform_pair, _task_prepared_raster_transform
+
 # The chunk dependency graph. Public but not exported: these names are generic
 # enough that exporting them into a user's namespace would be presumptuous.
 public ChunkDependencyGraph, chunk_dependency_graph
@@ -97,23 +110,11 @@ public srcvertex, dstvertex, srcchunk, dstchunk
 public issrcvertex, isdstvertex, srcvertices, dstvertices
 public nsourcechunks, ndestinationchunks, dependency_radius
 
-# Extension surface. These seven are unexported but load-bearing from outside:
-# a package that supplies a `RegridSpace` extends or calls them, so their
-# signatures are as fixed as the exported ones.
-#
-#   * `_asspace(target, name)` / `_asspace(target, name, src_space)` — resolve a
-#     `to`/`from` argument spelling into a `RegridSpace` (api.jl).
-#   * `subtree(space, inds)` — cell tree restricted to a chunk (conservative.jl).
-#   * `chunkextents(space)` — per-chunk spherical caps (discovery.jl).
-#   * `resolvespatialdims(data, nsrc)` — which array dimensions a regrid
-#     replaces (executor.jl).
-#   * `dimsource(lookup)` — the `from` a lookup already names (spaces.jl).
-#   * `_prepare_raster_transform_pair(forward, reverse)` — adapt a raster chart
-#     without storing task-owned resources on the shared grid (rastergrid.jl).
-#   * `_task_prepared_raster_transform(transform)` — hoist a task-owned chart
-#     resource around a multi-point geometry loop (rastergrid.jl).
-#
-# DiscreteGlobalGrids' `src/regridding.jl` extends the first three and
-# `dimsource`.
+# DiscreteGlobalGrids extends the qualified space contract in every
+# responsibility it customizes: `subtree`; `chunkextents`, `chunkindex`, and
+# `candidatechunks!`; `chunkranges`; and `dimsource`/`_asspace`. In particular,
+# its native DGG and CopernicusDEM chunk paths do not use private discovery
+# hooks. The Proj extension separately specializes the two public preparation
+# hooks above for task-owned native transforms.
 
 end # module GlobalRegridding

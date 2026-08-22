@@ -2,16 +2,6 @@
 
 # Source addressing
 
-"""
-    chunkranges(space::RegridSpace, chunk, spatialsize::NTuple{NS,Int})
-        -> NTuple{NS,UnitRange{Int}}
-
-Return a chunk's array-index ranges in spatial dimension order. Flattening this
-array block must match [`cellindices`](@ref). The fallback verifies that cells
-form a lattice rectangle; non-rectangular spaces must specialize this function.
-"""
-function chunkranges end
-
 function chunkranges(space::RegridSpace, chunk::Integer, ::NTuple{1,Int})
     inds = cellindices(space, Int(chunk))
     n = length(inds)

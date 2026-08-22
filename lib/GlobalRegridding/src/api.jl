@@ -236,15 +236,6 @@ _sourcespace(data) = throw(ArgumentError(
     "a $(typeof(data)) carries no coordinates, so no source space can be " *
     "derived from it; pass `from = ` a RegridSpace."))
 
-"""
-    _asspace(space, name) -> RegridSpace
-    _asspace(space, name, src_space) -> RegridSpace
-
-Resolve a `to` or `from` argument into a [`RegridSpace`](@ref). Packages that
-supply spaces extend the two-argument form for their own target spellings, and
-the three-argument form when the destination depends on the resolved source
-space. `name` names the keyword in error messages.
-"""
 function _asspace(space, name)
     space isa RegridSpace || throw(ArgumentError(
         "`$name` must be a RegridSpace, got $(typeof(space)). A package that " *

@@ -22,48 +22,9 @@ function build_weights!(coo::WeightCOO, ::NearestCell,
     return coo
 end
 
-# Cell-chart interface
+# Cell-chart fallbacks
 
-"""
-    chartaxes(space::RegridSpace) -> (xs, ys)
-
-Return strictly monotonic cell-centre coordinates for each separable lattice
-axis. Required when [`hascellchart`](@ref) is `true`.
-"""
-function chartaxes end
-
-"""
-    chartcoords(space::RegridSpace, p) -> Union{Tuple{Real,Real},Nothing}
-
-Convert `p` to native chart coordinates, or return `nothing` outside the chart.
-Coordinates must use the same branch as [`chartaxes`](@ref), except on periodic
-axes.
-"""
-function chartcoords end
-
-"""
-    chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
-
-Return the cell position at lattice index `(ix, iy)`. Required when
-[`hascellchart`](@ref) is `true`.
-"""
-function chartposition end
-
-"""
-    chartperiod(space::RegridSpace) -> (px, py)
-
-Return each axis period in native coordinates, or `nothing` for no wrap.
-Defaults to `(nothing, nothing)`.
-"""
 chartperiod(::RegridSpace) = (nothing, nothing)
-
-"""
-    chartspacing(space::RegridSpace) -> (Δx, Δy)
-
-Return upper bounds, in radians, on adjacent-centre distance along each axis.
-Required when [`hascellchart`](@ref) is `true`.
-"""
-function chartspacing end
 
 function _chart_required(f::Symbol, space::RegridSpace)
     throw(ArgumentError(

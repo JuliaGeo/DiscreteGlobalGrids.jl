@@ -24,7 +24,7 @@ function t6_raster(f, xs, ys; yfirst = false)
 end
 
 # Select destination cells by location, not assumed index arithmetic.
-t6_lat(space, i) = GR.SphereToLonLat()(cellcentroid(space, i))[2]
+t6_lat(space, i) = GO.UnitSpherical.GeographicFromUnitSphere()(cellcentroid(space, i))[2]
 
 t6_mass(space, values) =
     sum(values[i] * GR.cellarea(space, i) for i in 1:ncells(space))
@@ -238,7 +238,8 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test GR._onbranch(region.xedges, -1.0, 360.0) ≈ -1.0
         @test GR._onbranch(region.xedges, 61.0, 360.0) ≈ 61.0
         @test GR._onbranch(region.xedges, -1.0, nothing) == -1.0
-        @test GR.chartcoords(region, GR.LonLatToSphere()(-1.0, 10.0))[1] ≈ -1.0
+        point = GO.UnitSpherical.UnitSphereFromGeographic()((-1.0, 10.0))
+        @test GR.chartcoords(region, point)[1] ≈ -1.0
 
         # Pad cells clamp to the adjacent edge column, and destination tiling
         # changes nothing: the pad tile discovers the stencil's source chunk.

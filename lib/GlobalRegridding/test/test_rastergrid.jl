@@ -5,6 +5,10 @@ import DiskArrays
 import ConservativeRegridding as CR
 import GeometryOps: SpatialTreeInterface as STI
 
+const GEOGRAPHIC_TO_UNIT_SPHERE = GO.UnitSpherical.UnitSphereFromGeographic()
+const UNIT_SPHERE_TO_GEOGRAPHIC = GO.UnitSpherical.GeographicFromUnitSphere()
+geographic_point(lon, lat) = GEOGRAPHIC_TO_UNIT_SPHERE((lon, lat))
+
 # Disk-backed test array with explicit chunking and read counts.
 mutable struct CountingChunked{T,N,A<:AbstractArray{T,N}} <: DiskArrays.AbstractDiskArray{T,N}
     data::A
@@ -58,8 +62,8 @@ end
 # (`_CELL_CAP_SAMPLES` is zero), so a corner reference is the whole reference.
 @noinline function reference_corners(space, ix, iy)
     xlo, xhi, ylo, yhi = GR.cellbox(space, ix, iy)
-    t = space.transform
-    return (t(xlo, ylo), t(xhi, ylo), t(xhi, yhi), t(xlo, yhi))
+    t = space.native_to_unit_sphere
+    return (t((xlo, ylo)), t((xhi, ylo)), t((xhi, yhi)), t((xlo, yhi)))
 end
 
 @noinline function reference_cellcap(space, ix, iy)
@@ -104,7 +108,9 @@ bitequal(a, b) = bitequal(a.point, b.point) && a.radius === b.radius
 
 # Wrapper that forces per-point chart evaluation.
 struct OpaqueChart end
-(::OpaqueChart)(x, y) = GR.LonLatToSphere()(x, y)
+(::OpaqueChart)(x, y) = geographic_point(x, y)
+GR._spherical_step_bounds_radians(::OpaqueChart, dx, dy) =
+    (deg2rad(Float64(dx)), deg2rad(Float64(dy)))
 
 # Sample great-circle edges to test coverage between corners.
 function ring_samples(space, i, nseg = 6)
@@ -154,6 +160,39 @@ end
 
         @test ncells(space) == 32
         @test hascellchart(space)
+        @test space.native_to_unit_sphere isa GO.UnitSpherical.UnitSphereFromGeographic
+        @test space.unit_sphere_to_native isa GO.UnitSpherical.GeographicFromUnitSphere
+
+        # The internal contract is one coordinate. An explicit projected-native
+        # transform stays unwrapped; its inverse restores native coordinates.
+        projected_forward = xy -> geographic_point(xy[1] / 1_000, xy[2] / 1_000)
+        projected_inverse = p -> begin
+            lon, lat = UNIT_SPHERE_TO_GEOGRAPHIC(p)
+            (1_000lon, 1_000lat)
+        end
+        projected = RasterGrid(DD.DimArray(zeros(4, 2),
+            (DD.X(5_000.0:10_000.0:35_000.0), DD.Y(5_000.0:10_000.0:15_000.0)));
+            native_to_unit_sphere = projected_forward,
+            unit_sphere_to_native = projected_inverse)
+        @test projected.native_to_unit_sphere === projected_forward
+        @test projected.unit_sphere_to_native === projected_inverse
+        @test projected.tables === nothing
+        @test projected.xperiod === nothing
+        @test cellat(projected, cellcentroid(projected, 1)) == 1
+
+        default_array = DD.DimArray(zeros(8, 4), (DD.X(raster_lon()), DD.Y(raster_lat())))
+        no_inverse = RasterGrid(default_array;
+            unit_sphere_to_native = nothing)
+        @test !hascellchart(no_inverse)
+        @test_throws ArgumentError cellat(no_inverse, geographic_point(0.0, 0.0))
+
+        @test_throws ArgumentError RasterGrid(default_array;
+            native_to_unit_sphere = GEOGRAPHIC_TO_UNIT_SPHERE,
+            transform = GEOGRAPHIC_TO_UNIT_SPHERE)
+        @test_throws ArgumentError RasterGrid(default_array;
+            native_to_unit_sphere = 1)
+        @test_throws ArgumentError RasterGrid(default_array;
+            native_to_unit_sphere = identity)
 
         # The cells tile the sphere: edges are shared exactly, so no gap or
         # overlap survives the sum.
@@ -176,13 +215,13 @@ end
 
         # A raster need not cover the sphere, and says so.
         patch = RasterGrid(DD.DimArray(zeros(4, 2), (DD.X(5.0:10.0:35.0), DD.Y(5.0:10.0:15.0))))
-        @test cellat(patch, GR.LonLatToSphere()(20.0, 10.0)) isa Int
-        @test cellat(patch, GR.LonLatToSphere()(20.0, -10.0)) === nothing
-        @test cellat(patch, GR.LonLatToSphere()(-20.0, 10.0)) === nothing
+        @test cellat(patch, geographic_point(20.0, 10.0)) isa Int
+        @test cellat(patch, geographic_point(20.0, -10.0)) === nothing
+        @test cellat(patch, geographic_point(-20.0, 10.0)) === nothing
 
         # A raster numbered 0–360 still answers for a negative longitude.
         wrapped = RasterGrid(DD.DimArray(zeros(8, 4), (DD.X(22.5:45.0:337.5), DD.Y(raster_lat()))))
-        @test cellat(wrapped, GR.LonLatToSphere()(-170.0, 0.0)) ==
+        @test cellat(wrapped, geographic_point(-170.0, 0.0)) ==
               GR.cellposition(wrapped, 5, 3)
     end
 
@@ -264,7 +303,7 @@ end
         @test GR.chunkat(space, cellcentroid(space, 12)) == GR.chunkat(space, 12)
         patch = RasterGrid(DD.DimArray(zeros(4, 2),
             (DD.X(0.0:10.0:30.0), DD.Y(0.0:10.0:10.0))))
-        @test GR.chunkat(patch, GR.LonLatToSphere()(0.0, -80.0)) === nothing
+        @test GR.chunkat(patch, geographic_point(0.0, -80.0)) === nothing
 
         # Regional chunk extents cover their cell geometry.
         region = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (4, 2)),
@@ -283,7 +322,7 @@ end
         @test index isa CR.Trees.TopDownQuadtreeCursor
         @test index.grid isa GR.RasterGridView
         @test index.grid.space === space
-        whole = SphericalCap(GR.LonLatToSphere()(0.0, 0.0), Float64(pi))
+        whole = SphericalCap(geographic_point(0.0, 0.0), Float64(pi))
         @test GR.candidatechunks!(Int[], index, whole) == collect(1:nchunks(space))
 
         # Any source boundary point reached by a query cap implies that its
@@ -304,13 +343,21 @@ end
         yindex = GR.chunkindex(cols)
         @test GR.candidatechunks!(Int[], yindex, whole) == collect(1:nchunks(cols))
         shift = 17.0
-        shifted = (x, y) -> GR.LonLatToSphere()(x + shift, y)
+        shifted = (x, y) -> geographic_point(x + shift, y)
         shiftedspace = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (2, 2)),
-            (DD.X(raster_lon()), DD.Y(raster_lat()))); transform = shifted)
+            (DD.X(raster_lon()), DD.Y(raster_lat()))); native_to_unit_sphere = shifted)
         shiftedindex = GR.chunkindex(shiftedspace)
-        @test shiftedindex.grid.space.transform === shifted
+        @test shiftedspace.native_to_unit_sphere isa GR._TwoArgumentNativeToUnitSphere
+        @test shiftedspace.native_to_unit_sphere.f === shifted
+        @test cellcentroid(shiftedspace, 1) == shifted(raster_lon()[1], raster_lat()[1])
+        @test CR.Trees.getvertex(shiftedindex.grid, 1, 1) ==
+              shifted(shiftedspace.xedges[1], shiftedspace.yedges[1])
+        @test !isempty(cellring(shiftedspace, 1))
         @test GR.candidatechunks!(Int[], shiftedindex, whole) ==
               collect(1:nchunks(shiftedspace))
+        selective = SphericalCap(cellcentroid(shiftedspace, 1), 0.0)
+        @test GR.chunkat(shiftedspace, 1) in
+              GR.candidatechunks!(Int[], shiftedindex, selective)
         @test parent_x.reads == 0
     end
 
@@ -429,7 +476,7 @@ end
                 (DD.X(-177.5:5.0:177.5), DD.Y(-87.5:5.0:87.5)))),
         )
         for (name, space) in spaces
-            @test space.tables isa GR.LonLatEdgeTables
+            @test space.tables isa GR.GeographicEdgeTables
             @test all(1:ncells(space)) do i
                 ix, iy = GR.cellsubscript(space, i)
                 bitequal(GR._rastercellcap(space, ix, iy), reference_cellcap(space, ix, iy))
@@ -453,9 +500,11 @@ end
 
         # Untabulated charts use the equivalent per-point path.
         opaque = RasterGrid(DD.DimArray(zeros(8, 4), (DD.X(raster_lon()), DD.Y(raster_lat())));
-            transform = OpaqueChart(), inverse = GR.SphereToLonLat(), xperiod = 360.0,
+            transform = OpaqueChart(), inverse = UNIT_SPHERE_TO_GEOGRAPHIC, xperiod = 360.0,
             ybounds = (-90.0, 90.0))
         @test opaque.tables === nothing
+        @test opaque.native_to_unit_sphere isa GR._TwoArgumentNativeToUnitSphere
+        @test GR.chartspacing(opaque) == (deg2rad(45.0), deg2rad(45.0))
         @test all(1:ncells(opaque)) do i
             ix, iy = GR.cellsubscript(opaque, i)
             bitequal(GR._rastercellcap(opaque, ix, iy), reference_cellcap(opaque, ix, iy))
@@ -470,8 +519,8 @@ end
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([1:36], [3(k-1)+1:3k for k in 1:6]))
         caps = chunktree(bands).caps
-        north = GR.LonLatToSphere()(0.0, 90.0)
-        south = GR.LonLatToSphere()(0.0, -90.0)
+        north = geographic_point(0.0, 90.0)
+        south = geographic_point(0.0, -90.0)
 
         # Band caps cover bowed geodesic edges.
         @test all(GR.US._contains(caps[c], p)
@@ -509,7 +558,7 @@ end
                   for i in cellindices(stripes, c)
                   for p in ring_samples(stripes, i))
         # A stripe does not reach the meridian opposite it.
-        @test !GR.US._contains(stripecaps[1], GR.LonLatToSphere()(0.0, 0.0))
+        @test !GR.US._contains(stripecaps[1], geographic_point(0.0, 0.0))
 
         # Every node of the tree covers too — the extents the descent prunes on
         # are the same construction — and here against the filled-in geometry.

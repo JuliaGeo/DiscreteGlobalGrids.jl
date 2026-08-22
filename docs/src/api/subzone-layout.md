@@ -28,6 +28,23 @@ dropped and the subtree chunk boundaries published.
 A column is written whole: a cube whose coverage stops inside a subtree is
 refused with `DGGSFormatError(check = :incomplete_subtree)`.
 
+## Overviews
+
+`subzonestore(...; overviews = [l1, l2])` optionally creates coarse arrays for
+each data variable. A level `l` overview of variable `v` is stored as
+`v_ovr<l>` and uses the same level-`ancestor_level` columns as the base array;
+its column capacity and chunk size are those of a level-`l` subzone layout. An
+overview at exactly `ancestor_level` therefore has one value per column. Levels
+below `ancestor_level` are not supported by this primitive layout.
+
+The implemented `overview_method = :center` takes each level-`l` cell's center
+base-level descendant: the digit-zero chain, which is the first cell of its
+`descendant_range` in Z7 rank order. `dggwrite!` writes these arrays together
+with each base column, without a read-back pass, and `dggread(store; level = l)`
+reads one with pentagon padding removed. The method is recorded per overview;
+mean, maximum, and other aggregation methods can be added later without changing
+the stored shapes.
+
 ```@docs
 SubzoneLayout
 subzonestore

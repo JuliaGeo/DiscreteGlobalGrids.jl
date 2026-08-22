@@ -63,7 +63,8 @@ const MANIFEST_VALIDATED = "strict"
 
 """
     dggread(store; vars = All(), lazy = true, validate = :strict,
-            conventions = CONVENTION_REGISTRY, description = nothing) -> DimStack
+            conventions = CONVENTION_REGISTRY, description = nothing,
+            level = nothing) -> DimStack
     dggread(store, var::Symbol; kwargs...) -> DimArray
 
 Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
@@ -96,6 +97,8 @@ extension (`using AWSS3`) and says so otherwise.
     cells (or column indices) to restrict the cell axis to. The default reads
     the WHOLE level, since a column nobody wrote is not absent from such a store,
     it reads back as fill.
+  - `level`: an ancestor-subzone store only — its base level by default, or one
+    of the center-sampled overview levels recorded in the store.
   - `description`: a [`StoreDescription`](@ref) that bypasses detection. The
     caller then asserts grid, level, encoding and array names, and only the
     mechanical checks — the id scan, the closed-form counts — still run. This
@@ -122,7 +125,8 @@ to say about a two-dimensional store.
 """
 function DiscreteGlobalGrids.dggread(store::StoreLike; vars=DD.All(), lazy::Bool=true,
     validate::Symbol=:strict, conventions=DiscreteGlobalGrids.CONVENTION_REGISTRY,
-    description::Union{StoreDescription,Nothing}=nothing, ancestors=nothing)
+    description::Union{StoreDescription,Nothing}=nothing, ancestors=nothing,
+    level=nothing)
     samples = validation_samples(validate)
     group, identifier = opengroup(store)
     return with_store_context(identifier) do
@@ -135,11 +139,15 @@ function DiscreteGlobalGrids.dggread(store::StoreLike; vars=DD.All(), lazy::Bool
             description === nothing || throw(ArgumentError(
                 "`description` asserts a one-dimensional cell axis; this store is " *
                 "the ancestor-subzone layout, whose shape is in its own attributes."))
-            return DGGSZarrSubzones.assemble(group, snap, identifier, vars, lazy, ancestors)
+            return DGGSZarrSubzones.assemble(
+                group, snap, identifier, vars, lazy, ancestors, level)
         end
         ancestors === nothing || throw(ArgumentError(
             "`ancestors` selects the columns of an ancestor-subzone store, and " *
             "this store is not one."))
+        level === nothing || throw(ArgumentError(
+            "`level` selects a base or overview level of an ancestor-subzone " *
+            "store, and this store is not one."))
         desc, names = describe(snap, conventions, description)
         with_store_context(identifier; conventions=names) do
             assemble(group, snap, desc, names, vars, lazy, validate, samples)

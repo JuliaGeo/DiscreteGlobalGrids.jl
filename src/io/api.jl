@@ -25,7 +25,8 @@ end
 
 """
     dggread(store; vars = All(), lazy = true, validate = :strict,
-            conventions = CONVENTION_REGISTRY, description = nothing) -> DimStack
+            conventions = CONVENTION_REGISTRY, description = nothing,
+            level = nothing) -> DimStack
     dggread(store, var::Symbol; kwargs...) -> DimArray
 
 **Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`;
@@ -117,6 +118,10 @@ group, its arrays and its attributes are stamped once, and the columns are
 filled afterwards, one [`dggwrite!`](@ref) at a time. A column is one chunk and
 therefore one file, and a column write rewrites nothing shared, so tasks writing
 disjoint columns need no coordination.
+
+`overviews` may name strictly increasing levels from `ancestor_level` through
+`level - 1`. They are center-sampled automatically as base columns are written
+and read through `dggread(store; level = overview_level)`.
 
 See [`SubzoneLayout`](@ref) for the layout itself and [`dggwrite`](@ref)'s
 `layout = :subzones` for the one-shot form.

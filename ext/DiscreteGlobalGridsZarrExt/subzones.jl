@@ -3,7 +3,7 @@
 # and the DiskArrays wrapper that makes the two-dimensional store look like the
 # one-dimensional cell axis it stands for.
 #
-#   create   subzonestore(dest, sys, level; ancestor_level, layers)
+#   create   subzonestore(dest, sys, level; ancestor_level, layers, overviews)
 #   fill     dggwrite!(store, ancestor, values)   |   dggwrite!(store, cube)
 #   one shot dggwrite(dest, cube; layout = :subzones, ancestor_level)
 #   read     dggread(store)  ->  a cell-axis DimStack over `SubzoneCellArray`s
@@ -26,6 +26,13 @@ import DimensionalData as DD
 import DiskArrays
 import Zarr
 
+const OVERVIEW_LEVELS_ATTRIBUTE = "overview_levels"
+const OVERVIEWS_ATTRIBUTE = "overviews"
+const OVERVIEW_LEVEL_ATTRIBUTE = "dggs_overview_level"
+const OVERVIEW_METHOD_ATTRIBUTE = "dggs_overview_method"
+
+_overviewname(name::AbstractString, lev::Integer) = string(name, "_ovr", lev)
+
 # ===========================================================================
 # Creating a store
 # ===========================================================================
@@ -40,10 +47,17 @@ Handed back by [`subzonestore`](@ref) and filled by [`dggwrite!`](@ref). It owns
 no buffer and holds no lock: a column is a chunk is a file, so two tasks writing
 two columns share nothing, and the handle may be used from all of them.
 """
+struct SubzoneOverview{L<:SubzoneLayout}
+    layout::L
+    method::Symbol
+    arrays::Dict{String,Zarr.ZArray}
+end
+
 struct SubzoneStore{L<:SubzoneLayout}
     group::Zarr.ZGroup
     layout::L
     arrays::Dict{String,Zarr.ZArray}
+    overviews::Vector{SubzoneOverview}
     identifier::String
 end
 
@@ -55,8 +69,9 @@ Base.show(io::IO, s::SubzoneStore) = print(io, "SubzoneStore(", s.identifier, ",
     s.layout, ", ", join(keys(s), ", "), ")")
 
 """
-    subzonestore(dest, system, level; ancestor_level, layers,
+    subzonestore(dest, system, level; ancestor_level, layers, overviews = Int[],
                  capacity = nothing, fill_value = NaN, ancestor_coordinate = true,
+                 overview_method = :center,
                  attrs = Dict{String,Any}(), compressor = Zarr.BloscCompressor())
         -> SubzoneStore
     subzonestore(dest) -> SubzoneStore
@@ -84,6 +99,10 @@ reads back as `fill_value`.
     generic xdggs reader sees the ancestor axis for the cell axis it is.
   - `attrs` are the producer's own group attributes, which the layout's are
     stamped over.
+  - `overviews` is a strictly increasing list of levels from `ancestor_level`
+    through `level - 1`. Each gets a `<layer>_ovr<level>` array in the same
+    ancestor-column layout. `overview_method = :center` samples the first base
+    descendant of every overview cell; it is the only method implemented yet.
 
 Reopening reads the layout back out of the attributes and checks it against the
 arrays, so a mistyped path is refused rather than half-written into. `dest` is a
@@ -105,10 +124,19 @@ end
 function _create(identifier, opengroup, sys, lev; ancestor_level::Integer,
     layers, capacity::Union{Integer,Nothing}=nothing, fill_value=NaN,
     ancestor_coordinate::Bool=true, attrs=Dict{String,Any}(),
+    overviews=Int[], overview_method::Symbol=:center,
     compressor=Zarr.BloscCompressor())
 
     specs = _layerspecs(layers)
     layout = SubzoneLayout(sys, lev, ancestor_level; capacity=capacity)
+    overview_method === :center || throw(ArgumentError(
+        "the primitive overview writer implements `overview_method = :center` only, " *
+        "not $(repr(overview_method))."))
+    overview_levels = _overviewlevels(overviews, layout)
+    overview_layouts = SubzoneLayout[
+        SubzoneLayout(sys, lo, ancestor_level; gridname=layout.gridname)
+        for lo in overview_levels]
+    _checkoverviewnames(specs, overview_levels)
     coordinate = ancestor_coordinate ? ANCESTOR_COORDINATE : nothing
 
     return with_store_context(identifier) do
@@ -121,6 +149,7 @@ function _create(identifier, opengroup, sys, lev; ancestor_level::Integer,
         merge!(groupattrs, subzone_attrs(layout;
             variables=String[name for (name, _) in specs], coordinate=coordinate,
             fill_value=_fillspelling(fills)))
+        _overviewattrs!(groupattrs, overview_layouts, specs, overview_method)
 
         group = opengroup(groupattrs)
         arrays = Dict{String,Zarr.ZArray}()
@@ -131,10 +160,72 @@ function _create(identifier, opengroup, sys, lev; ancestor_level::Integer,
                 attrs=Dict{String,Any}(ARRAY_DIMENSIONS =>
                     [ANCESTOR_DIMENSION, SUBZONE_DIMENSION]))
         end
+        overview_handles = SubzoneOverview[]
+        for overview_layout in overview_layouts
+            overview_arrays = Dict{String,Zarr.ZArray}()
+            for (name, T) in specs
+                stored = _overviewname(name, overview_layout.level)
+                overview_arrays[name] = Zarr.zcreate(T, group, stored,
+                    overview_layout.capacity, overview_layout.ncolumns;
+                    chunks=(overview_layout.capacity, 1), fill_value=fills[name],
+                    fill_as_missing=false, compressor=compressor,
+                    attrs=Dict{String,Any}(
+                        ARRAY_DIMENSIONS => [ANCESTOR_DIMENSION, SUBZONE_DIMENSION],
+                        OVERVIEW_LEVEL_ATTRIBUTE => overview_layout.level,
+                        OVERVIEW_METHOD_ATTRIBUTE => String(overview_method)))
+            end
+            push!(overview_handles,
+                SubzoneOverview(overview_layout, overview_method, overview_arrays))
+        end
         coordinate === nothing || _writecoordinate(group, layout, coordinate)
         Zarr.consolidate_metadata(group)
-        return SubzoneStore(group, layout, arrays, String(identifier))
+        return SubzoneStore(group, layout, arrays, overview_handles, String(identifier))
     end
+end
+
+function _overviewlevels(overviews, layout::SubzoneLayout)
+    raw = try
+        collect(overviews)
+    catch
+        throw(ArgumentError("`overviews` is a list of integer levels."))
+    end
+    all(x -> x isa Integer && !(x isa Bool), raw) || throw(ArgumentError(
+        "`overviews` is a list of integer levels, not $(repr(raw))."))
+    levels = Int[x for x in raw]
+    issorted(levels) && allunique(levels) || throw(ArgumentError(
+        "`overviews` must be sorted and unique (strictly increasing), not " *
+        "$(repr(levels))."))
+    for lo in levels
+        layout.ancestor_level <= lo < layout.level || throw(ArgumentError(
+            "overview level $lo is outside $(layout.ancestor_level):$(layout.level - 1): " *
+            "an overview reuses the level-$(layout.ancestor_level) ancestor columns " *
+            "and must be coarser than the level-$(layout.level) base data."))
+    end
+    return levels
+end
+
+function _checkoverviewnames(specs, levels)
+    base = Set(first.(specs))
+    generated = String[_overviewname(name, lo) for lo in levels for (name, _) in specs]
+    collisions = sort!(collect(intersect(base, Set(generated))))
+    length(generated) == length(unique(generated)) && isempty(collisions) && return nothing
+    throw(ArgumentError("the `<layer>_ovr<level>` overview names collide with layer " *
+        "names: " * join(collisions, ", ") * ". Rename those layers."))
+end
+
+function _overviewattrs!(attrs, layouts, specs, method)
+    block = attrs["dggs"][DGG.SUBZONE_BLOCK]
+    block[OVERVIEW_LEVELS_ATTRIBUTE] = Int[l.level for l in layouts]
+    block[OVERVIEWS_ATTRIBUTE] = Any[
+        Dict{String,Any}(
+            "level" => l.level,
+            "method" => String(method),
+            "subzone_count" => l.capacity,
+            "chunk_shape" => Any[1, l.capacity],
+            "variables" => Dict{String,Any}(
+                name => _overviewname(name, l.level) for (name, _) in specs))
+        for l in layouts]
+    return attrs
 end
 
 # The column ids, as the one array in the store that is metadata rather than
@@ -164,9 +255,12 @@ function DGG.subzonestore(group::Zarr.ZGroup)
     return with_store_context(identifier) do
         attrs = Dict{String,Any}(group.attrs)
         layout = subzone_layout(attrs; store=identifier)
+        declarations = _overviewdeclarations(attrs, layout; store=identifier)
+        overview_names = Set(stored for d in declarations for stored in values(d.variables))
         arrays = Dict{String,Zarr.ZArray}()
         for (name, z) in group.arrays
             _issubzonearray(z) || continue
+            name in overview_names && continue
             _checkshape(z, layout, name, identifier)
             arrays[name] = z
         end
@@ -174,8 +268,103 @@ function DGG.subzonestore(group::Zarr.ZGroup)
             store=identifier, observed=sort!(collect(keys(group.arrays))),
             detail="this ancestor-subzone store holds no array on the " *
                    "($ANCESTOR_DIMENSION, $SUBZONE_DIMENSION) dimensions."))
-        return SubzoneStore(group, layout, arrays, identifier)
+        overview_handles = SubzoneOverview[]
+        for declaration in declarations
+            Set(keys(declaration.variables)) == Set(keys(arrays)) || throw(DGGSFormatError(
+                check=:overview_variable_mismatch, store=identifier,
+                declared=sort!(collect(keys(declaration.variables))),
+                observed=sort!(collect(keys(arrays))),
+                detail="the level-$(declaration.layout.level) overview must name one " *
+                       "array for every base variable."))
+            overview_arrays = Dict{String,Zarr.ZArray}()
+            for (name, stored) in declaration.variables
+                haskey(group.arrays, stored) || throw(DGGSFormatError(
+                    check=:missing_overview_variable, store=identifier,
+                    declared=stored, observed=sort!(collect(keys(group.arrays))),
+                    detail="the level-$(declaration.layout.level) overview of `$name` " *
+                           "is declared as array `$stored`, which is absent."))
+                z = group.arrays[stored]
+                _issubzonearray(z) || throw(DGGSFormatError(
+                    check=:invalid_overview_dimensions, store=identifier,
+                    declared=[ANCESTOR_DIMENSION, SUBZONE_DIMENSION],
+                    observed=get(z.attrs, ARRAY_DIMENSIONS, nothing),
+                    detail="overview array `$stored` does not use the subzone dimensions."))
+                _checkshape(z, declaration.layout, stored, identifier)
+                overview_arrays[name] = z
+            end
+            push!(overview_handles, SubzoneOverview(
+                declaration.layout, declaration.method, overview_arrays))
+        end
+        return SubzoneStore(group, layout, arrays, overview_handles, identifier)
     end
+end
+
+struct OverviewDeclaration{L<:SubzoneLayout}
+    layout::L
+    method::Symbol
+    variables::Dict{String,String}
+end
+
+function _overviewdeclarations(attrs, base::SubzoneLayout; store::AbstractString="")
+    block = attrs["dggs"][DGG.SUBZONE_BLOCK]
+    levels_raw = get(block, OVERVIEW_LEVELS_ATTRIBUTE, Any[])
+    entries = get(block, OVERVIEWS_ATTRIBUTE, Any[])
+    levels_raw isa AbstractVector || _overviewformaterror(store,
+        "`$OVERVIEW_LEVELS_ATTRIBUTE` is not a list.", levels_raw)
+    entries isa AbstractVector || _overviewformaterror(store,
+        "`$OVERVIEWS_ATTRIBUTE` is not a list.", entries)
+    levels = Int[_overviewint(x, OVERVIEW_LEVELS_ATTRIBUTE, store) for x in levels_raw]
+    issorted(levels) && allunique(levels) || _overviewformaterror(store,
+        "overview levels must be strictly increasing.", levels)
+    length(entries) == length(levels) || _overviewformaterror(store,
+        "overview levels and declarations have different lengths.",
+        (levels=length(levels), declarations=length(entries)))
+
+    declarations = OverviewDeclaration[]
+    for (k, entry) in pairs(entries)
+        entry isa AbstractDict || _overviewformaterror(store,
+            "overview declaration $k is not an object.", entry)
+        lo = _overviewint(get(entry, "level", nothing), "overview level", store)
+        lo == levels[k] || _overviewformaterror(store,
+            "overview declaration $k names level $lo instead of $(levels[k]).", entry)
+        base.ancestor_level <= lo < base.level || _overviewformaterror(store,
+            "overview level $lo is not in $(base.ancestor_level):$(base.level - 1).", lo)
+        method_raw = get(entry, "method", nothing)
+        method_raw == "center" || throw(DGGSFormatError(
+            check=:unsupported_overview_method, store=String(store),
+            declared=method_raw, observed="center",
+            detail="this primitive reader implements center-sampled overviews only."))
+        capacity = _overviewint(get(entry, "subzone_count", nothing),
+            "overview subzone_count", store)
+        overview_layout = SubzoneLayout(base.system, lo, base.ancestor_level;
+            gridname=base.gridname, capacity=capacity)
+        get(entry, "chunk_shape", Any[1, capacity]) == [1, capacity] ||
+            _overviewformaterror(store,
+                "the level-$lo overview chunk shape is not one whole column.",
+                get(entry, "chunk_shape", nothing))
+        vars_raw = get(entry, "variables", nothing)
+        vars_raw isa AbstractDict || _overviewformaterror(store,
+            "the level-$lo overview variables are not an object.", vars_raw)
+        variables = Dict{String,String}()
+        for (name, stored) in vars_raw
+            name isa AbstractString && stored isa AbstractString || _overviewformaterror(store,
+                "the level-$lo overview variable map must contain string names.",
+                name => stored)
+            variables[String(name)] = String(stored)
+        end
+        push!(declarations, OverviewDeclaration(overview_layout, :center, variables))
+    end
+    return declarations
+end
+
+function _overviewint(x, field, store)
+    x isa Integer && !(x isa Bool) && return Int(x)
+    _overviewformaterror(store, "`$field` is not an integer.", x)
+end
+
+@noinline function _overviewformaterror(store, detail, observed)
+    throw(DGGSFormatError(check=:invalid_overview_metadata, store=String(store),
+        observed=observed, detail=detail))
 end
 
 # A store's data arrays are the ones on the layout's two dimensions, found by
@@ -309,7 +498,37 @@ function DGG.dggwrite!(store::SubzoneStore, ancestor, values::AbstractVector;
         "$(length(values)) values were given. A pentagon's subtree is shorter " *
         "than a hexagon's; `columnlength(layout, column)` is its length."))
     store.arrays[name][1:h, col] = values
+    for overview in store.overviews
+        _writeoverview!(overview, store.layout, name, col, values)
+    end
     return store
+end
+
+function _writeoverview!(overview::SubzoneOverview, base::SubzoneLayout,
+    name::String, col::Int, values)
+    sampled = _overviewvalues(overview.method, base, overview.layout, col, values)
+    overview.arrays[name][1:length(sampled), col] = sampled
+    return nothing
+end
+
+# Aggregation grows here: a new stored method gets its own implementation while
+# the overview arrays keep exactly the same ancestor-subzone shape.
+function _overviewvalues(method::Symbol, base::SubzoneLayout,
+    overview::SubzoneLayout, col::Int, values)
+    method === :center || throw(ArgumentError(
+        "overview method $(repr(method)) is not implemented."))
+    positions = columnpositions(overview, col)
+    sampled = Vector{eltype(values)}(undef, length(positions))
+    for (j, position) in enumerate(positions)
+        overview_cell = cellindex(overview.grid, position)
+        center_position = first(DGG.descendant_range(
+            system(base), overview_cell, base.level))
+        base_column, base_row = positionindex(base, center_position)
+        base_column == col || error(
+            "center descendant escaped ancestor column $col into $base_column")
+        sampled[j] = values[base_row]
+    end
+    return sampled
 end
 
 function DGG.dggwrite!(store::SubzoneStore, ancestor, values::Union{NamedTuple,AbstractDict})
@@ -330,7 +549,6 @@ function DGG.dggwrite!(store::SubzoneStore, src::Union{DD.AbstractDimArray,DD.Ab
         end
         runs = subzone_runs(store.layout, lookup)
         for (name, A) in layers
-            z = store.arrays[name]
             data = DD.data(A)
             for run in runs
                 # One column at a time, and by `getindex` rather than by a view:
@@ -338,7 +556,7 @@ function DGG.dggwrite!(store::SubzoneStore, src::Union{DD.AbstractDimArray,DD.Ab
                 # `dggread` or a lazy regrid — and a view of one would be read
                 # element by element on the way into the chunk. A run is one
                 # chunk's worth, which is the block size a lazy source wants.
-                z[run.rows, run.column] = data[run.axis]
+                DGG.dggwrite!(store, run.column, data[run.axis]; var=name)
             end
         end
         return store
@@ -420,10 +638,11 @@ one-shot path.
 """
 function write_subzones(dest, src; ancestor_level::Union{Integer,Nothing}=nothing,
     capacity=nothing, fill_value=NaN, ancestor_coordinate::Bool=true,
+    overviews=Int[], overview_method::Symbol=:center,
     compressor=Zarr.BloscCompressor(), kw...)
     isempty(kw) || throw(ArgumentError(
         "`layout = :subzones` takes `ancestor_level`, `capacity`, `fill_value`, " *
-        "`ancestor_coordinate` and `compressor`; " *
+        "`ancestor_coordinate`, `overviews`, `overview_method` and `compressor`; " *
         join(sort!(String[string(k) for k in keys(kw)]), ", ") *
         " belongs to the one-dimensional cell layout, whose chunking and cell " *
         "coordinate this one has neither of."))
@@ -438,6 +657,7 @@ function write_subzones(dest, src; ancestor_level::Union{Integer,Nothing}=nothin
     store = DGG.subzonestore(dest, sys, lev; ancestor_level=ancestor_level,
         layers=[name => eltype(A) for (name, A) in layers], capacity=capacity,
         fill_value=fill_value, ancestor_coordinate=ancestor_coordinate,
+        overviews=overviews, overview_method=overview_method,
         compressor=compressor, attrs=_groupattrs(src))
     DGG.dggwrite!(store, src)
     return store.group
@@ -567,7 +787,7 @@ end
 # ===========================================================================
 
 """
-    assemble(group, snapshot, identifier, vars, lazy, ancestors) -> DimStack
+    assemble(group, snapshot, identifier, vars, lazy, ancestors, requested_level) -> DimStack
 
 `dggread` on an ancestor-subzone store: one `Cells` dimension carrying the
 [`CellLookup`](@ref) the written columns spell, and one lazy
@@ -577,25 +797,33 @@ end
 the ones nobody wrote reading back as fill — or the ancestor cells (or column
 indices) to restrict the axis to.
 
+`requested_level` is `nothing` (or the base level) for the base arrays, or one
+of the configured overview levels. Overview layers keep their base variable
+names on the returned stack even though their Zarr arrays are named
+`<variable>_ovr<level>`.
+
 The stack's metadata carries the source, the group attributes verbatim, and the
 [`SubzoneLayout`](@ref) under `"layout"`, which is what a caller does column
 arithmetic with. It carries no `StoreDescription`: that vocabulary describes a
 one-dimensional axis and has no field this layout would fill.
 """
-function assemble(group, snap, identifier, vars, lazy::Bool, ancestors)
-    layout = subzone_layout(snap.attrs; store=identifier)
-    available = String[a.name for a in snap.arrays
-                       if a.dims == [ANCESTOR_DIMENSION, SUBZONE_DIMENSION]]
+function assemble(group, snap, identifier, vars, lazy::Bool, ancestors, requested_level)
+    base = subzone_layout(snap.attrs; store=identifier)
+    declarations = _overviewdeclarations(snap.attrs, base; store=identifier)
+    layout, method, stored_names = _readlevel(base, declarations, requested_level,
+        snap.attrs, identifier)
+    available = sort!(collect(keys(stored_names)))
     selected = selectvars(available, vars)
     columns = ancestors === nothing ? nothing : subzone_columns(layout, ancestors)
     index = columns === nothing ? LevelColumns() : SelectedColumns(layout, columns)
     lookup = CellLookup(subzone_cellvector(layout, columns))
 
     layers = map(selected) do name
-        z = group[name]
-        _checkshape(z, layout, name, identifier)
+        stored = stored_names[name]
+        z = group[stored]
+        _checkshape(z, layout, stored, identifier)
         A = SubzoneCellArray(z, layout, index)
-        entry = DGG.getarray(snap, name)
+        entry = DGG.getarray(snap, stored)
         DD.DimArray(lazy ? A : Array(A), (Cells(lookup),);
             name=Symbol(name), metadata=deepcopy(entry.attrs))
     end
@@ -604,7 +832,39 @@ function assemble(group, snap, identifier, vars, lazy::Bool, ancestors)
         "source" => identifier,
         "layout" => layout,
         "attrs" => deepcopy(snap.attrs))
+    if method !== nothing
+        metadata["overview_level"] = layout.level
+        metadata["overview_method"] = method
+        metadata["base_level"] = base.level
+    end
     return DD.DimStack(NamedTuple{Tuple(Symbol.(selected))}(Tuple(layers)); metadata)
+end
+
+function _readlevel(base, declarations, requested_level, attrs, identifier)
+    block = attrs["dggs"][DGG.SUBZONE_BLOCK]
+    base_variables = get(block, "variables", Any[])
+    base_variables isa AbstractVector || _overviewformaterror(identifier,
+        "base `variables` is not a list.", base_variables)
+    all(x -> x isa AbstractString, base_variables) || _overviewformaterror(identifier,
+        "base `variables` contains a non-string name.", base_variables)
+    names = String[String(x) for x in base_variables]
+    allunique(names) || _overviewformaterror(identifier,
+        "base `variables` contains duplicate names.", names)
+
+    if requested_level === nothing || requested_level == base.level
+        return base, nothing, Dict{String,String}(name => name for name in names)
+    end
+    requested_level isa Integer && !(requested_level isa Bool) || throw(ArgumentError(
+        "`level` is the base level $(base.level) or one of its integer overview " *
+        "levels, not $(repr(requested_level))."))
+    lo = Int(requested_level)
+    for declaration in declarations
+        declaration.layout.level == lo || continue
+        return declaration.layout, declaration.method, declaration.variables
+    end
+    configured = Int[d.layout.level for d in declarations]
+    throw(ArgumentError("level $lo is not stored: the base is level $(base.level) " *
+        "and the configured overview levels are $(repr(configured))."))
 end
 
 end # module DGGSZarrSubzones

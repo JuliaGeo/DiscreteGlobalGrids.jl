@@ -30,8 +30,8 @@ import DiskArrays
 import Extents
 using DiscreteGlobalGrids: IGeo7System, Cells, CellLookup, CellVector,
     DGGSFormatError, SubzoneLayout, cellindex, children, columncell, columnindex,
-    columnlength, columnpositions, dggread, dggwrite, dggwrite!, levelgrid,
-    ncells, rootcells, subzone_cellvector, subzonestore
+    columnlength, columnpositions, descendant_range, dggread, dggwrite, dggwrite!,
+    levelgrid, ncells, positionindex, rootcells, subzone_cellvector, subzonestore
 
 const SYS = IGeo7System()
 const LEVEL = 4
@@ -91,6 +91,8 @@ end
     @test block["ancestor_count"] == LAYOUT.ncolumns
     @test block["variables"] == ["elevation"]
     @test block["ancestor_coordinate"] == "ancestor_cell_ids"
+    @test block["overview_levels"] == []
+    @test block["overviews"] == []
 
     # The ancestor coordinate is the level-2 ids, in order, and carries the
     # xdggs spelling of what it is.
@@ -107,6 +109,127 @@ end
     end
     @test all(isnan, z[:, 1])
     @test all(isnan, z[:, 200])
+end
+
+@testset "center-sampled overviews" begin
+    overview2 = SubzoneLayout(SYS, 2, ANCESTOR)
+    overview3 = SubzoneLayout(SYS, 3, ANCESTOR)
+
+    # Z7's digit-0 child chain is the first descendant in rank order. Check the
+    # claim independently of the store arithmetic for a full hexagon column and
+    # the short pentagon column, including the pentagon cell itself.
+    for col in (HEXCOLS[1], PENTCOL)
+        ancestor_cell = columncell(overview2, col)
+        center_chain = foldl((cell, _) -> first(children(SYS, cell)),
+            1:(LEVEL - ANCESTOR); init=ancestor_cell)
+        @test center_chain == cellindex(GRID,
+            first(descendant_range(SYS, ancestor_cell, LEVEL)))
+        for p in columnpositions(overview3, col)
+            coarse = cellindex(overview3.grid, p)
+            center = first(children(SYS, coarse))
+            first_descendant = cellindex(GRID,
+                first(descendant_range(SYS, coarse, LEVEL)))
+            @test center == first_descendant
+        end
+    end
+
+    path = dest("overviews.zarr")
+    store = subzonestore(path, SYS, LEVEL; ancestor_level=ANCESTOR,
+        layers=("elevation" => Float32,), overviews=[2, 3])
+    @test [o.layout.level for o in store.overviews] == [2, 3]
+    @test all(o -> o.method === :center, store.overviews)
+
+    columns = sort([PENTCOL, HEXCOLS[1]])
+    written = Dict{Int,Vector{Float32}}()
+    first_col = first(columns)
+    written[first_col] = Float32.(1001:(1000 + columnlength(LAYOUT, first_col)))
+    dggwrite!(store, first_col, written[first_col])
+
+    # Reopen before the second write: the overview declarations reconstruct the
+    # overview layouts and array handles needed by the automatic write hook.
+    reopened = subzonestore(path)
+    @test [o.layout.level for o in reopened.overviews] == [2, 3]
+    second_col = last(columns)
+    written[second_col] = Float32.(2001:(2000 + columnlength(LAYOUT, second_col)))
+    dggwrite!(reopened, second_col, written[second_col])
+
+    g = Zarr.zopen(path)
+    block = g.attrs["dggs"]["subzone_layout"]
+    @test block["overview_levels"] == [2, 3]
+    @test [entry["method"] for entry in block["overviews"]] == ["center", "center"]
+    @test block["overviews"][1]["variables"]["elevation"] == "elevation_ovr2"
+    @test block["overviews"][2]["variables"]["elevation"] == "elevation_ovr3"
+    @test size(g["elevation_ovr2"]) == (1, LAYOUT.ncolumns)
+    @test g["elevation_ovr2"].metadata.chunks == (1, 1)
+    @test size(g["elevation_ovr3"]) == (7, LAYOUT.ncolumns)
+    @test g["elevation_ovr3"].metadata.chunks == (7, 1)
+    for name in ("elevation", "elevation_ovr2", "elevation_ovr3")
+        chunks = filter(f -> !startswith(f, "."), readdir(joinpath(path, name)))
+        @test length(chunks) == length(columns)
+    end
+
+    function sampled(values, overview, col)
+        rows = Int[]
+        for p in columnpositions(overview, col)
+            coarse = cellindex(overview.grid, p)
+            center = first(descendant_range(SYS, coarse, LEVEL))
+            base_col, row = positionindex(LAYOUT, center)
+            @test base_col == col
+            push!(rows, row)
+        end
+        return values[rows]
+    end
+
+    expected3 = reduce(vcat, [sampled(written[col], overview3, col) for col in columns])
+    read3 = dggread(path; level=3, ancestors=columns)
+    @test keys(read3) == (:elevation,)
+    @test Array(read3[:elevation]) == expected3
+    @test DGG.level(DD.lookup(read3[:elevation], Cells)) == 3
+    @test DD.metadata(read3)["overview_level"] == 3
+    @test DD.metadata(read3)["overview_method"] === :center
+
+    # The pentagon overview has six real level-3 cells and one trailing fill;
+    # dggread exposes only the six. Lo == La degenerates to one cell per column.
+    pent3 = columnlength(overview3, PENTCOL)
+    @test pent3 == 6
+    @test all(isnan, g["elevation_ovr3"][(pent3+1):end, PENTCOL])
+    @test length(dggread(path; level=3, ancestors=[PENTCOL])[:elevation]) == pent3
+    read2 = dggread(path; level=ANCESTOR, ancestors=columns)[:elevation]
+    @test length(read2) == length(columns)
+    @test Array(read2) == Float32[first(written[col]) for col in columns]
+
+    # The one-shot spelling is the same create-then-column-write path.
+    one_shot = dest("overview-one-shot.zarr")
+    cube = democube(columns)
+    dggwrite(one_shot, cube; layout=:subzones, ancestor_level=ANCESTOR,
+        overviews=[3])
+    expected_one_shot = Float32[]
+    offset = 0
+    for col in columns
+        h = columnlength(LAYOUT, col)
+        append!(expected_one_shot,
+            sampled(DD.data(cube)[(offset+1):(offset+h)], overview3, col))
+        offset += h
+    end
+    @test Array(dggread(one_shot; level=3, ancestors=columns)[:elevation]) ==
+        expected_one_shot
+
+    # Naming and level validation happen before a destination is created.
+    @test_throws ArgumentError subzonestore(dest("ovr-unsorted.zarr"), SYS, LEVEL;
+        ancestor_level=ANCESTOR, layers=("x" => Float32,), overviews=[3, 2])
+    @test_throws ArgumentError subzonestore(dest("ovr-duplicate.zarr"), SYS, LEVEL;
+        ancestor_level=ANCESTOR, layers=("x" => Float32,), overviews=[3, 3])
+    @test_throws ArgumentError subzonestore(dest("ovr-below-ancestor.zarr"), SYS, LEVEL;
+        ancestor_level=ANCESTOR, layers=("x" => Float32,), overviews=[1])
+    @test_throws ArgumentError subzonestore(dest("ovr-base-level.zarr"), SYS, LEVEL;
+        ancestor_level=ANCESTOR, layers=("x" => Float32,), overviews=[LEVEL])
+    @test_throws ArgumentError subzonestore(dest("ovr-mean.zarr"), SYS, LEVEL;
+        ancestor_level=ANCESTOR, layers=("x" => Float32,), overviews=[3],
+        overview_method=:mean)
+    @test_throws ArgumentError subzonestore(dest("ovr-name.zarr"), SYS, LEVEL;
+        ancestor_level=ANCESTOR,
+        layers=("x" => Float32, "x_ovr3" => Float32), overviews=[3])
+    @test_throws ArgumentError dggread(path; level=1)
 end
 
 @testset "a pentagon column is padded, not truncated" begin
@@ -261,8 +384,10 @@ end
 @testset "several layers, and the errors" begin
     path = dest("two.zarr")
     store = subzonestore(path, SYS, LEVEL; ancestor_level=ANCESTOR,
-        layers=("elevation" => Float32, "slope" => Float64))
+        layers=("elevation" => Float32, "slope" => Float64), overviews=[3])
     @test keys(store) == ["elevation", "slope"]
+    @test all(haskey(Zarr.zopen(path).arrays, name)
+        for name in ("elevation_ovr3", "slope_ovr3"))
 
     # Two layers means the layer has to be named.
     @test caught(() -> dggwrite!(store, 9, Float32.(1:CAPACITY))) isa ArgumentError
@@ -278,6 +403,9 @@ end
     stack = dggread(path; ancestors=[9])
     @test keys(stack) == (:elevation, :slope)
     @test Array(stack[:slope]) == Float64.(1:CAPACITY)
+    overview = dggread(path; level=3, ancestors=[9])
+    @test keys(overview) == (:elevation, :slope)
+    @test length(overview[:elevation]) == 7
 
     # A NamedTuple writes both layers of one column.
     dggwrite!(store, 10, (elevation=fill(1.0f0, CAPACITY), slope=fill(2.0, CAPACITY)))

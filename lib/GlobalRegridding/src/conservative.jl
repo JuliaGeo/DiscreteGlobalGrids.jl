@@ -408,8 +408,72 @@ function _intersectionareas(m::GOCore.Manifold, dst_tree, src_tree, op)
     threaded = _innerthreaded()
     dst_tree, src_tree = _task_prepared_intersection_trees(
         threaded, dst_tree, src_tree)
-    return ConservativeRegridding.intersection_areas(
-        m, threaded, dst_tree, src_tree; intersection_operator = op)
+    ValType = ConservativeRegridding.output_eltype(op, src_tree, dst_tree)
+    return _with_sparse_assembly_cache(ValType) do cache
+        ConservativeRegridding.intersection_areas(
+            m, threaded, dst_tree, src_tree; intersection_operator = op, cache)
+    end
+end
+
+# Assembly scratch is module-owned because the block-build call chain has no
+# operation context.  The freelist grows on an empty acquire rather than
+# waiting for another build, and its retained size is therefore bounded by the
+# peak number of overlapping builds for each value type.
+struct _SparseAssemblyCacheKey{T} end
+
+mutable struct _SparseAssemblyCachePool{T}
+    lock::ReentrantLock
+    free::Vector{ConservativeRegridding.SparseMatrixAssemblyCache{T}}
+end
+
+_SparseAssemblyCachePool(::Type{T}) where {T} =
+    _SparseAssemblyCachePool{T}(ReentrantLock(),
+        ConservativeRegridding.SparseMatrixAssemblyCache{T}[])
+
+const _SPARSE_ASSEMBLY_POOL_LOCK = ReentrantLock()
+const _SPARSE_ASSEMBLY_POOLS = Dict{DataType,Any}()
+
+function _sparse_assembly_cache_pool(::Type{T}) where {T}
+    key = _SparseAssemblyCacheKey{T}
+    lock(_SPARSE_ASSEMBLY_POOL_LOCK)
+    try
+        return get!(_SPARSE_ASSEMBLY_POOLS, key) do
+            _SparseAssemblyCachePool(T)
+        end::_SparseAssemblyCachePool{T}
+    finally
+        unlock(_SPARSE_ASSEMBLY_POOL_LOCK)
+    end
+end
+
+function _acquire_sparse_assembly_cache(pool::_SparseAssemblyCachePool{T}) where {T}
+    lock(pool.lock)
+    try
+        return isempty(pool.free) ?
+            ConservativeRegridding.SparseMatrixAssemblyCache(T) : pop!(pool.free)
+    finally
+        unlock(pool.lock)
+    end
+end
+
+function _release_sparse_assembly_cache!(pool::_SparseAssemblyCachePool{T},
+    cache::ConservativeRegridding.SparseMatrixAssemblyCache{T}) where {T}
+    lock(pool.lock)
+    try
+        push!(pool.free, cache)
+    finally
+        unlock(pool.lock)
+    end
+    return cache
+end
+
+function _with_sparse_assembly_cache(f, ::Type{T}) where {T}
+    pool = _sparse_assembly_cache_pool(T)
+    cache = _acquire_sparse_assembly_cache(pool)
+    try
+        return f(cache)
+    finally
+        _release_sparse_assembly_cache!(pool, cache)
+    end
 end
 
 # CR's threaded frontier hands cursor nodes to spawned tasks, so its roots must

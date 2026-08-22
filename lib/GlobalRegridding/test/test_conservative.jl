@@ -232,11 +232,56 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
             ndst, nsrc)
         reference = assemble(GOCore.False())
 
+        # Sequential borrowers reuse retained, correctly typed buffers.
+        cache = GR._with_sparse_assembly_cache(Float64) do cache
+            push!(cache.candidate_pairs, (0, 0))
+            push!(cache.rows, 0); push!(cache.cols, 0); push!(cache.vals, 0.0)
+            cache
+        end
+        buffers = (cache.candidate_pairs, cache.rows, cache.cols, cache.vals)
+        production = GR._intersectionareas(m,
+            GR.subtree(dst, 1:ndst), GR.subtree(src, 1:nsrc), blockop())
+        @test all(isempty, buffers)
+        @test buffers === (cache.candidate_pairs, cache.rows, cache.cols, cache.vals)
+        @test cache === GR._with_sparse_assembly_cache(identity, Float64)
+
+        # Two live borrowers can never own the same cache.  Holding both until
+        # the parent observes them also proves an empty pool grows instead of
+        # making the second borrower wait.
+        ready = Channel{Any}(2)
+        release = Channel{Nothing}(2)
+        jobs = map(1:2) do _
+            Threads.@spawn GR._with_sparse_assembly_cache(Float64) do borrowed
+                put!(ready, borrowed)
+                take!(release)
+                borrowed
+            end
+        end
+        concurrent = (take!(ready), take!(ready))
+        @test concurrent[1] !== concurrent[2]
+        put!(release, nothing); put!(release, nothing)
+        fetch.(jobs)
+
+        # Pools are separated by the exact output value type.
+        cache32 = GR._with_sparse_assembly_cache(identity, Float32)
+        @test eltype(cache32.vals) === Float32
+        @test cache32 !== cache
+
+        # A failed borrower returns its cache through the production helper's
+        # `finally`, ready for the next acquire.
+        failed = Ref{Any}()
+        @test_throws ErrorException GR._with_sparse_assembly_cache(Float64) do borrowed
+            failed[] = borrowed
+            error("deliberate assembly failure")
+        end
+        @test failed[] === GR._with_sparse_assembly_cache(identity, Float64)
+
         @test GR.SparseArrays.nnz(block.weights) > 2000
 
         # The explicitly threaded build and the production build — whichever way
         # the thread count sends the latter — both equal the serial reference.
-        for other in (assemble(GOCore.True()), block)
+        for other in (assemble(GOCore.True()), WeightBlock(production,
+                GR._blockdenom(production, ndst)), block)
             @test other.weights.colptr == reference.weights.colptr
             @test other.weights.rowval == reference.weights.rowval
             @test all(other.weights.nzval .=== reference.weights.nzval)

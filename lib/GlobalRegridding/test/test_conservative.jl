@@ -37,6 +37,22 @@ function getcell(space::DensifiedCellSpace, i::Int)
     return GI.Polygon([GI.LinearRing(ring)])
 end
 
+"A geometry-free space used to pin the destination tile cache threshold."
+struct TileCacheBoundSpace <: RegridSpace
+    n::Int
+    reads::Base.RefValue{Int}
+end
+
+ncells(space::TileCacheBoundSpace) = space.n
+nchunks(::TileCacheBoundSpace) = 1
+cellindices(space::TileCacheBoundSpace, ::Int) = 1:space.n
+function getcell(space::TileCacheBoundSpace, i::Int)
+    1 <= i <= space.n || throw(BoundsError(space, i))
+    space.reads[] += 1
+    return i
+end
+GR.subtree(space::TileCacheBoundSpace, inds) = space
+
 # Helpers
 
 conservative_block(dst, dst_inds, src, src_inds) =
@@ -269,6 +285,28 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test plain.weights.rowval == stored.weights.rowval
         @test all(plain.weights.nzval .=== stored.weights.nzval)
         @test all(plain.denom .=== stored.denom)
+    end
+
+    @testset "the destination tile cell cache is bounded" begin
+        limit = GR._TILE_CELL_CACHE_MAX
+
+        # The documented boundary is inclusive: a tile at the limit is
+        # synthesized once, then shared by later subtree requests.
+        cached_space = TileCacheBoundSpace(limit, Ref(0))
+        cached = GR.TileCells(cached_space, 1:limit)
+        @test GR.subtree(cached, 1:limit) isa GR.CachedCellTree
+        @test GR.subtree(cached, 1:limit) isa GR.CachedCellTree
+        @test cached_space.reads[] == limit
+        @test length(cached.cells) == limit
+
+        # One cell beyond the limit keeps geometry on demand and allocates no
+        # tile-wide cell vector. Repeated access must not revisit initialization.
+        uncached_space = TileCacheBoundSpace(limit + 1, Ref(0))
+        uncached = GR.TileCells(uncached_space, 1:(limit + 1))
+        @test GR.subtree(uncached, 1:(limit + 1)) === uncached_space
+        @test GR.subtree(uncached, 1:(limit + 1)) === uncached_space
+        @test uncached.cells === nothing
+        @test uncached_space.reads[] == 0
     end
 
     @testset "cap tree split weights are the node windows" begin

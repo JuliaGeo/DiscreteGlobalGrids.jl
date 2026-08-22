@@ -3,6 +3,9 @@ uuid = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
 authors = ["Anshul Singhvi <anshulsinghvi@gmail.com>", "Fabian Gans <fabian.gans@bgc-jena.mpi.de>", "and contributors"]
 version = "0.1.0"
 
+[workspace]
+projects = ["test"]
+
 [deps]
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
@@ -32,17 +35,6 @@ GeoInterface = "1"
 GeometryOps = "0.1.43"
 GeometryOpsCore = "0.1.11"
 Graphs = "1.14"
-LinearAlgebra = "1"
 Rasters = "0.15"
 SparseArrays = "1"
-Test = "1"
 julia = "1.11"
-
-[extras]
-Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
-LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["Graphs", "LinearAlgebra", "Rasters", "Test"]

@@ -3,6 +3,9 @@ uuid = "13a16fb4-09f9-4c22-804e-8e2836b6de9f"
 authors = ["Anshul Singhvi <anshulsinghvi@gmail.com>"]
 version = "0.1.0"
 
+[workspace]
+projects = ["test"]
+
 [deps]
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"

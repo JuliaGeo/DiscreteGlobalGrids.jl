@@ -3,6 +3,9 @@ uuid = "26394bad-8505-4b24-ad04-fcf267e3a913"
 authors = ["Anshul Singhvi <anshulsinghvi@gmail.com>", "and contributors"]
 version = "0.1.0"
 
+[workspace]
+projects = ["test"]
+
 [deps]
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
@@ -26,9 +29,3 @@ GeometryBasics = "0.5"
 Makie = "0.24"
 Proj = "1"
 julia = "1.11"
-
-[extras]
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["Test"]

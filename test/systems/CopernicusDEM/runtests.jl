@@ -1034,9 +1034,9 @@ end
     rows = (first(r) + nc):(first(r) + 3nc - 1)
     @test GR.subtree(dense, rows) isa CD.MemoBlockCursor
     @test leafpositions(GR.subtree(dense, rows)) == collect(rows)
-    @test GR.subtree(dense, (first(r) + 1):(first(r) + nc)) isa GR.CellCapTree
+    @test GR.subtree(dense, (first(r) + 1):(first(r) + nc)) isa GR.CellSpaceRTree
     # And a run spanning two tiles is not one rectangle either.
-    @test GR.subtree(dense, (last(r) - 1):(last(r) + 1)) isa GR.CellCapTree
+    @test GR.subtree(dense, (last(r) - 1):(last(r) + 1)) isa GR.CellSpaceRTree
 
     # ---- a sparse holding: a scattered `PartialGrid`, one tile per chunk ----
     tiles = [CD.tilecell(TWIN, 89, 10),     # polemost band, 3 columns
@@ -1068,7 +1068,7 @@ end
         fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, tree;
             intersection_operator = op)
         slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree,
-            GR.CellCapTree(src, inds); intersection_operator = op)
+            GR.CellSpaceRTree(src, inds); intersection_operator = op)
         @test length(fast.nzval) > 0
         @test (k, fast == slow) == (k, true)
     end

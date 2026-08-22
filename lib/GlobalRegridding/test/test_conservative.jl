@@ -20,7 +20,7 @@ ncells(::DensifiedCellSpace) = 1
 nchunks(::DensifiedCellSpace) = 1
 cellindices(::DensifiedCellSpace, ::Int) = 1:1
 manifold(::DensifiedCellSpace) = GOCore.Spherical(; radius = 1.0)
-celltree(space::DensifiedCellSpace) = GR.CellCapTree(space, 1:1)
+celltree(space::DensifiedCellSpace) = GR.CellSpaceRTree(space, 1:1)
 
 function getcell(space::DensifiedCellSpace, i::Int)
     i == 1 || throw(BoundsError(space, i))
@@ -309,46 +309,74 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test uncached_space.reads[] == 0
     end
 
-    @testset "cap tree split weights are the node windows" begin
+    @testset "packed cell fallback preserves positions and packing results" begin
         space = ToyLonLatSpace(8, 4)
-        tree = GR.CellCapTree(space, 1:ncells(space))
+        inds = [1, 4, 7, 10, 13, 18, 23, 28, 31]
 
-        # Split weights are the node's own window: children partition the parent.
-        @test CR.Trees.split_weight(tree) == ncells(space)
-        @test sum(CR.Trees.split_weight, STI.getchild(tree)) == CR.Trees.split_weight(tree)
-        @test all(c -> CR.Trees.split_weight(c) < CR.Trees.split_weight(tree), STI.getchild(tree))
+        function leafpositions!(out, node)
+            if STI.isleaf(node)
+                append!(out, first(e) for e in STI.child_indices_extents(node))
+            else
+                foreach(child -> leafpositions!(out, child), STI.getchild(node))
+            end
+            return out
+        end
+
+        function candidates(tree, other)
+            out = Tuple{Int,Int}[]
+            STI.dual_depth_first_search(GO.Extents.intersects, tree, other) do i, j
+                push!(out, (i, j))
+            end
+            return sort!(out)
+        end
+
+        other = celltree(ToyLonLatSpace(16, 8))
+        reference_pairs = nothing
+        reference_weights = nothing
+        for capacity in (2, 3, 16)
+            tree = GR.CellSpaceRTree(space, inds; nodecapacity = capacity)
+            @test tree.space === space
+            @test tree.positions == inds
+            @test sort!(leafpositions!(Int[], tree)) == sort(inds)
+            @test CR.Trees.ncells(tree) == length(inds)
+            @test CR.Trees.cell_index_count(tree) == ncells(space)
+            @test CR.Trees.split_weight(tree) == length(inds)
+            STI.isleaf(tree) || @test sum(CR.Trees.split_weight, STI.getchild(tree)) ==
+                                      CR.Trees.split_weight(tree)
+
+            pairs = candidates(tree, other)
+            weights = CR.intersection_areas(manifold(space), GOCore.False(), other, tree;
+                progress = false)
+            if reference_pairs === nothing
+                reference_pairs = pairs
+                reference_weights = weights
+            else
+                @test pairs == reference_pairs
+                @test weights == reference_weights
+            end
+        end
     end
 
-    @testset "cap tree nodes bound their subtrees, and closely" begin
-        # Soundness: a node's cap must contain every cell below it, or the dual
-        # descent prunes a pair that does intersect.
-        space = ToyLonLatSpace(24, 12)
-        inside(cap, p) = US.spherical_distance(cap.point, p) <= cap.radius
-        function covers(node)
-            cap = STI.node_extent(node)
-            for i in view(node.inds, node.lo:node.hi)
-                all(inside(cap, USPoint(GI.x(p), GI.y(p), GI.z(p)))
-                    for p in GI.getpoint(getcell(space, i))) || return false
-            end
-            return all(covers, STI.getchild(node))
-        end
-        @test covers(GR.CellCapTree(space, 1:ncells(space)))
+    @testset "packed fallback and native cursor blocks are identical" begin
+        dst = ToyLonLatSpace(8, 4)
+        src = ToyLonLatSpace(16, 8)
+        native_dst, native_src = celltree(dst), celltree(src)
+        fallback_dst = GR.CellSpaceRTree(dst, 1:ncells(dst); nodecapacity = 3)
+        fallback_src = GR.CellSpaceRTree(src, 1:ncells(src); nodecapacity = 2)
 
-        # Tightness: a covering cap's radius is at least half the widest
-        # distance between two vertices, and Jung's bound puts the smallest one
-        # below 1.16 of that.
-        for inds in (1:6, 25:30, [cellposition(space, ix, iy) for ix in 3:6, iy in 4:7])
-            points = [USPoint(GI.x(p), GI.y(p), GI.z(p))
-                      for i in vec(collect(inds)) for p in GI.getpoint(getcell(space, i))]
-            widest = maximum(US.spherical_distance(a, b) for a in points, b in points)
-            root = GR.CellCapTree(space, vec(collect(inds)))
-            @test root.extent.radius >= widest / 2
-            @test root.extent.radius < 1.3 * widest / 2
-        end
+        m = manifold(dst)
+        reference = CR.intersection_areas(m, GOCore.False(), native_dst, native_src;
+            progress = false)
+        serial = CR.intersection_areas(m, GOCore.False(), fallback_dst, fallback_src;
+            progress = false)
+        threaded = CR.intersection_areas(m, GOCore.True(), fallback_dst, fallback_src;
+            progress = false)
+        @test serial == reference
+        @test threaded == serial
     end
 
     @testset "one tile's restricted tree, built once" begin
-        # A non-chunk range on a fallback space forces the CellCapTree path.
+        # A non-chunk range on a fallback space forces the packed R-tree path.
         xd = DD.X(-168.75:22.5:168.75)
         yd = DD.Y(-78.75:22.5:78.75)
         src = RasterGrid(DD.DimArray(zeros(16, 8), (xd, yd));

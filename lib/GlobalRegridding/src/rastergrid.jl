@@ -889,8 +889,9 @@ _task_prepared_raster_tree(tree) = tree
 """
     RasterFlatTree(space, indices, caps)
 
-A one-node spatial tree with stored extents for arbitrary cells or the chunk
-lattice. `indices` are cell positions or chunk numbers, respectively.
+Temporary compatibility tree for the legacy [`chunktree`](@ref) bridge.
+`indices` are chunk numbers. Cell fallbacks use [`CellSpaceRTree`](@ref);
+E2 removes this type together with the legacy bridge.
 """
 struct RasterFlatTree{S<:RasterGrid}
     space::S
@@ -931,8 +932,8 @@ celltree(space::RasterGrid) = _rastercursor(space)
     celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
 
 Return a restricted CR quadtree cursor for a chunk or other rectangular cell
-range, and a flat tree for scattered positions. Leaves always use global cell
-positions.
+range, and the packed cell-space fallback for scattered positions. Leaves
+always use global cell positions.
 """
 function celltree(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
@@ -945,8 +946,7 @@ function celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
         ix0, ix1, iy0, iy1 = rect
         return _rastercursor(space, ix0:ix1, iy0:iy1)
     end
-    caps = [_rastercellcap(space, cellsubscript(space, Int(i))...) for i in indices]
-    return RasterFlatTree(space, indices, caps)
+    return CellSpaceRTree(space, indices)
 end
 
 function _rastercellcap(space::RasterGrid, ix::Integer, iy::Integer)
@@ -965,15 +965,16 @@ function chunkextents(space::RasterGrid)
     return caps
 end
 
-# Compatibility for callers that still request the old public tree. Production
-# chunk discovery uses `_rasterchunkcursor` and never constructs this flat node.
+# Compatibility for callers that still request the old public tree. This is
+# RasterFlatTree's only remaining role until E2 removes the `chunktree` bridge;
+# production chunk discovery uses `_rasterchunkcursor` and never constructs it.
 chunktree(space::RasterGrid) = RasterFlatTree(space, 1:nchunks(space), chunkextents(space))
 
 """
     subtree(space::RasterGrid, inds)
 
 Return a restricted CR quadtree cursor when `inds` form a lattice rectangle,
-otherwise a flat tree with one cap per cell.
+otherwise the common packed cell-space fallback.
 """
 subtree(space::RasterGrid, inds) = celltree(space, inds)
 

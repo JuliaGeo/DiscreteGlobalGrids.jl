@@ -293,6 +293,6 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test all(GR.subtree(space, cellindices(space, c)) isa
                   CR.Trees.TopDownQuadtreeCursor
                   for c in 1:nchunks(space))
-        @test GR.subtree(space, [1, 5, 30]) isa GR.RasterFlatTree
+        @test GR.subtree(space, [1, 5, 30]) isa GR.CellSpaceRTree
     end
 end

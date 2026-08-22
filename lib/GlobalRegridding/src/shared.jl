@@ -99,7 +99,6 @@ end
 _capdistance(a, b) = Float64(US.spherical_distance(a.point, b.point))
 
 # Maximum cells per tree leaf.
-const _CELL_TREE_LEAF = 16
 
 # Threading policy
 

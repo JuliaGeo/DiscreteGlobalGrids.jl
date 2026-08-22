@@ -6,12 +6,12 @@
     subtree(space::RegridSpace, inds) -> tree
 
 Return a spatial tree over `inds`, with leaves addressed by global cell
-position. The fallback builds a bounding-cap hierarchy and one polygon per
-cell. Spaces with a cheaper restricted tree should specialize this function.
+position. The fallback packs GeometryOps' Cartesian cell extents in an R-tree.
+Spaces with a cheaper restricted tree should specialize this function.
 """
 function subtree(space::RegridSpace, inds)
     _iswholespace(space, inds) && return celltree(space)
-    return CellCapTree(space, inds)
+    return CellSpaceRTree(space, inds)
 end
 
 _iswholespace(space::RegridSpace, inds::AbstractUnitRange{<:Integer}) =
@@ -19,87 +19,104 @@ _iswholespace(space::RegridSpace, inds::AbstractUnitRange{<:Integer}) =
 _iswholespace(::RegridSpace, inds) = false
 
 """
-    CellCapTree(space, inds)
+    CellSpaceRTree(space, inds; nodecapacity = 16)
 
-Build the fallback balanced cap tree for `inds`. Nodes store their extents and
-leaves contain at most $(_CELL_TREE_LEAF) cells.
+The unstructured cell fallback: a thin cell-space adapter over GeometryOps'
+packed `FlexibleRTrees.RTree`. The R-tree owns outward-rounded Cartesian
+extents, while the adapter retains `space` for geometry access and maps every
+packed leaf back to its requested global cell position.
+
+Structured spaces should return a native restricted cursor before reaching
+this fallback. `nodecapacity` is exposed for packing-invariance checks.
 """
-struct CellCapTree{S}
+struct CellSpaceRTree{S,N,V<:AbstractVector{Int},C<:AbstractVector{<:Cap}}
     space::S
-    inds::Vector{Int}
-    caps::Vector{Cap}
-    lo::Int
-    hi::Int
-    extent::Cap
-    children::Vector{CellCapTree{S}}
+    node::N
+    positions::V
+    caps::C
+    leafcount::Int
+    height::Int
+    nodecapacity::Int
 end
 
-function CellCapTree(space::S, inds) where {S<:RegridSpace}
-    ix = collect(Int, inds)
-    caps = [_cellcap(space, i) for i in ix]
-    return _cellcapnode(space, ix, caps, 1, length(ix))
+function CellSpaceRTree(space::S, inds; nodecapacity::Int = 16) where {S<:RegridSpace}
+    positions = collect(Int, inds)
+    isempty(positions) && throw(ArgumentError(
+        "cannot build a cell tree from an empty index set"))
+    caps = [_packedcellcap(space, i) for i in positions]
+    boxes = map(Extents.extent, caps)
+    packed = FlexibleRTrees.RTree(FlexibleRTrees.HPR(), positions;
+        nodecapacity, extents = boxes)
+    return CellSpaceRTree(space, packed, positions, caps, length(positions),
+        length(packed.levels), nodecapacity)
 end
 
-# Splits the linear index range, not space: on row-major positions a shallow
-# node is a band of whole rows, so nothing above the deepest levels prunes on
-# longitude. Nothing downstream reads `ix` in order, so a spatial split may
-# permute `ix` and `caps` together.
-function _cellcapnode(space::S, ix::Vector{Int}, caps::Vector{Cap},
-    lo::Int, hi::Int) where {S}
-    children = CellCapTree{S}[]
-    if hi - lo + 1 > _CELL_TREE_LEAF
-        mid = (lo + hi) >> 1
-        push!(children, _cellcapnode(space, ix, caps, lo, mid))
-        push!(children, _cellcapnode(space, ix, caps, mid + 1, hi))
-        extent = _mergecaps([child.extent for child in children])
+# A cap of at most one hemisphere is geodesically convex, so it covers the cell
+# edges as well as the vertices. Wider vertex caps conservatively become the
+# whole sphere. Construction and merging use GeometryOps' public cap protocol;
+# the small fractional growth preserves the previous fallback's headroom.
+function _packedcellcap(space::RegridSpace, i::Int)
+    points = GI.getpoint(getcell(space, i))
+    isempty(points) && return _WHOLE_SPHERE
+    firstpoint = first(points)
+    cap = SphericalCap(USPoint(
+        GI.x(firstpoint), GI.y(firstpoint), GI.z(firstpoint)), 0.0)
+    for point in Iterators.drop(points, 1)
+        cap = Extents.union(cap, SphericalCap(
+            USPoint(GI.x(point), GI.y(point), GI.z(point)), 0.0))
+        cap.radius > Float64(pi) / 2 && return _WHOLE_SPHERE
+    end
+    return Extents.grow(cap, 5e-5)
+end
+
+Base.show(io::IO, tree::CellSpaceRTree) =
+    print(io, "CellSpaceRTree(", tree.leafcount, " cells, ", tree.node, ")")
+
+STI.isspatialtree(::Type{<:CellSpaceRTree}) = true
+STI.node_extent_is_expensive(::Type{<:CellSpaceRTree}) = false
+STI.isleaf(tree::CellSpaceRTree) = STI.isleaf(tree.node)
+STI.nchild(tree::CellSpaceRTree) = STI.nchild(tree.node)
+STI.node_extent(tree::CellSpaceRTree) = STI.node_extent(tree.node)
+
+function STI.getchild(tree::CellSpaceRTree, i::Int)
+    childheight = tree.height - 1
+    childcapacity = tree.nodecapacity^childheight
+    childcount = clamp(tree.leafcount - (i - 1) * childcapacity, 0, childcapacity)
+    return CellSpaceRTree(tree.space, STI.getchild(tree.node, i), tree.positions,
+        tree.caps, childcount, childheight, tree.nodecapacity)
+end
+
+STI.getchild(tree::CellSpaceRTree) =
+    (STI.getchild(tree, i) for i in 1:STI.nchild(tree))
+
+# FlexibleRTrees reports positions in its payload vector. Translate those local
+# positions back to stable global cell positions, and expose their exact cap
+# rather than the cap's broad-phase XYZ box.
+STI.child_indices_extents(tree::CellSpaceRTree) =
+    ((@inbounds(tree.positions[i]), @inbounds(tree.caps[i]))
+     for (i, _) in STI.child_indices_extents(tree.node))
+
+# `ncells` and `split_weight` describe this node's restricted population;
+# matrix assembly separately needs the owning space's complete global domain.
+ncells(tree::CellSpaceRTree) = tree.leafcount
+Trees.cell_index_count(tree::CellSpaceRTree) = ncells(tree.space)
+Trees.split_weight(tree::CellSpaceRTree) = tree.leafcount
+getcell(tree::CellSpaceRTree, i::Int) = getcell(tree.space, i)
+
+function _packedcellpositions!(out::Vector{Int}, tree::CellSpaceRTree)
+    if STI.isleaf(tree)
+        append!(out, first(entry) for entry in STI.child_indices_extents(tree))
     else
-        extent = _mergecaps(view(caps, lo:hi))
+        for child in STI.getchild(tree)
+            _packedcellpositions!(out, child)
+        end
     end
-    return CellCapTree{S}(space, ix, caps, lo, hi, extent, children)
+    return out
 end
 
-Base.show(io::IO, tree::CellCapTree) =
-    print(io, "CellCapTree(", tree.hi - tree.lo + 1, " cells)")
-
-# A cap containing all of `caps`, folded pairwise so a node is not inflated by
-# its children's spread. The full sphere beyond the convex range.
-function _mergecaps(caps)
-    acc = _WHOLE_SPHERE
-    seen = false
-    for c in caps
-        acc = seen ? Extents.union(acc, c) : c
-        seen = true
-        acc.radius > Float64(pi) / 2 && return _WHOLE_SPHERE
-    end
-    seen || return _WHOLE_SPHERE
-    return SphericalCap(acc.point, _padcap(acc.radius))
-end
-
-_cellcap(space::RegridSpace, i::Int) = _mergecaps(
-    [SphericalCap(USPoint(GI.x(p), GI.y(p), GI.z(p)), 0.0)
-     for p in GI.getpoint(getcell(space, i))])
-
-STI.isspatialtree(::Type{<:CellCapTree}) = true
-STI.node_extent_is_expensive(::Type{<:CellCapTree}) = false
-STI.isleaf(tree::CellCapTree) = isempty(tree.children)
-STI.nchild(tree::CellCapTree) = length(tree.children)
-STI.getchild(tree::CellCapTree) = tree.children
-STI.getchild(tree::CellCapTree, i::Int) = tree.children[i]
-STI.node_extent(tree::CellCapTree) = tree.extent
-STI.child_indices_extents(tree::CellCapTree) =
-    ((tree.inds[k], tree.caps[k]) for k in tree.lo:tree.hi)
-
-# Tree leaves and cell access both use global space positions.
-# ConservativeRegridding fetches matrix sizes and polygons through these
-# bindings during `intersection_areas`.
-ncells(tree::CellCapTree) = ncells(tree.space)
-# `ncells` answers for the whole space, so the frontier's default estimate
-# would be wrong here; the node's cap window is exact.
-Trees.split_weight(tree::CellCapTree) = tree.hi - tree.lo + 1
-getcell(tree::CellCapTree, i::Int) = getcell(tree.space, i)
-getcell(tree::CellCapTree) =
-    (getcell(tree.space, i) for i in view(tree.inds, tree.lo:tree.hi))
-GOCore.best_manifold(tree::CellCapTree) = manifold(tree.space)
+getcell(tree::CellSpaceRTree) =
+    (getcell(tree.space, i) for i in _packedcellpositions!(Int[], tree))
+GOCore.best_manifold(tree::CellSpaceRTree) = manifold(tree.space)
 
 # Destination-cell geometry cache
 

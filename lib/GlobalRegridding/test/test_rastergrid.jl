@@ -37,6 +37,11 @@ rg_forward() = RasterGrid(DD.DimArray(zeros(8, 4),
 
 cellring(space, i) = collect(GI.getpoint(GI.getexterior(getcell(space, i))))
 
+extentcovers(cap::GR.Cap, p) = GR.US._contains(cap, p)
+extentcovers(ext, p) = ext.X[1] <= p[1] <= ext.X[2] &&
+                        ext.Y[1] <= p[2] <= ext.Y[2] &&
+                        ext.Z[1] <= p[3] <= ext.Z[2]
+
 # Rotation-invariant ring key that preserves winding.
 function ringkey(space, i)
     r = cellring(space, i)[1:end-1]
@@ -125,8 +130,8 @@ function tree_covers_dense(space, node, ancestors = ())
     extent = STI.node_extent(node)
     chain = (ancestors..., extent)
     if STI.isleaf(node)
-        for (i, cap) in STI.child_indices_extents(node), p in ring_samples(space, i)
-            (GR.US._contains(cap, p) && all(e -> GR.US._contains(e, p), chain)) ||
+        for (i, extent) in STI.child_indices_extents(node), p in ring_samples(space, i)
+            (extentcovers(extent, p) && all(e -> extentcovers(e, p), chain)) ||
                 return false
         end
         return true
@@ -139,8 +144,8 @@ function tree_covers(space, node, ancestors = ())
     extent = STI.node_extent(node)
     chain = (ancestors..., extent)
     if STI.isleaf(node)
-        for (i, cap) in STI.child_indices_extents(node), p in cellring(space, i)
-            (GR.US._contains(cap, p) && all(e -> GR.US._contains(e, p), chain)) ||
+        for (i, extent) in STI.child_indices_extents(node), p in cellring(space, i)
+            (extentcovers(extent, p) && all(e -> extentcovers(e, p), chain)) ||
                 return false
         end
         return true
@@ -457,8 +462,8 @@ end
         whole = celltree(xfast)
         @test child_construction_allocated(whole) == 0
 
-        # Scattered indices remain on the temporary flat fallback.
-        @test GR.subtree(xfast, [1, 4, 9, 25]) isa GR.RasterFlatTree
+        # Scattered indices use the common packed fallback.
+        @test GR.subtree(xfast, [1, 4, 9, 25]) isa GR.CellSpaceRTree
     end
 
 

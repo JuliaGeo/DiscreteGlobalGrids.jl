@@ -762,7 +762,7 @@ function procthreads(pid::Integer)
         stat = try
             linuxstat(joinpath(taskdir, name, "stat"))
         catch err
-            (isa(err, SystemError) || isa(err, IOError)) && continue
+            (isa(err, SystemError) || isa(err, Base.IOError)) && continue
             rethrow()
         end
         out[tid] = stat
@@ -893,7 +893,7 @@ function superviseutilrun(tag::String)
                 emitprocsample(tag, pid, started, lasttime, lastproc,
                     lastthreads, juliamap)
             catch err
-                (isa(err, SystemError) || isa(err, IOError)) && !process_running(process) && break
+                (isa(err, SystemError) || isa(err, Base.IOError)) && !process_running(process) && break
                 rethrow()
             end
             lasttime, lastproc, lastthreads = sample.time, sample.proc, sample.threads

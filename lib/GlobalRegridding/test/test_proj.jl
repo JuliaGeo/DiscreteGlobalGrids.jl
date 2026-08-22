@@ -97,6 +97,14 @@ end
     @test all(cellat(space, cellcentroid(space, i)) == i for i in 1:ncells(space))
     @test data.reads == 0
 
+    # Actual projected-chart range extents take CR's perimeter path. Every
+    # cursor node and every DiskArrays chunk covers the declared geodesic cell
+    # polygons, without reading a source value.
+    @test tree_covers_dense(space, celltree(space))
+    @test all(tree_covers_dense(space, celltree(space, c)) for c in 1:nchunks(space))
+    @test chunks_cover_dense(space)
+    @test data.reads == 0
+
     querycap = SphericalCap(cellcentroid(space, 5), 0.5)
     reference = projected_snapshot(space, querycap)
     jobs = [Threads.@spawn begin

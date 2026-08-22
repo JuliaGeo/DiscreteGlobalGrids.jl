@@ -192,11 +192,6 @@ end
 const _XNAMES = (:x, :lon, :long, :longitude)
 const _YNAMES = (:y, :lat, :latitude)
 
-# Four corners are sufficient for a lon/lat cell cap.
-const _CELL_CAP_SAMPLES = 0
-# Extra boundary samples for multi-cell boxes.
-const _BOX_CAP_SAMPLES = 3
-
 function RasterGrid(A::DD.AbstractDimArray;
     xdim = nothing, ydim = nothing, chunks = nothing, kwargs...)
     ds = DD.dims(A)
@@ -663,113 +658,37 @@ end
 
 # Spherical caps
 
-# Return boundary sample `j`; multiples of `m` are corners.
-@inline function _boxpoint(t, xlo, xhi, ylo, yhi, m::Int, j::Int)
-    e, k = divrem(j, m)
-    u = k / m
-    return e == 0 ? t((xlo + u * (xhi - xlo), ylo)) :
-           e == 1 ? t((xhi, ylo + u * (yhi - ylo))) :
-           e == 2 ? t((xhi - u * (xhi - xlo), yhi)) :
-           t((xlo, yhi - u * (yhi - ylo)))
+"""
+    _geographic_range_extent(tables, space, ix0, ix1, iy0, iy1)
+
+Return an analytic cap for a rectangle in the built-in geographic-degrees
+chart. Every raster cell edge is a declared shortest geodesic. The maximum
+single-cell longitude step therefore bounds the poleward bow of every such
+edge. A polar latitude-band cap is valid for all longitude widths; rectangles
+narrower than 180 degrees may use the tighter mid-meridian cap.
+
+This specialization is deliberately selected only by `GeographicEdgeTables`,
+which are installed only for `GeometryOps.UnitSphereFromGeographic`. Arbitrary
+curvilinear and projected charts use ConservativeRegridding's perimeter walk.
+"""
+function _geographic_range_extent(t::GeographicEdgeTables, space::RasterGrid,
+        ix0::Int, ix1::Int, iy0::Int, iy1::Int)
+    xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
+    ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
+    polar = _geographic_polar_cap(t, ylo, yhi)
+    abs(xhi - xlo) < 180.0 || return polar
+    meridian = _geographic_meridian_cap(t, xlo, xhi, ylo, yhi)
+    return meridian.radius < polar.radius ? meridian : polar
 end
 
 """
-    _boxcap(space, xlo, xhi, ylo, yhi, nsamp) -> SphericalCap
+    _geographic_polar_cap(tables, ylo, yhi) -> SphericalCap
 
-Return a cap around `4(nsamp + 1)` boundary samples. For lon/lat boxes, a cap no
-wider than `π/2` contains the corners and their geodesic edges. Return the whole
-sphere when no stable convex cap exists; [`_rectcap`](@ref) handles wide boxes.
+Return the tighter north- or south-pole cap containing the bowed geographic
+latitude band. This remains valid for any longitude span, including full
+longitude and antimeridian-crossing ranges.
 """
-function _boxcap(space::RasterGrid, xlo, xhi, ylo, yhi, nsamp::Int)
-    t = _task_prepared_raster_transform(space.native_to_unit_sphere)
-    return _boxcap(t, space, xlo, xhi, ylo, yhi, nsamp)
-end
-
-function _boxcap(t, space::RasterGrid, xlo, xhi, ylo, yhi, nsamp::Int)
-    m = nsamp + 1
-    n = 4m
-    sx = sy = sz = 0.0
-    for j in 0:(n-1)
-        p = _boxpoint(t, xlo, xhi, ylo, yhi, m, j)
-        sx += p[1]
-        sy += p[2]
-        sz += p[3]
-    end
-    nrm = sqrt(sx^2 + sy^2 + sz^2)
-    nrm <= eps(Float64) && return _WHOLE_SPHERE
-    centre = USPoint(sx / nrm, sy / nrm, sz / nrm)
-    r = 0.0
-    for j in 0:(n-1)
-        r = max(r, US.spherical_distance(centre,
-            _boxpoint(t, xlo, xhi, ylo, yhi, m, j)))
-    end
-    # Caps beyond π/2 lose the convexity bound.
-    r = _padcap(r)
-    r > Float64(pi) / 2 && return _WHOLE_SPHERE
-    return SphericalCap(centre, r)
-end
-
-# Use tabulated corners for a cell cap when available.
-function _rastercellcap(space::RasterGrid, ix::Integer, iy::Integer)
-    space.tables === nothing &&
-        return _boxcap(space, cellbox(space, ix, iy)..., _CELL_CAP_SAMPLES)
-    return _cornercap(_cellcorners(space, ix, iy))
-end
-
-# Build the same cap as `_boxcap(..., 0)` from precomputed corners.
-function _cornercap(c::NTuple{4,USPoint})
-    sx = sy = sz = 0.0
-    for p in c
-        sx += p[1]
-        sy += p[2]
-        sz += p[3]
-    end
-    nrm = sqrt(sx^2 + sy^2 + sz^2)
-    nrm <= eps(Float64) && return _WHOLE_SPHERE
-    centre = USPoint(sx / nrm, sy / nrm, sz / nrm)
-    r = 0.0
-    for p in c
-        r = max(r, US.spherical_distance(centre, p))
-    end
-    r = _padcap(r)
-    r > Float64(pi) / 2 && return _WHOLE_SPHERE
-    return SphericalCap(centre, r)
-end
-
-"""
-    _widecap(space::RasterGrid, xlo, xhi, ylo, yhi) -> SphericalCap
-
-Return a safe cap for boxes too wide for [`_boxcap`](@ref). Lon/lat charts use
-the tighter of a polar latitude-band cap and, below 180° width, a mid-meridian
-cap. Other charts return the whole sphere.
-"""
-_widecap(space::RasterGrid, xlo, xhi, ylo, yhi) =
-    _widecap(space.tables, xlo, xhi, ylo, yhi)
-
-_widecap(::Nothing, xlo, xhi, ylo, yhi) = _WHOLE_SPHERE
-
-function _widecap(t::GeographicEdgeTables, xlo, xhi, ylo, yhi)
-    polar = _polarcap(t, ylo, yhi)
-    abs(xhi - xlo) / 2 < 90.0 || return polar
-    a, b = _bowedband(Float64(ylo), Float64(yhi), t.maxdx)
-    geographic_to_sphere = US.UnitSphereFromGeographic()
-    centre = geographic_to_sphere(((xlo + xhi) / 2, (a + b) / 2))
-    r = 0.0
-    for x in (xlo, xhi), y in (a, b)
-        r = max(r, US.spherical_distance(centre, geographic_to_sphere((x, y))))
-    end
-    r = _padcap(r)
-    (r >= Float64(pi) || polar.radius <= r) && return polar
-    return SphericalCap(centre, r)
-end
-
-"""
-    _polarcap(tables, ylo, yhi) -> SphericalCap
-
-Return the tighter north- or south-pole cap containing the bowed latitude band.
-This remains valid for any longitude span.
-"""
-function _polarcap(t::GeographicEdgeTables, ylo, yhi)
+function _geographic_polar_cap(t::GeographicEdgeTables, ylo, yhi)
     a, b = _bowedband(Float64(ylo), Float64(yhi), t.maxdx)
     centre = USPoint(0.0, 0.0, 1.0)
     r = deg2rad(90.0 - a)
@@ -783,6 +702,28 @@ function _polarcap(t::GeographicEdgeTables, ylo, yhi)
     return SphericalCap(centre, r)
 end
 
+"""
+    _geographic_meridian_cap(tables, xlo, xhi, ylo, yhi) -> SphericalCap
+
+Return a cap around a geographic box narrower than 180 degrees longitude. The
+box is first expanded to the proven poleward latitude limits of its geodesic
+cell edges. Distance from the mid-meridian centre is maximized at a box corner,
+so the resulting cap covers every point of every leaf boundary directly; it
+does not depend on convexity of a wider-than-hemisphere cap.
+"""
+function _geographic_meridian_cap(t::GeographicEdgeTables, xlo, xhi, ylo, yhi)
+    a, b = _bowedband(Float64(ylo), Float64(yhi), t.maxdx)
+    geographic_to_sphere = US.UnitSphereFromGeographic()
+    centre = geographic_to_sphere(((xlo + xhi) / 2, (a + b) / 2))
+    r = 0.0
+    for x in (xlo, xhi), y in (a, b)
+        r = max(r, US.spherical_distance(centre, geographic_to_sphere((x, y))))
+    end
+    r = _padcap(r)
+    r >= Float64(pi) && return _WHOLE_SPHERE
+    return SphericalCap(centre, r)
+end
+
 # Expand a latitude band to include poleward-bowing great-circle edges.
 function _bowedband(ylo::Float64, yhi::Float64, dxmax::Float64)
     h = min(abs(dxmax), 360.0) / 2
@@ -790,68 +731,6 @@ function _bowedband(ylo::Float64, yhi::Float64, dxmax::Float64)
     hi = yhi > 0 ? (c <= 0.0 ? 90.0 : min(90.0, atand(tand(yhi) / c))) : yhi
     lo = ylo < 0 ? (c <= 0.0 ? -90.0 : max(-90.0, atand(tand(ylo) / c))) : ylo
     return (lo, hi)
-end
-
-# Read an index rectangle's corners from edge tables.
-@inline _boxcorners(t::GeographicEdgeTables, ix0::Int, ix1::Int, iy0::Int, iy1::Int) =
-    (_tablecorner(t, ix0, iy0), _tablecorner(t, ix1 + 1, iy0),
-        _tablecorner(t, ix1 + 1, iy1 + 1), _tablecorner(t, ix0, iy1 + 1))
-
-"""
-    _sampledcap(tables, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi) -> SphericalCap
-
-Return the sampled cap used by [`_rectcap`](@ref), using the supplied task-local
-chart when boundary samples are required. Lon/lat boxes narrower than 180° use
-four tabulated corners; wider or untabulated boxes sample the boundary.
-"""
-@inline _sampledcap(::Nothing, transform, space::RasterGrid, ix0::Int, ix1::Int,
-    iy0::Int, iy1::Int, xlo, xhi, ylo, yhi) =
-    _boxcap(transform, space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
-
-@inline function _sampledcap(t::GeographicEdgeTables, transform, space::RasterGrid,
-    ix0::Int, ix1::Int, iy0::Int, iy1::Int, xlo, xhi, ylo, yhi)
-    xhi - xlo < 180.0 ||
-        return _boxcap(transform, space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
-    return _cornercap(_boxcorners(t, ix0, ix1, iy0, iy1))
-end
-
-"""
-    _rectcap(space, ix0, ix1, iy0, iy1) -> SphericalCap
-
-Return the tighter sampled or wide-box cap for a tree-node rectangle.
-"""
-function _rectcap(space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
-    transform = _task_prepared_raster_transform(space.native_to_unit_sphere)
-    return _rectcap(transform, space, ix0, ix1, iy0, iy1)
-end
-
-function _rectcap(transform, space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
-    xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
-    ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
-    sampled = _sampledcap(
-        space.tables, transform, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi)
-    return _tighterof(space, xlo, xhi, ylo, yhi, sampled)
-end
-
-"""
-    _chunkcap(space, ix0, ix1, iy0, iy1) -> SphericalCap
-
-Return a chunk rectangle's cap. Extra boundary samples improve the centre and
-reduce false-positive chunk connections. This is computed once per chunk.
-"""
-function _chunkcap(space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
-    xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
-    ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
-    sampled = _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
-    return _tighterof(space, xlo, xhi, ylo, yhi, sampled)
-end
-
-# Skip the wide-box calculation when the sampled cap already beats its lower bound.
-@inline function _tighterof(space::RasterGrid, xlo, xhi, ylo, yhi, sampled::Cap)
-    sampled.radius < Float64(pi) &&
-        sampled.radius <= deg2rad(min(90.0 - ylo, 90.0 + yhi)) && return sampled
-    wide = _widecap(space, xlo, xhi, ylo, yhi)
-    return wide.radius < sampled.radius ? wide : sampled
 end
 
 # Determine chart handedness once from probe-cell Newell normals.
@@ -953,9 +832,29 @@ function Trees.cell_range_extent(grid::RasterGridView, irange::UnitRange{Int},
     # one ephemeral view for this range calculation, so its perimeter loop does
     # one TLS lookup rather than one lookup per transformed vertex.
     localgrid = _task_prepared_raster_view(grid)
-    xr, yr = localgrid.space.xfast ? (irange, jrange) : (jrange, irange)
-    return _rectcap(localgrid.native_to_unit_sphere, localgrid.space,
+    return _raster_range_extent(localgrid, irange, jrange)
+end
+
+# The one range-extent seam for cursor nodes, leaves, scattered-cell caps, and
+# DiskArrays chunks. Only the exact built-in geographic chart takes the analytic
+# specialization; every other chart delegates to CR's conservative perimeter walk.
+function _raster_range_extent(grid::RasterGridView{M}, irange::UnitRange{Int},
+        jrange::UnitRange{Int}) where {M}
+    tables = grid.space.tables
+    tables === nothing && return _curvilinear_range_extent(grid, irange, jrange)
+    xr, yr = grid.space.xfast ? (irange, jrange) : (jrange, irange)
+    return _geographic_range_extent(tables, grid.space,
         first(xr), last(xr), first(yr), last(yr))
+end
+
+# Call the method owned by ConservativeRegridding, bypassing this RasterGridView
+# specialization. Kept as a named seam so the committed benchmark can compare
+# the earned geographic optimization with the exact delegated path.
+function _curvilinear_range_extent(grid::RasterGridView{M}, irange::UnitRange{Int},
+        jrange::UnitRange{Int}) where {M}
+    return invoke(Trees.cell_range_extent,
+        Tuple{Trees.AbstractCurvilinearGrid{M},UnitRange{Int},UnitRange{Int}},
+        grid, irange, jrange)
 end
 
 # The range cap is computed from the chart rather than read directly from axis
@@ -1050,12 +949,18 @@ function celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
     return RasterFlatTree(space, indices, caps)
 end
 
+function _rastercellcap(space::RasterGrid, ix::Integer, iy::Integer)
+    ranges = _rasterviewranges(space, Int(ix):Int(ix), Int(iy):Int(iy))
+    return Trees.cell_range_extent(RasterGridView(space), ranges...)
+end
+
 function chunkextents(space::RasterGrid)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)
     for c in 1:n
         xr, yr = chunkbox(space, c)
-        caps[c] = _chunkcap(space, first(xr), last(xr), first(yr), last(yr))
+        ranges = _rasterviewranges(space, xr, yr)
+        caps[c] = Trees.cell_range_extent(RasterGridView(space), ranges...)
     end
     return caps
 end

@@ -16,7 +16,9 @@ A synthetic root above [`rootcells`](@ref) covers the sphere. A rooted
 `bucket_size` stops descent when a node has at most that many stored cells;
 `nothing` uses the grid default.
 
-Node extents are system [`node_extent`](@ref) caps and are marked expensive.
+Node extents are marked expensive. They are system [`node_extent`](@ref) caps,
+except at the leaf level and on sparse nodes, which report tight caps over the
+cells they actually hold and therefore cover nothing below the leaf level.
 
 !!! note "What a system has to get right for this to work"
     A non-`PartialGrid` grid with a system must be its complete level grid in
@@ -234,6 +236,18 @@ end
 # aperture-7 grid (49).
 const STORED_UNION_CAP_LIMIT = 64
 
+"""
+    STI.node_extent(cursor::HierarchicalGridCursor) -> SphericalCap
+
+The cap this node is pruned by. It bounds cell *geometry* in every case, but not
+the same geometry in every case: a node at or below the leaf level bounds its one
+cell (`cell_cap`), a sparse node bounds the stored cells beneath it
+(`cells_cap`), and every other node bounds the system's whole subtree
+(`node_extent(system, id)`). Only the last reaches past the cursor's leaf level,
+so code that needs a bound over what lies *below* a leaf — a chunk index, where
+aperture-7 children overhang their parent — must call `node_extent(system, id)`
+itself rather than reuse the cursor's cap.
+"""
 function STI.node_extent(cursor::HierarchicalGridCursor)
     _issynthetic(cursor) && return full_sphere_cap()
     # A node at the leaf level IS one cell, and its tight cap is both sound and
@@ -261,6 +275,11 @@ end
 
 Return leaf grid positions and tight cell caps. The result is materialized to
 avoid recomputing caps during repeated dual-tree passes.
+
+Each cap is `cell_cap` of that one leaf cell: a bound over that cell's own
+geometry, with no subtree headroom and no coverage of anything below the leaf
+level. A consumer that needs the subtree bound must call
+`node_extent(system, id)`, whose covering law runs to `maxlevel`.
 """
 function STI.child_indices_extents(cursor::HierarchicalGridCursor)
     STI.isleaf(cursor) ||

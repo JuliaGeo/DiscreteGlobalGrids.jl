@@ -153,20 +153,36 @@ by [`cap_inflation(sys)`](@ref cap_inflation), and a system able to compute a
 tighter covering cap overrides it. The covering law below holds either way, and
 validating it is the system's responsibility.
 
-> `node_extent(sys, c)` contains the geometry of **every descendant of `c`, at
-> every depth** — every point of every cell boundary in the subtree, all the
-> way down to `maxlevel(sys)`.
+> **Guaranteed.** `node_extent(sys, c)` contains the *geometry* of every
+> descendant of `c`, at every depth — every point of every cell boundary in the
+> subtree, all the way down to `maxlevel(sys)`, independent of a caller's
+> planned traversal depth.
+>
+> **Not guaranteed.** It need not contain the descendants' `cell_cap`s or their
+> own `node_extent`s, and for real systems it does not. A cap is an inflated or
+> sampled bound *around* geometry, not geometry, so a child's cap can stand
+> partly outside its parent's extent while every child polygon lies inside it.
 
-Tree pruning depends on this covering law. Over-coverage only reduces pruning;
-under-coverage can omit valid results. For a convex cap of angular radius at
-most 90°, containing all boundary vertices also contains their great-circle
-arcs. Non-convex extents must establish containment of the full geometry.
+Both halves are load-bearing. A cell's own boundary does not cover its
+subtree — aperture-7 children extend beyond the parent boundary — so `cell_cap`
+is never a substitute for `node_extent`. Equally, the extents down a branch are
+not a nested chain of caps: a consumer that compares a parent's `node_extent`
+against a child's `node_extent` or `cell_cap`, or that expects radii to shrink
+with depth, is testing a property this function does not have and never
+promised.
 
-A cell's own boundary need not cover its descendants; aperture-7 children, for
-example, can extend beyond the parent boundary.
+Pruning is sound against queries derived from geometry, which is what tree
+descent asks: a query cap disjoint from `node_extent(sys, c)` meets no
+descendant cell polygon, so discarding the subtree can drop no result. Every
+node is tested against the query, never against its parent. Over-coverage only
+reduces pruning; under-coverage can omit valid results. For a convex cap of
+angular radius at most 90°, containing all boundary vertices also contains their
+great-circle arcs. Non-convex extents must establish containment of the full
+geometry.
 
-The result must cover through `maxlevel(sys)`, independent of a caller's
-planned traversal depth.
+A merge of the children's caps (`merge_caps` over `cell_cap`) is a bound over
+caps — a different and looser object, and one that says nothing about levels
+below those children. It is not `node_extent` and does not substitute for it.
 
 Extents are `SphericalCap`s throughout this package, at every node of every
 tree, which is what lets one predicate vocabulary serve all of them.
@@ -220,9 +236,12 @@ bounding-cap radius so that the cap covers the cell's entire subtree.
 
 Defaults to `1.2`.
 
-The value bounds how far descendants extend beyond a cell's bounding cap and
-must be validated for the system's refinement geometry. Systems overriding
-`node_extent` ignore it.
+The value bounds how far descendant *geometry* extends beyond a cell's bounding
+cap — the ratio of the farthest descendant boundary point's distance from the
+cap centre to the cap radius — and must be validated for the system's refinement
+geometry. It is not a bound on how far a descendant's own cap extends; caps are
+bounds in their own right and may exceed it. Systems overriding `node_extent`
+ignore it.
 
 Raising it costs query time (looser pruning). Setting it too low is a
 correctness bug — see the covering law in [`node_extent`](@ref).

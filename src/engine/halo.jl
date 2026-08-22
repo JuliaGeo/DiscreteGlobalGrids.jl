@@ -428,6 +428,10 @@ end
 # `x`. So the two caps intersect, and a node whose cap misses the root cap can
 # contain no halo cell.
 #
+# The argument runs entirely through shared *geometry* — one point in two
+# extents. It never needs a child's extent or cap to sit inside its parent's,
+# which the covering law does not provide and which is false in general.
+#
 # This requires native neighbours to share a boundary point. A system with
 # topological adjacency between geometrically disjoint cells must provide its
 # own `halo_engine` or widen the pruning cap.

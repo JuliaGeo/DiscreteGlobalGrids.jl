@@ -158,9 +158,13 @@ _subtree_cap(ix::Integer, iy::Integer, face::Integer, nside::Integer) =
 """
     node_extent(HEALPixSystem(), c) -> SphericalCap
 
-Return the pixel's subtree cap. Nested children exactly partition the parent,
-so no generic inflation is required. `_subtree_cap` derives its radius from
-the corner-inclusive perimeter samples plus conservative slack.
+Return the pixel's subtree cap. Nested children exactly partition the parent, so
+no generic inflation is required. `_subtree_cap` derives its radius from the
+corner-inclusive perimeter samples plus conservative slack.
+
+The geometry nests; the caps do not. A child's own cap is recentred on the child
+and may reach outside this one, which the covering law permits — it bounds
+descendant polygons, not descendant bounds.
 """
 function DGG.node_extent(::HEALPixSystem, c::DGG.LevelIndex)
     l = DGG.level(c)

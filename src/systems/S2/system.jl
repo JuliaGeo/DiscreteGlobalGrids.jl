@@ -135,7 +135,9 @@ end
 The cell's four-corner cap, used without [`cap_inflation`](@ref).
 
 Children tile their parent, and each cell is the geodesic convex hull of its
-corners, so the cap covers the whole subtree.
+corners, so the cap covers the whole subtree's geometry. It does not cover the
+children's own caps, which are recentred on the children and routinely reach
+outside it — the covering law bounds descendant polygons, not descendant bounds.
 
 The maximum radius is `acos(1/√3) ≈ 0.9553` rad, below `π/2`, so every extent is
 geodesically convex.

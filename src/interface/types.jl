@@ -98,7 +98,7 @@ allocation per cell. Declaring the bound is the fast path.
 | method | default |
 |---|---|
 | [`levelgrid(sys, l)`](@ref levelgrid) | `HierarchicalLevelGrid(sys, l)`, checked against [`levels`](@ref) |
-| [`node_extent(sys, c)`](@ref node_extent) | the cell's bounding cap, inflated — see the covering law |
+| [`node_extent(sys, c)`](@ref node_extent) | the cell's bounding cap, inflated — covers descendant *geometry*, not descendant caps; see the covering law |
 | [`cap_inflation(sys)`](@ref cap_inflation) | `1.2` |
 | [`maxlevel(sys)`](@ref maxlevel) | `last(levels(sys))` |
 | [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) | `false`; declaring it `true` obliges [`descendant_range`](@ref) |

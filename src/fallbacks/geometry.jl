@@ -333,7 +333,10 @@ end
     node_extent(sys, c) -> SphericalCap
 
 Return the cell cap inflated by [`cap_inflation(sys)`](@ref cap_inflation).
-This `O(1)` fallback is sound when descendant overhang stays within that factor.
+This `O(1)` fallback is sound when descendant overhang stays within that factor,
+where overhang is measured on descendant *boundary geometry* against the cell's
+cap. Descendant caps are separate bounds and are not covered by the result — see
+the covering law in [`node_extent`](@ref).
 """
 node_extent(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
     inflate_cap(cell_cap(levelgrid(sys, level(c)), c), cap_inflation(sys))

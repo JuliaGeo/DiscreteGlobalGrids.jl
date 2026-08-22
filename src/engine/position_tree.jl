@@ -13,6 +13,12 @@ const POSITION_TREE_ARITY = 4
 
 A spatial tree over grid positions, built from cell caps in `O(ncells)` time and
 memory. [`treeify`](@ref) uses it only for grids without a hierarchy.
+
+Its extents nest — every node's cap is a merge of its children's — because the
+tree bottoms out at the grid's own cells and has nothing below them. That is a
+property of this tree, not of extents generally; a system's
+[`node_extent`](@ref) hierarchy covers descendant geometry down to `maxlevel`
+and its caps do not nest.
 """
 struct PositionTree{G<:AbstractGrid}
     grid::G

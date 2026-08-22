@@ -142,8 +142,10 @@ _subtree_cap(ix::Integer, iy::Integer, diamond::Integer, nside::Integer) =
     node_extent(ISEA4RSystem(), c) -> SphericalCap
 
 Return the uninflated subtree cap. Exact chart nesting makes the cell rectangle
-a bound for every descendant; [`_subtree_cap`](@ref) supplies a conservative
-sampled radius. All returned caps are geodesically convex: the widest in the
+a bound for every descendant's geometry; [`_subtree_cap`](@ref) supplies a
+conservative sampled radius. It bounds no descendant's *cap*: a child cap is
+recentred and may reach outside its parent's extent without violating the
+covering law. All returned caps are geodesically convex: the widest in the
 system is a level-0 diamond's, 62.3°, against the 90° bound.
 """
 function DGG.node_extent(::ISEA4RSystem, c::DGG.LevelIndex)

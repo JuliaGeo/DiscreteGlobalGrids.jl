@@ -102,7 +102,8 @@ DGG.has_sorted_subtrees(::IGeo7System) = true
 DGG.maxneighbors(::IGeo7System, ::Connectivity) = 6
 
 # The default `cap_inflation == 1.2` covers the observed maximum descendant
-# overhang ratio of `1.0482`.
+# overhang ratio of `1.0482` — descendant boundary vertices against an ancestor's
+# cell-cap radius. Descendant caps are separate bounds and are not covered.
 
 """
     rootcells(::IGeo7System) -> SmallVector{12,Z7Cell}

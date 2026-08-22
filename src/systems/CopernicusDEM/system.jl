@@ -276,7 +276,8 @@ end
 """
     node_extent(CopernicusDEMSystem(...), c) -> SphericalCap
 
-A cap covering the cell and descendant rings, padded for edge bow and rounding.
+A cap covering the cell's boundary and every descendant's boundary, padded for
+edge bow and rounding. Descendant *caps* are not covered and need not be.
 """
 function DGG.node_extent(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     centre = DGG.cell_centroid(sys, c)

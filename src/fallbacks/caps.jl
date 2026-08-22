@@ -77,6 +77,11 @@ end
 
 The tight cap of one cell boundary, without subtree headroom. Unlike
 [`node_extent`](@ref), it does not cover descendants that overhang the cell.
+
+It bounds `c`'s own geometry and nothing else. In particular it is not itself
+bounded by the `node_extent` of an ancestor of `c` — the covering law is a
+statement about descendant geometry, not about descendant caps — so comparing
+this cap against an ancestor's extent tests nothing.
 """
 cell_cap(grid::AbstractGrid, c::AbstractCellIndex) = points_cap(cell_boundary(grid, c))
 
@@ -85,6 +90,10 @@ cell_cap(grid::AbstractGrid, c::AbstractCellIndex) = points_cap(cell_boundary(gr
 
 Bound a batch of cell boundaries. Return the full sphere after
 `UNION_CAP_BATCH_LIMIT` cells.
+
+The result bounds the geometry of the listed cells only. It covers neither their
+descendants nor any cap derived from them, so it is not a [`node_extent`](@ref)
+for any cell whose subtree reaches below `grid`'s level.
 """
 function cells_cap(grid::AbstractGrid, ids)
     points = USPoint[]
@@ -104,6 +113,12 @@ end
 
 A cap containing both. Used to build the fallback tree's internal extents
 bottom-up, where the leaf caps are in hand but their vertices are not.
+
+Merging bounds the caps, which is a looser and different object than bounding
+the geometry inside them: a merge of the children's caps is not
+[`node_extent`](@ref) of their parent and guarantees nothing below the level
+those caps came from. It is sound for the fallback tree because that tree's
+leaves are its deepest cells.
 """
 merge_caps(a::US.SphericalCap, b::US.SphericalCap) = US._merge(a, b)
 

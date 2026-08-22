@@ -27,7 +27,7 @@ WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [sources]
-ConservativeRegridding = {rev = "66ed54cbe8621018fc3c1df936c32f3f420cba57", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+ConservativeRegridding = {rev = "dce7bb9f34596758613638ebaac5a21f6985d4cc", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 DiscreteGlobalGridsVisualization = {path = "../lib/DiscreteGlobalGridsVisualization"}
 DiscreteGlobalGrids = {path = ".."}
 DocumenterVitepress = {rev = "as/bonito-plugin", url = "https://github.com/LuxDL/DocumenterVitepress.jl.git"}

@@ -29,7 +29,7 @@ MakieExt = ["Makie"]
 DiscreteGlobalGridsZarrExt = ["Zarr"]
 
 [sources]
-ConservativeRegridding = {rev = "66ed54cbe8621018fc3c1df936c32f3f420cba57", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+ConservativeRegridding = {rev = "dce7bb9f34596758613638ebaac5a21f6985d4cc", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 GeometryOps = {rev = "32c60581afa09f19aeaefee26446d95693ec52c4", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 # Not a workspace member: it resolves its own Manifest, so

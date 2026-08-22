@@ -111,6 +111,9 @@ const LASTCACHE = Ref{Any}(nothing)
 # Likewise the lazy provider: the cold-network harness reads its counters after
 # `main` returns. Production behavior does not depend on this observation seam.
 const LASTPROVIDER = Ref{Any}(nothing)
+# A one-second libuv wake keeps Julia's signal-profile report listener schedulable
+# while every default-pool thread is occupied by the outer worker wave.
+const PROFILEPUMP = Ref{Union{Nothing,Task}}(nothing)
 
 stamp() = Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS")
 
@@ -152,6 +155,11 @@ function configureprofile()
             println(stderr, "COPDEM_PROFILE_ERROR ", sprint(showerror, err))
             flush(stderr)
         end
+    end
+    if PROFILEPUMP[] === nothing || istaskdone(PROFILEPUMP[])
+        PROFILEPUMP[] = errormonitor(@async while true
+            sleep(1.0)
+        end)
     end
     say("profile: SIGUSR1 60-second peek armed; request file $request")
     return true

@@ -129,7 +129,7 @@ _neighbor_cycle(::DGG.Vertex) = (1, 2, 3, 4, 5, 6, 7, 8)
 _neighbor_cycle(::DGG.Edge) = (1, 3, 5, 7)
 
 """
-    lattice_neighbors(ordinal, level, connectivity) -> Vector{Int64}
+    lattice_neighbors(ordinal, level, connectivity) -> SmallVector{8,Int64}
 
 The scaffold ordinals adjacent to `ordinal` at `level`, in the rotational order
 of [`_neighbor_cycle`](@ref): counter-clockwise seen from outside the sphere,
@@ -138,18 +138,29 @@ starting at the `+s` lattice direction.
 Invalid cube-corner diagonals are omitted. Duplicate cells are removed while
 retaining the first occurrence, preserving rotational order.
 """
-function lattice_neighbors(ordinal::Integer, level::Integer, connectivity::DGG.Connectivity)
+@inline _neighbor_value(::Type{Int64}, ::Integer, h::Int64) = h
+@inline _neighbor_value(::Type{DGG.LevelIndex}, level::Integer, h::Int64) =
+    DGG.LevelIndex(level, h)
+
+function _lattice_neighbors(::Type{T}, ordinal::Integer, level::Integer,
+        connectivity::DGG.Connectivity) where {T}
     nside = Int64(1) << Int(level)
     ix, iy, face = hilbert_to_xyf(ordinal, nside)
-    out = Int64[]
-    sizehint!(out, 8)
+    out = DGG.Helpers.empty_small_list(Val(8),
+        _neighbor_value(T, level, Int64(0)))
     for m in _neighbor_cycle(connectivity)
         dx, dy = NEIGHBOR_OFFSETS[m]
         w = wrap_xyf(ix + dx, iy + dy, face, nside)
         w === nothing && continue
         h = xyf_to_hilbert(w[1], w[2], w[3], nside)
-        (h == ordinal || h in out) && continue
-        push!(out, h)
+        h == ordinal && continue
+        item = _neighbor_value(T, level, h)
+        item in out && continue
+        out = DGG.Helpers.small_push(out, item)
     end
-    return out
+    return SmallVector{8,T}(out)
 end
+
+lattice_neighbors(ordinal::Integer, level::Integer,
+    connectivity::DGG.Connectivity) =
+    _lattice_neighbors(Int64, ordinal, level, connectivity)

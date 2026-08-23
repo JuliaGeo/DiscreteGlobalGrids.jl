@@ -201,11 +201,7 @@ from outside the sphere, starting at the `+s` lattice direction**
 """
 function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     DGG.checked_id(g, c)
-    out = SmallVector{8,DGG.LevelIndex}()
-    for h in lattice_neighbors(c.index, g.level, connectivity)
-        out = SmallCollections.push(out, DGG.LevelIndex(g.level, h))
-    end
-    return out
+    return _lattice_neighbors(DGG.LevelIndex, c.index, g.level, connectivity)
 end
 
 """

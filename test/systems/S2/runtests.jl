@@ -100,6 +100,11 @@ function cell_sample(level::Integer, n::Integer = 64)
     return sort!(unique(rand(rng, Int64(0):(ncell - 1), n)))
 end
 
+# Keep allocation checks behind a typed function barrier so an isbits return
+# is not boxed merely because the assertion runs at testset top level.
+neighbor_bytes(grid, c, conn) =
+    @allocated neighbors(grid, c, 1; connectivity = conn)
+
 # Retain the largest measurement for each key in the test log.
 const MEASURED = Dict{String,Float64}()
 record!(key, value) = (MEASURED[key] = max(get(MEASURED, key, -Inf), value))
@@ -897,6 +902,18 @@ end
                 @test LevelIndex(level, src) in neighbors(gg, LevelIndex(level, dst), 1)
             end
         end
+    end
+end
+
+@testset "the native one-ring stays inline" begin
+    # A whole root face, a cube-corner cell, and a face-interior cell exercise
+    # the distinct duplicate/seam paths through the bounded lattice builder.
+    for (level, position) in ((0, 1), (3, 1), (3, 100)), conn in (Vertex(), Edge())
+        g = levelgrid(SYS, level)
+        c = cellindex(g, position)
+        neighbors(g, c, 1; connectivity = conn)
+        @test neighbor_bytes(g, c, conn) == 0 skip =
+            VERSION < v"1.12" || Base.JLOptions().check_bounds == 1
     end
 end
 

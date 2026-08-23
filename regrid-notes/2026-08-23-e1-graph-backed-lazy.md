@@ -4,7 +4,8 @@
 - Card: `regrid-notes/2026-08-21-regridding-simplification-plan.md`,
   "Phase 3 — graph-backed lazy execution", Task E1
 - Branch: `claude/e1-graph-backed-lazy`, cut from `claude/g4-plan-owns-graph`
-  @ `1228317` (PR #72's head). PR opens into `claude/g4-plan-owns-graph`.
+  @ `1228317` (PR #72's head). Landed as **PR #74** into
+  `claude/g4-plan-owns-graph`.
 - Commit: `Drive lazy regridding from dependency rows`
 
 Phase 3's gate: **no lazy read performs geometric dependency discovery;

@@ -79,7 +79,7 @@ Landed cards, with the commit each one shipped as:
 | G2 | `da9e737` | landed early via PR #69; see the card |
 | G3 | PR #71 | Add reusable dependency graph identities |
 | G4 | PR #72 | Make chunked plans own dependency graphs |
-| E1 | PR #73 | Drive lazy regridding from dependency rows |
+| E1 | PR #74 | Drive lazy regridding from dependency rows |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
 `93e836d` is the commit that pinned them and records their SHAs.
@@ -673,7 +673,7 @@ misses, source order, eager/lazy values, residency, and production policy.
 **Phase 3 gate:** no lazy read performs geometric dependency discovery; executor
 and scheduler consume the same object.
 **Commit:** `Drive lazy regridding from dependency rows`.
-**Landed:** PR #73, stacked on #72. Record:
+**Landed:** PR #74, stacked on #72. Record:
 `regrid-notes/2026-08-23-e1-graph-backed-lazy.md`. All six actions landed. Three
 things the card did not say, which a later task should read before designing
 around them:

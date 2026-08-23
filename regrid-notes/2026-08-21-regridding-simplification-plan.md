@@ -46,7 +46,7 @@ and source reads remain lazy.
 - Phase 1, native hierarchical chunk indexes: complete.
 - Phases 1A, 1B, and 1C: **complete**. They finished the spatial layer before
   graph integration.
-- Current implementation phase: **2**.
+- Current implementation phase: **2**. G1, G2 and G3 are closed; G4 is next.
 - The nearest/bilinear method redesign is deferred to a separate plan.
 
 Landed cards, with the commit each one shipped as:
@@ -62,6 +62,7 @@ Landed cards, with the commit each one shipped as:
 | C1 | `5e91b0c` | Consolidate the regridding space interface |
 | G1 | PR #70 | Add dependency graph correctness and performance gates |
 | G2 | `da9e737` | landed early via PR #69; see the card |
+| G3 | PR #71 | Add reusable dependency graph identities |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
 `93e836d` is the commit that pinned them and records their SHAs.
@@ -73,6 +74,8 @@ Evidence:
 - `regrid-notes/2026-08-23-chunk-dag-coverage.md` — why G2 landed early
 - `regrid-notes/2026-08-23-g1-graph-oracles.md` — G1's oracles, and the
   retroactive verdict on G2's gates
+- `regrid-notes/2026-08-23-g3-graph-identity.md` — G3's identity design, what it
+  catches and what it cannot, and the row-view measurements
 - `regrid-notes/2026-08-21-simplification-plan-review.md`
 - `regrid-notes/2026-08-21-regridding-simplification-plan-detailed-archive.md`
 
@@ -546,6 +549,28 @@ parent relation avoids that entirely.
 **Done when:** an invalid graph reuse fails at construction and row views retain
 global destination identity for refinement.
 **Commit:** `Add reusable dependency graph identities`.
+**Landed:** PR #71, stacked on #70. Record:
+`regrid-notes/2026-08-23-g3-graph-identity.md`. Two corrections to this card's
+premise are recorded there, and G4 should read them before designing around it:
+
+- `chunkindex` is **not** a fresh packed R-tree per column on either shipped
+  native space. `chunkindex(::DGGSpace) = space` is a field read and the
+  `RasterGrid` one is a cursor; both measure below 0.5 µs in every harness case.
+  The row view's saving is real ([measured] 26× for one destination and 80× for
+  a 4 136-chunk column on the production pair, with 16× less allocation) but it
+  comes from the destination caps and the per-row queries, not from an index
+  build. The R-tree claim holds only on the generic path, which neither shipped
+  native space takes.
+- `restrict` pays `O(nsourcechunks)` for its source-major transpose, because a
+  row view's refcounts are genuinely its own. Restricting to a *single* row on a
+  26 475-source problem is [measured] slower than re-querying that row. Restrict
+  a column, not a row.
+
+The identity is a fingerprint, not a proof. Equal source chunk caps do not imply
+equal source relations, because the relation comes from `chunkindex` rather than
+from the caps — the same divergence #69 exists to fix. That hole is documented on
+`spacestamp` and deliberately left open; closing it needs an index-identity hook
+on the qualified space interface, which is an interface change no card owns.
 
 ### Task G4 — make `ChunkedPlan` the sole graph owner
 

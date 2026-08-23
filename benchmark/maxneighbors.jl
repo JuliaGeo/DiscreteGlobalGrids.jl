@@ -20,6 +20,7 @@
 # likely to be using anyway.
 
 using Printf
+import InteractiveUtils
 import DiscreteGlobalGrids as DGG
 const F = DGG.Engine
 include(joinpath(@__DIR__, "toys.jl"))
@@ -127,6 +128,55 @@ for (sysname, sys, lvl, n) in (("HEALPix L6", DGG.HEALPixSystem(), 6, 40_000),
     f1(); f2()
     @printf("%-52s %14d B\n", "$sysname  _positioned SmallVector{$M}", @allocated f1())
     @printf("%-52s %14d B\n", "$sysname  _positioned Vector (fallback)", @allocated f2())
+end
+
+# --- Part 4: where a stack container stops paying (STATIC_RING_CAP) --------
+#
+# `Engine.STATIC_RING_CAP` (64 elements) and `STATIC_RING_BYTES` (512) are
+# COMPILE-time limits, so what is measured is emitted code size per element,
+# not run time. `SmallVector{N,T}` is a distinct type per `N`; each `N`
+# respecialises the neighbourhood stack, and past the cliff each one costs more
+# to compile and emits more code for the same work.
+#
+# Measured 2026-08-23, M-series macOS, Julia 1.12, SmallCollections 0.6.3:
+# 8-byte ids step at N=65 (315 -> 492 B/elem, +56%) with no recovery above
+# (752 at 96) -- that cliff is what STATIC_RING_CAP catches. 4-byte ids show no
+# cliff through 160, so the element cap is merely conservative there. 16-byte
+# ids show no cliff either but cost ~3.6x per element everywhere, so
+# STATIC_RING_BYTES bounds the total rather than catching a jump.
+
+const SC = DGG.SmallCollections
+
+println("=== Part 4: SmallVector code size per element ===")
+
+struct Pair16Bench
+    a::UInt64
+    b::UInt64
+end
+Base.isless(x::Pair16Bench, y::Pair16Bench) = x.a < y.a
+
+# A clip-shaped loop: the shape `_clip` and `_positioned` actually compile.
+for (T, tag, ns) in ((UInt64, "8-byte id", (32, 48, 56, 62, 64, 65, 66, 72, 80, 96)),
+                     (UInt32, "4-byte id", (64, 96, 128, 144, 160)),
+                     (Pair16Bench, "16-byte id", (16, 24, 32, 40, 48, 64)))
+    println("--- $tag (sizeof = $(sizeof(T))) ---")
+    @printf("%6s %10s %12s %10s  %s\n", "N", "payloadB", "nativeB", "B/elem", "capacity")
+    for N in ns
+        fn = Symbol("_ladder_", tag[1], "_", N)
+        @eval function $fn(src::Vector{$T}, lo::$T)
+            v = SC.SmallVector{$N,$T}()
+            @inbounds for i in eachindex(src)
+                src[i] > lo && (v = SC.push(v, src[i]))
+            end
+            return v
+        end
+        f = getfield(@__MODULE__, fn)
+        na = length(sprint(io -> InteractiveUtils.code_native(io, f, (Vector{T}, T))))
+        cap = F._capacity(N, T)
+        @printf("%6d %10d %12d %10.1f  %s\n", N, N * sizeof(T), na, na / N,
+            cap === nothing ? "heap" : "Val{$N}")
+    end
+    println()
 end
 
 println()

@@ -271,7 +271,7 @@ function cellat end
 
 """
     neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer = 1; connectivity::Connectivity = Vertex())
-    neighbors(grid::AbstractGrid, p::Int, k::Integer = 1; connectivity::Connectivity = Vertex()) -> Vector{Int}
+    neighbors(grid::AbstractGrid, p::Int, k::Integer = 1; connectivity::Connectivity = Vertex()) -> AbstractVector{Int}
 
 All cells of `grid` within `k` adjacency steps of `c`, excluding `c`.
 
@@ -333,6 +333,9 @@ documented.
 # Container
 
 Any ordered, indexable collection with the grid's cell-index `eltype`.
+Position forms preserve the id form's container family while replacing its
+element type with `Int`; in particular, a fixed-capacity one-ring remains a
+fixed-capacity one-ring after conversion to positions.
 
 # Coverage, and what a subset means
 
@@ -377,15 +380,24 @@ function neighbors end
 
 """
     ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer; connectivity::Connectivity = Vertex())
-    ring(grid::AbstractGrid, p::Int, k::Integer; connectivity::Connectivity = Vertex()) -> Vector{Int}
+    ring(grid::AbstractGrid, p::Int, k::Integer; connectivity::Connectivity = Vertex()) -> AbstractVector{Int}
 
 The cells at adjacency distance exactly `k` from `c`. `ring(grid, c, 0)` is
 `c` alone. The ordered result satisfies
 
-    neighbors(grid, c, k) == vcat(ring(grid, c, 1), ..., ring(grid, c, k))
+    neighbors(grid, c, k) ==
+        reduce(vcat, [ring(grid, c, j) for j in 1:k]; init = eltype(grid)[])
 
 so ring `k` is the final ordered block of `neighbors(grid, c, k)`. Overrides
 must preserve this equality.
+
+`init` is load-bearing, and the splatted `vcat(ring(grid, c, 1), ...)` is **not**
+an equivalent spelling. Rings at different `k` may arrive in containers of
+different capacity — a `SmallVector{6}` at `k == 1` beside a heap `Vector` at
+`k == 2` — and `vcat` takes `similar` from its first argument, so concatenating
+onto the one-ring overflows that one-ring's capacity and throws. Seeding an
+empty `Vector` fixes the result type; `reduce` also keeps the call out of a
+splat, which is what stops the arity from specialising per `k`.
 
 `ring` carries [`neighbors`](@ref)' order, container, coverage and
 subset-clipping contracts unchanged — including the position form's, which is

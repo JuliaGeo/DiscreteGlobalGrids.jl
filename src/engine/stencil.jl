@@ -136,6 +136,18 @@ neighborcount(cv::CellVector, c::AbstractCellIndex;
 # The generic route, for a grid with no faster membership test than its own
 # `cellposition`. A complete level grid lands here too, where the clip is a
 # no-op.
+@inline function _positions(sub, cells::SmallCollections.SmallVector{N}) where {N}
+    # Build mutably, then freeze once. Repeated immutable `SmallVector.push`
+    # copies the inline payload at every surviving neighbour and is slower than
+    # the former heap `Vector` path despite allocating less.
+    out = SmallCollections.MutableSmallVector{N,Int}()
+    for nb in cells
+        p = cellposition(sub, nb)
+        p === nothing || push!(out, p)
+    end
+    return SmallCollections.SmallVector(out)
+end
+
 function _positions(sub, cells)
     out = Int[]
     for nb in cells
@@ -146,8 +158,8 @@ function _positions(sub, cells)
 end
 
 """
-    neighbors(grid::AbstractGrid, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
-    ring(grid::AbstractGrid, p::Int, k; connectivity = Vertex()) -> Vector{Int}
+    neighbors(grid::AbstractGrid, p::Int, k = 1; connectivity = Vertex()) -> AbstractVector{Int}
+    ring(grid::AbstractGrid, p::Int, k; connectivity = Vertex()) -> AbstractVector{Int}
 
 The neighbourhood of the cell at **position** `p`, as in-set positions in the
 same counter-clockwise order the id form answers in. `p` outside
@@ -165,20 +177,22 @@ ring(grid::AbstractGrid, p::Int, k::Integer;
     _positions(grid, ring(grid, cellindex(grid, p), Int(k); connectivity))
 
 """
-    neighbors(sub::PartialGrid, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
-    ring(sub::PartialGrid, p::Int, k; connectivity = Vertex()) -> Vector{Int}
-    neighbors(cv::CellVector, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
-    ring(cv::CellVector, p::Int, k; connectivity = Vertex()) -> Vector{Int}
+    neighbors(sub::PartialGrid, p::Int, k = 1; connectivity = Vertex()) -> AbstractVector{Int}
+    ring(sub::PartialGrid, p::Int, k; connectivity = Vertex()) -> AbstractVector{Int}
+    neighbors(cv::CellVector, p::Int, k = 1; connectivity = Vertex()) -> AbstractVector{Int}
+    ring(cv::CellVector, p::Int, k; connectivity = Vertex()) -> AbstractVector{Int}
 
 The position forms on the two subset collections: positions in the subset, in
-the ring order [`neighbors`](@ref) states.
+the ring order [`neighbors`](@ref) states. The conversion preserves a
+fixed-capacity `SmallVector` returned by the system's one-ring, changing only
+its element type to `Int`; larger rings that arrive in a `Vector` remain one.
 
 The complete level's candidates are clipped ONCE here rather than by going
 through the id form and testing membership again on the way back — a position
 already names a cell of the subset, so there is nothing for the id form's
 out-of-set check to decide.
 """
-neighbors(pg::PartialGrid, p::Int, k::Integer = 1;
+@inline neighbors(pg::PartialGrid, p::Int, k::Integer = 1;
         connectivity::Connectivity = Vertex()) =
     _positions(pg, neighbors(pg.complete, cellindex(pg, p), Int(k); connectivity))
 
@@ -186,7 +200,7 @@ ring(pg::PartialGrid, p::Int, k::Integer;
         connectivity::Connectivity = Vertex()) =
     _positions(pg, ring(pg.complete, cellindex(pg, p), Int(k); connectivity))
 
-neighbors(cv::CellVector, p::Int, k::Integer = 1;
+@inline neighbors(cv::CellVector, p::Int, k::Integer = 1;
         connectivity::Connectivity = Vertex()) =
     _positions(cv, neighbors(cv.grid, cv[p], Int(k); connectivity))
 

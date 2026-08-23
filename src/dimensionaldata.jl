@@ -242,8 +242,8 @@ cellposition(lk::CellLookup, c::AbstractCellIndex) = cellposition(parent(lk), c)
 """
     neighbors(lk::CellLookup, c, k = 1; connectivity = Vertex())
     ring(lk::CellLookup, c, k; connectivity = Vertex())
-    neighbors(lk::CellLookup, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
-    ring(lk::CellLookup, p::Int, k; connectivity = Vertex()) -> Vector{Int}
+    neighbors(lk::CellLookup, p::Int, k = 1; connectivity = Vertex()) -> AbstractVector{Int}
+    ring(lk::CellLookup, p::Int, k; connectivity = Vertex()) -> AbstractVector{Int}
     halo(lk::CellLookup; connectivity = Vertex(), cells = false)
     border(lk::CellLookup; connectivity = Vertex(), cells = false)
     interior(lk::CellLookup; connectivity = Vertex(), cells = false)
@@ -261,7 +261,7 @@ neighbors(lk::CellLookup, c::AbstractCellIndex, k::Integer=1;
 ring(lk::CellLookup, c::AbstractCellIndex, k::Integer;
     connectivity::Connectivity=Vertex()) = ring(parent(lk), c, k; connectivity)
 
-neighbors(lk::CellLookup, p::Int, k::Integer=1;
+@inline neighbors(lk::CellLookup, p::Int, k::Integer=1;
     connectivity::Connectivity=Vertex()) =
     neighbors(parent(lk), p, k; connectivity)
 

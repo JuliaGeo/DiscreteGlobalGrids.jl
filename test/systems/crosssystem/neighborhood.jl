@@ -6,6 +6,7 @@ using Test
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
 import Extents
+using SmallCollections: SmallVector
 
 using DiscreteGlobalGrids: levelgrid, ncells, cellindex, cellposition,
     neighbors, ring, neighborcount, level, rawid, has_sorted_subtrees,
@@ -45,6 +46,12 @@ rooted(sys, base, depth) =
 
 nwindows(cv) = EN.nwindows(EN.windows(cv))
 
+# Measure behind a typed function barrier. At testset top level, Julia boxes
+# even a native SmallVector return and reports that box as an
+# allocation; a hot caller specializes on the lookup type.
+lookup_neighbor_bytes(lk, conn) =
+    @allocated neighbors(lk, 1; connectivity = conn)
+
 @testset "$(syslabel(sys))" for (sys, base, depth, covlvl) in SWEEP
     sub = rooted(sys, base, depth)
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=covlvl))
@@ -82,6 +89,27 @@ nwindows(cv) = EN.nwindows(EN.windows(cv))
         pg = subtree(sys, cellindex(levelgrid(sys, base), 3), base + depth)
         @test agree(collect(neighbors(pg)), collect(neighbors(sub)))
         @test agree(collect(neighbors(CellLookup(sub))), collect(neighbors(sub)))
+    end
+
+    @testset "compressed lookup keeps the positional one-ring inline" begin
+        lk = CellLookup(coverage)
+        capacity = DGG.maxneighbors(sys)
+        for conn in (Vertex(), Edge())
+            got = neighbors(lk, 1; connectivity = conn)
+            want = [cellposition(lk, c) for c in
+                    neighbors(coverage, coverage[1]; connectivity = conn)]
+            @test got isa SmallVector{capacity,Int}
+            @test collect(got) == want
+
+            # The lookup call is the shape used by
+            # `neighbors(lookup(cube)[1], i)`. Warm it before measuring.
+            neighbors(lk, 1; connectivity = conn)
+            # `--check-bounds=yes` deliberately prevents scalar replacement
+            # inside inline builders and boxes the isbits result. The package's
+            # normal bounds mode keeps this hot call allocation-free.
+            @test lookup_neighbor_bytes(lk, conn) == 0 skip =
+                VERSION < v"1.12" || Base.JLOptions().check_bounds == 1
+        end
     end
 end
 

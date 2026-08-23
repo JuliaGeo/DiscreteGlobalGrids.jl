@@ -758,10 +758,15 @@ function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, c
     refine = config.refinegraph ?
              ((d, s) -> boxesoverlap(dlat[d], dlon[d], drad[d], dhalf[d],
                  tlat[s], tlon[s])) : nothing
+    # Name the phase, so the relation records which one it is. A graph narrowed
+    # by an anonymous closure cannot be told apart afterwards from the full
+    # candidate relation, and `GR.validate_dependencies` refuses to certify one
+    # for reuse; the tag is what makes a refined graph reusable at all.
+    narrow = config.refinegraph ? :copdem_tile_lonlat_box : nothing
 
     t1 = time()
     radius = Float64(GR.support_radius(DGG.Conservative(), srcspace))
-    graph = GR.chunk_dependency_graph(dstspace, srcspace; radius, refine)
+    graph = GR.chunk_dependency_graph(dstspace, srcspace; radius, refine, narrow)
     tgraph = time() - t1
 
     # Sweep the tiles in Morton order over the 1-degree lattice and emit a chunk

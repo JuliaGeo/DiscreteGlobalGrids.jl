@@ -2,7 +2,7 @@
 #
 #     julia -t 8 --project=benchmark benchmark/chunk_graph_gates.jl
 #
-# Two questions, one harness, over one case matrix:
+# Three questions, one harness, over one case matrix:
 #
 #   1. Does the relation the builder produces hold every pair that a weight
 #      builder would find a nonzero weight between? The oracle builds REAL cell
@@ -22,6 +22,12 @@
 #      builder. `:latjoin_raw` is the same with the latitude prefilter off; it
 #      exists only to attribute the prefilter's share and is opt-in behind
 #      `DGG_GRAPH_GATE_RAW=1`.
+#
+#   3. What does a per-column plan pay for its rows? Task G3 added `restrict`,
+#      which hands back a row view sharing the parent's destination-major CSR.
+#      The alternative is a rebuild, and since #69 a rebuild costs a fresh
+#      `chunkindex(src_space)` per column. `restrict_measurement` times both and
+#      asserts they agree row for row.
 #
 # The two arms answer different relations on purpose: `:indexed` asks the source
 # space's own chunk index the question a lazy read asks, `:latjoin` joins the
@@ -145,11 +151,15 @@ function latjoin_graph(dst_space, src_space; radius::Real = 0.0, refine = nothin
         prefilter::Bool = true)
     r = Float64(radius)
     (isfinite(r) && r >= 0) || throw(ArgumentError("radius must be finite and >= 0"))
-    return _latjoin(GR.chunkextents(dst_space), GR.chunkextents(src_space), r,
+    # G3 gave the graph an identity; this arm stamps the same one the production
+    # builder would, so the two arms stay comparable as objects and not just as
+    # relations. The stamping cost is inside the timed region for both.
+    id = GR.dependency_identity(dst_space, src_space; radius = r)
+    return _latjoin(id, GR.chunkextents(dst_space), GR.chunkextents(src_space), r,
         refine, prefilter)
 end
 
-function _latjoin(dstcaps::Vector{<:SphCap}, srccaps::Vector{<:SphCap},
+function _latjoin(id, dstcaps::Vector{<:SphCap}, srccaps::Vector{<:SphCap},
         radius::Float64, refine, prefilter::Bool)
     T = Int32
     ndst, nsrc = length(dstcaps), length(srccaps)
@@ -171,7 +181,7 @@ function _latjoin(dstcaps::Vector{<:SphCap}, srccaps::Vector{<:SphCap},
             end
         end
     end
-    return _assemble(rows, nsrc, ndst, radius, T)
+    return _assemble(id, rows, nsrc, ndst, T)
 end
 
 function _latrow!(buf::Vector{T}, rows::Vector{Vector{T}}, d::Int, dcap,
@@ -213,7 +223,7 @@ function _blockranges(n::Int, k::Int)
     return out
 end
 
-function _assemble(rows::Vector{Vector{T}}, nsrc::Int, ndst::Int, radius::Float64,
+function _assemble(id, rows::Vector{Vector{T}}, nsrc::Int, ndst::Int,
         ::Type{T}) where {T}
     dstoff = Vector{Int}(undef, ndst + 1)
     dstoff[1] = 1
@@ -239,7 +249,7 @@ function _assemble(rows::Vector{Vector{T}}, nsrc::Int, ndst::Int, radius::Float6
         dstof[cursor[s]] = T(d)
         cursor[s] += 1
     end
-    return GR.ChunkDependencyGraph{T}(nsrc, ndst, radius, dstoff, srcof, srcoff, dstof)
+    return GR.ChunkDependencyGraph(id, dstoff, srcof, srcoff, dstof)
 end
 
 # ===========================================================================
@@ -404,6 +414,82 @@ const ARMS = let base = (
         base
 end
 
+# ===========================================================================
+# Question 3 — what a row view saves against rebuilding (Task G3)
+# ===========================================================================
+#
+# A per-column plan needs the dependency rows of one column of destinations.
+# Two ways to get them: `restrict` the graph that already exists, or build a
+# graph over just those destinations.
+#
+# `rebuild_graph` is that second path. It does every piece of work
+# `chunk_dependency_graph` does for a column-sized destination — stamp both
+# spaces, take the destination caps, build the source chunk index, query it once
+# per destination, assemble the destination-major CSR and transpose it — inside
+# the timed region, and it hands back a real `ChunkDependencyGraph`. Both sides
+# of the comparison therefore produce the same kind of object and pay the same
+# `O(nsourcechunks)` transpose; the difference is exactly the geometry work
+# `restrict` does not repeat.
+#
+# What it leaves OUT, and therefore understates, is constructing the per-column
+# destination space itself. A real per-column rebuild pays that too.
+
+"Build a one-column dependency graph the way a caller without `restrict` must."
+function rebuild_graph(dst, src, ds::Vector{Int}, radius::Float64)
+    id = GR.dependency_identity(dst, src; radius)
+    caps = GR.chunkextents(dst)
+    return GR._chunkgraph(id, [caps[d] for d in ds], GR.chunkindex(src),
+        Int(GR.nchunks(src)), radius, nothing)
+end
+
+rows_of(g) = [Int.(collect(GR.sourcesof(g, d))) for d in 1:GR.ndestinationchunks(g)]
+
+"""
+    restrict_measurement(graph, dst, src, radius, ndst) -> NamedTuple
+
+Time `restrict` against a rebuild, for one destination and for a column-sized
+block, and check that the two agree row for row and in both CSR directions. A
+disagreement would mean a row view is not the relation it claims to be, so it is
+an assertion and not a printed column.
+"""
+function restrict_measurement(graph, dst, src, radius, ndst)
+    one = ndst == 0 ? Int[] : [max(1, ndst ÷ 2)]
+    # A "column" of a 1/16th of the destination space, contiguous, which is the
+    # shape a per-column plan actually asks for.
+    lo = ndst == 0 ? 1 : max(1, ndst ÷ 2)
+    block = collect(lo:min(ndst, lo + max(0, cld(ndst, 16) - 1)))
+
+    vone, tone = timeit(() -> GR.restrict(graph, one), NSAMPLES)
+    vblk, tblk = timeit(() -> GR.restrict(graph, block), NSAMPLES)
+    bone, rone = timeit(() -> rebuild_graph(dst, src, one, radius), NSAMPLES)
+    bblk, rblk = timeit(() -> rebuild_graph(dst, src, block, radius), NSAMPLES)
+
+    # The relation a view reports must be the parent's rows for those chunks,
+    # must be what a rebuild would have produced, and must transpose the same.
+    consumers(g) = [Int.(collect(GR.consumersof(g, s))) for s in 1:GR.nsourcechunks(g)]
+    ok = rows_of(vone) == rows_of(bone) && rows_of(vblk) == rows_of(bblk) &&
+         consumers(vone) == consumers(bone) && consumers(vblk) == consumers(bblk) &&
+         GR.globaldestinations(vone) == one && GR.globaldestinations(vblk) == block
+    ok || error("restrict disagreed with a rebuild on $(GR.nsourcechunks(graph)) sources")
+
+    @printf("   restrict:    1 dst %9.6f s vs rebuild %9.6f s (%6.1f×)   \
+%d dst %9.6f s vs rebuild %9.6f s (%6.1f×)\n",
+        tone.seconds_median, rone.seconds_median,
+        rone.seconds_median / max(tone.seconds_median, eps()),
+        length(block), tblk.seconds_median, rblk.seconds_median,
+        rblk.seconds_median / max(tblk.seconds_median, eps()))
+
+    return (; restrict_one_seconds = tone.seconds_median,
+        restrict_one_bytes = tone.bytes_min,
+        rebuild_one_seconds = rone.seconds_median,
+        rebuild_one_bytes = rone.bytes_min,
+        restrict_block_destinations = length(block),
+        restrict_block_seconds = tblk.seconds_median,
+        restrict_block_bytes = tblk.bytes_min,
+        rebuild_block_seconds = rblk.seconds_median,
+        rebuild_block_bytes = rblk.bytes_min)
+end
+
 function runcase(case, prov)
     (dst, src), spacetime = timeit(case.make, 1; warm = false)
     ndst, nsrc = Int(GR.nchunks(dst)), Int(GR.nchunks(src))
@@ -418,6 +504,14 @@ function runcase(case, prov)
     truth = case.oracle ? contributing_pairs(dst, src; radius = case.radius) : nothing
     demanded = demanded_pairs(dst, src; radius = case.radius)
 
+    # The identity a graph now carries, and what stamping it costs. Both spaces
+    # are stamped inside `chunk_dependency_graph`, so this is a component of the
+    # `:indexed` timing below, not something added beside it.
+    _, idtime = timeit(NSAMPLES) do
+        GR.dependency_identity(dst, src; radius = case.radius)
+    end
+    _, indextime = timeit(() -> GR.chunkindex(src), NSAMPLES)
+
     rows = NamedTuple[]
     relations = Dict{Symbol,Set{Tuple{Int,Int}}}()
     measured = Dict{Symbol,Any}()
@@ -427,6 +521,8 @@ function runcase(case, prov)
         relations[arm] = pairs
         measured[arm] = (graph, t, pairs)
     end
+    restriction = restrict_measurement(measured[:indexed][1], dst, src,
+        Float64(case.radius), ndst)
     for (arm, _) in ARMS
         graph, t, pairs = measured[arm]
         push!(rows, (; case = case.name, arm = String(arm),
@@ -452,6 +548,11 @@ function runcase(case, prov)
             # How this arm differs from the production relation, both ways.
             only_here = length(setdiff(pairs, relations[:indexed])),
             missing_here = length(setdiff(relations[:indexed], pairs)),
+            # G3: what the identity costs, and what a row view saves.
+            identity_seconds = idtime.seconds_median,
+            identity_bytes = idtime.bytes_min,
+            source_index_seconds = indextime.seconds_median,
+            restriction...,
             samples = NSAMPLES, prov...))
     end
 

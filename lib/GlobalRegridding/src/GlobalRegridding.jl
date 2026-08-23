@@ -109,6 +109,12 @@ public sourcesof, consumersof, sourcedegree, consumerdegree
 public srcvertex, dstvertex, srcchunk, dstchunk
 public issrcvertex, isdstvertex, srcvertices, dstvertices
 public nsourcechunks, ndestinationchunks, dependency_radius
+# Graph identity and row views: what makes one relation reusable by a plan that
+# did not build it, and what a per-column plan restricts it to.
+public SpaceStamp, spacestamp, DependencyIdentity, dependency_identity
+public narrowphase, UNNAMED_NARROW, validate_dependencies
+public restrict, isrestricted
+public globaldestinations, globaldestination, localdestination
 
 # DiscreteGlobalGrids extends the qualified space contract in every
 # responsibility it customizes: `subtree`; `chunkextents`, `chunkindex`, and

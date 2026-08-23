@@ -1,5 +1,6 @@
 import Graphs
 import DimensionalData as DD
+import Serialization
 
 # The four relations — truth, demand, cap join, and the graph's own rows — are
 # defined once, in `graphoracles.jl`, and shared with the root suite and the G1
@@ -378,5 +379,263 @@ end
         # what makes "valid for any method with a smaller support" true.
         @test graph_pairs(tight) ⊆ graph_pairs(loose)
         @test occursin("ChunkDependencyGraph", sprint(show, tight))
+    end
+
+    @testset "space stamps distinguish the inputs" begin
+        # A stamp is a fingerprint, not a proof, so what is under test is that
+        # every way of being a *different* pair of spaces moves it. The two
+        # things it cannot catch — a digest collision, and equal caps over
+        # different cell geometry — are documented on `spacestamp` and are not
+        # testable here by construction.
+        base = ToyLonLatSpace(8, 4; chunks = (2, 2))
+        @test GR.spacestamp(base) == GR.spacestamp(ToyLonLatSpace(8, 4; chunks = (2, 2)))
+
+        # A different resolution, a different chunking, and a different extent
+        # each move it, and so does a different space type over the same globe.
+        @test GR.spacestamp(base) != GR.spacestamp(ToyLonLatSpace(16, 8; chunks = (2, 2)))
+        @test GR.spacestamp(base) != GR.spacestamp(ToyLonLatSpace(8, 4; chunks = (4, 2)))
+        @test GR.spacestamp(base) != GR.spacestamp(
+            ToyLonLatSpace(8, 4; lon = (-90.0, 90.0), chunks = (2, 2)))
+        raster = misalignedraster(8, 4, 2, 2)
+        @test GR.spacestamp(raster).tag != GR.spacestamp(base).tag
+
+        # The components are readable, not just hashed, so a mismatch can be
+        # reported in terms a caller recognizes.
+        s = GR.spacestamp(base)
+        @test s.ncells == ncells(base)
+        @test s.nchunks == nchunks(base)
+        @test occursin("ToyLonLatSpace", string(s.tag))
+
+        # Stamps, identities and whole graphs survive serialization: the point
+        # of a fingerprint over an object reference is that it can be written
+        # down beside the relation and read back.
+        roundtrip(x) = (io = IOBuffer(); Serialization.serialize(io, x);
+                        seekstart(io); Serialization.deserialize(io))
+        @test roundtrip(s) == s
+        id = GR.dependency_identity(base, base; radius = 0.25, narrow = :box)
+        @test roundtrip(id) == id
+        @test id.dst == id.src == s
+        @test id.radius == 0.25 && id.narrow == :box
+    end
+
+    @testset "a graph carries the identity of what built it" begin
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        g = GR.chunk_dependency_graph(dst, src; radius = 0.1)
+        id = GR.dependency_identity(g)
+
+        @test id == GR.dependency_identity(dst, src; radius = 0.1)
+        @test id.dst == GR.spacestamp(dst)
+        @test id.src == GR.spacestamp(src)
+        @test id.radius == GR.dependency_radius(g) == 0.1
+        @test GR.narrowphase(g) == :none
+        # The stamps carry the chunk counts the graph was built over.
+        @test id.dst.nchunks == GR.ndestinationchunks(g) == nchunks(dst)
+        @test id.src.nchunks == GR.nsourcechunks(g) == nchunks(src)
+        # Roles are not symmetric: swapping the spaces makes a different graph
+        # with a different identity, even at the same counts.
+        @test GR.dependency_identity(GR.chunk_dependency_graph(src, dst; radius = 0.1)) != id
+    end
+
+    @testset "the narrow-phase tag is a claim about the relation" begin
+        dst = ToyLonLatSpace(8, 4; chunks = (2, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 2))
+        odd = (d, s) -> isodd(s)
+
+        # No refine and no tag is the only combination that means ":none".
+        @test GR.narrowphase(GR.chunk_dependency_graph(dst, src)) == :none
+        # A closure has no identity a stamp can carry, so an unnamed refine is
+        # recorded as exactly that, and can never be validated for reuse.
+        @test GR.narrowphase(GR.chunk_dependency_graph(dst, src; refine = odd)) ==
+              GR.UNNAMED_NARROW
+        @test GR.narrowphase(GR.chunk_dependency_graph(dst, src; refine = odd,
+            narrow = :oddsources)) == :oddsources
+
+        # Both halves of the claim must agree. Naming a phase that was not
+        # applied, or applying one and claiming none, is an error at
+        # construction rather than a lie in the record.
+        @test_throws ArgumentError GR.chunk_dependency_graph(dst, src; narrow = :oddsources)
+        @test_throws ArgumentError GR.chunk_dependency_graph(dst, src; refine = odd,
+            narrow = :none)
+    end
+
+    @testset "an invalid reuse fails at construction" begin
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        g = GR.chunk_dependency_graph(dst, src; radius = 0.1)
+
+        # The valid reuse: the same pair, at this radius or any narrower one.
+        @test GR.validate_dependencies(g, dst, src; radius = 0.1) === g
+        @test GR.validate_dependencies(g, dst, src; radius = 0.0) === g
+
+        # A wider radius is NOT valid: the relation is monotone in the radius,
+        # so a graph built tight is not a superset of a looser demand.
+        @test_throws ArgumentError GR.validate_dependencies(g, dst, src; radius = 0.2)
+        @test_throws ArgumentError GR.validate_dependencies(g, dst, src; radius = -1.0)
+
+        # Either space being a different space fails, and so does swapping the
+        # two: the stamps are compared in their own roles.
+        other_dst = ToyLonLatSpace(12, 6; chunks = (2, 2))
+        other_src = ToyLonLatSpace(16, 8; chunks = (2, 1))
+        @test_throws ArgumentError GR.validate_dependencies(g, other_dst, src; radius = 0.1)
+        @test_throws ArgumentError GR.validate_dependencies(g, dst, other_src; radius = 0.1)
+        @test_throws ArgumentError GR.validate_dependencies(g, src, dst; radius = 0.1)
+        @test_throws ArgumentError GR.validate_dependencies(g, dst,
+            misalignedraster(8, 4, 2, 1); radius = 0.1)
+        # The message names the component that moved, not just "mismatch".
+        @test occursin("chunks against",
+            sprint(showerror, try
+                GR.validate_dependencies(g, other_dst, src; radius = 0.1)
+            catch e
+                e
+            end))
+
+        # A narrow phase in either direction. A caller expecting the full
+        # candidate relation must not silently receive one somebody thinned,
+        # and a caller expecting a thinning must not receive the full one.
+        thinned = GR.chunk_dependency_graph(dst, src; radius = 0.1,
+            refine = (d, s) -> isodd(s), narrow = :oddsources)
+        @test GR.validate_dependencies(thinned, dst, src; radius = 0.1,
+            narrow = :oddsources) === thinned
+        @test_throws ArgumentError GR.validate_dependencies(thinned, dst, src; radius = 0.1)
+        @test_throws ArgumentError GR.validate_dependencies(g, dst, src; radius = 0.1,
+            narrow = :oddsources)
+
+        # An unnamed refine is unusable in both directions.
+        anon = GR.chunk_dependency_graph(dst, src; radius = 0.1, refine = (d, s) -> isodd(s))
+        @test_throws ArgumentError GR.validate_dependencies(anon, dst, src; radius = 0.1)
+        @test_throws ArgumentError GR.validate_dependencies(anon, dst, src; radius = 0.1,
+            narrow = GR.UNNAMED_NARROW)
+        @test_throws ArgumentError GR.validate_dependencies(g, dst, src; radius = 0.1,
+            narrow = GR.UNNAMED_NARROW)
+    end
+
+    @testset "row views share the parent relation" begin
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        g = GR.chunk_dependency_graph(dst, src; radius = 0.05)
+        sel = [2, 3, 7, 11]
+        view = GR.restrict(g, sel)
+
+        # It is the same type, over the same source side, with the selected
+        # rows renumbered 1:k.
+        @test view isa GR.ChunkDependencyGraph
+        @test GR.isrestricted(view) && !GR.isrestricted(g)
+        @test GR.ndestinationchunks(view) == length(sel)
+        @test GR.nsourcechunks(view) == GR.nsourcechunks(g)
+
+        # THE POINT: the destination-major direction is the parent's arrays, by
+        # reference. Nothing about the relation is recomputed, and no space is
+        # queried. If this ever becomes a copy, `restrict` has stopped being a
+        # view and the per-column saving is gone.
+        @test view.dstoff === g.dstoff
+        @test view.srcof === g.srcof
+
+        # Rows are the parent's rows, and they still know their global chunk.
+        @test all(GR.sourcesof(view, i) == GR.sourcesof(g, sel[i]) for i in eachindex(sel))
+        @test all(GR.sourcedegree(view, i) == GR.sourcedegree(g, sel[i])
+                  for i in eachindex(sel))
+        @test GR.globaldestinations(view) == sel
+        @test all(GR.globaldestination(view, i) == sel[i] for i in eachindex(sel))
+        @test all(GR.localdestination(view, sel[i]) == i for i in eachindex(sel))
+        @test GR.localdestination(view, 1) === nothing
+        @test GR.globaldestinations(g) == 1:GR.ndestinationchunks(g)
+        @test GR.localdestination(g, 4) == 4
+
+        # A view's refcounts are the view's own. `consumersof` must count only
+        # the rows the view holds, or a refcount taken from it retires nothing.
+        @test Graphs.ne(view) == sum(GR.sourcedegree(g, d) for d in sel)
+        @test all(GR.consumerdegree(view, s) <= GR.consumerdegree(g, s)
+                  for s in 1:GR.nsourcechunks(g))
+        @test sum(GR.consumerdegree(view, s) for s in 1:GR.nsourcechunks(view)) ==
+              Graphs.ne(view)
+        @test all(GR.consumersof(view, s) ==
+                  [i for i in eachindex(sel) if insorted(Int32(s), GR.sourcesof(g, sel[i]))]
+                  for s in 1:GR.nsourcechunks(view))
+
+        # Both CSR directions are still transposes of one another, and sorted.
+        forward = Set((d, Int(s)) for d in 1:GR.ndestinationchunks(view)
+                      for s in GR.sourcesof(view, d))
+        reverse = Set((Int(d), s) for s in 1:GR.nsourcechunks(view)
+                      for d in GR.consumersof(view, s))
+        @test forward == reverse
+        @test forward == Set((i, s) for (i, d) in pairs(sel)
+                             for s in Int.(GR.sourcesof(g, d)))
+        @test all(issorted(GR.consumersof(view, s); lt = <)
+                  for s in 1:GR.nsourcechunks(view))
+
+        # The identity still stamps the WHOLE destination space: a view knows
+        # what it is a view of, which is what makes global refinement possible.
+        @test GR.dependency_identity(view) == GR.dependency_identity(g)
+        @test GR.dependency_identity(view).dst.nchunks == nchunks(dst)
+        @test occursin("row view", sprint(show, view))
+
+        # Graphs.jl still works over the same CSR — the view is not a second
+        # graph type with a second interface.
+        @test Graphs.nv(view) == GR.nsourcechunks(view) + length(sel)
+        @test Graphs.ne(view) == length(collect(Graphs.edges(view)))
+        @test Graphs.is_bipartite(view)
+        @test sum(length(Graphs.outneighbors(view, v)) for v in Graphs.vertices(view)) ==
+              2 * Graphs.ne(view)
+        @test all(Graphs.has_edge(view, Graphs.src(e), Graphs.dst(e))
+                  for e in Graphs.edges(view))
+        @test Set((Graphs.dst(e) - GR.nsourcechunks(view), Int(Graphs.src(e)))
+                  for e in Graphs.edges(view)) == graph_pairs(view)
+        @test sum(length, Graphs.connected_components(view)) == Graphs.nv(view)
+
+        # Views compose, and composing them composes the global numbering.
+        inner = GR.restrict(view, [2, 4])
+        @test GR.globaldestinations(inner) == [sel[2], sel[4]]
+        @test GR.sourcesof(inner, 1) == GR.sourcesof(g, sel[2])
+        @test inner.srcof === g.srcof
+        @test GR.restrict(g, 1:GR.ndestinationchunks(g)) |> graph_pairs == graph_pairs(g)
+
+        # Degenerate selections are legal and do not need special-casing.
+        empty_view = GR.restrict(g, Int[])
+        @test GR.ndestinationchunks(empty_view) == 0 && Graphs.ne(empty_view) == 0
+        @test all(GR.consumerdegree(empty_view, s) == 0
+                  for s in 1:GR.nsourcechunks(empty_view))
+
+        # An ill-formed selection fails before anything is built.
+        @test_throws ArgumentError GR.restrict(g, [3, 3])
+        @test_throws ArgumentError GR.restrict(g, [5, 2])
+        @test_throws ArgumentError GR.restrict(g, [0])
+        @test_throws ArgumentError GR.restrict(g, [GR.ndestinationchunks(g) + 1])
+
+        # And a view is validated against the rows its caller means to compute,
+        # never against the whole space.
+        @test GR.validate_dependencies(view, dst, src; radius = 0.05,
+            destinations = sel) === view
+        @test_throws ArgumentError GR.validate_dependencies(view, dst, src; radius = 0.05)
+        @test_throws ArgumentError GR.validate_dependencies(view, dst, src;
+            radius = 0.05, destinations = [2, 3])
+        @test_throws ArgumentError GR.validate_dependencies(g, dst, src; radius = 0.05,
+            destinations = sel)
+    end
+
+    @testset "a row view is the graph of those destinations" begin
+        # The oracle question, asked of a view: restricting must not change
+        # which pairs are held, only which rows are visible. This is the
+        # property G4's per-column plans depend on.
+        dst = ToyLonLatSpace(24, 12; chunks = (2, 2))
+        src = misalignedraster(36, 18, 7, 5)
+        for radius in (0.0, 0.1)
+            g = GR.chunk_dependency_graph(dst, src; radius)
+            ndst = GR.ndestinationchunks(g)
+            sel = collect(1:3:ndst)
+            view = GR.restrict(g, sel)
+            parent = graph_pairs(g)
+            # Read the view's own rows back into GLOBAL destination numbers and
+            # compare against the parent's rows for exactly those chunks.
+            lifted = Set((GR.globaldestination(view, d), Int(s))
+                         for d in 1:GR.ndestinationchunks(view)
+                         for s in GR.sourcesof(view, d))
+            @test lifted == Set(p for p in parent if p[1] in Set(sel))
+            @test !isempty(lifted)
+            # And every geometrically contributing pair over those chunks is
+            # still there, through the independent cell-geometry oracle.
+            truth = contributing_pairs(dst, src; radius)
+            @test Set(p for p in truth if p[1] in Set(sel)) ⊆ lifted
+        end
     end
 end

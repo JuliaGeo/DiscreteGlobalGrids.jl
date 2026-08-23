@@ -1,5 +1,11 @@
 # Generic barycentric and patch-like point regridding
 
+> **Implementation status:** This is a mathematical design note. The
+> authoritative API, chunk-planning, Copernicus DEM, scope, and task decisions
+> are in `regrid-notes/2026-08-23-barycentric-regridding-plan.md`. In
+> particular, that plan supersedes the tentative `sampleelement`, `patchsites`,
+> and `stencilreach` proposals below.
+
 ## Recommendation
 
 Implement `BarycentricPoint` on the **dual interpolation complex** of the

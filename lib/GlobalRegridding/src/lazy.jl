@@ -47,7 +47,7 @@ const DEST_BUDGET_SHARE = 8
 const DEST_BYTES_PER_CELL = 40
 
 """
-    DestTiling(runs, capsof, spacetiled)
+    DestTiling(runs, chunksof, spacetiled)
 
 Describe destination tiles by cell-position runs and bounding space chunks.
 When `spacetiled` is true, tile `t` is destination chunk `t`; otherwise the tile
@@ -55,7 +55,7 @@ is the corresponding contiguous run.
 """
 struct DestTiling
     runs::Vector{UnitRange{Int}}
-    capsof::Vector{Vector{Int}}
+    chunksof::Vector{Vector{Int}}
     spacetiled::Bool
 end
 
@@ -210,17 +210,35 @@ Dimensions are destination cells followed by the source's non-spatial
 dimensions. Tiling uses compatible destination chunks, declared `chunks`, or a
 budget-derived fallback. Construction reads no source data. Reads load only
 connected source chunks and keep them within [`databudget`](@ref).
+
+# Where a tile's source chunks come from
+
+From the plan's dependency relation, and from nowhere else. A read performs no
+geometric dependency discovery: the array holds no source chunk index, issues no
+[`candidatechunks!`](@ref) query and tests no cap against the source. A tile that
+*is* a destination chunk takes that chunk's row,
+[`sourcesof`](@ref)`(dependencies(plan), d)`; a derived tile spanning several
+destination chunks takes the ascending union of their rows. Data-dependent
+filtering — dropping the chunks [`knownempty`](@ref) reports empty — happens
+after that selection and never instead of it, so what a read may load is exactly
+what the relation permits, and a scheduler holding the same object predicts it
+exactly.
+
+The plan must therefore own a relation. `plan_regrid(...; lazy = true)` builds
+one by default; only `dependencies = false` asks for a plan that cannot back a
+lazy array.
 """
-struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,K,C} <: DiskArrays.AbstractDiskArray{T,N}
+struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C} <:
+       DiskArrays.AbstractDiskArray{T,N}
     source::A
     plan::P
     srcsize::NTuple{NS,Int}
     size::NTuple{N,Int}
-    srcindex::K
-    dstcaps::Vector{Cap}
-    srccaps::Vector{Cap}
+    # The plan's relation, by reference: `graph === dependencies(plan)`. It is
+    # the source of tile adjacency AND of the per-chunk caps wave costing
+    # weighs, so this array rebuilds and copies neither.
+    graph::G
     tiling::DestTiling
-    radius::Float64
     chunks::C
     otherchunks::NTuple{NO,Vector{UnitRange{Int}}}
     othergroups::Vector{NTuple{NO,UnitRange{Int}}}
@@ -231,6 +249,7 @@ end
 
 function LazyRegridArray(data, plan::ChunkedPlan)
     src_space, dst_space = plan.src_space, plan.dst_space
+    graph = _lazygraph(plan)
     nsrc = Int(ncells(src_space))
     ndst = Int(ncells(dst_space))
     sd = resolvespatialdims(data, nsrc)
@@ -239,25 +258,50 @@ function LazyRegridArray(data, plan::ChunkedPlan)
     nspatial = length(sd)
     srcsize = ntuple(i -> size(source, i), nspatial)
     spans, contiguous = _chunkspans(dst_space)
-    caps = chunkextents(dst_space)
-    radius = Float64(support_radius(plan.method, src_space))
-    radius >= 0 || throw(ArgumentError(
-        "support_radius must be a non-negative angular radius, got $radius"))
     chunks, tiling = _outputgrid(plan, source, ndst, spans, contiguous, nspatial, othersizes)
     otherchunks = _sourceotherchunks(source, nspatial, othersizes)
     othergroups = _groupgrid(otherchunks)
-    # Build the source space's native chunk index once for all tile queries.
-    srcindex = chunkindex(src_space)
-    # Source extents come along for the ride: `_wavesize` weighs a tile's
-    # chunks by how much of each one the tile can actually reach.
-    srccaps = chunkextents(src_space)
     T = outputeltype(eltype(data))
     return LazyRegridArray{T,length(othersizes) + 1,nspatial,length(othersizes),
-        typeof(source),typeof(plan),typeof(srcindex),typeof(chunks)}(
-        source, plan, srcsize, (ndst, othersizes...), srcindex, caps, srccaps, tiling, radius,
+        typeof(source),typeof(plan),typeof(graph),typeof(chunks)}(
+        source, plan, srcsize, (ndst, othersizes...), graph, tiling,
         chunks, otherchunks, othergroups, zeros(Int8, Int(nchunks(src_space))),
         !usesreference(plan.missingpolicy), LazyStats())
 end
+
+# The plan's relation is what a lazy read reads, so this is where a plan that
+# owns none is refused — at construction, naming the keyword that caused it,
+# rather than as a `nothing` reaching a tile query.
+function _lazygraph(plan::ChunkedPlan)
+    g = dependencies(plan)
+    g === nothing && throw(ArgumentError(
+        "a lazy regrid takes its source chunks from the plan's dependency " *
+        "relation, but this plan owns none. It was built with " *
+        "`dependencies = false`; drop that keyword to have the plan build one, " *
+        "or pass a `ChunkDependencyGraph` for it to adopt."))
+    hasextents(g) || throw(ArgumentError(
+        "$g carries no chunk extents, so a lazy read cannot weigh a wave's " *
+        "blocks. Build the relation from the spaces — `dependencies = true`, or " *
+        "`chunk_dependency_graph(dst, src; radius)` — rather than assembling it " *
+        "from bare CSR arrays."))
+    # The plan validated this graph against its own spaces; these two say so in
+    # the numbering the tiling is about to index it in.
+    ndestinationchunks(g) == Int(nchunks(plan.dst_space)) || throw(ArgumentError(
+        "$g holds $(ndestinationchunks(g)) destination rows for a " *
+        "$(nchunks(plan.dst_space))-chunk destination space"))
+    nsourcechunks(g) == Int(nchunks(plan.src_space)) || throw(ArgumentError(
+        "$g holds $(nsourcechunks(g)) source chunks for a " *
+        "$(nchunks(plan.src_space))-chunk source space"))
+    return g
+end
+
+"""
+    dependencies(A::LazyRegridArray) -> ChunkDependencyGraph
+
+Return the relation `A`'s reads are drawn from: `A`'s plan's relation, the
+identical object, so `dependencies(A) === dependencies(A.plan)`.
+"""
+dependencies(A::LazyRegridArray) = A.graph
 
 Base.size(A::LazyRegridArray) = A.size
 
@@ -407,8 +451,7 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
         # Share tile geometry across blocks built for this tile.
         dstcells = TileCells(plan.dst_space, dinds)
-        w = _wavesize(plan, nd, srcchunks, srcranges,
-            view(A.dstcaps, A.tiling.capsof[t]), A.srccaps)
+        w = _wavesize(plan, nd, srcchunks, srcranges, A.graph, A.tiling.chunksof[t])
         i = 1
         while i <= length(srcchunks)
             j = min(i + w - 1, length(srcchunks))
@@ -439,7 +482,7 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
 end
 
 """
-    _wavesize(plan, nd, srcchunks, srcranges, dstcaps, srccaps) -> Int
+    _wavesize(plan, nd, srcchunks, srcranges, graph, rows) -> Int
 
 Return the number of chunk-pair blocks to build concurrently. Single-threaded
 sessions return one.
@@ -455,9 +498,15 @@ threads.
 
 `innerspeedup` is the per-thread speedup one weight build reaches on its own;
 the default is ConservativeRegridding's measured 8.7x on 12 threads.
+
+The per-chunk geometry the estimate needs — one cap per source chunk, one per
+destination chunk of the tile — is read off `graph`, the plan's relation, which
+already holds both sides' [`chunkextents`](@ref) because they are its own
+inputs. `rows` are the tile's destination rows. Nothing here copies a cap
+vector, so a wave's tasks share the one the relation holds.
 """
 function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges::Vector,
-    dstcaps, srccaps::Vector{Cap}; innerspeedup::Float64 = 0.73)
+    graph::ChunkDependencyGraph, rows::Vector{Int}; innerspeedup::Float64 = 0.73)
     n = length(srcchunks)
     nt = Threads.nthreads()
     (nt > 1 && n > 1) || return 1
@@ -470,12 +519,12 @@ function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges
     w = Int(min(nt, n, fits))
     # An outer loop already owns the cores; the wave is all that is left here.
     OUTER_PARALLEL[] && return w
-    costs = _blockcosts!(Vector{Float64}(undef, n), srcchunks, srcranges, dstcaps, srccaps)
+    costs = _blockcosts!(Vector{Float64}(undef, n), srcchunks, srcranges, graph, rows)
     return _waveideal(costs, w) >= innerspeedup * nt ? w : 1
 end
 
 """
-    _blockcosts!(costs, srcchunks, srcranges, dstcaps, srccaps) -> costs
+    _blockcosts!(costs, srcchunks, srcranges, graph, rows) -> costs
 
 Estimate each chunk pair's build cost before building it, as the number of
 source cells the destination tile can reach: a chunk's cell count scaled by the
@@ -490,13 +539,16 @@ nothing, still scores above zero. The bias favours keeping the wave, which is
 the safe direction for a scheduling change.
 """
 function _blockcosts!(costs::Vector{Float64}, srcchunks::Vector{Int}, srcranges::Vector,
-    dstcaps, srccaps::Vector{Cap})
+    graph::ChunkDependencyGraph, rows::Vector{Int})
+    srccaps = sourceextents(graph)
+    dstcaps = destinationextents(graph)
     @inbounds for k in eachindex(srcchunks)
         scap = srccaps[srcchunks[k]]
         area = _caparea(Float64(scap.radius))
         ncell = prod(map(length, srcranges[k]))
         shared = 0.0
-        for dcap in dstcaps
+        for d in rows
+            dcap = dstcaps[globaldestination(graph, d)]
             # Tile extents may overlap each other, so take the widest reach
             # rather than summing and double counting the shared part.
             shared = max(shared, _capoverlap(Float64(dcap.radius),
@@ -571,19 +623,60 @@ end
 _tileindices(A::LazyRegridArray, t::Int) =
     A.tiling.spacetiled ? cellindices(A.plan.dst_space, t) : A.tiling.runs[t]
 
-# Discover source chunks for a tile and optionally drop known-empty chunks.
+"""
+    _connectedsource!(out, A, t) -> out
+
+Write tile `t`'s source chunks into `out`, ascending.
+
+This is the whole of the executor's source selection, and it is a read of the
+plan's relation — no index, no query, no cap test. A tile that is destination
+chunk `d` takes row `d`; a derived tile spanning several destination chunks
+takes the ascending union of their rows, which is a `k`-way merge of already
+ascending rows, so the result depends on the tiling and not on the order the
+rows are visited.
+
+`knownempty` filtering comes **after**, because it is data-dependent: it may drop
+a chunk the relation holds, and it may never add one the relation does not.
+"""
 function _connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int)
-    caps = A.tiling.capsof[t]
-    if length(caps) == 1
-        candidatechunks!(out, A.srcindex, A.dstcaps[caps[1]]; radius = A.radius)
+    rows = A.tiling.chunksof[t]
+    if length(rows) == 1
+        _copyrow!(out, sourcesof(A.graph, @inbounds rows[1]))
     else
-        connectedchunks!(out, view(A.dstcaps, caps), A.srcindex; radius = A.radius)
+        _unionrows!(out, A.graph, rows)
     end
     if A.dropempty
         before = length(out)
         filter!(s -> !_allempty(A, s), out)
         A.stats.dropped += before - length(out)
     end
+    return out
+end
+
+# One row, widened to the `Int` chunk numbers every consumer downstream uses.
+function _copyrow!(out::Vector{Int}, row)
+    resize!(out, length(row))
+    @inbounds for i in eachindex(row)
+        out[i] = Int(row[i])
+    end
+    return out
+end
+
+# The ascending union of several rows. Rows overlap heavily between neighbouring
+# destination chunks, so this concatenates and then sorts in place rather than
+# merging pairwise: one pass, one buffer, and the same answer for any row order.
+function _unionrows!(out::Vector{Int}, g::ChunkDependencyGraph, rows)
+    empty!(out)
+    @inbounds for d in rows
+        row = sourcesof(g, d)
+        n = length(out)
+        resize!(out, n + length(row))
+        for i in eachindex(row)
+            out[n+i] = Int(row[i])
+        end
+    end
+    sort!(out)
+    unique!(out)
     return out
 end
 

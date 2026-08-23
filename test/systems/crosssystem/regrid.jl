@@ -561,4 +561,57 @@ end
     @test Array(parent(lazy)) == parent(reference)
 end
 
+@testset "a column adopts the whole covering's relation and reads the same" begin
+    # Task E1, on the shape `scripts/copdem_production.jl` actually has: a
+    # covering plan over many level-`ancestor` chunks, and a per-column regrid
+    # whose destination is a ROOTED one-chunk subtree grid of the same hierarchy.
+    #
+    # G4 proved a row view of the covering's relation is refused there, because
+    # the view stamps the whole covering. `GR.subspace_dependencies` re-stamps it
+    # onto the column's own space, and this asserts the two things that make it
+    # worth having: the plan accepts it, and the values do not move.
+    sys = DGG.IGeo7System()
+    level, ancestor = 4, 2
+    covering = DGG.DGGSpace(DGG.levelgrid(sys, level); chunklevel = ancestor)
+    graph = GR.chunk_dependency_graph(covering, SRC)
+    @test GR.hasextents(graph)
+
+    a2 = DGG.levelgrid(sys, ancestor)
+    for d in (1, 23, GR.nchunks(covering))
+        column = DGG.DGGSpace(DGG.subtree(sys, DGG.cellindex(a2, d), level);
+            chunklevel = ancestor)
+        @test GR.nchunks(column) == 1
+
+        # The column's chunk cap IS the covering's cap for that chunk, which is
+        # what makes the re-stamp sound and what it checks.
+        @test only(GR.chunkextents(column)) == GR.chunkextents(covering)[d]
+        view = GR.subspace_dependencies(graph, column, [d])
+        @test collect(GR.sourcesof(view, 1)) == collect(GR.sourcesof(graph, d))
+        @test GR.globaldestination(view, 1) == d
+
+        # It is the relation the column would have built for itself...
+        own = GR.chunk_dependency_graph(column, SRC)
+        @test graph_pairs(view) == graph_pairs(own)
+        @test GR.dependency_identity(view) == GR.dependency_identity(own)
+        # ...and the plan adopts it by reference, where a plain row view and the
+        # whole covering's relation are both still refused.
+        adopted = GR.plan_regrid(RASTER; to = column, from = SRC, lazy = true,
+            dependencies = view)
+        @test GR.dependencies(adopted) === view
+        @test_throws ArgumentError GR.plan_regrid(RASTER; to = column, from = SRC,
+            lazy = true, dependencies = GR.restrict(graph, [d]))
+        @test_throws ArgumentError GR.plan_regrid(RASTER; to = column, from = SRC,
+            lazy = true, dependencies = graph)
+
+        # The values: adopted view, own relation, and the eager whole-domain
+        # answer for the same column, all the same numbers.
+        built = GR.plan_regrid(RASTER; to = column, from = SRC, lazy = true)
+        fromview = Array(parent(DGG.regrid(RASTER, adopted)))
+        frombuilt = Array(parent(DGG.regrid(RASTER, built)))
+        @test fromview == frombuilt
+        eager = Array(parent(DGG.regrid(RASTER; to = column, from = SRC, lazy = false)))
+        @test fromview ≈ eager rtol = 1e-12
+    end
+end
+
 end # module RegridTests

@@ -51,10 +51,17 @@ and source reads remain lazy.
   only way to read it and builds nothing; `refine` is a keyword of lazy
   `plan_regrid` alone. Read G4's record for the one action it could not complete
   and why.
-- Current implementation phase: **3**. E1 is next: make the lazy executor
-  consume graph rows instead of re-discovering sources per tile. Nothing in tree
-  consumes a plan's relation yet, which is why `dependencies` defaults to
-  `nothing`.
+- Phase 3, graph-backed lazy execution: **complete**. E1 is closed. The lazy
+  executor takes a tile's source chunks from `sourcesof(dependencies(plan), d)`
+  and performs no dependency discovery; `LazyRegridArray.srcindex` and its cap
+  vectors are gone, per-chunk caps now live on the relation, and a chunked plan
+  therefore owns a relation **by default** — `dependencies = false` is the
+  opt-out, and a plan that takes it cannot back a `LazyRegridArray`. G4's one
+  open action is closed with it: `subspace_dependencies` re-stamps a row view
+  onto a sub-space of the destination, which production measured and declined.
+- Current implementation phase: **4**. E2 is next: retire the duplicate
+  discovery state and the `chunktree` bridge. `connectedchunks` and
+  `connectedchunks!` already have no caller in `src/`.
 - The nearest/bilinear method redesign is deferred to a separate plan.
 
 Landed cards, with the commit each one shipped as:
@@ -72,6 +79,7 @@ Landed cards, with the commit each one shipped as:
 | G2 | `da9e737` | landed early via PR #69; see the card |
 | G3 | PR #71 | Add reusable dependency graph identities |
 | G4 | PR #72 | Make chunked plans own dependency graphs |
+| E1 | PR #73 | Drive lazy regridding from dependency rows |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
 `93e836d` is the commit that pinned them and records their SHAs.
@@ -88,6 +96,9 @@ Evidence:
 - `regrid-notes/2026-08-23-g4-plan-owns-graph.md` — G4's ownership design, the
   Phase 2 gate as tests rather than prose, and what a per-column relation would
   have cost production
+- `regrid-notes/2026-08-23-e1-graph-backed-lazy.md` — E1's row-driven executor,
+  where cap metadata moved, `subspace_dependencies` and why production declined
+  it, and the Phase 3 gate as tests
 - `regrid-notes/2026-08-21-simplification-plan-review.md`
 - `regrid-notes/2026-08-21-regridding-simplification-plan-detailed-archive.md`
 
@@ -662,6 +673,32 @@ misses, source order, eager/lazy values, residency, and production policy.
 **Phase 3 gate:** no lazy read performs geometric dependency discovery; executor
 and scheduler consume the same object.
 **Commit:** `Drive lazy regridding from dependency rows`.
+**Landed:** PR #73, stacked on #72. Record:
+`regrid-notes/2026-08-23-e1-graph-backed-lazy.md`. All six actions landed. Three
+things the card did not say, which a later task should read before designing
+around them:
+
+- **A chunked plan now owns a relation by default.** It had to: a lazy read *is*
+  a read of the rows, so `dependencies = nothing` — meaning "own none" — would
+  have made the default plan unable to back a `LazyRegridArray`. `nothing` and
+  `true` both build; `false` is the opt-out and is refused by the lazy array,
+  by name. That reverses G4's default, and G4's measured reason for it (nothing
+  consumed a plan's relation) is exactly what this card removed.
+- **G4's open action is closed, and production declined it.**
+  `subspace_dependencies(g, subspace, destinations)` re-stamps a row view onto a
+  sub-space whose chunk caps it reproduces cap for cap — sound because the
+  destination half of the relation is a function of those caps alone. A
+  per-column plan does adopt it. But [measured] on the production pair it is
+  only **0.82x** the time and **0.79x** the bytes of simply building the
+  one-row relation (408 us / 425 KB against 500 us / 542 KB), because both pay
+  the same `O(nsourcechunks)` transpose and adoption still stamps the source
+  space. `regrid_chunk` therefore keeps building its own, and E1 added a
+  sampled `graphmisscheck` to the driver instead.
+- **The card's proof obligation is true only where the source index is the
+  generic one.** `graph rows` are not inside the cap join on a native
+  hierarchy — the two relations cross, which is why #69 exists — so the raster
+  arm of the proof test asserts the eager containment and says so, rather than
+  asserting something false.
 
 ## Phase 4 — delete legacy discovery
 

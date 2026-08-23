@@ -119,8 +119,11 @@ public nsourcechunks, ndestinationchunks, dependency_radius
 # did not build it, and what a per-column plan restricts it to.
 public SpaceStamp, spacestamp, DependencyIdentity, dependency_identity
 public narrowphase, UNNAMED_NARROW, validate_dependencies
-public restrict, isrestricted
+public restrict, isrestricted, subspace_dependencies
 public globaldestinations, globaldestination, localdestination
+# The relation's own inputs, kept: where per-chunk cap metadata lives.
+public hasextents, destinationextents, sourceextents
+public destinationextent, sourceextent
 
 # DiscreteGlobalGrids extends the qualified space contract in every
 # responsibility it customizes: `subtree`; `chunkextents`, `chunkindex`, and

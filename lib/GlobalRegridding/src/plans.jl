@@ -378,17 +378,22 @@ struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
     dependencies::G
 end
 
+# The positional forms build the relation too. A `ChunkedPlan` owns one however
+# it is spelled; the nine-argument field constructor is the one way to assemble
+# a plan around a relation that already exists (or around none).
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
     budget::Integer, chunks) =
     ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget),
-        chunks, nothing, nothing)
+        chunks, nothing,
+        _plandependencies(nothing, nothing, nothing, method, dst_space, src_space))
 
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
     budget::Integer, chunks, missingval) =
     ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget),
-        chunks, missingval, nothing)
+        chunks, missingval,
+        _plandependencies(nothing, nothing, nothing, method, dst_space, src_space))
 
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace;
@@ -436,17 +441,13 @@ block, so there is no chunk pairing to describe.
 
 The `dependencies` keyword on lazy `plan_regrid` / `ChunkedPlan`:
 
-- `nothing` (the default) — **the plan owns no relation**, and construction does
-  no graph work at all. `dependencies(plan)` returns `nothing`. This is the
-  right choice for a plan whose destination is one chunk, or a few: the lazy
-  executor discovers a tile's sources by querying the source index directly, and
-  a whole graph object for a handful of rows costs more than the queries it
-  would replace, because [`restrict`](@ref) and a rebuild both pay
-  `O(nsourcechunks)` for the source-major direction that a one-row view barely
-  uses ([measured]: `regrid-notes/2026-08-23-g4-plan-owns-graph.md`).
-- `true` — build it now, once, from the plan's own spaces at the plan's own
-  radius, [`support_radius`](@ref)`(method, src_space)`. Passing `refine` or
-  `narrow` implies this.
+- `nothing` (the default) or `true` — build it now, once, from the plan's own
+  spaces at the plan's own radius, [`support_radius`](@ref)`(method, src_space)`.
+  Passing `refine` or `narrow` also selects this branch. A chunked plan owns a
+  relation by default because a lazy read *is* a read of that relation's rows:
+  the executor takes a tile's source chunks from
+  [`sourcesof`](@ref)`(dependencies(plan), d)` and performs no dependency
+  discovery of its own.
 - a [`ChunkDependencyGraph`](@ref) — adopt a relation somebody else built, after
   [`validate_dependencies`](@ref) certifies it against *these* spaces, *this*
   radius and the `narrow` phase the caller claims it carries. An invalid reuse
@@ -454,8 +455,12 @@ The `dependencies` keyword on lazy `plan_regrid` / `ChunkedPlan`:
   `refine` cannot be combined with a supplied graph: a narrow phase applies as a
   relation is built, and reapplying it afterwards would renumber nothing and
   prove nothing. Name the phase the graph already carries with `narrow` instead.
-- `false` — hold none, explicitly. Only differs from `nothing` in that it
-  rejects `refine`/`narrow` rather than acting on them.
+  A plan over part of a bigger destination adopts the bigger relation through
+  [`subspace_dependencies`](@ref), which re-stamps a row view onto the sub-space.
+- `false` — hold none, explicitly, and reject `refine`/`narrow` rather than
+  acting on them. A plan with no relation cannot back a
+  [`LazyRegridArray`](@ref), which needs the rows to read; it is for a caller
+  that wants nothing but [`blockfor`](@ref) and the plan's spaces.
 
 Whichever branch runs, it runs **once**, at construction, and reads no source
 data, builds no weights and issues no network metadata request.
@@ -477,12 +482,6 @@ dependencies(other) === g
 dependencies(plan::ChunkedPlan) = plan.dependencies
 dependencies(::DirectPlan) = nothing
 
-# The default: no relation asked for, so no relation work. This method exists
-# so that constructing a per-destination-chunk plan — which production does
-# 66 175 times — pays nothing at all, not even `support_radius`.
-_plandependencies(::Nothing, ::Nothing, ::Nothing, ::AbstractRegriddingMethod,
-    ::RegridSpace, ::RegridSpace) = nothing
-
 function _plandependencies(dependencies, refine, narrow,
         method::AbstractRegriddingMethod, dst_space::RegridSpace,
         src_space::RegridSpace)
@@ -495,8 +494,7 @@ function _plandependencies(dependencies, refine, narrow,
         return validate_dependencies(dependencies, dst_space, src_space;
             radius = Float64(support_radius(method, src_space)),
             narrow = narrow === nothing ? :none : narrow)
-    elseif dependencies === true ||
-           (dependencies === nothing && (refine !== nothing || narrow !== nothing))
+    elseif dependencies === true || dependencies === nothing
         return _builddependencies(dst_space, src_space,
             support_radius(method, src_space), refine, narrow)
     elseif dependencies === false
@@ -504,8 +502,6 @@ function _plandependencies(dependencies, refine, narrow,
             "`dependencies = false` asks the plan to hold no relation, but " *
             "`refine`/`narrow` describe one it would have to build; pass " *
             "`dependencies = true` or drop them."))
-        return nothing
-    elseif dependencies === nothing
         return nothing
     end
     throw(ArgumentError(

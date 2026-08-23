@@ -15,19 +15,29 @@
 #      `GR.ChunkedPlan` owns, and is that relation the one the pair has? G4
 #      moved the build inside the plan; this asserts the move changed nothing.
 #
-#   2. What would a per-column plan pay to own a relation? `regrid_chunk` builds
+#   2. What does a per-column plan pay to own a relation? `regrid_chunk` builds
 #      one plan per destination chunk — 66 175 of them — over a rooted one-chunk
-#      subtree grid. Three arms over exactly that space:
+#      subtree grid. Four arms over exactly that space:
 #
-#        A  `dependencies = nothing`  what production does: owns none
-#        B  `dependencies = true`     a one-destination graph per column
-#        C  `restrict(graph, [d])`    a one-row view of the global relation
+#        A  `dependencies = false`      no relation: the plan floor
+#        B  default (`nothing`/`true`)  a one-destination graph per column
+#        C  `restrict(graph, [d])`      a one-row view of the global relation
+#        D  `subspace_dependencies`     that view, re-stamped onto the column's
+#                                       own space, then adopted by the plan
 #
-#      B is what the card forbids. C is what the card suggested instead, and the
-#      run also shows that a per-column plan cannot legally hold it: its
-#      destination is a DIFFERENT space from the one the graph and its views are
-#      stamped against, so `validate_dependencies` refuses both C and the whole
-#      global graph. That refusal is the point, not a defect.
+#      Task G4 measured A as production's arm, because the lazy executor then
+#      discovered a tile's sources itself. Task E1 made the executor read the
+#      plan's rows instead, so a plan that owns no relation can no longer back a
+#      lazy read: **B is what production pays now**, and A is here only as the
+#      floor B is measured against.
+#
+#      C is what G4's card suggested and G4 showed a per-column plan may not
+#      hold: its destination is a DIFFERENT space from the one the graph and its
+#      views are stamped against, so `validate_dependencies` refuses both C and
+#      the whole global graph. D is E1's answer to that refusal — a row view
+#      re-stamped against the sub-space, which the plan does accept — and the
+#      question this run answers is whether D is worth plumbing the global
+#      relation into every worker, or whether B is simply cheap enough.
 #
 # Environment
 #
@@ -100,45 +110,59 @@ function main_ownership()
         chunklevel = CONFIG.ancestor)
 
     picks = chunks[round.(Int, range(1, length(chunks); length = NCOL))]
-    ta, tb, tc = Float64[], Float64[], Float64[]
-    aa, ab, ac = Int[], Int[], Int[]
+    ta, tb, tc, td = Float64[], Float64[], Float64[], Float64[]
+    aa, ab, ac, ad = Int[], Int[], Int[], Int[]
     for c in picks
         cs = colspace(c)
         GR.nchunks(cs) == 1 || error("a column is not one chunk")
         d = findfirst(==(c), chunks)
         A() = GR.ChunkedPlan(DGG.Conservative(), DGG.Weighted(0.5), cs, srcspace;
-            budget = CONFIG.budget)
+            budget = CONFIG.budget, dependencies = false)
         B() = GR.ChunkedPlan(DGG.Conservative(), DGG.Weighted(0.5), cs, srcspace;
-            budget = CONFIG.budget, dependencies = true)
+            budget = CONFIG.budget)
         C() = GR.restrict(graph, [d])
-        A(); B(); C()
+        # The whole of what a worker holding the global relation would do: the
+        # re-stamp AND the plan that validates and adopts it.
+        D() = GR.ChunkedPlan(DGG.Conservative(), DGG.Weighted(0.5), cs, srcspace;
+            budget = CONFIG.budget,
+            dependencies = GR.subspace_dependencies(graph, cs, [d]))
+        A(); B(); C(); D()
         GR.dependencies(A()) === nothing || error("arm A built a relation")
+        GR.dependencies(B()) isa GR.ChunkDependencyGraph || error("arm B built none")
+        # B and D must be the same relation, or one of them is wrong.
+        Set(Int.(GR.sourcesof(GR.dependencies(B()), 1))) ==
+        Set(Int.(GR.sourcesof(GR.dependencies(D()), 1))) ||
+            error("the re-stamped view and the rebuilt relation disagree on column $c")
         push!(ta, med(A, NSAMP)); push!(aa, @allocated A())
         push!(tb, med(B, NSAMP)); push!(ab, @allocated B())
         push!(tc, med(C, NSAMP)); push!(ac, @allocated C())
+        push!(td, med(D, NSAMP)); push!(ad, @allocated D())
     end
     m(v) = Statistics.median(v)
     n = length(chunks)
-    @printf("\n%-34s %12s %14s %12s %10s\n",
+    @printf("\n%-38s %12s %14s %12s %10s\n",
         "per-column arm", "median s", "bytes", "x $n s", "x $n GB")
-    for (label, t, a) in (("A  plan, no relation (today)", ta, aa),
-                          ("B  plan, dependencies = true", tb, ab),
-                          ("C  restrict(graph, [d])", tc, ac))
-        @printf("%-34s %12.4g %14d %12.1f %10.1f\n",
+    for (label, t, a) in (("A  plan, no relation (the floor)", ta, aa),
+                          ("B  plan, default: builds one (today)", tb, ab),
+                          ("C  restrict(graph, [d]) alone", tc, ac),
+                          ("D  subspace view, adopted by a plan", td, ad))
+        @printf("%-38s %12.4g %14d %12.1f %10.1f\n",
             label, m(t), m(a), m(t) * n, m(a) * n / 1e9)
     end
-    @printf("\nB/A = %.0fx time, %.0fx bytes;  C/A = %.0fx time, %.0fx bytes\n",
-        m(tb) / m(ta), m(ab) / max(m(aa), 1), m(tc) / m(ta), m(ac) / max(m(aa), 1))
+    @printf("\nB/A = %.0fx time, %.0fx bytes;  D/B = %.2fx time, %.2fx bytes\n",
+        m(tb) / m(ta), m(ab) / max(m(aa), 1), m(td) / m(tb), m(ad) / max(m(ab), 1))
 
-    # Neither B's product nor C is a relation a per-column plan may hold.
+    # C is still not a relation a per-column plan may hold; D is what makes one.
     cs = colspace(picks[1])
     d = findfirst(==(picks[1]), chunks)
     for (name, g) in (("a one-row view of the global graph", GR.restrict(graph, [d])),
-                      ("the whole global graph", graph))
+                      ("the whole global graph", graph),
+                      ("a re-stamped sub-space view",
+                          GR.subspace_dependencies(graph, cs, [d])))
         outcome = try
             GR.ChunkedPlan(DGG.Conservative(), DGG.Weighted(0.5), cs, srcspace;
                 dependencies = g)
-            "ADOPTED — UNEXPECTED"
+            "ADOPTED"
         catch e
             e isa ArgumentError ? "refused: " * first(split(e.msg, ". ")) : rethrow()
         end

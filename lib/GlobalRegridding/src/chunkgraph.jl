@@ -239,6 +239,22 @@ The spaces themselves are deliberately *not* stored. The graph carries a
 [`DependencyIdentity`](@ref) instead, which keeps it small, serializable, and
 free of the space type parameters.
 
+# Chunk extents
+
+A graph built from spaces also retains the two covering-cap vectors it was
+derived from — [`chunkextents`](@ref) of each side — because they are its own
+inputs and it would otherwise throw them away for every consumer to rebuild.
+[`destinationextents`](@ref), [`sourceextents`](@ref) and their singular forms
+read them; [`hasextents`](@ref) says whether a graph carries them at all, which
+a graph assembled from bare CSR arrays does not.
+
+This is where per-chunk cap metadata *lives*. A consumer that needs a chunk's
+extent — the lazy executor weighs a wave's blocks by how much of each source
+chunk a destination tile can reach — reads it off the relation both sides
+already agree on, rather than keeping a private copy per array, per worker or
+per column. The vectors are shared by reference: on a `DGGSpace` they are the
+space's own stored field, and a [`restrict`](@ref) row view shares its parent's.
+
 # Identity
 
 A graph is only reusable against the inputs it was built from, and it carries
@@ -270,22 +286,56 @@ struct ChunkDependencyGraph{T<:Integer} <: Graphs.AbstractGraph{T}
     # private, because a row view's refcounts are not its parent's.
     srcoff::Vector{Int}
     dstof::Vector{T}
+    # Whether the two cap vectors below are populated. An explicit flag, not an
+    # `isempty` test: a zero-chunk side has no caps and still carries them, and
+    # a subspace view's `dstcaps` is its parent's, whose length matches neither
+    # of this graph's own counts.
+    extents::Bool
+    # The covering caps of each side, in chunk order, as `chunkextents` reported
+    # them while the relation was built. `dstcaps` is indexed by GLOBAL
+    # destination chunk, exactly like `dstoff`, so a row view shares both by
+    # reference and `_row` indexes both.
+    dstcaps::Vector{Cap}
+    srccaps::Vector{Cap}
 end
 
 """
-    ChunkDependencyGraph(id::DependencyIdentity, dstoff, srcof, srcoff, dstof)
+    ChunkDependencyGraph(id::DependencyIdentity, dstoff, srcof, srcoff, dstof;
+                         dstcaps = Cap[], srccaps = Cap[])
 
 Assemble a graph over a whole destination space from prebuilt bidirectional CSR
 arrays. `dstoff` and `srcoff` are offset vectors of length `ndst+1` and
 `nsrc+1`. For callers that build the relation themselves; production goes
 through [`chunk_dependency_graph`](@ref).
+
+`dstcaps`/`srccaps` are the two sides' covering chunk extents. Supply both or
+neither: a graph assembled without them answers `hasextents(g) === false` and
+cannot serve a consumer that needs per-chunk geometry, such as the lazy
+executor's wave costing.
 """
 function ChunkDependencyGraph(id::DependencyIdentity, dstoff::Vector{Int},
-        srcof::Vector{T}, srcoff::Vector{Int}, dstof::Vector{T}) where {T<:Integer}
+        srcof::Vector{T}, srcoff::Vector{Int}, dstof::Vector{T};
+        dstcaps::AbstractVector{<:SphericalCap} = Cap[],
+        srccaps::AbstractVector{<:SphericalCap} = Cap[]) where {T<:Integer}
     length(srcof) == length(dstof) || throw(ArgumentError(
         "the two CSR directions hold $(length(srcof)) and $(length(dstof)) edges"))
-    return ChunkDependencyGraph{T}(id, length(srcoff) - 1, length(dstoff) - 1,
-        dstoff, srcof, Int[], srcoff, dstof)
+    nsrc, ndst = length(srcoff) - 1, length(dstoff) - 1
+    have = !(isempty(dstcaps) && isempty(srccaps))
+    have || return ChunkDependencyGraph{T}(id, nsrc, ndst, dstoff, srcof, Int[],
+        srcoff, dstof, false, Cap[], Cap[])
+    return ChunkDependencyGraph{T}(id, nsrc, ndst, dstoff, srcof, Int[],
+        srcoff, dstof, true, _graphcaps(dstcaps, ndst, "destination"),
+        _graphcaps(srccaps, nsrc, "source"))
+end
+
+# Extents are stored as a plain `Vector{Cap}` so the graph stays free of space
+# type parameters. `convert` aliases when the vector already has that type,
+# which is the case on every shipped space, so nothing is copied.
+function _graphcaps(caps::AbstractVector{<:SphericalCap}, n::Int, role::AbstractString)
+    length(caps) == n || throw(ArgumentError(
+        "$(length(caps)) $role chunk extents for $n $role chunks; supply both " *
+        "sides' extents or neither"))
+    return convert(Vector{Cap}, caps)
 end
 
 function Base.show(io::IO, g::ChunkDependencyGraph)
@@ -315,6 +365,71 @@ Return the graph's identity record: both space stamps, the radius, and the
 narrow-phase tag.
 """
 dependency_identity(g::ChunkDependencyGraph) = g.id
+
+# --------------------------------------------------------------------------
+# Chunk extents: the relation's own inputs, kept
+# --------------------------------------------------------------------------
+
+"""
+    hasextents(g::ChunkDependencyGraph) -> Bool
+
+Return whether `g` carries the covering chunk extents of both sides.
+
+True for every graph built from spaces — [`chunk_dependency_graph`](@ref) and
+plan construction — because those are the relation's own inputs. False only for
+a graph assembled from bare CSR arrays, which never had them.
+"""
+hasextents(g::ChunkDependencyGraph) = g.extents
+
+"""
+    destinationextents(g::ChunkDependencyGraph) -> Vector{Cap}
+    sourceextents(g::ChunkDependencyGraph) -> Vector{Cap}
+
+Return the covering spherical cap of every chunk of each side, in chunk order,
+as [`chunkextents`](@ref) reported it when the relation was built.
+
+The result is the graph's own vector, shared by reference and **not** to be
+mutated. `destinationextents` is indexed by the *destination space's* chunk
+number, so on a row view it is the parent space's whole vector; index it with
+[`globaldestination`](@ref), or use [`destinationextent`](@ref), which does.
+"""
+function destinationextents(g::ChunkDependencyGraph)
+    _requireextents(g)
+    return g.dstcaps
+end
+
+function sourceextents(g::ChunkDependencyGraph)
+    _requireextents(g)
+    return g.srccaps
+end
+
+"""
+    destinationextent(g::ChunkDependencyGraph, d) -> Cap
+    sourceextent(g::ChunkDependencyGraph, s) -> Cap
+
+Return one chunk's covering cap. `d` is a destination **row** of `g`, as
+everywhere else on this type; `s` is a source chunk number.
+"""
+function destinationextent(g::ChunkDependencyGraph, d::Integer)
+    _requireextents(g)
+    i = Int(d)
+    1 <= i <= g.ndst || throw(BoundsError(g, d))
+    return @inbounds g.dstcaps[_row(g, i)]
+end
+
+function sourceextent(g::ChunkDependencyGraph, s::Integer)
+    _requireextents(g)
+    i = Int(s)
+    1 <= i <= g.nsrc || throw(BoundsError(g, s))
+    return @inbounds g.srccaps[i]
+end
+
+@inline _requireextents(g::ChunkDependencyGraph) =
+    g.extents || throw(ArgumentError(
+        "$g carries no chunk extents. It was assembled from bare CSR arrays " *
+        "rather than built from spaces, so the per-chunk geometry this asks " *
+        "for was never part of it; build the relation with " *
+        "`chunk_dependency_graph` or a plan's `dependencies` keyword."))
 
 # The one place the "empty means identity" encoding of `dstrows` is read.
 @inline _row(g::ChunkDependencyGraph, d::Int) =
@@ -465,7 +580,8 @@ Graphs.vertices(g::ChunkDependencyGraph{T}) where {T} = Base.OneTo(Graphs.nv(g))
 Graphs.has_vertex(g::ChunkDependencyGraph, v::Integer) = 1 <= Int(v) <= g.nsrc + g.ndst
 
 Base.zero(::Type{ChunkDependencyGraph{T}}) where {T} =
-    ChunkDependencyGraph{T}(DependencyIdentity(), 0, 0, [1], T[], Int[], [1], T[])
+    ChunkDependencyGraph{T}(DependencyIdentity(), 0, 0, [1], T[], Int[], [1], T[],
+        true, Cap[], Cap[])
 Base.zero(g::ChunkDependencyGraph{T}) where {T} = zero(ChunkDependencyGraph{T})
 
 # A destination's neighbours are source chunk numbers, which *are* source vertex
@@ -625,18 +741,20 @@ function _builddependencies(dst_space::RegridSpace, src_space::RegridSpace,
         radius::Real, refine, narrow)
     r = _checkedradius(radius)
     tag = _narrowtag(refine, narrow)
-    # The destination caps are the graph's own input, so stamp the destination
-    # from them rather than paying `chunkextents` twice.
+    # Both cap vectors are the graph's own input — the destination's directly,
+    # the source's through its stamp — so take each once and keep it, rather
+    # than paying `chunkextents` twice here and again in every consumer.
     dstcaps = chunkextents(dst_space)
-    id = DependencyIdentity(_spacestamp(dst_space, dstcaps), spacestamp(src_space),
-        r, tag)
-    return _chunkgraph(id, dstcaps, chunkindex(src_space),
-        Int(nchunks(src_space)), r, refine)
+    srccaps = chunkextents(src_space)
+    id = DependencyIdentity(_spacestamp(dst_space, dstcaps),
+        _spacestamp(src_space, srccaps), r, tag)
+    return _chunkgraph(id, dstcaps, chunkindex(src_space), srccaps, r, refine)
 end
 
 function _chunkgraph(id::DependencyIdentity,
-        dstcaps::AbstractVector{<:SphericalCap}, srcindex, nsrc::Int,
-        radius::Float64, refine)
+        dstcaps::AbstractVector{<:SphericalCap}, srcindex,
+        srccaps::AbstractVector{<:SphericalCap}, radius::Float64, refine)
+    nsrc = length(srccaps)
     T = Int32
     ndst = length(dstcaps)
     (nsrc <= typemax(T) && ndst <= typemax(T)) || throw(ArgumentError(
@@ -673,7 +791,8 @@ function _chunkgraph(id::DependencyIdentity,
 
     srcoff, dstof = _transpose(dstoff, srcof, nsrc, ndst, T)
     return ChunkDependencyGraph{T}(id, nsrc, ndst, dstoff, srcof, Int[],
-        srcoff, dstof)
+        srcoff, dstof, true, convert(Vector{Cap}, dstcaps),
+        convert(Vector{Cap}, srccaps))
 end
 
 # Split `1:n` into `k` contiguous ranges of near-equal length.
@@ -756,6 +875,11 @@ On a whole-space graph this is `1:ndestinationchunks(g)`.
 This is what makes a row view usable for refinement: the view renumbers its rows
 `1:k` for Graphs.jl's sake, but never loses which chunk of the destination space
 each row is.
+
+On a [`subspace_dependencies`](@ref) view the numbers are the *parent* relation's
+destination chunks, not the sub-space's own — the sub-space's chunks are its
+rows, `1:k`. That is the provenance a caller wants from a re-stamped view: which
+chunks of the whole destination these rows came from.
 """
 globaldestinations(g::ChunkDependencyGraph) =
     isrestricted(g) ? g.dstrows : Base.OneTo(g.ndst)
@@ -800,12 +924,15 @@ destination rows and the same source side. Its rows are renumbered `1:k`;
 [`dependency_identity`](@ref) still stamps the **whole** destination space, so a
 view knows what it is a view *of*.
 
-That last point decides who may adopt one. A view is the relation of *these rows
+That last point decides who may adopt one, and [`subspace_dependencies`](@ref)
+is the way to change it. A view is the relation of *these rows
 of that space*, so [`validate_dependencies`](@ref) certifies it only against
 that space, with `destinations` naming the rows. It is **not** the relation of a
 smaller space built over the same cells: a plan whose destination is its own
-one-chunk grid has a different [`spacestamp`](@ref) and is refused, which is why
-`scripts/copdem_production.jl`'s per-column plans own no relation at all.
+one-chunk grid has a different [`spacestamp`](@ref) and is refused. To hand a
+view to a plan over such a sub-space, re-stamp it with
+[`subspace_dependencies`](@ref), which checks cap for cap that the sub-space's
+chunks are the selected chunks and stamps the destination half against it.
 
 # What is shared and what is not
 
@@ -852,7 +979,91 @@ function restrict(g::ChunkDependencyGraph{T}, destinations) where {T}
     rows = _restrictionrows(g, destinations)
     srcoff, dstof = _transpose(g.dstoff, g.srcof, rows, g.nsrc, T)
     return ChunkDependencyGraph{T}(g.id, g.nsrc, length(rows), g.dstoff, g.srcof,
-        rows, srcoff, dstof)
+        rows, srcoff, dstof, g.extents, g.dstcaps, g.srccaps)
+end
+
+"""
+    subspace_dependencies(g::ChunkDependencyGraph, subspace, destinations)
+        -> ChunkDependencyGraph
+
+Return [`restrict`](@ref)`(g, destinations)` re-stamped as the relation of
+`subspace` — a destination space whose chunks *are* `g`'s destination chunks
+`destinations`, in that order.
+
+This is what lets a plan over a piece of a destination space adopt the relation
+built over the whole of it, instead of rebuilding its own. The result is a whole
+destination-space relation *for `subspace`*: `validate_dependencies(view,
+subspace, src_space; radius)` certifies it with no `destinations` argument,
+because for `subspace` there are no other rows.
+
+# Why this is sound, and what is checked
+
+The destination half of the relation is a function of the destination chunk caps
+alone: a row is one [`candidatechunks!`](@ref) query of the source index against
+one cap. So if `subspace`'s chunk `k` has *the same cap* as `g`'s destination
+chunk `destinations[k]`, the row `subspace` would produce for `k` is the row `g`
+already holds — the same query, the same index, the same cap, the same answer.
+The source half is untouched: it is literally the parent's, and its stamp is
+carried over unchanged.
+
+That equality is therefore checked, cap for cap, and a mismatch is an
+`ArgumentError` rather than a re-stamp. Two caps are compared exactly, because
+they are two computations of the same covering cap and only a difference in how
+the two spaces derive it can separate them; a re-stamp on nearly-equal caps
+would be a relation for caps that are not these. The count must match too:
+`nchunks(subspace) == length(destinations)`.
+
+What is **not** checked, and cannot be, is that `subspace`'s chunk `k` holds the
+same *cells* as the parent's chunk `destinations[k]`. Equal caps do not imply
+equal cell sets. That is the same hole [`spacestamp`](@ref) documents, in the
+one place where it matters most, and it is why the destination stamp of the
+result is computed from `subspace` itself rather than asserted: a caller that
+hands over an unrelated space with coincidentally equal caps gets a certified
+relation for a destination it did not mean. Passing a space that is genuinely a
+sub-space of the graph's destination is the caller's obligation.
+
+`g` must carry chunk extents ([`hasextents`](@ref)); a graph assembled from bare
+CSR arrays has nothing to compare against.
+
+# Cost
+
+One `chunkextents(subspace)` call, `length(destinations)` cap comparisons, one
+`SpaceStamp` over the sub-space, and `restrict`'s `O(selected edges +
+nsourcechunks)` transpose. No query of either space's chunk index, and no cap
+test against the source.
+
+# Example
+
+```julia
+graph  = chunk_dependency_graph(dst_space, src_space)
+piece  = subspace_of(dst_space, 17:24)               # caller's own sub-space
+view   = subspace_dependencies(graph, piece, 17:24)
+sourcesof(view, 1) == sourcesof(graph, 17)
+plan   = plan_regrid(data; to = piece, from = src_space, lazy = true,
+                     dependencies = view)
+```
+"""
+function subspace_dependencies(g::ChunkDependencyGraph{T}, subspace::RegridSpace,
+        destinations) where {T}
+    _requireextents(g)
+    rows = _restrictionrows(g, destinations)
+    subcaps = chunkextents(subspace)
+    length(subcaps) == length(rows) || throw(ArgumentError(
+        "$subspace has $(length(subcaps)) chunks, but $(length(rows)) " *
+        "destination chunks of $g were selected; a sub-space relation must " *
+        "cover the sub-space exactly"))
+    @inbounds for k in eachindex(rows)
+        subcaps[k] == g.dstcaps[rows[k]] || throw(ArgumentError(
+            "chunk $k of $subspace has extent $(subcaps[k]), but destination " *
+            "chunk $(rows[k]) of $g has $(g.dstcaps[rows[k]]); a sub-space may " *
+            "only adopt rows whose destination cap it reproduces exactly, " *
+            "because the cap is the whole of what those rows were derived from"))
+    end
+    id = DependencyIdentity(_spacestamp(subspace, subcaps), g.id.src,
+        g.id.radius, g.id.narrow)
+    srcoff, dstof = _transpose(g.dstoff, g.srcof, rows, g.nsrc, T)
+    return ChunkDependencyGraph{T}(id, g.nsrc, length(rows), g.dstoff, g.srcof,
+        rows, srcoff, dstof, true, g.dstcaps, g.srccaps)
 end
 
 # Translate a selection of this graph's rows into global destination chunk
@@ -904,9 +1115,11 @@ Five things must agree.
    [`UNNAMED_NARROW`](@ref) never matches. A caller expecting the full candidate
    relation must not silently receive one somebody else thinned, and a caller
    expecting a specific thinning must not silently receive the full one.
-5. **The rows.** With `destinations === nothing`, `g` must be a whole-space graph
-   with one row per destination chunk. Pass `destinations` — the ascending global
-   chunk numbers the caller intends to compute — to validate a [`restrict`](@ref)
+5. **The rows.** With `destinations === nothing`, `g` must hold one row per chunk
+   of the destination space it stamps. That is every whole-space graph, and also
+   a [`subspace_dependencies`](@ref) view, which stamps the sub-space it covers.
+   Pass `destinations` — the ascending chunk numbers of the graph's own
+   destination the caller intends to compute — to validate a [`restrict`](@ref)
    row view instead; they must be exactly the view's
    [`globaldestinations`](@ref).
 
@@ -937,11 +1150,16 @@ function validate_dependencies(g::ChunkDependencyGraph, dst_space::RegridSpace,
         "$g was built with narrow phase $(repr(g.id.narrow)), but the caller " *
         "expects $(repr(narrow))"))
     if destinations === nothing
-        isrestricted(g) && throw(ArgumentError(
-            "$g is a row view over $(g.ndst) of $(g.id.dst.nchunks) destination " *
-            "chunks; pass `destinations` to validate it, or validate its parent"))
+        # A graph is whole for the space it stamps when it has a row per chunk
+        # of it. That is every unrestricted graph; it is also a
+        # `subspace_dependencies` view, whose stamp is the sub-space's own. A
+        # plain row view has fewer rows than the space it stamps and lands in
+        # the error, which is what refuses a fraction of a destination.
         g.ndst == Int(g.id.dst.nchunks) || throw(ArgumentError(
-            "$g holds $(g.ndst) rows for a $(g.id.dst.nchunks)-chunk destination"))
+            "$g holds $(g.ndst) rows for a $(g.id.dst.nchunks)-chunk " *
+            "destination; pass `destinations` to validate it as a row view, " *
+            "validate its parent, or re-stamp it onto the space it covers " *
+            "with `subspace_dependencies`"))
     else
         wanted = collect(Int, destinations)
         globaldestinations(g) == wanted || throw(ArgumentError(

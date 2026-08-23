@@ -26,7 +26,7 @@ import GeometryOps as GO
 const US = GO.UnitSpherical
 const USPoint = GO.UnitSphericalPoint{Float64}
 
-export contributing_pairs, graph_pairs, demanded_pairs, capjoin_pairs
+export contributing_pairs, graph_pairs, demanded_pairs, capjoin_pairs, eager_pairs
 
 """
     graph_pairs(g) -> Set{Tuple{Int,Int}}
@@ -79,6 +79,37 @@ capjoin_pairs(dst, src; radius = 0.0) =
         Set((d, s) for d in eachindex(dcaps), s in eachindex(scaps)
             if hits(dcaps[d], scaps[s]))
     end
+
+"""
+    eager_pairs(dst, src; method = GR.Conservative()) -> Set{Tuple{Int,Int}}
+
+Every `(dstchunk, srcchunk)` on which the **eager** path puts a nonzero weight:
+the whole-domain block `method` builds for this pair, read entry by entry and
+mapped to chunks.
+
+This is the relation a lazy read must be free to reproduce. It differs from
+[`contributing_pairs`](@ref) in what it is evidence about: that one is the
+geometric truth, computed independently of the weight builder, while this one is
+the weight builder's own answer. A dependency relation that does not contain it
+would let a lazy read miss a source chunk the eager path weighted — the exact
+way lazy and eager values could disagree.
+
+Reads no cap, no chunk extent and no chunk index, so it is an oracle for the
+relation rather than a second opinion. `O(ncells(dst) * ncells(src))` lookups;
+for small spaces only.
+"""
+function eager_pairs(dst, src; method = GR.Conservative())
+    W = GR.wholeblock(method, dst, src).weights
+    out = Set{Tuple{Int,Int}}()
+    for j in axes(W, 2), i in axes(W, 1)
+        iszero(W[i, j]) && continue
+        d, s = GR.chunkat(dst, i), GR.chunkat(src, j)
+        # A partial space reports `nothing` for a position it does not cover.
+        (d === nothing || s === nothing) && continue
+        push!(out, (Int(d), Int(s)))
+    end
+    return out
+end
 
 """
     contributing_pairs(dst, src; radius = 0.0) -> Set{Tuple{Int,Int}}

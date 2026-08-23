@@ -7,7 +7,7 @@ import Serialization
 # harness. Do not re-spell any of them here.
 include(joinpath(@__DIR__, "graphoracles.jl"))
 using .ChunkGraphOracles: contributing_pairs, graph_pairs, demanded_pairs,
-    capjoin_pairs
+    capjoin_pairs, eager_pairs
 
 # A raster whose chunk grid is deliberately out of step with the quadtree's
 # power-of-two splits, so its leaves straddle chunk boundaries.
@@ -53,6 +53,39 @@ cellat(p::G4ProbeSpace, x) = cellat(p.space, x)
 nchunks(p::G4ProbeSpace) = nchunks(p.space)
 cellindices(p::G4ProbeSpace, c::Int) = cellindices(p.space, c)
 celltree(p::G4ProbeSpace) = celltree(p.space)
+
+# A space that genuinely IS a sub-space of another: its chunks are `chunks` of
+# the parent, in that order, and its cells are those chunks' cells renumbered
+# `1:n`. Its geometry is the parent's, so its chunk caps ARE the parent's caps
+# for those chunks — which is precisely the precondition
+# `subspace_dependencies` checks before re-stamping a row view onto it. This is
+# the shape `scripts/copdem_production.jl`'s per-column destination has.
+struct E1Subspace{S<:RegridSpace} <: RegridSpace
+    parent::S
+    chunks::Vector{Int}
+    cells::Vector{Int}                  # local cell -> parent cell position
+    spans::Vector{UnitRange{Int}}       # local cells of each local chunk
+end
+
+function E1Subspace(parent::RegridSpace, chunks)
+    cells = Int[]
+    spans = UnitRange{Int}[]
+    for c in chunks
+        lo = length(cells) + 1
+        append!(cells, Int.(cellindices(parent, Int(c))))
+        push!(spans, lo:length(cells))
+    end
+    return E1Subspace(parent, collect(Int, chunks), cells, spans)
+end
+
+ncells(s::E1Subspace) = length(s.cells)
+nchunks(s::E1Subspace) = length(s.chunks)
+getcell(s::E1Subspace, i::Int) = getcell(s.parent, s.cells[i])
+manifold(s::E1Subspace) = manifold(s.parent)
+cellindices(s::E1Subspace, c::Int) = s.spans[c]
+# `chunkextents` is public but not exported, so this must name it to extend it
+# rather than define a second function that the generic fallback would shadow.
+GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
 
 @testset "chunk dependency graph" begin
 
@@ -201,6 +234,63 @@ celltree(p::G4ProbeSpace) = celltree(p.space)
                 # obligation, and it fails if a chunk cap is too tight.
                 @test truth ⊆ capjoin_pairs(dst, src; radius)
             end
+        end
+    end
+
+    @testset "eager weights ⊆ graph rows ⊆ the broad cap relation" begin
+        # Task E1's proof obligation, in the three terms it is stated in. The
+        # middle one is what the lazy executor now reads: a tile takes its
+        # source chunks from `sourcesof` and from nothing else.
+        #
+        # Left: the relation must hold every pair the EAGER path put a nonzero
+        # weight on. If it did not, a lazy read would never load a source the
+        # eager one used, and the two would return different numbers — which is
+        # the failure the whole card is guarding against. `eager_pairs` reads
+        # the weight builder's own answer, not a cap or an index.
+        #
+        # Right: the relation must stay inside the brute-force cap join, which
+        # is what "conservative bound" means as opposed to "any superset at
+        # all". That half holds where the source's chunk index is the generic
+        # one over the caps `chunkextents` reports. On a native hierarchy the
+        # two relations CROSS in both directions — pinned in the testset below —
+        # so the raster arm asserts what is true there instead, and says so.
+        generic = (
+            ("toy source", ToyLonLatSpace(12, 6; chunks = (3, 2)),
+                ToyLonLatSpace(8, 4; chunks = (2, 1))),
+            ("polar source", ToyLonLatSpace(24, 12; chunks = (3, 3)),
+                ToyLonLatSpace(8, 2; lat = (60.0, 90.0), chunks = (3, 1))),
+            ("antimeridian source", ToyLonLatSpace(24, 12; chunks = (2, 2)),
+                ToyLonLatSpace(6, 4; lon = (150.0, 180.0), lat = (-40.0, 40.0),
+                    chunks = (2, 2))),
+            ("coarser destination", ToyLonLatSpace(6, 4; chunks = (2, 2)),
+                ToyLonLatSpace(18, 9; chunks = (3, 3))),
+        )
+        for (name, dst, src) in generic
+            @testset "$name" begin
+                # The rows the executor reads are the plan's own relation, taken
+                # exactly as `LazyRegridArray` takes it.
+                rows = graph_pairs(GR.dependencies(
+                    ChunkedPlan(GR.Conservative(), Weighted(0.5), dst, src)))
+                eager = eager_pairs(dst, src)
+                @test !isempty(eager)
+                @test eager ⊆ rows
+                @test rows ⊆ capjoin_pairs(dst, src)
+            end
+        end
+
+        @testset "raster source" begin
+            dst = ToyLonLatSpace(24, 12; chunks = (2, 2))
+            src = misalignedraster(36, 18, 7, 5)
+            rows = graph_pairs(GR.dependencies(
+                ChunkedPlan(GR.Conservative(), Weighted(0.5), dst, src)))
+            eager = eager_pairs(dst, src)
+            @test !isempty(eager)
+            @test eager ⊆ rows
+            # The right-hand containment does not hold on a native hierarchy and
+            # is not meant to: the quadtree answers whole chunks for a
+            # straddling leaf. Both supersets still dominate the eager weights,
+            # which is the invariant that matters for correctness.
+            @test eager ⊆ capjoin_pairs(dst, src)
         end
     end
 
@@ -673,6 +763,72 @@ celltree(p::G4ProbeSpace) = celltree(p.space)
         end
     end
 
+    @testset "a row view re-stamped onto a sub-space is that space's relation" begin
+        # Task E1. G4 proved that a plan over a *sub-space* of the destination
+        # cannot adopt a row view, because the view stamps the whole space. This
+        # is the mechanism that closes it, and what makes it sound: the
+        # destination half of a relation is a function of the destination caps
+        # alone, so a space reproducing those caps reproduces those rows.
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        method = G4RadiusMethod(0.1)
+        g = planned_dependencies(dst, src; radius = 0.1)
+        sel = [2, 5, 6, 9]
+        sub = E1Subspace(dst, sel)
+        @test nchunks(sub) == length(sel)
+        @test GR.chunkextents(sub) == GR.chunkextents(dst)[sel]
+
+        view = GR.subspace_dependencies(g, sub, sel)
+        # Row for row, it is the parent's relation over those chunks.
+        for (k, d) in enumerate(sel)
+            @test collect(GR.sourcesof(view, k)) == collect(GR.sourcesof(g, d))
+        end
+        @test GR.globaldestinations(view) == sel     # provenance is retained
+        @test GR.nsourcechunks(view) == GR.nsourcechunks(g)
+        # ...and it is the relation the sub-space would have built for itself.
+        own = GR.chunk_dependency_graph(sub, src; radius = 0.1)
+        @test graph_pairs(view) == graph_pairs(own)
+        @test GR.dependency_identity(view) == GR.dependency_identity(own)
+
+        # Still a view: both shared arrays are the parent's, not copies.
+        @test view.dstoff === g.dstoff
+        @test view.srcof === g.srcof
+        @test GR.destinationextents(view) === GR.destinationextents(g)
+        @test GR.sourceextents(view) === GR.sourceextents(g)
+        # Its refcounts are its own, over its own rows.
+        @test sum(GR.consumerdegree(view, s) for s in 1:GR.nsourcechunks(view)) ==
+              sum(GR.sourcedegree(view, d) for d in 1:GR.ndestinationchunks(view))
+
+        # A plan over the SUB-space adopts it, by reference, with no
+        # `destinations` argument: for that space there are no other rows.
+        adopted = ChunkedPlan(method, Weighted(0.5), sub, src; dependencies = view)
+        @test GR.dependencies(adopted) === view
+        # The un-re-stamped view is still refused, which is the G4 behaviour
+        # this mechanism exists beside rather than instead of.
+        @test_throws ArgumentError ChunkedPlan(method, Weighted(0.5), sub, src;
+            dependencies = GR.restrict(g, sel))
+        @test_throws ArgumentError ChunkedPlan(method, Weighted(0.5), sub, src;
+            dependencies = g)
+        # And the re-stamped view is not a relation for the WHOLE destination.
+        @test_throws ArgumentError ChunkedPlan(method, Weighted(0.5), dst, src;
+            dependencies = view)
+
+        # Refusals, at the re-stamp rather than later.
+        @test_throws ArgumentError GR.subspace_dependencies(g, E1Subspace(dst, [1, 2]), sel)
+        @test_throws ArgumentError GR.subspace_dependencies(g, sub, [2, 5, 6, 10])
+        @test_throws ArgumentError GR.subspace_dependencies(g, sub, [9, 6, 5, 2])
+        # A space whose caps are not the parent's caps for those chunks is the
+        # one thing that makes the re-stamp unsound, so it is the one thing
+        # checked exactly rather than approximately.
+        other = E1Subspace(ToyLonLatSpace(12, 6; lat = (-80.0, 80.0), chunks = (3, 2)), sel)
+        @test GR.chunkextents(other) != GR.chunkextents(dst)[sel]
+        @test_throws ArgumentError GR.subspace_dependencies(g, other, sel)
+        # A relation with no extents has nothing to compare against.
+        bare = GR.ChunkDependencyGraph(GR.DependencyIdentity(), [1, 1], Int32[],
+            [1, 1], Int32[])
+        @test_throws ArgumentError GR.subspace_dependencies(bare, sub, [1])
+    end
+
     # ----------------------------------------------------------------------
     # Task G4: the Phase 2 gate. One logical plan exposes exactly one
     # validated relation, and a narrow phase cannot be supplied after the plan
@@ -685,16 +841,23 @@ celltree(p::G4ProbeSpace) = celltree(p.space)
         method = G4RadiusMethod(0.1)
         policy = Weighted(0.5)
 
-        # The default owns none, and construction then does no relation work at
-        # all: the probe is never asked a question. This is the shape every
-        # per-destination-chunk plan takes, production's 66 175 included.
+        # The default builds one, at the plan's own radius, in every spelling of
+        # the constructor — keyword and both positional forms. Task E1 made this
+        # the default because a lazy read IS a read of these rows.
         bare = ChunkedPlan(method, policy, dst, src)
-        @test GR.dependencies(bare) === nothing
+        @test GR.dependencies(bare) isa GR.ChunkDependencyGraph
+        @test GR.dependency_radius(GR.dependencies(bare)) == 0.1
+        for p in (ChunkedPlan(method, policy, dst, src, PerChunk(), 2^30, nothing),
+            ChunkedPlan(method, policy, dst, src, PerChunk(), 2^30, nothing, nothing))
+            @test graph_pairs(GR.dependencies(p)) == graph_pairs(GR.dependencies(bare))
+        end
+
+        # `dependencies = false` is the opt-out, and construction then does no
+        # relation work at all: the probe is never asked a question. A plan that
+        # takes it cannot back a `LazyRegridArray`, which is the point.
         quiet = G4ProbeSpace(src)
-        @test GR.dependencies(ChunkedPlan(method, policy, dst, quiet)) === nothing
-        @test quiet.queries == 0
-        @test GR.dependencies(ChunkedPlan(method, policy, dst, quiet,
-            PerChunk(), 2^30, nothing)) === nothing
+        @test GR.dependencies(
+            ChunkedPlan(method, policy, dst, quiet; dependencies = false)) === nothing
         @test quiet.queries == 0
 
         # `dependencies = true` builds it once, at the plan's OWN radius — the
@@ -829,10 +992,12 @@ celltree(p::G4ProbeSpace) = celltree(p.space)
         lazyplan = plan_regrid(data; to = dst, from = src, lazy = true,
             refine = odd, narrow = :oddsources)
         @test GR.narrowphase(GR.dependencies(lazyplan)) == :oddsources
-        @test GR.dependencies(plan_regrid(data; to = dst, from = src,
-            lazy = true)) === nothing
+        @test GR.narrowphase(GR.dependencies(plan_regrid(data; to = dst, from = src,
+            lazy = true))) == :none
         @test GR.dependencies(plan_regrid(data; to = dst, from = src,
             lazy = true, dependencies = true)) isa GR.ChunkDependencyGraph
+        @test GR.dependencies(plan_regrid(data; to = dst, from = src,
+            lazy = true, dependencies = false)) === nothing
 
         # An eager plan names each keyword it refuses rather than ignoring it.
         for (name, call) in (

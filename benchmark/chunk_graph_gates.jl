@@ -436,10 +436,15 @@ end
 
 "Build a one-column dependency graph the way a caller without `restrict` must."
 function rebuild_graph(dst, src, ds::Vector{Int}, radius::Float64)
-    id = GR.dependency_identity(dst, src; radius)
-    caps = GR.chunkextents(dst)
-    return GR._chunkgraph(id, [caps[d] for d in ds], GR.chunkindex(src),
-        Int(GR.nchunks(src)), radius, nothing)
+    # Mirrors `_builddependencies`: each side's caps are taken once and serve
+    # both the stamp and the relation. Task E1 made the graph keep them, so a
+    # rebuild that took them twice would no longer be what a rebuild costs.
+    dcaps = GR.chunkextents(dst)
+    scaps = GR.chunkextents(src)
+    id = GR.DependencyIdentity(GR._spacestamp(dst, dcaps), GR._spacestamp(src, scaps),
+        radius, :none)
+    return GR._chunkgraph(id, [dcaps[d] for d in ds], GR.chunkindex(src),
+        scaps, radius, nothing)
 end
 
 rows_of(g) = [Int.(collect(GR.sourcesof(g, d))) for d in 1:GR.ndestinationchunks(g)]

@@ -75,6 +75,17 @@ t7_plan(method, dst, src; policy = Weighted(0.5), storage = PerChunk(),
     budget = 2^30, chunks = nothing, missingval = nothing) =
     ChunkedPlan(method, policy, dst, src, storage, budget, chunks, missingval)
 
+# A relation carrying nothing but the caps a wave costs against. `_wavesize` and
+# `_blockcosts!` read per-chunk geometry off the plan's relation rather than off
+# private vectors, so a test that wants a contrived pair of cap sets builds the
+# relation that carries them. The CSR is deliberately edgeless: the wave
+# estimator reads the caps and the caller's own `srcchunks`, never the rows.
+t7_capgraph(dstcaps, srccaps) =
+    GR.ChunkDependencyGraph(GR.DependencyIdentity(),
+        fill(1, length(dstcaps) + 1), Int32[],
+        fill(1, length(srccaps) + 1), Int32[];
+        dstcaps = collect(dstcaps), srccaps = collect(srccaps))
+
 # Source with a configurable `knownempty` oracle.
 
 mutable struct T8Presence{T,N,A<:AbstractArray{T,N},F} <: DiskArrays.AbstractDiskArray{T,N}
@@ -235,8 +246,10 @@ end
         srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
         srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
         nd = length(cellindices(dstspace, 1))
-        dcaps = view(GR.chunkextents(dstspace), 1:1)
-        scaps = GR.chunkextents(srcspace)
+        # The tile is destination chunk 1, so its rows are `[1]`; the caps come
+        # off the plan's own relation.
+        graph = GR.dependencies(plan)
+        rows = [1]
         nt = Threads.nthreads()
         @test length(srcchunks) > 1
 
@@ -244,13 +257,13 @@ end
         # wave is the only parallelism left and the budget alone bounds it.
         Base.ScopedValues.@with GR.OUTER_PARALLEL => true begin
             tiny = t7_plan(ToyDiagonalMethod(), dstspace, srcspace; budget = 2^10)
-            @test GR._wavesize(tiny, nd, srcchunks, srcranges, dcaps, scaps) == 1
-            @test GR._wavesize(plan, nd, srcchunks, srcranges, dcaps, scaps) ==
+            @test GR._wavesize(tiny, nd, srcchunks, srcranges, graph, rows) == 1
+            @test GR._wavesize(plan, nd, srcchunks, srcranges, graph, rows) ==
                   min(nt, length(srcchunks))
 
             # One pair is one build whatever the threads: a wave never spawns
             # for a tile it cannot split.
-            @test GR._wavesize(plan, nd, srcchunks[1:1], srcranges[1:1], dcaps, scaps) == 1
+            @test GR._wavesize(plan, nd, srcchunks[1:1], srcranges[1:1], graph, rows) == 1
         end
     end
 
@@ -280,27 +293,32 @@ end
 
         # Costs weigh the chunk by how much of it the tile can reach, so equal
         # chunk sizes do not make an even wave.
-        wide = view([SphericalCap(toy_point(0, 0), 1.0)], 1:1)
+        wide = [SphericalCap(toy_point(0, 0), 1.0)]
         near = SphericalCap(toy_point(0, 0), 0.2)
         far = SphericalCap(toy_point(180, 0), 0.2)
         n = max(nt, 4)
         chunks = collect(1:n)
+        rows = [1]
         ranges = [srcranges[1] for _ in 1:n]
-        @test GR._blockcosts!(zeros(2), [1, 2], ranges[1:2], wide, [near, far]) ==
+        @test GR._blockcosts!(zeros(2), [1, 2], ranges[1:2],
+                  t7_capgraph(wide, [near, far]), rows) ==
               [Float64(prod(map(length, ranges[1]))), 0.0]
 
         if nt > 1
             # Every chunk sits inside the tile: the wave is worth its width.
-            @test GR._wavesize(plan, nd, chunks, ranges, wide, fill(near, n)) ==
-                  min(nt, n)
+            @test GR._wavesize(plan, nd, chunks, ranges,
+                      t7_capgraph(wide, fill(near, n)), rows) == min(nt, n)
             # One chunk carries all the work and the rest meet the tile only at
             # its extent: the wave cannot beat the threading it would suppress.
             lopsided = [i == 1 ? near : far for i in 1:n]
-            @test GR._wavesize(plan, nd, chunks, ranges, wide, lopsided) == 1
+            @test GR._wavesize(plan, nd, chunks, ranges,
+                      t7_capgraph(wide, lopsided), rows) == 1
             # Nothing to weigh at all still falls back to one build at a time.
-            @test GR._wavesize(plan, nd, chunks, ranges, wide, fill(far, n)) == 1
+            @test GR._wavesize(plan, nd, chunks, ranges,
+                      t7_capgraph(wide, fill(far, n)), rows) == 1
         else
-            @test GR._wavesize(plan, nd, chunks, ranges, wide, fill(near, n)) == 1
+            @test GR._wavesize(plan, nd, chunks, ranges,
+                      t7_capgraph(wide, fill(near, n)), rows) == 1
         end
     end
 
@@ -757,5 +775,133 @@ end
         whole = DD.DimArray(copy(values), (xd, yd))
         @test results[1] ≈ regrid(whole; to = dst, from = RasterGrid(whole),
             method = Conservative(), lazy = false) rtol = 1e-12
+    end
+
+    # ----------------------------------------------------------------------
+    # Task E1 — the lazy executor is driven by the plan's dependency rows
+    # ----------------------------------------------------------------------
+
+    @testset "a lazy read takes its sources from the plan's relation" begin
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        graph = GR.dependencies(plan)
+        source = T7Counting(field, (4, 2))
+        A = LazyRegridArray(source, plan)
+
+        # One relation, one object: the array's is its plan's, identically, and
+        # two arrays over one plan share it. Whatever schedules against the plan
+        # is looking at exactly what the read consults.
+        @test GR.dependencies(A) === graph
+        @test GR.dependencies(A) === GR.dependencies(plan)
+        @test GR.dependencies(LazyRegridArray(T7Counting(field, (4, 2)), plan)) === graph
+
+        # This destination's chunks are its tiles, so a tile's sources are that
+        # chunk's row, exactly — not a superset of it, and not a re-derivation.
+        @test A.tiling.spacetiled
+        out = Int[]
+        for t in 1:nchunks(dstspace)
+            @test GR._connectedsource!(out, A, t) == Int.(GR.sourcesof(graph, t))
+        end
+    end
+
+    @testset "a derived tile takes the sorted union of its rows" begin
+        # A tile smaller or larger than a destination chunk is a *derived* tile:
+        # it spans a set of destination chunks and its sources are the union of
+        # their rows, ascending and duplicate-free whatever order the rows are
+        # visited in.
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        data = collect(reshape(1.0:32.0, 8, 4))
+        plan = t7_plan(ToyDiagonalMethod(), dst, src; chunks = (7, ))
+        graph = GR.dependencies(plan)
+        A = LazyRegridArray(T7Counting(data, (4, 2)), plan)
+        @test !A.tiling.spacetiled
+
+        # At least one tile really does span several destination chunks, or the
+        # union branch below is never exercised.
+        @test any(t -> length(A.tiling.chunksof[t]) > 1, eachindex(A.tiling.runs))
+
+        out = Int[]
+        for t in eachindex(A.tiling.runs)
+            rows = A.tiling.chunksof[t]
+            union = sort!(unique!(reduce(vcat,
+                [Int.(GR.sourcesof(graph, d)) for d in rows])))
+            @test GR._connectedsource!(out, A, t) == union
+            @test issorted(out) && allunique(out)
+            # Order-independence: the same rows in any order give the same set.
+            @test GR._unionrows!(Int[], graph, reverse(rows)) == union
+        end
+    end
+
+    @testset "a lazy read performs no dependency discovery" begin
+        # The Phase 3 gate, behaviourally. `G4ProbeSpace` counts every
+        # `chunktree` call, and both `chunkextents` and the generic `chunkindex`
+        # route through it — so the counter rises exactly when a relation is
+        # being derived from the space. It is defined in `test_chunkgraph.jl`,
+        # which runs first; reuse rather than a second copy is deliberate.
+        probe = G4ProbeSpace(srcspace)
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, probe)
+        built = probe.queries
+        @test built > 0                                  # the plan did derive one
+
+        source = T7Counting(field, (4, 2))
+        A = LazyRegridArray(source, plan)
+        @test probe.queries == built                     # and the array derived none
+
+        expected = vec(field)
+        @test A[1:32] == expected
+        @test A[1:16] == expected[1:16]
+        @test A[17:32] == expected[17:32]
+        @test A[5:20] == expected[5:20]
+        @test collect(A) == expected
+        # Not one question to the source space through the whole of that.
+        @test probe.queries == built
+
+        # Structurally: the array holds the relation and nothing else that could
+        # answer a spatial query. No source index, no cap vectors of its own.
+        @test :graph in fieldnames(typeof(A))
+        @test fieldtype(typeof(A), :graph) <: GR.ChunkDependencyGraph
+        @test !any(in(fieldnames(typeof(A))), (:srcindex, :dstcaps, :srccaps, :radius))
+        @test !any(T -> T <: AbstractVector{<:SphericalCap}, fieldtypes(typeof(A)))
+    end
+
+    @testset "wave costing reads the relation's extents, and copies none" begin
+        # E1 moved the per-chunk caps onto the relation. The point is not only
+        # that they are reachable, but that there is ONE of each: a plan, its
+        # array and every task in a wave read the same vectors.
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        graph = GR.dependencies(plan)
+        A = LazyRegridArray(T7Counting(field, (4, 2)), plan)
+
+        @test GR.hasextents(graph)
+        @test GR.destinationextents(graph) == GR.chunkextents(dstspace)
+        @test GR.sourceextents(graph) == GR.chunkextents(srcspace)
+        @test GR.destinationextent(graph, 2) === GR.destinationextents(graph)[2]
+        @test GR.sourceextent(graph, 3) === GR.sourceextents(graph)[3]
+        # Shared by reference, not copied, through every derived object.
+        @test GR.sourceextents(GR.dependencies(A)) === GR.sourceextents(graph)
+        @test GR.destinationextents(GR.restrict(graph, [1])) ===
+              GR.destinationextents(graph)
+
+        # A relation assembled from bare CSR arrays carries none, says so, and
+        # is refused by the lazy array rather than silently degrading.
+        bare = GR.ChunkDependencyGraph(GR.DependencyIdentity(), [1, 1], Int32[],
+            [1, 1], Int32[])
+        @test !GR.hasextents(bare)
+        @test_throws ArgumentError GR.sourceextents(bare)
+        @test_throws ArgumentError GR.destinationextent(bare, 1)
+    end
+
+    @testset "a plan with no relation cannot back a lazy read" begin
+        plan = ChunkedPlan(ToyDiagonalMethod(), Weighted(0.5), dstspace, srcspace;
+            dependencies = false)
+        @test GR.dependencies(plan) === nothing
+        err = try
+            LazyRegridArray(T7Counting(field, (4, 2)), plan)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("dependencies = false", err.msg)
     end
 end

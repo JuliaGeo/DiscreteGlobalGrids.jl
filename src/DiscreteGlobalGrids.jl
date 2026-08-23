@@ -359,7 +359,7 @@ export cellsize, levelfor
 # `Base.parent(sys, c)` belongs to this list and is absent from it deliberately:
 # the hierarchy's parent is a method on Base's function, not a name to re-export.
 export cellindextype, levels, maxlevel, levelgrid, rootcells, children
-export node_extent, maxneighbors, winding, has_sorted_subtrees
+export node_extent, maxneighbors, maxring, winding, has_sorted_subtrees
 export ancestor, descendants, descendant_range
 export subtree
 export cellid

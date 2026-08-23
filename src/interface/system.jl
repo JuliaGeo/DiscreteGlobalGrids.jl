@@ -256,6 +256,72 @@ end
 
 winding(grid::AbstractGrid) = winding(grid, Vertex())
 
+"""
+    maxring(sys, k, connectivity = Vertex()) -> Union{Int,Nothing}
+
+A **static** upper bound on `length(ring(grid, c, k))` for any cell of `sys` at
+any level, or `nothing` when the system declares none.
+
+This is where a system writes its ring **scaling law**. A tiling whose k-ring is
+a scaled copy of its one-ring has `maxring(sys, k) == M * k` for the degree `M`
+of that turn — `6k` on a hexagonal system, `8k` on a vertex-connected quad grid,
+`4k` under [`Edge()`](@ref Edge). A system whose rings do not grow linearly
+declares nothing and keeps the heap path.
+
+An override owns **every** `k`, including `k == 0`, which is `1`: `ring(grid, c,
+0)` is `c` alone. The generic method answers `k == 0` with `1`, `k == 1` with
+[`maxneighbors`](@ref), and `nothing` beyond.
+
+[`maxneighbors(sys, k, connectivity)`](@ref maxneighbors) sums this, so one
+method declares both bounds.
+"""
+function maxring(sys::AbstractHierarchicalGridSystem, k::Integer,
+        connectivity::Connectivity = Vertex())
+    steps = checked_steps(k)
+    steps == 0 && return 1
+    steps == 1 && return maxneighbors(sys, connectivity)
+    return nothing
+end
+
+function maxring(grid::AbstractGrid, k::Integer,
+        connectivity::Connectivity = Vertex())
+    sys = system(grid)
+    return isnothing(sys) ? nothing : maxring(sys, k, connectivity)
+end
+
+"""
+    maxneighbors(sys, k::Integer, connectivity = Vertex()) -> Union{Int,Nothing}
+
+A **static** upper bound on `length(neighbors(grid, c, k))`, or `nothing` when
+the system declares no ring law.
+
+Derived, not declared: `neighbors(grid, c, k)` is the concatenation of rings `1`
+through `k`, so this is `sum(maxring(sys, j, connectivity) for j in 1:k)` and a
+system that writes [`maxring`](@ref) gets it for free. A linear ring law gives
+the quadratic disc bound `M * k * (k + 1) / 2` — `3k(k+1)` on a hexagonal
+system.
+
+`k == 0` is `0`: `neighbors(grid, c, 0)` is empty, where `ring(grid, c, 0)` is
+`c` alone.
+"""
+function maxneighbors(sys::AbstractHierarchicalGridSystem, k::Integer,
+        connectivity::Connectivity = Vertex())
+    steps = checked_steps(k)
+    total = 0
+    for j in 1:steps
+        m = maxring(sys, j, connectivity)
+        m === nothing && return nothing
+        total += m
+    end
+    return total
+end
+
+function maxneighbors(grid::AbstractGrid, k::Integer,
+        connectivity::Connectivity = Vertex())
+    sys = system(grid)
+    return isnothing(sys) ? nothing : maxneighbors(sys, k, connectivity)
+end
+
 # ===========================================================================
 # Traits with defaults
 # ===========================================================================

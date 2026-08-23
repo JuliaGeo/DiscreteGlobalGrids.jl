@@ -126,6 +126,15 @@ maxneighbors(::H3System, ::Connectivity=Vertex()) = 6
 
 DGG.winding(::H3System, ::Connectivity = Vertex()) = DGG.CounterClockwise()
 
+"""
+    maxring(::H3System, k, connectivity) -> Int
+
+`6k`, as on any hexagonal system: tight at a hexagon, an over-bound at the
+twelve pentagons, whose rings hold `5k`.
+"""
+DGG.maxring(::H3System, k::Integer, ::Connectivity = Vertex()) =
+    (steps = Int(k); steps == 0 ? 1 : 6 * steps)
+
 # ===========================================================================
 # The dense order: positions <-> ids
 # ===========================================================================

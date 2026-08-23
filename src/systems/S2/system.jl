@@ -76,6 +76,18 @@ DGG.maxneighbors(::S2System, ::DGG.Edge) = 4
 
 DGG.winding(::S2System, ::DGG.Connectivity) = DGG.CounterClockwise()
 
+"""
+    maxring(::S2System, k, connectivity) -> Int
+
+`8k` under `Vertex()` and `4k` under `Edge()`: the quad lattice's k-ring is its
+one-ring scaled by `k`, and the cube's 3-valent corners do not exceed it.
+"""
+DGG.maxring(::S2System, k::Integer, ::DGG.Vertex = DGG.Vertex()) =
+    (steps = Int(k); steps == 0 ? 1 : 8 * steps)
+
+DGG.maxring(::S2System, k::Integer, ::DGG.Edge) =
+    (steps = Int(k); steps == 0 ? 1 : 4 * steps)
+
 # ===========================================================================
 # Geometry
 # ===========================================================================

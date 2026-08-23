@@ -105,6 +105,15 @@ DGG.maxneighbors(::IGeo7System, ::Connectivity) = 6
 # walk carries that order outward instead of measuring azimuth per cell.
 DGG.winding(::IGeo7System, ::Connectivity) = DGG.CounterClockwise()
 
+"""
+    maxring(::IGeo7System, k, connectivity) -> Int
+
+`6k`: a hexagon's k-ring is its one-ring scaled by `k`. Tight — a hexagonal cell
+attains it — and an over-bound at the twelve pentagons, whose rings hold `5k`.
+"""
+DGG.maxring(::IGeo7System, k::Integer, ::Connectivity = DGG.Vertex()) =
+    (steps = Int(k); steps == 0 ? 1 : 6 * steps)
+
 # The default `cap_inflation == 1.2` covers the observed maximum descendant
 # overhang ratio of `1.0482` — descendant boundary vertices against an ancestor's
 # cell-cap radius. Descendant caps are separate bounds and are not covered.

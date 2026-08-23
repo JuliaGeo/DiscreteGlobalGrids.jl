@@ -51,6 +51,15 @@ vertices give seven. At level zero every diamond has six vertex neighbours.
 DGG.maxneighbors(::ISEA4RSystem, ::DGG.Vertex) = 9
 DGG.maxneighbors(::ISEA4RSystem, ::DGG.Edge) = 4
 
+# `CustomOrder`, not `CounterClockwise`, and no `maxring`: both omissions have
+# the same cause. The diamond lattice's flat laws would be `8k` per ring and a
+# faithfully rotational shell, but the 5-valent icosahedral vertices break both
+# — rings reach 25 and 35 against the flat 24 and 32 at k = 3 and 4, and the
+# distorted shells are not rotations of their one-rings, so azimuth is not
+# monotone around them. The one-rings themselves do measure counter-clockwise;
+# what cannot be carried outward is the order, which is what `CustomOrder` says.
+DGG.winding(::ISEA4RSystem, ::DGG.Connectivity) = DGG.CustomOrder()
+
 # Row-major codecs remain internal; only the canonical Morton index is exposed.
 DGG.cellindextypes(::ISEA4RSystem) = (DGG.LevelIndex,)
 

@@ -223,6 +223,39 @@ end
 
 maxneighbors(grid::AbstractGrid) = maxneighbors(grid, Vertex())
 
+"""
+    winding(sys::AbstractHierarchicalGridSystem, connectivity = Vertex()) -> Winding
+    winding(grid::AbstractGrid, connectivity = Vertex()) -> Winding
+
+The order [`one_ring`](@ref) returns a cell's neighbours in, as a trait the
+engine can read. Defaults to [`Unordered()`](@ref Unordered).
+
+**Why it is a trait.** `neighbors(grid, c, k)` and `ring(grid, c, k)` for
+`k >= 2` are a breadth-first shell walk, and each shell has to come out in the
+rotational order the two verbs promise. A declared turn lets the walk carry that
+order outward from the one-rings it is already reading. Without one it has to
+*measure* the order instead — a [`cell_centroid`](@ref) for every cell of every
+shell, and a sort — which is correct, slower, and the reason an undeclared
+system pays for `k >= 2` what it does.
+
+Declaring a turn is therefore a speed decision, like [`maxneighbors`](@ref), and
+it is checked rather than assumed: `test_grid_interface` verifies a declared
+winding against measured azimuth.
+
+The grid form forwards through [`system`](@ref); a standalone grid whose
+`system(grid) === nothing` is `Unordered()`.
+"""
+winding(::AbstractHierarchicalGridSystem, ::Connectivity) = Unordered()
+
+winding(sys::AbstractHierarchicalGridSystem) = winding(sys, Vertex())
+
+function winding(grid::AbstractGrid, connectivity::Connectivity)
+    sys = system(grid)
+    return isnothing(sys) ? Unordered() : winding(sys, connectivity)
+end
+
+winding(grid::AbstractGrid) = winding(grid, Vertex())
+
 # ===========================================================================
 # Traits with defaults
 # ===========================================================================

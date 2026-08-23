@@ -408,14 +408,26 @@ function ring end
 """
     one_ring(grid, c, connectivity) -> ordered neighbours of `c`
 
-The `k == 1` primitive: `c`'s immediate neighbours in one counter-clockwise turn
-from the system's own start direction, as [`neighbors`](@ref) documents. An
-internal hook, not part of the public API.
+The `k == 1` primitive: `c`'s immediate neighbours, in the order
+[`winding`](@ref)`(grid, connectivity)` declares. An internal hook, not part of
+the public API.
 
 A system implements this one method and inherits `neighbors`, `ring`, and the
 shell walk behind both from `Fallbacks.adjacency_shells`. The generic method is
 the geometric one — `Fallbacks.adjacent_cells` wound about the cell's centroid —
 and a system with native adjacency overrides it.
+
+**A system that overrides this owes a matching [`winding`](@ref) declaration.**
+The order is stated once, there, rather than in prose here: it is what the shell
+walk reads to carry rotational order outward to `k >= 2` without measuring it,
+so a wrong declaration is a wrong answer rather than a slow one. Declaring
+nothing leaves the default [`Unordered()`](@ref Unordered), which is always safe
+— the walk then measures azimuth instead.
+
+Where the turn *starts* is the system's own business and is not part of that
+declaration: the shell walk pins the starting cell of each outer ring
+separately, and nothing here promises a relationship between the start of one
+cell's ring and the start of its neighbour's.
 
 The return may be any ordered, indexable collection with the grid's cell-index
 `eltype`; a fixed-capacity `SmallVector` sized by [`maxneighbors`](@ref) is

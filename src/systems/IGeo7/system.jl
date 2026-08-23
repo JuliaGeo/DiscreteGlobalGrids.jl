@@ -101,6 +101,10 @@ DGG.has_sorted_subtrees(::IGeo7System) = true
 # bound is 6 under either connectivity (a pentagon reaches 5).
 DGG.maxneighbors(::IGeo7System, ::Connectivity) = 6
 
+# Z7's one-rings come out of the GBT automaton counter-clockwise, so the shell
+# walk carries that order outward instead of measuring azimuth per cell.
+DGG.winding(::IGeo7System, ::Connectivity) = DGG.CounterClockwise()
+
 # The default `cap_inflation == 1.2` covers the observed maximum descendant
 # overhang ratio of `1.0482` — descendant boundary vertices against an ancestor's
 # cell-cap radius. Descendant caps are separate bounds and are not covered.

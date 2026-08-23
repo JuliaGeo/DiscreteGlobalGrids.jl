@@ -339,6 +339,7 @@ export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
 export AbstractQuadFaceGridSystem
 export LevelIndex
 export Connectivity, Vertex, Edge
+export Winding, CounterClockwise, Clockwise, CustomOrder, Unordered
 # `GeometryOps.UnitSphericalPoint`, re-exported: every boundary and centroid
 # method in the contract is written in it.
 export UnitSphericalPoint
@@ -358,7 +359,7 @@ export cellsize, levelfor
 # `Base.parent(sys, c)` belongs to this list and is absent from it deliberately:
 # the hierarchy's parent is a method on Base's function, not a name to re-export.
 export cellindextype, levels, maxlevel, levelgrid, rootcells, children
-export node_extent, maxneighbors, has_sorted_subtrees
+export node_extent, maxneighbors, winding, has_sorted_subtrees
 export ancestor, descendants, descendant_range
 export subtree
 export cellid

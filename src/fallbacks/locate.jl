@@ -138,7 +138,33 @@ wound about `c`'s centroid from the spoke through ring 1's first cell.
 A walk that exhausts the component stops early, so a shell past the end is
 absent rather than empty.
 """
-function adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex,
+adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex,
+    steps::Int) where {W} = adjacency_shells(walk, grid, c, steps, Unordered())
+
+# A declared turn is carried outward; anything else is measured.
+adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
+    ::Union{CounterClockwise,Clockwise}) where {W} =
+    _shells_wound(walk, grid, c, steps)
+
+adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
+    ::Winding) where {W} = _shells_azimuth(walk, grid, c, steps)
+
+adjacency_shells(grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
+    connectivity::Connectivity) =
+    adjacency_shells(x -> one_ring(grid, x, connectivity), grid, c, steps,
+        winding(grid, connectivity))
+
+# The geometric walk hoists the spatial tree out of the per-cell one-ring.
+function _geometric_shells(grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
+        connectivity::Connectivity)
+    tree = treeify(grid)
+    return adjacency_shells(x -> one_ring(grid, x, connectivity, tree), grid, c,
+        steps, winding(grid, connectivity))
+end
+
+# --- the measured walk: no declared turn, so every outer shell is sorted -----
+
+function _shells_azimuth(walk::W, grid::AbstractGrid, c::AbstractCellIndex,
         steps::Int) where {W}
     T = typeof(c)
     shells = Vector{T}[]
@@ -170,15 +196,105 @@ function adjacency_shells(walk::W, grid::AbstractGrid, c::AbstractCellIndex,
     return shells
 end
 
-adjacency_shells(grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
-    connectivity::Connectivity) =
-    adjacency_shells(x -> one_ring(grid, x, connectivity), grid, c, steps)
+# --- the carried walk: the declared turn supplies the order ------------------
+#
+# Each frontier cell's one-ring is already a turn, so the cells it adds to the
+# next shell come off it in that turn's order once the arc is started at the
+# right place: just past the inward neighbours, which are contiguous in the
+# turn. Concatenating over a frontier that is itself in turn order gives the
+# whole shell in turn order, with no centroid and no sort.
+#
+# What that does NOT give is the shell's PHASE — which of its cells the ring
+# starts at. `_pin_phase!` supplies it, and is the only geometry here.
 
-# The geometric walk hoists the spatial tree out of the per-cell one-ring.
-function _geometric_shells(grid::AbstractGrid, c::AbstractCellIndex, steps::Int,
-        connectivity::Connectivity)
-    tree = treeify(grid)
-    return adjacency_shells(x -> one_ring(grid, x, connectivity, tree), grid, c, steps)
+function _shells_wound(walk::W, grid::AbstractGrid, c::AbstractCellIndex,
+        steps::Int) where {W}
+    T = typeof(c)
+    shells = Vector{T}[]
+    steps == 0 && return shells
+    r1 = collect(T, walk(c))
+    push!(shells, r1)
+    (steps == 1 || isempty(r1)) && return shells
+    centre = cell_centroid(grid, c)
+    frame = _ring_frame(grid, centre, first(r1))
+    prev2 = T[c]
+    prev1 = r1
+    for _ in 2:steps
+        next = T[]
+        for f in prev1
+            R = walk(f)
+            m = length(R)
+            m == 0 && continue
+            # Start the arc after the last inward neighbour. The inward set is
+            # contiguous in the turn, so one index is the whole boundary.
+            a = 0
+            for i in 1:m
+                _member(prev2, R[i]) && (a = i)
+            end
+            for t in 1:m
+                y = @inbounds R[mod1(a + t, m)]
+                (_member(prev2, y) || _member(prev1, y) || _member(next, y)) &&
+                    continue
+                push!(next, y)
+            end
+        end
+        _pin_phase!(next, grid, centre, frame)
+        push!(shells, next)
+        isempty(next) && break
+        prev2, prev1 = prev1, next
+    end
+    return shells
+end
+
+# Linear membership over a shell. Shells are `O(k)` and hold no duplicates, so
+# this beats hashing at every size the walk reaches.
+@inline function _member(v, y)
+    for x in v
+        x == y && return true
+    end
+    return false
+end
+
+"""
+    _pin_phase!(shell, grid, centre, frame) -> shell
+
+Rotate `shell` — already in turn order — so it starts where [`_wind!`](@ref)
+would have put it: at the smallest phase about `frame`'s zero spoke.
+
+Phase increases along a turn and wraps exactly once, so the starting cell is the
+wrap point of a rotated sorted sequence and a binary search finds it in
+`O(log n)` centroids rather than one per member. That search is only valid
+because the sequence really is a rotation of a sorted one, which is what a
+declared [`winding`](@ref) asserts and `test_grid_interface` checks.
+"""
+function _pin_phase!(shell::AbstractVector, grid, centre, frame)
+    n = length(shell)
+    n <= 1 && return shell
+    e1, e2, zero = frame
+    ph(i) = _phase(_azimuth(centre, e1, e2,
+        cell_centroid(grid, @inbounds shell[i])) - zero)
+    # Against a FIXED reference, so the search costs one centroid per step
+    # rather than two: phase rises to the end of the turn and restarts, so
+    # `phase < phase[1]` is false along the tail and true from the wrap on, and
+    # the first index where it holds is the start. No wrap means index 1.
+    first_phase = ph(1)
+    first_phase <= ph(n) && return shell
+    lo, hi = 1, n
+    while lo < hi
+        mid = (lo + hi) >> 1
+        if ph(mid) >= first_phase
+            lo = mid + 1
+        else
+            hi = mid
+        end
+    end
+    lo == 1 && return shell
+    rot = similar(shell)
+    @inbounds for i in 1:n
+        rot[i] = shell[mod1(lo + i - 1, n)]
+    end
+    copyto!(shell, rot)
+    return shell
 end
 
 """

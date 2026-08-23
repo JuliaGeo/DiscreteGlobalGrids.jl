@@ -124,6 +124,8 @@ coincide, and the bound is the hexagon's six. The twelve pentagons have five.
 """
 maxneighbors(::H3System, ::Connectivity=Vertex()) = 6
 
+DGG.winding(::H3System, ::Connectivity = Vertex()) = DGG.CounterClockwise()
+
 # ===========================================================================
 # The dense order: positions <-> ids
 # ===========================================================================

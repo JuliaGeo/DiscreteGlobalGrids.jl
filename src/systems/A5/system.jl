@@ -144,6 +144,12 @@ The global bounds are therefore `5` and `11`; the latter occurs at level 1.
 maxneighbors(::A5System, ::Vertex) = 11
 maxneighbors(::A5System, ::Edge) = 5
 
+# A5's one-rings measure counter-clockwise, but its shells are not rotational
+# copies of them: rings grow 8, 18, 29, 39 rather than linearly, so there is no
+# outward order for the shell walk to carry and no linear `maxring` law. Both
+# omissions are deliberate; see `CustomOrder`.
+DGG.winding(::A5System, ::Connectivity) = DGG.CustomOrder()
+
 # ===========================================================================
 # The dense order: positions <-> ids
 # ===========================================================================

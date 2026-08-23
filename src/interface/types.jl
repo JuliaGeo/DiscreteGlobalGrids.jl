@@ -243,3 +243,66 @@ von Neumann connectivity: two cells are adjacent only if they share a whole
 **edge**. The opt-in restriction of the [`Vertex()`](@ref Vertex) default.
 """
 struct Edge <: Connectivity end
+
+"""
+    abstract type Winding
+
+The order a system's [`one_ring`](@ref) arrives in, declared rather than
+promised in prose. See [`winding`](@ref).
+
+**What reads it.** The shell walk behind `neighbors(grid, c, k)` and
+`ring(grid, c, k)` for `k >= 2` has to know the rotational order of each ring.
+A declared turn ([`CounterClockwise`](@ref), [`Clockwise`](@ref)) lets it
+propagate that order outward from the one-rings it already has. Otherwise it
+measures the order geometrically instead — a [`cell_centroid`](@ref) per cell of
+every ring, plus a sort.
+
+Concrete singletons: [`CounterClockwise`](@ref), [`Clockwise`](@ref),
+[`CustomOrder`](@ref) and [`Unordered`](@ref).
+"""
+abstract type Winding end
+
+"""
+    CounterClockwise() <: Winding
+
+`one_ring` is one counter-clockwise turn seen from **outside** the sphere,
+starting at the system's own start direction. The order [`neighbors`](@ref)
+states, and the one every system in this package declares.
+"""
+struct CounterClockwise <: Winding end
+
+"""
+    Clockwise() <: Winding
+
+`one_ring` is one clockwise turn seen from outside the sphere. A rotational
+winding like [`CounterClockwise`](@ref), read in the other direction: the shell
+walk reverses it and is otherwise unchanged, so declaring this costs nothing
+against declaring the counter-clockwise turn.
+"""
+struct Clockwise <: Winding end
+
+"""
+    CustomOrder() <: Winding
+
+`one_ring` has a deterministic order the shell walk may **not** carry outward.
+Callers may rely on it being stable between calls; `k >= 2` is measured by
+azimuth as under [`Unordered`](@ref).
+
+Weaker than [`CounterClockwise`](@ref), and not the same as having no turn.
+A5 is the case: its one-rings *are* counter-clockwise when measured, but its
+shells are not rotational copies of them — its rings grow `8, 18, 29, 39` rather
+than linearly — so there is no outward order to propagate and the geometric sort
+is the answer rather than a fallback. A system whose one-ring is genuinely
+unsorted wants [`Unordered`](@ref) instead.
+"""
+struct CustomOrder <: Winding end
+
+"""
+    Unordered() <: Winding
+
+`one_ring` promises no order at all, not even stability between calls. The
+weakest declaration, and the safe default for a system that has not stated
+otherwise. The shell walk measures azimuth, as it does for
+[`CustomOrder`](@ref).
+"""
+struct Unordered <: Winding end

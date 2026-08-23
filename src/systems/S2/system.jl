@@ -74,6 +74,8 @@ DGG.levels(::S2System) = 0:MAX_LEVEL
 DGG.maxneighbors(::S2System, ::DGG.Vertex) = 8
 DGG.maxneighbors(::S2System, ::DGG.Edge) = 4
 
+DGG.winding(::S2System, ::DGG.Connectivity) = DGG.CounterClockwise()
+
 # ===========================================================================
 # Geometry
 # ===========================================================================

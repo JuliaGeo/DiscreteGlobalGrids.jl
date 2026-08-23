@@ -57,6 +57,11 @@ const CONNECTIVITIES = (DGG.Vertex(), DGG.Edge())
 conn_name(::DGG.Vertex) = "Vertex"
 conn_name(::DGG.Edge) = "Edge"
 
+# Keep allocation checks behind a typed function barrier so an isbits return
+# is not boxed merely because the assertion runs at testset top level.
+neighbor_bytes(grid, c, conn) =
+    @allocated DGG.neighbors(grid, c, 1; connectivity = conn)
+
 "A deterministic evenly spaced sweep of `n` positions of level `l`."
 function ordinal_sample(l::Int, n::Int)
     grid = DGG.levelgrid(S, l)
@@ -614,6 +619,17 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test typeof(DGG.children(S, c)) === SmallVector{5,A5.A5Cell}
         DGG.children(S, c)
         @test @allocated(DGG.children(S, c)) == 0 skip = VERSION < v"1.12"
+
+        # Cover both special low levels, a level-2 quintant/cross-face seam,
+        # and an ordinary deep cell. The seam cases take different native
+        # delta-table rows and previously boxed their heterogeneous tuples.
+        for (l, i) in ((0, 1), (1, 1), (2, 2), (5, 1000)), conn in CONNECTIVITIES
+            probe_grid = DGG.levelgrid(S, l)
+            probe = DGG.cellindex(probe_grid, i)
+            DGG.neighbors(probe_grid, probe, 1; connectivity = conn)
+            @test neighbor_bytes(probe_grid, probe, conn) == 0 skip =
+                VERSION < v"1.12" || Base.JLOptions().check_bounds == 1
+        end
 
         # An id that is not a cell of this grid's resolution is an error, not a
         # confident answer about some other cell.

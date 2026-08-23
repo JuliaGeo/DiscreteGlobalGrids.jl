@@ -800,6 +800,13 @@ destination rows and the same source side. Its rows are renumbered `1:k`;
 [`dependency_identity`](@ref) still stamps the **whole** destination space, so a
 view knows what it is a view *of*.
 
+That last point decides who may adopt one. A view is the relation of *these rows
+of that space*, so [`validate_dependencies`](@ref) certifies it only against
+that space, with `destinations` naming the rows. It is **not** the relation of a
+smaller space built over the same cells: a plan whose destination is its own
+one-chunk grid has a different [`spacestamp`](@ref) and is refused, which is why
+`scripts/copdem_production.jl`'s per-column plans own no relation at all.
+
 # What is shared and what is not
 
 The destination-major direction — the offsets and the whole edge array — is the

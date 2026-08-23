@@ -299,19 +299,37 @@ end
 Interleave a lattice coordinate pair into a Z-order code: `ix` occupies the even
 bits and `iy` the odd bits. That positional layout is what makes `code ÷ 4` the
 parent and `4code .+ (0:3)` the children.
+
+Defined for `0 <= ix, iy < 2^31`, which covers every representable refinement
+level; the low 32 bits of each coordinate are the ones interleaved.
 """
 @inline function morton_encode(ix::Integer, iy::Integer)
-    x = Int64(ix)
-    y = Int64(iy)
-    code = Int64(0)
-    shift = 0
-    while (x | y) != 0
-        code |= ((x & 1) << shift) | ((y & 1) << (shift + 1))
-        x >>= 1
-        y >>= 1
-        shift += 2
-    end
-    return code
+    return Int64(_spread_bits(UInt64(Int64(ix))) | (_spread_bits(UInt64(Int64(iy))) << 1))
+end
+
+# Spread the low 32 bits of `x` into the even bit positions of a 64-bit word by
+# repeated halving of the gaps: the classic branchless bit-interleave. Constant
+# time, unlike a per-bit loop whose cost grows with the refinement level.
+@inline function _spread_bits(x::UInt64)
+    x &= 0x00000000ffffffff
+    x = (x | (x << 16)) & 0x0000ffff0000ffff
+    x = (x | (x << 8))  & 0x00ff00ff00ff00ff
+    x = (x | (x << 4))  & 0x0f0f0f0f0f0f0f0f
+    x = (x | (x << 2))  & 0x3333333333333333
+    x = (x | (x << 1))  & 0x5555555555555555
+    return x
+end
+
+# Inverse of `_spread_bits`: gather the even bit positions back down into the
+# low 32 bits, halving the gaps in the opposite order.
+@inline function _gather_bits(x::UInt64)
+    x &= 0x5555555555555555
+    x = (x | (x >> 1))  & 0x3333333333333333
+    x = (x | (x >> 2))  & 0x0f0f0f0f0f0f0f0f
+    x = (x | (x >> 4))  & 0x00ff00ff00ff00ff
+    x = (x | (x >> 8))  & 0x0000ffff0000ffff
+    x = (x | (x >> 16)) & 0x00000000ffffffff
+    return x
 end
 
 """
@@ -321,15 +339,6 @@ Inverse of [`morton_encode`](@ref): even bits rebuild `ix`, odd bits rebuild
 `iy`.
 """
 @inline function morton_decode(code::Integer)
-    c = Int64(code)
-    ix = Int64(0)
-    iy = Int64(0)
-    shift = 0
-    while c != 0
-        ix |= (c & 1) << shift
-        iy |= ((c >> 1) & 1) << shift
-        c >>= 2
-        shift += 1
-    end
-    return (ix, iy)
+    c = UInt64(Int64(code))
+    return (Int64(_gather_bits(c)), Int64(_gather_bits(c >> 1)))
 end

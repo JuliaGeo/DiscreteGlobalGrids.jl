@@ -46,7 +46,15 @@ and source reads remain lazy.
 - Phase 1, native hierarchical chunk indexes: complete.
 - Phases 1A, 1B, and 1C: **complete**. They finished the spatial layer before
   graph integration.
-- Current implementation phase: **2**. G1, G2 and G3 are closed; G4 is next.
+- Phase 2, one authoritative dependency graph: **complete**. G1, G2, G3 and G4
+  are all closed. `ChunkedPlan` owns the relation; `dependencies(plan)` is the
+  only way to read it and builds nothing; `refine` is a keyword of lazy
+  `plan_regrid` alone. Read G4's record for the one action it could not complete
+  and why.
+- Current implementation phase: **3**. E1 is next: make the lazy executor
+  consume graph rows instead of re-discovering sources per tile. Nothing in tree
+  consumes a plan's relation yet, which is why `dependencies` defaults to
+  `nothing`.
 - The nearest/bilinear method redesign is deferred to a separate plan.
 
 Landed cards, with the commit each one shipped as:
@@ -63,6 +71,7 @@ Landed cards, with the commit each one shipped as:
 | G1 | PR #70 | Add dependency graph correctness and performance gates |
 | G2 | `da9e737` | landed early via PR #69; see the card |
 | G3 | PR #71 | Add reusable dependency graph identities |
+| G4 | PR #72 | Make chunked plans own dependency graphs |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
 `93e836d` is the commit that pinned them and records their SHAs.
@@ -76,6 +85,9 @@ Evidence:
   retroactive verdict on G2's gates
 - `regrid-notes/2026-08-23-g3-graph-identity.md` — G3's identity design, what it
   catches and what it cannot, and the row-view measurements
+- `regrid-notes/2026-08-23-g4-plan-owns-graph.md` — G4's ownership design, the
+  Phase 2 gate as tests rather than prose, and what a per-column relation would
+  have cost production
 - `regrid-notes/2026-08-21-simplification-plan-review.md`
 - `regrid-notes/2026-08-21-regridding-simplification-plan-detailed-archive.md`
 
@@ -599,6 +611,31 @@ Actions:
 **Phase 2 gate:** one logical plan exposes exactly one validated relation and a
 narrow phase cannot be supplied after the plan exists.
 **Commit:** `Make chunked plans own dependency graphs`.
+**Landed:** PR #72, stacked on #71. Record:
+`regrid-notes/2026-08-23-g4-plan-owns-graph.md`. Five of the six actions landed
+as written. One correction to this card's fourth action, which G3 predicted and
+G4 measured:
+
+- **Production's per-column plans cannot take a validated row view, and do not
+  need one.** "Never rebuild a one-destination graph per column" is met by
+  construction: `dependencies` defaults to `nothing`, so `regrid_chunk`'s plans
+  build no relation and the default costs [measured] 1.00 µs and 784 B against
+  512 µs / 542 KB for `dependencies = true` and 193 µs / 424 KB for a one-row
+  `restrict` — 511× and 193× on 66 175 columns. "Share the global graph or
+  validated row views" is **not possible at this destination shape**:
+  `regrid_chunk`'s destination is a rooted one-chunk subtree grid, a different
+  space from `dagplan`'s 66 175-chunk `PartialGrid`, and a row view still stamps
+  the *whole* destination space, so `validate_dependencies` refuses it —
+  correctly. Closing that would need destination-**sub**space re-stamping (sound
+  in principle: G3 §1.3 shows the destination half of the relation is a function
+  of the caps alone), which no card owns and which nothing would consume until
+  E1. G4 left it open and proved the refusal instead.
+
+The global plan does own the relation: `dagplan` constructs a `GR.ChunkedPlan`
+with `dependencies = true` and the narrow phase, and the schedule, refcount
+cache, prefetcher and closing validator all read `GR.dependencies(globalplan)` —
+asserted at run time by a new `check(...)` in the driver. The relation is
+[measured] unchanged: 326 064 edges, equal `DependencyIdentity`, 0.118 s warm.
 
 ## Phase 3 — graph-backed lazy execution
 

@@ -27,6 +27,54 @@ function demanded_pairs(dst, src; radius = 0.0)
     return out
 end
 
+# The geometric truth every dependency relation has to dominate: the chunk pairs
+# holding at least one cell pair a weight could be nonzero on. Real cell rings,
+# clipped through the same spherical kernel the conservative weight builder uses;
+# at nonzero support, cell vertices within `radius` count too. Nothing in this
+# construction consults a cap, a chunk extent or a chunk index, which is what
+# makes it an oracle rather than a second opinion.
+#
+# `O(ncells(dst) * ncells(src))` — keep the spaces small.
+function contributing_pairs(dst, src; radius = 0.0)
+    op = GR._intersectionoperator(manifold(dst))
+    nd, ns = Int(ncells(dst)), Int(ncells(src))
+    dcells = [getcell(dst, i) for i in 1:nd]
+    scells = [getcell(src, j) for j in 1:ns]
+    dchunk = [GR.chunkat(dst, i) for i in 1:nd]
+    schunk = [GR.chunkat(src, j) for j in 1:ns]
+    r = Float64(radius)
+    dpts = r > 0 ? [cell_vertices(dst, i) for i in 1:nd] : nothing
+    spts = r > 0 ? [cell_vertices(src, j) for j in 1:ns] : nothing
+    out = Set{Tuple{Int,Int}}()
+    for i in 1:nd, j in 1:ns
+        key = (Int(dchunk[i]), Int(schunk[j]))
+        # Rows repeat heavily; skipping a known pair skips the clip too.
+        key in out && continue
+        hit = op(dcells[i], scells[j]) > 0
+        if !hit && r > 0
+            hit = any(US.spherical_distance(a, b) <= r for a in dpts[i], b in spts[j])
+        end
+        hit && push!(out, key)
+    end
+    return out
+end
+
+# Cell rings carry unit-sphere points, not geographic ones.
+cell_vertices(space, i) = [USPoint(GI.x(p), GI.y(p), GI.z(p))
+                           for p in GI.getpoint(GI.getexterior(getcell(space, i)))]
+
+# A raster whose chunk grid is deliberately out of step with the quadtree's
+# power-of-two splits, so its leaves straddle chunk boundaries.
+function misalignedraster(nx, ny, cx, cy)
+    dlon, dlat = 360 / nx, 180 / ny
+    array = DD.DimArray(zeros(nx, ny),
+        (DD.X(range(-180 + dlon / 2, 180 - dlon / 2; length = nx)),
+         DD.Y(range(-90 + dlat / 2, 90 - dlat / 2; length = ny))))
+    return RasterGrid(array;
+        chunks = ([lo:min(lo + cx - 1, nx) for lo in 1:cx:nx],
+            [lo:min(lo + cy - 1, ny) for lo in 1:cy:ny]))
+end
+
 @testset "chunk dependency graph" begin
 
     @testset "absolute support-radius dilation" begin
@@ -102,11 +150,7 @@ end
         # A `RasterGrid` source is the shipped case: its index is a quadtree
         # cursor over cells whose leaves straddle chunk boundaries, and it
         # answers with whole chunks that the chunk's own cap would reject.
-        raster = RasterGrid(DD.DimArray(zeros(360, 180),
-            (DD.X(range(-179.5, 179.5; length = 360)),
-             DD.Y(range(-89.5, 89.5; length = 180)))),
-            chunks = ([lo:min(lo + 36, 360) for lo in 1:37:360],
-                [lo:min(lo + 22, 180) for lo in 1:23:180]))
+        raster = misalignedraster(360, 180, 37, 23)
         dst = ToyLonLatSpace(24, 12; chunks = (2, 2))
 
         for radius in (0.0, 0.02)
@@ -122,6 +166,88 @@ end
         toysrc = ToyLonLatSpace(8, 4; chunks = (2, 1))
         gt = GR.chunk_dependency_graph(dst, toysrc; radius = 0.05)
         @test graph_pairs(gt) == demanded_pairs(dst, toysrc; radius = 0.05)
+    end
+
+    @testset "no geometrically contributing pair is dropped" begin
+        # The tests above compare one conservative relation against another;
+        # both could be conservative about the wrong thing together. This one
+        # builds REAL cell geometry and asks the only question that matters: is
+        # every chunk pair a weight could be nonzero on an edge?
+        #
+        # `contributing_pairs` reaches that answer without a cap, a chunk extent
+        # or a chunk index anywhere in its construction, so it is independent of
+        # everything the builder does. A builder swap that keeps the candidate
+        # tests green and breaks this one has lost real weight.
+        cases = (
+            # A generic (packed R-tree) source index, at zero and at a support
+            # radius wide enough to connect chunks that do not touch.
+            ("toy source", ToyLonLatSpace(12, 6; chunks = (3, 2)),
+                ToyLonLatSpace(8, 4; chunks = (2, 1)), 0.0),
+            ("toy source, support", ToyLonLatSpace(12, 6; chunks = (3, 2)),
+                ToyLonLatSpace(8, 4; chunks = (2, 1)), 0.2),
+            # The shipped raster path: a quadtree cursor whose leaves straddle
+            # chunk boundaries, so its answers are not the chunk caps'.
+            ("raster source", ToyLonLatSpace(24, 12; chunks = (2, 2)),
+                misalignedraster(36, 18, 7, 5), 0.0),
+            ("raster source, support", ToyLonLatSpace(24, 12; chunks = (2, 2)),
+                misalignedraster(36, 18, 7, 5), 0.1),
+            # Chunks that do not divide the raster evenly: the last chunk of
+            # each axis is a different size from the rest.
+            ("nonuniform raster chunks", ToyLonLatSpace(18, 9; chunks = (4, 3)),
+                misalignedraster(37, 19, 11, 6), 0.0),
+            # A polar source band: the widest caps, and where a cell's own cap
+            # and its hierarchy's node extents diverge most.
+            ("polar source", ToyLonLatSpace(24, 12; chunks = (3, 3)),
+                ToyLonLatSpace(8, 2; lat = (60.0, 90.0), chunks = (3, 1)), 0.0),
+            # A regional source against the antimeridian, so the destination has
+            # isolated chunks and the source's own coverage wraps the cut.
+            ("antimeridian source", ToyLonLatSpace(24, 12; chunks = (2, 2)),
+                ToyLonLatSpace(6, 4; lon = (150.0, 180.0), lat = (-40.0, 40.0),
+                    chunks = (2, 2)), 0.0),
+        )
+        for (name, dst, src, radius) in cases
+            @testset "$name" begin
+                truth = contributing_pairs(dst, src; radius)
+                @test !isempty(truth)
+                @test truth ⊆ graph_pairs(GR.chunk_dependency_graph(dst, src; radius))
+                # A chunk cap covers its own cells, so the cap join must hold
+                # the same pairs. This is the `chunkextents` half of the same
+                # obligation, and it fails if a chunk cap is too tight.
+                @test truth ⊆ reference_pairs(dst, src; radius)
+            end
+        end
+    end
+
+    @testset "the cap join is an identity only on the generic index" begin
+        # G1's second gate. A space with no chunk index of its own is answered
+        # by a packed R-tree over the very caps `chunkextents` reports, so there
+        # the relation must be EXACTLY the brute-force cap join — an equality,
+        # not a containment.
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        for radius in (0.0, 0.05, 0.4)
+            @test graph_pairs(GR.chunk_dependency_graph(dst, src; radius)) ==
+                  reference_pairs(dst, src; radius)
+        end
+
+        # A native hierarchy is a different matter, and the difference is the
+        # reason PR #69 exists. The raster quadtree answers whole chunks for a
+        # straddling leaf without testing each chunk's own cap, so it holds
+        # pairs the cap join rejects; and the cap join holds pairs the quadtree
+        # never reaches. The two relations CROSS in both directions — measured
+        # here, so the cap join cannot be used as a bound on the graph in
+        # either direction, only as a second superset of the geometric truth.
+        rdst = ToyLonLatSpace(24, 12; chunks = (2, 2))
+        rsrc = misalignedraster(36, 18, 7, 5)
+        native = graph_pairs(GR.chunk_dependency_graph(rdst, rsrc))
+        capjoin = reference_pairs(rdst, rsrc)
+        @test !isempty(setdiff(native, capjoin))
+        @test !isempty(setdiff(capjoin, native))
+        # Both still dominate the geometric truth; that is the invariant, and
+        # it is the one a builder change must keep.
+        truth = contributing_pairs(rdst, rsrc)
+        @test truth ⊆ native
+        @test truth ⊆ capjoin
     end
 
     @testset "regional and polar spaces" begin

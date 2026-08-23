@@ -12,6 +12,7 @@ import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
 import DimensionalData as DD
 import Extents
+import GeoInterface as GI
 import GeometryOps as GO
 using GeometryOps: SpatialTreeInterface as STI
 import ConservativeRegridding as CR
@@ -194,6 +195,126 @@ end
     @test all(reached)
     @test demanded > 0
     @test unpredicted == 0
+end
+
+# The geometric truth a dependency relation has to dominate: the chunk pairs
+# holding at least one cell pair a weight could be nonzero on. Real cell rings
+# through the same spherical kernel the conservative weight builder uses; at
+# nonzero support, cell vertices within `radius` count too. No cap, no chunk
+# extent and no chunk index takes part in the construction, which is what makes
+# it an oracle rather than a second opinion. `O(ncells^2)` — keep it small.
+function contributing_pairs(dst, src; radius = 0.0)
+    op = GR._intersectionoperator(GR.manifold(dst))
+    nd, ns = Int(GR.ncells(dst)), Int(GR.ncells(src))
+    dcells = [GR.getcell(dst, i) for i in 1:nd]
+    scells = [GR.getcell(src, j) for j in 1:ns]
+    dchunk = [GR.chunkat(dst, i) for i in 1:nd]
+    schunk = [GR.chunkat(src, j) for j in 1:ns]
+    r = Float64(radius)
+    dpts = r > 0 ? [cellvertices(dst, i) for i in 1:nd] : nothing
+    spts = r > 0 ? [cellvertices(src, j) for j in 1:ns] : nothing
+    out = Set{Tuple{Int,Int}}()
+    for i in 1:nd, j in 1:ns
+        key = (Int(dchunk[i]), Int(schunk[j]))
+        key in out && continue          # rows repeat; skip the clip too
+        hit = op(dcells[i], scells[j]) > 0
+        if !hit && r > 0
+            hit = any(GO.UnitSpherical.spherical_distance(a, b) <= r
+                      for a in dpts[i], b in spts[j])
+        end
+        hit && push!(out, key)
+    end
+    return out
+end
+
+# Cell rings carry unit-sphere points, not geographic ones.
+cellvertices(space, i) =
+    [GO.UnitSphericalPoint(GI.x(p), GI.y(p), GI.z(p))
+     for p in GI.getpoint(GI.getexterior(GR.getcell(space, i)))]
+
+graphpairs(g) = Set((d, Int(s)) for d in 1:GR.ndestinationchunks(g)
+                    for s in GR.sourcesof(g, d))
+
+capjoinpairs(dst, src; radius = 0.0) =
+    let dcaps = GR.chunkextents(dst), scaps = GR.chunkextents(src),
+        hits = GR.DilatedIntersects(Float64(radius))
+
+        Set((d, s) for d in eachindex(dcaps), s in eachindex(scaps)
+            if hits(dcaps[d], scaps[s]))
+    end
+
+@testset "no geometrically contributing pair is dropped" begin
+    # The test above compares the graph against another conservative relation;
+    # both could be conservative about the wrong thing together. This one builds
+    # REAL hexagon and pentagon geometry and asks the only question that
+    # matters: is every chunk pair a weight could be nonzero on an edge?
+    sys7 = DGG.IGeo7System()
+    rasterspace = GR.RasterGrid(globalraster(10.0);
+        chunks = ([lo:min(lo + 6, 36) for lo in 1:7:36],
+            [lo:min(lo + 4, 18) for lo in 1:5:18]))
+    rooted = DGG.DGGSpace(
+        DGG.subtree(sys7, DGG.cellindex(DGG.levelgrid(sys7, 1), 20), 4);
+        chunklevel = 2)
+    sparse = DGG.DGGSpace(DGG.PartialGrid(REGION); chunklevel = 2)
+
+    cases = (
+        # A complete grid against a complete grid three levels finer: all twelve
+        # pentagons, both poles, and hexagon children that reach outside their
+        # own parent's boundary.
+        ("complete IGeo7", DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
+            DGG.DGGSpace(DGG.levelgrid(sys7, 3); chunklevel = 2), 0.0, true),
+        # Two systems whose cells share no edges at all.
+        ("IGeo7 from S2", DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
+            DGG.DGGSpace(DGG.levelgrid(SYS, 3); chunklevel = 1), 0.0, true),
+        # A rooted subtree destination: most source chunks reach nothing, so a
+        # relation that lost a pair would leave no other trace.
+        ("rooted subtree", rooted,
+            DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1), 0.0, true),
+        # A scattered, non-rooted subset of a level.
+        ("sparse subset", sparse,
+            DGG.DGGSpace(DGG.levelgrid(SYS, 3); chunklevel = 1), 0.0, true),
+        # The production shape: a chunked raster source into a DGG destination.
+        # Its quadtree is NOT answering the caps `chunkextents` reports, so the
+        # cap join is not a bound on it in either direction.
+        ("raster source", DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
+            rasterspace, 0.0, false),
+        ("raster source, support", DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
+            rasterspace, 0.05, false),
+    )
+
+    for (name, dst, src, radius, capbounded) in cases
+        @testset "$name" begin
+            truth = contributing_pairs(dst, src; radius)
+            @test !isempty(truth)
+            @test truth ⊆ graphpairs(GR.chunk_dependency_graph(dst, src; radius))
+            # A chunk cap covers its own cells, so the cap join holds the same
+            # pairs. This is the `chunkextents` half of the obligation: it fails
+            # if a chunk cap is too tight.
+            @test truth ⊆ capjoinpairs(dst, src; radius)
+        end
+    end
+
+    # G1's second gate. Where a space's index descends the very hierarchy
+    # `chunkextents` is derived from, the cap join is an UPPER bound: the
+    # descent can prune a chunk whose own cap intersects, never add one whose
+    # cap does not. That holds for `_dggcandidatechunks!`...
+    for (dst, src) in (
+            (DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
+                DGG.DGGSpace(DGG.levelgrid(SYS, 3); chunklevel = 1)),
+            (sparse, DGG.DGGSpace(DGG.levelgrid(SYS, 3); chunklevel = 1)))
+        @test graphpairs(GR.chunk_dependency_graph(dst, src)) ⊆ capjoinpairs(dst, src)
+    end
+
+    # ...and NOT for the raster quadtree, which answers whole chunks for a
+    # straddling leaf without testing each chunk's own cap. The two relations
+    # cross in both directions, so the cap join bounds the graph in neither.
+    # The same is true of the CopernicusDEM level-0 frontier, measured on the
+    # production pair at 72 pairs the index holds and the cap join rejects.
+    rdst = DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1)
+    native = graphpairs(GR.chunk_dependency_graph(rdst, rasterspace))
+    capjoin = capjoinpairs(rdst, rasterspace)
+    @test !isempty(setdiff(native, capjoin))
+    @test !isempty(setdiff(capjoin, native))
 end
 
 @testset "a rooted subset chunks without scanning the level" begin

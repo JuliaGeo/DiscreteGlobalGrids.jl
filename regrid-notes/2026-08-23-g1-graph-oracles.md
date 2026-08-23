@@ -1,0 +1,295 @@
+# G1 — dependency graph correctness and performance gates
+
+Task G1 of `2026-08-21-regridding-simplification-plan.md` (Phase 2). Production
+graph construction is **unchanged**: this task adds gates and instrumentation
+only, so that a later task can swap builders and get an objective verdict without
+writing new instrumentation first.
+
+It also settles the question **G2 skipped**. PR #69 (`da9e737`) cut
+`chunk_dependency_graph` over to indexed construction as a correctness fix,
+before G1 existed and therefore without G2's performance gate — "recover the
+recorded latitude-join performance before removing it". The old builder is gone,
+so the gate cannot be run as written. This note re-creates the deleted builder
+inside the harness and answers the question retroactively. **The gate fails on
+its literal wording** — see §5 — and the cutover is still right.
+
+Branch `claude/g1-graph-oracles`, cut from `claude/perf-ladder` @ `9adef54`.
+
+## 1. The oracles
+
+Three relations over the same `(dstchunk, srcchunk)` pair space:
+
+| relation | how it is built | what it is for |
+|---|---|---|
+| **truth** | real cell rings, clipped through the same spherical kernel the conservative weight builder uses; positive area, or (at nonzero support) cell vertices within `radius` | the geometric fact. No cap, no chunk extent, no chunk index takes part |
+| **demand** | one `candidatechunks!` per destination cap on `chunkindex(src)` | what a lazy read can ask for. A relation missing any of this cannot be a refcount |
+| **cap join** | brute-force `DilatedIntersects` over `chunkextents(dst) × chunkextents(src)` | the definition of the deleted builder's relation |
+
+The invariant every builder must keep is **truth ⊆ graph**. The invariant that
+makes the graph a *refcount* is **demand ⊆ graph**.
+
+### Where they live
+
+- `lib/GlobalRegridding/test/test_chunkgraph.jl`
+  - `contributing_pairs(dst, src; radius)` — the truth oracle, `O(ncells²)`.
+  - testset **"no geometrically contributing pair is dropped"** — seven cases:
+    generic (packed R-tree) source at radius 0 and 0.2; the shipped `RasterGrid`
+    quadtree at radius 0 and 0.1; nonuniform raster chunks; a polar source band;
+    an antimeridian regional source. Each asserts `truth ⊆ graph` **and**
+    `truth ⊆ capjoin` — the second catches a chunk cap that is too tight, which
+    is a `chunkextents` bug the graph would inherit.
+  - testset **"the cap join is an identity only on the generic index"** — the
+    brute-force cap identity gate, plus the measured refutation of the "upper
+    bound" reading (below).
+- `test/systems/crosssystem/regrid.jl`
+  - the same truth oracle over real DGG geometry, testset **"no geometrically
+    contributing pair is dropped"**: complete IGeo7 L2/chunk-1 from IGeo7
+    L3/chunk-2 (all twelve pentagons, both poles, aperture-7 children that reach
+    outside their parent's boundary), IGeo7 from S2 (two systems sharing no cell
+    edges), a rooted subtree destination, a scattered non-rooted subset, and a
+    chunked raster source into a DGG destination at radius 0 and 0.05.
+  - the same file's existing **"the dependency graph holds every pair the chunk
+    index answers"** covers demand-domination on the CopDEM level-0 frontier;
+    the new testsets build on it rather than repeating it.
+- `benchmark/chunk_graph_gates.jl` — all three relations again, over the cases
+  too large to assert on every CI run, including the production pair.
+
+Suites after the additions: GlobalRegridding **[measured] 3730 pass / 1 broken /
+0 fail** (baseline on this tip was 3702/1/0; the broken one is pre-existing).
+`test/systems/crosssystem/regrid.jl` runs clean, the new testset contributing
+**[measured] 22** assertions in **[measured] 3.6 s**; `crosssystem/runtests.jl`
+**[measured] 5222 pass / 0 fail**.
+
+### The brute-force cap identity gate, and its limits
+
+The card asks for "brute-force cap identity checks for the generic R-tree path"
+and to "treat the flat cap relation as an upper bound for raster/DGG native
+hierarchies". The first holds exactly. **The second is false as stated, and the
+tests now pin that.**
+
+| source index | relation vs the cap join |
+|---|---|
+| generic `_packedchunkindex` (any space with no `chunkindex` of its own) | **equal**, at every radius tried — it is a packed R-tree over the very caps `chunkextents` reports |
+| `DGGSpace` via `_dggcandidatechunks!` | **subset**. The descent can prune a chunk whose own cap intersects, never add one whose cap does not |
+| `RasterGrid` quadtree | **crosses in both directions**. A straddling leaf pushes every chunk in its rectangle with no per-chunk cap test, so the index holds pairs the cap join rejects; and the cap join holds pairs the descent never reaches |
+| `CopernicusDEM` level-0 frontier | **crosses**. **[measured] 72** pairs the index holds and the cap join rejects, on the production pair |
+
+So the cap join bounds the graph in *neither* direction on the two shipped
+native hierarchies. What both relations do satisfy is `truth ⊆ ·`, and that is
+the invariant the tests assert everywhere.
+
+## 2. The harness
+
+```
+julia -t 8 --project=benchmark benchmark/chunk_graph_gates.jl
+```
+
+Environment:
+
+| variable | meaning |
+|---|---|
+| `DGG_GRAPH_GATE_SAMPLES` | timed samples per arm (default 5) |
+| `DGG_GRAPH_GATE_CASES` | comma-separated case-name filter |
+| `DGG_GRAPH_GATE_NDJSON` | append one JSON line per `(case, arm)` |
+| `DGG_COPDEM_TILELIST` | a **local** Copernicus tile list. The production case is skipped without it; the harness never downloads |
+
+Three arms:
+
+- `:indexed` — production `chunk_dependency_graph`.
+- `:latjoin` — the deleted latitude-sorted cap join, reimplemented in the
+  harness from `ba2bbfa^:lib/GlobalRegridding/src/chunkgraph.jl`, with its
+  private helpers copied in so it cannot drift as `chunkgraph.jl` changes.
+- `:latjoin_raw` — the same with the latitude prefilter off, which is what
+  isolates the prefilter's contribution.
+
+Per row: destination/source chunk and cell counts, radius, edges, space-build
+seconds, `ChunkedPlan` seconds, graph seconds (min and median), complete plan
+seconds, allocated bytes, GC seconds, `Base.summarysize` of the graph, peak RSS
+growth, microseconds per destination, and the four correctness columns
+(`demanded_pairs`, `demand_missing`, `oracle_pairs`, `oracle_missing`) plus the
+two relation-difference columns (`only_here`, `missing_here`, both against
+`:indexed`).
+
+### Provenance stamping
+
+Every ndjson row carries the Julia version, the thread count, the GC thread
+count, the repo HEAD, and the **git revision and tree hash** of GeometryOps,
+GeometryOpsCore and ConservativeRegridding, read from the active manifest at
+runtime rather than hardcoded. Those three are pinned to branches rather than
+releases, and spherical-predicate/Foster-Hormann work in flight on the
+GeometryOps side will move clipping cost materially. Every number below is a
+**pre-change baseline**; a re-run after a pin bump relabels itself, and rows with
+different stamps are not comparable.
+
+This run:
+
+```
+julia 1.12.6   threads 8   gcthreads 8
+GeometryOps            697c7cc81b3d61666cf42bf697bf186cd7f6b2e2  tree 9944edf3893eb267769150fb563b2ccf01df7cf1
+GeometryOpsCore        main                                      tree 0896ad28d34338853bd9d335fee15053d748dc58
+ConservativeRegridding e8fc67f420da0362d59b354e2db6fcde8107fec0  tree c571dff5cb9bc1fb2a8c3112c6870baf13b91946
+repo 9adef543b7283383726378a7fbb4874697dbcbc0   samples 5
+```
+
+## 3. Recorded results
+
+Julia 1.12.6, 8 threads, 5 samples, medians. `idx-only`/`lat-only` are the
+relation difference in each direction. `demand-miss` is the number of pairs a
+lazy read would ask for that the arm does not hold — for `:indexed` it is 0 in
+every case by construction, so only the `:latjoin` column is shown.
+
+| case | dst chunks | src chunks | indexed s | latjoin s | raw s | idx/lat | idx alloc B | lat alloc B | idx graph B | lat graph B | idx edges | lat edges | idx-only | lat-only | truth pairs | idx miss | lat demand-miss |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| raster-small | 72 | 24 | 0.0003 | 0.0001 | 0.0001 | 2.3× | 79 112 | 52 216 | 4 240 | 3 560 | 405 | 320 | 92 | 7 | 193 | 0 | **92** |
+| raster-support (r=0.05) | 72 | 24 | 0.0003 | 0.0001 | 0.0001 | 2.1× | 83 656 | 53 208 | 4 608 | 3 760 | 451 | 345 | 114 | 8 | 209 | 0 | **114** |
+| raster-nonuniform | 72 | 49 | 0.0005 | 0.0001 | 0.0001 | 3.1× | 90 040 | 58 024 | 4 680 | 4 664 | 435 | 433 | 33 | 31 | 264 | 0 | **33** |
+| dgg-complete | 72 | 492 | 0.0012 | 0.0002 | 0.0002 | 7.0× | 96 584 | 104 856 | 18 280 | 18 280 | 1 692 | 1 692 | 0 | 0 | 1 332 | 0 | 0 |
+| dgg-crosssystem | 72 | 24 | 0.0002 | 0.0001 | 0.0001 | 1.6× | 92 520 | 51 496 | 3 256 | 3 368 | 282 | 296 | 0 | 14 | 194 | 0 | 0 |
+| dgg-rooted | 7 | 72 | 0.0002 | 0.0001 | 0.0001 | 2.3× | 6 832 | 9 104 | 1 048 | 1 048 | 23 | 23 | 0 | 0 | 19 | 0 | 0 |
+| dgg-sparse | 175 | 24 | 0.0002 | 0.0001 | 0.0001 | 2.2× | 143 880 | 58 168 | 5 168 | 5 336 | 418 | 439 | 0 | 21 | 267 | 0 | 0 |
+| polar-source | 72 | 15 | 0.0001 | 0.0001 | 0.0002 | 1.4× | 53 832 | 41 704 | 1 704 | 1 536 | 97 | 76 | 25 | 4 | 41 | 0 | **25** |
+| antimeridian-source | 72 | 12 | 0.0001 | 0.0001 | 0.0001 | 1.5× | 52 360 | 40 984 | 1 528 | 1 360 | 78 | 57 | 22 | 1 | 34 | 0 | **22** |
+| raster-4320-162chunks | 3 432 | 162 | 0.0303 | 0.0005 | 0.0008 | **60.3×** | 871 232 | 437 848 | 82 104 | 106 424 | 6 640 | 9 680 | 8 | 3 048 | — | — | **8** |
+| raster-4320-1800chunks | 3 432 | 1 800 | 0.0626 | 0.0017 | 0.0060 | **35.9×** | 4 150 744 | 700 688 | 170 808 | 198 424 | 16 090 | 19 542 | 120 | 3 572 | — | — | **120** |
+| dgg-large | 3 432 | 492 | 0.0226 | 0.0006 | 0.0016 | **36.0×** | 485 560 | 503 048 | 135 400 | 135 400 | 12 972 | 12 972 | 0 | 0 | — | — | 0 |
+| **copdem90-igeo7-l12** | 66 175 | 26 475 | **0.1219** | **0.0213** | 1.0011 | **5.7×** | 17 123 768 | 10 614 224 | 3 349 944 | 3 352 520 | 326 064 | 326 386 | 72 | 394 | — | — | **72** |
+
+Cases with `—` in the truth columns are too large for the `O(ncells²)` sweep;
+their correctness is covered by the demand column and by the small cases of the
+same shape.
+
+The production pair at 4 threads, for comparison against the archived figure:
+
+| arm | seconds (median) | allocated | graph bytes | edges |
+|---|---:|---:|---:|---:|
+| indexed | 0.2289 | 13 410 144 | 3 349 944 | 326 064 |
+| latjoin | 0.0376 | 10 591 960 | 3 352 520 | 326 386 |
+| latjoin_raw | 1.9822 | 10 591 960 | 3 352 520 | 326 386 |
+
+The `:latjoin` arm reproduces the archived baseline's relation exactly —
+**[measured] 66 175** destination chunks, **[measured] 26 475** source chunks,
+**[measured] 326 386** edges, **[measured] 3 352 520**-byte graph, the numbers in
+`benchmark/regridding_plan_baseline.jl`'s own header. The archived 0.0594 s
+median was taken on a differently loaded machine; **[measured] 0.0376 s** here at
+the same thread count.
+
+Space construction dwarfs both arms on the production pair: **[measured] 11.1 s**
+to build the two spaces, against 0.12 s for the graph. `ChunkedPlan`
+construction is **[measured] ~2 µs** — lazy plans hold no weights — so "complete
+plan time" is graph time plus noise.
+
+## 4. What the oracles caught
+
+Nothing wrong with the current builder: `oracle_missing` and `demand_missing` are
+**[measured] 0** for `:indexed` in every case, at every radius, on every space
+shape. That is the result G1 wanted and it is not a null result — it is the first
+time the relation has been checked against real cell geometry rather than against
+a second cap construction.
+
+What the oracles *do* catch is the deleted builder, on cases nobody had run it
+against:
+
+- **The cap join misses demanded pairs on the shipped raster path at every
+  size**: 92 of 405 demanded pairs on a 24-chunk raster, 8 of 6 640 on the
+  162-chunk 4320×2160 raster, 120 of 16 090 on the 1800-chunk one, and
+  **[measured] 72** of 326 064 on the production pair — the
+  exact defect `2026-08-23-chunk-dag-coverage.md` diagnosed, now reproduced by a
+  committed harness rather than a one-off script.
+- **It misses them on polar and antimeridian regional sources too** (25 and 22),
+  which no previous measurement covered.
+- **The latitude prefilter is worth 47× on the production pair** (0.0213 s vs
+  1.0011 s) and only ~1.5–3.5× at small sizes. Any future cap-join-shaped
+  builder must keep it.
+
+## 5. Retroactive verdict on G2's performance gate
+
+G2's action list says: *"Recover the recorded latitude-join performance before
+removing it. The archive records the 0.0594 s median... Remove the
+latitude-sorted join only after both gates pass."*
+
+**Correctness gate: PASS.** The indexed relation holds every geometrically
+contributing pair on every case in the matrix, and every demanded pair on the
+production pair, where the cap join misses 72.
+
+**Performance gate: FAIL, on the literal wording.** The indexed builder is
+**[measured] 5.7× slower** than the latitude join on the production pair at 8
+threads (0.1219 s vs 0.0213 s) and **[measured] 6.1×** at 4 threads (0.2289 s vs
+0.0376 s). It also allocates **[measured] 1.6×** as much (17.1 MB vs 10.6 MB).
+It did not recover the recorded performance and cannot be made to; the two
+builders do different work.
+
+**The raster path is worse than the production pair, and that is the finding
+#69 flagged and nobody had measured.** Per destination cap:
+
+| case | indexed µs/dst | latjoin µs/dst | ratio |
+|---|---:|---:|---:|
+| raster-4320-162chunks | 8.8 | 0.15 | **60×** |
+| raster-4320-1800chunks | 18.3 | 0.51 | **36×** |
+| dgg-large | 6.6 | 0.18 | **36×** |
+| copdem90-igeo7-l12 | 1.84 | 0.32 | 5.7× |
+
+#69's residual-risk note estimated ~58× per query on a 4320×2160 raster with 162
+chunks; measured here at **[measured] 60.3×**, so that estimate was right. But
+the ratio *falls* as the source side grows, within each index family:
+
+- raster quadtree: 60.3× at 162 source chunks, **[measured] 35.9×** at 1 800.
+- DGG hierarchy: 36.0× at 492 source chunks (`_dggcandidatechunks!`),
+  **[measured] 5.7×** at 26 475 (the CopernicusDEM level-0 frontier — a
+  different descent, so read this pair as a trend, not a controlled comparison).
+
+That is the expected shape: the cap join is `O(ndst × nsrc)` before its
+latitude prefilter, while an indexed query is logarithmic in the source side.
+The indexed builder is the one that scales; it is losing a large constant factor
+at every size measured so far. The 2.3 s serial / 0.3 s at t8 extrapolation
+#69 worried about does **not** materialise on any case in the matrix.
+
+Two things make the failed gate acceptable rather than blocking:
+
+1. **Absolute cost.** The worst absolute number in the matrix is 0.12 s (t8) on
+   a run whose recorded wall time is 8.81 h — about 4 × 10⁻⁶ of it. Space
+   construction alone is 90× the whole graph build.
+2. **What the extra time buys.** A relation that a refcount can be derived
+   from — 72 → 0 demanded-but-unheld pairs — plus 322 fewer edges (326 064 vs
+   326 386), so refcounts are tighter as well as sound.
+
+**Recommendation.** Record the gate as *failed and waived*, not as passed. If a
+later task wants the factor back, the measurements point at one place: the
+`RasterGrid` arm's `_task_prepared_raster_tree(index)` cursor copy per query and
+the quadtree descent it drives, which is where the 60× lives. `benchmark/
+chunk_graph_gates.jl` with `DGG_GRAPH_GATE_CASES=raster-4320-162chunks` is the
+one-line reproducer.
+
+## 6. Residual uncertainty
+
+1. **`peak_rss_growth_bytes` is uninformative once a case has already touched
+   its high-water mark.** `Sys.maxrss` never falls, so the production rows read
+   0 — space construction set the mark before the arms ran. The column is only
+   meaningful for a case run in a fresh process. Use `graph_summarysize_bytes`
+   and `graph_allocated_bytes` for graph memory; they are exact.
+2. **The truth oracle is `O(ncells²)`** and therefore only runs on small spaces.
+   The production pair's correctness rests on demand-domination, which is a
+   weaker statement — it says the graph holds what the executor asks for, not
+   what geometry requires. The two coincide only because the executor's own
+   candidate relation is itself conservative; that has not been proven, only
+   relied upon.
+3. **The truth oracle uses `ConvexConvexSutherlandHodgman`** through
+   `_intersectionoperator`, the same kernel the conservative weight builder uses.
+   If that kernel is wrong on some cell shape, the oracle inherits the error —
+   though in the direction that matters it inherits it *conservatively*: a
+   spurious positive area only makes the oracle demand more edges.
+4. **All timings predate the GeometryOps spherical-predicate/Foster-Hormann
+   work.** Clipping is 24.1% of the run's time mix, so the truth oracle's own
+   cost and, through `IntersectionAreaOperator`, much of the surrounding
+   workload will move. The graph builders themselves touch no clipping, so the
+   §3 graph timings should be stable across that change; the oracle sweep times
+   will not be.
+5. **The `raster-4320-*` cases use a `zeros` in-memory array,** so the quadtree
+   descent is measured without the disk-array chunk machinery a real store would
+   put behind it. A far larger raster with a deeper cursor was still not
+   measured — this narrows #69's residual risk 1 but does not close it.
+6. **The two relation-difference columns are against `:indexed`, not against
+   truth.** A pair in `lat-only` is not necessarily spurious; it may be a
+   genuinely contributing pair that both relations hold. Read `only_here` as
+   "how the arms differ", never as "how wrong the other arm is".
+
+STATUS: gates landed; production graph construction untouched.

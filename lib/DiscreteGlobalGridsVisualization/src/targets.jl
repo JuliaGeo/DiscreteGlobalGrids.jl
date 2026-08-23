@@ -138,6 +138,18 @@ struct GlobeTarget{TF} <: PlotTarget
     height::Float64
 end
 
+"""
+    GlobeTarget()
+
+The unit sphere: a globe of radius one, with no flattening and no offset.
+
+The default space for a mesh built outside a plot, where there is no axis to
+take an ellipsoid from.  A height is then in units of that radius, so real
+elevations want scaling — `zs ./ 6.371e6` puts metres on it — and any other
+ellipsoid is the four-argument form.
+"""
+GlobeTarget() = GlobeTarget(identity, 1.0, 0.0, 0.0)
+
 pointtype(::GlobeTarget) = Point3d
 needs_cutting(::GlobeTarget) = false
 

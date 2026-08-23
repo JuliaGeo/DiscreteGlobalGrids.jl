@@ -1,9 +1,10 @@
 # # The resampling recipe
 #
 # `dggresample` puts the descent in `resample.jl` behind a plot that follows the
-# camera.  What it draws is a `dggpoly` of the resampled cells, so everything
-# already true of that plot — the targets, the cut meridian, the poles, the
-# CairoMakie path — stays true here; the only new thing is *which* cells.
+# camera.  What it draws is a `dggpoly` of the resampled cells — or, given
+# heights, a `dggsurface` of them — so everything already true of those plots
+# (the targets, the cut meridian, the poles, the CairoMakie path) stays true
+# here; the only new thing is *which* cells.
 
 """
     Resampled(cells, index, level)
@@ -161,13 +162,15 @@ end
 
 """
     dggresample(cells; color = ..., kwargs...)
+    dggresample(cells, zs; kwargs...)
     dggresample(source, ids; color = ..., kwargs...)
 
 Draw a set of DGGS cells at whatever level of their own hierarchy the current
 zoom can actually show, resampled nearest neighbour.
 
-Takes the same arguments as [`dggpoly`](@ref) and draws through it.  The
-difference is what reaches the mesh: rather than every cell handed in,
+Takes the same arguments as [`dggpoly`](@ref) and draws through it — or through
+[`dggsurface`](@ref), given heights.  The difference is what reaches the mesh:
+rather than every cell handed in,
 `dggresample` descends the system's hierarchy from its root cells, keeping only
 branches that are on screen and hold data, and stops at the level whose cells
 come out about `cellpixels` across.  Each of those cells is coloured by the
@@ -189,13 +192,30 @@ covers a `buffer` factor more than the viewport and stands until the view leaves
 it — so panning within the buffer, and zooming within `hysteresis`, cost nothing
 at all.
 
+## Relief at any size
+
+`zs` is one height per cell of the set handed in, exactly as `color` is, and
+turns the plot into a resampled [`dggsurface`](@ref) rather than a resampled
+[`dggpoly`](@ref): the cells of a frame are one level, so they have adjacency,
+and the surface over them is raised by the heights of the same leaf cells the
+colours come from.
+
+```julia
+dggresample(cells, elevation; color = elevation)   # relief, at sixteen million cells
+```
+
+It is the answer to the same question the flat plot answers — what to do when
+there are more cells than pixels — for the plot that has a third dimension to
+lose as well.  A frame's surface stops half a cell inside the frame's own edge,
+which the `buffer` keeps off screen.
+
 !!! note "Nearest neighbour"
     A drawn cell shows one leaf value, not a summary of the leaves under it, so
     a coarse view of noisy data shows a sample of the noise rather than its
     mean.  This is what makes a frame cost what it does; averaging would have to
     read every leaf cell.
 """
-@recipe DGGResample (cells,) begin
+@recipe DGGResample (cells, zs) begin
     """
     Sets the colour of the cells: a single colour, or one value per cell **of
     the set handed in** — the resampling picks from it, so it is indexed by the
@@ -234,8 +254,11 @@ at all.
     primitive = Makie.automatic
     "Whether to split cells that straddle the map's cut meridian."
     wrap = true
-    "How many tasks build the mesh and do the resampling."
-    ntasks = Threads.nthreads()
+    """
+    How many tasks build the mesh and do the resampling.  `automatic` is one per
+    thread.
+    """
+    ntasks = Makie.automatic
     "The resampled frame currently drawn.  Set by the plot; read it to see which level is on screen."
     resampled = nothing
     cycle = [:color => :patchcolor]
@@ -243,10 +266,19 @@ at all.
     Makie.mixin_colormap_attributes()...
 end
 
-Makie.convert_arguments(::Type{<:DGGResample}, cs::CellSet) = (cs,)
-Makie.convert_arguments(::Type{<:DGGResample}, x) = (cellset(x),)
+# `nothing` in the heights slot is the flat plot: not a height of zero, which a
+# surface would still have to carry a vertex buffer for, but no heights at all,
+# and it is what the two `plot!` methods below dispatch on.
+Makie.convert_arguments(::Type{<:DGGResample}, cs::CellSet) = (cs, nothing)
+Makie.convert_arguments(::Type{<:DGGResample}, x) = (cellset(x), nothing)
+
+# A container followed by a vector is cells and their heights; anything else
+# followed by a vector is a source and its ids, which is the older form and the
+# one `dggpoly` shares.
+Makie.convert_arguments(::Type{<:DGGResample}, cells::CellContainer, zs::AbstractVector) =
+    (cellset(cells), cellvalues(zs))
 Makie.convert_arguments(::Type{<:DGGResample}, source, ids::AbstractVector) =
-    (cellset(source, ids),)
+    (cellset(source, ids), nothing)
 
 # The axis's limits must not depend on what is currently drawn: they drive the
 # camera, the camera drives the resampling, and the resampling would then drive
@@ -259,17 +291,35 @@ Makie.data_limits(plot::DGGResample) = plot.datalimits[]
 Makie.boundingbox(plot::DGGResample, space::Symbol = :data) =
     Makie.apply_transform_and_model(plot.model[], identity, plot.datalimits[], Point3d)
 
-function Makie.plot!(plot::DGGResample{<:Tuple{<:CellSet}})
+# ## The two plots a frame can become
+#
+# Everything up to the frame is the same either way — the pyramid, the camera
+# watch, the rebuild — so it lives in `resampling!`, and each `plot!` adds only
+# the plot it draws the frame with.  Which one that is has to be settled when
+# the plot is built, because a child plot cannot change its kind later; that is
+# what the heights being a converted *argument* rather than an attribute buys.
+
+"""
+    resampling!(plot) -> plot
+
+Install everything a resampled plot has before it draws anything: the pyramid
+over the cells, the limits that do not follow the frame, and the camera watch
+that rebuilds `plot.resampled` when the view has moved far enough.
+"""
+function resampling!(plot::DGGResample)
     Makie.map!(cs -> (CellPyramid(cs),), plot, [:cells], [:pyramid])
     Makie.map!(plot, [:pyramid, :transform_func], [:datalimits]) do pyr, transform_func
         return (extentbox(pyr, plot_target(transform_func)),)
     end
-    Makie.map!(r -> (r.cells,), plot, [:resampled], [:displayed])
-    Makie.map!((r, c) -> (pick(c, r.index),), plot, [:resampled, :color], [:cellcolor])
 
     scene = Makie.parent_scene(plot)
     state = BuildState()
     inflight = Ref(false)
+    # The cells the frame on screen was built from.  The compute graph tells a
+    # listener that a node was recomputed, not that its value differs, and the
+    # value it hands over is not always the same object the node holds — so the
+    # question "are these the cells I already resampled?" is asked with `==`.
+    built = Ref{Any}(nothing)
 
     function rebuild!(force::Bool)
         inflight[] && return nothing
@@ -281,7 +331,7 @@ function Makie.plot!(plot::DGGResample{<:Tuple{<:CellSet}})
         view = ScreenView(target, scene, Float64(plot.buffer[]))
         frame = resample_frame(plot.pyramid[], view;
             cellpixels = plot.cellpixels[], maxcells = plot.maxcells[],
-            ntasks = plot.ntasks[])
+            ntasks = task_count(plot.ntasks[]))
 
         inflight[] = true
         try
@@ -289,15 +339,24 @@ function Makie.plot!(plot::DGGResample{<:Tuple{<:CellSet}})
         finally
             inflight[] = false
         end
+        built[] = plot.cells[]
         record!(state, view)
         return nothing
     end
 
     rebuild!(true)
-    for attribute in (:pyramid, :cellpixels, :maxcells, :buffer, :wrap, :ntasks)
+    on(cs -> cs == built[] || rebuild!(true), plot.cells)
+    for attribute in (:cellpixels, :maxcells, :buffer, :wrap, :ntasks)
         on(_ -> rebuild!(true), getproperty(plot, attribute))
     end
     on(_ -> rebuild!(false), scene.camera.projectionview)
+    return plot
+end
+
+function Makie.plot!(plot::DGGResample{<:Tuple{<:CellSet, Nothing}})
+    resampling!(plot)
+    Makie.map!(r -> (r.cells,), plot, [:resampled], [:displayed])
+    Makie.map!((r, c) -> (pick(c, r.index),), plot, [:resampled, :color], [:cellcolor])
 
     dggpoly!(
         plot, plot.displayed;
@@ -326,20 +385,73 @@ function Makie.plot!(plot::DGGResample{<:Tuple{<:CellSet}})
     return plot
 end
 
-"""
-    pick(color, index) -> color
+function Makie.plot!(plot::DGGResample{<:Tuple{<:CellSet, <:AbstractVector}})
+    resampling!(plot)
+    Makie.map!(surfaceframe, plot, [:resampled], [:displayed, :pickindex])
+    Makie.map!((c, ix) -> (pick(c, ix),), plot, [:color, :pickindex], [:cellcolor])
+    Makie.map!((zs, ix) -> (pick(zs, ix),), plot, [:zs, :pickindex], [:cellheights])
 
-The colour of each drawn cell: `color[index]` when there is one value per cell of
-the original set, and `color` itself otherwise.
+    dggsurface!(
+        plot, plot.displayed, plot.cellheights;
+        color = plot.cellcolor,
+        colormap = plot.colormap,
+        colorscale = plot.colorscale,
+        colorrange = plot.colorrange,
+        lowclip = plot.lowclip,
+        highclip = plot.highclip,
+        nan_color = plot.nan_color,
+        alpha = plot.alpha,
+        shading = plot.shading,
+        wrap = plot.wrap,
+        ntasks = plot.ntasks,
+        visible = plot.visible,
+        transparency = plot.transparency,
+        inspectable = plot.inspectable,
+        space = plot.space,
+        depth_shift = plot.depth_shift,
+        clip_planes = plot.clip_planes,
+        fxaa = plot.fxaa,
+    )
 
-Recolouring therefore costs a gather, exactly as it does in [`dggpoly`](@ref) —
-the resampling does not run again.
+    return plot
+end
+
 """
-function pick(color, index::Vector{Int32})
-    color isa AbstractVector || return color
-    length(color) >= maximum(index; init = Int32(0)) || throw(ArgumentError(
-        "color has $(length(color)) entries, which does not cover the cells given"))
-    return color[index]
+    surfaceframe(r::Resampled) -> (region, index)
+
+A frame as a set of cells a surface can be built over, with its index reordered
+to match.
+
+The cells of a frame are all of one level — the descent stops at a level, not at
+a cell — so they are a `PartialGrid`, whose adjacency is the surface's
+connectivity and whose ragged edge is the edge of the frame.  A `PartialGrid`
+wants its ids ascending, and the descent emits them in the order it visits
+branches, so both they and the index that picks their values are sorted here.
+"""
+function surfaceframe(r::Resampled)
+    ids = r.cells.cells
+    order = sortperm(ids)
+    grid = DGG.PartialGrid(r.cells.source, r.level, ids[order])
+    return cellregion(grid), r.index[order]
+end
+
+"""
+    pick(values, index) -> values
+
+One value per drawn cell: `values[index]` when there is one value per cell of the
+original set, and `values` itself otherwise — a single colour stays a single
+colour.
+
+Both a colour and a height take this path, because both are indexed by the cells
+handed in rather than the cells drawn.  Recolouring or re-raising therefore costs
+a gather, exactly as recolouring does in [`dggpoly`](@ref) — the resampling does
+not run again.
+"""
+function pick(values, index::Vector{Int32})
+    values isa AbstractVector || return values
+    length(values) >= maximum(index; init = Int32(0)) || throw(ArgumentError(
+        "got $(length(values)) values, which does not cover the cells given"))
+    return cellvalues(values)[index]
 end
 
 """

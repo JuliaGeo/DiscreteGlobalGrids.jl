@@ -71,7 +71,7 @@ end
         @test GR.DilatedIntersects(0.05)(tangent_a, tangent_b)
     end
 
-    @testset "matches brute force, and `prefilter` is inert" begin
+    @testset "matches brute force" begin
         # Offset grids so chunk caps genuinely straddle each other, and include
         # polar chunks, where caps are widest.
         dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
@@ -82,12 +82,6 @@ end
             # this pair the relation is exactly the brute-force cap join.
             g = GR.chunk_dependency_graph(dst, src; radius)
             @test graph_pairs(g) == reference_pairs(dst, src; radius)
-
-            # `prefilter` is accepted for compatibility and no longer selects a
-            # code path; it must not change a single edge either way.
-            plain = GR.chunk_dependency_graph(dst, src; radius, prefilter = false)
-            @test graph_pairs(plain) == graph_pairs(g)
-            @test plain.dstoff == g.dstoff && plain.srcof == g.srcof
         end
 
         # A radius wide enough to reach every pair: the relation must then be

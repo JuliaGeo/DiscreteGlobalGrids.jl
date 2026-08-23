@@ -287,8 +287,8 @@ end
 # Construction
 
 """
-    chunk_dependency_graph(dst_space, src_space; radius = 0.0, refine = nothing,
-                           prefilter = true) -> ChunkDependencyGraph
+    chunk_dependency_graph(dst_space, src_space; radius = 0.0, refine = nothing)
+        -> ChunkDependencyGraph
     chunk_dependency_graph(plan::ChunkedPlan; refine = nothing) -> ChunkDependencyGraph
 
 Build the conservative bipartite dependency relation between the chunks of
@@ -309,9 +309,6 @@ order matches the rest of `discovery.jl`: destination first.
   radius, and drops the edge. Returning `true` keeps it. The default keeps every
   candidate the cap test accepts. A wrong `refine` silently corrupts results, so
   it must only ever reject pairs it can prove disconnected.
-- `prefilter`: accepted for compatibility and ignored. Rows now come from the
-  source space's own chunk query, which prunes through that space's index; there
-  is no separate latitude band left to switch off.
 
 # Method
 
@@ -366,7 +363,7 @@ Graphs.connected_components(graph)   # independent groups of work
 ```
 """
 function chunk_dependency_graph(dst_space::RegridSpace, src_space::RegridSpace;
-        radius::Real = 0.0, refine = nothing, prefilter::Bool = true)
+        radius::Real = 0.0, refine = nothing)
     r = Float64(radius)
     (isfinite(r) && r >= 0) || throw(ArgumentError(
         "radius must be finite and non-negative, got $radius"))
@@ -374,9 +371,9 @@ function chunk_dependency_graph(dst_space::RegridSpace, src_space::RegridSpace;
         Int(nchunks(src_space)), r, refine)
 end
 
-chunk_dependency_graph(plan::ChunkedPlan; refine = nothing, prefilter::Bool = true) =
+chunk_dependency_graph(plan::ChunkedPlan; refine = nothing) =
     chunk_dependency_graph(plan.dst_space, plan.src_space;
-        radius = support_radius(plan.method, plan.src_space), refine, prefilter)
+        radius = support_radius(plan.method, plan.src_space), refine)
 
 function _chunkgraph(dstcaps::AbstractVector{<:SphericalCap}, srcindex, nsrc::Int,
         radius::Float64, refine)

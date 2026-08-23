@@ -150,7 +150,7 @@ function ring_first(jr::Integer, nside::Integer)
         return ncap + (jr - nside) * 4nside + 1
     else
         js = 4nside - jr                            # mirrored cap ring index
-        return 12nside^2 - 2js * (js + 1) + 1
+        return 12 * nside * nside - 2js * (js + 1) + 1
     end
 end
 
@@ -187,10 +187,9 @@ Implements HEALPix `pix2xyf` by recovering `(iring, iphi)` and applying the
 """
 function ring_to_xyf(ipix::Integer, nside::Integer)
     ncap = 2nside * (nside - 1)
-    npix = 12nside^2
+    npix = 12 * nside * nside
     n2 = 2nside
-    1 <= ipix <= npix || throw(ArgumentError(
-        "ring index $ipix out of range for nside=$nside (expected 1:$npix)"))
+    1 <= ipix <= npix || _throw_bad_ring(ipix, nside, npix)
     if ipix <= ncap                                 # north polar cap
         jr = (1 + isqrt(2ipix - 1)) >> 1
         iphi = ipix - 2jr * (jr - 1)
@@ -245,14 +244,26 @@ The id is `face * nside² + morton(ix, iy)`, with `ix` bits in even positions an
 children.
 """
 function xyf_to_nested(ix::Integer, iy::Integer, face::Integer, nside::Integer)
-    ispow2(nside) || throw(ArgumentError(
-        "the NESTED index is only defined for nside = 2^k, got nside=$nside; \
-         use `xyf_to_ring` for arbitrary nside"))
-    (0 <= ix < nside && 0 <= iy < nside) || throw(ArgumentError(
-        "lattice coordinates ($ix, $iy) out of range for nside=$nside (expected 0:$(nside - 1))"))
-    0 <= face <= 11 || throw(ArgumentError("face $face out of range (expected 0:11)"))
-    return Int64(face) * Int64(nside)^2 + DGG.morton_encode(ix, iy)
+    ispow2(nside) || _throw_not_pow2(nside, "xyf_to_ring")
+    (0 <= ix < nside && 0 <= iy < nside) || _throw_bad_xy(ix, iy, nside)
+    0 <= face <= 11 || _throw_bad_face(face)
+    n = Int64(nside)
+    return Int64(face) * (n * n) + DGG.morton_encode(ix, iy)
 end
+
+# The argument-error paths build interpolated strings, which is far more code
+# than the arithmetic they guard. Kept behind `@noinline` so the hot path stays
+# small enough for the compiler to inline it into callers.
+@noinline _throw_not_pow2(nside, alt) = throw(ArgumentError(
+    "the NESTED index is only defined for nside = 2^k, got nside=$nside; \
+     use `$alt` for arbitrary nside"))
+@noinline _throw_bad_xy(ix, iy, nside) = throw(ArgumentError(
+    "lattice coordinates ($ix, $iy) out of range for nside=$nside (expected 0:$(nside - 1))"))
+@noinline _throw_bad_face(face) = throw(ArgumentError("face $face out of range (expected 0:11)"))
+@noinline _throw_bad_nested(pid, nside, npface) = throw(ArgumentError(
+    "nested id $pid out of range for nside=$nside (expected 0:$(12npface - 1))"))
+@noinline _throw_bad_ring(ipix, nside, npix) = throw(ArgumentError(
+    "ring index $ipix out of range for nside=$nside (expected 1:$npix)"))
 
 """
     nested_to_xyf(p, nside) -> (ix, iy, face)
@@ -265,14 +276,16 @@ De-interleaves the within-face Morton code: even bits rebuild `ix`, odd bits
 rebuild `iy`.
 """
 function nested_to_xyf(p::Integer, nside::Integer)
-    ispow2(nside) || throw(ArgumentError(
-        "the NESTED index is only defined for nside = 2^k, got nside=$nside; \
-         use `ring_to_xyf` for arbitrary nside"))
-    npface = Int64(nside)^2
+    ispow2(nside) || _throw_not_pow2(nside, "ring_to_xyf")
+    n = Int64(nside)
+    npface = n * n
     pid = Int64(p)
-    0 <= pid < 12npface || throw(ArgumentError(
-        "nested id $pid out of range for nside=$nside (expected 0:$(12npface - 1))"))
-    face, code = divrem(pid, npface)
+    0 <= pid < 12npface || _throw_bad_nested(pid, nside, npface)
+    # `nside` is a power of two, so the face quotient and within-face remainder
+    # are a shift and a mask rather than a 64-bit division.
+    shift = 2 * trailing_zeros(n)
+    face = pid >> shift
+    code = pid & (npface - 1)
     ix, iy = DGG.morton_decode(code)
     return (Int(ix), Int(iy), Int(face))
 end
@@ -317,7 +330,12 @@ function point_to_xyf(p, nside::Integer, order::Integer)
     # unit-norm point, and free of the cancellation that form suffers near a pole.
     st = sqrt(Float64(p[1])^2 + Float64(p[2])^2)
     phi = atan(Float64(p[2]), Float64(p[1]))
-    tt = mod(phi * (2 / Float64(π)), 4.0)       # longitude in units of 90 degrees, [0, 4)
+    # longitude in units of 90 degrees, [0, 4). `atan` returns `(-π, π]`, so the
+    # scaled value is in `(-2, 2]` and the wrap is a single compare-and-add --
+    # bit-identical to `mod(·, 4.0)` over that range, without the `fmod` call.
+    # The `+ 0.0` reproduces `mod`'s normalisation of `-0.0` to `+0.0`.
+    tt = phi * (2 / Float64(π))
+    tt = tt < 0 ? tt + 4.0 : tt + 0.0
     n = Int64(nside)
 
     if za <= 2 / 3                              # equatorial belt

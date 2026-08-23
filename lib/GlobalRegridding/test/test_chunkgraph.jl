@@ -21,6 +21,39 @@ function misalignedraster(nx, ny, cx, cy)
             [lo:min(lo + cy - 1, ny) for lo in 1:cy:ny]))
 end
 
+# Task G4 made a narrow phase an argument to plan construction and to nothing
+# else, so every test below that needs one goes through a plan. A plan takes its
+# radius from its method rather than from a keyword, so this method supplies the
+# radius a test wants. It builds no weights and is never asked to.
+struct G4RadiusMethod <: AbstractRegriddingMethod
+    radius::Float64
+end
+GR.support_radius(m::G4RadiusMethod, ::RegridSpace) = m.radius
+
+planned_dependencies(dst, src; radius = 0.0, kw...) =
+    GR.dependencies(ChunkedPlan(G4RadiusMethod(radius), Weighted(0.5), dst, src;
+        dependencies = true, kw...))
+
+# A space that counts every question the relation machinery asks it. Both
+# `chunkextents` (the destination caps *and* the identity stamp) and the generic
+# `chunkindex` route through `chunktree`, so this counter is nonzero exactly
+# when a relation is being built from this space and zero when nothing is.
+mutable struct G4ProbeSpace{S<:RegridSpace} <: RegridSpace
+    space::S
+    queries::Int
+end
+G4ProbeSpace(space::RegridSpace) = G4ProbeSpace(space, 0)
+chunktree(p::G4ProbeSpace) = (p.queries += 1; chunktree(p.space))
+ncells(p::G4ProbeSpace) = ncells(p.space)
+getcell(p::G4ProbeSpace, i::Int) = getcell(p.space, i)
+manifold(p::G4ProbeSpace) = manifold(p.space)
+hascellchart(p::G4ProbeSpace) = hascellchart(p.space)
+cellcentroid(p::G4ProbeSpace, i::Int) = cellcentroid(p.space, i)
+cellat(p::G4ProbeSpace, x) = cellat(p.space, x)
+nchunks(p::G4ProbeSpace) = nchunks(p.space)
+cellindices(p::G4ProbeSpace, c::Int) = cellindices(p.space, c)
+celltree(p::G4ProbeSpace) = celltree(p.space)
+
 @testset "chunk dependency graph" begin
 
     @testset "absolute support-radius dilation" begin
@@ -292,15 +325,15 @@ end
 
         # A refinement that rejects everything must empty the graph; one that
         # accepts everything must leave it untouched.
-        none = GR.chunk_dependency_graph(dst, src; refine = (d, s) -> false)
+        none = planned_dependencies(dst, src; refine = (d, s) -> false)
         @test Graphs.ne(none) == 0
         @test all(isempty(GR.sourcesof(none, d)) for d in 1:GR.ndestinationchunks(none))
-        all_kept = GR.chunk_dependency_graph(dst, src; refine = (d, s) -> true)
+        all_kept = planned_dependencies(dst, src; refine = (d, s) -> true)
         @test graph_pairs(all_kept) == graph_pairs(full)
 
         # A selective refinement drops exactly the rejected pairs, in both CSR
         # directions.
-        odd = GR.chunk_dependency_graph(dst, src; refine = (d, s) -> isodd(s))
+        odd = planned_dependencies(dst, src; refine = (d, s) -> isodd(s))
         @test graph_pairs(odd) == Set(p for p in graph_pairs(full) if isodd(p[2]))
         @test Graphs.ne(odd) == length(graph_pairs(odd))
         # The rejection must reach the reverse CSR too, not just the forward one.
@@ -444,18 +477,19 @@ end
 
         # No refine and no tag is the only combination that means ":none".
         @test GR.narrowphase(GR.chunk_dependency_graph(dst, src)) == :none
+        @test GR.narrowphase(planned_dependencies(dst, src)) == :none
         # A closure has no identity a stamp can carry, so an unnamed refine is
         # recorded as exactly that, and can never be validated for reuse.
-        @test GR.narrowphase(GR.chunk_dependency_graph(dst, src; refine = odd)) ==
+        @test GR.narrowphase(planned_dependencies(dst, src; refine = odd)) ==
               GR.UNNAMED_NARROW
-        @test GR.narrowphase(GR.chunk_dependency_graph(dst, src; refine = odd,
+        @test GR.narrowphase(planned_dependencies(dst, src; refine = odd,
             narrow = :oddsources)) == :oddsources
 
         # Both halves of the claim must agree. Naming a phase that was not
         # applied, or applying one and claiming none, is an error at
         # construction rather than a lie in the record.
-        @test_throws ArgumentError GR.chunk_dependency_graph(dst, src; narrow = :oddsources)
-        @test_throws ArgumentError GR.chunk_dependency_graph(dst, src; refine = odd,
+        @test_throws ArgumentError planned_dependencies(dst, src; narrow = :oddsources)
+        @test_throws ArgumentError planned_dependencies(dst, src; refine = odd,
             narrow = :none)
     end
 
@@ -493,7 +527,7 @@ end
         # A narrow phase in either direction. A caller expecting the full
         # candidate relation must not silently receive one somebody thinned,
         # and a caller expecting a thinning must not receive the full one.
-        thinned = GR.chunk_dependency_graph(dst, src; radius = 0.1,
+        thinned = planned_dependencies(dst, src; radius = 0.1,
             refine = (d, s) -> isodd(s), narrow = :oddsources)
         @test GR.validate_dependencies(thinned, dst, src; radius = 0.1,
             narrow = :oddsources) === thinned
@@ -502,7 +536,7 @@ end
             narrow = :oddsources)
 
         # An unnamed refine is unusable in both directions.
-        anon = GR.chunk_dependency_graph(dst, src; radius = 0.1, refine = (d, s) -> isodd(s))
+        anon = planned_dependencies(dst, src; radius = 0.1, refine = (d, s) -> isodd(s))
         @test_throws ArgumentError GR.validate_dependencies(anon, dst, src; radius = 0.1)
         @test_throws ArgumentError GR.validate_dependencies(anon, dst, src; radius = 0.1,
             narrow = GR.UNNAMED_NARROW)
@@ -616,7 +650,7 @@ end
     @testset "a row view is the graph of those destinations" begin
         # The oracle question, asked of a view: restricting must not change
         # which pairs are held, only which rows are visible. This is the
-        # property G4's per-column plans depend on.
+        # property any per-column plan taking a row view depends on.
         dst = ToyLonLatSpace(24, 12; chunks = (2, 2))
         src = misalignedraster(36, 18, 7, 5)
         for radius in (0.0, 0.1)
@@ -636,6 +670,185 @@ end
             # still there, through the independent cell-geometry oracle.
             truth = contributing_pairs(dst, src; radius)
             @test Set(p for p in truth if p[1] in Set(sel)) ⊆ lifted
+        end
+    end
+
+    # ----------------------------------------------------------------------
+    # Task G4: the Phase 2 gate. One logical plan exposes exactly one
+    # validated relation, and a narrow phase cannot be supplied after the plan
+    # exists. Both halves are asserted here rather than argued in prose.
+    # ----------------------------------------------------------------------
+
+    @testset "a plan owns exactly one relation" begin
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        method = G4RadiusMethod(0.1)
+        policy = Weighted(0.5)
+
+        # The default owns none, and construction then does no relation work at
+        # all: the probe is never asked a question. This is the shape every
+        # per-destination-chunk plan takes, production's 66 175 included.
+        bare = ChunkedPlan(method, policy, dst, src)
+        @test GR.dependencies(bare) === nothing
+        quiet = G4ProbeSpace(src)
+        @test GR.dependencies(ChunkedPlan(method, policy, dst, quiet)) === nothing
+        @test quiet.queries == 0
+        @test GR.dependencies(ChunkedPlan(method, policy, dst, quiet,
+            PerChunk(), 2^30, nothing)) === nothing
+        @test quiet.queries == 0
+
+        # `dependencies = true` builds it once, at the plan's OWN radius — the
+        # method's `support_radius`, never a keyword of its own.
+        owned = ChunkedPlan(method, policy, dst, src; dependencies = true)
+        g = GR.dependencies(owned)
+        @test g isa GR.ChunkDependencyGraph
+        @test GR.dependency_radius(g) == 0.1
+        @test graph_pairs(g) ==
+              graph_pairs(GR.chunk_dependency_graph(dst, src; radius = 0.1))
+        @test GR.dependency_radius(
+            GR.dependencies(ChunkedPlan(G4RadiusMethod(0.4), policy, dst, src;
+                dependencies = true))) == 0.4
+
+        # The accessor builds NOTHING: the same object every time, and not one
+        # further question to either space after construction.
+        probe = G4ProbeSpace(src)
+        built = ChunkedPlan(method, policy, dst, probe; dependencies = true)
+        asked = probe.queries
+        @test asked > 0
+        for _ in 1:5
+            @test GR.dependencies(built) === GR.dependencies(built)
+        end
+        @test GR.dependencies(built) === built.dependencies
+        @test probe.queries == asked
+
+        # Exactly one: no plan method on the builder, so there is no second
+        # relation a plan can be made to hand out.
+        @test isempty(methods(GR.chunk_dependency_graph, Tuple{ChunkedPlan}))
+        @test_throws MethodError GR.chunk_dependency_graph(owned)
+        @test_throws MethodError GR.chunk_dependency_graph(owned;
+            refine = (d, s) -> true)
+
+        # And an eager plan has no chunk relation to expose.
+        @test GR.dependencies(plan_regrid(zeros(8, 4); to = dst, from = src,
+            lazy = false)) === nothing
+    end
+
+    @testset "a narrow phase cannot be supplied after the plan exists" begin
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        odd = (d, s) -> isodd(s)
+        plan = ChunkedPlan(G4RadiusMethod(0.1), Weighted(0.5), dst, src;
+            dependencies = true, refine = odd, narrow = :oddsources)
+
+        # `refine`/`narrow` are keywords of plan construction — `plan_regrid`
+        # and the `ChunkedPlan` constructor it forwards to — and of nothing
+        # else. Not of the graph builder, not of the row view, not of the
+        # one-shot API.
+        haskw(f, kw) = any(m -> kw in Base.kwarg_decl(m), methods(f))
+        for kw in (:refine, :narrow)
+            @test !haskw(GR.chunk_dependency_graph, kw)
+            @test !haskw(GR.restrict, kw)
+            @test !haskw(GR.validate_dependencies, kw) || kw === :narrow
+            @test !haskw(regrid, kw)
+            @test !haskw(regrid!, kw)
+            @test haskw(plan_regrid, kw)
+        end
+        @test_throws MethodError regrid(zeros(8, 4); to = dst, from = src,
+            lazy = true, refine = odd)
+
+        # The plan's relation is a field of an immutable struct, so it cannot
+        # be swapped for another one after the fact either.
+        @test !ismutabletype(typeof(plan))
+        @test_throws ErrorException setfield!(plan, :dependencies, nothing)
+
+        # The relation records which phase produced it, and is the thinned one.
+        @test GR.narrowphase(GR.dependencies(plan)) == :oddsources
+        @test graph_pairs(GR.dependencies(plan)) ==
+              Set(p for p in graph_pairs(GR.chunk_dependency_graph(dst, src;
+                  radius = 0.1)) if isodd(p[2]))
+    end
+
+    @testset "a plan validates a relation it did not build" begin
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        method = G4RadiusMethod(0.1)
+        policy = Weighted(0.5)
+        g = GR.chunk_dependency_graph(dst, src; radius = 0.1)
+        adopt(; m = method, d = dst, s = src, kw...) =
+            GR.dependencies(ChunkedPlan(m, policy, d, s; kw...))
+
+        # Adopted by reference — this is the sharing that keeps a second plan
+        # over the same pair from rebuilding the relation.
+        @test adopt(; dependencies = g) === g
+        # A narrower method may reuse a wider relation; a wider one may not.
+        @test adopt(; dependencies = g, m = G4RadiusMethod(0.0)) === g
+        @test_throws ArgumentError adopt(; dependencies = g, m = G4RadiusMethod(0.2))
+        # Either space moving, or the pair being swapped, fails at construction.
+        @test_throws ArgumentError adopt(; dependencies = g,
+            d = ToyLonLatSpace(12, 6; chunks = (2, 2)))
+        @test_throws ArgumentError adopt(; dependencies = g,
+            s = ToyLonLatSpace(16, 8; chunks = (2, 1)))
+        @test_throws ArgumentError adopt(; dependencies = g, d = src, s = dst)
+
+        # A narrow phase applies while a relation is built, so it cannot be
+        # applied to one that already exists. Name it instead.
+        @test_throws ArgumentError adopt(; dependencies = g, refine = (d, s) -> isodd(s))
+        thinned = planned_dependencies(dst, src; radius = 0.1,
+            refine = (d, s) -> isodd(s), narrow = :oddsources)
+        @test_throws ArgumentError adopt(; dependencies = thinned)
+        @test adopt(; dependencies = thinned, narrow = :oddsources) === thinned
+        @test_throws ArgumentError adopt(; dependencies = g, narrow = :oddsources)
+
+        # A plan computes its WHOLE destination, so a row view is not a
+        # relation any plan may adopt — and neither is a whole-space relation
+        # over a DIFFERENT destination space that happens to cover those rows.
+        # That pair of refusals is exactly why production's per-column plans
+        # own no relation: their destination is a rooted one-chunk grid, not
+        # the global space the graph and its views are stamped against.
+        @test_throws ArgumentError adopt(; dependencies = GR.restrict(g, [1, 2]))
+        onechunk = ToyLonLatSpace(12, 2; chunks = (12, 2))
+        @test GR.nchunks(onechunk) == 1
+        @test_throws ArgumentError adopt(; dependencies = GR.restrict(g, [1]),
+            d = onechunk)
+        @test_throws ArgumentError adopt(; dependencies = g, d = onechunk)
+
+        # `false` is "hold none, and say so"; a stray narrow phase beside it is
+        # an error rather than something silently dropped.
+        @test adopt(; dependencies = false) === nothing
+        @test_throws ArgumentError adopt(; dependencies = false, refine = (d, s) -> true)
+        @test_throws ArgumentError adopt(; dependencies = false, narrow = :oddsources)
+        @test_throws ArgumentError adopt(; dependencies = 7)
+    end
+
+    @testset "`refine` reaches the plan through `plan_regrid` only" begin
+        src = ToyLonLatSpace(8, 4; chunks = (4, 2))
+        dst = ToyLonLatSpace(8, 4; chunks = (8, 2))
+        data = zeros(8, 4)
+        odd = (d, s) -> isodd(s)
+
+        lazyplan = plan_regrid(data; to = dst, from = src, lazy = true,
+            refine = odd, narrow = :oddsources)
+        @test GR.narrowphase(GR.dependencies(lazyplan)) == :oddsources
+        @test GR.dependencies(plan_regrid(data; to = dst, from = src,
+            lazy = true)) === nothing
+        @test GR.dependencies(plan_regrid(data; to = dst, from = src,
+            lazy = true, dependencies = true)) isa GR.ChunkDependencyGraph
+
+        # An eager plan names each keyword it refuses rather than ignoring it.
+        for (name, call) in (
+            ("dependencies", () -> plan_regrid(data; to = dst, from = src,
+                lazy = false, dependencies = true)),
+            ("refine", () -> plan_regrid(data; to = dst, from = src,
+                lazy = false, refine = odd)),
+            ("narrow", () -> plan_regrid(data; to = dst, from = src,
+                lazy = false, narrow = :oddsources)))
+            err = try
+                call()
+                nothing
+            catch e
+                e
+            end
+            @test err isa ArgumentError && occursin(name, err.msg)
         end
     end
 end

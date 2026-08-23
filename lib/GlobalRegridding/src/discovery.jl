@@ -199,21 +199,10 @@ function connectedchunks!(out::Vector{Int}, dstcaps::AbstractVector{<:SphericalC
     return out
 end
 
-"""
-    connectedchunkpairs(f, dst_space, src_space; radius = 0.0)
-
-Call `f(dstchunk, srcchunk)` for every potentially contributing pair through
-the source space's native chunk index.
-"""
-function connectedchunkpairs(f::F, dst_space::RegridSpace, src_space::RegridSpace;
-    radius::Real = 0.0) where {F}
-    index = chunkindex(src_space)
-    out = Int[]
-    for (d, cap) in pairs(chunkextents(dst_space))
-        candidatechunks!(out, index, cap; radius)
-        for s in out
-            f(d, s)
-        end
-    end
-    return nothing
-end
+# `connectedchunkpairs(f, dst_space, src_space; radius)` lived here until Task
+# G4. Since PR #69 it was line for line the loop `_chunkgraph` runs to fill its
+# destination-major rows — one `chunkindex(src_space)`, one `candidatechunks!`
+# per `chunkextents(dst_space)` entry — so it was a second spelling of the same
+# relation with none of the identity, the CSR or the reverse direction.
+# `chunk_dependency_graph(dst_space, src_space; radius)` and `sourcesof` are the
+# whole of what it did.

@@ -673,8 +673,8 @@ end
 # The dependency graph, and the walk order it implies
 # ===========================================================================
 
-# A conservative lon/lat narrow phase for this specific pair, available to
-# `chunk_dependency_graph` as its `refine` hook — and OFF by default. Read on.
+# A conservative lon/lat narrow phase for this specific pair, handed to the
+# global plan as its `refine` keyword — and OFF by default. Read on.
 #
 # The broad phase is cap-versus-cap, and a circle circumscribing a square already
 # inflates by its half-diagonal, so on this workload the cap relation carries
@@ -734,9 +734,24 @@ same numbering the source space and both caches use. The order is a *separate*
 permutation, `order[p] -> d`, applied by the cursor; the graph itself is never
 built in it.
 
-Returns `(graph, order, seconds, edges, dstspace)`. Building it costs about a
-second on the real pair, almost all of it the destination space; the graph
-itself is 0.12 s for 66 178 x 26 475 chunks.
+The relation is owned by a `GR.ChunkedPlan` over the same pair, not built beside
+one (Task G4): a narrow phase is an argument to plan construction and to nothing
+else, and `GR.dependencies(globalplan)` is the single object the schedule, the
+refcount cache, the prefetcher and the closing validator all read. Constructing
+that plan reads no DEM data, builds no weights and makes no network metadata
+request.
+
+The per-chunk regrids in `regrid_chunk` deliberately own **no** relation. Their
+destination is a rooted one-chunk subtree grid — a different space from this
+one, with different cell and chunk counts — so a row view of this graph is not
+its relation and `GR.validate_dependencies` correctly refuses to certify it as
+one. A one-destination graph per column would also cost more than the source
+queries the lazy executor already issues for that column. They therefore pass
+`dependencies = nothing` (the default) and build nothing.
+
+Returns `(globalplan, graph, order, seconds, edges, dstspace)`. Building it
+costs about a second on the real pair, almost all of it the destination space;
+the graph itself is 0.12 s for 66 178 x 26 475 chunks.
 """
 function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, config)
     t0 = time()
@@ -765,8 +780,14 @@ function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, c
     narrow = config.refinegraph ? :copdem_tile_lonlat_box : nothing
 
     t1 = time()
-    radius = Float64(GR.support_radius(DGG.Conservative(), srcspace))
-    graph = GR.chunk_dependency_graph(dstspace, srcspace; radius, refine, narrow)
+    # The plan owns the relation. Its radius is its method's own
+    # `support_radius`, which is the same number this line used to compute by
+    # hand, and the same one `regrid_chunk`'s per-column plans use.
+    globalplan = GR.ChunkedPlan(DGG.Conservative(), DGG.Weighted(0.5),
+        dstspace, srcspace; budget = config.budget, dependencies = true,
+        refine, narrow)
+    graph = GR.dependencies(globalplan)
+    radius = GR.dependency_radius(graph)
     tgraph = time() - t1
 
     # Sweep the tiles in Morton order over the 1-degree lattice and emit a chunk
@@ -783,7 +804,8 @@ function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, c
     end
     torder = time() - t2
 
-    return (graph = graph, order = order, dstspace = dstspace, radius = radius,
+    return (globalplan = globalplan, graph = graph, order = order,
+        dstspace = dstspace, radius = radius,
         tspace = tspace, tgraph = tgraph, torder = torder,
         edges = length(order) == 0 ? 0 : sum(d -> GR.sourcedegree(graph, d),
             1:length(chunks)))
@@ -818,6 +840,16 @@ One work unit: the level-`config.level` values of one chunk.
 it is one chunk without scanning the global level-`ancestor` grid for it. The
 regrid is lazy and `chunks` is deliberately not passed — supplying it defeats the
 plan's pairing, which is what prunes the source tiles this chunk does not meet.
+
+This plan owns **no** dependency relation, and building one here would be a
+mistake in both directions. It is not `dagplan`'s relation restricted: this
+destination is a different space, one chunk over its own cells, so a row view of
+the global graph would fail `GR.validate_dependencies` — correctly, because the
+row view still stamps the whole 66 175-chunk destination. And a fresh
+one-destination graph would cost more than it saves: it pays an
+`O(nsourcechunks)` transpose over all 26 475 tiles to describe a single row the
+lazy executor already discovers with one `candidatechunks!` query. So
+`dependencies` is left at its default and construction does no relation work.
 """
 function regrid_chunk(dem, srcspace, sys7, layout, chunk::Int, config)
     a = DGG.columncell(layout, chunk)
@@ -1276,6 +1308,10 @@ function main(config = CONFIG)
         GR.nsourcechunks(plan.graph), GR.ndestinationchunks(plan.graph), plan.edges,
         plan.edges / max(length(todochunks), 1), plan.radius,
         secs(plan.tspace), secs(plan.tgraph), secs(plan.torder)))
+    # One relation, one owner: everything below reads the object the global
+    # plan holds, and there is no second one anywhere in this run.
+    check("the graph is the global plan's own relation",
+        plan.graph === GR.dependencies(plan.globalplan))
     check("graph destination chunks are the work list",
         GR.ndestinationchunks(plan.graph) == length(todochunks))
     check("graph source chunks are the listed tiles",

@@ -536,37 +536,29 @@ end
 # Construction
 
 """
-    chunk_dependency_graph(dst_space, src_space; radius = 0.0, refine = nothing,
-                           narrow = nothing) -> ChunkDependencyGraph
-    chunk_dependency_graph(plan::ChunkedPlan; refine = nothing, narrow = nothing)
+    chunk_dependency_graph(dst_space, src_space; radius = 0.0)
         -> ChunkDependencyGraph
 
 Build the conservative bipartite dependency relation between the chunks of
 `dst_space` and those of `src_space`, from destination chunk extents and the
 source space's chunk index alone. No cell geometry is built and no data is read.
 
-The `plan` form takes the radius from the plan's method, which is the safe entry
-point; the space form is for callers that know the radius they want. Argument
-order matches the rest of `discovery.jl`: destination first.
+Argument order matches the rest of `discovery.jl`: destination first.
+
+This is the low-level builder, for a caller that knows the radius it wants and
+owns the result itself. A caller that has a plan should not use it: a
+[`ChunkedPlan`](@ref) owns exactly one relation, built or validated when the
+plan was constructed, and [`dependencies`](@ref) is how to read it. There is
+deliberately no `plan` method here and no narrow-phase keyword: a narrow phase
+is an argument to plan construction ([`plan_regrid`](@ref)) and to nothing else,
+so that a relation a plan hands out can never have been thinned behind the
+plan's back. See [`dependencies`](@ref).
 
 # Keywords
 
 - `radius`: the method's angular support radius in radians. Two caps are
   connected when their centres are within the sum of their radii plus this. Must
   be finite and non-negative.
-- `refine`: an optional conservative narrow phase, `refine(dstchunk, srcchunk)
-  -> Bool`. Returning `false` asserts that the pair *cannot* contribute at this
-  radius, and drops the edge. Returning `true` keeps it. The default keeps every
-  candidate the cap test accepts. A wrong `refine` silently corrupts results, so
-  it must only ever reject pairs it can prove disconnected.
-- `narrow`: a `Symbol` naming the narrow phase `refine` implements, recorded in
-  the graph's [`dependency_identity`](@ref) so a later caller can tell what
-  relation it is holding. A closure has no identity a stamp can carry, so a
-  `refine` given without a `narrow` is tagged [`UNNAMED_NARROW`](@ref) and the
-  graph can never be validated for reuse. Naming a narrow phase without a
-  `refine`, or supplying a `refine` and claiming `narrow = :none`, is an error:
-  the tag is a claim about the relation, and both halves must agree. That is why
-  the unsupplied value is `nothing` and not `:none`.
 
 # Method
 
@@ -620,8 +612,17 @@ length(consumersof(graph, 7))    # initial refcount for source chunk 7
 Graphs.connected_components(graph)   # independent groups of work
 ```
 """
-function chunk_dependency_graph(dst_space::RegridSpace, src_space::RegridSpace;
-        radius::Real = 0.0, refine = nothing, narrow = nothing)
+chunk_dependency_graph(dst_space::RegridSpace, src_space::RegridSpace;
+    radius::Real = 0.0) =
+    _builddependencies(dst_space, src_space, radius, nothing, nothing)
+
+# The narrow phase enters here and nowhere a caller can reach with a plan in
+# hand: `plans.jl` calls this once, during construction, and stores the result.
+# `refine(dstchunk, srcchunk) -> Bool` returning `false` asserts the pair cannot
+# contribute at this radius and drops the edge; `narrow` is the Symbol that
+# names the phase in the graph's identity. See `plan_regrid`.
+function _builddependencies(dst_space::RegridSpace, src_space::RegridSpace,
+        radius::Real, refine, narrow)
     r = _checkedradius(radius)
     tag = _narrowtag(refine, narrow)
     # The destination caps are the graph's own input, so stamp the destination
@@ -632,10 +633,6 @@ function chunk_dependency_graph(dst_space::RegridSpace, src_space::RegridSpace;
     return _chunkgraph(id, dstcaps, chunkindex(src_space),
         Int(nchunks(src_space)), r, refine)
 end
-
-chunk_dependency_graph(plan::ChunkedPlan; refine = nothing, narrow = nothing) =
-    chunk_dependency_graph(plan.dst_space, plan.src_space;
-        radius = support_radius(plan.method, plan.src_space), refine, narrow)
 
 function _chunkgraph(id::DependencyIdentity,
         dstcaps::AbstractVector{<:SphericalCap}, srcindex, nsrc::Int,

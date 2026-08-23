@@ -140,9 +140,13 @@ end
         # descent's leaf indices mean.
         @test GR.chunkextents(srcspace) == chunktree(srcspace).caps
 
-        # Batched queries find exactly the union of the per-chunk queries.
-        pairs = Tuple{Int,Int}[]
-        GR.connectedchunkpairs((d, s) -> push!(pairs, (d, s)), dstspace, srcspace)
+        # The dependency graph's rows are exactly the per-chunk queries. This
+        # assertion belonged to `connectedchunkpairs` until Task G4 deleted it:
+        # since #69 that function ran the identical loop, so the graph's own
+        # rows are where the claim belongs.
+        graph = GR.chunk_dependency_graph(dstspace, srcspace)
+        pairs = [(d, s) for d in 1:GR.ndestinationchunks(graph)
+                 for s in GR.sourcesof(graph, d)]
         expected = sort([(d, s) for d in 1:nchunks(dstspace)
                          for s in GR.connectedchunks(dstspace, d, srcspace)])
         @test sort(pairs) == expected

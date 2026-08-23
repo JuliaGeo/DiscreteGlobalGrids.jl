@@ -51,9 +51,11 @@ include("methods.jl")
 include("conservative.jl")
 include("intersection_area.jl")
 include("interpolation.jl")
-include("plans.jl")
 include("discovery.jl")
+# `chunkgraph.jl` precedes `plans.jl`: a `ChunkedPlan` owns the one
+# `ChunkDependencyGraph` it exposes, so the plan's field type names the graph's.
 include("chunkgraph.jl")
+include("plans.jl")
 include("executor.jl")
 include("lazy.jl")
 include("api.jl")
@@ -78,6 +80,10 @@ export AbstractMissingPolicy, Weighted, Extensive
 # Plans
 export AbstractRegriddingPlan, WeightBlock
 export DirectPlan, ChunkedPlan, PerChunk, Spilled
+
+# The one chunk dependency relation a plan owns. Not exported: `dependencies`
+# is too generic a name to put in a user's namespace unqualified.
+public dependencies
 
 # User API
 export regrid, regrid!, plan_regrid

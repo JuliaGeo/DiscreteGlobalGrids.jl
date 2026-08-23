@@ -9,7 +9,7 @@
 # across — as fine as a tile's worth of them will go on a standard CI runner.
 #
 # Three calls carry the page: `MultiOrderCoverage` names the cells the tile
-# touches, `regrid` fills them from the raster, and `adjacency` routes water
+# touches, `regrid` fills them from the raster, and `mapneighbors` routes water
 # out of every cell.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
@@ -22,6 +22,7 @@ import ArchGDAL
 import Extents
 using Statistics
 using GLMakie, GeoMakie
+using DiscreteGlobalGridsVisualization: dggsurface, dggsurface!
 GLMakie.activate!(inline = true)
 
 # ## Acquiring data
@@ -39,9 +40,11 @@ plot(dem; axis = (; aspect = DataAspect()))
 # Now, let's regrid it to IGeo7.  First, the system:
 sys = DGG.IGeo7System()
 # We can get the grid of IGeo7 cells that would cover the DEM tile,
-# using a `MultiOrderCoverage` query:
-leaf_level = 12
-region = DGG.query(sys, DGG.MultiOrderCoverage(Rasters.extent(dem)); level = leaf_level)
+# using a `MultiOrderCoverage` query.
+# You can specify an integer here, or find the closest matching level automatically:
+leaf_level = DGG.levelfor(sys, dem)
+
+region = @time DGG.query(sys, DGG.MultiOrderCoverage(Rasters.extent(dem)); level = leaf_level)
 # Here's what this looks like:
 f, a, p = plot(dem; axis = (; aspect = DataAspect()))
 poly!(a, region; color = :transparent, strokewidth = 1, strokecolor = (:black, 0.5))
@@ -78,32 +81,46 @@ grid = DGG.PartialGrid(DGG.CellLookup(region))
 # a bit at the border.
 
 igeo7_dem = @time DGG.regrid(dem; to = region)
+elevation = Raster(igeo7_dem; missingval = oftype(first(igeo7_dem), NaN))
 # Let's now plot this too:
-poly(lookup(igeo7_dem, DGG.Cells); color = vec(igeo7_dem), axis = (; aspect = DataAspect()))
+f, a, p = dggsurface(lookup(elevation, DGG.Cells); color = vec(elevation), axis = (; aspect = DataAspect()))
+f
+
+begin
+    f, a, p = dggsurface(elevation ./ 10000;color = vec(elevation), axis = (; type = Axis3, aspect = :data));
+    GLMakie.display(f; inline = false)
+end
 # and we can compute the elevation of the cells:
-covered = .!isnan.(igeo7_dem)
-extrema(igeo7_dem[covered])
-# Finally, let's extract the grid backing the lookup,
-# which we can pass to the DGG neighbors API.
-grid = DGG.PartialGrid(lookup(igeo7_dem, DGG.Cells))
+extrema(Rasters.skipmissing(elevation))
 # ## Flow direction
 #
 # Each cell sends its water to the lowest of its neighbours — the first step of
-# every flow-routing model. `adjacency(grid)` is every cell's neighbours, as
-# positions into the cube, in one call; keeping only the covered ones is
-# this page's filter, not the grid's. A cell with no lower neighbour is a pit.
+# every flow-routing model. `mapneighbors` walks every cell with its clipped
+# one-ring as positioned handles that index the cube; a neighbour whose
+# elevation is missing (the coverage overhangs the tile) is skipped. A cell
+# with no lower neighbour is a pit.
 
-nbrs = [filter(p -> covered[p], row) for row in DGG.adjacency(grid)]
-
-function downhill(i)
-    isempty(nbrs[i]) && return 0
-    j = nbrs[i][argmin(igeo7_dem[nbrs[i]])]
-    return igeo7_dem[j] < igeo7_dem[i] ? j : 0
+function downhill(elev, cell, nbrs)
+    dest = 0
+    zmin = typemax(eltype(elev))
+    for n in nbrs
+        z = elev[n]
+        isnan(z) && continue
+        if z < zmin
+            zmin = z
+            dest = DGG.cellposition(n)
+        end
+    end
+    zc = elev[cell]
+    (dest == 0 || zmin >= zc) && return (0, NaN32)
+    return (dest, zc - zmin)
 end
 
-flow = [covered[i] ? downhill(i) : 0 for i in 1:DGG.ncells(grid)]
-drop = [flow[i] == 0 ? NaN : igeo7_dem[i] - igeo7_dem[flow[i]] for i in eachindex(flow)]
-(; n_pits = count(i -> covered[i] && flow[i] == 0, eachindex(flow)),
+flow, drop = @time DGG.mapneighbors(elevation) do cell, nbrs
+    (isnan(elevation[cell]) ? (0, NaN32) : downhill(elevation, cell, nbrs))::Tuple{Int,Float32}
+end
+
+(; n_pits = count(i -> !isnan(elevation[i]) && flow[i] == 0, eachindex(flow)),
    max_drop = maximum(filter(!isnan, drop)))
 
 # Elevation, and the drop to the downhill neighbour — the drop map picks out
@@ -111,16 +128,14 @@ drop = [flow[i] == 0 ? NaN : igeo7_dem[i] - igeo7_dem[flow[i]] for i in eachinde
 # `CellVector(grid)[shown]` is the covered cells as a vector, which `poly!`
 # draws directly, in the same order `igeo7_dem[shown]` follows.
 
-shown = findall(covered)
-cells = DGG.CellVector(grid)[shown]
 
 fig = Figure(size = (900, 430))
 ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84", title = "elevation (m)")
-p1 = poly!(ax1, cells; color = vec(igeo7_dem[shown]), colormap = :terrain, strokewidth = 0)
+p1 = dggsurface!(ax1, lookup(elevation, DGG.Cells); color = vec(elevation), colormap = :terrain)
 Colorbar(fig[2, 1], p1; vertical = false)
 ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84", title = "drop to downhill neighbour (m)")
-p2 = poly!(ax2, cells; color = drop[shown], colormap = :magma,
-    nan_color = :gray80, strokewidth = 0)
+p2 = dggsurface!(ax2, lookup(elevation, DGG.Cells); color = drop, colormap = :magma,
+    nan_color = :gray80)
 Colorbar(fig[2, 2], p2; vertical = false)
 fig
 
@@ -132,30 +147,29 @@ fig
 # accumulation uses D8 here, with each result expressed as upstream area in
 # square metres.
 
-terrain = Raster(igeo7_dem; name = :height)
+tpi = @time GM.topographic_position_index(elevation)
+accumulation, directions = @time GM.flowaccumulation(elevation; method = GM.D8())
+# accumulation, directions = @time GM.flowaccumulation(elevation; method = GM.DInf())
 
-tpi = @time GM.topographic_position_index(terrain)
-accumulation, directions = @time GM.flowaccumulation(terrain; method = GM.D8())
-
-cell_area = @time GM.cellarea(terrain, first(eachindex(terrain)))
+cell_area = @time GM.cellarea(elevation, first(eachindex(elevation)))
 log_cells = log10.(accumulation ./ cell_area)
 
 fig = Figure(size = (900, 430))
 ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
     title = "topographic position index (m)")
-p1 = poly!(ax1, cells; color = vec(tpi[shown]), colorrange = (-25, 25),
-    colormap = :delta, strokewidth = 0)
+p1 = dggsurface!(ax1, lookup(tpi, DGG.Cells); color = vec(tpi), colorrange = (-25, 25),
+    colormap = :delta)
 Colorbar(fig[2, 1], p1; vertical = false)
 ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84",
     title = "D8 flow accumulation")
-p2 = poly!(ax2, cells; color = vec(log_cells[shown]),
-    colormap = :devon, strokewidth = 0)
+p2 = dggsurface!(ax2, lookup(log_cells, DGG.Cells); color = vec(log_cells),
+    colormap = :devon)
 Colorbar(fig[2, 2], p2; vertical = false,
     label = "log₁₀(upstream cell equivalents)")
-save("geomorphometry_igeo7.png", fig)
 fig
+save("geomorphometry_igeo7.png", fig)
 
-# `MultiOrderCoverage`, `subtree`, `regrid` and `adjacency` are interface
+# `MultiOrderCoverage`, `subtree`, `regrid` and `mapneighbors` are interface
 # methods, so the regridding and routing portions can use another system.
 # `RelativeZ7Cell` and the lazy cell-index iterator provide the IGEO7-specific
 # Geomorphometry integration.

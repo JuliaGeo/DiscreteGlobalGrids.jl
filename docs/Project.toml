@@ -1,10 +1,11 @@
 [deps]
 ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
 Bonito = "824d6782-a2ef-11e9-3a09-e5662e0c26f8"
+Chairmarks = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de"
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
-DiscreteGlobalGridsVisualization = "26394bad-8505-4b24-ad04-fcf267e3a913"
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
+DiscreteGlobalGridsVisualization = "26394bad-8505-4b24-ad04-fcf267e3a913"
 DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 DocumenterVitepress = "4710194d-e776-4893-9690-8d956a29c365"
@@ -28,8 +29,8 @@ Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [sources]
 ConservativeRegridding = {rev = "e8fc67f420da0362d59b354e2db6fcde8107fec0", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-DiscreteGlobalGridsVisualization = {path = "../lib/DiscreteGlobalGridsVisualization"}
 DiscreteGlobalGrids = {path = ".."}
+DiscreteGlobalGridsVisualization = {path = "../lib/DiscreteGlobalGridsVisualization"}
 DocumenterVitepress = {rev = "as/bonito-plugin", url = "https://github.com/LuxDL/DocumenterVitepress.jl.git"}
 GeometryOps = {rev = "697c7cc81b3d61666cf42bf697bf186cd7f6b2e2", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}

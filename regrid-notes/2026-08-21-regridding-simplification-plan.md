@@ -44,14 +44,35 @@ and source reads remain lazy.
 
 - Phase 0, environment and benchmark baseline: complete.
 - Phase 1, native hierarchical chunk indexes: complete.
-- Current implementation phase: **1A**.
-- Phases 1A, 1B, and 1C finish the spatial layer before graph integration.
+- Phases 1A, 1B, and 1C: **complete**. They finished the spatial layer before
+  graph integration.
+- Current implementation phase: **2**.
 - The nearest/bilinear method redesign is deferred to a separate plan.
+
+Landed cards, with the commit each one shipped as:
+
+| card | commit | subject |
+|---|---|---|
+| A1 | `47a7cf7` | Simplify raster coordinate transformations |
+| A2 | `41fb204` | Add task-local Proj raster transformations |
+| A3 | `a07de52` | Converge raster cells on the CR quadtree |
+| A4 | `e821c00` | Simplify raster range extent construction |
+| B1/B2/B3 | `714f101` + `93e836d` | Adopt public spherical extent operations; Pin public spherical extent dependencies |
+| B4 | `d194e2d` | Reuse packed trees for fallback cell geometry |
+| C1 | `5e91b0c` | Consolidate the regridding space interface |
+| G1 | PR #70 | Add dependency graph correctness and performance gates |
+| G2 | `da9e737` | landed early via PR #69; see the card |
+
+B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
+`93e836d` is the commit that pinned them and records their SHAs.
 
 Evidence:
 
 - `regrid-notes/2026-08-22-regridding-phase-0-baseline.md`
 - `regrid-notes/2026-08-22-regridding-phase-1.md`
+- `regrid-notes/2026-08-23-chunk-dag-coverage.md` — why G2 landed early
+- `regrid-notes/2026-08-23-g1-graph-oracles.md` — G1's oracles, and the
+  retroactive verdict on G2's gates
 - `regrid-notes/2026-08-21-simplification-plan-review.md`
 - `regrid-notes/2026-08-21-regridding-simplification-plan-detailed-archive.md`
 
@@ -140,6 +161,10 @@ B1 may be prepared in an isolated GeometryOps worktree while A tasks run, but
 B2 must use the committed B1 API and B3 waits for both the upstream work and
 the completed raster geometry. Do not integrate or pin provisional upstream
 work.
+
+The `G1 -> G2` edge is historical only: G2 landed *before* G1, as a correctness
+fix (PR #69), and G1/PR #70 ran its gates retroactively. Read the order as
+`C1 -> G2 -> G1 -> G3 -> G4` for what actually happened. Both cards are closed.
 
 ## Phase 1A — raster geometry and CRS
 
@@ -419,8 +444,15 @@ Actions:
 
 - Add an actual-cell small-space oracle that proves every geometrically
   contributing pair is retained.
-- Add brute-force cap identity checks for the generic R-tree path and treat the
-  flat cap relation as an upper bound for raster/DGG native hierarchies.
+- Add brute-force cap identity checks for the generic R-tree path. **Do not
+  treat the flat cap relation as an upper bound for raster/DGG native
+  hierarchies** — this card originally said to, and #70 measured and pinned the
+  opposite. The generic packed-R-tree index equals the cap join exactly; the DGG
+  hierarchical descent is a strict subset of it; the `RasterGrid` quadtree and
+  the CopernicusDEM level-0 frontier both *cross* it, holding pairs the cap join
+  rejects as well as missing pairs it holds. The cap join bounds the graph in
+  neither direction on either shipped native hierarchy. What both relations do
+  satisfy is `truth ⊆ ·`, and that is the invariant to assert.
 - Commit a repeatable comparison harness for the latitude join and native-index
   row builder, including complete plan time, graph time/bytes, allocations, and
   peak memory.
@@ -431,30 +463,63 @@ Actions:
 **Done when:** the next task can change builders and obtain an objective
 correctness/performance verdict without adding instrumentation.
 **Commit:** `Add dependency graph correctness and performance gates`.
+**Landed:** PR #70. Records: `regrid-notes/2026-08-23-g1-graph-oracles.md` (the
+oracles, the harness, and the retroactive verdict on G2) and
+`regrid-notes/2026-08-23-chunk-dag-coverage.md` (the coverage defect that made
+#69 land G2 early). Post-#69 the contract the gates assert is an **equality**
+between the graph and the demanded relation, not a containment; G3 and G4 use
+`benchmark/chunk_graph_gates.jl` and the shared oracles in
+`lib/GlobalRegridding/test/graphoracles.jl` to prove they did not change it.
 
-### Task G2 — cut over to indexed graph construction
+### Task G2 — cut over to indexed graph construction — CLOSED
 
-**Prerequisite:** G1.
-**Owns:** graph builder and graph construction tests. Execution remains
-unchanged.
+**Status: LANDED EARLY, OUT OF ORDER, AND CLOSED.** Not an implementation card.
+Do not reopen it.
 
-Actions:
+It shipped as PR #69 (`da9e737`, builder commit `ba2bbfa`, *Build the chunk
+dependency graph from the source space's own chunk index*) — before G1 existed,
+and therefore without either of the gates this card said to pass first. It landed
+as a **correctness fix**, not as the planned performance-neutral cutover: a graph
+built from `chunkextents` directly *crossed* the executor's own candidate
+relation instead of dominating it, so a refcount derived from it retired source
+tiles a subsequent read still demanded. Record:
+`regrid-notes/2026-08-23-chunk-dag-coverage.md`.
 
-- Build destination-major rows with one source `chunkindex` and independent
-  `candidatechunks!` queries.
-- Preserve deterministic sorted rows and the bidirectional Int32 CSR.
-- Pass G1's actual-cell no-miss and generic exact-identity gates.
-- Recover the recorded latitude-join performance before removing it. The
-  archive records the 0.0594 s median, allocations, graph bytes, and 322-edge
-  provisional difference.
-- Remove the latitude-sorted join only after both gates pass.
+What shipped: destination-major rows from one source `chunkindex` and independent
+`candidatechunks!` queries; deterministic sorted rows and the bidirectional Int32
+CSR preserved; the latitude-sorted join deleted.
 
-Test small spatial raster chunks, complete/rooted/sparse DGGs, polar and
-antimeridian cases, nonzero support, and nonuniform coverage.
+Both gates were then run retroactively by G1/PR #70, on the case matrix this card
+asked for (small spatial raster chunks, complete/rooted/sparse DGGs, polar and
+antimeridian cases, nonzero support, nonuniform coverage, and the production
+Copernicus-to-IGeo7 pair). Verdict in
+`regrid-notes/2026-08-23-g1-graph-oracles.md` §5:
 
-**Done when:** the indexed relation passes the geometric proof and performance
-gate. Keep the old builder if either gate fails and report the blocker.
-**Commit:** `Build dependency rows through native indexes`.
+- **Correctness gate: PASSED**, retroactively. The indexed relation holds every
+  geometrically contributing pair in every oracle-checked case at every radius,
+  and every demanded pair on the production pair — where the deleted cap join
+  misses 72.
+- **Performance gate: FAILED, AND WAIVED.** This card required recovering the
+  archived 0.0594 s latitude-join median before removing that builder. It was not
+  recovered and cannot be; the two builders do different work. Measured on the
+  production pair: **5.7× slower at t8** (0.1219 s vs 0.0213 s), **6.1× at t4**
+  (0.2289 s vs 0.0376 s), and **1.6× the allocations** (17.1 MB vs 10.6 MB). Per
+  destination it is worse on a shallow raster source — up to 60× on
+  4320×2160/162 chunks.
+
+The waiver, and its reasoning: 0.12 s against a run whose recorded wall time is
+8.81 h — about 4 × 10⁻⁶ of it, and 1/90th of the space construction that precedes
+it — bought in exchange for a relation a refcount can actually be derived from
+(72 → 0 demanded-but-unheld pairs) and 322 fewer edges. The gate is recorded as
+*failed and waived*, never as passed. If a later task wants the factor back, the
+measurement points at the `RasterGrid` arm's per-query cursor copy and quadtree
+descent; `benchmark/chunk_graph_gates.jl` with
+`DGG_GRAPH_GATE_CASES=raster-4320-162chunks` is the reproducer, and its
+`:latjoin` arm keeps the deleted builder runnable for as long as the waiver
+stands.
+
+**Commit:** `Build the chunk dependency graph from the source space's own chunk
+index` (`ba2bbfa`, merged as `da9e737`).
 
 ### Task G3 — give dependency objects identity and row views
 
@@ -470,6 +535,13 @@ Actions:
   sharing the parent relation rather than rebuilding it.
 - Retain `sourcesof`, `consumersof`, degrees, counts, and bidirectional CSR.
 - Keep Graphs.jl compatibility over the same CSR; do not create a second graph.
+
+Row views are worth **strictly more** than when this card was written. Post-#69,
+`chunkindex(src_space)` is rebuilt on *every* `chunk_dependency_graph` call
+(`lib/GlobalRegridding/src/discovery.jl:40` — the generic path is a fresh packed
+R-tree over `chunkextents`), so a per-column rebuild now costs a full index build
+per column, not a `sortperm` over caps that were already sorted. Sharing the
+parent relation avoids that entirely.
 
 **Done when:** an invalid graph reuse fails at construction and row views retain
 global destination identity for refinement.
@@ -489,6 +561,13 @@ Actions:
 - Remove `refine` from post-plan graph builders.
 - Make production global/per-column plans share the global graph or validated
   row views; never rebuild a one-destination graph per column.
+- Delete `connectedchunkpairs` (`lib/GlobalRegridding/src/discovery.jl:203-217`).
+  The archive scheduled it for Phase 4 alongside `connectedchunks`, but #69 made
+  it a free deletion here: it is now line-for-line the same loop as
+  `_chunkgraph`'s rows — one `chunkindex(src)`, one `candidatechunks!` per
+  `chunkextents(dst)` entry — and its only caller is
+  `lib/GlobalRegridding/test/test_lazy.jl:145`. Move that assertion onto the
+  graph's rows and drop the function.
 - Preserve zero source reads, zero weight builds, deterministic construction,
   and no network metadata work.
 
@@ -532,7 +611,9 @@ scripts.
 
 Actions:
 
-- Remove `connectedchunks`, `connectedchunks!`, and `connectedchunkpairs`.
+- Remove `connectedchunks` and `connectedchunks!`. (`connectedchunkpairs` moved
+  forward to G4 — after #69 it duplicates `_chunkgraph`'s rows exactly, so it is
+  a free deletion there.)
 - Remove any latitude join left after G2, post-plan graph builder, redundant cap
   vectors, and compatibility source-index state.
 - Keep a cheap `chunkextent(space, chunk)` and `chunkextents` materialization

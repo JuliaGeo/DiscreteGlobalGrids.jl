@@ -4,8 +4,8 @@
 - Card: `regrid-notes/2026-08-21-regridding-simplification-plan.md`,
   "Phase 4 — delete legacy discovery", Task E2
 - Branch: `claude/e2-delete-legacy-discovery`, cut from
-  `claude/e1-graph-backed-lazy` @ `0e3fb70` (PR #74's head). Opened into
-  `claude/e1-graph-backed-lazy` — fifth in the stack.
+  `claude/e1-graph-backed-lazy` @ `0e3fb70` (PR #74's head). Landed as
+  **PR #75** into `claude/e1-graph-backed-lazy` — fifth in the stack.
 - Commit: `Remove duplicate chunk discovery paths`
 
 Phase 4's gate: **one query implementation defines graph edges, and neither the

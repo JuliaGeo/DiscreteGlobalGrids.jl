@@ -84,7 +84,7 @@ Landed cards, with the commit each one shipped as:
 | G3 | PR #71 | Add reusable dependency graph identities |
 | G4 | PR #72 | Make chunked plans own dependency graphs |
 | E1 | PR #74 | Drive lazy regridding from dependency rows |
-| E2 | PR #TBD | Remove duplicate chunk discovery paths |
+| E2 | PR #75 | Remove duplicate chunk discovery paths |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
 `93e836d` is the commit that pinned them and records their SHAs.
@@ -733,7 +733,7 @@ Actions:
 executor nor interface translates that relation back through a compatibility
 tree.
 **Commit:** `Remove duplicate chunk discovery paths`.
-**Landed:** stacked on #74. Record:
+**Landed:** PR #75, stacked on #74. Record:
 `regrid-notes/2026-08-23-e2-delete-legacy-discovery.md`. All five actions
 landed. Three corrections to this card, which a later task should read:
 

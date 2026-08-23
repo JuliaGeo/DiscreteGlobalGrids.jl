@@ -633,6 +633,37 @@ end
         @test plot.mesh_color[] == DGGV.spread(Float64.(length(cells):-1:1), before)
     end
 
+    @testset "a recolour and a re-raise write over their own buffers" begin
+        # A whole level crosses the map's cut and both poles, so the surface has
+        # vertices the cells did not give it and the colours need a buffer.
+        cells = DGG.CellVector(DGG.levelgrid(SYS, 2))
+        n = length(cells)
+        values = Float64.(1:n)
+
+        figure, axis, plot = dggsurface(cells, values; color = values)
+        positions, colors = plot.mesh_positions[], plot.mesh_color[]
+        @test length(colors) > n
+
+        plot.color = reverse(values)
+        @test plot.mesh_color[] === colors
+        @test plot.mesh_color[] == DGGV.spread(reverse(values), plot.surfacemesh[])
+
+        Makie.update!(plot, cells, values .* 2)
+        @test plot.mesh_positions[] === positions
+        @test [p[3] for p in plot.mesh_positions[]] ==
+            DGGV.spread(2 .* values, plot.surfacemesh[])
+
+        # What a plot does not own it does not write over.  A flat map at no
+        # height draws the topology's own vertices, and a surface with nothing
+        # cut draws the caller's own colours.
+        figure, axis, flat = dggsurface(cells; color = values)
+        @test flat.mesh_positions[] === flat.surfacetopology[].positions
+
+        figure = Figure(size = (400, 300))
+        onglobe = dggsurface!(GlobeAxis(figure[1, 1]), cells; color = values)
+        @test onglobe.mesh_color[] === values
+    end
+
     @testset "a surface can be coloured by its own heights" begin
         cells = patch(7)
         values = Float64.(1:length(cells))

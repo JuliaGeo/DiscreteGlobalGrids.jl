@@ -108,19 +108,22 @@ Makie.convert_arguments(P::Type{<:DGGSurface}, x, zs::AbstractVector) =
     Makie.convert_arguments(P, cellregion(x), zs)
 
 """
-    reusable(cached, T, n, notthis) -> Vector{T} or nothing
+    ourbuffer!(held, T, n) -> Vector{T}
 
-The buffer a node computed last time, if it can be written over again.
+A buffer of `n` `T`s that this node owns and may write over.
 
-It can when it is a `Vector{T}` of the length wanted and is not `notthis` — an
-array the node does not own, which it would otherwise corrupt for whoever does.
+`held` is where the node keeps it between calls, and nothing else is ever put
+there.  That is the whole point: a node that wrote over whatever it returned
+last time would corrupt the caller's own array the first time it handed one
+straight back, and both of the nodes below do exactly that — a flat surface's
+vertices are the topology's, and an uncut surface's colours are the user's.
 """
-function reusable(cached, ::Type{T}, n::Int, notthis) where {T}
-    cached === nothing && return nothing
-    buffer = cached[1]
-    buffer isa Vector{T} || return nothing
-    (length(buffer) == n && buffer !== notthis) || return nothing
-    return buffer
+function ourbuffer!(held::Ref{Any}, ::Type{T}, n::Int) where {T}
+    buffer = held[]
+    buffer isa Vector{T} && length(buffer) == n && return buffer
+    fresh = Vector{T}(undef, n)
+    held[] = fresh
+    return fresh
 end
 
 """
@@ -142,6 +145,19 @@ end
 
 vertex_colors(mesh::SurfaceMesh, color) = vertex_colors(mesh.topology, color)
 
+"""
+    spreadable(top, values) -> Bool
+
+Is this a colour that [`spread!`](@ref) has work to do on?
+
+One value per cell, on a surface the seam or a pole added vertices to.  A single
+colour is not, and neither is a vector on a surface with nothing cut, where
+[`spread`](@ref) hands back what it was given rather than filling a buffer.
+"""
+spreadable(top::SurfaceTopology, values) =
+    values isa AbstractVector && !isempty(top.extra_tri) &&
+        length(values) == top.ncells
+
 function Makie.plot!(plot::DGGSurface{<:Tuple{<:CellRegion, <:AbstractVector}})
     # The topology is the expensive half of a surface, and the heights do not
     # touch it — but the compute graph reports `cells` as changed on every
@@ -161,25 +177,33 @@ function Makie.plot!(plot::DGGSurface{<:Tuple{<:CellRegion, <:AbstractVector}})
             ntasks = task_count(inputs.ntasks)),)
     end
 
-    # The vertex buffer is the one thing a height change costs, so it is written
-    # over rather than allocated again.  `reusable` is what keeps that from
-    # scribbling on a buffer the surface does not own — the topology's own
-    # positions, which a flat surface hands out as its vertices.
+    # The vertex buffer and the vertex colours are what a height or a colour
+    # change costs, and each is written over rather than allocated again — at a
+    # few million cells that is the redraw.  Each node holds its own buffer, so
+    # that neither can come to write over an array it was only passing on.
+    heldpositions = Ref{Any}(nothing)
     Makie.register_computation!(
         plot.attributes, [:surfacetopology, :zs, :ntasks], [:mesh_positions]
     ) do inputs, changed, cached
         top, zs = inputs.surfacetopology, inputs.zs
-        zs isa ZeroHeights && return (vertex_positions(top, zs),)
-        buffer = reusable(cached, Point3d, nvertices(top), top.positions)
-        buffer === nothing &&
-            return (vertex_positions(top, zs, task_count(inputs.ntasks)),)
+        flatvertices(top, zs) && return (top.positions,)
+        buffer = ourbuffer!(heldpositions, Point3d, nvertices(top))
         return (vertex_positions!(buffer, top, zs, task_count(inputs.ntasks)),)
     end
 
     Makie.map!(top -> (top.faces,), plot, [:surfacetopology], [:mesh_faces])
+
     # `color = nothing` is `surface`'s way of saying "colour it by its heights".
-    Makie.map!((top, c, zs) -> (vertex_colors(top, c === nothing ? zs : c),), plot,
-        [:surfacetopology, :color, :zs], [:mesh_color])
+    heldcolors = Ref{Any}(nothing)
+    Makie.register_computation!(
+        plot.attributes, [:surfacetopology, :color, :zs], [:mesh_color]
+    ) do inputs, changed, cached
+        top = inputs.surfacetopology
+        values = cellvalues(inputs.color === nothing ? inputs.zs : inputs.color)
+        spreadable(top, values) || return (vertex_colors(top, values),)
+        buffer = ourbuffer!(heldcolors, blendtype(eltype(values)), nvertices(top))
+        return (spread!(buffer, values, top),)
+    end
     # Kept for introspection: an O(1) view over the two halves, sharing their
     # arrays rather than copying them.
     Makie.map!((top, p) -> (SurfaceMesh(top, p),), plot,

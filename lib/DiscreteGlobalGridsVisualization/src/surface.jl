@@ -679,14 +679,33 @@ without a step.
 function spread(values::AbstractVector, top::SurfaceTopology)
     nextra = length(top.extra_tri)
     nextra == 0 && return values
-    length(values) == top.ncells ||
-        throw(ArgumentError("got $(length(values)) values, but there are \
-            $(top.ncells) cells"))
     out = Vector{blendtype(eltype(values))}(undef, top.ncells + nextra)
-    copyto!(out, 1, values, firstindex(values), top.ncells)
-    @inbounds for k in 1:nextra
+    return spread!(out, values, top)
+end
+
+"""
+    spread!(out, values, top) -> out
+
+[`spread`](@ref) into a buffer that already exists.
+
+A plot recoloured writes over the vertex values it had rather than allocating
+another set, for the same reason [`vertex_positions!`](@ref) does: at a few
+million cells the allocation is the redraw.  There is no in-place form of the
+`nextra == 0` case, because there is nothing to do there — `spread` hands back
+the values it was given.
+"""
+function spread!(out::AbstractVector, values::AbstractVector, top::SurfaceTopology)
+    n = top.ncells
+    length(values) == n ||
+        throw(ArgumentError("got $(length(values)) values, but there are \
+            $(n) cells"))
+    length(out) == n + length(top.extra_tri) ||
+        throw(ArgumentError("the buffer holds $(length(out)) values, but the \
+            surface has $(n + length(top.extra_tri)) vertices"))
+    copyto!(out, 1, values, firstindex(values), n)
+    @inbounds for k in eachindex(top.extra_tri)
         c = top.extra_tri[k]
-        out[top.ncells + k] = blend(values[c[1]], values[c[2]], values[c[3]],
+        out[n + k] = blend(values[c[1]], values[c[2]], values[c[3]],
             top.extra_weight[k])
     end
     return out
@@ -707,6 +726,19 @@ the number of vertices — no adjacency, no centroids, no projection.
 """
 vertex_positions(top::SurfaceTopology{Point2d, <:PlanarTarget}, ::ZeroHeights) =
     top.positions
+
+"""
+    flatvertices(top, zs) -> Bool
+
+Are the topology's own vertices already the buffer to draw?
+
+True in the one case that needs no work and owns no buffer: a flat map at no
+height, where a vertex keeps the two coordinates the build left it with.  A plot
+asks before reaching for a buffer of its own, because this is the answer it must
+not write into.
+"""
+flatvertices(::SurfaceTopology{Point2d, <:PlanarTarget}, ::ZeroHeights) = true
+flatvertices(::SurfaceTopology, ::AbstractVector) = false
 
 vertex_positions(top::SurfaceTopology, zs::AbstractVector, ntasks::Int = 1) =
     vertex_positions!(Vector{Point3d}(undef, length(top.positions)), top, zs, ntasks)

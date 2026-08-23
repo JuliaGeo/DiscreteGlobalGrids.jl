@@ -346,6 +346,29 @@ Actions:
 - Use it only when a native restricted cursor is unavailable.
 - Delete `CellCapTree` and `RasterFlatTree`'s scattered-cell role. Keep the
   latter only if the legacy `chunktree` bridge still requires it until E2.
+- **Make "when a native restricted cursor is unavailable" true on the DGGS
+  side** (folded in 2026-08-23; scope
+  `regrid-notes/2026-08-23-dggs-subcursor-scope.md`, decided by the user). It is
+  vacuous today: `subcursor` has one concrete method, CopernicusDEM
+  (`src/systems/CopernicusDEM/cursor.jl:412`); every hierarchical DGGS takes the
+  `= nothing` default at `src/interface/grid.jl:570`, so a non-chunk-aligned
+  window packs an R-tree instead of windowing the hierarchy. Implement
+  `subcursor` for hierarchical DGGS grids over the existing `SubtreeIds` O(1)
+  contiguous-run view, routed through a `PartialGrid` for the descent clamp.
+  This **subsumes `_chunkcursor` (`src/regridding.jl:250`) entirely** — a net
+  deletion. Two hard requirements from the scope: the position shift must be
+  **bidirectional** (a one-directional shift passes leaf-set and split-weight
+  assertions while producing silently wrong weights), and the window must carry
+  **cached leaf caps** — a bare cursor loses the join by 3-4x, worse than the
+  fallback it replaces.
+- Guard the destination-tiling cliff independently of the rest of B4, and first.
+  Nothing in production reaches the fallback today (all four `subtree` call
+  sites take case 1 or case 3, with 4.07x headroom in `_defaulttilesizes`), but
+  at `budget = 2^27` every destination unit packs a ~419k-cell R-tree on 40
+  workers: measured 1.213 s against 0.501 s for a cached window, at 4.3x the
+  memory. That cliff, not a steady-state win, is the reason this is on the list.
+- Not folded in: `_cachedcelltree`'s missing size guard (unlike
+  `_cachedchunktree`). User reviewed 2026-08-23 and accepted it as-is.
 
 Verify packing/node-capacity invariance, original leaf numbering, native versus
 fallback Conservative block identity, threaded determinism, production

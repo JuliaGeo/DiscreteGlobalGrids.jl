@@ -8,6 +8,7 @@ using Makie
 using CairoMakie
 using GeoMakie
 import Proj
+import DimensionalData as DD
 
 CairoMakie.activate!(type = "png")
 
@@ -470,6 +471,54 @@ end
 
         @test DGGV.vertex_colors(cut, :red) === :red
         @test_throws ArgumentError DGGV.vertex_colors(cut, values[1:3])
+
+        # A cube axis is unwrapped: a `DimArray` would still be one after
+        # Makie's colour conversion, and the backends will not draw that.
+        A = DD.DimArray(values, DGG.Cells(DGG.CellLookup(grid)))
+        @test DGGV.vertex_colors(mesh, A) == values
+        @test DGGV.vertex_colors(mesh, A) isa Vector{Float64}
+    end
+
+    @testset "heights are part of the geometry" begin
+        grid = DGG.levelgrid(SYS, 2)
+        n = DGG.ncells(grid)
+        zs = Float64.(1:n)
+
+        # Left out, there is no third coordinate to carry, and the fill that
+        # stands in for the heights stores nothing but its length.
+        flat = DGGV.triangulate(planar(), grid)
+        @test flat.nsplit > 0
+        @test eltype(flat.positions) === Point2d
+        @test DGGV.triangulate(planar(), grid, DGGV.ZeroHeights(n)).positions ==
+            flat.positions
+        @test all(iszero, DGGV.ZeroHeights(n))
+        @test (@allocated DGGV.ZeroHeights(n)) == 0
+
+        # Given, the map is the same map with a height on top of it.  The seam
+        # and the poles add vertices of their own, and each takes the height of
+        # the cell it takes its colour from.
+        raised = DGGV.triangulate(planar(), grid, zs)
+        @test eltype(raised.positions) === Point3d
+        @test [Point2d(p[1], p[2]) for p in raised.positions] == flat.positions
+        @test [p[3] for p in raised.positions] == zs[raised.vertex_cell]
+
+        @test_throws ArgumentError DGGV.triangulate(planar(), grid, zs[1:3])
+    end
+
+    @testset "a height on a globe is a height above the ellipsoid" begin
+        # Not a third coordinate but a lift straight out along the cell's own
+        # centroid, which on an oblate ellipsoid is not the direction the
+        # projected vertex points in: lifting along that instead lands 3.4 m
+        # away in the 1 km below, against the 0.1 m `≈` allows at this size.
+        grid = DGG.levelgrid(SYS, 2)
+        n = DGG.ncells(grid)
+        target = DGGV.GlobeTarget(identity, 6378137.0, 0.00669437999014, 0.0)
+        flat = DGGV.triangulate(target, grid)
+        raised = DGGV.triangulate(target, grid, fill(1000.0, n))
+        @test all(1:n) do p
+            u = DGG.cell_centroid(grid, DGG.cellindex(grid, p))
+            raised.positions[p] ≈ flat.positions[p] + 1000.0 * Point3d(u...)
+        end
     end
 
     @testset "surface plots" begin
@@ -495,6 +544,39 @@ end
         # A globe has no seam, so the mesh is exactly one vertex per cell.
         @test length(plot.surfacemesh[].positions) == DGG.ncells(grid)
         @test saves(figure)
+    end
+
+    @testset "surface heights through the recipe" begin
+        cells = patch(7)
+        n = length(cells)
+        values = Float64.(1:n)
+
+        # No heights given is the flat surface, and a flat surface keeps the
+        # two coordinates it had.
+        figure, axis, plot = dggsurface(cells; color = values)
+        @test plot.zs[] isa DGGV.ZeroHeights
+        @test eltype(plot.surfacemesh[].positions) === Point2d
+
+        figure, axis, plot = dggsurface(cells, values; color = values)
+        @test [p[3] for p in plot.surfacemesh[].positions] ==
+            values[plot.surfacemesh[].vertex_cell]
+        @test saves(figure)
+
+        # A one-dimensional cube axis is both at once: its lookup names the
+        # cells and its values are their heights.
+        A = DD.DimArray(values, DGG.Cells(DGG.CellLookup(cells)))
+        region, zs = Makie.convert_arguments(DGGV.DGGSurface, A)
+        @test length(region) == n
+        @test zs === values
+
+        figure, axis, plot = dggsurface(A; color = A)
+        @test plot.surfacemesh[].ncells == n
+        @test [p[3] for p in plot.surfacemesh[].positions] ==
+            values[plot.surfacemesh[].vertex_cell]
+        @test saves(figure)
+
+        # A dimension that is not cells names no surface.
+        @test_throws ArgumentError dggsurface(DD.DimArray(values, DD.X(1:n)))
     end
 
     @testset "recolouring a surface keeps the geometry" begin

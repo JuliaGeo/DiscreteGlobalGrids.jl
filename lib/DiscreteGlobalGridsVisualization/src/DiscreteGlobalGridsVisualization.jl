@@ -33,6 +33,12 @@ and four.  Its triangles come from adjacency alone, under a rule that gives each
 grid corner one owner, so none is emitted twice and none has to be de-duplicated
 afterwards; see `surface.jl`.
 
+It also takes heights, the way Makie's own `surface` does — `dggsurface(cells,
+zs)` lifts the vertex over each cell to that cell's height, as a third
+coordinate on a flat map and as a height above the ellipsoid on a globe.  A
+one-dimensional `DimArray` over a cell dimension carries both, so
+`dggsurface(A)` draws `A` as relief.
+
 ## Drawing less than you were given
 
 [`dggresample`](@ref) takes the same arguments and answers the other half of the
@@ -72,6 +78,7 @@ implements.
 module DiscreteGlobalGridsVisualization
 
 import DiscreteGlobalGrids as DGG
+import DimensionalData as DD
 import GeometryBasics
 using GeometryBasics: Point2d, Point3d, GLTriangleFace
 import Makie
@@ -87,6 +94,7 @@ include("tessellate.jl")
 include("recipe.jl")
 include("surface.jl")
 include("surface_recipe.jl")
+include("dimensionaldata.jl")
 include("pyramid.jl")
 include("resample.jl")
 include("resample_recipe.jl")

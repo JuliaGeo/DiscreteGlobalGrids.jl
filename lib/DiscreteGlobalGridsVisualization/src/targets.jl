@@ -144,14 +144,20 @@ needs_cutting(::GlobeTarget) = false
 project!(::GlobeTarget, positions) = positions
 
 """
-    globe_vertex(target::GlobeTarget, p) -> Point3d
+    globe_vertex(target::GlobeTarget, p, above = 0.0) -> Point3d
 
-The unit-sphere point `p` in the globe axis's coordinates.
+The unit-sphere point `p`, raised `above` the ellipsoid, in the globe axis's
+coordinates.
+
+Height enters the formula only as `h`, and only additively, so raising a point
+moves it straight out along `p`: `globe_vertex(target, p, above)` is
+`globe_vertex(target, p) + above * p`.  That is what lets a surface carry a
+height per cell without carrying a normal per vertex.
 """
-@inline function globe_vertex(target::GlobeTarget, p)
+@inline function globe_vertex(target::GlobeTarget, p, above = 0.0)
     x, y, z = p[1], p[2], p[3]
     N = target.a / sqrt(1 - target.e2 * z * z)
-    h = target.height
+    h = target.height + above
     return Point3d((N + h) * x, (N + h) * y, (N * (1 - target.e2) + h) * z)
 end
 

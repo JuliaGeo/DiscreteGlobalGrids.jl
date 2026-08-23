@@ -35,6 +35,28 @@
 # overlapping triangles instead of two.
 
 """
+    ZeroHeights(n)
+
+`n` heights, all zero, stored as the number `n` and nothing else.
+
+The stand-in for the `zs` a caller did not give.  It is an ordinary
+`AbstractVector{Float64}`, so anything that reads heights reads it, and
+[`triangulate`](@ref) recognises the type: a surface at height zero everywhere
+keeps the two coordinates it would have had rather than carrying a third that is
+always `0.0`.
+"""
+struct ZeroHeights <: AbstractVector{Float64}
+    n::Int
+end
+
+Base.size(z::ZeroHeights) = (z.n,)
+
+Base.@propagate_inbounds function Base.getindex(z::ZeroHeights, i::Int)
+    @boundscheck checkbounds(z, i)
+    return 0.0
+end
+
+"""
     SurfaceMesh(positions, faces, vertex_cell, ncells, nsplit)
 
 A set of DGGS cells as one interpolated surface in an axis's data space.
@@ -46,6 +68,9 @@ A set of DGGS cells as one interpolated surface in an axis's data space.
     the first `ncells`.
   * `ncells` — the length a colour vector must have.
   * `nsplit` — triangles cut at the seam or capped at a pole.  Zero on a globe.
+
+A vertex is a `Point2d` on a flat map and a `Point3d` on a globe, or on a flat
+map given heights — see [`triangulate`](@ref).
 
 Built by [`triangulate`](@ref).  Compare [`CellMesh`](@ref), which draws the
 same cells as flat patches.
@@ -510,18 +535,25 @@ cut.  A step of a quarter turn or more means an edge beside a pole, which
 end
 
 """
-    surface_vertex(target, p) -> Point2d or Point3d
+    surface_vertex(target, p, z) -> Point2d or Point3d
 
-A cell centroid `p`, a unit-sphere point, in the target's build space.
+A cell centroid `p`, a unit-sphere point, raised to height `z`, in the target's
+build space.
 
-On a [`GlobeTarget`](@ref) that is the finished vertex.  On a
-[`PlanarTarget`](@ref) it is longitude and latitude in degrees inside the map's
-window `[cut - 360, cut]`, which [`triangulate`](@ref) projects in bulk at the
-end.
+On a [`GlobeTarget`](@ref) that is the finished vertex, and `z` is a height above
+the ellipsoid in the axis's own units — the per-vertex form of the constant
+offset the axis's transform already adds.  Height enters `globe_vertex` purely
+additively along the unit vector, so raising a vertex moves it straight out.
+
+On a [`PlanarTarget`](@ref) it is longitude and latitude in degrees inside the
+map's window `[cut - 360, cut]`, which [`triangulate`](@ref) projects in bulk at
+the end; `z` is not part of the build space there, because every seam and polar
+cut is worked out in longitude and latitude alone.  [`elevate`](@ref) attaches it
+afterwards.
 """
-@inline surface_vertex(target::GlobeTarget, p) = globe_vertex(target, p)
+@inline surface_vertex(target::GlobeTarget, p, z) = globe_vertex(target, p, z)
 
-@inline function surface_vertex(target::PlanarTarget, p)
+@inline function surface_vertex(target::PlanarTarget, p, z)
     lon = atand(p[2], p[1])
     lat = asind(clamp(p[3], -1.0, 1.0))
     needs_cutting(target) || return Point2d(lon, lat)
@@ -529,20 +561,60 @@ end.
     return Point2d(left + mod(lon - left, 360.0), lat)
 end
 
-function surface_vertices(target::PlotTarget, cr::CellRegion)
+function surface_vertices(target::PlotTarget, cr::CellRegion, zs::AbstractVector)
     P = pointtype(target)
     n = length(cr)
     positions = Vector{P}(undef, n)
     cells = cr.cells
     source = cr.source
     Threads.@threads for p in 1:n
-        @inbounds positions[p] = surface_vertex(target, DGG.cell_centroid(source, cells[p]))
+        @inbounds positions[p] =
+            surface_vertex(target, DGG.cell_centroid(source, cells[p]), zs[p])
     end
     return positions
 end
 
 """
-    triangulate(target::PlotTarget, cells; ntasks = Threads.nthreads(),
+    vertextype(target, zs) -> Type
+
+The coordinate type of a finished vertex: `Point3d` wherever there is a height
+to carry, and `Point2d` on a flat map that has none.
+"""
+vertextype(::GlobeTarget, ::AbstractVector) = Point3d
+vertextype(::PlanarTarget, ::AbstractVector) = Point3d
+vertextype(::PlanarTarget, ::ZeroHeights) = Point2d
+
+"""
+    elevate(target, positions, vertex_cell, zs) -> positions
+
+Give each vertex of a finished planar buffer its height, as its third
+coordinate.
+
+A vertex added at a seam or a pole has no cell of its own, and takes the height
+of the cell it takes its colour from — the same one-cell-wide approximation
+along the cut that [`clip_tagged!`](@ref) makes for colour.
+
+Nothing to do on a globe, where the height is already in the vertex, or under
+[`ZeroHeights`](@ref), where there is no third coordinate to carry.
+"""
+elevate(::GlobeTarget, positions, vertex_cell, zs) = positions
+
+elevate(::PlanarTarget, positions::Vector{Point2d}, vertex_cell::Vector{Int32},
+    ::ZeroHeights) = positions
+
+function elevate(::PlanarTarget, positions::Vector{Point2d}, vertex_cell::Vector{Int32},
+        zs::AbstractVector)
+    raised = Vector{Point3d}(undef, length(positions))
+    @inbounds for i in eachindex(raised)
+        p = positions[i]
+        raised[i] = Point3d(p[1], p[2], zs[Int(vertex_cell[i])])
+    end
+    return raised
+end
+
+"""
+    triangulate(target::PlotTarget, cells, zs = ZeroHeights(length(cells));
+                ntasks = Threads.nthreads(),
                 connectivity = DiscreteGlobalGrids.Vertex()) -> SurfaceMesh
 
 Build the interpolated surface over `cells` in `target`'s coordinate space.
@@ -555,6 +627,13 @@ The result has one vertex per cell and the triangles of the grid's dual between
 them.  A cell whose neighbours are absent takes part in fewer triangles, so a
 partial grid comes out with a ragged edge rather than a wrong one.
 
+`zs` is one height per cell, and it lands in the geometry: on a
+[`PlanarTarget`](@ref) as each vertex's third coordinate, in the axis's data
+space, and on a [`GlobeTarget`](@ref) as a height above the ellipsoid, in the
+axis's units, which lifts the vertex straight out from the centre.  The default,
+[`ZeroHeights`](@ref), is the flat surface, and keeps a planar mesh's vertices
+two-dimensional.
+
 `connectivity` is what counts as a neighbour.  `Vertex()`, the default, is the
 one that gives a complete surface; `Edge()` would miss every corner of a
 square-celled grid, whose four cells touch only diagonally.
@@ -563,13 +642,17 @@ On a [`PlanarTarget`](@ref) two cases need more than three centroids, both
 counted in `nsplit`: a triangle straddling the cut is split against it, and the
 one at each pole is drawn as the cap it covers.
 """
-function triangulate(target::PlotTarget, cr::CellRegion;
+function triangulate(target::PlotTarget, cr::CellRegion,
+        zs::AbstractVector = ZeroHeights(length(cr));
         ntasks::Int = Threads.nthreads(), connectivity = DGG.Vertex())
-    P = pointtype(target)
     n = length(cr)
-    n == 0 && return SurfaceMesh(P[], GLTriangleFace[], Int32[], 0, 0)
+    length(zs) == n || throw(ArgumentError("zs has $(length(zs)) entries, but \
+        there are $n cells"))
+    V = vertextype(target, zs)
+    n == 0 && return SurfaceMesh(V[], GLTriangleFace[], Int32[], 0, 0)
 
-    positions = surface_vertices(target, cr)
+    P = pointtype(target)
+    positions = surface_vertices(target, cr, zs)
     adj = DGG.adjacency(cr.region; connectivity)
 
     nt = clamp(ntasks, 1, max(1, cld(n, 512)))
@@ -585,8 +668,11 @@ function triangulate(target::PlotTarget, cr::CellRegion;
         end
     end
 
-    return merge_surface(chunks, positions, n, sum(splits), target)
+    return merge_surface(chunks, positions, n, sum(splits), target, zs)
 end
+
+triangulate(target::PlotTarget, x, zs::AbstractVector; kwargs...) =
+    triangulate(target, cellregion(x), zs; kwargs...)
 
 triangulate(target::PlotTarget, x; kwargs...) = triangulate(target, cellregion(x); kwargs...)
 
@@ -596,7 +682,7 @@ fill_surface!(chunk::SurfaceChunk, target::GlobeTarget, adj, lo, hi, n, position
     fill_surface!(chunk, target, adj, lo, hi, n)
 
 function merge_surface(chunks::Vector{SurfaceChunk{P}}, positions::Vector{P},
-        n::Int, nsplit::Int, target::PlotTarget) where {P}
+        n::Int, nsplit::Int, target::PlotTarget, zs::AbstractVector) where {P}
     nt = length(chunks)
     face_offset = zeros(Int, nt + 1)
     extra_offset = zeros(Int, nt + 1)
@@ -637,5 +723,6 @@ function merge_surface(chunks::Vector{SurfaceChunk{P}}, positions::Vector{P},
     end
 
     project!(target, positions)
-    return SurfaceMesh(positions, faces, vertex_cell, n, nsplit)
+    raised = elevate(target, positions, vertex_cell, zs)
+    return SurfaceMesh(raised, faces, vertex_cell, n, nsplit)
 end

@@ -7,6 +7,7 @@ version = "0.1.0"
 projects = ["test"]
 
 [deps]
+DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
@@ -23,6 +24,7 @@ ProjExt = "Proj"
 DiscreteGlobalGrids = {path = "../.."}
 
 [compat]
+DimensionalData = "0.29, 0.30"
 DiscreteGlobalGrids = "0.1"
 GeoMakie = "0.7.16"
 GeometryBasics = "0.5"

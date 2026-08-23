@@ -184,8 +184,8 @@ local tile list, no downloads):
 - the graph build is **0.118 s warm** (0.572 s on the first call, compilation
   included) — the same number `dagplan`'s docstring has always claimed and
   within noise of the gates harness's 0.1143 s median for the same pair
-- with `refinegraph = true`, 0.159 s
-- `refinegraph = true` still narrows (**250 769 edges**), still tags
+- `refinegraph = true` still reaches the builder through the plan's `refine`
+  keyword, still narrows (**250 769 edges** in 0.159 s), still tags
   `:copdem_tile_lonlat_box`, and is still a subset of the cap relation
 
 ### The per-column plans own none — and cannot own a view

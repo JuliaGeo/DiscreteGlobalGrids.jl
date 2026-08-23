@@ -149,6 +149,53 @@ end
           collect(1:GR.nchunks(copspace))
 end
 
+@testset "the dependency graph holds every pair the chunk index answers" begin
+    # `consumersof` is a source chunk's refcount, so the graph has to hold every
+    # pair `candidatechunks!` can answer with. Both relations being conservative
+    # supersets of the true overlap is NOT enough: they can be conservative in
+    # different directions, and here they were. The level-0 Copernicus frontier
+    # tests a cap derived from the block cursor's node rectangle, whose east
+    # edge carries the whole tile width; `chunkextents` reports the cap derived
+    # from the tile's own boundary ring, half a pixel narrower. Neither cap
+    # contains the other, so a graph built from `chunkextents` directly CROSSED
+    # the executor's relation — and a refcount that reaches zero early retires a
+    # tile the next read is still going to ask for.
+    cop = DGG.CopernicusDEMSystem(90)
+    sys7 = DGG.IGeo7System()
+    src = DGG.DGGSpace(DGG.levelgrid(cop, 1); chunklevel = 0)
+    dst = DGG.DGGSpace(DGG.levelgrid(sys7, 3); chunklevel = 2)
+    @test GR.nchunks(src) == DGG.ncells(cop, 0)
+
+    # The case includes both poles and all twelve pentagons — the places where
+    # a cell's cap and its hierarchy's node extents diverge most.
+    pentagons = [foldl((c, _) -> first(DGG.children(sys7, c)), 1:3; init = r)
+                 for r in DGG.rootcells(sys7)]
+    @test length(unique(GR.chunkat(dst, DGG.cellposition(dst.grid, p))
+                        for p in pentagons)) == 12
+    for pole in (GO.UnitSphericalPoint(0.0, 0.0, 1.0),
+                 GO.UnitSphericalPoint(0.0, 0.0, -1.0))
+        @test GR.chunkat(dst, pole) in 1:GR.nchunks(dst)
+    end
+
+    graph = GR.chunk_dependency_graph(dst, src)
+    index = GR.chunkindex(src)
+    caps = GR.chunkextents(dst)
+    buf = Int[]
+    demanded, unpredicted, reached = 0, 0, falses(GR.nchunks(src))
+    for d in 1:GR.nchunks(dst)
+        GR.candidatechunks!(buf, index, caps[d]; radius = 0.0)
+        demanded += length(buf)
+        row = GR.sourcesof(graph, d)
+        unpredicted += count(s -> !insorted(Int32(s), row), buf)
+        reached[buf] .= true
+    end
+    # A complete destination reaches every tile, polar rows included, so the
+    # sweep really did exercise the whole source lattice.
+    @test all(reached)
+    @test demanded > 0
+    @test unpredicted == 0
+end
+
 @testset "a rooted subset chunks without scanning the level" begin
     # `_chunkwindows` visits every level-`a` ancestor to find the non-empty
     # ones, which at production sizes is a scan of the whole level per space

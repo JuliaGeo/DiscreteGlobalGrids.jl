@@ -5,7 +5,11 @@
 # one query at a time. That is the right shape for a lazy read, but a scheduler
 # needs the whole relation at once: refcounts need every consumer of a source
 # chunk, prefetch needs lookahead, and an affinity order needs both directions.
-# This file materializes the relation once, from chunk extents alone.
+# This file materializes the relation once, by asking `discovery.jl` the same
+# question for every destination chunk at once. Building it from the chunk caps
+# directly would be faster and wrong: a space's own index need not test the caps
+# `chunkextents` reports, and a graph that crosses the executor's relation
+# instead of dominating it retires sources that are still going to be demanded.
 
 """
     ChunkDependencyGraph{T} <: Graphs.AbstractGraph{T}
@@ -18,6 +22,11 @@ An edge `(s, d)` means source chunk `s` *may* contribute to destination chunk
 may include pairs whose geometries do not actually overlap, because it is
 computed from covering spherical caps rather than cell geometry. Treat an edge
 as "must be loaded", never as "has nonzero weight".
+
+What makes it usable as a *refcount* is a second, sharper property: the relation
+is the one [`candidatechunks!`](@ref) answers on the source space's own chunk
+index, so a lazy read can never demand a source chunk the graph did not predict.
+See [`chunk_dependency_graph`](@ref).
 
 # Vertex numbering
 
@@ -283,8 +292,8 @@ end
     chunk_dependency_graph(plan::ChunkedPlan; refine = nothing) -> ChunkDependencyGraph
 
 Build the conservative bipartite dependency relation between the chunks of
-`dst_space` and those of `src_space`, from chunk extents alone. No cell
-geometry is built and no data is read.
+`dst_space` and those of `src_space`, from destination chunk extents and the
+source space's chunk index alone. No cell geometry is built and no data is read.
 
 The `plan` form takes the radius from the plan's method, which is the safe entry
 point; the space form is for callers that know the radius they want. Argument
@@ -300,35 +309,33 @@ order matches the rest of `discovery.jl`: destination first.
   radius, and drops the edge. Returning `true` keeps it. The default keeps every
   candidate the cap test accepts. A wrong `refine` silently corrupts results, so
   it must only ever reject pairs it can prove disconnected.
-- `prefilter`: use the latitude-band prefilter (default `true`). Setting it to
-  `false` tests every destination against every source chunk; this is the
-  brute-force reference the prefilter is checked against, and is only useful for
-  small spaces and tests.
+- `prefilter`: accepted for compatibility and ignored. Rows now come from the
+  source space's own chunk query, which prunes through that space's index; there
+  is no separate latitude band left to switch off.
 
 # Method
 
-Both sides are reduced to their covering spherical caps via
-[`chunkextents`](@ref) — the one seam every `RegridSpace` provides — so the
-builder is generic over any source/destination pair the regridder accepts.
+The destination side is reduced to its covering spherical caps via
+[`chunkextents`](@ref). Each destination cap is then handed to
+[`candidatechunks!`](@ref) on [`chunkindex`](@ref)`(src_space)` — *the same
+query, on the same index, that a lazy read issues for that destination*.
 
-Pairs are then found by a **cap join** rather than by the dual-tree descent of
-[`connectedchunkpairs`](@ref). Source chunks are sorted by cap-centre latitude
-once; each destination cap then binary-searches the latitude band it could
-possibly reach and applies the exact [`DilatedIntersects`](@ref) test to the
-candidates. The band is a valid bound because the latitude gap between two
-points is a lower bound on their spherical distance, so a pair separated by more
-than `maxsrcradius + dstradius + radius` in latitude cannot pass the cap test.
-Every candidate still gets the exact predicate, so the prefilter changes speed,
-not results.
-
-This is deliberate: a space is free to return a *flat* chunk tree — a single
-node holding every chunk cap — and several do, which collapses a dual-tree
-descent into a full quadratic scan. The cap join is uniformly
-`O(nsrc log nsrc + ndst log nsrc + candidates)` regardless of tree shape.
+That identity is the point, and it is a correctness property rather than a
+convenience. A space's chunk index need not test the caps `chunkextents`
+reports: a hierarchy derives node extents its own way, and a covering cap
+derived from a node rectangle is neither contained in nor containing the cap
+derived from the chunk's own boundary. Building the graph from `chunkextents`
+directly therefore produced a relation that *crosses* the executor's rather than
+dominating it — measured on the Copernicus DEM × IGeo7 pair as 71 demanded
+pairs the graph did not hold, against 437 it held and no read ever asked for.
+Refcounts derived from such a graph retire a source that is still going to be
+demanded, and the demand then reloads it. Querying the index closes that gap by
+construction, for every space, with no per-space invariant to maintain.
 
 Destination rows are built in parallel over blocks of destination chunks and
-concatenated in chunk order, so the result is bit-identical regardless of thread
-count.
+written by index, so the result is identical regardless of thread count. The
+source index is built once and shared; `candidatechunks!` is already called
+concurrently from the lazy executor's workers and must be safe for that.
 
 # Using it for eviction and ordering
 
@@ -363,30 +370,20 @@ function chunk_dependency_graph(dst_space::RegridSpace, src_space::RegridSpace;
     r = Float64(radius)
     (isfinite(r) && r >= 0) || throw(ArgumentError(
         "radius must be finite and non-negative, got $radius"))
-    return _chunkgraph(chunkextents(dst_space), chunkextents(src_space), r,
-        refine, prefilter)
+    return _chunkgraph(chunkextents(dst_space), chunkindex(src_space),
+        Int(nchunks(src_space)), r, refine)
 end
 
 chunk_dependency_graph(plan::ChunkedPlan; refine = nothing, prefilter::Bool = true) =
     chunk_dependency_graph(plan.dst_space, plan.src_space;
         radius = support_radius(plan.method, plan.src_space), refine, prefilter)
 
-# Latitude of a unit-sphere point. `atan(z, hypot(x, y))` is the numerically
-# robust spelling: `asin(z)` loses precision near the poles.
-_caplatitude(c::SphericalCap) = atan(c.point[3], hypot(c.point[1], c.point[2]))
-
-function _chunkgraph(dstcaps::Vector{<:SphericalCap}, srccaps::Vector{<:SphericalCap},
-        radius::Float64, refine, prefilter::Bool)
+function _chunkgraph(dstcaps::AbstractVector{<:SphericalCap}, srcindex, nsrc::Int,
+        radius::Float64, refine)
     T = Int32
-    ndst, nsrc = length(dstcaps), length(srccaps)
+    ndst = length(dstcaps)
     (nsrc <= typemax(T) && ndst <= typemax(T)) || throw(ArgumentError(
         "chunk counts $nsrc and $ndst exceed the $(T) vertex numbering"))
-    # Sort source chunks by cap-centre latitude once. `order[j]` is the source
-    # chunk number of the j-th band entry.
-    lats = map(_caplatitude, srccaps)
-    order = sortperm(lats)
-    sortedlats = lats[order]
-    maxsrcradius = isempty(srccaps) ? 0.0 : maximum(c -> c.radius, srccaps)
 
     rows = Vector{Vector{T}}(undef, ndst)
     # Block the destination range so each task owns a contiguous span; rows are
@@ -398,10 +395,9 @@ function _chunkgraph(dstcaps::Vector{<:SphericalCap}, srccaps::Vector{<:Spherica
             Threads.@spawn begin
                 # One scratch buffer per task, not per thread, so task migration
                 # cannot alias it.
-                buf = T[]
+                buf = Int[]
                 for d in b
-                    _fillrow!(buf, rows, d, dstcaps[d], srccaps, order,
-                        sortedlats, maxsrcradius, radius, refine, prefilter)
+                    _fillrow!(buf, rows, d, dstcaps[d], srcindex, radius, refine)
                 end
             end
         end
@@ -437,32 +433,13 @@ function _blockranges(n::Int, k::Int)
 end
 
 # Fill destination row `d` with the source chunks that may contribute to it.
-function _fillrow!(buf::Vector{T}, rows::Vector{Vector{T}}, d::Int, dcap::SphericalCap,
-        srccaps::Vector, order::Vector{Int}, sortedlats::Vector{Float64},
-        maxsrcradius::Float64, radius::Float64, refine, prefilter::Bool) where {T}
-    empty!(buf)
-    intersects = DilatedIntersects(radius)
-    band = maxsrcradius + dcap.radius + radius
-    n = length(order)
-    # A threshold at or above pi reaches every cap, and the latitude bound
-    # degenerates; skip the prefilter rather than trusting the search bounds.
-    lo, hi = if !prefilter || !(band < Float64(pi))
-        1, n
-    else
-        dlat = _caplatitude(dcap)
-        # Widen by one ulp on each side so an exactly-equal boundary case is
-        # never dropped by rounding in the comparison.
-        (searchsortedfirst(sortedlats, prevfloat(dlat - band)),
-         searchsortedlast(sortedlats, nextfloat(dlat + band)))
-    end
-    @inbounds for j in lo:hi
-        s = order[j]
-        intersects(dcap, srccaps[s]) || continue
-        (refine === nothing || refine(d, s)::Bool) || continue
-        push!(buf, T(s))
-    end
-    sort!(buf)
-    rows[d] = copy(buf)
+# `candidatechunks!` returns them ascending and duplicate-free, which is what the
+# CSR rows and every `insorted` lookup on them rely on.
+function _fillrow!(buf::Vector{Int}, rows::Vector{Vector{T}}, d::Int,
+        dcap::SphericalCap, srcindex, radius::Float64, refine) where {T}
+    candidatechunks!(buf, srcindex, convert(Cap, dcap); radius)
+    refine === nothing || filter!(s -> refine(d, s)::Bool, buf)
+    rows[d] = T.(buf)
     return nothing
 end
 

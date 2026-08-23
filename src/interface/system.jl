@@ -191,9 +191,17 @@ function node_extent end
 
 """
     maxneighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
+    maxneighbors(grid::AbstractGrid, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
+    maxneighbors(cv::CellVector, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
+    maxneighbors(lk::CellLookup, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
 
 A **static** upper bound on the number of `connectivity`-neighbours of any cell
 of `sys`, at any level, or `nothing` when the system declares no bound.
+
+The grid and collection forms forward through [`system`](@ref). They therefore
+return the containing system's bound for complete grids and subsets alike:
+clipping a neighbourhood can shorten it, never exceed it. A standalone grid
+whose `system(grid) === nothing` returns `nothing`.
 
 **Sizes the neighbourhood family.** An `Int` bound permits the fixed-capacity
 stack containers behind [`neighbors`](@ref) and [`ring`](@ref) on a subset and
@@ -207,6 +215,13 @@ fewer neighbours than the bound.
 maxneighbors(::AbstractHierarchicalGridSystem, ::Connectivity) = nothing
 
 maxneighbors(sys::AbstractHierarchicalGridSystem) = maxneighbors(sys, Vertex())
+
+function maxneighbors(grid::AbstractGrid, connectivity::Connectivity)
+    sys = system(grid)
+    return isnothing(sys) ? nothing : maxneighbors(sys, connectivity)
+end
+
+maxneighbors(grid::AbstractGrid) = maxneighbors(grid, Vertex())
 
 # ===========================================================================
 # Traits with defaults

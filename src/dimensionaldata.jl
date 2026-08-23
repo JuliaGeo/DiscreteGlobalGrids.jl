@@ -217,6 +217,12 @@ The grid system the lookup's cells are named in.
 """
 system(lk::CellLookup) = system(parent(lk))
 
+# `CellLookup` neither adds cells nor changes adjacency; it carries the same
+# static degree bound as its compressed vector.
+maxneighbors(lk::CellLookup, connectivity::Connectivity) =
+    maxneighbors(parent(lk), connectivity)
+maxneighbors(lk::CellLookup) = maxneighbors(lk, Vertex())
+
 """
     level(lk::CellLookup) -> Int
 

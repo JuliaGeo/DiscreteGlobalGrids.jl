@@ -409,6 +409,12 @@ The grid system the vector's cells are named in.
 """
 system(cv::CellVector) = system(cv.grid)
 
+# A subset can only lose neighbours from the complete system's one-ring, so
+# the system-wide bound remains valid for every compressed collection shape.
+maxneighbors(cv::CellVector, connectivity::Connectivity) =
+    maxneighbors(cv.grid, connectivity)
+maxneighbors(cv::CellVector) = maxneighbors(cv, Vertex())
+
 """
     level(cv::CellVector) -> Int
 

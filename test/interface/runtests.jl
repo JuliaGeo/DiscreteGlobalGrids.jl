@@ -345,6 +345,13 @@ end
     @test maxneighbors(s) === nothing             # -> maxneighbors(s, Vertex())
     @test maxneighbors(s, Vertex()) === nothing
     @test maxneighbors(s, Edge()) === nothing
+
+    # Standalone grids have no system declaration to forward, so the grid
+    # form preserves the same explicit "no bound" answer.
+    g = UnimplementedGrid()
+    @test maxneighbors(g) === nothing
+    @test maxneighbors(g, Vertex()) === nothing
+    @test maxneighbors(g, Edge()) === nothing
 end
 
 end # module InterfaceTests

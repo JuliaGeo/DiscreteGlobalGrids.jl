@@ -107,6 +107,23 @@ end
 @testset "$(syslabel(sys))" for (sys, base, leaf) in SWEEP
     complete = levelgrid(sys, leaf)
 
+    @testset "maxneighbors follows the system through every region wrapper" begin
+        sub = rooted(sys, base, leaf)
+        cv = CellVector(sub)
+        lk = CellLookup(cv)
+        for conn in (Vertex(), Edge())
+            want = DGG.maxneighbors(sys, conn)
+            @test DGG.maxneighbors(complete, conn) == want
+            @test DGG.maxneighbors(sub, conn) == want
+            @test DGG.maxneighbors(cv, conn) == want
+            @test DGG.maxneighbors(lk, conn) == want
+        end
+        @test DGG.maxneighbors(complete) == DGG.maxneighbors(sys)
+        @test DGG.maxneighbors(sub) == DGG.maxneighbors(sys)
+        @test DGG.maxneighbors(cv) == DGG.maxneighbors(sys)
+        @test DGG.maxneighbors(lk) == DGG.maxneighbors(sys)
+    end
+
     @testset "$label: ring is the complete level's, clipped" for (label, sub) in
                                                                  shapes(sys, base, leaf)
         for c in probes(sub, 6), conn in (Vertex(), Edge()), k in 0:3

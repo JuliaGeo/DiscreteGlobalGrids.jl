@@ -2,7 +2,7 @@
 
 ## Decision summary
 
-The accepted run completed its data product: **[measured] 66,228 / 66,228** destination columns are represented by the ledger/store union, and the store contains **[measured] 54,956** materialized chunk files plus **[measured] 11,282** all-NaN columns that intentionally need no file. The final nonzero exit was solely the predicted-edge invariant. It was not an incomplete computation.
+The accepted run completed its data product: **[measured] 66,228 / 66,228** destination columns are represented by the ledger/store union, and the store contains **[measured] 54,946** materialized chunk payloads plus **[measured] 11,282** all-NaN columns that intentionally need no payload file. The final nonzero exit was solely the predicted-edge invariant. It was not an incomplete computation.
 
 The whole-run result was **[measured] 8.81 h** total wall, **[measured] 1,722,052 cells/s** over **[measured] 5.4541e10 cells**, **[estimated] 148.10 core-h**, **[estimated] 16.81 mean active cores**, **[measured] 25.19 GiB peak RSS**, and **[estimated] 17.8% GC-pause wall fraction**. The GC number is explicitly a model-based estimate: this production tip emitted no numeric GC-wall counter and none of the flat profile dumps contains a GC frame.
 
@@ -158,7 +158,7 @@ The assembly pool only reuses `SparseMatrixAssemblyCache` buffers. It does not o
 
 ### Owner 4: destination geometry and cap-tree construction
 
-The cached destination tree materializes one `Vector{SphericalCap{Float64}}` for each destination column, not once for each source block. Each cap is **[measured from the runtime type] 40 bytes**, so the raw vector payload is **[derived/estimated] 32,941,720 bytes per column**, **[estimated] 3.068 GiB per 100 columns**, and **[estimated] 1.984 TiB** over **[measured] 66,228** columns. This is **[estimated] 1.27%** of the **[measured] 242.2104 GiB** anchor on a 100-column basis, before vector/object overhead. The **[measured] 33,999** cap-tree samples support this code path. W1/W2 does not directly remove it.
+The cached destination tree materializes one `Vector{SphericalCap{Float64}}` for each destination column, not once for each source block. Each cap is **[measured from the runtime type] 40 bytes**, so the raw vector payload is **[derived/estimated] 32,941,720 bytes per column**, **[estimated] 3.068 GiB per 100 columns**, and **[estimated] 1.984 TiB** over **[measured] 66,228** columns. This is **[estimated] 1.27%** of the **[measured] 242.2104 GiB** anchor on a 100-column basis, before vector/object overhead. The companion full-cell geometry cache does not materialize here: the destination has **[measured] 823,543** cells, above the code's **[measured] 65,536-cell** cache threshold. The **[measured] 33,999** cap-tree samples support the cap-vector code path. W1/W2 does not directly remove it.
 
 ### Owner 5: store collection, serialization, and payload
 

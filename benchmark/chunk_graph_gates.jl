@@ -14,12 +14,14 @@
 #      large to assert on every CI run.
 #
 #   2. What does each row builder cost? The `:indexed` arm is production's
-#      `chunk_dependency_graph`. The `:latjoin` and `:latjoin_raw` arms
-#      reimplement the latitude-sorted cap join that PR #69 deleted, verbatim
-#      from `ba2bbfa^:lib/GlobalRegridding/src/chunkgraph.jl`, so the comparison
-#      that #69 bypassed can still be run. They are reimplemented HERE, not
-#      imported, so that this harness keeps working as later tasks change the
-#      production builder.
+#      `chunk_dependency_graph`. The `:latjoin` arm reimplements the
+#      latitude-sorted cap join that PR #69 deleted, verbatim from
+#      `ba2bbfa^:lib/GlobalRegridding/src/chunkgraph.jl`, so the comparison that
+#      #69 bypassed can still be run. It is reimplemented HERE, not imported, so
+#      that this harness keeps working as later tasks change the production
+#      builder. `:latjoin_raw` is the same with the latitude prefilter off; it
+#      exists only to attribute the prefilter's share and is opt-in behind
+#      `DGG_GRAPH_GATE_RAW=1`.
 #
 # The two arms answer different relations on purpose: `:indexed` asks the source
 # space's own chunk index the question a lazy read asks, `:latjoin` joins the
@@ -27,11 +29,27 @@
 # `only` columns), and only the first can back a refcount. Compare their COST
 # here, and read their correctness from the oracle columns.
 #
+# SUNSET CONDITION for the `:latjoin` arm. It reconstructs a builder that no
+# longer exists, so it is not maintenance the repo owes indefinitely. Delete it
+# — and this file's whole second question with it — at whichever comes first:
+#
+#   - G2's waived performance gate is retired (the waiver in
+#     `regrid-notes/2026-08-23-g1-graph-oracles.md` §5 is what the arm exists to
+#     keep auditable, and a retired waiver has nothing left to audit); or
+#   - the production builder stops being comparable to a flat cap join at all,
+#     so that "same relation, different cost" is no longer the question being
+#     asked and the timing is measuring two unrelated things.
+#
+# Question 1 — the oracles — has no sunset: G3 and G4 use them to prove they did
+# not change the relation.
+#
 # Environment
 #
 #   DGG_GRAPH_GATE_SAMPLES   timed samples per arm (default 5)
 #   DGG_GRAPH_GATE_CASES     comma-separated case-name filter (default: all)
 #   DGG_GRAPH_GATE_NDJSON    path to append one JSON line per (case, arm)
+#   DGG_GRAPH_GATE_RAW       set to 1 to add the unprefiltered `:latjoin_raw`
+#                            arm (default off)
 #   DGG_COPDEM_TILELIST      LOCAL Copernicus tile list. The production case is
 #                            SKIPPED without it; this harness never downloads.
 #
@@ -44,7 +62,6 @@
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
 import GeometryOps as GO
-import GeoInterface as GI
 import DimensionalData as DD
 import Extents
 import Graphs
@@ -52,8 +69,6 @@ import Statistics
 import Pkg
 using Printf: @printf
 
-const US = GO.UnitSpherical
-const USPoint = GO.UnitSphericalPoint{Float64}
 const SphCap = GO.UnitSpherical.SphericalCap
 
 const NSAMPLES = parse(Int, get(ENV, "DGG_GRAPH_GATE_SAMPLES", "5"))
@@ -62,6 +77,13 @@ const CASEFILTER = let s = get(ENV, "DGG_GRAPH_GATE_CASES", "")
     isempty(s) ? nothing : Set(strip.(split(s, ',')))
 end
 const TILELIST = get(ENV, "DGG_COPDEM_TILELIST", "")
+const WITHRAW = get(ENV, "DGG_GRAPH_GATE_RAW", "") in ("1", "true", "yes")
+
+# The oracles are shared with both test suites; see `graphoracles.jl` for why
+# they live there. Do not re-spell any of them in this file.
+include(joinpath(@__DIR__, "..", "lib", "GlobalRegridding", "test",
+    "graphoracles.jl"))
+using .ChunkGraphOracles: contributing_pairs, graph_pairs, demanded_pairs
 
 # ===========================================================================
 # Provenance
@@ -221,76 +243,6 @@ function _assemble(rows::Vector{Vector{T}}, nsrc::Int, ndst::Int, radius::Float6
 end
 
 # ===========================================================================
-# Relations
-# ===========================================================================
-
-graph_pairs(g) = Set((d, Int(s)) for d in 1:GR.ndestinationchunks(g)
-                     for s in GR.sourcesof(g, d))
-
-"""
-    contributing_pairs(dst, src; radius = 0.0) -> Set{Tuple{Int,Int}}
-
-The geometric truth a dependency relation must dominate: every `(dstchunk,
-srcchunk)` holding at least one cell pair with positive spherical intersection
-area, plus — at nonzero support — every pair whose cell vertices come within
-`radius` radians of each other.
-
-Built from real cell geometry through the same intersection kernel the
-conservative weight builder uses, so a pair outside this set is a pair no weight
-could be nonzero on. Nothing here consults a cap, a chunk extent or a chunk
-index, which is what makes it an oracle rather than a second opinion.
-
-`O(ncells(dst) * ncells(src))`; for small spaces only.
-"""
-function contributing_pairs(dst, src; radius::Real = 0.0)
-    op = GR._intersectionoperator(GR.manifold(dst))
-    nd, ns = Int(GR.ncells(dst)), Int(GR.ncells(src))
-    dcells = [GR.getcell(dst, i) for i in 1:nd]
-    scells = [GR.getcell(src, j) for j in 1:ns]
-    dchunk = [GR.chunkat(dst, i) for i in 1:nd]
-    schunk = [GR.chunkat(src, j) for j in 1:ns]
-    r = Float64(radius)
-    dpts = r > 0 ? [_cellvertices(dst, i) for i in 1:nd] : nothing
-    spts = r > 0 ? [_cellvertices(src, j) for j in 1:ns] : nothing
-    out = Set{Tuple{Int,Int}}()
-    for i in 1:nd, j in 1:ns
-        (dchunk[i] === nothing || schunk[j] === nothing) && continue
-        key = (Int(dchunk[i]), Int(schunk[j]))
-        key in out && continue
-        hit = op(dcells[i], scells[j]) > 0
-        if !hit && r > 0
-            hit = any(US.spherical_distance(a, b) <= r for a in dpts[i], b in spts[j])
-        end
-        hit && push!(out, key)
-    end
-    return out
-end
-
-_cellvertices(space, i) = [USPoint(GI.x(p), GI.y(p), GI.z(p))
-                           for p in GI.getpoint(GI.getexterior(GR.getcell(space, i)))]
-
-"""
-    demanded_pairs(dst, src; radius = 0.0) -> Set{Tuple{Int,Int}}
-
-Every pair a lazy read can ask for: one `candidatechunks!` per destination cap
-on the source space's own chunk index. A relation that does not contain this set
-cannot be a refcount, because a source it retired is still going to be demanded.
-"""
-function demanded_pairs(dst, src; radius::Real = 0.0)
-    index = GR.chunkindex(src)
-    caps = GR.chunkextents(dst)
-    out = Set{Tuple{Int,Int}}()
-    buf = Int[]
-    for d in eachindex(caps)
-        GR.candidatechunks!(buf, index, caps[d]; radius)
-        for s in buf
-            push!(out, (d, s))
-        end
-    end
-    return out
-end
-
-# ===========================================================================
 # Measurement
 # ===========================================================================
 
@@ -440,11 +392,17 @@ end
 # Runner
 # ===========================================================================
 
-const ARMS = (
-    (:indexed, (dst, src, r) -> GR.chunk_dependency_graph(dst, src; radius = r)),
-    (:latjoin, (dst, src, r) -> latjoin_graph(dst, src; radius = r, prefilter = true)),
-    (:latjoin_raw, (dst, src, r) -> latjoin_graph(dst, src; radius = r, prefilter = false)),
-)
+const ARMS = let base = (
+        (:indexed, (dst, src, r) -> GR.chunk_dependency_graph(dst, src; radius = r)),
+        (:latjoin, (dst, src, r) -> latjoin_graph(dst, src; radius = r, prefilter = true)),
+    )
+    # The unprefiltered join is an attribution aid, not a candidate builder, and
+    # it is the slowest arm in the matrix by an order of magnitude. Opt in.
+    WITHRAW ? (base...,
+        (:latjoin_raw,
+            (dst, src, r) -> latjoin_graph(dst, src; radius = r, prefilter = false))) :
+        base
+end
 
 function runcase(case, prov)
     (dst, src), spacetime = timeit(case.make, 1; warm = false)
@@ -502,7 +460,7 @@ function runcase(case, prov)
     ix, lj = relations[:indexed], relations[:latjoin]
     @printf("   relation: indexed %d edges, latjoin %d edges; indexed-only %d, latjoin-only %d\n",
         length(ix), length(lj), length(setdiff(ix, lj)), length(setdiff(lj, ix)))
-    if relations[:latjoin] != relations[:latjoin_raw]
+    if haskey(relations, :latjoin_raw) && relations[:latjoin] != relations[:latjoin_raw]
         @printf("   WARNING: the latitude prefilter changed the relation by %d pairs\n",
             length(symdiff(relations[:latjoin], relations[:latjoin_raw])))
     end
@@ -563,9 +521,53 @@ function main()
         println("\nwrote ", length(allrows), " rows to ", NDJSON)
     end
 
-    misses = count(r -> r.oracle_missing > 0 || r.demand_missing > 0,
-        filter(r -> r.arm == "indexed", allrows))
-    println("\nindexed-arm gate: ", misses == 0 ? "PASS" : "FAIL ($misses cases)")
+    return report(allrows)
+end
+
+"""
+    report(allrows) -> Int
+
+The indexed arm's correctness verdict, and — the point of separating this out —
+what it is a verdict *about*.
+
+`oracle_missing` is `-1`, not 0, when the `O(ncells²)` sweep was skipped as too
+large, and `demand_missing` is 0 for `:indexed` by construction: post-#69 the
+builder issues exactly the `candidatechunks!` queries `demanded_pairs` replays,
+so that column can only ever read 0 on this arm and is not evidence of anything.
+Counting either as a pass is how a run over nothing but skipped cases printed an
+unqualified PASS. So: count the cases that got a real geometric verdict, name
+the ones that did not, and refuse to call a run with no checked case a pass.
+"""
+function report(allrows)
+    indexed = filter(r -> r.arm == "indexed", allrows)
+    checked = filter(r -> r.oracle_pairs >= 0, indexed)
+    skipped = filter(r -> r.oracle_pairs < 0, indexed)
+    misses = count(r -> r.oracle_missing > 0, checked)
+
+    println("\nindexed-arm gate")
+    @printf("  cases run: %d.  Oracle-checked: %d.  Oracle skipped (space too large \
+             for the O(ncells^2) sweep): %d.\n",
+        length(indexed), length(checked), length(skipped))
+    isempty(skipped) || println("    skipped: ",
+        join((r.case for r in skipped), ", "))
+    for r in checked
+        @printf("    %-26s %6d contributing pairs, %d missing\n",
+            r.case, r.oracle_pairs, r.oracle_missing)
+    end
+    println("  demand_missing is 0 on this arm by construction (the builder IS the \
+             `candidatechunks!` query `demanded_pairs` replays), so it is not part \
+             of this verdict; read it on the `:latjoin` rows.")
+
+    verdict = if isempty(checked)
+        "NOT CHECKED — no case in this run had a geometric oracle. This run \
+         proves nothing about the relation; add a case with `oracle = true`."
+    elseif misses == 0
+        "PASS on $(length(checked)) oracle-checked case(s)" *
+        (isempty(skipped) ? "" : "; $(length(skipped)) case(s) unchecked")
+    else
+        "FAIL ($misses of $(length(checked)) oracle-checked cases miss pairs)"
+    end
+    println("  verdict: ", verdict)
     return misses
 end
 

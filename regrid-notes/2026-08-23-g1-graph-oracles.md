@@ -21,23 +21,36 @@ Three relations over the same `(dstchunk, srcchunk)` pair space:
 
 | relation | how it is built | what it is for |
 |---|---|---|
-| **truth** | real cell rings, clipped through the same spherical kernel the conservative weight builder uses; positive area, or (at nonzero support) cell vertices within `radius` | the geometric fact. No cap, no chunk extent, no chunk index takes part |
+| **truth** | real cell rings, clipped through the same spherical kernel the conservative weight builder uses; positive area, or (at nonzero support) cells within `radius` of each other, measured **cell to cell** — every vertex of one against every edge of the other, in both directions | the geometric fact. No cap, no chunk extent, no chunk index takes part |
 | **demand** | one `candidatechunks!` per destination cap on `chunkindex(src)` | what a lazy read can ask for. A relation missing any of this cannot be a refcount |
 | **cap join** | brute-force `DilatedIntersects` over `chunkextents(dst) × chunkextents(src)` | the definition of the deleted builder's relation |
 
 The invariant every builder must keep is **truth ⊆ graph**. The invariant that
-makes the graph a *refcount* is **demand ⊆ graph**.
+makes the graph a *refcount* is **demand ⊆ graph** — and post-#69, with no
+`refine`, **demand = graph** exactly, because the builder issues precisely the
+queries `demanded_pairs` replays. The tests assert the equality, not the
+containment: `truth ⊆ graph` on its own would pass on a builder that returned
+the complete bipartite relation, and G3/G4 need a gate that catches a *changed*
+relation, not only a lossy one.
 
 ### Where they live
 
+All four relations are defined **once**, in
+`lib/GlobalRegridding/test/graphoracles.jl` (module `ChunkGraphOracles`), and
+`include`d by path from the three sites that check them. That file is the
+innermost of the three — the root suite and `benchmark/` both already depend on
+GlobalRegridding — so it adds no dependency edge in the wrong direction, and it
+follows the `test/helpers.jl` convention: a module, included by path, defined
+inside the including module. It exports `contributing_pairs` (the truth oracle,
+`O(ncells²)`), `demanded_pairs`, `capjoin_pairs` and `graph_pairs`.
+
 - `lib/GlobalRegridding/test/test_chunkgraph.jl`
-  - `contributing_pairs(dst, src; radius)` — the truth oracle, `O(ncells²)`.
   - testset **"no geometrically contributing pair is dropped"** — seven cases:
     generic (packed R-tree) source at radius 0 and 0.2; the shipped `RasterGrid`
     quadtree at radius 0 and 0.1; nonuniform raster chunks; a polar source band;
-    an antimeridian regional source. Each asserts `truth ⊆ graph` **and**
-    `truth ⊆ capjoin` — the second catches a chunk cap that is too tight, which
-    is a `chunkextents` bug the graph would inherit.
+    an antimeridian regional source. Each asserts `truth ⊆ graph`,
+    `graph == demand`, **and** `truth ⊆ capjoin` — the last catches a chunk cap
+    that is too tight, which is a `chunkextents` bug the graph would inherit.
   - testset **"the cap join is an identity only on the generic index"** — the
     brute-force cap identity gate, plus the measured refutation of the "upper
     bound" reading (below).
@@ -47,18 +60,27 @@ makes the graph a *refcount* is **demand ⊆ graph**.
     L3/chunk-2 (all twelve pentagons, both poles, aperture-7 children that reach
     outside their parent's boundary), IGeo7 from S2 (two systems sharing no cell
     edges), a rooted subtree destination, a scattered non-rooted subset, and a
-    chunked raster source into a DGG destination at radius 0 and 0.05.
+    chunked raster source into a DGG destination at radius 0 and 0.05. Each
+    asserts `truth ⊆ graph`, `graph == demand`, `truth ⊆ capjoin`, and — on the
+    four DGG-source cases — `graph ⊆ capjoin`.
   - the same file's existing **"the dependency graph holds every pair the chunk
-    index answers"** covers demand-domination on the CopDEM level-0 frontier;
-    the new testsets build on it rather than repeating it.
-- `benchmark/chunk_graph_gates.jl` — all three relations again, over the cases
+    index answers"** covers demand-domination on the CopDEM level-0 frontier.
+    Post-#69 that sweep compares `candidatechunks!` against a graph *built from*
+    `candidatechunks!`, so it still catches a mis-assembled CSR but can no
+    longer catch a wrong *choice* of index; its own comment now says so. The
+    same testset gained the cap-crossing assertion described below.
+- `benchmark/chunk_graph_gates.jl` — all four relations again, over the cases
   too large to assert on every CI run, including the production pair.
 
-Suites after the additions: GlobalRegridding **[measured] 3730 pass / 1 broken /
-0 fail** (baseline on this tip was 3702/1/0; the broken one is pre-existing).
-`test/systems/crosssystem/regrid.jl` runs clean, the new testset contributing
-**[measured] 22** assertions in **[measured] 3.6 s**; `crosssystem/runtests.jl`
-**[measured] 5222 pass / 0 fail**.
+Suites after the additions and the review fixes: GlobalRegridding **[measured]
+3737 pass / 1 broken / 0 fail** (baseline on this tip was 3702/1/0; the first
+G1 landing took it to 3730, and the `graph == demand` equality added the other
+seven. The broken one is pre-existing). `test/systems/crosssystem/regrid.jl` runs
+clean in **[measured] 47 s**, the new testset contributing **[measured] 30**
+assertions in **[measured] 4.4 s** and the cap-crossing window taking "the
+dependency graph holds every pair the chunk index answers" from 7 to
+**[measured] 9**; `crosssystem/runtests.jl` **[measured] 5222 pass / 0 fail**
+(untouched — `regrid.jl` is included by the root `runtests.jl`, not by it).
 
 ### The brute-force cap identity gate, and its limits
 
@@ -72,7 +94,7 @@ tests now pin that.**
 | generic `_packedchunkindex` (any space with no `chunkindex` of its own) | **equal**, at every radius tried — it is a packed R-tree over the very caps `chunkextents` reports |
 | `DGGSpace` via `_dggcandidatechunks!` | **subset**. The descent can prune a chunk whose own cap intersects, never add one whose cap does not |
 | `RasterGrid` quadtree | **crosses in both directions**. A straddling leaf pushes every chunk in its rectangle with no per-chunk cap test, so the index holds pairs the cap join rejects; and the cap join holds pairs the descent never reaches |
-| `CopernicusDEM` level-0 frontier | **crosses**. **[measured] 72** pairs the index holds and the cap join rejects, on the production pair |
+| `CopernicusDEM` level-0 frontier | **crosses in both directions**. Pinned in CI on the whole level-0 GLO-90 frontier into IGeo7 L3/chunk-2 — no tile list, no download, **[measured] 0.36 s** for the brute-force join over 492 × 64 800 chunk pairs: **[measured] 6** pairs the index holds and the cap join rejects, **[measured] 10** the other way. At production scale (GLO-90 × IGeo7-L12) the first number is **[measured] 72**; *that* figure is harness-only, reproducible only with a local tile list, and is not asserted anywhere |
 
 So the cap join bounds the graph in *neither* direction on the two shipped
 native hierarchies. What both relations do satisfy is `truth ⊆ ·`, and that is
@@ -91,16 +113,35 @@ Environment:
 | `DGG_GRAPH_GATE_SAMPLES` | timed samples per arm (default 5) |
 | `DGG_GRAPH_GATE_CASES` | comma-separated case-name filter |
 | `DGG_GRAPH_GATE_NDJSON` | append one JSON line per `(case, arm)` |
+| `DGG_GRAPH_GATE_RAW` | set to `1` to add the unprefiltered `:latjoin_raw` arm (default off) |
 | `DGG_COPDEM_TILELIST` | a **local** Copernicus tile list. The production case is skipped without it; the harness never downloads |
 
-Three arms:
+Two arms by default:
 
 - `:indexed` — production `chunk_dependency_graph`.
 - `:latjoin` — the deleted latitude-sorted cap join, reimplemented in the
   harness from `ba2bbfa^:lib/GlobalRegridding/src/chunkgraph.jl`, with its
   private helpers copied in so it cannot drift as `chunkgraph.jl` changes.
 - `:latjoin_raw` — the same with the latitude prefilter off, which is what
-  isolates the prefilter's contribution.
+  isolates the prefilter's contribution. Opt-in behind `DGG_GRAPH_GATE_RAW=1`:
+  it is an attribution aid, not a candidate builder, and it is an order of
+  magnitude the slowest arm in the matrix.
+
+`:latjoin` has a **sunset condition**, stated in the file header: it goes when
+G2's waiver is retired, or when the production builder stops being comparable to
+a flat cap join, whichever comes first. It reconstructs a builder that no longer
+exists and is not maintenance the repo owes indefinitely. The oracles have no
+sunset — G3 and G4 use them to prove they did not change the relation.
+
+### What the gate line means
+
+The summary distinguishes **oracle-checked** cases from **skipped** ones. It has
+to: `oracle_missing` is `-1` when the `O(ncells²)` sweep was skipped as too
+large, and `demand_missing` is 0 for `:indexed` *by construction* — post-#69 the
+builder issues exactly the queries `demanded_pairs` replays, so that column can
+only read 0 on this arm and is not evidence. A run over nothing but skipped
+cases (`DGG_GRAPH_GATE_CASES=copdem90-igeo7-l12`, for instance) now prints
+`verdict: NOT CHECKED`, never `PASS`.
 
 Per row: destination/source chunk and cell counts, radius, edges, space-build
 seconds, `ChunkedPlan` seconds, graph seconds (min and median), complete plan
@@ -133,15 +174,16 @@ repo 9adef543b7283383726378a7fbb4874697dbcbc0   samples 5
 
 ## 3. Recorded results
 
-Julia 1.12.6, 8 threads, 5 samples, medians. `idx-only`/`lat-only` are the
-relation difference in each direction. `demand-miss` is the number of pairs a
-lazy read would ask for that the arm does not hold — for `:indexed` it is 0 in
-every case by construction, so only the `:latjoin` column is shown.
+Julia 1.12.6, 8 threads, 5 samples, medians, `DGG_GRAPH_GATE_RAW=1` (the `raw s`
+column is opt-in). `idx-only`/`lat-only` are the relation difference in each
+direction. `demand-miss` is the number of pairs a lazy read would ask for that
+the arm does not hold — for `:indexed` it is 0 in every case by construction, so
+only the `:latjoin` column is shown.
 
 | case | dst chunks | src chunks | indexed s | latjoin s | raw s | idx/lat | idx alloc B | lat alloc B | idx graph B | lat graph B | idx edges | lat edges | idx-only | lat-only | truth pairs | idx miss | lat demand-miss |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | raster-small | 72 | 24 | 0.0003 | 0.0001 | 0.0001 | 2.3× | 79 112 | 52 216 | 4 240 | 3 560 | 405 | 320 | 92 | 7 | 193 | 0 | **92** |
-| raster-support (r=0.05) | 72 | 24 | 0.0003 | 0.0001 | 0.0001 | 2.1× | 83 656 | 53 208 | 4 608 | 3 760 | 451 | 345 | 114 | 8 | 209 | 0 | **114** |
+| raster-support (r=0.05) | 72 | 24 | 0.0003 | 0.0001 | 0.0001 | 2.1× | 83 656 | 53 208 | 4 608 | 3 760 | 451 | 345 | 114 | 8 | 222 | 0 | **114** |
 | raster-nonuniform | 72 | 49 | 0.0005 | 0.0001 | 0.0001 | 3.1× | 90 040 | 58 024 | 4 680 | 4 664 | 435 | 433 | 33 | 31 | 264 | 0 | **33** |
 | dgg-complete | 72 | 492 | 0.0012 | 0.0002 | 0.0002 | 7.0× | 96 584 | 104 856 | 18 280 | 18 280 | 1 692 | 1 692 | 0 | 0 | 1 332 | 0 | 0 |
 | dgg-crosssystem | 72 | 24 | 0.0002 | 0.0001 | 0.0001 | 1.6× | 92 520 | 51 496 | 3 256 | 3 368 | 282 | 296 | 0 | 14 | 194 | 0 | 0 |
@@ -168,10 +210,13 @@ The production pair at 4 threads, for comparison against the archived figure:
 
 The `:latjoin` arm reproduces the archived baseline's relation exactly —
 **[measured] 66 175** destination chunks, **[measured] 26 475** source chunks,
-**[measured] 326 386** edges, **[measured] 3 352 520**-byte graph, the numbers in
-`benchmark/regridding_plan_baseline.jl`'s own header. The archived 0.0594 s
-median was taken on a differently loaded machine; **[measured] 0.0376 s** here at
-the same thread count.
+**[measured] 326 386** edges, **[measured] 3 352 520**-byte graph — the numbers
+`benchmark/regridding_plan_baseline.jl`'s header used to carry as its own. That
+header now records them as superseded and states what the script measures today
+(326 064 edges, 3 349 944 bytes, 0.229 s at t4), since #69 changed the builder
+underneath it; its behaviour is unchanged. The archived 0.0594 s median was taken
+on a differently loaded machine; **[measured] 0.0376 s** here at the same thread
+count.
 
 Space construction dwarfs both arms on the production pair: **[measured] 11.1 s**
 to build the two spaces, against 0.12 s for the graph. `ChunkedPlan`
@@ -186,6 +231,16 @@ shape. That is the result G1 wanted and it is not a null result — it is the fi
 time the relation has been checked against real cell geometry rather than against
 a second cap construction.
 
+What the oracles caught in *themselves* is worth recording, because it is the
+kind of error an oracle can make silently. The nonzero-support branch originally
+tested vertex-to-vertex distance, which under-approximates: two cells can come
+within `radius` edge-to-edge with no vertex pair that close. Replacing it with a
+cell-to-cell distance (every vertex of one against every edge of the other, both
+directions) grew `raster-support`'s truth set from 209 to **[measured] 222**
+pairs — 13 genuinely contributing pairs the `r > 0` oracle had not been demanding.
+All three arms hold all 222, so nothing was wrong with any builder; the *gate*
+was 6% weaker than it read.
+
 What the oracles *do* catch is the deleted builder, on cases nobody had run it
 against:
 
@@ -197,9 +252,18 @@ against:
   committed harness rather than a one-off script.
 - **It misses them on polar and antimeridian regional sources too** (25 and 22),
   which no previous measurement covered.
-- **The latitude prefilter is worth 47× on the production pair** (0.0213 s vs
-  1.0011 s) and only ~1.5–3.5× at small sizes. Any future cap-join-shaped
-  builder must keep it.
+- **The latitude prefilter was worth 47× on the production pair** (0.0213 s vs
+  1.0011 s at t8) and only ~1.5–3.5× at small sizes. Read that as a diagnosis of
+  the deleted builder, not as a requirement on a future one: it is the deleted
+  builder measured against itself, in a configuration — an unprefiltered flat
+  cap join — that ships nowhere. What the 47× says is that a flat
+  `O(ndst × nsrc)` scan over every source cap *is* the defect, and a latitude
+  band is a bandaid over it that recovers most but not all of the loss. The
+  shipped builder needs no band, because the pruning happens inside the source
+  space's own index instead of being bolted onto a scan: the indexed arm **beats
+  the unprefiltered cap join by 8.2×** (0.1219 s vs 1.0011 s) while losing to the
+  prefiltered one by 5.7×. A future builder should be judged on whether it prunes
+  structurally, not on whether it kept the band.
 
 ## 5. Retroactive verdict on G2's performance gate
 
@@ -291,5 +355,22 @@ one-line reproducer.
    truth.** A pair in `lat-only` is not necessarily spurious; it may be a
    genuinely contributing pair that both relations hold. Read `only_here` as
    "how the arms differ", never as "how wrong the other arm is".
+7. **The nonzero-support branch measures a cell-to-cell distance, and its
+   exactness rests on one geometric argument rather than on a test.** The branch
+   is reached only when the clip already returned zero intersection area, and for
+   two boundary rings with no positive intersection the minimum separation is
+   attained at a vertex of one and a point on an edge of the other — so testing
+   every vertex against every edge in both directions is exact there. It was
+   previously vertex-to-vertex, which *under*-approximated the truth exactly in
+   the `r > 0` cases the oracle exists to cover: two cells can lie within
+   `radius` edge-to-edge with no vertex pair that close. The direction of the old
+   error was safe (a weaker assertion, never a wrong one), and the fix makes the
+   `r > 0` assertions strictly stronger; they still pass. What remains unproven
+   is the argument itself — a ring pathological enough to break it (self-touching
+   or degenerate) would make the oracle under-demand again, silently.
+8. **`graph == demand` is asserted on toy, raster and DGG sources but not at
+   production scale.** The CopDEM-scale equality is a construction property of
+   `_fillrow!`, not a measurement; the harness's `demand_missing` column reads 0
+   on `:indexed` for the same reason and is not independent evidence.
 
 STATUS: gates landed; production graph construction untouched.

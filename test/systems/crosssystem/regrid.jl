@@ -12,7 +12,6 @@ import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
 import DimensionalData as DD
 import Extents
-import GeoInterface as GI
 import GeometryOps as GO
 using GeometryOps: SpatialTreeInterface as STI
 import ConservativeRegridding as CR
@@ -23,6 +22,14 @@ const SYS = DGG.S2System()
 const LEVEL = 3
 const GRID = DGG.levelgrid(SYS, LEVEL)
 const GLOBE = Extents.Extent(X = (-180.0, 180.0), Y = (-90.0, 90.0))
+
+# The four dependency-graph relations — truth, demand, cap join, and the graph's
+# own rows — are defined once, in the GlobalRegridding suite's `graphoracles.jl`,
+# and shared with that suite and the G1 harness. Do not re-spell any of them here.
+include(joinpath(@__DIR__, "..", "..", "..", "lib", "GlobalRegridding", "test",
+    "graphoracles.jl"))
+using .ChunkGraphOracles: contributing_pairs, graph_pairs, demanded_pairs,
+    capjoin_pairs
 
 # A 15° global raster whose cells are declared as abutting intervals, so its
 # edges tile the sphere exactly and a conservative regrid off it can conserve.
@@ -161,6 +168,15 @@ end
     # contains the other, so a graph built from `chunkextents` directly CROSSED
     # the executor's relation — and a refcount that reaches zero early retires a
     # tile the next read is still going to ask for.
+    #
+    # WHAT THIS CAN AND CANNOT CATCH, post-#69. The builder is now itself one
+    # `candidatechunks!` per destination cap on `chunkindex(src)`, so this sweep
+    # compares `candidatechunks!` against a graph BUILT FROM `candidatechunks!`.
+    # It still catches a builder that mis-assembles, mis-sorts or loses rows —
+    # which is most of what a CSR builder can get wrong — but it can no longer
+    # catch a wrong *choice* of index, because both sides would move together.
+    # The independent check on that is `contributing_pairs` below, and the cap
+    # crossing at the end of this testset.
     cop = DGG.CopernicusDEMSystem(90)
     sys7 = DGG.IGeo7System()
     src = DGG.DGGSpace(DGG.levelgrid(cop, 1); chunklevel = 0)
@@ -195,53 +211,19 @@ end
     @test all(reached)
     @test demanded > 0
     @test unpredicted == 0
+
+    # The crossing itself, on a window CI can run: the whole level-0 Copernicus
+    # frontier, no tile list and no download. The block cursor's relation and the
+    # cap join differ in BOTH directions, so the cap join is not a bound on the
+    # graph on this hierarchy either — the same fact the G1 harness measures at
+    # production scale (72 pairs the index holds and the cap join rejects, on the
+    # GLO-90 x IGeo7-L12 pair). That production figure is harness-only; these two
+    # assertions are the tested form of the finding.
+    capjoin = capjoin_pairs(dst, src)
+    native = graph_pairs(graph)
+    @test !isempty(setdiff(native, capjoin))
+    @test !isempty(setdiff(capjoin, native))
 end
-
-# The geometric truth a dependency relation has to dominate: the chunk pairs
-# holding at least one cell pair a weight could be nonzero on. Real cell rings
-# through the same spherical kernel the conservative weight builder uses; at
-# nonzero support, cell vertices within `radius` count too. No cap, no chunk
-# extent and no chunk index takes part in the construction, which is what makes
-# it an oracle rather than a second opinion. `O(ncells^2)` — keep it small.
-function contributing_pairs(dst, src; radius = 0.0)
-    op = GR._intersectionoperator(GR.manifold(dst))
-    nd, ns = Int(GR.ncells(dst)), Int(GR.ncells(src))
-    dcells = [GR.getcell(dst, i) for i in 1:nd]
-    scells = [GR.getcell(src, j) for j in 1:ns]
-    dchunk = [GR.chunkat(dst, i) for i in 1:nd]
-    schunk = [GR.chunkat(src, j) for j in 1:ns]
-    r = Float64(radius)
-    dpts = r > 0 ? [cellvertices(dst, i) for i in 1:nd] : nothing
-    spts = r > 0 ? [cellvertices(src, j) for j in 1:ns] : nothing
-    out = Set{Tuple{Int,Int}}()
-    for i in 1:nd, j in 1:ns
-        key = (Int(dchunk[i]), Int(schunk[j]))
-        key in out && continue          # rows repeat; skip the clip too
-        hit = op(dcells[i], scells[j]) > 0
-        if !hit && r > 0
-            hit = any(GO.UnitSpherical.spherical_distance(a, b) <= r
-                      for a in dpts[i], b in spts[j])
-        end
-        hit && push!(out, key)
-    end
-    return out
-end
-
-# Cell rings carry unit-sphere points, not geographic ones.
-cellvertices(space, i) =
-    [GO.UnitSphericalPoint(GI.x(p), GI.y(p), GI.z(p))
-     for p in GI.getpoint(GI.getexterior(GR.getcell(space, i)))]
-
-graphpairs(g) = Set((d, Int(s)) for d in 1:GR.ndestinationchunks(g)
-                    for s in GR.sourcesof(g, d))
-
-capjoinpairs(dst, src; radius = 0.0) =
-    let dcaps = GR.chunkextents(dst), scaps = GR.chunkextents(src),
-        hits = GR.DilatedIntersects(Float64(radius))
-
-        Set((d, s) for d in eachindex(dcaps), s in eachindex(scaps)
-            if hits(dcaps[d], scaps[s]))
-    end
 
 @testset "no geometrically contributing pair is dropped" begin
     # The test above compares the graph against another conservative relation;
@@ -285,34 +267,38 @@ capjoinpairs(dst, src; radius = 0.0) =
     for (name, dst, src, radius, capbounded) in cases
         @testset "$name" begin
             truth = contributing_pairs(dst, src; radius)
+            graph = graph_pairs(GR.chunk_dependency_graph(dst, src; radius))
             @test !isempty(truth)
-            @test truth ⊆ graphpairs(GR.chunk_dependency_graph(dst, src; radius))
+            @test truth ⊆ graph
+            # `truth ⊆ graph` alone would pass on a builder that returned every
+            # pair, so pin the relation exactly too: post-#69 the rows ARE the
+            # `candidatechunks!` answers, with no `refine`, so the graph and the
+            # demanded relation are equal and not merely nested. That equality
+            # is what a builder swap has to preserve.
+            @test graph == demanded_pairs(dst, src; radius)
             # A chunk cap covers its own cells, so the cap join holds the same
             # pairs. This is the `chunkextents` half of the obligation: it fails
             # if a chunk cap is too tight.
-            @test truth ⊆ capjoinpairs(dst, src; radius)
+            @test truth ⊆ capjoin_pairs(dst, src; radius)
+            # G1's second gate. Where a space's index descends the very
+            # hierarchy `chunkextents` is derived from, the cap join is an UPPER
+            # bound on the graph: the descent can prune a chunk whose own cap
+            # intersects, never add one whose cap does not. That holds for
+            # `_dggcandidatechunks!` and NOT for the raster quadtree, which
+            # answers whole chunks for a straddling leaf without testing each
+            # chunk's own cap — so for those cases the containment is asserted
+            # in the other direction below, never here.
+            capbounded && @test graph ⊆ capjoin_pairs(dst, src; radius)
         end
     end
 
-    # G1's second gate. Where a space's index descends the very hierarchy
-    # `chunkextents` is derived from, the cap join is an UPPER bound: the
-    # descent can prune a chunk whose own cap intersects, never add one whose
-    # cap does not. That holds for `_dggcandidatechunks!`...
-    for (dst, src) in (
-            (DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
-                DGG.DGGSpace(DGG.levelgrid(SYS, 3); chunklevel = 1)),
-            (sparse, DGG.DGGSpace(DGG.levelgrid(SYS, 3); chunklevel = 1)))
-        @test graphpairs(GR.chunk_dependency_graph(dst, src)) ⊆ capjoinpairs(dst, src)
-    end
-
-    # ...and NOT for the raster quadtree, which answers whole chunks for a
-    # straddling leaf without testing each chunk's own cap. The two relations
-    # cross in both directions, so the cap join bounds the graph in neither.
-    # The same is true of the CopernicusDEM level-0 frontier, measured on the
-    # production pair at 72 pairs the index holds and the cap join rejects.
+    # The raster quadtree's relation and the cap join cross in BOTH directions,
+    # so the cap join bounds the graph in neither. The CopernicusDEM level-0
+    # frontier crosses the same way; that one is pinned in "the dependency graph
+    # holds every pair the chunk index answers" above.
     rdst = DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1)
-    native = graphpairs(GR.chunk_dependency_graph(rdst, rasterspace))
-    capjoin = capjoinpairs(rdst, rasterspace)
+    native = graph_pairs(GR.chunk_dependency_graph(rdst, rasterspace))
+    capjoin = capjoin_pairs(rdst, rasterspace)
     @test !isempty(setdiff(native, capjoin))
     @test !isempty(setdiff(capjoin, native))
 end

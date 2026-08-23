@@ -1,67 +1,12 @@
 import Graphs
 import DimensionalData as DD
 
-# Brute-force reference: the definition of the relation, applied to every pair.
-function reference_pairs(dst, src; radius = 0.0)
-    dcaps, scaps = GR.chunkextents(dst), GR.chunkextents(src)
-    intersects = GR.DilatedIntersects(Float64(radius))
-    return Set((d, s) for d in eachindex(dcaps), s in eachindex(scaps)
-               if intersects(dcaps[d], scaps[s]))
-end
-
-graph_pairs(g) = Set((d, Int(s)) for d in 1:GR.ndestinationchunks(g)
-                     for s in GR.sourcesof(g, d))
-
-# The relation a lazy read actually issues: one `candidatechunks!` per
-# destination chunk, through the source space's own index.
-function demanded_pairs(dst, src; radius = 0.0)
-    index = GR.chunkindex(src)
-    out = Set{Tuple{Int,Int}}()
-    buf = Int[]
-    for (d, cap) in pairs(GR.chunkextents(dst))
-        GR.candidatechunks!(buf, index, cap; radius)
-        for s in buf
-            push!(out, (d, s))
-        end
-    end
-    return out
-end
-
-# The geometric truth every dependency relation has to dominate: the chunk pairs
-# holding at least one cell pair a weight could be nonzero on. Real cell rings,
-# clipped through the same spherical kernel the conservative weight builder uses;
-# at nonzero support, cell vertices within `radius` count too. Nothing in this
-# construction consults a cap, a chunk extent or a chunk index, which is what
-# makes it an oracle rather than a second opinion.
-#
-# `O(ncells(dst) * ncells(src))` — keep the spaces small.
-function contributing_pairs(dst, src; radius = 0.0)
-    op = GR._intersectionoperator(manifold(dst))
-    nd, ns = Int(ncells(dst)), Int(ncells(src))
-    dcells = [getcell(dst, i) for i in 1:nd]
-    scells = [getcell(src, j) for j in 1:ns]
-    dchunk = [GR.chunkat(dst, i) for i in 1:nd]
-    schunk = [GR.chunkat(src, j) for j in 1:ns]
-    r = Float64(radius)
-    dpts = r > 0 ? [cell_vertices(dst, i) for i in 1:nd] : nothing
-    spts = r > 0 ? [cell_vertices(src, j) for j in 1:ns] : nothing
-    out = Set{Tuple{Int,Int}}()
-    for i in 1:nd, j in 1:ns
-        key = (Int(dchunk[i]), Int(schunk[j]))
-        # Rows repeat heavily; skipping a known pair skips the clip too.
-        key in out && continue
-        hit = op(dcells[i], scells[j]) > 0
-        if !hit && r > 0
-            hit = any(US.spherical_distance(a, b) <= r for a in dpts[i], b in spts[j])
-        end
-        hit && push!(out, key)
-    end
-    return out
-end
-
-# Cell rings carry unit-sphere points, not geographic ones.
-cell_vertices(space, i) = [USPoint(GI.x(p), GI.y(p), GI.z(p))
-                           for p in GI.getpoint(GI.getexterior(getcell(space, i)))]
+# The four relations — truth, demand, cap join, and the graph's own rows — are
+# defined once, in `graphoracles.jl`, and shared with the root suite and the G1
+# harness. Do not re-spell any of them here.
+include(joinpath(@__DIR__, "graphoracles.jl"))
+using .ChunkGraphOracles: contributing_pairs, graph_pairs, demanded_pairs,
+    capjoin_pairs
 
 # A raster whose chunk grid is deliberately out of step with the quadtree's
 # power-of-two splits, so its leaves straddle chunk boundaries.
@@ -129,7 +74,7 @@ end
             # A toy space's index tests the caps `chunkextents` reports, so on
             # this pair the relation is exactly the brute-force cap join.
             g = GR.chunk_dependency_graph(dst, src; radius)
-            @test graph_pairs(g) == reference_pairs(dst, src; radius)
+            @test graph_pairs(g) == capjoin_pairs(dst, src; radius)
         end
 
         # A radius wide enough to reach every pair: the relation must then be
@@ -208,12 +153,19 @@ end
         for (name, dst, src, radius) in cases
             @testset "$name" begin
                 truth = contributing_pairs(dst, src; radius)
+                graph = graph_pairs(GR.chunk_dependency_graph(dst, src; radius))
                 @test !isempty(truth)
-                @test truth ⊆ graph_pairs(GR.chunk_dependency_graph(dst, src; radius))
+                @test truth ⊆ graph
+                # `truth ⊆ graph` alone would pass on a builder that returned
+                # every pair, so pin the relation exactly as well: post-#69 the
+                # rows ARE the `candidatechunks!` answers, with no `refine`, so
+                # the graph and the demanded relation are equal and not merely
+                # nested. That equality is what a builder swap must preserve.
+                @test graph == demanded_pairs(dst, src; radius)
                 # A chunk cap covers its own cells, so the cap join must hold
                 # the same pairs. This is the `chunkextents` half of the same
                 # obligation, and it fails if a chunk cap is too tight.
-                @test truth ⊆ reference_pairs(dst, src; radius)
+                @test truth ⊆ capjoin_pairs(dst, src; radius)
             end
         end
     end
@@ -227,7 +179,7 @@ end
         src = ToyLonLatSpace(8, 4; chunks = (2, 1))
         for radius in (0.0, 0.05, 0.4)
             @test graph_pairs(GR.chunk_dependency_graph(dst, src; radius)) ==
-                  reference_pairs(dst, src; radius)
+                  capjoin_pairs(dst, src; radius)
         end
 
         # A native hierarchy is a different matter, and the difference is the
@@ -240,7 +192,7 @@ end
         rdst = ToyLonLatSpace(24, 12; chunks = (2, 2))
         rsrc = misalignedraster(36, 18, 7, 5)
         native = graph_pairs(GR.chunk_dependency_graph(rdst, rsrc))
-        capjoin = reference_pairs(rdst, rsrc)
+        capjoin = capjoin_pairs(rdst, rsrc)
         @test !isempty(setdiff(native, capjoin))
         @test !isempty(setdiff(capjoin, native))
         # Both still dominate the geometric truth; that is the invariant, and
@@ -257,7 +209,7 @@ end
         src = ToyLonLatSpace(4, 2; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
             chunks = (2, 1))
         g = GR.chunk_dependency_graph(dst, src)
-        @test graph_pairs(g) == reference_pairs(dst, src)
+        @test graph_pairs(g) == capjoin_pairs(dst, src)
         @test GR.ndestinationchunks(g) == nchunks(dst)
         @test GR.nsourcechunks(g) == nchunks(src)
         @test any(d -> GR.sourcedegree(g, d) == 0, 1:GR.ndestinationchunks(g))

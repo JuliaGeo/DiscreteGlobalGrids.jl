@@ -337,8 +337,9 @@ end
         US.UnitSphereFromGeographic()(p), r) for p in pts]
     srcpts = [(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (6.0, 0.0)]
     dstpts = [(1.0, 0.0), (3.0, 0.0), (5.0, 0.0)]
-    graph = GR._chunkgraph(caps(dstpts, deg2rad(1.2)), caps(srcpts, deg2rad(1.2)),
-        0.0, nothing, true)
+    srccaps = caps(srcpts, deg2rad(1.2))
+    graph = GR._chunkgraph(caps(dstpts, deg2rad(1.2)),
+        GR._packedchunkindex(srccaps), length(srccaps), 0.0, nothing)
     @test GR.nsourcechunks(graph) == 4
     @test GR.ndestinationchunks(graph) == 3
 

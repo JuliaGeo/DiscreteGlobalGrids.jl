@@ -209,14 +209,22 @@ function main()
     check("every tile has at least one consumer",
         minimum(GR.consumerdegree(graph, s) for s in 1:GR.nsourcechunks(graph)) >= 1)
 
-    # The prefilter must not change the answer, only the time. Checked on the
-    # real pair, not just on toy spaces.
-    tplain = @elapsed plain = GR.chunk_dependency_graph(dstspace, srcspace;
-        radius, prefilter = false)
-    check("the latitude-band prefilter changes no edge",
-        plain.dstoff == graph.dstoff && plain.srcof == graph.srcof)
-    @printf("prefilter %.2f s vs brute force %.2f s (%.1fx)\n",
-        tbuild, tplain, tplain / tbuild)
+    # Predictive completeness, on the real pair rather than on toy spaces: every
+    # source chunk a lazy read can ask for has to be an edge, or `consumersof`
+    # is not a refcount. This is the check the 2026-08-23 full run failed.
+    tdemand = @elapsed unpredicted = let index = GR.chunkindex(srcspace),
+        caps = GR.chunkextents(dstspace), buf = Int[], n = 0
+
+        for d in 1:GR.nchunks(dstspace)
+            GR.candidatechunks!(buf, index, caps[d]; radius)
+            row = GR.sourcesof(graph, d)
+            n += count(s -> !insorted(Int32(s), row), buf)
+        end
+        n
+    end
+    check("the graph holds every pair the source index answers ($unpredicted missing)",
+        unpredicted == 0)
+    @printf("demand sweep %.2f s\n", tdemand)
 
     dstcaps = GR.chunkextents(dstspace)
     srccaps = GR.chunkextents(srcspace)
@@ -344,8 +352,8 @@ function main()
         "nsrcchunks" => GR.nsourcechunks(graph),
         "ndstchunks" => GR.ndestinationchunks(graph),
         "edges" => Graphs.ne(graph), "radius" => radius,
-        "graph_seconds" => tbuild, "bruteforce_seconds" => tplain,
-        "prefilter_speedup" => tplain / tbuild,
+        "graph_seconds" => tbuild, "demand_sweep_seconds" => tdemand,
+        "unpredicted_pairs" => unpredicted,
         "srcspace_seconds" => tsrc, "dstspace_seconds" => tdst,
         "write_seconds" => twrite, "refined_seconds" => trefined, "refined_edges" => Graphs.ne(refined), "components" => ncomp,
         "adjacency_bytes" => filesize(ADJACENCY)))

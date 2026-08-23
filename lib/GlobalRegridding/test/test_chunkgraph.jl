@@ -1,4 +1,5 @@
 import Graphs
+import DimensionalData as DD
 
 # Brute-force reference: the definition of the relation, applied to every pair.
 function reference_pairs(dst, src; radius = 0.0)
@@ -10,6 +11,21 @@ end
 
 graph_pairs(g) = Set((d, Int(s)) for d in 1:GR.ndestinationchunks(g)
                      for s in GR.sourcesof(g, d))
+
+# The relation a lazy read actually issues: one `candidatechunks!` per
+# destination chunk, through the source space's own index.
+function demanded_pairs(dst, src; radius = 0.0)
+    index = GR.chunkindex(src)
+    out = Set{Tuple{Int,Int}}()
+    buf = Int[]
+    for (d, cap) in pairs(GR.chunkextents(dst))
+        GR.candidatechunks!(buf, index, cap; radius)
+        for s in buf
+            push!(out, (d, s))
+        end
+    end
+    return out
+end
 
 @testset "chunk dependency graph" begin
 
@@ -55,27 +71,57 @@ graph_pairs(g) = Set((d, Int(s)) for d in 1:GR.ndestinationchunks(g)
         @test GR.DilatedIntersects(0.05)(tangent_a, tangent_b)
     end
 
-    @testset "matches brute force, and the prefilter changes nothing" begin
+    @testset "matches brute force" begin
         # Offset grids so chunk caps genuinely straddle each other, and include
-        # polar chunks, where the latitude band prunes least and caps are widest.
+        # polar chunks, where caps are widest.
         dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
         src = ToyLonLatSpace(8, 4; chunks = (2, 1))
 
         for radius in (0.0, 0.05, 0.4)
+            # A toy space's index tests the caps `chunkextents` reports, so on
+            # this pair the relation is exactly the brute-force cap join.
             g = GR.chunk_dependency_graph(dst, src; radius)
             @test graph_pairs(g) == reference_pairs(dst, src; radius)
-
-            # `prefilter = false` is the same computation without the latitude
-            # band; it must agree edge for edge, not merely in count.
-            plain = GR.chunk_dependency_graph(dst, src; radius, prefilter = false)
-            @test graph_pairs(plain) == graph_pairs(g)
-            @test plain.dstoff == g.dstoff && plain.srcof == g.srcof
         end
 
-        # A radius wide enough to reach every pair disables the band; the
-        # relation must then be complete, not silently truncated.
+        # A radius wide enough to reach every pair: the relation must then be
+        # complete, not silently truncated by the index's own pruning.
         full = GR.chunk_dependency_graph(dst, src; radius = 4.0)
         @test Graphs.ne(full) == nchunks(dst) * nchunks(src)
+    end
+
+    @testset "the graph dominates what a lazy read demands" begin
+        # A refcount built from `consumersof` is only sound if every source
+        # chunk a read can ask for is an edge. The graph is not free to use its
+        # own idea of a source chunk's cap: a space's index tests the extents
+        # its own hierarchy derives, and a cap derived from a node rectangle
+        # neither contains nor is contained in the cap derived from the chunk's
+        # own boundary. The two relations then CROSS, and the pairs on the
+        # index's side of the difference are demands no refcount predicted.
+        #
+        # A `RasterGrid` source is the shipped case: its index is a quadtree
+        # cursor over cells whose leaves straddle chunk boundaries, and it
+        # answers with whole chunks that the chunk's own cap would reject.
+        raster = RasterGrid(DD.DimArray(zeros(360, 180),
+            (DD.X(range(-179.5, 179.5; length = 360)),
+             DD.Y(range(-89.5, 89.5; length = 180)))),
+            chunks = ([lo:min(lo + 36, 360) for lo in 1:37:360],
+                [lo:min(lo + 22, 180) for lo in 1:23:180]))
+        dst = ToyLonLatSpace(24, 12; chunks = (2, 2))
+
+        for radius in (0.0, 0.02)
+            g = GR.chunk_dependency_graph(dst, raster; radius)
+            demanded = demanded_pairs(dst, raster; radius)
+            @test !isempty(demanded)
+            @test demanded ⊆ graph_pairs(g)
+        end
+
+        # Toy spaces have no such divergence — their index tests the very caps
+        # `chunkextents` reports — so the same assertion must also hold there,
+        # and there it must hold with equality.
+        toysrc = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        gt = GR.chunk_dependency_graph(dst, toysrc; radius = 0.05)
+        @test graph_pairs(gt) == demanded_pairs(dst, toysrc; radius = 0.05)
     end
 
     @testset "regional and polar spaces" begin

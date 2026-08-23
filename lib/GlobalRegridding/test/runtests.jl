@@ -67,7 +67,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
         # Regional chunk extents cover their cell corners.
         region = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
             chunks = (4, 2))
-        caps = chunktree(region).caps
+        caps = GR.chunkextents(region)
         @test all(GR.US._contains(caps[c], p)
                   for c in 1:nchunks(region)
                   for i in cellindices(region, c)

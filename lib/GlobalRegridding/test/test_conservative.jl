@@ -179,7 +179,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
     @testset "banded chunk extents" begin
         # Full-longitude row chunks retain bounded caps.
         banded = ToyLonLatSpace(16, 8; chunks = (16, 2))
-        caps = chunktree(banded).caps
+        caps = GR.chunkextents(banded)
         @test all(cap.radius < Float64(pi) for cap in caps)
 
         # Caps cover geodesic edges, not only corners.
@@ -208,7 +208,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         # Regional chunks retain convex caps.
         region = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
             chunks = (4, 2))
-        @test all(c -> c.radius < Float64(pi) / 2, chunktree(region).caps)
+        @test all(c -> c.radius < Float64(pi) / 2, GR.chunkextents(region))
     end
 
     @testset "threaded and serial builds agree bit for bit" begin

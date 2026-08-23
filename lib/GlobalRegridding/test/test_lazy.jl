@@ -10,6 +10,11 @@
 import DiskArrays
 import DimensionalData as DD
 
+# The shared relation oracles. `test_chunkgraph.jl` runs first and defines the
+# module; this file reuses it rather than re-spelling either definition, the
+# same way it reuses that file's `G4ProbeSpace`.
+using .ChunkGraphOracles: graph_pairs, demanded_pairs
+
 # Source read counter
 
 mutable struct T7Counting{T,N,A<:AbstractArray{T,N}} <: DiskArrays.AbstractDiskArray{T,N}
@@ -120,13 +125,23 @@ function t8_pairs(dst, src; radius = 0.0)
 end
 
 # The connectivity a flat pairwise cap test gives — the independent reference
-# the tree descent is checked against.
+# the tree descent is checked against. It reads `chunkextents` because that is
+# now the one way to obtain a space's chunk caps; until Task E2 it went through
+# `chunktree(space).caps`, which was the same vector packed in a flat tree.
 function t7_pairwise(dst, dstchunk, src; radius = 0.0)
-    dcap = chunktree(dst).caps[dstchunk]
-    return [s for (s, scap) in enumerate(chunktree(src).caps)
+    dcap = GR.chunkextents(dst)[dstchunk]
+    return [s for (s, scap) in enumerate(GR.chunkextents(src))
             if US.spherical_distance(dcap.point, scap.point) <=
                dcap.radius + scap.radius + radius]
 end
+
+# One destination chunk's source chunks, read the way the lazy executor reads
+# them since Task E1: off the relation the plan owns. Task E2 deleted
+# `GR.connectedchunks`, which was a second spelling of this with no identity, no
+# CSR and no reverse direction; these are the rows the executor will actually
+# take, so an assertion about them is an assertion about the read.
+t7_sources(plan::ChunkedPlan, d::Integer) =
+    Int.(GR.sourcesof(GR.dependencies(plan), Int(d)))
 
 @testset "Lazy path" begin
 
@@ -138,29 +153,38 @@ end
     field = collect(reshape(1.0:32.0, 8, 4))
 
     @testset "discovery" begin
+        # Every claim below is about the relation a plan owns, because since
+        # Task E2 that is the only relation there is: `connectedchunks`,
+        # `connectedchunks!` and `connectedchunkpairs` are all gone, and one
+        # `candidatechunks!` query per destination cap defines every edge.
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        graph = GR.dependencies(plan)
+
         # The generic packed index agrees with pairwise cap checks.
         for c in 1:nchunks(dstspace)
-            @test GR.connectedchunks(dstspace, c, srcspace) == t7_pairwise(dstspace, c, srcspace)
+            @test t7_sources(plan, c) == t7_pairwise(dstspace, c, srcspace)
         end
 
-        # Dilation only ever adds pairs.
-        wide = GR.connectedchunks(dstspace, 1, srcspace; radius = 0.5)
-        @test issubset(GR.connectedchunks(dstspace, 1, srcspace), wide)
+        # Dilation only ever adds pairs. The radius reaches the relation through
+        # the plan's method, which since Task G4 is the only way it can.
+        wideplan = t7_plan(T7RadiusMethod(0.5), dstspace, srcspace)
+        @test GR.dependency_radius(GR.dependencies(wideplan)) == 0.5
+        wide = t7_sources(wideplan, 1)
+        @test issubset(t7_sources(plan, 1), wide)
 
         # Chunk extents come back indexed by chunk number, which is what the
-        # descent's leaf indices mean.
-        @test GR.chunkextents(srcspace) == chunktree(srcspace).caps
+        # descent's leaf indices mean — and the relation carries the very
+        # vectors it was built from, so there is one copy of each, not two.
+        @test GR.sourceextents(graph) == GR.chunkextents(srcspace)
+        @test GR.destinationextents(graph) == GR.chunkextents(dstspace)
 
-        # The dependency graph's rows are exactly the per-chunk queries. This
-        # assertion belonged to `connectedchunkpairs` until Task G4 deleted it:
-        # since #69 that function ran the identical loop, so the graph's own
-        # rows are where the claim belongs.
-        graph = GR.chunk_dependency_graph(dstspace, srcspace)
-        pairs = [(d, s) for d in 1:GR.ndestinationchunks(graph)
-                 for s in GR.sourcesof(graph, d)]
-        expected = sort([(d, s) for d in 1:nchunks(dstspace)
-                         for s in GR.connectedchunks(dstspace, d, srcspace)])
-        @test sort(pairs) == expected
+        # The relation's rows ARE the per-destination-cap queries: one
+        # `chunkindex(src)`, one `candidatechunks!` per `chunkextents(dst)`
+        # entry. `demanded_pairs` replays exactly that loop, so with no `refine`
+        # the two must be equal, not merely nested. This assertion belonged to
+        # `connectedchunkpairs` until Task G4 and to `connectedchunks` until
+        # Task E2; both ran this same loop, which is why neither survives.
+        @test graph_pairs(graph) == demanded_pairs(dstspace, srcspace)
 
         # The generic index is GeometryOps' packed R-tree. Its leaf boxes are
         # outward-rounded bounds of each cap, including tiny, polar,
@@ -243,7 +267,7 @@ end
     @testset "the wave of concurrent builds is bounded by the weight budget" begin
         # Build waves respect the minimum block-size budget.
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
-        srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
+        srcchunks = t7_sources(plan, 1)
         srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
         nd = length(cellindices(dstspace, 1))
         # The tile is destination chunk 1, so its rows are `[1]`; the caps come
@@ -268,7 +292,9 @@ end
     end
 
     @testset "a wave that loses a task still waits for the rest" begin
-        srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
+        # The failing method is built from the chunk it must fail on, so the
+        # rows are read off a plan over the same pair at the same radius first.
+        srcchunks = t7_sources(t7_plan(ToyDiagonalMethod(), dstspace, srcspace), 1)
         j = min(3, length(srcchunks))
         @test j > 1
         dinds = cellindices(dstspace, 1)
@@ -278,6 +304,8 @@ end
         bad = Int(first(cellindices(srcspace, srcchunks[1])))
         method = WaveFailMethod(bad, 0.25)
         plan = t7_plan(method, dstspace, srcspace)
+        # ...and the plan under test really does hold those rows.
+        @test t7_sources(plan, 1) == srcchunks
         wave = GR.CachedBlock[]
         @test_throws Exception GR._fillwave!(wave, plan, 1, srcchunks, 1, j,
             dinds, GR.TileCells(plan.dst_space, dinds))
@@ -286,7 +314,7 @@ end
 
     @testset "at top level the wave is weighed against inner threading" begin
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
-        srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
+        srcchunks = t7_sources(plan, 1)
         srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
         nd = length(cellindices(dstspace, 1))
         nt = Threads.nthreads()
@@ -399,13 +427,15 @@ end
         point_dst = ToyLonLatSpace(1, 1; lon = (-40.0, -30.0), lat = (-5.0, 5.0))
         method = T7RadiusMethod(deg2rad(50))
 
-        @test GR.connectedchunks(point_dst, 1, wide_src) == [1]
-        @test GR.connectedchunks(point_dst, 1, wide_src; radius = method.radius) == [1, 2]
-
         line = collect(reshape(1.0:8.0, 8, 1))
         source = T7Counting(line, (4, 1))
         plan = t7_plan(method, point_dst, wide_src)
         A = LazyRegridArray(source, plan)
+
+        # The support radius widens the plan's own relation — the rows the read
+        # below will take — and it reaches it only through the plan's method.
+        @test t7_sources(t7_plan(ToyDiagonalMethod(), point_dst, wide_src), 1) == [1]
+        @test t7_sources(plan, 1) == [1, 2]
 
         # Dilated discovery includes all five cells within the support radius.
         @test A[1:1] == [3.0]
@@ -834,10 +864,12 @@ end
 
     @testset "a lazy read performs no dependency discovery" begin
         # The Phase 3 gate, behaviourally. `G4ProbeSpace` counts every
-        # `chunktree` call, and both `chunkextents` and the generic `chunkindex`
-        # route through it — so the counter rises exactly when a relation is
-        # being derived from the space. It is defined in `test_chunkgraph.jl`,
-        # which runs first; reuse rather than a second copy is deliberate.
+        # `chunkextents` call — the destination caps, the identity stamp and the
+        # vector the generic `chunkindex` packs all come through it — so the
+        # counter rises exactly when a relation is being derived from the space.
+        # It is defined in `test_chunkgraph.jl`, which runs first; reuse rather
+        # than a second copy is deliberate. (Until Task E2 the counter sat one
+        # level lower, on the `chunktree` that `chunkextents` collected from.)
         probe = G4ProbeSpace(srcspace)
         plan = t7_plan(ToyDiagonalMethod(), dstspace, probe)
         built = probe.queries

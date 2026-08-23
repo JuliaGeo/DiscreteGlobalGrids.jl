@@ -34,16 +34,54 @@ planned_dependencies(dst, src; radius = 0.0, kw...) =
     GR.dependencies(ChunkedPlan(G4RadiusMethod(radius), Weighted(0.5), dst, src;
         dependencies = true, kw...))
 
-# A space that counts every question the relation machinery asks it. Both
-# `chunkextents` (the destination caps *and* the identity stamp) and the generic
-# `chunkindex` route through `chunktree`, so this counter is nonzero exactly
-# when a relation is being built from this space and zero when nothing is.
+# A space that counts every question the relation machinery asks it.
+# `chunkextents` is that question: the destination caps a relation is built by
+# querying with, the caps the identity stamp hashes, and the vector the generic
+# `chunkindex` packs all come through it, so this counter is nonzero exactly
+# when a relation is being derived from this space and zero when nothing is.
+#
+# Until Task E2 the counter sat on `chunktree`, which `chunkextents` collected
+# from. Removing that bridge moved the funnel up one level; it did not widen or
+# narrow it, because `chunktree` had no caller of its own.
 mutable struct G4ProbeSpace{S<:RegridSpace} <: RegridSpace
     space::S
     queries::Int
 end
 G4ProbeSpace(space::RegridSpace) = G4ProbeSpace(space, 0)
-chunktree(p::G4ProbeSpace) = (p.queries += 1; chunktree(p.space))
+GR.chunkextents(p::G4ProbeSpace) = (p.queries += 1; GR.chunkextents(p.space))
+
+# A source chunk index that counts the queries a builder makes of it. The
+# Phase 4 gate is that ONE query implementation defines every edge, so the
+# counter and the pairs together say what the builder did: how many questions it
+# asked, and that the answers are the relation.
+mutable struct E2QueryIndex{I}
+    inner::I
+    queries::Int
+end
+
+GR.candidatechunks!(out::Vector{Int}, ix::E2QueryIndex, dstcap::GR.Cap;
+    radius::Real = 0.0) =
+    (ix.queries += 1; GR.candidatechunks!(out, ix.inner, dstcap; radius))
+
+struct E2QuerySpace{S<:RegridSpace,I} <: RegridSpace
+    space::S
+    index::E2QueryIndex{I}
+end
+
+E2QuerySpace(space::RegridSpace) =
+    E2QuerySpace(space, E2QueryIndex(GR.chunkindex(space), 0))
+
+GR.chunkindex(s::E2QuerySpace) = s.index
+GR.chunkextents(s::E2QuerySpace) = GR.chunkextents(s.space)
+ncells(s::E2QuerySpace) = ncells(s.space)
+getcell(s::E2QuerySpace, i::Int) = getcell(s.space, i)
+manifold(s::E2QuerySpace) = manifold(s.space)
+hascellchart(s::E2QuerySpace) = hascellchart(s.space)
+cellcentroid(s::E2QuerySpace, i::Int) = cellcentroid(s.space, i)
+cellat(s::E2QuerySpace, x) = cellat(s.space, x)
+nchunks(s::E2QuerySpace) = nchunks(s.space)
+cellindices(s::E2QuerySpace, c::Int) = cellindices(s.space, c)
+celltree(s::E2QuerySpace) = celltree(s.space)
 ncells(p::G4ProbeSpace) = ncells(p.space)
 getcell(p::G4ProbeSpace, i::Int) = getcell(p.space, i)
 manifold(p::G4ProbeSpace) = manifold(p.space)
@@ -981,6 +1019,53 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         @test_throws ArgumentError adopt(; dependencies = false, refine = (d, s) -> true)
         @test_throws ArgumentError adopt(; dependencies = false, narrow = :oddsources)
         @test_throws ArgumentError adopt(; dependencies = 7)
+    end
+
+    @testset "one query implementation defines every edge" begin
+        # The Phase 4 gate, structurally and behaviourally.
+        #
+        # Structurally: the duplicate spellings are gone from the module — not
+        # merely unexported — and `chunkextents` is a required hook rather than
+        # a fallback that collects caps back out of a compatibility tree.
+        for name in (:connectedchunks, :connectedchunks!, :connectedchunkpairs,
+                     :chunktree, :RasterFlatTree, :_collectextents!)
+            @test !isdefined(GR, name)
+        end
+        @test :chunktree ∉ names(GlobalRegridding)
+        @test !Base.ispublic(GR, :chunktree)
+        # No method for the abstract space type: nothing can fall back to a tree.
+        @test !hasmethod(GR.chunkextents, Tuple{RegridSpace})
+        @test hasmethod(GR.chunkextents, Tuple{ToyLonLatSpace})
+        @test hasmethod(GR.chunkextents, Tuple{RasterGrid})
+        # `chunkextent` survives with a cheap specialization, which is the whole
+        # reason to keep the singular form at all.
+        @test hasmethod(GR.chunkextent, Tuple{RegridSpace,Int})
+        @test which(GR.chunkextent, Tuple{RasterGrid,Int}).sig !==
+              which(GR.chunkextent, Tuple{RegridSpace,Int}).sig
+
+        # Behaviourally: every edge comes through `candidatechunks!` on the
+        # source space's own chunk index, one query per destination cap, and
+        # from nothing else. The counter says how many questions were asked; the
+        # oracle says the answers ARE the relation.
+        src = ToyLonLatSpace(8, 4; chunks = (4, 2))
+        dst = ToyLonLatSpace(8, 4; chunks = (8, 2))
+        probe = E2QuerySpace(src)
+        g = planned_dependencies(dst, probe)
+        @test probe.index.queries == nchunks(dst)
+        @test graph_pairs(g) == demanded_pairs(dst, src)
+        @test GR.nsourcechunks(g) == nchunks(src)
+
+        # A lazy read adds no query of its own: it takes the rows.
+        A = LazyRegridArray(zeros(8, 4),
+            ChunkedPlan(ToyDiagonalMethod(), Weighted(0.5), dst, probe))
+        asked = probe.index.queries
+        @test collect(A) == vec(zeros(8, 4))
+        @test probe.index.queries == asked
+
+        # And a cheap `chunkextent` agrees with the vector it is cheaper than.
+        raster = misalignedraster(16, 8, 5, 3)
+        @test [GR.chunkextent(raster, c) for c in 1:nchunks(raster)] ==
+              GR.chunkextents(raster)
     end
 
     @testset "`refine` reaches the plan through `plan_regrid` only" begin

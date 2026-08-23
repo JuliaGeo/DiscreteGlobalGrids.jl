@@ -3,7 +3,7 @@
 using GlobalRegridding
 import GlobalRegridding as GR
 import GlobalRegridding: RegridSpace, AbstractRegriddingMethod, WeightCOO,
-    celltree, chunktree, ncells, getcell, nchunks, cellindices,
+    celltree, chunkextents, ncells, getcell, nchunks, cellindices,
     cellcentroid, cellat, hascellchart, manifold,
     build_weights!, addweight!, adddenom!
 
@@ -305,7 +305,12 @@ ToyCapTree(space::ToyLonLatSpace, indices) =
         [toy_cap(cellcorners(space, i)) for i in indices])
 
 # Fall back to a latitude-band cap when a corner cap becomes non-convex.
-function chunktree(space::ToyLonLatSpace)
+#
+# This was `chunktree`, returning a `ToyCapTree` the generic `chunkextents`
+# fallback then walked to collect these very caps back out. Task E2 removed that
+# bridge, so the toy space reports the caps directly. The values are unchanged,
+# and so therefore is the packed index the generic `chunkindex` builds from them.
+function chunkextents(space::ToyLonLatSpace)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)
     points = USPoint[]
@@ -320,7 +325,7 @@ function chunktree(space::ToyLonLatSpace)
         cap = toy_cap(points)
         caps[c] = cap.radius >= Float64(pi) ? toy_bandcap(lat0, lat1, dlon(space)) : cap
     end
-    return ToyCapTree(space, collect(1:n), caps)
+    return caps
 end
 
 # Tree-build counting wrapper
@@ -351,7 +356,7 @@ cellat(cs::CountingSpace, p) = cellat(cs.space, p)
 nchunks(cs::CountingSpace) = nchunks(cs.space)
 cellindices(cs::CountingSpace, chunk::Int) = cellindices(cs.space, chunk)
 celltree(cs::CountingSpace) = celltree(cs.space)
-chunktree(cs::CountingSpace) = chunktree(cs.space)
+chunkextents(cs::CountingSpace) = chunkextents(cs.space)
 
 # Geometry-free test method
 

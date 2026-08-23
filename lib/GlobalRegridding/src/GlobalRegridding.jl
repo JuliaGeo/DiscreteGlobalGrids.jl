@@ -62,7 +62,7 @@ include("api.jl")
 
 # Space interface
 export RegridSpace
-export celltree, chunktree, nchunks, cellindices, ncells, getcell
+export celltree, nchunks, cellindices, ncells, getcell
 export cellcentroid, cellat, hascellchart, manifold
 
 # Included spaces

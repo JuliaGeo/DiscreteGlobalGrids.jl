@@ -59,9 +59,13 @@ and source reads remain lazy.
   opt-out, and a plan that takes it cannot back a `LazyRegridArray`. G4's one
   open action is closed with it: `subspace_dependencies` re-stamps a row view
   onto a sub-space of the destination, which production measured and declined.
-- Current implementation phase: **4**. E2 is next: retire the duplicate
-  discovery state and the `chunktree` bridge. `connectedchunks` and
-  `connectedchunks!` already have no caller in `src/`.
+- Phase 4, delete legacy discovery: **complete**. E2 is closed. `chunktree`,
+  `RasterFlatTree`, `connectedchunks`, `connectedchunks!` and the
+  `chunktree`-collecting `chunkextents` fallback are all gone; `chunkextents` is
+  a required hook with no fallback, and one `candidatechunks!` query per
+  destination cap defines every edge. Read E2's record for the `chunktree`
+  audit, and for the two things this card listed that were **not** dead.
+- Current implementation phase: **5**, behind the user's gate.
 - The nearest/bilinear method redesign is deferred to a separate plan.
 
 Landed cards, with the commit each one shipped as:
@@ -80,6 +84,7 @@ Landed cards, with the commit each one shipped as:
 | G3 | PR #71 | Add reusable dependency graph identities |
 | G4 | PR #72 | Make chunked plans own dependency graphs |
 | E1 | PR #74 | Drive lazy regridding from dependency rows |
+| E2 | PR #TBD | Remove duplicate chunk discovery paths |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
 `93e836d` is the commit that pinned them and records their SHAs.
@@ -96,6 +101,9 @@ Evidence:
 - `regrid-notes/2026-08-23-g4-plan-owns-graph.md` — G4's ownership design, the
   Phase 2 gate as tests rather than prose, and what a per-column relation would
   have cost production
+- `regrid-notes/2026-08-23-e2-delete-legacy-discovery.md` — E2's deletion audit,
+  the `chunktree` verdict, what the card listed that was not dead, and the
+  Phase 4 gate as tests
 - `regrid-notes/2026-08-23-e1-graph-backed-lazy.md` — E1's row-driven executor,
   where cap metadata moved, `subspace_dependencies` and why production declined
   it, and the Phase 3 gate as tests
@@ -725,6 +733,30 @@ Actions:
 executor nor interface translates that relation back through a compatibility
 tree.
 **Commit:** `Remove duplicate chunk discovery paths`.
+**Landed:** stacked on #74. Record:
+`regrid-notes/2026-08-23-e2-delete-legacy-discovery.md`. All five actions
+landed. Three corrections to this card, which a later task should read:
+
+- **The `chunktree` verdict is remove, and the audit is in the record.** No
+  in-repo or `DiscreteGlobalGrids` space implemented it except the bridge
+  itself and three test toys; `DGGSpace` never had one. `chunkextents` is now a
+  **required hook with no fallback** — asserted as
+  `!hasmethod(chunkextents, Tuple{RegridSpace})` — which is the structural half
+  of the gate. `RasterFlatTree` went with it, closing `rastergrid.jl:969-971`.
+- **Two things this card listed were not dead, and were kept.** There is no
+  latitude join left in `src/` at all — G2 deleted it — and what remains is the
+  gates harness's deliberately archived `:latjoin` arm, whose documented sunset
+  condition (G2's waiver retired) has **not** fired, so deleting it would have
+  destroyed both the waiver's audit trail and half of E2's own before/after
+  evidence. There is likewise no post-plan graph builder left and no redundant
+  cap vector: E1 moved the graph's two cap vectors onto the relation on purpose
+  and they are aliases to the two `DGGSpace`s' own arrays.
+- **`chunkextent` was kept and given the *cheap* method the card asks for.**
+  After `connectedchunks` went it had zero callers and zero specializations, but
+  it is `public`, documented, and asserted by the qualified-contract testset.
+  `RasterGrid` now specializes it at `O(1)` in the chunk count instead of
+  materializing the whole vector, which is the difference between keeping the
+  card's letter and its point.
 
 ## Phase 5 — one final weight block representation
 

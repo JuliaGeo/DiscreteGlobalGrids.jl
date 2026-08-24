@@ -322,6 +322,60 @@ function maxneighbors(grid::AbstractGrid, k::Integer,
     return isnothing(sys) ? nothing : maxneighbors(sys, k, connectivity)
 end
 
+"""
+    STATIC_RING_CAP
+    STATIC_RING_BYTES
+
+Where a declared bound stops buying a stack container: `64` elements, and `512`
+bytes of them. Past either, [`static_capacity`](@ref) reports no bound and the
+heap path runs instead, exactly as for a system that declared nothing.
+
+Both are **compile-time** limits, not memory ones. `SmallVector{N,T}` is a
+distinct type per `N`, so every `N` respecialises the whole neighbourhood stack,
+and past the element limit each specialisation also emits more code for the same
+work.
+
+The two limits are not the same measurement. `STATIC_RING_CAP` is a cliff: for
+an 8-byte id a clip loop emits 315 bytes of native code per element at `N == 64`
+and 492 at `N == 65` — a 56% step for one more slot, with no recovery above it
+(752 at `N == 96`). `STATIC_RING_BYTES` is not; a 16-byte id shows no such step,
+but costs roughly 3.6x as much emitted code per element everywhere, so the byte
+limit bounds the total rather than catching a jump — it stops `S2`'s 16-byte
+`LevelIndex` at 32 elements. For a 4-byte id neither limit is tight: no cliff
+appears through `N == 160`, and the element cap is simply conservative.
+
+`benchmark/maxneighbors.jl` part 4 reproduces the ladder.
+"""
+const STATIC_RING_CAP = 64
+
+@doc (@doc STATIC_RING_CAP)
+const STATIC_RING_BYTES = 512
+
+"""
+    static_capacity(M, ::Type{T}) -> Union{Val,Nothing}
+
+`Val(M)` when a bound of `M` elements of `T` is worth a stack container, and
+`nothing` when it is not — the single decision behind every fixed-capacity
+buffer in the neighbourhood family, so the walks and the sweeps cannot disagree
+about where the heap path starts.
+
+`nothing` in gives `nothing` out, which is how an undeclared
+[`maxneighbors`](@ref) or [`maxring`](@ref) reaches the heap path.
+"""
+@inline static_capacity(::Nothing, ::Type) = nothing
+
+# Foldable and inlined so that a caller whose `M` is a compile-time constant
+# gets a concrete `Val{N}` rather than the abstract `Val` this otherwise infers
+# to. That difference decides whether the walk's buffers land on the stack, so
+# it is worth spelling out to the compiler.
+Base.@assume_effects :foldable @inline function static_capacity(M::Integer,
+        ::Type{T}) where {T}
+    m = Int(M)
+    (0 <= m <= STATIC_RING_CAP && m * sizeof(T) <= STATIC_RING_BYTES) ||
+        return nothing
+    return Val(m)
+end
+
 # ===========================================================================
 # Traits with defaults
 # ===========================================================================

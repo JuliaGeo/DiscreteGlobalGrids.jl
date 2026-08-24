@@ -32,7 +32,7 @@ ConservativeRegridding = {rev = "e8fc67f420da0362d59b354e2db6fcde8107fec0", url 
 DiscreteGlobalGrids = {path = ".."}
 DiscreteGlobalGridsVisualization = {path = "../lib/DiscreteGlobalGridsVisualization"}
 DocumenterVitepress = {rev = "as/bonito-plugin", url = "https://github.com/LuxDL/DocumenterVitepress.jl.git"}
-GeometryOps = {rev = "35996798bcc34d325452cfa73926b37918ece65c", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+GeometryOps = {rev = "as/spherical-fh-clipping", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 Geomorphometry = {rev = "clipped-neighbors", url = "https://github.com/asinghvi17/GeoArrayOps.jl.git"}
 

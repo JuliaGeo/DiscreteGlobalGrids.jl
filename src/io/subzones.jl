@@ -331,8 +331,14 @@ partial coverage would read back with data cells indistinguishable from fill.
 Ancestor-snapped coverage — the way [`covering`](@ref) and a multi-order query
 name a region — satisfies it by construction.
 """
-function subzone_runs(l::SubzoneLayout, lk::CellLookup; complete::Bool=true)
+function subzone_runs(l::SubzoneLayout, lk::AbstractCellLookup; complete::Bool=true)
     return subzone_runs(l, parent(lk); complete=complete)
+end
+
+# A stored axis is planned through its compressed twin, which is where the
+# position windows this walks actually live.
+function subzone_runs(l::SubzoneLayout, cv::AbstractCellVector; complete::Bool=true)
+    return subzone_runs(l, region(cv); complete=complete)
 end
 
 function subzone_runs(l::SubzoneLayout, cv::CellVector; complete::Bool=true)

@@ -57,6 +57,7 @@ makedocs(;
         "API" => [
             "Region boundaries" => "api/boundaries.md",
             "Reading and writing DGGS stores" => "api/store-io.md",
+            "Sweeping a cube along its chunk lines" => "api/chunk-sweep.md",
             "The ancestor-subzone layout" => "api/subzone-layout.md",
         ],
     ],

@@ -338,6 +338,28 @@ end
         @test_throws ArgumentError DGGV.cellregion([DGG.cellindex(grid, 1)])
     end
 
+    @testset "a set is its cells, not the object holding them" begin
+        cells = patch(7)
+        # Two sets built separately over the same cells: different objects,
+        # equal contents.  `===` says no, which is Julia's default for a struct
+        # over an array, and is why the guards ask with `==`.
+        a, b = DGGV.cellset(cells), DGGV.cellset(DGG.CellVector(DGG.query(SYS,
+            DGG.MultiOrderCoverage(ALPS); level = 7)))
+        @test !(a === b)
+        @test a == b
+        @test hash(a) == hash(b)
+        @test DGGV.cellregion(cells) == DGGV.cellregion(cells)
+
+        # A grid answers in one comparison rather than in `ncells` of them.
+        grid = DGG.levelgrid(SYS, 3)
+        @test DGGV.cellset(grid) == DGGV.cellset(grid)
+        @test DGGV.GridCells(grid) == DGGV.GridCells(grid)
+
+        # And a different set is still a different set.
+        @test DGGV.cellset(patch(6)) != a
+        @test DGGV.cellset(DGG.levelgrid(SYS, 4)) != DGGV.cellset(grid)
+    end
+
     @testset "the dual of a whole level" begin
         # Three cells meet at every corner of an IGeo7 grid, so its dual is a
         # triangulation with `V - E + F == 2`, `3V == 2E` and one face per
@@ -349,7 +371,9 @@ end
             @test mesh.nsplit == 0
             # One vertex per cell and nothing else: a globe has no seam.
             @test length(mesh.positions) == DGG.ncells(grid)
-            @test mesh.vertex_cell == Int32.(1:DGG.ncells(grid))
+            # Nothing is cut, so the cells are the vertices and a value vector
+            # passes through untouched.
+            @test DGGV.spread(1:DGG.ncells(grid), mesh) === 1:DGG.ncells(grid)
             @test DGGV.ntriangles(mesh) == 2 * DGG.ncells(grid) - 4
             # No corner is drawn twice.
             @test length(triangle_set(mesh)) == DGGV.ntriangles(mesh)
@@ -461,13 +485,20 @@ end
         mesh = DGGV.triangulate(globe(), grid)
         @test DGGV.vertex_colors(mesh, values) === values
 
-        # On a map the seam and the poles add vertices, which do need one.
+        # On a map the seam and the poles add vertices, which do need one.  A
+        # vertex the seam created is a point inside a triangle, and takes that
+        # triangle's three values mixed — so it lands between them, never
+        # outside.
         cut = DGGV.triangulate(planar(), grid)
         @test cut.nsplit > 0
         vertex = DGGV.vertex_colors(cut, values)
         @test length(vertex) == length(cut.positions)
-        @test vertex == values[cut.vertex_cell]
         @test vertex[1:DGG.ncells(grid)] == values
+        for k in 1:length(cut.extra_tri)
+            v = vertex[DGG.ncells(grid) + k]
+            corners = values[collect(cut.extra_tri[k])]
+            @test minimum(corners) - 1.0e-9 <= v <= maximum(corners) + 1.0e-9
+        end
 
         @test DGGV.vertex_colors(cut, :red) === :red
         @test_throws ArgumentError DGGV.vertex_colors(cut, values[1:3])
@@ -477,6 +508,20 @@ end
         A = DD.DimArray(values, DGG.Cells(DGG.CellLookup(grid)))
         @test DGGV.vertex_colors(mesh, A) == values
         @test DGGV.vertex_colors(mesh, A) isa Vector{Float64}
+    end
+
+    @testset "ntasks follows the session, not the precompile worker" begin
+        # A recipe's attribute defaults are evaluated once, where the `@recipe`
+        # block is read — during precompilation, in a worker with one thread.
+        # A default of `Threads.nthreads()` therefore bakes `1` into the package
+        # image and no session ever gets more, which is what this pins.
+        cells = patch(6)
+        for make in (dggpoly, dggsurface, dggresample)
+            _, _, plot = make(cells)
+            @test plot.ntasks[] === Makie.automatic
+        end
+        @test DGGV.task_count(Makie.automatic) == Threads.nthreads()
+        @test DGGV.task_count(4) == 4
     end
 
     @testset "heights are part of the geometry" begin
@@ -500,7 +545,7 @@ end
         raised = DGGV.triangulate(planar(), grid, zs)
         @test eltype(raised.positions) === Point3d
         @test [Point2d(p[1], p[2]) for p in raised.positions] == flat.positions
-        @test [p[3] for p in raised.positions] == zs[raised.vertex_cell]
+        @test [p[3] for p in raised.positions] == DGGV.spread(zs, raised)
 
         @test_throws ArgumentError DGGV.triangulate(planar(), grid, zs[1:3])
     end
@@ -559,7 +604,7 @@ end
 
         figure, axis, plot = dggsurface(cells, values; color = values)
         @test [p[3] for p in plot.surfacemesh[].positions] ==
-            values[plot.surfacemesh[].vertex_cell]
+            DGGV.spread(values, plot.surfacemesh[])
         @test saves(figure)
 
         # A one-dimensional cube axis is both at once: its lookup names the
@@ -572,7 +617,7 @@ end
         figure, axis, plot = dggsurface(A; color = A)
         @test plot.surfacemesh[].ncells == n
         @test [p[3] for p in plot.surfacemesh[].positions] ==
-            values[plot.surfacemesh[].vertex_cell]
+            DGGV.spread(values, plot.surfacemesh[])
         @test saves(figure)
 
         # A dimension that is not cells names no surface.
@@ -585,7 +630,113 @@ end
         before = plot.surfacemesh[]
         plot.color = Float64.(length(cells):-1:1)
         @test plot.surfacemesh[] === before
-        @test plot.mesh_color[] == Float64.(length(cells):-1:1)[before.vertex_cell]
+        @test plot.mesh_color[] == DGGV.spread(Float64.(length(cells):-1:1), before)
+    end
+
+    @testset "a recolour and a re-raise write over their own buffers" begin
+        # A whole level crosses the map's cut and both poles, so the surface has
+        # vertices the cells did not give it and the colours need a buffer.
+        cells = DGG.CellVector(DGG.levelgrid(SYS, 2))
+        n = length(cells)
+        values = Float64.(1:n)
+
+        figure, axis, plot = dggsurface(cells, values; color = values)
+        positions, colors = plot.mesh_positions[], plot.mesh_color[]
+        @test length(colors) > n
+
+        plot.color = reverse(values)
+        @test plot.mesh_color[] === colors
+        @test plot.mesh_color[] == DGGV.spread(reverse(values), plot.surfacemesh[])
+
+        Makie.update!(plot, cells, values .* 2)
+        @test plot.mesh_positions[] === positions
+        @test [p[3] for p in plot.mesh_positions[]] ==
+            DGGV.spread(2 .* values, plot.surfacemesh[])
+
+        # What a plot does not own it does not write over.  A flat map at no
+        # height draws the topology's own vertices, and a surface with nothing
+        # cut draws the caller's own colours.
+        figure, axis, flat = dggsurface(cells; color = values)
+        @test flat.mesh_positions[] === flat.surfacetopology[].positions
+
+        figure = Figure(size = (400, 300))
+        onglobe = dggsurface!(GlobeAxis(figure[1, 1]), cells; color = values)
+        @test onglobe.mesh_color[] === values
+    end
+
+    @testset "a surface can be coloured by its own heights" begin
+        cells = patch(7)
+        values = Float64.(1:length(cells))
+
+        figure, axis, plot = dggsurface(cells, values; color = nothing)
+        @test plot.mesh_color[] == DGGV.spread(values, plot.surfacemesh[])
+        @test saves(figure)
+
+        # Explicit colour still wins, and so does the default, which is a
+        # colour rather than a field.
+        figure, axis, plot = dggsurface(cells, values)
+        @test plot.mesh_color[] != DGGV.spread(values, plot.surfacemesh[])
+    end
+
+    @testset "a cube axis names cells for every recipe" begin
+        cells = patch(7)
+        n = length(cells)
+        values = Float64.(1:n)
+        A = DD.DimArray(values, DGG.Cells(DGG.CellLookup(cells)))
+
+        # `dggpoly` and `dggresample` read only the cells: a cube axis is a
+        # cell set for them, and its values are a colour like any other.
+        @test length(DGGV.cellset(A)) == n
+        @test length(only(Makie.convert_arguments(DGGV.DGGPoly, A))) == n
+        @test length(first(Makie.convert_arguments(DGGV.DGGResample, A))) == n
+
+        figure, axis, plot = dggpoly(A; color = A)
+        @test plot.cellmesh[].ncells == n
+        @test saves(figure)
+    end
+
+    @testset "a mesh to hand somewhere else" begin
+        cells = patch(7)
+        n = length(cells)
+        values = Float64.(1:n)
+        region = DGGV.cellregion(cells)
+
+        # The default space is the unit sphere, and a height is a height above
+        # it — the same reading the recipe gives a globe.
+        flat = GeometryBasics.mesh(region)
+        @test length(GeometryBasics.coordinates(flat)) == n
+        @test all(p -> sqrt(sum(abs2, p)) ≈ 1, GeometryBasics.coordinates(flat))
+
+        raised = GeometryBasics.mesh(region, values ./ 100)
+        @test [sqrt(sum(abs2, p)) for p in GeometryBasics.coordinates(raised)] ≈
+            1 .+ values ./ 100
+        @test GeometryBasics.faces(raised) == DGGV.triangulate(globe(), cells).faces
+
+        # A value per cell becomes a value per vertex, including where the map's
+        # cut has made more vertices than there are cells.
+        whole = DGGV.cellregion(DGG.levelgrid(SYS, 2))
+        heights = Float64.(1:length(whole))
+        cut = GeometryBasics.mesh(whole, heights; target = planar(), color = heights)
+        @test length(GeometryBasics.coordinates(cut)) > length(whole)
+        @test cut.color ==
+            DGGV.spread(heights, DGGV.triangulate(planar(), whole, heights))
+
+        # A cube axis is cells and heights at once, but it takes both verbs to
+        # say so — `mesh` is `GeometryBasics`', and only our own types reach it.
+        A = DD.DimArray(values ./ 100, DGG.Cells(DGG.CellLookup(cells)))
+        @test GeometryBasics.coordinates(GeometryBasics.mesh(DGGV.cellregion(A), A)) ==
+            GeometryBasics.coordinates(raised)
+
+        # The patch mesh is the other one the package draws, and carries no
+        # heights.
+        patches = GeometryBasics.mesh(DGGV.cellset(cells); color = values)
+        @test length(patches.color) == length(GeometryBasics.coordinates(patches))
+        @test patches.color[1] == values[1]
+        @test_throws ArgumentError GeometryBasics.mesh(DGGV.cellset(cells), values)
+
+        # A set spanning levels has no surface, but it does have patches.
+        spanning = DGG.MultiOrderCellSet(SYS, DGG.MultiOrderCoverage(ALPS); level = 7)
+        @test GeometryBasics.mesh(DGGV.cellset(spanning)) isa GeometryBasics.Mesh
     end
 
     # ------------------------------------------------------------------
@@ -604,6 +755,12 @@ end
         ylims!(axis, 46.5 - width / 2, 46.5 + width / 2)
         return axis
     end
+
+    "The arithmetic mean.  A reduction is handed to the plot, so it need not be one the package knows."
+    mean(v) = sum(v) / length(v)
+
+    "The middle value of `v`, or the lower of the two middle ones."
+    median(v) = partialsort(collect(v), (length(v) + 1) ÷ 2)
 
     @testset "a pyramid over a cell set" begin
         cells = patch(9)
@@ -786,6 +943,187 @@ end
         plot.color = Float64.(length(cells):-1:1)
         @test plot.resampled[] === built
         @test plot.cellcolor[] == Float64.(length(cells):-1:1)[built.index]
+    end
+
+    @testset "a resampled plot can carry heights" begin
+        cells = patch(9)
+        n = length(cells)
+        values = Float64.(1:n)
+
+        # Without heights the frame is drawn as patches, as it always was.
+        figure, axis, plot = dggresample(cells; color = values)
+        @test plot.zs[] === nothing
+        @test any(p -> p isa DGGV.DGGPoly, plot.plots)
+
+        figure, axis, plot = dggresample(cells, values; color = values)
+        @test any(p -> p isa DGGV.DGGSurface, plot.plots)
+        drawn = frame(figure, plot)
+        region, index = DGGV.surfaceframe(drawn)
+
+        # Heights and colours are both indexed by the cells handed in, so both
+        # are the same gather over the frame.
+        @test length(region) == length(drawn)
+        @test plot.cellheights[] == values[index]
+        @test plot.cellcolor[] == values[index]
+
+        # The frame is one level, which is what lets it have a surface at all.
+        @test DGG.level(region.region) == drawn.level
+        @test saves(figure)
+
+
+        # Re-raising is the same gather again: the cells are the cells the
+        # frame was built from, so the frame stands and only the heights move.
+        Makie.update!(plot, cells, values .* 2)
+        @test frame(figure, plot) === drawn
+        @test plot.cellheights[] == 2 .* values[index]
+
+        # A source and a vector of ids is still a source and its ids.
+        ids = collect(cells)
+        @test only(Makie.convert_arguments(DGGV.DGGResample, SYS, ids)[2:2]) === nothing
+
+        # A globe raises above the ellipsoid here as it does anywhere else.
+        globefigure = Figure(size = (400, 300))
+        globe = GlobeAxis(globefigure[1, 1])
+        onglobe = dggresample!(globe, cells, values ./ 50; color = values)
+        @test length(frame(globefigure, onglobe)) > 0
+        @test saves(globefigure)
+
+        # Looking away from the data leaves a frame with no cells in it, and a
+        # surface over no cells is a surface with no triangles, not an error.
+        away, awayaxis, awayplot = dggresample(cells, values; color = values)
+        xlims!(awayaxis, -170, -160)
+        ylims!(awayaxis, -80, -70)
+        @test length(frame(away, awayplot)) == 0
+        @test length(awayplot.displayed[]) == 0
+        @test saves(away)
+    end
+
+    @testset "the leaves under a drawn cell" begin
+        cells = patch(9)
+        pyramid = DGGV.CellPyramid(DGGV.cellset(cells))
+        leaves = DGGV.subtreeranges(pyramid)
+
+        # Every level-7 ancestor of the patch claims a run of it; the runs
+        # ascend, do not overlap, and between them are the whole patch.  That
+        # is the property that lets a range stand in for a list of leaves.
+        coarse = unique(DGG.ancestor(SYS, c, 7) for c in cells)
+        runs = [leaves(c) for c in coarse]
+        @test issorted(runs; by = first)
+        @test all(i -> last(runs[i]) < first(runs[i + 1]), 1:length(runs) - 1)
+        @test sum(length, runs) == length(cells)
+        # And a run holds the cells under its own ancestor, not its neighbour's.
+        @test all(k -> DGG.ancestor(SYS, cells[k], 7) == coarse[1], runs[1])
+
+        # A cell of the leaf level is its own one leaf, and a cell over nothing
+        # gets an empty run rather than a wrong one.
+        @test leaves(cells[5]) == 5:5
+        away = DGG.ancestor(SYS, DGG.cellat(DGG.levelgrid(SYS, 9), -169.5, -46.5), 7)
+        @test isempty(leaves(away))
+    end
+
+    @testset "a summarised frame reads every leaf" begin
+        cells = patch(11)
+        values = Float64.(1:length(cells))
+
+        figure = Figure(size = (400, 300))
+        axis = Axis(figure[1, 1])
+        plot = dggresample!(axis, cells; color = values, aggregate = mean)
+        drawn = frame(figure, plot)
+
+        # The frame is far coarser than the data, and the runs partition it:
+        # every value handed in is read by exactly one drawn cell.
+        @test 0 < length(drawn) < length(cells) ÷ 10
+        @test sum(length, drawn.index) == length(cells)
+        @test plot.cellcolor[] == [mean(values[g]) for g in drawn.index]
+        @test saves(figure)
+
+        # The reduction is the API, so anything of the shape works — including
+        # two the package has never heard of.
+        for f in (sum, maximum, minimum, mean, median)
+            plot.aggregate = f
+            @test plot.cellcolor[] == [f(values[g]) for g in drawn.index]
+        end
+
+        # A height is indexed by the cells handed in exactly as a colour is, so
+        # it is summarised by the same call over the same runs.
+        raised, _, surface = dggresample(cells, values; color = values, aggregate = mean)
+        lifted = frame(raised, surface)
+        _, index = DGGV.surfaceframe(lifted)
+        @test surface.cellheights[] == [mean(values[g]) for g in index]
+        @test surface.cellcolor[] == surface.cellheights[]
+        @test saves(raised)
+    end
+
+    @testset "one reduction in place of another re-reads the frame" begin
+        cells = patch(10)
+        values = Float64.(1:length(cells))
+        figure = Figure(size = (400, 300))
+        axis = Axis(figure[1, 1])
+        plot = dggresample!(axis, cells; color = values, aggregate = mean)
+        built = frame(figure, plot)
+
+        # Which values lie under a drawn cell does not depend on what they are,
+        # so another reduction re-reads the frame rather than descending again.
+        plot.aggregate = maximum
+        @test plot.resampled[] === built
+        @test plot.cellcolor[] == [maximum(values[g]) for g in built.index]
+
+        # Nearest neighbour is a different grouping, though, and that one is
+        # built.
+        plot.aggregate = nothing
+        nearest = frame(figure, plot)
+        @test nearest !== built
+        @test eltype(nearest.index) == Int32
+        @test plot.cellcolor[] == values[nearest.index]
+    end
+
+    @testset "aggregation needs the leaves to sit together" begin
+        cells = patch(8)
+        values = Float64.(1:length(cells))
+        ids = collect(cells)
+
+        # A bare list of ids promises no order, so there is no run to reduce
+        # over — and saying so is better than a slower answer or a wrong one.
+        # Nearest neighbour still has a leaf under every centre.
+        figure = Figure(size = (400, 300))
+        @test_throws ArgumentError dggresample!(Axis(figure[1, 1]), SYS, ids;
+            color = values, aggregate = mean)
+        sampled = dggresample!(Axis(figure[2, 1]), SYS, ids; color = values)
+        @test length(frame(figure, sampled)) > 0
+
+        # A5 scatters a subtree through its level, which is the same refusal
+        # for the other of the two reasons.
+        a5 = DGG.A5System()
+        a5cells = DGG.CellVector(DGG.query(a5, DGG.MultiOrderCoverage(ALPS); level = 5))
+        a5values = Float64.(1:length(a5cells))
+        other = Figure(size = (400, 300))
+        @test_throws ArgumentError dggresample!(Axis(other[1, 1]), a5cells;
+            color = a5values, aggregate = mean)
+        onA5 = dggresample!(Axis(other[2, 1]), a5cells; color = a5values)
+        @test length(frame(other, onA5)) > 0
+    end
+
+    @testset "draw chooses the plot, not the arguments" begin
+        cells = patch(9)
+        values = Float64.(1:length(cells))
+
+        # A flat field drawn as a surface: no heights, so `ZeroHeights` stands
+        # in for them, which is what keeps the vertex buffer two-dimensional.
+        figure, axis, plot = dggresample(cells; color = values, draw = :surface)
+        drawn = frame(figure, plot)
+        @test any(p -> p isa DGGV.DGGSurface, plot.plots)
+        @test plot.cellheights[] isa DGGV.ZeroHeights
+        @test length(plot.cellheights[]) == length(drawn) > 0
+        @test saves(figure)
+
+        # Heights as patches is the one pairing with no picture behind it, and
+        # a name that is neither is not quietly ignored.
+        @test_throws ArgumentError dggresample(cells, values; color = values, draw = :patches)
+        @test_throws ArgumentError dggresample(cells; color = values, draw = :blobs)
+
+        # Naming what would have been chosen anyway changes nothing.
+        figure, axis, plot = dggresample(cells; color = values, draw = :patches)
+        @test any(p -> p isa DGGV.DGGPoly, plot.plots)
     end
 
     @testset "recolouring keeps the geometry" begin

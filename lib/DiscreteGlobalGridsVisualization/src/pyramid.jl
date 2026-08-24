@@ -27,7 +27,7 @@ Hand a `CellVector` rather than a `collect` of one when the set is large.
 """
 function celllocator end
 
-celllocator(cv::DGG.CellVector) = c -> something(DGG.cellposition(cv, c), 0)
+celllocator(cv::DGG.AbstractCellVector) = c -> something(DGG.cellposition(cv, c), 0)
 celllocator(gc::GridCells) = c -> something(DGG.cellposition(gc.grid, c), 0)
 
 function celllocator(cells::AbstractVector)
@@ -47,12 +47,12 @@ hierarchy can stand in for it.
 
 Holds the system, the level the data lives at, a spherical cap covering the data
 (estimated from `samples` cells, so that the descent can prune whole branches
-that hold nothing), and the locator that turns a cell back into a position in
-the user's value vector.
+that hold nothing), the cells themselves, and the locator that turns one of them
+back into a position in the user's value vector.
 
 Building one is `O(samples)`, not `O(ncells)`: nothing here walks the data.
 """
-struct CellPyramid{S, G, L}
+struct CellPyramid{S, G, C, L}
     system::S
     leafgrid::G
     leaflevel::Int
@@ -60,6 +60,7 @@ struct CellPyramid{S, G, L}
     capcentre::DGG.UnitSphericalPoint{Float64}
     capradius::Float64
     samplepoints::Vector{DGG.UnitSphericalPoint{Float64}}
+    cells::C
     locate::L
     ncells::Int
 end
@@ -85,7 +86,7 @@ function CellPyramid(cs::CellSet; samples::Integer = 4096)
     centre, radius = _samplecap(sys, cs.cells[first(picks)], points)
 
     return CellPyramid(sys, DGG.levelgrid(sys, leaf), leaf, first(DGG.levels(sys)),
-        centre, radius, points, celllocator(cs.cells), n)
+        centre, radius, points, cs.cells, celllocator(cs.cells), n)
 end
 
 """
@@ -148,4 +149,89 @@ it does: one point location per *drawn* cell, whatever the level below holds.
 function nearest(pyr::CellPyramid, cell)
     centre = DGG.cell_centroid(pyr.system, cell)
     return pyr.locate(DGG.cellat(pyr.leafgrid, centre))
+end
+
+# # Every leaf under a drawn cell
+#
+# Nearest neighbour asks the level below one question — which leaf lies under
+# this cell's centre.  A summary asks after all of them, and listing them would
+# cost what drawing them costs, which is the thing a resampling exists not to
+# do.  Naming them costs nothing, though, wherever a system keeps a subtree
+# together in its canonical order: `DiscreteGlobalGrids.descendant_range` is
+# then the interval of leaf-level *positions* the subtree occupies, and a set
+# stored in that same order meets the interval in one run, found by binary
+# search.  So a grouping is two searches per cell drawn, whatever the subtree
+# under it holds, and only the reduction that follows reads the leaves.
+
+"""
+    LeafPositions(cells, grid)
+
+`cells` as the positions they occupy in `grid`, read one at a time rather than
+built.
+
+Both containers a frame can be summarised over — a cell vector and a grid — hold
+their cells in the level's own order, so this is an ascending vector of integers
+and [`subtreeranges`](@ref) can search it without materialising it.
+"""
+struct LeafPositions{C, G} <: AbstractVector{Int}
+    cells::C
+    grid::G
+end
+
+Base.size(lp::LeafPositions) = (length(lp.cells),)
+
+Base.@propagate_inbounds function Base.getindex(lp::LeafPositions, k::Int)
+    @boundscheck checkbounds(lp, k)
+    return something(DGG.cellposition(lp.grid, lp.cells[k]))
+end
+
+"""
+    leafpositions(cells, grid) -> LeafPositions or nothing
+
+`cells` as leaf-level positions, or `nothing` where they are stored in no order
+worth searching.
+
+A `CellVector` is strictly ascending by construction, and a grid's positions
+ascend in canonical id order, so either can be met by an interval.  A bare
+vector of ids promises nothing of the kind — it is a list, and the honest answer
+for it is that there is no answer.
+"""
+leafpositions(cells::DGG.AbstractCellVector, grid) = LeafPositions(cells, grid)
+leafpositions(cells::GridCells, grid) = LeafPositions(cells, grid)
+leafpositions(::AbstractVector, grid) = nothing
+
+"""
+    subtreeranges(pyramid) -> f
+
+Build `f(cell) -> UnitRange{Int32}`, the positions in the user's value vector of
+every leaf under `cell`, empty where the cell has none.
+
+Throws where the pyramid cannot answer it, rather than falling back on something
+slower: a system whose subtrees are scattered through their level has no such
+range at all, and a bare list of ids does not say where in itself one would
+fall.  Both are conditions on a summary alone — nearest neighbour asks for one
+leaf at a time and works over any backing.
+"""
+function subtreeranges(pyr::CellPyramid)
+    sys = pyr.system
+    DGG.has_sorted_subtrees(sys) || throw(ArgumentError(
+        "`aggregate` needs the leaves under a drawn cell to sit together in the \
+         level below, and $(nameof(typeof(sys))) does not order its cells that \
+         way — `has_sorted_subtrees` is false, so a subtree is scattered \
+         through its level.  Leave `aggregate` unset to resample nearest \
+         neighbour."))
+    positions = leafpositions(pyr.cells, pyr.leafgrid)
+    positions === nothing && throw(ArgumentError(
+        "`aggregate` needs the cells in the level's own order, so that the \
+         leaves under a drawn cell are one run of the values, and a \
+         $(nameof(typeof(pyr.cells))) is a list that promises no order.  Hand a \
+         `CellVector`, a `CellLookup` or a grid, or leave `aggregate` unset to \
+         resample nearest neighbour."))
+    level = pyr.leaflevel
+    return function (cell)
+        r = DGG.descendant_range(sys, cell, level)
+        lo = searchsortedfirst(positions, first(r))
+        hi = searchsortedlast(positions, last(r))
+        return (lo % Int32):(hi % Int32)
+    end
 end

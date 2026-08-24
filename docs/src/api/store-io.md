@@ -44,6 +44,19 @@ however many cells it holds, and a selection over it fetches the chunks it lands
 in and no others. A foreign dense store pays one pass over its ids at open, and
 that pass is what proves them.
 
+A stored axis is also a **region**, and answers the region verbs — `halo`,
+`border`, `interior`, `adjacency` — with the same code a computed one does. It
+does so through [`region`](@ref), which is the axis's compressed
+[`CellVector`](@ref) twin, built on the first call and kept. What that
+conversion costs is the encoding's and not the axis's length: a ranges or
+implicit store converts by arithmetic alone, because a stored interval is a run
+of consecutive ranks and a rank plus one is a position; a dense store reads its
+ids once, in the order that touches each chunk once. Position order is
+preserved either way, which is what lets a result computed through the twin be
+written back against the store's own axis with no permutation. Sweeping a store
+along its own chunk lines is
+[its own page](@ref "Sweeping a cube along its chunk lines").
+
 Refusing to guess is policy. A grid name in no registry, two conventions that
 disagree about the level, an id that names no cell, a length that does not
 check out: all of them raise [`DGGSFormatError`](@ref) naming the check that
@@ -67,7 +80,7 @@ DiscreteGlobalGrids.ChunkedCellVector
 DiscreteGlobalGrids.axisposition
 ChunkManifest
 DiscreteGlobalGrids.chunkmanifest
-nchunks
+nchunks(::ChunkManifest)
 chunkof
 chunkbounds
 ```

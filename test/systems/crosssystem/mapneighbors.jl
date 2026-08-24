@@ -254,11 +254,11 @@ end
         threaded = false)) == parent(coutV)
 
     # Invalid dimensions and pass modes report the failing condition.
-    @test_throws "carries a CellLookup" mapneighbors(probe,
+    @test_throws "carries a cell lookup" mapneighbors(probe,
         DD.DimArray(collect(1.0:4), (DD.X(1:4),)))
     @test_throws "no dimension matching" mapneighbors(probe, cube;
         spatialdim = DD.Ti)
-    @test_throws "not a CellLookup" mapneighbors(probe, cube;
+    @test_throws "not a cell lookup" mapneighbors(probe, cube;
         spatialdim = :time)
     @test_throws "pass must be" mapneighbors(probe, cube; pass = :values)
 

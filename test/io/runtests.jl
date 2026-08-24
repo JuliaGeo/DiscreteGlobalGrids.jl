@@ -30,6 +30,8 @@ using .ChunkedLookups
     include("write.jl")
     include("stores.jl")
     include("subzone_store.jl")
+    # A stored axis answers the region verbs as the cube it came from.
+    include("region.jl")
 end
 
 end # module DGGIOTests

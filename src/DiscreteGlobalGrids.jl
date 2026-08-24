@@ -19,8 +19,9 @@ base grid interface to the five level-grid primitives a system writes instead.
 A bare `Int` is a position in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
 
-A **region** is a subset of one complete level — [`PartialGrid`](@ref),
-[`CellVector`](@ref), [`CellLookup`](@ref) — or a complete level itself, and
+A **region** is a subset of one complete level — [`PartialGrid`](@ref), any
+[`AbstractCellVector`](@ref) or [`AbstractCellLookup`](@ref), so a cube axis read
+from a store as readily as one built in memory — or a complete level itself, and
 [`subtree`](@ref) is the reifier that makes a subtree one. On a region,
 [`neighbors`](@ref) and [`ring`](@ref) return complete-level adjacency clipped
 to membership, and four verbs answer about the region as a whole:
@@ -173,8 +174,8 @@ using .CopernicusDEM: CopernicusDEMSystem
 # DimensionalData wrappers over the dependency-free `Fallbacks.CellVector`.
 include("dimensionaldata.jl")
 
-using .CellLookups: CellLookup, Cells, Covering, Neighbors, Values,
-    NeighborSlices
+using .CellLookups: AbstractCellLookup, CellLookup, Cells, Covering, Neighbors,
+    Values, NeighborSlices
 
 # The store-IO layer. Encodings and the chunked lookup own layout mechanics;
 # conventions are plain-data metadata logic with no Zarr and no arrays.
@@ -337,6 +338,9 @@ systems() = (IGeo7System(), H3System(), HEALPixSystem(),
 # --- Type vocabulary -------------------------------------------------------
 export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
 export AbstractQuadFaceGridSystem
+# The region contract and its cube face: what code meaning "a set of cells at
+# one level" dispatches on, whichever backing produced it.
+export AbstractCellVector, AbstractCellLookup
 export LevelIndex
 export Connectivity, Vertex, Edge
 export Winding, CounterClockwise, Clockwise, CustomOrder, Unordered
@@ -370,6 +374,8 @@ export mapneighbors, foreachneighbors
 # outside, the two insides, and the whole adjacency at once.
 export halo, border, interior
 export adjacency, AdjacencyTable, halocells, halopositions
+# The container those four are answered as, and the conversion into it.
+export region
 
 # --- Reachable by name, not exported ---------------------------------------
 # The lazy walk types: an argument of the verbs above, never a name a caller

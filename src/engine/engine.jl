@@ -14,7 +14,7 @@ module Engine
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractQuadFaceGridSystem,
-    AbstractCellIndex, LevelIndex, Connectivity, Vertex, Edge,
+    AbstractCellIndex, LevelIndex, AbstractCellVector, Connectivity, Vertex, Edge,
     Winding, CounterClockwise, Clockwise, CustomOrder, Unordered,
     ncells, cellindex, cell_boundary, cell_centroid,
     cellposition, rawid, reindex, cellindextypes,

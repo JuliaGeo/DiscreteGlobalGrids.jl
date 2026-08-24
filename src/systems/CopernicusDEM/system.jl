@@ -455,13 +455,13 @@ the eastern lateral over the pole to the western. Later rings are ordered by
 azimuth about the cell centre, from the spoke through the 1-ring's first entry;
 `ring(c, k)` is the final block of `neighbors(c, k)`.
 """
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     _checked_index(g, c)
     steps == 0 && return DGG.LevelIndex[]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    return reduce(vcat, DGG.adjacency_shells(g, c, steps, connectivity))
+    return DGG.shell_disc(g, c, steps, connectivity)
 end
 
 """
@@ -470,12 +470,33 @@ end
 The cells at adjacency distance exactly `k`, on the same closed-form adjacency and the
 same rotational order [`neighbors`](@ref) documents; `k == 0` is `[c]`.
 """
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     _checked_index(g, c)
     steps == 0 && return DGG.LevelIndex[c]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    return steps <= length(shells) ? shells[steps] : DGG.LevelIndex[]
+    return DGG.shell_ring(g, c, steps, connectivity)
+end
+
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    _checked_index(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return DGG.LevelIndex[]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_disc(g, c, Val(K), connectivity)
+end
+
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    _checked_index(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return DGG.LevelIndex[c]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_ring(g, c, Val(K), connectivity)
 end

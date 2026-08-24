@@ -225,14 +225,12 @@ the `SW` spoke; outer rings use azimuth about the cell centre.
 `k == 0` returns an empty container. `k == 1` returns a fixed-capacity
 `SmallVector` without allocation.
 """
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{8,DGG.LevelIndex}()
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    isempty(shells) && return DGG.LevelIndex[]
-    return reduce(vcat, shells)
+    return DGG.shell_disc(g, c, steps, connectivity)
 end
 
 """
@@ -243,12 +241,30 @@ outside the sphere. `k == 0` returns `[c]`; `k == 1` uses the lattice cycle.
 Outer rings are sorted by azimuth about the cell centre from the spoke through
 the `SW` neighbour, with canonical ids breaking ties.
 """
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    steps <= length(shells) || return DGG.LevelIndex[]
-    return shells[steps]
+    return DGG.shell_ring(g, c, steps, connectivity)
+end
+
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{8,DGG.LevelIndex}()
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_disc(g, c, Val(K), connectivity)
+end
+
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return DGG.LevelIndex[c]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_ring(g, c, Val(K), connectivity)
 end

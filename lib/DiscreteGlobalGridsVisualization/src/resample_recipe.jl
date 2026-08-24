@@ -408,8 +408,7 @@ function resampling!(plot::DGGResample)
         (force || plot.dynamic[]) || return nothing
         force || stale(state, scene, Float64(plot.hysteresis[])) || return nothing
 
-        target = plot_target(Makie.to_value(plot.transform_func))
-        plot.wrap[] || (target = uncut(target))
+        target = surface_target(Makie.to_value(plot.transform_func), plot.wrap[])
         view = ScreenView(target, scene, Float64(plot.buffer[]))
         frame = resample_frame(plot.pyramid[], view;
             cellpixels = plot.cellpixels[], maxcells = plot.maxcells[],

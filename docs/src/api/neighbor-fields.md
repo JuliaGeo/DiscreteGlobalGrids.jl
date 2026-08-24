@@ -67,12 +67,24 @@ Three things about them are the contract:
     [plan](@ref "Sweeping a cube along its chunk lines") is what does, in
     [`Values`](@ref)' form.
 
-  - **`Centroid()` is computed per call.** It is `cell_centroid` on the unit
-    sphere, and nothing is cached: a cell shared by six rings has its centroid
-    computed six times over, plus once as a centre. That is the honest cost
-    today, and it is the thing the next milestone attacks. The point is a
-    direction, not a place: distance and bearing want a radius, and stay in the
-    kernel.
+  - **`Centroid()` is `cell_centroid` on the unit sphere, answered from a
+    working set.** A cell's centroid is touched once as a centre and once from
+    every ring that names it, so each sweep task keeps a bounded cache of
+    recent centroids and computes each one on its first touch inside it —
+    automatic, with no knob, and the same values `cell_centroid` gives either
+    way. The key is the local index rather than the visit position, which is
+    what keeps a locality-preserving `order` hitting; a random permutation
+    scatters the keys, the window essentially stops hitting, and the centroid
+    surcharge measured 4.2–4.4× storage order's on the same fixture
+    (`benchmark/needs_centroid.jl`). In storage order it settles at roughly
+    one computation per cell instead of one per touch, and that one is most
+    of what is left: at 117,649 cells the sweep is 48.6 ms against 29.5 ms
+    with the whole grid's centroids prebuilt as `Value(table)`, over a
+    21.8 ms value-only floor. The table is materially faster — some 70% of
+    the residual surcharge — at 24 bytes per cell and a build pass, so the
+    bounded window is the default and the table the opt-in.
+    The point is a direction, not a place: distance and bearing want a radius,
+    and stay in the kernel.
 
 ## Steepest descent, in one pass
 

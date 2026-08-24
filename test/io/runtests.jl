@@ -30,8 +30,10 @@ using .ChunkedLookups
     include("write.jl")
     include("stores.jl")
     include("subzone_store.jl")
-    # A stored axis answers the region verbs as the cube it came from.
+    # A stored axis as a region, and the traversal that follows its chunks.
+    # Both round-trip through a real store, so both live behind the same skip.
     include("region.jl")
+    include("chunk_sweep.jl")
 end
 
 end # module DGGIOTests

@@ -53,7 +53,9 @@ implicit store converts by arithmetic alone, because a stored interval is a run
 of consecutive ranks and a rank plus one is a position; a dense store reads its
 ids once, in the order that touches each chunk once. Position order is
 preserved either way, which is what lets a result computed through the twin be
-written back against the store's own axis with no permutation.
+written back against the store's own axis with no permutation. Sweeping a store
+along its own chunk lines is
+[its own page](@ref "Sweeping a cube along its chunk lines").
 
 Refusing to guess is policy. A grid name in no registry, two conventions that
 disagree about the level, an id that names no cell, a length that does not
@@ -78,7 +80,7 @@ DiscreteGlobalGrids.ChunkedCellVector
 DiscreteGlobalGrids.axisposition
 ChunkManifest
 DiscreteGlobalGrids.chunkmanifest
-nchunks
+nchunks(::ChunkManifest)
 chunkof
 chunkbounds
 ```

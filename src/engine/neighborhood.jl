@@ -453,8 +453,12 @@ end
     "data must be laid out against the collection: expected a vector with " *
     "axis 1:$n, got axis $(nd)"))
 
+# `axes`, not `eachindex`: what the contract asks is that position `k` of the
+# data is position `k` of the collection, and a lazy array satisfies that while
+# reporting a chunked `eachindex` that is not a `OneTo`. Passing one is legal
+# and slow — see `foreachchunk` for the traversal that makes it fast.
 _check_data(data::AbstractVector, n::Int) =
-    eachindex(data) == Base.OneTo(n) || _data_mismatch(eachindex(data), n)
+    axes(data) == (Base.OneTo(n),) || _data_mismatch(axes(data, 1), n)
 
 """
     mapneighbors(f, cv; order = StorageOrder(), threaded = true,

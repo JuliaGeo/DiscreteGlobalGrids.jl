@@ -547,6 +547,13 @@ is an `ArgumentError`.
 - [`Values`](@ref): scalar values; the same dimensions as `A`.
 - [`NeighborSlices`](@ref): views across the other dimensions; one result per
   cell, on the cell dimension.
+
+With `pass = Values()` and `order = StorageOrder()`, a cube whose data is
+chunked on disk is swept along those chunks rather than cell by cell — see
+[`chunkplan`](@ref). The result is identical either way; what changes is that
+each stored chunk is decoded once instead of once per scalar read. A permutation
+`order` names a visit order over the whole axis and a chunked sweep visits by
+chunk, so the two cannot both be honoured and the permutation wins.
 """
 function mapneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
         pass = Neighbors(), order = StorageOrder(), threaded = true,
@@ -564,11 +571,26 @@ end
 
 function _map_dimarray(::Values, f::F, A, dnum, order, threaded,
         conn) where {F}
+    plan = _chunkedvalues(A, dnum, order, conn)
+    plan === nothing || return _rebuilt(A,
+        _map_values_chunked(f, A, dnum, plan, threaded, conn))
     cv = parent(DD.lookup(A, dnum))
     ndims(A) == 1 && return _rebuilt(A,
         mapneighbors(f, cv, parent(A); order, threaded, connectivity = conn))
     return _rebuilt(A, _map_slices(f, A, dnum, cv, order, threaded, conn))
 end
+
+# Values flow through the traversal rather than being fetched by the callback,
+# which is what lets a cube whose data is chunked on disk be swept along those
+# chunks instead of cell by cell. `chunks.jl` owns the plan and answers these
+# two; everything without a chunk grid takes the direct path above.
+#
+# `Neighbors()` deliberately has no such route: its callback closes over the
+# ORIGINAL array and indexes it by the handles it is given, so a sweep over
+# blocks would hand it positions into a block and it would read them from the
+# whole cube. `foreachchunk` is the chunk-following form of that pass.
+_chunkedvalues(A, dnum, order, conn) = nothing
+function _map_values_chunked end
 
 function _map_dimarray(::NeighborSlices, f::F, A, dnum, order, threaded,
         conn) where {F}

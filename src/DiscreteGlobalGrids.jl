@@ -200,6 +200,11 @@ include("io/conventions.jl")
 include("io/subzones.jl")
 include("io/api.jl")
 
+# Following the chunk lines of a stored cube: the plan, the runner, and the
+# out-of-core neighbourhood sweep built on them. Reads the cube layer above and
+# the region verbs below it.
+include("chunks.jl")
+
 # Last: the regridding face reads the grids, the compressed collection, and the
 # cube axis alike.
 include("regridding.jl")
@@ -376,6 +381,11 @@ export halo, border, interior
 export adjacency, AdjacencyTable, halocells, halopositions
 # The container those four are answered as, and the conversion into it.
 export region
+
+# --- Following a stored cube's chunk lines ---------------------------------
+export chunkplan, foreachchunk, mapneighbors!
+export MapChunkPlan, MapChunk, ChunkCube
+export chunkcube, chunkpositions, chunkrange, chunkhalo, halowidth
 
 # --- Reachable by name, not exported ---------------------------------------
 # The lazy walk types: an argument of the verbs above, never a name a caller

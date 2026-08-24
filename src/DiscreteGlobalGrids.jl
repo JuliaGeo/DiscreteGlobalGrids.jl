@@ -134,7 +134,8 @@ using .Engine: PartialGrid,
     SubsetIndexedCell, cellid,
     mapneighbors, foreachneighbors, StorageOrder,
     NeighborCallbackError,
-    AbstractNeed, Cell, Index, Local, Global, Value, Centroid
+    AbstractNeed, Cell, Index, Local, Global, Value, Centroid,
+    cellfield
 
 # Internal extension points for system-specific subtree walkers and shell
 # winding.
@@ -411,6 +412,8 @@ public StorageOrder
 # The fields a neighbourhood sweep can be asked to stream, and the two index
 # spaces `Index` names.
 public AbstractNeed, Cell, Index, Local, Global, Value, Centroid
+# The vector a `Value` reads when the quantity is computed rather than stored.
+public cellfield
 # A tuning knob for the default `node_extent`, read by no caller that does not
 # implement a system.
 public cap_inflation

@@ -332,6 +332,101 @@ end
                    output
 end
 
+# One read of a field, measured inside a function that receives it, and
+# summing a component so no read is dead code.
+readfield!(acc, a, ks) = (for k in ks
+    acc[] += a[k][1]
+end; nothing)
+
+function fieldbytes(a, ks)
+    acc = Ref(0.0)
+    readfield!(acc, a, ks)
+    return @allocated readfield!(acc, a, ks)
+end
+
+# `Centroid()` is the collection's centroid field asked for by name, so the
+# spelled-out field must answer the same numbers however much of itself it
+# already knows. Each `known` below kills a different reader: an ignored
+# `known` (the table row), a subset probed with the swept collection's index
+# instead of the subset's own (the border row — those two index spaces differ
+# on every cell but the first), and an entry the subset does not carry read
+# rather than computed (the empty row, where every read must fall through).
+@testset "a centroid field answers Centroid(), whatever it knows" begin
+    sys = DGG.IGeo7System()
+    cv = CellVector(rooted_pg(sys, 1, 3))
+    n = length(cv)
+    data = collect(1.0:n)
+    table = [cell_centroid(cv.grid, c) for c in cv]
+
+    bd = cv[collect(DGG.border(cv))]
+    @test 0 < length(bd) < n
+    bcube = DD.DimArray([cell_centroid(cv.grid, c) for c in bd],
+        (Cells(CellLookup(bd)),))
+    ecube = DD.DimArray(eltype(table)[], (Cells(CellLookup(cv[1:0])),))
+
+    want = mapneighbors(record, cv; needs = (Value(data), Centroid()),
+        threaded = false)
+    @testset "known = $label" for (label, known) in
+                                  ("nothing" => nothing,
+                                   "the whole table" => table,
+                                   "the border" => bcube,
+                                   "an empty subset" => ecube)
+        a = DGG.cellfield(cell_centroid, cv; known)
+        @test eltype(a) === eltype(table)
+        # The field is a vector in its own right: readable with no sweep
+        # around it, and answering the per-cell verb at every index.
+        @test collect(a) == table
+        @test mapneighbors(record, cv; needs = (Value(data), Value(a)),
+            threaded = false) == want
+        # The field is shared by every task and the readers are not, so a
+        # threaded sweep answers the sequential one's numbers.
+        @test mapneighbors(record, cv; needs = (Value(data), Value(a)),
+            threaded = true) == want
+        # Reading is pure: nothing is remembered, so the second read of the
+        # same index answers the same value and costs no allocation.
+        @test fieldbytes(a, 1:n) == 0
+    end
+
+    # A field is bounds-checked like the vector it is.
+    @test_throws BoundsError DGG.cellfield(cell_centroid, cv)[n + 1]
+
+    # A field is read by local index, so one built over OTHER cells of the same
+    # length answers a different cell's value in every slot without a single
+    # index leaving the axis: the layout check cannot see it and the
+    # collection check must. Sibling subtrees at the same level are exactly
+    # that pair.
+    other = CellVector(subtree(sys, cellindex(levelgrid(sys, 1), 4), 4))
+    @test length(other) == n
+    @test other != cv
+    @test_throws ArgumentError mapneighbors(record, cv;
+        needs = (Value(data), Value(DGG.cellfield(cell_centroid, other))),
+        threaded = false)
+
+    # The check is over cells, not over object identity: the dim-array route
+    # sweeps the lookup's own vector, and a field the caller built by naming
+    # the cube's cells is over the same cells in a different object. Rejecting
+    # it would make the cube route unusable with a field.
+    A = DD.DimArray(copy(data), (Cells(CellLookup(cv)),))
+    rebuilt = CellVector(DGG.cellset(DD.lookup(A, 1)))
+    @test rebuilt !== parent(DD.lookup(A, 1))
+    @test rebuilt == cv
+    @test map(parent, mapneighbors(record, A;
+        needs = (Value(data), Value(DGG.cellfield(cell_centroid, rebuilt))),
+        threaded = false)) == want
+
+    # A complete field is read straight through: the sweep builds no window
+    # for it, so a sweep over one allocates exactly what the same sweep with
+    # no field in it does. A window built anyway would show up here as half a
+    # megabyte.
+    big = CellVector(rooted_pg(sys, 1, 5))
+    bigdata = collect(1.0:length(big))
+    full = DGG.cellfield(cell_centroid, big;
+        known = [cell_centroid(big.grid, c) for c in big])
+    @test sweepbytes(slopesum, big, (Value(bigdata), Value(full));
+        threaded = false) ==
+          sweepbytes(valuesum, big, (Value(bigdata),); threaded = false)
+end
+
 # A field request on a cube runs the same sweep on the cell axis and hands
 # back the caller's own lookups. One system suffices: the forward is
 # system-generic and the numbers are pinned to the CellVector layer's.

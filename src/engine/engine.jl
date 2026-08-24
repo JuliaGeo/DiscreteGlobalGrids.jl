@@ -77,6 +77,9 @@ include("cell_vector.jl")
 include("stencil.jl")
 # The indexed iterator depends on the stencil and window helpers.
 include("neighborhood.jl")
+# A vector over the collection that knows some entries and computes the rest,
+# and the bounded per-task reader a sweep wraps one in.
+include("cellfield.jl")
 # The field requests resolve against the clip the sweep above already made.
 include("needs.jl")
 # The region verbs read every container above and the cursor the sweeps use.

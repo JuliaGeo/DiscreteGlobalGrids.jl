@@ -114,10 +114,76 @@
 # implementation and not reproducible from this file -- because the misses a
 # bigger one removes (1.080 -> 1.004 centroids per cell) are worth under a
 # millisecond here. W is a hit-rate choice rather than a time one.
+#
+# After `Centroid()` became a CELL FIELD, measured 2026-08-24. `Centroid()` now
+# resolves to `Value(cellfield(cell_centroid, cv))`; the window is the field's
+# per-task reader, and it is handed the cell the sweep already decoded, so a
+# miss computes without decoding it again. Two rows price the two spellings of
+# a field the caller builds itself:
+#
+#   4. `(Value, Value(field, full))`    a field whose `known` covers the whole
+#                                       collection -- read straight through,
+#                                       with no window at all, so this is row
+#                                       3 with one wrapper on it.
+#   5. `(Value, Value(field, border))`  a field whose `known` is the border
+#                                       alone (2,184 of 117,649 cells; 6,558
+#                                       of 823,543), so nearly every window
+#                                       miss pays a membership probe against
+#                                       that subset before computing.
+#
+# Three states of this package's source, run interleaved in ONE session on one
+# machine (IGeo7, Julia 1.12.6, 8 threads, best of 3 per cell): HEAD = the M2a
+# `_CentroidWindow`; SPIKE = the first cell-field version, whose window miss
+# re-decoded `cv[k]`; FIELD = the adopted one, whose miss is handed the cell.
+# Medians over 5 / 4 / 5 runs, [min, max] beside the small ones, milliseconds:
+#
+#   row                           HEAD (M2a)          SPIKE               FIELD
+#   small (Value,)             20.45 [20.1, 21.0] 18.66 [17.7, 20.7] 17.84 [17.4, 20.6]
+#   small (Value, Centroid)    46.91 [45.4, 48.4] 45.31 [43.6, 47.8] 44.33 [42.9, 48.0]
+#   small (Value, table)       28.38 [27.3, 28.9] 27.13 [26.0, 28.4] 26.61 [25.8, 28.6]
+#   small (Value, field full)                   -              27.11 27.03 [25.9, 28.6]
+#   small (Value, field bord)                   -              45.82 45.43 [44.2, 47.5]
+#   small (Value, Cent) shuf  111.3 [108, 115]   122.0 [118, 126]   110.7 [108, 118]
+#   large (Value,)            147.77             137.79             130.32
+#   large (Value, Centroid)   333.66             325.39             317.47
+#   large (Value, table)      201.42             194.92             193.14
+#   large (Value, field full)      -             195.07             191.62
+#   large (Value, field bord)      -             331.70             328.26
+#   small (Value, Cent) thr     7.05               6.76               6.54
+#   large (Value, Cent) thr    48.33              47.27              46.61
+#
+# Read the differences, not the rows. The centroid surcharge over the prebuilt
+# table -- what the window costs where it hits -- is 19.06 / 18.18 / 17.72 ms
+# small and 133.16 / 129.85 / 124.32 ms large, so the field is 7.0% and 6.6%
+# under HEAD and the whole `(Value, Centroid)` sweep 5.5% and 4.9% under it:
+# nothing was paid for making the centroid an ordinary vector read.
+#
+# The shuffled row is where a re-decode shows, because the window misses on
+# nearly every read there. Its surcharge is 80.59 / 91.33 / 81.33 ms: the spike
+# ran 13.3% over HEAD, and handing the miss the cell puts it back (+0.9% of
+# HEAD, inside this file's run-to-run spread). The shuffled/storage ratio this
+# file prints reads 4.28 [4.08, 4.33] at HEAD, 5.03 [4.73, 5.26] for the spike
+# and 4.59 [4.30, 5.22] for the field -- over HEAD's not because the numerator
+# grew but because the denominator shrank 7%, which is the paragraph above.
+#
+# What a partial `known` costs, from rows 2 and 5: the border field computes
+# the centroids the window would have, plus one membership probe against the
+# border on each miss, for +1.25 ms small (+2.8%) and +14.24 ms large (+4.5%)
+# -- 10 to 17 ns a probe over the ~1.03 misses per cell. That is the bar a
+# precomputed subset has to clear: it has to save more `cell_centroid` calls
+# than its probes cost. A complete `known` (row 4) is row 3 to within noise
+# (+0.4 ms small, -1.5 ms large), so the wrapper itself is free.
+#
+# The gate is a fraction of a same-session pair, never an absolute: the field
+# must not be slower than HEAD on any sequential row, and its shuffled
+# surcharge must land inside HEAD's run-to-run spread. Both hold above.
+# Absolutes from an earlier session do not transfer -- the value-only floor
+# alone moved between 17.4 and 20.6 ms inside this one.
 
 using Printf
 using Random: shuffle, Xoshiro
 import DiscreteGlobalGrids as DGG
+import DimensionalData as DD
 using DiscreteGlobalGrids: Value, Centroid
 const F = DGG.Engine
 
@@ -235,6 +301,36 @@ function runsize(sys, tag, base, depth; permuted::Bool = false)
         s = measure("$tag  $label  sequential", () -> f(false))
         t = measure("$tag  $label  threaded", () -> f(true); alloc = false)
         push!(times, s.time)
+        push!(ROWS, (tag = tag, req = label, n = n, seq = s.time,
+            thr = t.time, alloc = s.alloc))
+    end
+
+    # Two spellings of the same field, priced against the rows above.
+    #
+    #   - a COMPLETE field: `known` covers the collection, so the sweep reads
+    #     it straight through with no window at all. This row is the
+    #     `Value(table)` row with one layer of wrapper on it, and any gap
+    #     between them is that wrapper.
+    #   - a PARTIAL field: `known` is the border alone, a few percent of the
+    #     cells, so nearly every window miss pays a membership probe against
+    #     the subset before computing. This row is what the probe costs.
+    bd = cv[collect(DGG.border(cv))]
+    bcube = DD.DimArray(
+        [DGG.cell_centroid(cv.grid, c) for c in bd],
+        (DGG.Cells(DGG.CellLookup(bd)),))
+    full = DGG.cellfield(DGG.cell_centroid, cv; known = table)
+    part = DGG.cellfield(DGG.cell_centroid, cv; known = bcube)
+    f_full(thr) = DGG.mapneighbors(slopekernel, cv;
+        needs = (Value(dem), Value(full)), threaded = thr)
+    f_part(thr) = DGG.mapneighbors(slopekernel, cv;
+        needs = (Value(dem), Value(part)), threaded = thr)
+    @assert f_full(false) == v_cent(false)
+    @assert f_part(false) == v_cent(false)
+    @printf("%-46s %10d of %d\n", "$tag  border cells known", length(bd), n)
+    for (label, f) in (("(Value, Value(field, full))", f_full),
+        ("(Value, Value(field, border))", f_part))
+        s = measure("$tag  $label  sequential", () -> f(false))
+        t = measure("$tag  $label  threaded", () -> f(true); alloc = false)
         push!(ROWS, (tag = tag, req = label, n = n, seq = s.time,
             thr = t.time, alloc = s.alloc))
     end

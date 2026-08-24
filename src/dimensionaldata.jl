@@ -487,6 +487,38 @@ end
 _rebuilt(A::DD.AbstractDimArray, out::Tuple) = map(o -> DD.rebuild(A; data = o), out)
 _rebuilt(A::DD.AbstractDimArray, out) = DD.rebuild(A; data = out)
 
+# ===========================================================================
+# A cube as the `known` half of a cell field
+#
+# `cellfield` lives one layer down, where `DimensionalData` is not in scope,
+# so the cube shape of its `known` argument is named here. A cube over a
+# SUBSET of the swept collection is the partial case: its cells are read from
+# it, and the cells it does not carry are computed.
+# ===========================================================================
+
+DGG.Engine._cellknown(A::DD.AbstractDimArray, cv::CellVector, ::Type{T}) where {T} =
+    _cubeknown(A, cv, T)
+# A one-dimensional cube is both an `AbstractVector` and an `AbstractDimArray`,
+# and it is the cube: a vector `known` is the dense whole-collection form, and
+# a cube carries the cell axis that says which cells its entries are for.
+DGG.Engine._cellknown(A::DD.AbstractDimArray{<:Any,1}, cv::CellVector,
+    ::Type{T}) where {T} = _cubeknown(A, cv, T)
+
+function _cubeknown(A::DD.AbstractDimArray, cv::CellVector, ::Type{T}) where {T}
+    ndims(A) == 1 || throw(ArgumentError(
+        "a cube `known` names one value per cell, so it is one-dimensional; " *
+        "got dims $(map(DD.name, DD.dims(A)))"))
+    lk = DD.lookup(A, _cells_dimnum(A, nothing))
+    sub = parent(lk)
+    system(sub) == system(cv) && level(sub) == level(cv) || throw(ArgumentError(
+        "a cube `known` names cells of the collection being swept, so it " *
+        "carries the same system and level: got $(system(sub)) level " *
+        "$(level(sub)) against $(system(cv)) level $(level(cv))"))
+    eltype(A) <: T || throw(ArgumentError(
+        "`known` holds $(eltype(A)) where the field's element type is $T"))
+    return DGG.Engine._SubsetKnown(sub, parent(A))
+end
+
 """
     Neighbors()
 

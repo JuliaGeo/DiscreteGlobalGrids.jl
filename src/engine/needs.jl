@@ -104,93 +104,39 @@ Request each neighbour's `cell_centroid` on the unit sphere, as a
 `GO.UnitSphericalPoint{Float64}`. Distances and bearings need a radius and
 stay downstream of the sweep.
 
-A cell's centroid is touched once as the visited cell and once from each
-neighbour that names it, so the sweep keeps a bounded working set of recent
-centroids per task and computes each one on its first touch inside that
-window. The values are exactly what `cell_centroid` answers; what the window
-changes is how often it is called.
+`Centroid()` is `Value(`[`cellfield`](@ref)`(cell_centroid, cv))` asked for by
+name, and the two answer identically: the sweep gives each task a bounded
+window over the field, keyed by local index, and computes an entry on its
+first read inside that window. The values are exactly what `cell_centroid`
+answers; what the window changes is how often it is called — about once per
+cell wherever the visit order keeps neighbours close in local index, which
+storage order and a locality-preserving `order` do and a random permutation
+does not.
 
-The window is keyed by the local index, so it hits wherever the visit order
-keeps neighbours close in that index: storage order does, and so does a
-locality-preserving `order` permutation; a random one leaves the window
-missing on nearly every touch. What survives the window is about one
-computation per cell, and most of that is what a full precomputed table
-handed in as `Value(table)` removes — faster still, at O(ncells) memory plus
-its own build, which is why the window is the default and the table the
-caller's opt-in.
+Spell the field out to hand the sweep what you have already computed:
+`Value(cellfield(cell_centroid, cv; known = table))` for the whole
+collection, read straight through with no window at all, or a cube over a
+subset for the part of it you have.
 """
 struct Centroid <: AbstractNeed end
 
-# --- the centroid working set ----------------------------------------------
+# --- resolution ------------------------------------------------------------
 
-# A cell's centroid is touched `1 + degree` times over a sweep — once as the
-# visited cell, once from each neighbour that names it — and those touches are
-# close together in local index wherever the traversal has locality. So one
-# task keeps a direct-mapped cache of `W` recent centroids keyed by local
-# index: slot `k & (W - 1) + 1`, a hit iff that slot's tag is `k`. No
-# replacement policy and no recency bookkeeping — a fully associative LRU of
-# the same size was measured and buys at most 0.008 computations per cell.
-#
-# The key is the local index, so the hit rate is the visit order's property,
-# not the window's: storage order and any locality-preserving `order` keep it,
-# while a random permutation destroys it (see the permuted rows of
-# `benchmark/needs_centroid.jl`). What is left after the window is about one
-# computation per cell — 1.026-1.043 on the registered systems — and that
-# residual is most of what a full precomputed table removes on top, so
-# `Value(table)` stays worth its O(ncells) memory for a caller who can pay it.
-#
-# Local indices start at 1, so a zero tag is an empty slot and no separate
-# valid bit is needed. The window is per task and never shared: two tasks that
-# wrote one buffer would race, and their ranges have no locality with each
-# other anyway.
-struct _CentroidWindow
-    tags::Vector{Int}
-    vals::Vector{USPoint}
-    mask::Int
-end
+# A request is resolved once, at the sweep's entry: every need that names a
+# quantity rather than a place to read it becomes the `Value` of a field, and
+# nothing below this line knows that centroids are special. The field is built
+# here, once per sweep, and shared by every task — it is pure, so that is safe.
+_resolve(::Centroid, cv::CellVector) = Value(cellfield(cell_centroid, cv))
+_resolve(n::AbstractNeed, ::CellVector) = n
 
-# `W` is a power of two so the slot is a mask, no larger than the task itself
-# so a short sweep carries a short window, and capped at 16384 slots (512 KiB
-# of tags and points) because every registered system is already down to
-# 1.008-1.043 computations per cell there and a bigger window is memory spent
-# on nothing.
-function _CentroidWindow(n::Int)
-    W = n >= 16384 ? 16384 : nextpow(2, max(n, 1))
-    return _CentroidWindow(zeros(Int, W), Vector{USPoint}(undef, W), W - 1)
-end
+_resolveneeds(needs::Tuple, cv::CellVector) = map(n -> _resolve(n, cv), needs)
 
-@inline function _centroid(ws::_CentroidWindow, grid, k::Int, c)
-    slot = (k & ws.mask) + 1
-    if (@inbounds ws.tags[slot]) == k
-        return @inbounds ws.vals[slot]
-    end
-    return _centroid_miss(ws, grid, c, slot, k)
-end
+# Each task reads through its own reader: a plain vector is its own, and a
+# field gets the bounded window built inside that task from its range.
+_taskneed(n::Value, r::UnitRange{Int}) = Value(_taskreader(n.data, r))
+_taskneed(n::AbstractNeed, ::UnitRange{Int}) = n
 
-# The miss is deliberately out of line, and it is worth an eighth of what the
-# centroids cost the sweep. A hit is a tag compare and a load, and it is what
-# six of every seven touches are; inlining `cell_centroid` — a lattice decode
-# and a handful of trig calls — beside it bloats the ring loop the sweep
-# spends its time in for the sake of the seventh.
-@noinline function _centroid_miss(ws::_CentroidWindow, grid, c, slot::Int,
-        k::Int)
-    p = cell_centroid(grid, c)::USPoint
-    @inbounds ws.tags[slot] = k
-    @inbounds ws.vals[slot] = p
-    return p
-end
-
-# No window: every touch computes. This is the path a request that never asks
-# for a centroid takes, and it costs it nothing.
-@inline _centroid(::Nothing, grid, k::Int, c) = cell_centroid(grid, c)::USPoint
-
-# One window per task, built only when the request names a centroid — several
-# `Centroid()`s in one request share it. Recursion over the tuple rather than
-# a loop, so the answer is a type the compiler already knows.
-_taskcache(::Tuple{}, ::UnitRange{Int}) = nothing
-_taskcache(::Tuple{Centroid,Vararg{Any}}, r::UnitRange{Int}) =
-    _CentroidWindow(length(r))
-_taskcache(needs::Tuple, r::UnitRange{Int}) = _taskcache(Base.tail(needs), r)
+_taskneeds(needs::Tuple, r::UnitRange{Int}) = map(n -> _taskneed(n, r), needs)
 
 # --- element types ---------------------------------------------------------
 
@@ -200,7 +146,6 @@ _needtype(::Index{Local}, ::CellVector) = Int
 _needtype(::Index{Global}, ::CellVector) = Int
 _needtype(::Index{Type{T}}, ::CellVector) where {T<:AbstractCellIndex} = T
 _needtype(n::Value, ::CellVector) = eltype(n.data)
-_needtype(::Centroid, ::CellVector) = USPoint
 
 _centertype(needs::Tuple, cv::CellVector) =
     Tuple{map(n -> _needtype(n, cv), needs)...}
@@ -210,32 +155,29 @@ _ringstype(needs::Tuple, cv::CellVector, cap) =
 
 # --- per-need answers ------------------------------------------------------
 
-# The visited cell, named by its local index `k` and its handle `c`. `ws` is
-# the task's centroid working set, or `nothing` where no centroid was asked
-# for; every need is handed it so the request can stay a plain `map`.
-@inline _center(::Cell, ::CellVector, k::Int, c, ws) = cellid(c)
-@inline _center(::Index{Local}, ::CellVector, k::Int, c, ws) = k
-@inline _center(::Index{Global}, cv::CellVector, k::Int, c, ws) =
+# The visited cell, named by its local index `k` and its handle `c`.
+@inline _center(::Cell, ::CellVector, k::Int, c) = cellid(c)
+@inline _center(::Index{Local}, ::CellVector, k::Int, c) = k
+@inline _center(::Index{Global}, cv::CellVector, k::Int, c) =
     globalindex(cv.grid, c)::Int
-@inline _center(::Index{Type{T}}, cv::CellVector, k::Int, c, ws) where {T} =
+@inline _center(::Index{Type{T}}, cv::CellVector, k::Int, c) where {T} =
     reindex(T, system(cv), c)
-@inline _center(n::Value, ::CellVector, k::Int, c, ws) = @inbounds n.data[k]
-@inline _center(::Centroid, cv::CellVector, k::Int, c, ws) =
-    _centroid(ws, cv.grid, k, c)
+# Both names for the visited cell reach the reader: `k` is what it is keyed
+# by, and `cellid(c)` is the cell a field would otherwise decode again.
+@inline _center(n::Value, ::CellVector, k::Int, c) = _read(n.data, k, cellid(c))
 
 # One ring slot, named by the clipped handle the sweep produced. The handle
-# carries the neighbour's own local index, which is the key the working set is
-# built on, so a neighbour and the visit that later lands on it share a slot.
-@inline _slot(::Cell, ::CellVector, h::SubsetIndexedCell, ws) = h.cell
-@inline _slot(::Index{Local}, ::CellVector, h::SubsetIndexedCell, ws) = h.index
-@inline _slot(::Index{Global}, cv::CellVector, h::SubsetIndexedCell, ws) =
+# carries both of the neighbour's names — its local index, which is the key a
+# field's reader is built on, so a neighbour and the visit that later lands on
+# it share a slot, and the cell itself, which the clip already resolved.
+@inline _slot(::Cell, ::CellVector, h::SubsetIndexedCell) = h.cell
+@inline _slot(::Index{Local}, ::CellVector, h::SubsetIndexedCell) = h.index
+@inline _slot(::Index{Global}, cv::CellVector, h::SubsetIndexedCell) =
     globalindex(cv.grid, h.cell)::Int
-@inline _slot(::Index{Type{T}}, cv::CellVector, h::SubsetIndexedCell,
-    ws) where {T} = reindex(T, system(cv), h.cell)
-@inline _slot(n::Value, ::CellVector, h::SubsetIndexedCell, ws) =
-    @inbounds n.data[h.index]
-@inline _slot(::Centroid, cv::CellVector, h::SubsetIndexedCell, ws) =
-    _centroid(ws, cv.grid, h.index, h.cell)
+@inline _slot(::Index{Type{T}}, cv::CellVector,
+    h::SubsetIndexedCell) where {T} = reindex(T, system(cv), h.cell)
+@inline _slot(n::Value, ::CellVector, h::SubsetIndexedCell) =
+    _read(n.data, h.index, h.cell)
 
 # --- rings -----------------------------------------------------------------
 
@@ -243,29 +185,29 @@ _ringstype(needs::Tuple, cv::CellVector, cap) =
 # witness names — the same witness `_ringstype` derives the declared type from,
 # so the ring the callback receives and the type the output was sized for
 # cannot disagree. A declared bound keeps the row stack-allocated.
-@inline function _ring(n::AbstractNeed, cv::CellVector, nbrs, cap::Val, ws)
+@inline function _ring(n::AbstractNeed, cv::CellVector, nbrs, cap::Val)
     out = _newring(cap, _needtype(n, cv))
     for h in nbrs
-        out = _pushring(out, _slot(n, cv, h, ws))
+        out = _pushring(out, _slot(n, cv, h))
     end
     return out
 end
 
-@inline function _ring(n::AbstractNeed, cv::CellVector, nbrs, ::Nothing, ws)
+@inline function _ring(n::AbstractNeed, cv::CellVector, nbrs, ::Nothing)
     out = Vector{_needtype(n, cv)}(undef, length(nbrs))
     for (i, h) in enumerate(nbrs)
-        @inbounds out[i] = _slot(n, cv, h, ws)
+        @inbounds out[i] = _slot(n, cv, h)
     end
     return out
 end
 
 # The two tuples the callback receives. `map` over the request, never a loop:
 # the entries have different types and the tuple must stay inferable.
-@inline _centers(needs::Tuple, cv::CellVector, k::Int, c, ws) =
-    map(n -> _center(n, cv, k, c, ws), needs)
+@inline _centers(needs::Tuple, cv::CellVector, k::Int, c) =
+    map(n -> _center(n, cv, k, c), needs)
 
-@inline _rings(needs::Tuple, cv::CellVector, nbrs, cap, ws) =
-    map(n -> _ring(n, cv, nbrs, cap, ws), needs)
+@inline _rings(needs::Tuple, cv::CellVector, nbrs, cap) =
+    map(n -> _ring(n, cv, nbrs, cap), needs)
 
 # --- validation ------------------------------------------------------------
 
@@ -305,7 +247,32 @@ _space_hint(_) = ""
     "$(system(cv)) accepts $(join(cellindextypes(system(cv)), ", ")), " *
     "got $T"))
 
-_checkneed(n::Value, cv::CellVector) = _check_data(n.data, length(cv))
+_checkneed(n::Value, cv::CellVector) =
+    (_check_data(n.data, length(cv)); _checkover(n.data, cv))
+
+# A stored vector says which cell an entry is for by its position alone, so
+# the layout check above is the whole contract. A field also carries the
+# collection it computes against, and a sweep reads it by local index: over
+# any other collection those indices name other cells and every answer would
+# be silently wrong. Identity settles it in one comparison for the field a
+# sweep built itself; otherwise `CellVector`'s own equality does, which is
+# system, level and window bounds — O(number of windows), and O(n) over leaf
+# indices only when the two window representations differ.
+_checkover(::AbstractVector, ::CellVector) = nothing
+_checkover(a::CellField, cv::CellVector) =
+    (a.cv === cv || a.cv == cv) ? nothing : _field_collection(a.cv, cv)
+
+# Two collections of the same length are the case the layout check cannot
+# see, so the message names the cells rather than the count.
+_cvbrief(cv::CellVector) = isempty(cv) ? "no cells of $(system(cv)) level $(level(cv))" :
+                           "$(length(cv)) cells of $(system(cv)) level " *
+                           "$(level(cv)), $(cv[1]) to $(cv[end])"
+
+@noinline _field_collection(from::CellVector, cv::CellVector) =
+    throw(ArgumentError(
+        "a cell field is read by local index, so it must be over the " *
+        "collection being swept, and this one is not: the field is over " *
+        "$(_cvbrief(from)); the sweep is over $(_cvbrief(cv))"))
 # The scheme is checked here, before the sweep starts, rather than left to the
 # first `reindex` call to fail on.
 _checkneed(::Index{Type{T}}, cv::CellVector) where {T<:AbstractCellIndex} =
@@ -328,23 +295,26 @@ _checkneeds(needs, ::CellVector) = _need_tuple(needs)
 # in neighborhood.jl, and `needs = nothing` reaches it by dispatch.
 function _mapneighbors(f::F, cv::CellVector, needs, order, threaded,
         connectivity::Connectivity) where {F}
+    # Check what the caller wrote, then resolve it: an error names the request
+    # the caller made, not the field it would have become.
     _checkneeds(needs, cv)
+    rn = _resolveneeds(needs, cv)
     cap = _capacity(system(cv), connectivity)
-    T = Base.promote_op(f, _centertype(needs, cv), _ringstype(needs, cv, cap))
+    T = Base.promote_op(f, _centertype(rn, cv), _ringstype(rn, cv, cap))
     outs = _outputs(T, length(cv))
-    return _mapstore!(f, outs, cv, needs, connectivity, order,
+    return _mapstore!(f, outs, cv, rn, connectivity, order,
         GOCore.booltype(threaded), cap)
 end
 
 # Built after the output container type is known, like the other `_mapstore!`s.
 # The callback is built once per task rather than once per sweep, so the
-# working set it closes over belongs to that task alone.
+# readers it closes over belong to that task alone.
 function _mapstore!(f::F, outs::O, cv::CellVector, needs::Tuple,
         conn::Connectivity, order, thr, cap::CAP) where {F,O,CAP}
     _runeach!(cv, conn, order, thr, cap) do r
-        ws = _taskcache(needs, r)
+        tn = _taskneeds(needs, r)
         (k, c, nbrs) -> _store!(outs, k,
-            f(_centers(needs, cv, k, c, ws), _rings(needs, cv, nbrs, cap, ws)))
+            f(_centers(tn, cv, k, c), _rings(tn, cv, nbrs, cap)))
     end
     return outs
 end
@@ -352,13 +322,14 @@ end
 function _foreachneighbors(f::F, cv::CellVector, needs, order, threaded,
         connectivity::Connectivity) where {F}
     _checkneeds(needs, cv)
+    rn = _resolveneeds(needs, cv)
     # One capacity witness for the whole sweep: the clip, the rings it feeds
     # and the ring type all come from this value.
     cap = _capacity(system(cv), connectivity)
     _runeach!(cv, connectivity, order, GOCore.booltype(threaded), cap) do r
-        ws = _taskcache(needs, r)
-        (k, c, nbrs) -> (f(_centers(needs, cv, k, c, ws),
-            _rings(needs, cv, nbrs, cap, ws)); nothing)
+        tn = _taskneeds(rn, r)
+        (k, c, nbrs) -> (f(_centers(tn, cv, k, c),
+            _rings(tn, cv, nbrs, cap)); nothing)
     end
     return nothing
 end

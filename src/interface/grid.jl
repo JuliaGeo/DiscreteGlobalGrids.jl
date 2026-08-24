@@ -402,6 +402,21 @@ splat, which is what stops the arity from specialising per `k`.
 `ring` carries [`neighbors`](@ref)' order, container, coverage and
 subset-clipping contracts unchanged — including the position form's, which is
 the same counter-clockwise order read through [`cellposition`](@ref).
+
+# `k` as a type
+
+Both verbs also accept `Val(k)`, which answers the same cells in the same order
+and differs only in what the compiler is told. With `k` in the type, a system's
+declared [`maxring`](@ref) folds into a fixed buffer capacity, so the shell is
+built and returned without reaching the heap:
+
+    ring(grid, c, 2)       # Vector, capacity found at run time
+    ring(grid, c, Val(2))  # SmallVector, capacity found at compile time
+
+Worth reaching for in a focal loop over many cells and not otherwise. The
+`Integer` form is never wrong and never slower than it was; `Val(k)` only
+removes allocations, and only for a system that has opted in — the rest forward
+to the `Integer` form and lose nothing.
 """
 function ring end
 
@@ -441,10 +456,10 @@ function one_ring end
 The cells immediately OUTSIDE `region` that touch one of its members, lazily,
 each exactly once, in ascending complete-level position.
 
-A **region** is a subset of one complete level — [`PartialGrid`](@ref),
-[`CellVector`](@ref), `CellLookup` — or a complete [`AbstractGrid`](@ref), which
-has no outside and therefore an empty halo. `Vertex()` counts vertex contact,
-`Edge()` requires a shared edge.
+A **region** is a subset of one complete level — [`PartialGrid`](@ref), an
+[`AbstractCellVector`](@ref) or [`AbstractCellLookup`](@ref) — or a complete
+[`AbstractGrid`](@ref), which has no outside and therefore an empty halo.
+`Vertex()` counts vertex contact, `Edge()` requires a shared edge.
 
 Yields **positions on the complete level grid**: a halo cell is by definition
 absent from the region and has no position in it. `cells = true` yields cell ids
@@ -492,6 +507,26 @@ function border end
 
 @doc (@doc border)
 function interior end
+
+"""
+    region(x) -> CellVector
+
+The compressed [`CellVector`](@ref) a region is answered as — the container the
+four region verbs, the neighbourhood sweeps, regridding and plotting are all
+written against.
+
+On a [`CellVector`](@ref) or a [`CellLookup`](@ref) this is the identity: they
+already are that container. On a stored axis
+([`ChunkedCellVector`](@ref), [`ChunkedCellLookup`](@ref)) it is the conversion,
+built on first call and kept, so the cost is paid once however many verbs are
+asked afterwards. What that costs depends on the encoding and is documented on
+`CellVector(::ChunkedCellVector)`.
+
+Position order is preserved: position `k` of the result is position `k` of `x`,
+which is what lets a result computed through it be written back against `x`'s
+own axis without a permutation.
+"""
+function region end
 
 """
     adjacency(region; halo = 0, connectivity = Vertex(), threaded = true) -> AdjacencyTable

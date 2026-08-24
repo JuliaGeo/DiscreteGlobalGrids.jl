@@ -16,6 +16,7 @@ using DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge
 
 export test_grid_interface, test_hierarchical_system, test_generic_fallbacks
+export ring_bound_problems, inference_problems, val_form_problems
 
 """Seed used for reproducible default sampling."""
 const DEFAULT_SEED = 20260813
@@ -919,6 +920,146 @@ function ring_cycle_problems(grid, c, shell)
         "(first at $culprit). A closed one-ring has none and a coverage-clipped " *
         "arc has one; more means the members are in some order other than " *
         "rotational")
+    return problems
+end
+
+# One wrapper per literal `k`, so inference sees the same shape a caller's
+# kernel does: the grid and the cell arrive as arguments while `k` is written
+# into the source. Constant-propagating `k` is what collapses the branches, and
+# these must be real methods for `return_types` to have something to infer.
+_infer_nb_d(g, c) = DGG.neighbors(g, c)
+_infer_nb_1(g, c) = DGG.neighbors(g, c, 1)
+_infer_nb_2(g, c) = DGG.neighbors(g, c, 2)
+_infer_rg_1(g, c) = DGG.ring(g, c, 1)
+_infer_rg_2(g, c) = DGG.ring(g, c, 2)
+_infer_nb_1e(g, c) = DGG.neighbors(g, c, 1; connectivity = Edge())
+_infer_rg_2e(g, c) = DGG.ring(g, c, 2; connectivity = Edge())
+
+_infer_nbv_1(g, c) = DGG.neighbors(g, c, Val(1))
+_infer_nbv_2(g, c) = DGG.neighbors(g, c, Val(2))
+_infer_rgv_1(g, c) = DGG.ring(g, c, Val(1))
+_infer_rgv_2(g, c) = DGG.ring(g, c, Val(2))
+
+"""
+    val_form_problems(grid, c; connectivity, k) -> Vector{String}
+
+Whether `ring(grid, c, Val(k))` and `neighbors(grid, c, Val(k))` answer exactly
+what their `Integer` forms answer, element for element and in the same order.
+
+The `Val` form exists only to hand the compiler a capacity, never to compute a
+different neighbourhood, and it is opt-in: a system that defines it takes over
+its own `k >= 2` dispatch, so a system whose `Integer` form does something the
+generic shell walk does not — answering from its own automaton, or clipping to a
+subset — can define the `Val` method and quietly diverge from itself. Nothing
+else in the suite compares the two, because everywhere else they are the same
+call.
+
+The containers are deliberately allowed to differ: `Val` answers with a stack
+`SmallVector` where the `Integer` form answers with a `Vector`. Only the
+sequence of cells has to match.
+"""
+function val_form_problems(grid, c; connectivity::Connectivity = Vertex(),
+        k::Integer = 3)
+    problems = String[]
+    for j in 0:Int(k)
+        for (name, f) in (("ring", DGG.ring), ("neighbors", DGG.neighbors))
+            i_form = collect(f(grid, c, j; connectivity))
+            v_form = collect(f(grid, c, Val(j); connectivity))
+            i_form == v_form || push!(problems,
+                "$name($c, Val($j)) is not $name($c, $j): the Val form gives $v_form " *
+                "and the Integer form gives $i_form. The Val form may return a " *
+                "different container, never a different neighbourhood")
+        end
+    end
+    return problems
+end
+
+"""
+    inference_problems(grid, c; connectivities) -> Vector{String}
+
+Whether `neighbors` and `ring` return a concrete type when `k` is a literal and
+the grid and cell are ordinary run-time values — the shape every focal kernel
+has.
+
+These methods answer with a stack container for the small `k` a system serves
+from its automaton and with a heap `Vector` for the walked shells, so their
+return type is a union until `k` picks a branch. A literal `k` should pick it at
+compile time. When it does not, every caller sees the union: the one-ring, which
+is the hottest path in the package and otherwise allocation-free, gets boxed on
+the way out, and it is the `k = 1` callers who pay for `k >= 2` existing.
+
+Run-time `k` is deliberately not checked. The return type genuinely depends on
+`k` there, so a union is the correct answer and Julia can split it.
+"""
+function inference_problems(grid, c; connectivities = (Vertex(),))
+    problems = String[]
+    A = (typeof(grid), typeof(c))
+    checks = Any[("neighbors(g, c)", _infer_nb_d), ("neighbors(g, c, 1)", _infer_nb_1),
+        ("neighbors(g, c, 2)", _infer_nb_2), ("ring(g, c, 1)", _infer_rg_1),
+        ("ring(g, c, 2)", _infer_rg_2),
+        ("neighbors(g, c, Val(1))", _infer_nbv_1), ("neighbors(g, c, Val(2))", _infer_nbv_2),
+        ("ring(g, c, Val(1))", _infer_rgv_1), ("ring(g, c, Val(2))", _infer_rgv_2)]
+    if Edge() in connectivities
+        push!(checks, ("neighbors(g, c, 1; connectivity = Edge())", _infer_nb_1e))
+        push!(checks, ("ring(g, c, 2; connectivity = Edge())", _infer_rg_2e))
+    end
+    for (label, f) in checks
+        types = Base.return_types(f, A)
+        if length(types) != 1
+            push!(problems, "$label over ::$(typeof(grid)) infers $(length(types)) " *
+                "return types, not one")
+            continue
+        end
+        t = only(types)
+        isconcretetype(t) || push!(problems,
+            "$label over ::$(typeof(grid)) infers $t, which is not concrete. A literal " *
+            "k must select one branch at compile time; leaving the union in place boxes " *
+            "the one-ring for every caller, including the k = 1 ones")
+    end
+    return problems
+end
+
+"""
+    ring_bound_problems(grid, c; connectivity, k) -> Vector{String}
+
+Whether the static ring laws a system declares actually bound the rings it
+produces: `length(ring(c, j)) <= maxring(sys, j, conn)` and
+`length(neighbors(c, j)) <= maxneighbors(sys, j, conn)` for every `j in 1:k`.
+
+Unlike the other order laws this one guards memory, not meaning. A declared
+bound is what sizes the fixed-capacity buffers the shell walk fills, so a bound
+that is too small is not a wrong answer but an overrun — and it is invisible in
+the systems where it is easiest to get wrong, because the scaling law is exact
+on a regular tile and only fails at the handful of irregular ones. A hexagonal
+system's `6k` is attained at every hexagon and over-bounds its twelve pentagons;
+an icosahedral quad system's rings *grow past* a flat `8k` at the 5-valent
+vertices. Both look right on a random sample of ordinary cells.
+
+`nothing` declares no bound and is always legal — it costs the system its stack
+buffers and nothing else.
+"""
+function ring_bound_problems(grid, c; connectivity::Connectivity = Vertex(),
+        k::Integer = 3)
+    problems = String[]
+    sys = DGG.system(grid)
+    sys === nothing && return problems
+    for j in 1:Int(k)
+        rb = DGG.maxring(sys, j, connectivity)
+        if rb !== nothing
+            got = length(collect(DGG.ring(grid, c, j; connectivity)))
+            got <= rb || push!(problems,
+                "ring($c, $j) has $got cells, over maxring of $rb for $connectivity. " *
+                "The declared bound sizes a fixed-capacity buffer, so this is an " *
+                "overrun and not merely a loose law")
+        end
+        nb = DGG.maxneighbors(sys, j, connectivity)
+        if nb !== nothing
+            got = length(collect(DGG.neighbors(grid, c, j; connectivity)))
+            got <= nb || push!(problems,
+                "neighbors($c, $j) has $got cells, over maxneighbors of $nb for " *
+                "$connectivity")
+        end
+    end
     return problems
 end
 
@@ -1842,7 +1983,23 @@ function test_hierarchical_system(sys;
                             @test neighbor_order_problems(grid, c; connectivity = conn,
                                 k = neighbor_k, require_rotational_rings) == String[]
                         end
+                        # Declared ring laws must bound the rings actually
+                        # produced: these size stack buffers, so a violation is
+                        # an overrun rather than a loose bound.
+                        @test ring_bound_problems(grid, c; connectivity = conn,
+                            k = neighbor_k) == String[]
+                        # The Val form is a capacity hint, never a different
+                        # neighbourhood.
+                        @test val_form_problems(grid, c; connectivity = conn,
+                            k = neighbor_k) == String[]
                     end
+                end
+                # Inference reads types, not values, so this is one law per grid
+                # rather than one per sampled cell.
+                for l in tested
+                    isempty(last(samples[l])) && continue
+                    @test inference_problems(grids[l], first(last(samples[l]));
+                        connectivities) == String[]
                 end
                 ordered || skip!(skips, unimplemented_skip("the ring/disc order laws", sys,
                     "neighbors(::$(typeof(grids[first(tested)])), " *

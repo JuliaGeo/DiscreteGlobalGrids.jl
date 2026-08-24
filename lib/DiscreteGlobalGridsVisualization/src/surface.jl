@@ -56,36 +56,6 @@ Base.@propagate_inbounds function Base.getindex(z::ZeroHeights, i::Int)
     return 0.0
 end
 
-"""
-    SurfaceMesh(positions, faces, vertex_cell, ncells, nsplit)
-
-A set of DGGS cells as one interpolated surface in an axis's data space.
-
-  * `positions` — the vertices.  The first `ncells` are the cells' centroids in
-    cell order; the rest belong to triangles cut at the map's edge.
-  * `faces` — the triangles of the grid's dual, over `positions`.
-  * `vertex_cell` — the cell each vertex takes its value from; the identity over
-    the first `ncells`.
-  * `ncells` — the length a colour vector must have.
-  * `nsplit` — triangles cut at the seam or capped at a pole.  Zero on a globe.
-
-A vertex is a `Point2d` on a flat map and a `Point3d` on a globe, or on a flat
-map given heights — see [`triangulate`](@ref).
-
-Built by [`triangulate`](@ref).  Compare [`CellMesh`](@ref), which draws the
-same cells as flat patches.
-"""
-struct SurfaceMesh{P}
-    positions::Vector{P}
-    faces::Vector{GLTriangleFace}
-    vertex_cell::Vector{Int32}
-    ncells::Int
-    nsplit::Int
-end
-
-Base.isempty(m::SurfaceMesh) = isempty(m.faces)
-
-ntriangles(m::SurfaceMesh) = length(m.faces)
 
 # `adjacency` gives counter-clockwise rings addressed by in-region position,
 # which is also the index the vertex buffer and the colour vector use.
@@ -153,23 +123,46 @@ end
 # vertices]`, so an index of `n` or less names a centroid and needs no fixing up
 # at merge time, and a larger one is task-local and gets shifted.
 
+"""
+    CornerWeights
+
+How much of each of a triangle's three cells a vertex is made of.
+
+A vertex at a corner is that corner outright — `(1, 0, 0)` and its rotations.  A
+vertex the seam created lies partway along an edge, and is the two ends mixed in
+exactly the proportion the cut fell at, which is the value the GPU would have
+interpolated there had the triangle not been cut.  Carrying the mix rather than
+the nearer end is what keeps a cut triangle continuous with the one across the
+seam from it, in height as well as in colour.
+"""
+const CornerWeights = NTuple{3, Float64}
+
+const CORNER1 = (1.0, 0.0, 0.0)
+const CORNER2 = (0.0, 1.0, 0.0)
+const CORNER3 = (0.0, 0.0, 1.0)
+
+@inline mix(a::CornerWeights, b::CornerWeights, t::Float64) =
+    (a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2]), a[3] + t * (b[3] - a[3]))
+
 struct SurfaceChunk{P}
     faces::Vector{NTuple{3, Int32}}
-    extra::Vector{P}          # vertices private to a cut or polar triangle
-    extra_cell::Vector{Int32} # the cell each private vertex takes its value from
+    extra::Vector{P}                    # vertices private to a cut or polar triangle
+    extra_tri::Vector{NTuple{3, Int32}} # the three cells that vertex's triangle spans
+    extra_weight::Vector{NTuple{3, Float32}}  # how much of each it is
     poly::Vector{Point2d}     # scratch: a triangle being cut
-    polytag::Vector{Int32}
+    polyw::Vector{CornerWeights}
     clip::Vector{Point2d}     # scratch: the surviving side of a cut
-    cliptag::Vector{Int32}
+    clipw::Vector{CornerWeights}
     ring::Vector{Point2d}     # scratch: a triangle's outline, traced
-    ringtag::Vector{Int32}
+    ringw::Vector{CornerWeights}
 end
 
 function SurfaceChunk{P}(nhint::Int) where {P}
     faces = NTuple{3, Int32}[]
     sizehint!(faces, 2 * nhint)
-    return SurfaceChunk{P}(faces, P[], Int32[], Point2d[], Int32[], Point2d[], Int32[],
-        Point2d[], Int32[])
+    return SurfaceChunk{P}(faces, P[], NTuple{3, Int32}[], NTuple{3, Float32}[],
+        Point2d[], CornerWeights[], Point2d[], CornerWeights[],
+        Point2d[], CornerWeights[])
 end
 
 @inline function push_face!(chunk::SurfaceChunk, a::Int32, b::Int32, c::Int32)
@@ -178,19 +171,23 @@ end
 end
 
 """
-    emit_private_fan!(chunk, pts, tags, m, n) -> ntriangles
+    emit_private_fan!(chunk, pts, ws, m, n, tri) -> ntriangles
 
 Add `m` vertices of a cut or polar triangle as this task's own, and fan them.
 
 `n` is the number of shared centroid vertices, where task-local numbering starts.
+`tri` is the three cells the triangle spans, which the vertices' weights are
+weights of.
 """
-function emit_private_fan!(chunk::SurfaceChunk{P}, pts::Vector{P}, tags::Vector{Int32},
-        m::Int, n::Int) where {P}
+function emit_private_fan!(chunk::SurfaceChunk{P}, pts::Vector{P},
+        ws::Vector{CornerWeights}, m::Int, n::Int, tri::NTuple{3, Int32}) where {P}
     m < 3 && return 0
     base = Int32(n + length(chunk.extra))
     @inbounds for k in 1:m
+        w = ws[k]
         push!(chunk.extra, pts[k])
-        push!(chunk.extra_cell, tags[k])
+        push!(chunk.extra_tri, tri)
+        push!(chunk.extra_weight, (Float32(w[1]), Float32(w[2]), Float32(w[3])))
     end
     @inbounds for k in 2:(m - 1)
         push_face!(chunk, base + Int32(1), base + Int32(k), base + Int32(k + 1))
@@ -227,7 +224,7 @@ end
 # `±360` for the one at each pole that contains it.
 
 """
-    outline_triangle!(pts, tags, u1, u2, u3, c1, c2, c3) -> winding
+    outline_triangle!(pts, ws, u1, u2, u3) -> winding
 
 Fill `pts` with the triangle's outline in longitude/latitude degrees and return
 how far longitude turned in going once around.
@@ -250,12 +247,11 @@ map.  Grids whose cells meet four to a corner put a pole on a dual edge exactly.
 The jump follows the triangle's reference longitude, so the triangle across the
 edge takes the other half turn and between them they cover it once.
 """
-function outline_triangle!(pts::Vector{Point2d}, tags::Vector{Int32}, u1, u2, u3,
-        c1::Int32, c2::Int32, c3::Int32)
+function outline_triangle!(pts::Vector{Point2d}, ws::Vector{CornerWeights}, u1, u2, u3)
     empty!(pts)
-    empty!(tags)
+    empty!(ws)
     us = (u1, u2, u3)
-    cs = (c1, c2, c3)
+    cs = (CORNER1, CORNER2, CORNER3)
     reference = reference_longitude(us, 3)
     previous = atand(u1[2], u1[1])
     first_lon = previous
@@ -264,7 +260,7 @@ function outline_triangle!(pts::Vector{Point2d}, tags::Vector{Int32}, u1, u2, u3
         a = us[k]
         b = us[j]
         push!(pts, Point2d(previous, asind(clamp(a[3], -1.0, 1.0))))
-        push!(tags, cs[k])
+        push!(ws, cs[k])
 
         lon_b = atand(b[2], b[1])
         step = lon_delta(lon_b, previous)
@@ -282,9 +278,9 @@ function outline_triangle!(pts::Vector{Point2d}, tags::Vector{Int32}, u1, u2, u3
                     lon_distance(previous - 90.0, reference)
                 step = forward ? 180.0 : -180.0
                 push!(pts, Point2d(previous, pole))
-                push!(tags, cs[k])
+                push!(ws, cs[k])
                 push!(pts, Point2d(previous + step, pole))
-                push!(tags, cs[j])
+                push!(ws, cs[j])
             end
         end
         previous += step
@@ -293,7 +289,7 @@ function outline_triangle!(pts::Vector{Point2d}, tags::Vector{Int32}, u1, u2, u3
 end
 
 """
-    emit_polar_band!(chunk, m, n, north, left, cut) -> ntriangles
+    emit_polar_band!(chunk, m, n, north, left, cut, tri) -> ntriangles
 
 Draw a triangle that *contains* a pole as the polar cap it is.
 
@@ -309,22 +305,23 @@ out.  Each is emitted at two turns of longitude and clipped to the window, which
 leaves the band's lower edge on the longitudes its neighbours draw.
 """
 function emit_polar_band!(chunk::SurfaceChunk{Point2d}, m::Int, n::Int, north::Bool,
-        left::Float64, cut::Float64)
+        left::Float64, cut::Float64, tri::NTuple{3, Int32})
     ring = chunk.ring
-    ringtag = chunk.ringtag
+    ringw = chunk.ringw
     # Longitude increases around the north pole and decreases around the south.
     # Turning the southern outlines round lets one strip serve both.
     if !north
         reverse!(ring)
-        reverse!(ringtag)
+        reverse!(ringw)
     end
-    # The pole corners belong to whichever cell reaches nearest the pole.
-    polecell = ringtag[1]
+    # There is no data at the pole itself, so its corners take the value of
+    # whichever cell reaches nearest to it.
+    polew = ringw[1]
     highest = abs(ring[1][2])
     @inbounds for k in 2:m
         if abs(ring[k][2]) > highest
             highest = abs(ring[k][2])
-            polecell = ringtag[k]
+            polew = ringw[k]
         end
     end
     pole = north ? 90.0 : -90.0
@@ -334,7 +331,7 @@ function emit_polar_band!(chunk::SurfaceChunk{Point2d}, m::Int, n::Int, north::B
     @inbounds base_shift = (left + mod(ring[1][1] - left, 360.0)) - ring[1][1]
 
     pts = chunk.poly
-    tags = chunk.polytag
+    ws = chunk.polyw
     ntri = 0
     for turn in (-360.0, 0.0)
         @inbounds for k in 1:m
@@ -346,28 +343,28 @@ function emit_polar_band!(chunk::SurfaceChunk{Point2d}, m::Int, n::Int, north::B
             x1 = (k == m ? q[1] + 360.0 : q[1]) + base_shift + turn
             x0 == x1 && continue
             empty!(pts)
-            empty!(tags)
+            empty!(ws)
             # Wound counter-clockwise either way: at the north pole the cap lies
             # above its lower edge, at the south pole below it.
             if north
-                push!(pts, Point2d(x0, p[2]));  push!(tags, ringtag[k])
-                push!(pts, Point2d(x1, q[2]));  push!(tags, ringtag[j])
-                push!(pts, Point2d(x1, pole));  push!(tags, polecell)
-                push!(pts, Point2d(x0, pole));  push!(tags, polecell)
+                push!(pts, Point2d(x0, p[2]));  push!(ws, ringw[k])
+                push!(pts, Point2d(x1, q[2]));  push!(ws, ringw[j])
+                push!(pts, Point2d(x1, pole));  push!(ws, polew)
+                push!(pts, Point2d(x0, pole));  push!(ws, polew)
             else
-                push!(pts, Point2d(x1, q[2]));  push!(tags, ringtag[j])
-                push!(pts, Point2d(x0, p[2]));  push!(tags, ringtag[k])
-                push!(pts, Point2d(x0, pole));  push!(tags, polecell)
-                push!(pts, Point2d(x1, pole));  push!(tags, polecell)
+                push!(pts, Point2d(x1, q[2]));  push!(ws, ringw[j])
+                push!(pts, Point2d(x0, p[2]));  push!(ws, ringw[k])
+                push!(pts, Point2d(x0, pole));  push!(ws, polew)
+                push!(pts, Point2d(x1, pole));  push!(ws, polew)
             end
-            ntri += emit_window_polygon!(chunk, 4, n, left, cut)
+            ntri += emit_window_polygon!(chunk, 4, n, left, cut, tri)
         end
     end
     return ntri
 end
 
 """
-    emit_traced_polygon!(chunk, m, n, left, cut) -> ntriangles
+    emit_traced_polygon!(chunk, m, n, left, cut, tri) -> ntriangles
 
 Draw an ordinary triangle whose outline, in `chunk.ring`, does not fit the map
 in one piece.
@@ -378,69 +375,72 @@ either having to be identified as the far side.  Three, because the outline can
 run either way in longitude from the corner the turns are measured off.
 """
 function emit_traced_polygon!(chunk::SurfaceChunk{Point2d}, m::Int, n::Int,
-        left::Float64, cut::Float64)
+        left::Float64, cut::Float64, tri::NTuple{3, Int32})
     ring = chunk.ring
-    ringtag = chunk.ringtag
+    ringw = chunk.ringw
     @inbounds base_shift = (left + mod(ring[1][1] - left, 360.0)) - ring[1][1]
     pts = chunk.poly
-    tags = chunk.polytag
+    ws = chunk.polyw
     ntri = 0
     for turn in (-360.0, 0.0, 360.0)
         empty!(pts)
-        empty!(tags)
+        empty!(ws)
         @inbounds for k in 1:m
             push!(pts, Point2d(ring[k][1] + base_shift + turn, ring[k][2]))
-            push!(tags, ringtag[k])
+            push!(ws, ringw[k])
         end
-        ntri += emit_window_polygon!(chunk, m, n, left, cut)
+        ntri += emit_window_polygon!(chunk, m, n, left, cut, tri)
     end
     return ntri
 end
 
 """
-    emit_window_polygon!(chunk, m, n, left, cut) -> ntriangles
+    emit_window_polygon!(chunk, m, n, left, cut, tri) -> ntriangles
 
 Clip the `m`-gon in `chunk.poly` to the map's window `[left, cut]` and fan what
 survives.  The two clips ping-pong between the chunk's scratch buffers, leaving
 the result in `chunk.poly`.
 """
 function emit_window_polygon!(chunk::SurfaceChunk{Point2d}, m::Int, n::Int,
-        left::Float64, cut::Float64)
-    kept = clip_tagged!(chunk.clip, chunk.cliptag, chunk.poly, chunk.polytag,
+        left::Float64, cut::Float64, tri::NTuple{3, Int32})
+    kept = clip_weighted!(chunk.clip, chunk.clipw, chunk.poly, chunk.polyw,
         m, left, false, 0.0)
     kept < 3 && return 0
-    kept = clip_tagged!(chunk.poly, chunk.polytag, chunk.clip, chunk.cliptag,
+    kept = clip_weighted!(chunk.poly, chunk.polyw, chunk.clip, chunk.clipw,
         kept, cut, true, 0.0)
-    return emit_private_fan!(chunk, chunk.poly, chunk.polytag, kept, n)
+    return emit_private_fan!(chunk, chunk.poly, chunk.polyw, kept, n, tri)
 end
 
 """
-    clip_tagged!(out, outtag, pts, tags, m, cut, keep_below, shift) -> nkept
+    clip_weighted!(out, outw, pts, ws, m, cut, keep_below, shift) -> nkept
 
 Sutherland–Hodgman against one vertical half-plane in longitude, carrying each
-vertex's cell along with it, with `shift` added to the surviving longitudes so
-that the far side of a cut triangle lands on the far edge of the map.
+vertex's [`CornerWeights`](@ref) along with it, with `shift` added to the
+surviving longitudes so that the far side of a cut triangle lands on the far edge
+of the map.
 
 A crossing landing exactly on a corner is skipped: the corner is already there,
 and repeating it would put a zero-area triangle in the fan.
 
-A vertex created *on* the cut takes the cell of the nearer end of its edge.  This
-is the one approximate value in the mesh, confined to a strip one cell wide along
-the seam; carrying a blend of two cells instead would cost every vertex a lerp.
+A vertex created *on* the cut is its edge's two ends mixed at the crossing
+parameter, which is the value the triangle carried at that point before it was
+cut.  The mix costs one lerp per created vertex, and there are only as many of
+those as the seam and the poles make.
 """
-function clip_tagged!(out::Vector{Point2d}, outtag::Vector{Int32}, pts::Vector{Point2d},
-        tags::Vector{Int32}, m::Int, cut::Float64, keep_below::Bool, shift::Float64)
+function clip_weighted!(out::Vector{Point2d}, outw::Vector{CornerWeights},
+        pts::Vector{Point2d}, ws::Vector{CornerWeights}, m::Int, cut::Float64,
+        keep_below::Bool, shift::Float64)
     empty!(out)
-    empty!(outtag)
+    empty!(outw)
     @inbounds for i in 1:m
         j = i == m ? 1 : i + 1
         a = pts[i]; b = pts[j]
-        ta = tags[i]; tb = tags[j]
+        wa = ws[i]; wb = ws[j]
         a_in = keep_below ? (a[1] <= cut) : (a[1] >= cut)
         b_in = keep_below ? (b[1] <= cut) : (b[1] >= cut)
         if a_in
             push!(out, Point2d(a[1] + shift, a[2]))
-            push!(outtag, ta)
+            push!(outw, wa)
         end
         if a_in != b_in
             t = (cut - a[1]) / (b[1] - a[1])
@@ -449,7 +449,7 @@ function clip_tagged!(out::Vector{Point2d}, outtag::Vector{Int32}, pts::Vector{P
             # a zero-area triangle in the fan.
             if 0.0 < t < 1.0
                 push!(out, Point2d(cut + shift, a[2] + t * (b[2] - a[2])))
-                push!(outtag, t <= 0.5 ? ta : tb)
+                push!(outw, mix(wa, wb, t))
             end
         end
     end
@@ -493,18 +493,18 @@ function fill_surface!(chunk::SurfaceChunk{Point2d}, target::PlanarTarget, adj,
 
             # Everything else is drawn from its outline, and the winding says
             # whether it straddles the cut or lies over a pole.
-            winding = outline_triangle!(chunk.ring, chunk.ringtag,
+            winding = outline_triangle!(chunk.ring, chunk.ringw,
                 DGG.cell_centroid(source, cells[a]),
                 DGG.cell_centroid(source, cells[b]),
-                DGG.cell_centroid(source, cells[c]),
-                Int32(a), Int32(b), Int32(c))
+                DGG.cell_centroid(source, cells[c]))
             m = length(chunk.ring)
+            tri = (Int32(a), Int32(b), Int32(c))
             if abs(winding) > 180.0
                 # Longitude increases around the north pole and decreases around
                 # the south.
-                emit_polar_band!(chunk, m, n, winding > 0, left, cut)
+                emit_polar_band!(chunk, m, n, winding > 0, left, cut, tri)
             else
-                emit_traced_polygon!(chunk, m, n, left, cut)
+                emit_traced_polygon!(chunk, m, n, left, cut, tri)
             end
             nsplit += 1
         end
@@ -540,20 +540,18 @@ end
 A cell centroid `p`, a unit-sphere point, raised to height `z`, in the target's
 build space.
 
-On a [`GlobeTarget`](@ref) that is the finished vertex, and `z` is a height above
-the ellipsoid in the axis's own units — the per-vertex form of the constant
-offset the axis's transform already adds.  Height enters `globe_vertex` purely
-additively along the unit vector, so raising a vertex moves it straight out.
+On a [`GlobeTarget`](@ref) the build space is the unit sphere itself, and `z` is
+carried no further: a globe vertex is finished by [`vertex_positions`](@ref),
+which is what lets the heights change without the topology being rebuilt.
 
 On a [`PlanarTarget`](@ref) it is longitude and latitude in degrees inside the
-map's window `[cut - 360, cut]`, which [`triangulate`](@ref) projects in bulk at
-the end; `z` is not part of the build space there, because every seam and polar
-cut is worked out in longitude and latitude alone.  [`elevate`](@ref) attaches it
-afterwards.
+map's window `[cut - 360, cut]`, which [`surface_topology`](@ref) projects in
+bulk at the end; `z` is not part of that space either, because every seam and
+polar cut is worked out in longitude and latitude alone.
 """
-@inline surface_vertex(target::GlobeTarget, p, z) = globe_vertex(target, p, z)
+@inline surface_vertex(::GlobeTarget, p) = Point3d(p[1], p[2], p[3])
 
-@inline function surface_vertex(target::PlanarTarget, p, z)
+@inline function surface_vertex(target::PlanarTarget, p)
     lon = atand(p[2], p[1])
     lat = asind(clamp(p[3], -1.0, 1.0))
     needs_cutting(target) || return Point2d(lon, lat)
@@ -561,63 +559,252 @@ afterwards.
     return Point2d(left + mod(lon - left, 360.0), lat)
 end
 
-function surface_vertices(target::PlotTarget, cr::CellRegion, zs::AbstractVector)
+function surface_vertices(target::PlotTarget, cr::CellRegion, ntasks::Int)
     P = pointtype(target)
     n = length(cr)
     positions = Vector{P}(undef, n)
     cells = cr.cells
     source = cr.source
-    Threads.@threads for p in 1:n
-        @inbounds positions[p] =
-            surface_vertex(target, DGG.cell_centroid(source, cells[p]), zs[p])
+    inparallel(n, ntasks) do lo, hi
+        @inbounds for p in lo:hi
+            positions[p] = surface_vertex(target, DGG.cell_centroid(source, cells[p]))
+        end
     end
     return positions
 end
 
 """
-    vertextype(target, zs) -> Type
+    SurfaceTopology(target, cells, positions, faces, extra_tri, extra_weight,
+                    ncells, nsplit)
 
-The coordinate type of a finished vertex: `Point3d` wherever there is a height
-to carry, and `Point2d` on a flat map that has none.
+Everything about a DGGS surface that its heights do not touch.
+
+  * `target` — the space it was built in.
+  * `cells` — the [`CellRegion`](@ref) it was built from.  Held so that a plot
+    can tell a new cell set from the one it already has: the pipeline reports
+    every update as a change, and rebuilding this is the expensive half.
+  * `positions` — the vertices in **build space**: longitude and latitude
+    projected into the axis's plane on a flat map, and the unit-sphere direction
+    on a globe, which is as far as a vertex gets before its height is known.
+  * `faces` — the triangles of the grid's dual.
+  * `extra_tri`, `extra_weight` — for each vertex past the first `ncells`, the
+    three cells of the triangle that created it and its [`CornerWeights`](@ref)
+    within it.  The first `ncells` vertices are the cells themselves and need
+    neither.
+  * `ncells` — the length a value vector must have.
+  * `nsplit` — triangles cut at the seam or capped at a pole.  Zero on a globe.
+
+Built by [`surface_topology`](@ref); finished into a [`SurfaceMesh`](@ref) by
+[`vertex_positions`](@ref).
 """
-vertextype(::GlobeTarget, ::AbstractVector) = Point3d
-vertextype(::PlanarTarget, ::AbstractVector) = Point3d
-vertextype(::PlanarTarget, ::ZeroHeights) = Point2d
+struct SurfaceTopology{P, T <: PlotTarget, R <: CellRegion}
+    target::T
+    cells::R
+    positions::Vector{P}
+    faces::Vector{GLTriangleFace}
+    extra_tri::Vector{NTuple{3, Int32}}
+    extra_weight::Vector{NTuple{3, Float32}}
+    ncells::Int
+    nsplit::Int
+end
+
+Base.isempty(t::SurfaceTopology) = isempty(t.faces)
+
+ntriangles(t::SurfaceTopology) = length(t.faces)
+
+nvertices(t::SurfaceTopology) = length(t.positions)
 
 """
-    elevate(target, positions, vertex_cell, zs) -> positions
+    samebuild(top, target, cells) -> Bool
 
-Give each vertex of a finished planar buffer its height, as its third
-coordinate.
+Would rebuilding `top` from `target` and `cells` produce the same topology?
 
-A vertex added at a seam or a pole has no cell of its own, and takes the height
-of the cell it takes its colour from — the same one-cell-wide approximation
-along the cut that [`clip_tagged!`](@ref) makes for colour.
-
-Nothing to do on a globe, where the height is already in the vertex, or under
-[`ZeroHeights`](@ref), where there is no third coordinate to carry.
+The compute graph cannot answer it: for a value that is not `isbits` it reports
+`a === b` as *changed*, on the grounds that the same object may have been mutated
+behind its back, so the surface asks for itself.  A target is either immutable to
+its leaves or an object whose identity is the thing that matters, and `===` is
+the test for it.  The cells are compared with `==`, which for a
+[`CellRegion`](@ref) is a value comparison: a plot handed its arguments a second
+time may get a set rebuilt from the same cells rather than the same object, and
+`===` would call that a different surface and rebuild the expensive half.
 """
-elevate(::GlobeTarget, positions, vertex_cell, zs) = positions
+samebuild(top::SurfaceTopology, target::PlotTarget, cells::CellRegion) =
+    top.target === target && top.cells == cells
 
-elevate(::PlanarTarget, positions::Vector{Point2d}, vertex_cell::Vector{Int32},
-    ::ZeroHeights) = positions
+samebuild(::SurfaceTopology, ::PlotTarget, ::Any) = false
 
-function elevate(::PlanarTarget, positions::Vector{Point2d}, vertex_cell::Vector{Int32},
-        zs::AbstractVector)
-    raised = Vector{Point3d}(undef, length(positions))
-    @inbounds for i in eachindex(raised)
-        p = positions[i]
-        raised[i] = Point3d(p[1], p[2], zs[Int(vertex_cell[i])])
-    end
-    return raised
+"""
+    blend(v1, v2, v3, w) -> value
+
+One vertex's value, from the three cells of its triangle and its weights.
+
+Numbers are mixed.  Anything else — a colour, a category, a string — takes the
+cell it is most of, because there is no meaning to two thirds of a colour that
+the backends and the colormap would agree on.
+"""
+@inline blend(v1::Number, v2::Number, v3::Number, w::NTuple{3, Float32}) =
+    Float64(w[1]) * v1 + Float64(w[2]) * v2 + Float64(w[3]) * v3
+
+@inline function blend(v1, v2, v3, w::NTuple{3, Float32})
+    w[1] >= w[2] && w[1] >= w[3] && return v1
+    return w[2] >= w[3] ? v2 : v3
 end
 
 """
-    triangulate(target::PlotTarget, cells, zs = ZeroHeights(length(cells));
-                ntasks = Threads.nthreads(),
-                connectivity = DiscreteGlobalGrids.Vertex()) -> SurfaceMesh
+    blendtype(T) -> Type
 
-Build the interpolated surface over `cells` in `target`'s coordinate space.
+What a mix of `T`s has to be stored as.
+
+A float stays itself: mixing loses no more than the values already carried.  Any
+other number becomes a `Float64`, because two thirds of the way between two
+integers is not an integer — a colour vector of `1:ncells` would otherwise fail
+to hold its own seam vertices.  Anything that is not mixed at all keeps its type.
+"""
+blendtype(::Type{T}) where {T <: AbstractFloat} = T
+blendtype(::Type{T}) where {T <: Number} = Float64
+blendtype(::Type{T}) where {T} = T
+
+"""
+    spread(values, top) -> AbstractVector
+
+One value per cell spread over one value per vertex.
+
+The first `ncells` vertices are the cells in order, so a set with nothing cut —
+a globe, or `wrap = false` — hands `values` straight back.  Each vertex past
+them is a point inside a triangle, and takes that triangle's three values mixed
+by its [`CornerWeights`](@ref): exactly the value the GPU would have interpolated
+there had the triangle not been cut, so the two halves of a split triangle meet
+without a step.
+"""
+function spread(values::AbstractVector, top::SurfaceTopology)
+    nextra = length(top.extra_tri)
+    nextra == 0 && return values
+    out = Vector{blendtype(eltype(values))}(undef, top.ncells + nextra)
+    return spread!(out, values, top)
+end
+
+"""
+    spread!(out, values, top) -> out
+
+[`spread`](@ref) into a buffer that already exists.
+
+A plot recoloured writes over the vertex values it had rather than allocating
+another set, for the same reason [`vertex_positions!`](@ref) does: at a few
+million cells the allocation is the redraw.  There is no in-place form of the
+`nextra == 0` case, because there is nothing to do there — `spread` hands back
+the values it was given.
+"""
+function spread!(out::AbstractVector, values::AbstractVector, top::SurfaceTopology)
+    n = top.ncells
+    length(values) == n ||
+        throw(ArgumentError("got $(length(values)) values, but there are \
+            $(n) cells"))
+    length(out) == n + length(top.extra_tri) ||
+        throw(ArgumentError("the buffer holds $(length(out)) values, but the \
+            surface has $(n + length(top.extra_tri)) vertices"))
+    copyto!(out, 1, values, firstindex(values), n)
+    @inbounds for k in eachindex(top.extra_tri)
+        c = top.extra_tri[k]
+        out[n + k] = blend(values[c[1]], values[c[2]], values[c[3]],
+            top.extra_weight[k])
+    end
+    return out
+end
+
+"""
+    vertex_positions(top, zs) -> Vector{Point2d} or Vector{Point3d}
+
+The drawable vertex buffer: the topology's vertices at the heights `zs`.
+
+On a [`PlanarTarget`](@ref) the height is the vertex's third coordinate, and
+[`ZeroHeights`](@ref) leaves the two-coordinate buffer alone.  On a
+[`GlobeTarget`](@ref) the direction and the height turn into one earth-centred
+point together, which is the step a globe's build stops short of.
+
+This is the only part of a surface that the heights touch, and it is linear in
+the number of vertices — no adjacency, no centroids, no projection.
+"""
+vertex_positions(top::SurfaceTopology{Point2d, <:PlanarTarget}, ::ZeroHeights) =
+    top.positions
+
+"""
+    flatvertices(top, zs) -> Bool
+
+Are the topology's own vertices already the buffer to draw?
+
+True in the one case that needs no work and owns no buffer: a flat map at no
+height, where a vertex keeps the two coordinates the build left it with.  A plot
+asks before reaching for a buffer of its own, because this is the answer it must
+not write into.
+"""
+flatvertices(::SurfaceTopology{Point2d, <:PlanarTarget}, ::ZeroHeights) = true
+flatvertices(::SurfaceTopology, ::AbstractVector) = false
+
+vertex_positions(top::SurfaceTopology, zs::AbstractVector, ntasks::Int = 1) =
+    vertex_positions!(Vector{Point3d}(undef, length(top.positions)), top, zs, ntasks)
+
+"""
+    vertex_positions!(out, top, zs, ntasks = 1) -> out
+
+[`vertex_positions`](@ref) into a buffer that already exists.
+
+A plot at new heights writes over its old vertex buffer rather than allocating
+another, which at a few million cells is the difference between a redraw that
+allocates a hundred megabytes and one that allocates none.  The height of each
+vertex is read where it is needed instead of through a [`spread`](@ref) of its
+own, so the pass allocates nothing at all.
+"""
+function vertex_positions!(out::Vector{Point3d},
+        top::SurfaceTopology{Point2d, <:PlanarTarget}, zs::AbstractVector,
+        ntasks::Int = 1)
+    checkheights(zs, top)
+    n = top.ncells
+    inparallel(n, ntasks) do lo, hi
+        @inbounds for i in lo:hi
+            p = top.positions[i]
+            out[i] = Point3d(p[1], p[2], zs[i])
+        end
+    end
+    @inbounds for k in eachindex(top.extra_tri)
+        c = top.extra_tri[k]
+        p = top.positions[n + k]
+        out[n + k] = Point3d(p[1], p[2],
+            blend(zs[c[1]], zs[c[2]], zs[c[3]], top.extra_weight[k]))
+    end
+    return out
+end
+
+function vertex_positions!(out::Vector{Point3d},
+        top::SurfaceTopology{Point3d, <:GlobeTarget}, zs::AbstractVector,
+        ntasks::Int = 1)
+    checkheights(zs, top)
+    target = top.target
+    n = top.ncells
+    inparallel(n, ntasks) do lo, hi
+        @inbounds for i in lo:hi
+            out[i] = globe_vertex(target, top.positions[i], zs[i])
+        end
+    end
+    @inbounds for k in eachindex(top.extra_tri)
+        c = top.extra_tri[k]
+        z = blend(zs[c[1]], zs[c[2]], zs[c[3]], top.extra_weight[k])
+        out[n + k] = globe_vertex(target, top.positions[n + k], z)
+    end
+    return out
+end
+
+function checkheights(zs::AbstractVector, top::SurfaceTopology)
+    length(zs) == top.ncells || throw(ArgumentError("zs has $(length(zs)) entries, \
+        but there are $(top.ncells) cells"))
+    return nothing
+end
+
+"""
+    surface_topology(target::PlotTarget, cells;
+                     ntasks = Threads.nthreads(),
+                     connectivity = DiscreteGlobalGrids.Vertex()) -> SurfaceTopology
+
+Build everything about the surface over `cells` that its heights do not touch.
 
 `cells` is anything [`cellregion`](@ref) accepts: a set of cells at one level
 whose adjacency the package can answer.  That is more than [`tessellate`](@ref)
@@ -627,13 +814,6 @@ The result has one vertex per cell and the triangles of the grid's dual between
 them.  A cell whose neighbours are absent takes part in fewer triangles, so a
 partial grid comes out with a ragged edge rather than a wrong one.
 
-`zs` is one height per cell, and it lands in the geometry: on a
-[`PlanarTarget`](@ref) as each vertex's third coordinate, in the axis's data
-space, and on a [`GlobeTarget`](@ref) as a height above the ellipsoid, in the
-axis's units, which lifts the vertex straight out from the centre.  The default,
-[`ZeroHeights`](@ref), is the flat surface, and keeps a planar mesh's vertices
-two-dimensional.
-
 `connectivity` is what counts as a neighbour.  `Vertex()`, the default, is the
 one that gives a complete surface; `Edge()` would miss every corner of a
 square-celled grid, whose four cells touch only diagonally.
@@ -641,18 +821,19 @@ square-celled grid, whose four cells touch only diagonally.
 On a [`PlanarTarget`](@ref) two cases need more than three centroids, both
 counted in `nsplit`: a triangle straddling the cut is split against it, and the
 one at each pole is drawn as the cap it covers.
-"""
-function triangulate(target::PlotTarget, cr::CellRegion,
-        zs::AbstractVector = ZeroHeights(length(cr));
-        ntasks::Int = Threads.nthreads(), connectivity = DGG.Vertex())
-    n = length(cr)
-    length(zs) == n || throw(ArgumentError("zs has $(length(zs)) entries, but \
-        there are $n cells"))
-    V = vertextype(target, zs)
-    n == 0 && return SurfaceMesh(V[], GLTriangleFace[], Int32[], 0, 0)
 
+This is the expensive half of a surface — adjacency, a centroid per cell, the
+corner scan, and one bulk projection.  [`vertex_positions`](@ref) is the other
+half, and the only one the heights reach.
+"""
+function surface_topology(target::PlotTarget, cr::CellRegion;
+        ntasks::Int = Threads.nthreads(), connectivity = DGG.Vertex())
     P = pointtype(target)
-    positions = surface_vertices(target, cr, zs)
+    n = length(cr)
+    n == 0 && return SurfaceTopology(target, cr, P[], GLTriangleFace[],
+        NTuple{3, Int32}[], NTuple{3, Float32}[], 0, 0)
+
+    positions = surface_vertices(target, cr, ntasks)
     adj = DGG.adjacency(cr.region; connectivity)
 
     nt = clamp(ntasks, 1, max(1, cld(n, 512)))
@@ -668,7 +849,74 @@ function triangulate(target::PlotTarget, cr::CellRegion,
         end
     end
 
-    return merge_surface(chunks, positions, n, sum(splits), target, zs)
+    return merge_surface(chunks, positions, n, sum(splits), target, cr)
+end
+
+surface_topology(target::PlotTarget, x; kwargs...) =
+    surface_topology(target, cellregion(x); kwargs...)
+
+"""
+    SurfaceMesh(topology, positions)
+
+A set of DGGS cells as one interpolated surface in an axis's data space: a
+[`SurfaceTopology`](@ref) and the vertex buffer it comes to at some set of
+heights.
+
+`positions` are the drawable vertices — `Point2d` on a flat map, `Point3d` on a
+globe or on a flat map carrying heights.  `faces`, `ncells` and `nsplit` read
+through to the topology, and the arrays are shared with it rather than copied,
+so a mesh at new heights costs one vertex buffer and nothing else.
+
+Built by [`triangulate`](@ref).  Compare [`CellMesh`](@ref), which draws the
+same cells as flat patches.
+"""
+struct SurfaceMesh{V, Top <: SurfaceTopology}
+    topology::Top
+    positions::Vector{V}
+end
+
+function Base.getproperty(m::SurfaceMesh, name::Symbol)
+    name === :topology && return getfield(m, :topology)
+    name === :positions && return getfield(m, :positions)
+    return getproperty(getfield(m, :topology), name)
+end
+
+Base.propertynames(::SurfaceMesh) =
+    (:topology, :positions, :faces, :ncells, :nsplit, :target, :cells,
+        :extra_tri, :extra_weight)
+
+Base.isempty(m::SurfaceMesh) = isempty(m.topology)
+
+ntriangles(m::SurfaceMesh) = ntriangles(m.topology)
+
+spread(values::AbstractVector, m::SurfaceMesh) = spread(values, m.topology)
+
+"""
+    triangulate(target::PlotTarget, cells, zs = ZeroHeights(length(cells));
+                ntasks = Threads.nthreads(),
+                connectivity = DiscreteGlobalGrids.Vertex()) -> SurfaceMesh
+
+Build the interpolated surface over `cells` in `target`'s coordinate space, at
+the heights `zs`.
+
+The two halves of the work, [`surface_topology`](@ref) and
+[`vertex_positions`](@ref), run back to back.  A plot keeps them apart, so that
+changing the heights costs only the second; this is the one-shot form, for
+everything that is not a live plot.
+
+`zs` is one height per cell, and it lands in the geometry: on a
+[`PlanarTarget`](@ref) as each vertex's third coordinate, in the axis's data
+space, and on a [`GlobeTarget`](@ref) as a height above the ellipsoid, in the
+axis's units, which lifts the vertex straight out from the centre.  The default,
+[`ZeroHeights`](@ref), is the flat surface, and keeps a planar mesh's vertices
+two-dimensional.
+"""
+function triangulate(target::PlotTarget, cr::CellRegion,
+        zs::AbstractVector = ZeroHeights(length(cr)); kwargs...)
+    length(zs) == length(cr) || throw(ArgumentError("zs has $(length(zs)) entries, \
+        but there are $(length(cr)) cells"))
+    top = surface_topology(target, cr; kwargs...)
+    return SurfaceMesh(top, vertex_positions(top, zs))
 end
 
 triangulate(target::PlotTarget, x, zs::AbstractVector; kwargs...) =
@@ -682,7 +930,7 @@ fill_surface!(chunk::SurfaceChunk, target::GlobeTarget, adj, lo, hi, n, position
     fill_surface!(chunk, target, adj, lo, hi, n)
 
 function merge_surface(chunks::Vector{SurfaceChunk{P}}, positions::Vector{P},
-        n::Int, nsplit::Int, target::PlotTarget, zs::AbstractVector) where {P}
+        n::Int, nsplit::Int, target::PlotTarget, cr::CellRegion) where {P}
     nt = length(chunks)
     face_offset = zeros(Int, nt + 1)
     extra_offset = zeros(Int, nt + 1)
@@ -694,10 +942,8 @@ function merge_surface(chunks::Vector{SurfaceChunk{P}}, positions::Vector{P},
 
     nextra = extra_offset[end]
     faces = Vector{GLTriangleFace}(undef, face_offset[end])
-    vertex_cell = Vector{Int32}(undef, n + nextra)
-    @inbounds for p in 1:n
-        vertex_cell[p] = Int32(p)
-    end
+    extra_tri = Vector{NTuple{3, Int32}}(undef, nextra)
+    extra_weight = Vector{NTuple{3, Float32}}(undef, nextra)
     nextra > 0 && resize!(positions, n + nextra)
 
     Threads.@sync for t in 1:nt
@@ -716,13 +962,14 @@ function merge_surface(chunks::Vector{SurfaceChunk{P}}, positions::Vector{P},
                     z > cutoff ? z + shift : z,
                 )
             end
-            eoff = n + extra_offset[t]
-            copyto!(positions, eoff + 1, chunk.extra, 1, length(chunk.extra))
-            copyto!(vertex_cell, eoff + 1, chunk.extra_cell, 1, length(chunk.extra_cell))
+            eoff = extra_offset[t]
+            copyto!(positions, n + eoff + 1, chunk.extra, 1, length(chunk.extra))
+            copyto!(extra_tri, eoff + 1, chunk.extra_tri, 1, length(chunk.extra_tri))
+            copyto!(extra_weight, eoff + 1, chunk.extra_weight, 1, length(chunk.extra_weight))
         end
     end
 
     project!(target, positions)
-    raised = elevate(target, positions, vertex_cell, zs)
-    return SurfaceMesh(raised, faces, vertex_cell, n, nsplit)
+    return SurfaceTopology(target, cr, positions, faces, extra_tri, extra_weight,
+        n, nsplit)
 end

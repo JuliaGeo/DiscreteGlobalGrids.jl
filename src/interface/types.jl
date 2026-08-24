@@ -214,6 +214,48 @@ Base.isless(a::LevelIndex, b::LevelIndex) =
 Base.show(io::IO, c::LevelIndex) = print(io, "LevelIndex(", c.level, ", ", c.index, ")")
 
 """
+    abstract type AbstractCellVector{ID} <: AbstractVector{ID}
+
+An ascending collection of cells from one system and one level, addressed by
+position. This is the **region** contract in vector form: the four region verbs
+([`halo`](@ref), [`border`](@ref), [`interior`](@ref), [`adjacency`](@ref)),
+the neighbourhood sweeps, regridding and plotting are all written against it,
+so a new backing gets the whole surface by subtyping rather than by
+reimplementing it.
+
+Two backings ship. [`CellVector`](@ref) COMPUTES its ids from compressed
+position windows; [`ChunkedCellVector`](@ref) reads the ids a store WROTE, from
+its chunk manifest. What differs is where element `k` comes from and what it
+costs, not what it means.
+
+# Required interface
+
+| method | contract |
+|---|---|
+| [`system(cv)`](@ref system) | the grid system the cells belong to |
+| [`level(cv)`](@ref level) | the single level they are all at |
+| `Base.size(cv)` | `(n,)` — the number of cells |
+| `Base.getindex(cv, k::Int)` | position `k` → typed cell id, `1`-based |
+| [`cellposition(cv, c)`](@ref cellposition) | cell id → position, or `nothing` |
+
+`getindex` and `cellposition` are inverses over `1:length(cv)`, and the ids
+they range over are strictly ascending. A subtype that cannot promise ascent is
+not a cell vector; it is an unordered list of cells.
+
+# Cost is a property of the backing, not of the contract
+
+`cellposition` is closed-form arithmetic on one backing and may decode a stored
+chunk on another. Generic code that resolves positions in an order the backing
+did not choose is correct on both and cheap on only one, which is what
+[`chunkplan`](@ref) exists to fix: it names the traversal order that keeps a
+chunk-backed vector reading each chunk once.
+
+See also [`AbstractCellLookup`](@ref), the `DimensionalData` face of the same
+contract, and [`PartialGrid`](@ref), the grid-shaped sibling.
+"""
+abstract type AbstractCellVector{ID} <: AbstractVector{ID} end
+
+"""
     abstract type Connectivity
 
 How two cells must meet to count as adjacent. See [`neighbors`](@ref).

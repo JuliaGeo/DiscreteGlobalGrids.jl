@@ -24,7 +24,7 @@ import ..DiscreteGlobalGridsZarrExt
 using ..DiscreteGlobalGridsZarrExt: storeidentifier,
     MANIFEST_MARKER, MANIFEST_WRITER, MANIFEST_FORMAT, MANIFEST_VALIDATED
 using DiscreteGlobalGrids: AbstractCellIndex, ArrayEntry,
-    CellEncoding, CellLookup, ChunkedCellLookup, DGGSFormatError,
+    AbstractCellLookup, CellEncoding, CellLookup, DGGSFormatError,
     DEFAULT_WRITE_CONVENTIONS, DenseEncoding, ENCODING_REGISTRY, ImplicitEncoding,
     RangesEncoding, StoreDescription, StoreSnapshot,
     ancestor, cellaxis, chunkmanifest, encodingname, has_sorted_subtrees,
@@ -81,7 +81,7 @@ store**, consolidated metadata included. `dest` is a local path or an open
 writeable `Zarr.ZGroup`; a `gs://`/`s3://`/`https://` URL is refused rather than
 half-written.
 
-The cell dimension must carry a `CellLookup` or a `ChunkedCellLookup`, which is
+The cell dimension must carry an `AbstractCellLookup`, which is
 this package's way of saying the axis is still sorted, unique and at one level;
 `reverse` and friends degrade it to a `Categorical`, and that is refused.
 
@@ -96,7 +96,7 @@ this package's way of saying the axis is still sorted, unique and at one level;
     only by a rank-aware reader such as this package; see [`idranges`](@ref).
   - `chunks = :auto` groups whole coarse-ancestor subtree runs into chunks of
     about `chunk_target` elements; an integer is a fixed chunk length in CELLS.
-    See `ChunkPlan` for what that guarantees and what it only aims at.
+    See `WriteChunkPlan` for what that guarantees and what it only aims at.
     `chunk_target` counts the elements of a chunk — cells times the extents of
     the non-cell dimensions, which are one chunk each — so a layer with a
     40-step time axis gets a fortieth of the cells per chunk.
@@ -286,16 +286,16 @@ coordinate itself — works from this array, and a write of tens of millions of
 cells never holds the axis twice. Where a typed cell is wanted, `idcell` puts
 the wrapper back on for the one id in hand.
 
-Only this package's own cell lookups are accepted, and that is the canonicity
+Only an [`AbstractCellLookup`](@ref) is accepted, and that is the canonicity
 check rather than a restriction: an ascending, unique subset of a cell axis is
-a `CellLookup` again, and one that is neither is exactly what DimensionalData
+a cell lookup again, and one that is neither is exactly what DimensionalData
 degrades to a `Categorical` — so a cell dimension that is not a cell lookup is
 a cell dimension that is no longer sorted and unique.
 """
 function _cellaxis(src)
     for d in DD.dims(src)
         lk = DD.val(d)
-        lk isa Union{CellLookup,ChunkedCellLookup} || continue
+        lk isa AbstractCellLookup || continue
         grid = levelgrid(system(lk), level(lk))
         return d, grid, _rawids(grid, lk)
     end
@@ -321,7 +321,7 @@ end
     end
     throw(ArgumentError("dggwrite needs a cube with a cell dimension: none of " *
                         join(map(d -> string(DD.name(d)), DD.dims(src)), ", ") *
-                        " carries a CellLookup or a ChunkedCellLookup."))
+                        " carries a cell lookup."))
 end
 
 # ===========================================================================
@@ -428,7 +428,7 @@ end
 # ===========================================================================
 
 """
-    ChunkPlan(chunklength, ancestor_level, aligned)
+    WriteChunkPlan(chunklength, ancestor_level, aligned)
 
 What `chunks = :auto` decided, and how much of the coarse-ancestor property it
 could keep.
@@ -457,7 +457,7 @@ target itself, clamped to the axis.
 The target here is a CELL count: `dggwrite`'s `chunk_target` counts elements,
 and the non-cell extents have already been divided out of it.
 """
-struct ChunkPlan
+struct WriteChunkPlan
     chunklength::Int
     ancestor_level::Union{Int,Nothing}
     aligned::Bool
@@ -468,7 +468,7 @@ function _chunkplan(chunks::Integer, grid, cells, target)
         "a chunk length is at least one cell, not $chunks"))
     # Longer than the axis is not wrong, but it is not what was written either,
     # and the manifest must describe the chunks that exist.
-    return ChunkPlan(min(Int(chunks), length(cells)), nothing, false)
+    return WriteChunkPlan(min(Int(chunks), length(cells)), nothing, false)
 end
 
 function _chunkplan(chunks::Symbol, grid, cells, target)
@@ -477,7 +477,7 @@ function _chunkplan(chunks::Symbol, grid, cells, target)
     n = length(cells)
     sys = system(grid)
     L = level(grid)
-    plain = ChunkPlan(clamp(target, 1, n), nothing, false)
+    plain = WriteChunkPlan(clamp(target, 1, n), nothing, false)
     (L < 1 || !has_sorted_subtrees(sys)) && return plain
 
     # Runs at level L-1 cost one `ancestor` per cell; every coarser level is then
@@ -499,7 +499,7 @@ function _chunkplan(chunks::Symbol, grid, cells, target)
     j = searchsortedlast(best, target)
     @assert j >= 1
     cl = best[j]
-    return ChunkPlan(cl, bestlevel, _allaligned(best, cl, n))
+    return WriteChunkPlan(cl, bestlevel, _allaligned(best, cl, n))
 end
 
 # End positions of the maximal runs of cells sharing a level-`A` ancestor.

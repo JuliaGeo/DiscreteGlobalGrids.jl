@@ -233,7 +233,8 @@ GR.chunkranges(space::DGGSpace, chunk::Integer, ::NTuple{1,Int}) =
 """
     GlobalRegridding.subtree(space::DGGSpace, inds)
 
-Return the cell tree restricted to `inds`, preserving global cell indices.
+Return the cell tree restricted to `inds`, with leaves still addressed by the
+space's local index.
 In order: the whole space, a grid that can window its own tree
 ([`subcursor`](@ref)), an exact chunk range (the grid hierarchy in `O(1)`), and
 otherwise the common packed cell-space fallback. The whole space and small

@@ -756,6 +756,12 @@ end
         return axis
     end
 
+    "The arithmetic mean.  A reduction is handed to the plot, so it need not be one the package knows."
+    mean(v) = sum(v) / length(v)
+
+    "The middle value of `v`, or the lower of the two middle ones."
+    median(v) = partialsort(collect(v), (length(v) + 1) ÷ 2)
+
     @testset "a pyramid over a cell set" begin
         cells = patch(9)
         pyramid = DGGV.CellPyramid(DGGV.cellset(cells))
@@ -990,6 +996,134 @@ end
         @test length(frame(away, awayplot)) == 0
         @test length(awayplot.displayed[]) == 0
         @test saves(away)
+    end
+
+    @testset "the leaves under a drawn cell" begin
+        cells = patch(9)
+        pyramid = DGGV.CellPyramid(DGGV.cellset(cells))
+        leaves = DGGV.subtreeranges(pyramid)
+
+        # Every level-7 ancestor of the patch claims a run of it; the runs
+        # ascend, do not overlap, and between them are the whole patch.  That
+        # is the property that lets a range stand in for a list of leaves.
+        coarse = unique(DGG.ancestor(SYS, c, 7) for c in cells)
+        runs = [leaves(c) for c in coarse]
+        @test issorted(runs; by = first)
+        @test all(i -> last(runs[i]) < first(runs[i + 1]), 1:length(runs) - 1)
+        @test sum(length, runs) == length(cells)
+        # And a run holds the cells under its own ancestor, not its neighbour's.
+        @test all(k -> DGG.ancestor(SYS, cells[k], 7) == coarse[1], runs[1])
+
+        # A cell of the leaf level is its own one leaf, and a cell over nothing
+        # gets an empty run rather than a wrong one.
+        @test leaves(cells[5]) == 5:5
+        away = DGG.ancestor(SYS, DGG.cellat(DGG.levelgrid(SYS, 9), -169.5, -46.5), 7)
+        @test isempty(leaves(away))
+    end
+
+    @testset "a summarised frame reads every leaf" begin
+        cells = patch(11)
+        values = Float64.(1:length(cells))
+
+        figure = Figure(size = (400, 300))
+        axis = Axis(figure[1, 1])
+        plot = dggresample!(axis, cells; color = values, aggregate = mean)
+        drawn = frame(figure, plot)
+
+        # The frame is far coarser than the data, and the runs partition it:
+        # every value handed in is read by exactly one drawn cell.
+        @test 0 < length(drawn) < length(cells) ÷ 10
+        @test sum(length, drawn.index) == length(cells)
+        @test plot.cellcolor[] == [mean(values[g]) for g in drawn.index]
+        @test saves(figure)
+
+        # The reduction is the API, so anything of the shape works — including
+        # two the package has never heard of.
+        for f in (sum, maximum, minimum, mean, median)
+            plot.aggregate = f
+            @test plot.cellcolor[] == [f(values[g]) for g in drawn.index]
+        end
+
+        # A height is indexed by the cells handed in exactly as a colour is, so
+        # it is summarised by the same call over the same runs.
+        raised, _, surface = dggresample(cells, values; color = values, aggregate = mean)
+        lifted = frame(raised, surface)
+        _, index = DGGV.surfaceframe(lifted)
+        @test surface.cellheights[] == [mean(values[g]) for g in index]
+        @test surface.cellcolor[] == surface.cellheights[]
+        @test saves(raised)
+    end
+
+    @testset "one reduction in place of another re-reads the frame" begin
+        cells = patch(10)
+        values = Float64.(1:length(cells))
+        figure = Figure(size = (400, 300))
+        axis = Axis(figure[1, 1])
+        plot = dggresample!(axis, cells; color = values, aggregate = mean)
+        built = frame(figure, plot)
+
+        # Which values lie under a drawn cell does not depend on what they are,
+        # so another reduction re-reads the frame rather than descending again.
+        plot.aggregate = maximum
+        @test plot.resampled[] === built
+        @test plot.cellcolor[] == [maximum(values[g]) for g in built.index]
+
+        # Nearest neighbour is a different grouping, though, and that one is
+        # built.
+        plot.aggregate = nothing
+        nearest = frame(figure, plot)
+        @test nearest !== built
+        @test eltype(nearest.index) == Int32
+        @test plot.cellcolor[] == values[nearest.index]
+    end
+
+    @testset "aggregation needs the leaves to sit together" begin
+        cells = patch(8)
+        values = Float64.(1:length(cells))
+        ids = collect(cells)
+
+        # A bare list of ids promises no order, so there is no run to reduce
+        # over — and saying so is better than a slower answer or a wrong one.
+        # Nearest neighbour still has a leaf under every centre.
+        figure = Figure(size = (400, 300))
+        @test_throws ArgumentError dggresample!(Axis(figure[1, 1]), SYS, ids;
+            color = values, aggregate = mean)
+        sampled = dggresample!(Axis(figure[2, 1]), SYS, ids; color = values)
+        @test length(frame(figure, sampled)) > 0
+
+        # A5 scatters a subtree through its level, which is the same refusal
+        # for the other of the two reasons.
+        a5 = DGG.A5System()
+        a5cells = DGG.CellVector(DGG.query(a5, DGG.MultiOrderCoverage(ALPS); level = 5))
+        a5values = Float64.(1:length(a5cells))
+        other = Figure(size = (400, 300))
+        @test_throws ArgumentError dggresample!(Axis(other[1, 1]), a5cells;
+            color = a5values, aggregate = mean)
+        onA5 = dggresample!(Axis(other[2, 1]), a5cells; color = a5values)
+        @test length(frame(other, onA5)) > 0
+    end
+
+    @testset "draw chooses the plot, not the arguments" begin
+        cells = patch(9)
+        values = Float64.(1:length(cells))
+
+        # A flat field drawn as a surface: no heights, so `ZeroHeights` stands
+        # in for them, which is what keeps the vertex buffer two-dimensional.
+        figure, axis, plot = dggresample(cells; color = values, draw = :surface)
+        drawn = frame(figure, plot)
+        @test any(p -> p isa DGGV.DGGSurface, plot.plots)
+        @test plot.cellheights[] isa DGGV.ZeroHeights
+        @test length(plot.cellheights[]) == length(drawn) > 0
+        @test saves(figure)
+
+        # Heights as patches is the one pairing with no picture behind it, and
+        # a name that is neither is not quietly ignored.
+        @test_throws ArgumentError dggresample(cells, values; color = values, draw = :patches)
+        @test_throws ArgumentError dggresample(cells; color = values, draw = :blobs)
+
+        # Naming what would have been chosen anyway changes nothing.
+        figure, axis, plot = dggresample(cells; color = values, draw = :patches)
+        @test any(p -> p isa DGGV.DGGPoly, plot.plots)
     end
 
     @testset "recolouring keeps the geometry" begin

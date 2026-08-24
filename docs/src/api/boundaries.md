@@ -125,8 +125,11 @@ node_extent
 maxneighbors
 LevelIndex
 PartialGrid
+AbstractCellVector
 CellVector
+AbstractCellLookup
 CellLookup
+region
 MultiOrderCellSet
 MultiOrderCoverage
 grow

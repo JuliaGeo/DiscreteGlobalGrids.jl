@@ -15,7 +15,7 @@ module DGGSZarrSubzones
 
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: AbstractCellIndex, AbstractHierarchicalGridSystem,
-    CellLookup, Cells, ChunkedCellLookup, DGGSFormatError, SubzoneLayout,
+    AbstractCellLookup, CellLookup, Cells, DGGSFormatError, SubzoneLayout,
     ANCESTOR_COORDINATE, ANCESTOR_DIMENSION, SUBZONE_DIMENSION,
     cellindex, columnindex, columnlength, columnpositions, level, ncells,
     positionindex, rawid, subzone_attrs, subzone_cellvector, subzone_columns,
@@ -360,7 +360,7 @@ _knownvar(store::SubzoneStore, name) = haskey(store.arrays, name) ? name :
                                        throw(ArgumentError("this store has no layer `$name`; it holds " *
                                                            join(keys(store), ", ") * "."))
 
-# The cube's cell dimension and its LOOKUP — not its ids. A `CellLookup` keeps
+# The cube's cell dimension and its LOOKUP — not its ids. A cell lookup keeps
 # position windows, and `subzone_runs` walks those, so a land-only cube of tens
 # of millions of cells is planned without one id being materialized. This is
 # deliberately not the one-dimensional writer's `_cellaxis`, which reads the
@@ -368,13 +368,13 @@ _knownvar(store::SubzoneStore, name) = haskey(store.arrays, name) ? name :
 function _cellaxis(src)
     for d in DD.dims(src)
         lk = DD.val(d)
-        lk isa Union{CellLookup,ChunkedCellLookup} || continue
+        lk isa AbstractCellLookup || continue
         return d, lk
     end
     throw(ArgumentError("a subzone write needs a cube with a cell dimension: " *
                         "none of " *
                         join(map(d -> string(DD.name(d)), DD.dims(src)), ", ") *
-                        " carries a CellLookup or a ChunkedCellLookup."))
+                        " carries a cell lookup."))
 end
 
 _cubelayers(A::DD.AbstractDimArray, celldim) =

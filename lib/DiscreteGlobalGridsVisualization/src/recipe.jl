@@ -12,11 +12,15 @@
 Draw a set of DGGS cells as filled patches.
 
 `cells` is anything [`cellset`](@ref) accepts: an `AbstractGrid`, a
-`CellVector`, a `CellLookup`, a `MultiOrderCellSet`, or a system paired with a
-vector of cell ids.  Partial grids are the normal case, not a special one — the
-cells drawn are exactly the cells given.
+`CellVector`, a `CellLookup`, a `MultiOrderCellSet`, a one-dimensional
+`DimArray` over cells, or a system paired with a vector of cell ids.  Partial
+grids are the normal case, not a special one — the cells drawn are exactly the
+cells given.
 
-`color` is a single colour, or one value or colour **per cell**.
+`color` is a single colour, or one value or colour **per cell**.  A cube axis
+names only its cells here — `dggpoly(A)` draws them in one flat colour, and
+`dggpoly(A; color = A)` colours them by its values; it is [`dggsurface`](@ref)
+that reads a cube axis as heights.
 
 ```julia
 sys = DGG.IGeo7System()
@@ -63,8 +67,8 @@ one mesh with one draw call.
     targets have a cut; on a globe this attribute does nothing.
     """
     wrap = true
-    "How many tasks build the mesh."
-    ntasks = Threads.nthreads()
+    "How many tasks build the mesh.  `automatic` is one per thread."
+    ntasks = Makie.automatic
     "Depth shift of the outlines, to keep them from z-fighting with the fill."
     stroke_depth_shift = -1.0f-5
     cycle = [:color => :patchcolor]
@@ -80,6 +84,22 @@ Makie.convert_arguments(::Type{<:DGGPoly}, source, ids::AbstractVector) = (cells
 # branch in the inner loop.
 uncut(target::PlanarTarget) = PlanarTarget(target.projection, NaN)
 uncut(target::PlotTarget) = target
+
+"""
+    task_count(ntasks) -> Int
+
+How many tasks to build a mesh with: one per thread unless the plot names a
+number.
+
+The session's thread count cannot be written as the attribute's default.  A
+recipe's defaults are evaluated once, where the `@recipe` block is read — which
+is during precompilation, in a worker that has one thread — so
+`ntasks = Threads.nthreads()` bakes `1` into the package image and every plot
+gets it, however many threads the session was started with.  `automatic` is
+resolved here instead, when the mesh is actually built.
+"""
+task_count(::Makie.Automatic) = Threads.nthreads()
+task_count(ntasks::Integer) = Int(ntasks)
 
 """
     resolve_primitive(primitive, target) -> :mesh or :polygons
@@ -122,15 +142,17 @@ function vertex_colors(mesh::CellMesh, color)
 end
 
 """
-    cell_polygons(mesh::CellMesh) -> Vector{Makie.Polygon}
+    cell_polygons(mesh::CellMesh, ntasks = Threads.nthreads()) -> Vector{Makie.Polygon}
 
 The mesh's rings as one polygon each, for backends that draw paths.
 """
-function cell_polygons(mesh::CellMesh{P}) where {P}
+function cell_polygons(mesh::CellMesh{P}, ntasks::Int = Threads.nthreads()) where {P}
     polys = Vector{Makie.Polygon{2, Float64}}(undef, nrings(mesh))
     starts = mesh.ring_start
-    Threads.@threads for i in 1:nrings(mesh)
-        @inbounds polys[i] = Makie.Polygon(mesh.positions[starts[i]:(starts[i + 1] - 1)])
+    inparallel(nrings(mesh), ntasks) do lo, hi
+        @inbounds for i in lo:hi
+            polys[i] = Makie.Polygon(mesh.positions[starts[i]:(starts[i + 1] - 1)])
+        end
     end
     return polys
 end
@@ -179,7 +201,7 @@ function Makie.plot!(plot::DGGPoly{<:Tuple{<:CellSet}})
     ) do cells, transform_func, wrap, ntasks
         target = plot_target(transform_func)
         wrap || (target = uncut(target))
-        return (tessellate(target, cells; ntasks),)
+        return (tessellate(target, cells; ntasks = task_count(ntasks)),)
     end
 
     # Resolved once, when the plot is created: the backend does not change under
@@ -224,7 +246,8 @@ function draw_mesh!(plot::DGGPoly)
 end
 
 function draw_polygons!(plot::DGGPoly)
-    Makie.map!(m -> (cell_polygons(m),), plot, [:cellmesh], [:polygons])
+    Makie.map!((m, n) -> (cell_polygons(m, task_count(n)),), plot,
+        [:cellmesh, :ntasks], [:polygons])
     Makie.map!((m, c) -> (ring_colors(m, c),), plot, [:cellmesh, :color], [:polygon_color])
 
     return Makie.poly!(

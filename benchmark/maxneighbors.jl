@@ -179,6 +179,112 @@ for (T, tag, ns) in ((UInt64, "8-byte id", (32, 48, 56, 62, 64, 65, 66, 72, 80, 
     println()
 end
 
+# --- Part 5: the carried walk vs the azimuth sort, same system -------------
+
+# Both paths get the SAME grid, the same cells and the same one-ring automaton,
+# so the only difference is how a shell is ordered: `_shells_azimuth` sorts every
+# candidate by bearing around the centre (a centroid per candidate), while the
+# carried walk inherits the order from the neighbour that produced it and only
+# pins the shell's starting phase. IGeo7 declares `CounterClockwise` and a
+# `maxring` of `6k`, so the public API here is the carried walk with stack
+# buffers; Part 5 forces the azimuth path through the internal entry to show
+# what that declaration bought.
+#
+# Read the `k = 1` rows differently from the rest. `ring`/`neighbors` have
+# always answered `k <= 1` straight from the automaton, so that row is not two
+# versions of the public API but the short-circuit against the shell machinery
+# it skips — it prices the short-circuit, and the `0 B` is the property the
+# `@allocated` tests in each system's suite pin down. The `k >= 2` rows are the
+# real before-and-after: same rings, same automaton, different ordering.
+#
+# Measured 2026-08-23, IGeo7 L8, 4 cells per call, min of 9 (machine in low
+# power mode, so read the ratios and the byte counts, not the absolute times):
+#
+#     ring k=1  3.95x   0 B vs 2880 B      neighbors k=1  5.30x   0 B vs 3008 B
+#     ring k=2  1.85x  1728 B vs 9536 B    neighbors k=2  1.86x  1920 B vs 9920 B
+#     ring k=3  1.95x  2304 B vs 14400 B   neighbors k=3  1.97x  2944 B vs 15040 B
+#     ring k=4  1.89x  2880 B vs 30144 B   neighbors k=4  1.81x  4160 B vs 31040 B
+println("\n=== Part 5: carried walk vs azimuth sort (IGeo7 L8) ===")
+let sys = DGG.IGeo7System(), g = DGG.levelgrid(sys, 8), conn = DGG.Vertex(),
+        FB = DGG.Fallbacks
+    cells = [DGG.cellindex(g, i) for i in (3_000_000, 17, 250_000, 41_237_881)]
+    # Consume the shell into a scalar: returning a container to an untyped
+    # caller boxes it, which would price the measurement rather than the walk.
+    drain(v) = (s = UInt(0); for x in v; s ⊻= hash(x); end; s)
+    wound_ring(k)  = (s = UInt(0); for c in cells; s ⊻= drain(DGG.ring(g, c, k)); end; s)
+    wound_disc(k)  = (s = UInt(0); for c in cells; s ⊻= drain(DGG.neighbors(g, c, k)); end; s)
+    function azim(k, discp)
+        s = UInt(0)
+        for c in cells
+            sh = FB._shells_azimuth(x -> DGG.one_ring(g, x, conn), g, c, k)
+            if discp
+                for r in sh; s ⊻= drain(r); end
+            else
+                k <= length(sh) && (s ⊻= drain(@inbounds sh[k]))
+            end
+        end
+        return s
+    end
+    @printf("%-52s %13s %14s\n", "", "time", "alloc")
+    for k in 1:4
+        measure(@sprintf("ring k=%d   carried walk", k), () -> wound_ring(k))
+        measure(@sprintf("ring k=%d   azimuth sort", k), () -> azim(k, false))
+        measure(@sprintf("neighbors k=%d   carried walk", k), () -> wound_disc(k))
+        measure(@sprintf("neighbors k=%d   azimuth sort", k), () -> azim(k, true))
+    end
+end
+
+# --- Part 6: `Val(k)` against `k` ---------------------------------------
+
+# The two forms answer the same cells in the same order; all that differs is
+# whether the capacity a system declares is a compile-time constant. It only is
+# when `k` is in the type, which is why every call below writes `Val(2)` rather
+# than passing a variable — `Val(k)` built from a run-time `k` is a dynamic
+# dispatch and gives back everything the form was for.
+#
+# `k <= 1` is answered from the automaton either way, so it is here only to show
+# that the `Val` form does not cost anything to reach it.
+#
+# Measured 2026-08-23, IGeo7 L8, 4 cells per call, min of 9. Read the bytes, not
+# the times: at these sizes the timer's resolution is coarser than the
+# difference, and the form removes allocations rather than work.
+#
+#     ring k=1       0 B ->    0 B     neighbors k=2   480 B -> 112 B
+#     ring k=2     432 B ->  224 B     neighbors k=4  1040 B -> 208 B
+#     ring k=3     576 B ->  320 B
+#     ring k=4     720 B ->  416 B
+#
+# and `ring(g, c, Val(2))` infers `SmallVector{12,Z7Cell}` where
+# `ring(g, c, 2)` infers `Vector{Z7Cell}` — same cells, different container.
+println("\n=== Part 6: Val(k) vs k (IGeo7 L8) ===")
+let g = DGG.levelgrid(DGG.IGeo7System(), 8), c = DGG.cellindex(g, 3_000_000)
+    drain(v) = (s = UInt(0); for x in v; s ⊻= hash(x); end; s)
+    iring1(g, c) = drain(DGG.ring(g, c, 1));        vring1(g, c) = drain(DGG.ring(g, c, Val(1)))
+    iring2(g, c) = drain(DGG.ring(g, c, 2));        vring2(g, c) = drain(DGG.ring(g, c, Val(2)))
+    iring3(g, c) = drain(DGG.ring(g, c, 3));        vring3(g, c) = drain(DGG.ring(g, c, Val(3)))
+    iring4(g, c) = drain(DGG.ring(g, c, 4));        vring4(g, c) = drain(DGG.ring(g, c, Val(4)))
+    idisc2(g, c) = drain(DGG.neighbors(g, c, 2));   vdisc2(g, c) = drain(DGG.neighbors(g, c, Val(2)))
+    idisc4(g, c) = drain(DGG.neighbors(g, c, 4));   vdisc4(g, c) = drain(DGG.neighbors(g, c, Val(4)))
+    for (label, fi, fv) in (("ring k=1", iring1, vring1), ("ring k=2", iring2, vring2),
+            ("ring k=3", iring3, vring3), ("ring k=4", iring4, vring4),
+            ("neighbors k=2", idisc2, vdisc2), ("neighbors k=4", idisc4, vdisc4))
+        measure("$label   k::Integer", () -> fi(g, c))
+        measure("$label   Val(k)", () -> fv(g, c))
+    end
+    # The point of the form: a concrete, stack-sized return type. Infer the
+    # neighbourhood call itself — the timed helpers above drain into a `UInt64`,
+    # so inferring those would report the accumulator and not the container.
+    tring2(g, c) = DGG.ring(g, c, Val(2))
+    tdisc2(g, c) = DGG.neighbors(g, c, Val(2))
+    iring2t(g, c) = DGG.ring(g, c, 2)
+    for (label, f) in (("ring(g, c, Val(2))", tring2),
+            ("neighbors(g, c, Val(2))", tdisc2), ("ring(g, c, 2)", iring2t))
+        t = only(Base.return_types(f, (typeof(g), typeof(c))))
+        @printf("  %-30s %-8s %s\n", "infers $label",
+            isconcretetype(t) ? "concrete" : "ABSTRACT", t)
+    end
+end
+
 println()
 println("RESULTS_BEGIN")
 for (l, t, a) in RESULTS

@@ -1055,7 +1055,7 @@ function _onbranch(edges::Vector{Float64}, v::Float64, period)
     return v - p * round((v - mid) / p)
 end
 
-chartposition(space::RasterGrid, ix::Int, iy::Int) = localindex(space, ix, iy)
+chartlocalindex(space::RasterGrid, ix::Int, iy::Int) = localindex(space, ix, iy)
 
 """
     chartperiod(space::RasterGrid)

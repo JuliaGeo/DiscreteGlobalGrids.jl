@@ -16,7 +16,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
             :subtree,
             :chunkextents, :chunkextent, :chunkindex, :candidatechunks!,
             :chunkranges,
-            :chartaxes, :chartcoords, :chartposition, :chartperiod, :chartspacing,
+            :chartaxes, :chartcoords, :chartlocalindex, :chartperiod, :chartspacing,
             :destinationdims, :dimsource, :_asspace,
         )
         integration_hooks = (

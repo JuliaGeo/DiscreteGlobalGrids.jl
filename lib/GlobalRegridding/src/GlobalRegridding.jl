@@ -95,8 +95,11 @@ public outputsampling, destinationdims, dimsource
 public subtree
 public chunkextents, chunkextent, chunkindex, candidatechunks!
 public chunkranges
-public chartaxes, chartcoords, chartposition, chartperiod, chartspacing
+public chartaxes, chartcoords, chartlocalindex, chartperiod, chartspacing
 public _asspace
+
+# `chartposition` stays public for the deprecation shim in `spaces.jl`.
+public chartposition
 
 # Other qualified extension hooks used by package integrations.
 public resolvespatialdims

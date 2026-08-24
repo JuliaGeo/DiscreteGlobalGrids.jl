@@ -225,12 +225,12 @@ axes.
 function chartcoords end
 
 """
-    chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
+    chartlocalindex(space::RegridSpace, ix::Int, iy::Int) -> Int
 
 Return the space's local index for the cell at lattice index `(ix, iy)`.
 Required when [`hascellchart`](@ref) is `true`.
 """
-function chartposition end
+function chartlocalindex end
 
 """
     chartperiod(space::RegridSpace) -> (px, py)
@@ -247,6 +247,21 @@ Return upper bounds, in radians, on adjacent-centre distance along each axis.
 Required when [`hascellchart`](@ref) is `true`.
 """
 function chartspacing end
+
+# `chartposition` is the old name of `chartlocalindex` and forwards to it, so a
+# call of the old name answers the same with a deprecation warning. Only
+# callers are carried: a space that defines the old name supplies no chart
+# hook, and `_chart_required` names the new one.
+
+"""
+    chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
+
+Deprecated. Use [`chartlocalindex`](@ref), which this forwards to, so existing
+calls keep their old behaviour exactly.
+"""
+function chartposition end
+
+@deprecate chartposition(space::RegridSpace, ix::Int, iy::Int) chartlocalindex(space, ix, iy) false
 
 # --------------------------------------------------------------------------
 # Output labelling and target resolution

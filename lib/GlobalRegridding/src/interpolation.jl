@@ -34,7 +34,7 @@ end
 
 chartaxes(space::RegridSpace) = _chart_required(:chartaxes, space)
 chartcoords(space::RegridSpace, _) = _chart_required(:chartcoords, space)
-chartposition(space::RegridSpace, ::Int, ::Int) = _chart_required(:chartposition, space)
+chartlocalindex(space::RegridSpace, ::Int, ::Int) = _chart_required(:chartlocalindex, space)
 chartspacing(space::RegridSpace) = _chart_required(:chartspacing, space)
 
 function _require_chart(method, src_space::RegridSpace)
@@ -143,7 +143,7 @@ function build_weights!(coo::WeightCOO, method::BilinearPoint,
 
             w = wx * wy
             iszero(w) && continue
-            k = localindex(indexer, chartposition(src_space, ix, iy))
+            k = localindex(indexer, chartlocalindex(src_space, ix, iy))
             k == 0 && continue
             addweight!(coo, j, k, w)
         end

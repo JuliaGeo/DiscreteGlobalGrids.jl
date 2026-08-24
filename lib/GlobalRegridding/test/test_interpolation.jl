@@ -11,7 +11,7 @@ function GR.chartcoords(space::ToyLonLatSpace, p)
     return (space.lon0 + mod(lon - space.lon0, 360.0), lat)
 end
 
-GR.chartposition(space::ToyLonLatSpace, ix::Int, iy::Int) = localindex(space, ix, iy)
+GR.chartlocalindex(space::ToyLonLatSpace, ix::Int, iy::Int) = localindex(space, ix, iy)
 
 GR.chartperiod(space::ToyLonLatSpace) =
     (space.lon1 - space.lon0 >= 360 ? 360.0 : nothing, nothing)

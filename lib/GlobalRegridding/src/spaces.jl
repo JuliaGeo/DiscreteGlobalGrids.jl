@@ -32,8 +32,9 @@ function celltree end
 """
     subtree(space::RegridSpace, inds) -> tree
 
-Return a spatial tree over `inds`, with leaves addressed by global cell
-index. The fallback packs GeometryOps' Cartesian cell extents in an R-tree.
+Return a spatial tree over `inds`, with leaves addressed by the space's
+local index. The fallback packs GeometryOps' Cartesian cell extents in an
+R-tree.
 Spaces with a cheaper restricted tree should specialize this function.
 """
 function subtree end
@@ -72,7 +73,7 @@ function nchunks end
 
 Return a chunk's ascending cell indices. Chunks must partition
 `1:ncells(space)`. Return an `AbstractUnitRange` when indices are contiguous.
-Weight builders address entries by local index within this result.
+Weight builders address entries by chunk-local index within this result.
 """
 function cellindices end
 
@@ -226,8 +227,8 @@ function chartcoords end
 """
     chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
 
-Return the cell index at lattice index `(ix, iy)`. Required when
-[`hascellchart`](@ref) is `true`.
+Return the space's local index for the cell at lattice index `(ix, iy)`.
+Required when [`hascellchart`](@ref) is `true`.
 """
 function chartposition end
 

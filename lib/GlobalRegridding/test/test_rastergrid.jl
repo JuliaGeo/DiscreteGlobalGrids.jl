@@ -232,7 +232,7 @@ end
         # A raster numbered 0–360 still answers for a negative longitude.
         wrapped = RasterGrid(DD.DimArray(zeros(8, 4), (DD.X(22.5:45.0:337.5), DD.Y(raster_lat()))))
         @test cellat(wrapped, geographic_point(-170.0, 0.0)) ==
-              GR.globalindex(wrapped, 5, 3)
+              GR.localindex(wrapped, 5, 3)
     end
 
     @testset "lookup order" begin
@@ -260,7 +260,7 @@ end
         @test same_cells(forward, transposed)
         @test all(cellat(transposed, cellcentroid(transposed, i)) == i
                   for i in 1:ncells(transposed))
-        @test GR.globalindex(transposed, 3, 2) == 2 + (3 - 1) * 4
+        @test GR.localindex(transposed, 3, 2) == 2 + (3 - 1) * 4
     end
 
     @testset "chunks" begin
@@ -414,7 +414,7 @@ end
         @test all(≈(4pi / ncells(coarse)), sum(flipped_areas; dims = 2))
     end
 
-    @testset "restricted CR cursors keep global storage numbering" begin
+    @testset "restricted CR cursors keep the raster's local numbering" begin
         function leafindices!(out, node)
             if STI.isleaf(node)
                 append!(out, first.(collect(STI.child_indices_extents(node))))
@@ -445,7 +445,7 @@ end
             @test Trees.getcell(whole, 3) == getcell(space, 3)
             @test GOCore.best_manifold(whole) == manifold(space)
 
-            # One rectangular DiskArrays chunk keeps global leaf IDs even
+            # One rectangular DiskArrays chunk keeps the raster's local leaf IDs even
             # though `ncells(cursor)` and split weight describe only its range.
             inds = cellindices(space, 2)
             chunk = GR.subtree(space, inds)
@@ -597,7 +597,7 @@ end
             cap = Trees.cell_range_extent(warped_grid, ilo:ihi, jlo:jhi)
             @test all(GR.US._contains(cap, p)
                 for iy in jlo:jhi, ix in ilo:ihi
-                for p in ring_samples(warped, GR.globalindex(warped, ix, iy)))
+                for p in ring_samples(warped, GR.localindex(warped, ix, iy)))
             nrectangles += 1
         end
         @test nrectangles == 360
@@ -621,7 +621,7 @@ end
             p -> GR.US.spherical_distance(old_centre, p), old_fixed_samples))
         @test GR.US.spherical_distance(old_centre, escaped) > old_radius
         escaped_query = SphericalCap(escaped, 0.0)
-        owning = GR.chunkat(warped, GR.globalindex(warped, 1, 4))
+        owning = GR.chunkat(warped, GR.localindex(warped, 1, 4))
         @test owning in GR.candidatechunks!(Int[], GR.chunkindex(warped), escaped_query)
         @test warped_data.reads == 0
 
@@ -634,7 +634,7 @@ end
         large_cap = Trees.cell_range_extent(large_grid, 65_537:69_999, 1:2)
         @test all(GR.US._contains(large_cap, p)
             for ix in (65_537, 67_768, 69_999), iy in 1:2
-            for p in ring_samples(large, GR.globalindex(large, ix, iy)))
+            for p in ring_samples(large, GR.localindex(large, ix, iy)))
 
         # The earned geographic range path remains allocation-free once
         # compiled; general coverage is delegated even when it is less cheap.

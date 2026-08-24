@@ -17,7 +17,7 @@ _iswholespace(::RegridSpace, inds) = false
 The unstructured cell fallback: a thin cell-space adapter over GeometryOps'
 packed `FlexibleRTrees.RTree`. The R-tree owns outward-rounded Cartesian
 extents, while the adapter retains `space` for geometry access and maps every
-packed leaf back to its requested global cell index.
+packed leaf back to its requested local index in `space`.
 
 Structured spaces should return a native restricted cursor before reaching
 this fallback. `nodecapacity` is exposed for packing-invariance checks.
@@ -82,15 +82,15 @@ end
 STI.getchild(tree::CellSpaceRTree) =
     (STI.getchild(tree, i) for i in 1:STI.nchild(tree))
 
-# FlexibleRTrees reports indices in its payload vector. Translate those local
-# indices back to stable global cell indices, and expose their exact cap
-# rather than the cap's broad-phase XYZ box.
+# FlexibleRTrees reports slots in its payload vector. Translate those back to
+# the space's stable local indices, and expose their exact cap rather than the
+# cap's broad-phase XYZ box.
 STI.child_indices_extents(tree::CellSpaceRTree) =
     ((@inbounds(tree.indices[i]), @inbounds(tree.caps[i]))
      for (i, _) in STI.child_indices_extents(tree.node))
 
 # `ncells` and `split_weight` describe this node's restricted population;
-# matrix assembly separately needs the owning space's complete global domain.
+# matrix assembly separately needs the owning space's complete cell count.
 ncells(tree::CellSpaceRTree) = tree.leafcount
 Trees.cell_index_count(tree::CellSpaceRTree) = ncells(tree.space)
 Trees.split_weight(tree::CellSpaceRTree) = tree.leafcount
@@ -281,9 +281,9 @@ end
 """
     BlockAreaOperator(inner, dstmap, srcmap, srcmemo, dstmemo)
 
-Measure intersections with `inner` and map global tree indices to block-local
-indices. Each assembly task receives its own mutable clipping cache and its own
-cell memos.
+Measure intersections with `inner` and map the trees' local indices to
+chunk-local block rows and columns. Each assembly task receives its own mutable
+clipping cache and its own cell memos.
 """
 struct BlockAreaOperator{O,DM,SM,MS,MD}
     inner::O

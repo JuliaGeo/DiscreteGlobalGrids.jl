@@ -82,7 +82,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
         build_weights!(coo, ToyDiagonalMethod(; scale = 2.0), space, inds, space, inds)
         block = WeightBlock(coo, length(inds), length(inds))
 
-        # Weights use builder-local index order.
+        # Weights use chunk-local index order.
         @test size(block) == (8, 8)
         @test Matrix(block.weights) == 2.0 * Matrix(LinearAlgebra.I, 8, 8)
         @test block.denom == fill(2.0, 8)

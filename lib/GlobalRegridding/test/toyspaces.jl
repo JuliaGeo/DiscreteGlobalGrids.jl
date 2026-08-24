@@ -124,7 +124,7 @@ GO.SpatialTreeInterface.node_extent(tree::ToyCapTree) = tree.extent
 GO.SpatialTreeInterface.child_indices_extents(tree::ToyCapTree) =
     zip(tree.indices, tree.caps)
 
-# Cell-tree access uses the wrapped space's global indices.
+# Cell-tree access uses the wrapped space's local indices.
 GOCore.best_manifold(tree::ToyCapTree) = manifold(tree.space)
 Trees.ncells(tree::ToyCapTree) = ncells(tree.space)
 Trees.getcell(tree::ToyCapTree, i::Int) = getcell(tree.space, i)
@@ -175,9 +175,9 @@ nchunklat(space::ToyLonLatSpace) = cld(space.nlat, space.chunklat)
 
 """
     cellsubscript(space::ToyLonLatSpace, i::Int) -> (ix, iy)
-    globalindex(space::ToyLonLatSpace, ix::Int, iy::Int) -> Int
+    localindex(space::ToyLonLatSpace, ix::Int, iy::Int) -> Int
 
-Convert between cell indices and lattice coordinates.
+Convert between the space's local cell indices and lattice coordinates.
 """
 function cellsubscript(space::ToyLonLatSpace, i::Int)
     1 <= i <= ncells(space) || throw(BoundsError(space, i))
@@ -185,7 +185,7 @@ function cellsubscript(space::ToyLonLatSpace, i::Int)
     return (ix, iy)
 end
 
-function globalindex(space::ToyLonLatSpace, ix::Integer, iy::Integer)
+function localindex(space::ToyLonLatSpace, ix::Integer, iy::Integer)
     1 <= ix <= space.nlon && 1 <= iy <= space.nlat ||
         throw(BoundsError(space, (ix, iy)))
     return Int(ix) + (Int(iy) - 1) * space.nlon
@@ -264,7 +264,7 @@ function cellat(space::ToyLonLatSpace, p)
     space.lat0 <= lat <= space.lat1 || return nothing
     ix = clamp(floor(Int, (wrapped - space.lon0) / dlon(space)) + 1, 1, space.nlon)
     iy = clamp(floor(Int, (lat - space.lat0) / dlat(space)) + 1, 1, space.nlat)
-    return globalindex(space, ix, iy)
+    return localindex(space, ix, iy)
 end
 
 function _wrap_lon(lon::Float64, lo::Float64, hi::Float64)
@@ -289,11 +289,11 @@ function cellindices(space::ToyLonLatSpace, chunk::Int)
     iy1 = min(space.nlat, cy * space.chunklat)
     # Full-width chunks are contiguous in index order.
     nchunklon(space) == 1 &&
-        return globalindex(space, 1, iy0):globalindex(space, space.nlon, iy1)
+        return localindex(space, 1, iy0):localindex(space, space.nlon, iy1)
     out = Vector{Int}(undef, (ix1 - ix0 + 1) * (iy1 - iy0 + 1))
     k = 0
     for iy in iy0:iy1, ix in ix0:ix1
-        out[k += 1] = globalindex(space, ix, iy)
+        out[k += 1] = localindex(space, ix, iy)
     end
     return out
 end
@@ -380,9 +380,9 @@ countbuild!(method) = @lock TOY_COUNT_LOCK method.builds += 1
 
 function build_weights!(coo::WeightCOO, method::ToyDiagonalMethod,
     ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
-    local_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
+    chunklocal_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
     for (j, p) in enumerate(dst_inds)
-        k = get(local_of, p, 0)
+        k = get(chunklocal_of, p, 0)
         k == 0 && continue
         addweight!(coo, j, k, method.scale)
         method.withdenom && adddenom!(coo, j, method.scale)
@@ -414,9 +414,9 @@ function build_weights!(coo::WeightCOO, method::WaveFailMethod,
     Int(first(src_inds)) == method.bad &&
         error("WaveFailMethod: the chunk at index $(method.bad) fails by design")
     sleep(method.delay)
-    local_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
+    chunklocal_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
     for (j, p) in enumerate(dst_inds)
-        k = get(local_of, p, 0)
+        k = get(chunklocal_of, p, 0)
         k == 0 && continue
         addweight!(coo, j, k, 1.0)
         adddenom!(coo, j, 1.0)

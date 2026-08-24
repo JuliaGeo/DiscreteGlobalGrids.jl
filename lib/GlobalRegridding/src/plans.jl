@@ -47,8 +47,8 @@ Base.show(io::IO, block::WeightBlock) =
                sampling = nothing)
 
 Store one [`WeightBlock`](@ref) over both complete spaces. The block size is
-`(ncells(dst_space), ncells(src_space))`; its local indices are global cell
-indices.
+`(ncells(dst_space), ncells(src_space))`, so its chunk-local indices are the
+spaces' own local indices.
 `missingval` is an optional source nodata sentinel. `sampling` overrides the
 destination lookup sampling the method would imply ([`outputsampling`](@ref)).
 """

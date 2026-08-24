@@ -442,10 +442,10 @@ hascellchart(space::RasterGrid) = space.unit_sphere_to_native !== nothing
 
 """
     cellsubscript(space::RasterGrid, i::Int) -> (ix, iy)
-    globalindex(space::RasterGrid, ix::Integer, iy::Integer) -> Int
+    localindex(space::RasterGrid, ix::Integer, iy::Integer) -> Int
 
-Convert between cell indices and `(ix, iy)` lattice coordinates. Index
-order follows the array's fastest dimension.
+Convert between the raster's local cell indices and `(ix, iy)` lattice
+coordinates. Index order follows the array's fastest dimension.
 """
 function cellsubscript(space::RasterGrid, i::Int)
     1 <= i <= ncells(space) || throw(BoundsError(space, i))
@@ -457,7 +457,7 @@ function cellsubscript(space::RasterGrid, i::Int)
     return (ix, iy)
 end
 
-function globalindex(space::RasterGrid, ix::Integer, iy::Integer)
+function localindex(space::RasterGrid, ix::Integer, iy::Integer)
     1 <= ix <= _nx(space) && 1 <= iy <= _ny(space) ||
         throw(BoundsError(space, (ix, iy)))
     return space.xfast ? Int(ix) + (Int(iy) - 1) * _nx(space) :
@@ -562,7 +562,7 @@ function cellat(space::RasterGrid, p)
     ix === nothing && return nothing
     iy = _edgeindex(space.yedges, Float64(y), nothing)
     iy === nothing && return nothing
-    return globalindex(space, ix, iy)
+    return localindex(space, ix, iy)
 end
 
 function _edgeindex(edges::Vector{Float64}, v::Float64, period)
@@ -605,11 +605,11 @@ function chunkbox(space::RasterGrid, chunk::Int)
 end
 
 """
-    chunkposition(space::RasterGrid, cx::Integer, cy::Integer) -> Int
+    chunknumber(space::RasterGrid, cx::Integer, cy::Integer) -> Int
 
-Return the chunk number at `(cx, cy)`.
+Return the number of the chunk at `(cx, cy)`.
 """
-function chunkposition(space::RasterGrid, cx::Integer, cy::Integer)
+function chunknumber(space::RasterGrid, cx::Integer, cy::Integer)
     1 <= cx <= length(space.xchunks) && 1 <= cy <= length(space.ychunks) ||
         throw(BoundsError(space, (cx, cy)))
     return space.xfast ? Int(cx) + (Int(cy) - 1) * length(space.xchunks) :
@@ -629,7 +629,7 @@ end
 # Locate a cell's chunk with one binary search per axis.
 function chunkat(space::RasterGrid, i::Integer)
     ix, iy = cellsubscript(space, Int(i))
-    return chunkposition(space, _chunkofindex(space.xchunks, ix),
+    return chunknumber(space, _chunkofindex(space.xchunks, ix),
         _chunkofindex(space.ychunks, iy))
 end
 
@@ -933,7 +933,7 @@ celltree(space::RasterGrid) = _rastercursor(space)
 
 Return a restricted CR quadtree cursor for a chunk or other rectangular cell
 range, and the packed cell-space fallback for scattered indices. Leaves
-always use global cell indices.
+always use the space's local indices.
 """
 function celltree(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
@@ -1055,7 +1055,7 @@ function _onbranch(edges::Vector{Float64}, v::Float64, period)
     return v - p * round((v - mid) / p)
 end
 
-chartposition(space::RasterGrid, ix::Int, iy::Int) = globalindex(space, ix, iy)
+chartposition(space::RasterGrid, ix::Int, iy::Int) = localindex(space, ix, iy)
 
 """
     chartperiod(space::RasterGrid)

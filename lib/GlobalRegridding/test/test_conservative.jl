@@ -110,7 +110,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
 
         reference = conservative_block(fine, dst_inds, whole, cellindices(whole, 1))
 
-        # Non-contiguous chunks still use local block indices.
+        # Non-contiguous chunks still use chunk-local block indices.
         @test nchunks(chunked) == 2
         parts = [cellindices(chunked, c) for c in 1:nchunks(chunked)]
         @test !(parts[1] isa AbstractUnitRange)

@@ -61,9 +61,10 @@ outputsampling(::BilinearPoint) = DD.Lookups.Points()
 """
     WeightCOO(ndst::Int)
 
-A chunk-local coordinate-list accumulator. `rows` and `cols` index within the
-builder's `dst_inds` and `src_inds`. `denom` stores optional per-destination
-denominators. Duplicate entries are summed when the block is assembled.
+A chunk-local coordinate-list accumulator. `rows` and `cols` are chunk-local
+indices within the builder's `dst_inds` and `src_inds`. `denom` stores optional
+per-destination denominators. Duplicate entries are summed when the block is
+assembled.
 """
 mutable struct WeightCOO
     const rows::Vector{Int}
@@ -85,9 +86,9 @@ Base.show(io::IO, coo::WeightCOO) =
 """
     addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
 
-Add `w` to the weight of local source `src_local` in local destination
-`dst_local`. Indices are local indices within the builder's `dst_inds` and
-`src_inds`, not global cell indices.
+Add `w` to the weight of source `src_local` in destination `dst_local`. Both
+are chunk-local indices within the builder's `dst_inds` and `src_inds`, not the
+spaces' local indices.
 """
 function addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
     push!(coo.rows, dst_local)
@@ -99,8 +100,8 @@ end
 """
     adddenom!(coo::WeightCOO, dst_local::Int, d::Real)
 
-Add `d` to the local destination's denominator. Report only the share from the
-current source chunk.
+Add `d` to the denominator of chunk-local destination `dst_local`. Report only
+the share from the current source chunk.
 """
 function adddenom!(coo::WeightCOO, dst_local::Int, d::Real)
     coo.denom[dst_local] += Float64(d)

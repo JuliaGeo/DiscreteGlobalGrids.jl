@@ -593,18 +593,21 @@ is an `ArgumentError`.
 
 `needs` names the per-neighbour fields the kernel reads instead of `pass`, and
 the callback becomes `f(center, rings)` — the contract is the [`CellVector`](@ref)
-method's, and the requests are `Cell`, `Index`, `Value` and `Centroid`. The
-sweep runs on the cell axis alone and never reads `A`, so values reach the
-callback through the request's `Value` entries and an array of any
-dimensionality gives one result per cell, on the cell dimension. Any `pass`
-other than the default alongside `needs` is an `ArgumentError`.
+method's, and the requests are `Cell`, `Index`, `Value` and `Centroid`. Values
+reach the callback through the request's `Value` entries rather than from `A`
+itself, so an array of any dimensionality gives one result per cell, on the
+cell dimension. Any `pass` other than the default alongside `needs` is an
+`ArgumentError`.
 
-With `pass = Values()` and `order = StorageOrder()`, a cube whose data is
-chunked on disk is swept along those chunks rather than cell by cell — see
-[`chunkplan`](@ref). The result is identical either way; what changes is that
-each stored chunk is decoded once instead of once per scalar read. A permutation
-`order` names a visit order over the whole axis and a chunked sweep visits by
-chunk, so the two cannot both be honoured and the permutation wins.
+With `pass = Values()` or a `needs` request, and `order = StorageOrder()`, a
+cube whose data is chunked on disk is swept along those chunks rather than cell
+by cell — see [`chunkplan`](@ref). The result is identical either way; what
+changes is that each stored chunk is decoded once instead of once per scalar
+read, and that a request's stored `Value`s are read the same way.
+`Index(Local())` still answers this cube's cell-axis index, never a chunk's
+own. A permutation `order` names a visit order over the whole axis and a
+chunked sweep visits by chunk, so the two cannot both be honoured and the
+permutation wins.
 """
 function mapneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
         needs = nothing, pass = Neighbors(), order = StorageOrder(),
@@ -618,15 +621,28 @@ end
 _map_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn) where {F} =
     _map_dimarray(pass, f, A, dnum, order, threaded, conn)
 
-# A field request is answered by the cell axis alone: the sweep never touches
-# `A`, whatever its dimensionality, since the callback's values arrive through
-# the request's `Value` entries. One result per cell, on the cell dimension.
+# A field request is answered by the cell axis alone, whatever `A`'s
+# dimensionality: the callback's values arrive through the request's `Value`
+# entries, so the result is one per cell, on the cell dimension.
+#
+# A cube whose data is chunked on disk still takes the chunk route, under the
+# rule `Values()` uses — the request may name `A` itself, or any other stored
+# array, as a `Value`, and reading those along the chunk lines is the same win.
+# The route is `chunks.jl`'s; a permutation `order` keeps the whole-axis path,
+# because a chunked sweep visits by chunk and cannot honour one.
 function _map_needs(needs, pass, f::F, A, dnum, order, threaded, conn) where {F}
     _checkpass(pass)
+    plan = _chunkedvalues(A, dnum, order, conn)
+    plan === nothing || return _rebuilt_on_cells(A, DD.dims(A)[dnum],
+        _map_needs_chunked(f, A, dnum, plan, needs, threaded, conn))
     cv = parent(DD.lookup(A, dnum))
     out = mapneighbors(f, cv; needs, order, threaded, connectivity = conn)
     return _rebuilt_on_cells(A, DD.dims(A)[dnum], out)
 end
+
+# Answered in `chunks.jl`, like `_map_values_chunked`.
+function _map_needs_chunked end
+function _foreach_needs_chunked end
 
 function _map_dimarray(::Neighbors, f::F, A, dnum, order, threaded,
         conn) where {F}
@@ -728,6 +744,9 @@ _foreach_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn) where {F} 
 function _foreach_needs(needs, pass, f::F, A, dnum, order, threaded,
         conn) where {F}
     _checkpass(pass)
+    plan = _chunkedvalues(A, dnum, order, conn)
+    plan === nothing ||
+        return _foreach_needs_chunked(f, A, dnum, plan, needs, threaded, conn)
     foreachneighbors(f, parent(DD.lookup(A, dnum)); needs, order, threaded,
         connectivity = conn)
     return nothing

@@ -390,7 +390,9 @@ export region
 # --- Following a stored cube's chunk lines ---------------------------------
 export chunkplan, foreachchunk, mapneighbors!
 export MapChunkPlan, MapChunk, ChunkCube
-export chunkcube, localindices, globalindices, chunkhalo, halowidth
+export chunkcube, localindices, ownedindices, axisindices, chunkhalo, halowidth
+# Deprecated: the old name of `ownedindices`.
+export globalindices
 
 # --- Reachable by name, not exported ---------------------------------------
 # The lazy walk types: an argument of the verbs above, never a name a caller

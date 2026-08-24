@@ -68,6 +68,12 @@ end
 Base.size(a::CellField) = (length(a.cv),)
 Base.IndexStyle(::Type{<:CellField}) = Base.IndexLinear()
 
+# What a field is made of, for a caller that has to rebuild the same field
+# over another collection — the chunk route restricts a request onto each
+# chunk this way. Reading them changes nothing, so the field stays pure.
+_fieldfunction(a::CellField) = a.f
+_fieldknown(a::CellField) = a.known
+
 # The three knowledge shapes, one method each rather than one branch, so a
 # reader of a complete field carries no probe and a reader of an unknown field
 # carries no lookup. Each takes the cell as well as its index: whoever asks
@@ -104,6 +110,12 @@ function _cellknown(v::AbstractVector, cv::CellVector, ::Type{T}) where {T}
     eltype(v) <: T || _field_known_eltype(eltype(v), T)
     return v
 end
+
+# A subset the cube layer has already accepted, carried onto another
+# collection at the same system and level: it says which cells it holds by
+# cell id, and no re-collection changes that, so it passes through as it is.
+# This is how a field survives being restricted onto a chunk.
+_cellknown(s::_SubsetKnown, ::CellVector, ::Type) = s
 
 # The cube shape is named by the DimensionalData layer, which sits above this
 # one; it adds its own method (`src/dimensionaldata.jl`).

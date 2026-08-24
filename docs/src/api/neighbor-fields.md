@@ -59,13 +59,21 @@ Three things about them are the contract:
     [`CellVector`](@ref), or the cube's cell axis — never an index into some
     block the sweep chose internally. On a complete grid that equals the global
     index; on a subset it does not, and the subset's numbering is the one you
-    get. That pin holds today, and it binds whatever comes next: there is no
-    chunked form of `needs` yet, and when there is, it must translate each
-    chunk's numbering back to the caller's so its result equals the whole-axis
-    sweep's, cell for cell. In this milestone a request does not take the chunk
-    route at all; [`mapneighbors!`](@ref) over a
-    [plan](@ref "Sweeping a cube along its chunk lines") is what does, in
-    [`Values`](@ref)' form.
+    get. That holds however the sweep is run. A request may be answered
+    [chunk by chunk](@ref "Sweeping a cube along its chunk lines"), and a chunk
+    is a partial grid whose `1:ncells` is its own; the route translates the
+    request onto each chunk before sweeping it, and `Index(Local())` becomes a
+    `Value` of the chunk's cells' indices **in the caller's axis**, so the
+    visited cell's and every neighbour's number is the one the whole-axis sweep
+    would have reported. Every stored `Value` in the request is restricted the
+    same way, and one over a chunked array is read along its own storage chunks
+    rather than a scalar at a time. The chunked result is the whole-axis
+    result, cell for cell. [`mapneighbors!`](@ref) takes that route when given
+    `needs`, and [`mapneighbors`](@ref) and [`foreachneighbors`](@ref) take it
+    by themselves on a cube whose data is chunked and whose `order` is
+    `StorageOrder()` — the same rule [`Values`](@ref) follows. A
+    permutation `order` names a visit order over the whole axis, which a
+    chunked sweep cannot honour, so it keeps the whole-axis path.
 
   - **`Centroid()` is `cell_centroid` on the unit sphere, answered from a
     working set.** A cell's centroid is touched once as a centre and once from

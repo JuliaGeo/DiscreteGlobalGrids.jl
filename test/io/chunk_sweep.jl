@@ -25,8 +25,9 @@ if HAS_ZARR
 import DimensionalData as DD
 using DiscreteGlobalGrids: IGeo7System, levelgrid, cellindex, ncells, Cells,
     CellVector, CellLookup, dggread, dggwrite, mapneighbors, mapneighbors!,
-    chunkplan, foreachchunk, chunkcube, localindices, globalindices, chunkhalo,
-    halowidth, nchunks, region, Values, foreachneighbors, localindex
+    chunkplan, foreachchunk, chunkcube, localindices, ownedindices,
+    axisindices, globalindices, chunkhalo, halowidth, nchunks, region, Values,
+    foreachneighbors, localindex, Index, Local, Value
 
 # Counts the chunks read from a store. Metadata keys are not chunks; every other
 # key is a chunk of the array whose name prefixes it.
@@ -96,13 +97,13 @@ readfloor(plan) =
             @test nchunks(plan) == cld(N, CHUNK)
             @test halowidth(plan) == 1
             # The chunks partition the axis, in order.
-            @test reduce(vcat, collect(globalindices(mc)) for mc in plan) == collect(1:N)
+            @test reduce(vcat, collect(ownedindices(mc)) for mc in plan) == collect(1:N)
             for mc in plan
                 h = chunkhalo(mc)
                 @test !isempty(h)                      # a global axis has no isolated chunk
                 @test issorted(h) && allunique(h)
                 @test all(p -> 1 <= p <= N, h)
-                @test all(p -> !(p in globalindices(mc)), h)
+                @test all(p -> !(p in ownedindices(mc)), h)
             end
         end
 
@@ -115,16 +116,35 @@ readfloor(plan) =
                 # Ordinary: the package's own lookup, not the store's.
                 @test DD.lookup(cube, Cells) isa CellLookup
                 @test length(cube) ==
-                      length(globalindices(cc)) + length(chunkhalo(cc))
+                      length(ownedindices(cc)) + length(chunkhalo(cc))
                 # Owned and halo partition the block, and owned is contiguous
                 # because every halo cell is outside the chunk's own run.
                 @test sort(vcat(collect(localindices(cc)), chunkhalo(cc))) ==
                       collect(1:length(cube))
                 # The owned rows are the chunk's cells, in the axis's order.
-                @test parent(cube)[localindices(cc)] == parent(A)[globalindices(cc)]
+                @test parent(cube)[localindices(cc)] == parent(A)[ownedindices(cc)]
+                # Every cube cell knows where it came from in the axis, and the
+                # owned pair is one set of cells in the two numberings. A
+                # translation that dropped or reordered the halo dies here.
+                @test length(axisindices(cc)) == length(cube)
+                @test issorted(axisindices(cc)) && allunique(axisindices(cc))
+                @test axisindices(cc)[localindices(cc)] ==
+                      collect(ownedindices(cc))
+                @test sort(vcat(axisindices(cc)[chunkhalo(cc)],
+                    axisindices(cc)[localindices(cc)])) == axisindices(cc)
+                @test parent(cube) == parent(A)[axisindices(cc)]
                 owned += length(localindices(cc))
             end
             @test owned == N
+        end
+
+        @testset "globalindices still answers, deprecated" begin
+            B = dggread(path)[:e]
+            plan = chunkplan(B; halo=1)
+            @test globalindices(plan[1]) == ownedindices(plan[1])
+            foreachchunk(B, plan) do cc
+                @test globalindices(cc) == ownedindices(cc)
+            end
         end
 
         @testset "the chunked result is the whole-axis result" begin
@@ -180,7 +200,7 @@ readfloor(plan) =
             plan = chunkplan(B; halo=1)
             pieces = Base.split(plan, 4)
             @test sum(nchunks, pieces) == nchunks(plan)
-            @test reduce(vcat, [collect(globalindices(mc)) for p in pieces for mc in p]) ==
+            @test reduce(vcat, [collect(ownedindices(mc)) for p in pieces for mc in p]) ==
                   collect(1:N)
             dest = zeros(Float64, N)
             @sync for p in pieces
@@ -212,6 +232,83 @@ readfloor(plan) =
             # Two orders of magnitude is the claim; the exact ratio is the
             # chunk length's and not a law.
             @test reads["e"] * 100 < data.storage.reads["e"]
+        end
+
+        # A field request answered chunk by chunk. What is asserted here is the
+        # READ side and the route's own entry points; that a translated request
+        # equals the whole-axis one on a collection where the local index is
+        # not the global one is asserted next to the request itself, in
+        # `test/systems/crosssystem/needs.jl`.
+        @testset "a field request follows the chunk lines" begin
+            # `Index(Local())` in the centre and summed over the ring: a chunk
+            # reporting its own numbering fails on every chunk but the first.
+            kern(center, rings) = (center[1] + sum(rings[1]; init=0.0),
+                Float64(center[2]) + sum(rings[2]; init=0))
+            axiscv = region(DD.lookup(A, Cells))
+            wa, wb = mapneighbors(kern, axiscv;
+                needs=(Value(parent(A)), Index(Local())), threaded=false)
+
+            B = dggread(counting(path))[:e]
+            reads = parent(B).storage.reads
+            plan = chunkplan(B; halo=1)
+            needs = (Value(B), Index(Local()))
+
+            # The automatic route: a chunked parent and storage order, the same
+            # rule `Values()` follows.
+            empty!(reads)
+            ga, gb = mapneighbors(kern, B; needs=needs, threaded=false)
+            @test parent(ga) == wa
+            @test parent(gb) == wb
+            @test DD.lookup(ga, Cells) === DD.lookup(B, Cells)
+            # Each storage chunk is decoded a bounded number of times: once for
+            # the cube's own cells, once for the request's `Value` over the
+            # same store. Per-scalar reading is two orders of magnitude above.
+            @test readfloor(plan) <= reads["e"] <= 2 * readfloor(plan)
+
+            # A permutation names a visit order over the whole axis, which a
+            # chunked sweep cannot honour, so it keeps the whole-axis path and
+            # still answers the same.
+            pa, pb = mapneighbors(kern, B; needs=needs, order=collect(N:-1:1),
+                threaded=false)
+            @test parent(pa) == wa && parent(pb) == wb
+
+            # A `Value` over a store, swept on a cube already in memory: one
+            # read per storage chunk it touches, never one per scalar. That is
+            # the whole claim of reading a request along the chunk lines.
+            C = dggread(counting(path))[:e]
+            creads = parent(C).storage.reads
+            memplan = chunkplan(A; halo=1, chunks=CHUNK)
+            empty!(creads)
+            dest = (zeros(Float64, N), zeros(Float64, N))
+            mapneighbors!(dest, kern, A, memplan;
+                needs=(Value(C), Index(Local())), threaded=false)
+            @test dest[1] == wa && dest[2] == wb
+            @test creads["e"] == readfloor(memplan)
+
+            # Threading inside a chunk, and cutting the plan into pieces that
+            # each write their own part, change nothing.
+            d2 = (zeros(Float64, N), zeros(Float64, N))
+            mapneighbors!(d2, kern, B, plan; needs=needs)
+            @test d2[1] == wa && d2[2] == wb
+            d3 = (zeros(Float64, N), zeros(Float64, N))
+            @sync for p in Base.split(plan, 4)
+                Threads.@spawn mapneighbors!(d3, kern, B, p; needs=needs,
+                    threaded=false)
+            end
+            @test d3[1] == wa && d3[2] == wb
+
+            # The side-effecting form takes the route too, and must not fire
+            # for a chunk's halo — those cells are read to complete the owned
+            # cells' rings and have incomplete rings of their own, and there is
+            # no result to throw away afterwards.
+            hits = zeros(Int, N)
+            acc = zeros(Float64, N)
+            foreachneighbors(B; needs=needs, threaded=false) do center, rings
+                hits[center[2]] += 1
+                acc[center[2]] = center[1] + sum(rings[1]; init=0.0)
+            end
+            @test all(==(1), hits)
+            @test acc == wa
         end
     end
 end

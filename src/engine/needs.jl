@@ -319,8 +319,19 @@ function _mapstore!(f::F, outs::O, cv::CellVector, needs::Tuple,
     return outs
 end
 
+# Which visited cells the callback is called for. A sweep over one chunk of a
+# larger axis computes rings for the chunk's halo too — those cells are read to
+# complete the owned cells' rings, and their own rings are incomplete — and a
+# callback that runs for its effects has no result to discard afterwards, so
+# the chunk route hands its owned range down here. Every other caller visits
+# every cell, through a singleton the branch folds away against, so the plain
+# sweep keeps its zero-allocation shape.
+struct _EveryCell end
+
+@inline (::_EveryCell)(::Int) = true
+
 function _foreachneighbors(f::F, cv::CellVector, needs, order, threaded,
-        connectivity::Connectivity) where {F}
+        connectivity::Connectivity, keep::K=_EveryCell()) where {F,K}
     _checkneeds(needs, cv)
     rn = _resolveneeds(needs, cv)
     # One capacity witness for the whole sweep: the clip, the rings it feeds
@@ -328,7 +339,7 @@ function _foreachneighbors(f::F, cv::CellVector, needs, order, threaded,
     cap = _capacity(system(cv), connectivity)
     _runeach!(cv, connectivity, order, GOCore.booltype(threaded), cap) do r
         tn = _taskneeds(rn, r)
-        (k, c, nbrs) -> (f(_centers(tn, cv, k, c),
+        (k, c, nbrs) -> (keep(k) && f(_centers(tn, cv, k, c),
             _rings(tn, cv, nbrs, cap)); nothing)
     end
     return nothing

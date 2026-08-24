@@ -508,15 +508,14 @@ slot `j` of the callback's ring names a direction.
 need for its clipped neighbours. The rings are field-major, `rings[j]` being
 need `j`'s value for every neighbour, with slot `i` of every ring naming the
 same neighbour; a caller who wants one record per neighbour writes
-`zip(rings...)`. `Index(Local())` is the index in the collection passed here.
-No sweep that takes a field request splits that collection today —
-[`mapneighbors!`](@ref) has no `needs` keyword, and a `Value` over a
-disk-chunked cube is read cell by cell rather than along its chunks — and any
-future chunked route is bound by that promise: it must translate to this
-collection's indices rather than report a chunk-local number. `Centroid()` is
-answered from a bounded working set kept per task and keyed by the local
-index, so a centroid several neighbourhoods name is computed once wherever the
-visit order keeps them close in that index — the default storage order does,
+`zip(rings...)`. `Index(Local())` is the index in the collection passed here,
+and it stays that index however the sweep is run: [`mapneighbors!`](@ref)
+answers the same request chunk by chunk and translates each chunk's own
+numbering back to this collection's, so its result is this one's cell for
+cell. `Centroid()` is answered from a bounded working set kept per task and
+keyed by the local index, so a centroid several neighbourhoods name is
+computed once wherever the visit order keeps them close in that index — the
+default storage order does,
 and a random permutation `order` does not. A field request and a positional
 `data` vector are exclusive.
 

@@ -51,7 +51,7 @@ conversion instead of each repeating it.
 chunkplan
 MapChunkPlan
 MapChunk
-globalindices
+ownedindices
 chunkhalo
 nchunks(::MapChunkPlan)
 halowidth
@@ -67,16 +67,25 @@ because there is nothing special about it — it is a cube over cells at one
 level, and the fact that some of those cells are context rather than results is
 carried beside it, not inside it.
 
-The owned cells are contiguous within the block: every halo cell is by
-definition outside the chunk's own run, so sorting the two into one axis leaves
-the owned run unbroken. [`localindices`](@ref) is therefore a range, and
-[`globalindices`](@ref) says where those results belong in the full axis.
+A chunk is a partial grid, so an index into that cube is **chunk-local** and
+means nothing outside it. Two accessors carry the translation. The owned cells
+are contiguous within the block — every halo cell is by definition outside the
+chunk's own run, so sorting the two into one axis leaves the owned run unbroken
+— which makes [`localindices`](@ref) a range, and [`ownedindices`](@ref) says
+where those results belong in the caller's cell axis.
+[`axisindices`](@ref) names **every** cell of the block, halo included, in that
+same axis, so `axisindices(cc)[localindices(cc)] == ownedindices(cc)`. It is
+what lets a sweep over a chunk report numbers the caller can use, and it is how
+a [field request](@ref "Requesting neighbour fields") is translated onto a
+chunk.
 
 ```@docs
 foreachchunk
 ChunkCube
 chunkcube
 localindices
+axisindices
+globalindices
 ```
 
 ## The sweeps built on it
@@ -91,6 +100,21 @@ qualifying their results.
 chunk at a time, so neither the input nor the output has to fit in memory.
 [`mapneighbors`](@ref) with `pass = Values()` takes the same route by itself
 whenever the cube's data is chunked, and collects the results as it always has.
+
+A [field request](@ref "Requesting neighbour fields") takes it too.
+`mapneighbors!(dest, f, A, plan; needs = (Value(dem), Centroid()))` states the
+request once, about the cube that was passed, and the route translates it onto
+each chunk: `Index(Local())` keeps answering the caller's cell-axis index,
+never a chunk-local one, and each stored `Value` is read along its own chunk
+grid the way the swept data is. `mapneighbors` and `foreachneighbors` reach for
+it by themselves under the rule `Values()` uses — a chunked parent and
+`order = StorageOrder()`.
+
+```julia
+plan = chunkplan(A; halo = 1)
+out  = zeros(Float64, size(A))
+mapneighbors!(out, steepest, A, plan; needs = (Value(A), Centroid()))
+```
 
 [`Neighbors`](@ref) deliberately does **not** take this route. Its callback is
 handed cell handles and reaches back into the original array for values, so a

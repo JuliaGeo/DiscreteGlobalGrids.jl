@@ -9,11 +9,11 @@ import Extents
 using Random: shuffle, Xoshiro
 
 using DiscreteGlobalGrids: levelgrid, cellindex, localindex, globalindex,
-    neighbors, mapneighbors, foreachneighbors, subtree,
+    neighbors, mapneighbors, mapneighbors!, foreachneighbors, subtree,
     CellVector, CellLookup, Cells, MultiOrderCoverage, AuthalicSystem, Vertex,
     Edge, query, cellid, cell_centroid, rawid, reindex, cellindextypes,
-    Cell, Index, Local, Global, Value, Centroid,
-    Neighbors, Values, NeighborSlices
+    Cell, Index, Local, Global, Value, Centroid, cellfield, border, ncells,
+    chunkplan, nchunks, Neighbors, Values, NeighborSlices
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, sweepcovers
@@ -480,6 +480,144 @@ end
     # The default pass is untouched by the keyword's arrival.
     @test parent(mapneighbors(weighted, A; pass = Neighbors(),
         needs = (Cell(), Value(A)), threaded = false)) == want
+end
+
+# A request stated about one collection, answered chunk by chunk. A chunk is a
+# partial grid whose `1:ncells` is its own, so every number the sweep reports
+# has to be translated back — and the law is that the chunked answer IS the
+# whole-axis answer, cell for cell. The fixtures are subsets, where the local
+# index is not the global one, so a translation that confused the two dies
+# here; the read side of the same route is asserted in `test/io/chunk_sweep.jl`.
+@testset "a chunked field request answers in the caller's own indices" begin
+    sys = DGG.IGeo7System()
+    lvl = 4
+    grid = levelgrid(sys, lvl)
+    # One rooted subtree, and a scattered subset of the same level: the first
+    # is one window, the second is thousands, so the halo of a chunk of it is
+    # a very different shape.
+    scattered = CellVector(sys, lvl,
+        [cellindex(grid, p) for p in
+         sort(shuffle(Xoshiro(7), 1:ncells(grid))[1:3000])])
+    fixtures = ("one rooted subtree" => CellVector(rooted_pg(sys, 1, 3)),
+        "a scattered subset" => scattered)
+
+    # Every translated quantity, in one record: the visited cell's local index
+    # and the sum of its ring's, so a chunk-local number fails on every chunk
+    # but the first; the same in global indices, which no chunk may change; a
+    # value, a re-encoded id, a centroid and the ring's length.
+    function record(center, rings)
+        _, k, g, t, v, p = center
+        cs, ks, gs, ts, vs, ps = rings
+        return (k, sum(ks; init = 0), g, sum(gs; init = 0),
+            v + sum(vs; init = 0.0),
+            rawid(t) + sum(rawid(x) for x in ts; init = zero(rawid(t))),
+            p[1] + sum(q[1] for q in ps; init = 0.0), length(cs))
+    end
+
+    # Three needs: a value, a centroid field, and the caller's own index.
+    function record3(center, rings)
+        v, p, k = center
+        vs, ps, ks = rings
+        return (v + sum(vs; init = 0.0),
+            p[1] + sum(q[1] for q in ps; init = 0.0), k, sum(ks; init = 0))
+    end
+
+    @testset "$label" for (label, cv) in fixtures
+        n = length(cv)
+        # The fixtures are subsets: if they were not, an untranslated chunk
+        # index could pass by accident.
+        @test globalindex(cv, cv[1]) != 1
+        data = collect(1.0:n)
+        A = DD.DimArray(copy(data), (Cells(CellLookup(cv)),))
+        T = last(cellindextypes(sys))
+        needs = (Cell(), Index(Local()), Index(Global()), Index(T),
+            Value(data), Centroid())
+        want = mapneighbors(record, cv; needs, threaded = false)
+
+        plan = chunkplan(A; halo = 1, chunks = cld(n, 4))
+        @test nchunks(plan) >= 3
+
+        dest = map(similar, want)
+        mapneighbors!(dest, record, A, plan; needs, threaded = false)
+        @test all(map(==, dest, want))
+
+        # Threading inside a chunk, and cutting the plan into pieces that each
+        # write their own part, change nothing.
+        threadeddest = map(similar, want)
+        mapneighbors!(threadeddest, record, A, plan; needs, threaded = true)
+        @test all(map(==, threadeddest, want))
+
+        splitdest = map(similar, want)
+        for p in Base.split(plan, 3)
+            mapneighbors!(splitdest, record, A, p; needs, threaded = false)
+        end
+        @test all(map(==, splitdest, want))
+
+        # The plan-free form plans for itself.
+        autodest = map(similar, want)
+        mapneighbors!(autodest, record, A; needs, chunks = cld(n, 4),
+            threaded = false)
+        @test all(map(==, autodest, want))
+
+        # A scalar result lands in a plain destination.
+        onesum(center, rings) = center[5] + sum(rings[5]; init = 0.0)
+        scalarwant = mapneighbors(onesum, cv; needs, threaded = false)
+        scalardest = similar(scalarwant)
+        mapneighbors!(scalardest, onesum, A, plan; needs, threaded = false)
+        @test scalardest == scalarwant
+
+        # A request never reads the cube it is called on, so a cube with other
+        # dimensions is swept the same way and still gives one result per cell,
+        # on the cell axis alone — `dest` is a vector however wide `A` is.
+        cube = DD.DimArray(repeat(data, 1, 3),
+            (Cells(CellLookup(cv)), DD.Dim{:time}(1:3)))
+        cubedest = similar(scalarwant)
+        mapneighbors!(cubedest, onesum, cube,
+            chunkplan(cube; halo = 1, chunks = cld(n, 4)); needs,
+            threaded = false)
+        @test cubedest == scalarwant
+
+        # A cell field carrying a subset of what the caller already knows says
+        # which cells it holds by CELL ID, so no chunk may renumber it: the
+        # border's centroids read back the same on the chunk route as off it.
+        edge = cv[collect(border(cv))]
+        part = cellfield(cell_centroid, cv;
+            known = DD.DimArray([cell_centroid(cv.grid, c) for c in edge],
+                (Cells(CellLookup(edge)),)))
+        table = cellfield(cell_centroid, cv;
+            known = [cell_centroid(cv.grid, c) for c in cv])
+        fields = ("no" => cellfield(cell_centroid, cv), "a subset" => part,
+            "a complete" => table)
+        @testset "$kind known" for (kind, field) in fields
+            fneeds = (Value(data), Value(field), Index(Local()))
+            fwant = mapneighbors(record3, cv; needs = fneeds, threaded = false)
+            fdest = map(similar, fwant)
+            mapneighbors!(fdest, record3, A, plan; needs = fneeds,
+                threaded = false)
+            @test all(map(==, fdest, fwant))
+        end
+    end
+
+    # The request is checked against the collection the caller wrote it about,
+    # before a chunk is read: the message names the whole axis's length, not
+    # some chunk's.
+    cv = CellVector(rooted_pg(sys, 1, 3))
+    n = length(cv)
+    A = DD.DimArray(collect(1.0:n), (Cells(CellLookup(cv)),))
+    plan = chunkplan(A; halo = 1, chunks = cld(n, 4))
+    dest = zeros(Float64, n)
+    err = try
+        mapneighbors!(dest, record3, A, plan;
+            needs = (Value(collect(1.0:(n-1))), Index(Local())))
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("1:$n", err.msg)
+    # A field over other cells is refused by the same up-front check.
+    other = CellVector(subtree(sys, cellindex(levelgrid(sys, 1), 4), 4))
+    @test_throws ArgumentError mapneighbors!(dest, record3, A, plan;
+        needs = (Value(parent(A)), Value(cellfield(cell_centroid, other))))
 end
 
 end # module NeedsTests

@@ -32,7 +32,7 @@ import .ChunkedLookups: nchunks
 One chunk of a [`MapChunkPlan`](@ref): the axis indices it owns, and the axis
 indices outside it that its cells' rings reach.
 
-`globalindices(mc)` is the first, `chunkhalo(mc)` the second; both are indices in
+`ownedindices(mc)` is the first, `chunkhalo(mc)` the second; both are indices in
 the cube's own cell axis, and both ascend. The halo holds only indices the
 axis really has — a ring that leaves the axis altogether is clipped here exactly
 as [`neighbors`](@ref) clips it.
@@ -44,18 +44,24 @@ struct MapChunk
 end
 
 """
-    globalindices(mc::MapChunk) -> UnitRange{Int}
-    globalindices(cc::ChunkCube) -> UnitRange{Int}
+    ownedindices(mc::MapChunk) -> UnitRange{Int}
+    ownedindices(cc::ChunkCube) -> UnitRange{Int}
 
-The indices in the CUBE'S CELL AXIS that this chunk owns. Contiguous, because
-a chunk is a contiguous block of the axis.
+The indices in the CELL AXIS OF THE CUBE THE CALLER PASSED that this chunk
+owns — the cells it produces results for. Contiguous, because a chunk is a
+contiguous block of that axis.
+
+This is the axis index, not the complete level's numbering: on a cube over a
+subset of a level the two differ, and it is the caller's axis a result is
+written back to. [`axisindices`](@ref) names every cell of a loaded chunk in
+the same space, halo included.
 """
-globalindices(mc::MapChunk) = mc.range
+ownedindices(mc::MapChunk) = mc.range
 
 """
     chunkhalo(mc::MapChunk) -> Vector{Int}
 
-The axis indices outside [`globalindices`](@ref) that this chunk's cells reach,
+The axis indices outside [`ownedindices`](@ref) that this chunk's cells reach,
 ascending. These are the cells a sweep over the chunk has to read but does not
 produce a result for.
 """
@@ -172,7 +178,7 @@ plan = chunkplan(A; halo = 1)
 nchunks(plan)                             # what it will read
 foreachchunk(A, plan) do cc               # ... and reading it
     r = mapneighbors(f, chunkcube(cc))
-    out[globalindices(cc)] = parent(r)[localindices(cc)]
+    out[ownedindices(cc)] = parent(r)[localindices(cc)]
 end
 ```
 """
@@ -265,16 +271,23 @@ worth handing over rather than hiding: every verb in this package already works
 on a cube, so a chunk-following pass is written in the same vocabulary as the
 whole-cube pass it replaces.
 
+A chunk is a partial grid, so an index into its cube is CHUNK-LOCAL and means
+nothing to the caller. Its accessors name cells in the two index spaces:
+
 | accessor | what it gives |
 |---|---|
 | [`chunkcube`](@ref) | the in-memory cube: the chunk's cells AND its halo |
 | [`localindices`](@ref) | the indices IN THAT CUBE the chunk owns |
-| [`globalindices`](@ref) | the same cells' indices in the FULL axis |
+| [`ownedindices`](@ref) | those same owned cells' indices in the CALLER'S CELL AXIS |
+| [`axisindices`](@ref) | EVERY cube cell's index in the caller's cell axis, halo included |
+
+The owned pair is one set of cells in the two numberings, so
+`axisindices(cc)[localindices(cc)] == ownedindices(cc)` always.
 
 A result computed on the cube is meaningful for the owned indices only:
 a halo cell is there to complete its neighbours' rings, and its own ring is
 missing whatever fell outside the block. `r[localindices(cc)]` selects the
-part to keep and `globalindices(cc)` says where it belongs.
+part to keep and `ownedindices(cc)` says where it belongs.
 
 Because the halo holds every axis neighbour of every owned cell, a stencil that
 reaches no further than the plan's [`halowidth`](@ref) computes exactly what the
@@ -284,6 +297,7 @@ struct ChunkCube{C<:DD.AbstractDimArray}
     cube::C
     localindices::UnitRange{Int}
     range::UnitRange{Int}
+    axisindices::Vector{Int}
     index::Int
 end
 
@@ -304,7 +318,39 @@ one axis.
 """
 localindices(cc::ChunkCube) = cc.localindices
 
-globalindices(cc::ChunkCube) = cc.range
+ownedindices(cc::ChunkCube) = cc.range
+
+"""
+    axisindices(cc::ChunkCube) -> Vector{Int}
+
+Where every cell of [`chunkcube`](@ref) came from in the CALLER'S CELL AXIS,
+in the cube's own cell order: entry `k` is the axis index of the cube's cell
+`k`, halo cells included. Ascending, since the halo below the chunk, the chunk
+itself and the halo above it are stored in that order.
+
+This is the translation between the two numberings, and it is what lets a
+sweep over a chunk report indices the caller can use: `Index(Local())` on a
+chunk is `Value(axisindices(cc))`, so a request answered chunk by chunk names
+the same cells the whole-axis sweep would have.
+"""
+axisindices(cc::ChunkCube) = cc.axisindices
+
+# `globalindices` is the old name of `ownedindices` and forwards to it, so a
+# call of the old name answers the same with a deprecation warning. It was
+# never the complete level's numbering that `globalindex` answers — the word
+# meant "the whole axis", which is now said as the axis.
+
+"""
+    globalindices(mc::MapChunk) -> UnitRange{Int}
+    globalindices(cc::ChunkCube) -> UnitRange{Int}
+
+Deprecated. Use [`ownedindices`](@ref), which this forwards to, so existing
+calls keep their old behaviour exactly.
+"""
+function globalindices end
+
+@deprecate globalindices(mc::MapChunk) ownedindices(mc) false
+@deprecate globalindices(cc::ChunkCube) ownedindices(cc) false
 
 """
     chunkhalo(cc::ChunkCube) -> Vector{Int}
@@ -352,7 +398,7 @@ one, `split` the plan and run the pieces — see [`MapChunkPlan`](@ref).
 plan = chunkplan(A; halo = 1)
 @sync for p in Base.split(plan, Threads.nthreads())
     Threads.@spawn foreachchunk(A, p) do cc
-        write!(out, globalindices(cc), mine(mapneighbors(f, chunkcube(cc)), cc))
+        write!(out, ownedindices(cc), mine(mapneighbors(f, chunkcube(cc)), cc))
     end
 end
 ```
@@ -374,27 +420,51 @@ foreachchunk(f::F, A::DD.AbstractDimArray; spatialdim=nothing, kw...) where {F} 
     foreachchunk(f, A, chunkplan(A; spatialdim=spatialdim, kw...);
         spatialdim=spatialdim)
 
-# Read one chunk and its halo into an ordinary cube.
+# The three runs of axis indices a chunk's cube holds, in the cube's own cell
+# order: the halo below the chunk, the chunk's own contiguous block, the halo
+# above it. Named from the plan, before anything is read.
+function _chunkparts(mc::MapChunk)
+    below = _lessthan(mc.halo, first(mc.range))
+    return below, mc.range, (@view mc.halo[(length(below)+1):end])
+end
+
+# The same three runs, named from a chunk already loaded. `localindices` is the
+# owned run inside the cube, so what lies before and after it is the halo.
+function _chunkparts(cc::ChunkCube)
+    idx, own = cc.axisindices, cc.localindices
+    below = @view idx[1:(first(own)-1)]
+    above = @view idx[(last(own)+1):end]
+    return below, cc.range, above
+end
+
+# Read one chunk's three runs out of a cell-axis array and join them.
 #
-# The three pieces are read separately and joined rather than gathered in one
+# The pieces are read separately and joined rather than gathered in one
 # scattered index, so the chunk's own cells stay a single contiguous read and
-# each foreign chunk the halo reaches is read exactly once.
-function _loadchunk(A::DD.AbstractDimArray, dnum::Int, cv::CellVector,
-        mc::MapChunk, bounds::Vector{UnitRange{Int}})
-    r = mc.range
-    below = _lessthan(mc.halo, first(r))
-    above = @view mc.halo[(length(below)+1):end]
-    data = parent(A)
+# each foreign chunk the halo reaches is read exactly once. Both the cube being
+# swept and any array a field request names go through here, so a `Value` over
+# a stored array costs one read per storage chunk it touches, never one per
+# scalar.
+function _readcells(data, dnum::Int, below, r::UnitRange{Int}, above,
+        bounds::Vector{UnitRange{Int}})
     parts = Any[]
     isempty(below) || push!(parts, _readindices(data, dnum, below, bounds))
     push!(parts, _readrange(data, dnum, r))
     isempty(above) || push!(parts, _readindices(data, dnum, above, bounds))
-    block = length(parts) == 1 ? only(parts) : cat(parts...; dims=dnum)
+    return length(parts) == 1 ? only(parts) : cat(parts...; dims=dnum)
+end
+
+# Read one chunk and its halo into an ordinary cube.
+function _loadchunk(A::DD.AbstractDimArray, dnum::Int, cv::CellVector,
+        mc::MapChunk, bounds::Vector{UnitRange{Int}})
+    below, r, above = _chunkparts(mc)
+    block = _readcells(parent(A), dnum, below, r, above, bounds)
     indices = vcat(collect(below), collect(r), collect(above))
     lk = CellLookup(cv[indices])
     dims = ntuple(i -> i == dnum ? Cells(lk) : DD.dims(A)[i], Val(ndims(A)))
     own = (length(below)+1):(length(below)+length(r))
-    return ChunkCube(DD.rebuild(A; data=block, dims=dims), own, r, mc.index)
+    return ChunkCube(DD.rebuild(A; data=block, dims=dims), own, r, indices,
+        mc.index)
 end
 
 _lessthan(halo::Vector{Int}, lo::Int) =
@@ -456,6 +526,89 @@ function _boundsof(bounds::Vector{UnitRange{Int}}, p::Int)
 end
 
 # ===========================================================================
+# A field request, translated onto a chunk
+# ===========================================================================
+#
+# A request names quantities in the collection the CALLER passed. A chunk is a
+# different collection — a partial grid whose `1:ncells` is its own — so a
+# sweep over one has to be asked for the same quantities in ITS terms and give
+# back answers in the caller's. That translation is this section, and it is one
+# `map` over the request: each need either does not depend on the collection
+# at all, or is a `Value` whose vector is restricted to the chunk's cells.
+#
+# `Index(Local())` is the whole point. The caller's axis index of every cell of
+# the chunk's cube is `axisindices(cc)`, so the request becomes a `Value` of
+# that vector and the sweep's existing machinery answers it — for the visited
+# cell and for every ring slot — with the number the whole-axis sweep would
+# have reported. No per-need code, and the pin holds by construction.
+
+_chunkneeds(needs::Tuple, cc::ChunkCube) = map(n -> _chunkneed(n, cc), needs)
+
+# A cell id, the complete level's numbering and a centroid are properties of
+# the cell, not of the collection it was found in: a chunk answers them
+# unchanged.
+_chunkneed(n::Engine.Cell, ::ChunkCube) = n
+_chunkneed(n::Engine.Index{Engine.Global}, ::ChunkCube) = n
+_chunkneed(n::Engine.Index{Type{T}}, ::ChunkCube) where {T} = n
+_chunkneed(n::Engine.Centroid, ::ChunkCube) = n
+
+_chunkneed(::Engine.Index{Engine.Local}, cc::ChunkCube) =
+    Engine.Value(axisindices(cc))
+
+_chunkneed(n::Engine.Value, cc::ChunkCube) = Engine.Value(_restrict(n.data, cc))
+
+# The chunk cube's own collection: what a sweep over the chunk runs on, and
+# what a field restricted onto the chunk is built over. The lookup holds it, so
+# every call answers the same object and a field built here is accepted by the
+# sweep's `===` check without falling back to comparing windows.
+_chunkcv(cc::ChunkCube) = region(DD.lookup(cc.cube, _celldim(cc)))
+
+_rawdata(a) = a
+_rawdata(a::DD.AbstractDimArray) = parent(a)
+
+_ischunked(a) = DiskArrays.haschunks(_rawdata(a)) isa DiskArrays.Chunked
+
+# A vector laid out on the caller's axis, restricted to the chunk's cells and
+# laid out on the chunk cube's. In memory that is a gather; on disk it is the
+# same three-part read the chunk's own data took, so the request costs one read
+# per storage chunk it touches rather than one per scalar.
+#
+# The gather COPIES rather than viewing. On time the two are the same: over a
+# 117,649-cell in-memory sweep a view ran at 0.994 of the copy's median, inside
+# the run-to-run spread either way. What decides it is the type — a copy and
+# the disk-backed read below both answer a `Vector{eltype(a)}`, so the
+# translated request's types do not depend on which branch ran, which is what
+# lets the automatic route size its result from the whole axis before a chunk
+# exists — and lifetime: a view would keep the caller's whole array reachable
+# through every chunk's request and read each entry through one more
+# indirection on each of its `degree + 1` touches, against 8 bytes per block
+# cell copied once.
+function _restrict(a::AbstractVector, cc::ChunkCube)
+    v = _ischunked(a) ? _readalong(a, cc) : a[axisindices(cc)]
+    return convert(Vector{eltype(a)}, v)
+end
+
+function _readalong(a, cc::ChunkCube)
+    data = _rawdata(a)
+    below, r, above = _chunkparts(cc)
+    # A `Value` names one entry per cell, so its cell axis is its only one.
+    return vec(_readcells(data, 1, below, r, above, _storagebounds(data, 1)))
+end
+
+# A cell field is a function of the cell plus whatever the caller already knew,
+# so a chunk rebuilds it over the chunk cube's collection. `known` follows the
+# rule its own constructor states: a dense vector is laid out on the collection
+# and is restricted with it, and a subset cube says which cells it holds by
+# cell id, which no chunk changes.
+_restrict(a::Engine.CellField, cc::ChunkCube) =
+    Engine.cellfield(Engine._fieldfunction(a), _chunkcv(cc);
+        known=_restrictknown(Engine._fieldknown(a), cc))
+
+_restrictknown(::Nothing, ::ChunkCube) = nothing
+_restrictknown(k::AbstractVector, cc::ChunkCube) = _restrict(k, cc)
+_restrictknown(k::Engine._SubsetKnown, ::ChunkCube) = k
+
+# ===========================================================================
 # The result-producing forms
 # ===========================================================================
 
@@ -488,9 +641,52 @@ function CellLookups._map_values_chunked(f::F, A, dnum::Int,
     return dest
 end
 
+function CellLookups._map_needs_chunked(f::F, A, dnum::Int,
+        plan::MapChunkPlan, needs, threaded, conn::Connectivity) where {F}
+    cv = region(DD.lookup(A, dnum))
+    # What the caller wrote is checked against the collection they wrote it
+    # about, before a chunk is read, so an error names the request as written.
+    Engine._checkneeds(needs, cv)
+    # The translated request's element types are the request's own: every rule
+    # in `_chunkneed` preserves the need's element type — `Index(Local())`
+    # becomes a `Value` of `Int`s, a `Value` keeps its array's eltype, a field
+    # keeps the one it was built with, and the rest are unchanged — so the
+    # callback's argument types are the same on every chunk AND the same as
+    # the whole-axis sweep's. They can therefore be derived here, from the
+    # whole axis, before any chunk exists.
+    rn = Engine._resolveneeds(needs, cv)
+    cap = Engine._capacity(system(cv), conn)
+    T = Base.promote_op(f, Engine._centertype(rn, cv),
+        Engine._ringstype(rn, cv, cap))
+    n = length(cv)
+    dest = T <: Tuple && isconcretetype(T) ?
+           ntuple(j -> Array{fieldtype(T, j)}(undef, n), fieldcount(T)) :
+           Array{T}(undef, n)
+    _mapchunks!(needs, dest, f, A, plan, nothing, threaded)
+    return dest
+end
+
+# The side-effecting form. A sweep over a chunk visits the halo too — those
+# cells are there to complete the owned cells' rings — and a callback that is
+# only called for its effects must not see them, so the owned range is handed
+# down as the visit filter. `mapneighbors!` needs no such filter: it drops the
+# halo rows when it stores.
+function CellLookups._foreach_needs_chunked(f::F, A, dnum::Int,
+        plan::MapChunkPlan, needs, threaded, conn::Connectivity) where {F}
+    Engine._checkneeds(needs, region(DD.lookup(A, dnum)))
+    foreachchunk(A, plan) do cc
+        Engine._foreachneighbors(f, _chunkcv(cc), _chunkneeds(needs, cc),
+            StorageOrder(), threaded, plan.connectivity,
+            Base.Fix2(in, localindices(cc)))
+    end
+    return nothing
+end
+
 """
     mapneighbors!(dest, f, A::AbstractDimArray; halo = 1, chunks = :auto,
                   spatialdim = nothing, connectivity = Vertex(), threaded = true)
+    mapneighbors!(dest, f, A, plan::MapChunkPlan;
+                  needs = (Value(a), Centroid()), threaded = true)
 
 Apply `f` to each cell of `A` and its neighbours, chunk by chunk, writing one
 result per cell into `dest`.
@@ -505,9 +701,18 @@ another cube, or a lazy array being written back to a store.
 chunked sweep is exactly the case where the values must flow through the
 traversal rather than be fetched by the callback.
 
-The result is the whole-axis sweep's, cell for cell. Each chunk's halo carries
-every axis neighbour of every cell the chunk owns, so a ring computed on a chunk
-is the ring computed on the axis — clipped identically, and in the same order.
+`needs` names the per-neighbour fields the kernel reads instead, and the
+callback becomes `f(center, rings)` — [`mapneighbors`](@ref)'s field-request
+contract, here on the chunk route. The request is stated once, about the cube
+the caller passed, and translated onto each chunk: `Index(Local())` answers
+that cube's cell-axis index on every chunk, never a chunk-local one, and a
+[`Value`](@ref) over a stored array is read along its own storage chunks the
+way the swept data is. `dest` then holds one result per cell.
+
+The result is the whole-axis sweep's, cell for cell, in either form. Each
+chunk's halo carries every axis neighbour of every cell the chunk owns, so a
+ring computed on a chunk is the ring computed on the axis — clipped
+identically, and in the same order.
 
 `threaded` threads WITHIN each chunk. To run chunks themselves in parallel,
 `split` a [`chunkplan`](@ref) and call this on the pieces. Build the plan before
@@ -515,23 +720,47 @@ splitting: doing so is what fills the axis's [`region`](@ref) memo, so the
 pieces share one conversion rather than each repeating it.
 """
 function mapneighbors!(dest, f::F, A::DD.AbstractDimArray; halo::Integer=1,
-        chunks=:auto, spatialdim=nothing, connectivity::Connectivity=Vertex(),
-        threaded=true) where {F}
+        chunks=:auto, spatialdim=nothing, needs=nothing,
+        connectivity::Connectivity=Vertex(), threaded=true) where {F}
     plan = chunkplan(A; halo=halo, chunks=chunks, spatialdim=spatialdim,
         connectivity=connectivity)
-    return mapneighbors!(dest, f, A, plan; spatialdim=spatialdim,
+    return mapneighbors!(dest, f, A, plan; spatialdim=spatialdim, needs=needs,
         threaded=threaded)
 end
 
 function mapneighbors!(dest, f::F, A::DD.AbstractDimArray, plan::MapChunkPlan;
-        spatialdim=nothing, threaded=true) where {F}
+        spatialdim=nothing, needs=nothing, threaded=true) where {F}
+    _mapchunks!(needs, dest, f, A, plan, spatialdim, threaded)
+    return dest
+end
+
+# No field request: the `Values()` form, untouched — `needs = nothing` reaches
+# it by dispatch, not by a branch.
+function _mapchunks!(::Nothing, dest, f::F, A, plan::MapChunkPlan, spatialdim,
+        threaded) where {F}
     foreachchunk(A, plan; spatialdim=spatialdim) do cc
         cube = chunkcube(cc)
         out = mapneighbors(f, cube; pass=Values(), threaded=threaded,
             connectivity=plan.connectivity)
         _storechunk!(dest, out, cc)
     end
-    return dest
+    return nothing
+end
+
+# A field request. The sweep runs on the chunk cube's own collection rather
+# than the cube — a request never reads the array it is called on, so there is
+# nothing for the cube's other dimensions to do — and the answer is one result
+# per cell, of which the owned rows are kept.
+function _mapchunks!(needs, dest, f::F, A, plan::MapChunkPlan, spatialdim,
+        threaded) where {F}
+    dnum = CellLookups._cells_dimnum(A, spatialdim)
+    Engine._checkneeds(needs, region(DD.lookup(A, dnum)))
+    foreachchunk(A, plan; spatialdim=spatialdim) do cc
+        out = mapneighbors(f, _chunkcv(cc); needs=_chunkneeds(needs, cc),
+            threaded=threaded, connectivity=plan.connectivity)
+        _storeneeds!(dest, out, cc)
+    end
+    return nothing
 end
 
 # Keep the owned rows and put them where the chunk came from. A tuple result is
@@ -539,12 +768,24 @@ end
 function _storechunk!(dest, out, cc::ChunkCube)
     dnum = CellLookups._cells_dimnum(out, nothing)
     src = _slice(parent(out), dnum, localindices(cc))
-    _destview(dest, dnum, globalindices(cc)) .= src
+    _destview(dest, dnum, ownedindices(cc)) .= src
     return nothing
 end
 
 function _storechunk!(dest::Tuple, out::Tuple, cc::ChunkCube)
     map((d, o) -> _storechunk!(d, o, cc), dest, out)
+    return nothing
+end
+
+# A field request gives one result per cell, so its result is a plain vector
+# over the chunk cube's cells and `dest` is indexed along the cell axis alone.
+function _storeneeds!(dest, out::AbstractVector, cc::ChunkCube)
+    _destview(dest, 1, ownedindices(cc)) .= @view out[localindices(cc)]
+    return nothing
+end
+
+function _storeneeds!(dest::Tuple, out::Tuple, cc::ChunkCube)
+    map((d, o) -> _storeneeds!(d, o, cc), dest, out)
     return nothing
 end
 

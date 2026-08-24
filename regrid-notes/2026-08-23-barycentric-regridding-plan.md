@@ -44,9 +44,9 @@ destination tile
       v
 pointstencil!(buffer, prepared_source, point)
       |
-      | global source positions + weights
+      | source local indices + weights
       v
-partition by chunkat(source_space, source_position)
+partition by chunkat(source_space, local_index)
       |
       +--> source chunk 4  --> WeightBlock
       +--> source chunk 9  --> WeightBlock
@@ -77,7 +77,7 @@ the number of candidate source chunks.
    invent a `valuesampling`, `samplepoint`, or point-to-area conversion API.
 5. **The stable method-facing seam is a stencil, not a polygon.** A source space
    may expose or internally construct interpolation elements, but the
-   regridding executor consumes global source positions and scalar weights.
+   regridding executor consumes source local indices and scalar weights.
 6. **Chunking cannot affect mathematics.** The full stencil is determined before
    it is partitioned into source chunks. No source-chunk boundary may clamp,
    truncate, or otherwise change a stencil.
@@ -89,6 +89,29 @@ the number of candidate source chunks.
    fallback may be explicit; silent clamping is not barycentric interpolation.
 9. **Patch recovery is a later, distinct method.** `BarycentricPoint` will not
    grow patch rings or fit polynomials.
+
+## Index vocabulary
+
+Three index spaces appear below. The words are `DiscreteGlobalGrids`' own
+(`localindex`/`globalindex`, `Index(Local())`/`Index(Global())`), and a
+"position" anywhere in this plan is a local index.
+
+- **Local index** — a cell's place in the collection a space wraps,
+  `1:ncells(src_space)`. It is what `cellat(space, p)` answers, what
+  `cellcentroid(space, i)` and `chunkat(space, i)` take, and the space every
+  stencil is written in. A `DGGSpace` may wrap a `PartialGrid`, so this is not
+  the complete level's numbering.
+- **Chunk-local index** — the local index of one chunk read as a partial grid.
+  A chunk is a smaller collection, not another kind of index: chunk-local `j`
+  satisfies `cellindices(space, k)[j] == i`, and when the chunk is a
+  contiguous range, as every `DGGSpace` chunk is, that is
+  `i - first(cellindices(space, k)) + 1`. `WeightCOO` rows and columns are
+  chunk-local, rows within the destination tile and columns within the source
+  chunk.
+- **Global index** — the cell's place in the complete level (`globalindex`).
+  It equals the local index only on a complete grid. This plan uses it in one
+  place: CopDEM topology is constructed on the complete level and translated to
+  local indices before any stencil is emitted.
 
 ## Geometry and mathematical contract
 
@@ -137,7 +160,7 @@ The hot API must be allocation-free in steady state:
 pointstencil!(buffer, prepared, p) -> status
 ```
 
-`buffer` is reusable, owns parallel vectors of global source positions and
+`buffer` is reusable, owns parallel vectors of source local indices and
 `Float64` weights, and is cleared on entry. Each worker owns one buffer.
 `status` distinguishes at least mapped from unmapped; diagnostic builds may
 distinguish outside coverage, rim, and degenerate geometry.
@@ -160,8 +183,8 @@ pointstencil!(buffer, method::BarycentricPoint, src_space, p)
 ```
 
 Source spaces with a faster fused algorithm specialize it. The returned
-positions are global `1:ncells(src_space)` positions; source chunking is not an
-input.
+indices are the source space's local indices, `1:ncells(src_space)`; source
+chunking is not an input.
 
 ### Better name than `sampleelement`
 
@@ -173,7 +196,7 @@ interpolationelementat(prepared, p) -> InterpolationElement
 ```
 
 An `InterpolationElement` is a small structured object containing ordered
-source positions, sample-site geometry, and an explicit basis kind. It is not
+source local indices, sample-site geometry, and an explicit basis kind. It is not
 required to be a `GeoInterface.Polygon`, and Q1/P1 identity must not be erased
 by converting everything to a generic polygon. A natural polar construction
 could have many nodes, so the representation must not promise a fixed size.
@@ -232,8 +255,8 @@ hook behind `DGGSpace` on at least:
 - one hexagonal grid, including a pentagonal defect if present; and
 - one higher-valence dual polygon.
 
-Prefer a high-level, query-oriented implementation over manufacturing global
-vertex IDs. Possible internal factorizations are `interpolationelementat` or an
+Prefer a high-level, query-oriented implementation over manufacturing a
+numbering of primal vertices. Possible internal factorizations are `interpolationelementat` or an
 iterator of interpolation elements incident on a host cell. Do not export a
 lower-level vertex-incidence API until those systems show that it removes work
 rather than merely moving it.
@@ -271,9 +294,11 @@ O(1), with three or four source entries.
 
 ### Partial holdings and rims
 
-Construct topology against the complete CopDEM level, then map source positions
-through the actual `DGGSpace`/partial-grid membership. If any required node is
-absent, treat it as a holdings rim and apply the selected explicit rim policy.
+Construct topology in the complete CopDEM level's index space — the global
+index, the one place this plan uses it — then translate each node to its local
+index through the actual `DGGSpace`/partial-grid membership. If any required
+node has no local index, treat it as a holdings rim and apply the selected
+explicit rim policy.
 Do not replace the missing node with a cell from a different chunk or silently
 renormalize geometry.
 
@@ -347,18 +372,21 @@ PointTileOperator(
 
 Construction performs one destination pass. For every nonzero stencil entry it:
 
-1. obtains the owning source chunk with `chunkat(src_space, source_position)`;
-2. obtains the source position's local index within that chunk;
-3. appends `(destination_local, source_local, weight)` to that chunk's builder;
-4. combines duplicate source positions deterministically; and
+1. obtains the owning source chunk with `chunkat(src_space, i)` from the
+   source local index `i`;
+2. obtains the source's chunk-local index, its local index in that chunk read
+   as a partial grid;
+3. appends `(dst_tilelocal, src_chunklocal, weight)` to that chunk's builder;
+4. combines duplicate source cells deterministically; and
 5. finalizes nonempty blocks in ascending source-chunk order.
 
-Contiguous `cellindices` already permit arithmetic local indexing. Other spaces
-may use one cached `indexmap` per contributing chunk. Add a more specialized
-local-position hook only if profiles show the existing maps dominate.
+A contiguous `cellindices` range makes the chunk-local index arithmetic, as
+the vocabulary section states. Other spaces may use one cached `indexmap` per
+contributing chunk. Add a more specialized chunk-local hook only if profiles
+show the existing maps dominate.
 
 The implementation should process destination rows in bounded batches and use
-reusable buffers. It need not retain a second global copy of all stencils. The
+reusable buffers. It need not retain a second whole-tile copy of all stencils. The
 final sparse weights are inherently O(nonzeros); temporary memory must also be
 O(nonzeros in the tile) or smaller, not O(destination cells × candidate chunks).
 
@@ -386,7 +414,7 @@ reconstruct an evicted dependency list.
 `DirectPlan` may use the same stencil loop with one whole-domain source index.
 The conservative chunk-pair cache and executor remain unchanged.
 
-If a global scheduler requires a graph before any destination is requested, it
+If a whole-run scheduler requires a graph before any destination is requested, it
 has two honest choices: accept a no-false-negative support superset but delay
 source reads/prefetch until the exact tile manifest exists, or explicitly build
 the relevant point-tile operators eagerly. It must not obtain an “exact” graph
@@ -511,7 +539,7 @@ the performance cutover.
 - Add the tile-level build/cache unit and exact dependency manifest.
 - Route `BarycentricPoint` through it in lazy execution; retain the old path for
   conservative and unopted custom methods.
-- Partition once by global source position and apply exact source blocks in
+- Partition once by source local index and apply exact source blocks in
   ascending order.
 - Preserve eager/lazy and source-rechunking equivalence.
 - Add call-count and read-count assertions: one stencil query per requested

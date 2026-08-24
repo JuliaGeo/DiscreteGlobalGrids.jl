@@ -142,6 +142,59 @@ tangent plane at its own centroid.
 (fall[1], direction[1]), (fall[end], direction[end])
 ```
 
+## Any per-cell quantity
+
+`Centroid()` is not a special case inside the sweep. It resolves to a **cell
+field** — a vector over the collection whose entries are computed by a per-cell
+function instead of stored — and the sweep then reads that field like any other
+`Value`. [`cellfield`](@ref) builds one, so these two requests are the same
+request:
+
+```@example needs
+using DiscreteGlobalGrids: cellfield          # public, not exported
+
+byname  = mapneighbors(steepest, cells; needs = (Value(dem), Centroid()))
+spelled = mapneighbors(steepest, cells;
+    needs = (Value(dem), Value(cellfield(cell_centroid, cells))))
+byname == spelled
+```
+
+Any function of `(grid, cell)` can be a field — `cell_area` as readily
+as `cell_centroid`. A field is pure: it never mutates and never
+remembers, so one field is safely read by every task of a threaded sweep, and
+what remembers is the bounded window the sweep gives each task.
+
+`known` hands the field what you have already computed. A vector on the
+collection's cell axis is the complete case, and a complete field is read
+straight through with no window at all:
+
+```@example needs
+table = [cell_centroid(sys, c) for c in cells]
+whole = cellfield(cell_centroid, cells; known = table)
+mapneighbors(steepest, cells; needs = (Value(dem), Value(whole))) == byname
+```
+
+A one-dimensional cube on a `Cells` dimension is the partial case: the
+cells it carries are read from it, and every other cell is computed. Nothing
+requires the whole table, so precompute only the part that pays — the
+[`border`](@ref), say, whose neighbours lie outside the collection's own index
+range and so miss the window most often:
+
+```@example needs
+using DimensionalData: DimArray
+
+edge = cells[collect(border(cells))]
+part = cellfield(cell_centroid, cells;
+    known = DimArray([cell_centroid(sys, c) for c in edge],
+                     (Cells(CellLookup(edge)),)))
+length(edge), mapneighbors(steepest, cells;
+    needs = (Value(dem), Value(part))) == byname
+```
+
+A field is read by local index, so it must be over the collection being swept.
+One built over other cells is an `ArgumentError` raised before the sweep
+starts, not a silently wrong answer.
+
 ## The needs
 
 ```@docs
@@ -152,6 +205,7 @@ Local
 Global
 Value
 Centroid
+cellfield
 ```
 
 ## Index

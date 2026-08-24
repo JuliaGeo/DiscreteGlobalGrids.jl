@@ -359,7 +359,7 @@ identifier order.
 `k == 0` is empty and `k < 0` throws. For `k <= 1` the result is a
 `SmallVector{6,Z7Cell}`; larger discs return `Vector{Z7Cell}`.
 """
-function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
     connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     _level_checked(g, c)
@@ -404,7 +404,7 @@ Shares [`neighbors`](@ref)' walk, so this is that function's trailing block:
 `neighbors(g, c, k)` is `vcat(ring(g, c, 1), ..., ring(g, c, k))`, and the
 order contract is the one stated there.
 """
-function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
     connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     _level_checked(g, c)

@@ -501,7 +501,7 @@ two agree at `k == 1` and part company from `k == 2`. The law belongs to the
 named subset types ([`PartialGrid`](@ref), [`CellVector`](@ref), `CellLookup`),
 which override this method; a new subset grid owes its own override.
 """
-function neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer=1;
+Base.@constprop :aggressive function neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer=1;
         connectivity::Connectivity=Vertex())
     steps = checked_steps(k)
     steps == 0 && return typeof(c)[]
@@ -515,7 +515,7 @@ end
 Return cells at adjacency distance exactly `k`; `k == 0` returns `[c]`. Ordering
 matches the corresponding tail block of [`neighbors`](@ref).
 """
-function ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer;
+Base.@constprop :aggressive function ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = checked_steps(k)
     steps == 0 && return typeof(c)[c]

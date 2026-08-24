@@ -76,13 +76,13 @@ and never the geometric tree walk; the clip is one `cellposition` per candidate.
 `c` outside `pg` throws an `ArgumentError` rather than answering about cells
 `pg` does not hold.
 """
-function neighbors(pg::PartialGrid, c::AbstractCellIndex, k::Integer = 1;
+Base.@constprop :aggressive function neighbors(pg::PartialGrid, c::AbstractCellIndex, k::Integer = 1;
         connectivity::Connectivity = Vertex())
     _member_or_throw(pg, c)
     return _clip(pg, neighbors(pg.complete, c, Int(k); connectivity))
 end
 
-function ring(pg::PartialGrid, c::AbstractCellIndex, k::Integer;
+Base.@constprop :aggressive function ring(pg::PartialGrid, c::AbstractCellIndex, k::Integer;
         connectivity::Connectivity = Vertex())
     _member_or_throw(pg, c)
     return _clip(pg, ring(pg.complete, c, Int(k); connectivity))
@@ -97,17 +97,18 @@ same clipped-to-membership meaning a [`PartialGrid`](@ref) has. Membership is
 the window search — `O(log #windows)` — so the clip costs nothing the vector
 was not already able to answer.
 """
-function neighbors(cv::CellVector, c::AbstractCellIndex, k::Integer = 1;
+Base.@constprop :aggressive function neighbors(cv::CellVector, c::AbstractCellIndex, k::Integer = 1;
         connectivity::Connectivity = Vertex())
     _member_or_throw(cv, c)
     return _clip(cv, neighbors(cv.grid, c, Int(k); connectivity))
 end
 
-function ring(cv::CellVector, c::AbstractCellIndex, k::Integer;
+Base.@constprop :aggressive function ring(cv::CellVector, c::AbstractCellIndex, k::Integer;
         connectivity::Connectivity = Vertex())
     _member_or_throw(cv, c)
     return _clip(cv, ring(cv.grid, c, Int(k); connectivity))
 end
+
 
 # ===========================================================================
 # Neighbour counts default to the length of the clipped one-ring. Systems with

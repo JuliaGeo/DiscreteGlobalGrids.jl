@@ -283,7 +283,7 @@ function maxring(sys::AbstractHierarchicalGridSystem, k::Integer,
     return nothing
 end
 
-function maxring(grid::AbstractGrid, k::Integer,
+Base.@constprop :aggressive function maxring(grid::AbstractGrid, k::Integer,
         connectivity::Connectivity = Vertex())
     sys = system(grid)
     return isnothing(sys) ? nothing : maxring(sys, k, connectivity)

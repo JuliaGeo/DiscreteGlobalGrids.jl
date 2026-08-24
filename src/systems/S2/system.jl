@@ -237,7 +237,7 @@ spoke through the first ring-1 neighbour; see [`ring`](@ref).
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by `maxneighbors`.
 """
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{8,DGG.LevelIndex}()
@@ -255,7 +255,7 @@ outside the sphere. `ring(grid, c, 0)` is `[c]`.
 the centre, counter-clockwise from the first ring-1 neighbour. Azimuth ties use
 canonical id.
 """
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]

@@ -224,7 +224,7 @@ corner cells at finer levels.
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by [`maxneighbors`](@ref).
 """
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{9,DGG.LevelIndex}()
@@ -238,7 +238,7 @@ end
 Cells at lattice distance exactly `k`, counterclockwise from the first ring-1
 direction. `k == 0` returns `[c]`; outer-ring azimuth ties use canonical order.
 """
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]

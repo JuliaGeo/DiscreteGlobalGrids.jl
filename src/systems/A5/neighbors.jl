@@ -52,7 +52,7 @@ under both connectivities. `k >= 2` returns a `Vector{A5Cell}`.
 
 Throws `ArgumentError` unless `c` is valid at the grid resolution.
 """
-function neighbors(grid::LevelGrid, c::A5Cell, k::Integer=1;
+Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::A5Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{MAX_NEIGHBORS,A5Cell}()
@@ -68,7 +68,7 @@ outside. `ring(grid, c, 0)` is `[c]`.
 
 The result is the final shell returned by [`neighbors`](@ref)`(grid, c, k)`.
 """
-function ring(grid::LevelGrid, c::A5Cell, k::Integer;
+Base.@constprop :aggressive function ring(grid::LevelGrid, c::A5Cell, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return A5Cell[c]

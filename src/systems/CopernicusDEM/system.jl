@@ -455,7 +455,7 @@ the eastern lateral over the pole to the western. Later rings are ordered by
 azimuth about the cell centre, from the spoke through the 1-ring's first entry;
 `ring(c, k)` is the final block of `neighbors(c, k)`.
 """
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     _checked_index(g, c)
@@ -470,7 +470,7 @@ end
 The cells at adjacency distance exactly `k`, on the same closed-form adjacency and the
 same rotational order [`neighbors`](@ref) documents; `k == 0` is `[c]`.
 """
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     _checked_index(g, c)

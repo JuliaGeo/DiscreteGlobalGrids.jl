@@ -399,23 +399,40 @@ end
 
 _foreach_chunk(body!::F, n::Int, ::GOCore.False) where {F} = body!(1:n)
 
-function _run!(g::G, cv::CellVector, conn::Connectivity, ::StorageOrder, thr,
-        cap::CAP) where {G,CAP}
-    h = _reporting(g, thr)
-    return _foreach_chunk(r -> _sweep!(h, cv, conn, r, cap), length(cv), thr)
+# The sweep drivers take a callback *factory*, not a callback: `mkg(r)` is
+# called once inside each task with that task's range and answers the
+# `g(k, cell, nbrs)` that range is swept with. Per-task working state — a
+# buffer no two tasks may share — is built there and captured, so the sweeps
+# below stay unaware of it and a callback with no such state is built once and
+# handed to every range unchanged.
+function _runeach!(mkg::MK, cv::CellVector, conn::Connectivity, ::StorageOrder,
+        thr, cap::CAP) where {MK,CAP}
+    return _foreach_chunk(r -> _sweep!(_reporting(mkg(r), thr), cv, conn, r, cap),
+        length(cv), thr)
 end
 
-function _run!(g::G, cv::CellVector, conn::Connectivity,
-        perm::AbstractVector{<:Integer}, thr, cap::CAP) where {G,CAP}
+function _runeach!(mkg::MK, cv::CellVector, conn::Connectivity,
+        perm::AbstractVector{<:Integer}, thr, cap::CAP) where {MK,CAP}
     _check_permutation(perm, length(cv))
-    h = _reporting(g, thr)
-    return _foreach_chunk(r -> _sweep_perm!(h, cv, conn, perm, r, cap),
+    return _foreach_chunk(
+        r -> _sweep_perm!(_reporting(mkg(r), thr), cv, conn, perm, r, cap),
         length(perm), thr)
 end
 
-@noinline _run!(g, cv::CellVector, conn, order, thr, v) = throw(ArgumentError(
-    "order must be StorageOrder() or a permutation of 1:length(cv), " *
-    "got $(typeof(order))"))
+@noinline _runeach!(mkg, cv::CellVector, conn, order, thr, v) =
+    throw(ArgumentError(
+        "order must be StorageOrder() or a permutation of 1:length(cv), " *
+        "got $(typeof(order))"))
+
+# A callback with no per-task state: the same one for every range.
+struct _EveryTask{G}
+    g::G
+end
+
+@inline (h::_EveryTask)(::UnitRange{Int}) = h.g
+
+_run!(g::G, cv::CellVector, conn, order, thr, cap::CAP) where {G,CAP} =
+    _runeach!(_EveryTask(g), cv, conn, order, thr, cap)
 
 # --- output storage ---------------------------------------------------------
 
@@ -497,8 +514,11 @@ No sweep that takes a field request splits that collection today —
 disk-chunked cube is read cell by cell rather than along its chunks — and any
 future chunked route is bound by that promise: it must translate to this
 collection's indices rather than report a chunk-local number. `Centroid()` is
-computed per call. A field request and a positional `data` vector are
-exclusive.
+answered from a bounded working set kept per task and keyed by the local
+index, so a centroid several neighbourhoods name is computed once wherever the
+visit order keeps them close in that index — the default storage order does,
+and a random permutation `order` does not. A field request and a positional
+`data` vector are exclusive.
 
 Results are stored in subset index order. A concrete tuple result produces
 a tuple of vectors, one per component. `order` accepts [`StorageOrder`](@ref)

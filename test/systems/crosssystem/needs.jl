@@ -210,7 +210,24 @@ end
         needs = (Cell(),))
 end
 
-# Keep mutable state in the functor while measuring sweep allocations.
+# Keep mutable state in the functor while measuring sweep allocations: a
+# top-level `@allocated` through a non-const global boxes and reports bytes
+# that are not there.
+struct FieldSum <: Function
+    acc::Base.RefValue{Float64}
+end
+
+function (s::FieldSum)(center, rings)
+    c, k, g, v = center
+    cs, ls, gs, vs = rings
+    t = Float64(rawid(c)) + Float64(k) + Float64(g) + v
+    for i in eachindex(ls)
+        t += Float64(rawid(cs[i])) + Float64(ls[i]) + Float64(gs[i]) + vs[i]
+    end
+    s.acc[] += t
+    return nothing
+end
+
 struct NeedsSum <: Function
     acc::Base.RefValue{Float64}
 end
@@ -227,14 +244,92 @@ function (s::NeedsSum)(center, rings)
     return nothing
 end
 
+# Cells, indices and values are read out of state the sweep already has, so a
+# request for them alone still allocates nothing at all.
 @testset "the sequential needs sweep allocates nothing" begin
     sys = DGG.IGeo7System()
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=8))
     data = collect(1.0:length(coverage))
-    needs = (Cell(), Index(Local()), Index(Global()), Value(data), Centroid())
-    s = NeedsSum(Ref(0.0))
+    needs = (Cell(), Index(Local()), Index(Global()), Value(data))
+    s = FieldSum(Ref(0.0))
     foreachneighbors(s, coverage; needs)
     @test @allocated(foreachneighbors(s, coverage; needs)) == 0
+end
+
+# One sweep's centroid bytes, measured inside a function that receives the
+# collection.
+function centroidbytes(cv)
+    data = collect(1.0:length(cv))
+    needs = (Cell(), Index(Local()), Index(Global()), Value(data), Centroid())
+    s = NeedsSum(Ref(0.0))
+    foreachneighbors(s, cv; needs)
+    return @allocated foreachneighbors(s, cv; needs)
+end
+
+# One `mapneighbors` sweep's bytes, again measured inside a function that
+# receives what it sweeps. Both kernels below answer a `Float64`, so the two
+# requests allocate the same output vector and their difference is the
+# centroid machinery alone.
+function sweepbytes(f, cv, needs; threaded)
+    mapneighbors(f, cv; needs, threaded)
+    return @allocated mapneighbors(f, cv; needs, threaded)
+end
+
+valuesum(center, rings) = center[1] + sum(rings[1]; init = 0.0)
+
+# Reads the centre value, the centre centroid and every slot of both rings, so
+# nothing the sweep hands it can be elided.
+function slopesum(center, rings)
+    v0, p0 = center
+    vs, ps = rings
+    t = 0.0
+    for i in eachindex(vs)
+        t += (v0 - vs[i]) * (p0[1] - ps[i][1])
+    end
+    return t
+end
+
+# `Centroid()` buys a working set, so the law is per cell rather than per
+# sweep: one window per task, whatever the sweep's length. The two sequential
+# fixtures are 47,659 and 117,649 cells — 2.47x apart, and both past the
+# 16,384-slot cap — so both pay for one window of exactly the same size, and a
+# sweep that grew its cache with the collection, or rebuilt it per cell,
+# differs here. The threaded sweep then pays one such window per task and no
+# more: a window shared between tasks would be a race, and one per cell would
+# be the allocation this whole design exists to avoid.
+@testset "the centroid working set is per task, not per cell" begin
+    sys = DGG.IGeo7System()
+    coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=10))
+    sub = CellVector(rooted_pg(sys, 1, 6))
+    @test length(coverage) == 47659
+    @test length(sub) == 7^6
+    perslot = sizeof(Int) + sizeof(typeof(cell_centroid(sub.grid, sub[1])))
+    window = 16384 * perslot
+    small = centroidbytes(coverage)
+    large = centroidbytes(sub)
+    @test small == large
+    @test window <= small < 1 << 20
+
+    n = length(sub)
+    data = collect(1.0:n)
+    ranges = DGG.Engine._chunk_ranges(n)
+    @test length(ranges) > 1
+    # What one window costs: the sequential sweep's centroid bytes over the
+    # same sweep without one. That is `window` plus the two array headers,
+    # which is what the threaded bound must be stated in.
+    seqbase = sweepbytes(valuesum, sub, (Value(data),); threaded = false)
+    onewindow = sweepbytes(slopesum, sub, (Value(data), Centroid());
+        threaded = false) - seqbase
+    @test window <= onewindow < window + 1024
+    # The output vector and the sweep's own overhead, priced by the same call
+    # with no centroid in it.
+    output = sweepbytes(valuesum, sub, (Value(data),); threaded = true)
+    bytes = sweepbytes(slopesum, sub, (Value(data), Centroid()); threaded = true)
+    @test bytes <= length(ranges) * onewindow + output
+    # And at least one window per task: a task's window holds its whole range
+    # up to the cap, so nothing smaller than this can be one per task.
+    @test bytes >= length(ranges) * min(length(first(ranges)), 16384) * perslot +
+                   output
 end
 
 # A field request on a cube runs the same sweep on the cell axis and hands

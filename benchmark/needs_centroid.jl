@@ -3,11 +3,11 @@
 #
 #     julia -t auto --project=benchmark benchmark/needs_centroid.jl
 #
-# `needs = (Value(dem), Centroid())` recomputes `cell_centroid` once per touch:
-# once for the visited cell and once for each of its clipped neighbours, so
-# `1 + degree` computations per cell where a per-sweep working set would want
-# one. Three requests bracket that on the same cells, with the same kernel
-# wherever the kernel can be the same:
+# `needs = (Value(dem), Centroid())` computed `cell_centroid` once per touch
+# before the M2a working set landed: once for the visited cell and once for
+# each of its clipped neighbours, so `1 + degree` computations per cell where a
+# per-sweep working set would want one. Three requests bracket that on the same
+# cells, with the same kernel wherever the kernel can be the same:
 #
 #   1. `(Value(dem),)`                  the value-only floor: the sweep, the
 #                                       clip and the rings, no geometry.
@@ -61,8 +61,62 @@
 # most) while the derived ratios stayed put -- centroid share of the
 # `Centroid()` sweep 77.7-85.2%, the prebuilt table's share of that 89.9-94.0%,
 # one isolated `cell_centroid` 115.5-145.0 ns.
+#
+# After the M2a centroid working set, measured 2026-08-24. `Centroid()` is now
+# answered from a per-task direct-mapped window of 16,384 slots keyed by local
+# index, so the sweep computes 1.026 / 1.037 centroids per cell instead of the
+# 6.96 / 6.98 it touches. Both columns below are single runs of this file in
+# one session, best of 3 per cell, before and after on the same machine. Rows 1
+# and 3 are unchanged code, and they are what says how that session's machine
+# compared to the baseline capture above: the floor and the ceiling had moved
+# +20.7% and +30.2% at 117,649 cells, +4.4% and +2.7% at 823,543. Read the
+# pairs, not the absolutes:
+#
+#   request                       cells   before ms    after ms        alloc B
+#   (Value,)                    117,649       24.99       21.78         950,336
+#   (Value, Centroid)           117,649      132.42       48.58       1,474,752
+#   (Value, Value(table))       117,649       36.49       29.52         950,336
+#   (Value,)                    823,543      156.51      153.52       6,602,816
+#   (Value, Centroid)           823,543      823.39      348.25       7,127,232
+#   (Value, Value(table))       823,543      210.05      210.81       6,602,816
+#
+# The surcharge over the value-only floor falls 107.43 -> 26.80 ms and
+# 666.88 -> 194.73 ms: 75.1% and 70.8% of it removed, against the 6/7 = 85.7%
+# a cache that never missed and cost nothing to consult would reach. Threaded,
+# reported not gated: `(Value, Centroid)` 33.79 -> 9.07 ms and 124.07 ->
+# 51.13 ms. The 524,416 B the `Centroid()` rows now carry is the window itself
+# -- 16,384 tags and 16,384 points -- allocated once per task, not per cell;
+# the other rows still allocate the output alone.
+#
+# The M2a gate was two absolute thresholds -- <= 47 ms at 117,649 cells and
+# <= 340 ms at 823,543 -- and this run missed both: 48.58 ms is 3.4% over, and
+# 348.25 ms is 2.4% over. Those thresholds encoded "at least 70% of the
+# surcharge removed" at the baseline machine's speed, and the same-session
+# before/after pair above -- whose unchanged floor and ceiling rows had moved
+# +20.7%/+30.2% and +4.4%/+2.7% from that capture -- removes 75.1% and 70.8%.
+# The criterion is met; the absolute numbers it was written as are not, and
+# the ruling accepted it on the criterion (design note, "M2a outcome").
+#
+# The window is keyed by the local index, so what it is worth is a property of
+# the visit order, and the two shuffled rows at the small size price that: a
+# fixed random permutation costs `(Value, Centroid)` 108.79 ms against a
+# same-order `(Value, Value(table))` control at 30.50 ms, a surcharge of
+# 78.29 ms where storage order pays 18.67 ms -- 4.19x, and 4.43x on the run
+# before it (both 2026-08-24, this file). Storage order and any permutation
+# that preserves locality keep the hit rate; a random one does not.
+#
+# Where the remaining 26.80 ms goes, per touch of the 6.963 the small case
+# makes: 9.4 ns builds the ring and reads a value into it, which the prebuilt
+# table pays too; 18.1 ns is the 14.7% of touches that miss the window, times
+# a 123.1 ns `cell_centroid`; ~5 ns is the probe itself, over what reading a
+# plain array costs. A wider window did not buy that back -- W = 1024, 4096,
+# 16384 and 65536 all landed inside run-to-run noise, measured during
+# implementation and not reproducible from this file -- because the misses a
+# bigger one removes (1.080 -> 1.004 centroids per cell) are worth under a
+# millisecond here. W is a hit-rate choice rather than a time one.
 
 using Printf
+using Random: shuffle, Xoshiro
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: Value, Centroid
 const F = DGG.Engine
@@ -147,7 +201,7 @@ end
 
 const ROWS = Any[]
 
-function runsize(sys, tag, base, depth)
+function runsize(sys, tag, base, depth; permuted::Bool = false)
     cv = F.CellVector(rooted(sys, base, depth))
     n = length(cv)
     dem = synthdem(n)
@@ -185,6 +239,29 @@ function runsize(sys, tag, base, depth)
             thr = t.time, alloc = s.alloc))
     end
 
+    # The window is keyed by the local index, so what it is worth is a
+    # property of the visit order. A shuffled `order` has no locality in that
+    # index and the window stops hitting; the same-order table row is the
+    # control, since reading an array does not care about locality, so the
+    # ratio below is the window's loss and not the permuted cursor's.
+    permratio = NaN
+    if permuted
+        perm = shuffle(Xoshiro(42), 1:n)
+        p_cent() = DGG.mapneighbors(slopekernel, cv;
+            needs = (Value(dem), Centroid()), order = perm, threaded = false)
+        p_tab() = DGG.mapneighbors(slopekernel, cv;
+            needs = (Value(dem), Value(table)), order = perm, threaded = false)
+        # Results are stored in subset index order, so the order may not change
+        # a single number.
+        @assert p_cent() == v_cent(false)
+        @assert p_tab() == v_tab(false)
+        pc = measure("$tag  (Value, Centroid)  shuffled order", p_cent)
+        pt = measure("$tag  (Value, Value(table))  shuffled order", p_tab)
+        permratio = (pc.time - pt.time) / (times[2] - times[3])
+        @printf("%-46s %10.2fx\n",
+            "$tag  centroid surcharge shuffled / storage", permratio)
+    end
+
     # One `cell_centroid`, in isolation.
     cl = measure("$tag  cell_centroid loop ($n calls)",
         () -> centroidloop(cv.grid, cv))
@@ -193,7 +270,8 @@ function runsize(sys, tag, base, depth)
         cl.time / n * 1e9)
 
     return (tag = tag, n = n, t1 = times[1], t2 = times[2], t3 = times[3],
-        percall = cl.time / n * 1e9, build = tb.time, buildbytes = tb.alloc)
+        percall = cl.time / n * 1e9, build = tb.time, buildbytes = tb.alloc,
+        permratio = permratio)
 end
 
 # --- run -------------------------------------------------------------------
@@ -204,7 +282,8 @@ const SYS = DGG.IGeo7System()
 const DEGREE = DGG.maxneighbors(SYS, DGG.Vertex())
 
 # 7^6 = 117,649 cells and 7^7 = 823,543; see the aperture note at the top.
-const SUMMARY = [runsize(SYS, "small", 1, 6), runsize(SYS, "large", 1, 7)]
+const SUMMARY = [runsize(SYS, "small", 1, 6; permuted = true),
+    runsize(SYS, "large", 1, 7)]
 
 # --- table -----------------------------------------------------------------
 

@@ -50,6 +50,18 @@ the leaf cell under its centre.  It follows the camera, so zooming in refines
 and zooming out coarsens, and neither costs anything proportional to the number
 of cells handed in.
 
+Given heights as well, `dggresample(cells, zs)` draws the frame as a surface
+rather than as patches, so relief has the same answer to "more cells than
+pixels" that a flat field does.
+
+## Taking the mesh away
+
+`GeometryBasics.mesh(cellregion(cells)[, elevation]; attributes...)` builds the
+same mesh outside any plot, as a `GeometryBasics.Mesh` — to write out as a mesh
+file, to hand to something else, or to plot with Makie's own `mesh`.  Values
+arrive per cell and leave per vertex.  `cellset` in place of `cellregion` gives
+the flat patches instead.
+
 ## Where the mesh lives
 
 A DGGS cell is a spherical polygon, and where its corners land on screen depends
@@ -88,15 +100,17 @@ export dggpoly, dggpoly!
 export dggsurface, dggsurface!
 export dggresample, dggresample!
 
+include("chunks.jl")
 include("targets.jl")
 include("cellsets.jl")
 include("tessellate.jl")
 include("recipe.jl")
 include("surface.jl")
 include("surface_recipe.jl")
-include("dimensionaldata.jl")
+include("export.jl")
 include("pyramid.jl")
 include("resample.jl")
 include("resample_recipe.jl")
+include("dimensionaldata.jl")
 
 end # module

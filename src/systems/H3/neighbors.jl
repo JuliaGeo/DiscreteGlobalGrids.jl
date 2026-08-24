@@ -21,7 +21,7 @@ including at pentagons.
 
 `k >= 2` returns a `Vector{H3Cell}`, since `3k(k+1)` outgrows any static bound.
 """
-function neighbors(grid::LevelGrid, c::H3Cell, k::Integer=1;
+Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::H3Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{MAX_NEIGHBORS,H3Cell}()
@@ -54,7 +54,7 @@ The result is the final shell returned by [`neighbors`](@ref)`(grid, c, k)`.
 Uses libh3's O(k) shell walk, or an O(k²) pentagon-safe disk fallback ordered by
 azimuth.
 """
-function ring(grid::LevelGrid, c::H3Cell, k::Integer;
+Base.@constprop :aggressive function ring(grid::LevelGrid, c::H3Cell, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return H3Cell[c]

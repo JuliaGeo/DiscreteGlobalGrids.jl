@@ -52,12 +52,12 @@ under both connectivities. `k >= 2` returns a `Vector{A5Cell}`.
 
 Throws `ArgumentError` unless `c` is valid at the grid resolution.
 """
-function neighbors(grid::LevelGrid, c::A5Cell, k::Integer=1;
+Base.@constprop :aggressive function neighbors(grid::LevelGrid, c::A5Cell, k::Integer=1;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{MAX_NEIGHBORS,A5Cell}()
     steps == 1 && return one_ring(grid, c, connectivity)
-    return reduce(vcat, DGG.adjacency_shells(grid, c, steps, connectivity))
+    return DGG.shell_disc(grid, c, steps, connectivity)
 end
 
 """
@@ -68,13 +68,31 @@ outside. `ring(grid, c, 0)` is `[c]`.
 
 The result is the final shell returned by [`neighbors`](@ref)`(grid, c, k)`.
 """
-function ring(grid::LevelGrid, c::A5Cell, k::Integer;
+Base.@constprop :aggressive function ring(grid::LevelGrid, c::A5Cell, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return A5Cell[c]
     steps == 1 && return one_ring(grid, c, connectivity)
-    shells = DGG.adjacency_shells(grid, c, steps, connectivity)
-    # No shell exists after the traversal exhausts the connected component.
-    steps <= length(shells) || return A5Cell[]
-    return @inbounds shells[steps]
+    # An exhausted component yields an empty shell, not a missing one.
+    return DGG.shell_ring(grid, c, steps, connectivity)
+end
+
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function neighbors(grid::LevelGrid, c::A5Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{MAX_NEIGHBORS,A5Cell}()
+    K == 1 && return DGG.one_ring(grid, c, connectivity)
+    return DGG.shell_disc(grid, c, Val(K), connectivity)
+end
+
+function ring(grid::LevelGrid, c::A5Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return A5Cell[c]
+    K == 1 && return DGG.one_ring(grid, c, connectivity)
+    return DGG.shell_ring(grid, c, Val(K), connectivity)
 end

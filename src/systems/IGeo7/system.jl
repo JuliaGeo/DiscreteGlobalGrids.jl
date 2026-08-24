@@ -359,15 +359,13 @@ identifier order.
 `k == 0` is empty and `k < 0` throws. For `k <= 1` the result is a
 `SmallVector{6,Z7Cell}`; larger discs return `Vector{Z7Cell}`.
 """
-function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
     connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     _level_checked(g, c)
     steps == 0 && return SmallVector{6,Z7Cell}()
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    isempty(shells) && return Z7Cell[]
-    return reduce(vcat, shells)
+    return DGG.shell_disc(g, c, steps, connectivity)
 end
 
 """
@@ -406,16 +404,36 @@ Shares [`neighbors`](@ref)' walk, so this is that function's trailing block:
 `neighbors(g, c, k)` is `vcat(ring(g, c, 1), ..., ring(g, c, k))`, and the
 order contract is the one stated there.
 """
-function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
     connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     _level_checked(g, c)
     steps == 0 && return Z7Cell[c]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     # Return an empty ring after the traversal exhausts the component.
-    steps <= length(shells) || return Z7Cell[]
-    return shells[steps]
+    return DGG.shell_ring(g, c, steps, connectivity)
+end
+
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function DGG.neighbors(g::LevelGrid, c::Z7Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    _level_checked(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{6,Z7Cell}()
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_disc(g, c, Val(K), connectivity)
+end
+
+function DGG.ring(g::LevelGrid, c::Z7Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    _level_checked(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return Z7Cell[c]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_ring(g, c, Val(K), connectivity)
 end
 
 # A cell handed to a grid operation must belong to that grid's level; otherwise

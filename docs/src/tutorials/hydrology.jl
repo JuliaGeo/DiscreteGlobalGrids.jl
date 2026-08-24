@@ -22,7 +22,7 @@ import ArchGDAL
 import Extents
 using Statistics
 using GLMakie, GeoMakie
-using DiscreteGlobalGridsVisualization: dggsurface, dggsurface!
+using DiscreteGlobalGridsVisualization: dggsurface, dggsurface!, dggpoly, dggpoly!
 GLMakie.activate!(inline = true)
 
 # ## Acquiring data
@@ -32,7 +32,7 @@ GLMakie.activate!(inline = true)
 
 centre = GI.extent((10.5, 46.5))
 path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
-Sys.isapple() && Rasters.checkmem!(false)
+Sys.isapple() && Rasters.checkmem!(false) # needed for Apple systems
 dem = Raster(path; lazy = false)
 ## dem = aggregate(mean, dem, 8; progress = false)
 # This is what the raster looks like:
@@ -43,55 +43,52 @@ sys = DGG.IGeo7System()
 # using a `MultiOrderCoverage` query.
 # You can specify an integer here, or find the closest matching level automatically:
 leaf_level = DGG.levelfor(sys, dem)
-
-region = @time DGG.query(sys, DGG.MultiOrderCoverage(Rasters.extent(dem)); level = leaf_level)
+# Once we know the leaf level we want, we can query the system at that level with the
+# [`MultiOrderCoverage`](@ref) query, to get a cell set that we can use.
+region = @time DGG.query(
+    sys, 
+    DGG.MultiOrderCoverage(Rasters.extent(dem)); 
+    level = leaf_level
+)
 # Here's what this looks like:
 f, a, p = plot(dem; axis = (; aspect = DataAspect()))
-poly!(a, region; color = :transparent, strokewidth = 1, strokecolor = (:black, 0.5))
+poly!(a, region; color = :transparent, strokewidth = 1.2, strokecolor = (:black, 0.5))
 f
 # This is a nice way to compress the set of cells that would be covered in memory.
-# Note that `region` says it has ~16,728 cells.  But when you look at the number of
-# cells at level 12,
+# Note that `region` says it has ~44,000 cells.  But when you look at the number of
+# cells at level 13,
 DGG.CellLookup(region) |> length
 # That's a lot of cells!  This optimization helps to decrease memory pressure,
 # especially on datasets that don't fit in memory in the first place.
-# 
-# If you want, you can also choose the largest cell in the region to run this
-# analysis on:
-largest_contained_cell = DGG.coarsest_contained(region)
 
-# `CellLookup` reads the set as a one-level cell axis, and `PartialGrid` reads
-# that as an ordinary grid: positions run `1:ncells`, so a data vector indexes
-# straight through it. This is where the leaf level is paid for: the axis is
-# every level-`leaf_level` cell under the set, so its length grows sevenfold per
-# level and it, not the set, sizes everything below.
-
-grid = DGG.PartialGrid(DGG.CellLookup(region))
+# When we construct a DimArray with this, it will interpret `region` as a one
+# level cell axis.  Positions will run from `1:length(CellLookup(region))`,
+# linearly, so indexing is done as in a regular vector.
 
 # ## Regridding the DEM
-#
-# The download asks for a point inside the tile rather than the tile itself:
-# `getraster` fetches every 1° tile an extent touches, and a closed 1° box
-# touches four. A level-12 hexagon is about 65 m across, so the native 30 m
-# source stays the finer of the two and every hexagon averages a handful of
-# pixels.
-
-# `regrid` takes the coverage as its destination and the raster as its source, and
-# hands back a cube whose axis is the cells. The coverage overhangs the tile by
-# a bit at the border.
+# DiscreteGlobalGrids provides a `regrid` function that will take in a raster
+# and some sort of grid - a full level grid, or a region, or a partial grid -
+# and return a Raster whose axis is this new grid.
+# By default, it returns a DimArray, which we can promote to a Raster (those
+# have better handling for missing / NODATA values).
 
 igeo7_dem = @time DGG.regrid(dem; to = region)
 elevation = Raster(igeo7_dem; missingval = oftype(first(igeo7_dem), NaN))
-# Let's now plot this too:
+# Let's now plot this too, using the specialized [`dggsurface`](@ref) recipe for efficiency:
 f, a, p = dggsurface(lookup(elevation, DGG.Cells); color = vec(elevation), axis = (; aspect = DataAspect()))
 f
+# There are also some nice overloads to make this really feel like a surface plot.
+# To enhance realism, we'll transform it to "real" coordinates at least.
+f, a, p = dggsurface(
+    elevation .* 2; # just for effect, since this will be a static plot
+    color = vec(elevation), 
+    axis = (; type = Axis3, aspect = :data, clip = false)
+);
+p.transformation.transform_func[] = GeoMakie.create_transform("+proj=ortho +lon_0=10.5 +lat_0=46.5 +datum=WGS84", "+proj=longlat +datum=WGS84")
+f
+# We can compute the elevation of the cells pretty easily, as well.
+extrema(skipmissing(elevation))
 
-begin
-    f, a, p = dggsurface(elevation ./ 10000;color = vec(elevation), axis = (; type = Axis3, aspect = :data));
-    GLMakie.display(f; inline = false)
-end
-# and we can compute the elevation of the cells:
-extrema(Rasters.skipmissing(elevation))
 # ## Flow direction
 #
 # Each cell sends its water to the lowest of its neighbours — the first step of
@@ -120,8 +117,8 @@ flow, drop = @time DGG.mapneighbors(elevation) do cell, nbrs
     (isnan(elevation[cell]) ? (0, NaN32) : downhill(elevation, cell, nbrs))::Tuple{Int,Float32}
 end
 
-(; n_pits = count(i -> !isnan(elevation[i]) && flow[i] == 0, eachindex(flow)),
-   max_drop = maximum(filter(!isnan, drop)))
+# (; n_pits = count(i -> !isnan(elevation[i]) && flow[i] == 0, eachindex(flow)),
+#    max_drop = maximum(filter(!isnan, drop)))
 
 # Elevation, and the drop to the downhill neighbour — the drop map picks out
 # valley floors as the flat regions and headwalls as the steep ones.
@@ -148,6 +145,7 @@ fig
 # square metres.
 
 tpi = @time GM.topographic_position_index(elevation)
+#
 accumulation, directions = @time GM.flowaccumulation(elevation; method = GM.D8())
 # accumulation, directions = @time GM.flowaccumulation(elevation; method = GM.DInf())
 

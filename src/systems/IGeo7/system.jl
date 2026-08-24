@@ -414,6 +414,28 @@ Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::Z7Cell, k::Intege
     return DGG.shell_ring(g, c, steps, connectivity)
 end
 
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function DGG.neighbors(g::LevelGrid, c::Z7Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    _level_checked(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{6,Z7Cell}()
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_disc(g, c, Val(K), connectivity)
+end
+
+function DGG.ring(g::LevelGrid, c::Z7Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    _level_checked(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return Z7Cell[c]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_ring(g, c, Val(K), connectivity)
+end
+
 # A cell handed to a grid operation must belong to that grid's level; otherwise
 # every id below would be silently at the wrong resolution.
 @inline function _level_checked(g::LevelGrid, c::Z7Cell)

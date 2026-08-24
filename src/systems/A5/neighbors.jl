@@ -76,3 +76,23 @@ Base.@constprop :aggressive function ring(grid::LevelGrid, c::A5Cell, k::Integer
     # An exhausted component yields an empty shell, not a missing one.
     return DGG.shell_ring(grid, c, steps, connectivity)
 end
+
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function neighbors(grid::LevelGrid, c::A5Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{MAX_NEIGHBORS,A5Cell}()
+    K == 1 && return DGG.one_ring(grid, c, connectivity)
+    return DGG.shell_disc(grid, c, Val(K), connectivity)
+end
+
+function ring(grid::LevelGrid, c::A5Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return A5Cell[c]
+    K == 1 && return DGG.one_ring(grid, c, connectivity)
+    return DGG.shell_ring(grid, c, Val(K), connectivity)
+end

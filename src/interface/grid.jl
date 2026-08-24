@@ -402,6 +402,21 @@ splat, which is what stops the arity from specialising per `k`.
 `ring` carries [`neighbors`](@ref)' order, container, coverage and
 subset-clipping contracts unchanged — including the position form's, which is
 the same counter-clockwise order read through [`cellposition`](@ref).
+
+# `k` as a type
+
+Both verbs also accept `Val(k)`, which answers the same cells in the same order
+and differs only in what the compiler is told. With `k` in the type, a system's
+declared [`maxring`](@ref) folds into a fixed buffer capacity, so the shell is
+built and returned without reaching the heap:
+
+    ring(grid, c, 2)       # Vector, capacity found at run time
+    ring(grid, c, Val(2))  # SmallVector, capacity found at compile time
+
+Worth reaching for in a focal loop over many cells and not otherwise. The
+`Integer` form is never wrong and never slower than it was; `Val(k)` only
+removes allocations, and only for a system that has opted in — the rest forward
+to the `Integer` form and lose nothing.
 """
 function ring end
 

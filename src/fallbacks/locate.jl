@@ -282,6 +282,14 @@ end
 end
 @inline _harvest(v::Vector) = v
 
+# The `Val` entries know their capacity at compile time, so their return type
+# does not move under them and the buffer can come out as it is: an isbits
+# `SmallVector` that never reaches the heap. This is the whole difference
+# between `ring(grid, c, 2)` and `ring(grid, c, Val(2))`.
+@inline _freeze(v::SmallCollections.MutableSmallVector) =
+    SmallCollections.SmallVector(v)
+@inline _freeze(v::Vector) = v
+
 @inline function _refill!(dst, src)
     empty!(dst)
     for x in src
@@ -425,6 +433,55 @@ Base.@constprop :aggressive function _shell_ring(walk::W, grid::AbstractGrid,
     return _wound_ring(walk, grid, c, steps, cap)
 end
 
+# `K` is a type parameter, so `maxring` and `static_capacity` fold to a concrete
+# `Val{N}` here rather than to the abstract `Val` a run-time `steps` produces.
+# That is what lets the walk's buffers stay on the stack, and it is the only
+# reason these exist beside the `Integer` forms.
+function _static_shell_ring(walk::W, grid::AbstractGrid, c::T, ::Val{K},
+        connectivity::Connectivity) where {W,T,K}
+    if !_carried(winding(grid, connectivity))
+        shells = _shells_azimuth(walk, grid, c, K)
+        K <= length(shells) || return T[]
+        return @inbounds shells[K]
+    end
+    cap = static_capacity(maxring(grid, K, connectivity), T)
+    return _freeze(_wound_walk(walk, grid, c, K, cap, nothing))
+end
+
+# `maxneighbors(sys, k, conn)` sums `maxring` in a loop, and a loop is opaque to
+# constant folding in a way `maxring`'s own arithmetic is not — so asking it for
+# the disc bound loses the constant that the whole `Val` path exists to keep.
+# Recursing on the type parameter unrolls into the same additions with every
+# `maxring` call at a literal `k`, each of which does fold.
+@inline _disc_bound(grid::AbstractGrid, ::Val{0}, ::Connectivity) = 0
+@inline function _disc_bound(grid::AbstractGrid, ::Val{K},
+        connectivity::Connectivity) where {K}
+    # Without this a negative `K` recurses away from the `Val{0}` base forever
+    # instead of reporting itself. `K` is a type parameter, so the check folds.
+    K > 0 || throw(ArgumentError("k must be non-negative, got $K"))
+    rest = _disc_bound(grid, Val(K - 1), connectivity)
+    rest === nothing && return nothing
+    m = maxring(grid, K, connectivity)
+    m === nothing && return nothing
+    return rest + m
+end
+
+function _static_shell_disc(walk::W, grid::AbstractGrid, c::T, ::Val{K},
+        connectivity::Connectivity) where {W,T,K}
+    if !_carried(winding(grid, connectivity))
+        return reduce(vcat, _shells_azimuth(walk, grid, c, K); init = T[])
+    end
+    cap = static_capacity(maxring(grid, K, connectivity), T)
+    out = _shellbuf(static_capacity(_disc_bound(grid, Val(K), connectivity), T), T)
+    _wound_walk(walk, grid, c, K, cap, out)
+    return _freeze(out)
+end
+
+shell_ring(grid::AbstractGrid, c::AbstractCellIndex, ::Val{K},
+    connectivity::Connectivity) where {K} =
+    _static_shell_ring(x -> one_ring(grid, x, connectivity), grid, c, Val(K),
+        connectivity)
+
 shell_disc(grid::AbstractGrid, c::AbstractCellIndex, ::Val{K},
     connectivity::Connectivity) where {K} =
     _static_shell_disc(x -> one_ring(grid, x, connectivity), grid, c, Val(K),
@@ -522,6 +579,44 @@ Base.@constprop :aggressive function ring(grid::AbstractGrid, c::AbstractCellInd
     # A walk that ran out of cells before reaching `steps` has an empty shell
     # there: the ring is genuinely empty, not missing.
     return _geometric_shell_ring(grid, c, steps, connectivity)
+end
+
+"""
+    neighbors(grid, c, ::Val{K}; connectivity = Vertex())
+    ring(grid, c, ::Val{K}; connectivity = Vertex())
+
+The `k`-as-a-type form. Identical in meaning to the `Integer` form and different
+only in what the compiler can see: `K` is a type parameter, so the ring bound a
+system declares through [`maxring`](@ref) folds to a concrete buffer capacity
+and the shell can be built and returned without touching the heap.
+
+This generic method forwards to the `Integer` form, which is always correct and
+never slower. A system opts into the stack path by defining its own `Val`
+method — the same shape its `Integer` method already has, passing `Val(K)` on to
+[`shell_ring`](@ref)/`shell_disc` instead of an `Int`. A system whose `k >= 2`
+is not the shell walk (H3 answers from its own automaton) or one reached through
+the geometric fallback keeps this forward and loses nothing.
+
+The container differs between the two forms — a system on the stack path answers
+a `Val` with a `SmallVector` and an `Integer` with a `Vector`. Only a collection
+is promised either way.
+"""
+Base.@constprop :aggressive function neighbors(grid::AbstractGrid,
+        c::AbstractCellIndex, ::Val{K};
+        connectivity::Connectivity = Vertex()) where {K}
+    return neighbors(grid, c, checked_steps(K); connectivity)
+end
+
+"""
+    ring(grid, c, ::Val{K}; connectivity = Vertex())
+
+`ring` with `k` in the type. Same cells, same order; see the `Val` form of
+[`neighbors`](@ref) for what it buys and why a system has to opt in.
+"""
+Base.@constprop :aggressive function ring(grid::AbstractGrid,
+        c::AbstractCellIndex, ::Val{K};
+        connectivity::Connectivity = Vertex()) where {K}
+    return ring(grid, c, checked_steps(K); connectivity)
 end
 
 # Rotational shell ordering by measured azimuth.

@@ -57,7 +57,7 @@ function neighbors(grid::LevelGrid, c::A5Cell, k::Integer=1;
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{MAX_NEIGHBORS,A5Cell}()
     steps == 1 && return one_ring(grid, c, connectivity)
-    return reduce(vcat, DGG.adjacency_shells(grid, c, steps, connectivity))
+    return DGG.shell_disc(grid, c, steps, connectivity)
 end
 
 """
@@ -73,8 +73,6 @@ function ring(grid::LevelGrid, c::A5Cell, k::Integer;
     steps = DGG.checked_steps(k)
     steps == 0 && return A5Cell[c]
     steps == 1 && return one_ring(grid, c, connectivity)
-    shells = DGG.adjacency_shells(grid, c, steps, connectivity)
-    # No shell exists after the traversal exhausts the connected component.
-    steps <= length(shells) || return A5Cell[]
-    return @inbounds shells[steps]
+    # An exhausted component yields an empty shell, not a missing one.
+    return DGG.shell_ring(grid, c, steps, connectivity)
 end

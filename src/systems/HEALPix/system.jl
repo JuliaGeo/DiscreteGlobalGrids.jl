@@ -230,9 +230,7 @@ function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{8,DGG.LevelIndex}()
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    isempty(shells) && return DGG.LevelIndex[]
-    return reduce(vcat, shells)
+    return DGG.shell_disc(g, c, steps, connectivity)
 end
 
 """
@@ -248,7 +246,5 @@ function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
     steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    steps <= length(shells) || return DGG.LevelIndex[]
-    return shells[steps]
+    return DGG.shell_ring(g, c, steps, connectivity)
 end

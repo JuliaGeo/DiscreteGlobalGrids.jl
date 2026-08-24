@@ -138,7 +138,7 @@ using .Engine: PartialGrid,
 # winding.
 using .Fallbacks: collect_subtree,
     MortonCurve, quadrant_step, SquareBorderEngine, SquareInteriorEngine,
-    adjacency_shells, checked_steps, _ring_frame, _wind!
+    adjacency_shells, shell_ring, shell_disc, checked_steps, _ring_frame, _wind!
 using .Engine: SquareBandEngine, square_halo_engine, generic_halo_engine,
     check_halo_level, HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine
 

@@ -255,6 +255,194 @@ end
     return false
 end
 
+# --- fixed-capacity shell buffers -------------------------------------------
+#
+# `static_capacity(maxring(...), ID)` decides once whether a walk's working
+# buffers live on the stack. `MutableSmallVector` rather than `SmallVector`:
+# both are allocation-free while they do not escape, but the immutable `push`
+# recopies the whole inline buffer, which is 8x slower by the 60 elements a
+# level-4 hexagonal disc reaches. The result is frozen on the way out, so what
+# a caller receives is the isbits `SmallVector`.
+
+@inline _shellbuf(::Val{N}, ::Type{T}) where {N,T} =
+    SmallCollections.MutableSmallVector{N,T}()
+@inline _shellbuf(::Nothing, ::Type{T}) where {T} = T[]
+
+# The walk's buffers are stack containers whose capacity depends on `steps`, so
+# their type does too. Handing one back would make `shell_ring`/`shell_disc`
+# infer as `Any`, and a system's `ring`/`neighbors` — whose `k <= 1` branches
+# return a one-ring directly — would infer as `Any` with them, boxing the
+# one-ring on the hottest path in the package to speed up the coldest. So the
+# buffers stay inside and only their contents come out, in the one container
+# whose type does not move with `steps`.
+@inline function _harvest(v::SmallCollections.MutableSmallVector{N,T}) where {N,T}
+    out = Vector{T}(undef, length(v))
+    copyto!(out, v)
+    return out
+end
+@inline _harvest(v::Vector) = v
+
+@inline function _refill!(dst, src)
+    empty!(dst)
+    for x in src
+        push!(dst, x)
+    end
+    return nothing
+end
+
+@inline _absorb!(::Nothing, shell) = nothing
+@inline function _absorb!(out, shell)
+    for y in shell
+        push!(out, y)
+    end
+    return nothing
+end
+
+"""
+    _wound_walk(walk, grid, c, steps, cap, out) -> final shell
+
+Roll the carried walk with three reusable buffers instead of materialising one
+vector per shell. `out` accumulates every shell in order when it is a buffer and
+is skipped when it is `nothing`, which is the only difference between what
+[`ring`](@ref) and [`neighbors`](@ref) need from the same walk.
+
+The returned shell is a live buffer, not a copy. Only `_wound_ring` and
+`_wound_disc` call this, and both harvest into a `Vector` before returning,
+which is what keeps the buffers from escaping.
+"""
+@inline function _wound_walk(walk::W, grid::AbstractGrid, c::T, steps::Int, cap,
+        out) where {W,T}
+    prev1 = _shellbuf(cap, T)
+    for x in walk(c)
+        push!(prev1, x)
+    end
+    _absorb!(out, prev1)
+    (steps == 1 || isempty(prev1)) && return prev1
+    centre = cell_centroid(grid, c)
+    frame = _ring_frame(grid, centre, @inbounds prev1[1])
+    prev2 = _shellbuf(cap, T)
+    push!(prev2, c)
+    next = _shellbuf(cap, T)
+    for _ in 2:steps
+        empty!(next)
+        for f in prev1
+            R = walk(f)
+            m = length(R)
+            m == 0 && continue
+            a = 0
+            for i in 1:m
+                _member(prev2, @inbounds R[i]) && (a = i)
+            end
+            for t in 1:m
+                y = @inbounds R[mod1(a + t, m)]
+                (_member(prev2, y) || _member(prev1, y) || _member(next, y)) &&
+                    continue
+                push!(next, y)
+            end
+        end
+        _pin_phase!(next, grid, centre, frame)
+        _absorb!(out, next)
+        isempty(next) && return next
+        # Shift by copying rather than by rebinding. A three-way rotation makes
+        # the buffers indistinguishable to escape analysis, which puts all of
+        # them on the heap; holding each one's identity fixed keeps them on the
+        # stack, and the copy is O(shell) against one `walk` call per member.
+        _refill!(prev2, prev1)
+        _refill!(prev1, next)
+    end
+    return prev1
+end
+
+"""
+    shell_ring(grid, c, steps, connectivity)
+    shell_disc(grid, c, steps, connectivity)
+
+The shared bodies of [`ring`](@ref) and [`neighbors`](@ref) for `steps >= 2`:
+the shell at exactly `steps`, and rings `1:steps` concatenated.
+
+A declared [`winding`](@ref) takes the carried walk, and a declared
+[`maxring`](@ref) within [`STATIC_RING_CAP`](@ref) additionally puts its buffers
+and its result on the stack. Neither declaration changes the answer, only what
+it costs, and a system that declares neither lands on the measured walk with
+heap shells exactly as before.
+"""
+# The system entry points: `one_ring`'s three-argument form, so a system with a
+# native automaton reaches it and nothing builds a spatial tree.
+Base.@constprop :aggressive shell_ring(grid::AbstractGrid, c::AbstractCellIndex,
+    steps::Int, connectivity::Connectivity) =
+    _shell_ring(x -> one_ring(grid, x, connectivity), grid, c, steps, connectivity)
+
+Base.@constprop :aggressive shell_disc(grid::AbstractGrid, c::AbstractCellIndex,
+    steps::Int, connectivity::Connectivity) =
+    _shell_disc(x -> one_ring(grid, x, connectivity), grid, c, steps, connectivity)
+
+# The generic entry points: no native automaton, so the geometric one-ring runs
+# and its spatial tree is hoisted out of the per-cell walk exactly once.
+Base.@constprop :aggressive function _geometric_shell_ring(grid::AbstractGrid,
+        c::AbstractCellIndex, steps::Int, connectivity::Connectivity)
+    tree = treeify(grid)
+    return _shell_ring(x -> one_ring(grid, x, connectivity, tree), grid, c,
+        steps, connectivity)
+end
+
+Base.@constprop :aggressive function _geometric_shell_disc(grid::AbstractGrid,
+        c::AbstractCellIndex, steps::Int, connectivity::Connectivity)
+    tree = treeify(grid)
+    return _shell_disc(x -> one_ring(grid, x, connectivity, tree), grid, c,
+        steps, connectivity)
+end
+
+# `cap` is `Val{N}` only when the capacity is known at compile time, and
+# `Nothing` otherwise, so a run-time `steps` reaches these through a dynamic
+# dispatch. That dispatch is the function barrier: everything downstream of it
+# is concretely typed, and because both of these harvest before returning, the
+# walk's mutable buffers die inside the barrier instead of escaping across it.
+# Returning a live `MutableSmallVector` here would force all three onto the
+# heap.
+@inline _wound_ring(walk::W, grid::AbstractGrid, c::T, steps::Int, cap) where {W,T} =
+    _harvest(_wound_walk(walk, grid, c, steps, cap, nothing))
+
+# The disc accumulator is write-only — nothing is ever looked up in it — so it
+# gains nothing from a stack container and would only be copied out again. It is
+# the result, so it is built as the result: one `Vector`, sized once from the
+# declared bound when there is one.
+@inline function _wound_disc(walk::W, grid::AbstractGrid, c::T, steps::Int,
+        cap, bound) where {W,T}
+    out = T[]
+    bound === nothing || sizehint!(out, bound)
+    _wound_walk(walk, grid, c, steps, cap, out)
+    return out
+end
+
+Base.@constprop :aggressive function _shell_ring(walk::W, grid::AbstractGrid,
+        c::T, steps::Int, connectivity::Connectivity) where {W,T}
+    if !_carried(winding(grid, connectivity))
+        shells = _shells_azimuth(walk, grid, c, steps)
+        steps <= length(shells) || return T[]
+        return @inbounds shells[steps]
+    end
+    cap = static_capacity(maxring(grid, steps, connectivity), T)
+    return _wound_ring(walk, grid, c, steps, cap)
+end
+
+shell_disc(grid::AbstractGrid, c::AbstractCellIndex, ::Val{K},
+    connectivity::Connectivity) where {K} =
+    _static_shell_disc(x -> one_ring(grid, x, connectivity), grid, c, Val(K),
+        connectivity)
+
+Base.@constprop :aggressive function _shell_disc(walk::W, grid::AbstractGrid,
+        c::T, steps::Int, connectivity::Connectivity) where {W,T}
+    if !_carried(winding(grid, connectivity))
+        return reduce(vcat, _shells_azimuth(walk, grid, c, steps); init = T[])
+    end
+    cap = static_capacity(maxring(grid, steps, connectivity), T)
+    return _wound_disc(walk, grid, c, steps, cap,
+        maxneighbors(grid, steps, connectivity))
+end
+
+@inline _carried(::Union{CounterClockwise,Clockwise}) = true
+@inline _carried(::Winding) = false
+
 """
     _pin_phase!(shell, grid, centre, frame) -> shell
 
@@ -289,11 +477,13 @@ function _pin_phase!(shell::AbstractVector, grid, centre, frame)
         end
     end
     lo == 1 && return shell
-    rot = similar(shell)
-    @inbounds for i in 1:n
-        rot[i] = shell[mod1(lo + i - 1, n)]
-    end
-    copyto!(shell, rot)
+    # Rotate left by `lo - 1` with three reversals rather than a scratch copy:
+    # the buffer may be a stack container, where allocating a `similar` would
+    # put the walk back on the heap for the sake of one rotation.
+    s = lo - 1
+    reverse!(view(shell, 1:s))
+    reverse!(view(shell, (s + 1):n))
+    reverse!(shell)
     return shell
 end
 
@@ -316,9 +506,7 @@ function neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer=1;
     steps = checked_steps(k)
     steps == 0 && return typeof(c)[]
     steps == 1 && return one_ring(grid, c, connectivity)
-    shells = _geometric_shells(grid, c, steps, connectivity)
-    isempty(shells) && return typeof(c)[]
-    return reduce(vcat, shells)
+    return _geometric_shell_disc(grid, c, steps, connectivity)
 end
 
 """
@@ -331,11 +519,9 @@ function ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer;
         connectivity::Connectivity=Vertex())
     steps = checked_steps(k)
     steps == 0 && return typeof(c)[c]
-    shells = _geometric_shells(grid, c, steps, connectivity)
     # A walk that ran out of cells before reaching `steps` has an empty shell
     # there: the ring is genuinely empty, not missing.
-    steps <= length(shells) || return typeof(c)[]
-    return shells[steps]
+    return _geometric_shell_ring(grid, c, steps, connectivity)
 end
 
 # Rotational shell ordering by measured azimuth.

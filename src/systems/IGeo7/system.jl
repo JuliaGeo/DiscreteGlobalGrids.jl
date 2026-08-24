@@ -365,9 +365,7 @@ function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
     _level_checked(g, c)
     steps == 0 && return SmallVector{6,Z7Cell}()
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    isempty(shells) && return Z7Cell[]
-    return reduce(vcat, shells)
+    return DGG.shell_disc(g, c, steps, connectivity)
 end
 
 """
@@ -412,10 +410,8 @@ function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
     _level_checked(g, c)
     steps == 0 && return Z7Cell[c]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     # Return an empty ring after the traversal exhausts the component.
-    steps <= length(shells) || return Z7Cell[]
-    return shells[steps]
+    return DGG.shell_ring(g, c, steps, connectivity)
 end
 
 # A cell handed to a grid operation must belong to that grid's level; otherwise

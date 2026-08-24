@@ -358,7 +358,7 @@ else
     end
 
     @testset "the chunk plan falls back where no coarse level helps" begin
-        # Both fallbacks the `ChunkPlan` docstring commits to, neither of which
+        # Both fallbacks the `WriteChunkPlan` docstring commits to, neither of which
         # any other fixture reaches. Kills a planner that always claims an
         # ancestor level.
         #

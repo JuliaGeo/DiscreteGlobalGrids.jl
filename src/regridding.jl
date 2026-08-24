@@ -270,11 +270,12 @@ multi-order targets become a [`PartialGrid`](@ref).
 function regridgrid end
 
 regridgrid(grid::AbstractGrid) = grid
-regridgrid(lk::CellLookup) = PartialGrid(lk)
-regridgrid(cv::CellVector) = PartialGrid(cv)
+regridgrid(lk::AbstractCellLookup) = PartialGrid(lk)
+regridgrid(cv::AbstractCellVector) = PartialGrid(cv)
 regridgrid(set::MultiOrderCellSet) = PartialGrid(CellVector(set))
 
-const RegridTarget = Union{AbstractGrid,CellLookup,CellVector,MultiOrderCellSet}
+const RegridTarget =
+    Union{AbstractGrid,AbstractCellLookup,AbstractCellVector,MultiOrderCellSet}
 
 GR._asspace(target::RegridTarget, name::AbstractString) = DGGSpace(regridgrid(target))
 
@@ -288,7 +289,7 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
 
 # A `Cells` axis already names the cells a regrid would otherwise look for a
 # raster lattice in, so a source given no `from` can point at the grid itself.
-GR.dimsource(lk::CellLookup) = cellset(lk)
+GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
 
 # A bare system as the destination takes the level closest to the source's cells.
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,

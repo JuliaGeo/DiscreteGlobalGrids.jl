@@ -252,7 +252,7 @@ names leaves the target does not touch — most visibly inside a hole. A
 the region, by the same margin the refinement itself is; see
 [`MultiOrderCoverage`](@ref).
 """
-struct CellVector{ID,W<:CellWindows,G<:AbstractGrid,B} <: AbstractVector{ID}
+struct CellVector{ID,W<:CellWindows,G<:AbstractGrid,B} <: AbstractCellVector{ID}
     windows::W
     grid::G                  # `levelgrid(system, level)` — every `cv[k]` reads it
     backing::B               # what it was built from, or `nothing` when derived
@@ -343,6 +343,9 @@ end
 # Derived subsets keep the leaf grid and level but replace provenance with a
 # lazily constructed `PartialGrid`.
 _derive(cv::CellVector, w::CellWindows) = CellVector(w, cv.grid, nothing, cv.level)
+
+# A `CellVector` IS the region container, so `region` is the identity on it.
+DGG.region(cv::CellVector) = cv
 
 windows(cv::CellVector) = cv.windows
 

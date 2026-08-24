@@ -36,19 +36,19 @@ end
 
 # ## Cell collections
 
-function Makie.convert_arguments(P::Makie.PointBased, vector::DGG.CellVector)
+function Makie.convert_arguments(P::Makie.PointBased, vector::DGG.AbstractCellVector)
     Makie.convert_arguments(P, DGG.PartialGrid(vector))
 end
 
-function Makie.convert_arguments(P::Type{<:Makie.Poly}, vector::DGG.CellVector)
+function Makie.convert_arguments(P::Type{<:Makie.Poly}, vector::DGG.AbstractCellVector)
     Makie.convert_arguments(P, DGG.PartialGrid(vector))
 end
 
-function Makie.convert_arguments(P::Makie.PointBased, lookup::DGG.CellLookup)
+function Makie.convert_arguments(P::Makie.PointBased, lookup::DGG.AbstractCellLookup)
     Makie.convert_arguments(P, parent(lookup))
 end
 
-function Makie.convert_arguments(P::Type{<:Makie.Poly}, lookup::DGG.CellLookup)
+function Makie.convert_arguments(P::Type{<:Makie.Poly}, lookup::DGG.AbstractCellLookup)
     Makie.convert_arguments(P, parent(lookup))
 end
 

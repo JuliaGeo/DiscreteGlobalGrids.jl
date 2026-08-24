@@ -36,6 +36,33 @@ function toycache(rows::Vector{Vector{Int}}, nsrc::Int; permits = 8, load = noth
     return cache, calls
 end
 
+"""
+Drain `s` into `into`, appending every position it hands out.
+
+A named function, not a `while` loop inlined into the `Threads.@spawn` below:
+the enclosing testset scope already binds `b`, so an inlined
+`while (b = claim!(s)) !== nothing` would make every worker assign the *same*
+captured `Core.Box` and read back whichever batch another worker wrote last.
+Here `b` is a local of one call, so each task owns its own.
+"""
+function drain!(s::GuidedSchedule, into::Vector{Int})
+    while (b = claim!(s)) !== nothing
+        append!(into, b)
+    end
+    return into
+end
+
+"How `got` differs from a clean cover of `1:n`, rather than merely that it does."
+function coverage(got::Vector{Int}, n::Int)
+    counts = zeros(Int, n)
+    stray = Int[]
+    for v in got
+        1 <= v <= n ? (counts[v] += 1) : push!(stray, v)
+    end
+    return (; count = length(got), duplicated = findall(>(1), counts),
+        uncovered = findall(iszero, counts), stray)
+end
+
 @testset "morton2" begin
     @test morton2(0, 0) == 0
     @test morton2(1, 0) == 1
@@ -95,16 +122,20 @@ end
     end
     @test length(last) == 1
 
-    # Concurrent claims cover 1:n exactly once, with a varying batch size.
+    # Concurrent claims cover 1:n exactly once, with a varying batch size. The
+    # claim loop lives in `drain!` so that each task owns its own `b`; see there.
     n = 5000
     s = GuidedSchedule(n, 8, 8)
     seen = [Int[] for _ in 1:8]
     Threads.@sync for w in 1:8
-        Threads.@spawn while (b = claim!(s)) !== nothing
-            append!(seen[w], b)
-        end
+        Threads.@spawn drain!(s, seen[w])
     end
-    @test sort(vcat(seen...)) == 1:n
+    # Named parts, so a miscover says whether it dropped, doubled or invented.
+    cover = coverage(vcat(seen...), n)
+    @test cover.count == n
+    @test isempty(cover.duplicated)
+    @test isempty(cover.uncovered)
+    @test isempty(cover.stray)
     @test claim!(s) === nothing
 end
 

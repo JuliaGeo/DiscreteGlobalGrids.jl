@@ -51,7 +51,7 @@ conversion instead of each repeating it.
 chunkplan
 MapChunkPlan
 MapChunk
-chunkrange
+globalindices
 chunkhalo
 nchunks(::MapChunkPlan)
 halowidth
@@ -69,14 +69,14 @@ carried beside it, not inside it.
 
 The owned cells are contiguous within the block: every halo cell is by
 definition outside the chunk's own run, so sorting the two into one axis leaves
-the owned run unbroken. [`chunkpositions`](@ref) is therefore a range, and
-[`chunkrange`](@ref) says where those results belong in the full axis.
+the owned run unbroken. [`localindices`](@ref) is therefore a range, and
+[`globalindices`](@ref) says where those results belong in the full axis.
 
 ```@docs
 foreachchunk
 ChunkCube
 chunkcube
-chunkpositions
+localindices
 ```
 
 ## The sweeps built on it
@@ -94,7 +94,7 @@ whenever the cube's data is chunked, and collects the results as it always has.
 
 [`Neighbors`](@ref) deliberately does **not** take this route. Its callback is
 handed cell handles and reaches back into the original array for values, so a
-sweep over blocks would hand it block positions to index the whole cube with.
+sweep over blocks would hand it block indices to index the whole cube with.
 A chunked sweep is exactly the case where the values must flow through the
 traversal, which is what `Values()` means.
 

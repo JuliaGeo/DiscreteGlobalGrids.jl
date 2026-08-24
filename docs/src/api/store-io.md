@@ -50,8 +50,8 @@ does so through [`region`](@ref), which is the axis's compressed
 [`CellVector`](@ref) twin, built on the first call and kept. What that
 conversion costs is the encoding's and not the axis's length: a ranges or
 implicit store converts by arithmetic alone, because a stored interval is a run
-of consecutive ranks and a rank plus one is a position; a dense store reads its
-ids once, in the order that touches each chunk once. Position order is
+of consecutive ranks and a rank plus one is an index; a dense store reads its
+ids once, in the order that touches each chunk once. Index order is
 preserved either way, which is what lets a result computed through the twin be
 written back against the store's own axis with no permutation. Sweeping a store
 along its own chunk lines is
@@ -77,7 +77,7 @@ dggwrite
 ```@docs
 ChunkedCellLookup
 DiscreteGlobalGrids.ChunkedCellVector
-DiscreteGlobalGrids.axisposition
+DiscreteGlobalGrids.axisindex
 ChunkManifest
 DiscreteGlobalGrids.chunkmanifest
 nchunks(::ChunkManifest)

@@ -529,9 +529,19 @@ _rebuilt_on_cells(A, d, out::Tuple) =
     map(o -> DD.rebuild(A; data = o, dims = (d,)), out)
 _rebuilt_on_cells(A, d, out) = DD.rebuild(A; data = out, dims = (d,))
 
+@noinline _needs_pass(pass) = throw(ArgumentError(
+    "needs cannot be combined with pass = $(typeof(pass)): a field request " *
+    "already names what the callback receives; drop one of the two"))
+
+# A field request names the callback's arguments itself, so only the default
+# `pass` may accompany one.
+_checkpass(::Neighbors) = nothing
+_checkpass(pass) = _needs_pass(pass)
+
 """
     mapneighbors(f, A::AbstractDimArray; spatialdim = nothing, pass = Neighbors(),
                  order = StorageOrder(), threaded = true, connectivity = Vertex())
+    mapneighbors(f, A::AbstractDimArray; needs = (Value(a), Centroid()), ...)
 
 Apply `f` to each cell and its neighbors. The result uses `A`'s wrapper and
 lookups. If `f` returns a concrete tuple, each component becomes an array.
@@ -549,6 +559,14 @@ is an `ArgumentError`.
 - [`NeighborSlices`](@ref): views across the other dimensions; one result per
   cell, on the cell dimension.
 
+`needs` names the per-neighbour fields the kernel reads instead of `pass`, and
+the callback becomes `f(center, rings)` — the contract is the [`CellVector`](@ref)
+method's, and the requests are `Cell`, `Index`, `Value` and `Centroid`. The
+sweep runs on the cell axis alone and never reads `A`, so values reach the
+callback through the request's `Value` entries and an array of any
+dimensionality gives one result per cell, on the cell dimension. Any `pass`
+other than the default alongside `needs` is an `ArgumentError`.
+
 With `pass = Values()` and `order = StorageOrder()`, a cube whose data is
 chunked on disk is swept along those chunks rather than cell by cell — see
 [`chunkplan`](@ref). The result is identical either way; what changes is that
@@ -557,10 +575,25 @@ each stored chunk is decoded once instead of once per scalar read. A permutation
 chunk, so the two cannot both be honoured and the permutation wins.
 """
 function mapneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
-        pass = Neighbors(), order = StorageOrder(), threaded = true,
-        connectivity::Connectivity = Vertex()) where {F}
+        needs = nothing, pass = Neighbors(), order = StorageOrder(),
+        threaded = true, connectivity::Connectivity = Vertex()) where {F}
     dnum = _cells_dimnum(A, spatialdim)
-    return _map_dimarray(pass, f, A, dnum, order, threaded, connectivity)
+    return _map_needs(needs, pass, f, A, dnum, order, threaded, connectivity)
+end
+
+# No field request: `pass` picks the callback form, exactly as before —
+# `needs = nothing` reaches those methods by dispatch, not by a branch.
+_map_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn) where {F} =
+    _map_dimarray(pass, f, A, dnum, order, threaded, conn)
+
+# A field request is answered by the cell axis alone: the sweep never touches
+# `A`, whatever its dimensionality, since the callback's values arrive through
+# the request's `Value` entries. One result per cell, on the cell dimension.
+function _map_needs(needs, pass, f::F, A, dnum, order, threaded, conn) where {F}
+    _checkpass(pass)
+    cv = parent(DD.lookup(A, dnum))
+    out = mapneighbors(f, cv; needs, order, threaded, connectivity = conn)
+    return _rebuilt_on_cells(A, DD.dims(A)[dnum], out)
 end
 
 function _map_dimarray(::Neighbors, f::F, A, dnum, order, threaded,
@@ -644,15 +677,27 @@ _slice_store!(out::AbstractArray, res::AbstractVector, jpre, jpost) =
     foreachneighbors(f, A::AbstractDimArray; spatialdim = nothing, pass = Neighbors(),
                      order = StorageOrder(), threaded = false,
                      connectivity = Vertex())
+    foreachneighbors(f, A::AbstractDimArray; needs = (Value(a), Centroid()), ...)
 
 Call `f` for each cell and its neighbors without collecting results.
-`spatialdim` and `pass` behave as in [`mapneighbors`](@ref).
+`spatialdim`, `pass` and `needs` behave as in [`mapneighbors`](@ref).
 """
 function foreachneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
-        pass = Neighbors(), order = StorageOrder(), threaded = false,
-        connectivity::Connectivity = Vertex()) where {F}
+        needs = nothing, pass = Neighbors(), order = StorageOrder(),
+        threaded = false, connectivity::Connectivity = Vertex()) where {F}
     dnum = _cells_dimnum(A, spatialdim)
-    _foreach_dimarray(pass, f, A, dnum, order, threaded, connectivity)
+    _foreach_needs(needs, pass, f, A, dnum, order, threaded, connectivity)
+    return nothing
+end
+
+_foreach_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn) where {F} =
+    _foreach_dimarray(pass, f, A, dnum, order, threaded, conn)
+
+function _foreach_needs(needs, pass, f::F, A, dnum, order, threaded,
+        conn) where {F}
+    _checkpass(pass)
+    foreachneighbors(f, parent(DD.lookup(A, dnum)); needs, order, threaded,
+        connectivity = conn)
     return nothing
 end
 

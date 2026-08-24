@@ -77,6 +77,8 @@ include("cell_vector.jl")
 include("stencil.jl")
 # The indexed iterator depends on the stencil and window helpers.
 include("neighborhood.jl")
+# The field requests resolve against the clip the sweep above already made.
+include("needs.jl")
 # The region verbs read every container above and the cursor the sweeps use.
 include("region.jl")
 # The cached table reads the region verbs and the same cursor.

@@ -461,10 +461,20 @@ end
 _check_data(data::AbstractVector, n::Int) =
     axes(data) == (Base.OneTo(n),) || _data_mismatch(axes(data, 1), n)
 
+@noinline _needs_and_data() = throw(ArgumentError(
+    "pass a data vector or needs, not both: `Value(data)` is the field " *
+    "request for that vector"))
+
+# The data-taking methods answer `f(cell, value, values)`; a field request
+# would redefine the callback's arity, so the two forms are exclusive.
+_checknodata(::Nothing) = nothing
+_checknodata(needs) = _needs_and_data()
+
 """
     mapneighbors(f, cv; order = StorageOrder(), threaded = true,
                  connectivity = Vertex())
     mapneighbors(f, cv, data::AbstractVector; ...)
+    mapneighbors(f, cv; needs = (Value(data), Centroid()), ...)
 
 Apply `f` to each cell and its clipped one-ring. `cv` may be a
 [`CellVector`](@ref), [`PartialGrid`](@ref), or [`CellLookup`](@ref).
@@ -474,6 +484,21 @@ by the one-argument [`neighbors`](@ref) iterator. With a vector laid out
 against the subset, `f(cell, value, values)` receives the cell value and its
 neighbour values in the counter-clockwise order [`neighbors`](@ref) states, so
 slot `j` of the callback's ring names a direction.
+
+`needs` names the per-neighbour fields the kernel reads — a tuple of `Cell`,
+`Index`, `Value` and `Centroid` requests — and the callback becomes
+`f(center, rings)`: one entry per need for the visited cell, and one ring per
+need for its clipped neighbours. The rings are field-major, `rings[j]` being
+need `j`'s value for every neighbour, with slot `i` of every ring naming the
+same neighbour; a caller who wants one record per neighbour writes
+`zip(rings...)`. `Index(Local())` is the index in the collection passed here.
+No sweep that takes a field request splits that collection today —
+[`mapneighbors!`](@ref) has no `needs` keyword, and a `Value` over a
+disk-chunked cube is read cell by cell rather than along its chunks — and any
+future chunked route is bound by that promise: it must translate to this
+collection's indices rather than report a chunk-local number. `Centroid()` is
+computed per call. A field request and a positional `data` vector are
+exclusive.
 
 Results are stored in subset index order. A concrete tuple result produces
 a tuple of vectors, one per component. `order` accepts [`StorageOrder`](@ref)
@@ -488,8 +513,16 @@ it failed at, not one exception per task.
 [`foreachneighbors`](@ref) provides the side-effecting form and defaults to
 sequential execution.
 """
-function mapneighbors(f::F, cv::CellVector; order = StorageOrder(),
-        threaded = true, connectivity::Connectivity = Vertex()) where {F}
+function mapneighbors(f::F, cv::CellVector; needs = nothing,
+        order = StorageOrder(), threaded = true,
+        connectivity::Connectivity = Vertex()) where {F}
+    return _mapneighbors(f, cv, needs, order, threaded, connectivity)
+end
+
+# No field request: the callback receives the indexed handles themselves. The
+# `needs` method is in needs.jl; `nothing` reaches this one by dispatch.
+function _mapneighbors(f::F, cv::CellVector, ::Nothing, order, threaded,
+        connectivity::Connectivity) where {F}
     cap = _capacity(system(cv), connectivity)
     H = SubsetIndexedCell{eltype(cv)}
     T = Base.promote_op(f, H, _ringtype(cap, H))
@@ -499,8 +532,9 @@ function mapneighbors(f::F, cv::CellVector; order = StorageOrder(),
 end
 
 function mapneighbors(f::F, cv::CellVector, data::AbstractVector;
-        order = StorageOrder(), threaded = true,
+        needs = nothing, order = StorageOrder(), threaded = true,
         connectivity::Connectivity = Vertex()) where {F}
+    _checknodata(needs)
     _check_data(data, length(cv))
     cap = _capacity(system(cv), connectivity)
     H = SubsetIndexedCell{eltype(cv)}
@@ -530,21 +564,30 @@ end
     foreachneighbors(f, cv; order = StorageOrder(), threaded = false,
                      connectivity = Vertex())
     foreachneighbors(f, cv, data::AbstractVector; ...)
+    foreachneighbors(f, cv; needs = (Value(data), Centroid()), ...)
 
 Call `f` for each cell and clipped one-ring, discarding its return value. The
-calling forms and `order` contract match [`mapneighbors`](@ref). Threading is
-disabled by default; enabling it requires `f` to be order-independent.
+calling forms, `needs` contract and `order` contract match
+[`mapneighbors`](@ref). Threading is disabled by default; enabling it requires
+`f` to be order-independent.
 """
-function foreachneighbors(f::F, cv::CellVector; order = StorageOrder(),
-        threaded = false, connectivity::Connectivity = Vertex()) where {F}
+function foreachneighbors(f::F, cv::CellVector; needs = nothing,
+        order = StorageOrder(), threaded = false,
+        connectivity::Connectivity = Vertex()) where {F}
+    return _foreachneighbors(f, cv, needs, order, threaded, connectivity)
+end
+
+function _foreachneighbors(f::F, cv::CellVector, ::Nothing, order, threaded,
+        connectivity::Connectivity) where {F}
     _run!((k, c, nbrs) -> (f(c, nbrs); nothing), cv, connectivity, order,
         GOCore.booltype(threaded), _capacity(system(cv), connectivity))
     return nothing
 end
 
 function foreachneighbors(f::F, cv::CellVector, data::AbstractVector;
-        order = StorageOrder(), threaded = false,
+        needs = nothing, order = StorageOrder(), threaded = false,
         connectivity::Connectivity = Vertex()) where {F}
+    _checknodata(needs)
     _check_data(data, length(cv))
     _run!((k, c, nbrs) -> (f(c, (@inbounds data[k]), _gather(data, nbrs)); nothing),
         cv, connectivity, order, GOCore.booltype(threaded),

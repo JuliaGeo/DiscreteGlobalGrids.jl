@@ -133,7 +133,8 @@ using .Engine: PartialGrid,
     AdjacencyTable, halocells, haloindices,
     SubsetIndexedCell, cellid,
     mapneighbors, foreachneighbors, StorageOrder,
-    NeighborCallbackError
+    NeighborCallbackError,
+    AbstractNeed, Cell, Index, Local, Global, Value, Centroid
 
 # Internal extension points for system-specific subtree walkers and shell
 # winding.
@@ -407,6 +408,9 @@ public SubsetIndexedCell
 public HierarchicalGridCursor
 # A traversal order, not a traversal.
 public StorageOrder
+# The fields a neighbourhood sweep can be asked to stream, and the two index
+# spaces `Index` names.
+public AbstractNeed, Cell, Index, Local, Global, Value, Centroid
 # A tuning knob for the default `node_extent`, read by no caller that does not
 # implement a system.
 public cap_inflation

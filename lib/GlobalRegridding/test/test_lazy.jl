@@ -199,7 +199,7 @@ end
         @test size(A) == (32,)
         @test DiskArrays.haschunks(A) isa DiskArrays.Chunked
         # The destination's own chunks are the cell axis's chunks, because this
-        # destination's chunks are contiguous runs of cell positions.
+        # destination's chunks are contiguous runs of cell indices.
         @test collect(DiskArrays.eachchunk(A)) == [(1:16,), (17:32,)]
     end
 

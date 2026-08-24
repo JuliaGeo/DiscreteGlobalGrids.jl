@@ -61,7 +61,7 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
                   DGG.DGGSpace(DGG.PartialGrid(REGION); chunkcells = 8),
                   DGG.DGGSpace(DGG.levelgrid(DGG.IGeo7System(), 2); chunkcells = 8))
         @test GR.nchunks(space) > 1
-        # Chunks partition the cells, in ascending position order, and each one
+        # Chunks partition the cells, in ascending index order, and each one
         # is contiguous — which is what lets `cellindices` be a range and a
         # chunk be one read.
         @test chunkcells(space) == 1:DGG.ncells(space)
@@ -170,7 +170,7 @@ end
     # a cell's cap and its hierarchy's node extents diverge most.
     pentagons = [foldl((c, _) -> first(DGG.children(sys7, c)), 1:3; init = r)
                  for r in DGG.rootcells(sys7)]
-    @test length(unique(GR.chunkat(dst, DGG.cellposition(dst.grid, p))
+    @test length(unique(GR.chunkat(dst, DGG.globalindex(dst.grid, p))
                         for p in pentagons)) == 12
     for pole in (GO.UnitSphericalPoint(0.0, 0.0, 1.0),
                  GO.UnitSphericalPoint(0.0, 0.0, -1.0))
@@ -297,7 +297,7 @@ end
     @test DGG.plan_regrid(declared; to = GRID, missingval = nothing).missingval === nothing
 end
 
-@testset "a shifted cap vector is addressed by global position" begin
+@testset "a shifted cap vector is addressed by global index" begin
     v = DGG._ShiftedCaps(collect(10:19), 100)
     @test v isa AbstractVector{Int}
     @test length(v) == 10
@@ -355,8 +355,8 @@ end
         @test wa == wb
     end
 
-    # A chunk's tree caches only its own positions, addressed by global
-    # position, and must answer the raw chunk cursor's caps and cells the same.
+    # A chunk's tree caches only its own indices, addressed by global
+    # index, and must answer the raw chunk cursor's caps and cells the same.
     for space in (DGG.DGGSpace(GRID; chunkcells = 32),
                   DGG.DGGSpace(DGG.PartialGrid(REGION); chunkcells = 8))
         for c in (1, GR.nchunks(space) ÷ 2, GR.nchunks(space))

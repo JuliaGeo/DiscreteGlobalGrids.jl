@@ -17,7 +17,7 @@ end
 """
     indexmap(inds) -> map
 
-Return a map from global cell positions to their one-based positions within
+Return a map from global cell indices to their one-based local index within
 `inds`. Query it with [`localindex`](@ref); `length` is `length(inds)`.
 """
 indexmap(inds::AbstractUnitRange{<:Integer}) =
@@ -28,8 +28,8 @@ indexmap(inds) =
 """
     localindex(map, i::Integer) -> Int
 
-Return `i`'s one-based position within the mapped index set, or `0` when `i` is
-not in it.
+Return `i`'s one-based local index within the mapped index set, or `0` when
+`i` is not in it.
 """
 @inline localindex(m::OffsetIndexMap, i::Integer) =
     (k = Int(i) - m.offset; 1 <= k <= m.n ? k : 0)

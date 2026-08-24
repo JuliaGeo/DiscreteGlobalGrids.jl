@@ -29,11 +29,11 @@ import .ChunkedLookups: nchunks
 """
     MapChunk
 
-One chunk of a [`MapChunkPlan`](@ref): the axis positions it owns, and the axis
-positions outside it that its cells' rings reach.
+One chunk of a [`MapChunkPlan`](@ref): the axis indices it owns, and the axis
+indices outside it that its cells' rings reach.
 
-`chunkrange(mc)` is the first, `chunkhalo(mc)` the second; both are positions in
-the cube's own cell axis, and both ascend. The halo holds only positions the
+`globalindices(mc)` is the first, `chunkhalo(mc)` the second; both are indices in
+the cube's own cell axis, and both ascend. The halo holds only indices the
 axis really has — a ring that leaves the axis altogether is clipped here exactly
 as [`neighbors`](@ref) clips it.
 """
@@ -44,18 +44,18 @@ struct MapChunk
 end
 
 """
-    chunkrange(mc::MapChunk) -> UnitRange{Int}
-    chunkrange(cc::ChunkCube) -> UnitRange{Int}
+    globalindices(mc::MapChunk) -> UnitRange{Int}
+    globalindices(cc::ChunkCube) -> UnitRange{Int}
 
-The positions in the CUBE'S CELL AXIS that this chunk owns. Contiguous, because
+The indices in the CUBE'S CELL AXIS that this chunk owns. Contiguous, because
 a chunk is a contiguous block of the axis.
 """
-chunkrange(mc::MapChunk) = mc.range
+globalindices(mc::MapChunk) = mc.range
 
 """
     chunkhalo(mc::MapChunk) -> Vector{Int}
 
-The axis positions outside [`chunkrange`](@ref) that this chunk's cells reach,
+The axis indices outside [`globalindices`](@ref) that this chunk's cells reach,
 ascending. These are the cells a sweep over the chunk has to read but does not
 produce a result for.
 """
@@ -122,7 +122,7 @@ halowidth(plan::MapChunkPlan) = plan.width
 Cut the plan into at most `n` plans over disjoint chunks, in order.
 
 This is how a chunked sweep is parallelised: run the pieces on separate tasks.
-Each chunk writes only the positions it owns, so pieces running at once cannot
+Each chunk writes only the indices it owns, so pieces running at once cannot
 collide however the cut falls — and the result does not depend on how many
 pieces there were.
 """
@@ -172,7 +172,7 @@ plan = chunkplan(A; halo = 1)
 nchunks(plan)                             # what it will read
 foreachchunk(A, plan) do cc               # ... and reading it
     r = mapneighbors(f, chunkcube(cc))
-    out[chunkrange(cc)] = parent(r)[chunkpositions(cc)]
+    out[globalindices(cc)] = parent(r)[localindices(cc)]
 end
 ```
 """
@@ -220,12 +220,12 @@ function _asranges(chunklength::Integer, n::Int)
     return [lo:min(lo + cl - 1, n) for lo in 1:cl:n]
 end
 
-# The axis positions a chunk's cells reach but does not own.
+# The axis indices a chunk's cells reach but does not own.
 #
 # Asked of the REGION rather than cell by cell: `halo` walks a boundary in
 # `O(border)`, where enumerating every cell's ring and discarding the ones that
 # land back inside is `O(cells x degree)`. The answer ascends without sorting,
-# because a complete-level position and an axis position both ascend in cell id,
+# because a complete-level index and an axis index both ascend in cell id,
 # so the map between them is monotone.
 function _chunkhalo(cv::CellVector, r::UnitRange{Int}, width::Int,
         conn::Connectivity)
@@ -234,15 +234,15 @@ function _chunkhalo(cv::CellVector, r::UnitRange{Int}, width::Int,
     sub = cv[r]
     if width == 1
         for p in halo(sub; connectivity=conn)
-            q = Engine.windowposition(cv.windows, p)
+            q = Engine.windowindex(cv.windows, p)
             q === nothing || push!(out, q)
         end
     else
         # Wider than one ring has no single boundary walk, so the region is
         # grown and what it gained outside the chunk is the halo.
         grown = grow(sub, width; connectivity=conn)
-        for p in Engine.leafpositions(grown.windows)
-            q = Engine.windowposition(cv.windows, p)
+        for p in Engine.leafindices(grown.windows)
+            q = Engine.windowindex(cv.windows, p)
             (q === nothing || first(r) <= q <= last(r)) && continue
             push!(out, q)
         end
@@ -268,13 +268,13 @@ whole-cube pass it replaces.
 | accessor | what it gives |
 |---|---|
 | [`chunkcube`](@ref) | the in-memory cube: the chunk's cells AND its halo |
-| [`chunkpositions`](@ref) | the positions IN THAT CUBE the chunk owns |
-| [`chunkrange`](@ref) | the same cells' positions in the FULL axis |
+| [`localindices`](@ref) | the indices IN THAT CUBE the chunk owns |
+| [`globalindices`](@ref) | the same cells' indices in the FULL axis |
 
-A result computed on the cube is meaningful for the owned positions only:
+A result computed on the cube is meaningful for the owned indices only:
 a halo cell is there to complete its neighbours' rings, and its own ring is
-missing whatever fell outside the block. `r[chunkpositions(cc)]` selects the
-part to keep and `chunkrange(cc)` says where it belongs.
+missing whatever fell outside the block. `r[localindices(cc)]` selects the
+part to keep and `globalindices(cc)` says where it belongs.
 
 Because the halo holds every axis neighbour of every owned cell, a stencil that
 reaches no further than the plan's [`halowidth`](@ref) computes exactly what the
@@ -282,7 +282,7 @@ whole-axis sweep computes for those cells.
 """
 struct ChunkCube{C<:DD.AbstractDimArray}
     cube::C
-    positions::UnitRange{Int}
+    localindices::UnitRange{Int}
     range::UnitRange{Int}
     index::Int
 end
@@ -295,29 +295,29 @@ The chunk's cells and its halo, in memory, over a [`CellLookup`](@ref).
 chunkcube(cc::ChunkCube) = cc.cube
 
 """
-    chunkpositions(cc::ChunkCube) -> UnitRange{Int}
+    localindices(cc::ChunkCube) -> UnitRange{Int}
 
-The positions in [`chunkcube`](@ref) that the chunk OWNS — the ones a result is
+The indices in [`chunkcube`](@ref) that the chunk OWNS — the ones a result is
 kept for. Contiguous: a chunk is a run of the axis, and every halo cell is
 outside that run, so the owned cells stay together when the two are sorted into
 one axis.
 """
-chunkpositions(cc::ChunkCube) = cc.positions
+localindices(cc::ChunkCube) = cc.localindices
 
-chunkrange(cc::ChunkCube) = cc.range
+globalindices(cc::ChunkCube) = cc.range
 
 """
     chunkhalo(cc::ChunkCube) -> Vector{Int}
 
-The positions in [`chunkcube`](@ref) that are HALO — read to complete the owned
+The indices in [`chunkcube`](@ref) that are HALO — read to complete the owned
 cells' rings, and not results to keep. The complement of
-[`chunkpositions`](@ref) over the cube, so the two together are all of it.
+[`localindices`](@ref) over the cube, so the two together are all of it.
 
-These are positions in the block, not in the axis; `chunkhalo` of the plan's
-[`MapChunk`](@ref) gives the axis positions they came from.
+These are indices in the block, not in the axis; `chunkhalo` of the plan's
+[`MapChunk`](@ref) gives the axis indices they came from.
 """
-chunkhalo(cc::ChunkCube) = vcat(1:(first(cc.positions)-1),
-    (last(cc.positions)+1):_cellcount(cc))
+chunkhalo(cc::ChunkCube) = vcat(1:(first(cc.localindices)-1),
+    (last(cc.localindices)+1):_cellcount(cc))
 
 # The block cube's cell dimension, and how long it is. Read off the block rather
 # than carried, so the accessors work on a `ChunkCube` alone; on an N-D cube the
@@ -352,7 +352,7 @@ one, `split` the plan and run the pieces — see [`MapChunkPlan`](@ref).
 plan = chunkplan(A; halo = 1)
 @sync for p in Base.split(plan, Threads.nthreads())
     Threads.@spawn foreachchunk(A, p) do cc
-        write!(out, chunkrange(cc), mine(mapneighbors(f, chunkcube(cc)), cc))
+        write!(out, globalindices(cc), mine(mapneighbors(f, chunkcube(cc)), cc))
     end
 end
 ```
@@ -386,12 +386,12 @@ function _loadchunk(A::DD.AbstractDimArray, dnum::Int, cv::CellVector,
     above = @view mc.halo[(length(below)+1):end]
     data = parent(A)
     parts = Any[]
-    isempty(below) || push!(parts, _readpositions(data, dnum, below, bounds))
+    isempty(below) || push!(parts, _readindices(data, dnum, below, bounds))
     push!(parts, _readrange(data, dnum, r))
-    isempty(above) || push!(parts, _readpositions(data, dnum, above, bounds))
+    isempty(above) || push!(parts, _readindices(data, dnum, above, bounds))
     block = length(parts) == 1 ? only(parts) : cat(parts...; dims=dnum)
-    positions = vcat(collect(below), collect(r), collect(above))
-    lk = CellLookup(cv[positions])
+    indices = vcat(collect(below), collect(r), collect(above))
+    lk = CellLookup(cv[indices])
     dims = ntuple(i -> i == dnum ? Cells(lk) : DD.dims(A)[i], Val(ndims(A)))
     own = (length(below)+1):(length(below)+length(r))
     return ChunkCube(DD.rebuild(A; data=block, dims=dims), own, r, mc.index)
@@ -405,15 +405,15 @@ function _readrange(data, dnum::Int, r::AbstractUnitRange)
     return Array(data[inds...])
 end
 
-# Scattered positions, read one covering range per storage chunk they land in.
+# Scattered indices, read one covering range per storage chunk they land in.
 # Within a chunk the covering range is decoded as a unit anyway, so reading it
 # whole costs nothing over reading part of it — and reading the runs separately
 # is what stops a halo that straddles a distant chunk from pulling in everything
 # between.
-function _readpositions(data, dnum::Int, idx::AbstractVector{Int},
+function _readindices(data, dnum::Int, idx::AbstractVector{Int},
         bounds::Vector{UnitRange{Int}})
     parts = Any[]
-    for run in _positionruns(idx, bounds)
+    for run in _indexruns(idx, bounds)
         block = _readrange(data, dnum, run)
         take = [p - first(run) + 1 for p in idx if first(run) <= p <= last(run)]
         inds = ntuple(i -> i == dnum ? take : Colon(), Val(ndims(block)))
@@ -422,9 +422,9 @@ function _readpositions(data, dnum::Int, idx::AbstractVector{Int},
     return length(parts) == 1 ? only(parts) : cat(parts...; dims=dnum)
 end
 
-# Group ascending positions by the storage chunk they fall in, so each chunk a
+# Group ascending indices by the storage chunk they fall in, so each chunk a
 # gather reaches is read once and no two reads overlap.
-function _positionruns(idx::AbstractVector{Int}, bounds::Vector{UnitRange{Int}})
+function _indexruns(idx::AbstractVector{Int}, bounds::Vector{UnitRange{Int}})
     runs = UnitRange{Int}[]
     i = firstindex(idx)
     while i <= lastindex(idx)
@@ -478,7 +478,7 @@ function CellLookups._map_values_chunked(f::F, A, dnum::Int,
         plan::MapChunkPlan, threaded, conn::Connectivity) where {F}
     cv = region(DD.lookup(A, dnum))
     cap = Engine._capacity(system(cv), conn)
-    H = Engine.SubsetPositionedCell{eltype(cv)}
+    H = Engine.SubsetIndexedCell{eltype(cv)}
     T = Base.promote_op(f, H, eltype(A), Engine._ringtype(cap, eltype(A)))
     sz = size(A)
     dest = T <: Tuple && isconcretetype(T) ?
@@ -538,8 +538,8 @@ end
 # one output per component, so `dest` is then a tuple of the same length.
 function _storechunk!(dest, out, cc::ChunkCube)
     dnum = CellLookups._cells_dimnum(out, nothing)
-    src = _slice(parent(out), dnum, chunkpositions(cc))
-    _destview(dest, dnum, chunkrange(cc)) .= src
+    src = _slice(parent(out), dnum, localindices(cc))
+    _destview(dest, dnum, globalindices(cc)) .= src
     return nothing
 end
 

@@ -16,7 +16,7 @@ A system needs no grid type of its own. [`levelgrid`](@ref) defaults to
 [`HierarchicalLevelGrid`](@ref), which holds `(system, level)` and forwards the
 base grid interface to the five level-grid primitives a system writes instead.
 
-A bare `Int` is a position in `1:ncells(grid)`. An
+A bare `Int` is a local index in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
 
 A **region** is a subset of one complete level — [`PartialGrid`](@ref), any
@@ -30,7 +30,7 @@ middle; [`border`](@ref) and [`interior`](@ref) split what is inside;
 [`adjacency`](@ref) tables every one-ring at once, clipped, completed over a
 `[region; halo]` buffer, or marked in place. The three walks are lazy, serial
 and `O(depth)` in memory; `adjacency` is the cached, threaded product, and the
-one that keeps its halo ([`halopositions`](@ref)).
+one that keeps its halo ([`haloindices`](@ref)).
 [`member_neighbors`](@ref) asks the adjacency question across the levels of a
 [`MultiOrderCellSet`](@ref), which has no `halo` because it has no single level
 to answer at.
@@ -45,7 +45,7 @@ explicitly named wrappers convert longitude and latitude at API boundaries.
   - `src/fallbacks/`: the overridable generic defaults — identity, location,
     geometry, the subtree walkers, and the level-grid and authalic wrappers.
   - `src/engine/`: the machinery no system overrides — the region containers,
-    the cursor and position tree, the query planner, and the walks over them.
+    the cursor and index tree, the query planner, and the walks over them.
   - `src/dimensionaldata.jl`: the cube face of [`CellVector`](@ref) —
     [`CellLookup`](@ref), [`Cells`](@ref), [`Covering`](@ref).
   - `src/systems/`: grid-system implementations.
@@ -126,12 +126,12 @@ using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
 using .Engine: PartialGrid,
     HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
-    CellVector, cellset, covering, covering_positions,
+    CellVector, cellset, covering, covering_indices,
     grow, expand, compact, member_neighbors,
-    SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator, RegionSide,
-    halo_positions, sizehint,
-    AdjacencyTable, halocells, halopositions,
-    SubsetPositionedCell, cellid,
+    SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
+    halo_indices, sizehint,
+    AdjacencyTable, halocells, haloindices,
+    SubsetIndexedCell, cellid,
     mapneighbors, foreachneighbors, StorageOrder,
     NeighborCallbackError
 
@@ -191,7 +191,7 @@ using .Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
     idrank, idselect, idcount_between, idvalid, idcell, idtype,
     idranges, write_eligible, validate_ranges
 using .ChunkedLookups: ChunkManifest, nchunks, chunkof, chunkbounds,
-    ChunkedCellVector, axisposition, chunkmanifest, ChunkedCellLookup
+    ChunkedCellVector, axisindex, chunkmanifest, ChunkedCellLookup
 
 include("io/description.jl")
 include("io/conventions.jl")
@@ -212,6 +212,7 @@ include("cap_cached_tree.jl")
 
 # After it: a target resolution may be spelled as a raster or a regrid space.
 include("sizing.jl")
+include("deprecated.jl")
 
 # CopernicusDEM is deliberately absent: registering a system enrols it in every
 # cross-system sweep, whose hardcoded cases and level choices assume a globally
@@ -303,7 +304,7 @@ Important cross-system traits:
     subtree delegates to
     [`SubtreeHaloIterator`](@ref) and keeps its system's specialization;
     everything else — a hole, a forgotten root, an arbitrary id list — takes an
-    outside-first walk against membership, pruned by the subset's own position
+    outside-first walk against membership, pruned by the subset's own index
     spans rather than by geometry: a block the subset holds entire is retired by
     one lookup, and a block no NEIGHBOUR of which it touches is retired by the
     coarse-containment law. The walk follows the subset's boundary, so its cost
@@ -318,7 +319,7 @@ Important cross-system traits:
     in place (`halo = :mark`). The two complete-width shapes preserve slot
     indices against the canonical `one_ring`, so a direction code is a property
     of the cell; the clipped shape preserves order only. Rows exist for
-    in-region positions alone, so `halo` above 1 throws and points at
+    in-region indices alone, so `halo` above 1 throws and points at
     [`grow`](@ref).
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
     the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
@@ -355,6 +356,8 @@ export UnitSphericalPoint
 
 # --- Base grid interface ---------------------------------------------------
 export ncells, cellindex, cell_boundary, cell_centroid
+export localindex, globalindex
+# `cellposition` stays exported for the deprecation shim in `deprecated.jl`.
 export cellposition, rawid, reindex, cellindextypes
 export cell_polygon, cell_area, cell_extent, getcell
 export cellat, neighbors, ring, neighborcount
@@ -378,14 +381,14 @@ export mapneighbors, foreachneighbors
 # A region is a subset of one complete level, or a complete level itself: the
 # outside, the two insides, and the whole adjacency at once.
 export halo, border, interior
-export adjacency, AdjacencyTable, halocells, halopositions
+export adjacency, AdjacencyTable, halocells, haloindices
 # The container those four are answered as, and the conversion into it.
 export region
 
 # --- Following a stored cube's chunk lines ---------------------------------
 export chunkplan, foreachchunk, mapneighbors!
 export MapChunkPlan, MapChunk, ChunkCube
-export chunkcube, chunkpositions, chunkrange, chunkhalo, halowidth
+export chunkcube, localindices, globalindices, chunkhalo, halowidth
 
 # --- Reachable by name, not exported ---------------------------------------
 # The lazy walk types: an argument of the verbs above, never a name a caller
@@ -394,13 +397,13 @@ public EdgeCellIterator
 public InnerCellIterator
 public SubtreeHaloIterator
 public SubsetHaloIterator
-public HaloPositionIterator
+public HaloIndexIterator
 public RegionSide
 # The inexact size estimate `Base.IteratorSize` has no slot for.
 public sizehint
-# The positions view of an id halo walk; `halo` already answers in positions.
-public halo_positions
-public SubsetPositionedCell
+# The indices view of an id halo walk; `halo` already answers in indices.
+public halo_indices
+public SubsetIndexedCell
 public HierarchicalGridCursor
 # A traversal order, not a traversal.
 public StorageOrder
@@ -424,7 +427,7 @@ export iscontained, coarsest_contained, cell_polygons, member_neighbors
 
 # --- The compressed cell collection ----------------------------------------
 # `CellVector` is the DimensionalData-independent compressed collection.
-export CellVector, covering, covering_positions, cellset
+export CellVector, covering, covering_indices, cellset
 
 # --- Region algebra --------------------------------------------------------
 # Growth, bulk level movement, and compaction over the region types; `union`,
@@ -482,7 +485,7 @@ export ChunkedCellLookup, nchunks, chunkof, chunkbounds
 
 # --- The ancestor-subzone layout -------------------------------------------
 # The layout descriptor and the store handle its incremental writer hands back.
-# The arithmetic around them stays qualified: `columnpositions` and friends are
+# The arithmetic around them stays qualified: `columnindices` and friends are
 # names a production script spells once, not vocabulary for every user.
 export SubzoneLayout, subzonestore
 public SUBZONE_LAYOUT, SubzoneRun
@@ -490,7 +493,7 @@ public subzone_attrs, subzone_capacity, subzone_cellvector, subzone_columns,
     subzone_coordinate, subzone_depth, subzone_layout, subzone_runs,
     issubzonestore
 public SUBZONE_ORDER, SUBZONE_PADDING
-public columncell, columnindex, columnlength, columnpositions, positionindex,
+public columncell, columnindex, columnlength, columnindices, columnrow,
     subzoneindex, gridnamefor
 
 # The store description vocabulary: what `describe_store` hands back and what a

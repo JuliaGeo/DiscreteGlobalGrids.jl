@@ -11,7 +11,7 @@ function GR.chartcoords(space::ToyLonLatSpace, p)
     return (space.lon0 + mod(lon - space.lon0, 360.0), lat)
 end
 
-GR.chartposition(space::ToyLonLatSpace, ix::Int, iy::Int) = cellposition(space, ix, iy)
+GR.chartposition(space::ToyLonLatSpace, ix::Int, iy::Int) = globalindex(space, ix, iy)
 
 GR.chartperiod(space::ToyLonLatSpace) =
     (space.lon1 - space.lon0 >= 360 ? 360.0 : nothing, nothing)
@@ -28,9 +28,9 @@ function t4_build(method, dst, dst_inds, src, src_inds)
 end
 
 """
-    t4_entries(coo, dst_inds, src_inds) -> Dict{(dst position, src position), weight}
+    t4_entries(coo, dst_inds, src_inds) -> Dict{(dst index, src index), weight}
 
-Return block entries keyed by global destination and source positions.
+Return block entries keyed by global destination and source indices.
 """
 function t4_entries(coo, dst_inds, src_inds)
     entries = Dict{Tuple{Int,Int},Float64}()
@@ -41,13 +41,13 @@ function t4_entries(coo, dst_inds, src_inds)
     return entries
 end
 
-t4_rowsum(entries, dst_position) =
-    sum(w for ((j, _), w) in entries if j == dst_position; init = 0.0)
+t4_rowsum(entries, dst_index) =
+    sum(w for ((j, _), w) in entries if j == dst_index; init = 0.0)
 
 # Parent coarse cell of a twice-refined fine cell.
 function t4_parent(coarse, fine, i)
     ix, iy = cellsubscript(fine, i)
-    return cellposition(coarse, cld(ix, 2), cld(iy, 2))
+    return globalindex(coarse, cld(ix, 2), cld(iy, 2))
 end
 
 struct T4NoChartSpace <: RegridSpace end
@@ -98,10 +98,10 @@ GR.hascellchart(::T4BareChartSpace) = true
         entries = t4_entries(t4_build(BilinearPoint(), dst, [1], src, src_inds),
             [1], src_inds)
         @test length(entries) == 4
-        @test entries[(1, cellposition(src, 2, 1))] ≈ 0.1875
-        @test entries[(1, cellposition(src, 3, 1))] ≈ 0.0625
-        @test entries[(1, cellposition(src, 2, 2))] ≈ 0.5625
-        @test entries[(1, cellposition(src, 3, 2))] ≈ 0.1875
+        @test entries[(1, globalindex(src, 2, 1))] ≈ 0.1875
+        @test entries[(1, globalindex(src, 3, 1))] ≈ 0.0625
+        @test entries[(1, globalindex(src, 2, 2))] ≈ 0.5625
+        @test entries[(1, globalindex(src, 3, 2))] ≈ 0.1875
         @test t4_rowsum(entries, 1) ≈ 1.0
 
         # A centroid at 180° interpolates across the periodic seam.
@@ -109,7 +109,7 @@ GR.hascellchart(::T4BareChartSpace) = true
         entries = t4_entries(t4_build(BilinearPoint(), seam, [1], src, src_inds),
             [1], src_inds)
         @test length(entries) == 4
-        @test all(entries[(1, cellposition(src, ix, iy))] ≈ 0.25
+        @test all(entries[(1, globalindex(src, ix, iy))] ≈ 0.25
                   for ix in (1, 4), iy in (1, 2))
 
         # Outside latitude centres, clamp latitude and interpolate longitude.
@@ -117,8 +117,8 @@ GR.hascellchart(::T4BareChartSpace) = true
         entries = t4_entries(t4_build(BilinearPoint(), polar, [1], src, src_inds),
             [1], src_inds)
         @test length(entries) == 2
-        @test entries[(1, cellposition(src, 2, 2))] ≈ 0.5
-        @test entries[(1, cellposition(src, 3, 2))] ≈ 0.5
+        @test entries[(1, globalindex(src, 2, 2))] ≈ 0.5
+        @test entries[(1, globalindex(src, 3, 2))] ≈ 0.5
 
         # Non-periodic corners clamp to one point.
         patch = ToyLonLatSpace(4, 2; lon = (-40.0, 40.0), lat = (-20.0, 20.0))
@@ -126,7 +126,7 @@ GR.hascellchart(::T4BareChartSpace) = true
         entries = t4_entries(
             t4_build(BilinearPoint(), corner, [1], patch, cellindices(patch, 1)),
             [1], cellindices(patch, 1))
-        @test entries == Dict((1, cellposition(patch, 4, 2)) => 1.0)
+        @test entries == Dict((1, globalindex(patch, 4, 2)) => 1.0)
 
         # Bilinear interpolation reproduces a linear chart field.
         fsrc = ToyLonLatSpace(36, 18)

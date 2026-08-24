@@ -354,15 +354,15 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test uncached_space.reads[] == 0
     end
 
-    @testset "packed cell fallback preserves positions and packing results" begin
+    @testset "packed cell fallback preserves indices and packing results" begin
         space = ToyLonLatSpace(8, 4)
         inds = [1, 4, 7, 10, 13, 18, 23, 28, 31]
 
-        function leafpositions!(out, node)
+        function leafindices!(out, node)
             if STI.isleaf(node)
                 append!(out, first(e) for e in STI.child_indices_extents(node))
             else
-                foreach(child -> leafpositions!(out, child), STI.getchild(node))
+                foreach(child -> leafindices!(out, child), STI.getchild(node))
             end
             return out
         end
@@ -381,8 +381,8 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         for capacity in (2, 3, 16)
             tree = GR.CellSpaceRTree(space, inds; nodecapacity = capacity)
             @test tree.space === space
-            @test tree.positions == inds
-            @test sort!(leafpositions!(Int[], tree)) == sort(inds)
+            @test tree.indices == inds
+            @test sort!(leafindices!(Int[], tree)) == sort(inds)
             @test CR.Trees.ncells(tree) == length(inds)
             @test CR.Trees.cell_index_count(tree) == ncells(space)
             @test CR.Trees.split_weight(tree) == length(inds)

@@ -1,5 +1,5 @@
 # The machinery no system overrides: the region containers — `PartialGrid`,
-# `CellVector`, `MultiOrderCellSet` — the tree cursor and position tree, the
+# `CellVector`, `MultiOrderCellSet` — the tree cursor and index tree, the
 # query planner, and the halo, adjacency and neighbourhood walks over all of
 # them. One implementation each, reached through the exported verbs.
 #
@@ -17,7 +17,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, LevelIndex, AbstractCellVector, Connectivity, Vertex, Edge,
     Winding, CounterClockwise, Clockwise, CustomOrder, Unordered,
     ncells, cellindex, cell_boundary, cell_centroid,
-    cellposition, rawid, reindex, cellindextypes,
+    localindex, globalindex, rawid, reindex, cellindextypes,
     cell_polygon, cell_area, cell_extent, getcell,
     cellat, cellindices, neighbors, ring, one_ring, neighborcount,
     halo, border, interior, adjacency,
@@ -68,14 +68,14 @@ include("partial_grid.jl")
 # walk the inside of, and it reuses that file's stack vocabulary.
 include("halo.jl")
 include("cursor.jl")
-include("position_tree.jl")
+include("index_tree.jl")
 include("query.jl")
 include("multiorder.jl")
 include("cell_vector.jl")
 # The stencil layer reads every collection above it — the subset grid, the
 # compressed vector, the multi-order set — and the lazy border walkers besides.
 include("stencil.jl")
-# The positioned iterator depends on the stencil and window helpers.
+# The indexed iterator depends on the stencil and window helpers.
 include("neighborhood.jl")
 # The region verbs read every container above and the cursor the sweeps use.
 include("region.jl")

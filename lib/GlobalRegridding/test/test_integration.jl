@@ -164,7 +164,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test DD.intervalbounds(DD.lookup(area, DD.X))[1] == (-180.0, -140.0)
         @test DD.intervalbounds(DD.lookup(area, DD.Y))[1] == (-90.0, -60.0)
 
-        # Labelling only reshapes: the values are the cell-position vector the
+        # Labelling only reshapes: the values are the cell-index vector the
         # same regrid off a bare array returns.
         @test vec(parent(area)) == regrid(parent(src); to = dst,
             from = RasterGrid(src), method = Conservative())
@@ -219,7 +219,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         src = t6_raster((lon, lat) -> sind(lon),
             t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
         dst = t6_space(t6_centres(-175, 185, 36), t6_centres(-90, 90, 18))
-        seam = GR.cellposition(dst, 36, 9)
+        seam = GR.globalindex(dst, 36, 9)
 
         # Global bilinear interpolation wraps across the longitude seam.
         @test regrid(src; to = dst, method = BilinearPoint())[seam] ≈ 0 atol = 1e-12
@@ -253,8 +253,8 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
             lazy = false)
         tiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
             lazy = true)
-        @test untiled[GR.cellposition(dst, 1, 6)] ≈ f(xs[1], ys[6])
-        @test untiled[GR.cellposition(dst, 26, 6)] ≈ f(xs[end], ys[6])
+        @test untiled[GR.globalindex(dst, 1, 6)] ≈ f(xs[1], ys[6])
+        @test untiled[GR.globalindex(dst, 26, 6)] ≈ f(xs[end], ys[6])
         # Lazy and eager output share the destination's axes and values.
         @test DD.dims(tiled) == DD.dims(untiled)
         @test all(isequal.(vec(Array(tiled)), vec(Array(untiled))))

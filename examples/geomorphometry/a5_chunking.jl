@@ -6,8 +6,8 @@
 # The report separates two operations:
 #
 #   1. `descendant_range` does not exist for A5 (`has_sorted_subtrees` is
-#      false), so there is no O(1) way to name the chunk's position block. The
-#      fallback materializes `descendants`, takes their position hull, and
+#      false), so there is no O(1) way to name the chunk's index block. The
+#      fallback materializes `descendants`, takes their index hull, and
 #      verifies that the hull is contiguous, using O(subtree) time and memory.
 #   2. A5 has no specialised halo engine, so `halo` on a subtree runs the
 #      generic outside-first geometry walk.
@@ -26,7 +26,7 @@ function contiguity(sys, rootlevel, target, nroots)
     for i in 1:nroots
         p = 1 + (i - 1) * max(1, n ÷ nroots)
         p > n && break
-        ps = sort!([DGG.cellposition(g, c)
+        ps = sort!([DGG.localindex(g, c)
                     for c in DGG.descendants(sys, DGG.cellindex(groot, p), target)])
         ps == first(ps):last(ps) || (bad += 1)
     end
@@ -34,14 +34,14 @@ function contiguity(sys, rootlevel, target, nroots)
 end
 
 function main()
-    println("### is a subtree a contiguous position block on A5?")
+    println("### is a subtree a contiguous index block on A5?")
     for (rl, tl, nr) in ((0, 6, 12), (1, 7, 12), (2, 8, 10), (3, 9, 6), (4, 10, 4))
         b = contiguity(DGG.A5System(), rl, tl, nr)
         @printf("  L%d roots -> L%-2d : %d of %d NOT contiguous\n", rl, tl, b, nr)
     end
 
     println()
-    println("### cost of naming the chunk's position block")
+    println("### cost of naming the chunk's index block")
     for (sys, rl, tl) in ((DGG.HEALPixSystem(), 4, 12), (DGG.S2System(), 4, 12),
                           (DGG.ISEA4RSystem(), 4, 12), (DGG.A5System(), 4, 12))
         root = DGG.cellindex(DGG.levelgrid(sys, rl), 3)

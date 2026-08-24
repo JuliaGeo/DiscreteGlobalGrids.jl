@@ -1,4 +1,4 @@
-# Regridding spaces use dense cell positions and spherical-cap spatial trees.
+# Regridding spaces use dense cell indices and spherical-cap spatial trees.
 
 """
     RegridSpace
@@ -23,7 +23,7 @@ abstract type RegridSpace end
 """
     celltree(space::RegridSpace)
 
-Return a `SpatialTreeInterface` tree over cell positions `1:ncells(space)`.
+Return a `SpatialTreeInterface` tree over cell indices `1:ncells(space)`.
 Every node extent must be a `SphericalCap`. Define
 `STI.node_extent_is_expensive` when extents are computed on demand.
 """
@@ -33,7 +33,7 @@ function celltree end
     subtree(space::RegridSpace, inds) -> tree
 
 Return a spatial tree over `inds`, with leaves addressed by global cell
-position. The fallback packs GeometryOps' Cartesian cell extents in an R-tree.
+index. The fallback packs GeometryOps' Cartesian cell extents in an R-tree.
 Spaces with a cheaper restricted tree should specialize this function.
 """
 function subtree end
@@ -41,7 +41,7 @@ function subtree end
 """
     ncells(space::RegridSpace) -> Int
 
-Return the stable cell count in `O(1)`. Cell positions are `1:ncells(space)`.
+Return the stable cell count in `O(1)`. Cell indices are `1:ncells(space)`.
 """
 function ncells end
 
@@ -51,7 +51,7 @@ function ncells end
 Return cell `i` as a GeoInterface polygon with one explicitly closed ring of
 unit-sphere `(x, y, z)` coordinates. The ring is counter-clockwise from outside
 the sphere and its segments are great-circle arcs. Densify non-geodesic edges.
-Throw `BoundsError` for an invalid position.
+Throw `BoundsError` for an invalid index.
 """
 function getcell end
 
@@ -70,9 +70,9 @@ function nchunks end
 """
     cellindices(space::RegridSpace, chunk::Int) -> AbstractVector{Int}
 
-Return a chunk's ascending cell positions. Chunks must partition
-`1:ncells(space)`. Return an `AbstractUnitRange` when positions are contiguous.
-Weight builders address entries by local position within this result.
+Return a chunk's ascending cell indices. Chunks must partition
+`1:ncells(space)`. Return an `AbstractUnitRange` when indices are contiguous.
+Weight builders address entries by local index within this result.
 """
 function cellindices end
 
@@ -117,7 +117,7 @@ function candidatechunks! end
     chunkat(space::RegridSpace, i::Integer) -> Int
     chunkat(space::RegridSpace, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
 
-Return the chunk containing cell position `i` or point `p`. The fallback scans
+Return the chunk containing cell index `i` or point `p`. The fallback scans
 all chunks; structured spaces should provide an `O(1)` or `O(log nchunks)`
 method. The point form returns `nothing` outside the space's coverage.
 """
@@ -130,7 +130,7 @@ function chunkat(space::RegridSpace, i::Integer)
         p in cellindices(space, c) && return c
     end
     throw(ArgumentError(
-        "cell position $p of $(typeof(space)) belongs to no chunk; chunks must " *
+        "cell index $p of $(typeof(space)) belongs to no chunk; chunks must " *
         "partition 1:ncells(space)"))
 end
 
@@ -183,7 +183,7 @@ function manifold end
 """
     cellat(space::RegridSpace, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
 
-Return the position containing `p`, or `nothing` outside coverage. Point-based
+Return the index containing `p`, or `nothing` outside coverage. Point-based
 methods require this optional interface. Assign boundary points consistently to
 an incident cell.
 """
@@ -226,7 +226,7 @@ function chartcoords end
 """
     chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
 
-Return the cell position at lattice index `(ix, iy)`. Required when
+Return the cell index at lattice index `(ix, iy)`. Required when
 [`hascellchart`](@ref) is `true`.
 """
 function chartposition end

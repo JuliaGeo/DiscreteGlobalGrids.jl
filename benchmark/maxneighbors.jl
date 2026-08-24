@@ -123,11 +123,11 @@ for (sysname, sys, lvl, n) in (("HEALPix L6", DGG.HEALPixSystem(), 6, 40_000),
     M = DGG.maxneighbors(sys, conn)
     c = cv[1000]
     ring = DGG.neighbors(cv.grid, c, 1; connectivity = conn)
-    f1() = F._positioned(cv, 1, 1, ring, Val(M))
-    f2() = F._positioned(cv, 1, 1, ring, nothing)
+    f1() = F._indexed(cv, 1, 1, ring, Val(M))
+    f2() = F._indexed(cv, 1, 1, ring, nothing)
     f1(); f2()
-    @printf("%-52s %14d B\n", "$sysname  _positioned SmallVector{$M}", @allocated f1())
-    @printf("%-52s %14d B\n", "$sysname  _positioned Vector (fallback)", @allocated f2())
+    @printf("%-52s %14d B\n", "$sysname  _indexed SmallVector{$M}", @allocated f1())
+    @printf("%-52s %14d B\n", "$sysname  _indexed Vector (fallback)", @allocated f2())
 end
 
 # --- Part 4: where a stack container stops paying (STATIC_RING_CAP) --------
@@ -155,7 +155,7 @@ struct Pair16Bench
 end
 Base.isless(x::Pair16Bench, y::Pair16Bench) = x.a < y.a
 
-# A clip-shaped loop: the shape `_clip` and `_positioned` actually compile.
+# A clip-shaped loop: the shape `_clip` and `_indexed` actually compile.
 for (T, tag, ns) in ((UInt64, "8-byte id", (32, 48, 56, 62, 64, 65, 66, 72, 80, 96)),
                      (UInt32, "4-byte id", (64, 96, 128, 144, 160)),
                      (Pair16Bench, "16-byte id", (16, 24, 32, 40, 48, 64)))

@@ -30,7 +30,7 @@ import DiskArrays
 import Extents
 using DiscreteGlobalGrids: IGeo7System, Cells, CellLookup, CellVector,
     DGGSFormatError, SubzoneLayout, cellindex, children, columncell, columnindex,
-    columnlength, columnpositions, dggread, dggwrite, dggwrite!, levelgrid,
+    columnlength, columnindices, dggread, dggwrite, dggwrite!, levelgrid,
     ncells, rootcells, subzone_cellvector, subzonestore
 
 const SYS = IGeo7System()
@@ -144,11 +144,11 @@ end
 
     values = DD.data(cube)
     for (k, col) in pairs(HEXCOLS)
-        window = columnpositions(LAYOUT, col)
+        window = columnindices(LAYOUT, col)
         @test A[window] == values[((k-1)*CAPACITY+1):(k*CAPACITY)]
     end
     # Unwritten columns read as NaN, at zero storage cost.
-    @test all(isnan, A[columnpositions(LAYOUT, 200)])
+    @test all(isnan, A[columnindices(LAYOUT, 200)])
     @test count(!isnan, Array(A)) == length(values)
 
     # The restricted view is the cube that was written, cell for cell.

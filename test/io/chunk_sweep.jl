@@ -25,8 +25,8 @@ if HAS_ZARR
 import DimensionalData as DD
 using DiscreteGlobalGrids: IGeo7System, levelgrid, cellindex, ncells, Cells,
     CellVector, CellLookup, dggread, dggwrite, mapneighbors, mapneighbors!,
-    chunkplan, foreachchunk, chunkcube, chunkpositions, chunkrange, chunkhalo,
-    halowidth, nchunks, region, Values, foreachneighbors, cellposition
+    chunkplan, foreachchunk, chunkcube, localindices, globalindices, chunkhalo,
+    halowidth, nchunks, region, Values, foreachneighbors, localindex
 
 # Counts the chunks read from a store. Metadata keys are not chunks; every other
 # key is a chunk of the array whose name prefixes it.
@@ -96,13 +96,13 @@ readfloor(plan) =
             @test nchunks(plan) == cld(N, CHUNK)
             @test halowidth(plan) == 1
             # The chunks partition the axis, in order.
-            @test reduce(vcat, collect(chunkrange(mc)) for mc in plan) == collect(1:N)
+            @test reduce(vcat, collect(globalindices(mc)) for mc in plan) == collect(1:N)
             for mc in plan
                 h = chunkhalo(mc)
                 @test !isempty(h)                      # a global axis has no isolated chunk
                 @test issorted(h) && allunique(h)
                 @test all(p -> 1 <= p <= N, h)
-                @test all(p -> !(p in chunkrange(mc)), h)
+                @test all(p -> !(p in globalindices(mc)), h)
             end
         end
 
@@ -115,14 +115,14 @@ readfloor(plan) =
                 # Ordinary: the package's own lookup, not the store's.
                 @test DD.lookup(cube, Cells) isa CellLookup
                 @test length(cube) ==
-                      length(chunkrange(cc)) + length(chunkhalo(cc))
+                      length(globalindices(cc)) + length(chunkhalo(cc))
                 # Owned and halo partition the block, and owned is contiguous
                 # because every halo cell is outside the chunk's own run.
-                @test sort(vcat(collect(chunkpositions(cc)), chunkhalo(cc))) ==
+                @test sort(vcat(collect(localindices(cc)), chunkhalo(cc))) ==
                       collect(1:length(cube))
                 # The owned rows are the chunk's cells, in the axis's order.
-                @test parent(cube)[chunkpositions(cc)] == parent(A)[chunkrange(cc)]
-                owned += length(chunkpositions(cc))
+                @test parent(cube)[localindices(cc)] == parent(A)[globalindices(cc)]
+                owned += length(localindices(cc))
             end
             @test owned == N
         end
@@ -180,7 +180,7 @@ readfloor(plan) =
             plan = chunkplan(B; halo=1)
             pieces = Base.split(plan, 4)
             @test sum(nchunks, pieces) == nchunks(plan)
-            @test reduce(vcat, [collect(chunkrange(mc)) for p in pieces for mc in p]) ==
+            @test reduce(vcat, [collect(globalindices(mc)) for p in pieces for mc in p]) ==
                   collect(1:N)
             dest = zeros(Float64, N)
             @sync for p in pieces
@@ -204,9 +204,9 @@ readfloor(plan) =
             data, cv = parent(C), region(DD.lookup(C, Cells))
             empty!(data.storage.reads)
             foreachneighbors(cv; threaded=false) do c, nbrs
-                data[cellposition(c)]
+                data[localindex(c)]
                 for h in nbrs
-                    data[cellposition(h)]
+                    data[localindex(h)]
                 end
             end
             # Two orders of magnitude is the claim; the exact ratio is the

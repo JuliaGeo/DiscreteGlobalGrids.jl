@@ -439,7 +439,7 @@ end
         # edge — it is the complete dual, restricted.
         grid = DGG.levelgrid(SYS, DGG.level(cells))
         whole = DGGV.triangulate(globe(), grid)
-        position = Dict(DGG.cellindex(grid, p) => p for p in 1:DGG.ncells(grid))
+        index = Dict(DGG.cellindex(grid, p) => p for p in 1:DGG.ncells(grid))
         member = Dict(cells[p] => p for p in 1:length(cells))
         restricted = Set(
             Tuple(sort([member[DGG.cellindex(grid, Int(GeometryBasics.value(f[j])))] for j in 1:3]))
@@ -447,7 +447,7 @@ end
                 if all(DGG.cellindex(grid, Int(GeometryBasics.value(f[j]))) in keys(member) for j in 1:3)
         )
         @test triangle_set(mesh) == restricted
-        @test position isa Dict  # the level grid is indexed by position, as assumed above
+        @test index isa Dict  # the level grid is indexed by array index, as assumed above
     end
 
     @testset "threading is not observable" begin

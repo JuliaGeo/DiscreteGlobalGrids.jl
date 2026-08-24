@@ -31,7 +31,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
     @testset "toy space contract" begin
         space = ToyLonLatSpace(8, 4; chunks = (4, 2))
 
-        # Chunks partition cell positions.
+        # Chunks partition cell indices.
         covered = reduce(vcat, [collect(cellindices(space, c)) for c in 1:nchunks(space)])
         @test sort(covered) == collect(1:ncells(space))
 
@@ -48,7 +48,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
         patch = ToyLonLatSpace(4, 2; lat = (0.0, 40.0))
         @test cellat(patch, toy_point(0, -10)) === nothing
 
-        # Generic `chunkat` inverts `cellindices` for positions and points.
+        # Generic `chunkat` inverts `cellindices` for indices and points.
         @test all(GR.chunkat(space, i) == c
                   for c in 1:nchunks(space) for i in cellindices(space, c))
         @test GR.chunkat(space, cellcentroid(space, 5)) == GR.chunkat(space, 5)

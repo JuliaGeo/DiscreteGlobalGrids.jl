@@ -49,7 +49,7 @@ const DEST_BYTES_PER_CELL = 40
 """
     DestTiling(runs, capsof, spacetiled)
 
-Describe destination tiles by cell-position runs and bounding space chunks.
+Describe destination tiles by cell-index runs and bounding space chunks.
 When `spacetiled` is true, tile `t` is destination chunk `t`; otherwise the tile
 is the corresponding contiguous run.
 """
@@ -88,7 +88,7 @@ function _defaulttilesizes(ndst::Int, nchunk::Int, budget::Int)
     return [clamp(min(frombudget, fromchunks), 1, ndst)]
 end
 
-# Convert repeated or explicit chunk sizes to cell-position runs.
+# Convert repeated or explicit chunk sizes to cell-index runs.
 function _runs(sizes::Vector{Int}, ndst::Int)
     all(>(0), sizes) || throw(ArgumentError(
         "destination chunk sizes must be positive, got $sizes"))
@@ -106,7 +106,7 @@ function _runs(sizes::Vector{Int}, ndst::Int)
     return out
 end
 
-# Return space chunks whose position spans overlap `run`.
+# Return space chunks whose index spans overlap `run`.
 function _overlappingchunks(spans::Vector{UnitRange{Int}}, run::UnitRange{Int})
     out = Int[]
     for (c, sp) in enumerate(spans)
@@ -554,7 +554,7 @@ function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
     return wave
 end
 
-# Return destination tiles whose position spans overlap `cellr`.
+# Return destination tiles whose index spans overlap `cellr`.
 function _coveringtiles(A::LazyRegridArray, cellr::UnitRange{Int})
     out = Int[]
     lo, hi = first(cellr), last(cellr)
@@ -683,9 +683,9 @@ end
 
 # Split requested slices along source non-spatial chunk boundaries.
 _slicegroups(A::LazyRegridArray{T,N,NS,NO}, others::NTuple{NO,UnitRange{Int}}) where {T,N,NS,NO} =
-    _groupgrid(ntuple(d -> _splitpositions(others[d], A.otherchunks[d]), NO))
+    _groupgrid(ntuple(d -> _splitindices(others[d], A.otherchunks[d]), NO))
 
-function _splitpositions(r::UnitRange{Int}, chunks::Vector{UnitRange{Int}})
+function _splitindices(r::UnitRange{Int}, chunks::Vector{UnitRange{Int}})
     out = UnitRange{Int}[]
     isempty(r) && return push!(out, 1:0)
     lo, hi = first(r), last(r)
@@ -705,7 +705,7 @@ end
 _slicestrides(others::NTuple{NO,UnitRange{Int}}) where {NO} =
     ntuple(d -> prod(ntuple(i -> length(others[i]), d - 1); init = 1), NO)
 
-# Convert group-relative positions to source ranges.
+# Convert group-relative indices to source ranges.
 _grouprange(others::NTuple{NO,UnitRange{Int}}, pos::NTuple{NO,UnitRange{Int}}) where {NO} =
     ntuple(d -> (first(others[d])+first(pos[d])-1):(first(others[d])+last(pos[d])-1), NO)
 
@@ -739,7 +739,7 @@ _isdisksource(x) = x isa DiskArrays.AbstractDiskArray || DiskArrays.isdisk(x)
     ShapedRegridArray(parent::LazyRegridArray, shape)
 
 Lazily split `parent`'s leading cell axis into `shape`, column-major, so cell
-positions keep their order. Reads forward to `parent` without materializing it.
+indices keep their order. Reads forward to `parent` without materializing it.
 """
 struct ShapedRegridArray{T,N,ND,P<:LazyRegridArray} <: DiskArrays.AbstractDiskArray{T,N}
     parent::P

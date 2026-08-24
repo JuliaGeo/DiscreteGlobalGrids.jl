@@ -94,7 +94,7 @@ end
 """
     ToyCapTree(space, indices)
 
-A one-node spatial tree with stored caps. Indices are cell positions for cell
+A one-node spatial tree with stored caps. Indices are cell indices for cell
 trees and chunk numbers for chunk trees.
 """
 struct ToyCapTree{S}
@@ -124,7 +124,7 @@ GO.SpatialTreeInterface.node_extent(tree::ToyCapTree) = tree.extent
 GO.SpatialTreeInterface.child_indices_extents(tree::ToyCapTree) =
     zip(tree.indices, tree.caps)
 
-# Cell-tree access uses the wrapped space's global positions.
+# Cell-tree access uses the wrapped space's global indices.
 GOCore.best_manifold(tree::ToyCapTree) = manifold(tree.space)
 Trees.ncells(tree::ToyCapTree) = ncells(tree.space)
 Trees.getcell(tree::ToyCapTree, i::Int) = getcell(tree.space, i)
@@ -175,9 +175,9 @@ nchunklat(space::ToyLonLatSpace) = cld(space.nlat, space.chunklat)
 
 """
     cellsubscript(space::ToyLonLatSpace, i::Int) -> (ix, iy)
-    cellposition(space::ToyLonLatSpace, ix::Int, iy::Int) -> Int
+    globalindex(space::ToyLonLatSpace, ix::Int, iy::Int) -> Int
 
-Convert between cell positions and lattice coordinates.
+Convert between cell indices and lattice coordinates.
 """
 function cellsubscript(space::ToyLonLatSpace, i::Int)
     1 <= i <= ncells(space) || throw(BoundsError(space, i))
@@ -185,7 +185,7 @@ function cellsubscript(space::ToyLonLatSpace, i::Int)
     return (ix, iy)
 end
 
-function cellposition(space::ToyLonLatSpace, ix::Integer, iy::Integer)
+function globalindex(space::ToyLonLatSpace, ix::Integer, iy::Integer)
     1 <= ix <= space.nlon && 1 <= iy <= space.nlat ||
         throw(BoundsError(space, (ix, iy)))
     return Int(ix) + (Int(iy) - 1) * space.nlon
@@ -264,7 +264,7 @@ function cellat(space::ToyLonLatSpace, p)
     space.lat0 <= lat <= space.lat1 || return nothing
     ix = clamp(floor(Int, (wrapped - space.lon0) / dlon(space)) + 1, 1, space.nlon)
     iy = clamp(floor(Int, (lat - space.lat0) / dlat(space)) + 1, 1, space.nlat)
-    return cellposition(space, ix, iy)
+    return globalindex(space, ix, iy)
 end
 
 function _wrap_lon(lon::Float64, lo::Float64, hi::Float64)
@@ -287,13 +287,13 @@ function cellindices(space::ToyLonLatSpace, chunk::Int)
     ix1 = min(space.nlon, cx * space.chunklon)
     iy0 = (cy - 1) * space.chunklat + 1
     iy1 = min(space.nlat, cy * space.chunklat)
-    # Full-width chunks are contiguous in position order.
+    # Full-width chunks are contiguous in index order.
     nchunklon(space) == 1 &&
-        return cellposition(space, 1, iy0):cellposition(space, space.nlon, iy1)
+        return globalindex(space, 1, iy0):globalindex(space, space.nlon, iy1)
     out = Vector{Int}(undef, (ix1 - ix0 + 1) * (iy1 - iy0 + 1))
     k = 0
     for iy in iy0:iy1, ix in ix0:ix1
-        out[k += 1] = cellposition(space, ix, iy)
+        out[k += 1] = globalindex(space, ix, iy)
     end
     return out
 end
@@ -358,7 +358,7 @@ chunktree(cs::CountingSpace) = chunktree(cs.space)
 """
     ToyDiagonalMethod(; scale = 1.0, withdenom = true)
 
-Build diagonal weights of `scale` for shared cell positions. `withdenom = false`
+Build diagonal weights of `scale` for shared cell indices. `withdenom = false`
 omits denominators. This isolates executor behavior from geometry.
 """
 struct ToyDiagonalMethod <: AbstractRegriddingMethod
@@ -393,7 +393,7 @@ end
 """
     WaveFailMethod(bad, delay)
 
-Fail the build of the source chunk whose first cell position is `bad`, and make
+Fail the build of the source chunk whose first cell index is `bad`, and make
 every other build take `delay` seconds before recording itself in `finished`.
 
 This exists to pin one thing: a wave that loses a task must still wait for the
@@ -412,7 +412,7 @@ WaveFailMethod(bad::Integer, delay::Real) =
 function build_weights!(coo::WeightCOO, method::WaveFailMethod,
     ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
     Int(first(src_inds)) == method.bad &&
-        error("WaveFailMethod: the chunk at position $(method.bad) fails by design")
+        error("WaveFailMethod: the chunk at index $(method.bad) fails by design")
     sleep(method.delay)
     local_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
     for (j, p) in enumerate(dst_inds)

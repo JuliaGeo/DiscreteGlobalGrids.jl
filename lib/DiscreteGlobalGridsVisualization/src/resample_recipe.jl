@@ -12,8 +12,8 @@
 One frame's worth of resampling: the cells to draw, where in the user's value
 vector each of them reads, and the level they came from.
 
-`index` is one position per drawn cell where the frame was resampled nearest
-neighbour, and one *range* of positions — every leaf under the cell — where it
+`index` is one index per drawn cell where the frame was resampled nearest
+neighbour, and one *range* of indices — every leaf under the cell — where it
 was given an `aggregate`.  Which it is decides how the values are read, and
 nothing else about a frame.
 

@@ -15,7 +15,7 @@ using Printf
 const CDCOUNT = DGG.CopernicusDEM
 const BASEURLCOUNT = "https://copernicus-dem-90m.s3.amazonaws.com"
 
-# Lazy concatenation of complete-grid position ranges, matching the production
+# Lazy concatenation of complete-grid index ranges, matching the production
 # TileIds representation without materializing tens of billions of cell ids.
 struct CountConcatIds{G<:DGG.AbstractGrid,ID} <: AbstractVector{ID}
     grid::G

@@ -402,11 +402,11 @@ function fill_gaps!(elev)
     for _ in 1:8
         count(isnan, z) == 0 && break
         patched = DGG.mapneighbors(elev) do cell, nbrs
-            here = z[DGG.cellposition(cell)]
+            here = z[DGG.localindex(cell)]
             isnan(here) || return here
             total, seen = 0.0, 0
             for nb in nbrs
-                zn = z[DGG.cellposition(nb)]
+                zn = z[DGG.localindex(nb)]
                 isnan(zn) || (total += zn; seen += 1)
             end
             (seen == 0 ? NaN32 : Float32(total / seen))::Float32
@@ -430,9 +430,9 @@ function presmooth(elev)
     z = vec(parent(elev))
     for _ in 1:PRESMOOTH
         averaged = DGG.mapneighbors(elev) do cell, nbrs
-            total, seen = Float64(z[DGG.cellposition(cell)]), 1
+            total, seen = Float64(z[DGG.localindex(cell)]), 1
             for nb in nbrs
-                total += z[DGG.cellposition(nb)]; seen += 1
+                total += z[DGG.localindex(nb)]; seen += 1
             end
             Float32(total / seen)::Float32
         end
@@ -449,7 +449,7 @@ end
 """
     thalweg(elevation, accumulation) -> Vector{Int}
 
-Cell positions along the valley's main stem, from the headwater to the outlet.
+Cell indices along the valley's main stem, from the headwater to the outlet.
 
 Walks upstream from the cell of greatest flow accumulation, taking at each step
 the neighbour carrying the most water of those carrying less than the cell
@@ -461,10 +461,10 @@ function thalweg(elev, acc)
     a = Float64.(vec(parent(acc)))
     z = vec(parent(elev))
     up = vec(parent(DGG.mapneighbors(elev) do cell, nbrs
-        here = a[DGG.cellposition(cell)]
+        here = a[DGG.localindex(cell)]
         best, bestflow = 0, -Inf
         for nb in nbrs
-            j = DGG.cellposition(nb)
+            j = DGG.localindex(nb)
             if a[j] < here && a[j] > bestflow
                 best, bestflow = j, a[j]
             end
@@ -487,9 +487,9 @@ function thalweg(elev, acc)
 end
 
 """
-    projector(elev, grid, project) -> (position, lift = 0) -> Point3d
+    projector(elev, grid, project) -> (index, lift = 0) -> Point3d
 
-A function from a cell's position in the cube to its centre in the scene.
+A function from a cell's index in the cube to its centre in the scene.
 
 Everything that is not the terrain — the flight path, the water — is built as
 plain geometry rather than as a plot over cells, so each of them has to land in
@@ -509,7 +509,7 @@ function projector(elev, grid, project)
 end
 
 """
-    track(positions, place) -> Vector{Point3d}
+    track(indices, place) -> Vector{Point3d}
 
 The thalweg as a smooth, equally spaced polyline in scene coordinates.
 
@@ -518,8 +518,8 @@ a shudder, so the line is averaged along its length before it is resampled to
 constant spacing — constant spacing is what makes constant-speed interpolation
 between waypoints a constant ground speed.
 """
-function track(positions, place)
-    raw = map(place, positions)
+function track(indices, place)
+    raw = map(place, indices)
 
     n = length(raw)
     w = min(SMOOTHING, max(0, (n - 1) ÷ 2))
@@ -624,7 +624,7 @@ The indices of `track` that survive a Douglas-Peucker simplification of it.
 
 `simplify` returns geometry rather than indices and drops the third coordinate,
 so the run is done on the ground track and the survivors are matched back by
-position — they are verbatim copies of the vertices that went in.
+index — they are verbatim copies of the vertices that went in.
 """
 function corners(tr)
     line = GI.LineString([(p[1], p[2]) for p in tr])
@@ -664,7 +664,7 @@ end
 """
     downstream(flow, elev) -> Vector{Int}
 
-For every cell, the position of the neighbour its water leaves by, or `0` where
+For every cell, the index of the neighbour its water leaves by, or `0` where
 none does.
 
 A cell drains to the neighbour carrying the most water: accumulation at a cell
@@ -677,9 +677,9 @@ can return to a cell it has left.
 """
 function downstream(flow, elev)
     return vec(parent(DGG.mapneighbors(elev) do cell, nbrs
-        best, most = 0, flow[DGG.cellposition(cell)]
+        best, most = 0, flow[DGG.localindex(cell)]
         for nb in nbrs
-            j = DGG.cellposition(nb)
+            j = DGG.localindex(nb)
             f = flow[j]
             if isfinite(f) && f > most
                 best, most = j, f

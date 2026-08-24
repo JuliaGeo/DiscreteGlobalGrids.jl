@@ -6,13 +6,13 @@
 # buys tree-aligned chunking by spending a dimension on it, and goes away once
 # Zarr supports variable chunk sizes.
 #
-#     dim 1 (fastest)   subzone position 1:capacity within one ancestor's subtree
-#     dim 2             the ancestor, at position `i` of the complete level-La grid
+#     dim 1 (fastest)   subzone index 1:capacity within one ancestor's subtree
+#     dim 2             the ancestor, at index `i` of the complete level-La grid
 #     chunks            (capacity, 1) — one chunk per ancestor column
 #
 # So a chunk is a subtree, an unwritten ancestor is a chunk that was never
 # stored (Zarr reads it back as fill), and the twelve pentagon columns carry
-# `p(d)` real values followed by fill. Position within a column is OGC API-DGGS
+# `p(d)` real values followed by fill. Index within a column is OGC API-DGGS
 # SUB-ZONE ORDER, here ascending cell id.
 #
 # Arithmetic and vocabulary only: no Zarr, no arrays, and nothing that
@@ -42,7 +42,7 @@ const SUBZONE_WRITER = "DiscreteGlobalGrids.jl"
 "The nested attribute object the layout is described in, inside `dggs`."
 const SUBZONE_BLOCK = "subzone_layout"
 
-"The name of the fastest-varying (Julia dimension 1) axis: position in a subtree."
+"The name of the fastest-varying (Julia dimension 1) axis: index in a subtree."
 const SUBZONE_DIMENSION = "subzone"
 
 "The name of the slowest-varying axis: the level-`ancestor_level` cell."
@@ -55,7 +55,7 @@ const ANCESTOR_COORDINATE = "ancestor_cell_ids"
     SUBZONE_ORDER
 
 How the values inside one column are ordered: ascending cell id, which on a
-system with sorted subtrees is ascending position within the ancestor's
+system with sorted subtrees is ascending index within the ancestor's
 [`descendant_range`](@ref).
 """
 const SUBZONE_ORDER = "ascending_id"
@@ -83,7 +83,7 @@ subtrees of the complete level-`ancestor_level` grid, one subtree per column.
 
   - `ncolumns` is `ncells(levelgrid(system, ancestor_level))`, and column `i` is
     the `i`th level-`ancestor_level` cell in canonical order. The column axis is
-    IMPLICIT: position is the ancestor, and a store may carry the ids as a
+    IMPLICIT: index is the ancestor, and a store may carry the ids as a
     coordinate array for interop but is not read through it.
   - `capacity` is the number of ROWS the store needs, which is the longest
     column: `7^d` for IGEO7, `4^d` for a quad-face system. Shorter columns —
@@ -94,7 +94,7 @@ Both directions of the mapping are O(level) arithmetic on one cell id:
 
 ```julia
 subzoneindex(layout, cell)      # (column, row)
-columnpositions(layout, i)      # the level grid positions column i holds
+columnindices(layout, i)        # the level grid indices column i holds
 columncell(layout, i)           # the ancestor cell itself
 ```
 
@@ -224,27 +224,27 @@ end
 """
     columnindex(layout, ancestor) -> Int
 
-The column an ancestor cell occupies: its position in the complete
+The column an ancestor cell occupies: its index in the complete
 level-`ancestor_level` grid. Throws for a cell of another level.
 """
 function columnindex(l::SubzoneLayout, a::AbstractCellIndex)
     level(a) == l.ancestor_level || throw(ArgumentError(
         "$a is a level-$(level(a)) cell; the columns of this store are the " *
         "level-$(l.ancestor_level) cells."))
-    p = cellposition(l.ancestorgrid, a)
+    p = globalindex(l.ancestorgrid, a)
     p === nothing && throw(ArgumentError(
         "$a names no cell of levelgrid($(nameof(typeof(l.system))), $(l.ancestor_level))."))
     return p
 end
 
 """
-    columnpositions(layout, i) -> UnitRange{Int}
+    columnindices(layout, i) -> UnitRange{Int}
 
-The positions of the complete level grid that column `i` holds — the ancestor's
+The indices of the complete level grid that column `i` holds — the ancestor's
 [`descendant_range`](@ref), which is what makes a column one contiguous piece of
 the cell axis.
 """
-columnpositions(l::SubzoneLayout, i::Integer) =
+columnindices(l::SubzoneLayout, i::Integer) =
     descendant_range(l.system, columncell(l, i), l.level)
 
 """
@@ -253,13 +253,13 @@ columnpositions(l::SubzoneLayout, i::Integer) =
 How many cells column `i` really holds: `capacity` for a full subtree and less
 for a pentagon-rooted one, whose remaining rows are fill.
 """
-columnlength(l::SubzoneLayout, i::Integer) = length(columnpositions(l, i))
+columnlength(l::SubzoneLayout, i::Integer) = length(columnindices(l, i))
 
 """
     subzoneindex(layout, cell) -> (column, row)
 
 Where one level-`level` cell sits in the store: its ancestor's column, and its
-one-based position in the ancestor's subtree in ascending id order.
+one-based index in the ancestor's subtree in ascending id order.
 
 O(level) digit arithmetic on the id, so a whole store is addressed without any
 level-`level` id vector ever existing.
@@ -267,24 +267,24 @@ level-`level` id vector ever existing.
 function subzoneindex(l::SubzoneLayout, c::AbstractCellIndex)
     level(c) == l.level || throw(ArgumentError(
         "$c is a level-$(level(c)) cell; this store holds level $(l.level)."))
-    p = cellposition(l.grid, c)
+    p = globalindex(l.grid, c)
     p === nothing && throw(ArgumentError(
         "$c names no cell of levelgrid($(nameof(typeof(l.system))), $(l.level))."))
-    return positionindex(l, p)
+    return columnrow(l, p)
 end
 
 """
-    positionindex(layout, p) -> (column, row)
+    columnrow(layout, p) -> (column, row)
 
-[`subzoneindex`](@ref) from a POSITION of the complete level grid rather than
+[`subzoneindex`](@ref) from an INDEX of the complete level grid rather than
 from a cell id — what a run of the cell axis is walked with.
 """
-function positionindex(l::SubzoneLayout, p::Integer)
+function columnrow(l::SubzoneLayout, p::Integer)
     c = cellindex(l.grid, Int(p))
     a = ancestor(l.system, c, l.ancestor_level)
-    i = cellposition(l.ancestorgrid, a)
+    i = globalindex(l.ancestorgrid, a)
     i === nothing && throw(ArgumentError(
-        "the level-$(l.ancestor_level) ancestor $a of position $p names no cell " *
+        "the level-$(l.ancestor_level) ancestor $a of index $p names no cell " *
         "of its own level grid."))
     r = descendant_range(l.system, a, l.level)
     return i, Int(p) - first(r) + 1
@@ -298,7 +298,7 @@ end
     SubzoneRun(column, rows, axis)
 
 One contiguous piece of a cube's cell axis that lands inside one column:
-`axis` positions of the cube map onto `rows` of column `column`, in order.
+`axis` indices of the cube map onto `rows` of column `column`, in order.
 
 `length(rows) == length(axis)` always; a run whose `rows` is not the whole
 column is a partially covered subtree, which [`subzone_runs`](@ref) refuses.
@@ -320,9 +320,9 @@ each.
 
 `cells` is a [`CellLookup`](@ref), a [`CellVector`](@ref), or any strictly
 ascending vector of level-`level` cell ids. The first two are walked through
-their POSITION WINDOWS — one step per column touched, and no id is ever
+their INDEX WINDOWS — one step per column touched, and no id is ever
 materialized, which is what lets a land-only cube of tens of millions of cells
-be planned in microseconds. A plain vector costs one `cellposition` per cell.
+be planned in microseconds. A plain vector costs one `globalindex` per cell.
 
 `complete = true` refuses a column the axis covers only part of. That is the
 layout's central restriction and not an implementation limit: a column is one
@@ -336,7 +336,7 @@ function subzone_runs(l::SubzoneLayout, lk::AbstractCellLookup; complete::Bool=t
 end
 
 # A stored axis is planned through its compressed twin, which is where the
-# position windows this walks actually live.
+# index windows this walks actually live.
 function subzone_runs(l::SubzoneLayout, cv::AbstractCellVector; complete::Bool=true)
     return subzone_runs(l, region(cv); complete=complete)
 end
@@ -351,18 +351,18 @@ function subzone_runs(l::SubzoneLayout, cv::CellVector; complete::Bool=true)
 end
 
 function subzone_runs(l::SubzoneLayout, cells::AbstractVector; complete::Bool=true)
-    return _subzone_runs(l, _position_intervals(l, cells), complete)
+    return _subzone_runs(l, _index_intervals(l, cells), complete)
 end
 
-# Ascending, disjoint position intervals from an explicit id vector. The
+# Ascending, disjoint index intervals from an explicit id vector. The
 # fallback path: `CellVector` already keeps these and hands them over for free.
-function _position_intervals(l::SubzoneLayout, cells::AbstractVector)
+function _index_intervals(l::SubzoneLayout, cells::AbstractVector)
     ivs = Tuple{Int,Int}[]
     previous = 0
     for c in cells
-        p = _cellposition_checked(l, c)
+        p = _cellindex_checked(l, c)
         p > previous || throw(ArgumentError(
-            "the cell axis must be strictly ascending; position $p follows $previous."))
+            "the cell axis must be strictly ascending; index $p follows $previous."))
         if !isempty(ivs) && p == previous + 1
             ivs[end] = (ivs[end][1], p)
         else
@@ -373,16 +373,16 @@ function _position_intervals(l::SubzoneLayout, cells::AbstractVector)
     return ivs
 end
 
-function _cellposition_checked(l::SubzoneLayout, c::AbstractCellIndex)
+function _cellindex_checked(l::SubzoneLayout, c::AbstractCellIndex)
     level(c) == l.level || throw(ArgumentError(
         "the cell axis holds a level-$(level(c)) cell and the store holds level $(l.level)."))
-    p = cellposition(l.grid, c)
+    p = globalindex(l.grid, c)
     p === nothing && throw(ArgumentError("$c names no cell of level $(l.level)."))
     return p
 end
 
-_cellposition_checked(l::SubzoneLayout, x::Integer) =
-    _cellposition_checked(l, idcell(l.grid, x))
+_cellindex_checked(l::SubzoneLayout, x::Integer) =
+    _cellindex_checked(l, idcell(l.grid, x))
 
 function _subzone_runs(l::SubzoneLayout, intervals, complete::Bool)
     runs = SubzoneRun[]
@@ -390,7 +390,7 @@ function _subzone_runs(l::SubzoneLayout, intervals, complete::Bool)
     for (lo, hi) in intervals
         p = lo
         while p <= hi
-            i, row = positionindex(l, p)
+            i, row = columnrow(l, p)
             r = descendant_range(l.system, columncell(l, i), l.level)
             stop = min(hi, last(r))
             n = stop - p + 1
@@ -446,7 +446,7 @@ function subzone_cellvector(l::SubzoneLayout, columns::AbstractVector{<:Integer}
             "columns are read in ascending order and each at most once; column " *
             "$i follows $previous."))
         previous = Int(i)
-        r = columnpositions(l, i)
+        r = columnindices(l, i)
         # Windows are kept MAXIMAL — two `CellVector`s over the same cells must
         # compare equal, and `RangeWindows` compares boundaries — so adjacent
         # columns, which the whole-level case is nothing but, merge here.

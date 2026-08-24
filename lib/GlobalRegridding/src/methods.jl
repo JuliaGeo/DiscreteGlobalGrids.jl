@@ -86,8 +86,8 @@ Base.show(io::IO, coo::WeightCOO) =
     addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
 
 Add `w` to the weight of local source `src_local` in local destination
-`dst_local`. Indices are positions within the builder's `dst_inds` and
-`src_inds`, not cell positions.
+`dst_local`. Indices are local indices within the builder's `dst_inds` and
+`src_inds`, not global cell indices.
 """
 function addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
     push!(coo.rows, dst_local)

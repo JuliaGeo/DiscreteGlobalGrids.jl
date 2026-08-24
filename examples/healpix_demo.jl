@@ -6,8 +6,8 @@
 #     ids  = DGG.query(sys, DGG.Intersects(window); level)
 #     grid = DGG.PartialGrid(sys, level, ids)
 #
-# Positions `1:ncells(grid)` index the data vector; `query` selects zones in
-# that same index space through `cellposition`; `neighbors` gives the stencil
+# Indices `1:ncells(grid)` index the data vector; `query` selects zones in
+# that same index space through `localindex`; `neighbors` gives the stencil
 # ring, with the slots outside the crop simply missing rather than padded.
 #
 # Environment: needs nothing beyond DiscreteGlobalGrids and its dependencies
@@ -53,8 +53,8 @@ check("the crop is a strict subset of the globe",
     0 < DGG.ncells(grid) < DGG.ncells(globe);
     detail="$(DGG.ncells(grid)) of $(DGG.ncells(globe)) cells " *
            "($(round(100 * DGG.ncells(grid) / DGG.ncells(globe); digits=2))%)")
-check("positions round trip through the crop",
-    all(DGG.cellposition(grid, DGG.cellindex(grid, i)) == i
+check("indices round trip through the crop",
+    all(DGG.localindex(grid, DGG.cellindex(grid, i)) == i
         for i in (1, DGG.ncells(grid) ÷ 2, DGG.ncells(grid))))
 
 # The EOPF claim: the complete level's dense order IS Healpix.jl's nested pixel
@@ -62,7 +62,7 @@ check("positions round trip through the crop",
 res = Healpix.Resolution(2^LEVEL)
 theta, phi = Healpix.pix2angNest(res, 1)
 lon, lat = LONLAT(DGG.cell_centroid(globe, DGG.cellindex(globe, 1)))
-check("globe position 1 is Healpix.jl nested pixel 1",
+check("globe index 1 is Healpix.jl nested pixel 1",
     rad2deg(phi) ≈ mod(lon, 360) && 90 - rad2deg(theta) ≈ lat;
     detail="($(round(lon; digits=4)), $(round(lat; digits=4)))")
 
@@ -95,7 +95,7 @@ note("cell_area(crop, c) differs from cell_area(globe, c) by " *
 # --------------------------------------------------------------------------
 # 3. Zonal statistics, as a query in the crop's index space.
 #
-# `query` returns typed ids; `cellposition` turns each into an index into
+# `query` returns typed ids; `localindex` turns each into an index into
 # `data`. Two predicates bracket the answer: `Within` keeps only cells wholly
 # inside the zone, `Intersects` keeps every cell that touches it, and the
 # centre-in-zone rule that raster zonal statistics use sits between them.
@@ -105,15 +105,15 @@ zones = (Iberia=Extents.Extent(X=(-9.0, 3.0), Y=(36.0, 44.0)),
     France=Extents.Extent(X=(-4.0, 8.0), Y=(43.0, 51.0)),
     Poland=Extents.Extent(X=(14.0, 24.0), Y=(49.0, 55.0)))
 
-zone_positions(g, target) = Int[DGG.cellposition(g, c) for c in DGG.query(g, target)]
+zone_indices(g, target) = Int[DGG.localindex(g, c) for c in DGG.query(g, target)]
 
 inside(ext, (lon, lat)) = ext.X[1] <= lon <= ext.X[2] && ext.Y[1] <= lat <= ext.Y[2]
 
 println()
 println("  zone      within  centre  touching     mean (within / centre)")
 for (name, ext) in pairs(zones)
-    within = zone_positions(grid, DGG.Within(ext))
-    touching = zone_positions(grid, DGG.Intersects(ext))
+    within = zone_indices(grid, DGG.Within(ext))
+    touching = zone_indices(grid, DGG.Intersects(ext))
     centre = findall(c -> inside(ext, c), centers)
     println("  ", rpad(name, 9), lpad(length(within), 6), lpad(length(centre), 8),
         lpad(length(touching), 8), "     ",
@@ -128,12 +128,12 @@ end
 # 4. Stencils on partial coverage.
 #
 # Adjacency is a property of the complete level, so the ring table is built
-# from the globe's neighbours and then filtered through `cellposition`: a
-# neighbour the crop does not own has no position, and is dropped rather than
+# from the globe's neighbours and then filtered through `localindex`: a
+# neighbour the crop does not own has no index, and is dropped rather than
 # padded. Cells that keep all eight are the interior of the crop.
 # --------------------------------------------------------------------------
 
-rings = [Int[p for p in (DGG.cellposition(grid, nb)
+rings = [Int[p for p in (DGG.localindex(grid, nb)
                          for nb in DGG.neighbors(globe, DGG.cellindex(grid, i)))
              if p !== nothing]
          for i in 1:DGG.ncells(grid)]
@@ -158,7 +158,7 @@ check("only crop-boundary cells lose neighbours", 0 < full < length(rings))
 # in the same counter-clockwise order.
 sample = 1:50:DGG.ncells(grid)
 check("neighbors(crop, c) == the filtered globe ring",
-    all(sort(Int[DGG.cellposition(grid, nb)
+    all(sort(Int[DGG.localindex(grid, nb)
                  for nb in DGG.neighbors(grid, DGG.cellindex(grid, i))]) == sort(rings[i])
         for i in sample); detail="sampled $(length(sample)) cells")
 
@@ -173,9 +173,9 @@ for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.HEALPixSystem()))
     l = base isa Union{DGG.H3System,DGG.IGeo7System} ? 5 : 6
     g = DGG.PartialGrid(sys, l, DGG.query(sys, DGG.Intersects(WINDOW); level=l))
     complete = DGG.levelgrid(sys, l)
-    within = zone_positions(g, DGG.Within(zones.France))
-    touching = zone_positions(g, DGG.Intersects(zones.France))
-    degrees = [count(!isnothing, (DGG.cellposition(g, nb)
+    within = zone_indices(g, DGG.Within(zones.France))
+    touching = zone_indices(g, DGG.Intersects(zones.France))
+    degrees = [count(!isnothing, (DGG.localindex(g, nb)
                                  for nb in DGG.neighbors(complete, DGG.cellindex(g, i))))
                for i in 1:DGG.ncells(g)]
     name = sys isa DGG.AuthalicSystem ?
@@ -188,7 +188,7 @@ end
 
 println()
 note("call site, verbatim:  grid = DGG.PartialGrid(sys, level, DGG.query(sys, DGG.Intersects(window); level))")
-note("zonal = query + cellposition; stencil = neighbors + cellposition")
+note("zonal = query + localindex; stencil = neighbors + localindex")
 
 println()
 println(FAILURES[] == 0 ? "ALL CHECKS PASSED" : "$(FAILURES[]) CHECK(S) FAILED")

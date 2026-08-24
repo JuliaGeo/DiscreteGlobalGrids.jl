@@ -232,7 +232,7 @@ end
         # A raster numbered 0–360 still answers for a negative longitude.
         wrapped = RasterGrid(DD.DimArray(zeros(8, 4), (DD.X(22.5:45.0:337.5), DD.Y(raster_lat()))))
         @test cellat(wrapped, geographic_point(-170.0, 0.0)) ==
-              GR.cellposition(wrapped, 5, 3)
+              GR.globalindex(wrapped, 5, 3)
     end
 
     @testset "lookup order" begin
@@ -260,7 +260,7 @@ end
         @test same_cells(forward, transposed)
         @test all(cellat(transposed, cellcentroid(transposed, i)) == i
                   for i in 1:ncells(transposed))
-        @test GR.cellposition(transposed, 3, 2) == 2 + (3 - 1) * 4
+        @test GR.globalindex(transposed, 3, 2) == 2 + (3 - 1) * 4
     end
 
     @testset "chunks" begin
@@ -270,7 +270,7 @@ end
         @test nchunks(space) == 4
         @test space.xchunks == [1:4, 5:8]
         @test space.ychunks == [1:2, 3:4]
-        # Chunks partition cell positions.
+        # Chunks partition cell indices.
         covered = reduce(vcat, [collect(cellindices(space, c)) for c in 1:nchunks(space)])
         @test sort(covered) == collect(1:ncells(space))
         @test cellindices(space, 1) == [1, 2, 3, 4, 9, 10, 11, 12]
@@ -281,7 +281,7 @@ end
         foreach(i -> getcell(space, i), 1:ncells(space))
         @test parent_x.reads == 0
 
-        # Full-width chunks are contiguous in position order.
+        # Full-width chunks are contiguous in index order.
         rows = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (8, 2)),
             (DD.X(raster_lon()), DD.Y(raster_lat()))))
         @test cellindices(rows, 2) isa AbstractUnitRange
@@ -415,12 +415,12 @@ end
     end
 
     @testset "restricted CR cursors keep global storage numbering" begin
-        function leafpositions!(out, node)
+        function leafindices!(out, node)
             if STI.isleaf(node)
                 append!(out, first.(collect(STI.child_indices_extents(node))))
             else
                 for child in STI.getchild(node)
-                    leafpositions!(out, child)
+                    leafindices!(out, child)
                 end
             end
             return out
@@ -441,7 +441,7 @@ end
             @test Trees.ncells(whole) == GR.rastersize(space)
             @test Trees.cell_index_count(whole) == ncells(space)
             @test Trees.split_weight(whole) == ncells(space)
-            @test sort!(leafpositions!(Int[], whole)) == collect(1:ncells(space))
+            @test sort!(leafindices!(Int[], whole)) == collect(1:ncells(space))
             @test Trees.getcell(whole, 3) == getcell(space, 3)
             @test GOCore.best_manifold(whole) == manifold(space)
 
@@ -455,7 +455,7 @@ end
             @test prod(Trees.ncells(chunk)) == length(inds)
             @test Trees.cell_index_count(chunk) == ncells(space)
             @test Trees.split_weight(chunk) == length(inds)
-            @test sort!(leafpositions!(Int[], chunk)) == sort!(collect(inds))
+            @test sort!(leafindices!(Int[], chunk)) == sort!(collect(inds))
         end
 
         # Direct one-child construction is allocation-free once compiled.
@@ -597,7 +597,7 @@ end
             cap = Trees.cell_range_extent(warped_grid, ilo:ihi, jlo:jhi)
             @test all(GR.US._contains(cap, p)
                 for iy in jlo:jhi, ix in ilo:ihi
-                for p in ring_samples(warped, GR.cellposition(warped, ix, iy)))
+                for p in ring_samples(warped, GR.globalindex(warped, ix, iy)))
             nrectangles += 1
         end
         @test nrectangles == 360
@@ -621,7 +621,7 @@ end
             p -> GR.US.spherical_distance(old_centre, p), old_fixed_samples))
         @test GR.US.spherical_distance(old_centre, escaped) > old_radius
         escaped_query = SphericalCap(escaped, 0.0)
-        owning = GR.chunkat(warped, GR.cellposition(warped, 1, 4))
+        owning = GR.chunkat(warped, GR.globalindex(warped, 1, 4))
         @test owning in GR.candidatechunks!(Int[], GR.chunkindex(warped), escaped_query)
         @test warped_data.reads == 0
 
@@ -634,7 +634,7 @@ end
         large_cap = Trees.cell_range_extent(large_grid, 65_537:69_999, 1:2)
         @test all(GR.US._contains(large_cap, p)
             for ix in (65_537, 67_768, 69_999), iy in 1:2
-            for p in ring_samples(large, GR.cellposition(large, ix, iy)))
+            for p in ring_samples(large, GR.globalindex(large, ix, iy)))
 
         # The earned geographic range path remains allocation-free once
         # compiled; general coverage is delegated even when it is less cheap.

@@ -57,7 +57,7 @@ Base.@propagate_inbounds function Base.getindex(z::ZeroHeights, i::Int)
 end
 
 
-# `adjacency` gives counter-clockwise rings addressed by in-region position,
+# `adjacency` gives counter-clockwise rings addressed by in-region index,
 # which is also the index the vertex buffer and the colour vector use.
 
 @inline function inring(r, b::Int)

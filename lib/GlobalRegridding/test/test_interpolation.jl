@@ -136,6 +136,134 @@ function buildweights!(coo::WeightCOO, method::T4PlaceCount,
     return buildweights!(coo, BilinearPoint(), dst_space, dst_inds, src_space, src_inds)
 end
 
+"""
+    t5_bracket(space::ToyLonLatSpace, p) -> ((i0, w0), (i1, w1))
+
+The two sample sites bracketing `p` in longitude on `space`'s lattice of cell
+centres, in the latitude row `p` falls in. Longitude wraps, so the pair
+straddles the last and first columns across the seam and names one cell twice
+on a one-column source. Weights are the linear ones between the two centres.
+"""
+function t5_bracket(space::ToyLonLatSpace, p)
+    lon, lat = toy_lonlat(p)
+    iy = clamp(floor(Int, (lat - space.lat0) / dlat(space)) + 1, 1, space.nlat)
+    # Centres sit half a cell in from the axis start, so `t` is where the point
+    # lies between the two of them that bracket it.
+    t = mod((lon - space.lon0) / dlon(space) - 0.5, Float64(space.nlon))
+    ix = floor(Int, t)
+    frac = t - ix
+    return ((localindex(space, mod(ix, space.nlon) + 1, iy), 1.0 - frac),
+        (localindex(space, mod(ix + 1, space.nlon) + 1, iy), frac))
+end
+
+"""
+    T5Bracket(space, placed, yielding)
+
+The sampler state [`T5PlaceCount`](@ref) prepares once per source space: the
+space its stencils are written on, the method's location counter, and whether
+the first location of a pass yields.
+"""
+struct T5Bracket
+    space::ToyLonLatSpace
+    placed::Threads.Atomic{Int}
+    yielding::Bool
+end
+
+"""
+    T5PlaceCount(; yielding = false)
+
+Report `Points()`, supply a sampler, and emit the two source sample sites
+bracketing each destination point. `placed` counts destination point locations,
+so it is the number of stencil queries the build performed however many blocks
+came out of them. `yielding` makes the first location of the first pass yield,
+so a second task can reach a build that is already in flight.
+"""
+struct T5PlaceCount <: AbstractRegriddingMethod
+    placed::Threads.Atomic{Int}
+    yielding::Bool
+end
+
+T5PlaceCount(; yielding::Bool = false) = T5PlaceCount(Threads.Atomic{Int}(0), yielding)
+
+GR.outputsampling(::T5PlaceCount) = DD.Lookups.Points()
+
+GR.supportradius(::T5PlaceCount, src_space::RegridSpace) =
+    supportradius(BilinearPoint(), src_space)
+
+GR.sampler(method::T5PlaceCount, space::ToyLonLatSpace) =
+    GR.Sampler(space, GR.samplesites(space), T5Bracket(space, method.placed,
+        method.yielding))
+
+function GR.weightsat!(row::GR.WeightRow,
+    s::GR.Sampler{<:RegridSpace,<:AbstractVector,T5Bracket}, p)
+    empty!(row)
+    state = s.state
+    Threads.atomic_add!(state.placed, 1) == 0 && state.yielding && yield()
+    for (i, w) in t5_bracket(state.space, p)
+        w > 0 || continue
+        push!(row.indices, i)
+        push!(row.weights, w)
+    end
+    return GR.WeightsMapped
+end
+
+# The chunk-pair route for the same stencils, which the eager whole domain and
+# an un-cached `buildblock` take.
+function buildweights!(coo::WeightCOO, method::T5PlaceCount, dst_space::RegridSpace,
+    dst_inds, src_space::RegridSpace, src_inds)
+    smp = GR.sampler(method, src_space)
+    sites = GR.samplesites(dst_space)
+    indexer = GR.indexmap(src_inds)
+    row = GR.WeightRow()
+    for (j, i) in enumerate(dst_inds)
+        GR.ismapped(GR.weightsat!(row, smp, sites[Int(i)])) || continue
+        for k in eachindex(row.indices)
+            c = GR.localindex(indexer, row.indices[k])
+            c == 0 && continue
+            addweight!(coo, j, c, row.weights[k])
+        end
+    end
+    return coo
+end
+
+# One tile's weights, built straight rather than through a plan's storage.
+t5_weights(method, dst, tile, src) =
+    GR.tileweights(method, GR.TileCells(dst, tile), tile, src,
+        GR.sampler(method, src))
+
+"""
+    t5_entries(dst, tile, src) -> Dict{(tile row, source local index), weight}
+
+The stencils `tile`'s destinations take from `src`, computed from the bracket
+directly so a build has nothing to do with them.
+"""
+function t5_entries(dst, tile, src)
+    out = Dict{Tuple{Int,Int},Float64}()
+    for (j, i) in enumerate(tile), (s, w) in t5_bracket(src, cellcentroid(dst, i))
+        w > 0 || continue
+        out[(j, s)] = get(out, (j, s), 0.0) + w
+    end
+    return out
+end
+
+# The entries a tile's blocks hold, read back in the source space's own indices.
+function t5_blockentries(weights, src)
+    out = Dict{Tuple{Int,Int},Float64}()
+    for (k, s) in enumerate(weights.sourcechunks)
+        inds = ownedindices(src, s)
+        M = Matrix(weights.blocks[k].weights)
+        for row in axes(M, 1), col in axes(M, 2)
+            iszero(M[row, col]) && continue
+            out[(row, Int(inds[col]))] = M[row, col]
+        end
+    end
+    return out
+end
+
+# The source chunks a tile's stencils name, under whatever chunking `src` has.
+t5_owners(dst, tile, src) =
+    sort(unique(GR.chunkat(src, s) for (_, s) in keys(t5_entries(dst, tile, src))))
+
 @testset "Interpolation weights" begin
 
     @testset "NearestCell" begin
@@ -450,5 +578,178 @@ end
         # — fewer chunks than were searched.
         @test nonzeros == 4 * length(tile)
         @test 0 < contributing < k
+    end
+    @testset "a point tile is one build with an exact manifest" begin
+        # The counting fixture above, for a method that supplies a sampler: one
+        # destination tile against an 18-chunk source, with stencils that
+        # bracket each destination across source-chunk seams.
+        src = ToyLonLatSpace(36, 18; chunks = (6, 6))
+        dst = ToyLonLatSpace(20, 10; lon = (-19.0, 21.0), lat = (-20.0, 20.0))
+        tile = ownedindices(dst, 1)
+        method = T5PlaceCount()
+        plan = ChunkedPlan(method, Weighted(0.5), dst, src; storage = PerChunk())
+        candidates = GR.sourcesof(GR.dependencies(plan), 1)
+        k = length(candidates)
+        @test 1 < k < nchunks(src)
+
+        # Driving every pair the relation names locates each destination once,
+        # where the pair route above locates it once per candidate.
+        blocks = [GR.blockfor(plan, (1, Int(s)), tile).block for s in candidates]
+        @test method.placed[] == length(tile)
+        @test method.placed[] < length(tile) * k
+
+        # What that one pass produces is one two-entry stencil per destination,
+        # partitioned across fewer chunks than were searched.
+        nonzeros = sum(count(!iszero, b.weights) for b in blocks)
+        contributing = count(b -> any(!iszero, b.weights), blocks)
+        @test nonzeros == 2 * length(tile)
+        @test 0 < contributing < k
+
+        # The tile is the cache entry, and no chunk pair is one.
+        @test GR.nblocks(plan.storage) == 1
+        @test isempty(plan.storage.blocks)
+
+        # The manifest is exactly the chunks owning a nonzero entry: ascending,
+        # strictly increasing, inside the relation's row, and shorter than it.
+        weights = t5_weights(method, dst, tile, src)
+        @test weights.sourcechunks == t5_owners(dst, tile, src)
+        @test issorted(weights.sourcechunks) && allunique(weights.sourcechunks)
+        @test length(weights.blocks) == length(weights.sourcechunks)
+        @test issubset(weights.sourcechunks, candidates)
+        @test length(weights.sourcechunks) < k
+        @test all(any(!iszero, b.weights) for b in weights.blocks)
+
+        # Every entry sits at its chunk-local column of its owner's block, and
+        # some stencil straddles a seam, so the split is a real one.
+        expected = t5_entries(dst, tile, src)
+        got = t5_blockentries(weights, src)
+        @test length(got) == length(expected)
+        @test all(got[key] ≈ expected[key] for key in keys(expected))
+        @test count(1:length(tile)) do j
+            (a, _), (b, _) = t5_bracket(src, cellcentroid(dst, tile[j]))
+            GR.chunkat(src, a) != GR.chunkat(src, b)
+        end > 0
+    end
+
+    @testset "point tile values match eager, lazy and another chunking" begin
+        # One lattice under two chunkings: patchwork chunks, whose chunk-local
+        # index is a lookup, and full-width ones, whose chunk-local index is
+        # arithmetic.
+        src = ToyLonLatSpace(36, 18; chunks = (6, 6))
+        rows = ToyLonLatSpace(36, 18; chunks = (36, 6))
+        dst = ToyLonLatSpace(20, 10; lon = (-19.0, 21.0), lat = (-20.0, 20.0))
+        tile = ownedindices(dst, 1)
+        field = collect(reshape(1.0:648.0, 36, 18))
+        ndst = Int(ncells(dst))
+        @test !(ownedindices(src, 1) isa AbstractUnitRange) &&
+              ownedindices(rows, 1) isa AbstractUnitRange
+
+        # The eager whole domain locates each destination once too, and gives
+        # the bracket's own interpolation.
+        method = T5PlaceCount()
+        eager = regrid(field; to = dst, from = src, method, lazy = false)
+        @test method.placed[] == ndst
+        @test eager ≈ [sum(w * field[i] for (i, w) in t5_bracket(src, cellcentroid(dst, j)))
+                       for j in 1:ndst]
+
+        chunked = Vector{Float64}(undef, ndst)
+        regrid!(chunked, field, ChunkedPlan(T5PlaceCount(), Weighted(0.5), dst, src;
+            storage = PerChunk()))
+        @test chunked ≈ eager
+
+        lazy = LazyRegridArray(field, ChunkedPlan(T5PlaceCount(), Weighted(0.5), dst,
+            src; storage = PerChunk()))[1:ndst]
+        @test lazy == chunked
+
+        rechunked = Vector{Float64}(undef, ndst)
+        regrid!(rechunked, field, ChunkedPlan(T5PlaceCount(), Weighted(0.5), dst, rows;
+            storage = PerChunk()))
+        @test rechunked ≈ eager
+
+        # The stencils do not move with the chunking; the manifest does.
+        @test t5_weights(method, dst, tile, rows).sourcechunks == t5_owners(dst, tile, rows)
+        @test t5_owners(dst, tile, rows) != t5_owners(dst, tile, src)
+    end
+
+    @testset "a stencil naming one source cell twice keeps one entry" begin
+        # A one-column source: the bracket wraps onto the same cell twice.
+        src = ToyLonLatSpace(1, 4)
+        dst = ToyLonLatSpace(1, 1; lon = (80.0, 100.0), lat = (10.0, 20.0))
+        (a, wa), (b, wb) = t5_bracket(src, cellcentroid(dst, 1))
+        @test a == b && 0 < wa < 1 && wa + wb ≈ 1.0
+
+        plan = ChunkedPlan(T5PlaceCount(), Weighted(0.5), dst, src; storage = PerChunk())
+        block = GR.blockfor(plan, (1, GR.chunkat(src, a)), ownedindices(dst, 1)).block
+        @test count(!iszero, block.weights) == 1
+        @test sum(block.weights) ≈ 1.0
+    end
+
+    @testset "a point tile builds once, evicts and spills whole" begin
+        src = ToyLonLatSpace(36, 18; chunks = (6, 6))
+        dst = ToyLonLatSpace(20, 10; lon = (-19.0, 21.0), lat = (-20.0, 20.0),
+            chunks = (20, 5))
+        @test nchunks(dst) == 2
+        first_tile, second_tile = ownedindices(dst, 1), ownedindices(dst, 2)
+
+        # Two tasks asking for two source chunks of one tile: the second meets
+        # the build in flight and waits for it instead of starting a second.
+        method = T5PlaceCount(; yielding = true)
+        plan = ChunkedPlan(method, Weighted(0.5), dst, src; storage = PerChunk())
+        rows = (GR.sourcesof(GR.dependencies(plan), 1),
+            GR.sourcesof(GR.dependencies(plan), 2))
+        tasks = [Threads.@spawn GR.blockfor(plan, (1, Int(s)), first_tile)
+                 for s in rows[1][1:2]]
+        foreach(fetch, tasks)
+        @test method.placed[] == length(first_tile)
+        @test GR.nblocks(plan.storage) == 1
+        manifest = copy(plan.storage.tiles[1].sourcechunks)
+
+        # A budget too small for two tiles evicts the first, and the next
+        # request rebuilds it once, the same tile it was.
+        s1, s2 = Int(first(rows[1])), Int(first(rows[2]))
+        tight = T5PlaceCount()
+        tightplan = ChunkedPlan(tight, Weighted(0.5), dst, src;
+            storage = PerChunk(; maxbytes = 1))
+        once = Matrix(GR.blockfor(tightplan, (1, s1), first_tile).block.weights)
+        @test tight.placed[] == length(first_tile)
+        GR.blockfor(tightplan, (2, s2), second_tile)
+        @test GR.nblocks(tightplan.storage) == 1
+        again = Matrix(GR.blockfor(tightplan, (1, s1), first_tile).block.weights)
+        @test tight.placed[] == 2 * length(first_tile) + length(second_tile)
+        @test again == once
+
+        # A spilled tile comes back off disk with its manifest, and no
+        # destination pass runs to recover either.
+        spill = T5PlaceCount()
+        storage = Spilled(mktempdir(); maxbytes = 1)
+        spillplan = ChunkedPlan(spill, Weighted(0.5), dst, src; storage)
+        before = Matrix(GR.blockfor(spillplan, (1, s1), first_tile).block.weights)
+        @test spill.placed[] == length(first_tile)
+        @test length(GR.spilledfiles(storage)) == 1
+        GR.blockfor(spillplan, (2, s2), second_tile)
+        recovered = Matrix(GR.blockfor(spillplan, (1, s1), first_tile).block.weights)
+        @test spill.placed[] == length(first_tile) + length(second_tile)
+        @test recovered == before
+        @test storage.memory.tiles[1].sourcechunks == manifest
+    end
+
+    @testset "the conservative build unit is still one chunk pair" begin
+        src = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
+            chunks = (4, 2))
+        cdst = ToyLonLatSpace(4, 2; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
+            chunks = (4, 1))
+        field = collect(reshape(1.0:32.0, 8, 4))
+        plan = ChunkedPlan(Conservative(), Weighted(0.5), cdst, src; storage = PerChunk())
+        out = Vector{Float64}(undef, Int(ncells(cdst)))
+        regrid!(out, field, plan)
+        @test out ≈ regrid(field; to = cdst, from = src, method = Conservative(),
+            lazy = false)
+
+        # An area method has no sampler, so it keeps the pair key and holds no
+        # tile.
+        @test GR.tilesampler(plan) === nothing
+        @test isempty(plan.storage.tiles)
+        @test GR.nblocks(plan.storage) == length(plan.storage.blocks) > 1
+        @test all(key isa Tuple{Int,Int} for key in keys(plan.storage.blocks))
     end
 end

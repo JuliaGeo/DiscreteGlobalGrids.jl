@@ -420,12 +420,19 @@ end
 Read destination cells and slices into `out`. Source residency is limited to
 held chunks plus one streamed chunk. Blocks are built in waves but applied in
 chunk order, keeping results independent of thread count.
+
+A point method with a [`sampler`](@ref) has one build per tile rather than one
+per pair: the tile's [`TileWeights`](@ref) are built before any source read, and
+its blocks are applied in the same ascending chunk order.
 """
 function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
     cellr::UnitRange{Int}, others::NTuple{NO,UnitRange{Int}}, nslices::Int) where {T,N,NS,NO}
     plan = A.plan
     policy = plan.missingpolicy
     mv = plan.missingval
+    # One sampler serves every tile of this read; a plan on the pair route has
+    # none and builds a block at a time.
+    smp = tilesampler(plan)
     groups = _slicegroups(A, others)
     strides = _slicestrides(others)
     hold = SourceHold(_emptybuffer(A), databudget(plan.budget), A.stats)
@@ -447,15 +454,24 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         fill!(cover, 0.0)
         fill!(total, 0.0)
         _connectedsource!(srcchunks, A, t)
-        _sourceranges!(srcranges, A, srcchunks)
-        keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
         # Share tile geometry across blocks built for this tile.
         dstcells = TileCells(plan.dst_space, dinds)
-        w = _wavesize(plan, nd, srcchunks, srcranges, A.graph, A.tiling.chunksof[t])
+        # On the tile route the weights come first, and the chunks that carry
+        # one are the chunks worth reading.
+        tile = smp === nothing ? nothing : tilefor(plan, t, dinds, dstcells, smp)
+        tile === nothing || _keepmanifest!(srcchunks, tile.sourcechunks)
+        _sourceranges!(srcranges, A, srcchunks)
+        keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
+        w = tile === nothing ?
+            _wavesize(plan, nd, srcchunks, srcranges, A.graph, A.tiling.chunksof[t]) : 1
         i = 1
         while i <= length(srcchunks)
             j = min(i + w - 1, length(srcchunks))
-            _fillwave!(wave, plan, t, srcchunks, i, j, dinds, dstcells)
+            if tile === nothing
+                _fillwave!(wave, plan, t, srcchunks, i, j, dinds, dstcells)
+            else
+                _tilewave!(wave, tile, srcchunks, i, j)
+            end
             for k in i:j
                 entry = wave[k-i+1]
                 s = srcchunks[k]
@@ -572,6 +588,35 @@ function _waveideal(costs::Vector{Float64}, w::Int)
         i = j + 1
     end
     return serial > 0 ? total / serial : 1.0
+end
+
+# Keep the source chunks the tile's stencils name. The relation's row is a
+# superset of the manifest and `knownempty` filtering has already run, so this
+# intersects two ascending lists and keeps the order both are in.
+function _keepmanifest!(srcchunks::Vector{Int}, manifest::Vector{Int})
+    n = 0
+    k = 1
+    @inbounds for s in srcchunks
+        while k <= length(manifest) && manifest[k] < s
+            k += 1
+        end
+        (k <= length(manifest) && manifest[k] == s) || continue
+        srcchunks[n+=1] = s
+    end
+    resize!(srcchunks, n)
+    return srcchunks
+end
+
+# The tile route has one built object per tile, so its wave is a lookup: the
+# tile's block for each source chunk, in the ascending order the loop walks
+# them. Every chunk left in `srcchunks` is one the manifest holds.
+function _tilewave!(wave::Vector{CachedBlock}, tile::CachedTile, srcchunks::Vector{Int},
+    i::Int, j::Int)
+    empty!(wave)
+    for k in i:j
+        push!(wave, tileblock(tile, srcchunks[k])::CachedBlock)
+    end
+    return wave
 end
 
 # Build one wave concurrently and preserve chunk order in `wave`.

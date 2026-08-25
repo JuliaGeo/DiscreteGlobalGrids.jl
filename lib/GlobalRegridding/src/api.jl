@@ -154,14 +154,34 @@ regrid!(dest, data, plan::AbstractRegriddingPlan) =
     plan_regrid(data; to, from = nothing, method = Conservative(),
                 missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
                 lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
-                storage = nothing, sampling = nothing) -> AbstractRegriddingPlan
+                storage = nothing, sampling = nothing, dependencies = nothing,
+                refine = nothing, narrow = nothing) -> AbstractRegriddingPlan
 
 Build a reusable regridding plan without reading source values. In-memory data
 uses one whole-domain [`DirectPlan`](@ref). Lazy plans build blocks on demand
 and default to a budget-limited [`PerChunk`](@ref) cache. Use `PerChunk()` for
 an unlimited cache or `Spilled(dir)` for disk storage. Keywords match
-[`regrid`](@ref); `chunks`, `budget` and `storage` apply only to `lazy = true`,
-and `sampling` only to `lazy = false`.
+[`regrid`](@ref); `chunks`, `budget`, `storage`, `dependencies`, `refine` and
+`narrow` apply only to `lazy = true`, and `sampling` only to `lazy = false`.
+
+# The chunk dependency relation
+
+A lazy plan is the sole owner of its chunk dependency relation, and this is the
+only place a narrow phase may be supplied. `dependencies` chooses whether the
+plan builds one (`nothing`, the default, or `true`), adopts and validates one
+somebody else built (a [`ChunkDependencyGraph`](@ref)), or holds none (`false`).
+A lazy read *is* a read of that relation's rows, so a plan that holds none
+cannot back a [`LazyRegridArray`](@ref). `refine` is the
+conservative narrow phase to apply while building, `refine(dstchunk, srcchunk)
+-> Bool`, and `narrow` the `Symbol` that names it in the relation's identity. A
+`refine` must only ever reject pairs it can *prove* disconnected; a wrong one
+silently corrupts results. [`dependencies`](@ref) documents each branch.
+
+[`dependencies`](@ref)`(plan)` reads the relation back and builds nothing. It is
+deliberately impossible to narrow, replace or rebuild a plan's relation once the
+plan exists: [`regrid`](@ref) and [`regrid!`](@ref) take no `refine`, and
+[`chunk_dependency_graph`](@ref) has no `plan` method. A caller that wants a
+different relation makes a different plan.
 """
 function plan_regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
@@ -170,14 +190,16 @@ function plan_regrid(data; to, from = nothing,
     lazy::Bool = isdiskbacked(data), chunks = nothing,
     budget::Union{Nothing,Integer} = nothing,
     storage::Union{Nothing,AbstractBlockStorage} = nothing,
-    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing)
+    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing,
+    dependencies = nothing, refine = nothing,
+    narrow::Union{Nothing,Symbol} = nothing)
     src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
     dst_space = _asspace(to, "to", src_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *
         "is on $(manifold(src_space)) and the destination on $(manifold(dst_space))"))
     if !lazy
-        _rejectlazykeywords(chunks, budget, storage)
+        _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)
         return DirectPlan(method, missingpolicy, dst_space, src_space,
             wholeblock(method, dst_space, src_space), missingval, sampling)
     end
@@ -188,14 +210,18 @@ function plan_regrid(data; to, from = nothing,
     budget === nothing || budget > 0 ||
         throw(ArgumentError("budget must be positive, got $budget"))
     return ChunkedPlan(method, missingpolicy, dst_space, src_space;
-        storage, budget = something(budget, 2^30), chunks, missingval)
+        storage, budget = something(budget, 2^30), chunks, missingval,
+        dependencies, refine, narrow)
 end
 
-function _rejectlazykeywords(chunks, budget, storage)
+function _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)
     named = String[]
     chunks === nothing || push!(named, "`chunks`")
     budget === nothing || push!(named, "`budget`")
     storage === nothing || push!(named, "`storage`")
+    dependencies === nothing || push!(named, "`dependencies`")
+    refine === nothing || push!(named, "`refine`")
+    narrow === nothing || push!(named, "`narrow`")
     isempty(named) && return nothing
     throw(ArgumentError(
         "an eager plan holds one whole-domain block and takes no " *

@@ -128,92 +128,30 @@ function candidatechunks!(out::Vector{Int}, index, dstcap::Cap; radius::Real = 0
     return out
 end
 
-function chunkextents(space::RegridSpace)
-    caps = Vector{Cap}(undef, Int(nchunks(space)))
-    filled = falses(length(caps))
-    _collectextents!(caps, filled, chunktree(space))
-    all(filled) || throw(ArgumentError(
-        "the chunk tree of $(typeof(space)) does not reach every chunk in " *
-        "1:$(length(caps)); chunk tree leaf indices must be chunk numbers"))
-    return caps
-end
-
-function _collectextents!(caps::Vector{Cap}, filled::BitVector, node)
-    if STI.isleaf(node)
-        for (i, extent) in STI.child_indices_extents(node)
-            1 <= i <= length(caps) || throw(ArgumentError(
-                "chunk tree leaf index $i is outside 1:$(length(caps))"))
-            caps[i] = extent
-            filled[i] = true
-        end
-    else
-        for child in STI.getchild(node)
-            _collectextents!(caps, filled, child)
-        end
-    end
-    return caps
-end
-
 chunkextent(space::RegridSpace, chunk::Integer) = chunkextents(space)[Int(chunk)]
 
-"""
-    connectedchunks(dst_space, dstchunk, src_space; radius = 0.0) -> Vector{Int}
-
-Return ascending source chunks within `radius` radians of `dstchunk`. The result
-may include false positives, but must include every contributing chunk.
-"""
-connectedchunks(dst_space::RegridSpace, dstchunk::Integer, src_space::RegridSpace;
-    radius::Real = 0.0) =
-    connectedchunks!(Int[], chunkextent(dst_space, dstchunk), src_space; radius)
-
-"""
-    connectedchunks!(out, dstcap::SphericalCap, src_space; radius = 0.0) -> out
-    connectedchunks!(out, dstcap::SphericalCap, srcindex; radius = 0.0) -> out
-
-Write connected source chunks for `dstcap` into `out`. Passing a prebuilt source
-index avoids rebuilding it for repeated queries.
-"""
-connectedchunks!(out::Vector{Int}, dstcap::Cap, src_space::RegridSpace;
-    radius::Real = 0.0) =
-    candidatechunks!(out, chunkindex(src_space), dstcap; radius)
-
-connectedchunks!(out::Vector{Int}, dstcap::Cap, srcindex; radius::Real = 0.0) =
-    candidatechunks!(out, srcindex, dstcap; radius)
-
-"""
-    connectedchunks!(out, dstcaps::AbstractVector{<:SphericalCap}, srcindex; radius = 0.0)
-
-Write the union of connected chunks for several destination extents into `out`.
-Querying caps separately avoids the loose bound from merging distant caps.
-"""
-function connectedchunks!(out::Vector{Int}, dstcaps::AbstractVector{<:SphericalCap},
-    srcindex; radius::Real = 0.0)
-    empty!(out)
-    buffer = Int[]
-    for cap in dstcaps
-        candidatechunks!(buffer, srcindex, cap; radius)
-        append!(out, buffer)
-    end
-    sort!(out)
-    unique!(out)
-    return out
-end
-
-"""
-    connectedchunkpairs(f, dst_space, src_space; radius = 0.0)
-
-Call `f(dstchunk, srcchunk)` for every potentially contributing pair through
-the source space's native chunk index.
-"""
-function connectedchunkpairs(f::F, dst_space::RegridSpace, src_space::RegridSpace;
-    radius::Real = 0.0) where {F}
-    index = chunkindex(src_space)
-    out = Int[]
-    for (d, cap) in pairs(chunkextents(dst_space))
-        candidatechunks!(out, index, cap; radius)
-        for s in out
-            f(d, s)
-        end
-    end
-    return nothing
-end
+# Three spellings of one relation lived below this line until Phase 4.
+#
+# `connectedchunkpairs(f, dst_space, src_space; radius)` went in Task G4:
+# since PR #69 it was line for line the loop `_chunkgraph` runs to fill its
+# destination-major rows.
+#
+# `connectedchunks(dst_space, dstchunk, src_space; radius)` and its
+# `connectedchunks!` in-place forms went in Task E2, together with the
+# `chunktree`-collecting `chunkextents` fallback that gave a space a *second*
+# way to answer a chunk query. Since Task E1 the lazy executor takes a tile's
+# sources from `sourcesof(dependencies(plan), d)`, so the last caller of a
+# one-off chunk query was a test. What they did is now spelled:
+#
+#   - one destination chunk's sources: `sourcesof(dependencies(plan), d)`, or
+#     `sourcesof(chunk_dependency_graph(dst, src; radius), d)` without a plan;
+#   - several destinations' union: `_unionrows!` over those rows, which is what
+#     a derived lazy tile takes;
+#   - one prebuilt index against one cap: `candidatechunks!` itself, which is
+#     the seam all of the above are built from and the only query implementation
+#     that defines a graph edge.
+#
+# `chunkextents` remains, because it has real consumers that are not queries:
+# `spacestamp`, `_builddependencies` and `subspace_dependencies` need the caps
+# as *values*, and the generic `chunkindex` packs them. It is a required hook
+# now rather than a fallback over a compatibility tree.

@@ -886,45 +886,6 @@ end
 
 _task_prepared_raster_tree(tree) = tree
 
-"""
-    RasterFlatTree(space, indices, caps)
-
-Temporary compatibility tree for the legacy [`chunktree`](@ref) bridge.
-`indices` are chunk numbers. Cell fallbacks use [`CellSpaceRTree`](@ref);
-E2 removes this type together with the legacy bridge.
-"""
-struct RasterFlatTree{S<:RasterGrid}
-    space::S
-    indices::Vector{Int}
-    caps::Vector{Cap}
-    extent::Cap
-end
-
-function RasterFlatTree(space::RasterGrid, indices, caps)
-    ix = collect(Int, indices)
-    cs = collect(Cap, caps)
-    extent = isempty(cs) ? _WHOLE_SPHERE : foldl(Extents.union, cs)
-    return RasterFlatTree{typeof(space)}(space, ix, cs, extent)
-end
-
-Base.show(io::IO, t::RasterFlatTree) =
-    print(io, "RasterFlatTree(", length(t.indices), " entries)")
-
-STI.isspatialtree(::Type{<:RasterFlatTree}) = true
-STI.node_extent_is_expensive(::Type{<:RasterFlatTree}) = false
-STI.isleaf(::RasterFlatTree) = true
-STI.nchild(::RasterFlatTree) = 0
-STI.getchild(::RasterFlatTree) = ()
-STI.node_extent(t::RasterFlatTree) = t.extent
-STI.child_indices_extents(t::RasterFlatTree) = zip(t.indices, t.caps)
-
-GOCore.best_manifold(t::RasterFlatTree) = manifold(t.space)
-Trees.ncells(t::RasterFlatTree) = ncells(t.space)
-# Same whole-space `Trees.ncells` caveat; the stored entries are the node.
-Trees.split_weight(t::RasterFlatTree) = length(t.indices)
-Trees.getcell(t::RasterFlatTree, i::Int) = getcell(t.space, i)
-Trees.getcell(t::RasterFlatTree) = (getcell(t.space, i) for i in t.indices)
-
 celltree(space::RasterGrid) = _rastercursor(space)
 
 """
@@ -954,6 +915,10 @@ function _rastercellcap(space::RasterGrid, ix::Integer, iy::Integer)
     return Trees.cell_range_extent(RasterGridView(space), ranges...)
 end
 
+# The caps as values, for the identity stamp and for a consumer that wants a
+# chunk's covering extent. Chunk *queries* go to `_rasterchunkcursor` and never
+# come here; Task E2 removed the `chunktree` bridge that used to pack these into
+# a flat tree so the generic fallback could collect them straight back out.
 function chunkextents(space::RasterGrid)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)
@@ -965,10 +930,12 @@ function chunkextents(space::RasterGrid)
     return caps
 end
 
-# Compatibility for callers that still request the old public tree. This is
-# RasterFlatTree's only remaining role until E2 removes the `chunktree` bridge;
-# production chunk discovery uses `_rasterchunkcursor` and never constructs it.
-chunktree(space::RasterGrid) = RasterFlatTree(space, 1:nchunks(space), chunkextents(space))
+# One chunk's extent without materializing the whole vector.
+function chunkextent(space::RasterGrid, chunk::Integer)
+    xr, yr = chunkbox(space, Int(chunk))
+    return Trees.cell_range_extent(RasterGridView(space),
+        _rasterviewranges(space, xr, yr)...)
+end
 
 """
     subtree(space::RasterGrid, inds)

@@ -49,6 +49,10 @@ using Base.ScopedValues: @with
 const CD = DGG.CopernicusDEM
 const US = GO.UnitSpherical
 
+# Destination chunks sampled at start-up to check that a column's own relation
+# demands no tile the global one is missing. See the `check` in `run`.
+const GRAPHMISS_SAMPLE = 16
+
 # ===========================================================================
 # Configuration — edit this, there is no command line
 # ===========================================================================
@@ -673,8 +677,8 @@ end
 # The dependency graph, and the walk order it implies
 # ===========================================================================
 
-# A conservative lon/lat narrow phase for this specific pair, available to
-# `chunk_dependency_graph` as its `refine` hook — and OFF by default. Read on.
+# A conservative lon/lat narrow phase for this specific pair, handed to the
+# global plan as its `refine` keyword — and OFF by default. Read on.
 #
 # The broad phase is cap-versus-cap, and a circle circumscribing a square already
 # inflates by its half-diagonal, so on this workload the cap relation carries
@@ -734,9 +738,26 @@ same numbering the source space and both caches use. The order is a *separate*
 permutation, `order[p] -> d`, applied by the cursor; the graph itself is never
 built in it.
 
-Returns `(graph, order, seconds, edges, dstspace)`. Building it costs about a
-second on the real pair, almost all of it the destination space; the graph
-itself is 0.12 s for 66 178 x 26 475 chunks.
+The relation is owned by a `GR.ChunkedPlan` over the same pair, not built beside
+one (Task G4): a narrow phase is an argument to plan construction and to nothing
+else, and `GR.dependencies(globalplan)` is the single object the schedule, the
+refcount cache, the prefetcher and the closing validator all read. Constructing
+that plan reads no DEM data, builds no weights and makes no network metadata
+request.
+
+The per-chunk regrids in `regrid_chunk` own a one-row relation each, built there.
+Their destination is a rooted one-chunk subtree grid — a different space from
+this one, with different cell and chunk counts — so a plain row view of this
+graph is not its relation and `GR.validate_dependencies` correctly refuses to
+certify it as one. Task E1 added `GR.subspace_dependencies` to close that gap
+and measured that closing it here would save a fraction of a millisecond per
+column; `regrid_chunk`'s docstring records the numbers. This graph is therefore
+still the *only* relation over the whole covering, and it is still the one
+object the schedule, the cache and the validator read.
+
+Returns `(globalplan, graph, order, seconds, edges, dstspace)`. Building it
+costs about a second on the real pair, almost all of it the destination space;
+the graph itself is 0.12 s for 66 178 x 26 475 chunks.
 """
 function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, config)
     t0 = time()
@@ -758,10 +779,21 @@ function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, c
     refine = config.refinegraph ?
              ((d, s) -> boxesoverlap(dlat[d], dlon[d], drad[d], dhalf[d],
                  tlat[s], tlon[s])) : nothing
+    # Name the phase, so the relation records which one it is. A graph narrowed
+    # by an anonymous closure cannot be told apart afterwards from the full
+    # candidate relation, and `GR.validate_dependencies` refuses to certify one
+    # for reuse; the tag is what makes a refined graph reusable at all.
+    narrow = config.refinegraph ? :copdem_tile_lonlat_box : nothing
 
     t1 = time()
-    radius = Float64(GR.supportradius(DGG.Conservative(), srcspace))
-    graph = GR.chunk_dependency_graph(dstspace, srcspace; radius, refine)
+    # The plan owns the relation. Its radius is its method's own
+    # `supportradius`, which is the same number this line used to compute by
+    # hand, and the same one `regrid_chunk`'s per-column plans use.
+    globalplan = GR.ChunkedPlan(DGG.Conservative(), DGG.Weighted(0.5),
+        dstspace, srcspace; budget = config.budget, dependencies = true,
+        refine, narrow)
+    graph = GR.dependencies(globalplan)
+    radius = GR.dependency_radius(graph)
     tgraph = time() - t1
 
     # Sweep the tiles in Morton order over the 1-degree lattice and emit a chunk
@@ -778,7 +810,8 @@ function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, c
     end
     torder = time() - t2
 
-    return (graph = graph, order = order, dstspace = dstspace, radius = radius,
+    return (globalplan = globalplan, graph = graph, order = order,
+        dstspace = dstspace, radius = radius,
         tspace = tspace, tgraph = tgraph, torder = torder,
         edges = length(order) == 0 ? 0 : sum(d -> GR.sourcedegree(graph, d),
             1:length(chunks)))
@@ -805,6 +838,48 @@ Progress(total, every, cold = nothing) =
     Progress(ReentrantLock(), 0, 0, 0, 0, total, time(), Float64(every), cold, time())
 
 """
+    graphmisscheck(sys7, layout, srcspace, plan, todochunks, config) -> Bool
+
+Sample `GRAPHMISS_SAMPLE` columns and `check` that none of them demands a source
+tile the global relation does not hold.
+
+Since Task E1 a column's lazy read takes its source tiles from that column's
+**own** one-row relation, built in `regrid_chunk`, while the refcount cache
+retires tiles by consumer count from the **global** relation `dagplan` owns. A
+tile a column demanded but the global relation never held would be a silent
+graph miss: the cache would have retired it, and the column would either reload
+it or — with a bounded cache and no permits left — wait for a producer that is
+never coming.
+
+The two relations hold the same rows by construction. Both are one
+`GR.candidatechunks!` query of the same source chunk index against the same
+destination cap, and the caps are the same because a rooted subtree grid's chunk
+cap is the covering's cap for that chunk (asserted on this exact shape in
+`test/systems/crosssystem/regrid.jl`). So this samples the claim rather than
+proving it. It costs about half a millisecond per column sampled, once, at
+start-up.
+
+Uses the column destination `regrid_chunk` itself builds, through the same
+`DGG.columncell` mapping, so it checks the path the run takes rather than a
+restatement of it.
+"""
+function graphmisscheck(sys7, layout, srcspace, plan, todochunks, config)
+    n = min(GRAPHMISS_SAMPLE, length(todochunks))
+    misses, checked = 0, 0
+    for d in (n > 0 ? round.(Int, range(1, length(todochunks); length = n)) : Int[])
+        a = DGG.columncell(layout, todochunks[d])
+        colspace = DGG.DGGSpace(DGG.subtree(sys7, a, config.level);
+            chunklevel = config.ancestor)
+        col = GR.chunk_dependency_graph(colspace, srcspace; radius = plan.radius)
+        row = GR.sourcesof(plan.graph, d)
+        misses += count(s -> !insorted(s, row), GR.sourcesof(col, 1))
+        checked += 1
+    end
+    return check("no column demands a tile the graph does not hold",
+        misses == 0; detail = "$checked column(s) sampled, $misses miss(es)")
+end
+
+"""
     regrid_chunk(dem, srcspace, sys7, layout, chunk, config) -> Vector{Float32}
 
 One work unit: the level-`config.level` values of one chunk.
@@ -813,6 +888,31 @@ One work unit: the level-`config.level` values of one chunk.
 it is one chunk without scanning the global level-`ancestor` grid for it. The
 regrid is lazy and `chunks` is deliberately not passed — supplying it defeats the
 plan's pairing, which is what prunes the source tiles this chunk does not meet.
+
+This plan owns a **one-row** dependency relation of its own, built here, and
+that is no longer a choice: since Task E1 the lazy executor takes a tile's
+source chunks from `GR.sourcesof(GR.dependencies(plan), d)` and does no
+discovery of its own, so a plan holding no relation cannot back a lazy read.
+`dependencies` is left at its default, which builds one.
+
+It is **not** `dagplan`'s relation, and two routes to making it that were
+measured (`benchmark/plan_dependency_ownership.jl`; see
+`regrid-notes/2026-08-23-e1-graph-backed-lazy.md`):
+
+  - a plain `GR.restrict(graph, [d])` row view still stamps the whole
+    66 175-chunk destination, so `GR.validate_dependencies` refuses it here —
+    correctly, because this destination is a different space;
+  - `GR.subspace_dependencies(graph, dstspace, [d])` re-stamps that view onto
+    this one-chunk space and IS accepted. It gives the identical rows — the
+    re-stamp is only sound because it does — but it saves little: both routes
+    pay the same `O(nsourcechunks)` transpose over 26 475 tiles, and adoption
+    still pays `spacestamp(srcspace)` to certify the source half. What a
+    rebuild adds on top of that is one `candidatechunks!` query.
+
+So the choice is cost alone, and building costs a fraction of a millisecond
+against a column that takes about half a second of wall time. Threading the
+global relation and each column's row number through the worker loop would buy
+that fraction and nothing else.
 """
 function regrid_chunk(dem, srcspace, sys7, layout, chunk::Int, config)
     a = DGG.columncell(layout, chunk)
@@ -1271,12 +1371,17 @@ function main(config = CONFIG)
         GR.nsourcechunks(plan.graph), GR.ndestinationchunks(plan.graph), plan.edges,
         plan.edges / max(length(todochunks), 1), plan.radius,
         secs(plan.tspace), secs(plan.tgraph), secs(plan.torder)))
+    # One relation, one owner: everything below reads the object the global
+    # plan holds, and there is no second one anywhere in this run.
+    check("the graph is the global plan's own relation",
+        plan.graph === GR.dependencies(plan.globalplan))
     check("graph destination chunks are the work list",
         GR.ndestinationchunks(plan.graph) == length(todochunks))
     check("graph source chunks are the listed tiles",
         GR.nsourcechunks(plan.graph) == length(tiles))
     check("the walk order is a permutation of the work list",
         length(plan.order) == length(todochunks) && isperm(plan.order))
+    graphmisscheck(sys7, layout, srcspace, plan, todochunks, config)
 
     cache = if config.cachepolicy === :refcount
         RefCountCache{Vector{Float32}}(length(tiles), length(todochunks),

@@ -98,18 +98,29 @@ function cellindices end
 """
     chunkextent(space::RegridSpace, chunk::Integer) -> SphericalCap
 
-Return the spherical cap covering every cell owned by `chunk`. Spaces should
-specialize this when one extent is cheaper to obtain than the complete
-[`chunkextents`](@ref) vector.
+Return the spherical cap covering every cell owned by `chunk`. The fallback
+indexes [`chunkextents`](@ref); a space specializes it when one extent is
+cheaper to obtain than the complete vector, as [`RasterGrid`](@ref) does.
+
+For the cap of a chunk a *relation* was built over, prefer
+[`destinationextent`](@ref) or `sourceextent` on the relation: it already holds
+the caps it was built from, so reading them back off the space recomputes work
+and risks answering with a cap the relation never saw.
 """
 function chunkextent end
 
 """
     chunkextents(space::RegridSpace) -> Vector{SphericalCap}
 
-Return the chunk extents in chunk-number order. The compatibility fallback
-collects them from [`chunktree`](@ref); structured spaces whose query index is
-not a cap tree should specialize this function.
+Return the chunk extents in chunk-number order. Required of every space: there
+is no fallback.
+
+These are the caps as *values*, not a query. They stamp a relation's identity
+([`spacestamp`](@ref)), they are the destination caps a relation is built by
+querying with, and the generic [`chunkindex`](@ref) packs them. A chunk query
+goes to [`candidatechunks!`](@ref) on the space's own index, which is why a
+native space may report caps here that its index does not itself test — the
+divergence PR #69 exists to handle.
 """
 function chunkextents end
 
@@ -159,17 +170,13 @@ function chunkat(space::RegridSpace, p::US.UnitSphericalPoint)
     return chunkat(space, i)
 end
 
-"""
-    chunktree(space::RegridSpace)
-
-Return a spatial tree over chunk numbers `1:nchunks(space)`, with each leaf cap
-covering every cell returned by [`ownedindices`](@ref) for that chunk. This is a
-temporary compatibility bridge for the generic [`chunkextents`](@ref)
-fallback. New structured spaces should implement the
-[`chunkindex`](@ref)/[`candidatechunks!`](@ref) query seam instead; E2 decides
-whether to remove this bridge.
-"""
-function chunktree end
+# `chunktree(space::RegridSpace)` was declared here until Task E2. It was a
+# compatibility bridge: a space packed its chunk caps into a flat spatial tree
+# so that the generic `chunkextents` fallback could walk it and collect the same
+# caps straight back out, and so that a chunk query could descend it. Both roles
+# are gone — `chunkextents` is a required hook returning the caps directly, and
+# a chunk query is `candidatechunks!` on the space's own `chunkindex` — so a
+# space no longer has two ways to answer the same question.
 
 # --------------------------------------------------------------------------
 # Array storage

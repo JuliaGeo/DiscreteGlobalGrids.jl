@@ -277,7 +277,9 @@ end
 
         # Geometry queries never read raster values.
         celltree(space)
-        chunktree(space)
+        GR.chunkextents(space)
+        GR.chunkextent(space, 1)
+        GR.chunkindex(space)
         foreach(i -> getcell(space, i), 1:ncells(space))
         @test parent_x.reads == 0
 
@@ -318,7 +320,7 @@ end
         # Regional chunk extents cover their cell geometry.
         region = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (4, 2)),
             (DD.X(-35.0:10.0:35.0), DD.Y(-15.0:10.0:15.0))))
-        caps = chunktree(region).caps
+        caps = GR.chunkextents(region)
         @test all(GR.US._contains(caps[c], p)
                   for c in 1:nchunks(region)
                   for i in ownedindices(region, c)
@@ -524,7 +526,7 @@ end
         bands = RasterGrid(DD.DimArray(zeros(36, 18),
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([1:36], [3(k-1)+1:3k for k in 1:6]))
-        caps = chunktree(bands).caps
+        caps = GR.chunkextents(bands)
         north = geographic_point(0.0, 90.0)
         south = geographic_point(0.0, -90.0)
 
@@ -548,7 +550,7 @@ end
         straddling = RasterGrid(DD.DimArray(zeros(36, 18),
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([1:36], [1:6, 7:12, 13:18]))
-        mid = chunktree(straddling).caps[2]
+        mid = GR.chunkextents(straddling)[2]
         @test mid.radius < Float64(pi)
         @test all(GR.US._contains(mid, p)
                   for i in ownedindices(straddling, 2) for p in ring_samples(straddling, i))
@@ -557,7 +559,7 @@ end
         stripes = RasterGrid(DD.DimArray(zeros(36, 18),
                 (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0)));
             chunks = ([6(k-1)+1:6k for k in 1:6], [1:18]))
-        stripecaps = chunktree(stripes).caps
+        stripecaps = GR.chunkextents(stripes)
         @test all(cap.radius < Float64(pi) for cap in stripecaps)
         @test all(GR.US._contains(stripecaps[c], p)
                   for c in 1:nchunks(stripes)

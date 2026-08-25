@@ -23,6 +23,14 @@ const LEVEL = 3
 const GRID = DGG.levelgrid(SYS, LEVEL)
 const GLOBE = Extents.Extent(X = (-180.0, 180.0), Y = (-90.0, 90.0))
 
+# The four dependency-graph relations — truth, demand, cap join, and the graph's
+# own rows — are defined once, in the GlobalRegridding suite's `graphoracles.jl`,
+# and shared with that suite and the G1 harness. Do not re-spell any of them here.
+include(joinpath(@__DIR__, "..", "..", "..", "lib", "GlobalRegridding", "test",
+    "graphoracles.jl"))
+using .ChunkGraphOracles: contributing_pairs, graph_pairs, demanded_pairs,
+    capjoin_pairs
+
 # A 15° global raster whose cells are declared as abutting intervals, so its
 # edges tile the sphere exactly and a conservative regrid off it can conserve.
 _axis(D, centres, step) = D(DD.Sampled(collect(centres); span = DD.Regular(step),
@@ -160,6 +168,15 @@ end
     # contains the other, so a graph built from `chunkextents` directly CROSSED
     # the executor's relation — and a refcount that reaches zero early retires a
     # tile the next read is still going to ask for.
+    #
+    # WHAT THIS CAN AND CANNOT CATCH, post-#69. The builder is now itself one
+    # `candidatechunks!` per destination cap on `chunkindex(src)`, so this sweep
+    # compares `candidatechunks!` against a graph BUILT FROM `candidatechunks!`.
+    # It still catches a builder that mis-assembles, mis-sorts or loses rows —
+    # which is most of what a CSR builder can get wrong — but it can no longer
+    # catch a wrong *choice* of index, because both sides would move together.
+    # The independent check on that is `contributing_pairs` below, and the cap
+    # crossing at the end of this testset.
     cop = DGG.CopernicusDEMSystem(90)
     sys7 = DGG.IGeo7System()
     src = DGG.DGGSpace(DGG.levelgrid(cop, 1); chunklevel = 0)
@@ -194,6 +211,96 @@ end
     @test all(reached)
     @test demanded > 0
     @test unpredicted == 0
+
+    # The crossing itself, on a window CI can run: the whole level-0 Copernicus
+    # frontier, no tile list and no download. The block cursor's relation and the
+    # cap join differ in BOTH directions, so the cap join is not a bound on the
+    # graph on this hierarchy either — the same fact the G1 harness measures at
+    # production scale (72 pairs the index holds and the cap join rejects, on the
+    # GLO-90 x IGeo7-L12 pair). That production figure is harness-only; these two
+    # assertions are the tested form of the finding.
+    capjoin = capjoin_pairs(dst, src)
+    native = graph_pairs(graph)
+    @test !isempty(setdiff(native, capjoin))
+    @test !isempty(setdiff(capjoin, native))
+end
+
+@testset "no geometrically contributing pair is dropped" begin
+    # The test above compares the graph against another conservative relation;
+    # both could be conservative about the wrong thing together. This one builds
+    # REAL hexagon and pentagon geometry and asks the only question that
+    # matters: is every chunk pair a weight could be nonzero on an edge?
+    sys7 = DGG.IGeo7System()
+    rasterspace = GR.RasterGrid(globalraster(10.0);
+        chunks = ([lo:min(lo + 6, 36) for lo in 1:7:36],
+            [lo:min(lo + 4, 18) for lo in 1:5:18]))
+    rooted = DGG.DGGSpace(
+        DGG.subtree(sys7, DGG.cellindex(DGG.levelgrid(sys7, 1), 20), 4);
+        chunklevel = 2)
+    sparse = DGG.DGGSpace(DGG.PartialGrid(REGION); chunklevel = 2)
+
+    cases = (
+        # A complete grid against a complete grid three levels finer: all twelve
+        # pentagons, both poles, and hexagon children that reach outside their
+        # own parent's boundary.
+        ("complete IGeo7", DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
+            DGG.DGGSpace(DGG.levelgrid(sys7, 3); chunklevel = 2), 0.0, true),
+        # Two systems whose cells share no edges at all.
+        ("IGeo7 from S2", DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
+            DGG.DGGSpace(DGG.levelgrid(SYS, 3); chunklevel = 1), 0.0, true),
+        # A rooted subtree destination: most source chunks reach nothing, so a
+        # relation that lost a pair would leave no other trace.
+        ("rooted subtree", rooted,
+            DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1), 0.0, true),
+        # A scattered, non-rooted subset of a level.
+        ("sparse subset", sparse,
+            DGG.DGGSpace(DGG.levelgrid(SYS, 3); chunklevel = 1), 0.0, true),
+        # The production shape: a chunked raster source into a DGG destination.
+        # Its quadtree is NOT answering the caps `chunkextents` reports, so the
+        # cap join is not a bound on it in either direction.
+        ("raster source", DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
+            rasterspace, 0.0, false),
+        ("raster source, support", DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1),
+            rasterspace, 0.05, false),
+    )
+
+    for (name, dst, src, radius, capbounded) in cases
+        @testset "$name" begin
+            truth = contributing_pairs(dst, src; radius)
+            graph = graph_pairs(GR.chunk_dependency_graph(dst, src; radius))
+            @test !isempty(truth)
+            @test truth ⊆ graph
+            # `truth ⊆ graph` alone would pass on a builder that returned every
+            # pair, so pin the relation exactly too: post-#69 the rows ARE the
+            # `candidatechunks!` answers, with no `refine`, so the graph and the
+            # demanded relation are equal and not merely nested. That equality
+            # is what a builder swap has to preserve.
+            @test graph == demanded_pairs(dst, src; radius)
+            # A chunk cap covers its own cells, so the cap join holds the same
+            # pairs. This is the `chunkextents` half of the obligation: it fails
+            # if a chunk cap is too tight.
+            @test truth ⊆ capjoin_pairs(dst, src; radius)
+            # G1's second gate. Where a space's index descends the very
+            # hierarchy `chunkextents` is derived from, the cap join is an UPPER
+            # bound on the graph: the descent can prune a chunk whose own cap
+            # intersects, never add one whose cap does not. That holds for
+            # `_dggcandidatechunks!` and NOT for the raster quadtree, which
+            # answers whole chunks for a straddling leaf without testing each
+            # chunk's own cap — so for those cases the containment is asserted
+            # in the other direction below, never here.
+            capbounded && @test graph ⊆ capjoin_pairs(dst, src; radius)
+        end
+    end
+
+    # The raster quadtree's relation and the cap join cross in BOTH directions,
+    # so the cap join bounds the graph in neither. The CopernicusDEM level-0
+    # frontier crosses the same way; that one is pinned in "the dependency graph
+    # holds every pair the chunk index answers" above.
+    rdst = DGG.DGGSpace(DGG.levelgrid(sys7, 2); chunklevel = 1)
+    native = graph_pairs(GR.chunk_dependency_graph(rdst, rasterspace))
+    capjoin = capjoin_pairs(rdst, rasterspace)
+    @test !isempty(setdiff(native, capjoin))
+    @test !isempty(setdiff(capjoin, native))
 end
 
 @testset "a rooted subset chunks without scanning the level" begin
@@ -452,6 +559,59 @@ end
     lazy = DGG.regrid(RASTER; to = GRID, lazy = true)
     @test DD.dims(lazy, 1) isa DGG.Cells
     @test Array(parent(lazy)) == parent(reference)
+end
+
+@testset "a column adopts the whole covering's relation and reads the same" begin
+    # Task E1, on the shape `scripts/copdem_production.jl` actually has: a
+    # covering plan over many level-`ancestor` chunks, and a per-column regrid
+    # whose destination is a ROOTED one-chunk subtree grid of the same hierarchy.
+    #
+    # G4 proved a row view of the covering's relation is refused there, because
+    # the view stamps the whole covering. `GR.subspace_dependencies` re-stamps it
+    # onto the column's own space, and this asserts the two things that make it
+    # worth having: the plan accepts it, and the values do not move.
+    sys = DGG.IGeo7System()
+    level, ancestor = 4, 2
+    covering = DGG.DGGSpace(DGG.levelgrid(sys, level); chunklevel = ancestor)
+    graph = GR.chunk_dependency_graph(covering, SRC)
+    @test GR.hasextents(graph)
+
+    a2 = DGG.levelgrid(sys, ancestor)
+    for d in (1, 23, GR.nchunks(covering))
+        column = DGG.DGGSpace(DGG.subtree(sys, DGG.cellindex(a2, d), level);
+            chunklevel = ancestor)
+        @test GR.nchunks(column) == 1
+
+        # The column's chunk cap IS the covering's cap for that chunk, which is
+        # what makes the re-stamp sound and what it checks.
+        @test only(GR.chunkextents(column)) == GR.chunkextents(covering)[d]
+        view = GR.subspace_dependencies(graph, column, [d])
+        @test collect(GR.sourcesof(view, 1)) == collect(GR.sourcesof(graph, d))
+        @test GR.globaldestination(view, 1) == d
+
+        # It is the relation the column would have built for itself...
+        own = GR.chunk_dependency_graph(column, SRC)
+        @test graph_pairs(view) == graph_pairs(own)
+        @test GR.dependency_identity(view) == GR.dependency_identity(own)
+        # ...and the plan adopts it by reference, where a plain row view and the
+        # whole covering's relation are both still refused.
+        adopted = GR.plan_regrid(RASTER; to = column, from = SRC, lazy = true,
+            dependencies = view)
+        @test GR.dependencies(adopted) === view
+        @test_throws ArgumentError GR.plan_regrid(RASTER; to = column, from = SRC,
+            lazy = true, dependencies = GR.restrict(graph, [d]))
+        @test_throws ArgumentError GR.plan_regrid(RASTER; to = column, from = SRC,
+            lazy = true, dependencies = graph)
+
+        # The values: adopted view, own relation, and the eager whole-domain
+        # answer for the same column, all the same numbers.
+        built = GR.plan_regrid(RASTER; to = column, from = SRC, lazy = true)
+        fromview = Array(parent(DGG.regrid(RASTER, adopted)))
+        frombuilt = Array(parent(DGG.regrid(RASTER, built)))
+        @test fromview == frombuilt
+        eager = Array(parent(DGG.regrid(RASTER; to = column, from = SRC, lazy = false)))
+        @test fromview ≈ eager rtol = 1e-12
+    end
 end
 
 end # module RegridTests

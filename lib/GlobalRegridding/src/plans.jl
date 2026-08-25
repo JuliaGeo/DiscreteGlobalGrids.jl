@@ -349,18 +349,25 @@ end
 
 """
     ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, budget, chunks,
-                missingval = nothing)
+                missingval = nothing, dependencies = nothing)
     ChunkedPlan(method, missingpolicy, dst_space, src_space;
-                storage = nothing, budget = 2^30, chunks = nothing, missingval = nothing)
+                storage = nothing, budget = 2^30, chunks = nothing, missingval = nothing,
+                dependencies = nothing, refine = nothing, narrow = nothing)
 
 Build and store [`WeightBlock`](@ref)s by `(destination tile, source chunk)` on
 first use. `budget` limits transient weight and source-data residency without
 changing results. `chunks` sets lazy destination tiling; `nothing` derives it.
 `missingval` is an optional source nodata sentinel. Construction reads no data
 and builds no weights.
+
+The plan is also the sole owner of its chunk dependency relation. `dependencies`
+selects which one it holds, once, at construction; [`dependencies`](@ref) reads
+it back and builds nothing. See that accessor for the whole contract, and
+[`plan_regrid`](@ref) for the keywords as an API user meets them.
 """
 struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
-                   D<:RegridSpace,S<:RegridSpace,T<:AbstractBlockStorage,C,V} <: AbstractRegriddingPlan
+                   D<:RegridSpace,S<:RegridSpace,T<:AbstractBlockStorage,C,V,
+                   G<:Union{Nothing,ChunkDependencyGraph}} <: AbstractRegriddingPlan
     method::M
     missingpolicy::P
     dst_space::D
@@ -369,26 +376,139 @@ struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
     budget::Int
     chunks::C
     missingval::V
+    dependencies::G
 end
 
+# The positional forms build the relation too. A `ChunkedPlan` owns one however
+# it is spelled; the nine-argument field constructor is the one way to assemble
+# a plan around a relation that already exists (or around none).
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
     budget::Integer, chunks) =
     ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget),
-        chunks, nothing)
+        chunks, nothing,
+        _plandependencies(nothing, nothing, nothing, method, dst_space, src_space))
+
+ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
+    dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
+    budget::Integer, chunks, missingval) =
+    ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, Int(budget),
+        chunks, missingval,
+        _plandependencies(nothing, nothing, nothing, method, dst_space, src_space))
 
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace;
     storage::Union{Nothing,AbstractBlockStorage} = nothing, budget::Integer = 2^30,
-    chunks = nothing, missingval = nothing) =
+    chunks = nothing, missingval = nothing,
+    dependencies = nothing, refine = nothing, narrow = nothing) =
     ChunkedPlan(method, missingpolicy, dst_space, src_space,
         storage === nothing ? PerChunk(; maxbytes = weightbudget(budget)) : storage,
-        Int(budget), chunks, missingval)
+        Int(budget), chunks, missingval,
+        _plandependencies(dependencies, refine, narrow, method, dst_space, src_space))
 
-Base.show(io::IO, plan::ChunkedPlan) =
+function Base.show(io::IO, plan::ChunkedPlan)
     print(io, "ChunkedPlan(", typeof(plan.method).name.name, ", ",
         ncells(plan.dst_space), " cells / ", nchunks(plan.dst_space), " chunks ← ",
-        ncells(plan.src_space), " cells / ", nchunks(plan.src_space), " chunks)")
+        ncells(plan.src_space), " cells / ", nchunks(plan.src_space), " chunks")
+    g = plan.dependencies
+    g === nothing || print(io, ", ", Graphs.ne(g), " dependency edges")
+    print(io, ")")
+end
+
+# --------------------------------------------------------------------------
+# The one relation a plan owns
+# --------------------------------------------------------------------------
+
+"""
+    dependencies(plan) -> Union{Nothing,ChunkDependencyGraph}
+
+Return the chunk dependency relation `plan` owns, or `nothing` when it owns
+none. **This accessor builds nothing**: it is a field read, it queries neither
+space, and it returns the identical object every time it is called.
+
+A `ChunkedPlan` holds *at most one* relation, fixed when the plan was
+constructed. There is no way to obtain a second one from a plan, and no way to
+apply a narrow phase to a plan that already exists — `refine` is a keyword of
+[`plan_regrid`](@ref) (and of the [`ChunkedPlan`](@ref) constructor it forwards
+to) and of nothing else, and [`chunk_dependency_graph`](@ref) has no `plan`
+method. That is what makes "the plan's relation" a well-defined phrase: whoever
+schedules, evicts, prefetches or validates against a plan is looking at one
+object.
+
+An eager [`DirectPlan`](@ref) never has one: it holds a single whole-domain
+block, so there is no chunk pairing to describe.
+
+# What the plan holds, and how it is chosen
+
+The `dependencies` keyword on lazy `plan_regrid` / `ChunkedPlan`:
+
+- `nothing` (the default) or `true` — build it now, once, from the plan's own
+  spaces at the plan's own radius, [`supportradius`](@ref)`(method, src_space)`.
+  Passing `refine` or `narrow` also selects this branch. A chunked plan owns a
+  relation by default because a lazy read *is* a read of that relation's rows:
+  the executor takes a tile's source chunks from
+  [`sourcesof`](@ref)`(dependencies(plan), d)` and performs no dependency
+  discovery of its own.
+- a [`ChunkDependencyGraph`](@ref) — adopt a relation somebody else built, after
+  [`validate_dependencies`](@ref) certifies it against *these* spaces, *this*
+  radius and the `narrow` phase the caller claims it carries. An invalid reuse
+  therefore fails at plan construction rather than as a wrong answer later.
+  `refine` cannot be combined with a supplied graph: a narrow phase applies as a
+  relation is built, and reapplying it afterwards would renumber nothing and
+  prove nothing. Name the phase the graph already carries with `narrow` instead.
+  A plan over part of a bigger destination adopts the bigger relation through
+  [`subspace_dependencies`](@ref), which re-stamps a row view onto the sub-space.
+- `false` — hold none, explicitly, and reject `refine`/`narrow` rather than
+  acting on them. A plan with no relation cannot back a
+  [`LazyRegridArray`](@ref), which needs the rows to read; it is for a caller
+  that wants nothing but [`blockfor`](@ref) and the plan's spaces.
+
+Whichever branch runs, it runs **once**, at construction, and reads no source
+data, builds no weights and issues no network metadata request.
+
+# Example
+
+```julia
+global_plan = plan_regrid(data; to = dst, from = src, lazy = true,
+                          dependencies = true)
+g = dependencies(global_plan)
+sourcesof(g, 12)                  # what destination chunk 12 may read
+consumerdegree(g, 7)              # initial refcount for source chunk 7
+
+# A second plan over the same pair reuses the relation instead of rebuilding it.
+other = plan_regrid(data; to = dst, from = src, lazy = true, dependencies = g)
+dependencies(other) === g
+```
+"""
+dependencies(plan::ChunkedPlan) = plan.dependencies
+dependencies(::DirectPlan) = nothing
+
+function _plandependencies(dependencies, refine, narrow,
+        method::AbstractRegriddingMethod, dst_space::RegridSpace,
+        src_space::RegridSpace)
+    if dependencies isa ChunkDependencyGraph
+        refine === nothing || throw(ArgumentError(
+            "`refine` narrows a relation while it is being built, so it cannot " *
+            "be applied to a `dependencies` graph the plan did not build. Pass " *
+            "`narrow` to name the narrow phase the supplied graph already " *
+            "carries, or drop `dependencies` to build a narrowed one here."))
+        return validate_dependencies(dependencies, dst_space, src_space;
+            radius = Float64(supportradius(method, src_space)),
+            narrow = narrow === nothing ? :none : narrow)
+    elseif dependencies === true || dependencies === nothing
+        return _builddependencies(dst_space, src_space,
+            supportradius(method, src_space), refine, narrow)
+    elseif dependencies === false
+        (refine === nothing && narrow === nothing) || throw(ArgumentError(
+            "`dependencies = false` asks the plan to hold no relation, but " *
+            "`refine`/`narrow` describe one it would have to build; pass " *
+            "`dependencies = true` or drop them."))
+        return nothing
+    end
+    throw(ArgumentError(
+        "`dependencies` must be `nothing`, `true`, `false`, or a " *
+        "ChunkDependencyGraph to adopt, got $(typeof(dependencies))"))
+end
 
 """
     blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds[, dst_space]) -> CachedBlock

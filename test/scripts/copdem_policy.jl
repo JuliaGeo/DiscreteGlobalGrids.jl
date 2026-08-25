@@ -369,10 +369,18 @@ end
     srcpts = [(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (6.0, 0.0)]
     dstpts = [(1.0, 0.0), (3.0, 0.0), (5.0, 0.0)]
     srccaps = caps(srcpts, deg2rad(1.2))
-    graph = GR._chunkgraph(caps(dstpts, deg2rad(1.2)),
-        GR._packedchunkindex(srccaps), length(srccaps), 0.0, nothing)
+    # There are no `RegridSpace`s here to stamp, only caps, so the graph carries
+    # the empty identity: it matches no space, and `validate_dependencies` will
+    # refuse to certify it for reuse. That is the honest record for a relation
+    # built by hand, and nothing in this testset reuses it.
+    graph = GR._chunkgraph(GR.DependencyIdentity(), caps(dstpts, deg2rad(1.2)),
+        GR._packedchunkindex(srccaps), srccaps, 0.0, nothing)
     @test GR.nsourcechunks(graph) == 4
     @test GR.ndestinationchunks(graph) == 3
+    # Task E1: a relation built from caps keeps them, so a consumer that needs a
+    # chunk's extent — the lazy executor's wave costing — reads it here.
+    @test GR.hasextents(graph)
+    @test GR.sourceextents(graph) === srccaps
 
     keys = [morton2(round(Int, p[1]) + 180, round(Int, p[2]) + 90) for p in srcpts]
     order = affinity_order(3, d -> GR.sourcesof(graph, d), keys)

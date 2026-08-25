@@ -44,14 +44,69 @@ and source reads remain lazy.
 
 - Phase 0, environment and benchmark baseline: complete.
 - Phase 1, native hierarchical chunk indexes: complete.
-- Current implementation phase: **1A**.
-- Phases 1A, 1B, and 1C finish the spatial layer before graph integration.
+- Phases 1A, 1B, and 1C: **complete**. They finished the spatial layer before
+  graph integration.
+- Phase 2, one authoritative dependency graph: **complete**. G1, G2, G3 and G4
+  are all closed. `ChunkedPlan` owns the relation; `dependencies(plan)` is the
+  only way to read it and builds nothing; `refine` is a keyword of lazy
+  `plan_regrid` alone. Read G4's record for the one action it could not complete
+  and why.
+- Phase 3, graph-backed lazy execution: **complete**. E1 is closed. The lazy
+  executor takes a tile's source chunks from `sourcesof(dependencies(plan), d)`
+  and performs no dependency discovery; `LazyRegridArray.srcindex` and its cap
+  vectors are gone, per-chunk caps now live on the relation, and a chunked plan
+  therefore owns a relation **by default** — `dependencies = false` is the
+  opt-out, and a plan that takes it cannot back a `LazyRegridArray`. G4's one
+  open action is closed with it: `subspace_dependencies` re-stamps a row view
+  onto a sub-space of the destination, which production measured and declined.
+- Phase 4, delete legacy discovery: **complete**. E2 is closed. `chunktree`,
+  `RasterFlatTree`, `connectedchunks`, `connectedchunks!` and the
+  `chunktree`-collecting `chunkextents` fallback are all gone; `chunkextents` is
+  a required hook with no fallback, and one `candidatechunks!` query per
+  destination cap defines every edge. Read E2's record for the `chunktree`
+  audit, and for the two things this card listed that were **not** dead.
+- Current implementation phase: **5**, behind the user's gate.
 - The nearest/bilinear method redesign is deferred to a separate plan.
+
+Landed cards, with the commit each one shipped as:
+
+| card | commit | subject |
+|---|---|---|
+| A1 | `47a7cf7` | Simplify raster coordinate transformations |
+| A2 | `41fb204` | Add task-local Proj raster transformations |
+| A3 | `a07de52` | Converge raster cells on the CR quadtree |
+| A4 | `e821c00` | Simplify raster range extent construction |
+| B1/B2/B3 | `714f101` + `93e836d` | Adopt public spherical extent operations; Pin public spherical extent dependencies |
+| B4 | `d194e2d` | Reuse packed trees for fallback cell geometry |
+| C1 | `5e91b0c` | Consolidate the regridding space interface |
+| G1 | PR #70 | Add dependency graph correctness and performance gates |
+| G2 | `da9e737` | landed early via PR #69; see the card |
+| G3 | PR #71 | Add reusable dependency graph identities |
+| G4 | PR #72 | Make chunked plans own dependency graphs |
+| E1 | PR #74 | Drive lazy regridding from dependency rows |
+| E2 | PR #75 | Remove duplicate chunk discovery paths |
+
+B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
+`93e836d` is the commit that pinned them and records their SHAs.
 
 Evidence:
 
 - `regrid-notes/2026-08-22-regridding-phase-0-baseline.md`
 - `regrid-notes/2026-08-22-regridding-phase-1.md`
+- `regrid-notes/2026-08-23-chunk-dag-coverage.md` — why G2 landed early
+- `regrid-notes/2026-08-23-g1-graph-oracles.md` — G1's oracles, and the
+  retroactive verdict on G2's gates
+- `regrid-notes/2026-08-23-g3-graph-identity.md` — G3's identity design, what it
+  catches and what it cannot, and the row-view measurements
+- `regrid-notes/2026-08-23-g4-plan-owns-graph.md` — G4's ownership design, the
+  Phase 2 gate as tests rather than prose, and what a per-column relation would
+  have cost production
+- `regrid-notes/2026-08-23-e2-delete-legacy-discovery.md` — E2's deletion audit,
+  the `chunktree` verdict, what the card listed that was not dead, and the
+  Phase 4 gate as tests
+- `regrid-notes/2026-08-23-e1-graph-backed-lazy.md` — E1's row-driven executor,
+  where cap metadata moved, `subspace_dependencies` and why production declined
+  it, and the Phase 3 gate as tests
 - `regrid-notes/2026-08-21-simplification-plan-review.md`
 - `regrid-notes/2026-08-21-regridding-simplification-plan-detailed-archive.md`
 
@@ -140,6 +195,10 @@ B1 may be prepared in an isolated GeometryOps worktree while A tasks run, but
 B2 must use the committed B1 API and B3 waits for both the upstream work and
 the completed raster geometry. Do not integrate or pin provisional upstream
 work.
+
+The `G1 -> G2` edge is historical only: G2 landed *before* G1, as a correctness
+fix (PR #69), and G1/PR #70 ran its gates retroactively. Read the order as
+`C1 -> G2 -> G1 -> G3 -> G4` for what actually happened. Both cards are closed.
 
 ## Phase 1A — raster geometry and CRS
 
@@ -419,8 +478,15 @@ Actions:
 
 - Add an actual-cell small-space oracle that proves every geometrically
   contributing pair is retained.
-- Add brute-force cap identity checks for the generic R-tree path and treat the
-  flat cap relation as an upper bound for raster/DGG native hierarchies.
+- Add brute-force cap identity checks for the generic R-tree path. **Do not
+  treat the flat cap relation as an upper bound for raster/DGG native
+  hierarchies** — this card originally said to, and #70 measured and pinned the
+  opposite. The generic packed-R-tree index equals the cap join exactly; the DGG
+  hierarchical descent is a strict subset of it; the `RasterGrid` quadtree and
+  the CopernicusDEM level-0 frontier both *cross* it, holding pairs the cap join
+  rejects as well as missing pairs it holds. The cap join bounds the graph in
+  neither direction on either shipped native hierarchy. What both relations do
+  satisfy is `truth ⊆ ·`, and that is the invariant to assert.
 - Commit a repeatable comparison harness for the latitude join and native-index
   row builder, including complete plan time, graph time/bytes, allocations, and
   peak memory.
@@ -431,30 +497,63 @@ Actions:
 **Done when:** the next task can change builders and obtain an objective
 correctness/performance verdict without adding instrumentation.
 **Commit:** `Add dependency graph correctness and performance gates`.
+**Landed:** PR #70. Records: `regrid-notes/2026-08-23-g1-graph-oracles.md` (the
+oracles, the harness, and the retroactive verdict on G2) and
+`regrid-notes/2026-08-23-chunk-dag-coverage.md` (the coverage defect that made
+#69 land G2 early). Post-#69 the contract the gates assert is an **equality**
+between the graph and the demanded relation, not a containment; G3 and G4 use
+`benchmark/chunk_graph_gates.jl` and the shared oracles in
+`lib/GlobalRegridding/test/graphoracles.jl` to prove they did not change it.
 
-### Task G2 — cut over to indexed graph construction
+### Task G2 — cut over to indexed graph construction — CLOSED
 
-**Prerequisite:** G1.
-**Owns:** graph builder and graph construction tests. Execution remains
-unchanged.
+**Status: LANDED EARLY, OUT OF ORDER, AND CLOSED.** Not an implementation card.
+Do not reopen it.
 
-Actions:
+It shipped as PR #69 (`da9e737`, builder commit `ba2bbfa`, *Build the chunk
+dependency graph from the source space's own chunk index*) — before G1 existed,
+and therefore without either of the gates this card said to pass first. It landed
+as a **correctness fix**, not as the planned performance-neutral cutover: a graph
+built from `chunkextents` directly *crossed* the executor's own candidate
+relation instead of dominating it, so a refcount derived from it retired source
+tiles a subsequent read still demanded. Record:
+`regrid-notes/2026-08-23-chunk-dag-coverage.md`.
 
-- Build destination-major rows with one source `chunkindex` and independent
-  `candidatechunks!` queries.
-- Preserve deterministic sorted rows and the bidirectional Int32 CSR.
-- Pass G1's actual-cell no-miss and generic exact-identity gates.
-- Recover the recorded latitude-join performance before removing it. The
-  archive records the 0.0594 s median, allocations, graph bytes, and 322-edge
-  provisional difference.
-- Remove the latitude-sorted join only after both gates pass.
+What shipped: destination-major rows from one source `chunkindex` and independent
+`candidatechunks!` queries; deterministic sorted rows and the bidirectional Int32
+CSR preserved; the latitude-sorted join deleted.
 
-Test small spatial raster chunks, complete/rooted/sparse DGGs, polar and
-antimeridian cases, nonzero support, and nonuniform coverage.
+Both gates were then run retroactively by G1/PR #70, on the case matrix this card
+asked for (small spatial raster chunks, complete/rooted/sparse DGGs, polar and
+antimeridian cases, nonzero support, nonuniform coverage, and the production
+Copernicus-to-IGeo7 pair). Verdict in
+`regrid-notes/2026-08-23-g1-graph-oracles.md` §5:
 
-**Done when:** the indexed relation passes the geometric proof and performance
-gate. Keep the old builder if either gate fails and report the blocker.
-**Commit:** `Build dependency rows through native indexes`.
+- **Correctness gate: PASSED**, retroactively. The indexed relation holds every
+  geometrically contributing pair in every oracle-checked case at every radius,
+  and every demanded pair on the production pair — where the deleted cap join
+  misses 72.
+- **Performance gate: FAILED, AND WAIVED.** This card required recovering the
+  archived 0.0594 s latitude-join median before removing that builder. It was not
+  recovered and cannot be; the two builders do different work. Measured on the
+  production pair: **5.7× slower at t8** (0.1219 s vs 0.0213 s), **6.1× at t4**
+  (0.2289 s vs 0.0376 s), and **1.6× the allocations** (17.1 MB vs 10.6 MB). Per
+  destination it is worse on a shallow raster source — up to 60× on
+  4320×2160/162 chunks.
+
+The waiver, and its reasoning: 0.12 s against a run whose recorded wall time is
+8.81 h — about 4 × 10⁻⁶ of it, and 1/90th of the space construction that precedes
+it — bought in exchange for a relation a refcount can actually be derived from
+(72 → 0 demanded-but-unheld pairs) and 322 fewer edges. The gate is recorded as
+*failed and waived*, never as passed. If a later task wants the factor back, the
+measurement points at the `RasterGrid` arm's per-query cursor copy and quadtree
+descent; `benchmark/chunk_graph_gates.jl` with
+`DGG_GRAPH_GATE_CASES=raster-4320-162chunks` is the reproducer, and its
+`:latjoin` arm keeps the deleted builder runnable for as long as the waiver
+stands.
+
+**Commit:** `Build the chunk dependency graph from the source space's own chunk
+index` (`ba2bbfa`, merged as `da9e737`).
 
 ### Task G3 — give dependency objects identity and row views
 
@@ -471,9 +570,38 @@ Actions:
 - Retain `sourcesof`, `consumersof`, degrees, counts, and bidirectional CSR.
 - Keep Graphs.jl compatibility over the same CSR; do not create a second graph.
 
+Row views are worth **strictly more** than when this card was written. Post-#69,
+`chunkindex(src_space)` is rebuilt on *every* `chunk_dependency_graph` call
+(`lib/GlobalRegridding/src/discovery.jl:40` — the generic path is a fresh packed
+R-tree over `chunkextents`), so a per-column rebuild now costs a full index build
+per column, not a `sortperm` over caps that were already sorted. Sharing the
+parent relation avoids that entirely.
+
 **Done when:** an invalid graph reuse fails at construction and row views retain
 global destination identity for refinement.
 **Commit:** `Add reusable dependency graph identities`.
+**Landed:** PR #71, stacked on #70. Record:
+`regrid-notes/2026-08-23-g3-graph-identity.md`. Two corrections to this card's
+premise are recorded there, and G4 should read them before designing around it:
+
+- `chunkindex` is **not** a fresh packed R-tree per column on either shipped
+  native space. `chunkindex(::DGGSpace) = space` is a field read and the
+  `RasterGrid` one is a cursor; both measure below 0.5 µs in every harness case.
+  The row view's saving is real ([measured] 26× for one destination and 80× for
+  a 4 136-chunk column on the production pair, with 16× less allocation) but it
+  comes from the destination caps and the per-row queries, not from an index
+  build. The R-tree claim holds only on the generic path, which neither shipped
+  native space takes.
+- `restrict` pays `O(nsourcechunks)` for its source-major transpose, because a
+  row view's refcounts are genuinely its own. Restricting to a *single* row on a
+  26 475-source problem is [measured] slower than re-querying that row. Restrict
+  a column, not a row.
+
+The identity is a fingerprint, not a proof. Equal source chunk caps do not imply
+equal source relations, because the relation comes from `chunkindex` rather than
+from the caps — the same divergence #69 exists to fix. That hole is documented on
+`spacestamp` and deliberately left open; closing it needs an index-identity hook
+on the qualified space interface, which is an interface change no card owns.
 
 ### Task G4 — make `ChunkedPlan` the sole graph owner
 
@@ -489,12 +617,44 @@ Actions:
 - Remove `refine` from post-plan graph builders.
 - Make production global/per-column plans share the global graph or validated
   row views; never rebuild a one-destination graph per column.
+- Delete `connectedchunkpairs` (`lib/GlobalRegridding/src/discovery.jl:203-217`).
+  The archive scheduled it for Phase 4 alongside `connectedchunks`, but #69 made
+  it a free deletion here: it is now line-for-line the same loop as
+  `_chunkgraph`'s rows — one `chunkindex(src)`, one `candidatechunks!` per
+  `chunkextents(dst)` entry — and its only caller is
+  `lib/GlobalRegridding/test/test_lazy.jl:145`. Move that assertion onto the
+  graph's rows and drop the function.
 - Preserve zero source reads, zero weight builds, deterministic construction,
   and no network metadata work.
 
 **Phase 2 gate:** one logical plan exposes exactly one validated relation and a
 narrow phase cannot be supplied after the plan exists.
 **Commit:** `Make chunked plans own dependency graphs`.
+**Landed:** PR #72, stacked on #71. Record:
+`regrid-notes/2026-08-23-g4-plan-owns-graph.md`. Five of the six actions landed
+as written. One correction to this card's fourth action, which G3 predicted and
+G4 measured:
+
+- **Production's per-column plans cannot take a validated row view, and do not
+  need one.** "Never rebuild a one-destination graph per column" is met by
+  construction: `dependencies` defaults to `nothing`, so `regrid_chunk`'s plans
+  build no relation and the default costs [measured] 1.00 µs and 784 B against
+  512 µs / 542 KB for `dependencies = true` and 193 µs / 424 KB for a one-row
+  `restrict` — 511× and 193× on 66 175 columns. "Share the global graph or
+  validated row views" is **not possible at this destination shape**:
+  `regrid_chunk`'s destination is a rooted one-chunk subtree grid, a different
+  space from `dagplan`'s 66 175-chunk `PartialGrid`, and a row view still stamps
+  the *whole* destination space, so `validate_dependencies` refuses it —
+  correctly. Closing that would need destination-**sub**space re-stamping (sound
+  in principle: G3 §1.3 shows the destination half of the relation is a function
+  of the caps alone), which no card owns and which nothing would consume until
+  E1. G4 left it open and proved the refusal instead.
+
+The global plan does own the relation: `dagplan` constructs a `GR.ChunkedPlan`
+with `dependencies = true` and the narrow phase, and the schedule, refcount
+cache, prefetcher and closing validator all read `GR.dependencies(globalplan)` —
+asserted at run time by a new `check(...)` in the driver. The relation is
+[measured] unchanged: 326 064 edges, equal `DependencyIdentity`, 0.118 s warm.
 
 ## Phase 3 — graph-backed lazy execution
 
@@ -521,6 +681,32 @@ misses, source order, eager/lazy values, residency, and production policy.
 **Phase 3 gate:** no lazy read performs geometric dependency discovery; executor
 and scheduler consume the same object.
 **Commit:** `Drive lazy regridding from dependency rows`.
+**Landed:** PR #74, stacked on #72. Record:
+`regrid-notes/2026-08-23-e1-graph-backed-lazy.md`. All six actions landed. Three
+things the card did not say, which a later task should read before designing
+around them:
+
+- **A chunked plan now owns a relation by default.** It had to: a lazy read *is*
+  a read of the rows, so `dependencies = nothing` — meaning "own none" — would
+  have made the default plan unable to back a `LazyRegridArray`. `nothing` and
+  `true` both build; `false` is the opt-out and is refused by the lazy array,
+  by name. That reverses G4's default, and G4's measured reason for it (nothing
+  consumed a plan's relation) is exactly what this card removed.
+- **G4's open action is closed, and production declined it.**
+  `subspace_dependencies(g, subspace, destinations)` re-stamps a row view onto a
+  sub-space whose chunk caps it reproduces cap for cap — sound because the
+  destination half of the relation is a function of those caps alone. A
+  per-column plan does adopt it. But [measured] on the production pair it is
+  only **0.82x** the time and **0.79x** the bytes of simply building the
+  one-row relation (408 us / 425 KB against 500 us / 542 KB), because both pay
+  the same `O(nsourcechunks)` transpose and adoption still stamps the source
+  space. `regrid_chunk` therefore keeps building its own, and E1 added a
+  sampled `graphmisscheck` to the driver instead.
+- **The card's proof obligation is true only where the source index is the
+  generic one.** `graph rows` are not inside the cap join on a native
+  hierarchy — the two relations cross, which is why #69 exists — so the raster
+  arm of the proof test asserts the eager containment and says so, rather than
+  asserting something false.
 
 ## Phase 4 — delete legacy discovery
 
@@ -532,7 +718,9 @@ scripts.
 
 Actions:
 
-- Remove `connectedchunks`, `connectedchunks!`, and `connectedchunkpairs`.
+- Remove `connectedchunks` and `connectedchunks!`. (`connectedchunkpairs` moved
+  forward to G4 — after #69 it duplicates `_chunkgraph`'s rows exactly, so it is
+  a free deletion there.)
 - Remove any latitude join left after G2, post-plan graph builder, redundant cap
   vectors, and compatibility source-index state.
 - Keep a cheap `chunkextent(space, chunk)` and `chunkextents` materialization
@@ -545,6 +733,30 @@ Actions:
 executor nor interface translates that relation back through a compatibility
 tree.
 **Commit:** `Remove duplicate chunk discovery paths`.
+**Landed:** PR #75, stacked on #74. Record:
+`regrid-notes/2026-08-23-e2-delete-legacy-discovery.md`. All five actions
+landed. Three corrections to this card, which a later task should read:
+
+- **The `chunktree` verdict is remove, and the audit is in the record.** No
+  in-repo or `DiscreteGlobalGrids` space implemented it except the bridge
+  itself and three test toys; `DGGSpace` never had one. `chunkextents` is now a
+  **required hook with no fallback** — asserted as
+  `!hasmethod(chunkextents, Tuple{RegridSpace})` — which is the structural half
+  of the gate. `RasterFlatTree` went with it, closing `rastergrid.jl:969-971`.
+- **Two things this card listed were not dead, and were kept.** There is no
+  latitude join left in `src/` at all — G2 deleted it — and what remains is the
+  gates harness's deliberately archived `:latjoin` arm, whose documented sunset
+  condition (G2's waiver retired) has **not** fired, so deleting it would have
+  destroyed both the waiver's audit trail and half of E2's own before/after
+  evidence. There is likewise no post-plan graph builder left and no redundant
+  cap vector: E1 moved the graph's two cap vectors onto the relation on purpose
+  and they are aliases to the two `DGGSpace`s' own arrays.
+- **`chunkextent` was kept and given the *cheap* method the card asks for.**
+  After `connectedchunks` went it had zero callers and zero specializations, but
+  it is `public`, documented, and asserted by the qualified-contract testset.
+  `RasterGrid` now specializes it at `O(1)` in the chunk count instead of
+  materializing the whole vector, which is the difference between keeping the
+  card's letter and its point.
 
 ## Phase 5 — one final weight block representation
 

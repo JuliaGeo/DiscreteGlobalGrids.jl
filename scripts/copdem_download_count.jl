@@ -180,9 +180,15 @@ function main_count()
     end
     refine(d, s) = count_boxesoverlap(dstlat[d], dstlon[d], dstrdeg[d],
         dstlonhalf[d], tilelat[s], tilelon[s])
-    GR.chunk_dependency_graph(dstspace, srcspace; radius, refine) # compile warm-up
-    refinedseconds = @elapsed refined = GR.chunk_dependency_graph(
-        dstspace, srcspace; radius, refine)
+    # A narrow phase is an argument to plan construction and to nothing else
+    # (Task G4), so the refined relation comes from a plan that owns it. The
+    # plan's radius is `supportradius(Conservative(), srcspace)`, which is the
+    # same `radius` the cap graph above was built at.
+    refinedgraph() = GR.dependencies(GR.ChunkedPlan(DGG.Conservative(),
+        GR.Weighted(0.5), dstspace, srcspace;
+        dependencies = true, refine, narrow = :copdem_tile_lonlat_box))
+    refinedgraph() # compile warm-up
+    refinedseconds = @elapsed refined = refinedgraph()
 
     @printf("caps graph:    %.3f s, %d edges\n", capseconds, Graphs.ne(caps))
     @printf("refined graph: %.3f s, %d edges\n\n", refinedseconds, Graphs.ne(refined))

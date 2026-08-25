@@ -249,9 +249,16 @@ function main()
     end
     boxrefine(d, s) = boxesoverlap(dstlat[d], dstlon[d], dstrdeg[d], dstlonhalf[d],
         tilelat[s], tilelon[s])
-    GR.chunk_dependency_graph(dstspace, srcspace; radius, refine = boxrefine)
-    trefined = @elapsed refined = GR.chunk_dependency_graph(dstspace, srcspace;
-        radius, refine = boxrefine)
+    # Task G4: a narrow phase is an argument to plan construction and to
+    # nothing else, so the refined relation comes from a plan that owns it. The
+    # plan's radius is `supportradius(Conservative(), srcspace)`, the same
+    # `radius` the unrefined graph above was built at.
+    refinedgraph() = GR.dependencies(GR.ChunkedPlan(DGG.Conservative(),
+        GR.Weighted(0.5), dstspace, srcspace;
+        dependencies = true, refine = boxrefine,
+        narrow = :copdem_tile_lonlat_box))
+    refinedgraph()   # warm up
+    trefined = @elapsed refined = refinedgraph()
     @printf("built in %.2f s: %s\n", trefined, refined)
     check("refinement only removes edges", all(
         issubset(GR.sourcesof(refined, d), GR.sourcesof(graph, d))

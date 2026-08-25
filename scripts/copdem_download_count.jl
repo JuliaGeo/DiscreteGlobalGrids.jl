@@ -182,7 +182,7 @@ function main_count()
         dstlonhalf[d], tilelat[s], tilelon[s])
     # A narrow phase is an argument to plan construction and to nothing else
     # (Task G4), so the refined relation comes from a plan that owns it. The
-    # plan's radius is `support_radius(Conservative(), srcspace)`, which is the
+    # plan's radius is `supportradius(Conservative(), srcspace)`, which is the
     # same `radius` the cap graph above was built at.
     refinedgraph() = GR.dependencies(GR.ChunkedPlan(DGG.Conservative(),
         GR.Weighted(0.5), dstspace, srcspace;

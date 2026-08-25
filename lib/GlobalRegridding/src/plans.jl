@@ -446,7 +446,7 @@ The `dependencies` keyword on lazy `plan_regrid` / `ChunkedPlan`:
   `O(nsourcechunks)` for the source-major direction that a one-row view barely
   uses ([measured]: `regrid-notes/2026-08-23-g4-plan-owns-graph.md`).
 - `true` — build it now, once, from the plan's own spaces at the plan's own
-  radius, [`support_radius`](@ref)`(method, src_space)`. Passing `refine` or
+  radius, [`supportradius`](@ref)`(method, src_space)`. Passing `refine` or
   `narrow` implies this.
 - a [`ChunkDependencyGraph`](@ref) — adopt a relation somebody else built, after
   [`validate_dependencies`](@ref) certifies it against *these* spaces, *this*
@@ -480,7 +480,7 @@ dependencies(::DirectPlan) = nothing
 
 # The default: no relation asked for, so no relation work. This method exists
 # so that constructing a per-destination-chunk plan — which production does
-# 66 175 times — pays nothing at all, not even `support_radius`.
+# 66 175 times — pays nothing at all, not even `supportradius`.
 _plandependencies(::Nothing, ::Nothing, ::Nothing, ::AbstractRegriddingMethod,
     ::RegridSpace, ::RegridSpace) = nothing
 
@@ -494,12 +494,12 @@ function _plandependencies(dependencies, refine, narrow,
             "`narrow` to name the narrow phase the supplied graph already " *
             "carries, or drop `dependencies` to build a narrowed one here."))
         return validate_dependencies(dependencies, dst_space, src_space;
-            radius = Float64(support_radius(method, src_space)),
+            radius = Float64(supportradius(method, src_space)),
             narrow = narrow === nothing ? :none : narrow)
     elseif dependencies === true ||
            (dependencies === nothing && (refine !== nothing || narrow !== nothing))
         return _builddependencies(dst_space, src_space,
-            support_radius(method, src_space), refine, narrow)
+            supportradius(method, src_space), refine, narrow)
     elseif dependencies === false
         (refine === nothing && narrow === nothing) || throw(ArgumentError(
             "`dependencies = false` asks the plan to hold no relation, but " *

@@ -48,8 +48,8 @@ The relation is chosen **once**, at construction, by one keyword on lazy
 
 | `dependencies` | what the plan holds | what construction costs |
 |---|---|---|
-| `nothing` (default) | none | **nothing at all** — a dedicated `_plandependencies(::Nothing,::Nothing,::Nothing,…)` method returns `nothing` without even calling `support_radius` |
-| `true` | a relation built here, at `support_radius(method, src_space)` | one `chunk_dependency_graph` |
+| `nothing` (default) | none | **nothing at all** — a dedicated `_plandependencies(::Nothing,::Nothing,::Nothing,…)` method returns `nothing` without even calling `supportradius` |
+| `true` | a relation built here, at `supportradius(method, src_space)` | one `chunk_dependency_graph` |
 | a `ChunkDependencyGraph` | that object, by reference, after `validate_dependencies` certifies it | two `spacestamp` calls |
 | `false` | none, explicitly | nothing; and it *rejects* `refine`/`narrow` rather than dropping them |
 
@@ -160,8 +160,8 @@ graph  = GR.dependencies(globalplan)
 radius = GR.dependency_radius(graph)
 ```
 
-The radius is now the plan's method's own `support_radius` instead of a
-hand-computed `Float64(GR.support_radius(DGG.Conservative(), srcspace))` — the
+The radius is now the plan's method's own `supportradius` instead of a
+hand-computed `Float64(GR.supportradius(DGG.Conservative(), srcspace))` — the
 same number, from the same call, one layer down. `dagplan` returns `globalplan`
 beside `graph`, and the driver gained one structural assertion,
 `plan.graph === GR.dependencies(plan.globalplan)`, so "one relation, one owner"

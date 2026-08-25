@@ -251,7 +251,7 @@ function main()
         tilelat[s], tilelon[s])
     # Task G4: a narrow phase is an argument to plan construction and to
     # nothing else, so the refined relation comes from a plan that owns it. The
-    # plan's radius is `support_radius(Conservative(), srcspace)`, the same
+    # plan's radius is `supportradius(Conservative(), srcspace)`, the same
     # `radius` the unrefined graph above was built at.
     refinedgraph() = GR.dependencies(GR.ChunkedPlan(DGG.Conservative(),
         GR.Weighted(0.5), dstspace, srcspace;

@@ -76,6 +76,25 @@ function buildweights!(coo::WeightCOO, m::T7RadiusMethod,
     return coo
 end
 
+# A point method with `BarycentricPoint`'s stencils and the default support
+# radius of zero, so its relation is cap overlap and nothing else.
+
+struct T9NoReach <: AbstractRegriddingMethod end
+
+GR.outputsampling(::T9NoReach) = DD.Lookups.Points()
+GR.sampler(::T9NoReach, space::RegridSpace) = GR.sampler(BarycentricPoint(), space)
+
+# The source chunks a destination tile's stencils name, taken from an operator
+# built over the whole domain by the chunk-pair builder, so nothing a tile build
+# does takes part in the answer.
+function t9_owners(whole::Matrix{Float64}, space::RegridSpace, dinds)
+    out = Set{Int}()
+    for i in dinds, j in axes(whole, 2)
+        iszero(whole[Int(i), j]) || push!(out, Int(GR.chunkat(space, j)))
+    end
+    return sort!(collect(out))
+end
+
 t7_plan(method, dst, src; policy = Weighted(0.5), storage = PerChunk(),
     budget = 2^30, chunks = nothing, missingval = nothing) =
     ChunkedPlan(method, policy, dst, src, storage, budget, chunks, missingval)
@@ -935,5 +954,169 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
         end
         @test err isa ArgumentError
         @test occursin("dependencies = false", err.msg)
+    end
+
+    @testset "a point tile reads exactly the chunks its stencils name" begin
+        # The counting point fixture of `test_interpolation.jl`: stencils that
+        # bracket each destination across source-chunk seams, on a destination
+        # whose two chunks are its tiles, against an 18-chunk source.
+        src = ToyLonLatSpace(36, 18; chunks = (6, 6))
+        dst = ToyLonLatSpace(20, 10; lon = (-19.0, 21.0), lat = (-20.0, 20.0),
+            chunks = (20, 5))
+        data = collect(reshape(1.0:648.0, 36, 18))
+        source = T7Counting(data, (6, 6))
+        plan = t7_plan(T5PlaceCount(), dst, src)
+        graph = GR.dependencies(plan)
+        A = LazyRegridArray(source, plan)
+        @test A.tiling.spacetiled && nchunks(dst) == 2
+
+        eager = regrid(data; to = dst, from = src, method = T5PlaceCount(),
+            lazy = false)
+
+        for t in 1:nchunks(dst)
+            dinds = ownedindices(dst, t)
+            t7_reset!(source)
+            @test A[first(dinds):last(dinds)] ≈ eager[first(dinds):last(dinds)]
+
+            manifest = plan.storage.tiles[t].sourcechunks
+            row = Int.(GR.sourcesof(graph, t))
+
+            # The manifest is the tile's own stencils, and the read is the
+            # manifest: no row chunk with no block was loaded, and no manifest
+            # chunk was skipped.
+            @test manifest == t5_owners(dst, dinds, src)
+            @test length(source.reads) == length(manifest)
+            @test t7_spatial(source) ==
+                  sort([GR.chunkranges(src, s, (36, 18)) for s in manifest])
+
+            # The relation's row is a superset, and a strict one, so reading it
+            # rather than the manifest would show up in the count above.
+            @test issubset(manifest, row)
+            @test length(manifest) < length(row)
+        end
+
+        # Reading the whole destination in one call shares one source hold
+        # across the tiles, and still touches nothing outside their manifests.
+        t7_reset!(source)
+        @test A[1:Int(ncells(dst))] ≈ eager
+        held = Set(GR.chunkranges(src, s, (36, 18))
+                   for t in 1:nchunks(dst) for s in plan.storage.tiles[t].sourcechunks)
+        rowheld = Set(GR.chunkranges(src, s, (36, 18))
+                      for t in 1:nchunks(dst) for s in Int.(GR.sourcesof(graph, t)))
+        @test !isempty(source.reads)
+        @test all(in(held), t7_spatial(source))
+        @test length(held) < length(rowheld)
+    end
+
+    @testset "a point stencil reaching past cap overlap needs a declared radius" begin
+        # A destination lattice twenty times finer than the source, wholly
+        # inside one source cell and just past its sample site, so its stencils
+        # bracket sites in three further source chunks. Each source cell is its
+        # own chunk, so the caps are tight and the destination meets one.
+        src = ToyLonLatSpace(36, 18; chunks = (1, 1))
+        dst = ToyLonLatSpace(2, 2; lon = (5.0, 6.0), lat = (5.0, 6.0),
+            chunks = (2, 2))
+        data = collect(reshape(1.0:648.0, 36, 18))
+        ndst = Int(ncells(dst))
+        @test nchunks(dst) == 1
+
+        owner = Int(GR.chunkat(src, cellat(src, cellcentroid(dst, 1))))
+        @test all(Int(GR.chunkat(src, cellat(src, cellcentroid(dst, i)))) == owner
+                  for i in 1:ndst)
+
+        weights = GR.tileweights(BarycentricPoint(), GR.TileCells(dst, 1:ndst),
+            1:ndst, src, GR.sampler(BarycentricPoint(), src))
+        @test length(weights.sourcechunks) == 4
+        @test owner in weights.sourcechunks
+
+        # Cap overlap alone names only the chunk the destination sits in: the
+        # other three own sites whose own cells the destination never touches,
+        # so an intersection with a radius-free row would drop their weights.
+        caps, dcap = GR.chunkextents(src), GR.chunkextents(dst)[1]
+        @test [s for s in weights.sourcechunks
+               if US.spherical_distance(dcap.point, caps[s].point) <=
+                  dcap.radius + caps[s].radius] == [owner]
+
+        # The declared reach is what puts all four in the relation, and the read
+        # is all four.
+        plan = t7_plan(BarycentricPoint(), dst, src)
+        @test supportradius(BarycentricPoint(), src) ≈ deg2rad(10.0)
+        @test issubset(weights.sourcechunks, Int.(GR.sourcesof(GR.dependencies(plan), 1)))
+        source = T7Counting(data, (1, 1))
+        A = LazyRegridArray(source, plan)
+        @test A[1:ndst] ≈ regrid(data; to = dst, from = src,
+            method = BarycentricPoint(), lazy = false)
+        @test t7_spatial(source) ==
+              sort([GR.chunkranges(src, s, (36, 18)) for s in weights.sourcechunks])
+
+        # Declaring no reach leaves three of them out of the relation. The read
+        # refuses, naming the hook and the method, rather than answering with
+        # three weights silently dropped.
+        bare = t7_plan(T9NoReach(), dst, src)
+        @test supportradius(T9NoReach(), src) == 0.0
+        @test !issubset(weights.sourcechunks,
+            Int.(GR.sourcesof(GR.dependencies(bare), 1)))
+        err = try
+            LazyRegridArray(T7Counting(data, (1, 1)), bare)[1:ndst]
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("supportradius", err.msg)
+        @test occursin("T9NoReach", err.msg)
+    end
+
+    @testset "a point tile's manifest tracks the source's chunking" begin
+        # A chunked raster source under two chunkings, and a finer destination
+        # lattice inside its hull straddling both chunk seams.
+        xd = DD.X(-177.5:5.0:177.5)
+        yd = DD.Y(-87.5:5.0:87.5)
+        data = collect(reshape(1.0:2592.0, 72, 36))
+        dst = ToyLonLatSpace(17, 11; lon = (-102.0, -17.0), lat = (-42.0, 13.0),
+            chunks = (17, 4))
+        @test nchunks(dst) == 3
+
+        plainspace = RasterGrid(DD.DimArray(data, (xd, yd)))
+        eager = regrid(data; to = dst, from = plainspace,
+            method = BarycentricPoint(), lazy = false)
+        # The operator the chunk-pair builder gives over the whole domain, which
+        # no tile build takes part in.
+        whole = Matrix(GR.wholeblock(BarycentricPoint(), dst, plainspace).weights)
+        @test all(isapprox(1.0), sum(whole; dims = 2))
+
+        manifests = Dict{Tuple{Int,Int},Vector{Vector{Int}}}()
+        for chunks in ((18, 18), (12, 9))
+            counting = T7Counting(data, chunks)
+            raster = DD.DimArray(counting, (xd, yd))
+            space = RasterGrid(raster)
+            plan = t7_plan(BarycentricPoint(), dst, space)
+            A = LazyRegridArray(raster, plan)
+            tiles = Vector{Int}[]
+            for t in 1:nchunks(dst)
+                dinds = ownedindices(dst, t)
+                t7_reset!(counting)
+                @test A[first(dinds):last(dinds)] ≈ eager[first(dinds):last(dinds)]
+
+                manifest = plan.storage.tiles[t].sourcechunks
+                row = Int.(GR.sourcesof(GR.dependencies(plan), t))
+                @test manifest == t9_owners(whole, space, dinds)
+                @test issubset(manifest, row)
+                @test t7_spatial(counting) ==
+                      sort([GR.chunkranges(space, s, (72, 36)) for s in manifest])
+                push!(tiles, [Int(x) for x in manifest])
+            end
+            # Somewhere in this destination the row really is wider than the
+            # manifest, so the read is not the row by coincidence.
+            @test any(t -> length(tiles[t]) <
+                           length(GR.sourcesof(GR.dependencies(plan), t)),
+                1:nchunks(dst))
+            manifests[chunks] = tiles
+        end
+
+        # One answer under both chunkings, and a manifest that is not the same
+        # list: the stencils do not move with the chunking and the manifest
+        # does.
+        @test manifests[(18, 18)] != manifests[(12, 9)]
     end
 end

@@ -170,8 +170,9 @@ A lazy plan is the sole owner of its chunk dependency relation, and this is the
 only place a narrow phase may be supplied. `dependencies` chooses whether the
 plan builds one (`nothing`, the default, or `true`), adopts and validates one
 somebody else built (a [`ChunkDependencyGraph`](@ref)), or holds none (`false`).
-A lazy read *is* a read of that relation's rows, so a plan that holds none
-cannot back a [`LazyRegridArray`](@ref). `refine` is the
+Every lazy read needs one — for tile order, wave costing, refcounts and
+prefetch, and on the chunk-pair route for the source chunks themselves — so a
+plan that holds none cannot back a [`LazyRegridArray`](@ref). `refine` is the
 conservative narrow phase to apply while building, `refine(dstchunk, srcchunk)
 -> Bool`, and `narrow` the `Symbol` that names it in the relation's identity. A
 `refine` must only ever reject pairs it can *prove* disconnected; a wrong one

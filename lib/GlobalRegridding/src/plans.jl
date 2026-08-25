@@ -681,10 +681,11 @@ The `dependencies` keyword on lazy `plan_regrid` / `ChunkedPlan`:
 - `nothing` (the default) or `true` — build it now, once, from the plan's own
   spaces at the plan's own radius, [`supportradius`](@ref)`(method, src_space)`.
   Passing `refine` or `narrow` also selects this branch. A chunked plan owns a
-  relation by default because a lazy read *is* a read of that relation's rows:
-  the executor takes a tile's source chunks from
+  relation by default because every lazy read needs one: the executor takes a
+  chunk-pair tile's source chunks from
   [`sourcesof`](@ref)`(dependencies(plan), d)` and performs no dependency
-  discovery of its own.
+  discovery of its own, and it orders tiles, costs waves, and holds refcounts
+  and prefetch against the same object whatever the build unit is.
 - a [`ChunkDependencyGraph`](@ref) — adopt a relation somebody else built, after
   [`validate_dependencies`](@ref) certifies it against *these* spaces, *this*
   radius and the `narrow` phase the caller claims it carries. An invalid reuse
@@ -701,6 +702,16 @@ The `dependencies` keyword on lazy `plan_regrid` / `ChunkedPlan`:
 
 Whichever branch runs, it runs **once**, at construction, and reads no source
 data, builds no weights and issues no network metadata request.
+
+# What it decides, and what it does not
+
+For a method whose build unit is a chunk pair, a row *is* the read: the executor
+loads the chunks the row names and nothing else. For a point method that
+supplies a [`sampler`](@ref), the build unit is a destination tile and the read
+is the tile's [`TileWeights`](@ref) manifest — the exact chunks its stencils
+name. The relation then orders tiles, costs waves, and carries the caps,
+refcounts and prefetch, and its rows are a superset of every manifest, but they
+decide no read. Keeping them a superset is what [`supportradius`](@ref) is for.
 
 # Example
 

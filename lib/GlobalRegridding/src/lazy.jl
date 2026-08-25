@@ -269,14 +269,16 @@ function LazyRegridArray(data, plan::ChunkedPlan)
         !usesreference(plan.missingpolicy), LazyStats())
 end
 
-# The plan's relation is what a lazy read reads, so this is where a plan that
-# owns none is refused — at construction, naming the keyword that caused it,
-# rather than as a `nothing` reaching a tile query.
+# Every lazy read needs the plan's relation — for tile ordering, wave costing,
+# refcounts and prefetch, and on the pair route for the source chunks
+# themselves — so this is where a plan that owns none is refused: at
+# construction, naming the keyword that caused it, rather than as a `nothing`
+# reaching a tile query.
 function _lazygraph(plan::ChunkedPlan)
     g = dependencies(plan)
     g === nothing && throw(ArgumentError(
-        "a lazy regrid takes its source chunks from the plan's dependency " *
-        "relation, but this plan owns none. It was built with " *
+        "a lazy regrid orders, costs and bounds its source reads with the " *
+        "plan's dependency relation, but this plan owns none. It was built with " *
         "`dependencies = false`; drop that keyword to have the plan build one, " *
         "or pass a `ChunkDependencyGraph` for it to adopt."))
     hasextents(g) || throw(ArgumentError(
@@ -298,8 +300,14 @@ end
 """
     dependencies(A::LazyRegridArray) -> ChunkDependencyGraph
 
-Return the relation `A`'s reads are drawn from: `A`'s plan's relation, the
-identical object, so `dependencies(A) === dependencies(A.plan)`.
+Return the relation `A` reads against: `A`'s plan's relation, the identical
+object, so `dependencies(A) === dependencies(A.plan)`.
+
+It is what orders tiles, costs waves, holds the caps and carries the refcounts
+and prefetch, and on the chunk-pair route it is also the source selection
+itself. A tile built as one [`TileWeights`](@ref) selects from its own manifest
+instead, and the relation is then a superset of what that tile reads and decides
+no read of it.
 """
 dependencies(A::LazyRegridArray) = A.graph
 
@@ -422,8 +430,9 @@ held chunks plus one streamed chunk. Blocks are built in waves but applied in
 chunk order, keeping results independent of thread count.
 
 A point method with a [`sampler`](@ref) has one build per tile rather than one
-per pair: the tile's [`TileWeights`](@ref) are built before any source read, and
-its blocks are applied in the same ascending chunk order.
+per pair: the tile's [`TileWeights`](@ref) are built before any source read —
+before source selection, because their manifest is what selects — and its blocks
+are applied in the same ascending chunk order.
 """
 function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
     cellr::UnitRange{Int}, others::NTuple{NO,UnitRange{Int}}, nslices::Int) where {T,N,NS,NO}
@@ -453,13 +462,12 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         fill!(num, 0.0)
         fill!(cover, 0.0)
         fill!(total, 0.0)
-        _connectedsource!(srcchunks, A, t)
         # Share tile geometry across blocks built for this tile.
         dstcells = TileCells(plan.dst_space, dinds)
-        # On the tile route the weights come first, and the chunks that carry
-        # one are the chunks worth reading.
+        # On the tile route the weights come before the selection, because the
+        # chunks that carry one are exactly the chunks read.
         tile = smp === nothing ? nothing : tilefor(plan, t, dinds, dstcells, smp)
-        tile === nothing || _keepmanifest!(srcchunks, tile.sourcechunks)
+        _connectedsource!(srcchunks, A, t, tile)
         _sourceranges!(srcranges, A, srcchunks)
         keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
         w = tile === nothing ?
@@ -590,26 +598,9 @@ function _waveideal(costs::Vector{Float64}, w::Int)
     return serial > 0 ? total / serial : 1.0
 end
 
-# Keep the source chunks the tile's stencils name. The relation's row is a
-# superset of the manifest and `knownempty` filtering has already run, so this
-# intersects two ascending lists and keeps the order both are in.
-function _keepmanifest!(srcchunks::Vector{Int}, manifest::Vector{Int})
-    n = 0
-    k = 1
-    @inbounds for s in srcchunks
-        while k <= length(manifest) && manifest[k] < s
-            k += 1
-        end
-        (k <= length(manifest) && manifest[k] == s) || continue
-        srcchunks[n+=1] = s
-    end
-    resize!(srcchunks, n)
-    return srcchunks
-end
-
 # The tile route has one built object per tile, so its wave is a lookup: the
 # tile's block for each source chunk, in the ascending order the loop walks
-# them. Every chunk left in `srcchunks` is one the manifest holds.
+# them. `srcchunks` came from the manifest, so every one of them has a block.
 function _tilewave!(wave::Vector{CachedBlock}, tile::CachedTile, srcchunks::Vector{Int},
     i::Int, j::Int)
     empty!(wave)
@@ -669,27 +660,36 @@ _tileindices(A::LazyRegridArray, t::Int) =
     A.tiling.spacetiled ? ownedindices(A.plan.dst_space, t) : A.tiling.runs[t]
 
 """
-    _connectedsource!(out, A, t) -> out
+    _connectedsource!(out, A, t[, tile]) -> out
 
 Write tile `t`'s source chunks into `out`, ascending.
 
-This is the whole of the executor's source selection, and it is a read of the
-plan's relation — no index, no query, no cap test. A tile that is destination
-chunk `d` takes row `d`; a derived tile spanning several destination chunks
-takes the ascending union of their rows, which is a `k`-way merge of already
-ascending rows, so the result depends on the tiling and not on the order the
-rows are visited.
+This is the whole of the executor's source selection, and what decides it is the
+tile's build unit.
 
-`knownempty` filtering comes **after**, because it is data-dependent: it may drop
-a chunk the relation holds, and it may never add one the relation does not.
+A tile with no [`TileWeights`](@ref) — every area method, and a point method
+that supplies no [`sampler`](@ref) — is a read of the plan's relation, with no
+index, no query and no cap test. A tile that is destination chunk `d` takes row
+`d`; a derived tile spanning several destination chunks takes the ascending
+union of their rows, which is a `k`-way merge of already ascending rows, so the
+result depends on the tiling and not on the order the rows are visited.
+
+A tile that has `TileWeights` takes its manifest, exactly: the sorted union of
+the source chunks owning its nonzero stencil entries. The relation's row is a
+superset of that manifest and decides nothing here — intersecting the two could
+only drop a chunk a stencil named. A manifest naming a chunk no row of the tile
+holds is a declared [`supportradius`](@ref) too small to bound the method's
+stencils, and is refused rather than silently dropped.
+
+`knownempty` filtering comes **after**, on both routes, because it is
+data-dependent: it may drop a chunk the selection holds, and it may never add
+one the selection does not.
 """
-function _connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int)
-    rows = A.tiling.chunksof[t]
-    if length(rows) == 1
-        _copyrow!(out, sourcesof(A.graph, @inbounds rows[1]))
-    else
-        _unionrows!(out, A.graph, rows)
-    end
+_connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int) =
+    _connectedsource!(out, A, t, nothing)
+
+function _connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int, tile)
+    _selectsource!(out, A, t, tile)
     if A.dropempty
         before = length(out)
         filter!(s -> !_allempty(A, s), out)
@@ -698,7 +698,60 @@ function _connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int)
     return out
 end
 
-# One row, widened to the `Int` chunk numbers every consumer downstream uses.
+# The relation's rows: one row, or a derived tile's ascending union of rows.
+function _selectsource!(out::Vector{Int}, A::LazyRegridArray, t::Int, ::Nothing)
+    rows = A.tiling.chunksof[t]
+    if length(rows) == 1
+        _copyrow!(out, sourcesof(A.graph, @inbounds rows[1]))
+    else
+        _unionrows!(out, A.graph, rows)
+    end
+    return out
+end
+
+# The tile's own manifest, checked against the rows it has to sit inside. The
+# check is what keeps a declared reach from turning into a wrong answer: a
+# stencil entry whose chunk the relation never named would otherwise be applied
+# against source the refcounts and prefetch never accounted for.
+function _selectsource!(out::Vector{Int}, A::LazyRegridArray, t::Int, tile::CachedTile)
+    _copyrow!(out, tile.sourcechunks)
+    s = _outsiderows(A, t, out)
+    s == 0 || throw(ArgumentError(_reachmessage(A, t, s)))
+    return out
+end
+
+# The first chunk of `manifest` that no row of tile `t` holds, or `0` when every
+# one of them is inside. Rows are ascending, so each test is a binary search.
+function _outsiderows(A::LazyRegridArray, t::Int, manifest::Vector{Int})
+    rows = A.tiling.chunksof[t]
+    @inbounds for s in manifest
+        inside = false
+        for d in rows
+            _inrow(sourcesof(A.graph, d), s) && (inside = true; break)
+        end
+        inside || return s
+    end
+    return 0
+end
+
+function _inrow(row, s::Int)
+    k = searchsortedfirst(row, s)
+    return k <= length(row) && Int(@inbounds row[k]) == s
+end
+
+function _reachmessage(A::LazyRegridArray, t::Int, s::Int)
+    method, src_space = A.plan.method, A.plan.src_space
+    return "destination tile $t takes weights from source chunk $s, which the " *
+           "plan's dependency relation does not name for it. A method that " *
+           "supplies a `sampler` must declare a `supportradius` bounding every " *
+           "stencil it emits, so that the relation stays a superset of what is " *
+           "read; `supportradius` of $(typeof(method)) on $(typeof(src_space)) " *
+           "answers $(supportradius(method, src_space)) radians, which does not " *
+           "reach chunk $s."
+end
+
+# One ascending list of chunk numbers, widened to the `Int` every consumer
+# downstream uses: a relation row, or a tile's manifest.
 function _copyrow!(out::Vector{Int}, row)
     resize!(out, length(row))
     @inbounds for i in eachindex(row)

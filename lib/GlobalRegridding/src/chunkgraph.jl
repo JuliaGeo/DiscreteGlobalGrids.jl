@@ -672,9 +672,10 @@ plan's back. See [`dependencies`](@ref).
 
 # Keywords
 
-- `radius`: the method's angular support radius in radians. Two caps are
-  connected when their centres are within the sum of their radii plus this. Must
-  be finite and non-negative.
+- `radius`: the method's angular support radius in radians — a *bound* on how
+  far its stencils reach beyond a source chunk, never an estimate of it. Two
+  caps are connected when their centres are within the sum of their radii plus
+  this. Must be finite and non-negative.
 
 # Method
 
@@ -694,6 +695,12 @@ pairs the graph did not hold, against 437 it held and no read ever asked for.
 Refcounts derived from such a graph retire a source that is still going to be
 demanded, and the demand then reloads it. Querying the index closes that gap by
 construction, for every space, with no per-space invariant to maintain.
+
+A point method whose build unit is a whole destination tile reads that tile's
+own exact manifest instead of a row, so a row is then a superset of what is
+read rather than the read itself. Keeping it a superset is what a bounding
+`radius` is for; a chunked read refuses a tile whose weights name a chunk no
+row of it holds.
 
 Destination rows are built in parallel over blocks of destination chunks and
 written by index, so the result is identical regardless of thread count. The

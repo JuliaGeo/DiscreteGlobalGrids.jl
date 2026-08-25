@@ -163,6 +163,14 @@ end
 Return the maximum angular distance, in radians, that the method's stencil
 extends beyond a source chunk. The default is `0.0`. Overestimates add discovery
 work; underestimates can omit required weights.
+
+This is a *bound* on the stencil, not an estimate of it. Chunk discovery is cap
+overlap plus this radius, and cap overlap alone is not a superset of a point
+stencil's reach: a destination cell finer than a source cell can be bracketed by
+sample sites whose own cells it never touches. A method that supplies a
+[`sampler`](@ref) therefore declares here how far its stencils reach, so that
+the dependency relation stays a superset of the chunks its tiles read; a chunked
+read refuses a tile whose weights name a chunk the relation does not.
 """
 supportradius(::AbstractRegriddingMethod, ::RegridSpace) = 0.0
 

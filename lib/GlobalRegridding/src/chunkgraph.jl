@@ -76,9 +76,9 @@ not. Specifically, equal stamps still permit:
   **cell geometry**. The destination side of the relation is a function of the caps
   alone, so this is harmless there; on the source side it is not, because the
   relation comes from [`chunkindex`](@ref) — a native hierarchy that need not
-  test the caps `chunkextents` reports (that divergence is the whole reason PR
-  #69 exists). Two source spaces with equal caps and different hierarchies can
-  therefore produce different relations and identical stamps.
+  test the caps `chunkextents` reports. Two source spaces with equal caps and
+  different hierarchies can therefore produce different relations and identical
+  stamps.
 - In-place mutation of a space after the graph was built. A stamp is a snapshot,
   not a live binding.
 
@@ -233,7 +233,7 @@ endpoint, so `has_edge` and `edges` are role-agnostic.
 
 Destination *rows* and destination *chunks* coincide on a graph built over a
 whole destination space, and diverge on a row view; see [`restrict`](@ref) and
-[`globaldestination`](@ref).
+[`destinationchunk`](@ref).
 
 The spaces themselves are deliberately *not* stored. The graph carries a
 [`DependencyIdentity`](@ref) instead, which keeps it small, serializable, and
@@ -391,7 +391,7 @@ as [`chunkextents`](@ref) reported it when the relation was built.
 The result is the graph's own vector, shared by reference and **not** to be
 mutated. `destinationextents` is indexed by the *destination space's* chunk
 number, so on a row view it is the parent space's whole vector; index it with
-[`globaldestination`](@ref), or use [`destinationextent`](@ref), which does.
+[`destinationchunk`](@ref), or use [`destinationextent`](@ref), which does.
 """
 function destinationextents(g::ChunkDependencyGraph)
     _requireextents(g)
@@ -521,7 +521,7 @@ Return the ascending source chunk numbers that may contribute to destination row
 
 This is the executor's query: the set of source chunks that must be resident to
 compute this destination chunk. On a row view `d` is the view's own row index
-and [`globaldestination`](@ref) maps it back to the destination space's chunk
+and [`destinationchunk`](@ref) maps it back to the destination space's chunk
 number; on a whole-space graph the two coincide.
 """
 function sourcesof(g::ChunkDependencyGraph, d::Integer)
@@ -875,7 +875,7 @@ graph over the whole of one. See [`restrict`](@ref).
 isrestricted(g::ChunkDependencyGraph) = !isempty(g.dstrows)
 
 """
-    globaldestinations(g::ChunkDependencyGraph) -> AbstractVector{Int}
+    destinationchunks(g::ChunkDependencyGraph) -> AbstractVector{Int}
 
 Return the destination space's chunk number for each of `g`'s rows, ascending.
 On a whole-space graph this is `1:ndestinationchunks(g)`.
@@ -889,28 +889,28 @@ destination chunks, not the sub-space's own — the sub-space's chunks are its
 rows, `1:k`. That is the provenance a caller wants from a re-stamped view: which
 chunks of the whole destination these rows came from.
 """
-globaldestinations(g::ChunkDependencyGraph) =
+destinationchunks(g::ChunkDependencyGraph) =
     isrestricted(g) ? g.dstrows : Base.OneTo(g.ndst)
 
 """
-    globaldestination(g::ChunkDependencyGraph, d) -> Int
+    destinationchunk(g::ChunkDependencyGraph, r) -> Int
 
-Return the destination space's chunk number of `g`'s row `d`.
+Return the destination space's chunk number of `g`'s row `r`.
 """
-function globaldestination(g::ChunkDependencyGraph, d::Integer)
-    i = Int(d)
-    1 <= i <= g.ndst || throw(BoundsError(g, d))
+function destinationchunk(g::ChunkDependencyGraph, r::Integer)
+    i = Int(r)
+    1 <= i <= g.ndst || throw(BoundsError(g, r))
     return _row(g, i)
 end
 
 """
-    localdestination(g::ChunkDependencyGraph, chunk) -> Union{Int,Nothing}
+    destinationrow(g::ChunkDependencyGraph, chunk) -> Union{Int,Nothing}
 
 Return the row of `g` that holds destination chunk `chunk`, or `nothing` if the
 view does not hold it. `O(log k)`: rows are ascending in the destination chunk
 number.
 """
-function localdestination(g::ChunkDependencyGraph, chunk::Integer)
+function destinationrow(g::ChunkDependencyGraph, chunk::Integer)
     c = Int(chunk)
     if !isrestricted(g)
         return 1 <= c <= g.ndst ? c : nothing
@@ -928,7 +928,7 @@ collection of rows of `g`.
 The result is a `ChunkDependencyGraph` like any other — same accessors, same
 bidirectional CSR, same Graphs.jl interface — over `length(destinations)`
 destination rows and the same source side. Its rows are renumbered `1:k`;
-[`globaldestination`](@ref) maps them back, and its
+[`destinationchunk`](@ref) maps them back, and its
 [`dependency_identity`](@ref) still stamps the **whole** destination space, so a
 view knows what it is a view *of*.
 
@@ -972,7 +972,7 @@ destination's rows without its identity and CSR is 24 µs against `restrict`'s
 `destinations` must be strictly ascending. A schedule is a separate permutation
 applied by whoever walks the rows, exactly as it is for a whole-space graph; the
 graph is never built in walk order. Requiring ascending rows is what keeps
-`globaldestinations` searchable and both CSR directions sorted.
+`destinationchunks` searchable and both CSR directions sorted.
 
 # Example
 
@@ -980,7 +980,7 @@ graph is never built in walk order. Requiring ascending rows is what keeps
 graph = chunk_dependency_graph(dst_space, src_space)
 column = restrict(graph, 17:24)          # eight destination chunks
 sourcesof(column, 1) == sourcesof(graph, 17)
-globaldestination(column, 1) == 17
+destinationchunk(column, 1) == 17
 ```
 """
 function restrict(g::ChunkDependencyGraph{T}, destinations) where {T}
@@ -1129,7 +1129,7 @@ Five things must agree.
    Pass `destinations` — the ascending chunk numbers of the graph's own
    destination the caller intends to compute — to validate a [`restrict`](@ref)
    row view instead; they must be exactly the view's
-   [`globaldestinations`](@ref).
+   [`destinationchunks`](@ref).
 
 What this does **not** establish is that `g` is *the* relation these spaces
 produce: the stamps are fingerprints, not proofs. [`spacestamp`](@ref) documents
@@ -1170,8 +1170,8 @@ function validate_dependencies(g::ChunkDependencyGraph, dst_space::RegridSpace,
             "with `subspace_dependencies`"))
     else
         wanted = collect(Int, destinations)
-        globaldestinations(g) == wanted || throw(ArgumentError(
-            "$g holds destination chunks $(_summarize(globaldestinations(g))), " *
+        destinationchunks(g) == wanted || throw(ArgumentError(
+            "$g holds destination chunks $(_summarize(destinationchunks(g))), " *
             "but the caller asked for $(_summarize(wanted))"))
     end
     return g

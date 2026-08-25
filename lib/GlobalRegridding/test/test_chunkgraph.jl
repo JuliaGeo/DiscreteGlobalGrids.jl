@@ -3,8 +3,8 @@ import DimensionalData as DD
 import Serialization
 
 # The four relations — truth, demand, cap join, and the graph's own rows — are
-# defined once, in `graphoracles.jl`, and shared with the root suite and the G1
-# harness. Do not re-spell any of them here.
+# defined once, in `graphoracles.jl`, and shared with the root suite and the
+# benchmark harness. Do not re-spell any of them here.
 include(joinpath(@__DIR__, "graphoracles.jl"))
 using .ChunkGraphOracles: contributing_pairs, graph_pairs, demanded_pairs,
     capjoin_pairs, eager_pairs
@@ -21,10 +21,10 @@ function misalignedraster(nx, ny, cx, cy)
             [lo:min(lo + cy - 1, ny) for lo in 1:cy:ny]))
 end
 
-# Task G4 made a narrow phase an argument to plan construction and to nothing
-# else, so every test below that needs one goes through a plan. A plan takes its
-# radius from its method rather than from a keyword, so this method supplies the
-# radius a test wants. It builds no weights and is never asked to.
+# A narrow phase is an argument to plan construction and to nothing else, so
+# every test below that needs one goes through a plan. A plan takes its radius
+# from its method rather than from a keyword, so this method supplies the radius
+# a test wants. It builds no weights and is never asked to.
 struct G4RadiusMethod <: AbstractRegriddingMethod
     radius::Float64
 end
@@ -39,10 +39,6 @@ planned_dependencies(dst, src; radius = 0.0, kw...) =
 # querying with, the caps the identity stamp hashes, and the vector the generic
 # `chunkindex` packs all come through it, so this counter is nonzero exactly
 # when a relation is being derived from this space and zero when nothing is.
-#
-# Until Task E2 the counter sat on `chunktree`, which `chunkextents` collected
-# from. Removing that bridge moved the funnel up one level; it did not widen or
-# narrow it, because `chunktree` had no caller of its own.
 mutable struct G4ProbeSpace{S<:RegridSpace} <: RegridSpace
     space::S
     queries::Int
@@ -50,12 +46,12 @@ end
 G4ProbeSpace(space::RegridSpace) = G4ProbeSpace(space, 0)
 GR.chunkextents(p::G4ProbeSpace) = (p.queries += 1; GR.chunkextents(p.space))
 
-# A source chunk index that counts the queries a builder makes of it. The
-# Phase 4 gate is that ONE query implementation defines every edge, so the
-# counter and the pairs together say what the builder did: how many questions it
-# asked, and that the answers are the relation. A relation builds its rows in
-# spawned tasks, so the count is atomic: a plain increment loses one under
-# concurrency and understates what was asked.
+# A source chunk index that counts the queries a builder makes of it. ONE query
+# implementation defines every edge, so the counter and the pairs together say
+# what the builder did: how many questions it asked, and that the answers are
+# the relation. A relation builds its rows in spawned tasks, so the count is
+# atomic: a plain increment loses one under concurrency and understates what was
+# asked.
 mutable struct E2QueryIndex{I}
     inner::I
     queries::Threads.Atomic{Int}
@@ -266,10 +262,10 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
                 @test !isempty(truth)
                 @test truth ⊆ graph
                 # `truth ⊆ graph` alone would pass on a builder that returned
-                # every pair, so pin the relation exactly as well: post-#69 the
-                # rows ARE the `candidatechunks!` answers, with no `refine`, so
-                # the graph and the demanded relation are equal and not merely
-                # nested. That equality is what a builder swap must preserve.
+                # every pair, so pin the relation exactly as well: the rows ARE
+                # the `candidatechunks!` answers, with no `refine`, so the graph
+                # and the demanded relation are equal and not merely nested.
+                # That equality is what a builder swap must preserve.
                 @test graph == demanded_pairs(dst, src; radius)
                 # A chunk cap covers its own cells, so the cap join must hold
                 # the same pairs. This is the `chunkextents` half of the same
@@ -280,15 +276,15 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
     end
 
     @testset "eager weights ⊆ graph rows ⊆ the broad cap relation" begin
-        # Task E1's proof obligation, in the three terms it is stated in. The
-        # middle one is what the lazy executor now reads: a tile takes its
-        # source chunks from `sourcesof` and from nothing else.
+        # The proof obligation, in the three terms it is stated in. The middle
+        # one is what the lazy executor reads: a tile takes its source chunks
+        # from `sourcesof` and from nothing else.
         #
         # Left: the relation must hold every pair the EAGER path put a nonzero
         # weight on. If it did not, a lazy read would never load a source the
         # eager one used, and the two would return different numbers — which is
-        # the failure the whole card is guarding against. `eager_pairs` reads
-        # the weight builder's own answer, not a cap or an index.
+        # the failure this guards against. `eager_pairs` reads the weight
+        # builder's own answer, not a cap or an index.
         #
         # Right: the relation must stay inside the brute-force cap join, which
         # is what "conservative bound" means as opposed to "any superset at
@@ -337,10 +333,10 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
     end
 
     @testset "the cap join is an identity only on the generic index" begin
-        # G1's second gate. A space with no chunk index of its own is answered
-        # by a packed R-tree over the very caps `chunkextents` reports, so there
-        # the relation must be EXACTLY the brute-force cap join — an equality,
-        # not a containment.
+        # A space with no chunk index of its own is answered by a packed
+        # R-tree over the very caps `chunkextents` reports, so there the
+        # relation must be EXACTLY the brute-force cap join — an equality, not a
+        # containment.
         dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
         src = ToyLonLatSpace(8, 4; chunks = (2, 1))
         for radius in (0.0, 0.05, 0.4)
@@ -348,13 +344,13 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
                   capjoin_pairs(dst, src; radius)
         end
 
-        # A native hierarchy is a different matter, and the difference is the
-        # reason PR #69 exists. The raster quadtree answers whole chunks for a
-        # straddling leaf without testing each chunk's own cap, so it holds
-        # pairs the cap join rejects; and the cap join holds pairs the quadtree
-        # never reaches. The two relations CROSS in both directions — measured
-        # here, so the cap join cannot be used as a bound on the graph in
-        # either direction, only as a second superset of the geometric truth.
+        # A native hierarchy is a different matter. The raster quadtree
+        # answers whole chunks for a straddling leaf without testing each
+        # chunk's own cap, so it holds pairs the cap join rejects; and the cap
+        # join holds pairs the quadtree never reaches. The two relations CROSS
+        # in both directions — measured here, so the cap join cannot be used as
+        # a bound on the graph in either direction, only as a second superset of
+        # the geometric truth.
         rdst = ToyLonLatSpace(24, 12; chunks = (2, 2))
         rsrc = misalignedraster(36, 18, 7, 5)
         native = graph_pairs(GR.chunk_dependency_graph(rdst, rsrc))
@@ -701,12 +697,12 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         @test all(GR.sourcesof(view, i) == GR.sourcesof(g, sel[i]) for i in eachindex(sel))
         @test all(GR.sourcedegree(view, i) == GR.sourcedegree(g, sel[i])
                   for i in eachindex(sel))
-        @test GR.globaldestinations(view) == sel
-        @test all(GR.globaldestination(view, i) == sel[i] for i in eachindex(sel))
-        @test all(GR.localdestination(view, sel[i]) == i for i in eachindex(sel))
-        @test GR.localdestination(view, 1) === nothing
-        @test GR.globaldestinations(g) == 1:GR.ndestinationchunks(g)
-        @test GR.localdestination(g, 4) == 4
+        @test GR.destinationchunks(view) == sel
+        @test all(GR.destinationchunk(view, i) == sel[i] for i in eachindex(sel))
+        @test all(GR.destinationrow(view, sel[i]) == i for i in eachindex(sel))
+        @test GR.destinationrow(view, 1) === nothing
+        @test GR.destinationchunks(g) == 1:GR.ndestinationchunks(g)
+        @test GR.destinationrow(g, 4) == 4
 
         # A view's refcounts are the view's own. `consumersof` must count only
         # the rows the view holds, or a refcount taken from it retires nothing.
@@ -751,7 +747,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
 
         # Views compose, and composing them composes the global numbering.
         inner = GR.restrict(view, [2, 4])
-        @test GR.globaldestinations(inner) == [sel[2], sel[4]]
+        @test GR.destinationchunks(inner) == [sel[2], sel[4]]
         @test GR.sourcesof(inner, 1) == GR.sourcesof(g, sel[2])
         @test inner.srcof === g.srcof
         @test GR.restrict(g, 1:GR.ndestinationchunks(g)) |> graph_pairs == graph_pairs(g)
@@ -793,7 +789,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
             parent = graph_pairs(g)
             # Read the view's own rows back into GLOBAL destination numbers and
             # compare against the parent's rows for exactly those chunks.
-            lifted = Set((GR.globaldestination(view, d), Int(s))
+            lifted = Set((GR.destinationchunk(view, d), Int(s))
                          for d in 1:GR.ndestinationchunks(view)
                          for s in GR.sourcesof(view, d))
             @test lifted == Set(p for p in parent if p[1] in Set(sel))
@@ -806,11 +802,11 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
     end
 
     @testset "a row view re-stamped onto a sub-space is that space's relation" begin
-        # Task E1. G4 proved that a plan over a *sub-space* of the destination
-        # cannot adopt a row view, because the view stamps the whole space. This
-        # is the mechanism that closes it, and what makes it sound: the
-        # destination half of a relation is a function of the destination caps
-        # alone, so a space reproducing those caps reproduces those rows.
+        # A plan over a *sub-space* of the destination cannot adopt a row
+        # view, because the view stamps the whole space. This is the mechanism
+        # that closes that gap, and what makes it sound: the destination half
+        # of a relation is a function of the destination caps alone, so a space
+        # reproducing those caps reproduces those rows.
         dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
         src = ToyLonLatSpace(8, 4; chunks = (2, 1))
         method = G4RadiusMethod(0.1)
@@ -832,7 +828,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         for (k, d) in enumerate(sel)
             @test collect(GR.sourcesof(view, k)) == collect(GR.sourcesof(g, d))
         end
-        @test GR.globaldestinations(view) == sel     # provenance is retained
+        @test GR.destinationchunks(view) == sel     # provenance is retained
         @test GR.nsourcechunks(view) == GR.nsourcechunks(g)
         # ...and it is the relation the sub-space would have built for itself.
         own = GR.chunk_dependency_graph(sub, src; radius = 0.1)
@@ -852,8 +848,8 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         # `destinations` argument: for that space there are no other rows.
         adopted = ChunkedPlan(method, Weighted(0.5), sub, src; dependencies = view)
         @test GR.dependencies(adopted) === view
-        # The un-re-stamped view is still refused, which is the G4 behaviour
-        # this mechanism exists beside rather than instead of.
+        # The un-re-stamped view is still refused, which is the behaviour this
+        # mechanism exists beside rather than instead of.
         @test_throws ArgumentError ChunkedPlan(method, Weighted(0.5), sub, src;
             dependencies = GR.restrict(g, sel))
         @test_throws ArgumentError ChunkedPlan(method, Weighted(0.5), sub, src;
@@ -879,9 +875,9 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
     end
 
     # ----------------------------------------------------------------------
-    # Task G4: the Phase 2 gate. One logical plan exposes exactly one
-    # validated relation, and a narrow phase cannot be supplied after the plan
-    # exists. Both halves are asserted here rather than argued in prose.
+    # One logical plan exposes exactly one validated relation, and a narrow
+    # phase cannot be supplied after the plan exists. Both halves are asserted
+    # here rather than argued in prose.
     # ----------------------------------------------------------------------
 
     @testset "a plan owns exactly one relation" begin
@@ -898,8 +894,8 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         @test GR.ownedindices(G4ProbeSpace(src), 1) == GR.ownedindices(src, 1)
 
         # The default builds one, at the plan's own radius, in every spelling of
-        # the constructor — keyword and both positional forms. Task E1 made this
-        # the default because a lazy read IS a read of these rows.
+        # the constructor — keyword and both positional forms. It is the default
+        # because a lazy read IS a read of these rows.
         bare = ChunkedPlan(method, policy, dst, src)
         @test GR.dependencies(bare) isa GR.ChunkDependencyGraph
         @test GR.dependency_radius(GR.dependencies(bare)) == 0.1
@@ -1040,7 +1036,8 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
     end
 
     @testset "one query implementation defines every edge" begin
-        # The Phase 4 gate, structurally and behaviourally.
+        # One query implementation defines every edge, structurally and
+        # behaviourally.
         #
         # Structurally: the duplicate spellings are gone from the module — not
         # merely unexported — and `chunkextents` is a required hook rather than

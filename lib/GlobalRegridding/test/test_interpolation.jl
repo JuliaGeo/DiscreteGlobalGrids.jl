@@ -1,5 +1,5 @@
-# Nearest-cell and bilinear weight construction, and the build path the output
-# sampling selects.
+# Nearest-cell and bilinear weight construction, and the seam the output
+# sampling dispatches on.
 
 import DimensionalData as DD
 
@@ -59,8 +59,8 @@ struct T4NoChartSpace <: RegridSpace end
 struct T4BareChartSpace <: RegridSpace end
 GR.hascellchart(::T4BareChartSpace) = true
 
-# Two methods whose sampling is a field, so one method type can be put on either
-# build path. Nothing in the split may notice which type they are.
+# Two methods whose sampling is a field, so one method type can carry either
+# sampling. `weightblock` dispatches on the sampling, never on the method type.
 
 """
     T4SplitMethod(sampling)
@@ -95,8 +95,12 @@ end
 """
     T4TileMethod(sampling)
 
-Report `sampling` and supply a constant block on the point path. It implements
-no `buildweights!`, so it answers only where the point path runs.
+Report `sampling` and specialise [`weightblock`](@ref) on `Points()` with a
+constant block — a third-party sampling specialising that seam. It implements
+no `buildweights!`, so it answers only where its own `weightblock` method is
+selected; any other sampling reaches the generic one, which assembles a pair
+through `buildweights!`. It supplies no [`sampler`](@ref), so a plan around it
+keeps the chunk-pair build.
 """
 struct T4TileMethod{S<:DD.Lookups.Sampling} <: AbstractRegriddingMethod
     sampling::S
@@ -485,7 +489,7 @@ t5_owners(dst, tile, src) =
         @test supportradius(BilinearPoint(), oblong) >= deg2rad(dlat(oblong))
     end
 
-    @testset "output sampling selects the build path" begin
+    @testset "a sampling may specialise the weight block seam" begin
         src = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
             chunks = (4, 2))
         dst = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
@@ -493,8 +497,9 @@ t5_owners(dst, tile, src) =
         field = collect(reshape(1.0:32.0, 8, 4))
         ndst, nsrc = Int(ncells(dst)), Int(ncells(src))
 
-        # A point method that supplies no weights of its own still reaches
-        # `buildweights!`, once per block, and keeps every entry it emits.
+        # A method that specialises no seam of its own reaches `buildweights!`
+        # under either sampling, once per block, and keeps every entry it
+        # emits.
         point = T4SplitMethod(DD.Lookups.Points())
         area = T4SplitMethod(DD.Lookups.Intervals(DD.Lookups.Center()))
         pointweights = GR.wholeblock(point, dst, src).weights
@@ -502,16 +507,18 @@ t5_owners(dst, tile, src) =
         @test point.builds[] == 1
         @test pointweights == GR.wholeblock(area, dst, src).weights
 
-        # Eager and chunked agree for it, so the split moved no value.
+        # Eager and chunked agree for it, so the seam moved no value.
         eager = regrid(field; to = dst, from = src, method = point, lazy = false)
         dest = Vector{Float64}(undef, ndst)
         regrid!(dest, field,
             ChunkedPlan(point, Weighted(0.5), dst, src; storage = PerChunk()))
         @test dest == eager
 
-        # One method type on two traits. Only the point one takes the point
-        # path, in the eager builder and in the chunk-pair builder alike; the
-        # area one falls to `buildweights!`, which it does not implement.
+        # One method type on two samplings. Only the `Points()` one is
+        # answered by the fixture's own `weightblock` method, in the eager
+        # builder and in the chunk-pair builder alike; the other reaches the
+        # generic `weightblock` and so `buildweights!`, which the fixture does
+        # not implement.
         tilepoint = T4TileMethod(DD.Lookups.Points())
         tilearea = T4TileMethod(DD.Lookups.Intervals(DD.Lookups.Center()))
         @test Matrix(GR.wholeblock(tilepoint, dst, src).weights) ==

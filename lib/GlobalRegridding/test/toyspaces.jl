@@ -304,12 +304,8 @@ ToyCapTree(space::ToyLonLatSpace, indices) =
     ToyCapTree(space, collect(Int, indices),
         [toy_cap(cellcorners(space, i)) for i in indices])
 
-# Fall back to a latitude-band cap when a corner cap becomes non-convex.
-#
-# This was `chunktree`, returning a `ToyCapTree` the generic `chunkextents`
-# fallback then walked to collect these very caps back out. Task E2 removed that
-# bridge, so the toy space reports the caps directly. The values are unchanged,
-# and so therefore is the packed index the generic `chunkindex` builds from them.
+# The caps directly, one per chunk, falling back to a latitude-band cap when a
+# corner cap becomes non-convex. The generic `chunkindex` packs these.
 function chunkextents(space::ToyLonLatSpace)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)

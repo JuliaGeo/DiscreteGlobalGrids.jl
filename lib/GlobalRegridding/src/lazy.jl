@@ -572,7 +572,7 @@ function _blockcosts!(costs::Vector{Float64}, srcchunks::Vector{Int}, srcranges:
         ncell = prod(map(length, srcranges[k]))
         shared = 0.0
         for d in rows
-            dcap = dstcaps[globaldestination(graph, d)]
+            dcap = dstcaps[destinationchunk(graph, d)]
             # Tile extents may overlap each other, so take the widest reach
             # rather than summing and double counting the shared part.
             shared = max(shared, _capoverlap(Float64(dcap.radius),

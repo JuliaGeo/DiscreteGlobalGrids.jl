@@ -93,8 +93,7 @@ the number of candidate source chunks.
 ## Vocabulary
 
 Three index spaces appear below. The words are `DiscreteGlobalGrids`' own
-(`localindex`/`globalindex`, `Index(Local())`/`Index(Global())`), and a
-"position" anywhere in this plan is a local index.
+(`localindex`/`globalindex`, `Index(Local())`/`Index(Global())`).
 
 - **Local index** — a cell's place in the collection a space wraps,
   `1:ncells(src_space)`. It is what `cellat(space, p)` answers, what
@@ -531,7 +530,8 @@ Patch/MLS and the optional support query start only after P3-P5 measurements.
 - P2 `874bf74` — the raster specialization: Q1 stencils on prepared chart axes,
   with every intentional difference from `BilinearPoint` documented.
   `regrid-notes/2026-08-25-p2-raster-q1.md`.
-- P3 `8c05a2f` + `2800ba3` — the fused build unit and its exact reads: one
+- P3 — realised by the S2 and S3 commits `8c05a2f` and `2800ba3`, and recorded
+  closed in `d227de2`: the fused build unit and its exact reads: one
   `TileWeights` per destination tile, cached and locked by tile number, reading
   the source chunks its stencils name and no others.
   `regrid-notes/2026-08-25-s2-tile-weights.md`,

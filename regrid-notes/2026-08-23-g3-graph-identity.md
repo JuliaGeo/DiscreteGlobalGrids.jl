@@ -3,9 +3,8 @@
 - Date: 2026-08-23
 - Card: `regrid-notes/2026-08-21-regridding-simplification-plan.md`, Phase 2,
   Task G3.
-- Branch: `claude/g3-graph-identity`, cut from `claude/g1-graph-oracles`
-  @ `c13eca9` (PR #70's head). Stacked PR into `claude/g1-graph-oracles`.
-- Commit: `Add reusable dependency graph identities`.
+- Commit: `Add reusable dependency graph identities` (`5eef73a`), on top of
+  `c13eca9`.
 
 The card asked for four things: stamp the graph with chunk counts, support
 radius, space identity and a serializable narrow-phase tag; add validated

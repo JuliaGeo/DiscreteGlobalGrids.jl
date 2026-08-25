@@ -1,5 +1,5 @@
 # Who owns the chunk dependency relation in the production run, and what a
-# per-column plan would pay for one of its own (Task G4).
+# per-column plan would pay for one of its own.
 #
 #     DGG_COPDEM_TILELIST=/path/to/tileList90.txt \
 #         julia -t 8 --gcthreads=4 --project=benchmark \
@@ -12,8 +12,8 @@
 # Two questions.
 #
 #   1. Does production's `dagplan` hand back the relation its own global
-#      `GR.ChunkedPlan` owns, and is that relation the one the pair has? G4
-#      moved the build inside the plan; this asserts the move changed nothing.
+#      `GR.ChunkedPlan` owns, and is that relation the one the pair has? The
+#      plan builds it, and this asserts what it builds is the pair's relation.
 #
 #   2. What does a per-column plan pay to own a relation? `regrid_chunk` builds
 #      one plan per destination chunk — 66 175 of them — over a rooted one-chunk
@@ -25,19 +25,17 @@
 #        D  `subspace_dependencies`     that view, re-stamped onto the column's
 #                                       own space, then adopted by the plan
 #
-#      Task G4 measured A as production's arm, because the lazy executor then
-#      discovered a tile's sources itself. Task E1 made the executor read the
-#      plan's rows instead, so a plan that owns no relation can no longer back a
-#      lazy read: **B is what production pays now**, and A is here only as the
-#      floor B is measured against.
+#      The lazy executor reads the plan's rows, so a plan that owns no
+#      relation cannot back a lazy read: **B is what production pays**, and A
+#      is here only as the floor B is measured against.
 #
-#      C is what G4's card suggested and G4 showed a per-column plan may not
-#      hold: its destination is a DIFFERENT space from the one the graph and its
-#      views are stamped against, so `validate_dependencies` refuses both C and
-#      the whole global graph. D is E1's answer to that refusal — a row view
-#      re-stamped against the sub-space, which the plan does accept — and the
-#      question this run answers is whether D is worth plumbing the global
-#      relation into every worker, or whether B is simply cheap enough.
+#      C is what a per-column plan may not hold: its destination is a DIFFERENT
+#      space from the one the graph and its views are stamped against, so
+#      `validate_dependencies` refuses both C and the whole global graph. D
+#      answers that refusal — a row view re-stamped against the sub-space,
+#      which the plan does accept — and the question this run answers is
+#      whether D is worth plumbing the global relation into every worker, or
+#      whether B is simply cheap enough.
 #
 # Environment
 #

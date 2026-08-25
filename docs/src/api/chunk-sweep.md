@@ -99,7 +99,7 @@ qualifying their results.
 [`mapneighbors!`](@ref) is the streaming form: results are written into `dest` a
 chunk at a time, so neither the input nor the output has to fit in memory.
 [`mapneighbors`](@ref) with `pass = Values()` takes the same route by itself
-whenever the cube's data is chunked, and collects the results as it always has.
+whenever the cube's data is chunked, and collects the results.
 
 A [field request](@ref "Requesting neighbour fields") takes it too.
 `mapneighbors!(dest, f, A, plan; needs = (Value(dem), Centroid()))` states the

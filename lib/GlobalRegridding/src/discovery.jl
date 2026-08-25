@@ -130,18 +130,7 @@ end
 
 chunkextent(space::RegridSpace, chunk::Integer) = chunkextents(space)[Int(chunk)]
 
-# Three spellings of one relation lived below this line until Phase 4.
-#
-# `connectedchunkpairs(f, dst_space, src_space; radius)` went in Task G4:
-# since PR #69 it was line for line the loop `_chunkgraph` runs to fill its
-# destination-major rows.
-#
-# `connectedchunks(dst_space, dstchunk, src_space; radius)` and its
-# `connectedchunks!` in-place forms went in Task E2, together with the
-# `chunktree`-collecting `chunkextents` fallback that gave a space a *second*
-# way to answer a chunk query. Since Task E1 the lazy executor takes a tile's
-# sources from `sourcesof(dependencies(plan), d)`, so the last caller of a
-# one-off chunk query was a test. What they did is now spelled:
+# Where the chunk-to-chunk relation is spelled:
 #
 #   - one destination chunk's sources: `sourcesof(dependencies(plan), d)`, or
 #     `sourcesof(chunk_dependency_graph(dst, src; radius), d)` without a plan;
@@ -151,7 +140,6 @@ chunkextent(space::RegridSpace, chunk::Integer) = chunkextents(space)[Int(chunk)
 #     the seam all of the above are built from and the only query implementation
 #     that defines a graph edge.
 #
-# `chunkextents` remains, because it has real consumers that are not queries:
-# `spacestamp`, `_builddependencies` and `subspace_dependencies` need the caps
-# as *values*, and the generic `chunkindex` packs them. It is a required hook
-# now rather than a fallback over a compatibility tree.
+# `chunkextents` answers none of them: it hands out the caps as *values*, for
+# `spacestamp`, `_builddependencies`, `subspace_dependencies` and the generic
+# `chunkindex` that packs them.

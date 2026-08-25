@@ -4,12 +4,12 @@
 #
 #     julia -t 4 --project=benchmark benchmark/regridding_plan_baseline.jl
 #
-# WHAT THIS MEASURES NOW. Since PR #69 (`da9e737`) `chunk_dependency_graph` is
-# built from the source space's own chunk index, not from a latitude-sorted join
-# over `chunkextents`, so this script no longer times the builder its original
-# figures came from. On 2026-08-23, Julia 1.12.6, 4 threads: 26,475 source
-# chunks, 66,175 destination chunks, 326,064 edges, 3,349,944-byte graph, 0.229 s
-# median graph construction over five samples.
+# WHAT THIS MEASURES NOW. `chunk_dependency_graph` is built from the source
+# space's own chunk index, not from a latitude-sorted join over `chunkextents`,
+# so this script no longer times the builder its original figures came from.
+# On 2026-08-23, Julia 1.12.6, 4 threads: 26,475 source chunks, 66,175
+# destination chunks, 326,064 edges, 3,349,944-byte graph, 0.229 s median graph
+# construction over five samples.
 #
 # The superseded figures — 326,386 edges, 3,352,520-byte graph, 0.0589 s median,
 # same date and thread count — belong to the deleted latitude join and are only

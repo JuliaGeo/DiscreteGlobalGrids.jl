@@ -3,10 +3,8 @@
 - Date: 2026-08-23
 - Card: `regrid-notes/2026-08-21-regridding-simplification-plan.md`,
   "Phase 3 — graph-backed lazy execution", Task E1
-- Branch: `claude/e1-graph-backed-lazy`, cut from `claude/g4-plan-owns-graph`
-  @ `1228317` (PR #72's head). Landed as **PR #74** into
-  `claude/g4-plan-owns-graph`.
-- Commit: `Drive lazy regridding from dependency rows`
+- Commit: `Drive lazy regridding from dependency rows` (`67ef07f`), on top of
+  `1228317`.
 
 Phase 3's gate: **no lazy read performs geometric dependency discovery;
 executor and scheduler consume the same object.** Both halves are tests.
@@ -258,7 +256,7 @@ without that carve-out would have been stating something untrue.
 
 ### `benchmark/chunk_graph_gates.jl` — the relation is identical
 
-Run on the branch point (`1228317`, in a detached worktree) and on this branch:
+Run at `1228317` and again after `67ef07f`:
 13 cases including the production pair from a local tile list, both arms,
 26 ndjson rows each, `-t 8 --gcthreads=4`, 5 samples.
 

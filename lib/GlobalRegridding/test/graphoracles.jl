@@ -5,7 +5,7 @@
 #
 #   - `lib/GlobalRegridding/test/test_chunkgraph.jl`  (this subpackage's suite)
 #   - `test/systems/crosssystem/regrid.jl`            (the root suite)
-#   - `benchmark/chunk_graph_gates.jl`                (the G1 harness)
+#   - `benchmark/chunk_graph_gates.jl`                (the benchmark harness)
 #
 # They live here because this is the innermost of the three: the root suite and
 # `benchmark/` both already depend on GlobalRegridding, so including a file from
@@ -45,8 +45,8 @@ on the source space's own chunk index. A relation that does not contain this set
 cannot back a refcount, because a source it retired is still going to be
 demanded.
 
-Post-#69 `chunk_dependency_graph` is built from exactly these queries, so with
-no `refine` the graph and this set must be *equal*, not merely nested. That
+`chunk_dependency_graph` is built from exactly these queries, so with no
+`refine` the graph and this set must be *equal*, not merely nested. That
 equality is the contract a builder swap has to preserve, which is why the tests
 assert it rather than a containment.
 """

@@ -3,10 +3,8 @@
 - Date: 2026-08-23
 - Card: `regrid-notes/2026-08-21-regridding-simplification-plan.md`,
   "Phase 4 — delete legacy discovery", Task E2
-- Branch: `claude/e2-delete-legacy-discovery`, cut from
-  `claude/e1-graph-backed-lazy` @ `0e3fb70` (PR #74's head). Landed as
-  **PR #75** into `claude/e1-graph-backed-lazy` — fifth in the stack.
-- Commit: `Remove duplicate chunk discovery paths`
+- Commit: `Remove duplicate chunk discovery paths` (`526c057`), on top of
+  `0e3fb70`.
 
 Phase 4's gate: **one query implementation defines graph edges, and neither the
 executor nor the interface translates that relation back through a compatibility
@@ -267,8 +265,7 @@ build path changed at all.
 `scratchpad/residency.jl` — E1's script, reused verbatim, not committed (it is a
 measurement, not a suite). One 720×360 tiled raster onto IGeo7 L4 with level-2
 chunks, 24 012 destination cells, 492 chunks ← 72 chunks, a 4 MiB budget,
-`-t 4 --gcthreads=4`. Run at the branch point in a detached worktree and on this
-branch.
+`-t 4 --gcthreads=4`. Measured at `0e3fb70` and again after `526c057`.
 
 | | before (`0e3fb70`) | after |
 |---|---|---|
@@ -295,8 +292,8 @@ budget actually bounds — `LazyStats.peak` — is byte-identical.
 ## 6. Suites
 
 `-t 8 --gcthreads=4`, Julia 1.12.6, except the GlobalRegridding suite at `-t 4`.
-The "before" column was re-measured on the branch point in this session and
-reproduces E1's reported numbers exactly.
+The "before" column was re-measured at `0e3fb70` and reproduces E1's reported
+numbers exactly.
 
 | suite | before (`0e3fb70`) | after | delta |
 |---|---|---|---|

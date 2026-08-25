@@ -154,9 +154,7 @@ cellcentroid(tc::TileCells, i::Int) = cellcentroid(tc.space, i)
 hascellchart(tc::TileCells) = hascellchart(tc.space)
 celltree(tc::TileCells) = celltree(tc.space)
 # Chunk extents are the wrapped space's; the tile caches cell geometry, not
-# chunk geometry. This forwarded `chunktree` until Task E2 removed that bridge,
-# and forwarding `chunkextents` instead makes the tile answer for a `DGGSpace`
-# too, which never had a `chunktree` to forward.
+# chunk geometry.
 chunkextents(tc::TileCells) = chunkextents(tc.space)
 chunkextent(tc::TileCells, chunk::Integer) = chunkextent(tc.space, chunk)
 chunkindex(tc::TileCells) = chunkindex(tc.space)

@@ -3,10 +3,8 @@
 - Date: 2026-08-23
 - Card: `regrid-notes/2026-08-21-regridding-simplification-plan.md`, Phase 2,
   Task G4. Last card of Phase 2.
-- Branch: `claude/g4-plan-owns-graph`, cut from `claude/g3-graph-identity`
-  @ `f9f268a` (PR #71's head). PR **#72**, stacked into
-  `claude/g3-graph-identity`; #70 and #71 stay open.
-- Commit: `Make chunked plans own dependency graphs` (`71fefab`).
+- Commit: `Make chunked plans own dependency graphs` (`71fefab`), on top of
+  `f9f268a`.
 - Reproducers: `benchmark/chunk_graph_gates.jl` (the G1 gate, unmodified) and
   `benchmark/plan_dependency_ownership.jl` (new, this card's measurement). Both
   take `DGG_COPDEM_TILELIST` pointing at a **local** tile list and neither ever

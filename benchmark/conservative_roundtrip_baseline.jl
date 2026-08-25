@@ -1,6 +1,6 @@
-# Exact reproduction of the P1/P4 raster workload used to expose the
-# Conservative CSC -> COO -> CSC peak-memory round trip. Run modes in separate
-# processes because `Sys.maxrss()` cannot be reset.
+# Exact reproduction of the 3600x1800 -> 360x180 `RasterGrid` workload used to
+# expose the Conservative CSC -> COO -> CSC peak-memory round trip. Run modes
+# in separate processes because `Sys.maxrss()` cannot be reset.
 #
 #     julia -t 8 --project=benchmark benchmark/conservative_roundtrip_baseline.jl direct
 #     julia -t 8 --project=benchmark benchmark/conservative_roundtrip_baseline.jl chunked

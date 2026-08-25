@@ -13,7 +13,8 @@ so the gate cannot be run as written. This note re-creates the deleted builder
 inside the harness and answers the question retroactively. **The gate fails on
 its literal wording** — see §5 — and the cutover is still right.
 
-Branch `claude/g1-graph-oracles`, cut from `claude/perf-ladder` @ `9adef54`.
+Landed as `48b9815`, with the review findings applied in `07d24ea`, on top of
+`9adef54`.
 
 ## 1. The oracles
 

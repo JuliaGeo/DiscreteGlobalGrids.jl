@@ -925,7 +925,7 @@ end
         nc = Int(CD.ncols(TWIN, r))
         for (j, i) in ((0, 0), (ntwin - 1, nc - 1))
             c = CD.pixelcell(TWIN, tile, j, i)
-            pos = globalindex(g1twin, c)
+            gi = globalindex(g1twin, c)
             ring = cell_boundary(g1twin, c)
             node = root
             depth = 0
@@ -947,7 +947,7 @@ end
                 depth += 1
             end
             STI.isleaf(node) &&
-                any(idx == pos for (idx, _) in STI.child_indices_extents(node)) &&
+                any(idx == gi for (idx, _) in STI.child_indices_extents(node)) &&
                 (reached += 1)
         end
     end
@@ -1017,7 +1017,7 @@ end
     # A pole tile, a band edge on both sides, the equator, and the south pole.
     for lat_s in (89, 50, 49, 0, -90), lon_w in (-180, 7)
         tile = CD.tilecell(TWIN, lat_s, lon_w)
-        k = GR.chunkat(dense, globalindex(g1twin, CD.pixelcell(TWIN, tile, 0, 0)))
+        k = GR.chunkat(dense, localindex(g1twin, CD.pixelcell(TWIN, tile, 0, 0)))
         inds = GR.ownedindices(dense, k)
         @test length(inds) == Int(CD.lat_intervals(TWIN)) * Int(CD.ncols_at(TWIN, lat_s))
         tree = GR.subtree(dense, inds)
@@ -1029,7 +1029,7 @@ end
     # Any window of whole raster rows is a rectangle too; a mid-row window is
     # not one, and takes the bounding-cap fallback.
     r = GR.ownedindices(dense, GR.chunkat(dense,
-        globalindex(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
+        localindex(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
     nc = Int(CD.ncols_at(TWIN, 12))
     rows = (first(r) + nc):(first(r) + 3nc - 1)
     @test GR.subtree(dense, rows) isa CD.MemoBlockCursor

@@ -377,8 +377,8 @@ end
         GR._packedchunkindex(srccaps), srccaps, 0.0, nothing)
     @test GR.nsourcechunks(graph) == 4
     @test GR.ndestinationchunks(graph) == 3
-    # Task E1: a relation built from caps keeps them, so a consumer that needs a
-    # chunk's extent — the lazy executor's wave costing — reads it here.
+    # A relation built from caps keeps them, so a consumer that needs a chunk's
+    # extent — the lazy executor's wave costing — reads it here.
     @test GR.hasextents(graph)
     @test GR.sourceextents(graph) === srccaps
 

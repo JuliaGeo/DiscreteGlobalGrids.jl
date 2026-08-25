@@ -339,6 +339,11 @@ end
     sys, leaf = DGG.IGeo7System(), 9
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
 
+    # `cellindices` is this package's own function. `GlobalRegridding` exports
+    # a name-alike that is a deprecated chunk-ownership hook, and this is not
+    # an extension of it.
+    @test parentmodule(DGG.cellindices) === DGG
+
     compressed = DGG.PartialGrid(DGG.CellVector(set))
     materialised = DGG.PartialGrid(sys, leaf, DGG.cellindices(set, leaf))
 

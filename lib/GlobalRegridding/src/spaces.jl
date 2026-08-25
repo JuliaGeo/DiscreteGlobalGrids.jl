@@ -118,9 +118,8 @@ is no fallback.
 These are the caps as *values*, not a query. They stamp a relation's identity
 ([`spacestamp`](@ref)), they are the destination caps a relation is built by
 querying with, and the generic [`chunkindex`](@ref) packs them. A chunk query
-goes to [`candidatechunks!`](@ref) on the space's own index, which is why a
-native space may report caps here that its index does not itself test — the
-divergence PR #69 exists to handle.
+goes to [`candidatechunks!`](@ref) on the space's own index, so a native space
+may report caps here that its index does not itself test.
 """
 function chunkextents end
 
@@ -154,13 +153,13 @@ method. The point form returns `nothing` outside the space's coverage.
 function chunkat end
 
 function chunkat(space::RegridSpace, i::Integer)
-    p = Int(i)
-    1 <= p <= ncells(space) || throw(BoundsError(space, p))
+    i = Int(i)
+    1 <= i <= ncells(space) || throw(BoundsError(space, i))
     for c in 1:nchunks(space)
-        p in ownedindices(space, c) && return c
+        i in ownedindices(space, c) && return c
     end
     throw(ArgumentError(
-        "cell index $p of $(typeof(space)) belongs to no chunk; chunks must " *
+        "cell index $i of $(typeof(space)) belongs to no chunk; chunks must " *
         "partition 1:ncells(space)"))
 end
 
@@ -169,14 +168,6 @@ function chunkat(space::RegridSpace, p::US.UnitSphericalPoint)
     i === nothing && return nothing
     return chunkat(space, i)
 end
-
-# `chunktree(space::RegridSpace)` was declared here until Task E2. It was a
-# compatibility bridge: a space packed its chunk caps into a flat spatial tree
-# so that the generic `chunkextents` fallback could walk it and collect the same
-# caps straight back out, and so that a chunk query could descend it. Both roles
-# are gone — `chunkextents` is a required hook returning the caps directly, and
-# a chunk query is `candidatechunks!` on the space's own `chunkindex` — so a
-# space no longer has two ways to answer the same question.
 
 # --------------------------------------------------------------------------
 # Array storage

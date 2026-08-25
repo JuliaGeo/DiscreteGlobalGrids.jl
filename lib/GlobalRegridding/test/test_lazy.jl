@@ -144,9 +144,8 @@ function t8_pairs(dst, src; radius = 0.0)
 end
 
 # The connectivity a flat pairwise cap test gives — the independent reference
-# the tree descent is checked against. It reads `chunkextents` because that is
-# now the one way to obtain a space's chunk caps; until Task E2 it went through
-# `chunktree(space).caps`, which was the same vector packed in a flat tree.
+# the tree descent is checked against. It reads `chunkextents`, the one way to
+# obtain a space's chunk caps.
 function t7_pairwise(dst, dstchunk, src; radius = 0.0)
     dcap = GR.chunkextents(dst)[dstchunk]
     return [s for (s, scap) in enumerate(GR.chunkextents(src))
@@ -155,10 +154,8 @@ function t7_pairwise(dst, dstchunk, src; radius = 0.0)
 end
 
 # One destination chunk's source chunks, read the way the lazy executor reads
-# them since Task E1: off the relation the plan owns. Task E2 deleted
-# `GR.connectedchunks`, which was a second spelling of this with no identity, no
-# CSR and no reverse direction; these are the rows the executor will actually
-# take, so an assertion about them is an assertion about the read.
+# them: off the relation the plan owns. These are the rows the executor takes,
+# so an assertion about them is an assertion about the read.
 t7_sources(plan::ChunkedPlan, d::Integer) =
     Int.(GR.sourcesof(GR.dependencies(plan), Int(d)))
 
@@ -172,10 +169,9 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
     field = collect(reshape(1.0:32.0, 8, 4))
 
     @testset "discovery" begin
-        # Every claim below is about the relation a plan owns, because since
-        # Task E2 that is the only relation there is: `connectedchunks`,
-        # `connectedchunks!` and `connectedchunkpairs` are all gone, and one
-        # `candidatechunks!` query per destination cap defines every edge.
+        # Every claim below is about the relation a plan owns, because that
+        # is the only relation there is: one `candidatechunks!` query per
+        # destination cap defines every edge.
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
         graph = GR.dependencies(plan)
 
@@ -184,8 +180,8 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
             @test t7_sources(plan, c) == t7_pairwise(dstspace, c, srcspace)
         end
 
-        # Dilation only ever adds pairs. The radius reaches the relation through
-        # the plan's method, which since Task G4 is the only way it can.
+        # Dilation only ever adds pairs. The radius reaches the relation
+        # through the plan's method, which is the only way it can.
         wideplan = t7_plan(T7RadiusMethod(0.5), dstspace, srcspace)
         @test GR.dependency_radius(GR.dependencies(wideplan)) == 0.5
         wide = t7_sources(wideplan, 1)
@@ -199,10 +195,8 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
 
         # The relation's rows ARE the per-destination-cap queries: one
         # `chunkindex(src)`, one `candidatechunks!` per `chunkextents(dst)`
-        # entry. `demanded_pairs` replays exactly that loop, so with no `refine`
-        # the two must be equal, not merely nested. This assertion belonged to
-        # `connectedchunkpairs` until Task G4 and to `connectedchunks` until
-        # Task E2; both ran this same loop, which is why neither survives.
+        # entry. `demanded_pairs` replays exactly that loop, so with no
+        # `refine` the two must be equal, not merely nested.
         @test graph_pairs(graph) == demanded_pairs(dstspace, srcspace)
 
         # The generic index is GeometryOps' packed R-tree. Its leaf boxes are
@@ -888,7 +882,7 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
     end
 
     # ----------------------------------------------------------------------
-    # Task E1 — the lazy executor is driven by the plan's dependency rows
+    # The lazy executor is driven by the plan's dependency rows
     # ----------------------------------------------------------------------
 
     @testset "a lazy read takes its sources from the plan's relation" begin
@@ -943,13 +937,12 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
     end
 
     @testset "a lazy read performs no dependency discovery" begin
-        # The Phase 3 gate, behaviourally. `G4ProbeSpace` counts every
-        # `chunkextents` call — the destination caps, the identity stamp and the
-        # vector the generic `chunkindex` packs all come through it — so the
-        # counter rises exactly when a relation is being derived from the space.
-        # It is defined in `test_chunkgraph.jl`, which runs first; reuse rather
-        # than a second copy is deliberate. (Until Task E2 the counter sat one
-        # level lower, on the `chunktree` that `chunkextents` collected from.)
+        # `G4ProbeSpace` counts every `chunkextents` call — the destination
+        # caps, the identity stamp and the vector the generic `chunkindex`
+        # packs all come through it — so the counter rises exactly when a
+        # relation is being derived from the space. It is defined in
+        # `test_chunkgraph.jl`, which runs first; reuse rather than a second
+        # copy is deliberate.
         probe = G4ProbeSpace(srcspace)
         plan = t7_plan(ToyDiagonalMethod(), dstspace, probe)
         built = probe.queries
@@ -977,7 +970,7 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
     end
 
     @testset "wave costing reads the relation's extents, and copies none" begin
-        # E1 moved the per-chunk caps onto the relation. The point is not only
+        # The per-chunk caps live on the relation. The point is not only
         # that they are reachable, but that there is ONE of each: a plan, its
         # array and every task in a wave read the same vectors.
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)

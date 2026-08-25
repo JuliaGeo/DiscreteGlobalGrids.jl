@@ -250,7 +250,7 @@ _space_hint(_) = ""
 _checkneed(n::Value, cv::CellVector) =
     (_check_data(n.data, length(cv)); _checkover(n.data, cv))
 
-# A stored vector says which cell an entry is for by its position alone, so
+# A stored vector says which cell an entry is for by its axis index alone, so
 # the layout check above is the whole contract. A field also carries the
 # collection it computes against, and a sweep reads it by local index: over
 # any other collection those indices name other cells and every answer would

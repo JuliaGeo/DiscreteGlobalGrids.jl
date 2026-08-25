@@ -25,7 +25,8 @@ const GLOBE = Extents.Extent(X = (-180.0, 180.0), Y = (-90.0, 90.0))
 
 # The four dependency-graph relations — truth, demand, cap join, and the graph's
 # own rows — are defined once, in the GlobalRegridding suite's `graphoracles.jl`,
-# and shared with that suite and the G1 harness. Do not re-spell any of them here.
+# and shared with that suite and the benchmark harness. Do not re-spell any of
+# them here.
 include(joinpath(@__DIR__, "..", "..", "..", "lib", "GlobalRegridding", "test",
     "graphoracles.jl"))
 using .ChunkGraphOracles: contributing_pairs, graph_pairs, demanded_pairs,
@@ -177,9 +178,10 @@ end
     # the executor's relation — and a refcount that reaches zero early retires a
     # tile the next read is still going to ask for.
     #
-    # WHAT THIS CAN AND CANNOT CATCH, post-#69. The builder is now itself one
-    # `candidatechunks!` per destination cap on `chunkindex(src)`, so this sweep
-    # compares `candidatechunks!` against a graph BUILT FROM `candidatechunks!`.
+    # WHAT THIS CAN AND CANNOT CATCH. The builder is itself one
+    # `candidatechunks!` per destination cap on `chunkindex(src)`, so this
+    # sweep compares `candidatechunks!` against a graph BUILT FROM
+    # `candidatechunks!`.
     # It still catches a builder that mis-assembles, mis-sorts or loses rows —
     # which is most of what a CSR builder can get wrong — but it can no longer
     # catch a wrong *choice* of index, because both sides would move together.
@@ -195,7 +197,7 @@ end
     # a cell's cap and its hierarchy's node extents diverge most.
     pentagons = [foldl((c, _) -> first(DGG.children(sys7, c)), 1:3; init = r)
                  for r in DGG.rootcells(sys7)]
-    @test length(unique(GR.chunkat(dst, DGG.globalindex(dst.grid, p))
+    @test length(unique(GR.chunkat(dst, DGG.localindex(dst.grid, p))
                         for p in pentagons)) == 12
     for pole in (GO.UnitSphericalPoint(0.0, 0.0, 1.0),
                  GO.UnitSphericalPoint(0.0, 0.0, -1.0))
@@ -223,10 +225,11 @@ end
     # The crossing itself, on a window CI can run: the whole level-0 Copernicus
     # frontier, no tile list and no download. The block cursor's relation and the
     # cap join differ in BOTH directions, so the cap join is not a bound on the
-    # graph on this hierarchy either — the same fact the G1 harness measures at
-    # production scale (72 pairs the index holds and the cap join rejects, on the
-    # GLO-90 x IGeo7-L12 pair). That production figure is harness-only; these two
-    # assertions are the tested form of the finding.
+    # graph on this hierarchy either — the same fact
+    # `benchmark/chunk_graph_gates.jl` measures at production scale (72 pairs
+    # the index holds and the cap join rejects, on the GLO-90 x IGeo7-L12
+    # pair). That production figure is harness-only; these two assertions are
+    # the tested form of the finding.
     capjoin = capjoin_pairs(dst, src)
     native = graph_pairs(graph)
     @test !isempty(setdiff(native, capjoin))
@@ -278,20 +281,20 @@ end
             graph = graph_pairs(GR.chunk_dependency_graph(dst, src; radius))
             @test !isempty(truth)
             @test truth ⊆ graph
-            # `truth ⊆ graph` alone would pass on a builder that returned every
-            # pair, so pin the relation exactly too: post-#69 the rows ARE the
-            # `candidatechunks!` answers, with no `refine`, so the graph and the
-            # demanded relation are equal and not merely nested. That equality
-            # is what a builder swap has to preserve.
+            # `truth ⊆ graph` alone would pass on a builder that returned
+            # every pair, so pin the relation exactly too: the rows ARE the
+            # `candidatechunks!` answers, with no `refine`, so the graph and
+            # the demanded relation are equal and not merely nested. That
+            # equality is what a builder swap has to preserve.
             @test graph == demanded_pairs(dst, src; radius)
             # A chunk cap covers its own cells, so the cap join holds the same
             # pairs. This is the `chunkextents` half of the obligation: it fails
             # if a chunk cap is too tight.
             @test truth ⊆ capjoin_pairs(dst, src; radius)
-            # G1's second gate. Where a space's index descends the very
-            # hierarchy `chunkextents` is derived from, the cap join is an UPPER
-            # bound on the graph: the descent can prune a chunk whose own cap
-            # intersects, never add one whose cap does not. That holds for
+            # Where a space's index descends the very hierarchy
+            # `chunkextents` is derived from, the cap join is an UPPER bound on
+            # the graph: the descent can prune a chunk whose own cap intersects,
+            # never add one whose cap does not. That holds for
             # `_dggcandidatechunks!` and NOT for the raster quadtree, which
             # answers whole chunks for a straddling leaf without testing each
             # chunk's own cap — so for those cases the containment is asserted
@@ -412,7 +415,7 @@ end
     @test DGG.plan_regrid(declared; to = GRID, missingval = nothing).missingval === nothing
 end
 
-@testset "a shifted cap vector is addressed by global index" begin
+@testset "a shifted cap vector is addressed by local index" begin
     v = DGG._ShiftedCaps(collect(10:19), 100)
     @test v isa AbstractVector{Int}
     @test length(v) == 10
@@ -570,14 +573,14 @@ end
 end
 
 @testset "a column adopts the whole covering's relation and reads the same" begin
-    # Task E1, on the shape `scripts/copdem_production.jl` actually has: a
-    # covering plan over many level-`ancestor` chunks, and a per-column regrid
-    # whose destination is a ROOTED one-chunk subtree grid of the same hierarchy.
+    # The shape `scripts/copdem_production.jl` actually has: a covering plan
+    # over many level-`ancestor` chunks, and a per-column regrid whose
+    # destination is a ROOTED one-chunk subtree grid of the same hierarchy.
     #
-    # G4 proved a row view of the covering's relation is refused there, because
-    # the view stamps the whole covering. `GR.subspace_dependencies` re-stamps it
-    # onto the column's own space, and this asserts the two things that make it
-    # worth having: the plan accepts it, and the values do not move.
+    # A row view of the covering's relation is refused there, because the view
+    # stamps the whole covering. `GR.subspace_dependencies` re-stamps it onto
+    # the column's own space, and this asserts the two things that make it worth
+    # having: the plan accepts it, and the values do not move.
     sys = DGG.IGeo7System()
     level, ancestor = 4, 2
     covering = DGG.DGGSpace(DGG.levelgrid(sys, level); chunklevel = ancestor)
@@ -595,7 +598,7 @@ end
         @test only(GR.chunkextents(column)) == GR.chunkextents(covering)[d]
         view = GR.subspace_dependencies(graph, column, [d])
         @test collect(GR.sourcesof(view, 1)) == collect(GR.sourcesof(graph, d))
-        @test GR.globaldestination(view, 1) == d
+        @test GR.destinationchunk(view, 1) == d
 
         # It is the relation the column would have built for itself...
         own = GR.chunk_dependency_graph(column, SRC)

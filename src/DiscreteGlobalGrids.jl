@@ -62,8 +62,12 @@ here. `treeify`, `ncells`, and `getcell` extend and re-export
 [`regrid`](@ref), [`regrid!`](@ref) and [`plan_regrid`](@ref) are
 `GlobalRegridding`'s, extended in `src/regridding.jl` so that a grid, a
 [`CellVector`](@ref), a [`CellLookup`](@ref), a [`MultiOrderCellSet`](@ref), or a
-bare system spells a destination. `cellat` and `cellindices` are that package's
-bindings for the same reason the `Trees` ones are.
+bare system spells a destination. `cellat` is that package's binding for the
+same reason the `Trees` ones are. The rest of the space contract
+`src/regridding.jl` fills in — `nchunks`, `ownedindices`, `chunkat`,
+`cellcentroid`, `samplesites`, `celltree`, `chunkextents`, `chunkindex`,
+`candidatechunks!`, `chunkranges` and `subtree` — is extended under
+`GlobalRegridding`'s own name rather than imported.
 """
 module DiscreteGlobalGrids
 
@@ -95,10 +99,11 @@ import ConservativeRegridding.Trees: treeify, ncells, getcell
 
 # `GlobalRegridding` owns the regridding verbs and the space contract, and has no
 # dependency on this package; `src/regridding.jl` implements the contract for the
-# grids here. `cellat` and `cellindices` are its bindings for the same reason the
-# `Trees` ones are: extending them rather than shadowing them keeps one function
-# per name for a session that holds both surfaces.
-import GlobalRegridding: cellat, cellindices, regrid, regrid!, plan_regrid
+# grids here. `cellat` is its binding for the same reason the `Trees` ones are:
+# extending it rather than shadowing it keeps one function per name for a
+# session that holds both surfaces. Every other hook `src/regridding.jl` fills
+# in is extended qualified, so those names stay out of this namespace.
+import GlobalRegridding: cellat, regrid, regrid!, plan_regrid
 # The method and policy names ride along re-exported: they appear in the verbs'
 # keyword arguments, so a session that can call `regrid` can also spell
 # `method = Conservative()` without a second import.
@@ -114,6 +119,11 @@ include("core/manifolds.jl")
 include("interface/types.jl")
 include("interface/grid.jl")
 include("interface/system.jl")
+
+# Declared here rather than beside its method because both modules included
+# below import it; the method expands a `MultiOrderCellSet` to a level
+# (`src/engine/multiorder.jl`).
+function cellindices end
 
 # The overridable generic defaults, then the machinery that reads them.
 include("fallbacks/fallbacks.jl")

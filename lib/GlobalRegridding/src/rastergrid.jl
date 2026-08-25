@@ -917,8 +917,7 @@ end
 
 # The caps as values, for the identity stamp and for a consumer that wants a
 # chunk's covering extent. Chunk *queries* go to `_rasterchunkcursor` and never
-# come here; Task E2 removed the `chunktree` bridge that used to pack these into
-# a flat tree so the generic fallback could collect them straight back out.
+# come here.
 function chunkextents(space::RasterGrid)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)

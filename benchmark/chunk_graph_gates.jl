@@ -1,4 +1,4 @@
-# Correctness and performance gates for the chunk dependency graph (Task G1).
+# Correctness and performance gates for the chunk dependency graph.
 #
 #     julia -t 8 --project=benchmark benchmark/chunk_graph_gates.jl
 #
@@ -15,19 +15,18 @@
 #
 #   2. What does each row builder cost? The `:indexed` arm is production's
 #      `chunk_dependency_graph`. The `:latjoin` arm reimplements the
-#      latitude-sorted cap join that PR #69 deleted, verbatim from
-#      `ba2bbfa^:lib/GlobalRegridding/src/chunkgraph.jl`, so the comparison that
-#      #69 bypassed can still be run. It is reimplemented HERE, not imported, so
-#      that this harness keeps working as later tasks change the production
-#      builder. `:latjoin_raw` is the same with the latitude prefilter off; it
+#      latitude-sorted cap join the production builder replaced, verbatim from
+#      `ba2bbfa^:lib/GlobalRegridding/src/chunkgraph.jl`, so the two can still
+#      be compared. It is reimplemented HERE, not imported, so that this
+#      harness keeps working as later work changes the production builder.
+#      `:latjoin_raw` is the same with the latitude prefilter off; it
 #      exists only to attribute the prefilter's share and is opt-in behind
 #      `DGG_GRAPH_GATE_RAW=1`.
 #
-#   3. What does a per-column plan pay for its rows? Task G3 added `restrict`,
-#      which hands back a row view sharing the parent's destination-major CSR.
-#      The alternative is a rebuild, and since #69 a rebuild costs a fresh
-#      `chunkindex(src_space)` per column. `restrict_measurement` times both and
-#      asserts they agree row for row.
+#   3. What does a per-column plan pay for its rows? `restrict` hands back a
+#      row view sharing the parent's destination-major CSR. The alternative is
+#      a rebuild, which costs a fresh `chunkindex(src_space)` per column.
+#      `restrict_measurement` times both and asserts they agree row for row.
 #
 # The two arms answer different relations on purpose: `:indexed` asks the source
 # space's own chunk index the question a lazy read asks, `:latjoin` joins the
@@ -39,15 +38,16 @@
 # longer exists, so it is not maintenance the repo owes indefinitely. Delete it
 # — and this file's whole second question with it — at whichever comes first:
 #
-#   - G2's waived performance gate is retired (the waiver in
-#     `regrid-notes/2026-08-23-g1-graph-oracles.md` §5 is what the arm exists to
-#     keep auditable, and a retired waiver has nothing left to audit); or
+#   - the waived performance gate recorded in
+#     `regrid-notes/2026-08-23-g1-graph-oracles.md` §5 is retired (that waiver
+#     is what the arm exists to keep auditable, and a retired waiver has
+#     nothing left to audit); or
 #   - the production builder stops being comparable to a flat cap join at all,
 #     so that "same relation, different cost" is no longer the question being
 #     asked and the timing is measuring two unrelated things.
 #
-# Question 1 — the oracles — has no sunset: G3 and G4 use them to prove they did
-# not change the relation.
+# Question 1 — the oracles — has no sunset: they are how a change to the builder
+# proves it did not change the relation.
 #
 # Environment
 #
@@ -151,9 +151,10 @@ function latjoin_graph(dst_space, src_space; radius::Real = 0.0, refine = nothin
         prefilter::Bool = true)
     r = Float64(radius)
     (isfinite(r) && r >= 0) || throw(ArgumentError("radius must be finite and >= 0"))
-    # G3 gave the graph an identity; this arm stamps the same one the production
-    # builder would, so the two arms stay comparable as objects and not just as
-    # relations. The stamping cost is inside the timed region for both.
+    # The graph carries an identity; this arm stamps the same one the
+    # production builder would, so the two arms stay comparable as objects and
+    # not just as relations. The stamping cost is inside the timed region for
+    # both.
     id = GR.dependency_identity(dst_space, src_space; radius = r)
     return _latjoin(id, GR.chunkextents(dst_space), GR.chunkextents(src_space), r,
         refine, prefilter)
@@ -354,10 +355,11 @@ const CASES = [
      make = () -> (dgg(SYS7, 2, 1), boxraster(24, 6, 5, 2, (-180.0, 180.0), (60.0, 90.0)))),
     (name = "antimeridian-source", oracle = true, radius = 0.0,
      make = () -> (dgg(SYS7, 2, 1), boxraster(12, 16, 5, 5, (150.0, 180.0), (-40.0, 40.0)))),
-    # The residual risk PR #69 left open: a raster source deep enough that the
-    # quadtree descent per destination cap costs far more than a cap join over
-    # the same chunks. 4320x2160 with 162 chunks is the shape that measurement
-    # was taken on; the 1800-chunk row varies chunk count at fixed raster size.
+    # The residual risk the indexed builder leaves open: a raster source deep
+    # enough that the quadtree descent per destination cap costs far more than a
+    # cap join over the same chunks. 4320x2160 with 162 chunks is the shape that
+    # measurement was taken on; the 1800-chunk row varies chunk count at fixed
+    # raster size.
     (name = "raster-4320-162chunks", oracle = false, radius = 0.0,
      make = () -> (dgg(SYS7, 4, 3), gridraster(4320, 2160, 240, 240))),
     (name = "raster-4320-1800chunks", oracle = false, radius = 0.0,
@@ -415,7 +417,7 @@ const ARMS = let base = (
 end
 
 # ===========================================================================
-# Question 3 — what a row view saves against rebuilding (Task G3)
+# Question 3 — what a row view saves against rebuilding
 # ===========================================================================
 #
 # A per-column plan needs the dependency rows of one column of destinations.
@@ -437,8 +439,8 @@ end
 "Build a one-column dependency graph the way a caller without `restrict` must."
 function rebuild_graph(dst, src, ds::Vector{Int}, radius::Float64)
     # Mirrors `_builddependencies`: each side's caps are taken once and serve
-    # both the stamp and the relation. Task E1 made the graph keep them, so a
-    # rebuild that took them twice would no longer be what a rebuild costs.
+    # both the stamp and the relation. The graph keeps them, so a rebuild that
+    # took them twice would no longer be what a rebuild costs.
     dcaps = GR.chunkextents(dst)
     scaps = GR.chunkextents(src)
     id = GR.DependencyIdentity(GR._spacestamp(dst, dcaps), GR._spacestamp(src, scaps),
@@ -474,7 +476,7 @@ function restrict_measurement(graph, dst, src, radius, ndst)
     consumers(g) = [Int.(collect(GR.consumersof(g, s))) for s in 1:GR.nsourcechunks(g)]
     ok = rows_of(vone) == rows_of(bone) && rows_of(vblk) == rows_of(bblk) &&
          consumers(vone) == consumers(bone) && consumers(vblk) == consumers(bblk) &&
-         GR.globaldestinations(vone) == one && GR.globaldestinations(vblk) == block
+         GR.destinationchunks(vone) == one && GR.destinationchunks(vblk) == block
     ok || error("restrict disagreed with a rebuild on $(GR.nsourcechunks(graph)) sources")
 
     @printf("   restrict:    1 dst %9.6f s vs rebuild %9.6f s (%6.1f×)   \
@@ -553,7 +555,7 @@ function runcase(case, prov)
             # How this arm differs from the production relation, both ways.
             only_here = length(setdiff(pairs, relations[:indexed])),
             missing_here = length(setdiff(relations[:indexed], pairs)),
-            # G3: what the identity costs, and what a row view saves.
+            # What the identity costs, and what a row view saves.
             identity_seconds = idtime.seconds_median,
             identity_bytes = idtime.bytes_min,
             source_index_seconds = indextime.seconds_median,
@@ -637,9 +639,9 @@ The indexed arm's correctness verdict, and — the point of separating this out 
 what it is a verdict *about*.
 
 `oracle_missing` is `-1`, not 0, when the `O(ncells²)` sweep was skipped as too
-large, and `demand_missing` is 0 for `:indexed` by construction: post-#69 the
-builder issues exactly the `candidatechunks!` queries `demanded_pairs` replays,
-so that column can only ever read 0 on this arm and is not evidence of anything.
+large, and `demand_missing` is 0 for `:indexed` by construction: the builder
+issues exactly the `candidatechunks!` queries `demanded_pairs` replays, so that
+column can only ever read 0 on this arm and is not evidence of anything.
 Counting either as a pass is how a run over nothing but skipped cases printed an
 unqualified PASS. So: count the cases that got a real geometric verdict, name
 the ones that did not, and refuse to call a run with no checked case a pass.

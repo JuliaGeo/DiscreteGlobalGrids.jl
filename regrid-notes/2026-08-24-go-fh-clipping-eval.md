@@ -1,8 +1,8 @@
 # Evaluating the GeometryOps spherical Foster-Hormann branch as a DGG pin
 
 - Date: 2026-08-24
-- Branch: `claude/go-fh-clipping-eval`, cut from `claude/e2-delete-legacy-discovery`
-  @ `04ef77b` (PR #75's head). `claude/perf-ladder` was not touched.
+- Commit: `Evaluate the GeometryOps spherical Foster-Hormann branch as a pin`
+  (`091810d`), on top of `04ef77b`.
 - Machine: 64-core shared box, Julia 1.12.6, `--gcthreads=4` everywhere.
 - Verdict: **GO-WITH-CAVEATS as a correctness-neutral, off-driver improvement.
   NO-GO as a clipping optimisation** — the hypothesis this evaluation was set up
@@ -44,8 +44,8 @@ and a stale remote-tracking ref in a local clone is what makes it *look*
 present). The card's ancestry claim no longer holds either.
 
 **Pinned SHA: `35996798bcc34d325452cfa73926b37918ece65c`**
-(manifest tree `1e8708fd530e62235dc711da64449e9c2df82ba0`), the live tip as of
-this session. Same 13 commit subjects, rebased onto GeometryOps `main`
+(manifest tree `1e8708fd530e62235dc711da64449e9c2df82ba0`), the live tip on
+2026-08-24. Same 13 commit subjects, rebased onto GeometryOps `main`
 (`3b1878db0`).
 
 Consequences of the rebase, stated because they widen the blast radius the card

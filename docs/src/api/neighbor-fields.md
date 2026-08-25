@@ -32,10 +32,10 @@ answers in:
 as many of them as the kernel reads — two arrays of different element types give
 two rings of those element types. A single one is what [`Values`](@ref) already
 passes; a request is that idea without the one-array limit and with the geometry
-in it. Everything else about the call is unchanged: `needs` is a keyword on
-[`mapneighbors`](@ref) and [`foreachneighbors`](@ref), alongside `order`,
-`threaded` and `connectivity`, over a [`CellVector`](@ref), a
-[`PartialGrid`](@ref), a [`CellLookup`](@ref) or a dimensional array.
+in it. `needs` is a keyword on [`mapneighbors`](@ref) and
+[`foreachneighbors`](@ref), alongside `order`, `threaded` and `connectivity`,
+over a [`CellVector`](@ref), a [`PartialGrid`](@ref), a [`CellLookup`](@ref) or
+a dimensional array.
 
 ## The callback
 
@@ -80,10 +80,10 @@ Three things about them are the contract:
     every ring that names it, so each sweep task keeps a bounded cache of
     recent centroids and computes each one on its first touch inside it —
     automatic, with no knob, and the same values `cell_centroid` gives either
-    way. The key is the local index rather than the visit position, which is
-    what keeps a locality-preserving `order` hitting; a random permutation
-    scatters the keys, the window essentially stops hitting, and the centroid
-    surcharge measured 4.2–4.4× storage order's on the same fixture
+    way. The key is the local index rather than the order it was visited
+    in, which is what keeps a locality-preserving `order` hitting; a random
+    permutation scatters the keys, the window essentially stops hitting, and
+    the centroid surcharge measured 4.2–4.4× storage order's on the same fixture
     (`benchmark/needs_centroid.jl`). In storage order it settles at roughly
     one computation per cell instead of one per touch, and that one is most
     of what is left: at 117,649 cells the sweep is 48.6 ms against 29.5 ms

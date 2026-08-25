@@ -6,8 +6,8 @@ import DimensionalData as DD
 # sampler and the chunk-pair builder are tested on a toy space that answers one
 # hand-built dual cell.
 
-# Source indices that are not node positions, so a kernel that emits `k` instead
-# of `indices[k]` is caught rather than silently right.
+# Source indices that are not node slot numbers, so a kernel that emits `k`
+# instead of `indices[k]` is caught rather than silently right.
 const P1_TRI_INDS = [7, 3, 11]
 const P1_TRI_NODES = [(0.0, 0.0), (4.0, 0.0), (1.0, 3.0)]
 
@@ -33,8 +33,8 @@ p1_bilinear(c) = 1.0 + 0.5 * c[1] - 2.0 * c[2] + 0.25 * c[1] * c[2]
     p1_reproduce(row, indices, nodes, f) -> Float64
 
 The row's value for the field `f` sampled at the cell's nodes. Every entry must
-name one of `indices`, so a row that emits a node position, or a source cell the
-cell never held, fails here rather than in a value comparison.
+name one of `indices`, so a row that emits a node's slot number, or a source
+cell the cell never held, fails here rather than in a value comparison.
 """
 function p1_reproduce(row, indices, nodes, f)
     total = 0.0
@@ -404,7 +404,7 @@ end
     end
 
     @testset "chart Q1 matches BilinearPoint inside the lattice" begin
-        # The P0 interior fixture: source centres 20 degrees apart, every
+        # Interior fixture: source centres 20 degrees apart, every
         # destination centroid strictly inside the lattice hull.
         qsrc = ToyLonLatSpace(6, 5; lon = (-60.0, 60.0), lat = (-50.0, 50.0))
         qdst = ToyLonLatSpace(7, 4; lon = (-49.0, 49.0), lat = (-39.0, 39.0))
@@ -440,7 +440,7 @@ end
     end
 
     @testset "a periodic chart axis wraps at the seam" begin
-        # The P0 seam fixture: 35 degrees east of the last centre on a
+        # Seam fixture: 35 degrees east of the last centre on a
         # 90-degree lattice, so the two longitude weights are 11/18 and 7/18,
         # halved again across the two latitudes.
         src = ToyLonLatSpace(4, 2)
@@ -490,7 +490,7 @@ end
         @test GR.weightsat!(row, smp, cellcentroid(rim, 1)) === GR.WeightsRim
         @test GR.weightsat!(row, smp, cellcentroid(beyond, 1)) === GR.WeightsOutside
 
-        # The P0 outside fixture, which the bilinear point serves from the rim
+        # Outside fixture, which the bilinear point serves from the rim
         # line, and a longitude past the span on whatever branch the chart
         # reports.
         outside = ToyLonLatSpace(1, 1; lon = (-1.0, 1.0), lat = (59.0, 61.0))

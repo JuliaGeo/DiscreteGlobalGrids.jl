@@ -52,13 +52,13 @@ struct BilinearPoint <: AbstractRegriddingMethod end
 Interpolate between source sample sites at each destination sample site.
 
 The stencil is the dual cell of source sample sites containing the destination
-point, weighted by the coordinates that cell's basis names: triangle
-barycentric, tensor Q1, or mean-value coordinates on a convex polygon. Weights
-are nonnegative and sum to one, so the result lies between the source values it
-came from. Requires [`cellcentroid`](@ref) of the destination space and a
-source space that answers point queries; a destination outside the source's
-dual complex emits no entry at all, and the missing policy decides what it
-becomes.
+point, weighted by the coordinates that cell's basis names: tensor Q1 on a
+quadrilateral, or mean-value coordinates on a convex polygon, which on a
+triangle are that triangle's barycentric coordinates. Weights are nonnegative
+and sum to one, so the result lies between the source values it came from.
+Requires [`cellcentroid`](@ref) of the destination space and a source space
+that answers point queries; a destination outside the source's dual complex
+emits no entry at all, and the missing policy decides what it becomes.
 
 This point sample does not preserve integrals.
 """

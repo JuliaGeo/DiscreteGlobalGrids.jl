@@ -139,9 +139,9 @@ nodes are those sites:
 | primal source grid | usual primal-vertex valence | dual cell | basis |
 |---|---:|---|---|
 | quadrilateral raster | 4 | dual quadrilateral | tensor Q1 |
-| hexagons | 3 | dual triangle | P1 barycentric |
+| hexagons | 3 | dual triangle | mean value |
 | triangles | about 6 | dual polygon | named generalized coordinates |
-| nonconforming CopDEM transition | 3 or 4 | triangle or quadrilateral | P1 or Q1 |
+| nonconforming CopDEM transition | 3 or 4 | triangle or quadrilateral | mean value or Q1 |
 
 For a valid destination point `p`, the method emits
 
@@ -153,9 +153,9 @@ In a local two-dimensional chart it also reproduces affine coordinates. Q1 on
 a rectangular raster additionally reproduces `a + bx + cy + dxy`. The dual
 cell's kind, rather than merely its vertex count, chooses the basis:
 
-- `Linear`: ordinary triangle barycentric weights;
 - `Bilinear`: inverse isoparametric coordinates followed by tensor Q1 weights;
-- `MeanValue`: mean-value coordinates on a supported convex polygon.
+- `MeanValue`: mean-value coordinates on a supported convex polygon, which on a
+  triangle are that triangle's barycentric coordinates.
 
 A four-node dual cell is not automatically `Bilinear`. A raster or source-space
 specialization must assert that kind. Likewise, an arbitrary n-gon is
@@ -593,7 +593,7 @@ candidate chunks), and budget/spill tests pass.
 ### P4 — conforming DGGS support
 
 - Prototype the smallest fast topology seam behind `DGGSpace`.
-- Implement a hexagonal source fast path producing P1 dual triangles.
+- Implement a hexagonal source fast path producing dual triangles.
 - Exercise a variable-valence defect and a higher-valence polygon with its
   explicitly selected basis.
 - Test continuity across primal edges, face seams, and chunk boundaries.

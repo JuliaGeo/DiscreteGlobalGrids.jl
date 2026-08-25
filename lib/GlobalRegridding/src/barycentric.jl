@@ -8,15 +8,15 @@
 """
     BasisKind
 
-Which coordinates weight a dual cell's nodes: `Linear` for triangle barycentric
-coordinates, `Bilinear` for inverse isoparametric Q1 on a quadrilateral, and
-`MeanValue` for mean-value coordinates on a convex polygon.
+Which coordinates weight a dual cell's nodes: `Bilinear` for inverse
+isoparametric Q1 on a quadrilateral, and `MeanValue` for mean-value coordinates
+on a convex polygon. A triangle is a `MeanValue` cell, where mean-value
+coordinates are the triangle's barycentric coordinates.
 
 The kind belongs to the cell, not to its node count: a four-node cell is
 `Bilinear` only where the space that built it says so.
 """
 @enum BasisKind::UInt8 begin
-    Linear
     Bilinear
     MeanValue
 end
@@ -62,7 +62,7 @@ end
 # The turning direction of a closed node ring: `1` counter-clockwise, `-1`
 # clockwise, and `0` when some corner neither turns nor exists — a repeated
 # node, a straight corner, or a reflex one. A ring answering `0` is degenerate
-# for every basis here, since all three need a simple convex cell.
+# for every basis here, since both need a simple convex cell.
 function _orientation(nodes)
     n = length(nodes)
     n >= 3 || return 0
@@ -94,46 +94,7 @@ function _normalize!(row::WeightRow)
     return WeightsMapped
 end
 
-# --- the three kernels -----------------------------------------------------
-
-"""
-    linearweights!(row, indices, nodes, p) -> WeightStatus
-
-Weight a triangle's three nodes by the barycentric coordinates of `p`.
-
-`nodes` holds the three node coordinates in one two-dimensional chart, `p` is a
-point in that chart, and `indices` names the nodes' source cells in the same
-order. The row is cleared on entry and left holding the nonzero weights, so a
-point on an edge emits two entries and a point at a node one.
-
-Weights reproduce every affine field on the triangle and sum to one. A point
-outside the triangle is `WeightsOutside` and is never clamped in; a triangle
-with repeated or collinear nodes is `WeightsDegenerate`.
-"""
-function linearweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
-    empty!(row)
-    length(nodes) == 3 || return WeightsDegenerate
-    a, b, c = nodes[1], nodes[2], nodes[3]
-    ab, ac, bc = _sub(b, a), _sub(c, a), _sub(c, b)
-    twicearea = _cross(ab, ac)
-    abs(twicearea) > SHAPE_TOL * max(_norm2(ab), _norm2(ac), _norm2(bc)) ||
-        return WeightsDegenerate
-
-    hit = _nodehit(nodes, p)
-    if hit != 0
-        _addentry!(row, indices[hit], 1.0)
-        return WeightsMapped
-    end
-
-    wa = _cross(_sub(b, p), _sub(c, p)) / twicearea
-    wb = _cross(_sub(c, p), _sub(a, p)) / twicearea
-    wc = _cross(_sub(a, p), _sub(b, p)) / twicearea
-    (wa < -COORD_TOL || wb < -COORD_TOL || wc < -COORD_TOL) && return WeightsOutside
-    _addentry!(row, indices[1], wa)
-    _addentry!(row, indices[2], wb)
-    _addentry!(row, indices[3], wc)
-    return _normalize!(row)
-end
+# --- the two kernels -------------------------------------------------------
 
 # The bilinear map of the unit square onto a quadrilateral, and its derivatives.
 @inline _q1image(n1, n2, n3, n4, u::Float64, v::Float64) =
@@ -218,10 +179,18 @@ function bilinearweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
     return _normalize!(row)
 end
 
-# The tangent of half the angle `a` and `b` subtend, taken positive whichever
-# way the ring turns.
-@inline function _tanhalfangle(turn::Int, a::NTuple{2,Float64}, b::NTuple{2,Float64})
-    return tan(atan(turn * _cross(a, b), _dot(a, b)) / 2)
+# The tangent of half the angle the vectors `a` and `b` subtend at their common
+# origin, taken positive whichever way the ring turns: with `â` and `b̂` the unit
+# vectors along them, the distance between them over the distance across,
+# `‖â - b̂‖ / ‖â + b̂‖`, signed by the determinant. `ra` and `rb` are the vectors'
+# lengths. Distances only, and no arctangent.
+@inline function _halfangletangent(turn::Int, a::NTuple{2,Float64}, ra::Float64,
+    b::NTuple{2,Float64}, rb::Float64)
+    ua = (a[1] / ra, a[2] / ra)
+    ub = (b[1] / rb, b[2] / rb)
+    apart = sqrt(_norm2(_sub(ua, ub)))
+    across = sqrt(_norm2((ua[1] + ub[1], ua[2] + ub[2])))
+    return sign(turn * _cross(a, b)) * apart / across
 end
 
 """
@@ -231,9 +200,12 @@ Weight a convex polygon's nodes by the mean-value coordinates of `p`.
 
 `nodes` holds three or more node coordinates in cyclic order in one
 two-dimensional chart, `p` is a point in that chart, and `indices` names the
-nodes' source cells in the same order. Node `i` takes
-`(tan(α₋/2) + tan(α₊/2)) / rᵢ`, normalized, where `rᵢ` is its distance from `p`
-and `α∓` are the angles it subtends at `p` with its two neighbours.
+nodes' source cells in the same order. Writing `sᵢ` for the vector from `p` to
+node `i`, `rᵢ` for its length and `ŝᵢ` for the unit vector along it, node `i`
+takes `(t₋ + t₊) / rᵢ`, normalized, where each of its two edges contributes
+`t = ±‖ŝᵢ - ŝⱼ‖ / ‖ŝᵢ + ŝⱼ‖`, signed by `det(sᵢ, sⱼ)` — the tangent of half the
+angle that edge subtends at `p`, from distances alone, so no trigonometric
+function is evaluated.
 
 Weights are positive, reproduce every affine field on the polygon, and sum to
 one; on a triangle they are the barycentric coordinates. The row is cleared on
@@ -274,20 +246,27 @@ function meanvalueweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
     end
 
     # Mean-value coordinates. Each node's two angles are visited once, in one
-    # pass that carries the previous node's tangent.
+    # pass that carries the previous node's tangent, and each node's vector and
+    # length are formed once.
     d1 = _sub(nodes[1], p)
-    d = d1
-    tprev = _tanhalfangle(turn, _sub(nodes[n], p), d1)
+    r1 = sqrt(_norm2(d1))
+    dlast = _sub(nodes[n], p)
+    d, r = d1, r1
+    tprev = _halfangletangent(turn, dlast, sqrt(_norm2(dlast)), d1, r1)
     isfinite(tprev) || return WeightsDegenerate
     for i in 1:n
-        dnext = i == n ? d1 : _sub(nodes[i+1], p)
-        t = _tanhalfangle(turn, d, dnext)
+        dnext, rnext = d1, r1
+        if i != n
+            dnext = _sub(nodes[i+1], p)
+            rnext = sqrt(_norm2(dnext))
+        end
+        t = _halfangletangent(turn, d, r, dnext, rnext)
         isfinite(t) || (empty!(row); return WeightsDegenerate)
-        w = (tprev + t) / sqrt(_norm2(d))
+        w = (tprev + t) / r
         (isfinite(w) && w > 0) || (empty!(row); return WeightsDegenerate)
         _addentry!(row, indices[i], w)
         tprev = t
-        d = dnext
+        d, r = dnext, rnext
     end
     return _normalize!(row)
 end
@@ -333,7 +312,7 @@ Base.show(io::IO, cell::DualCell) =
 
 # The answer where no dual cell exists. Returning one prepared object costs a
 # query nothing.
-const NO_DUALCELL = DualCell(Int[], NTuple{2,Float64}[], Linear)
+const NO_DUALCELL = DualCell(Int[], NTuple{2,Float64}[], MeanValue)
 
 """
     dualweights!(row, cell::DualCell, p) -> WeightStatus
@@ -341,9 +320,7 @@ const NO_DUALCELL = DualCell(Int[], NTuple{2,Float64}[], Linear)
 Weight `cell`'s nodes at chart point `p` with the coordinates its kind names.
 """
 function dualweights!(row::WeightRow, cell::DualCell, p::NTuple{2,Float64})
-    kind = cell.kind
-    kind === Linear && return linearweights!(row, cell.indices, cell.nodes, p)
-    kind === Bilinear && return bilinearweights!(row, cell.indices, cell.nodes, p)
+    cell.kind === Bilinear && return bilinearweights!(row, cell.indices, cell.nodes, p)
     return meanvalueweights!(row, cell.indices, cell.nodes, p)
 end
 

@@ -1,7 +1,7 @@
 import DimensionalData as DD
 
 # The point contract: one reusable weight row, the dual cell a point falls in,
-# and the three coordinate kernels that weight its nodes. The kernels are tested
+# and the two coordinate kernels that weight its nodes. The kernels are tested
 # on bare node coordinates, with no space and no chunk anywhere near them; the
 # sampler and the chunk-pair builder are tested on a toy space that answers one
 # hand-built dual cell.
@@ -56,6 +56,40 @@ p1_rowsum(row) = sum(row.weights; init = 0.0)
 
 p1_weightof(row, i) = sum((row.weights[k] for k in 1:length(row) if row.indices[k] == i);
     init = 0.0)
+
+"""
+    p1_barycentric(nodes, p) -> NTuple{3,Float64}
+
+The barycentric coordinates of `p` in the triangle `nodes`, from the three
+signed areas. This is the closed form the mean-value kernel must reproduce on a
+triangle, computed here rather than taken from the kernel under test.
+"""
+function p1_barycentric(nodes, p)
+    a, b, c = nodes
+    twicearea(u, v, w) = (v[1] - u[1]) * (w[2] - u[2]) - (v[2] - u[2]) * (w[1] - u[1])
+    total = twicearea(a, b, c)
+    return (twicearea(p, b, c) / total, twicearea(p, c, a) / total,
+        twicearea(p, a, b) / total)
+end
+
+# A convex ring: points in angular order on a circle, so the ring is convex, put
+# through an affine map, which keeps it convex while giving it a shape. Both
+# arguments are deterministic, so the sweep is the same on every run.
+function p1_convexring(n::Int, k::Int)
+    θ = [2π * (j - 1 + 0.4 * sinpi((j * k) / 7)) / n for j in 1:n]
+    a, b = 1.0 + 0.3 * cospi(k / 5), 0.4 * sinpi(k / 3)
+    c, d = 0.2 * cospi(k / 4), 0.8 + 0.5 * sinpi(k / 6)
+    ox, oy = 2.0 * cospi(k / 9), 3.0 * sinpi(k / 11)
+    return [(a * cos(t) + b * sin(t) + ox, c * cos(t) + d * sin(t) + oy) for t in θ]
+end
+
+# A point strictly inside a convex ring: a convex combination of its nodes.
+function p1_inside(nodes, k::Int)
+    w = [0.2 + abs(sinpi((j * k) / 13)) for j in eachindex(nodes)]
+    w ./= sum(w)
+    return (sum(w[j] * nodes[j][1] for j in eachindex(nodes)),
+        sum(w[j] * nodes[j][2] for j in eachindex(nodes)))
+end
 
 # Warm the row, then measure the steady-state call.
 p1_kernelbytes(kernel, row, indices, nodes, p) =
@@ -118,54 +152,63 @@ end
 
 @testset "barycentric point contracts" begin
 
-    @testset "triangle barycentric coordinates" begin
+    @testset "a triangle is a mean-value cell" begin
+        # A triangle has no kernel of its own: mean-value coordinates on three
+        # nodes are the triangle's barycentric coordinates, which the test
+        # computes from signed areas.
         row = GR.WeightRow()
         inds, nodes = P1_TRI_INDS, P1_TRI_NODES
+        λ(p) = p1_barycentric(nodes, p)
 
-        # An interior point takes all three nodes, sums to one, and reproduces
-        # the constant, affine and coordinate fields the basis promises.
-        @test GR.linearweights!(row, inds, nodes, (1.5, 1.5)) === GR.WeightsMapped
+        # An interior point takes all three nodes, at the closed-form
+        # coordinates and not merely at some partition of unity.
+        @test GR.meanvalueweights!(row, inds, nodes, (1.5, 1.5)) === GR.WeightsMapped
         @test length(row) == 3
         @test sort(row.indices) == sort(inds)
         @test p1_rowsum(row) ≈ 1.0
-        @test p1_reproduce(row, inds, nodes, p1_constant) ≈ 3.5
-        @test p1_reproduce(row, inds, nodes, p1_affine) ≈ p1_affine((1.5, 1.5))
-        @test all(isapprox.(p1_site(row, inds, nodes), (1.5, 1.5); atol = 1e-12))
-        # The coordinates themselves, not merely a partition of unity.
+        @test all(isapprox(p1_weightof(row, inds[k]), λ((1.5, 1.5))[k]; atol = 1e-12)
+                  for k in 1:3)
         @test p1_weightof(row, 11) ≈ 0.5
 
-        # Every affine field, at several interior points.
+        # The coordinates at several interior points, and the fields they carry.
         for p in ((1.0, 1.0), (2.0, 0.5), (0.5, 0.5), (1.2, 2.0))
-            @test GR.linearweights!(row, inds, nodes, p) === GR.WeightsMapped
+            @test GR.meanvalueweights!(row, inds, nodes, p) === GR.WeightsMapped
+            @test all(isapprox(p1_weightof(row, inds[k]), λ(p)[k]; atol = 1e-12)
+                      for k in 1:3)
             @test p1_reproduce(row, inds, nodes, p1_affine) ≈ p1_affine(p)
             @test p1_rowsum(row) ≈ 1.0
         end
 
-        # A point on an edge emits that edge's two nodes and drops the zero.
-        @test GR.linearweights!(row, inds, nodes, (2.0, 0.0)) === GR.WeightsMapped
+        # A point on an edge emits that edge's two nodes, at the two
+        # coordinates the closed form gives them, and drops the zero.
+        @test GR.meanvalueweights!(row, inds, nodes, (2.0, 0.0)) === GR.WeightsMapped
         @test length(row) == 2
         @test sort(row.indices) == [3, 7]
-        @test p1_reproduce(row, inds, nodes, p1_affine) ≈ p1_affine((2.0, 0.0))
+        @test all(isapprox(p1_weightof(row, inds[k]), λ((2.0, 0.0))[k]; atol = 1e-12)
+                  for k in 1:3)
 
         # A point at a node reproduces that node exactly, with one entry.
         for k in 1:3
-            @test GR.linearweights!(row, inds, nodes, nodes[k]) === GR.WeightsMapped
+            @test GR.meanvalueweights!(row, inds, nodes, nodes[k]) === GR.WeightsMapped
             @test row.indices == [inds[k]]
             @test row.weights == [1.0]
+            @test λ(nodes[k])[k] ≈ 1.0
         end
 
-        # Outside is unmapped, never clamped to the boundary, and leaves no row.
+        # Outside is unmapped, never clamped to the boundary, and leaves no row;
+        # the closed form is the reason, one coordinate there being negative.
         for p in ((5.0, 0.0), (-1.0, -1.0), (2.0, 3.0), (1.0, -0.5))
-            @test GR.linearweights!(row, inds, nodes, p) === GR.WeightsOutside
+            @test GR.meanvalueweights!(row, inds, nodes, p) === GR.WeightsOutside
             @test isempty(row)
+            @test minimum(λ(p)) < 0.0
         end
 
         # Degeneracies are rejected rather than answered with a division by zero.
-        @test GR.linearweights!(row, inds, [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)],
+        @test GR.meanvalueweights!(row, inds, [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)],
             (1.0, 1.0)) === GR.WeightsDegenerate
-        @test GR.linearweights!(row, inds, [(0.0, 0.0), (4.0, 0.0), (0.0, 0.0)],
+        @test GR.meanvalueweights!(row, inds, [(0.0, 0.0), (4.0, 0.0), (0.0, 0.0)],
             (1.0, 0.0)) === GR.WeightsDegenerate
-        @test GR.linearweights!(row, inds, [(0.0, 0.0), (4.0, 0.0)],
+        @test GR.meanvalueweights!(row, inds, [(0.0, 0.0), (4.0, 0.0)],
             (1.0, 0.0)) === GR.WeightsDegenerate
         @test isempty(row)
     end
@@ -268,15 +311,6 @@ end
         @test sort(row.indices) == sort(inds[1:2])
         @test p1_reproduce(row, inds, nodes, p1_affine) ≈ p1_affine((2.0, 0.0))
 
-        # On a triangle, mean-value coordinates are the barycentric ones.
-        tri = GR.WeightRow()
-        @test GR.meanvalueweights!(row, P1_TRI_INDS, P1_TRI_NODES,
-            (1.5, 1.5)) === GR.WeightsMapped
-        @test GR.linearweights!(tri, P1_TRI_INDS, P1_TRI_NODES,
-            (1.5, 1.5)) === GR.WeightsMapped
-        @test row.indices == tri.indices
-        @test all(isapprox.(row.weights, tri.weights; atol = 1e-12))
-
         # Outside is unmapped, including a point on an edge's line beyond it.
         for p in ((6.0, 0.0), (-2.0, 0.0), (2.0, 5.0), (5.0, 0.0))
             @test GR.meanvalueweights!(row, inds, nodes, p) === GR.WeightsOutside
@@ -299,20 +333,56 @@ end
         @test isempty(row)
     end
 
+    @testset "mean value on convex cells of every node count" begin
+        # A sweep of convex rings, three to nine nodes, each queried at three
+        # interior points: the two laws that hold on every convex cell, and the
+        # reading that does not depend on which way the ring turns.
+        row, flipped = GR.WeightRow(), GR.WeightRow()
+        mapped = positive = turns = true
+        sumerr = siteerr = fliperr = 0.0
+        for n in 3:9, k in 1:8
+            nodes = p1_convexring(n, k)
+            inds = collect(10:(9+n))
+            for j in 1:3
+                p = p1_inside(nodes, k + j)
+                st = GR.meanvalueweights!(row, inds, nodes, p)
+                mapped &= st === GR.WeightsMapped && length(row) == n
+                st === GR.WeightsMapped && length(row) == n || continue
+                positive &= all(>(0.0), row.weights)
+                # Partition of unity, and linear reproduction: the weights put
+                # the point back where it was asked for.
+                sumerr = max(sumerr, abs(p1_rowsum(row) - 1.0))
+                siteerr = max(siteerr, maximum(abs.(p1_site(row, inds, nodes) .- p)))
+                # Reversing the ring reverses the row and changes nothing else.
+                turns &= GR.meanvalueweights!(flipped, reverse(inds), reverse(nodes),
+                    p) === GR.WeightsMapped && length(flipped) == n
+                length(flipped) == n || continue
+                fliperr = max(fliperr,
+                    maximum(abs.(reverse(flipped.weights) .- row.weights)))
+            end
+        end
+        @test mapped
+        @test positive
+        @test turns
+        @test sumerr < 1e-12
+        @test siteerr < 1e-12
+        @test fliperr < 1e-12
+    end
+
     @testset "the row is reused and costs nothing warm" begin
         row = GR.WeightRow()
 
         # The row is cleared on entry, so a mapped point never inherits the
         # previous point's entries and an unmapped one leaves none.
-        GR.linearweights!(row, P1_TRI_INDS, P1_TRI_NODES, (1.0, 1.0))
+        GR.meanvalueweights!(row, P1_TRI_INDS, P1_TRI_NODES, (1.0, 1.0))
         @test length(row) == 3
-        GR.linearweights!(row, P1_TRI_INDS, P1_TRI_NODES, (2.0, 0.0))
+        GR.meanvalueweights!(row, P1_TRI_INDS, P1_TRI_NODES, (2.0, 0.0))
         @test length(row) == 2
-        GR.linearweights!(row, P1_TRI_INDS, P1_TRI_NODES, (9.0, 9.0))
+        GR.meanvalueweights!(row, P1_TRI_INDS, P1_TRI_NODES, (9.0, 9.0))
         @test isempty(row)
 
         # Once warm, a point costs no allocation at all.
-        @test p1_kernelbytes(GR.linearweights!, row, P1_TRI_INDS, P1_TRI_NODES,
+        @test p1_kernelbytes(GR.meanvalueweights!, row, P1_TRI_INDS, P1_TRI_NODES,
             (1.0, 1.0)) == 0 skip = VERSION < v"1.12"
         @test p1_kernelbytes(GR.bilinearweights!, row, P1_QUAD_INDS, P1_QUAD_NODES,
             (2.0, 1.0)) == 0 skip = VERSION < v"1.12"
@@ -349,7 +419,7 @@ end
         @test Base.ispublic(GR, :BarycentricPoint)
         @test !any(Base.ispublic(GR, n) for n in
                    (:WeightRow, :weightsat!, :sampler, :samplesites, :dualcellat,
-            :DualCell, :linearweights!, :bilinearweights!, :meanvalueweights!))
+            :DualCell, :bilinearweights!, :meanvalueweights!))
     end
 
     @testset "a source space's dual cell reaches the executor" begin

@@ -80,7 +80,7 @@ hascellchart(s::E2QuerySpace) = hascellchart(s.space)
 cellcentroid(s::E2QuerySpace, i::Int) = cellcentroid(s.space, i)
 cellat(s::E2QuerySpace, x) = cellat(s.space, x)
 nchunks(s::E2QuerySpace) = nchunks(s.space)
-cellindices(s::E2QuerySpace, c::Int) = cellindices(s.space, c)
+ownedindices(s::E2QuerySpace, c::Int) = ownedindices(s.space, c)
 celltree(s::E2QuerySpace) = celltree(s.space)
 ncells(p::G4ProbeSpace) = ncells(p.space)
 getcell(p::G4ProbeSpace, i::Int) = getcell(p.space, i)
@@ -1064,6 +1064,10 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         src = ToyLonLatSpace(8, 4; chunks = (4, 2))
         dst = ToyLonLatSpace(8, 4; chunks = (8, 2))
         probe = E2QuerySpace(src)
+        # The probe owns its cells under the name the generics dispatch on.
+        # Spelt `cellindices`, `ownedindices` is a `MethodError` here and the
+        # query counter below counts nothing.
+        @test ownedindices(probe, 1) == ownedindices(src, 1)
         g = planned_dependencies(dst, probe)
         @test probe.index.queries == nchunks(dst)
         @test graph_pairs(g) == demanded_pairs(dst, src)

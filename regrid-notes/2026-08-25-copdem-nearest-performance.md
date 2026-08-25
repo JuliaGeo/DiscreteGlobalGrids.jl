@@ -1,5 +1,7 @@
 # Nearest regridding of Copernicus DEM tiles to IGeo7
 
+> Superseded for the locator cost by `2026-08-25-partialgrid-cellat.md`.
+
 - Date: 2026-08-25
 - Benchmark: `benchmark/copdem_nearest.jl`
 - Nothing in the library changed. This is what `NearestCell` costs on real

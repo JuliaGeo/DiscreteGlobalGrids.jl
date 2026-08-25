@@ -815,6 +815,33 @@ end
     @test onedge === OctantIndex(0)
 end
 
+@testset "cellat over a subset of a level the system does not locate" begin
+    # The mocks name no cell for a point on their own, so a subset of one of
+    # their levels must keep searching its own cells: a search over the whole
+    # level would cost more and then discard everything outside the subset.
+    @test !DGG.has_direct_location(SORTED)
+    @test !DGG.has_direct_location(UNSORTED)
+
+    searched(g, p) = invoke(cellat, Tuple{AbstractGrid,GO.UnitSphericalPoint}, g, p)
+    grid = levelgrid(SORTED, 2)
+    held = [cellindex(grid, i) for i in 1:3:ncells(grid)]
+    pg = PartialGrid(SORTED, 2, held)
+    for c in held
+        p = cell_centroid(grid, c)
+        @test cellat(pg, p) === c
+        @test cellat(pg, p) === searched(pg, p)
+    end
+
+    # A cell of the level the subset does not hold is outside coverage...
+    for i in 2:3:ncells(grid)
+        @test cellat(pg, cell_centroid(grid, cellindex(grid, i))) === nothing
+    end
+    # ...as is a point outside the band these mocks cover at all, and every
+    # point at all when the subset is empty.
+    @test cellat(pg, 0.0, 80.0) === nothing
+    @test cellat(PartialGrid(SORTED, 2, LevelIndex[]), 0.0, 0.0) === nothing
+end
+
 @testset "geometric neighbors and ring" begin
     octants = OctantGrid()
     # An octant shares an edge with the three octants one sign flip away, and

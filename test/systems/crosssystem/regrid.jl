@@ -88,6 +88,13 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
         @test GR.manifold(space) == GR.manifold(SRC)
         i = DGG.ncells(space) ÷ 2
         @test GR.cellat(space, GR.cellcentroid(space, i)) == i
+        # ...and it is the grid's own answer read as an index into the space:
+        # the space contributes the translation and nothing else, on a complete
+        # level and on a subset alike.
+        let p = GR.cellcentroid(space, i)
+            @test GR.cellat(space, p) ==
+                  DGG.localindex(space.grid, DGG.cellat(space.grid, p))
+        end
         # The sites a point method interpolates between are the space's own
         # centroids, handed over as the collection's centroid field — the same
         # pure vector a sweep asked for `Centroid()` reads, so nothing is

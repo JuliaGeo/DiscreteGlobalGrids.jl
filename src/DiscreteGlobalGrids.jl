@@ -276,6 +276,10 @@ Important cross-system traits:
     [`cap_inflation`](@ref) to `1.75`.
   - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
     has not established the two-sided [`descendant_range`](@ref) contract.
+  - **[`has_direct_location`](@ref).** True for every system here: each names
+    the cell containing a point from the point's coordinates, so a
+    [`PartialGrid`](@ref) over any of them locates through its complete level
+    rather than by searching its own cells.
   - **[`border`](@ref) on a subtree region.** IGeo7, H3, HEALPix, ISEA4R, and
     S2 provide `O(border)` walkers; A5 uses the `O(subtree)` fallback. Each is a
     resumable [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in
@@ -385,6 +389,7 @@ export cellsize, levelfor
 # the hierarchy's parent is a method on Base's function, not a name to re-export.
 export cellindextype, levels, maxlevel, levelgrid, rootcells, children
 export node_extent, maxneighbors, maxring, winding, has_sorted_subtrees
+export has_direct_location
 export ancestor, descendants, descendant_range
 export subtree
 export cellid

@@ -114,6 +114,9 @@ to level-1 quintant fan-out.
 """
 has_sorted_subtrees(::A5System) = false
 
+# `lonlat_to_cell` is the inverse projection, so location reads the point.
+has_direct_location(::A5System) = true
+
 """
     cap_inflation(::A5System) -> Float64
 

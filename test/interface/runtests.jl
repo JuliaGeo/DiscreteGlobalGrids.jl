@@ -85,7 +85,8 @@ end
               :cell_area, :cell_extent, :getcell, :cellat, :neighbors, :ring,
               :treeify, :query, :system, :level, :cellindextype, :levels,
               :maxlevel, :levelgrid, :rootcells, :children, :node_extent,
-              :maxneighbors, :has_sorted_subtrees, :ancestor, :descendants,
+              :maxneighbors, :has_sorted_subtrees, :has_direct_location,
+              :ancestor, :descendants,
               :descendant_range, :LevelIndex, :Connectivity, :Vertex, :Edge,
               :cellsize, :levelfor, :subtree, :halo, :border, :interior,
               :adjacency, :AdjacencyTable, :halocells, :haloindices)

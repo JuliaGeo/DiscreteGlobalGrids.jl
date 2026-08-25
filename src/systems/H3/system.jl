@@ -99,6 +99,9 @@ end
 # Base-cell-major child-position order makes each subtree contiguous.
 has_sorted_subtrees(::H3System) = true
 
+# `latLngToCell` is libh3's own inverse, so location reads the point.
+has_direct_location(::H3System) = true
+
 """
     cap_inflation(::H3System) -> Float64
 

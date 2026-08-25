@@ -246,6 +246,9 @@ rootcells(sys::AuthalicSystem) = rootcells(sys.system)
 children(sys::AuthalicSystem, c::AbstractCellIndex) = children(sys.system, c)
 Base.parent(sys::AuthalicSystem, c::AbstractCellIndex) = Base.parent(sys.system, c)
 has_sorted_subtrees(sys::AuthalicSystem) = has_sorted_subtrees(sys.system)
+# The wrapper's own `cellat` warps the point and forwards, so it locates
+# directly exactly when the system underneath does.
+has_direct_location(sys::AuthalicSystem) = has_direct_location(sys.system)
 maxneighbors(sys::AuthalicSystem, connectivity::Connectivity) =
     maxneighbors(sys.system, connectivity)
 ancestor(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer) =

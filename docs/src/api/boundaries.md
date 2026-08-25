@@ -122,6 +122,7 @@ globalindex
 descendant_range
 descendants
 has_sorted_subtrees
+has_direct_location
 node_extent
 maxneighbors
 LevelIndex

@@ -22,6 +22,16 @@ function sample_cells(grid, n::Int)
 end
 
 
+# The interface-wide locator, reached past whatever method the grid's own type
+# selects: a spatial-tree query over the grid's cells, a candidate sort and an
+# exact boundary test.
+searched(grid, p) =
+    invoke(cellat, Tuple{DGG.AbstractGrid,DGG.UnitSphericalPoint}, grid, p)
+
+# Warm bytes for one location, behind a function so the call is concretely
+# typed and `@allocated` prices the locator rather than the test's own scope.
+located_bytes(grid, p) = (cellat(grid, p); @allocated cellat(grid, p))
+
 function tangent_frame(p)
     # Any reference direction not parallel to `p`; the turn count does not
     # depend on which, only on the handedness.
@@ -96,6 +106,15 @@ eager_interior(sys, c, l; kw...) =
             g = levelgrid(sys, first(levels(sys)))
             @test ncells(g) > 0
             @test DGG.system(g) == sys
+
+            # `has_direct_location` is a declaration, and a declaration can
+            # drift from the methods it stands for. It must say `true` exactly
+            # when `cellat` on the complete level grid reaches a method of this
+            # system's own rather than the interface-wide search.
+            p = cell_centroid(g, cellindex(g, 1))
+            own = which(cellat, Base.typesof(g, p)).sig.parameters[2] !==
+                  DGG.AbstractGrid
+            @test DGG.has_direct_location(sys) == own
         end
     end
 
@@ -180,14 +199,62 @@ eager_interior(sys, c, l; kw...) =
                 DGG.Fallbacks.ring_winding_verdict(r, m, -cell_centroid(grid, c)) === nothing
             end
 
-            # ...and the consequence. A `PartialGrid` has no native `cellat`,
-            # so this is the generic descend-and-test path end to end: the
-            # centroid of a cell in the subset must locate that same cell.
+            # ...and the consequence, on the path this exists to exercise:
+            # `invoke` reaches the generic descend-and-test locator over the
+            # subset's own cells, and the centroid of a cell in the subset must
+            # locate that same cell.
             subset = sort(probes)
             pg = PartialGrid(sys, l, subset)
-            missed = [c for c in subset if cellat(pg, cell_centroid(grid, c)) !== c]
+            missed = [c for c in subset
+                      if searched(pg, cell_centroid(grid, c)) !== c]
             @test isempty(missed)
             isempty(missed) || @info "$name: cellat missed its own cell" first(missed, 5)
+        end
+
+        @testset "$name: locating a point in a subset of a level" begin
+            l = min(2, last(levels(sys)))
+            grid = levelgrid(sys, l)
+            # Every third cell, so every member has non-members beside it.
+            held = [cellindex(grid, i) for i in 1:3:ncells(grid)]
+            pg = PartialGrid(sys, l, held)
+
+            # Composing the complete level's answer with membership gives what
+            # searching the subset gives, on every member cell's own centroid.
+            disagreed = [c for c in held
+                         if cellat(pg, cell_centroid(grid, c)) !==
+                            searched(pg, cell_centroid(grid, c))]
+            @test isempty(disagreed)
+            @test all(c -> cellat(pg, cell_centroid(grid, c)) === c, held)
+
+            # A cell of the level the subset does not hold is outside coverage.
+            @test all(2:3:ncells(grid)) do i
+                cellat(pg, cell_centroid(grid, cellindex(grid, i))) === nothing
+            end
+
+            # Composing costs the complete level's arithmetic and a binary
+            # search, and nothing else: no tree, no candidate list, no polygon.
+            @test located_bytes(pg, cell_centroid(grid, held[2])) == 0 skip =
+                VERSION < v"1.12"
+
+            # The one place the two locators part company, and the reason the
+            # composed answer is stated as the complete level's restricted to
+            # the subset: a boundary point the complete level awards to a
+            # non-member is outside coverage here, where a search over member
+            # cells alone would hand back the member whose boundary it is on.
+            shared = nothing
+            for c in held, v in cell_boundary(grid, c)
+                owner = cellat(grid, v)
+                owner === nothing && continue
+                (owner == c || owner in pg) && continue
+                shared = (c, v)
+                break
+            end
+            @test shared !== nothing
+            if shared !== nothing
+                c, v = shared
+                @test cellat(pg, v) === nothing
+                @test searched(pg, v) === c
+            end
         end
 
         @testset "$name: subtree border hook" begin

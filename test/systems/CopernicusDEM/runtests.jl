@@ -715,6 +715,42 @@ end
 end
 
 # =========================================================================
+# (j.1) `cellat` on a holding of pixels
+# =========================================================================
+
+# A holding is a `PartialGrid` over the lattice, and locating a point in one
+# must give the complete lattice's pixel wherever that pixel is held.
+_cellat_bytes(g, p) = (cellat(g, p); @allocated cellat(g, p))
+
+@testset "cellat on a holding of pixels" begin
+    searched(g, p) = invoke(cellat, Tuple{DGG.AbstractGrid,GO.UnitSphericalPoint}, g, p)
+    complete = levelgrid(GLO90, 1)
+    tile = CD.tilecell(GLO90, 46, 10)
+    nc = Int(CD.ncols_at(GLO90, 46))
+    first_id = CD.pixelcell(GLO90, tile, 0, 0).index
+    # Four whole raster rows of one tile — the shape a tile holding is built of,
+    # and small enough to search cell by cell for the comparison.
+    held = [LevelIndex(1, k) for k in first_id:(first_id + 4 * nc - 1)]
+    pg = PartialGrid(GLO90, 1, held)
+
+    rng = MersenneTwister(20260825)
+    probes = [cell_centroid(complete, rand(rng, held)) for _ in 1:300]
+    @test all(p -> cellat(pg, p) === searched(pg, p), probes)
+    @test all(p -> cellat(pg, p) === cellat(complete, p), probes)
+
+    # A pixel of the same tile the holding does not reach is outside it, even
+    # though the complete lattice names it.
+    outside = LevelIndex(1, first_id + 8 * nc)
+    @test cellat(complete, cell_centroid(complete, outside)) === outside
+    @test cellat(pg, cell_centroid(complete, outside)) === nothing
+
+    # Locating is the lattice arithmetic and a membership search, with no tree
+    # query, no candidate list and no boundary polygon behind it.
+    @test _cellat_bytes(pg, cell_centroid(complete, held[2 * nc])) == 0 skip =
+        VERSION < v"1.12"
+end
+
+# =========================================================================
 # (k) The block cursor: an interior tree over a two-level lattice
 # =========================================================================
 

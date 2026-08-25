@@ -198,6 +198,17 @@ end
         @test DGG.cellat(cv, FARAWAY...) === nothing
         @test DGG.localindex(cv, FARAWAY...) === nothing
 
+        # The two subset containers over the same cells answer the same
+        # question the same way: each reduces to a location on the level and a
+        # membership test, and the containers differ only in how membership is
+        # stored.
+        pg = DGG.PartialGrid(cv)
+        for k in (1, length(ids) ÷ 2, length(ids))
+            lon, lat = LONLAT(DGG.cell_centroid(grid, ids[k]))
+            @test DGG.cellat(cv, lon, lat) == DGG.cellat(pg, lon, lat) == ids[k]
+        end
+        @test DGG.cellat(pg, FARAWAY...) === nothing
+
         # `covering` IS the coverage expansion intersected with the vector; the
         # hand-rolled right-hand side is the same sentence spelled out.
         for target in (ZURICH, REGION)

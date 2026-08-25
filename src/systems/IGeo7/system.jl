@@ -97,6 +97,9 @@ DGG.levels(::IGeo7System) = 0:MAX_RESOLUTION
 
 DGG.has_sorted_subtrees(::IGeo7System) = true
 
+# The gnomonic inverse and the Z7 digit walk name the cell from the point.
+DGG.has_direct_location(::IGeo7System) = true
+
 # Hexagons and pentagons: vertex adjacency and edge adjacency coincide, so the
 # bound is 6 under either connectivity (a pentagon reaches 5).
 DGG.maxneighbors(::IGeo7System, ::Connectivity) = 6

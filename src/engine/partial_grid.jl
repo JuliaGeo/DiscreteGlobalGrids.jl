@@ -172,6 +172,35 @@ end
 # is the complete grid's — not its own local index into `ids`.
 globalindex(grid::PartialGrid, c::AbstractCellIndex) = globalindex(grid.complete, c)
 
+"""
+    cellat(grid::PartialGrid, p::UnitSphericalPoint) -> Union{AbstractCellIndex,Nothing}
+    cellat(grid::PartialGrid, lon::Real, lat::Real)
+
+The cell **of `grid`** containing the point, or `nothing` when the point falls
+outside the cells the subset holds. Same contract as [`cellat`](@ref) on a grid,
+restricted to the subset: a point inside the complete level but outside this
+subset answers `nothing` rather than naming a cell that is not here. The
+`(lon, lat)` overload takes degrees.
+
+Where the system declares [`has_direct_location`](@ref), the answer is the
+complete level's own, kept when it is a member: no tree is built and no boundary
+polygon is tested. The subset's coverage is then exactly the complete level's
+verdict restricted to `ids`, so **a point the complete level assigns to a
+non-member cell is outside coverage even when it lies on the boundary of a
+member cell** — the two share that boundary and the complete level's tie rule
+decides it. That set of points has measure zero.
+
+Any other system keeps the generic search over the subset's own cells, which is
+less work there than searching the whole level and discarding the rest.
+"""
+function cellat(grid::PartialGrid, p::GO.UnitSphericalPoint)
+    has_direct_location(grid.system) || return invoke(cellat,
+        Tuple{AbstractGrid,GO.UnitSphericalPoint}, grid, p)
+    c = cellat(grid.complete, p)
+    c === nothing && return nothing
+    return localindex(grid, c) === nothing ? nothing : c
+end
+
 # [`subset_span`](@ref) over a sorted id vector. Ids ascend with indices on
 # every system here — the same fact `_check_rooted` decides a whole vector's
 # ancestry by — so the block `lo:hi` maps to the id interval `[idlo, idhi]` and

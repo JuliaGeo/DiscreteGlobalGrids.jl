@@ -10,6 +10,8 @@ const LevelGrid{N} = DGG.HierarchicalLevelGrid{CopernicusDEMSystem{N}}
 DGG.cellindextype(::CopernicusDEMSystem) = DGG.LevelIndex
 DGG.levels(::CopernicusDEMSystem) = 0:1
 DGG.has_sorted_subtrees(::CopernicusDEMSystem) = true
+# Location is a latitude-band lookup and two floors; see `cellat` below.
+DGG.has_direct_location(::CopernicusDEMSystem) = true
 
 """
     maxneighbors(CopernicusDEMSystem{N}(), connectivity) -> Int

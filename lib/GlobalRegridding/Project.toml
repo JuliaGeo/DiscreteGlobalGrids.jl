@@ -26,7 +26,7 @@ GlobalRegriddingRastersExt = "Rasters"
 
 [sources]
 ConservativeRegridding = {rev = "e8fc67f420da0362d59b354e2db6fcde8107fec0", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-GeometryOps = {rev = "697c7cc81b3d61666cf42bf697bf186cd7f6b2e2", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+GeometryOps = {rev = "as/spherical-fh-clipping", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 
 [compat]

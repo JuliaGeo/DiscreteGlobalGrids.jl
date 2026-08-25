@@ -664,6 +664,61 @@ function subcursor end
 
 subcursor(::AbstractGrid, ::AbstractUnitRange{<:Integer}) = nothing
 
+# ---------------------------------------------------------------------------
+# Grids whose cells are raster tiles
+# ---------------------------------------------------------------------------
+
+"""
+    raster_tiles(grid::AbstractGrid, inds::AbstractUnitRange) -> tiles or `nothing`
+
+The raster tiles covering the grid indices `inds`, or `nothing` (the default)
+when this grid's cells are not pixels of raster tiles.
+
+A **tile** is a rectangle of pixels: `raster_shape` gives its extent in rows and
+columns, `raster_localindex` names each pixel's index in `grid`, and
+`raster_cap` bounds any sub-rectangle of it. Together the tiles must hold every
+cell of `inds` exactly once and no cell outside it.
+
+The result is an indexable collection of **tile handles**. A handle is opaque to
+the caller, which only passes it back to the three hooks below, so a grid may
+carry in it whatever those need — an identifier, the rectangle's origin, its
+offset in the grid.
+
+Implemented by grids over a collection of raster tiles;
+[`treeify`](@ref) builds a tiled raster tree for them.
+"""
+function raster_tiles end
+
+raster_tiles(::AbstractGrid, ::AbstractUnitRange{<:Integer}) = nothing
+
+"""
+    raster_shape(grid::AbstractGrid, tile) -> (nrows, ncols)
+
+The tile's rectangle, in pixel rows and columns. Both are positive. Rows and
+columns are numbered `0:nrows-1` and `0:ncols-1` in every other hook.
+"""
+function raster_shape end
+
+"""
+    raster_localindex(grid::AbstractGrid, tile, j, i) -> Int
+
+The index **in `grid`** of the pixel at row `j` and column `i` of `tile`, both
+0-based. It is the tile's offset in the grid plus the pixel's row-major index
+within the tile, so a tile's pixels occupy one contiguous block of grid indices
+in row-major order.
+"""
+function raster_localindex end
+
+"""
+    raster_cap(grid::AbstractGrid, tile, j0, j1, i0, i1) -> SphericalCap
+
+A cap containing the geometry of every pixel in the closed sub-rectangle
+`j0:j1` x `i0:i1` of `tile`. It must cover the pixels' boundaries, not merely
+their centres, and `raster_cap(grid, tile, 0, nrows-1, 0, ncols-1)` therefore
+bounds the whole tile.
+"""
+function raster_cap end
+
 # ===========================================================================
 # Queries
 # ===========================================================================

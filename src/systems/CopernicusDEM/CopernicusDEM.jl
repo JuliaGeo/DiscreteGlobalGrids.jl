@@ -19,10 +19,10 @@ west-to-east raster order. `levelgrid` returns a [`HierarchicalLevelGrid`](@ref)
     This implements the AWS DGED profile. It does not implement the DTED
     (`.dt1`/`.dt2`) five-band profile.
 
-!!! note "A holding without the far-south tiles is still this lattice"
-    Rows `S90`–`S85` are the contiguous tail of both level orders, so a holding
-    without them is a `PartialGrid` over one id run, and `treeify` still gives it
-    the block cursor. System counts, geometry, and nesting stay global.
+!!! note "A holding of any tiles is still this lattice"
+    A holding is a `PartialGrid` over the tiles' pixels, in any arrangement, and
+    `treeify` gives it a tiled raster tree. System counts, geometry, and nesting
+    stay global.
 
 !!! note "`refine` and `coarsen` here are module-local"
     Call `DiscreteGlobalGrids.CopernicusDEM.refine` or `.coarsen`. They relate
@@ -31,6 +31,9 @@ west-to-east raster order. `levelgrid` returns a [`HierarchicalLevelGrid`](@ref)
 module CopernicusDEM
 
 import ..DiscreteGlobalGrids as DGG
+# The tiled raster tree, the leaf container and the rectangle split are the
+# engine's; this module answers the lattice hooks they read.
+import ..DiscreteGlobalGrids: Engine
 # The inline boundary storage IGeo7 already publishes its rings in.
 import ..Helpers
 

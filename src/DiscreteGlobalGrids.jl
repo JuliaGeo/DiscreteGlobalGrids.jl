@@ -135,7 +135,8 @@ using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
     EdgeCellIterator, InnerCellIterator
 
 using .Engine: PartialGrid,
-    HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
+    HierarchicalGridCursor, TiledRasterCursor,
+    MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_indices,
     grow, expand, compact, member_neighbors,
@@ -425,6 +426,7 @@ public sizehint
 public halo_indices
 public SubsetIndexedCell
 public HierarchicalGridCursor
+public TiledRasterCursor
 # A traversal order, not a traversal.
 public StorageOrder
 # The fields a neighbourhood sweep can be asked to stream, and the two index

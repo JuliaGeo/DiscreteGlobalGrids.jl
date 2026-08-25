@@ -20,7 +20,8 @@ opposing node, and a tile's tree is rewalked for every source block,
 destination column and worker.
 
 Interior nodes only: a leaf's `child_indices_extents` entries come back as the
-bare cursor's [`LeafCells`](@ref), which never reaches the heap.
+bare cursor's [`LeafCells`](@ref DiscreteGlobalGrids.Engine.LeafCells),
+which never reaches the heap.
 """
 struct MemoBlockCursor{C<:BlockCursor}
     node::C

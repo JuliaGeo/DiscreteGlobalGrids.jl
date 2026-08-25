@@ -21,7 +21,8 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     cell_polygon, cell_area, cell_extent, getcell,
     cellat, cellindices, neighbors, ring, one_ring, neighborcount,
     halo, border, interior, adjacency,
-    treeify, query,
+    treeify, query, subcursor,
+    raster_tiles, raster_shape, raster_localindex, raster_cap,
     system, level,
     cellindextype, levels, maxlevel, levelgrid, rootcells, children,
     node_extent, cap_inflation, maxneighbors, maxring, winding,
@@ -69,6 +70,8 @@ include("partial_grid.jl")
 include("halo.jl")
 include("cursor.jl")
 include("index_tree.jl")
+# The tiled raster tree packs tiles the way the index tree packs cells.
+include("tiled_raster.jl")
 include("query.jl")
 include("multiorder.jl")
 include("cell_vector.jl")

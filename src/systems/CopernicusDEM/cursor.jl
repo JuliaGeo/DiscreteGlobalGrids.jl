@@ -1,7 +1,10 @@
-# A lazy spatial tree over tile and pixel index rectangles.
+# A lazy spatial tree over tile and pixel index rectangles, for the complete
+# lattice; a holding of tiles gets the engine's tiled raster tree instead.
 
-# Cells at or below which a node stops splitting and yields its cells directly.
-const LEAF_CELLS = 9
+# The leaf size and the leaf container are the engine's, so both trees over this
+# lattice hand a leaf back the same way.
+const LEAF_CELLS = Engine.LEAF_CELLS
+const LeafCells = Engine.LeafCells
 
 """
     BlockStrategy
@@ -22,7 +25,8 @@ struct Blocked{K} <: BlockStrategy end
 """
     Bisected()
 
-Split the longer axis in two. This is what [`treeify`](@ref) builds.
+Split the longer axis in two, the rule both trees over this lattice use. This
+is what [`treeify`](@ref) builds.
 """
 struct Bisected <: BlockStrategy end
 
@@ -30,18 +34,22 @@ struct Bisected <: BlockStrategy end
 const DEFAULT_STRATEGY = Bisected()
 
 """
-    BlockCursor(grid; strategy = DEFAULT_STRATEGY)
+    BlockCursor(grid::HierarchicalLevelGrid{<:CopernicusDEMSystem};
+                strategy = DEFAULT_STRATEGY)
 
-A spatial-tree cursor over a Copernicus DEM rectangle. Prefer [`treeify`](@ref),
-which falls back for grids this cursor cannot represent.
+A spatial-tree cursor over a rectangle of the complete Copernicus DEM lattice.
+Prefer [`treeify`](@ref), which wraps it in a [`MemoBlockCursor`](@ref).
 
 A node is either:
 
   - a tile rectangle (`inpixels == false`), or
   - a raster rectangle within tile `(r0, q0)` (`inpixels == true`).
 
-`index = id - origin`; therefore partial grids must be one contiguous id run
-forming one rectangle.
+Its addressing law is `index = id - origin`, so it holds only where the cells it
+covers are one contiguous id run forming one rectangle — the whole level, and
+the windows [`subcursor`](@ref) cuts out of it. A holding of tiles satisfies
+neither in general and gets the engine's [`TiledRasterCursor`](@ref), whose law
+is a tile offset plus a row-major pixel index.
 """
 struct BlockCursor{G<:DGG.AbstractGrid,S<:CopernicusDEMSystem,F<:BlockStrategy}
     grid::G
@@ -76,32 +84,51 @@ end
 The node's longitude/latitude box in degrees. It contains every descendant box;
 tile rectangles use the westernmost band offset.
 """
-function _node_box(c::BlockCursor{G,S}) where {G,S}
-    N = lat_intervals(c.sys)
+_node_box(c::BlockCursor) = c.inpixels ?
+    _pixel_box(c.sys, c.r0, c.q0, c.j0, c.j1, c.i0, c.i1) :
+    _tile_box(c.sys, c.r0, c.r1, c.q0, c.q1)
+
+"""
+    _pixel_box(sys, r, q, j0, j1, i0, i1) -> (west, east, south, north)
+
+The longitude/latitude box in degrees of raster rows `j0:j1` and columns
+`i0:i1` of tile `(r, q)`. Pole rows extend to the pole.
+"""
+function _pixel_box(sys::CopernicusDEMSystem, r::Int, q::Int, j0::Int, j1::Int,
+        i0::Int, i1::Int)
+    N = Int(lat_intervals(sys))
     half_dlat = (1 / N) / 2
-    if c.inpixels
-        lat_s = _lat_s(c.r0)
-        lon_w = _lon_w(c.q0)
-        nc = ncols(c.sys, c.r0)
-        half_dlon = (1 / nc) / 2
-        west = (lon_w + c.i0 / nc) - half_dlon
-        east = (lon_w + (c.i1 + 1) / nc) - half_dlon
-        north = (lat_s + 1 - c.j0 / N) + half_dlat
-        south = (lat_s + 1 - (c.j1 + 1) / N) + half_dlat
-        c.j0 == 0 && lat_s == 89 && (north = 90.0)
-        c.j1 == N - 1 && lat_s == -90 && (south = -90.0)
-        return (west, east, south, north)
-    end
-    lat_n = _lat_s(c.r0) + 1
-    lat_s = _lat_s(c.r1)
-    north = _lat_s(c.r0) == 89 ? 90.0 : lat_n + half_dlat
+    lat_s = _lat_s(r)
+    lon_w = _lon_w(q)
+    nc = ncols(sys, r)
+    half_dlon = (1 / nc) / 2
+    west = (lon_w + i0 / nc) - half_dlon
+    east = (lon_w + (i1 + 1) / nc) - half_dlon
+    north = (lat_s + 1 - j0 / N) + half_dlat
+    south = (lat_s + 1 - (j1 + 1) / N) + half_dlat
+    j0 == 0 && lat_s == 89 && (north = 90.0)
+    j1 == N - 1 && lat_s == -90 && (south = -90.0)
+    return (west, east, south, north)
+end
+
+"""
+    _tile_box(sys, r0, r1, q0, q1) -> (west, east, south, north)
+
+The longitude/latitude box in degrees of the tile rectangle `r0:r1` x `q0:q1`,
+taken over the westernmost half-pixel offset of the bands it spans.
+"""
+function _tile_box(sys::CopernicusDEMSystem, r0::Int, r1::Int, q0::Int, q1::Int)
+    N = Int(lat_intervals(sys))
+    half_dlat = (1 / N) / 2
+    lat_n = _lat_s(r0) + 1
+    lat_s = _lat_s(r1)
+    north = _lat_s(r0) == 89 ? 90.0 : lat_n + half_dlat
     south = lat_s == -90 ? -90.0 : lat_s + half_dlat
-    # Westernmost half-pixel offset over the block's bands.
     widest = 0.0
-    for r in c.r0:c.r1
-        widest = max(widest, (1 / ncols(c.sys, r)) / 2)
+    for r in r0:r1
+        widest = max(widest, (1 / ncols(sys, r)) / 2)
     end
-    return (_lon_w(c.q0) - widest, Float64(_lon_w(c.q1) + 1), south, north)
+    return (_lon_w(q0) - widest, Float64(_lon_w(q1) + 1), south, north)
 end
 
 """
@@ -153,16 +180,11 @@ end
 # ===========================================================================
 
 # Part `t` of a non-empty, near-equal partition of `lo:lo+len-1`.
-@inline function _part(lo::Int, len::Int, parts::Int, t::Int)
-    base, rem = divrem(len, parts)
-    off = (t - 1) * base + min(t - 1, rem)
-    return (lo + off, lo + off + base + (t <= rem ? 1 : 0) - 1)
-end
+const _part = Engine.rect_part
 
 # How many parts each axis of a `(nrows, ncols)` rectangle splits into.
 @inline _parts(::Blocked{K}, nr::Int, nc::Int) where {K} = (min(K, nr), min(K, nc))
-@inline _parts(::Bisected, nr::Int, nc::Int) =
-    nr >= nc ? (min(2, nr), 1) : (1, min(2, nc))
+@inline _parts(::Bisected, nr::Int, nc::Int) = Engine.bisect_parts(nr, nc)
 
 "Cells in this node — pixels at level 1, tiles at level 0."
 function _node_cells(c::BlockCursor)
@@ -247,38 +269,13 @@ function STI.node_extent(c::BlockCursor)
     return _box_cap(west, east, south, north, _leaf_pad(c))
 end
 
-"""
-    LeafCells(cursor::BlockCursor)
-
-A leaf's cells as `(grid index, cap)` pairs, in a fixed inline buffer.
-
-The return value of [`STI.child_indices_extents`](@ref
-GeometryOps.SpatialTreeInterface.child_indices_extents) for a
-[`BlockCursor`](@ref): a read-only `AbstractVector` that indexes, iterates and
-`collect`s like the `Vector` it replaces, but is `isbits`, so it lives in the
-caller's frame and never reaches the heap.
-
-[`STI.isleaf`](@ref GeometryOps.SpatialTreeInterface.isleaf) splits any node
-holding more than `LEAF_CELLS` cells, so the entries fit an
-`NTuple{LEAF_CELLS}`. Every call must return its own value rather than share a
-buffer: callers keep the result past the call, and a dual-tree self-join loops
-over two leaves' entries at once.
-
-Filling is eager and stops at the leaf's own cell count; the unused tail
-repeats entry one. Entry order is row-major: the column index varies fastest.
-"""
-struct LeafCells <: AbstractVector{Tuple{Int,Cap}}
-    entries::NTuple{LEAF_CELLS,Tuple{Int,Cap}}
-    len::Int
-end
-
 # (cells along the fast axis, cells in the leaf).
 @inline function _leafshape(c::BlockCursor)
     c.inpixels && return (c.i1 - c.i0 + 1, (c.j1 - c.j0 + 1) * (c.i1 - c.i0 + 1))
     return (c.q1 - c.q0 + 1, (c.r1 - c.r0 + 1) * (c.q1 - c.q0 + 1))
 end
 
-# Entry `k` of the leaf's row-major cell order, as the old loop nest built it.
+# Entry `k` of the leaf's row-major cell order.
 @inline function _leafcell(c::BlockCursor, nfast::Int, k::Int)
     slow, fast = divrem(k - 1, nfast)
     if c.inpixels
@@ -295,23 +292,18 @@ end
     return (_index(c, r, q, 0, 0), STI.node_extent(leaf))
 end
 
+"""
+    LeafCells(cursor::BlockCursor)
+
+A [`BlockCursor`](@ref) leaf's cells as `(grid index, cap)` pairs. See
+[`LeafCells`](@ref DiscreteGlobalGrids.Engine.LeafCells) for the container.
+"""
+
 function LeafCells(c::BlockCursor)
     nfast, n = _leafshape(c)
     1 <= n <= LEAF_CELLS || throw(ArgumentError(
         "a leaf holds 1 to $LEAF_CELLS cells; $c reports $n"))
-    head = _leafcell(c, nfast, 1)
-    entries = ntuple(Val(LEAF_CELLS)) do k
-        k == 1 ? head : (k <= n ? _leafcell(c, nfast, k) : head)
-    end
-    return LeafCells(entries, n)
-end
-
-Base.size(e::LeafCells) = (e.len,)
-Base.IndexStyle(::Type{LeafCells}) = IndexLinear()
-
-Base.@propagate_inbounds function Base.getindex(e::LeafCells, k::Int)
-    @boundscheck checkbounds(e, k)
-    return @inbounds e.entries[k]
+    return Engine.leaf_cells(k -> _leafcell(c, nfast, k), n)
 end
 
 """
@@ -342,6 +334,140 @@ Trees.getcell(c::BlockCursor) = DGG.getcell(c.grid)
 Trees.split_weight(c::BlockCursor) = Int(_node_cells(c))
 
 # ===========================================================================
+# The lattice as raster tiles
+# ===========================================================================
+
+"""
+    RasterTile(r, q, j0, i0, nrows, ncols, offset, pixels)
+
+One rectangle of a Copernicus DEM holding, as [`raster_tiles`](@ref) names it:
+rows `j0:j0+nrows-1` and columns `i0:i0+ncols-1` of tile `(r, q)`, whose pixels
+occupy grid indices `offset+1 : offset+nrows*ncols` in row-major order.
+
+`pixels` is `false` on a level-0 grid, where the cell is the tile itself and the
+rectangle is the tile's own `1x1`.
+
+The engine treats this as an opaque handle, so it carries everything the three
+geometry hooks need without decoding an id again.
+"""
+struct RasterTile
+    r::Int
+    q::Int
+    j0::Int
+    i0::Int
+    nrows::Int
+    ncols::Int
+    offset::Int
+    pixels::Bool
+end
+
+Base.show(io::IO, t::RasterTile) = print(io, "RasterTile(",
+    t.pixels ? "rows $(t.j0):$(t.j0 + t.nrows - 1) x cols $(t.i0):$(t.i0 + t.ncols - 1) of " : "",
+    "tile ($(t.r),$(t.q)), offset=", t.offset, ")")
+
+"""
+    raster_tiles(grid::PartialGrid{<:CopernicusDEMSystem}, inds)
+
+The rectangles of the lattice that hold grid indices `inds`, or `nothing` when
+the grid names an id this lattice does not have.
+
+A whole tile is one rectangle, which is the shape a holding of tiles is made of.
+A run that starts or ends inside a raster row splits into at most three — a part
+row, the whole rows below it, and a part row — so every rectangle is one
+contiguous block of grid indices and the row-major index law holds on it.
+"""
+function DGG.raster_tiles(grid::DGG.PartialGrid{<:CopernicusDEMSystem},
+        inds::AbstractUnitRange{<:Integer})
+    isempty(inds) && return RasterTile[]
+    (1 <= first(inds) && last(inds) <= DGG.ncells(grid)) || return nothing
+    sys = DGG.system(grid)
+    l = DGG.level(grid)
+    N = Int(lat_intervals(sys))
+    tiles = RasterTile[]
+    p, stop = Int(first(inds)), Int(last(inds))
+    while p <= stop
+        c = DGG.cellindex(grid, p)
+        # `PartialGrid` does not range-check its ids; an id off this lattice has
+        # no rectangle, and the grid keeps the generic cursor.
+        DGG.globalindex(sys, c) === nothing && return nothing
+        r, q, j, i = decode(sys, c)
+        if l == 0
+            push!(tiles, RasterTile(r, q, 0, 0, 1, 1, p - 1, false))
+            p += 1
+            continue
+        end
+        nc = Int(ncols(sys, r))
+        len = _idrun(grid, p, min(stop - p + 1, nc * N - (j * nc + i)))
+        jj, rest = j, len
+        if i > 0
+            head = min(len, nc - i)
+            push!(tiles, RasterTile(r, q, j, i, 1, head, p - 1, true))
+            p += head
+            jj, rest = j + 1, len - head
+        end
+        full = rest ÷ nc
+        if full > 0
+            push!(tiles, RasterTile(r, q, jj, 0, full, nc, p - 1, true))
+            p += full * nc
+            jj += full
+            rest -= full * nc
+        end
+        if rest > 0
+            push!(tiles, RasterTile(r, q, jj, 0, 1, rest, p - 1, true))
+            p += rest
+        end
+    end
+    return tiles
+end
+
+# The longest run of consecutive ids starting at grid index `p`, at most
+# `maxlen`. Ids ascend strictly, so `id(p+k) - id(p) - k` never decreases and a
+# binary search finds the last `k` where it is still zero.
+function _idrun(grid, p::Int, maxlen::Int)
+    base = DGG.cellindex(grid, p).index
+    lo, hi = 0, maxlen - 1
+    while lo < hi
+        mid = (lo + hi + 1) >> 1
+        if DGG.cellindex(grid, p + mid).index - base == mid
+            lo = mid
+        else
+            hi = mid - 1
+        end
+    end
+    return lo + 1
+end
+
+"The rectangle's extent in pixel rows and columns."
+DGG.raster_shape(::DGG.PartialGrid{<:CopernicusDEMSystem}, t::RasterTile) =
+    (t.nrows, t.ncols)
+
+"""
+    raster_localindex(grid, tile, j, i)
+
+The rectangle's offset in the grid plus the pixel's row-major index within it.
+"""
+DGG.raster_localindex(::DGG.PartialGrid{<:CopernicusDEMSystem}, t::RasterTile,
+    j::Int, i::Int) = t.offset + j * t.ncols + i + 1
+
+"""
+    raster_cap(grid, tile, j0, j1, i0, i1)
+
+The cap of the sub-rectangle's [`_pixel_box`](@ref), padded for edge bow by
+`Δλ²/16` — the same cap [`BlockCursor`](@ref) derives for the same pixels.
+"""
+function DGG.raster_cap(grid::DGG.PartialGrid{<:CopernicusDEMSystem}, t::RasterTile,
+        j0::Int, j1::Int, i0::Int, i1::Int)
+    sys = DGG.system(grid)
+    if !t.pixels
+        west, east, south, north = _tile_box(sys, t.r, t.r, t.q, t.q)
+        return _box_cap(west, east, south, north, deg2rad(1.0)^2 / 16)
+    end
+    west, east, south, north = _pixel_box(sys, t.r, t.q, t.j0 + j0, t.j0 + j1,
+        t.i0 + i0, t.i0 + i1)
+    return _box_cap(west, east, south, north, deg2rad(1 / ncols(sys, t.r))^2 / 16)
+end
+
+# ===========================================================================
 # treeify
 # ===========================================================================
 
@@ -349,18 +475,19 @@ Trees.split_weight(c::BlockCursor) = Int(_node_cells(c))
     treeify(grid::HierarchicalLevelGrid{<:CopernicusDEMSystem})
     treeify(grid::PartialGrid{<:CopernicusDEMSystem})
 
-Use a [`BlockCursor`](@ref) when the grid has a rectangular contiguous id run.
+The complete lattice is one rectangle, and gets a [`BlockCursor`](@ref) whose
+node boxes are closed-form in the lattice coordinates — no table of 64 800 tile
+caps, and `O(1)` to build.
 
-A `PartialGrid` qualifies only for:
+A holding is a collection of tiles in no particular arrangement, and gets the
+engine's [`TiledRasterCursor`](@ref): a packed tree over the tiles' caps with a
+bisection quadtree inside each tile. Any tile set qualifies, a set crossing a
+latitude row included; only an id this lattice does not name keeps the generic
+[`HierarchicalGridCursor`](@ref), because such an id has no rectangle to place.
 
-  * level 0 — one segment of a tile row, or whole tile rows;
-  * level 1 — one tile's whole raster rows, or a run of whole tiles that is a
-    tile rectangle by the level-0 rule.
-
-Anything else falls back to [`HierarchicalGridCursor`](@ref).
-
-The cursor comes back wrapped in a [`MemoBlockCursor`](@ref), which memoizes
-derived node extents per task; `BlockCursor(grid)` gives the bare cursor.
+The block cursor comes back wrapped in a [`MemoBlockCursor`](@ref), which
+memoizes derived node extents per task; `BlockCursor(grid)` gives the bare
+cursor. The tiled raster cursor memoizes its own.
 """
 DGG.treeify(::GOCore.Manifold, grid::LevelGrid) = _memoized(BlockCursor(grid))
 DGG.treeify(::GOCore.Manifold, c::BlockCursor) = c
@@ -368,22 +495,12 @@ DGG.treeify(c::BlockCursor) = c
 
 function DGG.treeify(::GOCore.Manifold,
         grid::DGG.PartialGrid{<:CopernicusDEMSystem})
-    cursor = _block_cursor(grid, DEFAULT_STRATEGY)
-    return cursor === nothing ? DGG.HierarchicalGridCursor(grid) : _memoized(cursor)
+    tree = Engine.tiled_raster_tree(grid)
+    return tree === nothing ? DGG.HierarchicalGridCursor(grid) : tree
 end
 
 BlockCursor(grid::LevelGrid; strategy::BlockStrategy=DEFAULT_STRATEGY) =
     _level_cursor(grid, strategy)
-
-function BlockCursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem};
-        strategy::BlockStrategy=DEFAULT_STRATEGY)
-    cursor = _block_cursor(grid, strategy)
-    cursor === nothing && throw(ArgumentError(
-        "this partial grid's cells are not one rectangle of the Copernicus DEM " *
-        "lattice held as one contiguous id run, so `index = id - origin` does " *
-        "not hold; `treeify` falls back to HierarchicalGridCursor for it"))
-    return cursor
-end
 
 function _level_cursor(grid::LevelGrid, strategy::BlockStrategy)
     sys = DGG.system(grid)
@@ -392,29 +509,29 @@ function _level_cursor(grid::LevelGrid, strategy::BlockStrategy)
         0, NROWS - 1, 0, NCOLS_TILES - 1, 0, 0, 0, 0, false)
 end
 
-# `nothing` when the grid is not one rectangle held as one contiguous id run.
-_block_cursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem}, strategy::BlockStrategy) =
-    _window_cursor(grid, strategy, 1:DGG.ncells(grid))
-
 """
-    subcursor(grid, inds) -> MemoBlockCursor or `nothing`
+    subcursor(grid, inds) -> tree or `nothing`
 
-The node covering grid indices `inds`, or `nothing` when they are not one
-contiguous id run forming one lattice rectangle by [`treeify`](@ref)'s rules.
+The node covering grid indices `inds`, with leaf indices still `grid`'s own.
 
-Leaf indices stay `grid`'s own indices. The run test is over the window, not
-the whole grid, so a tile-sized chunk qualifies on a complete level grid and on
-a partial one alike.
+On the complete lattice that is a [`MemoBlockCursor`](@ref) when `inds` is one
+contiguous id run forming one lattice rectangle — one segment of a tile row or
+whole tile rows at level 0, one tile's whole raster rows or a run of whole tiles
+at level 1 — and `nothing` otherwise. The run test is over the window, so a
+tile-sized chunk qualifies.
 
-The window comes back wrapped in a [`MemoBlockCursor`](@ref): every block build
-re-walks its chunk's interior nodes, whose extents are derived, not stored.
+On a holding it is the [`TiledRasterCursor`](@ref) over the rectangles that
+window holds, which every window has.
 """
-DGG.subcursor(grid::Union{LevelGrid,DGG.PartialGrid{<:CopernicusDEMSystem}},
-    inds::AbstractUnitRange{<:Integer}) =
+DGG.subcursor(grid::LevelGrid, inds::AbstractUnitRange{<:Integer}) =
     _memoized(_window_cursor(grid, DEFAULT_STRATEGY, inds))
 
+DGG.subcursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem},
+    inds::AbstractUnitRange{<:Integer}) = Engine.tiled_raster_tree(grid, inds)
+
 # `nothing` unless `inds` is one contiguous id run forming one rectangle.
-function _window_cursor(grid, strategy::BlockStrategy, inds::AbstractUnitRange{<:Integer})
+function _window_cursor(grid::LevelGrid, strategy::BlockStrategy,
+        inds::AbstractUnitRange{<:Integer})
     isempty(inds) && return nothing
     lo_p, hi_p = Int(first(inds)), Int(last(inds))
     (1 <= lo_p && hi_p <= DGG.ncells(grid)) || return nothing
@@ -426,13 +543,10 @@ function _window_cursor(grid, strategy::BlockStrategy, inds::AbstractUnitRange{<
 end
 
 # The node covering the id run `lo:hi`, whose grid index is `id - origin`.
-function _run_cursor(grid, strategy::BlockStrategy, origin::Int64,
+function _run_cursor(grid::LevelGrid, strategy::BlockStrategy, origin::Int64,
         lo::DGG.LevelIndex, hi::DGG.LevelIndex)
     sys = DGG.system(grid)
     l = DGG.level(grid)
-    # `PartialGrid` does not range-check ids.
-    (DGG.globalindex(sys, lo) === nothing || DGG.globalindex(sys, hi) === nothing) &&
-        return nothing
     ra, qa, ja, ia = decode(sys, lo)
     rb, qb, jb, ib = decode(sys, hi)
     # Rectangular tile runs are one row segment or whole rows.

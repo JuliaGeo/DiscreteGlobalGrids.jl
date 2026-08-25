@@ -759,7 +759,8 @@ end
     STI = GO.SpatialTreeInterface
 
     # ---- which grids get it -------------------------------------------------
-    # Only rectangular contiguous id runs qualify for `_block_cursor`.
+    # The complete lattice is one rectangle and gets the block cursor; a holding
+    # of tiles, in any arrangement, gets the tiled raster tree.
     tile90 = CD.tilecell(GLO90, 50, 6)
     rect = subtree(GLO90, tile90, 1)
     ncols90 = CD.ncols_at(GLO90, 50)
@@ -769,16 +770,15 @@ end
     midrow = PartialGrid(GLO90, 1, [LevelIndex(1, k)
                                     for k in (first_id + 3):(first_id + 500)])
     scattered = PartialGrid(GLO90, 1, [LevelIndex(1, first_id + 2k) for k in 0:99])
-    # `treeify` hands the cursor back memoized; `BlockCursor` is the bare one.
+    # `treeify` hands the block cursor back memoized; `BlockCursor` is the bare one.
     @test treeify(levelgrid(GLO90, 0)) isa CD.MemoBlockCursor
     @test treeify(levelgrid(GLO90, 1)) isa CD.MemoBlockCursor
-    @test treeify(rect) isa CD.MemoBlockCursor
-    @test treeify(rows) isa CD.MemoBlockCursor
-    # Mid-row and scattered windows fall back to the generic cursor.
-    @test treeify(midrow) isa DGG.HierarchicalGridCursor
-    @test treeify(scattered) isa DGG.HierarchicalGridCursor
+    @test treeify(rect) isa DGG.TiledRasterCursor
+    @test treeify(rows) isa DGG.TiledRasterCursor
+    # Mid-row and scattered holdings are rectangles too, one per run.
+    @test treeify(midrow) isa DGG.TiledRasterCursor
+    @test treeify(scattered) isa DGG.TiledRasterCursor
 
-    # Level-1 runs of whole rectangular tiles qualify; partial end tiles do not.
     ntwin = Int(CD.lat_intervals(TWIN))
     nc_twin = Int(CD.ncols_at(TWIN, 50))
     two_lo = CD.pixelcell(TWIN, CD.tilecell(TWIN, 50, 6), 0, 0).index
@@ -790,11 +790,18 @@ end
                            Int(CD.ncols_at(TWIN, 88)) - 1).index
     pole_rows = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in pole_lo:pole_hi])
     part_end = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in two_lo:(two_hi-2)])
-    @test treeify(two_tiles) isa CD.MemoBlockCursor
-    @test treeify(pole_rows) isa CD.MemoBlockCursor
-    @test treeify(part_end) isa DGG.HierarchicalGridCursor
+    # Two tiles either side of a latitude row are two id runs, never one
+    # rectangle, and are the shape that used to fall to the generic cursor.
+    crossrow = PartialGrid(TWIN, 1, sort!(reduce(vcat,
+        [collect(children(TWIN, CD.tilecell(TWIN, lat, lon)))
+         for (lat, lon) in ((50, 6), (50, 7), (51, 6), (51, 7))])))
+    @test treeify(two_tiles) isa DGG.TiledRasterCursor
+    @test treeify(pole_rows) isa DGG.TiledRasterCursor
+    @test treeify(part_end) isa DGG.TiledRasterCursor
+    @test treeify(crossrow) isa DGG.TiledRasterCursor
 
-    # Out-of-range partial-grid ids must fall back cleanly.
+    # An id this lattice does not name has no rectangle, and keeps the generic
+    # cursor rather than throwing where `PartialGrid` promises not to.
     beyond = ncells(TWIN, 1)
     @test treeify(PartialGrid(TWIN, 1, [LevelIndex(1, beyond + k) for k in 0:3])) isa
           DGG.HierarchicalGridCursor
@@ -828,17 +835,43 @@ end
     end
 
     twin_tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
-    for (label, grid) in (("twin tile", twin_tile),
-                          ("4 GLO-90 rows", rows),
-                          ("GLO-90 tiles", levelgrid(GLO90, 0)),
-                          ("two twin tiles", two_tiles),
-                          ("two twin tile rows", pole_rows))
+    for (label, grid) in (("twin tiles", levelgrid(TWIN, 0)),
+                          ("GLO-90 tiles", levelgrid(GLO90, 0)))
         for strategy in (CD.Blocked{3}(), CD.Bisected())
             r = leaf_indices(CD.BlockCursor(grid; strategy), ncells(grid))
             @test (label, string(typeof(strategy)), r.seen, r.dup, r.oob, r.nodes > 1) ==
                   (label, string(typeof(strategy)), ncells(grid), 0, 0, true)
         end
     end
+
+    # A raster window of the complete level-1 lattice covers exactly its own
+    # index range, which is the shape `subcursor` cuts for a chunk.
+    g1twin = levelgrid(TWIN, 1)
+    twin_tilecell = CD.tilecell(TWIN, 50, 6)
+    twin_range = descendant_range(TWIN, twin_tilecell, 1)
+    tr, tq, _, _ = CD.decode(TWIN, twin_tilecell)
+    nc_tr = Int(CD.ncols(TWIN, tr))
+    function leaf_index_list(tree)
+        out = Int[]
+        stack = Any[tree]
+        while !isempty(stack)
+            node = pop!(stack)
+            if STI.isleaf(node)
+                append!(out, first(e) for e in STI.child_indices_extents(node))
+            else
+                append!(stack, collect(STI.getchild(node)))
+            end
+        end
+        return sort!(out)
+    end
+    for strategy in (CD.Blocked{3}(), CD.Bisected())
+        window = CD.BlockCursor(g1twin, TWIN, strategy, 1, Int64(-1), tr, tr, tq, tq,
+                                0, ntwin - 1, 0, nc_tr - 1, true)
+        @test (string(typeof(strategy)), leaf_index_list(window)) ==
+              (string(typeof(strategy)), collect(twin_range))
+    end
+    @test leaf_index_list(DGG.subcursor(g1twin, first(twin_range):last(twin_range))) ==
+          collect(twin_range)
 
     # ---- the covering law, at every node ------------------------------------
     # The global root crosses every band offset and both pole corrections.
@@ -861,15 +894,21 @@ end
         return worst
     end
 
-    # Exercise bisection and uneven `Blocked{3}` edge blocks.
-    for (label, grid) in (("twin tile", twin_tile), ("GLO-90 tiles", levelgrid(GLO90, 0))),
-        strategy in (CD.Blocked{3}(), CD.Bisected())
+    # Exercise bisection and uneven `Blocked{3}` edge blocks, at both scales.
+    for strategy in (CD.Blocked{3}(), CD.Bisected())
+        for (label, tree, grid) in
+            (("twin tile raster",
+              CD.BlockCursor(g1twin, TWIN, strategy, 1, Int64(-1), tr, tr, tq, tq,
+                             0, ntwin - 1, 0, nc_tr - 1, true), g1twin),
+             ("GLO-90 tiles", CD.BlockCursor(levelgrid(GLO90, 0); strategy),
+              levelgrid(GLO90, 0)))
 
-        slack = covering_slack(CD.BlockCursor(grid; strategy), grid)
-        @info "block cursor covering slack, $label" strategy slack
-        # Every leaf vertex lies strictly inside every ancestor cap.
-        @test (label, string(typeof(strategy)), slack < 0) ==
-              (label, string(typeof(strategy)), true)
+            slack = covering_slack(tree, grid)
+            @info "block cursor covering slack, $label" strategy slack
+            # Every leaf vertex lies strictly inside every ancestor cap.
+            @test (label, string(typeof(strategy)), slack < 0) ==
+                  (label, string(typeof(strategy)), true)
+        end
     end
 
     # ---- and the caps against the BOX, not just the corners it was built from --
@@ -993,21 +1032,19 @@ end
     @test worst_globe <= 0       # the whole-sphere root included, on its border
 
     # ---- the index space ----------------------------------------------------
-    # Tree and leaf indices both use the grid's global-index space.
-    root = CD.BlockCursor(twin_tile)
-    @test DGG.ncells(root) == ncells(twin_tile)
-    for i in (1, 2, ncells(twin_tile) ÷ 3, ncells(twin_tile))
-        @test getcell(root, i) == cell_polygon(twin_tile, cellindex(twin_tile, i))
+    # Tree and leaf indices both use the grid's own index space.
+    root = CD.BlockCursor(levelgrid(TWIN, 0))
+    @test DGG.ncells(root) == ncells(TWIN, 0)
+    for i in (1, 2, ncells(TWIN, 0) ÷ 3, ncells(TWIN, 0))
+        @test getcell(root, i) ==
+              cell_polygon(levelgrid(TWIN, 0), cellindex(levelgrid(TWIN, 0), i))
     end
 
     # ---- and the whole thing at once ----------------------------------------
     # Intersection matrices must match the generic cursor for both destinations.
     for (label, src, dst) in
-        (("twin tile -> HEALPix 5", twin_tile, levelgrid(DGG.HEALPixSystem(), 5)),
-         ("twin tile -> IGEO7 4", twin_tile, levelgrid(DGG.IGeo7System(), 4)),
-         ("two twin tiles -> HEALPix 5", two_tiles, levelgrid(DGG.HEALPixSystem(), 5)),
-         ("GLO-90 tiles -> HEALPix 2", levelgrid(GLO90, 0),
-          levelgrid(DGG.HEALPixSystem(), 2)))
+        (("GLO-90 tiles -> HEALPix 2", levelgrid(GLO90, 0),
+          levelgrid(DGG.HEALPixSystem(), 2)),)
 
         reference = CR.Regridder(MANIFOLD, dst,
             DGG.HierarchicalGridCursor(src)).intersections
@@ -1018,6 +1055,19 @@ end
             @test (label, string(typeof(strategy)), blocked == reference) ==
                   (label, string(typeof(strategy)), true)
         end
+    end
+
+    # A holding's tree answers the same intersections as the generic cursor.
+    for (label, src, dst) in
+        (("twin tile -> HEALPix 5", twin_tile, levelgrid(DGG.HEALPixSystem(), 5)),
+         ("twin tile -> IGEO7 4", twin_tile, levelgrid(DGG.IGeo7System(), 4)),
+         ("two twin tiles -> HEALPix 5", two_tiles, levelgrid(DGG.HEALPixSystem(), 5)))
+
+        reference = CR.Regridder(MANIFOLD, dst,
+            DGG.HierarchicalGridCursor(src)).intersections
+        @test length(reference.nzval) > 0
+        tiled = CR.Regridder(MANIFOLD, dst, treeify(src)).intersections
+        @test (label, tiled == reference) == (label, true)
     end
 end
 
@@ -1080,7 +1130,7 @@ end
              CD.tilecell(TWIN, 12, 40)]     # full-width equatorial tile
     ids = sort!(reduce(vcat, [collect(children(TWIN, t)) for t in tiles]))
     holding = PartialGrid(TWIN, 1, ids)
-    @test treeify(holding) isa DGG.HierarchicalGridCursor
+    @test treeify(holding) isa DGG.TiledRasterCursor
     src = DGG.DGGSpace(holding; chunklevel = 0)
     @test GR.nchunks(src) == length(tiles)
 
@@ -1098,7 +1148,7 @@ end
     for k in 1:GR.nchunks(src)
         inds = GR.ownedindices(src, k)
         tree = GR.subtree(src, inds)
-        @test tree isa CD.MemoBlockCursor
+        @test tree isa DGG.TiledRasterCursor
         @test leafindices(tree) == collect(inds)
         # The weights are the fallback's, entry for entry.
         fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, tree;
@@ -1107,6 +1157,224 @@ end
             GR.CellSpaceRTree(src, inds); intersection_operator = op)
         @test length(fast.nzval) > 0
         @test (k, fast == slow) == (k, true)
+    end
+end
+
+# =========================================================================
+# (k2b) The tiled raster tree over a holding of tiles
+# =========================================================================
+
+# A holding is a collection of tiles in no particular arrangement. Its tree
+# packs the tiles by their caps and bisects each tile's raster beneath, and its
+# leaf index is the tile's offset in the grid plus the pixel's row-major index
+# within the tile.
+@testset "the tiled raster tree over a holding" begin
+    STI = GO.SpatialTreeInterface
+    capholds(cap, p) = US.spherical_distance(cap.point, p) <= cap.radius
+
+    holding(spec) = PartialGrid(TWIN, 1, sort!(reduce(vcat,
+        [collect(children(TWIN, CD.tilecell(TWIN, lat, lon))) for (lat, lon) in spec])))
+
+    onetile = [(50, 6)]
+    onerow = [(50, 6), (50, 7)]
+    square = [(50, 6), (50, 7), (51, 6), (51, 7)]
+    ragged = [(50, 6), (50, 7), (51, 6)]                 # an L, not a rectangle
+    scattered = [(89, 10), (50, -3), (12, 40), (-90, 100)]
+
+    # ---- the index law -----------------------------------------------------
+    # A leaf's index is the grid's own, for every pixel of every shape.
+    for spec in (onetile, onerow, square, ragged, scattered)
+        g = holding(spec)
+        n = ncells(g)
+        seen = falses(n)
+        dup = oob = badindex = badcap = 0
+        stack = Any[treeify(g)]
+        while !isempty(stack)
+            node = pop!(stack)
+            if STI.isleaf(node)
+                for (i, cap) in STI.child_indices_extents(node)
+                    if !(1 <= i <= n)
+                        oob += 1
+                        continue
+                    end
+                    seen[i] ? (dup += 1) : (seen[i] = true)
+                    c = cellindex(g, i)
+                    localindex(g, c) == i || (badindex += 1)
+                    all(capholds(cap, p) for p in cell_boundary(g, c)) ||
+                        (badcap += 1)
+                end
+            else
+                append!(stack, collect(STI.getchild(node)))
+            end
+        end
+        @test (length(spec), count(seen), dup, oob, badindex, badcap) ==
+              (length(spec), n, 0, 0, 0, 0)
+    end
+
+    # And it is the stated law: the tile's offset plus the pixel's row-major
+    # index within the tile, for a random pixel of a random tile.
+    rng = MersenneTwister(20260825)
+    for spec in (square, ragged)
+        g = holding(spec)
+        for _ in 1:200
+            lat, lon = spec[rand(rng, eachindex(spec))]
+            tile = CD.tilecell(TWIN, lat, lon)
+            r, q, _, _ = CD.decode(TWIN, tile)
+            nc = Int(CD.ncols(TWIN, r))
+            j, i = rand(rng, 0:(Int(CD.lat_intervals(TWIN)) - 1)), rand(rng, 0:(nc - 1))
+            offset = localindex(g, CD.pixelcell(TWIN, tile, 0, 0)) - 1
+            @test localindex(g, CD.pixelcell(TWIN, tile, j, i)) == offset + j * nc + i + 1
+        end
+    end
+
+    # ---- the extents nest at the tile layer --------------------------------
+    # Every packed node's cap is a merge of its children's, so a tile's cap is
+    # inside every cap above it.
+    let g = holding(scattered)
+        tree = treeify(g)
+        worst = -Inf
+        stack = Any[tree]
+        while !isempty(stack)
+            node = pop!(stack)
+            node.inraster && continue
+            cap = STI.node_extent(node)
+            for k in 1:STI.nchild(node)
+                child = STI.getchild(node, k)
+                child.inraster && continue
+                cc = STI.node_extent(child)
+                worst = max(worst,
+                    US.spherical_distance(cap.point, cc.point) + cc.radius - cap.radius)
+                push!(stack, child)
+            end
+        end
+        @test worst <= 0
+    end
+
+    # ---- the same answers the block cursor gave -----------------------------
+    # A holding's leaf caps are the complete lattice's, so a point query over
+    # the holding names exactly what the per-tile block cursors name.
+    complete = levelgrid(TWIN, 1)
+    function blockcursor_hits(g, spec, p)
+        out = Int[]
+        for (lat, lon) in spec
+            r = descendant_range(TWIN, CD.tilecell(TWIN, lat, lon), 1)
+            window = DGG.subcursor(complete, first(r):last(r))
+            for i in STI.query(window, cap -> capholds(cap, p))
+                push!(out, localindex(g, cellindex(complete, i)))
+            end
+        end
+        return sort!(out)
+    end
+    for spec in (onetile, onerow, square)
+        g = holding(spec)
+        tree = treeify(g)
+        probes = GO.UnitSphericalPoint{Float64}[]
+        for _ in 1:60
+            c = cellindex(g, rand(rng, 1:ncells(g)))
+            push!(probes, cell_centroid(g, c))
+            append!(probes, cell_boundary(g, c))       # edges and corners
+        end
+        bad = 0
+        for p in probes
+            sort!(collect(STI.query(tree, cap -> capholds(cap, p)))) ==
+                blockcursor_hits(g, spec, p) || (bad += 1)
+        end
+        @test (length(spec), length(probes) >= 300, bad) == (length(spec), true, 0)
+    end
+
+    # ---- the interface the regridder reads ---------------------------------
+    let g = holding(square), tree = treeify(g)
+        @test STI.isspatialtree(typeof(tree))
+        # Tile caps are stored and raster caps memoized, so a repeat ask is a load.
+        @test !STI.node_extent_is_expensive(typeof(tree))
+        @test !STI.isleaf(tree)
+        @test STI.nchild(tree) > 1
+        @test [STI.getchild(tree, k) for k in 1:STI.nchild(tree)] ==
+              collect(STI.getchild(tree))
+        @test_throws BoundsError STI.getchild(tree, STI.nchild(tree) + 1)
+        @test_throws ArgumentError STI.child_indices_extents(tree)
+        @test DGG.ncells(tree) == ncells(g)
+        @test getcell(tree, 7) == cell_polygon(g, cellindex(g, 7))
+        @test CR.Trees.split_weight(tree) == ncells(g)
+        @test GOCore.best_manifold(tree) == GOCore.best_manifold(g)
+        @test treeify(tree) === tree
+        # A node's weight is the pixels beneath it, and the children partition them.
+        @test sum(CR.Trees.split_weight(c) for c in STI.getchild(tree)) ==
+              CR.Trees.split_weight(tree)
+        # The memo answers what the hooks answer, whoever asks and in what order.
+        node = STI.getchild(STI.getchild(tree, 1), 1)
+        want = STI.node_extent(node)
+        @test STI.node_extent(node) === want
+        @test all(==(0), fetch.([Threads.@spawn(count(_ -> STI.node_extent(node) !== want,
+                                                     1:64)) for _ in 1:4]))
+    end
+
+    # ---- the hot path infers ------------------------------------------------
+    # A search descends, reads extents and reaches leaves without a dynamic
+    # dispatch at any node, so every accessor and every hook it calls has a
+    # concrete return type. Construction may still return a union.
+    let g = holding(square), tree = treeify(g)
+        packed = STI.getchild(tree, 1)        # one tile, still a packed node
+        raster = STI.getchild(packed, 1)      # a rectangle inside that tile
+        leaf = raster
+        while !STI.isleaf(leaf)
+            leaf = STI.getchild(leaf, 1)
+        end
+        for node in (tree, packed, raster, leaf)
+            @test @inferred(STI.isleaf(node)) isa Bool
+            @test @inferred(STI.nchild(node)) isa Int
+            @test @inferred(CR.Trees.split_weight(node)) isa Int
+            @test @inferred(STI.node_extent(node)) isa US.SphericalCap
+        end
+        for node in (tree, packed, raster)
+            @test @inferred(STI.getchild(node, 1)) isa DGG.TiledRasterCursor
+        end
+        @test @inferred(STI.child_indices_extents(leaf)) isa DGG.Engine.LeafCells
+
+        # And the hooks the tree calls at every node.
+        tile = first(DGG.raster_tiles(g, 1:ncells(g)))
+        @test @inferred(DGG.raster_shape(g, tile)) isa Tuple{Int,Int}
+        @test @inferred(DGG.raster_localindex(g, tile, 1, 2)) isa Int
+        @test @inferred(DGG.raster_cap(g, tile, 0, 1, 0, 1)) isa US.SphericalCap
+        @test @inferred(DGG.Engine.rect_part(0, 7, 2, 1)) isa Tuple{Int,Int}
+        @test @inferred(DGG.Engine.bisect_parts(4, 7)) isa Tuple{Int,Int}
+        cap = DGG.raster_cap(g, tile, 0, 0, 0, 0)
+        @test @inferred(DGG.Engine.leaf_cells(k -> (k, cap), 3)) isa
+              DGG.Engine.LeafCells
+    end
+
+    # An empty holding is a tree with no cells rather than an error.
+    let empty_tree = treeify(PartialGrid(TWIN, 1, LevelIndex[]))
+        @test empty_tree isa DGG.TiledRasterCursor
+        @test STI.isleaf(empty_tree)
+        @test isempty(STI.child_indices_extents(empty_tree))
+    end
+
+    # ---- a level-0 holding: the cell is the tile ---------------------------
+    let g = PartialGrid(TWIN, 0, sort!([CD.tilecell(TWIN, lat, lon)
+                                        for (lat, lon) in scattered]))
+        tree = treeify(g)
+        @test tree isa DGG.TiledRasterCursor
+        hits = Int[]
+        stack = Any[tree]
+        while !isempty(stack)
+            node = pop!(stack)
+            STI.isleaf(node) ?
+                append!(hits, first(e) for e in STI.child_indices_extents(node)) :
+                append!(stack, collect(STI.getchild(node)))
+        end
+        @test sort!(hits) == collect(1:ncells(g))
+    end
+
+    # ---- the weights a regrid builds are the generic cursor's ---------------
+    for spec in (square, ragged)
+        g = holding(spec)
+        dst = levelgrid(DGG.HEALPixSystem(), 5)
+        reference = CR.Regridder(MANIFOLD, dst,
+            DGG.HierarchicalGridCursor(g)).intersections
+        tiled = CR.Regridder(MANIFOLD, dst, treeify(g)).intersections
+        @test length(reference.nzval) > 0
+        @test (length(spec), tiled == reference) == (length(spec), true)
     end
 end
 
@@ -1121,10 +1389,13 @@ end
 @testset "the node-extent memo" begin
     STI = GO.SpatialTreeInterface
 
-    tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
-    memoroot = treeify(tile)
+    # The block cursor addresses the complete lattice and the windows
+    # `subcursor` cuts out of it; one tile's raster is such a window.
+    g1twin = levelgrid(TWIN, 1)
+    tilerange = descendant_range(TWIN, CD.tilecell(TWIN, 50, 6), 1)
+    memoroot = DGG.subcursor(g1twin, first(tilerange):last(tilerange))
     @test memoroot isa CD.MemoBlockCursor
-    bareroot = CD.BlockCursor(tile)
+    bareroot = memoroot.node
 
     # ---- the interface the bare cursor implements, all of it ----------------
     @test STI.isspatialtree(typeof(memoroot))
@@ -1137,7 +1408,7 @@ end
           [STI.getchild(bareroot, k) for k in 1:STI.nchild(bareroot)]
     @test STI.getchild(memoroot, 2).node == STI.getchild(bareroot, 2)
     @test DGG.ncells(memoroot) == DGG.ncells(bareroot)
-    @test getcell(memoroot, 3) == getcell(bareroot, 3)
+    @test getcell(memoroot, first(tilerange)) == getcell(bareroot, first(tilerange))
     @test CR.Trees.split_weight(memoroot) == CR.Trees.split_weight(bareroot)
     @test GOCore.best_manifold(memoroot) == GOCore.best_manifold(bareroot)
     @test treeify(memoroot) === memoroot
@@ -1318,9 +1589,7 @@ end
     end
 
     # Tile leaves, pixel leaves, pole rows, and both split strategies.
-    twin_tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
-    for (label, grid) in (("twin tile", twin_tile),
-                          ("twin tiles", levelgrid(TWIN, 0)),
+    for (label, grid) in (("twin tiles", levelgrid(TWIN, 0)),
                           ("twin pixels", levelgrid(TWIN, 1)),
                           ("GLO-90 tiles", levelgrid(GLO90, 0)),
                           ("GLO-90 pixels", levelgrid(GLO90, 1))),

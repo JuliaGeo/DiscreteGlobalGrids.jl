@@ -96,7 +96,7 @@ function t9_owners(whole::Matrix{Float64}, space::RegridSpace, dinds)
 end
 
 t7_plan(method, dst, src; policy = Weighted(0.5), storage = PerChunk(),
-    budget = 2^30, chunks = nothing, missingval = nothing) =
+    budget = GR.DEFAULT_BUDGET, chunks = nothing, missingval = nothing) =
     ChunkedPlan(method, policy, dst, src, storage, budget, chunks, missingval)
 
 # A relation carrying nothing but the caps a wave costs against. `_wavesize` and

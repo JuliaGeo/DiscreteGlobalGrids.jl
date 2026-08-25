@@ -117,7 +117,7 @@ const WEIGHT_BUDGET_SHARE = 0.25
 # Bytes a chunked plan may hold in transient weights and source data when the
 # caller names no budget. Stated here alone: `plan_regrid` resolves the API
 # keyword against it rather than repeating the number.
-const DEFAULT_BUDGET = 2^30
+const DEFAULT_BUDGET = 2^31
 
 """
     weightbudget(budget::Integer) -> Int
@@ -622,7 +622,7 @@ end
     ChunkedPlan(method, missingpolicy, dst_space, src_space, storage, budget, chunks,
                 missingval = nothing, dependencies = nothing)
     ChunkedPlan(method, missingpolicy, dst_space, src_space;
-                storage = nothing, budget = 2^30, chunks = nothing, missingval = nothing,
+                storage = nothing, budget = 2^31, chunks = nothing, missingval = nothing,
                 dependencies = nothing, refine = nothing, narrow = nothing)
 
 Build and store [`WeightBlock`](@ref)s by `(destination tile, source chunk)` on

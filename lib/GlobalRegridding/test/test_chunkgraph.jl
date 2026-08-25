@@ -899,8 +899,10 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         bare = ChunkedPlan(method, policy, dst, src)
         @test GR.dependencies(bare) isa GR.ChunkDependencyGraph
         @test GR.dependency_radius(GR.dependencies(bare)) == 0.1
-        for p in (ChunkedPlan(method, policy, dst, src, PerChunk(), 2^30, nothing),
-            ChunkedPlan(method, policy, dst, src, PerChunk(), 2^30, nothing, nothing))
+        for p in (
+            ChunkedPlan(method, policy, dst, src, PerChunk(), GR.DEFAULT_BUDGET, nothing),
+            ChunkedPlan(method, policy, dst, src, PerChunk(), GR.DEFAULT_BUDGET, nothing,
+                nothing))
             @test graph_pairs(GR.dependencies(p)) == graph_pairs(GR.dependencies(bare))
         end
 

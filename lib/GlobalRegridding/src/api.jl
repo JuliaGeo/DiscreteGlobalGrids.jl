@@ -55,7 +55,7 @@ by the source element type, and `NaN` otherwise.
   - `missingval`: additional nodata sentinel. `missing` and `NaN` are always invalid.
   - `lazy`: compute on demand ([`LazyRegridArray`](@ref)); defaults to chunked sources.
   - `chunks`: lazy destination tiling. `nothing` derives it automatically.
-  - `budget`: target bytes for lazy reads and weights, default `2^30`.
+  - `budget`: target bytes for lazy reads and weights, default `2^31`.
   - `storage`: lazy weight storage, [`PerChunk`](@ref) or [`Spilled`](@ref).
   - `sampling`: destination lookup sampling. `nothing` follows the method —
     area-based methods give `Intervals`, point samples give `Points`

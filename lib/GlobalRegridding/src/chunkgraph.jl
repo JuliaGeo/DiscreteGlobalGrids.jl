@@ -708,9 +708,10 @@ _transpose(dstoff::Vector{Int}, srcof::Vector{T}, nsrc::Int, ndst::Int,
     ::Type{T}) where {T} = _transpose(dstoff, srcof, Base.OneTo(ndst), nsrc, T)
 
 # Counting-sort transpose of a *selection* of destination-major rows into a
-# source-major CSR whose destination numbers are the selection's own positions.
-# `rows` holds global destination chunk numbers in ascending order; passing
-# `OneTo(ndst)` transposes the whole relation, which is the whole-space case.
+# source-major CSR whose destination numbers are the selection's own local
+# indices. `rows` holds global destination chunk numbers in ascending order;
+# passing `OneTo(ndst)` transposes the whole relation, which is the whole-space
+# case.
 function _transpose(dstoff::Vector{Int}, srcof::Vector{T},
         rows::AbstractVector{<:Integer}, nsrc::Int, ::Type{T}) where {T}
     # Bin each edge's count one slot past its source, so the prefix sum turns

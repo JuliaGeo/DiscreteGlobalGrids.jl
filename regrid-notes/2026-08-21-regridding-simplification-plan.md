@@ -3,11 +3,17 @@
 - Original date: 2026-08-21
 - Rewritten: 2026-08-22
 
-This is the authoritative execution plan. The superseded evidence-rich version
-is preserved in
+This is the authoritative execution plan for conservative regridding and for
+the shared spatial, planning, and execution infrastructure every method uses.
+The superseded evidence-rich version is preserved in
 `regrid-notes/2026-08-21-regridding-simplification-plan-detailed-archive.md`.
 Use that archive for measurements, code citations, rejected alternatives, and
 dependency-version history; use this file for task order and scope.
+
+The point-method redesign is owned by
+`regrid-notes/2026-08-23-barycentric-regridding-plan.md`. That plan names the
+point API and its kernels; this plan owns the seams in the shared code that
+admit them, as Phase 9 below. Neither plan changes conservative behaviour.
 
 ## Outcome
 
@@ -30,27 +36,63 @@ space geometry
               v          v          v
           executor   scheduler   cache policy
               |
-              v
-      on-demand final WeightBlocks
-              |
+      +-------+--------+
+      |                |
+      v                v
+ area methods     point methods
+ one WeightBlock  one TileWeights per destination
+ per chunk pair   tile, with an exact source-chunk list
+      |                |
+      +-------+--------+
               v
        on-demand source data
 ```
 
 Planning is eager about geometry and chunk dependencies. Weight construction
-and source reads remain lazy.
+and source reads remain lazy. A point method is the one exception to the
+assumption that an exact chunk relation can always be materialized before
+weights: its exact dependency list and its weights fall out of the same
+destination pass, so they are built together, per tile, on first request.
+Planning still reads no source values.
+
+## Vocabulary
+
+The index words are `DiscreteGlobalGrids`' own and are used identically here
+and in the barycentric plan's `## Vocabulary`, which is the reference text for
+the point-method terms. "Position" names a geometric location and never an
+index.
+
+| term | meaning |
+|---|---|
+| local index | a collection's `1:ncells(space)`. What `cellat(space, p)` answers, what `cellcentroid` and `chunkat` take, what `ownedindices` lists, and the space every stencil is written in. A `DGGSpace` may wrap a partial grid, so this is not the complete level's numbering. |
+| chunk-local index | the local index of one chunk read as a partial grid: `j` with `ownedindices(space, k)[j] == i`, which is `i - first(ownedindices(space, k)) + 1` for a contiguous chunk. `WeightCOO` rows and columns and a `WeightBlock`'s axes are chunk-local. |
+| global index | the complete level's numbering (`globalindex`, `Index(Global())`). It equals the local index only on a complete grid. |
+| axis index | the output cube's full cell axis read as a local index. |
+| chunk | a space's own unit of ownership, `ownedindices(space, k)`, numbered by `chunknumber`. |
+| tile | the lazy array's write block: one destination chunk, or a run of them (`DestTiling`, `lib/GlobalRegridding/src/lazy.jl:56`). |
+| partial grid | a collection holding fewer cells than its level. |
+| sample site | where a source value is taken to sit: `cellcentroid(space, i)` unless the space says otherwise. |
+| rim | an *area* — the part of border cells lying outside the dual complex, where no dual cell exists. Distinct from `border`/`halo`, which are sets of cells. |
+
+Four hooks were renamed after the cards below were written; each old name is
+kept as a deprecation shim and appears in this plan only as history:
+`cellindices` → `ownedindices` (`spaces.jl:79`, shim at `:94`),
+`build_weights!` → `buildweights!` (`methods.jl:131`, shim at `:159`),
+`support_radius` → `supportradius` (`methods.jl:145`, shim at `:171`), and
+`chartposition` → `chartlocalindex` (`spaces.jl:258`, shim at `:287`).
 
 ## Current checkpoint
 
 - Phase 0, environment and benchmark baseline: complete.
 - Phase 1, native hierarchical chunk indexes: complete.
 - Phases 1A, 1B, and 1C: **complete**. They finished the spatial layer before
-  graph integration.
+  graph integration. One action was folded into B4 after B4 had already
+  shipped and has not landed; it is carried below as B5, the only open item in
+  Phases 1A-1C.
 - Phase 2, one authoritative dependency graph: **complete**. G1, G2, G3 and G4
   are all closed. `ChunkedPlan` owns the relation; `dependencies(plan)` is the
   only way to read it and builds nothing; `refine` is a keyword of lazy
-  `plan_regrid` alone. Read G4's record for the one action it could not complete
-  and why.
+  `plan_regrid` alone.
 - Phase 3, graph-backed lazy execution: **complete**. E1 is closed. The lazy
   executor takes a tile's source chunks from `sourcesof(dependencies(plan), d)`
   and performs no dependency discovery; `LazyRegridArray.srcindex` and its cap
@@ -63,10 +105,10 @@ and source reads remain lazy.
   `RasterFlatTree`, `connectedchunks`, `connectedchunks!` and the
   `chunktree`-collecting `chunkextents` fallback are all gone; `chunkextents` is
   a required hook with no fallback, and one `candidatechunks!` query per
-  destination cap defines every edge. Read E2's record for the `chunktree`
-  audit, and for the two things this card listed that were **not** dead.
-- Current implementation phase: **5**, behind the user's gate.
-- The nearest/bilinear method redesign is deferred to a separate plan.
+  destination cap defines every edge.
+- **Next in this plan's own order: Phase 5** (W1 then W2), behind the user's
+  gate. Phase 9's point-method admission is unblocked by E2 as well and is
+  independent of Phases 5-8; it waits on the barycentric plan's P1 and P2.
 
 Landed cards, with the commit each one shipped as:
 
@@ -101,12 +143,22 @@ Evidence:
 - `regrid-notes/2026-08-23-g4-plan-owns-graph.md` — G4's ownership design, the
   Phase 2 gate as tests rather than prose, and what a per-column relation would
   have cost production
-- `regrid-notes/2026-08-23-e2-delete-legacy-discovery.md` — E2's deletion audit,
-  the `chunktree` verdict, what the card listed that was not dead, and the
-  Phase 4 gate as tests
 - `regrid-notes/2026-08-23-e1-graph-backed-lazy.md` — E1's row-driven executor,
   where cap metadata moved, `subspace_dependencies` and why production declined
   it, and the Phase 3 gate as tests
+- `regrid-notes/2026-08-23-e2-delete-legacy-discovery.md` — E2's deletion audit,
+  the `chunktree` verdict, what the card listed that was not dead, and the
+  Phase 4 gate as tests
+- `regrid-notes/2026-08-23-barycentric-regridding-plan.md` — the point-method
+  plan Phase 9 admits, and the authoritative naming for its parts
+- `regrid-notes/generic-barycentric-patch-regridding.md` and
+  `regrid-notes/esmf-regridding-methods.md` — the point-method use cases
+- `regrid-notes/2026-08-24-go-fh-clipping-eval.md` — PR #77's GeometryOps pin
+  evaluation: GO-WITH-CAVEATS as an off-driver improvement, NO-GO as a clipping
+  optimisation, because the conservative weight kernel is
+  `GO.ConvexConvexSutherlandHodgman`
+  (`lib/GlobalRegridding/src/intersection_area.jl:31`), which that branch does
+  not touch. The pin informs the Phase 5 gate and does not open it.
 - `regrid-notes/2026-08-21-simplification-plan-review.md`
 - `regrid-notes/2026-08-21-regridding-simplification-plan-detailed-archive.md`
 
@@ -124,13 +176,18 @@ Evidence:
    to `chunklevel`; do not rebuild chunk ancestors as literal leaves.
 6. A `ChunkedPlan` owns or validates one immutable dependency relation.
    Scheduler, executor, prefetch, and cache policy consume that same object.
+   For a point method that relation orders, costs and prefetches; what is
+   actually read is the tile's exact manifest, which must be a subset of it.
 7. Planning reads no source values, builds no weights, and performs no provider
    network metadata requests.
 8. `DirectPlan` and `ChunkedPlan` remain separate. `ShapedRegridArray` remains.
-9. `cellindices` and `chunkranges` remain separate contracts: cell ownership is
+9. `ownedindices` and `chunkranges` remain separate contracts: cell ownership is
    not the same as a rectangular storage read.
 10. Do not create a general cache hierarchy. Simplify individual cache state
     only where a representation is genuinely duplicated.
+11. Conservative regridding's behaviour is fixed. Every place the point path
+    diverges from it is named at the seam where it diverges, and the
+    conservative branch of that seam is the one that exists today.
 
 ## Standing acceptance laws
 
@@ -143,12 +200,17 @@ Every task must preserve all applicable laws:
 5. Plan and lazy-array construction read no source values.
 6. Declared budgets bound mutable residency, apart from documented immutable
    planning metadata and the one streamed scratch buffer.
-7. Graph and executor agree exactly on permitted reads by sharing one graph.
+7. Graph and executor agree exactly on permitted reads. An area method shares
+   one graph; a point tile's exact manifest is a subset of its graph rows and
+   bounds its reads.
 8. A final `WeightBlock` carries one reusable reference vector; caches do not
    copy it.
 9. Every cross-package `RegridSpace` specialization is part of the documented
    qualified extension interface.
-10. Point-method behavior is unchanged by this plan.
+10. Conservative values, read counts and weights are unchanged by every card
+    here. Point-method behavior is unchanged by Phases 1A-8; Phase 9 changes
+    where a point method's weights are built and which chunks its tiles read,
+    never a weight.
 
 ## Sub-agent execution protocol
 
@@ -183,12 +245,13 @@ and stop if an exit condition cannot be demonstrated. Do not begin the next task
 ```text
 A1 -> A2 -> A3 -> A4 ----+
                           +-> B3 -> B4 -> C1              Phases 1A-1C
-B1 -> B2 -----------------+
+B1 -> B2 -----------------+          `-> B5
 C1 -> G1 -> G2 -> G3 -> G4 -> E1 -> E2                   Phases 2-4
 E2 -> W1 -> W2                                             Phase 5
 W2 -> O1 -> O2                                             Phase 6
 O2 -> P1                                                   Phase 7
 P1 -> L1 -> L2                                             Phase 8
+E2 -> S1 -> S2 -> S3                                       Phase 9
 ```
 
 B1 may be prepared in an isolated GeometryOps worktree while A tasks run, but
@@ -199,6 +262,11 @@ work.
 The `G1 -> G2` edge is historical only: G2 landed *before* G1, as a correctness
 fix (PR #69), and G1/PR #70 ran its gates retroactively. Read the order as
 `C1 -> G2 -> G1 -> G3 -> G4` for what actually happened. Both cards are closed.
+
+Phase 9 branches from E2 beside Phase 5 and depends on nothing in Phases 5-8,
+but S2 and S3 share `plans.jl` and `lazy.jl` with W1, W2 and L1, so they take
+the shared worktree in sequence rather than concurrently. S2 also requires the
+barycentric plan's P1 (`weightsat!`, `WeightRow`, `sampler`) to exist.
 
 ## Phase 1A — raster geometry and CRS
 
@@ -228,6 +296,7 @@ callables, eager/lazy parity, and zero source reads during construction.
 **Done when:** local geographic transformations are deleted and one explicit
 native-to-unit-sphere contract serves every raster geometry caller.
 **Commit:** `Simplify raster coordinate transformations`.
+**Landed:** `47a7cf7`.
 
 ### Task A2 — add task-local Proj integration
 
@@ -262,6 +331,9 @@ package.
 between tasks and every task owns the complete lifetime of its clones. The
 shared grid may retain the template through its locked chart state.
 **Commit:** `Add task-local Proj raster transformations`.
+**Landed:** `41fb204`. The two preparation hooks it added are public:
+`_prepare_raster_transform_pair` and `_task_prepared_raster_transform`
+(`lib/GlobalRegridding/src/GlobalRegridding.jl:137`).
 
 ### Task A3 — converge the structured raster tree
 
@@ -277,7 +349,7 @@ Actions:
   storage lookup for every vertex, and do not store the prepared clone on a
   cursor or index that may be shared between tasks.
 - Return restricted CR `TopDownQuadtreeCursor`s for whole and rectangular cell
-  ranges; preserve global storage-order numbering.
+  ranges; preserve storage-order numbering of the space's local indices.
 - Delete `RasterCellTree` and remove `MemoRasterTree` if the committed benchmark
   shows no material regression. If caching is earned, adapt one small cache to
   the CR cursor instead of retaining another tree.
@@ -292,6 +364,9 @@ traversal benchmark.
 **Done when:** one structured raster adapter replaces `RasterCellTree`, with no
 tree or memoization regression.
 **Commit:** `Converge raster cells on the CR quadtree`.
+**Landed:** `a07de52`. `RasterGridView` is
+`lib/GlobalRegridding/src/rastergrid.jl:783`; `RasterCellTree` and
+`MemoRasterTree` are gone.
 
 ### Task A4 — simplify and prove raster range extents
 
@@ -318,6 +393,8 @@ identity, and zero source reads.
 **Phase 1A gate:** one structured raster adapter; GeometryOps owns geographic
 conversion; Proj.jl owns all PROJ calls; every extent covers its leaves.
 **Commit:** `Simplify raster range extent construction`.
+**Landed:** `e821c00`. `Trees.cell_range_extent(::RasterGridView, ...)` is
+`rastergrid.jl:829`; `_boxcap` is gone.
 
 ## Phase 1B — spherical extents and fallback cell trees
 
@@ -345,6 +422,7 @@ symmetry.
 **Done when:** downstream packages need no private GeometryOps cap call or
 local cap-to-XYZ implementation.
 **Commit:** in GeometryOps, with its SHA recorded for B3.
+**Landed:** upstream; the SHA is in `93e836d`.
 
 ### Task B2 — make ConservativeRegridding extent-generic
 
@@ -366,6 +444,7 @@ Actions:
 **Done when:** mixed trees produce the same candidate/weight result without a
 material task-balance regression.
 **Commit:** in ConservativeRegridding, with its SHA recorded for B3.
+**Landed:** upstream; the SHA is in `93e836d`.
 
 ### Task B3 — integrate the public spherical extent protocol
 
@@ -392,6 +471,8 @@ fallback cell-tree results.
 **Done when:** this workspace calls one public spherical extent protocol and
 records the exact upstream SHAs.
 **Commit:** `Adopt public spherical extent operations`.
+**Landed:** `714f101` + `93e836d`. `DilatedIntersects` is
+`lib/GlobalRegridding/src/discovery.jl:6`.
 
 ### Task B4 — replace custom fallback cell trees
 
@@ -401,31 +482,10 @@ records the exact upstream SHAs.
 Actions:
 
 - Add one thin cell-space adapter over `FlexibleRTrees.RTree`, retaining the
-  owning space and original global cell positions.
+  owning space and the cells' original local indices.
 - Use it only when a native restricted cursor is unavailable.
 - Delete `CellCapTree` and `RasterFlatTree`'s scattered-cell role. Keep the
   latter only if the legacy `chunktree` bridge still requires it until E2.
-- **Make "when a native restricted cursor is unavailable" true on the DGGS
-  side** (folded in 2026-08-23; scope
-  `regrid-notes/2026-08-23-dggs-subcursor-scope.md`, decided by the user). It is
-  vacuous today: `subcursor` has one concrete method, CopernicusDEM
-  (`src/systems/CopernicusDEM/cursor.jl:412`); every hierarchical DGGS takes the
-  `= nothing` default at `src/interface/grid.jl:570`, so a non-chunk-aligned
-  window packs an R-tree instead of windowing the hierarchy. Implement
-  `subcursor` for hierarchical DGGS grids over the existing `SubtreeIds` O(1)
-  contiguous-run view, routed through a `PartialGrid` for the descent clamp.
-  This **subsumes `_chunkcursor` (`src/regridding.jl:250`) entirely** — a net
-  deletion. Two hard requirements from the scope: the position shift must be
-  **bidirectional** (a one-directional shift passes leaf-set and split-weight
-  assertions while producing silently wrong weights), and the window must carry
-  **cached leaf caps** — a bare cursor loses the join by 3-4x, worse than the
-  fallback it replaces.
-- Guard the destination-tiling cliff independently of the rest of B4, and first.
-  Nothing in production reaches the fallback today (all four `subtree` call
-  sites take case 1 or case 3, with 4.07x headroom in `_defaulttilesizes`), but
-  at `budget = 2^27` every destination unit packs a ~419k-cell R-tree on 40
-  workers: measured 1.213 s against 0.501 s for a cached window, at 4.3x the
-  memory. That cliff, not a steady-state win, is the reason this is on the list.
 - Not folded in: `_cachedcelltree`'s missing size guard (unlike
   `_cachedchunktree`). User reviewed 2026-08-23 and accepted it as-is.
 
@@ -433,11 +493,54 @@ Verify packing/node-capacity invariance, original leaf numbering, native versus
 fallback Conservative block identity, threaded determinism, production
 candidate count, task balance, time, and peak memory.
 
-**Phase 1B gate:** GeometryOps owns reusable cap primitives, CR accepts mixed
-extents, and GlobalRegridding has no custom general-purpose fallback cell tree.
-
 **Commit:** `Reuse packed trees for fallback cell geometry`, recording both
 upstream SHAs in the commit message.
+**Landed:** `d194e2d`. The adapter is `CellSpaceRTree`
+(`lib/GlobalRegridding/src/conservative.jl:25`); `CellCapTree` is gone, and E2
+took `RasterFlatTree` with the `chunktree` bridge. One action was folded into
+this card on 2026-08-23, after it had already shipped; it is carried as B5.
+
+### Task B5 — window the DGGS hierarchy for a non-chunk-aligned subtree
+
+**Prerequisite:** B4.
+**Owns:** `subcursor` for hierarchical DGGS grids, the `DGGSpace` subtree
+route, and its cache/benchmark. Scope:
+`regrid-notes/2026-08-23-dggs-subcursor-scope.md`, decided by the user.
+
+B4's "use the R-tree adapter only when a native restricted cursor is
+unavailable" is vacuous today: `subcursor` has one concrete method, CopernicusDEM
+(`src/systems/CopernicusDEM/cursor.jl:412`), and every hierarchical DGGS takes
+the `= nothing` default at `src/interface/grid.jl:665`, so a non-chunk-aligned
+window packs an R-tree instead of windowing the hierarchy.
+
+Actions:
+
+- Implement `subcursor` for hierarchical DGGS grids over the existing
+  `SubtreeIds` O(1) contiguous-run view (`src/engine/partial_grid.jl:10`),
+  routed through a `PartialGrid` for the descent clamp.
+- Subsume `_chunkcursor` (`src/regridding.jl:254`) entirely — a net deletion.
+  It is the third branch of `GR.subtree(::DGGSpace, inds)`
+  (`src/regridding.jl:243-251`); the window replaces it.
+- Two hard requirements from the scope: the index shift must be
+  **bidirectional** — a one-directional shift passes leaf-set and split-weight
+  assertions while producing silently wrong weights — and the window must carry
+  **cached leaf caps**, because a bare cursor loses the join by 3-4x, worse than
+  the fallback it replaces.
+- Guard the destination-tiling cliff independently and first. Nothing in
+  production reaches the fallback today (all four `subtree` call sites take case
+  1 or case 3, with 4.07x headroom in `_defaulttilesizes`,
+  `lib/GlobalRegridding/src/lazy.jl:85`), but at `budget = 2^27` every
+  destination unit packs a ~419k-cell R-tree on 40 workers: measured 1.213 s
+  against 0.501 s for a cached window, at 4.3x the memory. That cliff, not a
+  steady-state win, is the reason this is on the list.
+
+Verify leaf-set identity against the R-tree fallback, weight identity in both
+shift directions, cached-cap join time, the destination-tiling cliff at
+`budget = 2^27`, and threaded determinism.
+
+**Phase 1B gate:** GeometryOps owns reusable cap primitives, CR accepts mixed
+extents, and GlobalRegridding has no custom general-purpose fallback cell tree.
+**Commit:** `Window the DGGS hierarchy for restricted cell trees`.
 
 ## Phase 1C — the `RegridSpace` contract
 
@@ -451,13 +554,13 @@ Actions:
 
 - Gather and document the contracts by responsibility:
   `ncells/getcell/celltree/subtree`,
-  `nchunks/cellindices/chunkextent/chunkindex/candidatechunks!`,
+  `nchunks/ownedindices/chunkextent/chunkindex/candidatechunks!`,
   `chunkranges`, point/chart hooks, and
   `destinationdims/dimsource/_asspace`.
 - Mark load-bearing qualified hooks public even when unexported.
 - Correct the module comment: DGG already extends `chunkindex`,
   `candidatechunks!`, and `chunkranges`.
-- Keep `cellindices` distinct from rectangular `chunkranges`.
+- Keep `ownedindices` distinct from rectangular `chunkranges`.
 - Do not add an abstract chunk-index type, trait bundle, plan core, or forwarding
   space wrapper.
 - Leave `chunktree` documented as a temporary compatibility bridge for E2.
@@ -465,6 +568,10 @@ Actions:
 **Phase 1C gate:** every external specialization is named by one coherent
 contract and no new interface abstraction exists.
 **Commit:** `Consolidate the regridding space interface`.
+**Landed:** `5e91b0c`. The grouped contract is
+`lib/GlobalRegridding/src/spaces.jl`; the `public` lists are
+`lib/GlobalRegridding/src/GlobalRegridding.jl:104-137`. `ownedindices` was then
+spelled `cellindices`; `7a92dee` renamed it and left the shim at `spaces.jl:94`.
 
 ## Phase 2 — one authoritative dependency graph
 
@@ -570,19 +677,14 @@ Actions:
 - Retain `sourcesof`, `consumersof`, degrees, counts, and bidirectional CSR.
 - Keep Graphs.jl compatibility over the same CSR; do not create a second graph.
 
-Row views are worth **strictly more** than when this card was written. Post-#69,
-`chunkindex(src_space)` is rebuilt on *every* `chunk_dependency_graph` call
-(`lib/GlobalRegridding/src/discovery.jl:40` — the generic path is a fresh packed
-R-tree over `chunkextents`), so a per-column rebuild now costs a full index build
-per column, not a `sortperm` over caps that were already sorted. Sharing the
-parent relation avoids that entirely.
-
 **Done when:** an invalid graph reuse fails at construction and row views retain
-global destination identity for refinement.
+the destination's own chunk numbering for refinement.
 **Commit:** `Add reusable dependency graph identities`.
 **Landed:** PR #71, stacked on #70. Record:
-`regrid-notes/2026-08-23-g3-graph-identity.md`. Two corrections to this card's
-premise are recorded there, and G4 should read them before designing around it:
+`regrid-notes/2026-08-23-g3-graph-identity.md`. `DependencyIdentity` is
+`lib/GlobalRegridding/src/chunkgraph.jl:129`, `restrict` is `:979`. Two
+corrections to this card's premise are recorded there, and G4 should read them
+before designing around it:
 
 - `chunkindex` is **not** a fresh packed R-tree per column on either shipped
   native space. `chunkindex(::DGGSpace) = space` is a field read and the
@@ -617,13 +719,12 @@ Actions:
 - Remove `refine` from post-plan graph builders.
 - Make production global/per-column plans share the global graph or validated
   row views; never rebuild a one-destination graph per column.
-- Delete `connectedchunkpairs` (`lib/GlobalRegridding/src/discovery.jl:203-217`).
-  The archive scheduled it for Phase 4 alongside `connectedchunks`, but #69 made
-  it a free deletion here: it is now line-for-line the same loop as
-  `_chunkgraph`'s rows — one `chunkindex(src)`, one `candidatechunks!` per
-  `chunkextents(dst)` entry — and its only caller is
-  `lib/GlobalRegridding/test/test_lazy.jl:145`. Move that assertion onto the
-  graph's rows and drop the function.
+- Delete `connectedchunkpairs`. The archive scheduled it for Phase 4 alongside
+  `connectedchunks`, but #69 made it a free deletion here: it is now
+  line-for-line the same loop as `_chunkgraph`'s rows — one `chunkindex(src)`,
+  one `candidatechunks!` per `chunkextents(dst)` entry — and its only caller is
+  one lazy test assertion. Move that assertion onto the graph's rows and drop
+  the function.
 - Preserve zero source reads, zero weight builds, deterministic construction,
   and no network metadata work.
 
@@ -637,11 +738,11 @@ G4 measured:
 
 - **Production's per-column plans cannot take a validated row view, and do not
   need one.** "Never rebuild a one-destination graph per column" is met by
-  construction: `dependencies` defaults to `nothing`, so `regrid_chunk`'s plans
-  build no relation and the default costs [measured] 1.00 µs and 784 B against
-  512 µs / 542 KB for `dependencies = true` and 193 µs / 424 KB for a one-row
-  `restrict` — 511× and 193× on 66 175 columns. "Share the global graph or
-  validated row views" is **not possible at this destination shape**:
+  construction: `dependencies` then defaulted to `nothing`, so `regrid_chunk`'s
+  plans built no relation and the default cost [measured] 1.00 µs and 784 B
+  against 512 µs / 542 KB for `dependencies = true` and 193 µs / 424 KB for a
+  one-row `restrict` — 511× and 193× on 66 175 columns. "Share the global graph
+  or validated row views" is **not possible at this destination shape**:
   `regrid_chunk`'s destination is a rooted one-chunk subtree grid, a different
   space from `dagplan`'s 66 175-chunk `PartialGrid`, and a row view still stamps
   the *whole* destination space, so `validate_dependencies` refuses it —
@@ -650,11 +751,16 @@ G4 measured:
   of the caps alone), which no card owns and which nothing would consume until
   E1. G4 left it open and proved the refusal instead.
 
-The global plan does own the relation: `dagplan` constructs a `GR.ChunkedPlan`
-with `dependencies = true` and the narrow phase, and the schedule, refcount
-cache, prefetcher and closing validator all read `GR.dependencies(globalplan)` —
+The global plan does own the relation: `dagplan`
+(`scripts/copdem_production.jl:762`) constructs a `GR.ChunkedPlan` with
+`dependencies = true` and the narrow phase, and the schedule, refcount cache,
+prefetcher and closing validator all read `GR.dependencies(globalplan)` —
 asserted at run time by a new `check(...)` in the driver. The relation is
 [measured] unchanged: 326 064 edges, equal `DependencyIdentity`, 0.118 s warm.
+
+E1 later reversed this card's `dependencies` default. The current behaviour is
+in `_plandependencies` (`lib/GlobalRegridding/src/plans.jl:486`): `nothing` and
+`true` both build, `false` is the opt-out.
 
 ## Phase 3 — graph-backed lazy execution
 
@@ -682,26 +788,30 @@ misses, source order, eager/lazy values, residency, and production policy.
 and scheduler consume the same object.
 **Commit:** `Drive lazy regridding from dependency rows`.
 **Landed:** PR #74, stacked on #72. Record:
-`regrid-notes/2026-08-23-e1-graph-backed-lazy.md`. All six actions landed. Three
-things the card did not say, which a later task should read before designing
-around them:
+`regrid-notes/2026-08-23-e1-graph-backed-lazy.md`. All six actions landed;
+`_connectedsource!` is `lib/GlobalRegridding/src/lazy.jl:641` and the caps it
+costs waves from are read off the relation in `_wavesize` (`lazy.jl:508`).
+Three things the card did not say, which a later task should read before
+designing around them:
 
 - **A chunked plan now owns a relation by default.** It had to: a lazy read *is*
   a read of the rows, so `dependencies = nothing` — meaning "own none" — would
   have made the default plan unable to back a `LazyRegridArray`. `nothing` and
-  `true` both build; `false` is the opt-out and is refused by the lazy array,
-  by name. That reverses G4's default, and G4's measured reason for it (nothing
-  consumed a plan's relation) is exactly what this card removed.
+  `true` both build; `false` is the opt-out and is refused by the lazy array, by
+  name, in `_lazygraph` (`lazy.jl:275`). That reverses G4's default, and G4's
+  measured reason for it (nothing consumed a plan's relation) is exactly what
+  this card removed.
 - **G4's open action is closed, and production declined it.**
-  `subspace_dependencies(g, subspace, destinations)` re-stamps a row view onto a
-  sub-space whose chunk caps it reproduces cap for cap — sound because the
-  destination half of the relation is a function of those caps alone. A
-  per-column plan does adopt it. But [measured] on the production pair it is
-  only **0.82x** the time and **0.79x** the bytes of simply building the
-  one-row relation (408 us / 425 KB against 500 us / 542 KB), because both pay
-  the same `O(nsourcechunks)` transpose and adoption still stamps the source
-  space. `regrid_chunk` therefore keeps building its own, and E1 added a
-  sampled `graphmisscheck` to the driver instead.
+  `subspace_dependencies(g, subspace, destinations)` (`chunkgraph.jl:1047`)
+  re-stamps a row view onto a sub-space whose chunk caps it reproduces cap for
+  cap — sound because the destination half of the relation is a function of
+  those caps alone. A per-column plan does adopt it. But [measured] on the
+  production pair it is only **0.82x** the time and **0.79x** the bytes of
+  simply building the one-row relation (408 us / 425 KB against 500 us /
+  542 KB), because both pay the same `O(nsourcechunks)` transpose and adoption
+  still stamps the source space. `regrid_chunk` therefore keeps building its
+  own, and E1 added a sampled `graphmisscheck`
+  (`scripts/copdem_production.jl:841`) to the driver instead.
 - **The card's proof obligation is true only where the source index is the
   generic one.** `graph rows` are not inside the cap join on a native
   hierarchy — the two relations cross, which is why #69 exists — so the raster
@@ -735,14 +845,16 @@ tree.
 **Commit:** `Remove duplicate chunk discovery paths`.
 **Landed:** PR #75, stacked on #74. Record:
 `regrid-notes/2026-08-23-e2-delete-legacy-discovery.md`. All five actions
-landed. Three corrections to this card, which a later task should read:
+landed; what the three spellings of the relation are now is recorded in place at
+`lib/GlobalRegridding/src/discovery.jl:133-157`. Three corrections to this card,
+which a later task should read:
 
 - **The `chunktree` verdict is remove, and the audit is in the record.** No
   in-repo or `DiscreteGlobalGrids` space implemented it except the bridge
   itself and three test toys; `DGGSpace` never had one. `chunkextents` is now a
-  **required hook with no fallback** — asserted as
+  **required hook with no fallback** (`spaces.jl:125`) — asserted as
   `!hasmethod(chunkextents, Tuple{RegridSpace})` — which is the structural half
-  of the gate. `RasterFlatTree` went with it, closing `rastergrid.jl:969-971`.
+  of the gate. `RasterFlatTree` went with it.
 - **Two things this card listed were not dead, and were kept.** There is no
   latitude join left in `src/` at all — G2 deleted it — and what remains is the
   gates harness's deliberately archived `:latjoin` arm, whose documented sunset
@@ -754,9 +866,9 @@ landed. Three corrections to this card, which a later task should read:
 - **`chunkextent` was kept and given the *cheap* method the card asks for.**
   After `connectedchunks` went it had zero callers and zero specializations, but
   it is `public`, documented, and asserted by the qualified-contract testset.
-  `RasterGrid` now specializes it at `O(1)` in the chunk count instead of
-  materializing the whole vector, which is the difference between keeping the
-  card's letter and its point.
+  `RasterGrid` now specializes it at `O(1)` in the chunk count
+  (`rastergrid.jl:934`) instead of materializing the whole vector, which is the
+  difference between keeping the card's letter and its point.
 
 ## Phase 5 — one final weight block representation
 
@@ -768,14 +880,19 @@ spill reconstruction, and tests.
 
 Actions:
 
-- Change `WeightCOO` to `denom::Union{Nothing,Vector}` and remove `hasdenom`.
-  Allocate on `markdenominated!` or first `adddenom!`.
+- Change `WeightCOO` (`lib/GlobalRegridding/src/methods.jl:69`) to
+  `denom::Union{Nothing,Vector}` and remove `hasdenom`. Allocate on
+  `markdenominated!` or first `adddenom!`.
 - Make each `WeightBlock` own its final reusable reference vector. Alias it to
   `denom` for denominated blocks; otherwise compute row sums once.
-- Remove `CachedBlock.ref`; use `entry.block.reference`.
+- Remove `CachedBlock.ref` (`plans.jl:108`); use `entry.block.reference`.
 - Reuse the stored reference across eager plan applications.
 - Reconstruct, rather than serialize, a redundant reference in `Spilled` and
-  count aliased arrays once in `_blockbytes`.
+  count aliased arrays once in `_blockbytes` (`plans.jl:116`).
+
+A point method's `TileWeights` holds ordinary `WeightBlock`s, so this card's
+representation is the one Phase 9 caches per tile. Point blocks carry no
+denominator; the empty-`denom` path is theirs and must stay allocation-free.
 
 Verify empty sides, zero-coverage rows, point blocks, sparse/dense blocks,
 repeated application allocations, cache hits, spill round trips, and byte
@@ -798,9 +915,13 @@ Actions:
 - Let Conservative adopt its assembled CSC directly with denominators computed
   once; remove CSC-to-COO-to-CSC conversion.
 - Make eager and chunked builders call the same seam; remove the special
-  `wholeblock(::Conservative)` path.
+  `wholeblock(::Conservative)` path (`lib/GlobalRegridding/src/api.jl:236`).
 - Preserve wrapper/instrumentation dispatch through an explicit forwarding
   rule or trait.
+
+The new seam is per chunk pair, which is the area-method unit. It does not
+serve a point method, whose unit is a destination tile (S2); the two seams
+coexist and are selected by `outputsampling` (S1).
 
 Verify sparse structure/value identity, partition invariance, denominators,
 empty sides, third-party emitters, and the committed peak-RSS benchmark.
@@ -822,8 +943,8 @@ Actions:
 
 - Define the generic DGG destination dimension as
   `(Cells(CellLookup(space.grid)),)`.
-- Remove `_DirectToDGG`, `_ChunkedToDGG`, specialized `GR.regrid` methods, and
-  `_ascube`.
+- Remove `_DirectToDGG` and `_ChunkedToDGG` (`src/regridding.jl:306-308`), the
+  specialized `GR.regrid` methods, and `_ascube` (`src/regridding.jl:319`).
 - Add the one-axis lazy short circuit so DGG output does not create a pointless
   `ShapedRegridArray`.
 - Preserve non-spatial dimensions, lookups, parent type, values, and eager/lazy
@@ -840,8 +961,8 @@ Actions:
 
 Actions:
 
-- Replace `regridgrid` plus `RegridTarget` with direct `DGGSpace` constructors
-  or `_asspace` methods for each target spelling.
+- Replace `regridgrid` plus `RegridTarget` (`src/regridding.jl:274-284`) with
+  direct `DGGSpace` constructors or `_asspace` methods for each target spelling.
 - Retain the meaningful bare-system error and source-dependent level choice.
 - Make `plan_regrid` the single executable owner of keyword defaults and
   validation; forward `kwargs...` from `regrid` and `regrid!`.
@@ -861,16 +982,22 @@ construction, cache tests, and Conservative benchmark.
 
 Actions:
 
-- Introduce one private prepared destination tile holding its index set/local
-  map, one restricted tree, and optional prebuilt polygons.
+- Introduce one private prepared destination tile holding its index set and its
+  chunk-local map, one restricted tree, and optional prebuilt polygons.
 - Share it across all source blocks for the executor tile.
-- Let `BlockAreaOperator` obtain destination polygons directly from it.
-- Remove `TileCells <: RegridSpace` and its forwarding methods,
-  `CachedCellTree`, and destination `CellMemo` when polygons are prepared.
+- Let `BlockAreaOperator` (`lib/GlobalRegridding/src/conservative.jl:294`)
+  obtain destination polygons directly from it.
+- Remove `TileCells <: RegridSpace` (`conservative.jl:126`) and its forwarding
+  methods, `CachedCellTree` (`:209`), and destination `CellMemo` (`:258`) when
+  polygons are prepared.
 - Retain a task-local memo for unprepared source geometry and oversized
   destinations.
 - Remove stale raster/DGG extent caches only when their individual benchmark
   gate earns deletion; do not merge polygon and extent caches by name.
+
+The prepared tile is destination *polygon* geometry, which a point method does
+not use: a point tile needs its destination sample sites, not its cells. Keep
+the sample-site path off this wrapper.
 
 Verify one tree build per tile, cached/uncached identity, concurrent safety,
 cache threshold, allocations, time, and peak memory.
@@ -888,8 +1015,9 @@ no production regression.
 
 Actions:
 
-- Replace parallel `held` and `used` dictionaries with entries containing
-  `value`, `bytes`, and `used`.
+- Replace `SourceHold`'s parallel `held` and `used` dictionaries
+  (`lib/GlobalRegridding/src/lazy.jl:144`) with entries containing `value`,
+  `bytes`, and `used`.
 - Touch and evict through the entry; subtract its stored byte count.
 - Do not unify `SourceHold` and `PerChunk`. Share a tiny oldest-key helper only
   if both call sites become simpler without parameterizing their semantics.
@@ -914,8 +1042,9 @@ Actions:
   value.
 - Reuse it for inferred raster spatial chunks only if this does not couple
   `RasterGrid` to `LazyRegridArray` or put data-specific state on the plan.
-- Rename `isdiskbacked` to reflect that it tests declared chunking. Preserve the
-  separate true-disk predicate used for DiskArrays reads.
+- Rename `isdiskbacked` (`lib/GlobalRegridding/src/api.jl:4`) to reflect that it
+  tests declared chunking. Preserve the separate true-disk predicate used for
+  DiskArrays reads (`lazy.jl:827`).
 
 Use a counting fixture to verify one `eachchunk` interpretation and test
 regular, irregular, absent, malformed/non-grid chunk descriptions, output
@@ -924,6 +1053,131 @@ tiling, read groups, defaults, and zero source reads.
 **Phase 8 gate:** lazy source metadata and residency each have one private
 representation, with unchanged behavior and no new framework.
 **Commit:** `Normalize lazy DiskArrays chunk metadata`.
+
+## Phase 9 — point-method admission
+
+The point-method redesign is `regrid-notes/2026-08-23-barycentric-regridding-plan.md`
+and its cards are P0-P6 there. This phase owns only the shared code those cards
+must enter through: the method seam in `methods.jl`/`plans.jl`, the build and
+cache unit in `plans.jl`, and the tile loop in `lazy.jl`. Nothing here changes a
+conservative weight, key, read or value; every card says where the conservative
+branch stays.
+
+Use the barycentric plan's names exactly: `weightsat!(row, sampler, p)`,
+`WeightRow`, `sampler(method, space) -> Sampler` holding a `cellfield` of sample
+sites (`src/engine/cellfield.jl:61`), `dualcellat(sampler, p) -> DualCell`,
+basis kinds `Linear`/`Bilinear`/`MeanValue`, and `TileWeights(sourcechunks,
+blocks)`.
+
+### Task S1 — split weight construction on output sampling
+
+**Prerequisite:** E2.
+**Owns:** the point/area split in `plans.jl` and `methods.jl`, and the tests
+that pin it. No kernel and no weight changes.
+
+Actions:
+
+- Select the build path with `outputsampling(method) isa DD.Lookups.Points`, the
+  trait every method already carries (`lib/GlobalRegridding/src/methods.jl:55-57`:
+  `NearestCell` and `BilinearPoint` report `Points()`, everything else
+  `Intervals(Center())`). Never dispatch on a concrete method type.
+- `Conservative` and every method reporting `Intervals` keep `buildweights!`
+  (`methods.jl:131`) with `WeightCOO` and one `WeightBlock` per chunk pair —
+  `blockfor`/`buildblock` (`plans.jl:521-548`) unchanged.
+- Keep `buildweights!` as the generic fallback for a `Points` method that
+  supplies no `sampler`, so a third-party point method and the current
+  `NearestCell`/`BilinearPoint` builders (`interpolation.jl`) keep working
+  byte-identically until the barycentric plan's P2 gate passes.
+- Add no new trait and no method-type union.
+
+Verify eager and chunked values for `Conservative`, `NearestCell` and
+`BilinearPoint` unchanged; a `Points` method with no sampler still routes to
+`buildweights!`; dispatch is on the trait in a test that defines its own method.
+
+**Done when:** the shared builders name a point path by trait alone, and no
+conservative call site moved.
+**Commit:** `Split weight construction on output sampling`.
+
+### Task S2 — build point weights per destination tile
+
+**Prerequisites:** S1, and the barycentric plan's P1 (`WeightRow`, `sampler`,
+`weightsat!`).
+**Owns:** `TileWeights`, the point branch of `blockfor`/`buildblock`
+(`plans.jl:521-548`), block storage keys in `PerChunk` (`plans.jl:133`) and
+`Spilled` (`plans.jl:240`), and the tile loop's build step in
+`_readdestination!` (`lib/GlobalRegridding/src/lazy.jl:424`).
+
+Actions:
+
+- Add `TileWeights(sourcechunks::Vector{Int}, blocks::Vector{WeightBlock})`:
+  the exact sorted source chunk numbers and their blocks in the same order.
+  Rows are the tile's chunk-local destination indices and columns are the source
+  chunk's chunk-local indices — the convention `WeightCOO` already documents
+  (`methods.jl:60-67`).
+- Build one tile in one pass over its destination sample sites: `weightsat!` per
+  point, then partition each nonzero entry by `chunkat(src_space, i)`
+  (`spaces.jl:154`) and convert its local index to the chunk-local one by
+  `ownedindices` arithmetic when the chunk is contiguous, and through
+  `indexmap`/`localindex` (`lib/GlobalRegridding/src/shared.jl:18-37`)
+  otherwise. Combine duplicate source cells deterministically and finalize
+  nonempty blocks in ascending source-chunk order.
+- Make the tile the cache and locking unit for a point method: concurrent
+  requests for one tile build its stencils once. Its whole footprint counts
+  against `weightbudget` (`plans.jl:94`), and a spilled tile stores its manifest
+  beside its blocks so an evicted dependency list is never recovered by rerunning
+  the destination pass.
+- Keep temporary memory bounded by the tile's nonzeros plus named worker
+  scratch, never by destination cells times candidate chunks.
+- Leave `Conservative`'s `(destination tile, source chunk)` key, its `PerChunk`
+  eviction order, and its `Spilled` files exactly as they are.
+
+Verify one stencil query per requested destination cell; identical values eager,
+lazy and under a different source chunking; ascending source-chunk application;
+budget and spill round trips for a point tile; conservative cache statistics
+unchanged.
+
+**Done when:** a point method's atomic build unit is one destination tile with an
+exact sorted source-chunk manifest, and the conservative unit is still one chunk
+pair. This is half of the barycentric plan's P3 gate.
+**Commit:** `Build point weights per destination tile`.
+
+### Task S3 — read exactly a point tile's source chunks
+
+**Prerequisite:** S2.
+**Owns:** `_connectedsource!` (`lazy.jl:641`), `_lazygraph` (`lazy.jl:275`),
+`_plandependencies` (`plans.jl:486`), `_builddependencies`
+(`chunkgraph.jl:740`), and the read-count and residency tests.
+
+Actions:
+
+- For a point method, take a tile's source chunks from its
+  `TileWeights.sourcechunks`. The graph row is a superset; the manifest is
+  exact. A conservative tile keeps taking `sourcesof(dependencies(plan), d)`,
+  or the ascending union of its rows for a derived tile.
+- Apply `knownempty` filtering after selection on both paths, as
+  `_connectedsource!` already does: data-dependent filtering may drop a chunk
+  the manifest holds and may never add one it does not.
+- Buffer nothing. `supportradius(method, src_space)` stays `0.0` for a point
+  method (`methods.jl:145`), and no card may dilate a destination cap or join
+  neighbouring chunks to approximate a point stencil's reach.
+- State what a point plan's relation is for. `LazyRegridArray` requires one
+  (`_lazygraph`) and `_wavesize` (`lazy.jl:508`) costs waves from the caps it
+  carries, so a point plan still owns one — for ordering, wave costing,
+  refcounts and prefetch only. Document it as a superset that never decides a
+  read.
+- Assert standing law 7 for point tiles: the chunks read equal the sorted union
+  owning the tile's nonzero stencil entries, and that union is inside the tile's
+  graph rows.
+
+Verify a per-tile read-count assertion; no chunk outside the manifest reaches
+`_sourcefor!` (`lazy.jl:720`); conservative read counts, residency and values
+unchanged; a rechunked source gives the same values and a manifest that tracks
+the new chunking.
+
+**Phase 9 gate:** a point tile reads exactly the chunks its stencils name, with
+no cap superset and no support dilation, and every conservative read count,
+weight and value is unchanged.
+**Commit:** `Read exact source chunks for point tiles`.
 
 ## Phase gates
 
@@ -940,6 +1194,7 @@ applicable gate:
 | Graph changes | deterministic CSR, graph bytes/time, actual-cell no-miss proof |
 | Weight/cache changes | production Conservative time, allocations, and peak RSS |
 | Proj changes | concurrent task isolation and lifetime/failure tests |
+| Point-path changes | one stencil query per destination, per-tile read-count assertion, eager/lazy/rechunked equivalence, unchanged conservative results |
 
 Performance reports must state thread count, shape/parallelism mode, input
 sizes, warmup, statistic, allocations, and peak-memory method. The detailed
@@ -951,7 +1206,8 @@ hybrid-source production columns that are invalid byte-identity references.
 - Raster geometry uses GeometryOps transformations, task-local Proj.jl clones,
   and one CR curvilinear-grid adapter over DiskArrays-owned ranges.
 - GeometryOps owns public spherical extent primitives; CR accepts mixed extent
-  trees; arbitrary cell subsets use one `FlexibleRTree` adapter.
+  trees; arbitrary cell subsets use one `FlexibleRTree` adapter, taken only when
+  the source grid cannot window its own hierarchy.
 - The qualified `RegridSpace` contract names every external specialization.
 - A reusable `ChunkedPlan` owns one dependency CSR consumed by execution,
   scheduling, prefetch, and cache policy.
@@ -964,6 +1220,9 @@ hybrid-source production columns that are invalid byte-identity references.
 - Destination polygon geometry has one prepared-tile path.
 - Lazy source residency and DiskArrays chunk metadata each have one private
   representation.
-- The point-method redesign remains independently actionable.
+- The shared path admits a point method on its own terms: dispatch by
+  `outputsampling`, one `TileWeights` per destination tile, exact source-chunk
+  manifests, and no cap superset or support dilation — with conservative
+  behaviour unchanged, and the kernels themselves owned by the barycentric plan.
 - All correctness suites and representative production/small-chunk performance
   gates pass, and every phase-ending commit records its evidence.

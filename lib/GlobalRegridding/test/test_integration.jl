@@ -37,10 +37,10 @@ end
 
 T6CountingMethod(inner) = T6CountingMethod(inner, 0)
 
-function build_weights!(coo::WeightCOO, method::T6CountingMethod,
+function buildweights!(coo::WeightCOO, method::T6CountingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     countbuild!(method)
-    return build_weights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
+    return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
 # A lookup that names cells of its own, as a DGGS cell axis does.
@@ -164,7 +164,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test DD.intervalbounds(DD.lookup(area, DD.X))[1] == (-180.0, -140.0)
         @test DD.intervalbounds(DD.lookup(area, DD.Y))[1] == (-90.0, -60.0)
 
-        # Labelling only reshapes: the values are the cell-position vector the
+        # Labelling only reshapes: the values are the cell-index vector the
         # same regrid off a bare array returns.
         @test vec(parent(area)) == regrid(parent(src); to = dst,
             from = RasterGrid(src), method = Conservative())
@@ -219,7 +219,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         src = t6_raster((lon, lat) -> sind(lon),
             t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
         dst = t6_space(t6_centres(-175, 185, 36), t6_centres(-90, 90, 18))
-        seam = GR.cellposition(dst, 36, 9)
+        seam = GR.localindex(dst, 36, 9)
 
         # Global bilinear interpolation wraps across the longitude seam.
         @test regrid(src; to = dst, method = BilinearPoint())[seam] ≈ 0 atol = 1e-12
@@ -253,8 +253,8 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
             lazy = false)
         tiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
             lazy = true)
-        @test untiled[GR.cellposition(dst, 1, 6)] ≈ f(xs[1], ys[6])
-        @test untiled[GR.cellposition(dst, 26, 6)] ≈ f(xs[end], ys[6])
+        @test untiled[GR.localindex(dst, 1, 6)] ≈ f(xs[1], ys[6])
+        @test untiled[GR.localindex(dst, 26, 6)] ≈ f(xs[end], ys[6])
         # Lazy and eager output share the destination's axes and values.
         @test DD.dims(tiled) == DD.dims(untiled)
         @test all(isequal.(vec(Array(tiled)), vec(Array(untiled))))
@@ -290,7 +290,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
             chunks = ([1:4, 5:8], [1:3, 4:6]))
 
         # Chunk rectangles retain the restricted CR cursor in either orientation.
-        @test all(GR.subtree(space, cellindices(space, c)) isa
+        @test all(GR.subtree(space, ownedindices(space, c)) isa
                   CR.Trees.TopDownQuadtreeCursor
                   for c in 1:nchunks(space))
         @test GR.subtree(space, [1, 5, 30]) isa GR.CellSpaceRTree

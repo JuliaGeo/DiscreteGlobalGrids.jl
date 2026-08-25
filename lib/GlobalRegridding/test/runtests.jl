@@ -16,7 +16,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
             :subtree,
             :chunkextents, :chunkextent, :chunkindex, :candidatechunks!,
             :chunkranges,
-            :chartaxes, :chartcoords, :chartposition, :chartperiod, :chartspacing,
+            :chartaxes, :chartcoords, :chartlocalindex, :chartperiod, :chartspacing,
             :destinationdims, :dimsource, :_asspace,
         )
         integration_hooks = (
@@ -31,14 +31,14 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
     @testset "toy space contract" begin
         space = ToyLonLatSpace(8, 4; chunks = (4, 2))
 
-        # Chunks partition cell positions.
-        covered = reduce(vcat, [collect(cellindices(space, c)) for c in 1:nchunks(space)])
+        # Chunks partition cell indices.
+        covered = reduce(vcat, [collect(ownedindices(space, c)) for c in 1:nchunks(space)])
         @test sort(covered) == collect(1:ncells(space))
 
         # Full-width chunks are contiguous.
         rows = ToyLonLatSpace(8, 4; chunks = (8, 2))
-        @test cellindices(rows, 2) isa AbstractUnitRange
-        @test cellindices(rows, 2) == 17:32
+        @test ownedindices(rows, 2) isa AbstractUnitRange
+        @test ownedindices(rows, 2) == 17:32
 
         # Point location inverts cell centroids.
         @test all(cellat(space, cellcentroid(space, i)) == i for i in 1:ncells(space))
@@ -48,9 +48,9 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
         patch = ToyLonLatSpace(4, 2; lat = (0.0, 40.0))
         @test cellat(patch, toy_point(0, -10)) === nothing
 
-        # Generic `chunkat` inverts `cellindices` for positions and points.
+        # Generic `chunkat` inverts `ownedindices` for indices and points.
         @test all(GR.chunkat(space, i) == c
-                  for c in 1:nchunks(space) for i in cellindices(space, c))
+                  for c in 1:nchunks(space) for i in ownedindices(space, c))
         @test GR.chunkat(space, cellcentroid(space, 5)) == GR.chunkat(space, 5)
         @test GR.chunkat(patch, toy_point(0, -10)) === nothing
 
@@ -70,36 +70,36 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
         caps = chunktree(region).caps
         @test all(GR.US._contains(caps[c], p)
                   for c in 1:nchunks(region)
-                  for i in cellindices(region, c)
+                  for i in ownedindices(region, c)
                   for p in cellcorners(region, i))
         @test maximum(cap.radius for cap in caps) < pi / 2
     end
 
     @testset "weight blocks" begin
         space = ToyLonLatSpace(4, 2)
-        inds = cellindices(space, 1)
+        inds = ownedindices(space, 1)
         coo = WeightCOO(length(inds))
-        build_weights!(coo, ToyDiagonalMethod(; scale = 2.0), space, inds, space, inds)
+        buildweights!(coo, ToyDiagonalMethod(; scale = 2.0), space, inds, space, inds)
         block = WeightBlock(coo, length(inds), length(inds))
 
-        # Weights use builder-local index order.
+        # Weights use chunk-local index order.
         @test size(block) == (8, 8)
         @test Matrix(block.weights) == 2.0 * Matrix(LinearAlgebra.I, 8, 8)
         @test block.denom == fill(2.0, 8)
 
         # Denominators remain optional.
         bare = WeightCOO(length(inds))
-        build_weights!(bare, ToyDiagonalMethod(; withdenom = false), space, inds, space, inds)
+        buildweights!(bare, ToyDiagonalMethod(; withdenom = false), space, inds, space, inds)
         @test WeightBlock(bare, length(inds), length(inds)).denom === nothing
     end
 
     @testset "unimplemented hooks" begin
         space = ToyLonLatSpace(4, 2)
-        inds = cellindices(space, 1)
+        inds = ownedindices(space, 1)
         # Missing method implementations produce a useful error.
-        @test_throws "UnimplementedMethod" build_weights!(
+        @test_throws "UnimplementedMethod" buildweights!(
             WeightCOO(length(inds)), UnimplementedMethod(), space, inds, space, inds)
-        @test support_radius(UnimplementedMethod(), space) == 0.0
+        @test supportradius(UnimplementedMethod(), space) == 0.0
         @test_throws ArgumentError Weighted(1.5)
     end
 

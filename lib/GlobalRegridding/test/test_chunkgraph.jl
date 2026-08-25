@@ -28,7 +28,7 @@ end
 struct G4RadiusMethod <: AbstractRegriddingMethod
     radius::Float64
 end
-GR.support_radius(m::G4RadiusMethod, ::RegridSpace) = m.radius
+GR.supportradius(m::G4RadiusMethod, ::RegridSpace) = m.radius
 
 planned_dependencies(dst, src; radius = 0.0, kw...) =
     GR.dependencies(ChunkedPlan(G4RadiusMethod(radius), Weighted(0.5), dst, src;
@@ -51,7 +51,7 @@ hascellchart(p::G4ProbeSpace) = hascellchart(p.space)
 cellcentroid(p::G4ProbeSpace, i::Int) = cellcentroid(p.space, i)
 cellat(p::G4ProbeSpace, x) = cellat(p.space, x)
 nchunks(p::G4ProbeSpace) = nchunks(p.space)
-cellindices(p::G4ProbeSpace, c::Int) = cellindices(p.space, c)
+ownedindices(p::G4ProbeSpace, c::Int) = ownedindices(p.space, c)
 celltree(p::G4ProbeSpace) = celltree(p.space)
 
 # A space that genuinely IS a sub-space of another: its chunks are `chunks` of
@@ -841,6 +841,13 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         method = G4RadiusMethod(0.1)
         policy = Weighted(0.5)
 
+        # The toys implement the generics the plan actually dispatches on. A
+        # method spelled `support_radius` would leave the radius at the 0.0
+        # default, and one spelled `cellindices` would leave `ownedindices` a
+        # `MethodError`; both would go unnoticed everywhere else here.
+        @test GR.supportradius(method, src) == 0.1
+        @test GR.ownedindices(G4ProbeSpace(src), 1) == GR.ownedindices(src, 1)
+
         # The default builds one, at the plan's own radius, in every spelling of
         # the constructor — keyword and both positional forms. Task E1 made this
         # the default because a lazy read IS a read of these rows.
@@ -861,7 +868,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         @test quiet.queries == 0
 
         # `dependencies = true` builds it once, at the plan's OWN radius — the
-        # method's `support_radius`, never a keyword of its own.
+        # method's `supportradius`, never a keyword of its own.
         owned = ChunkedPlan(method, policy, dst, src; dependencies = true)
         g = GR.dependencies(owned)
         @test g isa GR.ChunkDependencyGraph

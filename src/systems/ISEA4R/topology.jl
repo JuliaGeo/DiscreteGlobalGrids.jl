@@ -131,7 +131,7 @@ end
 """
     _edge_cell(e, j, nside) -> (ix, iy)
 
-The border cell of diamond-local slot `e` at boundary-walk position `j`, using
+The border cell of diamond-local slot `e` at boundary-walk index `j`, using
 `S: j=ix`, `E: j=iy`, `N: j=nside-1-ix`, and `W: j=nside-1-iy`.
 """
 @inline function _edge_cell(e::Int, j::Int, nside::Int)
@@ -176,7 +176,7 @@ const NEIGHBOR_OFFSETS = ((1, 0), (1, 1), (0, 1), (-1, 1),
 """
     _offset_slots(connectivity) -> Tuple
 
-The positions of [`NEIGHBOR_OFFSETS`](@ref) that `connectivity` admits, in
+The indices of [`NEIGHBOR_OFFSETS`](@ref) that `connectivity` admits, in
 counterclockwise order from the same start.
 
 `Vertex()` is all eight; `Edge()` is the four axis offsets `1, 3, 5, 7`.

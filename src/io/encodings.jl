@@ -54,7 +54,7 @@ export idranges, write_eligible, validate_ranges, cellaxis, storedid
 
 The number of cells of `grid` whose raw id is strictly less than `id` — a
 COUNT, so it is a zero-based rank and `idrank(grid, rawid(c)) + 1` is
-[`cellposition`](@ref)`(grid, c)`.
+[`globalindex`](@ref)`(grid, c)`.
 
 **Total on the integer type.** `id` need not name a cell: an id above every
 cell of the level answers `ncells(grid)`, one below every cell answers `0`, and
@@ -64,7 +64,7 @@ a stored `[start, stop]` interval is counted by subtracting two ranks, and an
 interval's endpoints are not required to be cells.
 
 `grid` is a complete level grid; rank is meaningless against a subset, which
-has [`cellposition`](@ref) instead.
+has [`localindex`](@ref) instead.
 
 **Required** of a grid that is to be read from a store, together with
 [`idselect`](@ref) and [`idcount_between`](@ref).
@@ -93,7 +93,7 @@ The number of cells of `grid` whose raw id lies in the INCLUSIVE interval
 
 This is what makes a `ranges` store readable without touching a data array: the
 axis length is the sum of this over the stored intervals, and the same sum
-prefixed gives the position of every interval's first cell.
+prefixed gives the index of every interval's first cell.
 
 The generic implementation is the rank difference, and is correct for any grid
 that implements [`idrank`](@ref).
@@ -349,7 +349,7 @@ struct RangesEncoding <: CellEncoding end
 """
     ImplicitEncoding()
 
-No stored axis: position `k` is the cell at rank `k - 1` of the level. The
+No stored axis: index `k` is the cell at rank `k - 1` of the level. The
 whole-level case, as written by the DKRZ-style conventions.
 """
 struct ImplicitEncoding <: CellEncoding end

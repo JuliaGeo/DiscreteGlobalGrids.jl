@@ -94,14 +94,14 @@ const GI_SAMPLES = 32
 
 """
 The tile-row latitudes `test_grid_interface` will sample: the harness's own
-draw, reproduced by calling the harness's own `sample_positions` — so an
+draw, reproduced by calling the harness's own `sample_indices` — so an
 upstream change to the sampling moves this too and section (l)'s assertion
 goes red instead of silently testing different cells.
 """
 function sampled_tile_lats(sys, l, seed, n_samples)
     g = levelgrid(sys, l)
-    positions = CT.sample_positions(MersenneTwister(seed), ncells(g), n_samples)
-    return [CD.tilecorner(sys, cellindex(g, p))[1] for p in positions]
+    indices = CT.sample_indices(MersenneTwister(seed), ncells(g), n_samples)
+    return [CD.tilecorner(sys, cellindex(g, p))[1] for p in indices]
 end
 
 @testset "CopernicusDEM system" begin
@@ -192,13 +192,13 @@ end
         @test bad == String[]
         @test prev_stop == ncells(sys, 1)
 
-        # Positions round-trip through ids at both levels.
+        # Indices round-trip through ids at both levels.
         rng = MersenneTwister(20260815)
         for g in (g0, g1)
             n = ncells(g)
             for i in unique([1, 2, n - 1, n, rand(rng, 1:n, 32)...])
                 c = cellindex(g, i)
-                @test cellposition(g, c) == i
+                @test globalindex(g, c) == i
             end
         end
 
@@ -242,7 +242,7 @@ end
                 # North row first, then west to east.
                 k = j * nc + i + 1
                 @test cellindex(pg, k) == c
-                @test cellposition(pg, c) == k
+                @test localindex(pg, c) == k
 
                 _, east, south, north = CD.cell_box(sys, c)
                 if i < nc - 1
@@ -718,7 +718,7 @@ end
 # (k) The block cursor: an interior tree over a two-level lattice
 # =========================================================================
 
-# Check cap coverage, position indices, leaf partitioning, and intersection parity.
+# Check cap coverage, index coverage, leaf partitioning, and intersection parity.
 @testset "the block cursor is a tree over the lattice" begin
     STI = GO.SpatialTreeInterface
 
@@ -763,9 +763,9 @@ end
     @test treeify(PartialGrid(TWIN, 1, [LevelIndex(1, beyond + k) for k in 0:3])) isa
           DGG.HierarchicalGridCursor
 
-    # ---- the leaves partition the positions, exactly once each --------------
-    # Leaves must cover each grid position exactly once.
-    function leaf_positions(tree, n)
+    # ---- the leaves partition the indices, exactly once each ----------------
+    # Leaves must cover each grid index exactly once.
+    function leaf_indices(tree, n)
         seen = falses(n)
         stack = [tree]
         nodes = 0
@@ -798,7 +798,7 @@ end
                           ("two twin tiles", two_tiles),
                           ("two twin tile rows", pole_rows))
         for strategy in (CD.Blocked{3}(), CD.Bisected())
-            r = leaf_positions(CD.BlockCursor(grid; strategy), ncells(grid))
+            r = leaf_indices(CD.BlockCursor(grid; strategy), ncells(grid))
             @test (label, string(typeof(strategy)), r.seen, r.dup, r.oob, r.nodes > 1) ==
                   (label, string(typeof(strategy)), ncells(grid), 0, 0, true)
         end
@@ -925,7 +925,7 @@ end
         nc = Int(CD.ncols(TWIN, r))
         for (j, i) in ((0, 0), (ntwin - 1, nc - 1))
             c = CD.pixelcell(TWIN, tile, j, i)
-            pos = cellposition(g1twin, c)
+            pos = globalindex(g1twin, c)
             ring = cell_boundary(g1twin, c)
             node = root
             depth = 0
@@ -957,7 +957,7 @@ end
     @test worst_globe <= 0       # the whole-sphere root included, on its border
 
     # ---- the index space ----------------------------------------------------
-    # Tree and leaf indices both use grid-position space.
+    # Tree and leaf indices both use the grid's global-index space.
     root = CD.BlockCursor(twin_tile)
     @test DGG.ncells(root) == ncells(twin_tile)
     for i in (1, 2, ncells(twin_tile) ÷ 3, ncells(twin_tile))
@@ -995,8 +995,8 @@ end
 @testset "a source chunk keeps the block cursor" begin
     STI = GO.SpatialTreeInterface
 
-    # Every leaf position under `tree`, ascending.
-    function leafpositions(tree)
+    # Every leaf index under `tree`, ascending.
+    function leafindices(tree)
         out = Int[]
         stack = Any[tree]
         while !isempty(stack)
@@ -1017,23 +1017,23 @@ end
     # A pole tile, a band edge on both sides, the equator, and the south pole.
     for lat_s in (89, 50, 49, 0, -90), lon_w in (-180, 7)
         tile = CD.tilecell(TWIN, lat_s, lon_w)
-        k = GR.chunkat(dense, cellposition(g1twin, CD.pixelcell(TWIN, tile, 0, 0)))
-        inds = DGG.cellindices(dense, k)
+        k = GR.chunkat(dense, globalindex(g1twin, CD.pixelcell(TWIN, tile, 0, 0)))
+        inds = GR.ownedindices(dense, k)
         @test length(inds) == Int(CD.lat_intervals(TWIN)) * Int(CD.ncols_at(TWIN, lat_s))
         tree = GR.subtree(dense, inds)
         @test tree isa CD.MemoBlockCursor
         # The window is the chunk exactly — no cell of another tile leaks in.
-        @test leafpositions(tree) == collect(inds)
+        @test leafindices(tree) == collect(inds)
     end
 
     # Any window of whole raster rows is a rectangle too; a mid-row window is
     # not one, and takes the bounding-cap fallback.
-    r = DGG.cellindices(dense, GR.chunkat(dense,
-        cellposition(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
+    r = GR.ownedindices(dense, GR.chunkat(dense,
+        globalindex(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
     nc = Int(CD.ncols_at(TWIN, 12))
     rows = (first(r) + nc):(first(r) + 3nc - 1)
     @test GR.subtree(dense, rows) isa CD.MemoBlockCursor
-    @test leafpositions(GR.subtree(dense, rows)) == collect(rows)
+    @test leafindices(GR.subtree(dense, rows)) == collect(rows)
     @test GR.subtree(dense, (first(r) + 1):(first(r) + nc)) isa GR.CellSpaceRTree
     # And a run spanning two tiles is not one rectangle either.
     @test GR.subtree(dense, (last(r) - 1):(last(r) + 1)) isa GR.CellSpaceRTree
@@ -1060,10 +1060,10 @@ end
 
     op = CR.DefaultIntersectionOperator(MANIFOLD)
     for k in 1:GR.nchunks(src)
-        inds = DGG.cellindices(src, k)
+        inds = GR.ownedindices(src, k)
         tree = GR.subtree(src, inds)
         @test tree isa CD.MemoBlockCursor
-        @test leafpositions(tree) == collect(inds)
+        @test leafindices(tree) == collect(inds)
         # The weights are the fallback's, entry for entry.
         fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, tree;
             intersection_operator = op)
@@ -1253,13 +1253,13 @@ end
             for j in c.j0:c.j1, i in c.i0:c.i1
                 leaf = CD.BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
                     c.r0, c.r0, c.q0, c.q0, j, j, i, i, true)
-                push!(entries, (CD._position(c, c.r0, c.q0, j, i), STI.node_extent(leaf)))
+                push!(entries, (CD._index(c, c.r0, c.q0, j, i), STI.node_extent(leaf)))
             end
         else
             for r in c.r0:c.r1, q in c.q0:c.q1
                 leaf = CD.BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
                     r, r, q, q, 0, 0, 0, 0, false)
-                push!(entries, (CD._position(c, r, q, 0, 0), STI.node_extent(leaf)))
+                push!(entries, (CD._index(c, r, q, 0, 0), STI.node_extent(leaf)))
             end
         end
         return entries
@@ -1392,7 +1392,7 @@ end
         # Matching RNG states confirm the harness consumed the reproduced draw.
         r = MersenneTwister(CONFORMANCE_SEED)
         ref = MersenneTwister(CONFORMANCE_SEED)
-        CT.sample_positions(ref, ncells(levelgrid(sys, 1)), GI_SAMPLES)
+        CT.sample_indices(ref, ncells(levelgrid(sys, 1)), GI_SAMPLES)
         test_grid_interface(levelgrid(sys, 1); n_samples = GI_SAMPLES,
                             rng = r, label = "$sys level 1")
         @test r == ref

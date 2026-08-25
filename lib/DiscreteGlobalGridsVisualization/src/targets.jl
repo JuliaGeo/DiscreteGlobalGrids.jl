@@ -195,6 +195,45 @@ function probe_ellipsoid(tf, height::Real)
     return a, 1 - (b / a)^2
 end
 
+# ## Build space
+
+"""
+    buildspace(target::PlotTarget) -> PlotTarget
+
+The target with its projection dropped: the part of it a mesh *build* reads.
+
+A build never calls the projection.  It reads numbers out of the target — the
+seam's longitude on a flat map, the ellipsoid and the offset on a globe — and
+the projection is applied once at the end, over the finished vertex buffer.
+The space is those numbers, and nothing else.
+
+Keeping the two apart is what lets an axis re-project a live plot.  A
+[`SurfaceTopology`](@ref) holds the space rather than the target, so its type
+does not name the transform function: an axis that swaps `identity` for a
+`Proj.Transformation` leaves the topology's type — and its contents — alone, and
+costs one bulk [`project!`](@ref) instead of a rebuild.
+
+The space is `isbits`, which is what makes it a value [`samebuild`](@ref) can
+compare.
+"""
+buildspace(target::PlanarTarget) = PlanarTarget(identity, target.cut)
+buildspace(target::GlobeTarget) =
+    GlobeTarget(identity, target.a, target.e2, target.height)
+
+"""
+    needs_projection(target::PlotTarget) -> Bool
+
+Does [`project!`](@ref) do anything on this target?
+
+False for the two targets whose build space already *is* their data space: a
+flat map plotting longitude and latitude, and any globe, which is finished by
+[`globe_vertex`](@ref) instead.  Asked before a buffer to project into is
+reached for, since those are the cases that need none.
+"""
+needs_projection(::PlotTarget) = true
+needs_projection(::PlanarTarget{typeof(identity)}) = false
+needs_projection(::GlobeTarget) = false
+
 """
     project_probe(target, p::UnitSphericalPoint) -> Point2d or Point3d
 

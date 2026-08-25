@@ -62,7 +62,7 @@ DGG.CellLookup(region) |> length
 # especially on datasets that don't fit in memory in the first place.
 
 # When we construct a DimArray with this, it will interpret `region` as a one
-# level cell axis.  Positions will run from `1:length(CellLookup(region))`,
+# level cell axis.  Indices will run from `1:length(CellLookup(region))`,
 # linearly, so indexing is done as in a regular vector.
 
 # ## Regridding the DEM
@@ -93,7 +93,7 @@ extrema(skipmissing(elevation))
 #
 # Each cell sends its water to the lowest of its neighbours — the first step of
 # every flow-routing model. `mapneighbors` walks every cell with its clipped
-# one-ring as positioned handles that index the cube; a neighbour whose
+# one-ring as handles that index the cube; a neighbour whose
 # elevation is missing (the coverage overhangs the tile) is skipped. A cell
 # with no lower neighbour is a pit.
 
@@ -105,7 +105,7 @@ function downhill(elev, cell, nbrs)
         isnan(z) && continue
         if z < zmin
             zmin = z
-            dest = DGG.cellposition(n)
+            dest = DGG.localindex(n)
         end
     end
     zc = elev[cell]
@@ -139,7 +139,7 @@ fig
 # ## Terrain analysis with Geomorphometry
 #
 # The cube's axis is already a `CellLookup`: canonical IGEO7 cell identities
-# over positional vector storage. Geomorphometry reads the DGGS neighbourhood
+# over indexed vector storage. Geomorphometry reads the DGGS neighbourhood
 # and physical cell geometry off it directly. TPI is a single local call; flow
 # accumulation uses D8 here, with each result expressed as upstream area in
 # square metres.

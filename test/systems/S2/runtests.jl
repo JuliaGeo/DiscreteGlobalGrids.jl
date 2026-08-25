@@ -557,23 +557,23 @@ end
     @test issorted(roots) && allunique(roots)
 end
 
-@testset "cellindex / cellposition is the identity up to the base offset" begin
+@testset "cellindex / globalindex is the identity up to the base offset" begin
     for l in (0, 1, 3, 12, 30)
         g = levelgrid(SYS, l)
         n = ncells(g)
         for i in (1, 2, n ÷ 2, n)
             c = cellindex(g, i)
             @test c === LevelIndex(l, i - 1)
-            @test cellposition(g, c) == i
+            @test globalindex(g, c) == i
             @test rawid(c) == i - 1
         end
         @test_throws BoundsError cellindex(g, 0)
         @test_throws BoundsError cellindex(g, n + 1)
         # Not in the grid: out of range, or the right ordinal at a wrong level.
-        @test cellposition(g, LevelIndex(l, -1)) === nothing
-        @test cellposition(g, LevelIndex(l, n)) === nothing
-        l < 30 && @test cellposition(g, LevelIndex(l + 1, 0)) === nothing
-        l > 0 && @test cellposition(g, LevelIndex(l - 1, 0)) === nothing
+        @test globalindex(g, LevelIndex(l, -1)) === nothing
+        @test globalindex(g, LevelIndex(l, n)) === nothing
+        l < 30 && @test globalindex(g, LevelIndex(l + 1, 0)) === nothing
+        l > 0 && @test globalindex(g, LevelIndex(l - 1, 0)) === nothing
     end
 end
 
@@ -626,9 +626,9 @@ end
                 r = descendant_range(SYS, c, l + d)
                 actual = descendants(SYS, c, l + d)
                 @test length(r) == 4^d
-                # Two-sided: every descendant's POSITION is in the range, and
-                # every position in the range is a descendant.
-                @test [cellposition(target, x) for x in actual] == collect(r)
+                # Two-sided: every descendant's INDEX is in the range, and
+                # every index in the range is a descendant.
+                @test [globalindex(target, x) for x in actual] == collect(r)
             end
             # Sibling ranges partition the parent's, in order.
             if l < 30
@@ -1085,7 +1085,7 @@ end
         n = sqrt(x^2 + y^2 + z^2)
         c = cellat(g, GO.UnitSphericalPoint(x / n, y / n, z / n))
         @test c !== nothing
-        @test cellposition(g, c) !== nothing
+        @test globalindex(g, c) !== nothing
     end
     # The lon/lat wrapper agrees with the unit-sphere primitive.
     for (lon, lat) in ((0.0, 0.0), (-73.9, 40.7), (139.7, 35.7), (0.0, 90.0), (0.0, -90.0))

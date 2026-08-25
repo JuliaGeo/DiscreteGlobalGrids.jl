@@ -1,7 +1,7 @@
 # Nested HEALPix uses dense 0-based Morton ids: level `l` is
 # `0:12*4^l-1`, children are `4p:4p+3`, and the parent is `p ÷ 4` — the quad-face
 # family's arithmetic, which this file declares itself a member of rather than
-# rewriting. Grid positions and alternate RING indices are 1-based. Location,
+# rewriting. Grid indices and alternate RING indices are 1-based. Location,
 # topology, and subtree extents have direct chart or lattice implementations.
 
 # ===========================================================================
@@ -16,7 +16,7 @@ pixels refine by aperture 4, giving `12 * 4^l` cells of area
 `4π / (12 * 4^l)` at level `l`. Chart edges are not great circles, so
 [`cell_boundary`](@ref) densifies them.
 
-Canonical [`LevelIndex`](@ref) ids are 0-based; grid positions and alternate
+Canonical [`LevelIndex`](@ref) ids are 0-based; grid indices and alternate
 [`HEALPixRingIndex`](@ref) ids are 1-based. Supported levels are `0:29`, the
 largest range whose cell count fits `Int64`. Nested ordering makes subtrees
 contiguous. Maximum neighbour counts are 8 for `Vertex()` and 4 for `Edge()`.

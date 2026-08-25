@@ -18,7 +18,7 @@
 #   * resolution 30 exists, with the quintant pushed into bits 59-63 by a
 #     shorter marker, but only for the 42 of 60 quintants that still fit 64
 #     bits. There is therefore no complete res-30 grid, `levels` stops at 29,
-#     and `cellposition` answers `nothing` for a res-30 id at every level.
+#     and `globalindex` answers `nothing` for a res-30 id at every level.
 
 # The decoded record `A5Native` works in — origin, segment, Hilbert state,
 # resolution — under a name that cannot be confused with the id type below.
@@ -33,7 +33,7 @@ const MAX_LEVEL = A5Native.MAX_GRID_RESOLUTION      # 29
 
 Upstream a5's `UInt64` cell encoding. [`level`](@ref) reads its marker bit and
 [`rawid`](@ref) returns the interoperable value. Within a level, raw order is
-`(quintant, Hilbert state)` and matches grid positions; across levels it is not
+`(quintant, Hilbert state)` and matches grid indices; across levels it is not
 level-major. Encoded levels include the world cell at `-1` and partial level
 30, while [`isvalid`](@ref) accepts only complete system levels.
 """

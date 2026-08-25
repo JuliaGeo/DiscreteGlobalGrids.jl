@@ -11,9 +11,9 @@ tested exactly, and ordered by canonical id for deterministic boundary ties.
 """
 function cellat(grid::AbstractGrid, p::GO.UnitSphericalPoint)
     tree = treeify(grid)
-    positions = STI.query(tree, cap -> cap_contains(cap, p))
-    isempty(positions) && return nothing
-    candidates = sort!([cellindex(grid, i) for i in positions])
+    indices = STI.query(tree, cap -> cap_contains(cap, p))
+    isempty(indices) && return nothing
+    candidates = sort!([cellindex(grid, i) for i in indices])
     # Preserve one undecidable candidate rather than report it outside coverage.
     undecided = nothing
     for c in candidates
@@ -172,7 +172,7 @@ function _shells_azimuth(walk::W, grid::AbstractGrid, c::AbstractCellIndex,
     seen = Set{T}((c,))
     frontier = T[c]
     # Fixed once, from ring 1, and reused by every outer shell: one spoke for
-    # the whole disc is what makes position `j` of a ring mean a direction.
+    # the whole disc is what makes index `j` of a ring mean a direction.
     centre = nothing
     frame = nothing
     for j in 1:steps

@@ -9,7 +9,7 @@
 using Test
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: IGeo7System, HEALPixSystem, Z7Cell, LevelIndex,
-    levelgrid, ncells, cellindex, cellposition, rawid, level
+    levelgrid, ncells, cellindex, localindex, rawid, level
 
 # Every well-formed level-`L` digit string, ascending: base in 0:11 and `L`
 # digits in 0:6, tail padded with the 7 sentinel. `12 * 7^L` of them, of which
@@ -200,7 +200,7 @@ end
     ranges = Encodings.idranges(grid, ids)
     @test size(ranges, 2) == 2
     # Runs break where the ids stop being adjacent, so the run structure of the
-    # POSITIONS is what the ranges array records.
+    # INDICES is what the ranges array records.
     @test size(ranges, 1) == 3
     @test sum(Encodings.idcount_between(grid, ranges[i, 1], ranges[i, 2])
               for i in axes(ranges, 1)) == length(ids)

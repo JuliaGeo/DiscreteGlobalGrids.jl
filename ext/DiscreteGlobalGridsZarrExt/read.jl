@@ -68,7 +68,7 @@ const MANIFEST_VALIDATED = "strict"
 
 Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
 every layer, carrying a [`ChunkedCellLookup`](@ref) that resolves a cell to a
-position without scanning the axis. Any other dimension of the store — time,
+index without scanning the axis. Any other dimension of the store — time,
 bands — becomes an ordinary `Dim`, with the values of the like-named coordinate
 array where the store has one.
 
@@ -552,7 +552,7 @@ end
 
 # A dimension with a like-named one-dimensional array is that array's values —
 # the CF coordinate-variable convention, and small enough to read. Anything
-# else is a bare axis: DimensionalData indexes it by position.
+# else is a bare axis: DimensionalData indexes it by local index.
 function otherdim(name, len, group, snap)
     entry = getarray(snap, name)
     D = DD.Dim{Symbol(name)}

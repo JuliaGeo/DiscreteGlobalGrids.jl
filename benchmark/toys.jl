@@ -46,7 +46,7 @@ DGG.ncells(::AnyOctant, l::Integer) = 8 * 4^Int(l)
 
 DGG.cellindex(::AnyOctant, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
 
-function DGG.cellposition(sys::AnyOctant, c::DGG.LevelIndex)
+function DGG.globalindex(sys::AnyOctant, c::DGG.LevelIndex)
     r = DGG.rawid(c)
     0 <= r < DGG.ncells(sys, DGG.level(c)) || return nothing
     Int(r) + 1

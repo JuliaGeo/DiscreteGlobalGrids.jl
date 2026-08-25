@@ -50,11 +50,11 @@ const SRC = GR.RasterGrid(RASTER)
 
 # The cells the space assigns to each chunk, concatenated in chunk order.
 chunkcells(space) = reduce(vcat,
-    [collect(DGG.cellindices(space, c)) for c in 1:GR.nchunks(space)])
+    [collect(GR.ownedindices(space, c)) for c in 1:GR.nchunks(space)])
 
 capscover(space) = all(DGG.Fallbacks.cap_contains(GR.chunkextents(space)[c], p)
     for c in 1:GR.nchunks(space)
-    for i in DGG.cellindices(space, c)
+    for i in GR.ownedindices(space, c)
     for p in DGG.cell_boundary(space.grid, DGG.cellindex(space.grid, i)))
 
 const REGION = DGG.covering(DGG.CellVector(GRID),
@@ -69,30 +69,30 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
                   DGG.DGGSpace(DGG.PartialGrid(REGION); chunkcells = 8),
                   DGG.DGGSpace(DGG.levelgrid(DGG.IGeo7System(), 2); chunkcells = 8))
         @test GR.nchunks(space) > 1
-        # Chunks partition the cells, in ascending position order, and each one
-        # is contiguous — which is what lets `cellindices` be a range and a
+        # Chunks partition the cells, in ascending index order, and each one
+        # is contiguous — which is what lets `ownedindices` be a range and a
         # chunk be one read.
         @test chunkcells(space) == 1:DGG.ncells(space)
-        @test all(DGG.cellindices(space, c) isa UnitRange for c in 1:GR.nchunks(space))
+        @test all(GR.ownedindices(space, c) isa UnitRange for c in 1:GR.nchunks(space))
         @test all(GR.chunkranges(space, c, (DGG.ncells(space),)) ==
-                  (DGG.cellindices(space, c),) for c in 1:GR.nchunks(space))
+                  (GR.ownedindices(space, c),) for c in 1:GR.nchunks(space))
         # A chunk's cap covers every boundary vertex of every cell in it: the
         # covering law the lazy path's chunk discovery prunes on.
         @test capscover(space)
         # A chunk keeps the hierarchy rather than falling back to a cap list,
         # and small enough chunks carry their leaf caps with them.
-        chunktree = GR.subtree(space, DGG.cellindices(space, 2))
+        chunktree = GR.subtree(space, GR.ownedindices(space, 2))
         @test chunktree isa DGG.CapCachedTree
         @test chunktree.node isa DGG.HierarchicalGridCursor
         @test GR.manifold(space) == GR.manifold(SRC)
         i = DGG.ncells(space) ÷ 2
         @test GR.cellat(space, GR.cellcentroid(space, i)) == i
-        # `chunkat` inverts `cellindices`: every cell is placed back in the
+        # `chunkat` inverts `ownedindices`: every cell is placed back in the
         # chunk it came from, by binary search over the windows rather than by
         # a scan. A subset's windows are the ones that can disagree, since they
         # are the ancestor's descendant range intersected with the grid.
         @test all(GR.chunkat(space, j) == c
-                  for c in 1:GR.nchunks(space) for j in DGG.cellindices(space, c))
+                  for c in 1:GR.nchunks(space) for j in GR.ownedindices(space, c))
         # The DGG space itself is the private query index. A whole-sphere query
         # reaches every chunk exactly once through the original grid hierarchy,
         # and every chunk's own covering cap reaches itself.
@@ -110,7 +110,7 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
     # everything rather than the space refusing to exist.
     a5 = DGG.DGGSpace(DGG.levelgrid(DGG.A5System(), 2))
     @test GR.nchunks(a5) == 1
-    @test DGG.cellindices(a5, 1) == 1:DGG.ncells(a5)
+    @test GR.ownedindices(a5, 1) == 1:DGG.ncells(a5)
 
     # A system that answers the level-grid contract with a grid type of its own
     # rather than with `ncells(sys, l)` — the escape hatch `AbstractGrid`
@@ -187,7 +187,7 @@ end
     # a cell's cap and its hierarchy's node extents diverge most.
     pentagons = [foldl((c, _) -> first(DGG.children(sys7, c)), 1:3; init = r)
                  for r in DGG.rootcells(sys7)]
-    @test length(unique(GR.chunkat(dst, DGG.cellposition(dst.grid, p))
+    @test length(unique(GR.chunkat(dst, DGG.globalindex(dst.grid, p))
                         for p in pentagons)) == 12
     for pole in (GO.UnitSphericalPoint(0.0, 0.0, 1.0),
                  GO.UnitSphericalPoint(0.0, 0.0, -1.0))
@@ -404,7 +404,7 @@ end
     @test DGG.plan_regrid(declared; to = GRID, missingval = nothing).missingval === nothing
 end
 
-@testset "a shifted cap vector is addressed by global position" begin
+@testset "a shifted cap vector is addressed by global index" begin
     v = DGG._ShiftedCaps(collect(10:19), 100)
     @test v isa AbstractVector{Int}
     @test length(v) == 10
@@ -462,12 +462,12 @@ end
         @test wa == wb
     end
 
-    # A chunk's tree caches only its own positions, addressed by global
-    # position, and must answer the raw chunk cursor's caps and cells the same.
+    # A chunk's tree caches only its own indices, addressed by global
+    # index, and must answer the raw chunk cursor's caps and cells the same.
     for space in (DGG.DGGSpace(GRID; chunkcells = 32),
                   DGG.DGGSpace(DGG.PartialGrid(REGION); chunkcells = 8))
         for c in (1, GR.nchunks(space) ÷ 2, GR.nchunks(space))
-            inds = DGG.cellindices(space, c)
+            inds = GR.ownedindices(space, c)
             cached = GR.subtree(space, inds)
             @test cached isa DGG.CapCachedTree
             @test length(cached.caps) == length(inds)

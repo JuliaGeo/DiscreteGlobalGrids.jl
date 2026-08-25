@@ -162,7 +162,7 @@ attrs → description → lookup; writing is lookup → description → attrs.
   - `level`: the refinement level, or `nothing` for a variable-sized axis.
   - `encoding`: a `CellEncoding` instance, from `ENCODING_REGISTRY`.
   - `coordinate`: name of the array encoding the cell ids, `nothing` when the
-    axis is implicit in position.
+    axis is implicit in index.
   - `spatial_dimension`: the dimension the data variables share. It is not the
     coordinate's own dimension: a ranges coordinate is shaped `(n, 2)` and
     names neither.

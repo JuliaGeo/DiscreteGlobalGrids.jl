@@ -17,7 +17,7 @@ _iswholespace(::RegridSpace, inds) = false
 The unstructured cell fallback: a thin cell-space adapter over GeometryOps'
 packed `FlexibleRTrees.RTree`. The R-tree owns outward-rounded Cartesian
 extents, while the adapter retains `space` for geometry access and maps every
-packed leaf back to its requested global cell position.
+packed leaf back to its requested local index in `space`.
 
 Structured spaces should return a native restricted cursor before reaching
 this fallback. `nodecapacity` is exposed for packing-invariance checks.
@@ -25,7 +25,7 @@ this fallback. `nodecapacity` is exposed for packing-invariance checks.
 struct CellSpaceRTree{S,N,V<:AbstractVector{Int},C<:AbstractVector{<:Cap}}
     space::S
     node::N
-    positions::V
+    indices::V
     caps::C
     leafcount::Int
     height::Int
@@ -33,14 +33,14 @@ struct CellSpaceRTree{S,N,V<:AbstractVector{Int},C<:AbstractVector{<:Cap}}
 end
 
 function CellSpaceRTree(space::S, inds; nodecapacity::Int = 16) where {S<:RegridSpace}
-    positions = collect(Int, inds)
-    isempty(positions) && throw(ArgumentError(
+    indices = collect(Int, inds)
+    isempty(indices) && throw(ArgumentError(
         "cannot build a cell tree from an empty index set"))
-    caps = [_packedcellcap(space, i) for i in positions]
+    caps = [_packedcellcap(space, i) for i in indices]
     boxes = map(cap -> convert(Extents.Extent, cap), caps)
-    packed = FlexibleRTrees.RTree(FlexibleRTrees.HPR(), positions;
+    packed = FlexibleRTrees.RTree(FlexibleRTrees.HPR(), indices;
         nodecapacity, extents = boxes)
-    return CellSpaceRTree(space, packed, positions, caps, length(positions),
+    return CellSpaceRTree(space, packed, indices, caps, length(indices),
         length(packed.levels), nodecapacity)
 end
 
@@ -75,40 +75,40 @@ function STI.getchild(tree::CellSpaceRTree, i::Int)
     childheight = tree.height - 1
     childcapacity = tree.nodecapacity^childheight
     childcount = clamp(tree.leafcount - (i - 1) * childcapacity, 0, childcapacity)
-    return CellSpaceRTree(tree.space, STI.getchild(tree.node, i), tree.positions,
+    return CellSpaceRTree(tree.space, STI.getchild(tree.node, i), tree.indices,
         tree.caps, childcount, childheight, tree.nodecapacity)
 end
 
 STI.getchild(tree::CellSpaceRTree) =
     (STI.getchild(tree, i) for i in 1:STI.nchild(tree))
 
-# FlexibleRTrees reports positions in its payload vector. Translate those local
-# positions back to stable global cell positions, and expose their exact cap
-# rather than the cap's broad-phase XYZ box.
+# FlexibleRTrees reports slots in its payload vector. Translate those back to
+# the space's stable local indices, and expose their exact cap rather than the
+# cap's broad-phase XYZ box.
 STI.child_indices_extents(tree::CellSpaceRTree) =
-    ((@inbounds(tree.positions[i]), @inbounds(tree.caps[i]))
+    ((@inbounds(tree.indices[i]), @inbounds(tree.caps[i]))
      for (i, _) in STI.child_indices_extents(tree.node))
 
 # `ncells` and `split_weight` describe this node's restricted population;
-# matrix assembly separately needs the owning space's complete global domain.
+# matrix assembly separately needs the owning space's complete cell count.
 ncells(tree::CellSpaceRTree) = tree.leafcount
 Trees.cell_index_count(tree::CellSpaceRTree) = ncells(tree.space)
 Trees.split_weight(tree::CellSpaceRTree) = tree.leafcount
 getcell(tree::CellSpaceRTree, i::Int) = getcell(tree.space, i)
 
-function _packedcellpositions!(out::Vector{Int}, tree::CellSpaceRTree)
+function _packedcellindices!(out::Vector{Int}, tree::CellSpaceRTree)
     if STI.isleaf(tree)
         append!(out, first(entry) for entry in STI.child_indices_extents(tree))
     else
         for child in STI.getchild(tree)
-            _packedcellpositions!(out, child)
+            _packedcellindices!(out, child)
         end
     end
     return out
 end
 
 getcell(tree::CellSpaceRTree) =
-    (getcell(tree.space, i) for i in _packedcellpositions!(Int[], tree))
+    (getcell(tree.space, i) for i in _packedcellindices!(Int[], tree))
 GOCore.best_manifold(tree::CellSpaceRTree) = manifold(tree.space)
 
 # Destination-cell geometry cache
@@ -146,7 +146,7 @@ ncells(tc::TileCells) = ncells(tc.space)
 getcell(tc::TileCells, i::Int) = getcell(tc.space, i)
 manifold(tc::TileCells) = manifold(tc.space)
 nchunks(tc::TileCells) = nchunks(tc.space)
-cellindices(tc::TileCells, chunk::Int) = cellindices(tc.space, chunk)
+ownedindices(tc::TileCells, chunk::Int) = ownedindices(tc.space, chunk)
 chunkat(tc::TileCells, i::Integer) = chunkat(tc.space, i)
 chunkat(tc::TileCells, p::US.UnitSphericalPoint) = chunkat(tc.space, p)
 cellat(tc::TileCells, p::US.UnitSphericalPoint) = cellat(tc.space, p)
@@ -244,8 +244,8 @@ end
 """
     CellMemo(::Type{P}; slots)
 
-A task-local direct-mapped memo of cell polygons by tree position. Candidate
-pairs leave a leaf pairing in position runs — the destination repeats within a
+A task-local direct-mapped memo of cell polygons by tree index. Candidate
+pairs leave a leaf pairing in index runs — the destination repeats within a
 pairing and the source's few leaf cells cycle across consecutive pairings — so
 a handful of slots serves most `getcell` calls with the value already built.
 """
@@ -281,9 +281,9 @@ end
 """
     BlockAreaOperator(inner, dstmap, srcmap, srcmemo, dstmemo)
 
-Measure intersections with `inner` and map global tree positions to block-local
-indices. Each assembly task receives its own mutable clipping cache and its own
-cell memos.
+Measure intersections with `inner` and map the trees' local indices to
+chunk-local block rows and columns. Each assembly task receives its own mutable
+clipping cache and its own cell memos.
 """
 struct BlockAreaOperator{O,DM,SM,MS,MD}
     inner::O
@@ -326,14 +326,14 @@ end
 # Conservative method
 
 """
-    build_weights!(coo, ::Conservative, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, ::Conservative, dst_space, dst_inds, src_space, src_inds)
 
 Append spherical intersection areas for the two chunks. Each destination
 denominator accumulates its covered area. A conservative block always carries a
 denominator, including when coverage is zero. Source and destination manifolds
 must match. Intersection discovery and clipping may run in parallel.
 """
-function build_weights!(coo::WeightCOO, ::Conservative,
+function buildweights!(coo::WeightCOO, ::Conservative,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     isempty(dst_inds) && return coo
     markdenominated!(coo)

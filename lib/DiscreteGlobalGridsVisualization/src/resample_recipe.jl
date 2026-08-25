@@ -12,8 +12,8 @@
 One frame's worth of resampling: the cells to draw, where in the user's value
 vector each of them reads, and the level they came from.
 
-`index` is one position per drawn cell where the frame was resampled nearest
-neighbour, and one *range* of positions — every leaf under the cell — where it
+`index` is one index per drawn cell where the frame was resampled nearest
+neighbour, and one *range* of indices — every leaf under the cell — where it
 was given an `aggregate`.  Which it is decides how the values are read, and
 nothing else about a frame.
 
@@ -408,8 +408,7 @@ function resampling!(plot::DGGResample)
         (force || plot.dynamic[]) || return nothing
         force || stale(state, scene, Float64(plot.hysteresis[])) || return nothing
 
-        target = plot_target(Makie.to_value(plot.transform_func))
-        plot.wrap[] || (target = uncut(target))
+        target = surface_target(Makie.to_value(plot.transform_func), plot.wrap[])
         view = ScreenView(target, scene, Float64(plot.buffer[]))
         frame = resample_frame(plot.pyramid[], view;
             cellpixels = plot.cellpixels[], maxcells = plot.maxcells[],

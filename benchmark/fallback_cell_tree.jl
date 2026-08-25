@@ -16,12 +16,12 @@ import SparseArrays
 
 const STI = GO.SpatialTreeInterface
 
-function leafpositions!(out, node)
+function leafindices!(out, node)
     if STI.isleaf(node)
         append!(out, first(entry) for entry in STI.child_indices_extents(node))
     else
         for child in STI.getchild(node)
-            leafpositions!(out, child)
+            leafindices!(out, child)
         end
     end
     return out
@@ -64,7 +64,7 @@ function main()
     println((
         destination_cells = GR.ncells(dst),
         source_cells = GR.ncells(src),
-        original_leaf_positions = sort!(leafpositions!(Int[], fallback)) == collect(inds),
+        original_leaf_indices = sort!(leafindices!(Int[], fallback)) == collect(inds),
         tree_build_seconds = built.time,
         tree_build_bytes = built.bytes,
         candidate_count = length(candidates.value),

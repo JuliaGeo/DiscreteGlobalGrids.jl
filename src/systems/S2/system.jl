@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # S2 system interface. At level `l`, scaffold ordinals are `0:6*4^l-1` and
-# complete-grid position is ordinal plus one. Two Hilbert bits per level make
+# complete-grid index is ordinal plus one. Two Hilbert bits per level make
 # parent `p ÷ 4`, children `4p:4p+3`, and subtrees contiguous — so the hierarchy,
 # the level-grid arithmetic, and the subtree engines are the quad-face family's,
 # and this file writes only what the cube-face chart decides:
@@ -32,7 +32,7 @@ cell boundary.
 # Ids
 
 The canonical [`LevelIndex`](@ref) stores the 0-based scaffold ordinal
-`face * 4^level + hilbert_position`; complete-grid position is `index + 1`.
+`face * 4^level + hilbert_position`; complete-grid index is `index + 1`.
 Native 64-bit `s2_cellid` is not an alternate scheme.
 
 # Levels

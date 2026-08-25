@@ -15,7 +15,7 @@ GLMakie.activate!(inline = true)
 # ## A polygon, a grid, and data
 #
 # Texas comes from Natural Earth. The grid is every HEALPix cell at level 7,
-# read as a `CellVector` — the level's cell ids as a vector, so that position
+# read as a `CellVector` — the level's cell ids as a vector, so that index
 # `k` in a data array means cell `cells[k]`. The data is a synthetic field
 # sampled at each cell's centroid; only the sampling needs lon/lat.
 
@@ -35,11 +35,11 @@ data = [field_f(lonlat_tf(DGG.cell_centroid(grid, c))...) for c in cells]
 
 # ## The zonal mean
 #
-# `covering_positions` names the positions of every cell covering Texas,
+# `covering_indices` names the indices of every cell covering Texas,
 # ready to index `data`. HEALPix cells are equal-area, so this unweighted
 # mean *is* the areal mean — no latitude weights.
 
-tx = DGG.covering_positions(cells, texas)
+tx = DGG.covering_indices(cells, texas)
 (; n = length(tx), tavg = mean(data[tx]))
 
 # ## Touching or inside
@@ -51,7 +51,7 @@ tx = DGG.covering_positions(cells, texas)
 
 interior = DGG.query(grid, DGG.Within(texas))
 (; touching = mean(data[tx]),
-   inside = mean(data[DGG.cellposition(grid, c)] for c in interior))
+   inside = mean(data[DGG.globalindex(grid, c)] for c in interior))
 
 # ## The picture
 #
@@ -78,7 +78,7 @@ mean(A[DGG.Cells(DGG.Covering(texas))])
 
 # ## Any grid
 #
-# Nothing above is a HEALPix recipe: `covering_positions`, `query` and the
+# Nothing above is a HEALPix recipe: `covering_indices`, `query` and the
 # selectors are interface methods, and any system in `DGG.systems()` runs this
 # page unchanged. Two things do vary by system. Where cells are not equal-area,
 # weight the mean by `cell_area`. And where a system's refinement is not

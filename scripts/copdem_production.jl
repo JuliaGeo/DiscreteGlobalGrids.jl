@@ -760,7 +760,7 @@ function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, c
                  tlat[s], tlon[s])) : nothing
 
     t1 = time()
-    radius = Float64(GR.support_radius(DGG.Conservative(), srcspace))
+    radius = Float64(GR.supportradius(DGG.Conservative(), srcspace))
     graph = GR.chunk_dependency_graph(dstspace, srcspace; radius, refine)
     tgraph = time() - t1
 

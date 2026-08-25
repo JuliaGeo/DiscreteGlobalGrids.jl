@@ -3,7 +3,7 @@
 # Source addressing
 
 function chunkranges(space::RegridSpace, chunk::Integer, ::NTuple{1,Int})
-    inds = cellindices(space, Int(chunk))
+    inds = ownedindices(space, Int(chunk))
     n = length(inds)
     n == 0 && return (1:0,)
     lo, hi = Int(first(inds)), Int(last(inds))
@@ -12,7 +12,7 @@ function chunkranges(space::RegridSpace, chunk::Integer, ::NTuple{1,Int})
 end
 
 function chunkranges(space::RegridSpace, chunk::Integer, ssz::NTuple{2,Int})
-    inds = cellindices(space, Int(chunk))
+    inds = ownedindices(space, Int(chunk))
     n = length(inds)
     n == 0 && return (1:0, 1:0)
     n1 = ssz[1]
@@ -240,9 +240,9 @@ function LazyRegridArray(data, plan::ChunkedPlan)
     srcsize = ntuple(i -> size(source, i), nspatial)
     spans, contiguous = _chunkspans(dst_space)
     caps = chunkextents(dst_space)
-    radius = Float64(support_radius(plan.method, src_space))
+    radius = Float64(supportradius(plan.method, src_space))
     radius >= 0 || throw(ArgumentError(
-        "support_radius must be a non-negative angular radius, got $radius"))
+        "supportradius must be a non-negative angular radius, got $radius"))
     chunks, tiling = _outputgrid(plan, source, ndst, spans, contiguous, nspatial, othersizes)
     otherchunks = _sourceotherchunks(source, nspatial, othersizes)
     othergroups = _groupgrid(otherchunks)
@@ -282,7 +282,7 @@ function _chunkspans(space::RegridSpace)
     spans = Vector{UnitRange{Int}}(undef, nc)
     contiguous = true
     for c in 1:nc
-        inds = cellindices(space, c)
+        inds = ownedindices(space, c)
         if isempty(inds)
             spans[c] = 1:0
             contiguous = false
@@ -569,7 +569,7 @@ end
 
 # Return cells owned by a tile.
 _tileindices(A::LazyRegridArray, t::Int) =
-    A.tiling.spacetiled ? cellindices(A.plan.dst_space, t) : A.tiling.runs[t]
+    A.tiling.spacetiled ? ownedindices(A.plan.dst_space, t) : A.tiling.runs[t]
 
 # Discover source chunks for a tile and optionally drop known-empty chunks.
 function _connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int)

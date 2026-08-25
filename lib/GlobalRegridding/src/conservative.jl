@@ -146,7 +146,7 @@ ncells(tc::TileCells) = ncells(tc.space)
 getcell(tc::TileCells, i::Int) = getcell(tc.space, i)
 manifold(tc::TileCells) = manifold(tc.space)
 nchunks(tc::TileCells) = nchunks(tc.space)
-cellindices(tc::TileCells, chunk::Int) = cellindices(tc.space, chunk)
+ownedindices(tc::TileCells, chunk::Int) = ownedindices(tc.space, chunk)
 chunkat(tc::TileCells, i::Integer) = chunkat(tc.space, i)
 chunkat(tc::TileCells, p::US.UnitSphericalPoint) = chunkat(tc.space, p)
 cellat(tc::TileCells, p::US.UnitSphericalPoint) = cellat(tc.space, p)
@@ -326,14 +326,14 @@ end
 # Conservative method
 
 """
-    build_weights!(coo, ::Conservative, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, ::Conservative, dst_space, dst_inds, src_space, src_inds)
 
 Append spherical intersection areas for the two chunks. Each destination
 denominator accumulates its covered area. A conservative block always carries a
 denominator, including when coverage is zero. Source and destination manifolds
 must match. Intersection discovery and clipping may run in parallel.
 """
-function build_weights!(coo::WeightCOO, ::Conservative,
+function buildweights!(coo::WeightCOO, ::Conservative,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     isempty(dst_inds) && return coo
     markdenominated!(coo)

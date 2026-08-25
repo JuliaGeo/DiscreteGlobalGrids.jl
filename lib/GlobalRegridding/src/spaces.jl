@@ -69,13 +69,31 @@ containing `1:ncells(space)`.
 function nchunks end
 
 """
+    ownedindices(space::RegridSpace, chunk::Int) -> AbstractVector{Int}
+
+The space's local indices of the cells `chunk` owns — the cells it produces
+results for — ascending. Chunks must partition `1:ncells(space)`. Return an
+`AbstractUnitRange` when those indices are contiguous. Weight builders address
+entries by chunk-local index within this result.
+"""
+function ownedindices end
+
+# `cellindices` is the old name of `ownedindices` and forwards to it, so a call
+# of the old name answers the same with a deprecation warning. In this package
+# "cell index" is the local index a space numbers its cells by, and the name
+# collided with the typed cell id it means elsewhere. Only callers are carried:
+# a space that defines the old name supplies no chunk ownership, and the
+# generic dispatches on the new one.
+
+"""
     cellindices(space::RegridSpace, chunk::Int) -> AbstractVector{Int}
 
-Return a chunk's ascending cell indices. Chunks must partition
-`1:ncells(space)`. Return an `AbstractUnitRange` when indices are contiguous.
-Weight builders address entries by chunk-local index within this result.
+Deprecated. Use [`ownedindices`](@ref), which this forwards to, so existing
+calls keep their old behaviour exactly.
 """
 function cellindices end
+
+@deprecate cellindices(space::RegridSpace, chunk::Int) ownedindices(space, chunk) false
 
 """
     chunkextent(space::RegridSpace, chunk::Integer) -> SphericalCap
@@ -128,7 +146,7 @@ function chunkat(space::RegridSpace, i::Integer)
     p = Int(i)
     1 <= p <= ncells(space) || throw(BoundsError(space, p))
     for c in 1:nchunks(space)
-        p in cellindices(space, c) && return c
+        p in ownedindices(space, c) && return c
     end
     throw(ArgumentError(
         "cell index $p of $(typeof(space)) belongs to no chunk; chunks must " *
@@ -145,7 +163,7 @@ end
     chunktree(space::RegridSpace)
 
 Return a spatial tree over chunk numbers `1:nchunks(space)`, with each leaf cap
-covering every cell returned by [`cellindices`](@ref) for that chunk. This is a
+covering every cell returned by [`ownedindices`](@ref) for that chunk. This is a
 temporary compatibility bridge for the generic [`chunkextents`](@ref)
 fallback. New structured spaces should implement the
 [`chunkindex`](@ref)/[`candidatechunks!`](@ref) query seam instead; E2 decides
@@ -163,8 +181,8 @@ function chunktree end
 
 Return the rectangular array ranges that storage can read for `chunk` in one
 operation, in spatial-dimension order. Flattening that block must enumerate
-[`cellindices`](@ref) in the same order, but the two contracts are distinct:
-`cellindices` describes cell ownership and need not be a storage rectangle.
+[`ownedindices`](@ref) in the same order, but the two contracts are distinct:
+`ownedindices` describes cell ownership and need not be a storage rectangle.
 Non-rectangular spaces must specialize this function.
 """
 function chunkranges end

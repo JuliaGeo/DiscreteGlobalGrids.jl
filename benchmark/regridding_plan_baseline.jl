@@ -39,7 +39,7 @@ end
 
 function main()
     spaces = production_spaces()
-    radius = Float64(GR.support_radius(DGG.Conservative(), spaces.srcspace))
+    radius = Float64(GR.supportradius(DGG.Conservative(), spaces.srcspace))
 
     # Compile the graph builder against the production concrete space types
     # without using the production destination size as the warm-up.

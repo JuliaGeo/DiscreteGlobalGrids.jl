@@ -1018,7 +1018,7 @@ end
     for lat_s in (89, 50, 49, 0, -90), lon_w in (-180, 7)
         tile = CD.tilecell(TWIN, lat_s, lon_w)
         k = GR.chunkat(dense, globalindex(g1twin, CD.pixelcell(TWIN, tile, 0, 0)))
-        inds = DGG.cellindices(dense, k)
+        inds = GR.ownedindices(dense, k)
         @test length(inds) == Int(CD.lat_intervals(TWIN)) * Int(CD.ncols_at(TWIN, lat_s))
         tree = GR.subtree(dense, inds)
         @test tree isa CD.MemoBlockCursor
@@ -1028,7 +1028,7 @@ end
 
     # Any window of whole raster rows is a rectangle too; a mid-row window is
     # not one, and takes the bounding-cap fallback.
-    r = DGG.cellindices(dense, GR.chunkat(dense,
+    r = GR.ownedindices(dense, GR.chunkat(dense,
         globalindex(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
     nc = Int(CD.ncols_at(TWIN, 12))
     rows = (first(r) + nc):(first(r) + 3nc - 1)
@@ -1060,7 +1060,7 @@ end
 
     op = CR.DefaultIntersectionOperator(MANIFOLD)
     for k in 1:GR.nchunks(src)
-        inds = DGG.cellindices(src, k)
+        inds = GR.ownedindices(src, k)
         tree = GR.subtree(src, inds)
         @test tree isa CD.MemoBlockCursor
         @test leafindices(tree) == collect(inds)

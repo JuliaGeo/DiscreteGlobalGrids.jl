@@ -162,7 +162,7 @@ function main_count()
 
     @printf("source chunks=%d destination chunks=%d threads=%d\n",
         GR.nchunks(srcspace), GR.nchunks(dstspace), Threads.nthreads())
-    radius = Float64(GR.support_radius(DGG.Conservative(), srcspace))
+    radius = Float64(GR.supportradius(DGG.Conservative(), srcspace))
     GR.chunk_dependency_graph(dstspace, srcspace; radius) # compile warm-up
     capseconds = @elapsed caps = GR.chunk_dependency_graph(dstspace, srcspace; radius)
 

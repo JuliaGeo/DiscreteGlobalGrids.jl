@@ -633,7 +633,7 @@ function chunkat(space::RasterGrid, i::Integer)
         _chunkofindex(space.ychunks, iy))
 end
 
-function cellindices(space::RasterGrid, chunk::Int)
+function ownedindices(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
     nx, ny = _nx(space), _ny(space)
     if space.xfast

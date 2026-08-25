@@ -18,7 +18,7 @@ end
 
 ncells(::DensifiedCellSpace) = 1
 nchunks(::DensifiedCellSpace) = 1
-cellindices(::DensifiedCellSpace, ::Int) = 1:1
+ownedindices(::DensifiedCellSpace, ::Int) = 1:1
 manifold(::DensifiedCellSpace) = GOCore.Spherical(; radius = 1.0)
 celltree(space::DensifiedCellSpace) = GR.CellSpaceRTree(space, 1:1)
 
@@ -45,7 +45,7 @@ end
 
 ncells(space::TileCacheBoundSpace) = space.n
 nchunks(::TileCacheBoundSpace) = 1
-cellindices(space::TileCacheBoundSpace, ::Int) = 1:space.n
+ownedindices(space::TileCacheBoundSpace, ::Int) = 1:space.n
 function getcell(space::TileCacheBoundSpace, i::Int)
     1 <= i <= space.n || throw(BoundsError(space, i))
     space.reads[] += 1
@@ -57,7 +57,7 @@ GR.subtree(space::TileCacheBoundSpace, inds) = space
 
 conservative_block(dst, dst_inds, src, src_inds) =
     WeightBlock(
-        build_weights!(WeightCOO(length(dst_inds)), Conservative(),
+        buildweights!(WeightCOO(length(dst_inds)), Conservative(),
             dst, dst_inds, src, src_inds),
         length(dst_inds), length(src_inds))
 
@@ -68,7 +68,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
 
     @testset "identity" begin
         space = ToyLonLatSpace(4, 2)
-        inds = cellindices(space, 1)
+        inds = ownedindices(space, 1)
         block = conservative_block(space, inds, space, inds)
         areas = cellareas(space, inds)
         W = Matrix(block.weights)
@@ -86,8 +86,8 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
     @testset "refinement" begin
         coarse = ToyLonLatSpace(4, 2)
         fine = ToyLonLatSpace(8, 4)
-        dst_inds = cellindices(fine, 1)
-        src_inds = cellindices(coarse, 1)
+        dst_inds = ownedindices(fine, 1)
+        src_inds = ownedindices(coarse, 1)
         block = conservative_block(fine, dst_inds, coarse, src_inds)
         W = Matrix(block.weights)
         areas = cellareas(fine, dst_inds)
@@ -106,13 +106,13 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         fine = ToyLonLatSpace(8, 4)
         whole = ToyLonLatSpace(4, 2)
         chunked = ToyLonLatSpace(4, 2; chunks = (2, 2))
-        dst_inds = cellindices(fine, 1)
+        dst_inds = ownedindices(fine, 1)
 
-        reference = conservative_block(fine, dst_inds, whole, cellindices(whole, 1))
+        reference = conservative_block(fine, dst_inds, whole, ownedindices(whole, 1))
 
         # Non-contiguous chunks still use chunk-local block indices.
         @test nchunks(chunked) == 2
-        parts = [cellindices(chunked, c) for c in 1:nchunks(chunked)]
+        parts = [ownedindices(chunked, c) for c in 1:nchunks(chunked)]
         @test !(parts[1] isa AbstractUnitRange)
         @test sort(vcat(parts...)) == collect(1:8)
 
@@ -133,8 +133,8 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         fine = ToyLonLatSpace(8, 4)
         # Unit-sphere geometry handles cells crossing 180°.
         band = ToyLonLatSpace(2, 2; lon = (135.0, 225.0), lat = (-45.0, 45.0))
-        dst_inds = cellindices(fine, 1)
-        src_inds = cellindices(band, 1)
+        dst_inds = ownedindices(fine, 1)
+        src_inds = ownedindices(band, 1)
         block = conservative_block(fine, dst_inds, band, src_inds)
         W = Matrix(block.weights)
         areas = cellareas(band, src_inds)
@@ -152,7 +152,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         dense = DensifiedCellSpace((0.0, 90.0), (0.0, 45.0), 12)
         tiling = ToyLonLatSpace(16, 8)
         exact = GO.area(manifold(dense), getcell(dense, 1))
-        tiling_inds = cellindices(tiling, 1)
+        tiling_inds = ownedindices(tiling, 1)
 
         # A non-convex source intersects a full tiling to its own area.
         as_source = conservative_block(tiling, tiling_inds, dense, 1:1)
@@ -167,7 +167,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         # Direct sparse-block copying preserves entries exactly.
         coarse = ToyLonLatSpace(4, 2)
         fine = ToyLonLatSpace(8, 4)
-        dst_inds, src_inds = cellindices(coarse, 1), cellindices(fine, 1)
+        dst_inds, src_inds = ownedindices(coarse, 1), ownedindices(fine, 1)
         block = conservative_block(coarse, dst_inds, fine, src_inds)
         areas = CR.intersection_areas(manifold(coarse), GOCore.False(),
             GR.subtree(coarse, dst_inds), GR.subtree(fine, src_inds); progress = false)
@@ -198,7 +198,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         end
         @test all(US._contains(caps[c], p)
                   for c in 1:nchunks(banded)
-                  for i in cellindices(banded, c)
+                  for i in ownedindices(banded, c)
                   for p in samples(banded, i))
 
         # Opposite poles lie outside the band caps.
@@ -308,7 +308,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         space = RasterGrid(DD.DimArray(zeros(12, 6),
             (DD.X(range(-165.0, 165.0; length = 12)),
                 DD.Y(range(-75.0, 75.0; length = 6)))); chunks = ([1:6, 7:12], [1:3, 4:6]))
-        inds = cellindices(space, 3)
+        inds = ownedindices(space, 3)
         tc = GR.TileCells(space, inds)
         tree = GR.subtree(tc, inds)
         @test tree isa GR.CachedCellTree
@@ -320,10 +320,10 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
 
         # Only the exact tile subtree uses cached geometry.
         @test all(getcell(tc, i) == getcell(space, i) for i in 1:ncells(space))
-        @test !(GR.subtree(tc, cellindices(space, 1)) isa GR.CachedCellTree)
+        @test !(GR.subtree(tc, ownedindices(space, 1)) isa GR.CachedCellTree)
 
         # Cached geometry preserves weights bit for bit.
-        other = cellindices(space, 2)
+        other = ownedindices(space, 2)
         plain = conservative_block(space, inds, space, other)
         stored = conservative_block(tc, inds, space, other)
         @test plain.weights.colptr == stored.weights.colptr
@@ -428,7 +428,7 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
             chunks = ([1:8, 9:16], [1:4, 5:8]))
         dst = CountingSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
         inds = 5:20
-        s1, s2 = cellindices(src, 1), cellindices(src, 4)
+        s1, s2 = ownedindices(src, 1), ownedindices(src, 4)
 
         # One shared wrapper builds the destination tree once for both blocks.
         tc = GR.TileCells(dst, inds)

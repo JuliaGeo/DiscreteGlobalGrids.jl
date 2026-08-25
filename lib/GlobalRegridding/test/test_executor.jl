@@ -13,10 +13,10 @@ end
 
 CountingMethod(; kw...) = CountingMethod(ToyDiagonalMethod(; kw...), 0)
 
-function build_weights!(coo::WeightCOO, method::CountingMethod,
+function buildweights!(coo::WeightCOO, method::CountingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     countbuild!(method)
-    return build_weights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
+    return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
 @testset "Executor" begin

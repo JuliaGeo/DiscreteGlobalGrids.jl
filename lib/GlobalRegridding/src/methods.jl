@@ -5,7 +5,7 @@
 
 How source cell values are combined into destination cell values.
 
-Methods implement [`build_weights!`](@ref), plus [`support_radius`](@ref) when
+Methods implement [`buildweights!`](@ref), plus [`supportradius`](@ref) when
 their stencil extends beyond overlapping cells. Weights must be linear and
 independent of field data.
 """
@@ -120,7 +120,7 @@ function markdenominated!(coo::WeightCOO)
 end
 
 """
-    build_weights!(coo, method, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds)
 
 Append chunk-local weights for `dst_inds` and `src_inds`, then return `coo`.
 Builders may inspect geometry outside `src_inds`, but must emit weights only for
@@ -128,21 +128,50 @@ sources inside it. Otherwise weights are duplicated across chunk blocks.
 
 Weight construction must not depend on field data or execution order.
 """
-function build_weights!(coo::WeightCOO, method::AbstractRegriddingMethod,
+function buildweights!(coo::WeightCOO, method::AbstractRegriddingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     throw(ArgumentError(
-        "build_weights! is not implemented for $(typeof(method)) from " *
+        "buildweights! is not implemented for $(typeof(method)) from " *
         "$(typeof(src_space)) to $(typeof(dst_space))"))
 end
 
 """
-    support_radius(method, src_space::RegridSpace) -> Float64
+    supportradius(method, src_space::RegridSpace) -> Float64
 
 Return the maximum angular distance, in radians, that the method's stencil
 extends beyond a source chunk. The default is `0.0`. Overestimates add discovery
 work; underestimates can omit required weights.
 """
-support_radius(::AbstractRegriddingMethod, ::RegridSpace) = 0.0
+supportradius(::AbstractRegriddingMethod, ::RegridSpace) = 0.0
+
+# `build_weights!` and `support_radius` are the old names of `buildweights!`
+# and `supportradius` and forward to them, so a call of an old name answers the
+# same with a deprecation warning. Only callers are carried: a method that
+# defines an old name supplies neither hook, and the generics dispatch on the
+# new ones.
+
+"""
+    build_weights!(coo, method, dst_space, dst_inds, src_space, src_inds)
+
+Deprecated. Use [`buildweights!`](@ref), which this forwards to, so existing
+calls keep their old behaviour exactly.
+"""
+function build_weights! end
+
+@deprecate build_weights!(coo::WeightCOO, method::AbstractRegriddingMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) buildweights!(
+    coo, method, dst_space, dst_inds, src_space, src_inds) false
+
+"""
+    support_radius(method, src_space::RegridSpace) -> Float64
+
+Deprecated. Use [`supportradius`](@ref), which this forwards to, so existing
+calls keep their old behaviour exactly.
+"""
+function support_radius end
+
+@deprecate support_radius(method::AbstractRegriddingMethod, src_space::RegridSpace) supportradius(
+    method, src_space) false
 
 # Missing-data policies
 

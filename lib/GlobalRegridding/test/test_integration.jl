@@ -37,10 +37,10 @@ end
 
 T6CountingMethod(inner) = T6CountingMethod(inner, 0)
 
-function build_weights!(coo::WeightCOO, method::T6CountingMethod,
+function buildweights!(coo::WeightCOO, method::T6CountingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     countbuild!(method)
-    return build_weights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
+    return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
 # A lookup that names cells of its own, as a DGGS cell axis does.
@@ -290,7 +290,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
             chunks = ([1:4, 5:8], [1:3, 4:6]))
 
         # Chunk rectangles retain the restricted CR cursor in either orientation.
-        @test all(GR.subtree(space, cellindices(space, c)) isa
+        @test all(GR.subtree(space, ownedindices(space, c)) isa
                   CR.Trees.TopDownQuadtreeCursor
                   for c in 1:nchunks(space))
         @test GR.subtree(space, [1, 5, 30]) isa GR.CellSpaceRTree

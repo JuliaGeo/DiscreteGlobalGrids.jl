@@ -23,7 +23,7 @@ GR.chartspacing(space::ToyLonLatSpace) = (deg2rad(dlon(space)), deg2rad(dlat(spa
 
 function t4_build(method, dst, dst_inds, src, src_inds)
     coo = WeightCOO(length(dst_inds))
-    build_weights!(coo, method, dst, dst_inds, src, src_inds)
+    buildweights!(coo, method, dst, dst_inds, src, src_inds)
     return coo
 end
 
@@ -61,7 +61,7 @@ GR.hascellchart(::T4BareChartSpace) = true
     @testset "NearestCell" begin
         # Self-regridding is the identity.
         space = ToyLonLatSpace(8, 4)
-        inds = cellindices(space, 1)
+        inds = ownedindices(space, 1)
         block = WeightBlock(t4_build(NearestCell(), space, inds, space, inds),
             length(inds), length(inds))
         @test Matrix(block.weights) == Matrix(LinearAlgebra.I, 32, 32)
@@ -72,7 +72,7 @@ GR.hascellchart(::T4BareChartSpace) = true
         # Each fine centroid selects its coarse parent.
         coarse = ToyLonLatSpace(4, 2)
         fine = ToyLonLatSpace(8, 4)
-        dst_inds, src_inds = cellindices(fine, 1), cellindices(coarse, 1)
+        dst_inds, src_inds = ownedindices(fine, 1), ownedindices(coarse, 1)
         entries = t4_entries(t4_build(NearestCell(), fine, dst_inds, coarse, src_inds),
             dst_inds, src_inds)
         @test length(entries) == ncells(fine)
@@ -82,17 +82,17 @@ GR.hascellchart(::T4BareChartSpace) = true
         # Centroids outside coverage emit no weight.
         north = ToyLonLatSpace(4, 1; lat = (0.0, 90.0))
         global_dst = ToyLonLatSpace(4, 2)
-        dst_inds = cellindices(global_dst, 1)
+        dst_inds = ownedindices(global_dst, 1)
         entries = t4_entries(
-            t4_build(NearestCell(), global_dst, dst_inds, north, cellindices(north, 1)),
-            dst_inds, cellindices(north, 1))
+            t4_build(NearestCell(), global_dst, dst_inds, north, ownedindices(north, 1)),
+            dst_inds, ownedindices(north, 1))
         @test sort(unique(first.(keys(entries)))) == collect(5:8)
     end
 
     @testset "BilinearPoint stencils" begin
         # Source centres are at ±135°/±45° longitude and ±45° latitude.
         src = ToyLonLatSpace(4, 2)
-        src_inds = cellindices(src, 1)
+        src_inds = ownedindices(src, 1)
 
         # Asymmetric fractional position verifies axis order and weights.
         dst = ToyLonLatSpace(1, 1; lon = (-27.5, -17.5), lat = (17.5, 27.5))
@@ -125,14 +125,14 @@ GR.hascellchart(::T4BareChartSpace) = true
         patch = ToyLonLatSpace(4, 2; lon = (-40.0, 40.0), lat = (-20.0, 20.0))
         corner = ToyLonLatSpace(1, 1; lon = (38.0, 40.0), lat = (18.0, 20.0))
         entries = t4_entries(
-            t4_build(BilinearPoint(), corner, [1], patch, cellindices(patch, 1)),
-            [1], cellindices(patch, 1))
+            t4_build(BilinearPoint(), corner, [1], patch, ownedindices(patch, 1)),
+            [1], ownedindices(patch, 1))
         @test entries == Dict((1, localindex(patch, 4, 2)) => 1.0)
 
         # Bilinear interpolation reproduces a linear chart field.
         fsrc = ToyLonLatSpace(36, 18)
         fdst = ToyLonLatSpace(17, 8; lon = (-170.0, 170.0), lat = (-80.0, 80.0))
-        fdst_inds, fsrc_inds = cellindices(fdst, 1), cellindices(fsrc, 1)
+        fdst_inds, fsrc_inds = ownedindices(fdst, 1), ownedindices(fsrc, 1)
         function linear(p)
             lon, lat = toy_lonlat(p)
             return 2.0 + 0.01 * lon + 0.03 * lat
@@ -145,9 +145,9 @@ GR.hascellchart(::T4BareChartSpace) = true
         @test all(≈(1.0), sum(weights; dims = 2))
 
         # Bilinear interpolation requires a complete chart interface.
-        @test_throws "hascellchart" build_weights!(
+        @test_throws "hascellchart" buildweights!(
             WeightCOO(1), BilinearPoint(), src, [1], T4NoChartSpace(), [1])
-        @test_throws "chartaxes" build_weights!(
+        @test_throws "chartaxes" buildweights!(
             WeightCOO(1), BilinearPoint(), src, [1], T4BareChartSpace(), [1])
     end
 
@@ -155,20 +155,20 @@ GR.hascellchart(::T4BareChartSpace) = true
         # Every stencil crosses the east/west source-chunk boundary.
         src = ToyLonLatSpace(4, 2; chunks = (2, 2))
         dst = ToyLonLatSpace(3, 2; lon = (-30.0, 30.0), lat = (-30.0, 30.0))
-        dst_inds = cellindices(dst, 1)
+        dst_inds = ownedindices(dst, 1)
         @test nchunks(src) == 2
 
-        whole_inds = cellindices(ToyLonLatSpace(4, 2), 1)
+        whole_inds = ownedindices(ToyLonLatSpace(4, 2), 1)
         whole = t4_entries(t4_build(BilinearPoint(), dst, dst_inds, src, whole_inds),
             dst_inds, whole_inds)
 
         blocks = [t4_entries(
-                      t4_build(BilinearPoint(), dst, dst_inds, src, cellindices(src, c)),
-                      dst_inds, cellindices(src, c)) for c in 1:nchunks(src)]
+                      t4_build(BilinearPoint(), dst, dst_inds, src, ownedindices(src, c)),
+                      dst_inds, ownedindices(src, c)) for c in 1:nchunks(src)]
 
         # Each non-empty block emits only its own source cells.
         @test all(!isempty(b) for b in blocks)
-        @test all(key[2] in cellindices(src, c)
+        @test all(key[2] in ownedindices(src, c)
                   for (c, b) in enumerate(blocks) for key in keys(b))
 
         # Chunked stencils merge to the unchunked stencil.
@@ -183,13 +183,13 @@ GR.hascellchart(::T4BareChartSpace) = true
     @testset "support radius" begin
         # Bilinear support reaches beyond geometric overlap.
         space = ToyLonLatSpace(8, 4)
-        @test support_radius(NearestCell(), space) == 0.0
-        @test support_radius(BilinearPoint(), space) > 0
-        @test support_radius(BilinearPoint(), space) ≈ deg2rad(45.0)
+        @test supportradius(NearestCell(), space) == 0.0
+        @test supportradius(BilinearPoint(), space) > 0
+        @test supportradius(BilinearPoint(), space) ≈ deg2rad(45.0)
 
         # The larger axis spacing bounds both directions.
         oblong = ToyLonLatSpace(36, 6)
-        @test support_radius(BilinearPoint(), oblong) >= deg2rad(dlon(oblong))
-        @test support_radius(BilinearPoint(), oblong) >= deg2rad(dlat(oblong))
+        @test supportradius(BilinearPoint(), oblong) >= deg2rad(dlon(oblong))
+        @test supportradius(BilinearPoint(), oblong) >= deg2rad(dlat(oblong))
     end
 end

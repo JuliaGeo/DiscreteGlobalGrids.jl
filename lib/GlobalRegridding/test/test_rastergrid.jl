@@ -157,7 +157,7 @@ function chunks_cover_dense(space)
     caps = GR.chunkextents(space)
     return all(GR.US._contains(caps[c], p)
         for c in 1:nchunks(space)
-        for i in cellindices(space, c)
+        for i in ownedindices(space, c)
         for p in ring_samples(space, i))
 end
 
@@ -271,9 +271,9 @@ end
         @test space.xchunks == [1:4, 5:8]
         @test space.ychunks == [1:2, 3:4]
         # Chunks partition cell indices.
-        covered = reduce(vcat, [collect(cellindices(space, c)) for c in 1:nchunks(space)])
+        covered = reduce(vcat, [collect(ownedindices(space, c)) for c in 1:nchunks(space)])
         @test sort(covered) == collect(1:ncells(space))
-        @test cellindices(space, 1) == [1, 2, 3, 4, 9, 10, 11, 12]
+        @test ownedindices(space, 1) == [1, 2, 3, 4, 9, 10, 11, 12]
 
         # Geometry queries never read raster values.
         celltree(space)
@@ -284,25 +284,25 @@ end
         # Full-width chunks are contiguous in index order.
         rows = RasterGrid(DD.DimArray(CountingChunked(zeros(8, 4), (8, 2)),
             (DD.X(raster_lon()), DD.Y(raster_lat()))))
-        @test cellindices(rows, 2) isa AbstractUnitRange
-        @test cellindices(rows, 2) == 17:32
-        @test !(cellindices(space, 1) isa AbstractUnitRange)
+        @test ownedindices(rows, 2) isa AbstractUnitRange
+        @test ownedindices(rows, 2) == 17:32
+        @test !(ownedindices(space, 1) isa AbstractUnitRange)
 
         # Y-major arrays make full Y columns contiguous.
         cols = RasterGrid(DD.DimArray(CountingChunked(zeros(4, 8), (4, 2)),
             (DD.Y(raster_lat()), DD.X(raster_lon()))))
         @test nchunks(cols) == 4
-        @test cellindices(cols, 2) isa AbstractUnitRange
-        @test cellindices(cols, 2) == 9:16
+        @test ownedindices(cols, 2) isa AbstractUnitRange
+        @test ownedindices(cols, 2) == 9:16
 
         # An unchunked parent is one whole-domain chunk.
         @test nchunks(rg_forward()) == 1
-        @test cellindices(rg_forward(), 1) == 1:32
+        @test ownedindices(rg_forward(), 1) == 1:32
 
-        # `chunkat` inverts `cellindices` without data reads.
+        # `chunkat` inverts `ownedindices` without data reads.
         for s in (space, rows, cols, rg_forward())
             @test all(GR.chunkat(s, i) == c
-                      for c in 1:nchunks(s) for i in cellindices(s, c))
+                      for c in 1:nchunks(s) for i in ownedindices(s, c))
         end
         @test parent_x.reads == 0
         @test_throws BoundsError GR.chunkat(space, 0)
@@ -321,7 +321,7 @@ end
         caps = chunktree(region).caps
         @test all(GR.US._contains(caps[c], p)
                   for c in 1:nchunks(region)
-                  for i in cellindices(region, c)
+                  for i in ownedindices(region, c)
                   for p in cellring(region, i))
         @test maximum(cap.radius for cap in caps) < pi / 2
 
@@ -342,7 +342,7 @@ end
             candidates = GR.candidatechunks!(Int[], index, dcap)
             for s in 1:nchunks(space)
                 touched = any(GR.US._contains(dcap, p)
-                    for i in cellindices(space, s) for p in cellring(space, i))
+                    for i in ownedindices(space, s) for p in cellring(space, i))
                 touched && @test s in candidates
             end
         end
@@ -447,7 +447,7 @@ end
 
             # One rectangular DiskArrays chunk keeps the raster's local leaf IDs even
             # though `ncells(cursor)` and split weight describe only its range.
-            inds = cellindices(space, 2)
+            inds = ownedindices(space, 2)
             chunk = GR.subtree(space, inds)
             @test chunk isa Trees.TopDownQuadtreeCursor
             @test chunk.grid.space === space
@@ -531,7 +531,7 @@ end
         # Band caps cover bowed geodesic edges.
         @test all(GR.US._contains(caps[c], p)
                   for c in 1:nchunks(bands)
-                  for i in cellindices(bands, c)
+                  for i in ownedindices(bands, c)
                   for p in ring_samples(bands, i))
 
         # Band caps exclude the opposite pole.
@@ -551,7 +551,7 @@ end
         mid = chunktree(straddling).caps[2]
         @test mid.radius < Float64(pi)
         @test all(GR.US._contains(mid, p)
-                  for i in cellindices(straddling, 2) for p in ring_samples(straddling, i))
+                  for i in ownedindices(straddling, 2) for p in ring_samples(straddling, i))
 
         # Pole-to-pole stripes use a mid-meridian cap.
         stripes = RasterGrid(DD.DimArray(zeros(36, 18),
@@ -561,7 +561,7 @@ end
         @test all(cap.radius < Float64(pi) for cap in stripecaps)
         @test all(GR.US._contains(stripecaps[c], p)
                   for c in 1:nchunks(stripes)
-                  for i in cellindices(stripes, c)
+                  for i in ownedindices(stripes, c)
                   for p in ring_samples(stripes, i))
         # A stripe does not reach the meridian opposite it.
         @test !GR.US._contains(stripecaps[1], geographic_point(0.0, 0.0))

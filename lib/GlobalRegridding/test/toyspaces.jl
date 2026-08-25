@@ -3,9 +3,9 @@
 using GlobalRegridding
 import GlobalRegridding as GR
 import GlobalRegridding: RegridSpace, AbstractRegriddingMethod, WeightCOO,
-    celltree, chunktree, ncells, getcell, nchunks, cellindices,
+    celltree, chunktree, ncells, getcell, nchunks, ownedindices,
     cellcentroid, cellat, hascellchart, manifold,
-    build_weights!, addweight!, adddenom!
+    buildweights!, addweight!, adddenom!
 
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
@@ -281,7 +281,7 @@ function chunksubscript(space::ToyLonLatSpace, chunk::Int)
     return (cx, cy)
 end
 
-function cellindices(space::ToyLonLatSpace, chunk::Int)
+function ownedindices(space::ToyLonLatSpace, chunk::Int)
     cx, cy = chunksubscript(space, chunk)
     ix0 = (cx - 1) * space.chunklon + 1
     ix1 = min(space.nlon, cx * space.chunklon)
@@ -312,7 +312,7 @@ function chunktree(space::ToyLonLatSpace)
     for c in 1:n
         empty!(points)
         lat0, lat1 = 90.0, -90.0
-        for i in cellindices(space, c)
+        for i in ownedindices(space, c)
             append!(points, cellcorners(space, i))
             _, _, a, b = cellbounds(space, i)
             lat0, lat1 = min(lat0, a), max(lat1, b)
@@ -349,7 +349,7 @@ hascellchart(cs::CountingSpace) = hascellchart(cs.space)
 cellcentroid(cs::CountingSpace, i::Int) = cellcentroid(cs.space, i)
 cellat(cs::CountingSpace, p) = cellat(cs.space, p)
 nchunks(cs::CountingSpace) = nchunks(cs.space)
-cellindices(cs::CountingSpace, chunk::Int) = cellindices(cs.space, chunk)
+ownedindices(cs::CountingSpace, chunk::Int) = ownedindices(cs.space, chunk)
 celltree(cs::CountingSpace) = celltree(cs.space)
 chunktree(cs::CountingSpace) = chunktree(cs.space)
 
@@ -378,7 +378,7 @@ const TOY_COUNT_LOCK = ReentrantLock()
 
 countbuild!(method) = @lock TOY_COUNT_LOCK method.builds += 1
 
-function build_weights!(coo::WeightCOO, method::ToyDiagonalMethod,
+function buildweights!(coo::WeightCOO, method::ToyDiagonalMethod,
     ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
     chunklocal_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
     for (j, p) in enumerate(dst_inds)
@@ -409,7 +409,7 @@ end
 WaveFailMethod(bad::Integer, delay::Real) =
     WaveFailMethod(Int(bad), Float64(delay), Threads.Atomic{Int}(0))
 
-function build_weights!(coo::WeightCOO, method::WaveFailMethod,
+function buildweights!(coo::WeightCOO, method::WaveFailMethod,
     ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
     Int(first(src_inds)) == method.bad &&
         error("WaveFailMethod: the chunk at index $(method.bad) fails by design")

@@ -133,7 +133,7 @@ GOCore.manifold(space::DGGSpace) = GOCore.best_manifold(space.grid)
 
 GR.nchunks(space::DGGSpace) = length(space.ranges)
 
-cellindices(space::DGGSpace, chunk::Int) = space.ranges[chunk]
+GR.ownedindices(space::DGGSpace, chunk::Int) = space.ranges[chunk]
 
 # Locate an index by binary-searching the sorted chunk starts.
 function GR.chunkat(space::DGGSpace, i::Integer)

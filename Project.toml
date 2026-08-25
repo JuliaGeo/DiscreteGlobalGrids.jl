@@ -30,7 +30,7 @@ DiscreteGlobalGridsZarrExt = ["Zarr"]
 
 [sources]
 ConservativeRegridding = {rev = "e8fc67f420da0362d59b354e2db6fcde8107fec0", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-GeometryOps = {rev = "as/spherical-fh-clipping", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+GeometryOps = {rev = "27834e736262016acf104d6b02a41c3eab4b9371", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 # Not a workspace member: it resolves its own Manifest, so
 # `julia --project=lib/GlobalRegridding` stays self-contained.

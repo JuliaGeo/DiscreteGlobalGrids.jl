@@ -17,7 +17,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 [sources]
 ConservativeRegridding = {rev = "e8fc67f420da0362d59b354e2db6fcde8107fec0", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 DiscreteGlobalGrids = {path = "../.."}
-GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/spherical-fh-clipping"}
+GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "27834e736262016acf104d6b02a41c3eab4b9371"}
 GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 
 [compat]

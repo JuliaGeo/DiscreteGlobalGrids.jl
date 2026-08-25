@@ -139,9 +139,20 @@ kept as a deprecation shim and appears in this plan only as history:
   declared bound that keeps them a superset, and a manifest naming a chunk no
   row of its tile holds is refused rather than silently trimmed. Conservative
   weights, keys, read counts and values are unchanged.
-- **Next in this plan's own order: Phase 7** (D1), behind the user's gate.
-  Phase 9 branched from E2 beside Phase 5 and is closed, so nothing runs
-  alongside Phase 7; Phase 8 follows it in order.
+- Phase 7, prepared destination geometry: **complete**. D1 replaced `TileCells`,
+  `CachedCellTree` and the destination `CellMemo` with one `DestinationCache`
+  per executor tile — index set, chunk-local map, restricted tree, and a polygon
+  slot per row that fills from the candidate pairs a block is about to measure,
+  under the tile's lock, so a cell no source overlaps is never synthesized and
+  none is synthesized twice. A build prepares only where more than one block
+  shares the tile, the polygons fit the destination share of the budget, and
+  the space says its cell geometry is expensive (`expensivecellgeometry`; a
+  raster answers no); every other build takes the index set and its task-local
+  memo, and the two answers give the same weights entry for entry. The
+  destination tree is held behind an inference barrier, which took the chunked
+  block gate to 1.008× and the eager one to 0.538×.
+- **Next in this plan's own order: Phase 8** (L1, then L2). Phase 9 is closed,
+  so nothing runs alongside it.
 
 Landed cards, with the commit each one shipped as:
 
@@ -171,6 +182,7 @@ Landed cards, with the commit each one shipped as:
 | W2 | `6a4314f` | Unify final weight block construction |
 | O1 | `619db4e` | Use generic output dimensions for DGG regridding |
 | O2 | `fad29f6` | Simplify regridding target and keyword resolution |
+| D1 | `ee9c224` | Consolidate destination geometry preparation |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
 `93e836d` is the commit that pinned them and records their SHAs. P0, P1, P2 and P3

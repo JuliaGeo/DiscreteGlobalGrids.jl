@@ -151,8 +151,25 @@ kept as a deprecation shim and appears in this plan only as history:
   memo, and the two answers give the same weights entry for entry. The
   destination tree is held behind an inference barrier, which took the chunked
   block gate to 1.008× and the eager one to 0.538×.
-- **Next in this plan's own order: Phase 8** (L1, then L2). Phase 9 is closed,
-  so nothing runs alongside it.
+- Phase 8, private lazy state: **complete**. L2 is closed and L1 was ruled
+  out. A lazy array reads what its source declares about its own chunking once
+  — one `declareschunks` test and, when it holds, one `eachchunk` call — and
+  holds the reading as a `SourceChunking`: the pass-through chunks as declared,
+  as index ranges, and as the read groups one spatial chunk is loaded for. The
+  output's chunk grid, the splitting of a requested slice and the groups
+  `knownempty` is asked about all come off it; `otherchunks`, `othergroups`,
+  `_passthroughchunks` and `_sourceotherchunks` are gone. The spatial count
+  reaches the reading as a `Val`, so a grid mixing regular and irregular
+  dimensions keeps each dimension's own chunk type. `isdiskbacked` is
+  `declareschunks`, the residence test stays `_isdisksource`, and a derived
+  `RasterGrid` keeps its own reading of its array. L1 stays undone by ruling:
+  an entry holding a source's value beside its byte count and use count is
+  typed on the value, which differs from source to source, so the hold would
+  carry an abstract entry type; type stability is a standing constraint, and
+  the two parallel dictionaries are the type-stable form.
+- **Every phase of this plan is closed.** What remains is the merge: retarget
+  the branch's pull request at `main` so CI runs on it, fast-forward `main`,
+  and close the earlier pull requests it supersedes.
 
 Landed cards, with the commit each one shipped as:
 
@@ -183,6 +200,7 @@ Landed cards, with the commit each one shipped as:
 | O1 | `619db4e` | Use generic output dimensions for DGG regridding |
 | O2 | `fad29f6` | Simplify regridding target and keyword resolution |
 | D1 | `ee9c224` | Consolidate destination geometry preparation |
+| L2 | `da897f5` | Normalize lazy DiskArrays chunk metadata |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
 `93e836d` is the commit that pinned them and records their SHAs. P0, P1, P2 and P3
@@ -330,7 +348,7 @@ C1 -> G1 -> G2 -> G3 -> G4 -> E1 -> E2                   Phases 2-4
 E2 -> W1 -> W2                                             Phase 5
 W2 -> O1 -> O2                                             Phase 6
 O2 -> D1                                                   Phase 7
-D1 -> L1 -> L2                                             Phase 8
+D1 -> L2                                                   Phase 8 (L1 ruled out)
 E2 -> S1 -> S2 -> S3                                       Phase 9
 ```
 
@@ -1093,7 +1111,13 @@ no production regression.
 
 ## Phase 8 — private lazy state
 
-### Task L1 — give `SourceHold` one entry dictionary
+### Task L1 — give `SourceHold` one entry dictionary — RULED OUT
+
+Not done. An entry holding a source's value beside its byte count and use
+count is typed on the value, which differs from source to source, so the hold
+would carry an abstract entry type on the read path. Type stability is a
+standing constraint of this package, and `SourceHold`'s two parallel
+dictionaries are its type-stable form. L2 proceeded from D1 directly.
 
 **Prerequisite:** D1.
 **Owns:** source-hold entries, eviction, residency statistics, and lazy tests.
@@ -1116,7 +1140,7 @@ abstraction was introduced.
 
 ### Task L2 — normalize DiskArrays metadata once
 
-**Prerequisite:** L1.
+**Prerequisite:** D1 (L1 ruled out).
 **Owns:** lazy constructor chunk metadata, pass-through/source group helpers,
 chunked-source naming, and tests.
 

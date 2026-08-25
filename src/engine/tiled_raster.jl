@@ -15,20 +15,17 @@ const LEAF_CELLS = 9
 
 A leaf's cells as `(grid index, cap)` pairs, in a fixed inline buffer.
 
-The return value of [`STI.child_indices_extents`](@ref
-GeometryOps.SpatialTreeInterface.child_indices_extents) for a raster tree: a
-read-only `AbstractVector` that indexes, iterates and `collect`s like the
-`Vector` it replaces, but is `isbits`, so it lives in the caller's frame and
-never reaches the heap.
-
-[`STI.isleaf`](@ref GeometryOps.SpatialTreeInterface.isleaf) splits any node
-holding more than [`LEAF_CELLS`](@ref) cells, so the entries fit an
-`NTuple{LEAF_CELLS}`. Every call must return its own value rather than share a
-buffer: callers keep the result past the call, and a dual-tree self-join loops
-over two leaves' entries at once.
-
-The unused tail repeats entry one; an empty leaf repeats a placeholder no
-`size` reaches. Entry order is row-major: the column index varies fastest.
+  - The [`STI.child_indices_extents`](@ref
+    GeometryOps.SpatialTreeInterface.child_indices_extents) return value for a
+    raster tree: a read-only `AbstractVector` that indexes, iterates and
+    `collect`s like a `Vector`, but is `isbits` and never reaches the heap.
+  - Capacity is [`LEAF_CELLS`](@ref), the count above which
+    [`STI.isleaf`](@ref GeometryOps.SpatialTreeInterface.isleaf) splits a node.
+  - Every call returns its own value, never a shared buffer: callers keep the
+    result past the call, and a self-join reads two leaves at once.
+  - Entry order is row-major: the column index varies fastest.
+  - The unused tail repeats entry one; an empty leaf repeats a placeholder no
+    `size` reaches.
 """
 struct LeafCells <: AbstractVector{Tuple{Int,Cap}}
     entries::NTuple{LEAF_CELLS,Tuple{Int,Cap}}
@@ -78,16 +75,11 @@ end
 
 Children of a packed tile node. The tiles are sorted by the Morton key of their
 cap centres and split into this many near-equal blocks per level, down to one
-tile per node, which is where the per-tile quadtree begins. Four is
-[`IndexTree`](@ref)'s arity, the other packed tree here.
+tile per node, which is where the per-tile quadtree begins.
 
-The alternative is a flat root — one node with every tile as a child — and it
-measures the same on the tile counts a holding of tens has, for a point query
-and for a dual-tree join alike, because a shallow packed tree tests about as
-many caps as there are tiles. It diverges as the holding grows: a flat root
-tests every tile on every query, so a 1024-tile holding's point query costs
-3.4 times a packed root's, and the ratio grows with the tile count. A global
-Copernicus holding is 26 450 tiles.
+  - Four is [`IndexTree`](@ref)'s arity, the other packed tree here.
+  - The alternative, a flat root holding every tile, tests every tile on every
+    query, and falls further behind as the holding grows.
 """
 const RASTER_TILE_ARITY = 4
 
@@ -96,12 +88,12 @@ const RASTER_TILE_ARITY = 4
 
 The tile layer of the tree [`treeify`](@ref) builds for a grid that answers
 [`raster_tiles`](@ref): the tiles covering grid indices `inds`, sorted by the
-Morton key of their cap centres, and a stored cap and pixel count per node.
+Morton key of their cap centres, with a cap and a pixel count stored per node.
 
-Node `1` is the root. A node holding one tile is where the packed tree stops and
-the tile's own quadtree begins, so its stored cap is that tile's.
-
-Every cap is a merge of the caps below it, so the packed layer's extents nest.
+  - Node `1` is the root.
+  - A node holding one tile is where the packed tree stops and that tile's own
+    quadtree begins, so its stored cap is the tile's.
+  - Every cap is a merge of the caps below it, so the extents nest.
 """
 struct RasterTileTree{G<:AbstractGrid,T}
     grid::G
@@ -191,22 +183,18 @@ Base.show(io::IO, tree::RasterTileTree) =
 `GeometryOps.SpatialTreeInterface` cursor over a grid whose cells are the pixels
 of raster tiles. Prefer [`treeify(grid)`](@ref treeify) to direct construction.
 
-A node is either
-
-  - a **tile node**: a node of the packed [`RasterTileTree`](@ref), covering
-    every pixel of a block of tiles, or
-  - a **raster node**: a rectangle of rows and columns inside one tile.
-
-Descent runs through the packed tree to a single tile and then bisects that
-tile's rectangle — the longer axis in two — until a node holds
-[`LEAF_CELLS`](@ref) pixels or fewer, which is a leaf. A leaf names its pixels
-by [`raster_localindex`](@ref), so leaf indices are the grid's own indices and a
-tile's pixels are one contiguous block of them.
-
-Tile node extents are stored and nest. Raster node extents are derived from
-[`raster_cap`](@ref) and memoized per task; like every
-[`node_extent`](@ref) here they bound cell *geometry*, so a node's cap covers
-the boundaries of the pixels beneath it but not necessarily their caps.
+  - A node is either a **tile node** of the packed [`RasterTileTree`](@ref),
+    covering every pixel of a block of tiles, or a **raster node**, a rectangle
+    of rows and columns inside one tile.
+  - Descent runs through the packed tree to a single tile, then bisects that
+    tile's rectangle along its longer axis until a node holds
+    [`LEAF_CELLS`](@ref) pixels or fewer, which is a leaf.
+  - A leaf names its pixels by [`raster_localindex`](@ref): leaf indices are the
+    grid's own, and a tile's pixels are one contiguous block of them.
+  - Tile node extents are stored and nest; raster node extents come from
+    [`raster_cap`](@ref) and are memoized per task.
+  - Like every [`node_extent`](@ref) here, a node's cap bounds cell *geometry*:
+    it covers the boundaries of the pixels beneath it, not their caps.
 """
 struct TiledRasterCursor{G<:AbstractGrid,T}
     tree::RasterTileTree{G,T}
@@ -237,8 +225,7 @@ Base.show(io::IO, ::MIME"text/plain", c::TiledRasterCursor) = show(io, c)
 
 # What a single-tile node's children partition: the parts each axis splits into,
 # the tile, and the rectangle. A node holding one tile stands for that tile's
-# whole raster, so the tree spends no level on the tile itself. Zero parts mean
-# the node is a leaf. Every accessor below reads this once.
+# whole raster. Zero parts mean the node is a leaf.
 @inline function _raster_split(c::TiledRasterCursor)
     if c.inraster
         slot, j0, j1, i0, i1 = c.slot, c.j0, c.j1, c.i0, c.i1
@@ -263,8 +250,7 @@ end
 
 STI.isspatialtree(::Type{<:TiledRasterCursor}) = true
 
-# Tile extents are stored and raster extents memoized, so a hit is a load and
-# the search should not pay a vector per visited node to avoid one.
+# Tile extents are stored and raster extents memoized, so an extent is a load.
 STI.node_extent_is_expensive(::Type{<:TiledRasterCursor}) = false
 
 function STI.isleaf(c::TiledRasterCursor)
@@ -345,8 +331,8 @@ end
 # ===========================================================================
 
 # A raster node's extent is fixed by its tree and its `(tile slot, rows,
-# columns)` rectangle, so the tree is the identity the table is keyed on. Tile
-# nodes are not memoized: their extents are stored in the tree itself.
+# columns)` rectangle, so the table is keyed on the tree. Tile nodes are not
+# memoized: the tree stores their extents.
 function _memo_extent(c::TiledRasterCursor)
     key = (c.slot, c.j0, c.j1, c.i0, c.i1)
     table = extent_table(NTuple{5,Int}, c.tree)

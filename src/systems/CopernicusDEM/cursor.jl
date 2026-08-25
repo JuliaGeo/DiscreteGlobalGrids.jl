@@ -10,7 +10,8 @@ const LeafCells = Engine.LeafCells
     BlockStrategy
 
 How a [`BlockCursor`](@ref) partitions rectangles: [`Bisected`](@ref) by default,
-or [`Blocked`](@ref). Both produce the same intersections; see the benchmark script.
+or [`Blocked`](@ref). Both produce the same intersections;
+`scripts/bench_copdem_cursor.jl` times them.
 """
 abstract type BlockStrategy end
 
@@ -40,16 +41,14 @@ const DEFAULT_STRATEGY = Bisected()
 A spatial-tree cursor over a rectangle of the complete Copernicus DEM lattice.
 Prefer [`treeify`](@ref), which wraps it in a [`MemoBlockCursor`](@ref).
 
-A node is either:
-
-  - a tile rectangle (`inpixels == false`), or
-  - a raster rectangle within tile `(r0, q0)` (`inpixels == true`).
-
-Its addressing law is `index = id - origin`, so it holds only where the cells it
-covers are one contiguous id run forming one rectangle — the whole level, and
-the windows [`subcursor`](@ref) cuts out of it. A holding of tiles satisfies
-neither in general and gets the engine's [`TiledRasterCursor`](@ref), whose law
-is a tile offset plus a row-major pixel index.
+  - A node is either a tile rectangle (`inpixels == false`) or a raster
+    rectangle within tile `(r0, q0)` (`inpixels == true`).
+  - Its addressing law is `index = id - origin`, so it holds only where the
+    cells it covers are one contiguous id run forming one rectangle — the whole
+    level, and the windows [`subcursor`](@ref) cuts out of it.
+  - A holding of tiles satisfies neither in general and gets the engine's
+    [`TiledRasterCursor`](@ref), whose law is a tile offset plus a row-major
+    pixel index.
 """
 struct BlockCursor{G<:DGG.AbstractGrid,S<:CopernicusDEMSystem,F<:BlockStrategy}
     grid::G
@@ -344,11 +343,10 @@ One rectangle of a Copernicus DEM holding, as [`raster_tiles`](@ref) names it:
 rows `j0:j0+nrows-1` and columns `i0:i0+ncols-1` of tile `(r, q)`, whose pixels
 occupy grid indices `offset+1 : offset+nrows*ncols` in row-major order.
 
-`pixels` is `false` on a level-0 grid, where the cell is the tile itself and the
-rectangle is the tile's own `1x1`.
-
-The engine treats this as an opaque handle, so it carries everything the three
-geometry hooks need without decoding an id again.
+  - `pixels` is `false` on a level-0 grid, where the cell is the tile itself and
+    the rectangle is the tile's own `1x1`.
+  - The engine treats this as an opaque handle, so it carries everything the
+    three geometry hooks need without decoding an id again.
 """
 struct RasterTile
     r::Int
@@ -371,10 +369,11 @@ Base.show(io::IO, t::RasterTile) = print(io, "RasterTile(",
 The rectangles of the lattice that hold grid indices `inds`, or `nothing` when
 the grid names an id this lattice does not have.
 
-A whole tile is one rectangle, which is the shape a holding of tiles is made of.
-A run that starts or ends inside a raster row splits into at most three — a part
-row, the whole rows below it, and a part row — so every rectangle is one
-contiguous block of grid indices and the row-major index law holds on it.
+  - A whole tile is one rectangle, the shape a holding of tiles is made of.
+  - A run that starts or ends inside a raster row splits into at most three: a
+    part row, the whole rows below it, and a part row.
+  - Every rectangle is therefore one contiguous block of grid indices, and the
+    row-major index law holds on it.
 """
 function DGG.raster_tiles(grid::DGG.PartialGrid{<:CopernicusDEMSystem},
         inds::AbstractUnitRange{<:Integer})
@@ -475,19 +474,18 @@ end
     treeify(grid::HierarchicalLevelGrid{<:CopernicusDEMSystem})
     treeify(grid::PartialGrid{<:CopernicusDEMSystem})
 
-The complete lattice is one rectangle, and gets a [`BlockCursor`](@ref) whose
-node boxes are closed-form in the lattice coordinates — no table of 64 800 tile
-caps, and `O(1)` to build.
-
-A holding is a collection of tiles in no particular arrangement, and gets the
-engine's [`TiledRasterCursor`](@ref): a packed tree over the tiles' caps with a
-bisection quadtree inside each tile. Any tile set qualifies, a set crossing a
-latitude row included; only an id this lattice does not name keeps the generic
-[`HierarchicalGridCursor`](@ref), because such an id has no rectangle to place.
-
-The block cursor comes back wrapped in a [`MemoBlockCursor`](@ref), which
-memoizes derived node extents per task; `BlockCursor(grid)` gives the bare
-cursor. The tiled raster cursor memoizes its own.
+  - The complete lattice is one rectangle, and gets a [`BlockCursor`](@ref)
+    whose node boxes are closed-form in the lattice coordinates: no table of
+    tile caps, and `O(1)` to build.
+  - A holding is a collection of tiles in no particular arrangement, and gets
+    the engine's [`TiledRasterCursor`](@ref): a packed tree over the tiles' caps
+    with a bisection quadtree inside each tile. Any tile set qualifies, one
+    crossing a latitude row included.
+  - Only an id this lattice does not name keeps the generic
+    [`HierarchicalGridCursor`](@ref), such an id having no rectangle to place.
+  - The block cursor comes back wrapped in a [`MemoBlockCursor`](@ref), which
+    memoizes derived node extents per task; `BlockCursor(grid)` gives the bare
+    cursor. The tiled raster cursor memoizes its own.
 """
 DGG.treeify(::GOCore.Manifold, grid::LevelGrid) = _memoized(BlockCursor(grid))
 DGG.treeify(::GOCore.Manifold, c::BlockCursor) = c
@@ -514,14 +512,13 @@ end
 
 The node covering grid indices `inds`, with leaf indices still `grid`'s own.
 
-On the complete lattice that is a [`MemoBlockCursor`](@ref) when `inds` is one
-contiguous id run forming one lattice rectangle — one segment of a tile row or
-whole tile rows at level 0, one tile's whole raster rows or a run of whole tiles
-at level 1 — and `nothing` otherwise. The run test is over the window, so a
-tile-sized chunk qualifies.
-
-On a holding it is the [`TiledRasterCursor`](@ref) over the rectangles that
-window holds, which every window has.
+  - On the complete lattice: a [`MemoBlockCursor`](@ref) when `inds` is one
+    contiguous id run forming one lattice rectangle — a segment of a tile row or
+    whole tile rows at level 0, one tile's whole raster rows or a run of whole
+    tiles at level 1 — and `nothing` otherwise. The run test is over the window,
+    so a tile-sized chunk qualifies.
+  - On a holding: the [`TiledRasterCursor`](@ref) over the rectangles that
+    window holds, which every window has.
 """
 DGG.subcursor(grid::LevelGrid, inds::AbstractUnitRange{<:Integer}) =
     _memoized(_window_cursor(grid, DEFAULT_STRATEGY, inds))

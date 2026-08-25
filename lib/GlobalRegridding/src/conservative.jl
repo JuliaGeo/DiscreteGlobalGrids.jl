@@ -119,30 +119,25 @@ GOCore.best_manifold(tree::CellSpaceRTree) = manifold(tree.space)
 Prepared destination geometry for one tile: its index set, its chunk-local
 index map, its restricted tree, and one polygon slot per tile row.
 
-Every block the tile takes from a source chunk shares one cache, so the
-restricted tree is built once for the tile and each destination polygon is
-synthesized at most once across all of the tile's blocks. Slots fill from the
-candidate pairs a block is about to measure, so a destination cell no source
-overlaps is never synthesized. A fill holds the lock; the clipping loop only
-reads the slot named by the block row it has already computed.
-
-This is not a `RegridSpace` and answers no question about the destination:
-the destination space still does. Construction returns `nothing` when one
-probe cannot name a concrete polygon type, because dynamic dispatch in the
-clipping loop costs more than prepared geometry saves.
-
-The polygon type is a parameter and the tree is not, so a cache has one type
-per destination space whatever [`subtree`](@ref) returned.
+  - Every block the tile takes from a source chunk shares one cache: the
+    restricted tree is built once, and each destination polygon synthesized at
+    most once, for the whole tile.
+  - Slots fill from the candidate pairs a block is about to measure, so a
+    destination cell no source overlaps is never synthesized. A fill holds the
+    lock; the clipping loop only reads the slot named by its own block row.
+  - Not a `RegridSpace`: the destination space still answers every question
+    about the destination.
+  - `nothing` when one probe cannot name a concrete polygon type, dynamic
+    dispatch in the clipping loop costing more than prepared geometry saves.
+  - The polygon type is a parameter and the tree is not, so a cache has one type
+    per destination space whatever [`subtree`](@ref) returned.
 """
 struct DestinationCache{I,M,P}
     inds::I
     map::M
     # Untyped on purpose: a compile barrier. `subtree` returns one of several
-    # tree types for a space, and both of the calls that read this field are
-    # whole assemblies over the tile. Inferring the field would compile each
-    # of them for every tree type the space can produce; leaving it opaque
-    # compiles each for the type a run actually reaches, behind one dynamic
-    # dispatch per block. The clipping loop never reads it.
+    # tree types for a space, and the whole-tile assemblies that read this field
+    # would otherwise compile once per type. The clipping loop never reads it.
     tree::Any
     polygons::Vector{P}
     # A flag per row rather than `isassigned`, which cannot answer for an
@@ -186,11 +181,10 @@ The destination a tile's builds address: prepared geometry where `method`
 keeps it ([`preparesdestination`](@ref)) and `budget` holds it
 ([`destcellsfit`](@ref)), and `dst_inds` itself otherwise.
 
-Both answers reach the same weights, value for value and entry for entry.
-Preparing is worth its memory only where more than one block reads it — one
-tile prepares once and every block of that tile shares the result — so a build
-of a single block, the eager whole domain included, takes the index set and
-its task-local [`CellMemo`](@ref) instead.
+  - Both answers reach the same weights, value for value and entry for entry.
+  - Only a tile with more than one block repays the memory, so a single-block
+    build — the eager whole domain included — takes the index set and its
+    task-local [`CellMemo`](@ref) instead.
 """
 function preparedestination(method::AbstractRegriddingMethod,
     dst_space::RegridSpace, dst_inds, budget::Integer)
@@ -230,12 +224,10 @@ end
 
 The tree a block clips its destination against, held opaque to inference.
 
-[`subtree`](@ref) answers one of several tree types for a space, and the
-assembly a block runs is compiled for the tree it is handed. Inferring the
-answer compiles that assembly for every tree type the space can produce;
-crossing a barrier compiles it for the one the run reaches, behind a single
-dynamic dispatch per block. The clipping loop runs inside that specialization
-and pays nothing.
+[`subtree`](@ref) answers one of several tree types for a space. Crossing an
+inference barrier compiles a block's assembly for the one type the run reaches
+rather than for all of them, behind a single dynamic dispatch per block; the
+clipping loop runs inside that specialization and pays nothing.
 """
 _destinationtree(dst_space::RegridSpace, dst_inds) =
     Base.inferencebarrier(subtree(dst_space, dst_inds))
@@ -384,14 +376,12 @@ Adopt the assembled sparse matrix of intersection areas as the block's weights,
 reading each destination's denominator off it once. Every conservative block —
 the eager whole domain and a chunk pair alike — is built here.
 
-The generic route copies every entry into a [`WeightCOO`](@ref) and assembles a
-second, identical CSC from it. The values, their CSC layout, and the denominator
-accumulation order here are that route's, bit for bit.
-
-Naming the destination by index set builds its restricted tree here and
-synthesizes its geometry through a task-local [`CellMemo`](@ref). Naming it by
-a [`DestinationCache`](@ref) reuses the tile's tree and its prepared polygons
-instead; the weights are the same, entry for entry.
+  - The values, their CSC layout, and the denominator accumulation order are the
+    generic [`WeightCOO`](@ref) route's, bit for bit.
+  - Naming the destination by index set builds its restricted tree here and
+    synthesizes its geometry through a task-local [`CellMemo`](@ref); naming it
+    by a [`DestinationCache`](@ref) reuses the tile's tree and its prepared
+    polygons instead. The weights are the same, entry for entry.
 """
 function pairblock(::Conservative, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds)

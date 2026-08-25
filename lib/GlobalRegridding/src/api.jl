@@ -1,10 +1,8 @@
 # Public regridding API.
 
-# Whether `data` declares a chunking of its own. This is what makes a regrid
-# lazy by default, what `SourceChunking` reads that declaration for, and what
-# `flatsource` materializes before reshaping. It says nothing about where the
-# values live: a source's residence is tested separately, by `_isdisksource`,
-# because only a real disk array is read through `DiskArrays.readblock!`.
+# Whether `data` declares a chunking of its own: what makes a regrid lazy by
+# default, what `SourceChunking` reads, and what `flatsource` materializes before
+# reshaping. It says nothing about residence; `_isdisksource` tests that.
 declareschunks(data) = DiskArrays.haschunks(data) isa DiskArrays.Chunked
 
 # Nodata metadata keys, in precedence order.
@@ -247,10 +245,9 @@ Build one [`WeightBlock`](@ref) over all source and destination cells. The build
 path is [`weightblock`](@ref)'s, so the eager domain and a chunk pair are built
 the same way.
 
-The whole domain is one block, and prepares no destination geometry
-([`preparedestination`](@ref)): with no second block to share it with, a
-task-local memo of the cells a candidate pairing repeats is cheaper than a slot
-for every destination cell.
+The whole domain is one block, so it prepares no destination geometry
+([`preparedestination`](@ref)): with no second block to share it, a task-local
+memo is cheaper than a slot per destination cell.
 """
 wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
     src_space::RegridSpace) =

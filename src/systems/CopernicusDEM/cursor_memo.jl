@@ -5,17 +5,15 @@
 
 [`BlockCursor`](@ref) wrapped so [`node_extent`](@ref
 GeometryOps.SpatialTreeInterface.node_extent) reads a cached cap instead of
-re-deriving `_node_box` → [`_box_cap`](@ref) — five `sincosd` pairs and four
-spherical distances — on every ask. The values are unchanged, bit for bit;
-repeat asks get cheaper.
+re-deriving `_node_box` → [`_box_cap`](@ref) on every ask.
 
-The cache is the engine's [`ExtentTable`](@ref
-DiscreteGlobalGrids.Engine.ExtentTable): one direct-mapped table per lattice,
-a few tables per task, so alternating between lattices — a join of two of them,
-a window against the lattice it was cut from — hits in both. Interior nodes
-only: a leaf's `child_indices_extents` entries come back as the bare cursor's
-[`LeafCells`](@ref DiscreteGlobalGrids.Engine.LeafCells), which never reaches
-the heap.
+  - The values are unchanged, bit for bit.
+  - The cache is [`ExtentTable`](@ref DiscreteGlobalGrids.Engine.ExtentTable):
+    one direct-mapped table per lattice, a few tables per task, so alternating
+    between lattices hits in both.
+  - Interior nodes only: a leaf's `child_indices_extents` entries come back as
+    the bare cursor's [`LeafCells`](@ref DiscreteGlobalGrids.Engine.LeafCells),
+    which never reaches the heap.
 """
 struct MemoBlockCursor{C<:BlockCursor}
     node::C
@@ -37,8 +35,7 @@ Base.show(io::IO, t::MemoBlockCursor) = print(io, "Memo", t.node)
 
 STI.isspatialtree(::Type{<:MemoBlockCursor}) = true
 
-# A hit is a compare and a load, so the search should not pay a vector per
-# visited node to avoid it.
+# A memoized extent is a compare and a load.
 STI.node_extent_is_expensive(::Type{<:MemoBlockCursor}) = false
 
 STI.isleaf(t::MemoBlockCursor) = STI.isleaf(t.node)

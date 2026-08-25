@@ -63,15 +63,13 @@ Whether one [`getcell`](@ref) costs enough that an area method should keep the
 polygons of a destination tile rather than synthesize each one again for every
 source leaf that overlaps it.
 
-The default is `true`: a space that derives cell boundaries from an index pays
-for every call. A space whose cells are a few coordinates read off a lattice
-should answer `false` — there keeping them costs more memory traffic than the
-synthesis it replaces.
-
-This is a property of the space, not of the tree an index set produces. The
-spatial-tree trait `STI.node_extent_is_expensive` describes extents, and the
-packed R-tree fallback answers `false` for it whatever space it wraps, so the
-two traits do not classify the same thing.
+  - `true` by default: a space that derives cell boundaries from an index pays
+    for every call.
+  - A space whose cells are a few coordinates read off a lattice should answer
+    `false`; keeping them there costs more memory traffic than it saves.
+  - A property of the space, not of the tree an index set produces. The
+    spatial-tree trait `STI.node_extent_is_expensive` describes extents, and the
+    packed R-tree fallback answers `false` for it whatever space it wraps.
 """
 expensivecellgeometry(::RegridSpace) = true
 

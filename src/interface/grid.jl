@@ -674,18 +674,17 @@ subcursor(::AbstractGrid, ::AbstractUnitRange{<:Integer}) = nothing
 The raster tiles covering the grid indices `inds`, or `nothing` (the default)
 when this grid's cells are not pixels of raster tiles.
 
-A **tile** is a rectangle of pixels: `raster_shape` gives its extent in rows and
-columns, `raster_localindex` names each pixel's index in `grid`, and
-`raster_cap` bounds any sub-rectangle of it. Together the tiles must hold every
-cell of `inds` exactly once and no cell outside it.
-
-The result is an indexable collection of **tile handles**. A handle is opaque to
-the caller, which only passes it back to the three hooks below, so a grid may
-carry in it whatever those need — an identifier, the rectangle's origin, its
-offset in the grid.
-
-Implemented by grids over a collection of raster tiles;
-[`treeify`](@ref) builds a tiled raster tree for them.
+  - A **tile** is a rectangle of pixels: `raster_shape` gives its extent in rows
+    and columns, `raster_localindex` names each pixel's index in `grid`, and
+    `raster_cap` bounds any sub-rectangle of it.
+  - Together the tiles must hold every cell of `inds` exactly once and no cell
+    outside it.
+  - The result is an indexable collection of **tile handles**. A handle is
+    opaque to the caller, which only passes it back to the three hooks below, so
+    a grid may carry in it whatever those need — an identifier, the rectangle's
+    origin, its offset in the grid.
+  - Implemented by grids over a collection of raster tiles; [`treeify`](@ref)
+    builds a tiled raster tree for them.
 """
 function raster_tiles end
 

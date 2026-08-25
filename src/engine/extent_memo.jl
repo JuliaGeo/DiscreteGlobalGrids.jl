@@ -13,10 +13,9 @@ const EXTENT_MEMO_SLOTS = 1024
 """
     EXTENT_MEMO_TABLES
 
-Tables one task holds at once for a given node-key and tree-identity type. A
-dual-tree join reads two trees, and a sweep that opens a window tree per chunk
-reads that window beside the holding it came from, so a handful is enough and
-the count bounds the memory a task can hold.
+Tables one task holds at once for a given node-key and tree-identity type. The
+count bounds a task's memo memory; a handful covers a dual-tree join and a
+per-chunk window tree read beside the holding it came from.
 """
 const EXTENT_MEMO_TABLES = 4
 
@@ -32,13 +31,11 @@ const EXTENT_MEMO_TABLES = 4
 One tree's [`EXTENT_MEMO_SLOTS`](@ref) direct-mapped extent slots: node key type
 `K`, tree identity `id` of type `I`.
 
-A node's key hashes to exactly one slot, a hit is a key compare and a load, and
-a miss derives the extent and overwrites whatever sat there. The slot holds the
-whole key and compares it, so a collision costs a re-derive, never a wrong
-extent.
-
-`misses` counts the derivations since the table was keyed to `id`; it is
-incremented on the miss path only.
+  - A node's key hashes to exactly one slot; a hit is a key compare and a load.
+  - A miss derives the extent and overwrites whatever sat there. The slot holds
+    the whole key and compares it, so a collision costs a re-derive, never a
+    wrong extent.
+  - `misses` counts the derivations since the table was keyed to `id`.
 """
 mutable struct ExtentTable{K,I}
     id::I
@@ -60,17 +57,12 @@ Base.show(io::IO, t::ExtentTable{K}) where {K} =
 One task's [`ExtentTable`](@ref)s for node key type `K` and tree identity type
 `I`, at most [`EXTENT_MEMO_TABLES`](@ref) of them.
 
-A tree is found by an identity scan over the tables held, so turning to another
-tree costs a compare per table and leaves the tables already keyed intact:
-alternating between trees — a dual-tree join, a window tree against the holding
-it came from, a self-join — hits in every one of them.
-
-A miss past the table count re-keys the least recently used table, which is the
-one policy under which a tree read on every ask survives a stream of trees read
-once each.
-
-The memo is task-local and holds no lock: tasks sharing a tree have separate
-tables.
+  - A tree is found by an identity scan over the tables held, so turning to
+    another tree costs a compare per table and leaves the tables already keyed
+    intact: alternating between trees hits in every one of them.
+  - A miss past the table count re-keys the least recently used table, so a tree
+    read on every ask survives a stream of trees read once each.
+  - Task-local and lock-free: tasks sharing a tree have separate tables.
 """
 mutable struct ExtentMemo{K,I}
     const tables::Vector{ExtentTable{K,I}}

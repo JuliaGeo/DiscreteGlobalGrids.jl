@@ -403,16 +403,15 @@ Whether [`cellat`](@ref) on a complete level grid of `sys` is answered from the
 query point's coordinates alone, rather than by the generic search over the
 grid's cells.
 
-`false` by default. A system opting in must implement [`cellat`](@ref) for its
-complete level grids; declaring it without one leaves every caller on the
-generic search while claiming otherwise.
-
-What the declaration buys is location on a *subset* of a level: a
-[`PartialGrid`](@ref) over such a system asks the complete level and keeps the
-answer only when it is a member, instead of building a spatial tree over its own
-cells. A system whose location IS the generic search must leave this `false` —
-searching the whole level and then discarding everything outside the subset is
-strictly more work than searching the subset.
+  - `false` by default. A system opting in must implement [`cellat`](@ref) for
+    its complete level grids; declaring it without one leaves every caller on
+    the generic search while claiming otherwise.
+  - What it buys is location on a *subset* of a level: a [`PartialGrid`](@ref)
+    over such a system asks the complete level and keeps the answer only when it
+    is a member, instead of building a spatial tree over its own cells.
+  - A system whose location IS the generic search must leave this `false`:
+    searching the whole level and discarding everything outside the subset is
+    strictly more work than searching the subset.
 """
 has_direct_location(::AbstractHierarchicalGridSystem) = false
 

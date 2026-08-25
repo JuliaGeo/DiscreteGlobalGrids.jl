@@ -287,6 +287,16 @@ The approximate resident size in bytes of the blocks `storage` holds.
 storagebytes(s::PerChunk) = @lock s.lock s.bytes
 
 """
+    weightlimit(storage) -> Int
+
+The bytes of weights `storage` holds before it evicts, or zero where it states
+no bound. This is what bounds a lazy read's [`TilePrefetch`](@ref) queue.
+"""
+weightlimit(::AbstractBlockStorage) = 0
+
+weightlimit(s::PerChunk) = s.maxbytes
+
+"""
     getblock!(storage, key, build) -> CachedBlock
 
 Return the cached block for `key`, calling `build()` on a miss. Builds run
@@ -480,6 +490,7 @@ end
 
 nblocks(s::Spilled) = nblocks(s.memory)
 storagebytes(s::Spilled) = storagebytes(s.memory)
+weightlimit(s::Spilled) = weightlimit(s.memory)
 
 function getblock!(storage::Spilled, key::Tuple{Int,Int}, build::F) where {F}
     return getblock!(storage.memory, key, function ()

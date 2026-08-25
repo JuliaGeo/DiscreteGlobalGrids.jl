@@ -88,12 +88,33 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
         @test GR.manifold(space) == GR.manifold(SRC)
         i = DGG.ncells(space) ÷ 2
         @test GR.cellat(space, GR.cellcentroid(space, i)) == i
-        # ...and it is the grid's own answer read as an index into the space:
-        # the space contributes the translation and nothing else, on a complete
-        # level and on a subset alike.
-        let p = GR.cellcentroid(space, i)
-            @test GR.cellat(space, p) ==
-                  DGG.localindex(space.grid, DGG.cellat(space.grid, p))
+        # The space's answer is the grid's own membership read as an index, and
+        # it resolves that membership once. What it has to agree with is the
+        # two-step form — locate, then look the located cell up — at points
+        # inside a cell, on a cell's boundary, and off the collection
+        # altogether. `localindex` on the grid is the same question, and the
+        # method the space now takes.
+        let twostep = function (p)
+                c = DGG.cellat(space.grid, p)
+                return c === nothing ? nothing : DGG.localindex(space.grid, c)
+            end,
+            probes = vcat(
+                [GR.cellcentroid(space, j) for j in (1, i, DGG.ncells(space))],
+                collect(DGG.cell_boundary(space.grid, DGG.cellindex(space.grid, i))),
+                collect(DGG.cell_boundary(space.grid, DGG.cellindex(space.grid, 1))),
+                [DGG.Fallbacks.unit_point(lon, lat)
+                 for (lon, lat) in ((170.0, -85.0), (0.0, 0.0), (-179.0, 12.0))])
+
+            @test all(GR.cellat(space, p) == twostep(p) for p in probes)
+            @test all(DGG.localindex(space.grid, p) == twostep(p) for p in probes)
+            @test (@inferred Union{Nothing,Int} GR.cellat(space, first(probes))) ==
+                  twostep(first(probes))
+            # A subset does not cover the sphere, so some of those points are
+            # off it and the agreement above is an agreement about `nothing`
+            # as well as about indices.
+            if space.grid isa DGG.PartialGrid
+                @test any(GR.cellat(space, p) === nothing for p in probes)
+            end
         end
         # The sites a point method interpolates between are the space's own
         # centroids, handed over as the collection's centroid field — the same

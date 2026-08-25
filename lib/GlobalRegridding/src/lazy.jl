@@ -309,6 +309,48 @@ function _evictoldest!(hold::SourceHold)
     return hold
 end
 
+# Prefetching destination tiles
+
+"""
+    TilePrefetch(ntiles, limit)
+
+Builds the weights of upcoming destination tiles in background tasks while the
+current tile's sources are read, so a sweep over a lazy array overlaps the two.
+
+  - Starts after two consecutive tiles have been served; a single read never
+    spawns anything. A read that jumps waits for the queued tasks and empties
+    the queue.
+  - Queue depth is `min(nthreads() - 1, limit ÷ largest - 1)`: `limit` is the
+    storage's [`weightlimit`](@ref), `largest` the biggest tile built so far, so
+    queued tiles plus the one in hand never exceed what the cache may hold.
+    Depth is 0 on one thread, under [`OUTER_PARALLEL`](@ref), and before the
+    first tile is built.
+  - Tasks write only into the plan's storage under its lock; the queue is
+    guarded by `lock`, so concurrent readers of one array are safe.
+  - Source reads, their order, every `LazyStats` counter and the values are
+    unchanged.
+"""
+mutable struct TilePrefetch
+    ntiles::Int
+    queue::Vector{StableTask{CachedTile}}   # `queue[k]` is tile `served + k`
+    served::Int            # the tile last served, `0` before the first
+    largest::Int           # bytes of the largest tile built so far
+    limit::Int
+    lock::ReentrantLock    # guards every field above
+end
+
+TilePrefetch(ntiles::Integer, limit::Integer) = TilePrefetch(
+    Int(ntiles), StableTask{CachedTile}[], 0, 0, Int(limit), ReentrantLock())
+
+Base.show(io::IO, p::TilePrefetch) =
+    print(io, "TilePrefetch(", length(p.queue), " tiles queued after ", p.served, ")")
+
+# The queue depth, in one place.
+function _prefetchdepth(p::TilePrefetch)
+    (p.largest > 0 && !OUTER_PARALLEL[]) || return 0
+    return max(0, min(max(Threads.nthreads() - 1, 0), p.limit ÷ p.largest - 1))
+end
+
 # Lazy array
 
 """
@@ -357,6 +399,8 @@ struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C,
     emptymemo::Vector{Int8}
     dropempty::Bool
     stats::LazyStats
+    # Carries prefetch state between reads: a sweep asks for one tile per read.
+    prefetch::TilePrefetch
 end
 
 function LazyRegridArray(data, plan::ChunkedPlan)
@@ -377,7 +421,8 @@ function LazyRegridArray(data, plan::ChunkedPlan)
         typeof(source),typeof(plan),typeof(graph),typeof(chunks),typeof(chunking)}(
         source, plan, srcsize, (ndst, othersizes...), graph, tiling,
         chunks, chunking, zeros(Int8, Int(nchunks(src_space))),
-        !usesreference(plan.missingpolicy), LazyStats())
+        !usesreference(plan.missingpolicy), LazyStats(),
+        TilePrefetch(length(tiling.runs), weightlimit(plan.storage)))
 end
 
 # Every lazy read needs the plan's relation — for tile ordering, wave costing,
@@ -499,6 +544,78 @@ function DiskArrays.readblock!(A::LazyRegridArray, aout::AbstractArray,
     return _readdestination!(reshape(aout, length(cellr), nslices), A, cellr, others, nslices)
 end
 
+# Serving and queueing tiles. The reading loop below is their only caller; they
+# name the array because a queued tile takes its cells off it.
+
+# Serve tile `t` from the queue where it holds it and by building here where it
+# does not, then queue the tiles behind it. Both guarded regions leave `queue[k]`
+# naming tile `served + k`, so a take pops the tile it asked for however takes
+# interleave; the wait for the tile is between them, holding no lock.
+function _taketile!(p::TilePrefetch, A::LazyRegridArray, plan::ChunkedPlan, t::Int,
+    dinds, smp)
+    prev = 0
+    task = nothing
+    @lock p.lock begin
+        prev = p.served
+        if t == prev + 1 && !isempty(p.queue)
+            task = popfirst!(p.queue)
+        else
+            _drain!(p)
+        end
+        p.served = t
+    end
+    tile = task === nothing ? tilefor(plan, t, dinds, smp) : _fetchtile(task)
+    @lock p.lock begin
+        p.largest = max(p.largest, tile.bytes)
+        # Two tiles in succession are the evidence that a sweep is running.
+        (prev >= 1 && t == prev + 1) && _prefetch!(p, A, plan, smp)
+    end
+    return tile
+end
+
+# Raise what the build raised, not the wrapper a task failure arrives in.
+function _fetchtile(task::StableTask{CachedTile})
+    try
+        return fetch(task)
+    catch err
+        err isa TaskFailedException && throw(err.task.result)
+        rethrow()
+    end
+end
+
+# Queue the tiles behind the one served, up to the depth. Called under `p.lock`.
+function _prefetch!(p::TilePrefetch, A::LazyRegridArray, plan::ChunkedPlan, smp)
+    depth = _prefetchdepth(p)
+    while length(p.queue) < depth
+        next = p.served + length(p.queue) + 1
+        next <= p.ntiles || break
+        # The reading loop reads the destination space too, so a tile's cells
+        # are resolved here rather than in the task.
+        dinds = _tileindices(A, next)
+        # A build inside the task sees the scope and keeps its own loops serial.
+        # The typeassert is what the task's return type is inferred from, so the
+        # queue holds a `StableTask{CachedTile}` whatever `tilefor` infers to.
+        push!(p.queue, @with OUTER_PARALLEL => true StableTasks.@spawn tilefor(
+            plan, next, dinds, smp)::CachedTile)
+    end
+    return p
+end
+
+# Wait for every queued task and forget them. A build that failed raises where
+# its tile is served, not here.
+function _drain!(p::TilePrefetch)
+    @lock p.lock begin
+        for task in p.queue
+            try
+                wait(task)
+            catch
+            end
+        end
+        empty!(p.queue)
+    end
+    return p
+end
+
 """
     _readdestination!(out, A, cellr, others, nslices)
 
@@ -509,7 +626,8 @@ chunk order, keeping results independent of thread count.
 A point method with a [`sampler`](@ref) has one build per tile rather than one
 per pair: the tile's [`TileWeights`](@ref) are built before any source read —
 before source selection, because their manifest is what selects — and its blocks
-are applied in the same ascending chunk order.
+are applied in the same ascending chunk order. Tiles the array has not been
+asked for yet are built concurrently, through its [`TilePrefetch`](@ref).
 """
 function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
     cellr::UnitRange{Int}, others::NTuple{NO,UnitRange{Int}}, nslices::Int) where {T,N,NS,NO}
@@ -540,8 +658,9 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         fill!(cover, 0.0)
         fill!(total, 0.0)
         # On the tile route the weights come before the selection, because the
-        # chunks that carry one are exactly the chunks read.
-        tile = smp === nothing ? nothing : tilefor(plan, t, dinds, smp)
+        # chunks that carry one are exactly the chunks read. Taking a tile also
+        # queues the tiles behind it.
+        tile = smp === nothing ? nothing : _taketile!(A.prefetch, A, plan, t, dinds, smp)
         _connectedsource!(srcchunks, A, t, tile)
         _sourceranges!(srcranges, A, srcchunks)
         # Prepare the tile's destination geometry once, where more than one
@@ -700,6 +819,14 @@ function _tilewave!(wave::Vector{CachedBlock}, tile::CachedTile, srcchunks::Vect
     return wave
 end
 
+# Spawn one block build. A task inherits the scope, so a nested build sees the
+# wave and stays serial; the typeassert is what its return type is inferred from,
+# so a wave's handles are `StableTask{CachedBlock}`s whatever `blockfor` infers
+# to.
+_spawnblock(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, destination) =
+    @with OUTER_PARALLEL => true StableTasks.@spawn blockfor(
+        plan, key, dinds, destination)::CachedBlock
+
 # Build one wave concurrently and preserve chunk order in `wave`.
 function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
     srcchunks::Vector{Int}, i::Int, j::Int, dinds, destination)
@@ -710,11 +837,7 @@ function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
         push!(wave, blockfor(plan, (t, srcchunks[i]), dinds, destination))
         return wave
     end
-    tasks = map(i:j) do k
-        s = srcchunks[k]
-        # Tasks inherit the scope, so nested builds see the wave and stay serial.
-        @with OUTER_PARALLEL => true Threads.@spawn blockfor(plan, (t, s), dinds, destination)
-    end
+    tasks = map(k -> _spawnblock(plan, (t, srcchunks[k]), dinds, destination), i:j)
     # Every spawned task is waited for, whatever happens. A bare `fetch` loop
     # abandons the tasks after the first failure: they keep building against a
     # plan the caller has already moved on from, writing into its block storage
@@ -722,7 +845,7 @@ function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
     err = nothing
     for task in tasks
         try
-            block = fetch(task)::CachedBlock
+            block = fetch(task)
             err === nothing && push!(wave, block)
         catch e
             err === nothing && (err = e)

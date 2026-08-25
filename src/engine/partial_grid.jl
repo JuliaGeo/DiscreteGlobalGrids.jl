@@ -199,6 +199,16 @@ function cellat(grid::PartialGrid, p::GO.UnitSphericalPoint)
     return localindex(grid, c) === nothing ? nothing : c
 end
 
+# One search: `cellat` above is this method with the index thrown away, and the
+# membership test it makes is what produces that index.
+function localindex(grid::PartialGrid, p::GO.UnitSphericalPoint)
+    has_direct_location(grid.system) || return invoke(localindex,
+        Tuple{AbstractGrid,GO.UnitSphericalPoint}, grid, p)
+    c = cellat(grid.complete, p)
+    c === nothing && return nothing
+    return localindex(grid, c)
+end
+
 # [`subset_span`](@ref) over a sorted id vector. Ids ascend with indices on
 # every system here — the same fact `_check_rooted` decides a whole vector's
 # ancestry by — so the block `lo:hi` maps to the id interval `[idlo, idhi]` and

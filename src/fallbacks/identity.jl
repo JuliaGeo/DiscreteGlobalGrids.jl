@@ -65,6 +65,17 @@ function localindex(grid::AbstractGrid, c::AbstractCellIndex)
     return nothing
 end
 
+# The point form, spelled as the two calls it stands for. A grid that resolves
+# membership while it locates overrides this with one search.
+function localindex(grid::AbstractGrid, p::GO.UnitSphericalPoint)
+    c = cellat(grid, p)
+    c === nothing && return nothing
+    return localindex(grid, c)
+end
+
+localindex(grid::AbstractGrid, lon::Real, lat::Real) =
+    localindex(grid, unit_point(lon, lat))
+
 # `BoundsError` on a grid names the valid index range instead of the grid's
 # type parameters.
 function Base.summary(io::IO, grid::AbstractGrid)

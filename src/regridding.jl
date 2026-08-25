@@ -154,14 +154,9 @@ GR.cellcentroid(space::DGGSpace, i::Int) =
 # preparing a sampler materialises nothing and concurrent queries share it.
 GR.samplesites(space::DGGSpace) = cellfield(cell_centroid, CellVector(space.grid))
 
-function cellat(space::DGGSpace, p::GO.UnitSphericalPoint)
-    c = cellat(space.grid, p)
-    c === nothing && return nothing
-    # Local, not global: this is the inverse of `cellcentroid` above, which
-    # names its cell with `cellindex(space.grid, i)`. A `DGGSpace` may wrap a
-    # `PartialGrid`, and there the two spaces are different numbers.
-    return localindex(space.grid, c)
-end
+# Local, not global: the inverse of `cellcentroid` above, and on a `PartialGrid`
+# a different numbering from the grid's own cell ids.
+cellat(space::DGGSpace, p::GO.UnitSphericalPoint) = localindex(space.grid, p)
 
 GR.celltree(space::DGGSpace) = treeify(space.grid)
 

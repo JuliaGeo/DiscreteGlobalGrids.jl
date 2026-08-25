@@ -76,6 +76,35 @@ function buildweights!(coo::WeightCOO, m::T7RadiusMethod,
     return coo
 end
 
+# `NearestCell`'s stencils behind a sampler that records, per query, whether an
+# outer loop had declared itself parallel where the tile being built was built.
+# A prefetched build spawns under that declaration and a build in the consuming
+# loop does not, so the two are distinguishable from inside a build.
+
+struct T10ScopeNearest <: AbstractRegriddingMethod
+    seen::Vector{Bool}
+    guard::ReentrantLock
+end
+
+T10ScopeNearest() = T10ScopeNearest(Bool[], ReentrantLock())
+
+GR.outputsampling(::T10ScopeNearest) = DD.Lookups.Points()
+GR.supportradius(::T10ScopeNearest, space::RegridSpace) =
+    supportradius(NearestCell(), space)
+
+struct T10ScopeSampler{S}
+    inner::S
+    method::T10ScopeNearest
+end
+
+GR.sampler(m::T10ScopeNearest, space::RegridSpace) =
+    T10ScopeSampler(GR.sampler(NearestCell(), space), m)
+
+function GR.weightsat!(row::GR.WeightRow, s::T10ScopeSampler, p)
+    @lock s.method.guard push!(s.method.seen, GR.OUTER_PARALLEL[])
+    return GR.weightsat!(row, s.inner, p)
+end
+
 # A point method with `BarycentricPoint`'s stencils and the default support
 # radius of zero, so its relation is cap overlap and nothing else.
 
@@ -356,6 +385,16 @@ end
         @test_throws Exception GR._fillwave!(wave, plan, 1, srcchunks, 1, j,
             dinds, dinds)
         @test method.finished[] == j - 1
+    end
+
+    @testset "a wave's handles carry the block type" begin
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        dinds = ownedindices(dstspace, 1)
+        # A build spawned for a wave is fetched without an assertion, so the
+        # wave holds one concrete handle type.
+        task = GR._spawnblock(plan, (1, t7_sources(plan, 1)[1]), dinds, dinds)
+        @test task isa GR.StableTask{GR.CachedBlock}
+        @test @inferred(fetch(task)) isa GR.CachedBlock
     end
 
     @testset "at top level the wave is weighed against inner threading" begin
@@ -1350,5 +1389,227 @@ end
         # list: the stencils do not move with the chunking and the manifest
         # does.
         @test manifests[(18, 18)] != manifests[(12, 9)]
+    end
+
+    # A sixteen-tile destination over eighteen source chunks: a sweep is sixteen
+    # reads of one tile each, and the whole destination in one call is the other
+    # shape. Both are read below.
+    t10_src() = ToyLonLatSpace(36, 18; chunks = (6, 6))
+    t10_dst() = ToyLonLatSpace(40, 32; lon = (-40.0, 40.0), lat = (-30.0, 30.0),
+        chunks = (40, 2))
+    t10_data() = collect(reshape(1.0:648.0, 36, 18))
+    # A build typed like any other tile build that fails at run time.
+    function t10_failingbuild(flag::Base.RefValue{Bool}, tile::GR.CachedTile)
+        flag[] && throw(ArgumentError("weights"))
+        return tile
+    end
+
+    @testset "tiles built ahead answer what tiles built in turn answer" begin
+        src, dst, data = t10_src(), t10_dst(), t10_data()
+        ndst = Int(ncells(dst))
+        @test nchunks(dst) == 16
+
+        # `OUTER_PARALLEL` empties the queue, so the second run of each pair is
+        # the tile-by-tile one whatever the thread count is.
+        function t10_run(sweep::Bool, serial::Bool)
+            plan = t7_plan(NearestCell(), dst, src)
+            A = LazyRegridArray(data, plan)
+            out = Vector{Float64}(undef, ndst)
+            doread() = if sweep
+                for t in 1:nchunks(dst)
+                    dinds = ownedindices(dst, t)
+                    r = first(dinds):last(dinds)
+                    @test length(GR._coveringtiles(A, r)) == 1
+                    out[r] .= A[r]
+                end
+            else
+                out .= A[1:ndst]
+            end
+            serial ? Base.ScopedValues.@with(GR.OUTER_PARALLEL => true, doread()) :
+                doread()
+            return out, plan, GR.residency(A)
+        end
+
+        eager = regrid(data; to = dst, from = src, method = NearestCell(),
+            lazy = false)
+        for sweep in (true, false)
+            concurrent, cplan, cstats = t10_run(sweep, false)
+            serial, splan, sstats = t10_run(sweep, true)
+
+            # Bit-identical, not approximate: the same weights applied in the
+            # same order.
+            @test isequal(concurrent, serial)
+            @test isequal(concurrent, eager)
+
+            # Sources are read by the reading loop alone, so every counter the
+            # executor keeps is the tile-by-tile run's.
+            @test (cstats.loads, cstats.hits, cstats.skipped, cstats.dropped,
+                cstats.peakbytes) ==
+                  (sstats.loads, sstats.hits, sstats.skipped, sstats.dropped,
+                sstats.peakbytes)
+
+            # One pass builds one tile once, and leaves the same cache behind.
+            @test cplan.storage.builds == nchunks(dst)
+            @test splan.storage.builds == nchunks(dst)
+            @test sort(collect(keys(cplan.storage.tiles))) ==
+                  sort(collect(keys(splan.storage.tiles)))
+            @test GR.storagebytes(cplan.storage) == GR.storagebytes(splan.storage)
+            @test all(cplan.storage.tiles[t].bytes == splan.storage.tiles[t].bytes &&
+                      cplan.storage.tiles[t].sourcechunks ==
+                      splan.storage.tiles[t].sourcechunks
+                      for t in keys(cplan.storage.tiles))
+        end
+
+        # A queued build fails the way a build in the reading loop fails: with
+        # the exception it raised, not the wrapper a task failure arrives in.
+        let plan = t7_plan(NearestCell(), dst, src)
+            A = LazyRegridArray(data, plan)
+            tile = GR._taketile!(A.prefetch, A, plan, 1, GR._tileindices(A, 1),
+                GR.tilesampler(plan))
+            @test_throws ArgumentError GR._fetchtile(
+                GR.StableTasks.@spawn t10_failingbuild(Ref(true), tile)::GR.CachedTile)
+        end
+    end
+
+    @testset "the prefetch queue is bounded by the weights the storage holds" begin
+        src, dst, data = t10_src(), t10_dst(), t10_data()
+        ndst = Int(ncells(dst))
+        threads = max(Threads.nthreads() - 1, 0)
+
+        # Nothing measures a tile before one is built, so the depth is zero
+        # until one is.
+        pf = GR.TilePrefetch(nchunks(dst), 4000)
+        @test @inferred(GR._prefetchdepth(pf)) == 0
+
+        # A limit holding k tiles queues k - 1; a limit holding one queues none,
+        # and so does one thread whatever the limit says.
+        pf.largest = 1000
+        @test GR._prefetchdepth(pf) == min(threads, 3)
+        pf.largest = 4000
+        @test GR._prefetchdepth(pf) == 0
+        pf.largest = 5000
+        @test GR._prefetchdepth(pf) == 0
+        pf.largest = 1
+        @test GR._prefetchdepth(pf) == threads
+        @test GR.weightlimit(PerChunk(; maxbytes = 4000)) == 4000
+        @test Base.ScopedValues.@with(GR.OUTER_PARALLEL => true,
+            GR._prefetchdepth(pf)) == 0
+
+        # Driven against a real plan: the first tile served queues nothing, the
+        # second queues exactly the depth the arithmetic allows.
+        plan = t7_plan(NearestCell(), dst, src)
+        A = LazyRegridArray(data, plan)
+        smp = GR.tilesampler(plan)
+        first_tile = GR._taketile!(A.prefetch, A, plan, 1, GR._tileindices(A, 1), smp)
+        @test first_tile isa GR.CachedTile
+        @test isempty(A.prefetch.queue)
+        GR._taketile!(A.prefetch, A, plan, 2, GR._tileindices(A, 2), smp)
+        @test length(A.prefetch.queue) == GR._prefetchdepth(A.prefetch)
+        @test length(A.prefetch.queue) <= threads
+        # The queue is typed, so a fetched tile is one without an assertion.
+        @test eltype(A.prefetch.queue) === GR.StableTask{GR.CachedTile}
+        if !isempty(A.prefetch.queue)
+            @test @inferred(GR._fetchtile(first(A.prefetch.queue))) isa GR.CachedTile
+        end
+        # A read that jumps waits for the queued tiles and empties the queue.
+        far = nchunks(dst)
+        GR._taketile!(A.prefetch, A, plan, far, GR._tileindices(A, far), smp)
+        @test isempty(A.prefetch.queue)
+
+        # Whatever the bound, a sweep answers the same values and builds each
+        # tile once: the queue holds its own reference, so a tile the cache
+        # evicts before the sweep reaches it is served, not built twice.
+        eager = regrid(data; to = dst, from = src, method = NearestCell(),
+            lazy = false)
+        for maxbytes in (1, 4000, typemax(Int))
+            tight = t7_plan(NearestCell(), dst, src;
+                storage = PerChunk(; maxbytes))
+            B = LazyRegridArray(data, tight)
+            out = Vector{Float64}(undef, ndst)
+            for t in 1:nchunks(dst)
+                dinds = ownedindices(dst, t)
+                r = first(dinds):last(dinds)
+                out[r] .= B[r]
+            end
+            @test isequal(out, eager)
+            @test tight.storage.builds == nchunks(dst)
+        end
+    end
+
+    @testset "two tasks reading one array take the tiles they asked for" begin
+        src, dst, data = t10_src(), t10_dst(), t10_data()
+        ndst = Int(ncells(dst))
+        nt = nchunks(dst)
+        half = nt ÷ 2
+        serial = regrid(data; to = dst, from = src, method = NearestCell(),
+            lazy = false)
+
+        # Each reader runs ascending over its own half, so both see tiles in
+        # succession and both drive the one queue.
+        for round in 1:24
+            plan = t7_plan(NearestCell(), dst, src)
+            A = LazyRegridArray(data, plan)
+            out = Vector{Float64}(undef, ndst)
+            read!(lo, hi) = for t in lo:hi
+                dinds = ownedindices(dst, t)
+                r = first(dinds):last(dinds)
+                out[r] .= A[r]
+            end
+            lower = Threads.@spawn read!(1, half)
+            upper = Threads.@spawn read!(half + 1, nt)
+            wait(lower)
+            wait(upper)
+
+            # The tile a reader is handed is the tile it asked for: one swapped
+            # for another writes that other tile's weights into these cells.
+            @test isequal(out, serial)
+            @test plan.storage.builds == nt
+            # And the queue still describes itself: a run of tasks after the
+            # tile last served, no longer than the bound allows.
+            @test 0 <= A.prefetch.served <= A.prefetch.ntiles
+            @test length(A.prefetch.queue) <= GR._prefetchdepth(A.prefetch)
+            @test eltype(A.prefetch.queue) === GR.StableTask{GR.CachedTile}
+            @test all(t -> t isa GR.StableTask{GR.CachedTile}, A.prefetch.queue)
+            @test isempty(GR._drain!(A.prefetch).queue)
+        end
+    end
+
+    @testset "a prefetched build keeps its own loops serial" begin
+        # `OUTER_PARALLEL` is what turns threading off inside a weight build, so
+        # a tile built in a prefetch task must see it declared.
+        src, dst, data = t10_src(), t10_dst(), t10_data()
+        ndst = Int(ncells(dst))
+        # The first two tiles are built by the reading loop: nothing is queued
+        # before a first read, and the second read queues behind itself.
+        byloop = length(ownedindices(dst, 1)) + length(ownedindices(dst, 2))
+
+        function t10_sweep(method, storage)
+            plan = t7_plan(method, dst, src; storage)
+            A = LazyRegridArray(data, plan)
+            out = Vector{Float64}(undef, ndst)
+            for t in 1:nchunks(dst)
+                dinds = ownedindices(dst, t)
+                r = first(dinds):last(dinds)
+                out[r] .= A[r]
+            end
+            return out
+        end
+
+        open = T10ScopeNearest()
+        openout = t10_sweep(open, PerChunk())
+        @test length(open.seen) == ndst
+        if Threads.nthreads() > 1
+            @test count(!, open.seen) == byloop
+            @test count(identity, open.seen) == ndst - byloop
+        else
+            @test !any(open.seen)
+        end
+
+        # A storage holding no whole tile empties the queue, and then nothing is
+        # built under the declaration at all.
+        shut = T10ScopeNearest()
+        shutout = t10_sweep(shut, PerChunk(; maxbytes = 1))
+        @test !any(shut.seen)
+        @test isequal(openout, shutout)
     end
 end

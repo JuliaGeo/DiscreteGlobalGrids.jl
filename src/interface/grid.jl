@@ -181,6 +181,18 @@ for the local index and be correct in both cases.
 collection is not an error either — it is simply not held, so the answer is
 `nothing`.
 
+# Locating a point
+
+    localindex(collection, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
+    localindex(collection, lon::Real, lat::Real)
+
+The local index of the cell containing a point.
+
+  - `nothing` where the collection covers the point nowhere. Degrees for the
+    `(lon, lat)` method, as everywhere else.
+  - One search where the collection can answer in one: a subset resolves
+    membership while it locates, and keeps the index that produced.
+
 See also [`globalindex`](@ref), [`cellindex`](@ref).
 """
 function localindex end

@@ -35,6 +35,7 @@ using Base.ScopedValues: ScopedValue, @with
 import Graphs
 import SparseArrays
 using SparseArrays: SparseMatrixCSC, sparse
+using StableTasks: StableTasks, StableTask
 
 # Keep `SphericalCap` generic for its two-argument constructor.
 const US = GO.UnitSpherical

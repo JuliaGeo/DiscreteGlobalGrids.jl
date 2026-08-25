@@ -96,7 +96,7 @@ _targetarea(A::DD.AbstractDimArray, radius::Real, samples::Int) =
     _targetarea(GR.RasterGrid(A), radius, samples)
 
 # Sample with an irrational stride to avoid aliasing regular raster columns.
-function _samplepositions(n::Int, samples::Int)
+function _sampleindices(n::Int, samples::Int)
     k = clamp(samples, 1, n)
     k == n && return collect(1:n)
     return [mod1(round(Int, j * n * 0.6180339887498949), n) for j in 1:k]
@@ -112,14 +112,14 @@ end
 function _mediancellarea(space::GR.RegridSpace, samples::Int)
     n = Int(ncells(space))
     n > 0 || throw(ArgumentError("cannot measure cell areas against an empty space"))
-    return _median!([GR.cellarea(space, i) for i in _samplepositions(n, samples)])
+    return _median!([GR.cellarea(space, i) for i in _sampleindices(n, samples)])
 end
 
 function _mediancellarea(grid::AbstractGrid, over, samples::Int)
     n = ncells(grid)
     n > 0 || throw(ArgumentError("an empty grid has no cell size"))
     over === nothing && return _median!(
-        [cell_area(grid, cellindex(grid, i)) for i in _samplepositions(n, samples)])
+        [cell_area(grid, cellindex(grid, i)) for i in _sampleindices(n, samples)])
     return _median!([cell_area(grid, c) for c in _aoicells(grid, over, samples)])
 end
 
@@ -148,7 +148,7 @@ function _aoicells(grid::AbstractGrid, over, samples::Int)
     isempty(ids) && throw(ArgumentError(
         "no cell of the grid meets the area of interest"))
     sampled = length(ids) <= k ? ids :
-              [ids[i] for i in _samplepositions(length(ids), k)]
+              [ids[i] for i in _sampleindices(length(ids), k)]
     probe === grid && return sampled
     out = cellindextype(sys)[]
     for c in sampled

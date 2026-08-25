@@ -8,7 +8,7 @@
 
 include("Harness.jl")
 using .Harness
-using .Harness: modal_degree, pole_positions, nrange
+using .Harness: modal_degree, pole_indices, nrange
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: Vertex, Edge
 using Printf
@@ -21,7 +21,7 @@ function main()
         k = gridctx(sys, 3, conn)
         degs = [length(nrange(k, p)) for p in 1:length(k)]
         m = modal_degree(k)
-        np, sp = pole_positions(k)
+        np, sp = pole_indices(k)
         @printf("  %-16s L3 %5d cells  degrees %s (modal %d)  low=%d high=%d  poles at %d,%d\n",
             nameof(typeof(sys)), length(k), string(sort(unique(degs))), m,
             count(<(m), degs), count(>(m), degs), np, sp)

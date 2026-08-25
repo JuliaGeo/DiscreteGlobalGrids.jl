@@ -37,7 +37,7 @@ _base_cell_descendants(b::Int, r::Int) =
     b in PENTAGON_BASE_CELLS ? 1 + 5 * (7^r - 1) ÷ 6 : 7^r
 
 # `_H3_ROOT_ENDS[r + 1][j]` is the number of res-`r` cells in base cells
-# `0:(j-1)` — the cumulative table a position is binary-searched against.
+# `0:(j-1)` — the cumulative table an index is binary-searched against.
 const _H3_ROOT_ENDS = ntuple(MAX_RESOLUTION + 1) do i
     r = i - 1
     return cumsum([_base_cell_descendants(b, r) for b in 0:121])
@@ -136,7 +136,7 @@ DGG.maxring(::H3System, k::Integer, ::Connectivity = Vertex()) =
     (steps = Int(k); steps == 0 ? 1 : 6 * steps)
 
 # ===========================================================================
-# The dense order: positions <-> ids
+# The dense order: indices <-> ids
 # ===========================================================================
 
 function ncells(::H3System, l::Integer)
@@ -146,7 +146,7 @@ end
 """
     cellindex(::H3System, l::Integer, i::Int) -> H3Cell
 
-The id at position `i` of resolution `l`, computed from the base-cell prefix
+The id at index `i` of resolution `l`, computed from the base-cell prefix
 sums and libh3's `childPosToCell`. The grid must bounds-check `i` first.
 """
 function cellindex(::H3System, l::Integer, i::Int)
@@ -162,15 +162,15 @@ function cellindex(::H3System, l::Integer, i::Int)
 end
 
 """
-    cellposition(::H3System, c::H3Cell) -> Union{Int,Nothing}
+    globalindex(::H3System, c::H3Cell) -> Union{Int,Nothing}
 
-The position of `c` in its resolution's dense order, or `nothing` when `c` is
+The index of `c` in its resolution's dense order, or `nothing` when `c` is
 not a valid index. The grid must reject cells from another resolution first.
 
 Malformed ids return `nothing`; libh3 child-position arithmetic is not itself a
 validity check.
 """
-function cellposition(::H3System, c::H3Cell)
+function globalindex(::H3System, c::H3Cell)
     H3Native.is_valid_cell(c.id) || return nothing
     b = H3Native.get_base_cell(c.id)
     ends = @inbounds _H3_ROOT_ENDS[level(c)+1]
@@ -205,7 +205,7 @@ Every descendant at resolution `l`, in ascending id order. `cellToChildren`
 handles any depth in one call.
 
 O(subtree) and materialising, as the contract says — reach for
-[`descendant_range`](@ref) instead wherever positions will do.
+[`descendant_range`](@ref) instead wherever indices will do.
 """
 function descendants(::H3System, c::H3Cell, l::Integer)
     target = Int(l)
@@ -221,7 +221,7 @@ end
 """
     descendant_range(::H3System, c::H3Cell, l::Integer) -> UnitRange{Int}
 
-The contiguous interval of **positions** in `levelgrid(H3System(), l)` that the
+The contiguous interval of **indices** in `levelgrid(H3System(), l)` that the
 descendants of `c` at resolution `l` occupy.
 
 Computed without enumeration from child position zero and
@@ -240,12 +240,12 @@ function descendant_range(sys::H3System, c::H3Cell, l::Integer)
     # descent in `HierarchicalGridCursor` asks for it at the level above the
     # leaves and must not get an exception.
     if target == lc
-        p = cellposition(grid, c)
+        p = globalindex(grid, c)
         p === nothing && throw(ArgumentError("$c is not a valid H3 cell"))
         return p:p
     end
     first_child = H3Cell(H3Native.child_pos_to_cell(0, c.id, target))
-    p = cellposition(grid, first_child)
+    p = globalindex(grid, first_child)
     p === nothing && throw(ArgumentError("$c is not a valid H3 cell"))
     count = Int(H3Native.cell_to_children_size(c.id, target))
     return p:(p+count-1)

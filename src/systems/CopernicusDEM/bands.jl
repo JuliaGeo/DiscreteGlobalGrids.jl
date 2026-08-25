@@ -212,7 +212,7 @@ function decode(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     return (Int(r), Int(q), Int(j), Int(i))
 end
 
-# Reject invalid ids and levels; `cellposition` returns `nothing` instead.
+# Reject invalid ids and levels; `globalindex` returns `nothing` instead.
 @inline function _checked_index(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
     n = DGG.ncells(sys, l)

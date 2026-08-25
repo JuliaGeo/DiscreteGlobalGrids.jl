@@ -86,6 +86,18 @@ uncut(target::PlanarTarget) = PlanarTarget(target.projection, NaN)
 uncut(target::PlotTarget) = target
 
 """
+    surface_target(transform_func, wrap) -> PlotTarget
+
+The target a plot draws into: its axis's transform function read once, with the
+seam removed if the plot does not want one.
+
+Every recipe here starts from these two attributes, and this is the one place
+that turns them into a [`PlotTarget`](@ref).
+"""
+surface_target(transform_func, wrap::Bool) =
+    wrap ? plot_target(transform_func) : uncut(plot_target(transform_func))
+
+"""
     task_count(ntasks) -> Int
 
 How many tasks to build a mesh with: one per thread unless the plot names a
@@ -199,8 +211,7 @@ function Makie.plot!(plot::DGGPoly{<:Tuple{<:CellSet}})
     Makie.map!(
         plot, [:cells, :transform_func, :wrap, :ntasks], [:cellmesh]
     ) do cells, transform_func, wrap, ntasks
-        target = plot_target(transform_func)
-        wrap || (target = uncut(target))
+        target = surface_target(transform_func, wrap)
         return (tessellate(target, cells; ntasks = task_count(ntasks)),)
     end
 

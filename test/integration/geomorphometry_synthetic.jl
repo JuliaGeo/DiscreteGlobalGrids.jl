@@ -104,7 +104,7 @@ function flow_battery(sys, dem, cells, complete)
                 bad += 1
                 continue
             end
-            p = DGG.cellposition(cells, ring[slot])
+            p = DGG.localindex(cells, ring[slot])
             (p === nothing || !(accumulation[i] < accumulation[p])) && (bad += 1)
         end
         @test nonzero > 0               # Require at least one routed cell.

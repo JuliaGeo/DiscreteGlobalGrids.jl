@@ -1,5 +1,5 @@
 # The radix-4 quad-face family: one aligned `2^l x 2^l` lattice per base face,
-# ids `face * 4^l + curvecode`, positions `id + 1`. Everything that follows from
+# ids `face * 4^l + curvecode`, indices `id + 1`. Everything that follows from
 # that identity alone is written once here and dispatches on
 # `AbstractQuadFaceGridSystem`; the per-system files keep their charts,
 # adjacency, extents, and the three declarations below.
@@ -133,9 +133,9 @@ end
 """
     descendant_range(sys::AbstractQuadFaceGridSystem, c, l) -> UnitRange{Int}
 
-The contiguous **positions** in `levelgrid(sys, l)` occupied by `c`'s level-`l`
+The contiguous **indices** in `levelgrid(sys, l)` occupied by `c`'s level-`l`
 descendants: ids `index * 4^Δ` through `(index + 1) * 4^Δ - 1`, shifted into
-1-based positions.
+1-based indices.
 
 Exact and hole-free in both directions, which is what
 `has_sorted_subtrees(sys) == true` asserts: curve order is depth-first order by
@@ -169,7 +169,7 @@ function descendants(sys::AbstractQuadFaceGridSystem, c::LevelIndex, l::Integer)
 end
 
 # ===========================================================================
-# The level grid: size, and positions <-> ids
+# The level grid: size, and indices <-> ids
 # ===========================================================================
 
 ncells(sys::AbstractQuadFaceGridSystem, l::Integer) =
@@ -179,12 +179,12 @@ ncells(sys::AbstractQuadFaceGridSystem, l::Integer) =
 cellindex(::AbstractQuadFaceGridSystem, l::Integer, i::Int) = LevelIndex(l, i - 1)
 
 """
-    cellposition(sys::AbstractQuadFaceGridSystem, c) -> Union{Int,Nothing}
+    globalindex(sys::AbstractQuadFaceGridSystem, c) -> Union{Int,Nothing}
 
 `index + 1` for an in-range id, `nothing` otherwise. The grid has already
 rejected a cell from another level and converted any alternate scheme.
 """
-function cellposition(sys::AbstractQuadFaceGridSystem, c::LevelIndex)
+function globalindex(sys::AbstractQuadFaceGridSystem, c::LevelIndex)
     0 <= c.index < ncells(sys, level(c)) || return nothing
     return Int(c.index + 1)
 end

@@ -92,10 +92,10 @@ note("origin ($(gt[1]), $(gt[4]))  dlon $(gt[2])  dlat $(gt[6])")
 
 src = DGG.subtree(sys, tile, 1)
 
-# `vec` of the `(ncols, nrows)` raster already matches chunk position order.
+# `vec` of the `(ncols, nrows)` raster already matches chunk index order.
 values = vec(A)
-check("vec(A) is the chunk's position order",
-    all(values[DGG.cellposition(src, CD.pixelcell(sys, tile, j, i))] == A[i+1, j+1]
+check("vec(A) is the chunk's index order",
+    all(values[DGG.localindex(src, CD.pixelcell(sys, tile, j, i))] == A[i+1, j+1]
         for (j, i) in ((0, 0), (0, NCOLS - 1), (NROWS - 1, 0),
         (NROWS - 1, NCOLS - 1), (37, 421))))
 
@@ -104,9 +104,9 @@ dem = DD.DimArray(values, DGG.Cells(lk))
 
 check("chunk holds the whole raster", DGG.ncells(src) == NCOLS * NROWS;
     detail="$(DGG.ncells(src)) cells")
-check("positions are chunk-local",
-    DGG.cellposition(src, DGG.cellindex(src, 1)) == 1 &&
-    DGG.cellposition(src, DGG.cellindex(src, DGG.ncells(src))) == DGG.ncells(src))
+check("indices are chunk-local",
+    DGG.localindex(src, DGG.cellindex(src, 1)) == 1 &&
+    DGG.localindex(src, DGG.cellindex(src, DGG.ncells(src))) == DGG.ncells(src))
 check("the axis names level-1 cells of this system",
     DGG.level(lk) == 1 && DGG.system(lk) === sys)
 check("PartialGrid(lk) round-trips the chunk",
@@ -121,11 +121,11 @@ check("Covering(extent) selects a CellLookup sub-cube",
     sublk isa DGG.CellLookup && 0 < length(sub) < DGG.ncells(src);
     detail="$(length(sub)) cells over a 0.01 x 0.01 degree window")
 check("selected values are those cells' own values",
-    all(sub[k] == values[DGG.cellposition(src, subids[k])] for k in eachindex(subids)))
+    all(sub[k] == values[DGG.localindex(src, subids[k])] for k in eachindex(subids)))
 check("every selected cell meets the window",
     all(Extents.intersects(DGG.cell_extent(g1, c), window) for c in subids))
 
-# `CellVector` stores position windows, not a materialised id vector.
+# `CellVector` stores index windows, not a materialised id vector.
 note("axis memory: Base.summarysize(lk) = $(Base.summarysize(lk)) B, against " *
      "$(8 * DGG.ncells(src)) B for one Int64 id per cell " *
      "($(round(Int, 8 * DGG.ncells(src) / Base.summarysize(lk)))x)")

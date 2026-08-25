@@ -107,7 +107,7 @@ function contributing_pairs(dst, src; radius = 0.0)
     sring = r > 0 ? [cellvertices(src, j) for j in 1:ns] : nothing
     out = Set{Tuple{Int,Int}}()
     for i in 1:nd, j in 1:ns
-        # A partial space reports `nothing` for a position it does not cover.
+        # A partial space reports `nothing` for a local index it does not cover.
         (dchunk[i] === nothing || schunk[j] === nothing) && continue
         key = (Int(dchunk[i]), Int(schunk[j]))
         # Rows repeat heavily; skipping a known pair skips the clip too.

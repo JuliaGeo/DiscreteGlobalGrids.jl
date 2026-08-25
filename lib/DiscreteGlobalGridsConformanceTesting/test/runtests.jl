@@ -124,11 +124,11 @@ function DGG.cellindex(g::CubeGrid, i::Int)
     return LevelIndex(g.level, i - 1)
 end
 
-function DGG.cellposition(g::CubeGrid, c::LevelIndex)
+function DGG.localindex(g::CubeGrid, c::LevelIndex)
     level(c) == g.level || return nothing
     idx = rawid(c)
     0 <= idx < DGG.ncells(g) || return nothing
-    return g.sys.bug === :bad_position ? Int(idx) + 2 : Int(idx) + 1
+    return g.sys.bug === :bad_index ? Int(idx) + 2 : Int(idx) + 1
 end
 
 function DGG.cell_boundary(g::CubeGrid, c::LevelIndex)
@@ -474,10 +474,10 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
         @test any(contains("ascending canonical order"), problems)
     end
 
-    @testset "harness catches: cellposition off by one (bijection)" begin
-        @test !Conf.check_grid_interface(DGG.levelgrid(broken(:bad_position), 2))
-        problems = Conf.grid_interface_problems(DGG.levelgrid(broken(:bad_position), 2))
-        @test any(contains("cellposition"), problems)
+    @testset "harness catches: localindex off by one (bijection)" begin
+        @test !Conf.check_grid_interface(DGG.levelgrid(broken(:bad_index), 2))
+        problems = Conf.grid_interface_problems(DGG.levelgrid(broken(:bad_index), 2))
+        @test any(contains("localindex"), problems)
     end
 
     @testset "harness catches: descendant_range one too wide" begin
@@ -620,7 +620,7 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
 
         # Everything the fallbacks consume is still the system's own answer.
         @test DGG.cell_boundary(wgrid, c) == DGG.cell_boundary(grid, c)
-        @test DGG.cellposition(wgrid, c) == DGG.cellposition(grid, c)
+        @test DGG.localindex(wgrid, c) == DGG.localindex(grid, c)
         @test collect(DGG.children(wrapped, c)) == collect(DGG.children(FULL, c))
         @test DGG.node_extent(wrapped, c) == DGG.node_extent(FULL, c)
         @test DGG.descendant_range(wrapped, c, 3) == DGG.descendant_range(FULL, c, 3)
@@ -727,8 +727,8 @@ broken(bug::Symbol) = CubeSystem(; maxlevel = 3, bug)
     end
 
     @testset "harness is reproducible across runs" begin
-        a = Conf.grid_interface_problems(DGG.levelgrid(broken(:bad_position), 2))
-        b = Conf.grid_interface_problems(DGG.levelgrid(broken(:bad_position), 2))
+        a = Conf.grid_interface_problems(DGG.levelgrid(broken(:bad_index), 2))
+        b = Conf.grid_interface_problems(DGG.levelgrid(broken(:bad_index), 2))
         @test a == b
         @test !isempty(a)
         # A caller-supplied seed reaches every law, including the covering walk.

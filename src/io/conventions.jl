@@ -358,7 +358,7 @@ function decode(c::ZarrDGGSConvention, s::StoreSnapshot, ::Detection)
         "spatial_dimension", store, convs)
     coordinate = _asstring(get(dggs, "coordinate", nothing), "coordinate", store, convs)
 
-    # A missing `coordinate` means the whole domain is covered and position is
+    # A missing `coordinate` means the whole domain is covered and index is
     # the id; `compression` may only be present when `coordinate` is.
     encoding = if coordinate === nothing
         encoding_for("implicit"; store, conventions=convs)
@@ -578,7 +578,7 @@ The nextGEMS / DestinE / easy.gems dialect: a `crs` variable carrying
 Two things distinguish it from CF 1.13, which has the same shape.
 `healpix_nside` is an nside where CF's `refinement_level` is an order, and
 `healpix_order` takes the value `"nest"`. Most of these stores hold **no cell
-array at all**: position is the nested index and the axis is implicit. Where a
+array at all**: the array index is the nested index and the axis is implicit. Where a
 cell array does exist the store is regional and holds global indices, so its
 presence is the sparsity signal.
 

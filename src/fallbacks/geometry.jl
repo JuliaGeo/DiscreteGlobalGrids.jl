@@ -195,7 +195,7 @@ _ring_list(ring::T) where {T} = Helpers.SmallList{1,T}(1, (ring,))
 """
     getcell(grid, i) -> GI.Polygon
 
-`ConservativeRegridding.Trees.getcell`: position -> unit-sphere polygon.
+`ConservativeRegridding.Trees.getcell`: local index -> unit-sphere polygon.
 Implemented once, here, as `cell_polygon(grid, cellindex(grid, i))`; grid
 authors never write it.
 """

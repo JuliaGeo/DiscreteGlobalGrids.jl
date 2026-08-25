@@ -20,7 +20,7 @@
 #
 #   3. STRUCTURAL. The package-specific seam topology and its 9-neighbour corner
 #      cells, the rotational start, the exact subtree cap, and the 0-based id /
-#      1-based position convention.
+#      1-based index convention.
 #
 # `test/runtests.jl` includes this file; it also runs standalone:
 #     julia --project=test --startup-file=no test/systems/ISEA4R/runtests.jl
@@ -520,10 +520,10 @@ end
 end
 
 # =========================================================================
-# 3. Ids: 0-based ids, 1-based positions
+# 3. Ids: 0-based ids, 1-based indices
 # =========================================================================
 
-@testset "0-based Morton ids, 1-based positions" begin
+@testset "0-based Morton ids, 1-based indices" begin
     @test DGG.cellindextype(SYS) === LevelIndex
     @test cellindextypes(SYS) == (LevelIndex,)
     @test levels(SYS) == 0:29
@@ -544,15 +544,15 @@ end
         @test_throws BoundsError cellindex(g, 0)
         @test_throws BoundsError cellindex(g, ncells(g) + 1)
         for p in cell_sample(lvl)
-            @test cellposition(g, LevelIndex(lvl, p)) == p + 1
+            @test globalindex(g, LevelIndex(lvl, p)) == p + 1
             @test cellindex(g, p + 1) == LevelIndex(lvl, p)
         end
-        # `cellposition` returns `nothing` on any miss and never throws — an
+        # `globalindex` returns `nothing` on any miss and never throws — an
         # id below the range, above it, or at another level entirely.
-        @test cellposition(g, LevelIndex(lvl, -1)) === nothing
-        @test cellposition(g, LevelIndex(lvl, ncells(g))) === nothing
-        @test cellposition(g, LevelIndex(lvl + 1, 0)) === nothing
-        lvl > 0 && @test cellposition(g, LevelIndex(lvl - 1, 0)) === nothing
+        @test globalindex(g, LevelIndex(lvl, -1)) === nothing
+        @test globalindex(g, LevelIndex(lvl, ncells(g))) === nothing
+        @test globalindex(g, LevelIndex(lvl + 1, 0)) === nothing
+        lvl > 0 && @test globalindex(g, LevelIndex(lvl - 1, 0)) === nothing
     end
 
     @test_throws ArgumentError levelgrid(SYS, -1)
@@ -607,7 +607,7 @@ end
 
 @testset "descendant_range is exact and hole-free" begin
     # `has_sorted_subtrees` is the claim that a subtree is a CONTIGUOUS run of
-    # positions, in both directions. This is the empirical verification of the
+    # indices, in both directions. This is the empirical verification of the
     # trait rather than a restatement of it: the range is compared against the
     # descendants reached by walking `children`, so a Morton ordering that only
     # LOOKED contiguous would fail here.
@@ -619,13 +619,13 @@ end
             @test r isa UnitRange{Int}
             @test length(r) == 4^depth
 
-            # Forward: the walked subtree is exactly the range's positions.
+            # Forward: the walked subtree is exactly the range's indices.
             walked = [c]
             for _ in 1:depth
                 walked = reduce(vcat, (children(SYS, x) for x in walked))
             end
-            @test sort!([cellposition(g, x) for x in walked]) == collect(r)
-            # Backward: every position in the range is a descendant.
+            @test sort!([globalindex(g, x) for x in walked]) == collect(r)
+            # Backward: every index in the range is a descendant.
             @test all(i -> ancestor(SYS, cellindex(g, i), lvl) == c, r)
             # `descendants` agrees with the range and is ascending.
             @test descendants(SYS, c, lvl + depth) == [cellindex(g, i) for i in r]
@@ -804,7 +804,7 @@ end
             @test length(adj[p + 1]) == length(collect(neighbors(g, c, 1; connectivity = conn)))
             for q in adj[p + 1]
                 @test level(q) == lvl
-                @test cellposition(g, q) !== nothing
+                @test globalindex(g, q) !== nothing
                 @test c in adj[rawid(q) + 1]
             end
         end
@@ -1110,17 +1110,17 @@ end
     @test ncells(sub) == 4^3
     @test system(sub) === SYS
     @test level(sub) == 3
-    @test all(i -> cellposition(sub, cellindex(sub, i)) == i, 1:ncells(sub))
+    @test all(i -> localindex(sub, cellindex(sub, i)) == i, 1:ncells(sub))
     @test Set(cellindex(sub, i) for i in 1:ncells(sub)) ==
           Set(descendants(SYS, LevelIndex(0, 0), 3))
     # A cell of another diamond is simply not in it — `nothing`, not an error.
-    @test cellposition(sub, LevelIndex(3, 700)) === nothing
+    @test localindex(sub, LevelIndex(3, 700)) === nothing
     # Coverage: a neighbour outside the subtree is ABSENT, never padded.
     corner = LevelIndex(3, I4.xyd_to_morton(0, 0, 0, 8))
     @test length(neighbors(sub, corner, 1)) < length(neighbors(g, corner, 1))
-    @test all(n -> cellposition(sub, n) !== nothing, neighbors(sub, corner, 1))
+    @test all(n -> localindex(sub, n) !== nothing, neighbors(sub, corner, 1))
     @test Set(neighbors(sub, corner, 1)) ==
-          Set(n for n in neighbors(g, corner, 1) if cellposition(sub, n) !== nothing)
+          Set(n for n in neighbors(g, corner, 1) if localindex(sub, n) !== nothing)
 end
 
 # =========================================================================
@@ -1345,7 +1345,7 @@ end
             q = I4.xyd_to_point(x, y, d)
             c = cellat(g, q)
             @test cellat(g, q) == c                              # deterministic
-            @test cellposition(g, c) !== nothing                 # a real cell
+            @test globalindex(g, c) !== nothing                 # a real cell
             # Incident: the point is on that cell's own boundary (or inside it).
             @test minimum(sd(q, v) for v in cell_boundary(g, c)) < 1e-9
         end
@@ -1363,7 +1363,7 @@ end
         q = vpoint(v)
         c = cellat(g, q)
         @test cellat(g, q) == c                                  # deterministic
-        @test cellposition(g, c) !== nothing
+        @test globalindex(g, c) !== nothing
         @test minimum(sd(q, w) for w in cell_boundary(g, c)) < 1e-9
         # The cell named really is one of the cells at that vertex: its chart
         # corner slot on its own diamond carries this vertex.
@@ -1382,7 +1382,7 @@ end
         q = GO.UnitSphericalPoint((v ./ sqrt(sum(abs2, v)))...)
         c = cellat(g, q)
         @test c isa LevelIndex
-        @test cellposition(g, c) !== nothing
+        @test globalindex(g, c) !== nothing
         ix, iy, d = xyd_of(c)
         x, y, dd = I4.point_to_xy(q)
         @test dd == d

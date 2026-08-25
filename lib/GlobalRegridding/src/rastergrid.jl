@@ -139,7 +139,7 @@ their bounds, while point lookups are midpointed. Edge order matches lookup orde
 # Cell order
 
 Cells follow the array's dimension order, fastest dimension first. Thus `vec`
-of a spatial slice matches cell position order. Chunk numbers use the same rule.
+of a spatial slice matches cell index order. Chunk numbers use the same rule.
 
 # Keywords
 
@@ -181,7 +181,7 @@ struct RasterGrid{XD,YD,F,G,T} <: RegridSpace
     unit_sphere_to_native::G
     "period of the native X coordinate, or `nothing`"
     xperiod::Union{Nothing,Float64}
-    "whether the X dimension varies fastest in cell positions and chunk numbers"
+    "whether the X dimension varies fastest in cell indices and chunk numbers"
     xfast::Bool
     "whether `(xlo, ylo), (xhi, ylo), (xhi, yhi), (xlo, yhi)` is already counter-clockwise from outside"
     ccw::Bool
@@ -271,7 +271,7 @@ _ny(space::RasterGrid) = length(space.yedges) - 1
 """
     rastersize(space::RasterGrid) -> (n1, n2)
 
-Return spatial slice shape in array dimension order. `vec` follows cell positions.
+Return spatial slice shape in array dimension order. `vec` follows cell indices.
 """
 rastersize(space::RasterGrid) =
     space.xfast ? (_nx(space), _ny(space)) : (_ny(space), _nx(space))
@@ -442,10 +442,10 @@ hascellchart(space::RasterGrid) = space.unit_sphere_to_native !== nothing
 
 """
     cellsubscript(space::RasterGrid, i::Int) -> (ix, iy)
-    cellposition(space::RasterGrid, ix::Integer, iy::Integer) -> Int
+    localindex(space::RasterGrid, ix::Integer, iy::Integer) -> Int
 
-Convert between cell positions and `(ix, iy)` lattice coordinates. Position
-order follows the array's fastest dimension.
+Convert between the raster's local cell indices and `(ix, iy)` lattice
+coordinates. Index order follows the array's fastest dimension.
 """
 function cellsubscript(space::RasterGrid, i::Int)
     1 <= i <= ncells(space) || throw(BoundsError(space, i))
@@ -457,7 +457,7 @@ function cellsubscript(space::RasterGrid, i::Int)
     return (ix, iy)
 end
 
-function cellposition(space::RasterGrid, ix::Integer, iy::Integer)
+function localindex(space::RasterGrid, ix::Integer, iy::Integer)
     1 <= ix <= _nx(space) && 1 <= iy <= _ny(space) ||
         throw(BoundsError(space, (ix, iy)))
     return space.xfast ? Int(ix) + (Int(iy) - 1) * _nx(space) :
@@ -562,7 +562,7 @@ function cellat(space::RasterGrid, p)
     ix === nothing && return nothing
     iy = _edgeindex(space.yedges, Float64(y), nothing)
     iy === nothing && return nothing
-    return cellposition(space, ix, iy)
+    return localindex(space, ix, iy)
 end
 
 function _edgeindex(edges::Vector{Float64}, v::Float64, period)
@@ -605,11 +605,11 @@ function chunkbox(space::RasterGrid, chunk::Int)
 end
 
 """
-    chunkposition(space::RasterGrid, cx::Integer, cy::Integer) -> Int
+    chunknumber(space::RasterGrid, cx::Integer, cy::Integer) -> Int
 
-Return the chunk number at `(cx, cy)`.
+Return the number of the chunk at `(cx, cy)`.
 """
-function chunkposition(space::RasterGrid, cx::Integer, cy::Integer)
+function chunknumber(space::RasterGrid, cx::Integer, cy::Integer)
     1 <= cx <= length(space.xchunks) && 1 <= cy <= length(space.ychunks) ||
         throw(BoundsError(space, (cx, cy)))
     return space.xfast ? Int(cx) + (Int(cy) - 1) * length(space.xchunks) :
@@ -629,15 +629,15 @@ end
 # Locate a cell's chunk with one binary search per axis.
 function chunkat(space::RasterGrid, i::Integer)
     ix, iy = cellsubscript(space, Int(i))
-    return chunkposition(space, _chunkofindex(space.xchunks, ix),
+    return chunknumber(space, _chunkofindex(space.xchunks, ix),
         _chunkofindex(space.ychunks, iy))
 end
 
-function cellindices(space::RasterGrid, chunk::Int)
+function ownedindices(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
     nx, ny = _nx(space), _ny(space)
     if space.xfast
-        # Full-width chunks are contiguous in position order.
+        # Full-width chunks are contiguous in index order.
         length(xr) == nx && return ((first(yr)-1)*nx+1):(last(yr)*nx)
         out = Vector{Int}(undef, length(xr) * length(yr))
         k = 0
@@ -775,7 +775,7 @@ end
 
 A zero-copy `ConservativeRegridding` curvilinear-grid view of a `RasterGrid`.
 Its first index is whichever spatial dimension is fastest in the source array,
-so the existing `TopDownQuadtreeCursor` reports the same linear cell positions
+so the existing `TopDownQuadtreeCursor` reports the same linear cell indices
 as the regridding space. The wrapped space retains the actual
 native-to-unit-sphere transformation; raster storage chunking remains solely
 in `space.xchunks` and `space.ychunks`, populated from `DiskArrays.eachchunk`.
@@ -932,8 +932,8 @@ celltree(space::RasterGrid) = _rastercursor(space)
     celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
 
 Return a restricted CR quadtree cursor for a chunk or other rectangular cell
-range, and the packed cell-space fallback for scattered positions. Leaves
-always use global cell positions.
+range, and the packed cell-space fallback for scattered indices. Leaves
+always use the space's local indices.
 """
 function celltree(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
@@ -978,7 +978,7 @@ otherwise the common packed cell-space fallback.
 """
 subtree(space::RasterGrid, inds) = celltree(space, inds)
 
-# The number of cells along the dimension that varies fastest in cell positions.
+# The number of cells along the dimension that varies fastest in cell indices.
 _nfast(space::RasterGrid) = space.xfast ? _nx(space) : _ny(space)
 
 """
@@ -1055,7 +1055,7 @@ function _onbranch(edges::Vector{Float64}, v::Float64, period)
     return v - p * round((v - mid) / p)
 end
 
-chartposition(space::RasterGrid, ix::Int, iy::Int) = cellposition(space, ix, iy)
+chartlocalindex(space::RasterGrid, ix::Int, iy::Int) = localindex(space, ix, iy)
 
 """
     chartperiod(space::RasterGrid)

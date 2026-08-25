@@ -3,13 +3,13 @@
 # Nearest-cell weights
 
 """
-    build_weights!(coo, ::NearestCell, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, ::NearestCell, dst_space, dst_inds, src_space, src_inds)
 
 Add weight 1 for the source cell containing each destination centroid. Emit no
 entry when the point is outside coverage or the source belongs to another
 chunk. Point samples have no coverage denominator.
 """
-function build_weights!(coo::WeightCOO, ::NearestCell,
+function buildweights!(coo::WeightCOO, ::NearestCell,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     indexer = indexmap(src_inds)
     for (j, i) in enumerate(dst_inds)
@@ -34,7 +34,7 @@ end
 
 chartaxes(space::RegridSpace) = _chart_required(:chartaxes, space)
 chartcoords(space::RegridSpace, _) = _chart_required(:chartcoords, space)
-chartposition(space::RegridSpace, ::Int, ::Int) = _chart_required(:chartposition, space)
+chartlocalindex(space::RegridSpace, ::Int, ::Int) = _chart_required(:chartlocalindex, space)
 chartspacing(space::RegridSpace) = _chart_required(:chartspacing, space)
 
 function _require_chart(method, src_space::RegridSpace)
@@ -117,13 +117,13 @@ end
 # Bilinear weights
 
 """
-    build_weights!(coo, ::BilinearPoint, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, ::BilinearPoint, dst_space, dst_inds, src_space, src_inds)
 
 Build bilinear weights at destination centroids. Edges clamp instead of
 extrapolating, while periodic axes wrap. Emit only stencil points in `src_inds`;
 other chunks emit their own shares. Point samples have no denominator.
 """
-function build_weights!(coo::WeightCOO, method::BilinearPoint,
+function buildweights!(coo::WeightCOO, method::BilinearPoint,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     _require_chart(method, src_space)
     xs, ys = chartaxes(src_space)
@@ -143,7 +143,7 @@ function build_weights!(coo::WeightCOO, method::BilinearPoint,
 
             w = wx * wy
             iszero(w) && continue
-            k = localindex(indexer, chartposition(src_space, ix, iy))
+            k = localindex(indexer, chartlocalindex(src_space, ix, iy))
             k == 0 && continue
             addweight!(coo, j, k, w)
         end
@@ -152,12 +152,12 @@ function build_weights!(coo::WeightCOO, method::BilinearPoint,
 end
 
 """
-    support_radius(::BilinearPoint, src_space) -> Float64
+    supportradius(::BilinearPoint, src_space) -> Float64
 
 Return the larger chart-axis spacing, in radians, as a safe stencil bound for
 chunk discovery.
 """
-function support_radius(method::BilinearPoint, src_space::RegridSpace)
+function supportradius(method::BilinearPoint, src_space::RegridSpace)
     _require_chart(method, src_space)
     dx, dy = chartspacing(src_space)
     return Float64(max(dx, dy))

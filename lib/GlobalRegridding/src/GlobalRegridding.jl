@@ -5,7 +5,7 @@ Regrid spherical cell collections eagerly or in chunks.
 
 The source and destination spaces both implement [`RegridSpace`](@ref).
 Regridding methods build geometry-only sparse [`WeightBlock`](@ref)s through
-[`build_weights!`](@ref).
+[`buildweights!`](@ref).
 Plans contain the method, spaces, missing-data policy, storage, and memory
 budget, so applying a plan takes no keywords:
 
@@ -60,8 +60,11 @@ include("api.jl")
 
 # Space interface
 export RegridSpace
-export celltree, chunktree, nchunks, cellindices, ncells, getcell
+export celltree, chunktree, nchunks, ownedindices, ncells, getcell
 export cellcentroid, cellat, hascellchart, manifold
+
+# `cellindices` stays exported for the deprecation shim in `spaces.jl`.
+export cellindices
 
 # Included spaces
 export RasterGrid
@@ -69,7 +72,12 @@ export RasterGrid
 # Methods
 export AbstractRegriddingMethod
 export Conservative, NearestCell, BilinearPoint
+export buildweights!, supportradius
+
+# `build_weights!` and `support_radius` stay exported for the deprecation shims
+# in `methods.jl`.
 export build_weights!, support_radius
+
 export WeightCOO, addweight!, adddenom!
 
 # Missing-data policies
@@ -95,8 +103,11 @@ public outputsampling, destinationdims, dimsource
 public subtree
 public chunkextents, chunkextent, chunkindex, candidatechunks!
 public chunkranges
-public chartaxes, chartcoords, chartposition, chartperiod, chartspacing
+public chartaxes, chartcoords, chartlocalindex, chartperiod, chartspacing
 public _asspace
+
+# `chartposition` stays public for the deprecation shim in `spaces.jl`.
+public chartposition
 
 # Other qualified extension hooks used by package integrations.
 public resolvespatialdims

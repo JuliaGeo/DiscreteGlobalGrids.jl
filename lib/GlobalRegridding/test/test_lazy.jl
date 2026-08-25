@@ -41,13 +41,13 @@ mutable struct T7CountingMethod{M<:AbstractRegriddingMethod} <: AbstractRegriddi
 end
 
 T7CountingMethod(inner) = T7CountingMethod(inner, 0)
-GR.support_radius(m::T7CountingMethod, space::RegridSpace) =
-    GR.support_radius(m.inner, space)
+GR.supportradius(m::T7CountingMethod, space::RegridSpace) =
+    GR.supportradius(m.inner, space)
 
-function build_weights!(coo::WeightCOO, m::T7CountingMethod,
+function buildweights!(coo::WeightCOO, m::T7CountingMethod,
     dst::RegridSpace, dst_inds, src::RegridSpace, src_inds)
     countbuild!(m)
-    return build_weights!(coo, m.inner, dst, dst_inds, src, src_inds)
+    return buildweights!(coo, m.inner, dst, dst_inds, src, src_inds)
 end
 
 # Fixed-radius stencil used to test support discovery.
@@ -56,9 +56,9 @@ struct T7RadiusMethod <: AbstractRegriddingMethod
     radius::Float64
 end
 
-GR.support_radius(m::T7RadiusMethod, ::RegridSpace) = m.radius
+GR.supportradius(m::T7RadiusMethod, ::RegridSpace) = m.radius
 
-function build_weights!(coo::WeightCOO, m::T7RadiusMethod,
+function buildweights!(coo::WeightCOO, m::T7RadiusMethod,
     dst::RegridSpace, dst_inds, src::RegridSpace, src_inds)
     for (j, p) in enumerate(dst_inds)
         centre = cellcentroid(dst, p)
@@ -199,7 +199,7 @@ end
         @test size(A) == (32,)
         @test DiskArrays.haschunks(A) isa DiskArrays.Chunked
         # The destination's own chunks are the cell axis's chunks, because this
-        # destination's chunks are contiguous runs of cell positions.
+        # destination's chunks are contiguous runs of cell indices.
         @test collect(DiskArrays.eachchunk(A)) == [(1:16,), (17:32,)]
     end
 
@@ -230,7 +230,7 @@ end
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
         srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
         srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
-        nd = length(cellindices(dstspace, 1))
+        nd = length(ownedindices(dstspace, 1))
         dcaps = view(GR.chunkextents(dstspace), 1:1)
         scaps = GR.chunkextents(srcspace)
         nt = Threads.nthreads()
@@ -254,11 +254,11 @@ end
         srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
         j = min(3, length(srcchunks))
         @test j > 1
-        dinds = cellindices(dstspace, 1)
+        dinds = ownedindices(dstspace, 1)
         # The first chunk of the wave throws; the others sleep. A `_fillwave!`
         # that raises on the first `fetch` and abandons the rest would return
         # with those tasks still running against a plan the caller is done with.
-        bad = Int(first(cellindices(srcspace, srcchunks[1])))
+        bad = Int(first(ownedindices(srcspace, srcchunks[1])))
         method = WaveFailMethod(bad, 0.25)
         plan = t7_plan(method, dstspace, srcspace)
         wave = GR.CachedBlock[]
@@ -271,7 +271,7 @@ end
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
         srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
         srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
-        nd = length(cellindices(dstspace, 1))
+        nd = length(ownedindices(dstspace, 1))
         nt = Threads.nthreads()
 
         # Costs weigh the chunk by how much of it the tile can reach, so equal

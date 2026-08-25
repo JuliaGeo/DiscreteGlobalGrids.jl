@@ -123,7 +123,7 @@ DGG.maxring(::IGeo7System, k::Integer, ::Connectivity = DGG.Vertex()) =
 
 The twelve level-0 cells, one pentagon per icosahedron vertex, ascending. The
 level-0 id of base `b` is `(b << 60) | 0x0fff…f`, so ascending id order is
-ascending base order and these are exactly positions `1:12` of
+ascending base order and these are exactly indices `1:12` of
 `levelgrid(sys, 0)`.
 """
 function DGG.rootcells(::IGeo7System)
@@ -197,7 +197,7 @@ needs no sort. The count is `7^d` for a hexagon and `(5·7^d + 1)/6` for a
 pentagon, `d = l - level(c)`.
 
 Throws an `ArgumentError` for `l` outside `level(c):maxlevel`. This
-materialises — reach for [`descendant_range`](@ref) when positions will do.
+materialises — reach for [`descendant_range`](@ref) when indices will do.
 """
 function DGG.descendants(::IGeo7System, c::Z7Cell, l::Integer)
     res = _geometry_checked(c.id)
@@ -229,7 +229,7 @@ end
 """
     descendant_range(sys::IGeo7System, c::Z7Cell, l::Integer) -> UnitRange{Int}
 
-The contiguous position interval of `c`'s level-`l` descendants. Prefix order
+The contiguous index interval of `c`'s level-`l` descendants. Prefix order
 makes this an `O(level)` calculation; the size is `7^d` for a hexagon and
 `(5·7^d + 1)/6` for a pentagon.
 
@@ -241,8 +241,8 @@ function DGG.descendant_range(::IGeo7System, c::Z7Cell, l::Integer)
     res <= target <= MAX_RESOLUTION || throw(ArgumentError(
         "IGeo7 descendant level must be in $res:$MAX_RESOLUTION, got $target"))
     slots = _z7_tail_mask(res) ⊻ _z7_tail_mask(target)
-    first_position = cell_to_index(c.id & ~slots)
-    return first_position:(first_position+_subtree_count(c.id, res, target)-1)
+    first_index = cell_to_index(c.id & ~slots)
+    return first_index:(first_index+_subtree_count(c.id, res, target)-1)
 end
 
 # ---------------------------------------------------------------------------
@@ -263,22 +263,22 @@ DGG.ncells(::IGeo7System, l::Integer) = Int(num_cells(Int(l)))
 """
     cellindex(::IGeo7System, l::Integer, i::Int) -> Z7Cell
 
-The cell at position `i` of level `l`, by inverting the positional rank walk:
-peel the base cell's block, then at each level take the pentagon child while the
+The cell at index `i` of level `l`, by inverting the index-rank walk: peel the
+base cell's block, then at each level take the pentagon child while the
 remainder fits its subtree and otherwise divide by `7^depth` to pick the hexagon
 sibling, re-inserting the deleted digit's gap. O(level), allocation-free.
 """
 DGG.cellindex(::IGeo7System, l::Integer, i::Int) = Z7Cell(index_to_cell(i, Int(l)))
 
 """
-    cellposition(::IGeo7System, c::Z7Cell) -> Union{Int,Nothing}
+    globalindex(::IGeo7System, c::Z7Cell) -> Union{Int,Nothing}
 
-The position of `c` in its own level's dense order, or `nothing` when `c` is not
+The index of `c` in its own level's dense order, or `nothing` when `c` is not
 a valid cell at all. The walk adds the subtree size of every earlier sibling at
 each digit, which is O(level) and needs no table. The grid has already rejected
 a cell from another level.
 """
-function DGG.cellposition(::IGeo7System, c::Z7Cell)
+function DGG.globalindex(::IGeo7System, c::Z7Cell)
     is_valid_cell(c.id) || return nothing
     return cell_to_index(c.id)
 end
@@ -461,7 +461,7 @@ end
 # Hexagonal halo support
 # ---------------------------------------------------------------------------
 
-# The ring position of the step from a cell's parent to the cell, read off the
+# The ring index of the step from a cell's parent to the cell, read off the
 # cell's own last digit through the same table `_border_step` uses. Digit 0 is
 # the centre child, which has no direction, and a base cell has no parent.
 #

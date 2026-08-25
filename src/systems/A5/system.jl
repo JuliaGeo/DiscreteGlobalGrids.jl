@@ -1,4 +1,4 @@
-# Canonical positions are quintant-major, then Hilbert-state-major:
+# Canonical indices are quintant-major, then Hilbert-state-major:
 # `quintant * 4^(level-1) + S + 1`. Level 0 uses origin order.
 
 """
@@ -19,7 +19,7 @@ struct A5System <: AbstractHierarchicalGridSystem end
 # Grid descriptor for all cells at one A5 resolution.
 #
 # Because A5 lacks sorted subtrees, treeifying a complete grid materializes all
-# root positions. Use a `PartialGrid` for deep queries.
+# root indices. Use a `PartialGrid` for deep queries.
 const LevelGrid = HierarchicalLevelGrid{A5System}
 
 Base.show(io::IO, ::A5System) = print(io, "A5System()")
@@ -105,10 +105,10 @@ end
 `false`: no [`descendant_range`](@ref) contract is asserted across the level-0
 to level-1 quintant fan-out.
 
-  - [`treeify`](@ref) uses selection mode and materializes root positions;
+  - [`treeify`](@ref) uses selection mode and materializes root indices;
     prefer a [`PartialGrid`](@ref) for deep grids — a complete one is O(cells)
     in memory and not viable past about level 12.
-  - `MultiOrderCellSet` orders by `(level, position)` rather than by curve
+  - `MultiOrderCellSet` orders by `(level, index)` rather than by curve
     interval, and `level_ranges` on one raises an `ArgumentError`.
   - [`descendants`](@ref) is overridden to avoid level-by-level expansion.
 """
@@ -151,7 +151,7 @@ maxneighbors(::A5System, ::Edge) = 5
 DGG.winding(::A5System, ::Connectivity) = DGG.CustomOrder()
 
 # ===========================================================================
-# The dense order: positions <-> ids
+# The dense order: indices <-> ids
 # ===========================================================================
 
 # Number of cells per quintant at a positive level. At level 29 the complete
@@ -166,7 +166,7 @@ end
 """
     cellindex(::A5System, l::Integer, i::Int) -> A5Cell
 
-The id at position `i` of resolution `l`, computed from its quintant and Hilbert
+The id at index `i` of resolution `l`, computed from its quintant and Hilbert
 state in constant time. The grid must bounds-check `i` before calling this
 method.
 """
@@ -180,14 +180,14 @@ function cellindex(::A5System, lvl::Integer, i::Int)
 end
 
 """
-    cellposition(::A5System, c::A5Cell) -> Union{Int,Nothing}
+    globalindex(::A5System, c::A5Cell) -> Union{Int,Nothing}
 
-The position of `c` in its resolution's dense order. Returns `nothing` for the
+The index of `c` in its resolution's dense order. Returns `nothing` for the
 world cell, a resolution-30 id, or any malformed encoding, including nonzero
 padding bits. The grid must reject cells from another resolution before calling
 this method.
 """
-function cellposition(::A5System, c::A5Cell)
+function globalindex(::A5System, c::A5Cell)
     l = level(c)
     cell = _decode(c.id)
     cell === nothing && return nothing

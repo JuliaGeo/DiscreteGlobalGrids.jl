@@ -18,7 +18,7 @@
 #   `nside = 2^level` is exactly the SCAFFOLD ORDINAL this system's canonical
 #   `LevelIndex` carries (`face * 4^level + hilbert_position`).
 #
-# Both ids are 0-based; complete-grid position is `id + 1`. Argument order is
+# Both ids are 0-based; complete-grid index is `id + 1`. Argument order is
 # `(ix, iy, face, nside)` and inverse codecs take the id first.
 # ---------------------------------------------------------------------------
 

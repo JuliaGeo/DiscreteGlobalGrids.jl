@@ -1,7 +1,7 @@
 # Generic barycentric point regridding implementation plan
 
 - Date: 2026-08-23
-- Status: proposed, authoritative for this work
+- Status: in progress, authoritative for this work
 - Scope: `lib/GlobalRegridding` and the qualified `DGGSpace` extensions in this
   repository
 
@@ -519,6 +519,25 @@ P0 baseline
 
 Patch/MLS and the optional support query start only after P3-P5 measurements.
 ```
+
+## Progress
+
+- P0 `df1d8b8` — the baseline: `BilinearPoint`'s values pinned, the repeat of
+  point location per candidate chunk counted, and one large tile priced.
+  `regrid-notes/2026-08-25-p0-point-baseline.md`.
+- P1 `e57bd82` — the point seam: `WeightRow`, `sampler`, `weightsat!`, dual
+  cells and the coordinate kernels.
+  `regrid-notes/2026-08-25-p1-point-contracts.md`.
+- P2 `874bf74` — the raster specialization: Q1 stencils on prepared chart axes,
+  with every intentional difference from `BilinearPoint` documented.
+  `regrid-notes/2026-08-25-p2-raster-q1.md`.
+- P3 `8c05a2f` + `2800ba3` — the fused build unit and its exact reads: one
+  `TileWeights` per destination tile, cached and locked by tile number, reading
+  the source chunks its stencils name and no others.
+  `regrid-notes/2026-08-25-s2-tile-weights.md`,
+  `regrid-notes/2026-08-25-s3-exact-reads.md`, and the gate's measurement in
+  `regrid-notes/2026-08-25-p3-fused-tile-execution.md`.
+- P4 next.
 
 ### P0 — baseline and instrumentation
 

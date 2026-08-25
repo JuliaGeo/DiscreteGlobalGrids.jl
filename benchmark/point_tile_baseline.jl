@@ -1,4 +1,5 @@
-# What one large destination tile costs a point method today.
+# What one large destination tile costs a point method, on each of the two
+# build routes it can take.
 #
 #     julia -t auto --project=benchmark benchmark/point_tile_baseline.jl
 #
@@ -24,6 +25,30 @@
 #   4. `warm tile`       the same read against the plan arm 3 left warm, so the
 #                        weights are cached and only application and source
 #                        loads remain.
+#
+# Four more arms over that same tile with `BarycentricPoint`, which supplies a
+# `sampler` and is therefore built one destination tile at a time:
+#
+#   5. `tile weights`    one `tileweights` build of the whole tile, sampler
+#                        preparation included. Every destination is located once
+#                        and every entry is filed under the source chunk owning
+#                        it, so this replaces arm 2, not arm 1.
+#   6. `plan build`      the same spaces, chunk index and relation as arm 3's,
+#                        prepared for the other method.
+#   7. `cold read`       a fresh plan and one lazy read of the whole tile: arm 5
+#                        plus the loads its manifest names and the application.
+#   8. `warm read`       the same read against the plan arm 7 left warm.
+#
+# The tile-route accounting rows beside them come from one further instrumented
+# read of a clean plan, and describe what that route does rather than what the
+# pair route did: the point locations one build performs, counted through a
+# sampler that records every `weightsat!` query and answers with
+# `BarycentricPoint`'s own stencil, rather than asserted; the nonzeros and bytes
+# the single cached `TileWeights` holds, manifest included; the length of that
+# manifest against the number of candidates the relation names; and the source
+# chunks the read touched with how many times each was fetched. The counted
+# build's manifest is checked against the plan's, so the counted numbers belong
+# to the tile the plan built.
 #
 # SIZES. The source is a global 0.125-degree raster, 2880x1440 = 4,147,200 cells
 # in 8x4 = 32 chunks of 360x360, which is the shape of an ordinary global
@@ -53,25 +78,45 @@
 # RECORDED 2026-08-25, M-series macOS, Julia 1.12.6, 8 threads of 12 CPUs,
 # `powermode 2`, warm-up plus minimum of three samples:
 #
-#   arm                              time        allocated
-#   one pass over the tile      72.950 ms       96,081,312 B
-#   pair loop (4 candidates)   320.903 ms      244,901,440 B
-#   plan construction            0.058 ms            4,096 B
-#   cold tile read             308.418 ms      252,154,736 B
-#   warm tile read               2.834 ms       19,275,648 B
+#   arm                                  time        allocated
+#   one pass over the tile          67.801 ms      101,422,496 B
+#   pair loop (4 candidates)       324.564 ms      221,472,320 B
+#   plan construction                0.066 ms            4,320 B
+#   cold tile read                 331.528 ms      254,579,792 B
+#   warm tile read                   4.478 ms       19,275,648 B
+#   tile weights, one pass         105.406 ms      212,468,720 B
+#   plan construction, tile route    0.062 ms           78,304 B
+#   cold read, tile route          105.509 ms      245,848,432 B
+#   warm read, tile route            3.021 ms       19,349,536 B
 #
-#   375,000 destination cells, 4 candidate source chunks, all four contributing
-#   1,500,000 stencil entries, 4.00 per destination cell
-#   1,500,000 point locations performed where 375,000 would do
-#   weight bytes 40,147,488 (plan accounting) / 28,147,912 (summarysize)
-#   4 source chunks read, each once; peak source residency 4,147,200 B
+#   375,000 destination cells, 4 candidate source chunks [12, 13, 20, 21], all
+#   four contributing, 1,500,000 stencil entries on both routes, 4.00 per
+#   destination cell
 #
-# The pair loop is 4.40x one pass at k = 4: the destination pass is repeated per
+#   chunk-pair route  1,500,000 point locations where 375,000 would do
+#                     4 cached blocks, weight bytes 40,147,488 (plan
+#                     accounting) / 28,147,912 (summarysize)
+#                     4 source chunks read, each once; peak source residency
+#                     4,147,200 B
+#   tile route          375,000 point locations, one per destination
+#                     1 cached tile of 4 blocks over a 4-chunk manifest, weight
+#                     bytes 40,147,584 / 28,148,112
+#                     4 source chunks read, each once; peak source residency
+#                     4,147,200 B
+#
+# The pair loop is 4.79x one pass at k = 4: the destination pass is repeated per
 # candidate and nothing else about the build changes. Weight construction is
-# 99.1% of a cold tile read, so this repetition, not source I/O or the weight
-# application, is what a large point tile costs. Source reads are already exact
-# here — four chunks, one read each — so what the fused build has to remove is
-# the repeated point location, not a read.
+# 98.6% of a cold tile read, so this repetition, not source I/O or the weight
+# application, is what a large point tile costs on that route.
+#
+# The fused build locates each of the 375,000 destinations once, and the manifest
+# it emits equals the relation's candidate list here, so the reads are the same
+# four: 3.08x the pair loop for the same 1,500,000 entries, and a cold read 3.14x
+# the pair route's. Its 1.55x over the one-pass floor is not overhead over the
+# same work — the floor arm is a different kernel emitting one unpartitioned COO,
+# where the fused build also files every entry under its owning chunk and
+# assembles four blocks. Weight construction is 97.1% of its own cold read, and
+# the 96 extra bytes it holds are the manifest.
 #
 # These absolutes belong to that machine state. A later comparison must be a
 # ratio inside one session: re-run this file on the unchanged tree, then again
@@ -132,6 +177,31 @@ end
 DiskArrays.writeblock!(A::CountingSource, v, r::AbstractUnitRange...) =
     (view(A.parent, r...) .= v; v)
 
+# --- a sampler that records how often it is asked -------------------------
+
+"""
+    CountingSites(inner, placed)
+
+Sampler state that counts point locations and answers with `inner`'s stencil.
+`placed` is therefore the number of `weightsat!` queries a build performed,
+however many blocks came out of them, and the stencils are the ones the wrapped
+sampler produces.
+"""
+struct CountingSites{S}
+    inner::S
+    placed::Threads.Atomic{Int}
+end
+
+function GR.weightsat!(row::GR.WeightRow,
+    s::GR.Sampler{<:GR.RegridSpace,<:AbstractVector,<:CountingSites}, p)
+    Threads.atomic_add!(s.state.placed, 1)
+    return GR.weightsat!(row, s.state.inner, p)
+end
+
+countingsampler(space, placed) =
+    GR.Sampler(space, GR.samplesites(space),
+        CountingSites(GR.sampler(BarycentricPoint(), space), placed))
+
 # --- fixture ---------------------------------------------------------------
 
 centres(lo, hi, n) = range(lo + (hi - lo) / 2n, hi - (hi - lo) / 2n; length = n)
@@ -157,6 +227,11 @@ function fixture()
 end
 
 newplan(f) = ChunkedPlan(BilinearPoint(), Weighted(0.5), f.dst, f.src;
+    storage = PerChunk())
+
+# The same fixture on the fused route: `BarycentricPoint` supplies a `sampler`,
+# so its build unit is the destination tile and its reads are its manifest.
+newtileplan(f) = ChunkedPlan(BarycentricPoint(), Weighted(0.5), f.dst, f.src;
     storage = PerChunk())
 
 # --- measurement -----------------------------------------------------------
@@ -188,6 +263,19 @@ function weightbytes(plan)
         nblocks = GR.nblocks(plan.storage),
         nonzeros = sum(b -> count(!iszero, b.weights), blocks; init = 0),
         contributing = count(b -> any(!iszero, b.weights), blocks))
+end
+
+# The same accounting for a plan whose cache entry is one whole tile: its
+# blocks are the tile's, and its manifest is the exact source-chunk list.
+function tilebytes(plan)
+    tiles = collect(values(plan.storage.tiles))
+    blocks = [e.block for t in tiles for e in t.entries]
+    return (accounted = GR.storagebytes(plan.storage),
+        summarysize = Base.summarysize(blocks),
+        ntiles = length(tiles),
+        nblocks = length(blocks),
+        nonzeros = sum(b -> count(!iszero, b.weights), blocks; init = 0),
+        manifest = isempty(tiles) ? Int[] : tiles[1].sourcechunks)
 end
 
 """
@@ -233,6 +321,7 @@ function main()
     @printf("candidates   %d of %d source chunks: %s\n\n",
         k, GR.nchunks(f.src), string(candidates))
 
+    println("BilinearPoint, chunk-pair route")
     whole = 1:Int(GR.ncells(f.src))
     onepass = measure("one pass over the tile", function ()
         coo = WeightCOO(length(tile))
@@ -271,6 +360,36 @@ function main()
     cold.value ≈ f.want || error("the cold read did not reproduce the source surface")
     warm.value ≈ f.want || error("the warm read did not reproduce the source surface")
 
+    # The fused route over the same tile. The sampler is prepared inside the
+    # arm, so nothing the build needs is excluded from it; a plan prepares one
+    # per read, not one per tile.
+    println("\nBarycentricPoint, fused tile route")
+    tilebuild = measure("tile weights, one pass", function ()
+        tw = GR.tileweights(BarycentricPoint(), GR.TileCells(f.dst, tile), tile,
+            f.src, GR.sampler(BarycentricPoint(), f.src))
+        return sum(b -> count(!iszero, b.weights), tw.blocks; init = 0)
+    end)
+
+    tileplanbuild = measure("plan construction, tile route",
+        () -> newtileplan(f))
+
+    coldtile = measure("cold read, tile route", function ()
+        p = newtileplan(f)
+        A = GR.LazyRegridArray(f.data, p)
+        return A[1:Int(GR.ncells(f.dst))]
+    end)
+
+    tileplan = newtileplan(f)
+    warmtile = measure("warm read, tile route", function ()
+        A = GR.LazyRegridArray(f.data, tileplan)
+        return A[1:Int(GR.ncells(f.dst))]
+    end)
+
+    coldtile.value ≈ f.want ||
+        error("the cold tile-route read did not reproduce the source surface")
+    warmtile.value ≈ f.want ||
+        error("the warm tile-route read did not reproduce the source surface")
+
     # One instrumented read, on a clean plan and a clean read counter, so the
     # residency and per-chunk numbers describe exactly one tile.
     empty!(f.source.reads)
@@ -280,6 +399,24 @@ function main()
     stats = GR.residency(A)
     bytes = weightbytes(fresh)
     counts = sort(collect(values(f.source.reads)))
+
+    # The same instrumented read on the fused route, again on a clean plan and a
+    # clean read counter.
+    empty!(f.source.reads)
+    freshtile = newtileplan(f)
+    At = GR.LazyRegridArray(f.data, freshtile)
+    At[1:Int(GR.ncells(f.dst))]
+    tilestats = GR.residency(At)
+    tbytes = tilebytes(freshtile)
+    tilecounts = sort(collect(values(f.source.reads)))
+
+    # Point locations, counted rather than asserted: one build of the same tile
+    # with the same stencils, through a sampler that records every query.
+    placed = Threads.Atomic{Int}(0)
+    counted = GR.tileweights(BarycentricPoint(), GR.TileCells(f.dst, tile), tile,
+        f.src, countingsampler(f.src, placed))
+    counted.sourcechunks == tbytes.manifest ||
+        error("the counted build and the plan's tile disagree on the manifest")
 
     println()
     @printf("%-46s %14d\n", "destination cells in the tile", length(tile))
@@ -302,13 +439,47 @@ function main()
     @printf("%-46s %14d\n", "weightbudget(plan.budget)", GR.weightbudget(fresh.budget))
 
     println()
-    @printf("%-46s %14d\n", "source chunks read", length(f.source.reads))
+    @printf("%-46s %14d\n", "source chunks read", length(counts))
     @printf("%-46s %14s\n", "reads per chunk (min, max)",
         string((minimum(counts), maximum(counts))))
     @printf("%-46s %14d\n", "readblock! calls", sum(counts))
     @printf("%-46s %14d\n", "source loads (residency)", stats.loads)
     @printf("%-46s %14d\n", "source cache hits (residency)", stats.hits)
     @printf("%-46s %14d\n", "peak source bytes (residency)", stats.peakbytes)
+
+    println()
+    @printf("%-46s %14d\n", "point locations, tile route", placed[])
+    @printf("%-46s %14d\n", "stencil entries kept, tile route", tbytes.nonzeros)
+    @printf("%-46s %14.2f\n", "entries per destination cell, tile route",
+        tbytes.nonzeros / length(tile))
+    @printf("%-46s %14.2fx\n", "pair loop / tile build", pairs.time / tilebuild.time)
+    @printf("%-46s %14.2fx\n", "cold pair read / cold tile-route read",
+        cold.time / coldtile.time)
+    @printf("%-46s %14.2fx\n", "warm pair read / warm tile-route read",
+        warm.time / warmtile.time)
+    @printf("%-46s %14.3f\n", "plan construction, tile route, ms",
+        tileplanbuild.time * 1e3)
+
+    println()
+    @printf("%-46s %14d\n", "tiles held", tbytes.ntiles)
+    @printf("%-46s %14d\n", "weight blocks in the tile", tbytes.nblocks)
+    @printf("%-46s %14d\n", "manifest length", length(tbytes.manifest))
+    @printf("%-46s %14s\n", "manifest", string(tbytes.manifest))
+    @printf("%-46s %14d\n", "candidate source chunks (k)", k)
+    @printf("%-46s %14d\n", "weight nonzeros held, tile route", tbytes.nonzeros)
+    @printf("%-46s %14d\n", "weight bytes, plan accounting, tile route",
+        tbytes.accounted)
+    @printf("%-46s %14d\n", "weight bytes, summarysize, tile route",
+        tbytes.summarysize)
+
+    println()
+    @printf("%-46s %14d\n", "source chunks read, tile route", length(tilecounts))
+    @printf("%-46s %14s\n", "reads per chunk, tile route (min, max)",
+        string((minimum(tilecounts), maximum(tilecounts))))
+    @printf("%-46s %14d\n", "readblock! calls, tile route", sum(tilecounts))
+    @printf("%-46s %14d\n", "source loads, tile route", tilestats.loads)
+    @printf("%-46s %14d\n", "source cache hits, tile route", tilestats.hits)
+    @printf("%-46s %14d\n", "peak source bytes, tile route", tilestats.peakbytes)
 
     println()
     println("=== reading it ===")
@@ -319,7 +490,13 @@ function main()
     @printf("Weight construction is %.1f%% of a cold tile read.\n",
         100 * (cold.time - warm.time) / cold.time)
     @printf("Source chunks read: %d, of which %d carry a weight.\n",
-        length(f.source.reads), bytes.contributing)
+        length(counts), bytes.contributing)
+    @printf("The fused build locates each of those %d points once for the same %d\n",
+        placed[], tbytes.nonzeros)
+    @printf("entries: %.3f ms against the pair loop's %.3f ms (%.2fx), and a cold read\n",
+        tilebuild.time * 1e3, pairs.time * 1e3, pairs.time / tilebuild.time)
+    @printf("%.2fx the pair route's. Its manifest of %d chunks took %d reads.\n",
+        cold.time / coldtile.time, length(tbytes.manifest), sum(tilecounts))
 end
 
 main()

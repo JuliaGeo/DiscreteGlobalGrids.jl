@@ -63,7 +63,7 @@ celltree(p::G4ProbeSpace) = celltree(p.space)
 struct E1Subspace{S<:RegridSpace} <: RegridSpace
     parent::S
     chunks::Vector{Int}
-    cells::Vector{Int}                  # local cell -> parent cell position
+    cells::Vector{Int}                  # local index -> parent local index
     spans::Vector{UnitRange{Int}}       # local cells of each local chunk
 end
 
@@ -72,7 +72,7 @@ function E1Subspace(parent::RegridSpace, chunks)
     spans = UnitRange{Int}[]
     for c in chunks
         lo = length(cells) + 1
-        append!(cells, Int.(cellindices(parent, Int(c))))
+        append!(cells, Int.(ownedindices(parent, Int(c))))
         push!(spans, lo:length(cells))
     end
     return E1Subspace(parent, collect(Int, chunks), cells, spans)
@@ -82,7 +82,7 @@ ncells(s::E1Subspace) = length(s.cells)
 nchunks(s::E1Subspace) = length(s.chunks)
 getcell(s::E1Subspace, i::Int) = getcell(s.parent, s.cells[i])
 manifold(s::E1Subspace) = manifold(s.parent)
-cellindices(s::E1Subspace, c::Int) = s.spans[c]
+ownedindices(s::E1Subspace, c::Int) = s.spans[c]
 # `chunkextents` is public but not exported, so this must name it to extend it
 # rather than define a second function that the generic fallback would shadow.
 GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
@@ -777,6 +777,13 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         sub = E1Subspace(dst, sel)
         @test nchunks(sub) == length(sel)
         @test GR.chunkextents(sub) == GR.chunkextents(dst)[sel]
+        # The toy owns its cells under the name the generics dispatch on. Spelt
+        # `cellindices`, this is a `MethodError` and every row below is built
+        # over a sub-space nobody can enumerate.
+        @test ownedindices(sub, 1) == 1:length(ownedindices(dst, sel[1]))
+        @test [getcell(sub, i) for i in ownedindices(sub, 3)] ==
+              [getcell(dst, i) for i in ownedindices(dst, sel[3])]
+        @test last(ownedindices(sub, nchunks(sub))) == ncells(sub)
 
         view = GR.subspace_dependencies(g, sub, sel)
         # Row for row, it is the parent's relation over those chunks.

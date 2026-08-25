@@ -104,7 +104,7 @@ function eager_pairs(dst, src; method = GR.Conservative())
     for j in axes(W, 2), i in axes(W, 1)
         iszero(W[i, j]) && continue
         d, s = GR.chunkat(dst, i), GR.chunkat(src, j)
-        # A partial space reports `nothing` for a position it does not cover.
+        # A partial space reports `nothing` for an index it does not cover.
         (d === nothing || s === nothing) && continue
         push!(out, (Int(d), Int(s)))
     end

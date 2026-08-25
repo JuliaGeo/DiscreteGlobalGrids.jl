@@ -504,7 +504,10 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test fast.weights.rowval == slow.weights.rowval
         @test all(fast.weights.nzval .=== slow.weights.nzval)
         @test all(fast.denom .=== slow.denom)
-        @test GR.hasdenom(fast) == GR.hasdenom(slow) == true
+        # Both routes report denominators, and both reference them rather than
+        # the row sums a method reporting none would leave.
+        @test fast.reference === fast.denom
+        @test slow.reference === slow.denom
     end
 
     @testset "disjoint chunks keep zero denominators" begin

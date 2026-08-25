@@ -83,27 +83,30 @@ outputsampling(::BarycentricPoint) = DD.Lookups.Points()
 """
     WeightCOO(ndst::Int)
 
-A chunk-local coordinate-list accumulator. `rows` and `cols` are chunk-local
-indices within the builder's `dst_inds` and `src_inds`. `denom` stores optional
-per-destination denominators. Duplicate entries are summed when the block is
-assembled.
+A chunk-local coordinate-list accumulator over `ndst` destination cells. `rows`
+and `cols` are chunk-local indices within the builder's `dst_inds` and
+`src_inds`. Duplicate entries are summed when the block is assembled.
+
+`denom` holds optional per-destination denominators and is `nothing` until a
+builder declares them, through [`markdenominated!`](@ref) or the first
+[`adddenom!`](@ref); a method that reports none — every point sample — leaves it
+`nothing` and allocates no denominator vector.
 """
 mutable struct WeightCOO
+    const ndst::Int
     const rows::Vector{Int}
     const cols::Vector{Int}
     const vals::Vector{Float64}
-    const denom::Vector{Float64}
-    hasdenom::Bool
+    denom::Union{Nothing,Vector{Float64}}
 end
 
-WeightCOO(ndst::Integer) =
-    WeightCOO(Int[], Int[], Float64[], zeros(Float64, ndst), false)
+WeightCOO(ndst::Integer) = WeightCOO(Int(ndst), Int[], Int[], Float64[], nothing)
 
 Base.length(coo::WeightCOO) = length(coo.vals)
 
 Base.show(io::IO, coo::WeightCOO) =
-    print(io, "WeightCOO(ndst=", length(coo.denom), ", entries=", length(coo),
-        coo.hasdenom ? ", denom" : "", ")")
+    print(io, "WeightCOO(ndst=", coo.ndst, ", entries=", length(coo),
+        coo.denom === nothing ? "" : ", denom", ")")
 
 """
     addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
@@ -126,18 +129,25 @@ Add `d` to the denominator of chunk-local destination `dst_local`. Report only
 the share from the current source chunk.
 """
 function adddenom!(coo::WeightCOO, dst_local::Int, d::Real)
-    coo.denom[dst_local] += Float64(d)
-    coo.hasdenom = true
+    v = coo.denom
+    if v === nothing
+        v = zeros(Float64, coo.ndst)
+        coo.denom = v
+    end
+    v[dst_local] += Float64(d)
     return coo
 end
 
 """
     markdenominated!(coo::WeightCOO)
 
-Declare that `coo` carries denominators, without adding to any of them.
+Declare that `coo` carries denominators, without adding to any of them, and
+return `coo`. This is where the zero-filled denominator vector is allocated, so
+a builder that reports coverage for no destination still produces a denominated
+block of zeros.
 """
 function markdenominated!(coo::WeightCOO)
-    coo.hasdenom = true
+    coo.denom === nothing && (coo.denom = zeros(Float64, coo.ndst))
     return coo
 end
 

@@ -664,6 +664,67 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
         @test length(readdir(dir)) > built
     end
 
+    @testset "caches and spills carry no reference state of their own" begin
+        method = T7CountingMethod(ToyDiagonalMethod())
+        plan = t7_plan(method, dstspace, srcspace)
+        dinds = ownedindices(dstspace, 1)
+
+        built = GR.blockfor(plan, (1, 1), dinds)
+        @test method.builds == 1
+        @test built.block.reference === built.block.denom
+
+        # A hit hands back the entry, so it hands back the same reference object.
+        # A cache that kept a reference of its own would answer an equal copy.
+        hit = GR.blockfor(plan, (1, 1), dinds)
+        @test hit === built
+        @test hit.block.reference === built.block.reference
+        @test method.builds == 1
+
+        # A tile's cached blocks reference their own blocks too.
+        tiled = GR.CachedTile(GR.TileWeights([1], WeightBlock[built.block]))
+        @test tiled.entries[1].block.reference === built.block.reference
+
+        # The spill format stores weights and the optional denominator, and
+        # nothing else: a denominated block and a block with none, over the same
+        # weights, differ on disk by exactly the denominator.
+        dir = mktempdir()
+        inds = ownedindices(srcspace, 1)
+        m = length(inds)
+        coo = WeightCOO(m)
+        buildweights!(coo, ToyDiagonalMethod(; scale = 2.0), srcspace, inds, srcspace, inds)
+        denominated = WeightBlock(coo, m, m)
+        bare = WeightCOO(m)
+        buildweights!(bare, ToyDiagonalMethod(; scale = 2.0, withdenom = false),
+            srcspace, inds, srcspace, inds)
+        point = WeightBlock(bare, m, m)
+        @test point.weights == denominated.weights
+
+        dpath = GR.writeblockfile(joinpath(dir, "denominated.blk"), denominated)
+        ppath = GR.writeblockfile(joinpath(dir, "point.blk"), point)
+        @test filesize(dpath) - filesize(ppath) == 8 * m
+
+        # Both come back with the reference reconstructed, aliased to the
+        # denominator where there is one and recomputed where there is not.
+        dback = GR.readblockfile(dpath)
+        @test dback.weights == denominated.weights
+        @test dback.denom == denominated.denom
+        @test dback.reference === dback.denom
+        @test GR._blockbytes(dback) == GR._blockbytes(denominated)
+        pback = GR.readblockfile(ppath)
+        @test pback.weights == point.weights
+        @test pback.denom === nothing
+        @test pback.reference == point.reference
+        @test GR._blockbytes(pback) == GR._blockbytes(point)
+
+        # A spilled tile's blocks are reconstructed the same way.
+        tpath = GR.writetilefile(joinpath(dir, "tile.tile"),
+            GR.TileWeights([1, 2], WeightBlock[denominated, point]))
+        tback = GR.readtilefile(tpath)
+        @test tback.sourcechunks == [1, 2]
+        @test tback.blocks[1].reference === tback.blocks[1].denom
+        @test tback.blocks[2].reference == point.reference
+    end
+
     @testset "missingval on the lazy path" begin
         # The sentinel is applied per source chunk, so a lazy read must reach the
         # same verdict as the eager one on the same field.

@@ -17,30 +17,58 @@ Store one chunk pair's immutable weights. `weights` uses chunk-local indices;
 `denom` contains optional per-destination denominators. Construction from
 [`WeightCOO`](@ref) sums duplicate entries. Summing blocks across source chunks
 reconstructs the full operator.
+
+`reference` is the per-destination weight the block's values are normalized
+against, held once and reusable by every application of the block. On a
+denominated block it *is* `denom` — the same object, `reference === denom` — and
+on a block that reports none it is the row sums of `weights`, computed when the
+block is built. `denom === nothing` therefore still records which of the two a
+reference is, and nothing outside the block recomputes or copies it.
 """
 struct WeightBlock{M<:AbstractMatrix{Float64},D<:Union{Nothing,Vector{Float64}}}
     weights::M
     denom::D
+    reference::Vector{Float64}
 end
+
+WeightBlock(weights::AbstractMatrix{Float64}, denom::Vector{Float64}) =
+    WeightBlock{typeof(weights),Vector{Float64}}(weights, denom, denom)
+
+WeightBlock(weights::AbstractMatrix{Float64}, ::Nothing) =
+    WeightBlock{typeof(weights),Nothing}(weights, nothing, _rowsums(weights))
 
 function WeightBlock(coo::WeightCOO, ndst::Integer, nsrc::Integer)
     weights = sparse(coo.rows, coo.cols, coo.vals, Int(ndst), Int(nsrc))
-    return WeightBlock(weights, coo.hasdenom ? copy(coo.denom) : nothing)
+    d = coo.denom
+    return WeightBlock(weights, d === nothing ? nothing : copy(d))
 end
 
 Base.size(block::WeightBlock) = size(block.weights)
 Base.size(block::WeightBlock, d::Integer) = size(block.weights, d)
 
-"""
-    hasdenom(block::WeightBlock) -> Bool
-
-Return whether the block carries per-destination denominators.
-"""
-hasdenom(block::WeightBlock) = block.denom !== nothing
-
 Base.show(io::IO, block::WeightBlock) =
     print(io, "WeightBlock(", size(block, 1), "×", size(block, 2),
         block.denom === nothing ? "" : ", denom", ")")
+
+# A block with no denominator references its row sums, which is what the
+# accumulated weight of every source cell a destination draws on comes to.
+_rowsums(W::AbstractMatrix) = _addrowsums!(zeros(Float64, size(W, 1)), W)
+
+function _addrowsums!(ref::AbstractVector{Float64}, W::SparseMatrixCSC)
+    rows = SparseArrays.rowvals(W)
+    vals = SparseArrays.nonzeros(W)
+    @inbounds for p in eachindex(rows, vals)
+        ref[rows[p]] += vals[p]
+    end
+    return ref
+end
+
+function _addrowsums!(ref::AbstractVector{Float64}, W::AbstractMatrix)
+    @inbounds for k in axes(W, 2), j in axes(W, 1)
+        ref[j] += W[j, k]
+    end
+    return ref
+end
 
 """
     DirectPlan(method, missingpolicy, dst_space, src_space, block, missingval = nothing,
@@ -101,25 +129,30 @@ Return the part of `budget` available for loaded source chunks.
 databudget(budget::Integer) = max(1, Int(budget) - weightbudget(budget))
 
 """
-    CachedBlock(block, ref, bytes)
+    CachedBlock(block, bytes, used)
 
-A weight block with its reference vector, approximate size, and recency stamp.
+A weight block with its approximate size and recency stamp. The block carries
+its own reference vector, so caching one copies no numerical state.
 """
 mutable struct CachedBlock
     block::WeightBlock
-    ref::Vector{Float64}
     bytes::Int
     used::Int
 end
 
-# Estimate resident bytes from the block's backing arrays.
-function _blockbytes(block::WeightBlock, ref::Vector{Float64})
+CachedBlock(block::WeightBlock) = CachedBlock(block, _blockbytes(block), 0)
+
+# Estimate resident bytes from the block's backing arrays. A denominated block's
+# reference is its denominator, one vector counted once; a block with no
+# denominator holds its row sums instead, and pays for that vector alone.
+function _blockbytes(block::WeightBlock)
     W = block.weights
     w = W isa SparseMatrixCSC ?
         16 * SparseArrays.nnz(W) + 8 * (size(W, 2) + 1) :
         8 * length(W)
     d = block.denom === nothing ? 0 : 8 * length(block.denom)
-    return w + d + 8 * length(ref) + 64
+    r = block.reference === block.denom ? 0 : 8 * length(block.reference)
+    return w + d + r + 64
 end
 
 """
@@ -161,9 +194,7 @@ function CachedTile(weights::TileWeights)
     entries = Vector{CachedBlock}(undef, length(weights.blocks))
     bytes = 8 * length(weights.sourcechunks) + 64
     for k in eachindex(weights.blocks)
-        block = weights.blocks[k]
-        ref = blockreference!(Vector{Float64}(undef, size(block, 1)), block)
-        entry = CachedBlock(block, ref, _blockbytes(block, ref), 0)
+        entry = CachedBlock(weights.blocks[k])
         entries[k] = entry
         bytes += entry.bytes
     end
@@ -259,10 +290,7 @@ outside the storage lock.
 function getblock!(storage::PerChunk, key::Tuple{Int,Int}, build::F) where {F}
     hit = _touch!(storage, key)
     hit === nothing || return hit
-    block = build()
-    ref = blockreference!(Vector{Float64}(undef, size(block, 1)), block)
-    entry = CachedBlock(block, ref, _blockbytes(block, ref), 0)
-    return _insert!(storage, key, entry)
+    return _insert!(storage, key, CachedBlock(build()))
 end
 
 function _touch!(storage::PerChunk, key::Tuple{Int,Int})
@@ -491,8 +519,9 @@ end
 """
     readblockfile(path) -> WeightBlock
 
-Read a block written by [`writeblockfile`](@ref). Reference vectors are rebuilt
-from the weights.
+Read a block written by [`writeblockfile`](@ref). The file holds the weights and
+the optional denominator; the block's reference vector is not stored but
+reconstructed here, as the denominator itself or as the weights' row sums.
 """
 function readblockfile(path::AbstractString)
     return open(path, "r") do io
@@ -523,7 +552,8 @@ end
     readtilefile(path) -> TileWeights
 
 Read a tile written by [`writetilefile`](@ref), manifest and all, without
-rebuilding a stencil.
+rebuilding a stencil. Each block's reference vector is reconstructed as it is
+read, the same way [`readblockfile`](@ref) does.
 """
 function readtilefile(path::AbstractString)
     return open(path, "r") do io
@@ -811,11 +841,8 @@ tilefor(plan::ChunkedPlan, tile::Integer, dinds, dst_space::RegridSpace, smp) =
 
 # A source chunk no stencil in the tile names contributes nothing. This block is
 # not cached: it holds no weights to keep, and nothing reads it twice.
-function _emptyblock(nd::Int, ns::Int)
-    block = WeightBlock(sparse(Int[], Int[], Float64[], nd, ns), nothing)
-    ref = zeros(Float64, nd)
-    return CachedBlock(block, ref, _blockbytes(block, ref), 0)
-end
+_emptyblock(nd::Int, ns::Int) =
+    CachedBlock(WeightBlock(sparse(Int[], Int[], Float64[], nd, ns), nothing))
 
 """
     buildblock(plan::ChunkedPlan, dinds, sinds[, dst_space]) -> WeightBlock

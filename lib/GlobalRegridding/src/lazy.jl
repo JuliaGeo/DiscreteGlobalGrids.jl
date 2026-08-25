@@ -493,7 +493,7 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
                         continue
                     end
                     buf = _sourcefor!(hold, A, (s, gi), sr, gr, pos, keep)
-                    _applygroup!(num, cover, entry.block, entry.ref, buf, ncell, pos, strides, mv)
+                    _applygroup!(num, cover, entry.block, buf, ncell, pos, strides, mv)
                 end
             end
             # Retain at most one local wave; storage manages its own cache.
@@ -834,10 +834,12 @@ function _sourcefor!(hold::SourceHold, A::LazyRegridArray{T,N,NS,NO}, key::Tuple
     return hold.scratch
 end
 
-# Apply one block to every slice in a loaded chunk combination.
+# Apply one block to every slice in a loaded chunk combination. Coverage comes
+# off the block's own reference weights, which every slice shares.
 function _applygroup!(num::Matrix{Float64}, cover::Matrix{Float64}, block::WeightBlock,
-    ref::Vector{Float64}, buf::AbstractArray, ncell::Int,
+    buf::AbstractArray, ncell::Int,
     pos::NTuple{NO,UnitRange{Int}}, strides::NTuple{NO,Int}, missingval) where {NO}
+    ref = block.reference
     src = reshape(buf, ncell, :)
     dirty = anyinvalid(buf, missingval)
     k = 0

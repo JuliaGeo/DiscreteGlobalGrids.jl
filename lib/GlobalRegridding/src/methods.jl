@@ -51,6 +51,9 @@ struct BilinearPoint <: AbstractRegriddingMethod end
 
 Return the sampling a method gives the destination it writes. Area-based methods
 report `Intervals(Center())`, the default; point samples report `Points()`.
+
+This trait also selects the method's weight build path in [`weightblock`](@ref):
+`Points()` takes the point path, every other sampling the area path.
 """
 outputsampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Center())
 outputsampling(::NearestCell) = DD.Lookups.Points()

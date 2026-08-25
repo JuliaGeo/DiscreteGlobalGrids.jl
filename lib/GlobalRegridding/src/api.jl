@@ -231,16 +231,14 @@ end
 """
     wholeblock(method, dst_space, src_space) -> WeightBlock
 
-Build one [`WeightBlock`](@ref) over all source and destination cells.
+Build one [`WeightBlock`](@ref) over all source and destination cells. The build
+path is [`weightblock`](@ref)'s, so the eager domain and a chunk pair are built
+the same way.
 """
-function wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
-    src_space::RegridSpace)
-    ndst = Int(ncells(dst_space))
-    nsrc = Int(ncells(src_space))
-    coo = WeightCOO(ndst)
-    buildweights!(coo, method, dst_space, 1:ndst, src_space, 1:nsrc)
-    return WeightBlock(coo, ndst, nsrc)
-end
+wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+    src_space::RegridSpace) =
+    weightblock(method, dst_space, 1:Int(ncells(dst_space)),
+        src_space, 1:Int(ncells(src_space)))
 
 # Only dimensional arrays carry enough geometry to infer a source space.
 # A dimension that already names cells ([`dimsource`](@ref)) is not a raster

@@ -539,12 +539,48 @@ Build one chunk pair's weights without consulting storage.
 buildblock(plan::ChunkedPlan, dinds, sinds) =
     buildblock(plan, dinds, sinds, TileCells(plan.dst_space, dinds))
 
-function buildblock(plan::ChunkedPlan, dinds, sinds, dst_space::RegridSpace)
-    coo = WeightCOO(length(dinds))
-    buildweights!(coo, plan.method, dst_space, dinds, plan.src_space, sinds)
-    return WeightBlock(coo, length(dinds), length(sinds))
-end
+buildblock(plan::ChunkedPlan, dinds, sinds, dst_space::RegridSpace) =
+    weightblock(plan.method, dst_space, dinds, plan.src_space, sinds)
 
 buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
     buildblock(plan, ownedindices(plan.dst_space, Int(dstchunk)),
         ownedindices(plan.src_space, Int(srcchunk)))
+
+"""
+    weightblock(method, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
+
+Build the weights destination cells `dst_inds` take from source cells
+`src_inds`. Every builder, eager or chunked, goes through here, so this is where
+the build path is chosen: [`outputsampling`](@ref) selects it, and no concrete
+method type takes part.
+
+A destination the method samples at points takes the point path; every other
+sampling takes the area path. Both assemble one [`WeightCOO`](@ref) through
+[`buildweights!`](@ref), so a point method that builds no weights of its own
+needs nothing beyond that hook.
+"""
+weightblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
+    src_space::RegridSpace, src_inds) =
+    weightblock(outputsampling(method), method, dst_space, dst_inds, src_space, src_inds)
+
+weightblock(::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) =
+    pairblock(method, dst_space, dst_inds, src_space, src_inds)
+
+weightblock(::DD.Lookups.Points, method::AbstractRegriddingMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) =
+    pairblock(method, dst_space, dst_inds, src_space, src_inds)
+
+"""
+    pairblock(method, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
+
+Assemble one `(destination cells, source chunk)` pair from a single
+[`WeightCOO`](@ref). Rows are chunk-local within `dst_inds`, columns
+chunk-local within `src_inds`.
+"""
+function pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
+    src_space::RegridSpace, src_inds)
+    coo = WeightCOO(length(dst_inds))
+    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds)
+    return WeightBlock(coo, length(dst_inds), length(src_inds))
+end

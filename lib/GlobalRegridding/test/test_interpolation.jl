@@ -1,4 +1,7 @@
-# Nearest-cell and bilinear weight construction.
+# Nearest-cell and bilinear weight construction, and the build path the output
+# sampling selects.
+
+import DimensionalData as DD
 
 # Cell centres in native degrees.
 GR.chartaxes(space::ToyLonLatSpace) =
@@ -55,6 +58,55 @@ struct T4NoChartSpace <: RegridSpace end
 
 struct T4BareChartSpace <: RegridSpace end
 GR.hascellchart(::T4BareChartSpace) = true
+
+# Two methods whose sampling is a field, so one method type can be put on either
+# build path. Nothing in the split may notice which type they are.
+
+"""
+    T4SplitMethod(sampling)
+
+Report `sampling`, count `buildweights!` calls, and give each destination weight
+one to the source cell of the same local index. It supplies no weights outside
+that hook.
+"""
+struct T4SplitMethod{S<:DD.Lookups.Sampling} <: AbstractRegriddingMethod
+    sampling::S
+    builds::Threads.Atomic{Int}
+end
+
+T4SplitMethod(sampling::DD.Lookups.Sampling) =
+    T4SplitMethod(sampling, Threads.Atomic{Int}(0))
+
+GR.outputsampling(method::T4SplitMethod) = method.sampling
+
+function buildweights!(coo::WeightCOO, method::T4SplitMethod,
+    ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
+    Threads.atomic_add!(method.builds, 1)
+    chunklocal_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
+    for (j, p) in enumerate(dst_inds)
+        k = get(chunklocal_of, p, 0)
+        k == 0 && continue
+        addweight!(coo, j, k, 1.0)
+        adddenom!(coo, j, 1.0)
+    end
+    return coo
+end
+
+"""
+    T4TileMethod(sampling)
+
+Report `sampling` and supply a constant block on the point path. It implements
+no `buildweights!`, so it answers only where the point path runs.
+"""
+struct T4TileMethod{S<:DD.Lookups.Sampling} <: AbstractRegriddingMethod
+    sampling::S
+end
+
+GR.outputsampling(method::T4TileMethod) = method.sampling
+
+GR.weightblock(::DD.Lookups.Points, ::T4TileMethod, ::RegridSpace, dst_inds,
+    ::RegridSpace, src_inds) =
+    WeightBlock(fill(0.5, length(dst_inds), length(src_inds)), nothing)
 
 @testset "Interpolation weights" begin
 
@@ -191,5 +243,59 @@ GR.hascellchart(::T4BareChartSpace) = true
         oblong = ToyLonLatSpace(36, 6)
         @test supportradius(BilinearPoint(), oblong) >= deg2rad(dlon(oblong))
         @test supportradius(BilinearPoint(), oblong) >= deg2rad(dlat(oblong))
+    end
+
+    @testset "output sampling selects the build path" begin
+        src = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
+            chunks = (4, 2))
+        dst = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
+            chunks = (8, 2))
+        field = collect(reshape(1.0:32.0, 8, 4))
+        ndst, nsrc = Int(ncells(dst)), Int(ncells(src))
+
+        # A point method that supplies no weights of its own still reaches
+        # `buildweights!`, once per block, and keeps every entry it emits.
+        point = T4SplitMethod(DD.Lookups.Points())
+        area = T4SplitMethod(DD.Lookups.Intervals(DD.Lookups.Center()))
+        pointweights = GR.wholeblock(point, dst, src).weights
+        @test Matrix(pointweights) == Matrix(LinearAlgebra.I, ndst, nsrc)
+        @test point.builds[] == 1
+        @test pointweights == GR.wholeblock(area, dst, src).weights
+
+        # Eager and chunked agree for it, so the split moved no value.
+        eager = regrid(field; to = dst, from = src, method = point, lazy = false)
+        dest = Vector{Float64}(undef, ndst)
+        regrid!(dest, field,
+            ChunkedPlan(point, Weighted(0.5), dst, src; storage = PerChunk()))
+        @test dest == eager
+
+        # One method type on two traits. Only the point one takes the point
+        # path, in the eager builder and in the chunk-pair builder alike; the
+        # area one falls to `buildweights!`, which it does not implement.
+        tilepoint = T4TileMethod(DD.Lookups.Points())
+        tilearea = T4TileMethod(DD.Lookups.Intervals(DD.Lookups.Center()))
+        @test Matrix(GR.wholeblock(tilepoint, dst, src).weights) ==
+              fill(0.5, ndst, nsrc)
+        @test_throws "buildweights! is not implemented" GR.wholeblock(
+            tilearea, dst, src)
+
+        tileplan = ChunkedPlan(tilepoint, Weighted(0.5), dst, src;
+            storage = PerChunk())
+        @test Matrix(GR.buildblock(tileplan, 1, 1).weights) ==
+              fill(0.5, length(ownedindices(dst, 1)), length(ownedindices(src, 1)))
+        @test_throws "buildweights! is not implemented" GR.buildblock(
+            ChunkedPlan(tilearea, Weighted(0.5), dst, src; storage = PerChunk()),
+            1, 1)
+
+        # The shipped point methods answer the same eagerly and by chunk.
+        pdst = ToyLonLatSpace(5, 3; lon = (-30.0, 30.0), lat = (-15.0, 15.0),
+            chunks = (5, 2))
+        for method in (NearestCell(), BilinearPoint())
+            reference = regrid(field; to = pdst, from = src, method, lazy = false)
+            out = Vector{Float64}(undef, Int(ncells(pdst)))
+            regrid!(out, field, ChunkedPlan(method, Weighted(0.5), pdst, src;
+                storage = PerChunk()))
+            @test out == reference
+        end
     end
 end

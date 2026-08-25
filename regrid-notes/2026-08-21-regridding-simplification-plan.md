@@ -118,6 +118,16 @@ kept as a deprecation shim and appears in this plan only as history:
   on any route. `buildweights!` with `WeightCOO` remains the generic assembly
   and the only hook a method must supply, and a method wrapping another takes
   the inner method's build by forwarding `pairblock`.
+- Phase 6, generic DGG output and API forwarding: **complete**. O1 and O2 are
+  closed. A DGG destination supplies one output hook — `destinationdims`,
+  answering the cells' own axis — and one `_asspace` method per target
+  spelling; this package applies no plan, converts no target through an
+  intermediate generic, and labels no result of its own on either route, and a
+  destination whose one axis is the whole of its shape is labelled rather than
+  reshaped or wrapped. `plan_regrid` states every keyword, every default and
+  every check; `regrid` and `regrid!` forward `kwargs...` to it and declare
+  nothing, refusing only the three keywords that describe a relation a kept
+  plan owns.
 - Phase 9, point-method admission: **complete**. S1, S2 and S3 are closed, and
   the barycentric plan's P0, P1 and P2 landed inside it. `outputsampling` names
   the build path by trait alone; a point method supplying a `sampler` builds one
@@ -129,9 +139,9 @@ kept as a deprecation shim and appears in this plan only as history:
   declared bound that keeps them a superset, and a manifest naming a chunk no
   row of its tile holds is refused rather than silently trimmed. Conservative
   weights, keys, read counts and values are unchanged.
-- **Next in this plan's own order: Phase 6** (O1 then O2), behind the user's
-  gate. Phase 9 branched from E2 beside Phase 5 and is closed, so nothing runs
-  alongside Phase 6; Phases 7-8 follow it in order.
+- **Next in this plan's own order: Phase 7** (D1), behind the user's gate.
+  Phase 9 branched from E2 beside Phase 5 and is closed, so nothing runs
+  alongside Phase 7; Phase 8 follows it in order.
 
 Landed cards, with the commit each one shipped as:
 
@@ -159,6 +169,8 @@ Landed cards, with the commit each one shipped as:
 | W1 | `d01da5c` | Store reference weights in WeightBlock |
 | P3 | `d227de2` | Record the fused tile-weight execution |
 | W2 | `6a4314f` | Unify final weight block construction |
+| O1 | `619db4e` | Use generic output dimensions for DGG regridding |
+| O2 | `fad29f6` | Simplify regridding target and keyword resolution |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
 `93e836d` is the commit that pinned them and records their SHAs. P0, P1, P2 and P3
@@ -200,6 +212,11 @@ Evidence:
   reference vector, when it aliases a denominator, and what a builder hands it
 - `regrid-notes/2026-08-25-w2-one-builder.md` — W2's one build path,
   Conservative's adopted assembly, and the wrapper forwarding rule
+- `regrid-notes/2026-08-25-o1-generic-output.md` — O1's one output hook, the
+  two wrappers' one-axis short circuits, and the comparator behind them
+- `regrid-notes/2026-08-25-o2-target-keywords.md` — O2's one `_asspace` method
+  per target spelling, the bare-system level rule and its error, and where
+  every keyword default now lives
 - `regrid-notes/2026-08-23-barycentric-regridding-plan.md` — the point-method
   plan Phase 9 admits, and the authoritative naming for its parts
 - `regrid-notes/generic-barycentric-patch-regridding.md` and
@@ -1011,6 +1028,12 @@ Actions:
 
 **Phase 6 gate:** no DGG-specific plan application or intermediate conversion
 generic remains, and API defaults occur once.
+Met: this package defines no `regrid`, `regrid!` or `plan_regrid` method and no
+`_ascube`, `regridgrid` or `RegridTarget`; each target spelling is one
+`_asspace` method; and every keyword's default is declared on `plan_regrid`'s
+one method, with `regrid` and `regrid!` declaring only `kwargs...` and the lazy
+budget's value named once as `DEFAULT_BUDGET`.
+
 **Commit:** `Simplify regridding target and keyword resolution`.
 
 ## Phase 7 — prepared destination geometry

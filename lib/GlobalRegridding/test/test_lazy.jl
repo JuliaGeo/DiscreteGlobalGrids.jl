@@ -1062,6 +1062,48 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
         @test length(held) < length(rowheld)
     end
 
+    @testset "a nearest tile reads exactly the chunks its cells sit in" begin
+        # The same counting fixture, for `NearestCell`: each destination takes
+        # the one source cell containing it, and both tiles straddle a source
+        # chunk seam in longitude.
+        src = ToyLonLatSpace(36, 18; chunks = (6, 6))
+        dst = ToyLonLatSpace(20, 10; lon = (-19.0, 21.0), lat = (-20.0, 20.0),
+            chunks = (20, 5))
+        data = collect(reshape(1.0:648.0, 36, 18))
+        source = T7Counting(data, (6, 6))
+        plan = t7_plan(NearestCell(), dst, src)
+        graph = GR.dependencies(plan)
+        A = LazyRegridArray(source, plan)
+        @test GR.tilesampler(plan) !== nothing
+        @test A.tiling.spacetiled && nchunks(dst) == 2
+
+        eager = regrid(data; to = dst, from = src, method = NearestCell(),
+            lazy = false)
+
+        for t in 1:nchunks(dst)
+            dinds = ownedindices(dst, t)
+            t7_reset!(source)
+
+            # Bit-identical to the eager whole domain, not approximate: the
+            # weight is exactly one and there is nothing to accumulate.
+            @test A[first(dinds):last(dinds)] == eager[first(dinds):last(dinds)]
+
+            manifest = plan.storage.tiles[t].sourcechunks
+            row = Int.(GR.sourcesof(graph, t))
+
+            # A radius of zero already holds every chunk the tile reads, so the
+            # manifest sits inside the row for a tile straddling a seam and the
+            # read is the manifest exactly.
+            @test manifest == t6_owners(dst, dinds, src)
+            @test length(manifest) > 1
+            @test length(source.reads) == length(manifest)
+            @test t7_spatial(source) ==
+                  sort([GR.chunkranges(src, s, (36, 18)) for s in manifest])
+            @test issubset(manifest, row)
+            @test length(manifest) < length(row)
+        end
+    end
+
     @testset "a point stencil reaching past cap overlap needs a declared radius" begin
         # A destination lattice twenty times finer than the source, wholly
         # inside one source cell and just past its sample site, so its stencils

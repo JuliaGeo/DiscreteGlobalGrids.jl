@@ -39,6 +39,25 @@
 #                        plus the loads its manifest names and the application.
 #   8. `warm read`       the same read against the plan arm 7 left warm.
 #
+# Seven more arms over that same tile with `NearestCell`, whose two routes are
+# one method's own weights: `PairNearest` forwards its `buildweights!` and
+# supplies no `sampler`, so a plan around it builds one chunk pair at a time,
+# where `NearestCell` supplies one and builds one destination tile. Nothing but
+# the routing differs between them, so these price the routing alone, which arms
+# 1-8 cannot: they run two different kernels.
+#
+#   9.  `nearest one pass`   one `buildweights!` over the whole source index
+#                            range, the point-location floor for this kernel.
+#  10.  `nearest pair loop`  one `buildblock` per candidate chunk.
+#  11.  `nearest tile weights` one `tileweights` build of the whole tile,
+#                            sampler preparation included.
+#  12.  `nearest cold read, pair route`  a fresh `PairNearest` plan and one lazy
+#                            read of the whole tile.
+#  13.  `nearest cold read, tile route`  the same for `NearestCell` itself.
+#  14.  `nearest warm read, pair route`  the same read against the plan arm 10
+#                            left warm.
+#  15.  `nearest warm read, tile route`  the same for `NearestCell`.
+#
 # The tile-route accounting rows beside them come from one further instrumented
 # read of a clean plan, and describe what that route does rather than what the
 # pair route did: the point locations one build performs, counted through a
@@ -48,7 +67,11 @@
 # manifest against the number of candidates the relation names; and the source
 # chunks the read touched with how many times each was fetched. The counted
 # build's manifest is checked against the plan's, so the counted numbers belong
-# to the tile the plan built.
+# to the tile the plan built. The nearest rows are the same accounting on both
+# of that method's routes: its tile-route locations counted through the same
+# recording sampler, its pair-route locations counted through a method that
+# records what each build was asked to place, and one instrumented read of a
+# clean plan on each route.
 #
 # SIZES. The source is a global 0.125-degree raster, 2880x1440 = 4,147,200 cells
 # in 8x4 = 32 chunks of 360x360, which is the shape of an ordinary global
@@ -76,47 +99,70 @@
 # `weightbudget(plan.budget)` is printed beside them for comparison.
 #
 # RECORDED 2026-08-25, M-series macOS, Julia 1.12.6, 8 threads of 12 CPUs,
-# `powermode 2`, warm-up plus minimum of three samples:
+# `powermode 2`, warm-up plus minimum of three samples. All sixteen arms come
+# from one process, so every ratio below is same-session:
 #
 #   arm                                  time        allocated
-#   one pass over the tile          67.801 ms      101,422,496 B
-#   pair loop (4 candidates)       324.564 ms      221,472,320 B
-#   plan construction                0.066 ms            4,320 B
-#   cold tile read                 331.528 ms      254,579,792 B
-#   warm tile read                   4.478 ms       19,275,648 B
-#   tile weights, one pass         105.406 ms      212,468,720 B
-#   plan construction, tile route    0.062 ms           78,304 B
-#   cold read, tile route          105.509 ms      245,848,432 B
-#   warm read, tile route            3.021 ms       19,349,536 B
+#   one pass over the tile          62.990 ms       93,508,960 B
+#   pair loop (4 candidates)       324.871 ms      225,814,144 B
+#   plan construction                0.061 ms            4,320 B
+#   cold tile read                 327.565 ms      240,096,080 B
+#   warm tile read                   2.478 ms       19,275,648 B
+#   tile weights, one pass         112.536 ms      232,457,520 B
+#   plan construction, tile route    0.090 ms           78,304 B
+#   cold read, tile route          106.966 ms      247,814,448 B
+#   warm read, tile route            2.453 ms       19,349,536 B
+#   nearest one pass over the tile  44.263 ms       31,404,960 B
+#   nearest pair loop (4)          226.055 ms       88,399,360 B
+#   nearest tile weights            72.156 ms       88,399,600 B
+#   nearest cold read, pair route  226.120 ms      107,678,432 B
+#   nearest cold read, tile route   72.811 ms      107,680,240 B
+#   nearest warm read, pair route    1.727 ms       19,275,648 B
+#   nearest warm read, tile route    1.889 ms       19,275,552 B
 #
 #   375,000 destination cells, 4 candidate source chunks [12, 13, 20, 21], all
-#   four contributing, 1,500,000 stencil entries on both routes, 4.00 per
-#   destination cell
+#   four contributing. The chart methods keep 1,500,000 stencil entries, 4.00
+#   per destination cell; `NearestCell` keeps 375,000, 1.00 per destination.
 #
 #   chunk-pair route  1,500,000 point locations where 375,000 would do
 #                     4 cached blocks, weight bytes 40,147,488 (plan
-#                     accounting) / 28,147,912 (summarysize)
+#                     accounting) / 40,148,104 (summarysize)
 #                     4 source chunks read, each once; peak source residency
 #                     4,147,200 B
 #   tile route          375,000 point locations, one per destination
 #                     1 cached tile of 4 blocks over a 4-chunk manifest, weight
-#                     bytes 40,147,584 / 28,148,112
+#                     bytes 40,147,584 / 40,148,344
 #                     4 source chunks read, each once; peak source residency
 #                     4,147,200 B
+#   nearest, pair     1,500,000 point locations, weight bytes 22,147,488,
+#                     4 source chunks read, each once
+#   nearest, tile       375,000 point locations, 1 cached tile over a 4-chunk
+#                     manifest [12, 13, 20, 21], weight bytes 22,147,584,
+#                     4 source chunks read, each once
 #
-# The pair loop is 4.79x one pass at k = 4: the destination pass is repeated per
+# The pair loop is 5.16x one pass at k = 4: the destination pass is repeated per
 # candidate and nothing else about the build changes. Weight construction is
-# 98.6% of a cold tile read, so this repetition, not source I/O or the weight
+# 99.2% of a cold tile read, so this repetition, not source I/O or the weight
 # application, is what a large point tile costs on that route.
 #
 # The fused build locates each of the 375,000 destinations once, and the manifest
 # it emits equals the relation's candidate list here, so the reads are the same
-# four: 3.08x the pair loop for the same 1,500,000 entries, and a cold read 3.14x
-# the pair route's. Its 1.55x over the one-pass floor is not overhead over the
+# four: 2.89x the pair loop for the same 1,500,000 entries, and a cold read 3.06x
+# the pair route's. Its 1.79x over the one-pass floor is not overhead over the
 # same work — the floor arm is a different kernel emitting one unpartitioned COO,
 # where the fused build also files every entry under its owning chunk and
-# assembles four blocks. Weight construction is 97.1% of its own cold read, and
+# assembles four blocks. Weight construction is 97.7% of its own cold read, and
 # the 96 extra bytes it holds are the manifest.
+#
+# `NearestCell` prices the routing alone, one kernel on both sides. Locations
+# fall 4.00x, exactly `k`; the build falls 3.13x and a cold read 3.11x, for the
+# same 375,000 entries and the same four chunks read once each. A warm read is
+# unchanged (0.91x, one block application either way), and the tile costs the
+# same 96 bytes more, its manifest. Its `supportradius` is zero, so the four
+# candidates are cap overlap and nothing else; every one of them holds cells of
+# this tile, so the manifest is that same list and no read was removed here.
+# What fell is the repeated location, which is the whole of the gap on this
+# fixture.
 #
 # These absolutes belong to that machine state. A later comparison must be a
 # ratio inside one session: re-run this file on the unchanged tree, then again
@@ -198,9 +244,38 @@ function GR.weightsat!(row::GR.WeightRow,
     return GR.weightsat!(row, s.state.inner, p)
 end
 
-countingsampler(space, placed) =
+countingsampler(method, space, placed) =
     GR.Sampler(space, GR.samplesites(space),
-        CountingSites(GR.sampler(BarycentricPoint(), space), placed))
+        CountingSites(GR.sampler(method, space), placed))
+
+# --- nearest weights on the chunk-pair route -------------------------------
+
+"""
+    PairNearest()
+
+`NearestCell`'s weights on the chunk-pair route. It reports `Points()` and
+forwards `buildweights!`, but supplies no `sampler`, so a plan around it builds
+one `(destination tile, source chunk)` pair at a time — the route `NearestCell`
+itself took before it had a sampler, and the route any point method with no
+sampler still takes. `placed` counts the destination cells its builds were
+asked to place, which is one `cellat` query each.
+"""
+struct PairNearest <: AbstractRegriddingMethod
+    placed::Threads.Atomic{Int}
+end
+
+PairNearest() = PairNearest(Threads.Atomic{Int}(0))
+
+GR.outputsampling(::PairNearest) = DD.Lookups.Points()
+
+GR.supportradius(::PairNearest, space::GR.RegridSpace) =
+    GR.supportradius(NearestCell(), space)
+
+function GR.buildweights!(coo::WeightCOO, method::PairNearest, dst::GR.RegridSpace,
+    dst_inds, src::GR.RegridSpace, src_inds)
+    Threads.atomic_add!(method.placed, length(dst_inds))
+    return buildweights!(coo, NearestCell(), dst, dst_inds, src, src_inds)
+end
 
 # --- fixture ---------------------------------------------------------------
 
@@ -232,6 +307,13 @@ newplan(f) = ChunkedPlan(BilinearPoint(), Weighted(0.5), f.dst, f.src;
 # The same fixture on the fused route: `BarycentricPoint` supplies a `sampler`,
 # so its build unit is the destination tile and its reads are its manifest.
 newtileplan(f) = ChunkedPlan(BarycentricPoint(), Weighted(0.5), f.dst, f.src;
+    storage = PerChunk())
+
+# The same fixture for `NearestCell`, whose two routes are the same method's:
+# `PairNearest` builds one chunk pair at a time, `NearestCell` one tile.
+newpairnearestplan(f, method) = ChunkedPlan(method, Weighted(0.5), f.dst, f.src;
+    storage = PerChunk())
+newnearestplan(f) = ChunkedPlan(NearestCell(), Weighted(0.5), f.dst, f.src;
     storage = PerChunk())
 
 # --- measurement -----------------------------------------------------------
@@ -390,6 +472,67 @@ function main()
     warmtile.value ≈ f.want ||
         error("the warm tile-route read did not reproduce the source surface")
 
+    # The same tile for `NearestCell`. Its two routes are one method's weights:
+    # `PairNearest` forwards `buildweights!` and supplies no sampler, so nothing
+    # but the routing differs between these arms.
+    println("\nNearestCell, both routes")
+    pairnearest = PairNearest()
+    nearpairplan = newpairnearestplan(f, pairnearest)
+    nearplan = newnearestplan(f)
+    ncandidates = collect(Int, GR.sourcesof(GR.dependencies(nearplan), 1))
+    nk = length(ncandidates)
+
+    nonepass = measure("nearest one pass over the tile", function ()
+        coo = WeightCOO(length(tile))
+        buildweights!(coo, NearestCell(), f.dst, tile, f.src, whole)
+        return length(coo.vals)
+    end)
+
+    npairs = measure("nearest pair loop ($nk candidates)", function ()
+        n = 0
+        for s in ncandidates
+            n += count(!iszero,
+                GR.buildblock(nearpairplan, tile, GR.ownedindices(f.src, s)).weights)
+        end
+        return n
+    end)
+
+    ntile = measure("nearest tile weights, one pass", function ()
+        tw = GR.tileweights(NearestCell(), GR.TileCells(f.dst, tile), tile,
+            f.src, GR.sampler(NearestCell(), f.src))
+        return sum(b -> count(!iszero, b.weights), tw.blocks; init = 0)
+    end)
+
+    ncold = measure("nearest cold read, pair route", function ()
+        A = GR.LazyRegridArray(f.data, newpairnearestplan(f, PairNearest()))
+        return A[1:Int(GR.ncells(f.dst))]
+    end)
+
+    ncoldtile = measure("nearest cold read, tile route", function ()
+        A = GR.LazyRegridArray(f.data, newnearestplan(f))
+        return A[1:Int(GR.ncells(f.dst))]
+    end)
+
+    nwarm = measure("nearest warm read, pair route", function ()
+        A = GR.LazyRegridArray(f.data, nearpairplan)
+        return A[1:Int(GR.ncells(f.dst))]
+    end)
+
+    nwarmtile = measure("nearest warm read, tile route", function ()
+        A = GR.LazyRegridArray(f.data, nearplan)
+        return A[1:Int(GR.ncells(f.dst))]
+    end)
+
+    # The two routes are one answer, bit for bit, and it is the value of the
+    # source cell each destination falls in rather than the surface at the
+    # destination's own centre.
+    ncold.value == ncoldtile.value ||
+        error("the two nearest routes did not produce the same values")
+    (nwarm.value == ncold.value && nwarmtile.value == ncoldtile.value) ||
+        error("a warm nearest read disagrees with the cold read of the same route")
+    maximum(abs, ncold.value .- f.want) < 0.01 ||
+        error("the nearest read did not land inside the source cell holding it")
+
     # One instrumented read, on a clean plan and a clean read counter, so the
     # residency and per-chunk numbers describe exactly one tile.
     empty!(f.source.reads)
@@ -414,9 +557,41 @@ function main()
     # with the same stencils, through a sampler that records every query.
     placed = Threads.Atomic{Int}(0)
     counted = GR.tileweights(BarycentricPoint(), GR.TileCells(f.dst, tile), tile,
-        f.src, countingsampler(f.src, placed))
+        f.src, countingsampler(BarycentricPoint(), f.src, placed))
     counted.sourcechunks == tbytes.manifest ||
         error("the counted build and the plan's tile disagree on the manifest")
+
+    # The same accounting for the two nearest routes: point locations counted
+    # rather than asserted — the pair route through a method that records what
+    # each build was asked to place, the tile route through a sampler that
+    # records every query — and one instrumented read of a clean plan on each.
+    nplaced = Threads.Atomic{Int}(0)
+    ncounted = GR.tileweights(NearestCell(), GR.TileCells(f.dst, tile), tile,
+        f.src, countingsampler(NearestCell(), f.src, nplaced))
+    countpair = PairNearest()
+    countpairplan = newpairnearestplan(f, countpair)
+    for s in ncandidates
+        GR.buildblock(countpairplan, tile, GR.ownedindices(f.src, s))
+    end
+
+    empty!(f.source.reads)
+    freshnearpair = newpairnearestplan(f, PairNearest())
+    Ap = GR.LazyRegridArray(f.data, freshnearpair)
+    Ap[1:Int(GR.ncells(f.dst))]
+    pairstats = GR.residency(Ap)
+    pbytes = weightbytes(freshnearpair)
+    paircounts = sort(collect(values(f.source.reads)))
+
+    empty!(f.source.reads)
+    freshnear = newnearestplan(f)
+    An = GR.LazyRegridArray(f.data, freshnear)
+    An[1:Int(GR.ncells(f.dst))]
+    nearstats = GR.residency(An)
+    nbytes = tilebytes(freshnear)
+    nearcounts = sort(collect(values(f.source.reads)))
+
+    ncounted.sourcechunks == nbytes.manifest ||
+        error("the counted nearest build and the plan's tile disagree on the manifest")
 
     println()
     @printf("%-46s %14d\n", "destination cells in the tile", length(tile))
@@ -482,6 +657,38 @@ function main()
     @printf("%-46s %14d\n", "peak source bytes, tile route", tilestats.peakbytes)
 
     println()
+    @printf("%-46s %14d\n", "nearest point locations, pair loop", countpair.placed[])
+    @printf("%-46s %14d\n", "nearest point locations, tile route", nplaced[])
+    @printf("%-46s %14d\n", "nearest stencil entries kept", nbytes.nonzeros)
+    @printf("%-46s %14.2f\n", "nearest entries per destination cell",
+        nbytes.nonzeros / length(tile))
+    @printf("%-46s %14.2fx\n", "nearest pair loop / one pass",
+        npairs.time / nonepass.time)
+    @printf("%-46s %14.2fx\n", "nearest pair loop / tile build",
+        npairs.time / ntile.time)
+    @printf("%-46s %14.2fx\n", "nearest cold pair read / cold tile read",
+        ncold.time / ncoldtile.time)
+    @printf("%-46s %14.2fx\n", "nearest warm pair read / warm tile read",
+        nwarm.time / nwarmtile.time)
+
+    println()
+    @printf("%-46s %14d\n", "nearest candidate source chunks (k)", nk)
+    @printf("%-46s %14d\n", "nearest manifest length", length(nbytes.manifest))
+    @printf("%-46s %14s\n", "nearest manifest", string(nbytes.manifest))
+    @printf("%-46s %14d\n", "nearest weight bytes, pair route", pbytes.accounted)
+    @printf("%-46s %14d\n", "nearest weight bytes, tile route", nbytes.accounted)
+    @printf("%-46s %14d\n", "nearest source chunks read, pair route",
+        length(paircounts))
+    @printf("%-46s %14d\n", "nearest readblock! calls, pair route", sum(paircounts))
+    @printf("%-46s %14d\n", "nearest source chunks read, tile route",
+        length(nearcounts))
+    @printf("%-46s %14d\n", "nearest readblock! calls, tile route", sum(nearcounts))
+    @printf("%-46s %14d\n", "nearest peak source bytes, pair route",
+        pairstats.peakbytes)
+    @printf("%-46s %14d\n", "nearest peak source bytes, tile route",
+        nearstats.peakbytes)
+
+    println()
     println("=== reading it ===")
     @printf("%d destination points, located %d times to keep %d stencil entries.\n",
         length(tile), length(tile) * k, onepass.value)
@@ -497,6 +704,12 @@ function main()
         tilebuild.time * 1e3, pairs.time * 1e3, pairs.time / tilebuild.time)
     @printf("%.2fx the pair route's. Its manifest of %d chunks took %d reads.\n",
         cold.time / coldtile.time, length(tbytes.manifest), sum(tilecounts))
+    @printf("NearestCell locates %d points per route pass against %d, for the same %d\n",
+        nplaced[], countpair.placed[], nbytes.nonzeros)
+    @printf("entries: a tile build of %.3f ms against the pair loop's %.3f ms (%.2fx), and\n",
+        ntile.time * 1e3, npairs.time * 1e3, npairs.time / ntile.time)
+    @printf("a cold read %.2fx the pair route's, reading %d chunks against %d.\n",
+        ncold.time / ncoldtile.time, length(nearcounts), length(paircounts))
 end
 
 main()

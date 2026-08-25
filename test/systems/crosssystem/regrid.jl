@@ -622,18 +622,38 @@ end
 end
 
 @testset "a point method lands on the same axis, eagerly and lazily" begin
-    # `BarycentricPoint` evaluates at the destination's sample sites rather than
+    # A point method evaluates at the destination's sample sites rather than
     # averaging over its cells, and asks the output for `Points` sampling where
     # `Conservative` asks for `Intervals`. A cell holds one value either way, so
-    # the axis is the same axis, and both routes fill it identically.
-    bary(; kwargs...) = DGG.regrid(RASTER; to = GRID,
-        method = GR.BarycentricPoint(), kwargs...)
-    eager = bary()
-    lazy = bary(; lazy = true)
-    @test DD.dims(eager, 1) == DD.dims(DGG.regrid(RASTER; to = GRID), 1)
-    @test DD.dims(lazy) == DD.dims(eager)
-    @test parent(lazy) isa GR.LazyRegridArray
-    @test isequal(Array(parent(lazy)), parent(eager))
+    # the axis is the same axis, and every route fills it identically.
+    #
+    # The second source is the same lattice under a different chunking. A
+    # stencil is found whole before it is partitioned, so no chunking may move
+    # a value: `NearestCell` takes one source value entire and must reproduce
+    # it bit for bit, while a stencil of several sites is summed in as many
+    # partial sums as there are blocks and may reassociate by an ulp.
+    #
+    # A destination the source cannot map is missing on every route, so the
+    # looser comparison still holds one missing equal to another.
+    approxsame(a, b) = length(a) == length(b) &&
+        all(isequal(x, y) || x ≈ y for (x, y) in zip(a, b))
+    chunked = GR.RasterGrid(DD.dims(RASTER); chunks = ([1:12, 13:24], [1:6, 7:12]))
+    @test GR.nchunks(chunked) > GR.nchunks(SRC)
+    for (method, same) in ((GR.BarycentricPoint(), approxsame),
+        (GR.NearestCell(), isequal))
+
+        point(; kwargs...) = DGG.regrid(RASTER; to = GRID, method, kwargs...)
+        eager = point()
+        lazy = point(; lazy = true)
+        @test DD.dims(eager, 1) == DD.dims(DGG.regrid(RASTER; to = GRID), 1)
+        @test DD.dims(lazy) == DD.dims(eager)
+        @test parent(lazy) isa GR.LazyRegridArray
+        @test isequal(Array(parent(lazy)), parent(eager))
+
+        rechunked = DGG.regrid(RASTER; to = GRID, from = chunked, method,
+            lazy = true)
+        @test same(Array(parent(rechunked)), parent(eager))
+    end
 end
 
 @testset "a column adopts the whole covering's relation and reads the same" begin

@@ -230,6 +230,46 @@ function buildweights!(coo::WeightCOO, method::T5PlaceCount, dst_space::RegridSp
     return coo
 end
 
+"""
+    T6LocateCount(space)
+
+Wrap a source space and count [`cellat`](@ref) queries, delegating every other
+space verb unchanged. `located` is therefore the number of point locations a
+build performed, whichever route it took; builds may run on spawned tasks,
+hence the atomic counter.
+"""
+struct T6LocateCount{S<:RegridSpace} <: RegridSpace
+    space::S
+    located::Threads.Atomic{Int}
+end
+
+T6LocateCount(space::RegridSpace) = T6LocateCount(space, Threads.Atomic{Int}(0))
+
+function cellat(cs::T6LocateCount, p)
+    Threads.atomic_add!(cs.located, 1)
+    return cellat(cs.space, p)
+end
+
+ncells(cs::T6LocateCount) = ncells(cs.space)
+getcell(cs::T6LocateCount, i::Int) = getcell(cs.space, i)
+manifold(cs::T6LocateCount) = manifold(cs.space)
+hascellchart(cs::T6LocateCount) = hascellchart(cs.space)
+cellcentroid(cs::T6LocateCount, i::Int) = cellcentroid(cs.space, i)
+nchunks(cs::T6LocateCount) = nchunks(cs.space)
+ownedindices(cs::T6LocateCount, chunk::Int) = ownedindices(cs.space, chunk)
+celltree(cs::T6LocateCount) = celltree(cs.space)
+chunkextents(cs::T6LocateCount) = chunkextents(cs.space)
+
+"""
+    t6_owners(dst, tile, src) -> Vector{Int}
+
+The source chunks holding the cells `tile`'s destinations sit in, read from
+`cellat` directly so no build takes part in the answer.
+"""
+t6_owners(dst, tile, src) =
+    sort(unique(Int(GR.chunkat(src, cellat(src, cellcentroid(dst, Int(i)))))
+                for i in tile))
+
 # One tile's weights, built straight rather than through a plan's storage.
 t5_weights(method, dst, tile, src) =
     GR.tileweights(method, GR.TileCells(dst, tile), tile, src,
@@ -487,6 +527,11 @@ t5_owners(dst, tile, src) =
         oblong = ToyLonLatSpace(36, 6)
         @test supportradius(BilinearPoint(), oblong) >= deg2rad(dlon(oblong))
         @test supportradius(BilinearPoint(), oblong) >= deg2rad(dlat(oblong))
+
+        # Nearest support is zero on a chart source too: the stencil is the
+        # cell the destination point is already inside, so it does not follow
+        # the source's spacing anywhere.
+        @test supportradius(NearestCell(), oblong) == 0.0
     end
 
     @testset "a sampling may specialise the weight block seam" begin
@@ -534,15 +579,40 @@ t5_owners(dst, tile, src) =
             ChunkedPlan(tilearea, Weighted(0.5), dst, src; storage = PerChunk()),
             1, 1)
 
-        # The shipped point methods answer the same eagerly and by chunk.
+        # The shipped point methods answer the same eagerly, by chunk, lazily
+        # and against a differently chunked source, entry for entry rather than
+        # approximately. `odst` reaches past the source on both axes, so the
+        # cells outside coverage take no weight and the missing policy decides
+        # them on every route.
+        rows = ToyLonLatSpace(8, 4; lon = (-40.0, 40.0), lat = (-20.0, 20.0),
+            chunks = (8, 1))
         pdst = ToyLonLatSpace(5, 3; lon = (-30.0, 30.0), lat = (-15.0, 15.0),
             chunks = (5, 2))
-        for method in (NearestCell(), BilinearPoint())
-            reference = regrid(field; to = pdst, from = src, method, lazy = false)
-            out = Vector{Float64}(undef, Int(ncells(pdst)))
-            regrid!(out, field, ChunkedPlan(method, Weighted(0.5), pdst, src;
+        odst = ToyLonLatSpace(6, 3; lon = (-60.0, 60.0), lat = (-33.0, 33.0),
+            chunks = (3, 2))
+        @test count(i -> cellat(src, cellcentroid(odst, i)) === nothing,
+            1:Int(ncells(odst))) > 0
+        # A stencil of several sites is summed in as many partial sums as the
+        # chunking gives it blocks, so a second chunking may reassociate it by
+        # an ulp; `NearestCell` takes one source value whole and cannot.
+        for (method, same) in ((NearestCell(), isequal), (BilinearPoint(), isapprox)),
+            tdst in (pdst, odst)
+
+            nd = Int(ncells(tdst))
+            reference = regrid(field; to = tdst, from = src, method, lazy = false)
+            out = Vector{Float64}(undef, nd)
+            regrid!(out, field, ChunkedPlan(method, Weighted(0.5), tdst, src;
                 storage = PerChunk()))
-            @test out == reference
+            @test all(isequal(out[i], reference[i]) for i in 1:nd)
+
+            lazy = LazyRegridArray(field, ChunkedPlan(method, Weighted(0.5), tdst,
+                src; storage = PerChunk()))[1:nd]
+            @test all(isequal(lazy[i], reference[i]) for i in 1:nd)
+
+            rechunked = Vector{Float64}(undef, nd)
+            regrid!(rechunked, field, ChunkedPlan(method, Weighted(0.5), tdst, rows;
+                storage = PerChunk()))
+            @test same(rechunked, reference)
         end
     end
 
@@ -636,6 +706,60 @@ t5_owners(dst, tile, src) =
             (a, _), (b, _) = t5_bracket(src, cellcentroid(dst, tile[j]))
             GR.chunkat(src, a) != GR.chunkat(src, b)
         end > 0
+    end
+
+    @testset "a nearest tile is one build with an exact manifest" begin
+        # The counting fixture the two routes above share, for `NearestCell`:
+        # one destination tile against a 72-chunk source, straddling source
+        # chunk seams on both axes. The relation is cap overlap at radius zero,
+        # so it names more chunks than the tile's cells sit in.
+        src = ToyLonLatSpace(36, 18; chunks = (3, 3))
+        dst = ToyLonLatSpace(20, 10; lon = (-19.0, 21.0), lat = (-20.0, 20.0))
+        @test nchunks(dst) == 1
+        tile = ownedindices(dst, 1)
+
+        # The chunk-pair route, which `buildblock` still takes, locates every
+        # destination of the tile once per candidate source chunk.
+        paired = T6LocateCount(src)
+        pairplan = ChunkedPlan(NearestCell(), Weighted(0.5), dst, paired;
+            storage = PerChunk())
+        candidates = GR.sourcesof(GR.dependencies(pairplan), 1)
+        k = length(candidates)
+        @test 1 < k < nchunks(src)
+        for s in candidates
+            GR.buildblock(pairplan, tile, ownedindices(src, Int(s)))
+        end
+        @test paired.located[] == length(tile) * k
+
+        # A chunked plan takes the tile route, and it locates each destination
+        # once however many pairs ask for it.
+        counting = T6LocateCount(src)
+        plan = ChunkedPlan(NearestCell(), Weighted(0.5), dst, counting;
+            storage = PerChunk())
+        @test GR.tilesampler(plan) !== nothing
+        blocks = [GR.blockfor(plan, (1, Int(s)), tile).block for s in candidates]
+        @test counting.located[] == length(tile)
+        @test counting.located[] < length(tile) * k
+
+        # One entry of weight exactly one per destination, on fewer chunks than
+        # were searched.
+        nonzeros = sum(count(!iszero, b.weights) for b in blocks)
+        contributing = count(b -> any(!iszero, b.weights), blocks)
+        @test nonzeros == length(tile)
+        @test all(sum(b.weights) == count(!iszero, b.weights) for b in blocks)
+        @test 0 < contributing < k
+
+        # The tile is the cache entry, and no chunk pair is one.
+        @test GR.nblocks(plan.storage) == 1
+        @test isempty(plan.storage.blocks)
+
+        # The manifest is exactly the chunks owning those cells, and the tile
+        # straddles a source chunk seam, so the split is a real one.
+        weights = t5_weights(NearestCell(), dst, tile, src)
+        @test weights.sourcechunks == t6_owners(dst, tile, src)
+        @test length(weights.sourcechunks) > 1
+        @test issubset(weights.sourcechunks, candidates)
+        @test length(weights.sourcechunks) < k
     end
 
     @testset "point tile values match eager, lazy and another chunking" begin

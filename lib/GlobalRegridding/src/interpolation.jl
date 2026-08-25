@@ -1,4 +1,4 @@
-# Point-sampling methods and their source-chart interface.
+# Point-sampling methods, their samplers, and the source-chart interface.
 
 # Nearest-cell weights
 
@@ -20,6 +20,63 @@ function buildweights!(coo::WeightCOO, ::NearestCell,
         addweight!(coo, j, k, 1.0)
     end
     return coo
+end
+
+"""
+    supportradius(::NearestCell, src_space) -> Float64
+
+Zero. The stencil is the source cell the destination point already lies in, so
+it reaches no further than that point.
+
+A destination sample site lies inside its own cell, and so inside the covering
+cap of the chunk that owns it; the source cell [`cellat`](@ref) names contains
+that same point, so the source chunk owning that cell covers the point too. Two
+covers sharing a point overlap, so cap overlap at radius zero already relates
+every source chunk a destination tile reads. That is the containment every
+method's chunk discovery already rests on, not a second assumption.
+"""
+supportradius(::NearestCell, ::RegridSpace) = 0.0
+
+"""
+    NearestSampler(space)
+
+A source space prepared to answer [`NearestCell`](@ref)'s point queries.
+
+It holds the space and nothing else: the stencil at a point is the one cell
+containing it, which [`cellat`](@ref) answers by itself, so there is no state
+to prepare and nothing for concurrent queries to share.
+"""
+struct NearestSampler{S<:RegridSpace}
+    space::S
+end
+
+Base.show(io::IO, s::NearestSampler) = print(io, "NearestSampler(", s.space, ")")
+
+"""
+    sampler(::NearestCell, space::RegridSpace) -> NearestSampler
+
+Prepare `space` to answer `NearestCell`'s point queries. This runs once per plan
+or source space, never once per destination.
+"""
+sampler(::NearestCell, space::RegridSpace) = NearestSampler(space)
+
+"""
+    weightsat!(row, s::NearestSampler, p) -> WeightStatus
+
+Give weight one to the source cell containing `p`.
+
+The row is cleared on entry and left holding that single entry, named by the
+source space's local index. A point the source covers nowhere leaves the row
+empty and answers `WeightsOutside`; the missing policy then decides what the
+destination becomes. Nothing here reads source values and nothing here is told
+about chunks.
+"""
+function weightsat!(row::WeightRow, s::NearestSampler, p)
+    empty!(row)
+    i = cellat(s.space, p)
+    i === nothing && return WeightsOutside
+    _addentry!(row, i, 1.0)
+    return WeightsMapped
 end
 
 # Cell-chart fallbacks

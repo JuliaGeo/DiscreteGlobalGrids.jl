@@ -95,11 +95,13 @@ kept as a deprecation shim and appears in this plan only as history:
   `plan_regrid` alone.
 - Phase 3, graph-backed lazy execution: **complete**. E1 is closed. The lazy
   executor takes a tile's source chunks from `sourcesof(dependencies(plan), d)`
-  and performs no dependency discovery; `LazyRegridArray.srcindex` and its cap
-  vectors are gone, per-chunk caps now live on the relation, and a chunked plan
-  therefore owns a relation **by default** — `dependencies = false` is the
-  opt-out, and a plan that takes it cannot back a `LazyRegridArray`. G4's one
-  open action closed with it, and production declined the result; see E1.
+  — on the chunk-pair route; a tile with `TileWeights` reads its manifest, see
+  Phase 9 — and performs no dependency discovery; `LazyRegridArray.srcindex`
+  and its cap vectors are gone, per-chunk caps now live on the relation, and a
+  chunked plan therefore owns a relation **by default** — `dependencies = false`
+  is the opt-out, and a plan that takes it cannot back a `LazyRegridArray`.
+  G4's one open action closed with it, and production declined the result; see
+  E1.
 - Phase 4, delete legacy discovery: **complete**. E2 is closed. `chunktree`,
   `RasterFlatTree`, `connectedchunks`, `connectedchunks!` and the
   `chunktree`-collecting `chunkextents` fallback are all gone; `chunkextents` is
@@ -1246,8 +1248,11 @@ hybrid-source production columns that are invalid byte-identity references.
 - Lazy source residency and DiskArrays chunk metadata each have one private
   representation.
 - The shared path admits a point method on its own terms: dispatch by
-  `outputsampling`, one `TileWeights` per destination tile, exact source-chunk
-  manifests, and no cap superset or support dilation — with conservative
-  behaviour unchanged, and the kernels themselves owned by the barycentric plan.
+  `outputsampling`, one `TileWeights` per destination tile, and reads that are
+  that tile's exact source-chunk manifest rather than a cap superset — the
+  relation's rows remain a superset that decides no read of such a tile, kept
+  one by the method's declared `supportradius` and never by dilating a cap or
+  buffering an adjacent chunk — with conservative behaviour unchanged, and the
+  kernels themselves owned by the barycentric plan.
 - All correctness suites and representative production/small-chunk performance
   gates pass, and every phase-ending commit records its evidence.

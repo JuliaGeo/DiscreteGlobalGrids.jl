@@ -53,15 +53,19 @@ GR.chunkextents(p::G4ProbeSpace) = (p.queries += 1; GR.chunkextents(p.space))
 # A source chunk index that counts the queries a builder makes of it. The
 # Phase 4 gate is that ONE query implementation defines every edge, so the
 # counter and the pairs together say what the builder did: how many questions it
-# asked, and that the answers are the relation.
+# asked, and that the answers are the relation. A relation builds its rows in
+# spawned tasks, so the count is atomic: a plain increment loses one under
+# concurrency and understates what was asked.
 mutable struct E2QueryIndex{I}
     inner::I
-    queries::Int
+    queries::Threads.Atomic{Int}
 end
 
-GR.candidatechunks!(out::Vector{Int}, ix::E2QueryIndex, dstcap::GR.Cap;
-    radius::Real = 0.0) =
-    (ix.queries += 1; GR.candidatechunks!(out, ix.inner, dstcap; radius))
+function GR.candidatechunks!(out::Vector{Int}, ix::E2QueryIndex, dstcap::GR.Cap;
+    radius::Real = 0.0)
+    Threads.atomic_add!(ix.queries, 1)
+    return GR.candidatechunks!(out, ix.inner, dstcap; radius)
+end
 
 struct E2QuerySpace{S<:RegridSpace,I} <: RegridSpace
     space::S
@@ -69,7 +73,7 @@ struct E2QuerySpace{S<:RegridSpace,I} <: RegridSpace
 end
 
 E2QuerySpace(space::RegridSpace) =
-    E2QuerySpace(space, E2QueryIndex(GR.chunkindex(space), 0))
+    E2QuerySpace(space, E2QueryIndex(GR.chunkindex(space), Threads.Atomic{Int}(0)))
 
 GR.chunkindex(s::E2QuerySpace) = s.index
 GR.chunkextents(s::E2QuerySpace) = GR.chunkextents(s.space)
@@ -1069,16 +1073,16 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         # query counter below counts nothing.
         @test ownedindices(probe, 1) == ownedindices(src, 1)
         g = planned_dependencies(dst, probe)
-        @test probe.index.queries == nchunks(dst)
+        @test probe.index.queries[] == nchunks(dst)
         @test graph_pairs(g) == demanded_pairs(dst, src)
         @test GR.nsourcechunks(g) == nchunks(src)
 
         # A lazy read adds no query of its own: it takes the rows.
         A = LazyRegridArray(zeros(8, 4),
             ChunkedPlan(ToyDiagonalMethod(), Weighted(0.5), dst, probe))
-        asked = probe.index.queries
+        asked = probe.index.queries[]
         @test collect(A) == vec(zeros(8, 4))
-        @test probe.index.queries == asked
+        @test probe.index.queries[] == asked
 
         # And a cheap `chunkextent` agrees with the vector it is cheaper than.
         raster = misalignedraster(16, 8, 5, 3)

@@ -344,59 +344,16 @@ end
 # The per-task extent memo
 # ===========================================================================
 
-"""
-    RasterExtentMemo()
-
-One task's direct-mapped cache of derived raster node extents, so a repeat ask
-is a key compare and a load rather than a fresh [`raster_cap`](@ref).
-
-A node's rectangle hashes to exactly one slot, and a miss derives the extent and
-overwrites whatever sat there. Hence bounded memory per task whatever the tile
-size, no eviction policy, no lock — tasks sharing a tree have separate tables —
-and a collision costs a re-derive, never a wrong extent. The hit rate comes from
-revisits: the dual-tree join asks each node's extent once per opposing node.
-
-The slots describe one tree, and are cleared whenever the task turns to another.
-Tile nodes are not cached: their extents are stored in the tree itself.
-"""
-mutable struct RasterExtentMemo
-    tree::Any
-    const keys::Vector{NTuple{5,Int}}
-    const vals::Vector{Cap}
-end
-
-# A power of two, so the slot is a mask rather than a modulo.
-const _RASTER_MEMO_SLOTS = 1024
-
-# No node has a negative tile slot, so this can never equal a real key.
-const _NO_RASTER_NODE = (-1, -1, -1, -1, -1)
-
-RasterExtentMemo() = RasterExtentMemo(nothing,
-    fill(_NO_RASTER_NODE, _RASTER_MEMO_SLOTS),
-    Vector{Cap}(undef, _RASTER_MEMO_SLOTS))
-
-function _taskrastermemo(tree)
-    memo = get!(RasterExtentMemo, task_local_storage(),
-        :_dgg_raster_extent_memo)::RasterExtentMemo
-    if memo.tree !== tree
-        fill!(memo.keys, _NO_RASTER_NODE)
-        memo.tree = tree
-    end
-    return memo
-end
-
-# The slot holds the whole key and compares it, so a collision is a miss that
-# overwrites, never a wrong extent.
+# A raster node's extent is fixed by its tree and its `(tile slot, rows,
+# columns)` rectangle, so the tree is the identity the table is keyed on. Tile
+# nodes are not memoized: their extents are stored in the tree itself.
 function _memo_extent(c::TiledRasterCursor)
     key = (c.slot, c.j0, c.j1, c.i0, c.i1)
-    memo = _taskrastermemo(c.tree)
-    s = Int(hash(key) & UInt(_RASTER_MEMO_SLOTS - 1)) + 1
-    @inbounds memo.keys[s] == key && return @inbounds memo.vals[s]
-    tile = @inbounds c.tree.tiles[c.slot]
-    extent = raster_cap(c.tree.grid, tile, c.j0, c.j1, c.i0, c.i1)
-    @inbounds memo.keys[s] = key
-    @inbounds memo.vals[s] = extent
-    return extent
+    table = extent_table(NTuple{5,Int}, c.tree)
+    return memoized_extent(table, key) do
+        tile = @inbounds c.tree.tiles[c.slot]
+        raster_cap(c.tree.grid, tile, c.j0, c.j1, c.i0, c.i1)
+    end
 end
 
 # ===========================================================================

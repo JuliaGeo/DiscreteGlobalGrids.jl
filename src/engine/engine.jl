@@ -70,6 +70,9 @@ include("partial_grid.jl")
 include("halo.jl")
 include("cursor.jl")
 include("index_tree.jl")
+# Every cursor that derives a node extent rather than storing one reads the
+# same per-task tables.
+include("extent_memo.jl")
 # The tiled raster tree packs tiles the way the index tree packs cells.
 include("tiled_raster.jl")
 include("query.jl")

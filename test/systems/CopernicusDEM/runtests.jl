@@ -13,6 +13,8 @@ using Random
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
 const CD = DiscreteGlobalGrids.CopernicusDEM
+# Sections (k2b) and (k3) read the extent tables the cursors share.
+const Engine = DiscreteGlobalGrids.Engine
 
 using DiscreteGlobalGridsConformanceTesting
 # Section (l) calls these conformance helpers directly.
@@ -1341,6 +1343,20 @@ end
         cap = DGG.raster_cap(g, tile, 0, 0, 0, 0)
         @test @inferred(DGG.Engine.leaf_cells(k -> (k, cap), 3)) isa
               DGG.Engine.LeafCells
+
+        # The memo the raster nodes read: a concrete table, a concrete cap.
+        @test @inferred(Engine.extent_table(NTuple{5,Int}, raster.tree)) isa
+              Engine.ExtentTable{NTuple{5,Int}}
+        @test @inferred(Engine._memo_extent(raster)) isa US.SphericalCap
+    end
+
+    # The block cursor over the complete lattice reads the same tables, and its
+    # `node_extent` infers through them too.
+    let root = treeify(levelgrid(TWIN, 1))
+        node = STI.getchild(root, 1)
+        @test @inferred(CD._taskmemo(node.node)) isa Engine.ExtentTable{NTuple{9,Int}}
+        @test @inferred(STI.node_extent(node)) isa US.SphericalCap
+        @test @inferred(STI.node_extent(root)) isa US.SphericalCap
     end
 
     # An empty holding is a tree with no cells rather than an error.
@@ -1431,7 +1447,7 @@ end
 
     # The root's slot really does hold the root's cap after the first ask.
     rootkey = CD._nodekey(bareroot)
-    slot = CD._nodeslot(rootkey, CD._MEMO_EXTENT_SLOTS)
+    slot = Engine.extent_slot(rootkey)
     rootcap = STI.node_extent(memoroot)
     thememo = CD._taskmemo(bareroot)
     @test thememo.keys[slot] == rootkey
@@ -1443,18 +1459,18 @@ end
     globe = treeify(levelgrid(TWIN, 1))
     nodes = CD.MemoBlockCursor[globe]
     k = 1
-    while k <= length(nodes) && length(nodes) < 4 * CD._MEMO_EXTENT_SLOTS
+    while k <= length(nodes) && length(nodes) < 4 * Engine.EXTENT_MEMO_SLOTS
         n = nodes[k]
         k += 1
         STI.isleaf(n) || append!(nodes, (STI.getchild(n, c) for c in 1:STI.nchild(n)))
     end
-    @test length(nodes) > CD._MEMO_EXTENT_SLOTS   # more nodes than slots: real pressure
+    @test length(nodes) > Engine.EXTENT_MEMO_SLOTS   # more nodes than slots: real pressure
 
     # Two distinct nodes, with distinct caps, that land in one slot.
     seen = Dict{Int,CD.MemoBlockCursor}()
     collide = nothing
     for n in nodes
-        s = CD._nodeslot(CD._nodekey(n.node), CD._MEMO_EXTENT_SLOTS)
+        s = Engine.extent_slot(CD._nodekey(n.node))
         prev = get(seen, s, nothing)
         if prev !== nothing && CD._nodekey(prev.node) != CD._nodekey(n.node) &&
            STI.node_extent(prev.node) !== STI.node_extent(n.node)
@@ -1465,8 +1481,8 @@ end
     end
     @test collide !== nothing
     a, b = collide
-    @test CD._nodeslot(CD._nodekey(a.node), CD._MEMO_EXTENT_SLOTS) ==
-          CD._nodeslot(CD._nodekey(b.node), CD._MEMO_EXTENT_SLOTS)
+    @test Engine.extent_slot(CD._nodekey(a.node)) ==
+          Engine.extent_slot(CD._nodekey(b.node))
     # Alternating evicts on every ask; each ask still gets its own node's cap.
     for _ in 1:4
         @test STI.node_extent(a) === STI.node_extent(a.node)
@@ -1475,9 +1491,8 @@ end
     @test STI.node_extent(a) !== STI.node_extent(b)
 
     # One tile rectangle is one key, but the cap depends on the lattice it sits
-    # in: the level-0 pad is a whole tile, the level-1 pad one pixel. The table
-    # is cleared when a task turns to another lattice, so neither answers for
-    # the other.
+    # in: the level-0 pad is a whole tile, the level-1 pad one pixel. Each
+    # lattice holds a table of its own, so neither answers for the other.
     tr, tq, _, _ = CD.decode(TWIN, CD.tilecell(TWIN, 50, 6))
     tilenode(g, l) = CD.MemoBlockCursor(CD.BlockCursor(g, TWIN, CD.Bisected(), l,
         Int64(-1), tr, tr, tq, tq, 0, 0, 0, 0, false))
@@ -1521,6 +1536,155 @@ end
         end
     end
     @test all(==(0), fetch.(mixed))
+end
+
+# =========================================================================
+# (k3b) One extent table per tree
+# =========================================================================
+
+# A node's extent depends on the tree it sits in as much as on its rectangle, so
+# a memo holding one tree's slots at a time has to clear them whenever the
+# calling task turns to another tree. That is the common case, not a rare one: a
+# dual-tree join alternates between its two trees on one task, a window tree is
+# walked against the holding it was cut from, and a self-join reads one tree
+# twice. Under a single table every ask would clear the slots and re-derive, and
+# the memo would cost more than it saves.
+#
+# Tables are per tree instead, a bounded few per task. The pins below are on the
+# derivation count of an alternating walk: it is the number of DISTINCT NODES,
+# once each, not the number of asks.
+@testset "one extent table per tree" begin
+    STI = GO.SpatialTreeInterface
+
+    holding(spec) = PartialGrid(TWIN, 1, sort!(reduce(vcat,
+        [collect(children(TWIN, CD.tilecell(TWIN, lat, lon))) for (lat, lon) in spec])))
+
+    blocktable(t) = CD._taskmemo(t.node)
+    rasterkey(c) = (c.slot, c.j0, c.j1, c.i0, c.i1)
+    rastertable(c) = Engine.extent_table(NTuple{5,Int}, c.tree)
+
+    # At most `n` memoized nodes of `tree`, breadth-first, no two of them
+    # sharing a slot, so one pass over them derives exactly one extent each.
+    function probes(tree, key, memoized, n)
+        out = Any[]
+        slots = Set{Int}()
+        queue = Any[tree]
+        k = 1
+        while k <= length(queue) && length(out) < n
+            node = queue[k]
+            k += 1
+            STI.isleaf(node) ||
+                append!(queue, (STI.getchild(node, c) for c in 1:STI.nchild(node)))
+            memoized(node) || continue
+            s = Engine.extent_slot(key(node))
+            s in slots && continue
+            push!(slots, s)
+            push!(out, node)
+        end
+        return identity.(out)
+    end
+
+    # Walk two trees turn and turn about, three times over, reporting the
+    # derivations the two tables have done after each pass.
+    function alternating(a, b, table)
+        n = min(length(a), length(b))
+        counts = Int[]
+        for _ in 1:3
+            for k in 1:n
+                STI.node_extent(a[k])
+                STI.node_extent(b[k])
+            end
+            push!(counts, table(a[1]).misses + table(b[1]).misses)
+        end
+        return (; counts, distinct = 2n, asks = 6n)
+    end
+
+    # ---- (a) alternating between two trees derives each node once ----------
+    blockkey(t) = CD._nodekey(t.node)
+    blockprobes = (probes(treeify(levelgrid(TWIN, 0)), blockkey, t -> !STI.isleaf(t), 48),
+                   probes(treeify(levelgrid(TWIN, 1)), blockkey, t -> !STI.isleaf(t), 48))
+    # The two lattices give a tile rectangle the same key and a different cap,
+    # so this is exactly the alternation a shared table would clear on.
+    @test !isempty(intersect(Set(blockkey(t) for t in blockprobes[1]),
+                             Set(blockkey(t) for t in blockprobes[2])))
+
+    rasterprobes = (probes(treeify(holding([(46, 10), (46, 11)])),
+                           rasterkey, c -> c.inraster, 48),
+                    probes(treeify(holding([(47, 10), (47, 11)])),
+                           rasterkey, c -> c.inraster, 48))
+
+    # Each arm runs on a task of its own, which starts with no tables at all.
+    for (name, (a, b), table) in (("lattice", blockprobes, blocktable),
+                                  ("holding", rasterprobes, rastertable))
+        r = fetch(Threads.@spawn alternating(a, b, table))
+        @test (name, length(a) >= 24, length(b) >= 24) == (name, true, true)
+        # Every distinct node derived once on the first pass, none after it.
+        @test (name, r.counts) == (name, fill(r.distinct, 3))
+        # A table cleared on every turn would derive once per ask instead.
+        @test (name, r.distinct < r.asks) == (name, true)
+    end
+
+    # ---- (b) the same weights, from the same trees --------------------------
+    # A dual-tree join between two trees of one kind is the case that alternates
+    # hardest. Its intersection matrix must equal the memo-free one, entry for
+    # entry.
+    op = CR.DefaultIntersectionOperator(MANIFOLD)
+
+    # Holding against holding: two `TiledRasterCursor`s.
+    let dstgrid = holding([(46, 10), (46, 11)]), srcgrid = holding([(46, 10)])
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), treeify(dstgrid),
+            treeify(srcgrid); intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(),
+            DGG.HierarchicalGridCursor(dstgrid), DGG.HierarchicalGridCursor(srcgrid);
+            intersection_operator = op)
+        @test length(fast.nzval) > 0
+        @test fast == slow
+    end
+
+    # Level against level: a window of the complete lattice at level 0 against
+    # one at level 1, two `MemoBlockCursor`s that differ in level.
+    let tiles = levelgrid(TWIN, 0), pixels = levelgrid(TWIN, 1)
+        t0 = CD.tilecell(TWIN, 46, 10)
+        row = localindex(tiles, t0):(localindex(tiles, t0) + 2)
+        pix = descendant_range(TWIN, t0, 1)
+        dsttree = DGG.subcursor(tiles, row)
+        srctree = DGG.subcursor(pixels, first(pix):last(pix))
+        @test dsttree isa CD.MemoBlockCursor
+        @test srctree isa CD.MemoBlockCursor
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, srctree;
+            intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree.node,
+            srctree.node; intersection_operator = op)
+        @test length(fast.nzval) > 0
+        @test fast == slow
+    end
+
+    # ---- (c) more trees than tables: eviction, and answers through it -------
+    # A task holds a bounded number of tables, so touching more trees than that
+    # re-keys one. Every answer is still the tree the node came from.
+    let trees = [treeify(holding([(46, 10 + k)])) for k in 0:4]
+        nodes = [first(probes(t, rasterkey, c -> c.inraster, 1)) for t in trees]
+        want = [DGG.raster_cap(n.tree.grid, n.tree.tiles[n.slot],
+                               n.j0, n.j1, n.i0, n.i1) for n in nodes]
+        @test length(trees) > Engine.EXTENT_MEMO_TABLES
+        r = fetch(Threads.@spawn begin
+            bad = 0
+            for _ in 1:3, k in eachindex(nodes)
+                STI.node_extent(nodes[k]) === want[k] || (bad += 1)
+            end
+            store = task_local_storage()[
+                Engine.ExtentMemo{NTuple{5,Int},typeof(nodes[1].tree)}]
+            table = rastertable(nodes[1])
+            STI.node_extent(nodes[1])
+            m1 = table.misses
+            STI.node_extent(nodes[1])
+            (; bad, held = length(store.tables), m1, m2 = table.misses)
+        end)
+        @test r.bad == 0
+        # The tables are bounded, and the one just re-keyed answers from a slot
+        # on the second ask.
+        @test (r.held, r.m2) == (Engine.EXTENT_MEMO_TABLES, r.m1)
+    end
 end
 
 # =========================================================================

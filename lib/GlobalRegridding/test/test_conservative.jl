@@ -61,7 +61,59 @@ conservative_block(dst, dst_inds, src, src_inds) =
             dst, dst_inds, src, src_inds),
         length(dst_inds), length(src_inds))
 
+# The generic coordinate-list assembly, reached past a method's own `pairblock`.
+generic_pairblock(method, dst, dst_inds, src, src_inds) =
+    invoke(GR.pairblock,
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        method, dst, dst_inds, src, src_inds)
+
 cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in inds]
+
+"""
+    T3AdoptMethod(inner)
+
+Forward `pairblock` to `inner`, counting the forwards, and count the generic
+assemblies that reach `buildweights!` anyway.
+"""
+struct T3AdoptMethod{M<:AbstractRegriddingMethod} <: AbstractRegriddingMethod
+    inner::M
+    builds::Base.RefValue{Int}
+    fallbacks::Base.RefValue{Int}
+end
+
+T3AdoptMethod(inner::AbstractRegriddingMethod) =
+    T3AdoptMethod(inner, Ref(0), Ref(0))
+
+function GR.pairblock(method::T3AdoptMethod, dst_space::RegridSpace, dst_inds,
+    src_space::RegridSpace, src_inds)
+    method.builds[] += 1
+    return GR.pairblock(method.inner, dst_space, dst_inds, src_space, src_inds)
+end
+
+function buildweights!(coo::WeightCOO, method::T3AdoptMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    method.fallbacks[] += 1
+    return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
+end
+
+"""
+    T3CooMethod(inner)
+
+Forward only `buildweights!` to `inner`, counting the calls, as a third-party
+emitter that knows nothing but that hook.
+"""
+struct T3CooMethod{M<:AbstractRegriddingMethod} <: AbstractRegriddingMethod
+    inner::M
+    builds::Base.RefValue{Int}
+end
+
+T3CooMethod(inner::AbstractRegriddingMethod) = T3CooMethod(inner, Ref(0))
+
+function buildweights!(coo::WeightCOO, method::T3CooMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    method.builds[] += 1
+    return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
+end
 
 @testset "Conservative weights" begin
     @test Conservative() isa AbstractRegriddingMethod
@@ -127,6 +179,23 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
 
         @test assembled ≈ Matrix(reference.weights) rtol = 1e-8
         @test denom ≈ reference.denom rtol = 1e-8
+
+        # The seam every builder reaches partitions the same way. Each entry is
+        # computed in exactly one part, so the columns reassemble exactly.
+        seamwhole = GR.weightblock(Conservative(), fine, dst_inds, whole,
+            ownedindices(whole, 1))
+        seam = zeros(32, 8)
+        seamdenom = zeros(32)
+        for inds in parts
+            block = GR.weightblock(Conservative(), fine, dst_inds, chunked, inds)
+            @test size(block) == (32, length(inds))
+            seam[:, inds] .+= Matrix(block.weights)
+            seamdenom .+= block.denom
+        end
+        @test seam == Matrix(seamwhole.weights)
+        @test seamdenom ≈ seamwhole.denom rtol = 1e-12
+        @test Matrix(seamwhole.weights) == Matrix(reference.weights)
+        @test seamwhole.denom == reference.denom
     end
 
     @testset "cells across the antimeridian" begin
@@ -493,13 +562,13 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         @test checked == length(cells)^2
     end
 
-    @testset "the eager whole block adopts the assembled matrix unchanged" begin
+    @testset "every conservative block adopts the assembled matrix unchanged" begin
         dst = ToyLonLatSpace(4, 2)
         src = ToyLonLatSpace(8, 4)
-        fast = GR.wholeblock(Conservative(), dst, src)
-        slow = invoke(GR.wholeblock,
-            Tuple{AbstractRegriddingMethod,RegridSpace,RegridSpace},
-            Conservative(), dst, src)
+
+        # The seam, against the generic coordinate-list assembly it replaces.
+        fast = GR.pairblock(Conservative(), dst, 1:8, src, 1:32)
+        slow = generic_pairblock(Conservative(), dst, 1:8, src, 1:32)
         @test fast.weights.colptr == slow.weights.colptr
         @test fast.weights.rowval == slow.weights.rowval
         @test all(fast.weights.nzval .=== slow.weights.nzval)
@@ -508,6 +577,126 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         # the row sums a method reporting none would leave.
         @test fast.reference === fast.denom
         @test slow.reference === slow.denom
+
+        # The eager whole domain is that seam and nothing else.
+        eager = GR.wholeblock(Conservative(), dst, src)
+        @test eager.weights.colptr == fast.weights.colptr
+        @test eager.weights.rowval == fast.weights.rowval
+        @test all(eager.weights.nzval .=== fast.weights.nzval)
+        @test all(eager.denom .=== fast.denom)
+
+        # So is a chunked plan's pair, over a source chunk that is neither the
+        # whole domain nor contiguous.
+        chunked = ToyLonLatSpace(8, 4; chunks = (4, 2))
+        plan = ChunkedPlan(Conservative(), Weighted(0.5), dst, chunked;
+            storage = PerChunk())
+        for s in 1:nchunks(chunked)
+            sinds = ownedindices(chunked, s)
+            pair = GR.buildblock(plan, 1:8, sinds)
+            reference = generic_pairblock(Conservative(), dst, 1:8, chunked, sinds)
+            @test pair.weights.colptr == reference.weights.colptr
+            @test pair.weights.rowval == reference.weights.rowval
+            @test all(pair.weights.nzval .=== reference.weights.nzval)
+            @test all(pair.denom .=== reference.denom)
+            @test pair.reference === pair.denom
+        end
+    end
+
+    @testset "a conservative pair assembles no coordinate list" begin
+        dst = ToyLonLatSpace(24, 12)
+        src = ToyLonLatSpace(96, 48)
+        di, si = 1:Int(ncells(dst)), 1:Int(ncells(src))
+        # Serial assembly, so the two routes differ by what they allocate and
+        # by nothing else.
+        Base.ScopedValues.@with GR.OUTER_PARALLEL => true begin
+            adopted = GR.pairblock(Conservative(), dst, di, src, si)
+            generic_pairblock(Conservative(), dst, di, src, si)
+            nz = GR.SparseArrays.nnz(adopted.weights)
+            adoptbytes = @allocated GR.pairblock(Conservative(), dst, di, src, si)
+            coobytes = @allocated generic_pairblock(Conservative(), dst, di, src, si)
+            # A coordinate list holds a row, a column and a value for every
+            # entry, before the second matrix assembled from it.
+            @test coobytes - adoptbytes >= 24 * nz
+        end
+    end
+
+    @testset "a wrapper takes the build it forwards" begin
+        dst = ToyLonLatSpace(4, 2)
+        src = ToyLonLatSpace(8, 4)
+        field = collect(reshape(1.0:32.0, 8, 4))
+        reference = GR.pairblock(Conservative(), dst, 1:8, src, 1:32)
+
+        # Forwarding `pairblock` takes the inner method's own assembly and
+        # never reaches the generic route.
+        adopt = T3AdoptMethod(Conservative())
+        block = GR.wholeblock(adopt, dst, src)
+        @test block.weights.colptr == reference.weights.colptr
+        @test block.weights.rowval == reference.weights.rowval
+        @test all(block.weights.nzval .=== reference.weights.nzval)
+        @test all(block.denom .=== reference.denom)
+        @test adopt.builds[] == 1
+        @test adopt.fallbacks[] == 0
+
+        # Forwarding `buildweights!` alone keeps the generic route, for the
+        # same values.
+        emit = T3CooMethod(Conservative())
+        generic = GR.wholeblock(emit, dst, src)
+        @test emit.builds[] == 1
+        @test generic.weights == reference.weights
+        @test generic.denom == reference.denom
+        @test generic.reference === generic.denom
+
+        # One block carries one denominator, computed where it was built: a
+        # reused plan applies the stored one and builds nothing further.
+        counted = T3AdoptMethod(Conservative())
+        plan = plan_regrid(field; to = dst, from = src, method = counted, lazy = false)
+        @test counted.builds[] == 1
+        @test plan.block.reference === plan.block.denom
+        first = regrid(field, plan)
+        @test regrid(field, plan) == first
+        @test counted.builds[] == 1
+        @test counted.fallbacks[] == 0
+        @test first == regrid(field; to = dst, from = src, lazy = false)
+
+        # A chunked plan makes the same choice for both wrappers.
+        chunkedadopt = T3AdoptMethod(Conservative())
+        chunkedemit = T3CooMethod(Conservative())
+        adoptpair = GR.buildblock(ChunkedPlan(chunkedadopt, Weighted(0.5), dst, src;
+            storage = PerChunk()), 1, 1)
+        emitpair = GR.buildblock(ChunkedPlan(chunkedemit, Weighted(0.5), dst, src;
+            storage = PerChunk()), 1, 1)
+        @test adoptpair.weights == emitpair.weights
+        @test adoptpair.denom == emitpair.denom
+        @test chunkedadopt.builds[] == 1
+        @test chunkedadopt.fallbacks[] == 0
+        @test chunkedemit.builds[] == 1
+    end
+
+    @testset "empty sides keep the denominator asymmetry" begin
+        dst = ToyLonLatSpace(4, 2)
+        src = ToyLonLatSpace(8, 4)
+
+        # No destination returns before denominators are declared, no source
+        # after, so the two sides report differently. Both are the generic
+        # route's answer, entry for entry.
+        nodst = GR.weightblock(Conservative(), dst, 1:0, src, 1:32)
+        @test size(nodst) == (0, 32)
+        @test nodst.denom === nothing
+        @test isempty(nodst.reference)
+
+        nosrc = GR.weightblock(Conservative(), dst, 1:8, src, 1:0)
+        @test size(nosrc) == (8, 0)
+        @test nosrc.denom == zeros(8)
+        @test nosrc.reference === nosrc.denom
+
+        for (di, si) in ((1:0, 1:32), (1:8, 1:0), (1:0, 1:0))
+            seam = GR.weightblock(Conservative(), dst, di, src, si)
+            plain = generic_pairblock(Conservative(), dst, di, src, si)
+            @test size(seam) == size(plain)
+            @test typeof(seam.denom) === typeof(plain.denom)
+            @test seam.denom == plain.denom
+            @test seam.weights == plain.weights
+        end
     end
 
     @testset "disjoint chunks keep zero denominators" begin
@@ -518,5 +707,12 @@ cellareas(space, inds) = [GO.area(manifold(space), getcell(space, i)) for i in i
         # Disjoint conservative blocks retain zero denominators.
         @test GR.SparseArrays.nnz(block.weights) == 0
         @test block.denom == zeros(2)
+
+        # An adopted assembly with nothing in it reports them too, rather than
+        # falling back on the row sums of no weights.
+        seam = GR.weightblock(Conservative(), north, 1:2, south, 1:2)
+        @test GR.SparseArrays.nnz(seam.weights) == 0
+        @test seam.denom == zeros(2)
+        @test seam.reference === seam.denom
     end
 end

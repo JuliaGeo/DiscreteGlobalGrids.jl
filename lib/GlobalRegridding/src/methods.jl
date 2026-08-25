@@ -70,8 +70,12 @@ struct BarycentricPoint <: AbstractRegriddingMethod end
 Return the sampling a method gives the destination it writes. Area-based methods
 report `Intervals(Center())`, the default; point samples report `Points()`.
 
-This trait also selects the method's weight build path in [`weightblock`](@ref):
-`Points()` takes the point path, every other sampling the area path.
+This trait also selects the build route. A chunked plan selects the whole-tile
+route with it, through [`tilesampler`](@ref): a method reporting `Points()` and
+supplying a [`sampler`](@ref) builds one destination tile at a time.
+[`weightblock`](@ref) dispatches on it as well, so a sampling may specialise the
+per-pair assembly; today every sampling assembles a pair through
+[`pairblock`](@ref).
 """
 outputsampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Center())
 outputsampling(::NearestCell) = DD.Lookups.Points()
@@ -159,6 +163,13 @@ Builders may inspect geometry outside `src_inds`, but must emit weights only for
 sources inside it. Otherwise weights are duplicated across chunk blocks.
 
 Weight construction must not depend on field data or execution order.
+
+This is the one hook a method must supply, and the generic assembly every
+[`pairblock`](@ref) falls back to. A method that wraps another and forwards
+`buildweights!` therefore builds through this route even where the inner method
+assembles a block of its own; forward [`pairblock`](@ref) as well — and
+[`sampler`](@ref) too, for a point method — to take the inner method's own
+build.
 """
 function buildweights!(coo::WeightCOO, method::AbstractRegriddingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)

@@ -338,6 +338,10 @@ Append spherical intersection areas for the two chunks. Each destination
 denominator accumulates its covered area. A conservative block always carries a
 denominator, including when coverage is zero. Source and destination manifolds
 must match. Intersection discovery and clipping may run in parallel.
+
+This is the generic [`WeightCOO`](@ref) route, which any method may build
+through. [`pairblock`](@ref)`(::Conservative, …)` is the route a conservative
+plan takes, and reaches the same weights without a coordinate list.
 """
 function buildweights!(coo::WeightCOO, ::Conservative,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
@@ -360,21 +364,24 @@ function buildweights!(coo::WeightCOO, ::Conservative,
 end
 
 """
-    wholeblock(::Conservative, dst_space, src_space) -> WeightBlock
+    pairblock(::Conservative, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
 
-The eager whole-domain block, adopting the assembled sparse matrix directly.
-The generic path copies every entry into a [`WeightCOO`](@ref) and builds a
-second, identical CSC from it; here only the denominators are read off. The
-values, their CSC layout, and the denominator accumulation order are the
-generic path's, bit for bit.
+Adopt the assembled sparse matrix of intersection areas as the block's weights,
+reading each destination's denominator off it once. Every conservative block —
+the eager whole domain and a chunk pair alike — is built here.
+
+The generic route copies every entry into a [`WeightCOO`](@ref) and assembles a
+second, identical CSC from it. The values, their CSC layout, and the denominator
+accumulation order here are that route's, bit for bit.
 """
-function wholeblock(::Conservative, dst_space::RegridSpace, src_space::RegridSpace)
-    ndst = Int(ncells(dst_space))
-    nsrc = Int(ncells(src_space))
-    # Degenerate sides keep the generic path's exact semantics.
-    (ndst == 0 || nsrc == 0) &&
-        return invoke(wholeblock, Tuple{AbstractRegriddingMethod,RegridSpace,RegridSpace},
-            Conservative(), dst_space, src_space)
+function pairblock(::Conservative, dst_space::RegridSpace, dst_inds,
+    src_space::RegridSpace, src_inds)
+    ndst = length(dst_inds)
+    # A degenerate side keeps the generic route's exact semantics, including
+    # which of the two sides reports a denominator.
+    (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        Conservative(), dst_space, dst_inds, src_space, src_inds)
 
     m = manifold(dst_space)
     m == manifold(src_space) || throw(ArgumentError(
@@ -382,15 +389,15 @@ function wholeblock(::Conservative, dst_space::RegridSpace, src_space::RegridSpa
         "$(m), source is $(manifold(src_space))"))
 
     op = BlockAreaOperator(_intersectionoperator(m),
-        indexmap(1:ndst), indexmap(1:nsrc),
-        _cellmemo(src_space, 1:nsrc), _cellmemo(dst_space, 1:ndst))
-    block = _intersectionareas(m, subtree(dst_space, 1:ndst),
-        subtree(src_space, 1:nsrc), op)
+        indexmap(dst_inds), indexmap(src_inds),
+        _cellmemo(src_space, src_inds), _cellmemo(dst_space, dst_inds))
+    block = _intersectionareas(m, subtree(dst_space, dst_inds),
+        subtree(src_space, src_inds), op)
 
     return WeightBlock(block, _blockdenom(block, ndst))
 end
 
-# `_fillcoo!`'s denominator pass, without the COO round trip. Assembly types the
+# `_fillcoo!`'s denominator pass, over an adopted matrix. Assembly types the
 # block only as `SparseMatrixCSC`, so the loop needs its own dispatch to specialise.
 function _blockdenom(block::SparseArrays.AbstractSparseMatrixCSC, ndst::Int)
     denom = zeros(Float64, ndst)

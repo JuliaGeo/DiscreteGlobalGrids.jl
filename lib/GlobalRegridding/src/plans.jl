@@ -868,17 +868,17 @@ buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
     weightblock(method, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
 
 Build the weights destination cells `dst_inds` take from source cells
-`src_inds`. Every builder, eager or chunked, goes through here, so this is where
-the build path is chosen: [`outputsampling`](@ref) selects it, and no concrete
-method type takes part.
+`src_inds`. Every builder, eager or chunked, goes through here, and dispatches
+on [`outputsampling`](@ref), so a sampling may specialise the assembly and no
+concrete method type takes part.
 
-A destination the method samples at points takes the point path; every other
-sampling takes the area path. Both assemble one pair from one
-[`WeightCOO`](@ref) through [`buildweights!`](@ref), so a point method that
-builds no weights of its own needs nothing beyond that hook. This is what the
-eager whole domain and an un-cached [`buildblock`](@ref) go through; a chunked
-plan whose point method supplies a [`sampler`](@ref) builds a whole destination
-tile at once instead, in [`blockfor`](@ref).
+Every sampling assembles one destination/source pair through
+[`pairblock`](@ref), whose generic route fills one [`WeightCOO`](@ref) through
+[`buildweights!`](@ref), so a point method that builds no weights of its own
+needs nothing beyond that hook. This is what the eager whole domain and an
+un-cached [`buildblock`](@ref) go through. The whole-tile route a point method
+with a [`sampler`](@ref) takes is not chosen here: a chunked plan selects it
+once, by [`tilesampler`](@ref), in [`blockfor`](@ref).
 """
 weightblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds) =
@@ -888,16 +888,21 @@ weightblock(::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) =
     pairblock(method, dst_space, dst_inds, src_space, src_inds)
 
-weightblock(::DD.Lookups.Points, method::AbstractRegriddingMethod,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) =
-    pairblock(method, dst_space, dst_inds, src_space, src_inds)
-
 """
     pairblock(method, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
 
-Assemble one `(destination cells, source chunk)` pair from a single
-[`WeightCOO`](@ref). Rows are chunk-local within `dst_inds`, columns
-chunk-local within `src_inds`.
+Assemble one `(destination cells, source chunk)` pair. Rows are chunk-local
+within `dst_inds`, columns chunk-local within `src_inds`.
+
+The generic route fills a single [`WeightCOO`](@ref) through
+[`buildweights!`](@ref), which is all a method has to supply. A method that
+assembles a block of its own specializes here instead, and [`Conservative`](@ref)
+does.
+
+A method that wraps another and forwards its build takes the inner method's
+build by forwarding `pairblock` — and [`sampler`](@ref) too, for a point method.
+Forwarding [`buildweights!`](@ref) alone reaches the generic route whatever the
+inner method assembles for itself.
 """
 function pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds)

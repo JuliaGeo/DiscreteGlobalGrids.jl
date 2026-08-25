@@ -94,6 +94,15 @@ GR.chartcoords(::P1DualSpace, p) = toy_lonlat(p)
 GR.samplerstate(s::P1DualSpace) = s.cell
 GR.dualcellat(smp::GR.Sampler{<:P1DualSpace}, p) = smp.state
 
+# A source with no cell chart, so its sampler prepares no state and it takes the
+# generic dual-cell path with no cells of its own to offer.
+struct P1PlainSpace <: RegridSpace
+    space::ToyLonLatSpace
+end
+
+ncells(s::P1PlainSpace) = ncells(s.space)
+cellcentroid(s::P1PlainSpace, i::Int) = cellcentroid(s.space, i)
+
 # One operator from every chunk pair, in the spaces' own local indices.
 function p1_assemble(plan, dst, src)
     M = zeros(Float64, Int(ncells(dst)), Int(ncells(src)))
@@ -312,14 +321,16 @@ end
     end
 
     @testset "the sampler prepares a source space once" begin
-        space = ToyLonLatSpace(4, 2; lon = (-40.0, 40.0), lat = (-20.0, 20.0))
+        space = P1PlainSpace(ToyLonLatSpace(4, 2; lon = (-40.0, 40.0),
+            lat = (-20.0, 20.0)))
 
         # Sample sites are the space's centroids, read on demand.
         sites = GR.samplesites(space)
         @test length(sites) == Int(ncells(space))
         @test all(sites[i] == cellcentroid(space, i) for i in 1:Int(ncells(space)))
 
-        # A sampler holds the space and its sites, and is built once.
+        # A sampler holds the space and its sites, and is built once. A source
+        # with no cell chart prepares no state.
         smp = GR.sampler(BarycentricPoint(), space)
         @test smp.space === space
         @test smp.state === nothing
@@ -391,4 +402,217 @@ end
         far = ToyLonLatSpace(2, 1; lon = (60.0, 100.0), lat = (40.0, 60.0))
         @test isempty(GR.wholeblock(BarycentricPoint(), far, src).weights.nzval)
     end
+
+    @testset "chart Q1 matches BilinearPoint inside the lattice" begin
+        # The P0 interior fixture: source centres 20 degrees apart, every
+        # destination centroid strictly inside the lattice hull.
+        qsrc = ToyLonLatSpace(6, 5; lon = (-60.0, 60.0), lat = (-50.0, 50.0))
+        qdst = ToyLonLatSpace(7, 4; lon = (-49.0, 49.0), lat = (-39.0, 39.0))
+
+        # A source with a cell chart prepares its two axes and takes the fused
+        # path, whatever kind of space it is.
+        smp = GR.sampler(BarycentricPoint(), qsrc)
+        @test smp.state isa GR.ChartState
+        @test (smp.state.x.n, smp.state.y.n) == (6, 5)
+
+        # Entry for entry the same operator as the bilinear point writes: on a
+        # chart source the two are one tensor Q1 stencil.
+        bary = GR.wholeblock(BarycentricPoint(), qdst, qsrc).weights
+        bilin = GR.wholeblock(BilinearPoint(), qdst, qsrc).weights
+        @test Matrix(bary) == Matrix(bilin)
+
+        # Four entries per interior destination, summing to one.
+        dense = Matrix(bary)
+        @test all(count(!iszero, view(dense, r, :)) == 4 for r in axes(dense, 1))
+        @test all(isapprox(1.0), sum(dense; dims = 2))
+
+        # The whole Q1 space, not merely affine fields: a stencil that is not a
+        # tensor product loses the cross term.
+        q1(x, y) = 2.0 + 0.01x + 0.03y + 0.0007x * y
+        chart(space, i) = GR.chartcoords(qsrc, cellcentroid(space, i))
+        field = [q1(chart(qsrc, i)...) for i in 1:Int(ncells(qsrc))]
+        @test dense * field ≈ [q1(chart(qdst, i)...) for i in 1:Int(ncells(qdst))]
+
+        # Once warm, a point on the chart path costs no allocation at all.
+        row = GR.WeightRow()
+        @test p1_samplerbytes(row, smp, cellcentroid(qdst, 1)) == 0 skip =
+            VERSION < v"1.12"
+    end
+
+    @testset "a periodic chart axis wraps at the seam" begin
+        # The P0 seam fixture: 35 degrees east of the last centre on a
+        # 90-degree lattice, so the two longitude weights are 11/18 and 7/18,
+        # halved again across the two latitudes.
+        src = ToyLonLatSpace(4, 2)
+        src_inds = ownedindices(src, 1)
+        seam = ToyLonLatSpace(1, 1; lon = (169.0, 171.0), lat = (-1.0, 1.0))
+        entries = t4_entries(t4_build(BarycentricPoint(), seam, [1], src, src_inds),
+            [1], src_inds)
+        @test length(entries) == 4
+        @test all(entries[(1, localindex(src, 4, iy))] ≈ 11 / 36 for iy in (1, 2))
+        @test all(entries[(1, localindex(src, 1, iy))] ≈ 7 / 36 for iy in (1, 2))
+        @test t4_rowsum(entries, 1) ≈ 1.0
+    end
+
+    @testset "a nonperiodic rim takes no weights" begin
+        patch = ToyLonLatSpace(4, 2; lon = (-40.0, 40.0), lat = (-20.0, 20.0))
+        patch_inds = ownedindices(patch, 1)
+        smp = GR.sampler(BarycentricPoint(), patch)
+        row = GR.WeightRow()
+        barybuild(dst) = t4_entries(
+            t4_build(BarycentricPoint(), dst, [1], patch, patch_inds), [1], patch_inds)
+
+        # Past the last latitude centre the bilinear point drops to the rim line
+        # and still writes a row; the barycentric point stops at the outermost
+        # sample sites and leaves the destination to the missing policy.
+        latrim = ToyLonLatSpace(1, 1; lon = (-6.0, -4.0), lat = (14.0, 16.0))
+        clamped = t4_entries(t4_build(BilinearPoint(), latrim, [1], patch, patch_inds),
+            [1], patch_inds)
+        @test clamped[(1, localindex(patch, 2, 2))] ≈ 0.75
+        @test clamped[(1, localindex(patch, 3, 2))] ≈ 0.25
+        @test GR.weightsat!(row, smp, cellcentroid(latrim, 1)) === GR.WeightsRim
+        @test isempty(row)
+        @test isempty(barybuild(latrim))
+
+        # And the same across a longitude rim.
+        lonrim = ToyLonLatSpace(1, 1; lon = (34.0, 36.0), lat = (2.0, 4.0))
+        clamped = t4_entries(t4_build(BilinearPoint(), lonrim, [1], patch, patch_inds),
+            [1], patch_inds)
+        @test clamped[(1, localindex(patch, 4, 1))] ≈ 0.35
+        @test clamped[(1, localindex(patch, 4, 2))] ≈ 0.65
+        @test GR.weightsat!(row, smp, cellcentroid(lonrim, 1)) === GR.WeightsRim
+        @test isempty(barybuild(lonrim))
+
+        # Beyond the rim the point is outside the source altogether, and the two
+        # are told apart by the source boundary half a cell past the last site.
+        rim = ToyLonLatSpace(1, 1; lon = (-1.0, 1.0), lat = (18.0, 20.0))
+        beyond = ToyLonLatSpace(1, 1; lon = (-1.0, 1.0), lat = (20.0, 22.0))
+        @test GR.weightsat!(row, smp, cellcentroid(rim, 1)) === GR.WeightsRim
+        @test GR.weightsat!(row, smp, cellcentroid(beyond, 1)) === GR.WeightsOutside
+
+        # The P0 outside fixture, which the bilinear point serves from the rim
+        # line, and a longitude past the span on whatever branch the chart
+        # reports.
+        outside = ToyLonLatSpace(1, 1; lon = (-1.0, 1.0), lat = (59.0, 61.0))
+        @test GR.weightsat!(row, smp, cellcentroid(outside, 1)) === GR.WeightsOutside
+        @test isempty(barybuild(outside))
+        west = ToyLonLatSpace(1, 1; lon = (-171.0, -169.0), lat = (-1.0, 1.0))
+        @test GR.chartcoords(patch, cellcentroid(west, 1))[1] ≈ 190.0
+        @test GR.weightsat!(row, smp, cellcentroid(west, 1)) === GR.WeightsOutside
+        @test isempty(row)
+    end
+
+    @testset "a destination at a source sample site takes that source alone" begin
+        # A destination lattice on the source's own sites, on a nonperiodic
+        # source and on a periodic one: one entry of weight exactly one, with no
+        # second entry left by roundoff at the site.
+        for src in (ToyLonLatSpace(6, 5; lon = (-60.0, 60.0), lat = (-50.0, 50.0)),
+            ToyLonLatSpace(4, 2))
+            n = Int(ncells(src))
+            dense = Matrix(GR.wholeblock(BarycentricPoint(), src, src).weights)
+            @test dense == Matrix(LinearAlgebra.I, n, n)
+            @test count(!iszero, dense) == n
+        end
+    end
+
+    @testset "descending and one-cell chart axes" begin
+        # A raster whose latitude lookup descends. The lattice index a stencil
+        # names must be the one that lookup order gives, so the operator onto
+        # the same cells in ascending order matches them site for site.
+        down = RasterGrid(DD.DimArray(zeros(8, 4),
+            (DD.X(raster_lon()), DD.Y(reverse(raster_lat())))))
+        up = RasterGrid(DD.DimArray(zeros(8, 4),
+            (DD.X(raster_lon()), DD.Y(raster_lat()))))
+        sitekey(space, i) = round.(Tuple(cellcentroid(space, i)), digits = 10)
+        matching = Dict(sitekey(down, j) => j for j in 1:Int(ncells(down)))
+        dense = Matrix(GR.wholeblock(BarycentricPoint(), up, down).weights)
+        @test count(!iszero, dense) == Int(ncells(up))
+        @test all(dense[i, matching[sitekey(up, i)]] == 1.0 for i in 1:Int(ncells(up)))
+
+        # An interior destination on the descending source reproduces Q1.
+        mid = RasterGrid(DD.DimArray(zeros(7, 3),
+            (DD.X(-135.0:45.0:135.0), DD.Y(-45.0:45.0:45.0))))
+        q1(x, y) = 2.0 + 0.01x + 0.03y + 0.0007x * y
+        chart(space, i) = GR.chartcoords(down, cellcentroid(space, i))
+        field = [q1(chart(down, j)...) for j in 1:Int(ncells(down))]
+        W = Matrix(GR.wholeblock(BarycentricPoint(), mid, down).weights)
+        @test all(count(!iszero, view(W, r, :)) == 4 for r in axes(W, 1))
+        @test W * field ≈ [q1(chart(mid, i)...) for i in 1:Int(ncells(mid))]
+
+        # A one-cell axis has no interval, so its single site takes the whole
+        # axis weight as one entry rather than a repeated index.
+        strip = RasterGrid(DD.DimArray(zeros(8, 1),
+            (DD.X(raster_lon()), DD.Y(0.0:45.0:0.0))))
+        across = RasterGrid(DD.DimArray(zeros(7, 1),
+            (DD.X(-135.0:45.0:135.0), DD.Y(0.0:45.0:0.0))))
+        S = Matrix(GR.wholeblock(BarycentricPoint(), across, strip).weights)
+        @test all(count(!iszero, view(S, r, :)) == 2 for r in axes(S, 1))
+        @test all(isapprox(1.0), sum(S; dims = 2))
+        @test Matrix(GR.wholeblock(BarycentricPoint(), strip, strip).weights) ==
+              Matrix(LinearAlgebra.I, Int(ncells(strip)), Int(ncells(strip)))
+    end
+
+    @testset "chart stencils survive chunking" begin
+        src = ToyLonLatSpace(8, 6; lon = (-80.0, 80.0), lat = (-60.0, 60.0),
+            chunks = (2, 2))
+        dst = ToyLonLatSpace(5, 4; lon = (-50.0, 50.0), lat = (-40.0, 40.0),
+            chunks = (5, 2))
+        @test nchunks(src) == 12 && nchunks(dst) == 2
+
+        # The support radius is the larger chart spacing, and it belongs to the
+        # state a source prepares rather than to its type.
+        @test supportradius(BarycentricPoint(), src) ≈
+              deg2rad(max(dlon(src), dlat(src)))
+        @test supportradius(BarycentricPoint(), src) ==
+              supportradius(BilinearPoint(), src)
+        @test supportradius(BarycentricPoint(), P1PlainSpace(src)) == 0.0
+
+        # No source-chunk boundary changes a stencil: every pair's share of the
+        # operator adds back up to the eager one.
+        whole = Matrix(GR.wholeblock(BarycentricPoint(), dst, src).weights)
+        plan = ChunkedPlan(BarycentricPoint(), Weighted(0.5), dst, src;
+            storage = PerChunk())
+        @test p1_assemble(plan, dst, src) ≈ whole
+        @test all(isapprox(1.0), sum(whole; dims = 2))
+
+        # Eager and chunked values agree, and a differently chunked source gives
+        # the same values again.
+        chart(i) = GR.chartcoords(src, cellcentroid(src, i))
+        field = [p1_bilinear(chart(i)) for i in 1:Int(ncells(src))]
+        eager = regrid(field; to = dst, from = src, method = BarycentricPoint(),
+            lazy = false)
+        @test collect(eager) ≈ whole * field
+        chunked = Vector{Float64}(undef, Int(ncells(dst)))
+        regrid!(chunked, field,
+            ChunkedPlan(BarycentricPoint(), Weighted(0.5), dst,
+                ToyLonLatSpace(8, 6; lon = (-80.0, 80.0), lat = (-60.0, 60.0),
+                    chunks = (8, 2)); storage = PerChunk()))
+        @test chunked == eager
+        differently = Vector{Float64}(undef, Int(ncells(dst)))
+        regrid!(differently, field,
+            ChunkedPlan(BarycentricPoint(), Weighted(0.5), dst,
+                ToyLonLatSpace(8, 6; lon = (-80.0, 80.0), lat = (-60.0, 60.0),
+                    chunks = (8, 3)); storage = PerChunk()))
+        @test differently == chunked
+
+        # Discovery has no false negative. Each source cell here is its own
+        # chunk, and the destination sits in the corner of one of them, so the
+        # far corner of its stencil is a chunk its own cell corners are nowhere
+        # near. Only the support radius reaches it.
+        cells = ToyLonLatSpace(8, 6; lon = (-80.0, 80.0), lat = (-60.0, 60.0),
+            chunks = (1, 1))
+        off = ToyLonLatSpace(2, 2; lon = (-36.0, -32.0), lat = (-36.0, -32.0),
+            chunks = (1, 1))
+        offwhole = Matrix(GR.wholeblock(BarycentricPoint(), off, cells).weights)
+        @test all(isapprox(1.0), sum(offwhole; dims = 2))
+        far = localindex(cells, 2, 1)
+        @test offwhole[1, far] != 0
+        @test all(!GR.US._contains(GR.chunkextents(cells)[GR.chunkat(cells, far)], p)
+                  for p in cellcorners(off, 1))
+        offplan = ChunkedPlan(BarycentricPoint(), Weighted(0.5), off, cells;
+            storage = PerChunk())
+        @test GR.chunkat(cells, far) in GR.sourcesof(GR.dependencies(offplan), 1)
+        @test p1_assemble(offplan, off, cells) ≈ offwhole
+    end
+
 end

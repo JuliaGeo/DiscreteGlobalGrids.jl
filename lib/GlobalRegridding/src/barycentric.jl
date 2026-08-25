@@ -446,10 +446,16 @@ end
     samplerstate(space::RegridSpace) -> state
 
 Immutable query state a [`Sampler`](@ref) over `space` carries: axis locators,
-topology tables, prepared dual cells. The fallback is `nothing`. Whatever a
-space returns is read concurrently and must not be written during a sweep.
+topology tables, prepared dual cells. Whatever a space returns is read
+concurrently and must not be written during a sweep.
+
+The fallback prepares a [`ChartState`](@ref) where the space has a cell chart,
+which is what puts it on the fused chart path in [`weightsat!`](@ref), and is
+`nothing` otherwise. A space with a state of its own returns it here and takes
+the path its type names.
 """
-samplerstate(::RegridSpace) = nothing
+samplerstate(space::RegridSpace) =
+    hascellchart(space) ? ChartState(space) : nothing
 
 """
     Sampler(space, sites, state)
@@ -557,3 +563,157 @@ function buildweights!(coo::WeightCOO, method::BarycentricPoint,
     end
     return coo
 end
+
+# --- chart spaces ----------------------------------------------------------
+#
+# A source whose cells sit on a two-dimensional lattice needs no dual cell
+# object and no inverse map: its dual cells are the axis-aligned rectangles
+# between neighbouring sample sites, and the two bracketing fractions are the
+# rectangle's own Q1 coordinates. Preparation is the two axes; a query is one
+# chart conversion, two bracket searches, and at most four products.
+
+"""
+    ChartState(space::RegridSpace)
+
+The two prepared chart axes of a space with a cell chart.
+
+Each axis holds its sample coordinates in ascending order, the lattice
+orientation they arrived in, and the period where the source wraps, so a query
+searches a sorted vector and never rebuilds an axis. A [`Sampler`](@ref)
+carrying one takes the fused chart path in [`weightsat!`](@ref).
+"""
+struct ChartState
+    x::_ChartAxis
+    y::_ChartAxis
+end
+
+function ChartState(space::RegridSpace)
+    xs, ys = chartaxes(space)
+    px, py = chartperiod(space)
+    return ChartState(_ChartAxis(xs, px), _ChartAxis(ys, py))
+end
+
+Base.show(io::IO, st::ChartState) =
+    print(io, "ChartState(", st.x.n, "×", st.y.n, " sample sites)")
+
+# The unmapped answer, whose indices and weights are never read.
+@inline _nobracket(status::WeightStatus) = (0, 0, 0.0, 0.0, status)
+
+# Both axes speak: a point outside the source is outside whatever the other
+# axis made of it, and a rim only where nothing was outside.
+@inline _bracketstatus(sx::WeightStatus, sy::WeightStatus) =
+    (sx === WeightsOutside || sy === WeightsOutside) ? WeightsOutside : WeightsRim
+
+"""
+    _bracket(ax::_ChartAxis, x) -> (i0, i1, w0, w1, status)
+
+Bracket `x` between two of an axis' sample coordinates, without clamping.
+
+`i0` and `i1` are lattice indices as the space numbers the axis, so a descending
+axis answers the indices its own lookup order gives; `w0` and `w1` are the two
+linear fractions. A fraction within `$COORD_TOL` of an end of its interval is
+snapped to it, so a sample site reached through roundoff takes that site alone
+and never a second entry of weight `1e-17`.
+
+A periodic axis wraps exactly and is never unmapped: past the last site it
+brackets that site and the first across the seam. A one-cell axis has no
+interval, so it brackets its single site with itself at weights `1` and `0` and
+the repeat leaves with the zero; it cannot exclude a point, and the other axis
+decides.
+
+On a nonperiodic axis the Q1 domain ends at the outermost sample sites. Beyond
+them `x` is not bracketed: within half of the end interval — the rim between the
+outermost sites and the source's boundary — it is `WeightsRim`, and further out
+`WeightsOutside`.
+"""
+@inline function _bracket(ax::_ChartAxis, x::Float64)
+    v = ax.values
+    n = ax.n
+    n == 1 &&
+        return (_latticeindex(ax, 1), _latticeindex(ax, 1), 1.0, 0.0, WeightsMapped)
+    period = ax.period
+    if period === nothing
+        if x < v[1]
+            t = (x - v[1]) / (v[2] - v[1])
+            abs(t) <= COORD_TOL && return (_latticeindex(ax, 1), _latticeindex(ax, 2),
+                1.0, 0.0, WeightsMapped)
+            return _nobracket(t >= -0.5 ? WeightsRim : WeightsOutside)
+        elseif x > v[n]
+            t = (x - v[n]) / (v[n] - v[n-1])
+            abs(t) <= COORD_TOL && return (_latticeindex(ax, n - 1), _latticeindex(ax, n),
+                0.0, 1.0, WeightsMapped)
+            return _nobracket(t <= 0.5 ? WeightsRim : WeightsOutside)
+        end
+        k = min(searchsortedlast(v, x), n - 1)
+        t = _snapunit((x - v[k]) / (v[k+1] - v[k]))
+        return (_latticeindex(ax, k), _latticeindex(ax, k + 1), 1.0 - t, t, WeightsMapped)
+    end
+    p = period::Float64
+    xw = v[1] + mod(x - v[1], p)
+    k = max(searchsortedlast(v, xw), 1)
+    if k < n
+        t = _snapunit((xw - v[k]) / (v[k+1] - v[k]))
+        return (_latticeindex(ax, k), _latticeindex(ax, k + 1), 1.0 - t, t, WeightsMapped)
+    end
+    t = _snapunit((xw - v[n]) / (v[1] + p - v[n]))
+    return (_latticeindex(ax, n), _latticeindex(ax, 1), 1.0 - t, t, WeightsMapped)
+end
+
+"""
+    weightsat!(row, s::Sampler{<:RegridSpace,<:AbstractVector,ChartState}, p)
+
+Weight the at most four source sample sites bracketing `p` on the source's cell
+chart.
+
+The point crosses into the chart once and each prepared axis brackets it once;
+the two pairs of fractions multiply into the tensor Q1 weights of the
+axis-aligned dual rectangle they name. That rectangle's Q1 coordinates are the
+fractions themselves, so the basis is `Bilinear` by construction and no cell is
+built and no inverse map solved. Zero products are dropped, so a point on a
+lattice line takes two sites and a point at a sample site takes one with weight
+one; the four fractions are a partition of unity, so the row sums to one to
+roundoff.
+
+Periodic axes wrap exactly. On a nonperiodic axis the domain ends at the
+outermost sample sites: a point in the rim between those sites and the source's
+boundary is `WeightsRim`, a point beyond it `WeightsOutside`, and neither takes
+weights.
+"""
+function weightsat!(row::WeightRow,
+    s::Sampler{<:RegridSpace,<:AbstractVector,ChartState}, p)
+    empty!(row)
+    q = chartat(s, p)
+    q === nothing && return WeightsOutside
+    st = s.state
+    ix0, ix1, wx0, wx1, sx = _bracket(st.x, q[1])
+    iy0, iy1, wy0, wy1, sy = _bracket(st.y, q[2])
+    (ismapped(sx) && ismapped(sy)) || return _bracketstatus(sx, sy)
+    space = s.space
+    for (ix, wx) in ((ix0, wx0), (ix1, wx1)),
+        (iy, wy) in ((iy0, wy0), (iy1, wy1))
+
+        w = wx * wy
+        w > 0 || continue
+        _addentry!(row, chartlocalindex(space, ix, iy), w)
+    end
+    return WeightsMapped
+end
+
+"""
+    supportradius(::BarycentricPoint, src_space) -> Float64
+
+The larger chart-axis spacing in radians on a source the method queries through
+its cell chart, and `0.0` on every other source.
+
+A chart stencil reaches out to the sample sites bracketing a destination, up to
+one source cell beyond the destination's own extent, so chunk discovery must
+search that far or lose weights. Which sources those are is the state they
+prepare and not their type, the same reading [`weightsat!`](@ref) makes: a
+source answering dual cells of its own bounds them itself, and until it does its
+stencils are found by cap overlap alone.
+"""
+supportradius(::BarycentricPoint, src_space::RegridSpace) =
+    _chartradius(samplerstate(src_space), src_space)
+
+_chartradius(_, ::RegridSpace) = 0.0
+_chartradius(::ChartState, space::RegridSpace) = supportradius(BilinearPoint(), space)

@@ -1016,13 +1016,16 @@ function DiskArrays.readblock!(A::ShapedRegridArray{T,N,ND}, aout::AbstractArray
 end
 
 # Mirror `wrapoutput` without materializing: label a dimensional source's
-# regrid with the destination's own axes, or one flat `Cell` axis.
+# regrid with the destination's own axes, or one flat `Cell` axis. A
+# destination naming one axis is the array's leading axis already, so it is
+# labelled directly and no shaped view stands between it and its reads.
 function wraplazy(A::LazyRegridArray{T,N,NS}, data, dstdims) where {T,N,NS}
     data isa DD.AbstractDimArray || return A
     ds = DD.dims(data)
     others = ntuple(i -> ds[NS+i], ndims(data) - NS)
     dstdims === nothing &&
         return DD.DimArray(A, (DD.Dim{:Cell}(1:size(A, 1)), others...))
+    length(dstdims) == 1 && return DD.DimArray(A, (dstdims..., others...))
     shaped = ShapedRegridArray(A, map(length, dstdims))
     return DD.DimArray(shaped, (dstdims..., others...))
 end
@@ -1037,6 +1040,9 @@ and shape match the eager result ([`wrapoutput`](@ref)): a dimensional source
 comes back as a `DimArray` carrying the destination's own axes in their
 construction order, or a flat `Cell` axis; other sources stay a flat
 [`LazyRegridArray`](@ref).
+
+Several destination axes are a [`ShapedRegridArray`](@ref) view of the cell
+axis; one axis, or none, is the [`LazyRegridArray`](@ref) itself.
 """
 function regrid(data, plan::ChunkedPlan)
     A = LazyRegridArray(data, plan)

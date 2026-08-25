@@ -370,6 +370,10 @@ end
 Put the destination's own axes `dstdims`, or one flat `Cell` axis when it has
 none ([`destinationdims`](@ref)), before the source's unchanged non-spatial
 dimensions. Sources that are not dimensional are returned unlabelled.
+
+A destination naming one axis is already the shape the cells were written in,
+so the result is labelled over the written array itself; two or more axes split
+the leading cell axis by reshaping it.
 """
 function wrapoutput(out::AbstractArray, data, sd, dstdims)
     data isa DD.AbstractDimArray || return out
@@ -377,6 +381,7 @@ function wrapoutput(out::AbstractArray, data, sd, dstdims)
     others = Tuple(ds[i] for i in eachindex(ds) if !(i in sd))
     dstdims === nothing &&
         return DD.DimArray(out, (DD.Dim{:Cell}(1:size(out, 1)), others...))
+    length(dstdims) == 1 && return DD.DimArray(out, (dstdims..., others...))
     shaped = reshape(out, map(length, dstdims)..., Base.tail(size(out))...)
     return DD.DimArray(shaped, (dstdims..., others...))
 end

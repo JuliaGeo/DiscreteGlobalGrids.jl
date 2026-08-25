@@ -385,6 +385,20 @@ end
     @test size(out) == (DGG.ncells(GRID), 2)
     sub = DGG.regrid(RASTER; to = REGION)
     @test collect(DD.lookup(sub, 1)) == collect(REGION)
+
+    # That axis is the space's `destinationdims` and nothing else. A plan whose
+    # destination is a DGG space carries no application of its own on either
+    # route, so what labelled the result above is the generic output wrapping
+    # every space reaches.
+    eagerplan = DGG.plan_regrid(RASTER; to = GRID)
+    lazyplan = DGG.plan_regrid(RASTER; to = GRID, lazy = true)
+    @test GR.destinationdims(eagerplan) == (DD.dims(out, 1),)
+    @test GR.destinationdims(lazyplan) == GR.destinationdims(eagerplan)
+    for plan in (eagerplan, lazyplan)
+        applications = methods(GR.regrid, Tuple{Any,typeof(plan)})
+        @test !isempty(applications) &&
+              all(m -> parentmodule(m) === GR, applications)
+    end
 end
 
 @testset "Extensive conserves the global integral" begin
@@ -568,8 +582,27 @@ end
     @test parent(applied) == parent(reference)
     @test DD.dims(applied, 1) isa DGG.Cells
     lazy = DGG.regrid(RASTER; to = GRID, lazy = true)
-    @test DD.dims(lazy, 1) isa DGG.Cells
+    # Cells and the pass-through month, with their lookups, on the lazy route too.
+    @test DD.dims(lazy) == DD.dims(reference)
+    # The cells are the whole of the destination's shape, so a lazy result needs
+    # no reshaping view over the array that computes it.
+    @test parent(lazy) isa GR.LazyRegridArray
     @test Array(parent(lazy)) == parent(reference)
+end
+
+@testset "a point method lands on the same axis, eagerly and lazily" begin
+    # `BarycentricPoint` evaluates at the destination's sample sites rather than
+    # averaging over its cells, and asks the output for `Points` sampling where
+    # `Conservative` asks for `Intervals`. A cell holds one value either way, so
+    # the axis is the same axis, and both routes fill it identically.
+    bary(; kwargs...) = DGG.regrid(RASTER; to = GRID,
+        method = GR.BarycentricPoint(), kwargs...)
+    eager = bary()
+    lazy = bary(; lazy = true)
+    @test DD.dims(eager, 1) == DD.dims(DGG.regrid(RASTER; to = GRID), 1)
+    @test DD.dims(lazy) == DD.dims(eager)
+    @test parent(lazy) isa GR.LazyRegridArray
+    @test isequal(Array(parent(lazy)), parent(eager))
 end
 
 @testset "a column adopts the whole covering's relation and reads the same" begin

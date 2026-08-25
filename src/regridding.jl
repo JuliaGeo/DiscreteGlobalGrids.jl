@@ -305,29 +305,18 @@ GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
     src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, levelfor(sys, src_space)))
 
-# API integration
+# Labelling the output
 
-# DGGS destination plans return a cell-indexed cube. Explicit leading bounds
-# keep these aliases within the plan types' declared bounds.
-const _DirectToDGG =
-    GR.DirectPlan{<:GR.AbstractRegriddingMethod,<:GR.AbstractMissingPolicy,<:DGGSpace}
-const _ChunkedToDGG =
-    GR.ChunkedPlan{<:GR.AbstractRegriddingMethod,<:GR.AbstractMissingPolicy,<:DGGSpace}
+"""
+    GlobalRegridding.destinationdims(space::DGGSpace, sampling)
 
-function GR.regrid(data, plan::_DirectToDGG)
-    return _ascube(invoke(GR.regrid, Tuple{Any,GR.DirectPlan}, data, plan), data, plan)
-end
+Return the single [`Cells`](@ref) dimension a result over this space carries: a
+[`CellLookup`](@ref) over the destination's own cells, in its local index order.
 
-GR.regrid(data, plan::_ChunkedToDGG) =
-    _ascube(GR.LazyRegridArray(data, plan), data, plan)
-
-# Preserve non-spatial dimensions and label the destination with `Cells`.
-function _ascube(out, data, plan::GR.AbstractRegriddingPlan)
-    data isa DD.AbstractDimArray || return out
-    lk = CellLookup(plan.dst_space.grid)
-    ds = DD.dims(data)
-    sd = GR.resolvespatialdims(data, Int(ncells(plan.src_space)))
-    others = Tuple(ds[i] for i in eachindex(ds) if !(i in sd))
-    raw = out isa DD.AbstractDimArray ? parent(out) : out
-    return DD.DimArray(raw, (Cells(lk), others...))
-end
+A cell holds one value however that value was measured, so the lookup is the
+same whichever `sampling` the method asks for. Being the space's only axis, it
+is the whole of the destination's shape, and a regrid needs no reshape to put a
+result on it.
+"""
+GR.destinationdims(space::DGGSpace, ::DD.Lookups.Sampling) =
+    (Cells(CellLookup(space.grid)),)

@@ -66,8 +66,8 @@ bare system spells a destination. `cellat` is that package's binding for the
 same reason the `Trees` ones are. The rest of the space contract
 `src/regridding.jl` fills in — `nchunks`, `ownedindices`, `chunkat`,
 `cellcentroid`, `samplesites`, `celltree`, `chunkextents`, `chunkindex`,
-`candidatechunks!`, `chunkranges` and `subtree` — is extended under
-`GlobalRegridding`'s own name rather than imported.
+`candidatechunks!`, `chunkranges`, `subtree` and `destinationdims` — is
+extended under `GlobalRegridding`'s own name rather than imported.
 """
 module DiscreteGlobalGrids
 

@@ -269,25 +269,29 @@ function _chunkcursor(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
         Int(first(inds)), Int(last(inds)), nothing)
 end
 
-# Resolving `to`
+# Resolving `to` and `from`
 
 """
-    regridgrid(x) -> AbstractGrid
+    GlobalRegridding._asspace(target, name)
+    GlobalRegridding._asspace(target, name, src_space)
 
-Return the grid represented by a regridding target. Lookup, vector, and
-multi-order targets become a [`PartialGrid`](@ref).
+Return the [`DGGSpace`](@ref) over the cells a regridding target names. A grid
+stands for itself; a [`CellLookup`](@ref), a [`CellVector`](@ref) and a
+[`MultiOrderCellSet`](@ref) name the [`PartialGrid`](@ref) of their cells.
+
+A bare system names no cells until a level is chosen. As a destination it takes
+the level whose cells are closest in size to the source's, which is the only
+spelling that reads `src_space`; as a source there is nothing to match against
+and it is an error.
 """
-function regridgrid end
+GR._asspace(grid::AbstractGrid, name::AbstractString) = DGGSpace(grid)
 
-regridgrid(grid::AbstractGrid) = grid
-regridgrid(lk::AbstractCellLookup) = PartialGrid(lk)
-regridgrid(cv::AbstractCellVector) = PartialGrid(cv)
-regridgrid(set::MultiOrderCellSet) = PartialGrid(CellVector(set))
+GR._asspace(lk::AbstractCellLookup, name::AbstractString) = DGGSpace(PartialGrid(lk))
 
-const RegridTarget =
-    Union{AbstractGrid,AbstractCellLookup,AbstractCellVector,MultiOrderCellSet}
+GR._asspace(cv::AbstractCellVector, name::AbstractString) = DGGSpace(PartialGrid(cv))
 
-GR._asspace(target::RegridTarget, name::AbstractString) = DGGSpace(regridgrid(target))
+GR._asspace(set::MultiOrderCellSet, name::AbstractString) =
+    DGGSpace(PartialGrid(CellVector(set)))
 
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
     throw(ArgumentError(
@@ -295,15 +299,12 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
         "chosen. As a destination the level is matched to the source's cell " *
         "areas, but as a source you must name it with `levelgrid(sys, l)`."))
 
-# Resolving `from`
+GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
+    src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, levelfor(sys, src_space)))
 
 # A `Cells` axis already names the cells a regrid would otherwise look for a
 # raster lattice in, so a source given no `from` can point at the grid itself.
 GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
-
-# A bare system as the destination takes the level closest to the source's cells.
-GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
-    src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, levelfor(sys, src_space)))
 
 # Labelling the output
 

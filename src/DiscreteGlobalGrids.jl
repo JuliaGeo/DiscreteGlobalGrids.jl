@@ -60,10 +60,11 @@ here. `treeify`, `ncells`, and `getcell` extend and re-export
 `ConservativeRegridding.Trees` bindings.
 
 [`regrid`](@ref), [`regrid!`](@ref) and [`plan_regrid`](@ref) are
-`GlobalRegridding`'s, extended in `src/regridding.jl` so that a grid, a
-[`CellVector`](@ref), a [`CellLookup`](@ref), a [`MultiOrderCellSet`](@ref), or a
-bare system spells a destination. `cellat` is that package's binding for the
-same reason the `Trees` ones are. The rest of the space contract
+`GlobalRegridding`'s own, keywords and all; `src/regridding.jl` adds the target
+resolution that lets a grid, a [`CellVector`](@ref), a [`CellLookup`](@ref), a
+[`MultiOrderCellSet`](@ref), or a bare system spell a destination. `cellat` is
+that package's binding for the same reason the `Trees` ones are. The rest of
+the space contract
 `src/regridding.jl` fills in — `nchunks`, `ownedindices`, `chunkat`,
 `cellcentroid`, `samplesites`, `celltree`, `chunkextents`, `chunkindex`,
 `candidatechunks!`, `chunkranges`, `subtree` and `destinationdims` — is

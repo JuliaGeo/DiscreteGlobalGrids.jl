@@ -114,6 +114,11 @@ abstract type AbstractBlockStorage end
 # Fixed split between cached weights and loaded source data.
 const WEIGHT_BUDGET_SHARE = 0.25
 
+# Bytes a chunked plan may hold in transient weights and source data when the
+# caller names no budget. Stated here alone: `plan_regrid` resolves the API
+# keyword against it rather than repeating the number.
+const DEFAULT_BUDGET = 2^30
+
 """
     weightbudget(budget::Integer) -> Int
 
@@ -664,8 +669,8 @@ ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPoli
 
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace;
-    storage::Union{Nothing,AbstractBlockStorage} = nothing, budget::Integer = 2^30,
-    chunks = nothing, missingval = nothing,
+    storage::Union{Nothing,AbstractBlockStorage} = nothing,
+    budget::Integer = DEFAULT_BUDGET, chunks = nothing, missingval = nothing,
     dependencies = nothing, refine = nothing, narrow = nothing) =
     ChunkedPlan(method, missingpolicy, dst_space, src_space,
         storage === nothing ? PerChunk(; maxbytes = weightbudget(budget)) : storage,

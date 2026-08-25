@@ -958,7 +958,8 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         # `refine`/`narrow` are keywords of plan construction — `plan_regrid`
         # and the `ChunkedPlan` constructor it forwards to — and of nothing
         # else. Not of the graph builder, not of the row view, not of the
-        # one-shot API.
+        # one-shot API, which declares no keyword of its own and refuses these
+        # three out of the ones it forwards.
         haskw(f, kw) = any(m -> kw in Base.kwarg_decl(m), methods(f))
         for kw in (:refine, :narrow)
             @test !haskw(GR.chunk_dependency_graph, kw)
@@ -968,8 +969,12 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
             @test !haskw(regrid!, kw)
             @test haskw(plan_regrid, kw)
         end
-        @test_throws MethodError regrid(zeros(8, 4); to = dst, from = src,
-            lazy = true, refine = odd)
+        for kw in (:refine, :narrow, :dependencies)
+            @test_throws "so it takes no `$kw`" regrid(zeros(8, 4); to = dst,
+                from = src, lazy = true, kw => odd)
+            @test_throws "so it takes no `$kw`" regrid!(zeros(72), zeros(8, 4);
+                to = dst, from = src, lazy = true, kw => odd)
+        end
 
         # The plan's relation is a field of an immutable struct, so it cannot
         # be swapped for another one after the fact either.

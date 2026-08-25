@@ -284,6 +284,94 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         end
     end
 
+    @testset "a one-axis destination is labelled, not reshaped" begin
+        # A destination whose `destinationdims` names one axis is already the
+        # shape the cells were written in, so neither route may put a view
+        # between the result and the array it labels. `reshape` returns a fresh
+        # header even at an identical size, so identity is the assertion.
+        g(lon, lat) = 3.0 + 0.01 * lon - 0.02 * lat
+        plane = t6_raster(g, t6_centres(-180, 180, 16), t6_centres(-90, 90, 8))
+        data = DD.DimArray(cat(parent(plane), parent(plane) .+ 1.0; dims = 3),
+            (DD.dims(plane)..., DD.Dim{:month}(1:2)))
+        dst = ToyCellAxisSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
+
+        eagerplan = plan_regrid(data; to = dst, lazy = false)
+        dstdims = GR.destinationdims(eagerplan)
+        @test length(dstdims) == 1
+
+        eager = regrid(data, eagerplan)
+        @test DD.dims(eager, 1) == only(dstdims)
+        @test DD.dims(eager, 2) == DD.dims(data, :month)
+        @test size(eager) == (ncells(dst), 2)
+        written = Array{Float64}(undef, ncells(dst), 2)
+        @test parent(GR.wrapoutput(written, data, (1, 2), dstdims)) === written
+
+        lazyplan = plan_regrid(data; to = dst, lazy = true)
+        A = LazyRegridArray(data, lazyplan)
+        @test GR.destinationdims(lazyplan) == dstdims
+        @test parent(GR.wraplazy(A, data, dstdims)) === A
+
+        lazyresult = regrid(data; to = dst, lazy = true)
+        @test parent(lazyresult) isa LazyRegridArray
+        @test DD.dims(lazyresult) == DD.dims(eager)
+        @test all(isequal.(Array(parent(lazyresult)), parent(eager)))
+    end
+
+    @testset "one keyword surface, owned by `plan_regrid`" begin
+        h(lon, lat) = 1.0 + sind(lat) + 0.1 * cosd(lon)
+        data = t6_raster(h, t6_centres(-180, 180, 12), t6_centres(-90, 90, 6))
+        dst = t6_space(t6_centres(-180, 180, 6), t6_centres(-90, 90, 3))
+        dest = zeros(ncells(dst))
+
+        # `plan_regrid` declares every keyword; `regrid` and `regrid!` declare
+        # a splat and nothing else, so no default can be restated on them.
+        splat = [Symbol("kwargs...")]
+        for f in (regrid, regrid!)
+            @test all(d -> isempty(d) || d == splat,
+                [Base.kwarg_decl(m) for m in methods(f)])
+        end
+        planmethods = [m for m in methods(plan_regrid)
+                       if !isempty(Base.kwarg_decl(m))]
+        @test Set(Base.kwarg_decl(only(planmethods))) ==
+              Set((:to, :from, :method, :missingpolicy, :missingval, :lazy,
+            :chunks, :budget, :storage, :sampling, :dependencies, :refine,
+            :narrow))
+
+        # The one default with a value rather than a sentinel is named once,
+        # and both ways of reaching a chunked plan resolve against that name.
+        @test plan_regrid(data; to = dst, lazy = true).budget == GR.DEFAULT_BUDGET
+        @test ChunkedPlan(Conservative(), Weighted(0.5), dst,
+            RasterGrid(data)).budget == GR.DEFAULT_BUDGET
+
+        # Forwarding reaches the same defaults the two-step form applies.
+        @test parent(regrid(data; to = dst)) ==
+              parent(regrid(data, plan_regrid(data; to = dst)))
+        regrid!(dest, data; to = dst)
+        @test dest == vec(parent(regrid(data; to = dst)))
+
+        # And the same checks, on the same keyword values: a validation
+        # `plan_regrid` performs cannot be walked around by the one-shot form.
+        message(f) = try
+            f()
+            return "no error"
+        catch e
+            return sprint(showerror, e)
+        end
+        eagerbad = (:chunks => (2,), :budget => 2^20, :storage => PerChunk())
+        lazybad = (:budget => 0, :chunks => :auto, :sampling => DD.Points())
+        for (kw, extra) in ((eagerbad, ()), (lazybad, (:lazy => true,)))
+            for bad in kw
+                said = message(() -> plan_regrid(data; to = dst, extra...,
+                    (bad,)...))
+                @test startswith(said, "ArgumentError")
+                @test message(() -> regrid(data; to = dst, extra...,
+                    (bad,)...)) == said
+                @test message(() -> regrid!(dest, data; to = dst, extra...,
+                    (bad,)...)) == said
+            end
+        end
+    end
+
     @testset "raster subtrees" begin
         space = RasterGrid(DD.DimArray(zeros(8, 6),
                 (DD.X(t6_centres(-180, 180, 8)), DD.Y(t6_centres(-90, 90, 6))));

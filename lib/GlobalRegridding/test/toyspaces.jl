@@ -10,6 +10,7 @@ import GlobalRegridding: RegridSpace, AbstractRegriddingMethod, WeightCOO,
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
+import DimensionalData as DD
 import ConservativeRegridding: Trees
 
 const US = GO.UnitSpherical
@@ -353,6 +354,37 @@ nchunks(cs::CountingSpace) = nchunks(cs.space)
 ownedindices(cs::CountingSpace, chunk::Int) = ownedindices(cs.space, chunk)
 celltree(cs::CountingSpace) = celltree(cs.space)
 chunkextents(cs::CountingSpace) = chunkextents(cs.space)
+
+# One-axis destination wrapper
+
+"""
+    ToyCellAxisSpace(space)
+
+Wrap a `RegridSpace` and label results over it with one axis — `Dim{:toycell}`
+over the cells' local indices — where the wrapped space labels with its own
+lattice. This is the destination shape a cell collection has: the cells are the
+whole of it, so a result needs no reshape to sit on that axis.
+"""
+struct ToyCellAxisSpace{S<:RegridSpace} <: RegridSpace
+    space::S
+end
+
+Base.show(io::IO, cs::ToyCellAxisSpace) =
+    print(io, "ToyCellAxisSpace(", cs.space, ")")
+
+GR.destinationdims(cs::ToyCellAxisSpace, ::DD.Lookups.Sampling) =
+    (DD.Dim{:toycell}(1:ncells(cs.space)),)
+
+ncells(cs::ToyCellAxisSpace) = ncells(cs.space)
+getcell(cs::ToyCellAxisSpace, i::Int) = getcell(cs.space, i)
+manifold(cs::ToyCellAxisSpace) = manifold(cs.space)
+hascellchart(cs::ToyCellAxisSpace) = hascellchart(cs.space)
+cellcentroid(cs::ToyCellAxisSpace, i::Int) = cellcentroid(cs.space, i)
+cellat(cs::ToyCellAxisSpace, p) = cellat(cs.space, p)
+nchunks(cs::ToyCellAxisSpace) = nchunks(cs.space)
+ownedindices(cs::ToyCellAxisSpace, chunk::Int) = ownedindices(cs.space, chunk)
+celltree(cs::ToyCellAxisSpace) = celltree(cs.space)
+chunkextents(cs::ToyCellAxisSpace) = chunkextents(cs.space)
 
 # Geometry-free test method
 

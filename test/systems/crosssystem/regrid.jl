@@ -354,6 +354,27 @@ end
         @test parent(out) == parent(reference)
         @test collect(DD.lookup(out, 1)) == collect(DGG.CellVector(GRID))
     end
+
+    # Each spelling is one `_asspace` method answering the space over exactly
+    # those cells — the grid itself, not merely a matching cell count — and the
+    # same method answers `from`, which is given no source space to match.
+    for (target, cells) in ((GRID, DGG.CellVector(GRID)),
+                            (DGG.CellLookup(GRID), DGG.CellVector(GRID)),
+                            (DGG.CellVector(GRID), DGG.CellVector(GRID)),
+                            (set, DGG.CellVector(GRID)),
+                            (DGG.PartialGrid(REGION), REGION),
+                            (REGION, REGION))
+        space = GR._asspace(target, "to", SRC)
+        @test space isa DGG.DGGSpace
+        @test collect(DGG.CellVector(space.grid)) == collect(cells)
+        @test collect(DGG.CellVector(GR._asspace(target, "from").grid)) ==
+              collect(cells)
+    end
+    # The union and the open conversion generic that stood between a spelling
+    # and its space are gone; a spelling is a method.
+    @test !isdefined(DGG, :regridgrid)
+    @test !isdefined(DGG, :RegridTarget)
+
     # A bare system needs the source to choose a level, and any `from` that
     # names cells is a measurable source — the data itself need not carry them.
     bare = GR.plan_regrid(vec(parent(RASTER)[:, :, 1]); to = SYS, from = SRC)
@@ -361,6 +382,16 @@ end
     # And a grid is one of those spellings, not only a `RegridSpace`.
     fromgrid = GR.plan_regrid(zeros(DGG.ncells(GRID)); to = SYS, from = GRID)
     @test DGG.level(fromgrid.dst_space.grid) == LEVEL
+    # The level follows the source whatever kind of space the source is.
+    dggsrc = DGG.DGGSpace(GRID)
+    @test DGG.level(GR._asspace(SYS, "to", dggsrc).grid) == DGG.levelfor(SYS, dggsrc)
+    # As a source a bare system has nothing to be matched against, and saying
+    # so — naming the keyword and the spelling that fixes it — is the whole of
+    # that spelling's behaviour.
+    @test_throws ArgumentError GR._asspace(SYS, "from")
+    @test_throws "`from = S2System()` names no cells until a level is chosen" GR._asspace(
+        SYS, "from")
+    @test_throws "you must name it with `levelgrid(sys, l)`" GR._asspace(SYS, "from")
 end
 
 @testset "a bare system takes the size-matched level" begin
@@ -411,10 +442,10 @@ end
 end
 
 @testset "a source's declared sentinel reaches the plan" begin
-    # `to = ` resolution goes through a `plan_regrid` method of this package's
-    # own, which forwards the rest of the keywords. A sentinel the source
-    # declares of itself is one of the defaults that forwarding must not
-    # swallow, so the same field with the sentinel spelled NaN is the oracle.
+    # This package resolves `to` and supplies spaces; every keyword beyond that
+    # is `plan_regrid`'s, defaults included. A sentinel the source declares of
+    # itself is one of those defaults, so the same field with the sentinel
+    # spelled NaN is the oracle for it arriving.
     holed = collect(parent(RASTER))
     holed[3, 4, :] .= -9999.0
     nanned = replace(holed, -9999.0 => NaN)

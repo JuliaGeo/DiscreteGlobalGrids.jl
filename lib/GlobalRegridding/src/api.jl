@@ -64,20 +64,17 @@ by the source element type, and `NaN` otherwise.
 `chunks`, `budget` and `storage` apply only to `lazy = true`, and `sampling`
 only to `lazy = false`. The plan form accepts no keywords because the plan
 contains all settings.
+
+Every keyword above is [`plan_regrid`](@ref)'s and is forwarded to it, so each
+default and each check is stated there once. The relation keywords
+`dependencies`, `refine` and `narrow` describe a plan that is kept and are
+refused here.
 """
 function regrid end
 
-function regrid(data; to, from = nothing,
-    method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
-    missingval = sourcemissingval(data),
-    lazy::Bool = isdiskbacked(data), chunks = nothing,
-    budget::Union{Nothing,Integer} = nothing,
-    storage::Union{Nothing,AbstractBlockStorage} = nothing,
-    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing)
-    plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
-        chunks, budget, storage, sampling)
-    return regrid(data, plan)
+function regrid(data; kwargs...)
+    _rejectplankeywords(kwargs, "regrid")
+    return regrid(data, plan_regrid(data; kwargs...))
 end
 
 function regrid(data, plan::DirectPlan)
@@ -116,21 +113,14 @@ Regrid `data` into the preallocated `dest` and return `dest`.
 
 `dest` starts with the destination's own axes, or one flat cell dimension,
 followed by `data`'s non-spatial dimensions; either leading shape is accepted.
-Keywords match [`regrid`](@ref); the plan form takes none.
+Keywords match [`regrid`](@ref) and are forwarded to [`plan_regrid`](@ref); the
+plan form takes none.
 """
 function regrid! end
 
-function regrid!(dest, data; to, from = nothing,
-    method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
-    missingval = sourcemissingval(data),
-    lazy::Bool = isdiskbacked(data), chunks = nothing,
-    budget::Union{Nothing,Integer} = nothing,
-    storage::Union{Nothing,AbstractBlockStorage} = nothing,
-    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing)
-    plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
-        chunks, budget, storage, sampling)
-    return regrid!(dest, data, plan)
+function regrid!(dest, data; kwargs...)
+    _rejectplankeywords(kwargs, "regrid!")
+    return regrid!(dest, data, plan_regrid(data; kwargs...))
 end
 
 function regrid!(dest, data, plan::DirectPlan)
@@ -180,7 +170,8 @@ silently corrupts results. [`dependencies`](@ref) documents each branch.
 
 [`dependencies`](@ref)`(plan)` reads the relation back and builds nothing. It is
 deliberately impossible to narrow, replace or rebuild a plan's relation once the
-plan exists: [`regrid`](@ref) and [`regrid!`](@ref) take no `refine`, and
+plan exists: [`regrid`](@ref) and [`regrid!`](@ref) forward every other keyword
+here but refuse `dependencies`, `refine` and `narrow`, and
 [`chunk_dependency_graph`](@ref) has no `plan` method. A caller that wants a
 different relation makes a different plan.
 """
@@ -211,7 +202,7 @@ function plan_regrid(data; to, from = nothing,
     budget === nothing || budget > 0 ||
         throw(ArgumentError("budget must be positive, got $budget"))
     return ChunkedPlan(method, missingpolicy, dst_space, src_space;
-        storage, budget = something(budget, 2^30), chunks, missingval,
+        storage, budget = something(budget, DEFAULT_BUDGET), chunks, missingval,
         dependencies, refine, narrow)
 end
 
@@ -227,6 +218,22 @@ function _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narr
     throw(ArgumentError(
         "an eager plan holds one whole-domain block and takes no " *
         "$(join(named, ", ", " or ")); pass `lazy = true` for the chunked path."))
+end
+
+# The three keywords that describe a plan somebody keeps: a relation to adopt,
+# the narrow phase to build it with, and the name that phase goes by. A one-shot
+# regrid builds its plan and drops it, so there is nothing for them to describe.
+function _rejectplankeywords(kwargs, name::AbstractString)
+    named = String[]
+    for k in (:dependencies, :refine, :narrow)
+        k in keys(kwargs) && push!(named, "`$k`")
+    end
+    isempty(named) && return nothing
+    throw(ArgumentError(
+        "`$name` builds a plan, applies it and drops it, so it takes no " *
+        "$(join(named, ", ", " or ")): a chunk dependency relation is settled " *
+        "when the plan is built and is worth supplying only to a plan that is " *
+        "reused. Build it with `plan_regrid` and pass the plan to `$name`."))
 end
 
 """

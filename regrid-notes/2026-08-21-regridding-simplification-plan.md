@@ -105,9 +105,20 @@ kept as a deprecation shim and appears in this plan only as history:
   `chunktree`-collecting `chunkextents` fallback are all gone; `chunkextents` is
   a required hook with no fallback, and one `candidatechunks!` query per
   destination cap defines every edge.
+- Phase 9, point-method admission: **complete**. S1, S2 and S3 are closed, and
+  the barycentric plan's P0, P1 and P2 landed inside it. `outputsampling` names
+  the build path by trait alone; a point method supplying a `sampler` builds one
+  `TileWeights` per destination tile, cached and locked by tile number; and a
+  tile reads exactly the source chunks its stencils name — its own manifest,
+  neither the relation's row nor an intersection of the two. A point plan still
+  owns a relation, for tile order, wave costing, refcounts and prefetch, and its
+  rows are a documented superset that decides no read; `supportradius` is the
+  declared bound that keeps them a superset, and a manifest naming a chunk no
+  row of its tile holds is refused rather than silently trimmed. Conservative
+  weights, keys, read counts and values are unchanged.
 - **Next in this plan's own order: Phase 5** (W1 then W2), behind the user's
-  gate. Phase 9 branches from E2 beside it and depends on nothing in Phases
-  5-8: S1 is ready now, and S2 waits on the barycentric plan's P1.
+  gate. Phase 9 branched from E2 beside it and is closed, so nothing runs
+  alongside Phase 5 any more; Phases 6-8 follow it in order.
 
 Landed cards, with the commit each one shipped as:
 
@@ -126,9 +137,16 @@ Landed cards, with the commit each one shipped as:
 | G4 | PR #72 | Make chunked plans own dependency graphs |
 | E1 | PR #74 | Drive lazy regridding from dependency rows |
 | E2 | PR #75 | Remove duplicate chunk discovery paths |
+| S1 | `8057af2` | Split weight construction on output sampling |
+| P0 | `df1d8b8` | Record the point-method baseline |
+| P1 | `e57bd82` | Add the barycentric point contracts and kernels |
+| P2 | `874bf74` | Specialise barycentric points on chart axes |
+| S2 | `8c05a2f` | Build point weights per destination tile |
+| S3 | `2800ba3` | Read exact source chunks for point tiles |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
-`93e836d` is the commit that pinned them and records their SHAs.
+`93e836d` is the commit that pinned them and records their SHAs. P0, P1 and P2
+are the barycentric plan's own cards, landed here because Phase 9 admits them.
 
 Evidence:
 
@@ -148,6 +166,20 @@ Evidence:
 - `regrid-notes/2026-08-23-e2-delete-legacy-discovery.md` — E2's deletion audit,
   the `chunktree` verdict, what the card listed that was not dead, and the
   Phase 4 gate as tests
+- `regrid-notes/2026-08-25-s1-split-on-sampling.md` — S1's trait-selected build
+  path, and what stayed on `buildweights!`
+- `regrid-notes/2026-08-25-p0-point-baseline.md` — the pinned `BilinearPoint`
+  behaviour and the counted repeat of point location per candidate chunk
+- `regrid-notes/2026-08-25-p1-point-contracts.md` — the point seam: `WeightRow`,
+  `sampler`, `weightsat!`, dual cells and the coordinate kernels
+- `regrid-notes/2026-08-25-p2-raster-q1.md` — the chart specialization, every
+  intentional difference from `BilinearPoint`, and why the support radius is
+  declared on prepared state
+- `regrid-notes/2026-08-25-s2-tile-weights.md` — S2's `TileWeights`, the tile as
+  cache and locking unit, and the budget and spill round trips
+- `regrid-notes/2026-08-25-s3-exact-reads.md` — S3's selection: what decides a
+  read on each route, what the relation is for, and why `supportradius` is a
+  bound rather than an approximation
 - `regrid-notes/2026-08-23-barycentric-regridding-plan.md` — the point-method
   plan Phase 9 admits, and the authoritative naming for its parts
 - `regrid-notes/generic-barycentric-patch-regridding.md` and
@@ -1144,12 +1176,15 @@ Actions:
 - Apply `knownempty` filtering after selection on both paths, as
   `_connectedsource!` already does: data-dependent filtering may drop a chunk
   the manifest holds and may never add one it does not.
-- Buffer nothing. A tile-weighted point method keeps the default
-  `supportradius` of `0.0` (`methods.jl:145`); `BilinearPoint`'s chart-spacing
-  bound (`interpolation.jl:160`) is what a `Points` method still on
-  `buildweights!` needs and stays only for as long as it does. No card may
-  dilate a destination cap or join neighbouring chunks to approximate a point
-  stencil's reach.
+- Buffer nothing: what a tile with `TileWeights` reads is `sourcechunks`
+  exactly, neither an intersection with the relation's row nor the row. A
+  sampler-bearing method still declares `supportradius` (`methods.jl:145`) — a
+  true bound on its stencils, not an approximation of them, because cap overlap
+  alone is no superset of a stencil reaching sample sites whose own cells the
+  destination never touches — and a manifest naming a chunk outside the tile's
+  rows is refused with an `ArgumentError` naming `supportradius` and the method.
+  No card may dilate a destination cap or join neighbouring chunks to
+  approximate a point stencil's reach.
 - State what a point plan's relation is for. `LazyRegridArray` requires one
   (`_lazygraph`) and `_wavesize` (`lazy.jl:508`) costs waves from the caps it
   carries, so a point plan still owns one — for ordering, wave costing,

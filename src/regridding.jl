@@ -74,7 +74,7 @@ function _chunklevel(sys::AbstractHierarchicalGridSystem, lvl::Int, n::Int, targ
     return best
 end
 
-# Return one position range per non-empty ancestor, or `nothing` when this
+# Return one index range per non-empty ancestor, or `nothing` when this
 # cannot be determined without scanning every cell.
 function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
         lvl::Int, a::Int)
@@ -84,7 +84,7 @@ function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
     ID = cellindextype(sys)
     ids = ID[]
     ranges = UnitRange{Int}[]
-    for j in _ancestorpositions(grid, sys, a, ancestors)
+    for j in _ancestorindices(grid, sys, a, ancestors)
         id = cellindex(ancestors, j)
         r = descendant_range(sys, id, lvl)
         w = complete ? (Int(first(r)):Int(last(r))) : _subsetwindow(grid, r)
@@ -100,10 +100,10 @@ end
 # `PartialGrid` holds nothing outside its root's subtree, so only that root's
 # level-`a` descendants can qualify and the rest of the level need never be
 # visited. That is exact, not a heuristic: the constructor checks the ancestry.
-_ancestorpositions(::AbstractGrid, ::AbstractHierarchicalGridSystem, ::Int,
+_ancestorindices(::AbstractGrid, ::AbstractHierarchicalGridSystem, ::Int,
     ancestors::AbstractGrid) = 1:ncells(ancestors)
 
-function _ancestorpositions(grid::PartialGrid, sys::AbstractHierarchicalGridSystem,
+function _ancestorindices(grid::PartialGrid, sys::AbstractHierarchicalGridSystem,
         a::Int, ancestors::AbstractGrid)
     grid.root_level >= first(levels(sys)) || return 1:ncells(ancestors)
     if grid.root_level <= a
@@ -111,7 +111,7 @@ function _ancestorpositions(grid::PartialGrid, sys::AbstractHierarchicalGridSyst
         return Int(first(r)):Int(last(r))
     end
     # A root deeper than the chunk level puts the whole grid under one ancestor.
-    p = cellposition(ancestors, ancestor(sys, grid.root_id, a))
+    p = globalindex(ancestors, ancestor(sys, grid.root_id, a))
     return p:p
 end
 
@@ -133,15 +133,15 @@ GOCore.manifold(space::DGGSpace) = GOCore.best_manifold(space.grid)
 
 GR.nchunks(space::DGGSpace) = length(space.ranges)
 
-cellindices(space::DGGSpace, chunk::Int) = space.ranges[chunk]
+GR.ownedindices(space::DGGSpace, chunk::Int) = space.ranges[chunk]
 
-# Locate a position by binary-searching the sorted chunk starts.
+# Locate an index by binary-searching the sorted chunk starts.
 function GR.chunkat(space::DGGSpace, i::Integer)
     p = Int(i)
     1 <= p <= ncells(space) || throw(BoundsError(space, p))
     k = searchsortedlast(space.starts, p)
     (1 <= k <= length(space.ranges) && p in space.ranges[k]) || throw(ArgumentError(
-        "cell position $p belongs to no chunk of $space"))
+        "cell index $p belongs to no chunk of $space"))
     return k
 end
 
@@ -151,7 +151,10 @@ GR.cellcentroid(space::DGGSpace, i::Int) =
 function cellat(space::DGGSpace, p::GO.UnitSphericalPoint)
     c = cellat(space.grid, p)
     c === nothing && return nothing
-    return cellposition(space.grid, c)
+    # Local, not global: this is the inverse of `cellcentroid` above, which
+    # names its cell with `cellindex(space.grid, i)`. A `DGGSpace` may wrap a
+    # `PartialGrid`, and there the two spaces are different numbers.
+    return localindex(space.grid, c)
 end
 
 GR.celltree(space::DGGSpace) = treeify(space.grid)
@@ -195,9 +198,9 @@ function _mappedfrontierchunks!(out::Vector{Int}, space::DGGSpace, node, frontie
         dstcap, intersects)
     intersects(dstcap, STI.node_extent(node)) || return out
     if STI.isleaf(node)
-        for (position, cap) in STI.child_indices_extents(node)
+        for (index, cap) in STI.child_indices_extents(node)
             intersects(dstcap, cap) || continue
-            id = cellindex(frontier, position)
+            id = cellindex(frontier, index)
             k = searchsortedfirst(space.chunkids, id)
             k <= length(space.chunkids) && space.chunkids[k] == id && push!(out, k)
         end
@@ -223,14 +226,15 @@ function _dggcandidatechunks!(out::Vector{Int}, space::DGGSpace,
     return out
 end
 
-# DGGS chunks are one-dimensional position ranges.
+# DGGS chunks are one-dimensional index ranges.
 GR.chunkranges(space::DGGSpace, chunk::Integer, ::NTuple{1,Int}) =
     (space.ranges[Int(chunk)],)
 
 """
     GlobalRegridding.subtree(space::DGGSpace, inds)
 
-Return the cell tree restricted to `inds`, preserving global cell positions.
+Return the cell tree restricted to `inds`, with leaves still addressed by the
+space's local index.
 In order: the whole space, a grid that can window its own tree
 ([`subcursor`](@ref)), an exact chunk range (the grid hierarchy in `O(1)`), and
 otherwise the common packed cell-space fallback. The whole space and small

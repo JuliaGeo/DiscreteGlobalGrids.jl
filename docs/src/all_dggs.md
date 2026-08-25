@@ -56,7 +56,7 @@ figure
     steradians each.
 
 `AuthalicSystem` wraps any of the six to read geometry at geodetic latitude.
-Ids, positions, hierarchy and ordering are untouched, so it draws the same
+Ids, indices, hierarchy and ordering are untouched, so it draws the same
 picture and is not in the sweep.
 
 ## What differs

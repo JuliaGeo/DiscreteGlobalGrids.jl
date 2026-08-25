@@ -72,7 +72,7 @@ resetreads!(g::Zarr.ZGroup) = empty!(g.storage.reads)
 # ---------------------------------------------------------------------------
 
 const GRID = levelgrid(IGeo7System(), 4)
-# Three position runs: the shape of a regional store, and enough runs that the
+# Three index runs: the shape of a regional store, and enough runs that the
 # ranges twin has more than one row.
 const RANKS = [50:149; 399:399; 699:848]
 const IDS = UInt64[idselect(GRID, r) for r in RANKS]
@@ -190,7 +190,7 @@ function swaprow(R, c)
     return S
 end
 
-"A nextGEMS-style store: a `crs` variable, no cell array, position is the id."
+"A nextGEMS-style store: a `crs` variable, no cell array, index is the id."
 function dkrz_store(dir; name="dkrz.zarr")
     path = joinpath(dir, name)
     grid = levelgrid(HEALPixSystem(), 2)
@@ -223,8 +223,8 @@ end
         @test length(lk) == N
         @test collect(lk) == CELLS
 
-        # Values, addressed by cell rather than by position: the axis and the
-        # data have to agree for this to hold anywhere but position 1.
+        # Values, addressed by cell rather than by index: the axis and the
+        # data have to agree for this to hold anywhere but index 1.
         @test st[:elevation][Cells(DD.At(CELLS[137]))] == ELEVATION[137]
         @test st[:elevation][Cells(DD.At(CELLS[end]))] == ELEVATION[end]
         @test st[:slope][Cells(DD.At(CELLS[137]))] == SLOPE[137]

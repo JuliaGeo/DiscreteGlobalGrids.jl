@@ -452,7 +452,7 @@ chunk dependency graph is built against.
 """
 struct SubtreeIds{G,ID} <: AbstractVector{ID}
     complete::G
-    starts::Vector{Int}      # first level-`level` position of each subtree
+    starts::Vector{Int}      # first level-`level` index of each subtree
     offsets::Vector{Int}     # cells before each subtree; `offsets[1] == 0`
     n::Int
 end
@@ -490,7 +490,7 @@ end
 
 DGG.Helpers.strictly_increasing(::SubtreeIds) = true
 
-"Which subtree holds position `p`, and the offset within it."
+"Which subtree holds index `p`, and the offset within it."
 @inline function tileat(v::SubtreeIds, p::Int)
     k = searchsortedlast(v.offsets, p - 1)
     return k, p - v.offsets[k]
@@ -541,7 +541,7 @@ TileBuilder(sys, tiles::Vector{Int}, realtiles::Dict{Int,String}, provider, mask
 # It would have reached them ~1300 chunks later.)
 const GDALLOCK = ReentrantLock()
 
-"The decoded band of the GeoTIFF at `path`, validated and flattened into position order."
+"The decoded band of the GeoTIFF at `path`, validated and flattened into index order."
 function readtile(path, sys, tile::DGG.LevelIndex)
     band = lock(GDALLOCK) do
         ArchGDAL.read(ds -> ArchGDAL.read(ds, 1), path)
@@ -595,7 +595,7 @@ end
     TiledDEM(ids, builder, cache)
 
 Every listed tile's pixels as one `Float32` vector in the source grid's own
-position order, chunk `k` being listed tile `k` — so a read is always tile
+index order, chunk `k` being listed tile `k` — so a read is always tile
 aligned and the regridder's source chunks are the DEM's own tiles, which is what
 makes the chunk dependency graph's source side the DEM's own tile list.
 
@@ -666,7 +666,7 @@ function covering_chunks(sys7, sys, tiles::Vector{Int}, ancestor::Int; nthreads 
                 Y = (Float64(lat), Float64(lat) + 1))
             set = DGG.query(sys7, DGG.MultiOrderCoverage(ex); level = ancestor)
             for c in DGG.CellVector(set; level = ancestor)
-                push!(parts[w], DGG.cellposition(g, c))
+                push!(parts[w], DGG.localindex(g, c))
             end
         end
     end
@@ -787,7 +787,7 @@ function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, c
 
     t1 = time()
     # The plan owns the relation. Its radius is its method's own
-    # `support_radius`, which is the same number this line used to compute by
+    # `supportradius`, which is the same number this line used to compute by
     # hand, and the same one `regrid_chunk`'s per-column plans use.
     globalplan = GR.ChunkedPlan(DGG.Conservative(), DGG.Weighted(0.5),
         dstspace, srcspace; budget = config.budget, dependencies = true,
@@ -1068,11 +1068,11 @@ end
     runchunks(chunks, order, dem, srcspace, sys7, store, layout, skipped, donelog,
               prefetcher, config) -> Progress
 
-`W` tasks — [`workercount`](@ref) — pulling batches of positions off one
+`W` tasks — [`workercount`](@ref) — pulling batches of indices off one
 [`GuidedSchedule`](@ref), each computing its chunk and writing it straight to its
 own Zarr file. Chunks are disjoint, so no two tasks ever touch the same file.
 
-`order[p]` is the graph destination number to run at position `p`, and
+`order[p]` is the graph destination number to run at index `p`, and
 `chunks[order[p]]` is the level-`ancestor` chunk itself. The order is a priority
 sequence, never a partition: pulling dynamically is what keeps the polar chunks —
 which meet 200-360 tiles and cost ~5x a mid-latitude one — off the critical path,

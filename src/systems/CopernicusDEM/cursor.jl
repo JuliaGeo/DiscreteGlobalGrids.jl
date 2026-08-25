@@ -40,7 +40,7 @@ A node is either:
   - a tile rectangle (`inpixels == false`), or
   - a raster rectangle within tile `(r0, q0)` (`inpixels == true`).
 
-`position = id - origin`; therefore partial grids must be one contiguous id run
+`index = id - origin`; therefore partial grids must be one contiguous id run
 forming one rectangle.
 """
 struct BlockCursor{G<:DGG.AbstractGrid,S<:CopernicusDEMSystem,F<:BlockStrategy}
@@ -48,7 +48,7 @@ struct BlockCursor{G<:DGG.AbstractGrid,S<:CopernicusDEMSystem,F<:BlockStrategy}
     sys::S
     strategy::F
     level::Int          # the GRID's level: 0 = tiles are cells, 1 = pixels are
-    origin::Int64       # grid position of lattice id `x` is `x - origin`
+    origin::Int64       # grid index of lattice id `x` is `x - origin`
     r0::Int
     r1::Int
     q0::Int
@@ -123,12 +123,12 @@ function _leaf_pad(c::BlockCursor)
 end
 
 """
-    _position(cursor, r, q, j, i) -> Int
+    _index(cursor, r, q, j, i) -> Int
 
-The grid position of the lattice cell at tile `(r, q)` and — at level 1 —
+The grid index of the lattice cell at tile `(r, q)` and — at level 1 —
 raster `(j, i)`. Closed form via `tilebase`, offset by the grid's first id.
 """
-@inline function _position(c::BlockCursor, r::Int, q::Int, j::Int, i::Int)
+@inline function _index(c::BlockCursor, r::Int, q::Int, j::Int, i::Int)
     c.level == 0 && return Int(Int64(tileordinal(r, q)) - c.origin)
     return Int(tilebase(c.sys, r, q) + Int64(j) * ncols(c.sys, r) + Int64(i) - c.origin)
 end
@@ -250,7 +250,7 @@ end
 """
     LeafCells(cursor::BlockCursor)
 
-A leaf's cells as `(grid position, cap)` pairs, in a fixed inline buffer.
+A leaf's cells as `(grid index, cap)` pairs, in a fixed inline buffer.
 
 The return value of [`STI.child_indices_extents`](@ref
 GeometryOps.SpatialTreeInterface.child_indices_extents) for a
@@ -286,13 +286,13 @@ end
         i = c.i0 + fast
         leaf = BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
             c.r0, c.r0, c.q0, c.q0, j, j, i, i, true)
-        return (_position(c, c.r0, c.q0, j, i), STI.node_extent(leaf))
+        return (_index(c, c.r0, c.q0, j, i), STI.node_extent(leaf))
     end
     r = c.r0 + slow
     q = c.q0 + fast
     leaf = BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
         r, r, q, q, 0, 0, 0, 0, false)
-    return (_position(c, r, q, 0, 0), STI.node_extent(leaf))
+    return (_index(c, r, q, 0, 0), STI.node_extent(leaf))
 end
 
 function LeafCells(c::BlockCursor)
@@ -317,7 +317,7 @@ end
 """
     STI.child_indices_extents(cursor) -> LeafCells
 
-A leaf's cells as `(grid position, cap)` pairs. See [`LeafCells`](@ref).
+A leaf's cells as `(grid index, cap)` pairs. See [`LeafCells`](@ref).
 """
 function STI.child_indices_extents(c::BlockCursor)
     STI.isleaf(c) ||
@@ -331,7 +331,7 @@ end
 
 GOCore.best_manifold(c::BlockCursor) = GOCore.best_manifold(c.grid)
 
-# Leaf indices are grid positions, so these answer about the whole grid
+# Leaf indices are grid indices, so these answer about the whole grid
 # regardless of which node holds them.
 Trees.ncells(c::BlockCursor) = DGG.ncells(c.grid)
 Trees.getcell(c::BlockCursor, i::Int) = DGG.getcell(c.grid, i)
@@ -380,7 +380,7 @@ function BlockCursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem};
     cursor = _block_cursor(grid, strategy)
     cursor === nothing && throw(ArgumentError(
         "this partial grid's cells are not one rectangle of the Copernicus DEM " *
-        "lattice held as one contiguous id run, so `position = id - origin` does " *
+        "lattice held as one contiguous id run, so `index = id - origin` does " *
         "not hold; `treeify` falls back to HierarchicalGridCursor for it"))
     return cursor
 end
@@ -399,10 +399,10 @@ _block_cursor(grid::DGG.PartialGrid{<:CopernicusDEMSystem}, strategy::BlockStrat
 """
     subcursor(grid, inds) -> MemoBlockCursor or `nothing`
 
-The node covering grid positions `inds`, or `nothing` when they are not one
+The node covering grid indices `inds`, or `nothing` when they are not one
 contiguous id run forming one lattice rectangle by [`treeify`](@ref)'s rules.
 
-Leaf indices stay `grid`'s own positions. The run test is over the window, not
+Leaf indices stay `grid`'s own indices. The run test is over the window, not
 the whole grid, so a tile-sized chunk qualifies on a complete level grid and on
 a partial one alike.
 
@@ -425,13 +425,13 @@ function _window_cursor(grid, strategy::BlockStrategy, inds::AbstractUnitRange{<
     return _run_cursor(grid, strategy, Int64(lo.index) - lo_p, lo, hi)
 end
 
-# The node covering the id run `lo:hi`, whose grid position is `id - origin`.
+# The node covering the id run `lo:hi`, whose grid index is `id - origin`.
 function _run_cursor(grid, strategy::BlockStrategy, origin::Int64,
         lo::DGG.LevelIndex, hi::DGG.LevelIndex)
     sys = DGG.system(grid)
     l = DGG.level(grid)
     # `PartialGrid` does not range-check ids.
-    (DGG.cellposition(sys, lo) === nothing || DGG.cellposition(sys, hi) === nothing) &&
+    (DGG.globalindex(sys, lo) === nothing || DGG.globalindex(sys, hi) === nothing) &&
         return nothing
     ra, qa, ja, ia = decode(sys, lo)
     rb, qb, jb, ib = decode(sys, hi)

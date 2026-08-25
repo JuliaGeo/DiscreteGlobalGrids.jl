@@ -8,8 +8,8 @@
     variable chunk sizes.
 
 The layout buys tree-aligned chunking by spending a dimension on it. Data arrays
-are two-dimensional — subzone position within one ancestor's subtree, then the
-ancestor — chunked one column per ancestor, so a chunk *is* a subtree. Position
+are two-dimensional — subzone index within one ancestor's subtree, then the
+ancestor — chunked one column per ancestor, so a chunk *is* a subtree. Index
 within a column is what OGC API-DGGS calls the **sub-zone order**, here ascending
 cell id. So:
 
@@ -40,10 +40,10 @@ DiscreteGlobalGrids.subzone_cellvector
 DiscreteGlobalGrids.subzone_columns
 DiscreteGlobalGrids.columncell
 DiscreteGlobalGrids.columnindex
-DiscreteGlobalGrids.columnpositions
+DiscreteGlobalGrids.columnindices
 DiscreteGlobalGrids.columnlength
 DiscreteGlobalGrids.subzoneindex
-DiscreteGlobalGrids.positionindex
+DiscreteGlobalGrids.columnrow
 ```
 
 ## Attributes

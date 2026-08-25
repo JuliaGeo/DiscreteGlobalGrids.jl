@@ -184,7 +184,7 @@ end
             @test c isa LevelIndex
             @test DGG.level(c) == level
             @test cellat(grid, p) == c                    # deterministic
-            @test cellposition(grid, c) !== nothing       # a real cell of the grid
+            @test globalindex(grid, c) !== nothing       # a real cell of the grid
             # The point lies inside the selected cell's extent, and that cell's
             # center round-trips through `cellat`.
             cap = node_extent(SYS, c)
@@ -306,21 +306,21 @@ end
 # 3. Structural: id conventions
 # =========================================================================
 
-@testset "0-based nested ids, 1-based positions" begin
+@testset "0-based nested ids, 1-based indices" begin
     for level in (0, 1, 4)
         grid = levelgrid(SYS, level)
         @test ncells(grid) == 12 * 4^level
-        @test cellindex(grid, 1) == LevelIndex(level, 0)          # position 1 -> id 0
+        @test cellindex(grid, 1) == LevelIndex(level, 0)          # index 1 -> id 0
         @test cellindex(grid, ncells(grid)) == LevelIndex(level, 12 * 4^level - 1)
         @test rawid(cellindex(grid, 1)) == 0
         for i in (1, 7, ncells(grid))
-            @test cellposition(grid, cellindex(grid, i)) == i
+            @test globalindex(grid, cellindex(grid, i)) == i
         end
         # A cell from another level is simply not in this grid.
-        @test cellposition(grid, LevelIndex(level + 1, 0)) === nothing
+        @test globalindex(grid, LevelIndex(level + 1, 0)) === nothing
         # An id no pixel has is not in it either.
-        @test cellposition(grid, LevelIndex(level, 12 * 4^level)) === nothing
-        @test cellposition(grid, LevelIndex(level, -1)) === nothing
+        @test globalindex(grid, LevelIndex(level, 12 * 4^level)) === nothing
+        @test globalindex(grid, LevelIndex(level, -1)) === nothing
         @test_throws BoundsError cellindex(grid, 0)
         @test_throws BoundsError cellindex(grid, ncells(grid) + 1)
     end
@@ -341,18 +341,18 @@ end
             @test rawid(r) == Healpix.nest2ring(res, p + 1)
             @test reindex(LevelIndex, SYS, r) == c
             @test reindex(LevelIndex, SYS, c) === c
-            # A ring-named cell still finds its position in the nested grid.
-            @test cellposition(grid, r) == cellposition(grid, c)
+            # A ring-named cell still finds its index in the nested grid.
+            @test globalindex(grid, r) == globalindex(grid, c)
         end
         # A ring id outside the grid answers `nothing`, not an error: the
         # conversion would throw, so the range guard has to run before it.
         npix = 12 * 4^level
-        @test cellposition(grid, HP.HEALPixRingIndex(level, 0)) === nothing
-        @test cellposition(grid, HP.HEALPixRingIndex(level, npix + 1)) === nothing
-        @test cellposition(grid, HP.HEALPixRingIndex(level, -5)) === nothing
-        @test cellposition(grid, HP.HEALPixRingIndex(level + 1, 1)) === nothing
+        @test globalindex(grid, HP.HEALPixRingIndex(level, 0)) === nothing
+        @test globalindex(grid, HP.HEALPixRingIndex(level, npix + 1)) === nothing
+        @test globalindex(grid, HP.HEALPixRingIndex(level, -5)) === nothing
+        @test globalindex(grid, HP.HEALPixRingIndex(level + 1, 1)) === nothing
         # ... and one that IS in range still resolves.
-        @test cellposition(grid, HP.HEALPixRingIndex(level, npix)) !== nothing
+        @test globalindex(grid, HP.HEALPixRingIndex(level, npix)) !== nothing
     end
 end
 
@@ -402,9 +402,9 @@ end
             r = descendant_range(SYS, c, target)
             grid = levelgrid(SYS, target)
             @test length(r) == 4^d
-            # Every position in the range is a descendant, and every descendant
+            # Every index in the range is a descendant, and every descendant
             # is in the range — the two-sided contract.
-            actual = [cellposition(grid, x) for x in descendants(SYS, c, target)]
+            actual = [globalindex(grid, x) for x in descendants(SYS, c, target)]
             @test sort(actual) == collect(r)
             # `descendants` reads consecutive ids off the range rather than
             # recursing on `children`; both must agree, and it must be sorted.
@@ -762,7 +762,7 @@ end
             brute = LevelIndex[]
             for pos in inside
                 d = cellindex(grid, pos)
-                any(n -> !(cellposition(grid, n) in inside),
+                any(n -> !(globalindex(grid, n) in inside),
                     neighbors(grid, d, 1)) && push!(brute, d)
             end
             @test border == sort!(brute)
@@ -770,7 +770,7 @@ end
             brute_e = LevelIndex[]
             for pos in inside
                 d = cellindex(grid, pos)
-                any(n -> !(cellposition(grid, n) in inside),
+                any(n -> !(globalindex(grid, n) in inside),
                     neighbors(grid, d, 1; connectivity = Edge())) && push!(brute_e, d)
             end
             @test border == sort!(brute_e)

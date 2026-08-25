@@ -9,7 +9,7 @@
 using Test
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: IGeo7System, HEALPixSystem, Z7Cell, LevelIndex,
-    levelgrid, ncells, cellindex, cellposition, rawid, level, ancestor,
+    levelgrid, ncells, cellindex, rawid, level, ancestor,
     cell_extent, CellVector, CellLookup, Cells, Covering
 import DimensionalData as DD
 using DimensionalData: Lookups
@@ -26,7 +26,7 @@ Base.size(c::CountingIds) = size(c.values)
 Base.getindex(c::CountingIds, i::Int) = (c.reads[] += 1; c.values[i])
 Base.getindex(c::CountingIds, r::AbstractUnitRange) = (c.reads[] += 1; c.values[r])
 
-# A few hundred cells at IGEO7 level 4 in three position runs: the shape of a
+# A few hundred cells at IGEO7 level 4 in three index runs: the shape of a
 # regional store, small enough to hold the whole truth in memory.
 axis_grid = levelgrid(IGeo7System(), 4)
 axis_runs = [201:400; 900:900; 1500:2000]
@@ -52,25 +52,25 @@ axis_phantom = (UInt64(2) << 48) | ((UInt64(1) << 48) - 1)
     axis = Encodings.cellaxis(Encodings.RangesEncoding(), axis_grid, ranges;
         declared_length=6)
     @test collect(axis) == [Z7Cell(x) for x in ids]
-    @test ChunkedLookups.axisposition(axis, axis_phantom) === nothing
+    @test ChunkedLookups.axisindex(axis, axis_phantom) === nothing
 end
 
 @testset "a ranges row that holds no cell is skipped on read" begin
     # A well-formed interval containing only a deleted branch: structurally a
-    # row, arithmetically empty. Positions must step straight over it.
+    # row, arithmetically empty. Indices must step straight over it.
     ids = [Encodings.idselect(axis_grid, r) for r in 0:5]
     ranges = UInt64[ids[1] ids[2]; axis_phantom axis_phantom; ids[3] ids[6]]
     axis = Encodings.cellaxis(Encodings.RangesEncoding(), axis_grid, ranges;
         declared_length=6)
     @test collect(axis) == [Z7Cell(x) for x in ids]
-    @test ChunkedLookups.axisposition(axis, ids[3]) == 3
-    @test ChunkedLookups.axisposition(axis, axis_phantom) === nothing
+    @test ChunkedLookups.axisindex(axis, ids[3]) == 3
+    @test ChunkedLookups.axisindex(axis, axis_phantom) === nothing
 end
 
 @testset "a manifest whose chunk length does not describe it is refused" begin
     # `chunkof` divides by `chunklength` rather than searching `offsets`, so a
     # manifest loaded from a sidecar with a foreign chunk length would resolve
-    # every position into the wrong chunk. Only the last chunk may be short.
+    # every index into the wrong chunk. Only the last chunk may be short.
     ok = ChunkedLookups.ChunkManifest(UInt64[1, 5], UInt64[4, 8], [4, 3], [0, 4], 4)
     @test ChunkedLookups.nchunks(ok) == 2
     @test length(ok) == 7
@@ -90,13 +90,13 @@ end
     @test collect(ranged) == axis_cells
     @test collect(dense) == axis_cells
     # The inverse, on both, including ids the axis does not hold.
-    @test all(k -> ChunkedLookups.axisposition(ranged, axis_ids[k]) == k,
+    @test all(k -> ChunkedLookups.axisindex(ranged, axis_ids[k]) == k,
         eachindex(axis_ids))
-    @test all(k -> ChunkedLookups.axisposition(dense, axis_ids[k]) == k,
+    @test all(k -> ChunkedLookups.axisindex(dense, axis_ids[k]) == k,
         eachindex(axis_ids))
     absent = Encodings.idselect(axis_grid, 700)          # between two runs
-    @test ChunkedLookups.axisposition(ranged, absent) === nothing
-    @test ChunkedLookups.axisposition(dense, absent) === nothing
+    @test ChunkedLookups.axisindex(ranged, absent) === nothing
+    @test ChunkedLookups.axisindex(dense, absent) === nothing
 end
 
 @testset "manifest from ranges == manifest from a dense scan" begin
@@ -149,7 +149,7 @@ end
         e
     end
     @test err isa DGGSFormatError && err.check === :duplicate_ids
-    # The count and the FIRST offending position, both, so the message locates
+    # The count and the FIRST offending index, both, so the message locates
     # the damage rather than merely reporting it.
     msg = sprint(showerror, err)
     @test occursin("2", msg)
@@ -221,7 +221,7 @@ end
         e
     end
     @test err isa DGGSFormatError && err.check === :id_names_no_cell
-    @test occursin("position 3", sprint(showerror, err))
+    @test occursin("index 3", sprint(showerror, err))
 
     # Sampling is the explicit opt-out, and is what misses it.
     sampled = Encodings.cellaxis(Encodings.DenseEncoding(), axis_grid, ids;

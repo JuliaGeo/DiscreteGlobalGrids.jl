@@ -131,7 +131,7 @@ Base.IteratorSize(::Type{<:EagerEngine}) = Base.HasLength()
 Base.length(e::EagerEngine) = length(e.cells)
 
 # ===========================================================================
-# The generic scan: lazy over positions, one `ancestor` test per cell
+# The generic scan: lazy over indices, one `ancestor` test per cell
 # ===========================================================================
 
 # A neighbour is outside the subtree when its root-level ancestor differs from
@@ -146,7 +146,7 @@ end
 """
     ScanBorderEngine(sys, grid, root, rootlevel, first, last, connectivity)
 
-Walk the subtree's position range and keep the cells with a neighbour outside
+Walk the subtree's index range and keep the cells with a neighbour outside
 it. `O(subtree · degree)` time, `O(1)` memory, and lazy — the border is never
 collected. Requires [`has_sorted_subtrees`](@ref).
 """

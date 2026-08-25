@@ -119,7 +119,7 @@ const NEIGHBOR_OFFSETS = ((1, 0), (1, 1), (0, 1), (-1, 1),
 """
     _neighbor_cycle(connectivity) -> Tuple
 
-The positions of [`NEIGHBOR_OFFSETS`](@ref) to visit, in rotational order.
+The indices of [`NEIGHBOR_OFFSETS`](@ref) to visit, in rotational order.
 
 `Vertex()` uses all eight offsets. `Edge()` keeps the four axis offsets
 `+s, +t, -s, -t`; one-component offsets share an edge and diagonal offsets

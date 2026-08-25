@@ -62,7 +62,7 @@ module may define both generic fallbacks and specialized methods.
 
 This function reports only whether a specialized method exists. The
 conformance checks separately validate the method's result. `node_extent` and
-`cellposition` are checked unconditionally because their contracts also apply
+`localindex` are checked unconditionally because their contracts also apply
 when an interface-wide implementation provides them.
 """
 function has_nonfallback_method(f, args...)
@@ -190,17 +190,17 @@ end
 # ===========================================================================
 
 """
-    sample_positions(rng, npositions, n_samples) -> Vector{Int}
+    sample_indices(rng, nindices, n_samples) -> Vector{Int}
 
-`n_samples` distinct positions drawn from `1:npositions`, sorted; all of them
+`n_samples` distinct indices drawn from `1:nindices`, sorted; all of them
 when the grid is small enough to check exhaustively.
 
 Sampling is with replacement then deduplicated rather than a `randperm`,
 because a level grid may have more cells than there is memory for a
 permutation of them.
 """
-function sample_positions(rng, npositions::Integer, n_samples::Integer)
-    n = Int(npositions)
+function sample_indices(rng, nindices::Integer, n_samples::Integer)
+    n = Int(nindices)
     n <= 0 && return Int[]
     n <= n_samples && return collect(1:n)
     return sort!(unique(rand(rng, 1:n, Int(n_samples))))
@@ -209,11 +209,11 @@ end
 """
     sample_cells(rng, grid, n_samples)
 
-The typed ids at [`sample_positions`](@ref), paired with those positions.
+The typed ids at [`sample_indices`](@ref), paired with those indices.
 """
 function sample_cells(rng, grid, n_samples::Integer)
-    positions = sample_positions(rng, DGG.ncells(grid), n_samples)
-    return positions, [DGG.cellindex(grid, i) for i in positions]
+    indices = sample_indices(rng, DGG.ncells(grid), n_samples)
+    return indices, [DGG.cellindex(grid, i) for i in indices]
 end
 
 """
@@ -325,7 +325,7 @@ end
 """
     grid_interface_problems(grid; n_samples, rng, unit_atol) -> Vector{String}
 
-Every base-interface law violated by `grid`, over a sampled set of positions.
+Every base-interface law violated by `grid`, over a sampled set of indices.
 Empty means conforming. This is the `Bool`-free core that both
 [`test_grid_interface`](@ref) and [`check_grid_interface`](@ref) are written
 against.
@@ -336,15 +336,15 @@ function grid_interface_problems(grid;
         unit_atol::Real = DEFAULT_UNIT_ATOL)
     problems = String[]
     n = DGG.ncells(grid)
-    positions, cells = sample_cells(rng, grid, n_samples)
+    indices, cells = sample_cells(rng, grid, n_samples)
 
     if !allunique(cells)
-        push!(problems, "cellindex is not injective: distinct positions returned the same id")
+        push!(problems, "cellindex is not injective: distinct indices returned the same id")
     end
 
-    for (i, c) in zip(positions, cells)
-        pos = DGG.cellposition(grid, c)
-        pos == i || push!(problems, "cellposition(grid, cellindex(grid, $i)) == $pos, not $i")
+    for (i, c) in zip(indices, cells)
+        idx = DGG.localindex(grid, c)
+        idx == i || push!(problems, "localindex(grid, cellindex(grid, $i)) == $idx, not $i")
 
         pts = DGG.cell_boundary(grid, c)
         for p in boundary_problems(pts; unit_atol)
@@ -624,7 +624,7 @@ asserting the opposite of the contract.
 
 Partial coverage is handled by the contract rather than by an exemption: a
 neighbour beyond the grid's coverage must be **absent** from the result, so a
-returned cell that has no [`cellposition`](@ref) is itself a violation, and
+returned cell that has no [`localindex`](@ref) is itself a violation, and
 every cell that *is* returned is in the grid and can be asked for its own
 neighbours in turn. Symmetry is therefore total over whatever the grid returns.
 
@@ -672,7 +672,7 @@ function neighbor_problems(grid, c; connectivity::Connectivity = Vertex(),
     for nb in ns
         DGG.level(nb) == lc ||
             push!(problems, "neighbour $nb of $c is at level $(DGG.level(nb)), not $lc")
-        if DGG.cellposition(grid, nb) === nothing
+        if DGG.localindex(grid, nb) === nothing
             push!(problems, "neighbour $nb of $c is not a cell of the grid")
             continue
         end
@@ -689,11 +689,11 @@ function neighbor_problems(grid, c; connectivity::Connectivity = Vertex(),
         checked = Set(ns)
         push!(checked, c)
         for nb in ns
-            DGG.cellposition(grid, nb) === nothing && continue
+            DGG.localindex(grid, nb) === nothing && continue
             for x in DGG.neighbors(grid, nb, 1; connectivity)
                 x in checked && continue
                 push!(checked, x)
-                DGG.cellposition(grid, x) === nothing && continue
+                DGG.localindex(grid, x) === nothing && continue
                 if c in collect(DGG.neighbors(grid, x, 1; connectivity))
                     push!(problems,
                         "neighbours are not symmetric: $c ∈ neighbors($x) but $x ∉ neighbors($c) " *
@@ -1083,8 +1083,8 @@ The **order** laws of [`neighbors`](@ref)/[`ring`](@ref) at one cell, for every
   - **adjacency** — ring 1 walks around `c`: consecutive members are neighbours
     of one another, with at most the one break a coverage-clipped arc has
     ([`ring_cycle_problems`](@ref), `Vertex()` only).
-  - **idiom agreement** — the position forms answer the id forms read through
-    [`cellposition`](@ref), element for element, so the two idioms cannot
+  - **idiom agreement** — the index forms answer the id forms read through
+    [`localindex`](@ref), element for element, so the two idioms cannot
     present the same neighbourhood in two orders.
 
 At `j = 1` the concatenation law collapses to an identity every implementation
@@ -1114,7 +1114,7 @@ function neighbor_order_problems(grid, c;
     rings = [collect(DGG.ring(grid, c, j; connectivity)) for j in 1:Int(k)]
     connectivity isa Vertex && !isempty(rings) &&
         append!(problems, ring_cycle_problems(grid, c, first(rings)))
-    append!(problems, _position_form_problems(grid, c, rings; connectivity))
+    append!(problems, _index_form_problems(grid, c, rings; connectivity))
     for j in 1:Int(k)
         disc = collect(DGG.neighbors(grid, c, j; connectivity))
         shell = rings[j]
@@ -1145,24 +1145,24 @@ function neighbor_order_problems(grid, c;
     return problems
 end
 
-# The position form is the id form read through `cellposition`, element for
+# The index form is the id form read through `localindex`, element for
 # element. Written once, here, so no system can present one neighbourhood in two
 # orders — the drift that makes an oriented stencil silently change meaning when
 # a caller moves from ids to indices.
-function _position_form_problems(grid, c, rings; connectivity::Connectivity)
+function _index_form_problems(grid, c, rings; connectivity::Connectivity)
     problems = String[]
-    p = DGG.cellposition(grid, c)
+    p = DGG.localindex(grid, c)
     p isa Int || return problems
     for (j, shell) in enumerate(rings)
         want = Int[]
         for x in shell
-            q = DGG.cellposition(grid, x)
+            q = DGG.localindex(grid, x)
             q isa Int && push!(want, q)
         end
         got = DGG.ring(grid, p, j; connectivity)
         collect(got) == want || push!(problems,
-            "ring(grid, $p, $j) is not ring(grid, $c, $j) read through cellposition: " *
-            "got $got, the ids map to $want. The position and id forms are one order")
+            "ring(grid, $p, $j) is not ring(grid, $c, $j) read through localindex: " *
+            "got $got, the ids map to $want. The index and id forms are one order")
     end
     return problems
 end
@@ -1223,8 +1223,8 @@ end
     descendant_range_problems(sys, c, l, grid) -> Vector{String}
 
 Violations of the two-sided [`descendant_range`](@ref) contract at one cell:
-the positions of `c`'s actual level-`l` descendants in `grid` must *exactly*
-fill the returned range — every descendant in it, and every position in it a
+the indices of `c`'s actual level-`l` descendants in `grid` must *exactly*
+fill the returned range — every descendant in it, and every index in it a
 descendant.
 """
 function descendant_range_problems(sys, c, l::Integer, grid)
@@ -1239,30 +1239,30 @@ function descendant_range_problems(sys, c, l::Integer, grid)
     end
 
     actual = descendants_at(sys, c, l)
-    positions = Int[]
+    indices = Int[]
     for d in actual
-        pos = DGG.cellposition(grid, d)
-        if pos === nothing
-            push!(problems, "level-$l descendant $d of $c has no position in its own level grid")
+        idx = DGG.localindex(grid, d)
+        if idx === nothing
+            push!(problems, "level-$l descendant $d of $c has no index in its own level grid")
         else
-            push!(positions, pos)
+            push!(indices, idx)
         end
     end
 
     # A range wildly wider than the descendant set is itself the violation, and
     # materialising it to say so is how a harness runs a machine out of memory.
-    if length(r) > 8 * max(length(positions), 1) + 64
+    if length(r) > 8 * max(length(indices), 1) + 64
         push!(problems,
-            "descendant_range($c, $l) spans $(length(r)) positions for $(length(positions)) descendants")
+            "descendant_range($c, $l) spans $(length(r)) indices for $(length(indices)) descendants")
         return problems
     end
 
-    missed = setdiff(positions, r)
-    extra = setdiff(collect(r), positions)
+    missed = setdiff(indices, r)
+    extra = setdiff(collect(r), indices)
     isempty(missed) ||
-        push!(problems, "descendant_range($c, $l) = $r omits descendant positions $missed")
+        push!(problems, "descendant_range($c, $l) = $r omits descendant indices $missed")
     isempty(extra) ||
-        push!(problems, "descendant_range($c, $l) = $r contains $(length(extra)) positions that are not descendants of $c")
+        push!(problems, "descendant_range($c, $l) = $r contains $(length(extra)) indices that are not descendants of $c")
     return problems
 end
 
@@ -1424,8 +1424,8 @@ DGG.maxneighbors(w::GenericFallbackSystem, conn::Connectivity) =
 
 DGG.ncells(w::GenericFallbackSystem, l::Integer) = DGG.ncells(_inner(w, l))
 DGG.cellindex(w::GenericFallbackSystem, l::Integer, i::Int) = DGG.cellindex(_inner(w, l), i)
-DGG.cellposition(w::GenericFallbackSystem, c::AbstractCellIndex) =
-    DGG.cellposition(_inner(w, DGG.level(c)), c)
+DGG.globalindex(w::GenericFallbackSystem, c::AbstractCellIndex) =
+    DGG.globalindex(_inner(w, DGG.level(c)), c)
 DGG.cell_boundary(w::GenericFallbackSystem, c::AbstractCellIndex) =
     DGG.cell_boundary(_inner(w, DGG.level(c)), c)
 DGG.cell_centroid(w::GenericFallbackSystem, c::AbstractCellIndex) =
@@ -1453,8 +1453,8 @@ end
                         label = <grid type>)
 
 Property-test `grid` against the base-interface contracts, as a labelled
-`Test.@testset`: the [`cellindex`](@ref)/[`cellposition`](@ref) bijection over
-sampled positions (including `nothing` for a cell that is not in the grid),
+`Test.@testset`: the [`cellindex`](@ref)/[`localindex`](@ref) bijection over
+sampled indices (including `nothing` for a cell that is not in the grid),
 boundary rings of unit-norm points that are implicitly closed and wind
 counter-clockwise seen from outside, centroids strictly inside their own cell,
 `cellat(cell_centroid(grid, c)) == c` where [`cellat`](@ref) is implemented, and
@@ -1467,8 +1467,8 @@ calls examine identical cells, and a failure is reproduced by re-running it.
 Passing an `rng` explores a different sample; note that an RNG is mutable and
 advances as it is drawn from, so reproducing a specific run means constructing
 a *new* generator from the same seed, not reusing the one it consumed. Up to
-`n_samples` distinct positions are drawn (sampling is with replacement and then
-deduplicated, so a large request may yield somewhat fewer), or every position
+`n_samples` distinct indices are drawn (sampling is with replacement and then
+deduplicated, so a large request may yield somewhat fewer), or every index
 when the grid is smaller than that.
 
 Optional methods are skipped, not failed: a grid that does not implement
@@ -1478,7 +1478,7 @@ count alone cannot be told from a known failure.
 
 # Keyword arguments
 
-  - `n_samples` — how many distinct positions to draw (see above).
+  - `n_samples` — how many distinct indices to draw (see above).
   - `rng` — the sampling generator; a fresh seeded one per call by default, so
     two identical calls examine identical cells.
   - `unit_atol` — how far a boundary vertex or a centroid may sit off the unit
@@ -1530,7 +1530,7 @@ function test_grid_interface(grid;
         fallback_laws::Bool = false,
         label::AbstractString = string(nameof(typeof(grid))))
     n = DGG.ncells(grid)
-    positions, cells = sample_cells(rng, grid, n_samples)
+    indices, cells = sample_cells(rng, grid, n_samples)
     sys = DGG.system(grid)
     skips = String[]
 
@@ -1557,11 +1557,11 @@ function test_grid_interface(grid;
             end
         end
 
-        @testset "cellindex/cellposition bijection" begin
+        @testset "cellindex/localindex bijection" begin
             @test all(c -> c isa AbstractCellIndex, cells)
             @test allunique(cells)
-            for (i, c) in zip(positions, cells)
-                @test DGG.cellposition(grid, c) == i
+            for (i, c) in zip(indices, cells)
+                @test DGG.localindex(grid, c) == i
             end
         end
 
@@ -1570,15 +1570,15 @@ function test_grid_interface(grid;
             @test_throws BoundsError DGG.cellindex(grid, n + 1)
         end
 
-        @testset "cellposition of a cell outside the grid" begin
+        @testset "localindex of a cell outside the grid" begin
             # A cell one level down is, by the level contract, not in this grid.
             other = _foreign_cell(grid, sys, cells)
             if other === nothing
-                skip!(skips, "skipped: cellposition of a cell outside the grid — no such " *
+                skip!(skips, "skipped: localindex of a cell outside the grid — no such " *
                     "cell is constructible from the interface alone (no system provenance, " *
                     "or the grid is a complete deepest level)")
             else
-                @test DGG.cellposition(grid, other) === nothing
+                @test DGG.localindex(grid, other) === nothing
             end
         end
 
@@ -1617,11 +1617,11 @@ function test_grid_interface(grid;
         end
 
         @testset "determinism of repeated calls" begin
-            for (i, c) in zip(positions, cells)
+            for (i, c) in zip(indices, cells)
                 @test DGG.cellindex(grid, i) == c
                 @test DGG.cell_boundary(grid, c) == DGG.cell_boundary(grid, c)
                 @test DGG.cell_centroid(grid, c) == DGG.cell_centroid(grid, c)
-                @test DGG.cellposition(grid, c) == DGG.cellposition(grid, c)
+                @test DGG.localindex(grid, c) == DGG.localindex(grid, c)
             end
         end
 
@@ -1649,7 +1649,7 @@ function _foreign_cell(grid, sys, cells)
     if DGG.ncells(full) > DGG.ncells(grid)
         for i in 1:min(DGG.ncells(full), 4096)
             c = DGG.cellindex(full, i)
-            DGG.cellposition(grid, c) === nothing && return c
+            DGG.localindex(grid, c) === nothing && return c
         end
     end
 
@@ -1677,7 +1677,7 @@ The laws, each its own nested test set:
     [`maxlevel`](@ref); roots all at the first level, ascending and distinct,
     and exactly the cells of the coarsest level grid.
   - **`levelgrid` consistency** — `system`/`level` agree with the system,
-    `cellindex`/`cellposition` round-trip, and cell counts increase with level.
+    `cellindex`/`localindex` round-trip, and cell counts increase with level.
   - **`parent`/`children`** — mutual inverses; children distinct, non-empty,
     ascending and one level deeper; `parent` throws an `ArgumentError` on a
     root and `children` throws one at `maxlevel`.
@@ -1695,7 +1695,7 @@ The laws, each its own nested test set:
     concatenated outward, each ring is the tail block of its disc, and each ring
     winds counter-clockwise.
   - **`descendant_range`** — when [`has_sorted_subtrees`](@ref) is `true`, the
-    positions of the actual descendants exactly fill the returned range.
+    indices of the actual descendants exactly fill the returned range.
 
 Derived methods that a system has not implemented (`ancestor`, `descendants`,
 [`neighbors`](@ref), [`ring`](@ref)) are skipped rather than failed — the
@@ -1831,10 +1831,10 @@ function test_hierarchical_system(sys;
                 @test DGG.system(grid) === sys
                 @test DGG.level(grid) == l
                 @test DGG.ncells(grid) > 0
-                positions, cells = samples[l]
-                for (i, c) in zip(positions, cells)
+                indices, cells = samples[l]
+                for (i, c) in zip(indices, cells)
                     @test DGG.level(c) == l
-                    @test DGG.cellposition(grid, c) == i
+                    @test DGG.localindex(grid, c) == i
                 end
             end
             # Refinement adds cells: counts strictly increase with level.
@@ -2017,7 +2017,7 @@ function test_hierarchical_system(sys;
                         @test_throws ArgumentError DGG.descendant_range(sys, c, l - 1)
                     end
                     @test DGG.descendant_range(sys, c, l) ==
-                          DGG.cellposition(grids[l], c):DGG.cellposition(grids[l], c)
+                          DGG.localindex(grids[l], c):DGG.localindex(grids[l], c)
                     for d in 1:2
                         l + d > maxl && continue
                         target = get!(() -> DGG.levelgrid(sys, l + d), grids, l + d)

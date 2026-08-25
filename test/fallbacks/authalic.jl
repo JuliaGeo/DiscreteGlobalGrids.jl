@@ -6,7 +6,7 @@
 #      Lipschitz property itself, measured on point pairs rather than restated
 #      from the derivation.
 #   2. FORWARDING. Everything that is not geometry must come through the wrapper
-#      unchanged, ids and positions above all.
+#      unchanged, ids and indices above all.
 #   3. Covering law. The conformance harness is the oracle, but the
 #      necessity of the inflation is shown separately: against the TIGHTEST
 #      sound base cap the warp really does push descendants out, so a wrapper
@@ -134,7 +134,7 @@ end
 # 2. Forwarding
 # ===========================================================================
 
-@testset "ids, positions and hierarchy forward unchanged" begin
+@testset "ids, indices and hierarchy forward unchanged" begin
     for l in 0:4
         g = levelgrid(SYS, l)
         b = levelgrid(BASE, l)
@@ -145,10 +145,10 @@ end
         for i in (1, 2, ncells(g) ÷ 3, ncells(g))
             c = cellindex(g, i)
             @test c === cellindex(b, i)
-            @test cellposition(g, c) == i
+            @test globalindex(g, c) == i
         end
         # A cell that is not in the grid is a `nothing`, never an error.
-        l < maxlevel(SYS) && @test cellposition(g, first(children(SYS, cellindex(g, 1)))) === nothing
+        l < maxlevel(SYS) && @test globalindex(g, first(children(SYS, cellindex(g, 1)))) === nothing
         @test_throws BoundsError cellindex(g, 0)
         @test_throws BoundsError cellindex(g, ncells(g) + 1)
     end
@@ -421,13 +421,13 @@ end
     @test ncells(pg) == length(ids)
     @test cell_boundary(pg, ids[3]) == cell_boundary(complete, ids[3])
 
-    # The tree descends wrapped node extents in the subset's position space.
+    # The tree descends wrapped node extents in the subset's local-index space.
     # Both the tree query and fallback `cellat` must retain each stored cell's
     # centroid through every pruning step.
     tree = treeify(pg)
     for c in ids[1:13:end]
         hits = STI.query(tree, cap -> FB.cap_contains(cap, cell_centroid(pg, c)))
-        @test cellposition(pg, c) in hits
+        @test localindex(pg, c) in hits
         @test cellat(pg, cell_centroid(pg, c)) == c
     end
 

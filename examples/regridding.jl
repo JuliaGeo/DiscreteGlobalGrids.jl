@@ -42,7 +42,7 @@ midpoints(e) = (e[1:end-1] .+ e[2:end]) ./ 2
 const DST = GR.RasterGrid(DD.X(DD.Sampled(midpoints(DST_LON))),
     DD.Y(DD.Sampled(midpoints(DST_LAT))))
 
-"Every cell area of a regridding space, in position order."
+"Every cell area of a regridding space, in index order."
 areas(space) = [GR.cellarea(space, i) for i in 1:GR.ncells(space)]
 
 # Destination cells as polygons, for the tree-free reference intersections, and
@@ -74,7 +74,7 @@ const ANALYTIC = vec([field(TO_SPHERE(((DST_LON[i] + DST_LON[i+1]) / 2,
     (DST_LAT[j] + DST_LAT[j+1]) / 2)))
                       for i in 1:(length(DST_LON)-1), j in 1:(length(DST_LAT)-1)])
 
-"Sample `field` at every cell centroid of `grid`, in position order."
+"Sample `field` at every cell centroid of `grid`, in index order."
 sample(grid) = [field(DGG.cell_centroid(grid, DGG.cellindex(grid, i)))
                 for i in 1:DGG.ncells(grid)]
 
@@ -99,7 +99,7 @@ function verify(label, sys, l)
     plan = planfrom(src)
 
     # An eager plan holds one whole-domain block, and a whole-domain block's
-    # chunk-local indices ARE cell positions — so its weights are the
+    # chunk-local indices ARE cell indices — so its weights are the
     # intersection matrix itself, destination cells by source cells.
     A = plan.block.weights
     src_areas = areas(plan.src_space)
@@ -127,7 +127,7 @@ function verify(label, sys, l)
 
     # Spot-check the widest column against intersection areas computed straight
     # from the source cell's polygon — no tree involved on either side. Note
-    # the position/identity split: `j` is a POSITION in the matrix, and
+    # the index/identity split: `j` is an INDEX in the matrix, and
     # `cellindex` is what turns it into the cell's name.
     j = argmax(diff(A.colptr))
     c = DGG.cellindex(src, j)
@@ -139,10 +139,10 @@ function verify(label, sys, l)
         detail="$(count(!iszero, column)) nonzero dst cells, max rel diff $coldiff")
 
     # `getcell` on the tree is the same polygon the grid reports for that
-    # position — the leaf index space IS the dense position space, which is why
+    # index — the leaf index space IS the dense index space, which is why
     # a `DGGSpace` needs no permutation between the two.
     tree = DGG.treeify(src)
-    check("$label: tree leaf $j is the position-$j cell",
+    check("$label: tree leaf $j is the index-$j cell",
         DGG.getcell(tree, j) == polygon && DGG.ncells(tree) == n_src)
     return plan
 end

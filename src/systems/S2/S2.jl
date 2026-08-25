@@ -30,7 +30,7 @@ S2 cell is exactly its four-corner spherical quadrilateral:
 | operation | how |
 |---|---|
 | [`cellat`](@ref) | `point_to_xyf`, the chart's analytic inverse — no tree descent, no point-in-polygon |
-| [`cellindex`](@ref) / [`cellposition`](@ref) | the identity, up to the 0-based-id / 1-based-position `± 1` |
+| [`cellindex`](@ref) / [`globalindex`](@ref) | the identity, up to the 0-based-id / 1-based-index `± 1` |
 | [`descendant_range`](@ref) | `4^Δ`-wide shift of the scaffold ordinal: subtrees are contiguous, hence `has_sorted_subtrees` |
 | [`node_extent`](@ref) | the cell's own four-corner cap, uninflated |
 | [`neighbors`](@ref) / [`ring`](@ref) | the lattice one-ring plus the cube-edge seam table, under both `Vertex()` (8, or 7 in a face corner) and `Edge()` (4) |

@@ -25,7 +25,8 @@ fast-path tier: tree pruning under the covering law of `node_extent`, contiguous
 never a semantic — a system whose override disagrees with the generic answer is
 wrong, not fast.
 
-A bare `Int` argument is always a **position** in `1:ncells(grid)`. A typed
+A bare `Int` argument is always an **index** in `1:ncells(grid)` — a
+local index into that collection's own storage. A typed
 `AbstractCellIndex` is always an **identity**, self-describing about its level,
 so no call passes a level and an id side by side. All internal geometry is on
 the unit sphere, as `UnitSphericalPoint` — `GeometryOps`', re-exported here so
@@ -52,9 +53,9 @@ import DiscreteGlobalGrids as DGG
 grid = DGG.levelgrid(DGG.HEALPixSystem(), 4)
 DGG.ncells(grid)                                  # 3072
 
-# Positions <-> identities.
+# Indices <-> identities.
 c = DGG.cellindex(grid, 1000)                     # a typed cell id
-DGG.cellposition(grid, c)                         # 1000
+DGG.globalindex(grid, c)                          # 1000
 DGG.level(c)                                      # 4
 
 # Geometry, on the unit sphere.
@@ -65,7 +66,7 @@ DGG.cell_area(grid, c)                            # steradians
 DGG.cellat(grid, 8.5, 47.4)
 DGG.neighbors(grid, c)                            # ring 1, CCW seen from outside
 DGG.ring(grid, c, 2)                              # exactly distance 2
-DGG.adjacency(grid)                               # every cell's stencil, as positions
+DGG.adjacency(grid)                               # every cell's stencil, as indices
 
 # Spatial queries, with DE9IM predicate types and spherical semantics.
 import Extents
@@ -75,7 +76,7 @@ DGG.query(grid, DGG.Intersects(Extents.Extent(X = (5, 12), Y = (45, 50))))
 sys = DGG.HEALPixSystem()
 DGG.children(sys, c)
 parent(sys, c)
-DGG.descendant_range(sys, c, 6)                   # positions in levelgrid(sys, 6)
+DGG.descendant_range(sys, c, 6)                   # indices in levelgrid(sys, 6)
 region = DGG.subtree(sys, c, 6)                   # the subtree as an ordinary grid
 DGG.border(region)                                # the border, O(border)
 DGG.halo(region)                                  # the cells just OUTSIDE it
@@ -86,7 +87,7 @@ DGG.interior(region)                              # and the complement of the bo
 for p in DGG.halo(region)                         # O(depth) memory, resumable
     break
 end
-DGG.halo(region; cells = true)                    # ids rather than positions
+DGG.halo(region; cells = true)                    # ids rather than indices
 ```
 
 Swapping `HEALPixSystem()` for `IGeo7System()`, `H3System()`, `A5System()`,
@@ -121,12 +122,12 @@ the *drawn* cells is that region only where refinement is congruent — HEALPix,
 S2 and ISEA4R tile, IGEO7 and H3 leave slivers, A5 more.
 
 `CellVector` reads either set as a lazy `AbstractVector` of ascending ids at one
-level, stored as the leaf position windows they occupy rather than as the ids:
+level, stored as the leaf index windows they occupy rather than as the ids:
 
 ```julia
 cv = DGG.CellVector(accurate)              # or of a grid, or of an explicit id vector
 cv[3]                                      # the third id; nothing is materialised
-DGG.cellposition(cv, cv[3])                # the inverse, or `nothing`
+DGG.localindex(cv, cv[3])                  # the inverse, or `nothing`
 DGG.cellat(cv, 8.5, 47.4)                  # the cell of `cv` a point falls in
 DGG.covering(cv, Extents.Extent(X = (7, 8), Y = (46, 47)))   # a sub-region
 DGG.PartialGrid(cv)                        # read as a grid, O(1)
@@ -136,7 +137,7 @@ Memory is O(#windows), not O(#cells): 98 windows for the 1319 level-7 cells
 those 335 entries expand to, and the *same* 98 for
 `CellVector(accurate; level = 10)`, which names 452,417. `intersect` and
 `issubset` are Base's, answered over the windows. `PartialGrid(cv)` is the
-handshake with anything that wants a grid: position `k` of the grid is position
+handshake with anything that wants a grid: index `k` of the grid is index
 `k` of the vector, so data laid out against the vector needs no permutation.
 
 `CellLookup` is that same type wearing a `DimensionalData.Lookup` hat, and the

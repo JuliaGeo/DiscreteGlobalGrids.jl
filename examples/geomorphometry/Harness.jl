@@ -32,7 +32,7 @@ import Random
 using DiscreteGlobalGrids: Vertex, Edge, Connectivity
 using .SphericalTerrain
 using .SphericalTerrain: GridCtx, gridctx, nrange, WholeField, ChunkField,
-    positions, value, METRICS, same, first_difference, make_field, FIELD_KINDS,
+    indices, value, METRICS, same, first_difference, make_field, FIELD_KINDS,
     chunk_range
 using .HaloOracle
 
@@ -58,7 +58,7 @@ describe(sys, root, level, conn, field = nothing) =
 
 # Oracles derived directly from the cached one-ring.
 
-"Halo positions of the contiguous block `r`, inside-out. Ascending, unique."
+"Halo indices of the contiguous block `r`, inside-out. Ascending, unique."
 function fast_oracle(k::GridCtx, r::UnitRange{Int})
     lo, hi = first(r), last(r)
     io = Int[]
@@ -69,7 +69,7 @@ function fast_oracle(k::GridCtx, r::UnitRange{Int})
     return sort!(unique!(io))
 end
 
-"Halo positions of contiguous block `r`, found by scanning outside cells. O(ncells)."
+"Halo indices of contiguous block `r`, found by scanning outside cells. O(ncells)."
 function fast_oracle_outside_in(k::GridCtx, r::UnitRange{Int})
     lo, hi = first(r), last(r)
     oi = Int[]
@@ -85,7 +85,7 @@ function fast_oracle_outside_in(k::GridCtx, r::UnitRange{Int})
     return oi
 end
 
-"`(inside_out, outside_in)` halo positions of an arbitrary member set."
+"`(inside_out, outside_in)` halo indices of an arbitrary member set."
 function fast_subset_oracle(k::GridCtx, member::BitVector)
     io = Int[]
     for p in 1:length(k)
@@ -128,7 +128,7 @@ function symmetry_failures(sys, level::Integer, conn::Connectivity)
                 k.nbr[j2] == p && (found = true; break)
             end
             found || push!(out, Failure(:adjacency_asymmetry, tag,
-                "position $p (cell $(k.cells[p])) lists $q (cell $(k.cells[q])) " *
+                "index $p (cell $(k.cells[p])) lists $q (cell $(k.cells[q])) " *
                 "as a neighbour, but not vice versa"))
             length(out) > 8 && return out
         end
@@ -146,7 +146,7 @@ const WHOLE_CACHE = Dict{Any,Any}()
 
 Return the elevation field and every metric over the complete level grid.
 Results are memoized by system, level, connectivity, field kind, and spike
-position.
+index.
 """
 function whole_field(sys, level::Integer, conn::Connectivity, kind::Symbol,
         spike_at::Int)
@@ -209,18 +209,18 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
 
     # Ordering, uniqueness, and ancestry.
     issorted(hp) || push!(fails, Failure(:unsorted, tag,
-        "halo positions not ascending: " * string(hp)))
+        "halo indices not ascending: " * string(hp)))
     length(unique(hp)) == length(hp) || push!(fails, Failure(:duplicate, tag,
         "halo has $(length(hp) - length(unique(hp))) duplicate cells"))
     for (c, p) in zip(halo1, hp)
         if first(r) <= p <= last(r)
             push!(fails, Failure(:inside, tag,
-                "halo cell $c at position $p is inside the subtree block $r"))
+                "halo cell $c at index $p is inside the subtree block $r"))
             break
         end
         if DGG.ancestor(sys, c, DGG.level(root)) == root
             push!(fails, Failure(:ancestry, tag,
-                "halo cell $c has ancestor == root yet position $p is outside $r " *
+                "halo cell $c has ancestor == root yet index $p is outside $r " *
                 "(descendant_range and ancestor disagree)"))
             break
         end
@@ -232,9 +232,9 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
         push!(fails, Failure(:halo_mismatch, tag,
             "halo != brute-force one-ring halo: missing=" *
             string([k.cells[p] for p in setdiff(io, hp)]) *
-            " (positions $(setdiff(io, hp))) extra=" *
+            " (indices $(setdiff(io, hp))) extra=" *
             string([k.cells[p] for p in setdiff(hp, io)]) *
-            " (positions $(setdiff(hp, io)))"))
+            " (indices $(setdiff(hp, io)))"))
     end
     if outside_in
         oi = fast_oracle_outside_in(k, r)
@@ -263,8 +263,8 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
     sp = spike_in_halo && !isempty(hp) ? hp[1] : clamp(first(r), 1, length(k))
     z = whole_field(sys, level, conn, fieldkind, sp)
     chunk = ChunkField(k, sys, root, level, z)
-    chunk.halopos == hp || push!(fails, Failure(:chunk_halo, tag,
-        "ChunkField halo positions differ from halo(subtree)"))
+    chunk.haloindices == hp || push!(fails, Failure(:chunk_halo, tag,
+        "ChunkField halo indices differ from halo(subtree)"))
     want = metrics === nothing ? METRICS :
         Tuple(m for m in METRICS if m[1] in metrics)
     nmetric = 0
@@ -275,7 +275,7 @@ function check_subtree_case(sys, root, level::Integer, conn::Connectivity,
         if !same(wslice, cres)
             i, x, y = first_difference(wslice, cres)
             push!(fails, Failure(:chunk_differs, tag,
-                "$name differs at chunk offset $i (grid position $(first(r) + i - 1), " *
+                "$name differs at chunk offset $i (grid index $(first(r) + i - 1), " *
                 "cell $(k.cells[clamp(first(r) + i - 1, 1, length(k))])): " *
                 "whole=$x chunk=$y"))
         end
@@ -442,7 +442,7 @@ function classify_root(sys, root, level::Integer, conn::Connectivity)
     for p in hp
         base(p) == b0 || (push!(tags, :seam); break)
     end
-    np, sp = pole_positions(k)
+    np, sp = pole_indices(k)
     (np in r || np in hp) && push!(tags, :npole)
     (sp in r || sp in hp) && push!(tags, :spole)
     return tags
@@ -450,11 +450,11 @@ end
 
 const POLE_CACHE = Dict{Any,Tuple{Int,Int}}()
 
-"Grid positions of the cells containing the two geographic poles."
-function pole_positions(k::GridCtx)
+"Grid indices of the cells containing the two geographic poles."
+function pole_indices(k::GridCtx)
     get!(POLE_CACHE, objectid(k)) do
-        (DGG.cellposition(k.grid, DGG.cellat(k.grid, 0.0, 90.0)),
-         DGG.cellposition(k.grid, DGG.cellat(k.grid, 0.0, -90.0)))
+        (DGG.localindex(k.grid, DGG.cellat(k.grid, 0.0, 90.0)),
+         DGG.localindex(k.grid, DGG.cellat(k.grid, 0.0, -90.0)))
     end
 end
 

@@ -57,7 +57,7 @@ Base.@propagate_inbounds function Base.getindex(z::ZeroHeights, i::Int)
 end
 
 
-# `adjacency` gives counter-clockwise rings addressed by in-region position,
+# `adjacency` gives counter-clockwise rings addressed by in-region index,
 # which is also the index the vertex buffer and the colour vector use.
 
 @inline function inring(r, b::Int)
@@ -545,9 +545,9 @@ carried no further: a globe vertex is finished by [`vertex_positions`](@ref),
 which is what lets the heights change without the topology being rebuilt.
 
 On a [`PlanarTarget`](@ref) it is longitude and latitude in degrees inside the
-map's window `[cut - 360, cut]`, which [`surface_topology`](@ref) projects in
-bulk at the end; `z` is not part of that space either, because every seam and
-polar cut is worked out in longitude and latitude alone.
+map's window `[cut - 360, cut]`, which [`project_surface`](@ref) later projects
+in bulk; `z` is not part of that space either, because every seam and polar cut
+is worked out in longitude and latitude alone.
 """
 @inline surface_vertex(::GlobeTarget, p) = Point3d(p[1], p[2], p[3])
 
@@ -574,18 +574,21 @@ function surface_vertices(target::PlotTarget, cr::CellRegion, ntasks::Int)
 end
 
 """
-    SurfaceTopology(target, cells, positions, faces, extra_tri, extra_weight,
+    SurfaceTopology(space, cells, positions, faces, extra_tri, extra_weight,
                     ncells, nsplit)
 
 Everything about a DGGS surface that its heights do not touch.
 
-  * `target` — the space it was built in.
+  * `space` — the transform-free part of the target it was built in, from
+    [`buildspace`](@ref).  The projection is not part of it, and not part of
+    this type, which is what lets an axis re-project without rebuilding.
   * `cells` — the [`CellRegion`](@ref) it was built from.  Held so that a plot
     can tell a new cell set from the one it already has: the pipeline reports
     every update as a change, and rebuilding this is the expensive half.
-  * `positions` — the vertices in **build space**: longitude and latitude
-    projected into the axis's plane on a flat map, and the unit-sphere direction
-    on a globe, which is as far as a vertex gets before its height is known.
+  * `positions` — the vertices in **build space**: longitude and latitude in
+    degrees inside the map's window on a flat map, and the unit-sphere direction
+    on a globe.  Unprojected, and at no height — the two things a vertex still
+    has to be given, each by a pass of its own.
   * `faces` — the triangles of the grid's dual.
   * `extra_tri`, `extra_weight` — for each vertex past the first `ncells`, the
     three cells of the triangle that created it and its [`CornerWeights`](@ref)
@@ -594,11 +597,11 @@ Everything about a DGGS surface that its heights do not touch.
   * `ncells` — the length a value vector must have.
   * `nsplit` — triangles cut at the seam or capped at a pole.  Zero on a globe.
 
-Built by [`surface_topology`](@ref); finished into a [`SurfaceMesh`](@ref) by
-[`vertex_positions`](@ref).
+Built by [`surface_topology`](@ref); projected by [`project_surface`](@ref) and
+finished into a [`SurfaceMesh`](@ref) by [`vertex_positions`](@ref).
 """
-struct SurfaceTopology{P, T <: PlotTarget, R <: CellRegion}
-    target::T
+struct SurfaceTopology{P, S <: PlotTarget, R <: CellRegion}
+    space::S
     cells::R
     positions::Vector{P}
     faces::Vector{GLTriangleFace}
@@ -615,21 +618,23 @@ ntriangles(t::SurfaceTopology) = length(t.faces)
 nvertices(t::SurfaceTopology) = length(t.positions)
 
 """
-    samebuild(top, target, cells) -> Bool
+    samebuild(top, space, cells) -> Bool
 
-Would rebuilding `top` from `target` and `cells` produce the same topology?
+Would rebuilding `top` in `space` from `cells` produce the same topology?
 
 The compute graph cannot answer it: for a value that is not `isbits` it reports
 `a === b` as *changed*, on the grounds that the same object may have been mutated
-behind its back, so the surface asks for itself.  A target is either immutable to
-its leaves or an object whose identity is the thing that matters, and `===` is
-the test for it.  The cells are compared with `==`, which for a
-[`CellRegion`](@ref) is a value comparison: a plot handed its arguments a second
-time may get a set rebuilt from the same cells rather than the same object, and
-`===` would call that a different surface and rebuild the expensive half.
+behind its back, so the surface asks for itself.  Both halves are compared by
+value — a [`buildspace`](@ref) is `isbits`, and `==` on a [`CellRegion`](@ref)
+is structural, because a plot handed its arguments a second time may get a set
+rebuilt from the same cells rather than the same object, and `===` would call
+that a different surface and rebuild the expensive half.
+
+The projection is deliberately absent: it is not part of the space, and changing
+it re-projects rather than rebuilds.
 """
-samebuild(top::SurfaceTopology, target::PlotTarget, cells::CellRegion) =
-    top.target === target && top.cells == cells
+samebuild(top::SurfaceTopology, space::PlotTarget, cells::CellRegion) =
+    top.space == space && top.cells == cells
 
 samebuild(::SurfaceTopology, ::PlotTarget, ::Any) = false
 
@@ -778,7 +783,7 @@ function vertex_positions!(out::Vector{Point3d},
         top::SurfaceTopology{Point3d, <:GlobeTarget}, zs::AbstractVector,
         ntasks::Int = 1)
     checkheights(zs, top)
-    target = top.target
+    target = top.space
     n = top.ncells
     inparallel(n, ntasks) do lo, hi
         @inbounds for i in lo:hi
@@ -822,18 +827,20 @@ On a [`PlanarTarget`](@ref) two cases need more than three centroids, both
 counted in `nsplit`: a triangle straddling the cut is split against it, and the
 one at each pole is drawn as the cap it covers.
 
-This is the expensive half of a surface — adjacency, a centroid per cell, the
-corner scan, and one bulk projection.  [`vertex_positions`](@ref) is the other
-half, and the only one the heights reach.
+This is the expensive half of a surface — adjacency, a centroid per cell and
+the corner scan — and it leaves its vertices in build space.
+[`project_surface`](@ref) and [`vertex_positions`](@ref) are the two cheap
+passes that finish them, one per thing the build left out.
 """
 function surface_topology(target::PlotTarget, cr::CellRegion;
         ntasks::Int = Threads.nthreads(), connectivity = DGG.Vertex())
-    P = pointtype(target)
+    space = buildspace(target)
+    P = pointtype(space)
     n = length(cr)
-    n == 0 && return SurfaceTopology(target, cr, P[], GLTriangleFace[],
+    n == 0 && return SurfaceTopology(space, cr, P[], GLTriangleFace[],
         NTuple{3, Int32}[], NTuple{3, Float32}[], 0, 0)
 
-    positions = surface_vertices(target, cr, ntasks)
+    positions = surface_vertices(space, cr, ntasks)
     adj = DGG.adjacency(cr.region; connectivity)
 
     nt = clamp(ntasks, 1, max(1, cld(n, 512)))
@@ -845,15 +852,44 @@ function surface_topology(target::PlotTarget, cr::CellRegion;
             hi = div(t * n, nt)
             chunk = SurfaceChunk{P}(hi - lo + 1)
             chunks[t] = chunk
-            splits[t] = fill_surface!(chunk, target, adj, lo, hi, n, positions, cr)
+            splits[t] = fill_surface!(chunk, space, adj, lo, hi, n, positions, cr)
         end
     end
 
-    return merge_surface(chunks, positions, n, sum(splits), target, cr)
+    return merge_surface(chunks, positions, n, sum(splits), space, cr)
 end
 
 surface_topology(target::PlotTarget, x; kwargs...) =
     surface_topology(target, cellregion(x); kwargs...)
+
+"""
+    project_surface(top, target[, buffer]) -> SurfaceTopology
+
+`top` with its vertices in `target`'s data space rather than in build space.
+
+The build works in longitude and latitude, where the seam and the poles are, and
+[`project!`](@ref) is the one pass that leaves that space.  Held apart from the
+build, it is also the one pass an axis's transform function reaches: a
+projection that changes under a live plot costs this and nothing more, because
+the triangles, the split vertices and their weights were all worked out before
+the projection was ever applied.
+
+The result shares everything but the vertices with `top`, and on a target that
+projects nothing — a flat map plotting longitude and latitude, or any globe — it
+*is* `top`.  `buffer` is where the projected vertices go; the default is a fresh
+one, and a plot passes the one it owns instead.
+"""
+function project_surface(top::SurfaceTopology, target::PlotTarget,
+        buffer::Union{Nothing, Vector} = nothing)
+    needs_projection(target) || return top
+    out = buffer === nothing ? similar(top.positions) : buffer
+    length(out) == length(top.positions) || throw(ArgumentError("the buffer holds \
+        $(length(out)) vertices, but the surface has $(length(top.positions))"))
+    copyto!(out, top.positions)
+    project!(target, out)
+    return SurfaceTopology(top.space, top.cells, out, top.faces, top.extra_tri,
+        top.extra_weight, top.ncells, top.nsplit)
+end
 
 """
     SurfaceMesh(topology, positions)
@@ -882,7 +918,7 @@ function Base.getproperty(m::SurfaceMesh, name::Symbol)
 end
 
 Base.propertynames(::SurfaceMesh) =
-    (:topology, :positions, :faces, :ncells, :nsplit, :target, :cells,
+    (:topology, :positions, :faces, :ncells, :nsplit, :space, :cells,
         :extra_tri, :extra_weight)
 
 Base.isempty(m::SurfaceMesh) = isempty(m.topology)
@@ -899,10 +935,10 @@ spread(values::AbstractVector, m::SurfaceMesh) = spread(values, m.topology)
 Build the interpolated surface over `cells` in `target`'s coordinate space, at
 the heights `zs`.
 
-The two halves of the work, [`surface_topology`](@ref) and
-[`vertex_positions`](@ref), run back to back.  A plot keeps them apart, so that
-changing the heights costs only the second; this is the one-shot form, for
-everything that is not a live plot.
+The three passes — [`surface_topology`](@ref), [`project_surface`](@ref) and
+[`vertex_positions`](@ref) — run back to back.  A plot keeps them apart, so that
+changing the heights or the projection costs only the pass it touches; this is
+the one-shot form, for everything that is not a live plot.
 
 `zs` is one height per cell, and it lands in the geometry: on a
 [`PlanarTarget`](@ref) as each vertex's third coordinate, in the axis's data
@@ -915,7 +951,7 @@ function triangulate(target::PlotTarget, cr::CellRegion,
         zs::AbstractVector = ZeroHeights(length(cr)); kwargs...)
     length(zs) == length(cr) || throw(ArgumentError("zs has $(length(zs)) entries, \
         but there are $(length(cr)) cells"))
-    top = surface_topology(target, cr; kwargs...)
+    top = project_surface(surface_topology(target, cr; kwargs...), target)
     return SurfaceMesh(top, vertex_positions(top, zs))
 end
 
@@ -930,7 +966,7 @@ fill_surface!(chunk::SurfaceChunk, target::GlobeTarget, adj, lo, hi, n, position
     fill_surface!(chunk, target, adj, lo, hi, n)
 
 function merge_surface(chunks::Vector{SurfaceChunk{P}}, positions::Vector{P},
-        n::Int, nsplit::Int, target::PlotTarget, cr::CellRegion) where {P}
+        n::Int, nsplit::Int, space::PlotTarget, cr::CellRegion) where {P}
     nt = length(chunks)
     face_offset = zeros(Int, nt + 1)
     extra_offset = zeros(Int, nt + 1)
@@ -969,7 +1005,6 @@ function merge_surface(chunks::Vector{SurfaceChunk{P}}, positions::Vector{P},
         end
     end
 
-    project!(target, positions)
-    return SurfaceTopology(target, cr, positions, faces, extra_tri, extra_weight,
+    return SurfaceTopology(space, cr, positions, faces, extra_tri, extra_weight,
         n, nsplit)
 end

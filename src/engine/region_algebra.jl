@@ -1,7 +1,7 @@
 # Region algebra over the same-level region types: growth by rings, set union,
 # bulk movement between levels, and compaction to a mixed-level set.
 #
-# Every verb here answers in leaf-grid POSITION space and hands the result to
+# Every verb here answers in leaf-grid INDEX space and hands the result to
 # `_windows`/`_windows_from_intervals`, which own the `CellVector` invariants.
 # Nothing assumes a cell's children are contiguous or ascending: sorted-subtree
 # systems reach for `descendant_range`, and every other system goes through
@@ -64,7 +64,7 @@ Every level-`l` descendant of the region's cells, as one [`CellVector`](@ref).
 The expansion never assumes a cell's descendants are contiguous or ascending in
 the deeper level. Where [`has_sorted_subtrees`](@ref) holds it merges one
 [`descendant_range`](@ref) per cell; elsewhere (A5) it resolves
-[`descendants`](@ref) to positions and sorts them. Both paths visit every cell of
+[`descendants`](@ref) to indices and sorts them. Both paths visit every cell of
 the region, and the second visits every leaf it names.
 
 The set form is [`CellVector`](@ref)`(set; level = l)` — the same expansion, from
@@ -99,15 +99,15 @@ function _expand_windows(sys::AbstractHierarchicalGridSystem, cv::CellVector,
         issorted(ivs) || sort!(ivs)
         return _windows_from_intervals(ivs)
     end
-    positions = Int[]
+    indices = Int[]
     for c in cv, d in descendants(sys, c, target)
-        p = cellposition(grid, d)
+        p = globalindex(grid, d)
         p === nothing && throw(ArgumentError(
             "descendant $d of $c is not a cell of levelgrid($sys, $target)"))
-        push!(positions, p)
+        push!(indices, p)
     end
-    sort!(positions)
-    return _windows(positions)
+    sort!(indices)
+    return _windows(indices)
 end
 
 """
@@ -258,8 +258,8 @@ function _ascends(vs)
     for v in vs
         n = length(v.windows)
         n == 0 && continue
-        leafposition(v.windows, 1) > previous || return false
-        previous = leafposition(v.windows, n)
+        leafindex(v.windows, 1) > previous || return false
+        previous = leafindex(v.windows, n)
     end
     return true
 end

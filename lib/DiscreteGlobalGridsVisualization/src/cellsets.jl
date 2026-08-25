@@ -48,7 +48,7 @@ Base.hash(cs::CellSet, h::UInt) = hash(cs.cells, hash(cs.source, hash(:CellSet, 
 """
     GridCells(grid)
 
-The cells of `grid` as a lazy vector, `cellindex(grid, i)` at position `i`.
+The cells of `grid` as a lazy vector, `cellindex(grid, i)` at index `i`.
 
 Every grid can be enumerated this way, including ones outside a hierarchy that
 have no `CellVector`.
@@ -113,17 +113,17 @@ cellset(source, ids::AbstractVector) = CellSet(source, ids)
 #
 # A [`CellSet`](@ref) is enough to draw cells one boundary at a time.  A surface
 # also needs which cells touch which, so its set must be one `adjacency` can
-# answer about: a single level, positions doubling as data indices.
+# answer about: a single level, cell indices doubling as data indices.
 
 """
     CellRegion(region, source, cells)
 
 A set of DGGS cells whose adjacency can be read.
 
-  * `region` — what `DiscreteGlobalGrids.adjacency` is asked about; its positions
+  * `region` — what `DiscreteGlobalGrids.adjacency` is asked about; its indices
     `1:length(region)` index a colour vector.
   * `source` — what `cell_centroid` is asked of.
-  * `cells` — `cells[p]` is the cell at position `p`.
+  * `cells` — `cells[p]` is the cell at index `p`.
 
 Build one with [`cellregion`](@ref) rather than by hand.
 """

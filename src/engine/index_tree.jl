@@ -1,17 +1,17 @@
 # Eager fallback tree for grids without a hierarchy. It sorts tight cell caps by
 # Morton key and builds a 4-ary tree with stored extents. Leaf indices remain
-# grid positions.
+# grid indices.
 
 # Cells per leaf block. Small enough that a leaf's cells are genuinely close
 # together, large enough that the per-node overhead of the traversal is
 # amortised — the same trade `QUERY_BUCKET_SIZE` makes for the cursor.
-const POSITION_TREE_LEAF_SIZE = 16
-const POSITION_TREE_ARITY = 4
+const INDEX_TREE_LEAF_SIZE = 16
+const INDEX_TREE_ARITY = 4
 
 """
-    PositionTree(grid)
+    IndexTree(grid)
 
-A spatial tree over grid positions, built from cell caps in `O(ncells)` time and
+A spatial tree over grid indices, built from cell caps in `O(ncells)` time and
 memory. [`treeify`](@ref) uses it only for grids without a hierarchy.
 
 Its extents nest — every node's cap is a merge of its children's — because the
@@ -20,9 +20,9 @@ property of this tree, not of extents generally; a system's
 [`node_extent`](@ref) hierarchy covers descendant geometry down to `maxlevel`
 and its caps do not nest.
 """
-struct PositionTree{G<:AbstractGrid}
+struct IndexTree{G<:AbstractGrid}
     grid::G
-    order::Vector{Int}              # grid positions, in tree order
+    order::Vector{Int}              # grid indices, in tree order
     caps::Vector{Cap}               # cap of `order[k]`
     node_first::Vector{Int}         # node -> first index into `order`
     node_last::Vector{Int}
@@ -31,17 +31,17 @@ struct PositionTree{G<:AbstractGrid}
 end
 
 """
-    PositionTreeNode(tree, index)
+    IndexTreeNode(tree, index)
 
-One node of a [`PositionTree`](@ref) — the `SpatialTreeInterface` cursor over
-it. `PositionTreeNode(tree, 1)` is the root, which is what `treeify` returns.
+One node of a [`IndexTree`](@ref) — the `SpatialTreeInterface` cursor over
+it. `IndexTreeNode(tree, 1)` is the root, which is what `treeify` returns.
 """
-struct PositionTreeNode{G<:AbstractGrid}
-    tree::PositionTree{G}
+struct IndexTreeNode{G<:AbstractGrid}
+    tree::IndexTree{G}
     index::Int
 end
 
-function PositionTree(grid::AbstractGrid)
+function IndexTree(grid::AbstractGrid)
     n = ncells(grid)
     caps = Vector{Cap}(undef, n)
     keys = Vector{UInt64}(undef, n)
@@ -51,25 +51,25 @@ function PositionTree(grid::AbstractGrid)
         keys[i] = _morton_key(cap.point)
     end
     order = sortperm(keys)
-    tree = PositionTree{typeof(grid)}(grid, order, caps[order],
+    tree = IndexTree{typeof(grid)}(grid, order, caps[order],
         Int[], Int[], Vector{Int}[], Cap[])
     _build_node!(tree, 1, n)
     return tree
 end
 
 # Depth-first recursion records children by node index.
-function _build_node!(tree::PositionTree, lo::Int, hi::Int)
+function _build_node!(tree::IndexTree, lo::Int, hi::Int)
     index = length(tree.node_first) + 1
     push!(tree.node_first, lo)
     push!(tree.node_last, hi)
     push!(tree.node_children, Int[])
     push!(tree.node_cap, full_sphere_cap())
     count = hi - lo + 1
-    if count <= POSITION_TREE_LEAF_SIZE
+    if count <= INDEX_TREE_LEAF_SIZE
         tree.node_cap[index] = _merge_range(tree.caps, lo, hi)
         return index
     end
-    per = cld(count, POSITION_TREE_ARITY)
+    per = cld(count, INDEX_TREE_ARITY)
     start = lo
     cap = nothing
     while start <= hi
@@ -95,7 +95,7 @@ end
 
 # A Morton key on the cap centre's lon/lat, 16 bits per axis. Only the ordering
 # matters: contiguous runs of the sorted keys are spatially local, which is what
-# makes a block-split tree prune at all on a grid whose own position order is
+# makes a block-split tree prune at all on a grid whose own index order is
 # arbitrary.
 function _morton_key(p)
     lon, lat = lonlat(p)
@@ -109,32 +109,32 @@ function _morton_key(p)
     return key
 end
 
-Base.show(io::IO, tree::PositionTree) =
-    print(io, "PositionTree(", typeof(tree.grid).name.name, ", ncells=",
+Base.show(io::IO, tree::IndexTree) =
+    print(io, "IndexTree(", typeof(tree.grid).name.name, ", ncells=",
         length(tree.order), ", nodes=", length(tree.node_first), ")")
 
-Base.show(io::IO, node::PositionTreeNode) =
-    print(io, "PositionTreeNode(node=", node.index, ", ncells=",
+Base.show(io::IO, node::IndexTreeNode) =
+    print(io, "IndexTreeNode(node=", node.index, ", ncells=",
         node.tree.node_last[node.index] - node.tree.node_first[node.index] + 1, ")")
 
 # --------------------------------------------------------------------------
 # SpatialTreeInterface
 # --------------------------------------------------------------------------
 
-STI.isspatialtree(::Type{<:PositionTreeNode}) = true
+STI.isspatialtree(::Type{<:IndexTreeNode}) = true
 
 # Extents are stored, so there is nothing for the dual search to cache.
-STI.node_extent_is_expensive(::Type{<:PositionTreeNode}) = false
+STI.node_extent_is_expensive(::Type{<:IndexTreeNode}) = false
 
-STI.isleaf(node::PositionTreeNode) = isempty(node.tree.node_children[node.index])
-STI.nchild(node::PositionTreeNode) = length(node.tree.node_children[node.index])
-STI.getchild(node::PositionTreeNode) =
-    (PositionTreeNode(node.tree, i) for i in node.tree.node_children[node.index])
-STI.getchild(node::PositionTreeNode, i::Int) =
-    PositionTreeNode(node.tree, node.tree.node_children[node.index][i])
-STI.node_extent(node::PositionTreeNode) = node.tree.node_cap[node.index]
+STI.isleaf(node::IndexTreeNode) = isempty(node.tree.node_children[node.index])
+STI.nchild(node::IndexTreeNode) = length(node.tree.node_children[node.index])
+STI.getchild(node::IndexTreeNode) =
+    (IndexTreeNode(node.tree, i) for i in node.tree.node_children[node.index])
+STI.getchild(node::IndexTreeNode, i::Int) =
+    IndexTreeNode(node.tree, node.tree.node_children[node.index][i])
+STI.node_extent(node::IndexTreeNode) = node.tree.node_cap[node.index]
 
-function STI.child_indices_extents(node::PositionTreeNode)
+function STI.child_indices_extents(node::IndexTreeNode)
     STI.isleaf(node) ||
         throw(ArgumentError("child_indices_extents is only valid for leaf nodes"))
     tree = node.tree
@@ -146,17 +146,17 @@ end
 # ConservativeRegridding.Trees
 # --------------------------------------------------------------------------
 
-GOCore.best_manifold(node::PositionTreeNode) = GOCore.best_manifold(node.tree.grid)
-GOCore.best_manifold(tree::PositionTree) = GOCore.best_manifold(tree.grid)
+GOCore.best_manifold(node::IndexTreeNode) = GOCore.best_manifold(node.tree.grid)
+GOCore.best_manifold(tree::IndexTree) = GOCore.best_manifold(tree.grid)
 
-# Leaf indices are grid positions here, at every node — see the file header.
-Trees.ncells(node::PositionTreeNode) = ncells(node.tree.grid)
-Trees.getcell(node::PositionTreeNode, i::Int) = getcell(node.tree.grid, i)
-Trees.getcell(node::PositionTreeNode) = getcell(node.tree.grid)
+# Leaf indices are grid indices here, at every node — see the file header.
+Trees.ncells(node::IndexTreeNode) = ncells(node.tree.grid)
+Trees.getcell(node::IndexTreeNode, i::Int) = getcell(node.tree.grid, i)
+Trees.getcell(node::IndexTreeNode) = getcell(node.tree.grid)
 
 # `Trees.ncells` answers for the whole grid, so the frontier's default estimate
 # would be wrong here; the node's stored leaf window is exact.
-Trees.split_weight(node::PositionTreeNode) =
+Trees.split_weight(node::IndexTreeNode) =
     node.tree.node_last[node.index] - node.tree.node_first[node.index] + 1
 
 # --------------------------------------------------------------------------
@@ -169,18 +169,18 @@ Trees.split_weight(node::PositionTreeNode) =
 
 Return a spatial tree for any [`AbstractGrid`](@ref). Hierarchical grids receive
 an `O(1)` [`HierarchicalGridCursor`](@ref); other grids receive an `O(ncells)`
-[`PositionTree`](@ref). The manifold overload supports callers that pass the
+[`IndexTree`](@ref). The manifold overload supports callers that pass the
 grid's unit-sphere manifold.
 """
 treeify(grid::AbstractGrid) = treeify(GOCore.best_manifold(grid), grid)
 treeify(::GOCore.Manifold, grid::AbstractGrid) = _grid_tree(grid)
 
 _grid_tree(grid::AbstractGrid) = system(grid) === nothing ?
-                                 PositionTreeNode(PositionTree(grid), 1) :
+                                 IndexTreeNode(IndexTree(grid), 1) :
                                  HierarchicalGridCursor(grid)
 
 # Idempotent on the trees themselves, as `Trees.treeify` is for its own cursors.
 treeify(::GOCore.Manifold, cursor::HierarchicalGridCursor) = cursor
-treeify(::GOCore.Manifold, node::PositionTreeNode) = node
+treeify(::GOCore.Manifold, node::IndexTreeNode) = node
 treeify(cursor::HierarchicalGridCursor) = cursor
-treeify(node::PositionTreeNode) = node
+treeify(node::IndexTreeNode) = node

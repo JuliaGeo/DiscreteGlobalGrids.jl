@@ -1,5 +1,5 @@
 # The ancestor-subzone layout's arithmetic and vocabulary, with no store in
-# sight: `src/io/subzones.jl` sees cells, positions and attribute dictionaries
+# sight: `src/io/subzones.jl` sees cells, indices and attribute dictionaries
 # and nothing else, so this suite needs neither Zarr nor a temporary directory.
 # What a real store does with all of it is `subzone_store.jl`.
 #
@@ -15,8 +15,8 @@ using Test
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: IGeo7System, HEALPixSystem, A5System, Z7Cell,
     CellLookup, CellVector, DGGSFormatError, SubzoneLayout, cellindex, children,
-    columncell, columnindex, columnlength, columnpositions, descendants,
-    descendant_range, issubzonestore, levelgrid, ncells, positionindex,
+    columncell, columnindex, columnlength, columnindices, descendants,
+    descendant_range, issubzonestore, levelgrid, ncells, columnrow,
     rootcells, subzone_attrs, subzone_capacity, subzone_cellvector,
     subzone_columns, subzone_depth, subzone_layout, subzone_runs, subzoneindex
 
@@ -70,7 +70,7 @@ end
         c = columncell(LAYOUT, i)
         @test DGG.level(c) == ANCESTOR
         @test columnindex(LAYOUT, c) == i
-        @test columnpositions(LAYOUT, i) == descendant_range(SYS, c, LEVEL)
+        @test columnindices(LAYOUT, i) == descendant_range(SYS, c, LEVEL)
         @test columnlength(LAYOUT, i) == length(collect(descendants(SYS, c, LEVEL)))
     end
     # Every column together is the whole level, exactly once.
@@ -94,8 +94,8 @@ end
     for p in (1, 2, 41, 42, 1000, ncells(GRID))
         c = cellindex(GRID, p)
         col, row = subzoneindex(LAYOUT, c)
-        @test (col, row) == positionindex(LAYOUT, p)
-        r = columnpositions(LAYOUT, col)
+        @test (col, row) == columnrow(LAYOUT, p)
+        r = columnindices(LAYOUT, col)
         @test 1 <= row <= length(r)
         # The inverse: row `row` of column `col` is this cell and no other.
         @test cellindex(GRID, first(r) + row - 1) == c
@@ -116,7 +116,7 @@ end
     @test reduce(vcat, [collect(r.axis) for r in runs]) == collect(1:length(cv))
     # And the cells really are the ones the runs claim.
     for r in runs
-        window = columnpositions(LAYOUT, r.column)
+        window = columnindices(LAYOUT, r.column)
         @test collect(cv[r.axis]) == [cellindex(GRID, p) for p in window]
     end
 
@@ -136,9 +136,9 @@ end
 
 @testset "a partly covered column is refused" begin
     # One cell short of a complete subtree, at both ends and in the middle.
-    full = collect(columnpositions(LAYOUT, 5))
-    for positions in (full[2:end], full[1:end-1], [full[1:10]; full[12:end]])
-        cells = [cellindex(GRID, p) for p in positions]
+    full = collect(columnindices(LAYOUT, 5))
+    for indices in (full[2:end], full[1:end-1], [full[1:10]; full[12:end]])
+        cells = [cellindex(GRID, p) for p in indices]
         err = try
             subzone_runs(LAYOUT, cells)
             nothing
@@ -153,7 +153,7 @@ end
     # A pentagon column is complete at p(d) cells and NOT at 7^d: the padding is
     # not part of the axis.
     pentcol = columnindex(LAYOUT, first(pentagons(SYS, ANCESTOR)))
-    cells = [cellindex(GRID, p) for p in columnpositions(LAYOUT, pentcol)]
+    cells = [cellindex(GRID, p) for p in columnindices(LAYOUT, pentcol)]
     @test length(cells) == pent(2)
     @test length(subzone_runs(LAYOUT, cells)) == 1
 end

@@ -17,8 +17,8 @@ import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: AbstractCellIndex, AbstractHierarchicalGridSystem,
     AbstractCellLookup, CellLookup, Cells, DGGSFormatError, SubzoneLayout,
     ANCESTOR_COORDINATE, ANCESTOR_DIMENSION, SUBZONE_DIMENSION,
-    cellindex, columnindex, columnlength, columnpositions, level, ncells,
-    positionindex, rawid, subzone_attrs, subzone_cellvector, subzone_columns,
+    cellindex, columnindex, columnlength, columnindices, level, ncells,
+    columnrow, rawid, subzone_attrs, subzone_cellvector, subzone_columns,
     subzone_layout, subzone_runs, system, with_store_context
 import ..DiscreteGlobalGridsZarrExt
 using ..DiscreteGlobalGridsZarrExt: ARRAY_DIMENSIONS, selectvars, storeidentifier
@@ -79,7 +79,7 @@ reads back as `fill_value`.
     which needs a floating-point layer; a layer of another element type has to
     be given one.
   - `ancestor_coordinate` writes the level-`ancestor_level` ids as a
-    one-dimensional coordinate array. The column axis is IMPLICIT — position is
+    one-dimensional coordinate array. The column axis is IMPLICIT — the index is
     the ancestor — and this reader never consults it; it is there so that a
     generic xdggs reader sees the ancestor axis for the cell axis it is.
   - `attrs` are the producer's own group attributes, which the layout's are
@@ -361,7 +361,7 @@ _knownvar(store::SubzoneStore, name) = haskey(store.arrays, name) ? name :
                                                            join(keys(store), ", ") * "."))
 
 # The cube's cell dimension and its LOOKUP — not its ids. A cell lookup keeps
-# position windows, and `subzone_runs` walks those, so a land-only cube of tens
+# index windows, and `subzone_runs` walks those, so a land-only cube of tens
 # of millions of cells is planned without one id being materialized. This is
 # deliberately not the one-dimensional writer's `_cellaxis`, which reads the
 # whole axis out as raw ids on its way to a dense coordinate.
@@ -451,9 +451,9 @@ _attrs(md::DD.Metadata) = _attrs(DD.val(md))
 # Reading: which columns the view spans
 # ===========================================================================
 
-# The cube position -> (column, row) map. `LevelColumns` is the whole store,
-# needing no tables: a position is the level grid's own, so column and row are
-# one `positionindex` call. `SelectedColumns` is a subset, whose positions are
+# The cube index -> (column, row) map. `LevelColumns` is the whole store,
+# needing no tables: an index is the level grid's own global one, so column and row are
+# one `columnrow` call. `SelectedColumns` is a subset, whose local indices are
 # the selected subtrees concatenated, with offsets for the binary search.
 struct LevelColumns end
 
@@ -475,11 +475,11 @@ end
 axislength(::LevelColumns, layout) = Int(ncells(layout.grid))
 axislength(s::SelectedColumns, layout) = s.offsets[end]
 
-# The column one view position falls in, its row inside that column, and the
-# last view position that lands in the same column — which is what turns a
+# The column one view index falls in, its row inside that column, and the
+# last view index that lands in the same column — which is what turns a
 # read of a range into one read per column touched.
 @inline function locate(::LevelColumns, layout, p::Int)
-    i, row = positionindex(layout, p)
+    i, row = columnrow(layout, p)
     return i, row, p + (columnlength(layout, i) - row)
 end
 
@@ -501,7 +501,7 @@ chunksizes(s::SelectedColumns, layout) = diff(s.offsets)
     SubzoneCellArray(z, layout, index)
 
 One layer of an ancestor-subzone store as the ONE-dimensional cell-axis vector
-it stands for: position `k` is the `k`th cell of the view's cell axis, and the
+it stands for: index `k` is the `k`th cell of the view's cell axis, and the
 two-dimensional store behind it is not visible.
 
 A `DiskArrays.AbstractDiskArray` whose chunks are the store's own columns,

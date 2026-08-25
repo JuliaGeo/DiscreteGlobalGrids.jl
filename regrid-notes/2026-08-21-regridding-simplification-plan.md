@@ -248,8 +248,8 @@ B1 -> B2 -----------------+          `-> B5
 C1 -> G1 -> G2 -> G3 -> G4 -> E1 -> E2                   Phases 2-4
 E2 -> W1 -> W2                                             Phase 5
 W2 -> O1 -> O2                                             Phase 6
-O2 -> P1                                                   Phase 7
-P1 -> L1 -> L2                                             Phase 8
+O2 -> D1                                                   Phase 7
+D1 -> L1 -> L2                                             Phase 8
 E2 -> S1 -> S2 -> S3                                       Phase 9
 ```
 
@@ -957,7 +957,10 @@ generic remains, and API defaults occur once.
 
 ## Phase 7 — prepared destination geometry
 
-### Task P1 — replace the destination cache wrapper stack
+This phase's card is `D1`; `P1` in this plan always names the barycentric
+plan's card.
+
+### Task D1 — replace the destination cache wrapper stack
 
 **Prerequisite:** O2.
 **Owns:** `TileCells`, `CachedCellTree`, destination `CellMemo`, block
@@ -993,7 +996,7 @@ no production regression.
 
 ### Task L1 — give `SourceHold` one entry dictionary
 
-**Prerequisite:** P1.
+**Prerequisite:** D1.
 **Owns:** source-hold entries, eviction, residency statistics, and lazy tests.
 
 Actions:

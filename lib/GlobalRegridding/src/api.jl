@@ -242,6 +242,11 @@ end
 Build one [`WeightBlock`](@ref) over all source and destination cells. The build
 path is [`weightblock`](@ref)'s, so the eager domain and a chunk pair are built
 the same way.
+
+The whole domain is one block, and prepares no destination geometry
+([`preparedestination`](@ref)): with no second block to share it with, a
+task-local memo of the cells a candidate pairing repeats is cheaper than a slot
+for every destination cell.
 """
 wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
     src_space::RegridSpace) =

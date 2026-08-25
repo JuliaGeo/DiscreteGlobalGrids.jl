@@ -272,7 +272,7 @@ t6_owners(dst, tile, src) =
 
 # One tile's weights, built straight rather than through a plan's storage.
 t5_weights(method, dst, tile, src) =
-    GR.tileweights(method, GR.TileCells(dst, tile), tile, src,
+    GR.tileweights(method, dst, tile, src,
         GR.sampler(method, src))
 
 """

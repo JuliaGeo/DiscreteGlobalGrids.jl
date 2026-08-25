@@ -447,7 +447,7 @@ function main()
     # per read, not one per tile.
     println("\nBarycentricPoint, fused tile route")
     tilebuild = measure("tile weights, one pass", function ()
-        tw = GR.tileweights(BarycentricPoint(), GR.TileCells(f.dst, tile), tile,
+        tw = GR.tileweights(BarycentricPoint(), f.dst, tile,
             f.src, GR.sampler(BarycentricPoint(), f.src))
         return sum(b -> count(!iszero, b.weights), tw.blocks; init = 0)
     end)
@@ -498,7 +498,7 @@ function main()
     end)
 
     ntile = measure("nearest tile weights, one pass", function ()
-        tw = GR.tileweights(NearestCell(), GR.TileCells(f.dst, tile), tile,
+        tw = GR.tileweights(NearestCell(), f.dst, tile,
             f.src, GR.sampler(NearestCell(), f.src))
         return sum(b -> count(!iszero, b.weights), tw.blocks; init = 0)
     end)
@@ -556,7 +556,7 @@ function main()
     # Point locations, counted rather than asserted: one build of the same tile
     # with the same stencils, through a sampler that records every query.
     placed = Threads.Atomic{Int}(0)
-    counted = GR.tileweights(BarycentricPoint(), GR.TileCells(f.dst, tile), tile,
+    counted = GR.tileweights(BarycentricPoint(), f.dst, tile,
         f.src, countingsampler(BarycentricPoint(), f.src, placed))
     counted.sourcechunks == tbytes.manifest ||
         error("the counted build and the plan's tile disagree on the manifest")
@@ -566,7 +566,7 @@ function main()
     # each build was asked to place, the tile route through a sampler that
     # records every query — and one instrumented read of a clean plan on each.
     nplaced = Threads.Atomic{Int}(0)
-    ncounted = GR.tileweights(NearestCell(), GR.TileCells(f.dst, tile), tile,
+    ncounted = GR.tileweights(NearestCell(), f.dst, tile,
         f.src, countingsampler(NearestCell(), f.src, nplaced))
     countpair = PairNearest()
     countpairplan = newpairnearestplan(f, countpair)

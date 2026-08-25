@@ -77,16 +77,15 @@ end
     @test threaded_dst === retained
     @test threaded_src === retained
 
-    # A tile may retain its restricted tree and cached polygons across block
-    # tasks, so that stored tree also keeps the safe chart.
-    tile = GR.TileCells(space, 1:ncells(space))
-    cached = GR.subtree(tile, 1:ncells(space))
-    @test cached isa GR.CachedCellTree
-    @test cached.tree.grid.native_to_unit_sphere === space.native_to_unit_sphere
-    prepared_cached = GR._task_prepared_raster_tree(cached)
-    @test prepared_cached !== cached
-    @test prepared_cached.tree.grid.native_to_unit_sphere.transformation === pair.forward
-    @test tile.tree.grid.native_to_unit_sphere === space.native_to_unit_sphere
+    # A prepared destination retains its restricted tree across block tasks, so
+    # that stored tree keeps the safe chart, and a serial build still prepares
+    # a private cursor from it.
+    cache = GR.DestinationCache(space, 1:ncells(space))
+    @test cache.tree.grid.native_to_unit_sphere === space.native_to_unit_sphere
+    prepared_tile = GR._task_prepared_raster_tree(cache.tree)
+    @test prepared_tile !== cache.tree
+    @test prepared_tile.grid.native_to_unit_sphere.transformation === pair.forward
+    @test cache.tree.grid.native_to_unit_sphere === space.native_to_unit_sphere
 
     to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
     xaxis, yaxis = GR.chartaxes(space)

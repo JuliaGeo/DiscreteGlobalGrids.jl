@@ -321,7 +321,7 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
         @test t7_sources(plan, 1) == srcchunks
         wave = GR.CachedBlock[]
         @test_throws Exception GR._fillwave!(wave, plan, 1, srcchunks, 1, j,
-            dinds, GR.TileCells(plan.dst_space, dinds))
+            dinds, dinds)
         @test method.finished[] == j - 1
     end
 
@@ -1120,8 +1120,8 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
         @test all(Int(GR.chunkat(src, cellat(src, cellcentroid(dst, i)))) == owner
                   for i in 1:ndst)
 
-        weights = GR.tileweights(BarycentricPoint(), GR.TileCells(dst, 1:ndst),
-            1:ndst, src, GR.sampler(BarycentricPoint(), src))
+        weights = GR.tileweights(BarycentricPoint(), dst, 1:ndst, src,
+            GR.sampler(BarycentricPoint(), src))
         @test length(weights.sourcechunks) == 4
         @test owner in weights.sourcechunks
 

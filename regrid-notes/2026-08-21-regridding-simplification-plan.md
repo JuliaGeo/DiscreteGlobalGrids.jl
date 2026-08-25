@@ -1050,15 +1050,21 @@ construction, cache tests, and Conservative benchmark.
 Actions:
 
 - Introduce one private prepared destination tile holding its index set and its
-  chunk-local map, one restricted tree, and optional prebuilt polygons.
+  chunk-local map, one restricted tree, and a polygon slot per tile row.
+- Fill those slots on demand from the candidate pairs a block is about to
+  measure, rather than building the tile's polygons up front: a destination
+  cell no source overlaps is then never synthesized.
 - Share it across all source blocks for the executor tile.
 - Let `BlockAreaOperator` (`lib/GlobalRegridding/src/conservative.jl:294`)
   obtain destination polygons directly from it.
 - Remove `TileCells <: RegridSpace` (`conservative.jl:126`) and its forwarding
   methods, `CachedCellTree` (`:209`), and destination `CellMemo` (`:258`) when
   polygons are prepared.
-- Retain a task-local memo for unprepared source geometry and oversized
-  destinations.
+- Retain the task-local memo for source geometry, and for every build that
+  prepares nothing: a destination whose cells are cheap to synthesize, a tile
+  the budget cannot hold the polygons of, and a build of a single block, the
+  eager whole domain included. Preparing is worth its memory only where more
+  than one block reads it, which the benchmark arms measure.
 - Remove stale raster/DGG extent caches only when their individual benchmark
   gate earns deletion; do not merge polygon and extent caches by name.
 

@@ -107,7 +107,7 @@ public outputsampling, destinationdims, dimsource
 # Qualified `RegridSpace` extension hooks. Their declarations and contracts are
 # grouped by responsibility in spaces.jl; they stay unexported to avoid generic
 # names in user namespaces.
-public subtree
+public subtree, expensivecellgeometry
 public chunkextents, chunkextent, chunkindex, candidatechunks!
 public chunkranges
 public chartaxes, chartcoords, chartlocalindex, chartperiod, chartspacing

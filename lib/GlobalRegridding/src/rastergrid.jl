@@ -482,6 +482,10 @@ function getcell(space::RasterGrid, i::Int)
     return GI.Polygon([GI.LinearRing(ring)])
 end
 
+# A raster cell is four chart evaluations off two coordinate axes, which costs
+# about as much as reading a stored polygon back and allocates no more.
+expensivecellgeometry(::RasterGrid) = false
+
 """
     _cellcorners(space::RasterGrid, ix, iy) -> NTuple{4,UnitSphericalPoint}
 

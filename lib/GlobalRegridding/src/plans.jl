@@ -793,13 +793,14 @@ function _plandependencies(dependencies, refine, narrow,
 end
 
 """
-    blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds[, dst_space]) -> CachedBlock
+    blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds[, destination]) -> CachedBlock
     blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) -> CachedBlock
 
 Return the cached block destination tile `key[1]` takes from source chunk
 `key[2]`, building what it comes from on first use. `dinds` lists the tile's
-destination cells, and a shared `dst_space` can reuse tile geometry across
-several pairs.
+destination cells, and a shared `destination` — what
+[`preparedestination`](@ref) answered for the tile — lets several pairs reuse
+one preparation of its geometry.
 
 What is built, cached and locked is the method's build unit. An area method, and
 a point method with no [`sampler`](@ref), builds and caches the one pair. A point
@@ -809,19 +810,19 @@ it — and answers `key[2]` from it, or with an empty block when no stencil in t
 tile names that chunk.
 """
 blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds) =
-    blockfor(plan, key, dinds, TileCells(plan.dst_space, dinds))
+    blockfor(plan, key, dinds, dinds)
 
-blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, dst_space::RegridSpace) =
-    _blockfor(tilesampler(plan), plan, key, dinds, dst_space)
+blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, destination) =
+    _blockfor(tilesampler(plan), plan, key, dinds, destination)
 
-_blockfor(::Nothing, plan::ChunkedPlan, key::Tuple{Int,Int}, dinds,
-    dst_space::RegridSpace) =
+_blockfor(::Nothing, plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, destination) =
     getblock!(plan.storage, key,
-        () -> buildblock(plan, dinds, ownedindices(plan.src_space, key[2]), dst_space))
+        () -> buildblock(plan, dinds, ownedindices(plan.src_space, key[2]), destination))
 
-function _blockfor(smp, plan::ChunkedPlan, key::Tuple{Int,Int}, dinds,
-    dst_space::RegridSpace)
-    entry = tileblock(tilefor(plan, key[1], dinds, dst_space, smp), key[2])
+# A tile route reads destination sample sites, not cell geometry, so it takes
+# the tile's cells and never the preparation of their polygons.
+function _blockfor(smp, plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, destination)
+    entry = tileblock(tilefor(plan, key[1], dinds, smp), key[2])
     entry === nothing || return entry
     return _emptyblock(length(dinds), length(ownedindices(plan.src_space, key[2])))
 end
@@ -831,7 +832,7 @@ blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
         ownedindices(plan.dst_space, Int(dstchunk)))
 
 """
-    tilefor(plan::ChunkedPlan, tile::Integer, dinds, dst_space, smp) -> CachedTile
+    tilefor(plan::ChunkedPlan, tile::Integer, dinds, smp) -> CachedTile
 
 Return destination tile `tile`'s cached [`TileWeights`](@ref), building them on
 first use from the sampler `smp`.
@@ -840,9 +841,9 @@ The tile is the build, cache and locking unit: concurrent requests for one tile
 wait on one build rather than starting a second, and the whole tile, manifest
 included, counts against the plan's [`weightbudget`](@ref).
 """
-tilefor(plan::ChunkedPlan, tile::Integer, dinds, dst_space::RegridSpace, smp) =
+tilefor(plan::ChunkedPlan, tile::Integer, dinds, smp) =
     gettile!(plan.storage, Int(tile),
-        () -> tileweights(plan.method, dst_space, dinds, plan.src_space, smp))
+        () -> tileweights(plan.method, plan.dst_space, dinds, plan.src_space, smp))
 
 # A source chunk no stencil in the tile names contributes nothing. This block is
 # not cached: it holds no weights to keep, and nothing reads it twice.
@@ -850,7 +851,7 @@ _emptyblock(nd::Int, ns::Int) =
     CachedBlock(WeightBlock(sparse(Int[], Int[], Float64[], nd, ns), nothing))
 
 """
-    buildblock(plan::ChunkedPlan, dinds, sinds[, dst_space]) -> WeightBlock
+    buildblock(plan::ChunkedPlan, dinds, sinds[, destination]) -> WeightBlock
     buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) -> WeightBlock
 
 Build one chunk pair's weights without consulting storage.
@@ -860,10 +861,10 @@ build a point method with a [`sampler`](@ref) uses belongs to
 [`blockfor`](@ref), because a tile is worth building only where it is kept.
 """
 buildblock(plan::ChunkedPlan, dinds, sinds) =
-    buildblock(plan, dinds, sinds, TileCells(plan.dst_space, dinds))
+    buildblock(plan, dinds, sinds, dinds)
 
-buildblock(plan::ChunkedPlan, dinds, sinds, dst_space::RegridSpace) =
-    weightblock(plan.method, dst_space, dinds, plan.src_space, sinds)
+buildblock(plan::ChunkedPlan, dinds, sinds, destination) =
+    weightblock(plan.method, plan.dst_space, destination, plan.src_space, sinds)
 
 buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
     buildblock(plan, ownedindices(plan.dst_space, Int(dstchunk)),
@@ -876,6 +877,10 @@ Build the weights destination cells `dst_inds` take from source cells
 `src_inds`. Every builder, eager or chunked, goes through here, and dispatches
 on [`outputsampling`](@ref), so a sampling may specialise the assembly and no
 concrete method type takes part.
+
+`dst_inds` names the destination cells, either as their index set or as the
+geometry [`preparedestination`](@ref) prepared for them; nothing here reads it
+either way.
 
 Every sampling assembles one destination/source pair through
 [`pairblock`](@ref), whose generic route fills one [`WeightCOO`](@ref) through

@@ -42,9 +42,49 @@ chunkranges(space::RasterGrid, chunk::Integer, ::NTuple{2,Int}) =
 
 # Destination tiling
 
-# Reserve one eighth of the budget for per-cell destination buffers.
+# Reserve one eighth of the budget for the per-cell state of one destination
+# tile: the executor's accumulators, and whatever a build prepares per cell.
 const DEST_BUDGET_SHARE = 8
 const DEST_BYTES_PER_CELL = 40
+
+"""
+    destcellbudget(budget::Integer) -> Int
+
+The bytes one destination tile's per-cell state may hold.
+"""
+destcellbudget(budget::Integer) = max(1, Int(budget) ÷ DEST_BUDGET_SHARE)
+
+"""
+    destcellbytes(method, dst_space, ndst::Int) -> Int
+
+The bytes one destination cell holds while its tile is live: the executor's
+per-cell accumulators, plus one prepared cell polygon and its flag where
+`method` keeps them ([`preparedestination`](@ref)).
+
+One cell is probed, because a space's cells are the same shape.
+"""
+function destcellbytes(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+    ndst::Int)
+    (ndst > 0 && preparesdestination(method, dst_space)) ||
+        return DEST_BYTES_PER_CELL
+    return DEST_BYTES_PER_CELL + Int(Base.summarysize(getcell(dst_space, 1))) + 1
+end
+
+"""
+    destcellsfit(method, dst_space, ndst::Integer, budget::Integer) -> Bool
+
+Whether a tile of `ndst` destination cells holds its per-cell state, prepared
+geometry included, inside [`destcellbudget`](@ref).
+
+The tiling sizes tiles by the executor's own per-cell cost alone, because a
+smaller tile costs one more restricted tree and one more read of every source
+chunk it shares — both larger than the synthesis preparing saves. Preparing
+therefore takes what is left of the share, and this is what refuses it: no
+tile's prepared geometry is charged to a budget that does not hold it.
+"""
+destcellsfit(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+    ndst::Integer, budget::Integer) =
+    Int(ndst) * destcellbytes(method, dst_space, Int(ndst)) <= destcellbudget(budget)
 
 """
     DestTiling(runs, chunksof, spacetiled)
@@ -83,7 +123,7 @@ end
 
 # Derived tiles honor both the budget and the destination's chunk granularity.
 function _defaulttilesizes(ndst::Int, nchunk::Int, budget::Int)
-    frombudget = max(1, fld(budget, DEST_BUDGET_SHARE * DEST_BYTES_PER_CELL))
+    frombudget = max(1, fld(destcellbudget(budget), DEST_BYTES_PER_CELL))
     fromchunks = cld(ndst, max(nchunk, 1))
     return [clamp(min(frombudget, fromchunks), 1, ndst)]
 end
@@ -462,13 +502,26 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         fill!(num, 0.0)
         fill!(cover, 0.0)
         fill!(total, 0.0)
-        # Share tile geometry across blocks built for this tile.
-        dstcells = TileCells(plan.dst_space, dinds)
         # On the tile route the weights come before the selection, because the
         # chunks that carry one are exactly the chunks read.
-        tile = smp === nothing ? nothing : tilefor(plan, t, dinds, dstcells, smp)
+        tile = smp === nothing ? nothing : tilefor(plan, t, dinds, smp)
         _connectedsource!(srcchunks, A, t, tile)
         _sourceranges!(srcranges, A, srcchunks)
+        # Prepare the tile's destination geometry once, where more than one
+        # block reads it. A single block is served better by its own task-local
+        # memo, whose working set stays in cache where a tile-wide slot array
+        # does not.
+        #
+        # The answer crosses an inference barrier deliberately. Prepared and
+        # unprepared destinations reach two whole assemblies, and a plan takes
+        # the same one for every tile it has; inferring the choice would
+        # compile both into every run. One dynamic dispatch per wave compiles
+        # the one the run takes, and `_fillwave!` specializes on what it is
+        # handed, so the build below is concrete again.
+        destination = Base.inferencebarrier(
+            (tile === nothing && length(srcchunks) > 1) ?
+            preparedestination(plan.method, plan.dst_space, dinds, plan.budget) :
+            dinds)
         keep = _canhold(hold, srcranges, groups, sizeof(eltype(hold.scratch)))
         w = tile === nothing ?
             _wavesize(plan, nd, srcchunks, srcranges, A.graph, A.tiling.chunksof[t]) : 1
@@ -476,7 +529,7 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         while i <= length(srcchunks)
             j = min(i + w - 1, length(srcchunks))
             if tile === nothing
-                _fillwave!(wave, plan, t, srcchunks, i, j, dinds, dstcells)
+                _fillwave!(wave, plan, t, srcchunks, i, j, dinds, destination)
             else
                 _tilewave!(wave, tile, srcchunks, i, j)
             end
@@ -612,18 +665,18 @@ end
 
 # Build one wave concurrently and preserve chunk order in `wave`.
 function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
-    srcchunks::Vector{Int}, i::Int, j::Int, dinds, dstcells)
+    srcchunks::Vector{Int}, i::Int, j::Int, dinds, destination)
     empty!(wave)
     if i == j
         # No spawn and no declaration: a wave of one leaves the threads to the
         # build itself, which is what `_wavesize` returning one is asking for.
-        push!(wave, blockfor(plan, (t, srcchunks[i]), dinds, dstcells))
+        push!(wave, blockfor(plan, (t, srcchunks[i]), dinds, destination))
         return wave
     end
     tasks = map(i:j) do k
         s = srcchunks[k]
         # Tasks inherit the scope, so nested builds see the wave and stay serial.
-        @with OUTER_PARALLEL => true Threads.@spawn blockfor(plan, (t, s), dinds, dstcells)
+        @with OUTER_PARALLEL => true Threads.@spawn blockfor(plan, (t, s), dinds, destination)
     end
     # Every spawned task is waited for, whatever happens. A bare `fetch` loop
     # abandons the tasks after the first failure: they keep building against a

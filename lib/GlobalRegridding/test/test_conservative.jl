@@ -37,21 +37,43 @@ function getcell(space::DensifiedCellSpace, i::Int)
     return GI.Polygon([GI.LinearRing(ring)])
 end
 
-"A geometry-free space used to pin the destination tile cache threshold."
-struct TileCacheBoundSpace <: RegridSpace
-    n::Int
-    reads::Base.RefValue{Int}
+"""
+    CellCountSpace(space)
+
+Wrap a lon/lat space and count both restricted-tree builds and cell
+syntheses. The tile's tree is rooted at the wrapper and its node extents come
+from cell corners, so the count is exactly what a weight build synthesizes.
+Block builders may run on `Threads.@spawn` tasks, hence the atomic counters.
+"""
+struct CellCountSpace{S<:ToyLonLatSpace} <: RegridSpace
+    space::S
+    cells::Threads.Atomic{Int}
+    builds::Threads.Atomic{Int}
 end
 
-ncells(space::TileCacheBoundSpace) = space.n
-nchunks(::TileCacheBoundSpace) = 1
-ownedindices(space::TileCacheBoundSpace, ::Int) = 1:space.n
-function getcell(space::TileCacheBoundSpace, i::Int)
-    1 <= i <= space.n || throw(BoundsError(space, i))
-    space.reads[] += 1
-    return i
-end
-GR.subtree(space::TileCacheBoundSpace, inds) = space
+CellCountSpace(space::ToyLonLatSpace) =
+    CellCountSpace(space, Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
+
+ncells(cs::CellCountSpace) = ncells(cs.space)
+nchunks(cs::CellCountSpace) = nchunks(cs.space)
+ownedindices(cs::CellCountSpace, chunk::Int) = ownedindices(cs.space, chunk)
+manifold(cs::CellCountSpace) = manifold(cs.space)
+hascellchart(cs::CellCountSpace) = hascellchart(cs.space)
+cellcentroid(cs::CellCountSpace, i::Int) = cellcentroid(cs.space, i)
+cellat(cs::CellCountSpace, p) = cellat(cs.space, p)
+chunkextents(cs::CellCountSpace) = GR.chunkextents(cs.space)
+
+getcell(cs::CellCountSpace, i::Int) =
+    (Threads.atomic_add!(cs.cells, 1); getcell(cs.space, i))
+
+celltree(cs::CellCountSpace) = _countedtree(cs, 1:ncells(cs.space))
+
+GR.subtree(cs::CellCountSpace, inds) =
+    (Threads.atomic_add!(cs.builds, 1); _countedtree(cs, inds))
+
+_countedtree(cs::CellCountSpace, inds) =
+    ToyCapTree(cs, collect(Int, inds),
+        [toy_cap(cellcorners(cs.space, Int(i))) for i in inds])
 
 # Helpers
 
@@ -372,55 +394,221 @@ end
         @test block.denom == zeros(64)
     end
 
-    @testset "one tile's cell geometry, synthesized once" begin
-        # Cached tile geometry matches the wrapped space exactly.
-        space = RasterGrid(DD.DimArray(zeros(12, 6),
+    @testset "a prepared destination changes no weight" begin
+        # Both destination kinds: a raster lattice and a cell space.
+        raster = RasterGrid(DD.DimArray(zeros(12, 6),
             (DD.X(range(-165.0, 165.0; length = 12)),
                 DD.Y(range(-75.0, 75.0; length = 6)))); chunks = ([1:6, 7:12], [1:3, 4:6]))
-        inds = ownedindices(space, 3)
-        tc = GR.TileCells(space, inds)
-        tree = GR.subtree(tc, inds)
-        @test tree isa GR.CachedCellTree
-        @test all(getcell(tree, i) == getcell(space, i) for i in inds)
+        cells = ToyLonLatSpace(12, 6; chunks = (6, 3))
+        for (dst, src) in ((raster, raster),
+            (cells, ToyLonLatSpace(16, 8; chunks = (8, 4))))
+            inds = ownedindices(dst, 3)
+            sinds = ownedindices(src, 2)
+            cache = GR.DestinationCache(dst, inds)
+            prepared = GR.pairblock(Conservative(), dst, cache, src, sinds)
+            plain = GR.pairblock(Conservative(), dst, inds, src, sinds)
+            @test prepared.weights == plain.weights
+            @test prepared.weights.colptr == plain.weights.colptr
+            @test GR.SparseArrays.rowvals(prepared.weights) ==
+                  GR.SparseArrays.rowvals(plain.weights)
+            @test all(GR.SparseArrays.nzrange(prepared.weights, c) ==
+                      GR.SparseArrays.nzrange(plain.weights, c)
+                      for c in axes(prepared.weights, 2))
+            @test all(prepared.weights.nzval .=== plain.weights.nzval)
+            @test all(prepared.denom .=== plain.denom)
+            @test prepared.reference === prepared.denom
 
-        # Indices outside the tile fall through to the wrapped tree.
-        outside = setdiff(1:ncells(space), inds)
-        @test all(getcell(tree, i) == getcell(space, i) for i in outside)
+            # And the generic coordinate-list route, which prepares nothing.
+            reference = generic_pairblock(Conservative(), dst, inds, src, sinds)
+            @test prepared.weights.rowval == reference.weights.rowval
+            @test all(prepared.weights.nzval .=== reference.weights.nzval)
 
-        # Only the exact tile subtree uses cached geometry.
-        @test all(getcell(tc, i) == getcell(space, i) for i in 1:ncells(space))
-        @test !(GR.subtree(tc, ownedindices(space, 1)) isa GR.CachedCellTree)
-
-        # Cached geometry preserves weights bit for bit.
-        other = ownedindices(space, 2)
-        plain = conservative_block(space, inds, space, other)
-        stored = conservative_block(tc, inds, space, other)
-        @test plain.weights.colptr == stored.weights.colptr
-        @test plain.weights.rowval == stored.weights.rowval
-        @test all(plain.weights.nzval .=== stored.weights.nzval)
-        @test all(plain.denom .=== stored.denom)
+            # An empty source keeps the degenerate contract of the index form.
+            empty_prepared = GR.pairblock(Conservative(), dst, cache, src, 1:0)
+            empty_plain = GR.pairblock(Conservative(), dst, inds, src, 1:0)
+            @test empty_prepared.denom == empty_plain.denom
+            @test size(empty_prepared) == size(empty_plain)
+        end
     end
 
-    @testset "the destination tile cell cache is bounded" begin
-        limit = GR._TILE_CELL_CACHE_MAX
+    @testset "a prepared destination is built once and synthesized once" begin
+        # A non-chunk range on a fallback space forces the restricted tree.
+        xd = DD.X(-168.75:22.5:168.75)
+        yd = DD.Y(-78.75:22.5:78.75)
+        src = RasterGrid(DD.DimArray(zeros(16, 8), (xd, yd));
+            chunks = ([1:8, 9:16], [1:4, 5:8]))
+        dst = CellCountSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
+        inds = 5:20
+        # The source's northern half, so the tile holds southern destination
+        # cells neither chunk reaches.
+        s1, s2 = ownedindices(src, 3), ownedindices(src, 4)
 
-        # The documented boundary is inclusive: a tile at the limit is
-        # synthesized once, then shared by later subtree requests.
-        cached_space = TileCacheBoundSpace(limit, Ref(0))
-        cached = GR.TileCells(cached_space, 1:limit)
-        @test GR.subtree(cached, 1:limit) isa GR.CachedCellTree
-        @test GR.subtree(cached, 1:limit) isa GR.CachedCellTree
-        @test cached_space.reads[] == limit
-        @test length(cached.cells) == limit
+        cache = GR.DestinationCache(dst, inds)
+        @test cache.inds === inds
+        @test length(cache.polygons) == length(inds)
+        @test !any(cache.filled)
+        @test dst.builds[] == 1
+        built = dst.cells[]
 
-        # One cell beyond the limit keeps geometry on demand and allocates no
-        # tile-wide cell vector. Repeated access must not revisit initialization.
-        uncached_space = TileCacheBoundSpace(limit + 1, Ref(0))
-        uncached = GR.TileCells(uncached_space, 1:(limit + 1))
-        @test GR.subtree(uncached, 1:(limit + 1)) === uncached_space
-        @test GR.subtree(uncached, 1:(limit + 1)) === uncached_space
-        @test uncached.cells === nothing
-        @test uncached_space.reads[] == 0
+        sh1 = GR.pairblock(Conservative(), dst, cache, src, s1)
+        sh2 = GR.pairblock(Conservative(), dst, cache, src, s2)
+
+        # One restricted tree for the tile, whatever its block count.
+        @test dst.builds[] == 1
+        # One synthesis per prepared row, over both blocks together.
+        @test dst.cells[] - built == count(cache.filled)
+        # Every row a block weighs was prepared.
+        @test all(cache.filled[r] for r in GR.SparseArrays.rowvals(sh1.weights))
+        @test all(cache.filled[r] for r in GR.SparseArrays.rowvals(sh2.weights))
+        # Rows the tile holds but neither source chunk reaches are never
+        # synthesized.
+        @test count(cache.filled) == 12
+        @test !any(cache.filled[1:4])
+
+        # Fresh preparations per block: the unprepared reference.
+        b1 = dst.builds[]
+        fr1 = GR.pairblock(Conservative(), dst, inds, src, s1)
+        fr2 = GR.pairblock(Conservative(), dst, inds, src, s2)
+        @test dst.builds[] - b1 == 2
+
+        for (a, b) in ((sh1, fr1), (sh2, fr2))
+            @test a.weights.colptr == b.weights.colptr
+            @test a.weights.rowval == b.weights.rowval
+            @test all(a.weights.nzval .=== b.weights.nzval)
+            @test all(a.denom .=== b.denom)
+        end
+    end
+
+    @testset "concurrent blocks share one prepared destination" begin
+        xd = DD.X(-168.75:22.5:168.75)
+        yd = DD.Y(-78.75:22.5:78.75)
+        src = RasterGrid(DD.DimArray(zeros(16, 8), (xd, yd));
+            chunks = ([1:8, 9:16], [1:4, 5:8]))
+        dst = CellCountSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
+        inds = 1:32
+        chunkinds = [ownedindices(src, s) for s in 1:nchunks(src)]
+
+        cache = GR.DestinationCache(dst, inds)
+        built = dst.cells[]
+        tasks = map(chunkinds) do sinds
+            Base.ScopedValues.@with GR.OUTER_PARALLEL => true begin
+                Threads.@spawn GR.pairblock(Conservative(), dst, cache, src, sinds)
+            end
+        end
+        blocks = [fetch(t)::WeightBlock for t in tasks]
+
+        @test dst.builds[] == 1
+        @test dst.cells[] - built == count(cache.filled)
+        # The whole tile is covered here, so every row was prepared exactly once.
+        @test count(cache.filled) == length(inds)
+
+        for (block, sinds) in zip(blocks, chunkinds)
+            reference = GR.pairblock(Conservative(), dst, inds, src, sinds)
+            @test block.weights.colptr == reference.weights.colptr
+            @test block.weights.rowval == reference.weights.rowval
+            @test all(block.weights.nzval .=== reference.weights.nzval)
+            @test all(block.denom .=== reference.denom)
+        end
+    end
+
+    @testset "prepared geometry is charged to the budget, never to a tile's size" begin
+        cells = ToyLonLatSpace(32, 16)
+        raster = RasterGrid(DD.DimArray(zeros(12, 6),
+            (DD.X(range(-165.0, 165.0; length = 12)),
+                DD.Y(range(-75.0, 75.0; length = 6)))))
+        ncell = Int(ncells(cells))
+
+        # A raster cell is cheap to synthesize; an unknown space's is not.
+        @test !GR.expensivecellgeometry(raster)
+        @test GR.expensivecellgeometry(cells)
+        @test GR.preparesdestination(Conservative(), cells)
+        @test !GR.preparesdestination(Conservative(), raster)
+        @test !GR.preparesdestination(BarycentricPoint(), cells)
+
+        # Only a destination whose geometry is kept charges for it.
+        percell = GR.destcellbytes(Conservative(), cells, ncell)
+        @test percell > GR.DEST_BYTES_PER_CELL
+        @test GR.destcellbytes(Conservative(), raster, Int(ncells(raster))) ==
+              GR.DEST_BYTES_PER_CELL
+        @test GR.destcellbytes(BarycentricPoint(), cells, ncell) ==
+              GR.DEST_BYTES_PER_CELL
+
+        # A tile is sized by the executor's own per-cell cost alone, whatever
+        # the destination's geometry costs to keep.
+        budget = 1 << 20
+        @test GR._defaulttilesizes(1 << 20, 1, budget) ==
+              [fld(GR.destcellbudget(budget), GR.DEST_BYTES_PER_CELL)]
+
+        # Preparing takes what is left of the tile's share, and is refused
+        # where it does not fit. A tile at the size cap cannot hold it.
+        capped = only(GR._defaulttilesizes(1 << 20, 1, budget))
+        @test !GR.destcellsfit(Conservative(), cells, capped, budget)
+        @test GR.destcellsfit(Conservative(), cells,
+            fld(GR.destcellbudget(budget), percell), budget)
+
+        # The same rule decides the index set a build is handed.
+        @test GR.preparedestination(Conservative(), cells, 1:ncell, 1 << 10) === 1:ncell
+        @test GR.preparedestination(Conservative(), cells, 1:ncell,
+            GR.DEFAULT_BUDGET) isa GR.DestinationCache
+        # A cheap destination and a point method prepare nothing at any budget.
+        @test GR.preparedestination(Conservative(), raster, 1:24,
+            GR.DEFAULT_BUDGET) === 1:24
+        @test GR.preparedestination(BarycentricPoint(), cells, 1:ncell,
+            GR.DEFAULT_BUDGET) === 1:ncell
+        # An empty tile has no cell to probe, and prepares nothing.
+        @test GR.DestinationCache(cells, 1:0) === nothing
+        @test GR.preparedestination(Conservative(), cells, 1:0,
+            GR.DEFAULT_BUDGET) === 1:0
+    end
+
+    @testset "a method that reads no prepared geometry takes the tile's cells" begin
+        dst = ToyLonLatSpace(4, 2)
+        src = ToyLonLatSpace(8, 4)
+        inds, sinds = 1:8, 1:32
+        cache = GR.DestinationCache(dst, inds)
+
+        method = T3CooMethod(Conservative())
+        block = GR.pairblock(method, dst, cache, src, sinds)
+        reference = GR.pairblock(method, dst, inds, src, sinds)
+        @test block.weights == reference.weights
+        @test all(block.denom .=== reference.denom)
+        # It names the tile's cells through the space, and fills no slot.
+        @test !any(cache.filled)
+    end
+
+    @testset "a prepared destination adds nothing to the clipping loop" begin
+        dst = ToyLonLatSpace(8, 4)
+        src = ToyLonLatSpace(16, 8)
+        inds, sinds = 1:Int(ncells(dst)), 1:Int(ncells(src))
+        m = manifold(dst)
+        src_tree = GR.subtree(src, sinds)
+
+        cache = GR.DestinationCache(dst, inds)
+        pairs = [(i1, i2) for i1 in sinds, i2 in inds]
+        CR.work_items(GR.BlockAreaOperator(GR._intersectionoperator(m), cache.map,
+            GR.indexmap(sinds), nothing, cache), pairs)
+        @test count(cache.filled) == length(inds)
+
+        cachedop = CR.task_local_operator(
+            GR.BlockAreaOperator(GR._intersectionoperator(m), cache.map,
+                GR.indexmap(sinds), GR._cellmemo(src, sinds), cache))
+        memoop = CR.task_local_operator(
+            GR.BlockAreaOperator(GR._intersectionoperator(m), GR.indexmap(inds),
+                GR.indexmap(sinds), GR._cellmemo(src, sinds),
+                GR._cellmemo(dst, inds)))
+        rows, cols, vals = Int[], Int[], Float64[]
+        sizehint!(rows, 8)
+        sizehint!(cols, 8)
+        sizehint!(vals, 8)
+        item = (1, 1)
+        # Warm both operators' memos and both vectors' capacity.
+        cachedop(rows, cols, vals, item, src_tree, cache.tree)
+        memoop(rows, cols, vals, item, src_tree, cache.tree)
+        cachedbytes = @allocated cachedop(rows, cols, vals, item, src_tree, cache.tree)
+        memobytes = @allocated memoop(rows, cols, vals, item, src_tree, cache.tree)
+        @test cachedbytes == 0
+        @test cachedbytes <= memobytes
+        @test length(rows) == 4
     end
 
     @testset "packed cell fallback preserves indices and packing results" begin
@@ -487,38 +675,6 @@ end
             progress = false)
         @test serial == reference
         @test threaded == serial
-    end
-
-    @testset "one tile's restricted tree, built once" begin
-        # A non-chunk range on a fallback space forces the packed R-tree path.
-        xd = DD.X(-168.75:22.5:168.75)
-        yd = DD.Y(-78.75:22.5:78.75)
-        src = RasterGrid(DD.DimArray(zeros(16, 8), (xd, yd));
-            chunks = ([1:8, 9:16], [1:4, 5:8]))
-        dst = CountingSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
-        inds = 5:20
-        s1, s2 = ownedindices(src, 1), ownedindices(src, 4)
-
-        # One shared wrapper builds the destination tree once for both blocks.
-        tc = GR.TileCells(dst, inds)
-        b0 = dst.builds[]
-        sh1 = conservative_block(tc, inds, src, s1)
-        sh2 = conservative_block(tc, inds, src, s2)
-        @test dst.builds[] - b0 == 1
-
-        # Fresh wrappers rebuild per block: the uncached reference.
-        b1 = dst.builds[]
-        fr1 = conservative_block(GR.TileCells(dst, inds), inds, src, s1)
-        fr2 = conservative_block(GR.TileCells(dst, inds), inds, src, s2)
-        @test dst.builds[] - b1 == 2
-
-        # The memoized tree changes nothing, bit for bit.
-        for (a, b) in ((sh1, fr1), (sh2, fr2))
-            @test a.weights.colptr == b.weights.colptr
-            @test a.weights.rowval == b.weights.rowval
-            @test all(a.weights.nzval .=== b.weights.nzval)
-            @test all(a.denom .=== b.denom)
-        end
     end
 
     @testset "cell memos change nothing, and hits return the built value" begin

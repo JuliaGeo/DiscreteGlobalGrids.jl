@@ -148,6 +148,12 @@ end
 GR.cellcentroid(space::DGGSpace, i::Int) =
     cell_centroid(space.grid, cellindex(space.grid, i))
 
+# The sites a point method interpolates between, as one vector over the space's
+# local indices. It is the collection's centroid field, the same object a sweep
+# asked for `Centroid()` reads: a pure vector that computes an entry on read, so
+# preparing a sampler materialises nothing and concurrent queries share it.
+GR.samplesites(space::DGGSpace) = cellfield(cell_centroid, CellVector(space.grid))
+
 function cellat(space::DGGSpace, p::GO.UnitSphericalPoint)
     c = cellat(space.grid, p)
     c === nothing && return nothing

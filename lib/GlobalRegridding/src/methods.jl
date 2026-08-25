@@ -47,6 +47,24 @@ This point sample does not preserve integrals.
 struct BilinearPoint <: AbstractRegriddingMethod end
 
 """
+    BarycentricPoint()
+
+Interpolate between source sample sites at each destination sample site.
+
+The stencil is the dual cell of source sample sites containing the destination
+point, weighted by the coordinates that cell's basis names: triangle
+barycentric, tensor Q1, or mean-value coordinates on a convex polygon. Weights
+are nonnegative and sum to one, so the result lies between the source values it
+came from. Requires [`cellcentroid`](@ref) of the destination space and a
+source space that answers point queries; a destination outside the source's
+dual complex emits no entry at all, and the missing policy decides what it
+becomes.
+
+This point sample does not preserve integrals.
+"""
+struct BarycentricPoint <: AbstractRegriddingMethod end
+
+"""
     outputsampling(method::AbstractRegriddingMethod) -> DimensionalData.Lookups.Sampling
 
 Return the sampling a method gives the destination it writes. Area-based methods
@@ -58,6 +76,7 @@ This trait also selects the method's weight build path in [`weightblock`](@ref):
 outputsampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Center())
 outputsampling(::NearestCell) = DD.Lookups.Points()
 outputsampling(::BilinearPoint) = DD.Lookups.Points()
+outputsampling(::BarycentricPoint) = DD.Lookups.Points()
 
 # Weight construction
 

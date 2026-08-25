@@ -87,6 +87,14 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
         @test GR.manifold(space) == GR.manifold(SRC)
         i = DGG.ncells(space) ÷ 2
         @test GR.cellat(space, GR.cellcentroid(space, i)) == i
+        # The sites a point method interpolates between are the space's own
+        # centroids, handed over as the collection's centroid field — the same
+        # pure vector a sweep asked for `Centroid()` reads, so nothing is
+        # materialised to prepare one.
+        sites = GR.samplesites(space)
+        @test sites isa DGG.Engine.CellField
+        @test all(sites[j] == GR.cellcentroid(space, j)
+                  for j in (1, i, DGG.ncells(space)))
         # `chunkat` inverts `ownedindices`: every cell is placed back in the
         # chunk it came from, by binary search over the windows rather than by
         # a scan. A subset's windows are the ones that can disagree, since they

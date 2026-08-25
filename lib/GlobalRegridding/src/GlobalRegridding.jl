@@ -51,6 +51,7 @@ include("methods.jl")
 include("conservative.jl")
 include("intersection_area.jl")
 include("interpolation.jl")
+include("barycentric.jl")
 include("discovery.jl")
 # `chunkgraph.jl` precedes `plans.jl`: a `ChunkedPlan` owns the one
 # `ChunkDependencyGraph` it exposes, so the plan's field type names the graph's.
@@ -73,7 +74,7 @@ export RasterGrid
 
 # Methods
 export AbstractRegriddingMethod
-export Conservative, NearestCell, BilinearPoint
+export Conservative, NearestCell, BilinearPoint, BarycentricPoint
 export buildweights!, supportradius
 
 # `build_weights!` and `support_radius` stay exported for the deprecation shims

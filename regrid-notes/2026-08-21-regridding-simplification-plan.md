@@ -71,7 +71,7 @@ index.
 | chunk | a space's own unit of ownership, `ownedindices(space, k)` for `k` in `1:nchunks(space)`. |
 | tile | the lazy array's write block: one destination chunk, or a run of them (`DestTiling`, `lib/GlobalRegridding/src/lazy.jl:56`). |
 | partial grid | a collection holding fewer cells than its level. |
-| sample site | where a source value is taken to sit: `cellcentroid(space, i)` unless the space says otherwise. |
+| sample site | where a cell's value is taken to sit, on either side: `cellcentroid(space, i)` unless the space says otherwise. A point method interpolates between source sample sites and evaluates at destination sample sites; `samplesites(space)` answers both. |
 | rim | an *area* — the part of border cells lying outside the dual complex, where no dual cell exists. Distinct from `border`/`halo`, which are sets of cells. |
 
 Four hooks were renamed after the cards below were written; each old name is

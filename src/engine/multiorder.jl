@@ -288,7 +288,7 @@ end
 # already the tightest thing that can be said about its own footprint, and
 # splitting it spends budget to say the same thing in more words. Only crossing
 # cells are candidates, and they are visited COARSEST FIRST, ties broken by
-# position within the level — the curve order, so the schedule is a function of
+# index within the level — the curve order, so the schedule is a function of
 # the inputs alone and of nothing else.
 #
 # Coarsest-first plus "children are one level deeper" means the queue is at all
@@ -386,16 +386,16 @@ function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
     return true
 end
 
-# The tie-break inside one level. `cellposition` is the level's own order, which
+# The tie-break inside one level. `globalindex` is the level's own order, which
 # is curve order on every system here and is a bijection, so no two cells of a
-# level ever tie and the schedule has nothing left to decide. A missing position
+# level ever tie and the schedule has nothing left to decide. A missing index
 # would break that bijection and silently alias two cells onto one key, which is
 # a determinism bug wearing a plausible answer — so it is an error, not a zero.
 function _budget_key(grid, c)::Int
-    pos = cellposition(grid, c)
+    pos = globalindex(grid, c)
     pos === nothing && throw(ArgumentError(
-        "$(typeof(grid)) has no position for the cell $c it just produced. The " *
-        "budget schedule orders each level by `cellposition` and needs it total: " *
+        "$(typeof(grid)) has no index for the cell $c it just produced. The " *
+        "budget schedule orders each level by `globalindex` and needs it total: " *
         "without it two cells share a key and the traversal stops being " *
         "deterministic"))
     return pos
@@ -410,11 +410,11 @@ function _sorted_cell_set(sys::AbstractHierarchicalGridSystem, cells::Vector{ID}
             contained[perm], reference_level)
     end
     # No curve intervals to order by; `(level, id)` is the documented fallback,
-    # and the keys become the cells' own positions within their level, which is
+    # and the keys become the cells' own indices within their level, which is
     # still a total order but not a curve order.
     perm = sortperm(cells; by=c -> (level(c), c))
     ordered = cells[perm]
-    keys = [something(cellposition(levelgrid(sys, level(c)), c), 0) for c in ordered]
+    keys = [something(globalindex(levelgrid(sys, level(c)), c), 0) for c in ordered]
     return MultiOrderCellSet{typeof(sys),ID}(sys, ordered, keys, contained[perm],
         reference_level)
 end
@@ -503,7 +503,7 @@ end
 
 # --- geometry, without a level grid per cell -------------------------------
 
-# A set is not a grid — no positions, and its cells are at different levels —
+# A set is not a grid — no indices, and its cells are at different levels —
 # but it does know which level grid each cell belongs to. `levelgrid` is O(1),
 # so nothing here is worth caching.
 
@@ -543,7 +543,7 @@ cell_polygons(set::MultiOrderCellSet) =
 
 Return stored-cell sort keys. For sorted-subtree systems, each key is the start
 of the cell's reference-level descendant range. Otherwise it is the cell's
-position within its own level and is not comparable across levels.
+index within its own level and is not comparable across levels.
 """
 curve_keys(set::MultiOrderCellSet) = set.keys
 
@@ -560,7 +560,7 @@ Base.show(io::IO, ::MIME"text/plain", set::MultiOrderCellSet) = show(io, set)
 """
     level_ranges(set::MultiOrderCellSet, l::Integer) -> Vector{UnitRange{Int}}
 
-Expand the set to sorted, disjoint position ranges in `levelgrid(sys, l)`,
+Expand the set to sorted, disjoint index ranges in `levelgrid(sys, l)`,
 merging adjacent ranges. Requires sorted subtrees and `l` no shallower than any
 cell in the set.
 
@@ -576,7 +576,7 @@ cell in the set.
 function level_ranges(set::MultiOrderCellSet, l::Integer)
     has_sorted_subtrees(set.system) || throw(ArgumentError(
         "$(typeof(set.system)) has no descendant ranges, so a multi-order set " *
-        "cannot be expanded to position ranges"))
+        "cannot be expanded to index ranges"))
     target = Int(l)
     out = UnitRange{Int}[]
     for c in set.cells
@@ -597,7 +597,7 @@ end
 
 The set expanded to level `l` as typed ids, ascending — [`level_ranges`](@ref)
 resolved through `cellindex`. O(cells at `l`), so reach for the ranges instead
-wherever the positions are what is wanted.
+wherever the indices are what is wanted.
 """
 function cellindices(set::MultiOrderCellSet, l::Integer)
     grid = levelgrid(set.system, Int(l))

@@ -12,8 +12,9 @@ The mental model is two tiers. A **grid** is one finite collection of cells on
 the sphere — a complete level, or a regional subset of one — and geometry,
 stencils and queries are all answered there. A **system** adds the parent/child
 hierarchy across levels, always as a fast path: hierarchy is an optimisation,
-never a semantic. A bare `Int` is a position in `1:ncells(grid)`; a typed cell
-id knows its own level.
+never a semantic. A bare `Int` is always an **index** in `1:ncells(grid)` — a
+local index into that collection's own storage; a typed cell id knows its own
+level.
 
 ```@example index
 import DiscreteGlobalGrids as DGG

@@ -15,7 +15,7 @@ using Printf
 const CDCOUNT = DGG.CopernicusDEM
 const BASEURLCOUNT = "https://copernicus-dem-90m.s3.amazonaws.com"
 
-# Lazy concatenation of complete-grid position ranges, matching the production
+# Lazy concatenation of complete-grid index ranges, matching the production
 # TileIds representation without materializing tens of billions of cell ids.
 struct CountConcatIds{G<:DGG.AbstractGrid,ID} <: AbstractVector{ID}
     grid::G
@@ -162,7 +162,7 @@ function main_count()
 
     @printf("source chunks=%d destination chunks=%d threads=%d\n",
         GR.nchunks(srcspace), GR.nchunks(dstspace), Threads.nthreads())
-    radius = Float64(GR.support_radius(DGG.Conservative(), srcspace))
+    radius = Float64(GR.supportradius(DGG.Conservative(), srcspace))
     GR.chunk_dependency_graph(dstspace, srcspace; radius) # compile warm-up
     capseconds = @elapsed caps = GR.chunk_dependency_graph(dstspace, srcspace; radius)
 

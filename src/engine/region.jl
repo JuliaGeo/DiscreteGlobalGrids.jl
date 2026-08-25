@@ -6,9 +6,9 @@
 # `border` and `interior` split what is inside. All three are lazy and serial;
 # `adjacency` is the cached, threaded product.
 #
-# The currency is POSITIONS. A halo cell has none in the region, so its
-# positions are the complete level's; a border or interior cell has one, so
-# theirs are the region's own.
+# The currency is INDICES. A halo cell has none in the region, so it is named
+# by the complete level's global index; a border or interior cell has one, so
+# it is named by the region's own local index.
 # ---------------------------------------------------------------------------
 
 const Region = Union{AbstractGrid,CellVector}
@@ -20,7 +20,7 @@ const Region = Union{AbstractGrid,CellVector}
 Base.@constprop :aggressive function halo(region::Region;
         connectivity::Connectivity = Vertex(), cells::Bool = false)
     walk = _halo_walk(region, connectivity)
-    return cells ? walk : HaloPositionIterator(walk, _halo_grid(walk))
+    return cells ? walk : HaloIndexIterator(walk, _halo_grid(walk))
 end
 
 # A rooted grid holding a complete subtree keeps its system's specialization;
@@ -42,7 +42,7 @@ _halo_walk(grid::AbstractGrid, connectivity::Connectivity) =
     _halo_walk(CellVector(grid), connectivity)
 
 # Used by `adjacency`, where the keyword `halo` shadows this verb.
-_halo_positions(region::Region, connectivity::Connectivity) =
+_halo_indices(region::Region, connectivity::Connectivity) =
     collect(halo(region; connectivity))
 
 # ===========================================================================
@@ -53,7 +53,7 @@ _halo_positions(region::Region, connectivity::Connectivity) =
     RegionSide
 
 The lazy walk [`border`](@ref) and [`interior`](@ref) return. Its engine yields
-`(position, cell)` pairs and the wrapper projects them to whichever of the two
+`(index, cell)` pairs and the wrapper projects them to whichever of the two
 the caller asked for, so `cells = true` costs no second pass.
 """
 struct RegionSide{E,C}
@@ -80,8 +80,8 @@ Base.show(io::IO, it::RegionSide{E,C}) where {E,C} =
 # --- the rooted-subtree engine ---------------------------------------------
 
 # The system's own `O(border)` automaton plus the block offset that turns a
-# walked cell into an in-region position. The block is contiguous and ascending,
-# so the walk's canonical order is in-region position order.
+# walked cell into an in-region index. The block is contiguous and ascending,
+# so the walk's canonical order is in-region index order.
 struct SubtreeSideEngine{W,G}
     walk::W
     complete::G
@@ -94,7 +94,7 @@ Base.iterate(e::SubtreeSideEngine, state) = _subtree_side(e, iterate(e.walk, sta
 @inline function _subtree_side(e::SubtreeSideEngine, r)
     r === nothing && return nothing
     c, s = r
-    return ((cellposition(e.complete, c)::Int - e.lo + 1, c), s)
+    return ((globalindex(e.complete, c)::Int - e.lo + 1, c), s)
 end
 
 Base.show(io::IO, e::SubtreeSideEngine) = print(io, e.walk)
@@ -132,7 +132,7 @@ function Base.iterate(e::ScanSideEngine{CV,K,SHORT},
         c = cellindex(cv.grid, _leaf_at(w, wj, k))
         short = false
         for nb in neighbors(cv.grid, c, 1; connectivity = e.connectivity)
-            q, hj = _cursor_find(w, wj, hj, cellposition(cv.grid, nb)::Int)
+            q, hj = _cursor_find(w, wj, hj, globalindex(cv.grid, nb)::Int)
             if q == 0
                 short = true
                 break
@@ -212,7 +212,7 @@ function sizehint end
 
 sizehint(it::SubtreeHaloIterator) = _halo_sizehint(it.engine)
 sizehint(it::SubsetHaloIterator) = _halo_sizehint(it.engine)
-sizehint(it::HaloPositionIterator) = sizehint(it.halo)
+sizehint(it::HaloIndexIterator) = sizehint(it.halo)
 sizehint(it::RegionSide) = _side_sizehint(it.engine)
 
 _side_sizehint(::ScanSideEngine) = nothing
@@ -223,5 +223,5 @@ _side_sizehint(e::SubtreeSideEngine) =
 # engines are still validated by `collect_subtree`.
 Base.collect(it::SubtreeHaloIterator) = collect_subtree(it, sizehint(it))
 Base.collect(it::SubsetHaloIterator) = collect_subtree(it, sizehint(it))
-Base.collect(it::HaloPositionIterator) = collect_subtree(it, sizehint(it))
+Base.collect(it::HaloIndexIterator) = collect_subtree(it, sizehint(it))
 Base.collect(it::RegionSide) = collect_subtree(it, sizehint(it))

@@ -1,7 +1,7 @@
 # HEALPix 3×3 lattice neighbourhood in compass order
 # `SW, W, NW, N, NE, E, SE, S`. Because pixels are diamond-shaped in this
 # lattice, one-axis offsets share edges and two-axis offsets share corners;
-# `Edge()` therefore selects positions 1, 3, 5, and 7. The reference tuple is
+# `Edge()` therefore selects indices 1, 3, 5, and 7. The reference tuple is
 # clockwise on the sphere, so `_neighbor_cycle` reverses it. Degree-3 vertices
 # have one missing neighbour, and level-0 results require deduplication.
 #
@@ -67,7 +67,7 @@ end
 """
     _neighbor_cycle(connectivity) -> Tuple
 
-Positions in [`nested_neighbors`](@ref) ordered counter-clockwise from `SW` as
+Indices in [`nested_neighbors`](@ref) ordered counter-clockwise from `SW` as
 seen from outside the sphere. `Vertex()` yields `SW, S, SE, E, NE, N, NW, W`;
 `Edge()` yields `SW, SE, NE, NW`. Callers omit absent neighbours.
 """

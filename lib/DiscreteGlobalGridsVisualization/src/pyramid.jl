@@ -16,19 +16,20 @@
 """
     celllocator(cells) -> f
 
-Build `f(cell) -> Int`, the position of `cell` in `cells`, or `0` when it is not
+Build `f(cell) -> Int`, the index of `cell` in `cells`, or `0` when it is not
 one of them.
 
 This is what ties a resampled cell back to the value the user passed: `color[i]`
 for `i = f(cell)`.  `CellVector`s and whole grids answer it themselves through
-`DiscreteGlobalGrids.cellposition`, in no space at all; a bare vector of ids has
-to be indexed here, which is the one place a large set costs something up front.
-Hand a `CellVector` rather than a `collect` of one when the set is large.
+`DiscreteGlobalGrids.localindex` (a whole grid through `globalindex`), in no
+space at all; a bare vector of ids has to be indexed here, which is the one
+place a large set costs something up front.  Hand a `CellVector` rather than a
+`collect` of one when the set is large.
 """
 function celllocator end
 
-celllocator(cv::DGG.AbstractCellVector) = c -> something(DGG.cellposition(cv, c), 0)
-celllocator(gc::GridCells) = c -> something(DGG.cellposition(gc.grid, c), 0)
+celllocator(cv::DGG.AbstractCellVector) = c -> something(DGG.localindex(cv, c), 0)
+celllocator(gc::GridCells) = c -> something(DGG.globalindex(gc.grid, c), 0)
 
 function celllocator(cells::AbstractVector)
     index = Dict{eltype(cells), Int}()
@@ -48,7 +49,7 @@ hierarchy can stand in for it.
 Holds the system, the level the data lives at, a spherical cap covering the data
 (estimated from `samples` cells, so that the descent can prune whole branches
 that hold nothing), the cells themselves, and the locator that turns one of them
-back into a position in the user's value vector.
+back into an index in the user's value vector.
 
 Building one is `O(samples)`, not `O(ncells)`: nothing here walks the data.
 """
@@ -139,7 +140,7 @@ end
 """
     nearest(pyramid, cell) -> Int
 
-The position in the value vector of the leaf cell under `cell`'s centre, or `0`
+The index in the value vector of the leaf cell under `cell`'s centre, or `0`
 when there is none — which is how a resampled cell over a hole, or over the sea,
 is recognised and dropped.
 
@@ -158,52 +159,52 @@ end
 # cost what drawing them costs, which is the thing a resampling exists not to
 # do.  Naming them costs nothing, though, wherever a system keeps a subtree
 # together in its canonical order: `DiscreteGlobalGrids.descendant_range` is
-# then the interval of leaf-level *positions* the subtree occupies, and a set
+# then the interval of leaf-level *indices* the subtree occupies, and a set
 # stored in that same order meets the interval in one run, found by binary
 # search.  So a grouping is two searches per cell drawn, whatever the subtree
 # under it holds, and only the reduction that follows reads the leaves.
 
 """
-    LeafPositions(cells, grid)
+    LeafIndices(cells, grid)
 
-`cells` as the positions they occupy in `grid`, read one at a time rather than
+`cells` as the indices they occupy in `grid`, read one at a time rather than
 built.
 
 Both containers a frame can be summarised over — a cell vector and a grid — hold
 their cells in the level's own order, so this is an ascending vector of integers
 and [`subtreeranges`](@ref) can search it without materialising it.
 """
-struct LeafPositions{C, G} <: AbstractVector{Int}
+struct LeafIndices{C, G} <: AbstractVector{Int}
     cells::C
     grid::G
 end
 
-Base.size(lp::LeafPositions) = (length(lp.cells),)
+Base.size(lp::LeafIndices) = (length(lp.cells),)
 
-Base.@propagate_inbounds function Base.getindex(lp::LeafPositions, k::Int)
+Base.@propagate_inbounds function Base.getindex(lp::LeafIndices, k::Int)
     @boundscheck checkbounds(lp, k)
-    return something(DGG.cellposition(lp.grid, lp.cells[k]))
+    return something(DGG.globalindex(lp.grid, lp.cells[k]))
 end
 
 """
-    leafpositions(cells, grid) -> LeafPositions or nothing
+    leafindices(cells, grid) -> LeafIndices or nothing
 
-`cells` as leaf-level positions, or `nothing` where they are stored in no order
+`cells` as leaf-level indices, or `nothing` where they are stored in no order
 worth searching.
 
-A `CellVector` is strictly ascending by construction, and a grid's positions
+A `CellVector` is strictly ascending by construction, and a grid's indices
 ascend in canonical id order, so either can be met by an interval.  A bare
 vector of ids promises nothing of the kind — it is a list, and the honest answer
 for it is that there is no answer.
 """
-leafpositions(cells::DGG.AbstractCellVector, grid) = LeafPositions(cells, grid)
-leafpositions(cells::GridCells, grid) = LeafPositions(cells, grid)
-leafpositions(::AbstractVector, grid) = nothing
+leafindices(cells::DGG.AbstractCellVector, grid) = LeafIndices(cells, grid)
+leafindices(cells::GridCells, grid) = LeafIndices(cells, grid)
+leafindices(::AbstractVector, grid) = nothing
 
 """
     subtreeranges(pyramid) -> f
 
-Build `f(cell) -> UnitRange{Int32}`, the positions in the user's value vector of
+Build `f(cell) -> UnitRange{Int32}`, the indices in the user's value vector of
 every leaf under `cell`, empty where the cell has none.
 
 Throws where the pyramid cannot answer it, rather than falling back on something
@@ -220,8 +221,8 @@ function subtreeranges(pyr::CellPyramid)
          way — `has_sorted_subtrees` is false, so a subtree is scattered \
          through its level.  Leave `aggregate` unset to resample nearest \
          neighbour."))
-    positions = leafpositions(pyr.cells, pyr.leafgrid)
-    positions === nothing && throw(ArgumentError(
+    indices = leafindices(pyr.cells, pyr.leafgrid)
+    indices === nothing && throw(ArgumentError(
         "`aggregate` needs the cells in the level's own order, so that the \
          leaves under a drawn cell are one run of the values, and a \
          $(nameof(typeof(pyr.cells))) is a list that promises no order.  Hand a \
@@ -230,8 +231,8 @@ function subtreeranges(pyr::CellPyramid)
     level = pyr.leaflevel
     return function (cell)
         r = DGG.descendant_range(sys, cell, level)
-        lo = searchsortedfirst(positions, first(r))
-        hi = searchsortedlast(positions, last(r))
+        lo = searchsortedfirst(indices, first(r))
+        hi = searchsortedlast(indices, last(r))
         return (lo % Int32):(hi % Int32)
     end
 end

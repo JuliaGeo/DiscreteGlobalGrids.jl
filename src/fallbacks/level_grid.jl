@@ -19,13 +19,13 @@ counterparts, which are the implementor surface:
 |---|---|
 | `ncells(grid)` | `ncells(sys, level)` |
 | `cellindex(grid, i)` | `cellindex(sys, level, i)` |
-| `cellposition(grid, c)` | `cellposition(sys, c)` |
+| `localindex(grid, c)` | `globalindex(sys, c)` |
 | `cell_boundary(grid, c)` | `cell_boundary(sys, c)` |
 | `cell_centroid(grid, c)` | `cell_centroid(sys, c)` |
 
 The geometry pair takes no level: an [`AbstractCellIndex`](@ref) carries its own,
 so the level would be redundant and could disagree with the id. The grid methods
-supply what the level *is* needed for — the bounds check on a position, and the
+supply what the level *is* needed for — the bounds check on an index, and the
 rejection of an id from another level, which a complete-level grid must not
 answer about.
 
@@ -74,10 +74,10 @@ end
 # `_canonical` is the whole "is this cell of this grid" question: wrong level,
 # a scheme the system does not claim, and a scheme it claims but cannot convert
 # all answer `nothing`, leaving the system method to see canonical ids only.
-function cellposition(grid::HierarchicalLevelGrid, c::AbstractCellIndex)
+function localindex(grid::HierarchicalLevelGrid, c::AbstractCellIndex)
     target = _canonical(grid, c)
     target === nothing && return nothing
-    return cellposition(grid.system, target)
+    return globalindex(grid.system, target)
 end
 
 cell_boundary(grid::HierarchicalLevelGrid, c::AbstractCellIndex) =

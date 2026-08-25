@@ -1,5 +1,5 @@
 # Authalic wrappers convert geometry between authalic and geodetic latitude.
-# Cell ids, positions, hierarchy, and ordering are unchanged. The two latitudes
+# Cell ids, indices, hierarchy, and ordering are unchanged. The two latitudes
 # differ by up to 0.1283° for WGS84 — ~14.3 km along a meridian at ±45°, wider
 # than a level-8 cell — so overlaying the frames without this is a silent
 # misregistration.
@@ -77,7 +77,7 @@ end
     AuthalicGrid(grid, ellipsoid = Helpers.WGS84_AUTHALIC) <: AbstractGrid
 
 Read `grid` geometry at geodetic rather than authalic latitude. Cell ids,
-positions, hierarchy, adjacency, and winding are unchanged. [`cellat`](@ref)
+indices, hierarchy, adjacency, and winding are unchanged. [`cellat`](@ref)
 takes its query point in that same geodetic frame.
 
 `ellipsoid` may be a [`Helpers.AuthalicTransform`](@ref) or a
@@ -135,11 +135,15 @@ Base.parent(grid::AuthalicGrid) = grid.grid
 # --- the base grid interface ----------------------------------------------
 #
 # Identity forwards; geometry warps. Nothing here reorders or filters, so the
-# `cellindex`/`cellposition` bijection is the base grid's, unchanged.
+# `cellindex`/`localindex` bijection is the base grid's, unchanged.
 
 ncells(grid::AuthalicGrid) = ncells(grid.grid)
 cellindex(grid::AuthalicGrid, i::Int) = cellindex(grid.grid, i)
-cellposition(grid::AuthalicGrid, c::AbstractCellIndex) = cellposition(grid.grid, c)
+localindex(grid::AuthalicGrid, c::AbstractCellIndex) = localindex(grid.grid, c)
+# Delegated rather than left to the `AbstractGrid` bridge: the bridge reads a
+# grid's global index off its local one, which is only the same number when the
+# wrapped grid is complete. This wrapper does not require that.
+globalindex(grid::AuthalicGrid, c::AbstractCellIndex) = globalindex(grid.grid, c)
 level(grid::AuthalicGrid) = level(grid.grid)
 
 function system(grid::AuthalicGrid)

@@ -13,10 +13,10 @@ end
 
 CountingMethod(; kw...) = CountingMethod(ToyDiagonalMethod(; kw...), 0)
 
-function build_weights!(coo::WeightCOO, method::CountingMethod,
+function buildweights!(coo::WeightCOO, method::CountingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     countbuild!(method)
-    return build_weights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
+    return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
 @testset "Executor" begin
@@ -52,7 +52,7 @@ end
 
         whole = regrid(field; kw...)
         holed = copy(field)
-        holes = [cellposition(space, 2, 2), cellposition(space, 5, 1)]
+        holes = [localindex(space, 2, 2), localindex(space, 5, 1)]
         holed[2, 2] = NaN
         holed[5, 1] = NaN
         punched = regrid(holed; kw...)
@@ -91,7 +91,7 @@ end
         # Row sums provide coverage thresholds without denominators.
         holed = copy(field)
         holed[3, 2] = NaN
-        h = cellposition(space, 3, 2)
+        h = localindex(space, 3, 2)
         blanked = regrid(holed; to = space, from = space, method,
             missingpolicy = Weighted(0.5))
         rest = setdiff(1:n, (h,))
@@ -104,7 +104,7 @@ end
     @testset "missingval sentinel" begin
         # Declared sentinels behave exactly like NaN under both policies.
         field = rand(6, 3) .+ 1
-        holes = [cellposition(space, 2, 2), cellposition(space, 5, 1)]
+        holes = [localindex(space, 2, 2), localindex(space, 5, 1)]
         sentinel = copy(field)
         sentinel[2, 2] = -9999.0
         sentinel[5, 1] = -9999.0

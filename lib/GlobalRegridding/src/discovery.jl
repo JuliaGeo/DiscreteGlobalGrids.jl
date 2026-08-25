@@ -88,10 +88,10 @@ function _rastercandidates!(out::Vector{Int},
     cx0, cx1, cy0, cy1 = _rasterchunkspan(node)
     space = node.grid.space
     if cx0 == cx1 && cy0 == cy1
-        push!(out, chunkposition(space, cx0, cy0))
+        push!(out, chunknumber(space, cx0, cy0))
     elseif STI.isleaf(node)
         for cy in cy0:cy1, cx in cx0:cx1
-            push!(out, chunkposition(space, cx, cy))
+            push!(out, chunknumber(space, cx, cy))
         end
     else
         for child in STI.getchild(node)
@@ -107,8 +107,8 @@ function candidatechunks!(out::Vector{Int},
     empty!(out)
     # `index` may be retained by a LazyRegridArray. Traverse a private cursor
     # copy so a task-owned chart wrapper never escapes into shared index state.
-    localindex = _task_prepared_raster_tree(index)
-    _rastercandidates!(out, localindex,
+    privateindex = _task_prepared_raster_tree(index)
+    _rastercandidates!(out, privateindex,
         Base.Fix1(DilatedIntersects(Float64(radius)), dstcap))
     sort!(out)
     unique!(out)

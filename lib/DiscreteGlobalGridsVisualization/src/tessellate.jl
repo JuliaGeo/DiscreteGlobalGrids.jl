@@ -19,7 +19,7 @@ A set of cells as a single triangle mesh in an axis's data space.
 
   * `positions` — one vertex per cell corner, in the axis's data coordinates.
   * `faces` — the triangle fan of each cell, over `positions`.
-  * `vertex_cell` — for each vertex, the position of the cell it came from.
+  * `vertex_cell` — for each vertex, the index of the cell it came from.
     This is what makes recolouring cheap: new per-cell values become per-vertex
     values with one gather, and no geometry is rebuilt.
   * `ring_start` — where each drawn ring begins in `positions`, with a trailing

@@ -1,10 +1,10 @@
 # A stored cell axis IS a region, and answers the region verbs with the same
 # code a computed one does.
 #
-# What these check is the bridge `idrank(grid, id) + 1 == cellposition(grid, c)`
+# What these check is the bridge `idrank(grid, id) + 1 == globalindex(grid, c)`
 # and nothing else: the store is written from a cube whose axis is a
 # `CellLookup`, read back as a `ChunkedCellLookup`, and the two are required to
-# answer identically. A conversion that dropped a cell, shifted a position by
+# answer identically. A conversion that dropped a cell, shifted an index by
 # one, or left the runs unmerged fails here rather than somewhere downstream.
 
 module DGGSIORegionTests
@@ -45,7 +45,7 @@ function same_region(label, A, B)
         @test got isa ChunkedCellLookup
         cv = region(got)
 
-        # The conversion names the same cells in the same order. Position order
+        # The conversion names the same cells in the same order. Index order
         # is what lets a result computed through the twin be written back
         # against the store's own axis without a permutation.
         @test cv isa CellVector
@@ -70,7 +70,7 @@ function same_region(label, A, B)
         @test [cellindex(pg, i) for i in 1:DGG.ncells(pg)] ==
               [cellindex(pgw, i) for i in 1:DGG.ncells(pgw)]
 
-        f = (c, nbrs) -> length(nbrs) * DGG.cellposition(c)
+        f = (c, nbrs) -> length(nbrs) * DGG.localindex(c)
         @test mapneighbors(f, got) == mapneighbors(f, want)
         # `==` on cubes compares lookups too, and those differ by design.
         @test parent(mapneighbors(f, B)) == parent(mapneighbors(f, A))

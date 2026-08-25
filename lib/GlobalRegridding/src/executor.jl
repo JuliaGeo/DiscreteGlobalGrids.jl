@@ -154,7 +154,7 @@ end
 @inline _walknonzeros(W::SparseMatrixCSC) =
     SparseArrays.nnz(W) * 256 < size(W, 2)
 
-# Locate the column owning nonzero position `p`.
+# Locate the column owning nonzero index `p`.
 @inline _columnof(cols::Vector{Int}, p::Int) = searchsortedlast(cols, p)
 
 # Accumulate values when all entries are valid.

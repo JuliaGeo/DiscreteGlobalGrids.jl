@@ -27,7 +27,7 @@ const MEASUREMENTS = joinpath(OUTDIR, "2026-08-21-chunk-dag-api.ndjson")
 # cell indices. This is the same trick the production run's `TileIds` uses.
 struct ConcatIds{G<:DGG.AbstractGrid,ID} <: AbstractVector{ID}
     grid::G
-    starts::Vector{Int}    # first position of each run in `grid`
+    starts::Vector{Int}    # first index of each run in `grid`
     offsets::Vector{Int}   # cumulative run lengths, `offsets[1] == 0`
 end
 
@@ -180,13 +180,13 @@ function main()
     @printf("built in %.2f s: %s\n", tdst, dstspace)
     check("one destination chunk per listed column",
         GR.nchunks(dstspace) == length(cols) == 66178)
-    colof = [DGG.cellposition(g5, id) for id in dstspace.chunkids]
+    colof = [DGG.localindex(g5, id) for id in dstspace.chunkids]
     check("destination chunk k is column k of the columns file", colof == cols)
 
     # The graph. Conservative regridding has zero support radius; the relation
     # is still a superset because the caps cover the cells.
     println("\n== chunk dependency graph ==")
-    radius = Float64(GR.support_radius(DGG.Conservative(), srcspace))
+    radius = Float64(GR.supportradius(DGG.Conservative(), srcspace))
     @printf("support radius = %g rad\n", radius)
     GR.chunk_dependency_graph(dstspace, srcspace; radius)   # warm up
     tbuild = @elapsed graph = GR.chunk_dependency_graph(dstspace, srcspace; radius)

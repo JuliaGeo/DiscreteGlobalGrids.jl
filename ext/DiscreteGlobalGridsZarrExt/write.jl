@@ -88,7 +88,7 @@ this package's way of saying the axis is still sorted, unique and at one level;
   - `encoding = :auto` writes ranges where the axis is eligible and dense
     otherwise. `:dense` is the interop escape for readers that cannot expand
     ranges, `:ranges` forces the compact form, and `:implicit` writes no cell
-    coordinate at all — position is the cell — which needs a whole level.
+    coordinate at all — the index is the cell — which needs a whole level.
   - `merge = :step` merges only ids adjacent as integers, so no interval can
     enclose an id that names no cell — what a structural-count reader needs, and
     what the published IGEO7 range stores hold. `merge = :rank` merges runs of
@@ -502,8 +502,8 @@ function _chunkplan(chunks::Symbol, grid, cells, target)
     return WriteChunkPlan(cl, bestlevel, _allaligned(best, cl, n))
 end
 
-# End positions of the maximal runs of cells sharing a level-`A` ancestor.
-# `starts` names the positions to look at: every cell for the first pass, one
+# End indices of the maximal runs of cells sharing a level-`A` ancestor.
+# `starts` names the indices to look at: every cell for the first pass, one
 # representative per known run for each coarsening after it. The axis is raw
 # ids, so the typed cell `ancestor` wants is put back together one at a time —
 # a wrapper around an integer already in hand, and nothing is allocated.
@@ -550,7 +550,7 @@ struct ArrayWrite{S}
 end
 
 # A layer still in whatever array it arrived in: a lazy `ZArray` straight out of
-# `dggread` as readily as an `Array`. `celldim` is the position of the cell
+# `dggread` as readily as an `Array`. `celldim` is the index of the cell
 # dimension in it and `perm` the permutation that puts cells first, `nothing`
 # where they already are. Nothing bigger than one chunk is ever taken from it.
 struct CellStream{A,P}
@@ -656,7 +656,7 @@ _coordinate!(out, ::DenseEncoding, ids::AbstractVector, plan) =
     _push!(out, CELL_IDS_ARRAY, ids, (length(ids),), [SPATIAL_DIMENSION],
         (plan.chunklength,))
 
-# An implicit axis stores nothing: position IS the cell.
+# An implicit axis stores nothing: the index IS the cell.
 _coordinate!(out, ::ImplicitEncoding, n::Integer, plan) = out
 
 _coordinate!(out, enc::CellEncoding, coord, plan) = _nowritepath(enc)

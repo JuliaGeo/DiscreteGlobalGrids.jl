@@ -89,7 +89,7 @@ ndestinationchunks(g::ChunkDependencyGraph) = g.ndst
     dependency_radius(g::ChunkDependencyGraph) -> Float64
 
 Return the support radius, in radians, the relation was built at. A graph is
-valid for any method whose [`support_radius`](@ref) is at most this value.
+valid for any method whose [`supportradius`](@ref) is at most this value.
 """
 dependency_radius(g::ChunkDependencyGraph) = g.radius
 
@@ -373,7 +373,7 @@ end
 
 chunk_dependency_graph(plan::ChunkedPlan; refine = nothing) =
     chunk_dependency_graph(plan.dst_space, plan.src_space;
-        radius = support_radius(plan.method, plan.src_space), refine)
+        radius = supportradius(plan.method, plan.src_space), refine)
 
 function _chunkgraph(dstcaps::AbstractVector{<:SphericalCap}, srcindex, nsrc::Int,
         radius::Float64, refine)

@@ -166,15 +166,31 @@ function Makie.plot!(plot::DGGSurface{<:Tuple{<:CellRegion, <:AbstractVector}})
     Makie.register_computation!(
         plot.attributes, [:cells, :transform_func, :wrap, :ntasks], [:surfacetopology]
     ) do inputs, changed, cached
-        target = plot_target(inputs.transform_func)
-        inputs.wrap || (target = uncut(target))
+        space = buildspace(surface_target(inputs.transform_func, inputs.wrap))
         if cached !== nothing
             previous = cached[1]
             previous isa SurfaceTopology &&
-                samebuild(previous, target, inputs.cells) && return nothing
+                samebuild(previous, space, inputs.cells) && return nothing
         end
-        return (surface_topology(target, inputs.cells;
+        return (surface_topology(space, inputs.cells;
             ntasks = task_count(inputs.ntasks)),)
+    end
+
+    # The projection is the only part of the axis's transform function the build
+    # does not read, and the only one that can change under a live plot — a
+    # `GeoAxis` gets its `dest` after the plot is in it.  So it is its own pass,
+    # over a buffer of this node's own: the topology stays in build space, its
+    # type never names the transform function, and re-projecting costs one
+    # stride over the vertices rather than an adjacency scan.
+    heldprojected = Ref{Any}(nothing)
+    Makie.register_computation!(
+        plot.attributes, [:surfacetopology, :transform_func, :wrap], [:projectedtopology]
+    ) do inputs, changed, cached
+        top = inputs.surfacetopology
+        target = surface_target(inputs.transform_func, inputs.wrap)
+        needs_projection(target) || return (top,)
+        buffer = ourbuffer!(heldprojected, eltype(top.positions), nvertices(top))
+        return (project_surface(top, target, buffer),)
     end
 
     # The vertex buffer and the vertex colours are what a height or a colour
@@ -183,9 +199,9 @@ function Makie.plot!(plot::DGGSurface{<:Tuple{<:CellRegion, <:AbstractVector}})
     # that neither can come to write over an array it was only passing on.
     heldpositions = Ref{Any}(nothing)
     Makie.register_computation!(
-        plot.attributes, [:surfacetopology, :zs, :ntasks], [:mesh_positions]
+        plot.attributes, [:projectedtopology, :zs, :ntasks], [:mesh_positions]
     ) do inputs, changed, cached
-        top, zs = inputs.surfacetopology, inputs.zs
+        top, zs = inputs.projectedtopology, inputs.zs
         flatvertices(top, zs) && return (top.positions,)
         buffer = ourbuffer!(heldpositions, Point3d, nvertices(top))
         return (vertex_positions!(buffer, top, zs, task_count(inputs.ntasks)),)
@@ -207,7 +223,7 @@ function Makie.plot!(plot::DGGSurface{<:Tuple{<:CellRegion, <:AbstractVector}})
     # Kept for introspection: an O(1) view over the two halves, sharing their
     # arrays rather than copying them.
     Makie.map!((top, p) -> (SurfaceMesh(top, p),), plot,
-        [:surfacetopology, :mesh_positions], [:surfacemesh])
+        [:projectedtopology, :mesh_positions], [:surfacemesh])
 
     Makie.mesh!(
         plot, plot.mesh_positions, plot.mesh_faces;

@@ -157,11 +157,11 @@ end
 """
     xyf_to_ring(ix, iy, face, nside) -> Int
 
-RING index (1-based, i.e. the position in a ring-ordered data vector) of pixel
+RING index (1-based, i.e. the index in a ring-ordered data vector) of pixel
 `(ix, iy)` on `face` at resolution `nside`. Valid for any `nside >= 1`.
 
 Implements HEALPix `xyf2ring`; `kshift` is the alternating half-pixel belt
-stagger and `jp` is the 1-based position within the ring.
+stagger and `jp` is the 1-based index within the ring.
 
 Inputs must satisfy `0 <= ix, iy < nside` and `0 <= face <= 11`; unlike the
 NESTED codecs, they are not checked.

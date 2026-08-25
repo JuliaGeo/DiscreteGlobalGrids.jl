@@ -2,7 +2,7 @@
 # interior. A border cell is exposed along a contiguous arc of the six
 # lattice directions, and the arc a child inherits is a function of the parent's
 # arc and which digit the child is. The state is `(L, s)`: the arc of exposed
-# directions `s, s+1, ..., s+L-1` (mod 6), in `_H3_DIGIT_DIR` positions.
+# directions `s, s+1, ..., s+L-1` (mod 6), in `_H3_DIGIT_DIR` indices.
 # `L == 6` is the subtree root, fully exposed and the one state with no arc
 # ends; `L == 0` means interior, and the walk prunes there. Digit 0 (the centre
 # child) is never on the border.
@@ -18,7 +18,7 @@
 """
     _H3_DIGIT_DIR[digit] -> Int
 
-Position `0:5` on the direction ring of the IJK digit `digit in 1:6`, i.e. the
+Index `0:5` on the direction ring of the IJK digit `digit in 1:6`, i.e. the
 inverse of the geometric cyclic order `K(1), JK(3), J(2), IJ(6), I(4), IK(5)`.
 """
 const _H3_DIGIT_DIR = (0, 2, 1, 4, 5, 3)
@@ -249,7 +249,7 @@ end
 # Hexagonal halo support
 # ---------------------------------------------------------------------------
 
-# The ring position of the step from a cell's parent to the cell, read off the
+# The ring index of the step from a cell's parent to the cell, read off the
 # cell's own last digit through the same table `_h3_border_step` uses. Digit 0 is
 # the centre child, which has no direction, and a base cell has no parent.
 function DGG.hex_child_direction(::H3System, c::H3Cell)

@@ -8,7 +8,7 @@
 #     ranges = DGG.level_ranges(set, leaf)
 #
 # `set` is a few thousand mixed-level cells; `ranges` is their expansion to
-# sorted, disjoint POSITION ranges at the leaf level. Their concatenation is
+# sorted, disjoint INDEX ranges at the leaf level. Their concatenation is
 # exactly the leaf id vector, so a DD lookup can be O(#ranges) in memory and
 # still answer `length`, `getindex` and every selector.
 #
@@ -72,7 +72,7 @@ note("compression: $(length(ranges)) stored ranges for $nleaf leaf cells " *
 # 2. The lookup.
 #
 # `CellLookup(set)` is semantically the leaf id vector and structurally the
-# ranges. Position `k` maps to a leaf POSITION by a binary search over the
+# ranges. Index `k` maps to a leaf INDEX by a binary search over the
 # cumulative range lengths, and only then to a typed id — nothing is
 # materialised, which is what the memory section below measures.
 # --------------------------------------------------------------------------
@@ -91,18 +91,18 @@ check("the backing is the set itself", DGG.cellset(lk) === set;
 check("parent is the lazy id vector",
     parent(lk) isa AbstractVector{eltype(lk)} && length(parent(lk)) == nleaf)
 
-# LAW 1 — position <-> id round trips.
-check("position -> id -> position round trips",
-    all(DGG.cellposition(lk, lk[k]) == k
+# LAW 1 — index <-> id round trips.
+check("index -> id -> index round trips",
+    all(DGG.localindex(lk, lk[k]) == k
         for k in (1, 2, nleaf ÷ 3, nleaf ÷ 2, nleaf)))
 # LAW 2 — the lazy form equals the materialised leaf vector.
 materialised = DGG.cellindex.(Ref(LEAFGRID), reduce(vcat, collect.(ranges)))
 check("lazy ids == the materialised leaf vector",
     length(materialised) == nleaf && collect(lk) == materialised)
-# LAW 3 — a cell outside the region has no position.
+# LAW 3 — a cell outside the region has no index.
 outside = DGG.cellat(LEAFGRID, -60.0, 0.0)
-check("a cell outside the coverage has no position",
-    DGG.cellposition(lk, outside) === nothing)
+check("a cell outside the coverage has no index",
+    DGG.localindex(lk, outside) === nothing)
 
 # The same type, re-expanded. The set's reference level is 9; asking for 12
 # names 343 times as many cells and stores the same 666 windows.
@@ -125,12 +125,12 @@ check("a DimArray over the lookup", DD.lookup(A, DGG.Cells) === lk;
 
 c = lk[nleaf÷2]
 check("At(id) selects one value", A[DGG.Cells(DD.At(c))] == Float64(nleaf ÷ 2);
-    detail="$c -> position $(nleaf ÷ 2)")
+    detail="$c -> index $(nleaf ÷ 2)")
 
-k = DGG.cellposition(lk, DGG.cellat(LEAFGRID, 8.0, 46.5))
+k = DGG.localindex(lk, DGG.cellat(LEAFGRID, 8.0, 46.5))
 check("Contains(lon, lat) selects the cell the point is in",
     A[DGG.Cells(DD.Contains(8.0, 46.5))] == Float64(k);
-    detail="(8.0, 46.5) -> position $k -> $(lk[k])")
+    detail="(8.0, 46.5) -> index $k -> $(lk[k])")
 
 zurich = GI.Polygon([GI.LinearRing([(8.4, 47.3), (8.7, 47.3), (8.7, 47.5),
     (8.4, 47.5), (8.4, 47.3)])])
@@ -138,10 +138,10 @@ sub = A[DGG.Cells(DGG.Covering(zurich))]
 selected = Int[k for r in DGG.level_ranges(
                    DGG.query(SYS, DGG.MultiOrderCoverage(zurich); level=LEAF), LEAF)
                for p in r
-               for k in (DGG.cellposition(lk, DGG.cellindex(LEAFGRID, p)),) if k !== nothing]
+               for k in (DGG.localindex(lk, DGG.cellindex(LEAFGRID, p)),) if k !== nothing]
 check("Covering(polygon) == the coverage expansion",
     parent(sub) == Float64.(selected);
-    detail="$(length(sub)) of $nleaf positions")
+    detail="$(length(sub)) of $nleaf indices")
 
 # Any `query` target takes the same path, so a cap is a selector too.
 cap = GO.UnitSpherical.SphericalCap(GO.UnitSpherical.UnitSphereFromGeographic()((8.5, 46.8)),
@@ -175,7 +175,7 @@ check("an explicit id list is the same axis", partial == lk && collect(partial) 
 #
 # `PartialGrid` and `CellLookup` are the same set seen from two sides, so the
 # conversion is free and the regridder consumes the cube's own axis: grid
-# position `i` IS `parent(A)[i]`, with no permutation anywhere.
+# index `i` IS `parent(A)[i]`, with no permutation anywhere.
 # --------------------------------------------------------------------------
 
 check("the lookup as a grid is aligned with the cube",
@@ -207,8 +207,8 @@ check("regridding the cube's data through its own axis",
 # 6. A5, which has no descendant ranges.
 #
 # `level_ranges` throws there, so the lookup is built by SELECTION instead:
-# `descendants` names the leaves, they are resolved to positions, sorted, and
-# compressed like any other position list. Same type, same laws.
+# `descendants` names the leaves, they are resolved to indices, sorted, and
+# compressed like any other index list. Same type, same laws.
 # --------------------------------------------------------------------------
 
 const A5 = DGG.A5System()
@@ -226,7 +226,7 @@ a5lk = DGG.CellLookup(a5set)
 a5ids = sort!(reduce(vcat, [DGG.descendants(A5, c, 7) for c in a5set]))
 check("and a cell axis all the same",
     collect(a5lk) == a5ids &&
-    all(DGG.cellposition(a5lk, a5lk[k]) == k for k in eachindex(a5ids));
+    all(DGG.localindex(a5lk, a5lk[k]) == k for k in eachindex(a5ids));
     detail=sprint(show, a5lk))
 note("selection mode's cost is the construction, which walks the leaves;")
 note("an A5 leaf can also sit outside its own ancestor's footprint, so a")

@@ -23,17 +23,17 @@ halo can be far larger than the border it wraps.
 Three properties are contracts rather than accidents, and all three are worth
 knowing before writing any code against these verbs:
 
-  - **Positions by default, ids on request.** Each verb yields
-    `cellposition`s and takes `cells = true` to yield cell ids instead. A halo's
-    positions are into the complete level grid; a border's and an interior's are
-    into the region.
-  - **The order is ascending position on the target grid**, strictly increasing,
+  - **Indices by default, ids on request.** Each verb yields indices and
+    takes `cells = true` to yield cell ids instead. A halo's indices are
+    global indices, into the complete level grid; a border's and an
+    interior's are local indices, into the region.
+  - **The order is ascending index on the target grid**, strictly increasing,
     on every system and through every engine. A consumer indexing
-    position-ordered storage needs no `sort` and no `sortperm`. These are fetch
+    index-ordered storage needs no `sort` and no `sortperm`. These are fetch
     lists, and they are the *only* neighbourhood verbs here that are ascending:
     [`neighbors`](@ref), [`ring`](@ref), [`adjacency`](@ref) and
     [`member_neighbors`](@ref) all answer counter-clockwise seen from outside the
-    sphere, in ids and in positions alike.
+    sphere, in ids and in indices alike.
   - **`length` is refused wherever the count is unproved.** Face seams, poles
     and pentagons break perimeter formulas, so most engines declare
     `SizeUnknown()` and define no `length` at all.
@@ -63,11 +63,11 @@ EdgeCellIterator
 InnerCellIterator
 ```
 
-## Position space, and sizing
+## Index space, and sizing
 
 ```@docs
-halo_positions
-DiscreteGlobalGrids.Engine.HaloPositionIterator
+halo_indices
+DiscreteGlobalGrids.Engine.HaloIndexIterator
 DiscreteGlobalGrids.sizehint
 ```
 
@@ -83,7 +83,7 @@ answer at.
 adjacency
 AdjacencyTable
 halocells
-halopositions
+haloindices
 member_neighbors
 neighbors
 ring
@@ -117,7 +117,8 @@ Vertex
 Edge
 levelgrid
 cellindex
-cellposition
+localindex
+globalindex
 descendant_range
 descendants
 has_sorted_subtrees

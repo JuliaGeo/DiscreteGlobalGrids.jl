@@ -33,6 +33,8 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/stencils.jl")
     include("systems/crosssystem/neighborhood.jl")
     include("systems/crosssystem/mapneighbors.jl")
+    # The field-request form of the same sweep.
+    include("systems/crosssystem/needs.jl")
     include("systems/crosssystem/subtree_halos.jl")
     # The algebra over regions reads the halo walk and both cell containers.
     include("systems/crosssystem/region_algebra.jl")

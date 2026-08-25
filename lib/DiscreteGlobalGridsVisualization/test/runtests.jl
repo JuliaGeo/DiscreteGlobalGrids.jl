@@ -439,7 +439,7 @@ end
         # edge — it is the complete dual, restricted.
         grid = DGG.levelgrid(SYS, DGG.level(cells))
         whole = DGGV.triangulate(globe(), grid)
-        position = Dict(DGG.cellindex(grid, p) => p for p in 1:DGG.ncells(grid))
+        index = Dict(DGG.cellindex(grid, p) => p for p in 1:DGG.ncells(grid))
         member = Dict(cells[p] => p for p in 1:length(cells))
         restricted = Set(
             Tuple(sort([member[DGG.cellindex(grid, Int(GeometryBasics.value(f[j])))] for j in 1:3]))
@@ -447,7 +447,7 @@ end
                 if all(DGG.cellindex(grid, Int(GeometryBasics.value(f[j]))) in keys(member) for j in 1:3)
         )
         @test triangle_set(mesh) == restricted
-        @test position isa Dict  # the level grid is indexed by position, as assumed above
+        @test index isa Dict  # the level grid is indexed by array index, as assumed above
     end
 
     @testset "threading is not observable" begin
@@ -662,6 +662,47 @@ end
         figure = Figure(size = (400, 300))
         onglobe = dggsurface!(GlobeAxis(figure[1, 1]), cells; color = values)
         @test onglobe.mesh_color[] === values
+    end
+
+    @testset "a projection set after the plot re-projects rather than rebuilds" begin
+        # What a tutorial does: plot first, then hand the axis its projection.
+        # The topology has to survive that — the transform function is no part
+        # of its type — and only the vertices may move.
+        cells = patch(6)
+        values = Float64.(1:length(cells))
+        ortho(lat) = GeoMakie.create_transform(
+            "+proj=ortho +lon_0=10.5 +lat_0=$lat +datum=WGS84",
+            "+proj=longlat +datum=WGS84")
+
+        figure, axis, plot = dggsurface(cells; color = values)
+        flat = copy(plot.mesh_positions[])
+        plot.transformation.transform_func[] = ortho(46.5)
+        Makie.update_state_before_display!(figure)
+
+        built = plot.surfacetopology[]
+        @test plot.mesh_positions[] != flat
+        @test plot.mesh_positions[] == plot.projectedtopology[].positions
+        # The build keeps its longitudes and latitudes, or there would be
+        # nothing left to project the second time.
+        @test built.positions == flat
+
+        # Another projection about the same central meridian has the same seam,
+        # so the expensive half is reused and the vertices are projected again
+        # into the buffer that node already owns.
+        projected = plot.mesh_positions[]
+        plot.transformation.transform_func[] = ortho(0.0)
+        Makie.update_state_before_display!(figure)
+        @test plot.surfacetopology[] === built
+        @test plot.mesh_positions[] === projected
+        @test built.positions == flat
+        @test saves(figure)
+
+        # Heights are read after the projection, not before it.
+        figure, axis, raised = dggsurface(cells, values)
+        raised.transformation.transform_func[] = ortho(46.5)
+        Makie.update_state_before_display!(figure)
+        @test [p[3] for p in raised.mesh_positions[]] ==
+            DGGV.spread(values, raised.surfacemesh[])
     end
 
     @testset "a surface can be coloured by its own heights" begin

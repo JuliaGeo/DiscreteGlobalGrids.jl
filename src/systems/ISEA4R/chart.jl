@@ -1,5 +1,5 @@
 # Ten equal-area charts `[0,1]^2 -> S^2`, one per diamond. Coordinates and
-# row-major/Morton identifiers are 0-based; data positions are identifier + 1.
+# row-major/Morton identifiers are 0-based; data indices are identifier + 1.
 # Morton order is canonical for power-of-two `nside`.
 
 """

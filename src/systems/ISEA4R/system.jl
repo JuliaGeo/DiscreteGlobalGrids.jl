@@ -1,5 +1,5 @@
 # ISEA4R uses 0-based Morton identifiers over ten diamonds. Parent/child and
-# subtree operations are radix-4 arithmetic and grid positions are identifier
+# subtree operations are radix-4 arithmetic and grid indices are identifier
 # + 1, so they are the quad-face family's; this file writes the ten-diamond
 # chart's share.
 

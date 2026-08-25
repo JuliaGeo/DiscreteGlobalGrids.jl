@@ -1,4 +1,4 @@
-# A hierarchical cursor uses grid positions as leaf indices. Sorted-subtree
+# A hierarchical cursor uses grid indices as leaf indices. Sorted-subtree
 # systems descend through contiguous windows; others materialize selections.
 # Sparse partial-grid nodes may tighten their system-provided extent.
 
@@ -22,8 +22,8 @@ cells they actually hold and therefore cover nothing below the leaf level.
 
 !!! note "What a system has to get right for this to work"
     A non-`PartialGrid` grid with a system must be its complete level grid in
-    canonical position order. `descendant_range(sys, c, level(c))` must return
-    the cell's one-element position range.
+    canonical index order. `descendant_range(sys, c, level(c))` must return
+    the cell's one-element index range.
 """
 struct HierarchicalGridCursor{G<:AbstractGrid,S<:AbstractHierarchicalGridSystem,ID,X}
     grid::G
@@ -41,7 +41,7 @@ end
 function HierarchicalGridCursor(grid::AbstractGrid; bucket_size::Union{Nothing,Integer}=nothing)
     sys = system(grid)
     sys === nothing && throw(ArgumentError(
-        "$(typeof(grid)) has no hierarchical system; treeify builds a position-space tree for it"))
+        "$(typeof(grid)) has no hierarchical system; treeify builds an index-space tree for it"))
     leaf = level(grid)
     leaf === nothing && throw(ArgumentError(
         "$(typeof(grid)) reports a system but no level, so it names no leaf level"))
@@ -50,7 +50,7 @@ function HierarchicalGridCursor(grid::AbstractGrid; bucket_size::Union{Nothing,I
     bs >= 0 || throw(ArgumentError("bucket_size must be non-negative"))
     n = ncells(grid)
     lvl, id = _tree_root(grid, sys, top)
-    # Selection mode materializes the root position space once.
+    # Selection mode materializes the root index space once.
     selection = has_sorted_subtrees(sys) ? nothing : collect(1:n)
     return HierarchicalGridCursor{typeof(grid),typeof(sys),typeof(id),typeof(selection)}(
         grid, sys, top, Int(leaf), bs, lvl, id, 1, n, selection)
@@ -103,7 +103,7 @@ _stored_id(cursor::HierarchicalGridCursor, i::Int) =
 """
     node_indices(cursor) -> AbstractVector{Int}
 
-Return the ascending grid positions owned by this node. A window cursor returns
+Return the ascending grid indices owned by this node. A window cursor returns
 an `O(1)` range; a selection cursor returns its materialized vector.
 """
 node_indices(cursor::WindowCursor) = cursor.first_index:cursor.last_index
@@ -127,8 +127,8 @@ function _child_ids(cursor::HierarchicalGridCursor)
     return children(cursor.system, cursor.id)
 end
 
-# Position window of a child on a COMPLETE level grid: `descendant_range` is
-# already in this grid's position space, by its own contract.
+# Index window of a child on a COMPLETE level grid: `descendant_range` is
+# already in this grid's index space, by its own contract.
 _child_window(cursor::HierarchicalGridCursor, child_id) =
     _range_bounds(descendant_range(cursor.system, child_id, cursor.leaf_level))
 
@@ -273,7 +273,7 @@ end
 """
     STI.child_indices_extents(cursor) -> Vector{Tuple{Int,SphericalCap{Float64}}}
 
-Return leaf grid positions and tight cell caps. The result is materialized to
+Return leaf grid indices and tight cell caps. The result is materialized to
 avoid recomputing caps during repeated dual-tree passes.
 
 Each cap is `cell_cap` of that one leaf cell: a bound over that cell's own
@@ -303,10 +303,10 @@ GOCore.best_manifold(cursor::HierarchicalGridCursor) = GOCore.best_manifold(curs
 # tree-level (`1:ncells(tree)`) and node-level index spaces.
 Trees.ncells(cursor::HierarchicalGridCursor) = _stored_count(cursor)
 
-# `i` is a GRID position, at every node — the same index space
+# `i` is a GRID index, at every node — the same index space
 # `child_indices_extents` yields, so that the index pairs a dual tree walk
 # collects are valid arguments here. (At the root, where every consumer calls
-# it, the node-local and grid position spaces coincide anyway.)
+# it, the node-local and grid index spaces coincide anyway.)
 function Trees.getcell(cursor::HierarchicalGridCursor, i::Int)
     1 <= i <= ncells(cursor.grid) || throw(BoundsError(cursor.grid, i))
     return cell_polygon(cursor.grid, cellindex(cursor.grid, i))

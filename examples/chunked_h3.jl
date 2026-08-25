@@ -1,8 +1,8 @@
 # Demo: chunked data — one grid, one tree, per data chunk (H3).
 #
 # A datacube stored as H3 level-6 cells grouped by their level-2 ancestor wants
-# a grid per chunk: built in O(1), numbered 1:ncells so a position is an index
-# into the chunk's data array, and never naming a cell the chunk does not own.
+# a grid per chunk: built in O(1), numbered 1:ncells so a cell's index into the
+# grid is its index into the chunk's data array, and never naming a cell the chunk does not own.
 #
 #     grid = DGG.subtree(DGG.H3System(), chunk, LEAF_LEVEL)
 #
@@ -55,18 +55,18 @@ check("ncells == the chunk's descendant range", DGG.ncells(grid) == expected;
 check("every cell is a chunk descendant",
     all(DGG.ancestor(SYS, DGG.cellindex(grid, i), CHUNK_LEVEL) == CHUNK
         for i in 1:DGG.ncells(grid)))
-check("positions are chunk-local and round trip",
-    all(DGG.cellposition(grid, DGG.cellindex(grid, i)) == i
+check("indices are chunk-local and round trip",
+    all(DGG.localindex(grid, DGG.cellindex(grid, i)) == i
         for i in (1, 2, 1200, expected)))
-check("the tree's leaf i is the grid's position i",
+check("the tree's leaf i is the grid's index i",
     DGG.ncells(tree) == expected &&
     all(DGG.getcell(tree, i) == DGG.cell_polygon(grid, DGG.cellindex(grid, i))
         for i in (1, 2, 1200, expected)))
 
-# The globe at the same level is O(1) to build too, but its positions are global
+# The globe at the same level is O(1) to build too, but its indices are global
 # ordinals, so a per-chunk data array no longer indexes through it.
 globe = DGG.levelgrid(SYS, LEAF_LEVEL)
-check("chunk position 1 is not globe position 1",
+check("chunk index 1 is not globe index 1",
     DGG.cellindex(grid, 1) != DGG.cellindex(globe, 1);
     detail="$(DGG.cellindex(grid, 1)) vs $(DGG.cellindex(globe, 1))")
 note("globe at level $LEAF_LEVEL: $(DGG.ncells(globe)) cells " *
@@ -75,7 +75,7 @@ note("globe at level $LEAF_LEVEL: $(DGG.ncells(globe)) cells " *
 # --------------------------------------------------------------------------
 # 2. Queries answer in the chunk's own index space.
 #
-# `query` returns typed ids; `cellposition` is what turns one into an index into
+# `query` returns typed ids; `localindex` is what turns one into an index into
 # the chunk's data array. A query whose target is nowhere near the chunk is
 # pruned at the grid's root extent and comes back empty.
 # --------------------------------------------------------------------------
@@ -84,12 +84,12 @@ near = Extents.Extent(X=(9.9, 10.1), Y=(44.9, 45.1))
 far = Extents.Extent(X=(-150.5, -149.5), Y=(-40.5, -39.5))
 
 hits = DGG.query(grid, DGG.Intersects(near))
-positions = [DGG.cellposition(grid, c) for c in hits]
+indices = [DGG.localindex(grid, c) for c in hits]
 check("in-chunk query hits index the chunk", !isempty(hits) &&
-                                             all(p -> p isa Int && 1 <= p <= expected, positions);
+                                             all(p -> p isa Int && 1 <= p <= expected, indices);
     detail="$(length(hits)) cells")
 check("hits really do meet the target",
-    all(DGG.cellindex(grid, p) in hits for p in positions))
+    all(DGG.cellindex(grid, p) in hits for p in indices))
 check("out-of-chunk query returns nothing",
     isempty(DGG.query(grid, DGG.Intersects(far))))
 
@@ -110,7 +110,7 @@ check("cellat outside the chunk is nothing",
 # halo is outside, and an exchange that only knew the border would know what to
 # pack and not what to unpack.
 #
-# `halo` answers in positions on the GLOBE, which is exactly what a fetch list
+# `halo` answers in indices on the GLOBE, which is exactly what a fetch list
 # is: no ids are materialised on the way there, and the walk is ascending, so a
 # receiver can merge it against sorted storage without a sort of its own.
 # --------------------------------------------------------------------------
@@ -124,24 +124,24 @@ check("every border cell has a neighbour outside the chunk",
 check("border and interior partition the chunk",
     length(border) + length(collect(DGG.interior(grid))) == expected)
 
-fetch_positions = collect(DGG.halo(grid))
+fetch_indices = collect(DGG.halo(grid))
 check("the halo is outside the chunk, and reaches it",
-    all(DGG.cellposition(grid, DGG.cellindex(globe, p)) === nothing
-        for p in fetch_positions) &&
-    all(any(DGG.cellposition(grid, nb) !== nothing
+    all(DGG.localindex(grid, DGG.cellindex(globe, p)) === nothing
+        for p in fetch_indices) &&
+    all(any(DGG.localindex(grid, nb) !== nothing
             for nb in DGG.neighbors(globe, DGG.cellindex(globe, p)))
-        for p in fetch_positions);
-    detail="$(length(fetch_positions)) cells to fetch")
+        for p in fetch_indices);
+    detail="$(length(fetch_indices)) cells to fetch")
 check("the fetch list is ascending, so no receiver has to sort it",
-    issorted(fetch_positions) && allunique(fetch_positions))
+    issorted(fetch_indices) && allunique(fetch_indices))
 check("the send and fetch lists are disjoint and adjacent",
-    isempty(intersect(Set(border), Set(DGG.cellindex(globe, p) for p in fetch_positions))) &&
+    isempty(intersect(Set(border), Set(DGG.cellindex(globe, p) for p in fetch_indices))) &&
     all(any(DGG.cellindex(globe, p) in Set(DGG.neighbors(globe, c)) for c in border)
-        for p in fetch_positions))
+        for p in fetch_indices))
 halo_it = DGG.halo(grid)
 check("sizehint bounds it, and is not a count",
-    DGG.sizehint(halo_it) >= length(fetch_positions);
-    detail="hint $(DGG.sizehint(halo_it)) for $(length(fetch_positions)) cells")
+    DGG.sizehint(halo_it) >= length(fetch_indices);
+    detail="hint $(DGG.sizehint(halo_it)) for $(length(fetch_indices)) cells")
 
 # --------------------------------------------------------------------------
 # 4. O(chunk), not O(globe).
@@ -190,12 +190,12 @@ for sys in (DGG.systems()..., DGG.AuthalicSystem(DGG.H3System()))
            "Authalic($(nameof(typeof(base))))" : string(nameof(typeof(sys)))
     println("  ", rpad(name, 18), lpad(DGG.ncells(g), 11), "   ", lazy ? "yes" : "no")
     check("$name: chunk grid is rooted and local",
-        DGG.ncells(g) > 0 && DGG.cellposition(g, DGG.cellindex(g, 1)) == 1)
+        DGG.ncells(g) > 0 && DGG.localindex(g, DGG.cellindex(g, 1)) == 1)
 end
 
 println()
 note("call site, verbatim:  grid = DGG.subtree(sys, chunk, LEAF_LEVEL)")
-note("`treeify(grid)` is the tree; `cellposition(grid, c)` is the data index")
+note("`treeify(grid)` is the tree; `localindex(grid, c)` is the data index")
 
 println()
 println(FAILURES[] == 0 ? "ALL CHECKS PASSED" : "$(FAILURES[]) CHECK(S) FAILED")

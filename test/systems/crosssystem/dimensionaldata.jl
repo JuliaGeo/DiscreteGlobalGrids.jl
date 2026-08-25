@@ -86,19 +86,19 @@ end
         @test lk[:] === lk
     end
 
-    @testset "position <-> id round trips" begin
-        @test all(DGG.cellposition(lk, lk[k]) == k for k in eachindex(ids))
+    @testset "index <-> id round trips" begin
+        @test all(DGG.localindex(lk, lk[k]) == k for k in eachindex(ids))
         outside = DGG.cellat(grid, FARAWAY...)
         @test outside !== nothing
-        @test DGG.cellposition(lk, outside) === nothing
-        # An id from another level names no position here, rather than the
-        # position of a cell with the same raw bits.
+        @test DGG.localindex(lk, outside) === nothing
+        # An id from another level names no index here, rather than the
+        # index of a cell with the same raw bits.
         coarser = DGG.ancestor(sys, first(ids), leaf - 1)
-        @test DGG.cellposition(lk, coarser) === nothing
+        @test DGG.localindex(lk, coarser) === nothing
     end
 
     @testset "the degenerate cases answer identically" begin
-        # A whole level: one window, and the lookup's positions ARE the grid's.
+        # A whole level: one window, and the lookup's indices ARE the grid's.
         complete = DGG.CellLookup(grid)
         @test length(complete) == DGG.ncells(grid)
         @test CL.nwindows(CL.windows(complete)) == 1
@@ -106,29 +106,29 @@ end
 
         # PARTIAL ⊂ COMPLETE: the subset lookup and the whole-level lookup
         # agree about every cell of the subset, and the whole-level lookup's
-        # positions are the grid's own.
-        @test all(DGG.cellposition(complete, c) == DGG.cellposition(grid, c) for c in lk)
-        @test all(DGG.cellposition(complete, c) !== nothing for c in lk)
+        # indices are the grid's own.
+        @test all(DGG.localindex(complete, c) == DGG.globalindex(grid, c) for c in lk)
+        @test all(DGG.localindex(complete, c) !== nothing for c in lk)
 
         # An arbitrary ascending subset, the "partial lookup": same content,
         # same answers, and equal to the multi-order form it was built from.
         partial = DGG.CellLookup(DGG.PartialGrid(sys, leaf, ids))
         @test collect(partial) == ids
         @test partial == lk
-        @test all(DGG.cellposition(partial, ids[k]) == k for k in eachindex(ids))
+        @test all(DGG.localindex(partial, ids[k]) == k for k in eachindex(ids))
 
         # A rooted subtree, which is the one shape both backings can hold.
         root = DGG.ancestor(sys, first(ids), leaf - 1)
         rooted = DGG.CellLookup(DGG.subtree(sys, root, leaf))
         @test collect(rooted) == DGG.descendants(sys, root, leaf)
-        @test DGG.cellposition(rooted, first(ids)) !== nothing
+        @test DGG.localindex(rooted, first(ids)) !== nothing
     end
 
     @testset "the lookup read as a grid" begin
         pg = DGG.PartialGrid(lk)
         @test DGG.ncells(pg) == length(lk)
         @test all(DGG.cellindex(pg, k) == lk[k] for k in eachindex(ids))
-        @test all(DGG.cellposition(pg, lk[k]) == k for k in eachindex(ids))
+        @test all(DGG.localindex(pg, lk[k]) == k for k in eachindex(ids))
         @test DGG.level(pg) == leaf
     end
 end
@@ -163,7 +163,7 @@ end
         @test parent(A[DGG.Cells(DD.Where(c -> c == ids[2]))]) == [2.0]
     end
 
-    @testset "At(id) selects that id's position" begin
+    @testset "At(id) selects that id's index" begin
         for k in (1, length(ids) ÷ 2, length(ids))
             @test A[DGG.Cells(DD.At(ids[k]))] == Float64(k)
         end
@@ -185,7 +185,7 @@ end
         for target in (ZURICH, REGION)
             byhand = Int[]
             for c in expand(sys, DGG.query(sys, DGG.MultiOrderCoverage(target); level=leaf), leaf)
-                k = DGG.cellposition(lk, c)
+                k = DGG.localindex(lk, c)
                 k === nothing || push!(byhand, k)
             end
             sort!(byhand)
@@ -198,7 +198,7 @@ end
             @test sublk isa DGG.CellLookup
             @test DGG.level(sublk) == leaf
             @test collect(sublk) == [lk[k] for k in byhand]
-            @test all(DGG.cellposition(sublk, sublk[j]) == j for j in eachindex(byhand))
+            @test all(DGG.localindex(sublk, sublk[j]) == j for j in eachindex(byhand))
         end
         # The whole region selects the whole axis: the coverage that built the
         # lookup, run against the lookup, is the identity.
@@ -255,7 +255,7 @@ end
 # A5: the selection-mode decision, exercised
 # ---------------------------------------------------------------------------
 
-@testset "A5 stores positions because it has no descendant ranges" begin
+@testset "A5 stores indices because it has no descendant ranges" begin
     sys = DGG.A5System()
     leaf = 9
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
@@ -271,7 +271,7 @@ end
     lk = DGG.CellLookup(set)
     ids = sort!(reduce(vcat, [DGG.descendants(sys, c, leaf) for c in set]))
     @test collect(lk) == ids
-    @test all(DGG.cellposition(lk, lk[k]) == k for k in eachindex(ids))
+    @test all(DGG.localindex(lk, lk[k]) == k for k in eachindex(ids))
 
     DGG.CellLookup(set)
     DGG.CellLookup(set; level=leaf + 2)
@@ -284,7 +284,7 @@ end
     A = DD.DimArray(Float64.(eachindex(ids)), DGG.Cells(lk))
     inner = DGG.query(sys, DGG.MultiOrderCoverage(ZURICH); level=leaf)
     byhand = sort!(filter!(!isnothing,
-        [DGG.cellposition(lk, c) for c in sort!(reduce(vcat,
+        [DGG.localindex(lk, c) for c in sort!(reduce(vcat,
             [DGG.descendants(sys, c, leaf) for c in inner]))]))
     @test parent(A[DGG.Cells(DGG.Covering(ZURICH))]) == Float64.(byhand)
 end

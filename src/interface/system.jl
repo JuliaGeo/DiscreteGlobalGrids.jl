@@ -60,7 +60,7 @@ function levelgrid end
 """
     ncells(sys::AbstractHierarchicalGridSystem, l::Integer) -> Int
     cellindex(sys::AbstractHierarchicalGridSystem, l::Integer, i::Int) -> AbstractCellIndex
-    cellposition(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> Union{Int,Nothing}
+    globalindex(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> Union{Int,Nothing}
     cell_boundary(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex)
     cell_centroid(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex)
 
@@ -72,11 +72,11 @@ of its own and answers the [`AbstractGrid`](@ref) contract there.
 
 These are the five methods [`HierarchicalLevelGrid`](@ref) forwards to. Each
 carries its grid-level contract — [`ncells`](@ref), [`cellindex`](@ref),
-[`cellposition`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref) —
+[`globalindex`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref) —
 minus the two things the grid method has already settled:
 
   - `cellindex` may assume `i in 1:ncells(sys, l)`. The grid bounds-checks.
-  - `cellposition` may assume `c` is in [`cellindextype(sys)`](@ref
+  - `globalindex` may assume `c` is in [`cellindextype(sys)`](@ref
     cellindextype) and at the level being asked about: the grid answers
     `nothing` for a cell at another level, and reindexes the alternate schemes
     first. It still returns `nothing` for a canonical id that names no cell at
@@ -474,7 +474,7 @@ than a parallel set of verbs taking `(sys, c, l)` argument tuples.
 
 `l < level(c)` throws an `ArgumentError`. Construction is `O(1)` where
 [`has_sorted_subtrees`](@ref) holds, since the ids are then the level grid's own
-over a known position range; elsewhere it materialises
+over a known index range; elsewhere it materialises
 [`descendants`](@ref). `bucket_size` is [`PartialGrid`](@ref)'s.
 """
 function subtree end
@@ -554,7 +554,7 @@ function face_orientation end
 Define the operations used by the calibrated aperture-7 halo traversal. H3 and
 IGeo7 implement them using their subtree-border automata.
 
-`hex_child_direction` returns the position `0:5` of the parent-to-child step on
+`hex_child_direction` returns the index `0:5` of the parent-to-child step on
 the direction ring, or `-1` for a centre child or root cell.
 
 `seeded_border_engine` enters the system's border automaton at an arbitrary arc
@@ -577,7 +577,7 @@ function seeded_border_engine end
 """
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}
 
-The contiguous interval of **positions** in `levelgrid(sys, l)`'s canonical
+The contiguous interval of **indices** in `levelgrid(sys, l)`'s canonical
 dense order occupied by the descendants of `c` at level `l`.
 
 Available only when [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) is
@@ -587,11 +587,11 @@ both at the first call, rather than that `MethodError`.
 
 Both directions are required:
 
- 1. every level-`l` descendant of `c` has its position in the range, and
- 2. every position in the range is a level-`l` descendant of `c`.
+ 1. every level-`l` descendant of `c` has its index in the range, and
+ 2. every index in the range is a level-`l` descendant of `c`.
 
-The range is over valid dense positions, not raw ids, and therefore has no id
-encoding gaps. It can be intersected with sorted position vectors by binary
+The range is over valid dense indices, not raw ids, and therefore has no id
+encoding gaps. It can be intersected with sorted index vectors by binary
 search.
 
 Sibling ranges are disjoint and partition the parent's range in canonical order.

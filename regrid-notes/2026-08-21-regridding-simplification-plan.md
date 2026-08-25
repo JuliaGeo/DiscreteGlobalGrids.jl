@@ -107,6 +107,17 @@ kept as a deprecation shim and appears in this plan only as history:
   `chunktree`-collecting `chunkextents` fallback are all gone; `chunkextents` is
   a required hook with no fallback, and one `candidatechunks!` query per
   destination cap defines every edge.
+- Phase 5, one final weight block representation: **complete**. W1 and W2 are
+  closed. A final `WeightBlock` holds weights, the optional denominator and the
+  one reference vector its values are normalized against — aliased to the
+  denominator where there is one, row sums where there is not, stored once and
+  copied by no cache. `weightblock` is the one builder path, for the eager whole
+  domain and a chunk pair alike, and `Conservative` reaches it by specializing
+  `pairblock`: it adopts the matrix it assembles and reads each denominator off
+  that matrix once, so no conservative block is copied through a coordinate list
+  on any route. `buildweights!` with `WeightCOO` remains the generic assembly
+  and the only hook a method must supply, and a method wrapping another takes
+  the inner method's build by forwarding `pairblock`.
 - Phase 9, point-method admission: **complete**. S1, S2 and S3 are closed, and
   the barycentric plan's P0, P1 and P2 landed inside it. `outputsampling` names
   the build path by trait alone; a point method supplying a `sampler` builds one
@@ -118,9 +129,9 @@ kept as a deprecation shim and appears in this plan only as history:
   declared bound that keeps them a superset, and a manifest naming a chunk no
   row of its tile holds is refused rather than silently trimmed. Conservative
   weights, keys, read counts and values are unchanged.
-- **Next in this plan's own order: Phase 5** (W1 then W2), behind the user's
-  gate. Phase 9 branched from E2 beside it and is closed, so nothing runs
-  alongside Phase 5 any more; Phases 6-8 follow it in order.
+- **Next in this plan's own order: Phase 6** (O1 then O2), behind the user's
+  gate. Phase 9 branched from E2 beside Phase 5 and is closed, so nothing runs
+  alongside Phase 6; Phases 7-8 follow it in order.
 
 Landed cards, with the commit each one shipped as:
 
@@ -145,9 +156,12 @@ Landed cards, with the commit each one shipped as:
 | P2 | `874bf74` | Specialise barycentric points on chart axes |
 | S2 | `8c05a2f` | Build point weights per destination tile |
 | S3 | `2800ba3` | Read exact source chunks for point tiles |
+| W1 | `d01da5c` | Store reference weights in WeightBlock |
+| P3 | `d227de2` | Record the fused tile-weight execution |
+| W2 | `6a4314f` | Unify final weight block construction |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
-`93e836d` is the commit that pinned them and records their SHAs. P0, P1 and P2
+`93e836d` is the commit that pinned them and records their SHAs. P0, P1, P2 and P3
 are the barycentric plan's own cards, landed here because Phase 9 admits them.
 
 Evidence:
@@ -182,6 +196,10 @@ Evidence:
 - `regrid-notes/2026-08-25-s3-exact-reads.md` — S3's selection: what decides a
   read on each route, what the relation is for, and why `supportradius` is a
   bound rather than an approximation
+- `regrid-notes/2026-08-25-w1-block-reference.md` — W1's final block: the one
+  reference vector, when it aliases a denominator, and what a builder hands it
+- `regrid-notes/2026-08-25-w2-one-builder.md` — W2's one build path,
+  Conservative's adopted assembly, and the wrapper forwarding rule
 - `regrid-notes/2026-08-23-barycentric-regridding-plan.md` — the point-method
   plan Phase 9 admits, and the authoritative naming for its parts
 - `regrid-notes/generic-barycentric-patch-regridding.md` and
@@ -925,7 +943,8 @@ and weight tests/benchmark.
 
 Actions:
 
-- Add `weightblock(method, dst_space, dst_inds, src_space, src_inds)`.
+- Add `weightblock(method, dst_space, dst_inds, src_space, src_inds)` (landed
+  with S1, `8057af2`).
 - Keep `buildweights!` plus `WeightCOO` as the compatible generic fallback.
 - Let Conservative adopt its assembled CSC directly with denominators computed
   once; remove CSC-to-COO-to-CSC conversion.
@@ -945,6 +964,11 @@ empty sides, third-party emitters, and the committed peak-RSS benchmark.
 
 **Phase 5 gate:** one block-builder path and one final block representation,
 with no measured eager regression and the chunked round-trip memory removed.
+Met: interleaved same-session runs put eager production time within 0.9 % on
+medians against a 9.5 % within-state spread, and the chunked route's allocations
+fall by 812,885,051 bytes on `conservative_roundtrip_baseline.jl` — Phase 0's
+810,045,520-byte round trip — and by 6.6 % on `conservative_block_baseline.jl`,
+after which the chunked route allocates what the eager route allocates.
 
 **Commit:** `Unify final weight block construction`.
 

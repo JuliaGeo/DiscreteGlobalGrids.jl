@@ -1,7 +1,11 @@
 # Public regridding API.
 
-# Whether the source exposes chunked storage.
-isdiskbacked(data) = DiskArrays.haschunks(data) isa DiskArrays.Chunked
+# Whether `data` declares a chunking of its own. This is what makes a regrid
+# lazy by default, what `SourceChunking` reads that declaration for, and what
+# `flatsource` materializes before reshaping. It says nothing about where the
+# values live: a source's residence is tested separately, by `_isdisksource`,
+# because only a real disk array is read through `DiskArrays.readblock!`.
+declareschunks(data) = DiskArrays.haschunks(data) isa DiskArrays.Chunked
 
 # Nodata metadata keys, in precedence order.
 const MISSINGVAL_KEYS = ("missingval", "_FillValue", "missing_value")
@@ -29,7 +33,7 @@ end
 """
     regrid(data; to, from = nothing, method = Conservative(),
            missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
-           lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
+           lazy = declareschunks(data), chunks = nothing, budget = nothing,
            storage = nothing, sampling = nothing)
     regrid(data, plan::AbstractRegriddingPlan)
 
@@ -105,7 +109,7 @@ destinationdims(plan::ChunkedPlan) =
 """
     regrid!(dest, data; to, from = nothing, method = Conservative(),
             missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
-            lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
+            lazy = declareschunks(data), chunks = nothing, budget = nothing,
             storage = nothing, sampling = nothing)
     regrid!(dest, data, plan::AbstractRegriddingPlan)
 
@@ -143,7 +147,7 @@ regrid!(dest, data, plan::AbstractRegriddingPlan) =
 """
     plan_regrid(data; to, from = nothing, method = Conservative(),
                 missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
-                lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
+                lazy = declareschunks(data), chunks = nothing, budget = nothing,
                 storage = nothing, sampling = nothing, dependencies = nothing,
                 refine = nothing, narrow = nothing) -> AbstractRegriddingPlan
 
@@ -179,7 +183,7 @@ function plan_regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
     missingpolicy::AbstractMissingPolicy = Weighted(0.5),
     missingval = sourcemissingval(data),
-    lazy::Bool = isdiskbacked(data), chunks = nothing,
+    lazy::Bool = declareschunks(data), chunks = nothing,
     budget::Union{Nothing,Integer} = nothing,
     storage::Union{Nothing,AbstractBlockStorage} = nothing,
     sampling::Union{Nothing,DD.Lookups.Sampling} = nothing,

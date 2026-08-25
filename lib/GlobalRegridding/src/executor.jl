@@ -352,7 +352,7 @@ _otherdimsizes(data, sd) =
 # Reshape the source to `ncells × nslices` in memory order.
 function flatsource(data::AbstractArray, nsrc::Integer, nslices::Integer)
     raw = data isa DD.AbstractDimArray ? parent(data) : data
-    isdiskbacked(raw) && (raw = Array(raw))
+    declareschunks(raw) && (raw = Array(raw))
     return reshape(raw, Int(nsrc), Int(nslices))
 end
 

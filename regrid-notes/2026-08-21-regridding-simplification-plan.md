@@ -1125,11 +1125,14 @@ Actions:
 - Normalize a valid source `GridChunks` once per lazy-array application.
 - Derive output pass-through chunks and non-spatial read groups from that one
   value.
-- Reuse it for inferred raster spatial chunks only if this does not couple
-  `RasterGrid` to `LazyRegridArray` or put data-specific state on the plan.
-- Rename `isdiskbacked` (`lib/GlobalRegridding/src/api.jl:4`) to reflect that it
-  tests declared chunking. Preserve the separate true-disk predicate used for
-  DiskArrays reads (`lazy.jl:827`).
+- Leave the inferred raster spatial chunks with `RasterGrid`. A raster space is
+  built from an array before, and often without, any lazy array, so reusing the
+  lazy value there would either hand the space constructor that array's reading
+  or park a data-specific description on a plan reusable across arrays.
+  `_spatialchunks` reads the declaration itself and shares only the predicate.
+- Rename `isdiskbacked` (`lib/GlobalRegridding/src/api.jl`) to `declareschunks`,
+  which is what it tests. Preserve the separate true-disk predicate used for
+  DiskArrays reads (`_isdisksource`, `lazy.jl`).
 
 Use a counting fixture to verify one `eachchunk` interpretation and test
 regular, irregular, absent, malformed/non-grid chunk descriptions, output

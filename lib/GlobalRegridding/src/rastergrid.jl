@@ -407,9 +407,13 @@ end
 
 # Chunk extraction
 
+# A raster's own chunking, read from the array it is built over. This is a
+# space's geometry, fixed when the space is constructed and independent of any
+# data a plan is later applied to, so it stays separate from the chunking a lazy
+# array reads off the source it regrids.
 function _spatialchunks(data, xnum::Int, ynum::Int)
     sz = size(data)
-    if DiskArrays.haschunks(data) isa DiskArrays.Chunked
+    if declareschunks(data)
         cs = DiskArrays.eachchunk(data)
         if cs isa DiskArrays.GridChunks
             return (collect(cs.chunks[xnum]), collect(cs.chunks[ynum]))

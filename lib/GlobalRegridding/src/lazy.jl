@@ -40,6 +40,75 @@ _notrectangular(space, chunk) = throw(ArgumentError(
 chunkranges(space::RasterGrid, chunk::Integer, ::NTuple{2,Int}) =
     space.xfast ? chunkbox(space, Int(chunk)) : reverse(chunkbox(space, Int(chunk)))
 
+# Source chunk metadata
+
+"""
+    SourceChunking(source, ::Val{NS}, othersizes::NTuple{NO,Int})
+
+What `source` declares about the chunking of its pass-through dimensions. The
+declaration is read once — one `declareschunks` test and, when it holds, one
+`DiskArrays.eachchunk` call — and everything a lazy array reports or reads on
+those dimensions comes from the result.
+
+A declaration is usable when `eachchunk` answers a `GridChunks` over the
+regrid's own dimensions: the `NS` dimensions the source flattens over, followed
+by the `NO` pass-through dimensions. A source that declares unchunked storage,
+answers something else, or describes a different number of dimensions declares
+nothing usable, and each pass-through dimension is then one whole chunk.
+
+The spatial dimensions are not carried: a source's spatial chunking is the
+source *space*'s to describe, and a lazy read addresses it through
+[`chunkranges`](@ref).
+
+The spatial count comes in as a `Val` so that each pass-through dimension keeps
+its own chunk type; a grid mixing regular and irregular dimensions would
+otherwise be read into a tuple of unions.
+
+# Fields
+
+  - `passthrough`: the declared chunks themselves, kept as declared, so the
+    output reports the source's own chunk description on these dimensions.
+  - `splits`: the same chunks as index ranges, which a read splits a requested
+    slice range along.
+  - `groups`: every combination of those chunks, in column-major order — the
+    non-spatial reads one spatial chunk is loaded for.
+"""
+struct SourceChunking{NO,P<:Tuple}
+    passthrough::P
+    splits::NTuple{NO,Vector{UnitRange{Int}}}
+    groups::Vector{NTuple{NO,UnitRange{Int}}}
+end
+
+function SourceChunking(source, ::Val{NS}, othersizes::NTuple{NO,Int}) where {NS,NO}
+    if declareschunks(source)
+        declared = DiskArrays.eachchunk(source)
+        if declared isa DiskArrays.GridChunks && length(declared.chunks) == NS + NO
+            passthrough = ntuple(i -> declared.chunks[NS+i], Val(NO))
+            splits = ntuple(i -> UnitRange{Int}[UnitRange{Int}(r) for r in passthrough[i]],
+                Val(NO))
+            return SourceChunking{NO,typeof(passthrough)}(passthrough, splits,
+                _groupgrid(splits))
+        end
+    end
+    # Nothing usable: one whole chunk per pass-through dimension, said in both
+    # of the spellings above.
+    whole = ntuple(i -> DiskArrays.RegularChunks(max(othersizes[i], 1), 0, othersizes[i]),
+        Val(NO))
+    splits = ntuple(i -> UnitRange{Int}[1:othersizes[i]], Val(NO))
+    return SourceChunking{NO,typeof(whole)}(whole, splits, _groupgrid(splits))
+end
+
+# Cartesian product of non-spatial chunks in column-major order.
+function _groupgrid(splits::NTuple{NO,Vector{UnitRange{Int}}}) where {NO}
+    counts = map(length, splits)
+    out = Vector{NTuple{NO,UnitRange{Int}}}(undef, prod(counts; init = 1))
+    k = 0
+    for I in CartesianIndices(counts)
+        out[k+=1] = ntuple(d -> splits[d][I[d]], NO)
+    end
+    return out
+end
+
 # Destination tiling
 
 # Reserve one eighth of the budget for the per-cell state of one destination
@@ -248,8 +317,11 @@ end
 Return a chunked disk array that computes destination tiles on demand.
 Dimensions are destination cells followed by the source's non-spatial
 dimensions. Tiling uses compatible destination chunks, declared `chunks`, or a
-budget-derived fallback. Construction reads no source data. Reads load only
-connected source chunks and keep them within [`databudget`](@ref).
+budget-derived fallback. Pass-through dimensions report the plan's declared
+chunking where there is one, and the source's own where there is not.
+Construction reads no source data: it reads the source's chunk declaration once
+([`SourceChunking`](@ref)) and nothing else. Reads load only connected source
+chunks and keep them within [`databudget`](@ref).
 
 # Where a tile's source chunks come from
 
@@ -268,8 +340,8 @@ The plan must therefore own a relation. `plan_regrid(...; lazy = true)` builds
 one by default; only `dependencies = false` asks for a plan that cannot back a
 lazy array.
 """
-struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C} <:
-       DiskArrays.AbstractDiskArray{T,N}
+struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C,
+    S<:SourceChunking{NO}} <: DiskArrays.AbstractDiskArray{T,N}
     source::A
     plan::P
     srcsize::NTuple{NS,Int}
@@ -280,8 +352,8 @@ struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C} <:
     graph::G
     tiling::DestTiling
     chunks::C
-    otherchunks::NTuple{NO,Vector{UnitRange{Int}}}
-    othergroups::Vector{NTuple{NO,UnitRange{Int}}}
+    # What the source declares about its own chunking, read once and read here.
+    chunking::S
     emptymemo::Vector{Int8}
     dropempty::Bool
     stats::LazyStats
@@ -298,14 +370,13 @@ function LazyRegridArray(data, plan::ChunkedPlan)
     nspatial = length(sd)
     srcsize = ntuple(i -> size(source, i), nspatial)
     spans, contiguous = _chunkspans(dst_space)
-    chunks, tiling = _outputgrid(plan, source, ndst, spans, contiguous, nspatial, othersizes)
-    otherchunks = _sourceotherchunks(source, nspatial, othersizes)
-    othergroups = _groupgrid(otherchunks)
+    chunking = SourceChunking(source, Val(nspatial), othersizes)
+    chunks, tiling = _outputgrid(plan, chunking, ndst, spans, contiguous, othersizes)
     T = outputeltype(eltype(data))
     return LazyRegridArray{T,length(othersizes) + 1,nspatial,length(othersizes),
-        typeof(source),typeof(plan),typeof(graph),typeof(chunks)}(
+        typeof(source),typeof(plan),typeof(graph),typeof(chunks),typeof(chunking)}(
         source, plan, srcsize, (ndst, othersizes...), graph, tiling,
-        chunks, otherchunks, othergroups, zeros(Int8, Int(nchunks(src_space))),
+        chunks, chunking, zeros(Int8, Int(nchunks(src_space))),
         !usesreference(plan.missingpolicy), LazyStats())
 end
 
@@ -386,9 +457,11 @@ function _chunkspans(space::RegridSpace)
     return spans, contiguous
 end
 
-# Build the reported chunk grid and matching destination tiling.
-function _outputgrid(plan::ChunkedPlan, source, ndst::Int, spans::Vector{UnitRange{Int}},
-    contiguous::Bool, nspatial::Int, othersizes::Tuple)
+# Build the reported chunk grid and matching destination tiling. Pass-through
+# dimensions report the plan's declared chunking where there is one, and what
+# the source declares where there is not.
+function _outputgrid(plan::ChunkedPlan, chunking::SourceChunking, ndst::Int,
+    spans::Vector{UnitRange{Int}}, contiguous::Bool, othersizes::Tuple)
     nd = length(othersizes) + 1
     declared = plan.chunks
     # Plans built without `plan_regrid` have not passed the API-boundary check.
@@ -410,44 +483,8 @@ function _outputgrid(plan::ChunkedPlan, source, ndst::Int, spans::Vector{UnitRan
     end
     tiling = _desttiling(plan.dst_space, ndst, spans, contiguous, cellsizes, plan.budget)
     cells = DiskArrays.IrregularChunks(; chunksizes = [length(r) for r in tiling.runs])
-    passthrough = others === nothing ?
-                  _passthroughchunks(source, nspatial, othersizes) : others
+    passthrough = others === nothing ? chunking.passthrough : others
     return DiskArrays.GridChunks(cells, passthrough...), tiling
-end
-
-# Preserve source chunking on pass-through dimensions.
-function _passthroughchunks(source, nspatial::Int, othersizes::Tuple)
-    if DiskArrays.haschunks(source) isa DiskArrays.Chunked
-        ec = DiskArrays.eachchunk(source)
-        if ec isa DiskArrays.GridChunks && length(ec.chunks) == nspatial + length(othersizes)
-            return ntuple(i -> ec.chunks[nspatial+i], length(othersizes))
-        end
-    end
-    return ntuple(i -> DiskArrays.RegularChunks(max(othersizes[i], 1), 0, othersizes[i]),
-        length(othersizes))
-end
-
-# Source non-spatial chunk ranges used by `knownempty` and grouped reads.
-function _sourceotherchunks(source, nspatial::Int, othersizes::NTuple{NO,Int}) where {NO}
-    if DiskArrays.haschunks(source) isa DiskArrays.Chunked
-        ec = DiskArrays.eachchunk(source)
-        if ec isa DiskArrays.GridChunks && length(ec.chunks) == nspatial + NO
-            return ntuple(i -> UnitRange{Int}[UnitRange{Int}(r) for r in ec.chunks[nspatial+i]],
-                NO)
-        end
-    end
-    return ntuple(i -> UnitRange{Int}[1:othersizes[i]], NO)
-end
-
-# Cartesian product of non-spatial chunks in column-major order.
-function _groupgrid(splits::NTuple{NO,Vector{UnitRange{Int}}}) where {NO}
-    counts = map(length, splits)
-    out = Vector{NTuple{NO,UnitRange{Int}}}(undef, prod(counts; init = 1))
-    k = 0
-    for I in CartesianIndices(counts)
-        out[k+=1] = ntuple(d -> splits[d][I[d]], NO)
-    end
-    return out
 end
 
 # Block reads
@@ -838,7 +875,7 @@ function _allempty(A::LazyRegridArray, s::Int)
     m == 0 || return m == 1
     sr = chunkranges(A.plan.src_space, s, A.srcsize)
     empty = true
-    for g in A.othergroups
+    for g in A.chunking.groups
         knownempty(A.source, (sr..., g...)) || (empty = false; break)
     end
     memo[s] = empty ? Int8(1) : Int8(2)
@@ -929,7 +966,7 @@ end
 
 # Split requested slices along source non-spatial chunk boundaries.
 _slicegroups(A::LazyRegridArray{T,N,NS,NO}, others::NTuple{NO,UnitRange{Int}}) where {T,N,NS,NO} =
-    _groupgrid(ntuple(d -> _splitindices(others[d], A.otherchunks[d]), NO))
+    _groupgrid(ntuple(d -> _splitindices(others[d], A.chunking.splits[d]), NO))
 
 function _splitindices(r::UnitRange{Int}, chunks::Vector{UnitRange{Int}})
     out = UnitRange{Int}[]
@@ -977,6 +1014,9 @@ function _readsource!(buf::Array, source, sr::Tuple, others::Tuple)
     return buf
 end
 
+# Whether the source's values are reached through a DiskArrays read. This is the
+# residence test, and it is not `declareschunks`: an in-memory array may declare
+# a chunking, and is then copied from rather than read block by block.
 _isdisksource(x) = x isa DiskArrays.AbstractDiskArray || DiskArrays.isdisk(x)
 
 # Shaped view

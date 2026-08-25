@@ -159,6 +159,39 @@ end
 t7_sources(plan::ChunkedPlan, d::Integer) =
     Int.(GR.sourcesof(GR.dependencies(plan), Int(d)))
 
+# A source that declares whatever it is told to, and counts how often it is
+# asked. `answer` is what `eachchunk` gives back, including descriptions no
+# regrid can use.
+mutable struct T9Declaring{T,N,A<:AbstractArray{T,N},H,C} <: DiskArrays.AbstractDiskArray{T,N}
+    data::A
+    storage::H
+    answer::C
+    asked::Int
+    reads::Int
+end
+
+t9_grid(a::AbstractArray, grid) = T9Declaring(a, DiskArrays.Chunked(), grid, 0, 0)
+t9_chunked(a::AbstractArray, cs::Tuple) = t9_grid(a, DiskArrays.GridChunks(a, cs))
+t9_unchunked(a::AbstractArray) =
+    T9Declaring(a, DiskArrays.Unchunked(), DiskArrays.GridChunks(a, size(a)), 0, 0)
+
+Base.size(x::T9Declaring) = size(x.data)
+DiskArrays.haschunks(x::T9Declaring) = x.storage
+DiskArrays.eachchunk(x::T9Declaring) = (x.asked += 1; x.answer)
+function DiskArrays.readblock!(x::T9Declaring, out, r::AbstractUnitRange...)
+    x.reads += 1
+    out .= view(x.data, r...)
+    return out
+end
+
+# Apply a lazy array to `source` and report what the construction asked of it.
+function t9_apply(source, plan)
+    source.asked = 0
+    source.reads = 0
+    A = LazyRegridArray(source, plan)
+    return A, source.asked, source.reads
+end
+
 @testset "Lazy path" begin
 
     # Source and destination use different chunk layouts.
@@ -838,6 +871,109 @@ t7_sources(plan::ChunkedPlan, d::Integer) =
         @test LazyRegridArray(T7Counting(field, (4, 2)), gridded)[1:32] == expected
         @test_throws ArgumentError LazyRegridArray(T7Counting(field, (4, 2)),
             t7_plan(ToyDiagonalMethod(), whole, srcspace; chunks = (8, 2)))
+    end
+
+    @testset "source chunking" begin
+        # Everything the array reports or reads on the pass-through dimensions
+        # comes from one reading of what the source declares. Each case below
+        # applies a lazy array to a source and then asks the array what it made
+        # of the declaration, so a second interpretation would show up either as
+        # a second question to the source or as an answer that disagrees.
+        cube = reshape(repeat(vec(field), 12), 8, 4, 6, 2)
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+
+        # A declaration the regrid can use is read once and kept as declared:
+        # the output reports the source's own chunk descriptions, identically.
+        regular = t9_chunked(cube, (4, 2, 2, 1))
+        A, asked, reads = t9_apply(regular, plan)
+        @test asked == 1
+        @test reads == 0
+        grid = DiskArrays.eachchunk(A)
+        @test size(grid) == (2, 3, 2)
+        @test [grid[1, i, 1] for i in 1:3] ==
+              [(1:16, 1:2, 1:1), (1:16, 3:4, 1:1), (1:16, 5:6, 1:1)]
+        @test grid.chunks[2] === regular.answer.chunks[3]
+        @test grid.chunks[3] === regular.answer.chunks[4]
+
+        # The same reading is what a read splits its slices along.
+        @test A.chunking.splits == ([1:2, 3:4, 5:6], [1:1, 2:2])
+        @test A.chunking.groups == [(1:2, 1:1), (3:4, 1:1), (5:6, 1:1),
+            (1:2, 2:2), (3:4, 2:2), (5:6, 2:2)]
+        @test GR._slicegroups(A, (2:5, 2:2)) == [(1:1, 1:1), (2:3, 1:1), (4:4, 1:1)]
+        @test A[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+
+        # Irregular chunks keep their own description and their own boundaries.
+        irregular = t9_grid(cube, DiskArrays.GridChunks(
+            DiskArrays.RegularChunks(4, 0, 8), DiskArrays.RegularChunks(2, 0, 4),
+            DiskArrays.IrregularChunks(; chunksizes = [1, 2, 3]),
+            DiskArrays.RegularChunks(1, 0, 2)))
+        B, asked, reads = t9_apply(irregular, plan)
+        @test (asked, reads) == (1, 0)
+        @test DiskArrays.eachchunk(B).chunks[2] isa DiskArrays.IrregularChunks
+        @test B.chunking.splits == ([1:1, 2:3, 4:6], [1:1, 2:2])
+        @test GR._slicegroups(B, (2:5, 2:2)) == [(1:2, 1:1), (3:4, 1:1)]
+        @test B[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+
+        # A source declaring no chunking is never asked what it is, and gives
+        # one whole chunk per pass-through dimension.
+        absent, asked, reads = t9_apply(t9_unchunked(cube), plan)
+        @test (asked, reads) == (0, 0)
+        @test absent.chunking.splits == ([1:6], [1:2])
+        @test absent.chunking.groups == [(1:6, 1:2)]
+        @test size(DiskArrays.eachchunk(absent)) == (2, 1, 1)
+        @test DiskArrays.eachchunk(absent)[1, 1, 1] == (1:16, 1:6, 1:2)
+        @test absent[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+
+        # So does a declaration the regrid cannot use: one that is not a chunk
+        # grid, and one describing a different number of dimensions. Neither is
+        # an error — the source simply declares nothing this array can follow.
+        for answer in ([1:8, 1:4, 1:6, 1:2], DiskArrays.GridChunks(cube, (4, 2, 2)))
+            C, asked, reads = t9_apply(t9_grid(cube, answer), plan)
+            @test (asked, reads) == (1, 0)
+            @test C.chunking.splits == ([1:6], [1:2])
+            @test C.chunking.groups == [(1:6, 1:2)]
+            @test C[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+        end
+
+        # A plan that declares its own chunking says what the output reports and
+        # nothing about what the source is read in: the groups still follow the
+        # source, and the source is still asked exactly once.
+        declared = t9_chunked(cube, (4, 2, 2, 1))
+        D, asked, reads = t9_apply(declared,
+            t7_plan(ToyDiagonalMethod(), dstspace, srcspace; chunks = (8, 3, 1)))
+        @test (asked, reads) == (1, 0)
+        @test [DiskArrays.eachchunk(D)[i, 1, 1] for i in 1:4] ==
+              [(1:8, 1:3, 1:1), (9:16, 1:3, 1:1), (17:24, 1:3, 1:1), (25:32, 1:3, 1:1)]
+        @test D.chunking.groups == A.chunking.groups
+        @test D[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+
+        # A plan chunking that does not describe the regrid is refused in the
+        # regrid's own dimensions.
+        @test_throws "the plan's chunking has 1 dimensions, but the regrid of " *
+                     "this source has 3" LazyRegridArray(t9_chunked(cube, (4, 2, 2, 1)),
+            t7_plan(ToyDiagonalMethod(), dstspace, srcspace;
+                chunks = DiskArrays.GridChunks((32,), (8,))))
+
+        # A source with no pass-through dimensions has nothing to declare about
+        # them, however it chunks its spatial ones.
+        E, asked, reads = t9_apply(t9_chunked(field, (4, 2)), plan)
+        @test (asked, reads) == (1, 0)
+        @test E.chunking.splits == ()
+        @test E.chunking.groups == [()]
+        @test E[1:32] == vec(field)
+
+        # The declaration is read into concrete types, mixed chunk kinds and
+        # absent declarations included.
+        @test @inferred(GR.SourceChunking(regular, Val(2), (6, 2))) isa GR.SourceChunking
+        @test @inferred(GR.SourceChunking(irregular, Val(2), (6, 2))) isa GR.SourceChunking
+        @test @inferred(GR.SourceChunking(cube, Val(2), (6, 2))) isa GR.SourceChunking
+        @test isconcretetype(fieldtype(typeof(A.chunking), :passthrough))
+
+        # The same declaration decides whether a regrid is lazy at all.
+        @test regrid(t9_chunked(field, (4, 2)); to = dstspace, from = srcspace,
+            method = ToyDiagonalMethod()) isa LazyRegridArray
+        @test !(regrid(field; to = dstspace, from = srcspace,
+            method = ToyDiagonalMethod()) isa LazyRegridArray)
     end
 
     @testset "outer parallelism wins" begin

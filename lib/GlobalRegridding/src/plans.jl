@@ -47,7 +47,8 @@ Base.show(io::IO, block::WeightBlock) =
                sampling = nothing)
 
 Store one [`WeightBlock`](@ref) over both complete spaces. The block size is
-`(ncells(dst_space), ncells(src_space))`; its local indices are cell positions.
+`(ncells(dst_space), ncells(src_space))`, so its chunk-local indices are the
+spaces' own local indices.
 `missingval` is an optional source nodata sentinel. `sampling` overrides the
 destination lookup sampling the method would imply ([`outputsampling`](@ref)).
 """
@@ -442,7 +443,7 @@ block, so there is no chunk pairing to describe.
 The `dependencies` keyword on lazy `plan_regrid` / `ChunkedPlan`:
 
 - `nothing` (the default) or `true` — build it now, once, from the plan's own
-  spaces at the plan's own radius, [`support_radius`](@ref)`(method, src_space)`.
+  spaces at the plan's own radius, [`supportradius`](@ref)`(method, src_space)`.
   Passing `refine` or `narrow` also selects this branch. A chunked plan owns a
   relation by default because a lazy read *is* a read of that relation's rows:
   the executor takes a tile's source chunks from
@@ -492,11 +493,11 @@ function _plandependencies(dependencies, refine, narrow,
             "`narrow` to name the narrow phase the supplied graph already " *
             "carries, or drop `dependencies` to build a narrowed one here."))
         return validate_dependencies(dependencies, dst_space, src_space;
-            radius = Float64(support_radius(method, src_space)),
+            radius = Float64(supportradius(method, src_space)),
             narrow = narrow === nothing ? :none : narrow)
     elseif dependencies === true || dependencies === nothing
         return _builddependencies(dst_space, src_space,
-            support_radius(method, src_space), refine, narrow)
+            supportradius(method, src_space), refine, narrow)
     elseif dependencies === false
         (refine === nothing && narrow === nothing) || throw(ArgumentError(
             "`dependencies = false` asks the plan to hold no relation, but " *
@@ -522,12 +523,12 @@ blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds) =
 
 function blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds, dst_space::RegridSpace)
     return getblock!(plan.storage, key,
-        () -> buildblock(plan, dinds, cellindices(plan.src_space, key[2]), dst_space))
+        () -> buildblock(plan, dinds, ownedindices(plan.src_space, key[2]), dst_space))
 end
 
 blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
     blockfor(plan, (Int(dstchunk), Int(srcchunk)),
-        cellindices(plan.dst_space, Int(dstchunk)))
+        ownedindices(plan.dst_space, Int(dstchunk)))
 
 """
     buildblock(plan::ChunkedPlan, dinds, sinds[, dst_space]) -> WeightBlock
@@ -540,10 +541,10 @@ buildblock(plan::ChunkedPlan, dinds, sinds) =
 
 function buildblock(plan::ChunkedPlan, dinds, sinds, dst_space::RegridSpace)
     coo = WeightCOO(length(dinds))
-    build_weights!(coo, plan.method, dst_space, dinds, plan.src_space, sinds)
+    buildweights!(coo, plan.method, dst_space, dinds, plan.src_space, sinds)
     return WeightBlock(coo, length(dinds), length(sinds))
 end
 
 buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
-    buildblock(plan, cellindices(plan.dst_space, Int(dstchunk)),
-        cellindices(plan.src_space, Int(srcchunk)))
+    buildblock(plan, ownedindices(plan.dst_space, Int(dstchunk)),
+        ownedindices(plan.src_space, Int(srcchunk)))

@@ -34,7 +34,7 @@ not the sweeper.
 ## Extension surface
 
 A package that supplies its own space implements the `RegridSpace` interface —
-`celltree`, `nchunks`, `cellindices`, `ncells`, `getcell`,
+`celltree`, `nchunks`, `ownedindices`, `ncells`, `getcell`,
 `cellcentroid`, `cellat`, `hascellchart`, `manifold` — all exported — plus the
 unexported-but-public `chunkextents`, which every space must answer. (`chunktree`
 was exported until Task E2 retired it: a space's chunk caps come from

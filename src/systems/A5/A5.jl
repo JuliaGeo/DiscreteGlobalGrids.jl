@@ -17,7 +17,7 @@ A5 is not fixed-radix:
 
 Cells are ordered by quintant, then Hilbert state `S`:
 
-    position = quintant · 4^(level-1) + S + 1,     quintant = 5·origin + segment
+    index = quintant · 4^(level-1) + S + 1,     quintant = 5·origin + segment
 
 This equals ascending raw-`UInt64` order within a level. Level 0 contains the
 twelve faces in origin order.
@@ -34,7 +34,7 @@ import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,
     ncells, cellindex, cell_boundary, cell_centroid,
-    cellposition, rawid,
+    globalindex, rawid,
     cellat, neighbors, ring, one_ring, system, level,
     cellindextype, levels, levelgrid, rootcells, children,
     cap_inflation, maxneighbors, has_sorted_subtrees,

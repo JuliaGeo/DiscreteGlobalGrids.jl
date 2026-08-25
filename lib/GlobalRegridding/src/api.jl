@@ -238,7 +238,7 @@ function wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
     ndst = Int(ncells(dst_space))
     nsrc = Int(ncells(src_space))
     coo = WeightCOO(ndst)
-    build_weights!(coo, method, dst_space, 1:ndst, src_space, 1:nsrc)
+    buildweights!(coo, method, dst_space, 1:ndst, src_space, 1:nsrc)
     return WeightBlock(coo, ndst, nsrc)
 end
 

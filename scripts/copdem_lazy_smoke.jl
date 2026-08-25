@@ -105,7 +105,7 @@ function smoke()
     check_smoke("one level-5 column produces 7^7 cells", length(vals) == 7^7)
     check_smoke("real-tile regrid produces non-NaN cells", nfinite > 0)
     lo, hi = extrema(Iterators.filter(isfinite, vals))
-    println("\nRegrid: column_position=", column, " values=", length(vals),
+    println("\nRegrid: column_index=", column, " values=", length(vals),
         " finite=", nfinite, " NaN=", count(isnan, vals),
         " range=[", lo, ", ", hi, "] elapsed=", round(elapsed; digits = 2), " s")
     println("Successful GETs this process: ", provider.ndownloads[])

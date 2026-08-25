@@ -9,9 +9,9 @@
 #   * `levelgrid(sys, l)` is complete and ordered by ascending canonical id.
 #     Its default is a `HierarchicalLevelGrid`, which forwards the grid
 #     contracts to `ncells(sys, l)`, `cellindex(sys, l, i)`,
-#     `cellposition(sys, c)`, `cell_boundary(sys, c)`, `cell_centroid(sys, c)`.
-#   * `descendant_range(sys, c, l)` is in that same position space, and answers
-#     `l == level(c)` with the cell's one-element position range.
+#     `globalindex(sys, c)`, `cell_boundary(sys, c)`, `cell_centroid(sys, c)`.
+#   * `descendant_range(sys, c, l)` is in that same index space, and answers
+#     `l == level(c)` with the cell's one-element index range.
 #   * `children(sys, c)` and `rootcells(sys)` are in ascending canonical order:
 #     selection-mode descent binary-searches the child list.
 #   * `cell_centroid(grid, c)` is strictly interior to the cell.
@@ -19,7 +19,8 @@
 #     from outside; area, containment and the border sandwich all read its winding.
 #   * `node_extent(sys, c)` obeys the covering law.
 #
-# Performance-sensitive overrides are `cellposition`, `neighbors`, and `cellat`.
+# Performance-sensitive overrides are `localindex`, `globalindex`, `neighbors`,
+# and `cellat`.
 
 module Fallbacks
 
@@ -29,7 +30,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, LevelIndex, Connectivity, Vertex, Edge,
     Winding, CounterClockwise, Clockwise, CustomOrder, Unordered,
     ncells, cellindex, cell_boundary, cell_centroid,
-    cellposition, rawid, reindex, cellindextypes,
+    localindex, globalindex, rawid, reindex, cellindextypes,
     cell_polygon, cell_area, cell_extent, getcell,
     cellat, cellindices, neighbors, ring, one_ring, neighborcount,
     treeify, query,

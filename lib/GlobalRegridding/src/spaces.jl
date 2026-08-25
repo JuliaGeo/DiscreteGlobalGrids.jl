@@ -1,4 +1,4 @@
-# Regridding spaces use dense cell positions and spherical-cap spatial trees.
+# Regridding spaces use dense cell indices and spherical-cap spatial trees.
 
 """
     RegridSpace
@@ -23,7 +23,7 @@ abstract type RegridSpace end
 """
     celltree(space::RegridSpace)
 
-Return a `SpatialTreeInterface` tree over cell positions `1:ncells(space)`.
+Return a `SpatialTreeInterface` tree over cell indices `1:ncells(space)`.
 Every node extent must be a `SphericalCap`. Define
 `STI.node_extent_is_expensive` when extents are computed on demand.
 """
@@ -32,8 +32,9 @@ function celltree end
 """
     subtree(space::RegridSpace, inds) -> tree
 
-Return a spatial tree over `inds`, with leaves addressed by global cell
-position. The fallback packs GeometryOps' Cartesian cell extents in an R-tree.
+Return a spatial tree over `inds`, with leaves addressed by the space's
+local index. The fallback packs GeometryOps' Cartesian cell extents in an
+R-tree.
 Spaces with a cheaper restricted tree should specialize this function.
 """
 function subtree end
@@ -41,7 +42,7 @@ function subtree end
 """
     ncells(space::RegridSpace) -> Int
 
-Return the stable cell count in `O(1)`. Cell positions are `1:ncells(space)`.
+Return the stable cell count in `O(1)`. Cell indices are `1:ncells(space)`.
 """
 function ncells end
 
@@ -51,7 +52,7 @@ function ncells end
 Return cell `i` as a GeoInterface polygon with one explicitly closed ring of
 unit-sphere `(x, y, z)` coordinates. The ring is counter-clockwise from outside
 the sphere and its segments are great-circle arcs. Densify non-geodesic edges.
-Throw `BoundsError` for an invalid position.
+Throw `BoundsError` for an invalid index.
 """
 function getcell end
 
@@ -68,13 +69,31 @@ containing `1:ncells(space)`.
 function nchunks end
 
 """
+    ownedindices(space::RegridSpace, chunk::Int) -> AbstractVector{Int}
+
+The space's local indices of the cells `chunk` owns — the cells it produces
+results for — ascending. Chunks must partition `1:ncells(space)`. Return an
+`AbstractUnitRange` when those indices are contiguous. Weight builders address
+entries by chunk-local index within this result.
+"""
+function ownedindices end
+
+# `cellindices` is the old name of `ownedindices` and forwards to it, so a call
+# of the old name answers the same with a deprecation warning. In this package
+# "cell index" is the local index a space numbers its cells by, and the name
+# collided with the typed cell id it means elsewhere. Only callers are carried:
+# a space that defines the old name supplies no chunk ownership, and the
+# generic dispatches on the new one.
+
+"""
     cellindices(space::RegridSpace, chunk::Int) -> AbstractVector{Int}
 
-Return a chunk's ascending cell positions. Chunks must partition
-`1:ncells(space)`. Return an `AbstractUnitRange` when positions are contiguous.
-Weight builders address entries by local position within this result.
+Deprecated. Use [`ownedindices`](@ref), which this forwards to, so existing
+calls keep their old behaviour exactly.
 """
 function cellindices end
+
+@deprecate cellindices(space::RegridSpace, chunk::Int) ownedindices(space, chunk) false
 
 """
     chunkextent(space::RegridSpace, chunk::Integer) -> SphericalCap
@@ -128,7 +147,7 @@ function candidatechunks! end
     chunkat(space::RegridSpace, i::Integer) -> Int
     chunkat(space::RegridSpace, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
 
-Return the chunk containing cell position `i` or point `p`. The fallback scans
+Return the chunk containing cell index `i` or point `p`. The fallback scans
 all chunks; structured spaces should provide an `O(1)` or `O(log nchunks)`
 method. The point form returns `nothing` outside the space's coverage.
 """
@@ -138,10 +157,10 @@ function chunkat(space::RegridSpace, i::Integer)
     p = Int(i)
     1 <= p <= ncells(space) || throw(BoundsError(space, p))
     for c in 1:nchunks(space)
-        p in cellindices(space, c) && return c
+        p in ownedindices(space, c) && return c
     end
     throw(ArgumentError(
-        "cell position $p of $(typeof(space)) belongs to no chunk; chunks must " *
+        "cell index $p of $(typeof(space)) belongs to no chunk; chunks must " *
         "partition 1:ncells(space)"))
 end
 
@@ -169,8 +188,8 @@ end
 
 Return the rectangular array ranges that storage can read for `chunk` in one
 operation, in spatial-dimension order. Flattening that block must enumerate
-[`cellindices`](@ref) in the same order, but the two contracts are distinct:
-`cellindices` describes cell ownership and need not be a storage rectangle.
+[`ownedindices`](@ref) in the same order, but the two contracts are distinct:
+`ownedindices` describes cell ownership and need not be a storage rectangle.
 Non-rectangular spaces must specialize this function.
 """
 function chunkranges end
@@ -190,7 +209,7 @@ function manifold end
 """
     cellat(space::RegridSpace, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
 
-Return the position containing `p`, or `nothing` outside coverage. Point-based
+Return the index containing `p`, or `nothing` outside coverage. Point-based
 methods require this optional interface. Assign boundary points consistently to
 an incident cell.
 """
@@ -231,12 +250,12 @@ axes.
 function chartcoords end
 
 """
-    chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
+    chartlocalindex(space::RegridSpace, ix::Int, iy::Int) -> Int
 
-Return the cell position at lattice index `(ix, iy)`. Required when
-[`hascellchart`](@ref) is `true`.
+Return the space's local index for the cell at lattice index `(ix, iy)`.
+Required when [`hascellchart`](@ref) is `true`.
 """
-function chartposition end
+function chartlocalindex end
 
 """
     chartperiod(space::RegridSpace) -> (px, py)
@@ -253,6 +272,21 @@ Return upper bounds, in radians, on adjacent-centre distance along each axis.
 Required when [`hascellchart`](@ref) is `true`.
 """
 function chartspacing end
+
+# `chartposition` is the old name of `chartlocalindex` and forwards to it, so a
+# call of the old name answers the same with a deprecation warning. Only
+# callers are carried: a space that defines the old name supplies no chart
+# hook, and `_chart_required` names the new one.
+
+"""
+    chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
+
+Deprecated. Use [`chartlocalindex`](@ref), which this forwards to, so existing
+calls keep their old behaviour exactly.
+"""
+function chartposition end
+
+@deprecate chartposition(space::RegridSpace, ix::Int, iy::Int) chartlocalindex(space, ix, iy) false
 
 # --------------------------------------------------------------------------
 # Output labelling and target resolution

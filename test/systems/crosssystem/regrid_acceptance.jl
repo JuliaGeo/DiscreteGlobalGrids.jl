@@ -86,7 +86,7 @@ const PLAN = DGG.plan_regrid(DEM; to = SYS, lazy = true)
 const DST = PLAN.dst_space
 const POLE = GO.UnitSphericalPoint(0.0, 0.0, -1.0)
 const POLARCHUNK = GR.chunkat(DST, POLE)
-const POLARCELLS = DGG.cellindices(DST, POLARCHUNK)
+const POLARCELLS = GR.ownedindices(DST, POLARCHUNK)
 
 # The tile row those cells lie in — the fan-in the chunk pairs have to find.
 const POLARTILE = (NY - CHUNK + 1):NY
@@ -134,7 +134,7 @@ end
         # over the chunk windows. Against the scan it replaces: a wrong window
         # would move the whole file onto a chunk that is not the pole's, where
         # every read assertion below would still pass.
-        @test POLARCHUNK == findfirst(c -> GR.cellat(DST, POLE) in DGG.cellindices(DST, c),
+        @test POLARCHUNK == findfirst(c -> GR.cellat(DST, POLE) in GR.ownedindices(DST, c),
             1:GR.nchunks(DST))
         @test GR.cellat(DST, POLE) in POLARCELLS
     end

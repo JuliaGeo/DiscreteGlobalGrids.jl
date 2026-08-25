@@ -42,7 +42,7 @@ All 64 800 level-0 tiles, `LevelIndex(0, 0:64799)`, as an ascending lazy vector.
 DGG.rootcells(::CopernicusDEMSystem) = IdRange(Int32(0), Int64(0), NTILES)
 
 # ===========================================================================
-# The level grid: size, and positions <-> ids
+# The level grid: size, and indices <-> ids
 # ===========================================================================
 
 DGG.ncells(sys::CopernicusDEMSystem, l::Integer) =
@@ -54,11 +54,11 @@ DGG.ncells(sys::CopernicusDEMSystem, l::Integer) =
 DGG.cellindex(::CopernicusDEMSystem, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
 
 """
-    cellposition(CopernicusDEMSystem(...), c) -> Union{Int,Nothing}
+    globalindex(CopernicusDEMSystem(...), c) -> Union{Int,Nothing}
 
 Returns `index + 1` for an in-range id and `nothing` otherwise; it never throws.
 """
-function DGG.cellposition(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
+function DGG.globalindex(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
     (l == 0 || l == 1) || return nothing
     0 <= c.index < DGG.ncells(sys, l) || return nothing
@@ -118,10 +118,10 @@ end
 """
     descendant_range(CopernicusDEMSystem(...), tile, 1) -> UnitRange{Int}
 
-The tile's exact, contiguous level-1 position window:
+The tile's exact, contiguous level-1 index window:
 `tilebase + 1 : tilebase + ncols*N`.
 
-`l == level(c)` is the cell's own one-element position range; `l < level(c)` throws an
+`l == level(c)` is the cell's own one-element index range; `l < level(c)` throws an
 `ArgumentError`.
 """
 function DGG.descendant_range(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex,

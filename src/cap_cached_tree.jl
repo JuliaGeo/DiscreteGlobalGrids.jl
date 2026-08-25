@@ -3,9 +3,9 @@
 """
     CapCachedTree(node, caps)
 
-Wrap a grid cursor so a leaf's extent is `caps[p]` for grid position `p`, rather
+Wrap a grid cursor so a leaf's extent is `caps[p]` for grid index `p`, rather
 than re-derived from the cell boundary on every visit. `caps` is indexed by raw
-grid position; a chunk's vector covers only its own window and is wrapped in
+grid index; a chunk's vector covers only its own window and is wrapped in
 `_ShiftedCaps`.
 """
 struct CapCachedTree{C<:HierarchicalGridCursor,V<:AbstractVector}
@@ -16,7 +16,7 @@ end
 """
     _ShiftedCaps(data, offset)
 
-`data` addressed by grid position: element `i` is `data[i - offset]`, with axes
+`data` addressed by grid index: element `i` is `data[i - offset]`, with axes
 `offset .+ axes(data, 1)`.
 """
 struct _ShiftedCaps{E} <: AbstractVector{E}
@@ -46,8 +46,8 @@ STI.getchild(t::CapCachedTree) =
 STI.getchild(t::CapCachedTree, i::Int) =
     CapCachedTree(STI.getchild(t.node, i), t.caps)
 
-# A window node at the leaf level is exactly one stored cell; its position
-# indexes the cache. Everything else keeps the cursor's own extent logic.
+# A window node at the leaf level is exactly one stored cell; its index locates
+# it in the cache. Everything else keeps the cursor's own extent logic.
 function STI.node_extent(t::CapCachedTree)
     c = t.node
     if !Engine._issynthetic(c) && c.level >= c.leaf_level
@@ -118,7 +118,7 @@ function _bucketed(c::HierarchicalGridCursor)
 end
 
 # The whole-space tree, or the plain cursor where the wrap does not apply
-# (selection cursors index leaves by selection slot, not grid position).
+# (selection cursors index leaves by selection slot, not grid index).
 function _cachedcelltree(space::DGGSpace)
     root = treeify(_decodedgrid(space.grid))
     (root isa HierarchicalGridCursor && root.selection === nothing) ||
@@ -148,7 +148,7 @@ _decodedgrid(grid::PartialGrid{<:AbstractHierarchicalGridSystem,<:CellVector}) =
         root = Engine._is_rooted(grid) ? grid.root_id : nothing)
 _decodedgrid(grid::AbstractGrid) = grid
 
-# One tight cap per cell of `inds`; entry `k` is position `first(inds) + k - 1`.
+# One tight cap per cell of `inds`; entry `k` is index `first(inds) + k - 1`.
 function _leafcaps(grid::AbstractGrid, inds::AbstractUnitRange{<:Integer})
     n = length(inds)
     n == 0 && return [_cellcap(grid, Int(i)) for i in inds]

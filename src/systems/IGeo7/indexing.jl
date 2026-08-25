@@ -1,7 +1,7 @@
 """
     RelativeZ7Cell(cell, offset)
 
-A displacement from `cell` by `offset` positions in the canonical Z7
+A displacement from `cell` by `offset` indices in the canonical Z7
 space-filling-curve order. It is produced by subtracting two [`Z7Cell`](@ref)s:
 `target - origin == RelativeZ7Cell(origin, offset)`.
 
@@ -59,11 +59,11 @@ function Base.showerror(io::IO, e::RelativeZ7Error)
             ", so it cannot be applied to ", e.cell,
             "; rebase it with `target - ", e.cell, "` first")
     elseif r === :out_of_range
-        position = cell_to_index(e.cell.id)
+        index = cell_to_index(e.cell.id)
         n = num_cells(level(e.cell))
         print(io, "offset ", e.offset, " leaves level ", level(e.cell), ": from ",
-            e.cell, " (position ", position, " of ", n, ") the offsets in range are ",
-            1 - position, ":", n - position)
+            e.cell, " (index ", index, " of ", n, ") the offsets in range are ",
+            1 - index, ":", n - index)
     elseif r === :not_a_neighbor
         print(io, "offset ", e.offset, " from ", e.cell, " reaches ", e.other,
             ", which is not one of its immediate neighbors")
@@ -74,34 +74,34 @@ function Base.showerror(io::IO, e::RelativeZ7Error)
     return nothing
 end
 
-# `cellposition`'s walk, but throwing Z7's own validation error instead of
+# `globalindex`'s walk, but throwing Z7's own validation error instead of
 # answering `nothing`: a displacement between ids that name no cell is a caller
 # bug, exactly as it is on the geometry entry points.
-@inline function _checked_position(c::Z7Cell)
+@inline function _checked_index(c::Z7Cell)
     _geometry_checked(c.id)
     return cell_to_index(c.id)
 end
 
 function Base.:-(target::Z7Cell, origin::Z7Cell)
     level(target) == level(origin) || _rel_error(:level_mismatch, target, origin, 0)
-    # Positions live in `1:num_cells(19)`, i.e. below 1.2e17, so the difference
+    # Indices live in `1:num_cells(19)`, i.e. below 1.2e17, so the difference
     # is two decimal orders away from overflowing an `Int`. No widening needed.
     return RelativeZ7Cell(
         origin,
-        _checked_position(target) - _checked_position(origin),
+        _checked_index(target) - _checked_index(origin),
     )
 end
 
 function Base.:+(c::Z7Cell, d::RelativeZ7Cell)
     c == d.cell || _rel_error(:foreign_origin, c, d.cell, d.offset)
-    position = _checked_position(c)
+    index = _checked_index(c)
     n = num_cells(level(c))
-    # Bound the OFFSET rather than the target position: `position ∈ 1:n` makes
+    # Bound the OFFSET rather than the target index: `index ∈ 1:n` makes
     # both ends of this window exact in `Int`, so the check itself cannot
     # overflow and the addition it guards cannot either.
-    (1 - position) <= d.offset <= (n - position) ||
+    (1 - index) <= d.offset <= (n - index) ||
         _rel_error(:out_of_range, c, c, d.offset)
-    return Z7Cell(index_to_cell(position + d.offset, level(c)))
+    return Z7Cell(index_to_cell(index + d.offset, level(c)))
 end
 
 Base.:+(d::RelativeZ7Cell, c::Z7Cell) = c + d

@@ -375,7 +375,7 @@ end
         @test collect(lk) == brute
         @test length(lk) == length(brute)
         for k in (1, max(1, length(lk) ÷ 3), length(lk))
-            @test DGG.cellposition(lk, lk[k]) == k
+            @test DGG.localindex(lk, lk[k]) == k
         end
         # Its own reference level is the default, and it is a lookup too.
         @test length(DGG.CellLookup(set)) == length(expand(sys, set, set.reference_level))
@@ -449,7 +449,7 @@ end
     @test !DGG.has_sorted_subtrees(sys)
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=100)
     @test length(set) == 100
-    # The schedule's tie-break is `cellposition` within a level, which every
+    # The schedule's tie-break is `globalindex` within a level, which every
     # system answers; `descendant_range` has no method here at all, and the
     # traversal never reaches for one.
     @test_throws MethodError DGG.descendant_range(sys, first(collect(set)),

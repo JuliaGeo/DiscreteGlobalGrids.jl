@@ -201,7 +201,7 @@ end
     synthetic_tile(sys, tile, mask) -> (Vector{Float32}, nland)
 
 [`SYNTHETIC`](@ref) at every post of `tile`, ocean posts set to `NaN32`, in the
-tile's own position order: raster row `j` north first, column `i` west to east,
+tile's own index order: raster row `j` north first, column `i` west to east,
 `i` fastest. Also returns how many posts came out land.
 
 Posts are pixel-is-point: column `i` sits at `lon_w + i/ncols`, row `j` at

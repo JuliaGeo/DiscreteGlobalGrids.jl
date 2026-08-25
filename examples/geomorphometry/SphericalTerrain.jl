@@ -6,15 +6,15 @@ Terrain analysis on a DGGS, written directly against `DiscreteGlobalGrids`'
 
 The module provides maximum downward gradient, slope, aspect, curvature, TPI,
 TRI, roughness, prominence, D8 flow direction, and flow accumulation. Metrics
-use absolute cell IDs and resolve them to array positions with `cellposition`.
+use absolute cell IDs and resolve them to array indices with `localindex`.
 
 The same field interface supports complete grids and chunk-plus-halo reads:
 
-    positions(f)     # grid positions we produce output for, in output order
-    value(f, p)      # elevation at grid position `p`, or NaN if not held
+    indices(f)       # grid indices we produce output for, in output order
+    value(f, p)      # elevation at grid index `p`, or NaN if not held
     ctx(f)           # shared per-grid stencil cache
 
-`value` increments `f.misses[]` whenever a requested position is unavailable.
+`value` increments `f.misses[]` whenever a requested index is unavailable.
 A complete one-ring halo therefore leaves the counter at zero.
 """
 module SphericalTerrain
@@ -22,7 +22,7 @@ module SphericalTerrain
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: Vertex, Edge, Connectivity
 
-export GridCtx, WholeField, ChunkField, value, positions, ctx, reset_misses!,
+export GridCtx, WholeField, ChunkField, value, indices, ctx, reset_misses!,
     chunk_range
 export max_downward_gradient, slope_mdg, roughness, tpi, tri, prominence,
     aspect, planefit_slope, curvature, flow_direction, flow_accumulation
@@ -73,14 +73,14 @@ function bearing_deg(a, b)
     return mod(atand(dot3(v, east), dot3(v, north)), 360.0)
 end
 
-# Cache cell IDs, centroids, and one-ring neighbours in grid-position space.
+# Cache cell IDs, centroids, and one-ring neighbours in grid-index space.
 
 struct GridCtx{G,K,C}
     grid::G
     connectivity::K
-    cells::Vector{C}                     # position -> cell id
-    centroids::Vector{NTuple{3,Float64}} # position -> unit-sphere centroid
-    nbr::Vector{Int}                     # CSR neighbour positions
+    cells::Vector{C}                     # index -> cell id
+    centroids::Vector{NTuple{3,Float64}} # index -> unit-sphere centroid
+    nbr::Vector{Int}                     # CSR neighbour indices
     ptr::Vector{Int}                     # CSR row pointers, length n+1
 end
 
@@ -97,7 +97,7 @@ function GridCtx(sys, level::Integer; connectivity::Connectivity = Vertex())
     for p in 1:n
         ptr[p] = length(nbr) + 1
         for m in DGG.neighbors(g, cs[p], 1; connectivity)
-            push!(nbr, DGG.cellposition(g, m))
+            push!(nbr, DGG.localindex(g, m))
         end
     end
     ptr[n + 1] = length(nbr) + 1
@@ -110,20 +110,20 @@ Base.length(k::GridCtx) = length(k.cells)
 """
     chunk_range(sys, root, level) -> UnitRange{Int}
 
-Return the contiguous grid-position range occupied by a subtree.
+Return the contiguous grid-index range occupied by a subtree.
 
 Systems with sorted subtrees use `descendant_range`. Other systems materialize
-the descendant positions and verify that their position hull contains no gaps.
+the descendant indices and verify that their index hull contains no gaps.
 """
 function chunk_range(sys, root, level::Integer)
     if DGG.has_sorted_subtrees(sys)
         return DGG.descendant_range(sys, root, level)
     end
     g = DGG.levelgrid(sys, level)
-    ps = sort!([DGG.cellposition(g, c) for c in DGG.descendants(sys, root, level)])
+    ps = sort!([DGG.localindex(g, c) for c in DGG.descendants(sys, root, level)])
     r = first(ps):last(ps)
     length(r) == length(ps) || throw(ArgumentError(
-        "subtree of $root at level $level is not a contiguous position block"))
+        "subtree of $root at level $level is not a contiguous index block"))
     return r
 end
 
@@ -141,7 +141,7 @@ end
 """
     WholeField(ctx, z)
 
-Elevation over an entire level grid: `z[p]` is the value at position `p`.
+Elevation over an entire level grid: `z[p]` is the value at index `p`.
 """
 struct WholeField{K}
     ctx::K
@@ -155,10 +155,10 @@ WholeField(k::GridCtx, z::Vector{Float64}) = WholeField(k, z, Ref(0))
 
 Store a subtree chunk and the halo needed by a one-ring stencil.
 
-* `descendant_range(sys, root, level)` is the contiguous position block a
+* `descendant_range(sys, root, level)` is the contiguous index block a
   chunked store reads;
 * `halo(subtree(sys, root, level); connectivity)` supplies the outside grid
-  positions, ascending.
+  indices, ascending.
 
 Only chunk and halo values are copied from `z_whole`. Access elsewhere returns
 `NaN` and increments the miss counter.
@@ -172,7 +172,7 @@ struct ChunkField{K,C}
     range::UnitRange{Int}
     z::Vector{Float64}     # chunk values, z[p - offset]
     offset::Int
-    halopos::Vector{Int}   # ascending grid positions of the halo cells
+    haloindices::Vector{Int}   # ascending grid indices of the halo cells
     haloz::Vector{Float64}
     halocells::Vector{C}
     misses::Base.RefValue{Int}
@@ -181,20 +181,20 @@ end
 function ChunkField(k::GridCtx, sys, root, level::Integer, z_whole::Vector{Float64};
         halo_connectivity::Connectivity = k.connectivity, halo = nothing)
     r = chunk_range(sys, root, level)
-    hp = halo === nothing ?
+    hidx = halo === nothing ?
         collect(DGG.halo(DGG.subtree(sys, root, level);
             connectivity = halo_connectivity)) :
-        sort!([DGG.cellposition(k.grid, c) for c in halo])
-    hc = [k.cells[p] for p in hp]
-    return ChunkField(k, root, r, z_whole[r], first(r) - 1, hp, z_whole[hp], hc, Ref(0))
+        sort!([DGG.localindex(k.grid, c) for c in halo])
+    hc = [k.cells[p] for p in hidx]
+    return ChunkField(k, root, r, z_whole[r], first(r) - 1, hidx, z_whole[hidx], hc, Ref(0))
 end
 
 const Field = Union{WholeField,ChunkField}
 
 ctx(f::Field) = f.ctx
-positions(f::WholeField) = 1:length(f.ctx)
-positions(f::ChunkField) = f.range
-Base.length(f::Field) = length(positions(f))
+indices(f::WholeField) = 1:length(f.ctx)
+indices(f::ChunkField) = f.range
+Base.length(f::Field) = length(indices(f))
 reset_misses!(f::Field) = (f.misses[] = 0; f)
 
 @inline value(f::WholeField, p::Int) = @inbounds f.z[p]
@@ -203,8 +203,8 @@ reset_misses!(f::Field) = (f.misses[] = 0; f)
     if first(f.range) <= p <= last(f.range)
         return @inbounds f.z[p - f.offset]
     end
-    i = searchsortedfirst(f.halopos, p)
-    if i <= length(f.halopos) && @inbounds(f.halopos[i]) == p
+    i = searchsortedfirst(f.haloindices, p)
+    if i <= length(f.haloindices) && @inbounds(f.haloindices[i]) == p
         return @inbounds f.haloz[i]
     end
     f.misses[] += 1
@@ -227,7 +227,7 @@ Distances and neighbour counts are evaluated per cell.
 function max_downward_gradient(f::Field; degrees::Bool = true)
     k = f.ctx
     out = Vector{Float64}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         zc = value(f, p); pc = k.centroids[p]
         g = 0.0
         for j in nrange(k, p)
@@ -255,7 +255,7 @@ downhill neighbours contribute.
 function slope_mdg(f::Field)
     k = f.ctx
     out = Vector{Float64}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         zc = value(f, p); pc = k.centroids[p]; g = 0.0
         for j in nrange(k, p)
             q = k.nbr[j]; zn = value(f, q)
@@ -274,7 +274,7 @@ end
 function roughness(f::Field)
     k = f.ctx
     out = Vector{Float64}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         zc = value(f, p); v = 0.0
         for j in nrange(k, p)
             zn = value(f, k.nbr[j]); d = abs(zn - zc)
@@ -290,7 +290,7 @@ end
 function tpi(f::Field)
     k = f.ctx
     out = Vector{Float64}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         zc = value(f, p); total = 0.0; n = 0
         for j in nrange(k, p)
             total += value(f, k.nbr[j]); n += 1
@@ -304,7 +304,7 @@ end
 function tri(f::Field; normalize::Bool = false, squared::Bool = true)
     k = f.ctx
     out = Vector{Float64}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         zc = value(f, p); v = 0.0; n = 0
         for j in nrange(k, p)
             d = abs(value(f, k.nbr[j]) - zc)
@@ -321,7 +321,7 @@ end
 function prominence(f::Field)
     k = f.ctx
     out = Vector{Int}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         zc = value(f, p); n = 0
         for j in nrange(k, p)
             zn = value(f, k.nbr[j])
@@ -365,7 +365,7 @@ end
 "Aspect in degrees clockwise from north, pointing DOWNSLOPE. `NaN` when flat."
 function aspect(f::Field)
     out = Vector{Float64}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         eg, ng, ok = _plane_fit(f, p)
         out[i] = (!ok || (eg == 0 && ng == 0)) ? NaN : mod(atand(-eg, -ng), 360.0)
     end
@@ -375,7 +375,7 @@ end
 "Slope in degrees from the same least-squares plane fit `aspect` uses."
 function planefit_slope(f::Field)
     out = Vector{Float64}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         eg, ng, ok = _plane_fit(f, p)
         out[i] = ok ? atand(hypot(eg, ng)) : NaN
     end
@@ -392,7 +392,7 @@ centroid distances, so it degrades gracefully where cells are unequal.
 function curvature(f::Field)
     k = f.ctx
     out = Vector{Float64}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         zc = value(f, p); pc = k.centroids[p]; acc = 0.0; n = 0
         for j in nrange(k, p)
             q = k.nbr[j]
@@ -411,14 +411,14 @@ end
 """
     flow_direction(f) -> Vector{Int}
 
-Return the grid position of the neighbour with the steepest downhill gradient.
-A pit points to itself. Ties choose the smallest grid position, making the
+Return the grid index of the neighbour with the steepest downhill gradient.
+A pit points to itself. Ties choose the smallest grid index, making the
 result independent of the rotational phase of `neighbors`.
 """
 function flow_direction(f::Field)
     k = f.ctx
     out = Vector{Int}(undef, length(f))
-    @inbounds for (i, p) in enumerate(positions(f))
+    @inbounds for (i, p) in enumerate(indices(f))
         zc = value(f, p); pc = k.centroids[p]
         best = p; bestg = 0.0
         for j in nrange(k, p)
@@ -470,7 +470,7 @@ function smooth_harmonic(k::GridCtx)
     return z
 end
 
-"A single 1000-unit spike at position `at`, zero elsewhere."
+"A single 1000-unit spike at index `at`, zero elsewhere."
 function spike_field(k::GridCtx, at::Int)
     z = zeros(Float64, length(k)); z[at] = 1000.0; return z
 end

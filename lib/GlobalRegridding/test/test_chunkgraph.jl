@@ -28,7 +28,7 @@ end
 struct G4RadiusMethod <: AbstractRegriddingMethod
     radius::Float64
 end
-GR.support_radius(m::G4RadiusMethod, ::RegridSpace) = m.radius
+GR.supportradius(m::G4RadiusMethod, ::RegridSpace) = m.radius
 
 planned_dependencies(dst, src; radius = 0.0, kw...) =
     GR.dependencies(ChunkedPlan(G4RadiusMethod(radius), Weighted(0.5), dst, src;
@@ -89,7 +89,7 @@ hascellchart(p::G4ProbeSpace) = hascellchart(p.space)
 cellcentroid(p::G4ProbeSpace, i::Int) = cellcentroid(p.space, i)
 cellat(p::G4ProbeSpace, x) = cellat(p.space, x)
 nchunks(p::G4ProbeSpace) = nchunks(p.space)
-cellindices(p::G4ProbeSpace, c::Int) = cellindices(p.space, c)
+ownedindices(p::G4ProbeSpace, c::Int) = ownedindices(p.space, c)
 celltree(p::G4ProbeSpace) = celltree(p.space)
 
 # A space that genuinely IS a sub-space of another: its chunks are `chunks` of
@@ -101,7 +101,7 @@ celltree(p::G4ProbeSpace) = celltree(p.space)
 struct E1Subspace{S<:RegridSpace} <: RegridSpace
     parent::S
     chunks::Vector{Int}
-    cells::Vector{Int}                  # local cell -> parent cell position
+    cells::Vector{Int}                  # local index -> parent local index
     spans::Vector{UnitRange{Int}}       # local cells of each local chunk
 end
 
@@ -110,7 +110,7 @@ function E1Subspace(parent::RegridSpace, chunks)
     spans = UnitRange{Int}[]
     for c in chunks
         lo = length(cells) + 1
-        append!(cells, Int.(cellindices(parent, Int(c))))
+        append!(cells, Int.(ownedindices(parent, Int(c))))
         push!(spans, lo:length(cells))
     end
     return E1Subspace(parent, collect(Int, chunks), cells, spans)
@@ -120,7 +120,7 @@ ncells(s::E1Subspace) = length(s.cells)
 nchunks(s::E1Subspace) = length(s.chunks)
 getcell(s::E1Subspace, i::Int) = getcell(s.parent, s.cells[i])
 manifold(s::E1Subspace) = manifold(s.parent)
-cellindices(s::E1Subspace, c::Int) = s.spans[c]
+ownedindices(s::E1Subspace, c::Int) = s.spans[c]
 # `chunkextents` is public but not exported, so this must name it to extend it
 # rather than define a second function that the generic fallback would shadow.
 GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
@@ -815,6 +815,13 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         sub = E1Subspace(dst, sel)
         @test nchunks(sub) == length(sel)
         @test GR.chunkextents(sub) == GR.chunkextents(dst)[sel]
+        # The toy owns its cells under the name the generics dispatch on. Spelt
+        # `cellindices`, this is a `MethodError` and every row below is built
+        # over a sub-space nobody can enumerate.
+        @test ownedindices(sub, 1) == 1:length(ownedindices(dst, sel[1]))
+        @test [getcell(sub, i) for i in ownedindices(sub, 3)] ==
+              [getcell(dst, i) for i in ownedindices(dst, sel[3])]
+        @test last(ownedindices(sub, nchunks(sub))) == ncells(sub)
 
         view = GR.subspace_dependencies(g, sub, sel)
         # Row for row, it is the parent's relation over those chunks.
@@ -879,6 +886,13 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         method = G4RadiusMethod(0.1)
         policy = Weighted(0.5)
 
+        # The toys implement the generics the plan actually dispatches on. A
+        # method spelled `support_radius` would leave the radius at the 0.0
+        # default, and one spelled `cellindices` would leave `ownedindices` a
+        # `MethodError`; both would go unnoticed everywhere else here.
+        @test GR.supportradius(method, src) == 0.1
+        @test GR.ownedindices(G4ProbeSpace(src), 1) == GR.ownedindices(src, 1)
+
         # The default builds one, at the plan's own radius, in every spelling of
         # the constructor — keyword and both positional forms. Task E1 made this
         # the default because a lazy read IS a read of these rows.
@@ -899,7 +913,7 @@ GR.chunkextents(s::E1Subspace) = GR.chunkextents(s.parent)[s.chunks]
         @test quiet.queries == 0
 
         # `dependencies = true` builds it once, at the plan's OWN radius — the
-        # method's `support_radius`, never a keyword of its own.
+        # method's `supportradius`, never a keyword of its own.
         owned = ChunkedPlan(method, policy, dst, src; dependencies = true)
         g = GR.dependencies(owned)
         @test g isa GR.ChunkDependencyGraph

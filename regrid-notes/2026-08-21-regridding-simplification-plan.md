@@ -794,7 +794,7 @@ and weight tests/benchmark.
 Actions:
 
 - Add `weightblock(method, dst_space, dst_inds, src_space, src_inds)`.
-- Keep `build_weights!` plus `WeightCOO` as the compatible generic fallback.
+- Keep `buildweights!` plus `WeightCOO` as the compatible generic fallback.
 - Let Conservative adopt its assembled CSC directly with denominators computed
   once; remove CSC-to-COO-to-CSC conversion.
 - Make eager and chunked builders call the same seam; remove the special

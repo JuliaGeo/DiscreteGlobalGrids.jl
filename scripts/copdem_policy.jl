@@ -46,7 +46,7 @@ end
     affinity_order(ndst, sourcesof, srckeys) -> Vector{Int}
 
 The destination chunks in tile-affinity order: `order[p]` is the destination
-chunk to run at position `p`.
+chunk to run at index `p`.
 
 Sort the source chunks by `srckeys` — for this run a Morton sweep of the 1-degree
 tile lattice — and give each one its rank in that sweep. A destination chunk is
@@ -96,7 +96,7 @@ end
 """
     GuidedSchedule(n, workers, maxbatch)
 
-One atomic cursor over `n` work positions, handed out in batches that shrink as
+One atomic cursor over `n` work indices, handed out in batches that shrink as
 the queue drains — guided self-scheduling.
 
 Batching keeps a worker on a geographically connected run, which is what makes
@@ -125,13 +125,13 @@ GuidedSchedule(n::Integer, workers::Integer, maxbatch::Integer) =
 """
     claim!(s::GuidedSchedule) -> UnitRange{Int} or nothing
 
-Claim the next batch of positions, or `nothing` when the queue is empty.
+Claim the next batch of indices, or `nothing` when the queue is empty.
 
 A compare-and-swap loop rather than `atomic_add!`, because the batch size now
 depends on the cursor value: only the task that wins the CAS moves the cursor,
 and it moves it by exactly the batch it is about to keep. Every successful CAS
 therefore owns a half-open interval exclusively, so a varying batch size can
-neither drop a position nor hand one out twice.
+neither drop an index nor hand one out twice.
 """
 function claim!(s::GuidedSchedule)
     while true
@@ -143,8 +143,8 @@ function claim!(s::GuidedSchedule)
     end
 end
 
-"The next position the cursor will hand out; `n + 1` once the queue is empty."
-cursorposition(s::GuidedSchedule) = s.cursor[]
+"The next index the cursor will hand out; `n + 1` once the queue is empty."
+cursorindex(s::GuidedSchedule) = s.cursor[]
 
 # ===========================================================================
 # Tile caches
@@ -578,7 +578,7 @@ end
 """
     Prefetcher(cache, order, sourcesof, schedule; depth, concurrency, prepare)
 
-A pool that keeps the next `depth` positions of the walk order loaded before a
+A pool that keeps the next `depth` indices of the walk order loaded before a
 worker asks for them.
 
 It matters exactly when a source chunk costs real latency to obtain — which the
@@ -656,7 +656,7 @@ function _prefetch_driver(pf::Prefetcher, order::Vector{Int}, sourcesof, nsrc::I
     n = length(order)
     try
         while !pf.stop[]
-            target = min(n, cursorposition(schedule) + pf.depth - 1)
+            target = min(n, cursorindex(schedule) + pf.depth - 1)
             while frontier <= target
                 for s in sourcesof(order[frontier])
                     si = Int(s)

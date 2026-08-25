@@ -37,7 +37,7 @@ function toycache(rows::Vector{Vector{Int}}, nsrc::Int; permits = 8, load = noth
 end
 
 """
-Drain `s` into `into`, appending every position it hands out.
+Drain `s` into `into`, appending every index it hands out.
 
 A named function, not a `while` loop inlined into the `Threads.@spawn` below:
 the enclosing testset scope already binds `b`, so an inlined

@@ -188,7 +188,7 @@ function recordedcolumnset()
         selection_source = "canonical column_set in $RECORD; original source sidecars absent")
 end
 
-"Select exactly n evenly spaced positions, including both ends when n > 1."
+"Select exactly n evenly spaced indices, including both ends when n > 1."
 function evensample(values::AbstractVector, n::Integer)
     n == 0 && return eltype(values)[]
     n <= length(values) || error("cannot take $n values from $(length(values))")
@@ -1100,7 +1100,7 @@ function polediagnostic()
 
         row = worst === nothing ? nothing : worst
         cell = row === nothing ? nothing : DGG.cellindex(grid,
-            first(DGG.columnpositions(layout, column)) + row - 1)
+            first(DGG.columnindices(layout, column)) + row - 1)
         point = cell === nothing ? nothing : DGG.cell_centroid(grid, cell)
         lon = point === nothing ? nothing : atand(point[2], point[1])
         lat = point === nothing ? nothing : asind(point[3])

@@ -203,7 +203,7 @@ measures. The production planner does not collect the query win.
 The gates harness does not exercise clipping, so this is a purpose-built
 harness. Method:
 
-1. Build the production `BlockAreaOperator` exactly as `build_weights!` does,
+1. Build the production `BlockAreaOperator` exactly as `buildweights!` does,
    but with a **recording inner operator** that returns 0 (so the block
    assembles nothing) and pushes the two geometries it is handed. Run under
    `@with GR.OUTER_PARALLEL => true`, which forces `_innerthreaded()` serial so

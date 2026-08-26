@@ -31,15 +31,17 @@ METHOD="${1:-}"
 case "$METHOD" in
     conservative) NODE=0 ;;
     nearest)      NODE=1 ;;
-    *) echo "usage: $0 conservative|nearest" >&2; exit 2 ;;
+    *) echo "usage: $0 conservative|nearest [tag]" >&2; exit 2 ;;
 esac
+NODE="${COPDEM_NODE:-$NODE}"      # COPDEM_NODE overrides the per-method default
+TAG="${2:+-$2}"                # optional tag distinguishes a second run of one method
 
-RUN="glo90-synthetic-authalic-${METHOD}-20260826"
+RUN="glo90-synthetic-authalic-${METHOD}${TAG}-20260826"
 OUT=/home/asinghvi17/geo/scratch-stores
 STORE="$OUT/$RUN.zarr"
 LOG="$OUT/$RUN.log"
 PIDFILE="$OUT/$RUN.pid"
-UNIT="copdem-${METHOD}-20260826"
+UNIT="copdem-${METHOD}${TAG}-20260826"
 
 MEMMAX=24G
 HEAPHINT=18G

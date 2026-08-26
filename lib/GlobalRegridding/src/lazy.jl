@@ -637,8 +637,9 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         _connectedsource!(srcchunks, A, t, tile)
         _sourceranges!(srcranges, A, srcchunks)
         # Prepare the tile's destination geometry once where more than one block
-        # reads it; a single block uses its own task-local memo instead. The
-        # choice crosses an inference barrier so that only the assembly this run
+        # reads it: its tree always, its polygons where the budget holds them.
+        # A single block uses its own task-local memo instead. The choice
+        # crosses an inference barrier so that only the assembly this run
         # takes is compiled; `_fillwave!` specializes on what it is handed.
         destination = Base.inferencebarrier(
             (tile === nothing && length(srcchunks) > 1) ?

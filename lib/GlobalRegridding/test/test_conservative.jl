@@ -546,19 +546,56 @@ end
         @test GR.destcellsfit(Conservative(), cells,
             fld(GR.destcellbudget(budget), percell), budget)
 
-        # The same rule decides the index set a build is handed.
-        @test GR.preparedestination(Conservative(), cells, 1:ncell, 1 << 10) === 1:ncell
+        # The budget decides the polygon slots and nothing else. A refused tile
+        # still has its tree hoisted: the tree is a function of the index set
+        # alone, every block of the tile clips against the same one, and
+        # rebuilding it per block is the cost preparing exists to remove.
+        @test GR.preparedestination(Conservative(), cells, 1:ncell, 1 << 10) isa
+              GR.DestinationTree
         @test GR.preparedestination(Conservative(), cells, 1:ncell,
             GR.DEFAULT_BUDGET) isa GR.DestinationCache
-        # A cheap destination and a point method prepare nothing at any budget.
+        # A cheap destination and a point method keep no polygon at any budget,
+        # and still share the tile's tree.
         @test GR.preparedestination(Conservative(), raster, 1:24,
-            GR.DEFAULT_BUDGET) === 1:24
+            GR.DEFAULT_BUDGET) isa GR.DestinationTree
         @test GR.preparedestination(BarycentricPoint(), cells, 1:ncell,
-            GR.DEFAULT_BUDGET) === 1:ncell
+            GR.DEFAULT_BUDGET) isa GR.DestinationTree
+        # Either preparation answers with the tree it holds, built once.
+        for prep in (GR.preparedestination(Conservative(), cells, 1:ncell, 1 << 10),
+            GR.preparedestination(Conservative(), cells, 1:ncell, GR.DEFAULT_BUDGET))
+            @test GR._destinationtree(prep) === prep.tree
+            @test prep.inds == 1:ncell
+        end
         # An empty tile has no cell to probe, and prepares nothing.
         @test GR.DestinationCache(cells, 1:0) === nothing
         @test GR.preparedestination(Conservative(), cells, 1:0,
             GR.DEFAULT_BUDGET) === 1:0
+    end
+
+    @testset "the tree-only preparation reaches the index set's weights" begin
+        dst = ToyLonLatSpace(8, 4)
+        src = ToyLonLatSpace(16, 8)
+        inds, sinds = 1:Int(ncells(dst)), 1:Int(ncells(src))
+
+        # A budget too small for the polygons still hoists the tree.
+        prepared = GR.preparedestination(Conservative(), dst, inds, 1 << 10)
+        @test prepared isa GR.DestinationTree
+
+        block = GR.pairblock(Conservative(), dst, prepared, src, sinds)
+        reference = GR.pairblock(Conservative(), dst, inds, src, sinds)
+        @test block.weights.colptr == reference.weights.colptr
+        @test block.weights.rowval == reference.weights.rowval
+        @test all(block.weights.nzval .=== reference.weights.nzval)
+        @test all(block.denom .=== reference.denom)
+
+        # A degenerate side takes the generic route, as the index set does.
+        @test GR.pairblock(Conservative(), dst, prepared, src, 1:0).weights ==
+              GR.pairblock(Conservative(), dst, inds, src, 1:0).weights
+
+        # A method with no prepared-geometry spelling names the tile's cells.
+        method = T3CooMethod(Conservative())
+        @test GR.pairblock(method, dst, prepared, src, sinds).weights ==
+              GR.pairblock(method, dst, inds, src, sinds).weights
     end
 
     @testset "a method that reads no prepared geometry takes the tile's cells" begin

@@ -146,18 +146,50 @@ struct DestinationCache{I,M,P}
     lock::ReentrantLock
 end
 
-function DestinationCache(space::RegridSpace, inds)
+DestinationCache(space::RegridSpace, inds) =
+    isempty(inds) ? nothing :
+    DestinationCache(space, inds, indexmap(inds), subtree(space, inds))
+
+# The map and the tree are the tile's, built once by `preparedestination` and
+# handed to whichever preparation it settles on.
+function DestinationCache(space::RegridSpace, inds, imap, tree)
     isempty(inds) && return nothing
     P = typeof(getcell(space, Int(first(inds))))
     isconcretetype(P) || return nothing
     n = length(inds)
-    imap = indexmap(inds)
     return DestinationCache{typeof(inds),typeof(imap),P}(inds, imap,
-        subtree(space, inds), Vector{P}(undef, n), fill(false, n), ReentrantLock())
+        tree, Vector{P}(undef, n), fill(false, n), ReentrantLock())
 end
 
 Base.show(io::IO, c::DestinationCache) = print(io, "DestinationCache(",
     length(c.inds), " cells, ", count(c.filled), " prepared)")
+
+"""
+    DestinationTree(inds, map, tree)
+
+One tile's restricted tree and index map, with no polygon slots: the
+preparation a tile gets when its cells' geometry does not fit
+[`destcellbudget`](@ref), or when the method reads no cell polygon at all.
+
+Building the tree is the part of preparing that every tile repays. A tile's
+tree is a function of its index set alone, so one build serves every block the
+tile takes from a source chunk, and on a whole-space DGGS destination that
+build is a cap per cell — 823,543 of them for one production chunk, which is
+most of the block's cost when each block repeats it. The polygons are the part
+the budget may refuse; refusing them is not a reason to rebuild the tree.
+
+Blocks addressed this way synthesize destination geometry through their own
+task-local [`CellMemo`](@ref), exactly as an index set does.
+"""
+struct DestinationTree{I,M}
+    inds::I
+    map::M
+    # Untyped for the same reason `DestinationCache.tree` is.
+    tree::Any
+end
+
+Base.show(io::IO, d::DestinationTree) =
+    print(io, "DestinationTree(", length(d.inds), " cells)")
 
 """
     preparesdestination(method, dst_space::RegridSpace) -> Bool
@@ -175,23 +207,33 @@ preparesdestination(::Conservative, dst_space::RegridSpace) =
     expensivecellgeometry(dst_space)
 
 """
-    preparedestination(method, dst_space, dst_inds, budget) -> dst_inds or DestinationCache
+    preparedestination(method, dst_space, dst_inds, budget) -> DestinationCache, DestinationTree or dst_inds
 
-The destination a tile's builds address: prepared geometry where `method`
-keeps it ([`preparesdestination`](@ref)) and `budget` holds it
-([`destcellsfit`](@ref)), and `dst_inds` itself otherwise.
+The destination a tile's builds address: the tile's tree with prepared polygons
+where `method` keeps them ([`preparesdestination`](@ref)) and `budget` holds
+them ([`destcellsfit`](@ref)), the tile's tree alone otherwise, and `dst_inds`
+itself for an empty tile.
 
-  - Both answers reach the same weights, value for value and entry for entry.
-  - Only a tile with more than one block repays the memory, so a single-block
+  - All three answers reach the same weights, value for value and entry for entry.
+  - Only a tile with more than one block repays a preparation, so a single-block
     build — the eager whole domain included — takes the index set and its
     task-local [`CellMemo`](@ref) instead.
+  - The tree is hoisted whether or not the polygons are. It is built from the
+    index set alone and every block of the tile clips against the same one, so
+    the budget's refusal applies to the polygon slots and to nothing else. A
+    [`DestinationTree`](@ref) carries the tree without them.
 """
 function preparedestination(method::AbstractRegriddingMethod,
     dst_space::RegridSpace, dst_inds, budget::Integer)
-    preparesdestination(method, dst_space) || return dst_inds
-    destcellsfit(method, dst_space, length(dst_inds), budget) || return dst_inds
-    cache = DestinationCache(dst_space, dst_inds)
-    return cache === nothing ? dst_inds : cache
+    isempty(dst_inds) && return dst_inds
+    imap = indexmap(dst_inds)
+    tree = subtree(dst_space, dst_inds)
+    if preparesdestination(method, dst_space) &&
+       destcellsfit(method, dst_space, length(dst_inds), budget)
+        cache = DestinationCache(dst_space, dst_inds, imap, tree)
+        cache === nothing || return cache
+    end
+    return DestinationTree(dst_inds, imap, tree)
 end
 
 # Fill every row the pairs name and no other, once per row for the whole tile.
@@ -220,7 +262,7 @@ end
 
 """
     _destinationtree(dst_space, dst_inds)
-    _destinationtree(cache::DestinationCache)
+    _destinationtree(prepared::Union{DestinationCache,DestinationTree})
 
 The tree a block clips its destination against, held opaque to inference.
 
@@ -231,8 +273,9 @@ clipping loop runs inside that specialization and pays nothing.
 """
 _destinationtree(dst_space::RegridSpace, dst_inds) =
     Base.inferencebarrier(subtree(dst_space, dst_inds))
-# The cache holds its tree opaque already.
+# A preparation holds its tree opaque already.
 _destinationtree(cache::DestinationCache) = cache.tree
+_destinationtree(prepared::DestinationTree) = prepared.tree
 
 # Intersection operator
 
@@ -371,6 +414,7 @@ end
 """
     pairblock(::Conservative, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
     pairblock(::Conservative, dst_space, dst_cache::DestinationCache, src_space, src_inds)
+    pairblock(::Conservative, dst_space, prepared::DestinationTree, src_space, src_inds)
 
 Adopt the assembled sparse matrix of intersection areas as the block's weights,
 reading each destination's denominator off it once. Every conservative block —
@@ -380,8 +424,9 @@ the eager whole domain and a chunk pair alike — is built here.
     generic [`WeightCOO`](@ref) route's, bit for bit.
   - Naming the destination by index set builds its restricted tree here and
     synthesizes its geometry through a task-local [`CellMemo`](@ref); naming it
-    by a [`DestinationCache`](@ref) reuses the tile's tree and its prepared
-    polygons instead. The weights are the same, entry for entry.
+    by a [`DestinationTree`](@ref) reuses the tile's tree and keeps the memo;
+    naming it by a [`DestinationCache`](@ref) reuses the tile's tree and its
+    prepared polygons. The weights are the same, entry for entry.
 """
 function pairblock(::Conservative, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds)
@@ -419,11 +464,35 @@ function pairblock(::Conservative, dst_space::RegridSpace,
     return WeightBlock(block, _blockdenom(block, ndst))
 end
 
+# The tree-only preparation: the tile's tree, and a task-local memo for the
+# geometry it holds no slots for. Same assembly as the index-set spelling, one
+# tree build per tile rather than one per block.
+function pairblock(::Conservative, dst_space::RegridSpace,
+    prepared::DestinationTree, src_space::RegridSpace, src_inds)
+    ndst = length(prepared.inds)
+    (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        Conservative(), dst_space, prepared.inds, src_space, src_inds)
+
+    m = _sharedmanifold(dst_space, src_space)
+    op = BlockAreaOperator(_intersectionoperator(m),
+        prepared.map, indexmap(src_inds),
+        _cellmemo(src_space, src_inds), _cellmemo(dst_space, prepared.inds))
+    block = _intersectionareas(m, _destinationtree(prepared),
+        subtree(src_space, src_inds), op)
+
+    return WeightBlock(block, _blockdenom(block, ndst))
+end
+
 # A method that reads no prepared geometry still takes the destination a tile
 # prepared, and names its cells.
 pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
     dst_cache::DestinationCache, src_space::RegridSpace, src_inds) =
     pairblock(method, dst_space, dst_cache.inds, src_space, src_inds)
+
+pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+    prepared::DestinationTree, src_space::RegridSpace, src_inds) =
+    pairblock(method, dst_space, prepared.inds, src_space, src_inds)
 
 function _sharedmanifold(dst_space::RegridSpace, src_space::RegridSpace)
     m = manifold(dst_space)

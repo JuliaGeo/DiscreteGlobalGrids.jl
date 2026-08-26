@@ -224,6 +224,11 @@ include("chunks.jl")
 include("regridding.jl")
 include("cap_cached_tree.jl")
 
+# Copernicus DEM answers point queries from its own row arithmetic. The methods
+# dispatch on the space above, so the file is read into that system's module
+# here rather than where the module is defined.
+Base.include(CopernicusDEM, joinpath(@__DIR__, "systems", "CopernicusDEM", "point.jl"))
+
 # After it: a target resolution may be spelled as a raster or a regrid space.
 include("sizing.jl")
 include("deprecated.jl")

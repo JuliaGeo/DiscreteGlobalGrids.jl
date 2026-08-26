@@ -26,6 +26,7 @@ import GeoInterface as GI
 import ConservativeRegridding as CR
 # Section (k) checks the tree the regridder gets for one source chunk.
 import GlobalRegridding as GR
+import DiskArrays
 import Extents
 const US = GO.UnitSpherical
 using GeometryOps.UnitSpherical: spherical_orient
@@ -105,6 +106,150 @@ function sampled_tile_lats(sys, l, seed, n_samples)
     indices = CT.sample_indices(MersenneTwister(seed), ncells(g), n_samples)
     return [CD.tilecorner(sys, cellindex(g, p))[1] for p in indices]
 end
+
+# --------------------------------------------------------------------------
+# Point-stencil helpers, for section (n)
+# --------------------------------------------------------------------------
+const POINT = GR.BarycentricPoint()
+
+# A plane and a plane plus the cross term Q1 carries, both scaled to order one
+# so that a reproduction tolerance reads as a relative one.
+plane(lon, lat) = 3.0 + 0.7 * (lon / 180) - 1.3 * (lat / 90)
+saddle(lon, lat) = plane(lon, lat) + 0.05 * (lon / 180) * (lat / 90)
+
+"`f` interpolated over a row's posts, their longitudes unwrapped onto `lon`'s."
+function interpolate(f, sites, row, lon)
+    v = 0.0
+    for k in 1:length(row)
+        slon, slat = CD.FROM_SPHERE(sites[row.indices[k]])
+        v += row.weights[k] * f(lon + rem(slon - lon, 360.0, RoundNearest), slat)
+    end
+    return v
+end
+
+"The post rows bracketing `lat`, and their column counts, as the query finds them."
+function strip_at(st, sys, lat)
+    n = CD.lat_intervals(sys)
+    nrows = Int64(180) * Int64(n)
+    JA = clamp(floor(Int64, (90.0 - lat) * n), Int64(0), nrows - 2)
+    if lat > CD._sitelat(st, JA)
+        JA = max(JA - 1, Int64(0))
+    elseif lat < CD._sitelat(st, JA + 1)
+        JA = min(JA + 1, nrows - 2)
+    end
+    return JA, CD._rowcols(st, JA), CD._rowcols(st, JA + 1)
+end
+
+"The local index on the complete level of the post at row `J`, column `K`."
+cellof(st, J, K) = Int(CD._globalid(st, J, mod(K, 360 * CD._rowcols(st, J)))) + 1
+
+"""
+The dual cells of the strip between post rows `JA` and `JA+1` near columns `KA`
+and `KB`, built from the two rows' cell edges alone: an edge one row alone has
+carries three posts, an edge both rows share carries four. Each cell is its
+`(row, column)` nodes, their places in the strip's chart, and whether it is a
+quadrilateral.
+"""
+function strip_cells(st, JA, KA, KB)
+    a = CD._rowcols(st, JA)
+    b = CD._rowcols(st, JA + 1)
+    latA = CD._sitelat(st, JA)
+    latB = CD._sitelat(st, JA + 1)
+    out = Tuple{Vector{Tuple{Int64,Int64}},Vector{Tuple{Float64,Float64}},Bool}[]
+    place(J, K) = J == JA ? (K / a, latA) : (K / b, latB)
+    add!(nodes, quad) = push!(out, (nodes, [place(J, K) for (J, K) in nodes], quad))
+    for K in (KA - 2):(KA + 3)
+        e = (2K - 1) * b                          # the north row's west cell edge
+        L = fld(e + a, 2a)                        # the south row's cell holding it
+        shared = (2L - 1) * a == e
+        add!(shared ? [(JA, K - 1), (JA, K), (JA + 1, L), (JA + 1, L - 1)] :
+             [(JA, K - 1), (JA, K), (JA + 1, L)], shared)
+    end
+    for L in (KB - 2):(KB + 3)
+        e = (2L - 1) * a
+        K = fld(e + b, 2b)
+        (2K - 1) * b == e && continue             # already added as a shared edge
+        add!([(JA, K), (JA + 1, L - 1), (JA + 1, L)], false)
+    end
+    return out
+end
+
+"Whether `(x, y)` is inside or on the convex ring `coords`."
+function inring(coords, x, y)
+    turn = 0
+    n = length(coords)
+    for i in 1:n
+        j = i == n ? 1 : i + 1
+        ex, ey = coords[j][1] - coords[i][1], coords[j][2] - coords[i][2]
+        dx, dy = x - coords[i][1], y - coords[i][2]
+        cr = ex * dy - ey * dx
+        scale = sqrt((ex^2 + ey^2) * (dx^2 + dy^2))
+        abs(cr) > 1e-11 * scale || continue
+        s = cr > 0 ? 1 : -1
+        turn == 0 ? (turn = s) : (s == turn || return false)
+    end
+    return true
+end
+
+"A source over the twin's cells that records the chunk range of every read."
+struct CountingCells{C} <: DiskArrays.AbstractDiskArray{Float64,1}
+    values::Vector{Float64}
+    chunks::C
+    reads::Vector{Int}
+end
+
+Base.size(A::CountingCells) = size(A.values)
+DiskArrays.eachchunk(A::CountingCells) = A.chunks
+DiskArrays.haschunks(::CountingCells) = DiskArrays.Chunked()
+
+function DiskArrays.readblock!(A::CountingCells, out, r::AbstractUnitRange)
+    push!(A.reads, first(r))
+    out .= view(A.values, r)
+    return out
+end
+
+function counting_source(space, values)
+    widths = [length(GR.ownedindices(space, k)) for k in 1:GR.nchunks(space)]
+    chunks = DiskArrays.GridChunks(DiskArrays.IrregularChunks(; chunksizes = widths))
+    return CountingCells(values, chunks, Int[])
+end
+
+"""
+Longitude/latitude pairs that reach every band edge in both hemispheres and both
+pole rows, whatever the lattice's row count: a random sweep of a few thousand
+draws would miss a strip one row deep.
+"""
+function point_probes(sys)
+    st = CD._pointstate(sys)
+    n = CD.lat_intervals(sys)
+    nrows = Int64(180) * Int64(n)
+    out = Tuple{Float64,Float64}[]
+    for r in 0:(CD.NROWS - 2)
+        CD.ncols(sys, r) == CD.ncols(sys, r + 1) && continue
+        JA = Int64(r + 1) * n - 1
+        latA, latB = CD._sitelat(st, JA), CD._sitelat(st, JA + 1)
+        for f in (0.13, 0.5, 0.87), lon in (-179.7, -40.37, 0.3, 91.4, 179.7)
+            push!(out, (lon, latA + f * (latB - latA)))
+        end
+    end
+    for (J, sign) in ((Int64(0), 1.0), (nrows - 1, -1.0))
+        edge = CD._sitelat(st, J)
+        push!(out, (37.0, sign * 90.0))
+        push!(out, (-112.5, edge + sign * 1e-7))
+        push!(out, (-112.5, edge - sign * 1e-7))
+    end
+    return out
+end
+
+"The pixels of the named 1-degree tiles, ascending."
+function tilepixels(sys, tiles)
+    ids = DGG.LevelIndex[]
+    for (lat_s, lon_w) in tiles
+        append!(ids, DGG.descendants(sys, CD.tilecell(sys, lat_s, lon_w), 1))
+    end
+    return sort!(ids)
+end
+
 
 @testset "CopernicusDEM system" begin
 
@@ -2303,6 +2448,369 @@ end
     @test sort(unique(last.(counts0))) == [3, 4, 5]
     @test maximum(first.(counts0)) < DGG.maxneighbors(TWIN, DGG.Vertex())
     @test maximum(last.(counts0)) < DGG.maxneighbors(TWIN, DGG.Edge())
+end
+
+# -------------------------------------------------------------------------
+# (n) Point stencils: the posts a destination point takes its value from
+# -------------------------------------------------------------------------
+#
+# `BarycentricPoint` on a Copernicus DEM source interpolates between posts. The
+# scaled twin carries every band ratio the shipped lattices carry, in both
+# hemispheres, so the sweeps run on it and the products are spot-checked.
+
+@testset "a point query is at most four posts summing to one" begin
+    for (sys, draws) in ((TWIN, 40_000), (GLO90, 4_000), (GLO30, 4_000))
+        n = CD.lat_intervals(sys)
+        st = CD._pointstate(sys)
+        space = DGG.DGGSpace(levelgrid(sys, 1))
+        smp = GR.sampler(POINT, space)
+        sites = GR.samplesites(space)
+        row = GR.WeightRow()
+        rng = MersenneTwister(20260826)
+        bad = String[]
+        widest = 0
+        worstsum = worstplane = worstsaddle = 0.0
+        mapped = polar = ordinary = transition = 0
+        probes = point_probes(sys)
+        for k in 1:(draws + length(probes))
+            lon, lat = k <= draws ? (-180 + 360 * rand(rng), -90 + 180 * rand(rng)) :
+                       probes[k - draws]
+            p = CD.TO_SPHERE((lon, lat))
+            qlon, qlat = CD.FROM_SPHERE(p)
+            status = GR.weightsat!(row, smp, p)
+            if !GR.ismapped(status)
+                polar += 1
+                # Only a point poleward of the outermost post row is unmapped,
+                # and it is unmapped as an undecided cell, not as coverage.
+                abs(qlat) > 90 - 1 / n ||
+                    note!(bad, "unmapped at ($lon, $lat): $status")
+                status === GR.WeightsDegenerate ||
+                    note!(bad, "polar status at ($lon, $lat): $status")
+                isempty(row) || note!(bad, "unmapped row is not empty at ($lon, $lat)")
+                continue
+            end
+            mapped += 1
+            widest = max(widest, length(row))
+            all(>(0), row.weights) ||
+                note!(bad, "a weight is not positive at ($lon, $lat)")
+            worstsum = max(worstsum, abs(sum(row.weights) - 1))
+            worstplane = max(worstplane,
+                abs(interpolate(plane, sites, row, qlon) - plane(qlon, qlat)))
+            _, a, b = strip_at(st, sys, qlat)
+            if a == b
+                ordinary += 1
+                worstsaddle = max(worstsaddle,
+                    abs(interpolate(saddle, sites, row, qlon) - saddle(qlon, qlat)))
+            else
+                transition += 1
+            end
+        end
+        @testset "$(sys)" begin
+            @test bad == String[]
+            @test widest == 4
+            @test mapped + polar == draws + length(probes)
+            @test polar > 0
+            @test transition > 0
+            @test ordinary > 0
+            # Law 1: a mapped row is a partition of unity.
+            @test worstsum <= 1e-14
+            # Law 2: every dual cell reproduces a plane, and an ordinary
+            # rectangle also reproduces the cross term its Q1 basis carries.
+            @test worstplane <= 1e-9
+            @test worstsaddle <= 1e-9
+        end
+    end
+end
+
+@testset "a band edge is a triangle or a shared-edge trapezoid" begin
+    st = CD._pointstate(TWIN)
+    n = CD.lat_intervals(TWIN)
+    space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    smp = GR.sampler(POINT, space)
+    row = GR.WeightRow()
+    rng = MersenneTwister(11)
+    edges = [Int64(r + 1) * n - 1 for r in 0:(CD.NROWS - 2)
+             if CD.ncols(TWIN, r) != CD.ncols(TWIN, r + 1)]
+    bad = String[]
+    triangles = quads = exact = 0
+    for JA in edges
+        a = CD._rowcols(st, JA)
+        b = CD._rowcols(st, JA + 1)
+        latA = CD._sitelat(st, JA)
+        latB = CD._sitelat(st, JA + 1)
+        for _ in 1:1_000
+            x = 360 * rand(rng)
+            lat = latB + (latA - latB) * rand(rng)
+            p = CD.TO_SPHERE((x - 180.0, lat))
+            qlon, qlat = CD.FROM_SPHERE(p)
+            qx = qlon + 180.0
+            GR.ismapped(GR.weightsat!(row, smp, p)) ||
+                (note!(bad, "unmapped in the strip at ($qlon, $qlat)"); continue)
+            KA = floor(Int64, qx * a + 0.5)
+            KB = floor(Int64, qx * b + 0.5)
+            cell = nothing
+            for candidate in strip_cells(st, JA, KA, KB)
+                inring(candidate[2], qx, qlat) && (cell = candidate; break)
+            end
+            cell === nothing &&
+                (note!(bad, "no oracle cell at ($qlon, $qlat)"); continue)
+            cell[3] ? (quads += 1) : (triangles += 1)
+            want = sort([cellof(st, J, K) for (J, K) in cell[1]])
+            got = sort(collect(row.indices))
+            # A point on a dual edge drops the posts across it, so the query's
+            # posts are the cell's, with those carrying no weight left out.
+            issubset(got, want) || note!(bad, "posts $got are not the cell's $want")
+            length(got) == length(want) && (got == want ? (exact += 1) :
+                note!(bad, "posts $got are not the cell's $want"))
+        end
+    end
+    @test length(edges) == 10
+    @test bad == String[]
+    # The twin's ten band edges: eight interleave with no shared edge and give
+    # triangles alone, and the two at 80 degrees have both.
+    @test triangles > 0
+    @test quads > 0
+    @test exact > 0
+end
+
+@testset "the antimeridian and a tile seam are ordinary strips" begin
+    st = CD._pointstate(TWIN)
+    space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    smp = GR.sampler(POINT, space)
+    row = GR.WeightRow()
+    g1 = levelgrid(TWIN, 1)
+
+    "The query's posts, and the 1-degree tiles they belong to."
+    function stencil(lon, lat)
+        GR.ismapped(GR.weightsat!(row, smp, CD.TO_SPHERE((lon, lat)))) || return nothing
+        ids = [cellindex(g1, i) for i in row.indices]
+        return (copy(row.indices), copy(row.weights),
+            unique(CD.tilecorner(TWIN, c) for c in ids))
+    end
+
+    # A query in the last column of the lattice takes posts on both sides of the
+    # antimeridian, in the two tiles that meet there.
+    seam = stencil(179.99, 0.51)
+    @test seam !== nothing
+    @test length(seam[1]) == 4
+    @test sort(seam[3]) == [(0, -180), (0, 179)]
+
+    # The same query a whole degree west is the same stencil shifted by one
+    # tile's columns: a seam moves which tiles the posts sit in, and nothing
+    # else. The twin's band at the equator has 30 columns to the degree.
+    inland = stencil(178.99, 0.51)
+    @test inland !== nothing
+    @test seam[2] ≈ inland[2] rtol = 1e-12
+    @test length(unique(seam[1] .- inland[1])) == 2
+
+    # A 1-degree tile seam inside a band, away from the antimeridian, is the
+    # same statement: a query on the corner of four tiles takes one post from
+    # each, with the weights of the same query a degree west.
+    tile = stencil(10.99, 46.02)
+    west = stencil(9.99, 46.02)
+    @test tile !== nothing && west !== nothing
+    @test length(tile[1]) == 4
+    @test sort(tile[3]) == [(45, 10), (45, 11), (46, 10), (46, 11)]
+    @test tile[2] ≈ west[2] rtol = 1e-12
+end
+
+@testset "a destination at a post takes that post" begin
+    for sys in (TWIN, GLO90)
+        space = DGG.DGGSpace(levelgrid(sys, 1))
+        smp = GR.sampler(POINT, space)
+        sites = GR.samplesites(space)
+        row = GR.WeightRow()
+        rng = MersenneTwister(5)
+        worst = 0.0
+        single = total = 0
+        for i in rand(rng, 1:ncells(levelgrid(sys, 1)), 4_000)
+            GR.ismapped(GR.weightsat!(row, smp, sites[i])) || continue
+            total += 1
+            k = findfirst(==(i), row.indices)
+            worst = max(worst, 1 - (k === nothing ? 0.0 : row.weights[k]))
+            length(row) == 1 && (single += 1)
+        end
+        @testset "$(sys)" begin
+            @test total > 3_900
+            # Law 3. The residual is the site's own round trip through the unit
+            # sphere, not the stencil: most sites land on their post exactly.
+            @test worst <= 1e-8
+            @test single > (sys === TWIN ? total ÷ 2 : 0)
+        end
+    end
+end
+
+@testset "a holding without a post is a rim, never a substitute" begin
+    st = CD._pointstate(TWIN)
+    grid = DGG.PartialGrid(TWIN, 1, tilepixels(TWIN, [(46, 10)]))
+    space = DGG.DGGSpace(grid; chunklevel = 0)
+    smp = GR.sampler(POINT, space)
+    complete = DGG.DGGSpace(levelgrid(TWIN, 1))
+    csmp = GR.sampler(POINT, complete)
+    row = GR.WeightRow()
+    crow = GR.WeightRow()
+    rng = MersenneTwister(17)
+    bad = String[]
+    mapped = rims = 0
+    for _ in 1:8_000
+        lon = 9.5 + 2.0 * rand(rng)
+        lat = 45.5 + 2.0 * rand(rng)
+        p = CD.TO_SPHERE((lon, lat))
+        status = GR.weightsat!(row, smp, p)
+        GR.ismapped(GR.weightsat!(crow, csmp, p)) ||
+            (note!(bad, "the complete lattice did not map ($lon, $lat)"); continue)
+        held = [DGG.localindex(grid, cellindex(complete.grid, i)) for i in crow.indices]
+        if GR.ismapped(status)
+            mapped += 1
+            # The stencil is the complete lattice's, translated, and nothing
+            # else: no post is exchanged for another.
+            any(isnothing, held) &&
+                note!(bad, "mapped over a missing post at ($lon, $lat)")
+            row.indices == [something(h, 0) for h in held] ||
+                note!(bad, "substituted a post at ($lon, $lat)")
+            row.weights ≈ crow.weights ||
+                note!(bad, "renormalised at ($lon, $lat)")
+        else
+            rims += 1
+            status === GR.WeightsRim || note!(bad, "status $status at ($lon, $lat)")
+            isempty(row) || note!(bad, "a rim row is not empty at ($lon, $lat)")
+            any(isnothing, held) ||
+                note!(bad, "a rim whose posts are all held at ($lon, $lat)")
+        end
+    end
+    @test bad == String[]
+    @test mapped > 0
+    @test rims > 0
+end
+
+@testset "the pole rows are an undecided cell, not an answer" begin
+    st = CD._pointstate(TWIN)
+    n = CD.lat_intervals(TWIN)
+    space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    smp = GR.sampler(POINT, space)
+    row = GR.WeightRow()
+    nrows = Int64(180) * Int64(n)
+    at(lon, lat) = GR.weightsat!(row, smp, CD.TO_SPHERE((lon, lat)))
+
+    for (J, sign) in ((Int64(0), 1), (nrows - 1, -1))
+        edge = CD._sitelat(st, J)
+        # The whole-row dual cell over the pole is not constructed.
+        @test at(0.0, sign * 90.0) === GR.WeightsDegenerate
+        @test isempty(row)
+        @test at(123.0, edge + sign * 1e-6) === GR.WeightsDegenerate
+        # The row itself is an ordinary strip's edge, and carries weight there.
+        @test GR.ismapped(at(123.0, edge - sign * 1e-6))
+        @test any(i -> CD._globalid(st, J, Int64(0)) + 1 <=
+                       i <= CD._globalid(st, J, Int64(360 * CD._rowcols(st, J) - 1)) + 1,
+            row.indices)
+    end
+end
+
+@testset "the declared reach bounds every post a stencil names" begin
+    for sys in (TWIN, GLO90, GLO30)
+        space = DGG.DGGSpace(levelgrid(sys, 1))
+        radius = GR.supportradius(POINT, space)
+        smp = GR.sampler(POINT, space)
+        sites = GR.samplesites(space)
+        row = GR.WeightRow()
+        rng = MersenneTwister(29)
+        worst = 0.0
+        for _ in 1:4_000
+            lon = -180 + 360 * rand(rng)
+            lat = -90 + 180 * rand(rng)
+            p = CD.TO_SPHERE((lon, lat))
+            GR.ismapped(GR.weightsat!(row, smp, p)) || continue
+            for i in row.indices
+                worst = max(worst, US.spherical_distance(p, sites[i]))
+            end
+        end
+        @testset "$(sys)" begin
+            @test radius > 0
+            @test worst < radius
+        end
+    end
+end
+
+@testset "a warm query allocates nothing and infers" begin
+    sys = TWIN
+    space = DGG.DGGSpace(levelgrid(sys, 1))
+    @test (@inferred CD._pointstate(sys)) isa CD.PointState{30}
+    smp = GR.sampler(POINT, space)
+    row = GR.WeightRow()
+    @test (@inferred GR.weightsat!(row, smp, CD.TO_SPHERE((10.0, 46.0)))) ===
+          GR.WeightsMapped
+    rng = MersenneTwister(3)
+    points = [CD.TO_SPHERE((-180 + 360 * rand(rng), -85 + 170 * rand(rng)))
+              for _ in 1:2_000]
+    function sweep(row, smp, points)
+        n = 0
+        for p in points
+            GR.ismapped(GR.weightsat!(row, smp, p)) && (n += length(row))
+        end
+        return n
+    end
+    sweep(row, smp, points)                       # warm the row's buffers
+    @test @allocated(sweep(row, smp, points)) == 0
+    @test sweep(row, smp, points) > 4 * length(points) - 100
+end
+
+@testset "every route gives the same values and reads exactly its chunks" begin
+    src = CD.CopernicusDEMSystem{30}()
+    dst = CD.CopernicusDEMSystem{60}()
+    for (srctiles, dsttiles) in (([(46, 10), (46, 11)], [(46, 10), (46, 11)]),
+        ([(46, 10), (46, 11), (46, 12)], [(46, 11)]))
+
+        srcgrid = DGG.PartialGrid(src, 1, tilepixels(src, srctiles))
+        srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
+        dstgrid = DGG.PartialGrid(dst, 1, tilepixels(dst, dsttiles))
+        dstspace = DGG.DGGSpace(dstgrid; chunklevel = 0)
+        ssites = GR.samplesites(srcspace)
+        values = [saddle(CD.FROM_SPHERE(ssites[i])...) for i in 1:ncells(srcgrid)]
+        starts = [first(GR.ownedindices(srcspace, k)) for k in 1:GR.nchunks(srcspace)]
+
+        eager = GR.regrid(counting_source(srcspace, values); to = dstspace,
+            from = srcspace, method = POINT, missingpolicy = DGG.Weighted(1),
+            lazy = false)
+        lazysrc = counting_source(srcspace, values)
+        lazy = parent(GR.regrid(lazysrc; to = dstspace, from = srcspace,
+            method = POINT, missingpolicy = DGG.Weighted(1), lazy = true))
+        # Law 7: planning and building the lazy array read no source.
+        @test isempty(lazysrc.reads)
+
+        smp = GR.sampler(POINT, srcspace)
+        row = GR.WeightRow()
+        dsites = GR.samplesites(dstspace)
+        out = similar(parent(eager))
+        bad = String[]
+        for d in 1:GR.nchunks(dstspace)
+            empty!(lazysrc.reads)
+            cells = GR.ownedindices(dstspace, d)
+            out[cells] = lazy[cells]
+            read = sort(unique(findfirst(==(s), starts) for s in lazysrc.reads))
+            owning = Set{Int}()
+            for i in cells
+                GR.ismapped(GR.weightsat!(row, smp, dsites[i])) || continue
+                for j in row.indices
+                    push!(owning, GR.chunkat(srcspace, j))
+                end
+            end
+            # Law 6: the chunks read are the chunks owning the tile's entries.
+            read == sort(collect(owning)) ||
+                note!(bad, "tile $d read $read and owns $(sort(collect(owning)))")
+        end
+        # Law 5: the direct route and the chunked lazy route agree.
+        @testset "$(length(srctiles)) source tiles" begin
+            @test bad == String[]
+            @test isequal(parent(eager), out)
+            @test count(isfinite, out) > 0
+            worst = 0.0
+            for i in eachindex(out)
+                isfinite(out[i]) || continue
+                worst = max(worst, abs(out[i] - saddle(CD.FROM_SPHERE(dsites[i])...)))
+            end
+            @test worst <= 1e-9
+        end
+    end
 end
 
 end # @testset "CopernicusDEM system"

@@ -196,7 +196,7 @@ GR.supportradius(::T5PlaceCount, src_space::RegridSpace) =
 
 GR.sampler(method::T5PlaceCount, space::ToyLonLatSpace) =
     GR.Sampler(space, GR.samplesites(space), T5Bracket(space, method.placed,
-        method.yielding))
+        method.yielding), method)
 
 function GR.weightsat!(row::GR.WeightRow,
     s::GR.Sampler{<:RegridSpace,<:AbstractVector,T5Bracket}, p)

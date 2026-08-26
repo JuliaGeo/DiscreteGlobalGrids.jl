@@ -108,6 +108,27 @@ end
     return true
 end
 
+# The policy for a point poleward of the outermost post row, `J` that row.
+#
+# `NearestCell` takes the nearest post of the row. Every post of a row stands at
+# one latitude, so the nearest in longitude is the nearest on the sphere too:
+# the cosine of the distance grows with the cosine of the longitude difference
+# and with nothing else. The column is one rounding, and it wraps at the
+# antimeridian like any other.
+@inline function _polefill!(row::GR.WeightRow, st::PointState, grid,
+    ::GR.NearestCell, J::Int64, lon)
+    x = Float64(lon) + 180.0
+    x -= 360.0 * floor(x / 360.0)
+    K = floor(Int64, x * _rowcols(st, J) + 0.5)
+    i = _nodeindex(st, grid, J, K)
+    i == 0 && return GR.WeightsRim
+    GR._addentry!(row, i, 1.0)
+    return GR.WeightsMapped
+end
+
+@inline _polefill!(::GR.WeightRow, ::PointState, _grid, ::Nothing, ::Int64, _lon) =
+    GR.WeightsDegenerate
+
 # The four tensor products of a strip's two coordinates, north row first.
 @inline function _emitquad!(row::GR.WeightRow, st::PointState, grid, JA::Int64,
     K1::Int64, K2::Int64, K3::Int64, K4::Int64, u::Float64, v::Float64)
@@ -197,8 +218,10 @@ Weight the Copernicus DEM posts around `p`, at most four of them.
   - The stencil is built on the complete level and each node exchanged for its
     index in the collection sampled; a node the collection does not hold is
     `WeightsRim` and the row is empty.
-  - A point poleward of the outermost post row would need that row's whole-row
-    dual cell, whose construction is undecided, and is `WeightsDegenerate`.
+  - A point poleward of the outermost post row has no dual cell short of that
+    row entire, so the method's `poles` policy answers it: `NearestCell()`, the
+    default, takes the nearest post of that row with weight one; `nothing`
+    leaves it `WeightsDegenerate` with an empty row.
 """
 function GR.weightsat!(row::GR.WeightRow,
     s::GR.Sampler{<:DGG.DGGSpace{<:PointGrid},<:AbstractVector,PointState{N}},
@@ -216,12 +239,13 @@ function GR.weightsat!(row::GR.WeightRow,
     latA = _sitelat(st, JA)
     latB = _sitelat(st, JA + 1)
     if lat > latA
-        JA == 0 && return GR.WeightsDegenerate
+        JA == 0 && return _polefill!(row, st, grid, s.method.poles, JA, lon)
         JA -= 1
         latB = latA
         latA = _sitelat(st, JA)
     elseif lat < latB
-        JA + 1 == nrows - 1 && return GR.WeightsDegenerate
+        JA + 1 == nrows - 1 &&
+            return _polefill!(row, st, grid, s.method.poles, JA + 1, lon)
         JA += 1
         latA = latB
         latB = _sitelat(st, JA + 1)

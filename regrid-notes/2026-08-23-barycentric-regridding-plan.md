@@ -331,26 +331,24 @@ barycentric weights, the existing `Weighted(threshold)` policy can continue to
 measure valid weight and renormalize it. `Weighted(1)` is the strict complete
 stencil choice. Geometry-rim fallback happens before weights exist.
 
-### Poles are a decision gate
+### Poles
 
-The natural dual cell at a pole contains the entire polar source row:
-129,600 GLO-30 sites or 43,200 GLO-90 sites. Evaluating or storing such a
-coordinate set is necessarily linear in that row length and violates the
-ordinary constant-stencil performance model.
+The natural dual cell at a pole contains the entire polar source row: 129,600
+GLO-30 sites or 43,200 GLO-90 sites. Evaluating or storing such a coordinate set
+is linear in that row length, so for the handful of cells poleward of the
+outermost post row it would break the constant-stencil model the rest of the
+method rests on. That region is under one arcsecond across.
 
-There is also a semantic issue: `cell_centroid` is the midpoint of the clamped
-polar cell box, while the original DEM post coordinate and that midpoint differ
-in the pole rows. Before enabling CopDEM point regridding at the poles, choose
-and test one explicit policy:
-
-1. natural all-row polar coordinates, accepting their cost;
-2. an explicitly named nearest/local polar fallback; or
-3. another documented reconstruction that defines both its virtual geometry
-   and its sample-coordinate meaning.
-
-Do not make this choice implicitly in the generic method. Until it is made,
-CopDEM polar queries are unmapped under `BarycentricPoint` and the current
-production path remains available.
+A CopDEM point query there takes the nearest post of the polemost row instead:
+one entry, weight one. The policy is named on the method rather than assumed —
+`BarycentricPoint(; poles = NearestCell())` is the default and
+`BarycentricPoint(poles = nothing)` leaves those points unmapped — so a caller
+who wants nothing but interpolation can have it, and nobody gets a nearest
+sample they did not ask for. `cell_centroid` in a pole row is the midpoint of
+the clamped polar cell box rather than the published post coordinate; the
+nearest post is chosen by that same site, so the query and the sites it names
+agree. A source whose sample sites reach the poles has no such region and the
+setting never fires there.
 
 ## Exact source-chunk planning
 
@@ -546,7 +544,7 @@ Patch/MLS and the optional support query start only after P3-P5 measurements.
   triangles and Q1 trapezoids at band edges from exact integer arithmetic,
   rims on holdings, poles `WeightsDegenerate` with the polar policy unchosen.
   `regrid-notes/2026-08-26-p5-copdem-point-stencils.md`.
-- P6 next. The polar decision gate is open.
+- P6 next.
 
 ### P0 — baseline and instrumentation
 

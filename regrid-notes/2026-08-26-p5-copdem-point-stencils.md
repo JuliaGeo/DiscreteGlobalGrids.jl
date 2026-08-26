@@ -25,7 +25,7 @@ fraction `(latA-lat)/(latA-latB)`.
 | antimeridian | none — columns wrap `mod 360nc`, chart longitudes stay unwrapped | ordinary | ordinary |
 | 1-degree tile seam | none — a seam changes a row's base, not its length | ordinary | ordinary |
 | holding without a post | a post carrying weight has no index in the collection | none | `WeightsRim`, empty row |
-| poleward of the outermost row | `lat` outside the extreme rows' latitudes | none | `WeightsDegenerate`, see below |
+| poleward of the outermost row | `lat` outside the extreme rows' latitudes | the nearest post of that row | weight 1.0, see below |
 
 Cell edges are compared in units of `1/(2ab)` degrees, so "shared" is integer
 equality and no floating ring is intersected. The dual cell at a band edge is
@@ -88,31 +88,31 @@ source tiles. Planning and building the lazy array read nothing, and the direct
 and chunked lazy routes agree. `supportradius` is the largest post-to-point
 diagonal over the six bands, doubled, checked against every post named.
 
-## The polar gate, unchosen
+## The poles
 
 A point poleward of the outermost post row lies in the dual cell of the pole,
-whose nodes are that row entire: 43,200 posts on GLO-90, 129,600 on GLO-30. That
-cell is not constructed, so the query is `WeightsDegenerate` — a construction
-not settled — rather than `WeightsOutside`, which would claim the source does
-not cover the point. It does: the region is `lat > 90 - 1/(4N)` and
-`lat < -90 + 3/(4N)`, a quarter and three quarters of an arcsecond on GLO-30.
-Three policies are open, none taken here:
+whose nodes are that row entire: 43,200 posts on GLO-90, 129,600 on GLO-30 —
+linear in the row against a constant four everywhere else. So the query takes
+the **nearest post of that row**: one entry, weight 1.0, `WeightsMapped`. The
+region is `lat > 90 - 1/(4N)` and `lat < -90 + 3/(4N)`, a quarter and three
+quarters of an arcsecond on GLO-30. The policy is named on the method:
+`BarycentricPoint()` carries `poles = NearestCell()`; `poles = nothing` leaves
+the region `WeightsDegenerate` with an empty row — a construction not settled,
+not `WeightsOutside`, which would claim the source does not cover the point.
 
-| policy | what it costs |
-|---|---|
-| the natural all-row cell, by mean-value coordinates | linear in the row: 43,200 or 129,600 entries per query against a constant four everywhere else, breaking both the storage model and the four-entry law |
-| an explicitly named nearest fallback on the pole rows | one entry, constant time, and a discontinuity where the fallback begins; needs a name in the method's configuration, never a silent default |
-| a reconstructed cell — a virtual post at the pole, fanned to the row | constant stencil, but it must define both the virtual geometry and the value at that post, and the centroid there is the clamped box's midpoint, not the published post |
-
-The second is cheapest and the third most faithful; until one is chosen, polar
-output stays unmapped and the conservative path remains available there.
+Every post of a row stands at one latitude, so the nearest in longitude is the
+nearest on the sphere: the cosine of the distance grows with the cosine of the
+longitude difference and with nothing else. The column is one rounding, wrapping
+at the antimeridian, and the post is exchanged for its index in the collection
+sampled — absent, it is `WeightsRim`, as anywhere else. The interpolant steps
+where the fallback begins, which is what the constant stencil costs.
 
 ## The gate, per clause
 
-- **every nonpolar query is O(1)** — two floors and four products, plus at most
-  8 walk steps at a band edge; 0.0 B a query and `@allocated == 0` warm.
-- **emits at most four entries** — asserted over every sweep on all three
-  lattices, and exactly 4.000 per placed cell on the benchmark's destination.
+- **every query is O(1)** — two floors and four products, at most 8 walk steps
+  at a band edge, one rounding in a pole region; 0.0 B and `@allocated == 0`.
+- **emits at most four entries, one in a pole region** — asserted over every
+  sweep on all three lattices, and 4.000 per placed cell on the benchmark.
 - **reads exactly its owning chunks** — asserted per destination tile against
   the union recomputed from the stencils.
 - **agrees across seams and band transitions** — a 1-degree seam and the

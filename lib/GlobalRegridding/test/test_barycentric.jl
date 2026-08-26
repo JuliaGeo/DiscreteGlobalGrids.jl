@@ -495,7 +495,7 @@ end
         # The fallback dual cell is what a chart source reaches beyond its
         # chart: no cell, no nodes, and no stencil invented.
         row = GR.WeightRow()
-        plain = GR.Sampler(space, GR.samplesites(space), nothing)
+        plain = GR.Sampler(space, GR.samplesites(space), nothing, BarycentricPoint())
         @test GR.nodecount(GR.dualcellat(plain, cellcentroid(space, 1))) == 0
         @test all(GR.weightsat!(row, plain, cellcentroid(space, i)) === GR.WeightsOutside
                   for i in 1:Int(ncells(space)))

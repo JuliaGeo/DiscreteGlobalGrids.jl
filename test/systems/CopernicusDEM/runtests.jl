@@ -111,6 +111,7 @@ end
 # Point-stencil helpers, for section (n)
 # --------------------------------------------------------------------------
 const POINT = GR.BarycentricPoint()
+const POINT_NOPOLAR = GR.BarycentricPoint(poles = nothing)
 
 # A plane and a plane plus the cross term Q1 carries, both scaled to order one
 # so that a reproduction tolerance reads as a relative one.
@@ -2456,14 +2457,16 @@ end
 #
 # `BarycentricPoint` on a Copernicus DEM source interpolates between posts. The
 # scaled twin carries every band ratio the shipped lattices carry, in both
-# hemispheres, so the sweeps run on it and the products are spot-checked.
+# hemispheres, so the sweeps run on it and the products are spot-checked. The
+# sweeps ask for the stencil alone, with no polar policy, so the pole regions
+# stand out as the only place it builds nothing; the policy has its own testset.
 
 @testset "a point query is at most four posts summing to one" begin
     for (sys, draws) in ((TWIN, 40_000), (GLO90, 4_000), (GLO30, 4_000))
         n = CD.lat_intervals(sys)
         st = CD._pointstate(sys)
         space = DGG.DGGSpace(levelgrid(sys, 1))
-        smp = GR.sampler(POINT, space)
+        smp = GR.sampler(POINT_NOPOLAR, space)
         sites = GR.samplesites(space)
         row = GR.WeightRow()
         rng = MersenneTwister(20260826)
@@ -2683,27 +2686,61 @@ end
     @test rims > 0
 end
 
-@testset "the pole rows are an undecided cell, not an answer" begin
+@testset "a pole region takes the nearest post of the polemost row" begin
     st = CD._pointstate(TWIN)
     n = CD.lat_intervals(TWIN)
     space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    sites = GR.samplesites(space)
     smp = GR.sampler(POINT, space)
+    unmapped = GR.sampler(POINT_NOPOLAR, space)
     row = GR.WeightRow()
     nrows = Int64(180) * Int64(n)
-    at(lon, lat) = GR.weightsat!(row, smp, CD.TO_SPHERE((lon, lat)))
 
+    # The policy is named on the method, defaults to the nearest post, and is
+    # one of exactly two things.
+    @test GR.BarycentricPoint().poles isa GR.NearestCell
+    @test GR.BarycentricPoint(poles = nothing).poles === nothing
+    @test_throws ArgumentError GR.BarycentricPoint(poles = :clamp)
+
+    bad = String[]
     for (J, sign) in ((Int64(0), 1), (nrows - 1, -1))
         edge = CD._sitelat(st, J)
-        # The whole-row dual cell over the pole is not constructed.
-        @test at(0.0, sign * 90.0) === GR.WeightsDegenerate
-        @test isempty(row)
-        @test at(123.0, edge + sign * 1e-6) === GR.WeightsDegenerate
-        # The row itself is an ordinary strip's edge, and carries weight there.
-        @test GR.ismapped(at(123.0, edge - sign * 1e-6))
-        @test any(i -> CD._globalid(st, J, Int64(0)) + 1 <=
-                       i <= CD._globalid(st, J, Int64(360 * CD._rowcols(st, J) - 1)) + 1,
-            row.indices)
+        nc = CD._rowcols(st, J)
+        posts = [cellof(st, J, K) for K in Int64(0):(Int64(360) * nc - 1)]
+        postsites = [sites[i] for i in posts]
+        # The pole itself, a point just inside the region, and one just west of
+        # the antimeridian whose nearest post is the row's first column.
+        for (lon, lat) in ((0.0, sign * 90.0), (47.13, edge + sign * 1e-6),
+            (180.0 - 1 / (4 * nc), edge + sign * 1e-7))
+            p = CD.TO_SPHERE((lon, lat))
+            status = GR.weightsat!(row, smp, p)
+            status === GR.WeightsMapped ||
+                (note!(bad, "($lon, $lat) is $status"); continue)
+            (length(row) == 1 && row.weights[1] == 1.0) ||
+                note!(bad, "($lon, $lat) is $(length(row)) posts")
+            # Brute force over the row: no post is closer than the one kept.
+            kept = US.spherical_distance(p, sites[row.indices[1]])
+            best = minimum(q -> US.spherical_distance(p, q), postsites)
+            kept <= best + 1e-12 ||
+                note!(bad, "($lon, $lat) kept $kept against $best")
+            # Without a policy the region is what it was before there was one.
+            GR.weightsat!(row, unmapped, p) === GR.WeightsDegenerate ||
+                note!(bad, "($lon, $lat) is mapped with no polar policy")
+            isempty(row) || note!(bad, "($lon, $lat) leaves a row behind")
+        end
+        # The wrap keeps the row's first column, not its last.
+        GR.weightsat!(row, smp,
+            CD.TO_SPHERE((180.0 - 1 / (4 * nc), edge + sign * 1e-7)))
+        collect(row.indices) == [first(posts)] ||
+            note!(bad, "the antimeridian kept $(collect(row.indices))")
+        # The row itself is still an ordinary strip's edge and interpolates
+        # there: the policy begins where the posts stop, and no earlier.
+        GR.ismapped(GR.weightsat!(row, smp,
+            CD.TO_SPHERE((47.13, edge - sign * 1e-6)))) ||
+            note!(bad, "row $J carries no weight on its equatorward side")
+        length(row) == 4 || note!(bad, "row $J is $(length(row)) posts inside")
     end
+    @test bad == String[]
 end
 
 @testset "the declared reach bounds every post a stencil names" begin
@@ -2752,6 +2789,16 @@ end
     sweep(row, smp, points)                       # warm the row's buffers
     @test @allocated(sweep(row, smp, points)) == 0
     @test sweep(row, smp, points) > 4 * length(points) - 100
+
+    # The polar branch is the same query: one entry, inferred, and no allocation.
+    nlat = CD.lat_intervals(sys)
+    @test (@inferred GR.weightsat!(row, smp, CD.TO_SPHERE((37.0, 90.0)))) ===
+          GR.WeightsMapped
+    polar = [CD.TO_SPHERE((-180 + 360 * rand(rng),
+        hemi * (90 - rand(rng) / (8 * nlat)))) for hemi in (1.0, -1.0), _ in 1:500]
+    sweep(row, smp, polar)
+    @test @allocated(sweep(row, smp, polar)) == 0
+    @test sweep(row, smp, polar) == length(polar)
 end
 
 @testset "every route gives the same values and reads exactly its chunks" begin
@@ -2811,6 +2858,42 @@ end
             @test worst <= 1e-9
         end
     end
+end
+
+@testset "a destination reaching the pole agrees on every route" begin
+    src = CD.CopernicusDEMSystem{30}()
+    dst = CD.CopernicusDEMSystem{60}()
+    srcgrid = DGG.PartialGrid(src, 1, tilepixels(src, [(89, 10), (89, 11), (89, 12)]))
+    srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
+    dstgrid = DGG.PartialGrid(dst, 1, tilepixels(dst, [(89, 10), (89, 11)]))
+    dstspace = DGG.DGGSpace(dstgrid; chunklevel = 0)
+    ssites = GR.samplesites(srcspace)
+    values = [saddle(CD.FROM_SPHERE(ssites[i])...) for i in 1:ncells(srcgrid)]
+
+    # The finer destination's polemost row stands north of every source post, so
+    # the polar policy is the only thing that can place it.
+    smp = GR.sampler(POINT, srcspace)
+    unmapped = GR.sampler(POINT_NOPOLAR, srcspace)
+    row = GR.WeightRow()
+    dsites = GR.samplesites(dstspace)
+    beyond = [i for i in 1:Int(ncells(dstgrid))
+              if GR.weightsat!(row, unmapped, dsites[i]) === GR.WeightsDegenerate]
+    @test !isempty(beyond)
+    @test all(GR.ismapped(GR.weightsat!(row, smp, dsites[i])) for i in beyond)
+
+    # Law 5, with those cells in the destination: eager, lazy and a source
+    # chunked differently read the same values off the same operator.
+    args = (; to = dstspace, from = srcspace, method = POINT,
+        missingpolicy = DGG.Weighted(1))
+    eager = parent(GR.regrid(values; args..., lazy = false))
+    lazy = collect(parent(GR.regrid(values; args..., lazy = true)))
+    fine = DGG.DGGSpace(srcgrid; chunklevel = 1)
+    @test GR.nchunks(fine) != GR.nchunks(srcspace)
+    rechunked = parent(GR.regrid(values; to = dstspace, from = fine,
+        method = POINT, missingpolicy = DGG.Weighted(1), lazy = false))
+    @test isequal(eager, lazy)
+    @test isequal(eager, rechunked)
+    @test all(isfinite, eager[beyond])
 end
 
 end # @testset "CopernicusDEM system"

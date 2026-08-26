@@ -246,7 +246,7 @@ end
 
 countingsampler(method, space, placed) =
     GR.Sampler(space, GR.samplesites(space),
-        CountingSites(GR.sampler(method, space), placed))
+        CountingSites(GR.sampler(method, space), placed), method)
 
 # --- nearest weights on the chunk-pair route -------------------------------
 

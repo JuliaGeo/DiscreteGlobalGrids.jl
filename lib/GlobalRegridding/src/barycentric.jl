@@ -469,19 +469,21 @@ samplerstate(space::RegridSpace) =
     hascellchart(space) ? ChartState(space) : nothing
 
 """
-    Sampler(space, sites, state)
+    Sampler(space, sites, state, method)
 
-A source space prepared to be asked for weights at points.
+A source space prepared to be asked for weights at points by one method.
 
-It holds the space, its [`samplesites`](@ref), and whatever
-[`samplerstate`](@ref) the space prepared once. It is immutable and read
-concurrently; per-point scratch belongs to the calling task's
+It holds the space, its [`samplesites`](@ref), whatever [`samplerstate`](@ref)
+the space prepared once, and the method that asked for it, so a query reaches
+the method's own settings without being handed them per point. It is immutable
+and read concurrently; per-point scratch belongs to the calling task's
 [`WeightRow`](@ref).
 """
-struct Sampler{S<:RegridSpace,V<:AbstractVector,T}
+struct Sampler{S<:RegridSpace,V<:AbstractVector,T,M}
     space::S
     sites::V
     state::T
+    method::M
 end
 
 Base.show(io::IO, s::Sampler) = print(io, "Sampler(", s.space, ")")
@@ -507,13 +509,13 @@ A source with neither a cell chart nor dual cells is an `ArgumentError` naming
 it: there is no geometry to interpolate between, and a silent field of missing
 values is not the answer.
 """
-function sampler(::BarycentricPoint, space::RegridSpace)
+function sampler(method::BarycentricPoint, space::RegridSpace)
     (hascellchart(space) || hasdualcells(space)) || throw(ArgumentError(
         "BarycentricPoint has nothing to interpolate between on a " *
         "$(typeof(space)): it reports neither `hascellchart` nor " *
         "`hasdualcells`, so no dual cell of source sample sites can be built " *
         "around a destination point"))
-    return Sampler(space, samplesites(space), samplerstate(space))
+    return Sampler(space, samplesites(space), samplerstate(space), method)
 end
 
 """

@@ -47,22 +47,40 @@ This point sample does not preserve integrals.
 struct BilinearPoint <: AbstractRegriddingMethod end
 
 """
-    BarycentricPoint()
+    BarycentricPoint(; poles = NearestCell())
 
 Interpolate between source sample sites at each destination sample site.
 
-The stencil is the dual cell of source sample sites containing the destination
-point, weighted by the coordinates that cell's basis names: tensor Q1 on a
-quadrilateral, or mean-value coordinates on a convex polygon, which on a
-triangle are that triangle's barycentric coordinates. Weights are nonnegative
-and sum to one, so the result lies between the source values it came from.
-Requires [`cellcentroid`](@ref) of the destination space and a source space
-that answers point queries; a destination outside the source's dual complex
-emits no entry at all, and the missing policy decides what it becomes.
-
-This point sample does not preserve integrals.
+  - The stencil is the dual cell of source sample sites containing the point,
+    weighted by the coordinates that cell's basis names: tensor Q1 on a
+    quadrilateral, or mean-value coordinates on a convex polygon, which on a
+    triangle are that triangle's barycentric coordinates.
+  - Weights are nonnegative and sum to one, so the result lies between the
+    source values it came from. Integrals are not preserved.
+  - Requires [`cellcentroid`](@ref) of the destination space and a source space
+    that answers point queries; a destination outside the source's dual complex
+    emits no entry at all and the missing policy decides what it becomes.
+  - `poles` is the policy where a source's own sample sites stop short of a
+    pole: [`NearestCell`](@ref) takes the nearest site of the polemost row with
+    weight one, `nothing` leaves those points unmapped. A source whose sites
+    reach the poles — every conforming grid — has no such region and ignores it.
 """
-struct BarycentricPoint <: AbstractRegriddingMethod end
+struct BarycentricPoint{P} <: AbstractRegriddingMethod
+    poles::P
+    function BarycentricPoint(poles::P) where {P}
+        (poles isa NearestCell || poles === nothing) || throw(ArgumentError(
+            "BarycentricPoint(poles = $(repr(poles))) is not a polar policy; " *
+            "pass NearestCell() to take the nearest polemost sample site, or " *
+            "nothing to leave points beyond the polemost row unmapped"))
+        return new{P}(poles)
+    end
+end
+
+BarycentricPoint(; poles = NearestCell()) = BarycentricPoint(poles)
+
+# The shortest call that reconstructs it, so the opt-out is what stands out.
+Base.show(io::IO, m::BarycentricPoint) = print(io, "BarycentricPoint(",
+    m.poles isa NearestCell ? "" : "poles = $(repr(m.poles))", ")")
 
 """
     outputsampling(method::AbstractRegriddingMethod) -> DimensionalData.Lookups.Sampling

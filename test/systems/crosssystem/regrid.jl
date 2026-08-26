@@ -117,11 +117,11 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
             end
         end
         # The sites a point method interpolates between are the space's own
-        # centroids, handed over as the collection's centroid field — the same
-        # pure vector a sweep asked for `Centroid()` reads, so nothing is
-        # materialised to prepare one.
+        # centroids, computed on read: nothing is materialised to prepare a
+        # sampler, however many cells the space has.
         sites = GR.samplesites(space)
-        @test sites isa DGG.Engine.CellField
+        @test sites isa GR.CentroidSites
+        @test Base.summarysize(sites) - Base.summarysize(space) < 64
         @test all(sites[j] == GR.cellcentroid(space, j)
                   for j in (1, i, DGG.ncells(space)))
         # `chunkat` inverts `ownedindices`: every cell is placed back in the

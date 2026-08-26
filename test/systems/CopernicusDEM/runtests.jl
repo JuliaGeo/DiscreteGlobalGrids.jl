@@ -2686,6 +2686,165 @@ end
     @test rims > 0
 end
 
+# The production source names its 2.5e10 pixels by a lazy vector: one entry per
+# listed tile and arithmetic for the pixel, in id order. This is that vector's
+# shape, so what the suite asserts about a sampler over it holds for the run's.
+struct LazyTilePixels{G} <: AbstractVector{DGG.LevelIndex}
+    complete::G
+    starts::Vector{Int}      # first level-1 index of each tile
+    offsets::Vector{Int}     # pixels before each tile
+    n::Int
+end
+
+function LazyTilePixels(sys, tiles)
+    complete = levelgrid(sys, 1)
+    cells = sort!([CD.tilecell(sys, lat_s, lon_w) for (lat_s, lon_w) in tiles])
+    starts, offsets, acc = Int[], Int[], 0
+    for t in cells
+        r = DGG.descendant_range(sys, t, 1)
+        push!(starts, Int(first(r)))
+        push!(offsets, acc)
+        acc += length(r)
+    end
+    return LazyTilePixels(complete, starts, offsets, acc)
+end
+
+Base.size(v::LazyTilePixels) = (v.n,)
+Base.IndexStyle(::Type{<:LazyTilePixels}) = IndexLinear()
+Base.@propagate_inbounds function Base.getindex(v::LazyTilePixels, i::Int)
+    @boundscheck checkbounds(v, i)
+    k = searchsortedlast(v.offsets, i - 1)
+    return cellindex(v.complete, v.starts[k] + (i - 1 - v.offsets[k]))
+end
+DGG.Helpers.strictly_increasing(::LazyTilePixels) = true
+
+@testset "a sampler over a holding of tiles holds nothing" begin
+    # Seven GLO-90 tiles, 7.0e6 posts: a seam, the 50-degree band edge and
+    # both pole rows. Indexing them would be 8 bytes a post, and used to be.
+    sys = GLO90
+    tiles = [(46, 10), (46, 11), (47, 10), (49, 10), (50, 10), (89, 0), (-90, 0)]
+    ids = LazyTilePixels(sys, tiles)
+    grid = DGG.PartialGrid(sys, 1, ids)
+    @test ncells(grid) == length(ids) ==
+          sum(length(DGG.descendant_range(sys, CD.tilecell(sys, t...), 1)) for t in tiles)
+    space = DGG.DGGSpace(grid; chunklevel = 0)
+    @test GR.nchunks(space) == length(tiles)
+    GR.sampler(POINT, space)
+    @test @allocated(GR.sampler(POINT, space)) < 4096
+    smp = GR.sampler(POINT, space)
+    @test smp.state isa CD.PointState{1200}
+    sites = GR.samplesites(space)
+    @test sites isa GR.CentroidSites
+    @test all(sites[i] == cell_centroid(grid, ids[i]) for i in (1, 12_345, length(ids)))
+
+    # Every post a query names is found by its tile chunk, and the answer is
+    # the holding's own local index; a post of an unlisted tile is a rim.
+    complete = DGG.DGGSpace(levelgrid(sys, 1))
+    csmp = GR.sampler(POINT, complete)
+    row, crow = GR.WeightRow(), GR.WeightRow()
+    rng = MersenneTwister(2026_08_26)
+    bad = String[]
+    mapped = rims = polar = 0
+    nlat = CD.lat_intervals(sys)
+    probes = [(10.0 + 2.0 * rand(rng), 45.5 + 5.5 * rand(rng)) for _ in 1:4_000]
+    append!(probes, [(rand(rng), 89.0 + rand(rng)) for _ in 1:400])
+    append!(probes, [(rand(rng), -90.0 + rand(rng)) for _ in 1:400])
+    # The pole regions of the two listed pole tiles, and of two unlisted ones.
+    append!(probes, [(q + rand(rng), hemi * (90 - rand(rng) / (8 * nlat)))
+                     for hemi in (1.0, -1.0), q in (0.0, 7.0), _ in 1:100])
+    for (lon, lat) in probes
+        p = CD.TO_SPHERE((lon, lat))
+        status = GR.weightsat!(row, smp, p)
+        GR.ismapped(GR.weightsat!(crow, csmp, p)) ||
+            (note!(bad, "the complete lattice did not map ($lon, $lat)"); continue)
+        held = [DGG.localindex(grid, cellindex(complete.grid, i)) for i in crow.indices]
+        if GR.ismapped(status)
+            mapped += 1
+            length(row) == 1 && (polar += 1)
+            row.indices == [something(h, 0) for h in held] ||
+                note!(bad, "a post is not at its local index at ($lon, $lat)")
+            row.weights == crow.weights || note!(bad, "weights differ at ($lon, $lat)")
+        else
+            rims += 1
+            (status === GR.WeightsRim && isempty(row) && any(isnothing, held)) ||
+                note!(bad, "$status over $(count(isnothing, held)) absent posts at ($lon, $lat)")
+        end
+    end
+    @test bad == String[]
+    @test mapped > 0
+    @test rims > 0
+    @test polar > 0
+
+    # A warm query on the holding allocates nothing, as one on the level does.
+    points = [CD.TO_SPHERE(probes[k]) for k in 1:length(probes)]
+    function sweep(row, smp, points)
+        n = 0
+        for p in points
+            GR.ismapped(GR.weightsat!(row, smp, p)) && (n += length(row))
+        end
+        return n
+    end
+    sweep(row, smp, points)
+    @test @allocated(sweep(row, smp, points)) == 0
+end
+
+@testset "a post is found by its tile chunk or by the holding's ids alike" begin
+    # The same holding four ways: tiles as chunks over lazy and over listed
+    # ids, pixels as chunks, and a chunk short of one pixel of its tile, which
+    # sends that tile's posts to the search of the ids. All four answer the
+    # complete lattice's stencil translated, entry for entry.
+    sys = TWIN
+    tiles = [(46, 10), (46, 11), (49, 10), (50, 10)]
+    listed = tilepixels(sys, tiles)
+    lazy = LazyTilePixels(sys, tiles)
+    @test collect(lazy) == listed
+    dropped = CD.pixelcell(sys, CD.tilecell(sys, 46, 11), 7, 7)
+    holey = filter(!=(dropped), listed)
+    spaces = (
+        DGG.DGGSpace(DGG.PartialGrid(sys, 1, lazy); chunklevel = 0),
+        DGG.DGGSpace(DGG.PartialGrid(sys, 1, listed); chunklevel = 0),
+        DGG.DGGSpace(DGG.PartialGrid(sys, 1, listed); chunklevel = 1),
+        DGG.DGGSpace(DGG.PartialGrid(sys, 1, holey); chunklevel = 0))
+    @test GR.nchunks(spaces[1]) == GR.nchunks(spaces[2]) == GR.nchunks(spaces[4]) == 4
+    @test GR.nchunks(spaces[3]) == length(listed)
+    samplers = map(space -> GR.sampler(POINT, space), spaces)
+    complete = DGG.DGGSpace(levelgrid(sys, 1))
+    csmp = GR.sampler(POINT, complete)
+    rows = [GR.WeightRow() for _ in spaces]
+    crow = GR.WeightRow()
+    rng = MersenneTwister(4)
+    bad = String[]
+    mapped = zeros(Int, length(spaces))
+    rims = zeros(Int, length(spaces))
+    for _ in 1:6_000
+        lon, lat = 9.5 + 3.0 * rand(rng), 45.5 + 5.5 * rand(rng)
+        p = CD.TO_SPHERE((lon, lat))
+        GR.ismapped(GR.weightsat!(crow, csmp, p)) || continue
+        for (k, (space, smp)) in enumerate(zip(spaces, samplers))
+            status = GR.weightsat!(rows[k], smp, p)
+            held = [DGG.localindex(space.grid, cellindex(complete.grid, i))
+                    for i in crow.indices]
+            if GR.ismapped(status)
+                mapped[k] += 1
+                (rows[k].indices == [something(h, 0) for h in held] &&
+                 rows[k].weights == crow.weights) ||
+                    note!(bad, "space $k differs from the lattice at ($lon, $lat)")
+            else
+                rims[k] += 1
+                (status === GR.WeightsRim && any(isnothing, held)) ||
+                    note!(bad, "space $k: $status over held posts at ($lon, $lat)")
+            end
+        end
+    end
+    @test bad == String[]
+    @test all(>(0), mapped)
+    @test all(>(0), rims)
+    # The three complete holdings agree with each other everywhere; the one
+    # short of a pixel differs exactly where that pixel carries weight.
+    @test mapped[1] == mapped[2] == mapped[3]
+    @test mapped[4] < mapped[1]
+end
+
 @testset "a pole region takes the nearest post of the polemost row" begin
     st = CD._pointstate(TWIN)
     n = CD.lat_intervals(TWIN)

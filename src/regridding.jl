@@ -148,11 +148,13 @@ end
 GR.cellcentroid(space::DGGSpace, i::Int) =
     cell_centroid(space.grid, cellindex(space.grid, i))
 
-# The sites a point method interpolates between, as one vector over the space's
-# local indices. It is the collection's centroid field, the same object a sweep
-# asked for `Centroid()` reads: a pure vector that computes an entry on read, so
-# preparing a sampler materialises nothing and concurrent queries share it.
-GR.samplesites(space::DGGSpace) = cellfield(cell_centroid, CellVector(space.grid))
+# The sites a point method interpolates between are `cellcentroid` above, read
+# through `GlobalRegridding`'s own `CentroidSites`: a pure vector that computes
+# an entry on read and holds nothing, so preparing a sampler materialises
+# nothing and concurrent queries share it. The collection's centroid field would
+# read the same, but `CellVector` indexes every cell of a holding whose ids are
+# not one subtree — 2.5e10 of them for the GLO-90 source, 187 GiB — and a
+# sampler never reads more sites than its stencils name.
 
 # Local, not global: the inverse of `cellcentroid` above, and on a `PartialGrid`
 # a different numbering from the grid's own cell ids.

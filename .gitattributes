@@ -1,0 +1,29 @@
+# Normalize line endings on commit. The repository is all-LF today, so this is
+# a no-op for existing files; it stops a CRLF clone from introducing them.
+* text=auto
+
+# DGGRID oracle vectors. The IGeo7 suite parses these byte ranges directly, so
+# a CRLF checkout on Windows would change what the tests read.
+test/systems/IGeo7/vectors/** text eol=lf
+test/fixtures/** text eol=lf
+
+# Vendored font licenses stay byte-identical to upstream, CRLF and all.
+*-LICENSE.txt -text
+
+# Binary assets: no diff, no line-ending translation.
+*.png    binary
+*.ico    binary
+*.mp4    binary
+*.ttf    binary
+*.otf    binary
+*.woff2  binary
+
+# Generated. Keep them out of diffs and out of the language stats.
+docs/presentations/data_analysis_on_dggs/package-lock.json  linguist-generated -diff
+.agents/skills/juliageo-design-system/_ds_bundle.js         linguist-generated -diff
+.agents/skills/juliageo-design-system/_ds_manifest.json     linguist-generated -diff
+
+# This is a Julia package. The slide deck and the design-system skill are
+# supporting material, so keep their CSS/HTML/Vue out of the language bar.
+docs/**     linguist-documentation
+.agents/**  linguist-vendored

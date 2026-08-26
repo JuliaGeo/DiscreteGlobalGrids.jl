@@ -6,7 +6,7 @@ A clean, technical design system for the JuliaGeo open-source geospatial ecosyst
 
 ## Sources
 
-- **Logo SVG**: `uploads/juliageo (1).svg` — JuliaGeo organization logo (three circles + geographic map outline)
+- **Logo SVG**: `assets/juliageo-logo.svg` — JuliaGeo organization logo (three circles + geographic map outline)
 - **Codebase**: [JuliaGeo/GeometryOps.jl](https://github.com/JuliaGeo/GeometryOps.jl) — primary package in the JuliaGeo ecosystem
 - **Docs CSS**: `docs/src/.vitepress/theme/style.css` within the repo — VitePress theme overrides with brand colors
 - **Docs assets**: `docs/src/assets/logo.png` — GeometryOps package logo

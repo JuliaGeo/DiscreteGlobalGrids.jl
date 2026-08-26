@@ -537,7 +537,16 @@ Patch/MLS and the optional support query start only after P3-P5 measurements.
   `regrid-notes/2026-08-25-s2-tile-weights.md`,
   `regrid-notes/2026-08-25-s3-exact-reads.md`, and the gate's measurement in
   `regrid-notes/2026-08-25-p3-fused-tile-execution.md`.
-- P4 next.
+- P4 `2634061` — dual cells behind `DGGSpace`: the host's ring-ordered vertex
+  fans, an azimuthal-equidistant chart centred on the queried point,
+  `MeanValue` on every cell, the `hasdualcells` trait and the `sampler`
+  refusal of a space with neither chart nor dual cells.
+  `regrid-notes/2026-08-26-p4-dggs-dual-cells.md`.
+- P5 `2744b85` — Copernicus DEM row stencils: Q1 rectangles within a band, P1
+  triangles and Q1 trapezoids at band edges from exact integer arithmetic,
+  rims on holdings, poles `WeightsDegenerate` with the polar policy unchosen.
+  `regrid-notes/2026-08-26-p5-copdem-point-stencils.md`.
+- P6 next. The polar decision gate is open.
 
 ### P0 — baseline and instrumentation
 

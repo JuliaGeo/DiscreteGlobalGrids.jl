@@ -201,10 +201,12 @@ Landed cards, with the commit each one shipped as:
 | O2 | `fad29f6` | Simplify regridding target and keyword resolution |
 | D1 | `ee9c224` | Consolidate destination geometry preparation |
 | L2 | `da897f5` | Normalize lazy DiskArrays chunk metadata |
+| P5 | `2744b85` | Answer point queries from Copernicus DEM rows |
+| P4 | `2634061` | Interpolate on a DGGS grid's own dual cells |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
-`93e836d` is the commit that pinned them and records their SHAs. P0, P1, P2 and P3
-are the barycentric plan's own cards, landed here because Phase 9 admits them.
+`93e836d` is the commit that pinned them and records their SHAs. P0-P5 are the
+barycentric plan's own cards, landed here because Phase 9 admits them.
 
 Evidence:
 

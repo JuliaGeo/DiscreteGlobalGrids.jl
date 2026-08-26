@@ -38,6 +38,7 @@ case "$METHOD" in
     # The weightless nearest spike: same answers as `nearest`, no weight
     # assembly. It shares `nearest`'s default node; override with COPDEM_NODE.
     nearest-direct) NODE=1 ;;
+    bilinear)       NODE=1 ;;
     *) echo "usage: $0 conservative|point|nearest|nearest-direct [tag]" >&2; exit 2 ;;
 esac
 NODE="${COPDEM_NODE:-$NODE}"      # COPDEM_NODE overrides the per-method default

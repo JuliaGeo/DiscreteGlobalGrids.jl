@@ -76,7 +76,7 @@ const CONFIG = (
     retries     = 4,        # total GET attempts for a transient failure
     backoff     = 1.0,      # seconds; doubled between attempts
     timeout     = 600.0,    # seconds per tile GET
-    workers     = 40,       # concurrent worker tasks; 0 = size from `cores`
+    workers     = parse(Int, get(ENV, "COPDEM_WORKERS", "40")), # concurrent worker tasks; 0 = size from `cores` (local bench knob)
     cores       = 40,       # the core budget `workers` is sized to hold
     shape       = :outer,   # :outer or :inner; see `workercount`
     batch       = 8,        # chunks handed out per pull, at most; see `taper`
@@ -134,6 +134,8 @@ function regridmethod(config)
     # with no weight assembly on either the eager or the chunked route.
     config.method === Symbol("nearest-direct") && return DGG.DirectNearest()
     config.method === :nearest_direct && return DGG.DirectNearest()
+    # Local bench knob: chart-based bilinear on the source raster.
+    config.method === :bilinear && return DGG.BilinearPoint()
     return error(
         "method must be :conservative, :point, :nearest or :nearest-direct, " *
         "got $(repr(config.method))")
@@ -156,7 +158,7 @@ with no elevation blanks the cell rather than renormalising over the posts that
 have one.
 """
 regridpolicy(config) =
-    config.method === :point ? DGG.Weighted(1) : DGG.Weighted(0.5)
+    config.method in (:point, :bilinear) ? DGG.Weighted(1) : DGG.Weighted(0.5)
 
 # ===========================================================================
 # Logging

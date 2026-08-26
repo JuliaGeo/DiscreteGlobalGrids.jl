@@ -316,3 +316,6 @@ result on it.
 """
 GR.destinationdims(space::DGGSpace, ::DD.Lookups.Sampling) =
     (Cells(CellLookup(space.grid)),)
+
+# The dual cells a point method interpolates on.
+include("dual_cells.jl")

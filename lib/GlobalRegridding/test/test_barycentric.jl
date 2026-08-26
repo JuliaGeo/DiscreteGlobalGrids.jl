@@ -98,6 +98,28 @@ p1_kernelbytes(kernel, row, indices, nodes, p) =
 p1_samplerbytes(row, smp, p) =
     (GR.weightsat!(row, smp, p); @allocated GR.weightsat!(row, smp, p))
 
+p1_chartbytes(ch, q) = (GR.chartpoint(ch, q); @allocated GR.chartpoint(ch, q))
+
+# Chart geometry read off the sphere rather than off the chart: a point from
+# radians of longitude and latitude, the angle between two points, and the angle
+# a pair subtends at a third.
+p1_sphere(lon, lat) = GR.USPoint(cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat))
+
+p1_geodesic(a, b) = acos(clamp(sum(a .* b), -1.0, 1.0))
+
+function p1_angleat(centre, a, b)
+    ta = a .- centre .* sum(a .* centre)
+    tb = b .- centre .* sum(b .* centre)
+    return acos(clamp(sum(ta .* tb) / (sqrt(sum(ta .^ 2)) * sqrt(sum(tb .^ 2))),
+        -1.0, 1.0))
+end
+
+# Twice the signed area of a chart ring: positive where it turns
+# counter-clockwise.
+p1_shoelace(ring) = sum(ring[i][1] * ring[mod1(i + 1, length(ring))][2] -
+                        ring[mod1(i + 1, length(ring))][1] * ring[i][2]
+                        for i in eachindex(ring))
+
 # A source space whose sampler answers one hand-built dual cell: the
 # quadrilateral of its own four sample sites, held in two chunks so every
 # stencil crosses a source-chunk seam.
@@ -390,6 +412,57 @@ end
             (0.3, 0.2)) == 0 skip = VERSION < v"1.12"
     end
 
+    @testset "a local tangent chart" begin
+        # Three points a tenth of a radian apart, and the chart about the first.
+        centre = p1_sphere(0.4, 0.3)
+        ch = GR.TangentChart(centre)
+
+        # The centre is the origin exactly, so a sample site queried at itself
+        # is a node hit rather than a point a hair inside its own dual cell.
+        @test GR.chartpoint(ch, centre) === (0.0, 0.0)
+        @test GR.chartpoint(ch, p1_sphere(0.4, 0.3 + 1e-15)) === (0.0, 0.0)
+
+        # Distance from the origin is the geodesic distance, and the direction
+        # is a rotation of the tangent plane: two points at the same distance
+        # come out at the same radius, and the angle between them is theirs.
+        for (dlon, dlat) in ((0.05, 0.0), (0.0, 0.07), (-0.09, 0.04), (0.3, -0.4))
+            q = p1_sphere(0.4 + dlon, 0.3 + dlat)
+            c = GR.chartpoint(ch, q)
+            @test c !== nothing
+            @test hypot(c[1], c[2]) ≈ p1_geodesic(centre, q) atol = 1e-12
+        end
+        a, b = p1_sphere(0.5, 0.3), p1_sphere(0.4, 0.4)
+        ca, cb = GR.chartpoint(ch, a), GR.chartpoint(ch, b)
+        @test (ca[1] * cb[1] + ca[2] * cb[2]) /
+              (hypot(ca...) * hypot(cb...)) ≈ cos(p1_angleat(centre, a, b)) atol = 1e-12
+
+        # The frame is right-handed about the centre, so a ring that turns
+        # counter-clockwise seen from outside the sphere turns counter-clockwise
+        # here — which is what lets a ring built on the sphere be read as a cell.
+        ring = [GR.chartpoint(ch, p1_sphere(0.4 + dx, 0.3 + dy))
+                for (dx, dy) in ((0.06, 0.0), (0.0, 0.06), (-0.06, 0.0), (0.0, -0.06))]
+        @test p1_shoelace(ring) > 0
+
+        # Nothing beyond the chart's reach, and nothing at all at the antipode.
+        @test GR.chartpoint(ch, p1_sphere(0.4 + pi, -0.3)) === nothing
+        @test GR.chartpoint(ch, p1_sphere(0.4 + 2.0, 0.3)) === nothing
+        @test GR.chartpoint(GR.TangentChart(centre; reach = 0.01),
+            p1_sphere(0.45, 0.3)) === nothing
+
+        # The kernel infers to coordinates or the one answer for a point it
+        # cannot place, and costs nothing warm.
+        @test (@inferred Union{Nothing,NTuple{2,Float64}} GR.chartpoint(ch, a)) === ca
+        @test p1_chartbytes(ch, a) == 0 skip = VERSION < v"1.12"
+
+        # Containment is the mean-value kernel's own reading, so a ring this
+        # accepts is one that kernel weights.
+        @test GR.containspoint(P1_QUAD_NODES, (2.0, 1.0))
+        @test GR.containspoint(P1_QUAD_NODES, (0.0, 0.0))
+        @test !GR.containspoint(P1_QUAD_NODES, (-1.0, 1.0))
+        @test !GR.containspoint([(0.0, 0.0), (1.0, 0.0)], (0.5, 0.0))
+        @test !GR.containspoint([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)], (1.0, 0.0))
+    end
+
     @testset "the sampler prepares a source space once" begin
         space = P1PlainSpace(ToyLonLatSpace(4, 2; lon = (-40.0, 40.0),
             lat = (-20.0, 20.0)))
@@ -399,17 +472,32 @@ end
         @test length(sites) == Int(ncells(space))
         @test all(sites[i] == cellcentroid(space, i) for i in 1:Int(ncells(space)))
 
-        # A sampler holds the space and its sites, and is built once. A source
-        # with no cell chart prepares no state.
-        smp = GR.sampler(BarycentricPoint(), space)
-        @test smp.space === space
-        @test smp.state === nothing
+        # A source with neither a cell chart nor dual cells has nothing to
+        # interpolate between, and says so instead of mapping nothing.
+        @test !GR.hasdualcells(space)
+        err = try
+            GR.sampler(BarycentricPoint(), space)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("P1PlainSpace", err.msg)
+        @test occursin("hasdualcells", err.msg)
 
-        # With no dual cells to offer, a generic source maps nothing rather than
-        # inventing a stencil.
+        # A sampler holds the space and its sites, and is built once. A source
+        # with a chart prepares that chart's axes.
+        charted = ToyLonLatSpace(4, 2; lon = (-40.0, 40.0), lat = (-20.0, 20.0))
+        smp = GR.sampler(BarycentricPoint(), charted)
+        @test smp.space === charted
+        @test smp.state isa GR.ChartState
+
+        # The fallback dual cell is what a chart source reaches beyond its
+        # chart: no cell, no nodes, and no stencil invented.
         row = GR.WeightRow()
-        @test GR.nodecount(GR.dualcellat(smp, cellcentroid(space, 1))) == 0
-        @test all(GR.weightsat!(row, smp, cellcentroid(space, i)) === GR.WeightsOutside
+        plain = GR.Sampler(space, GR.samplesites(space), nothing)
+        @test GR.nodecount(GR.dualcellat(plain, cellcentroid(space, 1))) == 0
+        @test all(GR.weightsat!(row, plain, cellcentroid(space, i)) === GR.WeightsOutside
                   for i in 1:Int(ncells(space)))
         @test isempty(row)
 
@@ -419,7 +507,8 @@ end
         @test Base.ispublic(GR, :BarycentricPoint)
         @test !any(Base.ispublic(GR, n) for n in
                    (:WeightRow, :weightsat!, :sampler, :samplesites, :dualcellat,
-            :DualCell, :bilinearweights!, :meanvalueweights!))
+            :DualCell, :bilinearweights!, :meanvalueweights!, :hasdualcells,
+            :TangentChart, :chartpoint, :containspoint))
     end
 
     @testset "a source space's dual cell reaches the executor" begin

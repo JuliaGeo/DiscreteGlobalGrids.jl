@@ -40,6 +40,12 @@ const NEWTON_TOL = 1e-12
 const NEWTON_MAXITER = 20
 const NEWTON_RESIDUAL = 1e-8
 
+# A point this many radians from a local chart's centre is that centre. Forming
+# the tangent direction of a point at the centre leaves the frame's own
+# roundoff behind, and this is what keeps a sample site queried at itself
+# landing on the origin rather than a hair off it.
+const CHART_TOL = 1e-12
+
 # --- plane arithmetic ------------------------------------------------------
 
 @inline _sub(a::NTuple{2,Float64}, b::NTuple{2,Float64}) = (a[1] - b[1], a[2] - b[2])
@@ -271,6 +277,104 @@ function meanvalueweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
     return _normalize!(row)
 end
 
+"""
+    containspoint(nodes, p) -> Bool
+
+Whether the convex node ring `nodes` holds the chart point `p`.
+
+The edge test and the rounding margin are [`meanvalueweights!`](@ref)'s own, so
+a ring this accepts is one that kernel weights rather than calls outside. A ring
+with fewer than three nodes, a repeated node, or a straight or reflex corner is
+not a cell and holds nothing.
+"""
+function containspoint(nodes, p::NTuple{2,Float64})
+    n = length(nodes)
+    n >= 3 || return false
+    turn = _orientation(nodes)
+    turn == 0 && return false
+    for i in 1:n
+        a, b = nodes[i], nodes[_next(i, n)]
+        e, d = _sub(b, a), _sub(p, a)
+        cr = turn * _cross(e, d)
+        cr < -COORD_TOL * sqrt(_norm2(e) * _norm2(d)) && return false
+    end
+    return true
+end
+
+# --- local tangent charts --------------------------------------------------
+
+@inline _cross3(a::NTuple{3,Float64}, b::NTuple{3,Float64}) =
+    (a[2] * b[3] - a[3] * b[2], a[3] * b[1] - a[1] * b[3], a[1] * b[2] - a[2] * b[1])
+
+@inline _dot3(a::NTuple{3,Float64}, b::NTuple{3,Float64}) =
+    a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+
+@inline _point3(q) = (Float64(q[1]), Float64(q[2]), Float64(q[3]))
+
+# One axis of the frame, from the centre alone: the smallest component of the
+# centre names the axis least parallel to it, so the cross product is far from
+# zero wherever the centre points and the frame never degenerates.
+@inline function _framefirst(c::NTuple{3,Float64})
+    ax = abs(c[1]) <= abs(c[2]) ?
+         (abs(c[1]) <= abs(c[3]) ? (1.0, 0.0, 0.0) : (0.0, 0.0, 1.0)) :
+         (abs(c[2]) <= abs(c[3]) ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0))
+    v = _cross3(ax, c)
+    n = sqrt(_dot3(v, v))
+    return (v[1] / n, v[2] / n, v[3] / n)
+end
+
+"""
+    TangentChart(centre; reach = pi / 2)
+
+The azimuthal-equidistant chart of the unit sphere about `centre`.
+
+  - A point's coordinates are its geodesic distance from `centre` along the
+    direction it lies in, so `centre` is the origin and both distances from the
+    origin and angles at the origin are the sphere's own.
+  - The frame is fixed by `centre` alone and is right-handed about it, so a ring
+    that turns counter-clockwise on the sphere turns counter-clockwise here.
+  - A point further than `reach` from `centre` has no coordinates: it is
+    nonlocal, and a cell holding one is rejected rather than folded flat.
+"""
+struct TangentChart
+    centre::NTuple{3,Float64}
+    e1::NTuple{3,Float64}
+    e2::NTuple{3,Float64}
+    reach::Float64
+end
+
+function TangentChart(centre; reach::Real = pi / 2)
+    c = _point3(centre)
+    n = sqrt(_dot3(c, c))
+    u = (c[1] / n, c[2] / n, c[3] / n)
+    e1 = _framefirst(u)
+    return TangentChart(u, e1, _cross3(u, e1), Float64(reach))
+end
+
+Base.show(io::IO, ch::TangentChart) =
+    print(io, "TangentChart(", ch.centre, ", reach = ", ch.reach, ")")
+
+"""
+    chartpoint(chart::TangentChart, q) -> Union{NTuple{2,Float64},Nothing}
+
+The coordinates of the sphere point `q` in `chart`, or `nothing` where `q` is
+beyond the chart's reach — an antipodal or otherwise nonlocal point, which no
+local chart can place. A point within `$CHART_TOL` radians of the centre is the
+origin exactly, so a sample site queried at itself weights itself alone.
+"""
+@inline function chartpoint(ch::TangentChart, q)
+    x, y, z = _point3(q)
+    c = ch.centre
+    d = x * c[1] + y * c[2] + z * c[3]
+    t = (x - d * c[1], y - d * c[2], z - d * c[3])
+    r = sqrt(_dot3(t, t))
+    theta = atan(r, d)
+    (isfinite(theta) && theta <= ch.reach) || return nothing
+    theta <= CHART_TOL && return (0.0, 0.0)
+    s = theta / r
+    return (s * _dot3(t, ch.e1), s * _dot3(t, ch.e2))
+end
+
 # --- dual cells ------------------------------------------------------------
 
 """
@@ -383,13 +487,34 @@ end
 Base.show(io::IO, s::Sampler) = print(io, "Sampler(", s.space, ")")
 
 """
+    hasdualcells(space::RegridSpace) -> Bool
+
+Whether `space` answers [`dualcellat`](@ref) with dual cells of its own.
+
+`false` by default. A source reporting neither this nor [`hascellchart`](@ref)
+has nothing to interpolate between, and [`sampler`](@ref) refuses it rather than
+preparing a sampler that maps every point to nothing.
+"""
+hasdualcells(::RegridSpace) = false
+
+"""
     sampler(method, space::RegridSpace) -> Sampler
 
 Prepare `space` to answer `method`'s point queries. This runs once per plan or
 source space, never once per destination.
+
+A source with neither a cell chart nor dual cells is an `ArgumentError` naming
+it: there is no geometry to interpolate between, and a silent field of missing
+values is not the answer.
 """
-sampler(::BarycentricPoint, space::RegridSpace) =
-    Sampler(space, samplesites(space), samplerstate(space))
+function sampler(::BarycentricPoint, space::RegridSpace)
+    (hascellchart(space) || hasdualcells(space)) || throw(ArgumentError(
+        "BarycentricPoint has nothing to interpolate between on a " *
+        "$(typeof(space)): it reports neither `hascellchart` nor " *
+        "`hasdualcells`, so no dual cell of source sample sites can be built " *
+        "around a destination point"))
+    return Sampler(space, samplesites(space), samplerstate(space))
+end
 
 """
     chartat(sampler, p) -> Union{NTuple{2,Float64},Nothing}
@@ -413,9 +538,11 @@ end
 The dual cell of source sample sites containing `p`, or a cell with no nodes
 where none does.
 
-The fallback has no construction and answers no nodes, so a source space that
-does not implement it maps nothing. A space either answers here, in the chart
-its [`chartat`](@ref) uses, or answers [`weightsat!`](@ref) whole.
+A space either answers here, in the chart its [`chartat`](@ref) uses, or answers
+[`weightsat!`](@ref) whole; either way it declares [`hasdualcells`](@ref). The
+fallback constructs nothing and answers no nodes, which a chart source reaches
+where its chart does not, and which no other source reaches: [`sampler`](@ref)
+refuses a space that declares neither.
 """
 dualcellat(::Sampler, p) = NO_DUALCELL
 

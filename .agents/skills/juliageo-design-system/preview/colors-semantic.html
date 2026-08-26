@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Colors" name="Semantic Color Tokens" subtitle="Text, background, border and feedback tokens" viewport="700x260" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin: 0; padding: 20px; font-family: var(--font-sans); background: #fff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .token { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius-md); border: 1px solid var(--color-border); background: var(--gray-50); }
+  .dot { width: 28px; height: 28px; border-radius: var(--radius-sm); flex-shrink: 0; border: 1px solid rgba(0,0,0,0.08); }
+  .tname { font-size: 10px; font-weight: 600; color: var(--gray-700); font-family: var(--font-mono); }
+  .tval  { font-size: 9px; color: var(--gray-500); font-family: var(--font-mono); }
+  .section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gray-500); margin: 0 0 8px; }
+  .section { margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div class="section">
+  <p class="section-label">Text</p>
+  <div class="grid">
+    <div class="token"><div class="dot" style="background:#212529"></div><div><div class="tname">fg-1</div><div class="tval">gray-900</div></div></div>
+    <div class="token"><div class="dot" style="background:#495057"></div><div><div class="tname">fg-2</div><div class="tval">gray-700</div></div></div>
+    <div class="token"><div class="dot" style="background:#adb5bd"></div><div><div class="tname">fg-3</div><div class="tval">gray-500</div></div></div>
+    <div class="token"><div class="dot" style="background:#2c7a1e"></div><div><div class="tname">fg-brand</div><div class="tval">green-600</div></div></div>
+    <div class="token"><div class="dot" style="background:#CB3C33"></div><div><div class="tname">fg-code</div><div class="tval">red-500</div></div></div>
+    <div class="token"><div class="dot" style="background:#ffffff;border:1px solid #dee2e6"></div><div><div class="tname">fg-invert</div><div class="tval">white</div></div></div>
+  </div>
+</div>
+<div class="section">
+  <p class="section-label">Backgrounds</p>
+  <div class="grid">
+    <div class="token"><div class="dot" style="background:#ffffff;border:1px solid #dee2e6"></div><div><div class="tname">bg</div><div class="tval">white</div></div></div>
+    <div class="token"><div class="dot" style="background:#f8f9fa;border:1px solid #dee2e6"></div><div><div class="tname">bg-subtle</div><div class="tval">gray-50</div></div></div>
+    <div class="token"><div class="dot" style="background:#f1f3f5"></div><div><div class="tname">bg-mute</div><div class="tval">gray-100</div></div></div>
+    <div class="token"><div class="dot" style="background:#389826"></div><div><div class="tname">bg-brand</div><div class="tval">green-500</div></div></div>
+  </div>
+</div>
+<div class="section">
+  <p class="section-label">Feedback</p>
+  <div class="grid">
+    <div class="token"><div class="dot" style="background:#389826"></div><div><div class="tname">success</div><div class="tval">green-500</div></div></div>
+    <div class="token"><div class="dot" style="background:#b45309"></div><div><div class="tname">warning</div><div class="tval">#b45309</div></div></div>
+    <div class="token"><div class="dot" style="background:#CB3C33"></div><div><div class="tname">error</div><div class="tval">red-500</div></div></div>
+    <div class="token"><div class="dot" style="background:#4063D8"></div><div><div class="tname">info</div><div class="tval">blue-500</div></div></div>
+  </div>
+</div>
+</body></html>

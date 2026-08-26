@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Brand" name="Dual-Tree DFS Animation" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dual-Tree DFS</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; }
+  #root { min-height: 100vh; }
+</style>
+<template id="__bundler_thumbnail" data-bg-color="#0e1012">
+  <svg viewBox="0 0 120 80" xmlns="http://www.w3.org/2000/svg">
+    <!-- Tree 1 -->
+    <line x1="25" y1="18" x2="15" y2="40" stroke="#4063D8" stroke-width="1.5" opacity="0.6"/>
+    <line x1="25" y1="18" x2="35" y2="40" stroke="#4063D8" stroke-width="1.5" opacity="0.6"/>
+    <line x1="15" y1="40" x2="10" y2="62" stroke="#4063D8" stroke-width="1.2" opacity="0.4"/>
+    <line x1="15" y1="40" x2="20" y2="62" stroke="#4063D8" stroke-width="1.2" opacity="0.4"/>
+    <line x1="35" y1="40" x2="30" y2="62" stroke="#4063D8" stroke-width="1.2" opacity="0.4"/>
+    <line x1="35" y1="40" x2="40" y2="62" stroke="#4063D8" stroke-width="1.2" opacity="0.4"/>
+    <circle cx="25" cy="18" r="7" fill="#4063D833" stroke="#4063D8" stroke-width="1.5"/>
+    <circle cx="15" cy="40" r="6" fill="#4063D822" stroke="#4063D8" stroke-width="1.2"/>
+    <circle cx="35" cy="40" r="6" fill="#4063D822" stroke="#4063D8" stroke-width="1.2"/>
+    <circle cx="10" cy="62" r="5" fill="#389826aa" stroke="#389826" stroke-width="1.5"/>
+    <circle cx="20" cy="62" r="5" fill="#4063D81a" stroke="#4063D866" stroke-width="1"/>
+    <circle cx="30" cy="62" r="5" fill="#4063D81a" stroke="#4063D866" stroke-width="1"/>
+    <circle cx="40" cy="62" r="5" fill="#4063D81a" stroke="#4063D866" stroke-width="1"/>
+    <!-- Tree 2 -->
+    <line x1="95" y1="18" x2="85" y2="40" stroke="#9558B2" stroke-width="1.5" opacity="0.6"/>
+    <line x1="95" y1="18" x2="105" y2="40" stroke="#9558B2" stroke-width="1.5" opacity="0.6"/>
+    <line x1="85" y1="40" x2="80" y2="62" stroke="#9558B2" stroke-width="1.2" opacity="0.4"/>
+    <line x1="85" y1="40" x2="90" y2="62" stroke="#9558B2" stroke-width="1.2" opacity="0.4"/>
+    <line x1="105" y1="40" x2="100" y2="62" stroke="#9558B2" stroke-width="1.2" opacity="0.4"/>
+    <line x1="105" y1="40" x2="110" y2="62" stroke="#9558B2" stroke-width="1.2" opacity="0.4"/>
+    <circle cx="95" cy="18" r="7" fill="#9558B233" stroke="#9558B2" stroke-width="1.5"/>
+    <circle cx="85" cy="40" r="6" fill="#9558B222" stroke="#9558B2" stroke-width="1.2"/>
+    <circle cx="105" cy="40" r="6" fill="#9558B222" stroke="#9558B2" stroke-width="1.2"/>
+    <circle cx="80" cy="62" r="5" fill="#9558B21a" stroke="#9558B266" stroke-width="1"/>
+    <circle cx="90" cy="62" r="5" fill="#9558B21a" stroke="#9558B266" stroke-width="1"/>
+    <circle cx="100" cy="62" r="5" fill="#9558B21a" stroke="#9558B266" stroke-width="1"/>
+    <circle cx="110" cy="62" r="5" fill="#9558B21a" stroke="#9558B266" stroke-width="1"/>
+    <!-- Connector arc -->
+    <path d="M25,18 Q60,-5 95,18" fill="none" stroke="#389826" stroke-width="1.5" stroke-dasharray="none" opacity="0.7"/>
+    <circle cx="60" cy="6" r="3" fill="#38982633" stroke="#389826" stroke-width="1"/>
+    <text x="60" y="10" text-anchor="middle" font-family="monospace" font-size="5" fill="#91dd33" opacity="0.9">✓</text>
+  </svg>
+</template>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const GREEN = '#389826', GREEN2 = '#91dd33', AMBER = '#b45309', RED = '#c0392b', BLUE = '#4063D8', PURPLE = '#9558B2';
+
+function mkT(dark) {
+  return dark ? {
+    FG:'#e8eaf0', FG2:'#8a9099', FG3:'#555c66',
+    BG:'#0e1012', BGCARD:'#161a1f', BGPANEL:'#1a1f26',
+    BORDER:'#252a32', NODE_EMPTY:'#1c2128', CODE_BG:'#1a1e24', DIM:'#2c3240',
+  } : {
+    FG:'#111416', FG2:'#555c66', FG3:'#8a9099',
+    BG:'#ffffff', BGCARD:'#f8f9fa', BGPANEL:'#f1f3f5',
+    BORDER:'#dee2e6', NODE_EMPTY:'#edf0f3', CODE_BG:'#f1f3f5', DIM:'#d0d4db',
+  };
+}
+
+const Q_NODES = [
+  {id:'Q',  label:'Q',  parent:null,children:['Qa','Qb'],  depth:0,leaf:false},
+  {id:'Qa', label:'Qa', parent:'Q', children:['Qa1','Qa2'],depth:1,leaf:false},
+  {id:'Qb', label:'Qb', parent:'Q', children:['Qb1','Qb2'],depth:1,leaf:false},
+  {id:'Qa1',label:'Qa1',parent:'Qa',children:[],           depth:2,leaf:true,pts:3},
+  {id:'Qa2',label:'Qa2',parent:'Qa',children:[],           depth:2,leaf:true,pts:2},
+  {id:'Qb1',label:'Qb1',parent:'Qb',children:[],           depth:2,leaf:true,pts:2},
+  {id:'Qb2',label:'Qb2',parent:'Qb',children:[],           depth:2,leaf:true,pts:3},
+];
+const R_NODES = [
+  {id:'R',  label:'R',  parent:null,children:['Ra','Rb'],  depth:0,leaf:false},
+  {id:'Ra', label:'Ra', parent:'R', children:['Ra1','Ra2'],depth:1,leaf:false},
+  {id:'Rb', label:'Rb', parent:'R', children:['Rb1','Rb2'],depth:1,leaf:false},
+  {id:'Ra1',label:'Ra1',parent:'Ra',children:[],           depth:2,leaf:true,pts:2},
+  {id:'Ra2',label:'Ra2',parent:'Ra',children:[],           depth:2,leaf:true,pts:3},
+  {id:'Rb1',label:'Rb1',parent:'Rb',children:[],           depth:2,leaf:true,pts:2},
+  {id:'Rb2',label:'Rb2',parent:'Rb',children:[],           depth:2,leaf:true,pts:4},
+];
+
+const CW=80, RH=88, NR=22;
+function layout(nodes, x0) {
+  const p={};
+  nodes.filter(n=>n.depth===2).forEach((n,i)=>{p[n.id]={x:x0+i*CW,y:2*RH};});
+  nodes.filter(n=>n.depth===1).forEach(n=>{const xs=n.children.map(c=>p[c].x);p[n.id]={x:(xs[0]+xs[1])/2,y:RH};});
+  nodes.filter(n=>n.depth===0).forEach(n=>{const xs=n.children.map(c=>p[c].x);p[n.id]={x:(xs[0]+xs[1])/2,y:0};});
+  return p;
+}
+function ancestors(id, nodes) {
+  const s=new Set(); let cur=nodes.find(n=>n.id===id);
+  while(cur){s.add(cur.id);if(!cur.parent)break;cur=nodes.find(n=>n.id===cur.parent);}
+  return s;
+}
+
+const STEPS = [
+  {q:null,r:null,act:'intro',stack:[],res:[],desc:[
+    {t:'Dual-Tree DFS',s:'h'},
+    {t:'Two spatial trees — Tree 1 and Tree 2 — are traversed simultaneously depth-first.',s:'b'},
+    {t:'At each step a (q, r) node pair is popped from the stack. Distant pairs are pruned early; leaf pairs trigger direct computation.',s:'b'},
+  ]},
+  {q:'Q',r:'R',act:'push',stack:[['Q','R']],res:[],desc:[
+    {t:'Push root pair (1-root, 2-root)',s:'h'},{t:'Push both root nodes as a pair onto the DFS stack to begin traversal.',s:'b'},{t:'Stack: [(Q, R)]',s:'m'},
+  ]},
+  {q:'Q',r:'R',act:'recurse',stack:[['Qa','Ra'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']],res:[],desc:[
+    {t:'Recurse: expand (Q, R)',s:'h'},
+    {t:'↩ First recursion — both nodes are internal, so we expand. Q has children [Qa, Qb], R has [Ra, Rb]. We push all 4 cross-products onto the stack.',s:'b'},
+    {t:'[(Qa,Ra), (Qa,Rb), (Qb,Ra), (Qb,Rb)]',s:'m'},
+  ]},
+  {q:'Qa',r:'Ra',act:'recurse',stack:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']],res:[],desc:[
+    {t:'Pop (Qa, Ra) → recurse',s:'h'},
+    {t:'⬡ Predicate check — do the bounding regions of Qa and Ra overlap? Yes. Both are internal nodes, so recurse: push all child pairs.',s:'b'},
+    {t:'4 new pairs pushed. DFS goes deeper left-first.',s:'b'},
+  ]},
+  {q:'Qa1',r:'Ra1',act:'compute',stack:[['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']],res:[['Qa1','Ra1']],desc:[
+    {t:'Pop (Qa1, Ra1) → compute',s:'h'},
+    {t:'✓ First base case — both are leaf nodes. We compute pairwise distances for all 3×2 = 6 point pairs directly. No more recursion needed here.',s:'b'},
+    {t:'✓ Results recorded.',s:'ok'},
+  ]},
+  {q:'Qa1',r:'Ra2',act:'compute',stack:[['Qa2','Ra1'],['Qa2','Ra2'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']],res:[['Qa1','Ra1'],['Qa1','Ra2']],desc:[
+    {t:'Pop (Qa1, Ra2) → compute',s:'h'},{t:'Both leaves. 3×3 = 9 pairs.',s:'b'},{t:'✓ Results recorded.',s:'ok'},
+  ]},
+  {q:'Qa2',r:'Ra1',act:'compute',stack:[['Qa2','Ra2'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1']],desc:[
+    {t:'Pop (Qa2, Ra1) → compute',s:'h'},{t:'Both leaves. 2×2 = 4 pairs.',s:'b'},{t:'✓ Results recorded.',s:'ok'},
+  ]},
+  {q:'Qa2',r:'Ra2',act:'compute',stack:[['Qa','Rb'],['Qb','Ra'],['Qb','Rb']],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2']],desc:[
+    {t:'Pop (Qa2, Ra2) → compute',s:'h'},{t:'Both leaves. 2×3 = 6 pairs.',s:'b'},{t:'✓ Left subtree fully processed.',s:'ok'},
+  ]},
+  {q:'Qa',r:'Rb',act:'prune',stack:[['Qb','Ra'],['Qb','Rb']],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2']],desc:[
+    {t:'Pop (Qa, Rb) → PRUNE',s:'pr'},
+    {t:'✗ First rejection — the bounding regions of Qa and Rb are far apart. The minimum possible distance between any point in Qa and any point in Rb already exceeds our threshold θ.',s:'b'},
+    {t:'Entire subtree skipped — saves 2×2 = 4 leaf comparisons without examining a single point.',s:'pr'},
+  ]},
+  {q:'Qb',r:'Ra',act:'prune',stack:[['Qb','Rb']],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2']],desc:[
+    {t:'Pop (Qb, Ra) → PRUNE',s:'pr'},{t:'Qb and Ra are spatially distant.',s:'b'},{t:'✗ Pruned again. Saves another 4 comparisons.',s:'pr'},
+  ]},
+  {q:'Qb',r:'Rb',act:'recurse',stack:[['Qb1','Rb1'],['Qb1','Rb2'],['Qb2','Rb1'],['Qb2','Rb2']],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2']],desc:[
+    {t:'Pop (Qb, Rb) → recurse',s:'h'},{t:'⬡ Bounding regions overlap — expand all child pairs.',s:'b'},{t:'4 new leaf pairs queued.',s:'b'},
+  ]},
+  {q:'Qb1',r:'Rb1',act:'compute',stack:[['Qb1','Rb2'],['Qb2','Rb1'],['Qb2','Rb2']],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1']],desc:[
+    {t:'Pop (Qb1, Rb1) → compute',s:'h'},{t:'2×2 = 4 pairs.',s:'b'},{t:'✓ Results recorded.',s:'ok'},
+  ]},
+  {q:'Qb1',r:'Rb2',act:'compute',stack:[['Qb2','Rb1'],['Qb2','Rb2']],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1'],['Qb1','Rb2']],desc:[
+    {t:'Pop (Qb1, Rb2) → compute',s:'h'},{t:'2×4 = 8 pairs.',s:'b'},{t:'✓ Results recorded.',s:'ok'},
+  ]},
+  {q:'Qb2',r:'Rb1',act:'compute',stack:[['Qb2','Rb2']],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1'],['Qb1','Rb2'],['Qb2','Rb1']],desc:[
+    {t:'Pop (Qb2, Rb1) → compute',s:'h'},{t:'3×2 = 6 pairs.',s:'b'},{t:'✓ Results recorded.',s:'ok'},
+  ]},
+  {q:'Qb2',r:'Rb2',act:'compute',stack:[],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1'],['Qb1','Rb2'],['Qb2','Rb1'],['Qb2','Rb2']],desc:[
+    {t:'Pop (Qb2, Rb2) → compute',s:'h'},{t:'3×4 = 12 pairs.',s:'b'},{t:'✓ Stack empty. DFS complete.',s:'ok'},
+  ]},
+  {q:null,r:null,act:'done',stack:[],res:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1'],['Qb1','Rb2'],['Qb2','Rb1'],['Qb2','Rb2']],desc:[
+    {t:'Done',s:'h'},{t:'8 leaf pairs computed, 2 pairs pruned early.',s:'b'},
+    {t:'Without tree: 7×11 = 77 comparisons. Dual-tree: ~47 — 39% fewer. Pruning improves with depth.',s:'b'},
+    {t:'Used in kNN, range queries, kernel density — core to SpatialTreeInterface.jl',s:'m'},
+  ]},
+];
+
+function acol(act) { return act==='prune'?RED:act==='compute'?GREEN:act==='done'?GREEN2:BLUE; }
+
+function TreeSVG({nodes,pos,activeId,act,res,T,tcol}) {
+  const anc = activeId ? ancestors(activeId,nodes) : new Set();
+  const ac = acol(act);
+  function nstate(id) {
+    if(id===activeId) return 'active';
+    if(anc.has(id)) return 'anc';
+    if(res.some(([q,r])=>nodes===Q_NODES?q===id:r===id)) return 'done';
+    return 'idle';
+  }
+  // Active = bright full color; ancestors = very muted; done = dim green
+  function ncol(st) { return st==='active'?ac:st==='anc'?null:st==='done'?GREEN2:null; }
+  const ancStroke = (c) => c+'44';
+  const ancFill   = (c) => c+'08';
+  const TW = 3*CW;
+  return (
+    <g>
+      <text x={TW/2} y={-38} textAnchor="middle" fontFamily="Space Mono,monospace" fontSize="10" fontWeight="700" letterSpacing="0.1em" fill={tcol} opacity="0.85">
+        {nodes===Q_NODES?'TREE 1':'TREE 2'}
+      </text>
+      {nodes.map(n=>n.children.map(c=>{
+        const p=pos[n.id],cp=pos[c];
+        const lit=anc.has(n.id)&&anc.has(c);
+        return <line key={n.id+c} x1={p.x} y1={p.y} x2={cp.x} y2={cp.y}
+          stroke={lit?tcol+'55':T.DIM} strokeWidth={lit?1.5:1.2}
+          opacity={lit?0.4:1}/>;
+      }))}
+      {nodes.map(n=>{
+        const p=pos[n.id], st=nstate(n.id), col=ncol(st);
+        const isAct=st==='active', isAnc=st==='anc';
+        return (
+          <g key={n.id} transform={`translate(${p.x},${p.y})`}>
+            {isAct&&<circle r={NR+11} fill="none" stroke={col} strokeWidth="1.5" opacity="0.25" style={{filter:`drop-shadow(0 0 16px ${col})`}}/>}
+            {isAct&&<circle r={NR+6} fill="none" stroke={col} strokeWidth="2" opacity="0.5"/>}
+            {isAnc&&<circle r={NR+3} fill="none" stroke={ancStroke(tcol)} strokeWidth="0.8" opacity="0.2"/>}
+            <circle r={NR} fill={isAnc?ancFill(tcol):(col?col+'33':T.NODE_EMPTY)} stroke={isAnc?ancStroke(tcol):(col?col:T.BORDER)} strokeWidth={isAct?2.8:isAnc?0.9:1.2}
+              style={isAct?{filter:`drop-shadow(0 0 14px ${col}aa)`}:{}}/>
+            {n.leaf&&<circle r={3.5} fill={isAnc?'transparent':(col?col+'cc':T.DIM)}/>}
+            <text textAnchor="middle" dominantBaseline="middle" fontFamily="Space Mono,monospace"
+              fontSize={n.depth===0?'14':n.depth===1?'12':'10'} fontWeight={isAct?'700':'400'}
+              fill={isAnc?T.DIM:(col||T.FG2)} opacity={isAnc?0.35:1}>{n.label}</text>
+            {n.leaf&&n.pts&&<text y={NR+13} textAnchor="middle" fontFamily="Inter,sans-serif" fontSize="9.5" fill={isAnc?T.DIM:(col?col+'cc':T.FG3)} opacity={isAnc?0.3:1}>{n.pts} pts</text>}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+function Connector({qp,rp,act}) {
+  if(!qp||!rp) return null;
+  const col=acol(act), mx=(qp.x+rp.x)/2, my=Math.min(qp.y,rp.y)-30;
+  return (
+    <g>
+      <path d={`M${qp.x},${qp.y} Q${mx},${my} ${rp.x},${rp.y}`} fill="none" stroke={col} strokeWidth="2"
+        strokeDasharray={act==='prune'?'6 3':'none'} opacity="0.65" style={{filter:`drop-shadow(0 0 5px ${col}88)`}}/>
+      <circle cx={mx} cy={my} r={5} fill={col+'44'} stroke={col} strokeWidth="1.5"/>
+      {act==='prune'&&<text x={mx} y={my-13} textAnchor="middle" fontFamily="Space Mono,monospace" fontSize="14" fontWeight="700" fill={RED}>✗</text>}
+      {act==='compute'&&<text x={mx} y={my-13} textAnchor="middle" fontFamily="Space Mono,monospace" fontSize="14" fontWeight="700" fill={GREEN}>✓</text>}
+    </g>
+  );
+}
+
+const App = () => {
+  const [step,setStep]=useState(0), [play,setPlay]=useState(false), [dark,setDark]=useState(true);
+  const tmr=useRef(null), N=STEPS.length, T=mkT(dark);
+  useEffect(()=>{document.body.style.background=T.BG;},[dark]);
+  useEffect(()=>{
+    if(play){tmr.current=setInterval(()=>setStep(s=>{if(s>=N-1){setPlay(false);return s;}return s+1;}),2400);}
+    return()=>clearInterval(tmr.current);
+  },[play]);
+  const cur=STEPS[step];
+  const ac=acol(cur.act);
+  // SVG layout: viewBox 688 wide
+  const PAD=36,GAP=72,TW=3*CW,SVG_W=PAD+TW+GAP+TW+PAD,SVG_H=2*RH+90,TY=76;
+  const qpos=layout(Q_NODES,0), rpos=layout(R_NODES,0);
+  // SVG: center each tree within its half
+  const HALF = Math.floor(SVG_W/2);
+  const QX = Math.floor((HALF - TW) / 2);
+  const RX = HALF + Math.floor((HALF - TW) / 2);
+  const qap=cur.q?{x:qpos[cur.q].x+QX,y:qpos[cur.q].y+TY}:null;
+  const rap=cur.r?{x:rpos[cur.r].x+RX,y:rpos[cur.r].y+TY}:null;
+  const btn=(dis)=>({fontFamily:'Space Mono,monospace',fontSize:10,fontWeight:700,padding:'7px 14px',borderRadius:4,border:`1px solid ${T.BORDER}`,background:T.BGPANEL,color:dis?T.FG3:T.FG2,cursor:dis?'not-allowed':'pointer',opacity:dis?0.4:1,transition:'all 120ms'});
+
+  return (
+    <div style={{background:T.BG,color:T.FG,fontFamily:'Inter,sans-serif',transition:'background 200ms'}}>
+      <div style={{maxWidth:1300,margin:'0 auto',padding:'20px 28px 40px',display:'flex',flexDirection:'column',gap:14}}>
+
+        {/* Header */}
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',paddingBottom:14,borderBottom:`1px solid ${T.BORDER}`}}>
+          <div>
+            <div style={{fontFamily:'Space Mono,monospace',fontSize:9,letterSpacing:'0.16em',color:T.FG3,marginBottom:3,textTransform:'uppercase'}}>JuliaGeo · SpatialTreeInterface.jl</div>
+            <div style={{fontSize:18,fontWeight:700,letterSpacing:'-0.02em',color:T.FG}}>Dual-Tree Depth-First Search</div>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <button onClick={()=>setDark(d=>!d)} style={{...btn(false),display:'flex',alignItems:'center',gap:6}}>
+              {dark?<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>}
+              {dark?'LIGHT':'DARK'}
+            </button>
+            <span style={{fontFamily:'Space Mono,monospace',fontSize:10,color:T.FG3}}>{step+1}/{N}</span>
+          </div>
+        </div>
+
+        {/* Main grid */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 300px',gap:14,alignItems:'start'}}>
+
+          {/* Left */}
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {/* Trees */}
+            <div style={{background:T.BGCARD,border:`1px solid ${T.BORDER}`,borderRadius:8}}>
+              <svg viewBox={`0 0 ${SVG_W} ${SVG_H+TY+20}`} style={{display:'block',width:'100%'}}>
+                <rect width={SVG_W} height={SVG_H+TY+20} fill={T.BGCARD}/>
+                <Connector qp={qap} rp={rap} act={cur.act}/>
+                <g transform={`translate(${QX},${TY})`}><TreeSVG nodes={Q_NODES} pos={qpos} activeId={cur.q} act={cur.act} res={cur.res} T={T} tcol={BLUE}/></g>
+                <g transform={`translate(${RX},${TY})`}><TreeSVG nodes={R_NODES} pos={rpos} activeId={cur.r} act={cur.act} res={cur.res} T={T} tcol={PURPLE}/></g>
+                <line x1={QX+TW+GAP/2} y1={TY-18} x2={QX+TW+GAP/2} y2={SVG_H+TY+10} stroke={T.BORDER} strokeWidth="1" strokeDasharray="4 4"/>
+              </svg>
+            </div>
+            {/* Stack + Results */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              <div style={{background:T.BGPANEL,border:`1px solid ${T.BORDER}`,borderRadius:6,padding:'12px 14px'}}>
+                <div style={{fontFamily:'Space Mono,monospace',fontSize:9,fontWeight:700,letterSpacing:'0.14em',color:T.FG3,marginBottom:8,textTransform:'uppercase'}}>DFS Stack</div>
+                {cur.stack.length===0
+                  ?<div style={{fontSize:10,color:T.FG3,fontFamily:'Space Mono,monospace'}}>(empty)</div>
+                  :cur.stack.map(([q,r],i)=>(
+                    <div key={i} style={{fontSize:10,padding:'4px 8px',borderRadius:3,marginBottom:3,fontFamily:'Space Mono,monospace',background:i===0?ac+'1a':'transparent',border:`1px solid ${i===0?ac:T.BORDER}`,color:i===0?ac:T.FG2,display:'flex',justifyContent:'space-between'}}>
+                      <span>({q}, {r})</span>{i===0&&<span style={{fontSize:9,opacity:0.7}}>← top</span>}
+                    </div>
+                  ))
+                }
+              </div>
+              <div style={{background:T.BGPANEL,border:`1px solid ${T.BORDER}`,borderRadius:6,padding:'12px 14px',maxHeight:200,overflowY:'auto'}}>
+                <div style={{fontFamily:'Space Mono,monospace',fontSize:9,fontWeight:700,letterSpacing:'0.14em',color:T.FG3,marginBottom:8,textTransform:'uppercase'}}>Computed</div>
+                {cur.res.length===0
+                  ?<div style={{fontSize:10,color:T.FG3}}>—</div>
+                  :cur.res.map(([q,r],i)=>(
+                    <div key={i} style={{fontSize:10,color:GREEN2,fontFamily:'Space Mono,monospace',padding:'2px 0'}}>✓ ({q},{r})</div>
+                  ))
+                }
+              </div>
+            </div>
+          </div>
+
+          {/* Right */}
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {/* Badge + progress */}
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <div style={{fontFamily:'Space Mono,monospace',fontSize:10,fontWeight:700,letterSpacing:'0.14em',color:ac,background:ac+'1a',border:`1px solid ${ac+'44'}`,borderRadius:3,padding:'4px 10px',whiteSpace:'nowrap'}}>{cur.act.toUpperCase()}</div>
+              <div style={{flex:1,height:3,background:T.BORDER,borderRadius:2,overflow:'hidden'}}>
+                <div style={{width:`${(step/(N-1))*100}%`,height:'100%',background:ac,borderRadius:2,transition:'width 300ms ease'}}/>
+              </div>
+            </div>
+            {/* Description */}
+            <div style={{background:T.BGCARD,border:`1px solid ${T.BORDER}`,borderRadius:8,padding:'16px 18px'}}>
+              {cur.desc.map((l,i)=>{
+                if(l.s==='h') return <div key={i} style={{fontSize:15,fontWeight:700,color:ac,marginBottom:8,letterSpacing:'-0.01em',lineHeight:1.25}}>{l.t}</div>;
+                if(l.s==='m') return <div key={i} style={{fontFamily:'Space Mono,monospace',fontSize:10,color:T.FG2,background:T.CODE_BG,border:`1px solid ${T.BORDER}`,borderRadius:4,padding:'8px 10px',marginTop:8,lineHeight:1.7,wordBreak:'break-word'}}>{l.t}</div>;
+                if(l.s==='ok') return <div key={i} style={{fontSize:12,fontWeight:600,color:GREEN2,marginTop:5}}>{l.t}</div>;
+                if(l.s==='pr') return <div key={i} style={{fontSize:i===0?15:12,fontWeight:i===0?700:600,color:RED,marginTop:i===0?0:5,letterSpacing:i===0?'-0.01em':'0',marginBottom:i===0?8:0,lineHeight:1.25}}>{l.t}</div>;
+                return <div key={i} style={{fontSize:12.5,color:T.FG2,lineHeight:1.65,marginBottom:5}}>{l.t}</div>;
+              })}
+            </div>
+            {/* Complexity */}
+            <div style={{background:T.BGPANEL,border:`1px solid ${T.BORDER}`,borderRadius:6,padding:'12px 14px'}}>
+              <div style={{fontFamily:'Space Mono,monospace',fontSize:8.5,letterSpacing:'0.14em',color:T.FG3,marginBottom:6,textTransform:'uppercase'}}>Complexity</div>
+              <div style={{fontSize:12,color:T.FG2,lineHeight:1.7}}>
+                Naïve: <span style={{color:RED,fontFamily:'Space Mono,monospace'}}>O(n·m)</span><br/>
+                Dual-tree: <span style={{color:GREEN,fontFamily:'Space Mono,monospace'}}>O((n+m)log(n+m))</span><br/>
+                Prune if: <span style={{color:AMBER,fontFamily:'Space Mono,monospace'}}>min_dist(q,r) {'>'} θ</span>
+              </div>
+            </div>
+            {/* Controls */}
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={()=>{setPlay(false);setStep(s=>Math.max(0,s-1));}} disabled={step===0} style={btn(step===0)}>← Prev</button>
+              <button onClick={()=>{if(step>=N-1){setStep(0);setPlay(true);}else setPlay(p=>!p);}} style={{...btn(false),flex:'1 1 auto',background:play?AMBER+'1a':GREEN+'1a',borderColor:play?AMBER:GREEN,color:play?AMBER:GREEN,fontWeight:700}}>
+                {play?'⏸ Pause':step>=N-1?'↺ Restart':'▶ Play'}
+              </button>
+              <button onClick={()=>{setPlay(false);setStep(s=>Math.min(N-1,s+1));}} disabled={step>=N-1} style={btn(step>=N-1)}>Next →</button>
+            </div>
+            {/* Dots */}
+            <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+              {STEPS.map((s,i)=>{
+                const c=s.act==='prune'?RED:s.act==='compute'?GREEN:s.act==='done'?GREEN2:BLUE;
+                return <button key={i} onClick={()=>{setPlay(false);setStep(i);}} style={{width:9,height:9,borderRadius:'50%',padding:0,background:i===step?c:i<step?c+'66':T.BORDER,border:'none',cursor:'pointer',transition:'background 200ms'}}/>;
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

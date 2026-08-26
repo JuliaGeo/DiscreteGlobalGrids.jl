@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Brand" name="Spatial Structures Clip Art" subtitle="3 technical illustrations: spherical polygon ops, spherical cap tree, R-tree" viewport="1200x900" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spatial Structures — JuliaGeo Illustrations</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #fff;
+    color: #111;
+    font-family: 'Inter', sans-serif;
+    padding: 64px 56px 96px;
+    max-width: 1200px;
+    margin: 0 auto;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    border-bottom: 2px solid #111;
+    padding-bottom: 24px;
+    margin-bottom: 64px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+  header .logo-lockup { display: flex; align-items: center; gap: 14px; }
+  header img { height: 34px; }
+  header h1 { font-size: 13px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; }
+  header .byline { font-size: 11px; color: #888; font-family: 'Space Mono', monospace; }
+
+  .illustration {
+    margin-bottom: 80px;
+    border-top: 1px solid #ddd;
+    padding-top: 36px;
+  }
+  .ill-header { margin-bottom: 28px; }
+  .ill-num { font-family: 'Space Mono', monospace; font-size: 10px; color: #aaa; letter-spacing: 0.06em; margin-bottom: 8px; }
+  .ill-title { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; color: #111; margin-bottom: 8px; }
+  .ill-desc { font-size: 13px; color: #555; line-height: 1.6; max-width: 680px; }
+  .ill-desc code { font-family: 'Space Mono', monospace; font-size: 11.5px; color: #389826; }
+
+  .ill-body {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 48px;
+    align-items: start;
+  }
+  .ill-body.full { grid-template-columns: 1fr; }
+  .ill-body.three { grid-template-columns: repeat(3, 1fr); }
+
+  .ill-body svg { display: block; width: 100%; height: auto; }
+
+  .legend { padding-top: 8px; }
+  .legend-item { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .legend-swatch { width: 24px; height: 3px; flex-shrink: 0; }
+  .legend-swatch.filled { height: 14px; border-radius: 2px; }
+  .legend-label { font-size: 12px; color: #555; line-height: 1.4; }
+  .legend-label code { font-family: 'Space Mono', monospace; font-size: 10.5px; color: #389826; }
+
+  .annotation-block { margin-top: 24px; border-left: 2px solid #389826; padding-left: 14px; }
+  .annotation-block p { font-size: 12px; color: #555; line-height: 1.6; margin-bottom: 8px; }
+  .annotation-block p:last-child { margin-bottom: 0; }
+
+  footer {
+    margin-top: 48px;
+    border-top: 1px solid #ddd;
+    padding-top: 20px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #aaa;
+    font-family: 'Space Mono', monospace;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-lockup">
+    <img src="../assets/juliageo-logo.svg" alt="JuliaGeo">
+    <h1>Spatial Structures — Illustrated</h1>
+  </div>
+  <span class="byline">JuliaGeo · 2026</span>
+</header>
+
+<!-- ═══════════════════════════════════════════════════════════
+     1. SPHERICAL POLYGON OPERATIONS
+═══════════════════════════════════════════════════════════ -->
+<div class="illustration">
+  <div class="ill-header">
+    <div class="ill-num">01</div>
+    <div class="ill-title">Spherical Polygon Operations</div>
+    <div class="ill-desc">Boolean set operations applied to geodesic polygons on a sphere. Edges follow great circles, so the shapes curve — intersection is computed in spherical coordinates, not projected space. The result differs from a planar computation whenever polygons span more than a few degrees.</div>
+  </div>
+  <div class="ill-body">
+    <svg viewBox="0 0 560 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <!-- Globe gradient: subtle shading -->
+        <radialGradient id="globeGrad" cx="40%" cy="35%" r="65%">
+          <stop offset="0%" stop-color="#f8f8f8"/>
+          <stop offset="100%" stop-color="#e8e8e8"/>
+        </radialGradient>
+        <clipPath id="globeClip"><ellipse cx="180" cy="180" rx="155" ry="155"/></clipPath>
+
+        <!-- polygon A clip, polygon B clip for intersection -->
+        <clipPath id="sphA">
+          <path d="M130,80 C160,65 220,62 240,95 C260,128 245,175 210,195 C175,215 130,200 110,170 C90,140 100,95 130,80Z"/>
+        </clipPath>
+        <clipPath id="sphB">
+          <path d="M160,120 C195,100 255,108 270,148 C285,188 258,230 220,240 C182,250 148,228 140,195 C132,162 125,140 160,120Z"/>
+        </clipPath>
+      </defs>
+
+      <!-- ── GLOBE ── -->
+      <!-- Sphere body -->
+      <ellipse cx="180" cy="180" rx="155" ry="155" fill="url(#globeGrad)" stroke="#ccc" stroke-width="1.2"/>
+
+      <!-- Graticule — parallels -->
+      <g clip-path="url(#globeClip)" stroke="#ddd" stroke-width="0.7" fill="none">
+        <ellipse cx="180" cy="180" rx="155" ry="26"/>
+        <ellipse cx="180" cy="130" rx="138" ry="22"/>
+        <ellipse cx="180" cy="80"  rx="95"  ry="15"/>
+        <ellipse cx="180" cy="230" rx="138" ry="22"/>
+        <ellipse cx="180" cy="280" rx="95"  ry="15"/>
+        <!-- meridians as curved paths -->
+        <path d="M180,25 C210,90 210,270 180,335"/>
+        <path d="M180,25 C150,90 150,270 180,335"/>
+        <path d="M180,25 C255,110 255,250 180,335"/>
+        <path d="M180,25 C105,110 105,250 180,335"/>
+        <path d="M180,25 C300,130 300,230 180,335"/>
+        <path d="M180,25 C60,130 60,230 180,335"/>
+      </g>
+
+      <!-- Polygon A (geodesic boundary — curves along sphere) -->
+      <path d="M130,80 C160,65 220,62 240,95 C260,128 245,175 210,195 C175,215 130,200 110,170 C90,140 100,95 130,80Z"
+        clip-path="url(#globeClip)"
+        fill="#ddd" fill-opacity="0.5" stroke="#888" stroke-width="1.6"/>
+
+      <!-- Polygon B -->
+      <path d="M160,120 C195,100 255,108 270,148 C285,188 258,230 220,240 C182,250 148,228 140,195 C132,162 125,140 160,120Z"
+        clip-path="url(#globeClip)"
+        fill="#ddd" fill-opacity="0.5" stroke="#888" stroke-width="1.6"/>
+
+      <!-- Intersection (A ∩ B) — rendered by stacking both clips -->
+      <!-- Approximate intersection region -->
+      <path d="M168,120 C195,108 245,115 255,148 C240,175 215,195 195,195 C175,195 148,175 140,155 C133,137 142,130 168,120Z"
+        clip-path="url(#globeClip)"
+        fill="#389826" fill-opacity="0.32" stroke="#389826" stroke-width="2"/>
+
+      <!-- Globe outline over everything -->
+      <ellipse cx="180" cy="180" rx="155" ry="155" fill="none" stroke="#999" stroke-width="1.4"/>
+
+      <!-- Vertex dots -->
+      <circle cx="130" cy="80"  r="3.5" fill="#555"/>
+      <circle cx="240" cy="95"  r="3.5" fill="#555"/>
+      <circle cx="210" cy="195" r="3.5" fill="#555"/>
+      <circle cx="110" cy="170" r="3.5" fill="#555"/>
+      <circle cx="160" cy="120" r="3.5" fill="#777"/>
+      <circle cx="270" cy="148" r="3.5" fill="#777"/>
+      <circle cx="220" cy="240" r="3.5" fill="#777"/>
+      <circle cx="140" cy="195" r="3.5" fill="#777"/>
+
+      <!-- Labels on globe -->
+      <text x="105" y="118" font-family="Inter,sans-serif" font-size="15" font-weight="700" fill="#666">A</text>
+      <text x="258" y="200" font-family="Inter,sans-serif" font-size="15" font-weight="700" fill="#666">B</text>
+      <text x="186" y="158" font-family="Inter,sans-serif" font-size="12" font-weight="700" fill="#2c7a1e">A∩B</text>
+
+      <!-- Note: great-circle edge annotation -->
+      <path d="M50,310 Q90,280 130,78" fill="none" stroke="#aaa" stroke-width="0.8" stroke-dasharray="2 2"/>
+      <text x="18" y="324" font-family="Inter,sans-serif" font-size="10" fill="#aaa">edges follow</text>
+      <text x="18" y="337" font-family="Inter,sans-serif" font-size="10" fill="#aaa">great circles</text>
+
+      <!-- ── PANEL: Planar equivalent (distorted) ── -->
+      <!-- Divider -->
+      <line x1="370" y1="20" x2="370" y2="340" stroke="#eee" stroke-width="1"/>
+
+      <!-- Planar projection label -->
+      <text x="390" y="28" font-family="Space Mono,monospace" font-size="9" fill="#aaa">planar projection</text>
+      <text x="390" y="40" font-family="Inter,sans-serif" font-size="9" fill="#bbb">(not equivalent)</text>
+
+      <!-- Equirectangular grid -->
+      <rect x="385" y="50" width="160" height="120" fill="#f8f8f8" stroke="#e0e0e0" stroke-width="0.8"/>
+      <line x1="385" y1="90"  x2="545" y2="90"  stroke="#eee" stroke-width="0.6"/>
+      <line x1="385" y1="130" x2="545" y2="130" stroke="#eee" stroke-width="0.6"/>
+      <line x1="438" y1="50"  x2="438" y2="170" stroke="#eee" stroke-width="0.6"/>
+      <line x1="492" y1="50"  x2="492" y2="170" stroke="#eee" stroke-width="0.6"/>
+
+      <!-- Polygon A (flat — straight edges) -->
+      <polygon points="395,58 450,55 462,100 430,118 398,110"
+        fill="#ddd" fill-opacity="0.7" stroke="#888" stroke-width="1.2"/>
+      <!-- Polygon B (flat) -->
+      <polygon points="425,78 490,72 510,115 475,135 440,125"
+        fill="#ddd" fill-opacity="0.7" stroke="#888" stroke-width="1.2"/>
+      <!-- Intersection (flat) -->
+      <polygon points="432,78 462,75 468,100 450,115 432,108"
+        fill="#389826" fill-opacity="0.25" stroke="#389826" stroke-width="1.4"/>
+
+      <text x="395" y="150" font-family="Inter,sans-serif" font-size="8.5" fill="#999">straight-edge result</text>
+      <text x="395" y="162" font-family="Inter,sans-serif" font-size="8.5" fill="#c0392b">differs near poles/antimeridian</text>
+
+      <!-- Arrow connecting -->
+      <path d="M350,130 Q370,130 385,110" fill="none" stroke="#ccc" stroke-width="1" marker-end="url(#arrCcc)"/>
+      <defs>
+        <marker id="arrCcc" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#ccc"/>
+        </marker>
+      </defs>
+
+      <!-- ── Comparison: correct vs wrong ── -->
+      <text x="386" y="195" font-family="Space Mono,monospace" font-size="9" fill="#aaa">spherical result</text>
+      <!-- schematic polygon: curved edge -->
+      <rect x="385" y="205" width="160" height="120" fill="#f8f8f8" stroke="#e0e0e0" stroke-width="0.8"/>
+      <line x1="385" y1="245" x2="545" y2="245" stroke="#eee" stroke-width="0.6"/>
+      <line x1="385" y1="285" x2="545" y2="285" stroke="#eee" stroke-width="0.6"/>
+      <line x1="438" y1="205" x2="438" y2="325" stroke="#eee" stroke-width="0.6"/>
+      <line x1="492" y1="205" x2="492" y2="325" stroke="#eee" stroke-width="0.6"/>
+
+      <!-- A curved geodesic -->
+      <path d="M395,213 C430,205 455,207 466,255 C450,275 430,278 398,265Z"
+        fill="#ddd" fill-opacity="0.7" stroke="#888" stroke-width="1.2"/>
+      <path d="M428,232 C460,222 498,228 514,270 C498,292 472,295 445,280Z"
+        fill="#ddd" fill-opacity="0.7" stroke="#888" stroke-width="1.2"/>
+      <!-- curved intersection -->
+      <path d="M434,235 C462,228 476,250 466,268 C453,280 434,272 430,252Z"
+        fill="#389826" fill-opacity="0.28" stroke="#389826" stroke-width="1.4"/>
+      <text x="395" y="310" font-family="Inter,sans-serif" font-size="8.5" fill="#389826">geodesic edges preserved</text>
+    </svg>
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-swatch filled" style="background:#ddd; border:1.5px solid #888;"></div>
+        <span class="legend-label">Input polygon A or B (geodesic boundary)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch filled" style="background:rgba(56,152,38,0.28); border:2px solid #389826;"></div>
+        <span class="legend-label">Intersection result A∩B</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#ccc; border-style:dashed; border-width:1px;"></div>
+        <span class="legend-label">Graticule (parallels &amp; meridians)</span>
+      </div>
+      <div class="annotation-block" style="margin-top:20px">
+        <p>Edges of spherical polygons are <strong>great-circle arcs</strong>, not straight lines. They appear curved when drawn on a 2D projection.</p>
+        <p>Set operations must be computed in spherical coordinates — applying planar intersection to projected coordinates introduces area errors that grow with polygon size and latitude.</p>
+        <p>Near the poles or antimeridian (180°), planar results can be completely wrong. <code>GO.intersection</code> handles these cases correctly.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     2. SPHERICAL TREE (Spherical Cap Hierarchy)
+═══════════════════════════════════════════════════════════ -->
+<div class="illustration">
+  <div class="ill-header">
+    <div class="ill-num">02</div>
+    <div class="ill-title">Spherical Cap Spatial Index</div>
+    <div class="ill-desc">A hierarchical spatial index on the sphere surface, where each node is a <em>spherical cap</em> — the set of all points within a given angular distance of a center point. Parent caps fully contain their children, enabling fast bounding-cap tests during traversal. Analogous to an R-tree but in spherical space.</div>
+  </div>
+  <div class="ill-body">
+    <svg viewBox="0 0 560 380" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <clipPath id="sc1"><ellipse cx="190" cy="190" rx="162" ry="162"/></clipPath>
+        <radialGradient id="sphereGrad2" cx="38%" cy="33%" r="60%">
+          <stop offset="0%" stop-color="#f9f9f9"/>
+          <stop offset="100%" stop-color="#e5e5e5"/>
+        </radialGradient>
+      </defs>
+
+      <!-- ── Sphere ── -->
+      <ellipse cx="190" cy="190" rx="162" ry="162" fill="url(#sphereGrad2)" stroke="#ccc" stroke-width="1.2"/>
+
+      <!-- Graticule -->
+      <g clip-path="url(#sc1)" stroke="#e8e8e8" stroke-width="0.7" fill="none">
+        <ellipse cx="190" cy="190" rx="162" ry="28"/>
+        <ellipse cx="190" cy="135" rx="144" ry="24"/>
+        <ellipse cx="190" cy="80"  rx="100" ry="16"/>
+        <ellipse cx="190" cy="245" rx="144" ry="24"/>
+        <ellipse cx="190" cy="300" rx="100" ry="16"/>
+        <path d="M190,28 C222,100 222,280 190,352"/>
+        <path d="M190,28 C158,100 158,280 190,352"/>
+        <path d="M190,28 C270,115 270,265 190,352"/>
+        <path d="M190,28 C110,115 110,265 190,352"/>
+        <path d="M190,28 C320,130 320,250 190,352"/>
+        <path d="M190,28 C60,130 60,250 190,352"/>
+      </g>
+
+      <!-- Level 1: Root cap (whole-sphere proxy) — large dashed ring -->
+      <ellipse cx="190" cy="160" rx="130" ry="100" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.04" stroke="#389826" stroke-width="1.4" stroke-dasharray="6 3"/>
+
+      <!-- Level 2: Three child caps -->
+      <!-- Child cap NW -->
+      <ellipse cx="148" cy="130" rx="62" ry="48" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.08" stroke="#389826" stroke-width="1.6" stroke-dasharray="4 2"/>
+      <!-- Child cap NE -->
+      <ellipse cx="240" cy="118" rx="55" ry="42" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.08" stroke="#389826" stroke-width="1.6" stroke-dasharray="4 2"/>
+      <!-- Child cap S -->
+      <ellipse cx="185" cy="230" rx="70" ry="52" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.08" stroke="#389826" stroke-width="1.6" stroke-dasharray="4 2"/>
+
+      <!-- Level 3: Leaf caps (tight around actual geometries) -->
+      <!-- NW children -->
+      <ellipse cx="130" cy="118" rx="22" ry="17" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.18" stroke="#389826" stroke-width="1.8"/>
+      <ellipse cx="168" cy="148" rx="18" ry="14" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.18" stroke="#389826" stroke-width="1.8"/>
+      <ellipse cx="128" cy="155" rx="16" ry="12" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.18" stroke="#389826" stroke-width="1.8"/>
+
+      <!-- NE children -->
+      <ellipse cx="228" cy="100" rx="20" ry="15" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.18" stroke="#389826" stroke-width="1.8"/>
+      <ellipse cx="258" cy="118" rx="18" ry="14" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.18" stroke="#389826" stroke-width="1.8"/>
+      <ellipse cx="242" cy="142" rx="16" ry="13" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.18" stroke="#389826" stroke-width="1.8"/>
+
+      <!-- S children -->
+      <ellipse cx="160" cy="232" rx="25" ry="18" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.18" stroke="#389826" stroke-width="1.8"/>
+      <ellipse cx="210" cy="218" rx="20" ry="15" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.18" stroke="#389826" stroke-width="1.8"/>
+      <ellipse cx="200" cy="252" rx="22" ry="16" clip-path="url(#sc1)"
+        fill="#389826" fill-opacity="0.18" stroke="#389826" stroke-width="1.8"/>
+
+      <!-- Leaf geometry points -->
+      <circle cx="130" cy="118" r="3" fill="#111"/>
+      <circle cx="169" cy="149" r="3" fill="#111"/>
+      <circle cx="128" cy="155" r="3" fill="#111"/>
+      <circle cx="228" cy="100" r="3" fill="#111"/>
+      <circle cx="259" cy="118" r="3" fill="#111"/>
+      <circle cx="242" cy="142" r="3" fill="#111"/>
+      <circle cx="160" cy="232" r="3" fill="#111"/>
+      <circle cx="210" cy="218" r="3" fill="#111"/>
+      <circle cx="200" cy="252" r="3" fill="#111"/>
+
+      <!-- Cap center dots (level 2) -->
+      <circle cx="148" cy="130" r="2.5" fill="#389826"/>
+      <circle cx="240" cy="118" r="2.5" fill="#389826"/>
+      <circle cx="185" cy="230" r="2.5" fill="#389826"/>
+
+      <!-- Angular radius annotation on one cap -->
+      <line x1="148" y1="130" x2="148" y2="82" stroke="#aaa" stroke-width="0.9" stroke-dasharray="2 1"/>
+      <line x1="142" y1="82" x2="154" y2="82" stroke="#aaa" stroke-width="0.9"/>
+      <text x="156" y="87" font-family="Space Mono,monospace" font-size="9" fill="#aaa">θ (angular radius)</text>
+
+      <!-- Sphere outline -->
+      <ellipse cx="190" cy="190" rx="162" ry="162" fill="none" stroke="#999" stroke-width="1.4"/>
+
+      <!-- ── Tree diagram (right panel) ── -->
+      <line x1="380" y1="20" x2="380" y2="360" stroke="#f0f0f0" stroke-width="1"/>
+
+      <!-- Nodes -->
+      <!-- Root -->
+      <rect x="420" y="30" width="80" height="32" rx="3" fill="#f0f0f0" stroke="#389826" stroke-width="1.4" stroke-dasharray="5 2"/>
+      <text x="460" y="50" font-family="Space Mono,monospace" font-size="9.5" fill="#389826" text-anchor="middle">root cap</text>
+
+      <!-- Level 2 -->
+      <rect x="388" y="100" width="56" height="28" rx="3" fill="#e8f5e4" stroke="#389826" stroke-width="1.4" stroke-dasharray="3 1.5"/>
+      <text x="416" y="118" font-family="Space Mono,monospace" font-size="8.5" fill="#2c7a1e" text-anchor="middle">NW</text>
+
+      <rect x="432" y="100" width="56" height="28" rx="3" fill="#e8f5e4" stroke="#389826" stroke-width="1.4" stroke-dasharray="3 1.5"/>
+      <text x="460" y="118" font-family="Space Mono,monospace" font-size="8.5" fill="#2c7a1e" text-anchor="middle">NE</text>
+
+      <rect x="476" y="100" width="56" height="28" rx="3" fill="#e8f5e4" stroke="#389826" stroke-width="1.4" stroke-dasharray="3 1.5"/>
+      <text x="504" y="118" font-family="Space Mono,monospace" font-size="8.5" fill="#2c7a1e" text-anchor="middle">S</text>
+
+      <!-- Connectors root → L2 -->
+      <line x1="460" y1="62" x2="416" y2="100" stroke="#bbb" stroke-width="1"/>
+      <line x1="460" y1="62" x2="460" y2="100" stroke="#bbb" stroke-width="1"/>
+      <line x1="460" y1="62" x2="504" y2="100" stroke="#bbb" stroke-width="1"/>
+
+      <!-- Level 3 leaf nodes under NW -->
+      <rect x="384" y="168" width="36" height="24" rx="3" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.4"/>
+      <text x="402" y="183" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e" text-anchor="middle">p₁</text>
+      <rect x="396" y="168" width="36" height="24" rx="3" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.4" x="408"/>
+      <rect x="408" y="168" width="36" height="24" rx="3" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.4"/>
+      <text x="426" y="183" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e" text-anchor="middle">p₂</text>
+      <rect x="444" y="168" width="36" height="24" rx="3" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.4"/>
+      <text x="462" y="183" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e" text-anchor="middle">p₃</text>
+
+      <!-- NE leaves -->
+      <rect x="480" y="168" width="36" height="24" rx="3" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.4"/>
+      <text x="498" y="183" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e" text-anchor="middle">p₄</text>
+      <rect x="516" y="168" width="36" height="24" rx="3" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.4"/>
+      <text x="534" y="183" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e" text-anchor="middle">p₅</text>
+
+      <!-- NW connectors -->
+      <line x1="416" y1="128" x2="402" y2="168" stroke="#bbb" stroke-width="1"/>
+      <line x1="416" y1="128" x2="426" y2="168" stroke="#bbb" stroke-width="1"/>
+      <!-- NE connectors -->
+      <line x1="460" y1="128" x2="462" y2="168" stroke="#bbb" stroke-width="1"/>
+      <line x1="504" y1="128" x2="498" y2="168" stroke="#bbb" stroke-width="1"/>
+      <line x1="504" y1="128" x2="534" y2="168" stroke="#bbb" stroke-width="1"/>
+
+      <!-- Level labels -->
+      <text x="392" y="26"  font-family="Inter,sans-serif" font-size="9" fill="#aaa">L0 root</text>
+      <text x="392" y="96"  font-family="Inter,sans-serif" font-size="9" fill="#aaa">L1</text>
+      <text x="392" y="164" font-family="Inter,sans-serif" font-size="9" fill="#aaa">L2 leaf</text>
+
+      <!-- Query cap annotation -->
+      <text x="388" y="240" font-family="Inter,sans-serif" font-size="10" font-weight="600" fill="#111">Query: point P</text>
+      <text x="388" y="256" font-family="Inter,sans-serif" font-size="9" fill="#555">1. Does P lie in root cap?</text>
+      <text x="388" y="270" font-family="Inter,sans-serif" font-size="9" fill="#555">2. Recurse into overlapping L1 caps.</text>
+      <text x="388" y="284" font-family="Inter,sans-serif" font-size="9" fill="#555">3. Check leaf geometry only.</text>
+      <text x="388" y="302" font-family="Space Mono,monospace" font-size="8.5" fill="#389826">O(log n) vs O(n) linear scan</text>
+    </svg>
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#389826; opacity:0.12; border:1.5px dashed #389826; height:14px; border-radius:2px;"></div>
+        <span class="legend-label"><strong>Root / L1</strong> — large bounding caps (dashed)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch filled" style="background:rgba(56,152,38,0.18); border:1.8px solid #389826;"></div>
+        <span class="legend-label"><strong>Leaf caps</strong> — tight around individual geometries</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch filled" style="background:#111; border-radius:50%;"></div>
+        <span class="legend-label">Indexed point geometries</span>
+      </div>
+      <div class="annotation-block" style="margin-top:20px">
+        <p>A <strong>spherical cap</strong> is defined by a center point on the sphere and an angular radius θ. All points within great-circle distance θ of the center belong to the cap.</p>
+        <p>The containment test between a cap and a point is a single dot-product, making traversal extremely fast. Spherical cap trees are the spherical analogue of R-trees or BVHs.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     3. PLANAR R-TREE
+═══════════════════════════════════════════════════════════ -->
+<div class="illustration">
+  <div class="ill-header">
+    <div class="ill-num">03</div>
+    <div class="ill-title">Planar R-Tree (Spatial Index)</div>
+    <div class="ill-desc">An R-tree organises geometries in a hierarchy of <em>minimum bounding rectangles</em> (MBRs). Each node's MBR contains all its children's MBRs. Spatial queries prune entire subtrees whose MBRs don't intersect the query region — reducing average complexity from O(n) to O(log n).</div>
+  </div>
+  <div class="ill-body">
+    <svg viewBox="0 0 560 380" fill="none" xmlns="http://www.w3.org/2000/svg">
+
+      <!-- Background grid -->
+      <rect width="560" height="380" fill="#fafafa"/>
+      <g stroke="#f0f0f0" stroke-width="0.8">
+        <line x1="0" y1="40"  x2="560" y2="40"/>
+        <line x1="0" y1="80"  x2="560" y2="80"/>
+        <line x1="0" y1="120" x2="560" y2="120"/>
+        <line x1="0" y1="160" x2="560" y2="160"/>
+        <line x1="0" y1="200" x2="560" y2="200"/>
+        <line x1="0" y1="240" x2="560" y2="240"/>
+        <line x1="0" y1="280" x2="560" y2="280"/>
+        <line x1="0" y1="320" x2="560" y2="320"/>
+        <line x1="40"  y1="0" x2="40"  y2="380"/>
+        <line x1="80"  y1="0" x2="80"  y2="380"/>
+        <line x1="120" y1="0" x2="120" y2="380"/>
+        <line x1="160" y1="0" x2="160" y2="380"/>
+        <line x1="200" y1="0" x2="200" y2="380"/>
+        <line x1="240" y1="0" x2="240" y2="380"/>
+        <line x1="280" y1="0" x2="280" y2="380"/>
+        <line x1="320" y1="0" x2="320" y2="380"/>
+        <line x1="360" y1="0" x2="360" y2="380"/>
+        <line x1="400" y1="0" x2="400" y2="380"/>
+        <line x1="440" y1="0" x2="440" y2="380"/>
+        <line x1="480" y1="0" x2="480" y2="380"/>
+        <line x1="520" y1="0" x2="520" y2="380"/>
+      </g>
+
+      <!-- ── Level 0: Root MBR (entire bounding box) ── -->
+      <rect x="18" y="18" width="520" height="344" rx="2"
+        fill="none" stroke="#111" stroke-width="2.2"/>
+      <text x="24" y="36" font-family="Space Mono,monospace" font-size="9.5" fill="#111" font-weight="700">R (root)</text>
+
+      <!-- ── Level 1: Two child MBRs ── -->
+      <!-- Node A (left cluster) -->
+      <rect x="26" y="30" width="244" height="322" rx="2"
+        fill="#389826" fill-opacity="0.04" stroke="#389826" stroke-width="1.8" stroke-dasharray="6 3"/>
+      <text x="32" y="48" font-family="Space Mono,monospace" font-size="9" fill="#389826">A</text>
+
+      <!-- Node B (right cluster) -->
+      <rect x="278" y="30" width="254" height="322" rx="2"
+        fill="#389826" fill-opacity="0.04" stroke="#389826" stroke-width="1.8" stroke-dasharray="6 3"/>
+      <text x="284" y="48" font-family="Space Mono,monospace" font-size="9" fill="#389826">B</text>
+
+      <!-- ── Level 2: Leaf MBRs ── -->
+      <!-- Under A: three leaf nodes (tight MBRs around features) -->
+      <!-- A1 — urban block (buildings + road) -->
+      <rect x="40" y="74" width="90" height="104" rx="2"
+        fill="#389826" fill-opacity="0.09" stroke="#389826" stroke-width="1.3"/>
+      <text x="44" y="86" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e">A1</text>
+      <!-- A2 — suburban parcels -->
+      <rect x="146" y="68" width="118" height="76" rx="2"
+        fill="#389826" fill-opacity="0.09" stroke="#389826" stroke-width="1.3"/>
+      <text x="150" y="80" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e">A2</text>
+      <!-- A3 — lake + parcels -->
+      <rect x="34" y="206" width="226" height="130" rx="2"
+        fill="#389826" fill-opacity="0.09" stroke="#389826" stroke-width="1.3"/>
+      <text x="38" y="218" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e">A3</text>
+
+      <!-- Under B: three leaf nodes -->
+      <!-- B1 — rural parcels -->
+      <rect x="290" y="68" width="114" height="96" rx="2"
+        fill="#389826" fill-opacity="0.09" stroke="#389826" stroke-width="1.3"/>
+      <text x="294" y="80" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e">B1</text>
+      <!-- B2 — coastline + buildings -->
+      <rect x="416" y="66" width="108" height="144" rx="2"
+        fill="#389826" fill-opacity="0.09" stroke="#389826" stroke-width="1.3"/>
+      <text x="420" y="78" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e">B2</text>
+      <!-- B3 — urban district -->
+      <rect x="284" y="196" width="240" height="148" rx="2"
+        fill="#389826" fill-opacity="0.09" stroke="#389826" stroke-width="1.3"/>
+      <text x="288" y="208" font-family="Space Mono,monospace" font-size="7.5" fill="#2c7a1e">B3</text>
+
+      <!-- ── Leaf geometries (real-world features) ── -->
+      <!-- A1 — urban block: building footprints (orthogonal) + a road -->
+      <g stroke="#666" stroke-width="0.9" stroke-linejoin="miter">
+        <!-- L-shaped building -->
+        <path d="M44,82 L72,82 L72,96 L84,96 L84,118 L60,118 L60,108 L44,108 Z" fill="#d4d4d4"/>
+        <!-- Rectangular building -->
+        <rect x="92" y="78" width="32" height="22" fill="#d4d4d4"/>
+        <!-- T-shaped building -->
+        <path d="M48,128 L72,128 L72,140 L92,140 L92,156 L72,156 L72,170 L48,170 Z" fill="#d4d4d4"/>
+        <!-- Small square building -->
+        <rect x="100" y="148" width="22" height="26" fill="#d4d4d4"/>
+        <!-- Road as linestring -->
+        <polyline points="40,124 76,124 80,144 122,144" fill="none" stroke="#888" stroke-width="2.2" stroke-linecap="round"/>
+        <polyline points="40,124 76,124 80,144 122,144" fill="none" stroke="#fff" stroke-width="0.6" stroke-dasharray="3 3"/>
+      </g>
+
+      <!-- A2 — suburban: two parcels + cul-de-sac road -->
+      <g stroke="#666" stroke-width="0.9">
+        <!-- Notched parcel -->
+        <path d="M150,76 L196,76 L196,98 L182,98 L182,108 L196,108 L196,128 L150,128 Z" fill="#d4d4d4"/>
+        <!-- Irregular parcel -->
+        <path d="M208,72 L256,76 L260,98 L250,118 L222,124 L210,108 L204,90 Z" fill="#d4d4d4"/>
+        <!-- Curved road -->
+        <path d="M150,138 Q200,135 232,138 Q252,140 256,128" fill="none" stroke="#888" stroke-width="2.2" stroke-linecap="round"/>
+        <path d="M150,138 Q200,135 232,138 Q252,140 256,128" fill="none" stroke="#fff" stroke-width="0.6" stroke-dasharray="3 3"/>
+      </g>
+
+      <!-- A3 — mixed: lake, river, two parcels, points of interest -->
+      <g>
+        <!-- Lake (irregular polygon) -->
+        <path d="M44,222 Q58,210 78,212 Q102,210 116,224 Q128,238 124,260 Q120,278 100,288 Q82,294 62,288 Q44,280 38,260 Q34,240 44,222 Z"
+              fill="#cfd8dc" stroke="#7e8e95" stroke-width="0.9"/>
+        <!-- River as linestring flowing into lake -->
+        <path d="M124,240 Q160,236 184,250 Q210,266 240,256 Q256,250 258,240"
+              fill="none" stroke="#7e8e95" stroke-width="1.6" stroke-linecap="round"/>
+        <!-- Two parcels -->
+        <rect x="142" y="270" width="44" height="34" fill="#d4d4d4" stroke="#666" stroke-width="0.9"/>
+        <path d="M196,272 L246,270 L250,300 L244,316 L200,318 Z" fill="#d4d4d4" stroke="#666" stroke-width="0.9"/>
+        <!-- Points of interest -->
+        <circle cx="180" cy="232" r="2.6" fill="#666"/>
+        <circle cx="218" cy="284" r="2.6" fill="#666"/>
+        <circle cx="60" cy="320" r="2.6" fill="#666"/>
+        <circle cx="100" cy="328" r="2.6" fill="#666"/>
+      </g>
+
+      <!-- B1 — rural: farm parcels + property line -->
+      <g stroke="#666" stroke-width="0.9">
+        <!-- Large agricultural parcel -->
+        <rect x="294" y="74" width="56" height="46" fill="#d4d4d4"/>
+        <!-- Adjacent parcel (irregular) -->
+        <path d="M356,72 L398,76 L400,108 L388,128 L362,130 L356,108 Z" fill="#d4d4d4"/>
+        <!-- Boundary linestring -->
+        <polyline points="294,138 350,138 354,156 396,158" fill="none" stroke="#888" stroke-width="1.2" stroke-dasharray="4 2"/>
+      </g>
+
+      <!-- B2 — coastline + buildings + harbor -->
+      <g>
+        <!-- Coastline as polygon (land mass with inlet) -->
+        <path d="M422,72 Q444,68 466,74 Q482,82 478,100 Q470,114 482,128 L482,142 L420,142 Z"
+              fill="#d4d4d4" stroke="#666" stroke-width="0.9"/>
+        <!-- Pier (linestring extending into water) -->
+        <polyline points="478,118 502,124 514,118" fill="none" stroke="#888" stroke-width="1.6" stroke-linecap="round"/>
+        <!-- Two buildings -->
+        <rect x="430" y="152" width="20" height="22" fill="#d4d4d4" stroke="#666" stroke-width="0.9"/>
+        <rect x="456" y="154" width="26" height="20" fill="#d4d4d4" stroke="#666" stroke-width="0.9"/>
+        <!-- Lighthouse point -->
+        <circle cx="510" cy="200" r="3" fill="#666"/>
+        <circle cx="510" cy="200" r="6" fill="none" stroke="#666" stroke-width="0.6"/>
+      </g>
+
+      <!-- B3 — urban district: street grid, blocks, park, points -->
+      <g stroke="#666" stroke-width="0.9" stroke-linejoin="miter">
+        <!-- Street grid (linestrings) -->
+        <g stroke="#888" stroke-width="2" stroke-linecap="round" fill="none">
+          <line x1="290" y1="220" x2="520" y2="220"/>
+          <line x1="290" y1="270" x2="520" y2="270"/>
+          <line x1="290" y1="318" x2="520" y2="318"/>
+          <line x1="340" y1="200" x2="340" y2="338"/>
+          <line x1="400" y1="200" x2="400" y2="338"/>
+          <line x1="460" y1="200" x2="460" y2="338"/>
+        </g>
+        <!-- City blocks (between streets) -->
+        <rect x="296" y="226" width="38" height="38" fill="#d4d4d4"/>
+        <rect x="346" y="226" width="48" height="38" fill="#d4d4d4"/>
+        <rect x="406" y="226" width="48" height="38" fill="#d4d4d4"/>
+        <!-- Park (irregular green-ish polygon) -->
+        <path d="M468,228 Q494,224 514,232 Q518,250 510,262 L468,262 Z" fill="#c5d4bd" stroke="#7d8d75" stroke-width="0.9"/>
+        <!-- More blocks -->
+        <rect x="296" y="276" width="38" height="36" fill="#d4d4d4"/>
+        <path d="M346,276 L394,276 L394,300 L380,312 L346,312 Z" fill="#d4d4d4"/>
+        <rect x="406" y="276" width="48" height="36" fill="#d4d4d4"/>
+        <rect x="468" y="276" width="46" height="36" fill="#d4d4d4"/>
+        <!-- Points of interest along streets -->
+        <g fill="#666" stroke="none">
+          <circle cx="370" cy="220" r="2.4"/>
+          <circle cx="430" cy="270" r="2.4"/>
+          <circle cx="490" cy="318" r="2.4"/>
+        </g>
+      </g>
+
+      <!-- ── Query region highlight ── -->
+      <rect x="120" y="150" width="200" height="160" rx="2"
+        fill="none" stroke="#c0392b" stroke-width="1.6" stroke-dasharray="5 3"/>
+      <text x="126" y="168" font-family="Inter,sans-serif" font-size="9" fill="#c0392b" font-weight="600">query window</text>
+
+      <!-- Pruned nodes (gray X) -->
+      <text x="450" y="110" font-family="Inter,sans-serif" font-size="9" fill="#ccc">✕ pruned</text>
+      <text x="320" y="108" font-family="Inter,sans-serif" font-size="9" fill="#ccc">✕ pruned</text>
+      <text x="60" y="100" font-family="Inter,sans-serif" font-size="9" fill="#ccc">✕ pruned</text>
+
+      <!-- Matched leaf indicators (highlight features inside query) -->
+      <rect x="139" y="267" width="50" height="40" fill="none" stroke="#c0392b" stroke-width="1.4"/>
+      <circle cx="180" cy="232" r="5" fill="none" stroke="#c0392b" stroke-width="1.4"/>
+      <circle cx="218" cy="284" r="5" fill="none" stroke="#c0392b" stroke-width="1.4"/>
+    </svg>
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#111; height:2.5px;"></div>
+        <span class="legend-label"><strong>Root MBR</strong> — bounding box of all geometries</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#389826; opacity:0.5; height:2px; border-style:dashed; border-width:1px;"></div>
+        <span class="legend-label"><strong>L1 nodes</strong> A, B — coarse spatial partition</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch filled" style="background:rgba(56,152,38,0.09); border:1.3px solid #389826;"></div>
+        <span class="legend-label"><strong>L2 leaf nodes</strong> A1–B3 — tight MBRs around data</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch filled" style="background:#ddd; border:1px solid #888;"></div>
+        <span class="legend-label">Individual geometries (points, polygons, lines)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="height:2px; background:#c0392b; border-style:dashed; border-width:1px;"></div>
+        <span class="legend-label">Query window — only intersecting nodes traversed</span>
+      </div>
+      <div class="annotation-block" style="margin-top:20px">
+        <p>For a range query, the tree is traversed top-down. Any node whose MBR doesn't intersect the query is <strong>pruned</strong> — its entire subtree is skipped.</p>
+        <p>Nodes A1 and A2 here are fully outside the query window; only A3 and part of B3 need checking. Instead of testing all 16 geometries, only 3–4 are candidates.</p>
+        <p>R-trees support <code>insert</code>, <code>delete</code>, <code>range_query</code>, and <code>k_nearest_neighbors</code>. Used in <code>SpatialIndexing.jl</code> and ArchGDAL.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span>JuliaGeo Design System · Spatial Structures Reference</span>
+  <span>3 illustrations · April 2026</span>
+</footer>
+
+</body>
+</html>

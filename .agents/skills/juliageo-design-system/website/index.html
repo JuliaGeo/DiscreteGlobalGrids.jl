@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Brand" name="JuliaGeo Website" subtitle="JuliaGeo marketing site — hero, ecosystem, methods, CTA" viewport="1280x900" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JuliaGeo — Geospatial computing in Julia</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #fff; }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
+
+  /* Layout container */
+  .container { max-width: 1120px; margin: 0 auto; padding: 0 32px; }
+
+  /* Header */
+  .site-header {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(255,255,255,0.92);
+    backdrop-filter: saturate(180%) blur(8px);
+    border-bottom: 1px solid var(--gray-200);
+  }
+  .nav { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; }
+  .brand img { height: 32px; }
+  .brand-name { font-size: 17px; font-weight: 700; color: var(--gray-900); letter-spacing: -0.02em; }
+  .nav-links { display: flex; align-items: center; gap: 6px; }
+  .nav-link { font-size: 14px; color: var(--gray-700); padding: 6px 12px; border-radius: 5px; text-decoration: none; transition: all 150ms ease; }
+  .nav-link:hover { background: var(--gray-100); color: var(--green-600); }
+  .nav-cta { font-size: 14px; font-weight: 500; color: #fff; background: var(--green-500); padding: 8px 16px; border-radius: 5px; text-decoration: none; transition: background 150ms ease; white-space: nowrap; }
+  .nav-cta:hover { background: var(--green-600); }
+
+  /* Hero */
+  .hero { padding: 96px 0 80px; }
+  .hero-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 56px; align-items: center; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--green-600); background: var(--green-50); border: 1px solid var(--green-200); padding: 5px 12px; border-radius: 9999px; margin-bottom: 20px; white-space: nowrap; }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green-500); }
+  .hero h1 { font-size: 64px; line-height: 1.04; letter-spacing: -0.035em; font-weight: 700; color: var(--gray-900); margin-bottom: 20px; }
+  .hero h1 em { font-style: normal; color: var(--green-500); }
+  .hero .lede { font-size: 19px; line-height: 1.55; color: var(--gray-700); max-width: 540px; margin-bottom: 32px; }
+  .hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 20px; border-radius: 5px; font-size: 15px; font-weight: 500; text-decoration: none; border: 1.5px solid transparent; cursor: pointer; transition: all 150ms ease; font-family: inherit; }
+  .btn-primary { background: var(--green-500); color: #fff; border-color: var(--green-500); }
+  .btn-primary:hover { background: var(--green-600); border-color: var(--green-600); }
+  .btn-secondary { background: transparent; color: var(--gray-800); border-color: var(--gray-300); }
+  .btn-secondary:hover { background: var(--gray-50); border-color: var(--gray-400); }
+
+  .hero-code {
+    background: hsl(220,20%,9%); border-radius: 8px;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.15), 0 8px 16px rgba(0,0,0,0.07);
+    border: 1px solid hsl(220,12%,23%);
+    overflow: hidden;
+  }
+  .code-titlebar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid hsl(220,12%,23%); }
+  .code-titlebar .lights { display: flex; gap: 6px; }
+  .code-titlebar .light { width: 10px; height: 10px; border-radius: 50%; }
+  .code-titlebar .filename { font-family: var(--font-mono); font-size: 11px; color: hsl(220,8%,56%); margin-left: 8px; }
+  .hero-code pre { background: transparent; padding: 18px 22px; margin: 0; border: none; font-size: 13px; line-height: 1.7; }
+  .kw { color: #91dd33; } .fn { color: #7dd3fc; } .cm { color: #6c8a6c; font-style: italic; }
+  .st { color: #fbbf24; } .nu { color: #f9a8d4; }
+
+  /* Stat strip */
+  .stats { padding: 40px 0; border-top: 1px solid var(--gray-200); border-bottom: 1px solid var(--gray-200); background: var(--gray-50); }
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+  .stat .num { font-size: 32px; font-weight: 700; color: var(--green-600); letter-spacing: -0.02em; line-height: 1; }
+  .stat .lbl { font-size: 13px; color: var(--gray-600); margin-top: 6px; }
+
+  /* Section general */
+  section.block { padding: 96px 0; }
+  .section-eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--green-600); margin-bottom: 12px; }
+  .section-title { font-size: 36px; font-weight: 700; color: var(--gray-900); letter-spacing: -0.025em; line-height: 1.15; margin-bottom: 12px; max-width: 640px; }
+  .section-lede { font-size: 17px; line-height: 1.6; color: var(--gray-700); max-width: 620px; margin-bottom: 48px; }
+
+  /* Features grid */
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .feature { background: #fff; border: 1px solid var(--gray-200); border-radius: 8px; padding: 24px; transition: all 200ms ease; }
+  .feature:hover { border-color: var(--green-300); box-shadow: 0 4px 12px rgba(56,152,38,0.08); }
+  .feature .icon { width: 40px; height: 40px; background: var(--green-50); border: 1px solid var(--green-200); border-radius: 6px; display: flex; align-items: center; justify-content: center; margin-bottom: 16px; }
+  .feature h3 { font-size: 16px; font-weight: 600; color: var(--gray-900); margin-bottom: 8px; }
+  .feature p { font-size: 14px; color: var(--gray-600); line-height: 1.6; }
+
+  /* Packages list */
+  .packages { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .pkg { display: flex; gap: 16px; align-items: flex-start; background: #fff; border: 1px solid var(--gray-200); border-radius: 8px; padding: 20px; transition: all 150ms ease; text-decoration: none; }
+  .pkg:hover { border-color: var(--green-300); }
+  .pkg-mark { width: 36px; height: 36px; flex-shrink: 0; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 13px; font-weight: 700; }
+  .pkg-mark.green { background: var(--green-50); color: var(--green-600); border: 1px solid var(--green-200); }
+  .pkg-mark.blue  { background: var(--blue-100); color: #2d47a8; border: 1px solid #b6c2f0; }
+  .pkg-mark.purple{ background: var(--purple-100); color: #6b3a85; border: 1px solid #d4b8e0; }
+  .pkg-mark.red   { background: var(--red-100); color: #9a2e27; border: 1px solid #ecb8b4; }
+  .pkg-name { font-family: var(--font-mono); font-size: 14px; font-weight: 700; color: var(--gray-900); }
+  .pkg-desc { font-size: 13px; color: var(--gray-600); line-height: 1.5; margin-top: 4px; }
+  .pkg-meta { display: flex; gap: 8px; margin-top: 8px; }
+  .pkg-badge { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 3px; background: var(--gray-100); color: var(--gray-700); }
+  .pkg-badge.stable { background: var(--green-50); color: var(--green-600); }
+  .pkg-badge.dev    { background: #fef3c7; color: #78350f; }
+
+  /* Methods showcase */
+  .methods-section { background: var(--gray-50); }
+  .methods-grid { display: flex; flex-wrap: wrap; gap: 8px; max-width: 800px; }
+  .method { font-family: var(--font-mono); font-size: 13px; padding: 6px 14px; border-radius: 5px; background: #fff; color: var(--gray-800); border: 1px solid var(--gray-200); transition: all 150ms ease; cursor: default; }
+  .method:hover { border-color: var(--green-500); color: var(--green-600); background: var(--green-50); }
+  .method.featured { background: var(--green-500); color: #fff; border-color: var(--green-500); }
+
+  /* CTA */
+  .cta { padding: 96px 0; background: hsl(220,20%,9%); color: #fff; }
+  .cta-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 48px; align-items: center; }
+  .cta h2 { font-size: 40px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.1; color: #fff; margin-bottom: 16px; }
+  .cta h2 em { font-style: normal; color: #91dd33; }
+  .cta p { font-size: 17px; color: hsl(220,8%,70%); line-height: 1.6; margin-bottom: 28px; }
+  .cta .btn-primary { background: #91dd33; color: hsl(220,20%,9%); border-color: #91dd33; }
+  .cta .btn-primary:hover { background: #7dd027; border-color: #7dd027; }
+  .cta .btn-secondary { color: #fff; border-color: hsl(220,12%,30%); }
+  .cta .btn-secondary:hover { background: hsl(220,16%,15%); }
+  .cta-install {
+    background: hsl(220,16%,13%); border: 1px solid hsl(220,12%,23%); border-radius: 8px;
+    padding: 18px 22px; font-family: var(--font-mono); font-size: 13.5px;
+    color: #d4d4d4; line-height: 1.7;
+  }
+  .cta-install .dim { color: hsl(220,8%,56%); }
+
+  /* Footer */
+  footer { background: hsl(220,20%,9%); color: hsl(220,8%,70%); padding: 48px 0 32px; border-top: 1px solid hsl(220,12%,23%); }
+  .footer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 32px; margin-bottom: 32px; }
+  .footer-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .footer-brand img { height: 28px; }
+  .footer-brand-name { font-weight: 700; color: #fff; font-size: 15px; }
+  .footer-tag { font-size: 13px; color: hsl(220,8%,56%); max-width: 280px; line-height: 1.6; }
+  .footer-col h4 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: hsl(220,8%,56%); margin-bottom: 12px; }
+  .footer-col a { display: block; font-size: 13px; color: hsl(220,8%,80%); text-decoration: none; padding: 4px 0; transition: color 150ms; }
+  .footer-col a:hover { color: #91dd33; }
+  .footer-bottom { padding-top: 24px; border-top: 1px solid hsl(220,12%,23%); display: flex; justify-content: space-between; font-size: 12px; color: hsl(220,8%,56%); }
+  .color-strip { display: flex; height: 3px; }
+  .color-strip div { flex: 1; }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="container nav">
+    <a href="#" class="brand">
+      <img src="../assets/juliageo-logo.svg" alt="JuliaGeo">
+      <span class="brand-name">JuliaGeo</span>
+    </a>
+    <nav class="nav-links">
+      <a class="nav-link" href="#packages">Packages</a>
+      <a class="nav-link" href="#docs">Docs</a>
+      <a class="nav-link" href="#community">Community</a>
+      <a class="nav-link" href="https://github.com/JuliaGeo">GitHub</a>
+      <a class="nav-cta" href="#start">Get started</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container hero-grid">
+      <div>
+        <span class="eyebrow"><span class="dot"></span>Open source · v0.1.12</span>
+        <h1>Geospatial computing<br>in pure <em>Julia</em>.</h1>
+        <p class="lede">A community-maintained ecosystem of high-performance, GeoInterface-compatible packages for geometry, projection, and Earth-data workflows.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#start">
+            Get started
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </a>
+          <a class="btn btn-secondary" href="#packages">Browse packages</a>
+        </div>
+      </div>
+      <div class="hero-code">
+        <div class="code-titlebar">
+          <div class="lights">
+            <div class="light" style="background:#ff5f56"></div>
+            <div class="light" style="background:#ffbd2e"></div>
+            <div class="light" style="background:#27c93f"></div>
+          </div>
+          <span class="filename">intersection.jl</span>
+        </div>
+<pre><code><span class="kw">using</span> GeometryOps <span class="kw">as</span> GO
+<span class="kw">using</span> GeoInterface <span class="kw">as</span> GI
+
+<span class="cm"># Two overlapping polygons</span>
+a = GI.<span class="fn">Polygon</span>([[(<span class="nu">0</span>,<span class="nu">0</span>), (<span class="nu">2</span>,<span class="nu">0</span>),
+                  (<span class="nu">2</span>,<span class="nu">2</span>), (<span class="nu">0</span>,<span class="nu">2</span>), (<span class="nu">0</span>,<span class="nu">0</span>)]])
+b = GI.<span class="fn">Polygon</span>([[(<span class="nu">1</span>,<span class="nu">0</span>), (<span class="nu">3</span>,<span class="nu">0</span>),
+                  (<span class="nu">3</span>,<span class="nu">2</span>), (<span class="nu">1</span>,<span class="nu">2</span>), (<span class="nu">1</span>,<span class="nu">0</span>)]])
+
+result = GO.<span class="fn">intersection</span>(a, b)
+GO.<span class="fn">area</span>(result)  <span class="cm"># → 2.0</span></code></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <section class="stats">
+    <div class="container stats-grid">
+      <div class="stat"><div class="num">28+</div><div class="lbl">Packages in ecosystem</div></div>
+      <div class="stat"><div class="num">100%</div><div class="lbl">Pure Julia, no C bindings</div></div>
+      <div class="stat"><div class="num">2.6×</div><div class="lbl">Faster than Shapely on clipping</div></div>
+      <div class="stat"><div class="num">MIT</div><div class="lbl">Licensed, free forever</div></div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="block">
+    <div class="container">
+      <div class="section-eyebrow">Why JuliaGeo</div>
+      <h2 class="section-title">Built for scientists who refuse to choose between speed and clarity.</h2>
+      <p class="section-lede">Every package is written in idiomatic Julia. Read the source, extend it, dispatch on it. No glue code, no opaque shared libraries.</p>
+      <div class="features">
+        <div class="feature">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#389826" stroke-width="1.75"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+          <h3>Blazing fast</h3>
+          <p>Outperforms Shapely, GEOS, and most R equivalents on geometry benchmarks thanks to Julia's JIT compiler and zero-allocation patterns.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#389826" stroke-width="1.75"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+          <h3>One interface, every format</h3>
+          <p>Built on GeoInterface.jl. Mix shapefiles, GeoJSON, GeoArrow, ArchGDAL — same functions work across every supported source.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#389826" stroke-width="1.75"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
+          <h3>Literate documentation</h3>
+          <p>Source code is the documentation. Every method ships with executable examples and prose-explained algorithms via Literate.jl.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#389826" stroke-width="1.75"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/><line x1="12" y1="2" x2="12" y2="22"/><line x1="2" y1="8.5" x2="22" y2="8.5"/></svg></div>
+          <h3>Composable</h3>
+          <p>Multiple-dispatch lets you extend any operation for new geometry types or coordinate spaces — no monkey-patching, no inheritance hacks.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#389826" stroke-width="1.75"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4"/></svg></div>
+          <h3>Full CRS support</h3>
+          <p>Reproject between any coordinate reference systems via Proj.jl. Handle datums, geodesics, and spherical operations correctly.</p>
+        </div>
+        <div class="feature">
+          <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#389826" stroke-width="1.75"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+          <h3>Community-driven</h3>
+          <p>Maintained by researchers and engineers across academia and industry. PRs welcome; issues triaged weekly.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Packages -->
+  <section class="block" style="padding-top:0" id="packages">
+    <div class="container">
+      <div class="section-eyebrow">The Ecosystem</div>
+      <h2 class="section-title">A package for every layer of the stack.</h2>
+      <p class="section-lede">From geometric primitives to specialized GIS workflows — pick what you need, leave the rest.</p>
+      <div class="packages">
+        <a class="pkg" href="#">
+          <div class="pkg-mark green">Go</div>
+          <div>
+            <div class="pkg-name">GeometryOps.jl</div>
+            <div class="pkg-desc">Clipping, simplification, distance, and projection — the geometry workhorse.</div>
+            <div class="pkg-meta"><span class="pkg-badge dev">In Development</span><span class="pkg-badge">v0.1.12</span></div>
+          </div>
+        </a>
+        <a class="pkg" href="#">
+          <div class="pkg-mark blue">Gi</div>
+          <div>
+            <div class="pkg-name">GeoInterface.jl</div>
+            <div class="pkg-desc">The common interface every JuliaGeo package implements. Universal geometry types.</div>
+            <div class="pkg-meta"><span class="pkg-badge stable">Stable</span><span class="pkg-badge">v1.4.0</span></div>
+          </div>
+        </a>
+        <a class="pkg" href="#">
+          <div class="pkg-mark purple">Pr</div>
+          <div>
+            <div class="pkg-name">Proj.jl</div>
+            <div class="pkg-desc">Coordinate reference system transformations via the PROJ library.</div>
+            <div class="pkg-meta"><span class="pkg-badge stable">Stable</span><span class="pkg-badge">v1.7.4</span></div>
+          </div>
+        </a>
+        <a class="pkg" href="#">
+          <div class="pkg-mark red">Ad</div>
+          <div>
+            <div class="pkg-name">ArchGDAL.jl</div>
+            <div class="pkg-desc">Read, write, and process GDAL-compatible geospatial formats.</div>
+            <div class="pkg-meta"><span class="pkg-badge stable">Stable</span><span class="pkg-badge">v0.10.5</span></div>
+          </div>
+        </a>
+        <a class="pkg" href="#">
+          <div class="pkg-mark green">Sf</div>
+          <div>
+            <div class="pkg-name">Shapefile.jl</div>
+            <div class="pkg-desc">Pure-Julia ESRI Shapefile reader and writer.</div>
+            <div class="pkg-meta"><span class="pkg-badge stable">Stable</span><span class="pkg-badge">v0.13.0</span></div>
+          </div>
+        </a>
+        <a class="pkg" href="#">
+          <div class="pkg-mark blue">Gj</div>
+          <div>
+            <div class="pkg-name">GeoJSON.jl</div>
+            <div class="pkg-desc">Read, write, and validate GeoJSON. Zero-copy in many cases.</div>
+            <div class="pkg-meta"><span class="pkg-badge stable">Stable</span><span class="pkg-badge">v0.8.1</span></div>
+          </div>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Methods showcase -->
+  <section class="block methods-section">
+    <div class="container">
+      <div class="section-eyebrow">API Surface</div>
+      <h2 class="section-title">All the geometry operations you'd expect — and a few you didn't.</h2>
+      <p class="section-lede">Implemented in pure Julia, dispatched generically across every GeoInterface type.</p>
+      <div class="methods-grid">
+        <span class="method featured">intersection</span>
+        <span class="method featured">difference</span>
+        <span class="method featured">union</span>
+        <span class="method">equals</span>
+        <span class="method">intersects</span>
+        <span class="method">contains</span>
+        <span class="method">crosses</span>
+        <span class="method">within</span>
+        <span class="method">disjoint</span>
+        <span class="method">touches</span>
+        <span class="method">distance</span>
+        <span class="method">centroid</span>
+        <span class="method">area</span>
+        <span class="method">signed_area</span>
+        <span class="method">extent</span>
+        <span class="method">simplify</span>
+        <span class="method">segmentize</span>
+        <span class="method">polygonize</span>
+        <span class="method">reproject</span>
+        <span class="method">apply</span>
+        <span class="method">applyreduce</span>
+        <span class="method">barycentric_coordinates</span>
+        <span class="method">winding_order</span>
+        <span class="method">convex_hull</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta" id="start">
+    <div class="container cta-grid">
+      <div>
+        <h2>Install in <em>one line</em>.<br>Ship in production tomorrow.</h2>
+        <p>JuliaGeo packages are registered in the General registry. Add them like any Julia dependency.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#">Read the docs</a>
+          <a class="btn btn-secondary" href="#">Star on GitHub</a>
+        </div>
+      </div>
+      <div class="cta-install">
+<span class="dim">julia&gt;</span> using Pkg
+<span class="dim">julia&gt;</span> Pkg.add(<span style="color:#fbbf24">"GeometryOps"</span>)
+<span class="dim">julia&gt;</span> using GeometryOps
+<span class="dim">julia&gt;</span> <span style="color:#6c8a6c"># ready to go.</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <div class="footer-brand">
+          <img src="../assets/juliageo-logo.svg" alt="JuliaGeo">
+          <span class="footer-brand-name">JuliaGeo</span>
+        </div>
+        <p class="footer-tag">A community-maintained ecosystem of geospatial packages for the Julia programming language.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Packages</h4>
+        <a href="#">GeometryOps.jl</a>
+        <a href="#">GeoInterface.jl</a>
+        <a href="#">Proj.jl</a>
+        <a href="#">ArchGDAL.jl</a>
+      </div>
+      <div class="footer-col">
+        <h4>Resources</h4>
+        <a href="#">Documentation</a>
+        <a href="#">Tutorials</a>
+        <a href="#">Benchmarks</a>
+        <a href="#">Changelog</a>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <a href="#">GitHub</a>
+        <a href="#">Slack</a>
+        <a href="#">Discourse</a>
+        <a href="#">Contribute</a>
+      </div>
+    </div>
+    <div class="color-strip">
+      <div style="background:#389826;flex:2"></div>
+      <div style="background:#4063D8;flex:1"></div>
+      <div style="background:#9558B2;flex:1"></div>
+      <div style="background:#CB3C33;flex:1"></div>
+    </div>
+    <div class="footer-bottom" style="margin-top:20px">
+      <span>© 2026 JuliaGeo contributors. MIT licensed.</span>
+      <span>Built with Julia 1.11</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

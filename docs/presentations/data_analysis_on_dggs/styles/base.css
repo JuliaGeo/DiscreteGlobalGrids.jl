@@ -1,0 +1,325 @@
+/* =============================================================
+   Base — element defaults for every slide.
+   Layout-specific rules live in layouts.css; reusable pieces
+   live in components.css.
+   ============================================================= */
+
+html,
+body,
+#slide-content {
+  background: var(--dy-bg);
+  color: var(--dy-fg);
+}
+
+/* Slidev bridges: point its theme vars at the JuliaGeo tokens so
+   built-in chrome (nav bar, tooltips, code blocks) inherits the
+   palette. */
+:root {
+  --slidev-theme-primary: var(--dy-accent);
+  --slidev-code-background: var(--dy-code-bg);
+  --slidev-code-foreground: var(--dy-code-fg);
+  --slidev-code-radius: var(--dy-r-2);
+  --slidev-code-font-family: var(--dy-font-mono);
+}
+
+/* Slidev's base gives .slidev-layout its own padding and heading
+   sizes. Every layout here owns its own frame, so clear both. */
+.slidev-layout {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  background: var(--dy-bg);
+  color: var(--dy-fg);
+  font-family: var(--dy-font-sans);
+  font-size: var(--dy-t-body);
+  line-height: var(--dy-lh-body);
+  font-feature-settings: 'ss01', 'ss02', 'cv01';
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Headings ---------- */
+
+.slidev-layout h1 {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: var(--dy-t-title);
+  line-height: var(--dy-lh-snug);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-fg);
+  margin: 0;
+  text-wrap: balance;
+}
+
+.slidev-layout h2 {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: 26px;
+  line-height: var(--dy-lh-snug);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-fg);
+  margin: 0;
+  text-wrap: balance;
+}
+
+/* h3 asks for `display` rather than inheriting the body face. It read
+   the same either way while both families were Rale Grotesk; now that
+   `sans` is Inter, inheriting would drop the smallest heading onto the
+   body face while h1 and h2 stayed on the display one. A heading is a
+   heading at every level. */
+.slidev-layout h3 {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: 21px;
+  line-height: var(--dy-lh-snug);
+  color: var(--dy-fg);
+  margin: 0;
+}
+
+/* h4 doubles as an inline mono label — the signage layer. */
+.slidev-layout h4 {
+  font-family: var(--dy-font-mono);
+  font-weight: 500;
+  font-size: var(--dy-t-label);
+  line-height: 1.4;
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-2);
+  margin: 0;
+}
+
+/* ---------- Copy ---------- */
+
+.slidev-layout p {
+  margin: 0;
+  color: var(--dy-fg);
+  text-wrap: pretty;
+}
+
+.slidev-layout strong {
+  font-weight: 500;
+  color: var(--dy-fg);
+}
+
+/* Emphasis is accent, never underline. */
+.slidev-layout em {
+  font-style: normal;
+  color: var(--dy-accent-ink);
+}
+
+.slidev-layout a {
+  color: var(--dy-accent-ink);
+  text-decoration: none;
+  border-bottom: var(--dy-rule-hair) solid var(--dy-accent);
+  padding-bottom: 1px;
+  transition: color var(--dy-dur) var(--dy-ease),
+              border-color var(--dy-dur) var(--dy-ease);
+}
+
+.slidev-layout a:hover {
+  color: var(--dy-accent);
+  border-bottom-color: var(--dy-accent-ink);
+}
+
+/* ---------- Lists ----------
+   No bullet discs. A hairline dash in muted keeps the left edge of
+   the text block flush with everything else on the slide. */
+
+.slidev-layout ul,
+.slidev-layout ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Markers are typed characters in the normal inline flow — a hanging
+   indent, not absolute positioning. The li reserves the indent with
+   padding, and the marker pulls itself back out into it with an equal
+   negative margin. Wrapped lines start at the padding edge, which is
+   what makes the text block hang square.
+
+   Everything vertical then falls out for free. An inline-block sits
+   on the line's baseline by default, so the dash lands exactly where
+   the body face draws its own dash and the numeral lands on the same
+   baseline as the words beside it — whatever the face, whatever the
+   size, at any nesting depth. No font metrics, no measuring, nothing
+   to re-derive when the type changes. */
+
+.slidev-layout ul > li,
+.slidev-layout ol > li {
+  padding-left: 22px;
+  margin-top: var(--dy-s-3);
+}
+
+.slidev-layout ul > li:first-child,
+.slidev-layout ol > li:first-child {
+  margin-top: 0;
+}
+
+.slidev-layout ul > li::before,
+.slidev-layout ol > li::before {
+  display: inline-block;
+  width: 22px;
+  margin-left: -22px;
+}
+
+.slidev-layout ul > li::before {
+  content: '–';
+  /* fg-3, not muted-3: JuliaGeo's tertiary grey is gray-500, which is
+     a caption colour for a monitor and too faint on a wall. The
+     semantic token already carries that correction. */
+  color: var(--dy-fg-3);
+}
+
+.slidev-layout ol {
+  counter-reset: dy-ol;
+}
+
+.slidev-layout ol > li {
+  counter-increment: dy-ol;
+  padding-left: 30px;
+}
+
+.slidev-layout ol > li::before {
+  content: counter(dy-ol, decimal-leading-zero);
+  width: 30px;
+  margin-left: -30px;
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-label);
+  letter-spacing: var(--dy-track-label);
+  color: var(--dy-accent-ink);
+}
+
+/* Nested lists step down a size and lose the accent numbering. */
+.slidev-layout li ul,
+.slidev-layout li ol {
+  margin-top: var(--dy-s-2);
+  font-size: var(--dy-t-body-sm);
+  color: var(--dy-fg-2);
+}
+
+/* ---------- Rules ---------- */
+
+.slidev-layout hr {
+  border: 0;
+  border-top: var(--dy-rule-hair) solid var(--dy-hairline);
+  margin: var(--dy-s-5) 0;
+}
+
+/* ---------- Blockquote ---------- */
+
+.slidev-layout blockquote {
+  margin: 0;
+  padding: 0 0 0 var(--dy-s-5);
+  border-left: var(--dy-rule-med) solid var(--dy-accent);
+  color: var(--dy-fg-2);
+  font-size: var(--dy-t-body);
+}
+
+/* ---------- Code ---------- */
+
+.slidev-layout code {
+  font-family: var(--dy-font-mono);
+  font-size: 0.9em;
+}
+
+/* Inline code is the one place a third hue is allowed: light chip,
+   Julia red type. It is how the docs site marks a symbol mid-sentence
+   and it is the cheapest way to make prose read as JuliaGeo's. */
+.slidev-layout :not(pre) > code {
+  background: var(--dy-code-inline-bg);
+  border: var(--dy-rule-hair) solid var(--dy-hairline-soft);
+  border-radius: var(--dy-r-1);
+  padding: 1px 5px;
+  color: var(--dy-code-inline-ink);
+}
+
+/* Block code is a dark slab even in light mode — the source's own
+   choice, and the right one here: a projector glares off a light
+   block and eats the contrast between it and the paper around it. */
+.slidev-layout pre,
+.slidev-layout .slidev-code-wrapper pre {
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-caption);
+  line-height: 1.62;
+  background: var(--dy-code-bg);
+  color: var(--dy-code-fg);
+  border: var(--dy-rule-hair) solid var(--dy-code-border);
+  border-radius: var(--dy-r-2);
+  padding: var(--dy-s-4) var(--dy-s-5);
+  overflow: auto;
+  margin: 0;
+}
+
+/* Shiki writes `background` inline on the <pre class="shiki"> and on
+   every span, from its own theme. Both have to be overridden or the
+   theme's slab colour and its per-token highlights fight the tokens
+   above — but they have to be overridden DIFFERENTLY. The pre is the
+   slab and keeps a colour; the spans have to go transparent so the
+   slab shows through. Collapsing these two rules into one
+   `transparent` (which is what the Dyad template did, harmlessly,
+   because its slab was near-white anyway) leaves the block sitting
+   on the page background — invisible light-grey type on white. */
+.slidev-layout .shiki {
+  background: var(--dy-code-bg) !important;
+}
+
+.slidev-layout .shiki span {
+  background: transparent !important;
+}
+
+/* ---------- Tables ----------
+   Hairline horizontals only. No verticals, no zebra fill. */
+
+.slidev-layout table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--dy-t-body-sm);
+}
+
+.slidev-layout th {
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-label);
+  font-weight: 500;
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-2);
+  text-align: left;
+  padding: 0 var(--dy-s-4) var(--dy-s-2) 0;
+  border-bottom: var(--dy-rule-thin) solid var(--dy-ink);
+}
+
+.slidev-layout td {
+  padding: var(--dy-s-3) var(--dy-s-4) var(--dy-s-3) 0;
+  border-bottom: var(--dy-rule-hair) solid var(--dy-hairline);
+  vertical-align: top;
+}
+
+.slidev-layout tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ---------- Images ---------- */
+
+.slidev-layout img {
+  border-radius: var(--dy-r-2);
+}
+
+/* Customer photography is grayscale. Opt out with `.no-gray`. */
+.slidev-layout img.dy-photo {
+  filter: grayscale(1);
+  border: var(--dy-rule-hair) solid var(--dy-hairline);
+}
+
+/* ---------- Motion ----------
+   Fades and 1–2px translates only. No bounce, no spring. */
+
+.slidev-vclick-target {
+  transition: opacity var(--dy-dur) var(--dy-ease),
+              transform var(--dy-dur) var(--dy-ease);
+}
+
+.slidev-vclick-hidden {
+  opacity: 0;
+  transform: translateY(2px);
+}

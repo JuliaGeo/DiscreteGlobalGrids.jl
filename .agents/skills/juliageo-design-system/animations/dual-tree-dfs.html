@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Dual-Tree DFS — JuliaGeo</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ── Accent colors (theme-invariant) ─────────────────────────
+const GREEN  = '#389826';
+const GREEN2 = '#91dd33';
+const AMBER  = '#b45309';
+const RED    = '#c0392b';
+const BLUE   = '#4063D8';
+const PURPLE = '#9558B2';
+
+function mkTheme(dark) {
+  return dark ? {
+    FG: '#e8eaf0', FG2: '#8a9099', FG3: '#555c66',
+    BG: '#0e1012', BGCARD: '#161a1f', BGPANEL: '#1a1f26',
+    BORDER: '#252a32', NODE_EMPTY: '#1c2128', CODE_BG: '#1a1e24',
+    DIM: '#2c3240', EDGE: '#2c3240', EDGE_LIT: '#4a5568',
+  } : {
+    FG: '#111416', FG2: '#555c66', FG3: '#8a9099',
+    BG: '#ffffff', BGCARD: '#f8f9fa', BGPANEL: '#f1f3f5',
+    BORDER: '#dee2e6', NODE_EMPTY: '#edf0f3', CODE_BG: '#f1f3f5',
+    DIM: '#d0d4db', EDGE: '#d0d4db', EDGE_LIT: '#adb5bd',
+  };
+}
+
+// ── Tree data ────────────────────────────────────────────────
+const Q_NODES = [
+  { id:'Q',   label:'Q',   parent:null, children:['Qa','Qb'],    depth:0, leaf:false },
+  { id:'Qa',  label:'Qa',  parent:'Q',  children:['Qa1','Qa2'],  depth:1, leaf:false },
+  { id:'Qb',  label:'Qb',  parent:'Q',  children:['Qb1','Qb2'],  depth:1, leaf:false },
+  { id:'Qa1', label:'Qa1', parent:'Qa', children:[],             depth:2, leaf:true, pts:3 },
+  { id:'Qa2', label:'Qa2', parent:'Qa', children:[],             depth:2, leaf:true, pts:2 },
+  { id:'Qb1', label:'Qb1', parent:'Qb', children:[],             depth:2, leaf:true, pts:2 },
+  { id:'Qb2', label:'Qb2', parent:'Qb', children:[],             depth:2, leaf:true, pts:3 },
+];
+const R_NODES = [
+  { id:'R',   label:'R',   parent:null, children:['Ra','Rb'],    depth:0, leaf:false },
+  { id:'Ra',  label:'Ra',  parent:'R',  children:['Ra1','Ra2'],  depth:1, leaf:false },
+  { id:'Rb',  label:'Rb',  parent:'R',  children:['Rb1','Rb2'],  depth:1, leaf:false },
+  { id:'Ra1', label:'Ra1', parent:'Ra', children:[],             depth:2, leaf:true, pts:2 },
+  { id:'Ra2', label:'Ra2', parent:'Ra', children:[],             depth:2, leaf:true, pts:3 },
+  { id:'Rb1', label:'Rb1', parent:'Rb', children:[],             depth:2, leaf:true, pts:2 },
+  { id:'Rb2', label:'Rb2', parent:'Rb', children:[],             depth:2, leaf:true, pts:4 },
+];
+
+// Layout: equal-width columns, vertically centred in SVG
+const COL_W = 88;
+const ROW_H = 96;
+const NODE_R = 24;
+
+function treeLayout(nodes, xBase) {
+  const pos = {};
+  nodes.filter(n=>n.depth===2).forEach((n,i)=>{ pos[n.id]={ x: xBase + i*COL_W, y: 2*ROW_H }; });
+  nodes.filter(n=>n.depth===1).forEach(n=>{ const xs=n.children.map(c=>pos[c].x); pos[n.id]={ x:(xs[0]+xs[1])/2, y:ROW_H }; });
+  nodes.filter(n=>n.depth===0).forEach(n=>{ const xs=n.children.map(c=>pos[c].x); pos[n.id]={ x:(xs[0]+xs[1])/2, y:0 }; });
+  return pos;
+}
+
+// Ancestors of a node (inclusive)
+function getAncestors(id, nodes) {
+  const set = new Set();
+  let cur = nodes.find(n=>n.id===id);
+  while (cur) { set.add(cur.id); if (!cur.parent) break; cur=nodes.find(n=>n.id===cur.parent); }
+  return set;
+}
+
+// ── Animation steps ─────────────────────────────────────────
+const STEPS = [
+  { qNode:null, rNode:null, action:'intro', stack:[], results:[], description:[
+    {text:'Dual-Tree DFS',style:'title'},
+    {text:'Two spatial trees — query tree Q and reference tree R — are traversed simultaneously depth-first.',style:'body'},
+    {text:'At each step a (q, r) node pair is tested. Pairs far apart are pruned early; leaf pairs trigger direct computation.',style:'body'},
+  ]},
+  { qNode:'Q', rNode:'R', action:'push', stack:[['Q','R']], results:[], description:[
+    {text:'Push root pair (Q, R)',style:'title'},
+    {text:'Push both root nodes as a pair onto the DFS stack.',style:'body'},
+    {text:'Stack: [(Q, R)]',style:'mono'},
+  ]},
+  { qNode:'Q', rNode:'R', action:'recurse', stack:[['Qa','Ra'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']], results:[], description:[
+    {text:'Recurse: expand (Q, R)',style:'title'},
+    {text:"Both internal. Cross-expand children → 4 new pairs pushed.",style:'body'},
+    {text:'[(Qa,Ra), (Qa,Rb), (Qb,Ra), (Qb,Rb)]',style:'mono'},
+  ]},
+  { qNode:'Qa', rNode:'Ra', action:'recurse', stack:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']], results:[], description:[
+    {text:'Pop (Qa, Ra) → recurse',style:'title'},
+    {text:'Qa and Ra bounding regions overlap. Both internal — expand all children.',style:'body'},
+    {text:'4 new pairs pushed. DFS goes deeper left-first.',style:'body'},
+  ]},
+  { qNode:'Qa1', rNode:'Ra1', action:'compute', stack:[['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']], results:[['Qa1','Ra1']], description:[
+    {text:'Pop (Qa1, Ra1) → compute',style:'title'},
+    {text:'Both leaf nodes. Compute 3×2 = 6 point pairs directly.',style:'body'},
+    {text:'✓ Base case. Results recorded.',style:'success'},
+  ]},
+  { qNode:'Qa1', rNode:'Ra2', action:'compute', stack:[['Qa2','Ra1'],['Qa2','Ra2'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']], results:[['Qa1','Ra1'],['Qa1','Ra2']], description:[
+    {text:'Pop (Qa1, Ra2) → compute',style:'title'},
+    {text:'Both leaves. Compute 3×3 = 9 point pairs.',style:'body'},
+    {text:'✓ Results recorded.',style:'success'},
+  ]},
+  { qNode:'Qa2', rNode:'Ra1', action:'compute', stack:[['Qa2','Ra2'],['Qa','Rb'],['Qb','Ra'],['Qb','Rb']], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1']], description:[
+    {text:'Pop (Qa2, Ra1) → compute',style:'title'},
+    {text:'Both leaves. Compute 2×2 = 4 point pairs.',style:'body'},
+    {text:'✓ Results recorded.',style:'success'},
+  ]},
+  { qNode:'Qa2', rNode:'Ra2', action:'compute', stack:[['Qa','Rb'],['Qb','Ra'],['Qb','Rb']], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2']], description:[
+    {text:'Pop (Qa2, Ra2) → compute',style:'title'},
+    {text:'Both leaves. Compute 2×3 = 6 point pairs.',style:'body'},
+    {text:'✓ Left subtree fully processed.',style:'success'},
+  ]},
+  { qNode:'Qa', rNode:'Rb', action:'prune', stack:[['Qb','Ra'],['Qb','Rb']], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2']], description:[
+    {text:'Pop (Qa, Rb) → PRUNE',style:'prune'},
+    {text:'Bounding regions of Qa and Rb are far apart — min distance exceeds threshold.',style:'body'},
+    {text:'✗ Entire subtree skipped. Saves 4 leaf comparisons.',style:'prune'},
+  ]},
+  { qNode:'Qb', rNode:'Ra', action:'prune', stack:[['Qb','Rb']], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2']], description:[
+    {text:'Pop (Qb, Ra) → PRUNE',style:'prune'},
+    {text:'Qb and Ra are spatially distant. Min distance between any points exceeds threshold.',style:'body'},
+    {text:'✗ Pruned. Another 4 comparisons saved.',style:'prune'},
+  ]},
+  { qNode:'Qb', rNode:'Rb', action:'recurse', stack:[['Qb1','Rb1'],['Qb1','Rb2'],['Qb2','Rb1'],['Qb2','Rb2']], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2']], description:[
+    {text:'Pop (Qb, Rb) → recurse',style:'title'},
+    {text:'Qb and Rb overlap. Expand all children.',style:'body'},
+    {text:'4 new leaf pairs queued.',style:'body'},
+  ]},
+  { qNode:'Qb1', rNode:'Rb1', action:'compute', stack:[['Qb1','Rb2'],['Qb2','Rb1'],['Qb2','Rb2']], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1']], description:[
+    {text:'Pop (Qb1, Rb1) → compute',style:'title'},
+    {text:'2×2 = 4 point pairs computed.',style:'body'},
+    {text:'✓ Results recorded.',style:'success'},
+  ]},
+  { qNode:'Qb1', rNode:'Rb2', action:'compute', stack:[['Qb2','Rb1'],['Qb2','Rb2']], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1'],['Qb1','Rb2']], description:[
+    {text:'Pop (Qb1, Rb2) → compute',style:'title'},
+    {text:'2×4 = 8 point pairs computed.',style:'body'},
+    {text:'✓ Results recorded.',style:'success'},
+  ]},
+  { qNode:'Qb2', rNode:'Rb1', action:'compute', stack:[['Qb2','Rb2']], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1'],['Qb1','Rb2'],['Qb2','Rb1']], description:[
+    {text:'Pop (Qb2, Rb1) → compute',style:'title'},
+    {text:'3×2 = 6 point pairs computed.',style:'body'},
+    {text:'✓ Results recorded.',style:'success'},
+  ]},
+  { qNode:'Qb2', rNode:'Rb2', action:'compute', stack:[], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1'],['Qb1','Rb2'],['Qb2','Rb1'],['Qb2','Rb2']], description:[
+    {text:'Pop (Qb2, Rb2) → compute',style:'title'},
+    {text:'3×4 = 12 point pairs computed.',style:'body'},
+    {text:'✓ Stack empty. DFS complete.',style:'success'},
+  ]},
+  { qNode:null, rNode:null, action:'done', stack:[], results:[['Qa1','Ra1'],['Qa1','Ra2'],['Qa2','Ra1'],['Qa2','Ra2'],['Qb1','Rb1'],['Qb1','Rb2'],['Qb2','Rb1'],['Qb2','Rb2']], description:[
+    {text:'Done',style:'title'},
+    {text:'8 leaf pairs computed, 2 pairs pruned early.',style:'body'},
+    {text:'Without tree: 7×11 = 77 comparisons. Dual-tree: ~47 — 39% fewer. Savings grow with depth.',style:'body'},
+    {text:'Used in kNN, range queries, kernel density — core to SpatialTreeInterface.jl',style:'mono'},
+  ]},
+];
+
+// ── Tree SVG component ───────────────────────────────────────
+function TreeSVG({ nodes, positions, activeId, step, action, results, T, treeColor }) {
+  const ancestors = activeId ? getAncestors(activeId, nodes) : new Set();
+  const accentCol = action==='prune' ? RED : action==='compute' ? GREEN : treeColor;
+
+  // Node visual state
+  function nodeState(id) {
+    if (id === activeId) return 'active';
+    if (ancestors.has(id)) return 'ancestor';
+    if (results.some(([q,r]) => nodes===Q_NODES ? q===id : r===id)) return 'done';
+    return 'idle';
+  }
+
+  function nodeColor(state) {
+    if (state==='active')   return accentCol;
+    if (state==='ancestor') return treeColor;
+    if (state==='done')     return GREEN2;
+    return null; // idle
+  }
+
+  // Edge: is it on the ancestor path?
+  function edgeLit(parentId, childId) {
+    return ancestors.has(parentId) && ancestors.has(childId);
+  }
+
+  const W = 3 * COL_W; // tree width (4 leaves, 3 gaps)
+
+  return (
+    <g>
+      {/* Tree label */}
+      <text x={W/2} y={-10} textAnchor="middle"
+        fontFamily="Space Mono, monospace" fontSize="11" fontWeight="700" letterSpacing="0.06em"
+        fill={treeColor} opacity="0.9">
+        {nodes===Q_NODES ? 'QUERY TREE  Q' : 'REFERENCE TREE  R'}
+      </text>
+
+      {/* Edges */}
+      {nodes.map(n => n.children.map(cid => {
+        const p = positions[n.id], c = positions[cid];
+        const lit = edgeLit(n.id, cid);
+        return (
+          <line key={n.id+cid}
+            x1={p.x} y1={p.y} x2={c.x} y2={c.y}
+            stroke={lit ? treeColor : T.EDGE}
+            strokeWidth={lit ? 2.5 : 1.5}
+            opacity={lit ? 0.9 : 1}
+            style={lit ? {filter:`drop-shadow(0 0 3px ${treeColor}66)`} : {}}
+          />
+        );
+      }))}
+
+      {/* Nodes */}
+      {nodes.map(n => {
+        const p = positions[n.id];
+        const state = nodeState(n.id);
+        const col = nodeColor(state);
+        const isActive = state === 'active';
+        const isAncestor = state === 'ancestor';
+
+        return (
+          <g key={n.id} transform={`translate(${p.x},${p.y})`}>
+            {/* Glow ring for active */}
+            {isActive && (
+              <circle r={NODE_R+10} fill="none"
+                stroke={col} strokeWidth="1" opacity="0.2"
+                style={{filter:`drop-shadow(0 0 10px ${col})`}}/>
+            )}
+            {/* Pulse ring for ancestors */}
+            {isAncestor && (
+              <circle r={NODE_R+5} fill="none"
+                stroke={treeColor} strokeWidth="1" opacity="0.25"/>
+            )}
+            {/* Node body */}
+            <circle r={NODE_R}
+              fill={col ? col+'28' : T.NODE_EMPTY}
+              stroke={col ? col : T.BORDER}
+              strokeWidth={isActive ? 2.5 : isAncestor ? 1.8 : 1.2}
+              style={isActive ? {filter:`drop-shadow(0 0 12px ${col}88)`} : {}}
+            />
+            {/* Leaf indicator dot */}
+            {n.leaf && (
+              <circle r={4}
+                fill={col ? col+'aa' : T.DIM}
+              />
+            )}
+            {/* Label */}
+            <text textAnchor="middle" dominantBaseline="middle"
+              fontFamily="Space Mono, monospace"
+              fontSize={n.depth===0?'14':n.depth===1?'12':'10'}
+              fontWeight={isActive||isAncestor ? '700' : '400'}
+              fill={col ? col : T.FG2}>
+              {n.label}
+            </text>
+            {/* pts label */}
+            {n.leaf && n.pts && (
+              <text y={NODE_R+14} textAnchor="middle"
+                fontFamily="Inter, sans-serif" fontSize="10"
+                fill={col ? col+'cc' : T.FG3}>
+                {n.pts} pts
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+function ActiveConnector({ qPos, rPos, action }) {
+  if (!qPos || !rPos) return null;
+  const col = action==='prune' ? RED : action==='compute' ? GREEN : BLUE;
+  const mx = (qPos.x+rPos.x)/2, my = Math.min(qPos.y,rPos.y)-32;
+  return (
+    <g>
+      <path d={`M ${qPos.x} ${qPos.y} Q ${mx} ${my} ${rPos.x} ${rPos.y}`}
+        fill="none" stroke={col} strokeWidth="2"
+        strokeDasharray={action==='prune'?'6 3':'none'}
+        opacity="0.7"
+        style={{filter:`drop-shadow(0 0 5px ${col}88)`}}/>
+      <circle cx={mx} cy={my} r={5} fill={col+'44'} stroke={col} strokeWidth="1.5"/>
+      {action==='prune'   && <text x={mx} y={my-12} textAnchor="middle" fontFamily="Space Mono,monospace" fontSize="13" fontWeight="700" fill={RED}>✗</text>}
+      {action==='compute' && <text x={mx} y={my-12} textAnchor="middle" fontFamily="Space Mono,monospace" fontSize="13" fontWeight="700" fill={GREEN}>✓</text>}
+    </g>
+  );
+}
+
+// ── Side panels ──────────────────────────────────────────────
+function StackPanel({ stack, action, T }) {
+  const col = action==='prune' ? RED : action==='compute' ? GREEN : BLUE;
+  return (
+    <div style={{ fontFamily:'Space Mono,monospace' }}>
+      <div style={{ fontSize:9, fontWeight:700, letterSpacing:'0.14em', color:T.FG3, marginBottom:8, textTransform:'uppercase' }}>DFS Stack</div>
+      {stack.length===0
+        ? <div style={{ fontSize:10, color:T.FG3, padding:'6px 10px', border:`1px dashed ${T.BORDER}`, borderRadius:4 }}>(empty)</div>
+        : stack.map(([q,r],i) => (
+          <div key={i} style={{
+            fontSize:10, padding:'5px 10px', borderRadius:4, marginBottom:4,
+            background: i===0 ? col+'1a' : 'transparent',
+            border: `1px solid ${i===0 ? col : T.BORDER}`,
+            color: i===0 ? col : T.FG2,
+            display:'flex', justifyContent:'space-between', alignItems:'center',
+          }}>
+            <span>({q}, {r})</span>
+            {i===0 && <span style={{ fontSize:9, opacity:0.7 }}>← top</span>}
+          </div>
+        ))
+      }
+    </div>
+  );
+}
+
+function ResultsPanel({ results, T }) {
+  return (
+    <div style={{ fontFamily:'Space Mono,monospace' }}>
+      <div style={{ fontSize:9, fontWeight:700, letterSpacing:'0.14em', color:T.FG3, marginBottom:8, textTransform:'uppercase' }}>Computed</div>
+      {results.length===0
+        ? <div style={{ fontSize:10, color:T.FG3 }}>—</div>
+        : results.map(([q,r],i) => (
+          <div key={i} style={{ fontSize:10, color:GREEN2, padding:'3px 0', lineHeight:1.4 }}>✓ ({q}, {r})</div>
+        ))
+      }
+    </div>
+  );
+}
+
+function DescPanel({ description, action, T }) {
+  const col = action==='prune' ? RED : action==='compute' ? GREEN : action==='done' ? GREEN2 : BLUE;
+  return (
+    <div>
+      {description.map((line,i) => {
+        if (line.style==='title') return (
+          <div key={i} style={{ fontSize:15, fontWeight:700, color:col, marginBottom:8, letterSpacing:'-0.01em', lineHeight:1.25 }}>{line.text}</div>
+        );
+        if (line.style==='mono') return (
+          <div key={i} style={{ fontFamily:'Space Mono,monospace', fontSize:10, color:T.FG2, background:T.CODE_BG, border:`1px solid ${T.BORDER}`, borderRadius:4, padding:'8px 10px', marginTop:8, lineHeight:1.7, wordBreak:'break-word' }}>{line.text}</div>
+        );
+        if (line.style==='success') return (
+          <div key={i} style={{ fontSize:12, fontWeight:600, color:GREEN2, marginTop:5 }}>{line.text}</div>
+        );
+        if (line.style==='prune') return (
+          <div key={i} style={{ fontSize: i===0?15:12, fontWeight: i===0?700:600, color:RED, marginTop: i===0?0:5, letterSpacing: i===0?'-0.01em':'0', marginBottom: i===0?8:0, lineHeight:1.25 }}>{line.text}</div>
+        );
+        return <div key={i} style={{ fontSize:12.5, color:T.FG2, lineHeight:1.65, marginBottom:5 }}>{line.text}</div>;
+      })}
+    </div>
+  );
+}
+
+// ── App ──────────────────────────────────────────────────────
+const App = () => {
+  const [step, setStep]     = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [dark, setDark]     = useState(true);
+  const timer = useRef(null);
+  const TOTAL = STEPS.length;
+  const T = mkTheme(dark);
+
+  useEffect(() => { document.body.style.background = T.BG; }, [dark]);
+
+  useEffect(() => {
+    if (playing) {
+      timer.current = setInterval(() => {
+        setStep(s => { if (s>=TOTAL-1){ setPlaying(false); return s; } return s+1; });
+      }, 2400);
+    }
+    return () => clearInterval(timer.current);
+  }, [playing]);
+
+  const prev   = () => { setPlaying(false); setStep(s=>Math.max(0,s-1)); };
+  const next   = () => { setPlaying(false); setStep(s=>Math.min(TOTAL-1,s+1)); };
+  const toggle = () => { if(step>=TOTAL-1){setStep(0);setPlaying(true);}else setPlaying(p=>!p); };
+
+  const cur = STEPS[step];
+
+  // SVG layout — two trees, side by side, vertically centred
+  // Each tree: 4 leaf nodes, colW=88, so treeW = 3*88 = 264
+  // Total SVG: padding + treeW + gap + treeW + padding
+  const TREE_W = 3 * COL_W;  // 264
+  const PAD    = 40;
+  const GAP    = 80;
+  const SVG_W  = PAD + TREE_W + GAP + TREE_W + PAD;  // 688
+  const SVG_H  = 2 * ROW_H + 90;
+  const TREE_Y = 52;
+
+  const qPos = treeLayout(Q_NODES, 0);
+  const rPos = treeLayout(R_NODES, 0);
+
+  const Q_TX = PAD;
+  const R_TX = PAD + TREE_W + GAP;
+
+  // Absolute coords for connector
+  const qActive = cur.qNode ? { x: qPos[cur.qNode].x + Q_TX, y: qPos[cur.qNode].y + TREE_Y } : null;
+  const rActive = cur.rNode ? { x: rPos[cur.rNode].x + R_TX, y: rPos[cur.rNode].y + TREE_Y } : null;
+
+  const actionColor = cur.action==='prune' ? RED : cur.action==='compute' ? GREEN : cur.action==='done' ? GREEN2 : BLUE;
+
+  const btnBase = { fontFamily:'Space Mono,monospace', fontSize:10, fontWeight:700, padding:'7px 14px', borderRadius:4, border:`1px solid ${T.BORDER}`, background:T.BGPANEL, color:T.FG2, cursor:'pointer', transition:'all 120ms' };
+
+  return (
+    <div style={{ background:T.BG, height:'100vh', color:T.FG, fontFamily:'Inter,sans-serif', display:'flex', flexDirection:'column', padding:'20px 24px 24px', userSelect:'none', transition:'background 200ms', overflow:'hidden' }}>
+
+      {/* ── Header ─────────────────────────────────── */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16, paddingBottom:14, borderBottom:`1px solid ${T.BORDER}` }}>
+        <div>
+          <div style={{ fontFamily:'Space Mono,monospace', fontSize:9, letterSpacing:'0.16em', color:T.FG3, marginBottom:3, textTransform:'uppercase' }}>JuliaGeo · SpatialTreeInterface.jl</div>
+          <div style={{ fontSize:17, fontWeight:700, letterSpacing:'-0.02em', color:T.FG }}>Dual-Tree Depth-First Search</div>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <button onClick={()=>setDark(d=>!d)} style={{ ...btnBase, display:'flex', alignItems:'center', gap:6 }}>
+            {dark
+              ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+              : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            }
+            {dark?'LIGHT':'DARK'}
+          </button>
+          <div style={{ fontFamily:'Space Mono,monospace', fontSize:10, color:T.FG3 }}>{step+1}/{TOTAL}</div>
+        </div>
+      </div>
+
+      {/* ── Main 3-column body ──────────────────────── */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 320px', gap:16, flex:'1 1 0', minHeight:0 }}>
+
+        {/* ── Left: trees + stack ─────────────────── */}
+        <div style={{ display:'flex', flexDirection:'column', gap:10, minHeight:0, flex:'1 1 0' }}>
+
+          {/* Trees SVG */}
+          <div style={{ background:T.BGCARD, border:`1px solid ${T.BORDER}`, borderRadius:8, flex:'1 1 0', minHeight:0, overflow:'hidden' }}>
+            <svg width="100%" height="100%" viewBox={`0 0 ${SVG_W} ${SVG_H + TREE_Y + 20}`} preserveAspectRatio="xMidYMid meet" style={{ display:'block' }}>
+              <rect width={SVG_W} height={SVG_H+TREE_Y+20} fill={T.BGCARD}/>
+
+              {/* Connector arc */}
+              <ActiveConnector qPos={qActive} rPos={rActive} action={cur.action}/>
+
+              {/* Q tree */}
+              <g transform={`translate(${Q_TX},${TREE_Y})`}>
+                <TreeSVG nodes={Q_NODES} positions={qPos}
+                  activeId={cur.qNode} step={step} action={cur.action} results={cur.results}
+                  T={T} treeColor={BLUE}/>
+              </g>
+
+              {/* R tree */}
+              <g transform={`translate(${R_TX},${TREE_Y})`}>
+                <TreeSVG nodes={R_NODES} positions={rPos}
+                  activeId={cur.rNode} step={step} action={cur.action} results={cur.results}
+                  T={T} treeColor={PURPLE}/>
+              </g>
+
+              {/* Divider */}
+              <line x1={Q_TX+TREE_W+GAP/2} y1={TREE_Y-20}
+                    x2={Q_TX+TREE_W+GAP/2} y2={SVG_H+TREE_Y+10}
+                stroke={T.BORDER} strokeWidth="1" strokeDasharray="4 4"/>
+            </svg>
+          </div>
+
+          {/* Stack + Results row */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            <div style={{ background:T.BGPANEL, border:`1px solid ${T.BORDER}`, borderRadius:6, padding:'14px 16px' }}>
+              <StackPanel stack={cur.stack} action={cur.action} T={T}/>
+            </div>
+            <div style={{ background:T.BGPANEL, border:`1px solid ${T.BORDER}`, borderRadius:6, padding:'14px 16px', overflowY:'auto', maxHeight:200 }}>
+              <ResultsPanel results={cur.results} T={T}/>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Right: description + controls ──────── */}
+        <div style={{ display:'flex', flexDirection:'column', gap:10, minHeight:0, flex:'1 1 0' }}>
+
+          {/* Action badge */}
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <div style={{ fontFamily:'Space Mono,monospace', fontSize:10, fontWeight:700, letterSpacing:'0.14em', color:actionColor, background:actionColor+'1a', border:`1px solid ${actionColor+'44'}`, borderRadius:3, padding:'4px 10px' }}>
+              {cur.action.toUpperCase()}
+            </div>
+            {/* Progress bar */}
+            <div style={{ flex:1, height:3, background:T.BORDER, borderRadius:2, overflow:'hidden' }}>
+              <div style={{ width:`${(step/(TOTAL-1))*100}%`, height:'100%', background:actionColor, borderRadius:2, transition:'width 300ms ease' }}/>
+            </div>
+          </div>
+
+          {/* Description */}
+          <div style={{ background:T.BGCARD, border:`1px solid ${T.BORDER}`, borderRadius:8, padding:'18px 20px', flex:'1 1 auto', overflowY:'auto' }}>
+            <DescPanel description={cur.description} action={cur.action} T={T}/>
+          </div>
+
+          {/* Complexity */}
+          <div style={{ background:T.BGPANEL, border:`1px solid ${T.BORDER}`, borderRadius:6, padding:'12px 14px' }}>
+            <div style={{ fontFamily:'Space Mono,monospace', fontSize:8.5, letterSpacing:'0.14em', color:T.FG3, marginBottom:7, textTransform:'uppercase' }}>Complexity</div>
+            <div style={{ fontSize:12, color:T.FG2, lineHeight:1.7 }}>
+              Naïve: <span style={{color:RED,fontFamily:'Space Mono,monospace'}}>O(n·m)</span><br/>
+              Dual-tree: <span style={{color:GREEN,fontFamily:'Space Mono,monospace'}}>O((n+m) log(n+m))</span><br/>
+              Prune if: <span style={{color:AMBER,fontFamily:'Space Mono,monospace'}}>min_dist(q,r) {'>'} θ</span>
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={prev} disabled={step===0} style={{ ...btnBase, opacity:step===0?0.35:1, cursor:step===0?'not-allowed':'pointer' }}>← Prev</button>
+            <button onClick={toggle} style={{ ...btnBase, flex:'1 1 auto', background:playing?AMBER+'1a':GREEN+'1a', borderColor:playing?AMBER:GREEN, color:playing?AMBER:GREEN, fontWeight:700 }}>
+              {playing ? '⏸ Pause' : step>=TOTAL-1 ? '↺ Restart' : '▶ Play'}
+            </button>
+            <button onClick={next} disabled={step>=TOTAL-1} style={{ ...btnBase, opacity:step>=TOTAL-1?0.35:1, cursor:step>=TOTAL-1?'not-allowed':'pointer' }}>Next →</button>
+          </div>
+
+          {/* Step dots */}
+          <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+            {STEPS.map((s,i) => {
+              const c = s.action==='prune'?RED : s.action==='compute'?GREEN : s.action==='done'?GREEN2 : BLUE;
+              return <button key={i} onClick={()=>{setPlaying(false);setStep(i);}} style={{ width:9, height:9, borderRadius:'50%', padding:0, background:i===step?c:(i<step?c+'66':T.BORDER), border:'none', cursor:'pointer', transition:'background 200ms' }}/>;
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

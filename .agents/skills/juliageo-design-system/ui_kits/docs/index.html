@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<!-- @dsCard group="UI Kit — Docs" name="Docs UI Kit" subtitle="GeometryOps.jl docs site — home, sidebar, content, API pages" viewport="1280x680" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GeometryOps.jl Docs — JuliaGeo</title>
+<link rel="icon" href="../../assets/favicon.ico">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; }
+  body { font-family: 'Inter', sans-serif; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #dee2e6; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="Header.jsx"></script>
+<script type="text/babel" src="Sidebar.jsx"></script>
+<script type="text/babel" src="ContentPage.jsx"></script>
+<script type="text/babel" src="HomePage.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// API page content
+const ApiPage = ({ dark }) => {
+  const s = {
+    wrap: { maxWidth: 860, padding: '40px 48px 80px', fontFamily: 'Inter, sans-serif' },
+    h1: { fontSize: 36, fontWeight: 700, color: dark ? '#f8f9fa' : '#212529', letterSpacing: '-0.025em', marginBottom: 8, lineHeight: 1.15 },
+    sub: { fontSize: 15, color: dark ? 'hsl(220,8%,56%)' : '#6c757d', marginBottom: 36, lineHeight: 1.6 },
+    section: { marginBottom: 32 },
+    h2: { fontSize: 20, fontWeight: 600, color: dark ? '#f8f9fa' : '#212529', marginBottom: 16, paddingBottom: 10, borderBottom: `1px solid ${dark ? 'hsl(220,12%,23%)' : '#e9ecef'}` },
+    table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
+    th: { textAlign: 'left', padding: '8px 12px', background: dark ? 'hsl(220,14%,17%)' : '#f8f9fa', color: dark ? '#adb5bd' : '#6c757d', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', borderBottom: `1px solid ${dark ? 'hsl(220,12%,23%)' : '#e9ecef'}` },
+    td: { padding: '10px 12px', borderBottom: `1px solid ${dark ? 'hsl(220,12%,23%)' : '#e9ecef'}`, color: dark ? '#adb5bd' : '#495057', lineHeight: 1.5, verticalAlign: 'top' },
+    fn: { fontFamily: 'Space Mono, monospace', color: dark ? '#7dd3fc' : '#2c7a1e', fontSize: '0.95em' },
+  };
+  const sections = [
+    {
+      title: 'Geometry Predicates',
+      rows: [
+        ['equals(a, b)', 'Check if two geometries are equal'],
+        ['intersects(a, b)', 'Check if two geometries intersect'],
+        ['contains(a, b)', 'Check if a contains b'],
+        ['crosses(a, b)', 'Check if two geometries cross'],
+        ['within(a, b)', 'Check if a is within b'],
+        ['disjoint(a, b)', 'Check if two geometries are disjoint'],
+      ]
+    },
+    {
+      title: 'Measurements',
+      rows: [
+        ['area(geom)', 'Calculate the area of a geometry'],
+        ['signed_area(geom)', 'Calculate signed area (positive = CCW)'],
+        ['distance(a, b)', 'Calculate minimum distance between geometries'],
+        ['centroid(geom)', 'Return the centroid point of a geometry'],
+        ['extent(geom)', 'Return the bounding box of a geometry'],
+      ]
+    },
+    {
+      title: 'Set Operations',
+      rows: [
+        ['intersection(a, b; target)', 'Return the intersection of two geometries'],
+        ['difference(a, b; target)', 'Return a minus b'],
+        ['union(a, b; target)', 'Return the union of two geometries'],
+      ]
+    },
+    {
+      title: 'Transformations',
+      rows: [
+        ['apply(f, target, geom)', 'Apply function f to target traits in geom'],
+        ['applyreduce(f, op, target, geom)', 'Apply and reduce over geometry'],
+        ['simplify(geom; ratio, tol)', 'Simplify geometry using Visvalingam–Whyatt'],
+        ['segmentize(geom; max_distance)', 'Densify geometry along edges'],
+        ['reproject(geom, source_crs, target_crs)', 'Reproject geometry between CRS'],
+      ]
+    },
+  ];
+  return (
+    <div style={s.wrap}>
+      <h1 style={s.h1}>API Reference</h1>
+      <p style={s.sub}>Complete function reference for GeometryOps.jl. All functions accept any GeoInterface.jl-compatible geometry.</p>
+      {sections.map(sec => (
+        <div key={sec.title} style={s.section}>
+          <h2 style={s.h2}>{sec.title}</h2>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={{...s.th, width: '45%'}}>Function</th>
+                <th style={s.th}>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sec.rows.map(([fn, desc]) => (
+                <tr key={fn}>
+                  <td style={s.td}><span style={s.fn}>{fn}</span></td>
+                  <td style={s.td}>{desc}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// Intro page
+const IntroPage = ({ dark, onNav }) => {
+  const s = {
+    wrap: { maxWidth: 860, padding: '40px 48px 80px', fontFamily: 'Inter, sans-serif' },
+    h1: { fontSize: 36, fontWeight: 700, color: dark ? '#f8f9fa' : '#212529', letterSpacing: '-0.025em', marginBottom: 20, lineHeight: 1.15 },
+    h2: { fontSize: 22, fontWeight: 600, color: dark ? '#f8f9fa' : '#212529', marginBottom: 12, marginTop: 36, paddingTop: 28, borderTop: `1px solid ${dark ? 'hsl(220,12%,23%)' : '#e9ecef'}` },
+    p: { fontSize: 15, color: dark ? '#adb5bd' : '#495057', lineHeight: 1.7, marginBottom: 14 },
+    ul: { paddingLeft: 20, color: dark ? '#adb5bd' : '#495057', fontSize: 15, lineHeight: 1.8 },
+  };
+  return (
+    <div style={s.wrap}>
+      <h1 style={s.h1}>Introduction</h1>
+      <p style={s.p}>GeometryOps.jl is a package for geometric calculations on (primarily 2D) geometries. The driving idea is to unify all disparate packages for geometric calculations in Julia, and make them GeoInterface.jl-compatible.</p>
+      <p style={s.p}>Most use cases are driven by GIS and similar Earth data workflows, but methods are always general to any coordinate space.</p>
+
+      <h2 style={s.h2}>How to navigate the docs</h2>
+      <p style={s.p}>GeometryOps docs are divided into three sections:</p>
+      <ul style={s.ul}>
+        <li><strong>Tutorials</strong> — Learn fundamental concepts and how to perform operations</li>
+        <li><strong>Explanations</strong> — Deep dives into how GeometryOps works internally</li>
+        <li><strong>Source code</strong> — Annotated source with examples via literate programming</li>
+      </ul>
+
+      <h2 style={s.h2}>Installation</h2>
+      <pre style={{background:'hsl(220,20%,9%)',color:'#d4d4d4',fontFamily:'Space Mono, monospace',fontSize:13,lineHeight:1.65,padding:'20px 24px',borderRadius:8,border:'1px solid hsl(220,12%,23%)',margin:'0 0 16px',overflowX:'auto'}}>
+        <code dangerouslySetInnerHTML={{__html:`<span style="color:#91dd33">using</span> Pkg\nPkg.<span style="color:#7dd3fc">add</span>(<span style="color:#fbbf24">"GeometryOps"</span>)`}} />
+      </pre>
+      <p style={s.p}>Or from the Julia REPL, press <code style={{fontFamily:'Space Mono,monospace',fontSize:'0.875em',background:dark?'hsl(220,14%,17%)':'#f1f3f5',color:dark?'#f472b6':'#CB3C33',padding:'0.15em 0.4em',borderRadius:3,border:`1px solid ${dark?'hsl(220,12%,23%)':'#e9ecef'}`}}>]</code> to enter Pkg mode, then type <code style={{fontFamily:'Space Mono,monospace',fontSize:'0.875em',background:dark?'hsl(220,14%,17%)':'#f1f3f5',color:dark?'#f472b6':'#CB3C33',padding:'0.15em 0.4em',borderRadius:3,border:`1px solid ${dark?'hsl(220,12%,23%)':'#e9ecef'}`}}>add GeometryOps</code>.</p>
+    </div>
+  );
+};
+
+// Main App
+const App = () => {
+  const [dark, setDark] = useState(false);
+  const [page, setPage] = useState('home');
+
+  const bg = dark ? 'hsl(220,20%,9%)' : '#ffffff';
+  const contentBg = dark ? 'hsl(220,20%,9%)' : '#ffffff';
+
+  const renderPage = () => {
+    if (page === 'home') return <HomePage dark={dark} onNav={setPage} />;
+    if (page === 'api')  return <ApiPage dark={dark} />;
+    if (page === 'intro' || page === 'introduction') return <IntroPage dark={dark} onNav={setPage} />;
+    return <ContentPage dark={dark} />;
+  };
+
+  return (
+    <div style={{ background: bg, minHeight: '100vh' }}>
+      <Header
+        darkMode={dark}
+        onToggleDark={() => setDark(d => !d)}
+        currentPage={page}
+        onNav={setPage}
+      />
+      {page !== 'home' ? (
+        <div style={{ display: 'flex', paddingTop: 56 }}>
+          <Sidebar darkMode={dark} currentPage={page} onNav={setPage} />
+          <main style={{ marginLeft: 260, flex: 1, minHeight: 'calc(100vh - 56px)', background: contentBg }}>
+            {renderPage()}
+          </main>
+        </div>
+      ) : (
+        <div style={{ paddingTop: 56, background: contentBg, minHeight: 'calc(100vh - 56px)' }}>
+          {renderPage()}
+        </div>
+      )}
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

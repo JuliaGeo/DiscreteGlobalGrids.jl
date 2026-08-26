@@ -1,0 +1,14 @@
+node_modules/
+dist/
+exports/
+.slidev/
+*.log
+.DS_Store
+
+# Rale Grotesk is licensed, not redistributable. Without the OTFs the
+# display stack falls back to Inter (see --dy-font-display in styles/tokens.css).
+public/fonts/RaleGrotesk-*
+
+# Exported figures — ~100 MB of generated WGLMakie pages.
+# Rebuild with: julia --project figures/01-what-is_dggs-series.jl
+figures/html/

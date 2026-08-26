@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Type" name="Monospace & Code" subtitle="Space Mono — inline code and dark code blocks" viewport="700x260" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; padding: 20px 24px; font-family: var(--font-sans); background: #fff; }
+  .block { margin-bottom: 16px; }
+  .label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gray-400); margin-bottom: 6px; }
+  .inline-example { font-size: 15px; line-height: 1.7; color: var(--gray-700); }
+  .inline-example code { font-family: var(--font-mono); font-size: 0.875em; background: var(--gray-100); color: #CB3C33; padding: 0.15em 0.4em; border-radius: 3px; border: 1px solid var(--gray-200); }
+  pre.dark { background: hsl(220,20%,9%); color: #d4d4d4; padding: 16px 20px; border-radius: 8px; font-family: var(--font-mono); font-size: 13px; line-height: 1.65; margin:0; overflow-x:auto; }
+  .kw { color: #91dd33; }
+  .fn { color: #7dd3fc; }
+  .cm { color: #6c757d; font-style:italic; }
+  .st { color: #fbbf24; }
+  .nu { color: #f9a8d4; }
+</style>
+</head>
+<body>
+  <div class="block">
+    <div class="label">Inline code — Inter body + Space Mono</div>
+    <div class="inline-example">Use <code>GI.geomtrait(geom)</code> to check a geometry's type, or call <code>GO.intersects(a, b)</code> to test intersection.</div>
+  </div>
+  <div class="block">
+    <div class="label">Code block — Space Mono 13px on dark</div>
+    <pre class="dark"><span class="kw">using</span> GeometryOps <span class="kw">as</span> GO
+<span class="kw">using</span> GeoInterface <span class="kw">as</span> GI
+
+<span class="cm"># Create two polygons and compute their intersection</span>
+poly1 = GI.Polygon([[(<span class="nu">0</span>, <span class="nu">0</span>), (<span class="nu">1</span>, <span class="nu">0</span>), (<span class="nu">1</span>, <span class="nu">1</span>), (<span class="nu">0</span>, <span class="nu">1</span>), (<span class="nu">0</span>, <span class="nu">0</span>)]])
+poly2 = GI.Polygon([[(<span class="nu">0.5</span>, <span class="nu">0</span>), (<span class="nu">1.5</span>, <span class="nu">0</span>), (<span class="nu">1.5</span>, <span class="nu">1</span>), (<span class="nu">0.5</span>, <span class="nu">1</span>), (<span class="nu">0.5</span>, <span class="nu">0</span>)]])
+
+result = GO.<span class="fn">intersection</span>(poly1, poly2; target = GI.PolygonTrait())
+GO.<span class="fn">area</span>(result)  <span class="cm"># → 0.5</span></pre>
+  </div>
+</body></html>

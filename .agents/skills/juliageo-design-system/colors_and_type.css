@@ -1,0 +1,278 @@
+/* ============================================================
+   JuliaGeo Design System — Colors & Typography
+   Generated: April 2026
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
+/* ============================================================
+   COLOR TOKENS — Base Palette
+   ============================================================ */
+:root {
+  /* Julia brand colors */
+  --julia-green:       #389826;
+  --julia-blue:        #4063D8;
+  --julia-purple:      #9558B2;
+  --julia-red:         #CB3C33;
+
+  /* Green scale (primary brand) */
+  --green-50:          #f0faea;
+  --green-100:         #dcf5d7;
+  --green-200:         #b6ecab;
+  --green-300:         #7dda71;
+  --green-400:         #4dc43d;
+  --green-500:         #389826;  /* brand primary */
+  --green-600:         #2c7a1e;
+  --green-700:         #205c15;
+  --green-800:         #163d0e;
+  --green-900:         #0c2008;
+
+  /* Neutral / Gray scale */
+  --gray-0:            #ffffff;
+  --gray-50:           #f8f9fa;
+  --gray-100:          #f1f3f5;
+  --gray-200:          #e9ecef;
+  --gray-300:          #dee2e6;
+  --gray-400:          #ced4da;
+  --gray-500:          #adb5bd;
+  --gray-600:          #6c757d;
+  --gray-700:          #495057;
+  --gray-800:          #343a40;
+  --gray-900:          #212529;
+  --gray-950:          #141618;
+
+  /* Dark mode surface scale (hsl 220) */
+  --dark-bg:           hsl(220, 20%, 9%);
+  --dark-bg-soft:      hsl(220, 16%, 13%);
+  --dark-bg-mute:      hsl(220, 14%, 17%);
+  --dark-border:       hsl(220, 12%, 23%);
+  --dark-fg-dim:       hsl(220, 8%, 56%);
+
+  /* Accent colors */
+  --blue-500:          #4063D8;
+  --blue-100:          #d4dcf9;
+  --purple-500:        #9558B2;
+  --purple-100:        #eadaf2;
+  --red-500:           #CB3C33;
+  --red-100:           #f7d5d3;
+
+  /* ============================================================
+     SEMANTIC COLOR TOKENS
+     ============================================================ */
+
+  /* Brand */
+  --color-brand:           var(--green-500);
+  --color-brand-hover:     var(--green-600);
+  --color-brand-light:     var(--green-100);
+  --color-brand-dim:       var(--green-50);
+
+  /* Text */
+  --color-fg-1:        var(--gray-900);   /* primary text */
+  --color-fg-2:        var(--gray-700);   /* secondary text */
+  --color-fg-3:        var(--gray-500);   /* muted / captions */
+  --color-fg-invert:   var(--gray-0);     /* text on dark bg */
+  --color-fg-brand:    var(--green-600);  /* brand-colored text */
+  --color-fg-code:     var(--red-500);    /* inline code */
+
+  /* Backgrounds */
+  --color-bg:          var(--gray-0);
+  --color-bg-subtle:   var(--gray-50);
+  --color-bg-mute:     var(--gray-100);
+  --color-bg-code:     var(--gray-100);
+  --color-bg-brand:    var(--green-500);
+
+  /* Borders */
+  --color-border:      var(--gray-200);
+  --color-border-strong: var(--gray-400);
+  --color-border-brand: var(--green-300);
+
+  /* Feedback */
+  --color-success:     var(--green-500);
+  --color-warning:     #b45309;   /* darker amber — high contrast on light bg */
+  --color-warning-bg:  #fef3c7;
+  --color-warning-fg:  #78350f;
+  --color-error:       var(--red-500);
+  --color-info:        var(--blue-500);
+
+  /* Link */
+  --color-link:        var(--green-600);
+  --color-link-hover:  var(--green-500);
+
+  /* ============================================================
+     TYPOGRAPHY TOKENS
+     ============================================================ */
+
+  /* Font families */
+  --font-sans:         'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:         'Space Mono', Menlo, Monaco, Consolas, 'Courier New', monospace;
+
+  /* Font sizes — fluid type scale */
+  --text-xs:           0.75rem;    /* 12px */
+  --text-sm:           0.875rem;   /* 14px */
+  --text-base:         1rem;       /* 16px */
+  --text-md:           1.125rem;   /* 18px */
+  --text-lg:           1.25rem;    /* 20px */
+  --text-xl:           1.5rem;     /* 24px */
+  --text-2xl:          1.875rem;   /* 30px */
+  --text-3xl:          2.25rem;    /* 36px */
+  --text-4xl:          3rem;       /* 48px */
+  --text-5xl:          4rem;       /* 64px */
+
+  /* Font weights */
+  --weight-light:      300;
+  --weight-regular:    400;
+  --weight-medium:     500;
+  --weight-semibold:   600;
+  --weight-bold:       700;
+
+  /* Line heights */
+  --leading-tight:     1.2;
+  --leading-snug:      1.35;
+  --leading-normal:    1.5;
+  --leading-relaxed:   1.65;
+  --leading-loose:     1.8;
+
+  /* Letter spacing */
+  --tracking-tight:    -0.025em;
+  --tracking-normal:   0em;
+  --tracking-wide:     0.05em;
+  --tracking-widest:   0.12em;
+
+  /* ============================================================
+     SPACING TOKENS
+     ============================================================ */
+  --space-1:   0.25rem;   /*  4px */
+  --space-2:   0.5rem;    /*  8px */
+  --space-3:   0.75rem;   /* 12px */
+  --space-4:   1rem;      /* 16px */
+  --space-5:   1.25rem;   /* 20px */
+  --space-6:   1.5rem;    /* 24px */
+  --space-8:   2rem;      /* 32px */
+  --space-10:  2.5rem;    /* 40px */
+  --space-12:  3rem;      /* 48px */
+  --space-16:  4rem;      /* 64px */
+  --space-20:  5rem;      /* 80px */
+  --space-24:  6rem;      /* 96px */
+
+  /* ============================================================
+     BORDER RADIUS
+     ============================================================ */
+  --radius-sm:   3px;
+  --radius-md:   5px;
+  --radius-lg:   8px;
+  --radius-xl:   12px;
+  --radius-full: 9999px;
+
+  /* ============================================================
+     SHADOWS
+     ============================================================ */
+  --shadow-xs:  0 1px 2px rgba(0,0,0,0.07);
+  --shadow-sm:  0 1px 4px rgba(0,0,0,0.09), 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-md:  0 4px 12px rgba(0,0,0,0.10), 0 2px 4px rgba(0,0,0,0.06);
+  --shadow-lg:  0 8px 24px rgba(0,0,0,0.12), 0 4px 8px rgba(0,0,0,0.06);
+  --shadow-xl:  0 16px 48px rgba(0,0,0,0.15), 0 8px 16px rgba(0,0,0,0.07);
+
+  /* ============================================================
+     TRANSITIONS
+     ============================================================ */
+  --transition-fast:   150ms ease;
+  --transition-base:   220ms ease;
+  --transition-slow:   380ms ease;
+}
+
+/* ============================================================
+   SEMANTIC ELEMENT STYLES
+   ============================================================ */
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--color-fg-1);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-sans);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-fg-1);
+  text-wrap: balance;
+}
+
+h1 { font-size: var(--text-4xl); font-weight: var(--weight-bold); }
+h2 { font-size: var(--text-3xl); }
+h3 { font-size: var(--text-2xl); }
+h4 { font-size: var(--text-xl); }
+h5 { font-size: var(--text-lg); font-weight: var(--weight-medium); }
+h6 { font-size: var(--text-base); font-weight: var(--weight-medium); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+
+p {
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  color: var(--color-fg-2);
+  text-wrap: pretty;
+}
+
+a {
+  color: var(--color-link);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+a:hover { color: var(--color-link-hover); text-decoration: underline; }
+
+code, kbd, samp {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--color-bg-code);
+  color: var(--color-fg-code);
+  padding: 0.15em 0.4em;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+}
+
+pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--dark-bg);
+  color: var(--gray-200);
+  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  overflow-x: auto;
+  line-height: var(--leading-relaxed);
+}
+
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+blockquote {
+  border-left: 3px solid var(--color-brand);
+  padding-left: var(--space-4);
+  color: var(--color-fg-2);
+  font-style: italic;
+  margin: 0;
+}
+
+small, .text-sm { font-size: var(--text-sm); }
+.text-xs        { font-size: var(--text-xs); }
+.text-mono      { font-family: var(--font-mono); }
+.text-muted     { color: var(--color-fg-3); }
+.text-brand     { color: var(--color-brand); }
+
+/* Labels / badges */
+.label {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--color-fg-3);
+}

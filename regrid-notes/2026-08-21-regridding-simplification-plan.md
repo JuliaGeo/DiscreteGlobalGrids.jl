@@ -203,9 +203,11 @@ Landed cards, with the commit each one shipped as:
 | L2 | `da897f5` | Normalize lazy DiskArrays chunk metadata |
 | P5 | `2744b85` | Answer point queries from Copernicus DEM rows |
 | P4 | `2634061` | Interpolate on a DGGS grid's own dual cells |
+| poles | `d66d4d7` | Take the nearest post in a Copernicus DEM pole region |
+| P6 | `1b17f8b` | Choose the production regridding semantics by name |
 
 B1 and B2 are upstream commits in GeometryOps and ConservativeRegridding;
-`93e836d` is the commit that pinned them and records their SHAs. P0-P5 are the
+`93e836d` is the commit that pinned them and records their SHAs. P0-P6 and the polar policy are the
 barycentric plan's own cards, landed here because Phase 9 admits them.
 
 Evidence:

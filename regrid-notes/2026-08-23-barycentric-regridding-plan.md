@@ -544,7 +544,15 @@ Patch/MLS and the optional support query start only after P3-P5 measurements.
   triangles and Q1 trapezoids at band edges from exact integer arithmetic,
   rims on holdings, poles `WeightsDegenerate` with the polar policy unchosen.
   `regrid-notes/2026-08-26-p5-copdem-point-stencils.md`.
-- P6 next.
+- P6 `1b17f8b` — production opt-in and documentation: `CONFIG.method` in the
+  Copernicus DEM run selects the area method, the barycentric point method or
+  either nearest path with the missing policy each needs, the store records
+  the name it was written under, `benchmark/copdem_semantics.jl` compares the
+  readings, the source-space point hooks are `public`, and the documentation
+  says which method a given product wants.
+  `regrid-notes/2026-08-26-p6-point-production.md`.
+- Every card of this plan is closed. The polar policy is the nearest post,
+  named on the method and on by default (`d66d4d7`).
 
 ### P0 — baseline and instrumentation
 

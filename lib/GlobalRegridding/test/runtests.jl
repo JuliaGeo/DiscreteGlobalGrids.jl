@@ -111,5 +111,6 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
     include("test_executor.jl")
     include("test_chunkgraph.jl")
     include("test_lazy.jl")
+    include("test_directnearest.jl")
     include("test_integration.jl")
 end

@@ -194,8 +194,8 @@ function plan_regrid(data; to, from = nothing,
         "is on $(manifold(src_space)) and the destination on $(manifold(dst_space))"))
     if !lazy
         _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)
-        return DirectPlan(method, missingpolicy, dst_space, src_space,
-            wholeblock(method, dst_space, src_space), missingval, sampling)
+        return eagerplan(method, missingpolicy, dst_space, src_space,
+            missingval, sampling)
     end
     sampling === nothing || throw(ArgumentError(
         "a lazy regrid returns an unlabelled disk array, so there is no lookup " *

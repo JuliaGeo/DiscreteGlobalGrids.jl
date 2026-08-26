@@ -64,7 +64,7 @@ const CONFIG = (
     ancestor    = 5,        # chunk root level
     source      = :synthetic, # :real (lazy AWS tiles) or :synthetic
     authalic    = true,     # compute on the WGS84 authalic geometry
-    method      = Symbol(get(ENV, "COPDEM_METHOD", "conservative")), # :conservative or :nearest
+    method      = Symbol(get(ENV, "COPDEM_METHOD", "conservative")), # :conservative, :nearest or :nearest-direct
     store       = get(ENV, "COPDEM_STORE",
                       "/home/asinghvi17/geo/scratch-stores/glo90-synthetic-authalic-phase1.zarr"),
     region      = nothing,  # nothing for the globe, or [(w, e, s, n), ...] boxes
@@ -122,7 +122,13 @@ one and passes the source value through unchanged.
 function regridmethod(config)
     config.method === :conservative && return DGG.Conservative()
     config.method === :nearest && return DGG.NearestCell()
-    return error("method must be :conservative or :nearest, got $(repr(config.method))")
+    # The weightless nearest spike: same stencil and same answers as `:nearest`,
+    # with no weight assembly on either the eager or the chunked route.
+    config.method === Symbol("nearest-direct") && return DGG.DirectNearest()
+    config.method === :nearest_direct && return DGG.DirectNearest()
+    return error(
+        "method must be :conservative, :nearest or :nearest-direct, got " *
+        "$(repr(config.method))")
 end
 
 # ===========================================================================

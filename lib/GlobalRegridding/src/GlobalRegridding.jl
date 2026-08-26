@@ -61,6 +61,9 @@ include("plans.jl")
 include("executor.jl")
 include("lazy.jl")
 include("api.jl")
+# The weightless nearest-cell spike: it specializes `eagerplan` from `api.jl`
+# and `_readdestination!` from `lazy.jl`, so it comes after both.
+include("directnearest.jl")
 
 # Space interface
 export RegridSpace
@@ -76,6 +79,7 @@ export RasterGrid
 # Methods
 export AbstractRegriddingMethod
 export Conservative, NearestCell, BilinearPoint, BarycentricPoint
+export DirectNearest
 export buildweights!, supportradius
 
 # `build_weights!` and `support_radius` stay exported for the deprecation shims
@@ -90,6 +94,7 @@ export AbstractMissingPolicy, Weighted, Extensive
 # Plans
 export AbstractRegriddingPlan, WeightBlock
 export DirectPlan, ChunkedPlan, PerChunk, Spilled
+export NearestDirectPlan
 
 # The one chunk dependency relation a plan owns. Not exported: `dependencies`
 # is too generic a name to put in a user's namespace unqualified.

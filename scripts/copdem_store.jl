@@ -217,16 +217,28 @@ end
 Reopen the subzone store named by `config.store`, or create it if it is not
 there. One `Float32` layer, `elevation`, filled with `NaN`; one Zarr chunk per
 level-`config.ancestor` chunk, `capacity` cells wide.
+
+A new store records `config.method` as `regridding_method`, so a file says which
+semantics produced its elevations — area means, post samples, or the nearest
+post. Reopening one written under a different method is refused: one store holds
+one reading of the data. A store from before the attribute existed carries none
+and is accepted as it is.
 """
 function openstore(config, sys7, capacity;
         geometry_tag::Union{Nothing,String} = nothing)
     path = config.store
+    method_tag = String(config.method)
     if isdir(path)
         store = DGG.subzonestore(path)
         observed = get(store.group.attrs, "destination_geometry", nothing)
         observed == geometry_tag || error(
             "store destination_geometry is $(repr(observed)), expected " *
             "$(repr(geometry_tag)); refusing to mix spherical and authalic columns")
+        seen = get(store.group.attrs, "regridding_method", nothing)
+        seen === nothing || seen == method_tag || error(
+            "store regridding_method is $(repr(seen)), expected " *
+            "$(repr(method_tag)); refusing to mix two readings of the data in " *
+            "one store")
         say("store: reopened $path")
         return store
     end
@@ -239,6 +251,7 @@ function openstore(config, sys7, capacity;
     producerattrs = Dict{String,Any}(
         "title" => "Copernicus DEM GLO-$(config.res) ($sourcelabel) on IGEO7 level $(config.level)",
         "source" => sourcedescription,
+        "regridding_method" => method_tag,
         "created" => stamp())
     geometry_tag === nothing ||
         (producerattrs["destination_geometry"] = geometry_tag)

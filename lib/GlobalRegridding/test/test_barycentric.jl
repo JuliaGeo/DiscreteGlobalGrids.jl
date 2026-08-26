@@ -502,12 +502,24 @@ end
         @test isempty(row)
 
         # The method reports point sampling, so the shared builders put it on the
-        # point path, and only its name is public.
+        # point path.
         @test GR.outputsampling(BarycentricPoint()) === DD.Lookups.Points()
         @test Base.ispublic(GR, :BarycentricPoint)
+
+        # What a source space needs to answer point queries is public and
+        # closed: the three hooks, the two types they dispatch on and build,
+        # the basis kinds a cell names itself by, and the chart hook a space
+        # with no cell chart of its own answers.
+        @test all(Base.ispublic(GR, n) for n in
+                  (:hasdualcells, :dualcellat, :samplerstate, :Sampler, :DualCell,
+            :BasisKind, :Bilinear, :MeanValue, :chartat))
+
+        # Nothing else is. The row, the query and the coordinate kernels stay
+        # internal: a space replacing `weightsat!` whole is CopDEM's route, not
+        # a contract anyone outside may rely on yet.
         @test !any(Base.ispublic(GR, n) for n in
-                   (:WeightRow, :weightsat!, :sampler, :samplesites, :dualcellat,
-            :DualCell, :bilinearweights!, :meanvalueweights!, :hasdualcells,
+                   (:WeightRow, :weightsat!, :sampler, :samplesites, :nodecount,
+            :dualweights!, :bilinearweights!, :meanvalueweights!,
             :TangentChart, :chartpoint, :containspoint))
     end
 

@@ -64,7 +64,7 @@ const CONFIG = (
     ancestor    = 5,        # chunk root level
     source      = :synthetic, # :real (lazy AWS tiles) or :synthetic
     authalic    = true,     # compute on the WGS84 authalic geometry
-    method      = Symbol(get(ENV, "COPDEM_METHOD", "conservative")), # :conservative, :nearest or :nearest-direct
+    method      = Symbol(get(ENV, "COPDEM_METHOD", "conservative")), # :conservative, :point, :nearest or :nearest-direct
     store       = get(ENV, "COPDEM_STORE",
                       "/home/asinghvi17/geo/scratch-stores/glo90-synthetic-authalic-phase1.zarr"),
     region      = nothing,  # nothing for the globe, or [(w, e, s, n), ...] boxes
@@ -115,21 +115,48 @@ method's own `supportradius`, so the two must agree — a graph built at
 `Conservative`'s radius while the columns regrid with `NearestCell` would credit
 tiles no column asks for, and the reverse would leave real demands uncredited.
 
-`missingpolicy` is `Weighted(0.5)` for both methods, as `benchmark/copdem_nearest.jl`
-uses it: a nearest stencil is one weight of exactly 1.0, so the policy divides by
-one and passes the source value through unchanged.
+The missing policy is [`regridpolicy`](@ref)'s and belongs to the same choice:
+an area weight row is a spectrum a threshold cuts, a point row is complete or
+empty.
+
+`:conservative` gives every destination cell the coverage-normalised mean of the
+source pixels it overlaps, and is what every store written so far holds.
+`:point` gives it a sample at its own centroid, interpolated between the
+Copernicus posts around it: the faithful reading of posts, which are published
+at a coordinate rather than averaged over a footprint, and conservative of
+nothing. `:nearest` and `:nearest-direct` give it the nearest post alone.
 """
 function regridmethod(config)
     config.method === :conservative && return DGG.Conservative()
+    config.method === :point && return DGG.BarycentricPoint()
     config.method === :nearest && return DGG.NearestCell()
     # The weightless nearest spike: same stencil and same answers as `:nearest`,
     # with no weight assembly on either the eager or the chunked route.
     config.method === Symbol("nearest-direct") && return DGG.DirectNearest()
     config.method === :nearest_direct && return DGG.DirectNearest()
     return error(
-        "method must be :conservative, :nearest or :nearest-direct, got " *
-        "$(repr(config.method))")
+        "method must be :conservative, :point, :nearest or :nearest-direct, " *
+        "got $(repr(config.method))")
 end
+
+"""
+    regridpolicy(config) -> AbstractMissingPolicy
+
+The missing-data policy [`regridmethod`](@ref)'s weights need.
+
+`Weighted(0.5)` for the area and nearest methods, as `benchmark/copdem_nearest.jl`
+uses it: an area row is a spectrum, half coverage the line below which a cell is
+blanked, and a nearest stencil is one weight of exactly 1.0, so the policy
+divides by one and passes the source value through unchanged.
+
+`Weighted(1)` for `:point`, whose row is complete or empty — four posts or none.
+The threshold is then a yes/no switch on whether an absent post may be
+interpolated across, and the strict setting says no: a stencil naming a post
+with no elevation blanks the cell rather than renormalising over the posts that
+have one.
+"""
+regridpolicy(config) =
+    config.method === :point ? DGG.Weighted(1) : DGG.Weighted(0.5)
 
 # ===========================================================================
 # Logging
@@ -819,7 +846,7 @@ function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, c
     # The plan owns the relation. Its radius is its method's own
     # `supportradius`, which is the same number this line used to compute by
     # hand, and the same one `regrid_chunk`'s per-column plans use.
-    globalplan = GR.ChunkedPlan(regridmethod(config), DGG.Weighted(0.5),
+    globalplan = GR.ChunkedPlan(regridmethod(config), regridpolicy(config),
         dstspace, srcspace; budget = config.budget, dependencies = true,
         refine, narrow)
     graph = GR.dependencies(globalplan)
@@ -949,7 +976,7 @@ function regrid_chunk(dem, srcspace, sys7, layout, chunk::Int, config)
     dstgrid = DGG.subtree(sys7, a, config.level)
     dstspace = DGG.DGGSpace(dstgrid; chunklevel = config.ancestor)
     out = GR.regrid(dem; to = dstspace, from = srcspace,
-        method = regridmethod(config), missingpolicy = DGG.Weighted(0.5),
+        method = regridmethod(config), missingpolicy = regridpolicy(config),
         lazy = true, budget = config.budget)
     return Float32.(vec(collect(out)))
 end

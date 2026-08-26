@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # Launch one full-globe copdem_production.jl run, detached, for the 2026-08-26
-# Conservative-vs-NearestCell comparison.
+# method comparison.
 #
 #     scripts/launch_copdem_bench.sh conservative
+#     scripts/launch_copdem_bench.sh point
 #     scripts/launch_copdem_bench.sh nearest
 #
 # The two runs differ ONLY in the method, the store/log names and the NUMA node
@@ -30,11 +31,14 @@ set -euo pipefail
 METHOD="${1:-}"
 case "$METHOD" in
     conservative)   NODE=0 ;;
+    # Post samples interpolated between the Copernicus posts, the semantic pair
+    # of `conservative` and the reason to run two nodes at once.
+    point)          NODE=1 ;;
     nearest)        NODE=1 ;;
     # The weightless nearest spike: same answers as `nearest`, no weight
     # assembly. It shares `nearest`'s default node; override with COPDEM_NODE.
     nearest-direct) NODE=1 ;;
-    *) echo "usage: $0 conservative|nearest|nearest-direct [tag]" >&2; exit 2 ;;
+    *) echo "usage: $0 conservative|point|nearest|nearest-direct [tag]" >&2; exit 2 ;;
 esac
 NODE="${COPDEM_NODE:-$NODE}"      # COPDEM_NODE overrides the per-method default
 TAG="${2:+-$2}"                # optional tag distinguishes a second run of one method

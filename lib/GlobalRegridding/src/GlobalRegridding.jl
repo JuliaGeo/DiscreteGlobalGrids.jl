@@ -115,6 +115,13 @@ public outputsampling, destinationdims, dimsource
 # names in user namespaces.
 public subtree, expensivecellgeometry
 public chunkextents, chunkextent, chunkindex, candidatechunks!
+# Making a source space point-samplable. `hasdualcells` declares it,
+# `samplerstate` prepares whatever the lookup reads, and `dualcellat` answers
+# one point with the `DualCell` its nodes and `BasisKind` describe. `Sampler` is
+# what those two dispatch on, and `chartat` is where a space without a cell
+# chart says which plane its nodes are written in.
+public hasdualcells, dualcellat, samplerstate
+public Sampler, DualCell, BasisKind, Bilinear, MeanValue, chartat
 public chunkranges
 public chartaxes, chartcoords, chartlocalindex, chartperiod, chartspacing
 public _asspace

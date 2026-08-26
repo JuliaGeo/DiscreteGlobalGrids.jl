@@ -84,7 +84,7 @@ end
 # does not hold the node. The node arrives as its tile, its place `off` in that
 # tile's raster, its id on the complete level and its tile's pixel count.
 #
-#   - A complete level is arithmetic: the id.
+#   - A complete level is arithmetic: the id, one-based.
 #   - A holding chunked by tile — the production source, whose chunks are the
 #     listed tiles — is one search of the space's ascending tile ids and
 #     arithmetic within the tile: a chunk holding every pixel of its tile keeps

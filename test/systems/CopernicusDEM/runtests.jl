@@ -2807,6 +2807,13 @@ end
         DGG.DGGSpace(DGG.PartialGrid(sys, 1, holey); chunklevel = 0))
     @test GR.nchunks(spaces[1]) == GR.nchunks(spaces[2]) == GR.nchunks(spaces[4]) == 4
     @test GR.nchunks(spaces[3]) == length(listed)
+    # What the tile route rests on: a tile chunk's window is its tile's pixel
+    # count exactly when it holds the whole tile, in id order.
+    whole(space, k) = length(space.ranges[k]) ==
+                      length(DGG.descendant_range(sys, space.chunkids[k], 1))
+    @test all(whole(spaces[1], k) for k in 1:4)
+    @test all(whole(spaces[2], k) for k in 1:4)
+    @test count(whole(spaces[4], k) for k in 1:4) == 3
     samplers = map(space -> GR.sampler(POINT, space), spaces)
     complete = DGG.DGGSpace(levelgrid(sys, 1))
     csmp = GR.sampler(POINT, complete)

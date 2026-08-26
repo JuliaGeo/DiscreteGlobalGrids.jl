@@ -66,9 +66,10 @@ resolution that lets a grid, a [`CellVector`](@ref), a [`CellLookup`](@ref), a
 that package's binding for the same reason the `Trees` ones are. The rest of
 the space contract
 `src/regridding.jl` fills in — `nchunks`, `ownedindices`, `chunkat`,
-`cellcentroid`, `samplesites`, `celltree`, `chunkextents`, `chunkindex`,
-`candidatechunks!`, `chunkranges`, `subtree` and `destinationdims` — is
-extended under `GlobalRegridding`'s own name rather than imported.
+`cellcentroid`, `celltree`, `chunkextents`, `chunkindex`, `candidatechunks!`,
+`chunkranges`, `subtree` and `destinationdims` — is extended under
+`GlobalRegridding`'s own name rather than imported; `samplesites` is left to
+that package's own centroid vector.
 """
 module DiscreteGlobalGrids
 

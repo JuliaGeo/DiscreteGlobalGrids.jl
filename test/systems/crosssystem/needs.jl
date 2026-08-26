@@ -325,7 +325,13 @@ end
     # with no centroid in it.
     output = sweepbytes(valuesum, sub, (Value(data),); threaded = true)
     bytes = sweepbytes(slopesum, sub, (Value(data), Centroid()); threaded = true)
-    @test bytes <= length(ranges) * onewindow + output
+    # A task's window is sized from its own range, so price it from that range
+    # rather than from the sequential sweep's, and allow the 512 bytes a task's
+    # callback box costs to be spawned: the field `Centroid()` resolves to is
+    # named inside that box. Both are per task, not per cell.
+    taskwindow = min(nextpow(2, length(first(ranges))), 16384) * perslot +
+                 (onewindow - window)
+    @test bytes <= length(ranges) * (taskwindow + 512) + output
     # And at least one window per task: a task's window holds its whole range
     # up to the cap, so nothing smaller than this can be one per task.
     @test bytes >= length(ranges) * min(length(first(ranges)), 16384) * perslot +

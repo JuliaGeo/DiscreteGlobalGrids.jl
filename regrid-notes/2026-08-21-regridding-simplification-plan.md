@@ -167,7 +167,7 @@ kept as a deprecation shim and appears in this plan only as history:
   typed on the value, which differs from source to source, so the hold would
   carry an abstract entry type; type stability is a standing constraint, and
   the two parallel dictionaries are the type-stable form.
-- **Every phase of this plan is closed.** What remains is the merge: retarget
+- **Every phase through 9 is closed; Phase 10 (R1, names) is recorded and not started.** What remains is the merge: retarget
   the branch's pull request at `main` so CI runs on it, fast-forward `main`,
   and close the earlier pull requests it supersedes.
 
@@ -350,6 +350,7 @@ W2 -> O1 -> O2                                             Phase 6
 O2 -> D1                                                   Phase 7
 D1 -> L2                                                   Phase 8 (L1 ruled out)
 E2 -> S1 -> S2 -> S3                                       Phase 9
+S3, L2 -> R1                                               Phase 10 (not started)
 ```
 
 B1 may be prepared in an isolated GeometryOps worktree while A tasks run, but
@@ -1297,6 +1298,87 @@ the new chunking.
 no cap superset and no support dilation, and every conservative read count,
 weight and value is unchanged.
 **Commit:** `Read exact source chunks for point tiles`.
+
+## Phase 10 — names that say what they do
+
+The cards above left names that describe a mechanism, a history, or nothing
+at all. This phase is one card, recorded so the list is not lost. It is NOT
+STARTED and runs only when the owner says so.
+
+### Task R1 — rename or document the names that do not say what they do
+
+**Prerequisite:** everything in the landed table.
+**Owns:** the names below and the docstrings, comments, `@ref` links, tests,
+benchmarks and notes that mention them. No behaviour, dispatch or performance
+change.
+
+For each name choose ONE of:
+
+- rename it so the name states what the thing does or holds — private `_`
+  names and unexported internals rename freely; `public` or exported names keep
+  a deprecated forward carrying callers only; or
+- keep the name and rewrite its docstring or comment so the first line says
+  what it does, within the docstring standard (summary line plus a few bullets,
+  at most about fifteen lines).
+
+Record the choice per name in a table in the card's note.
+
+Candidates in `lib/GlobalRegridding/src/lazy.jl`:
+
+| name | what it actually is |
+|---|---|
+| `SourceHold`, `_holdtake!`, `_holdstore!` | a byte-budgeted LRU cache of source chunks live for one `readblock!`; "hold"/"take" say neither cache nor recency |
+| `_waveideal` | returns a speedup ratio, not an ideal wave |
+| `_notepeak!` | records current and peak bytes |
+| `_runs` | converts chunk sizes to cell-index runs; a bare noun |
+| `_fitmatrix`, `_fitbuffer` | read as predicates; both reallocate when the shape differs |
+| `_canhold` | a predicate over all of a read's groups at once, unlike its neighbours |
+| `_emptybuffer` | a zero-length prototype for `similar`, never a usable buffer |
+| `_outsiderows` | returns the first offending source chunk number or 0; reads as a set of rows |
+| `groups`, `_slicegroups`, `_groupgrid`, `_grouprange` | "group" is unexplained jargon for one combination of pass-through chunk ranges |
+| `DestTiling.chunksof` | does not say which chunks (the destination chunks a tile's run overlaps) |
+| `LazyStats.skipped` vs `.dropped` | two kinds of not-read (per-group vs at-selection `knownempty`); neither name distinguishes them |
+| `DEST_BUDGET_SHARE` vs `WEIGHT_BUDGET_SHARE` | a divisor (8) and a fraction (0.25) under one suffix |
+
+Candidates in `lib/GlobalRegridding/src/plans.jl`:
+
+| name | what it actually is |
+|---|---|
+| `PerChunk` | keys whole destination tiles as well as chunks |
+| `nblocks` | counts blocks and tiles |
+| `Spilled` | an adjective standing in for a storage type |
+| `CachedBlock.used`, `CachedTile.used` | a logical-clock recency stamp, not a count or a flag |
+| `PerChunk.builds` vs `PerChunk.building` | completed inserts vs in-flight claims |
+| `blockfor`, `tilefor` vs `buildblock` | "for" carries the whole cache-vs-no-cache distinction |
+| `_touch!` | LRU jargon that also returns the entry |
+| `WeightBlock.reference` | reads as a pointer; it is the per-destination normalisation weight |
+| `_fileentry!` | "file" as a verb |
+| `ChunkAccumulator.map` | shadows `Base.map`; it is a chunk-local index map |
+| `slots` in `tileweights` | indices into `accums`, not slots |
+| `weightlimit`, `weightbudget`, `maxbytes` | three names for byte bounds on weights |
+| `refine`, `narrow` | two words for one narrowing phase |
+
+Candidates elsewhere:
+
+| name | what it actually is |
+|---|---|
+| `LEAF_CELLS` (`src/engine/tiled_raster.jl`) | the maximum cells a leaf holds; `MAX_LEAF_CELLS` |
+| `RasterTile` (`src/systems/CopernicusDEM/cursor.jl`) | one rectangle of a tile's pixels, not the tile; `RasterRect` |
+| `rect_part` (`tiled_raster.jl`) | the `t`-th of `parts` equal slices of a range |
+| `ExtentMemo`, `ExtentTable` (`src/engine/extent_memo.jl`) | read backwards: the memo is the per-task store of tables, the table is one tree's slots |
+| `no_extent_key`, `_memo_extent` vs `memoized_extent` | one sentinel and two spellings of the same verb |
+| `_index(::BlockCursor, …)` (`CopernicusDEM/cursor.jl`) | says nothing about which index it answers |
+| `preparesdestination` vs `preparedestination` (`lib/GlobalRegridding/src/conservative.jl`) | a predicate and an action one letter apart |
+
+Kept deliberately, not candidates: `DestinationCache` (the owner's choice) and
+`TilePrefetch` (already named for what it does).
+
+**Phase 10 gate:** every renamed symbol has no remaining reference in `src`,
+`lib`, `test`, `docs`, `benchmark`, `examples` or `regrid-notes`; every kept
+name's docstring first line states what it does; the docs build adds no
+cross-reference warning; every suite matches its same-session baseline
+exactly.
+**Commit:** `Name regridding state for what it does`.
 
 ## Phase gates
 

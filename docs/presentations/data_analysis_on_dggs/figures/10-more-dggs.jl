@@ -8,8 +8,8 @@ using DiscreteGlobalGrids
 more_dggs_app() = globe_panels_app([
     ("TRIPOLAR", tripolar_cells(48, 28)),
     ("ROTATED POLE", rotated_pole_cells(18)),
-    ("A5", dggs_cells(A5DGGS(), 3)),
-    ("ISEA4R", dggs_cells(ISEA4RDGGS(), 3)),
+    ("A5", levelgrid(A5System(), 3)),
+    ("ISEA4R", levelgrid(ISEA4RSystem(), 3)),
 ])
 
 export_more_dggs(dir = joinpath(@__DIR__, "html")) =

@@ -13,9 +13,11 @@ npm run export       # PDF → exports/
 npm run export:png   # one PNG per slide → exports/png/
 ```
 
-The figures are Julia, and they are built separately:
+The figures are Julia, and they are built separately. Instantiate once after
+checking out the repository so the deck resolves both local packages:
 
 ```bash
+julia --project -e 'using Pkg; Pkg.instantiate()'
 julia --project figures/01-what-is_dggs-series.jl   # all four, → figures/html/
 ```
 
@@ -248,6 +250,12 @@ that exports a standalone WGLMakie/Bonito page into `figures/html/` —
 a live WebGL scene, drawn out of the same tokens as the deck
 (`figures/00-dggs-theme.jl` mirrors the palette and loads the three
 bundled faces).
+
+Package grids are passed directly from `levelgrid(...)` to
+`DiscreteGlobalGridsVisualization.dggpoly!`; the recipe reads the current
+`cell_boundary` interface and emits one mesh for the complete cell set. Only
+the non-DGGS Oceananigans comparison grids and hand-built Tissot geometry use
+Makie's generic `poly!` path.
 
 **The figure is the figure; the slide is the slide.** An exported page
 carries no title, no subtitle and no rule — the `figure` layout draws

@@ -4,6 +4,7 @@ Bonito = "824d6782-a2ef-11e9-3a09-e5662e0c26f8"
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
+DiscreteGlobalGridsVisualization = "26394bad-8505-4b24-ad04-fcf267e3a913"
 GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
 GeoDataFrames = "62cb38b5-d8d2-4862-a48e-6a340996859f"
 GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
@@ -13,9 +14,18 @@ Geodesy = "0ef565a4-170c-5f04-8de2-149903a85f3d"
 GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
 GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
 Geomorphometry = "714e3e49-7933-471a-9334-4a6a65a92f36"
+GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
 Oceananigans = "9e8cae18-63c1-5223-a75c-80ca9d6e9a09"
 RasterDataSources = "3cb90ccd-e1b6-4867-9617-4276c8b2ca36"
 Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
 WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
+
+[sources]
+ConservativeRegridding = {rev = "e8fc67f420da0362d59b354e2db6fcde8107fec0", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+DiscreteGlobalGrids = {path = "../../.."}
+DiscreteGlobalGridsVisualization = {path = "../../../lib/DiscreteGlobalGridsVisualization"}
+GeometryOps = {rev = "27834e736262016acf104d6b02a41c3eab4b9371", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
+GlobalRegridding = {path = "../../../lib/GlobalRegridding"}

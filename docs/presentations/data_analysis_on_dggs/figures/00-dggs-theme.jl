@@ -2,6 +2,7 @@ module DGGSTalkFigures
 
 using Bonito, GeoMakie, Makie, WGLMakie
 using DiscreteGlobalGrids
+using DiscreteGlobalGridsVisualization
 import ConservativeRegridding as CR
 import Geodesy
 import GeometryOps as GO
@@ -9,7 +10,7 @@ import GeoInterface as GI
 import Oceananigans
 
 export JG, AREA_COLORMAP, AREA_RANGE, area_globe_app, cell_area_ratios
-export dggs_cells, export_html, globe_outline_app, longlat_cells, projection_app
+export export_html, globe_outline_app, longlat_cells, projection_app
 export ROTATED_POLE, globe_panels_app, rotated_pole_cells, tripolar_cells
 
 const JG = (
@@ -22,8 +23,7 @@ const JG = (
     paper = colorant"#ffffff", paper_off = colorant"#f8f9fa",
 )
 
-const FONT_DIR = normpath(joinpath(
-    @__DIR__, "..", "..", "..", "templates", "juliageo-template", "dist", "fonts"))
+const FONT_DIR = normpath(joinpath(@__DIR__, "..", "public", "fonts"))
 const FONT_BODY = joinpath(FONT_DIR, "Inter-Variable.ttf")
 const FONT_DISPLAY = joinpath(FONT_DIR, "RaleGrotesk-Medium.otf")
 const FONT_BOLD = joinpath(FONT_DIR, "RaleGrotesk-Bold.otf")
@@ -95,16 +95,24 @@ function rotated_pole_cells(nlat; north_pole = values(ROTATED_POLE))
         longitude = (-180, 180), latitude = (-90, 90), z = (0, 1)))
 end
 
-function dggs_cells(system, level)
-    ids = ordinal_to_cell.((system,), (level,), 1:Int(DiscreteGlobalGrids.num_cells(system, level)))
-    cell_polygon_unitsphere.((system,), (level,), ids)
-end
-
 function cell_area_ratios(cells)
     geographic = GO.transform(GO.GeographicFromUnitSphere(), cells)
     areas = GO.area.(Ref(GO.Spherical(; radius = 1.0)), geographic)
     areas ./ (4pi / length(areas))
 end
+
+function cell_area_ratios(grid::AbstractGrid)
+    cells = CellVector(grid)
+    areas = [cell_area(grid, cell) for cell in cells]
+    areas ./ (4pi / length(areas))
+end
+
+# Package grids stay as grids all the way into Makie.  The specialized recipe
+# reads `cell_boundary` itself and builds one mesh for the full set.  The
+# Oceananigans comparison grids are ordinary unit-sphere polygons, so they keep
+# the generic Makie path.
+plot_cells!(axis, grid::AbstractGrid; kwargs...) = dggpoly!(axis, grid; kwargs...)
+plot_cells!(axis, cells; kwargs...) = poly!(axis, cells; source = CARTESIAN_SPHERE, kwargs...)
 
 const WEB_STYLE = Styles(
     CSS("html, body", "width" => "100%", "height" => "100%", "margin" => "0",
@@ -123,7 +131,7 @@ function globe_outline_app(cells; camera...)
     with_theme(JG_THEME) do
         fig, body = slide_figure()
         axis = globe_axis(body[1, 1]; camera...)
-        poly!(axis, cells; source = CARTESIAN_SPHERE, color = JG.green_100,
+        plot_cells!(axis, cells; color = JG.green_100,
             strokecolor = JG.green_dark, strokewidth = 0.65)
         coastlines!(axis)
         static_app(fig)
@@ -149,7 +157,7 @@ function globe_panels_app(panels; ncols = 2, camera = NamedTuple())
                 tellwidth = false)
             axis = globe_axis(panel[2, 1];
                 (length(panel_spec) > 2 ? panel_spec[3] : camera)...)
-            poly!(axis, cells; source = CARTESIAN_SPHERE, color = JG.green_100,
+            plot_cells!(axis, cells; color = JG.green_100,
                 strokecolor = JG.green_dark, strokewidth = 0.5)
             coastlines!(axis)
             rowgap!(panel, 2)
@@ -164,7 +172,7 @@ function area_globe_app(cells; colorrange = AREA_RANGE,
     with_theme(JG_THEME) do
         fig, body = slide_figure()
         axis = globe_axis(body[1, 1]; camera...)
-        area = poly!(axis, cells; source = CARTESIAN_SPHERE,
+        area = plot_cells!(axis, cells;
             color = cell_area_ratios(cells), colormap = AREA_COLORMAP,
             colorrange, strokecolor = (JG.ink, 0.42), strokewidth = 0.6)
         coastlines!(axis)

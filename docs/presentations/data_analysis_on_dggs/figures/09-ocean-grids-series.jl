@@ -1,5 +1,3 @@
-include(joinpath(@__DIR__, "06-tripolar-grid.jl"))
-include(joinpath(@__DIR__, "07-rotated-pole-grid.jl"))
 include(joinpath(@__DIR__, "08-ocean-grid-areas.jl"))
 
 function export_ocean_series(dir = joinpath(@__DIR__, "html"))

@@ -4,10 +4,10 @@ using DiscreteGlobalGrids
 
 const AREA_GRIDS = (
     ("long–latitude", "longlat", longlat_cells(36)),
-    ("H3", "h3", dggs_cells(H3DGGS(), 1)),
-    ("S2", "s2", dggs_cells(S2DGGS(), 3)),
-    ("IGEO7", "igeo7", dggs_cells(IGEO7DGGS(), 2)),
-    ("ISEA4R", "isea4r", dggs_cells(ISEA4RDGGS(), 3)),
+    ("H3", "h3", levelgrid(H3System(), 1)),
+    ("S2", "s2", levelgrid(S2System(), 3)),
+    ("IGEO7", "igeo7", levelgrid(IGeo7System(), 2)),
+    ("ISEA4R", "isea4r", levelgrid(ISEA4RSystem(), 3)),
 )
 
 area_app(_, cells) = area_globe_app(cells)

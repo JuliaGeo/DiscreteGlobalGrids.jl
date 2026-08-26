@@ -2,7 +2,7 @@ isdefined(@__MODULE__, :DGGSTalkFigures) || include(joinpath(@__DIR__, "00-dggs-
 using .DGGSTalkFigures
 using DiscreteGlobalGrids
 
-h3_app() = globe_outline_app(dggs_cells(H3DGGS(), 1))
+h3_app() = globe_outline_app(levelgrid(H3System(), 1))
 
 export_h3(dir = joinpath(@__DIR__, "html")) =
     export_html(joinpath(dir, "02-h3-grid.html"), h3_app())

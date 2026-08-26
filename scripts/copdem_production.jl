@@ -134,8 +134,6 @@ function regridmethod(config)
     # with no weight assembly on either the eager or the chunked route.
     config.method === Symbol("nearest-direct") && return DGG.DirectNearest()
     config.method === :nearest_direct && return DGG.DirectNearest()
-    # Local bench knob: chart-based bilinear on the source raster.
-    config.method === :bilinear && return DGG.BilinearPoint()
     return error(
         "method must be :conservative, :point, :nearest or :nearest-direct, " *
         "got $(repr(config.method))")
@@ -158,7 +156,7 @@ with no elevation blanks the cell rather than renormalising over the posts that
 have one.
 """
 regridpolicy(config) =
-    config.method in (:point, :bilinear) ? DGG.Weighted(1) : DGG.Weighted(0.5)
+    config.method === :point ? DGG.Weighted(1) : DGG.Weighted(0.5)
 
 # ===========================================================================
 # Logging

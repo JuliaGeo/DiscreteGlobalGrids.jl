@@ -95,13 +95,14 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test !isempty(polar)
         @test all(isnan, b[polar])
 
-        # Bilinear stencils renormalize after one point becomes invalid.
+        # Point stencils renormalize after one sample site becomes invalid.
         constant = t6_raster((lon, lat) -> 5.0,
             t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
         constant[10, 9] = NaN
-        # Half-cell offsets produce four equal stencil weights.
-        offset = t6_space(t6_centres(-175, 185, 36), t6_centres(-85, 95, 18))
-        @test all(≈(5.0), regrid(constant; to = offset, method = BilinearPoint()))
+        # Half-cell offsets in both axes produce four equal stencil weights, and
+        # every destination centre stays inside the source's lattice of sites.
+        offset = t6_space(t6_centres(-175, 185, 36), t6_centres(-85, 85, 17))
+        @test all(≈(5.0), regrid(constant; to = offset, method = BarycentricPoint()))
     end
 
     @testset "orientation" begin
@@ -208,21 +209,22 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
 
         conservative = regrid(src; to = dst, method = Conservative())
         nearest = regrid(src; to = dst, method = NearestCell())
-        bilinear = regrid(src; to = dst, method = BilinearPoint())
+        barycentric = regrid(src; to = dst, method = BarycentricPoint())
 
         @test maximum(abs, nearest .- conservative) < 0.15
-        @test maximum(abs, bilinear .- conservative) < 0.15
+        @test maximum(abs, barycentric .- conservative) < 0.15
     end
 
-    @testset "bilinear across the longitude seam" begin
+    @testset "point sampling across the longitude seam" begin
         # One destination centre lies on the ±180° source seam.
         src = t6_raster((lon, lat) -> sind(lon),
             t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
         dst = t6_space(t6_centres(-175, 185, 36), t6_centres(-90, 90, 18))
         seam = GR.localindex(dst, 36, 9)
 
-        # Global bilinear interpolation wraps across the longitude seam.
-        @test regrid(src; to = dst, method = BilinearPoint())[seam] ≈ 0 atol = 1e-12
+        # A global chart axis wraps across the longitude seam, so the seam cell
+        # is interpolated between the two centres straddling it.
+        @test regrid(src; to = dst, method = BarycentricPoint())[seam] ≈ 0 atol = 1e-12
         @test abs(regrid(src; to = dst, method = NearestCell())[seam]) > 0.08
 
         # Regional rasters do not report a longitude period.
@@ -230,9 +232,9 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
             t6_centres(-20, 20, 4))) == (nothing, nothing)
     end
 
-    @testset "bilinear west of a regional raster" begin
-        # A point just west of a regional raster stays just west on its chart;
-        # folded a period east, the non-periodic axis clamps it to the east column.
+    @testset "point sampling west of a regional raster" begin
+        # A point just west of a regional raster stays just west on its chart
+        # rather than folding a period east onto the far column.
         xs, ys = t6_centres(0, 120, 24), t6_centres(-30, 30, 12)
         region = t6_space(xs, ys)
         @test GR._onbranch(region.xedges, -1.0, 360.0) ≈ -1.0
@@ -241,20 +243,26 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         point = GO.UnitSpherical.UnitSphereFromGeographic()((-1.0, 10.0))
         @test GR.chartcoords(region, point)[1] ≈ -1.0
 
-        # Pad cells clamp to the adjacent edge column, and destination tiling
-        # changes nothing: the pad tile discovers the stencil's source chunk.
+        # The pad columns sit outside the lattice of source sample sites, so
+        # they take no weights and the missing policy blanks them rather than
+        # extrapolating the edge column outwards. Destination tiling changes
+        # nothing: the pad tile still discovers the stencil's source chunk.
         f(lon, lat) = 2.0 + 0.01 * lon + 0.03 * lat
         data = t6_raster(f, xs, ys)
         src = RasterGrid(data; chunks = ([1:8, 9:16, 17:24], [1:12]))
         dxs = t6_centres(-5, 125, 26)
         dst = RasterGrid(DD.DimArray(zeros(12, 26), (DD.Y(ys), DD.X(dxs)));
             chunks = ([1:7, 8:14, 15:20, 21:26], [1:12]))
-        untiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
+        untiled = regrid(data; to = dst, from = src, method = BarycentricPoint(),
             lazy = false)
-        tiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
+        tiled = regrid(data; to = dst, from = src, method = BarycentricPoint(),
             lazy = true)
-        @test untiled[GR.localindex(dst, 1, 6)] ≈ f(xs[1], ys[6])
-        @test untiled[GR.localindex(dst, 26, 6)] ≈ f(xs[end], ys[6])
+        # Columns 2 and 25 sit on the outermost source sites and reproduce them.
+        @test untiled[GR.localindex(dst, 2, 6)] ≈ f(xs[1], ys[6])
+        @test untiled[GR.localindex(dst, 25, 6)] ≈ f(xs[end], ys[6])
+        # Columns 1 and 26 lie beyond them and are blanked.
+        @test isnan(untiled[GR.localindex(dst, 1, 6)])
+        @test isnan(untiled[GR.localindex(dst, 26, 6)])
         # Lazy and eager output share the destination's axes and values.
         @test DD.dims(tiled) == DD.dims(untiled)
         @test all(isequal.(vec(Array(tiled)), vec(Array(untiled))))

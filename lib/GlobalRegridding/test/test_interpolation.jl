@@ -1,4 +1,4 @@
-# Nearest-cell and bilinear weight construction, and the seam the output
+# Nearest-cell and chart-Q1 weight construction, and the seam the output
 # sampling dispatches on.
 
 import DimensionalData as DD
@@ -116,10 +116,10 @@ GR.weightblock(::DD.Lookups.Points, ::T4TileMethod, ::RegridSpace, dst_inds,
     T4PlaceCount()
 
 Report `Points()`, record how many destination cells each `buildweights!` call
-is asked to place, and emit [`BilinearPoint`](@ref) stencils. `placed` is
+is asked to place, and emit [`BarycentricPoint`](@ref) stencils. `placed` is
 therefore the number of destination point locations the builder performs, and
 `calls` the number of blocks it was asked for. Its support radius is
-`BilinearPoint`'s, so a plan around it discovers the same source chunks.
+`BarycentricPoint`'s, so a plan around it discovers the same source chunks.
 """
 struct T4PlaceCount <: AbstractRegriddingMethod
     placed::Threads.Atomic{Int}
@@ -131,13 +131,13 @@ T4PlaceCount() = T4PlaceCount(Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
 GR.outputsampling(::T4PlaceCount) = DD.Lookups.Points()
 
 GR.supportradius(::T4PlaceCount, src_space::RegridSpace) =
-    supportradius(BilinearPoint(), src_space)
+    supportradius(BarycentricPoint(), src_space)
 
 function buildweights!(coo::WeightCOO, method::T4PlaceCount,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     Threads.atomic_add!(method.calls, 1)
     Threads.atomic_add!(method.placed, length(dst_inds))
-    return buildweights!(coo, BilinearPoint(), dst_space, dst_inds, src_space, src_inds)
+    return buildweights!(coo, BarycentricPoint(), dst_space, dst_inds, src_space, src_inds)
 end
 
 """
@@ -192,7 +192,7 @@ T5PlaceCount(; yielding::Bool = false) = T5PlaceCount(Threads.Atomic{Int}(0), yi
 GR.outputsampling(::T5PlaceCount) = DD.Lookups.Points()
 
 GR.supportradius(::T5PlaceCount, src_space::RegridSpace) =
-    supportradius(BilinearPoint(), src_space)
+    GR.chartradius(src_space)
 
 GR.sampler(method::T5PlaceCount, space::ToyLonLatSpace) =
     GR.Sampler(space, GR.samplesites(space), T5Bracket(space, method.placed,
@@ -341,14 +341,14 @@ t5_owners(dst, tile, src) =
         @test sort(unique(first.(keys(entries)))) == collect(5:8)
     end
 
-    @testset "BilinearPoint stencils" begin
+    @testset "chart Q1 stencils" begin
         # Source centres are at ±135°/±45° longitude and ±45° latitude.
         src = ToyLonLatSpace(4, 2)
         src_inds = ownedindices(src, 1)
 
         # Asymmetric fractional position verifies axis order and weights.
         dst = ToyLonLatSpace(1, 1; lon = (-27.5, -17.5), lat = (17.5, 27.5))
-        entries = t4_entries(t4_build(BilinearPoint(), dst, [1], src, src_inds),
+        entries = t4_entries(t4_build(BarycentricPoint(), dst, [1], src, src_inds),
             [1], src_inds)
         @test length(entries) == 4
         @test entries[(1, localindex(src, 2, 1))] ≈ 0.1875
@@ -359,29 +359,41 @@ t5_owners(dst, tile, src) =
 
         # A centroid at 180° interpolates across the periodic seam.
         seam = ToyLonLatSpace(1, 1; lon = (175.0, 185.0), lat = (-5.0, 5.0))
-        entries = t4_entries(t4_build(BilinearPoint(), seam, [1], src, src_inds),
+        entries = t4_entries(t4_build(BarycentricPoint(), seam, [1], src, src_inds),
             [1], src_inds)
         @test length(entries) == 4
         @test all(entries[(1, localindex(src, ix, iy))] ≈ 0.25
                   for ix in (1, 4), iy in (1, 2))
 
-        # Outside latitude centres, clamp latitude and interpolate longitude.
+        # Past the outermost latitude centres there is no cell to interpolate
+        # in, on a periodic longitude axis as anywhere else: the stencil is
+        # empty and the missing policy decides the destination.
         polar = ToyLonLatSpace(1, 1; lon = (-5.0, 5.0), lat = (75.0, 85.0))
-        entries = t4_entries(t4_build(BilinearPoint(), polar, [1], src, src_inds),
-            [1], src_inds)
-        @test length(entries) == 2
-        @test entries[(1, localindex(src, 2, 2))] ≈ 0.5
-        @test entries[(1, localindex(src, 3, 2))] ≈ 0.5
+        @test isempty(t4_entries(t4_build(BarycentricPoint(), polar, [1], src, src_inds),
+            [1], src_inds))
 
-        # Non-periodic corners clamp to one point.
+        # And likewise past a non-periodic corner, where a clamp would have had
+        # the corner cell answer for ground it does not reach.
         patch = ToyLonLatSpace(4, 2; lon = (-40.0, 40.0), lat = (-20.0, 20.0))
+        patch_inds = ownedindices(patch, 1)
         corner = ToyLonLatSpace(1, 1; lon = (38.0, 40.0), lat = (18.0, 20.0))
-        entries = t4_entries(
-            t4_build(BilinearPoint(), corner, [1], patch, ownedindices(patch, 1)),
-            [1], ownedindices(patch, 1))
-        @test entries == Dict((1, localindex(patch, 4, 2)) => 1.0)
+        @test isempty(t4_entries(
+            t4_build(BarycentricPoint(), corner, [1], patch, patch_inds),
+            [1], patch_inds))
 
-        # Bilinear interpolation reproduces a linear chart field.
+        # A point outside the source's coverage takes no weights either way:
+        # `NearestCell` asks `cellat`, the chart point brackets its axes, and
+        # neither invents a source for it.
+        outside = ToyLonLatSpace(1, 1; lon = (-1.0, 1.0), lat = (59.0, 61.0))
+        @test cellat(patch, cellcentroid(outside, 1)) === nothing
+        @test isempty(t4_entries(
+            t4_build(BarycentricPoint(), outside, [1], patch, patch_inds),
+            [1], patch_inds))
+        @test isempty(t4_entries(
+            t4_build(NearestCell(), outside, [1], patch, patch_inds),
+            [1], patch_inds))
+
+        # Chart interpolation reproduces a linear chart field.
         fsrc = ToyLonLatSpace(36, 18)
         fdst = ToyLonLatSpace(17, 8; lon = (-170.0, 170.0), lat = (-80.0, 80.0))
         fdst_inds, fsrc_inds = ownedindices(fdst, 1), ownedindices(fsrc, 1)
@@ -391,100 +403,16 @@ t5_owners(dst, tile, src) =
         end
         field = [linear(cellcentroid(fsrc, i)) for i in fsrc_inds]
         weights = WeightBlock(
-            t4_build(BilinearPoint(), fdst, fdst_inds, fsrc, fsrc_inds),
+            t4_build(BarycentricPoint(), fdst, fdst_inds, fsrc, fsrc_inds),
             length(fdst_inds), length(fsrc_inds)).weights
         @test weights * field ≈ [linear(cellcentroid(fdst, i)) for i in fdst_inds]
         @test all(≈(1.0), sum(weights; dims = 2))
 
-        # Bilinear interpolation requires a complete chart interface.
+        # Chart interpolation requires a complete chart interface.
         @test_throws "hascellchart" buildweights!(
-            WeightCOO(1), BilinearPoint(), src, [1], T4NoChartSpace(), [1])
+            WeightCOO(1), BarycentricPoint(), src, [1], T4NoChartSpace(), [1])
         @test_throws "chartaxes" buildweights!(
-            WeightCOO(1), BilinearPoint(), src, [1], T4BareChartSpace(), [1])
-    end
-
-    @testset "BilinearPoint sampling policy" begin
-        # Interior: the stencil is a tensor product, so it reproduces the whole
-        # Q1 space `a + bx + cy + dxy` on the chart, not merely affine fields.
-        # Source centres lie 20° apart; every destination centroid falls
-        # strictly inside the lattice hull, so nothing here is clamped.
-        qsrc = ToyLonLatSpace(6, 5; lon = (-60.0, 60.0), lat = (-50.0, 50.0))
-        qdst = ToyLonLatSpace(7, 4; lon = (-49.0, 49.0), lat = (-39.0, 39.0))
-        qsrc_inds, qdst_inds = ownedindices(qsrc, 1), ownedindices(qdst, 1)
-        q1(x, y) = 2.0 + 0.01x + 0.03y + 0.0007x * y
-        chart(space, i) = GR.chartcoords(qsrc, cellcentroid(space, i))
-        qfield = [q1(chart(qsrc, i)...) for i in qsrc_inds]
-        qweights = WeightBlock(
-            t4_build(BilinearPoint(), qdst, qdst_inds, qsrc, qsrc_inds),
-            length(qdst_inds), length(qsrc_inds)).weights
-        @test qweights * qfield ≈ [q1(chart(qdst, i)...) for i in qdst_inds]
-        @test all(≈(1.0), sum(qweights; dims = 2))
-
-        # Four entries per interior destination, never more.
-        @test all(count(!iszero, view(qweights, r, :)) == 4
-                  for r in axes(qweights, 1))
-
-        # Periodic seam: a point 35° east of the last centre interpolates
-        # between that centre and the first across the 90° seam, so the two
-        # longitude weights are 11/18 and 7/18 rather than a clamp to one.
-        src = ToyLonLatSpace(4, 2)
-        src_inds = ownedindices(src, 1)
-        seam = ToyLonLatSpace(1, 1; lon = (169.0, 171.0), lat = (-1.0, 1.0))
-        entries = t4_entries(t4_build(BilinearPoint(), seam, [1], src, src_inds),
-            [1], src_inds)
-        @test length(entries) == 4
-        @test all(entries[(1, localindex(src, 4, iy))] ≈ 11 / 36 for iy in (1, 2))
-        @test all(entries[(1, localindex(src, 1, iy))] ≈ 7 / 36 for iy in (1, 2))
-        @test t4_rowsum(entries, 1) ≈ 1.0
-
-        # Non-periodic rim: past the last centre of one axis the stencil drops
-        # to that axis' rim line and the other axis keeps interpolating, so two
-        # entries carry the other axis' weights and the row still sums to one.
-        patch = ToyLonLatSpace(4, 2; lon = (-40.0, 40.0), lat = (-20.0, 20.0))
-        patch_inds = ownedindices(patch, 1)
-        latrim = ToyLonLatSpace(1, 1; lon = (-6.0, -4.0), lat = (14.0, 16.0))
-        entries = t4_entries(t4_build(BilinearPoint(), latrim, [1], patch, patch_inds),
-            [1], patch_inds)
-        @test length(entries) == 2
-        @test entries[(1, localindex(patch, 2, 2))] ≈ 0.75
-        @test entries[(1, localindex(patch, 3, 2))] ≈ 0.25
-        @test t4_rowsum(entries, 1) ≈ 1.0
-
-        lonrim = ToyLonLatSpace(1, 1; lon = (34.0, 36.0), lat = (2.0, 4.0))
-        entries = t4_entries(t4_build(BilinearPoint(), lonrim, [1], patch, patch_inds),
-            [1], patch_inds)
-        @test length(entries) == 2
-        @test entries[(1, localindex(patch, 4, 1))] ≈ 0.35
-        @test entries[(1, localindex(patch, 4, 2))] ≈ 0.65
-        @test t4_rowsum(entries, 1) ≈ 1.0
-
-        # Outside coverage: the chart is located but never tested for coverage,
-        # so a point 40° north of the source's northmost cell is served by the
-        # rim line with a row summing to one. `NearestCell`, which asks
-        # `cellat`, emits nothing for the same point.
-        outside = ToyLonLatSpace(1, 1; lon = (-1.0, 1.0), lat = (59.0, 61.0))
-        @test cellat(patch, cellcentroid(outside, 1)) === nothing
-        entries = t4_entries(t4_build(BilinearPoint(), outside, [1], patch, patch_inds),
-            [1], patch_inds)
-        @test length(entries) == 2
-        @test entries[(1, localindex(patch, 2, 2))] ≈ 0.5
-        @test entries[(1, localindex(patch, 3, 2))] ≈ 0.5
-        @test t4_rowsum(entries, 1) ≈ 1.0
-        @test isempty(t4_entries(
-            t4_build(NearestCell(), outside, [1], patch, patch_inds),
-            [1], patch_inds))
-
-        # The same holds along a non-periodic longitude axis: whatever branch
-        # the chart reports, a coordinate past the axis span is clamped rather
-        # than refused.
-        west = ToyLonLatSpace(1, 1; lon = (-171.0, -169.0), lat = (-1.0, 1.0))
-        @test GR.chartcoords(patch, cellcentroid(west, 1))[1] ≈ 190.0
-        @test cellat(patch, cellcentroid(west, 1)) === nothing
-        entries = t4_entries(t4_build(BilinearPoint(), west, [1], patch, patch_inds),
-            [1], patch_inds)
-        @test length(entries) == 2
-        @test all(entries[(1, localindex(patch, 4, iy))] ≈ 0.5 for iy in (1, 2))
-        @test t4_rowsum(entries, 1) ≈ 1.0
+            WeightCOO(1), BarycentricPoint(), src, [1], T4BareChartSpace(), [1])
     end
 
     @testset "stencils partition across source chunks" begin
@@ -495,11 +423,12 @@ t5_owners(dst, tile, src) =
         @test nchunks(src) == 2
 
         whole_inds = ownedindices(ToyLonLatSpace(4, 2), 1)
-        whole = t4_entries(t4_build(BilinearPoint(), dst, dst_inds, src, whole_inds),
+        whole = t4_entries(t4_build(BarycentricPoint(), dst, dst_inds, src, whole_inds),
             dst_inds, whole_inds)
 
         blocks = [t4_entries(
-                      t4_build(BilinearPoint(), dst, dst_inds, src, ownedindices(src, c)),
+                      t4_build(BarycentricPoint(), dst, dst_inds, src,
+                          ownedindices(src, c)),
                       dst_inds, ownedindices(src, c)) for c in 1:nchunks(src)]
 
         # Each non-empty block emits only its own source cells.
@@ -517,16 +446,20 @@ t5_owners(dst, tile, src) =
     end
 
     @testset "support radius" begin
-        # Bilinear support reaches beyond geometric overlap.
+        # Chart support reaches beyond geometric overlap.
         space = ToyLonLatSpace(8, 4)
         @test supportradius(NearestCell(), space) == 0.0
-        @test supportradius(BilinearPoint(), space) > 0
-        @test supportradius(BilinearPoint(), space) ≈ deg2rad(45.0)
+        @test GR.chartradius(space) > 0
+        @test GR.chartradius(space) ≈ deg2rad(45.0)
+        @test supportradius(BarycentricPoint(), space) == GR.chartradius(space)
 
         # The larger axis spacing bounds both directions.
         oblong = ToyLonLatSpace(36, 6)
-        @test supportradius(BilinearPoint(), oblong) >= deg2rad(dlon(oblong))
-        @test supportradius(BilinearPoint(), oblong) >= deg2rad(dlat(oblong))
+        @test GR.chartradius(oblong) >= deg2rad(dlon(oblong))
+        @test GR.chartradius(oblong) >= deg2rad(dlat(oblong))
+
+        # A source with no chart has no chart spacing to bound.
+        @test_throws "hascellchart" GR.chartradius(T4NoChartSpace())
 
         # Nearest support is zero on a chart source too: the stencil is the
         # cell the destination point is already inside, so it does not follow
@@ -594,8 +527,10 @@ t5_owners(dst, tile, src) =
             1:Int(ncells(odst))) > 0
         # A stencil of several sites is summed in as many partial sums as the
         # chunking gives it blocks, so a second chunking may reassociate it by
-        # an ulp; `NearestCell` takes one source value whole and cannot.
-        for (method, same) in ((NearestCell(), isequal), (BilinearPoint(), isapprox)),
+        # an ulp; `NearestCell` takes one source value whole and cannot. A
+        # destination the source cannot map is blanked either way, and a blank
+        # compares by where it is rather than by value.
+        for (method, same) in ((NearestCell(), isequal), (BarycentricPoint(), isapprox)),
             tdst in (pdst, odst)
 
             nd = Int(ncells(tdst))
@@ -612,7 +547,9 @@ t5_owners(dst, tile, src) =
             rechunked = Vector{Float64}(undef, nd)
             regrid!(rechunked, field, ChunkedPlan(method, Weighted(0.5), tdst, rows;
                 storage = PerChunk()))
-            @test same(rechunked, reference)
+            @test all(isnan(rechunked[i]) == isnan(reference[i]) for i in 1:nd)
+            mapped = findall(i -> !isnan(reference[i]), 1:nd)
+            @test same([rechunked[i] for i in mapped], [reference[i] for i in mapped])
         end
     end
 

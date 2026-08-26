@@ -78,7 +78,7 @@ export RasterGrid
 
 # Methods
 export AbstractRegriddingMethod
-export Conservative, NearestCell, BilinearPoint, BarycentricPoint
+export Conservative, NearestCell, BarycentricPoint
 export DirectNearest
 export buildweights!, supportradius
 

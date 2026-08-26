@@ -34,19 +34,6 @@ This method does not preserve integrals.
 struct NearestCell <: AbstractRegriddingMethod end
 
 """
-    BilinearPoint()
-
-Bilinearly interpolate the source chart at each destination centroid.
-
-The stencil is written on the source space's chart, so the source must answer
-`true` to [`hascellchart`](@ref); the destination must provide
-[`cellcentroid`](@ref).
-
-This point sample does not preserve integrals.
-"""
-struct BilinearPoint <: AbstractRegriddingMethod end
-
-"""
     BarycentricPoint(; poles = NearestCell())
 
 Interpolate between source sample sites at each destination sample site.
@@ -97,7 +84,6 @@ per-pair assembly; today every sampling assembles a pair through
 """
 outputsampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Center())
 outputsampling(::NearestCell) = DD.Lookups.Points()
-outputsampling(::BilinearPoint) = DD.Lookups.Points()
 outputsampling(::BarycentricPoint) = DD.Lookups.Points()
 
 # Weight construction

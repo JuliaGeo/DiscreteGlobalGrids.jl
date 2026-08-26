@@ -118,3 +118,10 @@ a source reporting neither `hascellchart` nor the new `hasdualcells` throws an
   and at level 1 declares an `Edge()` ring that is not its cells' shared-edge
   adjacency, so its dual complex there is that ring's; it is not tested here.
 - **`BilinearPoint` compatibility** is untouched and undecided, as the plan says.
+  2026-08-26: `BilinearPoint` was removed. On a raster source
+  `BarycentricPoint` reduces to the same tensor-Q1 stencil and produced
+  bit-identical values (0.000 m RMS and max over 2.3M IGEO7 L12 cells) at the
+  same 1.85 s / 1265 MiB, while bilinear additionally required a source chart —
+  so it could not run the CopDEM production space at all — and extrapolated
+  past the last post at a raster edge (0 NaN where barycentric blanks 5,235
+  boundary cells) instead of declining.

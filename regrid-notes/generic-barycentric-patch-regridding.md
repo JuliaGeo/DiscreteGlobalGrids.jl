@@ -53,9 +53,19 @@ destination-cell average, and it is not conservative.
   On a curvilinear quadrilateral, solve the inverse isoparametric map for
   `(u,v)`; do not substitute distances to four points.
 
-The current `BilinearPoint` instead requires global separable `chartaxes` and
-therefore only describes `RasterGrid`. Its raster kernel is useful as the Q1
-fast path, but the global chart trait is not the generic abstraction.
+The `BilinearPoint` of the day this note was written instead requires global
+separable `chartaxes` and therefore only describes `RasterGrid`. Its raster
+kernel is useful as the Q1 fast path, but the global chart trait is not the
+generic abstraction.
+
+2026-08-26: `BilinearPoint` was removed. On a raster source `BarycentricPoint`
+reduces to the same tensor-Q1 stencil and produced bit-identical values (0.000
+m RMS and max over 2.3M IGEO7 L12 cells) at the same 1.85 s / 1265 MiB, while
+bilinear additionally required a source chart — so it could not run the CopDEM
+production space at all — and extrapolated past the last post at a raster edge
+(0 NaN where barycentric blanks 5,235 boundary cells) instead of declining. Its
+raster kernel is exactly the Q1 fast path this section recommends, and it
+survives as `BarycentricPoint`'s chart path.
 
 ## Coordinates and the sphere
 

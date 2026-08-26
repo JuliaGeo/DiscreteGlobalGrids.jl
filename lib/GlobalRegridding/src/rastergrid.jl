@@ -85,7 +85,7 @@ _spherical_step_bounds_radians(t::Any, dx, dy) = throw(ArgumentError(
     "a RasterGrid using $(typeof(t)) cannot bound its native cell spacing in " *
     "radians of unit-sphere arc; define " *
     "GlobalRegridding._spherical_step_bounds_radians(::$(typeof(t)), dx, dy) " *
-    "to use BilinearPoint with it."))
+    "to interpolate on its chart."))
 
 # Longitude distance is bounded by Δλ; latitude distance equals Δφ.
 _spherical_step_bounds_radians(::US.UnitSphereFromGeographic, dx, dy) =

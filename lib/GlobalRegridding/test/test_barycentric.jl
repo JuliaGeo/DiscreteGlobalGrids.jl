@@ -54,6 +54,36 @@ p1_site(row, indices, nodes) = (p1_reproduce(row, indices, nodes, c -> c[1]),
 
 p1_rowsum(row) = sum(row.weights; init = 0.0)
 
+"""
+    p1_tensorq1(dst, src) -> Matrix{Float64}
+
+The dense tensor-Q1 operator from `src` onto `dst`, written out here from
+`src`'s own chart axes: bracket each destination's chart coordinates on the two
+axes of source sample sites and multiply the two pairs of linear fractions.
+
+Every destination must fall strictly inside the lattice hull, so this is the
+interior stencil with no rim, seam or boundary policy in it — an independent
+expectation for what a chart source's sampler must produce there.
+"""
+function p1_tensorq1(dst, src)
+    xs, ys = GR.chartaxes(src)
+    W = zeros(Int(ncells(dst)), Int(ncells(src)))
+    for i in 1:Int(ncells(dst))
+        x, y = GR.chartcoords(src, cellcentroid(dst, i))
+        (xs[1] < x < xs[end] && ys[1] < y < ys[end]) ||
+            error("destination $i is not strictly inside the lattice hull")
+        ix, iy = searchsortedlast(xs, x), searchsortedlast(ys, y)
+        tx = (x - xs[ix]) / (xs[ix+1] - xs[ix])
+        ty = (y - ys[iy]) / (ys[iy+1] - ys[iy])
+        for (jx, wx) in ((ix, 1.0 - tx), (ix + 1, tx)),
+            (jy, wy) in ((iy, 1.0 - ty), (iy + 1, ty))
+
+            W[i, GR.chartlocalindex(src, jx, jy)] += wx * wy
+        end
+    end
+    return W
+end
+
 p1_weightof(row, i) = sum((row.weights[k] for k in 1:length(row) if row.indices[k] == i);
     init = 0.0)
 
@@ -574,7 +604,7 @@ end
         @test isempty(GR.wholeblock(BarycentricPoint(), far, src).weights.nzval)
     end
 
-    @testset "chart Q1 matches BilinearPoint inside the lattice" begin
+    @testset "a chart source is tensor Q1 inside the lattice" begin
         # Interior fixture: source centres 20 degrees apart, every
         # destination centroid strictly inside the lattice hull.
         qsrc = ToyLonLatSpace(6, 5; lon = (-60.0, 60.0), lat = (-50.0, 50.0))
@@ -586,11 +616,11 @@ end
         @test smp.state isa GR.ChartState
         @test (smp.state.x.n, smp.state.y.n) == (6, 5)
 
-        # Entry for entry the same operator as the bilinear point writes: on a
-        # chart source the two are one tensor Q1 stencil.
+        # Entry for entry the tensor Q1 stencil, written out here from the
+        # source's own axes rather than taken from another method: the two
+        # bracketing fractions of each axis multiply into the four weights.
         bary = GR.wholeblock(BarycentricPoint(), qdst, qsrc).weights
-        bilin = GR.wholeblock(BilinearPoint(), qdst, qsrc).weights
-        @test Matrix(bary) == Matrix(bilin)
+        @test Matrix(bary) == p1_tensorq1(qdst, qsrc)
 
         # Four entries per interior destination, summing to one.
         dense = Matrix(bary)
@@ -633,25 +663,19 @@ end
         barybuild(dst) = t4_entries(
             t4_build(BarycentricPoint(), dst, [1], patch, patch_inds), [1], patch_inds)
 
-        # Past the last latitude centre the bilinear point drops to the rim line
-        # and still writes a row; the barycentric point stops at the outermost
-        # sample sites and leaves the destination to the missing policy.
+        # Past the last latitude centre the point is in the rim between the
+        # outermost sample sites and the source's own boundary: it takes no
+        # weights and is left to the missing policy, rather than being served
+        # from the rim line by an extrapolation of it.
         latrim = ToyLonLatSpace(1, 1; lon = (-6.0, -4.0), lat = (14.0, 16.0))
-        clamped = t4_entries(t4_build(BilinearPoint(), latrim, [1], patch, patch_inds),
-            [1], patch_inds)
-        @test clamped[(1, localindex(patch, 2, 2))] ≈ 0.75
-        @test clamped[(1, localindex(patch, 3, 2))] ≈ 0.25
         @test GR.weightsat!(row, smp, cellcentroid(latrim, 1)) === GR.WeightsRim
         @test isempty(row)
         @test isempty(barybuild(latrim))
 
         # And the same across a longitude rim.
         lonrim = ToyLonLatSpace(1, 1; lon = (34.0, 36.0), lat = (2.0, 4.0))
-        clamped = t4_entries(t4_build(BilinearPoint(), lonrim, [1], patch, patch_inds),
-            [1], patch_inds)
-        @test clamped[(1, localindex(patch, 4, 1))] ≈ 0.35
-        @test clamped[(1, localindex(patch, 4, 2))] ≈ 0.65
         @test GR.weightsat!(row, smp, cellcentroid(lonrim, 1)) === GR.WeightsRim
+        @test isempty(row)
         @test isempty(barybuild(lonrim))
 
         # Beyond the rim the point is outside the source altogether, and the two
@@ -661,9 +685,8 @@ end
         @test GR.weightsat!(row, smp, cellcentroid(rim, 1)) === GR.WeightsRim
         @test GR.weightsat!(row, smp, cellcentroid(beyond, 1)) === GR.WeightsOutside
 
-        # Outside fixture, which the bilinear point serves from the rim
-        # line, and a longitude past the span on whatever branch the chart
-        # reports.
+        # A destination well past the source, and a longitude past the span on
+        # whatever branch the chart reports.
         outside = ToyLonLatSpace(1, 1; lon = (-1.0, 1.0), lat = (59.0, 61.0))
         @test GR.weightsat!(row, smp, cellcentroid(outside, 1)) === GR.WeightsOutside
         @test isempty(barybuild(outside))
@@ -671,6 +694,45 @@ end
         @test GR.chartcoords(patch, cellcentroid(west, 1))[1] ≈ 190.0
         @test GR.weightsat!(row, smp, cellcentroid(west, 1)) === GR.WeightsOutside
         @test isempty(row)
+    end
+
+    @testset "a raster edge blanks rather than extrapolates" begin
+        # A regional raster of posts 5 degrees apart, the outermost at ±10. Its
+        # own boundary is half a cell further out, at ±12.5, so a destination
+        # between the last post and that boundary is inside the raster and
+        # still outside the lattice of sites the stencil interpolates between.
+        posts = collect(-10.0:5.0:10.0)
+        q1(x, y) = 2.0 + 0.01x + 0.03y + 0.0007x * y
+        data = DD.DimArray([q1(x, y) for x in posts, y in posts],
+            (DD.X(posts), DD.Y(posts)))
+        src = RasterGrid(data)
+
+        # Destination sites 2.5 degrees apart. The first and last of each axis
+        # sit in that rim; every other site is strictly inside the lattice.
+        sites = collect(-11.25:2.5:11.25)
+        n = length(sites)
+        dst = RasterGrid(DD.DimArray(zeros(n, n), (DD.X(sites), DD.Y(sites))))
+        rim = [GR.localindex(dst, ix, iy) for ix in 1:n, iy in 1:n
+               if ix in (1, n) || iy in (1, n)]
+        interior = setdiff(1:Int(ncells(dst)), rim)
+        @test length(rim) == n^2 - (n - 2)^2
+
+        # Beyond the last post row or column the row is empty: nothing is
+        # extrapolated outwards from the edge posts.
+        W = Matrix(GR.wholeblock(BarycentricPoint(), dst, src).weights)
+        @test all(iszero, view(W, rim, :))
+
+        # Inside, the four bracketing posts, summing to one and exact on Q1.
+        @test all(count(!iszero, view(W, r, :)) == 4 for r in interior)
+        @test all(isapprox(1.0), sum(view(W, interior, :); dims = 2))
+
+        # Under `Weighted(1)` an empty row is blanked and a complete one passes
+        # the interpolated value through.
+        out = collect(regrid(data; to = dst, method = BarycentricPoint(),
+            missingpolicy = Weighted(1), lazy = false))
+        chart(space, i) = GR.chartcoords(src, cellcentroid(space, i))
+        @test all(isnan, out[rim])
+        @test out[interior] ≈ [q1(chart(dst, i)...) for i in interior]
     end
 
     @testset "a destination at a source sample site takes that source alone" begin
@@ -734,8 +796,7 @@ end
         # state a source prepares rather than to its type.
         @test supportradius(BarycentricPoint(), src) ≈
               deg2rad(max(dlon(src), dlat(src)))
-        @test supportradius(BarycentricPoint(), src) ==
-              supportradius(BilinearPoint(), src)
+        @test supportradius(BarycentricPoint(), src) == GR.chartradius(src)
         @test supportradius(BarycentricPoint(), P1PlainSpace(src)) == 0.0
 
         # No source-chunk boundary changes a stencil: every pair's share of the

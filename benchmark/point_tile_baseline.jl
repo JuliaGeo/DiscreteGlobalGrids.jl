@@ -11,7 +11,9 @@
 # that gap on a raster large enough for it to matter, and records what a tile's
 # weights and reads cost beside it.
 #
-# Four arms over the same tile, all with `BilinearPoint`:
+# Four arms over the same tile, all with `PairBarycentric`: `BarycentricPoint`'s
+# own weights with its `sampler` withheld, so a plan around it builds one
+# `(destination tile, source chunk)` pair at a time.
 #
 #   1. `one pass`        one `buildweights!` over the whole source index range.
 #                        Every destination is located once and every entry is
@@ -43,8 +45,8 @@
 # one method's own weights: `PairNearest` forwards its `buildweights!` and
 # supplies no `sampler`, so a plan around it builds one chunk pair at a time,
 # where `NearestCell` supplies one and builds one destination tile. Nothing but
-# the routing differs between them, so these price the routing alone, which arms
-# 1-8 cannot: they run two different kernels.
+# the routing differs between them, so these price the routing alone for a
+# one-entry stencil, as arms 1-8 do for a four-entry one.
 #
 #   9.  `nearest one pass`   one `buildweights!` over the whole source index
 #                            range, the point-location floor for this kernel.
@@ -98,6 +100,12 @@
 # bytes are what the tile's blocks actually occupy, not what a budget allows.
 # `weightbudget(plan.budget)` is printed beside them for comparison.
 #
+# ARMS 1-4 REPOINTED 2026-08-26. They ran `BilinearPoint`, which was removed
+# that day (see `regrid-notes/2026-08-23-barycentric-regridding-plan.md`); they
+# now run `PairBarycentric`, the same kernel arms 5-8 fuse. The four rows below
+# are therefore the removed method's and must be re-recorded before they are
+# read as this file's own; every other row and ratio is unaffected.
+#
 # RECORDED 2026-08-25, M-series macOS, Julia 1.12.6, 8 threads of 12 CPUs,
 # `powermode 2`, warm-up plus minimum of three samples. All sixteen arms come
 # from one process, so every ratio below is same-session:
@@ -149,10 +157,10 @@
 # it emits equals the relation's candidate list here, so the reads are the same
 # four: 2.89x the pair loop for the same 1,500,000 entries, and a cold read 3.06x
 # the pair route's. Its 1.79x over the one-pass floor is not overhead over the
-# same work — the floor arm is a different kernel emitting one unpartitioned COO,
-# where the fused build also files every entry under its owning chunk and
-# assembles four blocks. Weight construction is 97.7% of its own cold read, and
-# the 96 extra bytes it holds are the manifest.
+# same work — the floor arm emits one unpartitioned COO, where the fused build
+# also files every entry under its owning chunk and assembles four blocks.
+# Weight construction is 97.7% of its own cold read, and the 96 extra bytes it
+# holds are the manifest.
 #
 # `NearestCell` prices the routing alone, one kernel on both sides. Locations
 # fall 4.00x, exactly `k`; the build falls 3.13x and a cold read 3.11x, for the
@@ -277,6 +285,29 @@ function GR.buildweights!(coo::WeightCOO, method::PairNearest, dst::GR.RegridSpa
     return buildweights!(coo, NearestCell(), dst, dst_inds, src, src_inds)
 end
 
+# --- barycentric weights on the chunk-pair route ---------------------------
+
+"""
+    PairBarycentric()
+
+`BarycentricPoint`'s weights on the chunk-pair route. It reports `Points()` and
+forwards `buildweights!` and `supportradius`, but supplies no `sampler`, so a
+plan around it builds one `(destination tile, source chunk)` pair at a time —
+the route any point method with no sampler takes. Nothing but the routing
+differs between it and `BarycentricPoint`, so arms 1-8 price that routing on a
+four-entry stencil.
+"""
+struct PairBarycentric <: AbstractRegriddingMethod end
+
+GR.outputsampling(::PairBarycentric) = DD.Lookups.Points()
+
+GR.supportradius(::PairBarycentric, space::GR.RegridSpace) =
+    GR.supportradius(BarycentricPoint(), space)
+
+GR.buildweights!(coo::WeightCOO, ::PairBarycentric, dst::GR.RegridSpace,
+    dst_inds, src::GR.RegridSpace, src_inds) =
+    buildweights!(coo, BarycentricPoint(), dst, dst_inds, src, src_inds)
+
 # --- fixture ---------------------------------------------------------------
 
 centres(lo, hi, n) = range(lo + (hi - lo) / 2n, hi - (hi - lo) / 2n; length = n)
@@ -301,7 +332,7 @@ function fixture()
     return (; src, dst, data, source, want)
 end
 
-newplan(f) = ChunkedPlan(BilinearPoint(), Weighted(0.5), f.dst, f.src;
+newplan(f) = ChunkedPlan(PairBarycentric(), Weighted(0.5), f.dst, f.src;
     storage = PerChunk())
 
 # The same fixture on the fused route: `BarycentricPoint` supplies a `sampler`,
@@ -403,11 +434,11 @@ function main()
     @printf("candidates   %d of %d source chunks: %s\n\n",
         k, GR.nchunks(f.src), string(candidates))
 
-    println("BilinearPoint, chunk-pair route")
+    println("BarycentricPoint, chunk-pair route")
     whole = 1:Int(GR.ncells(f.src))
     onepass = measure("one pass over the tile", function ()
         coo = WeightCOO(length(tile))
-        buildweights!(coo, BilinearPoint(), f.dst, tile, f.src, whole)
+        buildweights!(coo, PairBarycentric(), f.dst, tile, f.src, whole)
         return length(coo.vals)
     end)
 

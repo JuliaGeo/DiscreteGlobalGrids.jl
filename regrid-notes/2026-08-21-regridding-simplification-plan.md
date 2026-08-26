@@ -15,6 +15,13 @@ The point-method redesign is owned by
 point API and its kernels; this plan owns the seams in the shared code that
 admit them, as Phase 9 below. Neither plan changes conservative behaviour.
 
+2026-08-26: `BilinearPoint` was removed, so every card below naming it names a
+method that no longer exists. `BarycentricPoint` reduces to the same tensor-Q1
+stencil on a raster and produced bit-identical values there, needed no source
+chart — bilinear could not run the CopDEM production space at all — and blanks
+a raster edge where bilinear extrapolated past the last post. See
+`regrid-notes/2026-08-23-barycentric-regridding-plan.md`.
+
 ## Outcome
 
 Global regridding should have one representation at each layer:

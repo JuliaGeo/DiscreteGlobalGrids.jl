@@ -752,4 +752,4 @@ supportradius(::BarycentricPoint, src_space::RegridSpace) =
     _chartradius(samplerstate(src_space), src_space)
 
 _chartradius(_, ::RegridSpace) = 0.0
-_chartradius(::ChartState, space::RegridSpace) = supportradius(BilinearPoint(), space)
+_chartradius(::ChartState, space::RegridSpace) = chartradius(space)

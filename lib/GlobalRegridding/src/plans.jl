@@ -13,17 +13,17 @@ abstract type AbstractRegriddingPlan end
     WeightBlock(weights, denom)
     WeightBlock(coo::WeightCOO, ndst::Integer, nsrc::Integer)
 
-Store one chunk pair's immutable weights. `weights` uses chunk-local indices;
-`denom` contains optional per-destination denominators. Construction from
-[`WeightCOO`](@ref) sums duplicate entries. Summing blocks across source chunks
-reconstructs the full operator.
+Store one chunk pair's immutable weights.
 
-`reference` is the per-destination weight the block's values are normalized
-against, held once and reusable by every application of the block. On a
-denominated block it *is* `denom` — the same object, `reference === denom` — and
-on a block that reports none it is the row sums of `weights`, computed when the
-block is built. `denom === nothing` therefore still records which of the two a
-reference is, and nothing outside the block recomputes or copies it.
+  - `weights` uses chunk-local indices; `denom` contains optional
+    per-destination denominators. Summing blocks across source chunks
+    reconstructs the full operator.
+  - Construction from [`WeightCOO`](@ref) sums duplicate entries.
+  - `reference` is the per-destination weight the values are normalized against,
+    held once and reusable by every application: `denom` itself on a denominated
+    block (`reference === denom`), the row sums of `weights` otherwise, computed
+    when the block is built.
+  - Nothing outside the block recomputes or copies the reference.
 """
 struct WeightBlock{M<:AbstractMatrix{Float64},D<:Union{Nothing,Vector{Float64}}}
     weights::M
@@ -115,8 +115,7 @@ abstract type AbstractBlockStorage end
 const WEIGHT_BUDGET_SHARE = 0.25
 
 # Bytes a chunked plan may hold in transient weights and source data when the
-# caller names no budget. Stated here alone: `plan_regrid` resolves the API
-# keyword against it rather than repeating the number.
+# caller names no budget; `plan_regrid` resolves its API keyword against this.
 const DEFAULT_BUDGET = 2^31
 
 """
@@ -148,8 +147,7 @@ end
 CachedBlock(block::WeightBlock) = CachedBlock(block, _blockbytes(block), 0)
 
 # Estimate resident bytes from the block's backing arrays. A denominated block's
-# reference is its denominator, one vector counted once; a block with no
-# denominator holds its row sums instead, and pays for that vector alone.
+# reference is its denominator, so either way one vector is counted.
 function _blockbytes(block::WeightBlock)
     W = block.weights
     w = W isa SparseMatrixCSC ?
@@ -165,12 +163,13 @@ end
 
 One destination tile's weights, split by the source chunk each entry belongs to.
 
-`sourcechunks` is the exact ascending list of the source chunks the tile's
-stencils name, and `blocks[k]` holds the weights `sourcechunks[k]` supplies. A
-block's rows are chunk-local destination indices within the tile and its columns
-chunk-local source indices within that chunk, the convention [`WeightCOO`](@ref)
-documents. A chunk no stencil names has no block and does not appear, so the
-manifest bounds the tile's reads exactly.
+  - `sourcechunks` is the exact ascending list of the source chunks the tile's
+    stencils name; `blocks[k]` holds the weights `sourcechunks[k]` supplies.
+  - A block's rows are chunk-local destination indices within the tile and its
+    columns chunk-local source indices within that chunk, the convention
+    [`WeightCOO`](@ref) documents.
+  - A chunk no stencil names has no block and does not appear, so the manifest
+    bounds the tile's reads exactly.
 """
 struct TileWeights
     sourcechunks::Vector{Int}
@@ -228,15 +227,17 @@ end
     PerChunk(capacity)
     PerChunk(; capacity = typemax(Int), maxbytes = typemax(Int))
 
-Cache blocks by `(destination chunk, source chunk)` and evict least-recently-used
-entries when `capacity` or `maxbytes` is exceeded. The newest block is retained.
-Builds run outside the lock; duplicate concurrent builds keep the first result.
+Cache weight blocks, evicting least-recently-used entries when `capacity` or
+`maxbytes` is exceeded.
 
-A point method whose build unit is a destination tile is cached by tile number
-instead, through [`gettile!`](@ref), and one tile is built once: a request
-meeting a build already in flight waits for it. Tiles and chunk pairs share the
-recency clock, the entry count and the byte budget, and evict each other by
-recency alone.
+  - A chunk pair is keyed by `(destination chunk, source chunk)`; a point method
+    whose build unit is a destination tile is keyed by tile number instead,
+    through [`gettile!`](@ref).
+  - The newest entry is retained. Tiles and chunk pairs share the recency clock,
+    the entry count and the byte budget, and evict each other by recency alone.
+  - Builds run outside the lock. Duplicate concurrent builds of a pair keep the
+    first result; one tile is built once, a request meeting a build already in
+    flight waiting for it.
 """
 mutable struct PerChunk <: AbstractBlockStorage
     capacity::Int
@@ -261,9 +262,9 @@ end
 
 PerChunk(capacity::Integer) = PerChunk(; capacity)
 
-# The three observers below take the lock like every other reader of `blocks`.
-# A wave builds concurrently, and `length(::Dict)` read while `_insert!` rehashes
-# is the one way a caller merely *looking* at the cache can see a torn table.
+# The three observers below take the lock like every other reader of `blocks`: a
+# wave builds concurrently, and an unlocked `length(::Dict)` can read a table
+# `_insert!` is rehashing.
 Base.show(io::IO, s::PerChunk) =
     @lock s.lock print(io, "PerChunk(", _entrycount(s), " blocks, ", s.bytes, " bytes)")
 
@@ -333,9 +334,8 @@ function _insert!(storage::PerChunk, key::Tuple{Int,Int}, entry::CachedBlock)
     end
 end
 
-# Evict under the lock until both bounds hold; retain the latest entry. `keep`
-# is the key just inserted, a pair or a tile number, and the two kinds of entry
-# compete by recency alone.
+# Evict under the lock until both bounds hold, retaining `keep`, the key just
+# inserted: a chunk pair or a tile number, the two competing by recency alone.
 function _evict!(storage::PerChunk, keep)
     while _entrycount(storage) > 1 &&
           (_entrycount(storage) > storage.capacity || storage.bytes > storage.maxbytes)
@@ -378,9 +378,9 @@ end
 
 Return the cached weights of destination `tile`, calling `build()` on a miss.
 
-One tile is built once. A request that meets a build already in flight waits for
-it instead of starting a second, and the build itself runs outside the storage
-lock.
+  - One tile is built once: a request meeting a build already in flight waits
+    for it instead of starting a second.
+  - The build itself runs outside the storage lock.
 """
 function gettile!(storage::PerChunk, tile::Int, build::F) where {F}
     @lock storage.lock begin
@@ -435,10 +435,11 @@ end
 """
     Spilled(dir; capacity = typemax(Int), maxbytes = typemax(Int))
 
-Store blocks in scratch directory `dir` behind a [`PerChunk`](@ref) cache. The
-caller owns `dir` and its lifetime. Filenames carry a per-instance tag, so only
-this storage can read them: once the plan is dropped they are unreadable
-garbage, and deleting the directory is the caller's job.
+Store blocks in scratch directory `dir` behind a [`PerChunk`](@ref) cache.
+
+  - The caller owns `dir` and its lifetime, deleting it included.
+  - Filenames carry a per-instance tag, so only this storage can read them: once
+    the plan is dropped they are unreadable garbage.
 """
 struct Spilled <: AbstractBlockStorage
     dir::String
@@ -637,15 +638,16 @@ end
                 dependencies = nothing, refine = nothing, narrow = nothing)
 
 Build and store [`WeightBlock`](@ref)s by `(destination tile, source chunk)` on
-first use. `budget` limits transient weight and source-data residency without
-changing results. `chunks` sets lazy destination tiling; `nothing` derives it.
-`missingval` is an optional source nodata sentinel. Construction reads no data
-and builds no weights.
+first use. Construction reads no data and builds no weights.
 
-The plan is also the sole owner of its chunk dependency relation. `dependencies`
-selects which one it holds, once, at construction; [`dependencies`](@ref) reads
-it back and builds nothing. See that accessor for the whole contract, and
-[`plan_regrid`](@ref) for the keywords as an API user meets them.
+  - `budget` limits transient weight and source-data residency without changing
+    results.
+  - `chunks` sets lazy destination tiling; `nothing` derives it. `missingval` is
+    an optional source nodata sentinel.
+  - The plan is the sole owner of its chunk dependency relation, which
+    `dependencies` selects once, at construction. See [`dependencies`](@ref) for
+    the whole contract and [`plan_regrid`](@ref) for the keywords as an API user
+    meets them.
 """
 struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
                    D<:RegridSpace,S<:RegridSpace,T<:AbstractBlockStorage,C,V,
@@ -661,9 +663,9 @@ struct ChunkedPlan{M<:AbstractRegriddingMethod,P<:AbstractMissingPolicy,
     dependencies::G
 end
 
-# The positional forms build the relation too. A `ChunkedPlan` owns one however
-# it is spelled; the nine-argument field constructor is the one way to assemble
-# a plan around a relation that already exists (or around none).
+# The positional forms build the relation too; the nine-argument field
+# constructor is the one way to assemble a plan around an existing relation, or
+# around none.
 ChunkedPlan(method::AbstractRegriddingMethod, missingpolicy::AbstractMissingPolicy,
     dst_space::RegridSpace, src_space::RegridSpace, storage::AbstractBlockStorage,
     budget::Integer, chunks) =
@@ -708,56 +710,34 @@ Return the chunk dependency relation `plan` owns, or `nothing` when it owns
 none. **This accessor builds nothing**: it is a field read, it queries neither
 space, and it returns the identical object every time it is called.
 
-A `ChunkedPlan` holds *at most one* relation, fixed when the plan was
-constructed. There is no way to obtain a second one from a plan, and no way to
-apply a narrow phase to a plan that already exists — `refine` is a keyword of
-[`plan_regrid`](@ref) (and of the [`ChunkedPlan`](@ref) constructor it forwards
-to) and of nothing else, and [`chunk_dependency_graph`](@ref) has no `plan`
-method. That is what makes "the plan's relation" a well-defined phrase: whoever
-schedules, evicts, prefetches or validates against a plan is looking at one
-object.
+A `ChunkedPlan` holds *at most one* relation, fixed at construction and never
+replaced or narrowed afterwards: `refine` is a keyword of [`plan_regrid`](@ref)
+and the [`ChunkedPlan`](@ref) constructor it forwards to and of nothing else,
+and [`chunk_dependency_graph`](@ref) has no `plan` method. An eager
+[`DirectPlan`](@ref), holding one whole-domain block, never has one. For a
+chunk-pair build unit a row *is* the read; for a point method with a
+[`sampler`](@ref) the rows only have to stay a superset of the tile's
+[`TileWeights`](@ref) manifest, which is what [`supportradius`](@ref) is for.
 
-An eager [`DirectPlan`](@ref) never has one: it holds a single whole-domain
-block, so there is no chunk pairing to describe.
+The `dependencies` keyword on lazy `plan_regrid` / `ChunkedPlan` selects which
+one is held. Whichever branch runs, it runs **once**, at construction, and reads
+no source data, builds no weights and issues no network metadata request.
 
-# What the plan holds, and how it is chosen
-
-The `dependencies` keyword on lazy `plan_regrid` / `ChunkedPlan`:
-
-- `nothing` (the default) or `true` — build it now, once, from the plan's own
-  spaces at the plan's own radius, [`supportradius`](@ref)`(method, src_space)`.
-  Passing `refine` or `narrow` also selects this branch. A chunked plan owns a
-  relation by default because every lazy read needs one: the executor takes a
-  chunk-pair tile's source chunks from
-  [`sourcesof`](@ref)`(dependencies(plan), d)` and performs no dependency
-  discovery of its own, and it orders tiles, costs waves, and holds refcounts
-  and prefetch against the same object whatever the build unit is.
-- a [`ChunkDependencyGraph`](@ref) — adopt a relation somebody else built, after
-  [`validate_dependencies`](@ref) certifies it against *these* spaces, *this*
-  radius and the `narrow` phase the caller claims it carries. An invalid reuse
-  therefore fails at plan construction rather than as a wrong answer later.
-  `refine` cannot be combined with a supplied graph: a narrow phase applies as a
-  relation is built, and reapplying it afterwards would renumber nothing and
-  prove nothing. Name the phase the graph already carries with `narrow` instead.
-  A plan over part of a bigger destination adopts the bigger relation through
-  [`subspace_dependencies`](@ref), which re-stamps a row view onto the sub-space.
-- `false` — hold none, explicitly, and reject `refine`/`narrow` rather than
-  acting on them. A plan with no relation cannot back a
-  [`LazyRegridArray`](@ref), which needs the rows to read; it is for a caller
-  that wants nothing but [`blockfor`](@ref) and the plan's spaces.
-
-Whichever branch runs, it runs **once**, at construction, and reads no source
-data, builds no weights and issues no network metadata request.
-
-# What it decides, and what it does not
-
-For a method whose build unit is a chunk pair, a row *is* the read: the executor
-loads the chunks the row names and nothing else. For a point method that
-supplies a [`sampler`](@ref), the build unit is a destination tile and the read
-is the tile's [`TileWeights`](@ref) manifest — the exact chunks its stencils
-name. The relation then orders tiles, costs waves, and carries the caps,
-refcounts and prefetch, and its rows are a superset of every manifest, but they
-decide no read. Keeping them a superset is what [`supportradius`](@ref) is for.
+  - `nothing` (the default), `true`, or any use of `refine`/`narrow`: build it
+    from the plan's own spaces at the plan's own radius,
+    [`supportradius`](@ref)`(method, src_space)`. This is the default because
+    every lazy read needs a relation.
+  - a [`ChunkDependencyGraph`](@ref): adopt one somebody else built, once
+    [`validate_dependencies`](@ref) certifies it against *these* spaces, *this*
+    radius and the `narrow` phase the caller claims it carries, so an invalid
+    reuse fails at construction rather than as a wrong answer later. `refine` is
+    refused here — name the phase the graph already carries with `narrow`
+    instead. A plan over part of a bigger destination adopts the bigger relation
+    through [`subspace_dependencies`](@ref).
+  - `false`: hold none, explicitly, and reject `refine`/`narrow` rather than
+    acting on them. Such a plan cannot back a [`LazyRegridArray`](@ref), which
+    needs the rows to read; it is for a caller that wants nothing but
+    [`blockfor`](@ref) and the plan's spaces.
 
 # Example
 
@@ -808,17 +788,17 @@ end
     blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) -> CachedBlock
 
 Return the cached block destination tile `key[1]` takes from source chunk
-`key[2]`, building what it comes from on first use. `dinds` lists the tile's
-destination cells, and a shared `destination` — what
-[`preparedestination`](@ref) answered for the tile — lets several pairs reuse
-one preparation of its geometry.
+`key[2]`, building what it comes from on first use.
 
-What is built, cached and locked is the method's build unit. An area method, and
-a point method with no [`sampler`](@ref), builds and caches the one pair. A point
-method that supplies a sampler builds the whole destination tile at once — one
-[`TileWeights`](@ref) keyed by tile number, built once however many pairs ask for
-it — and answers `key[2]` from it, or with an empty block when no stencil in the
-tile names that chunk.
+  - `dinds` lists the tile's destination cells; a shared `destination`, what
+    [`preparedestination`](@ref) answered for the tile, lets several pairs reuse
+    one preparation of its geometry.
+  - What is built, cached and locked is the method's build unit. An area method,
+    and a point method with no [`sampler`](@ref), builds and caches the one pair.
+  - A point method that supplies a sampler builds the whole destination tile at
+    once — one [`TileWeights`](@ref) keyed by tile number, built once however
+    many pairs ask for it — and answers `key[2]` from it, or with an empty block
+    when no stencil in the tile names that chunk.
 """
 blockfor(plan::ChunkedPlan, key::Tuple{Int,Int}, dinds) =
     blockfor(plan, key, dinds, dinds)
@@ -848,9 +828,10 @@ blockfor(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
 Return destination tile `tile`'s cached [`TileWeights`](@ref), building them on
 first use from the sampler `smp`.
 
-The tile is the build, cache and locking unit: concurrent requests for one tile
-wait on one build rather than starting a second, and the whole tile, manifest
-included, counts against the plan's [`weightbudget`](@ref).
+  - The tile is the build, cache and locking unit: concurrent requests for one
+    tile wait on one build rather than starting a second.
+  - The whole tile, manifest included, counts against the plan's
+    [`weightbudget`](@ref).
 """
 tilefor(plan::ChunkedPlan, tile::Integer, dinds, smp) =
     gettile!(plan.storage, Int(tile),
@@ -867,9 +848,9 @@ _emptyblock(nd::Int, ns::Int) =
 
 Build one chunk pair's weights without consulting storage.
 
-This is always the single pair, through [`weightblock`](@ref). The whole-tile
-build a point method with a [`sampler`](@ref) uses belongs to
-[`blockfor`](@ref), because a tile is worth building only where it is kept.
+  - This is always the single pair, through [`weightblock`](@ref).
+  - The whole-tile build a point method with a [`sampler`](@ref) uses belongs to
+    [`blockfor`](@ref), where the tile is kept.
 """
 buildblock(plan::ChunkedPlan, dinds, sinds) =
     buildblock(plan, dinds, sinds, dinds)
@@ -885,21 +866,21 @@ buildblock(plan::ChunkedPlan, dstchunk::Integer, srcchunk::Integer) =
     weightblock(method, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
 
 Build the weights destination cells `dst_inds` take from source cells
-`src_inds`. Every builder, eager or chunked, goes through here, and dispatches
-on [`outputsampling`](@ref), so a sampling may specialise the assembly and no
-concrete method type takes part.
+`src_inds`.
 
-`dst_inds` names the destination cells, either as their index set or as the
-geometry [`preparedestination`](@ref) prepared for them; nothing here reads it
-either way.
-
-Every sampling assembles one destination/source pair through
-[`pairblock`](@ref), whose generic route fills one [`WeightCOO`](@ref) through
-[`buildweights!`](@ref), so a point method that builds no weights of its own
-needs nothing beyond that hook. This is what the eager whole domain and an
-un-cached [`buildblock`](@ref) go through. The whole-tile route a point method
-with a [`sampler`](@ref) takes is not chosen here: a chunked plan selects it
-once, by [`tilesampler`](@ref), in [`blockfor`](@ref).
+  - Every builder, eager or chunked, goes through here and dispatches on
+    [`outputsampling`](@ref), so a sampling may specialise the assembly and no
+    concrete method type takes part.
+  - `dst_inds` names the destination cells either as their index set or as the
+    geometry [`preparedestination`](@ref) prepared for them; nothing here reads
+    it either way.
+  - Every sampling assembles one pair through [`pairblock`](@ref), whose generic
+    route fills one [`WeightCOO`](@ref) through [`buildweights!`](@ref) — all a
+    point method that builds no weights of its own needs. The eager whole domain
+    and an un-cached [`buildblock`](@ref) go through it.
+  - The whole-tile route a point method with a [`sampler`](@ref) takes is not
+    chosen here: a chunked plan selects it once, by [`tilesampler`](@ref), in
+    [`blockfor`](@ref).
 """
 weightblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds) =
@@ -915,15 +896,14 @@ weightblock(::DD.Lookups.Sampling, method::AbstractRegriddingMethod,
 Assemble one `(destination cells, source chunk)` pair. Rows are chunk-local
 within `dst_inds`, columns chunk-local within `src_inds`.
 
-The generic route fills a single [`WeightCOO`](@ref) through
-[`buildweights!`](@ref), which is all a method has to supply. A method that
-assembles a block of its own specializes here instead, and [`Conservative`](@ref)
-does.
-
-A method that wraps another and forwards its build takes the inner method's
-build by forwarding `pairblock` — and [`sampler`](@ref) too, for a point method.
-Forwarding [`buildweights!`](@ref) alone reaches the generic route whatever the
-inner method assembles for itself.
+  - The generic route fills a single [`WeightCOO`](@ref) through
+    [`buildweights!`](@ref), which is all a method has to supply.
+  - A method that assembles a block of its own specializes here instead, as
+    [`Conservative`](@ref) does.
+  - A method that wraps another takes the inner method's build by forwarding
+    `pairblock` — and [`sampler`](@ref) too, for a point method. Forwarding
+    [`buildweights!`](@ref) alone reaches the generic route whatever the inner
+    method assembles for itself.
 """
 function pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds)
@@ -950,10 +930,11 @@ sampler(::AbstractRegriddingMethod, ::RegridSpace) = nothing
 The [`sampler`](@ref) this plan's method prepares for its source space, or
 `nothing` when the plan builds one chunk pair at a time.
 
-A method whose destination sampling is `Points()` and which supplies a sampler
-builds by destination tile. Every other method, and every point method that
-supplies no sampler, keeps the chunk-pair build. No concrete method type takes
-part in the choice.
+  - A method whose destination sampling is `Points()` and which supplies a
+    sampler builds by destination tile.
+  - Every other method, and every point method that supplies no sampler, keeps
+    the chunk-pair build.
+  - No concrete method type takes part in the choice.
 """
 tilesampler(plan::ChunkedPlan) = _tilesampler(outputsampling(plan.method), plan)
 
@@ -994,17 +975,17 @@ end
 
 Build destination tile `dinds`' weights in one pass over its sample sites.
 
-Each destination cell gets one [`weightsat!`](@ref) query, whatever the source
-chunking is, so no chunk boundary changes a stencil. Every nonzero entry is
-filed under the chunk that owns it, [`chunkat`](@ref)`(src_space, i)`, by that
-chunk's chunk-local index; entries naming one source cell twice are summed.
-Blocks are finalized in ascending source-chunk order, and a chunk no stencil
-names produces none, so the manifest is exact.
-
-Temporary storage is one [`WeightRow`](@ref), one slot per source chunk number,
-and one accumulator per contributing chunk holding the entries that reached it
-— never destination cells times candidate chunks. Nothing here reads source
-data or depends on field values or execution order.
+  - Each destination cell gets one [`weightsat!`](@ref) query whatever the
+    source chunking is, so no chunk boundary changes a stencil.
+  - Every nonzero entry is filed under the chunk that owns it,
+    [`chunkat`](@ref)`(src_space, i)`, by that chunk's chunk-local index;
+    entries naming one source cell twice are summed.
+  - Blocks are finalized in ascending source-chunk order, and a chunk no stencil
+    names produces none, so the manifest is exact.
+  - Temporary storage is one [`WeightRow`](@ref), one slot per source chunk
+    number, and one accumulator per contributing chunk — never destination cells
+    times candidate chunks.
+  - Nothing here reads source data or depends on field values or execution order.
 """
 function tileweights(method::AbstractRegriddingMethod, dst_space::RegridSpace, dinds,
     src_space::RegridSpace, smp)

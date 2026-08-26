@@ -45,33 +45,22 @@ chunkranges(space::RasterGrid, chunk::Integer, ::NTuple{2,Int}) =
 """
     SourceChunking(source, ::Val{NS}, othersizes::NTuple{NO,Int})
 
-What `source` declares about the chunking of its pass-through dimensions. The
-declaration is read once — one `declareschunks` test and, when it holds, one
-`DiskArrays.eachchunk` call — and everything a lazy array reports or reads on
-those dimensions comes from the result.
+What `source` declares about the chunking of its `NO` pass-through dimensions,
+read once at construction.
 
-A declaration is usable when `eachchunk` answers a `GridChunks` over the
-regrid's own dimensions: the `NS` dimensions the source flattens over, followed
-by the `NO` pass-through dimensions. A source that declares unchunked storage,
-answers something else, or describes a different number of dimensions declares
-nothing usable, and each pass-through dimension is then one whole chunk.
-
-The spatial dimensions are not carried: a source's spatial chunking is the
-source *space*'s to describe, and a lazy read addresses it through
-[`chunkranges`](@ref).
-
-The spatial count comes in as a `Val` so that each pass-through dimension keeps
-its own chunk type; a grid mixing regular and irregular dimensions would
-otherwise be read into a tuple of unions.
+  - Usable when `declareschunks(source)` holds and `DiskArrays.eachchunk`
+    answers a `GridChunks` over the `NS` flattened dimensions followed by the
+    `NO` pass-through ones; anything else makes every pass-through dimension
+    one whole chunk.
+  - Spatial chunking is not carried; a lazy read addresses it through
+    [`chunkranges`](@ref).
+  - `NS` arrives as a `Val` so each pass-through dimension keeps its chunk type.
 
 # Fields
 
-  - `passthrough`: the declared chunks themselves, kept as declared, so the
-    output reports the source's own chunk description on these dimensions.
-  - `splits`: the same chunks as index ranges, which a read splits a requested
-    slice range along.
-  - `groups`: every combination of those chunks, in column-major order — the
-    non-spatial reads one spatial chunk is loaded for.
+  - `passthrough`: the chunks as declared, which the output reports.
+  - `splits`: the same chunks as index ranges, which a read splits a request along.
+  - `groups`: every combination of those chunks, column-major.
 """
 struct SourceChunking{NO,P<:Tuple}
     passthrough::P
@@ -145,11 +134,10 @@ end
 Whether a tile of `ndst` destination cells holds its per-cell state, prepared
 geometry included, inside [`destcellbudget`](@ref).
 
-The tiling sizes tiles by the executor's own per-cell cost alone, because a
-smaller tile costs one more restricted tree and one more read of every source
-chunk it shares — both larger than the synthesis preparing saves. Preparing
-therefore takes what is left of the share, and this is what refuses it: no
-tile's prepared geometry is charged to a budget that does not hold it.
+  - Tiling sizes tiles by the executor's own per-cell cost alone; preparing
+    takes what is left of the share.
+  - Prepared geometry that does not fit is refused here rather than charged to a
+    budget that does not hold it.
 """
 destcellsfit(method::AbstractRegriddingMethod, dst_space::RegridSpace,
     ndst::Integer, budget::Integer) =
@@ -357,30 +345,21 @@ end
     LazyRegridArray(data, plan::ChunkedPlan)
 
 Return a chunked disk array that computes destination tiles on demand.
-Dimensions are destination cells followed by the source's non-spatial
-dimensions. Tiling uses compatible destination chunks, declared `chunks`, or a
-budget-derived fallback. Pass-through dimensions report the plan's declared
-chunking where there is one, and the source's own where there is not.
-Construction reads no source data: it reads the source's chunk declaration once
-([`SourceChunking`](@ref)) and nothing else. Reads load only connected source
-chunks and keep them within [`databudget`](@ref).
 
-# Where a tile's source chunks come from
-
-From the plan's dependency relation, and from nowhere else. A read performs no
-geometric dependency discovery: the array holds no source chunk index, issues no
-[`candidatechunks!`](@ref) query and tests no cap against the source. A tile that
-*is* a destination chunk takes that chunk's row,
-[`sourcesof`](@ref)`(dependencies(plan), d)`; a derived tile spanning several
-destination chunks takes the ascending union of their rows. Data-dependent
-filtering — dropping the chunks [`knownempty`](@ref) reports empty — happens
-after that selection and never instead of it, so what a read may load is exactly
-what the relation permits, and a scheduler holding the same object predicts it
-exactly.
-
-The plan must therefore own a relation. `plan_regrid(...; lazy = true)` builds
-one by default; only `dependencies = false` asks for a plan that cannot back a
-lazy array.
+  - Dimensions are destination cells followed by the source's non-spatial
+    dimensions. Tiling uses compatible destination chunks, declared `chunks`, or
+    a budget-derived fallback.
+  - Pass-through dimensions report the plan's declared chunking, and the
+    source's own where there is none.
+  - Construction reads no source data: one [`SourceChunking`](@ref) declaration
+    and nothing else. Reads keep what they load within [`databudget`](@ref).
+  - A tile's source chunks come from the plan's dependency relation alone — a
+    destination chunk's row, [`sourcesof`](@ref)`(dependencies(plan), d)`, or the
+    ascending union of a derived tile's rows. A read performs no geometric
+    dependency discovery and issues no [`candidatechunks!`](@ref) query.
+  - Dropping the chunks [`knownempty`](@ref) reports empty comes after that
+    selection, never instead of it.
+  - A plan built with `dependencies = false` cannot back a lazy array.
 """
 struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C,
     S<:SourceChunking{NO}} <: DiskArrays.AbstractDiskArray{T,N}
@@ -388,9 +367,8 @@ struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C,
     plan::P
     srcsize::NTuple{NS,Int}
     size::NTuple{N,Int}
-    # The plan's relation, by reference: `graph === dependencies(plan)`. It is
-    # the source of tile adjacency AND of the per-chunk caps wave costing
-    # weighs, so this array rebuilds and copies neither.
+    # The plan's relation by reference (`graph === dependencies(plan)`): tile
+    # adjacency and the per-chunk caps wave costing weighs, neither copied.
     graph::G
     tiling::DestTiling
     chunks::C
@@ -425,11 +403,8 @@ function LazyRegridArray(data, plan::ChunkedPlan)
         TilePrefetch(length(tiling.runs), weightlimit(plan.storage)))
 end
 
-# Every lazy read needs the plan's relation — for tile ordering, wave costing,
-# refcounts and prefetch, and on the pair route for the source chunks
-# themselves — so this is where a plan that owns none is refused: at
-# construction, naming the keyword that caused it, rather than as a `nothing`
-# reaching a tile query.
+# Refuse a plan that owns no relation at construction, naming the keyword that
+# caused it: every lazy read needs one, and on the pair route it is the read.
 function _lazygraph(plan::ChunkedPlan)
     g = dependencies(plan)
     g === nothing && throw(ArgumentError(
@@ -442,8 +417,7 @@ function _lazygraph(plan::ChunkedPlan)
         "blocks. Build the relation from the spaces — `dependencies = true`, or " *
         "`chunk_dependency_graph(dst, src; radius)` — rather than assembling it " *
         "from bare CSR arrays."))
-    # The plan validated this graph against its own spaces; these two say so in
-    # the numbering the tiling is about to index it in.
+    # Restate the plan's validation in the numbering the tiling indexes.
     ndestinationchunks(g) == Int(nchunks(plan.dst_space)) || throw(ArgumentError(
         "$g holds $(ndestinationchunks(g)) destination rows for a " *
         "$(nchunks(plan.dst_space))-chunk destination space"))
@@ -456,14 +430,14 @@ end
 """
     dependencies(A::LazyRegridArray) -> ChunkDependencyGraph
 
-Return the relation `A` reads against: `A`'s plan's relation, the identical
-object, so `dependencies(A) === dependencies(A.plan)`.
+Return the relation `A` reads against, the identical object its plan holds:
+`dependencies(A) === dependencies(A.plan)`.
 
-It is what orders tiles, costs waves, holds the caps and carries the refcounts
-and prefetch, and on the chunk-pair route it is also the source selection
-itself. A tile built as one [`TileWeights`](@ref) selects from its own manifest
-instead, and the relation is then a superset of what that tile reads and decides
-no read of it.
+  - It orders tiles, costs waves, holds the caps, and carries the refcounts and
+    prefetch.
+  - On the chunk-pair route it is also the source selection itself.
+  - A tile built as one [`TileWeights`](@ref) selects from its own manifest
+    instead; the relation is then a superset that decides no read of it.
 """
 dependencies(A::LazyRegridArray) = A.graph
 
@@ -503,8 +477,7 @@ function _chunkspans(space::RegridSpace)
 end
 
 # Build the reported chunk grid and matching destination tiling. Pass-through
-# dimensions report the plan's declared chunking where there is one, and what
-# the source declares where there is not.
+# dimensions report the plan's declared chunking, or the source's where none.
 function _outputgrid(plan::ChunkedPlan, chunking::SourceChunking, ndst::Int,
     spans::Vector{UnitRange{Int}}, contiguous::Bool, othersizes::Tuple)
     nd = length(othersizes) + 1
@@ -619,15 +592,16 @@ end
 """
     _readdestination!(out, A, cellr, others, nslices)
 
-Read destination cells and slices into `out`. Source residency is limited to
-held chunks plus one streamed chunk. Blocks are built in waves but applied in
-chunk order, keeping results independent of thread count.
+Read destination cells and slices into `out`.
 
-A point method with a [`sampler`](@ref) has one build per tile rather than one
-per pair: the tile's [`TileWeights`](@ref) are built before any source read —
-before source selection, because their manifest is what selects — and its blocks
-are applied in the same ascending chunk order. Tiles the array has not been
-asked for yet are built concurrently, through its [`TilePrefetch`](@ref).
+  - Source residency is limited to held chunks plus one streamed chunk.
+  - Blocks are built in waves but applied in chunk order, so results are
+    independent of thread count.
+  - A point method with a [`sampler`](@ref) builds one [`TileWeights`](@ref) per
+    tile before any source read, because its manifest is what selects the
+    chunks; its blocks are applied in the same ascending chunk order.
+  - Tiles not yet asked for are built concurrently, through the array's
+    [`TilePrefetch`](@ref).
 """
 function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
     cellr::UnitRange{Int}, others::NTuple{NO,UnitRange{Int}}, nslices::Int) where {T,N,NS,NO}
@@ -658,22 +632,14 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         fill!(cover, 0.0)
         fill!(total, 0.0)
         # On the tile route the weights come before the selection, because the
-        # chunks that carry one are exactly the chunks read. Taking a tile also
-        # queues the tiles behind it.
+        # chunks that carry one are exactly the chunks read.
         tile = smp === nothing ? nothing : _taketile!(A.prefetch, A, plan, t, dinds, smp)
         _connectedsource!(srcchunks, A, t, tile)
         _sourceranges!(srcranges, A, srcchunks)
-        # Prepare the tile's destination geometry once, where more than one
-        # block reads it. A single block is served better by its own task-local
-        # memo, whose working set stays in cache where a tile-wide slot array
-        # does not.
-        #
-        # The answer crosses an inference barrier deliberately. Prepared and
-        # unprepared destinations reach two whole assemblies, and a plan takes
-        # the same one for every tile it has; inferring the choice would
-        # compile both into every run. One dynamic dispatch per wave compiles
-        # the one the run takes, and `_fillwave!` specializes on what it is
-        # handed, so the build below is concrete again.
+        # Prepare the tile's destination geometry once where more than one block
+        # reads it; a single block uses its own task-local memo instead. The
+        # choice crosses an inference barrier so that only the assembly this run
+        # takes is compiled; `_fillwave!` specializes on what it is handed.
         destination = Base.inferencebarrier(
             (tile === nothing && length(srcchunks) > 1) ?
             preparedestination(plan.method, plan.dst_space, dinds, plan.budget) :
@@ -717,26 +683,21 @@ end
 """
     _wavesize(plan, nd, srcchunks, srcranges, graph, rows) -> Int
 
-Return the number of chunk-pair blocks to build concurrently. Single-threaded
-sessions return one.
+Return the number of chunk-pair blocks to build concurrently; one on a
+single-threaded session.
 
-A wave spawns one task per block and declares [`OUTER_PARALLEL`](@ref), which
-turns off threading *inside* each build, so the two are alternatives rather
-than additions. Under an outer loop that already declared `OUTER_PARALLEL` the
-wave is the only parallelism left and its width is bounded only by thread
-count, block count and the weight budget. At top level the wave must beat inner
-threading instead — [`_waveideal`](@ref) of [`_blockcosts!`](@ref) against
-`innerspeedup * nthreads()` — or this returns one and the build gets the
-threads.
-
-`innerspeedup` is the per-thread speedup one weight build reaches on its own;
-the default is ConservativeRegridding's measured 8.7x on 12 threads.
-
-The per-chunk geometry the estimate needs — one cap per source chunk, one per
-destination chunk of the tile — is read off `graph`, the plan's relation, which
-already holds both sides' [`chunkextents`](@ref) because they are its own
-inputs. `rows` are the tile's destination rows. Nothing here copies a cap
-vector, so a wave's tasks share the one the relation holds.
+  - A wave spawns one task per block and declares [`OUTER_PARALLEL`](@ref),
+    which turns off threading *inside* each build, so the two are alternatives
+    rather than additions.
+  - Under an outer loop that already declared `OUTER_PARALLEL` the width is
+    bounded only by thread count, block count and the weight budget.
+  - At top level the wave must beat inner threading — [`_waveideal`](@ref) of
+    [`_blockcosts!`](@ref) against `innerspeedup * nthreads()` — or this returns
+    one and the build gets the threads.
+  - `innerspeedup` is the per-thread speedup one weight build reaches on its own.
+  - The caps the estimate needs are read off `graph`'s
+    [`chunkextents`](@ref) and never copied, so a wave's tasks share them;
+    `rows` are the tile's destination rows.
 """
 function _wavesize(plan::ChunkedPlan, nd::Int, srcchunks::Vector{Int}, srcranges::Vector,
     graph::ChunkDependencyGraph, rows::Vector{Int}; innerspeedup::Float64 = 0.73)
@@ -759,17 +720,16 @@ end
 """
     _blockcosts!(costs, srcchunks, srcranges, graph, rows) -> costs
 
-Estimate each chunk pair's build cost before building it, as the number of
-source cells the destination tile can reach: a chunk's cell count scaled by the
-fraction of its extent that a tile extent overlaps. Build cost tracks the pairs
-that actually intersect, and cell counts alone do not — chunks of one source are
-near enough the same size, while their overlap with a tile runs from all of the
-chunk to none of it.
+Estimate each chunk pair's build cost before building it, as the source cells
+the destination tile can reach: the chunk's cell count scaled by the fraction of
+its extent a tile extent overlaps.
 
-Extents are bounding caps, so the estimate is an upper bound on how evenly the
-work spreads: a chunk that touches only the tile's cap, and so contributes
-nothing, still scores above zero. The bias favours keeping the wave, which is
-the safe direction for a scheduling change.
+  - Cell counts alone do not track build cost, because chunks of one source are
+    near enough the same size while their overlap with a tile is not.
+  - Extents are bounding caps, so the estimate is an upper bound on how evenly
+    the work spreads: a chunk touching only the tile's cap, and so contributing
+    nothing, still scores above zero.
+  - That bias favours keeping the wave.
 """
 function _blockcosts!(costs::Vector{Float64}, srcchunks::Vector{Int}, srcranges::Vector,
     graph::ChunkDependencyGraph, rows::Vector{Int})
@@ -807,9 +767,9 @@ function _waveideal(costs::Vector{Float64}, w::Int)
     return serial > 0 ? total / serial : 1.0
 end
 
-# The tile route has one built object per tile, so its wave is a lookup: the
-# tile's block for each source chunk, in the ascending order the loop walks
-# them. `srcchunks` came from the manifest, so every one of them has a block.
+# The tile route's wave is a lookup: the tile's block for each source chunk, in
+# the ascending order the loop walks them. `srcchunks` came from the manifest,
+# so every one of them has a block.
 function _tilewave!(wave::Vector{CachedBlock}, tile::CachedTile, srcchunks::Vector{Int},
     i::Int, j::Int)
     empty!(wave)
@@ -838,10 +798,8 @@ function _fillwave!(wave::Vector{CachedBlock}, plan::ChunkedPlan, t::Int,
         return wave
     end
     tasks = map(k -> _spawnblock(plan, (t, srcchunks[k]), dinds, destination), i:j)
-    # Every spawned task is waited for, whatever happens. A bare `fetch` loop
-    # abandons the tasks after the first failure: they keep building against a
-    # plan the caller has already moved on from, writing into its block storage
-    # while the next tile reads it. The first exception is still the one raised.
+    # Every spawned task is waited for, whatever happens, so no build outlives
+    # the read that spawned it. The first exception is the one raised.
     err = nothing
     for task in tasks
         try
@@ -875,28 +833,22 @@ _tileindices(A::LazyRegridArray, t::Int) =
 """
     _connectedsource!(out, A, t[, tile]) -> out
 
-Write tile `t`'s source chunks into `out`, ascending.
+Write tile `t`'s source chunks into `out`, ascending. This is the whole of the
+executor's source selection, and the tile's build unit decides it.
 
-This is the whole of the executor's source selection, and what decides it is the
-tile's build unit.
-
-A tile with no [`TileWeights`](@ref) — every area method, and a point method
-that supplies no [`sampler`](@ref) — is a read of the plan's relation, with no
-index, no query and no cap test. A tile that is destination chunk `d` takes row
-`d`; a derived tile spanning several destination chunks takes the ascending
-union of their rows, which is a `k`-way merge of already ascending rows, so the
-result depends on the tiling and not on the order the rows are visited.
-
-A tile that has `TileWeights` takes its manifest, exactly: the sorted union of
-the source chunks owning its nonzero stencil entries. The relation's row is a
-superset of that manifest and decides nothing here — intersecting the two could
-only drop a chunk a stencil named. A manifest naming a chunk no row of the tile
-holds is a declared [`supportradius`](@ref) too small to bound the method's
-stencils, and is refused rather than silently dropped.
-
-`knownempty` filtering comes **after**, on both routes, because it is
-data-dependent: it may drop a chunk the selection holds, and it may never add
-one the selection does not.
+  - A tile with no [`TileWeights`](@ref) — every area method, and a point method
+    supplying no [`sampler`](@ref) — reads the plan's relation, with no index,
+    no query and no cap test: row `d` for destination chunk `d`, or the
+    ascending union of the rows a derived tile spans, which depends on the
+    tiling and not on the order the rows are visited.
+  - A tile with `TileWeights` takes its manifest exactly — the sorted union of
+    the source chunks owning its nonzero stencil entries. The relation's row is
+    a superset of it and decides nothing here.
+  - A manifest naming a chunk no row of the tile holds is a declared
+    [`supportradius`](@ref) too small to bound the method's stencils, and is
+    refused rather than silently dropped.
+  - `knownempty` filtering comes **after**, on both routes: it may drop a chunk
+    the selection holds, and may never add one the selection does not.
 """
 _connectedsource!(out::Vector{Int}, A::LazyRegridArray, t::Int) =
     _connectedsource!(out, A, t, nothing)
@@ -922,10 +874,8 @@ function _selectsource!(out::Vector{Int}, A::LazyRegridArray, t::Int, ::Nothing)
     return out
 end
 
-# The tile's own manifest, checked against the rows it has to sit inside. The
-# check is what keeps a declared reach from turning into a wrong answer: a
-# stencil entry whose chunk the relation never named would otherwise be applied
-# against source the refcounts and prefetch never accounted for.
+# The tile's own manifest, checked against the rows it has to sit inside: a
+# chunk the relation never named would be read outside every refcount.
 function _selectsource!(out::Vector{Int}, A::LazyRegridArray, t::Int, tile::CachedTile)
     _copyrow!(out, tile.sourcechunks)
     s = _outsiderows(A, t, out)
@@ -973,9 +923,8 @@ function _copyrow!(out::Vector{Int}, row)
     return out
 end
 
-# The ascending union of several rows. Rows overlap heavily between neighbouring
-# destination chunks, so this concatenates and then sorts in place rather than
-# merging pairwise: one pass, one buffer, and the same answer for any row order.
+# The ascending union of several rows: concatenate, then sort in place, so the
+# answer is the same for any row order.
 function _unionrows!(out::Vector{Int}, g::ChunkDependencyGraph, rows)
     empty!(out)
     @inbounds for d in rows
@@ -1137,9 +1086,8 @@ function _readsource!(buf::Array, source, sr::Tuple, others::Tuple)
     return buf
 end
 
-# Whether the source's values are reached through a DiskArrays read. This is the
-# residence test, and it is not `declareschunks`: an in-memory array may declare
-# a chunking, and is then copied from rather than read block by block.
+# Whether the source's values are reached through a DiskArrays read. This is not
+# `declareschunks`: an in-memory array may declare a chunking and is copied from.
 _isdisksource(x) = x isa DiskArrays.AbstractDiskArray || DiskArrays.isdisk(x)
 
 # Shaped view
@@ -1231,10 +1179,9 @@ function DiskArrays.readblock!(A::ShapedRegridArray{T,N,ND}, aout::AbstractArray
     return aout
 end
 
-# Mirror `wrapoutput` without materializing: label a dimensional source's
-# regrid with the destination's own axes, or one flat `Cell` axis. A
-# destination naming one axis is the array's leading axis already, so it is
-# labelled directly and no shaped view stands between it and its reads.
+# Mirror `wrapoutput` without materializing: label a dimensional source's regrid
+# with the destination's own axes, or one flat `Cell` axis. A destination naming
+# one axis is labelled directly, with no shaped view between it and its reads.
 function wraplazy(A::LazyRegridArray{T,N,NS}, data, dstdims) where {T,N,NS}
     data isa DD.AbstractDimArray || return A
     ds = DD.dims(data)
@@ -1251,14 +1198,14 @@ end
 """
     regrid(data, plan::ChunkedPlan) -> lazy array
 
-Return a disk-backed array that computes destination tiles on demand. Labels
-and shape match the eager result ([`wrapoutput`](@ref)): a dimensional source
-comes back as a `DimArray` carrying the destination's own axes in their
-construction order, or a flat `Cell` axis; other sources stay a flat
-[`LazyRegridArray`](@ref).
+Return a disk-backed array that computes destination tiles on demand.
 
-Several destination axes are a [`ShapedRegridArray`](@ref) view of the cell
-axis; one axis, or none, is the [`LazyRegridArray`](@ref) itself.
+  - Labels and shape match the eager result ([`wrapoutput`](@ref)): a
+    dimensional source comes back as a `DimArray` carrying the destination's own
+    axes in their construction order, or a flat `Cell` axis.
+  - Several destination axes are a [`ShapedRegridArray`](@ref) view of the cell
+    axis; one axis, or none, is the [`LazyRegridArray`](@ref) itself.
+  - Other sources stay a flat [`LazyRegridArray`](@ref).
 """
 function regrid(data, plan::ChunkedPlan)
     A = LazyRegridArray(data, plan)

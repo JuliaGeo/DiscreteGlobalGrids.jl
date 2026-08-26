@@ -1,0 +1,702 @@
+/* =============================================================
+   Layouts — one frame per canonical layout.
+
+   Six canonical layouts: title, section, hero-image, two-up,
+   domain-split, quote. Pick one per slide; do not combine them.
+
+   `default`, `cards`, `code` and `end` are additions this deck
+   needs to be usable as a talk template. They inherit the same
+   frame and type scale rather than introducing a new system.
+
+   Nothing here holds a colour — every one comes from
+   styles/tokens.css. Recolouring the deck is that one file.
+   ============================================================= */
+
+/* ---------- The shared frame ----------
+   Layout is stated as relationships, not absolute offsets, so it
+   survives a jump to Keynote or Typst. This is the one place
+   that pins the content column to the canvas. */
+
+.dy-slide {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: var(--dy-pad-y) var(--dy-pad-x) var(--dy-pad-bot);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--dy-bg);
+}
+
+.dy-slide--quiet {
+  background: var(--dy-bg-alt);
+}
+
+/* Header: eyebrow one grid unit above the title, hairline below. */
+.dy-slide__head {
+  flex: none;
+}
+
+.dy-slide__eyebrow {
+  margin-bottom: var(--dy-s-3);
+}
+
+.dy-slide__title {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: var(--dy-t-title);
+  line-height: var(--dy-lh-snug);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-fg);
+  text-wrap: balance;
+}
+
+.dy-slide__rule {
+  margin-top: var(--dy-s-4);
+}
+
+.dy-slide__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: var(--dy-s-5);
+}
+
+/* Vertical rhythm between top-level blocks in the body.
+   The `:is(...)` is load-bearing: base.css zeroes `margin` on ul, ol
+   and hr at (0,1,1), which beats a bare `> * + *` at (0,1,0) no matter
+   what order the files load in. Naming the elements lifts this to
+   (0,1,1) so it ties and wins on order. */
+.dy-slide__body > * + :is(p, ul, ol, table, pre, blockquote, hr, div, h1, h2, h3, h4) {
+  margin-top: var(--dy-s-5);
+}
+
+/* =============================================================
+   1. Title
+   Wordmark top-left. Huge accent H1 bottom-left. Mono tripod one
+   body line-height below the H1 baseline. Page number suppressed.
+   ============================================================= */
+
+.dy-title {
+  justify-content: space-between;
+}
+
+.dy-title__mark {
+  display: flex;
+  align-items: center;
+  gap: var(--dy-s-3);
+}
+
+.dy-title__wordmark {
+  font-family: var(--dy-font-display);
+  font-weight: 700;
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  color: var(--dy-accent);
+}
+
+/* The org mark. Sized to the wordmark's cap height rather than its
+   em box, so the two read as one lockup instead of a picture next to
+   a word. Radius is cleared explicitly: base.css rounds every img at
+   8px, which on a 28px mark would bite into the circles. */
+.dy-title__logo {
+  height: 28px;
+  width: auto;
+  border-radius: 0;
+  display: block;
+}
+
+.dy-title__foot {
+  width: 100%;
+}
+
+/* No text-wrap: balance here — at display size the author breaks the
+   line by hand with <br>, and balancing would fight that. */
+.dy-title__h1 {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: var(--dy-t-display);
+  line-height: 1;
+  letter-spacing: var(--dy-track-hero);
+  color: var(--dy-accent-ink);
+}
+
+.dy-title__sub {
+  margin-top: var(--dy-s-4);
+  font-size: var(--dy-t-lede);
+  line-height: var(--dy-lh-body);
+  color: var(--dy-fg-2);
+  max-width: 62ch;
+}
+
+/* The tripod: three short mono labels on one baseline. */
+.dy-tripod {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dy-s-6);
+  margin-top: var(--dy-s-7);
+  padding-top: var(--dy-s-4);
+  border-top: var(--dy-rule-hair) solid var(--dy-hairline);
+}
+
+.dy-tripod__item {
+  font-family: var(--dy-font-mono);
+  font-weight: 500;
+  font-size: var(--dy-t-label);
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-2);
+}
+
+/* =============================================================
+   2. Section divider
+   Eyebrow + massive accent H2. Whitespace does the work.
+   No images, no diagrams.
+   ============================================================= */
+
+.dy-section {
+  justify-content: center;
+}
+
+.dy-section__index {
+  font-family: var(--dy-font-mono);
+  font-weight: 500;
+  font-size: var(--dy-t-eyebrow);
+  letter-spacing: var(--dy-track-eyebrow);
+  text-transform: uppercase;
+  color: var(--dy-accent-ink);
+  margin-bottom: var(--dy-s-5);
+}
+
+.dy-section__h2 {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: var(--dy-t-section);
+  line-height: var(--dy-lh-tight);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-accent-ink);
+  max-width: 20ch;
+  text-wrap: balance;
+}
+
+.dy-section__note {
+  margin-top: var(--dy-s-5);
+  font-size: var(--dy-t-body);
+  color: var(--dy-fg-2);
+  max-width: 54ch;
+}
+
+/* =============================================================
+   3. Hero image
+   Eyebrow + accent H2 at top, full-bleed grayscale image below,
+   three-column mono-kicker triad under the image.
+   ============================================================= */
+
+.dy-hero__h2 {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: 32px;
+  line-height: var(--dy-lh-snug);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-accent-ink);
+  max-width: 26ch;
+  text-wrap: balance;
+}
+
+.dy-hero__figure {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: var(--dy-s-5);
+  border: var(--dy-rule-hair) solid var(--dy-hairline);
+  border-radius: var(--dy-r-2);
+  overflow: hidden;
+  position: relative;
+  background: var(--dy-bg-alt);
+}
+
+.dy-hero__figure img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: grayscale(1);
+  border-radius: 0;
+  display: block;
+}
+
+.dy-hero__triad {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--dy-s-5);
+  margin-top: var(--dy-s-5);
+  padding-top: var(--dy-s-4);
+  border-top: var(--dy-rule-hair) solid var(--dy-hairline);
+}
+
+.dy-hero__triad-item p {
+  margin-top: var(--dy-s-2);
+  font-size: var(--dy-t-body-sm);
+  line-height: var(--dy-lh-body);
+  color: var(--dy-fg-2);
+}
+
+/* Placeholder for a photo that does not exist yet: hairline
+   rectangle, one centred mono caption. */
+.dy-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--dy-bg-alt);
+}
+
+.dy-placeholder__caption {
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-caption);
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-3);
+}
+
+/* =============================================================
+   4. Two-up diagram
+   Left column text (eyebrow + accent H2 + feature rows),
+   right column one structural diagram.
+   ============================================================= */
+
+.dy-twoup__cols {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: var(--dy-s-5);   /* col-gap token */
+  align-items: center;
+}
+
+.dy-twoup__left {
+  min-width: 0;
+}
+
+.dy-twoup__h2 {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: 30px;
+  line-height: var(--dy-lh-snug);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-accent-ink);
+  margin-top: var(--dy-s-3);
+  text-wrap: balance;
+}
+
+.dy-twoup__features {
+  margin-top: var(--dy-s-6);
+}
+
+.dy-twoup__right {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dy-twoup__right > * {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* Wider left column when the diagram is narrow. */
+.dy-twoup--wide-left .dy-twoup__cols {
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+}
+
+/* =============================================================
+   5. Domain split
+   Centred compound title, one diagram, gutter-left and
+   gutter-right label stacks.
+   ============================================================= */
+
+.dy-split {
+  align-items: center;
+  text-align: center;
+}
+
+.dy-split__title {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: var(--dy-t-title);
+  line-height: var(--dy-lh-snug);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-fg);
+}
+
+.dy-split__stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  margin-top: var(--dy-s-4);
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) 150px;
+  column-gap: var(--dy-s-5);
+  align-items: center;
+}
+
+.dy-split__aside {
+  text-align: left;
+  font-size: var(--dy-t-caption);
+  line-height: var(--dy-lh-body);
+  color: var(--dy-fg-2);
+}
+
+.dy-split__aside--right {
+  text-align: right;
+}
+
+.dy-split__aside p {
+  margin-top: var(--dy-s-2);
+  font-size: var(--dy-t-caption);
+  line-height: var(--dy-lh-body);
+  color: var(--dy-fg-2);
+}
+
+.dy-split__figure {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+/* =============================================================
+   6. Full-bleed quote
+   Mono eyebrow top, large ink quote centred, mono attribution
+   bottom. Sits on paper-off so it reads as a full-bleed break.
+   ============================================================= */
+
+/* The quote keeps a wider inset than the rest of the deck — the
+   narrower measure is what makes a pull-quote read as one. */
+.dy-quote {
+  justify-content: space-between;
+  padding: var(--dy-s-6) var(--dy-s-8) var(--dy-pad-bot);
+}
+
+.dy-quote__body {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+}
+
+.dy-quote__text {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: 38px;
+  line-height: var(--dy-lh-snug);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-fg);
+  text-wrap: balance;
+}
+
+.dy-quote__attr {
+  flex: none;
+  font-family: var(--dy-font-mono);
+  font-weight: 500;
+  font-size: var(--dy-t-label);
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-2);
+  padding-top: var(--dy-s-4);
+  border-top: var(--dy-rule-hair) solid var(--dy-hairline);
+}
+
+/* =============================================================
+   Cards (addition)
+   A row of hairline cards under the standard header.
+   ============================================================= */
+
+.dy-cards__grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  gap: var(--dy-s-5);
+  margin-top: var(--dy-s-6);
+  align-content: start;
+}
+
+.dy-cards__grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.dy-cards__grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.dy-cards__grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* =============================================================
+   Code (addition)
+   Header, then a single code block that owns the rest of the
+   slide. Optional narrow note column on the right.
+   ============================================================= */
+
+.dy-code__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: var(--dy-s-5);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: var(--dy-s-5);
+}
+
+.dy-code__body--with-note {
+  grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr);
+}
+
+.dy-code__main {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dy-code__main .slidev-code-wrapper,
+.dy-code__main pre {
+  max-height: 100%;
+}
+
+.dy-code__note {
+  min-width: 0;
+  font-size: var(--dy-t-body-sm);
+  line-height: var(--dy-lh-body);
+  color: var(--dy-fg-2);
+  padding-left: var(--dy-s-5);
+  border-left: var(--dy-rule-hair) solid var(--dy-hairline);
+}
+
+/* =============================================================
+   End (addition)
+   The title layout inverted: mark, closing line, contact tripod.
+   ============================================================= */
+
+.dy-end {
+  justify-content: center;
+  background: var(--dy-bg-alt);
+}
+
+.dy-end__h1 {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: var(--dy-t-section);
+  line-height: var(--dy-lh-tight);
+  letter-spacing: var(--dy-track-hero);
+  color: var(--dy-accent-ink);
+  text-wrap: balance;
+}
+
+.dy-end__links {
+  display: flex;
+  gap: var(--dy-s-7);
+  margin-top: var(--dy-s-7);
+  padding-top: var(--dy-s-4);
+  border-top: var(--dy-rule-hair) solid var(--dy-hairline);
+}
+
+.dy-end__link-label {
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-label);
+  font-weight: 500;
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-3);
+}
+
+.dy-end__link-value {
+  margin-top: var(--dy-s-1);
+  font-size: var(--dy-t-body-sm);
+  color: var(--dy-fg);
+}
+
+/* =============================================================
+   Figure (addition)
+   The standard header over one exported figure, which takes the
+   whole of the rest of the canvas. Drop the title and the header
+   goes with it: the figure runs full bleed.
+   ============================================================= */
+
+/* Everything below the title is the figure. The gap the other layouts
+   open under the rule is air the body needs to start reading; a figure
+   carries its own padding and its own margins, so here that gap is
+   whitespace stacked on whitespace — and every pixel of it comes
+   straight off the size of the plot. The rule sits tight under the
+   title, the body starts at the rule, and the slide gives back the
+   extra bottom inset it was holding for copy to clear the page
+   number: a figure clears it on its own. */
+.dy-figureslide {
+  padding-bottom: var(--dy-safe);
+}
+
+.dy-figureslide .dy-slide__rule {
+  margin-top: var(--dy-s-4);
+  margin-bottom: 0;
+}
+
+.dy-figureslide__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 0;
+  /* A figure is not copy and needs no reading column: bleed it out to
+     the canvas edges, past the content inset the header keeps. */
+  margin-inline: calc(-1 * var(--dy-pad-x));
+}
+
+.dy-figureslide--bare {
+  padding: 0;
+}
+
+.dy-figureslide--bare .dy-figureslide__body {
+  margin-inline: 0;
+}
+
+/* Bottom-left of the safe area, opposite the page number. Only
+   appears when the slide actually writes a note. */
+.dy-figureslide__note {
+  position: absolute;
+  left: var(--dy-safe);
+  bottom: var(--dy-safe);
+  z-index: 5;
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-label);
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-3);
+}
+
+/* The frame fills whatever box it is handed and centres the page
+   inside it. The page is laid out at its own exported pixel size and
+   scaled to fit by the component, so nothing is ever cropped and a
+   figure exported at the size of this box lands 1:1. */
+.dy-figure {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--dy-bg);
+}
+
+.dy-figure__frame {
+  flex: none;
+  border: 0;
+  display: block;
+}
+
+.dy-video__media {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: var(--dy-bg);
+}
+
+/* Held over the frame until the page reports it has loaded, then
+   faded out — a hard swap reads as a flicker on a projector. */
+.dy-figure__cover {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--dy-bg-alt);
+  transition: opacity var(--dy-dur) var(--dy-ease);
+  pointer-events: none;
+}
+
+.dy-figure__cover--loaded {
+  opacity: 0;
+}
+
+.dy-figure__cover-label {
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-caption);
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-3);
+}
+
+/* =============================================================
+   Markdown ergonomics.
+
+   Slot content arrives as markdown, so `# Title` lands inside a
+   headline container as an h1 that would otherwise pick up the
+   base heading style and fight the container. Two rules below:
+
+   1. Inside a container that already sets its own type, headings
+      and paragraphs inherit.
+   2. Inside a layout whose headline is written as markdown rather
+      than as a container, h1 and h2 take the layout's headline
+      type directly.
+
+   Everything here is a single class plus an element, so it ties
+   with `.slidev-layout h1` on specificity and wins on order.
+   ============================================================= */
+
+/* 1a. Headline containers: one line of type, so collapse everything
+       inside to the container's own settings. */
+.dy-title__h1 h1, .dy-title__h1 h2, .dy-title__h1 h3, .dy-title__h1 p,
+.dy-section__h2 h1, .dy-section__h2 h2, .dy-section__h2 h3, .dy-section__h2 p,
+.dy-hero__h2 h1, .dy-hero__h2 h2, .dy-hero__h2 h3, .dy-hero__h2 p,
+.dy-split__title h1, .dy-split__title h2, .dy-split__title h3, .dy-split__title p,
+.dy-quote__text h1, .dy-quote__text h2, .dy-quote__text h3, .dy-quote__text p,
+.dy-end__h1 h1, .dy-end__h1 h2, .dy-end__h1 h3, .dy-end__h1 p {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  font-style: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  margin: 0;
+  text-wrap: inherit;
+}
+
+/* 1b. Body containers: same inheritance, but paragraphs keep their
+       rhythm — these can legitimately hold more than one. */
+.dy-title__sub p,
+.dy-section__note p,
+.dy-card__body p,
+.dy-code__note p,
+.dy-split__aside p {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  color: inherit;
+  margin: 0;
+}
+
+.dy-title__sub p + p,
+.dy-section__note p + p,
+.dy-card__body p + p,
+.dy-code__note p + p,
+.dy-split__aside p + p {
+  margin-top: var(--dy-s-4);
+}
+
+/* 2. Markdown headings that ARE the layout headline.
+      No top margin — when an eyebrow is present its own margin-bottom
+      opens the gap, so the headline sits flush at the top otherwise. */
+.dy-twoup__left h1,
+.dy-twoup__left h2 {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: 30px;
+  line-height: var(--dy-lh-snug);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-accent-ink);
+  margin-top: 0;
+  text-wrap: balance;
+}
+
+/* Consecutive blocks in a markdown slot need vertical rhythm the
+   markdown itself cannot express. */
+.dy-twoup__left > * + *,
+.dy-code__note > * + *,
+.dy-split__aside > * + * {
+  margin-top: var(--dy-s-4);
+}
+
+.dy-hero__triad > * {
+  min-width: 0;
+}

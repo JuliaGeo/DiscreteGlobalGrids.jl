@@ -1,0 +1,126 @@
+/* =============================================================
+   Diagrams — the hero of a technical deck, and the surface a
+   JuliaGeo talk leans on hardest: geometry plots, spatial
+   structures, operation flows.
+
+   Rules these classes encode:
+     · one backbone per diagram — polygon, Venn, cycle or flow
+     · orthogonal wires only, 1.5px ink
+     · block labels mono 11px uppercase, centred, inside
+     · every other label outside, joined by a 1px muted leader
+     · structural arrows 1.4–1.8px ink, closed triangle markers
+     · feedback arrows accent, dashed, 0.45 opacity
+     · exactly one apex — one accent dot, arrow or filled node
+
+   Green tint bands are legal inside a diagram and nowhere else.
+   ============================================================= */
+
+.dy-diagram {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* ---------- Strokes ---------- */
+
+.dy-dg-wire {
+  fill: none;
+  stroke: var(--dy-ink);
+  stroke-width: 1.5;
+  stroke-linecap: butt;
+}
+
+.dy-dg-feedback {
+  fill: none;
+  stroke: var(--dy-accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 5;
+  opacity: 0.45;
+}
+
+.dy-dg-leader {
+  fill: none;
+  stroke: var(--dy-fg-3);
+  stroke-width: 1;
+}
+
+/* ---------- Shapes ---------- */
+
+.dy-dg-block {
+  fill: var(--dy-paper);
+  stroke: var(--dy-ink);
+  stroke-width: 1.5;
+}
+
+.dy-dg-lobe {
+  fill: none;
+  stroke: var(--dy-ink);
+  stroke-width: 1.5;
+}
+
+/* Tint washes are legal here and nowhere else: structural bands
+   inside a diagram, never a slide background. */
+.dy-dg-band {
+  fill: var(--dy-accent-tint);
+  stroke: none;
+}
+
+.dy-dg-junction {
+  fill: var(--dy-ink);
+  stroke: none;
+}
+
+/* The apex. One per diagram. */
+.dy-dg-apex {
+  fill: var(--dy-accent);
+  stroke: none;
+}
+
+.dy-dg-marker {
+  fill: var(--dy-ink);
+  stroke: none;
+}
+
+/* Markers do not inherit opacity from the path that references them,
+   so the feedback head carries its own. */
+.dy-dg-marker-accent {
+  fill: var(--dy-accent);
+  stroke: none;
+  opacity: 0.45;
+}
+
+/* ---------- Diagram type ---------- */
+
+.dy-dg-label {
+  font-family: var(--dy-font-mono);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  fill: var(--dy-ink);
+}
+
+.dy-dg-label--outside {
+  font-size: 10px;
+  fill: var(--dy-muted);
+}
+
+.dy-dg-label--accent {
+  fill: var(--dy-accent-ink);
+}
+
+.dy-dg-sub {
+  font-family: var(--dy-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  fill: var(--dy-fg-3);
+}
+
+.dy-dg-sign {
+  font-family: var(--dy-font-mono);
+  font-size: 13px;
+  fill: var(--dy-ink);
+}
+
+.dy-dg-gen { fill: var(--dy-accent); }
+.dy-dg-sci { fill: none; stroke: var(--dy-ink); stroke-width: 2; stroke-linecap: round; }

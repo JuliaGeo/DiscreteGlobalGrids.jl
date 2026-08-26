@@ -64,7 +64,9 @@ const CONFIG = (
     ancestor    = 5,        # chunk root level
     source      = :synthetic, # :real (lazy AWS tiles) or :synthetic
     authalic    = true,     # compute on the WGS84 authalic geometry
-    store       = "/home/asinghvi17/geo/scratch-stores/glo90-synthetic-authalic-phase1.zarr",
+    method      = Symbol(get(ENV, "COPDEM_METHOD", "conservative")), # :conservative or :nearest
+    store       = get(ENV, "COPDEM_STORE",
+                      "/home/asinghvi17/geo/scratch-stores/glo90-synthetic-authalic-phase1.zarr"),
     region      = nothing,  # nothing for the globe, or [(w, e, s, n), ...] boxes
     maskarcsec  = 15,       # land-mask lattice, arcseconds; 0 disables the mask
     real        = :none,    # local overrides; synthetic requires :none absolutely
@@ -92,7 +94,7 @@ const CONFIG = (
     checks      = false,    # run the synthetic oracle after the run
     checkchunks = 6,        # chunks to verify when `checks`
     heartbeat   = 300,      # seconds between summary lines
-    maxchunks   = 0,        # 0 = no limit; a smoke-test knob
+    maxchunks   = parse(Int, get(ENV, "COPDEM_MAXCHUNKS", "0")), # 0 = no limit; a smoke-test knob
     chunks      = Int[],    # explicit chunk indices, overriding the covering
     dryrun      = false,    # plan and report, compute nothing
     allowsweeper = false,   # run anyway under `--gcthreads=N,1`; see `gcguard`
@@ -100,6 +102,28 @@ const CONFIG = (
     data        = get(ENV, "RASTERDATASOURCES_PATH",
                       joinpath(@__DIR__, "..", "bench", "data")),
 )
+
+"""
+    regridmethod(config) -> AbstractRegriddingMethod
+
+The regridding method `config.method` names.
+
+Every plan in the run takes its method from here: the per-column plans in
+[`regrid_chunk`](@ref) and the global one in [`dagplan`](@ref) whose relation the
+schedule and the cache read. A plan's dependency relation is built at its
+method's own `supportradius`, so the two must agree — a graph built at
+`Conservative`'s radius while the columns regrid with `NearestCell` would credit
+tiles no column asks for, and the reverse would leave real demands uncredited.
+
+`missingpolicy` is `Weighted(0.5)` for both methods, as `benchmark/copdem_nearest.jl`
+uses it: a nearest stencil is one weight of exactly 1.0, so the policy divides by
+one and passes the source value through unchanged.
+"""
+function regridmethod(config)
+    config.method === :conservative && return DGG.Conservative()
+    config.method === :nearest && return DGG.NearestCell()
+    return error("method must be :conservative or :nearest, got $(repr(config.method))")
+end
 
 # ===========================================================================
 # Logging
@@ -789,7 +813,7 @@ function dagplan(sys, sys7, tiles::Vector{Int}, chunks::Vector{Int}, srcspace, c
     # The plan owns the relation. Its radius is its method's own
     # `supportradius`, which is the same number this line used to compute by
     # hand, and the same one `regrid_chunk`'s per-column plans use.
-    globalplan = GR.ChunkedPlan(DGG.Conservative(), DGG.Weighted(0.5),
+    globalplan = GR.ChunkedPlan(regridmethod(config), DGG.Weighted(0.5),
         dstspace, srcspace; budget = config.budget, dependencies = true,
         refine, narrow)
     graph = GR.dependencies(globalplan)
@@ -919,7 +943,7 @@ function regrid_chunk(dem, srcspace, sys7, layout, chunk::Int, config)
     dstgrid = DGG.subtree(sys7, a, config.level)
     dstspace = DGG.DGGSpace(dstgrid; chunklevel = config.ancestor)
     out = GR.regrid(dem; to = dstspace, from = srcspace,
-        method = DGG.Conservative(), missingpolicy = DGG.Weighted(0.5),
+        method = regridmethod(config), missingpolicy = DGG.Weighted(0.5),
         lazy = true, budget = config.budget)
     return Float32.(vec(collect(out)))
 end
@@ -1257,12 +1281,14 @@ end
 
 function main(config = CONFIG)
     gcguard(config)
+    regridmethod(config)   # fail fast on a bad `method`, before the land mask
     configureprofile()
     realspec = effective_realspec(config.source, config.real)
     println("="^92)
     println(stamp(), "  copdem_production.jl — GLO-$(config.res) -> IGEO7 level " *
                      "$(config.level), level-$(config.ancestor) chunks, " *
-                     "$(uppercase(String(config.source))) elevations")
+                     "$(uppercase(String(config.source))) elevations, " *
+                     "$(uppercase(String(config.method))) method")
     println("  julia $(VERSION)  threads=$(Threads.nthreads())  " *
             "gcmark=$(Base.JLOptions().nmarkthreads)  " *
             "gcsweep=$(Base.JLOptions().nsweepthreads)  pid=$(getpid())")

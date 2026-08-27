@@ -359,16 +359,22 @@ fig
 #     union of its children's, so the descendant leaves are the only such cover
 #     and the regrid reads `M` presented at its `reference_level`. Cost follows
 #     the leaf count there, and it is the leaf count that buys the coverage.
-#   - `BarycentricPoint` reads sample sites too, but interpolating needs a ring
-#     of neighbouring sites, and mixed levels do not tile conformingly: a coarse
-#     cell's edge carries T-junctions. It is refused until that construction
-#     lands. To interpolate on the leaves anyway — a different function, which
-#     rebuilds the coarsening steps at leaf spacing — expand by hand first, which
-#     says so.
+#   - `BarycentricPoint` reads sample sites too, and interpolates between the
+#     stored ones. The stencil is the triangle of stored sites around the
+#     destination point, found through the covering cell's own level, so the
+#     blend runs across a coarse cell at the resolution the value was stored at
+#     and the interpolant kinks — visibly — at every level boundary. Cost
+#     follows the stored count.
+#   - Interpolating on the leaves instead is a **different** function, not a
+#     coarser one: every leaf under a stored cell repeats that cell's value, so
+#     the blend is flat through the cell and steps at leaf spacing at its edge —
+#     the coarsening staircase, rebuilt. Ask for it by name if you want it:
+#     `regrid(expand(M, ref); to = ...)`.
 #
 # `from` names a space, not a layout. Pairing the container with values stored
 # one per *cell* against a method that reads it as leaves is refused, and so is
-# the mirror; put the values on the axis and drop the keyword.
+# the mirror; a `from` naming a different container than the cube's own axis is
+# refused too. Put the values on the axis and drop the keyword.
 
 # ## Summary
 #

@@ -2,7 +2,7 @@
 #
 #     julia --project=benchmark --threads=1 benchmark/multiorder_baseline.jl
 #
-# Six arms, all on synthetic HEALPix fixtures, no downloads:
+# Seven arms, all on synthetic HEALPix fixtures, no downloads:
 #
 #   1. INFERENCE   — the return type of every public entry point. The package
 #                    carries a juliac ambition, so an answer that is neither
@@ -20,6 +20,9 @@
 #                    search and allocates nothing, `collect` is a run fill.
 #   6. STORE IO    — a compacted write+read against the expanded write of the
 #                    same field, same session, same data.
+#   7. REGRID      — `BarycentricPoint` off the stored cells against off their
+#                    reference-level expansion, same session, same field: build
+#                    and apply, and what the reference level costs.
 #
 # Plus a region note: `covering_indices` and the `Covering` selector are bounded
 # not by the container but by `query(sys, MultiOrderCoverage(...); level)`,
@@ -27,8 +30,8 @@
 #
 # The IO arm needs Zarr, which is a weak dependency: it self-skips when absent.
 #
-# Checkpoint 2026-08-27, Julia 1.12.7, 1 thread, M-series laptop, 112 s and
-# 1 990 MiB peak of which 1 570 MiB is loading and compiling this script:
+# Checkpoint 2026-08-27, Julia 1.12.7, 1 thread, M-series laptop, 140 s and
+# 1 563 MiB peak of which most is loading and compiling this script:
 #
 #   * every entry point concrete, `Union{T,Nothing}`, or the documented
 #     two-way shape union;
@@ -39,7 +42,14 @@
 #     12.0 ms at atol 0.001 (778 992); `aggregate` 1.2 ms one level up;
 #   * `expand` access 9.5 ns and zero bytes; `collect` 0.07 ns/cell;
 #   * a compacted store is 0.095x the expanded one on disk and 2.7x slower to
-#     read back, because reading validates every (level, id) pair.
+#     read back, because reading validates every (level, id) pair;
+#   * `BarycentricPoint` off 624 stored cells onto 12 288: 819 ns and 0 bytes
+#     per destination point, 3.9 MiB of plan. Re-keying those SAME cells two
+#     reference levels deeper (16x the leaves) leaves the native plan at 1.02x
+#     time and 1.00x bytes; the expansion's goes to 3.52x bytes, so at that
+#     reference level the native plan is 0.22x the expanded one, and applying
+#     it 0.07x. Build TIME is the destination sweep either way — the source
+#     presentation moves the bytes, not the clock.
 #
 # The one cost that is NOT the container's is the region arm: see its note.
 
@@ -504,6 +514,113 @@ function io_arm(leaf::Int)
 end
 
 # ---------------------------------------------------------------------------
+# 7. Regrid
+# ---------------------------------------------------------------------------
+#
+# An interpolating method reads sample sites, so it takes the stored cells as
+# they are. The comparison is against the only other way to interpolate a
+# mixed-level field — expand to the reference level first, where every leaf
+# under a stored cell repeats one value — measured in the same session on the
+# same numbers, so only the source presentation differs.
+
+# Typed wrappers, as arm 1: a keyword call through a closure over a script
+# global reports a false answer for both inference and allocation.
+w_plan(A, dst, m) = GR.plan_regrid(A; to = dst, method = m, lazy = false)
+w_apply(A, plan) = GR.regrid(A, plan)
+w_cube(mov, values) = DD.DimArray(values, (DGG.Cells(DGG.MultiOrderLookup(mov)),))
+
+function w_sweep(row, smp, pts)
+    n = 0
+    for p in pts
+        GR.ismapped(GR.weightsat!(row, smp, p)) && (n += 1)
+    end
+    return n
+end
+
+function regrid_arm(leaf::Int, dstlevel::Int; atol = 0.25)
+    rule("7. REGRID — BarycentricPoint off the stored cells, and off their expansion")
+    cv, vals = level_field(leaf)
+    mov, mvals = DGG.coarsen(cv, vals; atol)
+    cv = vals = nothing
+    GC.gc(true)
+    A = w_cube(mov, mvals)
+    E = DGG.expand(A, leaf)
+    dst = DGG.levelgrid(SYS, dstlevel)
+    m = GR.BarycentricPoint()
+    stored, leaves = length(mov), DGG.ncells(DGG.levelgrid(SYS, leaf))
+    println("a level-$leaf field coarsened at atol $atol to $stored stored " *
+            "cells ($(round(leaves / stored; digits = 1))x fewer than its " *
+            "$leaves leaves),\nonto level $dstlevel ($(DGG.ncells(dst)) cells)")
+
+    widths = (14, 9, 9, 11, 12, 11)
+    row(("route", "source", "columns", "build", "build bytes", "apply"), widths)
+    println("-"^76)
+    results = Dict{String,NTuple{3,Float64}}()
+    for (label, data, apply) in (("stored", A, true), ("expanded", E, true))
+        gb = () -> w_plan(data, dst, m)
+        plan = gb()
+        eb = estimate(gb; seconds = 3.0, samples = 5)
+        ns = 0.0
+        if apply
+            ga = () -> w_apply(data, plan)
+            ga()
+            ns = estimate(ga; seconds = 3.0, samples = 5).ns
+        end
+        row((label, Int(GR.ncells(plan.src_space)),
+                size(plan.block.weights, 2), fmt_ns(eb.ns), fmt_bytes(eb.bytes),
+                apply ? fmt_ns(ns) : "-"), widths)
+        results[label] = (eb.ns, Float64(eb.bytes), ns)
+        plan = nothing
+        GC.gc(true)
+    end
+
+    # The reference level names the leaves and nothing else. Re-keying the SAME
+    # stored cells two levels deeper multiplies the leaf count by sixteen: the
+    # native plan should not move at all, and the expansion's should follow the
+    # leaves. Only the builds are measured here — applying the deep expansion
+    # would materialise a leaf per value and say nothing new.
+    deep = EN.MultiOrderVector(SYS, collect(mov); reference_level = leaf + 2)
+    D = w_cube(deep, mvals)
+    deepleaves = DGG.ncells(DGG.levelgrid(SYS, leaf + 2))
+    println("\nthe same $stored stored cells re-keyed to reference level " *
+            "$(leaf + 2) — $deepleaves leaves, $(round(Int, deepleaves / leaves))x:")
+    for (label, data) in (("stored/deep", D), ("expanded/deep", DGG.expand(D, leaf + 2)))
+        gd = () -> w_plan(data, dst, m)
+        plan = gd()
+        e = estimate(gd; seconds = 3.0, samples = 3)
+        row((label, Int(GR.ncells(plan.src_space)),
+                size(plan.block.weights, 2), fmt_ns(e.ns), fmt_bytes(e.bytes),
+                "-"), widths)
+        results[label] = (e.ns, Float64(e.bytes), 0.0)
+        plan = nothing
+        GC.gc(true)
+    end
+    D = deep = nothing
+    GC.gc(true)
+
+    s, e = results["stored"], results["expanded"]
+    sd, ed = results["stored/deep"], results["expanded/deep"]
+    @printf("\nstored / expanded, at reference level %d: build %.2fx time, %.2fx bytes; apply %.3fx\n",
+        leaf, s[1] / e[1], s[2] / e[2], s[3] / e[3])
+    @printf("stored / expanded, at reference level %d: build %.2fx time, %.3fx bytes\n",
+        leaf + 2, sd[1] / ed[1], sd[2] / ed[2])
+    @printf("deep / shallow, same stored cells:  stored %.2fx time %.2fx bytes, expanded %.2fx time %.2fx bytes\n",
+        sd[1] / s[1], sd[2] / s[2], ed[1] / e[1], ed[2] / e[2])
+
+    # And one query: the fan is fixed capacity, so a located stencil reaches no
+    # heap however big the container is.
+    smp = GR.sampler(m, GR.sourcespacefor(mov, m))
+    pts = [GR.cellcentroid(DGG.DGGSpace(dst), i) for i in 1:DGG.ncells(dst)]
+    grow = () -> w_sweep(GR.WeightRow(), smp, pts)
+    mapped = grow()
+    eq = estimate(grow; seconds = 3.0, samples = 5)
+    @printf("weightsat! over %d points: %s each, %s total, %d mapped\n",
+        length(pts), fmt_ns(eq.ns / length(pts)), fmt_bytes(eq.bytes), mapped)
+    A = E = mov = mvals = smp = pts = nothing
+    GC.gc(true)
+end
+
+# ---------------------------------------------------------------------------
 
 rss() = round(Sys.maxrss() / 2^20; digits = 1)
 mark(name) = println("\n[peak RSS after $name: $(rss()) MiB]")
@@ -535,6 +652,9 @@ function main()
 
     region_arm()
     mark("region")
+    regrid_arm(6, 5)
+    GC.gc(true)
+    mark("arm 7")
     io_arm(6)
     println("\npeak RSS ", rss(), " MiB")
 end

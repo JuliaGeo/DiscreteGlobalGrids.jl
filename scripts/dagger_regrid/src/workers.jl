@@ -20,7 +20,8 @@ function make_worker_state(settings)
     geometry = _source_geometry(config)
     tiledir = joinpath(config.data, "CopernicusDEM", "$(config.res)m")
     landshp = joinpath(config.data, "naturalearth", "ne_10m_land.shp")
-    mask = landmask(landshp, config.maskarcsec)
+    # Real tiles carry their own ocean nodata; only a synthetic source masks.
+    mask = config.source === :synthetic ? landmask(landshp, config.maskarcsec) : NOMASK
     real = realtiles(geometry.sys, tiledir,
         effective_realspec(config.source, config.real))
     tileset = Set(geometry.tiles)

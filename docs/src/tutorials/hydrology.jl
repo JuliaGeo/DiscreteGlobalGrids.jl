@@ -72,16 +72,16 @@ DGG.CellLookup(region) |> length
 # By default, it returns a DimArray, which we can promote to a Raster (those
 # have better handling for missing / NODATA values).
 
+DGG.regrid(dem; to = region) # hide
 igeo7_dem = @time DGG.regrid(dem; to = region)
-igeo7_dem = @time DGG.regrid(dem; to = region, method = DGG.BarycentricPoint())
 elevation = Raster(igeo7_dem; missingval = oftype(first(igeo7_dem), NaN))
 # Let's now plot this too, using the specialized [`dggsurface`](@ref) recipe for efficiency:
-f, a, p = dggpoly(lookup(elevation, DGG.Cells); color = vec(elevation), axis = (; aspect = DataAspect()))
+f, a, p = dggsurface(lookup(elevation, DGG.Cells); color = vec(elevation), axis = (; aspect = DataAspect()))
 f
 
 # There are also some nice overloads to make this really feel like a surface plot.
 # To enhance realism, we'll transform it to "real" coordinates at least.
-f, a, p = dggpoly(
+f, a, p = dggsurface(
     elevation .* 2; # just for effect, since this will be a static plot
     color = vec(elevation), 
     axis = (; type = Axis3, aspect = :data, clip = false)

@@ -494,7 +494,8 @@ function main(config = CONFIG)
     donelog = donelogpath(config.store)
     chunklist = chunklistpath(config.store)
 
-    mask = landmask(landshp, config.maskarcsec)
+    # Real tiles carry their own ocean nodata; only a synthetic source masks.
+    mask = config.source === :synthetic ? landmask(landshp, config.maskarcsec) : NOMASK
 
     # --- the source ------------------------------------------------------
     t0 = time()

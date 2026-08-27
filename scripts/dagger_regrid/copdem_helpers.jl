@@ -50,7 +50,7 @@ function copdem_config()
         timeout     = 600.0,    # seconds per tile GET
         workers     = parse(Int, get(ENV, "COPDEM_WORKERS", "40")), # concurrent worker tasks; 0 = size from `cores` (local bench knob)
         cores       = 40,       # the core budget `workers` is sized to hold
-        shape       = :outer,   # :outer or :inner; see `workercount`
+        shape       = Symbol(get(ENV, "COPDEM_SHAPE", "outer")), # :outer or :inner; see `workercount`
         batch       = 8,        # chunks handed out per pull, at most; see `taper`
         taper       = true,     # shrink the batch as the queue drains
         budget      = 2^30,     # lazy-regrid byte budget, per worker

@@ -27,16 +27,14 @@ GlobalRegriddingRastersExt = "Rasters"
 
 [sources]
 ConservativeRegridding = {rev = "main", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-GeometryOps = {rev = "27834e736262016acf104d6b02a41c3eab4b9371", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 
 [compat]
 ConservativeRegridding = "0.2.8"
 DimensionalData = "0.30"
 DiskArrays = "0.4"
 GeoInterface = "1"
-GeometryOps = "0.1.43"
-GeometryOpsCore = "0.1.11"
+GeometryOps = "0.1.45"
+GeometryOpsCore = "0.1.12"
 Graphs = "1.14"
 Proj = "1.9"
 Rasters = "0.15"

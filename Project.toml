@@ -30,16 +30,14 @@ DiscreteGlobalGridsZarrExt = ["Zarr"]
 
 [sources]
 ConservativeRegridding = {rev = "main", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-GeometryOps = {rev = "27834e736262016acf104d6b02a41c3eab4b9371", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-# Not a workspace member: it resolves its own Manifest, so
 # `julia --project=lib/GlobalRegridding` stays self-contained.
 GlobalRegridding = {path = "lib/GlobalRegridding"}
 
 [compat]
 DE9IM = "0.1"
 DiskArrays = "0.4"
-GeometryOpsCore = "0.1.11"
+GeometryOps = "0.1.45"
+GeometryOpsCore = "0.1.12"
 SmallCollections = "0.6.3"
 Zarr = "0.10"
 julia = "1.11"

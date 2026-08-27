@@ -17,13 +17,11 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 [sources]
 ConservativeRegridding = {rev = "main", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 DiscreteGlobalGrids = {path = "../.."}
-GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "27834e736262016acf104d6b02a41c3eab4b9371"}
-GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 
 [compat]
 DiscreteGlobalGrids = "0.1"
-GeometryOps = "0.1.43"
-GeometryOpsCore = "0.1.11"
+GeometryOps = "0.1.45"
+GeometryOpsCore = "0.1.12"
 Random = "1"
 Test = "1"
 julia = "1.11"

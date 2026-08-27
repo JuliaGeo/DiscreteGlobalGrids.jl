@@ -27,8 +27,6 @@ Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 ConservativeRegridding = {rev = "main", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 Dagger = {rev = "master", url = "https://github.com/JuliaParallel/Dagger.jl.git"}
 DiscreteGlobalGrids = {path = "../.."}
-GeometryOps = {rev = "27834e736262016acf104d6b02a41c3eab4b9371", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GlobalRegridding = {path = "../../lib/GlobalRegridding"}
 
 [compat]

@@ -56,17 +56,40 @@ function STI.node_extent(t::CapCachedTree)
     return STI.node_extent(c)
 end
 
+"""
+    _CapCachedLeafEntries(cursor, caps)
+
+A read-only view of one [`CapCachedTree`](@ref) leaf's `(index, cap)` entries.
+
+The cached tree deliberately groups up to [`_CACHED_BUCKET_SIZE`](@ref) cells in
+one leaf. A dual-tree search may pair that leaf with many source leaves, so
+materialising its entries on every pairing turns the cache into hundreds of
+megabytes of short-lived vectors. This view keeps the entries lazy: their
+indices come from the cursor and their already-computed caps come from the
+cache, with no per-visit buffer.
+"""
+struct _CapCachedLeafEntries{C,V<:AbstractVector,E} <: AbstractVector{Tuple{Int,E}}
+    cursor::C
+    caps::V
+end
+
+_CapCachedLeafEntries(cursor::C, caps::V) where {C,E,V<:AbstractVector{E}} =
+    _CapCachedLeafEntries{C,V,E}(cursor, caps)
+
+Base.size(entries::_CapCachedLeafEntries) = (Engine._stored_count(entries.cursor),)
+Base.IndexStyle(::Type{<:_CapCachedLeafEntries}) = IndexLinear()
+
+Base.@propagate_inbounds function Base.getindex(entries::_CapCachedLeafEntries, k::Int)
+    @boundscheck checkbounds(entries, k)
+    index = Engine._stored_index(entries.cursor, k)
+    return (index, @inbounds entries.caps[index])
+end
+
 function STI.child_indices_extents(t::CapCachedTree)
     c = t.node
     STI.isleaf(c) ||
         throw(ArgumentError("child_indices_extents is only valid for leaf nodes"))
-    count = Engine._stored_count(c)
-    entries = Vector{Tuple{Int,eltype(t.caps)}}(undef, count)
-    for k in 1:count
-        index = Engine._stored_index(c, k)
-        entries[k] = (index, @inbounds t.caps[index])
-    end
-    return entries
+    return _CapCachedLeafEntries(c, t.caps)
 end
 
 Trees.ncells(t::CapCachedTree) = Trees.ncells(t.node)
@@ -77,16 +100,16 @@ GOCore.best_manifold(t::CapCachedTree) = GOCore.best_manifold(t.node)
 """
     _CACHED_BUCKET_SIZE
 
-Leaf size for a cursor whose caps this file precomputes: stop descent at `7^2`
-stored cells, two IGeo7 refinement levels above the grid's own resolution. It is
-a cell budget, not a level count, so a system of another aperture stops wherever
-`49` cells falls — the swept optimum below is flat enough to carry that.
+Leaf size for a cursor whose cell caps are precomputed: stop descent at `7^2`
+stored cells, two IGeo7 refinement levels above the grid's own resolution. It
+is a cell budget, not a level count, so a system of another aperture stops
+wherever `49` cells falls.
 
 A cursor's default leaf is one cell, so the dual search descends every level and
 spends most of its visits on the bottom one — for an IGeo7 level-12 column
 rooted at level 5, 823543 of the tree's 960799 nodes. Stopping two levels early
 deletes that layer; the leaf then hands back its `49` cells through
-`child_indices_extents`, which reads them straight out of `caps`.
+`child_indices_extents`, which loads their cached caps.
 
 Measured on the production CopDEM GLO-90 -> IGeo7 L12 column regrid, core-seconds
 per column, single-threaded:
@@ -97,29 +120,43 @@ per column, single-threaded:
 | 98241 (all NaN)|  18.27 |  11.66 |   **10.97** |    16.60 |
 | 115426 (polar) |  20.36 |  13.30 |   **12.34** |    18.89 |
 
-!!! warning "This constant belongs to the cached seam, not to the cursor"
-    A big leaf is only cheap because `caps` already holds its cells' extents. A
-    bare [`HierarchicalGridCursor`](@ref) re-derives them on every visit, and the
-    same sweep against one costs `+25%` at leaf 50 and `+441%` at leaf 350 — the
-    change flips sign. So it is applied at the two sites that return a
-    `CapCachedTree`, and never on a path that hands back a plain cursor:
-    `GR.celltree`, a [`subcursor`](@ref) window, the oversized-chunk return
-    below, or the selection-cursor fallback in `_cachedcelltree`.
+!!! warning "This is not the analytical leaf size"
+    A bigger leaf revisits each cell cap more often. The analytical IGeo7 path
+    still decodes a centre per visit and has its own measured optimum,
+    [`_ANALYTICAL_BUCKET_SIZE`](@ref). A generic `cell_boundary` cap remains at
+    the cursor's own leaf size.
 """
 const _CACHED_BUCKET_SIZE = 49
 
-# Give a cursor the cached seam's leaf size, leaving an explicit caller choice
-# alone. `0` is the grid default ("descend to single cells"), not a request.
-function _bucketed(c::HierarchicalGridCursor)
+"""
+    _ANALYTICAL_BUCKET_SIZE
+
+Leaf size for analytical caps. The cursor constructs one inline leaf when the
+traversal first reaches it. The traversal carries that value while the opposing
+tree descends, so this can use the same broad-search optimum as a precomputed
+cap load without retaining a cache.
+"""
+const _ANALYTICAL_BUCKET_SIZE = Engine.ANALYTICAL_LEAF_CAPACITY
+
+# Give a cursor the optimized seam's leaf size, leaving an explicit caller
+# choice alone. `0` is the grid default ("descend to single cells"), not a
+# request.
+function _bucketed(c::HierarchicalGridCursor, bucket_size::Int = _CACHED_BUCKET_SIZE)
     c.bucket_size == 0 || return c
     return typeof(c)(c.grid, c.system, c.top_level, c.leaf_level,
-        _CACHED_BUCKET_SIZE, c.level, c.id, c.first_index, c.last_index,
-        c.selection)
+        bucket_size, c.level, c.id, c.first_index, c.last_index,
+        c.complete_subtree, c.selection)
 end
 
-# The whole-space tree, or the plain cursor where the wrap does not apply
-# (selection cursors index leaves by selection slot, not grid index).
+# The whole-space tree. A system with a cheap analytical cap keeps the original
+# compressed grid and derives caps through a bucketed analytical cursor. Other
+# systems retain the older decoded-grid + cap-vector path.
 function _cachedcelltree(space::DGGSpace)
+    lazy = treeify(space.grid)
+    if lazy isa HierarchicalGridCursor && lazy.selection === nothing &&
+            Fallbacks.cell_cap_is_cheap(lazy.grid) isa Val{true}
+        return _bucketed(lazy, _ANALYTICAL_BUCKET_SIZE)
+    end
     root = treeify(_decodedgrid(space.grid))
     (root isa HierarchicalGridCursor && root.selection === nothing) ||
         return GR.celltree(space)
@@ -131,10 +168,13 @@ end
 # (2 MiB of caps at the limit).
 const _CHUNK_CAP_CACHE_MAX = 2^16
 
-# A chunk's cursor with its own cap vector, or the plain cursor when the chunk is
-# too large to be worth caching.
+# A chunk's cursor with analytical uncached caps where available, otherwise its own
+# cap vector when small enough. Analytical caps take the same bucketed leaf
+# shape without retaining a vector proportional to the chunk.
 function _cachedchunktree(cursor::HierarchicalGridCursor,
         inds::AbstractUnitRange{<:Integer})
+    Fallbacks.cell_cap_is_cheap(cursor.grid) isa Val{true} &&
+        return _bucketed(cursor, _ANALYTICAL_BUCKET_SIZE)
     # Past the limit the cursor goes back bare, so it keeps its own leaf size.
     length(inds) > _CHUNK_CAP_CACHE_MAX && return cursor
     caps = _ShiftedCaps(_leafcaps(cursor.grid, inds), Int(first(inds)) - 1)

@@ -75,6 +75,12 @@ this cap against an ancestor's extent tests nothing.
 """
 cell_cap(grid::AbstractGrid, c::AbstractCellIndex) = points_cap(cell_boundary(grid, c))
 
+# Whether a grid's `cell_cap` override is cheap enough to derive while a leaf
+# view is iterated. The generic boundary-derived cap is deliberately false: a
+# dual-tree walk may revisit the same leaf many times. Systems with a closed
+# form opt in and let the cursor keep those entries lazy and allocation-free.
+cell_cap_is_cheap(::AbstractGrid) = Val(false)
+
 """
     cells_cap(grid, ids) -> SphericalCap
 
@@ -96,6 +102,41 @@ function cells_cap(grid::AbstractGrid, ids)
         end
     end
     return points_cap(points)
+end
+
+# Bound a small, indexable batch of caps without materialising either the caps or
+# their cell boundaries.  The normalized mean only chooses the centre; every input
+# radius participates in the bound through the spherical triangle inequality:
+#
+#     d(center, x) <= d(center, cap.point) + cap.radius.
+#
+# `getcap` may therefore derive each cap twice.  This helper is used only for grids
+# whose `cell_cap_is_cheap` trait opts into that tradeoff.
+function _caps_cap(getcap::F, count::Int) where {F}
+    count == 0 && return full_sphere_cap()
+    count == 1 && return getcap(1)
+
+    sx = sy = sz = 0.0
+    for i in 1:count
+        p = getcap(i).point
+        sx += p[1]
+        sy += p[2]
+        sz += p[3]
+    end
+    norm = sqrt(sx * sx + sy * sy + sz * sz)
+    norm > count * eps(Float64) || return full_sphere_cap()
+    center = USPoint(sx / norm, sy / norm, sz / norm)
+
+    radius = 0.0
+    for i in 1:count
+        cap = getcap(i)
+        candidate = US.spherical_distance(center, cap.point) + Float64(cap.radius)
+        candidate < Float64(pi) || return full_sphere_cap()
+        radius = max(radius, candidate)
+    end
+    radius = nextfloat(radius * CAP_SLACK + 1e-12)
+    radius < Float64(pi) || return full_sphere_cap()
+    return SphericalCap(center, radius)
 end
 
 """

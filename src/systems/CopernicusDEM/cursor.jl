@@ -215,11 +215,21 @@ function _box_cap(west::Float64, east::Float64, south::Float64, north::Float64,
         return rn <= rs ? SphericalCap(NODE_NORTH_POLE, min(Float64(π), rn + pad)) :
                SphericalCap(NODE_SOUTH_POLE, min(Float64(π), rs + pad))
     end
-    centre = TO_SPHERE(((west + east) / 2, (south + north) / 2))
-    rmax = 0.0
-    for (lon, lat) in ((west, south), (east, south), (east, north), (west, north))
-        rmax = max(rmax, US.spherical_distance(centre, TO_SPHERE((lon, lat))))
-    end
+    centre_lat = (south + north) / 2
+    centre = TO_SPHERE(((west + east) / 2, centre_lat))
+
+    # The longitude offsets of all four corners have equal magnitude. In the
+    # haversine formula the farther latitude edge is therefore the one nearer
+    # the equator (larger cosine), so one stable closed form replaces four
+    # corner constructions and four spherical-distance calls.
+    half_dlat = deg2rad((north - south) / 2)
+    half_dlon = deg2rad((east - west) / 2)
+    edge_lat = abs(south) <= abs(north) ? south : north
+    shlat = sin(half_dlat / 2)
+    shlon = sin(half_dlon / 2)
+    hav = muladd(shlat, shlat,
+        cosd(centre_lat) * cosd(edge_lat) * shlon * shlon)
+    rmax = 2asin(sqrt(clamp(hav, 0.0, 1.0)))
     return SphericalCap(centre, nextfloat(min(Float64(π), rmax + pad)))
 end
 

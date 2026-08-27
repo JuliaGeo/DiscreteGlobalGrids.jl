@@ -80,11 +80,17 @@ const REGION = DGG.covering(DGG.CellVector(GRID),
         # A chunk's cap covers every boundary vertex of every cell in it: the
         # covering law the lazy path's chunk discovery prunes on.
         @test capscover(space)
-        # A chunk keeps the hierarchy rather than falling back to a cap list,
-        # and small enough chunks carry their leaf caps with them.
+        # A chunk keeps the hierarchy rather than falling back to a cap list.
+        # IGeo7's analytical caps remain uncached; other small chunks carry their
+        # leaf caps with them.
         chunktree = GR.subtree(space, GR.ownedindices(space, 2))
-        @test chunktree isa DGG.CapCachedTree
-        @test chunktree.node isa DGG.HierarchicalGridCursor
+        if DGG.Fallbacks.cell_cap_is_cheap(space.grid) isa Val{true}
+            @test chunktree isa DGG.HierarchicalGridCursor
+            @test chunktree.bucket_size == DGG._ANALYTICAL_BUCKET_SIZE
+        else
+            @test chunktree isa DGG.CapCachedTree
+            @test chunktree.node isa DGG.HierarchicalGridCursor
+        end
         @test GR.manifold(space) == GR.manifold(SRC)
         i = DGG.ncells(space) ÷ 2
         @test GR.cellat(space, GR.cellcentroid(space, i)) == i
@@ -250,17 +256,15 @@ end
     @test demanded > 0
     @test unpredicted == 0
 
-    # The crossing itself, on a window CI can run: the whole level-0 Copernicus
-    # frontier, no tile list and no download. The block cursor's relation and the
-    # cap join differ in BOTH directions, so the cap join is not a bound on the
-    # graph on this hierarchy either — the same fact
-    # `benchmark/chunk_graph_gates.jl` measures at production scale (72 pairs
-    # the index holds and the cap join rejects, on the GLO-90 x IGeo7-L12
-    # pair). That production figure is harness-only; these two assertions are
-    # the tested form of the finding.
+    # IGeo7's analytical cell cap carries the Snyder inverse-scale envelope,
+    # which is wider than the old vertex-fitted cap. On this complete sweep it
+    # now contains the block cursor's relation: the independent cap join may
+    # over-select, but no longer rejects a pair the native index holds. The
+    # graph still deliberately builds from the native index rather than relying
+    # on this workload-specific containment.
     capjoin = capjoin_pairs(dst, src)
     native = graph_pairs(graph)
-    @test !isempty(setdiff(native, capjoin))
+    @test isempty(setdiff(native, capjoin))
     @test !isempty(setdiff(capjoin, native))
 end
 
@@ -504,8 +508,80 @@ end
     @test axes(DGG._ShiftedCaps(collect(1:3), 0), 1) == 1:3
 end
 
+@testset "IGeo7 destination caps stay analytical and uncached" begin
+    sys = DGG.IGeo7System()
+    root = DGG.cellindex(DGG.levelgrid(sys, 2), 100)
+    grids = (
+        DGG.subtree(sys, root, 6),
+        DGG.subtree(DGG.AuthalicSystem(sys), root, 6),
+    )
+
+    function firstleaf(tree)
+        while !STI.isleaf(tree)
+            tree = first(STI.getchild(tree))
+        end
+        return tree
+    end
+
+    function sum_leaf_indices(leaf)
+        total = 0
+        for (i, _) in STI.child_indices_extents(leaf)
+            total += i
+        end
+        return total
+    end
+
+    for grid in grids
+        @test DGG.Fallbacks.cell_cap_is_cheap(grid) isa Val{true}
+        space = DGG.DGGSpace(grid; chunklevel = 2)
+        tree = GR.subtree(space, 1:DGG.ncells(grid))
+        @test tree isa DGG.HierarchicalGridCursor
+        @test tree.grid === grid
+        @test tree.bucket_size == DGG._ANALYTICAL_BUCKET_SIZE
+
+        leaf = firstleaf(tree)
+        entries = STI.child_indices_extents(leaf)
+        @test entries isa DGG.Engine.AnalyticalLeafEntries
+        @test 1 < length(entries) <= DGG._ANALYTICAL_BUCKET_SIZE
+        @test_throws BoundsError entries[0]
+        @test_throws BoundsError entries[length(entries) + 1]
+        for (index, cap) in entries
+            c = DGG.cellindex(grid, index)
+            @test all(p -> DGG.Fallbacks.cap_contains(cap, p),
+                DGG.cell_boundary(grid, c))
+        end
+        sum_leaf_indices(leaf)
+        @test (@allocated sum_leaf_indices(leaf)) == 0 skip = VERSION < v"1.12"
+    end
+
+    # The authalic wrapper warps the centre and inflates the radius by its
+    # Lipschitz bound; it must not reuse an untransformed spherical cap.
+    base, auth = grids
+    c = DGG.cellindex(base, 173)
+    basecap = DGG.Fallbacks.cell_cap(base, c)
+    authcap = DGG.Fallbacks.cell_cap(auth, c)
+    @test authcap.point == DGG.cell_centroid(auth, c)
+    @test authcap.radius == nextfloat(
+        DGG.Fallbacks.authalic_stretch(auth.complete.transform) * basecap.radius)
+end
+
 @testset "the cached trees cache caps without changing them" begin
     samecap(a, b) = a.point == b.point && a.radius == b.radius
+
+    function sum_leaf_indices(leaf)
+        total = 0
+        for (i, _) in STI.child_indices_extents(leaf)
+            total += i
+        end
+        return total
+    end
+
+    function firstleaf(tree)
+        while !STI.isleaf(tree)
+            tree = first(STI.getchild(tree))
+        end
+        return tree
+    end
 
     # Extents, leaf entries and polygons must be the raw cursor's, bit for bit.
     function checktree(a, b)
@@ -525,7 +601,7 @@ end
     # written out here so the test pins the constructor's field order itself.
     reshape_leaves(c) = typeof(c)(c.grid, c.system, c.top_level, c.leaf_level,
         DGG._CACHED_BUCKET_SIZE, c.level, c.id, c.first_index, c.last_index,
-        c.selection)
+        c.complete_subtree, c.selection)
 
     for space in (DGG.DGGSpace(DGG.PartialGrid(REGION)), DGG.DGGSpace(GRID))
         n = DGG.ncells(space.grid)
@@ -535,6 +611,19 @@ end
         @test Trees.ncells(cached) == Trees.ncells(cursor) == n
         raw = DGG.treeify(DGG._decodedgrid(space.grid))
         @test checktree(cached, reshape_leaves(raw))
+
+        # A cached leaf is revisited for every source leaf it overlaps. Its
+        # entries are a view over the cap cache, not a fresh vector per visit.
+        leaf = firstleaf(cached)
+        rawleaf = firstleaf(reshape_leaves(raw))
+        entries = @inferred STI.child_indices_extents(leaf)
+        @test entries isa DGG._CapCachedLeafEntries
+        @test collect(entries) == collect(STI.child_indices_extents(rawleaf))
+        @test_throws BoundsError entries[0]
+        @test_throws BoundsError entries[length(entries) + 1]
+        sum_leaf_indices(leaf) # compile before measuring the steady-state visit
+        @test (@allocated sum_leaf_indices(leaf)) == 0 skip = VERSION < v"1.12"
+
         # The weight matrix the two trees build is identical, entry for entry —
         # and `cursor` here still has the default one-cell leaf, so this is also
         # the statement that the seam's leaf size changes no weight.

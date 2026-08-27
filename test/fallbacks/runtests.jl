@@ -536,6 +536,30 @@ end
     @test node_extent(SORTED, c).radius > FB.cell_cap(grid, c).radius
 end
 
+@testset "analytical cap enclosure" begin
+    # Unequal radii are part of the bound, not an inflation applied after solving
+    # a point-only problem.
+    caps = (
+        US.SphericalCap(sph(0.0, 0.0), deg2rad(0.5)),
+        US.SphericalCap(sph(2.0, 0.0), deg2rad(1.0)),
+        US.SphericalCap(sph(1.0, 2.0), deg2rad(0.25)),
+    )
+    cap_enclosure(caps) = FB._caps_cap(i -> @inbounds(caps[i]), length(caps))
+    enclosing = @inferred cap_enclosure(caps)
+    @test enclosing isa US.SphericalCap{Float64}
+    @test all(caps) do cap
+        US.spherical_distance(enclosing.point, cap.point) + cap.radius <= enclosing.radius
+    end
+
+    # The hot path derives caps twice but retains no batch or boundary buffer.
+    cap_enclosure(caps)
+    @test @allocated(cap_enclosure(caps)) == 0
+    @test FB._caps_cap(i -> caps[i], 0).radius > pi
+    antipodal = (US.SphericalCap(sph(0.0, 0.0), 0.0),
+                 US.SphericalCap(sph(180.0, 0.0), 0.0))
+    @test cap_enclosure(antipodal).radius > pi
+end
+
 @testset "cursor: window mode" begin
     grid = levelgrid(SORTED, 3)
     tree = treeify(grid)
@@ -733,7 +757,11 @@ end
     rooted = treeify(chunk)
     @test rooted.level == 1
     @test rooted.id === LevelIndex(1, 5)
+    @test rooted.complete_subtree
     @test leaf_indices(rooted) == collect(1:ncells(chunk))
+    walk(rooted) do node
+        @test node.complete_subtree
+    end
 
     # Bucketed descent stops early and scans.
     bucketed = treeify(subtree(SORTED, LevelIndex(1, 5), 4; bucket_size=16))

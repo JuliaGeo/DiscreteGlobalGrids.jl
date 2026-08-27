@@ -376,6 +376,21 @@ end
     @test big > 8 * n                    # O(#cells), one word per id at least
     @test big / small > 20               # measured 27.0x on this fixture
 
+    # Cursor descent can map complete-grid child ranges into the compressed
+    # index space without probing and decoding the logical cell vector.
+    cv = DGG.CellVector(set)
+    materialised_indices = [Int(DGG.globalindex(DGG.levelgrid(sys, leaf), c))
+                            for c in materialised.ids]
+    probes = ((first(materialised_indices), last(materialised_indices)),
+              (first(materialised_indices) - 1, first(materialised_indices) - 1),
+              (materialised_indices[n ÷ 3], materialised_indices[n ÷ 2]),
+              (last(materialised_indices) + 1, last(materialised_indices) + 1))
+    for (lo, hi) in probes
+        expected = (searchsortedfirst(materialised_indices, lo),
+                    searchsortedlast(materialised_indices, hi))
+        @test EN.subset_window_bounds(cv, lo, hi) == expected
+    end
+
     deep = DGG.PartialGrid(DGG.CellVector(set; level=leaf + 3))
     @test DGG.ncells(deep) == 343 * n
     @test Base.summarysize(deep) == small

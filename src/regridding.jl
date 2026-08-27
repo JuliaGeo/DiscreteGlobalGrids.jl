@@ -240,8 +240,9 @@ Return the cell tree restricted to `inds`, with leaves still addressed by the
 space's local index.
 In order: the whole space, a grid that can window its own tree
 ([`subcursor`](@ref)), an exact chunk range (the grid hierarchy in `O(1)`), and
-otherwise the common packed cell-space fallback. The whole space and small
-enough chunks carry precomputed leaf caps.
+otherwise the common packed cell-space fallback. Grids with an analytical cell
+cap keep the hierarchical tree lazy; other whole spaces and small enough chunks
+carry precomputed leaf caps.
 """
 function GR.subtree(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
     GR._iswholespace(space, inds) && return _cachedcelltree(space)
@@ -261,9 +262,11 @@ function _chunkcursor(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
     (k <= length(space.ranges) && space.ranges[k] == inds) || return nothing
     root = treeify(space.grid)
     root isa HierarchicalGridCursor && root.selection === nothing || return nothing
+    complete_subtree = length(inds) ==
+        length(descendant_range(root.system, space.chunkids[k], root.leaf_level))
     return typeof(root)(space.grid, root.system, root.top_level, root.leaf_level,
         root.bucket_size, space.chunklevel, space.chunkids[k],
-        Int(first(inds)), Int(last(inds)), nothing)
+        Int(first(inds)), Int(last(inds)), complete_subtree, nothing)
 end
 
 # Resolving `to` and `from`

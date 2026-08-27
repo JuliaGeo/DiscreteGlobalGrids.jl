@@ -23,6 +23,28 @@ const CELL_SCALE = ntuple(i -> L_PLANE / ecpx(P_R[i]), MAX_DIGITS + 1)
 const INV_CELL_SCALE = ntuple(i -> ecpx(P_R[i]) / L_PLANE, MAX_DIGITS + 1)
 
 """
+    CELL_CAP_SCALE_BOUND
+
+An outward bound on spherical distance per Snyder-plane distance. The Snyder
+ISEA inverse has maximum scale about `1.163`; `1.17` rounds that published
+envelope outward and retains numerical headroom at face seams.
+
+This is a projection bound, distinct from the hierarchy's `cap_inflation`: it
+bounds one cell's own centre-to-corner paths, not descendant overhang.
+"""
+const CELL_CAP_SCALE_BOUND = 1.17
+
+# Every hex corner is `1/sqrt(3)` lattice units from its centre; the pentagon
+# constructor uses the same radius explicitly. Development slots differ only
+# by rigid rotations, so this distance also holds across cone cuts. Applying
+# the global inverse-projection bound gives one radius per level. The absolute
+# term is only a Float64 containment guard and remains negligible at GLO-30
+# regridding levels.
+const CELL_CAP_RADIUS = ntuple(MAX_RESOLUTION + 1) do i
+    nextfloat(CELL_CAP_SCALE_BOUND * abs(CELL_SCALE[i]) / SQRT3 + 1e-12)
+end
+
+"""
     THETA_DIR
 
 `THETA_DIR[m+1][d]` = dev direction (degrees in `[0, 360)`) of digit `d`'s

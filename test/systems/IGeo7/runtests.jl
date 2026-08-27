@@ -809,6 +809,67 @@ const CLEAN = (0, "")
             @test nbad == 0
         end
 
+        # The tree-search cap is a centre projection plus the analytical
+        # level radius; it must contain the published ring without constructing
+        # that ring to choose its size. Exhaust the coarse grids (including all
+        # pentagons and cone cuts), then sample down to the deepest geometry.
+        for r in 0:4
+            g = DGG.levelgrid(S, r)
+            @test DGG.Fallbacks.cell_cap_is_cheap(g) isa Val{true}
+            for i in 1:DGG.ncells(g)
+                c = DGG.cellindex(g, i)
+                cap = DGG.Fallbacks.cell_cap(g, c)
+                @test cap.point == DGG.cell_centroid(g, c)
+                @test cap.radius == I.CELL_CAP_RADIUS[r+1]
+                @test cap.radius < pi / 2
+                @test all(p -> DGG.Fallbacks.cap_contains(cap, p),
+                    DGG.cell_boundary(g, c))
+            end
+        end
+
+        rng = Random.MersenneTwister(0x1ca7)
+        for r in (6, 13, 19)
+            g = DGG.levelgrid(S, r)
+            samples = [DGG.cellindex(g, rand(rng, 1:DGG.ncells(g))) for _ in 1:400]
+            append!(samples, pentagon(b, r) for b in 0:11)
+            for c in samples
+                cap = DGG.Fallbacks.cell_cap(g, c)
+                @test all(p -> DGG.Fallbacks.cap_contains(cap, p),
+                    DGG.cell_boundary(g, c))
+            end
+        end
+
+        # A small sparse cursor node encloses the analytical cell caps directly.
+        # This is the MOC boundary-node path: no cell boundary or retained cap cache.
+        root = DGG.cellindex(DGG.levelgrid(S, 10), 1000)
+        ids = collect(Iterators.take(DGG.descendants(S, root, 13), 49))
+        sparse = DGG.treeify(DGG.PartialGrid(S, 13, ids;
+            root, bucket_size = length(ids)))
+        @test GO.SpatialTreeInterface.isleaf(sparse)
+        extent = @inferred GO.SpatialTreeInterface.node_extent(sparse)
+        @test all(ids) do c
+            cap = DGG.Fallbacks.cell_cap(sparse.grid, c)
+            US.spherical_distance(extent.point, cap.point) + cap.radius <= extent.radius &&
+                all(p -> DGG.Fallbacks.cap_contains(extent, p),
+                    DGG.cell_boundary(sparse.grid, c))
+        end
+        GO.SpatialTreeInterface.node_extent(sparse)
+        @test @allocated(GO.SpatialTreeInterface.node_extent(sparse)) == 0
+
+        # A complete bucket is the common MOC-interior case. The cursor carries
+        # that one bit down the hierarchy, so its entries address the complete
+        # level interval directly instead of searching the CellVector runs.
+        full_root = first(DGG.children(S, root))
+        full_ids = collect(DGG.descendants(S, full_root, 13))
+        full = DGG.treeify(DGG.PartialGrid(S, 13, full_ids;
+            root = full_root, bucket_size = length(full_ids)))
+        @test full.complete_subtree
+        full_entries = GO.SpatialTreeInterface.child_indices_extents(full)
+        @test first.(full_entries) == collect(eachindex(full_ids))
+        @test last.(full_entries) == DGG.Fallbacks.cell_cap.(Ref(full.grid), full_ids)
+        GO.SpatialTreeInterface.child_indices_extents(full)
+        @test @allocated(GO.SpatialTreeInterface.child_indices_extents(full)) == 0
+
         # the published corner rings tile the sphere exactly: adjacent cells
         # share corners, so their great-circle edges coincide and the areas sum
         # to 4pi

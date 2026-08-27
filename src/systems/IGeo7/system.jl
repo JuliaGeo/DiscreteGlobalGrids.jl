@@ -317,6 +317,28 @@ exactly the icosahedron vertex it surrounds.
 DGG.cell_centroid(::IGeo7System, c::Z7Cell) = USPoint(_cell_center_xyz(c.id, _geometry_checked(c.id)))
 
 """
+    _analytical_cell_cap(c::Z7Cell) -> SphericalCap
+
+A constant-time cap over one IGeo7 cell. Its centre is the cell's Snyder image
+and its radius is the level's planar circumradius multiplied by the global
+inverse-projection scale bound. The radius is below `pi/2`, so the cap is
+geodesically convex: containing the vertices also contains the great-circle
+edges used by `cell_boundary`.
+"""
+function _analytical_cell_cap(c::Z7Cell)
+    res = _geometry_checked(c.id)
+    p = _cell_center_xyz(c.id, res)
+    return GO.UnitSpherical.SphericalCap(
+        USPoint(p[1], p[2], p[3]), @inbounds CELL_CAP_RADIUS[res+1])
+end
+
+# Override only the complete IGeo7 level. `PartialGrid` forwards to its
+# complete grid, so rooted subtrees and compressed multi-root coverages take
+# this method too without duplicating dispatch here.
+DGG.Fallbacks.cell_cap(::LevelGrid, c::Z7Cell) = _analytical_cell_cap(c)
+DGG.Fallbacks.cell_cap_is_cheap(::LevelGrid) = Val(true)
+
+"""
     cellat(g::LevelGrid, p::UnitSphericalPoint) -> Z7Cell
 
 Return the cell containing `p` by Snyder projection and strict lattice

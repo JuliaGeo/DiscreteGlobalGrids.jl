@@ -146,6 +146,14 @@ level(grid::PartialGrid) = grid.level
 cell_boundary(grid::PartialGrid, c::AbstractCellIndex) = cell_boundary(grid.complete, c)
 cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.complete, c)
 
+# A subset changes membership, never cell geometry. Forward the cap hook as
+# well as the public geometry hooks so a system's analytical implementation is
+# not lost merely because its level is stored as a `PartialGrid`.
+Fallbacks.cell_cap(grid::PartialGrid, c::AbstractCellIndex) =
+    Fallbacks.cell_cap(grid.complete, c)
+Fallbacks.cell_cap_is_cheap(grid::PartialGrid) =
+    Fallbacks.cell_cap_is_cheap(grid.complete)
+
 # Forwarded, not derived. The generic `cell_area` is the ring's polygon area,
 # right only where the ring IS the cell: HEALPix and ISEA4R have curvilinear
 # edges and override it on their level grid with the exact `4pi/ncells`. A

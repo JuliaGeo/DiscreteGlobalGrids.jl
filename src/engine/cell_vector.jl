@@ -53,6 +53,36 @@ end
 
 leafindices(w::CellWindows) = (leafindex(w, k) for k in 1:length(w))
 
+# Map a complete-level index interval to the contiguous logical window that a
+# `CellVector` stores from it.  Tree descent asks this question for every child.
+# Answering it from the run table avoids binary-searching decoded cell IDs where
+# every comparison would itself decode a `CellVector` element.
+@inline function subset_window_bounds(w::RangeWindows, lo::Int, hi::Int)
+    lo <= hi || return (1, 0)
+    first_run = searchsortedfirst(w.stops, lo)
+    first_run <= length(w.stops) || return (length(w) + 1, length(w))
+    @inbounds first_global = max(lo, w.starts[first_run])
+    if first_global > hi
+        @inbounds base = first_run == 1 ? 0 : w.offsets[first_run - 1]
+        return (base + 1, base)
+    end
+
+    last_run = searchsortedlast(w.starts, hi)
+    last_run >= first_run || return (1, 0)
+    @inbounds last_global = min(hi, w.stops[last_run])
+
+    @inbounds first_base = first_run == 1 ? 0 : w.offsets[first_run - 1]
+    @inbounds last_base = last_run == 1 ? 0 : w.offsets[last_run - 1]
+    @inbounds first_local = first_base + first_global - w.starts[first_run] + 1
+    @inbounds last_local = last_base + last_global - w.starts[last_run] + 1
+    return (first_local, last_local)
+end
+
+@inline function subset_window_bounds(w::IndexWindows, lo::Int, hi::Int)
+    lo <= hi || return (1, 0)
+    return (searchsortedfirst(w.indices, lo), searchsortedlast(w.indices, hi))
+end
+
 # Classify how much of the leaf block `lo:hi` is stored. Both representations
 # inspect the first entry that reaches `lo`:
 #
@@ -257,6 +287,21 @@ struct CellVector{ID,W<:CellWindows,G<:AbstractGrid,B} <: AbstractCellVector{ID}
     grid::G                  # `levelgrid(system, level)` — every `cv[k]` reads it
     backing::B               # what it was built from, or `nothing` when derived
     level::Int
+end
+
+@inline subset_window_bounds(cv::CellVector, lo::Int, hi::Int) =
+    subset_window_bounds(cv.windows, lo, hi)
+
+# A compressed `CellVector` already stores complete-grid index runs.  Consult
+# those runs directly during cursor descent: generic `searchsorted*` over the
+# logical vector makes every comparison pay a second binary search plus cell-ID
+# decoding.
+@inline function _partial_child_window(
+        ids::CellVector, complete, range, first_index::Int, last_index::Int)
+    lo, hi = subset_window_bounds(ids, Int(first(range)), Int(last(range)))
+    lo = max(lo, first_index)
+    hi = min(hi, last_index)
+    return hi < lo ? (first_index, first_index - 1) : (lo, hi)
 end
 
 function CellVector(windows::CellWindows, grid::AbstractGrid, backing, l::Integer)

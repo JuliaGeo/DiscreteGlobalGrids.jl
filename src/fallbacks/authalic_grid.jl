@@ -161,6 +161,32 @@ cell_boundary(grid::AuthalicGrid, c::AbstractCellIndex) =
 cell_centroid(grid::AuthalicGrid, c::AbstractCellIndex) =
     geodetic_point(grid.transform, cell_centroid(grid.grid, c))
 
+# A closed-form base cap can stay closed-form through the latitude warp. The
+# centre is transformed exactly as the cell centroid is, while the angular
+# radius is multiplied by the warp's Lipschitz constant. For a base cap
+# `(p, r)` and authalic-to-geodetic warp `Φ`,
+#
+#     d(Φp, Φv) <= authalic_stretch(transform) * d(p, v) <= Lr.
+#
+# Keep the old tight boundary-derived fallback for systems that have no cheap
+# cap: it avoids making every authalic grid pay for a looser generic bound.
+function cell_cap(grid::AuthalicGrid, c::AbstractCellIndex)
+    return _authalic_cell_cap(grid, c, cell_cap_is_cheap(grid.grid))
+end
+
+_authalic_cell_cap(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{false}) =
+    points_cap(cell_boundary(grid, c))
+
+function _authalic_cell_cap(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{true})
+    cap = cell_cap(grid.grid, c)
+    radius = authalic_stretch(grid.transform) * Float64(cap.radius)
+    radius > Float64(pi) / 2 && return full_sphere_cap()
+    return SphericalCap(
+        geodetic_point(grid.transform, cap.point), nextfloat(radius))
+end
+
+cell_cap_is_cheap(grid::AuthalicGrid) = cell_cap_is_cheap(grid.grid)
+
 # The one input-side warp: the caller's point is in the geodetic frame this grid
 # publishes, and the grid underneath speaks authalic.
 cellat(grid::AuthalicGrid, p::GO.UnitSphericalPoint) =

@@ -9,8 +9,9 @@
 #   verify          the oracle: read written chunks back and hold them against
 #                   SYNTHETIC.
 #
-# Included by `copdem_production.jl`, which supplies `say`, `check` and the
-# imports.
+# Included through `dagger_regrid/copdem_helpers.jl`, which supplies `say` and
+# the imports. The production driver additionally supplies `check` for the
+# verification routines near the end of this file.
 
 # ===========================================================================
 # The field

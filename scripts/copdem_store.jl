@@ -1,5 +1,6 @@
 # The store side of the run: the Zarr store, its two sidecar files, and what
-# "already done" means. Included by `copdem_production.jl`.
+# "already done" means. Included through `dagger_regrid/copdem_helpers.jl` by
+# both CopDEM execution drivers.
 #
 # A CHUNK is one level-`ancestor` IGeo7 cell together with all its
 # level-`level` descendants: one work unit, one Zarr chunk, one file on disk.

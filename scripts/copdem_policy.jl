@@ -1,6 +1,6 @@
-# Scheduling policy for the CopDEM -> IGeo7 production run: the walk order, the
-# tile cache, the pull cursor and the prefetcher. Included by
-# `copdem_production.jl`; unit-tested by `test/scripts/copdem_policy.jl`.
+# Scheduling policy for the CopDEM -> IGeo7 production and Dagger runs: the walk
+# order, tile cache, pull cursor, and prefetcher. Included through the shared
+# CopDEM helper; unit-tested by `test/scripts/copdem_policy.jl`.
 #
 # Nothing here knows about Copernicus DEM, IGeo7, Zarr, or GlobalRegridding. The
 # only thing it is given about the workload is the tile <-> column adjacency,

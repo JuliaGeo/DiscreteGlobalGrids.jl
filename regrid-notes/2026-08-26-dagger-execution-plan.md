@@ -1,7 +1,8 @@
 # Dagger as an isolated regridding execution backend
 
-Status: **isolated D0/D1 scaffold implemented on 2026-08-26**. The regular
-regridding entry points remain unchanged by this experiment. A one-chunk,
+Status: **isolated D0/D1 scaffold implemented on 2026-08-26 and reorganized on
+2026-08-27**. The regular regridding entry points and behavior remain unchanged;
+their reusable CopDEM definitions now live in one shared include. A one-chunk,
 one-process synthetic vertical slice passes; no production-data canary,
 byte-identity comparison, or speed claim has been made yet.
 
@@ -11,11 +12,11 @@ Companions: `2026-08-21-chunk-dag-api.md`, `2026-08-21-chunk-dag-sim.md`,
 
 ## 1. Decision and boundary
 
-Test Dagger as a **separate, optional execution backend**, reached through a new
-script-level function tentatively named `dagger_regrid`. Do not add Dagger calls,
-conditionals, options, or dependencies to `GlobalRegridding.regrid!`,
-`LazyRegridArray`, `_readdestination!`, or the regular CopDEM production driver
-while the idea is being evaluated.
+Test Dagger as a **separate, optional execution backend**, reached through
+`scripts/dagger_regrid/main.jl`. Do not add Dagger calls, conditionals, options,
+or dependencies to `GlobalRegridding.regrid!`, `LazyRegridArray`,
+`_readdestination!`, or the regular CopDEM production loop while the idea is
+being evaluated.
 
 The domain scheduler remains ours. It owns the source/destination graph,
 destination priority, source affinity, batching, tapering, cache policy, retry
@@ -37,71 +38,79 @@ fold inside one worker preserves the current byte-identity contract.
 
 ## 2. Isolation in the tree
 
-The initial implementation is **one implementation file**, not a new subsystem:
+The implementation is a small, explicit script directory:
 
 ```text
-scripts/dagger_regrid.jl                 coordinator, worker, smoke, and canary modes
-scripts/dagger_regrid/Project.toml       isolated Dagger dependency environment
+scripts/dagger_regrid/main.jl            readable top-level smoke/canary/run flow
+scripts/dagger_regrid/README.md           short purpose and usage guide
+scripts/dagger_regrid/src/DaggerRegrid.jl package module and include order
+scripts/dagger_regrid/src/types.jl        configuration and transport values
+scripts/dagger_regrid/src/workers.jl      process-local source/cache/write work
+scripts/dagger_regrid/src/coordinator.jl  graph preparation, admission, and ledger
+scripts/dagger_regrid/src/smoke.jl        process-placement smoke
+scripts/dagger_regrid/copdem_helpers.jl  shared CopDEM source/graph/chunk helpers
+scripts/dagger_regrid/Project.toml        isolated Dagger dependency environment
 ```
 
 The project file is dependency metadata rather than another implementation
-layer. It avoids adding Dagger to the root environment or coupling the experiment
-to the presentation environment that happens to contain Dagger today. All new
-Julia logic remains in `scripts/dagger_regrid.jl` until a measured result
-justifies extracting anything.
+layer. It avoids adding Dagger to the root environment or coupling the
+experiment to the presentation environment that happens to contain Dagger
+today. Its package metadata lets the entry point and distributed workers load
+the implementation with `using DaggerRegrid`; no absolute source path or
+worker-side `include` protocol is needed. The executable `main.jl` contains
+top-level control flow, not a CLI function or `let` block, and leaves its
+intermediate values bound for interactive inspection.
 
-The script eagerly loads `copdem_production.jl`: that file already runs `main`
-only when it is the program, and the validation and scaling harnesses use the
-same include seam. Eager loading ensures every worker has the complete method
-table before its first Dagger task and avoids a Julia world-age wrapper. `smoke`
-still opens no source, graph, or store, but it pays the geospatial package-load
-cost. The Dagger script reuses only three existing boundaries:
+Both drivers eagerly include `copdem_helpers.jl`. The file holds the common
+configuration, source construction, graph planning, one-chunk regrid, store,
+and scheduler/cache definitions. `copdem_production.jl` retains only its
+threaded run orchestration, profiling, progress, checks, and reporting. This
+keeps one implementation of the domain work while ensuring every Dagger worker
+has the complete method table before its first task. `smoke` opens no source,
+graph, or store, but it pays the geospatial package-load cost. The Dagger
+backend reuses three boundaries:
 
 1. `dagplan` and the graph queries for destination order and source affinity;
 2. `regrid_chunk` as the complete, deterministically ordered work unit;
 3. the disjoint chunk writer, with ledger commits kept on the coordinator.
 
-Worker processes load the same file and reconstruct their own provider, source
-space, plan/cache state, and output handle from plain configuration. This setup
-can be a small private function in the Dagger script; it does not require a hook
-in `main` or a change to the regular threaded loop.
+Worker processes load the `DaggerRegrid` package and reconstruct their own
+provider, source space, cache state, and output handle from plain configuration.
+The top-level script shows the coordinator lifecycle directly: preparation,
+Shard construction, bounded admission, completion, teardown, and final
+statistics. Only the mechanical operations live in helper functions.
 
-The one file may expose modes such as `smoke`, `canary`, and `run`, so the first
+The top-level script exposes `smoke`, `canary`, and `run`, so the first
 serialization checks and fixed-core comparison use the exact implementation
 being tested rather than parallel test/harness scaffolding. Dedicated test or
 benchmark files come later only if the backend survives the promotion gates.
 
 These ownership boundaries remain:
 
-- `scripts/dagger_regrid.jl` does not become another mode inside
+- `scripts/dagger_regrid/main.jl` does not become another mode inside
   `scripts/copdem_production.jl`.
 - Dagger is not added to the root `Project.toml` during the experiment. The
   separate script environment tracks Dagger's upstream `master` branch while
   the experiment is active.
 - Production scheduler policy may be called or included from
   `scripts/copdem_policy.jl`; it is not copied into GlobalRegridding.
-- Smoke checks and canaries invoke `dagger_regrid` explicitly. Nothing selects
-  it automatically from `regrid!`.
+- Smoke checks and canaries invoke `scripts/dagger_regrid/main.jl` explicitly.
+  Nothing selects it automatically from `regrid!`.
 - No extension module is added until the experiment passes its promotion gates.
 
-The implemented API is deliberately narrow:
-
-```julia
-dagger_regrid(config::DaggerRegridConfig)::DaggerRegridReport
-```
-
-`DaggerRegridConfig` contains serializable descriptions of the input, output,
+`DaggerRegridConfig` is the narrow boundary between the readable script and its
+workers. It contains serializable descriptions of the input, output,
 destination range, method, missing policy, scheduling limits, and worker
 topology. It must not contain an open store, downloader, `LazyRegridArray`, live
-`ChunkedPlan`, lock, condition, GDAL dataset, or PROJ pointer.
-
-This is an experimental driver API, not a new public package contract.
+`ChunkedPlan`, lock, condition, GDAL dataset, or PROJ pointer. This is an
+experimental script contract, not a new public package API.
 
 ### Implemented slice
 
-`scripts/dagger_regrid.jl` now provides:
+The files under `scripts/dagger_regrid/` now provide:
 
-- `DaggerRegridConfig`, `dagger_regrid`, and a compact `DaggerRegridReport`;
+- `DaggerRegridConfig` and a compact `DaggerRegridReport` around the top-level
+  execution flow;
 - a coordinator-owned affinity order and guided rolling admission window;
 - process-scoped DTasks, with one completion-channel watcher per admitted batch;
 - one process-local provider, source space, bounded LRU, and output handle held
@@ -143,9 +152,9 @@ DGG and GlobalRegridding from this checkout.
   level-6 destination chunk, writes the disjoint temporary Zarr chunk, commits
   its coordinator ledger entry, and returns compact worker/cache statistics.
 - The first canary exposed a Julia 1.12 world-age boundary when production
-  helpers were loaded from inside a Dagger task. The final implementation loads
-  them eagerly on the coordinator and every worker, removing the lazy-load lock,
-  worker branch, and all `invokelatest` calls.
+  helpers were loaded from inside a Dagger task. The shared helper is now loaded
+  while the coordinator and worker modules are defined, removing the lazy-load
+  lock, worker branch, and all `invokelatest` calls.
 
 The next action is still the D1 8--32-chunk byte-identity canary below, not a
 production run.
@@ -323,9 +332,9 @@ The separate backend remains experimental unless all of these hold:
 - **Correctness:** every canary output is byte-identical to the regular path;
   graph demand remains a superset of actual reads; source accumulation order is
   unchanged.
-- **Isolation:** regular regridding files and behavior remain unchanged; Dagger
-  stays out of the root dependency graph; the backend runs only through an
-  explicit `dagger_regrid` invocation.
+- **Isolation:** regular regridding behavior remains unchanged; Dagger stays out
+  of the root dependency graph; the backend runs only through an explicit
+  `scripts/dagger_regrid/main.jl` invocation.
 - **Overhead:** one-process Dagger is within approximately 5% of the current
   driver on representative batches.
 - **Speed:** multiple processes produce a material repeatable improvement,

@@ -1,3 +1,8 @@
+name = "DaggerRegrid"
+uuid = "11720a2a-ed24-4506-8c84-45e7a82299a6"
+version = "0.0.0-DEV"
+authors = ["Anshul Singhvi"]
+
 [deps]
 ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"

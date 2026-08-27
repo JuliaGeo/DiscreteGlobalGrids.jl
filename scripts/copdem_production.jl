@@ -1,7 +1,7 @@
 # Copernicus DEM GLO-90 -> IGEO7 level 12, into one global ancestor-subzone Zarr
 # store, written by W worker tasks in one process.
 #
-# Edit the shared `CONFIG` in `dagger_regrid/copdem_helpers.jl`, then run it:
+# Edit `copdem_config` in `dagger_regrid/copdem_helpers.jl`, then run it:
 #
 #     julia --project=benchmark -t 26 --gcthreads=8 scripts/copdem_production.jl
 #
@@ -23,7 +23,7 @@
 #   budget  bytes of intersection weights a lazy regrid may hold at once, per
 #           worker.
 #
-# `CONFIG.source` selects real, lazily downloaded GLO-90 GeoTIFFs or the analytic
+# `copdem_config().source` selects real, lazily downloaded GLO-90 GeoTIFFs or the analytic
 # field in `copdem_synthetic.jl`. The tile LIST is real in both modes: Copernicus
 # ships ~26 450 of the 64 800 tiles in the 1x1-degree lattice, and the source is a
 # `PartialGrid` over exactly those. A destination chunk over open ocean therefore
@@ -32,6 +32,7 @@
 const STARTED = Ref(time())
 
 include(joinpath(@__DIR__, "dagger_regrid", "copdem_helpers.jl"))
+const CONFIG = copdem_config()
 
 # Destination chunks sampled at start-up to check that a column's own relation
 # demands no tile the global one is missing. See the `check` in `run`.
@@ -488,7 +489,7 @@ function main(config = CONFIG)
     capacity = 7^(config.level - config.ancestor)
 
     tiledir = joinpath(config.data, "CopernicusDEM", "$(config.res)m")
-    tilelist = joinpath(config.data, "CopernicusDEM", "tileList-glo$(config.res).txt")
+    tilelist = copdem_tilelist(config)
     landshp = joinpath(config.data, "naturalearth", "ne_10m_land.shp")
     donelog = donelogpath(config.store)
     chunklist = chunklistpath(config.store)

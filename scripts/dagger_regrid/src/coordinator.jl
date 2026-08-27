@@ -4,7 +4,7 @@ function _source_geometry(config)
     sys = DGG.CopernicusDEMSystem(config.res)
     storesys7 = DGG.IGeo7System()
     sys7 = config.authalic ? DGG.AuthalicSystem(storesys7) : storesys7
-    tilelist = joinpath(config.data, "CopernicusDEM", "tileList-glo$(config.res).txt")
+    tilelist = copdem_tilelist(config)
     tiles = listedtiles(sys, tilelist, config.region)
     isempty(tiles) && error("the tile list and region select no tiles")
     ids = TileIds(sys, tiles)

@@ -23,50 +23,57 @@ using Base.ScopedValues: @with
 const CD = DGG.CopernicusDEM
 const US = GO.UnitSpherical
 const SCRIPTS_DIR = dirname(@__DIR__)
-const CONFIG = (
-    res         = 90,       # 90 for GLO-90, 30 for GLO-30
-    level       = 12,       # IGeo7 output level
-    ancestor    = 5,        # chunk root level
-    source      = :synthetic, # :real (lazy AWS tiles) or :synthetic
-    authalic    = true,     # compute on the WGS84 authalic geometry
-    method      = Symbol(get(ENV, "COPDEM_METHOD", "conservative")), # :conservative, :point, :nearest or :nearest-direct
-    store       = get(ENV, "COPDEM_STORE",
-                      "/home/asinghvi17/geo/scratch-stores/glo90-synthetic-authalic-phase1.zarr"),
-    region      = nothing,  # nothing for the globe, or [(w, e, s, n), ...] boxes
-    maskarcsec  = 15,       # land-mask lattice, arcseconds; 0 disables the mask
-    real        = :none,    # local overrides; synthetic requires :none absolutely
-    tilecache   = get(ENV, "COPDEM_TILE_CACHE",
-                      joinpath(SCRIPTS_DIR, "..", "bench", "data", "CopernicusDEM", "tiles")),
-    tilebaseurl = "https://copernicus-dem-90m.s3.amazonaws.com",
-    retries     = 4,        # total GET attempts for a transient failure
-    backoff     = 1.0,      # seconds; doubled between attempts
-    timeout     = 600.0,    # seconds per tile GET
-    workers     = parse(Int, get(ENV, "COPDEM_WORKERS", "40")), # concurrent worker tasks; 0 = size from `cores` (local bench knob)
-    cores       = 40,       # the core budget `workers` is sized to hold
-    shape       = :outer,   # :outer or :inner; see `workercount`
-    batch       = 8,        # chunks handed out per pull, at most; see `taper`
-    taper       = true,     # shrink the batch as the queue drains
-    budget      = 2^30,     # lazy-regrid byte budget, per worker
-    schedule    = :affinity, # :affinity (tile-affinity walk) or :canonical
-    cachepolicy = :refcount, # :refcount (graph-driven) or :lru
-    cache       = 3072,     # tiles held across all workers, `cachepolicy = :lru` only
-    stripes     = 64,       # independent locks over that cache, ditto
-    refinegraph = false,    # narrow the graph past the regridder's own pairing
-    prefetch    = 0,        # columns of lookahead; 0 disables the prefetcher
-    fetchconc   = 0,        # concurrent source loads; 0 means "as many as workers"
-    fetchdelay  = 0.0,      # seconds of fake latency per tile build; a test knob
-    resume      = true,     # skip chunks already written
-    checks      = false,    # run the synthetic oracle after the run
-    checkchunks = 6,        # chunks to verify when `checks`
-    heartbeat   = 300,      # seconds between summary lines
-    maxchunks   = parse(Int, get(ENV, "COPDEM_MAXCHUNKS", "0")), # 0 = no limit; a smoke-test knob
-    chunks      = Int[],    # explicit chunk indices, overriding the covering
-    dryrun      = false,    # plan and report, compute nothing
-    allowsweeper = false,   # run anyway under `--gcthreads=N,1`; see `gcguard`
-    malloctrim  = 32 * 2^20, # glibc M_TRIM_THRESHOLD; 0 leaves glibc alone
-    data        = get(ENV, "RASTERDATASOURCES_PATH",
-                      joinpath(SCRIPTS_DIR, "..", "bench", "data")),
-)
+
+"Build a fresh CopDEM configuration, including current environment overrides."
+function copdem_config()
+    res = 90  # 90 for GLO-90, 30 for GLO-30
+    data = get(ENV, "RASTERDATASOURCES_PATH",
+        joinpath(SCRIPTS_DIR, "..", "bench", "data"))
+    return (
+        res,
+        level       = 12,       # IGeo7 output level
+        ancestor    = 5,        # chunk root level
+        source      = :synthetic, # :real (lazy AWS tiles) or :synthetic
+        authalic    = true,     # compute on the WGS84 authalic geometry
+        method      = Symbol(get(ENV, "COPDEM_METHOD", "conservative")), # :conservative, :point, :nearest or :nearest-direct
+        store       = get(ENV, "COPDEM_STORE",
+                          "/home/asinghvi17/geo/scratch-stores/glo90-synthetic-authalic-phase1.zarr"),
+        region      = nothing,  # nothing for the globe, or [(w, e, s, n), ...] boxes
+        maskarcsec  = 15,       # land-mask lattice, arcseconds; 0 disables the mask
+        real        = :none,    # local overrides; synthetic requires :none absolutely
+        tilecache   = get(ENV, "COPDEM_TILE_CACHE",
+                          joinpath(data, "CopernicusDEM", "tiles")),
+        tilebaseurl = get(ENV, "COPDEM_TILE_BASEURL",
+                          "https://copernicus-dem-$(res)m.s3.amazonaws.com"),
+        retries     = 4,        # total GET attempts for a transient failure
+        backoff     = 1.0,      # seconds; doubled between attempts
+        timeout     = 600.0,    # seconds per tile GET
+        workers     = parse(Int, get(ENV, "COPDEM_WORKERS", "40")), # concurrent worker tasks; 0 = size from `cores` (local bench knob)
+        cores       = 40,       # the core budget `workers` is sized to hold
+        shape       = :outer,   # :outer or :inner; see `workercount`
+        batch       = 8,        # chunks handed out per pull, at most; see `taper`
+        taper       = true,     # shrink the batch as the queue drains
+        budget      = 2^30,     # lazy-regrid byte budget, per worker
+        schedule    = :affinity, # :affinity (tile-affinity walk) or :canonical
+        cachepolicy = :refcount, # :refcount (graph-driven) or :lru
+        cache       = 3072,     # tiles held across all workers, `cachepolicy = :lru` only
+        stripes     = 64,       # independent locks over that cache, ditto
+        refinegraph = false,    # narrow the graph past the regridder's own pairing
+        prefetch    = 0,        # columns of lookahead; 0 disables the prefetcher
+        fetchconc   = 0,        # concurrent source loads; 0 means "as many as workers"
+        fetchdelay  = 0.0,      # seconds of fake latency per tile build; a test knob
+        resume      = true,     # skip chunks already written
+        checks      = false,    # run the synthetic oracle after the run
+        checkchunks = 6,        # chunks to verify when `checks`
+        heartbeat   = 300,      # seconds between summary lines
+        maxchunks   = parse(Int, get(ENV, "COPDEM_MAXCHUNKS", "0")), # 0 = no limit; a smoke-test knob
+        chunks      = Int[],    # explicit chunk indices, overriding the covering
+        dryrun      = false,    # plan and report, compute nothing
+        allowsweeper = false,   # run anyway under `--gcthreads=N,1`; see `gcguard`
+        malloctrim  = 32 * 2^20, # glibc M_TRIM_THRESHOLD; 0 leaves glibc alone
+        data,
+    )
+end
 
 """
     regridmethod(config) -> AbstractRegriddingMethod
@@ -202,6 +209,36 @@ end
 inregions(::Nothing, lon, lat) = true
 inregions(regions, lon, lat) =
     any(r -> r[1] <= lon <= r[2] && r[3] <= lat <= r[4], regions)
+
+"""
+    copdem_tilelist(config) -> String
+
+Return the local Copernicus tile-list path. If it is absent, download the
+bucket's canonical `tileList.txt` once and cache it under `config.data`.
+"""
+function copdem_tilelist(config)
+    path = joinpath(config.data, "CopernicusDEM", "tileList-glo$(config.res).txt")
+    isfile(path) && return path
+
+    url = string(rstrip(String(config.tilebaseurl), '/'), "/tileList.txt")
+    mkpath(dirname(path))
+    part, io = mktemp(dirname(path))
+    close(io)
+    say("tile list: downloading $url -> $path")
+    try
+        Downloads.download(url, part; timeout = config.timeout)
+        filesize(part) > 0 || error("downloaded an empty object from $url")
+        Base.Filesystem.rename(part, path)
+    catch err
+        isfile(path) && return path  # another process completed the same download
+        detail = sprint(showerror, err)
+        throw(ArgumentError(
+            "no tile list at $path and automatic download from $url failed: $detail"))
+    finally
+        rm(part; force = true)
+    end
+    return path
+end
 
 """
     listedtiles(sys, path, regions) -> Vector{Int}

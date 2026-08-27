@@ -119,6 +119,10 @@ The files under `scripts/dagger_regrid/` now provide:
 - coordinator-only done-ledger appends after a successful compact report;
 - process-private real-source download cache directories, avoiding cross-process
   `.part` races at the deliberate cost of measuring duplicate downloads;
+- runtime construction of environment-sensitive CopDEM configuration, so
+  package precompilation cannot freeze `RASTERDATASOURCES_PATH`;
+- automatic caching of the public bucket's canonical `tileList.txt` beneath
+  that data directory when the renamed local list is absent;
 - `:before_compute`, `:before_write`, and `:after_write` failure injection;
 - safe exceptional teardown that drains side-effecting write tasks instead of
   treating Dagger cancellation as process preemption; and

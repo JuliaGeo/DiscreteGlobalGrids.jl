@@ -21,7 +21,7 @@ using DaggerRegrid: GuidedSchedule, WorkerStateFactory, WorkerStats
 using DaggerRegrid: claim_items!, collect_worker_stats, drain_flights!
 using DaggerRegrid: launch_batch!, prepare_coordinator
 using DaggerRegrid: record_batch!, record_transport_failures!
-using DaggerRegrid: gcguard, hours, say, validate_config, worker_config
+using DaggerRegrid: copdem_config, gcguard, hours, say, validate_config, worker_config
 
 # Choose the execution mode before opening a source, graph, or store.
 mode = Symbol(lowercase(get(ENV, "DAGGER_REGRID_MODE", "run")))
@@ -32,7 +32,9 @@ mode in (:smoke, :run, :canary) ||
 batch = haskey(ENV, "DAGGER_BATCH") ? parse(Int, ENV["DAGGER_BATCH"]) : nothing
 
 # Describe the run with plain, serializable values.
+production = copdem_config()
 config = DaggerRegridConfig(;
+    production,
     inflight_per_process = parse(Int, get(ENV, "DAGGER_INFLIGHT", "1")),
     batch,
     worker_cache_slots = parse(Int, get(ENV, "DAGGER_CACHE_SLOTS", "256")),

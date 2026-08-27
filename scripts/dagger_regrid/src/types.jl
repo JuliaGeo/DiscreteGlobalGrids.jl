@@ -18,7 +18,7 @@ function DaggerRegridConfig(; production = nothing, processes = nothing,
         worker_cache_slots::Integer = 256, worker_cache_stripes::Integer = 16,
         worker_tilecache_root::Union{Nothing,AbstractString} = nothing,
         failpoints = Dict{Int,Symbol}())
-    production === nothing && (production = CONFIG)
+    production === nothing && (production = copdem_config())
     batch === nothing && (batch = production.batch)
     pids = processes === nothing ? Distributed.workers() : Int.(processes)
     isempty(pids) && (pids = [Distributed.myid()])

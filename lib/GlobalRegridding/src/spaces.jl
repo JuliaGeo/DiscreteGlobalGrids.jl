@@ -314,7 +314,10 @@ destinationdims(::RegridSpace, ::DD.Lookups.Sampling) = nothing
 
 Return the source a lookup already names, or `nothing`. A lookup that carries
 its own cells is not a raster axis, so a package that supplies one extends this
-and a regrid given no `from` names it instead of asking for `xdim`.
+and a regrid given no `from` **resolves** what it names instead of looking for
+`xdim`. The name must therefore be one [`_asspace`](@ref) answers for; a name
+nothing resolves is a missing method in the package that supplied the axis, and
+says so.
 """
 dimsource(::Any) = nothing
 

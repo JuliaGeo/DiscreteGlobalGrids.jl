@@ -340,16 +340,21 @@ so a mixed-level cube is a source with no `from` and no manual [`expand`](@ref).
     are refused, because every leaf under a stored cell carries one replicated
     value and interpolating between those sites rebuilds the coarsening
     staircase at leaf spacing.
-  - `expand` is one-dimensional, so a cube with pass-through dimensions declines
-    and asks for a `from` instead.
+  - `expand` is one-dimensional, so a cube with pass-through dimensions is
+    refused outright rather than left to fail on a count.
 """
 function GR.sourceview(lk::MultiOrderLookup, A::DD.AbstractDimArray, method)
-    ndims(A) == 1 || return nothing
+    ndims(A) == 1 || _nomultidim(lk, method)
     GR.refinementinvariant(method) || _nointerpolation(lk, method)
     return expand(A, reference_level(lk))
 end
 
 GR.sourceview(::MultiOrderLookup, A, method) = nothing
+
+@noinline _nomultidim(lk::MultiOrderLookup, method) = throw(ArgumentError(
+    "a mixed-level cube presents itself refined to level " *
+    "$(reference_level(lk)), and `expand` is one-dimensional, so it cannot do " *
+    "that for a cube with pass-through dimensions. Regrid one slice at a time."))
 
 @noinline _nointerpolation(lk::MultiOrderLookup, method) = throw(ArgumentError(
     "$(nameof(typeof(method))) interpolates between source sample sites, and a " *

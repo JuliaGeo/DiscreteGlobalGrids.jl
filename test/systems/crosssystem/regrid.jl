@@ -919,6 +919,34 @@ const MOCDST = DGG.levelgrid(MOCSYS, MOCREF - 1)
     end
 end
 
+@testset "a plain cell axis names its own source too" begin
+    # Rasters infer their source; a cell axis has already said what its cells
+    # are, so it does too. No `from`, no ceremony, and the same numbers as
+    # naming that source by hand.
+    grid = DGG.levelgrid(MOCSYS, 2)
+    vals = collect(1.0:DGG.ncells(grid))
+    plain = DD.DimArray(vals, DGG.Cells(DGG.CellLookup(DGG.CellVector(grid))))
+
+    # A store-backed axis over the same cells, in the shape `dggread` hands
+    # back: the other `AbstractCellLookup`, and it must answer alike.
+    chunked = DD.DimArray(vals, DGG.Cells(DGG.ChunkedCellLookup(
+        DGG.cellaxis(DGG.ImplicitEncoding(), grid, DGG.ncells(grid)))))
+
+    for A in (plain, chunked), method in (GR.Conservative(), GR.NearestCell(),
+                                          GR.BarycentricPoint())
+        lk = DD.lookup(A, DGG.Cells)
+        @test isequal(parent(DGG.regrid(A; to = MOCDST, method)),
+            parent(DGG.regrid(A; to = MOCDST, from = DGG.cellset(lk), method)))
+        # And the same as the bare-array call the axis is standing in for.
+        @test isequal(parent(DGG.regrid(A; to = MOCDST, method)),
+            DGG.regrid(vals; to = MOCDST, from = grid, method))
+    end
+
+    # An explicit `from` still wins: inference never overrides what was named.
+    @test parent(DGG.regrid(plain; to = MOCDST, from = DGG.levelgrid(MOCSYS, 2))) ==
+          parent(DGG.regrid(plain; to = MOCDST))
+end
+
 @testset "only a method refinement cannot move presents itself refined" begin
     # Replacing a stored cell by its leaves, each repeating that cell's value,
     # leaves an area or nearest-cell answer alone. It does not leave an
@@ -964,15 +992,14 @@ end
     @test parent(DGG.regrid(MOCCUBE; to = MOCDST, from = MOV)) ==
           parent(DGG.regrid(MOCCUBE; to = MOCDST))
 
-    # `expand` is one-dimensional, so a cube with pass-through dimensions
-    # declines to present itself and asks for the `from` it can be given.
+    # `expand` is one-dimensional, so a cube with pass-through dimensions says
+    # so outright rather than leaving a count to fail one step later.
     cube2d = DD.DimArray(hcat(MOCVALS, MOCVALS),
         (DGG.Cells(DGG.MultiOrderLookup(MOV)), DD.Dim{:month}(1:2)))
-    @test GR.sourceview(DD.lookup(cube2d, DGG.Cells), cube2d,
-        GR.Conservative()) === nothing
+    @test_throws ArgumentError GR.sourceview(DD.lookup(cube2d, DGG.Cells),
+        cube2d, GR.Conservative())
     @test_throws ArgumentError DGG.regrid(cube2d; to = MOCDST)
-    @test_throws "names cells rather than a raster lattice" DGG.regrid(cube2d;
-        to = MOCDST)
+    @test_throws "`expand` is one-dimensional" DGG.regrid(cube2d; to = MOCDST)
 end
 
 end # module RegridTests

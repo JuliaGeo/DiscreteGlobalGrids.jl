@@ -43,7 +43,9 @@ function buildweights!(coo::WeightCOO, method::T6CountingMethod,
     return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
-# A lookup that names cells of its own, as a DGGS cell axis does.
+# A lookup that names cells of its own, as a DGGS cell axis does, and the target
+# spelling it names. The package supplying the axis owes an `_asspace` for that
+# spelling; having one is what lets the axis resolve itself with no `from`.
 struct T6Grid end
 Base.show(io::IO, ::T6Grid) = print(io, "T6Grid()")
 
@@ -52,6 +54,20 @@ struct T6Cell
 end
 
 GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
+
+GR._asspace(::T6Grid, name::AbstractString) =
+    t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
+
+# The same shape from a package that stopped one step short: the axis names a
+# source and nothing resolves that name into a space.
+struct T6Unresolved end
+Base.show(io::IO, ::T6Unresolved) = print(io, "T6Unresolved()")
+
+struct T6LooseCell
+    id::Int
+end
+
+GR.dimsource(::DD.Lookups.Lookup{T6LooseCell}) = T6Unresolved()
 
 @testset "Integration" begin
 
@@ -191,14 +207,37 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test DD.dims(regrid(src; to = yfirst)) isa Tuple{<:DD.Y,<:DD.X}
     end
 
-    @testset "a cell axis names its own source" begin
-        data = DD.DimArray(zeros(32), (DD.Dim{:Cells}(DD.Lookups.Categorical(
+    @testset "a cell axis resolves its own source" begin
+        values = collect(1.0:32.0)
+        data = DD.DimArray(values, (DD.Dim{:Cells}(DD.Lookups.Categorical(
             [T6Cell(i) for i in 1:32]; order = DD.Lookups.Unordered())),))
-        dst = t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
+        dst = t6_space(t6_centres(-180, 180, 4), t6_centres(-90, 90, 2))
+        src = t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
 
-        # Without `from` the source space is derived from the data, and a cell
-        # axis is not a raster lattice: name the grid it holds, not `xdim`.
-        @test_throws "from = T6Grid()" regrid(data; to = dst)
+        # An axis that has already said what its cells are needs no `from`: the
+        # name it gives is resolved, not handed back to the caller to retype.
+        # Bit for bit the same as spelling that source out.
+        for method in (Conservative(), NearestCell(), BarycentricPoint())
+            @test regrid(data; to = dst, method) ==
+                  regrid(data; to = dst, from = T6Grid(), method)
+            @test vec(parent(regrid(data; to = dst, method))) ==
+                  regrid(values; to = dst, from = src, method)
+        end
+        @test GR.plan_regrid(data; to = dst, lazy = false).src_space isa RasterGrid
+
+        # An explicit `from` still wins: inference never overrides what the
+        # caller named. A coarser source over the same cells answers
+        # differently, and that is the answer.
+        coarse = t6_space(t6_centres(-180, 180, 4), t6_centres(-90, 90, 8))
+        @test regrid(data; to = dst, from = coarse) !=
+              regrid(data; to = dst)
+
+        # A named source nothing resolves is the package's omission, and the
+        # error says so instead of pretending the axis is a raster lattice.
+        loose = DD.DimArray(zeros(32), (DD.Dim{:Cells}(DD.Lookups.Categorical(
+            [T6LooseCell(i) for i in 1:32]; order = DD.Lookups.Unordered())),))
+        @test_throws ArgumentError regrid(loose; to = dst)
+        @test_throws "must be a RegridSpace, got T6Unresolved" regrid(loose; to = dst)
     end
 
     @testset "cross-method agreement" begin

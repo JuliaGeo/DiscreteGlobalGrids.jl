@@ -256,10 +256,16 @@ wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
         src_space, 1:Int(ncells(src_space)))
 
 # Only dimensional arrays carry enough geometry to infer a source space.
-# An axis that presents the data itself ([`sourceview`](@ref)) resolves without
-# a `from`, through the space its own view names. An axis that merely names
-# cells ([`dimsource`](@ref)) is still not a raster axis, so name it rather than
-# ask for the raster axis it does not have.
+#
+# An axis that presents the data itself ([`sourceview`](@ref)) resolves through
+# the space its own view names. An axis that merely names a source
+# ([`dimsource`](@ref)) resolves through that: it has already said what the
+# cells are, so asking the caller to retype it would be a spelling test, not a
+# question. A raster lattice is the last case, and the only one left for
+# [`RasterGrid`](@ref) to find.
+#
+# A named source `_asspace` cannot resolve says so in `_asspace`'s own terms —
+# the package that supplied the axis owes the space.
 function _sourcespace(data::DD.AbstractDimArray, method)
     for d in DD.dims(data)
         lookup = DD.lookup(d)
@@ -267,11 +273,7 @@ function _sourcespace(data::DD.AbstractDimArray, method)
         view === nothing || return _presentedspace(view)
         named = dimsource(lookup)
         named === nothing && continue
-        throw(ArgumentError("""
-        no `from` was given, so the source space was derived from the data, but \
-        its $(DD.name(d)) dimension names cells rather than a raster lattice. \
-        Pass `from = $(named)`.
-        """))
+        return _asspace(named, "from")
     end
     return RasterGrid(data)
 end

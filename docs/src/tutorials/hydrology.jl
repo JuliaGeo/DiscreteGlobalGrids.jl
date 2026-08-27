@@ -52,7 +52,7 @@ region = @time DGG.query(
 )
 # Here's what this looks like:
 f, a, p = plot(dem; axis = (; aspect = DataAspect()))
-poly!(a, region; color = :transparent, strokewidth = 1.2, strokecolor = (:black, 0.5))
+poly!(a, region; color = :transparent, strokewidth = 2, strokecolor = (:black, 0.5))
 f
 # This is a nice way to compress the set of cells that would be covered in memory.
 # Note that `region` says it has ~44,000 cells.  But when you look at the number of
@@ -73,13 +73,15 @@ DGG.CellLookup(region) |> length
 # have better handling for missing / NODATA values).
 
 igeo7_dem = @time DGG.regrid(dem; to = region)
+igeo7_dem = @time DGG.regrid(dem; to = region, method = DGG.BarycentricPoint())
 elevation = Raster(igeo7_dem; missingval = oftype(first(igeo7_dem), NaN))
 # Let's now plot this too, using the specialized [`dggsurface`](@ref) recipe for efficiency:
-f, a, p = dggsurface(lookup(elevation, DGG.Cells); color = vec(elevation), axis = (; aspect = DataAspect()))
+f, a, p = dggpoly(lookup(elevation, DGG.Cells); color = vec(elevation), axis = (; aspect = DataAspect()))
 f
+
 # There are also some nice overloads to make this really feel like a surface plot.
 # To enhance realism, we'll transform it to "real" coordinates at least.
-f, a, p = dggsurface(
+f, a, p = dggpoly(
     elevation .* 2; # just for effect, since this will be a static plot
     color = vec(elevation), 
     axis = (; type = Axis3, aspect = :data, clip = false)

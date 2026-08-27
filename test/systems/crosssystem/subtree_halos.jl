@@ -11,8 +11,8 @@ module SubtreeHaloTests
 using Test
 using DiscreteGlobalGrids
 using DiscreteGlobalGrids: systems, levelgrid, level, maxlevel, ncells,
-    cellindex, cellposition, neighbors, ancestor, Vertex, Edge,
-    SubtreeHaloIterator, halo_positions, sizehint
+    cellindex, localindex, globalindex, neighbors, ancestor, Vertex, Edge,
+    SubtreeHaloIterator, halo_indices, sizehint
 import DiscreteGlobalGrids as DGG
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
@@ -55,7 +55,7 @@ Base.eltype(::Type{<:EagerHaloEngine{E,C}}) where {E,C} = C
 Base.IteratorSize(::Type{<:EagerHaloEngine}) = Base.HasLength()
 Base.length(e::EagerHaloEngine) = length(e.cells)
 
-# Subset wrapper that counts membership-position and span queries. This measures
+# Subset wrapper that counts membership-index and span queries. This measures
 # traversal work without relying on wall-clock time.
 mutable struct CountingSubset{S}
     inner::S
@@ -64,8 +64,8 @@ end
 
 CountingSubset(inner) = CountingSubset{typeof(inner)}(inner, 0)
 
-DGG.cellposition(cs::CountingSubset, c::DGG.AbstractCellIndex) =
-    (cs.calls += 1; DGG.cellposition(cs.inner, c))
+DGG.localindex(cs::CountingSubset, c::DGG.AbstractCellIndex) =
+    (cs.calls += 1; DGG.localindex(cs.inner, c))
 
 DGG.Engine.subset_span(cs::CountingSubset, lo::Int, hi::Int) =
     (cs.calls += 1; DGG.Engine.subset_span(cs.inner, lo, hi))
@@ -102,7 +102,7 @@ CountingGrid(g) = CountingGrid{typeof(g)}(g, 0)
 DGG.neighbors(cg::CountingGrid, x, k::Int; kwargs...) =
     (cg.calls += 1; DGG.neighbors(cg.inner, x, k; kwargs...))
 
-# Uncounted forwards: the scan engine walks positions off the grid itself.
+# Uncounted forwards: the scan engine walks indices off the grid itself.
 DGG.ncells(cg::CountingGrid) = DGG.ncells(cg.inner)
 DGG.cellindex(cg::CountingGrid, i) = DGG.cellindex(cg.inner, i)
 DGG.level(cg::CountingGrid) = DGG.level(cg.inner)
@@ -212,9 +212,9 @@ state_size(it) = Base.summarysize(it)
         end
     end
 
-    # Full-grid oracle: scan target-level positions and retain outside cells with
+    # Full-grid oracle: scan target-level indices and retain outside cells with
     # a descendant neighbour. This O(ncells) definition shares no traversal code
-    # with the halo engines and preserves canonical position order.
+    # with the halo engines and preserves canonical index order.
     function law_halo(sys, c, l; connectivity = Vertex())
         grid = levelgrid(sys, l)
         lc = level(c)
@@ -378,7 +378,7 @@ state_size(it) = Base.summarysize(it)
         lc = level(c)
         @test all(x -> ancestor(sys, x, lc) != c, h)          # outside ancestry
         grid = levelgrid(sys, l)
-        @test issorted([cellposition(grid, x) for x in h])    # canonical order
+        @test issorted([globalindex(grid, x) for x in h])    # canonical order
         # Both adjacency directions, under the same connectivity: every border cell
         # reaches the halo, and every halo cell reaches the border.
         bnd = eager_border(sys, c, l; connectivity = conn)
@@ -629,7 +629,7 @@ state_size(it) = Base.summarysize(it)
             mx = maxlevel(sys)
             for base in (mx - 1, 19), conn in (Vertex(), Edge())
                 l = base + 1
-                # Position 1 is lattice (0, 0) of face 0 under both curves: the
+                # Index 1 is lattice (0, 0) of face 0 under both curves: the
                 # Morton systems because min-code is min-corner, S2 because the
                 # Hilbert curve enters face 0 at its origin.
                 c = cellindex(levelgrid(sys, base), 1)
@@ -683,7 +683,7 @@ state_size(it) = Base.summarysize(it)
     end
 
     # All twelve pentagons, the ring around two of them (the arc-3 neighbours),
-    # and a spread of ordinary cells by position.
+    # and a spread of ordinary cells by index.
     function hex_roots(sys, base::Int, nhex::Int)
         grid = levelgrid(sys, base)
         pents = hex_pentagons(sys, base)
@@ -738,7 +738,7 @@ state_size(it) = Base.summarysize(it)
         # at base 8, and the seeded frames sit at the other parity. The
         # generation cannot be enumerated — H3's level-8 grid is 7e8 cells — so
         # the roots are the twelve pentagons BY NAME, the ring around two of
-        # them, and a positional spread. Depth 4 is in every base because it is
+        # them, and an index-based spread. Depth 4 is in every base because it is
         # the first at which a seeded arc has been through three transitions.
         base = 8
         if base + 1 <= maxlevel(sys)
@@ -963,7 +963,7 @@ state_size(it) = Base.summarysize(it)
         for x in vcat(whole, collect(removed))
             any(held, neighbors(grid, x, 1; connectivity = conn)) && push!(out, x)
         end
-        sort!(out; by = x -> cellposition(grid, x))
+        sort!(out; by = x -> globalindex(grid, x))
         return out
     end
 
@@ -995,8 +995,8 @@ state_size(it) = Base.summarysize(it)
         @test collect(hcells(loose)) == expected
 
         @test collect(hcells(pg; connectivity = Edge())) == geom[Edge()]
-        @test all(x -> cellposition(pg, x) === nothing, collect(hcells(pg)))
-        @test all(x -> cellposition(loose, x) === nothing, collect(hcells(loose)))
+        @test all(x -> localindex(pg, x) === nothing, collect(hcells(pg)))
+        @test all(x -> localindex(loose, x) === nothing, collect(hcells(loose)))
 
         inner = eager_interior(sys, c, l)
         # one interior cell, the whole interior, a border patch
@@ -1013,7 +1013,7 @@ state_size(it) = Base.summarysize(it)
                 @test hh == collect(hcells(CellLookup(CellVector(holed));
                     connectivity = conn))
                 @test allunique(hh)
-                @test all(x -> cellposition(holed, x) === nothing, hh)
+                @test all(x -> localindex(holed, x) === nothing, hh)
                 rooted = PartialGrid(sys, l, ids; root = c)
                 @test hcells(rooted) isa DGG.Engine.SubsetHaloIterator
                 @test collect(hcells(rooted; connectivity = conn)) == hh
@@ -1249,20 +1249,20 @@ state_size(it) = Base.summarysize(it)
     end
 
 
-    @testset "halo_positions is the ascending position stream, on every engine" begin
+    @testset "halo_indices is the ascending index stream, on every engine" begin
         seen = Set{Symbol}()
         wrappers = Set{Symbol}()
-        function check_positions(grid, it)
+        function check_indices(grid, it)
             push!(seen, engine_tag(it.engine))
             push!(wrappers, nameof(typeof(it)))
             ids = collect(it)
-            hp = halo_positions(it)
+            hp = halo_indices(it)
             ps = collect(hp)
             @test !isempty(ps)
             # The stream IS the conversion of the id stream, element for element
-            # — including on the subset walks, where the grid a position means
+            # — including on the subset walks, where the grid an index means
             # is the COMPLETE level and not the subset.
-            @test ps == [cellposition(grid, x) for x in ids]
+            @test ps == [globalindex(grid, x) for x in ids]
             # The contract.
             @test issorted(ps)
             @test allunique(ps)
@@ -1271,7 +1271,7 @@ state_size(it) = Base.summarysize(it)
             # with nothing red anywhere.
             @test eltype(typeof(hp)) === Int
             @test ps isa Vector{Int}
-            # Reading positions instead of ids changes nothing about counting.
+            # Reading indices instead of ids changes nothing about counting.
             @test Base.IteratorSize(typeof(hp)) === Base.IteratorSize(typeof(it))
             if Base.IteratorSize(typeof(hp)) isa Base.HasLength
                 @test length(hp) == length(ps)
@@ -1287,16 +1287,16 @@ state_size(it) = Base.summarysize(it)
             mx = maxlevel(sys)
             c0 = cellindex(levelgrid(sys, 0), 1)
             for l in 0:min(2, mx)
-                check_positions(levelgrid(sys, l), SubtreeHaloIterator(sys, c0, l))
+                check_indices(levelgrid(sys, l), SubtreeHaloIterator(sys, c0, l))
             end
             l = min(2, mx)
-            check_positions(levelgrid(sys, l), generic_iterator(sys, c0, l))
+            check_indices(levelgrid(sys, l), generic_iterator(sys, c0, l))
             loose = PartialGrid(sys, l, collect(subtree(sys, c0, l).ids))
-            check_positions(levelgrid(sys, l), hcells(loose))
-            check_positions(levelgrid(sys, l), hcells(CellVector(loose)))
+            check_indices(levelgrid(sys, l), hcells(loose))
+            check_indices(levelgrid(sys, l), hcells(CellVector(loose)))
         end
         for sys in SQUARE_SYSTEMS
-            check_positions(levelgrid(sys, 4),
+            check_indices(levelgrid(sys, 4),
                 SubtreeHaloIterator(sys, inface_root(sys, 2, 4), 4))
         end
         @test seen == ALL_ENGINE_TAGS
@@ -1308,7 +1308,7 @@ state_size(it) = Base.summarysize(it)
             pg = subtree(sys, cellindex(levelgrid(sys, 0), 1), l)
             for conn in (Vertex(), Edge())
                 @test collect(halo(pg; connectivity = conn)) ==
-                      [cellposition(levelgrid(sys, l), x)
+                      [globalindex(levelgrid(sys, l), x)
                        for x in collect(hcells(pg; connectivity = conn))]
             end
         end
@@ -1397,7 +1397,7 @@ state_size(it) = Base.summarysize(it)
             push!(hinted, engine_tag(it.engine))
             @test sizehint(it) isa Int
             @test sizehint(it) >= length(collect(it))
-            @test sizehint(halo_positions(it)) == sizehint(it)
+            @test sizehint(halo_indices(it)) == sizehint(it)
             if Base.IteratorSize(typeof(it)) isa Base.SizeUnknown
                 @test_throws MethodError length(it)
             else
@@ -1759,7 +1759,7 @@ state_size(it) = Base.summarysize(it)
                 @test length(Set(walk)) == length(out)      # no duplicates
                 @test all(in(Set(walk)), out)
             end
-            # A position walk and its id twin are the same stream, so `Set`
+            # An index walk and its id twin are the same stream, so `Set`
             # membership answers the same question in either currency.
             g = levelgrid(sys, l)
             @test Set(cellindex(g, p) for p in halo(pg)) == Set(hcells(pg))

@@ -1,4 +1,5 @@
-# Identity and hierarchy fallbacks. A bare `Int` is a grid position; a typed
+# Identity and hierarchy fallbacks. A bare `Int` argument is always an index in
+# `1:ncells(grid)` — a local index into that collection's own storage. A typed
 # `AbstractCellIndex` is a cell identifier.
 
 """
@@ -17,7 +18,7 @@ end
 """
     cellindex(grid, i, T) -> T
 
-The id of the cell at position `i` in the requested scheme. Generic:
+The id of the cell at local index `i` in the requested scheme. Generic:
 `reindex(T, system(grid), cellindex(grid, i))`.
 """
 function cellindex(grid::AbstractGrid, i::Int, ::Type{T}) where {T<:AbstractCellIndex}
@@ -50,12 +51,12 @@ function reindex(::Type{T}, sys::AbstractHierarchicalGridSystem,
 end
 
 """
-    cellposition(grid, c) -> Union{Int,Nothing}
+    localindex(grid::AbstractGrid, c) -> Union{Int,Nothing}
 
-Return the position of `c`, or `nothing` if absent. The generic fallback scans
+Return the local index of `c`, or `nothing` if absent. The generic fallback scans
 `1:ncells(grid)` linearly; searchable grids should override it.
 """
-function cellposition(grid::AbstractGrid, c::AbstractCellIndex)
+function localindex(grid::AbstractGrid, c::AbstractCellIndex)
     target = _canonical(grid, c)
     target === nothing && return nothing
     for i in 1:ncells(grid)
@@ -64,14 +65,25 @@ function cellposition(grid::AbstractGrid, c::AbstractCellIndex)
     return nothing
 end
 
-# `BoundsError` on a grid names the valid position range instead of the grid's
+# The point form, spelled as the two calls it stands for. A grid that resolves
+# membership while it locates overrides this with one search.
+function localindex(grid::AbstractGrid, p::GO.UnitSphericalPoint)
+    c = cellat(grid, p)
+    c === nothing && return nothing
+    return localindex(grid, c)
+end
+
+localindex(grid::AbstractGrid, lon::Real, lat::Real) =
+    localindex(grid, unit_point(lon, lat))
+
+# `BoundsError` on a grid names the valid index range instead of the grid's
 # type parameters.
 function Base.summary(io::IO, grid::AbstractGrid)
     sys = system(grid)
     sys === nothing || print(io, nameof(typeof(sys)), " ")
     l = level(grid)
     l === nothing || print(io, "level-", l, " ")
-    print(io, nameof(typeof(grid)), " over positions 1:", ncells(grid))
+    print(io, nameof(typeof(grid)), " over indices 1:", ncells(grid))
     return nothing
 end
 
@@ -102,7 +114,7 @@ end
 
 # The system verbs a cell id reaches directly. Each shipped system defines a
 # more specific method, so these are hit only by a cell the system cannot name.
-for f in (:cell_boundary, :cell_centroid, :cellposition, :children)
+for f in (:cell_boundary, :cell_centroid, :globalindex, :children)
     @eval $f(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
         _foreign_cell($f, sys, c)
 end

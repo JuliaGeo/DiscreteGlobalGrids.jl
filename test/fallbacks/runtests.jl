@@ -12,7 +12,7 @@
 #     mode. Every traversal answer must match `SortedMock`'s exactly; that
 #     equality verifies both cursor modes.
 #   * `OctantGrid` — eight spherical triangles, no system at all: the
-#     standalone-grid path (position-space tree, geometric neighbours) with
+#     standalone-grid path (index-space tree, geometric neighbours) with
 #     areas that are known in closed form (pi/2 steradians each).
 #
 # The mocks cover a band of the sphere (latitude -45..45), not the whole of it,
@@ -49,7 +49,7 @@ eager_interior(sys, c, l; kw...) =
 # Level 0 is 4 longitude sectors x 2 latitude bands (8 roots) covering
 # latitude -45..45; each cell splits into 2x2, with child `4id + k` taking the
 # `(k & 1, k >> 1)` half in (lon, lat). Ids are `LevelIndex(level, id)` with a
-# 0-based dense index, so a position in a level grid is `id + 1`.
+# 0-based dense index, so an index in a level grid is `id + 1`.
 # ===========================================================================
 
 struct SortedMock <: AbstractHierarchicalGridSystem end
@@ -96,7 +96,7 @@ function DGG.cellindex(g::MockGrid, i::Int)
     return LevelIndex(g.level, i - 1)
 end
 
-DGG.cellposition(g::MockGrid, c::LevelIndex) =
+DGG.localindex(g::MockGrid, c::LevelIndex) =
     (level(c) == g.level && 0 <= rawid(c) < mock_ncells(g.level)) ? Int(rawid(c)) + 1 : nothing
 
 DGG.rootcells(::MockSystem) = [LevelIndex(0, i) for i in 0:(ROOTS-1)]
@@ -111,7 +111,7 @@ function DGG.children(::MockSystem, c::LevelIndex)
     return [LevelIndex(level(c) + 1, rawid(c) * RADIX + k) for k in 0:(RADIX-1)]
 end
 
-# `descendant_range` returns one-based positions, not raw ids.
+# `descendant_range` returns one-based indices, not raw ids.
 function DGG.descendant_range(::Union{SortedMock,OverhangMock}, c::LevelIndex, l::Integer)
     Int(l) >= level(c) || throw(ArgumentError("level $l is above the cell's own"))
     span = RADIX^(Int(l) - level(c))
@@ -124,8 +124,8 @@ end
 # `MockPairIndex` names a cell by (root, offset within that root's subtree)
 # rather than by a dense id — and, crucially for the `_canonical` regression
 # tests, its converter REJECTS an offset that names no cell. A system converter
-# is allowed to throw for a value that is simply not a cell; `cellposition` is
-# not allowed to let that throw escape.
+# is allowed to throw for a value that is simply not a cell; `localindex`/
+# `globalindex` are not allowed to let that throw escape.
 struct MockPairIndex <: AbstractCellIndex
     level::Int
     root::Int
@@ -222,7 +222,7 @@ struct OctantGrid <: AbstractGrid end
 DGG.ncells(::OctantGrid) = 8
 DGG.cellindex(::OctantGrid, i::Int) = (1 <= i <= 8 || throw(BoundsError(OctantGrid(), i));
 OctantIndex(i - 1))
-DGG.cellposition(::OctantGrid, c::OctantIndex) = c.code + 1
+DGG.localindex(::OctantGrid, c::OctantIndex) = c.code + 1
 
 octant_signs(c::OctantIndex) = ((c.code & 1) == 0 ? 1.0 : -1.0,
     (c.code & 2) == 0 ? 1.0 : -1.0,
@@ -297,7 +297,7 @@ function walk(f, node)
     return nothing
 end
 
-leaf_positions(tree) = STI.query(tree, _ -> true)
+leaf_indices(tree) = STI.query(tree, _ -> true)
 
 "`q`'s offset from `p`, projected into the tangent plane at `p`."
 function tangent_offset(p, q)
@@ -355,7 +355,7 @@ end
     @test closed[1] == closed[end]
     @test closed[1:4] == ring
 
-    # `getcell` is `cell_polygon . cellindex`, by position.
+    # `getcell` is `cell_polygon . cellindex`, by index.
     @test collect(GI.getpoint(GI.getexterior(getcell(grid, 17)))) == closed
     @test getcell === Trees.getcell
 
@@ -409,7 +409,7 @@ end
     @test dateline.Y[2] > 20.0           # great-circle bulge again
 end
 
-@testset "a grid's BoundsError names its valid positions" begin
+@testset "a grid's BoundsError names its valid indices" begin
     grid = levelgrid(SORTED, 3)
     n = ncells(grid)
     message = try
@@ -418,7 +418,7 @@ end
         sprint(showerror, err)
     end
     # The regression: `summary` falls back to the grid's parameterised type and
-    # the range the position had to be in never appears.
+    # the range the index had to be in never appears.
     @test occursin("1:$n", message)
     @test occursin("level-3", message)
 end
@@ -432,16 +432,16 @@ end
 
     # Bijection over the whole level.
     for i in (1, 2, 100, ncells(grid))
-        @test cellposition(grid, cellindex(grid, i)) == i
+        @test globalindex(grid, cellindex(grid, i)) == i
     end
     # A cell from another level is simply not in this grid.
-    @test cellposition(grid, LevelIndex(2, 0)) === nothing
+    @test globalindex(grid, LevelIndex(2, 0)) === nothing
 
-    # The generic linear-scan `cellposition` on a grid with no override.
+    # The generic linear-scan `globalindex` on a grid with no override.
     octants = OctantGrid()
     @test cellindextypes(octants) == (OctantIndex,)
     for i in 1:8
-        @test cellposition(octants, cellindex(octants, i)) == i
+        @test globalindex(octants, cellindex(octants, i)) == i
     end
 
     # ancestor / descendants
@@ -465,8 +465,8 @@ end
     @test_throws MethodError descendant_range(UNSORTED, LevelIndex(0, 0), 2)
 end
 
-@testset "cellposition: `nothing`, never a throw" begin
-    # `cellposition(grid, c)` returns `nothing` for unsupported ids even when
+@testset "index resolution: `nothing`, never a throw" begin
+    # `localindex`/`globalindex` return `nothing` for unsupported ids even when
     # the underlying `reindex` call throws an `ArgumentError`.
 
     # --- (a) a FOREIGN id type ------------------------------------------------
@@ -475,18 +475,18 @@ end
     roots = levelgrid(SORTED, 0)
     @test level(OctantIndex(3)) == level(roots) == 0
     @test !(OctantIndex in cellindextypes(SORTED))
-    @test cellposition(roots, OctantIndex(3)) === nothing
+    @test globalindex(roots, OctantIndex(3)) === nothing
     # ... and on a PartialGrid, which binary-searches but routes through the
     # same `_canonical`.
     part0 = PartialGrid(SORTED, 0, [LevelIndex(0, i) for i in (1, 3, 5)])
-    @test cellposition(part0, OctantIndex(3)) === nothing
+    @test localindex(part0, OctantIndex(3)) === nothing
     # ... and on a standalone grid, which has no system to ask at all.
-    @test cellposition(OctantGrid(), LevelIndex(0, 1)) === nothing
+    @test globalindex(OctantGrid(), LevelIndex(0, 1)) === nothing
 
     # --- (b) an OUT-OF-RANGE id in a scheme the system DOES support ------------
     # `UnsortedMock` names cells two ways, and the second scheme's converter
     # rejects an offset that is not a cell. That rejection is correct; letting
-    # it out of `cellposition` is not.
+    # it out of `localindex`/`globalindex` is not.
     @test cellindextypes(UNSORTED) == (LevelIndex, MockPairIndex)
     @test cellindextype(UNSORTED) === LevelIndex
     @test reindex(LevelIndex, UNSORTED, MockPairIndex(2, 0, 3)) === LevelIndex(2, 3)
@@ -494,24 +494,24 @@ end
 
     ids = [LevelIndex(2, i) for i in (3, 5, 8, 40, 41, 100)]
     partial = PartialGrid(UNSORTED, 2, ids)
-    @test cellposition(partial, MockPairIndex(2, 0, 3)) == 1
-    @test cellposition(partial, MockPairIndex(2, 0, 5)) == 2
-    @test cellposition(partial, MockPairIndex(2, 2, 8)) == 4      # 2*16 + 8 = 40
+    @test localindex(partial, MockPairIndex(2, 0, 3)) == 1
+    @test localindex(partial, MockPairIndex(2, 0, 5)) == 2
+    @test localindex(partial, MockPairIndex(2, 2, 8)) == 4      # 2*16 + 8 = 40
     # In range, correctly converted, simply not one of this grid's cells.
-    @test cellposition(partial, MockPairIndex(2, 0, 4)) === nothing
+    @test localindex(partial, MockPairIndex(2, 0, 4)) === nothing
 
-    # The regression, both halves: the converter throws, `cellposition` does not.
+    # The regression, both halves: the converter throws, `localindex`/`globalindex` do not.
     @test_throws ArgumentError reindex(LevelIndex, UNSORTED, MockPairIndex(2, 0, 99))
     @test_throws ArgumentError reindex(LevelIndex, UNSORTED, MockPairIndex(2, 99, 0))
-    @test cellposition(partial, MockPairIndex(2, 0, 99)) === nothing
-    @test cellposition(partial, MockPairIndex(2, 99, 0)) === nothing
+    @test localindex(partial, MockPairIndex(2, 0, 99)) === nothing
+    @test localindex(partial, MockPairIndex(2, 99, 0)) === nothing
     # ... on the complete level grid too, through the generic linear scan.
-    @test cellposition(levelgrid(UNSORTED, 2), MockPairIndex(2, 0, 5)) == 6
-    @test cellposition(levelgrid(UNSORTED, 2), MockPairIndex(2, 0, 99)) === nothing
+    @test globalindex(levelgrid(UNSORTED, 2), MockPairIndex(2, 0, 5)) == 6
+    @test globalindex(levelgrid(UNSORTED, 2), MockPairIndex(2, 0, 99)) === nothing
 
     # --- and `reindex` itself still throws ------------------------------------
-    # The fix belongs at the `cellposition` boundary; pushing it down into
-    # `reindex` would turn "I cannot name this" into a silent `nothing`.
+    # The fix belongs at the `localindex`/`globalindex` boundary; pushing it down
+    # into `reindex` would turn "I cannot name this" into a silent `nothing`.
     @test_throws ArgumentError reindex(OctantIndex, UNSORTED, LevelIndex(2, 0))
     @test_throws ArgumentError reindex(LevelIndex, UNSORTED, OctantIndex(1))
 end
@@ -536,6 +536,30 @@ end
     @test node_extent(SORTED, c).radius > FB.cell_cap(grid, c).radius
 end
 
+@testset "analytical cap enclosure" begin
+    # Unequal radii are part of the bound, not an inflation applied after solving
+    # a point-only problem.
+    caps = (
+        US.SphericalCap(sph(0.0, 0.0), deg2rad(0.5)),
+        US.SphericalCap(sph(2.0, 0.0), deg2rad(1.0)),
+        US.SphericalCap(sph(1.0, 2.0), deg2rad(0.25)),
+    )
+    cap_enclosure(caps) = FB._caps_cap(i -> @inbounds(caps[i]), length(caps))
+    enclosing = @inferred cap_enclosure(caps)
+    @test enclosing isa US.SphericalCap{Float64}
+    @test all(caps) do cap
+        US.spherical_distance(enclosing.point, cap.point) + cap.radius <= enclosing.radius
+    end
+
+    # The hot path derives caps twice but retains no batch or boundary buffer.
+    cap_enclosure(caps)
+    @test @allocated(cap_enclosure(caps)) == 0
+    @test FB._caps_cap(i -> caps[i], 0).radius > pi
+    antipodal = (US.SphericalCap(sph(0.0, 0.0), 0.0),
+                 US.SphericalCap(sph(180.0, 0.0), 0.0))
+    @test cap_enclosure(antipodal).radius > pi
+end
+
 @testset "cursor: window mode" begin
     grid = levelgrid(SORTED, 3)
     tree = treeify(grid)
@@ -545,8 +569,8 @@ end
     @test Trees.ncells(tree) == ncells(grid)
     @test GOCore.best_manifold(tree) == GO.Spherical(; radius=1.0)
 
-    # The tree's leaves are exactly the grid's positions, once each.
-    @test leaf_positions(tree) == collect(1:ncells(grid))
+    # The tree's leaves are exactly the grid's indices, once each.
+    @test leaf_indices(tree) == collect(1:ncells(grid))
 
     # Constant type through descent, and windows that partition their parent.
     nodes = 0
@@ -575,7 +599,7 @@ end
         end
     end
 
-    # Leaf entries are (position, tight cap) pairs.
+    # Leaf entries are (index, tight cap) pairs.
     leaf = tree
     while !STI.isleaf(leaf)
         leaf = first(STI.getchild(leaf))
@@ -602,12 +626,12 @@ end
     unsorted = treeify(levelgrid(UNSORTED, 2))
     @test unsorted isa DGG.HierarchicalGridCursor
     # Without `descendant_range` the cursor has to carry an explicit selection,
-    # and at the root that selection is the whole grid, in position order.
+    # and at the root that selection is the whole grid, in index order.
     @test sorted.selection === nothing
     @test unsorted.selection == collect(1:ncells(levelgrid(UNSORTED, 2)))
 
     # The two modes must agree on everything a traversal can observe.
-    @test leaf_positions(unsorted) == leaf_positions(sorted)
+    @test leaf_indices(unsorted) == leaf_indices(sorted)
     walk(unsorted) do node
         @test typeof(node) === typeof(unsorted)
     end
@@ -649,9 +673,9 @@ end
     @test system(grid) === SORTED
     @test level(grid) == 2
     @test cellindex(grid, 3) === LevelIndex(2, 8)
-    @test cellposition(grid, LevelIndex(2, 8)) == 3
-    @test cellposition(grid, LevelIndex(2, 9)) === nothing
-    @test cellposition(grid, LevelIndex(3, 8)) === nothing
+    @test localindex(grid, LevelIndex(2, 8)) == 3
+    @test localindex(grid, LevelIndex(2, 9)) === nothing
+    @test localindex(grid, LevelIndex(3, 8)) === nothing
     @test cell_boundary(grid, ids[1]) == cell_boundary(levelgrid(SORTED, 2), ids[1])
     @test cell_centroid(grid, ids[1]) == cell_centroid(levelgrid(SORTED, 2), ids[1])
     @test occursin("PartialGrid", sprint(show, grid))
@@ -691,7 +715,7 @@ end
     tree = treeify(grid)
     @test tree isa DGG.HierarchicalGridCursor
     @test Trees.ncells(tree) == 6
-    @test leaf_positions(tree) == collect(1:6)
+    @test leaf_indices(tree) == collect(1:6)
 
     # Every node's window is a slice of the id vector, and children partition it.
     walk(tree) do node
@@ -733,11 +757,15 @@ end
     rooted = treeify(chunk)
     @test rooted.level == 1
     @test rooted.id === LevelIndex(1, 5)
-    @test leaf_positions(rooted) == collect(1:ncells(chunk))
+    @test rooted.complete_subtree
+    @test leaf_indices(rooted) == collect(1:ncells(chunk))
+    walk(rooted) do node
+        @test node.complete_subtree
+    end
 
     # Bucketed descent stops early and scans.
     bucketed = treeify(subtree(SORTED, LevelIndex(1, 5), 4; bucket_size=16))
-    @test leaf_positions(bucketed) == collect(1:ncells(chunk))
+    @test leaf_indices(bucketed) == collect(1:ncells(chunk))
     leaves = 0
     walk(bucketed) do node
         STI.isleaf(node) && (leaves += 1)
@@ -748,17 +776,17 @@ end
     unsorted_ids = [LevelIndex(4, i) for i in (0, 1, 2, 300, 1000, 2047)]
     unsorted = treeify(PartialGrid(UNSORTED, 4, unsorted_ids))
     @test unsorted.selection isa Vector{Int}
-    @test leaf_positions(unsorted) == collect(1:6)
+    @test leaf_indices(unsorted) == collect(1:6)
 end
 
-@testset "position-space fallback tree" begin
+@testset "index-space fallback tree" begin
     grid = OctantGrid()
     tree = treeify(grid)
-    @test tree isa EN.PositionTreeNode
+    @test tree isa EN.IndexTreeNode
     @test STI.isspatialtree(typeof(tree))
     @test !STI.node_extent_is_expensive(typeof(tree))
     @test Trees.ncells(tree) == 8
-    @test leaf_positions(tree) == collect(1:8)
+    @test leaf_indices(tree) == collect(1:8)
     @test system(grid) === nothing && level(grid) === nothing
 
     # Node extents cover their leaves.
@@ -778,7 +806,7 @@ end
     @test STI.nchild(big) > 0
 
     # `treeify` is idempotent and manifold-agnostic.
-    @test treeify(GO.Spherical(), grid) isa EN.PositionTreeNode
+    @test treeify(GO.Spherical(), grid) isa EN.IndexTreeNode
     @test treeify(tree) === tree
     @test treeify(GO.Spherical(), tree) === tree
 end
@@ -795,7 +823,7 @@ end
     @test cellat(grid, 0.0, 80.0) === nothing
     @test cellat(grid, 0.0, -80.0) === nothing
 
-    # A standalone grid goes through the position tree.
+    # A standalone grid goes through the index tree.
     octants = OctantGrid()
     for c in all_cells(octants)
         @test cellat(octants, cell_centroid(octants, c)) === c
@@ -813,6 +841,33 @@ end
     onedge = cellat(octants, corner)
     @test onedge === (isempty(claimants) ? first(undecided) : first(claimants))
     @test onedge === OctantIndex(0)
+end
+
+@testset "cellat over a subset of a level the system does not locate" begin
+    # The mocks name no cell for a point on their own, so a subset of one of
+    # their levels must keep searching its own cells: a search over the whole
+    # level would cost more and then discard everything outside the subset.
+    @test !DGG.has_direct_location(SORTED)
+    @test !DGG.has_direct_location(UNSORTED)
+
+    searched(g, p) = invoke(cellat, Tuple{AbstractGrid,GO.UnitSphericalPoint}, g, p)
+    grid = levelgrid(SORTED, 2)
+    held = [cellindex(grid, i) for i in 1:3:ncells(grid)]
+    pg = PartialGrid(SORTED, 2, held)
+    for c in held
+        p = cell_centroid(grid, c)
+        @test cellat(pg, p) === c
+        @test cellat(pg, p) === searched(pg, p)
+    end
+
+    # A cell of the level the subset does not hold is outside coverage...
+    for i in 2:3:ncells(grid)
+        @test cellat(pg, cell_centroid(grid, cellindex(grid, i))) === nothing
+    end
+    # ...as is a point outside the band these mocks cover at all, and every
+    # point at all when the subset is empty.
+    @test cellat(pg, 0.0, 80.0) === nothing
+    @test cellat(PartialGrid(SORTED, 2, LevelIndex[]), 0.0, 0.0) === nothing
 end
 
 @testset "geometric neighbors and ring" begin
@@ -874,7 +929,7 @@ end
 end
 
 @testset "rotational neighbour order" begin
-    # The order is contract, not convenience: it is what makes position `j` of
+    # The order is contract, not convenience: it is what makes index `j` of
     # a ring name a fixed direction. These are the three laws that pin it.
     octants = OctantGrid()
     g1 = levelgrid(SORTED, 1)
@@ -1019,7 +1074,7 @@ end
         (40.0, 30.0), (10.0, 30.0), (10.0, 10.0)])])
     @test query(grid, Intersects(lonlat_box)) == query(grid, Intersects(targets["box"]))
 
-    # A standalone grid: the position tree, same oracle.
+    # A standalone grid: the index tree, same oracle.
     octants = OctantGrid()
     small = lonlat_ring([sph(10.0, 10.0), sph(20.0, 10.0), sph(20.0, 20.0), sph(10.0, 20.0)])
     @test query(octants, Intersects(small)) == brute_force(octants, small)
@@ -1155,7 +1210,7 @@ end
     # parent than to the children that tile it.
     exact = count(1:ncells(dst)) do i
         p = parent(SORTED, cellindex(dst, i))
-        isapprox(out[i], ramp[cellposition(src, p)]; rtol=1e-8)
+        isapprox(out[i], ramp[globalindex(src, p)]; rtol=1e-8)
     end
     @test exact > ncells(dst) ÷ 2
 end
@@ -1181,7 +1236,7 @@ end
     @test maximum(level, cells) <= 4
 
     # Curve order, checked against the intervals themselves rather than against
-    # the stored keys: the cells' level-4 position intervals ascend and are
+    # the stored keys: the cells' level-4 index intervals ascend and are
     # pairwise disjoint, which is both the curve order and the guarantee that no
     # cell is an ancestor of another (that would double-count a region).
     intervals = [descendant_range(SORTED, c, 4) for c in cells]
@@ -1194,17 +1249,17 @@ end
         level(a) < level(b) && @test ancestor(SORTED, b, level(a)) !== a
     end
 
-    # Per-level expansion: sorted, disjoint, merged position ranges.
+    # Per-level expansion: sorted, disjoint, merged index ranges.
     ranges = level_ranges(set, 4)
     @test issorted(first.(ranges))
     for k in 2:length(ranges)
         @test first(ranges[k]) > last(ranges[k-1]) + 1   # merged, so never adjacent
     end
-    positions = reduce(vcat, collect.(ranges))
-    @test allunique(positions)
-    @test issorted(positions)
+    indices = reduce(vcat, collect.(ranges))
+    @test allunique(indices)
+    @test issorted(indices)
     # Merging changed the shape of the answer and nothing else.
-    @test positions == sort!(reduce(vcat, collect.(intervals)))
+    @test indices == sort!(reduce(vcat, collect.(intervals)))
 
     # The coverage brackets the two single-level queries at that depth: every
     # cell wholly inside the target is in it, and nothing outside the target is.
@@ -1217,7 +1272,7 @@ end
 
     # Expansion to a coarser level than the set's own cells is refused.
     @test_throws ArgumentError level_ranges(set, 1)
-    # ... and a system without descendant ranges has no position ranges at all,
+    # ... and a system without descendant ranges has no index ranges at all,
     # though it must still find the same cells: the two mocks are the same
     # hierarchy over the same geometry, so their coverages have to agree.
     unsorted_set = query(UNSORTED, coverage; level=2)

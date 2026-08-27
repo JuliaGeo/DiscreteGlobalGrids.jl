@@ -1,7 +1,9 @@
 # Public regridding API.
 
-# Whether the source exposes chunked storage.
-isdiskbacked(data) = DiskArrays.haschunks(data) isa DiskArrays.Chunked
+# Whether `data` declares a chunking of its own: what makes a regrid lazy by
+# default, what `SourceChunking` reads, and what `flatsource` materializes before
+# reshaping. It says nothing about residence; `_isdisksource` tests that.
+declareschunks(data) = DiskArrays.haschunks(data) isa DiskArrays.Chunked
 
 # Nodata metadata keys, in precedence order.
 const MISSINGVAL_KEYS = ("missingval", "_FillValue", "missing_value")
@@ -29,7 +31,7 @@ end
 """
     regrid(data; to, from = nothing, method = Conservative(),
            missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
-           lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
+           lazy = declareschunks(data), chunks = nothing, budget = nothing,
            storage = nothing, sampling = nothing)
     regrid(data, plan::AbstractRegriddingPlan)
 
@@ -55,7 +57,7 @@ by the source element type, and `NaN` otherwise.
   - `missingval`: additional nodata sentinel. `missing` and `NaN` are always invalid.
   - `lazy`: compute on demand ([`LazyRegridArray`](@ref)); defaults to chunked sources.
   - `chunks`: lazy destination tiling. `nothing` derives it automatically.
-  - `budget`: target bytes for lazy reads and weights, default `2^30`.
+  - `budget`: target bytes for lazy reads and weights, default `2^31`.
   - `storage`: lazy weight storage, [`PerChunk`](@ref) or [`Spilled`](@ref).
   - `sampling`: destination lookup sampling. `nothing` follows the method —
     area-based methods give `Intervals`, point samples give `Points`
@@ -64,20 +66,17 @@ by the source element type, and `NaN` otherwise.
 `chunks`, `budget` and `storage` apply only to `lazy = true`, and `sampling`
 only to `lazy = false`. The plan form accepts no keywords because the plan
 contains all settings.
+
+Every keyword above is [`plan_regrid`](@ref)'s and is forwarded to it, so each
+default and each check is stated there once. The relation keywords
+`dependencies`, `refine` and `narrow` describe a plan that is kept and are
+refused here.
 """
 function regrid end
 
-function regrid(data; to, from = nothing,
-    method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
-    missingval = sourcemissingval(data),
-    lazy::Bool = isdiskbacked(data), chunks = nothing,
-    budget::Union{Nothing,Integer} = nothing,
-    storage::Union{Nothing,AbstractBlockStorage} = nothing,
-    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing)
-    plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
-        chunks, budget, storage, sampling)
-    return regrid(data, plan)
+function regrid(data; kwargs...)
+    _rejectplankeywords(kwargs, "regrid")
+    return regrid(data, plan_regrid(data; kwargs...))
 end
 
 function regrid(data, plan::DirectPlan)
@@ -108,7 +107,7 @@ destinationdims(plan::ChunkedPlan) =
 """
     regrid!(dest, data; to, from = nothing, method = Conservative(),
             missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
-            lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
+            lazy = declareschunks(data), chunks = nothing, budget = nothing,
             storage = nothing, sampling = nothing)
     regrid!(dest, data, plan::AbstractRegriddingPlan)
 
@@ -116,21 +115,14 @@ Regrid `data` into the preallocated `dest` and return `dest`.
 
 `dest` starts with the destination's own axes, or one flat cell dimension,
 followed by `data`'s non-spatial dimensions; either leading shape is accepted.
-Keywords match [`regrid`](@ref); the plan form takes none.
+Keywords match [`regrid`](@ref) and are forwarded to [`plan_regrid`](@ref); the
+plan form takes none.
 """
 function regrid! end
 
-function regrid!(dest, data; to, from = nothing,
-    method::AbstractRegriddingMethod = Conservative(),
-    missingpolicy::AbstractMissingPolicy = Weighted(0.5),
-    missingval = sourcemissingval(data),
-    lazy::Bool = isdiskbacked(data), chunks = nothing,
-    budget::Union{Nothing,Integer} = nothing,
-    storage::Union{Nothing,AbstractBlockStorage} = nothing,
-    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing)
-    plan = plan_regrid(data; to, from, method, missingpolicy, missingval, lazy,
-        chunks, budget, storage, sampling)
-    return regrid!(dest, data, plan)
+function regrid!(dest, data; kwargs...)
+    _rejectplankeywords(kwargs, "regrid!")
+    return regrid!(dest, data, plan_regrid(data; kwargs...))
 end
 
 function regrid!(dest, data, plan::DirectPlan)
@@ -153,33 +145,57 @@ regrid!(dest, data, plan::AbstractRegriddingPlan) =
 """
     plan_regrid(data; to, from = nothing, method = Conservative(),
                 missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
-                lazy = isdiskbacked(data), chunks = nothing, budget = nothing,
-                storage = nothing, sampling = nothing) -> AbstractRegriddingPlan
+                lazy = declareschunks(data), chunks = nothing, budget = nothing,
+                storage = nothing, sampling = nothing, dependencies = nothing,
+                refine = nothing, narrow = nothing) -> AbstractRegriddingPlan
 
 Build a reusable regridding plan without reading source values. In-memory data
 uses one whole-domain [`DirectPlan`](@ref). Lazy plans build blocks on demand
 and default to a budget-limited [`PerChunk`](@ref) cache. Use `PerChunk()` for
 an unlimited cache or `Spilled(dir)` for disk storage. Keywords match
-[`regrid`](@ref); `chunks`, `budget` and `storage` apply only to `lazy = true`,
-and `sampling` only to `lazy = false`.
+[`regrid`](@ref); `chunks`, `budget`, `storage`, `dependencies`, `refine` and
+`narrow` apply only to `lazy = true`, and `sampling` only to `lazy = false`.
+
+# The chunk dependency relation
+
+A lazy plan is the sole owner of its chunk dependency relation, and this is the
+only place a narrow phase may be supplied. `dependencies` chooses whether the
+plan builds one (`nothing`, the default, or `true`), adopts and validates one
+somebody else built (a [`ChunkDependencyGraph`](@ref)), or holds none (`false`).
+Every lazy read needs one — for tile order, wave costing, refcounts and
+prefetch, and on the chunk-pair route for the source chunks themselves — so a
+plan that holds none cannot back a [`LazyRegridArray`](@ref). `refine` is the
+conservative narrow phase to apply while building, `refine(dstchunk, srcchunk)
+-> Bool`, and `narrow` the `Symbol` that names it in the relation's identity. A
+`refine` must only ever reject pairs it can *prove* disconnected; a wrong one
+silently corrupts results. [`dependencies`](@ref) documents each branch.
+
+[`dependencies`](@ref)`(plan)` reads the relation back and builds nothing. It is
+deliberately impossible to narrow, replace or rebuild a plan's relation once the
+plan exists: [`regrid`](@ref) and [`regrid!`](@ref) forward every other keyword
+here but refuse `dependencies`, `refine` and `narrow`, and
+[`chunk_dependency_graph`](@ref) has no `plan` method. A caller that wants a
+different relation makes a different plan.
 """
 function plan_regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
     missingpolicy::AbstractMissingPolicy = Weighted(0.5),
     missingval = sourcemissingval(data),
-    lazy::Bool = isdiskbacked(data), chunks = nothing,
+    lazy::Bool = declareschunks(data), chunks = nothing,
     budget::Union{Nothing,Integer} = nothing,
     storage::Union{Nothing,AbstractBlockStorage} = nothing,
-    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing)
+    sampling::Union{Nothing,DD.Lookups.Sampling} = nothing,
+    dependencies = nothing, refine = nothing,
+    narrow::Union{Nothing,Symbol} = nothing)
     src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
     dst_space = _asspace(to, "to", src_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *
         "is on $(manifold(src_space)) and the destination on $(manifold(dst_space))"))
     if !lazy
-        _rejectlazykeywords(chunks, budget, storage)
-        return DirectPlan(method, missingpolicy, dst_space, src_space,
-            wholeblock(method, dst_space, src_space), missingval, sampling)
+        _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)
+        return eagerplan(method, missingpolicy, dst_space, src_space,
+            missingval, sampling)
     end
     sampling === nothing || throw(ArgumentError(
         "a lazy regrid returns an unlabelled disk array, so there is no lookup " *
@@ -188,33 +204,55 @@ function plan_regrid(data; to, from = nothing,
     budget === nothing || budget > 0 ||
         throw(ArgumentError("budget must be positive, got $budget"))
     return ChunkedPlan(method, missingpolicy, dst_space, src_space;
-        storage, budget = something(budget, 2^30), chunks, missingval)
+        storage, budget = something(budget, DEFAULT_BUDGET), chunks, missingval,
+        dependencies, refine, narrow)
 end
 
-function _rejectlazykeywords(chunks, budget, storage)
+function _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narrow)
     named = String[]
     chunks === nothing || push!(named, "`chunks`")
     budget === nothing || push!(named, "`budget`")
     storage === nothing || push!(named, "`storage`")
+    dependencies === nothing || push!(named, "`dependencies`")
+    refine === nothing || push!(named, "`refine`")
+    narrow === nothing || push!(named, "`narrow`")
     isempty(named) && return nothing
     throw(ArgumentError(
         "an eager plan holds one whole-domain block and takes no " *
         "$(join(named, ", ", " or ")); pass `lazy = true` for the chunked path."))
 end
 
+# The three keywords that describe a plan somebody keeps: a relation to adopt,
+# the narrow phase to build it with, and the name that phase goes by. A one-shot
+# regrid builds its plan and drops it, so there is nothing for them to describe.
+function _rejectplankeywords(kwargs, name::AbstractString)
+    named = String[]
+    for k in (:dependencies, :refine, :narrow)
+        k in keys(kwargs) && push!(named, "`$k`")
+    end
+    isempty(named) && return nothing
+    throw(ArgumentError(
+        "`$name` builds a plan, applies it and drops it, so it takes no " *
+        "$(join(named, ", ", " or ")): a chunk dependency relation is settled " *
+        "when the plan is built and is worth supplying only to a plan that is " *
+        "reused. Build it with `plan_regrid` and pass the plan to `$name`."))
+end
+
 """
     wholeblock(method, dst_space, src_space) -> WeightBlock
 
-Build one [`WeightBlock`](@ref) over all source and destination cells.
+Build one [`WeightBlock`](@ref) over all source and destination cells. The build
+path is [`weightblock`](@ref)'s, so the eager domain and a chunk pair are built
+the same way.
+
+The whole domain is one block, so it prepares no destination geometry
+([`preparedestination`](@ref)): with no second block to share it, a task-local
+memo is cheaper than a slot per destination cell.
 """
-function wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
-    src_space::RegridSpace)
-    ndst = Int(ncells(dst_space))
-    nsrc = Int(ncells(src_space))
-    coo = WeightCOO(ndst)
-    build_weights!(coo, method, dst_space, 1:ndst, src_space, 1:nsrc)
-    return WeightBlock(coo, ndst, nsrc)
-end
+wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+    src_space::RegridSpace) =
+    weightblock(method, dst_space, 1:Int(ncells(dst_space)),
+        src_space, 1:Int(ncells(src_space)))
 
 # Only dimensional arrays carry enough geometry to infer a source space.
 # A dimension that already names cells ([`dimsource`](@ref)) is not a raster
@@ -236,15 +274,6 @@ _sourcespace(data) = throw(ArgumentError(
     "a $(typeof(data)) carries no coordinates, so no source space can be " *
     "derived from it; pass `from = ` a RegridSpace."))
 
-"""
-    _asspace(space, name) -> RegridSpace
-    _asspace(space, name, src_space) -> RegridSpace
-
-Resolve a `to` or `from` argument into a [`RegridSpace`](@ref). Packages that
-supply spaces extend the two-argument form for their own target spellings, and
-the three-argument form when the destination depends on the resolved source
-space. `name` names the keyword in error messages.
-"""
 function _asspace(space, name)
     space isa RegridSpace || throw(ArgumentError(
         "`$name` must be a RegridSpace, got $(typeof(space)). A package that " *

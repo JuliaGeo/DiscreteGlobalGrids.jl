@@ -1,15 +1,15 @@
-# Point-sampling methods and their source-chart interface.
+# Point-sampling methods, their samplers, and the source-chart interface.
 
 # Nearest-cell weights
 
 """
-    build_weights!(coo, ::NearestCell, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, ::NearestCell, dst_space, dst_inds, src_space, src_inds)
 
 Add weight 1 for the source cell containing each destination centroid. Emit no
 entry when the point is outside coverage or the source belongs to another
 chunk. Point samples have no coverage denominator.
 """
-function build_weights!(coo::WeightCOO, ::NearestCell,
+function buildweights!(coo::WeightCOO, ::NearestCell,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     indexer = indexmap(src_inds)
     for (j, i) in enumerate(dst_inds)
@@ -22,67 +22,77 @@ function build_weights!(coo::WeightCOO, ::NearestCell,
     return coo
 end
 
-# Cell-chart interface
+"""
+    supportradius(::NearestCell, src_space) -> Float64
+
+Zero. The stencil is the source cell the destination point already lies in, so
+it reaches no further than that point.
+
+A destination sample site lies inside its own cell, and so inside the covering
+cap of the chunk that owns it; the source cell [`cellat`](@ref) names contains
+that same point, so the source chunk owning that cell covers the point too. Two
+covers sharing a point overlap, so cap overlap at radius zero already relates
+every source chunk a destination tile reads. That is the containment every
+method's chunk discovery already rests on, not a second assumption.
+"""
+supportradius(::NearestCell, ::RegridSpace) = 0.0
 
 """
-    chartaxes(space::RegridSpace) -> (xs, ys)
+    NearestSampler(space)
 
-Return strictly monotonic cell-centre coordinates for each separable lattice
-axis. Required when [`hascellchart`](@ref) is `true`.
-"""
-function chartaxes end
+A source space prepared to answer [`NearestCell`](@ref)'s point queries.
 
+It holds the space and nothing else: the stencil at a point is the one cell
+containing it, which [`cellat`](@ref) answers by itself, so there is no state
+to prepare and nothing for concurrent queries to share.
 """
-    chartcoords(space::RegridSpace, p) -> Union{Tuple{Real,Real},Nothing}
+struct NearestSampler{S<:RegridSpace}
+    space::S
+end
 
-Convert `p` to native chart coordinates, or return `nothing` outside the chart.
-Coordinates must use the same branch as [`chartaxes`](@ref), except on periodic
-axes.
-"""
-function chartcoords end
+Base.show(io::IO, s::NearestSampler) = print(io, "NearestSampler(", s.space, ")")
 
 """
-    chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
+    sampler(::NearestCell, space::RegridSpace) -> NearestSampler
 
-Return the cell position at lattice index `(ix, iy)`. Required when
-[`hascellchart`](@ref) is `true`.
+Prepare `space` to answer `NearestCell`'s point queries. This runs once per plan
+or source space, never once per destination.
 """
-function chartposition end
+sampler(::NearestCell, space::RegridSpace) = NearestSampler(space)
 
 """
-    chartperiod(space::RegridSpace) -> (px, py)
+    weightsat!(row, s::NearestSampler, p) -> WeightStatus
 
-Return each axis period in native coordinates, or `nothing` for no wrap.
-Defaults to `(nothing, nothing)`.
+Give weight one to the source cell containing `p`.
+
+The row is cleared on entry and left holding that single entry, named by the
+source space's local index. A point the source covers nowhere leaves the row
+empty and answers `WeightsOutside`; the missing policy then decides what the
+destination becomes. Nothing here reads source values and nothing here is told
+about chunks.
 """
+function weightsat!(row::WeightRow, s::NearestSampler, p)
+    empty!(row)
+    i = cellat(s.space, p)
+    i === nothing && return WeightsOutside
+    _addentry!(row, i, 1.0)
+    return WeightsMapped
+end
+
+# Cell-chart fallbacks
+
 chartperiod(::RegridSpace) = (nothing, nothing)
-
-"""
-    chartspacing(space::RegridSpace) -> (Δx, Δy)
-
-Return upper bounds, in radians, on adjacent-centre distance along each axis.
-Required when [`hascellchart`](@ref) is `true`.
-"""
-function chartspacing end
 
 function _chart_required(f::Symbol, space::RegridSpace)
     throw(ArgumentError(
         "$(typeof(space)) claims a cell chart but supplies no $(f), so " *
-        "BilinearPoint cannot write a stencil on it."))
+        "no chart stencil can be written on it."))
 end
 
 chartaxes(space::RegridSpace) = _chart_required(:chartaxes, space)
 chartcoords(space::RegridSpace, _) = _chart_required(:chartcoords, space)
-chartposition(space::RegridSpace, ::Int, ::Int) = _chart_required(:chartposition, space)
+chartlocalindex(space::RegridSpace, ::Int, ::Int) = _chart_required(:chartlocalindex, space)
 chartspacing(space::RegridSpace) = _chart_required(:chartspacing, space)
-
-function _require_chart(method, src_space::RegridSpace)
-    hascellchart(src_space) || throw(ArgumentError(
-        "$(nameof(typeof(method))) interpolates on the source chart, but " *
-        "hascellchart(::$(typeof(src_space))) is false; use Conservative() or " *
-        "NearestCell() on a source with no chart."))
-    return nothing
-end
 
 # Coordinate location
 
@@ -123,81 +133,22 @@ end
 
 _latticeindex(ax::_ChartAxis, k::Int) = ax.reversed ? ax.n + 1 - k : k
 
-"""
-    _locate(ax::_ChartAxis, x) -> (i0, i1, w0, w1)
-
-Return the two indices bracketing `x` and linear weights summing to one.
-Non-periodic axes clamp to the nearest centre; periodic axes wrap across the seam.
-"""
-function _locate(ax::_ChartAxis, x::Float64)
-    v = ax.values
-    n = ax.n
-    n == 1 && return (_latticeindex(ax, 1), _latticeindex(ax, 1), 1.0, 0.0)
-    if ax.period === nothing
-        x <= v[1] && return (_latticeindex(ax, 1), _latticeindex(ax, 1), 1.0, 0.0)
-        x >= v[n] && return (_latticeindex(ax, n), _latticeindex(ax, n), 1.0, 0.0)
-        k = searchsortedlast(v, x)
-        t = (x - v[k]) / (v[k+1] - v[k])
-        return (_latticeindex(ax, k), _latticeindex(ax, k + 1), 1.0 - t, t)
-    end
-    p = ax.period::Float64
-    xw = v[1] + mod(x - v[1], p)
-    k = searchsortedlast(v, xw)
-    k = max(k, 1)
-    if k < n
-        t = (xw - v[k]) / (v[k+1] - v[k])
-        return (_latticeindex(ax, k), _latticeindex(ax, k + 1), 1.0 - t, t)
-    end
-    seam = v[1] + p - v[n]
-    t = (xw - v[n]) / seam
-    return (_latticeindex(ax, n), _latticeindex(ax, 1), 1.0 - t, t)
-end
-
-# Bilinear weights
+# Chart support radius
 
 """
-    build_weights!(coo, ::BilinearPoint, dst_space, dst_inds, src_space, src_inds)
-
-Build bilinear weights at destination centroids. Edges clamp instead of
-extrapolating, while periodic axes wrap. Emit only stencil points in `src_inds`;
-other chunks emit their own shares. Point samples have no denominator.
-"""
-function build_weights!(coo::WeightCOO, method::BilinearPoint,
-    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
-    _require_chart(method, src_space)
-    xs, ys = chartaxes(src_space)
-    px, py = chartperiod(src_space)
-    xax = _ChartAxis(xs, px)
-    yax = _ChartAxis(ys, py)
-    indexer = indexmap(src_inds)
-    for (j, i) in enumerate(dst_inds)
-        coords = chartcoords(src_space, cellcentroid(dst_space, Int(i)))
-        coords === nothing && continue
-        x, y = Float64(coords[1]), Float64(coords[2])
-        (isfinite(x) && isfinite(y)) || continue
-        ix0, ix1, wx0, wx1 = _locate(xax, x)
-        iy0, iy1, wy0, wy1 = _locate(yax, y)
-        for (ix, wx) in ((ix0, wx0), (ix1, wx1)),
-            (iy, wy) in ((iy0, wy0), (iy1, wy1))
-
-            w = wx * wy
-            iszero(w) && continue
-            k = localindex(indexer, chartposition(src_space, ix, iy))
-            k == 0 && continue
-            addweight!(coo, j, k, w)
-        end
-    end
-    return coo
-end
-
-"""
-    support_radius(::BilinearPoint, src_space) -> Float64
+    chartradius(src_space) -> Float64
 
 Return the larger chart-axis spacing, in radians, as a safe stencil bound for
 chunk discovery.
+
+The source must answer `true` to [`hascellchart`](@ref); a source with no chart
+has no chart spacing to bound.
 """
-function support_radius(method::BilinearPoint, src_space::RegridSpace)
-    _require_chart(method, src_space)
+function chartradius(src_space::RegridSpace)
+    hascellchart(src_space) || throw(ArgumentError(
+        "a chart stencil interpolates on the source chart, but " *
+        "hascellchart(::$(typeof(src_space))) is false; use Conservative() or " *
+        "NearestCell() on a source with no chart."))
     dx, dy = chartspacing(src_space)
     return Float64(max(dx, dy))
 end

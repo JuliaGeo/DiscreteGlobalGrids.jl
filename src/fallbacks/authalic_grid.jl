@@ -1,5 +1,5 @@
 # Authalic wrappers convert geometry between authalic and geodetic latitude.
-# Cell ids, positions, hierarchy, and ordering are unchanged. The two latitudes
+# Cell ids, indices, hierarchy, and ordering are unchanged. The two latitudes
 # differ by up to 0.1283° for WGS84 — ~14.3 km along a meridian at ±45°, wider
 # than a level-8 cell — so overlaying the frames without this is a silent
 # misregistration.
@@ -77,7 +77,7 @@ end
     AuthalicGrid(grid, ellipsoid = Helpers.WGS84_AUTHALIC) <: AbstractGrid
 
 Read `grid` geometry at geodetic rather than authalic latitude. Cell ids,
-positions, hierarchy, adjacency, and winding are unchanged. [`cellat`](@ref)
+indices, hierarchy, adjacency, and winding are unchanged. [`cellat`](@ref)
 takes its query point in that same geodetic frame.
 
 `ellipsoid` may be a [`Helpers.AuthalicTransform`](@ref) or a
@@ -135,11 +135,15 @@ Base.parent(grid::AuthalicGrid) = grid.grid
 # --- the base grid interface ----------------------------------------------
 #
 # Identity forwards; geometry warps. Nothing here reorders or filters, so the
-# `cellindex`/`cellposition` bijection is the base grid's, unchanged.
+# `cellindex`/`localindex` bijection is the base grid's, unchanged.
 
 ncells(grid::AuthalicGrid) = ncells(grid.grid)
 cellindex(grid::AuthalicGrid, i::Int) = cellindex(grid.grid, i)
-cellposition(grid::AuthalicGrid, c::AbstractCellIndex) = cellposition(grid.grid, c)
+localindex(grid::AuthalicGrid, c::AbstractCellIndex) = localindex(grid.grid, c)
+# Delegated rather than left to the `AbstractGrid` bridge: the bridge reads a
+# grid's global index off its local one, which is only the same number when the
+# wrapped grid is complete. This wrapper does not require that.
+globalindex(grid::AuthalicGrid, c::AbstractCellIndex) = globalindex(grid.grid, c)
 level(grid::AuthalicGrid) = level(grid.grid)
 
 function system(grid::AuthalicGrid)
@@ -156,6 +160,32 @@ cell_boundary(grid::AuthalicGrid, c::AbstractCellIndex) =
 
 cell_centroid(grid::AuthalicGrid, c::AbstractCellIndex) =
     geodetic_point(grid.transform, cell_centroid(grid.grid, c))
+
+# A closed-form base cap can stay closed-form through the latitude warp. The
+# centre is transformed exactly as the cell centroid is, while the angular
+# radius is multiplied by the warp's Lipschitz constant. For a base cap
+# `(p, r)` and authalic-to-geodetic warp `Φ`,
+#
+#     d(Φp, Φv) <= authalic_stretch(transform) * d(p, v) <= Lr.
+#
+# Keep the old tight boundary-derived fallback for systems that have no cheap
+# cap: it avoids making every authalic grid pay for a looser generic bound.
+function cell_cap(grid::AuthalicGrid, c::AbstractCellIndex)
+    return _authalic_cell_cap(grid, c, cell_cap_is_cheap(grid.grid))
+end
+
+_authalic_cell_cap(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{false}) =
+    points_cap(cell_boundary(grid, c))
+
+function _authalic_cell_cap(grid::AuthalicGrid, c::AbstractCellIndex, ::Val{true})
+    cap = cell_cap(grid.grid, c)
+    radius = authalic_stretch(grid.transform) * Float64(cap.radius)
+    radius > Float64(pi) / 2 && return full_sphere_cap()
+    return SphericalCap(
+        geodetic_point(grid.transform, cap.point), nextfloat(radius))
+end
+
+cell_cap_is_cheap(grid::AuthalicGrid) = cell_cap_is_cheap(grid.grid)
 
 # The one input-side warp: the caller's point is in the geodetic frame this grid
 # publishes, and the grid underneath speaks authalic.
@@ -242,6 +272,9 @@ rootcells(sys::AuthalicSystem) = rootcells(sys.system)
 children(sys::AuthalicSystem, c::AbstractCellIndex) = children(sys.system, c)
 Base.parent(sys::AuthalicSystem, c::AbstractCellIndex) = Base.parent(sys.system, c)
 has_sorted_subtrees(sys::AuthalicSystem) = has_sorted_subtrees(sys.system)
+# The wrapper's own `cellat` warps the point and forwards, so it locates
+# directly exactly when the system underneath does.
+has_direct_location(sys::AuthalicSystem) = has_direct_location(sys.system)
 maxneighbors(sys::AuthalicSystem, connectivity::Connectivity) =
     maxneighbors(sys.system, connectivity)
 ancestor(sys::AuthalicSystem, c::AbstractCellIndex, l::Integer) =

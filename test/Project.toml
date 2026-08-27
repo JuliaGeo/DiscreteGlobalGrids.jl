@@ -25,4 +25,3 @@ DiscreteGlobalGridsConformanceTesting = "13a16fb4-09f9-4c22-804e-8e2836b6de9f"
 [sources]
 DiscreteGlobalGrids = {path = ".."}
 DiscreteGlobalGridsConformanceTesting = {path = "../lib/DiscreteGlobalGridsConformanceTesting"}
-GeometryOps = {url = "https://github.com/JuliaGeo/GeometryOps.jl.git", rev = "as/intersection_area"}

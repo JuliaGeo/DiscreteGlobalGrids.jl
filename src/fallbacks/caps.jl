@@ -18,16 +18,6 @@ The cap containing the full sphere.
 full_sphere_cap() = SphericalCap(USPoint(0.0, 0.0, 1.0), nextfloat(Float64(pi)))
 
 """
-    intersects_cap(a::SphericalCap, b::SphericalCap) -> Bool
-    intersects_cap(a::SphericalCap) -> predicate
-
-Test whether two caps intersect. The one-argument form returns a traversal
-predicate without exposing GeometryOps' private implementation.
-"""
-intersects_cap(a::US.SphericalCap, b::US.SphericalCap) = US._intersects(a, b)
-intersects_cap(a::US.SphericalCap) = Base.Fix1(intersects_cap, a)
-
-"""
     cap_contains(cap::SphericalCap, p::UnitSphericalPoint) -> Bool
 
 Whether a point lies in the closed cap.
@@ -77,14 +67,29 @@ end
 
 The tight cap of one cell boundary, without subtree headroom. Unlike
 [`node_extent`](@ref), it does not cover descendants that overhang the cell.
+
+It bounds `c`'s own geometry and nothing else. In particular it is not itself
+bounded by the `node_extent` of an ancestor of `c` — the covering law is a
+statement about descendant geometry, not about descendant caps — so comparing
+this cap against an ancestor's extent tests nothing.
 """
 cell_cap(grid::AbstractGrid, c::AbstractCellIndex) = points_cap(cell_boundary(grid, c))
+
+# Whether a grid's `cell_cap` override is cheap enough to derive while a leaf
+# view is iterated. The generic boundary-derived cap is deliberately false: a
+# dual-tree walk may revisit the same leaf many times. Systems with a closed
+# form opt in and let the cursor keep those entries lazy and allocation-free.
+cell_cap_is_cheap(::AbstractGrid) = Val(false)
 
 """
     cells_cap(grid, ids) -> SphericalCap
 
 Bound a batch of cell boundaries. Return the full sphere after
 `UNION_CAP_BATCH_LIMIT` cells.
+
+The result bounds the geometry of the listed cells only. It covers neither their
+descendants nor any cap derived from them, so it is not a [`node_extent`](@ref)
+for any cell whose subtree reaches below `grid`'s level.
 """
 function cells_cap(grid::AbstractGrid, ids)
     points = USPoint[]
@@ -99,13 +104,40 @@ function cells_cap(grid::AbstractGrid, ids)
     return points_cap(points)
 end
 
-"""
-    merge_caps(a::SphericalCap, b::SphericalCap) -> SphericalCap
+# Bound a small, indexable batch of caps without materialising either the caps or
+# their cell boundaries.  The normalized mean only chooses the centre; every input
+# radius participates in the bound through the spherical triangle inequality:
+#
+#     d(center, x) <= d(center, cap.point) + cap.radius.
+#
+# `getcap` may therefore derive each cap twice.  This helper is used only for grids
+# whose `cell_cap_is_cheap` trait opts into that tradeoff.
+function _caps_cap(getcap::F, count::Int) where {F}
+    count == 0 && return full_sphere_cap()
+    count == 1 && return getcap(1)
 
-A cap containing both. Used to build the fallback tree's internal extents
-bottom-up, where the leaf caps are in hand but their vertices are not.
-"""
-merge_caps(a::US.SphericalCap, b::US.SphericalCap) = US._merge(a, b)
+    sx = sy = sz = 0.0
+    for i in 1:count
+        p = getcap(i).point
+        sx += p[1]
+        sy += p[2]
+        sz += p[3]
+    end
+    norm = sqrt(sx * sx + sy * sy + sz * sz)
+    norm > count * eps(Float64) || return full_sphere_cap()
+    center = USPoint(sx / norm, sy / norm, sz / norm)
+
+    radius = 0.0
+    for i in 1:count
+        cap = getcap(i)
+        candidate = US.spherical_distance(center, cap.point) + Float64(cap.radius)
+        candidate < Float64(pi) || return full_sphere_cap()
+        radius = max(radius, candidate)
+    end
+    radius = nextfloat(radius * CAP_SLACK + 1e-12)
+    radius < Float64(pi) || return full_sphere_cap()
+    return SphericalCap(center, radius)
+end
 
 """
     unit_point(lon, lat) -> UnitSphericalPoint

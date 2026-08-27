@@ -12,7 +12,7 @@ implemented by the enclosing [`A5`](@ref) module.
 """
 module A5Native
 
-using ...Helpers: SmallList, empty_small_list, small_push
+using ...Helpers: SmallList, empty_small_list, small_push, small_sort
 
 export FIRST_HILBERT_RESOLUTION,
     MAX_GRID_RESOLUTION,
@@ -33,6 +33,13 @@ export FIRST_HILBERT_RESOLUTION,
 
 const FIRST_HILBERT_RESOLUTION = 2
 const MAX_RESOLUTION = 30
+const MAX_CELL_NEIGHBORS = 11
+
+@inline _empty_neighbors() = empty_small_list(Val(MAX_CELL_NEIGHBORS), UInt64(0))
+
+@inline function _push_unique(out::SmallList, item::UInt64)
+    return item in out ? out : small_push(out, item)
+end
 # Resolution 30 is available only for the 42 quintants that fit the 64-bit
 # encoding. A uniform full-world grid therefore stops at resolution 29.
 const MAX_GRID_RESOLUTION = 29
@@ -1411,6 +1418,17 @@ const NEIGHBORS = (
      (0, 1, 1, -1), (1, -1, -1, 1)),
 )
 
+@inline function _matches_neighbor(relative, flavor::Int)
+    flavor == 0 && return relative in NEIGHBORS[1]
+    flavor == 1 && return relative in NEIGHBORS[2]
+    flavor == 2 && return relative in NEIGHBORS[3]
+    flavor == 3 && return relative in NEIGHBORS[4]
+    flavor == 4 && return relative in NEIGHBORS[5]
+    flavor == 5 && return relative in NEIGHBORS[6]
+    flavor == 6 && return relative in NEIGHBORS[7]
+    return relative in NEIGHBORS[8]
+end
+
 function _is_neighbor(origin::Anchor, candidate::Anchor)
     origin_flavor = _get_pentagon_flavor(origin)
     candidate_flavor = _get_pentagon_flavor(candidate)
@@ -1421,14 +1439,14 @@ function _is_neighbor(origin::Anchor, candidate::Anchor)
         candidate.flips[1] * origin.flips[1],
         candidate.flips[2] * origin.flips[2],
     )
-    return any(==(relative), NEIGHBORS[origin_flavor + 1])
+    return _matches_neighbor(relative, origin_flavor)
 end
 
 function _find_quintant_neighbor_s(source_triple, uv_source_anchor, source_s::UInt64, resolution::Integer,
         orientation::Symbol, edge_only::Bool)
     max_s = UInt64(4)^UInt64(resolution)
     max_row = (1 << resolution) - 1
-    out = UInt64[]
+    out = _empty_neighbors()
     for dx in -1:1, dy in -1:1, dz in -1:1
         dx == 0 && dy == 0 && dz == 0 && continue
         abs(dx) + abs(dy) + abs(dz) > 3 && continue
@@ -1440,7 +1458,7 @@ function _find_quintant_neighbor_s(source_triple, uv_source_anchor, source_s::UI
         _is_neighbor(uv_source_anchor, uv_neighbor_anchor) || continue
         neighbor_s = _triple_to_s(neighbor_triple, resolution, orientation)
         if neighbor_s !== nothing && neighbor_s < max_s && neighbor_s != source_s
-            push!(out, neighbor_s)
+            out = _push_unique(out, neighbor_s)
         end
     end
     return out
@@ -1452,38 +1470,45 @@ function _serialize_res1(origin::Origin, quintant::Integer)
 end
 
 function _get_res0_neighbors(origin::Origin)
-    out = Set{UInt64}()
+    out = _empty_neighbors()
     for q in 0:4
         adjacent_face_id, _ = FACE_ADJACENCY[origin.id + 1][q + 1]
-        push!(out, serialize(A5Cell(ORIGINS[adjacent_face_id + 1], 0, 0x00, 0)))
+        out = _push_unique(out,
+            serialize(A5Cell(ORIGINS[adjacent_face_id + 1], 0, 0x00, 0)))
     end
-    return sort!(collect(out))
+    return small_sort(out)
 end
 
 function _get_res1_neighbors(origin::Origin, segment::Integer, edge_only::Bool)
     quintant, _ = _segment_to_quintant(segment, origin)
-    out = Set{UInt64}()
+    out = _empty_neighbors()
     left_q = mod(quintant - 1, 5)
     right_q = mod(quintant + 1, 5)
-    push!(out, _serialize_res1(origin, left_q))
-    push!(out, _serialize_res1(origin, right_q))
+    out = _push_unique(out, _serialize_res1(origin, left_q))
+    out = _push_unique(out, _serialize_res1(origin, right_q))
     adjacent_face_id, adjacent_quintant = FACE_ADJACENCY[origin.id + 1][quintant + 1]
     adjacent_origin = ORIGINS[adjacent_face_id + 1]
-    push!(out, _serialize_res1(adjacent_origin, adjacent_quintant))
-    edge_only && return sort!(collect(out))
-    push!(out, _serialize_res1(origin, mod(quintant - 2, 5)))
-    push!(out, _serialize_res1(origin, mod(quintant + 2, 5)))
-    push!(out, _serialize_res1(adjacent_origin, mod(adjacent_quintant - 1, 5)))
-    push!(out, _serialize_res1(adjacent_origin, mod(adjacent_quintant + 1, 5)))
+    out = _push_unique(out, _serialize_res1(adjacent_origin, adjacent_quintant))
+    edge_only && return small_sort(out)
+    out = _push_unique(out, _serialize_res1(origin, mod(quintant - 2, 5)))
+    out = _push_unique(out, _serialize_res1(origin, mod(quintant + 2, 5)))
+    out = _push_unique(out,
+        _serialize_res1(adjacent_origin, mod(adjacent_quintant - 1, 5)))
+    out = _push_unique(out,
+        _serialize_res1(adjacent_origin, mod(adjacent_quintant + 1, 5)))
     left_adjacent_face_id, left_adjacent_quintant = FACE_ADJACENCY[origin.id + 1][left_q + 1]
     left_adjacent_origin = ORIGINS[left_adjacent_face_id + 1]
-    push!(out, _serialize_res1(left_adjacent_origin, left_adjacent_quintant))
-    push!(out, _serialize_res1(left_adjacent_origin, mod(left_adjacent_quintant - 1, 5)))
+    out = _push_unique(out,
+        _serialize_res1(left_adjacent_origin, left_adjacent_quintant))
+    out = _push_unique(out,
+        _serialize_res1(left_adjacent_origin, mod(left_adjacent_quintant - 1, 5)))
     right_adjacent_face_id, right_adjacent_quintant = FACE_ADJACENCY[origin.id + 1][right_q + 1]
     right_adjacent_origin = ORIGINS[right_adjacent_face_id + 1]
-    push!(out, _serialize_res1(right_adjacent_origin, right_adjacent_quintant))
-    push!(out, _serialize_res1(right_adjacent_origin, mod(right_adjacent_quintant + 1, 5)))
-    return sort!(collect(out))
+    out = _push_unique(out,
+        _serialize_res1(right_adjacent_origin, right_adjacent_quintant))
+    out = _push_unique(out,
+        _serialize_res1(right_adjacent_origin, mod(right_adjacent_quintant + 1, 5)))
+    return small_sort(out)
 end
 
 const LEFT_EDGE_DELTAS = (
@@ -1503,25 +1528,58 @@ const CROSS_FACE_DELTAS = (
     ((0, 0, -1, true), (0, 0, 0, false)),
 )
 
-function _push_triple!(out, triple, orientation::Symbol, origin::Origin, segment::Integer, ctx)
-    _triple_in_bounds(triple, ctx.max_row) || return nothing
+function _push_triple(out, triple, orientation::Symbol, origin::Origin, segment::Integer, ctx)
+    _triple_in_bounds(triple, ctx.max_row) || return out
     s = _triple_to_s(triple, ctx.hilbert_resolution, orientation)
     if s !== nothing && s < ctx.max_s
-        push!(out, serialize(A5Cell(origin, segment, s, ctx.resolution)))
+        return _push_unique(out, serialize(A5Cell(origin, segment, s, ctx.resolution)))
     end
-    return nothing
+    return out
 end
 
-function _push_deltas!(out, base, deltas, edge_only::Bool, orientation::Symbol, origin::Origin, segment::Integer, ctx)
+function _push_deltas(out, base, deltas, edge_only::Bool, orientation::Symbol, origin::Origin, segment::Integer, ctx)
     for (dx, dy, dz, is_edge) in deltas
         edge_only && !is_edge && continue
-        _push_triple!(out, (x=base.x + dx, y=base.y + dy, z=base.z + dz), orientation, origin, segment, ctx)
+        out = _push_triple(out, (x=base.x + dx, y=base.y + dy, z=base.z + dz),
+            orientation, origin, segment, ctx)
     end
-    return nothing
+    return out
+end
+
+# These tables have rows of different tuple lengths. Indexing the outer tuple
+# dynamically boxes the selected row, so keep each row visible to inference.
+@inline function _push_left_deltas(out, base, index::Int, edge_only::Bool,
+        orientation::Symbol, origin::Origin, segment::Integer, ctx)
+    index == 1 && return _push_deltas(out, base, LEFT_EDGE_DELTAS[1],
+        edge_only, orientation, origin, segment, ctx)
+    index == 2 && return _push_deltas(out, base, LEFT_EDGE_DELTAS[2],
+        edge_only, orientation, origin, segment, ctx)
+    index == 3 && return out
+    return _push_deltas(out, base, LEFT_EDGE_DELTAS[4],
+        edge_only, orientation, origin, segment, ctx)
+end
+
+@inline function _push_right_deltas(out, base, index::Int, edge_only::Bool,
+        orientation::Symbol, origin::Origin, segment::Integer, ctx)
+    index == 1 && return _push_deltas(out, base, RIGHT_EDGE_DELTAS[1],
+        edge_only, orientation, origin, segment, ctx)
+    index == 2 && return _push_deltas(out, base, RIGHT_EDGE_DELTAS[2],
+        edge_only, orientation, origin, segment, ctx)
+    index == 3 && return _push_deltas(out, base, RIGHT_EDGE_DELTAS[3],
+        edge_only, orientation, origin, segment, ctx)
+    return out
+end
+
+@inline function _push_cross_deltas(out, base, index::Int, edge_only::Bool,
+        orientation::Symbol, origin::Origin, segment::Integer, ctx)
+    index == 1 && return _push_deltas(out, base, CROSS_FACE_DELTAS[1],
+        edge_only, orientation, origin, segment, ctx)
+    return _push_deltas(out, base, CROSS_FACE_DELTAS[2],
+        edge_only, orientation, origin, segment, ctx)
 end
 
 function _get_boundary_neighbors(ctx, edge_only::Bool, skip_corners::Bool=false)
-    out = UInt64[]
+    out = _empty_neighbors()
     triple = ctx.triple
     parity = ctx.parity
     source_quintant = ctx.source_quintant
@@ -1533,20 +1591,20 @@ function _get_boundary_neighbors(ctx, edge_only::Bool, skip_corners::Bool=false)
     if triple.z == 0
         target_quintant = mod(source_quintant - 1, 5)
         segment, orientation = _quintant_to_segment(target_quintant, origin)
-        _push_deltas!(out, (x=0, y=triple.y, z=triple.x), LEFT_EDGE_DELTAS[delta_index],
+        out = _push_left_deltas(out, (x=0, y=triple.y, z=triple.x), delta_index,
             edge_only, orientation, origin, segment, ctx)
     end
     if triple.x == 0
         target_quintant = mod(source_quintant + 1, 5)
         segment, orientation = _quintant_to_segment(target_quintant, origin)
-        _push_deltas!(out, (x=triple.z, y=triple.y, z=0), RIGHT_EDGE_DELTAS[delta_index],
+        out = _push_right_deltas(out, (x=triple.z, y=triple.y, z=0), delta_index,
             edge_only, orientation, origin, segment, ctx)
     end
     if triple.y == max_row
         adjacent_face_id, adjacent_quintant = FACE_ADJACENCY[origin.id + 1][source_quintant + 1]
         adjacent_origin = ORIGINS[adjacent_face_id + 1]
         segment, orientation = _quintant_to_segment(adjacent_quintant, adjacent_origin)
-        _push_deltas!(out, (x=triple.z, y=max_row, z=triple.x), CROSS_FACE_DELTAS[parity + 1],
+        out = _push_cross_deltas(out, (x=triple.z, y=max_row, z=triple.x), parity + 1,
             edge_only, orientation, adjacent_origin, segment, ctx)
     end
     if triple.x == 0 && triple.y == 0 && triple.z == 0
@@ -1555,7 +1613,7 @@ function _get_boundary_neighbors(ctx, edge_only::Bool, skip_corners::Bool=false)
             distance = min(mod(q - source_quintant, 5), mod(source_quintant - q, 5))
             edge_only && distance != 1 && continue
             segment, orientation = _quintant_to_segment(q, origin)
-            _push_triple!(out, triple, orientation, origin, segment, ctx)
+            out = _push_triple(out, triple, orientation, origin, segment, ctx)
         end
     end
     if !skip_corners && triple.x == -max_row && triple.y == max_row && triple.z == 0
@@ -1563,13 +1621,15 @@ function _get_boundary_neighbors(ctx, edge_only::Bool, skip_corners::Bool=false)
         prev_adj_face_id, prev_adj_quintant = FACE_ADJACENCY[origin.id + 1][prev_quintant + 1]
         prev_adj_origin = ORIGINS[prev_adj_face_id + 1]
         prev_segment, prev_orientation = _quintant_to_segment(prev_adj_quintant, prev_adj_origin)
-        _push_triple!(out, triple, prev_orientation, prev_adj_origin, prev_segment, ctx)
+        out = _push_triple(out, triple, prev_orientation,
+            prev_adj_origin, prev_segment, ctx)
 
         cross_face_id, cross_quintant = FACE_ADJACENCY[origin.id + 1][source_quintant + 1]
         cross_origin = ORIGINS[cross_face_id + 1]
         next_cross_quintant = mod(cross_quintant + 1, 5)
         cross_segment, cross_orientation = _quintant_to_segment(next_cross_quintant, cross_origin)
-        _push_triple!(out, triple, cross_orientation, cross_origin, cross_segment, ctx)
+        out = _push_triple(out, triple, cross_orientation,
+            cross_origin, cross_segment, ctx)
     end
     return out
 end
@@ -1583,10 +1643,11 @@ function _get_global_cell_neighbors(cell_id::UInt64; edge_only::Bool=false)
     anchor = _s_to_anchor(cell.S, hilbert_resolution, source_orientation)
     triple = _anchor_to_triple(anchor)
     uv_source_anchor = _triple_to_anchor(triple, hilbert_resolution, :uv)
-    out = Set{UInt64}()
+    out = _empty_neighbors()
     for neighbor_s in _find_quintant_neighbor_s(triple, uv_source_anchor, cell.S, hilbert_resolution,
             source_orientation, edge_only)
-        push!(out, serialize(A5Cell(cell.origin, cell.segment, neighbor_s, cell.resolution)))
+        out = _push_unique(out,
+            serialize(A5Cell(cell.origin, cell.segment, neighbor_s, cell.resolution)))
     end
     ctx = (
         triple=triple,
@@ -1599,9 +1660,9 @@ function _get_global_cell_neighbors(cell_id::UInt64; edge_only::Bool=false)
         resolution=cell.resolution,
     )
     for neighbor in _get_boundary_neighbors(ctx, edge_only)
-        push!(out, neighbor)
+        out = _push_unique(out, neighbor)
     end
-    return sort!(collect(out))
+    return small_sort(out)
 end
 
 const SPIRAL_SAMPLE_COUNT = 24

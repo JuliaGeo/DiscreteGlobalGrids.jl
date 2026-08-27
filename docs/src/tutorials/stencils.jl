@@ -2,7 +2,7 @@
 #
 # A stencil operation recomputes every cell from its own value and its
 # neighbours'. On any grid in this package that is three lines: `adjacency`
-# gives, for every position, the positions of the cells it touches, and a
+# gives, for every index, the indices of the cells it touches, and a
 # stencil is a comprehension over its rows. The same pass is the graph
 # convolution behind DeepSphere-style machine learning on spherical grids —
 # stacking `k` passes gives each cell a `k`-hop receptive field.
@@ -32,7 +32,7 @@ values = [field(lonlat(DGG.cell_centroid(grid, c))...) for c in cells] .+
 
 # ## Smoothing in three lines
 #
-# Row `p` of the table is `neighbors(grid, p)`: the in-set positions of `p`'s
+# Row `p` of the table is `neighbors(grid, p)`: the in-set indices of `p`'s
 # neighbours, counter-clockwise seen from outside the sphere, starting from the
 # same neighbour every time the cell is asked. Every neighbour idiom in the
 # package uses that one order, so on a complete grid like this one an oriented
@@ -69,7 +69,7 @@ var(diffused)
 #
 # ## Plotting
 #
-# `poly!` draws `cells` directly, as lon/lat polygons in position order.
+# `poly!` draws `cells` directly, as lon/lat polygons in index order.
 # `+over` keeps PROJ from rewrapping the cells that straddle ±180°, a hairline
 # stroke in the fill colour hides antialiasing seams, and the Laplacian gets a
 # diverging colormap centred at 0.
@@ -101,7 +101,7 @@ sub = DGG.subtree(sys, face, 5)                # its level-5 subtree, 32 × 32
 subtable = DGG.adjacency(sub)
 (; n = DGG.ncells(sub), edge = count(<(8), length.(subtable)))
 
-# Position `i` of the subset is position `i` of its data vector, so the stencil
+# Index `i` of the subset is index `i` of its data vector, so the stencil
 # is the same comprehension.
 
 subcells = DGG.CellVector(sub)
@@ -127,6 +127,6 @@ DGG.ring(sub, edgecell, 2) == filter(in(sub), DGG.ring(grid, edgecell, 2))
 DGG.ncells(sub), length(collect(DGG.halo(sub)))
 
 # Nothing above named HEALPix except the singleton. `levelgrid`, `adjacency`
-# and the position forms of `neighbors` and `ring` are interface methods, so
+# and the index forms of `neighbors` and `ring` are interface methods, so
 # the same three lines run unchanged on every registered system — only the
 # degree changes.

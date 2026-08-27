@@ -12,7 +12,7 @@
 #   * SELECTION-MODE tests. A5 is the first real system with
 #     `has_sorted_subtrees == false`, so `treeify`, `query` and
 #     `MultiOrderCoverage` take the generic substrate's fallback paths here —
-#     the materialised-selection cursor and the `(level, position)` set order —
+#     the materialised-selection cursor and the `(level, index)` set order —
 #     and this suite is where those paths meet a real grid rather than a mock.
 #
 # Two measurement batteries print their numbers rather than only asserting
@@ -57,7 +57,12 @@ const CONNECTIVITIES = (DGG.Vertex(), DGG.Edge())
 conn_name(::DGG.Vertex) = "Vertex"
 conn_name(::DGG.Edge) = "Edge"
 
-"A deterministic evenly spaced sweep of `n` positions of level `l`."
+# Keep allocation checks behind a typed function barrier so an isbits return
+# is not boxed merely because the assertion runs at testset top level.
+neighbor_bytes(grid, c, conn) =
+    @allocated DGG.neighbors(grid, c, 1; connectivity = conn)
+
+"A deterministic evenly spaced sweep of `n` indices of level `l`."
 function ordinal_sample(l::Int, n::Int)
     grid = DGG.levelgrid(S, l)
     total = DGG.ncells(grid)
@@ -232,9 +237,9 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test !isvalid(A5.A5Cell(UInt64(12) << 58 | UInt64(1) << 57))   # face 12 at res 0
         # Junk in the padding below the resolution marker. Most such bits move
         # the marker and so change the reported level, but not all: the marker
-        # walk only ever examines odd bit positions, so an even bit below it
+        # walk only ever examines odd bit indices, so an even bit below it
         # (here bit 6) is invisible to `level`, is DISCARDED by `deserialize`,
-        # and would otherwise decode to — and be given the position of — a
+        # and would otherwise decode to — and be given the index of — a
         # perfectly good cell that it is not. That is what the round-trip half
         # of `isvalid` is for.
         junk = A5.A5Cell(DGG.rawid(RES3[1]) | (UInt64(1) << 6))
@@ -246,7 +251,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     end
 
     # =======================================================================
-    @testset "dense order: cellindex/cellposition" begin
+    @testset "dense order: cellindex/globalindex" begin
         # The hierarchy-built complete levels, against the ordinal arithmetic.
         for (l, cells) in ((0, ROOTS), (1, RES1), (2, RES2), (3, RES3), (4, RES4))
             grid = DGG.levelgrid(S, l)
@@ -254,36 +259,36 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             @test issorted(cells)
             @test allunique(cells)
             @test [DGG.cellindex(grid, i) for i in 1:length(cells)] == cells
-            @test [DGG.cellposition(grid, c) for c in cells] == collect(1:length(cells))
+            @test [DGG.globalindex(grid, c) for c in cells] == collect(1:length(cells))
             @test_throws BoundsError DGG.cellindex(grid, 0)
             @test_throws BoundsError DGG.cellindex(grid, length(cells) + 1)
         end
         @test DGG.ncells(DGG.levelgrid(S, 29)) == 60 * Int64(4)^28
 
-        # Deep levels, where no complete level can be held: a sweep of positions
+        # Deep levels, where no complete level can be held: a sweep of indices
         # must come back ascending, at the right resolution, and round-trip.
         for l in (5, 9, 15, 22, 29)
             grid = DGG.levelgrid(S, l)
             total = DGG.ncells(grid)
             step = (total - 1) ÷ 17
-            positions = sort!(unique!(vcat([1, 2, total - 1, total],
+            indices = sort!(unique!(vcat([1, 2, total - 1, total],
                 [1 + k * step for k in 1:16])))
-            cells = [DGG.cellindex(grid, i) for i in positions]
+            cells = [DGG.cellindex(grid, i) for i in indices]
             @test all(c -> DGG.level(c) == l, cells)
             @test issorted(cells)
-            @test [DGG.cellposition(grid, c) for c in cells] == positions
+            @test [DGG.globalindex(grid, c) for c in cells] == indices
         end
 
         # Everything that is not a cell of the grid answers `nothing`, never an
         # error — a different level, the world cell, a res-30 id, a malformed
         # id, and an id of another system entirely.
         g2 = DGG.levelgrid(S, 2)
-        @test DGG.cellposition(g2, RES3[1]) === nothing
-        @test DGG.cellposition(g2, ROOTS[1]) === nothing
-        @test DGG.cellposition(g2, A5.A5Cell(A5N.WORLD_CELL)) === nothing
-        @test DGG.cellposition(g2, A5.A5Cell(UInt64(60) << 58 | UInt64(1) << 55)) === nothing
-        @test DGG.cellposition(g2, A5.A5Cell(DGG.rawid(RES2[1]) | UInt64(1))) === nothing
-        @test DGG.cellposition(g2, DGG.LevelIndex(2, 1)) === nothing
+        @test DGG.globalindex(g2, RES3[1]) === nothing
+        @test DGG.globalindex(g2, ROOTS[1]) === nothing
+        @test DGG.globalindex(g2, A5.A5Cell(A5N.WORLD_CELL)) === nothing
+        @test DGG.globalindex(g2, A5.A5Cell(UInt64(60) << 58 | UInt64(1) << 55)) === nothing
+        @test DGG.globalindex(g2, A5.A5Cell(DGG.rawid(RES2[1]) | UInt64(1))) === nothing
+        @test DGG.globalindex(g2, DGG.LevelIndex(2, 1)) === nothing
     end
 
     # =======================================================================
@@ -362,9 +367,9 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test_throws ArgumentError DGG.children(S, bad)
         @test_throws ArgumentError DGG.descendants(S, bad, 4)
         @test_throws ArgumentError DGG.descendants(S, bad, 3)
-        # The position side of the same rule answers `nothing` instead, because
+        # The index side of the same rule answers `nothing` instead, because
         # that is what ITS contract says — the refusal is shared, not the shape.
-        @test DGG.cellposition(DGG.levelgrid(S, 3), bad) === nothing
+        @test DGG.globalindex(DGG.levelgrid(S, 3), bad) === nothing
     end
 
     # =======================================================================
@@ -590,10 +595,10 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             table = Dict(c => collect(DGG.neighbors(grid, c, 1; connectivity=conn)) for c in cells)
             @test all(c -> allunique(table[c]) && !(c in table[c]), cells)
             @test all(c -> all(n -> DGG.level(n) == l, table[c]), cells)
-            # Validity without a level to enumerate: the position round trip,
+            # Validity without a level to enumerate: the index round trip,
             # which only closes for an id that really is a cell of `l`.
             @test all(c -> all(n ->
-                    DGG.cellindex(grid, DGG.cellposition(grid, n)) == n, table[c]), cells)
+                    DGG.cellindex(grid, DGG.globalindex(grid, n)) == n, table[c]), cells)
             @test all(c -> all(n -> !(n in patch) || (c in table[n]), table[c]), cells)
         end
 
@@ -614,6 +619,17 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test typeof(DGG.children(S, c)) === SmallVector{5,A5.A5Cell}
         DGG.children(S, c)
         @test @allocated(DGG.children(S, c)) == 0 skip = VERSION < v"1.12"
+
+        # Cover both special low levels, a level-2 quintant/cross-face seam,
+        # and an ordinary deep cell. The seam cases take different native
+        # delta-table rows and previously boxed their heterogeneous tuples.
+        for (l, i) in ((0, 1), (1, 1), (2, 2), (5, 1000)), conn in CONNECTIVITIES
+            probe_grid = DGG.levelgrid(S, l)
+            probe = DGG.cellindex(probe_grid, i)
+            DGG.neighbors(probe_grid, probe, 1; connectivity = conn)
+            @test neighbor_bytes(probe_grid, probe, conn) == 0 skip =
+                VERSION < v"1.12" || Base.JLOptions().check_bounds == 1
+        end
 
         # An id that is not a cell of this grid's resolution is an error, not a
         # confident answer about some other cell.
@@ -880,8 +896,8 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         for name in (:A5, :A5Cell, :A5System,
                      # the four required grid primitives
                      :cellindex, :cell_boundary, :cell_centroid,
-                     # position, adjacency, hierarchy
-                     :cellposition, :cellat, :neighbors, :ring,
+                     # index, adjacency, hierarchy
+                     :globalindex, :cellat, :neighbors, :ring,
                      :parent, :children, :ancestor, :descendants, :rootcells,
                      # traits and validity
                      :maxneighbors, :cap_inflation, :has_sorted_subtrees, :isvalid)
@@ -900,8 +916,8 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
     # SELECTION MODE. A5 is the first real system with
     # `has_sorted_subtrees == false`, so everything below runs on the generic
     # substrate's fallback paths: a `HierarchicalGridCursor` that materialises
-    # the positions each node owns, and a `MultiOrderCellSet` ordered by
-    # `(level, position)` rather than by curve interval.
+    # the indices each node owns, and a `MultiOrderCellSet` ordered by
+    # `(level, index)` rather than by curve interval.
     # =======================================================================
     @testset "treeify takes the selection-mode cursor" begin
         for l in (0, 1, 2, 3)
@@ -911,7 +927,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             @test tree.selection isa Vector{Int}      # the selection path, not a window
             @test Trees.ncells(tree) == DGG.ncells(grid)
             # Full leaf coverage, exactly once each, and leaf index i is
-            # position i of the grid.
+            # index i of the grid.
             @test sort(STI.depth_first_search(Returns(true), tree)) == collect(1:DGG.ncells(grid))
             @test all(i -> ring_points(Trees.getcell(tree, i)) ==
                            ring_points(DGG.cell_polygon(grid, DGG.cellindex(grid, i))),
@@ -962,7 +978,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
             inside = [c for c in [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
                       if any(p -> SD(cap.point, p) < cap.radius, DGG.cell_boundary(grid, c))]
             @test issubset(Set(inside), Set(hits))
-            @test all(c -> DGG.Fallbacks.intersects_cap(cap, DGG.Fallbacks.cell_cap(grid, c)), hits)
+            @test all(c -> GO.Extents.intersects(cap, DGG.Fallbacks.cell_cap(grid, c)), hits)
             # The system-level form answers the same without a grid in hand.
             @test DGG.query(S, DGG.Intersects(cap); level=l) == hits
         end
@@ -973,7 +989,7 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         @test issorted(hits)
     end
 
-    @testset "MultiOrderCellSet takes the (level, position) fallback sort" begin
+    @testset "MultiOrderCellSet takes the (level, index) fallback sort" begin
         cap = GO.UnitSpherical.SphericalCap(GO.UnitSphericalPoint(0.0, 0.0, 1.0), 0.5)
         set = DGG.query(S, DGG.MultiOrderCoverage(cap); level=4)
         @test set isa DGG.MultiOrderCellSet
@@ -985,11 +1001,11 @@ ring_points(polygon) = collect(GI.getpoint(GI.getexterior(polygon)))
         # WITHOUT sorted subtrees the order is `(level, id)` — levels grouped,
         # ascending inside each — rather than curve order.
         @test issorted(cells; by=c -> (DGG.level(c), c))
-        # ... and the reported keys are each cell's position within its own
+        # ... and the reported keys are each cell's index within its own
         # level, which is what the fallback documents.
         @test DGG.Engine.curve_keys(set) ==
-              [DGG.cellposition(DGG.levelgrid(S, DGG.level(c)), c) for c in cells]
-        # There are no position intervals to expand to, and asking says so.
+              [DGG.globalindex(DGG.levelgrid(S, DGG.level(c)), c) for c in cells]
+        # There are no index intervals to expand to, and asking says so.
         @test_throws ArgumentError DGG.level_ranges(set, 4)
 
         # COVERAGE, which is the property the set is for: every level-4 cell

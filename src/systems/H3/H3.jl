@@ -1,4 +1,4 @@
-# H3 interface over libh3, with dense grid positions and subtree-border walks.
+# H3 interface over libh3, with dense grid indices and subtree-border walks.
 
 """
     DiscreteGlobalGrids.H3
@@ -20,10 +20,10 @@ import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractCellIndex, Connectivity, Vertex, Edge, HierarchicalLevelGrid,
     ncells, cellindex, cell_boundary, cell_centroid,
-    cellposition, rawid,
+    globalindex, rawid,
     cellat, neighbors, ring, one_ring, system, level,
     cellindextype, levels, levelgrid, rootcells, children,
-    cap_inflation, maxneighbors, has_sorted_subtrees,
+    cap_inflation, maxneighbors, has_sorted_subtrees, has_direct_location,
     ancestor, descendants, descendant_range
 
 import GeometryOps as GO

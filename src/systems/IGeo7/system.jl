@@ -97,19 +97,36 @@ DGG.levels(::IGeo7System) = 0:MAX_RESOLUTION
 
 DGG.has_sorted_subtrees(::IGeo7System) = true
 
+# The gnomonic inverse and the Z7 digit walk name the cell from the point.
+DGG.has_direct_location(::IGeo7System) = true
+
 # Hexagons and pentagons: vertex adjacency and edge adjacency coincide, so the
 # bound is 6 under either connectivity (a pentagon reaches 5).
 DGG.maxneighbors(::IGeo7System, ::Connectivity) = 6
 
+# Z7's one-rings come out of the GBT automaton counter-clockwise, so the shell
+# walk carries that order outward instead of measuring azimuth per cell.
+DGG.winding(::IGeo7System, ::Connectivity) = DGG.CounterClockwise()
+
+"""
+    maxring(::IGeo7System, k, connectivity) -> Int
+
+`6k`: a hexagon's k-ring is its one-ring scaled by `k`. Tight — a hexagonal cell
+attains it — and an over-bound at the twelve pentagons, whose rings hold `5k`.
+"""
+DGG.maxring(::IGeo7System, k::Integer, ::Connectivity = DGG.Vertex()) =
+    (steps = Int(k); steps == 0 ? 1 : 6 * steps)
+
 # The default `cap_inflation == 1.2` covers the observed maximum descendant
-# overhang ratio of `1.0482`.
+# overhang ratio of `1.0482` — descendant boundary vertices against an ancestor's
+# cell-cap radius. Descendant caps are separate bounds and are not covered.
 
 """
     rootcells(::IGeo7System) -> SmallVector{12,Z7Cell}
 
 The twelve level-0 cells, one pentagon per icosahedron vertex, ascending. The
 level-0 id of base `b` is `(b << 60) | 0x0fff…f`, so ascending id order is
-ascending base order and these are exactly positions `1:12` of
+ascending base order and these are exactly indices `1:12` of
 `levelgrid(sys, 0)`.
 """
 function DGG.rootcells(::IGeo7System)
@@ -183,7 +200,7 @@ needs no sort. The count is `7^d` for a hexagon and `(5·7^d + 1)/6` for a
 pentagon, `d = l - level(c)`.
 
 Throws an `ArgumentError` for `l` outside `level(c):maxlevel`. This
-materialises — reach for [`descendant_range`](@ref) when positions will do.
+materialises — reach for [`descendant_range`](@ref) when indices will do.
 """
 function DGG.descendants(::IGeo7System, c::Z7Cell, l::Integer)
     res = _geometry_checked(c.id)
@@ -215,7 +232,7 @@ end
 """
     descendant_range(sys::IGeo7System, c::Z7Cell, l::Integer) -> UnitRange{Int}
 
-The contiguous position interval of `c`'s level-`l` descendants. Prefix order
+The contiguous index interval of `c`'s level-`l` descendants. Prefix order
 makes this an `O(level)` calculation; the size is `7^d` for a hexagon and
 `(5·7^d + 1)/6` for a pentagon.
 
@@ -227,8 +244,8 @@ function DGG.descendant_range(::IGeo7System, c::Z7Cell, l::Integer)
     res <= target <= MAX_RESOLUTION || throw(ArgumentError(
         "IGeo7 descendant level must be in $res:$MAX_RESOLUTION, got $target"))
     slots = _z7_tail_mask(res) ⊻ _z7_tail_mask(target)
-    first_position = cell_to_index(c.id & ~slots)
-    return first_position:(first_position+_subtree_count(c.id, res, target)-1)
+    first_index = cell_to_index(c.id & ~slots)
+    return first_index:(first_index+_subtree_count(c.id, res, target)-1)
 end
 
 # ---------------------------------------------------------------------------
@@ -249,22 +266,22 @@ DGG.ncells(::IGeo7System, l::Integer) = Int(num_cells(Int(l)))
 """
     cellindex(::IGeo7System, l::Integer, i::Int) -> Z7Cell
 
-The cell at position `i` of level `l`, by inverting the positional rank walk:
-peel the base cell's block, then at each level take the pentagon child while the
+The cell at index `i` of level `l`, by inverting the index-rank walk: peel the
+base cell's block, then at each level take the pentagon child while the
 remainder fits its subtree and otherwise divide by `7^depth` to pick the hexagon
 sibling, re-inserting the deleted digit's gap. O(level), allocation-free.
 """
 DGG.cellindex(::IGeo7System, l::Integer, i::Int) = Z7Cell(index_to_cell(i, Int(l)))
 
 """
-    cellposition(::IGeo7System, c::Z7Cell) -> Union{Int,Nothing}
+    globalindex(::IGeo7System, c::Z7Cell) -> Union{Int,Nothing}
 
-The position of `c` in its own level's dense order, or `nothing` when `c` is not
+The index of `c` in its own level's dense order, or `nothing` when `c` is not
 a valid cell at all. The walk adds the subtree size of every earlier sibling at
 each digit, which is O(level) and needs no table. The grid has already rejected
 a cell from another level.
 """
-function DGG.cellposition(::IGeo7System, c::Z7Cell)
+function DGG.globalindex(::IGeo7System, c::Z7Cell)
     is_valid_cell(c.id) || return nothing
     return cell_to_index(c.id)
 end
@@ -298,6 +315,28 @@ physical lattice point pulled back through the Snyder chart, and for a pentagon
 exactly the icosahedron vertex it surrounds.
 """
 DGG.cell_centroid(::IGeo7System, c::Z7Cell) = USPoint(_cell_center_xyz(c.id, _geometry_checked(c.id)))
+
+"""
+    _analytical_cell_cap(c::Z7Cell) -> SphericalCap
+
+A constant-time cap over one IGeo7 cell. Its centre is the cell's Snyder image
+and its radius is the level's planar circumradius multiplied by the global
+inverse-projection scale bound. The radius is below `pi/2`, so the cap is
+geodesically convex: containing the vertices also contains the great-circle
+edges used by `cell_boundary`.
+"""
+function _analytical_cell_cap(c::Z7Cell)
+    res = _geometry_checked(c.id)
+    p = _cell_center_xyz(c.id, res)
+    return GO.UnitSpherical.SphericalCap(
+        USPoint(p[1], p[2], p[3]), @inbounds CELL_CAP_RADIUS[res+1])
+end
+
+# Override only the complete IGeo7 level. `PartialGrid` forwards to its
+# complete grid, so rooted subtrees and compressed multi-root coverages take
+# this method too without duplicating dispatch here.
+DGG.Fallbacks.cell_cap(::LevelGrid, c::Z7Cell) = _analytical_cell_cap(c)
+DGG.Fallbacks.cell_cap_is_cheap(::LevelGrid) = Val(true)
 
 """
     cellat(g::LevelGrid, p::UnitSphericalPoint) -> Z7Cell
@@ -345,15 +384,13 @@ identifier order.
 `k == 0` is empty and `k < 0` throws. For `k <= 1` the result is a
 `SmallVector{6,Z7Cell}`; larger discs return `Vector{Z7Cell}`.
 """
-function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::Z7Cell, k::Integer=1;
     connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     _level_checked(g, c)
     steps == 0 && return SmallVector{6,Z7Cell}()
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    isempty(shells) && return Z7Cell[]
-    return reduce(vcat, shells)
+    return DGG.shell_disc(g, c, steps, connectivity)
 end
 
 """
@@ -392,16 +429,36 @@ Shares [`neighbors`](@ref)' walk, so this is that function's trailing block:
 `neighbors(g, c, k)` is `vcat(ring(g, c, 1), ..., ring(g, c, k))`, and the
 order contract is the one stated there.
 """
-function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::Z7Cell, k::Integer;
     connectivity::Connectivity=Vertex())
     steps = DGG.checked_steps(k)
     _level_checked(g, c)
     steps == 0 && return Z7Cell[c]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
     # Return an empty ring after the traversal exhausts the component.
-    steps <= length(shells) || return Z7Cell[]
-    return shells[steps]
+    return DGG.shell_ring(g, c, steps, connectivity)
+end
+
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function DGG.neighbors(g::LevelGrid, c::Z7Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    _level_checked(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{6,Z7Cell}()
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_disc(g, c, Val(K), connectivity)
+end
+
+function DGG.ring(g::LevelGrid, c::Z7Cell, ::Val{K};
+        connectivity::Connectivity=Vertex()) where {K}
+    _level_checked(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return Z7Cell[c]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_ring(g, c, Val(K), connectivity)
 end
 
 # A cell handed to a grid operation must belong to that grid's level; otherwise
@@ -429,7 +486,7 @@ end
 # Hexagonal halo support
 # ---------------------------------------------------------------------------
 
-# The ring position of the step from a cell's parent to the cell, read off the
+# The ring index of the step from a cell's parent to the cell, read off the
 # cell's own last digit through the same table `_border_step` uses. Digit 0 is
 # the centre child, which has no direction, and a base cell has no parent.
 #

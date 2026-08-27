@@ -30,7 +30,7 @@ end
 """
     oracle_subtree_halo(sys, root, l, connectivity) -> (inside_out, outside_in)
 
-Both directions, each sorted ascending by position.
+Both directions, each sorted ascending by index.
 """
 function oracle_subtree_halo(sys, root, l::Integer, connectivity::Connectivity)
     g = DGG.levelgrid(sys, l)
@@ -41,7 +41,7 @@ function oracle_subtree_halo(sys, root, l::Integer, connectivity::Connectivity)
     for p in r
         d = DGG.cellindex(g, p)
         for n in DGG.neighbors(g, d, 1; connectivity)
-            pn = DGG.cellposition(g, n)
+            pn = DGG.localindex(g, n)
             (lo <= pn <= hi) || push!(io, n)
         end
     end
@@ -51,14 +51,14 @@ function oracle_subtree_halo(sys, root, l::Integer, connectivity::Connectivity)
         (lo <= p <= hi) && continue
         x = DGG.cellindex(g, p)
         for n in DGG.neighbors(g, x, 1; connectivity)
-            pn = DGG.cellposition(g, n)
+            pn = DGG.localindex(g, n)
             if lo <= pn <= hi
                 push!(oi, x); break
             end
         end
     end
 
-    key = c -> DGG.cellposition(g, c)
+    key = c -> DGG.localindex(g, c)
     return sort!(collect(io); by = key), sort!(collect(oi); by = key)
 end
 
@@ -85,7 +85,7 @@ function oracle_subset_halo(g, members::AbstractSet, connectivity::Connectivity)
             end
         end
     end
-    key = c -> DGG.cellposition(g, c)
+    key = c -> DGG.localindex(g, c)
     return sort!(collect(io); by = key), sort!(collect(oi); by = key)
 end
 

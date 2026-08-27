@@ -13,12 +13,12 @@ import GeometryOps as GO
 const FB = DGG.Fallbacks
 const EN = DGG.Engine
 
-using DiscreteGlobalGrids: systems, levelgrid, ncells, cellindex, cellposition,
-    neighbors, ring, level, levels, maxlevel, descendants,
+using DiscreteGlobalGrids: systems, levelgrid, ncells, cellindex, localindex,
+    globalindex, neighbors, ring, level, levels, maxlevel, descendants,
     descendant_range, has_sorted_subtrees, PartialGrid, CellVector, CellLookup,
     MultiOrderCoverage, member_neighbors, Vertex, Edge,
     Connectivity, cellindextype, query, system,
-    subtree, halo, adjacency, AdjacencyTable, halopositions, halocells
+    subtree, halo, adjacency, AdjacencyTable, haloindices, halocells
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, isquadface, sweepcovers
@@ -50,7 +50,7 @@ end
 # The subset shapes
 # ---------------------------------------------------------------------------
 
-held(sub, c) = cellposition(sub, c) !== nothing
+held(sub, c) = localindex(sub, c) !== nothing
 
 # A rooted subtree, the shape `subtree(sys, cell, level)` builds.
 rooted(sys, base, leaf) =
@@ -107,6 +107,23 @@ end
 @testset "$(syslabel(sys))" for (sys, base, leaf) in SWEEP
     complete = levelgrid(sys, leaf)
 
+    @testset "maxneighbors follows the system through every region wrapper" begin
+        sub = rooted(sys, base, leaf)
+        cv = CellVector(sub)
+        lk = CellLookup(cv)
+        for conn in (Vertex(), Edge())
+            want = DGG.maxneighbors(sys, conn)
+            @test DGG.maxneighbors(complete, conn) == want
+            @test DGG.maxneighbors(sub, conn) == want
+            @test DGG.maxneighbors(cv, conn) == want
+            @test DGG.maxneighbors(lk, conn) == want
+        end
+        @test DGG.maxneighbors(complete) == DGG.maxneighbors(sys)
+        @test DGG.maxneighbors(sub) == DGG.maxneighbors(sys)
+        @test DGG.maxneighbors(cv) == DGG.maxneighbors(sys)
+        @test DGG.maxneighbors(lk) == DGG.maxneighbors(sys)
+    end
+
     @testset "$label: ring is the complete level's, clipped" for (label, sub) in
                                                                  shapes(sys, base, leaf)
         for c in probes(sub, 6), conn in (Vertex(), Edge()), k in 0:3
@@ -129,18 +146,18 @@ end
         end
     end
 
-    @testset "$label: the position face is the id face" for (label, sub) in
+    @testset "$label: the index face is the id face" for (label, sub) in
                                                             shapes(sys, base, leaf)
         for p in 1:max(1, ncells(sub) ÷ 6):ncells(sub), conn in (Vertex(), Edge()), k in 0:2
             c = cellindex(sub, p)
-            # Element for element, not as sets: the position form IS the id
-            # form read through `cellposition`, and it carries the same
+            # Element for element, not as sets: the index form IS the id
+            # form read through `localindex`, and it carries the same
             # counter-clockwise order.
             @test neighbors(sub, p, k; connectivity = conn) ==
-                  [cellposition(sub, x)
+                  [localindex(sub, x)
                    for x in neighbors(sub, c, k; connectivity = conn)]
             @test ring(sub, p, k; connectivity = conn) ==
-                  [cellposition(sub, x)
+                  [localindex(sub, x)
                    for x in ring(sub, c, k; connectivity = conn)]
         end
     end
@@ -217,11 +234,11 @@ end
         @test_throws ArgumentError neighbors(cv, outside)
         @test_throws ArgumentError ring(cv, outside, 2)
         @test_throws ArgumentError neighbors(CellLookup(cv), outside)
-        # And the position face keeps Base's contract instead.
+        # And the index face keeps Base's contract instead.
         @test_throws BoundsError neighbors(sub, ncells(sub) + 1)
         # Directly on `cellindex`, because that is where it is enforced: a
-        # subtree's ids are a WINDOW into the level, so an unchecked position
-        # past the end reads a real cell of the next subtree and the position
+        # subtree's ids are a WINDOW into the level, so an unchecked index
+        # past the end reads a real cell of the next subtree and the index
         # form would answer confidently about a cell the subset does not hold.
         @test_throws BoundsError cellindex(sub, 0)
         @test_throws BoundsError cellindex(sub, ncells(sub) + 1)
@@ -356,7 +373,7 @@ end
                  all(p -> collect(t[p]) == want[p], 1:ncells(pg))) ||
                     push!(disagreed, (syslabel(sys), root, l, conn))
                 (t.offsets[1] == 1 && t.offsets[end] == length(t.indices) + 1 &&
-                 all(s -> 1 <= s <= length(t) + length(halopositions(t)), t.indices) &&
+                 all(s -> 1 <= s <= length(t) + length(haloindices(t)), t.indices) &&
                  reduce(vcat, t; init = Int[]) == t.indices) ||
                     push!(csr, (syslabel(sys), root, l, conn))
 
@@ -448,7 +465,7 @@ end
     edge_halo = collect(halo(pg; connectivity = Edge()))
     @test length(vertex_halo) == 19 && length(edge_halo) == 16
 
-    # A row exists only for an in-region position, so a wider receptive field is
+    # A row exists only for an in-region index, so a wider receptive field is
     # a wider REGION and the message has to say so.
     @test_throws ArgumentError adjacency(pg; halo = 2)
     @test occursin("grow(region, 1)",
@@ -474,7 +491,7 @@ end
     @test_throws ArgumentError adjacency(pg, edge_halo; connectivity = Vertex())
     @test adjacency(pg, edge_halo; connectivity = Edge()) isa AdjacencyTable
 
-    # `offsets` is one longer than the table, so an unchecked position past the
+    # `offsets` is one longer than the table, so an unchecked index past the
     # end reads a real offset and returns a plausible row of somebody else's
     # neighbours.
     t = adjacency(pg, vertex_halo)
@@ -500,14 +517,14 @@ end
         clipped = adjacency(sub; connectivity = conn)
         marked = adjacency(sub; halo = :mark, connectivity = conn)
         buffered = adjacency(sub; halo = 1, connectivity = conn)
-        hpos = halopositions(buffered)
+        hpos = haloindices(buffered)
         bad = Int[]
         for p in 1:n
             c = cellindex(sub, p)
             canonical = collect(neighbors(complete, c, 1; connectivity = conn))
-            slots = [something(cellposition(sub, nb), 0) for nb in canonical]
+            slots = [something(localindex(sub, nb), 0) for nb in canonical]
             buf = [q == 0 ?
-                   n + searchsortedfirst(hpos, cellposition(complete, canonical[j])) : q
+                   n + searchsortedfirst(hpos, globalindex(complete, canonical[j])) : q
                    for (j, q) in enumerate(slots)]
             (collect(marked[p]) == slots &&
              collect(buffered[p]) == buf &&
@@ -525,7 +542,7 @@ end
     for (sys, base, leaf) in SWEEP
         sub = holed(sys, base, leaf)
         t = adjacency(sub; halo = :mark)
-        @test isempty(halopositions(t))
+        @test isempty(haloindices(t))
         @test isempty(halocells(t))
         @test all(q -> 0 <= q <= length(t), t.indices)
         @test any(iszero, t.indices)
@@ -550,10 +567,10 @@ end
 @testset "slot n+j is the j-th halo cell: $(syslabel(sys))" for (sys, base, leaf) in SWEEP
     for (label, sub) in shapes(sys, base, leaf), conn in (Vertex(), Edge())
         t = adjacency(sub; halo = 1, connectivity = conn)
-        @test halopositions(t) == collect(halo(sub; connectivity = conn))
+        @test haloindices(t) == collect(halo(sub; connectivity = conn))
         @test halocells(t) == collect(halo(sub; connectivity = conn, cells = true))
         # The caller's own list, passed back in, is the same table.
-        @test adjacency(sub, halopositions(t); connectivity = conn) == t
+        @test adjacency(sub, haloindices(t); connectivity = conn) == t
         # And every out-of-region slot resolves to the cell it names.
         n = length(t)
         complete = levelgrid(sys, leaf)
@@ -588,7 +605,7 @@ end
     # The rows themselves cost the same either way — the buffer's second half
     # is addressed by search, never materialised per row. The only thing the
     # public verb allocates in proportion to the list is the copy the table
-    # keeps for `halopositions`.
+    # keeps for `haloindices`.
     cv = CellVector(pg)
     n = ncells(pg)
     rows(list) = EN._adjacency_rows(cv, Vertex(), EN.BufferedRows(list, n), false)
@@ -725,7 +742,7 @@ const MOC_SWEEP = [
 
     # The order is the package's one order on a mixed-level set: a single
     # counter-clockwise turn about the member, each neighbour read on its own
-    # level's grid. `issorted` by `(level, position)` — what this used to be —
+    # level's grid. `issorted` by `(level, index)` — what this used to be —
     # is exactly the ascending order the contract now refuses.
     @testset "one counter-clockwise turn about the member" begin
         for i in member_probes(set, 6), conn in (Vertex(), Edge())
@@ -809,8 +826,8 @@ end
     for k in 1:2
         @test neighbors(pg, c, k) == filter(in(pg), neighbors(complete, c, k))
     end
-    @test adjacency(pg)[cellposition(pg, c)] ==
-          [cellposition(pg, x) for x in filter(in(pg), neighbors(complete, c, 1))]
+    @test adjacency(pg)[localindex(pg, c)] ==
+          [localindex(pg, x) for x in filter(in(pg), neighbors(complete, c, 1))]
 end
 
 end # module StencilTests

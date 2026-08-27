@@ -2,7 +2,7 @@
 #
 # HEALPix is astronomy's grid: every CMB map and all-sky survey ships as a flat
 # vector of `12 * nside^2` equal-area pixels in nested order. That order is
-# exactly the position order of `levelgrid(HEALPixSystem(), level)`, so an
+# exactly the index order of `levelgrid(HEALPixSystem(), level)`, so an
 # astronomer's map and a DiscreteGlobalGrids data vector are the same vector.
 #
 # This page builds a synthetic all-sky map, checks that claim against
@@ -19,7 +19,7 @@ GLMakie.activate!(inline = true)
 # ## A synthetic sky
 #
 # Level 5 is `nside = 2^5 = 32`: 12288 pixels. `CellVector` reads the grid as a
-# lazy vector of cell ids, one per position.
+# lazy vector of cell ids, one per index.
 
 grid = DGG.levelgrid(DGG.HEALPixSystem(), 5)
 cells = DGG.CellVector(grid)
@@ -44,7 +44,7 @@ end
 # ## The Healpix.jl correspondence
 #
 # The values vector *is* a nested-order `HealpixMap` — no reshuffle, no copy.
-# Every cell center agrees with Healpix.jl's center for the same position:
+# Every cell center agrees with Healpix.jl's center for the same index:
 
 m = Healpix.HealpixMap{Float64, Healpix.NestedOrder}(sky)
 all(i -> collect(Healpix.pix2vecNest(m.resolution, i)) ≈ collect(DGG.cell_centroid(grid, cells[i])),
@@ -53,7 +53,7 @@ all(i -> collect(Healpix.pix2vecNest(m.resolution, i)) ≈ collect(DGG.cell_cent
 # ## The all-sky map
 #
 # One `poly!` over the cell vector paints the whole sphere: Makie reads
-# `cells` as one polygon per position, so `color = sky` lines up. Mollweide is
+# `cells` as one polygon per index, so `color = sky` lines up. Mollweide is
 # the projection astronomers reach for; `+over` keeps the cells straddling
 # ±180° from smearing across the map.
 
@@ -68,14 +68,14 @@ fig
 #
 # The astronomer's spatial query: everything within 5° of a source. A
 # `SphericalCap` is a first-class `query` target, handled exactly, and
-# `cellposition` turns the returned ids into positions in `sky`. (`Within` in
+# `globalindex` turns the returned ids into indices in `sky`. (`Within` in
 # place of `Intersects` would keep only the cells wholly inside the cone.)
 
 to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
 lon0, lat0, _ = sources[1]
 cone = GO.UnitSpherical.SphericalCap(to_sphere((lon0, lat0)), deg2rad(5))
 
-idx = DGG.cellposition.(Ref(grid), DGG.query(grid, DGG.Intersects(cone)))
+idx = DGG.globalindex.(Ref(grid), DGG.query(grid, DGG.Intersects(cone)))
 #
 (; n = length(idx), cone_mean = mean(sky[idx]), sky_mean = mean(sky))
 

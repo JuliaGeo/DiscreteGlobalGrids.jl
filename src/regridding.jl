@@ -74,7 +74,7 @@ function _chunklevel(sys::AbstractHierarchicalGridSystem, lvl::Int, n::Int, targ
     return best
 end
 
-# Return one position range per non-empty ancestor, or `nothing` when this
+# Return one index range per non-empty ancestor, or `nothing` when this
 # cannot be determined without scanning every cell.
 function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
         lvl::Int, a::Int)
@@ -84,7 +84,7 @@ function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
     ID = cellindextype(sys)
     ids = ID[]
     ranges = UnitRange{Int}[]
-    for j in 1:ncells(ancestors)
+    for j in _ancestorindices(grid, sys, a, ancestors)
         id = cellindex(ancestors, j)
         r = descendant_range(sys, id, lvl)
         w = complete ? (Int(first(r)):Int(last(r))) : _subsetwindow(grid, r)
@@ -93,6 +93,26 @@ function _chunkwindows(grid::AbstractGrid, sys::AbstractHierarchicalGridSystem,
         push!(ranges, w)
     end
     return ids, ranges
+end
+
+# The level-`a` ancestors that can hold any of `grid`'s cells. Every one of them
+# in general — the scan is what decides which are non-empty — but a ROOTED
+# `PartialGrid` holds nothing outside its root's subtree, so only that root's
+# level-`a` descendants can qualify and the rest of the level need never be
+# visited. That is exact, not a heuristic: the constructor checks the ancestry.
+_ancestorindices(::AbstractGrid, ::AbstractHierarchicalGridSystem, ::Int,
+    ancestors::AbstractGrid) = 1:ncells(ancestors)
+
+function _ancestorindices(grid::PartialGrid, sys::AbstractHierarchicalGridSystem,
+        a::Int, ancestors::AbstractGrid)
+    grid.root_level >= first(levels(sys)) || return 1:ncells(ancestors)
+    if grid.root_level <= a
+        r = descendant_range(sys, grid.root_id, a)
+        return Int(first(r)):Int(last(r))
+    end
+    # A root deeper than the chunk level puts the whole grid under one ancestor.
+    p = globalindex(ancestors, ancestor(sys, grid.root_id, a))
+    return p:p
 end
 
 # Sorted subset IDs make each ancestor's descendants a contiguous interval.
@@ -113,50 +133,125 @@ GOCore.manifold(space::DGGSpace) = GOCore.best_manifold(space.grid)
 
 GR.nchunks(space::DGGSpace) = length(space.ranges)
 
-cellindices(space::DGGSpace, chunk::Int) = space.ranges[chunk]
+GR.ownedindices(space::DGGSpace, chunk::Int) = space.ranges[chunk]
 
-# Locate a position by binary-searching the sorted chunk starts.
+# Locate an index by binary-searching the sorted chunk starts.
 function GR.chunkat(space::DGGSpace, i::Integer)
     p = Int(i)
     1 <= p <= ncells(space) || throw(BoundsError(space, p))
     k = searchsortedlast(space.starts, p)
     (1 <= k <= length(space.ranges) && p in space.ranges[k]) || throw(ArgumentError(
-        "cell position $p belongs to no chunk of $space"))
+        "cell index $p belongs to no chunk of $space"))
     return k
 end
 
 GR.cellcentroid(space::DGGSpace, i::Int) =
     cell_centroid(space.grid, cellindex(space.grid, i))
 
-function cellat(space::DGGSpace, p::GO.UnitSphericalPoint)
-    c = cellat(space.grid, p)
-    c === nothing && return nothing
-    return cellposition(space.grid, c)
-end
+# The sites a point method interpolates between are `cellcentroid` above, read
+# through `GlobalRegridding`'s own `CentroidSites`: a pure vector that computes
+# an entry on read and holds nothing, so preparing a sampler materialises
+# nothing and concurrent queries share it. The collection's centroid field would
+# read the same, but `CellVector` indexes every cell of a holding whose ids are
+# not one subtree — 2.5e10 of them for the GLO-90 source, 187 GiB — and a
+# sampler never reads more sites than its stencils name.
+
+# Local, not global: the inverse of `cellcentroid` above, and on a `PartialGrid`
+# a different numbering from the grid's own cell ids.
+cellat(space::DGGSpace, p::GO.UnitSphericalPoint) = localindex(space.grid, p)
 
 GR.celltree(space::DGGSpace) = treeify(space.grid)
 
-GR.chunktree(space::DGGSpace) = DGGChunkTree(space)
-
 GR.chunkextents(space::DGGSpace) = space.caps
 
-# DGGS chunks are one-dimensional position ranges.
+# The DGG space is its own private chunk index: candidate queries descend the
+# grid's existing hierarchy to `chunklevel`, with no second tree or extent
+# adapter. Construct the hierarchical cursor directly because some systems use
+# a different optimized tree for cell intersections.
+GR.chunkindex(space::DGGSpace) = space
+
+function GR.candidatechunks!(out::Vector{Int}, space::DGGSpace, dstcap::GR.Cap;
+        radius::Real = 0.0)
+    empty!(out)
+    intersects = GR.DilatedIntersects(Float64(radius))
+    if GR.nchunks(space) == 1
+        intersects(dstcap, only(space.caps)) && push!(out, 1)
+        return out
+    end
+    if space.chunklevel == 0 && system(space.grid) isa CopernicusDEM.CopernicusDEMSystem
+        frontier = levelgrid(system(space.grid), space.chunklevel)
+        _mappedfrontierchunks!(out, space, treeify(frontier), frontier, dstcap, intersects)
+        sort!(out)
+        unique!(out)
+        return out
+    end
+    root = HierarchicalGridCursor(space.grid; bucket_size = 0)
+    _dggcandidatechunks!(out, space, root, dstcap, intersects)
+    sort!(out)
+    unique!(out)
+    return out
+end
+
+# CopernicusDEM has tens of thousands of level-0 roots, so the generic
+# ancestor cursor would still scan a flat root fanout for every query. Its
+# existing BlockCursor is the spatial hierarchy over that lattice. Traverse a
+# complete grid at the requested frontier level and filter its leaf ids through
+# the selected `PartialGrid` chunk ids; no source pixels are materialized.
+function _mappedfrontierchunks!(out::Vector{Int}, space::DGGSpace, node, frontier,
+        dstcap, intersects)
+    intersects(dstcap, STI.node_extent(node)) || return out
+    if STI.isleaf(node)
+        for (index, cap) in STI.child_indices_extents(node)
+            intersects(dstcap, cap) || continue
+            id = cellindex(frontier, index)
+            k = searchsortedfirst(space.chunkids, id)
+            k <= length(space.chunkids) && space.chunkids[k] == id && push!(out, k)
+        end
+        return out
+    end
+    for child in STI.getchild(node)
+        _mappedfrontierchunks!(out, space, child, frontier, dstcap, intersects)
+    end
+    return out
+end
+
+function _dggcandidatechunks!(out::Vector{Int}, space::DGGSpace,
+        node::HierarchicalGridCursor, dstcap, intersects)
+    intersects(dstcap, STI.node_extent(node)) || return out
+    if node.level >= space.chunklevel
+        inds = Engine.node_indices(node)
+        isempty(inds) || push!(out, GR.chunkat(space, first(inds)))
+        return out
+    end
+    for child in STI.getchild(node)
+        _dggcandidatechunks!(out, space, child, dstcap, intersects)
+    end
+    return out
+end
+
+# DGGS chunks are one-dimensional index ranges.
 GR.chunkranges(space::DGGSpace, chunk::Integer, ::NTuple{1,Int}) =
     (space.ranges[Int(chunk)],)
 
 """
     GlobalRegridding.subtree(space::DGGSpace, inds)
 
-Return the cell tree restricted to `inds`, preserving global cell positions.
-The whole space gets a cursor with decoded ids and precomputed leaf caps;
-exact chunk ranges reuse the grid hierarchy in `O(1)`; other ranges use a
-bounding-cap tree.
+Return the cell tree restricted to `inds`, with leaves still addressed by the
+space's local index.
+In order: the whole space, a grid that can window its own tree
+([`subcursor`](@ref)), an exact chunk range (the grid hierarchy in `O(1)`), and
+otherwise the common packed cell-space fallback. Grids with an analytical cell
+cap keep the hierarchical tree lazy; other whole spaces and small enough chunks
+carry precomputed leaf caps.
 """
 function GR.subtree(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
     GR._iswholespace(space, inds) && return _cachedcelltree(space)
+    # Dispatch-only, so it costs nothing for the grids that have no method.
+    window = subcursor(space.grid, inds)
+    window === nothing || return window
     cursor = _chunkcursor(space, inds)
-    cursor === nothing || return cursor
-    return GR.CellCapTree(space, inds)
+    cursor === nothing || return _cachedchunktree(cursor, inds)
+    return GR.CellSpaceRTree(space, inds)
 end
 
 # Reuse the hierarchy rooted at the ancestor for an exact chunk range.
@@ -167,61 +262,36 @@ function _chunkcursor(space::DGGSpace, inds::AbstractUnitRange{<:Integer})
     (k <= length(space.ranges) && space.ranges[k] == inds) || return nothing
     root = treeify(space.grid)
     root isa HierarchicalGridCursor && root.selection === nothing || return nothing
+    complete_subtree = length(inds) ==
+        length(descendant_range(root.system, space.chunkids[k], root.leaf_level))
     return typeof(root)(space.grid, root.system, root.top_level, root.leaf_level,
         root.bucket_size, space.chunklevel, space.chunkids[k],
-        Int(first(inds)), Int(last(inds)), nothing)
+        Int(first(inds)), Int(last(inds)), complete_subtree, nothing)
 end
 
-"""
-    DGGChunkTree(space::DGGSpace)
-
-A one-node spatial tree whose leaves are chunk numbers. Each stored ancestor
-extent covers all cells in its chunk.
-"""
-struct DGGChunkTree{S<:DGGSpace,E}
-    space::S
-    extent::E
-end
-
-DGGChunkTree(space::DGGSpace) = DGGChunkTree(space,
-    isempty(space.caps) ? Fallbacks.full_sphere_cap() :
-    foldl(Fallbacks.merge_caps, space.caps))
-
-Base.show(io::IO, t::DGGChunkTree) =
-    print(io, "DGGChunkTree(", length(t.space.ranges), " chunks)")
-
-STI.isspatialtree(::Type{<:DGGChunkTree}) = true
-STI.node_extent_is_expensive(::Type{<:DGGChunkTree}) = false
-STI.isleaf(::DGGChunkTree) = true
-STI.nchild(::DGGChunkTree) = 0
-STI.getchild(::DGGChunkTree) = ()
-STI.node_extent(t::DGGChunkTree) = t.extent
-STI.child_indices_extents(t::DGGChunkTree) =
-    zip(eachindex(t.space.ranges), t.space.caps)
-
-GOCore.best_manifold(t::DGGChunkTree) = GOCore.best_manifold(t.space.grid)
-Trees.ncells(t::DGGChunkTree) = ncells(t.space.grid)
-Trees.getcell(t::DGGChunkTree, i::Int) = getcell(t.space.grid, i)
-Trees.getcell(t::DGGChunkTree) = (getcell(t.space.grid, i) for i in 1:ncells(t.space.grid))
-
-# Resolving `to`
+# Resolving `to` and `from`
 
 """
-    regridgrid(x) -> AbstractGrid
+    GlobalRegridding._asspace(target, name)
+    GlobalRegridding._asspace(target, name, src_space)
 
-Return the grid represented by a regridding target. Lookup, vector, and
-multi-order targets become a [`PartialGrid`](@ref).
+Return the [`DGGSpace`](@ref) over the cells a regridding target names. A grid
+stands for itself; a [`CellLookup`](@ref), a [`CellVector`](@ref) and a
+[`MultiOrderCellSet`](@ref) name the [`PartialGrid`](@ref) of their cells.
+
+A bare system names no cells until a level is chosen. As a destination it takes
+the level whose cells are closest in size to the source's, which is the only
+spelling that reads `src_space`; as a source there is nothing to match against
+and it is an error.
 """
-function regridgrid end
+GR._asspace(grid::AbstractGrid, name::AbstractString) = DGGSpace(grid)
 
-regridgrid(grid::AbstractGrid) = grid
-regridgrid(lk::CellLookup) = PartialGrid(lk)
-regridgrid(cv::CellVector) = PartialGrid(cv)
-regridgrid(set::MultiOrderCellSet) = PartialGrid(CellVector(set))
+GR._asspace(lk::AbstractCellLookup, name::AbstractString) = DGGSpace(PartialGrid(lk))
 
-const RegridTarget = Union{AbstractGrid,CellLookup,CellVector,MultiOrderCellSet}
+GR._asspace(cv::AbstractCellVector, name::AbstractString) = DGGSpace(PartialGrid(cv))
 
-GR._asspace(target::RegridTarget, name::AbstractString) = DGGSpace(regridgrid(target))
+GR._asspace(set::MultiOrderCellSet, name::AbstractString) =
+    DGGSpace(PartialGrid(CellVector(set)))
 
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
     throw(ArgumentError(
@@ -229,39 +299,28 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
         "chosen. As a destination the level is matched to the source's cell " *
         "areas, but as a source you must name it with `levelgrid(sys, l)`."))
 
-# Resolving `from`
-
-# A `Cells` axis already names the cells a regrid would otherwise look for a
-# raster lattice in, so a source given no `from` can point at the grid itself.
-GR.dimsource(lk::CellLookup) = cellset(lk)
-
-# A bare system as the destination takes the level closest to the source's cells.
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
     src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, levelfor(sys, src_space)))
 
-# API integration
+# A `Cells` axis already names the cells a regrid would otherwise look for a
+# raster lattice in, so a source given no `from` can point at the grid itself.
+GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
 
-# DGGS destination plans return a cell-indexed cube. Explicit leading bounds
-# keep these aliases within the plan types' declared bounds.
-const _DirectToDGG =
-    GR.DirectPlan{<:GR.AbstractRegriddingMethod,<:GR.AbstractMissingPolicy,<:DGGSpace}
-const _ChunkedToDGG =
-    GR.ChunkedPlan{<:GR.AbstractRegriddingMethod,<:GR.AbstractMissingPolicy,<:DGGSpace}
+# Labelling the output
 
-function GR.regrid(data, plan::_DirectToDGG)
-    return _ascube(invoke(GR.regrid, Tuple{Any,GR.DirectPlan}, data, plan), data, plan)
-end
+"""
+    GlobalRegridding.destinationdims(space::DGGSpace, sampling)
 
-GR.regrid(data, plan::_ChunkedToDGG) =
-    _ascube(GR.LazyRegridArray(data, plan), data, plan)
+Return the single [`Cells`](@ref) dimension a result over this space carries: a
+[`CellLookup`](@ref) over the destination's own cells, in its local index order.
 
-# Preserve non-spatial dimensions and label the destination with `Cells`.
-function _ascube(out, data, plan::GR.AbstractRegriddingPlan)
-    data isa DD.AbstractDimArray || return out
-    lk = CellLookup(plan.dst_space.grid)
-    ds = DD.dims(data)
-    sd = GR.resolvespatialdims(data, Int(ncells(plan.src_space)))
-    others = Tuple(ds[i] for i in eachindex(ds) if !(i in sd))
-    raw = out isa DD.AbstractDimArray ? parent(out) : out
-    return DD.DimArray(raw, (Cells(lk), others...))
-end
+A cell holds one value however that value was measured, so the lookup is the
+same whichever `sampling` the method asks for. Being the space's only axis, it
+is the whole of the destination's shape, and a regrid needs no reshape to put a
+result on it.
+"""
+GR.destinationdims(space::DGGSpace, ::DD.Lookups.Sampling) =
+    (Cells(CellLookup(space.grid)),)
+
+# The dual cells a point method interpolates on.
+include("dual_cells.jl")

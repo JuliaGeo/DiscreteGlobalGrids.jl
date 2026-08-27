@@ -10,6 +10,8 @@ const LevelGrid{N} = DGG.HierarchicalLevelGrid{CopernicusDEMSystem{N}}
 DGG.cellindextype(::CopernicusDEMSystem) = DGG.LevelIndex
 DGG.levels(::CopernicusDEMSystem) = 0:1
 DGG.has_sorted_subtrees(::CopernicusDEMSystem) = true
+# Location is a latitude-band lookup and two floors; see `cellat` below.
+DGG.has_direct_location(::CopernicusDEMSystem) = true
 
 """
     maxneighbors(CopernicusDEMSystem{N}(), connectivity) -> Int
@@ -42,7 +44,7 @@ All 64 800 level-0 tiles, `LevelIndex(0, 0:64799)`, as an ascending lazy vector.
 DGG.rootcells(::CopernicusDEMSystem) = IdRange(Int32(0), Int64(0), NTILES)
 
 # ===========================================================================
-# The level grid: size, and positions <-> ids
+# The level grid: size, and indices <-> ids
 # ===========================================================================
 
 DGG.ncells(sys::CopernicusDEMSystem, l::Integer) =
@@ -54,11 +56,11 @@ DGG.ncells(sys::CopernicusDEMSystem, l::Integer) =
 DGG.cellindex(::CopernicusDEMSystem, l::Integer, i::Int) = DGG.LevelIndex(l, i - 1)
 
 """
-    cellposition(CopernicusDEMSystem(...), c) -> Union{Int,Nothing}
+    globalindex(CopernicusDEMSystem(...), c) -> Union{Int,Nothing}
 
 Returns `index + 1` for an in-range id and `nothing` otherwise; it never throws.
 """
-function DGG.cellposition(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
+function DGG.globalindex(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     l = DGG.level(c)
     (l == 0 || l == 1) || return nothing
     0 <= c.index < DGG.ncells(sys, l) || return nothing
@@ -118,10 +120,10 @@ end
 """
     descendant_range(CopernicusDEMSystem(...), tile, 1) -> UnitRange{Int}
 
-The tile's exact, contiguous level-1 position window:
+The tile's exact, contiguous level-1 index window:
 `tilebase + 1 : tilebase + ncols*N`.
 
-`l == level(c)` is the cell's own one-element position range; `l < level(c)` throws an
+`l == level(c)` is the cell's own one-element index range; `l < level(c)` throws an
 `ArgumentError`.
 """
 function DGG.descendant_range(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex,
@@ -205,7 +207,7 @@ const NORTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, 1.0)
 const SOUTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, -1.0)
 
 """
-    cell_boundary(grid, c) -> Vector{UnitSphericalPoint}
+    cell_boundary(grid, c) -> Helpers.SmallList{4,UnitSphericalPoint}
 
 The closed box as a 4-corner great-circle quadrilateral, counter-clockwise from
 outside the sphere, in the order
@@ -216,15 +218,27 @@ poleward bow of about `Δλ²/16` radians. Adjacent cells within a band share
 corners bit-identically.
 
 A pole cell is a triangle with the duplicate corner dropped and an exact pole apex.
+
+Storage is inline, as IGeo7's rings are: the ring, its [`closed_ring`](@ref), and
+the polygon built on it are `isbits`, so a boundary read never reaches the heap.
 """
 function DGG.cell_boundary(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     west, east, south, north = cell_box(sys, c)
-    north == 90.0 && return [TO_SPHERE((west, south)), TO_SPHERE((east, south)),
-                             NORTH_POLE]
-    south == -90.0 && return [SOUTH_POLE, TO_SPHERE((east, north)),
-                              TO_SPHERE((west, north))]
-    return [TO_SPHERE((west, south)), TO_SPHERE((east, south)),
-            TO_SPHERE((east, north)), TO_SPHERE((west, north))]
+    # A quad's worth of slots; a pole triangle leaves the fourth unused.
+    ring = Helpers.empty_small_list(Val(4), NORTH_POLE)
+    if north == 90.0
+        ring = Helpers.small_push(ring, TO_SPHERE((west, south)))
+        ring = Helpers.small_push(ring, TO_SPHERE((east, south)))
+        return Helpers.small_push(ring, NORTH_POLE)
+    elseif south == -90.0
+        ring = Helpers.small_push(ring, SOUTH_POLE)
+        ring = Helpers.small_push(ring, TO_SPHERE((east, north)))
+        return Helpers.small_push(ring, TO_SPHERE((west, north)))
+    end
+    ring = Helpers.small_push(ring, TO_SPHERE((west, south)))
+    ring = Helpers.small_push(ring, TO_SPHERE((east, south)))
+    ring = Helpers.small_push(ring, TO_SPHERE((east, north)))
+    return Helpers.small_push(ring, TO_SPHERE((west, north)))
 end
 
 """
@@ -264,7 +278,8 @@ end
 """
     node_extent(CopernicusDEMSystem(...), c) -> SphericalCap
 
-A cap covering the cell and descendant rings, padded for edge bow and rounding.
+A cap covering the cell's boundary and every descendant's boundary, padded for
+edge bow and rounding. Descendant *caps* are not covered and need not be.
 """
 function DGG.node_extent(sys::CopernicusDEMSystem, c::DGG.LevelIndex)
     centre = DGG.cell_centroid(sys, c)
@@ -442,13 +457,13 @@ the eastern lateral over the pole to the western. Later rings are ordered by
 azimuth about the cell centre, from the spoke through the 1-ring's first entry;
 `ring(c, k)` is the final block of `neighbors(c, k)`.
 """
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     _checked_index(g, c)
     steps == 0 && return DGG.LevelIndex[]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    return reduce(vcat, DGG.adjacency_shells(g, c, steps, connectivity))
+    return DGG.shell_disc(g, c, steps, connectivity)
 end
 
 """
@@ -457,12 +472,33 @@ end
 The cells at adjacency distance exactly `k`, on the same closed-form adjacency and the
 same rotational order [`neighbors`](@ref) documents; `k == 0` is `[c]`.
 """
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     _checked_index(g, c)
     steps == 0 && return DGG.LevelIndex[c]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    return steps <= length(shells) ? shells[steps] : DGG.LevelIndex[]
+    return DGG.shell_ring(g, c, steps, connectivity)
+end
+
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    _checked_index(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return DGG.LevelIndex[]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_disc(g, c, Val(K), connectivity)
+end
+
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    _checked_index(g, c)
+    DGG.checked_steps(K)
+    K == 0 && return DGG.LevelIndex[c]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_ring(g, c, Val(K), connectivity)
 end

@@ -29,7 +29,7 @@ eager_interior(sys, c, l; kw...) =
     collect(DGG.interior(DGG.subtree(sys, c, l); cells = true, kw...))
 
 # A deterministic sample of cells at `res`: every pentagon, plus an evenly
-# spaced sweep of the level's positions. Deterministic by construction rather
+# spaced sweep of the level's indices. Deterministic by construction rather
 # than by seed, so a failure names the same cell on every run.
 function sample_cells(res::Int; stride::Int=0)
     grid = DGG.levelgrid(S, res)
@@ -172,7 +172,7 @@ end
     end
 
     # =======================================================================
-    @testset "dense order: cellindex/cellposition vs libh3" begin
+    @testset "dense order: cellindex/globalindex vs libh3" begin
         for res in 0:6
             grid = DGG.levelgrid(S, res)
             n = DGG.ncells(grid)
@@ -180,10 +180,10 @@ end
             previous = nothing
             for i in 1:step:n
                 c = DGG.cellindex(grid, i)
-                @test DGG.cellposition(grid, c) == i
+                @test DGG.globalindex(grid, c) == i
                 @test H3N.is_valid_cell(DGG.rawid(c))
                 @test H3N.get_resolution(DGG.rawid(c)) == res
-                # Position order is id order: the base interface requires it.
+                # Index order is id order: the base interface requires it.
                 previous === nothing || @test previous < c
                 previous = c
                 # The ordinal is the base-cell prefix plus the child position,
@@ -196,7 +196,7 @@ end
             @test_throws BoundsError DGG.cellindex(grid, n + 1)
         end
 
-        # Exhaustive at res 0 and 1: every cell, every position.
+        # Exhaustive at res 0 and 1: every cell, every index.
         for res in 0:1
             grid = DGG.levelgrid(S, res)
             cells = [DGG.cellindex(grid, i) for i in 1:DGG.ncells(grid)]
@@ -209,7 +209,7 @@ end
 
         # A cell from another level is simply not in the grid.
         g2 = DGG.levelgrid(S, 2)
-        @test DGG.cellposition(g2, DGG.cellindex(DGG.levelgrid(S, 3), 1)) === nothing
+        @test DGG.globalindex(g2, DGG.cellindex(DGG.levelgrid(S, 3), 1)) === nothing
         # Neither is a malformed index at the right level. These are the four
         # ways an H3 index can look plausible and name no cell; libh3's own
         # `cellToChildren` would happily enumerate a subtree of any of them,
@@ -228,7 +228,7 @@ end
             c = H3.H3Cell(id)
             @test !H3N.is_valid_cell(id)
             @test !isvalid(c)
-            @test DGG.cellposition(DGG.levelgrid(S, DGG.level(c)), c) === nothing
+            @test DGG.globalindex(DGG.levelgrid(S, DGG.level(c)), c) === nothing
             @test_throws ArgumentError eager_border(S, c, DGG.level(c) + 1)
         end
     end
@@ -279,15 +279,15 @@ end
             for c in sample_cells(res; stride=max(1, DGG.ncells(DGG.levelgrid(S, res)) ÷ 12))
                 id = DGG.rawid(c)
                 @test DGG.descendant_range(S, c, res) ==
-                      DGG.cellposition(DGG.levelgrid(S, res), c):DGG.cellposition(DGG.levelgrid(S, res), c)
+                      DGG.globalindex(DGG.levelgrid(S, res), c):DGG.globalindex(DGG.levelgrid(S, res), c)
                 for target in (res+1):min(res + 3, 15)
                     r = DGG.descendant_range(S, c, target)
                     @test r isa UnitRange{Int}
                     # Size is libh3's own closed-form count, pentagons included.
                     @test length(r) == H3N.cell_to_children_size(id, target)
-                    # Two-sided: the range is exactly the descendants' positions.
+                    # Two-sided: the range is exactly the descendants' indices.
                     tgrid = DGG.levelgrid(S, target)
-                    actual = sort([DGG.cellposition(tgrid, H3.H3Cell(d))
+                    actual = sort([DGG.globalindex(tgrid, H3.H3Cell(d))
                                    for d in H3N.cell_to_children(id, target)])
                     @test collect(r) == actual
                 end

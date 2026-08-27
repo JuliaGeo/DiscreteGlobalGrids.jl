@@ -13,14 +13,21 @@ using Random
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
 const CD = DiscreteGlobalGrids.CopernicusDEM
+# Sections (k2b) and (k3) read the extent tables the cursors share.
+const Engine = DiscreteGlobalGrids.Engine
 
 using DiscreteGlobalGridsConformanceTesting
 # Section (l) calls these conformance helpers directly.
 import DiscreteGlobalGridsConformanceTesting as CT
 
 import GeometryOps as GO
+import GeometryOpsCore as GOCore
 import GeoInterface as GI
 import ConservativeRegridding as CR
+# Section (k) checks the tree the regridder gets for one source chunk.
+import GlobalRegridding as GR
+import DiskArrays
+import Extents
 const US = GO.UnitSpherical
 using GeometryOps.UnitSpherical: spherical_orient
 
@@ -90,15 +97,160 @@ const GI_SAMPLES = 32
 
 """
 The tile-row latitudes `test_grid_interface` will sample: the harness's own
-draw, reproduced by calling the harness's own `sample_positions` — so an
+draw, reproduced by calling the harness's own `sample_indices` — so an
 upstream change to the sampling moves this too and section (l)'s assertion
 goes red instead of silently testing different cells.
 """
 function sampled_tile_lats(sys, l, seed, n_samples)
     g = levelgrid(sys, l)
-    positions = CT.sample_positions(MersenneTwister(seed), ncells(g), n_samples)
-    return [CD.tilecorner(sys, cellindex(g, p))[1] for p in positions]
+    indices = CT.sample_indices(MersenneTwister(seed), ncells(g), n_samples)
+    return [CD.tilecorner(sys, cellindex(g, p))[1] for p in indices]
 end
+
+# --------------------------------------------------------------------------
+# Point-stencil helpers, for section (n)
+# --------------------------------------------------------------------------
+const POINT = GR.BarycentricPoint()
+const POINT_NOPOLAR = GR.BarycentricPoint(poles = nothing)
+
+# A plane and a plane plus the cross term Q1 carries, both scaled to order one
+# so that a reproduction tolerance reads as a relative one.
+plane(lon, lat) = 3.0 + 0.7 * (lon / 180) - 1.3 * (lat / 90)
+saddle(lon, lat) = plane(lon, lat) + 0.05 * (lon / 180) * (lat / 90)
+
+"`f` interpolated over a row's posts, their longitudes unwrapped onto `lon`'s."
+function interpolate(f, sites, row, lon)
+    v = 0.0
+    for k in 1:length(row)
+        slon, slat = CD.FROM_SPHERE(sites[row.indices[k]])
+        v += row.weights[k] * f(lon + rem(slon - lon, 360.0, RoundNearest), slat)
+    end
+    return v
+end
+
+"The post rows bracketing `lat`, and their column counts, as the query finds them."
+function strip_at(st, sys, lat)
+    n = CD.lat_intervals(sys)
+    nrows = Int64(180) * Int64(n)
+    JA = clamp(floor(Int64, (90.0 - lat) * n), Int64(0), nrows - 2)
+    if lat > CD._sitelat(st, JA)
+        JA = max(JA - 1, Int64(0))
+    elseif lat < CD._sitelat(st, JA + 1)
+        JA = min(JA + 1, nrows - 2)
+    end
+    return JA, CD._rowcols(st, JA), CD._rowcols(st, JA + 1)
+end
+
+"The local index on the complete level of the post at row `J`, column `K`."
+cellof(st, J, K) = Int(CD._globalid(st, J, mod(K, 360 * CD._rowcols(st, J)))) + 1
+
+"""
+The dual cells of the strip between post rows `JA` and `JA+1` near columns `KA`
+and `KB`, built from the two rows' cell edges alone: an edge one row alone has
+carries three posts, an edge both rows share carries four. Each cell is its
+`(row, column)` nodes, their places in the strip's chart, and whether it is a
+quadrilateral.
+"""
+function strip_cells(st, JA, KA, KB)
+    a = CD._rowcols(st, JA)
+    b = CD._rowcols(st, JA + 1)
+    latA = CD._sitelat(st, JA)
+    latB = CD._sitelat(st, JA + 1)
+    out = Tuple{Vector{Tuple{Int64,Int64}},Vector{Tuple{Float64,Float64}},Bool}[]
+    place(J, K) = J == JA ? (K / a, latA) : (K / b, latB)
+    add!(nodes, quad) = push!(out, (nodes, [place(J, K) for (J, K) in nodes], quad))
+    for K in (KA - 2):(KA + 3)
+        e = (2K - 1) * b                          # the north row's west cell edge
+        L = fld(e + a, 2a)                        # the south row's cell holding it
+        shared = (2L - 1) * a == e
+        add!(shared ? [(JA, K - 1), (JA, K), (JA + 1, L), (JA + 1, L - 1)] :
+             [(JA, K - 1), (JA, K), (JA + 1, L)], shared)
+    end
+    for L in (KB - 2):(KB + 3)
+        e = (2L - 1) * a
+        K = fld(e + b, 2b)
+        (2K - 1) * b == e && continue             # already added as a shared edge
+        add!([(JA, K), (JA + 1, L - 1), (JA + 1, L)], false)
+    end
+    return out
+end
+
+"Whether `(x, y)` is inside or on the convex ring `coords`."
+function inring(coords, x, y)
+    turn = 0
+    n = length(coords)
+    for i in 1:n
+        j = i == n ? 1 : i + 1
+        ex, ey = coords[j][1] - coords[i][1], coords[j][2] - coords[i][2]
+        dx, dy = x - coords[i][1], y - coords[i][2]
+        cr = ex * dy - ey * dx
+        scale = sqrt((ex^2 + ey^2) * (dx^2 + dy^2))
+        abs(cr) > 1e-11 * scale || continue
+        s = cr > 0 ? 1 : -1
+        turn == 0 ? (turn = s) : (s == turn || return false)
+    end
+    return true
+end
+
+"A source over the twin's cells that records the chunk range of every read."
+struct CountingCells{C} <: DiskArrays.AbstractDiskArray{Float64,1}
+    values::Vector{Float64}
+    chunks::C
+    reads::Vector{Int}
+end
+
+Base.size(A::CountingCells) = size(A.values)
+DiskArrays.eachchunk(A::CountingCells) = A.chunks
+DiskArrays.haschunks(::CountingCells) = DiskArrays.Chunked()
+
+function DiskArrays.readblock!(A::CountingCells, out, r::AbstractUnitRange)
+    push!(A.reads, first(r))
+    out .= view(A.values, r)
+    return out
+end
+
+function counting_source(space, values)
+    widths = [length(GR.ownedindices(space, k)) for k in 1:GR.nchunks(space)]
+    chunks = DiskArrays.GridChunks(DiskArrays.IrregularChunks(; chunksizes = widths))
+    return CountingCells(values, chunks, Int[])
+end
+
+"""
+Longitude/latitude pairs that reach every band edge in both hemispheres and both
+pole rows, whatever the lattice's row count: a random sweep of a few thousand
+draws would miss a strip one row deep.
+"""
+function point_probes(sys)
+    st = CD._pointstate(sys)
+    n = CD.lat_intervals(sys)
+    nrows = Int64(180) * Int64(n)
+    out = Tuple{Float64,Float64}[]
+    for r in 0:(CD.NROWS - 2)
+        CD.ncols(sys, r) == CD.ncols(sys, r + 1) && continue
+        JA = Int64(r + 1) * n - 1
+        latA, latB = CD._sitelat(st, JA), CD._sitelat(st, JA + 1)
+        for f in (0.13, 0.5, 0.87), lon in (-179.7, -40.37, 0.3, 91.4, 179.7)
+            push!(out, (lon, latA + f * (latB - latA)))
+        end
+    end
+    for (J, sign) in ((Int64(0), 1.0), (nrows - 1, -1.0))
+        edge = CD._sitelat(st, J)
+        push!(out, (37.0, sign * 90.0))
+        push!(out, (-112.5, edge + sign * 1e-7))
+        push!(out, (-112.5, edge - sign * 1e-7))
+    end
+    return out
+end
+
+"The pixels of the named 1-degree tiles, ascending."
+function tilepixels(sys, tiles)
+    ids = DGG.LevelIndex[]
+    for (lat_s, lon_w) in tiles
+        append!(ids, DGG.descendants(sys, CD.tilecell(sys, lat_s, lon_w), 1))
+    end
+    return sort!(ids)
+end
+
 
 @testset "CopernicusDEM system" begin
 
@@ -188,13 +340,13 @@ end
         @test bad == String[]
         @test prev_stop == ncells(sys, 1)
 
-        # Positions round-trip through ids at both levels.
+        # Indices round-trip through ids at both levels.
         rng = MersenneTwister(20260815)
         for g in (g0, g1)
             n = ncells(g)
             for i in unique([1, 2, n - 1, n, rand(rng, 1:n, 32)...])
                 c = cellindex(g, i)
-                @test cellposition(g, c) == i
+                @test globalindex(g, c) == i
             end
         end
 
@@ -238,7 +390,7 @@ end
                 # North row first, then west to east.
                 k = j * nc + i + 1
                 @test cellindex(pg, k) == c
-                @test cellposition(pg, c) == k
+                @test localindex(pg, c) == k
 
                 _, east, south, north = CD.cell_box(sys, c)
                 if i < nc - 1
@@ -406,6 +558,62 @@ end
         @test worst_pixel < 1e-8             # pixels outside the ±90 tile rows
         @test worst_pole_pixel < 1e-4        # slivers and pole triangles
     end
+end
+
+# The ring moved from a heap `Vector` to inline `Helpers.SmallList` storage, which
+# is a representation change and nothing else: the vertices, their order, and both
+# pole degeneracies have to be bit-for-bit what the heap version emitted.
+@testset "rings are inline, and identical to the heap version" begin
+    # Verbatim copy of the pre-inline body. It is the oracle; do not "fix" it.
+    function heap_cell_boundary(sys, c)
+        west, east, south, north = CD.cell_box(sys, c)
+        north == 90.0 && return [CD.TO_SPHERE((west, south)), CD.TO_SPHERE((east, south)),
+                                 CD.NORTH_POLE]
+        south == -90.0 && return [CD.SOUTH_POLE, CD.TO_SPHERE((east, north)),
+                                  CD.TO_SPHERE((west, north))]
+        return [CD.TO_SPHERE((west, south)), CD.TO_SPHERE((east, south)),
+                CD.TO_SPHERE((east, north)), CD.TO_SPHERE((west, north))]
+    end
+
+    differed = String[]
+    for sys in ALL_SYSTEMS
+        N = CD.lat_intervals(sys)
+        for lat_s in PROBE_LATS, lon_w in PROBE_LONS
+            t = CD.tilecell(sys, lat_s, lon_w)
+            nc = Int(CD.ncols_at(sys, lat_s))
+            cells = [CD.pixelcell(sys, t, j, i)
+                     for (j, i) in ((0, 0), (0, nc - 1), (1, 1), (N ÷ 2, nc ÷ 2),
+                                    (N - 1, 0), (N - 1, nc - 1))]
+            pushfirst!(cells, t)
+            for c in cells
+                got = cell_boundary(sys, c)
+                want = heap_cell_boundary(sys, c)
+                # `===` on an isbits point compares bits: a signed zero differs.
+                (length(got) == length(want) &&
+                 all(got[k] === want[k] for k in eachindex(want))) ||
+                    note!(differed, "$sys $c: $(collect(got)) != $want")
+            end
+        end
+    end
+    @test differed == String[]
+
+    # Inline end to end: the ring, its closed form, and the published polygon.
+    g1 = levelgrid(GLO90, 1)
+    quad = CD.pixelcell(GLO90, CD.tilecell(GLO90, 0, 0), 3, 3)
+    npole = CD.pixelcell(GLO90, CD.tilecell(GLO90, 89, 0), 0, 0)
+    spole = CD.pixelcell(GLO90, CD.tilecell(GLO90, -90, 0),
+                         CD.lat_intervals(GLO90) - 1, 0)
+    for c in (quad, npole, spole)
+        ring = cell_boundary(GLO90, c)
+        @test ring isa DGG.Helpers.SmallList
+        @test isbits(ring)
+        @test isbits(DGG.Fallbacks.closed_ring(ring))
+        @test isbits(cell_polygon(g1, c))
+    end
+    # The fourth slot is capacity, not a vertex: a pole cell still reports three.
+    @test length(cell_boundary(GLO90, quad)) == 4
+    @test length(cell_boundary(GLO90, npole)) == 3
+    @test length(cell_boundary(GLO90, spole)) == 3
 end
 
 # =========================================================================
@@ -655,15 +863,52 @@ end
 end
 
 # =========================================================================
+# (j.1) `cellat` on a holding of pixels
+# =========================================================================
+
+# A holding is a `PartialGrid` over the lattice, and locating a point in one
+# must give the complete lattice's pixel wherever that pixel is held.
+_cellat_bytes(g, p) = (cellat(g, p); @allocated cellat(g, p))
+
+@testset "cellat on a holding of pixels" begin
+    searched(g, p) = invoke(cellat, Tuple{DGG.AbstractGrid,GO.UnitSphericalPoint}, g, p)
+    complete = levelgrid(GLO90, 1)
+    tile = CD.tilecell(GLO90, 46, 10)
+    nc = Int(CD.ncols_at(GLO90, 46))
+    first_id = CD.pixelcell(GLO90, tile, 0, 0).index
+    # Four whole raster rows of one tile — the shape a tile holding is built of,
+    # and small enough to search cell by cell for the comparison.
+    held = [LevelIndex(1, k) for k in first_id:(first_id + 4 * nc - 1)]
+    pg = PartialGrid(GLO90, 1, held)
+
+    rng = MersenneTwister(20260825)
+    probes = [cell_centroid(complete, rand(rng, held)) for _ in 1:300]
+    @test all(p -> cellat(pg, p) === searched(pg, p), probes)
+    @test all(p -> cellat(pg, p) === cellat(complete, p), probes)
+
+    # A pixel of the same tile the holding does not reach is outside it, even
+    # though the complete lattice names it.
+    outside = LevelIndex(1, first_id + 8 * nc)
+    @test cellat(complete, cell_centroid(complete, outside)) === outside
+    @test cellat(pg, cell_centroid(complete, outside)) === nothing
+
+    # Locating is the lattice arithmetic and a membership search, with no tree
+    # query, no candidate list and no boundary polygon behind it.
+    @test _cellat_bytes(pg, cell_centroid(complete, held[2 * nc])) == 0 skip =
+        VERSION < v"1.12"
+end
+
+# =========================================================================
 # (k) The block cursor: an interior tree over a two-level lattice
 # =========================================================================
 
-# Check cap coverage, position indices, leaf partitioning, and intersection parity.
+# Check cap coverage, index coverage, leaf partitioning, and intersection parity.
 @testset "the block cursor is a tree over the lattice" begin
     STI = GO.SpatialTreeInterface
 
     # ---- which grids get it -------------------------------------------------
-    # Only rectangular contiguous id runs qualify for `_block_cursor`.
+    # The complete lattice is one rectangle and gets the block cursor; a holding
+    # of tiles, in any arrangement, gets the tiled raster tree.
     tile90 = CD.tilecell(GLO90, 50, 6)
     rect = subtree(GLO90, tile90, 1)
     ncols90 = CD.ncols_at(GLO90, 50)
@@ -673,15 +918,15 @@ end
     midrow = PartialGrid(GLO90, 1, [LevelIndex(1, k)
                                     for k in (first_id + 3):(first_id + 500)])
     scattered = PartialGrid(GLO90, 1, [LevelIndex(1, first_id + 2k) for k in 0:99])
-    @test treeify(levelgrid(GLO90, 0)) isa CD.BlockCursor
-    @test treeify(levelgrid(GLO90, 1)) isa CD.BlockCursor
-    @test treeify(rect) isa CD.BlockCursor
-    @test treeify(rows) isa CD.BlockCursor
-    # Mid-row and scattered windows fall back to the generic cursor.
-    @test treeify(midrow) isa DGG.HierarchicalGridCursor
-    @test treeify(scattered) isa DGG.HierarchicalGridCursor
+    # `treeify` hands the block cursor back memoized; `BlockCursor` is the bare one.
+    @test treeify(levelgrid(GLO90, 0)) isa CD.MemoBlockCursor
+    @test treeify(levelgrid(GLO90, 1)) isa CD.MemoBlockCursor
+    @test treeify(rect) isa DGG.TiledRasterCursor
+    @test treeify(rows) isa DGG.TiledRasterCursor
+    # Mid-row and scattered holdings are rectangles too, one per run.
+    @test treeify(midrow) isa DGG.TiledRasterCursor
+    @test treeify(scattered) isa DGG.TiledRasterCursor
 
-    # Level-1 runs of whole rectangular tiles qualify; partial end tiles do not.
     ntwin = Int(CD.lat_intervals(TWIN))
     nc_twin = Int(CD.ncols_at(TWIN, 50))
     two_lo = CD.pixelcell(TWIN, CD.tilecell(TWIN, 50, 6), 0, 0).index
@@ -693,18 +938,25 @@ end
                            Int(CD.ncols_at(TWIN, 88)) - 1).index
     pole_rows = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in pole_lo:pole_hi])
     part_end = PartialGrid(TWIN, 1, [LevelIndex(1, k) for k in two_lo:(two_hi-2)])
-    @test treeify(two_tiles) isa CD.BlockCursor
-    @test treeify(pole_rows) isa CD.BlockCursor
-    @test treeify(part_end) isa DGG.HierarchicalGridCursor
+    # Two tiles either side of a latitude row are two id runs, never one
+    # rectangle, and are the shape that used to fall to the generic cursor.
+    crossrow = PartialGrid(TWIN, 1, sort!(reduce(vcat,
+        [collect(children(TWIN, CD.tilecell(TWIN, lat, lon)))
+         for (lat, lon) in ((50, 6), (50, 7), (51, 6), (51, 7))])))
+    @test treeify(two_tiles) isa DGG.TiledRasterCursor
+    @test treeify(pole_rows) isa DGG.TiledRasterCursor
+    @test treeify(part_end) isa DGG.TiledRasterCursor
+    @test treeify(crossrow) isa DGG.TiledRasterCursor
 
-    # Out-of-range partial-grid ids must fall back cleanly.
+    # An id this lattice does not name has no rectangle, and keeps the generic
+    # cursor rather than throwing where `PartialGrid` promises not to.
     beyond = ncells(TWIN, 1)
     @test treeify(PartialGrid(TWIN, 1, [LevelIndex(1, beyond + k) for k in 0:3])) isa
           DGG.HierarchicalGridCursor
 
-    # ---- the leaves partition the positions, exactly once each --------------
-    # Leaves must cover each grid position exactly once.
-    function leaf_positions(tree, n)
+    # ---- the leaves partition the indices, exactly once each ----------------
+    # Leaves must cover each grid index exactly once.
+    function leaf_indices(tree, n)
         seen = falses(n)
         stack = [tree]
         nodes = 0
@@ -731,17 +983,43 @@ end
     end
 
     twin_tile = subtree(TWIN, CD.tilecell(TWIN, 50, 6), 1)
-    for (label, grid) in (("twin tile", twin_tile),
-                          ("4 GLO-90 rows", rows),
-                          ("GLO-90 tiles", levelgrid(GLO90, 0)),
-                          ("two twin tiles", two_tiles),
-                          ("two twin tile rows", pole_rows))
+    for (label, grid) in (("twin tiles", levelgrid(TWIN, 0)),
+                          ("GLO-90 tiles", levelgrid(GLO90, 0)))
         for strategy in (CD.Blocked{3}(), CD.Bisected())
-            r = leaf_positions(CD.BlockCursor(grid; strategy), ncells(grid))
+            r = leaf_indices(CD.BlockCursor(grid; strategy), ncells(grid))
             @test (label, string(typeof(strategy)), r.seen, r.dup, r.oob, r.nodes > 1) ==
                   (label, string(typeof(strategy)), ncells(grid), 0, 0, true)
         end
     end
+
+    # A raster window of the complete level-1 lattice covers exactly its own
+    # index range, which is the shape `subcursor` cuts for a chunk.
+    g1twin = levelgrid(TWIN, 1)
+    twin_tilecell = CD.tilecell(TWIN, 50, 6)
+    twin_range = descendant_range(TWIN, twin_tilecell, 1)
+    tr, tq, _, _ = CD.decode(TWIN, twin_tilecell)
+    nc_tr = Int(CD.ncols(TWIN, tr))
+    function leaf_index_list(tree)
+        out = Int[]
+        stack = Any[tree]
+        while !isempty(stack)
+            node = pop!(stack)
+            if STI.isleaf(node)
+                append!(out, first(e) for e in STI.child_indices_extents(node))
+            else
+                append!(stack, collect(STI.getchild(node)))
+            end
+        end
+        return sort!(out)
+    end
+    for strategy in (CD.Blocked{3}(), CD.Bisected())
+        window = CD.BlockCursor(g1twin, TWIN, strategy, 1, Int64(-1), tr, tr, tq, tq,
+                                0, ntwin - 1, 0, nc_tr - 1, true)
+        @test (string(typeof(strategy)), leaf_index_list(window)) ==
+              (string(typeof(strategy)), collect(twin_range))
+    end
+    @test leaf_index_list(DGG.subcursor(g1twin, first(twin_range):last(twin_range))) ==
+          collect(twin_range)
 
     # ---- the covering law, at every node ------------------------------------
     # The global root crosses every band offset and both pole corrections.
@@ -764,15 +1042,21 @@ end
         return worst
     end
 
-    # Exercise bisection and uneven `Blocked{3}` edge blocks.
-    for (label, grid) in (("twin tile", twin_tile), ("GLO-90 tiles", levelgrid(GLO90, 0))),
-        strategy in (CD.Blocked{3}(), CD.Bisected())
+    # Exercise bisection and uneven `Blocked{3}` edge blocks, at both scales.
+    for strategy in (CD.Blocked{3}(), CD.Bisected())
+        for (label, tree, grid) in
+            (("twin tile raster",
+              CD.BlockCursor(g1twin, TWIN, strategy, 1, Int64(-1), tr, tr, tq, tq,
+                             0, ntwin - 1, 0, nc_tr - 1, true), g1twin),
+             ("GLO-90 tiles", CD.BlockCursor(levelgrid(GLO90, 0); strategy),
+              levelgrid(GLO90, 0)))
 
-        slack = covering_slack(CD.BlockCursor(grid; strategy), grid)
-        @info "block cursor covering slack, $label" strategy slack
-        # Every leaf vertex lies strictly inside every ancestor cap.
-        @test (label, string(typeof(strategy)), slack < 0) ==
-              (label, string(typeof(strategy)), true)
+            slack = covering_slack(tree, grid)
+            @info "block cursor covering slack, $label" strategy slack
+            # Every leaf vertex lies strictly inside every ancestor cap.
+            @test (label, string(typeof(strategy)), slack < 0) ==
+                  (label, string(typeof(strategy)), true)
+        end
     end
 
     # ---- and the caps against the BOX, not just the corners it was built from --
@@ -848,11 +1132,13 @@ end
     # Multi-tile level-1 grids descend through tile nodes into each raster.
     g1twin = levelgrid(TWIN, 1)
     root = treeify(g1twin)
-    @test root isa CD.BlockCursor
+    @test root isa CD.MemoBlockCursor
     @test !STI.isleaf(root)
-    holds(nd, r, q, j, i) = nd.inpixels ?
-                            (nd.r0 == r && nd.q0 == q && nd.j0 <= j <= nd.j1 && nd.i0 <= i <= nd.i1) :
-                            (nd.r0 <= r <= nd.r1 && nd.q0 <= q <= nd.q1)
+    holds(t, r, q, j, i) = let nd = t.node
+        nd.inpixels ?
+            (nd.r0 == r && nd.q0 == q && nd.j0 <= j <= nd.j1 && nd.i0 <= i <= nd.i1) :
+            (nd.r0 <= r <= nd.r1 && nd.q0 <= q <= nd.q1)
+    end
     worst_ancestor = -Inf
     worst_globe = -Inf
     reached = 0
@@ -862,7 +1148,7 @@ end
         nc = Int(CD.ncols(TWIN, r))
         for (j, i) in ((0, 0), (ntwin - 1, nc - 1))
             c = CD.pixelcell(TWIN, tile, j, i)
-            pos = cellposition(g1twin, c)
+            gi = globalindex(g1twin, c)
             ring = cell_boundary(g1twin, c)
             node = root
             depth = 0
@@ -884,7 +1170,7 @@ end
                 depth += 1
             end
             STI.isleaf(node) &&
-                any(idx == pos for (idx, _) in STI.child_indices_extents(node)) &&
+                any(idx == gi for (idx, _) in STI.child_indices_extents(node)) &&
                 (reached += 1)
         end
     end
@@ -894,21 +1180,19 @@ end
     @test worst_globe <= 0       # the whole-sphere root included, on its border
 
     # ---- the index space ----------------------------------------------------
-    # Tree and leaf indices both use grid-position space.
-    root = CD.BlockCursor(twin_tile)
-    @test DGG.ncells(root) == ncells(twin_tile)
-    for i in (1, 2, ncells(twin_tile) ÷ 3, ncells(twin_tile))
-        @test getcell(root, i) == cell_polygon(twin_tile, cellindex(twin_tile, i))
+    # Tree and leaf indices both use the grid's own index space.
+    root = CD.BlockCursor(levelgrid(TWIN, 0))
+    @test DGG.ncells(root) == ncells(TWIN, 0)
+    for i in (1, 2, ncells(TWIN, 0) ÷ 3, ncells(TWIN, 0))
+        @test getcell(root, i) ==
+              cell_polygon(levelgrid(TWIN, 0), cellindex(levelgrid(TWIN, 0), i))
     end
 
     # ---- and the whole thing at once ----------------------------------------
     # Intersection matrices must match the generic cursor for both destinations.
     for (label, src, dst) in
-        (("twin tile -> HEALPix 5", twin_tile, levelgrid(DGG.HEALPixSystem(), 5)),
-         ("twin tile -> IGEO7 4", twin_tile, levelgrid(DGG.IGeo7System(), 4)),
-         ("two twin tiles -> HEALPix 5", two_tiles, levelgrid(DGG.HEALPixSystem(), 5)),
-         ("GLO-90 tiles -> HEALPix 2", levelgrid(GLO90, 0),
-          levelgrid(DGG.HEALPixSystem(), 2)))
+        (("GLO-90 tiles -> HEALPix 2", levelgrid(GLO90, 0),
+          levelgrid(DGG.HEALPixSystem(), 2)),)
 
         reference = CR.Regridder(MANIFOLD, dst,
             DGG.HierarchicalGridCursor(src)).intersections
@@ -919,6 +1203,776 @@ end
             @test (label, string(typeof(strategy)), blocked == reference) ==
                   (label, string(typeof(strategy)), true)
         end
+    end
+
+    # A holding's tree answers the same intersections as the generic cursor.
+    for (label, src, dst) in
+        (("twin tile -> HEALPix 5", twin_tile, levelgrid(DGG.HEALPixSystem(), 5)),
+         ("twin tile -> IGEO7 4", twin_tile, levelgrid(DGG.IGeo7System(), 4)),
+         ("two twin tiles -> HEALPix 5", two_tiles, levelgrid(DGG.HEALPixSystem(), 5)))
+
+        reference = CR.Regridder(MANIFOLD, dst,
+            DGG.HierarchicalGridCursor(src)).intersections
+        @test length(reference.nzval) > 0
+        tiled = CR.Regridder(MANIFOLD, dst, treeify(src)).intersections
+        @test (label, tiled == reference) == (label, true)
+    end
+end
+
+# =========================================================================
+# (k2) The chunked source: `GR.subtree` windows the cursor
+# =========================================================================
+
+# `DGGSpace` chunks a Copernicus source by tile and asks for one tree per chunk.
+# `subcursor` answers with the index rectangle rather than the bounding-cap
+# fallback, whose row-major bisection prunes nothing on longitude.
+@testset "a source chunk keeps the block cursor" begin
+    STI = GO.SpatialTreeInterface
+
+    # Every leaf index under `tree`, ascending.
+    function leafindices(tree)
+        out = Int[]
+        stack = Any[tree]
+        while !isempty(stack)
+            node = pop!(stack)
+            if STI.isleaf(node)
+                append!(out, first(e) for e in STI.child_indices_extents(node))
+            else
+                append!(stack, (STI.getchild(node, k) for k in 1:STI.nchild(node)))
+            end
+        end
+        return sort!(out)
+    end
+
+    # ---- the complete level grid: 97 M cells, none materialized here --------
+    g1twin = levelgrid(TWIN, 1)
+    dense = DGG.DGGSpace(g1twin; chunklevel = 0)
+    @test GR.nchunks(dense) == 64_800
+    # A pole tile, a band edge on both sides, the equator, and the south pole.
+    for lat_s in (89, 50, 49, 0, -90), lon_w in (-180, 7)
+        tile = CD.tilecell(TWIN, lat_s, lon_w)
+        k = GR.chunkat(dense, localindex(g1twin, CD.pixelcell(TWIN, tile, 0, 0)))
+        inds = GR.ownedindices(dense, k)
+        @test length(inds) == Int(CD.lat_intervals(TWIN)) * Int(CD.ncols_at(TWIN, lat_s))
+        tree = GR.subtree(dense, inds)
+        @test tree isa CD.MemoBlockCursor
+        # The window is the chunk exactly — no cell of another tile leaks in.
+        @test leafindices(tree) == collect(inds)
+    end
+
+    # Any window of whole raster rows is a rectangle too; a mid-row window is
+    # not one, and takes the bounding-cap fallback.
+    r = GR.ownedindices(dense, GR.chunkat(dense,
+        localindex(g1twin, CD.pixelcell(TWIN, CD.tilecell(TWIN, 12, 40), 0, 0))))
+    nc = Int(CD.ncols_at(TWIN, 12))
+    rows = (first(r) + nc):(first(r) + 3nc - 1)
+    @test GR.subtree(dense, rows) isa CD.MemoBlockCursor
+    @test leafindices(GR.subtree(dense, rows)) == collect(rows)
+    @test GR.subtree(dense, (first(r) + 1):(first(r) + nc)) isa GR.CellSpaceRTree
+    # And a run spanning two tiles is not one rectangle either.
+    @test GR.subtree(dense, (last(r) - 1):(last(r) + 1)) isa GR.CellSpaceRTree
+
+    # ---- a sparse holding: a scattered `PartialGrid`, one tile per chunk ----
+    tiles = [CD.tilecell(TWIN, 89, 10),     # polemost band, 3 columns
+             CD.tilecell(TWIN, 50, -3),     # band edge, west of the prime meridian
+             CD.tilecell(TWIN, 12, 40)]     # full-width equatorial tile
+    ids = sort!(reduce(vcat, [collect(children(TWIN, t)) for t in tiles]))
+    holding = PartialGrid(TWIN, 1, ids)
+    @test treeify(holding) isa DGG.TiledRasterCursor
+    src = DGG.DGGSpace(holding; chunklevel = 0)
+    @test GR.nchunks(src) == length(tiles)
+
+    # One destination covering the three tiles, at a level fine enough that most
+    # of its cells take weight from the source.
+    tilebox(t) = let (lat_s, lon_w) = CD.tilecorner(TWIN, t)
+        Extents.Extent(X = (Float64(lon_w), lon_w + 1.0), Y = (Float64(lat_s), lat_s + 1.0))
+    end
+    sys7 = DGG.IGeo7System()
+    dstgrid = PartialGrid(sys7, 7, sort!(unique(reduce(vcat,
+        [query(sys7, Intersects(tilebox(t)); level = 7) for t in tiles]))))
+    dsttree = GR.subtree(DGG.DGGSpace(dstgrid), 1:ncells(dstgrid))
+
+    op = CR.DefaultIntersectionOperator(MANIFOLD)
+    for k in 1:GR.nchunks(src)
+        inds = GR.ownedindices(src, k)
+        tree = GR.subtree(src, inds)
+        @test tree isa DGG.TiledRasterCursor
+        @test leafindices(tree) == collect(inds)
+        # The weights are the fallback's, entry for entry.
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, tree;
+            intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree,
+            GR.CellSpaceRTree(src, inds); intersection_operator = op)
+        @test length(fast.nzval) > 0
+        @test (k, fast == slow) == (k, true)
+    end
+end
+
+# =========================================================================
+# (k2b) The tiled raster tree over a holding of tiles
+# =========================================================================
+
+# A holding is a collection of tiles in no particular arrangement. Its tree
+# packs the tiles by their caps and bisects each tile's raster beneath, and its
+# leaf index is the tile's offset in the grid plus the pixel's row-major index
+# within the tile.
+@testset "the tiled raster tree over a holding" begin
+    STI = GO.SpatialTreeInterface
+    capholds(cap, p) = US.spherical_distance(cap.point, p) <= cap.radius
+
+    holding(spec) = PartialGrid(TWIN, 1, sort!(reduce(vcat,
+        [collect(children(TWIN, CD.tilecell(TWIN, lat, lon))) for (lat, lon) in spec])))
+
+    onetile = [(50, 6)]
+    onerow = [(50, 6), (50, 7)]
+    square = [(50, 6), (50, 7), (51, 6), (51, 7)]
+    ragged = [(50, 6), (50, 7), (51, 6)]                 # an L, not a rectangle
+    scattered = [(89, 10), (50, -3), (12, 40), (-90, 100)]
+
+    # ---- the index law -----------------------------------------------------
+    # A leaf's index is the grid's own, for every pixel of every shape.
+    for spec in (onetile, onerow, square, ragged, scattered)
+        g = holding(spec)
+        n = ncells(g)
+        seen = falses(n)
+        dup = oob = badindex = badcap = 0
+        stack = Any[treeify(g)]
+        while !isempty(stack)
+            node = pop!(stack)
+            if STI.isleaf(node)
+                for (i, cap) in STI.child_indices_extents(node)
+                    if !(1 <= i <= n)
+                        oob += 1
+                        continue
+                    end
+                    seen[i] ? (dup += 1) : (seen[i] = true)
+                    c = cellindex(g, i)
+                    localindex(g, c) == i || (badindex += 1)
+                    all(capholds(cap, p) for p in cell_boundary(g, c)) ||
+                        (badcap += 1)
+                end
+            else
+                append!(stack, collect(STI.getchild(node)))
+            end
+        end
+        @test (length(spec), count(seen), dup, oob, badindex, badcap) ==
+              (length(spec), n, 0, 0, 0, 0)
+    end
+
+    # And it is the stated law: the tile's offset plus the pixel's row-major
+    # index within the tile, for a random pixel of a random tile.
+    rng = MersenneTwister(20260825)
+    for spec in (square, ragged)
+        g = holding(spec)
+        for _ in 1:200
+            lat, lon = spec[rand(rng, eachindex(spec))]
+            tile = CD.tilecell(TWIN, lat, lon)
+            r, q, _, _ = CD.decode(TWIN, tile)
+            nc = Int(CD.ncols(TWIN, r))
+            j, i = rand(rng, 0:(Int(CD.lat_intervals(TWIN)) - 1)), rand(rng, 0:(nc - 1))
+            offset = localindex(g, CD.pixelcell(TWIN, tile, 0, 0)) - 1
+            @test localindex(g, CD.pixelcell(TWIN, tile, j, i)) == offset + j * nc + i + 1
+        end
+    end
+
+    # ---- the extents nest at the tile layer --------------------------------
+    # Every packed node's cap is a merge of its children's, so a tile's cap is
+    # inside every cap above it.
+    let g = holding(scattered)
+        tree = treeify(g)
+        worst = -Inf
+        stack = Any[tree]
+        while !isempty(stack)
+            node = pop!(stack)
+            node.inraster && continue
+            cap = STI.node_extent(node)
+            for k in 1:STI.nchild(node)
+                child = STI.getchild(node, k)
+                child.inraster && continue
+                cc = STI.node_extent(child)
+                worst = max(worst,
+                    US.spherical_distance(cap.point, cc.point) + cc.radius - cap.radius)
+                push!(stack, child)
+            end
+        end
+        @test worst <= 0
+    end
+
+    # ---- the same answers the block cursor gave -----------------------------
+    # A holding's leaf caps are the complete lattice's, so a point query over
+    # the holding names exactly what the per-tile block cursors name.
+    complete = levelgrid(TWIN, 1)
+    function blockcursor_hits(g, spec, p)
+        out = Int[]
+        for (lat, lon) in spec
+            r = descendant_range(TWIN, CD.tilecell(TWIN, lat, lon), 1)
+            window = DGG.subcursor(complete, first(r):last(r))
+            for i in STI.query(window, cap -> capholds(cap, p))
+                push!(out, localindex(g, cellindex(complete, i)))
+            end
+        end
+        return sort!(out)
+    end
+    for spec in (onetile, onerow, square)
+        g = holding(spec)
+        tree = treeify(g)
+        probes = GO.UnitSphericalPoint{Float64}[]
+        for _ in 1:60
+            c = cellindex(g, rand(rng, 1:ncells(g)))
+            push!(probes, cell_centroid(g, c))
+            append!(probes, cell_boundary(g, c))       # edges and corners
+        end
+        bad = 0
+        for p in probes
+            sort!(collect(STI.query(tree, cap -> capholds(cap, p)))) ==
+                blockcursor_hits(g, spec, p) || (bad += 1)
+        end
+        @test (length(spec), length(probes) >= 300, bad) == (length(spec), true, 0)
+    end
+
+    # ---- the interface the regridder reads ---------------------------------
+    let g = holding(square), tree = treeify(g)
+        @test STI.isspatialtree(typeof(tree))
+        # Tile caps are stored and raster caps memoized, so a repeat ask is a load.
+        @test !STI.node_extent_is_expensive(typeof(tree))
+        @test !STI.isleaf(tree)
+        @test STI.nchild(tree) > 1
+        @test [STI.getchild(tree, k) for k in 1:STI.nchild(tree)] ==
+              collect(STI.getchild(tree))
+        @test_throws BoundsError STI.getchild(tree, STI.nchild(tree) + 1)
+        @test_throws ArgumentError STI.child_indices_extents(tree)
+        @test DGG.ncells(tree) == ncells(g)
+        @test getcell(tree, 7) == cell_polygon(g, cellindex(g, 7))
+        @test CR.Trees.split_weight(tree) == ncells(g)
+        @test GOCore.best_manifold(tree) == GOCore.best_manifold(g)
+        @test treeify(tree) === tree
+        # A node's weight is the pixels beneath it, and the children partition them.
+        @test sum(CR.Trees.split_weight(c) for c in STI.getchild(tree)) ==
+              CR.Trees.split_weight(tree)
+        # The memo answers what the hooks answer, whoever asks and in what order.
+        node = STI.getchild(STI.getchild(tree, 1), 1)
+        want = STI.node_extent(node)
+        @test STI.node_extent(node) === want
+        @test all(==(0), fetch.([Threads.@spawn(count(_ -> STI.node_extent(node) !== want,
+                                                     1:64)) for _ in 1:4]))
+    end
+
+    # ---- the hot path infers ------------------------------------------------
+    # A search descends, reads extents and reaches leaves without a dynamic
+    # dispatch at any node, so every accessor and every hook it calls has a
+    # concrete return type. Construction may still return a union.
+    let g = holding(square), tree = treeify(g)
+        packed = STI.getchild(tree, 1)        # one tile, still a packed node
+        raster = STI.getchild(packed, 1)      # a rectangle inside that tile
+        leaf = raster
+        while !STI.isleaf(leaf)
+            leaf = STI.getchild(leaf, 1)
+        end
+        for node in (tree, packed, raster, leaf)
+            @test @inferred(STI.isleaf(node)) isa Bool
+            @test @inferred(STI.nchild(node)) isa Int
+            @test @inferred(CR.Trees.split_weight(node)) isa Int
+            @test @inferred(STI.node_extent(node)) isa US.SphericalCap
+        end
+        for node in (tree, packed, raster)
+            @test @inferred(STI.getchild(node, 1)) isa DGG.TiledRasterCursor
+        end
+        @test @inferred(STI.child_indices_extents(leaf)) isa DGG.Engine.LeafCells
+
+        # And the hooks the tree calls at every node.
+        tile = first(DGG.raster_tiles(g, 1:ncells(g)))
+        @test @inferred(DGG.raster_shape(g, tile)) isa Tuple{Int,Int}
+        @test @inferred(DGG.raster_localindex(g, tile, 1, 2)) isa Int
+        @test @inferred(DGG.raster_cap(g, tile, 0, 1, 0, 1)) isa US.SphericalCap
+        @test @inferred(DGG.Engine.rect_part(0, 7, 2, 1)) isa Tuple{Int,Int}
+        @test @inferred(DGG.Engine.bisect_parts(4, 7)) isa Tuple{Int,Int}
+        cap = DGG.raster_cap(g, tile, 0, 0, 0, 0)
+        @test @inferred(DGG.Engine.leaf_cells(k -> (k, cap), 3)) isa
+              DGG.Engine.LeafCells
+
+        # The memo the raster nodes read: a concrete table, a concrete cap.
+        @test @inferred(Engine.extent_table(NTuple{5,Int}, raster.tree)) isa
+              Engine.ExtentTable{NTuple{5,Int}}
+        @test @inferred(Engine._memo_extent(raster)) isa US.SphericalCap
+    end
+
+    # The block cursor over the complete lattice reads the same tables, and its
+    # `node_extent` infers through them too.
+    let root = treeify(levelgrid(TWIN, 1))
+        node = STI.getchild(root, 1)
+        @test @inferred(CD._taskmemo(node.node)) isa Engine.ExtentTable{NTuple{9,Int}}
+        @test @inferred(STI.node_extent(node)) isa US.SphericalCap
+        @test @inferred(STI.node_extent(root)) isa US.SphericalCap
+    end
+
+    # An empty holding is a tree with no cells rather than an error.
+    let empty_tree = treeify(PartialGrid(TWIN, 1, LevelIndex[]))
+        @test empty_tree isa DGG.TiledRasterCursor
+        @test STI.isleaf(empty_tree)
+        @test isempty(STI.child_indices_extents(empty_tree))
+    end
+
+    # ---- a level-0 holding: the cell is the tile ---------------------------
+    let g = PartialGrid(TWIN, 0, sort!([CD.tilecell(TWIN, lat, lon)
+                                        for (lat, lon) in scattered]))
+        tree = treeify(g)
+        @test tree isa DGG.TiledRasterCursor
+        hits = Int[]
+        stack = Any[tree]
+        while !isempty(stack)
+            node = pop!(stack)
+            STI.isleaf(node) ?
+                append!(hits, first(e) for e in STI.child_indices_extents(node)) :
+                append!(stack, collect(STI.getchild(node)))
+        end
+        @test sort!(hits) == collect(1:ncells(g))
+    end
+
+    # ---- the weights a regrid builds are the generic cursor's ---------------
+    for spec in (square, ragged)
+        g = holding(spec)
+        dst = levelgrid(DGG.HEALPixSystem(), 5)
+        reference = CR.Regridder(MANIFOLD, dst,
+            DGG.HierarchicalGridCursor(g)).intersections
+        tiled = CR.Regridder(MANIFOLD, dst, treeify(g)).intersections
+        @test length(reference.nzval) > 0
+        @test (length(spec), tiled == reference) == (length(spec), true)
+    end
+end
+
+# =========================================================================
+# (k3) The extent memo: the same caps, no false hits, no shared state
+# =========================================================================
+
+# `treeify`/`subcursor` hand back a `MemoBlockCursor`, which answers
+# `node_extent` from a per-task direct-mapped table instead of re-deriving the
+# box and its cap. The table must be invisible: every answer is the bare
+# cursor's, bit for bit, whoever asks and in whatever order.
+@testset "the node-extent memo" begin
+    STI = GO.SpatialTreeInterface
+
+    # The block cursor addresses the complete lattice and the windows
+    # `subcursor` cuts out of it; one tile's raster is such a window.
+    g1twin = levelgrid(TWIN, 1)
+    tilerange = descendant_range(TWIN, CD.tilecell(TWIN, 50, 6), 1)
+    memoroot = DGG.subcursor(g1twin, first(tilerange):last(tilerange))
+    @test memoroot isa CD.MemoBlockCursor
+    bareroot = memoroot.node
+
+    # ---- the interface the bare cursor implements, all of it ----------------
+    @test STI.isspatialtree(typeof(memoroot))
+    # A hit is a compare and a load, so the search must not cache child extents.
+    @test !STI.node_extent_is_expensive(typeof(memoroot))
+    @test STI.isleaf(memoroot) == STI.isleaf(bareroot)
+    @test STI.nchild(memoroot) == STI.nchild(bareroot)
+    @test all(c isa CD.MemoBlockCursor for c in STI.getchild(memoroot))
+    @test [c.node for c in STI.getchild(memoroot)] ==
+          [STI.getchild(bareroot, k) for k in 1:STI.nchild(bareroot)]
+    @test STI.getchild(memoroot, 2).node == STI.getchild(bareroot, 2)
+    @test DGG.ncells(memoroot) == DGG.ncells(bareroot)
+    @test getcell(memoroot, first(tilerange)) == getcell(bareroot, first(tilerange))
+    @test CR.Trees.split_weight(memoroot) == CR.Trees.split_weight(bareroot)
+    @test GOCore.best_manifold(memoroot) == GOCore.best_manifold(bareroot)
+    @test treeify(memoroot) === memoroot
+    @test sprint(show, memoroot) == "Memo" * sprint(show, bareroot)
+
+    # ---- (a) every answer is the unmemoized one, bit for bit ---------------
+    # `===` on an immutable cap compares the bits, so this is stricter than `==`.
+    function sameextents(a, b)
+        STI.node_extent(a) === STI.node_extent(b) || return false
+        STI.isleaf(a) == STI.isleaf(b) || return false
+        STI.isleaf(a) && return isequal(collect(STI.child_indices_extents(a)),
+                                        collect(STI.child_indices_extents(b)))
+        STI.nchild(a) == STI.nchild(b) || return false
+        return all(sameextents(STI.getchild(a, k), STI.getchild(b, k))
+                   for k in 1:STI.nchild(a))
+    end
+    @test sameextents(memoroot, bareroot)
+    # A second walk is served from the table and answers the same.
+    @test sameextents(memoroot, bareroot)
+
+    # The root's slot really does hold the root's cap after the first ask.
+    rootkey = CD._nodekey(bareroot)
+    slot = Engine.extent_slot(rootkey)
+    rootcap = STI.node_extent(memoroot)
+    thememo = CD._taskmemo(bareroot)
+    @test thememo.keys[slot] == rootkey
+    @test thememo.vals[slot] === rootcap === STI.node_extent(bareroot)
+
+    # ---- (b) a slot collision is a miss, never a false hit ------------------
+    # The whole level-1 lattice, breadth-first, past the point where the table
+    # is full: with more live nodes than slots, collisions are the common case.
+    globe = treeify(levelgrid(TWIN, 1))
+    nodes = CD.MemoBlockCursor[globe]
+    k = 1
+    while k <= length(nodes) && length(nodes) < 4 * Engine.EXTENT_MEMO_SLOTS
+        n = nodes[k]
+        k += 1
+        STI.isleaf(n) || append!(nodes, (STI.getchild(n, c) for c in 1:STI.nchild(n)))
+    end
+    @test length(nodes) > Engine.EXTENT_MEMO_SLOTS   # more nodes than slots: real pressure
+
+    # Two distinct nodes, with distinct caps, that land in one slot.
+    seen = Dict{Int,CD.MemoBlockCursor}()
+    collide = nothing
+    for n in nodes
+        s = Engine.extent_slot(CD._nodekey(n.node))
+        prev = get(seen, s, nothing)
+        if prev !== nothing && CD._nodekey(prev.node) != CD._nodekey(n.node) &&
+           STI.node_extent(prev.node) !== STI.node_extent(n.node)
+            collide = (prev, n)
+            break
+        end
+        seen[s] = n
+    end
+    @test collide !== nothing
+    a, b = collide
+    @test Engine.extent_slot(CD._nodekey(a.node)) ==
+          Engine.extent_slot(CD._nodekey(b.node))
+    # Alternating evicts on every ask; each ask still gets its own node's cap.
+    for _ in 1:4
+        @test STI.node_extent(a) === STI.node_extent(a.node)
+        @test STI.node_extent(b) === STI.node_extent(b.node)
+    end
+    @test STI.node_extent(a) !== STI.node_extent(b)
+
+    # One tile rectangle is one key, but the cap depends on the lattice it sits
+    # in: the level-0 pad is a whole tile, the level-1 pad one pixel. Each
+    # lattice holds a table of its own, so neither answers for the other.
+    tr, tq, _, _ = CD.decode(TWIN, CD.tilecell(TWIN, 50, 6))
+    tilenode(g, l) = CD.MemoBlockCursor(CD.BlockCursor(g, TWIN, CD.Bisected(), l,
+        Int64(-1), tr, tr, tq, tq, 0, 0, 0, 0, false))
+    lvl0 = tilenode(levelgrid(TWIN, 0), 0)
+    lvl1 = tilenode(levelgrid(TWIN, 1), 1)
+    @test CD._nodekey(lvl0.node) == CD._nodekey(lvl1.node)
+    @test STI.node_extent(lvl0.node) !== STI.node_extent(lvl1.node)
+    for _ in 1:4
+        @test STI.node_extent(lvl0) === STI.node_extent(lvl0.node)
+        @test STI.node_extent(lvl1) === STI.node_extent(lvl1.node)
+    end
+    # And turning back to the tile grid still answers for the tile grid.
+    @test STI.node_extent(memoroot) === STI.node_extent(bareroot)
+
+    # ---- (c) concurrent readers of one shared grid --------------------------
+    # The table is task-local, so 8 tasks walking the same nodes share no slot.
+    bare = [n.node for n in nodes]
+    want = [STI.node_extent(n) for n in bare]
+    tasks = map(1:8) do _
+        Threads.@spawn begin
+            bad = 0
+            for (k, n) in enumerate(nodes)
+                STI.node_extent(n) === want[k] || (bad += 1)
+                k % 32 == 0 && yield()
+            end
+            bad
+        end
+    end
+    @test all(==(0), fetch.(tasks))
+    # Tasks that alternate between two lattices keep their own reset straight.
+    mixed = map(1:8) do t
+        Threads.@spawn begin
+            bad = 0
+            for _ in 1:8
+                STI.node_extent(lvl0) === STI.node_extent(lvl0.node) || (bad += 1)
+                yield()
+                STI.node_extent(lvl1) === STI.node_extent(lvl1.node) || (bad += 1)
+                yield()
+            end
+            bad
+        end
+    end
+    @test all(==(0), fetch.(mixed))
+end
+
+# =========================================================================
+# (k3b) One extent table per tree
+# =========================================================================
+
+# A node's extent depends on the tree it sits in as much as on its rectangle, so
+# a memo holding one tree's slots at a time has to clear them whenever the
+# calling task turns to another tree. That is the common case, not a rare one: a
+# dual-tree join alternates between its two trees on one task, a window tree is
+# walked against the holding it was cut from, and a self-join reads one tree
+# twice. Under a single table every ask would clear the slots and re-derive, and
+# the memo would cost more than it saves.
+#
+# Tables are per tree instead, a bounded few per task. The pins below are on the
+# derivation count of an alternating walk: it is the number of DISTINCT NODES,
+# once each, not the number of asks.
+@testset "one extent table per tree" begin
+    STI = GO.SpatialTreeInterface
+
+    holding(spec) = PartialGrid(TWIN, 1, sort!(reduce(vcat,
+        [collect(children(TWIN, CD.tilecell(TWIN, lat, lon))) for (lat, lon) in spec])))
+
+    blocktable(t) = CD._taskmemo(t.node)
+    rasterkey(c) = (c.slot, c.j0, c.j1, c.i0, c.i1)
+    rastertable(c) = Engine.extent_table(NTuple{5,Int}, c.tree)
+
+    # At most `n` memoized nodes of `tree`, breadth-first, no two of them
+    # sharing a slot, so one pass over them derives exactly one extent each.
+    function probes(tree, key, memoized, n)
+        out = Any[]
+        slots = Set{Int}()
+        queue = Any[tree]
+        k = 1
+        while k <= length(queue) && length(out) < n
+            node = queue[k]
+            k += 1
+            STI.isleaf(node) ||
+                append!(queue, (STI.getchild(node, c) for c in 1:STI.nchild(node)))
+            memoized(node) || continue
+            s = Engine.extent_slot(key(node))
+            s in slots && continue
+            push!(slots, s)
+            push!(out, node)
+        end
+        return identity.(out)
+    end
+
+    # Walk two trees turn and turn about, three times over, reporting the
+    # derivations the two tables have done after each pass.
+    function alternating(a, b, table)
+        n = min(length(a), length(b))
+        counts = Int[]
+        for _ in 1:3
+            for k in 1:n
+                STI.node_extent(a[k])
+                STI.node_extent(b[k])
+            end
+            push!(counts, table(a[1]).misses + table(b[1]).misses)
+        end
+        return (; counts, distinct = 2n, asks = 6n)
+    end
+
+    # ---- (a) alternating between two trees derives each node once ----------
+    blockkey(t) = CD._nodekey(t.node)
+    blockprobes = (probes(treeify(levelgrid(TWIN, 0)), blockkey, t -> !STI.isleaf(t), 48),
+                   probes(treeify(levelgrid(TWIN, 1)), blockkey, t -> !STI.isleaf(t), 48))
+    # The two lattices give a tile rectangle the same key and a different cap,
+    # so this is exactly the alternation a shared table would clear on.
+    @test !isempty(intersect(Set(blockkey(t) for t in blockprobes[1]),
+                             Set(blockkey(t) for t in blockprobes[2])))
+
+    rasterprobes = (probes(treeify(holding([(46, 10), (46, 11)])),
+                           rasterkey, c -> c.inraster, 48),
+                    probes(treeify(holding([(47, 10), (47, 11)])),
+                           rasterkey, c -> c.inraster, 48))
+
+    # Each arm runs on a task of its own, which starts with no tables at all.
+    for (name, (a, b), table) in (("lattice", blockprobes, blocktable),
+                                  ("holding", rasterprobes, rastertable))
+        r = fetch(Threads.@spawn alternating(a, b, table))
+        @test (name, length(a) >= 24, length(b) >= 24) == (name, true, true)
+        # Every distinct node derived once on the first pass, none after it.
+        @test (name, r.counts) == (name, fill(r.distinct, 3))
+        # A table cleared on every turn would derive once per ask instead.
+        @test (name, r.distinct < r.asks) == (name, true)
+    end
+
+    # ---- (b) the same weights, from the same trees --------------------------
+    # A dual-tree join between two trees of one kind is the case that alternates
+    # hardest. Its intersection matrix must equal the memo-free one, entry for
+    # entry.
+    op = CR.DefaultIntersectionOperator(MANIFOLD)
+
+    # Holding against holding: two `TiledRasterCursor`s.
+    let dstgrid = holding([(46, 10), (46, 11)]), srcgrid = holding([(46, 10)])
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), treeify(dstgrid),
+            treeify(srcgrid); intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(),
+            DGG.HierarchicalGridCursor(dstgrid), DGG.HierarchicalGridCursor(srcgrid);
+            intersection_operator = op)
+        @test length(fast.nzval) > 0
+        @test fast == slow
+    end
+
+    # Level against level: a window of the complete lattice at level 0 against
+    # one at level 1, two `MemoBlockCursor`s that differ in level.
+    let tiles = levelgrid(TWIN, 0), pixels = levelgrid(TWIN, 1)
+        t0 = CD.tilecell(TWIN, 46, 10)
+        row = localindex(tiles, t0):(localindex(tiles, t0) + 2)
+        pix = descendant_range(TWIN, t0, 1)
+        dsttree = DGG.subcursor(tiles, row)
+        srctree = DGG.subcursor(pixels, first(pix):last(pix))
+        @test dsttree isa CD.MemoBlockCursor
+        @test srctree isa CD.MemoBlockCursor
+        fast = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree, srctree;
+            intersection_operator = op)
+        slow = CR.intersection_areas(MANIFOLD, GOCore.False(), dsttree.node,
+            srctree.node; intersection_operator = op)
+        @test length(fast.nzval) > 0
+        @test fast == slow
+    end
+
+    # ---- (c) more trees than tables: eviction, and answers through it -------
+    # A task holds a bounded number of tables, so touching more trees than that
+    # re-keys one. Every answer is still the tree the node came from.
+    let trees = [treeify(holding([(46, 10 + k)])) for k in 0:4]
+        nodes = [first(probes(t, rasterkey, c -> c.inraster, 1)) for t in trees]
+        want = [DGG.raster_cap(n.tree.grid, n.tree.tiles[n.slot],
+                               n.j0, n.j1, n.i0, n.i1) for n in nodes]
+        @test length(trees) > Engine.EXTENT_MEMO_TABLES
+        r = fetch(Threads.@spawn begin
+            bad = 0
+            for _ in 1:3, k in eachindex(nodes)
+                STI.node_extent(nodes[k]) === want[k] || (bad += 1)
+            end
+            store = task_local_storage()[
+                Engine.ExtentMemo{NTuple{5,Int},typeof(nodes[1].tree)}]
+            table = rastertable(nodes[1])
+            STI.node_extent(nodes[1])
+            m1 = table.misses
+            STI.node_extent(nodes[1])
+            (; bad, held = length(store.tables), m1, m2 = table.misses)
+        end)
+        @test r.bad == 0
+        # The tables are bounded, and the one just re-keyed answers from a slot
+        # on the second ask.
+        @test (r.held, r.m2) == (Engine.EXTENT_MEMO_TABLES, r.m1)
+    end
+end
+
+# =========================================================================
+# (k4) The leaf cells: the same pairs, in the same order, for nothing
+# =========================================================================
+
+# One warmed, type-stable pass over a leaf's cells. Kept out of the testset so
+# the node's type is concrete at the call, which is what `@allocated` needs to
+# mean anything: an inferred call to a heap-free build is the whole point.
+function _leafcell_sum(node)
+    s = 0
+    for (i, _) in GO.SpatialTreeInterface.child_indices_extents(node)
+        s += i
+    end
+    return s
+end
+
+# The `Ref` is allocated before the measurement and forces the call to happen.
+function leafcell_bytes(node)
+    warm = _leafcell_sum(node)
+    total = Ref(warm)
+    bytes = @allocated (total[] += _leafcell_sum(node))
+    return (bytes, total[] - warm)
+end
+
+# `child_indices_extents` hands back a `LeafCells` instead of a fresh
+# vector per call. It must behave as the vector did — indexable, iterable,
+# collectable, same length and eltype — and yield the same pairs, bit for bit.
+@testset "the leaf cells" begin
+    STI = GO.SpatialTreeInterface
+    Cap = US.SphericalCap{Float64}
+
+    # The materializing implementation `LeafCells` replaced, verbatim.
+    function materialized(c::CD.BlockCursor)
+        entries = Tuple{Int,Cap}[]
+        if c.inpixels
+            for j in c.j0:c.j1, i in c.i0:c.i1
+                leaf = CD.BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
+                    c.r0, c.r0, c.q0, c.q0, j, j, i, i, true)
+                push!(entries, (CD._index(c, c.r0, c.q0, j, i), STI.node_extent(leaf)))
+            end
+        else
+            for r in c.r0:c.r1, q in c.q0:c.q1
+                leaf = CD.BlockCursor(c.grid, c.sys, c.strategy, c.level, c.origin,
+                    r, r, q, q, 0, 0, 0, 0, false)
+                push!(entries, (CD._index(c, r, q, 0, 0), STI.node_extent(leaf)))
+            end
+        end
+        return entries
+    end
+
+    function someleaves(root, cap)
+        out = typeof(root)[]
+        stack = [root]
+        while !isempty(stack) && length(out) < cap
+            n = pop!(stack)
+            if STI.isleaf(n)
+                push!(out, n)
+            else
+                for k in 1:STI.nchild(n)
+                    push!(stack, STI.getchild(n, k))
+                end
+            end
+        end
+        return out
+    end
+
+    # Tile leaves, pixel leaves, pole rows, and both split strategies.
+    for (label, grid) in (("twin tiles", levelgrid(TWIN, 0)),
+                          ("twin pixels", levelgrid(TWIN, 1)),
+                          ("GLO-90 tiles", levelgrid(GLO90, 0)),
+                          ("GLO-90 pixels", levelgrid(GLO90, 1))),
+        strategy in (CD.Blocked{3}(), CD.Bisected())
+
+        root = CD.BlockCursor(grid; strategy)
+        ls = someleaves(root, 400)
+        @test (label, isempty(ls)) == (label, false)
+        bad = 0
+        for l in ls
+            e = STI.child_indices_extents(l)
+            want = materialized(l)
+            # `===` on a tuple of `Int` and an immutable cap compares the bits.
+            (e isa AbstractVector && eltype(e) == Tuple{Int,Cap} &&
+             size(e) == (length(want),) && length(e) == length(want) &&
+             all(e[k] === want[k] for k in eachindex(want)) &&
+             collect(e) == want && all(x === want[k] for (k, x) in enumerate(e))) ||
+                (bad += 1)
+        end
+        @test (label, string(typeof(strategy)), bad) ==
+              (label, string(typeof(strategy)), 0)
+    end
+
+    # The whole value is `isbits`, which is why it never reaches the heap.
+    @test isbitstype(CD.LeafCells)
+    @test Base.IndexStyle(CD.LeafCells) === IndexLinear()
+
+    # An interior node is still an error, as it was for the vector.
+    globe = CD.BlockCursor(levelgrid(GLO90, 0))
+    @test !STI.isleaf(globe)
+    @test_throws ArgumentError STI.child_indices_extents(globe)
+
+    # ---- it allocates nothing: construction and a full pass -----------------
+    # This is the point of `LeafCells`. 71.6% of a production regrid's
+    # allocation was the per-leaf vector it replaces.
+    for grid in (levelgrid(GLO90, 0), levelgrid(GLO90, 1))
+        leaf = someleaves(CD.BlockCursor(grid), 1)[1]
+        bytes, sum1 = leafcell_bytes(leaf)
+        @test sum1 == sum(i for (i, _) in materialized(leaf))
+        @test bytes == 0
+        # A memoized cursor forwards the entries, so it allocates nothing either.
+        mbytes, sum2 = leafcell_bytes(CD.MemoBlockCursor(leaf))
+        @test sum2 == sum1
+        @test mbytes == 0
+    end
+
+    # ---- two leaves' entries live at once, which is how the search reads them
+    # `dual_depth_first_search` binds both leaves' entries and loops over them
+    # nested, so a shared per-task buffer would serve one leaf's cells from the
+    # other's. A self-join is exactly that shape: both sides are `BlockCursor`.
+    let root = CD.BlockCursor(levelgrid(TWIN, 0))
+        ls = someleaves(root, 3)
+        a, b = ls[1], ls[end]
+        @test a != b
+        ea, eb = STI.child_indices_extents(a), STI.child_indices_extents(b)
+        wa, wb = materialized(a), materialized(b)
+        # Holding both is safe: neither call disturbed the other's answers.
+        @test all(ea[k] === wa[k] for k in eachindex(wa))
+        @test all(eb[k] === wb[k] for k in eachindex(wb))
+
+        pairs = Tuple{Int,Int}[]
+        STI.dual_depth_first_search((_, _) -> true, a, b) do i1, i2
+            push!(pairs, (i1, i2))
+        end
+        @test pairs == [(i, j) for (i, _) in wa for (j, _) in wb]
+        # And the search's pruning still agrees with the materialized caps.
+        overlaps(x, y) =
+            US.spherical_distance(x.point, y.point) <= x.radius + y.radius
+        near = Tuple{Int,Int}[]
+        STI.dual_depth_first_search(overlaps, a, b) do i1, i2
+            push!(near, (i1, i2))
+        end
+        @test near == [(i, j) for (i, ca) in wa for (j, cb) in wb if overlaps(ca, cb)]
     end
 end
 
@@ -953,7 +2007,7 @@ end
         # Matching RNG states confirm the harness consumed the reproduced draw.
         r = MersenneTwister(CONFORMANCE_SEED)
         ref = MersenneTwister(CONFORMANCE_SEED)
-        CT.sample_positions(ref, ncells(levelgrid(sys, 1)), GI_SAMPLES)
+        CT.sample_indices(ref, ncells(levelgrid(sys, 1)), GI_SAMPLES)
         test_grid_interface(levelgrid(sys, 1); n_samples = GI_SAMPLES,
                             rng = r, label = "$sys level 1")
         @test r == ref
@@ -1395,6 +2449,617 @@ end
     @test sort(unique(last.(counts0))) == [3, 4, 5]
     @test maximum(first.(counts0)) < DGG.maxneighbors(TWIN, DGG.Vertex())
     @test maximum(last.(counts0)) < DGG.maxneighbors(TWIN, DGG.Edge())
+end
+
+# -------------------------------------------------------------------------
+# (n) Point stencils: the posts a destination point takes its value from
+# -------------------------------------------------------------------------
+#
+# `BarycentricPoint` on a Copernicus DEM source interpolates between posts. The
+# scaled twin carries every band ratio the shipped lattices carry, in both
+# hemispheres, so the sweeps run on it and the products are spot-checked. The
+# sweeps ask for the stencil alone, with no polar policy, so the pole regions
+# stand out as the only place it builds nothing; the policy has its own testset.
+
+@testset "a point query is at most four posts summing to one" begin
+    for (sys, draws) in ((TWIN, 40_000), (GLO90, 4_000), (GLO30, 4_000))
+        n = CD.lat_intervals(sys)
+        st = CD._pointstate(sys)
+        space = DGG.DGGSpace(levelgrid(sys, 1))
+        smp = GR.sampler(POINT_NOPOLAR, space)
+        sites = GR.samplesites(space)
+        row = GR.WeightRow()
+        rng = MersenneTwister(20260826)
+        bad = String[]
+        widest = 0
+        worstsum = worstplane = worstsaddle = 0.0
+        mapped = polar = ordinary = transition = 0
+        probes = point_probes(sys)
+        for k in 1:(draws + length(probes))
+            lon, lat = k <= draws ? (-180 + 360 * rand(rng), -90 + 180 * rand(rng)) :
+                       probes[k - draws]
+            p = CD.TO_SPHERE((lon, lat))
+            qlon, qlat = CD.FROM_SPHERE(p)
+            status = GR.weightsat!(row, smp, p)
+            if !GR.ismapped(status)
+                polar += 1
+                # Only a point poleward of the outermost post row is unmapped,
+                # and it is unmapped as an undecided cell, not as coverage.
+                abs(qlat) > 90 - 1 / n ||
+                    note!(bad, "unmapped at ($lon, $lat): $status")
+                status === GR.WeightsDegenerate ||
+                    note!(bad, "polar status at ($lon, $lat): $status")
+                isempty(row) || note!(bad, "unmapped row is not empty at ($lon, $lat)")
+                continue
+            end
+            mapped += 1
+            widest = max(widest, length(row))
+            all(>(0), row.weights) ||
+                note!(bad, "a weight is not positive at ($lon, $lat)")
+            worstsum = max(worstsum, abs(sum(row.weights) - 1))
+            worstplane = max(worstplane,
+                abs(interpolate(plane, sites, row, qlon) - plane(qlon, qlat)))
+            _, a, b = strip_at(st, sys, qlat)
+            if a == b
+                ordinary += 1
+                worstsaddle = max(worstsaddle,
+                    abs(interpolate(saddle, sites, row, qlon) - saddle(qlon, qlat)))
+            else
+                transition += 1
+            end
+        end
+        @testset "$(sys)" begin
+            @test bad == String[]
+            @test widest == 4
+            @test mapped + polar == draws + length(probes)
+            @test polar > 0
+            @test transition > 0
+            @test ordinary > 0
+            # Law 1: a mapped row is a partition of unity.
+            @test worstsum <= 1e-14
+            # Law 2: every dual cell reproduces a plane, and an ordinary
+            # rectangle also reproduces the cross term its Q1 basis carries.
+            @test worstplane <= 1e-9
+            @test worstsaddle <= 1e-9
+        end
+    end
+end
+
+@testset "a band edge is a triangle or a shared-edge trapezoid" begin
+    st = CD._pointstate(TWIN)
+    n = CD.lat_intervals(TWIN)
+    space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    smp = GR.sampler(POINT, space)
+    row = GR.WeightRow()
+    rng = MersenneTwister(11)
+    edges = [Int64(r + 1) * n - 1 for r in 0:(CD.NROWS - 2)
+             if CD.ncols(TWIN, r) != CD.ncols(TWIN, r + 1)]
+    bad = String[]
+    triangles = quads = exact = 0
+    for JA in edges
+        a = CD._rowcols(st, JA)
+        b = CD._rowcols(st, JA + 1)
+        latA = CD._sitelat(st, JA)
+        latB = CD._sitelat(st, JA + 1)
+        for _ in 1:1_000
+            x = 360 * rand(rng)
+            lat = latB + (latA - latB) * rand(rng)
+            p = CD.TO_SPHERE((x - 180.0, lat))
+            qlon, qlat = CD.FROM_SPHERE(p)
+            qx = qlon + 180.0
+            GR.ismapped(GR.weightsat!(row, smp, p)) ||
+                (note!(bad, "unmapped in the strip at ($qlon, $qlat)"); continue)
+            KA = floor(Int64, qx * a + 0.5)
+            KB = floor(Int64, qx * b + 0.5)
+            cell = nothing
+            for candidate in strip_cells(st, JA, KA, KB)
+                inring(candidate[2], qx, qlat) && (cell = candidate; break)
+            end
+            cell === nothing &&
+                (note!(bad, "no oracle cell at ($qlon, $qlat)"); continue)
+            cell[3] ? (quads += 1) : (triangles += 1)
+            want = sort([cellof(st, J, K) for (J, K) in cell[1]])
+            got = sort(collect(row.indices))
+            # A point on a dual edge drops the posts across it, so the query's
+            # posts are the cell's, with those carrying no weight left out.
+            issubset(got, want) || note!(bad, "posts $got are not the cell's $want")
+            length(got) == length(want) && (got == want ? (exact += 1) :
+                note!(bad, "posts $got are not the cell's $want"))
+        end
+    end
+    @test length(edges) == 10
+    @test bad == String[]
+    # The twin's ten band edges: eight interleave with no shared edge and give
+    # triangles alone, and the two at 80 degrees have both.
+    @test triangles > 0
+    @test quads > 0
+    @test exact > 0
+end
+
+@testset "the antimeridian and a tile seam are ordinary strips" begin
+    st = CD._pointstate(TWIN)
+    space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    smp = GR.sampler(POINT, space)
+    row = GR.WeightRow()
+    g1 = levelgrid(TWIN, 1)
+
+    "The query's posts, and the 1-degree tiles they belong to."
+    function stencil(lon, lat)
+        GR.ismapped(GR.weightsat!(row, smp, CD.TO_SPHERE((lon, lat)))) || return nothing
+        ids = [cellindex(g1, i) for i in row.indices]
+        return (copy(row.indices), copy(row.weights),
+            unique(CD.tilecorner(TWIN, c) for c in ids))
+    end
+
+    # A query in the last column of the lattice takes posts on both sides of the
+    # antimeridian, in the two tiles that meet there.
+    seam = stencil(179.99, 0.51)
+    @test seam !== nothing
+    @test length(seam[1]) == 4
+    @test sort(seam[3]) == [(0, -180), (0, 179)]
+
+    # The same query a whole degree west is the same stencil shifted by one
+    # tile's columns: a seam moves which tiles the posts sit in, and nothing
+    # else. The twin's band at the equator has 30 columns to the degree.
+    inland = stencil(178.99, 0.51)
+    @test inland !== nothing
+    @test seam[2] ≈ inland[2] rtol = 1e-12
+    @test length(unique(seam[1] .- inland[1])) == 2
+
+    # A 1-degree tile seam inside a band, away from the antimeridian, is the
+    # same statement: a query on the corner of four tiles takes one post from
+    # each, with the weights of the same query a degree west.
+    tile = stencil(10.99, 46.02)
+    west = stencil(9.99, 46.02)
+    @test tile !== nothing && west !== nothing
+    @test length(tile[1]) == 4
+    @test sort(tile[3]) == [(45, 10), (45, 11), (46, 10), (46, 11)]
+    @test tile[2] ≈ west[2] rtol = 1e-12
+end
+
+@testset "a destination at a post takes that post" begin
+    for sys in (TWIN, GLO90)
+        space = DGG.DGGSpace(levelgrid(sys, 1))
+        smp = GR.sampler(POINT, space)
+        sites = GR.samplesites(space)
+        row = GR.WeightRow()
+        rng = MersenneTwister(5)
+        worst = 0.0
+        single = total = 0
+        for i in rand(rng, 1:ncells(levelgrid(sys, 1)), 4_000)
+            GR.ismapped(GR.weightsat!(row, smp, sites[i])) || continue
+            total += 1
+            k = findfirst(==(i), row.indices)
+            worst = max(worst, 1 - (k === nothing ? 0.0 : row.weights[k]))
+            length(row) == 1 && (single += 1)
+        end
+        @testset "$(sys)" begin
+            @test total > 3_900
+            # Law 3. The residual is the site's own round trip through the unit
+            # sphere, not the stencil: most sites land on their post exactly.
+            @test worst <= 1e-8
+            @test single > (sys === TWIN ? total ÷ 2 : 0)
+        end
+    end
+end
+
+@testset "a holding without a post is a rim, never a substitute" begin
+    st = CD._pointstate(TWIN)
+    grid = DGG.PartialGrid(TWIN, 1, tilepixels(TWIN, [(46, 10)]))
+    space = DGG.DGGSpace(grid; chunklevel = 0)
+    smp = GR.sampler(POINT, space)
+    complete = DGG.DGGSpace(levelgrid(TWIN, 1))
+    csmp = GR.sampler(POINT, complete)
+    row = GR.WeightRow()
+    crow = GR.WeightRow()
+    rng = MersenneTwister(17)
+    bad = String[]
+    mapped = rims = 0
+    for _ in 1:8_000
+        lon = 9.5 + 2.0 * rand(rng)
+        lat = 45.5 + 2.0 * rand(rng)
+        p = CD.TO_SPHERE((lon, lat))
+        status = GR.weightsat!(row, smp, p)
+        GR.ismapped(GR.weightsat!(crow, csmp, p)) ||
+            (note!(bad, "the complete lattice did not map ($lon, $lat)"); continue)
+        held = [DGG.localindex(grid, cellindex(complete.grid, i)) for i in crow.indices]
+        if GR.ismapped(status)
+            mapped += 1
+            # The stencil is the complete lattice's, translated, and nothing
+            # else: no post is exchanged for another.
+            any(isnothing, held) &&
+                note!(bad, "mapped over a missing post at ($lon, $lat)")
+            row.indices == [something(h, 0) for h in held] ||
+                note!(bad, "substituted a post at ($lon, $lat)")
+            row.weights ≈ crow.weights ||
+                note!(bad, "renormalised at ($lon, $lat)")
+        else
+            rims += 1
+            status === GR.WeightsRim || note!(bad, "status $status at ($lon, $lat)")
+            isempty(row) || note!(bad, "a rim row is not empty at ($lon, $lat)")
+            any(isnothing, held) ||
+                note!(bad, "a rim whose posts are all held at ($lon, $lat)")
+        end
+    end
+    @test bad == String[]
+    @test mapped > 0
+    @test rims > 0
+end
+
+# The production source names its 2.5e10 pixels by a lazy vector: one entry per
+# listed tile and arithmetic for the pixel, in id order. This is that vector's
+# shape, so what the suite asserts about a sampler over it holds for the run's.
+struct LazyTilePixels{G} <: AbstractVector{DGG.LevelIndex}
+    complete::G
+    starts::Vector{Int}      # first level-1 index of each tile
+    offsets::Vector{Int}     # pixels before each tile
+    n::Int
+end
+
+function LazyTilePixels(sys, tiles)
+    complete = levelgrid(sys, 1)
+    cells = sort!([CD.tilecell(sys, lat_s, lon_w) for (lat_s, lon_w) in tiles])
+    starts, offsets, acc = Int[], Int[], 0
+    for t in cells
+        r = DGG.descendant_range(sys, t, 1)
+        push!(starts, Int(first(r)))
+        push!(offsets, acc)
+        acc += length(r)
+    end
+    return LazyTilePixels(complete, starts, offsets, acc)
+end
+
+Base.size(v::LazyTilePixels) = (v.n,)
+Base.IndexStyle(::Type{<:LazyTilePixels}) = IndexLinear()
+Base.@propagate_inbounds function Base.getindex(v::LazyTilePixels, i::Int)
+    @boundscheck checkbounds(v, i)
+    k = searchsortedlast(v.offsets, i - 1)
+    return cellindex(v.complete, v.starts[k] + (i - 1 - v.offsets[k]))
+end
+DGG.Helpers.strictly_increasing(::LazyTilePixels) = true
+
+@testset "a sampler over a holding of tiles holds nothing" begin
+    # Seven GLO-90 tiles, 7.0e6 posts: a seam, the 50-degree band edge and
+    # both pole rows. Indexing them would be 8 bytes a post, and used to be.
+    sys = GLO90
+    tiles = [(46, 10), (46, 11), (47, 10), (49, 10), (50, 10), (89, 0), (-90, 0)]
+    ids = LazyTilePixels(sys, tiles)
+    grid = DGG.PartialGrid(sys, 1, ids)
+    @test ncells(grid) == length(ids) ==
+          sum(length(DGG.descendant_range(sys, CD.tilecell(sys, t...), 1)) for t in tiles)
+    space = DGG.DGGSpace(grid; chunklevel = 0)
+    @test GR.nchunks(space) == length(tiles)
+    GR.sampler(POINT, space)
+    @test @allocated(GR.sampler(POINT, space)) < 4096
+    smp = GR.sampler(POINT, space)
+    @test smp.state isa CD.PointState{1200}
+    sites = GR.samplesites(space)
+    @test sites isa GR.CentroidSites
+    @test all(sites[i] == cell_centroid(grid, ids[i]) for i in (1, 12_345, length(ids)))
+
+    # Every post a query names is found by its tile chunk, and the answer is
+    # the holding's own local index; a post of an unlisted tile is a rim.
+    complete = DGG.DGGSpace(levelgrid(sys, 1))
+    csmp = GR.sampler(POINT, complete)
+    row, crow = GR.WeightRow(), GR.WeightRow()
+    rng = MersenneTwister(2026_08_26)
+    bad = String[]
+    mapped = rims = polar = 0
+    nlat = CD.lat_intervals(sys)
+    probes = [(10.0 + 2.0 * rand(rng), 45.5 + 5.5 * rand(rng)) for _ in 1:4_000]
+    append!(probes, [(rand(rng), 89.0 + rand(rng)) for _ in 1:400])
+    append!(probes, [(rand(rng), -90.0 + rand(rng)) for _ in 1:400])
+    # The pole regions of the two listed pole tiles, and of two unlisted ones.
+    append!(probes, [(q + rand(rng), hemi * (90 - rand(rng) / (8 * nlat)))
+                     for hemi in (1.0, -1.0), q in (0.0, 7.0), _ in 1:100])
+    for (lon, lat) in probes
+        p = CD.TO_SPHERE((lon, lat))
+        status = GR.weightsat!(row, smp, p)
+        GR.ismapped(GR.weightsat!(crow, csmp, p)) ||
+            (note!(bad, "the complete lattice did not map ($lon, $lat)"); continue)
+        held = [DGG.localindex(grid, cellindex(complete.grid, i)) for i in crow.indices]
+        if GR.ismapped(status)
+            mapped += 1
+            length(row) == 1 && (polar += 1)
+            row.indices == [something(h, 0) for h in held] ||
+                note!(bad, "a post is not at its local index at ($lon, $lat)")
+            row.weights == crow.weights || note!(bad, "weights differ at ($lon, $lat)")
+        else
+            rims += 1
+            (status === GR.WeightsRim && isempty(row) && any(isnothing, held)) ||
+                note!(bad, "$status over $(count(isnothing, held)) absent posts at ($lon, $lat)")
+        end
+    end
+    @test bad == String[]
+    @test mapped > 0
+    @test rims > 0
+    @test polar > 0
+
+    # A warm query on the holding allocates nothing, as one on the level does.
+    points = [CD.TO_SPHERE(probes[k]) for k in 1:length(probes)]
+    function sweep(row, smp, points)
+        n = 0
+        for p in points
+            GR.ismapped(GR.weightsat!(row, smp, p)) && (n += length(row))
+        end
+        return n
+    end
+    sweep(row, smp, points)
+    @test @allocated(sweep(row, smp, points)) == 0
+end
+
+@testset "a post is found by its tile chunk or by the holding's ids alike" begin
+    # The same holding four ways: tiles as chunks over lazy and over listed
+    # ids, pixels as chunks, and a chunk short of one pixel of its tile, which
+    # sends that tile's posts to the search of the ids. All four answer the
+    # complete lattice's stencil translated, entry for entry.
+    sys = TWIN
+    tiles = [(46, 10), (46, 11), (49, 10), (50, 10)]
+    listed = tilepixels(sys, tiles)
+    lazy = LazyTilePixels(sys, tiles)
+    @test collect(lazy) == listed
+    dropped = CD.pixelcell(sys, CD.tilecell(sys, 46, 11), 7, 7)
+    holey = filter(!=(dropped), listed)
+    spaces = (
+        DGG.DGGSpace(DGG.PartialGrid(sys, 1, lazy); chunklevel = 0),
+        DGG.DGGSpace(DGG.PartialGrid(sys, 1, listed); chunklevel = 0),
+        DGG.DGGSpace(DGG.PartialGrid(sys, 1, listed); chunklevel = 1),
+        DGG.DGGSpace(DGG.PartialGrid(sys, 1, holey); chunklevel = 0))
+    @test GR.nchunks(spaces[1]) == GR.nchunks(spaces[2]) == GR.nchunks(spaces[4]) == 4
+    @test GR.nchunks(spaces[3]) == length(listed)
+    # What the tile route rests on: a tile chunk's window is its tile's pixel
+    # count exactly when it holds the whole tile, in id order.
+    whole(space, k) = length(space.ranges[k]) ==
+                      length(DGG.descendant_range(sys, space.chunkids[k], 1))
+    @test all(whole(spaces[1], k) for k in 1:4)
+    @test all(whole(spaces[2], k) for k in 1:4)
+    @test count(whole(spaces[4], k) for k in 1:4) == 3
+    samplers = map(space -> GR.sampler(POINT, space), spaces)
+    complete = DGG.DGGSpace(levelgrid(sys, 1))
+    csmp = GR.sampler(POINT, complete)
+    rows = [GR.WeightRow() for _ in spaces]
+    crow = GR.WeightRow()
+    rng = MersenneTwister(4)
+    bad = String[]
+    mapped = zeros(Int, length(spaces))
+    rims = zeros(Int, length(spaces))
+    for _ in 1:6_000
+        lon, lat = 9.5 + 3.0 * rand(rng), 45.5 + 5.5 * rand(rng)
+        p = CD.TO_SPHERE((lon, lat))
+        GR.ismapped(GR.weightsat!(crow, csmp, p)) || continue
+        for (k, (space, smp)) in enumerate(zip(spaces, samplers))
+            status = GR.weightsat!(rows[k], smp, p)
+            held = [DGG.localindex(space.grid, cellindex(complete.grid, i))
+                    for i in crow.indices]
+            if GR.ismapped(status)
+                mapped[k] += 1
+                (rows[k].indices == [something(h, 0) for h in held] &&
+                 rows[k].weights == crow.weights) ||
+                    note!(bad, "space $k differs from the lattice at ($lon, $lat)")
+            else
+                rims[k] += 1
+                (status === GR.WeightsRim && any(isnothing, held)) ||
+                    note!(bad, "space $k: $status over held posts at ($lon, $lat)")
+            end
+        end
+    end
+    @test bad == String[]
+    @test all(>(0), mapped)
+    @test all(>(0), rims)
+    # The three complete holdings agree with each other everywhere; the one
+    # short of a pixel differs exactly where that pixel carries weight.
+    @test mapped[1] == mapped[2] == mapped[3]
+    @test mapped[4] < mapped[1]
+end
+
+@testset "a pole region takes the nearest post of the polemost row" begin
+    st = CD._pointstate(TWIN)
+    n = CD.lat_intervals(TWIN)
+    space = DGG.DGGSpace(levelgrid(TWIN, 1))
+    sites = GR.samplesites(space)
+    smp = GR.sampler(POINT, space)
+    unmapped = GR.sampler(POINT_NOPOLAR, space)
+    row = GR.WeightRow()
+    nrows = Int64(180) * Int64(n)
+
+    # The policy is named on the method, defaults to the nearest post, and is
+    # one of exactly two things.
+    @test GR.BarycentricPoint().poles isa GR.NearestCell
+    @test GR.BarycentricPoint(poles = nothing).poles === nothing
+    @test_throws ArgumentError GR.BarycentricPoint(poles = :clamp)
+
+    bad = String[]
+    for (J, sign) in ((Int64(0), 1), (nrows - 1, -1))
+        edge = CD._sitelat(st, J)
+        nc = CD._rowcols(st, J)
+        posts = [cellof(st, J, K) for K in Int64(0):(Int64(360) * nc - 1)]
+        postsites = [sites[i] for i in posts]
+        # The pole itself, a point just inside the region, and one just west of
+        # the antimeridian whose nearest post is the row's first column.
+        for (lon, lat) in ((0.0, sign * 90.0), (47.13, edge + sign * 1e-6),
+            (180.0 - 1 / (4 * nc), edge + sign * 1e-7))
+            p = CD.TO_SPHERE((lon, lat))
+            status = GR.weightsat!(row, smp, p)
+            status === GR.WeightsMapped ||
+                (note!(bad, "($lon, $lat) is $status"); continue)
+            (length(row) == 1 && row.weights[1] == 1.0) ||
+                note!(bad, "($lon, $lat) is $(length(row)) posts")
+            # Brute force over the row: no post is closer than the one kept.
+            kept = US.spherical_distance(p, sites[row.indices[1]])
+            best = minimum(q -> US.spherical_distance(p, q), postsites)
+            kept <= best + 1e-12 ||
+                note!(bad, "($lon, $lat) kept $kept against $best")
+            # Without a policy the region is what it was before there was one.
+            GR.weightsat!(row, unmapped, p) === GR.WeightsDegenerate ||
+                note!(bad, "($lon, $lat) is mapped with no polar policy")
+            isempty(row) || note!(bad, "($lon, $lat) leaves a row behind")
+        end
+        # The wrap keeps the row's first column, not its last.
+        GR.weightsat!(row, smp,
+            CD.TO_SPHERE((180.0 - 1 / (4 * nc), edge + sign * 1e-7)))
+        collect(row.indices) == [first(posts)] ||
+            note!(bad, "the antimeridian kept $(collect(row.indices))")
+        # The row itself is still an ordinary strip's edge and interpolates
+        # there: the policy begins where the posts stop, and no earlier.
+        GR.ismapped(GR.weightsat!(row, smp,
+            CD.TO_SPHERE((47.13, edge - sign * 1e-6)))) ||
+            note!(bad, "row $J carries no weight on its equatorward side")
+        length(row) == 4 || note!(bad, "row $J is $(length(row)) posts inside")
+    end
+    @test bad == String[]
+end
+
+@testset "the declared reach bounds every post a stencil names" begin
+    for sys in (TWIN, GLO90, GLO30)
+        space = DGG.DGGSpace(levelgrid(sys, 1))
+        radius = GR.supportradius(POINT, space)
+        smp = GR.sampler(POINT, space)
+        sites = GR.samplesites(space)
+        row = GR.WeightRow()
+        rng = MersenneTwister(29)
+        worst = 0.0
+        for _ in 1:4_000
+            lon = -180 + 360 * rand(rng)
+            lat = -90 + 180 * rand(rng)
+            p = CD.TO_SPHERE((lon, lat))
+            GR.ismapped(GR.weightsat!(row, smp, p)) || continue
+            for i in row.indices
+                worst = max(worst, US.spherical_distance(p, sites[i]))
+            end
+        end
+        @testset "$(sys)" begin
+            @test radius > 0
+            @test worst < radius
+        end
+    end
+end
+
+@testset "a warm query allocates nothing and infers" begin
+    sys = TWIN
+    space = DGG.DGGSpace(levelgrid(sys, 1))
+    @test (@inferred CD._pointstate(sys)) isa CD.PointState{30}
+    smp = GR.sampler(POINT, space)
+    row = GR.WeightRow()
+    @test (@inferred GR.weightsat!(row, smp, CD.TO_SPHERE((10.0, 46.0)))) ===
+          GR.WeightsMapped
+    rng = MersenneTwister(3)
+    points = [CD.TO_SPHERE((-180 + 360 * rand(rng), -85 + 170 * rand(rng)))
+              for _ in 1:2_000]
+    function sweep(row, smp, points)
+        n = 0
+        for p in points
+            GR.ismapped(GR.weightsat!(row, smp, p)) && (n += length(row))
+        end
+        return n
+    end
+    sweep(row, smp, points)                       # warm the row's buffers
+    @test @allocated(sweep(row, smp, points)) == 0
+    @test sweep(row, smp, points) > 4 * length(points) - 100
+
+    # The polar branch is the same query: one entry, inferred, and no allocation.
+    nlat = CD.lat_intervals(sys)
+    @test (@inferred GR.weightsat!(row, smp, CD.TO_SPHERE((37.0, 90.0)))) ===
+          GR.WeightsMapped
+    polar = [CD.TO_SPHERE((-180 + 360 * rand(rng),
+        hemi * (90 - rand(rng) / (8 * nlat)))) for hemi in (1.0, -1.0), _ in 1:500]
+    sweep(row, smp, polar)
+    @test @allocated(sweep(row, smp, polar)) == 0
+    @test sweep(row, smp, polar) == length(polar)
+end
+
+@testset "every route gives the same values and reads exactly its chunks" begin
+    src = CD.CopernicusDEMSystem{30}()
+    dst = CD.CopernicusDEMSystem{60}()
+    for (srctiles, dsttiles) in (([(46, 10), (46, 11)], [(46, 10), (46, 11)]),
+        ([(46, 10), (46, 11), (46, 12)], [(46, 11)]))
+
+        srcgrid = DGG.PartialGrid(src, 1, tilepixels(src, srctiles))
+        srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
+        dstgrid = DGG.PartialGrid(dst, 1, tilepixels(dst, dsttiles))
+        dstspace = DGG.DGGSpace(dstgrid; chunklevel = 0)
+        ssites = GR.samplesites(srcspace)
+        values = [saddle(CD.FROM_SPHERE(ssites[i])...) for i in 1:ncells(srcgrid)]
+        starts = [first(GR.ownedindices(srcspace, k)) for k in 1:GR.nchunks(srcspace)]
+
+        eager = GR.regrid(counting_source(srcspace, values); to = dstspace,
+            from = srcspace, method = POINT, missingpolicy = DGG.Weighted(1),
+            lazy = false)
+        lazysrc = counting_source(srcspace, values)
+        lazy = parent(GR.regrid(lazysrc; to = dstspace, from = srcspace,
+            method = POINT, missingpolicy = DGG.Weighted(1), lazy = true))
+        # Law 7: planning and building the lazy array read no source.
+        @test isempty(lazysrc.reads)
+
+        smp = GR.sampler(POINT, srcspace)
+        row = GR.WeightRow()
+        dsites = GR.samplesites(dstspace)
+        out = similar(parent(eager))
+        bad = String[]
+        for d in 1:GR.nchunks(dstspace)
+            empty!(lazysrc.reads)
+            cells = GR.ownedindices(dstspace, d)
+            out[cells] = lazy[cells]
+            read = sort(unique(findfirst(==(s), starts) for s in lazysrc.reads))
+            owning = Set{Int}()
+            for i in cells
+                GR.ismapped(GR.weightsat!(row, smp, dsites[i])) || continue
+                for j in row.indices
+                    push!(owning, GR.chunkat(srcspace, j))
+                end
+            end
+            # Law 6: the chunks read are the chunks owning the tile's entries.
+            read == sort(collect(owning)) ||
+                note!(bad, "tile $d read $read and owns $(sort(collect(owning)))")
+        end
+        # Law 5: the direct route and the chunked lazy route agree.
+        @testset "$(length(srctiles)) source tiles" begin
+            @test bad == String[]
+            @test isequal(parent(eager), out)
+            @test count(isfinite, out) > 0
+            worst = 0.0
+            for i in eachindex(out)
+                isfinite(out[i]) || continue
+                worst = max(worst, abs(out[i] - saddle(CD.FROM_SPHERE(dsites[i])...)))
+            end
+            @test worst <= 1e-9
+        end
+    end
+end
+
+@testset "a destination reaching the pole agrees on every route" begin
+    src = CD.CopernicusDEMSystem{30}()
+    dst = CD.CopernicusDEMSystem{60}()
+    srcgrid = DGG.PartialGrid(src, 1, tilepixels(src, [(89, 10), (89, 11), (89, 12)]))
+    srcspace = DGG.DGGSpace(srcgrid; chunklevel = 0)
+    dstgrid = DGG.PartialGrid(dst, 1, tilepixels(dst, [(89, 10), (89, 11)]))
+    dstspace = DGG.DGGSpace(dstgrid; chunklevel = 0)
+    ssites = GR.samplesites(srcspace)
+    values = [saddle(CD.FROM_SPHERE(ssites[i])...) for i in 1:ncells(srcgrid)]
+
+    # The finer destination's polemost row stands north of every source post, so
+    # the polar policy is the only thing that can place it.
+    smp = GR.sampler(POINT, srcspace)
+    unmapped = GR.sampler(POINT_NOPOLAR, srcspace)
+    row = GR.WeightRow()
+    dsites = GR.samplesites(dstspace)
+    beyond = [i for i in 1:Int(ncells(dstgrid))
+              if GR.weightsat!(row, unmapped, dsites[i]) === GR.WeightsDegenerate]
+    @test !isempty(beyond)
+    @test all(GR.ismapped(GR.weightsat!(row, smp, dsites[i])) for i in beyond)
+
+    # Law 5, with those cells in the destination: eager, lazy and a source
+    # chunked differently read the same values off the same operator.
+    args = (; to = dstspace, from = srcspace, method = POINT,
+        missingpolicy = DGG.Weighted(1))
+    eager = parent(GR.regrid(values; args..., lazy = false))
+    lazy = collect(parent(GR.regrid(values; args..., lazy = true)))
+    fine = DGG.DGGSpace(srcgrid; chunklevel = 1)
+    @test GR.nchunks(fine) != GR.nchunks(srcspace)
+    rechunked = parent(GR.regrid(values; to = dstspace, from = fine,
+        method = POINT, missingpolicy = DGG.Weighted(1), lazy = false))
+    @test isequal(eager, lazy)
+    @test isequal(eager, rechunked)
+    @test all(isfinite, eager[beyond])
 end
 
 end # @testset "CopernicusDEM system"

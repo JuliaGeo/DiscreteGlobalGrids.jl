@@ -13,10 +13,10 @@ end
 
 CountingMethod(; kw...) = CountingMethod(ToyDiagonalMethod(; kw...), 0)
 
-function build_weights!(coo::WeightCOO, method::CountingMethod,
+function buildweights!(coo::WeightCOO, method::CountingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     countbuild!(method)
-    return build_weights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
+    return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
 @testset "Executor" begin
@@ -52,7 +52,7 @@ end
 
         whole = regrid(field; kw...)
         holed = copy(field)
-        holes = [cellposition(space, 2, 2), cellposition(space, 5, 1)]
+        holes = [localindex(space, 2, 2), localindex(space, 5, 1)]
         holed[2, 2] = NaN
         holed[5, 1] = NaN
         punched = regrid(holed; kw...)
@@ -91,7 +91,7 @@ end
         # Row sums provide coverage thresholds without denominators.
         holed = copy(field)
         holed[3, 2] = NaN
-        h = cellposition(space, 3, 2)
+        h = localindex(space, 3, 2)
         blanked = regrid(holed; to = space, from = space, method,
             missingpolicy = Weighted(0.5))
         rest = setdiff(1:n, (h,))
@@ -104,7 +104,7 @@ end
     @testset "missingval sentinel" begin
         # Declared sentinels behave exactly like NaN under both policies.
         field = rand(6, 3) .+ 1
-        holes = [cellposition(space, 2, 2), cellposition(space, 5, 1)]
+        holes = [localindex(space, 2, 2), localindex(space, 5, 1)]
         sentinel = copy(field)
         sentinel[2, 2] = -9999.0
         sentinel[5, 1] = -9999.0
@@ -217,13 +217,98 @@ end
         block = plan.block
         num = zeros(n)
         cover = zeros(n)
-        ref = GR.blockreference!(Vector{Float64}(undef, n), block)
+        ref = block.reference
         x = vec(field)
 
         GR.applyblock!(num, cover, block, x, nothing, ref)
         @test (@allocated GR.applyblock!(num, cover, block, x, nothing, ref)) <= 128
         GR.applyblock!(num, cover, block, x, x, ref)
         @test (@allocated GR.applyblock!(num, cover, block, x, x, ref)) <= 128
+    end
+
+    @testset "one reference vector lives in the final block" begin
+        inds = ownedindices(space, 1)
+        m = length(inds)
+
+        # A denominated block references its denominator itself: one vector, not
+        # a copy of one, so nothing can hold a stale second opinion of it.
+        coo = WeightCOO(m)
+        buildweights!(coo, ToyDiagonalMethod(; scale = 2.0), space, inds, space, inds)
+        denominated = WeightBlock(coo, m, m)
+        @test denominated.denom == fill(2.0, m)
+        @test denominated.reference === denominated.denom
+
+        # A method reporting no denominator allocates none at any point, and its
+        # block references the weights' row sums instead of zeros.
+        bare = WeightCOO(m)
+        @test bare.denom === nothing
+        buildweights!(bare, ToyDiagonalMethod(; scale = 2.0, withdenom = false),
+            space, inds, space, inds)
+        @test bare.denom === nothing
+        point = WeightBlock(bare, m, m)
+        @test point.denom === nothing
+        @test point.reference == fill(2.0, m)
+        @test point.weights == denominated.weights
+
+        # Dense and sparse weights of the same operator agree on the reference.
+        dense = WeightBlock(Matrix(point.weights), nothing)
+        @test dense.reference == point.reference
+        @test dense.reference !== point.reference
+
+        # A row no source reaches has reference zero, and the policy decides
+        # what that destination becomes — the block states the fact only.
+        holed = WeightBlock(SparseArrays.sparse([1, 3], [1, 3], [2.0, 2.0], 3, 3), nothing)
+        @test holed.reference == [2.0, 0.0, 2.0]
+        num = zeros(3)
+        cover = zeros(3)
+        GR.applyblock!(num, cover, holed, ones(3))
+        @test cover == holed.reference
+        blanked = Vector{Union{Missing,Float64}}(undef, 3)
+        GR.finalize!(blanked, num, cover, holed.reference, Weighted(0.5))
+        @test ismissing(blanked[2])
+        GR.finalize!(blanked, num, cover, holed.reference, Extensive())
+        @test blanked[2] == 0.0
+
+        # Empty sides build and apply. A block with no destinations has an empty
+        # reference; one with no sources has a zero reference of full length.
+        nodst = WeightBlock(SparseArrays.sparse(Int[], Int[], Float64[], 0, 4), nothing)
+        @test isempty(nodst.reference)
+        @test GR.applyblock!(Float64[], Float64[], nodst, zeros(4)) == Float64[]
+        nosrc = WeightBlock(SparseArrays.sparse(Int[], Int[], Float64[], 3, 0), nothing)
+        @test nosrc.reference == zeros(3)
+        n0, c0 = zeros(3), zeros(3)
+        GR.applyblock!(n0, c0, nosrc, Float64[])
+        @test n0 == zeros(3) && c0 == zeros(3)
+        # A builder that declares denominators for an empty destination still
+        # produces a denominated block, and it references its own empty vector.
+        empty = WeightBlock(GR.markdenominated!(WeightCOO(0)), 0, 4)
+        @test empty.denom == Float64[]
+        @test empty.reference === empty.denom
+
+        # Resident bytes are the weights plus exactly one vector, whichever kind
+        # of reference the block carries.
+        vecbytes = 8 * m
+        wbytes = 16 * SparseArrays.nnz(denominated.weights) +
+                 8 * (size(denominated.weights, 2) + 1)
+        @test GR._blockbytes(denominated) == wbytes + vecbytes + 64
+        @test GR._blockbytes(point) == wbytes + vecbytes + 64
+    end
+
+    @testset "repeated eager application allocates no reference" begin
+        wide = ToyLonLatSpace(40, 20)
+        nwide = Int(ncells(wide))
+        plan = plan_regrid(zeros(40, 20); to = wide, from = wide,
+            method = ToyDiagonalMethod(), missingpolicy = Weighted())
+        @test plan.block.reference === plan.block.denom
+        src = reshape(collect(1.0:nwide), nwide, 1)
+        dst = zeros(Float64, nwide, 1)
+
+        GR.applyplan!(dst, plan, src)
+        first = copy(dst)
+        # Two accumulators and no third vector: a per-application reference would
+        # cost another `8 * nwide` bytes on top.
+        @test (@allocated GR.applyplan!(dst, plan, src)) < 3 * 8 * nwide skip = VERSION < v"1.12"
+        @test dst == first
     end
 
     @testset "sparse column walks agree" begin

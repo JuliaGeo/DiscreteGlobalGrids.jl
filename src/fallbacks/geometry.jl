@@ -195,7 +195,7 @@ _ring_list(ring::T) where {T} = Helpers.SmallList{1,T}(1, (ring,))
 """
     getcell(grid, i) -> GI.Polygon
 
-`ConservativeRegridding.Trees.getcell`: position -> unit-sphere polygon.
+`ConservativeRegridding.Trees.getcell`: local index -> unit-sphere polygon.
 Implemented once, here, as `cell_polygon(grid, cellindex(grid, i))`; grid
 authors never write it.
 """
@@ -333,7 +333,10 @@ end
     node_extent(sys, c) -> SphericalCap
 
 Return the cell cap inflated by [`cap_inflation(sys)`](@ref cap_inflation).
-This `O(1)` fallback is sound when descendant overhang stays within that factor.
+This `O(1)` fallback is sound when descendant overhang stays within that factor,
+where overhang is measured on descendant *boundary geometry* against the cell's
+cap. Descendant caps are separate bounds and are not covered by the result — see
+the covering law in [`node_extent`](@ref).
 """
 node_extent(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
     inflate_cap(cell_cap(levelgrid(sys, level(c)), c), cap_inflation(sys))

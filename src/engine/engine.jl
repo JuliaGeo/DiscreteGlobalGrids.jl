@@ -1,5 +1,5 @@
 # The machinery no system overrides: the region containers — `PartialGrid`,
-# `CellVector`, `MultiOrderCellSet` — the tree cursor and position tree, the
+# `CellVector`, `MultiOrderCellSet` — the tree cursor and index tree, the
 # query planner, and the halo, adjacency and neighbourhood walks over all of
 # them. One implementation each, reached through the exported verbs.
 #
@@ -14,16 +14,20 @@ module Engine
 import ..DiscreteGlobalGrids as DGG
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     AbstractQuadFaceGridSystem,
-    AbstractCellIndex, LevelIndex, Connectivity, Vertex, Edge,
+    AbstractCellIndex, LevelIndex, AbstractCellVector, Connectivity, Vertex, Edge,
+    Winding, CounterClockwise, Clockwise, CustomOrder, Unordered,
     ncells, cellindex, cell_boundary, cell_centroid,
-    cellposition, rawid, reindex, cellindextypes,
+    localindex, globalindex, rawid, reindex, cellindextypes,
     cell_polygon, cell_area, cell_extent, getcell,
     cellat, cellindices, neighbors, ring, one_ring, neighborcount,
     halo, border, interior, adjacency,
-    treeify, query,
+    treeify, query, subcursor,
+    raster_tiles, raster_shape, raster_localindex, raster_cap,
     system, level,
     cellindextype, levels, maxlevel, levelgrid, rootcells, children,
-    node_extent, cap_inflation, maxneighbors, has_sorted_subtrees,
+    node_extent, cap_inflation, maxneighbors, maxring, winding,
+    static_capacity, STATIC_RING_CAP, STATIC_RING_BYTES,
+    has_sorted_subtrees, has_direct_location,
     ancestor, descendants, descendant_range,
     subtree,
     border_engine, interior_engine, halo_engine,
@@ -35,8 +39,8 @@ import ..Fallbacks: AuthalicGrid, AuthalicSystem, HierarchicalLevelGrid,
     EdgeCellIterator, InnerCellIterator, collect_subtree,
     MortonCurve, quadrant_step, _SQUARE_CAP,
     checked_id, subtree_curve, nside,
-    cap_contains, cell_cap, cells_cap, full_sphere_cap, intersects_cap,
-    merge_caps, points_cap, lonlat, unit_point, query_point,
+    cap_contains, cell_cap, cell_cap_is_cheap, cells_cap, full_sphere_cap,
+    points_cap, lonlat, unit_point, query_point,
     point_in_cell, open_ring, closed_ring,
     _canonical, _match_tolerance, _shared_vertices,
     _tangent_basis, _azimuth, _phase
@@ -65,15 +69,25 @@ include("partial_grid.jl")
 # walk the inside of, and it reuses that file's stack vocabulary.
 include("halo.jl")
 include("cursor.jl")
-include("position_tree.jl")
+include("index_tree.jl")
+# Every cursor that derives a node extent rather than storing one reads the
+# same per-task tables.
+include("extent_memo.jl")
+# The tiled raster tree packs tiles the way the index tree packs cells.
+include("tiled_raster.jl")
 include("query.jl")
 include("multiorder.jl")
 include("cell_vector.jl")
 # The stencil layer reads every collection above it — the subset grid, the
 # compressed vector, the multi-order set — and the lazy border walkers besides.
 include("stencil.jl")
-# The positioned iterator depends on the stencil and window helpers.
+# The indexed iterator depends on the stencil and window helpers.
 include("neighborhood.jl")
+# A vector over the collection that knows some entries and computes the rest,
+# and the bounded per-task reader a sweep wraps one in.
+include("cellfield.jl")
+# The field requests resolve against the clip the sweep above already made.
+include("needs.jl")
 # The region verbs read every container above and the cursor the sweeps use.
 include("region.jl")
 # The cached table reads the region verbs and the same cursor.

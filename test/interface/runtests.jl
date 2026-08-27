@@ -80,23 +80,24 @@ end
     @test UnimplementedIndex() isa AbstractCellIndex
 
     # Required interface names are exported.
-    for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :cellposition,
-              :rawid, :reindex, :cellindextypes, :cell_polygon, :cell_area,
-              :cell_extent, :getcell, :cellat, :neighbors, :ring, :treeify,
-              :query, :system, :level, :cellindextype, :levels, :maxlevel,
-              :levelgrid, :rootcells, :children, :node_extent,
-              :maxneighbors, :has_sorted_subtrees, :ancestor, :descendants,
+    for n in (:ncells, :cellindex, :cell_boundary, :cell_centroid, :localindex,
+              :globalindex, :rawid, :reindex, :cellindextypes, :cell_polygon,
+              :cell_area, :cell_extent, :getcell, :cellat, :neighbors, :ring,
+              :treeify, :query, :system, :level, :cellindextype, :levels,
+              :maxlevel, :levelgrid, :rootcells, :children, :node_extent,
+              :maxneighbors, :has_sorted_subtrees, :has_direct_location,
+              :ancestor, :descendants,
               :descendant_range, :LevelIndex, :Connectivity, :Vertex, :Edge,
               :cellsize, :levelfor, :subtree, :halo, :border, :interior,
-              :adjacency, :AdjacencyTable, :halocells, :halopositions)
+              :adjacency, :AdjacencyTable, :halocells, :haloindices)
         @test n in EXPORTED
     end
 
     # The `public` tier: documented and reachable by module path, deliberately
     # absent from `using`. Machinery a caller names only to talk ABOUT it.
     for n in (:EdgeCellIterator, :InnerCellIterator, :SubtreeHaloIterator,
-              :SubsetHaloIterator, :HaloPositionIterator, :RegionSide,
-              :sizehint, :halo_positions, :SubsetPositionedCell,
+              :SubsetHaloIterator, :HaloIndexIterator, :RegionSide,
+              :sizehint, :halo_indices, :SubsetIndexedCell,
               :HierarchicalGridCursor, :StorageOrder, :NeighborCallbackError,
               :cap_inflation, :directioncode, :authalic_sphere,
               :StoreSnapshot, :StoreDescription, :ArrayEntry, :ChunkManifest,
@@ -107,11 +108,11 @@ end
     end
 
     # The type every boundary and centroid method returns, and the
-    # position-space covering verb the zonal recipe calls, are reachable from
+    # index-space covering verb the zonal recipe calls, are reachable from
     # the top namespace — `using DiscreteGlobalGrids` and no module path.
     @test :UnitSphericalPoint in EXPORTED
     @test UnitSphericalPoint === DGG.GO.UnitSpherical.UnitSphericalPoint
-    @test :covering_positions in EXPORTED
+    @test :covering_indices in EXPORTED
 
     # Retired interface names are not defined.
     for n in (:AbstractDGGS, :all_systems, :DGGSGrid, :DGGSCursor, :cell_neighbors,
@@ -163,7 +164,7 @@ end
 
     # Two contracts are load-bearing enough to pin in the docs themselves: the
     # covering law (without it, generic tree pruning is silently unsound) and
-    # the position-vs-identity rule (without it, `Int` arguments are a coin
+    # the index-vs-identity rule (without it, `Int` arguments are a coin
     # flip). Both must be explicit in the public documentation.
     node_extent_doc = docstring(DiscreteGlobalGrids, :node_extent)
     @test occursin("covering law", lowercase(node_extent_doc))
@@ -171,7 +172,7 @@ end
     @test occursin("every depth", node_extent_doc)
 
     grid_doc = docstring(DiscreteGlobalGrids, :AbstractGrid)
-    @test occursin("position", lowercase(grid_doc))
+    @test occursin("index", lowercase(grid_doc))
     @test occursin("1:ncells(grid)", grid_doc)
 end
 
@@ -260,7 +261,7 @@ end
     @test_throws MethodError cellindex(g, 1, LevelIndex)
     @test_throws MethodError cell_boundary(g, c)
     @test_throws MethodError cell_centroid(g, c)
-    @test_throws MethodError cellposition(g, c)
+    @test_throws MethodError globalindex(g, c)
     @test_throws MethodError cell_polygon(g, c)
     @test_throws MethodError cell_area(g, c)
     @test_throws MethodError cell_extent(g, c)
@@ -302,7 +303,7 @@ DGG.levels(::IdentifiedSystem) = 0:2
     # Required: the five level-grid primitives, in their system-level arity.
     @test_throws Exception ncells(s, 1)
     @test_throws Exception cellindex(s, 1, 1)
-    @test_throws Exception cellposition(s, c)
+    @test_throws Exception globalindex(s, c)
     @test_throws Exception cell_boundary(s, c)
     @test_throws Exception cell_centroid(s, c)
 
@@ -345,6 +346,13 @@ end
     @test maxneighbors(s) === nothing             # -> maxneighbors(s, Vertex())
     @test maxneighbors(s, Vertex()) === nothing
     @test maxneighbors(s, Edge()) === nothing
+
+    # Standalone grids have no system declaration to forward, so the grid
+    # form preserves the same explicit "no bound" answer.
+    g = UnimplementedGrid()
+    @test maxneighbors(g) === nothing
+    @test maxneighbors(g, Vertex()) === nothing
+    @test maxneighbors(g, Edge()) === nothing
 end
 
 end # module InterfaceTests

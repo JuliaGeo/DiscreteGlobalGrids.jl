@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Spacing" name="Radius & Shadows" subtitle="Border radii (3–9999px) and shadow elevation system" viewport="700x220" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin: 0; padding: 20px 24px; font-family: var(--font-sans); background: #fff; }
+  .row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 20px; }
+  .section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gray-400); margin: 0 0 10px; }
+  /* Radii */
+  .r-item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .r-box { width: 56px; height: 56px; background: #dcf5d7; border: 2px solid #389826; }
+  .r-label { font-size: 10px; font-family: var(--font-mono); color: var(--gray-600); text-align: center; }
+  .r-val { font-size: 9px; color: var(--gray-400); font-family: var(--font-mono); }
+  /* Shadows */
+  .sh-item { background: white; width: 80px; height: 52px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-family: var(--font-mono); color: var(--gray-500); }
+</style>
+</head>
+<body>
+  <p class="section-label">Border Radius</p>
+  <div class="row">
+    <div class="r-item"><div class="r-box" style="border-radius:3px"></div><div class="r-label">radius-sm</div><div class="r-val">3px</div></div>
+    <div class="r-item"><div class="r-box" style="border-radius:5px"></div><div class="r-label">radius-md</div><div class="r-val">5px</div></div>
+    <div class="r-item"><div class="r-box" style="border-radius:8px"></div><div class="r-label">radius-lg</div><div class="r-val">8px</div></div>
+    <div class="r-item"><div class="r-box" style="border-radius:12px"></div><div class="r-label">radius-xl</div><div class="r-val">12px</div></div>
+    <div class="r-item"><div class="r-box" style="border-radius:9999px"></div><div class="r-label">radius-full</div><div class="r-val">9999px</div></div>
+  </div>
+  <p class="section-label">Shadow System</p>
+  <div class="row">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+      <div class="sh-item" style="box-shadow:0 1px 2px rgba(0,0,0,0.07)">xs</div>
+      <div style="font-size:9px;color:var(--gray-400);font-family:var(--font-mono);text-align:center">shadow-xs</div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+      <div class="sh-item" style="box-shadow:0 1px 4px rgba(0,0,0,0.09),0 1px 2px rgba(0,0,0,0.06)">sm</div>
+      <div style="font-size:9px;color:var(--gray-400);font-family:var(--font-mono);text-align:center">shadow-sm</div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+      <div class="sh-item" style="box-shadow:0 4px 12px rgba(0,0,0,0.10),0 2px 4px rgba(0,0,0,0.06)">md</div>
+      <div style="font-size:9px;color:var(--gray-400);font-family:var(--font-mono);text-align:center">shadow-md</div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+      <div class="sh-item" style="box-shadow:0 8px 24px rgba(0,0,0,0.12),0 4px 8px rgba(0,0,0,0.06)">lg</div>
+      <div style="font-size:9px;color:var(--gray-400);font-family:var(--font-mono);text-align:center">shadow-lg</div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+      <div class="sh-item" style="box-shadow:0 16px 48px rgba(0,0,0,0.15),0 8px 16px rgba(0,0,0,0.07)">xl</div>
+      <div style="font-size:9px;color:var(--gray-400);font-family:var(--font-mono);text-align:center">shadow-xl</div>
+    </div>
+  </div>
+</body></html>

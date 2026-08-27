@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Components" name="Badges & Labels" subtitle="Status badges, pill tags, uppercase labels" viewport="700x180" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; padding: 20px 24px; font-family: var(--font-sans); background: #fff; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+  .section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gray-400); margin: 0 0 8px; }
+  .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; line-height: 1.6; font-family: var(--font-sans); }
+  .badge-green  { background: #dcf5d7; color: #2c7a1e; }
+  .badge-blue   { background: #d4dcf9; color: #2d47a8; }
+  .badge-purple { background: #eadaf2; color: #6b3a85; }
+  .badge-red    { background: #f7d5d3; color: #9a2e27; }
+  .badge-gray   { background: #f1f3f5; color: #495057; }
+  .badge-yellow { background: #fdf6c3; color: #7a6b00; }
+  .badge-outline { background: transparent; border: 1px solid #dee2e6; color: #495057; }
+  .tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 9999px; font-size: 12px; font-weight: 500; }
+  .tag-green { background: #dcf5d7; color: #2c7a1e; border: 1px solid #b6ecab; }
+  .tag-mono { font-family: var(--font-mono); font-size: 11px; background: #f1f3f5; color: #CB3C33; border: 1px solid #e9ecef; }
+  .label-upper { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #adb5bd; }
+</style>
+</head>
+<body>
+  <p class="section-label">Status Badges</p>
+  <div class="row">
+    <span class="badge badge-green">Stable</span>
+    <span class="badge badge-blue">In Development</span>
+    <span class="badge badge-yellow">Experimental</span>
+    <span class="badge badge-red">Deprecated</span>
+    <span class="badge badge-gray">Internal</span>
+    <span class="badge badge-purple">Extension</span>
+    <span class="badge badge-outline">Optional</span>
+  </div>
+  <p class="section-label">Tags / Pills</p>
+  <div class="row">
+    <span class="tag tag-green">GeoInterface</span>
+    <span class="tag tag-green">Pure Julia</span>
+    <span class="tag tag-mono">PolygonTrait</span>
+    <span class="tag tag-mono">LineTrait</span>
+    <span class="tag tag-mono">PointTrait</span>
+  </div>
+  <p class="section-label">Labels</p>
+  <div class="row">
+    <span class="label-upper">Tutorials</span>
+    <span class="label-upper" style="margin-left:16px">Explanations</span>
+    <span class="label-upper" style="margin-left:16px">Source Code</span>
+    <span class="label-upper" style="margin-left:16px">API Reference</span>
+  </div>
+</body></html>

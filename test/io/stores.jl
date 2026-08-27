@@ -56,7 +56,7 @@ end
 const SYS = IGeo7System()
 const LEVEL = 4
 const GRID = levelgrid(SYS, LEVEL)
-# Three position runs: the shape of a regional store, and each long enough to
+# Three index runs: the shape of a regional store, and each long enough to
 # span several digit rollovers, which is what makes `:rank` and `:step` disagree
 # about how many runs there are.
 const RANKS = [100:199; 500:519; 900:929]
@@ -165,8 +165,8 @@ end
 
     sametwin(dense, ranged)
     @test collect(DD.lookup(dense[:elevation], Cells)) == CELLS
-    # Addressed by cell rather than by position, which is the only way the axis
-    # and the data can be caught disagreeing anywhere but position 1.
+    # Addressed by cell rather than by index, which is the only way the axis
+    # and the data can be caught disagreeing anywhere but index 1.
     for k in (1, 101, N)
         @test ranged[:elevation][Cells(DD.At(CELLS[k]))] == ELEVATION[k]
         @test ranged[:slope][Cells(DD.At(CELLS[k]))] == SLOPE[k]
@@ -233,8 +233,8 @@ end
 @testset "an implicit axis is the same complete level, ours and theirs" begin
     # The whole of HEALPix level 2 written four ways: as intervals, as stored
     # ids, as this package's own implicit store, and as a DKRZ store from another
-    # producer's dialect. The last two write no axis at all and let position be
-    # the id, which kills an off-by-one there — rank is zero-based and position
+    # producer's dialect. The last two write no axis at all and let index be
+    # the id, which kills an off-by-one there — rank is zero-based and index
     # is one-based — that nothing else catches, since every other encoding reads
     # its ids back from the store.
     c = corpus()
@@ -345,7 +345,7 @@ end
         # Sampled or not, the FIRST id already contradicts the attributes, which
         # is why `:lazy` catches this one and misses a lone phantom.
         msg = sprint(showerror, caught(() -> dggread(path)))
-        @test occursin("level 3", msg) && occursin("position 1", msg)
+        @test occursin("level 3", msg) && occursin("index 1", msg)
         # Design §5 asks for an error naming BOTH levels and pointing at the
         # reference-level pattern. The id's own level is read back out of the id
         # where the scheme carries one, which for Z7 it does.
@@ -420,9 +420,9 @@ end
     # "strict"` is the writer's attestation that no such duplicate exists, and a
     # trusted store takes it: the axis opens holding the cell twice.
     #
-    # What the trust does NOT buy is a wrong answer. `_axisposition` searches the
+    # What the trust does NOT buy is a wrong answer. `_axisindex` searches the
     # decoded chunk and compares the id it lands on, so every cell still resolves
-    # to a position that really holds it. And `validate = :scan` declines the
+    # to a local index that really holds it. And `validate = :scan` declines the
     # sidecar and finds the duplicate, which is the way back.
     mktempdir() do dir
         path = joinpath(dir, "interior_dup.zarr")
@@ -439,12 +439,12 @@ end
         @test length(cells) == N
         @test cells[2] == cells[3]      # the duplicate is there to be seen
 
-        # No cell is misplaced: whatever position each one resolves to, that
-        # position holds it. `_axisposition` searches the decoded chunk and
-        # compares the id it lands on, so the duplicate costs position 3 its
-        # cell and costs no cell its position.
+        # No cell is misplaced: whatever local index each one resolves to, that
+        # index holds it. `_axisindex` searches the decoded chunk and
+        # compares the id it lands on, so the duplicate costs local index 3 its
+        # cell and costs no cell its index.
         @test all(eachindex(cells)) do k
-            p = DGG.cellposition(lk, cells[k])
+            p = DGG.localindex(lk, cells[k])
             p !== nothing && cells[p] == cells[k]
         end
 
@@ -521,7 +521,7 @@ else
         @test parent(big[:elevation]) isa Zarr.ZArray
         @test !(parent(big[:elevation]) isa Array)
         # Forward and inverse agree in the middle of a level-12 axis, which is
-        # further than any synthetic fixture here reaches. Position 100 000 holds
+        # further than any synthetic fixture here reaches. Index 100 000 holds
         # a real elevation rather than the model's NaN nodata, so `==` is the
         # comparison that means something.
         k = 100_000

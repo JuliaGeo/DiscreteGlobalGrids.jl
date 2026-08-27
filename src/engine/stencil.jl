@@ -10,7 +10,7 @@
 #   * distance is the SYSTEM's, so nothing here does a breadth-first walk of its
 #     own and a hole in the subset cannot lengthen a path around itself.
 #
-# The position forms are the same answers read as indices into a data vector.
+# The index forms are the same answers read as indices into a data vector.
 # `adjacency` is those for a whole region at once.
 # ---------------------------------------------------------------------------
 
@@ -27,7 +27,7 @@
 end
 
 @inline function _member_or_throw(sub, c::AbstractCellIndex)
-    p = cellposition(sub, c)
+    p = localindex(sub, c)
     p === nothing && _not_a_member(sub, c)
     return p
 end
@@ -50,7 +50,7 @@ end
 function _clip(sub, cells::SmallCollections.SmallVector{N,T}) where {N,T}
     out = SmallCollections.SmallVector{N,T}()
     for nb in cells
-        cellposition(sub, nb) === nothing ||
+        localindex(sub, nb) === nothing ||
             (out = SmallCollections.push(out, nb))
     end
     return out
@@ -59,7 +59,7 @@ end
 function _clip(sub, cells)
     out = Vector{eltype(cells)}()
     for nb in cells
-        cellposition(sub, nb) === nothing || push!(out, nb)
+        localindex(sub, nb) === nothing || push!(out, nb)
     end
     return out
 end
@@ -71,18 +71,18 @@ end
 The complete level's neighbourhood of `c`, clipped to the subset — which is
 what [`neighbors`](@ref) means on a subset. The complete grid is
 `levelgrid(system(pg), level(pg))`, so this reaches the system's own automaton
-and never the geometric tree walk; the clip is one `cellposition` per candidate.
+and never the geometric tree walk; the clip is one `localindex` per candidate.
 
 `c` outside `pg` throws an `ArgumentError` rather than answering about cells
 `pg` does not hold.
 """
-function neighbors(pg::PartialGrid, c::AbstractCellIndex, k::Integer = 1;
+Base.@constprop :aggressive function neighbors(pg::PartialGrid, c::AbstractCellIndex, k::Integer = 1;
         connectivity::Connectivity = Vertex())
     _member_or_throw(pg, c)
     return _clip(pg, neighbors(pg.complete, c, Int(k); connectivity))
 end
 
-function ring(pg::PartialGrid, c::AbstractCellIndex, k::Integer;
+Base.@constprop :aggressive function ring(pg::PartialGrid, c::AbstractCellIndex, k::Integer;
         connectivity::Connectivity = Vertex())
     _member_or_throw(pg, c)
     return _clip(pg, ring(pg.complete, c, Int(k); connectivity))
@@ -97,17 +97,33 @@ same clipped-to-membership meaning a [`PartialGrid`](@ref) has. Membership is
 the window search — `O(log #windows)` — so the clip costs nothing the vector
 was not already able to answer.
 """
-function neighbors(cv::CellVector, c::AbstractCellIndex, k::Integer = 1;
+Base.@constprop :aggressive function neighbors(cv::CellVector, c::AbstractCellIndex, k::Integer = 1;
         connectivity::Connectivity = Vertex())
     _member_or_throw(cv, c)
     return _clip(cv, neighbors(cv.grid, c, Int(k); connectivity))
 end
 
-function ring(cv::CellVector, c::AbstractCellIndex, k::Integer;
+Base.@constprop :aggressive function ring(cv::CellVector, c::AbstractCellIndex, k::Integer;
         connectivity::Connectivity = Vertex())
     _member_or_throw(cv, c)
     return _clip(cv, ring(cv.grid, c, Int(k); connectivity))
 end
+
+# A `CellVector` is not an `AbstractGrid`, so the interface's `Val` forward does
+# not cover it. It clips to membership and hands back a `Vector` either way, so
+# there is nothing for a static capacity to hold on to — forwarding is the whole
+# implementation, and it keeps the membership check and the clip.
+#
+# These belong on whatever abstract type the cell-vector backings come to share,
+# so that a new backing gains the `Val` form with the `Integer` ones rather than
+# needing its own copy.
+neighbors(cv::CellVector, c::AbstractCellIndex, ::Val{K};
+    connectivity::Connectivity = Vertex()) where {K} =
+    neighbors(cv, c, K; connectivity)
+
+ring(cv::CellVector, c::AbstractCellIndex, ::Val{K};
+    connectivity::Connectivity = Vertex()) where {K} =
+    ring(cv, c, K; connectivity)
 
 # ===========================================================================
 # Neighbour counts default to the length of the clipped one-ring. Systems with
@@ -123,34 +139,46 @@ neighborcount(cv::CellVector, c::AbstractCellIndex;
     length(neighbors(cv, c, 1; connectivity))
 
 # ===========================================================================
-# The position forms
+# The index forms
 #
-# A bare `Int` is a position, so these are the same two verbs read as indices
+# A bare `Int` is an index, so these are the same two verbs read as indices
 # into a data vector laid out against the collection — the id answer mapped
-# through `cellposition`, element for element. The ROTATIONAL order is carried
+# through `localindex`, element for element. The ROTATIONAL order is carried
 # across: slot `i` of a row names the same direction as slot `i` of the ring,
 # which is the whole content of the order contract and the thing an oriented
 # stencil reads.
 # ===========================================================================
 
 # The generic route, for a grid with no faster membership test than its own
-# `cellposition`. A complete level grid lands here too, where the clip is a
+# `localindex`. A complete level grid lands here too, where the clip is a
 # no-op.
-function _positions(sub, cells)
+@inline function _indices(sub, cells::SmallCollections.SmallVector{N}) where {N}
+    # Build mutably, then freeze once. Repeated immutable `SmallVector.push`
+    # copies the inline payload at every surviving neighbour and is slower than
+    # the former heap `Vector` path despite allocating less.
+    out = SmallCollections.MutableSmallVector{N,Int}()
+    for nb in cells
+        p = localindex(sub, nb)
+        p === nothing || push!(out, p)
+    end
+    return SmallCollections.SmallVector(out)
+end
+
+function _indices(sub, cells)
     out = Int[]
     for nb in cells
-        p = cellposition(sub, nb)
+        p = localindex(sub, nb)
         p === nothing || push!(out, p)
     end
     return out
 end
 
 """
-    neighbors(grid::AbstractGrid, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
-    ring(grid::AbstractGrid, p::Int, k; connectivity = Vertex()) -> Vector{Int}
+    neighbors(grid::AbstractGrid, p::Int, k = 1; connectivity = Vertex()) -> AbstractVector{Int}
+    ring(grid::AbstractGrid, p::Int, k; connectivity = Vertex()) -> AbstractVector{Int}
 
-The neighbourhood of the cell at **position** `p`, as in-set positions in the
-same counter-clockwise order the id form answers in. `p` outside
+The neighbourhood of the cell at **local index** `p`, as in-set local indices in
+the same counter-clockwise order the id form answers in. `p` outside
 `1:ncells(grid)` is a `BoundsError`, from [`cellindex`](@ref).
 
 See [`neighbors`](@ref) for the contract these keep, and [`adjacency`](@ref)
@@ -158,43 +186,45 @@ for a whole region's worth at once.
 """
 neighbors(grid::AbstractGrid, p::Int, k::Integer = 1;
         connectivity::Connectivity = Vertex()) =
-    _positions(grid, neighbors(grid, cellindex(grid, p), Int(k); connectivity))
+    _indices(grid, neighbors(grid, cellindex(grid, p), Int(k); connectivity))
 
 ring(grid::AbstractGrid, p::Int, k::Integer;
         connectivity::Connectivity = Vertex()) =
-    _positions(grid, ring(grid, cellindex(grid, p), Int(k); connectivity))
+    _indices(grid, ring(grid, cellindex(grid, p), Int(k); connectivity))
 
 """
-    neighbors(sub::PartialGrid, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
-    ring(sub::PartialGrid, p::Int, k; connectivity = Vertex()) -> Vector{Int}
-    neighbors(cv::CellVector, p::Int, k = 1; connectivity = Vertex()) -> Vector{Int}
-    ring(cv::CellVector, p::Int, k; connectivity = Vertex()) -> Vector{Int}
+    neighbors(sub::PartialGrid, p::Int, k = 1; connectivity = Vertex()) -> AbstractVector{Int}
+    ring(sub::PartialGrid, p::Int, k; connectivity = Vertex()) -> AbstractVector{Int}
+    neighbors(cv::CellVector, p::Int, k = 1; connectivity = Vertex()) -> AbstractVector{Int}
+    ring(cv::CellVector, p::Int, k; connectivity = Vertex()) -> AbstractVector{Int}
 
-The position forms on the two subset collections: positions in the subset, in
-the ring order [`neighbors`](@ref) states.
+The index forms on the two subset collections: local indices in the subset, in
+the ring order [`neighbors`](@ref) states. The conversion preserves a
+fixed-capacity `SmallVector` returned by the system's one-ring, changing only
+its element type to `Int`; larger rings that arrive in a `Vector` remain one.
 
 The complete level's candidates are clipped ONCE here rather than by going
-through the id form and testing membership again on the way back — a position
-already names a cell of the subset, so there is nothing for the id form's
-out-of-set check to decide.
+through the id form and testing membership again on the way back — a local
+index already names a cell of the subset, so there is nothing for the id
+form's out-of-set check to decide.
 """
-neighbors(pg::PartialGrid, p::Int, k::Integer = 1;
+@inline neighbors(pg::PartialGrid, p::Int, k::Integer = 1;
         connectivity::Connectivity = Vertex()) =
-    _positions(pg, neighbors(pg.complete, cellindex(pg, p), Int(k); connectivity))
+    _indices(pg, neighbors(pg.complete, cellindex(pg, p), Int(k); connectivity))
 
 ring(pg::PartialGrid, p::Int, k::Integer;
         connectivity::Connectivity = Vertex()) =
-    _positions(pg, ring(pg.complete, cellindex(pg, p), Int(k); connectivity))
+    _indices(pg, ring(pg.complete, cellindex(pg, p), Int(k); connectivity))
 
-neighbors(cv::CellVector, p::Int, k::Integer = 1;
+@inline neighbors(cv::CellVector, p::Int, k::Integer = 1;
         connectivity::Connectivity = Vertex()) =
-    _positions(cv, neighbors(cv.grid, cv[p], Int(k); connectivity))
+    _indices(cv, neighbors(cv.grid, cv[p], Int(k); connectivity))
 
 ring(cv::CellVector, p::Int, k::Integer;
         connectivity::Connectivity = Vertex()) =
-    _positions(cv, ring(cv.grid, cv[p], Int(k); connectivity))
+    _indices(cv, ring(cv.grid, cv[p], Int(k); connectivity))
 
-# The subtree's position block, or `nothing` when this grid is not one. The
+# The subtree's index block, or `nothing` when this grid is not one. The
 # count decides it: the ids are validated ascending and inside the root's range,
 # so holding as many of them as the range is long means holding all of it.
 #
@@ -224,7 +254,7 @@ one), and this is the one call that finds both.
 in the result. The order is the package's one order — counter-clockwise about
 `cell_centroid(system(set), c)` seen from outside, as [`neighbors`](@ref)
 states — measured on each neighbour's own centroid, whatever level it sits at.
-The start is the smallest-`(level, position)` neighbour, and exact azimuth ties
+The start is the smallest-`(level, index)` neighbour, and exact azimuth ties
 break the same way, so the answer is deterministic and independent of how the
 walk found them.
 
@@ -296,7 +326,7 @@ function member_neighbors(set::MultiOrderCellSet, c::AbstractCellIndex;
         end
     end
     length(hits) <= 1 && return [set.cells[i] for i in hits]
-    # `(level, key)` IS ascending `(level, position)`: within one level the keys
+    # `(level, key)` IS ascending `(level, index)`: within one level the keys
     # are that level's own order, whichever branch built them. It is the tie
     # break and the start anchor, not the order — the order is the ring's.
     rank(i) = (level(set.cells[i]), set.keys[i])
@@ -343,7 +373,7 @@ _home_index(lk::AncestorLookup, ::MultiOrderCellSet, ::Int, c::AbstractCellIndex
 
 function _member_of(::CurveKeyLookup, set::MultiOrderCellSet, grid::AbstractGrid,
         nb::AbstractCellIndex)
-    p = cellposition(grid, nb)
+    p = globalindex(grid, nb)
     p === nothing && return nothing
     i = searchsortedlast(set.keys, p)
     i >= 1 || return nothing

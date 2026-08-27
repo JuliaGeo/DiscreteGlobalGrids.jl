@@ -43,7 +43,7 @@ function deep_subtree_failures(sys, root, level, conn)
     seen = Set{Int}()
     for p in r
         for m in DGG.neighbors(g, DGG.cellindex(g, p), 1; connectivity = conn)
-            q = DGG.cellposition(g, m)
+            q = DGG.localindex(g, m)
             (lo <= q <= hi) || push!(seen, q)
         end
     end

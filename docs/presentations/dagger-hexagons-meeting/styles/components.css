@@ -1,0 +1,379 @@
+/* =============================================================
+   Components — the small reusable pieces.
+   Every class here is usable straight from markdown, so a slide
+   can reach for one without dropping into a Vue component.
+   ============================================================= */
+
+/* ---------- The signage layer ----------
+   Mono, uppercase, tracked. These are signage, not decoration:
+   never mix weights inside a single label. */
+
+.dy-eyebrow,
+.dy-label,
+.dy-kicker {
+  font-family: var(--dy-font-mono);
+  font-weight: 500;
+  text-transform: uppercase;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.dy-eyebrow {
+  font-size: var(--dy-t-eyebrow);
+  letter-spacing: var(--dy-track-eyebrow);
+  color: var(--dy-fg-2);
+}
+
+.dy-label {
+  font-size: var(--dy-t-label);
+  letter-spacing: var(--dy-track-label);
+  color: var(--dy-fg);
+}
+
+.dy-kicker {
+  font-size: var(--dy-t-label);
+  letter-spacing: var(--dy-track-label);
+  color: var(--dy-accent-ink);
+}
+
+/* Figure caption / axis label — mono, because it is signage on a
+   drawing rather than prose. */
+.dy-caption {
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-caption);
+  line-height: 1.5;
+  color: var(--dy-fg-3);
+}
+
+/* Running commentary — a sentence about the slide, not a label.
+   Sans and muted so it stays quieter than the body it sits under. */
+.dy-note {
+  font-family: var(--dy-font-sans);
+  font-size: var(--dy-t-body-sm);
+  line-height: var(--dy-lh-body);
+  color: var(--dy-fg-2);
+  max-width: 76ch;
+}
+
+/* ---------- Accent headline ----------
+   Hero H1s and mission/AI H2s take accent-ink, not accent.
+   Body copy is never accent. */
+
+.dy-accent-head {
+  color: var(--dy-accent-ink);
+}
+
+/* ---------- Domain markers ----------
+   A block that carries a domain gets exactly one.
+   Marker A = filled, accent green. Marker B = stroked, ink.
+   Rendered at 1.2x the surrounding size. Class names are historical
+   — see components/Gen.vue. */
+
+.dy-gen,
+.dy-sci {
+  display: inline-block;
+  font-size: 1.2em;
+  line-height: 1;
+  vertical-align: -0.06em;
+}
+
+.dy-gen {
+  color: var(--dy-accent);
+}
+
+.dy-sci {
+  color: var(--dy-fg);
+}
+
+/* ---------- Rules ---------- */
+
+.dy-rule {
+  border: 0;
+  border-top: var(--dy-rule-thin) solid var(--dy-ink);
+  opacity: 0.75;
+  margin: 0;
+}
+
+.dy-rule--hair {
+  border-top-width: var(--dy-rule-hair);
+  opacity: 0.55;
+}
+
+.dy-rule--thick {
+  border-top-width: var(--dy-rule-thick);
+  opacity: 0.9;
+}
+
+.dy-rule--dashed {
+  border-top: var(--dy-rule-med) dashed var(--dy-ink);
+  opacity: 0.55;
+}
+
+.dy-rule--accent {
+  border-top-color: var(--dy-accent);
+  opacity: 1;
+}
+
+/* ---------- Cards — the least decorative container ----------
+   Hairline border, 2px radius, no left-border accent bar. */
+
+.dy-card {
+  background: var(--dy-card-bg);
+  border: var(--dy-rule-hair) solid var(--dy-hairline);
+  border-radius: var(--dy-r-2);
+  padding: var(--dy-s-5);
+}
+
+.dy-card--lift {
+  box-shadow: var(--dy-shadow-lift);
+}
+
+.dy-card--feature {
+  background: var(--dy-card-feature-bg);
+  border-color: transparent;
+}
+
+.dy-card__label {
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-label);
+  font-weight: 500;
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-3);
+  margin-bottom: var(--dy-s-3);
+}
+
+/* Display, not sans: a card title is a heading that happens to be
+   small. It sits at the same rank as .dy-feature__title below. */
+.dy-card__title {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: var(--dy-t-lede);
+  line-height: var(--dy-lh-snug);
+  color: var(--dy-fg);
+  margin-bottom: var(--dy-s-2);
+}
+
+.dy-card__body {
+  font-size: var(--dy-t-body-sm);
+  line-height: var(--dy-lh-body);
+  color: var(--dy-fg-2);
+}
+
+/* ---------- Pills ---------- */
+
+.dy-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dy-s-2);
+  padding: 4px 12px;
+  border: var(--dy-rule-med) solid var(--dy-ink);
+  border-radius: var(--dy-r-pill);
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-label);
+  font-weight: 500;
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  line-height: 1.5;
+  color: var(--dy-ink);
+  background: transparent;
+}
+
+.dy-pill--accent {
+  border-color: var(--dy-accent);
+  color: var(--dy-accent-ink);
+}
+
+.dy-pill--solid {
+  background: var(--dy-ink);
+  border-color: var(--dy-ink);
+  color: var(--dy-paper);
+}
+
+/* ---------- Dots ---------- */
+
+.dy-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--dy-ink);
+  vertical-align: middle;
+}
+
+.dy-dot--accent {
+  width: 14px;
+  height: 14px;
+  background: var(--dy-accent);
+}
+
+/* ---------- Feature row ----------
+   A domain marker, a title, a line of support. The building
+   block of the left column in a two-up. */
+
+.dy-feature {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  column-gap: var(--dy-s-3);
+  align-items: start;
+}
+
+.dy-feature + .dy-feature {
+  margin-top: var(--dy-s-5);
+}
+
+/* The marker cell is exactly one title line tall and centres whatever
+   it holds inside that box. Every marker — sparkle, asterisk, plain
+   dot — then lands on the title's optical centre without knowing
+   anything about the others, and the height tracks the title tokens
+   rather than a measured nudge.
+
+   The markers size themselves at 1.2em, so the cell sets 1em to the
+   title size and the glyph lands at the specified 1.2x. */
+.dy-feature__mark {
+  font-size: var(--dy-t-lede);
+  height: calc(var(--dy-t-lede) * var(--dy-lh-snug));
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.dy-feature__title {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: var(--dy-t-lede);
+  line-height: var(--dy-lh-snug);
+  color: var(--dy-fg);
+}
+
+.dy-feature__body {
+  margin-top: var(--dy-s-2);
+  font-size: var(--dy-t-body-sm);
+  line-height: var(--dy-lh-body);
+  color: var(--dy-fg-2);
+}
+
+/* ---------- Stat ----------
+   Specific numbers beat vague claims. */
+
+.dy-stat__value {
+  font-family: var(--dy-font-display);
+  font-weight: 500;
+  font-size: 52px;
+  line-height: var(--dy-lh-tight);
+  letter-spacing: var(--dy-track-tight);
+  color: var(--dy-accent-ink);
+}
+
+.dy-stat__label {
+  margin-top: var(--dy-s-2);
+  font-family: var(--dy-font-mono);
+  font-size: var(--dy-t-label);
+  font-weight: 500;
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-2);
+}
+
+/* ---------- CTA ----------
+   Trailing single right-angle quote, never an arrow or a bang. */
+
+.dy-cta {
+  font-family: var(--dy-font-sans);
+  font-weight: 500;
+  font-size: var(--dy-t-body);
+  color: var(--dy-accent-ink);
+}
+
+/* ---------- Page number ----------
+   Bottom-right of the safe area. No prefix, no total. */
+
+.dy-pagenum {
+  position: absolute;
+  right: var(--dy-safe);
+  bottom: var(--dy-safe);
+  font-family: var(--dy-font-mono);
+  font-weight: 500;
+  font-size: var(--dy-t-page);
+  letter-spacing: var(--dy-track-label);
+  color: var(--dy-fg-3);
+  z-index: 5;
+}
+
+/* ---------- Compact ----------
+   Steps type and row padding down one notch. For reference slides
+   that are genuinely a lookup table rather than an argument — do not
+   reach for it to squeeze a normal slide onto one screen. */
+
+.dy-compact {
+  font-size: var(--dy-t-caption);
+}
+
+.dy-compact table {
+  font-size: var(--dy-t-caption);
+}
+
+.dy-compact td {
+  padding-top: var(--dy-s-2);
+  padding-bottom: var(--dy-s-2);
+}
+
+/* ---------- Grids ---------- */
+
+.dy-grid {
+  display: grid;
+  gap: var(--dy-s-5);
+}
+
+.dy-grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.dy-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.dy-grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.dy-grid--tight { gap: var(--dy-s-4); }
+
+.dy-grid > * { min-width: 0; }
+
+/* ---------- Token specimens ----------
+   Used by the reference slides at the back of the deck. Delete them
+   with those slides if the deck does not need to document itself. */
+
+.dy-swatch-row {
+  margin-top: var(--dy-s-3);
+}
+
+.dy-swatch {
+  height: 30px;
+  border-radius: var(--dy-r-2);
+  border: var(--dy-rule-hair) solid var(--dy-hairline);
+}
+
+.dy-swatch-meta {
+  font-family: var(--dy-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--dy-fg-3);
+  margin-top: var(--dy-s-1);
+}
+
+.dy-specimen {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dy-s-4);
+  padding-bottom: var(--dy-s-3);
+  margin-bottom: var(--dy-s-3);
+  border-bottom: var(--dy-rule-hair) solid var(--dy-hairline);
+}
+
+.dy-specimen:last-child {
+  border-bottom: 0;
+}
+
+.dy-specimen__k {
+  flex: none;
+  width: 96px;
+  font-family: var(--dy-font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: var(--dy-track-label);
+  text-transform: uppercase;
+  color: var(--dy-fg-3);
+}

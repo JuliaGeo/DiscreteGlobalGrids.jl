@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Colors" name="Neutral Scale + Dark Surfaces" subtitle="Gray scale and dark mode surface tokens" viewport="700x220" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin: 0; padding: 20px; font-family: var(--font-sans); background: #fff; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .swatch { flex: 1; min-width: 52px; border-radius: var(--radius-md); overflow: hidden; }
+  .color-box { height: 48px; }
+  .info { padding: 5px 6px; }
+  .name { font-size: 10px; font-weight: 600; color: var(--gray-700); }
+  .hex  { font-size: 9px; font-family: var(--font-mono); color: var(--gray-500); }
+  .section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gray-500); margin: 0 0 8px; }
+  .section { margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<div class="section">
+  <p class="section-label">Neutrals</p>
+  <div class="row">
+    <div class="swatch"><div class="color-box" style="background:#ffffff;border:1px solid #e9ecef"></div><div class="info"><div class="name">0</div><div class="hex">#fff</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#f8f9fa;border:1px solid #e9ecef"></div><div class="info"><div class="name">50</div><div class="hex">#f8f9fa</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#f1f3f5"></div><div class="info"><div class="name">100</div><div class="hex">#f1f3f5</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#e9ecef"></div><div class="info"><div class="name">200</div><div class="hex">#e9ecef</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#dee2e6"></div><div class="info"><div class="name">300</div><div class="hex">#dee2e6</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#ced4da"></div><div class="info"><div class="name">400</div><div class="hex">#ced4da</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#adb5bd"></div><div class="info"><div class="name">500</div><div class="hex">#adb5bd</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#6c757d"></div><div class="info"><div class="name">600</div><div class="hex">#6c757d</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#495057"></div><div class="info"><div class="name">700</div><div class="hex">#495057</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#343a40"></div><div class="info"><div class="name">800</div><div class="hex">#343a40</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#212529"></div><div class="info"><div class="name">900</div><div class="hex">#212529</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:#141618"></div><div class="info"><div class="name">950</div><div class="hex">#141618</div></div></div>
+  </div>
+</div>
+<div class="section">
+  <p class="section-label">Dark Mode Surfaces</p>
+  <div class="row">
+    <div class="swatch"><div class="color-box" style="background:hsl(220,20%,9%)"></div><div class="info"><div class="name">bg</div><div class="hex">hsl 220 9%</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:hsl(220,16%,13%)"></div><div class="info"><div class="name">soft</div><div class="hex">hsl 220 13%</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:hsl(220,14%,17%)"></div><div class="info"><div class="name">mute</div><div class="hex">hsl 220 17%</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:hsl(220,12%,23%)"></div><div class="info"><div class="name">border</div><div class="hex">hsl 220 23%</div></div></div>
+    <div class="swatch"><div class="color-box" style="background:hsl(220,8%,56%)"></div><div class="info"><div class="name">dim fg</div><div class="hex">hsl 220 56%</div></div></div>
+  </div>
+</div>
+</body></html>

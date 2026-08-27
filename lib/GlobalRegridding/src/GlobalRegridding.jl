@@ -5,7 +5,7 @@ Regrid spherical cell collections eagerly or in chunks.
 
 The source and destination spaces both implement [`RegridSpace`](@ref).
 Regridding methods build geometry-only sparse [`WeightBlock`](@ref)s through
-[`build_weights!`](@ref).
+[`buildweights!`](@ref).
 Plans contain the method, spaces, missing-data policy, storage, and memory
 budget, so applying a plan takes no keywords:
 
@@ -32,41 +32,60 @@ import GeometryOpsCore: manifold
 import DimensionalData as DD
 import DiskArrays
 using Base.ScopedValues: ScopedValue, @with
+import Graphs
 import SparseArrays
 using SparseArrays: SparseMatrixCSC, sparse
+using StableTasks: StableTasks, StableTask
 
 # Keep `SphericalCap` generic for its two-argument constructor.
 const US = GO.UnitSpherical
 const USPoint = GO.UnitSphericalPoint{Float64}
 const SphericalCap = GO.UnitSpherical.SphericalCap
 const Cap = GO.UnitSpherical.SphericalCap{Float64}
+const Extents = GO.Extents
+const FlexibleRTrees = GO.FlexibleRTrees
 
 include("shared.jl")
 include("spaces.jl")
 include("rastergrid.jl")
-include("raster_tree_memo.jl")
 include("methods.jl")
 include("conservative.jl")
 include("intersection_area.jl")
 include("interpolation.jl")
-include("plans.jl")
+include("barycentric.jl")
 include("discovery.jl")
+# `chunkgraph.jl` precedes `plans.jl`: a `ChunkedPlan` owns the one
+# `ChunkDependencyGraph` it exposes, so the plan's field type names the graph's.
+include("chunkgraph.jl")
+include("plans.jl")
 include("executor.jl")
 include("lazy.jl")
 include("api.jl")
+# The weightless nearest-cell spike: it specializes `eagerplan` from `api.jl`
+# and `_readdestination!` from `lazy.jl`, so it comes after both.
+include("directnearest.jl")
 
 # Space interface
 export RegridSpace
-export celltree, chunktree, nchunks, cellindices, ncells, getcell
+export celltree, nchunks, ownedindices, ncells, getcell
 export cellcentroid, cellat, hascellchart, manifold
+
+# `cellindices` stays exported for the deprecation shim in `spaces.jl`.
+export cellindices
 
 # Included spaces
 export RasterGrid
 
 # Methods
 export AbstractRegriddingMethod
-export Conservative, NearestCell, BilinearPoint
+export Conservative, NearestCell, BarycentricPoint
+export DirectNearest
+export buildweights!, supportradius
+
+# `build_weights!` and `support_radius` stay exported for the deprecation shims
+# in `methods.jl`.
 export build_weights!, support_radius
+
 export WeightCOO, addweight!, adddenom!
 
 # Missing-data policies
@@ -75,6 +94,11 @@ export AbstractMissingPolicy, Weighted, Extensive
 # Plans
 export AbstractRegriddingPlan, WeightBlock
 export DirectPlan, ChunkedPlan, PerChunk, Spilled
+export NearestDirectPlan
+
+# The one chunk dependency relation a plan owns. Not exported: `dependencies`
+# is too generic a name to put in a user's namespace unqualified.
+public dependencies
 
 # User API
 export regrid, regrid!, plan_regrid
@@ -86,18 +110,51 @@ public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource
 
-# Extension surface. These five are unexported but load-bearing from outside:
-# a package that supplies a `RegridSpace` extends or calls them, so their
-# signatures are as fixed as the exported ones.
-#
-#   * `_asspace(target, name)` / `_asspace(target, name, src_space)` — resolve a
-#     `to`/`from` argument spelling into a `RegridSpace` (api.jl).
-#   * `subtree(space, inds)` — cell tree restricted to a chunk (conservative.jl).
-#   * `chunkextents(space)` — per-chunk spherical caps (discovery.jl).
-#   * `resolvespatialdims(data, nsrc)` — which array dimensions a regrid
-#     replaces (executor.jl).
-#   * `dimsource(lookup)` — the `from` a lookup already names (spaces.jl).
-#
-# DiscreteGlobalGrids' `src/regridding.jl` extends the first three and the last.
+# Qualified `RegridSpace` extension hooks. Their declarations and contracts are
+# grouped by responsibility in spaces.jl; they stay unexported to avoid generic
+# names in user namespaces.
+public subtree, expensivecellgeometry
+public chunkextents, chunkextent, chunkindex, candidatechunks!
+# Making a source space point-samplable. `hasdualcells` declares it,
+# `samplerstate` prepares whatever the lookup reads, and `dualcellat` answers
+# one point with the `DualCell` its nodes and `BasisKind` describe. `Sampler` is
+# what those two dispatch on, and `chartat` is where a space without a cell
+# chart says which plane its nodes are written in.
+public hasdualcells, dualcellat, samplerstate
+public Sampler, DualCell, BasisKind, Bilinear, MeanValue, chartat
+public chunkranges
+public chartaxes, chartcoords, chartlocalindex, chartperiod, chartspacing
+public _asspace
+
+# `chartposition` stays public for the deprecation shim in `spaces.jl`.
+public chartposition
+
+# Other qualified extension hooks used by package integrations.
+public resolvespatialdims
+public _prepare_raster_transform_pair, _task_prepared_raster_transform
+
+# The chunk dependency graph. Public but not exported: these names are generic
+# enough that exporting them into a user's namespace would be presumptuous.
+public ChunkDependencyGraph, chunk_dependency_graph
+public sourcesof, consumersof, sourcedegree, consumerdegree
+public srcvertex, dstvertex, srcchunk, dstchunk
+public issrcvertex, isdstvertex, srcvertices, dstvertices
+public nsourcechunks, ndestinationchunks, dependency_radius
+# Graph identity and row views: what makes one relation reusable by a plan that
+# did not build it, and what a per-column plan restricts it to.
+public SpaceStamp, spacestamp, DependencyIdentity, dependency_identity
+public narrowphase, UNNAMED_NARROW, validate_dependencies
+public restrict, isrestricted, subspace_dependencies
+public destinationchunks, destinationchunk, destinationrow
+# The relation's own inputs, kept: where per-chunk cap metadata lives.
+public hasextents, destinationextents, sourceextents
+public destinationextent, sourceextent
+
+# DiscreteGlobalGrids extends the qualified space contract in every
+# responsibility it customizes: `subtree`; `chunkextents`, `chunkindex`, and
+# `candidatechunks!`; `chunkranges`; and `dimsource`/`_asspace`. In particular,
+# its native DGG and CopernicusDEM chunk paths do not use private discovery
+# hooks. The Proj extension separately specializes the two public preparation
+# hooks above for task-owned native transforms.
 
 end # module GlobalRegridding

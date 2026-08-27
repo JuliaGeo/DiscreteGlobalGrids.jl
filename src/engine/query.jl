@@ -521,12 +521,12 @@ function query(sys::AbstractHierarchicalGridSystem, pred::DE9IM.DE9IMPredicate;
 end
 
 function _run_query(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate, target::QueryTarget)
-    positions = _query_positions(grid, pred, target)
-    out = Vector{_id_type(grid)}(undef, length(positions))
-    for (k, i) in enumerate(positions)
+    indices = _query_indices(grid, pred, target)
+    out = Vector{_id_type(grid)}(undef, length(indices))
+    for (k, i) in enumerate(indices)
         out[k] = cellindex(grid, i)
     end
-    # Positions ascend in canonical id order for every grid a system produces,
+    # Indices ascend in canonical id order for every grid a system produces,
     # but a standalone grid's own order need not, and the contract is sorted
     # BY ID.
     return sort!(out)
@@ -536,7 +536,7 @@ end
 # only honest way to answer it: a cell that no tree node's extent reaches is
 # still disjoint from the target, so there is nothing to prune away.
 function _run_query(grid::AbstractGrid, ::DE9IM.Disjoint, target::QueryTarget)
-    hits = _query_positions(grid, DE9IM.Intersects(nothing), target)
+    hits = _query_indices(grid, DE9IM.Intersects(nothing), target)
     out = Vector{_id_type(grid)}()
     j = 1
     for i in 1:ncells(grid)
@@ -549,7 +549,7 @@ function _run_query(grid::AbstractGrid, ::DE9IM.Disjoint, target::QueryTarget)
     return sort!(out)
 end
 
-function _query_positions(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate,
+function _query_indices(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate,
         target::QueryTarget)
     ncells(grid) == 0 && return Int[]
     out = Int[]
@@ -558,19 +558,18 @@ function _query_positions(grid::AbstractGrid, pred::DE9IM.DE9IMPredicate,
 end
 
 _query_tree(grid::AbstractGrid) = system(grid) === nothing ?
-                                  PositionTreeNode(PositionTree(grid), 1) :
+                                  IndexTreeNode(IndexTree(grid), 1) :
                                   HierarchicalGridCursor(grid;
     bucket_size=max(QUERY_BUCKET_SIZE, _grid_bucket_size(grid)))
 
 function _descend!(out, node, grid, pred, target)
     extent = STI.node_extent(node)
-    intersects_cap(target.cap, extent) || return nothing
+    Extents.intersects(target.cap, extent) || return nothing
     if STI.isleaf(node)
         # A node whose whole extent sits inside the target's cap has no per-cell
         # cap prune left to win — every cell cap would pass — so it skips
         # straight to the exact tests.
-        interior = US.spherical_distance(target.cap.point, extent.point) +
-                   extent.radius <= target.cap.radius
+        interior = Extents.contains(target.cap, extent)
         _leaf_scan!(out, node, grid, pred, target, interior)
         return nothing
     end
@@ -581,20 +580,20 @@ function _descend!(out, node, grid, pred, target)
 end
 
 # The leaf scan, once per tree kind: the hierarchical cursor derives a cell's
-# cap from its boundary, the position tree has it stored.
+# cap from its boundary, the index tree has it stored.
 function _leaf_scan!(out, node::HierarchicalGridCursor, grid, pred, target, interior::Bool)
     for index in node_indices(node)
         c = cellindex(grid, index)
-        interior || intersects_cap(target.cap, cell_cap(grid, c)) || continue
+        interior || Extents.intersects(target.cap, cell_cap(grid, c)) || continue
         _matches(pred, target, grid, c) && push!(out, index)
     end
     return nothing
 end
 
-function _leaf_scan!(out, node::PositionTreeNode, grid, pred, target, interior::Bool)
+function _leaf_scan!(out, node::IndexTreeNode, grid, pred, target, interior::Bool)
     tree = node.tree
     for k in tree.node_first[node.index]:tree.node_last[node.index]
-        interior || intersects_cap(target.cap, tree.caps[k]) || continue
+        interior || Extents.intersects(target.cap, tree.caps[k]) || continue
         index = tree.order[k]
         _matches(pred, target, grid, cellindex(grid, index)) && push!(out, index)
     end

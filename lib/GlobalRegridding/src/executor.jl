@@ -67,45 +67,16 @@ end
 # Accumulation
 
 """
-    blockreference!(ref, block::WeightBlock) -> ref
-
-Write each destination's reference weight to `ref`, using stored denominators or
-row sums. The result is data-independent and reusable.
-"""
-function blockreference!(ref::AbstractVector{Float64}, block::WeightBlock)
-    fill!(ref, 0.0)
-    return addreference!(ref, block)
-end
-
-"""
     addreference!(ref, block::WeightBlock) -> ref
 
-Add `block`'s per-destination reference weight to `ref`.
+Add `block`'s per-destination reference weight to `ref`, from the vector the
+block stores. Blocks over one destination accumulate into one `ref`, which is
+the reference the destination's values are normalized against.
 """
 function addreference!(ref::AbstractVector{Float64}, block::WeightBlock)
-    d = block.denom
-    if d === nothing
-        _addrowsums!(ref, block.weights)
-    else
-        @inbounds for j in eachindex(ref, d)
-            ref[j] += d[j]
-        end
-    end
-    return ref
-end
-
-function _addrowsums!(ref::AbstractVector{Float64}, W::SparseMatrixCSC)
-    rows = SparseArrays.rowvals(W)
-    vals = SparseArrays.nonzeros(W)
-    @inbounds for p in eachindex(rows, vals)
-        ref[rows[p]] += vals[p]
-    end
-    return ref
-end
-
-function _addrowsums!(ref::AbstractVector{Float64}, W::AbstractMatrix)
-    @inbounds for k in axes(W, 2), j in axes(W, 1)
-        ref[j] += W[j, k]
+    r = block.reference
+    @inbounds for j in eachindex(ref, r)
+        ref[j] += r[j]
     end
     return ref
 end
@@ -154,7 +125,7 @@ end
 @inline _walknonzeros(W::SparseMatrixCSC) =
     SparseArrays.nnz(W) * 256 < size(W, 2)
 
-# Locate the column owning nonzero position `p`.
+# Locate the column owning nonzero index `p`.
 @inline _columnof(cols::Vector{Int}, p::Int) = searchsortedlast(cols, p)
 
 # Accumulate values when all entries are valid.
@@ -268,9 +239,9 @@ end
 Finalize one destination chunk after all source blocks have accumulated.
 
 `num` is the weighted sum with invalid sources contributing zero, `cover` the
-weight of the sources that were valid, and `total` the accumulated reference
-weight from [`blockreference!`](@ref) — the denominator the method reported, or
-the row sums when it reported none.
+weight of the sources that were valid, and `total` the reference weight the
+applied blocks accumulated ([`addreference!`](@ref)) — the denominator the
+method reported, or the row sums when it reported none.
 
   - [`Extensive`](@ref): `num`.
   - [`Weighted`](@ref)`(t)`: `num / cover`, blank where `cover ≤ 0` or
@@ -381,7 +352,7 @@ _otherdimsizes(data, sd) =
 # Reshape the source to `ncells × nslices` in memory order.
 function flatsource(data::AbstractArray, nsrc::Integer, nslices::Integer)
     raw = data isa DD.AbstractDimArray ? parent(data) : data
-    isdiskbacked(raw) && (raw = Array(raw))
+    declareschunks(raw) && (raw = Array(raw))
     return reshape(raw, Int(nsrc), Int(nslices))
 end
 
@@ -399,6 +370,10 @@ end
 Put the destination's own axes `dstdims`, or one flat `Cell` axis when it has
 none ([`destinationdims`](@ref)), before the source's unchanged non-spatial
 dimensions. Sources that are not dimensional are returned unlabelled.
+
+A destination naming one axis is already the shape the cells were written in,
+so the result is labelled over the written array itself; two or more axes split
+the leading cell axis by reshaping it.
 """
 function wrapoutput(out::AbstractArray, data, sd, dstdims)
     data isa DD.AbstractDimArray || return out
@@ -406,6 +381,7 @@ function wrapoutput(out::AbstractArray, data, sd, dstdims)
     others = Tuple(ds[i] for i in eachindex(ds) if !(i in sd))
     dstdims === nothing &&
         return DD.DimArray(out, (DD.Dim{:Cell}(1:size(out, 1)), others...))
+    length(dstdims) == 1 && return DD.DimArray(out, (dstdims..., others...))
     shaped = reshape(out, map(length, dstdims)..., Base.tail(size(out))...)
     return DD.DimArray(shaped, (dstdims..., others...))
 end
@@ -415,8 +391,9 @@ end
 """
     applyplan!(out, plan::DirectPlan, src) -> out
 
-Apply the whole-domain plan to each source column. Accumulators and the reference
-vector are reused across slices.
+Apply the whole-domain plan to each source column. Accumulators are reused across
+slices, and the reference weights are the block's own, so a second application of
+one plan allocates nothing beyond its accumulators.
 """
 function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix)
     block = plan.block
@@ -429,7 +406,9 @@ function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix)
         "$(size(src, 2)) source slices into $(size(out, 2)) output slices"))
     num = zeros(Float64, ndst)
     cover = zeros(Float64, ndst)
-    ref = blockreference!(Vector{Float64}(undef, ndst), block)
+    # The block's own reference, not a copy: applying one plan again allocates
+    # no second reference vector.
+    ref = block.reference
     policy = plan.missingpolicy
     mv = plan.missingval
     for s in axes(src, 2)

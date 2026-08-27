@@ -141,3 +141,8 @@ fig
 # upstream clipper fix in GeometryOps. The README and
 # `test/systems/crosssystem/regridding_conservation.jl` carry the full account,
 # and `missingpolicy = DGG.Weighted(t)` is the normalization that survives it.
+#
+# Every regrid above is conservative, an area operation. Data whose values sit
+# at points rather than over footprints — a DEM's posts, say — wants a point
+# method instead; [Choosing a regridding method](../api/regridding-methods.md)
+# is the account of the three.

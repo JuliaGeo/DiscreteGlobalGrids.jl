@@ -18,17 +18,27 @@ methods, `Points` for point samples, or whatever `sampling` says.
 `DGGSpace` for its grid systems, and is the reference for what a space package
 has to provide.
 
-Regridding is threaded, and at high thread counts it wants `--gcthreads=8,1` as
+Regridding is threaded, and at high thread counts it wants `--gcthreads=8` as
 well: at `-t 64` the default GC thread count leaves the serial tail spinning at
-~300 % CPU, and pinning it cuts wall time a further ~7 %. The flag sets 8
-parallel mark threads and one concurrent sweep thread, in place of the default
-of one mark thread per worker thread.
+~300 % CPU, and pinning the mark threads at 8 cuts wall time a further ~7 %, in
+place of the default of one mark thread per worker thread.
+
+Do **not** add the optional second field. `--gcthreads=N,1` also starts Julia's
+*concurrent page sweeper*, which `madvise`s freed pages from a background thread
+while the workers run — and on 2026-08-21 a production regrid died of a SIGSEGV
+whose signature is a page released out from under a live object, with no
+out-of-bounds access, no unsafe code and no unsynchronized state anywhere on the
+path. `M` defaults to `0`; leave it there. The measured ~7 % is the mark threads,
+not the sweeper.
 
 ## Extension surface
 
 A package that supplies its own space implements the `RegridSpace` interface —
-`celltree`, `chunktree`, `nchunks`, `cellindices`, `ncells`, `getcell`,
-`cellcentroid`, `cellat`, `hascellchart`, `manifold` — all exported.
+`celltree`, `nchunks`, `ownedindices`, `ncells`, `getcell`,
+`cellcentroid`, `cellat`, `hascellchart`, `manifold` — all exported — plus the
+unexported-but-public `chunkextents`, which every space must answer. A space's
+chunk caps come from `chunkextents`, and a chunk query from `candidatechunks!`
+on its `chunkindex`.
 
 Five further names are unexported but load-bearing from outside, and their
 signatures are as fixed as the exported ones:

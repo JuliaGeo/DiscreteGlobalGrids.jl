@@ -5,7 +5,7 @@
 
 How source cell values are combined into destination cell values.
 
-Methods implement [`build_weights!`](@ref), plus [`support_radius`](@ref) when
+Methods implement [`buildweights!`](@ref), plus [`supportradius`](@ref) when
 their stencil extends beyond overlapping cells. Weights must be linear and
 independent of field data.
 """
@@ -34,60 +34,94 @@ This method does not preserve integrals.
 struct NearestCell <: AbstractRegriddingMethod end
 
 """
-    BilinearPoint()
+    BarycentricPoint(; poles = NearestCell())
 
-Bilinearly interpolate the source chart at each destination centroid.
+Interpolate between source sample sites at each destination sample site.
 
-The stencil is written on the source space's chart, so the source must answer
-`true` to [`hascellchart`](@ref); the destination must provide
-[`cellcentroid`](@ref).
-
-This point sample does not preserve integrals.
+  - The stencil is the dual cell of source sample sites containing the point,
+    weighted by the coordinates that cell's basis names: tensor Q1 on a
+    quadrilateral, or mean-value coordinates on a convex polygon, which on a
+    triangle are that triangle's barycentric coordinates.
+  - Weights are nonnegative and sum to one, so the result lies between the
+    source values it came from. Integrals are not preserved.
+  - Requires [`cellcentroid`](@ref) of the destination space and a source space
+    that answers point queries; a destination outside the source's dual complex
+    emits no entry at all and the missing policy decides what it becomes.
+  - `poles` is the policy where a source's own sample sites stop short of a
+    pole: [`NearestCell`](@ref) takes the nearest site of the polemost row with
+    weight one, `nothing` leaves those points unmapped. A source whose sites
+    reach the poles — every conforming grid — has no such region and ignores it.
 """
-struct BilinearPoint <: AbstractRegriddingMethod end
+struct BarycentricPoint{P} <: AbstractRegriddingMethod
+    poles::P
+    function BarycentricPoint(poles::P) where {P}
+        (poles isa NearestCell || poles === nothing) || throw(ArgumentError(
+            "BarycentricPoint(poles = $(repr(poles))) is not a polar policy; " *
+            "pass NearestCell() to take the nearest polemost sample site, or " *
+            "nothing to leave points beyond the polemost row unmapped"))
+        return new{P}(poles)
+    end
+end
+
+BarycentricPoint(; poles = NearestCell()) = BarycentricPoint(poles)
+
+# The shortest call that reconstructs it, so the opt-out is what stands out.
+Base.show(io::IO, m::BarycentricPoint) = print(io, "BarycentricPoint(",
+    m.poles isa NearestCell ? "" : "poles = $(repr(m.poles))", ")")
 
 """
     outputsampling(method::AbstractRegriddingMethod) -> DimensionalData.Lookups.Sampling
 
 Return the sampling a method gives the destination it writes. Area-based methods
 report `Intervals(Center())`, the default; point samples report `Points()`.
+
+This trait also selects the build route. A chunked plan selects the whole-tile
+route with it, through [`tilesampler`](@ref): a method reporting `Points()` and
+supplying a [`sampler`](@ref) builds one destination tile at a time.
+[`weightblock`](@ref) dispatches on it as well, so a sampling may specialise the
+per-pair assembly; today every sampling assembles a pair through
+[`pairblock`](@ref).
 """
 outputsampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Center())
 outputsampling(::NearestCell) = DD.Lookups.Points()
-outputsampling(::BilinearPoint) = DD.Lookups.Points()
+outputsampling(::BarycentricPoint) = DD.Lookups.Points()
 
 # Weight construction
 
 """
     WeightCOO(ndst::Int)
 
-A chunk-local coordinate-list accumulator. `rows` and `cols` index within the
-builder's `dst_inds` and `src_inds`. `denom` stores optional per-destination
-denominators. Duplicate entries are summed when the block is assembled.
+A chunk-local coordinate-list accumulator over `ndst` destination cells. `rows`
+and `cols` are chunk-local indices within the builder's `dst_inds` and
+`src_inds`. Duplicate entries are summed when the block is assembled.
+
+`denom` holds optional per-destination denominators and is `nothing` until a
+builder declares them, through [`markdenominated!`](@ref) or the first
+[`adddenom!`](@ref); a method that reports none — every point sample — leaves it
+`nothing` and allocates no denominator vector.
 """
 mutable struct WeightCOO
+    const ndst::Int
     const rows::Vector{Int}
     const cols::Vector{Int}
     const vals::Vector{Float64}
-    const denom::Vector{Float64}
-    hasdenom::Bool
+    denom::Union{Nothing,Vector{Float64}}
 end
 
-WeightCOO(ndst::Integer) =
-    WeightCOO(Int[], Int[], Float64[], zeros(Float64, ndst), false)
+WeightCOO(ndst::Integer) = WeightCOO(Int(ndst), Int[], Int[], Float64[], nothing)
 
 Base.length(coo::WeightCOO) = length(coo.vals)
 
 Base.show(io::IO, coo::WeightCOO) =
-    print(io, "WeightCOO(ndst=", length(coo.denom), ", entries=", length(coo),
-        coo.hasdenom ? ", denom" : "", ")")
+    print(io, "WeightCOO(ndst=", coo.ndst, ", entries=", length(coo),
+        coo.denom === nothing ? "" : ", denom", ")")
 
 """
     addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
 
-Add `w` to the weight of local source `src_local` in local destination
-`dst_local`. Indices are positions within the builder's `dst_inds` and
-`src_inds`, not cell positions.
+Add `w` to the weight of source `src_local` in destination `dst_local`. Both
+are chunk-local indices within the builder's `dst_inds` and `src_inds`, not the
+spaces' local indices.
 """
 function addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
     push!(coo.rows, dst_local)
@@ -99,49 +133,171 @@ end
 """
     adddenom!(coo::WeightCOO, dst_local::Int, d::Real)
 
-Add `d` to the local destination's denominator. Report only the share from the
-current source chunk.
+Add `d` to the denominator of chunk-local destination `dst_local`. Report only
+the share from the current source chunk.
 """
 function adddenom!(coo::WeightCOO, dst_local::Int, d::Real)
-    coo.denom[dst_local] += Float64(d)
-    coo.hasdenom = true
+    v = coo.denom
+    if v === nothing
+        v = zeros(Float64, coo.ndst)
+        coo.denom = v
+    end
+    v[dst_local] += Float64(d)
     return coo
 end
 
 """
     markdenominated!(coo::WeightCOO)
 
-Declare that `coo` carries denominators, without adding to any of them.
+Declare that `coo` carries denominators, without adding to any of them, and
+return `coo`. This is where the zero-filled denominator vector is allocated, so
+a builder that reports coverage for no destination still produces a denominated
+block of zeros.
 """
 function markdenominated!(coo::WeightCOO)
-    coo.hasdenom = true
+    coo.denom === nothing && (coo.denom = zeros(Float64, coo.ndst))
     return coo
 end
 
+# Per-point weights
+
 """
-    build_weights!(coo, method, dst_space, dst_inds, src_space, src_inds)
+    WeightRow()
+
+The source cells one destination point takes its value from, and their weights.
+
+`indices` and `weights` are parallel: entry `k` gives weight `weights[k]` to the
+source cell the source space calls `indices[k]`. [`weightsat!`](@ref) clears the
+row on entry, so one row serves a whole sweep and grows only to the widest
+stencil it has met. A row belongs to one task.
+"""
+struct WeightRow
+    indices::Vector{Int}
+    weights::Vector{Float64}
+end
+
+WeightRow() = WeightRow(Int[], Float64[])
+
+Base.length(row::WeightRow) = length(row.indices)
+Base.isempty(row::WeightRow) = isempty(row.indices)
+
+function Base.empty!(row::WeightRow)
+    empty!(row.indices)
+    empty!(row.weights)
+    return row
+end
+
+Base.show(io::IO, row::WeightRow) = print(io, "WeightRow(", length(row), " entries)")
+
+# A zero weight is dropped rather than stored, so a point on an edge or at a
+# node emits only the nodes that carry it.
+@inline function _addentry!(row::WeightRow, i::Integer, w::Float64)
+    w > 0 || return row
+    push!(row.indices, Int(i))
+    push!(row.weights, w)
+    return row
+end
+
+"""
+    WeightStatus
+
+What [`weightsat!`](@ref) made of one destination point.
+
+`WeightsMapped` says the row holds a complete stencil. Every other value says
+the row is empty and the destination takes no weights at all; they differ only
+in the reason, which is diagnostic. Execution reads
+[`ismapped`](@ref) and nothing else.
+
+  - `WeightsOutside` — the source covers no cell the point belongs to: it lies
+    outside the dual complex, outside the cell that was offered for it, or
+    outside the source's coverage altogether;
+  - `WeightsRim` — a required sample site is not in the source collection, so no
+    dual cell exists there. A space's own `weightsat!` answers this;
+  - `WeightsDegenerate` — the cell is unusable: repeated nodes, no area, a fold,
+    a reflex corner, or an inverse map that did not converge.
+"""
+@enum WeightStatus::UInt8 begin
+    WeightsMapped
+    WeightsOutside
+    WeightsRim
+    WeightsDegenerate
+end
+
+"""
+    ismapped(status::WeightStatus) -> Bool
+
+Whether `status` says the row carries a stencil.
+"""
+@inline ismapped(status::WeightStatus) = status === WeightsMapped
+
+"""
+    buildweights!(coo, method, dst_space, dst_inds, src_space, src_inds)
 
 Append chunk-local weights for `dst_inds` and `src_inds`, then return `coo`.
 Builders may inspect geometry outside `src_inds`, but must emit weights only for
 sources inside it. Otherwise weights are duplicated across chunk blocks.
 
 Weight construction must not depend on field data or execution order.
+
+This is the one hook a method must supply, and the generic assembly every
+[`pairblock`](@ref) falls back to. A method that wraps another and forwards
+`buildweights!` therefore builds through this route even where the inner method
+assembles a block of its own; forward [`pairblock`](@ref) as well — and
+[`sampler`](@ref) too, for a point method — to take the inner method's own
+build.
 """
-function build_weights!(coo::WeightCOO, method::AbstractRegriddingMethod,
+function buildweights!(coo::WeightCOO, method::AbstractRegriddingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     throw(ArgumentError(
-        "build_weights! is not implemented for $(typeof(method)) from " *
+        "buildweights! is not implemented for $(typeof(method)) from " *
         "$(typeof(src_space)) to $(typeof(dst_space))"))
 end
 
 """
-    support_radius(method, src_space::RegridSpace) -> Float64
+    supportradius(method, src_space::RegridSpace) -> Float64
 
 Return the maximum angular distance, in radians, that the method's stencil
 extends beyond a source chunk. The default is `0.0`. Overestimates add discovery
 work; underestimates can omit required weights.
+
+This is a *bound* on the stencil, not an estimate of it. Chunk discovery is cap
+overlap plus this radius, and cap overlap alone is not a superset of a point
+stencil's reach: a destination cell finer than a source cell can be bracketed by
+sample sites whose own cells it never touches. A method that supplies a
+[`sampler`](@ref) therefore declares here how far its stencils reach, so that
+the dependency relation stays a superset of the chunks its tiles read; a chunked
+read refuses a tile whose weights name a chunk the relation does not.
 """
-support_radius(::AbstractRegriddingMethod, ::RegridSpace) = 0.0
+supportradius(::AbstractRegriddingMethod, ::RegridSpace) = 0.0
+
+# `build_weights!` and `support_radius` are the old names of `buildweights!`
+# and `supportradius` and forward to them, so a call of an old name answers the
+# same with a deprecation warning. Only callers are carried: a method that
+# defines an old name supplies neither hook, and the generics dispatch on the
+# new ones.
+
+"""
+    build_weights!(coo, method, dst_space, dst_inds, src_space, src_inds)
+
+Deprecated. Use [`buildweights!`](@ref), which this forwards to, so existing
+calls keep their old behaviour exactly.
+"""
+function build_weights! end
+
+@deprecate build_weights!(coo::WeightCOO, method::AbstractRegriddingMethod,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds) buildweights!(
+    coo, method, dst_space, dst_inds, src_space, src_inds) false
+
+"""
+    support_radius(method, src_space::RegridSpace) -> Float64
+
+Deprecated. Use [`supportradius`](@ref), which this forwards to, so existing
+calls keep their old behaviour exactly.
+"""
+function support_radius end
+
+@deprecate support_radius(method::AbstractRegriddingMethod, src_space::RegridSpace) supportradius(
+    method, src_space) false
 
 # Missing-data policies
 

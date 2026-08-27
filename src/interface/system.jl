@@ -60,7 +60,7 @@ function levelgrid end
 """
     ncells(sys::AbstractHierarchicalGridSystem, l::Integer) -> Int
     cellindex(sys::AbstractHierarchicalGridSystem, l::Integer, i::Int) -> AbstractCellIndex
-    cellposition(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> Union{Int,Nothing}
+    globalindex(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) -> Union{Int,Nothing}
     cell_boundary(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex)
     cell_centroid(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex)
 
@@ -72,11 +72,11 @@ of its own and answers the [`AbstractGrid`](@ref) contract there.
 
 These are the five methods [`HierarchicalLevelGrid`](@ref) forwards to. Each
 carries its grid-level contract — [`ncells`](@ref), [`cellindex`](@ref),
-[`cellposition`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref) —
+[`globalindex`](@ref), [`cell_boundary`](@ref), [`cell_centroid`](@ref) —
 minus the two things the grid method has already settled:
 
   - `cellindex` may assume `i in 1:ncells(sys, l)`. The grid bounds-checks.
-  - `cellposition` may assume `c` is in [`cellindextype(sys)`](@ref
+  - `globalindex` may assume `c` is in [`cellindextype(sys)`](@ref
     cellindextype) and at the level being asked about: the grid answers
     `nothing` for a cell at another level, and reindexes the alternate schemes
     first. It still returns `nothing` for a canonical id that names no cell at
@@ -153,20 +153,36 @@ by [`cap_inflation(sys)`](@ref cap_inflation), and a system able to compute a
 tighter covering cap overrides it. The covering law below holds either way, and
 validating it is the system's responsibility.
 
-> `node_extent(sys, c)` contains the geometry of **every descendant of `c`, at
-> every depth** — every point of every cell boundary in the subtree, all the
-> way down to `maxlevel(sys)`.
+> **Guaranteed.** `node_extent(sys, c)` contains the *geometry* of every
+> descendant of `c`, at every depth — every point of every cell boundary in the
+> subtree, all the way down to `maxlevel(sys)`, independent of a caller's
+> planned traversal depth.
+>
+> **Not guaranteed.** It need not contain the descendants' `cell_cap`s or their
+> own `node_extent`s, and for real systems it does not. A cap is an inflated or
+> sampled bound *around* geometry, not geometry, so a child's cap can stand
+> partly outside its parent's extent while every child polygon lies inside it.
 
-Tree pruning depends on this covering law. Over-coverage only reduces pruning;
-under-coverage can omit valid results. For a convex cap of angular radius at
-most 90°, containing all boundary vertices also contains their great-circle
-arcs. Non-convex extents must establish containment of the full geometry.
+Both halves are load-bearing. A cell's own boundary does not cover its
+subtree — aperture-7 children extend beyond the parent boundary — so `cell_cap`
+is never a substitute for `node_extent`. Equally, the extents down a branch are
+not a nested chain of caps: a consumer that compares a parent's `node_extent`
+against a child's `node_extent` or `cell_cap`, or that expects radii to shrink
+with depth, is testing a property this function does not have and never
+promised.
 
-A cell's own boundary need not cover its descendants; aperture-7 children, for
-example, can extend beyond the parent boundary.
+Pruning is sound against queries derived from geometry, which is what tree
+descent asks: a query cap disjoint from `node_extent(sys, c)` meets no
+descendant cell polygon, so discarding the subtree can drop no result. Every
+node is tested against the query, never against its parent. Over-coverage only
+reduces pruning; under-coverage can omit valid results. For a convex cap of
+angular radius at most 90°, containing all boundary vertices also contains their
+great-circle arcs. Non-convex extents must establish containment of the full
+geometry.
 
-The result must cover through `maxlevel(sys)`, independent of a caller's
-planned traversal depth.
+A merge of the children's caps (`Extents.union` over `cell_cap`) is a bound over
+caps — a different and looser object, and one that says nothing about levels
+below those children. It is not `node_extent` and does not substitute for it.
 
 Extents are `SphericalCap`s throughout this package, at every node of every
 tree, which is what lets one predicate vocabulary serve all of them.
@@ -175,9 +191,17 @@ function node_extent end
 
 """
     maxneighbors(sys::AbstractHierarchicalGridSystem, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
+    maxneighbors(grid::AbstractGrid, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
+    maxneighbors(cv::CellVector, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
+    maxneighbors(lk::CellLookup, connectivity::Connectivity = Vertex()) -> Union{Int,Nothing}
 
 A **static** upper bound on the number of `connectivity`-neighbours of any cell
 of `sys`, at any level, or `nothing` when the system declares no bound.
+
+The grid and collection forms forward through [`system`](@ref). They therefore
+return the containing system's bound for complete grids and subsets alike:
+clipping a neighbourhood can shorten it, never exceed it. A standalone grid
+whose `system(grid) === nothing` returns `nothing`.
 
 **Sizes the neighbourhood family.** An `Int` bound permits the fixed-capacity
 stack containers behind [`neighbors`](@ref) and [`ring`](@ref) on a subset and
@@ -191,6 +215,166 @@ fewer neighbours than the bound.
 maxneighbors(::AbstractHierarchicalGridSystem, ::Connectivity) = nothing
 
 maxneighbors(sys::AbstractHierarchicalGridSystem) = maxneighbors(sys, Vertex())
+
+function maxneighbors(grid::AbstractGrid, connectivity::Connectivity)
+    sys = system(grid)
+    return isnothing(sys) ? nothing : maxneighbors(sys, connectivity)
+end
+
+maxneighbors(grid::AbstractGrid) = maxneighbors(grid, Vertex())
+
+"""
+    winding(sys::AbstractHierarchicalGridSystem, connectivity = Vertex()) -> Winding
+    winding(grid::AbstractGrid, connectivity = Vertex()) -> Winding
+
+The order [`one_ring`](@ref) returns a cell's neighbours in, as a trait the
+engine can read. Defaults to [`Unordered()`](@ref Unordered).
+
+**Why it is a trait.** `neighbors(grid, c, k)` and `ring(grid, c, k)` for
+`k >= 2` are a breadth-first shell walk, and each shell has to come out in the
+rotational order the two verbs promise. A declared turn lets the walk carry that
+order outward from the one-rings it is already reading. Without one it has to
+*measure* the order instead — a [`cell_centroid`](@ref) for every cell of every
+shell, and a sort — which is correct, slower, and the reason an undeclared
+system pays for `k >= 2` what it does.
+
+Declaring a turn is therefore a speed decision, like [`maxneighbors`](@ref), and
+it is checked rather than assumed: `test_grid_interface` verifies a declared
+winding against measured azimuth.
+
+The grid form forwards through [`system`](@ref); a standalone grid whose
+`system(grid) === nothing` is `Unordered()`.
+"""
+winding(::AbstractHierarchicalGridSystem, ::Connectivity) = Unordered()
+
+winding(sys::AbstractHierarchicalGridSystem) = winding(sys, Vertex())
+
+function winding(grid::AbstractGrid, connectivity::Connectivity)
+    sys = system(grid)
+    return isnothing(sys) ? Unordered() : winding(sys, connectivity)
+end
+
+winding(grid::AbstractGrid) = winding(grid, Vertex())
+
+"""
+    maxring(sys, k, connectivity = Vertex()) -> Union{Int,Nothing}
+
+A **static** upper bound on `length(ring(grid, c, k))` for any cell of `sys` at
+any level, or `nothing` when the system declares none.
+
+This is where a system writes its ring **scaling law**. A tiling whose k-ring is
+a scaled copy of its one-ring has `maxring(sys, k) == M * k` for the degree `M`
+of that turn — `6k` on a hexagonal system, `8k` on a vertex-connected quad grid,
+`4k` under [`Edge()`](@ref Edge). A system whose rings do not grow linearly
+declares nothing and keeps the heap path.
+
+An override owns **every** `k`, including `k == 0`, which is `1`: `ring(grid, c,
+0)` is `c` alone. The generic method answers `k == 0` with `1`, `k == 1` with
+[`maxneighbors`](@ref), and `nothing` beyond.
+
+[`maxneighbors(sys, k, connectivity)`](@ref maxneighbors) sums this, so one
+method declares both bounds.
+"""
+function maxring(sys::AbstractHierarchicalGridSystem, k::Integer,
+        connectivity::Connectivity = Vertex())
+    steps = checked_steps(k)
+    steps == 0 && return 1
+    steps == 1 && return maxneighbors(sys, connectivity)
+    return nothing
+end
+
+Base.@constprop :aggressive function maxring(grid::AbstractGrid, k::Integer,
+        connectivity::Connectivity = Vertex())
+    sys = system(grid)
+    return isnothing(sys) ? nothing : maxring(sys, k, connectivity)
+end
+
+"""
+    maxneighbors(sys, k::Integer, connectivity = Vertex()) -> Union{Int,Nothing}
+
+A **static** upper bound on `length(neighbors(grid, c, k))`, or `nothing` when
+the system declares no ring law.
+
+Derived, not declared: `neighbors(grid, c, k)` is the concatenation of rings `1`
+through `k`, so this is `sum(maxring(sys, j, connectivity) for j in 1:k)` and a
+system that writes [`maxring`](@ref) gets it for free. A linear ring law gives
+the quadratic disc bound `M * k * (k + 1) / 2` — `3k(k+1)` on a hexagonal
+system.
+
+`k == 0` is `0`: `neighbors(grid, c, 0)` is empty, where `ring(grid, c, 0)` is
+`c` alone.
+"""
+function maxneighbors(sys::AbstractHierarchicalGridSystem, k::Integer,
+        connectivity::Connectivity = Vertex())
+    steps = checked_steps(k)
+    total = 0
+    for j in 1:steps
+        m = maxring(sys, j, connectivity)
+        m === nothing && return nothing
+        total += m
+    end
+    return total
+end
+
+function maxneighbors(grid::AbstractGrid, k::Integer,
+        connectivity::Connectivity = Vertex())
+    sys = system(grid)
+    return isnothing(sys) ? nothing : maxneighbors(sys, k, connectivity)
+end
+
+"""
+    STATIC_RING_CAP
+    STATIC_RING_BYTES
+
+Where a declared bound stops buying a stack container: `64` elements, and `512`
+bytes of them. Past either, [`static_capacity`](@ref) reports no bound and the
+heap path runs instead, exactly as for a system that declared nothing.
+
+Both are **compile-time** limits, not memory ones. `SmallVector{N,T}` is a
+distinct type per `N`, so every `N` respecialises the whole neighbourhood stack,
+and past the element limit each specialisation also emits more code for the same
+work.
+
+The two limits are not the same measurement. `STATIC_RING_CAP` is a cliff: for
+an 8-byte id a clip loop emits 315 bytes of native code per element at `N == 64`
+and 492 at `N == 65` — a 56% step for one more slot, with no recovery above it
+(752 at `N == 96`). `STATIC_RING_BYTES` is not; a 16-byte id shows no such step,
+but costs roughly 3.6x as much emitted code per element everywhere, so the byte
+limit bounds the total rather than catching a jump — it stops `S2`'s 16-byte
+`LevelIndex` at 32 elements. For a 4-byte id neither limit is tight: no cliff
+appears through `N == 160`, and the element cap is simply conservative.
+
+`benchmark/maxneighbors.jl` part 4 reproduces the ladder.
+"""
+const STATIC_RING_CAP = 64
+
+@doc (@doc STATIC_RING_CAP)
+const STATIC_RING_BYTES = 512
+
+"""
+    static_capacity(M, ::Type{T}) -> Union{Val,Nothing}
+
+`Val(M)` when a bound of `M` elements of `T` is worth a stack container, and
+`nothing` when it is not — the single decision behind every fixed-capacity
+buffer in the neighbourhood family, so the walks and the sweeps cannot disagree
+about where the heap path starts.
+
+`nothing` in gives `nothing` out, which is how an undeclared
+[`maxneighbors`](@ref) or [`maxring`](@ref) reaches the heap path.
+"""
+@inline static_capacity(::Nothing, ::Type) = nothing
+
+# Foldable and inlined so that a caller whose `M` is a compile-time constant
+# gets a concrete `Val{N}` rather than the abstract `Val` this otherwise infers
+# to. That difference decides whether the walk's buffers land on the stack, so
+# it is worth spelling out to the compiler.
+Base.@assume_effects :foldable @inline function static_capacity(M::Integer,
+        ::Type{T}) where {T}
+    m = Int(M)
+    (0 <= m <= STATIC_RING_CAP && m * sizeof(T) <= STATIC_RING_BYTES) ||
+        return nothing
+    return Val(m)
+end
 
 # ===========================================================================
 # Traits with defaults
@@ -213,6 +397,25 @@ ordering, and declaring it falsely produces silently wrong subtree answers.
 has_sorted_subtrees(::AbstractHierarchicalGridSystem) = false
 
 """
+    has_direct_location(sys::AbstractHierarchicalGridSystem) -> Bool
+
+Whether [`cellat`](@ref) on a complete level grid of `sys` is answered from the
+query point's coordinates alone, rather than by the generic search over the
+grid's cells.
+
+  - `false` by default. A system opting in must implement [`cellat`](@ref) for
+    its complete level grids; declaring it without one leaves every caller on
+    the generic search while claiming otherwise.
+  - What it buys is location on a *subset* of a level: a [`PartialGrid`](@ref)
+    over such a system asks the complete level and keeps the answer only when it
+    is a member, instead of building a spatial tree over its own cells.
+  - A system whose location IS the generic search must leave this `false`:
+    searching the whole level and discarding everything outside the subset is
+    strictly more work than searching the subset.
+"""
+has_direct_location(::AbstractHierarchicalGridSystem) = false
+
+"""
     cap_inflation(sys::AbstractHierarchicalGridSystem) -> Float64
 
 The factor by which the default [`node_extent`](@ref) inflates a cell's own
@@ -220,9 +423,12 @@ bounding-cap radius so that the cap covers the cell's entire subtree.
 
 Defaults to `1.2`.
 
-The value bounds how far descendants extend beyond a cell's bounding cap and
-must be validated for the system's refinement geometry. Systems overriding
-`node_extent` ignore it.
+The value bounds how far descendant *geometry* extends beyond a cell's bounding
+cap — the ratio of the farthest descendant boundary point's distance from the
+cap centre to the cap radius — and must be validated for the system's refinement
+geometry. It is not a bound on how far a descendant's own cap extends; caps are
+bounds in their own right and may exceed it. Systems overriding `node_extent`
+ignore it.
 
 Raising it costs query time (looser pruning). Setting it too low is a
 correctness bug — see the covering law in [`node_extent`](@ref).
@@ -287,7 +493,7 @@ than a parallel set of verbs taking `(sys, c, l)` argument tuples.
 
 `l < level(c)` throws an `ArgumentError`. Construction is `O(1)` where
 [`has_sorted_subtrees`](@ref) holds, since the ids are then the level grid's own
-over a known position range; elsewhere it materialises
+over a known index range; elsewhere it materialises
 [`descendants`](@ref). `bucket_size` is [`PartialGrid`](@ref)'s.
 """
 function subtree end
@@ -367,7 +573,7 @@ function face_orientation end
 Define the operations used by the calibrated aperture-7 halo traversal. H3 and
 IGeo7 implement them using their subtree-border automata.
 
-`hex_child_direction` returns the position `0:5` of the parent-to-child step on
+`hex_child_direction` returns the index `0:5` of the parent-to-child step on
 the direction ring, or `-1` for a centre child or root cell.
 
 `seeded_border_engine` enters the system's border automaton at an arbitrary arc
@@ -390,7 +596,7 @@ function seeded_border_engine end
 """
     descendant_range(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex, l::Integer) -> UnitRange{Int}
 
-The contiguous interval of **positions** in `levelgrid(sys, l)`'s canonical
+The contiguous interval of **indices** in `levelgrid(sys, l)`'s canonical
 dense order occupied by the descendants of `c` at level `l`.
 
 Available only when [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) is
@@ -400,11 +606,11 @@ both at the first call, rather than that `MethodError`.
 
 Both directions are required:
 
- 1. every level-`l` descendant of `c` has its position in the range, and
- 2. every position in the range is a level-`l` descendant of `c`.
+ 1. every level-`l` descendant of `c` has its index in the range, and
+ 2. every index in the range is a level-`l` descendant of `c`.
 
-The range is over valid dense positions, not raw ids, and therefore has no id
-encoding gaps. It can be intersected with sorted position vectors by binary
+The range is over valid dense indices, not raw ids, and therefore has no id
+encoding gaps. It can be intersected with sorted index vectors by binary
 search.
 
 Sibling ranges are disjoint and partition the parent's range in canonical order.

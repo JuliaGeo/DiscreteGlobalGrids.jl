@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Spacing" name="Spacing Scale" subtitle="4px base grid, space-1 through space-24" viewport="700x160" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin: 0; padding: 20px 24px; font-family: var(--font-sans); background: #fff; }
+  .row { display: flex; gap: 4px; align-items: flex-end; margin-bottom: 16px; }
+  .sp-block { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .sp-box { background: #dcf5d7; border: 1px solid #389826; border-radius: 3px; width: 36px; }
+  .sp-label { font-size: 9px; font-family: var(--font-mono); color: var(--gray-500); text-align: center; }
+  .sp-val { font-size: 9px; font-family: var(--font-mono); color: var(--gray-700); font-weight: 600; text-align: center; }
+  .section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gray-400); margin: 0 0 10px; }
+</style>
+</head>
+<body>
+  <p class="section-label">Spacing Scale</p>
+  <div class="row">
+    <div class="sp-block"><div class="sp-box" style="height:4px"></div><div class="sp-val">4px</div><div class="sp-label">space-1</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:8px"></div><div class="sp-val">8px</div><div class="sp-label">space-2</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:12px"></div><div class="sp-val">12px</div><div class="sp-label">space-3</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:16px"></div><div class="sp-val">16px</div><div class="sp-label">space-4</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:20px"></div><div class="sp-val">20px</div><div class="sp-label">space-5</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:24px"></div><div class="sp-val">24px</div><div class="sp-label">space-6</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:32px"></div><div class="sp-val">32px</div><div class="sp-label">space-8</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:40px"></div><div class="sp-val">40px</div><div class="sp-label">space-10</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:48px"></div><div class="sp-val">48px</div><div class="sp-label">space-12</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:64px"></div><div class="sp-val">64px</div><div class="sp-label">space-16</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:80px"></div><div class="sp-val">80px</div><div class="sp-label">space-20</div></div>
+    <div class="sp-block"><div class="sp-box" style="height:96px"></div><div class="sp-val">96px</div><div class="sp-label">space-24</div></div>
+  </div>
+</body></html>

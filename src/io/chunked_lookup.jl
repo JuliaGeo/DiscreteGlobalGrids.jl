@@ -19,7 +19,7 @@ The lazy cube axis of a DGGS store: [`ChunkManifest`](@ref),
 [`ChunkedCellVector`](@ref), and the `DimensionalData` lookup over them,
 [`ChunkedCellLookup`](@ref).
 
-Where `CellLookup` compresses a cell set into position windows it computes
+Where `CellLookup` compresses a cell set into index windows it computes
 ids from, this lookup describes a set someone else has already written down,
 chunk by chunk, and resolves selectors without reading more of it than the one
 chunk an answer can be in.
@@ -27,12 +27,23 @@ chunk an answer can be in.
 module ChunkedLookups
 
 import ..DiscreteGlobalGrids as DGG
-import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex,
-    AbstractHierarchicalGridSystem, ncells, cellindex, cellposition, cellat,
+import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex, AbstractCellVector,
+    AbstractHierarchicalGridSystem, ncells, cellindex, localindex, globalindex, cellat,
     level, system, cellindextype, rawid, query, descendants,
     has_sorted_subtrees, level_ranges, MultiOrderCoverage, CellVector,
-    CellLookup, Covering, covering_positions
-import ..DiscreteGlobalGrids.CellLookups: show_selector_error
+    CellLookup, Covering, covering_indices,
+    PartialGrid, cellset, covering, maxneighbors,
+    neighbors, ring, neighborcount, halo, border, interior, adjacency,
+    mapneighbors, foreachneighbors, region
+# The window constructors the conversion below builds a `CellVector` out of.
+# They are `Engine`'s internals rather than package surface: nothing outside the
+# region machinery has a reason to name a window.
+import ..DiscreteGlobalGrids.Engine: _range_windows, _windows, windows
+# `_subset` is `CellLookups`' function, not a new one: the generic `getindex`
+# on `AbstractCellLookup` calls it, so a lookup that defined its own would be
+# indexed straight past its own subsetting rule.
+import ..DiscreteGlobalGrids.CellLookups: AbstractCellLookup, _subset,
+    _masksubset, show_selector_error
 
 import ..Encodings
 using ..Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
@@ -49,7 +60,7 @@ import DimensionalData as DD
 using DimensionalData: Lookups, Dimensions
 
 export ChunkManifest, nchunks, chunkof, chunkbounds
-export ChunkedCellVector, axisposition, chunkmanifest
+export ChunkedCellVector, axisindex, chunkmanifest
 export ChunkedCellLookup
 
 # ===========================================================================
@@ -82,7 +93,7 @@ The final chunk is short whenever the length is not a multiple of
 chunk holds exactly `chunklength` cells, and the constructor refuses a manifest
 that says otherwise: [`chunkof`](@ref) divides by `chunklength` rather than
 searching `offsets`, so a manifest read back from a sidecar under a different
-chunk length would resolve every position into the wrong chunk.
+chunk length would resolve every index into the wrong chunk.
 """
 struct ChunkManifest{I<:Integer}
     firstids::Vector{I}
@@ -144,7 +155,7 @@ Base.show(io::IO, m::ChunkManifest) = print(io, "ChunkManifest(", nchunks(m),
 """
     chunkof(m::ChunkManifest, k::Integer) -> Int
 
-The chunk holding axis position `k`.
+The chunk holding axis index `k`.
 """
 function chunkof(m::ChunkManifest, k::Integer)
     1 <= k <= length(m) || throw(BoundsError(m, k))
@@ -154,7 +165,7 @@ end
 """
     chunkbounds(m::ChunkManifest, c::Integer) -> UnitRange{Int}
 
-The axis positions chunk `c` holds.
+The axis indices chunk `c` holds.
 """
 chunkbounds(m::ChunkManifest, c::Integer) =
     (m.offsets[c]+1):(m.offsets[c]+m.lengths[c])
@@ -181,19 +192,25 @@ Semantically it **is** the id vector the store wrote: `length` is the number of
 cells, `axis[k]` is the `k`th of them, `collect(axis)` is the vector itself.
 What backs it is the encoding's business — closed-form rank/select over stored
 intervals, over the whole level, or a cached chunk of a stored id array — and
-[`axisposition`](@ref) is the inverse in every case.
+[`axisindex`](@ref) is the inverse in every case.
 
 Build one with [`cellaxis`](@ref), never directly.
 """
-struct ChunkedCellVector{ID,G<:AbstractGrid,S} <: AbstractVector{ID}
+struct ChunkedCellVector{ID,G<:AbstractGrid,S} <: AbstractCellVector{ID}
     grid::G
     source::S
     length::Int
+    # The compressed twin, built on first demand by `region` and kept. Untyped
+    # because which window form it lands in is a property of the ids, not of
+    # the encoding: the same store is `RangeWindows` where its cells run and
+    # `IndexWindows` where they scatter.
+    region::Base.RefValue{Any}
 end
 
 function ChunkedCellVector(grid::AbstractGrid, source, n::Integer)
     ID = cellindextype(system(grid))
-    return ChunkedCellVector{ID,typeof(grid),typeof(source)}(grid, source, Int(n))
+    return ChunkedCellVector{ID,typeof(grid),typeof(source)}(
+        grid, source, Int(n), Base.RefValue{Any}(nothing))
 end
 
 Base.size(axis::ChunkedCellVector) = (axis.length,)
@@ -207,36 +224,41 @@ end
 """
     rawcell(axis::ChunkedCellVector, k::Integer) -> Integer
 
-The RAW stored id at axis position `k` — `axis[k]` without the typed wrapper,
+The RAW stored id at axis index `k` — `axis[k]` without the typed wrapper,
 which is what a comparison against stored bytes wants.
 """
 rawcell(axis::ChunkedCellVector, k::Integer) = _rawcell(axis.source, axis, Int(k))
 
 """
-    axisposition(axis::ChunkedCellVector, id::Integer) -> Union{Int,Nothing}
+    axisindex(axis::ChunkedCellVector, id::Integer) -> Union{Int,Nothing}
 
-The position of raw id `id` in the axis, or `nothing` when the axis does not
+The index of raw id `id` in the axis, or `nothing` when the axis does not
 hold it. The inverse of [`rawcell`](@ref), and the half of the bijection every
 selector ends at.
 
 Resolution is two-level wherever the ids are stored rather than computed: the
 manifest names the one chunk `id` could be in, and only that chunk is read.
 """
-axisposition(axis::ChunkedCellVector, id::Integer) =
-    _axisposition(axis.source, axis, id)
+axisindex(axis::ChunkedCellVector, id::Integer) =
+    _axisindex(axis.source, axis, id)
 
 DGG.system(axis::ChunkedCellVector) = system(axis.grid)
 DGG.level(axis::ChunkedCellVector) = level(axis.grid)
 
 """
-    cellposition(axis::ChunkedCellVector, c::AbstractCellIndex) -> Union{Int,Nothing}
+    localindex(axis::ChunkedCellVector, c::AbstractCellIndex) -> Union{Int,Nothing}
 
-The position of a typed cell id in the axis, or `nothing` when the axis does not
+The index of a typed cell id in the axis, or `nothing` when the axis does not
 hold it — including when `c` is at another level.
 """
-function DGG.cellposition(axis::ChunkedCellVector, c::AbstractCellIndex)
+# The axis holds a subset of its level, so the global index is the level's — the
+# number that stays valid when the cell is carried to another axis.
+DGG.globalindex(axis::ChunkedCellVector, c::AbstractCellIndex) =
+    DGG.globalindex(axis.grid, c)
+
+function DGG.localindex(axis::ChunkedCellVector, c::AbstractCellIndex)
     level(c) == level(axis.grid) || return nothing
-    return axisposition(axis, convert(idtype(axis.grid), rawid(c)))
+    return axisindex(axis, convert(idtype(axis.grid), rawid(c)))
 end
 
 Base.:(==)(a::ChunkedCellVector, b::ChunkedCellVector) =
@@ -267,7 +289,7 @@ function _rawcell(s::RangesSource, axis::ChunkedCellVector, k::Int)
     return idselect(axis.grid, s.rstart[i] + (k - 1 - s.offsets[i]))
 end
 
-function _axisposition(s::RangesSource, axis::ChunkedCellVector, id::Integer)
+function _axisindex(s::RangesSource, axis::ChunkedCellVector, id::Integer)
     x = convert(idtype(axis.grid), id)
     i = searchsortedlast(s.starts, x)
     (i == 0 || x > s.stops[i]) && return nothing
@@ -284,7 +306,7 @@ encoding(::ChunkedCellVector{<:Any,<:AbstractGrid,<:RangesSource}) = RangesEncod
 
 Build the axis of a `compression: "ranges"` store from its `(n, 2)` array of
 inclusive `[start, stop]` raw ids alone. Zero data IO: the length, every id, and
-every position are closed-form rank/select arithmetic.
+every index are closed-form rank/select arithmetic.
 
 The rows are checked for shape and disjointness as they are indexed, and
 `declared_length`, when given, against the closed-form count — the normative
@@ -299,13 +321,13 @@ function Encodings.cellaxis(::RangesEncoding, grid::AbstractGrid,
     return ChunkedCellVector(grid, RangesSource(starts, stops, rstart, offsets), total)
 end
 
-# --- implicit: position is rank --------------------------------------------
+# --- implicit: index is rank ------------------------------------------------
 
 struct ImplicitSource end
 
 _rawcell(::ImplicitSource, axis::ChunkedCellVector, k::Int) = idselect(axis.grid, k - 1)
 
-function _axisposition(::ImplicitSource, axis::ChunkedCellVector, id::Integer)
+function _axisindex(::ImplicitSource, axis::ChunkedCellVector, id::Integer)
     idvalid(axis.grid, id) || return nothing
     r = idrank(axis.grid, convert(idtype(axis.grid), id))
     return r < length(axis) ? r + 1 : nothing
@@ -316,7 +338,7 @@ encoding(::ChunkedCellVector{<:Any,<:AbstractGrid,ImplicitSource}) = ImplicitEnc
 """
     cellaxis(ImplicitEncoding(), grid, n::Integer)
 
-Build the axis of a store that writes no cell coordinate at all: position `k` is
+Build the axis of a store that writes no cell coordinate at all: index `k` is
 the cell at rank `k - 1` of the level. `n` is the declared length, which must be
 a prefix of the level — the whole of it, for a global store.
 """
@@ -330,7 +352,7 @@ end
 
 # --- dense: one cached chunk of the stored ids -----------------------------
 
-# The cache holds one decoded chunk. A read walks positions in order and a
+# The cache holds one decoded chunk. A read walks indices in order and a
 # selector resolves inside one chunk, so a single slot serves both without a
 # policy.
 #
@@ -391,7 +413,7 @@ function _rawcell(s::DenseSource, axis::ChunkedCellVector, k::Int)
     return _chunkblock(s, c)[k-s.manifest.offsets[c]]
 end
 
-function _axisposition(s::DenseSource, axis::ChunkedCellVector, id::Integer)
+function _axisindex(s::DenseSource, axis::ChunkedCellVector, id::Integer)
     x = convert(idtype(axis.grid), id)
     c = _prunechunk(s.manifest, x)
     c === nothing && return nothing
@@ -465,8 +487,8 @@ function Encodings.cellaxis(::DenseEncoding, grid::AbstractGrid,
                 else
                     throw(DGGSFormatError(check=:unsorted_cell_axis,
                         declared=previous, observed=x,
-                        detail="the cell axis is not sorted: id $x at position " *
-                               "$(lo + j - 1) is below $previous at the position " *
+                        detail="the cell axis is not sorted: id $x at index " *
+                               "$(lo + j - 1) is below $previous at the index " *
                                "before it."))
                 end
             end
@@ -475,7 +497,7 @@ function Encodings.cellaxis(::DenseEncoding, grid::AbstractGrid,
         for j in _checkslots(length(block), samples)
             idvalid(grid, block[j]) || throw(DGGSFormatError(
                 check=:id_names_no_cell, declared=level(grid), observed=block[j],
-                detail="the id $(block[j]) at position $(lo + j - 1) of the cell " *
+                detail="the id $(block[j]) at index $(lo + j - 1) of the cell " *
                        "axis names no cell of level $(level(grid))." *
                        _ownlevel(grid, block[j])))
         end
@@ -487,7 +509,7 @@ function Encodings.cellaxis(::DenseEncoding, grid::AbstractGrid,
     duplicates == 0 || throw(DGGSFormatError(check=:duplicate_ids,
         observed=duplicates, declared=firstduplicate,
         detail="the cell axis holds $duplicates duplicate ids, the first at " *
-               "position $firstduplicate; a DGGS store names each cell once."))
+               "index $firstduplicate; a DGGS store names each cell once."))
     manifest = ChunkManifest(firstids, lastids, lengths, offsets, cl)
     source = DenseSource(ids, manifest, Ref(0), Ref(I[]))
     return ChunkedCellVector(grid, source, n)
@@ -557,7 +579,7 @@ end
 _checkslots(n::Int, ::Nothing) = Base.OneTo(n)
 _checkslots(n::Int, samples::Integer) = _sampleslots(n, Int(samples))
 
-# Spot-sample positions: both ends of the block, which are the ids the manifest
+# Spot-sample indices: both ends of the block, which are the ids the manifest
 # itself publishes, and an even interior spread between them.
 function _sampleslots(n::Int, samples::Int)
     n == 0 && return Int[]
@@ -600,28 +622,175 @@ function _boundary_manifest(axis::ChunkedCellVector, chunklength::Integer)
 end
 
 # ===========================================================================
+# As a region
+#
+# A stored axis and a `CellVector` describe the same thing — an ascending set of
+# cells at one level — in two vocabularies. The store speaks in ids; the region
+# machinery speaks in indices of the complete level grid. `idrank` is the
+# bridge, and it is exact: `idrank(grid, id) + 1` IS the index, so two of the
+# three encodings convert by arithmetic over what they already hold.
+#
+# Index order is preserved by construction: index `k` of the vector is
+# index `k` of the axis. That is what lets a sweep's results be written back
+# against the cube's own axis without a permutation.
+# ===========================================================================
+
+"""
+    CellVector(axis::ChunkedCellVector) -> CellVector
+
+The stored axis as this package's compressed cell vector — the container every
+region verb is written against.
+
+What it costs is the ENCODING's, not the axis's length:
+
+| encoding | cost |
+|---|---|
+| [`ImplicitEncoding`](@ref) | `O(1)`, no IO — the axis is a prefix of the level |
+| [`RangesEncoding`](@ref) | `O(number of stored intervals)`, no IO |
+| [`DenseEncoding`](@ref) | one pass over the stored id array, in chunk order |
+
+The first two are pure arithmetic because a stored interval is a run of
+consecutive RANKS, and a rank plus one is an index in the complete level grid
+— which is what a window already is. No id is materialised and no chunk is read.
+
+A dense axis has no such structure to borrow, so its ids are read once, in
+ascending index order, which is the order that touches each chunk once. The
+indices are then run-compressed like any other index list, so a dense store
+of contiguous cells ends up exactly as compact as the ranges twin of it.
+
+Use [`region`](@ref) rather than this constructor to get the same vector back on
+every call instead of rebuilding it.
+"""
+CellVector(axis::ChunkedCellVector) = _regionvector(axis.source, axis)
+
+"""
+    region(axis::ChunkedCellVector) -> CellVector
+    region(lk::ChunkedCellLookup) -> CellVector
+
+The axis's compressed twin, built once and kept on the axis.
+
+Every region verb a stored axis answers goes through this, so the dense scan
+[`CellVector`](@ref)`(axis)` describes is paid on the first such call and never
+again. On the two computed encodings there is nothing to amortise and the memo
+just saves the arithmetic.
+"""
+function DGG.region(axis::ChunkedCellVector)
+    cached = axis.region[]
+    cached === nothing || return cached::CellVector
+    cv = CellVector(axis)
+    axis.region[] = cv
+    return cv
+end
+
+# Index `k` is rank `k - 1` of the level, so the whole axis is one window.
+_regionvector(::ImplicitSource, axis::ChunkedCellVector) =
+    CellVector(_range_windows((1:length(axis),)), axis.grid, nothing, level(axis))
+
+# Each stored interval is a run of consecutive ranks, so it is an index window
+# outright. Runs that ABUT are merged: `RangeWindows` are maximal by invariant,
+# and the intervals a `:step` writer emits routinely split one run of indices
+# into many rows.
+function _regionvector(s::RangesSource, axis::ChunkedCellVector)
+    runs = UnitRange{Int}[]
+    for i in eachindex(s.rstart)
+        lo = s.rstart[i] + 1
+        hi = lo + (s.offsets[i+1] - s.offsets[i]) - 1
+        hi < lo && continue
+        if !isempty(runs) && lo == runs[end].stop + 1
+            runs[end] = runs[end].start:hi
+        else
+            push!(runs, lo:hi)
+        end
+    end
+    return CellVector(_range_windows(runs), axis.grid, nothing, level(axis))
+end
+
+# The one encoding that has to be read. Ascending `k` is what makes it one pass:
+# the source caches the chunk it last decoded, so a forward walk decodes each
+# chunk once and no chunk twice.
+function _regionvector(::DenseSource, axis::ChunkedCellVector)
+    n = length(axis)
+    indices = Vector{Int}(undef, n)
+    for k in 1:n
+        @inbounds indices[k] = idrank(axis.grid, rawcell(axis, k)) + 1
+    end
+    return CellVector(_windows(indices), axis.grid, nothing, level(axis))
+end
+
+# --- the region surface ----------------------------------------------------
+#
+# Delegating rather than reimplementing is the point: a stored axis answers the
+# region verbs with the SAME code a computed one does, so there is one halo
+# walk, one adjacency table and one neighbourhood sweep in the package.
+
+DGG.PartialGrid(axis::ChunkedCellVector) = PartialGrid(region(axis))
+cellset(axis::ChunkedCellVector) = cellset(region(axis))
+windows(axis::ChunkedCellVector) = windows(region(axis))
+
+DGG.maxneighbors(axis::ChunkedCellVector, connectivity::DGG.Connectivity) =
+    maxneighbors(region(axis), connectivity)
+DGG.maxneighbors(axis::ChunkedCellVector) = maxneighbors(axis, DGG.Vertex())
+
+DGG.neighbors(axis::ChunkedCellVector, c::AbstractCellIndex, k::Integer=1;
+    connectivity::DGG.Connectivity=DGG.Vertex()) =
+    neighbors(region(axis), c, k; connectivity)
+DGG.neighbors(axis::ChunkedCellVector, p::Int, k::Integer=1;
+    connectivity::DGG.Connectivity=DGG.Vertex()) =
+    neighbors(region(axis), p, k; connectivity)
+DGG.neighbors(axis::ChunkedCellVector;
+    connectivity::DGG.Connectivity=DGG.Vertex()) =
+    neighbors(region(axis); connectivity)
+DGG.ring(axis::ChunkedCellVector, c::AbstractCellIndex, k::Integer;
+    connectivity::DGG.Connectivity=DGG.Vertex()) =
+    ring(region(axis), c, k; connectivity)
+DGG.ring(axis::ChunkedCellVector, p::Int, k::Integer;
+    connectivity::DGG.Connectivity=DGG.Vertex()) =
+    ring(region(axis), p, k; connectivity)
+DGG.neighborcount(axis::ChunkedCellVector, c::AbstractCellIndex;
+    connectivity::DGG.Connectivity=DGG.Vertex()) =
+    neighborcount(region(axis), c; connectivity)
+
+DGG.halo(axis::ChunkedCellVector; kw...) = halo(region(axis); kw...)
+DGG.border(axis::ChunkedCellVector; kw...) = border(region(axis); kw...)
+DGG.interior(axis::ChunkedCellVector; kw...) = interior(region(axis); kw...)
+DGG.adjacency(axis::ChunkedCellVector; kw...) = adjacency(region(axis); kw...)
+DGG.adjacency(axis::ChunkedCellVector, hpos::AbstractVector{<:Integer}; kw...) =
+    adjacency(region(axis), hpos; kw...)
+
+mapneighbors(f::F, axis::ChunkedCellVector; kw...) where {F} =
+    mapneighbors(f, region(axis); kw...)
+mapneighbors(f::F, axis::ChunkedCellVector, data::AbstractVector; kw...) where {F} =
+    mapneighbors(f, region(axis), data; kw...)
+foreachneighbors(f::F, axis::ChunkedCellVector; kw...) where {F} =
+    foreachneighbors(f, region(axis); kw...)
+foreachneighbors(f::F, axis::ChunkedCellVector, data::AbstractVector;
+    kw...) where {F} = foreachneighbors(f, region(axis), data; kw...)
+
+covering(axis::ChunkedCellVector, target) = covering(region(axis), target)
+
+# ===========================================================================
 # Region selection
 # ===========================================================================
 
 """
-    covering_positions(axis::ChunkedCellVector, target) -> Vector{Int}
+    covering_indices(axis::ChunkedCellVector, target) -> Vector{Int}
 
-The positions in `axis` of the cells a [`MultiOrderCoverage`](@ref) of `target`
-names, ascending — the position-space form of the [`Covering`](@ref) selector.
+The indices in `axis` of the cells a [`MultiOrderCoverage`](@ref) of `target`
+names, ascending — the index-space form of the [`Covering`](@ref) selector.
 
-The coverage is walked in ascending position order, so a chunk-backed axis
+The coverage is walked in ascending index order, so a chunk-backed axis
 touches each chunk the region meets once.
 
 This is the same verb [`CellVector`](@ref) answers, on a stored axis instead of
 a computed one.
 """
-function covering_positions(axis::ChunkedCellVector, target)
+function covering_indices(axis::ChunkedCellVector, target)
     sys = system(axis.grid)
     l = level(axis.grid)
     set = query(sys, MultiOrderCoverage(target); level=l)
     out = Int[]
     _each_leaf(sys, set, axis.grid, l) do p
-        k = axisposition(axis, convert(idtype(axis.grid), rawid(cellindex(axis.grid, p))))
+        k = axisindex(axis, convert(idtype(axis.grid), rawid(cellindex(axis.grid, p))))
         k === nothing || push!(out, k)
     end
     return issorted(out) ? out : sort!(out)
@@ -635,12 +804,12 @@ function _each_leaf(f, sys::AbstractHierarchicalGridSystem, set, grid, l::Int)
             f(p)
         end
     else
-        positions = Int[]
+        indices = Int[]
         for c in set, d in descendants(sys, c, l)
-            p = cellposition(grid, d)
-            p === nothing || push!(positions, p)
+            p = globalindex(grid, d)
+            p === nothing || push!(indices, p)
         end
-        for p in sort!(positions)
+        for p in sort!(indices)
             f(p)
         end
     end
@@ -685,7 +854,7 @@ axis; one that is neither becomes an `Unordered` `Categorical` lookup over the
 same cells, since a cell axis is sorted by definition and this one is not.
 `Base.reverse` is the everyday way to reach the second case.
 """
-struct ChunkedCellLookup{ID,A<:ChunkedCellVector} <: Lookups.Lookup{ID,1}
+struct ChunkedCellLookup{ID,A<:ChunkedCellVector} <: AbstractCellLookup{ID}
     axis::A
 end
 
@@ -695,23 +864,8 @@ ChunkedCellLookup(axis::ChunkedCellVector{ID}) where {ID} =
 ChunkedCellLookup(lk::ChunkedCellLookup) = lk
 
 Base.parent(lk::ChunkedCellLookup) = lk.axis
-Base.IndexStyle(::Type{<:ChunkedCellLookup}) = Base.IndexLinear()
 
-Base.@propagate_inbounds Base.getindex(lk::ChunkedCellLookup, k::Int) = parent(lk)[k]
-Base.@propagate_inbounds Base.getindex(lk::ChunkedCellLookup, k::CartesianIndex{1}) =
-    parent(lk)[k[1]]
-
-for f in (:getindex, :view, :dotview)
-    @eval Base.$f(lk::ChunkedCellLookup, ::Colon) = lk
-    @eval Base.$f(lk::ChunkedCellLookup, i::AbstractVector{<:Integer}) = _subset(lk, i)
-end
-
-Base.reverse(lk::ChunkedCellLookup) = lk[lastindex(lk):-1:firstindex(lk)]
-
-function _subset(lk::ChunkedCellLookup, mask::AbstractArray{Bool})
-    axes(mask) == axes(lk) || throw(BoundsError(lk, (mask,)))
-    return _subset(lk, findall(mask))
-end
+_subset(lk::ChunkedCellLookup, mask::AbstractArray{Bool}) = _masksubset(lk, mask)
 
 # A subset leaves the store behind: its cells are named explicitly, which is
 # what `CellVector` compresses.
@@ -736,23 +890,9 @@ chunkmanifest(axis::ChunkedCellVector, chunklength::Integer) =
 chunkmanifest(lk::ChunkedCellLookup, chunklength::Integer) =
     ChunkManifest(parent(lk), chunklength)
 
-DGG.system(lk::ChunkedCellLookup) = system(parent(lk))
-DGG.level(lk::ChunkedCellLookup) = level(parent(lk))
-DGG.cellposition(lk::ChunkedCellLookup, c::AbstractCellIndex) =
-    cellposition(parent(lk), c)
-
 encoding(lk::ChunkedCellLookup) = encoding(parent(lk))
 
 # --- DimensionalData plumbing ----------------------------------------------
-
-Lookups.order(::ChunkedCellLookup) = Lookups.ForwardOrdered()
-Lookups.metadata(::ChunkedCellLookup) = Lookups.NoMetadata()
-Lookups.bounds(lk::ChunkedCellLookup) =
-    isempty(lk) ? (nothing, nothing) : (first(lk), last(lk))
-
-Lookups.reducelookup(::ChunkedCellLookup) = Lookups.NoLookup(Base.OneTo(1))
-
-Dimensions.format(lk::ChunkedCellLookup, ::Type, values, axis::AbstractRange) = lk
 
 function Lookups.rebuild(lk::ChunkedCellLookup; data=nothing, kw...)
     (data === nothing || data === lk || data === parent(lk)) && return lk
@@ -781,58 +921,27 @@ end
 Base.show(io::IO, ::MIME"text/plain", lk::ChunkedCellLookup) = show(io, lk)
 
 # --- selectors -------------------------------------------------------------
+#
+# `At`, `Contains`, `Covering` and the `Near` refusal are `AbstractCellLookup`'s,
+# written once against `localindex` and `covering_indices`. What is here is
+# the pair of methods those generic ones call: resolving a lon/lat point on this
+# axis, and printing a miss.
 
-Lookups.hasselection(lk::ChunkedCellLookup, sel::Lookups.At{<:AbstractCellIndex}) =
-    cellposition(parent(lk), Lookups.val(sel)) !== nothing
+"""
+    localindex(axis::ChunkedCellVector, lon::Real, lat::Real) -> Union{Int,Nothing}
 
-Lookups.hasselection(lk::ChunkedCellLookup, sel::Lookups.Contains{<:AbstractCellIndex}) =
-    cellposition(parent(lk), Lookups.val(sel)) !== nothing
+The index of the cell containing a point, or `nothing` when the axis does not
+hold it.
 
-Lookups.hasselection(lk::ChunkedCellLookup, sel::Lookups.Contains{<:Tuple{Real,Real}}) =
-    _pointposition(parent(lk), Lookups.val(sel)...) !== nothing
-
-Lookups.selectindices(lk::ChunkedCellLookup, sel::Lookups.At{<:AbstractCellIndex}; kw...) =
-    _found(lk, cellposition(parent(lk), Lookups.val(sel)), sel)
-
-Lookups.selectindices(lk::ChunkedCellLookup,
-    sel::Lookups.Contains{<:AbstractCellIndex}; kw...) =
-    _found(lk, cellposition(parent(lk), Lookups.val(sel)), sel)
-
-Lookups.selectindices(lk::ChunkedCellLookup,
-    sel::Lookups.Contains{<:Tuple{Real,Real}}; kw...) =
-    _found(lk, _pointposition(parent(lk), Lookups.val(sel)...), sel)
-
-Lookups.selectindices(lk::ChunkedCellLookup, sel::Lookups.At{<:Tuple{Real,Real}}; kw...) =
-    _found(lk, _pointposition(parent(lk), Lookups.val(sel)...), sel)
-
-Lookups.selectindices(lk::ChunkedCellLookup, sel::Covering; kw...) =
-    covering_positions(parent(lk), Lookups.val(sel))
-
-Lookups.selectindices(lk::ChunkedCellLookup, sel::Covering{<:AbstractVector}; kw...) =
-    covering_positions(parent(lk), Lookups.val(sel))
-
-# Resolve a point through the complete level and then look the cell up here, so
-# a point inside the level but outside the store answers `nothing`.
-function _pointposition(axis::ChunkedCellVector, lon::Real, lat::Real)
+The point is resolved through the COMPLETE level first and looked up here after,
+so a point that lands inside the level but outside what the store wrote answers
+`nothing` rather than the nearest stored cell.
+"""
+function DGG.localindex(axis::ChunkedCellVector, lon::Real, lat::Real)
     c = cellat(axis.grid, lon, lat)
     c === nothing && return nothing
-    return cellposition(axis, c)
+    return localindex(axis, c)
 end
-
-_found(::ChunkedCellLookup, k::Int, sel) = k
-_found(lk::ChunkedCellLookup, ::Nothing, sel) = throw(Lookups.SelectorError(lk, sel))
-
-# `Near` is refused here for the reason it is refused on `CellLookup`: id order
-# is a space-filling curve, not sphere distance.
-@noinline _no_near(lk, sel) = throw(ArgumentError(
-    "Near is not defined on a stored cell axis: cell ids run along a " *
-    "space-filling curve, so the nearest id is not the nearest cell on the " *
-    "sphere. Use At(cell), Contains(lon, lat), or Covering(region)."))
-
-Lookups.selectindices(lk::ChunkedCellLookup, sel::Lookups.Near; kw...) =
-    _no_near(lk, sel)
-Lookups.selectindices(lk::ChunkedCellLookup, sel::Lookups.Near{<:AbstractVector};
-    kw...) = _no_near(lk, sel)
 
 Base.showerror(io::IO, e::Lookups.SelectorError{<:ChunkedCellLookup}) =
     show_selector_error(io, e.lookup, e.selector)

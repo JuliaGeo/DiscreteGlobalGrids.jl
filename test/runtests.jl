@@ -33,6 +33,8 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/stencils.jl")
     include("systems/crosssystem/neighborhood.jl")
     include("systems/crosssystem/mapneighbors.jl")
+    # The field-request form of the same sweep.
+    include("systems/crosssystem/needs.jl")
     include("systems/crosssystem/subtree_halos.jl")
     # The algebra over regions reads the halo walk and both cell containers.
     include("systems/crosssystem/region_algebra.jl")
@@ -41,9 +43,16 @@ using DiscreteGlobalGrids
     # The GlobalRegridding face reads the grids, the cell containers, and the
     # cube axis, so it runs after all three.
     include("systems/crosssystem/regrid.jl")
+    # The dual cells that same face builds for a point method.
+    include("systems/crosssystem/regrid_dual.jl")
     # Acceptance: the tiled-DEM, south-pole, streaming-and-spill case, on the
     # face the file above unit-tests.
     include("systems/crosssystem/regrid_acceptance.jl")
     include("io/runtests.jl")
     include("plotting/runtests.jl")
+    # The production driver's scheduling policy. It is a script rather than a
+    # package, but the tile cache and the pull cursor are concurrent state with
+    # an invariant, and an invariant is what a test is for.
+    include("scripts/copdem_source_mode.jl")
+    include("scripts/copdem_policy.jl")
 end

@@ -1,0 +1,32 @@
+name = "DaggerRegrid"
+uuid = "11720a2a-ed24-4506-8c84-45e7a82299a6"
+version = "0.0.0-DEV"
+authors = ["Anshul Singhvi"]
+
+[deps]
+ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
+ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
+Dagger = "d58978e5-989f-55fb-8d15-ea34adc7bf54"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
+DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
+DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+Extents = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
+GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
+GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
+GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
+GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Profile = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
+
+[sources]
+Dagger = {rev = "master", url = "https://github.com/JuliaParallel/Dagger.jl.git"}
+DiscreteGlobalGrids = {path = "../.."}
+GlobalRegridding = {path = "../../lib/GlobalRegridding"}
+
+[compat]
+julia = "1.11"

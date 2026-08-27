@@ -1,5 +1,5 @@
 # ISEA4R uses 0-based Morton identifiers over ten diamonds. Parent/child and
-# subtree operations are radix-4 arithmetic and grid positions are identifier
+# subtree operations are radix-4 arithmetic and grid indices are identifier
 # + 1, so they are the quad-face family's; this file writes the ten-diamond
 # chart's share.
 
@@ -50,6 +50,15 @@ vertices give seven. At level zero every diamond has six vertex neighbours.
 """
 DGG.maxneighbors(::ISEA4RSystem, ::DGG.Vertex) = 9
 DGG.maxneighbors(::ISEA4RSystem, ::DGG.Edge) = 4
+
+# `CustomOrder`, not `CounterClockwise`, and no `maxring`: both omissions have
+# the same cause. The diamond lattice's flat laws would be `8k` per ring and a
+# faithfully rotational shell, but the 5-valent icosahedral vertices break both
+# — rings reach 25 and 35 against the flat 24 and 32 at k = 3 and 4, and the
+# distorted shells are not rotations of their one-rings, so azimuth is not
+# monotone around them. The one-rings themselves do measure counter-clockwise;
+# what cannot be carried outward is the order, which is what `CustomOrder` says.
+DGG.winding(::ISEA4RSystem, ::DGG.Connectivity) = DGG.CustomOrder()
 
 # Row-major codecs remain internal; only the canonical Morton index is exposed.
 DGG.cellindextypes(::ISEA4RSystem) = (DGG.LevelIndex,)
@@ -142,8 +151,10 @@ _subtree_cap(ix::Integer, iy::Integer, diamond::Integer, nside::Integer) =
     node_extent(ISEA4RSystem(), c) -> SphericalCap
 
 Return the uninflated subtree cap. Exact chart nesting makes the cell rectangle
-a bound for every descendant; [`_subtree_cap`](@ref) supplies a conservative
-sampled radius. All returned caps are geodesically convex: the widest in the
+a bound for every descendant's geometry; [`_subtree_cap`](@ref) supplies a
+conservative sampled radius. It bounds no descendant's *cap*: a child cap is
+recentred and may reach outside its parent's extent without violating the
+covering law. All returned caps are geodesically convex: the widest in the
 system is a level-0 diamond's, 62.3°, against the 90° bound.
 """
 function DGG.node_extent(::ISEA4RSystem, c::DGG.LevelIndex)
@@ -213,14 +224,12 @@ corner cells at finer levels.
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by [`maxneighbors`](@ref).
 """
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{9,DGG.LevelIndex}()
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    isempty(shells) && return DGG.LevelIndex[]
-    return reduce(vcat, shells)
+    return DGG.shell_disc(g, c, steps, connectivity)
 end
 
 """
@@ -229,12 +238,30 @@ end
 Cells at lattice distance exactly `k`, counterclockwise from the first ring-1
 direction. `k == 0` returns `[c]`; outer-ring azimuth ties use canonical order.
 """
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    steps <= length(shells) || return DGG.LevelIndex[]
-    return shells[steps]
+    return DGG.shell_ring(g, c, steps, connectivity)
+end
+
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{9,DGG.LevelIndex}()
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_disc(g, c, Val(K), connectivity)
+end
+
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return DGG.LevelIndex[c]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_ring(g, c, Val(K), connectivity)
 end

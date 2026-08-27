@@ -1,0 +1,102 @@
+/* Three faces, and the split between the first two is the point:
+   Rale Grotesk sets the headlines, Inter sets the running copy,
+   JuliaMono sets the signage and code. All three are bundled and
+   served from public/fonts/, so the deck never touches the network.
+
+   Inter is the design system's specified sans. Rale Grotesk is not
+   in that system at all — it is kept for display type because the
+   deck's headline sizes, tracking and line breaks were drawn
+   against it, and because a grotesk headline over an Inter body is
+   a sharper pairing than Inter over Inter. */
+
+/* ---------------------------------------------------------------
+   Inter — body. One variable file covering the whole 100–900 axis,
+   so `font-weight` interpolates instead of snapping to a bundled
+   cut, and one 874KB request replaces three static ones.
+
+   `font-weight: 100 900` is what tells the browser the range is
+   real; without it the variable axis is pinned at its default and
+   every weight below renders identically.
+
+   Italic is deliberately absent. The deck sets `italic: false` in
+   its headmatter and nothing in it is italic, so the 904KB italic
+   companion would be dead weight.
+
+   SIL OFL 1.1 — see Inter-LICENSE.txt alongside.
+   --------------------------------------------------------------- */
+
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/Inter-Variable.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------------------------------------------------------------
+   Rale Grotesk — display. Bundled OTFs.
+   --------------------------------------------------------------- */
+
+@font-face {
+  font-family: 'Rale Grotesk';
+  src: url('/fonts/RaleGrotesk-Regular.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Rale Grotesk';
+  src: url('/fonts/RaleGrotesk-Medium.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Rale Grotesk';
+  src: url('/fonts/RaleGrotesk-Bold.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* JuliaMono — bundled woff2, served from public/fonts/.
+   This is the signage and code face. The JuliaGeo design system
+   specifies Space Mono; this deck does not follow it there, for the
+   reasons in styles/tokens.css and the README — JuliaMono is the
+   Julia community's typeface, it carries the glyphs Julia code
+   actually contains, and every label offset in this template is
+   measured against it.
+
+   Weights are declared, not synthesised: 400 for code and captions,
+   500 for every mono label, 700 for the definitions the Shiki theme
+   bolds. Without a real 700 face the browser fakes it, and faux bold
+   on a monospace smears the letterfit.
+
+   Files and licence come from the JuliaMono Julia artifact
+   (SIL OFL 1.1, see JuliaMono-LICENSE.txt alongside them). */
+
+@font-face {
+  font-family: 'JuliaMono';
+  src: url('/fonts/JuliaMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JuliaMono';
+  src: url('/fonts/JuliaMono-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JuliaMono';
+  src: url('/fonts/JuliaMono-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}

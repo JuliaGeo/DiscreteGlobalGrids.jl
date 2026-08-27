@@ -2,16 +2,9 @@
 
 # Chunk-restricted cell trees
 
-"""
-    subtree(space::RegridSpace, inds) -> tree
-
-Return a spatial tree over `inds`, with leaves addressed by global cell
-position. The fallback builds a bounding-cap hierarchy and one polygon per
-cell. Spaces with a cheaper restricted tree should specialize this function.
-"""
 function subtree(space::RegridSpace, inds)
     _iswholespace(space, inds) && return celltree(space)
-    return CellCapTree(space, inds)
+    return CellSpaceRTree(space, inds)
 end
 
 _iswholespace(space::RegridSpace, inds::AbstractUnitRange{<:Integer}) =
@@ -19,217 +12,278 @@ _iswholespace(space::RegridSpace, inds::AbstractUnitRange{<:Integer}) =
 _iswholespace(::RegridSpace, inds) = false
 
 """
-    CellCapTree(space, inds)
+    CellSpaceRTree(space, inds; nodecapacity = 16)
 
-Build the fallback balanced cap tree for `inds`. Nodes store their extents and
-leaves contain at most $(_CELL_TREE_LEAF) cells.
+The unstructured cell fallback: a thin cell-space adapter over GeometryOps'
+packed `FlexibleRTrees.RTree`. The R-tree owns outward-rounded Cartesian
+extents, while the adapter retains `space` for geometry access and maps every
+packed leaf back to its requested local index in `space`.
+
+Structured spaces should return a native restricted cursor before reaching
+this fallback. `nodecapacity` is exposed for packing-invariance checks.
 """
-struct CellCapTree{S}
+struct CellSpaceRTree{S,N,V<:AbstractVector{Int},C<:AbstractVector{<:Cap}}
     space::S
-    inds::Vector{Int}
-    caps::Vector{Cap}
-    lo::Int
-    hi::Int
-    extent::Cap
-    children::Vector{CellCapTree{S}}
+    node::N
+    indices::V
+    caps::C
+    leafcount::Int
+    height::Int
+    nodecapacity::Int
 end
 
-function CellCapTree(space::S, inds) where {S<:RegridSpace}
-    ix = collect(Int, inds)
-    caps = [_cellcap(space, i) for i in ix]
-    return _cellcapnode(space, ix, caps, 1, length(ix))
+function CellSpaceRTree(space::S, inds; nodecapacity::Int = 16) where {S<:RegridSpace}
+    indices = collect(Int, inds)
+    isempty(indices) && throw(ArgumentError(
+        "cannot build a cell tree from an empty index set"))
+    caps = [_packedcellcap(space, i) for i in indices]
+    boxes = map(cap -> convert(Extents.Extent, cap), caps)
+    packed = FlexibleRTrees.RTree(FlexibleRTrees.HPR(), indices;
+        nodecapacity, extents = boxes)
+    return CellSpaceRTree(space, packed, indices, caps, length(indices),
+        length(packed.levels), nodecapacity)
 end
 
-function _cellcapnode(space::S, ix::Vector{Int}, caps::Vector{Cap},
-    lo::Int, hi::Int) where {S}
-    children = CellCapTree{S}[]
-    if hi - lo + 1 > _CELL_TREE_LEAF
-        mid = (lo + hi) >> 1
-        push!(children, _cellcapnode(space, ix, caps, lo, mid))
-        push!(children, _cellcapnode(space, ix, caps, mid + 1, hi))
-        extent = _mergecaps([child.extent for child in children])
+# A cap of at most one hemisphere is geodesically convex, so it covers the cell
+# edges as well as the vertices. Wider vertex caps conservatively become the
+# whole sphere. Construction and merging use GeometryOps' public cap protocol;
+# the small fractional growth preserves the previous fallback's headroom.
+function _packedcellcap(space::RegridSpace, i::Int)
+    points = GI.getpoint(getcell(space, i))
+    isempty(points) && return _WHOLE_SPHERE
+    firstpoint = first(points)
+    cap = SphericalCap(USPoint(
+        GI.x(firstpoint), GI.y(firstpoint), GI.z(firstpoint)), 0.0)
+    for point in Iterators.drop(points, 1)
+        cap = Extents.union(cap, SphericalCap(
+            USPoint(GI.x(point), GI.y(point), GI.z(point)), 0.0))
+        cap.radius > Float64(pi) / 2 && return _WHOLE_SPHERE
+    end
+    return Extents.grow(cap, 5e-5)
+end
+
+Base.show(io::IO, tree::CellSpaceRTree) =
+    print(io, "CellSpaceRTree(", tree.leafcount, " cells, ", tree.node, ")")
+
+STI.isspatialtree(::Type{<:CellSpaceRTree}) = true
+STI.node_extent_is_expensive(::Type{<:CellSpaceRTree}) = false
+STI.isleaf(tree::CellSpaceRTree) = STI.isleaf(tree.node)
+STI.nchild(tree::CellSpaceRTree) = STI.nchild(tree.node)
+STI.node_extent(tree::CellSpaceRTree) = STI.node_extent(tree.node)
+
+function STI.getchild(tree::CellSpaceRTree, i::Int)
+    childheight = tree.height - 1
+    childcapacity = tree.nodecapacity^childheight
+    childcount = clamp(tree.leafcount - (i - 1) * childcapacity, 0, childcapacity)
+    return CellSpaceRTree(tree.space, STI.getchild(tree.node, i), tree.indices,
+        tree.caps, childcount, childheight, tree.nodecapacity)
+end
+
+STI.getchild(tree::CellSpaceRTree) =
+    (STI.getchild(tree, i) for i in 1:STI.nchild(tree))
+
+# FlexibleRTrees reports slots in its payload vector. Translate those back to
+# the space's stable local indices, and expose their exact cap rather than the
+# cap's broad-phase XYZ box.
+STI.child_indices_extents(tree::CellSpaceRTree) =
+    ((@inbounds(tree.indices[i]), @inbounds(tree.caps[i]))
+     for (i, _) in STI.child_indices_extents(tree.node))
+
+# `ncells` and `split_weight` describe this node's restricted population;
+# matrix assembly separately needs the owning space's complete cell count.
+ncells(tree::CellSpaceRTree) = tree.leafcount
+Trees.cell_index_count(tree::CellSpaceRTree) = ncells(tree.space)
+Trees.split_weight(tree::CellSpaceRTree) = tree.leafcount
+getcell(tree::CellSpaceRTree, i::Int) = getcell(tree.space, i)
+
+function _packedcellindices!(out::Vector{Int}, tree::CellSpaceRTree)
+    if STI.isleaf(tree)
+        append!(out, first(entry) for entry in STI.child_indices_extents(tree))
     else
-        extent = _mergecaps(view(caps, lo:hi))
+        for child in STI.getchild(tree)
+            _packedcellindices!(out, child)
+        end
     end
-    return CellCapTree{S}(space, ix, caps, lo, hi, extent, children)
+    return out
 end
 
-Base.show(io::IO, tree::CellCapTree) =
-    print(io, "CellCapTree(", tree.hi - tree.lo + 1, " cells)")
+getcell(tree::CellSpaceRTree) =
+    (getcell(tree.space, i) for i in _packedcellindices!(Int[], tree))
+GOCore.best_manifold(tree::CellSpaceRTree) = manifold(tree.space)
 
-# Merge caps around their mean centre. Use the full sphere beyond the convex range.
-function _mergecaps(caps)
-    sx = sy = sz = 0.0
-    n = 0
-    for c in caps
-        sx += c.point[1]
-        sy += c.point[2]
-        sz += c.point[3]
-        n += 1
-    end
-    n == 0 && return _WHOLE_SPHERE
-    norm = sqrt(sx^2 + sy^2 + sz^2)
-    norm <= eps(Float64) && return _WHOLE_SPHERE
-    centre = USPoint(sx / norm, sy / norm, sz / norm)
-    radius = 0.0
-    for c in caps
-        radius = max(radius, US.spherical_distance(centre, c.point) + c.radius)
-    end
-    radius > Float64(pi) / 2 && return _WHOLE_SPHERE
-    return SphericalCap(centre, _padcap(radius))
-end
-
-_cellcap(space::RegridSpace, i::Int) = _mergecaps(
-    [SphericalCap(USPoint(GI.x(p), GI.y(p), GI.z(p)), 0.0)
-     for p in GI.getpoint(getcell(space, i))])
-
-STI.isspatialtree(::Type{<:CellCapTree}) = true
-STI.node_extent_is_expensive(::Type{<:CellCapTree}) = false
-STI.isleaf(tree::CellCapTree) = isempty(tree.children)
-STI.nchild(tree::CellCapTree) = length(tree.children)
-STI.getchild(tree::CellCapTree) = tree.children
-STI.getchild(tree::CellCapTree, i::Int) = tree.children[i]
-STI.node_extent(tree::CellCapTree) = tree.extent
-STI.child_indices_extents(tree::CellCapTree) =
-    ((tree.inds[k], tree.caps[k]) for k in tree.lo:tree.hi)
-
-# Tree leaves and cell access both use global space positions.
-# ConservativeRegridding fetches matrix sizes and polygons through these
-# bindings during `intersection_areas`.
-ncells(tree::CellCapTree) = ncells(tree.space)
-# `ncells` answers for the whole space, so the frontier's default estimate
-# would be wrong here; the node's cap window is exact.
-Trees.split_weight(tree::CellCapTree) = tree.hi - tree.lo + 1
-getcell(tree::CellCapTree, i::Int) = getcell(tree.space, i)
-getcell(tree::CellCapTree) =
-    (getcell(tree.space, i) for i in view(tree.inds, tree.lo:tree.hi))
-GOCore.best_manifold(tree::CellCapTree) = manifold(tree.space)
-
-# Destination-cell geometry cache
-
-# Avoid caching tiles large enough to create excessive temporary geometry.
-const _TILE_CELL_CACHE_MAX = 1 << 16
+# Prepared destination geometry
 
 """
-    TileCells(space, inds)
+    DestinationCache(space, inds) -> DestinationCache or `nothing`
 
-Wrap `space` and cache geometry for `inds` on first subtree access. Concurrent
-block builds share the cache. Tiles above $(_TILE_CELL_CACHE_MAX) cells keep
-on-demand geometry.
+Prepared destination geometry for one tile: its index set, its chunk-local
+index map, its restricted tree, and one polygon slot per tile row.
+
+  - Every block the tile takes from a source chunk shares one cache: the
+    restricted tree is built once, and each destination polygon synthesized at
+    most once, for the whole tile.
+  - Slots fill from the candidate pairs a block is about to measure, so a
+    destination cell no source overlaps is never synthesized. A fill holds the
+    lock; the clipping loop only reads the slot named by its own block row.
+  - Not a `RegridSpace`: the destination space still answers every question
+    about the destination.
+  - `nothing` when one probe cannot name a concrete polygon type, dynamic
+    dispatch in the clipping loop costing more than prepared geometry saves.
+  - The polygon type is a parameter and the tree is not, so a cache has one type
+    per destination space whatever [`subtree`](@ref) returned.
 """
-mutable struct TileCells{S<:RegridSpace,I,M} <: RegridSpace
-    space::S
+struct DestinationCache{I,M,P}
     inds::I
     map::M
-    initialized::Bool
-    "the tile's cached geometry, or `nothing` when caching is off"
-    cells::Union{Nothing,Vector}
-    "the tile's restricted tree, built once and shared by every block build"
+    # Untyped on purpose: a compile barrier. `subtree` returns one of several
+    # tree types for a space, and the whole-tile assemblies that read this field
+    # would otherwise compile once per type. The clipping loop never reads it.
     tree::Any
+    polygons::Vector{P}
+    # A flag per row rather than `isassigned`, which cannot answer for an
+    # isbits polygon: those are stored inline and leave no empty slot.
+    filled::Vector{Bool}
     lock::ReentrantLock
 end
 
-TileCells(space::RegridSpace, inds) =
-    TileCells(space, inds, indexmap(inds), false, nothing, nothing, ReentrantLock())
+DestinationCache(space::RegridSpace, inds) =
+    isempty(inds) ? nothing :
+    DestinationCache(space, inds, indexmap(inds), subtree(space, inds))
 
-Base.show(io::IO, tc::TileCells) =
-    print(io, "TileCells(", tc.space, ", ", length(tc.inds), " cells)")
-
-# Forward the space interface; only the restricted tree uses cached geometry.
-ncells(tc::TileCells) = ncells(tc.space)
-getcell(tc::TileCells, i::Int) = getcell(tc.space, i)
-manifold(tc::TileCells) = manifold(tc.space)
-nchunks(tc::TileCells) = nchunks(tc.space)
-cellindices(tc::TileCells, chunk::Int) = cellindices(tc.space, chunk)
-chunkat(tc::TileCells, i::Integer) = chunkat(tc.space, i)
-chunkat(tc::TileCells, p::US.UnitSphericalPoint) = chunkat(tc.space, p)
-cellat(tc::TileCells, p::US.UnitSphericalPoint) = cellat(tc.space, p)
-cellcentroid(tc::TileCells, i::Int) = cellcentroid(tc.space, i)
-hascellchart(tc::TileCells) = hascellchart(tc.space)
-celltree(tc::TileCells) = celltree(tc.space)
-chunktree(tc::TileCells) = chunktree(tc.space)
-
-"""
-    subtree(tc::TileCells, inds)
-
-Return the memoized restricted tree for the tile's exact index set, wrapped
-with cached cell geometry where available. Initialization runs once under a
-lock; the immutable tree is then shared by concurrent block builds.
-"""
-function subtree(tc::TileCells, inds)
-    inds == tc.inds || return subtree(tc.space, inds)
-    tree, cells = _tiletree!(tc)
-    cells === nothing && return tree
-    return _cachedtree(tree, tc.map, cells)
+# The map and the tree are the tile's, built once by `preparedestination` and
+# handed to whichever preparation it settles on.
+function DestinationCache(space::RegridSpace, inds, imap, tree)
+    isempty(inds) && return nothing
+    P = typeof(getcell(space, Int(first(inds))))
+    isconcretetype(P) || return nothing
+    n = length(inds)
+    return DestinationCache{typeof(inds),typeof(imap),P}(inds, imap,
+        tree, Vector{P}(undef, n), fill(false, n), ReentrantLock())
 end
 
-function _tiletree!(tc::TileCells)
-    lock(tc.lock)
-    try
-        if !tc.initialized
-            tc.tree = subtree(tc.space, tc.inds)
-            tc.cells = length(tc.inds) > _TILE_CELL_CACHE_MAX ? nothing :
-                       _synthesizecells(tc.space, tc.inds)
-            tc.initialized = true
-        end
-        return tc.tree, tc.cells
-    finally
-        unlock(tc.lock)
-    end
-end
-
-function _synthesizecells(space::RegridSpace, inds)
-    cells = [getcell(space, Int(i)) for i in inds]
-    # Dynamic dispatch in the clipping loop costs more than the cache saves.
-    return isconcretetype(eltype(cells)) ? cells : nothing
-end
-
-# Function barrier for the cache field's abstract element type.
-_cachedtree(tree::T, map::M, cells::Vector{P}) where {T,M,P} =
-    CachedCellTree{T,M,P}(tree, map, cells)
+Base.show(io::IO, c::DestinationCache) = print(io, "DestinationCache(",
+    length(c.inds), " cells, ", count(c.filled), " prepared)")
 
 """
-    CachedCellTree(tree, map, cells)
+    DestinationTree(inds, map, tree)
 
-Wrap `tree` so `getcell` uses `cells`. Spatial-tree methods and extents are
-unchanged. The immutable wrapper is safe to share across assembly tasks.
+One tile's restricted tree and index map, with no polygon slots: the
+preparation a tile gets when its cells' geometry does not fit
+[`destcellbudget`](@ref), or when the method reads no cell polygon at all.
+
+Building the tree is the part of preparing that every tile repays. A tile's
+tree is a function of its index set alone, so one build serves every block the
+tile takes from a source chunk, and on a whole-space DGGS destination that
+build is a cap per cell — 823,543 of them for one production chunk, which is
+most of the block's cost when each block repeats it. The polygons are the part
+the budget may refuse; refusing them is not a reason to rebuild the tree.
+
+Blocks addressed this way synthesize destination geometry through their own
+task-local [`CellMemo`](@ref), exactly as an index set does.
 """
-struct CachedCellTree{T,M,P}
-    tree::T
+struct DestinationTree{I,M}
+    inds::I
     map::M
-    cells::Vector{P}
+    # Untyped for the same reason `DestinationCache.tree` is.
+    tree::Any
 end
 
-Base.show(io::IO, t::CachedCellTree) =
-    print(io, "CachedCellTree(", t.tree, ", ", length(t.cells), " cells)")
+Base.show(io::IO, d::DestinationTree) =
+    print(io, "DestinationTree(", length(d.inds), " cells)")
 
-STI.isspatialtree(::Type{<:CachedCellTree{T}}) where {T} = STI.isspatialtree(T)
-STI.node_extent_is_expensive(::Type{<:CachedCellTree{T}}) where {T} =
-    STI.node_extent_is_expensive(T)
-STI.isleaf(t::CachedCellTree) = STI.isleaf(t.tree)
-STI.nchild(t::CachedCellTree) = STI.nchild(t.tree)
-STI.getchild(t::CachedCellTree) = STI.getchild(t.tree)
-STI.getchild(t::CachedCellTree, i::Int) = STI.getchild(t.tree, i)
-STI.node_extent(t::CachedCellTree) = STI.node_extent(t.tree)
-STI.child_indices_extents(t::CachedCellTree) = STI.child_indices_extents(t.tree)
+"""
+    preparesdestination(method, dst_space::RegridSpace) -> Bool
 
-GOCore.best_manifold(t::CachedCellTree) = GOCore.best_manifold(t.tree)
-ncells(t::CachedCellTree) = ncells(t.tree)
-getcell(t::CachedCellTree) = getcell(t.tree)
+Whether a build of `method` over `dst_space` keeps the tile's destination cell
+polygons, given room for them.
 
-@inline function getcell(t::CachedCellTree, i::Int)
-    k = localindex(t.map, i)
-    k == 0 && return getcell(t.tree, i)
-    return @inbounds t.cells[k]
+An area method reads a destination cell's polygon once per overlapping source
+leaf, so it keeps them where synthesizing one is expensive
+([`expensivecellgeometry`](@ref)). A point method evaluates at a destination's
+sample site and reads no cell polygon, so it keeps none.
+"""
+preparesdestination(::AbstractRegriddingMethod, ::RegridSpace) = false
+preparesdestination(::Conservative, dst_space::RegridSpace) =
+    expensivecellgeometry(dst_space)
+
+"""
+    preparedestination(method, dst_space, dst_inds, budget) -> DestinationCache, DestinationTree or dst_inds
+
+The destination a tile's builds address: the tile's tree with prepared polygons
+where `method` keeps them ([`preparesdestination`](@ref)) and `budget` holds
+them ([`destcellsfit`](@ref)), the tile's tree alone otherwise, and `dst_inds`
+itself for an empty tile.
+
+  - All three answers reach the same weights, value for value and entry for entry.
+  - Only a tile with more than one block repays a preparation, so a single-block
+    build — the eager whole domain included — takes the index set and its
+    task-local [`CellMemo`](@ref) instead.
+  - The tree is hoisted whether or not the polygons are. It is built from the
+    index set alone and every block of the tile clips against the same one, so
+    the budget's refusal applies to the polygon slots and to nothing else. A
+    [`DestinationTree`](@ref) carries the tree without them.
+"""
+function preparedestination(method::AbstractRegriddingMethod,
+    dst_space::RegridSpace, dst_inds, budget::Integer)
+    isempty(dst_inds) && return dst_inds
+    imap = indexmap(dst_inds)
+    tree = subtree(dst_space, dst_inds)
+    if preparesdestination(method, dst_space) &&
+       destcellsfit(method, dst_space, length(dst_inds), budget)
+        cache = DestinationCache(dst_space, dst_inds, imap, tree)
+        cache === nothing || return cache
+    end
+    return DestinationTree(dst_inds, imap, tree)
 end
+
+# Fill every row the pairs name and no other, once per row for the whole tile.
+# Concurrent blocks of one tile fill under the lock, and a block's own reads
+# happen after it releases the lock, so a slot another block filled is visible.
+function _preparepolygons!(cache::DestinationCache, pairs)
+    lock(cache.lock)
+    try
+        _fillpolygons!(cache.polygons, cache.filled, cache.map, cache.tree, pairs)
+    finally
+        unlock(cache.lock)
+    end
+    return cache
+end
+
+function _fillpolygons!(polygons::Vector{P}, filled::Vector{Bool}, map, tree,
+    pairs) where {P}
+    @inbounds for (_, i2) in pairs
+        row = localindex(map, i2)
+        (row == 0 || filled[row]) && continue
+        polygons[row] = Trees.getcell(tree, i2)
+        filled[row] = true
+    end
+    return polygons
+end
+
+"""
+    _destinationtree(dst_space, dst_inds)
+    _destinationtree(prepared::Union{DestinationCache,DestinationTree})
+
+The tree a block clips its destination against, held opaque to inference.
+
+[`subtree`](@ref) answers one of several tree types for a space. Crossing an
+inference barrier compiles a block's assembly for the one type the run reaches
+rather than for all of them, behind a single dynamic dispatch per block; the
+clipping loop runs inside that specialization and pays nothing.
+"""
+_destinationtree(dst_space::RegridSpace, dst_inds) =
+    Base.inferencebarrier(subtree(dst_space, dst_inds))
+# A preparation holds its tree opaque already.
+_destinationtree(cache::DestinationCache) = cache.tree
+_destinationtree(prepared::DestinationTree) = prepared.tree
 
 # Intersection operator
 
 """
     CellMemo(::Type{P}; slots)
 
-A task-local direct-mapped memo of cell polygons by tree position. Candidate
-pairs leave a leaf pairing in position runs — the destination repeats within a
+A task-local direct-mapped memo of cell polygons by tree index. Candidate
+pairs leave a leaf pairing in index runs — the destination repeats within a
 pairing and the source's few leaf cells cycle across consecutive pairings — so
 a handful of slots serves most `getcell` calls with the value already built.
 """
@@ -263,18 +317,23 @@ function _cellmemo(space::RegridSpace, inds)
 end
 
 """
-    BlockAreaOperator(inner, dstmap, srcmap, srcmemo, dstmemo)
+    BlockAreaOperator(inner, dstmap, srcmap, srcmemo, dstcells)
 
-Measure intersections with `inner` and map global tree positions to block-local
-indices. Each assembly task receives its own mutable clipping cache and its own
-cell memos.
+Measure intersections with `inner` and map the trees' local indices to
+chunk-local block rows and columns. Each assembly task receives its own mutable
+clipping cache and its own source cell memo.
+
+`dstcells` is where the destination's geometry comes from: a
+[`DestinationCache`](@ref) the whole tile shares, a task-local
+[`CellMemo`](@ref), or `nothing` for a memo-free build. A cache answers by the
+block row the operator has already computed; the other two synthesize.
 """
 struct BlockAreaOperator{O,DM,SM,MS,MD}
     inner::O
     dstmap::DM
     srcmap::SM
     srcmemo::MS
-    dstmemo::MD
+    dstcells::MD
 end
 
 # Memo-free form: every `getcell` synthesizes. The production path passes memos.
@@ -289,7 +348,17 @@ ConservativeRegridding.output_matrix_size(op::BlockAreaOperator, src_tree, dst_t
 
 ConservativeRegridding.task_local_operator(op::BlockAreaOperator) =
     BlockAreaOperator(ConservativeRegridding.task_local_operator(op.inner),
-        op.dstmap, op.srcmap, _fresh(op.srcmemo), _fresh(op.dstmemo))
+        op.dstmap, op.srcmap, _fresh(op.srcmemo), _fresh(op.dstcells))
+
+# One tile's cache is read-only for the length of an assembly and is shared by
+# every task, rather than copied per task as a memo is.
+_fresh(cache::DestinationCache) = cache
+
+# The candidate pairs are complete and ordered before any assembly task starts,
+# so this is where the block learns exactly which destination rows it measures.
+ConservativeRegridding.work_items(
+    op::BlockAreaOperator{O,DM,SM,MS,<:DestinationCache}, pairs) where {O,DM,SM,MS} =
+    (_preparepolygons!(op.dstcells, pairs); pairs)
 
 # The source is the subject and the destination is the clip ring. A block emits
 # weights only for the pairs both of its chunks contain.
@@ -299,7 +368,7 @@ ConservativeRegridding.task_local_operator(op::BlockAreaOperator) =
     col = localindex(op.srcmap, i1)
     (row == 0 || col == 0) && return nothing
     area = op.inner(_memocell(op.srcmemo, src_tree, i1),
-        _memocell(op.dstmemo, dst_tree, i2))
+        _destinationcell(op.dstcells, dst_tree, i2, row))
     area > 0 || return nothing
     push!(rows, row)
     push!(cols, col)
@@ -307,68 +376,133 @@ ConservativeRegridding.task_local_operator(op::BlockAreaOperator) =
     return nothing
 end
 
+@inline _destinationcell(dstcells, dst_tree, i::Int, ::Int) =
+    _memocell(dstcells, dst_tree, i)
+@inline _destinationcell(cache::DestinationCache, dst_tree, ::Int, row::Int) =
+    @inbounds cache.polygons[row]
+
 # Conservative method
 
 """
-    build_weights!(coo, ::Conservative, dst_space, dst_inds, src_space, src_inds)
+    buildweights!(coo, ::Conservative, dst_space, dst_inds, src_space, src_inds)
 
 Append spherical intersection areas for the two chunks. Each destination
 denominator accumulates its covered area. A conservative block always carries a
 denominator, including when coverage is zero. Source and destination manifolds
 must match. Intersection discovery and clipping may run in parallel.
+
+This is the generic [`WeightCOO`](@ref) route, which any method may build
+through. [`pairblock`](@ref)`(::Conservative, …)` is the route a conservative
+plan takes, and reaches the same weights without a coordinate list.
 """
-function build_weights!(coo::WeightCOO, ::Conservative,
+function buildweights!(coo::WeightCOO, ::Conservative,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     isempty(dst_inds) && return coo
     markdenominated!(coo)
     isempty(src_inds) && return coo
 
-    m = manifold(dst_space)
-    m == manifold(src_space) || throw(ArgumentError(
-        "conservative weights need one manifold on both sides: destination is " *
-        "$(m), source is $(manifold(src_space))"))
-
+    m = _sharedmanifold(dst_space, src_space)
     op = BlockAreaOperator(_intersectionoperator(m),
         indexmap(dst_inds), indexmap(src_inds),
         _cellmemo(src_space, src_inds), _cellmemo(dst_space, dst_inds))
-    block = _intersectionareas(m, subtree(dst_space, dst_inds),
+    block = _intersectionareas(m, _destinationtree(dst_space, dst_inds),
         subtree(src_space, src_inds), op)
 
     return _fillcoo!(coo, block)
 end
 
 """
-    wholeblock(::Conservative, dst_space, src_space) -> WeightBlock
+    pairblock(::Conservative, dst_space, dst_inds, src_space, src_inds) -> WeightBlock
+    pairblock(::Conservative, dst_space, dst_cache::DestinationCache, src_space, src_inds)
+    pairblock(::Conservative, dst_space, prepared::DestinationTree, src_space, src_inds)
 
-The eager whole-domain block, adopting the assembled sparse matrix directly.
-The generic path copies every entry into a [`WeightCOO`](@ref) and builds a
-second, identical CSC from it; here only the denominators are read off. The
-values, their CSC layout, and the denominator accumulation order are the
-generic path's, bit for bit.
+Adopt the assembled sparse matrix of intersection areas as the block's weights,
+reading each destination's denominator off it once. Every conservative block —
+the eager whole domain and a chunk pair alike — is built here.
+
+  - The values, their CSC layout, and the denominator accumulation order are the
+    generic [`WeightCOO`](@ref) route's, bit for bit.
+  - Naming the destination by index set builds its restricted tree here and
+    synthesizes its geometry through a task-local [`CellMemo`](@ref); naming it
+    by a [`DestinationTree`](@ref) reuses the tile's tree and keeps the memo;
+    naming it by a [`DestinationCache`](@ref) reuses the tile's tree and its
+    prepared polygons. The weights are the same, entry for entry.
 """
-function wholeblock(::Conservative, dst_space::RegridSpace, src_space::RegridSpace)
-    ndst = Int(ncells(dst_space))
-    nsrc = Int(ncells(src_space))
-    # Degenerate sides keep the generic path's exact semantics.
-    (ndst == 0 || nsrc == 0) &&
-        return invoke(wholeblock, Tuple{AbstractRegriddingMethod,RegridSpace,RegridSpace},
-            Conservative(), dst_space, src_space)
+function pairblock(::Conservative, dst_space::RegridSpace, dst_inds,
+    src_space::RegridSpace, src_inds)
+    ndst = length(dst_inds)
+    # A degenerate side keeps the generic route's exact semantics, including
+    # which of the two sides reports a denominator.
+    (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        Conservative(), dst_space, dst_inds, src_space, src_inds)
 
-    m = manifold(dst_space)
-    m == manifold(src_space) || throw(ArgumentError(
-        "conservative weights need one manifold on both sides: destination is " *
-        "$(m), source is $(manifold(src_space))"))
-
+    m = _sharedmanifold(dst_space, src_space)
     op = BlockAreaOperator(_intersectionoperator(m),
-        indexmap(1:ndst), indexmap(1:nsrc),
-        _cellmemo(src_space, 1:nsrc), _cellmemo(dst_space, 1:ndst))
-    block = _intersectionareas(m, subtree(dst_space, 1:ndst),
-        subtree(src_space, 1:nsrc), op)
+        indexmap(dst_inds), indexmap(src_inds),
+        _cellmemo(src_space, src_inds), _cellmemo(dst_space, dst_inds))
+    block = _intersectionareas(m, _destinationtree(dst_space, dst_inds),
+        subtree(src_space, src_inds), op)
 
     return WeightBlock(block, _blockdenom(block, ndst))
 end
 
-# `_fillcoo!`'s denominator pass, without the COO round trip. Assembly types the
+function pairblock(::Conservative, dst_space::RegridSpace,
+    dst_cache::DestinationCache, src_space::RegridSpace, src_inds)
+    ndst = length(dst_cache.inds)
+    (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        Conservative(), dst_space, dst_cache.inds, src_space, src_inds)
+
+    m = _sharedmanifold(dst_space, src_space)
+    op = BlockAreaOperator(_intersectionoperator(m),
+        dst_cache.map, indexmap(src_inds),
+        _cellmemo(src_space, src_inds), dst_cache)
+    block = _intersectionareas(m, _destinationtree(dst_cache),
+        subtree(src_space, src_inds), op)
+
+    return WeightBlock(block, _blockdenom(block, ndst))
+end
+
+# The tree-only preparation: the tile's tree, and a task-local memo for the
+# geometry it holds no slots for. Same assembly as the index-set spelling, one
+# tree build per tile rather than one per block.
+function pairblock(::Conservative, dst_space::RegridSpace,
+    prepared::DestinationTree, src_space::RegridSpace, src_inds)
+    ndst = length(prepared.inds)
+    (ndst == 0 || isempty(src_inds)) && return invoke(pairblock,
+        Tuple{AbstractRegriddingMethod,RegridSpace,Any,RegridSpace,Any},
+        Conservative(), dst_space, prepared.inds, src_space, src_inds)
+
+    m = _sharedmanifold(dst_space, src_space)
+    op = BlockAreaOperator(_intersectionoperator(m),
+        prepared.map, indexmap(src_inds),
+        _cellmemo(src_space, src_inds), _cellmemo(dst_space, prepared.inds))
+    block = _intersectionareas(m, _destinationtree(prepared),
+        subtree(src_space, src_inds), op)
+
+    return WeightBlock(block, _blockdenom(block, ndst))
+end
+
+# A method that reads no prepared geometry still takes the destination a tile
+# prepared, and names its cells.
+pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+    dst_cache::DestinationCache, src_space::RegridSpace, src_inds) =
+    pairblock(method, dst_space, dst_cache.inds, src_space, src_inds)
+
+pairblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
+    prepared::DestinationTree, src_space::RegridSpace, src_inds) =
+    pairblock(method, dst_space, prepared.inds, src_space, src_inds)
+
+function _sharedmanifold(dst_space::RegridSpace, src_space::RegridSpace)
+    m = manifold(dst_space)
+    m == manifold(src_space) || throw(ArgumentError(
+        "conservative weights need one manifold on both sides: destination is " *
+        "$(m), source is $(manifold(src_space))"))
+    return m
+end
+
+# `_fillcoo!`'s denominator pass, over an adopted matrix. Assembly types the
 # block only as `SparseMatrixCSC`, so the loop needs its own dispatch to specialise.
 function _blockdenom(block::SparseArrays.AbstractSparseMatrixCSC, ndst::Int)
     denom = zeros(Float64, ndst)
@@ -390,9 +524,83 @@ and no outer loop is already parallel ([`OUTER_PARALLEL`](@ref)).
 """
 function _intersectionareas(m::GOCore.Manifold, dst_tree, src_tree, op)
     threaded = _innerthreaded()
-    return ConservativeRegridding.intersection_areas(
-        m, threaded, dst_tree, src_tree; intersection_operator = op)
+    dst_tree, src_tree = _task_prepared_intersection_trees(
+        threaded, dst_tree, src_tree)
+    ValType = ConservativeRegridding.output_eltype(op, src_tree, dst_tree)
+    return _with_sparse_assembly_cache(ValType) do cache
+        ConservativeRegridding.intersection_areas(
+            m, threaded, dst_tree, src_tree; intersection_operator = op, cache)
+    end
 end
+
+# Assembly scratch is module-owned because the block-build call chain has no
+# operation context.  The freelist grows on an empty acquire rather than
+# waiting for another build, and its retained size is therefore bounded by the
+# peak number of overlapping builds for each value type.
+struct _SparseAssemblyCacheKey{T} end
+
+mutable struct _SparseAssemblyCachePool{T}
+    lock::ReentrantLock
+    free::Vector{ConservativeRegridding.SparseMatrixAssemblyCache{T}}
+end
+
+_SparseAssemblyCachePool(::Type{T}) where {T} =
+    _SparseAssemblyCachePool{T}(ReentrantLock(),
+        ConservativeRegridding.SparseMatrixAssemblyCache{T}[])
+
+const _SPARSE_ASSEMBLY_POOL_LOCK = ReentrantLock()
+const _SPARSE_ASSEMBLY_POOLS = Dict{DataType,Any}()
+
+function _sparse_assembly_cache_pool(::Type{T}) where {T}
+    key = _SparseAssemblyCacheKey{T}
+    lock(_SPARSE_ASSEMBLY_POOL_LOCK)
+    try
+        return get!(_SPARSE_ASSEMBLY_POOLS, key) do
+            _SparseAssemblyCachePool(T)
+        end::_SparseAssemblyCachePool{T}
+    finally
+        unlock(_SPARSE_ASSEMBLY_POOL_LOCK)
+    end
+end
+
+function _acquire_sparse_assembly_cache(pool::_SparseAssemblyCachePool{T}) where {T}
+    lock(pool.lock)
+    try
+        return isempty(pool.free) ?
+            ConservativeRegridding.SparseMatrixAssemblyCache(T) : pop!(pool.free)
+    finally
+        unlock(pool.lock)
+    end
+end
+
+function _release_sparse_assembly_cache!(pool::_SparseAssemblyCachePool{T},
+    cache::ConservativeRegridding.SparseMatrixAssemblyCache{T}) where {T}
+    lock(pool.lock)
+    try
+        push!(pool.free, cache)
+    finally
+        unlock(pool.lock)
+    end
+    return cache
+end
+
+function _with_sparse_assembly_cache(f, ::Type{T}) where {T}
+    pool = _sparse_assembly_cache_pool(T)
+    cache = _acquire_sparse_assembly_cache(pool)
+    try
+        return f(cache)
+    finally
+        _release_sparse_assembly_cache!(pool, cache)
+    end
+end
+
+# CR's threaded frontier hands cursor nodes to spawned tasks, so its roots must
+# retain safe chart callables. A serial search and assembly stay in this task
+# and may hoist each raster chart once on private cursor copies.
+_task_prepared_intersection_trees(::GOCore.True, dst_tree, src_tree) =
+    (dst_tree, src_tree)
+_task_prepared_intersection_trees(::GOCore.False, dst_tree, src_tree) =
+    (_task_prepared_raster_tree(dst_tree), _task_prepared_raster_tree(src_tree))
 
 # Copy stored entries directly to avoid `findnz` allocations.
 function _fillcoo!(coo::WeightCOO, block::SparseArrays.AbstractSparseMatrixCSC)

@@ -16,11 +16,12 @@ A system needs no grid type of its own. [`levelgrid`](@ref) defaults to
 [`HierarchicalLevelGrid`](@ref), which holds `(system, level)` and forwards the
 base grid interface to the five level-grid primitives a system writes instead.
 
-A bare `Int` is a position in `1:ncells(grid)`. An
+A bare `Int` is a local index in `1:ncells(grid)`. An
 [`AbstractCellIndex`](@ref) is a typed cell identity that records its level.
 
-A **region** is a subset of one complete level — [`PartialGrid`](@ref),
-[`CellVector`](@ref), [`CellLookup`](@ref) — or a complete level itself, and
+A **region** is a subset of one complete level — [`PartialGrid`](@ref), any
+[`AbstractCellVector`](@ref) or [`AbstractCellLookup`](@ref), so a cube axis read
+from a store as readily as one built in memory — or a complete level itself, and
 [`subtree`](@ref) is the reifier that makes a subtree one. On a region,
 [`neighbors`](@ref) and [`ring`](@ref) return complete-level adjacency clipped
 to membership, and four verbs answer about the region as a whole:
@@ -29,7 +30,7 @@ middle; [`border`](@ref) and [`interior`](@ref) split what is inside;
 [`adjacency`](@ref) tables every one-ring at once, clipped, completed over a
 `[region; halo]` buffer, or marked in place. The three walks are lazy, serial
 and `O(depth)` in memory; `adjacency` is the cached, threaded product, and the
-one that keeps its halo ([`halopositions`](@ref)).
+one that keeps its halo ([`haloindices`](@ref)).
 [`member_neighbors`](@ref) asks the adjacency question across the levels of a
 [`MultiOrderCellSet`](@ref), which has no `halo` because it has no single level
 to answer at.
@@ -44,7 +45,7 @@ explicitly named wrappers convert longitude and latitude at API boundaries.
   - `src/fallbacks/`: the overridable generic defaults — identity, location,
     geometry, the subtree walkers, and the level-grid and authalic wrappers.
   - `src/engine/`: the machinery no system overrides — the region containers,
-    the cursor and position tree, the query planner, and the walks over them.
+    the cursor and index tree, the query planner, and the walks over them.
   - `src/dimensionaldata.jl`: the cube face of [`CellVector`](@ref) —
     [`CellLookup`](@ref), [`Cells`](@ref), [`Covering`](@ref).
   - `src/systems/`: grid-system implementations.
@@ -59,10 +60,16 @@ here. `treeify`, `ncells`, and `getcell` extend and re-export
 `ConservativeRegridding.Trees` bindings.
 
 [`regrid`](@ref), [`regrid!`](@ref) and [`plan_regrid`](@ref) are
-`GlobalRegridding`'s, extended in `src/regridding.jl` so that a grid, a
-[`CellVector`](@ref), a [`CellLookup`](@ref), a [`MultiOrderCellSet`](@ref), or a
-bare system spells a destination. `cellat` and `cellindices` are that package's
-bindings for the same reason the `Trees` ones are.
+`GlobalRegridding`'s own, keywords and all; `src/regridding.jl` adds the target
+resolution that lets a grid, a [`CellVector`](@ref), a [`CellLookup`](@ref), a
+[`MultiOrderCellSet`](@ref), or a bare system spell a destination. `cellat` is
+that package's binding for the same reason the `Trees` ones are. The rest of
+the space contract
+`src/regridding.jl` fills in — `nchunks`, `ownedindices`, `chunkat`,
+`cellcentroid`, `celltree`, `chunkextents`, `chunkindex`, `candidatechunks!`,
+`chunkranges`, `subtree` and `destinationdims` — is extended under
+`GlobalRegridding`'s own name rather than imported; `samplesites` is left to
+that package's own centroid vector.
 """
 module DiscreteGlobalGrids
 
@@ -94,15 +101,16 @@ import ConservativeRegridding.Trees: treeify, ncells, getcell
 
 # `GlobalRegridding` owns the regridding verbs and the space contract, and has no
 # dependency on this package; `src/regridding.jl` implements the contract for the
-# grids here. `cellat` and `cellindices` are its bindings for the same reason the
-# `Trees` ones are: extending them rather than shadowing them keeps one function
-# per name for a session that holds both surfaces.
-import GlobalRegridding: cellat, cellindices, regrid, regrid!, plan_regrid
+# grids here. `cellat` is its binding for the same reason the `Trees` ones are:
+# extending it rather than shadowing it keeps one function per name for a
+# session that holds both surfaces. Every other hook `src/regridding.jl` fills
+# in is extended qualified, so those names stay out of this namespace.
+import GlobalRegridding: cellat, regrid, regrid!, plan_regrid
 # The method and policy names ride along re-exported: they appear in the verbs'
 # keyword arguments, so a session that can call `regrid` can also spell
 # `method = Conservative()` without a second import.
-using GlobalRegridding: Conservative, NearestCell, BilinearPoint,
-    Weighted, Extensive, PerChunk, Spilled
+using GlobalRegridding: Conservative, NearestCell, DirectNearest,
+    BarycentricPoint, Weighted, Extensive, PerChunk, Spilled
 
 include("Helpers/Helpers.jl")
 
@@ -114,6 +122,11 @@ include("interface/types.jl")
 include("interface/grid.jl")
 include("interface/system.jl")
 
+# Declared here rather than beside its method because both modules included
+# below import it; the method expands a `MultiOrderCellSet` to a level
+# (`src/engine/multiorder.jl`).
+function cellindices end
+
 # The overridable generic defaults, then the machinery that reads them.
 include("fallbacks/fallbacks.jl")
 include("engine/engine.jl")
@@ -123,22 +136,25 @@ using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
     EdgeCellIterator, InnerCellIterator
 
 using .Engine: PartialGrid,
-    HierarchicalGridCursor, MultiOrderCoverage, MultiOrderCellSet, level_ranges,
+    HierarchicalGridCursor, TiledRasterCursor,
+    MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
-    CellVector, cellset, covering, covering_positions,
+    CellVector, cellset, covering, covering_indices,
     grow, expand, compact, member_neighbors,
-    SubtreeHaloIterator, SubsetHaloIterator, HaloPositionIterator, RegionSide,
-    halo_positions, sizehint,
-    AdjacencyTable, halocells, halopositions,
-    SubsetPositionedCell, cellid,
+    SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
+    halo_indices, sizehint,
+    AdjacencyTable, halocells, haloindices,
+    SubsetIndexedCell, cellid,
     mapneighbors, foreachneighbors, StorageOrder,
-    NeighborCallbackError
+    NeighborCallbackError,
+    AbstractNeed, Cell, Index, Local, Global, Value, Centroid,
+    cellfield
 
 # Internal extension points for system-specific subtree walkers and shell
 # winding.
 using .Fallbacks: collect_subtree,
     MortonCurve, quadrant_step, SquareBorderEngine, SquareInteriorEngine,
-    adjacency_shells, checked_steps, _ring_frame, _wind!
+    adjacency_shells, shell_ring, shell_disc, checked_steps, _ring_frame, _wind!
 using .Engine: SquareBandEngine, square_halo_engine, generic_halo_engine,
     check_halo_level, HexChildHaloEngine, HexArcHaloEngine, hex_halo_engine
 
@@ -173,8 +189,8 @@ using .CopernicusDEM: CopernicusDEMSystem
 # DimensionalData wrappers over the dependency-free `Fallbacks.CellVector`.
 include("dimensionaldata.jl")
 
-using .CellLookups: CellLookup, Cells, Covering, Neighbors, Values,
-    NeighborSlices
+using .CellLookups: AbstractCellLookup, CellLookup, Cells, Covering, Neighbors,
+    Values, NeighborSlices
 
 # The store-IO layer. Encodings and the chunked lookup own layout mechanics;
 # conventions are plain-data metadata logic with no Zarr and no arrays.
@@ -190,19 +206,33 @@ using .Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
     idrank, idselect, idcount_between, idvalid, idcell, idtype,
     idranges, write_eligible, validate_ranges
 using .ChunkedLookups: ChunkManifest, nchunks, chunkof, chunkbounds,
-    ChunkedCellVector, axisposition, chunkmanifest, ChunkedCellLookup
+    ChunkedCellVector, axisindex, chunkmanifest, ChunkedCellLookup
 
 include("io/description.jl")
 include("io/conventions.jl")
+# The two-dimensional ancestor-subzone layout: arithmetic and vocabulary only,
+# read after the conventions whose grid reference table it spells names out of.
+include("io/subzones.jl")
 include("io/api.jl")
+
+# Following the chunk lines of a stored cube: the plan, the runner, and the
+# out-of-core neighbourhood sweep built on them. Reads the cube layer above and
+# the region verbs below it.
+include("chunks.jl")
 
 # Last: the regridding face reads the grids, the compressed collection, and the
 # cube axis alike.
 include("regridding.jl")
 include("cap_cached_tree.jl")
 
+# Copernicus DEM answers point queries from its own row arithmetic. The methods
+# dispatch on the space above, so the file is read into that system's module
+# here rather than where the module is defined.
+Base.include(CopernicusDEM, joinpath(@__DIR__, "systems", "CopernicusDEM", "point.jl"))
+
 # After it: a target resolution may be spelled as a raster or a regrid space.
 include("sizing.jl")
+include("deprecated.jl")
 
 # CopernicusDEM is deliberately absent: registering a system enrols it in every
 # cross-system sweep, whose hardcoded cases and level choices assume a globally
@@ -253,6 +283,10 @@ Important cross-system traits:
     [`cap_inflation`](@ref) to `1.75`.
   - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
     has not established the two-sided [`descendant_range`](@ref) contract.
+  - **[`has_direct_location`](@ref).** True for every system here: each names
+    the cell containing a point from the point's coordinates, so a
+    [`PartialGrid`](@ref) over any of them locates through its complete level
+    rather than by searching its own cells.
   - **[`border`](@ref) on a subtree region.** IGeo7, H3, HEALPix, ISEA4R, and
     S2 provide `O(border)` walkers; A5 uses the `O(subtree)` fallback. Each is a
     resumable [`EdgeCellIterator`](@ref) / [`InnerCellIterator`](@ref) in
@@ -294,7 +328,7 @@ Important cross-system traits:
     subtree delegates to
     [`SubtreeHaloIterator`](@ref) and keeps its system's specialization;
     everything else — a hole, a forgotten root, an arbitrary id list — takes an
-    outside-first walk against membership, pruned by the subset's own position
+    outside-first walk against membership, pruned by the subset's own index
     spans rather than by geometry: a block the subset holds entire is retired by
     one lookup, and a block no NEIGHBOUR of which it touches is retired by the
     coarse-containment law. The walk follows the subset's boundary, so its cost
@@ -309,7 +343,7 @@ Important cross-system traits:
     in place (`halo = :mark`). The two complete-width shapes preserve slot
     indices against the canonical `one_ring`, so a direction code is a property
     of the cell; the clipped shape preserves order only. Rows exist for
-    in-region positions alone, so `halo` above 1 throws and points at
+    in-region indices alone, so `halo` above 1 throws and points at
     [`grow`](@ref).
   - **Cross-level adjacency ([`member_neighbors`](@ref)).** Boundary sharing in
     the geometric sense on HEALPix, S2 and ISEA4R, whose four children tile
@@ -334,14 +368,20 @@ systems() = (IGeo7System(), H3System(), HEALPixSystem(),
 # --- Type vocabulary -------------------------------------------------------
 export AbstractGrid, AbstractHierarchicalGridSystem, AbstractCellIndex
 export AbstractQuadFaceGridSystem
+# The region contract and its cube face: what code meaning "a set of cells at
+# one level" dispatches on, whichever backing produced it.
+export AbstractCellVector, AbstractCellLookup
 export LevelIndex
 export Connectivity, Vertex, Edge
+export Winding, CounterClockwise, Clockwise, CustomOrder, Unordered
 # `GeometryOps.UnitSphericalPoint`, re-exported: every boundary and centroid
 # method in the contract is written in it.
 export UnitSphericalPoint
 
 # --- Base grid interface ---------------------------------------------------
 export ncells, cellindex, cell_boundary, cell_centroid
+export localindex, globalindex
+# `cellposition` stays exported for the deprecation shim in `deprecated.jl`.
 export cellposition, rawid, reindex, cellindextypes
 export cell_polygon, cell_area, cell_extent, getcell
 export cellat, neighbors, ring, neighborcount
@@ -355,7 +395,8 @@ export cellsize, levelfor
 # `Base.parent(sys, c)` belongs to this list and is absent from it deliberately:
 # the hierarchy's parent is a method on Base's function, not a name to re-export.
 export cellindextype, levels, maxlevel, levelgrid, rootcells, children
-export node_extent, maxneighbors, has_sorted_subtrees
+export node_extent, maxneighbors, maxring, winding, has_sorted_subtrees
+export has_direct_location
 export ancestor, descendants, descendant_range
 export subtree
 export cellid
@@ -365,7 +406,16 @@ export mapneighbors, foreachneighbors
 # A region is a subset of one complete level, or a complete level itself: the
 # outside, the two insides, and the whole adjacency at once.
 export halo, border, interior
-export adjacency, AdjacencyTable, halocells, halopositions
+export adjacency, AdjacencyTable, halocells, haloindices
+# The container those four are answered as, and the conversion into it.
+export region
+
+# --- Following a stored cube's chunk lines ---------------------------------
+export chunkplan, foreachchunk, mapneighbors!
+export MapChunkPlan, MapChunk, ChunkCube
+export chunkcube, localindices, ownedindices, axisindices, chunkhalo, halowidth
+# Deprecated: the old name of `ownedindices`.
+export globalindices
 
 # --- Reachable by name, not exported ---------------------------------------
 # The lazy walk types: an argument of the verbs above, never a name a caller
@@ -374,16 +424,22 @@ public EdgeCellIterator
 public InnerCellIterator
 public SubtreeHaloIterator
 public SubsetHaloIterator
-public HaloPositionIterator
+public HaloIndexIterator
 public RegionSide
 # The inexact size estimate `Base.IteratorSize` has no slot for.
 public sizehint
-# The positions view of an id halo walk; `halo` already answers in positions.
-public halo_positions
-public SubsetPositionedCell
+# The indices view of an id halo walk; `halo` already answers in indices.
+public halo_indices
+public SubsetIndexedCell
 public HierarchicalGridCursor
+public TiledRasterCursor
 # A traversal order, not a traversal.
 public StorageOrder
+# The fields a neighbourhood sweep can be asked to stream, and the two index
+# spaces `Index` names.
+public AbstractNeed, Cell, Index, Local, Global, Value, Centroid
+# The vector a `Value` reads when the quantity is computed rather than stored.
+public cellfield
 # A tuning knob for the default `node_extent`, read by no caller that does not
 # implement a system.
 public cap_inflation
@@ -404,7 +460,7 @@ export iscontained, coarsest_contained, cell_polygons, member_neighbors
 
 # --- The compressed cell collection ----------------------------------------
 # `CellVector` is the DimensionalData-independent compressed collection.
-export CellVector, covering, covering_positions, cellset
+export CellVector, covering, covering_indices, cellset
 
 # --- Region algebra --------------------------------------------------------
 # Growth, bulk level movement, and compaction over the region types; `union`,
@@ -443,13 +499,14 @@ public authalic_sphere
 # Methods, policies, and storage flavors are re-exported so the verbs' keyword
 # arguments are spellable without importing `GlobalRegridding`.
 export regrid, regrid!, plan_regrid, DGGSpace
-export Conservative, NearestCell, BilinearPoint, Weighted, Extensive
+export Conservative, NearestCell, DirectNearest, BarycentricPoint
+export Weighted, Extensive
 export PerChunk, Spilled
 
 # --- Store IO --------------------------------------------------------------
 # `detect`, `decode`, `encode!` and `gridname` stay qualified: they are
 # extension points, and the names are too generic to export.
-export dggread, dggwrite
+export dggread, dggwrite, dggwrite!
 export Detection, DGGSFormatError
 export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
     LegacyHealpixConvention, DKRZConvention
@@ -459,6 +516,19 @@ export register_encoding!
 export register_grid!
 export describe_store
 export ChunkedCellLookup, nchunks, chunkof, chunkbounds
+
+# --- The ancestor-subzone layout -------------------------------------------
+# The layout descriptor and the store handle its incremental writer hands back.
+# The arithmetic around them stays qualified: `columnindices` and friends are
+# names a production script spells once, not vocabulary for every user.
+export SubzoneLayout, subzonestore
+public SUBZONE_LAYOUT, SubzoneRun
+public subzone_attrs, subzone_capacity, subzone_cellvector, subzone_columns,
+    subzone_coordinate, subzone_depth, subzone_layout, subzone_runs,
+    issubzonestore
+public SUBZONE_ORDER, SUBZONE_PADDING
+public columncell, columnindex, columnlength, columnindices, columnrow,
+    subzoneindex, gridnamefor
 
 # The store description vocabulary: what `describe_store` hands back and what a
 # convention writer reads, never a name a reader or writer has to spell.

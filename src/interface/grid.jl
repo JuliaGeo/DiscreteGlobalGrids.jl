@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Base-grid interface contracts. `Int` arguments are dense positions;
+# Base-grid interface contracts. `Int` arguments are dense local indices;
 # `AbstractCellIndex` arguments are cell identities. Geometry uses
 # `GO.UnitSphericalPoint` unless a converting wrapper states otherwise: `GO` is
 # `GeometryOps`, and this package re-exports the point type, so an implementor
@@ -18,7 +18,7 @@
     ncells(grid::AbstractGrid) -> Int
 
 The number of cells in `grid`, which is the length of its canonical dense
-order: positions run over `1:ncells(grid)`.
+order: indices run over `1:ncells(grid)`.
 
 **Required** of every [`AbstractGrid`](@ref).
 
@@ -32,15 +32,15 @@ function ncells end
 """
     cellindex(grid::AbstractGrid, i::Int) -> AbstractCellIndex
 
-The canonical typed id of the cell at **position** `i` in `grid`'s dense order.
+The canonical typed id of the cell at **local index** `i` in `grid`'s dense order.
 
 **Required** of every [`AbstractGrid`](@ref).
 
 The returned id is of type `cellindextype(system(grid))` for a grid that has a
 system, and of the grid's own canonical id type otherwise. Together with
-[`cellposition`](@ref) this is a bijection `1:ncells(grid)` ↔ the grid's cells:
+[`localindex`](@ref) this is a bijection `1:ncells(grid)` ↔ the grid's cells:
 
-    cellposition(grid, cellindex(grid, i)) == i   for all i in 1:ncells(grid)
+    localindex(grid, cellindex(grid, i)) == i   for all i in 1:ncells(grid)
 
 `i` outside `1:ncells(grid)` throws a `BoundsError`.
 
@@ -114,7 +114,7 @@ The encoded integer behind a typed cell id: the `UInt64` of an `H3Cell` or
 `Z7Cell`, the linear index of a [`LevelIndex`](@ref).
 
 This is the value to write to disk, print in hex, or hand to a C library — not
-a position, and not something to do arithmetic on unless the system documents
+an index, and not something to do arithmetic on unless the system documents
 what the arithmetic means. Round-tripping it back into a typed id needs the id
 type (and, for [`LevelIndex`](@ref)-style schemes, the level), so `rawid` is
 lossy on its own; prefer passing typed ids.
@@ -124,7 +124,7 @@ function rawid end
 """
     cellindex(grid::AbstractGrid, i::Int, T::Type{<:AbstractCellIndex}) -> T
 
-The id of the cell at position `i`, in the requested index scheme `T` rather
+The id of the cell at local index `i`, in the requested index scheme `T` rather
 than the system's canonical one — `cellindex(grid, i, Z7Cell)`, say, from a
 grid whose canonical scheme is something else.
 
@@ -165,17 +165,65 @@ report).
 function cellindextypes end
 
 """
-    cellposition(grid::AbstractGrid, c::AbstractCellIndex) -> Union{Int,Nothing}
+    localindex(collection, c::AbstractCellIndex) -> Union{Int,Nothing}
 
-The **position** of cell `c` in `grid`'s dense order, or `nothing` when absent.
-It is the inverse of [`cellindex`](@ref).
+The **local index** (storage index) of cell `c` in `collection`'s own dense
+order, or `nothing` when absent. It is the inverse of [`cellindex`](@ref).
+
+`collection` is anything that stores cells in an order of its own: a grid, a
+[`CellVector`](@ref), a [`PartialGrid`](@ref), a cell lookup. On a complete grid
+the local index and the [`globalindex`](@ref) coincide — its storage IS the
+level — so generic code that means "wherever this collection put it" should ask
+for the local index and be correct in both cases.
 
 `c` may be given in any scheme in [`cellindextypes`](@ref); it is
 [`reindex`](@ref)ed to canonical first. A `c` at a different level than the
-grid is not an error either — it is simply not in the grid, so the answer is
+collection is not an error either — it is simply not held, so the answer is
 `nothing`.
+
+# Locating a point
+
+    localindex(collection, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
+    localindex(collection, lon::Real, lat::Real)
+
+The local index of the cell containing a point.
+
+  - `nothing` where the collection covers the point nowhere. Degrees for the
+    `(lon, lat)` method, as everywhere else.
+  - One search where the collection can answer in one: a subset resolves
+    membership while it locates, and keeps the index that produced.
+
+See also [`globalindex`](@ref), [`cellindex`](@ref).
 """
-function cellposition end
+function localindex end
+
+"""
+    globalindex(collection, c::AbstractCellIndex) -> Union{Int,Nothing}
+
+The **global index** of cell `c`: its index in the complete grid at `c`'s level,
+independent of which subset is asking, or `nothing` when `c` is not a valid cell
+of the system.
+
+This is the index space a subset's own storage is carved out of. Asking a
+[`CellVector`](@ref) for a global index answers for its underlying grid, so two
+different subsets of one level agree on it where their [`localindex`](@ref)
+values do not. It is the numeric counterpart of [`cellid`](@ref): the way to
+carry a cell between collections without carrying a stale offset.
+
+See also [`localindex`](@ref), [`cellindex`](@ref).
+"""
+function globalindex end
+
+# The two spaces coincide at both ends of the hierarchy, and saying so once here
+# is what lets generic code ask for a local index and be right either way.
+#
+# A grid's dense order IS its own storage, so a grid implements `localindex` and
+# reads its global index off that — `PartialGrid` overrides this, because its
+# storage is carved out of a larger level. A system only ever names the complete
+# level, so it implements `globalindex` and its local index is the same number.
+globalindex(grid::AbstractGrid, c::AbstractCellIndex) = localindex(grid, c)
+localindex(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
+    globalindex(sys, c)
 
 # ===========================================================================
 # Geometry
@@ -228,12 +276,12 @@ function cell_extent end
 """
     getcell(grid::AbstractGrid, i::Int) -> GI.Polygon
 
-The cell at **position** `i` as a unit-sphere polygon. This extends
+The cell at **local index** `i` as a unit-sphere polygon. This extends
 `ConservativeRegridding.Trees.getcell` and is implemented as
 
     cell_polygon(grid, cellindex(grid, i))
 
-`getcell` takes a position; [`cell_polygon`](@ref) takes an id.
+`getcell` takes a local index; [`cell_polygon`](@ref) takes an id.
 """
 function getcell end
 
@@ -271,7 +319,7 @@ function cellat end
 
 """
     neighbors(grid::AbstractGrid, c::AbstractCellIndex, k::Integer = 1; connectivity::Connectivity = Vertex())
-    neighbors(grid::AbstractGrid, p::Int, k::Integer = 1; connectivity::Connectivity = Vertex()) -> Vector{Int}
+    neighbors(grid::AbstractGrid, p::Int, k::Integer = 1; connectivity::Connectivity = Vertex()) -> AbstractVector{Int}
 
 All cells of `grid` within `k` adjacency steps of `c`, excluding `c`.
 
@@ -320,11 +368,11 @@ neighbour leaves no gap in the sequence.
 
 # The idioms that carry this order
 
-[`ring`](@ref), the position forms below, [`adjacency`](@ref),
+[`ring`](@ref), the index forms below, [`adjacency`](@ref),
 [`member_neighbors`](@ref), the one-argument [`neighbors`](@ref) iterator, and
 the rings `mapneighbors` and `foreachneighbors` pass to their callbacks — all of
 them. Nothing in this package answers a neighbourhood question in ascending id
-or position.
+or index.
 
 The verb that is ascending is [`halo`](@ref), and it is not a ring: it is a
 fetch list, ordered so that a read is sequential. It says so where it is
@@ -333,6 +381,9 @@ documented.
 # Container
 
 Any ordered, indexable collection with the grid's cell-index `eltype`.
+Index forms preserve the id form's container family while replacing its
+element type with `Int`; in particular, a fixed-capacity one-ring remains a
+fixed-capacity one-ring after conversion to indices.
 
 # Coverage, and what a subset means
 
@@ -361,49 +412,85 @@ identity reads the complete level's ring.
 `k` must be ≥ 0; `k == 0` returns an empty collection. See [`ring`](@ref) for
 the cells at *exactly* distance `k`.
 
-# Positions
+# Indices
 
-Given a position, both verbs answer with **in-set positions in the rotational
+Given a local index, both verbs answer with **in-set local indices in the rotational
 order above**: `neighbors(grid, p, k)` is `neighbors(grid, cellindex(grid, p),
-k)` mapped through [`cellposition`](@ref), element for element, with non-members
+k)` mapped through [`localindex`](@ref), element for element, with non-members
 dropped. [`adjacency`](@ref) is this form for a whole region at once.
 
 The result is therefore not sorted. An index list read only by membership does
 not care, and one read by direction — a gradient, an upwind stencil — cannot be
-written at all against a sorted list, which is why the position forms carry the
+written at all against a sorted list, which is why the index forms carry the
 same order the id forms do.
 """
 function neighbors end
 
 """
     ring(grid::AbstractGrid, c::AbstractCellIndex, k::Integer; connectivity::Connectivity = Vertex())
-    ring(grid::AbstractGrid, p::Int, k::Integer; connectivity::Connectivity = Vertex()) -> Vector{Int}
+    ring(grid::AbstractGrid, p::Int, k::Integer; connectivity::Connectivity = Vertex()) -> AbstractVector{Int}
 
 The cells at adjacency distance exactly `k` from `c`. `ring(grid, c, 0)` is
 `c` alone. The ordered result satisfies
 
-    neighbors(grid, c, k) == vcat(ring(grid, c, 1), ..., ring(grid, c, k))
+    neighbors(grid, c, k) ==
+        reduce(vcat, [ring(grid, c, j) for j in 1:k]; init = eltype(grid)[])
 
 so ring `k` is the final ordered block of `neighbors(grid, c, k)`. Overrides
 must preserve this equality.
 
+`init` is load-bearing, and the splatted `vcat(ring(grid, c, 1), ...)` is **not**
+an equivalent spelling. Rings at different `k` may arrive in containers of
+different capacity — a `SmallVector{6}` at `k == 1` beside a heap `Vector` at
+`k == 2` — and `vcat` takes `similar` from its first argument, so concatenating
+onto the one-ring overflows that one-ring's capacity and throws. Seeding an
+empty `Vector` fixes the result type; `reduce` also keeps the call out of a
+splat, which is what stops the arity from specialising per `k`.
+
 `ring` carries [`neighbors`](@ref)' order, container, coverage and
-subset-clipping contracts unchanged — including the position form's, which is
-the same counter-clockwise order read through [`cellposition`](@ref).
+subset-clipping contracts unchanged — including the local-index form's, which is
+the same counter-clockwise order read through [`localindex`](@ref).
+
+# `k` as a type
+
+Both verbs also accept `Val(k)`, which answers the same cells in the same order
+and differs only in what the compiler is told. With `k` in the type, a system's
+declared [`maxring`](@ref) folds into a fixed buffer capacity, so the shell is
+built and returned without reaching the heap:
+
+    ring(grid, c, 2)       # Vector, capacity found at run time
+    ring(grid, c, Val(2))  # SmallVector, capacity found at compile time
+
+Worth reaching for in a focal loop over many cells and not otherwise. The
+`Integer` form is never wrong and never slower than it was; `Val(k)` only
+removes allocations, and only for a system that has opted in — the rest forward
+to the `Integer` form and lose nothing.
 """
 function ring end
 
 """
     one_ring(grid, c, connectivity) -> ordered neighbours of `c`
 
-The `k == 1` primitive: `c`'s immediate neighbours in one counter-clockwise turn
-from the system's own start direction, as [`neighbors`](@ref) documents. An
-internal hook, not part of the public API.
+The `k == 1` primitive: `c`'s immediate neighbours, in the order
+[`winding`](@ref)`(grid, connectivity)` declares. An internal hook, not part of
+the public API.
 
 A system implements this one method and inherits `neighbors`, `ring`, and the
 shell walk behind both from `Fallbacks.adjacency_shells`. The generic method is
 the geometric one — `Fallbacks.adjacent_cells` wound about the cell's centroid —
 and a system with native adjacency overrides it.
+
+**A system that overrides this owes a matching [`winding`](@ref) declaration.**
+The order is stated once, there, rather than in prose here: it is what the shell
+walk reads to carry rotational order outward to `k >= 2` without measuring it,
+so a wrong declaration is a wrong answer rather than a slow one. Declaring
+nothing leaves the default [`Unordered()`](@ref Unordered), which is always safe
+— the walk then measures azimuth instead.
+
+Where the turn *starts* is the system's own business and is not part of that
+declaration: the shell walk pins the starting cell of each outer ring
+separately, and nothing here promises a relationship between the start of one
+cell's ring and the start of its neighbour's.
 
 The return may be any ordered, indexable collection with the grid's cell-index
 `eltype`; a fixed-capacity `SmallVector` sized by [`maxneighbors`](@ref) is
@@ -415,15 +502,15 @@ function one_ring end
     halo(region; connectivity = Vertex(), cells = false)
 
 The cells immediately OUTSIDE `region` that touch one of its members, lazily,
-each exactly once, in ascending complete-level position.
+each exactly once, in ascending global index.
 
-A **region** is a subset of one complete level — [`PartialGrid`](@ref),
-[`CellVector`](@ref), `CellLookup` — or a complete [`AbstractGrid`](@ref), which
-has no outside and therefore an empty halo. `Vertex()` counts vertex contact,
-`Edge()` requires a shared edge.
+A **region** is a subset of one complete level — [`PartialGrid`](@ref), an
+[`AbstractCellVector`](@ref) or [`AbstractCellLookup`](@ref) — or a complete
+[`AbstractGrid`](@ref), which has no outside and therefore an empty halo.
+`Vertex()` counts vertex contact, `Edge()` requires a shared edge.
 
-Yields **positions on the complete level grid**: a halo cell is by definition
-absent from the region and has no position in it. `cells = true` yields cell ids
+Yields **global indices**: a halo cell is by definition
+absent from the region and has no local index in it. `cells = true` yields cell ids
 instead.
 
 A cell punched out of the middle of a region is outside it and touches it, so it
@@ -449,12 +536,12 @@ function halo end
     interior(region; connectivity = Vertex(), cells = false)
 
 The members of `region` that do (`border`) or do not (`interior`) have a
-neighbour outside it, lazily, in ascending in-region position. The two are
+neighbour outside it, lazily, in ascending local index. The two are
 disjoint and together are the region.
 
-Yields **in-region positions** — `1:length(region)`, the index a data vector
+Yields **local indices** — `1:length(region)`, the index a data vector
 laid out against the region is read by. `cells = true` yields cell ids instead.
-([`halo`](@ref) yields complete-level positions instead, for the reason it
+([`halo`](@ref) yields global indices instead, for the reason it
 gives.) The region types are `halo`'s; a complete grid has no cell with an
 absent neighbour, so its border is empty and its interior is all of it.
 
@@ -470,11 +557,31 @@ function border end
 function interior end
 
 """
+    region(x) -> CellVector
+
+The compressed [`CellVector`](@ref) a region is answered as — the container the
+four region verbs, the neighbourhood sweeps, regridding and plotting are all
+written against.
+
+On a [`CellVector`](@ref) or a [`CellLookup`](@ref) this is the identity: they
+already are that container. On a stored axis
+([`ChunkedCellVector`](@ref), [`ChunkedCellLookup`](@ref)) it is the conversion,
+built on first call and kept, so the cost is paid once however many verbs are
+asked afterwards. What that costs depends on the encoding and is documented on
+`CellVector(::ChunkedCellVector)`.
+
+Index order is preserved: local index `k` of the result is local index `k` of `x`,
+which is what lets a result computed through it be written back against `x`'s
+own axis without a permutation.
+"""
+function region end
+
+"""
     adjacency(region; halo = 0, connectivity = Vertex(), threaded = true) -> AdjacencyTable
     adjacency(region, hpos::AbstractVector{<:Integer}; connectivity = Vertex(), threaded = true)
 
 The one-ring of every cell of `region` at once, cached: `adj[p]` is the ring of
-in-region position `p` as a non-allocating view, in the counter-clockwise order
+in-region local index `p` as a non-allocating view, in the counter-clockwise order
 [`neighbors`](@ref) states. `length(adj)` is the region size, which is what an
 entry is compared against to tell a region slot from a halo slot.
 
@@ -488,12 +595,12 @@ The region types are [`halo`](@ref)'s, the complete grid included —
   - `halo = 1` — rings COMPLETE, addressing a `[region; halo]` buffer: `1:n`
     names a cell of the region and `n + j` the `j`-th cell of `halo(region)`
     under the same connectivity. The halo is walked once, here, and the table
-    keeps it — see [`halopositions`](@ref).
+    keeps it — see [`haloindices`](@ref).
   - `halo = :mark` — rings COMPLETE, with `0` where a member is outside the
     region. Slot geometry with no halo to walk, materialise or fetch, which is
     what a direction codec reads.
 
-`halo` above 1 throws. A row exists only for an in-region position, so a wider
+`halo` above 1 throws. A row exists only for an in-region local index, so a wider
 receptive field is a wider region: `adjacency(grow(region, n); halo = 1)`.
 
 # The anchor
@@ -509,7 +616,7 @@ and recovering slot identity from a clipped row is deliberately impossible.
 Reach for `:mark` when the slot is the answer.
 
 The second form takes a halo the caller already walked, as strictly ascending
-complete-level positions, and builds the `halo = 1` table against it. A
+complete-level global indices, and builds the `halo = 1` table against it. A
 neighbour in neither half is an `ArgumentError` naming the cell, not a short
 row. The list need not be minimal, only ascending and covering.
 
@@ -548,11 +655,80 @@ The result implements `GeometryOps.SpatialTreeInterface`. **Node extents are
 the whole predicate vocabulary tree descent needs.
 
 A hierarchical grid uses its [`node_extent`](@ref) hierarchy; other grids use a
-fallback tree over position space.
+fallback tree over index space.
 
 The one-argument form picks the manifold with `best_manifold(grid)`.
 """
 function treeify end
+
+"""
+    subcursor(grid::AbstractGrid, inds::AbstractUnitRange) -> tree or `nothing`
+
+The [`treeify`](@ref) tree restricted to the grid indices `inds`, with leaf
+indices still in `grid`'s own index space, or `nothing` (the default) when
+this grid cannot express that restriction. The result must cover exactly the
+cells at `inds`, no more.
+
+Implemented by grids whose tree is a lattice rectangle rather than a cell
+hierarchy; a hierarchical grid needs no method.
+"""
+function subcursor end
+
+subcursor(::AbstractGrid, ::AbstractUnitRange{<:Integer}) = nothing
+
+# ---------------------------------------------------------------------------
+# Grids whose cells are raster tiles
+# ---------------------------------------------------------------------------
+
+"""
+    raster_tiles(grid::AbstractGrid, inds::AbstractUnitRange) -> tiles or `nothing`
+
+The raster tiles covering the grid indices `inds`, or `nothing` (the default)
+when this grid's cells are not pixels of raster tiles.
+
+  - A **tile** is a rectangle of pixels: `raster_shape` gives its extent in rows
+    and columns, `raster_localindex` names each pixel's index in `grid`, and
+    `raster_cap` bounds any sub-rectangle of it.
+  - Together the tiles must hold every cell of `inds` exactly once and no cell
+    outside it.
+  - The result is an indexable collection of **tile handles**. A handle is
+    opaque to the caller, which only passes it back to the three hooks below, so
+    a grid may carry in it whatever those need — an identifier, the rectangle's
+    origin, its offset in the grid.
+  - Implemented by grids over a collection of raster tiles; [`treeify`](@ref)
+    builds a tiled raster tree for them.
+"""
+function raster_tiles end
+
+raster_tiles(::AbstractGrid, ::AbstractUnitRange{<:Integer}) = nothing
+
+"""
+    raster_shape(grid::AbstractGrid, tile) -> (nrows, ncols)
+
+The tile's rectangle, in pixel rows and columns. Both are positive. Rows and
+columns are numbered `0:nrows-1` and `0:ncols-1` in every other hook.
+"""
+function raster_shape end
+
+"""
+    raster_localindex(grid::AbstractGrid, tile, j, i) -> Int
+
+The index **in `grid`** of the pixel at row `j` and column `i` of `tile`, both
+0-based. It is the tile's offset in the grid plus the pixel's row-major index
+within the tile, so a tile's pixels occupy one contiguous block of grid indices
+in row-major order.
+"""
+function raster_localindex end
+
+"""
+    raster_cap(grid::AbstractGrid, tile, j0, j1, i0, i1) -> SphericalCap
+
+A cap containing the geometry of every pixel in the closed sub-rectangle
+`j0:j1` x `i0:i1` of `tile`. It must cover the pixels' boundaries, not merely
+their centres, and `raster_cap(grid, tile, 0, nrows-1, 0, ncols-1)` therefore
+bounds the whole tile.
+"""
+function raster_cap end
 
 # ===========================================================================
 # Queries

@@ -1,5 +1,5 @@
 # The radix-4 quad-face family: one aligned `2^l x 2^l` lattice per base face,
-# ids `face * 4^l + curvecode`, positions `id + 1`. Everything that follows from
+# ids `face * 4^l + curvecode`, indices `id + 1`. Everything that follows from
 # that identity alone is written once here and dispatches on
 # `AbstractQuadFaceGridSystem`; the per-system files keep their charts,
 # adjacency, extents, and the three declarations below.
@@ -73,6 +73,10 @@ end
 cellindextype(::AbstractQuadFaceGridSystem) = LevelIndex
 has_sorted_subtrees(::AbstractQuadFaceGridSystem) = true
 
+# The family contract obliges every subtype to supply `cellat` on its own
+# level grid, so the declaration belongs to the family rather than to each.
+has_direct_location(::AbstractQuadFaceGridSystem) = true
+
 """
     rootcells(sys::AbstractQuadFaceGridSystem)
 
@@ -133,9 +137,9 @@ end
 """
     descendant_range(sys::AbstractQuadFaceGridSystem, c, l) -> UnitRange{Int}
 
-The contiguous **positions** in `levelgrid(sys, l)` occupied by `c`'s level-`l`
+The contiguous **indices** in `levelgrid(sys, l)` occupied by `c`'s level-`l`
 descendants: ids `index * 4^Δ` through `(index + 1) * 4^Δ - 1`, shifted into
-1-based positions.
+1-based indices.
 
 Exact and hole-free in both directions, which is what
 `has_sorted_subtrees(sys) == true` asserts: curve order is depth-first order by
@@ -169,7 +173,7 @@ function descendants(sys::AbstractQuadFaceGridSystem, c::LevelIndex, l::Integer)
 end
 
 # ===========================================================================
-# The level grid: size, and positions <-> ids
+# The level grid: size, and indices <-> ids
 # ===========================================================================
 
 ncells(sys::AbstractQuadFaceGridSystem, l::Integer) =
@@ -179,12 +183,12 @@ ncells(sys::AbstractQuadFaceGridSystem, l::Integer) =
 cellindex(::AbstractQuadFaceGridSystem, l::Integer, i::Int) = LevelIndex(l, i - 1)
 
 """
-    cellposition(sys::AbstractQuadFaceGridSystem, c) -> Union{Int,Nothing}
+    globalindex(sys::AbstractQuadFaceGridSystem, c) -> Union{Int,Nothing}
 
 `index + 1` for an in-range id, `nothing` otherwise. The grid has already
 rejected a cell from another level and converted any alternate scheme.
 """
-function cellposition(sys::AbstractQuadFaceGridSystem, c::LevelIndex)
+function globalindex(sys::AbstractQuadFaceGridSystem, c::LevelIndex)
     0 <= c.index < ncells(sys, level(c)) || return nothing
     return Int(c.index + 1)
 end
@@ -299,19 +303,37 @@ end
 Interleave a lattice coordinate pair into a Z-order code: `ix` occupies the even
 bits and `iy` the odd bits. That positional layout is what makes `code ÷ 4` the
 parent and `4code .+ (0:3)` the children.
+
+Defined for `0 <= ix, iy < 2^31`, which covers every representable refinement
+level; the low 32 bits of each coordinate are the ones interleaved.
 """
 @inline function morton_encode(ix::Integer, iy::Integer)
-    x = Int64(ix)
-    y = Int64(iy)
-    code = Int64(0)
-    shift = 0
-    while (x | y) != 0
-        code |= ((x & 1) << shift) | ((y & 1) << (shift + 1))
-        x >>= 1
-        y >>= 1
-        shift += 2
-    end
-    return code
+    return Int64(_spread_bits(UInt64(Int64(ix))) | (_spread_bits(UInt64(Int64(iy))) << 1))
+end
+
+# Spread the low 32 bits of `x` into the even bit positions of a 64-bit word by
+# repeated halving of the gaps: the classic branchless bit-interleave. Constant
+# time, unlike a per-bit loop whose cost grows with the refinement level.
+@inline function _spread_bits(x::UInt64)
+    x &= 0x00000000ffffffff
+    x = (x | (x << 16)) & 0x0000ffff0000ffff
+    x = (x | (x << 8))  & 0x00ff00ff00ff00ff
+    x = (x | (x << 4))  & 0x0f0f0f0f0f0f0f0f
+    x = (x | (x << 2))  & 0x3333333333333333
+    x = (x | (x << 1))  & 0x5555555555555555
+    return x
+end
+
+# Inverse of `_spread_bits`: gather the even bit positions back down into the
+# low 32 bits, halving the gaps in the opposite order.
+@inline function _gather_bits(x::UInt64)
+    x &= 0x5555555555555555
+    x = (x | (x >> 1))  & 0x3333333333333333
+    x = (x | (x >> 2))  & 0x0f0f0f0f0f0f0f0f
+    x = (x | (x >> 4))  & 0x00ff00ff00ff00ff
+    x = (x | (x >> 8))  & 0x0000ffff0000ffff
+    x = (x | (x >> 16)) & 0x00000000ffffffff
+    return x
 end
 
 """
@@ -321,15 +343,6 @@ Inverse of [`morton_encode`](@ref): even bits rebuild `ix`, odd bits rebuild
 `iy`.
 """
 @inline function morton_decode(code::Integer)
-    c = Int64(code)
-    ix = Int64(0)
-    iy = Int64(0)
-    shift = 0
-    while c != 0
-        ix |= (c & 1) << shift
-        iy |= ((c >> 1) & 1) << shift
-        c >>= 2
-        shift += 1
-    end
-    return (ix, iy)
+    c = UInt64(Int64(code))
+    return (Int64(_gather_bits(c)), Int64(_gather_bits(c >> 1)))
 end

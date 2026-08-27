@@ -68,7 +68,7 @@ const MANIFEST_VALIDATED = "strict"
 
 Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
 every layer, carrying a [`ChunkedCellLookup`](@ref) that resolves a cell to a
-position without scanning the axis. Any other dimension of the store — time,
+index without scanning the axis. Any other dimension of the store — time,
 bands — becomes an ordinary `Dim`, with the values of the like-named coordinate
 array where the store has one.
 
@@ -92,6 +92,10 @@ extension (`using AWSS3`) and says so otherwise.
     sidecar is ignored, the ids are scanned, and every check runs on every
     store.
   - `conventions`: the conventions to try, in order.
+  - `ancestors`: an ancestor-subzone store only — the level-`ancestor_level`
+    cells (or column indices) to restrict the cell axis to. The default reads
+    the WHOLE level, since a column nobody wrote is not absent from such a store,
+    it reads back as fill.
   - `description`: a [`StoreDescription`](@ref) that bypasses detection. The
     caller then asserts grid, level, encoding and array names, and only the
     mechanical checks — the id scan, the closed-form counts — still run. This
@@ -108,14 +112,34 @@ The stack's `metadata` carries the provenance a value-identical rewrite needs:
 | `"description"` | the [`StoreDescription`](@ref) everything was read through |
 
 Each layer keeps its own array attributes as its metadata.
+
+**The ancestor-subzone layout** is recognized from its own attributes and read
+by its own path: the layers come back over a `Cells` dimension as ever, backed
+by a lazy [`SubzoneCellArray`](@ref) whose chunks are the store's subtrees. Such
+a stack's metadata carries `"layout"` — a [`SubzoneLayout`](@ref) — in place of
+`"description"`, `"conventions"` and `"encoding"`, none of which have anything
+to say about a two-dimensional store.
 """
 function DiscreteGlobalGrids.dggread(store::StoreLike; vars=DD.All(), lazy::Bool=true,
     validate::Symbol=:strict, conventions=DiscreteGlobalGrids.CONVENTION_REGISTRY,
-    description::Union{StoreDescription,Nothing}=nothing)
+    description::Union{StoreDescription,Nothing}=nothing, ancestors=nothing)
     samples = validation_samples(validate)
     group, identifier = opengroup(store)
     return with_store_context(identifier) do
         snap = snapshot(group; identifier)
+        # The two-dimensional layout is recognized before the conventions are
+        # asked, and by its own attribute rather than by one of theirs: its data
+        # arrays share no cell dimension, so there is nothing for a convention to
+        # describe and no `StoreDescription` that could describe it.
+        if DiscreteGlobalGrids.issubzonestore(snap.attrs)
+            description === nothing || throw(ArgumentError(
+                "`description` asserts a one-dimensional cell axis; this store is " *
+                "the ancestor-subzone layout, whose shape is in its own attributes."))
+            return DGGSZarrSubzones.assemble(group, snap, identifier, vars, lazy, ancestors)
+        end
+        ancestors === nothing || throw(ArgumentError(
+            "`ancestors` selects the columns of an ancestor-subzone store, and " *
+            "this store is not one."))
         desc, names = describe(snap, conventions, description)
         with_store_context(identifier; conventions=names) do
             assemble(group, snap, desc, names, vars, lazy, validate, samples)
@@ -528,7 +552,7 @@ end
 
 # A dimension with a like-named one-dimensional array is that array's values —
 # the CF coordinate-variable convention, and small enough to read. Anything
-# else is a bare axis: DimensionalData indexes it by position.
+# else is a bare axis: DimensionalData indexes it by local index.
 function otherdim(name, len, group, snap)
     entry = getarray(snap, name)
     D = DD.Dim{Symbol(name)}

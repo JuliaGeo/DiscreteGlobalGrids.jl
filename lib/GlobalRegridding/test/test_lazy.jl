@@ -10,6 +10,11 @@
 import DiskArrays
 import DimensionalData as DD
 
+# The shared relation oracles. `test_chunkgraph.jl` runs first and defines the
+# module; this file reuses it rather than re-spelling either definition, the
+# same way it reuses that file's `G4ProbeSpace`.
+using .ChunkGraphOracles: graph_pairs, demanded_pairs
+
 # Source read counter
 
 mutable struct T7Counting{T,N,A<:AbstractArray{T,N}} <: DiskArrays.AbstractDiskArray{T,N}
@@ -41,13 +46,13 @@ mutable struct T7CountingMethod{M<:AbstractRegriddingMethod} <: AbstractRegriddi
 end
 
 T7CountingMethod(inner) = T7CountingMethod(inner, 0)
-GR.support_radius(m::T7CountingMethod, space::RegridSpace) =
-    GR.support_radius(m.inner, space)
+GR.supportradius(m::T7CountingMethod, space::RegridSpace) =
+    GR.supportradius(m.inner, space)
 
-function build_weights!(coo::WeightCOO, m::T7CountingMethod,
+function buildweights!(coo::WeightCOO, m::T7CountingMethod,
     dst::RegridSpace, dst_inds, src::RegridSpace, src_inds)
     countbuild!(m)
-    return build_weights!(coo, m.inner, dst, dst_inds, src, src_inds)
+    return buildweights!(coo, m.inner, dst, dst_inds, src, src_inds)
 end
 
 # Fixed-radius stencil used to test support discovery.
@@ -56,9 +61,9 @@ struct T7RadiusMethod <: AbstractRegriddingMethod
     radius::Float64
 end
 
-GR.support_radius(m::T7RadiusMethod, ::RegridSpace) = m.radius
+GR.supportradius(m::T7RadiusMethod, ::RegridSpace) = m.radius
 
-function build_weights!(coo::WeightCOO, m::T7RadiusMethod,
+function buildweights!(coo::WeightCOO, m::T7RadiusMethod,
     dst::RegridSpace, dst_inds, src::RegridSpace, src_inds)
     for (j, p) in enumerate(dst_inds)
         centre = cellcentroid(dst, p)
@@ -71,9 +76,68 @@ function build_weights!(coo::WeightCOO, m::T7RadiusMethod,
     return coo
 end
 
+# `NearestCell`'s stencils behind a sampler that records, per query, whether an
+# outer loop had declared itself parallel where the tile being built was built.
+# A prefetched build spawns under that declaration and a build in the consuming
+# loop does not, so the two are distinguishable from inside a build.
+
+struct T10ScopeNearest <: AbstractRegriddingMethod
+    seen::Vector{Bool}
+    guard::ReentrantLock
+end
+
+T10ScopeNearest() = T10ScopeNearest(Bool[], ReentrantLock())
+
+GR.outputsampling(::T10ScopeNearest) = DD.Lookups.Points()
+GR.supportradius(::T10ScopeNearest, space::RegridSpace) =
+    supportradius(NearestCell(), space)
+
+struct T10ScopeSampler{S}
+    inner::S
+    method::T10ScopeNearest
+end
+
+GR.sampler(m::T10ScopeNearest, space::RegridSpace) =
+    T10ScopeSampler(GR.sampler(NearestCell(), space), m)
+
+function GR.weightsat!(row::GR.WeightRow, s::T10ScopeSampler, p)
+    @lock s.method.guard push!(s.method.seen, GR.OUTER_PARALLEL[])
+    return GR.weightsat!(row, s.inner, p)
+end
+
+# A point method with `BarycentricPoint`'s stencils and the default support
+# radius of zero, so its relation is cap overlap and nothing else.
+
+struct T9NoReach <: AbstractRegriddingMethod end
+
+GR.outputsampling(::T9NoReach) = DD.Lookups.Points()
+GR.sampler(::T9NoReach, space::RegridSpace) = GR.sampler(BarycentricPoint(), space)
+
+# The source chunks a destination tile's stencils name, taken from an operator
+# built over the whole domain by the chunk-pair builder, so nothing a tile build
+# does takes part in the answer.
+function t9_owners(whole::Matrix{Float64}, space::RegridSpace, dinds)
+    out = Set{Int}()
+    for i in dinds, j in axes(whole, 2)
+        iszero(whole[Int(i), j]) || push!(out, Int(GR.chunkat(space, j)))
+    end
+    return sort!(collect(out))
+end
+
 t7_plan(method, dst, src; policy = Weighted(0.5), storage = PerChunk(),
-    budget = 2^30, chunks = nothing, missingval = nothing) =
+    budget = GR.DEFAULT_BUDGET, chunks = nothing, missingval = nothing) =
     ChunkedPlan(method, policy, dst, src, storage, budget, chunks, missingval)
+
+# A relation carrying nothing but the caps a wave costs against. `_wavesize` and
+# `_blockcosts!` read per-chunk geometry off the plan's relation rather than off
+# private vectors, so a test that wants a contrived pair of cap sets builds the
+# relation that carries them. The CSR is deliberately edgeless: the wave
+# estimator reads the caps and the caller's own `srcchunks`, never the rows.
+t7_capgraph(dstcaps, srccaps) =
+    GR.ChunkDependencyGraph(GR.DependencyIdentity(),
+        fill(1, length(dstcaps) + 1), Int32[],
+        fill(1, length(srccaps) + 1), Int32[];
+        dstcaps = collect(dstcaps), srccaps = collect(srccaps))
 
 # Source with a configurable `knownempty` oracle.
 
@@ -109,12 +173,52 @@ function t8_pairs(dst, src; radius = 0.0)
 end
 
 # The connectivity a flat pairwise cap test gives — the independent reference
-# the tree descent is checked against.
+# the tree descent is checked against. It reads `chunkextents`, the one way to
+# obtain a space's chunk caps.
 function t7_pairwise(dst, dstchunk, src; radius = 0.0)
-    dcap = chunktree(dst).caps[dstchunk]
-    return [s for (s, scap) in enumerate(chunktree(src).caps)
+    dcap = GR.chunkextents(dst)[dstchunk]
+    return [s for (s, scap) in enumerate(GR.chunkextents(src))
             if US.spherical_distance(dcap.point, scap.point) <=
                dcap.radius + scap.radius + radius]
+end
+
+# One destination chunk's source chunks, read the way the lazy executor reads
+# them: off the relation the plan owns. These are the rows the executor takes,
+# so an assertion about them is an assertion about the read.
+t7_sources(plan::ChunkedPlan, d::Integer) =
+    Int.(GR.sourcesof(GR.dependencies(plan), Int(d)))
+
+# A source that declares whatever it is told to, and counts how often it is
+# asked. `answer` is what `eachchunk` gives back, including descriptions no
+# regrid can use.
+mutable struct T9Declaring{T,N,A<:AbstractArray{T,N},H,C} <: DiskArrays.AbstractDiskArray{T,N}
+    data::A
+    storage::H
+    answer::C
+    asked::Int
+    reads::Int
+end
+
+t9_grid(a::AbstractArray, grid) = T9Declaring(a, DiskArrays.Chunked(), grid, 0, 0)
+t9_chunked(a::AbstractArray, cs::Tuple) = t9_grid(a, DiskArrays.GridChunks(a, cs))
+t9_unchunked(a::AbstractArray) =
+    T9Declaring(a, DiskArrays.Unchunked(), DiskArrays.GridChunks(a, size(a)), 0, 0)
+
+Base.size(x::T9Declaring) = size(x.data)
+DiskArrays.haschunks(x::T9Declaring) = x.storage
+DiskArrays.eachchunk(x::T9Declaring) = (x.asked += 1; x.answer)
+function DiskArrays.readblock!(x::T9Declaring, out, r::AbstractUnitRange...)
+    x.reads += 1
+    out .= view(x.data, r...)
+    return out
+end
+
+# Apply a lazy array to `source` and report what the construction asked of it.
+function t9_apply(source, plan)
+    source.asked = 0
+    source.reads = 0
+    A = LazyRegridArray(source, plan)
+    return A, source.asked, source.reads
 end
 
 @testset "Lazy path" begin
@@ -127,26 +231,75 @@ end
     field = collect(reshape(1.0:32.0, 8, 4))
 
     @testset "discovery" begin
-        # Dual-tree discovery agrees with pairwise cap checks.
+        # Every claim below is about the relation a plan owns, because that
+        # is the only relation there is: one `candidatechunks!` query per
+        # destination cap defines every edge.
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        graph = GR.dependencies(plan)
+
+        # The generic packed index agrees with pairwise cap checks.
         for c in 1:nchunks(dstspace)
-            @test GR.connectedchunks(dstspace, c, srcspace) == t7_pairwise(dstspace, c, srcspace)
+            @test t7_sources(plan, c) == t7_pairwise(dstspace, c, srcspace)
         end
 
-        # Dilation only ever adds pairs.
-        wide = GR.connectedchunks(dstspace, 1, srcspace; radius = 0.5)
-        @test issubset(GR.connectedchunks(dstspace, 1, srcspace), wide)
+        # Dilation only ever adds pairs. The radius reaches the relation
+        # through the plan's method, which is the only way it can.
+        wideplan = t7_plan(T7RadiusMethod(0.5), dstspace, srcspace)
+        @test GR.dependency_radius(GR.dependencies(wideplan)) == 0.5
+        wide = t7_sources(wideplan, 1)
+        @test issubset(t7_sources(plan, 1), wide)
 
         # Chunk extents come back indexed by chunk number, which is what the
-        # descent's leaf indices mean.
-        @test GR.chunkextents(srcspace) == chunktree(srcspace).caps
+        # descent's leaf indices mean — and the relation carries the very
+        # vectors it was built from, so there is one copy of each, not two.
+        @test GR.sourceextents(graph) == GR.chunkextents(srcspace)
+        @test GR.destinationextents(graph) == GR.chunkextents(dstspace)
 
-        # The batched dual descent finds exactly the union of the per-chunk
-        # queries — the form a hierarchical destination tree will use.
-        pairs = Tuple{Int,Int}[]
-        GR.connectedchunkpairs((d, s) -> push!(pairs, (d, s)), dstspace, srcspace)
-        expected = sort([(d, s) for d in 1:nchunks(dstspace)
-                         for s in GR.connectedchunks(dstspace, d, srcspace)])
-        @test sort(pairs) == expected
+        # The relation's rows ARE the per-destination-cap queries: one
+        # `chunkindex(src)`, one `candidatechunks!` per `chunkextents(dst)`
+        # entry. `demanded_pairs` replays exactly that loop, so with no
+        # `refine` the two must be equal, not merely nested.
+        @test graph_pairs(graph) == demanded_pairs(dstspace, srcspace)
+
+        # The generic index is GeometryOps' packed R-tree. Its leaf boxes are
+        # outward-rounded bounds of each cap, including tiny, polar,
+        # antimeridian and whole-sphere cases.
+        index = GR.chunkindex(srcspace)
+        @test index isa GR.FlexibleRTrees.RTree
+        srccaps = GR.chunkextents(srcspace)
+        srcboxes = map(cap -> convert(GR.Extents.Extent, cap), srccaps)
+        for capacity in (2, 3, 16)
+            packed = GR.FlexibleRTrees.RTree(GR.FlexibleRTrees.HPR(), srccaps;
+                extents = srcboxes, nodecapacity = capacity)
+            for c in 1:nchunks(dstspace)
+                dcap = GR.chunkextents(dstspace)[c]
+                @test GR.candidatechunks!(Int[], packed, dcap) ==
+                      t7_pairwise(dstspace, c, srcspace)
+            end
+        end
+        capcases = (
+            SphericalCap(toy_point(0, 90), 1e-12),
+            SphericalCap(toy_point(180, 0), 0.3),
+            SphericalCap(toy_point(25, -40), 1.2),
+            SphericalCap(toy_point(0, 0), Float64(pi)),
+        )
+        for cap in capcases
+            box = convert(GR.Extents.Extent, cap)
+            @test keys(box) == (:X, :Y, :Z)
+            centre = cap.point
+            seed = abs(centre[3]) < 0.9 ? USPoint(0.0, 0.0, 1.0) : USPoint(1.0, 0.0, 0.0)
+            u = LinearAlgebra.normalize(seed - LinearAlgebra.dot(seed, centre) * centre)
+            v = USPoint(centre[2] * u[3] - centre[3] * u[2],
+                centre[3] * u[1] - centre[1] * u[3],
+                centre[1] * u[2] - centre[2] * u[1])
+            r = min(cap.radius, Float64(pi))
+            for θ in range(0.0, 2pi; length = 65)
+                p = cos(r) * centre + sin(r) * (cos(θ) * u + sin(θ) * v)
+                @test box.X[1] <= p[1] <= box.X[2]
+                @test box.Y[1] <= p[2] <= box.Y[2]
+                @test box.Z[1] <= p[3] <= box.Z[2]
+            end
+        end
     end
 
     @testset "L1 — construction is free" begin
@@ -160,7 +313,7 @@ end
         @test size(A) == (32,)
         @test DiskArrays.haschunks(A) isa DiskArrays.Chunked
         # The destination's own chunks are the cell axis's chunks, because this
-        # destination's chunks are contiguous runs of cell positions.
+        # destination's chunks are contiguous runs of cell indices.
         @test collect(DiskArrays.eachchunk(A)) == [(1:16,), (17:32,)]
     end
 
@@ -189,19 +342,117 @@ end
     @testset "the wave of concurrent builds is bounded by the weight budget" begin
         # Build waves respect the minimum block-size budget.
         plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
-        srcchunks = GR.connectedchunks(dstspace, 1, srcspace)
+        srcchunks = t7_sources(plan, 1)
         srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
-        nd = length(cellindices(dstspace, 1))
+        nd = length(ownedindices(dstspace, 1))
+        # The tile is destination chunk 1, so its rows are `[1]`; the caps come
+        # off the plan's own relation.
+        graph = GR.dependencies(plan)
+        rows = [1]
+        nt = Threads.nthreads()
         @test length(srcchunks) > 1
 
-        tiny = t7_plan(ToyDiagonalMethod(), dstspace, srcspace; budget = 2^10)
-        @test GR._wavesize(tiny, nd, srcchunks, srcranges) == 1
-        @test GR._wavesize(plan, nd, srcchunks, srcranges) ==
-              min(Threads.nthreads(), length(srcchunks))
+        # Under a declared outer wave, inner threading is already off, so the
+        # wave is the only parallelism left and the budget alone bounds it.
+        Base.ScopedValues.@with GR.OUTER_PARALLEL => true begin
+            tiny = t7_plan(ToyDiagonalMethod(), dstspace, srcspace; budget = 2^10)
+            @test GR._wavesize(tiny, nd, srcchunks, srcranges, graph, rows) == 1
+            @test GR._wavesize(plan, nd, srcchunks, srcranges, graph, rows) ==
+                  min(nt, length(srcchunks))
 
-        # One pair is one build whatever the threads: a wave never spawns for a
-        # tile it cannot split.
-        @test GR._wavesize(plan, nd, srcchunks[1:1], srcranges[1:1]) == 1
+            # One pair is one build whatever the threads: a wave never spawns
+            # for a tile it cannot split.
+            @test GR._wavesize(plan, nd, srcchunks[1:1], srcranges[1:1], graph, rows) == 1
+        end
+    end
+
+    @testset "a wave that loses a task still waits for the rest" begin
+        # The failing method is built from the chunk it must fail on, so the
+        # rows are read off a plan over the same pair at the same radius first.
+        srcchunks = t7_sources(t7_plan(ToyDiagonalMethod(), dstspace, srcspace), 1)
+        j = min(3, length(srcchunks))
+        @test j > 1
+        dinds = ownedindices(dstspace, 1)
+        # The first chunk of the wave throws; the others sleep. A `_fillwave!`
+        # that raises on the first `fetch` and abandons the rest would return
+        # with those tasks still running against a plan the caller is done with.
+        bad = Int(first(ownedindices(srcspace, srcchunks[1])))
+        method = WaveFailMethod(bad, 0.25)
+        plan = t7_plan(method, dstspace, srcspace)
+        # ...and the plan under test really does hold those rows.
+        @test t7_sources(plan, 1) == srcchunks
+        wave = GR.CachedBlock[]
+        @test_throws Exception GR._fillwave!(wave, plan, 1, srcchunks, 1, j,
+            dinds, dinds)
+        @test method.finished[] == j - 1
+    end
+
+    @testset "a wave's handles carry the block type" begin
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        dinds = ownedindices(dstspace, 1)
+        # A build spawned for a wave is fetched without an assertion, so the
+        # wave holds one concrete handle type.
+        task = GR._spawnblock(plan, (1, t7_sources(plan, 1)[1]), dinds, dinds)
+        @test task isa GR.StableTask{GR.CachedBlock}
+        @test @inferred(fetch(task)) isa GR.CachedBlock
+    end
+
+    @testset "at top level the wave is weighed against inner threading" begin
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        srcchunks = t7_sources(plan, 1)
+        srcranges = [GR.chunkranges(srcspace, s, (8, 4)) for s in srcchunks]
+        nd = length(ownedindices(dstspace, 1))
+        nt = Threads.nthreads()
+
+        # Costs weigh the chunk by how much of it the tile can reach, so equal
+        # chunk sizes do not make an even wave.
+        wide = [SphericalCap(toy_point(0, 0), 1.0)]
+        near = SphericalCap(toy_point(0, 0), 0.2)
+        far = SphericalCap(toy_point(180, 0), 0.2)
+        n = max(nt, 4)
+        chunks = collect(1:n)
+        rows = [1]
+        ranges = [srcranges[1] for _ in 1:n]
+        @test GR._blockcosts!(zeros(2), [1, 2], ranges[1:2],
+                  t7_capgraph(wide, [near, far]), rows) ==
+              [Float64(prod(map(length, ranges[1]))), 0.0]
+
+        if nt > 1
+            # Every chunk sits inside the tile: the wave is worth its width.
+            @test GR._wavesize(plan, nd, chunks, ranges,
+                      t7_capgraph(wide, fill(near, n)), rows) == min(nt, n)
+            # One chunk carries all the work and the rest meet the tile only at
+            # its extent: the wave cannot beat the threading it would suppress.
+            lopsided = [i == 1 ? near : far for i in 1:n]
+            @test GR._wavesize(plan, nd, chunks, ranges,
+                      t7_capgraph(wide, lopsided), rows) == 1
+            # Nothing to weigh at all still falls back to one build at a time.
+            @test GR._wavesize(plan, nd, chunks, ranges,
+                      t7_capgraph(wide, fill(far, n)), rows) == 1
+        else
+            @test GR._wavesize(plan, nd, chunks, ranges,
+                      t7_capgraph(wide, fill(near, n)), rows) == 1
+        end
+    end
+
+    @testset "cap overlap areas" begin
+        area(r) = 2pi * (1 - cos(r))
+        # Disjoint, nested, and identical caps are exact.
+        @test GR._capoverlap(0.3, 0.3, 1.0) == 0.0
+        @test GR._capoverlap(1.0, 0.2, 0.5) ≈ area(0.2)
+        @test GR._capoverlap(0.4, 0.4, 0.0) ≈ area(0.4)
+        # A cap against the whole sphere is the cap.
+        @test GR._capoverlap(Float64(GR._WHOLE_SPHERE.radius), 0.7, 2.0) ≈ area(0.7)
+        # Touching caps meet in nothing, and half-covered ones in half.
+        @test GR._capoverlap(0.3, 0.5, 0.8) ≈ 0.0 atol = 1e-12
+        @test GR._capoverlap(0.5, 0.5, 0.5) ≈ 0.307515 rtol = 1e-5
+        # Symmetric in its two caps, and monotone as they separate.
+        @test GR._capoverlap(0.9, 0.4, 0.7) ≈ GR._capoverlap(0.4, 0.9, 0.7)
+        @test GR._capoverlap(0.9, 0.4, 0.7) > GR._capoverlap(0.9, 0.4, 0.9)
+        # Caps wider than a quarter turn go through their complements.
+        @test GR._capoverlap(2.0, 0.5, 1.8) ≈ 0.585781 rtol = 1e-5
+        @test GR._capoverlap(1.7, 1.7, 3.0) ≈ 1.619108 rtol = 1e-5
+        @test GR._capoverlap(2.5, 2.0, 1.0) ≈ 8.402553 rtol = 1e-5
     end
 
     @testset "L4 — plan reuse" begin
@@ -261,13 +512,15 @@ end
         point_dst = ToyLonLatSpace(1, 1; lon = (-40.0, -30.0), lat = (-5.0, 5.0))
         method = T7RadiusMethod(deg2rad(50))
 
-        @test GR.connectedchunks(point_dst, 1, wide_src) == [1]
-        @test GR.connectedchunks(point_dst, 1, wide_src; radius = method.radius) == [1, 2]
-
         line = collect(reshape(1.0:8.0, 8, 1))
         source = T7Counting(line, (4, 1))
         plan = t7_plan(method, point_dst, wide_src)
         A = LazyRegridArray(source, plan)
+
+        # The support radius widens the plan's own relation — the rows the read
+        # below will take — and it reaches it only through the plan's method.
+        @test t7_sources(t7_plan(ToyDiagonalMethod(), point_dst, wide_src), 1) == [1]
+        @test t7_sources(plan, 1) == [1, 2]
 
         # Dilated discovery includes all five cells within the support radius.
         @test A[1:1] == [3.0]
@@ -477,6 +730,67 @@ end
         @test length(readdir(dir)) > built
     end
 
+    @testset "caches and spills carry no reference state of their own" begin
+        method = T7CountingMethod(ToyDiagonalMethod())
+        plan = t7_plan(method, dstspace, srcspace)
+        dinds = ownedindices(dstspace, 1)
+
+        built = GR.blockfor(plan, (1, 1), dinds)
+        @test method.builds == 1
+        @test built.block.reference === built.block.denom
+
+        # A hit hands back the entry, so it hands back the same reference object.
+        # A cache that kept a reference of its own would answer an equal copy.
+        hit = GR.blockfor(plan, (1, 1), dinds)
+        @test hit === built
+        @test hit.block.reference === built.block.reference
+        @test method.builds == 1
+
+        # A tile's cached blocks reference their own blocks too.
+        tiled = GR.CachedTile(GR.TileWeights([1], WeightBlock[built.block]))
+        @test tiled.entries[1].block.reference === built.block.reference
+
+        # The spill format stores weights and the optional denominator, and
+        # nothing else: a denominated block and a block with none, over the same
+        # weights, differ on disk by exactly the denominator.
+        dir = mktempdir()
+        inds = ownedindices(srcspace, 1)
+        m = length(inds)
+        coo = WeightCOO(m)
+        buildweights!(coo, ToyDiagonalMethod(; scale = 2.0), srcspace, inds, srcspace, inds)
+        denominated = WeightBlock(coo, m, m)
+        bare = WeightCOO(m)
+        buildweights!(bare, ToyDiagonalMethod(; scale = 2.0, withdenom = false),
+            srcspace, inds, srcspace, inds)
+        point = WeightBlock(bare, m, m)
+        @test point.weights == denominated.weights
+
+        dpath = GR.writeblockfile(joinpath(dir, "denominated.blk"), denominated)
+        ppath = GR.writeblockfile(joinpath(dir, "point.blk"), point)
+        @test filesize(dpath) - filesize(ppath) == 8 * m
+
+        # Both come back with the reference reconstructed, aliased to the
+        # denominator where there is one and recomputed where there is not.
+        dback = GR.readblockfile(dpath)
+        @test dback.weights == denominated.weights
+        @test dback.denom == denominated.denom
+        @test dback.reference === dback.denom
+        @test GR._blockbytes(dback) == GR._blockbytes(denominated)
+        pback = GR.readblockfile(ppath)
+        @test pback.weights == point.weights
+        @test pback.denom === nothing
+        @test pback.reference == point.reference
+        @test GR._blockbytes(pback) == GR._blockbytes(point)
+
+        # A spilled tile's blocks are reconstructed the same way.
+        tpath = GR.writetilefile(joinpath(dir, "tile.tile"),
+            GR.TileWeights([1, 2], WeightBlock[denominated, point]))
+        tback = GR.readtilefile(tpath)
+        @test tback.sourcechunks == [1, 2]
+        @test tback.blocks[1].reference === tback.blocks[1].denom
+        @test tback.blocks[2].reference == point.reference
+    end
+
     @testset "missingval on the lazy path" begin
         # The sentinel is applied per source chunk, so a lazy read must reach the
         # same verdict as the eager one on the same field.
@@ -598,6 +912,109 @@ end
             t7_plan(ToyDiagonalMethod(), whole, srcspace; chunks = (8, 2)))
     end
 
+    @testset "source chunking" begin
+        # Everything the array reports or reads on the pass-through dimensions
+        # comes from one reading of what the source declares. Each case below
+        # applies a lazy array to a source and then asks the array what it made
+        # of the declaration, so a second interpretation would show up either as
+        # a second question to the source or as an answer that disagrees.
+        cube = reshape(repeat(vec(field), 12), 8, 4, 6, 2)
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+
+        # A declaration the regrid can use is read once and kept as declared:
+        # the output reports the source's own chunk descriptions, identically.
+        regular = t9_chunked(cube, (4, 2, 2, 1))
+        A, asked, reads = t9_apply(regular, plan)
+        @test asked == 1
+        @test reads == 0
+        grid = DiskArrays.eachchunk(A)
+        @test size(grid) == (2, 3, 2)
+        @test [grid[1, i, 1] for i in 1:3] ==
+              [(1:16, 1:2, 1:1), (1:16, 3:4, 1:1), (1:16, 5:6, 1:1)]
+        @test grid.chunks[2] === regular.answer.chunks[3]
+        @test grid.chunks[3] === regular.answer.chunks[4]
+
+        # The same reading is what a read splits its slices along.
+        @test A.chunking.splits == ([1:2, 3:4, 5:6], [1:1, 2:2])
+        @test A.chunking.groups == [(1:2, 1:1), (3:4, 1:1), (5:6, 1:1),
+            (1:2, 2:2), (3:4, 2:2), (5:6, 2:2)]
+        @test GR._slicegroups(A, (2:5, 2:2)) == [(1:1, 1:1), (2:3, 1:1), (4:4, 1:1)]
+        @test A[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+
+        # Irregular chunks keep their own description and their own boundaries.
+        irregular = t9_grid(cube, DiskArrays.GridChunks(
+            DiskArrays.RegularChunks(4, 0, 8), DiskArrays.RegularChunks(2, 0, 4),
+            DiskArrays.IrregularChunks(; chunksizes = [1, 2, 3]),
+            DiskArrays.RegularChunks(1, 0, 2)))
+        B, asked, reads = t9_apply(irregular, plan)
+        @test (asked, reads) == (1, 0)
+        @test DiskArrays.eachchunk(B).chunks[2] isa DiskArrays.IrregularChunks
+        @test B.chunking.splits == ([1:1, 2:3, 4:6], [1:1, 2:2])
+        @test GR._slicegroups(B, (2:5, 2:2)) == [(1:2, 1:1), (3:4, 1:1)]
+        @test B[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+
+        # A source declaring no chunking is never asked what it is, and gives
+        # one whole chunk per pass-through dimension.
+        absent, asked, reads = t9_apply(t9_unchunked(cube), plan)
+        @test (asked, reads) == (0, 0)
+        @test absent.chunking.splits == ([1:6], [1:2])
+        @test absent.chunking.groups == [(1:6, 1:2)]
+        @test size(DiskArrays.eachchunk(absent)) == (2, 1, 1)
+        @test DiskArrays.eachchunk(absent)[1, 1, 1] == (1:16, 1:6, 1:2)
+        @test absent[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+
+        # So does a declaration the regrid cannot use: one that is not a chunk
+        # grid, and one describing a different number of dimensions. Neither is
+        # an error — the source simply declares nothing this array can follow.
+        for answer in ([1:8, 1:4, 1:6, 1:2], DiskArrays.GridChunks(cube, (4, 2, 2)))
+            C, asked, reads = t9_apply(t9_grid(cube, answer), plan)
+            @test (asked, reads) == (1, 0)
+            @test C.chunking.splits == ([1:6], [1:2])
+            @test C.chunking.groups == [(1:6, 1:2)]
+            @test C[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+        end
+
+        # A plan that declares its own chunking says what the output reports and
+        # nothing about what the source is read in: the groups still follow the
+        # source, and the source is still asked exactly once.
+        declared = t9_chunked(cube, (4, 2, 2, 1))
+        D, asked, reads = t9_apply(declared,
+            t7_plan(ToyDiagonalMethod(), dstspace, srcspace; chunks = (8, 3, 1)))
+        @test (asked, reads) == (1, 0)
+        @test [DiskArrays.eachchunk(D)[i, 1, 1] for i in 1:4] ==
+              [(1:8, 1:3, 1:1), (9:16, 1:3, 1:1), (17:24, 1:3, 1:1), (25:32, 1:3, 1:1)]
+        @test D.chunking.groups == A.chunking.groups
+        @test D[1:32, 1:6, 1:2] == repeat(vec(field), 1, 6, 2)
+
+        # A plan chunking that does not describe the regrid is refused in the
+        # regrid's own dimensions.
+        @test_throws "the plan's chunking has 1 dimensions, but the regrid of " *
+                     "this source has 3" LazyRegridArray(t9_chunked(cube, (4, 2, 2, 1)),
+            t7_plan(ToyDiagonalMethod(), dstspace, srcspace;
+                chunks = DiskArrays.GridChunks((32,), (8,))))
+
+        # A source with no pass-through dimensions has nothing to declare about
+        # them, however it chunks its spatial ones.
+        E, asked, reads = t9_apply(t9_chunked(field, (4, 2)), plan)
+        @test (asked, reads) == (1, 0)
+        @test E.chunking.splits == ()
+        @test E.chunking.groups == [()]
+        @test E[1:32] == vec(field)
+
+        # The declaration is read into concrete types, mixed chunk kinds and
+        # absent declarations included.
+        @test @inferred(GR.SourceChunking(regular, Val(2), (6, 2))) isa GR.SourceChunking
+        @test @inferred(GR.SourceChunking(irregular, Val(2), (6, 2))) isa GR.SourceChunking
+        @test @inferred(GR.SourceChunking(cube, Val(2), (6, 2))) isa GR.SourceChunking
+        @test isconcretetype(fieldtype(typeof(A.chunking), :passthrough))
+
+        # The same declaration decides whether a regrid is lazy at all.
+        @test regrid(t9_chunked(field, (4, 2)); to = dstspace, from = srcspace,
+            method = ToyDiagonalMethod()) isa LazyRegridArray
+        @test !(regrid(field; to = dstspace, from = srcspace,
+            method = ToyDiagonalMethod()) isa LazyRegridArray)
+    end
+
     @testset "outer parallelism wins" begin
         # Top level threads exactly when the session has threads.
         top = Threads.nthreads() > 1 ? GOCore.True() : GOCore.False()
@@ -637,5 +1054,562 @@ end
         whole = DD.DimArray(copy(values), (xd, yd))
         @test results[1] ≈ regrid(whole; to = dst, from = RasterGrid(whole),
             method = Conservative(), lazy = false) rtol = 1e-12
+    end
+
+    # ----------------------------------------------------------------------
+    # The lazy executor is driven by the plan's dependency rows
+    # ----------------------------------------------------------------------
+
+    @testset "a lazy read takes its sources from the plan's relation" begin
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        graph = GR.dependencies(plan)
+        source = T7Counting(field, (4, 2))
+        A = LazyRegridArray(source, plan)
+
+        # One relation, one object: the array's is its plan's, identically, and
+        # two arrays over one plan share it. Whatever schedules against the plan
+        # is looking at exactly what the read consults.
+        @test GR.dependencies(A) === graph
+        @test GR.dependencies(A) === GR.dependencies(plan)
+        @test GR.dependencies(LazyRegridArray(T7Counting(field, (4, 2)), plan)) === graph
+
+        # This destination's chunks are its tiles, so a tile's sources are that
+        # chunk's row, exactly — not a superset of it, and not a re-derivation.
+        @test A.tiling.spacetiled
+        out = Int[]
+        for t in 1:nchunks(dstspace)
+            @test GR._connectedsource!(out, A, t) == Int.(GR.sourcesof(graph, t))
+        end
+    end
+
+    @testset "a derived tile takes the sorted union of its rows" begin
+        # A tile smaller or larger than a destination chunk is a *derived* tile:
+        # it spans a set of destination chunks and its sources are the union of
+        # their rows, ascending and duplicate-free whatever order the rows are
+        # visited in.
+        dst = ToyLonLatSpace(12, 6; chunks = (3, 2))
+        src = ToyLonLatSpace(8, 4; chunks = (2, 1))
+        data = collect(reshape(1.0:32.0, 8, 4))
+        plan = t7_plan(ToyDiagonalMethod(), dst, src; chunks = (7, ))
+        graph = GR.dependencies(plan)
+        A = LazyRegridArray(T7Counting(data, (4, 2)), plan)
+        @test !A.tiling.spacetiled
+
+        # At least one tile really does span several destination chunks, or the
+        # union branch below is never exercised.
+        @test any(t -> length(A.tiling.chunksof[t]) > 1, eachindex(A.tiling.runs))
+
+        out = Int[]
+        for t in eachindex(A.tiling.runs)
+            rows = A.tiling.chunksof[t]
+            union = sort!(unique!(reduce(vcat,
+                [Int.(GR.sourcesof(graph, d)) for d in rows])))
+            @test GR._connectedsource!(out, A, t) == union
+            @test issorted(out) && allunique(out)
+            # Order-independence: the same rows in any order give the same set.
+            @test GR._unionrows!(Int[], graph, reverse(rows)) == union
+        end
+    end
+
+    @testset "a lazy read performs no dependency discovery" begin
+        # `G4ProbeSpace` counts every `chunkextents` call — the destination
+        # caps, the identity stamp and the vector the generic `chunkindex`
+        # packs all come through it — so the counter rises exactly when a
+        # relation is being derived from the space. It is defined in
+        # `test_chunkgraph.jl`, which runs first; reuse rather than a second
+        # copy is deliberate.
+        probe = G4ProbeSpace(srcspace)
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, probe)
+        built = probe.queries
+        @test built > 0                                  # the plan did derive one
+
+        source = T7Counting(field, (4, 2))
+        A = LazyRegridArray(source, plan)
+        @test probe.queries == built                     # and the array derived none
+
+        expected = vec(field)
+        @test A[1:32] == expected
+        @test A[1:16] == expected[1:16]
+        @test A[17:32] == expected[17:32]
+        @test A[5:20] == expected[5:20]
+        @test collect(A) == expected
+        # Not one question to the source space through the whole of that.
+        @test probe.queries == built
+
+        # Structurally: the array holds the relation and nothing else that could
+        # answer a spatial query. No source index, no cap vectors of its own.
+        @test :graph in fieldnames(typeof(A))
+        @test fieldtype(typeof(A), :graph) <: GR.ChunkDependencyGraph
+        @test !any(in(fieldnames(typeof(A))), (:srcindex, :dstcaps, :srccaps, :radius))
+        @test !any(T -> T <: AbstractVector{<:SphericalCap}, fieldtypes(typeof(A)))
+    end
+
+    @testset "wave costing reads the relation's extents, and copies none" begin
+        # The per-chunk caps live on the relation. The point is not only
+        # that they are reachable, but that there is ONE of each: a plan, its
+        # array and every task in a wave read the same vectors.
+        plan = t7_plan(ToyDiagonalMethod(), dstspace, srcspace)
+        graph = GR.dependencies(plan)
+        A = LazyRegridArray(T7Counting(field, (4, 2)), plan)
+
+        @test GR.hasextents(graph)
+        @test GR.destinationextents(graph) == GR.chunkextents(dstspace)
+        @test GR.sourceextents(graph) == GR.chunkextents(srcspace)
+        @test GR.destinationextent(graph, 2) === GR.destinationextents(graph)[2]
+        @test GR.sourceextent(graph, 3) === GR.sourceextents(graph)[3]
+        # Shared by reference, not copied, through every derived object.
+        @test GR.sourceextents(GR.dependencies(A)) === GR.sourceextents(graph)
+        @test GR.destinationextents(GR.restrict(graph, [1])) ===
+              GR.destinationextents(graph)
+
+        # A relation assembled from bare CSR arrays carries none, says so, and
+        # is refused by the lazy array rather than silently degrading.
+        bare = GR.ChunkDependencyGraph(GR.DependencyIdentity(), [1, 1], Int32[],
+            [1, 1], Int32[])
+        @test !GR.hasextents(bare)
+        @test_throws ArgumentError GR.sourceextents(bare)
+        @test_throws ArgumentError GR.destinationextent(bare, 1)
+    end
+
+    @testset "a plan with no relation cannot back a lazy read" begin
+        plan = ChunkedPlan(ToyDiagonalMethod(), Weighted(0.5), dstspace, srcspace;
+            dependencies = false)
+        @test GR.dependencies(plan) === nothing
+        err = try
+            LazyRegridArray(T7Counting(field, (4, 2)), plan)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("dependencies = false", err.msg)
+    end
+
+    @testset "a point tile reads exactly the chunks its stencils name" begin
+        # The counting point fixture of `test_interpolation.jl`: stencils that
+        # bracket each destination across source-chunk seams, on a destination
+        # whose two chunks are its tiles, against an 18-chunk source.
+        src = ToyLonLatSpace(36, 18; chunks = (6, 6))
+        dst = ToyLonLatSpace(20, 10; lon = (-19.0, 21.0), lat = (-20.0, 20.0),
+            chunks = (20, 5))
+        data = collect(reshape(1.0:648.0, 36, 18))
+        source = T7Counting(data, (6, 6))
+        plan = t7_plan(T5PlaceCount(), dst, src)
+        graph = GR.dependencies(plan)
+        A = LazyRegridArray(source, plan)
+        @test A.tiling.spacetiled && nchunks(dst) == 2
+
+        eager = regrid(data; to = dst, from = src, method = T5PlaceCount(),
+            lazy = false)
+
+        for t in 1:nchunks(dst)
+            dinds = ownedindices(dst, t)
+            t7_reset!(source)
+            @test A[first(dinds):last(dinds)] ≈ eager[first(dinds):last(dinds)]
+
+            manifest = plan.storage.tiles[t].sourcechunks
+            row = Int.(GR.sourcesof(graph, t))
+
+            # The manifest is the tile's own stencils, and the read is the
+            # manifest: no row chunk with no block was loaded, and no manifest
+            # chunk was skipped.
+            @test manifest == t5_owners(dst, dinds, src)
+            @test length(source.reads) == length(manifest)
+            @test t7_spatial(source) ==
+                  sort([GR.chunkranges(src, s, (36, 18)) for s in manifest])
+
+            # The relation's row is a superset, and a strict one, so reading it
+            # rather than the manifest would show up in the count above.
+            @test issubset(manifest, row)
+            @test length(manifest) < length(row)
+        end
+
+        # Reading the whole destination in one call shares one source hold
+        # across the tiles, and still touches nothing outside their manifests.
+        t7_reset!(source)
+        @test A[1:Int(ncells(dst))] ≈ eager
+        held = Set(GR.chunkranges(src, s, (36, 18))
+                   for t in 1:nchunks(dst) for s in plan.storage.tiles[t].sourcechunks)
+        rowheld = Set(GR.chunkranges(src, s, (36, 18))
+                      for t in 1:nchunks(dst) for s in Int.(GR.sourcesof(graph, t)))
+        @test !isempty(source.reads)
+        @test all(in(held), t7_spatial(source))
+        @test length(held) < length(rowheld)
+    end
+
+    @testset "a nearest tile reads exactly the chunks its cells sit in" begin
+        # The same counting fixture, for `NearestCell`: each destination takes
+        # the one source cell containing it, and both tiles straddle a source
+        # chunk seam in longitude.
+        src = ToyLonLatSpace(36, 18; chunks = (6, 6))
+        dst = ToyLonLatSpace(20, 10; lon = (-19.0, 21.0), lat = (-20.0, 20.0),
+            chunks = (20, 5))
+        data = collect(reshape(1.0:648.0, 36, 18))
+        source = T7Counting(data, (6, 6))
+        plan = t7_plan(NearestCell(), dst, src)
+        graph = GR.dependencies(plan)
+        A = LazyRegridArray(source, plan)
+        @test GR.tilesampler(plan) !== nothing
+        @test A.tiling.spacetiled && nchunks(dst) == 2
+
+        eager = regrid(data; to = dst, from = src, method = NearestCell(),
+            lazy = false)
+
+        for t in 1:nchunks(dst)
+            dinds = ownedindices(dst, t)
+            t7_reset!(source)
+
+            # Bit-identical to the eager whole domain, not approximate: the
+            # weight is exactly one and there is nothing to accumulate.
+            @test A[first(dinds):last(dinds)] == eager[first(dinds):last(dinds)]
+
+            manifest = plan.storage.tiles[t].sourcechunks
+            row = Int.(GR.sourcesof(graph, t))
+
+            # A radius of zero already holds every chunk the tile reads, so the
+            # manifest sits inside the row for a tile straddling a seam and the
+            # read is the manifest exactly.
+            @test manifest == t6_owners(dst, dinds, src)
+            @test length(manifest) > 1
+            @test length(source.reads) == length(manifest)
+            @test t7_spatial(source) ==
+                  sort([GR.chunkranges(src, s, (36, 18)) for s in manifest])
+            @test issubset(manifest, row)
+            @test length(manifest) < length(row)
+        end
+    end
+
+    @testset "a point stencil reaching past cap overlap needs a declared radius" begin
+        # A destination lattice twenty times finer than the source, wholly
+        # inside one source cell and just past its sample site, so its stencils
+        # bracket sites in three further source chunks. Each source cell is its
+        # own chunk, so the caps are tight and the destination meets one.
+        src = ToyLonLatSpace(36, 18; chunks = (1, 1))
+        dst = ToyLonLatSpace(2, 2; lon = (5.0, 6.0), lat = (5.0, 6.0),
+            chunks = (2, 2))
+        data = collect(reshape(1.0:648.0, 36, 18))
+        ndst = Int(ncells(dst))
+        @test nchunks(dst) == 1
+
+        owner = Int(GR.chunkat(src, cellat(src, cellcentroid(dst, 1))))
+        @test all(Int(GR.chunkat(src, cellat(src, cellcentroid(dst, i)))) == owner
+                  for i in 1:ndst)
+
+        weights = GR.tileweights(BarycentricPoint(), dst, 1:ndst, src,
+            GR.sampler(BarycentricPoint(), src))
+        @test length(weights.sourcechunks) == 4
+        @test owner in weights.sourcechunks
+
+        # Cap overlap alone names only the chunk the destination sits in: the
+        # other three own sites whose own cells the destination never touches,
+        # so an intersection with a radius-free row would drop their weights.
+        caps, dcap = GR.chunkextents(src), GR.chunkextents(dst)[1]
+        @test [s for s in weights.sourcechunks
+               if US.spherical_distance(dcap.point, caps[s].point) <=
+                  dcap.radius + caps[s].radius] == [owner]
+
+        # The declared reach is what puts all four in the relation, and the read
+        # is all four.
+        plan = t7_plan(BarycentricPoint(), dst, src)
+        @test supportradius(BarycentricPoint(), src) ≈ deg2rad(10.0)
+        @test issubset(weights.sourcechunks, Int.(GR.sourcesof(GR.dependencies(plan), 1)))
+        source = T7Counting(data, (1, 1))
+        A = LazyRegridArray(source, plan)
+        @test A[1:ndst] ≈ regrid(data; to = dst, from = src,
+            method = BarycentricPoint(), lazy = false)
+        @test t7_spatial(source) ==
+              sort([GR.chunkranges(src, s, (36, 18)) for s in weights.sourcechunks])
+
+        # Declaring no reach leaves three of them out of the relation. The read
+        # refuses, naming the hook and the method, rather than answering with
+        # three weights silently dropped.
+        bare = t7_plan(T9NoReach(), dst, src)
+        @test supportradius(T9NoReach(), src) == 0.0
+        @test !issubset(weights.sourcechunks,
+            Int.(GR.sourcesof(GR.dependencies(bare), 1)))
+        err = try
+            LazyRegridArray(T7Counting(data, (1, 1)), bare)[1:ndst]
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("supportradius", err.msg)
+        @test occursin("T9NoReach", err.msg)
+    end
+
+    @testset "a point tile's manifest tracks the source's chunking" begin
+        # A chunked raster source under two chunkings, and a finer destination
+        # lattice inside its hull straddling both chunk seams.
+        xd = DD.X(-177.5:5.0:177.5)
+        yd = DD.Y(-87.5:5.0:87.5)
+        data = collect(reshape(1.0:2592.0, 72, 36))
+        dst = ToyLonLatSpace(17, 11; lon = (-102.0, -17.0), lat = (-42.0, 13.0),
+            chunks = (17, 4))
+        @test nchunks(dst) == 3
+
+        plainspace = RasterGrid(DD.DimArray(data, (xd, yd)))
+        eager = regrid(data; to = dst, from = plainspace,
+            method = BarycentricPoint(), lazy = false)
+        # The operator the chunk-pair builder gives over the whole domain, which
+        # no tile build takes part in.
+        whole = Matrix(GR.wholeblock(BarycentricPoint(), dst, plainspace).weights)
+        @test all(isapprox(1.0), sum(whole; dims = 2))
+
+        manifests = Dict{Tuple{Int,Int},Vector{Vector{Int}}}()
+        for chunks in ((18, 18), (12, 9))
+            counting = T7Counting(data, chunks)
+            raster = DD.DimArray(counting, (xd, yd))
+            space = RasterGrid(raster)
+            plan = t7_plan(BarycentricPoint(), dst, space)
+            A = LazyRegridArray(raster, plan)
+            tiles = Vector{Int}[]
+            for t in 1:nchunks(dst)
+                dinds = ownedindices(dst, t)
+                t7_reset!(counting)
+                @test A[first(dinds):last(dinds)] ≈ eager[first(dinds):last(dinds)]
+
+                manifest = plan.storage.tiles[t].sourcechunks
+                row = Int.(GR.sourcesof(GR.dependencies(plan), t))
+                @test manifest == t9_owners(whole, space, dinds)
+                @test issubset(manifest, row)
+                @test t7_spatial(counting) ==
+                      sort([GR.chunkranges(space, s, (72, 36)) for s in manifest])
+                push!(tiles, [Int(x) for x in manifest])
+            end
+            # Somewhere in this destination the row really is wider than the
+            # manifest, so the read is not the row by coincidence.
+            @test any(t -> length(tiles[t]) <
+                           length(GR.sourcesof(GR.dependencies(plan), t)),
+                1:nchunks(dst))
+            manifests[chunks] = tiles
+        end
+
+        # One answer under both chunkings, and a manifest that is not the same
+        # list: the stencils do not move with the chunking and the manifest
+        # does.
+        @test manifests[(18, 18)] != manifests[(12, 9)]
+    end
+
+    # A sixteen-tile destination over eighteen source chunks: a sweep is sixteen
+    # reads of one tile each, and the whole destination in one call is the other
+    # shape. Both are read below.
+    t10_src() = ToyLonLatSpace(36, 18; chunks = (6, 6))
+    t10_dst() = ToyLonLatSpace(40, 32; lon = (-40.0, 40.0), lat = (-30.0, 30.0),
+        chunks = (40, 2))
+    t10_data() = collect(reshape(1.0:648.0, 36, 18))
+    # A build typed like any other tile build that fails at run time.
+    function t10_failingbuild(flag::Base.RefValue{Bool}, tile::GR.CachedTile)
+        flag[] && throw(ArgumentError("weights"))
+        return tile
+    end
+
+    @testset "tiles built ahead answer what tiles built in turn answer" begin
+        src, dst, data = t10_src(), t10_dst(), t10_data()
+        ndst = Int(ncells(dst))
+        @test nchunks(dst) == 16
+
+        # `OUTER_PARALLEL` empties the queue, so the second run of each pair is
+        # the tile-by-tile one whatever the thread count is.
+        function t10_run(sweep::Bool, serial::Bool)
+            plan = t7_plan(NearestCell(), dst, src)
+            A = LazyRegridArray(data, plan)
+            out = Vector{Float64}(undef, ndst)
+            doread() = if sweep
+                for t in 1:nchunks(dst)
+                    dinds = ownedindices(dst, t)
+                    r = first(dinds):last(dinds)
+                    @test length(GR._coveringtiles(A, r)) == 1
+                    out[r] .= A[r]
+                end
+            else
+                out .= A[1:ndst]
+            end
+            serial ? Base.ScopedValues.@with(GR.OUTER_PARALLEL => true, doread()) :
+                doread()
+            return out, plan, GR.residency(A)
+        end
+
+        eager = regrid(data; to = dst, from = src, method = NearestCell(),
+            lazy = false)
+        for sweep in (true, false)
+            concurrent, cplan, cstats = t10_run(sweep, false)
+            serial, splan, sstats = t10_run(sweep, true)
+
+            # Bit-identical, not approximate: the same weights applied in the
+            # same order.
+            @test isequal(concurrent, serial)
+            @test isequal(concurrent, eager)
+
+            # Sources are read by the reading loop alone, so every counter the
+            # executor keeps is the tile-by-tile run's.
+            @test (cstats.loads, cstats.hits, cstats.skipped, cstats.dropped,
+                cstats.peakbytes) ==
+                  (sstats.loads, sstats.hits, sstats.skipped, sstats.dropped,
+                sstats.peakbytes)
+
+            # One pass builds one tile once, and leaves the same cache behind.
+            @test cplan.storage.builds == nchunks(dst)
+            @test splan.storage.builds == nchunks(dst)
+            @test sort(collect(keys(cplan.storage.tiles))) ==
+                  sort(collect(keys(splan.storage.tiles)))
+            @test GR.storagebytes(cplan.storage) == GR.storagebytes(splan.storage)
+            @test all(cplan.storage.tiles[t].bytes == splan.storage.tiles[t].bytes &&
+                      cplan.storage.tiles[t].sourcechunks ==
+                      splan.storage.tiles[t].sourcechunks
+                      for t in keys(cplan.storage.tiles))
+        end
+
+        # A queued build fails the way a build in the reading loop fails: with
+        # the exception it raised, not the wrapper a task failure arrives in.
+        let plan = t7_plan(NearestCell(), dst, src)
+            A = LazyRegridArray(data, plan)
+            tile = GR._taketile!(A.prefetch, A, plan, 1, GR._tileindices(A, 1),
+                GR.tilesampler(plan))
+            @test_throws ArgumentError GR._fetchtile(
+                GR.StableTasks.@spawn t10_failingbuild(Ref(true), tile)::GR.CachedTile)
+        end
+    end
+
+    @testset "the prefetch queue is bounded by the weights the storage holds" begin
+        src, dst, data = t10_src(), t10_dst(), t10_data()
+        ndst = Int(ncells(dst))
+        threads = max(Threads.nthreads() - 1, 0)
+
+        # Nothing measures a tile before one is built, so the depth is zero
+        # until one is.
+        pf = GR.TilePrefetch(nchunks(dst), 4000)
+        @test @inferred(GR._prefetchdepth(pf)) == 0
+
+        # A limit holding k tiles queues k - 1; a limit holding one queues none,
+        # and so does one thread whatever the limit says.
+        pf.largest = 1000
+        @test GR._prefetchdepth(pf) == min(threads, 3)
+        pf.largest = 4000
+        @test GR._prefetchdepth(pf) == 0
+        pf.largest = 5000
+        @test GR._prefetchdepth(pf) == 0
+        pf.largest = 1
+        @test GR._prefetchdepth(pf) == threads
+        @test GR.weightlimit(PerChunk(; maxbytes = 4000)) == 4000
+        @test Base.ScopedValues.@with(GR.OUTER_PARALLEL => true,
+            GR._prefetchdepth(pf)) == 0
+
+        # Driven against a real plan: the first tile served queues nothing, the
+        # second queues exactly the depth the arithmetic allows.
+        plan = t7_plan(NearestCell(), dst, src)
+        A = LazyRegridArray(data, plan)
+        smp = GR.tilesampler(plan)
+        first_tile = GR._taketile!(A.prefetch, A, plan, 1, GR._tileindices(A, 1), smp)
+        @test first_tile isa GR.CachedTile
+        @test isempty(A.prefetch.queue)
+        GR._taketile!(A.prefetch, A, plan, 2, GR._tileindices(A, 2), smp)
+        @test length(A.prefetch.queue) == GR._prefetchdepth(A.prefetch)
+        @test length(A.prefetch.queue) <= threads
+        # The queue is typed, so a fetched tile is one without an assertion.
+        @test eltype(A.prefetch.queue) === GR.StableTask{GR.CachedTile}
+        if !isempty(A.prefetch.queue)
+            @test @inferred(GR._fetchtile(first(A.prefetch.queue))) isa GR.CachedTile
+        end
+        # A read that jumps waits for the queued tiles and empties the queue.
+        far = nchunks(dst)
+        GR._taketile!(A.prefetch, A, plan, far, GR._tileindices(A, far), smp)
+        @test isempty(A.prefetch.queue)
+
+        # Whatever the bound, a sweep answers the same values and builds each
+        # tile once: the queue holds its own reference, so a tile the cache
+        # evicts before the sweep reaches it is served, not built twice.
+        eager = regrid(data; to = dst, from = src, method = NearestCell(),
+            lazy = false)
+        for maxbytes in (1, 4000, typemax(Int))
+            tight = t7_plan(NearestCell(), dst, src;
+                storage = PerChunk(; maxbytes))
+            B = LazyRegridArray(data, tight)
+            out = Vector{Float64}(undef, ndst)
+            for t in 1:nchunks(dst)
+                dinds = ownedindices(dst, t)
+                r = first(dinds):last(dinds)
+                out[r] .= B[r]
+            end
+            @test isequal(out, eager)
+            @test tight.storage.builds == nchunks(dst)
+        end
+    end
+
+    @testset "two tasks reading one array take the tiles they asked for" begin
+        src, dst, data = t10_src(), t10_dst(), t10_data()
+        ndst = Int(ncells(dst))
+        nt = nchunks(dst)
+        half = nt ÷ 2
+        serial = regrid(data; to = dst, from = src, method = NearestCell(),
+            lazy = false)
+
+        # Each reader runs ascending over its own half, so both see tiles in
+        # succession and both drive the one queue.
+        for round in 1:24
+            plan = t7_plan(NearestCell(), dst, src)
+            A = LazyRegridArray(data, plan)
+            out = Vector{Float64}(undef, ndst)
+            read!(lo, hi) = for t in lo:hi
+                dinds = ownedindices(dst, t)
+                r = first(dinds):last(dinds)
+                out[r] .= A[r]
+            end
+            lower = Threads.@spawn read!(1, half)
+            upper = Threads.@spawn read!(half + 1, nt)
+            wait(lower)
+            wait(upper)
+
+            # The tile a reader is handed is the tile it asked for: one swapped
+            # for another writes that other tile's weights into these cells.
+            @test isequal(out, serial)
+            @test plan.storage.builds == nt
+            # And the queue still describes itself: a run of tasks after the
+            # tile last served, no longer than the bound allows.
+            @test 0 <= A.prefetch.served <= A.prefetch.ntiles
+            @test length(A.prefetch.queue) <= GR._prefetchdepth(A.prefetch)
+            @test eltype(A.prefetch.queue) === GR.StableTask{GR.CachedTile}
+            @test all(t -> t isa GR.StableTask{GR.CachedTile}, A.prefetch.queue)
+            @test isempty(GR._drain!(A.prefetch).queue)
+        end
+    end
+
+    @testset "a prefetched build keeps its own loops serial" begin
+        # `OUTER_PARALLEL` is what turns threading off inside a weight build, so
+        # a tile built in a prefetch task must see it declared.
+        src, dst, data = t10_src(), t10_dst(), t10_data()
+        ndst = Int(ncells(dst))
+        # The first two tiles are built by the reading loop: nothing is queued
+        # before a first read, and the second read queues behind itself.
+        byloop = length(ownedindices(dst, 1)) + length(ownedindices(dst, 2))
+
+        function t10_sweep(method, storage)
+            plan = t7_plan(method, dst, src; storage)
+            A = LazyRegridArray(data, plan)
+            out = Vector{Float64}(undef, ndst)
+            for t in 1:nchunks(dst)
+                dinds = ownedindices(dst, t)
+                r = first(dinds):last(dinds)
+                out[r] .= A[r]
+            end
+            return out
+        end
+
+        open = T10ScopeNearest()
+        openout = t10_sweep(open, PerChunk())
+        @test length(open.seen) == ndst
+        if Threads.nthreads() > 1
+            @test count(!, open.seen) == byloop
+            @test count(identity, open.seen) == ndst - byloop
+        else
+            @test !any(open.seen)
+        end
+
+        # A storage holding no whole tile empties the queue, and then nothing is
+        # built under the declaration at all.
+        shut = T10ScopeNearest()
+        shutout = t10_sweep(shut, PerChunk(; maxbytes = 1))
+        @test !any(shut.seen)
+        @test isequal(openout, shutout)
     end
 end

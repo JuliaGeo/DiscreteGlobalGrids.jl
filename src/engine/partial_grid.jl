@@ -1,10 +1,10 @@
-# A `PartialGrid` is a sorted subset of one system level. Grid positions match
-# positions in its id vector. Rooted subsets start tree descent at their root.
+# A `PartialGrid` is a sorted subset of one system level. Grid indices match
+# indices in its id vector. Rooted subsets start tree descent at their root.
 
 """
     SubtreeIds(grid, first, n) <: AbstractVector
 
-Lazy ids for `n` consecutive positions of a complete level grid. This provides
+Lazy ids for `n` consecutive indices of a complete level grid. This provides
 `O(1)` construction for rooted subsets in sorted-subtree systems.
 """
 struct SubtreeIds{G<:AbstractGrid,ID} <: AbstractVector{ID}
@@ -22,15 +22,15 @@ Base.size(v::SubtreeIds) = (v.n,)
 Base.IndexStyle(::Type{<:SubtreeIds}) = Base.IndexLinear()
 
 # The check is written out rather than left to Base: a `getindex(::T, ::Int)`
-# defined directly is the whole method, so without it a position past the end
+# defined directly is the whole method, so without it an index past the end
 # resolves an id from the NEXT subtree instead of throwing — and `PartialGrid`'s
-# `cellindex`, which the position contract says bounds-checks, is this call.
+# `cellindex`, which the index contract says bounds-checks, is this call.
 Base.@propagate_inbounds function Base.getindex(v::SubtreeIds, i::Int)
     @boundscheck checkbounds(v, i)
     return cellindex(v.grid, v.first + i - 1)
 end
 
-# Positions of a complete level grid ascend in canonical id order, so the O(n)
+# Indices of a complete level grid ascend in canonical id order, so the O(n)
 # verification `PartialGrid` runs on an arbitrary vector has nothing to find.
 Helpers.strictly_increasing(::SubtreeIds) = true
 
@@ -118,7 +118,7 @@ _placeholder_root(sys::AbstractHierarchicalGridSystem) = first(rootcells(sys))
 Fallbacks._check_wrappable(::PartialGrid) = throw(ArgumentError(
     "wrap the SYSTEM, not the subset: `PartialGrid(AuthalicSystem(sys), level, ids)`. \
 A subset is a property of the id set and the warp is a property of the system, and \
-only that order keeps the tree cursor's position windows correct."))
+only that order keeps the tree cursor's index windows correct."))
 
 function _check_rooted(sys, complete, ids, root, l)
     if has_sorted_subtrees(sys)
@@ -146,6 +146,14 @@ level(grid::PartialGrid) = grid.level
 cell_boundary(grid::PartialGrid, c::AbstractCellIndex) = cell_boundary(grid.complete, c)
 cell_centroid(grid::PartialGrid, c::AbstractCellIndex) = cell_centroid(grid.complete, c)
 
+# A subset changes membership, never cell geometry. Forward the cap hook as
+# well as the public geometry hooks so a system's analytical implementation is
+# not lost merely because its level is stored as a `PartialGrid`.
+Fallbacks.cell_cap(grid::PartialGrid, c::AbstractCellIndex) =
+    Fallbacks.cell_cap(grid.complete, c)
+Fallbacks.cell_cap_is_cheap(grid::PartialGrid) =
+    Fallbacks.cell_cap_is_cheap(grid.complete)
+
 # Forwarded, not derived. The generic `cell_area` is the ring's polygon area,
 # right only where the ring IS the cell: HEALPix and ISEA4R have curvilinear
 # edges and override it on their level grid with the exact `4pi/ncells`. A
@@ -157,10 +165,10 @@ cell_area(grid::PartialGrid, c::AbstractCellIndex) = cell_area(grid.complete, c)
 # contract is written with: `filter(in(sub), ring(complete, c, k))` has to RUN,
 # and Base's fallback would need a grid to be iterable. `CellVector` carries the
 # same method for the same reason.
-Base.in(c::AbstractCellIndex, grid::PartialGrid) = cellposition(grid, c) !== nothing
+Base.in(c::AbstractCellIndex, grid::PartialGrid) = localindex(grid, c) !== nothing
 
 # The ids are sorted, so the O(n) generic scan is two comparisons here.
-function cellposition(grid::PartialGrid, c::AbstractCellIndex)
+function localindex(grid::PartialGrid, c::AbstractCellIndex)
     target = _canonical(grid, c)
     target === nothing && return nothing
     i = searchsortedfirst(grid.ids, target)
@@ -168,7 +176,48 @@ function cellposition(grid::PartialGrid, c::AbstractCellIndex)
     return i
 end
 
-# [`subset_span`](@ref) over a sorted id vector. Ids ascend with positions on
+# A subset's storage is carved out of the complete level, so its global index
+# is the complete grid's — not its own local index into `ids`.
+globalindex(grid::PartialGrid, c::AbstractCellIndex) = globalindex(grid.complete, c)
+
+"""
+    cellat(grid::PartialGrid, p::UnitSphericalPoint) -> Union{AbstractCellIndex,Nothing}
+    cellat(grid::PartialGrid, lon::Real, lat::Real)
+
+The cell **of `grid`** containing the point, or `nothing` when the point falls
+outside the cells the subset holds. The `(lon, lat)` overload takes degrees.
+
+  - Same contract as [`cellat`](@ref) on a grid, restricted to the subset: a
+    point inside the complete level but outside this subset answers `nothing`
+    rather than naming a cell that is not here.
+  - Where the system declares [`has_direct_location`](@ref), the answer is the
+    complete level's own, kept when it is a member: no tree is built and no
+    boundary polygon is tested. Coverage is then exactly the complete level's
+    verdict restricted to `ids`, so **a point the complete level assigns to a
+    non-member cell is outside coverage even when it lies on the boundary of a
+    member cell** — the two share that boundary and the complete level's tie
+    rule decides it. That set of points has measure zero.
+  - Any other system keeps the generic search over the subset's own cells.
+"""
+function cellat(grid::PartialGrid, p::GO.UnitSphericalPoint)
+    has_direct_location(grid.system) || return invoke(cellat,
+        Tuple{AbstractGrid,GO.UnitSphericalPoint}, grid, p)
+    c = cellat(grid.complete, p)
+    c === nothing && return nothing
+    return localindex(grid, c) === nothing ? nothing : c
+end
+
+# One search: `cellat` above is this method with the index thrown away, and the
+# membership test it makes is what produces that index.
+function localindex(grid::PartialGrid, p::GO.UnitSphericalPoint)
+    has_direct_location(grid.system) || return invoke(localindex,
+        Tuple{AbstractGrid,GO.UnitSphericalPoint}, grid, p)
+    c = cellat(grid.complete, p)
+    c === nothing && return nothing
+    return localindex(grid, c)
+end
+
+# [`subset_span`](@ref) over a sorted id vector. Ids ascend with indices on
 # every system here — the same fact `_check_rooted` decides a whole vector's
 # ancestry by — so the block `lo:hi` maps to the id interval `[idlo, idhi]` and
 # one `searchsortedfirst` answers all three verdicts. The `ALL` case needs no

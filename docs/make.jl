@@ -55,8 +55,12 @@ makedocs(;
             "A round trip through a DGGS store" => "tutorials/store_io.md",
         ],
         "API" => [
+            "Choosing a regridding method" => "api/regridding-methods.md",
             "Region boundaries" => "api/boundaries.md",
             "Reading and writing DGGS stores" => "api/store-io.md",
+            "Sweeping a cube along its chunk lines" => "api/chunk-sweep.md",
+            "Requesting neighbour fields" => "api/neighbor-fields.md",
+            "The ancestor-subzone layout" => "api/subzone-layout.md",
         ],
     ],
     plugins = [DocumenterVitepress.BonitoPlugin()],

@@ -3,13 +3,14 @@
 using GlobalRegridding
 import GlobalRegridding as GR
 import GlobalRegridding: RegridSpace, AbstractRegriddingMethod, WeightCOO,
-    celltree, chunktree, ncells, getcell, nchunks, cellindices,
+    celltree, chunkextents, ncells, getcell, nchunks, ownedindices,
     cellcentroid, cellat, hascellchart, manifold,
-    build_weights!, addweight!, adddenom!
+    buildweights!, addweight!, adddenom!
 
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
 import GeoInterface as GI
+import DimensionalData as DD
 import ConservativeRegridding: Trees
 
 const US = GO.UnitSpherical
@@ -94,7 +95,7 @@ end
 """
     ToyCapTree(space, indices)
 
-A one-node spatial tree with stored caps. Indices are cell positions for cell
+A one-node spatial tree with stored caps. Indices are cell indices for cell
 trees and chunk numbers for chunk trees.
 """
 struct ToyCapTree{S}
@@ -108,7 +109,7 @@ function ToyCapTree(space, indices, caps)
     ix = collect(Int, indices)
     cs = collect(Cap, caps)
     extent = isempty(cs) ? TOY_FULL_SPHERE :
-             foldl(US._merge, cs)
+             foldl(GO.Extents.union, cs)
     return ToyCapTree{typeof(space)}(space, ix, cs, extent)
 end
 
@@ -124,7 +125,7 @@ GO.SpatialTreeInterface.node_extent(tree::ToyCapTree) = tree.extent
 GO.SpatialTreeInterface.child_indices_extents(tree::ToyCapTree) =
     zip(tree.indices, tree.caps)
 
-# Cell-tree access uses the wrapped space's global positions.
+# Cell-tree access uses the wrapped space's local indices.
 GOCore.best_manifold(tree::ToyCapTree) = manifold(tree.space)
 Trees.ncells(tree::ToyCapTree) = ncells(tree.space)
 Trees.getcell(tree::ToyCapTree, i::Int) = getcell(tree.space, i)
@@ -175,9 +176,9 @@ nchunklat(space::ToyLonLatSpace) = cld(space.nlat, space.chunklat)
 
 """
     cellsubscript(space::ToyLonLatSpace, i::Int) -> (ix, iy)
-    cellposition(space::ToyLonLatSpace, ix::Int, iy::Int) -> Int
+    localindex(space::ToyLonLatSpace, ix::Int, iy::Int) -> Int
 
-Convert between cell positions and lattice coordinates.
+Convert between the space's local cell indices and lattice coordinates.
 """
 function cellsubscript(space::ToyLonLatSpace, i::Int)
     1 <= i <= ncells(space) || throw(BoundsError(space, i))
@@ -185,7 +186,7 @@ function cellsubscript(space::ToyLonLatSpace, i::Int)
     return (ix, iy)
 end
 
-function cellposition(space::ToyLonLatSpace, ix::Integer, iy::Integer)
+function localindex(space::ToyLonLatSpace, ix::Integer, iy::Integer)
     1 <= ix <= space.nlon && 1 <= iy <= space.nlat ||
         throw(BoundsError(space, (ix, iy)))
     return Int(ix) + (Int(iy) - 1) * space.nlon
@@ -264,7 +265,7 @@ function cellat(space::ToyLonLatSpace, p)
     space.lat0 <= lat <= space.lat1 || return nothing
     ix = clamp(floor(Int, (wrapped - space.lon0) / dlon(space)) + 1, 1, space.nlon)
     iy = clamp(floor(Int, (lat - space.lat0) / dlat(space)) + 1, 1, space.nlat)
-    return cellposition(space, ix, iy)
+    return localindex(space, ix, iy)
 end
 
 function _wrap_lon(lon::Float64, lo::Float64, hi::Float64)
@@ -281,19 +282,19 @@ function chunksubscript(space::ToyLonLatSpace, chunk::Int)
     return (cx, cy)
 end
 
-function cellindices(space::ToyLonLatSpace, chunk::Int)
+function ownedindices(space::ToyLonLatSpace, chunk::Int)
     cx, cy = chunksubscript(space, chunk)
     ix0 = (cx - 1) * space.chunklon + 1
     ix1 = min(space.nlon, cx * space.chunklon)
     iy0 = (cy - 1) * space.chunklat + 1
     iy1 = min(space.nlat, cy * space.chunklat)
-    # Full-width chunks are contiguous in position order.
+    # Full-width chunks are contiguous in index order.
     nchunklon(space) == 1 &&
-        return cellposition(space, 1, iy0):cellposition(space, space.nlon, iy1)
+        return localindex(space, 1, iy0):localindex(space, space.nlon, iy1)
     out = Vector{Int}(undef, (ix1 - ix0 + 1) * (iy1 - iy0 + 1))
     k = 0
     for iy in iy0:iy1, ix in ix0:ix1
-        out[k += 1] = cellposition(space, ix, iy)
+        out[k += 1] = localindex(space, ix, iy)
     end
     return out
 end
@@ -304,15 +305,16 @@ ToyCapTree(space::ToyLonLatSpace, indices) =
     ToyCapTree(space, collect(Int, indices),
         [toy_cap(cellcorners(space, i)) for i in indices])
 
-# Fall back to a latitude-band cap when a corner cap becomes non-convex.
-function chunktree(space::ToyLonLatSpace)
+# The caps directly, one per chunk, falling back to a latitude-band cap when a
+# corner cap becomes non-convex. The generic `chunkindex` packs these.
+function chunkextents(space::ToyLonLatSpace)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)
     points = USPoint[]
     for c in 1:n
         empty!(points)
         lat0, lat1 = 90.0, -90.0
-        for i in cellindices(space, c)
+        for i in ownedindices(space, c)
             append!(points, cellcorners(space, i))
             _, _, a, b = cellbounds(space, i)
             lat0, lat1 = min(lat0, a), max(lat1, b)
@@ -320,7 +322,7 @@ function chunktree(space::ToyLonLatSpace)
         cap = toy_cap(points)
         caps[c] = cap.radius >= Float64(pi) ? toy_bandcap(lat0, lat1, dlon(space)) : cap
     end
-    return ToyCapTree(space, collect(1:n), caps)
+    return caps
 end
 
 # Tree-build counting wrapper
@@ -349,16 +351,47 @@ hascellchart(cs::CountingSpace) = hascellchart(cs.space)
 cellcentroid(cs::CountingSpace, i::Int) = cellcentroid(cs.space, i)
 cellat(cs::CountingSpace, p) = cellat(cs.space, p)
 nchunks(cs::CountingSpace) = nchunks(cs.space)
-cellindices(cs::CountingSpace, chunk::Int) = cellindices(cs.space, chunk)
+ownedindices(cs::CountingSpace, chunk::Int) = ownedindices(cs.space, chunk)
 celltree(cs::CountingSpace) = celltree(cs.space)
-chunktree(cs::CountingSpace) = chunktree(cs.space)
+chunkextents(cs::CountingSpace) = chunkextents(cs.space)
+
+# One-axis destination wrapper
+
+"""
+    ToyCellAxisSpace(space)
+
+Wrap a `RegridSpace` and label results over it with one axis — `Dim{:toycell}`
+over the cells' local indices — where the wrapped space labels with its own
+lattice. This is the destination shape a cell collection has: the cells are the
+whole of it, so a result needs no reshape to sit on that axis.
+"""
+struct ToyCellAxisSpace{S<:RegridSpace} <: RegridSpace
+    space::S
+end
+
+Base.show(io::IO, cs::ToyCellAxisSpace) =
+    print(io, "ToyCellAxisSpace(", cs.space, ")")
+
+GR.destinationdims(cs::ToyCellAxisSpace, ::DD.Lookups.Sampling) =
+    (DD.Dim{:toycell}(1:ncells(cs.space)),)
+
+ncells(cs::ToyCellAxisSpace) = ncells(cs.space)
+getcell(cs::ToyCellAxisSpace, i::Int) = getcell(cs.space, i)
+manifold(cs::ToyCellAxisSpace) = manifold(cs.space)
+hascellchart(cs::ToyCellAxisSpace) = hascellchart(cs.space)
+cellcentroid(cs::ToyCellAxisSpace, i::Int) = cellcentroid(cs.space, i)
+cellat(cs::ToyCellAxisSpace, p) = cellat(cs.space, p)
+nchunks(cs::ToyCellAxisSpace) = nchunks(cs.space)
+ownedindices(cs::ToyCellAxisSpace, chunk::Int) = ownedindices(cs.space, chunk)
+celltree(cs::ToyCellAxisSpace) = celltree(cs.space)
+chunkextents(cs::ToyCellAxisSpace) = chunkextents(cs.space)
 
 # Geometry-free test method
 
 """
     ToyDiagonalMethod(; scale = 1.0, withdenom = true)
 
-Build diagonal weights of `scale` for shared cell positions. `withdenom = false`
+Build diagonal weights of `scale` for shared cell indices. `withdenom = false`
 omits denominators. This isolates executor behavior from geometry.
 """
 struct ToyDiagonalMethod <: AbstractRegriddingMethod
@@ -378,14 +411,49 @@ const TOY_COUNT_LOCK = ReentrantLock()
 
 countbuild!(method) = @lock TOY_COUNT_LOCK method.builds += 1
 
-function build_weights!(coo::WeightCOO, method::ToyDiagonalMethod,
+function buildweights!(coo::WeightCOO, method::ToyDiagonalMethod,
     ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
-    local_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
+    chunklocal_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
     for (j, p) in enumerate(dst_inds)
-        k = get(local_of, p, 0)
+        k = get(chunklocal_of, p, 0)
         k == 0 && continue
         addweight!(coo, j, k, method.scale)
         method.withdenom && adddenom!(coo, j, method.scale)
     end
+    return coo
+end
+
+"""
+    WaveFailMethod(bad, delay)
+
+Fail the build of the source chunk whose first cell index is `bad`, and make
+every other build take `delay` seconds before recording itself in `finished`.
+
+This exists to pin one thing: a wave that loses a task must still wait for the
+rest. Put the failing chunk first and the survivors sleep, so a `_fillwave!` that
+raises on the first `fetch` and walks away leaves `finished` short.
+"""
+struct WaveFailMethod <: AbstractRegriddingMethod
+    bad::Int
+    delay::Float64
+    finished::Threads.Atomic{Int}
+end
+
+WaveFailMethod(bad::Integer, delay::Real) =
+    WaveFailMethod(Int(bad), Float64(delay), Threads.Atomic{Int}(0))
+
+function buildweights!(coo::WeightCOO, method::WaveFailMethod,
+    ::RegridSpace, dst_inds, ::RegridSpace, src_inds)
+    Int(first(src_inds)) == method.bad &&
+        error("WaveFailMethod: the chunk at index $(method.bad) fails by design")
+    sleep(method.delay)
+    chunklocal_of = Dict{Int,Int}(p => k for (k, p) in enumerate(src_inds))
+    for (j, p) in enumerate(dst_inds)
+        k = get(chunklocal_of, p, 0)
+        k == 0 && continue
+        addweight!(coo, j, k, 1.0)
+        adddenom!(coo, j, 1.0)
+    end
+    Threads.atomic_add!(method.finished, 1)
     return coo
 end

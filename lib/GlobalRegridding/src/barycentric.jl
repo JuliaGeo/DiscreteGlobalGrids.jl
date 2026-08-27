@@ -1,0 +1,755 @@
+# Generic point interpolation between source sample sites.
+#
+# One destination sample site at a time: find the dual cell of source sample
+# sites that contains it, then weight that cell's nodes with the coordinates its
+# basis names. Nothing here knows about chunks. A row carries the source space's
+# local indices and whoever asked for it partitions them.
+
+"""
+    BasisKind
+
+Which coordinates weight a dual cell's nodes: `Bilinear` for inverse
+isoparametric Q1 on a quadrilateral, and `MeanValue` for mean-value coordinates
+on a convex polygon. A triangle is a `MeanValue` cell, where mean-value
+coordinates are the triangle's barycentric coordinates.
+
+The kind belongs to the cell, not to its node count: a four-node cell is
+`Bilinear` only where the space that built it says so.
+"""
+@enum BasisKind::UInt8 begin
+    Bilinear
+    MeanValue
+end
+
+# --- tolerances ------------------------------------------------------------
+
+# A coordinate below this is outside its cell. This is a rounding margin, not a
+# policy: a point further out than this is unmapped, and no point is ever
+# clamped into a cell it does not lie in.
+const COORD_TOL = 1e-12
+
+# A cell is degenerate when its area, or the turn at a corner, is this small
+# beside the square of its own size. Repeated nodes, collinear triangles,
+# zero-area or folded quadrilaterals and reflex corners all arrive here.
+const SHAPE_TOL = 1e-12
+
+# The inverse bilinear map's Newton iteration: a step moving both coordinates
+# less than this has converged, a cell needing more than these steps or leaving
+# a residual above `NEWTON_RESIDUAL` times its size is treated as degenerate.
+const NEWTON_TOL = 1e-12
+const NEWTON_MAXITER = 20
+const NEWTON_RESIDUAL = 1e-8
+
+# A point this many radians from a local chart's centre is that centre. Forming
+# the tangent direction of a point at the centre leaves the frame's own
+# roundoff behind, and this is what keeps a sample site queried at itself
+# landing on the origin rather than a hair off it.
+const CHART_TOL = 1e-12
+
+# --- plane arithmetic ------------------------------------------------------
+
+@inline _sub(a::NTuple{2,Float64}, b::NTuple{2,Float64}) = (a[1] - b[1], a[2] - b[2])
+@inline _cross(a::NTuple{2,Float64}, b::NTuple{2,Float64}) = a[1] * b[2] - a[2] * b[1]
+@inline _dot(a::NTuple{2,Float64}, b::NTuple{2,Float64}) = a[1] * b[1] + a[2] * b[2]
+@inline _norm2(a::NTuple{2,Float64}) = _dot(a, a)
+
+@inline _next(i::Int, n::Int) = i == n ? 1 : i + 1
+
+# A point at a node reproduces that node exactly, whatever the surrounding cell
+# would otherwise make of it.
+@inline function _nodehit(nodes, p::NTuple{2,Float64})
+    for k in eachindex(nodes)
+        n = nodes[k]
+        (n[1] == p[1] && n[2] == p[2]) && return Int(k)
+    end
+    return 0
+end
+
+# The turning direction of a closed node ring: `1` counter-clockwise, `-1`
+# clockwise, and `0` when some corner neither turns nor exists — a repeated
+# node, a straight corner, or a reflex one. A ring answering `0` is degenerate
+# for every basis here, since both need a simple convex cell.
+function _orientation(nodes)
+    n = length(nodes)
+    n >= 3 || return 0
+    turn = 0
+    for i in 1:n
+        a, b, c = nodes[i], nodes[_next(i, n)], nodes[_next(_next(i, n), n)]
+        e1, e2 = _sub(b, a), _sub(c, b)
+        cr = _cross(e1, e2)
+        abs(cr) > SHAPE_TOL * max(_norm2(e1), _norm2(e2)) || return 0
+        t = cr > 0 ? 1 : -1
+        turn == 0 ? (turn = t) : (turn == t || return 0)
+    end
+    return turn
+end
+
+# Coordinates already sum to one; dividing by the total they actually reached
+# keeps a reported row inside the tolerance the acceptance law states.
+function _normalize!(row::WeightRow)
+    total = 0.0
+    for w in row.weights
+        total += w
+    end
+    (isfinite(total) && total > 0) || (empty!(row); return WeightsDegenerate)
+    if total != 1.0
+        for k in eachindex(row.weights)
+            row.weights[k] /= total
+        end
+    end
+    return WeightsMapped
+end
+
+# --- the two kernels -------------------------------------------------------
+
+# The bilinear map of the unit square onto a quadrilateral, and its derivatives.
+@inline _q1image(n1, n2, n3, n4, u::Float64, v::Float64) =
+    ((1 - u) * (1 - v) * n1[1] + u * (1 - v) * n2[1] + u * v * n3[1] +
+     (1 - u) * v * n4[1],
+        (1 - u) * (1 - v) * n1[2] + u * (1 - v) * n2[2] + u * v * n3[2] +
+        (1 - u) * v * n4[2])
+
+# Roundoff at the edge of the parameter square is the square's edge: a point at
+# a node or on an edge emits exactly the nodes that carry it.
+@inline function _snapunit(t::Float64)
+    abs(t) <= COORD_TOL && return 0.0
+    abs(t - 1.0) <= COORD_TOL && return 1.0
+    return t
+end
+
+"""
+    bilinearweights!(row, indices, nodes, p) -> WeightStatus
+
+Weight a quadrilateral's four nodes by tensor Q1 coordinates of `p`.
+
+`nodes` holds the four node coordinates in cyclic order in one two-dimensional
+chart, `p` is a point in that chart, and `indices` names the nodes' source cells
+in the same order. The isoparametric map of the unit square onto the
+quadrilateral is inverted by Newton iteration from its centre, to a step below
+`$NEWTON_TOL` within `$NEWTON_MAXITER` iterations; the recovered coordinates
+then give the tensor weights `(1-u)(1-v)`, `u(1-v)`, `uv`, `(1-u)v`.
+
+Weights reproduce `a + bx + cy + dxy` on an axis-aligned rectangle, reproduce
+every affine field on any convex quadrilateral, and sum to one. The row is
+cleared on entry and left holding the nonzero weights. A point outside the
+quadrilateral is `WeightsOutside`; a folded, zero-area, reflex or repeated-node
+quadrilateral, and an inverse map that fails to converge, are
+`WeightsDegenerate`.
+"""
+function bilinearweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
+    empty!(row)
+    length(nodes) == 4 || return WeightsDegenerate
+    n1, n2, n3, n4 = nodes[1], nodes[2], nodes[3], nodes[4]
+    _orientation(nodes) == 0 && return WeightsDegenerate
+
+    hit = _nodehit(nodes, p)
+    if hit != 0
+        _addentry!(row, indices[hit], 1.0)
+        return WeightsMapped
+    end
+
+    # x(u, v) = n1 + u B + v C + u v D.
+    B = _sub(n2, n1)
+    C = _sub(n4, n1)
+    D = (n1[1] - n2[1] + n3[1] - n4[1], n1[2] - n2[2] + n3[2] - n4[2])
+    size2 = max(_norm2(B), _norm2(C), _norm2(_sub(n3, n1)))
+
+    u = v = 0.5
+    converged = false
+    for _ in 1:NEWTON_MAXITER
+        image = _q1image(n1, n2, n3, n4, u, v)
+        r = _sub(image, p)
+        du = (B[1] + v * D[1], B[2] + v * D[2])
+        dv = (C[1] + u * D[1], C[2] + u * D[2])
+        det = _cross(du, dv)
+        abs(det) > SHAPE_TOL * size2 || return WeightsDegenerate
+        su = _cross(r, dv) / det
+        sv = _cross(du, r) / det
+        u -= su
+        v -= sv
+        if abs(su) <= NEWTON_TOL && abs(sv) <= NEWTON_TOL
+            converged = true
+            break
+        end
+    end
+    converged || return WeightsDegenerate
+    r = _sub(_q1image(n1, n2, n3, n4, u, v), p)
+    _norm2(r) <= NEWTON_RESIDUAL^2 * size2 || return WeightsDegenerate
+
+    u, v = _snapunit(u), _snapunit(v)
+    (0.0 <= u <= 1.0 && 0.0 <= v <= 1.0) || return WeightsOutside
+    _addentry!(row, indices[1], (1 - u) * (1 - v))
+    _addentry!(row, indices[2], u * (1 - v))
+    _addentry!(row, indices[3], u * v)
+    _addentry!(row, indices[4], (1 - u) * v)
+    return _normalize!(row)
+end
+
+# The tangent of half the angle the vectors `a` and `b` subtend at their common
+# origin, taken positive whichever way the ring turns: with `â` and `b̂` the unit
+# vectors along them, the distance between them over the distance across,
+# `‖â - b̂‖ / ‖â + b̂‖`, signed by the determinant. `ra` and `rb` are the vectors'
+# lengths. Distances only, and no arctangent.
+@inline function _halfangletangent(turn::Int, a::NTuple{2,Float64}, ra::Float64,
+    b::NTuple{2,Float64}, rb::Float64)
+    ua = (a[1] / ra, a[2] / ra)
+    ub = (b[1] / rb, b[2] / rb)
+    apart = sqrt(_norm2(_sub(ua, ub)))
+    across = sqrt(_norm2((ua[1] + ub[1], ua[2] + ub[2])))
+    return sign(turn * _cross(a, b)) * apart / across
+end
+
+"""
+    meanvalueweights!(row, indices, nodes, p) -> WeightStatus
+
+Weight a convex polygon's nodes by the mean-value coordinates of `p`.
+
+`nodes` holds three or more node coordinates in cyclic order in one
+two-dimensional chart, `p` is a point in that chart, and `indices` names the
+nodes' source cells in the same order. Writing `sᵢ` for the vector from `p` to
+node `i`, `rᵢ` for its length and `ŝᵢ` for the unit vector along it, node `i`
+takes `(t₋ + t₊) / rᵢ`, normalized, where each of its two edges contributes
+`t = ±‖ŝᵢ - ŝⱼ‖ / ‖ŝᵢ + ŝⱼ‖`, signed by `det(sᵢ, sⱼ)` — the tangent of half the
+angle that edge subtends at `p`, from distances alone, so no trigonometric
+function is evaluated.
+
+Weights are positive, reproduce every affine field on the polygon, and sum to
+one; on a triangle they are the barycentric coordinates. The row is cleared on
+entry and left holding the nonzero weights, so a point on an edge emits that
+edge's two nodes and a point at a node one. A point outside the polygon is
+`WeightsOutside`; a polygon with repeated nodes, a straight corner or a reflex
+corner is `WeightsDegenerate`.
+"""
+function meanvalueweights!(row::WeightRow, indices, nodes, p::NTuple{2,Float64})
+    empty!(row)
+    n = length(nodes)
+    n >= 3 || return WeightsDegenerate
+    turn = _orientation(nodes)
+    turn == 0 && return WeightsDegenerate
+
+    hit = _nodehit(nodes, p)
+    if hit != 0
+        _addentry!(row, indices[hit], 1.0)
+        return WeightsMapped
+    end
+
+    # Containment. A convex polygon meets an edge's line exactly along that
+    # edge, so a point on the line is on the edge or outside the polygon.
+    for i in 1:n
+        j = _next(i, n)
+        a, b = nodes[i], nodes[j]
+        e, d = _sub(b, a), _sub(p, a)
+        cr = turn * _cross(e, d)
+        scale = sqrt(_norm2(e) * _norm2(d))
+        cr < -COORD_TOL * scale && return WeightsOutside
+        cr <= COORD_TOL * scale || continue
+        t = _dot(d, e) / _norm2(e)
+        (-COORD_TOL <= t <= 1 + COORD_TOL) || return WeightsOutside
+        t = clamp(t, 0.0, 1.0)
+        _addentry!(row, indices[i], 1.0 - t)
+        _addentry!(row, indices[j], t)
+        return _normalize!(row)
+    end
+
+    # Mean-value coordinates. Each node's two angles are visited once, in one
+    # pass that carries the previous node's tangent, and each node's vector and
+    # length are formed once.
+    d1 = _sub(nodes[1], p)
+    r1 = sqrt(_norm2(d1))
+    dlast = _sub(nodes[n], p)
+    d, r = d1, r1
+    tprev = _halfangletangent(turn, dlast, sqrt(_norm2(dlast)), d1, r1)
+    isfinite(tprev) || return WeightsDegenerate
+    for i in 1:n
+        dnext, rnext = d1, r1
+        if i != n
+            dnext = _sub(nodes[i+1], p)
+            rnext = sqrt(_norm2(dnext))
+        end
+        t = _halfangletangent(turn, d, r, dnext, rnext)
+        isfinite(t) || (empty!(row); return WeightsDegenerate)
+        w = (tprev + t) / r
+        (isfinite(w) && w > 0) || (empty!(row); return WeightsDegenerate)
+        _addentry!(row, indices[i], w)
+        tprev = t
+        d, r = dnext, rnext
+    end
+    return _normalize!(row)
+end
+
+"""
+    containspoint(nodes, p) -> Bool
+
+Whether the convex node ring `nodes` holds the chart point `p`.
+
+The edge test and the rounding margin are [`meanvalueweights!`](@ref)'s own, so
+a ring this accepts is one that kernel weights rather than calls outside. A ring
+with fewer than three nodes, a repeated node, or a straight or reflex corner is
+not a cell and holds nothing.
+"""
+function containspoint(nodes, p::NTuple{2,Float64})
+    n = length(nodes)
+    n >= 3 || return false
+    turn = _orientation(nodes)
+    turn == 0 && return false
+    for i in 1:n
+        a, b = nodes[i], nodes[_next(i, n)]
+        e, d = _sub(b, a), _sub(p, a)
+        cr = turn * _cross(e, d)
+        cr < -COORD_TOL * sqrt(_norm2(e) * _norm2(d)) && return false
+    end
+    return true
+end
+
+# --- local tangent charts --------------------------------------------------
+
+@inline _cross3(a::NTuple{3,Float64}, b::NTuple{3,Float64}) =
+    (a[2] * b[3] - a[3] * b[2], a[3] * b[1] - a[1] * b[3], a[1] * b[2] - a[2] * b[1])
+
+@inline _dot3(a::NTuple{3,Float64}, b::NTuple{3,Float64}) =
+    a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+
+@inline _point3(q) = (Float64(q[1]), Float64(q[2]), Float64(q[3]))
+
+# One axis of the frame, from the centre alone: the smallest component of the
+# centre names the axis least parallel to it, so the cross product is far from
+# zero wherever the centre points and the frame never degenerates.
+@inline function _framefirst(c::NTuple{3,Float64})
+    ax = abs(c[1]) <= abs(c[2]) ?
+         (abs(c[1]) <= abs(c[3]) ? (1.0, 0.0, 0.0) : (0.0, 0.0, 1.0)) :
+         (abs(c[2]) <= abs(c[3]) ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0))
+    v = _cross3(ax, c)
+    n = sqrt(_dot3(v, v))
+    return (v[1] / n, v[2] / n, v[3] / n)
+end
+
+"""
+    TangentChart(centre; reach = pi / 2)
+
+The azimuthal-equidistant chart of the unit sphere about `centre`.
+
+  - A point's coordinates are its geodesic distance from `centre` along the
+    direction it lies in, so `centre` is the origin and both distances from the
+    origin and angles at the origin are the sphere's own.
+  - The frame is fixed by `centre` alone and is right-handed about it, so a ring
+    that turns counter-clockwise on the sphere turns counter-clockwise here.
+  - A point further than `reach` from `centre` has no coordinates: it is
+    nonlocal, and a cell holding one is rejected rather than folded flat.
+"""
+struct TangentChart
+    centre::NTuple{3,Float64}
+    e1::NTuple{3,Float64}
+    e2::NTuple{3,Float64}
+    reach::Float64
+end
+
+function TangentChart(centre; reach::Real = pi / 2)
+    c = _point3(centre)
+    n = sqrt(_dot3(c, c))
+    u = (c[1] / n, c[2] / n, c[3] / n)
+    e1 = _framefirst(u)
+    return TangentChart(u, e1, _cross3(u, e1), Float64(reach))
+end
+
+Base.show(io::IO, ch::TangentChart) =
+    print(io, "TangentChart(", ch.centre, ", reach = ", ch.reach, ")")
+
+"""
+    chartpoint(chart::TangentChart, q) -> Union{NTuple{2,Float64},Nothing}
+
+The coordinates of the sphere point `q` in `chart`, or `nothing` where `q` is
+beyond the chart's reach — an antipodal or otherwise nonlocal point, which no
+local chart can place. A point within `$CHART_TOL` radians of the centre is the
+origin exactly, so a sample site queried at itself weights itself alone.
+"""
+@inline function chartpoint(ch::TangentChart, q)
+    x, y, z = _point3(q)
+    c = ch.centre
+    d = x * c[1] + y * c[2] + z * c[3]
+    t = (x - d * c[1], y - d * c[2], z - d * c[3])
+    r = sqrt(_dot3(t, t))
+    theta = atan(r, d)
+    (isfinite(theta) && theta <= ch.reach) || return nothing
+    theta <= CHART_TOL && return (0.0, 0.0)
+    s = theta / r
+    return (s * _dot3(t, ch.e1), s * _dot3(t, ch.e2))
+end
+
+# --- dual cells ------------------------------------------------------------
+
+"""
+    DualCell(indices, nodes, kind::BasisKind)
+
+The polygon of source sample sites a destination point falls in.
+
+`indices` names its nodes' cells by the source space's local index and `nodes`
+gives their coordinates in one two-dimensional chart, both in cyclic order.
+`kind` names the coordinates that weight them, which is the cell's own
+statement and not a reading of its node count.
+
+The cell is read, never written, so one prepared cell is shared by concurrent
+queries. It promises no fixed node count.
+"""
+struct DualCell{I<:AbstractVector{Int},N<:AbstractVector{NTuple{2,Float64}}}
+    indices::I
+    nodes::N
+    kind::BasisKind
+
+    function DualCell(indices::I, nodes::N, kind::BasisKind) where {I<:AbstractVector{Int},
+        N<:AbstractVector{NTuple{2,Float64}}}
+        length(indices) == length(nodes) || throw(ArgumentError(
+            "a dual cell needs one source index per node, got $(length(indices)) " *
+            "for $(length(nodes)) nodes"))
+        return new{I,N}(indices, nodes, kind)
+    end
+end
+
+"""
+    nodecount(cell::DualCell) -> Int
+
+The number of sample sites the cell interpolates between.
+"""
+nodecount(cell::DualCell) = length(cell.indices)
+
+Base.show(io::IO, cell::DualCell) =
+    print(io, "DualCell(", nodecount(cell), " nodes, ", cell.kind, ")")
+
+# The answer where no dual cell exists. Returning one prepared object costs a
+# query nothing.
+const NO_DUALCELL = DualCell(Int[], NTuple{2,Float64}[], MeanValue)
+
+"""
+    dualweights!(row, cell::DualCell, p) -> WeightStatus
+
+Weight `cell`'s nodes at chart point `p` with the coordinates its kind names.
+"""
+function dualweights!(row::WeightRow, cell::DualCell, p::NTuple{2,Float64})
+    cell.kind === Bilinear && return bilinearweights!(row, cell.indices, cell.nodes, p)
+    return meanvalueweights!(row, cell.indices, cell.nodes, p)
+end
+
+# --- samplers --------------------------------------------------------------
+
+"""
+    samplesites(space::RegridSpace) -> AbstractVector
+
+The point each source cell's value is taken to sit at, by local index:
+`samplesites(space)[i] == cellcentroid(space, i)` for every space.
+
+The fallback reads [`cellcentroid`](@ref) on demand and holds nothing. A space
+whose sites are already computed, or which knows a site other than the
+centroid, returns its own vector over `1:ncells(space)`.
+"""
+samplesites(space::RegridSpace) = CentroidSites(space)
+
+struct CentroidSites{S<:RegridSpace} <: AbstractVector{USPoint}
+    space::S
+end
+
+Base.size(sites::CentroidSites) = (Int(ncells(sites.space)),)
+Base.IndexStyle(::Type{<:CentroidSites}) = Base.IndexLinear()
+Base.@propagate_inbounds function Base.getindex(sites::CentroidSites, i::Int)
+    @boundscheck checkbounds(sites, i)
+    return cellcentroid(sites.space, i)
+end
+
+"""
+    samplerstate(space::RegridSpace) -> state
+
+Immutable query state a [`Sampler`](@ref) over `space` carries: axis locators,
+topology tables, prepared dual cells. Whatever a space returns is read
+concurrently and must not be written during a sweep.
+
+The fallback prepares a [`ChartState`](@ref) where the space has a cell chart,
+which is what puts it on the fused chart path in [`weightsat!`](@ref), and is
+`nothing` otherwise. A space with a state of its own returns it here and takes
+the path its type names.
+"""
+samplerstate(space::RegridSpace) =
+    hascellchart(space) ? ChartState(space) : nothing
+
+"""
+    Sampler(space, sites, state, method)
+
+A source space prepared to be asked for weights at points by one method.
+
+It holds the space, its [`samplesites`](@ref), whatever [`samplerstate`](@ref)
+the space prepared once, and the method that asked for it, so a query reaches
+the method's own settings without being handed them per point. It is immutable
+and read concurrently; per-point scratch belongs to the calling task's
+[`WeightRow`](@ref).
+"""
+struct Sampler{S<:RegridSpace,V<:AbstractVector,T,M}
+    space::S
+    sites::V
+    state::T
+    method::M
+end
+
+Base.show(io::IO, s::Sampler) = print(io, "Sampler(", s.space, ")")
+
+"""
+    hasdualcells(space::RegridSpace) -> Bool
+
+Whether `space` answers [`dualcellat`](@ref) with dual cells of its own.
+
+`false` by default. A source reporting neither this nor [`hascellchart`](@ref)
+has nothing to interpolate between, and [`sampler`](@ref) refuses it rather than
+preparing a sampler that maps every point to nothing.
+"""
+hasdualcells(::RegridSpace) = false
+
+"""
+    sampler(method, space::RegridSpace) -> Sampler
+
+Prepare `space` to answer `method`'s point queries. This runs once per plan or
+source space, never once per destination.
+
+A source with neither a cell chart nor dual cells is an `ArgumentError` naming
+it: there is no geometry to interpolate between, and a silent field of missing
+values is not the answer.
+"""
+function sampler(method::BarycentricPoint, space::RegridSpace)
+    (hascellchart(space) || hasdualcells(space)) || throw(ArgumentError(
+        "BarycentricPoint has nothing to interpolate between on a " *
+        "$(typeof(space)): it reports neither `hascellchart` nor " *
+        "`hasdualcells`, so no dual cell of source sample sites can be built " *
+        "around a destination point"))
+    return Sampler(space, samplesites(space), samplerstate(space), method)
+end
+
+"""
+    chartat(sampler, p) -> Union{NTuple{2,Float64},Nothing}
+
+The coordinates of `p` in the chart the sampler's dual cells are written in, or
+`nothing` where the chart does not reach. The fallback is the source space's
+cell chart, so a space with no chart answers `nothing`.
+"""
+function chartat(s::Sampler, p)
+    hascellchart(s.space) || return nothing
+    c = chartcoords(s.space, p)
+    c === nothing && return nothing
+    x, y = Float64(c[1]), Float64(c[2])
+    (isfinite(x) && isfinite(y)) || return nothing
+    return (x, y)
+end
+
+"""
+    dualcellat(sampler, p) -> DualCell
+
+The dual cell of source sample sites containing `p`, or a cell with no nodes
+where none does.
+
+A space either answers here, in the chart its [`chartat`](@ref) uses, or answers
+[`weightsat!`](@ref) whole; either way it declares [`hasdualcells`](@ref). The
+fallback constructs nothing and answers no nodes, which a chart source reaches
+where its chart does not, and which no other source reaches: [`sampler`](@ref)
+refuses a space that declares neither.
+"""
+dualcellat(::Sampler, p) = NO_DUALCELL
+
+"""
+    weightsat!(row, sampler, p) -> WeightStatus
+
+Fill `row` with the source cells and weights the point `p` takes its value
+from, and return what became of it.
+
+The row is cleared on entry, and is left empty for every status but
+`WeightsMapped`. The default locates [`dualcellat`](@ref) and weights its nodes
+with the coordinates the cell's kind names; a source space with a fused
+algorithm of its own replaces this method. Nothing here reads source values,
+and nothing here is told about chunks: `row.indices` are the source space's
+local indices, `1:ncells(space)`.
+"""
+function weightsat!(row::WeightRow, s::Sampler, p)
+    empty!(row)
+    cell = dualcellat(s, p)
+    nodecount(cell) == 0 && return WeightsOutside
+    q = chartat(s, p)
+    q === nothing && return WeightsOutside
+    return dualweights!(row, cell, q)
+end
+
+# --- weights for one chunk pair --------------------------------------------
+
+"""
+    buildweights!(coo, ::BarycentricPoint, dst_space, dst_inds, src_space, src_inds)
+
+Interpolate between source sample sites at each destination sample site.
+
+Each destination gets one [`weightsat!`](@ref) query, whose stencil is the whole
+source space's; only the entries `src_inds` owns are emitted, so the other
+source chunks emit their own shares and no chunk boundary changes a stencil. A
+destination the source cannot map emits no entry at all, and the missing policy
+decides what it becomes. Point samples have no coverage denominator.
+"""
+function buildweights!(coo::WeightCOO, method::BarycentricPoint,
+    dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
+    smp = sampler(method, src_space)
+    sites = samplesites(dst_space)
+    indexer = indexmap(src_inds)
+    row = WeightRow()
+    for (j, i) in enumerate(dst_inds)
+        ismapped(weightsat!(row, smp, sites[Int(i)])) || continue
+        for k in 1:length(row)
+            c = localindex(indexer, row.indices[k])
+            c == 0 && continue
+            addweight!(coo, j, c, row.weights[k])
+        end
+    end
+    return coo
+end
+
+# --- chart spaces ----------------------------------------------------------
+#
+# A source whose cells sit on a two-dimensional lattice needs no dual cell
+# object and no inverse map: its dual cells are the axis-aligned rectangles
+# between neighbouring sample sites, and the two bracketing fractions are the
+# rectangle's own Q1 coordinates. Preparation is the two axes; a query is one
+# chart conversion, two bracket searches, and at most four products.
+
+"""
+    ChartState(space::RegridSpace)
+
+The two prepared chart axes of a space with a cell chart.
+
+Each axis holds its sample coordinates in ascending order, the lattice
+orientation they arrived in, and the period where the source wraps, so a query
+searches a sorted vector and never rebuilds an axis. A [`Sampler`](@ref)
+carrying one takes the fused chart path in [`weightsat!`](@ref).
+"""
+struct ChartState
+    x::_ChartAxis
+    y::_ChartAxis
+end
+
+function ChartState(space::RegridSpace)
+    xs, ys = chartaxes(space)
+    px, py = chartperiod(space)
+    return ChartState(_ChartAxis(xs, px), _ChartAxis(ys, py))
+end
+
+Base.show(io::IO, st::ChartState) =
+    print(io, "ChartState(", st.x.n, "×", st.y.n, " sample sites)")
+
+# The unmapped answer, whose indices and weights are never read.
+@inline _nobracket(status::WeightStatus) = (0, 0, 0.0, 0.0, status)
+
+# Both axes speak: a point outside the source is outside whatever the other
+# axis made of it, and a rim only where nothing was outside.
+@inline _bracketstatus(sx::WeightStatus, sy::WeightStatus) =
+    (sx === WeightsOutside || sy === WeightsOutside) ? WeightsOutside : WeightsRim
+
+"""
+    _bracket(ax::_ChartAxis, x) -> (i0, i1, w0, w1, status)
+
+Bracket `x` between two of an axis' sample coordinates, without clamping.
+
+`i0` and `i1` are lattice indices as the space numbers the axis, so a descending
+axis answers the indices its own lookup order gives; `w0` and `w1` are the two
+linear fractions. A fraction within `$COORD_TOL` of an end of its interval is
+snapped to it, so a sample site reached through roundoff takes that site alone
+and never a second entry of weight `1e-17`.
+
+A periodic axis wraps exactly and is never unmapped: past the last site it
+brackets that site and the first across the seam. A one-cell axis has no
+interval, so it brackets its single site with itself at weights `1` and `0` and
+the repeat leaves with the zero; it cannot exclude a point, and the other axis
+decides.
+
+On a nonperiodic axis the Q1 domain ends at the outermost sample sites. Beyond
+them `x` is not bracketed: within half of the end interval — the rim between the
+outermost sites and the source's boundary — it is `WeightsRim`, and further out
+`WeightsOutside`.
+"""
+@inline function _bracket(ax::_ChartAxis, x::Float64)
+    v = ax.values
+    n = ax.n
+    n == 1 &&
+        return (_latticeindex(ax, 1), _latticeindex(ax, 1), 1.0, 0.0, WeightsMapped)
+    period = ax.period
+    if period === nothing
+        if x < v[1]
+            t = (x - v[1]) / (v[2] - v[1])
+            abs(t) <= COORD_TOL && return (_latticeindex(ax, 1), _latticeindex(ax, 2),
+                1.0, 0.0, WeightsMapped)
+            return _nobracket(t >= -0.5 ? WeightsRim : WeightsOutside)
+        elseif x > v[n]
+            t = (x - v[n]) / (v[n] - v[n-1])
+            abs(t) <= COORD_TOL && return (_latticeindex(ax, n - 1), _latticeindex(ax, n),
+                0.0, 1.0, WeightsMapped)
+            return _nobracket(t <= 0.5 ? WeightsRim : WeightsOutside)
+        end
+        k = min(searchsortedlast(v, x), n - 1)
+        t = _snapunit((x - v[k]) / (v[k+1] - v[k]))
+        return (_latticeindex(ax, k), _latticeindex(ax, k + 1), 1.0 - t, t, WeightsMapped)
+    end
+    p = period::Float64
+    xw = v[1] + mod(x - v[1], p)
+    k = max(searchsortedlast(v, xw), 1)
+    if k < n
+        t = _snapunit((xw - v[k]) / (v[k+1] - v[k]))
+        return (_latticeindex(ax, k), _latticeindex(ax, k + 1), 1.0 - t, t, WeightsMapped)
+    end
+    t = _snapunit((xw - v[n]) / (v[1] + p - v[n]))
+    return (_latticeindex(ax, n), _latticeindex(ax, 1), 1.0 - t, t, WeightsMapped)
+end
+
+"""
+    weightsat!(row, s::Sampler{<:RegridSpace,<:AbstractVector,ChartState}, p)
+
+Weight the at most four source sample sites bracketing `p` on the source's cell
+chart.
+
+The point crosses into the chart once and each prepared axis brackets it once;
+the two pairs of fractions multiply into the tensor Q1 weights of the
+axis-aligned dual rectangle they name. That rectangle's Q1 coordinates are the
+fractions themselves, so the basis is `Bilinear` by construction and no cell is
+built and no inverse map solved. Zero products are dropped, so a point on a
+lattice line takes two sites and a point at a sample site takes one with weight
+one; the four fractions are a partition of unity, so the row sums to one to
+roundoff.
+
+Periodic axes wrap exactly. On a nonperiodic axis the domain ends at the
+outermost sample sites: a point in the rim between those sites and the source's
+boundary is `WeightsRim`, a point beyond it `WeightsOutside`, and neither takes
+weights.
+"""
+function weightsat!(row::WeightRow,
+    s::Sampler{<:RegridSpace,<:AbstractVector,ChartState}, p)
+    empty!(row)
+    q = chartat(s, p)
+    q === nothing && return WeightsOutside
+    st = s.state
+    ix0, ix1, wx0, wx1, sx = _bracket(st.x, q[1])
+    iy0, iy1, wy0, wy1, sy = _bracket(st.y, q[2])
+    (ismapped(sx) && ismapped(sy)) || return _bracketstatus(sx, sy)
+    space = s.space
+    for (ix, wx) in ((ix0, wx0), (ix1, wx1)),
+        (iy, wy) in ((iy0, wy0), (iy1, wy1))
+
+        w = wx * wy
+        w > 0 || continue
+        _addentry!(row, chartlocalindex(space, ix, iy), w)
+    end
+    return WeightsMapped
+end
+
+"""
+    supportradius(::BarycentricPoint, src_space) -> Float64
+
+The larger chart-axis spacing in radians on a source the method queries through
+its cell chart, and `0.0` on every other source.
+
+A chart stencil reaches out to the sample sites bracketing a destination, up to
+one source cell beyond the destination's own extent, so chunk discovery must
+search that far or lose weights. Which sources those are is the state they
+prepare and not their type, the same reading [`weightsat!`](@ref) makes: a
+source answering dual cells of its own bounds them itself, and until it does its
+stencils are found by cap overlap alone.
+"""
+supportradius(::BarycentricPoint, src_space::RegridSpace) =
+    _chartradius(samplerstate(src_space), src_space)
+
+_chartradius(_, ::RegridSpace) = 0.0
+_chartradius(::ChartState, space::RegridSpace) = chartradius(space)

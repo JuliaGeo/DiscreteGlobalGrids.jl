@@ -68,7 +68,7 @@ manifest = DGG.chunkmanifest(axis, 128)
 # ## Selecting a region out of a store
 #
 # `Covering(target)` runs a coverage of `target` against the axis and keeps the
-# positions it lands on. The cheapest interesting target here is the extent of a
+# indices it lands on. The cheapest interesting target here is the extent of a
 # coarse ancestor of one of the stored cells: a level-2 cell, a small piece of
 # what was written.
 

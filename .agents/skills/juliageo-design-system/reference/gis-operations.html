@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Brand" name="GIS Operations Reference" subtitle="20 GIS operations illustrated as annotated SVG diagrams" viewport="1200x900" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GIS Operations — JuliaGeo Reference</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #fff;
+    color: #111;
+    font-family: 'Inter', sans-serif;
+    padding: 72px 48px 96px;
+    max-width: 1200px;
+    margin: 0 auto;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    border-bottom: 2px solid #111;
+    padding-bottom: 28px;
+    margin-bottom: 56px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+  header .logo-lockup { display: flex; align-items: center; gap: 14px; }
+  header img { height: 36px; }
+  header h1 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #111;
+  }
+  header .byline {
+    font-size: 12px;
+    color: #888;
+    letter-spacing: 0.04em;
+    font-family: 'Space Mono', monospace;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0;
+    border-top: 1px solid #ddd;
+    border-left: 1px solid #ddd;
+  }
+
+  .card {
+    border-right: 1px solid #ddd;
+    border-bottom: 1px solid #ddd;
+    padding: 24px 20px 20px;
+  }
+
+  .card-num {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: #aaa;
+    letter-spacing: 0.06em;
+    margin-bottom: 8px;
+  }
+
+  .card-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: #111;
+    margin-bottom: 16px;
+    line-height: 1.2;
+  }
+
+  .card svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .card-caption {
+    margin-top: 14px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: #555;
+  }
+  .card-caption code {
+    font-family: 'Space Mono', monospace;
+    font-size: 10.5px;
+    color: #389826;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  /* Divider row — section label */
+  .section-divider {
+    grid-column: 1 / -1;
+    border-right: 1px solid #ddd;
+    border-bottom: 1px solid #ddd;
+    padding: 14px 20px;
+    background: #f8f8f8;
+  }
+  .section-divider span {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: #888;
+  }
+
+  footer {
+    margin-top: 48px;
+    border-top: 1px solid #ddd;
+    padding-top: 20px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #aaa;
+    font-family: 'Space Mono', monospace;
+  }
+
+  /* ── shared SVG tokens ── */
+  /* colors defined inline in SVGs for portability */
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-lockup">
+    <img src="../assets/juliageo-logo.svg" alt="JuliaGeo">
+    <h1>GIS Operations Reference</h1>
+  </div>
+  <span class="byline">GeometryOps.jl · JuliaGeo · 2026</span>
+</header>
+
+<div class="grid">
+
+  <!-- ─── SET OPERATIONS ─────────────────────────── -->
+  <div class="section-divider"><span>Set operations</span></div>
+
+  <!-- 01 Intersection -->
+  <div class="card">
+    <div class="card-num">01</div>
+    <div class="card-title">Intersection</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <clipPath id="clipA1"><circle cx="80" cy="60" r="44"/></clipPath>
+        <clipPath id="clipB1"><circle cx="120" cy="60" r="44"/></clipPath>
+      </defs>
+      <!-- A -->
+      <circle cx="80" cy="60" r="44" fill="#f0f0f0" stroke="#bbb" stroke-width="1.2"/>
+      <!-- B -->
+      <circle cx="120" cy="60" r="44" fill="#f0f0f0" stroke="#bbb" stroke-width="1.2"/>
+      <!-- Intersection result -->
+      <circle cx="80" cy="60" r="44" fill="#389826" fill-opacity="0.25" clip-path="url(#clipB1)"/>
+      <circle cx="120" cy="60" r="44" fill="none" stroke="#389826" stroke-width="1.8" clip-path="url(#clipA1)"/>
+      <!-- labels -->
+      <text x="58" y="64" font-family="Inter,sans-serif" font-size="13" font-weight="600" fill="#666">A</text>
+      <text x="133" y="64" font-family="Inter,sans-serif" font-size="13" font-weight="600" fill="#666">B</text>
+      <text x="96" y="64" font-family="Inter,sans-serif" font-size="10" fill="#389826" font-weight="700">A∩B</text>
+    </svg>
+    <div class="card-caption">The region shared by both geometries. <code>GO.intersection(a, b)</code></div>
+  </div>
+
+  <!-- 02 Union -->
+  <div class="card">
+    <div class="card-num">02</div>
+    <div class="card-title">Union</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="80" cy="60" r="44" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.6"/>
+      <circle cx="120" cy="60" r="44" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.6"/>
+      <!-- center seam hidden -->
+      <defs>
+        <clipPath id="clipUnionA"><circle cx="80" cy="60" r="44"/></clipPath>
+      </defs>
+      <!-- erase inner stroke -->
+      <line x1="100" y1="18" x2="100" y2="102" stroke="#389826" stroke-opacity="0.2" stroke-width="4"/>
+      <text x="58" y="64" font-family="Inter,sans-serif" font-size="13" font-weight="600" fill="#2c7a1e">A</text>
+      <text x="133" y="64" font-family="Inter,sans-serif" font-size="13" font-weight="600" fill="#2c7a1e">B</text>
+    </svg>
+    <div class="card-caption">The combined footprint of A and B. <code>GO.union(a, b)</code></div>
+  </div>
+
+  <!-- 03 Difference -->
+  <div class="card">
+    <div class="card-num">03</div>
+    <div class="card-title">Difference</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <clipPath id="diffClip"><circle cx="80" cy="60" r="44"/></clipPath>
+        <!-- mask: A minus B -->
+        <mask id="diffMask">
+          <rect width="200" height="120" fill="white"/>
+          <circle cx="120" cy="60" r="44" fill="black"/>
+        </mask>
+      </defs>
+      <!-- B gray -->
+      <circle cx="120" cy="60" r="44" fill="#f0f0f0" stroke="#ccc" stroke-width="1.2"/>
+      <!-- A minus B = result -->
+      <circle cx="80" cy="60" r="44" fill="#389826" fill-opacity="0.25" stroke="#389826" stroke-width="1.6" mask="url(#diffMask)"/>
+      <!-- A outline full -->
+      <circle cx="80" cy="60" r="44" fill="none" stroke="#389826" stroke-width="1.6" stroke-dasharray="3 2"/>
+      <text x="56" y="64" font-family="Inter,sans-serif" font-size="13" font-weight="600" fill="#389826">A</text>
+      <text x="134" y="64" font-family="Inter,sans-serif" font-size="13" font-weight="600" fill="#aaa">B</text>
+      <text x="60" y="98" font-family="Inter,sans-serif" font-size="9.5" fill="#389826" font-weight="600">A \ B</text>
+    </svg>
+    <div class="card-caption">A with B's overlap removed. <code>GO.difference(a, b)</code></div>
+  </div>
+
+  <!-- 04 Symmetric Difference -->
+  <div class="card">
+    <div class="card-num">04</div>
+    <div class="card-title">Symmetric Difference</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <mask id="xorA">
+          <rect width="200" height="120" fill="white"/>
+          <circle cx="120" cy="60" r="44" fill="black"/>
+        </mask>
+        <mask id="xorB">
+          <rect width="200" height="120" fill="white"/>
+          <circle cx="80" cy="60" r="44" fill="black"/>
+        </mask>
+      </defs>
+      <!-- left excl. part -->
+      <circle cx="80" cy="60" r="44" fill="#389826" fill-opacity="0.22" stroke="#389826" stroke-width="1.4" mask="url(#xorA)"/>
+      <!-- right excl. part -->
+      <circle cx="120" cy="60" r="44" fill="#389826" fill-opacity="0.22" stroke="#389826" stroke-width="1.4" mask="url(#xorB)"/>
+      <!-- overlap shown as blank -->
+      <defs>
+        <clipPath id="xorOverlap"><circle cx="80" cy="60" r="44"/></clipPath>
+      </defs>
+      <circle cx="120" cy="60" r="44" fill="#fff" stroke="#ddd" stroke-width="1" clip-path="url(#xorOverlap)"/>
+      <!-- outlines -->
+      <circle cx="80" cy="60" r="44" fill="none" stroke="#aaa" stroke-width="1.2" stroke-dasharray="3 2"/>
+      <circle cx="120" cy="60" r="44" fill="none" stroke="#aaa" stroke-width="1.2" stroke-dasharray="3 2"/>
+      <text x="57" y="64" font-family="Inter,sans-serif" font-size="13" font-weight="600" fill="#389826">A</text>
+      <text x="134" y="64" font-family="Inter,sans-serif" font-size="13" font-weight="600" fill="#389826">B</text>
+    </svg>
+    <div class="card-caption">Parts exclusive to each polygon — XOR. Neither share. <code>GO.symdiff(a, b)</code></div>
+  </div>
+
+  <!-- ─── SPATIAL OPERATIONS ─────────────────────── -->
+  <div class="section-divider"><span>Spatial operations</span></div>
+
+  <!-- 05 Buffer -->
+  <div class="card">
+    <div class="card-num">05</div>
+    <div class="card-title">Buffer</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- original shape: irregular polygon -->
+      <polygon points="80,30 120,25 145,55 130,95 70,90 55,55"
+        fill="#f0f0f0" stroke="#888" stroke-width="1.4"/>
+      <!-- buffer ring -->
+      <polygon points="70,16 126,10 158,48 143,102 58,98 40,46"
+        fill="#389826" fill-opacity="0.15" stroke="#389826" stroke-width="1.6" stroke-dasharray="4 2"/>
+      <!-- arrow indicating distance -->
+      <line x1="40" y1="46" x2="55" y2="55" stroke="#389826" stroke-width="1" stroke-dasharray="2 1"/>
+      <text x="30" y="43" font-family="Space Mono,monospace" font-size="8.5" fill="#389826">d</text>
+    </svg>
+    <div class="card-caption">Expands geometry outward by distance <code>d</code>. Rounds corners at vertices.</div>
+  </div>
+
+  <!-- 06 Convex Hull -->
+  <div class="card">
+    <div class="card-num">06</div>
+    <div class="card-title">Convex Hull</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- scattered points -->
+      <circle cx="60" cy="85" r="3" fill="#888"/>
+      <circle cx="90" cy="30" r="3" fill="#888"/>
+      <circle cx="130" cy="25" r="3" fill="#888"/>
+      <circle cx="155" cy="65" r="3" fill="#888"/>
+      <circle cx="140" cy="95" r="3" fill="#888"/>
+      <circle cx="75" cy="98" r="3" fill="#888"/>
+      <circle cx="100" cy="60" r="3" fill="#888"/>
+      <circle cx="120" cy="75" r="3" fill="#888"/>
+      <circle cx="105" cy="45" r="3" fill="#888"/>
+      <!-- hull -->
+      <polygon points="60,85 75,98 140,95 155,65 130,25 90,30"
+        fill="#389826" fill-opacity="0.12" stroke="#389826" stroke-width="1.6"/>
+      <!-- concave inner point to show hull isn't just outline -->
+      <circle cx="100" cy="60" r="3" fill="#aaa"/>
+    </svg>
+    <div class="card-caption">Smallest convex polygon enclosing all input points. <code>GO.convex_hull(pts)</code></div>
+  </div>
+
+  <!-- 07 Simplification -->
+  <div class="card">
+    <div class="card-num">07</div>
+    <div class="card-title">Simplification</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- original dense polyline -->
+      <polyline points="20,65 32,50 40,58 50,42 62,55 72,38 82,52 92,35 104,50 116,40 128,55 138,43 150,58 162,47 180,60"
+        fill="none" stroke="#ccc" stroke-width="1.2"/>
+      <!-- simplified -->
+      <polyline points="20,65 50,42 92,35 128,55 180,60"
+        fill="none" stroke="#389826" stroke-width="2"/>
+      <!-- epsilon annotation -->
+      <line x1="50" y1="42" x2="62" y2="55" stroke="#aaa" stroke-width="0.8" stroke-dasharray="2 1"/>
+      <text x="54" y="54" font-family="Space Mono,monospace" font-size="8" fill="#aaa">ε</text>
+      <!-- vertex dots on simplified -->
+      <circle cx="20" cy="65" r="2.5" fill="#389826"/>
+      <circle cx="50" cy="42" r="2.5" fill="#389826"/>
+      <circle cx="92" cy="35" r="2.5" fill="#389826"/>
+      <circle cx="128" cy="55" r="2.5" fill="#389826"/>
+      <circle cx="180" cy="60" r="2.5" fill="#389826"/>
+      <text x="14" y="105" font-family="Inter,sans-serif" font-size="9" fill="#aaa">original</text>
+      <rect x="10" y="109" width="20" height="1.2" fill="#ccc"/>
+      <text x="70" y="105" font-family="Inter,sans-serif" font-size="9" fill="#389826">simplified</text>
+      <rect x="66" y="109" width="20" height="2" fill="#389826"/>
+    </svg>
+    <div class="card-caption">Removes redundant vertices within tolerance ε. Douglas-Peucker algorithm. <code>GO.simplify(geom, ε)</code></div>
+  </div>
+
+  <!-- 08 Segmentize -->
+  <div class="card">
+    <div class="card-num">08</div>
+    <div class="card-title">Segmentize</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- before: long edge -->
+      <line x1="25" y1="60" x2="175" y2="60" stroke="#ddd" stroke-width="1.5"/>
+      <circle cx="25" cy="60" r="3.5" fill="#888"/>
+      <circle cx="175" cy="60" r="3.5" fill="#888"/>
+      <text x="12" y="50" font-family="Inter,sans-serif" font-size="9" fill="#999">before</text>
+
+      <!-- after: densified -->
+      <line x1="25" y1="85" x2="175" y2="85" stroke="#389826" stroke-width="1.5"/>
+      <circle cx="25" cy="85" r="3" fill="#389826"/>
+      <circle cx="55" cy="85" r="2.5" fill="#389826" fill-opacity="0.7"/>
+      <circle cx="85" cy="85" r="2.5" fill="#389826" fill-opacity="0.7"/>
+      <circle cx="115" cy="85" r="2.5" fill="#389826" fill-opacity="0.7"/>
+      <circle cx="145" cy="85" r="2.5" fill="#389826" fill-opacity="0.7"/>
+      <circle cx="175" cy="85" r="3" fill="#389826"/>
+      <!-- tick marks for equal spacing -->
+      <line x1="55" y1="82" x2="55" y2="88" stroke="#389826" stroke-width="1"/>
+      <line x1="85" y1="82" x2="85" y2="88" stroke="#389826" stroke-width="1"/>
+      <line x1="115" y1="82" x2="115" y2="88" stroke="#389826" stroke-width="1"/>
+      <line x1="145" y1="82" x2="145" y2="88" stroke="#389826" stroke-width="1"/>
+      <text x="12" y="75" font-family="Inter,sans-serif" font-size="9" fill="#389826">after</text>
+      <!-- spacing label -->
+      <line x1="55" y1="97" x2="85" y2="97" stroke="#aaa" stroke-width="0.8"/>
+      <line x1="55" y1="94" x2="55" y2="100" stroke="#aaa" stroke-width="0.8"/>
+      <line x1="85" y1="94" x2="85" y2="100" stroke="#aaa" stroke-width="0.8"/>
+      <text x="62" y="108" font-family="Space Mono,monospace" font-size="8" fill="#aaa">max_d</text>
+    </svg>
+    <div class="card-caption">Adds intermediate vertices so no edge exceeds <code>max_d</code>. Required before reprojection. <code>GO.segmentize(geom, max_d)</code></div>
+  </div>
+
+  <!-- ─── MEASUREMENT ─────────────────────────────── -->
+  <div class="section-divider"><span>Measurement</span></div>
+
+  <!-- 09 Centroid -->
+  <div class="card">
+    <div class="card-num">09</div>
+    <div class="card-title">Centroid</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- irregular polygon -->
+      <polygon points="30,100 40,30 90,20 160,45 170,90 110,105 60,108"
+        fill="#f0f0f0" stroke="#999" stroke-width="1.4"/>
+      <!-- centroid cross -->
+      <line x1="98" y1="62" x2="98" y2="54" stroke="#389826" stroke-width="1.5"/>
+      <line x1="98" y1="62" x2="98" y2="70" stroke="#389826" stroke-width="1.5"/>
+      <line x1="94" y1="62" x2="90" y2="62" stroke="#389826" stroke-width="1.5"/>
+      <line x1="98" y1="62" x2="106" y2="62" stroke="#389826" stroke-width="1.5"/>
+      <circle cx="98" cy="62" r="3.5" fill="#389826"/>
+      <text x="104" y="57" font-family="Space Mono,monospace" font-size="8.5" fill="#389826">c</text>
+    </svg>
+    <div class="card-caption">Area-weighted center of mass. Not guaranteed inside non-convex polygons. <code>GO.centroid(geom)</code></div>
+  </div>
+
+  <!-- 10 Area & Signed Area -->
+  <div class="card">
+    <div class="card-num">10</div>
+    <div class="card-title">Signed Area</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- CCW polygon (positive) -->
+      <polygon points="25,100 25,25 85,25 85,100"
+        fill="#389826" fill-opacity="0.15" stroke="#389826" stroke-width="1.4"/>
+      <!-- CCW arrow path -->
+      <path d="M25,25 L85,25 L85,100 L25,100" fill="none" stroke="#389826" stroke-width="1.4" marker-end="url(#arrowG)"/>
+      <text x="40" y="65" font-family="Space Mono,monospace" font-size="10" fill="#389826">+A</text>
+      <!-- CW polygon (negative) -->
+      <polygon points="110,100 170,100 170,25 110,25"
+        fill="#ddd" stroke="#999" stroke-width="1.4"/>
+      <path d="M110,25 L110,100 L170,100 L170,25" fill="none" stroke="#999" stroke-width="1.4" marker-end="url(#arrowGray)"/>
+      <text x="125" y="65" font-family="Space Mono,monospace" font-size="10" fill="#888">−A</text>
+      <defs>
+        <marker id="arrowG" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#389826"/>
+        </marker>
+        <marker id="arrowGray" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#999"/>
+        </marker>
+      </defs>
+      <!-- labels -->
+      <text x="26" y="115" font-family="Inter,sans-serif" font-size="8.5" fill="#389826">CCW → positive</text>
+      <text x="108" y="115" font-family="Inter,sans-serif" font-size="8.5" fill="#888">CW → negative</text>
+    </svg>
+    <div class="card-caption">Sign encodes ring orientation. Used to detect holes vs exteriors. <code>GO.signed_area(ring)</code></div>
+  </div>
+
+  <!-- 11 Distance -->
+  <div class="card">
+    <div class="card-num">11</div>
+    <div class="card-title">Distance</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- polygon A -->
+      <polygon points="20,50 20,100 70,100 70,50" fill="#f0f0f0" stroke="#999" stroke-width="1.3"/>
+      <text x="36" y="80" font-family="Inter,sans-serif" font-size="12" fill="#888" font-weight="600">A</text>
+      <!-- polygon B -->
+      <polygon points="110,20 110,75 175,75 175,20" fill="#f0f0f0" stroke="#999" stroke-width="1.3"/>
+      <text x="132" y="53" font-family="Inter,sans-serif" font-size="12" fill="#888" font-weight="600">B</text>
+      <!-- shortest distance line -->
+      <line x1="70" y1="75" x2="110" y2="55" stroke="#389826" stroke-width="1.8" stroke-dasharray="4 2"/>
+      <!-- endpoint dots -->
+      <circle cx="70" cy="75" r="3" fill="#389826"/>
+      <circle cx="110" cy="55" r="3" fill="#389826"/>
+      <!-- distance label -->
+      <text x="78" y="58" font-family="Space Mono,monospace" font-size="8.5" fill="#389826">d</text>
+    </svg>
+    <div class="card-caption">Closest approach between two geometries. Zero when they touch or overlap. <code>GO.distance(a, b)</code></div>
+  </div>
+
+  <!-- 12 Point-in-Polygon -->
+  <div class="card">
+    <div class="card-num">12</div>
+    <div class="card-title">Point-in-Polygon</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- polygon -->
+      <polygon points="30,105 30,20 100,15 170,30 165,100 90,110"
+        fill="#f0f0f0" stroke="#999" stroke-width="1.4"/>
+      <!-- inside point + ray -->
+      <line x1="95" y1="60" x2="195" y2="60" stroke="#389826" stroke-width="1" stroke-dasharray="3 2"/>
+      <circle cx="95" cy="60" r="4" fill="#389826"/>
+      <!-- crossings -->
+      <line x1="165" y1="56" x2="165" y2="64" stroke="#389826" stroke-width="1.8"/>
+      <text x="168" y="57" font-family="Space Mono,monospace" font-size="8" fill="#389826">1×</text>
+      <!-- outside point + ray -->
+      <circle cx="30" cy="92" r="4" fill="#111" fill-opacity="0.3"/>
+      <line x1="30" y1="92" x2="195" y2="92" stroke="#aaa" stroke-width="0.8" stroke-dasharray="2 1"/>
+      <line x1="165" y1="88" x2="165" y2="96" stroke="#aaa" stroke-width="1.5"/>
+      <line x1="31" y1="88" x2="31" y2="96" stroke="#aaa" stroke-width="1.5"/>
+      <text x="168" y="90" font-family="Space Mono,monospace" font-size="8" fill="#aaa">2×</text>
+      <!-- inside/outside labels -->
+      <text x="90" y="52" font-family="Inter,sans-serif" font-size="8.5" fill="#389826">inside</text>
+      <text x="14" y="88" font-family="Inter,sans-serif" font-size="8" fill="#aaa">out</text>
+    </svg>
+    <div class="card-caption">Cast a ray rightward. Odd crossing count → inside. Even → outside. <code>GO.contains(poly, pt)</code></div>
+  </div>
+
+  <!-- ─── PREDICATES ────────────────────────────── -->
+  <div class="section-divider"><span>Predicates</span></div>
+
+  <!-- 13 Contains / Within -->
+  <div class="card">
+    <div class="card-num">13</div>
+    <div class="card-title">Contains / Within</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- outer polygon -->
+      <polygon points="20,108 15,15 185,15 185,108"
+        fill="#f5f5f5" stroke="#aaa" stroke-width="1.4"/>
+      <text x="22" y="28" font-family="Inter,sans-serif" font-size="10" fill="#888" font-weight="600">A</text>
+      <!-- inner polygon -->
+      <polygon points="65,90 60,45 140,40 140,90"
+        fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.8"/>
+      <text x="88" y="75" font-family="Inter,sans-serif" font-size="11" fill="#389826" font-weight="600">B</text>
+      <!-- label -->
+      <text x="50" y="112" font-family="Space Mono,monospace" font-size="8.5" fill="#389826">A contains B</text>
+      <text x="52" y="122" font-family="Space Mono,monospace" font-size="8.5" fill="#aaa">B within A</text>
+    </svg>
+    <div class="card-caption">Every point of B lies inside A. Inverse: B is within A. <code>GO.contains(a, b)</code></div>
+  </div>
+
+  <!-- 14 Intersects -->
+  <div class="card">
+    <div class="card-num">14</div>
+    <div class="card-title">Intersects / Disjoint</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- case 1: overlapping — intersects -->
+      <rect x="15" y="20" width="60" height="60" rx="2" fill="#f0f0f0" stroke="#999" stroke-width="1.2"/>
+      <rect x="45" y="35" width="60" height="60" rx="2" fill="#f0f0f0" stroke="#999" stroke-width="1.2"/>
+      <!-- overlap highlight -->
+      <rect x="45" y="35" width="30" height="45" rx="0" fill="#389826" fill-opacity="0.25"/>
+      <text x="90" y="85" font-family="Space Mono,monospace" font-size="8" fill="#389826">true</text>
+      <text x="25" y="93" font-family="Inter,sans-serif" font-size="8.5" fill="#389826">intersects</text>
+
+      <!-- case 2: disjoint -->
+      <rect x="118" y="20" width="50" height="45" rx="2" fill="#f0f0f0" stroke="#ccc" stroke-width="1.2"/>
+      <rect x="130" y="72" width="55" height="40" rx="2" fill="#f0f0f0" stroke="#ccc" stroke-width="1.2"/>
+      <text x="122" y="115" font-family="Inter,sans-serif" font-size="8.5" fill="#aaa">disjoint</text>
+      <text x="155" y="62" font-family="Space Mono,monospace" font-size="8" fill="#aaa">false</text>
+    </svg>
+    <div class="card-caption">Geometries share at least one point. Opposite is disjoint. <code>GO.intersects(a, b)</code></div>
+  </div>
+
+  <!-- 15 Touches -->
+  <div class="card">
+    <div class="card-num">15</div>
+    <div class="card-title">Touches</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- left rect -->
+      <rect x="20" y="25" width="80" height="70" fill="#f0f0f0" stroke="#999" stroke-width="1.4"/>
+      <!-- right rect touching at shared edge -->
+      <rect x="100" y="35" width="75" height="60" fill="#f0f0f0" stroke="#999" stroke-width="1.4"/>
+      <!-- shared boundary highlight -->
+      <line x1="100" y1="35" x2="100" y2="95" stroke="#389826" stroke-width="2.5"/>
+      <!-- annotation -->
+      <circle cx="100" cy="65" r="3.5" fill="#389826"/>
+      <text x="54" y="105" font-family="Inter,sans-serif" font-size="8.5" fill="#aaa">A</text>
+      <text x="128" y="105" font-family="Inter,sans-serif" font-size="8.5" fill="#aaa">B</text>
+      <text x="104" y="60" font-family="Inter,sans-serif" font-size="8" fill="#389826">shared</text>
+      <text x="104" y="70" font-family="Inter,sans-serif" font-size="8" fill="#389826">boundary</text>
+    </svg>
+    <div class="card-caption">Geometries share only boundary — interiors are disjoint. <code>GO.touches(a, b)</code></div>
+  </div>
+
+  <!-- 16 Winding Order -->
+  <div class="card">
+    <div class="card-num">16</div>
+    <div class="card-title">Winding Order</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrGreen" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#389826"/>
+        </marker>
+        <marker id="arrRed" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#c0392b"/>
+        </marker>
+      </defs>
+      <!-- CCW polygon (exterior) -->
+      <polygon points="20,100 20,25 90,25 90,100" fill="#389826" fill-opacity="0.1" stroke="#389826" stroke-width="1.4"/>
+      <path d="M20,25 L90,25 L90,100" fill="none" stroke="#389826" stroke-width="1.4" marker-end="url(#arrGreen)"/>
+      <text x="32" y="70" font-family="Space Mono,monospace" font-size="8" fill="#389826">CCW</text>
+      <text x="25" y="82" font-family="Inter,sans-serif" font-size="8" fill="#389826">exterior</text>
+
+      <!-- CW polygon (hole) -->
+      <polygon points="110,100 180,100 180,25 110,25" fill="#eee" stroke="#c0392b" stroke-width="1.4"/>
+      <path d="M110,25 L180,25 L180,100" fill="none" stroke="#c0392b" stroke-width="1.4" marker-end="url(#arrRed)"/>
+      <text x="122" y="70" font-family="Space Mono,monospace" font-size="8" fill="#c0392b">CW</text>
+      <text x="118" y="82" font-family="Inter,sans-serif" font-size="8" fill="#c0392b">hole ring</text>
+    </svg>
+    <div class="card-caption">CCW exterior rings, CW holes. GeoJSON mandates this; many formats do not enforce it. <code>GO.fix(geom)</code></div>
+  </div>
+
+  <!-- ─── SPHERICAL GEOMETRY ────────────────────── -->
+  <div class="section-divider"><span>Spherical geometry</span></div>
+
+  <!-- 17 Great Circle -->
+  <div class="card">
+    <div class="card-num">17</div>
+    <div class="card-title">Great Circle Path</div>
+    <svg viewBox="0 0 200 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <clipPath id="gc17"><circle cx="100" cy="64" r="54"/></clipPath>
+        <radialGradient id="gsh17" cx="38%" cy="32%" r="62%">
+          <stop offset="0%" stop-color="#f6f6f6"/>
+          <stop offset="100%" stop-color="#dcdcdc"/>
+        </radialGradient>
+      </defs>
+      <!-- Globe fill -->
+      <circle cx="100" cy="64" r="54" fill="url(#gsh17)"/>
+      <!-- Graticule clipped to sphere -->
+      <g clip-path="url(#gc17)" fill="none" stroke="#ccc" stroke-width="0.7">
+        <!-- parallels -->
+        <ellipse cx="100" cy="64" rx="54" ry="11"/>
+        <ellipse cx="100" cy="42" rx="46" ry="9"/>
+        <ellipse cx="100" cy="86" rx="46" ry="9"/>
+        <ellipse cx="100" cy="22" rx="30" ry="6"/>
+        <ellipse cx="100" cy="106" rx="30" ry="6"/>
+        <!-- meridians -->
+        <ellipse cx="100" cy="64" rx="20" ry="54"/>
+        <ellipse cx="100" cy="64" rx="40" ry="54"/>
+        <ellipse cx="100" cy="64" rx="54" ry="54"/>
+      </g>
+      <!-- Globe rim -->
+      <circle cx="100" cy="64" r="54" stroke="#aaa" stroke-width="1.3"/>
+      <!-- Two surface points -->
+      <circle cx="48"  cy="46" r="4" fill="#111"/>
+      <circle cx="156" cy="50" r="4" fill="#111"/>
+      <!-- Planar straight (wrong) -->
+      <line x1="48" y1="46" x2="156" y2="50" stroke="#bbb" stroke-width="1.6" stroke-dasharray="5 3"/>
+      <text x="74" y="42" font-family="Inter,sans-serif" font-size="9" fill="#bbb">straight line</text>
+      <!-- Great circle arc (correct) -->
+      <path d="M48,46 Q102,8 156,50" fill="none" stroke="#389826" stroke-width="2.2"/>
+      <!-- arrow tip on arc -->      
+      <circle cx="104" cy="11" r="0"/>
+      <text x="68" y="14" font-family="Inter,sans-serif" font-size="9.5" font-weight="700" fill="#389826">great circle arc</text>
+      <!-- pointer line from label to arc -->      
+      <line x1="102" y1="17" x2="102" y2="26" stroke="#389826" stroke-width="0.9" stroke-dasharray="2 1"/>
+      <!-- endpoint labels -->
+      <text x="30" y="44" font-family="Space Mono,monospace" font-size="8.5" fill="#555">P</text>
+      <text x="160" y="48" font-family="Space Mono,monospace" font-size="8.5" fill="#555">Q</text>
+    </svg>
+    <div class="card-caption">The shortest path between two points on a sphere. Curves visibly when projected flat — straight-line shortcuts cut through the Earth. <code>GO.segmentize</code> densifies edges along great circles before reprojection.</div>
+  </div>
+
+  <!-- 18 Geodesic Distance -->
+  <div class="card">
+    <div class="card-num">18</div>
+    <div class="card-title">Geodesic Distance</div>
+    <svg viewBox="0 0 200 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <clipPath id="gc18"><circle cx="100" cy="64" r="52"/></clipPath>
+        <radialGradient id="gsh18" cx="38%" cy="32%" r="62%">
+          <stop offset="0%" stop-color="#f6f6f6"/>
+          <stop offset="100%" stop-color="#dcdcdc"/>
+        </radialGradient>
+      </defs>
+      <!-- Globe -->
+      <circle cx="100" cy="64" r="52" fill="url(#gsh18)"/>
+      <g clip-path="url(#gc18)" fill="none" stroke="#ccc" stroke-width="0.65">
+        <ellipse cx="100" cy="64" rx="52" ry="10"/>
+        <ellipse cx="100" cy="42" rx="44" ry="8"/>
+        <ellipse cx="100" cy="86" rx="44" ry="8"/>
+        <ellipse cx="100" cy="22" rx="28" ry="5"/>
+        <ellipse cx="100" cy="106" rx="28" ry="5"/>
+        <ellipse cx="100" cy="64" rx="18" ry="52"/>
+        <ellipse cx="100" cy="64" rx="38" ry="52"/>
+      </g>
+      <circle cx="100" cy="64" r="52" stroke="#aaa" stroke-width="1.3"/>
+      <!-- Radii to surface points -->
+      <line x1="100" y1="64" x2="58"  y2="24"  stroke="#ccc" stroke-width="1"/>
+      <line x1="100" y1="64" x2="152" y2="36"  stroke="#ccc" stroke-width="1"/>
+      <!-- Chord (Euclidean, wrong) -->
+      <line x1="58" y1="24" x2="152" y2="36" stroke="#bbb" stroke-width="1.4" stroke-dasharray="4 2"/>
+      <!-- Geodesic arc -->
+      <path d="M58,24 A52,52 0 0,1 152,36" fill="none" stroke="#389826" stroke-width="2.4"/>
+      <!-- Arc length label on arc midpoint -->
+      <text x="90" y="8" font-family="Space Mono,monospace" font-size="10" font-weight="700" fill="#389826">d = R·θ</text>
+      <line x1="102" y1="12" x2="102" y2="20" stroke="#389826" stroke-width="0.9" stroke-dasharray="2 1"/>
+      <!-- Angle arc at centre -->
+      <path d="M116,52 A18,18 0 0,0 100,46" fill="none" stroke="#555" stroke-width="1.1"/>
+      <text x="118" y="51" font-family="Space Mono,monospace" font-size="10" fill="#555">θ</text>
+      <!-- Center dot -->
+      <circle cx="100" cy="64" r="2.5" fill="#999"/>
+      <text x="103" y="70" font-family="Inter,sans-serif" font-size="8" fill="#aaa">center</text>
+      <!-- Surface point dots -->
+      <circle cx="58"  cy="24" r="4" fill="#111"/>
+      <circle cx="152" cy="36" r="4" fill="#111"/>
+      <text x="38"  y="23" font-family="Space Mono,monospace" font-size="8.5" fill="#555">P</text>
+      <text x="155" y="35" font-family="Space Mono,monospace" font-size="8.5" fill="#555">Q</text>
+      <!-- R label on radius line -->
+      <text x="66" y="52" font-family="Space Mono,monospace" font-size="8.5" fill="#aaa">R</text>
+    </svg>
+    <div class="card-caption">True arc length on the ellipsoid surface: <code>d = R·θ</code> where θ is the central angle. Chord length (dashed) is always shorter and wrong for GIS. Computed via Haversine or Vincenty. <code>GO.distance(P, Q)</code></div>
+  </div>
+
+  <!-- 19 Reprojection -->
+  <div class="card">
+    <div class="card-num">19</div>
+    <div class="card-title">Reprojection</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- lat/lon grid (left) -->
+      <g opacity="0.6">
+        <rect x="12" y="15" width="70" height="90" fill="#f5f5f5" stroke="#ccc" stroke-width="0.8"/>
+        <!-- grid lines -->
+        <line x1="12" y1="45" x2="82" y2="45" stroke="#ddd" stroke-width="0.6"/>
+        <line x1="12" y1="75" x2="82" y2="75" stroke="#ddd" stroke-width="0.6"/>
+        <line x1="35" y1="15" x2="35" y2="105" stroke="#ddd" stroke-width="0.6"/>
+        <line x1="58" y1="15" x2="58" y2="105" stroke="#ddd" stroke-width="0.6"/>
+        <text x="16" y="12" font-family="Space Mono,monospace" font-size="7.5" fill="#999">WGS84</text>
+      </g>
+      <!-- polygon in left CRS -->
+      <polygon points="22,30 60,22 75,55 50,95 20,80" fill="#ddd" stroke="#999" stroke-width="1"/>
+
+      <!-- arrow -->
+      <path d="M87,60 L113,60" stroke="#111" stroke-width="1.4" marker-end="url(#arrBlack)"/>
+      <defs>
+        <marker id="arrBlack" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#111"/>
+        </marker>
+      </defs>
+      <text x="91" y="56" font-family="Space Mono,monospace" font-size="7" fill="#555">proj</text>
+
+      <!-- projected grid (right, distorted) -->
+      <g opacity="0.6">
+        <rect x="118" y="15" width="70" height="90" fill="#f5f5f5" stroke="#ccc" stroke-width="0.8"/>
+        <!-- curved grid lines -->
+        <path d="M118,45 Q153,42 188,45" fill="none" stroke="#ddd" stroke-width="0.6"/>
+        <path d="M118,72 Q153,75 188,72" fill="none" stroke="#ddd" stroke-width="0.6"/>
+        <line x1="148" y1="15" x2="148" y2="105" stroke="#ddd" stroke-width="0.6"/>
+        <text x="120" y="12" font-family="Space Mono,monospace" font-size="7.5" fill="#389826">EPSG:3857</text>
+      </g>
+      <!-- reprojected polygon — distorted shape -->
+      <polygon points="128,28 162,18 178,55 148,98 124,82" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1.2"/>
+    </svg>
+    <div class="card-caption">Transforms coordinates from one CRS to another. Shape distorts based on projection. <code>GO.reproject(geom, crs)</code></div>
+  </div>
+
+  <!-- 20 Triangulation -->
+  <div class="card">
+    <div class="card-num">20</div>
+    <div class="card-title">Triangulation</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- L-shaped polygon -->
+      <polygon points="25,105 25,20 105,20 105,55 75,55 75,105"
+        fill="#f0f0f0" stroke="#999" stroke-width="1.4"/>
+      <!-- triangles with green fill alternating -->
+      <polygon points="25,20 105,20 75,55" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1" stroke-dasharray="3 1"/>
+      <polygon points="25,20 25,55 75,55" fill="#389826" fill-opacity="0.08" stroke="#389826" stroke-width="1" stroke-dasharray="3 1"/>
+      <polygon points="25,55 25,105 75,105" fill="#389826" fill-opacity="0.2" stroke="#389826" stroke-width="1" stroke-dasharray="3 1"/>
+      <polygon points="25,55 75,55 75,105" fill="#389826" fill-opacity="0.08" stroke="#389826" stroke-width="1" stroke-dasharray="3 1"/>
+      <!-- diagonal lines only -->
+      <line x1="25" y1="20" x2="75" y2="55" stroke="#389826" stroke-width="1" stroke-dasharray="3 1"/>
+      <line x1="25" y1="55" x2="75" y2="55" stroke="#389826" stroke-width="1" stroke-dasharray="3 1"/>
+      <line x1="25" y1="55" x2="75" y2="105" stroke="#389826" stroke-width="1" stroke-dasharray="3 1"/>
+    </svg>
+    <div class="card-caption">Decomposes polygon into non-overlapping triangles. Enables rendering and interpolation. <code>GO.triangulate(poly)</code></div>
+  </div>
+
+  <!-- ─── DECOMPOSITION & INTERPOLATION ──────────── -->
+  <div class="section-divider"><span>Decomposition &amp; interpolation</span></div>
+
+  <!-- 21 Delaunay Triangulation -->
+  <div class="card">
+    <div class="card-num">21</div>
+    <div class="card-title">Delaunay Triangulation</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- points -->
+      <circle cx="40"  cy="95" r="2.5" fill="#555"/>
+      <circle cx="30"  cy="40" r="2.5" fill="#555"/>
+      <circle cx="90"  cy="20" r="2.5" fill="#555"/>
+      <circle cx="155" cy="30" r="2.5" fill="#555"/>
+      <circle cx="170" cy="85" r="2.5" fill="#555"/>
+      <circle cx="115" cy="100" r="2.5" fill="#555"/>
+      <circle cx="80"  cy="70" r="2.5" fill="#555"/>
+      <circle cx="130" cy="60" r="2.5" fill="#555"/>
+      <!-- triangles -->
+      <polygon points="30,40 40,95 80,70"   fill="#389826" fill-opacity="0.10" stroke="#389826" stroke-width="1"/>
+      <polygon points="30,40 80,70 90,20"   fill="#389826" fill-opacity="0.16" stroke="#389826" stroke-width="1"/>
+      <polygon points="90,20 80,70 130,60"  fill="#389826" fill-opacity="0.10" stroke="#389826" stroke-width="1"/>
+      <polygon points="90,20 130,60 155,30" fill="#389826" fill-opacity="0.16" stroke="#389826" stroke-width="1"/>
+      <polygon points="130,60 155,30 170,85" fill="#389826" fill-opacity="0.10" stroke="#389826" stroke-width="1"/>
+      <polygon points="80,70 130,60 170,85"  fill="#389826" fill-opacity="0.16" stroke="#389826" stroke-width="1"/>
+      <polygon points="40,95 80,70 115,100"  fill="#389826" fill-opacity="0.10" stroke="#389826" stroke-width="1"/>
+      <polygon points="80,70 170,85 115,100" fill="#389826" fill-opacity="0.16" stroke="#389826" stroke-width="1"/>
+      <!-- circumcircle hint on one triangle -->
+      <circle cx="80" cy="50" r="28" fill="none" stroke="#ccc" stroke-width="0.8" stroke-dasharray="3 2"/>
+      <text x="52" y="33" font-family="Inter,sans-serif" font-size="7.5" fill="#bbb">circumcircle</text>
+    </svg>
+    <div class="card-caption">Triangulation maximising minimum angles. No point lies inside any triangle's circumcircle. <code>GO.triangulate(pts, :delaunay)</code></div>
+  </div>
+
+  <!-- 22 Voronoi Diagram -->
+  <div class="card">
+    <div class="card-num">22</div>
+    <div class="card-title">Voronoi Diagram</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs><clipPath id="vorClip"><rect width="200" height="120"/></clipPath></defs>
+      <g clip-path="url(#vorClip)">
+        <!-- Voronoi cells — hand-laid polygons approximating dual of the Delaunay above -->
+        <polygon points="0,0 60,0 55,55 0,65"            fill="#389826" fill-opacity="0.08" stroke="#389826" stroke-width="1"/>
+        <polygon points="60,0 130,0 105,45 55,55"        fill="#389826" fill-opacity="0.13" stroke="#389826" stroke-width="1"/>
+        <polygon points="130,0 200,0 200,55 155,48 105,45" fill="#389826" fill-opacity="0.08" stroke="#389826" stroke-width="1"/>
+        <polygon points="0,65 55,55 105,45 95,90 50,120 0,120" fill="#389826" fill-opacity="0.13" stroke="#389826" stroke-width="1"/>
+        <polygon points="55,55 105,45 155,48 140,90 95,90"     fill="#389826" fill-opacity="0.08" stroke="#389826" stroke-width="1"/>
+        <polygon points="155,48 200,55 200,120 140,120 140,90" fill="#389826" fill-opacity="0.13" stroke="#389826" stroke-width="1"/>
+        <polygon points="50,120 95,90 140,90 140,120"          fill="#389826" fill-opacity="0.08" stroke="#389826" stroke-width="1"/>
+      </g>
+      <!-- seed points -->
+      <circle cx="25"  cy="28"  r="3" fill="#111"/>
+      <circle cx="88"  cy="18"  r="3" fill="#111"/>
+      <circle cx="160" cy="22"  r="3" fill="#111"/>
+      <circle cx="18"  cy="88"  r="3" fill="#111"/>
+      <circle cx="115" cy="70"  r="3" fill="#111"/>
+      <circle cx="170" cy="80"  r="3" fill="#111"/>
+      <circle cx="88"  cy="108" r="3" fill="#111"/>
+    </svg>
+    <div class="card-caption">Partitions space so each cell contains every point closest to its seed. Dual of Delaunay. <code>GO.voronoi(pts)</code></div>
+  </div>
+
+  <!-- 23 Barycentric Coordinates -->
+  <div class="card">
+    <div class="card-num">23</div>
+    <div class="card-title">Barycentric Coordinates</div>
+    <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- triangle -->
+      <polygon points="100,12 180,105 20,105" fill="#f5f5f5" stroke="#999" stroke-width="1.4"/>
+      <!-- vertex labels -->
+      <text x="96"  y="9"  font-family="Space Mono,monospace" font-size="9" fill="#555" text-anchor="middle">v₁</text>
+      <text x="186" y="110" font-family="Space Mono,monospace" font-size="9" fill="#555">v₂</text>
+      <text x="8"   y="110" font-family="Space Mono,monospace" font-size="9" fill="#555">v₃</text>
+      <!-- interior point P -->
+      <circle cx="100" cy="72" r="4" fill="#389826"/>
+      <!-- lines from P to each vertex -->
+      <line x1="100" y1="72" x2="100" y2="12"  stroke="#389826" stroke-width="1" stroke-dasharray="3 2"/>
+      <line x1="100" y1="72" x2="180" y2="105" stroke="#389826" stroke-width="1" stroke-dasharray="3 2"/>
+      <line x1="100" y1="72" x2="20"  y2="105" stroke="#389826" stroke-width="1" stroke-dasharray="3 2"/>
+      <!-- sub-triangle shading -->
+      <polygon points="100,12 180,105 100,72"  fill="#389826" fill-opacity="0.20"/>
+      <polygon points="100,12 20,105  100,72"  fill="#389826" fill-opacity="0.10"/>
+      <polygon points="180,105 20,105 100,72"  fill="#389826" fill-opacity="0.14"/>
+      <!-- bary label -->
+      <text x="100" y="66" font-family="Space Mono,monospace" font-size="8.5" fill="#389826" text-anchor="middle">P</text>
+      <text x="16"  y="74" font-family="Space Mono,monospace" font-size="7.5" fill="#389826">λ₁,λ₂,λ₃</text>
+      <text x="14"  y="84" font-family="Inter,sans-serif"     font-size="7"   fill="#aaa">λ₁+λ₂+λ₃=1</text>
+    </svg>
+    <div class="card-caption">Weights (λ₁,λ₂,λ₃) expressing P as a blend of triangle vertices. Used for interpolation. <code>GO.barycentric_coordinates(tri, pt)</code></div>
+  </div>
+
+  <!-- filler to complete row -->
+  <div class="card" style="background:#fafafa;">
+    <div class="card-num" style="opacity:0.3">—</div>
+    <div class="card-title" style="color:#ccc">More coming</div>
+    <svg viewBox="0 0 200 120"></svg>
+    <div class="card-caption" style="color:#ccc">Additional operations in progress.</div>
+  </div>
+
+</div>
+
+<footer>
+  <span>JuliaGeo Design System · GeometryOps.jl Reference</span>
+  <span>20 operations · April 2026</span>
+</footer>
+
+</body>
+</html>

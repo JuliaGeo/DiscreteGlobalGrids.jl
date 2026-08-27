@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # S2 system interface. At level `l`, scaffold ordinals are `0:6*4^l-1` and
-# complete-grid position is ordinal plus one. Two Hilbert bits per level make
+# complete-grid index is ordinal plus one. Two Hilbert bits per level make
 # parent `p ÷ 4`, children `4p:4p+3`, and subtrees contiguous — so the hierarchy,
 # the level-grid arithmetic, and the subtree engines are the quad-face family's,
 # and this file writes only what the cube-face chart decides:
@@ -32,7 +32,7 @@ cell boundary.
 # Ids
 
 The canonical [`LevelIndex`](@ref) stores the 0-based scaffold ordinal
-`face * 4^level + hilbert_position`; complete-grid position is `index + 1`.
+`face * 4^level + hilbert_position`; complete-grid index is `index + 1`.
 Native 64-bit `s2_cellid` is not an alternate scheme.
 
 # Levels
@@ -73,6 +73,20 @@ DGG.levels(::S2System) = 0:MAX_LEVEL
 
 DGG.maxneighbors(::S2System, ::DGG.Vertex) = 8
 DGG.maxneighbors(::S2System, ::DGG.Edge) = 4
+
+DGG.winding(::S2System, ::DGG.Connectivity) = DGG.CounterClockwise()
+
+"""
+    maxring(::S2System, k, connectivity) -> Int
+
+`8k` under `Vertex()` and `4k` under `Edge()`: the quad lattice's k-ring is its
+one-ring scaled by `k`, and the cube's 3-valent corners do not exceed it.
+"""
+DGG.maxring(::S2System, k::Integer, ::DGG.Vertex = DGG.Vertex()) =
+    (steps = Int(k); steps == 0 ? 1 : 8 * steps)
+
+DGG.maxring(::S2System, k::Integer, ::DGG.Edge) =
+    (steps = Int(k); steps == 0 ? 1 : 4 * steps)
 
 # ===========================================================================
 # Geometry
@@ -135,7 +149,9 @@ end
 The cell's four-corner cap, used without [`cap_inflation`](@ref).
 
 Children tile their parent, and each cell is the geodesic convex hull of its
-corners, so the cap covers the whole subtree.
+corners, so the cap covers the whole subtree's geometry. It does not cover the
+children's own caps, which are recentred on the children and routinely reach
+outside it — the covering law bounds descendant polygons, not descendant bounds.
 
 The maximum radius is `acos(1/√3) ≈ 0.9553` rad, below `π/2`, so every extent is
 geodesically convex.
@@ -185,11 +201,7 @@ from outside the sphere, starting at the `+s` lattice direction**
 """
 function DGG.one_ring(g::LevelGrid, c::DGG.LevelIndex, connectivity::DGG.Connectivity)
     DGG.checked_id(g, c)
-    out = SmallVector{8,DGG.LevelIndex}()
-    for h in lattice_neighbors(c.index, g.level, connectivity)
-        out = SmallCollections.push(out, DGG.LevelIndex(g.level, h))
-    end
-    return out
+    return _lattice_neighbors(DGG.LevelIndex, c.index, g.level, connectivity)
 end
 
 """
@@ -225,14 +237,12 @@ spoke through the first ring-1 neighbour; see [`ring`](@ref).
 `k == 0` returns an empty container; `k == 1` returns a
 `SmallCollections.SmallVector` sized by `maxneighbors`.
 """
-function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
+Base.@constprop :aggressive function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, k::Integer = 1;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return SmallVector{8,DGG.LevelIndex}()
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    isempty(shells) && return DGG.LevelIndex[]
-    return reduce(vcat, shells)
+    return DGG.shell_disc(g, c, steps, connectivity)
 end
 
 """
@@ -245,12 +255,30 @@ outside the sphere. `ring(grid, c, 0)` is `[c]`.
 the centre, counter-clockwise from the first ring-1 neighbour. Azimuth ties use
 canonical id.
 """
-function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
+Base.@constprop :aggressive function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, k::Integer;
         connectivity::DGG.Connectivity = DGG.Vertex())
     steps = DGG.checked_steps(k)
     steps == 0 && return DGG.LevelIndex[c]
     steps == 1 && return DGG.one_ring(g, c, connectivity)
-    shells = DGG.adjacency_shells(g, c, steps, connectivity)
-    steps <= length(shells) || return DGG.LevelIndex[]
-    return shells[steps]
+    return DGG.shell_ring(g, c, steps, connectivity)
+end
+
+# The `Val` form of the two above: same short-circuits, same walk, but `K` is a
+# type parameter so the declared ring bound folds to a fixed buffer capacity and
+# the shell is built and returned on the stack. See the interface `Val` methods
+# for why this is opt-in rather than generic.
+function DGG.neighbors(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return SmallVector{8,DGG.LevelIndex}()
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_disc(g, c, Val(K), connectivity)
+end
+
+function DGG.ring(g::LevelGrid, c::DGG.LevelIndex, ::Val{K};
+        connectivity::DGG.Connectivity = DGG.Vertex()) where {K}
+    DGG.checked_steps(K)
+    K == 0 && return DGG.LevelIndex[c]
+    K == 1 && return DGG.one_ring(g, c, connectivity)
+    return DGG.shell_ring(g, c, Val(K), connectivity)
 end

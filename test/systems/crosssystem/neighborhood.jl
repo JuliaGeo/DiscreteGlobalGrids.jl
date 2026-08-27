@@ -1,4 +1,4 @@
-# Compare the positioned `neighbors` iterator with per-cell neighbour calls.
+# Compare the indexed `neighbors` iterator with per-cell neighbour calls.
 
 module NeighborhoodTests
 
@@ -6,13 +6,14 @@ using Test
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
 import Extents
+using SmallCollections: SmallVector
 
-using DiscreteGlobalGrids: levelgrid, ncells, cellindex, cellposition,
+using DiscreteGlobalGrids: levelgrid, ncells, cellindex, localindex, globalindex,
     neighbors, ring, neighborcount, level, rawid, has_sorted_subtrees,
     cellindextype, cell_centroid, cell_boundary, cell_area, cell_extent,
     cell_polygon, PartialGrid, subtree,
     CellVector, CellLookup, MultiOrderCoverage, AuthalicSystem, Vertex, Edge,
-    query, system, SubsetPositionedCell, cellid, Cells
+    query, system, SubsetIndexedCell, cellid, Cells
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, sweepcovers
@@ -45,6 +46,12 @@ rooted(sys, base, depth) =
 
 nwindows(cv) = EN.nwindows(EN.windows(cv))
 
+# Measure behind a typed function barrier. At testset top level, Julia boxes
+# even a native SmallVector return and reports that box as an
+# allocation; a hot caller specializes on the lookup type.
+lookup_neighbor_bytes(lk, conn) =
+    @allocated neighbors(lk, 1; connectivity = conn)
+
 @testset "$(syslabel(sys))" for (sys, base, depth, covlvl) in SWEEP
     sub = rooted(sys, base, depth)
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=covlvl))
@@ -64,17 +71,17 @@ nwindows(cv) = EN.nwindows(EN.windows(cv))
                     [cellid(h) for h in res[k][2]] ==
                     collect(neighbors(cv, c; connectivity = conn))
             end
-            # Every handle carries the position resolved from its cell.
+            # Every handle carries the local index resolved from its cell.
             @test all(neighbors(cv; connectivity = conn)) do (c, nbrs)
-                cellposition(cv, cellid(c)) == cellposition(c) &&
-                    all(h -> cellposition(cv, cellid(h)) == cellposition(h), nbrs)
+                localindex(cv, cellid(c)) == localindex(c) &&
+                    all(h -> localindex(cv, cellid(h)) == localindex(h), nbrs)
             end
         end
     end
 
-    # Compare stored positions explicitly because handle equality uses cell ids.
+    # Compare stored indices explicitly because handle equality uses cell ids.
     @testset "the grid and lookup forms are the vector's" begin
-        same(a, b) = cellid(a) == cellid(b) && cellposition(a) == cellposition(b)
+        same(a, b) = cellid(a) == cellid(b) && localindex(a) == localindex(b)
         agree(x, y) = length(x) == length(y) &&
                       all(same(cx, cy) && length(nx) == length(ny) &&
                           all(splat(same), zip(nx, ny))
@@ -82,6 +89,27 @@ nwindows(cv) = EN.nwindows(EN.windows(cv))
         pg = subtree(sys, cellindex(levelgrid(sys, base), 3), base + depth)
         @test agree(collect(neighbors(pg)), collect(neighbors(sub)))
         @test agree(collect(neighbors(CellLookup(sub))), collect(neighbors(sub)))
+    end
+
+    @testset "compressed lookup keeps the indexed one-ring inline" begin
+        lk = CellLookup(coverage)
+        capacity = DGG.maxneighbors(sys)
+        for conn in (Vertex(), Edge())
+            got = neighbors(lk, 1; connectivity = conn)
+            want = [localindex(lk, c) for c in
+                    neighbors(coverage, coverage[1]; connectivity = conn)]
+            @test got isa SmallVector{capacity,Int}
+            @test collect(got) == want
+
+            # The lookup call is the shape used by
+            # `neighbors(lookup(cube)[1], i)`. Warm it before measuring.
+            neighbors(lk, 1; connectivity = conn)
+            # `--check-bounds=yes` deliberately prevents scalar replacement
+            # inside inline builders and boxes the isbits result. The package's
+            # normal bounds mode keeps this hot call allocation-free.
+            @test lookup_neighbor_bytes(lk, conn) == 0 skip =
+                VERSION < v"1.12" || Base.JLOptions().check_bounds == 1
+        end
     end
 end
 
@@ -107,30 +135,30 @@ end
     @test level(h) == level(c)
     @test isbitstype(typeof(h)) && sizeof(typeof(h)) == 16
 
-    # `show` names the wrapper and the position: printing as the bare cell is
+    # `show` names the wrapper and the index: printing as the bare cell is
     # what leaves a caller with no way to guess what it is holding.
     s = sprint(show, h)
-    @test occursin("SubsetPositionedCell", s) && occursin(sprint(show, c), s)
-    @test occursin("position $(cellposition(h))", s)
+    @test occursin("SubsetIndexedCell", s) && occursin(sprint(show, c), s)
+    @test occursin("index $(localindex(h))", s)
     @test sprint(show, MIME"text/plain"(), h) == s
 
     # Read-only verbs answer for the cell, so a handle needs no unwrapping.
     grid = levelgrid(sys, level(c))
     @test all((cell_centroid, cell_boundary, cell_area, cell_extent,
-        cell_polygon, cellposition, neighbors, neighborcount)) do f
+        cell_polygon, globalindex, neighbors, neighborcount)) do f
         f(grid, h) == f(grid, c)
     end
-    @test cellposition(cv, h) == cellposition(cv, c)
+    @test localindex(cv, h) == localindex(cv, c)
     @test ring(grid, h, 2) == ring(grid, c, 2)
     @test rawid(h) == rawid(c)
 
     A = DD.DimArray(collect(1.0:length(cv)), (Cells(CellLookup(cv)),))
-    # Handles read and write their stored position.
-    @test A[h] == parent(A)[cellposition(h)]
+    # Handles read and write their stored index.
+    @test A[h] == parent(A)[localindex(h)]
     A[h] = -1.0
-    @test parent(A)[cellposition(h)] == -1.0
-    # An in-range position is used without resolving the cell id.
-    wrong = SubsetPositionedCell(c, 7)
+    @test parent(A)[localindex(h)] == -1.0
+    # An in-range index is used without resolving the cell id.
+    wrong = SubsetIndexedCell(c, 7)
     @test A[wrong] == parent(A)[7]
     # Bare cells use the selector path.
     @test A[DD.At(c)] == A[h]
@@ -142,9 +170,9 @@ end
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=8))
     @test nwindows(coverage) > 1
     sweeploop(it) = (n = 0; for (c, nbrs) in it
-        n += cellposition(c)
+        n += localindex(c)
         for h in nbrs
-            n += cellposition(h)
+            n += localindex(h)
         end
     end; n)
     it = neighbors(coverage)

@@ -55,7 +55,7 @@ const Z7Cell = I.Z7Cell
     last_cell = DGG.cellindex(complete, DGG.ncells(complete))
     @test first_cell + (last_cell - first_cell) == last_cell
     @test_throws I.RelativeZ7Error first_cell + DGG.RelativeZ7Cell(first_cell, -1)
-    # An offset that would overflow a widened target position is still just an
+    # An offset that would overflow a widened target index is still just an
     # out-of-range offset: the check brackets the offset, never the sum.
     @test_throws I.RelativeZ7Error last_cell + DGG.RelativeZ7Cell(last_cell, typemax(Int))
     @test_throws I.RelativeZ7Error DGG.directioncode(last_cell - first_cell)
@@ -222,7 +222,7 @@ const CLEAN = (0, "")
         # the oracle's row order is its own, so compare as a sorted id set
         @test sort(parse.(UInt64, getindex.(rows, 2); base=16)) == DGG.rawid.(roots)
 
-        # roots ARE positions 1:12 of the level-0 grid
+        # roots ARE indices 1:12 of the level-0 grid
         g0 = DGG.levelgrid(S, 0)
         @test [DGG.cellindex(g0, i) for i in 1:12] == roots
 
@@ -292,7 +292,7 @@ const CLEAN = (0, "")
                 worst = max(worst, lldist(DGG.cell_centroid(grid, c), lon, lat))
                 DGG.cellat(grid, lon, lat) == c || (ndecode += 1)
                 # the published cell is a cell of this grid, at this level
-                DGG.cellposition(grid, c) === nothing && (npos += 1)
+                DGG.globalindex(grid, c) === nothing && (npos += 1)
             end
             @printf("    level %d: %6d cells   centroid max err %.3e deg   decode mismatches %d\n",
                 r, length(rows), worst, ndecode)
@@ -342,13 +342,13 @@ const CLEAN = (0, "")
                     "$text: parent walk reached $(I.z7_string(walker)), expected $expected")
             end
 
-            # every ancestor's descendant_range brackets the cell's position
+            # every ancestor's descendant_range brackets the cell's index
             grid = DGG.levelgrid(S, r)
-            pos = DGG.cellposition(grid, c)
+            pos = DGG.globalindex(grid, c)
             for (k, ptext) in enumerate(parents)
                 anc = Z7Cell(I.z7_from_string(ptext))
                 rng = DGG.descendant_range(S, anc, r)
-                check!(t, pos in rng, "$text: position $pos outside $ptext's range $rng")
+                check!(t, pos in rng, "$text: index $pos outside $ptext's range $rng")
                 expected_len = I.is_pentagon(anc) ?
                                (5 * 7^(r - (r - k)) + 1) ÷ 6 : 7^(r - (r - k))
                 check!(t, length(rng) == expected_len,
@@ -398,14 +398,14 @@ const CLEAN = (0, "")
                 "$tag: child digits $(sort(digits_taken)) are not 0:6 minus $missing_digit")
 
             # subtree sizes follow the pentagon recurrence, and the deleted digit
-            # leaves NO hole in the position range
+            # leaves NO hole in the index range
             check!(t, length(DGG.descendants(S, c, DGG.level(c) + 1)) == 6,
                 "$tag: depth-1 subtree is not 6 cells")
             check!(t, length(DGG.descendants(S, c, DGG.level(c) + 2)) == 41,
                 "$tag: depth-2 subtree is not 41 cells")
             rng = DGG.descendant_range(S, c, DGG.level(c) + 1)
             g = DGG.levelgrid(S, DGG.level(c) + 1)
-            check!(t, extrema(DGG.cellposition(g, k) for k in kids) == (first(rng), last(rng)),
+            check!(t, extrema(DGG.globalindex(g, k) for k in kids) == (first(rng), last(rng)),
                 "$tag: children do not span descendant_range $rng")
             check!(t, length(rng) == 6, "$tag: descendant_range has $(length(rng)) cells, not 6")
         end
@@ -416,26 +416,26 @@ const CLEAN = (0, "")
     end
 
     # =======================================================================
-    # 7. Curve order: positions, ids and subtrees agree
+    # 7. Curve order: indices, ids and subtrees agree
     # =======================================================================
 
-    @testset "7. curve order and position/id consistency" begin
+    @testset "7. curve order and index/id consistency" begin
         for r in 0:4
             g = DGG.levelgrid(S, r)
             n = DGG.ncells(g)
             cells = [DGG.cellindex(g, i) for i in 1:n]
-            @test ascending(cells)                       # position order IS id order
-            @test all(i -> DGG.cellposition(g, cells[i]) == i, 1:n)
+            @test ascending(cells)                       # index order IS id order
+            @test all(i -> DGG.globalindex(g, cells[i]) == i, 1:n)
             @test allunique(cells)
             @test all(c -> DGG.level(c) == r, cells)
         end
 
         # a cell at the wrong level is simply not in the grid
         g2 = DGG.levelgrid(S, 2)
-        @test DGG.cellposition(g2, Z7Cell("00")) === nothing
-        @test DGG.cellposition(g2, Z7Cell("00000")) === nothing
-        @test DGG.cellposition(g2, Z7Cell("000")) === nothing
-        @test DGG.cellposition(g2, Z7Cell("0000")) == 1
+        @test DGG.globalindex(g2, Z7Cell("00")) === nothing
+        @test DGG.globalindex(g2, Z7Cell("00000")) === nothing
+        @test DGG.globalindex(g2, Z7Cell("000")) === nothing
+        @test DGG.globalindex(g2, Z7Cell("0000")) == 1
 
         # bounds
         @test_throws BoundsError DGG.cellindex(g2, 0)
@@ -451,9 +451,9 @@ const CLEAN = (0, "")
             for p in parents
                 desc = DGG.descendants(S, p, leaf)
                 rng = DGG.descendant_range(S, p, leaf)
-                positions = [DGG.cellposition(leafgrid, d) for d in desc]
+                indices = [DGG.globalindex(leafgrid, d) for d in desc]
                 @test rng isa UnitRange{Int}
-                @test sort(positions) == collect(rng)      # two-sided, tight
+                @test sort(indices) == collect(rng)      # two-sided, tight
                 @test first(rng) > previous_hi             # ordered, disjoint
                 previous_hi = last(rng)
                 total += length(desc)
@@ -462,7 +462,7 @@ const CLEAN = (0, "")
             @test previous_hi == DGG.ncells(leafgrid)
         end
 
-        # self-range is the cell's own single position (the cursor depends on it)
+        # self-range is the cell's own single index (the cursor depends on it)
         g3 = DGG.levelgrid(S, 3)
         for i in (1, 17, 500, DGG.ncells(g3))
             c = DGG.cellindex(g3, i)
@@ -521,7 +521,7 @@ const CLEAN = (0, "")
                 allunique(ns) || (nbad += 1)
                 (c in ns) && (nbad += 1)
                 all(nb -> DGG.level(nb) == r, ns) || (nbad += 1)
-                all(nb -> DGG.cellposition(g, nb) !== nothing, ns) || (nbad += 1)
+                all(nb -> DGG.globalindex(g, nb) !== nothing, ns) || (nbad += 1)
                 # determinism
                 collect(DGG.neighbors(g, c)) == collect(ns) || (nbad += 1)
                 # symmetry — checked for EVERY cell, so a pentagon seam that
@@ -562,7 +562,7 @@ const CLEAN = (0, "")
         @test nccw == ntested
 
         # Pin the documented start of the rotational order. Winding is invariant
-        # under rotation, but each neighbour position must represent a fixed
+        # under rotation, but each neighbour's index must represent a fixed
         # lattice direction for directional stencil weights.
         #
         # Values produced by the implementation and checked against the
@@ -809,6 +809,67 @@ const CLEAN = (0, "")
             @test nbad == 0
         end
 
+        # The tree-search cap is a centre projection plus the analytical
+        # level radius; it must contain the published ring without constructing
+        # that ring to choose its size. Exhaust the coarse grids (including all
+        # pentagons and cone cuts), then sample down to the deepest geometry.
+        for r in 0:4
+            g = DGG.levelgrid(S, r)
+            @test DGG.Fallbacks.cell_cap_is_cheap(g) isa Val{true}
+            for i in 1:DGG.ncells(g)
+                c = DGG.cellindex(g, i)
+                cap = DGG.Fallbacks.cell_cap(g, c)
+                @test cap.point == DGG.cell_centroid(g, c)
+                @test cap.radius == I.CELL_CAP_RADIUS[r+1]
+                @test cap.radius < pi / 2
+                @test all(p -> DGG.Fallbacks.cap_contains(cap, p),
+                    DGG.cell_boundary(g, c))
+            end
+        end
+
+        rng = Random.MersenneTwister(0x1ca7)
+        for r in (6, 13, 19)
+            g = DGG.levelgrid(S, r)
+            samples = [DGG.cellindex(g, rand(rng, 1:DGG.ncells(g))) for _ in 1:400]
+            append!(samples, pentagon(b, r) for b in 0:11)
+            for c in samples
+                cap = DGG.Fallbacks.cell_cap(g, c)
+                @test all(p -> DGG.Fallbacks.cap_contains(cap, p),
+                    DGG.cell_boundary(g, c))
+            end
+        end
+
+        # A small sparse cursor node encloses the analytical cell caps directly.
+        # This is the MOC boundary-node path: no cell boundary or retained cap cache.
+        root = DGG.cellindex(DGG.levelgrid(S, 10), 1000)
+        ids = collect(Iterators.take(DGG.descendants(S, root, 13), 49))
+        sparse = DGG.treeify(DGG.PartialGrid(S, 13, ids;
+            root, bucket_size = length(ids)))
+        @test GO.SpatialTreeInterface.isleaf(sparse)
+        extent = @inferred GO.SpatialTreeInterface.node_extent(sparse)
+        @test all(ids) do c
+            cap = DGG.Fallbacks.cell_cap(sparse.grid, c)
+            US.spherical_distance(extent.point, cap.point) + cap.radius <= extent.radius &&
+                all(p -> DGG.Fallbacks.cap_contains(extent, p),
+                    DGG.cell_boundary(sparse.grid, c))
+        end
+        GO.SpatialTreeInterface.node_extent(sparse)
+        @test @allocated(GO.SpatialTreeInterface.node_extent(sparse)) == 0
+
+        # A complete bucket is the common MOC-interior case. The cursor carries
+        # that one bit down the hierarchy, so its entries address the complete
+        # level interval directly instead of searching the CellVector runs.
+        full_root = first(DGG.children(S, root))
+        full_ids = collect(DGG.descendants(S, full_root, 13))
+        full = DGG.treeify(DGG.PartialGrid(S, 13, full_ids;
+            root = full_root, bucket_size = length(full_ids)))
+        @test full.complete_subtree
+        full_entries = GO.SpatialTreeInterface.child_indices_extents(full)
+        @test first.(full_entries) == collect(eachindex(full_ids))
+        @test last.(full_entries) == DGG.Fallbacks.cell_cap.(Ref(full.grid), full_ids)
+        GO.SpatialTreeInterface.child_indices_extents(full)
+        @test @allocated(GO.SpatialTreeInterface.child_indices_extents(full)) == 0
+
         # the published corner rings tile the sphere exactly: adjacent cells
         # share corners, so their great-circle edges coincide and the areas sum
         # to 4pi
@@ -938,7 +999,7 @@ const CLEAN = (0, "")
         @test !isempty(brute)
         @test issubset(Set(brute), Set(hits))
 
-        # the ConservativeRegridding.Trees surface works off dense positions.
+        # the ConservativeRegridding.Trees surface works off dense indices.
         # (`isa Any` was here and asserted nothing — every value is an `Any`.
         # The trait check below is the real assertion.)
         @test GO.GI.geomtrait(DGG.getcell(g, 1)) isa GO.GI.PolygonTrait

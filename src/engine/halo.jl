@@ -13,8 +13,8 @@ What [`halo`](@ref) returns for a region that is a whole rooted subtree, with
 `cells = true`. `l == level(c)` is `c`'s own one-ring, sorted. `l < level(c)`
 and `l > maxlevel(sys)` throw an `ArgumentError`.
 
-`cellposition(levelgrid(sys, l), x)` is strictly increasing over the walk, which
-is what `halo`'s position form reads. This differs from the rotational ordering
+`globalindex(levelgrid(sys, l), x)` is strictly increasing over the walk, which
+is what `halo`'s index form reads. This differs from the rotational ordering
 of [`neighbors`](@ref).
 
 Construction does not materialize the halo. The iterator holds `O(depth)` walk
@@ -179,67 +179,67 @@ Base.show(io::IO, it::SubsetHaloIterator) = print(io, "SubsetHaloIterator(",
     it.subset, "; connectivity = ", it.connectivity, ")")
 
 # ===========================================================================
-# The same walk in complete-grid position space, without first materializing ids.
+# The same walk in complete-grid global-index space, without first materializing ids.
 # ===========================================================================
 
 """
-    HaloPositionIterator(halo, grid)
+    HaloIndexIterator(halo, grid)
 
-A halo walk read as `cellposition`s on `grid`, lazily — what [`halo`](@ref)
-returns by default, and what [`halo_positions`](@ref) wraps an id walk in.
+A halo walk read as global indices on `grid`, lazily — what [`halo`](@ref)
+returns by default, and what [`halo_indices`](@ref) wraps an id walk in.
 
 Yields `Int`, strictly increasing, one per cell of the underlying walk and in
 the same order. Everything else is the wrapped iterator's:
 [`Base.IteratorSize`](@ref), the `length` that exists on exactly two engines and
 on no others, resumability, and the `O(depth)` state.
 """
-struct HaloPositionIterator{I,G}
+struct HaloIndexIterator{I,G}
     halo::I
     grid::G
 end
 
-# Subtree positions refer to the target level; subset positions refer to the
+# Subtree indices refer to the target level; subset indices refer to the
 # complete grid from which the subset was drawn.
 _halo_grid(it::SubtreeHaloIterator) = levelgrid(it.system, it.level)
 _halo_grid(it::SubsetHaloIterator) = it.engine.grid
 
 """
-    halo_positions(it) -> HaloPositionIterator
+    halo_indices(it) -> HaloIndexIterator
 
-An id halo walk read as POSITIONS on the grid it was cut from: strictly
+An id halo walk read as GLOBAL INDICES on the grid it was cut from: strictly
 increasing, lazily, with the walk's own `O(depth)` state. `halo(region)` already
-answers in positions; this is the wrapper it uses, for a walk obtained with
+answers in indices; this is the wrapper it uses, for a walk obtained with
 `cells = true`.
 """
-halo_positions(it::Union{SubtreeHaloIterator,SubsetHaloIterator}) =
-    HaloPositionIterator(it, _halo_grid(it))
+halo_indices(it::Union{SubtreeHaloIterator,SubsetHaloIterator}) =
+    HaloIndexIterator(it, _halo_grid(it))
 
-# Engines may override the default `cellposition` conversion when state already
-# contains the position.
-@inline _halo_position(::Any, grid, x, state) = cellposition(grid, x)::Int
+# Engines may override the default `globalindex` conversion when state already
+# contains the index.
+@inline _halo_index(::Any, grid, x, state) = globalindex(grid, x)::Int
 
-Base.eltype(::Type{<:HaloPositionIterator}) = Int
-Base.IteratorSize(::Type{<:HaloPositionIterator{I,G}}) where {I,G} =
+Base.eltype(::Type{<:HaloIndexIterator}) = Int
+Base.IteratorSize(::Type{<:HaloIndexIterator{I,G}}) where {I,G} =
     Base.IteratorSize(I)
 
-# Position conversion does not change the wrapped iterator's countability.
-Base.length(it::HaloPositionIterator) = length(it.halo)
+# Index conversion does not change the wrapped iterator's countability.
+Base.length(it::HaloIndexIterator) = length(it.halo)
 
-Base.show(io::IO, it::HaloPositionIterator) =
-    print(io, "halo_positions(", it.halo, ")")
+Base.show(io::IO, it::HaloIndexIterator) =
+    print(io, "halo_indices(", it.halo, ")")
 
-function Base.iterate(it::HaloPositionIterator)
+function Base.iterate(it::HaloIndexIterator)
     r = iterate(it.halo)
     r === nothing && return nothing
     x, s = r
-    return (_halo_position(it.halo.engine, it.grid, x, s), s)
+    return (_halo_index(it.halo.engine, it.grid, x, s), s)
 end
 
-function Base.iterate(it::HaloPositionIterator, state)
+function Base.iterate(it::HaloIndexIterator, state)
     r = iterate(it.halo, state)
     r === nothing && return nothing
     x, s = r
-    return (_halo_position(it.halo.engine, it.grid, x, s), s)
+    return (_halo_index(it.halo.engine, it.grid, x, s), s)
 end
 
 # ===========================================================================
@@ -291,8 +291,8 @@ struct ForcedGeometry end
 Adjacency to a SUBSET rather than to a subtree: `x` is a halo cell when the
 subset does not hold it and does hold one of its neighbours,
 
-    cellposition(subset, x) === nothing &&
-        any(nb -> cellposition(subset, nb) !== nothing,
+    localindex(subset, x) === nothing &&
+        any(nb -> localindex(subset, nb) !== nothing,
             neighbors(complete, x, 1; connectivity))
 
 This predicate tests both non-membership and contact because an arbitrary subset
@@ -309,7 +309,7 @@ struct SubsetMembership{S,G}
 end
 
 # ---------------------------------------------------------------------------
-# The subset's shape, read as position spans
+# The subset's shape, read as index spans
 # ---------------------------------------------------------------------------
 
 const _SPAN_NONE = 0
@@ -319,14 +319,14 @@ const _SPAN_ALL = 2
 """
     subset_span(subset, lo::Int, hi::Int) -> Int
 
-How much of the position block `lo:hi` of the subset's own complete level the
+How much of the index block `lo:hi` of the subset's own complete level the
 subset holds: `_SPAN_NONE`, `_SPAN_SOME` or `_SPAN_ALL`.
 
 The block is a node's [`descendant_range`](@ref). Classification costs
 O(log(number of windows)) for [`CellVector`](@ref) and O(log(number of cells))
 for [`PartialGrid`](@ref), without scanning the block.
 
-Both containers store cells in ascending position order, so full containment is
+Both containers store cells in ascending index order, so full containment is
 decided by the endpoints plus a count: the
 stored entries between them number `hi - lo + 1` only if none is missing.
 """
@@ -351,9 +351,9 @@ end
 
 # For subsets, test non-membership and adjacency to a member.
 @inline function _touches_subtree(p::SubsetMembership, e, x)
-    cellposition(p.subset, x) === nothing || return false
+    localindex(p.subset, x) === nothing || return false
     for nb in neighbors(p.complete, x, 1; connectivity = e.connectivity)
-        cellposition(p.subset, nb) === nothing || return true
+        localindex(p.subset, nb) === nothing || return true
     end
     return false
 end
@@ -374,7 +374,7 @@ function _touches_subtree(::ForcedGeometry, e, x)
     # At depth zero, compare directly with the root; a descendant cursor has no
     # target-level child to expand.
     if e.rootlevel == e.target
-        intersects_cap(cell_cap(e.grid, e.root), xcap) || return false
+        Extents.intersects(cell_cap(e.grid, e.root), xcap) || return false
         return _shared_vertices(xb, cell_boundary(e.grid, e.root), tol) >= needed
     end
     return _descendant_touches(e, xb, tol, needed, xcap)
@@ -403,12 +403,12 @@ function _descendant_touches(e, xb, tol::Float64, needed::Int, xcap)
         d = @inbounds kids[f.next]
         st = Helpers.small_setlast(st, HaloFrame(f.cell, f.next + 0x1))
         if level(d) == e.target
-            intersects_cap(cell_cap(e.grid, d), xcap) || continue
+            Extents.intersects(cell_cap(e.grid, d), xcap) || continue
             _shared_vertices(xb, cell_boundary(e.grid, d), tol) >= needed &&
                 return true
             continue
         end
-        intersects_cap(node_extent(sys, d), xcap) || continue
+        Extents.intersects(node_extent(sys, d), xcap) || continue
         st = Helpers.small_push(st, HaloFrame(d, 0x1))
     end
     return false
@@ -428,6 +428,10 @@ end
 # `x`. So the two caps intersect, and a node whose cap misses the root cap can
 # contain no halo cell.
 #
+# The argument runs entirely through shared *geometry* — one point in two
+# extents. It never needs a child's extent or cap to sit inside its parent's,
+# which the covering law does not provide and which is false in general.
+#
 # This requires native neighbours to share a boundary point. A system with
 # topological adjacency between geometrically disjoint cells must provide its
 # own `halo_engine` or widen the pruning cap.
@@ -435,10 +439,10 @@ end
 # Unit-sphere caps avoid longitude/latitude seam and pole degeneracies.
 #
 # ---------------------------------------------------------------------------
-# Subset pruning uses position spans rather than geometry.
+# Subset pruning uses index spans rather than geometry.
 #
 # `SubsetMembership` has no root, so there is no root cap to compare against and
-# no covering law to lean on. What it has instead is the subset's own position
+# no covering law to lean on. What it has instead is the subset's own index
 # spans, and the prune those support is the COARSE-CONTAINMENT LAW:
 #
 #     for every pair of cells `x`, `y` that the system calls VERTEX-adjacent at
@@ -488,7 +492,7 @@ fallback, and with [`ForcedGeometry`](@ref) it is the independent oracle those
 specializations are checked against.
 
 Requires more than [`has_sorted_subtrees`](@ref), which promises only that a
-subtree's target-level descendants are CONTIGUOUS in position. This walk emits
+subtree's target-level descendants are CONTIGUOUS in index. This walk emits
 in the order it meets cells, with no sort to repair it, so it additionally
 requires that `children(sys, c)` and `rootcells(sys)` are each ordered by their
 elements' TARGET-LEVEL descendant ranges — sibling `i` before sibling `j`
@@ -498,7 +502,7 @@ target. Contiguity without that ordering still produces contiguous blocks, just
 visited out of order, and the walk would emit a mis-sorted halo with no error
 raised anywhere. Every bundled system satisfies it, and
 `test/systems/crosssystem/subtree_halos.jl` is what says so: its law compares
-this walk element for element against an ascending-POSITION scan of the target
+this walk element for element against an ascending-INDEX scan of the target
 level. A system that does not satisfy it must supply its own `halo_engine`
 rather than inherit this one.
 """
@@ -539,10 +543,10 @@ const _HALO_DESCEND = 2
 # the candidate's cap.
 @inline _target_prune(::IndexedNeighbors, e, c) = true
 @inline _target_prune(::ForcedGeometry, e, c) =
-    intersects_cap(cell_cap(e.grid, c), e.rootcap)
+    Extents.intersects(cell_cap(e.grid, c), e.rootcap)
 
 # Subtree providers prune by ancestry and geometry; `SubsetMembership` prunes
-# by position spans. Provider dispatch keeps each admission path monomorphic.
+# by index spans. Provider dispatch keeps each admission path monomorphic.
 @inline _admit(e::OutsideWalkEngine, c) = _admit(e.provider, e, c)
 
 # --- the subtree arm --------------------------------------------------------
@@ -565,7 +569,7 @@ const _HALO_DESCEND = 2
         _target_prune(p, e, c) || return _HALO_SKIP
         return _touches_subtree(p, e, c) ? _HALO_EMIT : _HALO_SKIP
     end
-    intersects_cap(node_extent(e.system, c), e.rootcap) || return _HALO_SKIP
+    Extents.intersects(node_extent(e.system, c), e.rootcap) || return _HALO_SKIP
     return _HALO_DESCEND
 end
 
@@ -652,7 +656,7 @@ end
 """
     ScanHaloEngine(system, grid, root, rootlevel, target, provider, connectivity)
 
-Every cell of the target level in position order, the descendants skipped and
+Every cell of the target level in index order, the descendants skipped and
 the rest tested. `O(1)` memory and canonical by construction, but `O(ncells)`
 time — the price of a system with no [`descendant_range`](@ref) to prune by, and
 A5 is the only one. See the comment above this type for what a dedicated A5
@@ -682,8 +686,8 @@ Base.IteratorSize(::Type{<:ScanHaloEngine}) = Base.SizeUnknown()
     ancestor(e.system, x, e.rootlevel) != e.root
 @inline _scan_outside(::SubsetMembership, e, x) = true
 
-# The scan state already contains the position following the emitted cell.
-@inline _halo_position(::ScanHaloEngine, ::Any, ::Any, state::Int) = state - 1
+# The scan state already contains the index following the emitted cell.
+@inline _halo_index(::ScanHaloEngine, ::Any, ::Any, state::Int) = state - 1
 
 Base.iterate(e::ScanHaloEngine) = iterate(e, 1)
 function Base.iterate(e::ScanHaloEngine, p::Int)
@@ -729,7 +733,7 @@ geometry_halo_engine(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex,
     subset_halo_engine(sys, subset, complete, target, connectivity)
 
 Return the outside-first engine for an arbitrary subset. It uses
-[`SubsetMembership`](@ref) and subset position spans instead of a subtree root
+[`SubsetMembership`](@ref) and subset index spans instead of a subtree root
 range or cap. The subtree-skip fields are inert so an absent cell inside the
 subset's span can still be emitted as a halo cell. Nodes are descended only when
 the subset touches them or one of their same-level neighbours.
@@ -1289,7 +1293,7 @@ end
 # for the two systems.
 #
 # Same-level neighbour subtrees are disjoint. Sorting neighbours by the first
-# position of their target-level descendant range therefore produces ascending,
+# index of their target-level descendant range therefore produces ascending,
 # non-overlapping candidate blocks, while each border automaton emits its own block
 # in ascending id order.
 #

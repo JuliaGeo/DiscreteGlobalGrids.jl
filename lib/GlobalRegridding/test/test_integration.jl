@@ -24,7 +24,7 @@ function t6_raster(f, xs, ys; yfirst = false)
 end
 
 # Select destination cells by location, not assumed index arithmetic.
-t6_lat(space, i) = GR.SphereToLonLat()(cellcentroid(space, i))[2]
+t6_lat(space, i) = GO.UnitSpherical.GeographicFromUnitSphere()(cellcentroid(space, i))[2]
 
 t6_mass(space, values) =
     sum(values[i] * GR.cellarea(space, i) for i in 1:ncells(space))
@@ -37,10 +37,10 @@ end
 
 T6CountingMethod(inner) = T6CountingMethod(inner, 0)
 
-function build_weights!(coo::WeightCOO, method::T6CountingMethod,
+function buildweights!(coo::WeightCOO, method::T6CountingMethod,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)
     countbuild!(method)
-    return build_weights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
+    return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
 # A lookup that names cells of its own, as a DGGS cell axis does.
@@ -95,13 +95,14 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test !isempty(polar)
         @test all(isnan, b[polar])
 
-        # Bilinear stencils renormalize after one point becomes invalid.
+        # Point stencils renormalize after one sample site becomes invalid.
         constant = t6_raster((lon, lat) -> 5.0,
             t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
         constant[10, 9] = NaN
-        # Half-cell offsets produce four equal stencil weights.
-        offset = t6_space(t6_centres(-175, 185, 36), t6_centres(-85, 95, 18))
-        @test all(≈(5.0), regrid(constant; to = offset, method = BilinearPoint()))
+        # Half-cell offsets in both axes produce four equal stencil weights, and
+        # every destination centre stays inside the source's lattice of sites.
+        offset = t6_space(t6_centres(-175, 185, 36), t6_centres(-85, 85, 17))
+        @test all(≈(5.0), regrid(constant; to = offset, method = BarycentricPoint()))
     end
 
     @testset "orientation" begin
@@ -164,7 +165,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test DD.intervalbounds(DD.lookup(area, DD.X))[1] == (-180.0, -140.0)
         @test DD.intervalbounds(DD.lookup(area, DD.Y))[1] == (-90.0, -60.0)
 
-        # Labelling only reshapes: the values are the cell-position vector the
+        # Labelling only reshapes: the values are the cell-index vector the
         # same regrid off a bare array returns.
         @test vec(parent(area)) == regrid(parent(src); to = dst,
             from = RasterGrid(src), method = Conservative())
@@ -208,21 +209,22 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
 
         conservative = regrid(src; to = dst, method = Conservative())
         nearest = regrid(src; to = dst, method = NearestCell())
-        bilinear = regrid(src; to = dst, method = BilinearPoint())
+        barycentric = regrid(src; to = dst, method = BarycentricPoint())
 
         @test maximum(abs, nearest .- conservative) < 0.15
-        @test maximum(abs, bilinear .- conservative) < 0.15
+        @test maximum(abs, barycentric .- conservative) < 0.15
     end
 
-    @testset "bilinear across the longitude seam" begin
+    @testset "point sampling across the longitude seam" begin
         # One destination centre lies on the ±180° source seam.
         src = t6_raster((lon, lat) -> sind(lon),
             t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
         dst = t6_space(t6_centres(-175, 185, 36), t6_centres(-90, 90, 18))
-        seam = GR.cellposition(dst, 36, 9)
+        seam = GR.localindex(dst, 36, 9)
 
-        # Global bilinear interpolation wraps across the longitude seam.
-        @test regrid(src; to = dst, method = BilinearPoint())[seam] ≈ 0 atol = 1e-12
+        # A global chart axis wraps across the longitude seam, so the seam cell
+        # is interpolated between the two centres straddling it.
+        @test regrid(src; to = dst, method = BarycentricPoint())[seam] ≈ 0 atol = 1e-12
         @test abs(regrid(src; to = dst, method = NearestCell())[seam]) > 0.08
 
         # Regional rasters do not report a longitude period.
@@ -230,30 +232,37 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
             t6_centres(-20, 20, 4))) == (nothing, nothing)
     end
 
-    @testset "bilinear west of a regional raster" begin
-        # A point just west of a regional raster stays just west on its chart;
-        # folded a period east, the non-periodic axis clamps it to the east column.
+    @testset "point sampling west of a regional raster" begin
+        # A point just west of a regional raster stays just west on its chart
+        # rather than folding a period east onto the far column.
         xs, ys = t6_centres(0, 120, 24), t6_centres(-30, 30, 12)
         region = t6_space(xs, ys)
         @test GR._onbranch(region.xedges, -1.0, 360.0) ≈ -1.0
         @test GR._onbranch(region.xedges, 61.0, 360.0) ≈ 61.0
         @test GR._onbranch(region.xedges, -1.0, nothing) == -1.0
-        @test GR.chartcoords(region, GR.LonLatToSphere()(-1.0, 10.0))[1] ≈ -1.0
+        point = GO.UnitSpherical.UnitSphereFromGeographic()((-1.0, 10.0))
+        @test GR.chartcoords(region, point)[1] ≈ -1.0
 
-        # Pad cells clamp to the adjacent edge column, and destination tiling
-        # changes nothing: the pad tile discovers the stencil's source chunk.
+        # The pad columns sit outside the lattice of source sample sites, so
+        # they take no weights and the missing policy blanks them rather than
+        # extrapolating the edge column outwards. Destination tiling changes
+        # nothing: the pad tile still discovers the stencil's source chunk.
         f(lon, lat) = 2.0 + 0.01 * lon + 0.03 * lat
         data = t6_raster(f, xs, ys)
         src = RasterGrid(data; chunks = ([1:8, 9:16, 17:24], [1:12]))
         dxs = t6_centres(-5, 125, 26)
         dst = RasterGrid(DD.DimArray(zeros(12, 26), (DD.Y(ys), DD.X(dxs)));
             chunks = ([1:7, 8:14, 15:20, 21:26], [1:12]))
-        untiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
+        untiled = regrid(data; to = dst, from = src, method = BarycentricPoint(),
             lazy = false)
-        tiled = regrid(data; to = dst, from = src, method = BilinearPoint(),
+        tiled = regrid(data; to = dst, from = src, method = BarycentricPoint(),
             lazy = true)
-        @test untiled[GR.cellposition(dst, 1, 6)] ≈ f(xs[1], ys[6])
-        @test untiled[GR.cellposition(dst, 26, 6)] ≈ f(xs[end], ys[6])
+        # Columns 2 and 25 sit on the outermost source sites and reproduce them.
+        @test untiled[GR.localindex(dst, 2, 6)] ≈ f(xs[1], ys[6])
+        @test untiled[GR.localindex(dst, 25, 6)] ≈ f(xs[end], ys[6])
+        # Columns 1 and 26 lie beyond them and are blanked.
+        @test isnan(untiled[GR.localindex(dst, 1, 6)])
+        @test isnan(untiled[GR.localindex(dst, 26, 6)])
         # Lazy and eager output share the destination's axes and values.
         @test DD.dims(tiled) == DD.dims(untiled)
         @test all(isequal.(vec(Array(tiled)), vec(Array(untiled))))
@@ -283,14 +292,103 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         end
     end
 
+    @testset "a one-axis destination is labelled, not reshaped" begin
+        # A destination whose `destinationdims` names one axis is already the
+        # shape the cells were written in, so neither route may put a view
+        # between the result and the array it labels. `reshape` returns a fresh
+        # header even at an identical size, so identity is the assertion.
+        g(lon, lat) = 3.0 + 0.01 * lon - 0.02 * lat
+        plane = t6_raster(g, t6_centres(-180, 180, 16), t6_centres(-90, 90, 8))
+        data = DD.DimArray(cat(parent(plane), parent(plane) .+ 1.0; dims = 3),
+            (DD.dims(plane)..., DD.Dim{:month}(1:2)))
+        dst = ToyCellAxisSpace(ToyLonLatSpace(8, 4; chunks = (8, 2)))
+
+        eagerplan = plan_regrid(data; to = dst, lazy = false)
+        dstdims = GR.destinationdims(eagerplan)
+        @test length(dstdims) == 1
+
+        eager = regrid(data, eagerplan)
+        @test DD.dims(eager, 1) == only(dstdims)
+        @test DD.dims(eager, 2) == DD.dims(data, :month)
+        @test size(eager) == (ncells(dst), 2)
+        written = Array{Float64}(undef, ncells(dst), 2)
+        @test parent(GR.wrapoutput(written, data, (1, 2), dstdims)) === written
+
+        lazyplan = plan_regrid(data; to = dst, lazy = true)
+        A = LazyRegridArray(data, lazyplan)
+        @test GR.destinationdims(lazyplan) == dstdims
+        @test parent(GR.wraplazy(A, data, dstdims)) === A
+
+        lazyresult = regrid(data; to = dst, lazy = true)
+        @test parent(lazyresult) isa LazyRegridArray
+        @test DD.dims(lazyresult) == DD.dims(eager)
+        @test all(isequal.(Array(parent(lazyresult)), parent(eager)))
+    end
+
+    @testset "one keyword surface, owned by `plan_regrid`" begin
+        h(lon, lat) = 1.0 + sind(lat) + 0.1 * cosd(lon)
+        data = t6_raster(h, t6_centres(-180, 180, 12), t6_centres(-90, 90, 6))
+        dst = t6_space(t6_centres(-180, 180, 6), t6_centres(-90, 90, 3))
+        dest = zeros(ncells(dst))
+
+        # `plan_regrid` declares every keyword; `regrid` and `regrid!` declare
+        # a splat and nothing else, so no default can be restated on them.
+        splat = [Symbol("kwargs...")]
+        for f in (regrid, regrid!)
+            @test all(d -> isempty(d) || d == splat,
+                [Base.kwarg_decl(m) for m in methods(f)])
+        end
+        planmethods = [m for m in methods(plan_regrid)
+                       if !isempty(Base.kwarg_decl(m))]
+        @test Set(Base.kwarg_decl(only(planmethods))) ==
+              Set((:to, :from, :method, :missingpolicy, :missingval, :lazy,
+            :chunks, :budget, :storage, :sampling, :dependencies, :refine,
+            :narrow))
+
+        # The one default with a value rather than a sentinel is named once,
+        # and both ways of reaching a chunked plan resolve against that name.
+        @test plan_regrid(data; to = dst, lazy = true).budget == GR.DEFAULT_BUDGET
+        @test ChunkedPlan(Conservative(), Weighted(0.5), dst,
+            RasterGrid(data)).budget == GR.DEFAULT_BUDGET
+
+        # Forwarding reaches the same defaults the two-step form applies.
+        @test parent(regrid(data; to = dst)) ==
+              parent(regrid(data, plan_regrid(data; to = dst)))
+        regrid!(dest, data; to = dst)
+        @test dest == vec(parent(regrid(data; to = dst)))
+
+        # And the same checks, on the same keyword values: a validation
+        # `plan_regrid` performs cannot be walked around by the one-shot form.
+        message(f) = try
+            f()
+            return "no error"
+        catch e
+            return sprint(showerror, e)
+        end
+        eagerbad = (:chunks => (2,), :budget => 2^20, :storage => PerChunk())
+        lazybad = (:budget => 0, :chunks => :auto, :sampling => DD.Points())
+        for (kw, extra) in ((eagerbad, ()), (lazybad, (:lazy => true,)))
+            for bad in kw
+                said = message(() -> plan_regrid(data; to = dst, extra...,
+                    (bad,)...))
+                @test startswith(said, "ArgumentError")
+                @test message(() -> regrid(data; to = dst, extra...,
+                    (bad,)...)) == said
+                @test message(() -> regrid!(dest, data; to = dst, extra...,
+                    (bad,)...)) == said
+            end
+        end
+    end
+
     @testset "raster subtrees" begin
         space = RasterGrid(DD.DimArray(zeros(8, 6),
                 (DD.X(t6_centres(-180, 180, 8)), DD.Y(t6_centres(-90, 90, 6))));
             chunks = ([1:4, 5:8], [1:3, 4:6]))
 
-        # Chunk rectangles retain the recursive (memoized) tree in either orientation.
-        @test all(GR.subtree(space, cellindices(space, c)) isa GR.MemoRasterTree
+        # Chunk rectangles retain the restricted CR cursor in either orientation.
+        @test all(GR.subtree(space, ownedindices(space, c)) isa
+                  CR.Trees.TopDownQuadtreeCursor
                   for c in 1:nchunks(space))
-        @test GR.subtree(space, [1, 5, 30]) isa GR.RasterFlatTree
+        @test GR.subtree(space, [1, 5, 30]) isa GR.CellSpaceRTree
     end
 end

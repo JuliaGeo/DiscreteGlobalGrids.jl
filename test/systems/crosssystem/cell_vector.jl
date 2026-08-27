@@ -68,12 +68,12 @@ end
     @test parentmodule(DGG.CellVector) === DGG.Engine
     @test DGG.CellVector <: AbstractVector
     @test !(DGG.CellVector <: DGG.CellLookup)
-    for f in (DGG.covering, DGG.covering_positions, DGG.cellset)
+    for f in (DGG.covering, DGG.covering_indices, DGG.cellset)
         @test any(m -> occursin("cell_vector.jl", string(m.file)), methods(f))
     end
-    # `covering`/`covering_positions` are answered ONLY in the core: the cube
+    # `covering`/`covering_indices` are answered ONLY in the core: the cube
     # layer selects by calling them, never by reimplementing them.
-    for f in (DGG.covering, DGG.covering_positions)
+    for f in (DGG.covering, DGG.covering_indices)
         @test !any(m -> occursin("dimensionaldata.jl", string(m.file)), methods(f))
     end
 
@@ -134,27 +134,27 @@ end
         @test collect(cv[mask]) == ids[[2, 4]]
     end
 
-    @testset "position <-> id round trips" begin
-        @test all(DGG.cellposition(cv, cv[k]) == k for k in eachindex(ids))
+    @testset "index <-> id round trips" begin
+        @test all(DGG.localindex(cv, cv[k]) == k for k in eachindex(ids))
         outside = DGG.cellat(grid, FARAWAY...)
         @test outside !== nothing
-        @test DGG.cellposition(cv, outside) === nothing
+        @test DGG.localindex(cv, outside) === nothing
         @test !(outside in cv)
         @test all(cv[k] in cv for k in (1, length(ids) ÷ 2, length(ids)))
-        # An id from another level names no position here, rather than the
-        # position of a cell with the same raw bits.
+        # An id from another level names no index here, rather than the
+        # index of a cell with the same raw bits.
         coarser = DGG.ancestor(sys, first(ids), leaf - 1)
-        @test DGG.cellposition(cv, coarser) === nothing
+        @test DGG.localindex(cv, coarser) === nothing
         @test !(coarser in cv)
     end
 
     @testset "the five ways in agree" begin
-        # A whole level: one window, and the vector's positions ARE the grid's.
+        # A whole level: one window, and the vector's indices ARE the grid's.
         complete = DGG.CellVector(grid)
         @test length(complete) == DGG.ncells(grid)
         @test nwin(complete) == 1
         @test all(complete[k] == DGG.cellindex(grid, k) for k in (1, 7, DGG.ncells(grid)))
-        @test all(DGG.cellposition(complete, c) == DGG.cellposition(grid, c) for c in cv)
+        @test all(DGG.localindex(complete, c) == DGG.globalindex(grid, c) for c in cv)
 
         # An arbitrary ascending subset, by both spellings.
         @test DGG.CellVector(DGG.PartialGrid(sys, leaf, ids)) == cv
@@ -165,7 +165,7 @@ end
         root = DGG.ancestor(sys, first(ids), leaf - 1)
         rooted = DGG.CellVector(DGG.subtree(sys, root, leaf))
         @test collect(rooted) == DGG.descendants(sys, root, leaf)
-        @test DGG.cellposition(rooted, first(ids)) !== nothing
+        @test DGG.localindex(rooted, first(ids)) !== nothing
 
         # And the identity.
         @test DGG.CellVector(cv) === cv
@@ -176,7 +176,7 @@ end
         @test DGG.ncells(pg) == length(cv)
         @test DGG.level(pg) == leaf
         @test all(DGG.cellindex(pg, k) == cv[k] for k in eachindex(ids))
-        @test all(DGG.cellposition(pg, cv[k]) == k for k in eachindex(ids))
+        @test all(DGG.localindex(pg, cv[k]) == k for k in eachindex(ids))
         # The round trip is exact, and it is the same windows rather than a
         # re-derivation of them.
         back = DGG.CellVector(pg)
@@ -191,19 +191,30 @@ end
         # read through the compression.
         for k in (1, length(ids) ÷ 3, length(ids) ÷ 2, length(ids))
             lon, lat = LONLAT(DGG.cell_centroid(grid, ids[k]))
-            @test DGG.cellposition(cv, lon, lat) == k
+            @test DGG.localindex(cv, lon, lat) == k
             @test DGG.cellat(cv, lon, lat) == ids[k]
         end
         @test DGG.cellat(grid, FARAWAY...) !== nothing
         @test DGG.cellat(cv, FARAWAY...) === nothing
-        @test DGG.cellposition(cv, FARAWAY...) === nothing
+        @test DGG.localindex(cv, FARAWAY...) === nothing
+
+        # The two subset containers over the same cells answer the same
+        # question the same way: each reduces to a location on the level and a
+        # membership test, and the containers differ only in how membership is
+        # stored.
+        pg = DGG.PartialGrid(cv)
+        for k in (1, length(ids) ÷ 2, length(ids))
+            lon, lat = LONLAT(DGG.cell_centroid(grid, ids[k]))
+            @test DGG.cellat(cv, lon, lat) == DGG.cellat(pg, lon, lat) == ids[k]
+        end
+        @test DGG.cellat(pg, FARAWAY...) === nothing
 
         # `covering` IS the coverage expansion intersected with the vector; the
         # hand-rolled right-hand side is the same sentence spelled out.
         for target in (ZURICH, REGION)
             byhand = Int[]
             for c in expand(sys, DGG.query(sys, DGG.MultiOrderCoverage(target); level=leaf), leaf)
-                k = DGG.cellposition(cv, c)
+                k = DGG.localindex(cv, c)
                 k === nothing || push!(byhand, k)
             end
             sort!(byhand)
@@ -212,8 +223,8 @@ end
             @test DGG.level(sub) == leaf
             @test DGG.system(sub) == sys
             @test collect(sub) == [cv[k] for k in byhand]
-            @test DGG.covering_positions(cv, target) == byhand
-            @test all(DGG.cellposition(sub, sub[j]) == j for j in eachindex(byhand))
+            @test DGG.covering_indices(cv, target) == byhand
+            @test all(DGG.localindex(sub, sub[j]) == j for j in eachindex(byhand))
             # A derived vector has no origin of its own and says so.
             @test DGG.cellset(sub) isa DGG.PartialGrid
         end
@@ -221,7 +232,7 @@ end
         # and a region it does not reach selects nothing at all.
         @test DGG.covering(cv, REGION) == cv
         @test isempty(DGG.covering(cv, NOWHERE))
-        @test isempty(DGG.covering_positions(cv, NOWHERE))
+        @test isempty(DGG.covering_indices(cv, NOWHERE))
     end
 end
 
@@ -309,7 +320,7 @@ end
     @test Base.summarysize(DGG.PartialGrid(deep)) < 8 * length(deep)
 end
 
-@testset "A5 stores positions because it has no descendant ranges" begin
+@testset "A5 stores indices because it has no descendant ranges" begin
     sys, leaf = DGG.A5System(), 9
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
 
@@ -322,7 +333,7 @@ end
     cv = DGG.CellVector(set)
     ids = sort!(reduce(vcat, [DGG.descendants(sys, c, leaf) for c in set]))
     @test collect(cv) == ids
-    @test all(DGG.cellposition(cv, cv[k]) == k for k in eachindex(ids))
+    @test all(DGG.localindex(cv, cv[k]) == k for k in eachindex(ids))
 
     # The cost is the CONSTRUCTION, not the stored form.
     DGG.CellVector(set)
@@ -339,10 +350,15 @@ end
     sys, leaf = DGG.IGeo7System(), 9
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
 
+    # `cellindices` is this package's own function. `GlobalRegridding` exports
+    # a name-alike that is a deprecated chunk-ownership hook, and this is not
+    # an extension of it.
+    @test parentmodule(DGG.cellindices) === DGG
+
     compressed = DGG.PartialGrid(DGG.CellVector(set))
     materialised = DGG.PartialGrid(sys, leaf, DGG.cellindices(set, leaf))
 
-    # Same grid, in the position order a regridder lines up against.
+    # Same grid, in the index order a regridder lines up against.
     n = DGG.ncells(materialised)
     @test DGG.ncells(compressed) == n
     @test DGG.level(compressed) == DGG.level(materialised) == leaf
@@ -359,6 +375,21 @@ end
     @test small < 200 * windows          # O(#windows), with room for the header
     @test big > 8 * n                    # O(#cells), one word per id at least
     @test big / small > 20               # measured 27.0x on this fixture
+
+    # Cursor descent can map complete-grid child ranges into the compressed
+    # index space without probing and decoding the logical cell vector.
+    cv = DGG.CellVector(set)
+    materialised_indices = [Int(DGG.globalindex(DGG.levelgrid(sys, leaf), c))
+                            for c in materialised.ids]
+    probes = ((first(materialised_indices), last(materialised_indices)),
+              (first(materialised_indices) - 1, first(materialised_indices) - 1),
+              (materialised_indices[n ÷ 3], materialised_indices[n ÷ 2]),
+              (last(materialised_indices) + 1, last(materialised_indices) + 1))
+    for (lo, hi) in probes
+        expected = (searchsortedfirst(materialised_indices, lo),
+                    searchsortedlast(materialised_indices, hi))
+        @test EN.subset_window_bounds(cv, lo, hi) == expected
+    end
 
     deep = DGG.PartialGrid(DGG.CellVector(set; level=leaf + 3))
     @test DGG.ncells(deep) == 343 * n
@@ -379,7 +410,7 @@ end
         mask[2] = mask[4] = true
         @test collect(cv[mask]) == ids[[2, 4]]
         @test collect(lk[mask]) == ids[[2, 4]]
-        # A mask of every position is the whole vector, not an error.
+        # A mask of every index is the whole vector, not an error.
         @test collect(cv[trues(n)]) == ids
         @test isempty(cv[falses(n)])
 

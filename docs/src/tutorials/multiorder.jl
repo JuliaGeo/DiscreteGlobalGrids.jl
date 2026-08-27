@@ -36,7 +36,7 @@ coverage = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 7)
    n_leaves = sum(length, DGG.level_ranges(coverage, 7)))
 
 # `level_ranges(coverage, 7)` is the compressed form — sorted, disjoint
-# position ranges at level 7. It is what a lookup layer slices arrays with,
+# index ranges at level 7. It is what a lookup layer slices arrays with,
 # and it never materialises the leaf ids. The query is generic — the same
 # call runs on every registered system — but the compressed form needs
 # sorted subtrees: on A5, `level_ranges` throws, and `descendants` is the

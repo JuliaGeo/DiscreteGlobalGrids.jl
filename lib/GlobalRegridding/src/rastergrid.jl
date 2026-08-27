@@ -1,67 +1,105 @@
 # Dimensional-raster implementation of `RegridSpace`.
 
-# Chart interface
+# Native-coordinate transform interface
 
-"""
-    LonLatToSphere()
+# Constructor-only sentinel, needed to distinguish an omitted inverse from an
+# explicit `unit_sphere_to_native = nothing`.
+struct _UnsetRasterKeyword end
+const _UNSET_RASTER_KEYWORD = _UnsetRasterKeyword()
 
-Convert longitude and latitude in degrees to a `UnitSphericalPoint`.
-"""
-struct LonLatToSphere end
+# Compatibility adapter for the original `transform = (x, y) -> ...` contract.
+# Raster geometry calls only the one-coordinate form after construction.
+struct _TwoArgumentNativeToUnitSphere{F}
+    f::F
+end
 
-function (::LonLatToSphere)(lon::Real, lat::Real)
-    coslat = cosd(Float64(lat))
-    return USPoint(coslat * cosd(Float64(lon)), coslat * sind(Float64(lon)),
-        sind(Float64(lat)))
+@inline (t::_TwoArgumentNativeToUnitSphere)(xy) = t.f(xy[1], xy[2])
+
+function _one_coordinate_native_to_unit_sphere(f)
+    applicable(f, (0.0, 0.0)) && return f
+    applicable(f, 0.0, 0.0) && return _TwoArgumentNativeToUnitSphere(f)
+    throw(ArgumentError(
+        "native_to_unit_sphere must accept one `(x, y)` coordinate; the legacy " *
+        "two-argument form `(x, y) -> ...` is also supported"))
+end
+
+function _one_coordinate_unit_sphere_to_native(f)
+    f === nothing && return nothing
+    applicable(f, USPoint(1.0, 0.0, 0.0)) && return f
+    throw(ArgumentError(
+        "unit_sphere_to_native must accept one unit-sphere point coordinate"))
 end
 
 """
-    SphereToLonLat()
+    _prepare_raster_transform_pair(native_to_unit_sphere, unit_sphere_to_native)
 
-Convert a unit-sphere point to longitude and latitude in degrees.
+Prepare the two callable transformations stored by `RasterGrid`.
+`unit_sphere_to_native` may be `_UNSET_RASTER_KEYWORD`, in which case the
+forward transformation's default inverse is used. Extensions may specialize
+this hook to return lightweight views which obtain task-local transformation
+resources when called.
 """
-struct SphereToLonLat end
-
-(::SphereToLonLat)(p) = (atand(p[2], p[1]), asind(clamp(p[3], -1.0, 1.0)))
-
-"""
-    chartinverse(transform) -> callable or nothing
-
-Return a chart's inverse, or `nothing` when unavailable.
-"""
-chartinverse(::Any) = nothing
-chartinverse(::LonLatToSphere) = SphereToLonLat()
-
-"""
-    chartlimits(transform) -> (xperiod, ybounds)
-
-Return the first-coordinate period and second-coordinate bounds. Either may be
-`nothing`. The default is unconstrained and non-periodic.
-"""
-chartlimits(::Any) = (nothing, nothing)
-chartlimits(::LonLatToSphere) = (360.0, (-90.0, 90.0))
+function _prepare_raster_transform_pair(forward, backward)
+    prepared_forward = _one_coordinate_native_to_unit_sphere(forward)
+    raw_backward = backward === _UNSET_RASTER_KEYWORD ?
+        _default_unit_sphere_to_native(forward) : backward
+    prepared_backward = _one_coordinate_unit_sphere_to_native(raw_backward)
+    return (prepared_forward, prepared_backward)
+end
 
 """
-    chartarcs(transform, dx, dy) -> (Δx, Δy)
+    _task_prepared_raster_transform(transform)
 
-Return angular upper bounds, in radians, for native chart steps `dx` and `dy`.
-These bounds are used for interpolation support discovery.
+Return a callable prepared for repeated use by the current task. Ordinary Julia
+transformations need no preparation. Extensions may hoist task-owned resources
+out of multi-point loops without storing them on a shared `RasterGrid`.
 """
-chartarcs(t::Any, dx, dy) = throw(ArgumentError(
-    "a RasterGrid on a $(typeof(t)) chart cannot bound its cell spacing in " *
-    "radians of arc; define GlobalRegridding.chartarcs(::$(typeof(t)), dx, dy) " *
-    "to use BilinearPoint with it."))
+_task_prepared_raster_transform(transform) = transform
+
+"""
+    _default_unit_sphere_to_native(native_to_unit_sphere) -> callable or nothing
+
+Return the default inverse of a native-to-unit-sphere transformation, or
+`nothing` when no inverse is known.
+"""
+_default_unit_sphere_to_native(::Any) = nothing
+_default_unit_sphere_to_native(t::US.UnitSphereFromGeographic) = inv(t)
+
+"""
+    _native_coordinate_limits(native_to_unit_sphere) -> (xperiod, ybounds)
+
+Return the first native coordinate's period and the second native coordinate's
+bounds. Either may be `nothing`. Only the geographic-degrees transform supplies
+defaults.
+"""
+_native_coordinate_limits(::Any) = (nothing, nothing)
+_native_coordinate_limits(::US.UnitSphereFromGeographic) = (360.0, (-90.0, 90.0))
+
+"""
+    _spherical_step_bounds_radians(native_to_unit_sphere, dx, dy) -> (Δx, Δy)
+
+Return angular upper bounds, in radians, for native coordinate steps `dx` and
+`dy`. These bounds are used for interpolation support discovery.
+"""
+_spherical_step_bounds_radians(t::Any, dx, dy) = throw(ArgumentError(
+    "a RasterGrid using $(typeof(t)) cannot bound its native cell spacing in " *
+    "radians of unit-sphere arc; define " *
+    "GlobalRegridding._spherical_step_bounds_radians(::$(typeof(t)), dx, dy) " *
+    "to interpolate on its chart."))
 
 # Longitude distance is bounded by Δλ; latitude distance equals Δφ.
-chartarcs(::LonLatToSphere, dx, dy) = (deg2rad(Float64(dx)), deg2rad(Float64(dy)))
+_spherical_step_bounds_radians(::US.UnitSphereFromGeographic, dx, dy) =
+    (deg2rad(Float64(dx)), deg2rad(Float64(dy)))
+_spherical_step_bounds_radians(t::_TwoArgumentNativeToUnitSphere, dx, dy) =
+    _spherical_step_bounds_radians(t.f, dx, dy)
 
 """
-    LonLatEdgeTables(xedges, yedges)
+    GeographicEdgeTables(xedges, yedges)
 
 Cache sine and cosine values for longitude/latitude edges, plus the largest
 longitude step. This avoids repeated chart evaluation for cell corners.
 """
-struct LonLatEdgeTables
+struct GeographicEdgeTables
     cx::Vector{Float64}
     sx::Vector{Float64}
     cy::Vector{Float64}
@@ -69,21 +107,22 @@ struct LonLatEdgeTables
     maxdx::Float64
 end
 
-LonLatEdgeTables(xe::Vector{Float64}, ye::Vector{Float64}) =
-    LonLatEdgeTables(cosd.(xe), sind.(xe), cosd.(ye), sind.(ye), _maxstep(xe))
+GeographicEdgeTables(xe::Vector{Float64}, ye::Vector{Float64}) =
+    GeographicEdgeTables(cosd.(xe), sind.(xe), cosd.(ye), sind.(ye), _maxstep(xe))
 
-@inline _tablecorner(t::LonLatEdgeTables, i::Int, j::Int) =
+@inline _tablecorner(t::GeographicEdgeTables, i::Int, j::Int) =
     @inbounds USPoint(t.cy[j] * t.cx[i], t.cy[j] * t.sx[i], t.sy[j])
 
 """
-    chartedgetables(transform, xedges, yedges) -> tables or nothing
+    _geographic_edge_tables(native_to_unit_sphere, xedges, yedges) -> tables or nothing
 
 Return optional per-edge lookup tables for a chart. `nothing` uses direct chart
 evaluation.
 """
-chartedgetables(::Any, xedges, yedges) = nothing
-chartedgetables(::LonLatToSphere, xedges::Vector{Float64}, yedges::Vector{Float64}) =
-    LonLatEdgeTables(xedges, yedges)
+_geographic_edge_tables(::Any, xedges, yedges) = nothing
+_geographic_edge_tables(::US.UnitSphereFromGeographic,
+    xedges::Vector{Float64}, yedges::Vector{Float64}) =
+    GeographicEdgeTables(xedges, yedges)
 
 # Raster space
 
@@ -100,13 +139,24 @@ their bounds, while point lookups are midpointed. Edge order matches lookup orde
 # Cell order
 
 Cells follow the array's dimension order, fastest dimension first. Thus `vec`
-of a spatial slice matches cell position order. Chunk numbers use the same rule.
+of a spatial slice matches cell index order. Chunk numbers use the same rule.
 
 # Keywords
 
   - `xdim`, `ydim`: explicit spatial dimensions.
-  - `transform`: native `(x, y)` to the unit sphere.
-  - `inverse`: unit sphere to native coordinates; `nothing` disables `cellat`.
+  - `native_to_unit_sphere`: transform one native `(x, y)` coordinate to the
+    unit sphere, returning a `UnitSphericalPoint{Float64}`. The default assumes
+    geographic longitude/latitude in degrees. Projected native coordinates
+    require an explicit transformation; generic dimensional metadata cannot
+    identify them. With the Proj extension loaded, an explicit
+    `Proj.Transformation` is interpreted as native coordinates to geographic
+    longitude/latitude and composed with the unit-sphere conversion. Construct
+    raster templates with `always_xy = true`; the selected pipeline is cloned,
+    not reconstructed from CRS metadata.
+  - `unit_sphere_to_native`: transform one unit-sphere point back to native
+    coordinates; `nothing` disables `cellat`.
+  - `transform`, `inverse`: compatibility spellings for the preceding two
+    keywords. A legacy two-argument forward closure is adapted at construction.
   - `xperiod`, `ybounds`: native chart limits.
   - `chunks`: `(xchunks, ychunks)` index ranges for the dimension-tuple form.
 
@@ -125,27 +175,22 @@ struct RasterGrid{XD,YD,F,G,T} <: RegridSpace
     xchunks::Vector{UnitRange{Int}}
     "the Y dimension's chunk index ranges, ascending and partitioning `1:ny`"
     ychunks::Vector{UnitRange{Int}}
-    "native `(x, y)` to the unit sphere"
-    transform::F
-    "the unit sphere back to native `(x, y)`, or `nothing`"
-    inverse::G
+    "one native `(x, y)` coordinate to the unit sphere"
+    native_to_unit_sphere::F
+    "one unit-sphere point back to native `(x, y)`, or `nothing`"
+    unit_sphere_to_native::G
     "period of the native X coordinate, or `nothing`"
     xperiod::Union{Nothing,Float64}
-    "whether the X dimension varies fastest in cell positions and chunk numbers"
+    "whether the X dimension varies fastest in cell indices and chunk numbers"
     xfast::Bool
     "whether `(xlo, ylo), (xhi, ylo), (xhi, yhi), (xlo, yhi)` is already counter-clockwise from outside"
     ccw::Bool
-    "the chart's per-edge tables ([`chartedgetables`](@ref)), or `nothing`"
+    "geographic-degrees per-edge tables, or `nothing`"
     tables::T
 end
 
 const _XNAMES = (:x, :lon, :long, :longitude)
 const _YNAMES = (:y, :lat, :latitude)
-
-# Four corners are sufficient for a lon/lat cell cap.
-const _CELL_CAP_SAMPLES = 0
-# Extra boundary samples for multi-cell boxes.
-const _BOX_CAP_SAMPLES = 3
 
 function RasterGrid(A::DD.AbstractDimArray;
     xdim = nothing, ydim = nothing, chunks = nothing, kwargs...)
@@ -168,18 +213,42 @@ end
 RasterGrid(ds::DD.Dimension...; kwargs...) = RasterGrid(ds; kwargs...)
 
 function _rastergrid(xd, yd, chunks, xfast::Bool;
-    transform = LonLatToSphere(),
-    inverse = chartinverse(transform),
-    xperiod = chartlimits(transform)[1],
-    ybounds = chartlimits(transform)[2])
+    native_to_unit_sphere = _UNSET_RASTER_KEYWORD,
+    unit_sphere_to_native = _UNSET_RASTER_KEYWORD,
+    transform = _UNSET_RASTER_KEYWORD,
+    inverse = _UNSET_RASTER_KEYWORD,
+    xperiod = _UNSET_RASTER_KEYWORD,
+    ybounds = _UNSET_RASTER_KEYWORD)
+
+    native_to_unit_sphere !== _UNSET_RASTER_KEYWORD &&
+        transform !== _UNSET_RASTER_KEYWORD && throw(ArgumentError(
+            "pass only `native_to_unit_sphere` or its compatibility alias `transform`"))
+    unit_sphere_to_native !== _UNSET_RASTER_KEYWORD &&
+        inverse !== _UNSET_RASTER_KEYWORD && throw(ArgumentError(
+            "pass only `unit_sphere_to_native` or its compatibility alias `inverse`"))
+
+    raw_forward = native_to_unit_sphere !== _UNSET_RASTER_KEYWORD ?
+        native_to_unit_sphere : transform !== _UNSET_RASTER_KEYWORD ?
+        transform : US.UnitSphereFromGeographic()
+    raw_backward = unit_sphere_to_native !== _UNSET_RASTER_KEYWORD ?
+        unit_sphere_to_native : inverse !== _UNSET_RASTER_KEYWORD ?
+        inverse : _UNSET_RASTER_KEYWORD
+    forward, backward = _prepare_raster_transform_pair(raw_forward, raw_backward)
+    default_xperiod, default_ybounds = _native_coordinate_limits(raw_forward)
+    xp = xperiod === _UNSET_RASTER_KEYWORD ? default_xperiod : xperiod
+    yb = ybounds === _UNSET_RASTER_KEYWORD ? default_ybounds : ybounds
+
     xe = _edges(xd, nothing)
-    ye = _edges(yd, ybounds)
+    ye = _edges(yd, yb)
+    forward((xe[1], ye[1])) isa USPoint || throw(ArgumentError(
+        "native_to_unit_sphere must return a UnitSphericalPoint{Float64}"))
     nx, ny = length(xe) - 1, length(ye) - 1
     xc, yc = chunks === nothing ? ([1:nx], [1:ny]) :
              (_chunkranges(chunks[1], nx, "X"), _chunkranges(chunks[2], ny, "Y"))
-    return RasterGrid(xd, yd, xe, ye, xc, yc, transform, inverse,
-        xperiod === nothing ? nothing : Float64(xperiod), xfast,
-        _chartorientation(transform, xe, ye), chartedgetables(transform, xe, ye))
+    return RasterGrid(xd, yd, xe, ye, xc, yc, forward, backward,
+        xp === nothing ? nothing : Float64(xp), xfast,
+        _native_chart_orientation(forward, xe, ye),
+        _geographic_edge_tables(raw_forward, xe, ye))
 end
 
 function _dimnums(ds, xd, yd)
@@ -202,7 +271,7 @@ _ny(space::RasterGrid) = length(space.yedges) - 1
 """
     rastersize(space::RasterGrid) -> (n1, n2)
 
-Return spatial slice shape in array dimension order. `vec` follows cell positions.
+Return spatial slice shape in array dimension order. `vec` follows cell indices.
 """
 rastersize(space::RasterGrid) =
     space.xfast ? (_nx(space), _ny(space)) : (_ny(space), _nx(space))
@@ -338,9 +407,13 @@ end
 
 # Chunk extraction
 
+# A raster's own chunking, read from the array it is built over. This is a
+# space's geometry, fixed when the space is constructed and independent of any
+# data a plan is later applied to, so it stays separate from the chunking a lazy
+# array reads off the source it regrids.
 function _spatialchunks(data, xnum::Int, ynum::Int)
     sz = size(data)
-    if DiskArrays.haschunks(data) isa DiskArrays.Chunked
+    if declareschunks(data)
         cs = DiskArrays.eachchunk(data)
         if cs isa DiskArrays.GridChunks
             return (collect(cs.chunks[xnum]), collect(cs.chunks[ynum]))
@@ -369,14 +442,14 @@ ncells(space::RasterGrid) = _nx(space) * _ny(space)
 manifold(::RasterGrid) = GOCore.Spherical(; radius = 1.0)
 
 # Interpolation requires an inverse transform into the cell-centre chart.
-hascellchart(space::RasterGrid) = space.inverse !== nothing
+hascellchart(space::RasterGrid) = space.unit_sphere_to_native !== nothing
 
 """
     cellsubscript(space::RasterGrid, i::Int) -> (ix, iy)
-    cellposition(space::RasterGrid, ix::Integer, iy::Integer) -> Int
+    localindex(space::RasterGrid, ix::Integer, iy::Integer) -> Int
 
-Convert between cell positions and `(ix, iy)` lattice coordinates. Position
-order follows the array's fastest dimension.
+Convert between the raster's local cell indices and `(ix, iy)` lattice
+coordinates. Index order follows the array's fastest dimension.
 """
 function cellsubscript(space::RasterGrid, i::Int)
     1 <= i <= ncells(space) || throw(BoundsError(space, i))
@@ -388,7 +461,7 @@ function cellsubscript(space::RasterGrid, i::Int)
     return (ix, iy)
 end
 
-function cellposition(space::RasterGrid, ix::Integer, iy::Integer)
+function localindex(space::RasterGrid, ix::Integer, iy::Integer)
     1 <= ix <= _nx(space) && 1 <= iy <= _ny(space) ||
         throw(BoundsError(space, (ix, iy)))
     return space.xfast ? Int(ix) + (Int(iy) - 1) * _nx(space) :
@@ -413,6 +486,10 @@ function getcell(space::RasterGrid, i::Int)
     return GI.Polygon([GI.LinearRing(ring)])
 end
 
+# A raster cell is four chart evaluations off two coordinate axes, which costs
+# about as much as reading a stored polygon back and allocates no more.
+expensivecellgeometry(::RasterGrid) = false
+
 """
     _cellcorners(space::RasterGrid, ix, iy) -> NTuple{4,UnitSphericalPoint}
 
@@ -420,11 +497,15 @@ Return corners in ascending native order, using edge tables when available.
 `space.ccw` records whether polygon construction must reverse them.
 """
 @inline function _cellcorners(space::RasterGrid, ix::Integer, iy::Integer)
+    f = _task_prepared_raster_transform(space.native_to_unit_sphere)
+    return _cellcorners(space, ix, iy, f)
+end
+
+@inline function _cellcorners(space::RasterGrid, ix::Integer, iy::Integer, f)
     t = space.tables
     if t === nothing
         xlo, xhi, ylo, yhi = cellbox(space, ix, iy)
-        f = space.transform
-        return (f(xlo, ylo), f(xhi, ylo), f(xhi, yhi), f(xlo, yhi))
+        return (f((xlo, ylo)), f((xhi, ylo)), f((xhi, yhi)), f((xlo, yhi)))
     end
     ilo, ihi = _edgeorder(space.xedges, ix)
     jlo, jhi = _edgeorder(space.yedges, iy)
@@ -469,8 +550,8 @@ end
 
 function cellcentroid(space::RasterGrid, i::Int)
     ix, iy = cellsubscript(space, i)
-    return space.transform((space.xedges[ix] + space.xedges[ix+1]) / 2,
-        (space.yedges[iy] + space.yedges[iy+1]) / 2)
+    return space.native_to_unit_sphere(((space.xedges[ix] + space.xedges[ix+1]) / 2,
+        (space.yedges[iy] + space.yedges[iy+1]) / 2))
 end
 
 """
@@ -481,14 +562,15 @@ coverage. Periodic X coordinates wrap into the raster span. Shared edges select
 the larger-native cell; outer edges select the interior cell. Requires an inverse chart.
 """
 function cellat(space::RasterGrid, p)
-    space.inverse === nothing && throw(ArgumentError(
-        "cellat needs an inverse chart; this RasterGrid was built with `inverse = nothing`"))
-    x, y = space.inverse(p)
+    space.unit_sphere_to_native === nothing && throw(ArgumentError(
+        "cellat needs a unit-sphere-to-native transform; this RasterGrid was " *
+        "built with `unit_sphere_to_native = nothing`"))
+    x, y = space.unit_sphere_to_native(p)
     ix = _edgeindex(space.xedges, Float64(x), space.xperiod)
     ix === nothing && return nothing
     iy = _edgeindex(space.yedges, Float64(y), nothing)
     iy === nothing && return nothing
-    return cellposition(space, ix, iy)
+    return localindex(space, ix, iy)
 end
 
 function _edgeindex(edges::Vector{Float64}, v::Float64, period)
@@ -531,11 +613,11 @@ function chunkbox(space::RasterGrid, chunk::Int)
 end
 
 """
-    chunkposition(space::RasterGrid, cx::Integer, cy::Integer) -> Int
+    chunknumber(space::RasterGrid, cx::Integer, cy::Integer) -> Int
 
-Return the chunk number at `(cx, cy)`.
+Return the number of the chunk at `(cx, cy)`.
 """
-function chunkposition(space::RasterGrid, cx::Integer, cy::Integer)
+function chunknumber(space::RasterGrid, cx::Integer, cy::Integer)
     1 <= cx <= length(space.xchunks) && 1 <= cy <= length(space.ychunks) ||
         throw(BoundsError(space, (cx, cy)))
     return space.xfast ? Int(cx) + (Int(cy) - 1) * length(space.xchunks) :
@@ -555,15 +637,15 @@ end
 # Locate a cell's chunk with one binary search per axis.
 function chunkat(space::RasterGrid, i::Integer)
     ix, iy = cellsubscript(space, Int(i))
-    return chunkposition(space, _chunkofindex(space.xchunks, ix),
+    return chunknumber(space, _chunkofindex(space.xchunks, ix),
         _chunkofindex(space.ychunks, iy))
 end
 
-function cellindices(space::RasterGrid, chunk::Int)
+function ownedindices(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
     nx, ny = _nx(space), _ny(space)
     if space.xfast
-        # Full-width chunks are contiguous in position order.
+        # Full-width chunks are contiguous in index order.
         length(xr) == nx && return ((first(yr)-1)*nx+1):(last(yr)*nx)
         out = Vector{Int}(undef, length(xr) * length(yr))
         k = 0
@@ -584,109 +666,37 @@ end
 
 # Spherical caps
 
-# Return boundary sample `j`; multiples of `m` are corners.
-@inline function _boxpoint(t, xlo, xhi, ylo, yhi, m::Int, j::Int)
-    e, k = divrem(j, m)
-    u = k / m
-    return e == 0 ? t(xlo + u * (xhi - xlo), ylo) :
-           e == 1 ? t(xhi, ylo + u * (yhi - ylo)) :
-           e == 2 ? t(xhi - u * (xhi - xlo), yhi) :
-           t(xlo, yhi - u * (yhi - ylo))
+"""
+    _geographic_range_extent(tables, space, ix0, ix1, iy0, iy1)
+
+Return an analytic cap for a rectangle in the built-in geographic-degrees
+chart. Every raster cell edge is a declared shortest geodesic. The maximum
+single-cell longitude step therefore bounds the poleward bow of every such
+edge. A polar latitude-band cap is valid for all longitude widths; rectangles
+narrower than 180 degrees may use the tighter mid-meridian cap.
+
+This specialization is deliberately selected only by `GeographicEdgeTables`,
+which are installed only for `GeometryOps.UnitSphereFromGeographic`. Arbitrary
+curvilinear and projected charts use ConservativeRegridding's perimeter walk.
+"""
+function _geographic_range_extent(t::GeographicEdgeTables, space::RasterGrid,
+        ix0::Int, ix1::Int, iy0::Int, iy1::Int)
+    xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
+    ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
+    polar = _geographic_polar_cap(t, ylo, yhi)
+    abs(xhi - xlo) < 180.0 || return polar
+    meridian = _geographic_meridian_cap(t, xlo, xhi, ylo, yhi)
+    return meridian.radius < polar.radius ? meridian : polar
 end
 
 """
-    _boxcap(space, xlo, xhi, ylo, yhi, nsamp) -> SphericalCap
+    _geographic_polar_cap(tables, ylo, yhi) -> SphericalCap
 
-Return a cap around `4(nsamp + 1)` boundary samples. For lon/lat boxes, a cap no
-wider than `π/2` contains the corners and their geodesic edges. Return the whole
-sphere when no stable convex cap exists; [`_rectcap`](@ref) handles wide boxes.
+Return the tighter north- or south-pole cap containing the bowed geographic
+latitude band. This remains valid for any longitude span, including full
+longitude and antimeridian-crossing ranges.
 """
-function _boxcap(space::RasterGrid, xlo, xhi, ylo, yhi, nsamp::Int)
-    t = space.transform
-    m = nsamp + 1
-    n = 4m
-    sx = sy = sz = 0.0
-    for j in 0:(n-1)
-        p = _boxpoint(t, xlo, xhi, ylo, yhi, m, j)
-        sx += p[1]
-        sy += p[2]
-        sz += p[3]
-    end
-    nrm = sqrt(sx^2 + sy^2 + sz^2)
-    nrm <= eps(Float64) && return _WHOLE_SPHERE
-    centre = USPoint(sx / nrm, sy / nrm, sz / nrm)
-    r = 0.0
-    for j in 0:(n-1)
-        r = max(r, US.spherical_distance(centre,
-            _boxpoint(t, xlo, xhi, ylo, yhi, m, j)))
-    end
-    # Caps beyond π/2 lose the convexity bound.
-    r = _padcap(r)
-    r > Float64(pi) / 2 && return _WHOLE_SPHERE
-    return SphericalCap(centre, r)
-end
-
-# Use tabulated corners for a cell cap when available.
-function _rastercellcap(space::RasterGrid, ix::Integer, iy::Integer)
-    space.tables === nothing &&
-        return _boxcap(space, cellbox(space, ix, iy)..., _CELL_CAP_SAMPLES)
-    return _cornercap(_cellcorners(space, ix, iy))
-end
-
-# Build the same cap as `_boxcap(..., 0)` from precomputed corners.
-function _cornercap(c::NTuple{4,USPoint})
-    sx = sy = sz = 0.0
-    for p in c
-        sx += p[1]
-        sy += p[2]
-        sz += p[3]
-    end
-    nrm = sqrt(sx^2 + sy^2 + sz^2)
-    nrm <= eps(Float64) && return _WHOLE_SPHERE
-    centre = USPoint(sx / nrm, sy / nrm, sz / nrm)
-    r = 0.0
-    for p in c
-        r = max(r, US.spherical_distance(centre, p))
-    end
-    r = _padcap(r)
-    r > Float64(pi) / 2 && return _WHOLE_SPHERE
-    return SphericalCap(centre, r)
-end
-
-"""
-    _widecap(space::RasterGrid, xlo, xhi, ylo, yhi) -> SphericalCap
-
-Return a safe cap for boxes too wide for [`_boxcap`](@ref). Lon/lat charts use
-the tighter of a polar latitude-band cap and, below 180° width, a mid-meridian
-cap. Other charts return the whole sphere.
-"""
-_widecap(space::RasterGrid, xlo, xhi, ylo, yhi) =
-    _widecap(space.tables, xlo, xhi, ylo, yhi)
-
-_widecap(::Nothing, xlo, xhi, ylo, yhi) = _WHOLE_SPHERE
-
-function _widecap(t::LonLatEdgeTables, xlo, xhi, ylo, yhi)
-    polar = _polarcap(t, ylo, yhi)
-    abs(xhi - xlo) / 2 < 90.0 || return polar
-    a, b = _bowedband(Float64(ylo), Float64(yhi), t.maxdx)
-    chart = LonLatToSphere()
-    centre = chart((xlo + xhi) / 2, (a + b) / 2)
-    r = 0.0
-    for x in (xlo, xhi), y in (a, b)
-        r = max(r, US.spherical_distance(centre, chart(x, y)))
-    end
-    r = _padcap(r)
-    (r >= Float64(pi) || polar.radius <= r) && return polar
-    return SphericalCap(centre, r)
-end
-
-"""
-    _polarcap(tables, ylo, yhi) -> SphericalCap
-
-Return the tighter north- or south-pole cap containing the bowed latitude band.
-This remains valid for any longitude span.
-"""
-function _polarcap(t::LonLatEdgeTables, ylo, yhi)
+function _geographic_polar_cap(t::GeographicEdgeTables, ylo, yhi)
     a, b = _bowedband(Float64(ylo), Float64(yhi), t.maxdx)
     centre = USPoint(0.0, 0.0, 1.0)
     r = deg2rad(90.0 - a)
@@ -694,6 +704,28 @@ function _polarcap(t::LonLatEdgeTables, ylo, yhi)
     if rs < r
         centre = USPoint(0.0, 0.0, -1.0)
         r = rs
+    end
+    r = _padcap(r)
+    r >= Float64(pi) && return _WHOLE_SPHERE
+    return SphericalCap(centre, r)
+end
+
+"""
+    _geographic_meridian_cap(tables, xlo, xhi, ylo, yhi) -> SphericalCap
+
+Return a cap around a geographic box narrower than 180 degrees longitude. The
+box is first expanded to the proven poleward latitude limits of its geodesic
+cell edges. Distance from the mid-meridian centre is maximized at a box corner,
+so the resulting cap covers every point of every leaf boundary directly; it
+does not depend on convexity of a wider-than-hemisphere cap.
+"""
+function _geographic_meridian_cap(t::GeographicEdgeTables, xlo, xhi, ylo, yhi)
+    a, b = _bowedband(Float64(ylo), Float64(yhi), t.maxdx)
+    geographic_to_sphere = US.UnitSphereFromGeographic()
+    centre = geographic_to_sphere(((xlo + xhi) / 2, (a + b) / 2))
+    r = 0.0
+    for x in (xlo, xhi), y in (a, b)
+        r = max(r, US.spherical_distance(centre, geographic_to_sphere((x, y))))
     end
     r = _padcap(r)
     r >= Float64(pi) && return _WHOLE_SPHERE
@@ -709,67 +741,16 @@ function _bowedband(ylo::Float64, yhi::Float64, dxmax::Float64)
     return (lo, hi)
 end
 
-# Read an index rectangle's corners from edge tables.
-@inline _boxcorners(t::LonLatEdgeTables, ix0::Int, ix1::Int, iy0::Int, iy1::Int) =
-    (_tablecorner(t, ix0, iy0), _tablecorner(t, ix1 + 1, iy0),
-        _tablecorner(t, ix1 + 1, iy1 + 1), _tablecorner(t, ix0, iy1 + 1))
-
-"""
-    _sampledcap(tables, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi) -> SphericalCap
-
-Return the sampled cap used by [`_rectcap`](@ref). Lon/lat boxes narrower than
-180° use four tabulated corners; wider or untabulated boxes sample the boundary.
-"""
-@inline _sampledcap(::Nothing, space::RasterGrid, ix0::Int, ix1::Int, iy0::Int,
-    iy1::Int, xlo, xhi, ylo, yhi) = _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
-
-@inline function _sampledcap(t::LonLatEdgeTables, space::RasterGrid, ix0::Int, ix1::Int,
-    iy0::Int, iy1::Int, xlo, xhi, ylo, yhi)
-    xhi - xlo < 180.0 || return _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
-    return _cornercap(_boxcorners(t, ix0, ix1, iy0, iy1))
-end
-
-"""
-    _rectcap(space, ix0, ix1, iy0, iy1) -> SphericalCap
-
-Return the tighter sampled or wide-box cap for a tree-node rectangle.
-"""
-function _rectcap(space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
-    xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
-    ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
-    sampled = _sampledcap(space.tables, space, ix0, ix1, iy0, iy1, xlo, xhi, ylo, yhi)
-    return _tighterof(space, xlo, xhi, ylo, yhi, sampled)
-end
-
-"""
-    _chunkcap(space, ix0, ix1, iy0, iy1) -> SphericalCap
-
-Return a chunk rectangle's cap. Extra boundary samples improve the centre and
-reduce false-positive chunk connections. This is computed once per chunk.
-"""
-function _chunkcap(space::RasterGrid, ix0::Int, ix1::Int, iy0::Int, iy1::Int)
-    xlo, xhi = minmax(space.xedges[ix0], space.xedges[ix1+1])
-    ylo, yhi = minmax(space.yedges[iy0], space.yedges[iy1+1])
-    sampled = _boxcap(space, xlo, xhi, ylo, yhi, _BOX_CAP_SAMPLES)
-    return _tighterof(space, xlo, xhi, ylo, yhi, sampled)
-end
-
-# Skip the wide-box calculation when the sampled cap already beats its lower bound.
-@inline function _tighterof(space::RasterGrid, xlo, xhi, ylo, yhi, sampled::Cap)
-    sampled.radius < Float64(pi) &&
-        sampled.radius <= deg2rad(min(90.0 - ylo, 90.0 + yhi)) && return sampled
-    wide = _widecap(space, xlo, xhi, ylo, yhi)
-    return wide.radius < sampled.radius ? wide : sampled
-end
-
 # Determine chart handedness once from probe-cell Newell normals.
-function _chartorientation(transform, xedges::Vector{Float64}, yedges::Vector{Float64})
+function _native_chart_orientation(native_to_unit_sphere,
+    xedges::Vector{Float64}, yedges::Vector{Float64})
+    native_to_unit_sphere = _task_prepared_raster_transform(native_to_unit_sphere)
     nx, ny = length(xedges) - 1, length(yedges) - 1
     best = 0.0
     for iy in _probes(ny), ix in _probes(nx)
         xlo, xhi = minmax(xedges[ix], xedges[ix+1])
         ylo, yhi = minmax(yedges[iy], yedges[iy+1])
-        s = _quadsign(transform, xlo, xhi, ylo, yhi)
+        s = _quadsign(native_to_unit_sphere, xlo, xhi, ylo, yhi)
         abs(s) > abs(best) && (best = s)
     end
     best == 0.0 && throw(ArgumentError(
@@ -781,7 +762,7 @@ end
 _probes(n::Int) = n <= 3 ? (1:n) : (1, cld(n, 2), n)
 
 function _quadsign(t, xlo, xhi, ylo, yhi)
-    c = (t(xlo, ylo), t(xhi, ylo), t(xhi, yhi), t(xlo, yhi))
+    c = (t((xlo, ylo)), t((xhi, ylo)), t((xhi, yhi)), t((xlo, yhi)))
     nx = ny = nz = 0.0
     for k in 1:4
         a, b = c[k], c[k == 4 ? 1 : k+1]
@@ -798,140 +779,180 @@ end
 # Spatial trees
 
 """
-    RasterCellTree(space, ix0, ix1, iy0, iy1)
+    RasterGridView(space)
 
-A recursive spatial tree over a raster index rectangle. It splits the longer
-side and derives extents on demand, so construction is `O(1)`.
+A zero-copy `ConservativeRegridding` curvilinear-grid view of a `RasterGrid`.
+Its first index is whichever spatial dimension is fastest in the source array,
+so the existing `TopDownQuadtreeCursor` reports the same linear cell indices
+as the regridding space. The wrapped space retains the actual
+native-to-unit-sphere transformation; raster storage chunking remains solely
+in `space.xchunks` and `space.ychunks`, populated from `DiskArrays.eachchunk`.
 """
-struct RasterCellTree{S<:RasterGrid}
+struct RasterGridView{M<:GOCore.Manifold,S<:RasterGrid,F} <: Trees.AbstractCurvilinearGrid{M}
+    manifold::M
     space::S
-    ix0::Int
-    ix1::Int
-    iy0::Int
-    iy1::Int
+    "safe retained chart callable, or a task-owned callable on a private prepared copy"
+    native_to_unit_sphere::F
 end
 
-Base.show(io::IO, t::RasterCellTree) = print(io, "RasterCellTree(",
-    t.ix0, ":", t.ix1, ", ", t.iy0, ":", t.iy1, ")")
+RasterGridView(space::RasterGrid) =
+    RasterGridView(manifold(space), space, space.native_to_unit_sphere)
 
-_treecells(t::RasterCellTree) = (t.ix1 - t.ix0 + 1) * (t.iy1 - t.iy0 + 1)
+# Only short-lived, nonescaping copies receive a task-owned chart wrapper.
+function _task_prepared_raster_view(grid::RasterGridView)
+    transform = _task_prepared_raster_transform(grid.native_to_unit_sphere)
+    transform === grid.native_to_unit_sphere && return grid
+    return RasterGridView(grid.manifold, grid.space, transform)
+end
 
-STI.isspatialtree(::Type{<:RasterCellTree}) = true
-STI.node_extent_is_expensive(::Type{<:RasterCellTree}) = true
-STI.isleaf(t::RasterCellTree) = _treecells(t) <= _CELL_TREE_LEAF
-STI.nchild(t::RasterCellTree) = STI.isleaf(t) ? 0 : 2
-STI.node_extent(t::RasterCellTree) = _rectcap(t.space, t.ix0, t.ix1, t.iy0, t.iy1)
+GOCore.manifold(grid::RasterGridView) = grid.manifold
 
-function STI.getchild(t::RasterCellTree)
-    if t.ix1 - t.ix0 >= t.iy1 - t.iy0
-        mid = (t.ix0 + t.ix1) ÷ 2
-        return (RasterCellTree(t.space, t.ix0, mid, t.iy0, t.iy1),
-            RasterCellTree(t.space, mid + 1, t.ix1, t.iy0, t.iy1))
-    else
-        mid = (t.iy0 + t.iy1) ÷ 2
-        return (RasterCellTree(t.space, t.ix0, t.ix1, t.iy0, mid),
-            RasterCellTree(t.space, t.ix0, t.ix1, mid + 1, t.iy1))
+Trees.ncells(grid::RasterGridView, dim::Int) = if grid.space.xfast
+    dim == 1 ? _nx(grid.space) : dim == 2 ? _ny(grid.space) : throw(BoundsError(grid, dim))
+else
+    dim == 1 ? _ny(grid.space) : dim == 2 ? _nx(grid.space) : throw(BoundsError(grid, dim))
+end
+
+@inline function _viewsubscript(grid::RasterGridView, i::Int, j::Int)
+    return grid.space.xfast ? (i, j) : (j, i)
+end
+
+function Trees.getcell(grid::RasterGridView, i::Int, j::Int)
+    ix, iy = _viewsubscript(grid, i, j)
+    space = grid.space
+    c = _cellcorners(space, ix, iy, grid.native_to_unit_sphere)
+    ring = _cellring(space.ccw ? c : (c[4], c[3], c[2], c[1]))
+    return GI.Polygon([GI.LinearRing(ring)])
+end
+
+function Trees.getvertex(grid::RasterGridView, i::Int, j::Int)
+    ix, iy = _viewsubscript(grid, i, j)
+    space = grid.space
+    if space.tables === nothing
+        return grid.native_to_unit_sphere((space.xedges[ix], space.yedges[iy]))
     end
+    return _tablecorner(space.tables, ix, iy)
 end
 
-STI.getchild(t::RasterCellTree, i::Int) = STI.getchild(t)[i]
-
-STI.child_indices_extents(t::RasterCellTree) =
-    ((cellposition(t.space, ix, iy), _rastercellcap(t.space, ix, iy))
-     for iy in t.iy0:t.iy1, ix in t.ix0:t.ix1)
-
-# ConservativeRegridding fetches matrix sizes and polygons through these
-# bindings during `intersection_areas`.
-GOCore.best_manifold(t::RasterCellTree) = manifold(t.space)
-Trees.ncells(t::RasterCellTree) = ncells(t.space)
-# `Trees.ncells` answers for the whole space, so the frontier's default estimate
-# would be wrong here; the node's index rectangle is exact.
-Trees.split_weight(t::RasterCellTree) = _treecells(t)
-Trees.getcell(t::RasterCellTree, i::Int) = getcell(t.space, i)
-Trees.getcell(t::RasterCellTree) =
-    (getcell(t.space, cellposition(t.space, ix, iy))
-     for iy in t.iy0:t.iy1, ix in t.ix0:t.ix1)
-
-"""
-    RasterFlatTree(space, indices, caps)
-
-A one-node spatial tree with stored extents for arbitrary cells or the chunk
-lattice. `indices` are cell positions or chunk numbers, respectively.
-"""
-struct RasterFlatTree{S<:RasterGrid}
-    space::S
-    indices::Vector{Int}
-    caps::Vector{Cap}
-    extent::Cap
+function Trees.cell_range_extent(grid::RasterGridView, irange::UnitRange{Int},
+        jrange::UnitRange{Int})
+    # Threaded CR frontier nodes retain the safe view and cross tasks. Prepare
+    # one ephemeral view for this range calculation, so its perimeter loop does
+    # one TLS lookup rather than one lookup per transformed vertex.
+    localgrid = _task_prepared_raster_view(grid)
+    return _raster_range_extent(localgrid, irange, jrange)
 end
 
-function RasterFlatTree(space::RasterGrid, indices, caps)
-    ix = collect(Int, indices)
-    cs = collect(Cap, caps)
-    extent = isempty(cs) ? _WHOLE_SPHERE : foldl(US._merge, cs)
-    return RasterFlatTree{typeof(space)}(space, ix, cs, extent)
+# The one range-extent seam for cursor nodes, leaves, scattered-cell caps, and
+# DiskArrays chunks. Only the exact built-in geographic chart takes the analytic
+# specialization; every other chart delegates to CR's conservative perimeter walk.
+function _raster_range_extent(grid::RasterGridView{M}, irange::UnitRange{Int},
+        jrange::UnitRange{Int}) where {M}
+    tables = grid.space.tables
+    tables === nothing && return _curvilinear_range_extent(grid, irange, jrange)
+    xr, yr = grid.space.xfast ? (irange, jrange) : (jrange, irange)
+    return _geographic_range_extent(tables, grid.space,
+        first(xr), last(xr), first(yr), last(yr))
 end
 
-Base.show(io::IO, t::RasterFlatTree) =
-    print(io, "RasterFlatTree(", length(t.indices), " entries)")
+# Call the method owned by ConservativeRegridding, bypassing this RasterGridView
+# specialization. Kept as a named seam so the committed benchmark can compare
+# the earned geographic optimization with the exact delegated path.
+function _curvilinear_range_extent(grid::RasterGridView{M}, irange::UnitRange{Int},
+        jrange::UnitRange{Int}) where {M}
+    return invoke(Trees.cell_range_extent,
+        Tuple{Trees.AbstractCurvilinearGrid{M},UnitRange{Int},UnitRange{Int}},
+        grid, irange, jrange)
+end
 
-STI.isspatialtree(::Type{<:RasterFlatTree}) = true
-STI.node_extent_is_expensive(::Type{<:RasterFlatTree}) = false
-STI.isleaf(::RasterFlatTree) = true
-STI.nchild(::RasterFlatTree) = 0
-STI.getchild(::RasterFlatTree) = ()
-STI.node_extent(t::RasterFlatTree) = t.extent
-STI.child_indices_extents(t::RasterFlatTree) = zip(t.indices, t.caps)
+# The range cap is computed from the chart rather than read directly from axis
+# coordinates. This lets ConservativeRegridding's own traversal policy cache
+# child extents when it is used in a dual search.
+Trees.extent_is_expensive(::Type{<:RasterGridView}) = true
 
-GOCore.best_manifold(t::RasterFlatTree) = manifold(t.space)
-Trees.ncells(t::RasterFlatTree) = ncells(t.space)
-# Same whole-space `Trees.ncells` caveat; the stored entries are the node.
-Trees.split_weight(t::RasterFlatTree) = length(t.indices)
-Trees.getcell(t::RasterFlatTree, i::Int) = getcell(t.space, i)
-Trees.getcell(t::RasterFlatTree) = (getcell(t.space, i) for i in t.indices)
+const _RASTER_CURSOR_LEAFSIZE = (4, 4)
 
-celltree(space::RasterGrid) = RasterCellTree(space, 1, _nx(space), 1, _ny(space))
+@inline _rasterviewranges(space::RasterGrid, xr::UnitRange{Int}, yr::UnitRange{Int}) =
+    space.xfast ? (xr, yr) : (yr, xr)
+
+function _rastercursor(space::RasterGrid, xr::UnitRange{Int}, yr::UnitRange{Int})
+    ranges = _rasterviewranges(space, xr, yr)
+    return Trees.TopDownQuadtreeCursor(
+        RasterGridView(space), ranges; leafsize = _RASTER_CURSOR_LEAFSIZE)
+end
+
+_rastercursor(space::RasterGrid) = _rastercursor(space, 1:_nx(space), 1:_ny(space))
+_rasterchunkcursor(space::RasterGrid) = _rastercursor(space)
+
+function _task_prepared_raster_tree(
+        tree::Trees.TopDownQuadtreeCursor{<:RasterGridView})
+    grid = _task_prepared_raster_view(tree.grid)
+    grid === tree.grid && return tree
+    return Trees.TopDownQuadtreeCursor(
+        grid, tree.leafranges; leafsize = tree.leafsize)
+end
+
+_task_prepared_raster_tree(tree) = tree
+
+celltree(space::RasterGrid) = _rastercursor(space)
 
 """
     celltree(space::RasterGrid, chunk::Int)
     celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
 
-Return a recursive tree for a chunk rectangle or a flat tree for arbitrary cell
-positions. Leaves always use global cell positions.
+Return a restricted CR quadtree cursor for a chunk or other rectangular cell
+range, and the packed cell-space fallback for scattered indices. Leaves
+always use the space's local indices.
 """
 function celltree(space::RasterGrid, chunk::Int)
     xr, yr = chunkbox(space, chunk)
-    return RasterCellTree(space, first(xr), last(xr), first(yr), last(yr))
+    return _rastercursor(space, xr, yr)
 end
 
 function celltree(space::RasterGrid, indices::AbstractVector{<:Integer})
-    caps = [_rastercellcap(space, cellsubscript(space, Int(i))...) for i in indices]
-    return RasterFlatTree(space, indices, caps)
+    rect = _indexrect(space, indices)
+    if rect !== nothing
+        ix0, ix1, iy0, iy1 = rect
+        return _rastercursor(space, ix0:ix1, iy0:iy1)
+    end
+    return CellSpaceRTree(space, indices)
 end
 
-function chunktree(space::RasterGrid)
+function _rastercellcap(space::RasterGrid, ix::Integer, iy::Integer)
+    ranges = _rasterviewranges(space, Int(ix):Int(ix), Int(iy):Int(iy))
+    return Trees.cell_range_extent(RasterGridView(space), ranges...)
+end
+
+# The caps as values, for the identity stamp and for a consumer that wants a
+# chunk's covering extent. Chunk *queries* go to `_rasterchunkcursor` and never
+# come here.
+function chunkextents(space::RasterGrid)
     n = nchunks(space)
     caps = Vector{Cap}(undef, n)
     for c in 1:n
         xr, yr = chunkbox(space, c)
-        caps[c] = _chunkcap(space, first(xr), last(xr), first(yr), last(yr))
+        ranges = _rasterviewranges(space, xr, yr)
+        caps[c] = Trees.cell_range_extent(RasterGridView(space), ranges...)
     end
-    return RasterFlatTree(space, 1:n, caps)
+    return caps
+end
+
+# One chunk's extent without materializing the whole vector.
+function chunkextent(space::RasterGrid, chunk::Integer)
+    xr, yr = chunkbox(space, Int(chunk))
+    return Trees.cell_range_extent(RasterGridView(space),
+        _rasterviewranges(space, xr, yr)...)
 end
 
 """
     subtree(space::RasterGrid, inds)
 
-Return a memoized recursive tree when `inds` form a lattice rectangle,
-otherwise a flat tree with one cap per cell.
+Return a restricted CR quadtree cursor when `inds` form a lattice rectangle,
+otherwise the common packed cell-space fallback.
 """
-function subtree(space::RasterGrid, inds)
-    rect = _indexrect(space, inds)
-    rect === nothing && return celltree(space, inds)
-    return MemoRasterTree(RasterCellTree(space, rect...))
-end
+subtree(space::RasterGrid, inds) = celltree(space, inds)
 
-# The number of cells along the dimension that varies fastest in cell positions.
+# The number of cells along the dimension that varies fastest in cell indices.
 _nfast(space::RasterGrid) = space.xfast ? _nx(space) : _ny(space)
 
 """
@@ -995,8 +1016,8 @@ Return `p` in native coordinates, or `nothing` without an inverse. Periodic X
 returns the representative nearest the edge span.
 """
 function chartcoords(space::RasterGrid, p)
-    space.inverse === nothing && return nothing
-    x, y = space.inverse(p)
+    space.unit_sphere_to_native === nothing && return nothing
+    x, y = space.unit_sphere_to_native(p)
     return (_onbranch(space.xedges, Float64(x), space.xperiod), Float64(y))
 end
 
@@ -1008,7 +1029,7 @@ function _onbranch(edges::Vector{Float64}, v::Float64, period)
     return v - p * round((v - mid) / p)
 end
 
-chartposition(space::RasterGrid, ix::Int, iy::Int) = cellposition(space, ix, iy)
+chartlocalindex(space::RasterGrid, ix::Int, iy::Int) = localindex(space, ix, iy)
 
 """
     chartperiod(space::RasterGrid)
@@ -1029,7 +1050,8 @@ end
 Return the largest edge step on each axis in radians of arc.
 """
 chartspacing(space::RasterGrid) =
-    chartarcs(space.transform, _maxstep(space.xedges), _maxstep(space.yedges))
+    _spherical_step_bounds_radians(space.native_to_unit_sphere,
+        _maxstep(space.xedges), _maxstep(space.yedges))
 
 _maxstep(e::Vector{Float64}) =
     maximum(abs(e[k+1] - e[k]) for k in 1:(length(e)-1))

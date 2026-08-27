@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Components" name="Form Inputs" subtitle="Text inputs, search, select — all states" viewport="700x260" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; padding: 20px 24px; font-family: var(--font-sans); background: #fff; }
+  .section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gray-400); margin: 0 0 8px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; margin-bottom: 16px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  label { font-size: 12px; font-weight: 500; color: #343a40; }
+  input[type=text], input[type=search], select {
+    font-family: var(--font-sans); font-size: 14px; color: #212529;
+    background: #fff; border: 1.5px solid #dee2e6; border-radius: 6px;
+    padding: 0 12px; height: 36px; outline: none; transition: border-color 150ms;
+    min-width: 180px;
+  }
+  input:focus, select:focus { border-color: #389826; box-shadow: 0 0 0 3px #b6ecab55; }
+  input.error { border-color: #CB3C33; }
+  input.error:focus { box-shadow: 0 0 0 3px #f7d5d355; }
+  .hint { font-size: 11px; color: #6c757d; }
+  .error-msg { font-size: 11px; color: #CB3C33; }
+  input[disabled] { background: #f1f3f5; color: #adb5bd; cursor: not-allowed; }
+  .search-wrap { position: relative; }
+  .search-wrap input { padding-left: 32px; }
+  .search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+</style>
+</head>
+<body>
+  <p class="section-label">Text Inputs</p>
+  <div class="row">
+    <div class="field">
+      <label>Package name</label>
+      <input type="text" placeholder="e.g. GeometryOps.jl">
+      <span class="hint">Enter a registered Julia package</span>
+    </div>
+    <div class="field">
+      <label>Version</label>
+      <input type="text" value="0.1.12" style="width:120px">
+    </div>
+    <div class="field">
+      <label>Filter (error state)</label>
+      <input type="text" class="error" value="invalid..syntax">
+      <span class="error-msg">Invalid package name</span>
+    </div>
+    <div class="field">
+      <label>Disabled</label>
+      <input type="text" disabled value="read-only">
+    </div>
+  </div>
+  <p class="section-label">Search</p>
+  <div class="row">
+    <div class="field">
+      <div class="search-wrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#adb5bd" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" placeholder="Search docs…" style="width:240px">
+      </div>
+    </div>
+  </div>
+  <p class="section-label">Select</p>
+  <div class="row">
+    <div class="field">
+      <label>Geometry trait</label>
+      <select>
+        <option>PolygonTrait</option>
+        <option>LineTrait</option>
+        <option>PointTrait</option>
+        <option>MultiPolygonTrait</option>
+      </select>
+    </div>
+  </div>
+</body></html>

@@ -22,10 +22,18 @@ using .ChunkedLookups
     include("encodings.jl")
     include("chunked_lookup.jl")
     include("conventions.jl")
+    # The two-dimensional layout's arithmetic and vocabulary, which need a store
+    # no more than the conventions do.
+    include("subzones.jl")
     # The Zarr-extension suites need `using Zarr` and self-skip when absent.
     include("read.jl")
     include("write.jl")
     include("stores.jl")
+    include("subzone_store.jl")
+    # A stored axis as a region, and the traversal that follows its chunks.
+    # Both round-trip through a real store, so both live behind the same skip.
+    include("region.jl")
+    include("chunk_sweep.jl")
 end
 
 end # module DGGIOTests

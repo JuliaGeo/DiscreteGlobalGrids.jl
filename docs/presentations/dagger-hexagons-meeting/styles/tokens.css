@@ -1,0 +1,286 @@
+/* =============================================================
+   JuliaGeo design tokens — mirrored from
+   ../../../.claude/skills/juliageo-design-system/
+     colors_and_type.css  (the values)
+     README.md            (the rules those values obey)
+
+   That pair is the single source of truth. If this file and it
+   ever disagree, it wins — fix this file. Do not invent values
+   here; every hex below is quoted from the source, and the three
+   places one is derived are marked DERIVED with the arithmetic.
+
+   Structure and token names are inherited from the Dyad talk
+   template this deck was forked from, so the two stay diffable.
+   The `--dy-` prefix is that inheritance, not a claim about
+   whose system this is.
+   ============================================================= */
+
+:root {
+  /* ---------- Color — ink / paper ----------
+     JuliaGeo's neutral ramp is cool (blue-tinted) where Dyad's was
+     warm. Nothing composites the two, so the ramp swaps wholesale. */
+  --dy-ink:              #212529;   /* gray-900 — primary text */
+  --dy-ink-2:            #343a40;   /* gray-800 */
+  --dy-paper:            #ffffff;   /* gray-0   */
+  --dy-paper-off:        #f8f9fa;   /* gray-50  */
+
+  /* ---------- Color — accent (Julia green) ----------
+     Two variants, and which one you reach for depends on how much
+     ink the shape puts on the page: solid fills take `accent`,
+     thin letterforms take `accent-ink`. */
+  --dy-accent:           #389826;   /* green-500 — Julia green. Solid shapes. */
+  --dy-accent-ink:       #2c7a1e;   /* green-600 — headlines, links          */
+  --dy-accent-soft:      #4dc43d;   /* green-400                             */
+  --dy-accent-tint:      #b6ecab;   /* green-200 — bands INSIDE diagrams     */
+  --dy-accent-tint-2:    #dcf5d7;   /* green-100 — the logo circle fill      */
+  --dy-accent-tint-3:    #f0faea;   /* green-50                              */
+
+  /* ---------- Color — alt hue (two-domain splits only) ----------
+     Dyad allowed exactly one hue beyond the accent, for slides that
+     genuinely split into two domains. JuliaGeo's palette offers
+     three Julia brand colours for that slot; purple is the pick.
+     Blue reads as water on a geospatial slide and red is already
+     spoken for by inline code, so purple is the only one that can
+     mean "the other domain" without meaning something else first.
+
+     Named `alt`, not `amber`, because the hue moved — a token
+     called amber holding a purple is worse than a renamed token. */
+  --dy-alt:              #9558b2;   /* purple-500 — solid shapes */
+  /* DERIVED. The source gives purple-500 and purple-100 only, and a
+     letterform variant has to be deeper than the solid or single-line
+     type loses contrast. This is purple-500 scaled by 0.79 per
+     channel — the same step that takes green-500 to green-600. */
+  --dy-alt-ink:          #764e8d;
+  --dy-alt-tint:         #eadaf2;   /* purple-100 */
+
+  /* ---------- Color — muted + structure ----------
+     Raw ramp, 1:1 with the source. See --dy-fg-3 below for the one
+     place the SEMANTIC mapping steps off it. */
+  --dy-muted:            #495057;   /* gray-700 */
+  --dy-muted-2:          #6c757d;   /* gray-600 */
+  --dy-muted-3:          #adb5bd;   /* gray-500 */
+
+  /* Hairlines are solid greys here, not alpha-composited ink as in
+     Dyad. The source specifies a border COLOUR (#e9ecef), not a
+     border opacity, and on this deck every rule sits on paper or
+     paper-off, so nothing needs to composite. */
+  --dy-hairline-soft:    #e9ecef;   /* gray-200 — the source's border colour */
+  /* DEVIATION, one step darker than the source's #e9ecef. This deck
+     is projected, and a projector eats low-contrast detail that a
+     monitor at arm's length resolves fine — at #e9ecef the table
+     rules and card borders disappear off the back wall. gray-300
+     lands within a point of what Dyad's rgba(17,17,17,.14) actually
+     rendered as over white (#dcdcdc), which is the weight this
+     frame was drawn against. Set it to hairline-soft for an exact
+     match with the docs site. */
+  --dy-hairline:         #dee2e6;   /* gray-300 */
+  --dy-hairline-strong:  #adb5bd;   /* gray-500 */
+
+  /* ---------- Semantic surfaces ---------- */
+  --dy-bg:               var(--dy-paper);
+  --dy-bg-alt:           var(--dy-paper-off);
+  --dy-fg:               var(--dy-ink);
+  --dy-fg-2:             var(--dy-muted);
+  /* DEVIATION: muted-2, not muted-3. Same reason as the hairline —
+     fg-3 carries page numbers, captions, card labels and diagram
+     leader lines, all at 10–11px, and gray-500 on white is about
+     2:1. It is the right value for a caption in a docs page and the
+     wrong one for a caption on a wall. */
+  --dy-fg-3:             var(--dy-muted-2);
+  --dy-rule:             var(--dy-hairline);
+  --dy-card-bg:          var(--dy-paper);
+  --dy-card-feature-bg:  var(--dy-accent-tint-3);
+
+  /* ---------- Code surfaces ----------
+     The source puts code on a dark slab in BOTH modes — it is the
+     most recognisable thing about the JuliaGeo/VitePress look, and
+     it projects better than a light block, which glares. Inline
+     code is the exception: light chip, red type. */
+  --dy-code-bg:          hsl(220, 20%, 9%);
+  --dy-code-fg:          #e9ecef;   /* gray-200 */
+  --dy-code-border:      transparent;
+  --dy-code-inline-bg:   #f1f3f5;   /* gray-100 */
+  --dy-code-inline-ink:  #cb3c33;   /* Julia red — the source's --color-fg-code */
+
+  /* ---------- Type families ----------
+     Two sans faces doing two different jobs. `sans` is running copy
+     — body, lists, tables, notes, captions. `display` is headline
+     type, and only headline type.
+
+     Inter is the design system's specified sans and it is a better
+     reading face at 17–19px on a wall: bigger x-height, wider
+     apertures, and it was drawn for screens. Rale Grotesk keeps the
+     headlines because that is where its character shows and because
+     the deck's display sizes, tracking and hand-set line breaks
+     were all drawn against it.
+
+     Anything that is a heading must take `display` explicitly —
+     see the h3 note in base.css for the one that has to say so. */
+  --dy-font-sans:        'Inter', ui-sans-serif, system-ui, sans-serif;
+  --dy-font-display:     'Rale Grotesk', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --dy-font-mono:        'JuliaMono', ui-monospace, Menlo, monospace;
+
+  /* ---------- Leading ---------- */
+  --dy-lh-tight:         1.05;
+  --dy-lh-snug:          1.18;
+  --dy-lh-body:          1.5;
+  --dy-lh-loose:         1.65;
+
+  /* ---------- Tracking ---------- */
+  --dy-track-hero:       -0.02em;   /* presentations: hero titles */
+  --dy-track-tight:      -0.01em;
+  --dy-track-normal:     0;
+  --dy-track-label:      0.12em;
+  --dy-track-eyebrow:    0.16em;
+
+  /* ---------- Spacing — 4px base, twelve steps ----------
+     The source's scale is 4/8/12/16/20/24/32/40/48/64/80/96. This
+     one is 4/8/12/16/24/32/48/64/96/128/192 — the same 4px base,
+     reaching further because a 960px canvas needs gaps a 16px docs
+     column never does. Kept as-is. */
+  --dy-s-0:   0px;
+  --dy-s-1:   4px;
+  --dy-s-2:   8px;
+  --dy-s-3:  12px;
+  --dy-s-4:  16px;
+  --dy-s-5:  24px;
+  --dy-s-6:  32px;
+  --dy-s-7:  48px;
+  --dy-s-8:  64px;
+  --dy-s-9:  96px;
+  --dy-s-10: 128px;
+  --dy-s-11: 192px;
+
+  /* ---------- Stroke widths ---------- */
+  --dy-rule-hair:   1px;
+  --dy-rule-thin:   1.5px;
+  --dy-rule-med:    2px;
+  --dy-rule-thick:  2.5px;
+
+  /* ---------- Radii ----------
+     Small, but not near-zero: the source calls oversized rounding
+     dated and 3/5/8/12 "technical and current". Dyad's 0/1/2 read
+     as a different brand, so these move. */
+  --dy-r-0:    0px;      /* full-bleed        */
+  --dy-r-1:    3px;      /* badges, tags      */
+  --dy-r-2:    8px;      /* cards, code       */
+  --dy-r-3:   12px;      /* modals — unused here, kept for parity */
+  --dy-r-pill: 9999px;   /* --radius-full     */
+
+  /* ---------- Shadows — functional only ----------
+     "Flat-to-barely-raised." */
+  --dy-shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.07);
+  --dy-shadow-card: 0 1px 4px rgba(0, 0, 0, 0.09), 0 1px 2px rgba(0, 0, 0, 0.06);
+
+  /* ---------- Motion ----------
+     Plain `ease`. The source is explicit: no bounces, no springs. */
+  --dy-ease:      ease;
+  --dy-ease-out:  ease-out;
+  --dy-dur-fast:  150ms;
+  --dy-dur:       220ms;
+  --dy-dur-slow:  380ms;
+}
+
+/* =============================================================
+   Dark mode. Slidev toggles `.dark` on <html>.
+
+   The surface ramp is the source's hsl(220, …) scale — a cool
+   near-black, not a neutral one. The accent pair inverts as it did
+   in Dyad: solid shapes take `accent`, thin letterforms take
+   `accent-ink`, and in light mode the letterform variant is the
+   deeper of the two while in dark mode it is the brighter. That
+   flip is what keeps single-line type readable whichever way paper
+   goes, and the source hands us both ends of it — green-600 for a
+   light-mode link, #91dd33 for a dark-mode one.
+   ============================================================= */
+
+html.dark {
+  --dy-ink:              #e9ecef;   /* gray-200 */
+  --dy-ink-2:            #dee2e6;   /* gray-300 */
+  --dy-paper:            hsl(220, 20%, 9%);    /* --dark-bg      */
+  --dy-paper-off:        hsl(220, 16%, 13%);   /* --dark-bg-soft */
+
+  --dy-accent:           #4dc43d;   /* green-400 */
+  --dy-accent-ink:       #91dd33;   /* the source's dark-mode link colour */
+  --dy-accent-soft:      #389826;   /* green-500 */
+  --dy-accent-tint:      rgba(77, 196, 61, 0.18);
+  --dy-accent-tint-2:    rgba(77, 196, 61, 0.10);
+  --dy-accent-tint-3:    rgba(77, 196, 61, 0.05);
+
+  /* DERIVED, same rule as the light pair read backwards: the solid
+     lightens, the letterform variant lightens further. */
+  --dy-alt:              #b07fc9;
+  --dy-alt-ink:          #cfa8e3;
+  --dy-alt-tint:         rgba(149, 88, 178, 0.22);
+
+  --dy-muted:            hsl(220, 8%, 56%);    /* --dark-fg-dim */
+  --dy-muted-2:          hsl(220, 9%, 45%);
+  --dy-muted-3:          hsl(220, 10%, 34%);
+
+  --dy-hairline-soft:    hsl(220, 12%, 18%);
+  --dy-hairline:         hsl(220, 12%, 23%);   /* --dark-border */
+  --dy-hairline-strong:  hsl(220, 12%, 34%);
+
+  /* Dark mode does not use shadows — separation is paper-off + hairline. */
+  --dy-shadow-lift: none;
+  --dy-shadow-card: none;
+
+  /* On dark, cards elevate to paper-off so they read as surfaces
+     rather than bordered paragraphs. */
+  --dy-card-bg:          var(--dy-paper-off);
+
+  /* accent-tint-3 composited over paper-off, not over paper. Putting
+     the raw 5% tint straight onto the page leaves the feature card
+     DARKER than its neighbours — the emphasis inverts. Compositing
+     over paper-off keeps it lifted, which is what the tint is for.
+     Same hue, same 5%, different base. */
+  --dy-card-feature-bg:  #1e2828;
+
+  /* A near-black code slab on a near-black page is invisible, so on
+     dark the block steps UP to paper-off and takes a hairline. Same
+     move the card makes, for the same reason. */
+  --dy-code-bg:          var(--dy-paper-off);
+  --dy-code-border:      var(--dy-hairline);
+  --dy-code-inline-bg:   hsl(220, 14%, 17%);   /* --dark-bg-mute */
+  /* DERIVED: Julia red is a 4.9:1 letterform on white and a 2.6:1
+     one on hsl(220,20%,9%). Lightened until it clears 4.5:1 again. */
+  --dy-code-inline-ink:  #e8837b;
+}
+
+/* =============================================================
+   Slide-canvas tokens.
+
+   The canvas is 960x540 — the half-res 16:9 fallback, and the
+   reason every size below is a bare number. 960px across 13.333in
+   is exactly 72px/in, so 1pt === 1px here and every pt figure in a
+   presentation spec drops into this file unconverted. Set
+   canvasWidth: 1920 in slides.md and every value below doubles.
+
+   Inherited unchanged from the Dyad template: it is canvas
+   geometry, not brand.
+   ============================================================= */
+
+:root {
+  /* Safe area: 6% of the 540px short side. Nothing crosses it. */
+  --dy-safe:      32px;
+  /* Content column inset. Sits just outside the safe area rather than
+     well inside it — the safe line is a floor, not a target, and at
+     960px across every extra pixel of gutter is a pixel of headline. */
+  --dy-pad-x:     40px;
+  --dy-pad-y:     36px;
+  /* The bottom needs more: the page number sits on the safe line, so
+     copy has to clear both it and one grid step of air. */
+  --dy-pad-bot:   48px;
+
+  /* Slide type scale (pt from the guide, 1:1 as px on this canvas) */
+  --dy-t-display:  72px;  /* hero title      66–78 */
+  --dy-t-section:  46px;  /* section title   42–48 */
+  --dy-t-title:    34px;  /* slide title     30–36 */
+  --dy-t-lede:     22px;  /* opening line, top of body range */
+  --dy-t-body:     19px;  /* body — floor is 18 */
+  --dy-t-body-sm:  17px;
+  --dy-t-caption:  14px;  /* caption / axis  13.5–18 */
+  --dy-t-label:    11px;  /* mono micro-label */
+  --dy-t-eyebrow:  10px;  /* eyebrow          9–10.5 */
+  --dy-t-page:   10.5px;  /* page number */
+}

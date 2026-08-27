@@ -1,0 +1,28 @@
+Inter is licensed under the SIL Open Font License, Version 1.1.
+
+    Copyright (c) 2016 The Inter Project Authors
+    (https://github.com/rsms/inter)
+
+    This Font Software is licensed under the SIL Open Font License,
+    Version 1.1. This license is copied below, and is also available
+    with a FAQ at: https://openfontlicense.org
+
+NOTE — the full OFL 1.1 text is NOT reproduced in this file.
+
+Inter-Variable.ttf was copied from a local font installation
+(~/Library/Fonts) that did not carry its accompanying OFL.txt, and the
+licence text was not fabricated here rather than risk shipping an
+inaccurate copy.
+
+Before distributing this deck or its build output, drop the canonical
+OFL.txt in beside this file. It ships with every Inter release:
+
+    https://github.com/rsms/inter/blob/master/LICENSE.txt
+    https://fonts.google.com/specimen/Inter  (download includes OFL.txt)
+
+The OFL requires that the licence and copyright notice accompany the
+font whenever it is redistributed, so this is a real obligation for a
+deck that gets exported, hosted or handed round — not a formality.
+
+JuliaMono, in this same directory, does ship its full licence text; see
+JuliaMono-LICENSE.txt for the shape the finished file should take.

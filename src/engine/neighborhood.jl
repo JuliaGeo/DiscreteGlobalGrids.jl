@@ -1,93 +1,94 @@
 # ---------------------------------------------------------------------------
-# Iterate clipped one-rings in storage order while reusing position lookups.
+# Iterate clipped one-rings in storage order while reusing index lookups.
 # ---------------------------------------------------------------------------
 
 """
-    SubsetPositionedCell{C}
+    SubsetIndexedCell{C}
 
-A cell and its position in the subset that created the handle. The one-argument
+A cell and its local index in the subset that created the handle. The one-argument
 [`neighbors`](@ref) iterator yields these handles.
 
-The position is valid only for that subset and is trusted unconditionally
+The index is valid only for that subset and is trusted unconditionally
 wherever a handle is accepted: indexing a `Cells`-lookup raster with one reads
-storage at that position directly, with no membership check. Use
+storage at that index directly, with no membership check. Use
 [`cellid`](@ref) and resolve the bare cell when working with another
 collection.
 
 `==`, `hash` and `convert(::Type{C})` delegate to the cell, so a handle
-compares and hashes as its cell; `show` prints the wrapper and the position
-as well. [`cellposition`](@ref)`(h)` returns the stored position.
+compares and hashes as its cell; `show` prints the wrapper and the index
+as well. [`localindex`](@ref)`(h)` returns the stored index.
 
 The read-only cell verbs — [`cell_boundary`](@ref), [`cell_centroid`](@ref),
 [`cell_polygon`](@ref), [`cell_area`](@ref), [`cell_extent`](@ref),
-[`node_extent`](@ref), [`cellposition`](@ref), [`neighbors`](@ref),
-[`ring`](@ref), [`neighborcount`](@ref), [`reindex`](@ref), [`level`](@ref)
-and [`rawid`](@ref) — accept a handle wherever they accept a cell, and answer
-for the cell.
+[`node_extent`](@ref), [`localindex`](@ref), [`globalindex`](@ref),
+[`neighbors`](@ref), [`ring`](@ref), [`neighborcount`](@ref),
+[`reindex`](@ref), [`level`](@ref) and [`rawid`](@ref) — accept a handle
+wherever they accept a cell, and answer for the cell.
 """
-struct SubsetPositionedCell{C<:AbstractCellIndex}
+struct SubsetIndexedCell{C<:AbstractCellIndex}
     cell::C
-    position::Int
+    index::Int
 end
 
 """
-    cellid(h::SubsetPositionedCell)
+    cellid(h::SubsetIndexedCell)
     cellid(c::AbstractCellIndex)
 
-Return the bare cell from a positioned handle, or return a bare cell unchanged.
-The escape from a handle's single-axis contract: `cellposition(other,
-cellid(h))` resolves against any axis, where the handle's own position is valid
+Return the bare cell from an indexed handle, or return a bare cell unchanged.
+The escape from a handle's single-axis contract: `localindex(other,
+cellid(h))` resolves against any axis, where the handle's own index is valid
 only against the collection that minted it.
 """
-cellid(h::SubsetPositionedCell) = h.cell
+cellid(h::SubsetIndexedCell) = h.cell
 cellid(c::AbstractCellIndex) = c
 
 """
-    cellposition(h::SubsetPositionedCell) -> Int
+    localindex(h::SubsetIndexedCell) -> Int
 
-Return the handle's position in the collection that created it.
+Return the handle's local index in the collection that created it.
 """
-cellposition(h::SubsetPositionedCell) = h.position
+localindex(h::SubsetIndexedCell) = h.index
 
-level(h::SubsetPositionedCell) = level(h.cell)
-rawid(h::SubsetPositionedCell) = rawid(h.cell)
+level(h::SubsetIndexedCell) = level(h.cell)
+rawid(h::SubsetIndexedCell) = rawid(h.cell)
 
 # The read-only cell verbs answer for the underlying cell, so a handle works
 # wherever the cell it prints does. The collection stays untyped because grids,
 # systems, `CellVector`s and `CellLookup`s all take a cell in this slot.
-cellposition(x, h::SubsetPositionedCell) = cellposition(x, h.cell)
-cell_boundary(x, h::SubsetPositionedCell) = cell_boundary(x, h.cell)
-cell_centroid(x, h::SubsetPositionedCell) = cell_centroid(x, h.cell)
-cell_polygon(x, h::SubsetPositionedCell) = cell_polygon(x, h.cell)
-cell_area(x, h::SubsetPositionedCell) = cell_area(x, h.cell)
-cell_extent(x, h::SubsetPositionedCell) = cell_extent(x, h.cell)
-node_extent(x, h::SubsetPositionedCell) = node_extent(x, h.cell)
-neighbors(x, h::SubsetPositionedCell, k::Integer = 1;
+localindex(x, h::SubsetIndexedCell) = localindex(x, h.cell)
+globalindex(x, h::SubsetIndexedCell) = globalindex(x, h.cell)
+cell_boundary(x, h::SubsetIndexedCell) = cell_boundary(x, h.cell)
+cell_centroid(x, h::SubsetIndexedCell) = cell_centroid(x, h.cell)
+cell_polygon(x, h::SubsetIndexedCell) = cell_polygon(x, h.cell)
+cell_area(x, h::SubsetIndexedCell) = cell_area(x, h.cell)
+cell_extent(x, h::SubsetIndexedCell) = cell_extent(x, h.cell)
+node_extent(x, h::SubsetIndexedCell) = node_extent(x, h.cell)
+neighbors(x, h::SubsetIndexedCell, k::Integer = 1;
     connectivity::Connectivity = Vertex()) = neighbors(x, h.cell, k; connectivity)
-ring(x, h::SubsetPositionedCell, k::Integer;
+ring(x, h::SubsetIndexedCell, k::Integer;
     connectivity::Connectivity = Vertex()) = ring(x, h.cell, k; connectivity)
-neighborcount(x, h::SubsetPositionedCell;
+neighborcount(x, h::SubsetIndexedCell;
     connectivity::Connectivity = Vertex()) = neighborcount(x, h.cell; connectivity)
-reindex(T::Type{<:AbstractCellIndex}, sys, h::SubsetPositionedCell) =
+reindex(T::Type{<:AbstractCellIndex}, sys, h::SubsetIndexedCell) =
     reindex(T, sys, h.cell)
 
-Base.:(==)(a::SubsetPositionedCell, b::SubsetPositionedCell) = a.cell == b.cell
-Base.:(==)(a::SubsetPositionedCell, b::AbstractCellIndex) = a.cell == b
-Base.:(==)(a::AbstractCellIndex, b::SubsetPositionedCell) = a == b.cell
-Base.hash(h::SubsetPositionedCell, u::UInt) = hash(h.cell, u)
+Base.:(==)(a::SubsetIndexedCell, b::SubsetIndexedCell) = a.cell == b.cell
+Base.:(==)(a::SubsetIndexedCell, b::AbstractCellIndex) = a.cell == b
+Base.:(==)(a::AbstractCellIndex, b::SubsetIndexedCell) = a == b.cell
+Base.hash(h::SubsetIndexedCell, u::UInt) = hash(h.cell, u)
 # Print what it is: a bare cell here would hide both the wrapper and the
-# position, which is the pair every handle question turns on.
-Base.show(io::IO, h::SubsetPositionedCell) =
-    print(io, "SubsetPositionedCell(", h.cell, ", position ", h.position, ")")
-Base.show(io::IO, ::MIME"text/plain", h::SubsetPositionedCell) = show(io, h)
-Base.convert(::Type{C}, h::SubsetPositionedCell{C}) where {C<:AbstractCellIndex} =
+# index, which is the pair every handle question turns on.
+Base.show(io::IO, h::SubsetIndexedCell) =
+    print(io, "SubsetIndexedCell(", h.cell, ", index ", h.index, ")")
+Base.show(io::IO, ::MIME"text/plain", h::SubsetIndexedCell) = show(io, h)
+Base.convert(::Type{C}, h::SubsetIndexedCell{C}) where {C<:AbstractCellIndex} =
     h.cell
 
 # ===========================================================================
 # The window cursor
 #
-# The cursor tracks the storage position, its window, and the last window that
-# contained a neighbour. A returned position of zero means the cell is absent.
+# The cursor tracks the storage index, its window, and the last window that
+# contained a neighbour. A returned index of zero means the cell is absent.
 # ===========================================================================
 
 @inline _wbase(w::RangeWindows, j::Int) = j == 1 ? 0 : @inbounds w.offsets[j-1]
@@ -98,13 +99,13 @@ Base.convert(::Type{C}, h::SubsetPositionedCell{C}) where {C<:AbstractCellIndex}
     end
     return wj
 end
-@inline _advance(::PositionWindows, wj::Int, k::Int) = k
+@inline _advance(::IndexWindows, wj::Int, k::Int) = k
 
 @inline _leaf_at(w::RangeWindows, wj::Int, k::Int) =
     @inbounds w.starts[wj] + (k - _wbase(w, wj)) - 1
-@inline _leaf_at(w::PositionWindows, ::Int, k::Int) = @inbounds w.positions[k]
+@inline _leaf_at(w::IndexWindows, ::Int, k::Int) = @inbounds w.indices[k]
 
-# Leaf position -> (concatenation position or 0, updated hint).
+# Leaf index -> (concatenation index or 0, updated hint).
 @inline function _cursor_find(w::RangeWindows, wj::Int, hj::Int, p::Int)
     @inbounds if w.starts[wj] <= p <= w.stops[wj]
         return _wbase(w, wj) + (p - w.starts[wj]) + 1, hj
@@ -117,9 +118,9 @@ end
     return _wbase(w, j) + (p - @inbounds w.starts[j]) + 1, j
 end
 
-# Check the previous match before searching a position list.
-@inline function _cursor_find(w::PositionWindows, ::Int, hj::Int, p::Int)
-    ps = w.positions
+# Check the previous match before searching an index list.
+@inline function _cursor_find(w::IndexWindows, ::Int, hj::Int, p::Int)
+    ps = w.indices
     @inbounds if hj <= length(ps) && ps[hj] == p
         return hj, hj
     end
@@ -140,9 +141,10 @@ end
 # was.
 # ===========================================================================
 
-_capacity(sys, conn::Connectivity) = _capacity(maxneighbors(sys, conn))
-_capacity(M::Integer) = Val(Int(M))
-_capacity(::Nothing) = nothing
+_capacity(sys, conn::Connectivity) =
+    static_capacity(maxneighbors(sys, conn), cellindextype(sys))
+
+_capacity(M, ::Type{T}) where {T} = static_capacity(M, T)
 
 _ringtype(::Val{M}, ::Type{T}) where {M,T} = SmallCollections.SmallVector{M,T}
 _ringtype(::Nothing, ::Type{T}) where {T} = Vector{T}
@@ -158,14 +160,14 @@ _ringtype(::Nothing, ::Type{T}) where {T} = Vector{T}
 _hint_degree(::Val{M}) where {M} = M
 _hint_degree(::Nothing) = 8
 
-# Clip a ring to the subset and attach each surviving cell's position. A
+# Clip a ring to the subset and attach each surviving cell's local index. A
 # declared degree bound keeps the result statically sized and off the heap.
-@inline function _positioned(cv::CellVector, wj::Int, hj::Int, cells, cap)
+@inline function _indexed(cv::CellVector, wj::Int, hj::Int, cells, cap)
     w = cv.windows
-    out = _newring(cap, SubsetPositionedCell{eltype(cells)})
+    out = _newring(cap, SubsetIndexedCell{eltype(cells)})
     for nb in cells
-        q, hj = _cursor_find(w, wj, hj, cellposition(cv.grid, nb)::Int)
-        q == 0 || (out = _pushring(out, SubsetPositionedCell(nb, q)))
+        q, hj = _cursor_find(w, wj, hj, globalindex(cv.grid, nb)::Int)
+        q == 0 || (out = _pushring(out, SubsetIndexedCell(nb, q)))
     end
     return out, hj
 end
@@ -173,15 +175,15 @@ end
 # Undeclared: the unclipped ring is an exact upper bound on the clipped one, so
 # the row is allocated once at that size and trimmed. `push!`-from-empty would
 # reallocate on the way to a degree-12 neighbourhood.
-@inline function _positioned(cv::CellVector, wj::Int, hj::Int, cells, ::Nothing)
+@inline function _indexed(cv::CellVector, wj::Int, hj::Int, cells, ::Nothing)
     w = cv.windows
-    out = Vector{SubsetPositionedCell{eltype(cells)}}(undef, length(cells))
+    out = Vector{SubsetIndexedCell{eltype(cells)}}(undef, length(cells))
     m = 0
     for nb in cells
-        q, hj = _cursor_find(w, wj, hj, cellposition(cv.grid, nb)::Int)
+        q, hj = _cursor_find(w, wj, hj, globalindex(cv.grid, nb)::Int)
         if q != 0
             m += 1
-            @inbounds out[m] = SubsetPositionedCell(nb, q)
+            @inbounds out[m] = SubsetIndexedCell(nb, q)
         end
     end
     m == length(out) || resize!(out, m)
@@ -197,12 +199,12 @@ end
     neighbors(pg::PartialGrid; connectivity = Vertex())
 
 Iterate a subset in storage order as `(cell, nbrs)`. Both the cell and its
-one-ring, clipped to membership, are [`SubsetPositionedCell`](@ref) handles:
+one-ring, clipped to membership, are [`SubsetIndexedCell`](@ref) handles:
 `nbrs` holds the same cells `neighbors(cv, cell)` answers, in the same order.
 
 The iterator reuses window lookups across the sweep and allocates nothing
 beyond the system's native one-ring operation. A `PartialGrid` uses its
-`CellVector` representation without changing positions.
+`CellVector` representation without changing indices.
 """
 neighbors(cv::CellVector; connectivity::Connectivity = Vertex()) =
     NeighborhoodIterator(cv, connectivity)
@@ -241,18 +243,18 @@ function _neighborhood_next(it::NeighborhoodIterator{CAP}, k::Int, wj::Int,
     w = cv.windows
     wj = _advance(w, wj, k)
     c = cellindex(cv.grid, _leaf_at(w, wj, k))
-    nbrs, hj = _positioned(cv, wj, hj,
+    nbrs, hj = _indexed(cv, wj, hj,
         neighbors(cv.grid, c, 1; connectivity = it.connectivity), CAP())
-    return (SubsetPositionedCell(c, k), nbrs), (k + 1, wj, hj)
+    return (SubsetIndexedCell(c, k), nbrs), (k + 1, wj, hj)
 end
 
 # ===========================================================================
 # Closure-based neighbourhood sweeps.
 # ===========================================================================
 
-# Find the window containing storage position `k`.
+# Find the window containing storage index `k`.
 @inline _window_at(w::RangeWindows, k::Int) = searchsortedfirst(w.offsets, k)
-@inline _window_at(::PositionWindows, k::Int) = k
+@inline _window_at(::IndexWindows, k::Int) = k
 
 """
     StorageOrder()
@@ -272,14 +274,14 @@ function _sweep!(g::G, cv::CellVector, conn::Connectivity, r::UnitRange{Int},
     for k in r
         wj = _advance(w, wj, k)
         c = cellindex(cv.grid, _leaf_at(w, wj, k))
-        nbrs, hj = _positioned(cv, wj, hj,
+        nbrs, hj = _indexed(cv, wj, hj,
             neighbors(cv.grid, c, 1; connectivity = conn), cap)
-        g(k, SubsetPositionedCell(c, k), nbrs)
+        g(k, SubsetIndexedCell(c, k), nbrs)
     end
     return nothing
 end
 
-# Visit the positions selected by `perm`; each visit starts with a fresh window
+# Visit the indices selected by `perm`; each visit starts with a fresh window
 # lookup because permutations provide no locality guarantee.
 function _sweep_perm!(g::G, cv::CellVector, conn::Connectivity,
         perm::AbstractVector{<:Integer}, r::UnitRange{Int},
@@ -289,14 +291,14 @@ function _sweep_perm!(g::G, cv::CellVector, conn::Connectivity,
         k = Int(@inbounds perm[j])
         wj = _window_at(w, k)
         c = cellindex(cv.grid, _leaf_at(w, wj, k))
-        nbrs, _ = _positioned(cv, wj, wj,
+        nbrs, _ = _indexed(cv, wj, wj,
             neighbors(cv.grid, c, 1; connectivity = conn), cap)
-        g(k, SubsetPositionedCell(c, k), nbrs)
+        g(k, SubsetIndexedCell(c, k), nbrs)
     end
     return nothing
 end
 
-# Reject orders that do not visit every output position exactly once.
+# Reject orders that do not visit every output index exactly once.
 function _check_permutation(perm::AbstractVector{<:Integer}, n::Int)
     length(perm) == n || throw(ArgumentError(
         "order must be a permutation of 1:$n, got length $(length(perm))"))
@@ -322,23 +324,23 @@ end
     NeighborCallbackError
 
 A [`mapneighbors`](@ref) or [`foreachneighbors`](@ref) callback that threw
-during a threaded sweep, naming the `cell` and subset `position` it was called
+during a threaded sweep, naming the `cell` and subset `index` it was called
 with. The callback's own exception is `err` and is shown as the cause.
 
 One callback failure raises one of these: the sweep waits for every chunk, then
-reports the failure at the lowest position and drops the rest. The sequential
+reports the failure at the lowest index and drops the rest. The sequential
 path lets the callback's exception through untouched.
 """
 struct NeighborCallbackError <: Exception
     cell::AbstractCellIndex
-    position::Int
+    index::Int
     err::Any
     backtrace::Any
 end
 
 function Base.showerror(io::IO, e::NeighborCallbackError)
     print(io, "NeighborCallbackError: the callback failed at cell ", e.cell,
-        ", subset position ", e.position, ".",
+        ", subset index ", e.index, ".",
         "\nRerun with `threaded = false` to raise it on its own.",
         "\ncaused by: ")
     showerror(io, e.err, e.backtrace)
@@ -364,7 +366,7 @@ _reporting(g::G, ::GOCore.False) where {G} = g
 _reporting(g::G, ::GOCore.True) where {G} = _ReportingCallback(g)
 
 # Every chunk is waited on before anything is reported, so no task outlives the
-# call and the reported failure is the earliest in position order rather than
+# call and the reported failure is the earliest in index order rather than
 # the first to be scheduled.
 function _foreach_chunk(body!::F, n::Int, ::GOCore.True) where {F}
     n == 0 && return nothing
@@ -397,23 +399,40 @@ end
 
 _foreach_chunk(body!::F, n::Int, ::GOCore.False) where {F} = body!(1:n)
 
-function _run!(g::G, cv::CellVector, conn::Connectivity, ::StorageOrder, thr,
-        cap::CAP) where {G,CAP}
-    h = _reporting(g, thr)
-    return _foreach_chunk(r -> _sweep!(h, cv, conn, r, cap), length(cv), thr)
+# The sweep drivers take a callback *factory*, not a callback: `mkg(r)` is
+# called once inside each task with that task's range and answers the
+# `g(k, cell, nbrs)` that range is swept with. Per-task working state — a
+# buffer no two tasks may share — is built there and captured, so the sweeps
+# below stay unaware of it and a callback with no such state is built once and
+# handed to every range unchanged.
+function _runeach!(mkg::MK, cv::CellVector, conn::Connectivity, ::StorageOrder,
+        thr, cap::CAP) where {MK,CAP}
+    return _foreach_chunk(r -> _sweep!(_reporting(mkg(r), thr), cv, conn, r, cap),
+        length(cv), thr)
 end
 
-function _run!(g::G, cv::CellVector, conn::Connectivity,
-        perm::AbstractVector{<:Integer}, thr, cap::CAP) where {G,CAP}
+function _runeach!(mkg::MK, cv::CellVector, conn::Connectivity,
+        perm::AbstractVector{<:Integer}, thr, cap::CAP) where {MK,CAP}
     _check_permutation(perm, length(cv))
-    h = _reporting(g, thr)
-    return _foreach_chunk(r -> _sweep_perm!(h, cv, conn, perm, r, cap),
+    return _foreach_chunk(
+        r -> _sweep_perm!(_reporting(mkg(r), thr), cv, conn, perm, r, cap),
         length(perm), thr)
 end
 
-@noinline _run!(g, cv::CellVector, conn, order, thr, v) = throw(ArgumentError(
-    "order must be StorageOrder() or a permutation of 1:length(cv), " *
-    "got $(typeof(order))"))
+@noinline _runeach!(mkg, cv::CellVector, conn, order, thr, v) =
+    throw(ArgumentError(
+        "order must be StorageOrder() or a permutation of 1:length(cv), " *
+        "got $(typeof(order))"))
+
+# A callback with no per-task state: the same one for every range.
+struct _EveryTask{G}
+    g::G
+end
+
+@inline (h::_EveryTask)(::UnitRange{Int}) = h.g
+
+_run!(g::G, cv::CellVector, conn, order, thr, cap::CAP) where {G,CAP} =
+    _runeach!(_EveryTask(g), cv, conn, order, thr, cap)
 
 # --- output storage ---------------------------------------------------------
 
@@ -435,7 +454,7 @@ end
         nbrs::SmallCollections.SmallVector{M}) where {M}
     out = SmallCollections.SmallVector{M,eltype(data)}()
     for h in nbrs
-        out = SmallCollections.push(out, @inbounds data[h.position])
+        out = SmallCollections.push(out, @inbounds data[h.index])
     end
     return out
 end
@@ -443,7 +462,7 @@ end
 @inline function _gather(data::AbstractVector, nbrs::Vector)
     out = Vector{eltype(data)}(undef, length(nbrs))
     for (i, h) in enumerate(nbrs)
-        @inbounds out[i] = data[h.position]
+        @inbounds out[i] = data[h.index]
     end
     return out
 end
@@ -452,40 +471,79 @@ end
     "data must be laid out against the collection: expected a vector with " *
     "axis 1:$n, got axis $(nd)"))
 
+# `axes`, not `eachindex`: what the contract asks is that index `k` of the
+# data is index `k` of the collection, and a lazy array satisfies that while
+# reporting a chunked `eachindex` that is not a `OneTo`. Passing one is legal
+# and slow — see `foreachchunk` for the traversal that makes it fast.
 _check_data(data::AbstractVector, n::Int) =
-    eachindex(data) == Base.OneTo(n) || _data_mismatch(eachindex(data), n)
+    axes(data) == (Base.OneTo(n),) || _data_mismatch(axes(data, 1), n)
+
+@noinline _needs_and_data() = throw(ArgumentError(
+    "pass a data vector or needs, not both: `Value(data)` is the field " *
+    "request for that vector"))
+
+# The data-taking methods answer `f(cell, value, values)`; a field request
+# would redefine the callback's arity, so the two forms are exclusive.
+_checknodata(::Nothing) = nothing
+_checknodata(needs) = _needs_and_data()
 
 """
     mapneighbors(f, cv; order = StorageOrder(), threaded = true,
                  connectivity = Vertex())
     mapneighbors(f, cv, data::AbstractVector; ...)
+    mapneighbors(f, cv; needs = (Value(data), Centroid()), ...)
 
 Apply `f` to each cell and its clipped one-ring. `cv` may be a
 [`CellVector`](@ref), [`PartialGrid`](@ref), or [`CellLookup`](@ref).
 
-Without `data`, `f(cell, nbrs)` receives the same positioned handles yielded
+Without `data`, `f(cell, nbrs)` receives the same indexed handles yielded
 by the one-argument [`neighbors`](@ref) iterator. With a vector laid out
 against the subset, `f(cell, value, values)` receives the cell value and its
 neighbour values in the counter-clockwise order [`neighbors`](@ref) states, so
 slot `j` of the callback's ring names a direction.
 
-Results are stored in subset position order. A concrete tuple result produces
+`needs` names the per-neighbour fields the kernel reads — a tuple of `Cell`,
+`Index`, `Value` and `Centroid` requests — and the callback becomes
+`f(center, rings)`: one entry per need for the visited cell, and one ring per
+need for its clipped neighbours. The rings are field-major, `rings[j]` being
+need `j`'s value for every neighbour, with slot `i` of every ring naming the
+same neighbour; a caller who wants one record per neighbour writes
+`zip(rings...)`. `Index(Local())` is the index in the collection passed here,
+and it stays that index however the sweep is run: [`mapneighbors!`](@ref)
+answers the same request chunk by chunk and translates each chunk's own
+numbering back to this collection's, so its result is this one's cell for
+cell. `Centroid()` is answered from a bounded working set kept per task and
+keyed by the local index, so a centroid several neighbourhoods name is
+computed once wherever the visit order keeps them close in that index — the
+default storage order does,
+and a random permutation `order` does not. A field request and a positional
+`data` vector are exclusive.
+
+Results are stored in subset index order. A concrete tuple result produces
 a tuple of vectors, one per component. `order` accepts [`StorageOrder`](@ref)
 or a permutation of `1:length(cv)`; invalid permutations throw
 `ArgumentError`.
 
 When `threaded` is true, contiguous ranges run in separate tasks and write to
-disjoint output positions — legal exactly when `f` is order-independent, and
+disjoint output indices — legal exactly when `f` is order-independent, and
 the results are then identical to the sequential ones. A callback that throws
-there raises one [`NeighborCallbackError`](@ref) naming the cell and position
+there raises one [`NeighborCallbackError`](@ref) naming the cell and index
 it failed at, not one exception per task.
 [`foreachneighbors`](@ref) provides the side-effecting form and defaults to
 sequential execution.
 """
-function mapneighbors(f::F, cv::CellVector; order = StorageOrder(),
-        threaded = true, connectivity::Connectivity = Vertex()) where {F}
+function mapneighbors(f::F, cv::CellVector; needs = nothing,
+        order = StorageOrder(), threaded = true,
+        connectivity::Connectivity = Vertex()) where {F}
+    return _mapneighbors(f, cv, needs, order, threaded, connectivity)
+end
+
+# No field request: the callback receives the indexed handles themselves. The
+# `needs` method is in needs.jl; `nothing` reaches this one by dispatch.
+function _mapneighbors(f::F, cv::CellVector, ::Nothing, order, threaded,
+        connectivity::Connectivity) where {F}
     cap = _capacity(system(cv), connectivity)
-    H = SubsetPositionedCell{eltype(cv)}
+    H = SubsetIndexedCell{eltype(cv)}
     T = Base.promote_op(f, H, _ringtype(cap, H))
     outs = _outputs(T, length(cv))
     return _mapstore!(f, outs, cv, connectivity, order, GOCore.booltype(threaded),
@@ -493,11 +551,12 @@ function mapneighbors(f::F, cv::CellVector; order = StorageOrder(),
 end
 
 function mapneighbors(f::F, cv::CellVector, data::AbstractVector;
-        order = StorageOrder(), threaded = true,
+        needs = nothing, order = StorageOrder(), threaded = true,
         connectivity::Connectivity = Vertex()) where {F}
+    _checknodata(needs)
     _check_data(data, length(cv))
     cap = _capacity(system(cv), connectivity)
-    H = SubsetPositionedCell{eltype(cv)}
+    H = SubsetIndexedCell{eltype(cv)}
     T = Base.promote_op(f, H, eltype(data), _ringtype(cap, eltype(data)))
     outs = _outputs(T, length(cv))
     return _mapstore!(f, outs, cv, data, connectivity, order,
@@ -524,21 +583,30 @@ end
     foreachneighbors(f, cv; order = StorageOrder(), threaded = false,
                      connectivity = Vertex())
     foreachneighbors(f, cv, data::AbstractVector; ...)
+    foreachneighbors(f, cv; needs = (Value(data), Centroid()), ...)
 
 Call `f` for each cell and clipped one-ring, discarding its return value. The
-calling forms and `order` contract match [`mapneighbors`](@ref). Threading is
-disabled by default; enabling it requires `f` to be order-independent.
+calling forms, `needs` contract and `order` contract match
+[`mapneighbors`](@ref). Threading is disabled by default; enabling it requires
+`f` to be order-independent.
 """
-function foreachneighbors(f::F, cv::CellVector; order = StorageOrder(),
-        threaded = false, connectivity::Connectivity = Vertex()) where {F}
+function foreachneighbors(f::F, cv::CellVector; needs = nothing,
+        order = StorageOrder(), threaded = false,
+        connectivity::Connectivity = Vertex()) where {F}
+    return _foreachneighbors(f, cv, needs, order, threaded, connectivity)
+end
+
+function _foreachneighbors(f::F, cv::CellVector, ::Nothing, order, threaded,
+        connectivity::Connectivity) where {F}
     _run!((k, c, nbrs) -> (f(c, nbrs); nothing), cv, connectivity, order,
         GOCore.booltype(threaded), _capacity(system(cv), connectivity))
     return nothing
 end
 
 function foreachneighbors(f::F, cv::CellVector, data::AbstractVector;
-        order = StorageOrder(), threaded = false,
+        needs = nothing, order = StorageOrder(), threaded = false,
         connectivity::Connectivity = Vertex()) where {F}
+    _checknodata(needs)
     _check_data(data, length(cv))
     _run!((k, c, nbrs) -> (f(c, (@inbounds data[k]), _gather(data, nbrs)); nothing),
         cv, connectivity, order, GOCore.booltype(threaded),

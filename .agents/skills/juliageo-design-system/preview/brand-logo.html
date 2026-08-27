@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Brand" name="Logo Usage" subtitle="JuliaGeo + GeometryOps lockups, dark bg, color bar" viewport="700x340" -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../colors_and_type.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; padding: 28px 32px; font-family: var(--font-sans); background: #fff; display: flex; flex-direction: column; gap: 28px; }
+  .section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gray-400); margin: 0 0 12px; }
+  /* Horizontal lockup */
+  .lockup-h { display: flex; align-items: center; gap: 14px; }
+  .lockup-h img { height: 48px; width: auto; }
+  .lockup-name { font-size: 22px; font-weight: 700; color: #212529; letter-spacing: -0.02em; line-height: 1; }
+  .lockup-sub { font-size: 12px; color: #6c757d; margin-top: 2px; letter-spacing: 0.02em; }
+  /* Icon only */
+  .icon-row { display: flex; gap: 20px; align-items: center; }
+  .icon-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .icon-wrap img { display: block; }
+  .icon-label { font-size: 10px; color: #adb5bd; font-family: var(--font-mono); }
+  /* Dark bg */
+  .on-dark { background: hsl(220,20%,9%); border-radius: 10px; padding: 20px 28px; display: flex; align-items: center; gap: 14px; }
+  .on-dark .lockup-name { color: #f8f9fa; }
+  .on-dark .lockup-sub { color: #6c757d; }
+  /* Color bar */
+  .color-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; gap: 1px; }
+  .color-bar div { flex: 1; }
+</style>
+</head>
+<body>
+  <div>
+    <p class="section-label">Logo — Horizontal Lockup</p>
+    <div class="lockup-h">
+      <img src="../assets/juliageo-logo.svg" alt="JuliaGeo logo">
+      <div>
+        <div class="lockup-name">JuliaGeo</div>
+        <div class="lockup-sub">Geospatial computing in Julia</div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p class="section-label">Package — GeometryOps.jl</p>
+    <div class="lockup-h">
+      <img src="../assets/geometryops-logo.png" alt="GeometryOps logo" style="height:44px">
+      <div>
+        <div class="lockup-name" style="font-size:18px">GeometryOps.jl</div>
+        <div class="lockup-sub">Blazing fast geometry operations in pure Julia</div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p class="section-label">Logo on Dark Background</p>
+    <div class="on-dark">
+      <img src="../assets/juliageo-logo.svg" alt="JuliaGeo logo" style="height:44px">
+      <div>
+        <div class="lockup-name">JuliaGeo</div>
+        <div class="lockup-sub">Geospatial computing in Julia</div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <p class="section-label">Julia Brand Color Bar</p>
+    <div class="color-bar" style="width:300px">
+      <div style="background:#389826;flex:2"></div>
+      <div style="background:#4063D8;flex:1"></div>
+      <div style="background:#9558B2;flex:1"></div>
+      <div style="background:#CB3C33;flex:1"></div>
+    </div>
+  </div>
+</body></html>

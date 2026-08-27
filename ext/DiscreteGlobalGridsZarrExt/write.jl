@@ -20,10 +20,11 @@
 module DGGSZarrWrite
 
 import DiscreteGlobalGrids as DGG
+import ..DiscreteGlobalGridsZarrExt
 using ..DiscreteGlobalGridsZarrExt: storeidentifier,
     MANIFEST_MARKER, MANIFEST_WRITER, MANIFEST_FORMAT, MANIFEST_VALIDATED
 using DiscreteGlobalGrids: AbstractCellIndex, ArrayEntry,
-    CellEncoding, CellLookup, ChunkedCellLookup, DGGSFormatError,
+    AbstractCellLookup, CellEncoding, CellLookup, DGGSFormatError,
     DEFAULT_WRITE_CONVENTIONS, DenseEncoding, ENCODING_REGISTRY, ImplicitEncoding,
     RangesEncoding, StoreDescription, StoreSnapshot,
     ancestor, cellaxis, chunkmanifest, encodingname, has_sorted_subtrees,
@@ -80,14 +81,14 @@ store**, consolidated metadata included. `dest` is a local path or an open
 writeable `Zarr.ZGroup`; a `gs://`/`s3://`/`https://` URL is refused rather than
 half-written.
 
-The cell dimension must carry a `CellLookup` or a `ChunkedCellLookup`, which is
+The cell dimension must carry an `AbstractCellLookup`, which is
 this package's way of saying the axis is still sorted, unique and at one level;
 `reverse` and friends degrade it to a `Categorical`, and that is refused.
 
   - `encoding = :auto` writes ranges where the axis is eligible and dense
     otherwise. `:dense` is the interop escape for readers that cannot expand
     ranges, `:ranges` forces the compact form, and `:implicit` writes no cell
-    coordinate at all — position is the cell — which needs a whole level.
+    coordinate at all — the index is the cell — which needs a whole level.
   - `merge = :step` merges only ids adjacent as integers, so no interval can
     enclose an id that names no cell — what a structural-count reader needs, and
     what the published IGEO7 range stores hold. `merge = :rank` merges runs of
@@ -95,7 +96,7 @@ this package's way of saying the axis is still sorted, unique and at one level;
     only by a rank-aware reader such as this package; see [`idranges`](@ref).
   - `chunks = :auto` groups whole coarse-ancestor subtree runs into chunks of
     about `chunk_target` elements; an integer is a fixed chunk length in CELLS.
-    See `ChunkPlan` for what that guarantees and what it only aims at.
+    See `WriteChunkPlan` for what that guarantees and what it only aims at.
     `chunk_target` counts the elements of a chunk — cells times the extents of
     the non-cell dimensions, which are one chunk each — so a layer with a
     40-step time axis gets a fortieth of the cells per chunk.
@@ -121,20 +122,39 @@ so a stack read back carries it in each layer's `metadata`.
 Layers are never overwritten: a `ZGroup` destination that already holds an array
 this write would create raises before anything is stamped.
 """
-function DGG.dggwrite(dest::AbstractString, src::Cube; kw...)
+function DGG.dggwrite(dest::AbstractString, src::Cube; layout::Symbol=:cells, kw...)
     path = String(dest)
     _reject_remote(path)
+    layout === :cells || return (_otherlayout(layout, path, src; kw...); dest)
     # `zgroup` refuses a store that is not empty, so a path needs no name guard.
     _write(path, (attrs, names) -> Zarr.zgroup(path; attrs=attrs), src; kw...)
     return dest
 end
 
-function DGG.dggwrite(dest::Zarr.ZGroup, src::Cube; kw...)
+function DGG.dggwrite(dest::Zarr.ZGroup, src::Cube; layout::Symbol=:cells, kw...)
     dest.writeable || throw(ArgumentError(
         "dggwrite needs a writeable group; this one was opened read-only."))
+    layout === :cells || return (_otherlayout(layout, dest, src; kw...); dest)
     _write(storeidentifier(dest), (attrs, names) -> _stamp(dest, attrs, names),
         src; kw...)
     return dest
+end
+
+# `layout` chooses the SHAPE of the store where `encoding` chooses the shape of
+# its cell coordinate. `:cells` is everything in this file — one cell dimension,
+# cut into equal chunks — and `:subzones` is the two-dimensional
+# ancestor-subzone layout, which shares this entry point and none of the
+# pipeline below it. The module is named rather than imported because it is
+# included after this file: it needs the write half's error style, not the
+# other way round.
+@noinline function _otherlayout(layout::Symbol, dest, src; kw...)
+    layout === :subzones && return DiscreteGlobalGridsZarrExt.DGGSZarrSubzones.write_subzones(
+        dest, src; kw...)
+    throw(ArgumentError(
+        "dggwrite writes the `:cells` layout — one cell dimension, the default — " *
+        "and the `:subzones` layout, which is the two-dimensional " *
+        "ancestor-subzone store and takes an `ancestor_level`. " *
+        "$(repr(layout)) is neither."))
 end
 
 @noinline function _reject_remote(path)
@@ -266,16 +286,16 @@ coordinate itself — works from this array, and a write of tens of millions of
 cells never holds the axis twice. Where a typed cell is wanted, `idcell` puts
 the wrapper back on for the one id in hand.
 
-Only this package's own cell lookups are accepted, and that is the canonicity
+Only an [`AbstractCellLookup`](@ref) is accepted, and that is the canonicity
 check rather than a restriction: an ascending, unique subset of a cell axis is
-a `CellLookup` again, and one that is neither is exactly what DimensionalData
+a cell lookup again, and one that is neither is exactly what DimensionalData
 degrades to a `Categorical` — so a cell dimension that is not a cell lookup is
 a cell dimension that is no longer sorted and unique.
 """
 function _cellaxis(src)
     for d in DD.dims(src)
         lk = DD.val(d)
-        lk isa Union{CellLookup,ChunkedCellLookup} || continue
+        lk isa AbstractCellLookup || continue
         grid = levelgrid(system(lk), level(lk))
         return d, grid, _rawids(grid, lk)
     end
@@ -301,7 +321,7 @@ end
     end
     throw(ArgumentError("dggwrite needs a cube with a cell dimension: none of " *
                         join(map(d -> string(DD.name(d)), DD.dims(src)), ", ") *
-                        " carries a CellLookup or a ChunkedCellLookup."))
+                        " carries a cell lookup."))
 end
 
 # ===========================================================================
@@ -408,7 +428,7 @@ end
 # ===========================================================================
 
 """
-    ChunkPlan(chunklength, ancestor_level, aligned)
+    WriteChunkPlan(chunklength, ancestor_level, aligned)
 
 What `chunks = :auto` decided, and how much of the coarse-ancestor property it
 could keep.
@@ -437,7 +457,7 @@ target itself, clamped to the axis.
 The target here is a CELL count: `dggwrite`'s `chunk_target` counts elements,
 and the non-cell extents have already been divided out of it.
 """
-struct ChunkPlan
+struct WriteChunkPlan
     chunklength::Int
     ancestor_level::Union{Int,Nothing}
     aligned::Bool
@@ -448,7 +468,7 @@ function _chunkplan(chunks::Integer, grid, cells, target)
         "a chunk length is at least one cell, not $chunks"))
     # Longer than the axis is not wrong, but it is not what was written either,
     # and the manifest must describe the chunks that exist.
-    return ChunkPlan(min(Int(chunks), length(cells)), nothing, false)
+    return WriteChunkPlan(min(Int(chunks), length(cells)), nothing, false)
 end
 
 function _chunkplan(chunks::Symbol, grid, cells, target)
@@ -457,7 +477,7 @@ function _chunkplan(chunks::Symbol, grid, cells, target)
     n = length(cells)
     sys = system(grid)
     L = level(grid)
-    plain = ChunkPlan(clamp(target, 1, n), nothing, false)
+    plain = WriteChunkPlan(clamp(target, 1, n), nothing, false)
     (L < 1 || !has_sorted_subtrees(sys)) && return plain
 
     # Runs at level L-1 cost one `ancestor` per cell; every coarser level is then
@@ -479,11 +499,11 @@ function _chunkplan(chunks::Symbol, grid, cells, target)
     j = searchsortedlast(best, target)
     @assert j >= 1
     cl = best[j]
-    return ChunkPlan(cl, bestlevel, _allaligned(best, cl, n))
+    return WriteChunkPlan(cl, bestlevel, _allaligned(best, cl, n))
 end
 
-# End positions of the maximal runs of cells sharing a level-`A` ancestor.
-# `starts` names the positions to look at: every cell for the first pass, one
+# End indices of the maximal runs of cells sharing a level-`A` ancestor.
+# `starts` names the indices to look at: every cell for the first pass, one
 # representative per known run for each coarsening after it. The axis is raw
 # ids, so the typed cell `ancestor` wants is put back together one at a time —
 # a wrapper around an integer already in hand, and nothing is allocated.
@@ -530,7 +550,7 @@ struct ArrayWrite{S}
 end
 
 # A layer still in whatever array it arrived in: a lazy `ZArray` straight out of
-# `dggread` as readily as an `Array`. `celldim` is the position of the cell
+# `dggread` as readily as an `Array`. `celldim` is the index of the cell
 # dimension in it and `perm` the permutation that puts cells first, `nothing`
 # where they already are. Nothing bigger than one chunk is ever taken from it.
 struct CellStream{A,P}
@@ -636,7 +656,7 @@ _coordinate!(out, ::DenseEncoding, ids::AbstractVector, plan) =
     _push!(out, CELL_IDS_ARRAY, ids, (length(ids),), [SPATIAL_DIMENSION],
         (plan.chunklength,))
 
-# An implicit axis stores nothing: position IS the cell.
+# An implicit axis stores nothing: the index IS the cell.
 _coordinate!(out, ::ImplicitEncoding, n::Integer, plan) = out
 
 _coordinate!(out, enc::CellEncoding, coord, plan) = _nowritepath(enc)

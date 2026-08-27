@@ -97,5 +97,43 @@ store read and rewritten keeps its `units`, `long_name` and group vocabulary;
 convention-generated keys are stamped over the producer's. A round trip
 normalizes two things: layers are written in alphabetical order, and each
 layer's attributes carry the `_ARRAY_DIMENSIONS` this writer stamps.
+
+`layout` chooses the SHAPE of the store rather than the shape of its cell
+coordinate: `:cells` (the default) is everything above, a one-dimensional cell
+axis; `:subzones` is the two-dimensional [`SubzoneLayout`](@ref), which takes an
+`ancestor_level` and none of the keywords above it.
 """
 dggwrite(args...; kwargs...) = _needs_zarr("dggwrite")
+
+"""
+    subzonestore(dest, system, level; ancestor_level, layers, kwargs...) -> SubzoneStore
+    subzonestore(dest) -> SubzoneStore
+
+**Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`,
+whose docstring is the full keyword reference.
+
+Create — or reopen — an ancestor-subzone store for incremental writing: the
+group, its arrays and its attributes are stamped once, and the columns are
+filled afterwards, one [`dggwrite!`](@ref) at a time. A column is one chunk and
+therefore one file, and a column write rewrites nothing shared, so tasks writing
+disjoint columns need no coordination.
+
+See [`SubzoneLayout`](@ref) for the layout itself and [`dggwrite`](@ref)'s
+`layout = :subzones` for the one-shot form.
+"""
+subzonestore(args...; kwargs...) = _needs_zarr("subzonestore")
+
+"""
+    dggwrite!(store::SubzoneStore, ancestor, values; var = the only layer) -> store
+    dggwrite!(store::SubzoneStore, cube) -> store
+
+**Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`.
+
+Fill columns of a store [`subzonestore`](@ref) has already created: one ancestor
+cell's subtree from a vector in ascending cell id, or every complete column of a
+cube over a cell axis.
+
+`values` is as long as that ancestor's subtree really is — `7^d` for a hexagon
+and `(5*7^d + 1)/6` for a pentagon — and the rest of the column stays fill.
+"""
+dggwrite!(args...; kwargs...) = _needs_zarr("dggwrite!")

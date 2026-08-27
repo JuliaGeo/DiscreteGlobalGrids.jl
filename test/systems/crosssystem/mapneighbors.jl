@@ -8,7 +8,7 @@ import DimensionalData as DD
 import Extents
 using Random: shuffle, Xoshiro
 
-using DiscreteGlobalGrids: levelgrid, cellindex, cellposition, neighbors,
+using DiscreteGlobalGrids: levelgrid, cellindex, localindex, neighbors,
     mapneighbors, foreachneighbors, StorageOrder, adjacency, subtree,
     PartialGrid, CellVector, CellLookup, Cells, MultiOrderCoverage,
     AuthalicSystem, Vertex, Edge, query, system, cellid, level,
@@ -40,13 +40,13 @@ const TILE = Extents.Extent(X=(10.0, 11.0), Y=(46.0, 47.0))
 rooted_pg(sys, base, depth) =
     subtree(sys, cellindex(levelgrid(sys, base), 3), base + depth)
 
-# Include cell position, neighbour positions, and ring order in one result.
+# Include cell index, neighbour indices, and ring order in one result.
 probe(c, nbrs) =
-    cellposition(c) * 31 + sum(i * cellposition(h) for (i, h) in enumerate(nbrs);
+    localindex(c) * 31 + sum(i * localindex(h) for (i, h) in enumerate(nbrs);
         init = 0)
 
 naive(cv; connectivity = Vertex()) =
-    [k * 31 + sum(i * cellposition(cv, x)
+    [k * 31 + sum(i * localindex(cv, x)
                   for (i, x) in enumerate(neighbors(cv, cv[k]; connectivity));
           init = 0)
      for k in eachindex(cv)]
@@ -61,7 +61,7 @@ naive(cv; connectivity = Vertex()) =
         n = length(cv)
         for conn in (Vertex(), Edge())
             want = naive(cv; connectivity = conn)
-            # Traversal mode does not change position-ordered results.
+            # Traversal mode does not change index-ordered results.
             @test mapneighbors(probe, cv; threaded = false,
                 connectivity = conn) == want
             @test mapneighbors(probe, cv; threaded = true,
@@ -78,14 +78,14 @@ naive(cv; connectivity = Vertex()) =
         metric = (c, v, vals) ->
             3.0v + sum(i * vals[i] for i in eachindex(vals); init = 0.0)
         want_data = [3.0data[k] +
-                     sum(i * data[cellposition(cv, x)]
+                     sum(i * data[localindex(cv, x)]
                          for (i, x) in enumerate(neighbors(cv, cv[k])); init = 0.0)
                      for k in eachindex(cv)]
         @test mapneighbors(metric, cv, data; threaded = false) == want_data
         @test mapneighbors(metric, cv, data; threaded = true) == want_data
 
-        # Concrete tuple results split into position-ordered vectors.
-        pair(c, nbrs) = (cellposition(c), Float64(length(nbrs)))
+        # Concrete tuple results split into index-ordered vectors.
+        pair(c, nbrs) = (localindex(c), Float64(length(nbrs)))
         a, b = mapneighbors(pair, cv)
         @test a isa Vector{Int} && b isa Vector{Float64}
         @test a == collect(1:n)
@@ -96,7 +96,7 @@ naive(cv; connectivity = Vertex()) =
         @test length(t) == n
         @test t.offsets[1] == 1 && t.offsets[end] == length(t.indices) + 1
         @test all(zip(1:n, neighbors(cv))) do (p, (c, nbrs))
-            collect(t[p]) == [cellposition(h) for h in nbrs]
+            collect(t[p]) == [localindex(h) for h in nbrs]
         end
         @test all(p -> collect(t[p]) == neighbors(cv, p, 1), 1:n)
 
@@ -131,7 +131,7 @@ end
     n = length(cv)
     perm = shuffle(Xoshiro(7), 1:n)
     visits = Int[]
-    foreachneighbors((c, nbrs) -> push!(visits, cellposition(c)), cv; order = perm)
+    foreachneighbors((c, nbrs) -> push!(visits, localindex(c)), cv; order = perm)
     @test visits == perm
     # Orders must visit every cell exactly once.
     bad = copy(perm); bad[2] = bad[1]
@@ -151,7 +151,7 @@ end
     sys = DGG.IGeo7System()
     cv = CellVector(rooted_pg(sys, 1, 3))
     bad = 5
-    boom(c, nbrs) = cellposition(c) == bad ? error("callback said no") : 1.0
+    boom(c, nbrs) = localindex(c) == bad ? error("callback said no") : 1.0
 
     err = try
         mapneighbors(boom, cv; threaded = true)
@@ -162,7 +162,7 @@ end
     @test err isa DGG.NeighborCallbackError
     msg = sprint(showerror, err)
     @test occursin(sprint(show, cv[bad]), msg)
-    @test occursin("position $bad", msg)
+    @test occursin("subset index $bad", msg)
     @test occursin("threaded = false", msg)
     # The callback's own exception is the cause, not something swallowed.
     @test occursin("callback said no", msg)
@@ -171,15 +171,15 @@ end
 end
 
 # Keep mutable state in the functor while measuring sweep allocations.
-struct PositionSum <: Function
+struct IndexSum <: Function
     acc::Base.RefValue{Int}
 end
-(s::PositionSum)(c, nbrs) = (s.acc[] += cellposition(c) + length(nbrs); nothing)
+(s::IndexSum)(c, nbrs) = (s.acc[] += localindex(c) + length(nbrs); nothing)
 
 @testset "the sequential sweep allocates nothing" begin
     sys = DGG.IGeo7System()
     coverage = CellVector(query(sys, MultiOrderCoverage(TILE); level=8))
-    s = PositionSum(Ref(0))
+    s = IndexSum(Ref(0))
     foreachneighbors(s, coverage)
     @test @allocated(foreachneighbors(s, coverage)) == 0
 end
@@ -198,7 +198,7 @@ end
     cubedata = [j * data[k] + 0.1j for j in 1:3, k in 1:n]
     cube = DD.DimArray(copy(cubedata), (DD.Dim{:time}(1:3), Cells(CellLookup(cv))))
 
-    # The default passes positioned handles: `probe` has no three-argument
+    # The default passes indexed handles: `probe` has no three-argument
     # method, so a default flipped to Values() errors instead of matching
     # the CellVector layer's numbers.
     out = mapneighbors(probe, A; threaded = false)
@@ -212,7 +212,7 @@ end
     @test size(colsum) == (n,)
     @test parent(DD.lookup(colsum, 1)) === cv
     @test parent(colsum) == vec(sum(cubedata; dims = 1))
-    h = DGG.SubsetPositionedCell(cv[5], 5)
+    h = DGG.SubsetIndexedCell(cv[5], 5)
     @test cube[h] == cubedata[:, 5]
     @test map(DD.name, DD.dims(cube[h])) == (:time,)
     @test view(cube, h) == cubedata[:, 5]
@@ -243,7 +243,7 @@ end
     @test parent(DD.lookup(outS, 1)) === cv
     rings = collect(neighbors(cv))
     @test parent(outS) ≈ [sum(cubedata[:, k]) +
-        sum(sum(cubedata[:, cellposition(h)]) for h in rings[k][2]; init = 0.0)
+        sum(sum(cubedata[:, localindex(h)]) for h in rings[k][2]; init = 0.0)
         for k in 1:n]
     @test_throws "use Values()" mapneighbors(sliced, A; pass = NeighborSlices())
 
@@ -254,11 +254,11 @@ end
         threaded = false)) == parent(coutV)
 
     # Invalid dimensions and pass modes report the failing condition.
-    @test_throws "carries a CellLookup" mapneighbors(probe,
+    @test_throws "carries a cell lookup" mapneighbors(probe,
         DD.DimArray(collect(1.0:4), (DD.X(1:4),)))
     @test_throws "no dimension matching" mapneighbors(probe, cube;
         spatialdim = DD.Ti)
-    @test_throws "not a CellLookup" mapneighbors(probe, cube;
+    @test_throws "not a cell lookup" mapneighbors(probe, cube;
         spatialdim = :time)
     @test_throws "pass must be" mapneighbors(probe, cube; pass = :values)
 

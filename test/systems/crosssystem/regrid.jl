@@ -978,22 +978,21 @@ end
     # A method that reads sample sites gets the stored cells, not the leaves —
     # so the cube presents itself as it stands and nothing is refined.
     @test GR.sourceview(lk, MOCCUBE, bary) === MOCCUBE
-    # There are no dual cells over mixed levels yet, so it is refused there
-    # instead, in terms that name both working routes.
-    for call in (() -> DGG.regrid(MOCCUBE; to = MOCDST, method = bary),
-                 () -> DGG.regrid(MOCCUBE; to = MOCDST, from = MOV, method = bary))
-        @test_throws ArgumentError call()
-        @test_throws "do not tile conformingly" call()
-        @test_throws "coarsening steps at leaf spacing" call()
-    end
-    @test !GR.hasdualcells(GR.sourcespacefor(MOV, bary))
+    # The stored cells carry dual cells of their own, so the blend is between
+    # the values AS STORED and nothing is refined on the way.
+    @test GR.hasdualcells(GR.sourcespacefor(MOV, bary))
+    native = DGG.regrid(MOCCUBE; to = MOCDST, method = bary)
+    @test all(isfinite, parent(native))
+    @test isequal(parent(native),
+        parent(DGG.regrid(MOCCUBE; to = MOCDST, from = MOV, method = bary)))
 
-    # And the escape hatch the message names does work: expand by hand, and the
-    # leaf-site interpolation — a different, worse function, deliberately — is
-    # yours. The expanded cube names its own cells, so no `from` is needed.
+    # Interpolating on the leaves is still available, still a different and
+    # worse function, and still has to be asked for by name. Values are
+    # distinct per stored cell, so the two routes cannot agree by accident.
     manual = DGG.expand(MOCCUBE, DGG.reference_level(lk))
     onleaves = DGG.regrid(manual; to = MOCDST, method = bary)
     @test all(isfinite, parent(onleaves))
+    @test !isequal(parent(native), parent(onleaves))
 
     # A container that stores one cell per leaf refines to itself, so the
     # expansion is the identity and every method may read it — including the

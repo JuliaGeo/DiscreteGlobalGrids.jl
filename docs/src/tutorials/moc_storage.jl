@@ -345,14 +345,30 @@ fig
 # out = DGG.regrid(M; to = DGG.levelgrid(DGG.HEALPixSystem(), 6))
 # ```
 #
-# The regrid reads `M` presented at its `reference_level`, so every leaf of a
-# stored cell carries that cell's value and the weights are built against the
-# leaves — cost follows the leaf count, not the stored count. That is exact for
-# conservative and nearest-cell methods and wrong for an interpolating one,
-# which would blend between replicated leaf values, so `BarycentricPoint` is
-# refused here. `from` names a space, not a layout, so pairing the container
-# with values stored one per *cell* is refused too; put them on the axis and
-# drop the keyword.
+# Which cells the regrid reads depends on what the method reads.
+#
+#   - A **nearest-cell** method (`NearestCell`, `DirectNearest`) reads sample
+#     sites, so it takes the stored cells as they are: one source cell per
+#     stored cell, and cost follows the stored count however deep the reference
+#     level is. A destination point resolves to the stored cell covering it,
+#     which is the same cell the reference-level expansion would have reached
+#     through the leaf under the point — so the answer is identical, to the bit,
+#     and only the price changes.
+#   - A **conservative** method reads cell *area*, and needs a gap-free polygon
+#     cover. On a hexagonal hierarchy — H3, IGeo7 — a parent's polygon is not the
+#     union of its children's, so the descendant leaves are the only such cover
+#     and the regrid reads `M` presented at its `reference_level`. Cost follows
+#     the leaf count there, and it is the leaf count that buys the coverage.
+#   - `BarycentricPoint` reads sample sites too, but interpolating needs a ring
+#     of neighbouring sites, and mixed levels do not tile conformingly: a coarse
+#     cell's edge carries T-junctions. It is refused until that construction
+#     lands. To interpolate on the leaves anyway — a different function, which
+#     rebuilds the coarsening steps at leaf spacing — expand by hand first, which
+#     says so.
+#
+# `from` names a space, not a layout. Pairing the container with values stored
+# one per *cell* against a method that reads it as leaves is refused, and so is
+# the mirror; put the values on the axis and drop the keyword.
 
 # ## Summary
 #

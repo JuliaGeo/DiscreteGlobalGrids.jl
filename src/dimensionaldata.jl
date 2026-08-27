@@ -1176,9 +1176,10 @@ end
 
 Reduce a cell array to level `l`: one element per distinct level-`l` ancestor
 of `A`'s cells, each carrying `f` of the values of its **present** descendants.
-`A` must be one-dimensional over a [`Cells`](@ref) axis with a
-[`CellLookup`](@ref); the answer carries the coarser lookup. A pyramid is this
-call once per level:
+`A` must be one-dimensional over a [`Cells`](@ref) axis with an
+[`AbstractCellLookup`](@ref) — a [`CellLookup`](@ref) or a [`ChunkedCellLookup`](@ref)
+read from a store; the answer carries the coarser `CellLookup`. A pyramid is
+this call once per level:
 
 ```julia
 pyramid = [aggregate(sum, A, l) for l in level(lookup(A, Cells)) - 1 : -1 : 3]
@@ -1188,8 +1189,8 @@ See the `(CellVector, values)` method for what `f` sees and how partial groups
 are treated.
 """
 function aggregate(f, A::DD.AbstractDimArray, l::Integer)
-    lk = _cell_axis(A, CellLookup, "aggregate")
-    coarse, vals = aggregate(f, parent(lk), parent(A), l)
+    lk = _cell_axis(A, AbstractCellLookup, "aggregate")
+    coarse, vals = aggregate(f, DGG.region(lk), parent(A), l)
     return _aggregated(A, coarse, vals)
 end
 
@@ -1205,8 +1206,9 @@ _aggregated(A::DD.AbstractDimArray, coarse::CellVector, vals::AbstractVector) =
 
 Merge each subtree of `A` whose values agree to within `atol` into the single
 coarse cell that stands for them. `A` must be one-dimensional over a
-[`Cells`](@ref) axis with a [`CellLookup`](@ref); the answer carries a
-[`MultiOrderLookup`](@ref) over the mixed-level container.
+[`Cells`](@ref) axis with an [`AbstractCellLookup`](@ref) — a
+[`CellLookup`](@ref) or a [`ChunkedCellLookup`](@ref) read from a store; the
+answer carries a [`MultiOrderLookup`](@ref) over the mixed-level container.
 
 ```julia
 M = coarsen(A; atol = 1.0)                       # °C
@@ -1218,8 +1220,8 @@ See the `(CellVector, values)` method for the merge criterion, the treatment
 of `missing`, and the error bound the default `by` carries.
 """
 function coarsen(A::DD.AbstractDimArray; atol, kw...)
-    lk = _cell_axis(A, CellLookup, "coarsen")
-    mov, vals = coarsen(parent(lk), parent(A); atol, kw...)
+    lk = _cell_axis(A, AbstractCellLookup, "coarsen")
+    mov, vals = coarsen(DGG.region(lk), parent(A); atol, kw...)
     return DD.rebuild(A; data=vals, dims=(Cells(MultiOrderLookup(mov)),))
 end
 

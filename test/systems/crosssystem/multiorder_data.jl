@@ -352,6 +352,41 @@ end
     @test_throws ArgumentError DGG.expand(plain, L)
 end
 
+@testset "aggregate and coarsen also read a ChunkedCellLookup axis" begin
+    # A store-backed axis over the same cells as a whole level, built directly
+    # from the implicit encoding rather than through a Zarr store — it is the
+    # store-shaped stand-in `dggread` would hand back. `region` compresses it
+    # to one whole-level window, identical to `CellVector(grid)`, so the two
+    # cubes below carry the same cells in the same order and any divergence in
+    # the answer is a real bug, not a fixture mismatch.
+    sys, L = DGG.HEALPixSystem(), 3
+    grid = DGG.levelgrid(sys, L)
+    n = DGG.ncells(grid)
+    chunked = DGG.cellaxis(DGG.ImplicitEncoding(), grid, n)
+    @test chunked isa DGG.ChunkedCellVector
+    lat = centroid_lat(chunked)
+
+    Ac = DD.DimArray(lat, DGG.Cells(DGG.ChunkedCellLookup(chunked)); name=:lat)
+    Ap = DD.DimArray(lat, DGG.Cells(DGG.CellLookup(DGG.CellVector(grid))); name=:lat)
+
+    @testset "aggregate" begin
+        Agc = DGG.aggregate(sum, Ac, L - 1)
+        Agp = DGG.aggregate(sum, Ap, L - 1)
+        @test DD.lookup(Agc, DGG.Cells) isa DGG.CellLookup
+        @test collect(DD.lookup(Agc, DGG.Cells)) == collect(DD.lookup(Agp, DGG.Cells))
+        @test parent(Agc) == parent(Agp)
+    end
+
+    @testset "coarsen" begin
+        atol = 5.0
+        Mc = DGG.coarsen(Ac; atol)
+        Mp = DGG.coarsen(Ap; atol)
+        @test DD.lookup(Mc, DGG.Cells) isa DGG.MultiOrderLookup
+        @test parent(DD.lookup(Mc, DGG.Cells)) == parent(DD.lookup(Mp, DGG.Cells))
+        @test parent(Mc) == parent(Mp)
+    end
+end
+
 # ---------------------------------------------------------------------------
 # The DimensionalData plumbing, on one system
 # ---------------------------------------------------------------------------

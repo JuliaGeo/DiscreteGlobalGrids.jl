@@ -26,13 +26,13 @@ const SCRIPTS_DIR = dirname(@__DIR__)
 
 "Build a fresh CopDEM configuration, including current environment overrides."
 function copdem_config()
-    res = 90  # 90 for GLO-90, 30 for GLO-30
+    res = parse(Int, get(ENV, "COPDEM_RES", "90"))  # 90 for GLO-90, 30 for GLO-30
     data = get(ENV, "RASTERDATASOURCES_PATH",
         joinpath(SCRIPTS_DIR, "..", "bench", "data"))
     return (
         res,
-        level       = 12,       # IGeo7 output level
-        ancestor    = 5,        # chunk root level
+        level       = parse(Int, get(ENV, "COPDEM_LEVEL", "12")),  # IGeo7 output level
+        ancestor    = parse(Int, get(ENV, "COPDEM_ANCESTOR", "5")),  # chunk root level
         source      = :synthetic, # :real (lazy AWS tiles) or :synthetic
         authalic    = true,     # compute on the WGS84 authalic geometry
         method      = Symbol(get(ENV, "COPDEM_METHOD", "conservative")), # :conservative, :point, :nearest or :nearest-direct
@@ -63,6 +63,7 @@ function copdem_config()
         fetchconc   = 0,        # concurrent source loads; 0 means "as many as workers"
         fetchdelay  = 0.0,      # seconds of fake latency per tile build; a test knob
         resume      = true,     # skip chunks already written
+        write       = get(ENV, "COPDEM_WRITE", "1") != "0", # 0: compute and ledger, never write chunks
         checks      = false,    # run the synthetic oracle after the run
         checkchunks = 6,        # chunks to verify when `checks`
         heartbeat   = 300,      # seconds between summary lines

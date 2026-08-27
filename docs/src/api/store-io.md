@@ -153,6 +153,7 @@ CellEncoding
 DenseEncoding
 RangesEncoding
 ImplicitEncoding
+CompactedEncoding
 ENCODING_REGISTRY
 register_encoding!
 GridReference

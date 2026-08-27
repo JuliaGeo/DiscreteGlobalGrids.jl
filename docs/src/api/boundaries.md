@@ -134,7 +134,14 @@ CellLookup
 region
 MultiOrderCellSet
 MultiOrderCoverage
+MultiOrderVector
+MultiOrderLookup
 grow
+aggregate
+coarsen
+covering_index
+complement
+reference_level
 ```
 
 ## The engines

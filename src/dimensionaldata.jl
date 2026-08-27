@@ -1190,8 +1190,15 @@ are treated.
 function aggregate(f, A::DD.AbstractDimArray, l::Integer)
     lk = _cell_axis(A, CellLookup, "aggregate")
     coarse, vals = aggregate(f, parent(lk), parent(A), l)
-    return DD.rebuild(A; data=vals, dims=(Cells(CellLookup(coarse)),))
+    return _aggregated(A, coarse, vals)
 end
+
+# Function barrier. The core answers a `CellVector` whose window shape is a
+# runtime choice between two types, and rebuilding an array through that union
+# in line widens the result to `Any`; one call per shape keeps it a two-way
+# union the caller can split.
+_aggregated(A::DD.AbstractDimArray, coarse::CellVector, vals::AbstractVector) =
+    DD.rebuild(A; data=vals, dims=(Cells(CellLookup(coarse)),))
 
 """
     coarsen(A::AbstractDimArray; atol, by = mean, minlevel = shallowest) -> AbstractDimArray

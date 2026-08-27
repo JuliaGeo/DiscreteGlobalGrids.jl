@@ -318,6 +318,12 @@ and a regrid given no `from` **resolves** what it names — through
 [`sourcespacefor`](@ref) — instead of looking for `xdim`. The name must
 therefore be one [`_asspace`](@ref) answers for; a name nothing resolves is a
 missing method in the package that supplied the axis, and says so.
+
+A source resolves in one order: an explicit `from` wins; otherwise a
+self-describing axis — one answering [`sourceview`](@ref) or this — names the
+source itself; otherwise the array is read as a raster lattice, and an axis
+answering neither is the `from`-is-required error. Defining this used to make
+that error's wording better and nothing else; it now removes the error.
 """
 dimsource(::Any) = nothing
 
@@ -329,11 +335,16 @@ Return the array `method` reads when `data` carries `lookup`, or `nothing` when
 that axis cannot present the data itself.
 
 An axis storing one value per cell of the space [`dimsource`](@ref) names needs
-no method here: `from` describes it and the data is read as it stands. A
-*compressed* axis stores fewer values than that space has cells, so no `from`
-can describe the pair — only the axis knows how its stored values spread over
-the cells. A lookup that defines this resolves with no `from` at all; one that
-defines only `dimsource` still asks for it.
+no method here: the data is read as it stands. A *compressed* axis stores fewer
+values than that space has cells, so no `from` can describe the pair — only the
+axis knows how its stored values spread over the cells, and only this hook can
+present them.
+
+Either hook makes an axis self-describing, so neither asks for a `from`: an
+explicit one still wins, an axis answering one of them resolves itself, and an
+axis answering neither is the `from`-is-required error. A `from` that
+contradicts what a presenting axis lays its values out by belongs in
+[`checksource`](@ref).
 
 The view must present the cells in the space's own order and name that space
 through its own `dimsource`. It is also free to refuse `method`, which is what

@@ -1022,6 +1022,36 @@ end
     @test GR.checksource(MOV, MOCCUBE, GR._asspace(MOV, "from")) === nothing
     @test parent(DGG.regrid(MOCCUBE; to = MOCDST, from = MOV)) ==
           parent(DGG.regrid(MOCCUBE; to = MOCDST))
+    # Rebuilt from the same cells at the same reference level: the same source,
+    # so identity is not what the exemption turns on.
+    rebuilt = DGG.MultiOrderVector(MOCSYS, collect(MOV); reference_level = MOCREF)
+    @test rebuilt !== MOV
+    @test parent(DGG.regrid(MOCCUBE; to = MOCDST, from = rebuilt)) ==
+          parent(DGG.regrid(MOCCUBE; to = MOCDST))
+
+    # But a `from` naming a DIFFERENT container of the same length is refused.
+    # The cube lays its values out by its OWN axis whatever `from` says, so the
+    # plan would weight one container's geometry against another's values and
+    # the counts would never disagree — the mismatch is silent unless it is
+    # refused here.
+    l1 = DGG.levelgrid(MOCSYS, 1)
+    roots = [DGG.cellindex(l1, i) for i in 1:DGG.ncells(l1)]
+    kids(c, l) = collect(DGG.CellVector(DGG.subtree(MOCSYS, c, l)))
+    other = DGG.MultiOrderVector(MOCSYS,
+        vcat(roots[1:2], kids(roots[3], 3), kids(roots[4], 2), roots[5:end]);
+        reference_level = MOCREF)
+    @test length(other) == length(MOV) && collect(other) != collect(MOV)
+    for spelling in (other, DGG.MultiOrderLookup(other))
+        @test_throws ArgumentError DGG.regrid(MOCCUBE; to = MOCDST,
+            from = spelling, method = GR.NearestCell())
+        @test_throws "different mixed-level container" DGG.regrid(MOCCUBE;
+            to = MOCDST, from = spelling, method = GR.NearestCell())
+    end
+    # Same cells, different reference level: also a different source, because
+    # the level decides which leaves each stored cell stands for.
+    @test_throws "different mixed-level container" DGG.regrid(MOCCUBE;
+        to = MOCDST, from = DGG.MultiOrderVector(MOCSYS, collect(MOV);
+            reference_level = MOCREF + 1), method = GR.NearestCell())
 
     # The mirror trap: values one per LEAF against the stored cells the point
     # method reads `from = mov` as. Name the expansion, not the container.

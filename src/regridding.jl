@@ -463,11 +463,19 @@ expansion under an area one, and either can meet the wrong array:
   - values one per **leaf** against the stored cells — the data is already
     expanded, so it should name the expansion rather than the container.
 
-A cube carrying the [`MultiOrderLookup`](@ref) passes either way: it presents
-itself to match.
+A cube carrying the [`MultiOrderLookup`](@ref) presents itself to match, so it
+passes either way — but only against **its own** container. `from` naming a
+different one is refused: the axis lays the values out whatever `from` says, so
+where the two counts agree the plan would pair one container's geometry with
+another's values and say nothing.
 """
 function GR.checksource(mov::MultiOrderVector, data, space::GR.RegridSpace)
-    (data isa AbstractArray && !_carriesmixed(data)) || return nothing
+    data isa AbstractArray || return nothing
+    own = _mixedaxis(data)
+    if own !== nothing
+        _samecontainer(mov, own) || _fromcontradicts(mov, own)
+        return nothing
+    end
     n = size(data, 1)
     (n == ncells(space) || !_expandsleaves(mov)) && return nothing
     stored, leaves = length(mov), _leafcount(mov)
@@ -492,8 +500,32 @@ end
 GR.checksource(lk::MultiOrderLookup, data, space::GR.RegridSpace) =
     GR.checksource(parent(lk), data, space)
 
-_carriesmixed(data) = data isa DD.AbstractDimArray &&
-    any(l -> l isa MultiOrderLookup, DD.lookup(data))
+# The container a cube lays its own values out by, or `nothing` where it has no
+# mixed-level axis and `from` is the only thing naming its cells.
+function _mixedaxis(data)
+    data isa DD.AbstractDimArray || return nothing
+    for l in DD.lookup(data)
+        l isa MultiOrderLookup && return parent(l)
+    end
+    return nothing
+end
+
+# Same cells at the same reference level. Identity is the common case and is
+# checked first; two containers built separately from one set of cells are the
+# same source, and two keyed at different reference levels are not.
+_samecontainer(a::MultiOrderVector, b::MultiOrderVector) =
+    a === b || (reference_level(a) == reference_level(b) && a.cells == b.cells)
+
+@noinline _fromcontradicts(mov::MultiOrderVector, own::MultiOrderVector) =
+    throw(ArgumentError(
+        "`from` names a different mixed-level container than the source's own " *
+        "`Cells` axis: `from` holds $(length(mov)) cells at reference level " *
+        "$(reference_level(mov)), the axis holds $(length(own)) at " *
+        "$(reference_level(own)). A mixed-level cube's values are laid out by " *
+        "its own axis whatever `from` says, so pairing the two would weight " *
+        "one container's geometry against another's values — silently, " *
+        "wherever the counts agree. Drop `from` and let the axis name the " *
+        "source, or put the values on the axis of the container you meant."))
 
 # Labelling the output
 

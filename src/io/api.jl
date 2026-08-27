@@ -34,8 +34,9 @@ extension's docstring — not this one — is the full keyword reference.
 
 Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
 every layer, carrying a [`ChunkedCellLookup`](@ref) — the lookup over an axis a
-store wrote, which resolves a cell without scanning it. The grid SYSTEM is in
-that lookup's type, the level is a field of the grid it holds, and what is
+store wrote, which resolves a cell without scanning it — or, for a `compacted`
+store, a [`MultiOrderLookup`](@ref) over its mixed-level cells. The grid SYSTEM
+is in that lookup's type, the level is a field of the grid it holds, and what is
 neither — orientation, ellipsoid, the layout the store keeps its axis in — rides
 in the [`StoreDescription`](@ref) under the stack's `metadata["description"]`.
 
@@ -68,18 +69,23 @@ until it loads, this name is a stub whose only behaviour is to say so, and the
 extension's docstring — not this one — is the full keyword reference.
 
 Write a `DimStack` or `DimArray` over a `Cells` dimension to a Zarr v2 directory
-store. The cell dimension has to carry a `CellLookup` or a
+store. The cell dimension carries a `CellLookup` or a
 [`ChunkedCellLookup`](@ref) — this package's way of saying the axis is still
-sorted, unique and at one level. `dest` is a local directory path or a writeable
+sorted, unique and at one level — or a [`MultiOrderLookup`](@ref), a
+mixed-level axis. `dest` is a local directory path or a writeable
 `Zarr.ZGroup`; a remote URL is refused rather than half-written — write locally
 and upload.
 
-`encoding = :auto` picks ranges where the axis is eligible — sorted, unique,
-single-level — and dense otherwise; `:dense` is the interop escape for readers
-that cannot expand ranges, `:ranges` forces the compact form, and `:implicit`
-writes no cell coordinate at all, which needs a whole level. `conventions`
+`encoding = :auto` picks compacted for a mixed-level axis (a
+[`MultiOrderLookup`](@ref)), ranges where a single-level axis is eligible —
+sorted, unique — and dense otherwise; `:dense` is the interop escape for
+readers that cannot expand ranges, `:ranges` forces the compact form, and
+`:implicit` writes no cell coordinate at all, which needs a whole level. A
+single-level encoding requested for a mixed-level axis is refused; present the
+cube at one level with [`expand`](@ref) to write it that way. `conventions`
 stamps the store, dual by default so that both a convention-aware reader and
-xdggs can open it.
+xdggs can open it; a compacted store carries no xdggs stamp, which cannot say
+mixed-level.
 
 `merge` picks the ranges run rule: `:step` (default) merges unit-increment ids,
 which a structural reader also counts correctly; `:rank` merges rank-adjacent

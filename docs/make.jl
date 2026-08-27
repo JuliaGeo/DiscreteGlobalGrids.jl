@@ -15,8 +15,8 @@ DocMeta.setdocmeta!(DiscreteGlobalGrids, :DocTestSetup,
                     :(using DiscreteGlobalGrids); recursive = true)
 
 # Generate Markdown beside each Literate source without executing its examples.
-for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
-          "healpix_astronomy", "store_io")
+for f in ("stencils", "zonal", "regridding", "multiorder", "moc_storage",
+          "hydrology", "healpix_astronomy", "store_io")
     Literate.markdown(joinpath(@__DIR__, "src", "tutorials", f * ".jl"),
                       joinpath(@__DIR__, "src", "tutorials");
                       flavor = Literate.DocumenterFlavor(), execute = false)
@@ -50,6 +50,7 @@ makedocs(;
             "Zonal statistics" => "tutorials/zonal.md",
             "Regridding a time series" => "tutorials/regridding.md",
             "Multi-order coverage" => "tutorials/multiorder.md",
+            "Multi-order storage" => "tutorials/moc_storage.md",
             "Hydrology: a DEM on an IGEO7 grid" => "tutorials/hydrology.md",
             "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
             "A round trip through a DGGS store" => "tutorials/store_io.md",

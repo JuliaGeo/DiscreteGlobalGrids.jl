@@ -140,6 +140,7 @@ using .Engine: PartialGrid,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
     CellVector, cellset, covering, covering_indices,
+    covering_positions, covering_position, reference_level,
     grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
     halo_indices, sizehint,
@@ -148,7 +149,8 @@ using .Engine: PartialGrid,
     mapneighbors, foreachneighbors, StorageOrder,
     NeighborCallbackError,
     AbstractNeed, Cell, Index, Local, Global, Value, Centroid,
-    cellfield
+    cellfield,
+    MultiOrderVector, aggregate, coarsen, complement
 
 # Internal extension points for system-specific subtree walkers and shell
 # winding.
@@ -190,7 +192,7 @@ using .CopernicusDEM: CopernicusDEMSystem
 include("dimensionaldata.jl")
 
 using .CellLookups: AbstractCellLookup, CellLookup, Cells, Covering, Neighbors,
-    Values, NeighborSlices
+    Values, NeighborSlices, MultiOrderLookup
 
 # The store-IO layer. Encodings and the chunked lookup own layout mechanics;
 # conventions are plain-data metadata logic with no Zarr and no arrays.
@@ -202,6 +204,7 @@ include("io/encodings.jl")
 include("io/chunked_lookup.jl")
 
 using .Encodings: CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
+    CompactedEncoding,
     ENCODING_REGISTRY, encodingname, register_encoding!, cellaxis,
     idrank, idselect, idcount_between, idvalid, idcell, idtype,
     idranges, write_eligible, validate_ranges
@@ -467,11 +470,23 @@ export CellVector, covering, covering_indices, cellset
 # `vcat`, `intersect` and `issubset` are Base's and carry no name of their own.
 export grow, expand, compact
 
+# --- Multi-order storage -----------------------------------------------------
+# The mixed-level cell container, its adaptive constructor, the covering
+# lookup, and the sphere complement. `expand` is exported above.
+export MultiOrderVector, coarsen, covering_position, complement
+
+# Public but unexported: `aggregate` because Rasters also exports one,
+# `reference_level` because the name says nothing on its own. Reach them as
+# `DiscreteGlobalGrids.aggregate` and `.reference_level`.
+public aggregate
+public reference_level
+
 # --- The DimensionalData layer ---------------------------------------------
 # Do not re-export DimensionalData's `Contains`; it conflicts with the DE9IM
 # geometry predicate exported above.
 export CellLookup, Cells, Covering
 export Neighbors, Values, NeighborSlices
+export MultiOrderLookup
 
 # --- Grid systems ----------------------------------------------------------
 # Export system types rather than modules whose names collide with packages.
@@ -511,7 +526,8 @@ export Detection, DGGSFormatError
 export DGGSConvention, ZarrDGGSConvention, XdggsConvention,
     LegacyHealpixConvention, DKRZConvention
 export register_convention!
-export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
+export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
+    CompactedEncoding
 export register_encoding!
 export register_grid!
 export describe_store

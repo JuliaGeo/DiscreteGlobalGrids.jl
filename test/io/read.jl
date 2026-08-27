@@ -895,6 +895,45 @@ end
     @test occursin("AWSS3", msg) && occursin("https", msg)
 end
 
+# ---------------------------------------------------------------------------
+# Compacted stores
+# ---------------------------------------------------------------------------
+
+@testset "a compacted store round-trips a coarsened field" begin
+    # The whole mixed-level path on both radices: coarsen leaf data, write,
+    # read back, query, expand. The field is exactly flat where it merges, so
+    # the expansion of the read-back cube reproduces the leaf values
+    # bit-for-bit — which kills any reordering of cells against values, a lost
+    # or misread levels column, and a signed/unsigned id-column mixup.
+    for sys in (HEALPixSystem(), IGeo7System())
+        L = 3
+        grid = levelgrid(sys, L)
+        cv = CellVector(grid)
+        n = ncells(grid)
+        leafvals = Float64[k <= n ÷ 2 ? 1.0 : k for k in 1:n]
+        mov, vals = DGG.coarsen(cv, leafvals; atol=0.5)
+        @test length(mov) < n
+
+        M = DD.DimArray(vals, Cells(DGG.MultiOrderLookup(mov)); name=:field)
+        path = joinpath(mktempdir(), "compacted.zarr")
+        dggwrite(path, M)
+
+        A = dggread(path, :field; lazy=false)
+        lk = DD.lookup(A, Cells)
+        @test lk isa DGG.MultiOrderLookup
+        @test collect(parent(lk)) == collect(mov)
+        @test collect(A) == vals
+
+        # Contains resolves a leaf cell to its stored ancestor's value.
+        leaf = cv[1]
+        pos = DGG.covering_position(parent(lk), leaf)
+        @test A[Cells(DD.Contains(leaf))] == vals[pos]
+
+        # The read-back cube expands to the leaf level it was coarsened from.
+        @test collect(DGG.expand(A, L)) == leafvals
+    end
+end
+
 end # if HAS_ZARR
 
 end # module DGGSIOReadTests

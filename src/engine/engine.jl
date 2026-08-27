@@ -78,6 +78,10 @@ include("tiled_raster.jl")
 include("query.jl")
 include("multiorder.jl")
 include("cell_vector.jl")
+# The mixed-level storage container, and the aggregation verbs that build one
+# from leaf data; both read the compressed vector's windows.
+include("multiorder_vector.jl")
+include("aggregate.jl")
 # The stencil layer reads every collection above it — the subset grid, the
 # compressed vector, the multi-order set — and the lazy border walkers besides.
 include("stencil.jl")

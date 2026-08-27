@@ -21,14 +21,18 @@ side: closed-form rank/select over one complete level, defined on every
 `UInt64`/`Int64` rather than only on ids that name cells, so a reader can count
 what a stored interval holds without enumerating it.
 
-[`CellEncoding`](@ref) and its three singletons are the layout side, resolved
+[`CellEncoding`](@ref) and its four singletons are the layout side, resolved
 from a store's vocabulary through [`ENCODING_REGISTRY`](@ref).
 """
 module Encodings
 
 import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex,
-    HierarchicalLevelGrid, IGeo7System, HEALPixSystem, Z7Cell, LevelIndex,
-    ncells, cellindex, level, rawid
+    AbstractHierarchicalGridSystem, HierarchicalLevelGrid,
+    IGeo7System, HEALPixSystem, Z7Cell, LevelIndex,
+    ncells, cellindex, level, levels, levelgrid, rawid
+# The compacted layout's axis IS the mixed-level container; nothing else here
+# touches a collection type.
+import ..DiscreteGlobalGrids.Engine: MultiOrderVector
 # The Z7 digit tables, validity predicate and inverse-rank walk are the system's
 # own; this file adds only the rank that is total on ids naming no cell.
 import ..DiscreteGlobalGrids: IGeo7
@@ -40,7 +44,8 @@ import ..DGGSFormatError
 # the store adds the identifier and the conventions that fired on the way out,
 # with `with_store_context`.
 
-export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding
+export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
+    CompactedEncoding
 export ENCODING_REGISTRY, encodingname, register_encoding!
 export idrank, idselect, idcount_between, idvalid, idcell, idtype, idlevel
 export idranges, write_eligible, validate_ranges, cellaxis, storedid
@@ -315,10 +320,10 @@ idvalid(grid::_HPXGrid, id::Integer) = 0 <= id < ncells(grid)
 """
     CellEncoding
 
-How a store lays its cell axis out. The three shipped layouts are
-[`DenseEncoding`](@ref), [`RangesEncoding`](@ref) and
-[`ImplicitEncoding`](@ref); a downstream package adds its own by subtyping this
-and registering an instance in [`ENCODING_REGISTRY`](@ref).
+How a store lays its cell axis out. The four shipped layouts are
+[`DenseEncoding`](@ref), [`RangesEncoding`](@ref), [`ImplicitEncoding`](@ref)
+and [`CompactedEncoding`](@ref); a downstream package adds its own by subtyping
+this and registering an instance in [`ENCODING_REGISTRY`](@ref).
 
 An encoding implements [`cellaxis`](@ref) (build the axis, and with it the
 chunk manifest), its own validation, and [`write_eligible`](@ref), which
@@ -355,17 +360,37 @@ whole-level case, as written by the DKRZ-style conventions.
 struct ImplicitEncoding <: CellEncoding end
 
 """
+    CompactedEncoding()
+
+One stored cell per position at MIXED refinement levels: two aligned columns,
+a level and a raw id at that level, in [`MultiOrderVector`](@ref) container
+order — ascending by subtree-interval start. Such a store declares
+`refinement_level: null` and `compression: "compacted"`, names its level
+column in `refinement_levels`, and its axis reads back as a
+`MultiOrderVector` rather than a single-level vector.
+
+This is an EXTENSION, not a conforming layout: v1 of `zarr-conventions/dggs`
+takes the vocabulary word `compacted` but requires `compression: "none"`
+wherever `refinement_level` is null, and for healpix it requires a `*uniq`
+indexing scheme there — a self-describing id with no level column at all. A
+conforming reader will reject these stores; only this package reads them.
+"""
+struct CompactedEncoding <: CellEncoding end
+
+"""
     ENCODING_REGISTRY
 
-Store vocabulary (`"none"`, `"ranges"`, `"implicit"`) to [`CellEncoding`](@ref)
-instance. Conventions resolve an attribute's string through this table, and
-keyword symbols are sugar over the same entries, so a downstream encoding
-becomes usable by adding one pair — [`register_encoding!`](@ref).
+Store vocabulary (`"none"`, `"ranges"`, `"implicit"`, `"compacted"`) to
+[`CellEncoding`](@ref) instance. Conventions resolve an attribute's string
+through this table, and keyword symbols are sugar over the same entries, so a
+downstream encoding becomes usable by adding one pair —
+[`register_encoding!`](@ref).
 """
 const ENCODING_REGISTRY = Dict{String,CellEncoding}(
     "none" => DenseEncoding(),
     "ranges" => RangesEncoding(),
     "implicit" => ImplicitEncoding(),
+    "compacted" => CompactedEncoding(),
 )
 
 """
@@ -391,9 +416,10 @@ stamps into the store's attributes.
 encodingname(::DenseEncoding) = "none"
 encodingname(::RangesEncoding) = "ranges"
 encodingname(::ImplicitEncoding) = "implicit"
+encodingname(::CompactedEncoding) = "compacted"
 
 """
-    cellaxis(enc::CellEncoding, grid::AbstractGrid, source; kw...) -> ChunkedCellVector
+    cellaxis(enc::CellEncoding, grid_or_system, source...; kw...) -> AbstractVector
 
 The stored axis as an `AbstractVector` of typed cell ids. `source` is whatever
 the encoding reads:
@@ -403,8 +429,11 @@ the encoding reads:
 | [`RangesEncoding`](@ref) | the `(n, 2)` inclusive-range array | arithmetic, no IO |
 | [`ImplicitEncoding`](@ref) | the axis length | arithmetic, no IO |
 | [`DenseEncoding`](@ref) | the id vector, lazy or not | one chunked pass |
+| [`CompactedEncoding`](@ref) | the level and id columns | one validating pass |
 
-Implemented in `chunked_lookup.jl`, where the axis type lives.
+The single-level encodings take a level grid and answer a `ChunkedCellVector`
+(built in `chunked_lookup.jl`, where that type lives); the compacted one takes
+the SYSTEM and answers a [`MultiOrderVector`](@ref).
 """
 function cellaxis end
 
@@ -419,12 +448,20 @@ and all cells of `grid`'s single level; [`ImplicitEncoding`](@ref) additionally
 requires them to be the whole level; [`DenseEncoding`](@ref) always is, which
 is what makes `:auto` total.
 
-`ids` may be raw integers or typed cell ids.
+`ids` may be raw integers or typed cell ids. A downstream encoding that states
+no restriction is eligible: the fallback is `true`, and the write path refuses
+it by name if it implements nothing else.
 """
+write_eligible(::CellEncoding, ::AbstractGrid, ::AbstractVector) = true
+
 write_eligible(::DenseEncoding, ::AbstractGrid, ::AbstractVector) = true
 
 write_eligible(::RangesEncoding, grid::AbstractGrid, ids::AbstractVector) =
     _sorted_unique_cells(grid, ids)
+
+# A single-level axis is written dense or as ranges; the compacted layout is
+# reached from a `MultiOrderLookup`, never from one level's ids.
+write_eligible(::CompactedEncoding, ::AbstractGrid, ::AbstractVector) = false
 
 function write_eligible(::ImplicitEncoding, grid::AbstractGrid, ids::AbstractVector)
     length(ids) == ncells(grid) || return false
@@ -583,6 +620,72 @@ function checkcount(grid::AbstractGrid, total::Integer, declared::Integer)
         detail="the cell axis holds $total cells of level $(level(grid)) but " *
                "the store declares $declared; the axis and the data disagree."))
     return nothing
+end
+
+# ===========================================================================
+# The compacted axis
+# ===========================================================================
+
+"""
+    cellaxis(CompactedEncoding(), sys::AbstractHierarchicalGridSystem,
+             cell_levels::AbstractVector{<:Integer}, cell_ids::AbstractVector;
+             declared_length = nothing) -> MultiOrderVector
+
+Build the mixed-level axis of a `compression: "compacted"` store from its two
+aligned columns: position `k` holds the cell whose raw id is `cell_ids[k]` at
+level `cell_levels[k]`.
+
+Every pair is checked — the level must be one of the system's, the id must name
+a cell of that level — and the whole set must already BE a
+[`MultiOrderVector`](@ref): pairwise disjoint as subtrees and ascending by
+subtree-interval start. Container order is required rather than restored,
+because the store's data arrays are laid out against these positions and a
+sort here would silently misalign every value.
+"""
+function cellaxis(::CompactedEncoding, sys::AbstractHierarchicalGridSystem,
+    cell_levels::AbstractVector{<:Integer}, cell_ids::AbstractVector;
+    declared_length::Union{Integer,Nothing}=nothing)
+    n = length(cell_ids)
+    length(cell_levels) == n || throw(DGGSFormatError(
+        check=:compacted_column_mismatch, declared=n, observed=length(cell_levels),
+        detail="a compacted axis holds one level per id: $(length(cell_levels)) " *
+               "levels against $n ids."))
+    declared_length === nothing || declared_length == n || throw(DGGSFormatError(
+        check=:count_mismatch, declared=Int(declared_length), observed=n,
+        detail="the cell axis holds $n cells but the store declares " *
+               "$declared_length; the axis and the data disagree."))
+    grids = Dict{Int,Any}()
+    cells = map(1:n) do k
+        # Membership before narrowing: `Int` of a wild unsigned is an
+        # InexactError, not the format error a malformed store deserves.
+        raw = cell_levels[k]
+        raw in levels(sys) || throw(DGGSFormatError(check=:invalid_stored_level,
+            declared=Int(first(levels(sys))):Int(last(levels(sys))), observed=raw,
+            detail="position $k of the cell axis declares level $raw, which " *
+                   "$(nameof(typeof(sys))) does not have."))
+        l = Int(raw)
+        grid = get!(() -> levelgrid(sys, l), grids, l)
+        id = storedid(idtype(grid), cell_ids[k])
+        idvalid(grid, id) || throw(DGGSFormatError(check=:id_names_no_cell,
+            declared=l, observed=id,
+            detail="the id $id at position $k of the cell axis names no cell " *
+                   "of level $l."))
+        idcell(grid, id)
+    end
+    mov = try
+        MultiOrderVector(sys, cells)
+    catch err
+        err isa ArgumentError || rethrow()
+        throw(DGGSFormatError(check=:invalid_compacted_axis,
+            observed=nameof(typeof(sys)),
+            detail="the stored cells do not form a multi-order axis: " * err.msg))
+    end
+    all(k -> mov[k] == cells[k], 1:n) || throw(DGGSFormatError(
+        check=:compacted_axis_order,
+        detail="the compacted cell axis is not in container order — ascending " *
+               "by subtree-interval start — so the store's data arrays do not " *
+               "align with its cells. Rewrite the store with `dggwrite`."))
+    return mov
 end
 
 end # module Encodings

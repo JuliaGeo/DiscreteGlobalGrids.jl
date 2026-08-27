@@ -215,6 +215,70 @@ else
             encoding=:dense)
     end
 
+    @testset "a mixed-level axis writes as compacted and reads back as itself" begin
+        # Kills a writer that sorts the container against its values, drops the
+        # levels column, stamps xdggs (whose readers would decode a dense
+        # single-level axis), or declares a refinement level.
+        mov = DGG.MultiOrderVector(SYS, [ROOTS[1]; collect(DGG.children(SYS, ROOTS[2]))])
+        vals = Float32.(1:length(mov))
+        M = DD.DimArray(vals, Cells(DGG.MultiOrderLookup(mov)); name=:elevation)
+        path = dest("moc.zarr")
+        @test DGG.dggwrite(path, M) === path
+
+        g = Zarr.zopen(path)
+        @test sort!(collect(keys(g.arrays))) ==
+              [MANIFEST, "cell_ids", "cell_levels", "elevation"]
+        @test g.attrs["dggs"]["compression"] == "compacted"
+        @test g.attrs["dggs"]["refinement_level"] === nothing
+        @test g.attrs["dggs"]["coordinate"] == "cell_ids"
+        # The level column names itself: nothing in the convention does.
+        @test g.attrs["dggs"]["refinement_levels"] == "cell_levels"
+        @test !haskey(g["cell_ids"].attrs, "grid_name")
+        @test g["cell_ids"][:] == [DGG.rawid(c) for c in mov]
+        @test Int.(g["cell_levels"][:]) == [DGG.level(c) for c in mov]
+        # The levels column sits on its own dimension, invisible to variables.
+        @test g["cell_levels"].attrs["_ARRAY_DIMENSIONS"] == ["cell_levels"]
+        # The manifest marker records the container's reference level; the
+        # description has no single level to record.
+        marker = g[MANIFEST].attrs[MARKER]
+        @test marker["level"] === nothing && marker["reference_level"] == 2
+
+        S = dggread(path)
+        lk = DD.lookup(S[:elevation], Cells)
+        @test lk isa DGG.MultiOrderLookup
+        @test collect(parent(lk)) == collect(mov)
+        @test collect(S[:elevation]) == vals
+    end
+
+    @testset "a single-level encoding on a mixed-level axis keeps the refusal" begin
+        # Kills a dispatcher that routes an explicit :dense/:ranges/:implicit
+        # request into the compacted path, and the mirror mutant that lets
+        # :compacted claim a single-level axis.
+        mov = DGG.MultiOrderVector(SYS, [ROOTS[1]; collect(DGG.children(SYS, ROOTS[2]))])
+        M = DD.DimArray(Float32.(1:length(mov)), Cells(DGG.MultiOrderLookup(mov));
+            name=:elevation)
+        for enc in (:dense, :ranges, :implicit)
+            err = try
+                DGG.dggwrite(dest("moc-$enc.zarr"), M; encoding=enc)
+                nothing
+            catch e
+                e
+            end
+            @test err isa DGGSFormatError && err.check === :mixed_level_axis
+            @test occursin("expand", err.detail)
+        end
+        for (i, spec) in enumerate((:compacted, DGG.CompactedEncoding()))
+            err = try
+                DGG.dggwrite(dest("single-compacted-$i.zarr"), demostack();
+                    encoding=spec)
+                nothing
+            catch e
+                e
+            end
+            @test err isa DGGSFormatError && err.check === :not_write_eligible
+        end
+    end
+
     @testset "the auto chunk plan breaks on coarse-ancestor boundaries" begin
         # 49 level-3 cells per level-1 subtree, so two whole subtrees is the
         # largest whole number of runs under a 100-cell target. Kills a plan

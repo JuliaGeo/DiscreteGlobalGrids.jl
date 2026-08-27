@@ -279,6 +279,10 @@ Return the [`DGGSpace`](@ref) over the cells a regridding target names. A grid
 stands for itself; a [`CellLookup`](@ref), a [`CellVector`](@ref) and a
 [`MultiOrderCellSet`](@ref) name the [`PartialGrid`](@ref) of their cells.
 
+A mixed-level target — a [`MultiOrderVector`](@ref) or the axis that carries
+one — is expanded to its reference level first, so the destination has one cell
+per leaf.
+
 A bare system names no cells until a level is chosen. As a destination it takes
 the level whose cells are closest in size to the source's, which is the only
 spelling that reads `src_space`; as a source there is nothing to match against
@@ -292,6 +296,14 @@ GR._asspace(cv::AbstractCellVector, name::AbstractString) = DGGSpace(PartialGrid
 
 GR._asspace(set::MultiOrderCellSet, name::AbstractString) =
     DGGSpace(PartialGrid(CellVector(set)))
+
+# The storage container and its axis name the same cells the query-side set
+# does, so all three resolve alike: expanded to the reference level.
+GR._asspace(mov::MultiOrderVector, name::AbstractString) =
+    DGGSpace(PartialGrid(CellVector(mov)))
+
+GR._asspace(lk::MultiOrderLookup, name::AbstractString) =
+    GR._asspace(parent(lk), name)
 
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
     throw(ArgumentError(

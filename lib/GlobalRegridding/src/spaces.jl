@@ -319,6 +319,51 @@ and a regrid given no `from` names it instead of asking for `xdim`.
 dimsource(::Any) = nothing
 
 """
+    sourceview(lookup, data, method) -> array or nothing
+    sourceview(data, method) -> array
+
+Return the array `method` reads when `data` carries `lookup`, or `nothing` when
+that axis cannot present the data itself.
+
+An axis storing one value per cell of the space [`dimsource`](@ref) names needs
+no method here: `from` describes it and the data is read as it stands. A
+*compressed* axis stores fewer values than that space has cells, so no `from`
+can describe the pair — only the axis knows how its stored values spread over
+the cells. A lookup that defines this resolves with no `from` at all; one that
+defines only `dimsource` still asks for it.
+
+The view must present the cells in the space's own order and name that space
+through its own `dimsource`. It is also free to refuse `method`, which is what
+[`refinementinvariant`](@ref) is for.
+
+The two-argument form is the whole array's answer: the first axis that presents
+one, or `data` unchanged.
+"""
+sourceview(::Any, ::Any, ::Any) = nothing
+
+sourceview(data, method) = data
+
+function sourceview(data::DD.AbstractDimArray, method)
+    for d in DD.dims(data)
+        view = sourceview(DD.lookup(d), data, method)
+        view === nothing || return view
+    end
+    return data
+end
+
+"""
+    checksource(from, data, space) -> nothing
+
+Refuse a `from` spelling that cannot describe `data`, or do nothing.
+
+Called once per plan, only when `from` was given. A spelling whose cells are
+not one-per-stored-value extends this to say so in its own terms, rather than
+leaving the count mismatch to surface as a `DimensionMismatch` from the flatten
+step.
+"""
+checksource(::Any, ::Any, ::RegridSpace) = nothing
+
+"""
     _asspace(space, name) -> RegridSpace
     _asspace(space, name, src_space) -> RegridSpace
 

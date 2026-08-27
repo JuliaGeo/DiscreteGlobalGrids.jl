@@ -336,6 +336,24 @@ fig
 # are cells kept at the leaf level: unmerged cells are copied, not
 # approximated.
 
+# ## Regridding off the mesh
+#
+# A mixed-level cube is a regridding source as it stands — no `from`, no manual
+# `expand`:
+#
+# ```julia
+# out = DGG.regrid(M; to = DGG.levelgrid(DGG.HEALPixSystem(), 6))
+# ```
+#
+# The regrid reads `M` presented at its `reference_level`, so every leaf of a
+# stored cell carries that cell's value and the weights are built against the
+# leaves — cost follows the leaf count, not the stored count. That is exact for
+# conservative and nearest-cell methods and wrong for an interpolating one,
+# which would blend between replicated leaf values, so `BarycentricPoint` is
+# refused here. `from` names a space, not a layout, so pairing the container
+# with values stored one per *cell* is refused too; put them on the axis and
+# drop the keyword.
+
 # ## Summary
 #
 # `coarsen` picks a level per cell from the data and a tolerance; the axis

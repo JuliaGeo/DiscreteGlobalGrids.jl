@@ -924,6 +924,15 @@ MultiOrderLookup(lk::MultiOrderLookup) = lk
 Base.parent(lk::MultiOrderLookup) = lk.cells
 Base.IndexStyle(::Type{<:MultiOrderLookup}) = Base.IndexLinear()
 
+"""
+    cellset(lk::MultiOrderLookup)
+
+The [`MultiOrderVector`](@ref) the axis is written against — for this lookup the
+same collection `Base.parent` returns, since a mixed-level axis is its own
+backing.
+"""
+cellset(lk::MultiOrderLookup) = cellset(parent(lk))
+
 # No `bounds` method: the lookup is `Unordered` (see `order` below), and the
 # generic `(nothing, nothing)` is the right answer.
 

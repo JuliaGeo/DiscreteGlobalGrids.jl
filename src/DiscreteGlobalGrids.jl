@@ -69,7 +69,9 @@ the space contract
 `cellcentroid`, `celltree`, `chunkextents`, `chunkindex`, `candidatechunks!`,
 `chunkranges`, `subtree` and `destinationdims` — is extended under
 `GlobalRegridding`'s own name rather than imported; `samplesites` is left to
-that package's own centroid vector.
+that package's own centroid vector. A mixed-level cube is a source with no
+`from` at all: `sourceview` presents it at its reference level, and
+`checksource` says why the container cannot be named as one instead.
 """
 module DiscreteGlobalGrids
 

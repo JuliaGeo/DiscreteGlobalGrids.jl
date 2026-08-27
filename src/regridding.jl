@@ -281,7 +281,8 @@ stands for itself; a [`CellLookup`](@ref), a [`CellVector`](@ref) and a
 
 A mixed-level target — a [`MultiOrderVector`](@ref) or the axis that carries
 one — is expanded to its reference level first, so the destination has one cell
-per leaf.
+per leaf. As a *source* the cube resolves itself and needs no `from` at all;
+see `GlobalRegridding.sourceview`.
 
 A bare system names no cells until a level is chosen. As a destination it takes
 the level whose cells are closest in size to the source's, which is the only
@@ -317,6 +318,76 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
 # A `Cells` axis already names the cells a regrid would otherwise look for a
 # raster lattice in, so a source given no `from` can point at the grid itself.
 GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
+
+# Only reached when the axis cannot present the cube itself — a mixed-level cube
+# with more than one dimension, which `expand` is not defined on.
+GR.dimsource(lk::MultiOrderLookup) = cellset(lk)
+
+"""
+    GlobalRegridding.sourceview(lk::MultiOrderLookup, A, method)
+
+Present a mixed-level cube at its [`reference_level`](@ref): `expand(A, ref)`,
+whose `Cells` axis is the [`CellLookup`](@ref) over the same cells
+`GlobalRegridding._asspace(lk, "from")` resolves to. A regrid reads this view,
+so a mixed-level cube is a source with no `from` and no manual [`expand`](@ref).
+
+  - Alignment: both sides come from `CellVector(mov; level = ref)`, so leaf `k`
+    of the view is leaf `k` of the space — the expansion enumerates each stored
+    cell's `descendant_range` in stored order, and the space's cells are those
+    same ranges merged where adjacent.
+  - Lazy: one stored value per multi-order cell, whatever the leaf count.
+  - Only for a `method` that is `GlobalRegridding.refinementinvariant`. Others
+    are refused, because every leaf under a stored cell carries one replicated
+    value and interpolating between those sites rebuilds the coarsening
+    staircase at leaf spacing.
+  - `expand` is one-dimensional, so a cube with pass-through dimensions declines
+    and asks for a `from` instead.
+"""
+function GR.sourceview(lk::MultiOrderLookup, A::DD.AbstractDimArray, method)
+    ndims(A) == 1 || return nothing
+    GR.refinementinvariant(method) || _nointerpolation(lk, method)
+    return expand(A, reference_level(lk))
+end
+
+GR.sourceview(::MultiOrderLookup, A, method) = nothing
+
+@noinline _nointerpolation(lk::MultiOrderLookup, method) = throw(ArgumentError(
+    "$(nameof(typeof(method))) interpolates between source sample sites, and a " *
+    "mixed-level cube can only present itself refined to level " *
+    "$(reference_level(lk)), where every leaf under a stored cell repeats that " *
+    "cell's one value — interpolating between them rebuilds the coarsening " *
+    "steps at leaf spacing. Use an area or nearest-cell method, or wait for the " *
+    "native mixed-level source. To interpolate on the leaves anyway, say so: " *
+    "`regrid(expand(A, DiscreteGlobalGrids.reference_level(lookup(A, Cells))); " *
+    "to = ..., from = cellset(lookup(A, Cells)), method = ...)`."))
+
+"""
+    GlobalRegridding.checksource(mov::MultiOrderVector, data, space)
+
+Refuse a `from` naming mixed-level cells against values stored one per *cell*
+rather than one per leaf. The space `mov` resolves to is its reference-level
+expansion, so the two counts differ whenever the container is genuinely mixed,
+and the flatten step would otherwise report only a size mismatch.
+
+A cube carrying the [`MultiOrderLookup`](@ref) passes: it expands itself.
+"""
+function GR.checksource(mov::MultiOrderVector, data, space::GR.RegridSpace)
+    n = length(mov)
+    (n == ncells(space) || _carriesmixed(data) || size(data, 1) != n) && return nothing
+    throw(ArgumentError(
+        "`from` names $n mixed-level cells, which stand for $(ncells(space)) " *
+        "cells at reference level $(reference_level(mov)), but the source " *
+        "holds $n values — one per stored cell. No `from` can pair those: the " *
+        "axis itself says how the stored values spread over the cells. Put " *
+        "them on it — `DimArray(values, Cells(MultiOrderLookup(mov)))` — and " *
+        "regrid with no `from` at all."))
+end
+
+GR.checksource(lk::MultiOrderLookup, data, space::GR.RegridSpace) =
+    GR.checksource(parent(lk), data, space)
+
+_carriesmixed(data) = data isa DD.AbstractDimArray &&
+    any(l -> l isa MultiOrderLookup, DD.lookup(data))
 
 # Labelling the output
 

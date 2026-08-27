@@ -826,4 +826,153 @@ end
     end
 end
 
+# ---------------------------------------------------------------------------
+# A mixed-level cube as the SOURCE. The axis presents the cube at its reference
+# level, so `regrid(A; to = ...)` needs neither a `from` nor a manual `expand`.
+#
+# The container spans three levels over the whole sphere, and every stored cell
+# carries its own value, so any permutation between the presented data and the
+# space's cells moves a number.
+# ---------------------------------------------------------------------------
+
+const MOCSYS = DGG.HEALPixSystem()
+const MOCREF = 3
+
+# Level 1 everywhere, one root refined to level 3 and another to level 2: three
+# levels, still tiling the sphere exactly.
+function mixedcontainer()
+    l1 = DGG.levelgrid(MOCSYS, 1)
+    roots = [DGG.cellindex(l1, i) for i in 1:DGG.ncells(l1)]
+    kids(c, l) = collect(DGG.CellVector(DGG.subtree(MOCSYS, c, l)))
+    cells = vcat(kids(roots[1], 3), kids(roots[2], 2), roots[3:end])
+    return DGG.MultiOrderVector(MOCSYS, cells; reference_level = MOCREF)
+end
+
+const MOV = mixedcontainer()
+# Distinct per stored cell: a misplaced value cannot hide behind a neighbour.
+const MOCVALS = collect(1.0:length(MOV))
+const MOCCUBE = DD.DimArray(MOCVALS, DGG.Cells(DGG.MultiOrderLookup(MOV)))
+const MOCDST = DGG.levelgrid(MOCSYS, MOCREF - 1)
+
+@testset "a mixed-level cube is a source as it stands" begin
+    @test length(unique(DGG.level, collect(MOV))) == 3
+    @test length(MOV) < DGG.ncells(DGG.levelgrid(MOCSYS, MOCREF))
+
+    lk = DD.lookup(MOCCUBE, DGG.Cells)
+    # The container is its own backing, whichever way it is spelled.
+    @test DGG.cellset(MOV) === MOV
+    @test DGG.cellset(lk) === MOV
+    @test DGG.cellset(DGG.CellVector(MOV)) === MOV
+    @test GR.dimsource(lk) === MOV
+
+    # The view the regrid reads: the reference-level expansion, on the cells the
+    # source space is built over, and still O(#stored) in memory.
+    view = GR.sourceview(lk, MOCCUBE, GR.Conservative())
+    manual = DGG.expand(MOCCUBE, DGG.reference_level(lk))
+    @test collect(parent(view)) == collect(parent(manual))
+    @test collect(DD.lookup(view, DGG.Cells)) == collect(DD.lookup(manual, DGG.Cells))
+    # The array-level answer is the axis's, so `_flatten` reads the same view.
+    @test collect(parent(GR.sourceview(MOCCUBE, GR.Conservative()))) ==
+          collect(parent(view))
+    space = GR.plan_regrid(MOCCUBE; to = MOCDST).src_space
+    @test DGG.ncells(space) == length(view) ==
+          DGG.ncells(DGG.levelgrid(MOCSYS, MOCREF))
+    @test collect(DGG.CellVector(space.grid)) ==
+          collect(DD.lookup(view, DGG.Cells))
+    @test Base.summarysize(parent(view)) <
+          Base.summarysize(collect(parent(view)))
+
+    # No `from`, no `expand`: it runs and answers everywhere.
+    out = DGG.regrid(MOCCUBE; to = MOCDST)
+    @test DD.dims(out, 1) isa DGG.Cells
+    @test collect(DD.lookup(out, 1)) == collect(DGG.CellVector(MOCDST))
+    @test all(isfinite, parent(out))
+
+    # The alignment law, against an oracle that never touches `expand`: leaf `k`
+    # of the presented data is leaf `k` of the space, so onto the reference level
+    # itself every cell reads the stored cell covering it — exactly, because a
+    # nearest-cell regrid takes one source value entire.
+    ref = DGG.levelgrid(MOCSYS, MOCREF)
+    leafvals = [MOCVALS[DGG.covering_index(MOV, DGG.cellindex(ref, i))]
+                for i in 1:DGG.ncells(ref)]
+    @test isequal(parent(DGG.regrid(MOCCUBE; to = ref, method = GR.NearestCell())),
+        leafvals)
+
+    # Conservatively onto a coarser level, the same oracle bounds every answer:
+    # a destination whose leaves all read one stored cell takes that value
+    # entire, and a mixed one stays strictly between the values it averages.
+    covered = [[MOCVALS[DGG.covering_index(MOV, c)] for c in
+                DGG.CellVector(DGG.subtree(MOCSYS, DGG.cellindex(MOCDST, i), MOCREF))]
+               for i in 1:DGG.ncells(MOCDST)]
+    uniform = findall(allequal, covered)
+    mixed = findall(!allequal, covered)
+    @test !isempty(mixed) && length(uniform) + length(mixed) == DGG.ncells(MOCDST)
+    @test all(i -> parent(out)[i] ≈ first(covered[i]), uniform)
+    @test all(i -> minimum(covered[i]) < parent(out)[i] < maximum(covered[i]), mixed)
+
+    # The transparent route IS the manual recipe, bit for bit, and on a point
+    # method too — where `from` names the same space the view is written against.
+    for method in (GR.Conservative(), GR.NearestCell(), GR.DirectNearest())
+        @test isequal(parent(DGG.regrid(MOCCUBE; to = MOCDST, method)),
+            parent(DGG.regrid(manual; to = MOCDST, from = DGG.cellset(
+                DD.lookup(manual, DGG.Cells)), method)))
+    end
+end
+
+@testset "only a method refinement cannot move presents itself refined" begin
+    # Replacing a stored cell by its leaves, each repeating that cell's value,
+    # leaves an area or nearest-cell answer alone. It does not leave an
+    # interpolation alone: the leaf sites are where the staircase would be
+    # rebuilt, so the route is refused rather than quietly taken.
+    @test GR.refinementinvariant(GR.Conservative())
+    @test GR.refinementinvariant(GR.NearestCell())
+    @test GR.refinementinvariant(GR.DirectNearest())
+    @test !GR.refinementinvariant(GR.BarycentricPoint())
+
+    lk = DD.lookup(MOCCUBE, DGG.Cells)
+    bary = GR.BarycentricPoint()
+    @test_throws ArgumentError GR.sourceview(lk, MOCCUBE, bary)
+    for call in (() -> DGG.regrid(MOCCUBE; to = MOCDST, method = bary),
+                 () -> DGG.regrid(MOCCUBE; to = MOCDST, from = MOV, method = bary))
+        @test_throws ArgumentError call()
+        @test_throws "rebuilds the coarsening steps" call()
+        @test_throws "native mixed-level source" call()
+    end
+
+    # And the escape hatch the message names does work: expand by hand, say so,
+    # and the leaf-site interpolation is yours.
+    manual = DGG.expand(MOCCUBE, DGG.reference_level(lk))
+    onleaves = DGG.regrid(manual; to = MOCDST, from = DGG.cellset(
+        DD.lookup(manual, DGG.Cells)), method = bary)
+    @test all(isfinite, parent(onleaves))
+end
+
+@testset "`from` names a space, not a layout" begin
+    # Values stored one per CELL cannot be paired with a space of one cell per
+    # LEAF. Say which counts disagree and where the working route is, rather
+    # than leave it to the flatten step's size mismatch.
+    for spelling in (MOV, DGG.MultiOrderLookup(MOV))
+        @test_throws ArgumentError GR.plan_regrid(MOCVALS; to = MOCDST,
+            from = spelling)
+        @test_throws "one per stored cell" GR.plan_regrid(MOCVALS;
+            to = MOCDST, from = spelling)
+        @test_throws "regrid with no `from` at all" GR.plan_regrid(MOCVALS;
+            to = MOCDST, from = spelling)
+    end
+    # The cube itself is not refused by that check: it expands itself.
+    @test GR.checksource(MOV, MOCCUBE, GR._asspace(MOV, "from")) === nothing
+    @test parent(DGG.regrid(MOCCUBE; to = MOCDST, from = MOV)) ==
+          parent(DGG.regrid(MOCCUBE; to = MOCDST))
+
+    # `expand` is one-dimensional, so a cube with pass-through dimensions
+    # declines to present itself and asks for the `from` it can be given.
+    cube2d = DD.DimArray(hcat(MOCVALS, MOCVALS),
+        (DGG.Cells(DGG.MultiOrderLookup(MOV)), DD.Dim{:month}(1:2)))
+    @test GR.sourceview(DD.lookup(cube2d, DGG.Cells), cube2d,
+        GR.Conservative()) === nothing
+    @test_throws ArgumentError DGG.regrid(cube2d; to = MOCDST)
+    @test_throws "names cells rather than a raster lattice" DGG.regrid(cube2d;
+        to = MOCDST)
+end
+
 end # module RegridTests

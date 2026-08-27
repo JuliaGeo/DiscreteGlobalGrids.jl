@@ -12,6 +12,25 @@ independent of field data.
 abstract type AbstractRegriddingMethod end
 
 """
+    refinementinvariant(method) -> Bool
+
+Whether replacing a source cell by its children, each carrying that cell's
+value, leaves the method's answer unchanged.
+
+Area methods hold: the children tile the parent, so it is the same value over
+the same total overlap. Nearest-cell methods hold: a site lands in a child of
+the cell it would have landed in, carrying that cell's value. Methods that
+blend by where the sites *are* do not — refining moves the sites, so
+interpolating between replicated values reproduces the coarse steps at the
+finer spacing.
+
+`false` by default, so a source presenting itself refined
+([`sourceview`](@ref)) refuses a method that has not declared the property
+rather than silently handing it a different geometry.
+"""
+refinementinvariant(::AbstractRegriddingMethod) = false
+
+"""
     Conservative()
 
 Weight source cells by their spherical intersection area with each destination.
@@ -19,6 +38,8 @@ With [`Extensive`](@ref), this preserves the covered integral; with
 [`Weighted`](@ref), it returns coverage-normalized means. Requires cell polygons.
 """
 struct Conservative <: AbstractRegriddingMethod end
+
+refinementinvariant(::Conservative) = true
 
 """
     NearestCell()
@@ -32,6 +53,8 @@ no entry at all; the missing policy decides what that destination cell becomes.
 This method does not preserve integrals.
 """
 struct NearestCell <: AbstractRegriddingMethod end
+
+refinementinvariant(::NearestCell) = true
 
 """
     BarycentricPoint(; poles = NearestCell())

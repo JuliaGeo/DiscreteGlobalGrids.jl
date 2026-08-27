@@ -109,6 +109,11 @@ public knownempty, sourcemissingval, chunkat, cellarea
 public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource
+# A compressed cell axis presents the array a regrid reads (`sourceview`), says
+# why a `from` naming its cells cannot describe the stored values
+# (`checksource`), and asks each method whether refining its cells is allowed to
+# change the answer (`refinementinvariant`).
+public sourceview, checksource, refinementinvariant
 
 # Qualified `RegridSpace` extension hooks. Their declarations and contracts are
 # grouped by responsibility in spaces.jl; they stay unexported to avoid generic

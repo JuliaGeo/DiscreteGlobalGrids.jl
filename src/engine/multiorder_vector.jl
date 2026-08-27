@@ -328,6 +328,14 @@ whatever `level` is. [`cellset`](@ref) on the result returns `mov`.
 CellVector(mov::MultiOrderVector; level::Integer=reference_level(mov)) =
     _cellvector(mov, Int(level))
 
+"""
+    cellset(mov::MultiOrderVector)
+
+The container itself: a stored mixed-level collection is its own backing, as
+`cellset(CellVector(mov))` returns it for the expansion.
+"""
+cellset(mov::MultiOrderVector) = mov
+
 function _cellvector(mov::MultiOrderVector, l::Int)
     sys = mov.system
     for c in mov.cells

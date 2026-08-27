@@ -13,40 +13,21 @@
     MultiOrderVector(sys, cells::AbstractVector; reference_level = deepest cell level)
 
 An immutable `AbstractVector` of cells at mixed refinement levels of one
-hierarchical system, pairwise disjoint as subtrees (no member is an ancestor
-of another, none repeats), ordered by the index intervals their subtrees
-occupy at a **reference level** — depth-first order, the order a sorted
-single-level axis has and coarse-ancestor store chunking assumes
-([`dggwrite`](@ref)). Semantically it is that id vector; what is
-stored beside the ids is the interval index (`starts`, `stops`, cumulative
-`offsets`) that answers every query below in O(log n).
+hierarchical system — the storage form of a MOC, where
+[`MultiOrderCellSet`](@ref) is the query form. Requires
+[`has_sorted_subtrees`](@ref).
 
-Construction from a [`MultiOrderCellSet`](@ref) is O(n) and keeps the set's
-reference level; from `sys, cells` the vector is sorted and validated, with
-`reference_level` defaulting to the deepest level present (a deeper one is
-legal). The sort discards the input order, so a parallel value vector must be
-permuted with it — `localindex(mov, c)` gives each cell's stored index.
-The reference level is a property of the container, not of the system: two
-containers of the same cells at different reference levels compare equal.
-
-```julia
-mov[k]                          # the kth cell id
-localindex(mov, c)            # exact membership: Int, or `nothing`
-c in mov                        # the same as a Bool
-covering_index(mov, c)       # the stored cell that is `c` or an ancestor of it
-cellat(mov, lon, lat)           # the stored cell a point falls in
-covering(mov, polygon)          # the sub-container a region names
-CellVector(mov; level = l)      # the leaf-level expansion, as windows
-union(a, b); intersect(a, b); setdiff(a, b); complement(a)
-issubset(a, b); isdisjoint(a, b); issetequal(a, b); symdiff(a, b)
-```
-
-Membership and point queries are one binary search; the set operations are
-O(n + m) interval arithmetic and return **normalized minimal** containers —
-the coarsest cells tiling the result — so `union(a, a)` may be coarser than a
-non-minimal `a`. `==` compares the stored cells, so those two are unequal even
-though they hold the same leaves; `issetequal` is the leaf-set comparison. The
-system must have [`has_sorted_subtrees`](@ref).
+  - Members are pairwise disjoint as subtrees, ordered by the index interval
+    each occupies at the **reference level**: the order a sorted single-level
+    axis has, and the one [`dggwrite`](@ref) chunks against.
+  - That interval index is stored beside the ids, so [`localindex`](@ref),
+    [`covering_index`](@ref), `in`, `cellat` and [`covering`](@ref) each cost
+    one binary search, and `CellVector(mov; level = l)` expands to windows.
+  - `union`, `intersect`, `setdiff`, `symdiff` and `complement` are O(n + m)
+    and return the coarsest cells tiling the result, so `union(a, a)` may be
+    coarser than `a`. `==` compares stored cells; `issetequal` compares leaves.
+  - Construction sorts and validates, so a parallel value vector must be
+    permuted with it — `localindex(mov, c)` gives each cell's stored index.
 """
 struct MultiOrderVector{ID,S<:AbstractHierarchicalGridSystem} <: AbstractVector{ID}
     system::S

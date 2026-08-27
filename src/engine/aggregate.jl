@@ -73,22 +73,19 @@ eachinterval(w::IndexWindows) = ((p, p) for p in w.indices)
 
 Reduce leaf data to level `l`: one output cell per distinct level-`l` ancestor
 of `cv`'s cells, ascending, each carrying `f` of the values of its **present**
-descendants. `values` is indexed against `cv` — `values[k]` is the datum of
-`cv[k]` — and the answer is another such pair:
+descendants. `values` is indexed against `cv`, and so is the pair returned, so
+a pyramid is `[aggregate(sum, cv, data, l) for l in level(cv)-1:-1:3]`.
 
-```julia
-pyramid = [aggregate(sum, cv, data, l) for l in level(cv)-1:-1:3]
-```
+  - Partial groups are reduced over what is there; a group `cv` misses
+    entirely is absent from the output.
+  - `f` is handed a contiguous `AbstractVector` view into `values`, never a
+    copy, and sees the values as they stand — `mean` over a group holding a
+    `missing` answers `missing`, and `v -> mean(skipmissing(v))` is the other
+    reading.
+  - `l` must be strictly coarser than `level(cv)`; the system must have
+    [`has_sorted_subtrees`](@ref).
 
-Partial groups are reduced over what is there; a group `cv` misses entirely is
-absent from the output. `f` is handed a contiguous `AbstractVector` view into
-`values`, never a copy, and sees the values as they stand: `mean` over a group
-holding a `missing` answers `missing`, and `v -> mean(skipmissing(v))` is the
-other reading.
-
-`l` must be strictly coarser than `level(cv)`, and the system must have
-[`has_sorted_subtrees`](@ref). See also [`coarsen`](@ref), which picks the
-level per cell instead of fixing one.
+See also [`coarsen`](@ref), which picks the level per cell instead.
 """
 function aggregate(f, cv::CellVector, values::AbstractVector, l::Integer)
     sys = system(cv)
@@ -159,33 +156,20 @@ end
             minlevel = first(levels(system(cv)))) -> (MultiOrderVector, Vector)
 
 Merge each subtree whose leaf values agree to within `atol` into one coarse
-cell: an adaptively refined mesh built from data at one level. Cells where the
-field is flat are stored once at whatever level flatness reaches; the rest
-stay at `level(cv)` with their original values.
+cell: an adaptively refined mesh built from data at one level.
 
-A cell between `minlevel` and `level(cv)` replaces its subtree iff:
-
-  - **complete** — `cv` holds *every* leaf descendant of it. Incomplete groups
-    never merge, so `CellVector(mov; level = level(cv))` recovers `cv` window
-    for window, whatever `atol`.
-  - **within tolerance** — over the leaf values `vs` under it, either all are
-    `missing` (the merged value is `missing`), or none is and
-    `maximum(vs) - minimum(vs) <= atol`. A group mixing `missing` with data
-    never merges.
-
-The criterion is monotone, so each leaf's stored cell is its coarsest merging
-ancestor. The stored value is `by(vs)` over the LEAF values, never over child
-summaries — on an equal-area system the default mean is the exact
-area-weighted mean of the region. With the default `by` every leaf value is
-within `atol` of the value stored for it; any `by` bounded by `extrema(vs)`
-keeps that bound. The default equals `Statistics.mean` (`Statistics` is not a
-dependency).
-
-`values` is indexed against `cv`; the system must have
-[`has_sorted_subtrees`](@ref); `minlevel` must be no deeper than `level(cv)`.
-The container comes back with `reference_level = level(cv)`. See also
-[`aggregate`](@ref), which fixes one output level, and [`expand`](@ref), the
-inverse presentation.
+  - A cell between `minlevel` and `level(cv)` replaces its subtree iff `cv`
+    holds every leaf descendant of it and, over those leaf values `vs`, either
+    all are `missing` or none is and `maximum(vs) - minimum(vs) <= atol`.
+  - Completeness is required, so `CellVector(mov; level = level(cv))` recovers
+    `cv` window for window whatever `atol`; the criterion is monotone, so each
+    leaf is stored at its coarsest merging ancestor.
+  - The stored value is `by(vs)` over the LEAF values, never over child
+    summaries. `Statistics.mean` by default — exact and area-weighted on an
+    equal-area system — and any `by` within `extrema(vs)` keeps every leaf
+    inside `atol` of what is stored for it.
+  - `values` is indexed against `cv`; the result carries
+    `reference_level = level(cv)`. See [`aggregate`](@ref), [`expand`](@ref).
 """
 function coarsen(cv::CellVector, values::AbstractVector; atol, by=_mean,
         minlevel::Integer=first(levels(system(cv))))

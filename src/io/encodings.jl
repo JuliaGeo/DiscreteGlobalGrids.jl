@@ -362,18 +362,18 @@ struct ImplicitEncoding <: CellEncoding end
 """
     CompactedEncoding()
 
-One stored cell per index at MIXED refinement levels: two aligned columns,
-a level and a raw id at that level, in [`MultiOrderVector`](@ref) container
-order — ascending by subtree-interval start. Such a store declares
-`refinement_level: null` and `compression: "compacted"`, names its level
-column in `refinement_levels`, and its axis reads back as a
-`MultiOrderVector` rather than a single-level vector.
+One stored cell per index at MIXED refinement levels: two aligned columns, a
+level and a raw id at that level, in [`MultiOrderVector`](@ref) container
+order — ascending by subtree-interval start.
 
-This is an EXTENSION, not a conforming layout: v1 of `zarr-conventions/dggs`
-takes the vocabulary word `compacted` but requires `compression: "none"`
-wherever `refinement_level` is null, and for healpix it requires a `*uniq`
-indexing scheme there — a self-describing id with no level column at all. A
-conforming reader will reject these stores; only this package reads them.
+  - The store declares `refinement_level: null` and
+    `compression: "compacted"`, and names its level column in
+    `refinement_levels`. Its axis reads back as a `MultiOrderVector`.
+  - This is an EXTENSION, not a conforming layout: v1 of
+    `zarr-conventions/dggs` takes the word `compacted` but requires
+    `compression: "none"` wherever `refinement_level` is null, and for healpix
+    a `*uniq` scheme with no level column at all. Only this package reads
+    these stores.
 """
 struct CompactedEncoding <: CellEncoding end
 

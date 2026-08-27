@@ -891,40 +891,21 @@ _found(lk::Lookups.Lookup, ::Nothing, sel) = throw(Lookups.SelectorError(lk, sel
     MultiOrderLookup(set::MultiOrderCellSet)
 
 A `DimensionalData` lookup over cells at mixed refinement levels: a thin
-wrapper around the [`MultiOrderVector`](@ref) that holds them, reached as
-`Base.parent`. Pair it with [`Cells`](@ref) to make the axis of an adaptively
-refined mesh:
+wrapper around the [`MultiOrderVector`](@ref) it holds, reached as
+`Base.parent`. Pair it with [`Cells`](@ref) for the axis of an adaptively
+refined mesh — `DimArray(vals, Cells(MultiOrderLookup(mov)))`.
 
-```julia
-mov, vals = coarsen(cv, temperature; atol = 1.0)
-A = DimensionalData.DimArray(vals, Cells(MultiOrderLookup(mov)))
-```
-
-`length(lk)` is the number of stored cells, `lk[k]` the `k`th of them, and
-`collect(lk)` the id vector. Every selector resolves through the container's
-interval index in O(log n):
-
-```julia
-A[Cells(DimensionalData.At(c))]               # c must be stored
-A[Cells(DimensionalData.Contains(c))]         # the stored cell covering c
-A[Cells(DimensionalData.Contains(8.0, 46.5))] # the stored cell a point falls in
-A[Cells(Covering(polygon))]                   # every stored cell a region names
-```
-
-`At` is exact membership ([`localindex`](@ref)); `Contains` resolves a cell —
-including one deeper than the [`reference_level`](@ref) — to the stored
-ancestor that holds its value ([`covering_index`](@ref)). `At` and
-`Contains` are reached through `DimensionalData` because this package exports
-DE9IM's geometry predicate [`Contains`](@ref).
-
-An ascending subset stays a `MultiOrderLookup`; a reordered one falls back to
-an unordered `DimensionalData.Categorical` of the same ids. A reduction
-collapses the axis to `NoLookup`; `vcat`/`cat` of disjoint ascending axes
-rebuild a `MultiOrderLookup`. [`coarsen`](@ref) constructs one from a
-`Cells{<:CellLookup}` array; [`expand`](@ref) presents one back at a single
-level.
-
-Requires [`has_sorted_subtrees`](@ref); see [`MultiOrderVector`](@ref).
+  - Selectors resolve through the container's interval index in O(log n).
+    `At` is exact membership ([`localindex`](@ref)); `Contains` resolves a
+    cell — including one deeper than the [`reference_level`](@ref) — to the
+    stored ancestor that holds its value ([`covering_index`](@ref));
+    [`Covering`](@ref) names every stored cell a region meets. The first two
+    are `DimensionalData`'s, because this package exports DE9IM's `Contains`.
+  - An ascending subset stays a `MultiOrderLookup`; a reordered one degrades
+    to `Categorical` and a reduction to `NoLookup`, while `vcat`/`cat` of
+    disjoint ascending axes rebuild one.
+  - [`coarsen`](@ref) constructs one from a `Cells{<:CellLookup}` array;
+    [`expand`](@ref) presents one back at a single level.
 """
 struct MultiOrderLookup{ID,M<:MultiOrderVector} <: Lookups.Lookup{ID,1}
     cells::M

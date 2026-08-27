@@ -50,10 +50,12 @@ to the presentation environment that happens to contain Dagger today. All new
 Julia logic remains in `scripts/dagger_regrid.jl` until a measured result
 justifies extracting anything.
 
-The script safely loads `copdem_production.jl` lazily: that file already runs
-`main` only when it is the program, and the validation and scaling harnesses use
-the same include seam. Lazy loading lets `smoke` exercise Dagger without loading
-the geospatial stack. The Dagger script reuses only three existing boundaries:
+The script eagerly loads `copdem_production.jl`: that file already runs `main`
+only when it is the program, and the validation and scaling harnesses use the
+same include seam. Eager loading ensures every worker has the complete method
+table before its first Dagger task and avoids a Julia world-age wrapper. `smoke`
+still opens no source, graph, or store, but it pays the geospatial package-load
+cost. The Dagger script reuses only three existing boundaries:
 
 1. `dagplan` and the graph queries for destination order and source affinity;
 2. `regrid_chunk` as the complete, deterministically ordered work unit;
@@ -140,10 +142,10 @@ DGG and GlobalRegridding from this checkout.
   builds one CopDEM tile, computes all seven finite cells of one level-5 to
   level-6 destination chunk, writes the disjoint temporary Zarr chunk, commits
   its coordinator ledger entry, and returns compact worker/cache statistics.
-- That canary exposed and fixed a Julia 1.12 world-age boundary: production
-  helpers are loaded outside the worker-state task, and the three Dagger entry
-  points use `invokelatest` so a prior executor-only smoke cannot leave a
-  reusable task loop in an older world.
+- The first canary exposed a Julia 1.12 world-age boundary when production
+  helpers were loaded from inside a Dagger task. The final implementation loads
+  them eagerly on the coordinator and every worker, removing the lazy-load lock,
+  worker branch, and all `invokelatest` calls.
 
 The next action is still the D1 8--32-chunk byte-identity canary below, not a
 production run.

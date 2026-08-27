@@ -3,8 +3,8 @@
 """
 An isolated Dagger execution backend for the CopDEM production regrid.
 
-The regular production driver is loaded lazily for its source, graph, regrid,
-and store seams; it is not modified and its `main` is never called here. The
+The regular production driver is loaded for its source, graph, regrid, and
+store seams; it is not modified and its `main` is never called here. The
 coordinator retains the dependency graph, affinity order, admission policy, and
 completion ledger. A Dagger task computes and writes a complete destination
 chunk (or a small affinity-contiguous batch), preserving the existing ordered
@@ -28,23 +28,13 @@ import Distributed
 import Printf: @sprintf
 using Base.ScopedValues: @with
 
+Base.include(@__MODULE__, joinpath(@__DIR__, "copdem_production.jl"))
+
 export DaggerRegridConfig, DaggerRegridReport, dagger_regrid, dagger_smoke
 
 const SCRIPT_PATH = abspath(@__FILE__)
-const SOURCE_VERSION = "2026-08-26-dagger-regrid-d10"
+const SOURCE_VERSION = "2026-08-27-dagger-regrid-d11"
 const ALLOWED_FAILPOINTS = (:before_compute, :before_write, :after_write)
-const PRODUCTION_LOCK = ReentrantLock()
-const PRODUCTION_LOADED = Ref(false)
-
-function _load_production!()
-    PRODUCTION_LOADED[] && return nothing
-    lock(PRODUCTION_LOCK) do
-        PRODUCTION_LOADED[] && return nothing
-        Base.include(@__MODULE__, joinpath(@__DIR__, "copdem_production.jl"))
-        PRODUCTION_LOADED[] = true
-    end
-    return nothing
-end
 
 """Configuration owned by the experimental Dagger coordinator."""
 struct DaggerRegridConfig{P}
@@ -64,10 +54,7 @@ function DaggerRegridConfig(; production = nothing, processes = nothing,
         worker_cache_slots::Integer = 256, worker_cache_stripes::Integer = 16,
         worker_tilecache_root::Union{Nothing,AbstractString} = nothing,
         failpoints = Dict{Int,Symbol}())
-    if production === nothing
-        _load_production!()
-        production = CONFIG
-    end
+    production === nothing && (production = CONFIG)
     batch === nothing && (batch = production.batch)
     pids = processes === nothing ? Distributed.workers() : Int.(processes)
     isempty(pids) && (pids = [Distributed.myid()])
@@ -164,7 +151,7 @@ function _validate(config::DaggerRegridConfig)
     return config
 end
 
-function _load_workers!(pids; production = false)
+function _load_workers!(pids)
     for pid in pids
         pid == Distributed.myid() && continue
         loaded = Distributed.remotecall_fetch(isdefined, pid, Main, :DaggerRegrid)
@@ -175,13 +162,6 @@ function _load_workers!(pids; production = false)
                 "process $pid has DaggerRegrid $version loaded, expected $SOURCE_VERSION; use fresh workers")
         else
             Distributed.remotecall_wait(Base.include, pid, Main, SCRIPT_PATH)
-        end
-        if production
-            # Load production outside a Dagger task. The Dagger call sites also
-            # enter through `invokelatest`, because a smoke task may already
-            # have started a reusable loop with an older Julia 1.12 world age.
-            Distributed.remotecall_wait(Core.eval, pid, Main,
-                :(DaggerRegrid._load_production!()))
         end
     end
     return nothing
@@ -246,7 +226,6 @@ function _worker_config(config::DaggerRegridConfig)
 end
 
 function _make_worker_state(settings)
-    _load_production!()
     config = settings.production
     gcguard(config)
     config.malloctrim > 0 && tunemalloc(config.malloctrim)
@@ -320,14 +299,11 @@ function _worker_stats(state::WorkerState)
         stats.bytes, builder.nreal[], builder.nsynthetic[], builder.npixels[])
 end
 
-_latest(f, args...) = Base.invokelatest(f, args...)
-
 function _spawn_batch(state, pid, items)
     firstchunk, lastchunk = first(items).chunk, last(items).chunk
     options = Dagger.Options(; scope = Dagger.scope(; worker = pid),
         name = "regrid-$firstchunk-$lastchunk", return_type = BatchReport)
-    return BatchFlight(Dagger.spawn(_latest, options, _worker_batch, state, items),
-        pid, items)
+    return BatchFlight(Dagger.spawn(_worker_batch, options, state, items), pid, items)
 end
 
 function _launch!(flights, ready, slot, state, pid, items)
@@ -387,10 +363,9 @@ function _drain_flights!(flights, log, failures)
 end
 
 function _final_worker_stats(state, pids)
-    tasks = [Dagger.spawn(_latest,
+    tasks = [Dagger.spawn(_worker_stats,
         Dagger.Options(; scope = Dagger.scope(; worker = pid),
-            name = "regrid-stats-$pid", return_type = WorkerStats),
-        _worker_stats, state) for pid in pids]
+            name = "regrid-stats-$pid", return_type = WorkerStats), state) for pid in pids]
     return WorkerStats[fetch(task) for task in tasks]
 end
 
@@ -404,7 +379,6 @@ reports return to the coordinator. The coordinator alone appends the done
 ledger.
 """
 function dagger_regrid(config::DaggerRegridConfig = DaggerRegridConfig())
-    _load_production!()
     _validate(config)
     gcguard(config.production)
     prepared = _prepare_coordinator(config)
@@ -415,14 +389,11 @@ function dagger_regrid(config::DaggerRegridConfig = DaggerRegridConfig())
     end
 
     # Dagger's eager context sees every Distributed worker, even though our
-    # process scopes use only `config.processes`; all workers need the task
-    # module, while only selected workers need the production helpers.
+    # process scopes use only `config.processes`; all workers need the complete
+    # task module before Dagger initializes or reuses its execution context.
     _load_workers!(Distributed.workers())
-    _load_workers!(config.processes; production = true)
     settings = _worker_config(config)
-    state = Dagger.shard(
-        () -> Base.invokelatest(_make_worker_state, settings);
-        workers = config.processes)
+    state = Dagger.shard(() -> _make_worker_state(settings); workers = config.processes)
     nslots = length(config.processes) * config.inflight_per_process
     schedule = GuidedSchedule(length(prepared.order),
         config.production.taper ? nslots : 1, config.batch)
@@ -508,7 +479,6 @@ function run_cli()
         println("Dagger smoke passed: ", reports)
         return 0
     end
-    _load_production!()
     mode in (:run, :canary) || error(
         "DAGGER_REGRID_MODE must be smoke, canary, or run; got $(repr(mode))")
     mode === :canary && !(0 < CONFIG.maxchunks <= 32) && error(

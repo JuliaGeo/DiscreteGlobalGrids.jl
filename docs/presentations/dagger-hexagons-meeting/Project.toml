@@ -27,7 +27,7 @@ Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
 WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
 
 [sources]
-ConservativeRegridding = {rev = "e8fc67f420da0362d59b354e2db6fcde8107fec0", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+ConservativeRegridding = {rev = "main", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 DiscreteGlobalGrids = {path = "../../.."}
 DiscreteGlobalGridsVisualization = {path = "../../../lib/DiscreteGlobalGridsVisualization"}
 GeometryOps = {rev = "27834e736262016acf104d6b02a41c3eab4b9371", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}

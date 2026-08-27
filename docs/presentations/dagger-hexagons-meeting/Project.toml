@@ -30,6 +30,4 @@ WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
 ConservativeRegridding = {rev = "main", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 DiscreteGlobalGrids = {path = "../../.."}
 DiscreteGlobalGridsVisualization = {path = "../../../lib/DiscreteGlobalGridsVisualization"}
-GeometryOps = {rev = "27834e736262016acf104d6b02a41c3eab4b9371", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
 GlobalRegridding = {path = "../../../lib/GlobalRegridding"}

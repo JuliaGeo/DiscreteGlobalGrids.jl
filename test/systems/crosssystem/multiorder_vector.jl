@@ -3,10 +3,10 @@
 #
 #   * round trip: a coverage read as storage keeps its cells, order and
 #     reference level, and expands to the set's own `CellVector` at every level.
-#   * membership: `cellposition` is exact; `covering_position` resolves every
+#   * membership: `localindex` is exact; `covering_index` resolves every
 #     covered leaf (or deeper cell) to its stored ancestor.
 #   * point location: a stored cell's centroid resolves back to that cell.
-#   * set algebra: against a brute force over leaf-position `Set`s, which
+#   * set algebra: against a brute force over leaf-index `Set`s, which
 #     shares no code with the interval index.
 #   * normalization: results are the coarsest cells that tile them — no
 #     complete sibling family survives in any result.
@@ -68,7 +68,7 @@ function shallow_level(sys; atleast=400)
     return last(DGG.levels(sys))
 end
 
-# Leaf positions a container names, via `descendant_range` — independent of
+# Leaf indices a container names, via `descendant_range` — independent of
 # the container's own index.
 leafset(mov, l) = Set(p for c in mov for p in DGG.descendant_range(DGG.system(mov), c, l))
 
@@ -158,28 +158,28 @@ end
     end
 
     @testset "membership is exact" begin
-        @test all(DGG.cellposition(mov, mov[k]) == k for k in eachindex(mov))
+        @test all(DGG.localindex(mov, mov[k]) == k for k in eachindex(mov))
         @test all(c in mov for c in mov)
 
         # A descendant of a stored cell is covered but NOT stored — kills
-        # `cellposition` answering with the covering position.
+        # `localindex` answering with the covering index.
         coarse = argmin(k -> DGG.level(mov[k]), eachindex(mov))
         kid = first(DGG.children(sys, mov[coarse]))
         @test DGG.level(kid) <= leaf
-        @test DGG.cellposition(mov, kid) === nothing
+        @test DGG.localindex(mov, kid) === nothing
         @test !(kid in mov)
 
         # An ancestor of a stored cell is neither stored nor covered.
         deepest = argmax(k -> DGG.level(mov[k]), eachindex(mov))
         anc = DGG.ancestor(sys, mov[deepest], DGG.level(mov[deepest]) - 1)
-        @test DGG.cellposition(mov, anc) === nothing
-        @test EN.covering_position(mov, anc) === nothing
+        @test DGG.localindex(mov, anc) === nothing
+        @test EN.covering_index(mov, anc) === nothing
 
         # A leaf-grid cell outside the container entirely.
         outside = DGG.cellat(grid, FARAWAY...)
         @test outside !== nothing
-        @test DGG.cellposition(mov, outside) === nothing
-        @test EN.covering_position(mov, outside) === nothing
+        @test DGG.localindex(mov, outside) === nothing
+        @test EN.covering_index(mov, outside) === nothing
     end
 
     @testset "the covering ancestor" begin
@@ -188,15 +188,15 @@ end
         for i in ks
             r = DGG.descendant_range(sys, mov[i], leaf)
             for p in (first(r), (first(r) + last(r)) ÷ 2, last(r))
-                @test EN.covering_position(mov, DGG.cellindex(grid, p)) == i
+                @test EN.covering_index(mov, DGG.cellindex(grid, p)) == i
             end
         end
         # A cell deeper than the reference level resolves through its
         # reference-level ancestor.
         deep = first(DGG.children(sys, DGG.cellindex(grid, mov.stops[end])))
         @test DGG.level(deep) == leaf + 1
-        @test EN.covering_position(mov, deep) == length(mov)
-        @test DGG.cellposition(mov, deep) === nothing
+        @test EN.covering_index(mov, deep) == length(mov)
+        @test DGG.localindex(mov, deep) === nothing
     end
 
     @testset "a point lands in the cell holding it" begin
@@ -206,11 +206,11 @@ end
             c = mov[i]
             lon, lat = LONLAT(DGG.cell_centroid(DGG.levelgrid(sys, DGG.level(c)), c))
             @test DGG.cellat(mov, lon, lat) == c
-            @test DGG.cellposition(mov, lon, lat) == i
+            @test DGG.localindex(mov, lon, lat) == i
         end
         @test DGG.cellat(grid, FARAWAY...) !== nothing
         @test DGG.cellat(mov, FARAWAY...) === nothing
-        @test DGG.cellposition(mov, FARAWAY...) === nothing
+        @test DGG.localindex(mov, FARAWAY...) === nothing
     end
 
     @testset "a region selects whole cells" begin
@@ -219,18 +219,18 @@ end
                 DGG.query(sys, DGG.MultiOrderCoverage(target); level=leaf), leaf) for p in r)
             byhand = [i for i in eachindex(mov)
                       if any(in(covered), DGG.descendant_range(sys, mov[i], leaf))]
-            @test DGG.covering_positions(mov, target) == byhand
+            @test DGG.covering_indices(mov, target) == byhand
             sub = DGG.covering(mov, target)
             @test sub isa DGG.MultiOrderVector
             @test EN.reference_level(sub) == leaf
             # The selection is a sub-vector of stored cells, never a re-cut of
             # the region.
             @test collect(sub) == [mov[i] for i in byhand]
-            @test all(DGG.cellposition(sub, sub[j]) == j for j in eachindex(sub))
+            @test all(DGG.localindex(sub, sub[j]) == j for j in eachindex(sub))
         end
         @test DGG.covering(mov, REGION) == mov
         @test isempty(DGG.covering(mov, NOWHERE))
-        @test isempty(DGG.covering_positions(mov, NOWHERE))
+        @test isempty(DGG.covering_indices(mov, NOWHERE))
     end
 
     @testset "indexing takes CellVector's fork" begin
@@ -247,7 +247,7 @@ end
         # A subset is a container in its own right, not a view with stale keys.
         sub = mov[2:4]
         @test sub isa DGG.MultiOrderVector
-        @test all(DGG.cellposition(sub, sub[j]) == j for j in eachindex(sub))
+        @test all(DGG.localindex(sub, sub[j]) == j for j in eachindex(sub))
         @test disjoint_and_sorted(sub)
     end
 
@@ -295,8 +295,8 @@ end
         empty = DGG.MultiOrderVector(sys, DGG.cellindextype(sys)[])
         @test isempty(empty)
         @test EN.reference_level(empty) == top
-        @test DGG.cellposition(empty, cells[1]) === nothing
-        @test EN.covering_position(empty, cells[1]) === nothing
+        @test DGG.localindex(empty, cells[1]) === nothing
+        @test EN.covering_index(empty, cells[1]) === nothing
         @test isempty(DGG.CellVector(empty))
         @test isempty(DGG.covering(empty, REGION))
         @test occursin("0 cells", sprint(show, empty))
@@ -304,7 +304,7 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# Set algebra, against a brute force over leaf position sets
+# Set algebra, against a brute force over leaf index sets
 # ---------------------------------------------------------------------------
 
 @testset "set algebra: $(sysname(sys))" for (sys, _) in SWEEP
@@ -417,7 +417,7 @@ end
 end
 
 # An id outside its level is refused at construction, not at the first geometry
-# call that decodes it. `LevelIndex` positions are zero-based, so `ncells` is
+# call that decodes it. `LevelIndex` indices are zero-based, so `ncells` is
 # one past the end.
 @testset "an id past the end of its level is refused" begin
     sys = DGG.HEALPixSystem()

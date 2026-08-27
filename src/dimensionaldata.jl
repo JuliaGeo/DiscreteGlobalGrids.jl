@@ -45,7 +45,7 @@ import ..DiscreteGlobalGrids.Engine: CellVector, cellset, covering,
 # The mixed-level container, its membership verbs, and the aggregation verbs
 # whose DimArray methods close this file.
 import ..DiscreteGlobalGrids.Engine: MultiOrderVector, reference_level,
-    covering_position, covering_positions, aggregate, coarsen, expand
+    covering_index, aggregate, coarsen, expand
 
 import SmallCollections
 import DimensionalData as DD
@@ -913,7 +913,7 @@ A[Cells(Covering(polygon))]                   # every stored cell a region names
 
 `At` is exact membership ([`localindex`](@ref)); `Contains` resolves a cell —
 including one deeper than the [`reference_level`](@ref) — to the stored
-ancestor that holds its value ([`covering_position`](@ref)). `At` and
+ancestor that holds its value ([`covering_index`](@ref)). `At` and
 `Contains` are reached through `DimensionalData` because this package exports
 DE9IM's geometry predicate [`Contains`](@ref).
 
@@ -994,21 +994,21 @@ reference_level(lk::MultiOrderLookup) = reference_level(parent(lk))
 """
     localindex(lk::MultiOrderLookup, c::AbstractCellIndex) -> Union{Int,Nothing}
 
-Position of cell `c` on the axis, or `nothing` when the axis does not hold that
+Index of cell `c` on the axis, or `nothing` when the axis does not hold that
 cell — including when `c` is a descendant or an ancestor of one it does hold.
 EXACT membership, and what `At` resolves to.
 """
 localindex(lk::MultiOrderLookup, c::AbstractCellIndex) = localindex(parent(lk), c)
 
 """
-    covering_position(lk::MultiOrderLookup, c::AbstractCellIndex) -> Union{Int,Nothing}
+    covering_index(lk::MultiOrderLookup, c::AbstractCellIndex) -> Union{Int,Nothing}
 
-Position of the stored cell that **is `c`, or is an ancestor of `c`** — the
+Index of the stored cell that **is `c`, or is an ancestor of `c`** — the
 compression verb, and what `Contains` resolves to. `c` may be deeper than
 [`reference_level`](@ref).
 """
-covering_position(lk::MultiOrderLookup, c::AbstractCellIndex) =
-    covering_position(parent(lk), c)
+covering_index(lk::MultiOrderLookup, c::AbstractCellIndex) =
+    covering_index(parent(lk), c)
 
 # --- DimensionalData plumbing ----------------------------------------------
 
@@ -1063,7 +1063,7 @@ Lookups.hasselection(lk::MultiOrderLookup, sel::Lookups.At{<:AbstractCellIndex})
     localindex(lk, Lookups.val(sel)) !== nothing
 
 Lookups.hasselection(lk::MultiOrderLookup, sel::Lookups.Contains{<:AbstractCellIndex}) =
-    covering_position(lk, Lookups.val(sel)) !== nothing
+    covering_index(lk, Lookups.val(sel)) !== nothing
 
 Lookups.hasselection(lk::MultiOrderLookup, sel::Lookups.Contains{<:Tuple{Real,Real}}) =
     localindex(parent(lk), Lookups.val(sel)...) !== nothing
@@ -1088,10 +1088,10 @@ Base.show(io::IO, ::MIME"text/plain", lk::MultiOrderLookup) = show(io, lk)
 # Typed on the selector's value, as in the `CellLookup` block above.
 
 Lookups.selectindices(lk::MultiOrderLookup, sel::Covering; kw...) =
-    covering_positions(parent(lk), Lookups.val(sel))
+    covering_indices(parent(lk), Lookups.val(sel))
 
 Lookups.selectindices(lk::MultiOrderLookup, sel::Covering{<:AbstractVector}; kw...) =
-    covering_positions(parent(lk), Lookups.val(sel))
+    covering_indices(parent(lk), Lookups.val(sel))
 
 Lookups.selectindices(lk::MultiOrderLookup, sel::Lookups.At{<:AbstractCellIndex}; kw...) =
     _found(lk, localindex(parent(lk), Lookups.val(sel)), sel)
@@ -1100,7 +1100,7 @@ Lookups.selectindices(lk::MultiOrderLookup, sel::Lookups.At{<:AbstractCellIndex}
 # level — resolves to its stored ancestor.
 Lookups.selectindices(lk::MultiOrderLookup,
     sel::Lookups.Contains{<:AbstractCellIndex}; kw...) =
-    _found(lk, covering_position(parent(lk), Lookups.val(sel)), sel)
+    _found(lk, covering_index(parent(lk), Lookups.val(sel)), sel)
 
 Lookups.selectindices(lk::MultiOrderLookup,
     sel::Lookups.Contains{<:Tuple{Real,Real}}; kw...) =

@@ -32,22 +32,22 @@ end
 
 # --- the two window questions the verbs below ask --------------------------
 
-# The first position `cv` holds at or after `lo`, or `nothing`.
-function _next_position(w::RangeWindows, lo::Int)
+# The first index `cv` holds at or after `lo`, or `nothing`.
+function _next_index(w::RangeWindows, lo::Int)
     j = searchsortedfirst(w.stops, lo)
     j <= length(w.stops) || return nothing
     return max(lo, @inbounds w.starts[j])
 end
 
-function _next_position(w::IndexWindows, lo::Int)
+function _next_index(w::IndexWindows, lo::Int)
     j = searchsortedfirst(w.indices, lo)
     j <= length(w.indices) || return nothing
     return @inbounds w.indices[j]
 end
 
-# The values under a subtree as a range of data-array positions, or `nothing`
+# The values under a subtree as a range of data-array indices, or `nothing`
 # when the subtree is not complete in `cv`: both endpoints present and exactly
-# `length(r)` positions between them (the windows are strictly ascending).
+# `length(r)` indices between them (the windows are strictly ascending).
 function _complete_segment(w::CellWindows, r::UnitRange{Int})
     a = windowindex(w, first(r))
     a === nothing && return nothing
@@ -100,16 +100,16 @@ function aggregate(f, cv::CellVector, values::AbstractVector, l::Integer)
         "aggregation goes UP the hierarchy: level $target is not coarser than the " *
         "vector's level $(level(cv))"))
     coarse = levelgrid(sys, target)
-    positions, segments = _aggregate_segments(cv, coarse, target)
+    indices, segments = _aggregate_segments(cv, coarse, target)
     out = map(r -> f(view(values, r)), segments)
-    # `_windows` re-checks that the coarse positions ascend, which
+    # `_windows` re-checks that the coarse indices ascend, which
     # `has_sorted_subtrees` guarantees; a system breaking that gets an error.
-    return CellVector(_windows(positions), coarse, nothing, target), out
+    return CellVector(_windows(indices), coarse, nothing, target), out
 end
 
 # One forward pass; `ancestor` runs once per output cell, not once per leaf.
-# Segments are ranges even when a group's leaf positions have gaps: `k` counts
-# positions `cv` holds, so a gap in the leaves is no gap in the concatenation.
+# Segments are ranges even when a group's leaf indices have gaps: `k` counts
+# indices `cv` holds, so a gap in the leaves is no gap in the concatenation.
 # The windows are a separate argument so the loop specialises on one shape
 # rather than the `Union` in `cv.windows`.
 _aggregate_segments(cv::CellVector, coarse::AbstractGrid, target::Int) =
@@ -119,11 +119,11 @@ function _aggregate_segments(cv::CellVector, w::CellWindows, coarse::AbstractGri
         target::Int)
     sys = system(cv)
     leaf = level(cv)
-    positions = Int[]
+    indices = Int[]
     segments = UnitRange{Int}[]
     k = 0        # values consumed
     kstart = 0   # first value of the open group
-    stop = 0     # last leaf POSITION of the open group; 0 while none is open
+    stop = 0     # last leaf INDEX of the open group; 0 while none is open
     for (lo, hi) in eachinterval(w)
         p = lo
         while p <= hi
@@ -131,7 +131,7 @@ function _aggregate_segments(cv::CellVector, w::CellWindows, coarse::AbstractGri
                 stop == 0 || push!(segments, kstart:k)
                 a = ancestor(sys, cellindex(cv.grid, p), target)
                 stop = last(descendant_range(sys, a, leaf))
-                push!(positions, _coarse_position(coarse, a))
+                push!(indices, _coarse_index(coarse, a))
                 kstart = k + 1
             end
             n = min(hi, stop) - p + 1
@@ -140,10 +140,10 @@ function _aggregate_segments(cv::CellVector, w::CellWindows, coarse::AbstractGri
         end
     end
     stop == 0 || push!(segments, kstart:k)
-    return positions, segments
+    return indices, segments
 end
 
-function _coarse_position(grid::AbstractGrid, c::AbstractCellIndex)
+function _coarse_index(grid::AbstractGrid, c::AbstractCellIndex)
     p = localindex(grid, c)
     p === nothing && throw(ArgumentError(
         "$c is not a cell of levelgrid($(system(grid)), $(level(grid)))"))
@@ -240,7 +240,7 @@ function _coarsen_visit!(cells, vals, cv::CellVector, values::AbstractVector,
     w = cv.windows
     leaf = level(cv)
     r = descendant_range(sys, c, leaf)
-    p = _next_position(w, first(r))
+    p = _next_index(w, first(r))
     (p === nothing || p > last(r)) && return nothing
     lc = level(c)
     if lc == leaf

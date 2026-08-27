@@ -69,7 +69,7 @@ function covering_byhand(mov, sys, L, target)
     set = DGG.query(sys, DGG.MultiOrderCoverage(target); level=L)
     out = Int[]
     for r in DGG.level_ranges(set, L), p in r
-        k = EN.covering_position(mov, DGG.cellindex(grid, p))
+        k = EN.covering_index(mov, DGG.cellindex(grid, p))
         k === nothing || push!(out, k)
     end
     return unique!(sort!(out))
@@ -118,24 +118,24 @@ end
     end
 
     @testset "At is exact and Contains is covering" begin
-        @test all(DGG.cellposition(lk, ids[k]) == k for k in eachindex(ids))
-        @test all(EN.covering_position(lk, ids[k]) == k for k in eachindex(ids))
+        @test all(DGG.localindex(lk, ids[k]) == k for k in eachindex(ids))
+        @test all(EN.covering_index(lk, ids[k]) == k for k in eachindex(ids))
 
         j = findfirst(c -> DGG.level(c) < L, ids)
         @test j !== nothing                     # a mixed axis has a coarse cell
         coarse = ids[j]
         leaf = first(DGG.descendants(sys, coarse, L))
         @test leaf != coarse
-        @test DGG.cellposition(lk, leaf) === nothing
-        @test EN.covering_position(lk, leaf) == j
+        @test DGG.localindex(lk, leaf) === nothing
+        @test EN.covering_index(lk, leaf) == j
         # Deeper than the reference level: resolved through its ancestor there.
         deeper = first(DGG.descendants(sys, coarse, L + 1))
-        @test DGG.cellposition(lk, deeper) === nothing
-        @test EN.covering_position(lk, deeper) == j
+        @test DGG.localindex(lk, deeper) === nothing
+        @test EN.covering_index(lk, deeper) == j
         # An ancestor of a stored cell is neither stored nor covered.
         up = DGG.ancestor(sys, coarse, DGG.level(coarse) - 1)
-        @test DGG.cellposition(lk, up) === nothing
-        @test EN.covering_position(lk, up) === nothing
+        @test DGG.localindex(lk, up) === nothing
+        @test EN.covering_index(lk, up) === nothing
     end
 
     @testset "the selectors are those two verbs" begin
@@ -186,7 +186,7 @@ end
         @test sublk isa DGG.MultiOrderLookup
         @test collect(sublk) == ids[byhand]
         @test EN.reference_level(sublk) == L
-        @test all(DGG.cellposition(sublk, sublk[k]) == k for k in eachindex(byhand))
+        @test all(DGG.localindex(sublk, sublk[k]) == k for k in eachindex(byhand))
 
         # A region no cell of the axis meets selects nothing at all.
         away = GO.UnitSpherical.SphericalCap(
@@ -238,7 +238,7 @@ end
     end
 
     @testset "every leaf reads the cell covering it" begin
-        want = [vals[EN.covering_position(mov, c)] for c in cv]
+        want = [vals[EN.covering_index(mov, c)] for c in cv]
         @test data == want
         @test all(data[k] == want[k] for k in eachindex(want))
         # The bound `coarsen` promises, read end to end through the cube.
@@ -273,7 +273,7 @@ end
         @test Base.summarysize(parent(deep)) < 8 * length(deep)
         # The values it presents are still the covering cell's, one level down.
         deepcv = parent(DD.lookup(deep, DGG.Cells))
-        @test all(parent(deep)[k] == vals[EN.covering_position(mov, deepcv[k])]
+        @test all(parent(deep)[k] == vals[EN.covering_index(mov, deepcv[k])]
                   for k in (1, length(deep) ÷ 2, length(deep)))
     end
 
@@ -281,7 +281,7 @@ end
         # Constant per level-`L-1` sibling group, so `atol = 0` merges exactly
         # those groups.
         coarse = DGG.levelgrid(sys, L - 1)
-        piece = [Float64(DGG.cellposition(coarse, DGG.ancestor(sys, c, L - 1)))
+        piece = [Float64(DGG.localindex(coarse, DGG.ancestor(sys, c, L - 1)))
                  for c in cv]
         P = DD.DimArray(piece, DGG.Cells(DGG.CellLookup(cv)))
         C = DGG.coarsen(P; atol=0.0)

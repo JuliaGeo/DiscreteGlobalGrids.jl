@@ -362,7 +362,7 @@ struct ImplicitEncoding <: CellEncoding end
 """
     CompactedEncoding()
 
-One stored cell per position at MIXED refinement levels: two aligned columns,
+One stored cell per index at MIXED refinement levels: two aligned columns,
 a level and a raw id at that level, in [`MultiOrderVector`](@ref) container
 order — ascending by subtree-interval start. Such a store declares
 `refinement_level: null` and `compression: "compacted"`, names its level
@@ -632,14 +632,14 @@ end
              declared_length = nothing) -> MultiOrderVector
 
 Build the mixed-level axis of a `compression: "compacted"` store from its two
-aligned columns: position `k` holds the cell whose raw id is `cell_ids[k]` at
+aligned columns: index `k` holds the cell whose raw id is `cell_ids[k]` at
 level `cell_levels[k]`.
 
 Every pair is checked — the level must be one of the system's, the id must name
 a cell of that level — and the whole set must already BE a
 [`MultiOrderVector`](@ref): pairwise disjoint as subtrees and ascending by
 subtree-interval start. Container order is required rather than restored,
-because the store's data arrays are laid out against these positions and a
+because the store's data arrays are laid out against these indices and a
 sort here would silently misalign every value.
 """
 function cellaxis(::CompactedEncoding, sys::AbstractHierarchicalGridSystem,
@@ -661,14 +661,14 @@ function cellaxis(::CompactedEncoding, sys::AbstractHierarchicalGridSystem,
         raw = cell_levels[k]
         raw in levels(sys) || throw(DGGSFormatError(check=:invalid_stored_level,
             declared=Int(first(levels(sys))):Int(last(levels(sys))), observed=raw,
-            detail="position $k of the cell axis declares level $raw, which " *
+            detail="index $k of the cell axis declares level $raw, which " *
                    "$(nameof(typeof(sys))) does not have."))
         l = Int(raw)
         grid = get!(() -> levelgrid(sys, l), grids, l)
         id = storedid(idtype(grid), cell_ids[k])
         idvalid(grid, id) || throw(DGGSFormatError(check=:id_names_no_cell,
             declared=l, observed=id,
-            detail="the id $id at position $k of the cell axis names no cell " *
+            detail="the id $id at index $k of the cell axis names no cell " *
                    "of level $l."))
         idcell(grid, id)
     end

@@ -14,7 +14,7 @@
 
 An immutable `AbstractVector` of cells at mixed refinement levels of one
 hierarchical system, pairwise disjoint as subtrees (no member is an ancestor
-of another, none repeats), ordered by the position intervals their subtrees
+of another, none repeats), ordered by the index intervals their subtrees
 occupy at a **reference level** — depth-first order, the order a sorted
 single-level axis has and coarse-ancestor store chunking assumes
 ([`dggwrite`](@ref)). Semantically it is that id vector; what is
@@ -25,7 +25,7 @@ Construction from a [`MultiOrderCellSet`](@ref) is O(n) and keeps the set's
 reference level; from `sys, cells` the vector is sorted and validated, with
 `reference_level` defaulting to the deepest level present (a deeper one is
 legal). The sort discards the input order, so a parallel value vector must be
-permuted with it — `localindex(mov, c)` gives each cell's stored position.
+permuted with it — `localindex(mov, c)` gives each cell's stored index.
 The reference level is a property of the container, not of the system: two
 containers of the same cells at different reference levels compare equal.
 
@@ -33,7 +33,7 @@ containers of the same cells at different reference levels compare equal.
 mov[k]                          # the kth cell id
 localindex(mov, c)            # exact membership: Int, or `nothing`
 c in mov                        # the same as a Bool
-covering_position(mov, c)       # the stored cell that is `c` or an ancestor of it
+covering_index(mov, c)       # the stored cell that is `c` or an ancestor of it
 cellat(mov, lon, lat)           # the stored cell a point falls in
 covering(mov, polygon)          # the sub-container a region names
 CellVector(mov; level = l)      # the leaf-level expansion, as windows
@@ -110,13 +110,13 @@ function _check_multiorder(sys::AbstractHierarchicalGridSystem, cells, starts, s
         # geometry call that decodes it.
         1 <= starts[i] && stops[i] <= n || throw(ArgumentError(
             "$(cells[i]) is not a cell of $(typeof(sys)): its level-$ref interval " *
-            "$(starts[i]):$(stops[i]) leaves the level's positions 1:$n"))
+            "$(starts[i]):$(stops[i]) leaves the level's indices 1:$n"))
         i == 1 && continue
         # Overlapping reference-level intervals mean one cell contains the
         # other, or repeats it.
         starts[i] > stops[i-1] || throw(ArgumentError(
             "multi-order cells must be pairwise disjoint: $(cells[i-1]) holds " *
-            "positions $(starts[i-1]):$(stops[i-1]) at level $ref and $(cells[i]) " *
+            "indices $(starts[i-1]):$(stops[i-1]) at level $ref and $(cells[i]) " *
             "holds $(starts[i]):$(stops[i]), so one descends from the other or " *
             "the two repeat"))
     end
@@ -245,12 +245,12 @@ intervals(mov::MultiOrderVector) =
     localindex(mov::MultiOrderVector, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
     localindex(mov::MultiOrderVector, lon::Real, lat::Real) -> Union{Int,Nothing}
 
-Position of `c` in the container, or `nothing` when it does not hold that
+Index of `c` in the container, or `nothing` when it does not hold that
 exact cell — a stored ancestor or descendant of `c` does not count. One binary
 search, O(log n). The point forms locate the point's covering stored cell, as
 [`cellat`](@ref) does; lon/lat in degrees.
 
-[`covering_position`](@ref) answers which stored cell speaks for `c`.
+[`covering_index`](@ref) answers which stored cell speaks for `c`.
 """
 function localindex(mov::MultiOrderVector, c::AbstractCellIndex)
     lc = level(c)
@@ -265,15 +265,15 @@ function localindex(mov::MultiOrderVector, c::AbstractCellIndex)
 end
 
 """
-    covering_position(mov::MultiOrderVector, c::AbstractCellIndex) -> Union{Int,Nothing}
+    covering_index(mov::MultiOrderVector, c::AbstractCellIndex) -> Union{Int,Nothing}
 
-Position of the stored cell that is `c` or an ancestor of `c`, or `nothing`
+Index of the stored cell that is `c` or an ancestor of `c`, or `nothing`
 when none covers it — resolves a leaf to the cell holding its value. `c` may
 be deeper than the container's [`reference_level`](@ref); it is keyed through
 its reference-level ancestor. O(log n). [`localindex`](@ref) is exact
 membership.
 """
-function covering_position(mov::MultiOrderVector, c::AbstractCellIndex)
+function covering_index(mov::MultiOrderVector, c::AbstractCellIndex)
     ref = mov.reference_level
     keyed = level(c) > ref ? ancestor(mov.system, c, ref) : c
     r = descendant_range(mov.system, keyed, ref)
@@ -291,7 +291,7 @@ Base.in(c::AbstractCellIndex, mov::MultiOrderVector) = localindex(mov, c) !== no
 
 The stored cell containing the point, at whatever level it sits, or `nothing`
 when none covers it: one point location at the reference level plus one
-binary search. [`localindex`](@ref)'s point forms answer with the position
+binary search. [`localindex`](@ref)'s point forms answer with the index
 instead.
 """
 function cellat(mov::MultiOrderVector, p::GO.UnitSphericalPoint)
@@ -304,7 +304,7 @@ cellat(mov::MultiOrderVector, lon::Real, lat::Real) = cellat(mov, unit_point(lon
 function localindex(mov::MultiOrderVector, p::GO.UnitSphericalPoint)
     c = cellat(levelgrid(mov.system, mov.reference_level), p)
     c === nothing && return nothing
-    return covering_position(mov, c)
+    return covering_index(mov, c)
 end
 
 localindex(mov::MultiOrderVector, lon::Real, lat::Real) =
@@ -357,21 +357,21 @@ The cells of `mov` whose subtrees meet a [`MultiOrderCoverage`](@ref) of
 `target`, kept whole, never clipped. `target` is anything [`query`](@ref)
 accepts: a GeoInterface geometry, an `Extents.Extent` in lon/lat degrees, or
 a `GO.UnitSpherical.SphericalCap`. O(log n) per coverage interval.
-[`covering_positions`](@ref) is the position-space form.
+[`covering_indices`](@ref) is the index-space form.
 """
 function covering(mov::MultiOrderVector, target)
-    ks = covering_positions(mov, target)
+    ks = covering_indices(mov, target)
     return _derive(mov, mov.cells[ks], mov.starts[ks], mov.stops[ks])
 end
 
 """
-    covering_positions(mov::MultiOrderVector, target) -> Vector{Int}
+    covering_indices(mov::MultiOrderVector, target) -> Vector{Int}
 
-The positions in `mov` of the cells [`covering`](@ref) selects, ascending — for
+The indices in `mov` of the cells [`covering`](@ref) selects, ascending — for
 indexing a data array laid out against the container without building the
 sub-container.
 """
-function covering_positions(mov::MultiOrderVector, target)
+function covering_indices(mov::MultiOrderVector, target)
     out = Int[]
     isempty(mov) && return out
     ref = mov.reference_level
@@ -543,7 +543,7 @@ function _setdiff_intervals(A::Vector{Tuple{Int,Int}}, B::Vector{Tuple{Int,Int}}
     return out
 end
 
-# Intervals back to cells: at each position, climb ancestors while they start
+# Intervals back to cells: at each index, climb ancestors while they start
 # there and fit inside the interval, emit the highest, resume past it.
 # O(cells × depth); the emitted cells are sorted and disjoint, so the
 # container is built unchecked.

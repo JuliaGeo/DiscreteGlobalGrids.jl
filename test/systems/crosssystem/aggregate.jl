@@ -49,9 +49,9 @@ rooted_subtree(sys, l) = DGG.CellVector(DGG.subtree(sys, first(DGG.rootcells(sys
 centroid_lat(cv) = (g = DGG.levelgrid(DGG.system(cv), DGG.level(cv));
 [LONLAT(DGG.cell_centroid(g, c))[2] for c in cv])
 
-# Leaf position -> index into a data array laid out against `cv`.
+# Leaf index -> index into a data array laid out against `cv`.
 dataindex(cv) = (g = DGG.levelgrid(DGG.system(cv), DGG.level(cv));
-Dict(DGG.cellposition(g, c) => k for (k, c) in enumerate(cv)))
+Dict(DGG.localindex(g, c) => k for (k, c) in enumerate(cv)))
 
 # --- oracles ---------------------------------------------------------------
 
@@ -65,7 +65,7 @@ function brute_aggregate(f, sys, ids, values, l)
         haskey(groups, a) || (groups[a] = Int[]; push!(order, a))
         push!(groups[a], k)
     end
-    sort!(order; by=a -> DGG.cellposition(grid, a))
+    sort!(order; by=a -> DGG.localindex(grid, a))
     return order, [f(values[groups[a]]) for a in order], groups
 end
 
@@ -221,7 +221,7 @@ end
 
     # Deterministic fields: constant per level-`L-1` sibling group, all
     # distinct, and banded.
-    parentgroup = [Float64(DGG.cellposition(DGG.levelgrid(sys, L - 1),
+    parentgroup = [Float64(DGG.localindex(DGG.levelgrid(sys, L - 1),
         DGG.ancestor(sys, c, L - 1))) for c in cv]
     distinct = Float64.(eachindex(cv))
     banded = [Float64((k - 1) ÷ 3) for k in 1:n]
@@ -333,12 +333,12 @@ end
 
     @testset "completeness is what makes the cell set recoverable" begin
         # Holes are punched per sibling group (first leaf of every third), not
-        # by position stride: a small stride hits every radix-7 group and would
+        # by index stride: a small stride hits every radix-7 group and would
         # leave the mixed-level assertions below vacuous.
         grid = DGG.levelgrid(sys, L)
         dropped = Set(first(DGG.descendant_range(sys, a, L))
                       for (j, a) in enumerate(parents) if j % 3 == 0)
-        keep = [k for (k, c) in enumerate(cv) if DGG.cellposition(grid, c) ∉ dropped]
+        keep = [k for (k, c) in enumerate(cv) if DGG.localindex(grid, c) ∉ dropped]
         sub = cv[keep]
         flat = fill(2.0, length(sub))
         cells, vals = EN._coarsen(sub, flat; atol=0.0)
@@ -347,16 +347,16 @@ end
         @test isequal(vals, wantvals)
         @test root ∉ cells
 
-        # The stored subtrees name exactly the input's positions.
+        # The stored subtrees name exactly the input's indices.
         named = sort!(reduce(vcat,
             [collect(DGG.descendant_range(sys, c, L)) for c in cells]))
-        @test named == sort!([DGG.cellposition(grid, c) for c in sub])
+        @test named == sort!([DGG.localindex(grid, c) for c in sub])
         # The holes left some groups whole and broke others.
         @test any(c -> DGG.level(c) < L, cells)
         @test any(c -> DGG.level(c) == L, cells)
     end
 
-    @testset "the position-list window shape answers the same" begin
+    @testset "the index-list window shape answers the same" begin
         # Every fixture above stores `RangeWindows`; this one forces
         # `IndexWindows` — first sibling group kept whole, the rest thinned
         # to every other cell — so the merge path runs on that shape too.
@@ -462,7 +462,7 @@ end
 
     # Every leaf is covered by one stored cell whose value is within `atol`.
     for k in (1, n ÷ 3, n ÷ 2, n)
-        j = EN.covering_position(mov, cv[k])
+        j = EN.covering_index(mov, cv[k])
         @test j !== nothing
         @test abs(vals[j] - lat[k]) <= atol
     end

@@ -62,7 +62,7 @@ grid = DGG.levelgrid(DGG.HEALPixSystem(), L)
 cells = DGG.CellVector(grid)
 
 # `CellVector(grid)` is the whole level as a lazy vector of cell ids, one per
-# position — on HEALPix, the nested order astronomy ships all-sky maps in.
+# index — on HEALPix, the nested order astronomy ships all-sky maps in.
 
 # ## Sampling onto the cells
 #
@@ -87,7 +87,7 @@ tavg = [raster[X(Near(lon)), Y(Near(lat))] for (lon, lat) in centers]
 
 A = DD.DimArray(Vector{Union{Float64, Missing}}(tavg), DGG.Cells(DGG.CellLookup(grid)))
 
-# It indexes by position like any vector, and by point through the axis.
+# It indexes by integer like any vector, and by point through the axis.
 # (`DD.Contains` is DimensionalData's point selector, reached through `DD`
 # because this package exports DE9IM's `Contains`, a different thing.)
 

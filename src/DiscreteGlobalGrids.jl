@@ -139,8 +139,8 @@ using .Engine: PartialGrid,
     HierarchicalGridCursor, TiledRasterCursor,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
-    CellVector, cellset, covering, covering_indices,
-    covering_positions, covering_position, reference_level,
+    CellVector, cellset, covering, covering_indices, covering_index,
+    reference_level,
     grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
     halo_indices, sizehint,
@@ -473,7 +473,7 @@ export grow, expand, compact
 # --- Multi-order storage -----------------------------------------------------
 # The mixed-level cell container, its adaptive constructor, the covering
 # lookup, and the sphere complement. `expand` is exported above.
-export MultiOrderVector, coarsen, covering_position, complement
+export MultiOrderVector, coarsen, covering_index, complement
 
 # Public but unexported: `aggregate` because Rasters also exports one,
 # `reference_level` because the name says nothing on its own. Reach them as

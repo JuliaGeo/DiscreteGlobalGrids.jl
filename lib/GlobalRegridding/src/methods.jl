@@ -109,6 +109,24 @@ outputsampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Cen
 outputsampling(::NearestCell) = DD.Lookups.Points()
 outputsampling(::BarycentricPoint) = DD.Lookups.Points()
 
+"""
+    sourcesampling(method::AbstractRegriddingMethod) -> DimensionalData.Lookups.Sampling
+
+Return the sampling a method reads on the source. `Intervals(Center())`, the
+default, integrates over source cell area and needs a gap-free polygon cover;
+`Points()` reads source sample sites and never asks for a cell boundary.
+
+Sibling of [`outputsampling`](@ref), which is what a method *writes*. The two
+agree for every method here and are still two questions: a source can offer
+sample sites where it cannot offer a gap-free cover, so a source with more than
+one presentation of itself chooses with this one ([`sourcespacefor`](@ref),
+[`sourceview`](@ref)). Making them one function would make a method that writes
+points from areas unrepresentable.
+"""
+sourcesampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Center())
+sourcesampling(::NearestCell) = DD.Lookups.Points()
+sourcesampling(::BarycentricPoint) = DD.Lookups.Points()
+
 # Weight construction
 
 """

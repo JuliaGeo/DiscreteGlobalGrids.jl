@@ -314,10 +314,10 @@ destinationdims(::RegridSpace, ::DD.Lookups.Sampling) = nothing
 
 Return the source a lookup already names, or `nothing`. A lookup that carries
 its own cells is not a raster axis, so a package that supplies one extends this
-and a regrid given no `from` **resolves** what it names instead of looking for
-`xdim`. The name must therefore be one [`_asspace`](@ref) answers for; a name
-nothing resolves is a missing method in the package that supplied the axis, and
-says so.
+and a regrid given no `from` **resolves** what it names — through
+[`sourcespacefor`](@ref) — instead of looking for `xdim`. The name must
+therefore be one [`_asspace`](@ref) answers for; a name nothing resolves is a
+missing method in the package that supplied the axis, and says so.
 """
 dimsource(::Any) = nothing
 
@@ -376,3 +376,20 @@ the three-argument form when the destination depends on the resolved source
 space. `name` names the keyword in error messages.
 """
 function _asspace end
+
+"""
+    sourcespacefor(target, method) -> RegridSpace
+
+Resolve a **source** target into the space `method` reads it through.
+
+The default is [`_asspace`](@ref)`(target, "from")`, method-blind, so a target
+with one presentation of itself needs no method here. A target that has a
+choice — a compressed cell collection that either refines to a single level or
+hands over the cells it stores — extends this and asks
+[`sourcesampling`](@ref) which presentation the method can read.
+
+The space returned must name the cells [`sourceview`](@ref) presents for the
+same `method`, in the same order: they are one decision taken in two places,
+one for the geometry and one for the values.
+"""
+sourcespacefor(target, method) = _asspace(target, "from")

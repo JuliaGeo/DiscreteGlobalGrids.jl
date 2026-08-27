@@ -152,7 +152,7 @@ using .Engine: PartialGrid,
     NeighborCallbackError,
     AbstractNeed, Cell, Index, Local, Global, Value, Centroid,
     cellfield,
-    MultiOrderVector, aggregate, coarsen, complement
+    MultiOrderVector, MultiOrderGrid, aggregate, coarsen, complement
 
 # Internal extension points for system-specific subtree walkers and shell
 # winding.
@@ -474,8 +474,9 @@ export grow, expand, compact
 
 # --- Multi-order storage -----------------------------------------------------
 # The mixed-level cell container, its adaptive constructor, the covering
-# lookup, and the sphere complement. `expand` is exported above.
-export MultiOrderVector, coarsen, covering_index, complement
+# lookup, the sphere complement, and the grid face of the container's stored
+# cells. `expand` is exported above.
+export MultiOrderVector, MultiOrderGrid, coarsen, covering_index, complement
 
 # Public but unexported: `aggregate` because Rasters also exports one,
 # `reference_level` because the name says nothing on its own. Reach them as

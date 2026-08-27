@@ -18,7 +18,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
             :chunkranges,
             :chartaxes, :chartcoords, :chartlocalindex, :chartperiod, :chartspacing,
             :destinationdims, :dimsource, :sourceview, :checksource,
-            :refinementinvariant, :_asspace,
+            :refinementinvariant, :sourcesampling, :sourcespacefor, :_asspace,
         )
         integration_hooks = (
             :resolvespatialdims,

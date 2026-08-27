@@ -56,6 +56,44 @@ _dualtopology(grid::PartialGrid) = DualTopology(grid.complete)
 GR.hasdualcells(::DGGSpace) = true
 
 """
+    GlobalRegridding.hasdualcells(::DGGSpace{<:MultiOrderGrid}) -> false
+
+No dual cells over mixed levels — yet.
+
+`_locatedual` below reads the host's `Vertex()` and `Edge()` one-rings, and a
+mixed-level tiling has neither: it does not conform, so a ring matched on shared
+vertices is wrong across every T-junction. A point method asking this space for
+a stencil gets [`GlobalRegridding.sampler`](@ref)'s own refusal rather than a
+plausible fan built on the wrong topology.
+"""
+GR.hasdualcells(::DGGSpace{<:MultiOrderGrid}) = false
+
+"""
+    GlobalRegridding.sampler(::BarycentricPoint, space::DGGSpace{<:MultiOrderGrid})
+
+Refuse, and say what to do instead.
+
+The generic refusal reads `hasdualcells` and reports the type; this one names
+the reason and the two working routes. Interpolating natively over mixed levels
+is the dual-cell construction this file does not have yet, and interpolating on
+the reference-level expansion is a different, worse function — every leaf under
+a stored cell repeats one value, so the blend rebuilds the coarsening staircase
+at leaf spacing. Both are said here rather than left to be discovered.
+"""
+GR.sampler(::GR.BarycentricPoint, space::DGGSpace{<:MultiOrderGrid}) = _nomixeddual(space)
+
+@noinline _nomixeddual(space::DGGSpace{<:MultiOrderGrid}) = throw(ArgumentError(
+    "BarycentricPoint has nothing to interpolate between on the $(ncells(space)) " *
+    "stored cells of a mixed-level container: they do not tile conformingly, so " *
+    "there is no ring of neighbouring sample sites to build a dual cell from, " *
+    "and the native mixed-level construction has not landed yet. Use an area or " *
+    "nearest-cell method, which read the stored cells as they are. To " *
+    "interpolate on the leaves anyway — a different function, which rebuilds " *
+    "the coarsening steps at leaf spacing — expand first, which says so: " *
+    "`regrid(expand(A, DiscreteGlobalGrids.reference_level(lookup(A, Cells))); " *
+    "to = ..., method = BarycentricPoint())`."))
+
+"""
     GlobalRegridding.samplerstate(space::DGGSpace)
 
 The complete level the space's dual cells are built on, held once per sampler.

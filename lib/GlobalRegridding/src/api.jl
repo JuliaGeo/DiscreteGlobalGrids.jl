@@ -187,7 +187,8 @@ function plan_regrid(data; to, from = nothing,
     sampling::Union{Nothing,DD.Lookups.Sampling} = nothing,
     dependencies = nothing, refine = nothing,
     narrow::Union{Nothing,Symbol} = nothing)
-    src_space = from === nothing ? _sourcespace(data, method) : _asspace(from, "from")
+    src_space = from === nothing ? _sourcespace(data, method) :
+                sourcespacefor(from, method)
     from === nothing || checksource(from, data, src_space)
     dst_space = _asspace(to, "to", src_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
@@ -264,26 +265,28 @@ wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
 # question. A raster lattice is the last case, and the only one left for
 # [`RasterGrid`](@ref) to find.
 #
-# A named source `_asspace` cannot resolve says so in `_asspace`'s own terms —
-# the package that supplied the axis owes the space.
+# A named source `sourcespacefor` cannot resolve says so in `_asspace`'s own
+# terms — the package that supplied the axis owes the space.
 function _sourcespace(data::DD.AbstractDimArray, method)
     for d in DD.dims(data)
         lookup = DD.lookup(d)
         view = sourceview(lookup, data, method)
-        view === nothing || return _presentedspace(view)
+        view === nothing || return _presentedspace(view, method)
         named = dimsource(lookup)
         named === nothing && continue
-        return _asspace(named, "from")
+        return sourcespacefor(named, method)
     end
     return RasterGrid(data)
 end
 
 # The space a presented view is written against. The view is the array the
-# regrid reads, so it must name its own cells outright.
-function _presentedspace(view::DD.AbstractDimArray)
+# regrid reads, so it must name its own cells outright — and it is resolved
+# through the same `method` the view was chosen for, so an axis that presents
+# itself differently per method gets the matching space.
+function _presentedspace(view::DD.AbstractDimArray, method)
     for d in DD.dims(view)
         named = dimsource(DD.lookup(d))
-        named === nothing || return _asspace(named, "from")
+        named === nothing || return sourcespacefor(named, method)
     end
     throw(ArgumentError(
         "a presented source must name the cells it is written against, but " *

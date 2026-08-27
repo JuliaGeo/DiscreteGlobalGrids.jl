@@ -910,12 +910,15 @@ const MOCDST = DGG.levelgrid(MOCSYS, MOCREF - 1)
     @test all(i -> parent(out)[i] ≈ first(covered[i]), uniform)
     @test all(i -> minimum(covered[i]) < parent(out)[i] < maximum(covered[i]), mixed)
 
-    # The transparent route IS the manual recipe, bit for bit, and on a point
-    # method too — where `from` names the same space the view is written against.
+    # The transparent route IS the manual recipe, bit for bit — for the area
+    # method because both build the same space, and for the point methods
+    # because a point's covering stored cell is the same cell whether it is
+    # reached through the leaf it lands in or read off the container directly.
+    # The expanded cube names its own cells, so the manual route needs no `from`
+    # either.
     for method in (GR.Conservative(), GR.NearestCell(), GR.DirectNearest())
         @test isequal(parent(DGG.regrid(MOCCUBE; to = MOCDST, method)),
-            parent(DGG.regrid(manual; to = MOCDST, from = DGG.cellset(
-                DD.lookup(manual, DGG.Cells)), method)))
+            parent(DGG.regrid(manual; to = MOCDST, method)))
     end
 end
 
@@ -943,15 +946,28 @@ end
     end
 
     # An explicit `from` still wins: inference never overrides what was named.
+    # A coarser source over the same values is a different, and correct, answer.
+    coarse = DGG.MultiOrderVector(MOCSYS,
+        collect(DGG.CellVector(DGG.levelgrid(MOCSYS, 1))); reference_level = 2)
     @test parent(DGG.regrid(plain; to = MOCDST, from = DGG.levelgrid(MOCSYS, 2))) ==
           parent(DGG.regrid(plain; to = MOCDST))
+    @test length(coarse) != DGG.ncells(grid)
+
+    # The expansion of a mixed container is NOT named by its container: the
+    # container resolves per method, these cells do not.
+    exp_lk = DD.lookup(DGG.expand(MOCCUBE, MOCREF), DGG.Cells)
+    @test DGG.cellset(exp_lk) === MOV
+    @test GR.dimsource(exp_lk) === exp_lk
+    @test DGG.ncells(GR._asspace(GR.dimsource(exp_lk), "from")) ==
+          DGG.ncells(DGG.levelgrid(MOCSYS, MOCREF))
 end
 
 @testset "only a method refinement cannot move presents itself refined" begin
     # Replacing a stored cell by its leaves, each repeating that cell's value,
     # leaves an area or nearest-cell answer alone. It does not leave an
     # interpolation alone: the leaf sites are where the staircase would be
-    # rebuilt, so the route is refused rather than quietly taken.
+    # rebuilt, so the expansion is offered only to a method that says refining
+    # is a no-op for it.
     @test GR.refinementinvariant(GR.Conservative())
     @test GR.refinementinvariant(GR.NearestCell())
     @test GR.refinementinvariant(GR.DirectNearest())
@@ -959,20 +975,35 @@ end
 
     lk = DD.lookup(MOCCUBE, DGG.Cells)
     bary = GR.BarycentricPoint()
-    @test_throws ArgumentError GR.sourceview(lk, MOCCUBE, bary)
+    # A method that reads sample sites gets the stored cells, not the leaves —
+    # so the cube presents itself as it stands and nothing is refined.
+    @test GR.sourceview(lk, MOCCUBE, bary) === MOCCUBE
+    # There are no dual cells over mixed levels yet, so it is refused there
+    # instead, in terms that name both working routes.
     for call in (() -> DGG.regrid(MOCCUBE; to = MOCDST, method = bary),
                  () -> DGG.regrid(MOCCUBE; to = MOCDST, from = MOV, method = bary))
         @test_throws ArgumentError call()
-        @test_throws "rebuilds the coarsening steps" call()
-        @test_throws "native mixed-level source" call()
+        @test_throws "do not tile conformingly" call()
+        @test_throws "coarsening steps at leaf spacing" call()
     end
+    @test !GR.hasdualcells(GR.sourcespacefor(MOV, bary))
 
-    # And the escape hatch the message names does work: expand by hand, say so,
-    # and the leaf-site interpolation is yours.
+    # And the escape hatch the message names does work: expand by hand, and the
+    # leaf-site interpolation — a different, worse function, deliberately — is
+    # yours. The expanded cube names its own cells, so no `from` is needed.
     manual = DGG.expand(MOCCUBE, DGG.reference_level(lk))
-    onleaves = DGG.regrid(manual; to = MOCDST, from = DGG.cellset(
-        DD.lookup(manual, DGG.Cells)), method = bary)
+    onleaves = DGG.regrid(manual; to = MOCDST, method = bary)
     @test all(isfinite, parent(onleaves))
+
+    # A container that stores one cell per leaf refines to itself, so the
+    # expansion is the identity and every method may read it — including the
+    # one that could not read a genuinely mixed container's.
+    uniform = DGG.MultiOrderVector(MOCSYS,
+        collect(DGG.CellVector(DGG.levelgrid(MOCSYS, MOCREF - 1)));
+        reference_level = MOCREF - 1)
+    ucube = DD.DimArray(collect(1.0:length(uniform)),
+        DGG.Cells(DGG.MultiOrderLookup(uniform)))
+    @test all(isfinite, parent(DGG.regrid(ucube; to = MOCDST, method = bary)))
 end
 
 @testset "`from` names a space, not a layout" begin
@@ -992,12 +1023,31 @@ end
     @test parent(DGG.regrid(MOCCUBE; to = MOCDST, from = MOV)) ==
           parent(DGG.regrid(MOCCUBE; to = MOCDST))
 
-    # `expand` is one-dimensional, so a cube with pass-through dimensions says
-    # so outright rather than leaving a count to fail one step later.
-    cube2d = DD.DimArray(hcat(MOCVALS, MOCVALS),
+    # The mirror trap: values one per LEAF against the stored cells the point
+    # method reads `from = mov` as. Name the expansion, not the container.
+    leafvals = collect(parent(DGG.expand(MOCCUBE, MOCREF)))
+    @test length(leafvals) != length(MOV)
+    @test_throws "already expanded" GR.plan_regrid(leafvals; to = MOCDST,
+        from = MOV, method = GR.NearestCell())
+    @test_throws "from = CellVector(mov)" GR.plan_regrid(leafvals; to = MOCDST,
+        from = MOV, method = GR.NearestCell())
+    @test isequal(DGG.regrid(leafvals; to = MOCDST, from = DGG.CellVector(MOV),
+            method = GR.NearestCell()),
+        vec(parent(DGG.regrid(MOCCUBE; to = MOCDST, method = GR.NearestCell()))))
+
+    # A cube with pass-through dimensions: nothing to expand on the native
+    # route, so it works; `expand` is one-dimensional, so the area method that
+    # needs it says exactly that instead of asking for an impossible `from`.
+    cube2d = DD.DimArray(hcat(MOCVALS, 2 .* MOCVALS),
         (DGG.Cells(DGG.MultiOrderLookup(MOV)), DD.Dim{:month}(1:2)))
-    @test_throws ArgumentError GR.sourceview(DD.lookup(cube2d, DGG.Cells),
-        cube2d, GR.Conservative())
+    lk2 = DD.lookup(cube2d, DGG.Cells)
+    @test GR.sourceview(lk2, cube2d, GR.NearestCell()) === cube2d
+    out2 = DGG.regrid(cube2d; to = MOCDST, method = GR.NearestCell())
+    @test size(out2) == (DGG.ncells(MOCDST), 2)
+    @test parent(out2)[:, 2] ≈ 2 .* parent(out2)[:, 1]
+    @test parent(out2)[:, 1] ==
+          parent(DGG.regrid(MOCCUBE; to = MOCDST, method = GR.NearestCell()))
+    @test_throws ArgumentError GR.sourceview(lk2, cube2d, GR.Conservative())
     @test_throws ArgumentError DGG.regrid(cube2d; to = MOCDST)
     @test_throws "`expand` is one-dimensional" DGG.regrid(cube2d; to = MOCDST)
 end

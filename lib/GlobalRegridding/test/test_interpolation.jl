@@ -310,6 +310,38 @@ t5_owners(dst, tile, src) =
 
 @testset "Interpolation weights" begin
 
+    @testset "what a method reads on a source is its own trait" begin
+        # `sourcesampling` is what a method READS; `outputsampling` is what it
+        # WRITES. They agree for every method here, so wiring one to the other
+        # would be invisible today — and wrong the first time a source can offer
+        # sample sites but not a gap-free cover, which is the whole reason a
+        # compressed source consults this.
+        @test GR.sourcesampling(Conservative()) isa DD.Lookups.Intervals
+        @test GR.sourcesampling(UnimplementedMethod()) isa DD.Lookups.Intervals
+        for method in (NearestCell(), DirectNearest(), BarycentricPoint())
+            @test GR.sourcesampling(method) === DD.Lookups.Points()
+        end
+        # Not the same function: a method may override one without the other.
+        @test GR.sourcesampling !== GR.outputsampling
+
+        # The default resolution is method-blind, so every source that has one
+        # presentation of itself answers the same for every method — including
+        # a space, which is already resolved.
+        space = ToyLonLatSpace(8, 4)
+        for method in (Conservative(), NearestCell(), DirectNearest(),
+                       BarycentricPoint(), UnimplementedMethod())
+            @test GR.sourcespacefor(space, method) === space
+        end
+        @test GR.sourcespacefor(space, NearestCell()) ===
+              GR._asspace(space, "from")
+
+        # And it is the path `from` takes: a plan's source space is whatever
+        # `sourcespacefor` returned.
+        plan = plan_regrid(collect(reshape(1.0:32.0, 8, 4)); to = ToyLonLatSpace(4, 2),
+            from = space, method = NearestCell(), lazy = false)
+        @test plan.src_space === space
+    end
+
     @testset "NearestCell" begin
         # Self-regridding is the identity.
         space = ToyLonLatSpace(8, 4)

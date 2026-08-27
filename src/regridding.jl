@@ -315,77 +315,178 @@ GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString) =
 GR._asspace(sys::AbstractHierarchicalGridSystem, name::AbstractString,
     src_space::GR.RegridSpace) = DGGSpace(levelgrid(sys, levelfor(sys, src_space)))
 
-# A `Cells` axis already names the cells a regrid would otherwise look for a
-# raster lattice in, so a source given no `from` can point at the grid itself.
-GR.dimsource(lk::AbstractCellLookup) = cellset(lk)
+# Routing a mixed-level source
 
-# Only reached when the axis cannot present the cube itself — a mixed-level cube
-# with more than one dimension, which `expand` is not defined on.
+"""
+    GlobalRegridding.sourcespacefor(mov::MultiOrderVector, method)
+
+The source space `method` reads a mixed-level container through.
+
+  - A method that reads source **sample sites** (`GlobalRegridding.sourcesampling`
+    is `Points()`) takes the stored cells as they are: `DGGSpace(MultiOrderGrid(mov))`,
+    one cell per stored cell. A destination point resolves through the
+    container's covering-ancestor lookup, which is the same verdict the
+    reference-level expansion reaches, so nearest-cell answers are unchanged and
+    the plan no longer carries a column per leaf.
+  - A method that reads source **area** (`Intervals`) keeps the expansion. A
+    stored cell's descendant leaves are the only gap-free cover of it on a
+    non-congruent hierarchy — H3 and IGeo7, where a parent's polygon is not the
+    union of its children's — so coarse polygons would leave slivers and lose
+    mass.
+  - A container that stores one cell per reference-level leaf expands to itself,
+    so it keeps the [`PartialGrid`](@ref) path either way: same cells, same
+    order, same count, and already-tested code.
+"""
+GR.sourcespacefor(mov::MultiOrderVector, method) = _readsstored(mov, method) ?
+    DGGSpace(MultiOrderGrid(mov)) : GR._asspace(mov, "from")
+
+GR.sourcespacefor(lk::MultiOrderLookup, method) = GR.sourcespacefor(parent(lk), method)
+
+# The one routing decision, asked in both places it is needed: `true` means the
+# stored cells ARE the source — `MultiOrderGrid` for the geometry, the cube as
+# it stands for the values.
+_readsstored(mov::MultiOrderVector, method) =
+    _readsstored(mov, method, GR.sourcesampling(method))
+
+_readsstored(mov::MultiOrderVector, method, ::DD.Lookups.Points) = _expandsleaves(mov)
+
+_readsstored(::MultiOrderVector, method, ::DD.Lookups.Intervals) = false
+
+@noinline _readsstored(mov::MultiOrderVector, method, sampling) = throw(ArgumentError(
+    "$(nameof(typeof(method))) reports `sourcesampling` $(sampling), which is " *
+    "neither `Points()` nor `Intervals()`, so a mixed-level container cannot " *
+    "tell which of its two presentations to offer: the stored cells " *
+    "themselves, which give sample sites but no gap-free polygon cover, or " *
+    "the expansion to reference level $(reference_level(mov)), which gives a " *
+    "gap-free cover of one cell per leaf. Declare one of the two samplings."))
+
+# The leaves `mov` presents at its reference level, accumulated at construction.
+_leafcount(mov::MultiOrderVector) = isempty(mov) ? 0 : last(mov.offsets)
+
+# Whether presenting `mov` at its reference level names more cells than it
+# stores. Exactly the question the routing turns on, and it costs one comparison.
+_expandsleaves(mov::MultiOrderVector) = _leafcount(mov) != length(mov)
+
+"""
+    GlobalRegridding.dimsource(lk::AbstractCellLookup)
+
+The cells the axis holds, as a `from` target — so a cube with a `Cells` axis is
+a source with no `from` at all, the way a raster is.
+
+Usually [`cellset`](@ref), what the collection was built *from*. The exception
+is a collection built by expanding a [`MultiOrderVector`](@ref): `cellset` names
+the container there, and a container resolves to a different space per method
+(`GlobalRegridding.sourcespacefor`), so it is not a name for these cells. The
+axis names itself instead, which is exact in every case.
+"""
+GR.dimsource(lk::AbstractCellLookup) = _axissource(lk, cellset(lk))
+
+_axissource(::AbstractCellLookup, set) = set
+_axissource(lk::AbstractCellLookup, ::MultiOrderVector) = lk
+
+# The container the axis's presented view is written against, whichever
+# presentation `sourceview` chose: the stored cells natively, or their
+# reference-level expansion. `sourcespacefor` reads the method and resolves it
+# to the matching space.
 GR.dimsource(lk::MultiOrderLookup) = cellset(lk)
 
 """
     GlobalRegridding.sourceview(lk::MultiOrderLookup, A, method)
 
-Present a mixed-level cube at its [`reference_level`](@ref): `expand(A, ref)`,
-whose `Cells` axis is the [`CellLookup`](@ref) over the same cells
-`GlobalRegridding._asspace(lk, "from")` resolves to. A regrid reads this view,
-so a mixed-level cube is a source with no `from` and no manual [`expand`](@ref).
+Present a mixed-level cube as the array `method` reads, matching whichever
+space [`GlobalRegridding.sourcespacefor`](@ref) resolves for the same `method`.
+Either way the cube is a source with no `from` and no manual [`expand`](@ref).
 
-  - Alignment: both sides come from `CellVector(mov; level = ref)`, so leaf `k`
-    of the view is leaf `k` of the space — the expansion enumerates each stored
-    cell's `descendant_range` in stored order, and the space's cells are those
-    same ranges merged where adjacent.
-  - Lazy: one stored value per multi-order cell, whatever the leaf count.
-  - Only for a `method` that is `GlobalRegridding.refinementinvariant`. Others
-    are refused, because every leaf under a stored cell carries one replicated
-    value and interpolating between those sites rebuilds the coarsening
-    staircase at leaf spacing.
-  - `expand` is one-dimensional, so a cube with pass-through dimensions is
-    refused outright rather than left to fail on a count.
+  - A method that reads sample sites takes `A` **as it stands**, one value per
+    stored cell, against `DGGSpace(MultiOrderGrid(mov))`. Nothing is expanded,
+    so the cube's pass-through dimensions are no obstacle either.
+  - A method that reads area takes `expand(A, ref)`, on the same cells
+    `GlobalRegridding._asspace(lk, "from")` resolves to. Alignment: both sides
+    come from `CellVector(mov; level = ref)`, so leaf `k` of the view is leaf
+    `k` of the space — the expansion enumerates each stored cell's
+    `descendant_range` in stored order, and the space's cells are those same
+    ranges merged where adjacent. It stays lazy: one stored value per
+    multi-order cell, whatever the leaf count.
+  - The expansion is offered only to a `method` that is
+    `GlobalRegridding.refinementinvariant`, unless the container stores one cell
+    per leaf and the expansion is therefore the identity. Otherwise every leaf
+    under a stored cell carries one replicated value, and interpolating between
+    those sites rebuilds the coarsening staircase at leaf spacing.
+  - `expand` is one-dimensional, so a cube with pass-through dimensions can only
+    take the native route; an area method over one is refused outright.
 """
 function GR.sourceview(lk::MultiOrderLookup, A::DD.AbstractDimArray, method)
+    mov = parent(lk)
+    _readsstored(mov, method) && return A
     ndims(A) == 1 || _nomultidim(lk, method)
-    GR.refinementinvariant(method) || _nointerpolation(lk, method)
+    (GR.refinementinvariant(method) || !_expandsleaves(mov)) ||
+        _nointerpolation(lk, method)
     return expand(A, reference_level(lk))
 end
 
 GR.sourceview(::MultiOrderLookup, A, method) = nothing
 
-@noinline _nomultidim(lk::MultiOrderLookup, method) = throw(ArgumentError(
-    "a mixed-level cube presents itself refined to level " *
-    "$(reference_level(lk)), and `expand` is one-dimensional, so it cannot do " *
-    "that for a cube with pass-through dimensions. Regrid one slice at a time."))
-
 @noinline _nointerpolation(lk::MultiOrderLookup, method) = throw(ArgumentError(
-    "$(nameof(typeof(method))) interpolates between source sample sites, and a " *
-    "mixed-level cube can only present itself refined to level " *
+    "$(nameof(typeof(method))) interpolates between source sample sites, and " *
+    "reports `sourcesampling` $(GR.sourcesampling(method)) — area, not points " *
+    "— so a mixed-level cube can only present itself refined to level " *
     "$(reference_level(lk)), where every leaf under a stored cell repeats that " *
-    "cell's one value — interpolating between them rebuilds the coarsening " *
-    "steps at leaf spacing. Use an area or nearest-cell method, or wait for the " *
-    "native mixed-level source. To interpolate on the leaves anyway, say so: " *
-    "`regrid(expand(A, DiscreteGlobalGrids.reference_level(lookup(A, Cells))); " *
-    "to = ..., from = cellset(lookup(A, Cells)), method = ...)`."))
+    "cell's one value; interpolating between them rebuilds the coarsening " *
+    "steps at leaf spacing. Declare `GlobalRegridding.sourcesampling(method) = " *
+    "Points()` to read the stored cells natively, or interpolate on the leaves " *
+    "anyway by expanding first, which says so: `regrid(expand(A, " *
+    "DiscreteGlobalGrids.reference_level(lookup(A, Cells))); to = ..., " *
+    "method = ...)`."))
+
+@noinline _nomultidim(lk::MultiOrderLookup, method) = throw(ArgumentError(
+    "$(nameof(typeof(method))) reads source cell area, so a mixed-level cube " *
+    "must present itself refined to level $(reference_level(lk)) — and " *
+    "`expand` is one-dimensional, so it cannot do that for a cube with " *
+    "pass-through dimensions. Regrid one slice at a time, or use a method that " *
+    "reads sample sites (`NearestCell`, `DirectNearest`), which takes the " *
+    "stored cells as they are and needs no expansion at all."))
 
 """
     GlobalRegridding.checksource(mov::MultiOrderVector, data, space)
 
-Refuse a `from` naming mixed-level cells against values stored one per *cell*
-rather than one per leaf. The space `mov` resolves to is its reference-level
-expansion, so the two counts differ whenever the container is genuinely mixed,
-and the flatten step would otherwise report only a size mismatch.
+Refuse a `from` naming mixed-level cells against values the space it resolved
+to cannot be laid out against, and say which presentation the caller is holding.
 
-A cube carrying the [`MultiOrderLookup`](@ref) passes: it expands itself.
+`from = mov` names a container with two presentations, and the method picks
+between them (`GlobalRegridding.sourcespacefor`). So the same spelling stands
+for the stored cells under a point method and for their reference-level
+expansion under an area one, and either can meet the wrong array:
+
+  - values one per **stored cell** against the expansion — no `from` can pair
+    those, because only the axis says how one stored value spreads over its
+    leaves;
+  - values one per **leaf** against the stored cells — the data is already
+    expanded, so it should name the expansion rather than the container.
+
+A cube carrying the [`MultiOrderLookup`](@ref) passes either way: it presents
+itself to match.
 """
 function GR.checksource(mov::MultiOrderVector, data, space::GR.RegridSpace)
-    n = length(mov)
-    (n == ncells(space) || _carriesmixed(data) || size(data, 1) != n) && return nothing
-    throw(ArgumentError(
-        "`from` names $n mixed-level cells, which stand for $(ncells(space)) " *
-        "cells at reference level $(reference_level(mov)), but the source " *
-        "holds $n values — one per stored cell. No `from` can pair those: the " *
-        "axis itself says how the stored values spread over the cells. Put " *
-        "them on it — `DimArray(values, Cells(MultiOrderLookup(mov)))` — and " *
-        "regrid with no `from` at all."))
+    (data isa AbstractArray && !_carriesmixed(data)) || return nothing
+    n = size(data, 1)
+    (n == ncells(space) || !_expandsleaves(mov)) && return nothing
+    stored, leaves = length(mov), _leafcount(mov)
+    n == stored && throw(ArgumentError(
+        "`from` names $stored mixed-level cells, which stand for " *
+        "$(ncells(space)) cells at reference level $(reference_level(mov)) for " *
+        "this method, but the source holds $stored values — one per stored " *
+        "cell. No `from` can pair those: the axis itself says how the stored " *
+        "values spread over the cells. Put them on it — " *
+        "`DimArray(values, Cells(MultiOrderLookup(mov)))` — and regrid with no " *
+        "`from` at all."))
+    n == leaves && throw(ArgumentError(
+        "`from` names $stored mixed-level cells, which this method reads as " *
+        "the $(ncells(space)) cells stored, but the source holds $leaves " *
+        "values — one per leaf at reference level $(reference_level(mov)). " *
+        "The data is already expanded, so name the expansion rather than the " *
+        "container: `from = CellVector(mov)`, or drop `from` and let the " *
+        "expanded cube's own `Cells` axis name it."))
+    return nothing
 end
 
 GR.checksource(lk::MultiOrderLookup, data, space::GR.RegridSpace) =
@@ -409,6 +510,19 @@ result on it.
 """
 GR.destinationdims(space::DGGSpace, ::DD.Lookups.Sampling) =
     (Cells(CellLookup(space.grid)),)
+
+"""
+    GlobalRegridding.destinationdims(space::DGGSpace{<:MultiOrderGrid}, sampling)
+
+The [`MultiOrderLookup`](@ref) over the container's stored cells.
+
+Mixed levels have no single-level [`CellLookup`](@ref) to be labelled with, so
+a result written over these cells says so with the axis that carries them. This
+is labelling only: routing a regrid *onto* mixed levels is a separate question
+about area normalisation and does not ship here.
+"""
+GR.destinationdims(space::DGGSpace{<:MultiOrderGrid}, ::DD.Lookups.Sampling) =
+    (Cells(MultiOrderLookup(cellset(space.grid))),)
 
 # The dual cells a point method interpolates on.
 include("dual_cells.jl")

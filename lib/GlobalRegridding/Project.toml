@@ -25,11 +25,8 @@ Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
 GlobalRegriddingProjExt = "Proj"
 GlobalRegriddingRastersExt = "Rasters"
 
-[sources]
-ConservativeRegridding = {rev = "main", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
-
 [compat]
-ConservativeRegridding = "0.2.8"
+ConservativeRegridding = "0.2.10"
 DimensionalData = "0.30"
 DiskArrays = "0.4"
 GeoInterface = "1"

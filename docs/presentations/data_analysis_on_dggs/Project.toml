@@ -23,7 +23,6 @@ Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
 WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
 
 [sources]
-ConservativeRegridding = {rev = "main", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 DiscreteGlobalGrids = {path = "../../.."}
 DiscreteGlobalGridsVisualization = {path = "../../../lib/DiscreteGlobalGridsVisualization"}
 GlobalRegridding = {path = "../../../lib/GlobalRegridding"}

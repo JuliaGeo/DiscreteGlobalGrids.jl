@@ -29,12 +29,12 @@ MakieExt = ["Makie"]
 DiscreteGlobalGridsZarrExt = ["Zarr"]
 
 [sources]
-ConservativeRegridding = {rev = "main", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
 # Not a workspace member: it resolves its own Manifest, so
 # `julia --project=lib/GlobalRegridding` stays self-contained.
 GlobalRegridding = {path = "lib/GlobalRegridding"}
 
 [compat]
+ConservativeRegridding = "0.2.10"
 DE9IM = "0.1"
 DiskArrays = "0.4"
 GeometryOps = "0.1.45"

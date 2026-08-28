@@ -360,6 +360,7 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
     pending = ID[]          # members no child of which meets: settled at the end
     settled = Bool[]        # per pending cell: no longer holds a budget slot
     covered = Bool[]        # per pending cell: share proven covered
+    evidenced = Bool[]      # per pending cell: a refusal recorded on its cell
     refused = ID[]          # meeting cells the budget could not pay for
     abandoned = ID[]        # branches a refusal killed: unsearched territory
     entrant_refused = false
@@ -419,6 +420,7 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
                     ncells(grids[level(c)-top+1]), pieces)
                 push!(settled, !held)
                 push!(covered, false)
+                push!(evidenced, false)
                 held || (total -= 1)
                 append!(next_phantoms, kids_miss)
             elseif k == 0 || total + k - 1 > maxcells
@@ -442,11 +444,25 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
         livecaps = [cellcap(pending[i]) for i in live]
         for p in phantoms
             # After a refusal, a branch matters only where a claim's share is
-            # still unproven; the rest die where they stand, recorded.
+            # still unproven. Around an EVIDENCED claim it matters only for
+            # what lies beyond that claim's own cell: one refusal there
+            # already justifies the hand-back, which covers the cell whole,
+            # and searching inside it refines nothing the end phase can use.
             if entrant_refused
                 ext = node_extent(sys, p)
-                if !any(k -> !covered[live[k]] &&
-                            Extents.intersects(livecaps[k], ext), eachindex(live))
+                keep = false
+                for k in eachindex(live)
+                    i = live[k]
+                    covered[i] && continue
+                    Extents.intersects(livecaps[k], ext) || continue
+                    if !evidenced[i] || !_cell_contains_cap(
+                            cell_cap(grids[level(p)-top+1], p),
+                            grids[level(pending[i])-top+1], pending[i])
+                        keep = true
+                        break
+                    end
+                end
+                if !keep
                     push!(abandoned, p)
                     continue
                 end
@@ -474,6 +490,13 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
                 else
                     entrant_refused = true
                     push!(refused, child)
+                    rcap = cellcap(child)
+                    for k in eachindex(live)
+                        i = live[k]
+                        (covered[i] || evidenced[i]) && continue
+                        _cell_meets_cap(rcap, grids[level(pending[i])-top+1],
+                            pending[i], false) && (evidenced[i] = true)
+                    end
                     continue
                 end
                 append!(contained, kids_in)
@@ -487,14 +510,13 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
         # found there was admitted, so the share is covered; a slot still
         # held is surplus, released for the stream to spend.
         if !congruent && !isempty(pending)
-            exts = [node_extent(sys, p) for p in next_phantoms]
-            aexts = [node_extent(sys, a)
-                     for a in Iterators.flatten((abandoned, refused))]
             for i in eachindex(pending)
                 covered[i] && continue
                 cap = cellcap(pending[i])
-                any(x -> Extents.intersects(cap, x), exts) && continue
-                any(x -> Extents.intersects(cap, x), aexts) && continue
+                any(p -> Extents.intersects(cap, node_extent(sys, p)),
+                    next_phantoms) && continue
+                any(a -> Extents.intersects(cap, node_extent(sys, a)),
+                    Iterators.flatten((abandoned, refused))) && continue
                 covered[i] = true
                 if !settled[i]
                     settled[i] = true
@@ -544,14 +566,24 @@ function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
 end
 
 # One (bounding cap, target) pair per connected piece of the target — a
-# MultiPolygon's parts, each prepared on its own; any other target is one
-# piece, itself.
+# MultiPolygon's parts; any other target is one piece, itself. A part is
+# prepared on first use: most walks never test containment, and preparing
+# every part up front cost a quarter of the whole query on a multipart
+# outline.
+mutable struct _PieceSlot{G}
+    const geom::G
+    prepared::Any
+    points::Any
+end
+
 function _target_pieces(target_value, target)
-    (GI.isgeometry(target_value) &&
-     GI.trait(target_value) isa GI.MultiPolygonTrait) ||
-        return [(target.cap, target)]
-    return [(points_cap([query_point(p) for p in GI.getpoint(g)]),
-             _query_target(g)) for g in GI.getpolygon(target_value)]
+    if GI.isgeometry(target_value) &&
+       GI.trait(target_value) isa GI.MultiPolygonTrait
+        return [(points_cap([query_point(p) for p in GI.getpoint(g)]),
+                 _PieceSlot(g, nothing, nothing)) for g in GI.getpolygon(target_value)]
+    end
+    target isa GeometryTarget || return [(target.cap, target)]
+    return [(target.cap, _PieceSlot(target_value, target, nothing))]
 end
 
 # A held claim promises the cell may come back whole at the end. That is only
@@ -576,10 +608,23 @@ end
 
 # Whether one whole piece of the target lies inside the cell — the only
 # containment the engine answers exactly. A piece kind without an exact test
-# certifies nothing.
-_piece_in_cell(piece::GeometryTarget, grid, c) =
+# certifies nothing. The slot rejects on the first piece vertex outside the
+# cell's cap — sound, and what makes the exact predicate rare — and prepares
+# its geometry only when a candidate survives that.
+_piece_in_cell(piece::GeometryTarget, grid, c, cellcap) =
     _matches(DE9IM.Contains(nothing), piece, grid, c)
-_piece_in_cell(piece, grid, c) = false
+function _piece_in_cell(slot::_PieceSlot, grid, c, cellcap)
+    if slot.points === nothing
+        g = GI.isgeometry(slot.geom) ? slot.geom : _extent_target(slot.geom)
+        slot.points = [query_point(p) for p in GI.getpoint(g)]
+    end
+    for p in slot.points
+        cap_contains(cellcap, p) || return false
+    end
+    slot.prepared === nothing && (slot.prepared = _query_target(slot.geom))
+    return _piece_in_cell(slot.prepared::GeometryTarget, grid, c, cellcap)
+end
+_piece_in_cell(piece, grid, c, cellcap) = false
 
 # The deepest unsettled claim the entrant provably stands in for, or 0: the
 # entrant's CELL must contain every piece of the target the claim's cap
@@ -592,6 +637,8 @@ _piece_in_cell(piece, grid, c) = false
 function _claim_match(grid, child, pieces, live, livecaps, settled, total::Int,
         maxcells::Int)
     total <= maxcells || return 0
+    isempty(live) && return 0
+    childcap = cell_cap(grid, child)
     holds = zeros(UInt8, length(pieces))    # 0 unknown, 1 contains, 2 does not
     for k in eachindex(live)
         settled[live[k]] && continue
@@ -599,7 +646,7 @@ function _claim_match(grid, child, pieces, live, livecaps, settled, total::Int,
         for (j, (cap, piece)) in enumerate(pieces)
             Extents.intersects(livecaps[k], cap) || continue
             if holds[j] == 0x00
-                holds[j] = _piece_in_cell(piece, grid, child) ? 0x01 : 0x02
+                holds[j] = _piece_in_cell(piece, grid, child, childcap) ? 0x01 : 0x02
             end
             ok = holds[j] == 0x01
             ok || break

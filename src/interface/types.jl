@@ -114,6 +114,7 @@ allocation per cell. Declaring the bound is the fast path.
 | [`cap_inflation(sys)`](@ref cap_inflation) | `1.2` |
 | [`maxlevel(sys)`](@ref maxlevel) | `last(levels(sys))` |
 | [`has_sorted_subtrees(sys)`](@ref has_sorted_subtrees) | `false`; declaring it `true` obliges [`descendant_range`](@ref) |
+| [`has_congruent_refinement(sys)`](@ref has_congruent_refinement) | `false`; `true` asserts that children tile their parent |
 | [`has_direct_location(sys)`](@ref has_direct_location) | `false`; declaring it `true` obliges [`cellat`](@ref) on the level grid |
 
 # Grid methods and system methods

@@ -396,7 +396,7 @@ export cellsize, levelfor
 # the hierarchy's parent is a method on Base's function, not a name to re-export.
 export cellindextype, levels, maxlevel, levelgrid, rootcells, children
 export node_extent, maxneighbors, maxring, winding, has_sorted_subtrees
-export has_direct_location
+export has_congruent_refinement, has_direct_location
 export ancestor, descendants, descendant_range
 export subtree
 export cellid

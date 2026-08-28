@@ -99,8 +99,16 @@ const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
 # Measured sphere fractions for the annulus tiles at the bottom of this file,
 # where that testset says what they are measures of: the whole set, and its
 # largest single member, in units of the tile's own area.
-const EXCESS_BOUND = 8.0        # measured 6.65
-const MEMBER_BOUND = 5.0        # measured 3.90
+const EXCESS_BOUND = 3.0        # measured 2.50
+const MEMBER_BOUND = 1.5        # measured 1.15
+
+# The union reading on those same tiles. A 1x1-degree tile is a different
+# measurement from the state-sized outline above — a small budget spends every
+# cell on the tile's own boundary, so the slivers are a larger share of it —
+# and it gets its own numbers rather than loosening that one.
+const TILE_UNION_BOUND = Dict("IGeo7System" => 0.04,   # measured 0.030
+    "H3System" => 0.03,                                # measured 0.018
+    "A5System" => 0.22)                                # measured 0.178
 
 @testset "the budget sweep covers every registered system" begin
     sweepcovers(SWEEP)
@@ -455,7 +463,11 @@ end
     sys = DGG.A5System()
     @test !DGG.has_sorted_subtrees(sys)
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=100)
-    @test length(set) == 100
+    # 99, not 100: the last cell the traversal set aside for its overhang gave
+    # its slot back on the final pass, after the last candidate that could have
+    # spent it. The budget is a bound and this is under it; that it is REACHED
+    # is the ladder testset's assertion, at a budget where nothing is left over.
+    @test 99 <= length(set) <= 100
     # The schedule's tie-break is `globalindex` within a level, which every
     # system answers; `descendant_range` has no method here at all, and the
     # traversal never reaches for one.
@@ -497,27 +509,43 @@ end
 # the pathology on the code this testset was written against, which answered
 # with a single cell 834x (IGeo7 Alps), 3991x (IGeo7 lon -120 lat 30), 389x
 # (H3) and 999x (A5 Alps, ONE level-1 cell) the size of the tile it covered.
+# Two rows are the residue the first repair left, where the covering members sit
+# on a lineage a descent through cells that meet the target cannot reach at all
+# — under a root that misses the tile, or under a child that misses it of a cell
+# that does: 6773x for IGeo7 at (-60, -60) and 84.7x for A5 at (0, -60), both a
+# single cell at every budget.
 #
 # `EXCESS_BOUND` and `MEMBER_BOUND`, at the top of this file with the other
 # measured bounds, are sphere fractions in units of the tile's own area — or of
 # one cell of the cap, on the one row whose cap is coarser than the tile.
-# Measured worsts over the four uncapped rows and both budgets: 6.65 for the set
-# and 3.90 for its largest member, both on the A5 row, where the four Hilbert
-# children do not even stay inside their parent. The slack is that per-system
-# spread; two orders of magnitude still separate these bounds from the numbers
-# above.
+# Measured worsts over the six uncapped rows and both budgets: 2.50 for the set,
+# on A5 at a budget of ten, and 1.15 for its largest member, on H3. A covering
+# of a tile that costs twice the tile is the price of ten cells; the numbers
+# above are 30x to 2000x these bounds.
 #
 # Both are order-of-magnitude figures rather than areas: `setsphere` charges each
 # member `1/ncells(levelgrid(...))`, which is the MEAN cell area of its level. On
 # IGeo7 and H3 the twelve pentagons are smaller than the hexagons around them, so
 # a member's true footprint can sit either side of what it is charged here.
+#
+# The union reading is asserted here too, against `TILE_UNION_BOUND`. That is
+# the gate on the traversal DROPPING a cell whose subtree owns none of the
+# target: the drop is sound only while the area it gives up is covered by other
+# members, and a hole it opened would show up as a tile point in no emitted
+# cell. The A5 (0, -60) row is where that reading bites hardest — the single
+# cell it used to answer with was 84x the tile and still missed 56% of it.
 # ---------------------------------------------------------------------------
 
 tilearea(x0, y0) = deg2rad(1) * (sind(y0 + 1) - sind(y0)) / (4pi)
 setsphere(sys, set) =
     sum(1.0 / DGG.ncells(DGG.levelgrid(sys, DGG.level(c))) for c in set; init=0.0)
 
-# Three rows share a system and two share a tile, so a row is named by all three
+# The tile is a lon/lat box, so its own lattice is interior samples already —
+# no `inside` filter, unlike the California outline's.
+tilesamples(x0, y0; n::Int=12) =
+    vec([(x0 + i / n, y0 + j / n) for i in 0:n, j in 0:n])
+
+# Four rows share a system and two share a tile, so a row is named by all three
 # of the things that vary.
 annuluslabel(sys, x0, y0, cap) = "$(syslabel(sys)) at ($x0, $y0), " *
                                  (cap === nothing ? "uncapped" : "maxlevel $cap")
@@ -525,19 +553,17 @@ annuluslabel(sys, x0, y0, cap) = "$(syslabel(sys)) at ($x0, $y0), " *
 @testset "a tile in the annulus never keeps the giant: $(annuluslabel(sys, x0, y0, cap))" for
         (sys, x0, y0, cap) in ((DGG.IGeo7System(), 10.0, 46.0, nothing),
                                (DGG.IGeo7System(), -120.0, 30.0, nothing),
+                               (DGG.IGeo7System(), -60.0, -60.0, nothing),
                                (DGG.H3System(), 0.0, -30.0, nothing),
                                (DGG.A5System(), 10.0, 46.0, nothing),
-                               # The last row is the maxlevel STALL GUARD. The
-                               # Alps descent's shallowest find is a single
-                               # level-3 cell, so a cap of 3 admits it as
-                               # crossing and leaves it in the queue for the
-                               # next pass — a cell the pass cannot refine
-                               # because its children lie past the cap. Remove
-                               # the guard and this row throws a `BoundsError`
-                               # off the end of `grids`, as does every cap from
-                               # 3 down to the deepest level; caps 1 and 2 stop
-                               # the descent before it finds anything and do
-                               # not reach the guard at all.
+                               (DGG.A5System(), 0.0, -60.0, nothing),
+                               # The last row is a cap COARSER THAN THE TILE:
+                               # one level-3 cell is already bigger than a
+                               # square degree, so the answer cannot be as small
+                               # as the tile and `unit` below says so. It is
+                               # also the row that pins a capped descent against
+                               # the same laws as an uncapped one — the phantom
+                               # stream stops at the cap like everything else.
                                (DGG.IGeo7System(), 10.0, 46.0, 3))
     tile = Extents.Extent(X=(x0, x0 + 1), Y=(y0, y0 + 1))
     ta = tilearea(x0, y0)
@@ -545,6 +571,8 @@ annuluslabel(sys, x0, y0, cap) = "$(syslabel(sys)) at ($x0, $y0), " *
     # cell of the cap level is then the smallest thing the answer may say, and
     # asking for less would be asking the traversal to break its own bound.
     unit = cap === nothing ? ta : max(ta, 1.0 / DGG.ncells(DGG.levelgrid(sys, cap)))
+    samples = tilesamples(x0, y0)
+    @test length(samples) > 100
     for b in (10, 200)
         set = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b, maxlevel=cap)
         @test length(set) <= b
@@ -558,6 +586,9 @@ annuluslabel(sys, x0, y0, cap) = "$(syslabel(sys)) at ($x0, $y0), " *
         # no single member dwarfs the target
         @test maximum(c -> 1.0 / DGG.ncells(DGG.levelgrid(sys, DGG.level(c))),
                       collect(set)) <= MEMBER_BOUND * unit
+        # Shrinking the answer must not open a hole in it.
+        @test union_misses(set, samples) / length(samples) <=
+              TILE_UNION_BOUND[syslabel(sys)]
         again = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b, maxlevel=cap)
         @test collect(set) == collect(again)
     end

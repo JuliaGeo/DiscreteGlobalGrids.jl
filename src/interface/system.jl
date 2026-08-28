@@ -397,6 +397,24 @@ ordering, and declaring it falsely produces silently wrong subtree answers.
 has_sorted_subtrees(::AbstractHierarchicalGridSystem) = false
 
 """
+    has_congruent_refinement(sys::AbstractHierarchicalGridSystem) -> Bool
+
+Whether a cell's children **tile the cell**: no part of the parent is left
+uncovered and no child reaches outside it.
+
+`false` by default, and declaring it falsely is a correctness bug rather than a
+performance one. The quad-face family refines an aligned lattice per face and
+qualifies; aperture-7 rosettes (IGEO7, H3) and A5's Hilbert children do not,
+which is why a coverage there can leave slivers.
+
+What it buys the traversals is REACHABILITY: children inside their parent means
+a cell that meets a target has a parent that meets it too, so a descent through
+cells that meet the target reaches every cell that does. Without it a covering
+must also descend through cells that miss.
+"""
+has_congruent_refinement(::AbstractHierarchicalGridSystem) = false
+
+"""
     has_direct_location(sys::AbstractHierarchicalGridSystem) -> Bool
 
 Whether [`cellat`](@ref) on a complete level grid of `sys` is answered from the

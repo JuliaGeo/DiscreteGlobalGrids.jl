@@ -25,10 +25,9 @@ than being covered by it. The cardinality is whatever the outline needs.
 
 `maxcells` is cardinality first — "ten cells that cover California, or a
 hundred". Refinement is coarsest first over the crossing cells, a level at a
-time except where a cell's overhang sends it several levels down at once, and
-stops when the next replacement would not fit; the budget is never exceeded but
-for one documented case. The depth is then whatever the budget bought, and
-varies from branch to branch.
+time, and stops when the next replacement would not fit; the budget is never
+exceeded but for one documented case. The depth is then whatever the budget
+bought, and varies from branch to branch.
 
 Neither mode approximates the other: a `level` set is the exact answer at a
 fixed depth, a `maxcells` set the best a fixed cardinality can say, with the
@@ -160,10 +159,11 @@ Every point of the target lies inside one of the emitted cells. That is the
 plain reading of "ten cells that cover California", and it is the guarantee this
 mode is built around. The seed is the coarsest cells that meet the target, and
 those tile the sphere between them; refinement then replaces a crossing cell
-only by the children that meet the target. Where no child meets, the traversal
-follows the overhang into the cell's own subtree and replaces the cell by the
-members it finds there — a jump of several levels — keeping it whole only when
-the subtree shelters nothing or the finds do not fit the budget.
+only by the children that meet the target. Where refinement is not congruent it
+descends through cells that MISS as well, exactly as `level` mode does, so that
+a cell meeting the target under a parent that does not is still found and
+admitted; a crossing cell none of whose children meet is then dropped rather
+than kept, unless the budget refused one of those admissions.
 
 It is EXACT, at every budget, on the three systems whose four children tile
 their parent: HEALPix, S2 and ISEA4R. Where children do not tile their parent it
@@ -180,12 +180,12 @@ that meets the target is a member or the descendant of one — is a law here on
 those same three systems only. The `level` mode earns it everywhere by
 descending into cells that miss the target, because a child can overhang its
 parent, and carrying that descent all the way to `level`. A budget has no fixed
-depth to carry it to: it follows the overhang only out of a cell no child of
-which meets, and only as far as what is left of the budget pays for, so a branch
-stalled for want of cells stops there. On the same outline the leaf statement
-misses under 1% of the target on IGEO7, 2% on its authalic wrap and on H3, and
-18% on A5. Both statements are pinned per system, at three budgets and on four
-targets, in `test/systems/crosssystem/multiorder_budget.jl`.
+depth to carry it to: it makes the same descent, but each cell it finds costs a
+cell of the budget, and the first one it cannot pay for ends the search, so a
+branch stalled for want of cells stops there. On the same outline the leaf
+statement misses under 1% of the target on IGEO7, 2% on its authalic wrap and
+on H3, and 18% on A5. Both statements are pinned per system, at three budgets
+and on four targets, in `test/systems/crosssystem/multiorder_budget.jl`.
 
 What a budget does NOT buy is a tight picture of the target: at ten cells the
 set over-covers California by a wide margin, and it says so through
@@ -286,30 +286,52 @@ end
 # Same target preparation, same prunes and the same two exact predicates as the
 # depth-first walk above. What changes is the SCHEDULE and what stops it.
 #
-# The covering is maintained explicitly as {contained cells} ∪ {crossing cells}.
-# Contained cells are never refined: a cell proven to lie inside the target is
-# already the tightest thing that can be said about its own footprint, and
-# splitting it spends budget to say the same thing in more words. Only crossing
-# cells are candidates, and they are visited COARSEST FIRST, ties broken by
-# index within the level — the curve order, so the schedule is a function of
-# the inputs alone and of nothing else.
+# The covering is maintained explicitly as {contained cells} ∪ {crossing
+# members}. Contained cells are never refined: a cell proven to lie inside the
+# target is already the tightest thing that can be said about its own footprint,
+# and splitting it spends budget to say the same thing in more words. Only
+# crossing members are candidates, and they are visited COARSEST FIRST, ties
+# broken by index within the level — the curve order, so the schedule is a
+# function of the inputs alone and of nothing else.
+#
+# PHANTOMS are the second stream, and they carry no cells into the set. Where
+# refinement is not congruent a cell can meet the target while its parent misses
+# it, so a descent that follows only cells that meet loses whole lineages of the
+# covering. A phantom is a cell that fails the exact test but passes both
+# `node_extent` prunes — the descent `_coverage_visit!` makes — and every cell
+# this traversal opens contributes its missing children to the stream. A phantom
+# costs nothing against the budget and exists only to reach the meeting cells
+# beneath it, which are admitted one at a time as the budget allows. Where
+# `has_congruent_refinement` holds there are none: children inside their parent
+# means a meeting cell always has a meeting parent, and the member stream
+# already reaches everything.
+#
+# A cell KEPT WHOLE is not opened: no phantom descends from it, because a member
+# admitted under a member would be emitted as its own ancestor's descendant.
 #
 # The priority queue is spelled here as two vectors and a pass counter rather
 # than as a heap: each pass sorts what it holds on `(level, key)` and refines in
 # that order, so the schedule stays total and a function of the inputs alone.
-# That is the order a heap on `(level, key)` would pop only while every cell
-# advances one level per pass. An overhang descent breaks the equivalence — it
-# injects cells several levels deeper, which the next pass refines ahead of the
-# shallower cells a heap would pop first — so the queue a pass sorts can be
-# mixed-level.
+# Every cell of either stream advances exactly one level per pass, which is the
+# order a heap on `(level, key)` would pop. Members are refined before phantoms
+# within a pass; that order decides only which admission meets the budget first.
 #
-# WHEN A REPLACEMENT DOES NOT FIT the cell is set aside and the traversal moves
-# on to the next candidate rather than stopping. Nothing is lost by trying: the
-# set only ever grows, so a replacement rejected once is rejected for good, and
-# a single pass over the queue is enough. What is gained is the tail of the
-# budget — a coarse crossing cell with seven intersecting children can overrun a
-# budget that a finer one with two children still fits into, and stopping on the
-# first miss would strand those cells unspent.
+# WHEN A REPLACEMENT DOES NOT FIT the cell is kept whole and the traversal moves
+# on to the next candidate rather than stopping. What that gains is the tail of
+# the budget — a coarse crossing cell with seven intersecting children can
+# overrun a budget that a finer one with two children still fits into, and
+# stopping on the first miss would strand those cells unspent. The queue is
+# walked once and never revisited: the covering grows, except where a cell is
+# set aside for its overhang and hands its slot back, and a replacement refused
+# before that is not offered the slot afterwards.
+#
+# THE END PHASE is the one place the set shrinks. A member none of whose
+# children meets the target is held PENDING rather than kept or refined: it is
+# many times the target's size, and the phantom stream reaches the members that
+# cover what it covers. It leaves the covering, and its slot with it, when it is
+# set aside. Pending cells are dropped at the end — except where the budget cut
+# the search short, and then the ones no member of the covering lies anywhere
+# near are kept whole. `_budget_resolve!` says why.
 # ---------------------------------------------------------------------------
 
 function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
@@ -323,75 +345,102 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
     top = first(levels(sys))
     grids = [levelgrid(sys, l) for l in top:maxlevel]
 
+    # Children inside their parent means the member stream reaches every cell
+    # that meets the target, and a phantom could only add work.
+    congruent = has_congruent_refinement(sys)
+
     contained = ID[]        # proven `Within`: never refined, never requeued
     stalled = ID[]          # crossing, and kept whole: the budget said no
-    current = ID[]          # crossing, at the level being refined
+    current = ID[]          # crossing members, at the level being refined
+    phantoms = ID[]         # non-members that passed the prunes, same level
+    pending = ID[]          # members no child of which meets: dropped at the end
+    entrant_refused = false # a meeting cell the budget could not pay for
     for c in rootcells(sys)
-        _budget_admit!(contained, current, sys, target, c, grids, top, maxlevel)
+        _budget_admit!(contained, current, sys, target, c, grids, top, maxlevel) && continue
+        congruent || (_budget_reaches(sys, target, c) && push!(phantoms, c))
     end
-    # The running size of {contained} ∪ {crossing}, maintained rather than
-    # recomputed: a replacement is committed exactly when the size it would
-    # leave behind fits.
+    # The running size of the covering, maintained rather than recomputed: a
+    # replacement is committed exactly when the size it would leave behind fits.
+    # Neither phantoms nor pending cells are in it — a pending cell is one the
+    # end phase has to be given a reason to keep.
     total = length(contained) + length(current)
+    schedule_key(c) = (level(c), _budget_key(grids[level(c)-top+1], c))
 
     kids_in = ID[]
     kids_out = ID[]
+    kids_miss = ID[]
     for _ in top:(maxlevel-1)
-        isempty(current) && break
-        sort!(current; by=c -> (level(c), _budget_key(grids[level(c)-top+1], c)))
+        (isempty(current) && isempty(phantoms)) && break
+        sort!(current; by=schedule_key)
+        sort!(phantoms; by=schedule_key)
         next = ID[]
+        next_phantoms = ID[]
         for c in current
-            # An overhang descent can leave a cell already at `maxlevel` in the
-            # queue; it has no children to reach for and must stall.
+            # Nothing at `maxlevel` has children to reach for. Both streams
+            # advance one level per pass, so nothing reaches this today; it is
+            # what keeps `grids` in range should a cell ever enter deeper.
             if level(c) >= maxlevel
                 push!(stalled, c)
                 continue
             end
             empty!(kids_in)
             empty!(kids_out)
+            empty!(kids_miss)
             for child in children(sys, c)
-                _budget_admit!(kids_in, kids_out, sys, target, child, grids, top, maxlevel)
+                _budget_admit!(kids_in, kids_out, sys, target, child, grids,
+                    top, maxlevel) && continue
+                congruent || (_budget_reaches(sys, target, child) &&
+                              push!(kids_miss, child))
             end
             k = length(kids_in) + length(kids_out)
             if k == 0
                 # No child meets: the target sits in this cell's overhang
-                # annulus (non-congruent refinement). Its own subtree still
-                # shelters the members that cover it — find them the way
-                # level mode would, and replace the cell by those.
-                #
-                # Two ways that fails, and both stall the cell whole, exactly
-                # like any other refused replacement: the find does not fit
-                # the budget, or the subtree shelters nothing at all. The
-                # second is not the same as "the cell covers nothing" — the
-                # members covering the target can sit under a SIBLING this
-                # traversal already passed over, because refinement follows
-                # cells that meet where `level` mode follows `node_extent`.
-                # Dropping the cell on that evidence empties coverings.
+                # annulus (non-congruent refinement). Refining it would drop the
+                # target, keeping it buys a cell many times the target's size,
+                # so it leaves the covering here and the end phase confirms it.
+                push!(pending, c)
+                total -= 1
+            elseif total + k - 1 > maxcells
+                # Kept whole, and with it everything under it: opening the cell
+                # would put members below a member.
+                push!(stalled, c)
+                continue
+            else
+                append!(contained, kids_in)
+                append!(next, kids_out)
+                total += k - 1
+            end
+            append!(next_phantoms, kids_miss)
+        end
+        for p in phantoms
+            entrant_refused && break
+            level(p) >= maxlevel && continue
+            for child in children(sys, p)
                 empty!(kids_in)
                 empty!(kids_out)
-                _overhang_descend!(kids_in, kids_out, sys, target, c, grids,
-                    top, maxlevel, maxcells - total + 1)
-                found = length(kids_in) + length(kids_out)
-                if found == 0 || total + found - 1 > maxcells
-                    push!(stalled, c)
+                if !_budget_admit!(kids_in, kids_out, sys, target, child, grids,
+                        top, maxlevel)
+                    _budget_reaches(sys, target, child) && push!(next_phantoms, child)
                     continue
+                end
+                # A meeting cell whose parent misses replaces nothing, so it
+                # costs a whole cell rather than the difference.
+                if total + 1 > maxcells
+                    entrant_refused = true
+                    break
                 end
                 append!(contained, kids_in)
                 append!(next, kids_out)
-                total += found - 1
-                continue
+                total += 1
             end
-            if total + k - 1 > maxcells
-                push!(stalled, c)
-                continue
-            end
-            append!(contained, kids_in)
-            append!(next, kids_out)
-            total += k - 1
         end
         current = next
+        # The first refusal ends the search: the budget only shrinks from here,
+        # so no later phantom could be paid for either.
+        phantoms = entrant_refused ? empty!(next_phantoms) : next_phantoms
     end
-    append!(stalled, current)       # whatever `maxlevel` left unrefinable
+    append!(stalled, current)       # members only: what `maxlevel` left unrefined
+    _budget_resolve!(stalled, contained, sys, pending, entrant_refused)
 
     cells = vcat(contained, stalled)
     flags = falses(length(cells))
@@ -402,12 +451,21 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
     return _sorted_cell_set(sys, cells, flags, reference)
 end
 
+# Can anything in this cell's SUBTREE belong to the covering? Both prunes read
+# `node_extent`, which bounds the subtree, so a cell that fails them shelters
+# nothing that meets the target — which is what makes a phantom worth carrying
+# and a pruned cell worth forgetting. `_coverage_visit!` descends on exactly
+# this test.
+function _budget_reaches(sys, target, c)
+    extent = node_extent(sys, c)
+    Extents.intersects(target.cap, extent) || return false
+    return !_subtree_outside(target, extent)
+end
+
 # The cheap half of admission: can this cell belong to the covering at all?
 # Both prunes and the cheap exact predicate, in `_coverage_visit!`'s order.
 function _budget_meets(sys, target, c, grids, top::Int)
-    extent = node_extent(sys, c)
-    Extents.intersects(target.cap, extent) || return false
-    _subtree_outside(target, extent) && return false
+    _budget_reaches(sys, target, c) || return false
     return _matches(DE9IM.Intersects(nothing), target, grids[level(c)-top+1], c)
 end
 
@@ -430,35 +488,39 @@ function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
     return true
 end
 
-# A crossing cell none of whose children meet can still shelter members: on a
-# non-congruent refinement its footprint is retiled by the children of its
-# NEIGHBORS, and its own deep descendants overhang elsewhere. The target sits
-# in that annulus. Level mode reaches such members by descending on
-# `node_extent`; this walk does the same, from one cell, collecting the
-# descendants that meet. Cells that fail `Intersects` cover none of the
-# target, so the walk past them loses nothing, and it never descends past a
-# member it admits.
+# The last word on the pending cells, and the two cases where one comes back. A
+# pending cell is a member none of whose children meets the target, so it is
+# many times the target's size and the phantom stream reaches the members that
+# cover what it covers. It left the covering the moment it was set aside, which
+# is why nothing here consults the budget.
 #
-# `room` is the caller's headroom, `maxcells - total + 1`: the walk stops as
-# soon as the finds outgrow it. Result-preserving, because the find set only
-# grows — once it exceeds the headroom the caller refuses the replacement and
-# stalls the cell whole however much further the cone is walked.
-function _overhang_descend!(found_in, found_out, sys, target, c, grids,
-        top::Int, maxlevel::Int, room::Int)
-    frontier = [c]
-    while !isempty(frontier)
-        p = pop!(frontier)
-        level(p) >= maxlevel && continue
-        for child in children(sys, p)
-            _budget_admit!(found_in, found_out, sys, target, child, grids,
-                top, maxlevel) && continue
-            extent = node_extent(sys, child)
-            Extents.intersects(target.cap, extent) || continue
-            _subtree_outside(target, extent) && continue
-            push!(frontier, child)
+# THE SEARCH STOPPED SHORT where an entrant was refused: from there on the
+# stream was buying nothing, and a part of the target can be left with no member
+# at all — an offshore island whose one replacement cell the budget never
+# reached. So the pending cells the rest of the covering says nothing about are
+# kept whole: cell caps, not node extents, because the question is whether a
+# member's own footprint lies near this one and not whether their subtrees might
+# meet. Deepest first, so that where two of them overlap the smaller is the one
+# kept.
+#
+# A COVERING WITH NOTHING IN IT is the other case. A budget of one, on a target
+# smaller than a cell, can spend itself before the descent finds anything to
+# keep, and the answer to a target the system meets is a cell, not an empty set.
+function _budget_resolve!(stalled, contained, sys, pending, entrant_refused::Bool)
+    isempty(pending) && return nothing
+    if entrant_refused
+        cellcap(c) = cell_cap(levelgrid(sys, level(c)), c)
+        caps = [cellcap(m) for m in contained]
+        append!(caps, cellcap(m) for m in stalled)
+        sort!(pending; by=level, rev=true)
+        for c in pending
+            cap = cellcap(c)
+            any(k -> Extents.intersects(cap, k), caps) && continue
+            push!(stalled, c)
+            push!(caps, cap)
         end
-        length(found_in) + length(found_out) > room && return nothing
     end
+    (isempty(contained) && isempty(stalled)) && push!(stalled, argmin(level, pending))
     return nothing
 end
 

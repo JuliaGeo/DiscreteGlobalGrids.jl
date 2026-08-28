@@ -283,6 +283,10 @@ Important cross-system traits:
     [`cap_inflation`](@ref) to `1.75`.
   - **[`has_sorted_subtrees`](@ref).** True except for A5, whose canonical order
     has not established the two-sided [`descendant_range`](@ref) contract.
+  - **[`has_congruent_refinement`](@ref).** True for HEALPix, S2 and ISEA4R,
+    whose four children tile their parent exactly; false for IGeo7, H3 and A5.
+    A `maxcells` [`MultiOrderCellSet`](@ref) descends through meeting cells
+    alone where it holds, and through cells that miss as well where it does not.
   - **[`has_direct_location`](@ref).** True for every system here: each names
     the cell containing a point from the point's coordinates, so a
     [`PartialGrid`](@ref) over any of them locates through its complete level

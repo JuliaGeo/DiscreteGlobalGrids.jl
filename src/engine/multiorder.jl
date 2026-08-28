@@ -128,7 +128,8 @@ set = query(sys, MultiOrderCoverage(california); level = 7)   # thousands of cel
 ```
 
 `maxcells` is CARDINALITY FIRST: refine the crossing cells coarsest first, and
-stop when the next replacement would not fit in the budget.
+keep whole any cell whose replacement would not fit rather than ending the
+search.
 
 ```julia
 set = query(sys, MultiOrderCoverage(california); maxcells = 10)   # ten cells
@@ -333,17 +334,18 @@ end
 # PENDING CELLS are the only way the set ever shrinks. A member none of whose
 # children meets the target is held pending rather than kept or refined: it is
 # many times the target's size, and the phantom stream reaches the members that
-# cover what it covers. It leaves the covering, and its slot with it, when it is
-# set aside, and the end phase then drops it or hands it back — so the set can
-# come out of that phase smaller, the same size, or larger.
+# cover what it covers. It leaves the covering, and its slot with it, when it
+# is set aside; the end phase then drops it for good or hands it back, and is
+# the one place the covering can GROW — a freed slot spent on an entrant, then
+# another freed slot handing a pending cell back.
 #
 # WHY THE DROP IS SOUND, at its strongest: `node_extent` bounds a cell's whole
 # subtree, so where no child even reaches, nothing under the cell meets the
 # target, `level` mode emits nothing there either, and the drop reproduces that
 # mode exactly. Where some child does reach, the phantom stream carries the
 # descent on and what it admits covers this cell's share of the target. Both
-# arguments need a phantom stream, so a cell is pended only where one runs: on a
-# congruent system a childless member is kept whole instead. Where the budget
+# arguments need a phantom stream, so a cell is pended only on a system where
+# one runs: on a congruent system a childless member is kept whole instead. Where the budget
 # refused an admission the stream stopped everywhere, including over lineages
 # that had asked for nothing, and the end phase hands back the pending cells
 # that were left uncovered by it. `_budget_resolve!` has the last word.

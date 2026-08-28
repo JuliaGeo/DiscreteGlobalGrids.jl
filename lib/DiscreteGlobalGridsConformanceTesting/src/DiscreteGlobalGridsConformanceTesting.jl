@@ -1417,6 +1417,8 @@ DGG.node_extent(w::GenericFallbackSystem, c::AbstractCellIndex) =
     DGG.node_extent(w.system, c)
 DGG.cap_inflation(w::GenericFallbackSystem) = DGG.cap_inflation(w.system)
 DGG.has_sorted_subtrees(w::GenericFallbackSystem) = DGG.has_sorted_subtrees(w.system)
+DGG.has_congruent_refinement(w::GenericFallbackSystem) =
+    DGG.has_congruent_refinement(w.system)
 DGG.descendant_range(w::GenericFallbackSystem, c::AbstractCellIndex, l::Integer) =
     DGG.descendant_range(w.system, c, l)
 DGG.maxneighbors(w::GenericFallbackSystem, conn::Connectivity) =

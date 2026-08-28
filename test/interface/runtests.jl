@@ -85,7 +85,8 @@ end
               :cell_area, :cell_extent, :getcell, :cellat, :neighbors, :ring,
               :treeify, :query, :system, :level, :cellindextype, :levels,
               :maxlevel, :levelgrid, :rootcells, :children, :node_extent,
-              :maxneighbors, :has_sorted_subtrees, :has_direct_location,
+              :maxneighbors, :has_sorted_subtrees, :has_congruent_refinement,
+              :has_direct_location,
               :ancestor, :descendants,
               :descendant_range, :LevelIndex, :Connectivity, :Vertex, :Edge,
               :cellsize, :levelfor, :subtree, :halo, :border, :interior,
@@ -243,8 +244,11 @@ end
     s = UnimplementedSystem()
     g = UnimplementedGrid()
 
-    # Documented defaults, live.
+    # Documented defaults, live. `has_congruent_refinement` defaulting to
+    # `false` is the safe direction: the coverage traversals pay for the descent
+    # through cells that miss unless a system claims its children tile it.
     @test has_sorted_subtrees(s) === false
+    @test has_congruent_refinement(s) === false
     @test DGG.cap_inflation(s) === 1.2
 
     # A standalone grid has no hierarchy, and says so rather than erroring.

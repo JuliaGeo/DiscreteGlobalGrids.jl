@@ -57,6 +57,16 @@ const BLOCK = GI.Polygon([GI.LinearRing([(-122.42, 37.77), (-122.40, 37.77),
 parallel_ring(lat) = GI.Polygon([GI.LinearRing([(lon, lat) for lon in 0.0:5.0:360.0])])
 const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 
+# Twenty-one specks on a lattice, each its own lineage under its own root cell.
+# A small budget cannot reach them all, so the traversal stops searching while
+# most of them are still crossing cells set aside for their overhang, and the
+# end phase gets them all back at once. That is the one place the covering can
+# GROW, and the place a budget is easiest to overrun.
+speck(x0, y0) = GI.Polygon([GI.LinearRing([(x0, y0), (x0 + 0.05, y0),
+    (x0 + 0.05, y0 + 0.05), (x0, y0 + 0.05), (x0, y0)])])
+const SPECKS = GI.MultiPolygon([speck(-150.0 + 30.0 * ((k - 1) % 11),
+    -60.0 + 20.0 * ((k - 1) ÷ 11)) for k in 1:21])
+
 # Somewhere no cell of anything meets: a degenerate target is not swept here,
 # but an empty answer has to stay a well-formed set, so one is built below.
 
@@ -101,6 +111,15 @@ const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
 # largest single member, in units of the tile's own area.
 const EXCESS_BOUND = 3.0        # measured 2.50
 const MEMBER_BOUND = 1.5        # measured 1.15
+
+# The level a budget of ONE reaches on the city block below: the chain of single
+# crossing cells stops at the first cell the block crosses into two of, and this
+# is where each system's is. Asserted as a floor, so a traversal that answered
+# with a root — or with anything near one — fails on depth rather than passing
+# on `length == 1`. Measured, exactly, on this fixture.
+const BLOCK_DEPTH = Dict("IGeo7System" => 6, "Authalic(IGeo7System)" => 6,
+    "H3System" => 6, "HEALPixSystem" => 11, "A5System" => 11,
+    "S2System" => 4, "ISEA4RSystem" => 10)
 
 # The union reading on those same tiles. A 1x1-degree tile is a different
 # measurement from the state-sized outline above — a small budget spends every
@@ -239,6 +258,10 @@ end
     (sys, toplevel) in SWEEP
 
     congruent = isquadface(sys)
+    # Which arm the laws below take is the traversal's own question, asked of
+    # the trait it branches on: the phantom stream runs exactly where children
+    # do not tile their parent.
+    @test DGG.has_congruent_refinement(sys) == isquadface(sys)
 
     sets = Dict(b => DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=b)
                 for b in BUDGETS)
@@ -376,6 +399,19 @@ end
             else
                 @test length(budgeted) <= length(accurate)
                 @test !isempty(budgeted)
+                # And with room to spare it is the SAME statement here. A
+                # budget exactly the size of the level can still refuse an
+                # admission — an entrant costs a whole cell where a replacement
+                # costs the difference — and every refusal is a branch the
+                # search left early. Give it four times the room and nothing is
+                # refused, and then the phantom stream's whole claim is testable
+                # as an equality: descending through cells that miss reaches
+                # every cell of this level that `level` mode reaches, in the
+                # same order. Anything weaker than `==` here cannot tell a
+                # complete descent from a lucky one.
+                roomy = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND);
+                    maxcells=4 * length(accurate), maxlevel=l)
+                @test collect(roomy) == collect(accurate)
             end
         end
     end
@@ -433,6 +469,8 @@ end
     # crosses into two of.
     one = DGG.query(sys, DGG.MultiOrderCoverage(BLOCK); maxcells=1)
     @test length(one) == 1
+    # One cell, but the RIGHT one cell: the chain has to have descended to it.
+    @test DGG.level(one[1]) >= BLOCK_DEPTH[syslabel(sys)]
     @test !DGG.iscontained(one, 1)
     @test DGG.coarsest_contained(one) === nothing
     @test one.reference_level == DGG.level(one[1])
@@ -443,6 +481,24 @@ end
     more = DGG.query(sys, DGG.MultiOrderCoverage(BLOCK); maxcells=8)
     @test length(more) >= length(one)
     @test length(more) <= 8
+end
+
+@testset "the end phase cannot spend what it was not handed: $(syslabel(sys))" for
+    (sys, _) in SWEEP
+
+    # The end phase hands a set-aside cell back only into a slot another
+    # set-aside cell gave up, and there are far fewer of those than there are
+    # specks asking. A rule that hands them back without counting answers 22
+    # cells to a budget of 20 on IGeo7, 21 on H3 and 34 on A5 — measured at
+    # deb743c, the commit this testset was added against.
+    for b in (20, 30)
+        set = DGG.query(sys, DGG.MultiOrderCoverage(SPECKS); maxcells=b)
+        @test length(set) <= b
+        @test !isempty(set)
+        # And what comes back is a well-formed set: a cell handed back must not
+        # be the ancestor of a member the budget already paid for.
+        @test isempty(emitted_ancestors(sys, set))
+    end
 end
 
 @testset "an empty answer is still a set" begin
@@ -463,10 +519,14 @@ end
     sys = DGG.A5System()
     @test !DGG.has_sorted_subtrees(sys)
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=100)
-    # 99, not 100: the last cell the traversal set aside for its overhang gave
-    # its slot back on the final pass, after the last candidate that could have
-    # spent it. The budget is a bound and this is under it; that it is REACHED
-    # is the ladder testset's assertion, at a budget where nothing is left over.
+    # 99, not 100, and the slot is not recoverable: a cell set aside for its
+    # overhang hands its slot back, the end phase can only spend that slot on
+    # another such cell, and here every remaining one has a member of the
+    # covering lying against it. Spending it on one of those anyway would put a
+    # cell many times the target's size back into the set for nothing — the very
+    # thing the annulus testset at the bottom of this file forbids. The budget is
+    # a bound and this is under it; that it is REACHED is the ladder testset's
+    # assertion, at a budget where nothing is left over.
     @test 99 <= length(set) <= 100
     # The schedule's tie-break is `globalindex` within a level, which every
     # system answers; `descendant_range` has no method here at all, and the
@@ -513,7 +573,10 @@ end
 # on a lineage a descent through cells that meet the target cannot reach at all
 # — under a root that misses the tile, or under a child that misses it of a cell
 # that does: 6773x for IGeo7 at (-60, -60) and 84.7x for A5 at (0, -60), both a
-# single cell at every budget.
+# single cell at every budget. Those two are measurements OF THE OLD CODE, taken
+# at 2f3aeb7 in the 2026-08-28 diagnosis: run these same fixtures against that
+# commit to see them again. Nothing here reproduces them, and what this testset
+# asserts are the bounds below.
 #
 # `EXCESS_BOUND` and `MEMBER_BOUND`, at the top of this file with the other
 # measured bounds, are sphere fractions in units of the tile's own area — or of
@@ -533,7 +596,8 @@ end
 # target: the drop is sound only while the area it gives up is covered by other
 # members, and a hole it opened would show up as a tile point in no emitted
 # cell. The A5 (0, -60) row is where that reading bites hardest — the single
-# cell it used to answer with was 84x the tile and still missed 56% of it.
+# cell it answered with at 2f3aeb7 was 84x the tile and still missed 56% of it —
+# again a measurement of that commit rather than anything asserted here.
 # ---------------------------------------------------------------------------
 
 tilearea(x0, y0) = deg2rad(1) * (sind(y0 + 1) - sind(y0)) / (4pi)

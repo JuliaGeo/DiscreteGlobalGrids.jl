@@ -106,8 +106,11 @@ const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
 
 # Annulus-tile bounds, in units of the tile's own area: the whole set, and its
 # largest single member. The testset at the bottom of this file measures them.
-const EXCESS_BOUND = 3.0        # measured 2.50
-const MEMBER_BOUND = 1.5        # measured 1.15
+# The excess climbed from 2.50 when pending claims began reserving their
+# slots: at a budget of ten, a reserved slot is a member not refined, and the
+# refused cells the end phase pays for come on top.
+const EXCESS_BOUND = 3.5        # measured 3.06
+const MEMBER_BOUND = 1.5        # measured 1.32
 
 # The level a budget of ONE reaches on the city block below: where the chain of
 # single crossing cells first splits. A floor, so an answer at or near a root
@@ -293,7 +296,9 @@ end
             @test length(set) <= max(b, 2)
         end
         @test issorted(sizes)                 # measurement of the schedule
-        @test sizes[end] == LADDER[end]       # and the budget is actually spent
+        # And the budget is spent: freed and settled claims recycle into the
+        # stream, and the end phase pays refused cells with what is left.
+        @test sizes[end] == LADDER[end]
     end
 
     @testset "determinism" begin
@@ -502,11 +507,7 @@ end
     sys = DGG.A5System()
     @test !DGG.has_sorted_subtrees(sys)
     set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=100)
-    # 99 is correct: a slot freed by a pended cell is spent only on a pending
-    # cell no member lies against, and here every remaining one has a neighbour
-    # in the covering. The ladder testset asserts the bound is reached where
-    # nothing is pended.
-    @test 99 <= length(set) <= 100
+    @test length(set) == 100
     # The schedule's tie-break is `globalindex` within a level, which every
     # system answers; `descendant_range` has no method here at all, and the
     # traversal never reaches for one.
@@ -538,6 +539,31 @@ end
             end
             @test hit || error("part $k of $(syslabel(sys)) met no emitted cell")
         end
+    end
+end
+
+@testset "a refusal in one part never loses another: $label" for
+        (label, sys, bx, by, bw, sx, sy) in
+        (("IGeo7 Alps", DGG.IGeo7System(), 0.0, 40.0, 8.0, 10.05, 46.05),
+         ("IGeo7 California", DGG.IGeo7System(), -125.0, 32.0, 8.0, -119.95, 30.05),
+         ("A5 Alps", DGG.A5System(), 4.0, 40.0, 5.0, 10.05, 46.05),
+         ("A5 south", DGG.A5System(), -6.0, -58.0, 5.0, 0.05, -59.95),
+         ("H3 south", DGG.H3System(), -6.0, -28.0, 6.0, 0.05, -29.95))
+
+    # A blob big enough to spend any of these budgets, and a speck sitting in a
+    # coarse cell's overhang annulus. The speck's covering rides on the end
+    # phase: its crossing cell pends, and a pend whose slot the blob can spend
+    # leaves the whole component uncovered at whatever budget the schedule
+    # happens to starve it.
+    blob = topolygon([[(bx, by), (bx + bw, by), (bx + bw, by + bw),
+        (bx, by + bw), (bx, by)]])
+    target = GI.MultiPolygon([blob, speck(sx, sy)])
+    samples = vec([(sx + 0.05 * i / 6, sy + 0.05 * j / 6) for i in 0:6, j in 0:6])
+    for b in (10, 20, 50, 100, 200)
+        set = DGG.query(sys, DGG.MultiOrderCoverage(target); maxcells=b)
+        @test length(set) <= b
+        @test isempty(emitted_ancestors(sys, set))
+        @test union_misses(set, samples) == 0
     end
 end
 

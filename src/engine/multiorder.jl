@@ -24,10 +24,11 @@ cells still crossed there are emitted too, so the set covers the target rather
 than being covered by it. The cardinality is whatever the outline needs.
 
 `maxcells` is cardinality first — "ten cells that cover California, or a
-hundred". Refinement is breadth first over the crossing cells, coarsest level
-up, and stops when the next replacement would not fit; the budget is never
-exceeded but for one documented case. The depth is then whatever the budget
-bought, and varies from branch to branch.
+hundred". Refinement is coarsest first over the crossing cells, a level at a
+time except where a cell's overhang sends it several levels down at once, and
+stops when the next replacement would not fit; the budget is never exceeded but
+for one documented case. The depth is then whatever the budget bought, and
+varies from branch to branch.
 
 Neither mode approximates the other: a `level` set is the exact answer at a
 fixed depth, a `maxcells` set the best a fixed cardinality can say, with the
@@ -159,8 +160,10 @@ Every point of the target lies inside one of the emitted cells. That is the
 plain reading of "ten cells that cover California", and it is the guarantee this
 mode is built around. The seed is the coarsest cells that meet the target, and
 those tile the sphere between them; refinement then replaces a crossing cell
-only by the children that meet the target, and a cell that no child of the
-replacement would cover is not replaced at all.
+only by the children that meet the target. Where no child meets, the traversal
+follows the overhang into the cell's own subtree and replaces the cell by the
+members it finds there — a jump of several levels — keeping it whole only when
+the subtree shelters nothing or the finds do not fit the budget.
 
 It is EXACT, at every budget, on the three systems whose four children tile
 their parent: HEALPix, S2 and ISEA4R. Where children do not tile their parent it
@@ -177,12 +180,12 @@ that meets the target is a member or the descendant of one — is a law here on
 those same three systems only. The `level` mode earns it everywhere by
 descending into cells that miss the target, because a child can overhang its
 parent, and carrying that descent all the way to `level`. A budget has no fixed
-depth to carry it to. A budget may stop early, and a branch stopped
-early at a cell that misses the target is a branch whose overhang is not
-followed. On the same outline the leaf statement misses under 1% of the target
-on IGEO7, 2% on its authalic wrap and on H3, and 18% on A5. Both statements are
-pinned per system, at three budgets and on four targets, in
-`test/systems/crosssystem/multiorder_budget.jl`.
+depth to carry it to: it follows the overhang only out of a cell no child of
+which meets, and only as far as what is left of the budget pays for, so a branch
+stalled for want of cells stops there. On the same outline the leaf statement
+misses under 1% of the target on IGEO7, 2% on its authalic wrap and on H3, and
+18% on A5. Both statements are pinned per system, at three budgets and on four
+targets, in `test/systems/crosssystem/multiorder_budget.jl`.
 
 What a budget does NOT buy is a tight picture of the target: at ten cells the
 set over-covers California by a wide margin, and it says so through
@@ -291,11 +294,14 @@ end
 # index within the level — the curve order, so the schedule is a function of
 # the inputs alone and of nothing else.
 #
-# Coarsest-first plus "children are one level deeper" means the queue is at all
-# times a level and its successor, so the priority queue is spelled here as two
-# vectors and a level counter rather than as a heap. That is not a shortcut: it
-# is the same order a heap on `(level, key)` would pop, and it makes the
-# breadth-first shape of the traversal visible.
+# The priority queue is spelled here as two vectors and a pass counter rather
+# than as a heap: each pass sorts what it holds on `(level, key)` and refines in
+# that order, so the schedule stays total and a function of the inputs alone.
+# That is the order a heap on `(level, key)` would pop only while every cell
+# advances one level per pass. An overhang descent breaks the equivalence — it
+# injects cells several levels deeper, which the next pass refines ahead of the
+# shallower cells a heap would pop first — so the queue a pass sorts can be
+# mixed-level.
 #
 # WHEN A REPLACEMENT DOES NOT FIT the cell is set aside and the traversal moves
 # on to the next candidate rather than stopping. Nothing is lost by trying: the
@@ -364,7 +370,7 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
                 empty!(kids_in)
                 empty!(kids_out)
                 _overhang_descend!(kids_in, kids_out, sys, target, c, grids,
-                    top, maxlevel)
+                    top, maxlevel, maxcells - total + 1)
                 found = length(kids_in) + length(kids_out)
                 if found == 0 || total + found - 1 > maxcells
                     push!(stalled, c)
@@ -432,8 +438,13 @@ end
 # descendants that meet. Cells that fail `Intersects` cover none of the
 # target, so the walk past them loses nothing, and it never descends past a
 # member it admits.
+#
+# `room` is the caller's headroom, `maxcells - total + 1`: the walk stops as
+# soon as the finds outgrow it. Result-preserving, because the find set only
+# grows — once it exceeds the headroom the caller refuses the replacement and
+# stalls the cell whole however much further the cone is walked.
 function _overhang_descend!(found_in, found_out, sys, target, c, grids,
-        top::Int, maxlevel::Int)
+        top::Int, maxlevel::Int, room::Int)
     frontier = [c]
     while !isempty(frontier)
         p = pop!(frontier)
@@ -446,6 +457,7 @@ function _overhang_descend!(found_in, found_out, sys, target, c, grids,
             _subtree_outside(target, extent) && continue
             push!(frontier, child)
         end
+        length(found_in) + length(found_out) > room && return nothing
     end
     return nothing
 end

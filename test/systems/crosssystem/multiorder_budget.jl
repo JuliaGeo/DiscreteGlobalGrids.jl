@@ -96,6 +96,12 @@ const UNION_BOUND = Dict("IGeo7System" => 0.02, "Authalic(IGeo7System)" => 0.03,
 const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
     "H3System" => 0.02, "A5System" => 0.18)
 
+# Measured sphere fractions for the annulus tiles at the bottom of this file,
+# where that testset says what they are measures of: the whole set, and its
+# largest single member, in units of the tile's own area.
+const EXCESS_BOUND = 8.0        # measured 6.65
+const MEMBER_BOUND = 5.0        # measured 3.90
+
 @testset "the budget sweep covers every registered system" begin
     sweepcovers(SWEEP)
 end
@@ -492,38 +498,67 @@ end
 # with a single cell 834x (IGeo7 Alps), 3991x (IGeo7 lon -120 lat 30), 389x
 # (H3) and 999x (A5 Alps, ONE level-1 cell) the size of the tile it covered.
 #
-# Two sphere-fraction bounds, in units of the tile's own area. Measured worsts
-# over the four rows and both budgets: 6.65 for the set and 3.90 for its
-# largest member, both on the A5 row, where the four Hilbert children do not
-# even stay inside their parent. The slack is that per-system spread; two
-# orders of magnitude still separate these bounds from the numbers above.
+# `EXCESS_BOUND` and `MEMBER_BOUND`, at the top of this file with the other
+# measured bounds, are sphere fractions in units of the tile's own area — or of
+# one cell of the cap, on the one row whose cap is coarser than the tile.
+# Measured worsts over the four uncapped rows and both budgets: 6.65 for the set
+# and 3.90 for its largest member, both on the A5 row, where the four Hilbert
+# children do not even stay inside their parent. The slack is that per-system
+# spread; two orders of magnitude still separate these bounds from the numbers
+# above.
+#
+# Both are order-of-magnitude figures rather than areas: `setsphere` charges each
+# member `1/ncells(levelgrid(...))`, which is the MEAN cell area of its level. On
+# IGeo7 and H3 the twelve pentagons are smaller than the hexagons around them, so
+# a member's true footprint can sit either side of what it is charged here.
 # ---------------------------------------------------------------------------
-
-const EXCESS_BOUND = 8.0        # measured 6.65
-const MEMBER_BOUND = 5.0        # measured 3.90
 
 tilearea(x0, y0) = deg2rad(1) * (sind(y0 + 1) - sind(y0)) / (4pi)
 setsphere(sys, set) =
     sum(1.0 / DGG.ncells(DGG.levelgrid(sys, DGG.level(c))) for c in set; init=0.0)
 
-@testset "a tile in the annulus never keeps the giant: $(syslabel(sys))" for
-        (sys, x0, y0) in ((DGG.IGeo7System(), 10.0, 46.0),
-                          (DGG.IGeo7System(), -120.0, 30.0),
-                          (DGG.H3System(), 0.0, -30.0),
-                          (DGG.A5System(), 10.0, 46.0))
+# Three rows share a system and two share a tile, so a row is named by all three
+# of the things that vary.
+annuluslabel(sys, x0, y0, cap) = "$(syslabel(sys)) at ($x0, $y0), " *
+                                 (cap === nothing ? "uncapped" : "maxlevel $cap")
+
+@testset "a tile in the annulus never keeps the giant: $(annuluslabel(sys, x0, y0, cap))" for
+        (sys, x0, y0, cap) in ((DGG.IGeo7System(), 10.0, 46.0, nothing),
+                               (DGG.IGeo7System(), -120.0, 30.0, nothing),
+                               (DGG.H3System(), 0.0, -30.0, nothing),
+                               (DGG.A5System(), 10.0, 46.0, nothing),
+                               # The last row is the maxlevel STALL GUARD. The
+                               # Alps descent's shallowest find is a single
+                               # level-3 cell, so a cap of 3 admits it as
+                               # crossing and leaves it in the queue for the
+                               # next pass — a cell the pass cannot refine
+                               # because its children lie past the cap. Remove
+                               # the guard and this row throws a `BoundsError`
+                               # off the end of `grids`, as does every cap from
+                               # 3 down to the deepest level; caps 1 and 2 stop
+                               # the descent before it finds anything and do
+                               # not reach the guard at all.
+                               (DGG.IGeo7System(), 10.0, 46.0, 3))
     tile = Extents.Extent(X=(x0, x0 + 1), Y=(y0, y0 + 1))
     ta = tilearea(x0, y0)
+    # A cap coarser than the tile takes the tile's place as the yardstick: one
+    # cell of the cap level is then the smallest thing the answer may say, and
+    # asking for less would be asking the traversal to break its own bound.
+    unit = cap === nothing ? ta : max(ta, 1.0 / DGG.ncells(DGG.levelgrid(sys, cap)))
     for b in (10, 200)
-        set = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b)
+        set = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b, maxlevel=cap)
         @test length(set) <= b
         # Dropping a cell whose subtree owns none of the target is one of the
         # traversal's answers; dropping the whole covering is not.
         @test !isempty(set)
-        @test setsphere(sys, set) <= EXCESS_BOUND * ta
+        @test allunique(collect(set))
+        @test isempty(emitted_ancestors(sys, set))
+        @test set.reference_level == maximum(DGG.level, collect(set))
+        @test setsphere(sys, set) <= EXCESS_BOUND * unit
         # no single member dwarfs the target
         @test maximum(c -> 1.0 / DGG.ncells(DGG.levelgrid(sys, DGG.level(c))),
-                      collect(set)) <= MEMBER_BOUND * ta
-        again = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b)
+                      collect(set)) <= MEMBER_BOUND * unit
+        again = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b, maxlevel=cap)
         @test collect(set) == collect(again)
     end
 end

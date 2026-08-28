@@ -10,6 +10,7 @@ const EN = DGG.Engine
 import GeoInterface as GI
 import GeometryOps as GO
 import DimensionalData as DD
+import Extents
 
 include(joinpath(@__DIR__, "..", "..", "helpers.jl"))
 using .DGGTestHelpers: syslabel, isquadface, sweepcovers
@@ -480,6 +481,50 @@ end
             end
             @test hit || error("part $k of $(syslabel(sys)) met no emitted cell")
         end
+    end
+end
+
+# ---------------------------------------------------------------------------
+# Non-congruent overhang: a small target sitting in the annulus a cell's own
+# children do not retile must not leave that cell in the covering. Fixtures are
+# 1x1-degree DEM tiles from the 2026-08-28 diagnosis, each measured to trigger
+# the pathology on the code this testset was written against, which answered
+# with a single cell 834x (IGeo7 Alps), 3991x (IGeo7 lon -120 lat 30), 389x
+# (H3) and 999x (A5 Alps, ONE level-1 cell) the size of the tile it covered.
+#
+# Two sphere-fraction bounds, in units of the tile's own area. Measured worsts
+# over the four rows and both budgets: 6.65 for the set and 3.90 for its
+# largest member, both on the A5 row, where the four Hilbert children do not
+# even stay inside their parent. The slack is that per-system spread; two
+# orders of magnitude still separate these bounds from the numbers above.
+# ---------------------------------------------------------------------------
+
+const EXCESS_BOUND = 8.0        # measured 6.65
+const MEMBER_BOUND = 5.0        # measured 3.90
+
+tilearea(x0, y0) = deg2rad(1) * (sind(y0 + 1) - sind(y0)) / (4pi)
+setsphere(sys, set) =
+    sum(1.0 / DGG.ncells(DGG.levelgrid(sys, DGG.level(c))) for c in set; init=0.0)
+
+@testset "a tile in the annulus never keeps the giant: $(syslabel(sys))" for
+        (sys, x0, y0) in ((DGG.IGeo7System(), 10.0, 46.0),
+                          (DGG.IGeo7System(), -120.0, 30.0),
+                          (DGG.H3System(), 0.0, -30.0),
+                          (DGG.A5System(), 10.0, 46.0))
+    tile = Extents.Extent(X=(x0, x0 + 1), Y=(y0, y0 + 1))
+    ta = tilearea(x0, y0)
+    for b in (10, 200)
+        set = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b)
+        @test length(set) <= b
+        # Dropping a cell whose subtree owns none of the target is one of the
+        # traversal's answers; dropping the whole covering is not.
+        @test !isempty(set)
+        @test setsphere(sys, set) <= EXCESS_BOUND * ta
+        # no single member dwarfs the target
+        @test maximum(c -> 1.0 / DGG.ncells(DGG.levelgrid(sys, DGG.level(c))),
+                      collect(set)) <= MEMBER_BOUND * ta
+        again = DGG.query(sys, DGG.MultiOrderCoverage(tile); maxcells=b)
+        @test collect(set) == collect(again)
     end
 end
 

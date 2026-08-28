@@ -335,16 +335,47 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
         sort!(current; by=c -> (level(c), _budget_key(grids[level(c)-top+1], c)))
         next = ID[]
         for c in current
+            # An overhang descent can leave a cell already at `maxlevel` in the
+            # queue; it has no children to reach for and must stall.
+            if level(c) >= maxlevel
+                push!(stalled, c)
+                continue
+            end
             empty!(kids_in)
             empty!(kids_out)
             for child in children(sys, c)
                 _budget_admit!(kids_in, kids_out, sys, target, child, grids, top, maxlevel)
             end
             k = length(kids_in) + length(kids_out)
-            # `k == 0` is a cell that meets the target and has no child that
-            # does, which non-congruent refinement allows. Replacing it by
-            # nothing would shrink the covering, so it is not a replacement.
-            if k == 0 || total + k - 1 > maxcells
+            if k == 0
+                # No child meets: the target sits in this cell's overhang
+                # annulus (non-congruent refinement). Its own subtree still
+                # shelters the members that cover it — find them the way
+                # level mode would, and replace the cell by those.
+                #
+                # Two ways that fails, and both stall the cell whole, exactly
+                # like any other refused replacement: the find does not fit
+                # the budget, or the subtree shelters nothing at all. The
+                # second is not the same as "the cell covers nothing" — the
+                # members covering the target can sit under a SIBLING this
+                # traversal already passed over, because refinement follows
+                # cells that meet where `level` mode follows `node_extent`.
+                # Dropping the cell on that evidence empties coverings.
+                empty!(kids_in)
+                empty!(kids_out)
+                _overhang_descend!(kids_in, kids_out, sys, target, c, grids,
+                    top, maxlevel)
+                found = length(kids_in) + length(kids_out)
+                if found == 0 || total + found - 1 > maxcells
+                    push!(stalled, c)
+                    continue
+                end
+                append!(contained, kids_in)
+                append!(next, kids_out)
+                total += found - 1
+                continue
+            end
+            if total + k - 1 > maxcells
                 push!(stalled, c)
                 continue
             end
@@ -365,25 +396,58 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
     return _sorted_cell_set(sys, cells, flags, reference)
 end
 
-# Classify one candidate cell, or reject it. Both prunes and both predicates are
-# the ones `_coverage_visit!` uses, in the same order and for the same reasons —
-# including the `maxlevel` arm, where `Within` is not asked because no decision
-# depends on the answer and the call is the expensive one. `iscontained`
-# documents what that leaves unproven.
-function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
-        maxlevel::Int)
+# The cheap half of admission: can this cell belong to the covering at all?
+# Both prunes and the cheap exact predicate, in `_coverage_visit!`'s order.
+function _budget_meets(sys, target, c, grids, top::Int)
     extent = node_extent(sys, c)
     Extents.intersects(target.cap, extent) || return false
     _subtree_outside(target, extent) && return false
+    return _matches(DE9IM.Intersects(nothing), target, grids[level(c)-top+1], c)
+end
+
+# Classify one candidate cell, or reject it: `_budget_meets`, then the `Within`
+# question. Both prunes and both predicates are the ones `_coverage_visit!`
+# uses, in the same order and for the same reasons — including the `maxlevel`
+# arm, where `Within` is not asked because no decision depends on the answer and
+# the call is the expensive one. `iscontained` documents what that leaves
+# unproven.
+function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
+        maxlevel::Int)
+    _budget_meets(sys, target, c, grids, top) || return false
     lc = level(c)
     grid = grids[lc-top+1]
-    _matches(DE9IM.Intersects(nothing), target, grid, c) || return false
     if lc < maxlevel && _matches(DE9IM.Within(nothing), target, grid, c)
         push!(contained, c)
     else
         push!(crossing, c)
     end
     return true
+end
+
+# A crossing cell none of whose children meet can still shelter members: on a
+# non-congruent refinement its footprint is retiled by the children of its
+# NEIGHBORS, and its own deep descendants overhang elsewhere. The target sits
+# in that annulus. Level mode reaches such members by descending on
+# `node_extent`; this walk does the same, from one cell, collecting the
+# descendants that meet. Cells that fail `Intersects` cover none of the
+# target, so the walk past them loses nothing, and it never descends past a
+# member it admits.
+function _overhang_descend!(found_in, found_out, sys, target, c, grids,
+        top::Int, maxlevel::Int)
+    frontier = [c]
+    while !isempty(frontier)
+        p = pop!(frontier)
+        level(p) >= maxlevel && continue
+        for child in children(sys, p)
+            _budget_admit!(found_in, found_out, sys, target, child, grids,
+                top, maxlevel) && continue
+            extent = node_extent(sys, child)
+            Extents.intersects(target.cap, extent) || continue
+            _subtree_outside(target, extent) && continue
+            push!(frontier, child)
+        end
+    end
+    return nothing
 end
 
 # The tie-break inside one level. `globalindex` is the level's own order, which

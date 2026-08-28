@@ -244,9 +244,7 @@ end
     s = UnimplementedSystem()
     g = UnimplementedGrid()
 
-    # Documented defaults, live. `has_congruent_refinement` defaulting to
-    # `false` is the safe direction: the coverage traversals pay for the descent
-    # through cells that miss unless a system claims its children tile it.
+    # Documented defaults, live.
     @test has_sorted_subtrees(s) === false
     @test has_congruent_refinement(s) === false
     @test DGG.cap_inflation(s) === 1.2

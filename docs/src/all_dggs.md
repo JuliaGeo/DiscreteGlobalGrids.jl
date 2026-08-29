@@ -72,6 +72,7 @@ for sys in DGG.systems()
             " levels ", DGG.levels(sys),
             ", ", lpad(DGG.ncells(grid), 6), " cells at level 3",
             ", sorted subtrees: ", DGG.has_sorted_subtrees(sys),
+            ", congruent refinement: ", DGG.has_congruent_refinement(sys),
             ", id: ", nameof(DGG.cellindextype(sys)))
 end
 ```

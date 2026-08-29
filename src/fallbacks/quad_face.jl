@@ -73,6 +73,10 @@ end
 cellindextype(::AbstractQuadFaceGridSystem) = LevelIndex
 has_sorted_subtrees(::AbstractQuadFaceGridSystem) = true
 
+# Four children on the parent's own lattice block: they tile it, and
+# `descendant_range` says the same thing about the ids.
+has_congruent_refinement(::AbstractQuadFaceGridSystem) = true
+
 # The family contract obliges every subtype to supply `cellat` on its own
 # level grid, so the declaration belongs to the family rather than to each.
 has_direct_location(::AbstractQuadFaceGridSystem) = true

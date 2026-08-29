@@ -168,6 +168,7 @@ end
     @test maxlevel(SYS) == maxlevel(BASE)
     @test collect(rootcells(SYS)) == collect(rootcells(BASE))
     @test has_sorted_subtrees(SYS) == has_sorted_subtrees(BASE)
+    @test has_congruent_refinement(SYS) == has_congruent_refinement(BASE)
     @test DGG.cap_inflation(SYS) == DGG.cap_inflation(BASE)
     @test maxneighbors(SYS) == maxneighbors(BASE)
     @test maxneighbors(SYS, Edge()) == maxneighbors(BASE, Edge())

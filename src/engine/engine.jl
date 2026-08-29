@@ -27,7 +27,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     cellindextype, levels, maxlevel, levelgrid, rootcells, children,
     node_extent, cap_inflation, maxneighbors, maxring, winding,
     static_capacity, STATIC_RING_CAP, STATIC_RING_BYTES,
-    has_sorted_subtrees, has_direct_location,
+    has_sorted_subtrees, has_congruent_refinement, has_direct_location,
     ancestor, descendants, descendant_range,
     subtree,
     border_engine, interior_engine, halo_engine,
@@ -77,6 +77,8 @@ include("extent_memo.jl")
 include("tiled_raster.jl")
 include("query.jl")
 include("multiorder.jl")
+include("multiorder_budget.jl")
+include("multiorder_set.jl")
 include("cell_vector.jl")
 # The stencil layer reads every collection above it — the subset grid, the
 # compressed vector, the multi-order set — and the lazy border walkers besides.

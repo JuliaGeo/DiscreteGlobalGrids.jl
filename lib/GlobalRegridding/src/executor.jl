@@ -90,6 +90,10 @@ Accumulate one source chunk into weighted sums `num` and valid coverage `cover`.
 valid and uses `ref` when supplied; otherwise `valid` is a same-length mask or
 the source itself. `missingval` adds a nodata sentinel. This function allocates
 nothing.
+
+Under a mask, coverage comes from the block's own coverage weights where it
+declares them and from its value weights otherwise ([`WeightBlock`](@ref)): a
+block whose values are signed cannot measure coverage with them.
 """
 function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64},
     block::WeightBlock, src::AbstractVector,
@@ -116,7 +120,13 @@ function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64
         Base.require_one_based_indexing(valid)
         length(valid) == length(src) || throw(DimensionMismatch(
             "validity mask has $(length(valid)) entries, source has $(length(src))"))
-        _accumulate!(num, cover, W, src, valid, missingval)
+        C = block.coverage
+        if C === nothing
+            _accumulate!(num, cover, W, src, valid, missingval)
+        else
+            _accumulate!(num, W, src, missingval)
+            _accumulatecoverage!(cover, C, valid, missingval)
+        end
     end
     return num
 end
@@ -231,6 +241,52 @@ function _accumulate!(num::AbstractVector{Float64}, cover::AbstractVector{Float6
     return num
 end
 
+# Accumulate coverage alone, from the block's separate coverage operator.
+function _accumulatecoverage!(cover::AbstractVector{Float64}, C::SparseMatrixCSC,
+    valid::AbstractVector, missingval = nothing)
+    rows = SparseArrays.rowvals(C)
+    vals = SparseArrays.nonzeros(C)
+    cols = SparseArrays.getcolptr(C)
+    if _walknonzeros(C)
+        p = 1
+        nz = SparseArrays.nnz(C)
+        @inbounds while p <= nz
+            k = _columnof(cols, p)
+            p2 = cols[k+1] - 1
+            m = _validity(valid[k], missingval)
+            if !iszero(m)
+                for q in p:p2
+                    cover[rows[q]] += vals[q] * m
+                end
+            end
+            p = p2 + 1
+        end
+        return cover
+    end
+    @inbounds for k in axes(C, 2)
+        p1, p2 = cols[k], cols[k+1] - 1
+        p1 > p2 && continue
+        m = _validity(valid[k], missingval)
+        iszero(m) && continue
+        for p in p1:p2
+            cover[rows[p]] += vals[p] * m
+        end
+    end
+    return cover
+end
+
+function _accumulatecoverage!(cover::AbstractVector{Float64}, C::AbstractMatrix,
+    valid::AbstractVector, missingval = nothing)
+    @inbounds for k in axes(C, 2)
+        m = _validity(valid[k], missingval)
+        iszero(m) && continue
+        for j in axes(C, 1)
+            cover[j] += C[j, k] * m
+        end
+    end
+    return cover
+end
+
 # Finalization
 
 """
@@ -239,8 +295,9 @@ end
 Finalize one destination chunk after all source blocks have accumulated.
 
 `num` is the weighted sum with invalid sources contributing zero, `cover` the
-weight of the sources that were valid, and `total` the reference weight the
-applied blocks accumulated ([`addreference!`](@ref)) — the denominator the
+weight of the sources that were valid — the applied blocks' coverage weights, or
+their value weights where they report none — and `total` the reference weight
+the applied blocks accumulated ([`addreference!`](@ref)) — the denominator the
 method reported, or the row sums when it reported none.
 
   - [`Extensive`](@ref): `num`.

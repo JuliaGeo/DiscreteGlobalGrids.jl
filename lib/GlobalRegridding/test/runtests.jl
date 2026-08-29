@@ -14,6 +14,7 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
     @testset "qualified space extension contract" begin
         hooks = (
             :subtree, :expensivecellgeometry,
+            :cellneighbors, :celldiameter,
             :chunkextents, :chunkextent, :chunkindex, :candidatechunks!,
             :chunkranges,
             :chartaxes, :chartcoords, :chartlocalindex, :chartperiod, :chartspacing,
@@ -106,6 +107,9 @@ struct UnimplementedMethod <: AbstractRegriddingMethod end
     include("test_rastergrid.jl")
     include("test_proj.jl")
     include("test_conservative.jl")
+    include("test_moments.jl")
+    include("test_gradient.jl")
+    include("test_second_order.jl")
     include("test_interpolation.jl")
     include("test_barycentric.jl")
     include("test_executor.jl")

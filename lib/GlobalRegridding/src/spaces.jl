@@ -74,6 +74,47 @@ source leaf that overlaps it.
 expensivecellgeometry(::RegridSpace) = true
 
 # --------------------------------------------------------------------------
+# Cell adjacency
+# --------------------------------------------------------------------------
+
+"""
+    cellneighbors(space::RegridSpace, i::Int) -> AbstractVector{Int}
+
+The local indices of the cells adjacent to cell `i`, in no particular order,
+without `i` itself.
+
+  - Adjacent means sharing an edge or a vertex with `i`. A space with a lattice
+    or a grid topology answers from that topology, where edge neighbours are
+    enough; the generic fallback has no topology to read and answers every cell
+    whose polygon shares a vertex with `i`'s, so it returns the diagonals too.
+  - Only cells of the collection are returned: a partial space simply has fewer
+    neighbours at its rim.
+  - The result may alias storage the space owns, and is valid until the next
+    call.
+
+Gradient-recovering methods use this. The least-squares fit they build depends
+on neither the order nor the count of the answer, so a space may return the 4,
+6, or 8 neighbours its own topology has.
+"""
+function cellneighbors end
+
+"""
+    celldiameter(space::RegridSpace) -> Float64
+
+An upper bound, in radians, on the angular diameter of every cell of `space` —
+the largest angular distance between two points of one cell.
+
+A bound, not a measurement: overestimating it costs discovery work and nothing
+else. A method whose stencil reaches one cell past its source cell — a cell and
+its [`cellneighbors`](@ref) — declares this as its [`supportradius`](@ref).
+
+The generic fallback scans the leaf caps of [`celltree`](@ref) and answers twice
+the widest of them, which is `O(ncells(space))`. A structured space should
+answer from its resolution instead.
+"""
+function celldiameter end
+
+# --------------------------------------------------------------------------
 # Chunk ownership and spatial discovery
 # --------------------------------------------------------------------------
 

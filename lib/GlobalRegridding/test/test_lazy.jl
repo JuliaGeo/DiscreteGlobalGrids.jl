@@ -9,6 +9,7 @@
 
 import DiskArrays
 import DimensionalData as DD
+import SparseArrays
 
 # The shared relation oracles. `test_chunkgraph.jl` runs first and defines the
 # module; this file reuses it rather than re-spelling either definition, the
@@ -789,6 +790,28 @@ end
         @test tback.sourcechunks == [1, 2]
         @test tback.blocks[1].reference === tback.blocks[1].denom
         @test tback.blocks[2].reference == point.reference
+        @test dback.coverage === nothing
+        @test pback.coverage === nothing
+        @test tback.blocks[1].coverage === nothing
+
+        # A block whose signed values keep coverage of their own carries both
+        # matrices through the format, block file and tile file alike.
+        signed = WeightBlock(
+            SparseArrays.sparse([1, 1, 2], [1, 2, 2], [1.2, -0.2, 1.0], 2, 2),
+            [1.0, 1.0],
+            SparseArrays.sparse([1, 1, 2], [1, 2, 2], [0.8, 0.2, 1.0], 2, 2))
+        sback = GR.readblockfile(
+            GR.writeblockfile(joinpath(dir, "signed.blk"), signed))
+        @test sback.weights == signed.weights
+        @test sback.denom == signed.denom
+        @test sback.coverage == signed.coverage
+        @test sback.reference === sback.denom
+        @test GR._blockbytes(sback) == GR._blockbytes(signed)
+
+        cback = GR.readtilefile(GR.writetilefile(joinpath(dir, "signed.tile"),
+            GR.TileWeights([1, 2], WeightBlock[signed, point])))
+        @test cback.blocks[1].coverage == signed.coverage
+        @test cback.blocks[2].coverage === nothing
     end
 
     @testset "missingval on the lazy path" begin

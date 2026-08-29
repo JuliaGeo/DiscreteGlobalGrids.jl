@@ -369,12 +369,19 @@ ConservativeRegridding.work_items(
     (row == 0 || col == 0) && return nothing
     area = op.inner(_memocell(op.srcmemo, src_tree, i1),
         _destinationcell(op.dstcells, dst_tree, i2, row))
-    area > 0 || return nothing
+    _covers(area) || return nothing
     push!(rows, row)
     push!(cols, col)
     push!(vals, area)
     return nothing
 end
+
+# Whether one measured overlap is worth an entry. The inner operator decides
+# what it measures — an area, or an area with its first moment — and the
+# assembled value type follows it.
+@inline _covers(area::Real) = area > 0
+ConservativeRegridding.output_eltype(op::BlockAreaOperator) = _outputeltype(op.inner)
+_outputeltype(inner) = ConservativeRegridding.output_eltype(inner)
 
 @inline _destinationcell(dstcells, dst_tree, i::Int, ::Int) =
     _memocell(dstcells, dst_tree, i)

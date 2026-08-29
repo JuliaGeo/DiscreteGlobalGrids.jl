@@ -48,6 +48,10 @@ using DiscreteGlobalGrids
     # Acceptance: the tiled-DEM, south-pole, streaming-and-spill case, on the
     # face the file above unit-tests.
     include("systems/crosssystem/regrid_acceptance.jl")
+    # The second-order conservative method on the same face: the two adjacency
+    # hooks it recovers gradients from, and its conservation and accuracy on
+    # real cell geometry.
+    include("systems/crosssystem/regrid_second_order.jl")
     include("io/runtests.jl")
     include("plotting/runtests.jl")
     # The production driver's scheduling policy. It is a script rather than a

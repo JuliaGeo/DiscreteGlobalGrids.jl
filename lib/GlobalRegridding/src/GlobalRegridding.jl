@@ -51,6 +51,9 @@ include("rastergrid.jl")
 include("methods.jl")
 include("conservative.jl")
 include("intersection_area.jl")
+include("moments.jl")
+include("gradient.jl")
+include("conservative_second_order.jl")
 include("interpolation.jl")
 include("barycentric.jl")
 include("discovery.jl")
@@ -78,7 +81,7 @@ export RasterGrid
 
 # Methods
 export AbstractRegriddingMethod
-export Conservative, NearestCell, BarycentricPoint
+export Conservative, ConservativeSecondOrder, NearestCell, BarycentricPoint
 export DirectNearest
 export buildweights!, supportradius
 
@@ -114,6 +117,9 @@ public outputsampling, destinationdims, dimsource
 # grouped by responsibility in spaces.jl; they stay unexported to avoid generic
 # names in user namespaces.
 public subtree, expensivecellgeometry
+# Cell adjacency and how far one cell reaches past its neighbours, for methods
+# whose stencil is a cell and the cells around it.
+public cellneighbors, celldiameter
 public chunkextents, chunkextent, chunkindex, candidatechunks!
 # Making a source space point-samplable. `hasdualcells` declares it,
 # `samplerstate` prepares whatever the lookup reads, and `dualcellat` answers

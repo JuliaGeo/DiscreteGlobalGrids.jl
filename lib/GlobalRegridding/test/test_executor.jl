@@ -294,6 +294,136 @@ end
         @test GR._blockbytes(point) == wbytes + vecbytes + 64
     end
 
+    @testset "signed weights, coverage of their own" begin
+        # A second-order stencil: non-negative overlap areas plus a zero-row-sum
+        # gradient correction. The values are signed; the coverage is the areas.
+        W = SparseArrays.sparse([1, 1, 2, 2], [1, 2, 2, 3],
+            [1.2, -0.2, 0.8, 0.2], 2, 3)
+        C = SparseArrays.sparse([1, 1, 2, 2], [1, 2, 2, 3],
+            [0.8, 0.2, 0.5, 0.5], 2, 3)
+        denom = [1.0, 1.0]
+        block = WeightBlock(W, denom, C)
+        @test block.coverage === C
+        @test block.reference === block.denom
+        @test contains(repr(block), "denom, coverage")
+
+        # Clean sources take the reference, exactly as an unsigned block does.
+        src = [4.0, 10.0, 20.0]
+        num = zeros(2)
+        cover = zeros(2)
+        GR.applyblock!(num, cover, block, src)
+        @test num ≈ Matrix(W) * src
+        @test cover == denom
+
+        # A hole at source 2 leaves each destination covered by its remaining
+        # area — never by the signed weights, which here would report 1.2 and
+        # 0.2 and misnormalize both destinations.
+        holed = [4.0, NaN, 20.0]
+        fill!(num, 0.0)
+        fill!(cover, 0.0)
+        GR.applyblock!(num, cover, block, holed, holed)
+        @test num ≈ [1.2 * 4.0, 0.2 * 20.0]
+        @test cover ≈ [0.8, 0.5]
+        @test cover ≉ [1.2, 0.2]
+
+        # `Weighted` divides by that coverage and blanks against the reference:
+        # destination 2 keeps half its area and falls below a 0.6 threshold.
+        out = Vector{Union{Missing,Float64}}(undef, 2)
+        GR.finalize!(out, num, cover, block.reference, Weighted(0.5))
+        @test out ≈ [1.2 * 4.0 / 0.8, 0.2 * 20.0 / 0.5]
+        GR.finalize!(out, num, cover, block.reference, Weighted(0.6))
+        @test out[1] ≈ 1.2 * 4.0 / 0.8
+        @test ismissing(out[2])
+        # `Extensive` reports the undivided sums, coverage or none.
+        GR.finalize!(out, num, cover, block.reference, Extensive())
+        @test out ≈ num
+
+        # An all-valid mask reaches the coverage the clean path took.
+        fill!(num, 0.0)
+        fill!(cover, 0.0)
+        GR.applyblock!(num, cover, block, src, src)
+        @test num ≈ Matrix(W) * src
+        @test cover ≈ denom
+        # And accumulating coverage separately allocates nothing either.
+        @test (@allocated GR.applyblock!(num, cover, block, src, src)) <= 128
+
+        # Dense weights and dense coverage answer the same, and both sparse
+        # column walks agree with the dense loop over an empty-column stretch.
+        dense = WeightBlock(Matrix(W), denom, Matrix(C))
+        n2, c2 = zeros(2), zeros(2)
+        GR.applyblock!(n2, c2, dense, holed, holed)
+        @test n2 ≈ [1.2 * 4.0, 0.2 * 20.0]
+        @test c2 ≈ [0.8, 0.5]
+        for ncols in (20, 20_000)
+            rows, cs = [1, 1, 2], [4, 9, 12]
+            Wn = SparseArrays.sparse(rows, cs, [1.5, -0.5, 2.0], 2, ncols)
+            Cn = SparseArrays.sparse(rows, cs, [0.7, 0.3, 2.0], 2, ncols)
+            @test GR._walknonzeros(Cn) == (ncols == 20_000)
+            wide = WeightBlock(Wn, [1.0, 2.0], Cn)
+            x = collect(1.0:ncols)
+            x[9] = NaN
+            n3, c3 = zeros(2), zeros(2)
+            GR.applyblock!(n3, c3, wide, x, x)
+            @test n3 ≈ Matrix(Wn) * map(v -> isnan(v) ? 0.0 : v, x)
+            @test c3 ≈ Matrix(Cn) * map(v -> isnan(v) ? 0.0 : 1.0, x)
+        end
+
+        # Coverage is indexed like the values it stands in for.
+        @test_throws DimensionMismatch WeightBlock(W, denom,
+            SparseArrays.sparse(Int[], Int[], Float64[], 2, 4))
+    end
+
+    @testset "coverage through the COO" begin
+        coo = WeightCOO(2)
+        @test !GR.hascoverage(coo)
+        for (j, k, w, a) in ((1, 1, 1.2, 0.8), (1, 2, -0.2, 0.2),
+            (2, 2, 0.8, 0.5), (2, 3, 0.2, 0.5))
+            addweight!(coo, j, k, w)
+            GR.addcoverage!(coo, j, k, a)
+        end
+        # Duplicate entries are summed on both lists alike.
+        addweight!(coo, 2, 3, 0.1)
+        GR.addcoverage!(coo, 2, 3, 0.1)
+        adddenom!(coo, 1, 1.0)
+        adddenom!(coo, 2, 1.0)
+        @test GR.hascoverage(coo)
+        @test contains(repr(coo), "denom, coverage")
+
+        block = WeightBlock(coo, 2, 3)
+        @test Matrix(block.weights) ≈ [1.2 -0.2 0.0; 0.0 0.8 0.3]
+        @test Matrix(block.coverage) ≈ [0.8 0.2 0.0; 0.0 0.5 0.6]
+        @test block.reference === block.denom
+
+        # A builder that declares coverage but reports none covers nothing: the
+        # block reads a zero operator rather than falling back to its weights.
+        empty = WeightCOO(2)
+        addweight!(empty, 1, 1, 1.2)
+        GR.markcovered!(empty)
+        @test GR.hascoverage(empty)
+        zeroed = WeightBlock(empty, 2, 3)
+        @test SparseArrays.nnz(zeroed.coverage) == 0
+        num, cover = zeros(2), zeros(2)
+        GR.applyblock!(num, cover, zeroed, ones(3), ones(3))
+        @test num ≈ [1.2, 0.0]
+        @test cover == zeros(2)
+
+        # A COO that reports no coverage builds the block it always did, and its
+        # weights go on serving as their own coverage.
+        plain = WeightCOO(2)
+        addweight!(plain, 1, 1, 1.0)
+        addweight!(plain, 2, 3, 3.0)
+        @test !GR.hascoverage(plain)
+        bare = WeightBlock(plain, 2, 3)
+        @test bare.coverage === nothing
+        @test bare.denom === nothing
+        @test bare.reference == [1.0, 3.0]
+        @test !contains(repr(bare), "coverage")
+        n4, c4 = zeros(2), zeros(2)
+        GR.applyblock!(n4, c4, bare, [2.0, 0.0, NaN], [2.0, 0.0, NaN])
+        @test n4 ≈ [2.0, 0.0]
+        @test c4 ≈ [1.0, 0.0]
+    end
+
     @testset "repeated eager application allocates no reference" begin
         wide = ToyLonLatSpace(40, 20)
         nwide = Int(ncells(wide))

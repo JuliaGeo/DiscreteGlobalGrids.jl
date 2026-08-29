@@ -23,27 +23,23 @@ system(set::MultiOrderCellSet) = set.system
 """
     iscontained(set::MultiOrderCellSet, i::Integer) -> Bool
 
-Whether the set's `i`th cell was **proven** to lie inside the coverage target.
-`true` means `Within` was asked of it and held. `false` means one of two things,
-told apart by the cell's level:
+Whether the set's `i`th cell was **proven** to lie inside the coverage target:
+`Within` was asked of it and held. `false` means one of two things, told apart
+by the cell's level:
 
   - above the traversal's maximum depth, the cell was asked and the target's
-    boundary crosses it. The flag is exact there, in both directions.
-  - at the maximum depth, the cell was never asked. The traversal ran out of
-    depth and emitted it to cover; it may or may not fit.
+    boundary crosses it — exact, in both directions.
+  - at the maximum depth, the cell was never asked: the traversal ran out of
+    depth and emitted it to cover. It may or may not fit.
 
-In `level` mode the maximum depth *is* the reference level, so the blind spot
-sits exactly there. In `maxcells` mode they part: the reference level is the
-deepest level the budget reached, the maximum depth is the `maxlevel` cap, and a
-budget that stopped short of the cap — the ordinary case — carries an exact flag
-on every member.
+In `level` mode the maximum depth *is* the reference level. In `maxcells` mode
+the maximum depth is the `maxlevel` cap, and a budget that stopped short of it
+— the ordinary case — carries an exact flag on every member.
 
-The asymmetry is the contract. `Within` allocates ~48 KB per call against ~600 B
-for `Intersects`, and a deep coverage ends on thousands of reference-level
-cells: labelling them exactly costs hundreds of megabytes and changes no member
-of the set. The direction that matters survives — `true` implies inside — and
-code needing exact containment at the reference level asks `Within` of the few
-cells it cares about.
+The asymmetry is the contract: `Within` allocates ~48 KB per call against
+~600 B for `Intersects`, and labelling thousands of reference-level cells
+exactly changes no member of the set. `true` implies inside; code needing
+exact containment asks `Within` of the few cells it cares about.
 
 `argmin(level, set)` is therefore not "the coarsest cell inside the target":
 every emission can be unproven. [`coarsest_contained`](@ref) reads this flag.
@@ -53,16 +49,12 @@ iscontained(set::MultiOrderCellSet, i::Integer) = set.contained[i]
 """
     coarsest_contained(set::MultiOrderCellSet) -> cell id or `nothing`
 
-The shallowest cell of `set` **proven** inside the coverage target, or `nothing`
-when no cell of it was — see [`iscontained`](@ref) for what "proven" leaves
-out. Maximum-depth cells are never tested, so a set of nothing but those answers
-`nothing` even where some fit; a target smaller than one cell is the clearest
-way there, not the only one.
-
-A budget set answers `nothing` for a second, more ordinary reason: at ten cells
-over a state nothing has been refined far enough to fit inside it, and the
-accessor says so rather than hand back the shallowest crossing cell. Raise the
-budget and the answer appears.
+The shallowest cell of `set` **proven** inside the coverage target, or
+`nothing` when none was — see [`iscontained`](@ref) for what "proven" leaves
+out. Maximum-depth cells are never tested, so a set of nothing but those
+answers `nothing` even where some fit. A budget set answers `nothing` while
+nothing has been refined far enough to fit inside the target; the answer
+appears as the budget grows.
 
 ```julia
 set = query(sys, MultiOrderCoverage(tile); level = 12)
@@ -82,9 +74,8 @@ end
 
 # --- geometry, without a level grid per cell -------------------------------
 
-# A set is not a grid — no indices, and its cells are at different levels —
-# but it does know which level grid each cell belongs to. `levelgrid` is O(1),
-# so nothing here is worth caching.
+# Each cell's geometry lives in `levelgrid(system(set), level(c))`, and
+# `levelgrid` is O(1), so nothing here is worth caching.
 
 """
     cell_boundary(set::MultiOrderCellSet, c) -> Vector{UnitSphericalPoint}

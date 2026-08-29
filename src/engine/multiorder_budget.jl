@@ -7,21 +7,20 @@
 # The covering is {contained cells} ∪ {crossing members}. Contained cells are
 # never refined. Crossing members refine COARSEST FIRST, ties broken by curve
 # order within the level, so the schedule is a function of the inputs alone.
-# The queue is two vectors and a pass counter: each pass sorts both streams on
-# `(level, key)` and advances one level; members refine before phantoms. A
-# cell kept whole is never opened — a member beneath it would be emitted under
-# its own ancestor.
+# Each pass sorts both streams on `(level, key)` and advances one level,
+# members before phantoms. A cell kept whole is never opened, so no member
+# lands under an ancestor.
 #
 # PHANTOMS carry the descent through cells that miss the target but pass both
 # `node_extent` prunes: under non-congruent refinement a cell can meet the
 # target while its parent misses it. Phantoms are free; the meeting cells
-# found beneath them are ENTRANTS and cost one whole slot each. On a congruent
-# system every meeting cell has a meeting parent, so the member stream reaches
-# everything and phantoms stay empty.
+# found beneath them are ENTRANTS and cost one whole slot each. On a
+# congruent system every meeting cell has a meeting parent, and phantoms stay
+# empty.
 #
 # PENDING cells are members none of whose children meet: the target lies in
-# their overhang annulus and the phantom stream reaches the cells covering it.
-# A pended cell leaves the covering but keeps its slot as a CLAIM until
+# their overhang annulus, reached only by the phantom stream. A pended cell
+# leaves the covering but keeps its slot as a CLAIM until
 #   * REDEEMED — at the margin, by an entrant that provably stands in for it
 #     (see `_claim_match`);
 #   * COMPLETED — its neighbourhood searched to the end, every meeting cell
@@ -30,13 +29,10 @@
 #     share, handed back where the evidence stands on its cell.
 # Only non-congruent systems pend.
 #
-# A replacement that does not fit leaves its cell kept whole. An entrant that
-# can pay neither a fresh slot nor a claim is REFUSED and recorded; after a
-# refusal, every branch no unsettled claim keeps alive dies as ABANDONED —
-# territory never revisited, which keeps later refusals local and lets settled
-# claims release soundly. Refused and abandoned cells together bound
-# everything the walk left uncovered: the EVIDENCE the end phase settles
-# claims against.
+# An entrant that can pay neither a fresh slot nor a claim is REFUSED and
+# recorded; every branch no unsettled claim then keeps alive dies as
+# ABANDONED. Refused and abandoned cells together bound everything the walk
+# left uncovered: the EVIDENCE the end phase settles claims against.
 # ---------------------------------------------------------------------------
 
 function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
@@ -71,10 +67,9 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
         _budget_admit!(contained, current, sys, target, c, grids, top, maxlevel) && continue
         congruent || push!(phantoms, c)
     end
-    # The budget's running claim: contained + crossing + stalled + unsettled
-    # pending. A pended cell holds its claim until it is settled — redeemed,
-    # released on completion, or resolved at the end — so the end phase always
-    # has room for what is still uncovered. Phantoms are outside it.
+    # The running claim: contained + crossing + stalled + unsettled pending.
+    # Held claims guarantee the end phase room for what is still uncovered;
+    # phantoms are outside it.
     total = length(contained) + length(current)
     schedule_key(c) = (level(c), _budget_key(grids[level(c)-top+1], c))
     cellcap(c) = cell_cap(grids[level(c)-top+1], c)
@@ -108,13 +103,10 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
             end
             k = length(kids_in) + length(kids_out)
             if k == 0 && !congruent
-                # No child meets: the target lies in this cell's overhang
-                # annulus, and the phantom stream reaches the cells that cover
-                # it. The claim is held only where handing the cell back could
-                # ever be the right answer — commensurate with a piece it
-                # guards; a cell that dwarfs every piece it touches frees its
-                # slot to the stream, and the refused entrants stand in for
-                # its share at the end.
+                # No child meets: the target lies in the overhang annulus,
+                # reached by the phantom stream. The claim is held only where
+                # the hand-back could ever be the right answer — a cell
+                # commensurate with a piece it guards; a giant frees its slot.
                 push!(pending, c)
                 held = _claim_worth_holding(cellcap(c),
                     ncells(grids[level(c)-top+1]), pieces)
@@ -124,11 +116,10 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
                 held || (total -= 1)
                 append!(next_phantoms, kids_miss)
             elseif k == 0 || total + k - 1 > maxcells
-                # Kept whole; the subtree stays closed so no member lands under
-                # a member. Congruent `k == 0` lands here too: children that
-                # tile their parent cannot lose the target between them — the
-                # cell meets it on a boundary sliver — and dropping it would
-                # break the exactness this mode promises where refinement is.
+                # Kept whole; the subtree stays closed. Congruent `k == 0`
+                # lands here too: children that tile their parent cannot lose
+                # the target between them — a boundary sliver — and dropping
+                # the cell would break congruent exactness.
                 push!(stalled, c)
             else
                 append!(contained, kids_in)
@@ -144,10 +135,9 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
         livecaps = [cellcap(pending[i]) for i in live]
         for p in phantoms
             # After a refusal, a branch matters only where a claim's share is
-            # still unproven. Around an EVIDENCED claim it matters only for
-            # what lies beyond that claim's own cell: one refusal there
-            # already justifies the hand-back, which covers the cell whole,
-            # and searching inside it refines nothing the end phase can use.
+            # still unproven — and around an EVIDENCED claim, only beyond that
+            # claim's own cell: one refusal there already justifies the whole
+            # hand-back.
             if entrant_refused
                 ext = node_extent(sys, p)
                 keep = false
@@ -203,12 +193,10 @@ function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
                 append!(next, kids_out)
             end
         end
-        # A claim's share is proven covered by COMPLETION when nothing can
-        # change its covering any more: no live phantom still reaches it, and
-        # no refusal was recorded against it — nor can one be later, since
-        # any branch able to reach it would still be live now. Everything
-        # found there was admitted, so the share is covered; a slot still
-        # held is surplus, released for the stream to spend.
+        # COMPLETION: no live phantom reaches the claim and no refusal was
+        # recorded against it — nor can one be later, since any branch able
+        # to reach it would still be live. Everything found there was
+        # admitted, so the share is covered and a held slot is released.
         if !congruent && !isempty(pending)
             for i in eachindex(pending)
                 covered[i] && continue
@@ -248,10 +236,9 @@ function _budget_reaches(sys, target, c)
     return !_subtree_outside(target, extent)
 end
 
-# Classify one candidate: `Intersects`, then `Within` — the predicates
-# `_coverage_visit!` uses, in the same order; at `maxlevel`, `Within` is skipped
-# (see `iscontained`). Callers run `_budget_reaches` first: a rejected cell is a
-# phantom candidate, and both decisions share that one prune.
+# Classify one candidate: `Intersects`, then `Within` — `_coverage_visit!`'s
+# predicates in its order; at `maxlevel`, `Within` is skipped (see
+# `iscontained`). Callers run `_budget_reaches` first.
 function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
         maxlevel::Int)
     lc = level(c)
@@ -284,12 +271,10 @@ function _target_pieces(target_value, target)
     return [(target.cap, _PieceSlot(target_value, target, nothing))]
 end
 
-# A held claim may come back whole at the end — only ever right for a cell
-# commensurate with a piece it touches; a giant handed back over a speck is
-# the annulus pathology, and its slot serves the stream better. Yardstick:
-# the piece cap's spherical area against the cell's, tuned on the annulus and
-# refusal-isolation laws (a cap already overshoots its piece, so 1 carries
-# the slack a covering cell needs).
+# A hand-back is only ever right for a cell commensurate with a piece it
+# touches; a giant over a speck is the annulus pathology. The yardstick is
+# the piece cap's spherical area against the cell's — a cap already
+# overshoots its piece, so 1 carries the slack a covering cell needs.
 const _CLAIM_PROPORTION = 1.0
 
 _cap_fraction(cap) = (1 - cos(min(Float64(cap.radius), Float64(pi)))) / 2
@@ -305,8 +290,7 @@ end
 
 # Whether one whole piece of the target lies inside the cell — the only
 # containment the engine answers exactly; a piece kind without an exact test
-# certifies nothing. The slot rejects on the first vertex outside the cell's
-# cap and prepares its geometry only when a candidate survives that.
+# certifies nothing. The slot rejects on the first vertex outside the cap.
 _piece_in_cell(piece::GeometryTarget, grid, c, cellcap) =
     _matches(DE9IM.Contains(nothing), piece, grid, c)
 function _piece_in_cell(slot::_PieceSlot, grid, c, cellcap)
@@ -323,11 +307,10 @@ end
 _piece_in_cell(piece, grid, c, cellcap) = false
 
 # The deepest unsettled claim the entrant provably stands in for, or 0: the
-# entrant's CELL must contain every piece the claim's cap touches. A cap test
-# is not enough — a cap swallows more than its cell, and a claim redeemed on
-# a sliver loses the rest of its share. `live` comes deepest first, so the
-# first hit is the smallest cell. Redemption is a transfer, not a purchase:
-# refused while the covering itself is over budget (a seed above `maxcells`).
+# entrant's CELL must contain every piece the claim's cap touches — a cap
+# swallows more than its cell, and a claim redeemed on a sliver loses the
+# rest of its share. `live` comes deepest first. Redemption is a transfer,
+# not a purchase: refused while the covering itself is over budget.
 function _claim_match(grid, child, pieces, live, livecaps, settled, total::Int,
         maxcells::Int)
     total <= maxcells || return 0
@@ -353,21 +336,15 @@ end
 # Hands back what the walk still owes, finest cells first, inside `room`.
 #
 # Everything uncovered lies inside a refused entrant or under a culled
-# branch: those are the evidence. Candidates are the refused cells (each its
-# own evidence) and the pending cells not proven covered, which need evidence
-# ON THEIR CELL — not their cap, which reaches territory the footprint never
-# held: a giant handed back on far-away evidence is the annulus pathology.
+# branch: the EVIDENCE. Candidates are the refused cells (each its own
+# evidence) and the uncovered pending cells, which need evidence ON THEIR
+# CELL — not their cap, which reaches territory the footprint never held.
 #
-# One pass, deepest first: emitting a refused cell settles its evidence, so a
-# coarser pending cell comes back only for evidence nothing finer explained,
-# and of two nested candidates the smaller blocks the coarser.
-#
-# STARVED pieces come before everything: a piece no member stands on has only
-# this pass to be covered at all, and room spent first on refused slivers of
-# a well-covered piece loses the island whole.
-#
-# A covering is never empty: with nothing else kept, the shallowest unproven
-# cell — the one whose footprint holds the most target — is the answer.
+# One pass, deepest first: emitting a refused cell settles its evidence, so
+# a coarser pending cell comes back only for evidence nothing finer
+# explained. STARVED pieces come before everything — a piece no member
+# stands on has only this pass to be covered at all. A covering is never
+# empty: with nothing else kept, the shallowest unproven cell is the answer.
 function _budget_resolve!(stalled, contained, sys, pending, settled, covered,
         grids, top::Int, maxcells::Int, abandoned, refused, pieces)
     unresolved = [pending[i] for i in eachindex(pending) if !covered[i]]
@@ -384,11 +361,9 @@ function _budget_resolve!(stalled, contained, sys, pending, settled, covered,
         # could never be proportionate (see `_claim_worth_holding`).
         cands = [(pending[i], 0) for i in eachindex(pending) if !settled[i]]
         append!(cands, [(refused[j], j) for j in eachindex(refused) if evlive[j]])
-        # A NEGLECTED piece — far fewer members than the dominant one — is a
-        # component the budget passed over, and losing it whole is the
-        # multipart pathology; its candidates come first, coarsest first,
-        # covering the most with the least. Everything else is tightening,
-        # finest first.
+        # A NEGLECTED piece — far fewer members than the dominant one — was
+        # passed over by the budget; its candidates come first, coarsest
+        # first. Everything else is tightening, finest first.
         mcount = zeros(Int, length(pieces))
         for m in members
             for j in eachindex(pieces)
@@ -465,11 +440,9 @@ function _descends_from_any(sys, c, members)
     return any(m -> level(m) < lc && ancestor(sys, c, level(m)) == m, members)
 end
 
-# The tie-break inside one level. `globalindex` is the level's own order, which
-# is curve order on every system here and is a bijection, so no two cells of a
-# level ever tie and the schedule has nothing left to decide. A missing index
-# would silently alias two cells onto one key and break determinism — so it is
-# an error, not a zero.
+# The tie-break inside one level: `globalindex` is a bijection on every
+# system here, so no two cells of a level ever tie. A missing index would
+# alias two cells onto one key and break determinism — an error, not a zero.
 function _budget_key(grid, c)::Int
     pos = globalindex(grid, c)
     pos === nothing && throw(ArgumentError(

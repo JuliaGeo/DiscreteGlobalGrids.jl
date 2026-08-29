@@ -51,36 +51,33 @@ const CALIFORNIA = GI.MultiPolygon([topolygon(p) for p in PARTS])
 const BLOCK = GI.Polygon([GI.LinearRing([(-122.42, 37.77), (-122.40, 37.77),
     (-122.40, 37.79), (-122.42, 37.79), (-122.42, 37.77)])])
 
-# Two polar caps whose union is 66% of the sphere. Every root cell of every
-# system meets it, so its SEED is the whole top level and a small budget cannot
-# refine any of it — the documented over-budget return.
+# Two polar caps whose union is 66% of the sphere: every root cell meets it,
+# so the SEED is the whole top level — the documented over-budget return.
 parallel_ring(lat) = GI.Polygon([GI.LinearRing([(lon, lat) for lon in 0.0:5.0:360.0])])
 const WIDE = GI.MultiPolygon([parallel_ring(20.0), parallel_ring(-20.0)])
 
 # Twenty-one specks, each its own lineage under its own root cell. A small
-# budget strands most of them pending, making the end phase — the one place
-# the covering grows — the easiest place to overrun the budget.
+# budget strands most of them pending, making the end phase the easiest place
+# to overrun the budget.
 speck(x0, y0) = GI.Polygon([GI.LinearRing([(x0, y0), (x0 + 0.05, y0),
     (x0 + 0.05, y0 + 0.05), (x0, y0 + 0.05), (x0, y0)])])
 const SPECKS = GI.MultiPolygon([speck(-150.0 + 30.0 * ((k - 1) % 11),
     -60.0 + 20.0 * ((k - 1) ÷ 11)) for k in 1:21])
 
-# Somewhere no cell of anything meets: a degenerate target is not swept here,
-# but an empty answer has to stay a well-formed set, so one is built below.
+# An empty answer has to stay a well-formed set; one is built directly below.
 
 # ---------------------------------------------------------------------------
 # Systems
 #
-# CONGRUENCE — whether a cell's children exactly tile it — decides which arm two
-# of the laws take, and it is `isquadface`: the quad-face family are aperture-4
-# quadtrees on a chart and four children tile their parent; IGEO7 and H3 are
-# aperture 7 and their seven children are a rotated rosette with the parent's
-# area and not its footprint; A5's four Hilbert children do not even stay
-# inside it.
+# CONGRUENCE — whether a cell's children exactly tile it — decides which arm
+# two of the laws take, and it is `isquadface`: the quad-face family's four
+# children tile their parent; IGEO7 and H3's seven children are a rotated
+# rosette with the parent's area, not its footprint; A5's four Hilbert
+# children do not even stay inside it.
 #
-# The second column is the level the equivalence law sweeps up to. It is
-# per-system because the apertures differ and the set sizes have to stay small
-# enough to run the accuracy mode repeatedly.
+# The second column, the level the equivalence law sweeps to, is per-system:
+# apertures differ and the accuracy mode runs repeatedly, so the set sizes
+# have to stay small.
 # ---------------------------------------------------------------------------
 
 const SWEEP = [
@@ -93,8 +90,7 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 5),
 ]
 
-# The budgets the sampled laws run at, and the wider ladder the counting laws
-# use. 10 and 100 are the owner's own two numbers.
+# The budgets the sampled laws run at, and the wider ladder the counting laws use.
 const BUDGETS = (10, 40, 100)
 const LADDER = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377)
 
@@ -289,9 +285,8 @@ end
         for b in LADDER
             set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=b)
             push!(sizes, length(set))
-            # The seed on this outline is one or two root cells, so the
-            # exception below cannot fire here; the over-budget case has its own
-            # testset with a target that produces it.
+            # The seed here is one or two root cells, so the over-budget
+            # exception cannot fire; that case has its own testset.
             @test length(set) <= max(b, 2)
         end
         @test issorted(sizes)                 # measurement of the schedule
@@ -331,15 +326,12 @@ end
     end
 
     @testset "a maxlevel the refinement reaches restores the blind spot" begin
-        # Cap the descent shallow enough that the budget cannot spend itself,
-        # and the cells stranded at the cap are flagged unproven without being
-        # asked — the accuracy mode's contract, verbatim.
-        #
-        # The cap is `first + 6` and not something shallower because the second
-        # assertion needs cells that ACTUALLY fit inside California. At a cap of
-        # `first + 2` no cell of any of the seven does — level-2 cells are
-        # continent-sized — so the flag being `false` there would be a true
-        # statement rather than a blind one, and would prove nothing.
+        # A cap the budget cannot spend itself against strands cells at the
+        # cap, flagged unproven without being asked — the accuracy mode's
+        # contract, verbatim. `first + 6` because the `fits > 0` assertion
+        # needs cells that ACTUALLY fit inside California: at `first + 2`
+        # every cell is continent-sized, `false` would be a true statement,
+        # and the blind spot would prove nothing.
         cap = first(DGG.levels(sys)) + 6
         set = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND); maxcells=10_000, maxlevel=cap)
         @test set.reference_level == cap
@@ -433,11 +425,9 @@ end
 @testset "a seed bigger than the budget comes back whole: $(syslabel(sys))" for
     (sys, _) in SWEEP
 
-    # Every root cell of every system meets a target covering 66% of the sphere,
-    # so the seed IS the top level and no refinement of it can fit in three
-    # cells. Returning the seed over budget is the documented answer: it is the
-    # coarsest covering this traversal can express, and there is nothing to
-    # refine away.
+    # Every root cell meets a target covering 66% of the sphere, so the seed
+    # IS the top level and cannot fit in three cells. The seed over budget is
+    # the documented answer: there is nothing to refine away.
     set = DGG.query(sys, DGG.MultiOrderCoverage(WIDE); maxcells=3)
     roots = collect(DGG.rootcells(sys))
     @test length(set) > 3
@@ -548,11 +538,9 @@ end
          ("A5 south", DGG.A5System(), -6.0, -58.0, 5.0, 0.05, -59.95),
          ("H3 south", DGG.H3System(), -6.0, -28.0, 6.0, 0.05, -29.95))
 
-    # A blob big enough to spend any of these budgets, and a speck sitting in a
-    # coarse cell's overhang annulus. The speck's covering rides on the end
-    # phase: its crossing cell pends, and a pend whose slot the blob can spend
-    # leaves the whole component uncovered at whatever budget the schedule
-    # happens to starve it.
+    # A blob big enough to spend any of these budgets, and a speck in a coarse
+    # cell's overhang annulus. The speck's covering rides on the end phase: a
+    # pend whose slot the blob can spend loses the whole component.
     blob = topolygon([[(bx, by), (bx + bw, by), (bx + bw, by + bw),
         (bx, by + bw), (bx, by)]])
     target = GI.MultiPolygon([blob, speck(sx, sy)])
@@ -568,14 +556,12 @@ end
 # ---------------------------------------------------------------------------
 # Non-congruent overhang: a small target in the annulus a cell's children do
 # not retile must not leave that cell in the covering. Each 1x1-degree tile
-# fixture sits in such an annulus, so a descent through meeting cells alone
-# strands the giant; two rows place the covering on a lineage only phantoms
-# reach. `EXCESS_BOUND`/`MEMBER_BOUND` (top of file) are in units of the
-# tile's area — or one cap-level cell where the cap is coarser; `setsphere`
-# charges the MEAN cell area of a level, so both are order-of-magnitude
-# bounds. `TILE_UNION_BOUND` gates the DROP: giving up a cell is sound only
-# while other members cover its share, and a hole shows up as a tile point
-# inside no emitted cell.
+# fixture sits in such an annulus; two rows place the covering on a lineage
+# only phantoms reach. `EXCESS_BOUND`/`MEMBER_BOUND` are in units of the
+# tile's area (one cap-level cell where the cap is coarser); `setsphere`
+# charges a level's MEAN cell area, so both are order-of-magnitude bounds.
+# `TILE_UNION_BOUND` gates the DROP: a hole shows up as a tile point inside
+# no emitted cell.
 # ---------------------------------------------------------------------------
 
 tilearea(x0, y0) = deg2rad(1) * (sind(y0 + 1) - sind(y0)) / (4pi)

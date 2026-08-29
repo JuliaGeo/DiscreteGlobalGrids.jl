@@ -156,18 +156,13 @@ crossing cell for level after level and the budget never binds.
 
 # What "cover" means here, and where it is exact
 
-Every point of the target lies inside one of the emitted cells. That is the
-plain reading of "ten cells that cover California", and it is the guarantee this
-mode is built around. The seed is the coarsest cells that meet the target, and
-those tile the sphere between them; refinement then replaces a crossing cell by
-the children that meet the target. Non-congruent refinement gets the same
-descent `level` mode has — through cells that miss the target as well — so a
-cell meeting the target under a parent that misses it is still found, and a
-crossing cell none of whose children meet is dropped in favour of the cells
-that do cover its share. When the budget cuts that descent short, the dropped
-cells' reserved slots pay for what the walk still owes: the cells it found
-and could not afford, or a dropped cell kept whole after all where its share
-was never certified.
+Every point of the target lies inside one of the emitted cells. The seed is
+the coarsest cells meeting the target; refinement replaces a crossing cell by
+its meeting children. Non-congruent refinement descends through missing cells
+too, as `level` mode does, so a crossing cell with no meeting child is dropped
+for the cells that do cover its share — and its reserved slot pays for what the
+walk still owes: cells found and not afforded, or the cell itself kept whole
+where its share was never certified.
 
 It is EXACT, at every budget, on the three systems whose four children tile
 their parent: HEALPix, S2 and ISEA4R. Where children do not tile their parent it
@@ -179,14 +174,11 @@ in no emitted cell: under 2% on IGEO7, 3% on its authalic wrap, 15% on H3 and
 `test/systems/crosssystem/multiorder_budget.jl` asserts, per system, so this
 paragraph cannot quietly stop being true.
 
-The LEAF statement the `level` mode makes — every cell of the reference level
-that meets the target is a member or the descendant of one — is a law here on
-those same three systems only. The `level` mode earns it everywhere by
-descending into cells that miss the target, because a child can overhang its
-parent, and carrying that descent all the way to `level`. A budget has no fixed
-depth to carry it to: it makes the same descent, and where it stops paying, the
-search goes on only for the dropped cells whose share is still unproven — the
-rest of the frontier ends there. On the same outline the leaf
+The LEAF statement `level` mode makes — every reference-level cell meeting the
+target is a member or the descendant of one — is a law here on those same three
+systems only. Elsewhere the budget makes the same overhang descent but has no
+fixed depth to carry it to: where it stops paying, the search goes on only for
+the dropped cells whose share is still unproven. On the same outline the leaf
 statement misses under 1% of the target on IGEO7, 2% on its authalic wrap and
 on H3, and 18% on A5. Both statements are pinned per system, at three budgets
 and on four targets, in `test/systems/crosssystem/multiorder_budget.jl`.
@@ -287,56 +279,41 @@ end
 # ---------------------------------------------------------------------------
 # The budget traversal
 #
-# Same target preparation, same prunes and the same two exact predicates as the
-# depth-first walk above. What changes is the SCHEDULE and what stops it.
+# Same target preparation, prunes and exact predicates as `_coverage_visit!`;
+# what changes is the SCHEDULE and what stops it.
 #
-# The covering is maintained explicitly as {contained cells} ∪ {crossing
-# members}. Contained cells are never refined: a cell proven to lie inside the
-# target is already the tightest thing that can be said about its own footprint,
-# and splitting it spends budget to say the same thing in more words. Only
-# crossing members are candidates, and they are visited COARSEST FIRST, ties
-# broken by index within the level — the curve order, so the schedule is a
-# function of the inputs alone and of nothing else.
-#
-# PHANTOMS carry the descent through cells that miss the target. Under
-# non-congruent refinement a cell can meet the target while its parent misses
-# it; a phantom is a cell that fails the exact test but passes both
-# `node_extent` prunes — the descent `_coverage_visit!` makes — and every
-# opened cell contributes its missing children to the stream. Phantoms are
-# free: only the meeting cells found beneath them are charged, one whole cell
-# each, as ENTRANTS. On a congruent system every meeting cell has a meeting
-# parent, so the member stream reaches everything and no phantoms run. A cell
-# kept whole is never opened: a member admitted beneath it would be emitted
-# under its own ancestor.
-#
+# The covering is {contained cells} ∪ {crossing members}. Contained cells are
+# never refined. Crossing members refine COARSEST FIRST, ties broken by curve
+# order within the level, so the schedule is a function of the inputs alone.
 # The queue is two vectors and a pass counter: each pass sorts both streams on
-# `(level, key)` and advances every cell one level — the order a heap on that
-# key would pop. Members refine before phantoms within a pass.
+# `(level, key)` and advances one level; members refine before phantoms. A
+# cell kept whole is never opened — a member beneath it would be emitted under
+# its own ancestor.
+#
+# PHANTOMS carry the descent through cells that miss the target but pass both
+# `node_extent` prunes: under non-congruent refinement a cell can meet the
+# target while its parent misses it. Phantoms are free; the meeting cells
+# found beneath them are ENTRANTS and cost one whole slot each. Congruent
+# systems never need them — every meeting cell has a meeting parent.
 #
 # PENDING cells are members none of whose children meet: the target lies in
-# their overhang annulus, and the phantom stream reaches the cells that cover
-# it. A pended cell leaves the covering but keeps its budget slot as a CLAIM
-# until one of three settlements takes it:
-#   * REDEEMED — at the budget's margin, by an entrant that provably stands
-#     in for it (see `_claim_match`);
+# their overhang annulus and the phantom stream reaches the cells covering it.
+# A pended cell leaves the covering but keeps its slot as a CLAIM until
+#   * REDEEMED — at the margin, by an entrant that provably stands in for it
+#     (see `_claim_match`);
 #   * COMPLETED — its neighbourhood searched to the end, every meeting cell
-#     admitted: the share is covered, the slot released to the stream;
-#   * RESOLVED — by `_budget_resolve!` at the end: dropped where the search
-#     covered its share, handed back on its own slot where the evidence
-#     stands on its cell.
+#     admitted: the slot is released to the stream;
+#   * RESOLVED — by `_budget_resolve!`: dropped where the search covered its
+#     share, handed back where the evidence stands on its cell.
 # Only non-congruent systems pend.
 #
-# A REPLACEMENT that does not fit leaves its cell kept whole and the walk
-# moves on: a coarse cell with seven meeting children can overrun a budget
-# that a finer one with two still fits into. An ENTRANT costs a fresh slot,
-# or — at the margin — a claim it provably stands in for; one that can pay
-# neither is REFUSED and recorded: a meeting cell the covering still owes,
-# which `_budget_resolve!` pays for out of the slots the claims held. After a
-# refusal, every branch no unsettled claim keeps alive dies where it stands,
-# recorded as ABANDONED — territory the walk never revisits, which is what
-# lets later refusals stay local and settled claims release soundly. Refused
-# and abandoned cells together bound everything the walk left uncovered:
-# they are the EVIDENCE the end phase settles claims against.
+# A replacement that does not fit leaves its cell kept whole. An entrant that
+# can pay neither a fresh slot nor a claim is REFUSED and recorded; after a
+# refusal, every branch no unsettled claim keeps alive dies as ABANDONED —
+# territory never revisited, which keeps later refusals local and lets settled
+# claims release soundly. Refused and abandoned cells together bound
+# everything the walk left uncovered: the EVIDENCE the end phase settles
+# claims against.
 # ---------------------------------------------------------------------------
 
 function _multi_order_budget(sys::AbstractHierarchicalGridSystem, target_value,
@@ -566,10 +543,8 @@ function _budget_admit!(contained, crossing, sys, target, c, grids, top::Int,
 end
 
 # One (bounding cap, target) pair per connected piece of the target — a
-# MultiPolygon's parts; any other target is one piece, itself. A part is
-# prepared on first use: most walks never test containment, and preparing
-# every part up front cost a quarter of the whole query on a multipart
-# outline.
+# MultiPolygon's parts; any other target is one piece, itself. Parts prepare
+# on first use: preparing all up front cost a quarter of a multipart query.
 mutable struct _PieceSlot{G}
     const geom::G
     prepared::Any
@@ -586,13 +561,12 @@ function _target_pieces(target_value, target)
     return [(target.cap, _PieceSlot(target_value, target, nothing))]
 end
 
-# A held claim promises the cell may come back whole at the end. That is only
-# ever the right answer for a cell commensurate with a piece it touches: a
-# giant handed back over a speck is the annulus pathology, so its claim is
-# worthless as insurance and the slot serves the stream better. The yardstick
-# is the piece cap's spherical area against the cell's: the cell must fit the
-# cap, measured on the annulus and refusal-isolation laws — a cap already
-# overshoots its piece, so 1 carries the slack a covering cell needs.
+# A held claim may come back whole at the end — only ever right for a cell
+# commensurate with a piece it touches; a giant handed back over a speck is
+# the annulus pathology, and its slot serves the stream better. Yardstick:
+# the piece cap's spherical area against the cell's, tuned on the annulus and
+# refusal-isolation laws (a cap already overshoots its piece, so 1 carries
+# the slack a covering cell needs).
 const _CLAIM_PROPORTION = 1.0
 
 _cap_fraction(cap) = (1 - cos(min(Float64(cap.radius), Float64(pi)))) / 2
@@ -607,10 +581,9 @@ function _claim_worth_holding(cellcap, ncells_level, pieces)
 end
 
 # Whether one whole piece of the target lies inside the cell — the only
-# containment the engine answers exactly. A piece kind without an exact test
-# certifies nothing. The slot rejects on the first piece vertex outside the
-# cell's cap — sound, and what makes the exact predicate rare — and prepares
-# its geometry only when a candidate survives that.
+# containment the engine answers exactly; a piece kind without an exact test
+# certifies nothing. The slot rejects on the first vertex outside the cell's
+# cap and prepares its geometry only when a candidate survives that.
 _piece_in_cell(piece::GeometryTarget, grid, c, cellcap) =
     _matches(DE9IM.Contains(nothing), piece, grid, c)
 function _piece_in_cell(slot::_PieceSlot, grid, c, cellcap)
@@ -627,13 +600,11 @@ end
 _piece_in_cell(piece, grid, c, cellcap) = false
 
 # The deepest unsettled claim the entrant provably stands in for, or 0: the
-# entrant's CELL must contain every piece of the target the claim's cap
-# touches — a claim's share is inside its pieces, so the entrant covers it.
-# A cap test is not enough: a cap swallows more than its cell does, and a
-# claim redeemed on a sliver loses the rest of its share. `live` comes
-# deepest first, so the first hit is the smallest cell. Redemption is a
-# transfer, not a purchase, and is refused while the covering itself is over
-# budget (a seed larger than `maxcells`).
+# entrant's CELL must contain every piece the claim's cap touches. A cap test
+# is not enough — a cap swallows more than its cell, and a claim redeemed on
+# a sliver loses the rest of its share. `live` comes deepest first, so the
+# first hit is the smallest cell. Redemption is a transfer, not a purchase:
+# refused while the covering itself is over budget (a seed above `maxcells`).
 function _claim_match(grid, child, pieces, live, livecaps, settled, total::Int,
         maxcells::Int)
     total <= maxcells || return 0
@@ -658,23 +629,19 @@ end
 
 # Hands back what the walk still owes, finest cells first, inside `room`.
 #
-# Everything the covering leaves uncovered lies inside a refused entrant or
-# under a culled branch: those are the evidence. The candidates are the
-# refused cells themselves — meeting cells the walk already proved belong in
-# the covering, each its own evidence — and the pending cells not proven
-# covered, which stand for evidence ON THEIR CELL: not their cap — a coarse
-# cell's cap reaches territory its footprint never held, and a giant handed
-# back on far-away evidence is the annulus pathology.
+# Everything uncovered lies inside a refused entrant or under a culled
+# branch: those are the evidence. Candidates are the refused cells (each its
+# own evidence) and the pending cells not proven covered, which need evidence
+# ON THEIR CELL — not their cap, which reaches territory the footprint never
+# held: a giant handed back on far-away evidence is the annulus pathology.
 #
 # One pass, deepest first: emitting a refused cell settles its evidence, so a
 # coarser pending cell comes back only for evidence nothing finer explained,
-# and of two nested candidates the smaller comes back and blocks the coarser
-# (emitting both a cell and its ancestor would claim the same leaves twice).
+# and of two nested candidates the smaller blocks the coarser.
 #
-# STARVED pieces come before everything: a piece of the target no member
-# stands on has only this pass to be covered at all, and room spent first on
-# refused slivers of a well-covered piece is the multipart pathology — a
-# budget exhausted on the mainland losing the island whole.
+# STARVED pieces come before everything: a piece no member stands on has only
+# this pass to be covered at all, and room spent first on refused slivers of
+# a well-covered piece loses the island whole.
 #
 # A covering is never empty: with nothing else kept, the shallowest unproven
 # cell — the one whose footprint holds the most target — is the answer.

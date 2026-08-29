@@ -104,11 +104,10 @@ const UNION_BOUND = Dict("IGeo7System" => 0.02, "Authalic(IGeo7System)" => 0.03,
 const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
     "H3System" => 0.02, "A5System" => 0.18)
 
-# Annulus-tile bounds, in units of the tile's own area: the whole set, and its
-# largest single member. The testset at the bottom of this file measures them.
-# The excess climbed from 2.50 when pending claims began reserving their
-# slots: at a budget of ten, a reserved slot is a member not refined, and the
-# refused cells the end phase pays for come on top.
+# Annulus-tile bounds, in units of the tile's own area: the whole set and its
+# largest single member, measured by the testset at the bottom of this file.
+# Excess rose from 2.50 when pending claims began reserving their slots: at a
+# budget of ten a reserved slot is a member not refined.
 const EXCESS_BOUND = 3.5        # measured 3.06
 const MEMBER_BOUND = 1.5        # measured 1.32
 
@@ -396,11 +395,10 @@ end
             else
                 @test length(budgeted) <= length(accurate)
                 @test !isempty(budgeted)
-                # With four times the room nothing is refused, and the phantom
-                # stream's completeness claim becomes an equality: the budget
-                # descent reaches every cell `level` mode reaches, in the same
-                # order. Anything weaker than `==` cannot tell a complete
-                # descent from a lucky one.
+                # With four times the room nothing is refused and completeness
+                # becomes an equality: the budget descent reaches every cell
+                # `level` mode reaches, in the same order. Anything weaker
+                # than `==` cannot tell a complete descent from a lucky one.
                 roomy = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND);
                     maxcells=4 * length(accurate), maxlevel=l)
                 @test collect(roomy) == collect(accurate)
@@ -570,20 +568,14 @@ end
 # ---------------------------------------------------------------------------
 # Non-congruent overhang: a small target in the annulus a cell's children do
 # not retile must not leave that cell in the covering. Each 1x1-degree tile
-# fixture sits in such an annulus of a coarse cell, so a descent through
-# meeting cells alone strands the giant; two rows further place the covering on
-# a lineage only phantoms reach — under a root that misses the tile, and under
-# a missing child of a cell that meets it.
-#
-# `EXCESS_BOUND` and `MEMBER_BOUND` (top of file) are in units of the tile's
-# area — or of one cell of the cap, on the row whose cap is coarser than the
-# tile. `setsphere` charges each member the MEAN cell area of its level, and a
-# pentagon's true footprint sits either side of that, so both are
-# order-of-magnitude bounds rather than areas.
-#
-# `TILE_UNION_BOUND` gates the traversal's DROP: giving up a cell is sound only
-# while other members cover its share of the target, and a hole shows up as a
-# tile point inside no emitted cell.
+# fixture sits in such an annulus, so a descent through meeting cells alone
+# strands the giant; two rows place the covering on a lineage only phantoms
+# reach. `EXCESS_BOUND`/`MEMBER_BOUND` (top of file) are in units of the
+# tile's area — or one cap-level cell where the cap is coarser; `setsphere`
+# charges the MEAN cell area of a level, so both are order-of-magnitude
+# bounds. `TILE_UNION_BOUND` gates the DROP: giving up a cell is sound only
+# while other members cover its share, and a hole shows up as a tile point
+# inside no emitted cell.
 # ---------------------------------------------------------------------------
 
 tilearea(x0, y0) = deg2rad(1) * (sind(y0 + 1) - sind(y0)) / (4pi)
@@ -604,11 +596,9 @@ annuluslabel(sys, x0, y0, cap) = "$(syslabel(sys)) at ($x0, $y0), " *
                                (DGG.H3System(), 0.0, -30.0, nothing),
                                (DGG.A5System(), 10.0, 46.0, nothing),
                                (DGG.A5System(), 0.0, -60.0, nothing),
-                               # A cap COARSER THAN THE TILE: `unit` below
-                               # swaps in the cap cell as the yardstick, and
-                               # the row pins a capped descent — the phantom
-                               # stream stops at the cap too — against the
-                               # same laws as the uncapped ones.
+                               # A cap COARSER THAN THE TILE: `unit` swaps in
+                               # the cap cell as yardstick; phantoms stop at
+                               # the cap too, same laws as the uncapped rows.
                                (DGG.IGeo7System(), 10.0, 46.0, 3))
     tile = Extents.Extent(X=(x0, x0 + 1), Y=(y0, y0 + 1))
     ta = tilearea(x0, y0)

@@ -187,7 +187,9 @@ function plan_regrid(data; to, from = nothing,
     sampling::Union{Nothing,DD.Lookups.Sampling} = nothing,
     dependencies = nothing, refine = nothing,
     narrow::Union{Nothing,Symbol} = nothing)
-    src_space = from === nothing ? _sourcespace(data) : _asspace(from, "from")
+    src_space = from === nothing ? _sourcespace(data, method) :
+                sourcespacefor(from, method)
+    from === nothing || checksource(from, data, src_space)
     dst_space = _asspace(to, "to", src_space)
     manifold(dst_space) == manifold(src_space) || throw(ArgumentError(
         "the two sides of a regrid must live on one manifold, but the source " *
@@ -255,22 +257,47 @@ wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
         src_space, 1:Int(ncells(src_space)))
 
 # Only dimensional arrays carry enough geometry to infer a source space.
-# A dimension that already names cells ([`dimsource`](@ref)) is not a raster
-# axis, so name it rather than ask for the raster axis it does not have.
-function _sourcespace(data::DD.AbstractDimArray)
+#
+# An axis that presents the data itself ([`sourceview`](@ref)) resolves through
+# the space its own view names. An axis that merely names a source
+# ([`dimsource`](@ref)) resolves through that: it has already said what the
+# cells are, so asking the caller to retype it would be a spelling test, not a
+# question. A raster lattice is the last case, and the only one left for
+# [`RasterGrid`](@ref) to find.
+#
+# A named source `sourcespacefor` cannot resolve says so in `_asspace`'s own
+# terms — the package that supplied the axis owes the space.
+function _sourcespace(data::DD.AbstractDimArray, method)
     for d in DD.dims(data)
-        named = dimsource(DD.lookup(d))
+        lookup = DD.lookup(d)
+        view = sourceview(lookup, data, method)
+        view === nothing || return _presentedspace(view, method)
+        named = dimsource(lookup)
         named === nothing && continue
-        throw(ArgumentError("""
-        no `from` was given, so the source space was derived from the data, but \
-        its $(DD.name(d)) dimension names cells rather than a raster lattice. \
-        Pass `from = $(named)`.
-        """))
+        return sourcespacefor(named, method)
     end
     return RasterGrid(data)
 end
 
-_sourcespace(data) = throw(ArgumentError(
+# The space a presented view is written against. The view is the array the
+# regrid reads, so it must name its own cells outright — and it is resolved
+# through the same `method` the view was chosen for, so an axis that presents
+# itself differently per method gets the matching space.
+function _presentedspace(view::DD.AbstractDimArray, method)
+    for d in DD.dims(view)
+        named = dimsource(DD.lookup(d))
+        named === nothing || return sourcespacefor(named, method)
+    end
+    throw(ArgumentError(
+        "a presented source must name the cells it is written against, but " *
+        "$(DD.dims(view)) names none"))
+end
+
+_presentedspace(view) = throw(ArgumentError(
+    "a presented source must be a dimensional array naming its own cells, " *
+    "got a $(typeof(view))"))
+
+_sourcespace(data, method) = throw(ArgumentError(
     "a $(typeof(data)) carries no coordinates, so no source space can be " *
     "derived from it; pass `from = ` a RegridSpace."))
 
@@ -292,8 +319,11 @@ _checkchunks(chunks) = throw(ArgumentError(
     "`chunks` must be a tuple of chunk sizes, a DiskArrays.GridChunks, or " *
     "nothing, got $(typeof(chunks))"))
 
-# Flatten the source to `ncells × nslices` and retain pass-through sizes.
+# Flatten the source to `ncells × nslices` and retain pass-through sizes. The
+# array flattened is the one the source's own axes present ([`sourceview`](@ref)),
+# which for an ordinary axis is `data` itself.
 function _flatten(data, plan::AbstractRegriddingPlan)
+    data = sourceview(data, plan.method)
     nsrc = Int(ncells(plan.src_space))
     sd = resolvespatialdims(data, nsrc)
     othersizes = _otherdimsizes(data, sd)

@@ -314,9 +314,68 @@ destinationdims(::RegridSpace, ::DD.Lookups.Sampling) = nothing
 
 Return the source a lookup already names, or `nothing`. A lookup that carries
 its own cells is not a raster axis, so a package that supplies one extends this
-and a regrid given no `from` names it instead of asking for `xdim`.
+and a regrid given no `from` **resolves** what it names — through
+[`sourcespacefor`](@ref) — instead of looking for `xdim`. The name must
+therefore be one [`_asspace`](@ref) answers for; a name nothing resolves is a
+missing method in the package that supplied the axis, and says so.
+
+A source resolves in one order: an explicit `from` wins; otherwise a
+self-describing axis — one answering [`sourceview`](@ref) or this — names the
+source itself; otherwise the array is read as a raster lattice, and an axis
+answering neither is the `from`-is-required error. Defining this used to make
+that error's wording better and nothing else; it now removes the error.
 """
 dimsource(::Any) = nothing
+
+"""
+    sourceview(lookup, data, method) -> array or nothing
+    sourceview(data, method) -> array
+
+Return the array `method` reads when `data` carries `lookup`, or `nothing` when
+that axis cannot present the data itself.
+
+An axis storing one value per cell of the space [`dimsource`](@ref) names needs
+no method here: the data is read as it stands. A *compressed* axis stores fewer
+values than that space has cells, so no `from` can describe the pair — only the
+axis knows how its stored values spread over the cells, and only this hook can
+present them.
+
+Either hook makes an axis self-describing, so neither asks for a `from`: an
+explicit one still wins, an axis answering one of them resolves itself, and an
+axis answering neither is the `from`-is-required error. A `from` that
+contradicts what a presenting axis lays its values out by belongs in
+[`checksource`](@ref).
+
+The view must present the cells in the space's own order and name that space
+through its own `dimsource`. It is also free to refuse `method`, which is what
+[`refinementinvariant`](@ref) is for.
+
+The two-argument form is the whole array's answer: the first axis that presents
+one, or `data` unchanged.
+"""
+sourceview(::Any, ::Any, ::Any) = nothing
+
+sourceview(data, method) = data
+
+function sourceview(data::DD.AbstractDimArray, method)
+    for d in DD.dims(data)
+        view = sourceview(DD.lookup(d), data, method)
+        view === nothing || return view
+    end
+    return data
+end
+
+"""
+    checksource(from, data, space) -> nothing
+
+Refuse a `from` spelling that cannot describe `data`, or do nothing.
+
+Called once per plan, only when `from` was given. A spelling whose cells are
+not one-per-stored-value extends this to say so in its own terms, rather than
+leaving the count mismatch to surface as a `DimensionMismatch` from the flatten
+step.
+"""
+checksource(::Any, ::Any, ::RegridSpace) = nothing
 
 """
     _asspace(space, name) -> RegridSpace
@@ -328,3 +387,20 @@ the three-argument form when the destination depends on the resolved source
 space. `name` names the keyword in error messages.
 """
 function _asspace end
+
+"""
+    sourcespacefor(target, method) -> RegridSpace
+
+Resolve a **source** target into the space `method` reads it through.
+
+The default is [`_asspace`](@ref)`(target, "from")`, method-blind, so a target
+with one presentation of itself needs no method here. A target that has a
+choice — a compressed cell collection that either refines to a single level or
+hands over the cells it stores — extends this and asks
+[`sourcesampling`](@ref) which presentation the method can read.
+
+The space returned must name the cells [`sourceview`](@ref) presents for the
+same `method`, in the same order: they are one decision taken in two places,
+one for the geometry and one for the values.
+"""
+sourcespacefor(target, method) = _asspace(target, "from")

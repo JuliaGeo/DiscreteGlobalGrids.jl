@@ -54,7 +54,14 @@ struct DirectNearest <: AbstractRegriddingMethod end
 
 outputsampling(::DirectNearest) = DD.Lookups.Points()
 
+# It reads the one source cell containing a point, so the source is sample sites
+# for it exactly as it is for `NearestCell`.
+sourcesampling(::DirectNearest) = DD.Lookups.Points()
+
 supportradius(::DirectNearest, ::RegridSpace) = 0.0
+
+# The stencil is `NearestCell`'s, so the refinement argument is the same one.
+refinementinvariant(::DirectNearest) = true
 
 # The fallback route, so nothing that has not been specialized breaks.
 buildweights!(coo::WeightCOO, ::DirectNearest, dst_space::RegridSpace, dst_inds,

@@ -382,6 +382,9 @@ struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C,
 end
 
 function LazyRegridArray(data, plan::ChunkedPlan)
+    # The source is read as its own axes present it — the array `_flatten` would
+    # have flattened on the eager route ([`sourceview`](@ref)).
+    data = sourceview(data, plan.method)
     src_space, dst_space = plan.src_space, plan.dst_space
     graph = _lazygraph(plan)
     nsrc = Int(ncells(src_space))

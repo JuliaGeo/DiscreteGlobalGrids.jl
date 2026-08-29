@@ -29,6 +29,14 @@ using DiscreteGlobalGrids
     include("systems/crosssystem/multiorder_budget.jl")
     # Test the compressed cell container before the lookup that wraps it.
     include("systems/crosssystem/cell_vector.jl")
+    # MOC storage, in dependency order: the mixed-level container, the
+    # aggregation verbs that build one, then its cube face.
+    include("systems/crosssystem/multiorder_vector.jl")
+    include("systems/crosssystem/aggregate.jl")
+    include("systems/crosssystem/multiorder_data.jl")
+    # The grid face of that container — its stored cells, each at its own level
+    # — and the regridding route that reads them instead of their leaves.
+    include("systems/crosssystem/multiorder_grid.jl")
     include("systems/crosssystem/subtree_iterators.jl")
     include("systems/crosssystem/stencils.jl")
     include("systems/crosssystem/neighborhood.jl")

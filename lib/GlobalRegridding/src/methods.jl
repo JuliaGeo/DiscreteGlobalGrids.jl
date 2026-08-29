@@ -12,6 +12,25 @@ independent of field data.
 abstract type AbstractRegriddingMethod end
 
 """
+    refinementinvariant(method) -> Bool
+
+Whether replacing a source cell by its children, each carrying that cell's
+value, leaves the method's answer unchanged.
+
+Area methods hold: the children tile the parent, so it is the same value over
+the same total overlap. Nearest-cell methods hold: a site lands in a child of
+the cell it would have landed in, carrying that cell's value. Methods that
+blend by where the sites *are* do not — refining moves the sites, so
+interpolating between replicated values reproduces the coarse steps at the
+finer spacing.
+
+`false` by default, so a source presenting itself refined
+([`sourceview`](@ref)) refuses a method that has not declared the property
+rather than silently handing it a different geometry.
+"""
+refinementinvariant(::AbstractRegriddingMethod) = false
+
+"""
     Conservative()
 
 Weight source cells by their spherical intersection area with each destination.
@@ -19,6 +38,8 @@ With [`Extensive`](@ref), this preserves the covered integral; with
 [`Weighted`](@ref), it returns coverage-normalized means. Requires cell polygons.
 """
 struct Conservative <: AbstractRegriddingMethod end
+
+refinementinvariant(::Conservative) = true
 
 """
     NearestCell()
@@ -32,6 +53,8 @@ no entry at all; the missing policy decides what that destination cell becomes.
 This method does not preserve integrals.
 """
 struct NearestCell <: AbstractRegriddingMethod end
+
+refinementinvariant(::NearestCell) = true
 
 """
     BarycentricPoint(; poles = NearestCell())
@@ -85,6 +108,24 @@ per-pair assembly; today every sampling assembles a pair through
 outputsampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Center())
 outputsampling(::NearestCell) = DD.Lookups.Points()
 outputsampling(::BarycentricPoint) = DD.Lookups.Points()
+
+"""
+    sourcesampling(method::AbstractRegriddingMethod) -> DimensionalData.Lookups.Sampling
+
+Return the sampling a method reads on the source. `Intervals(Center())`, the
+default, integrates over source cell area and needs a gap-free polygon cover;
+`Points()` reads source sample sites and never asks for a cell boundary.
+
+Sibling of [`outputsampling`](@ref), which is what a method *writes*. The two
+agree for every method here and are still two questions: a source can offer
+sample sites where it cannot offer a gap-free cover, so a source with more than
+one presentation of itself chooses with this one ([`sourcespacefor`](@ref),
+[`sourceview`](@ref)). Making them one function would make a method that writes
+points from areas unrepresentable.
+"""
+sourcesampling(::AbstractRegriddingMethod) = DD.Lookups.Intervals(DD.Lookups.Center())
+sourcesampling(::NearestCell) = DD.Lookups.Points()
+sourcesampling(::BarycentricPoint) = DD.Lookups.Points()
 
 # Weight construction
 

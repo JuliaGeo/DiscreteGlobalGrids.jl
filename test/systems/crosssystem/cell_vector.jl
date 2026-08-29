@@ -148,6 +148,20 @@ end
         @test !(coarser in cv)
     end
 
+    @testset "cellposition forwards to localindex, deprecated" begin
+        # `cv` is a partial coverage, not a complete level, so `localindex`
+        # and `globalindex` disagree here (see "the five ways in agree" below)
+        # — a shim that forwarded to the wrong one would be caught.
+        c = cv[1]
+        @test DGG.cellposition(cv, c) == DGG.localindex(cv, c)
+        lon, lat = LONLAT(DGG.cell_centroid(grid, c))
+        @test DGG.cellposition(cv, lon, lat) == DGG.localindex(cv, lon, lat)
+        p = FB.unit_point(lon, lat)
+        @test DGG.cellposition(cv, p) == DGG.localindex(cv, p)
+        h = DGG.SubsetIndexedCell(c, 1)
+        @test DGG.cellposition(h) == DGG.localindex(h) == 1
+    end
+
     @testset "the five ways in agree" begin
         # A whole level: one window, and the vector's indices ARE the grid's.
         complete = DGG.CellVector(grid)

@@ -64,6 +64,23 @@ end
     @test length(polygons) == length(expanded)
 end
 
+@testset "multi-order container Makie conversion" begin
+    system = DGG.HEALPixSystem()
+    root = first(DGG.rootcells(system))
+    # One child refined further than its siblings, so a conversion reading the
+    # container through a single level's grid would name the wrong cells.
+    kids = DGG.children(system, root)
+    mixed = vcat(DGG.children(system, first(kids)), kids[2:end])
+    vector = DGG.MultiOrderVector(system, mixed)
+    @test length(unique(DGG.level, collect(vector))) > 1
+
+    polygons = GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(vector))
+    @test length(polygons) == length(vector)
+
+    test_conversions(vector, polygons)
+    test_conversions(DGG.MultiOrderLookup(vector), polygons)
+end
+
 @testset "multi-order coverage Makie conversion" begin
     target = GI.Polygon([GI.LinearRing([
         (-10.0, 40.0), (10.0, 40.0), (10.0, 50.0),

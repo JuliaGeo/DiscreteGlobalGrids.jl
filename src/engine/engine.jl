@@ -77,6 +77,8 @@ include("extent_memo.jl")
 include("tiled_raster.jl")
 include("query.jl")
 include("multiorder.jl")
+include("multiorder_budget.jl")
+include("multiorder_set.jl")
 include("cell_vector.jl")
 # The stencil layer reads every collection above it — the subset grid, the
 # compressed vector, the multi-order set — and the lazy border walkers besides.

@@ -1,23 +1,12 @@
-# `CellVector` is a strictly ascending collection of cells from one system and
-# level. It stores leaf-grid index windows and resolves ids on demand.
-# DimensionalData's `CellLookup` delegates to this dependency-free collection.
-#
-# Both window representations support these mappings:
-#
-#   `leafindex(w, k)`    concatenation index -> leaf grid index
-#   `windowindex(w, p)`  leaf grid index -> concatenation index or `nothing`
-# ---------------------------------------------------------------------------
-
-# Parallel vectors allow both searches to use `searchsortedfirst` without
-# deriving range endpoints for each lookup.
+# Parallel endpoints support binary search in both directions.
 struct RangeWindows
     starts::Vector{Int}
     stops::Vector{Int}
-    offsets::Vector{Int}     # offsets[j] = cells in windows 1:j
+    offsets::Vector{Int}
 end
 
 struct IndexWindows
-    indices::Vector{Int}   # sorted, strictly ascending
+    indices::Vector{Int}
 end
 
 const CellWindows = Union{RangeWindows,IndexWindows}
@@ -53,10 +42,7 @@ end
 
 leafindices(w::CellWindows) = (leafindex(w, k) for k in 1:length(w))
 
-# Map a complete-level index interval to the contiguous logical window that a
-# `CellVector` stores from it.  Tree descent asks this question for every child.
-# Answering it from the run table avoids binary-searching decoded cell IDs where
-# every comparison would itself decode a `CellVector` element.
+# Run-table lookup keeps tree descent from repeatedly decoding cell ids.
 @inline function subset_window_bounds(w::RangeWindows, lo::Int, hi::Int)
     lo <= hi || return (1, 0)
     first_run = searchsortedfirst(w.stops, lo)
@@ -83,17 +69,6 @@ end
     return (searchsortedfirst(w.indices, lo), searchsortedlast(w.indices, hi))
 end
 
-# Classify how much of the leaf block `lo:hi` is stored. Both representations
-# inspect the first entry that reaches `lo`:
-#
-#   * nothing reaches `lo`, or the first thing that does starts past `hi` — the
-#     block is empty of stored cells;
-#   * that one run covers the whole block — the block is stored entire, and it
-#     takes only one run to say so because runs are maximal and disjoint;
-#   * anything else — the block is partly stored, which is all the walk needs.
-#
-# For `IndexWindows`, strict ascent makes the block complete exactly when
-# the entry `hi - lo` slots later is `hi`.
 @inline function span_windows(w::RangeWindows, lo::Int, hi::Int)
     j = searchsortedfirst(w.stops, lo)
     j <= length(w.stops) || return _SPAN_NONE
@@ -116,8 +91,7 @@ end
     return _SPAN_SOME
 end
 
-# Runs are stored maximally, so equal `RangeWindows` have identical boundaries.
-# Set operations normalize their output to preserve this invariant.
+# Maximal runs make logical equality equivalent to endpoint equality.
 Base.:(==)(a::RangeWindows, b::RangeWindows) =
     a.starts == b.starts && a.stops == b.stops
 
@@ -140,8 +114,7 @@ function _range_windows(ranges)
     return RangeWindows(starts, stops, offsets)
 end
 
-# Run-compress sorted indices and keep the smaller representation. A range
-# uses three integers; an explicit index uses one.
+# Choose ranges only when their three arrays use no more integers than indices.
 function _windows(indices::Vector{Int})
     isempty(indices) && return _empty_windows()
     runs = 1
@@ -170,18 +143,14 @@ function _windows(indices::Vector{Int})
     return RangeWindows(starts, stops, offsets)
 end
 
-# --- the two shapes, read as intervals -------------------------------------
-#
-# Set operations convert both representations to intervals. An explicit
-# index becomes a one-cell interval.
+# --- interval form ----------------------------------------------------------
 
 intervals(w::RangeWindows) =
     [(@inbounds(w.starts[j]), @inbounds(w.stops[j])) for j in eachindex(w.starts)]
 
 intervals(w::IndexWindows) = [(p, p) for p in w.indices]
 
-# Convert sorted intervals to maximal windows without expanding ranges merely
-# to choose a representation.
+# Preserve compact ranges while normalizing sorted intervals.
 function _windows_from_intervals(ivs::Vector{Tuple{Int,Int}})
     isempty(ivs) && return _empty_windows()
     merged = Tuple{Int,Int}[]
@@ -213,89 +182,51 @@ function _windows_from_intervals(ivs::Vector{Tuple{Int,Int}})
     return IndexWindows(indices)
 end
 
-# ===========================================================================
-# The vector
-# ===========================================================================
+# --- vector -----------------------------------------------------------------
 
 """
     CellVector(set::MultiOrderCellSet; level = set's reference level)
     CellVector(grid::AbstractGrid)
     CellVector(sys, level, ids::AbstractVector)
 
-An immutable, lazy `AbstractVector` of strictly ascending cell ids from one
-level of one hierarchical system. It stores their leaf-grid index windows
-instead of the ids.
+`CellVector` is an immutable, lazy vector of strictly ascending cell ids from
+one level of one hierarchical system. It stores sorted level-grid index runs
+or indices and resolves ids on demand. Memory is O(number of windows), and
+indexing is O(log(number of windows)). [`CellLookup`](@ref) provides its
+DimensionalData wrapper.
 
-Semantically `cv` **is** the id vector: `length(cv)` is the number of cells,
-`cv[k]` is the `k`th of them, `collect(cv)` is the vector itself. What is
-*stored* is sorted, disjoint intervals or a sorted index list in
-`levelgrid(system(cv), level(cv))`, so memory is O(number of windows) rather
-than O(number of cells). `cv[k]` searches the windows' cumulative lengths and
-resolves one `cellindex`; [`localindex`](@ref) runs the inverse. Nothing is
-materialised.
+Construct a `CellVector` from:
 
-[`CellLookup`](@ref) provides the DimensionalData wrapper and delegates its
-collection operations to this type.
+  - a [`MultiOrderCellSet`](@ref), optionally expanded to a deeper level;
+  - an [`AbstractGrid`](@ref), including a [`PartialGrid`](@ref); or
+  - an explicit strictly ascending cell-id vector with `sys` and `level`.
 
-# The three ways in
-
-  - a [`MultiOrderCellSet`](@ref), the compressed coverage, optionally
-    re-expanded to a deeper `level` than the set's own reference level;
-  - an [`AbstractGrid`](@ref) — `levelgrid(sys, l)`, a whole level, which is one
-    window; or a [`PartialGrid`](@ref), which is that subset's indices (one
-    window when the subset is a subtree, the explicit list when it is
-    scattered);
-  - `sys, level, ids` — an explicit **strictly ascending** id vector, validated
-    and run-compressed.
-
-`CellVector(cv)` returns `cv` unchanged.
-
-# The verbs
+`CellVector(cv)` returns `cv`.
 
 ```julia
-cv[k]                          # the kth cell id
-localindex(cv, c)              # its inverse: Int, or `nothing`
-c in cv                        # membership, O(log #windows)
-localindex(cv, lon, lat)       # the index of the cell a point falls in
-cellat(cv, lon, lat)           # that cell's id instead
-covering(cv, polygon)          # the sub-vector a region's coverage names
-intersect(cv, other)           # two vectors at the same level, O(#windows)
-PartialGrid(cv)                # read as a grid, O(1) — the regridding handshake
-cellset(cv)                    # what it was built from
+cv[k]
+localindex(cv, c)
+covering(cv, polygon)
+PartialGrid(cv)
 ```
 
-`Base.summarysize(cv)` is O(number of windows) plus the object referenced by
-[`cellset`](@ref). Indexing is O(log(number of windows)) and allocation-free.
-
-Where [`has_sorted_subtrees`](@ref) holds, [`level_ranges`](@ref) constructs the
-windows in
-O(#entries). Where it does not (A5), a cell's descendants are not one interval
-of their level, so the vector is built by SELECTION: `descendants` names the
-leaves, they are resolved to indices and sorted, and the result is
-run-compressed like any other index list. Every method above is unchanged
-as any other index list. This construction visits every leaf. The stored
-form ranges from a small set of windows to one index per cell.
-
-For A5, descendants need not lie inside their parent's footprint, so expanding a coverage
-names leaves the target does not touch — most visibly inside a hole. A
-[`covering`](@ref) subset on A5 is therefore a superset of the cells that meet
-the region, by the same margin the refinement itself is; see
+Systems with [`has_sorted_subtrees`](@ref) construct windows from
+[`level_ranges`](@ref) in O(entries). Other systems enumerate, sort, and
+compress descendant indices. On A5, non-congruent refinement can make an
+expanded [`covering`](@ref) selection over-cover the target; see
 [`MultiOrderCoverage`](@ref).
 """
 struct CellVector{ID,W<:CellWindows,G<:AbstractGrid,B} <: AbstractCellVector{ID}
     windows::W
-    grid::G                  # `levelgrid(system, level)` — every `cv[k]` reads it
-    backing::B               # what it was built from, or `nothing` when derived
+    grid::G
+    backing::B
     level::Int
 end
 
 @inline subset_window_bounds(cv::CellVector, lo::Int, hi::Int) =
     subset_window_bounds(cv.windows, lo, hi)
 
-# A compressed `CellVector` already stores complete-grid index runs.  Consult
-# those runs directly during cursor descent: generic `searchsorted*` over the
-# logical vector makes every comparison pay a second binary search plus cell-ID
-# decoding.
+# Direct run lookup avoids nested searches and id decoding during cursor descent.
 @inline function _partial_child_window(
         ids::CellVector, complete, range, first_index::Int, last_index::Int)
     lo, hi = subset_window_bounds(ids, Int(first(range)), Int(last(range)))
@@ -323,8 +254,7 @@ function _cellvector(set::MultiOrderCellSet, l::Int)
     return CellVector(w, grid, set, l)
 end
 
-# Selection mode sorts leaf indices because sibling descendant lists need not
-# concatenate in canonical order.
+# Sorting restores canonical order for non-contiguous descendant lists.
 function _selection_indices(set::MultiOrderCellSet, grid::AbstractGrid, l::Int)
     sys = system(set)
     out = Int[]
@@ -353,8 +283,7 @@ CellVector(sys::AbstractHierarchicalGridSystem, l::Integer, ids::AbstractVector)
 
 CellVector(cv::CellVector) = cv
 
-# A complete level occupies indices `1:ncells`; proper subsets are resolved
-# cell by cell.
+# Whole levels use one run; subsets resolve their complete-grid indices.
 function _grid_windows(grid::AbstractGrid, complete::AbstractGrid)
     n = ncells(grid)
     n == ncells(complete) && return _range_windows((1:n,))
@@ -368,8 +297,7 @@ function _grid_windows(grid::PartialGrid{<:Any,<:SubtreeIds}, complete::Abstract
     return _range_windows((ids.first:(ids.first+ids.n-1),))
 end
 
-# Reuse the windows when converting a `CellVector`-backed `PartialGrid` back to
-# a vector.
+# Reuse the original windows when round-tripping through `PartialGrid`.
 _grid_windows(grid::PartialGrid{<:Any,<:CellVector}, complete::AbstractGrid) =
     grid.ids.windows
 
@@ -385,8 +313,7 @@ function _grid_indices(grid::AbstractGrid, complete::AbstractGrid)
     return out
 end
 
-# Derived subsets keep the leaf grid and level but replace provenance with a
-# lazily constructed `PartialGrid`.
+# Derived subsets retain their level grid and drop source provenance.
 _derive(cv::CellVector, w::CellWindows) = CellVector(w, cv.grid, nothing, cv.level)
 
 # A `CellVector` IS the region container, so `region` is the identity on it.
@@ -404,25 +331,17 @@ Base.@propagate_inbounds function Base.getindex(cv::CellVector, k::Int)
     return cellindex(cv.grid, leafindex(cv.windows, k))
 end
 
-# Immutable, so the whole-vector slice is the vector rather than a copy of it.
+# Immutability makes the whole-vector slice safe to return directly.
 Base.getindex(cv::CellVector, ::Colon) = cv
 
-# Ascending unique indices remain windowed; permutations, repetitions, and
-# reversals return an ordinary materialized vector.
-#
-# `AbstractVector`, not `AbstractArray`: indexing an array by a
-# higher-dimensional index returns something of the INDEX's shape, and a window
-# set has no shape to give back. Narrowing here lets `cv[matrix]` fall through
-# to Base's generic, which answers with a matrix of ids — so the answer's shape
-# no longer depends on whether the index happened to be ascending.
+# Vector-only specialization lets Base preserve higher-dimensional index shapes.
 Base.getindex(cv::CellVector, idx::AbstractVector{<:Integer}) = _subset(cv, idx)
 
 # Resolve the method ambiguity with SmallCollections vector indexing.
 Base.getindex(cv::CellVector,
     i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(cv, i)
 
-# Handle boolean masks inside `_subset` because `Bool <: Integer`. Validate axes
-# before `findall` so masks with the wrong length or rank throw `BoundsError`.
+# Validate boolean axes before `findall`, which discards the mask shape.
 function _subset(cv::CellVector, mask::AbstractArray{Bool})
     axes(mask) == axes(cv) || throw(BoundsError(cv, (mask,)))
     return _subset(cv, findall(mask))
@@ -457,8 +376,7 @@ The grid system the vector's cells are named in.
 """
 system(cv::CellVector) = system(cv.grid)
 
-# A subset can only lose neighbours from the complete system's one-ring, so
-# the system-wide bound remains valid for every compressed collection shape.
+# Subsetting can only reduce the complete grid's neighbor count.
 maxneighbors(cv::CellVector, connectivity::Connectivity) =
     maxneighbors(cv.grid, connectivity)
 maxneighbors(cv::CellVector) = maxneighbors(cv, Vertex())
@@ -474,19 +392,13 @@ level(cv::CellVector) = cv.level
     cellset(cv::CellVector)
     cellset(lk::CellLookup)
 
-Return the [`MultiOrderCellSet`](@ref), the [`MultiOrderVector`](@ref) expanded
-to one level, or the grid used to build the collection.
-
-A collection *derived* from another one, by indexing or by [`covering`](@ref),
-has no such origin and reports the [`PartialGrid`](@ref) describing it instead.
-
-For [`CellLookup`](@ref), `Base.parent` returns the logical values as a
-[`CellVector`](@ref).
+Return the collection that constructed `cv`: a
+[`MultiOrderCellSet`](@ref), expanded [`MultiOrderVector`](@ref), or grid.
+Derived collections return their describing [`PartialGrid`](@ref).
+For [`CellLookup`](@ref), `Base.parent` returns the logical [`CellVector`](@ref).
 """
 cellset(cv::CellVector) = _origin(cv, cv.backing)
 
-# Dispatch on the backing value to distinguish `Nothing` without ambiguous
-# partially specified `CellVector` parameter bounds.
 _origin(::CellVector, backing) = backing
 _origin(cv::CellVector, ::Nothing) = PartialGrid(cv)
 
@@ -495,16 +407,11 @@ _origin(cv::CellVector, ::Nothing) = PartialGrid(cv)
     localindex(cv::CellVector, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
     localindex(cv::CellVector, lon::Real, lat::Real) -> Union{Int,Nothing}
 
-Local index of a cell in the vector, or `nothing` when the vector does not hold
-it — including when `c` is at another level. The inverse of `cv[k]`, and the
-half of the bijection every selection ends at.
-
-The point forms name the cell through [`cellat`](@ref) first and then answer
-with its local index, which is the one-call form of "where in my data does
-this point land". Degrees for the `(lon, lat)` method, as everywhere else.
+Return the local index of cell `c`, or `nothing` when `cv` does not contain it.
+This is the inverse of `cv[k]`. The point forms first call [`cellat`](@ref) and
+return the matching data index. Longitude and latitude are in degrees.
 """
-# A subset's storage is carved out of a complete level, so its global index is
-# that level's — the number two different subsets of one level agree on.
+# Global indices come from the shared complete level.
 globalindex(cv::CellVector, c::AbstractCellIndex) = globalindex(cv.grid, c)
 
 function localindex(cv::CellVector, c::AbstractCellIndex)
@@ -526,12 +433,8 @@ localindex(cv::CellVector, lon::Real, lat::Real) =
     cellat(cv::CellVector, p::GO.UnitSphericalPoint) -> Union{AbstractCellIndex,Nothing}
     cellat(cv::CellVector, lon::Real, lat::Real)
 
-The cell **of `cv`** containing the point, or `nothing` when the point falls
-outside the cells the vector holds. Same contract as [`cellat`](@ref) on a
-grid, restricted to the subset: a point inside the level grid but outside this
-vector answers `nothing` rather than naming a cell that is not here.
-
-[`localindex`](@ref) is the same question answered as an index.
+Return the cell in `cv` containing the point, or `nothing` when the point lies
+outside the subset. [`localindex`](@ref) returns the corresponding index.
 """
 function cellat(cv::CellVector, p::GO.UnitSphericalPoint)
     c = cellat(cv.grid, p)
@@ -550,25 +453,19 @@ subset_span(cv::CellVector, lo::Int, hi::Int) = span_windows(cv.windows, lo, hi)
 """
     PartialGrid(cv::CellVector) -> PartialGrid
 
-Return a grid whose index `k` is `cv[k]`. Construction is O(1) and keeps the
-ids lazy, so data indexed by the vector needs no permutation.
-
-A vector built from a rooted `PartialGrid` returns that grid, preserving its
-root and bucket size. Other vectors return an unrooted grid because their
-windows do not identify an ancestor.
+Return an O(1) grid view whose index `k` is `cv[k]`. A vector built from a
+rooted `PartialGrid` preserves that grid's root and bucket size. Other vectors
+return an unrooted grid.
 """
 PartialGrid(cv::CellVector) = _partial_grid(cv, cv.backing)
 
-# Preserve a rooted backing grid. Rebuild unrooted grids around the compressed
-# vector so membership continues to use its windows.
+# Preserve rooted metadata while keeping window-based membership for other grids.
 _partial_grid(cv::CellVector, pg::PartialGrid) =
     _is_rooted(pg) ? pg : PartialGrid(system(cv), cv.level, _bare(cv, pg))
 _partial_grid(cv::CellVector, backing) =
     PartialGrid(system(cv), cv.level, _bare(cv, backing))
 
-# Delegate membership to the compressed vector to avoid decoding one id per
-# binary-search probe. Spell the system parameter with its declared bound to
-# keep this method more specific than the general `PartialGrid` method.
+# Delegate membership to the compressed windows without decoding probe ids.
 localindex(grid::PartialGrid{<:AbstractHierarchicalGridSystem,<:CellVector},
     c::AbstractCellIndex) = localindex(grid.ids, c)
 
@@ -581,9 +478,8 @@ _bare(cv::CellVector, ::Nothing) = cv
 """
     covering(cv::CellVector, target) -> CellVector
 
-The cells of `cv` that a [`MultiOrderCoverage`](@ref) of `target` names, at
-`cv`'s own level — the region selector, as a `CellVector` again, so what a
-subset *stores* is windows rather than an id vector.
+Return the cells of `cv` named by a [`MultiOrderCoverage`](@ref) of `target` at
+`cv`'s level. The result remains a windowed `CellVector`.
 
 `target` is anything [`query`](@ref) accepts: a GeoInterface geometry, an
 `Extents.Extent` in lon/lat degrees, or a `GO.UnitSpherical.SphericalCap`.
@@ -594,16 +490,14 @@ basin = covering(cv, watershed)          # a CellVector again
 data[covering_indices(cv, watershed)]    # the same selection as indices
 ```
 
-[`covering_indices`](@ref) is the index-space form, for indexing a data
-array laid out against `cv`. This is what the `DimensionalData` selector
-[`Covering`](@ref) is spelled as outside `DimensionalData`.
+[`covering_indices`](@ref) returns the same selection in index space and backs
+the DimensionalData [`Covering`](@ref) selector.
 
 Selection visits each leaf named by the coverage, even though the result is
-stored compactly. Select at the level being read to avoid unnecessary expansion.
+stored compactly. Selection at the target level limits expansion work.
 
-Coverage means *covering*: the result is a superset of the cells that meet
-`target`, by whatever margin the system's refinement is non-congruent. See
-[`MultiOrderCoverage`](@ref) for the size of that margin per system.
+Non-congruent refinement can make the result over-cover `target`; see
+[`MultiOrderCoverage`](@ref).
 """
 covering(cv::CellVector, target) =
     _derive(cv, _windows(_covering_leafindices(cv, target)))
@@ -611,12 +505,8 @@ covering(cv::CellVector, target) =
 """
     covering_indices(cv::CellVector, target) -> Vector{Int}
 
-The indices in `cv` of the cells [`covering`](@ref) selects, ascending — for
-indexing a data array laid out against `cv` without building the sub-vector.
-
-`covering(cv, target)` and `cv[covering_indices(cv, target)]` name the same
-cells; this form is the one a cube's `getindex` needs, and is what the
-[`Covering`](@ref) selector resolves to.
+Return the ascending indices selected by [`covering`](@ref), suitable for a
+parallel data vector. The [`Covering`](@ref) selector resolves to this form.
 """
 function covering_indices(cv::CellVector, target)
     out = Int[]
@@ -653,16 +543,9 @@ function _each_leaf_index(f, cv::CellVector, target)
     return nothing
 end
 
-# --- set arithmetic over the windows ---------------------------------------
-#
-# `intersect` preserves the left operand's ascending order; `issubset` performs
-# a set comparison. Both run in O(number of windows).
-#
-# Across different systems or levels, only an empty left vector is a subset.
-# `intersect` throws because no result system and level can be selected.
-#
-# `union` is not specialized because Base preserves first-appearance order,
-# which need not be ascending for two ascending operands.
+# --- set arithmetic ---------------------------------------------------------
+
+# Base's first-appearance union order may violate the ascending invariant.
 
 function _same_space(a::CellVector, b::CellVector, verb::AbstractString)
     system(a) == system(b) || throw(ArgumentError(

@@ -28,8 +28,8 @@ roots = DGG.CellVector(DGG.levelgrid(sys, 1))[1:2]
 cells = sort!(reduce(vcat, [collect(DGG.descendants(sys, c, 4)) for c in roots]))
 lookup = DGG.CellLookup(DGG.CellVector(sys, 4, cells))
 
-# Two layers over that one axis, as a `DimStack`. The values are deterministic
-# so the round trip below is checkable rather than plausible.
+# Deterministic values make the two-layer `DimStack` round trip exact and
+# reproducible.
 
 n = length(cells)
 elevation = Float32.(1:n)
@@ -54,13 +54,14 @@ axis = DD.lookup(store[:elevation], DGG.Cells)
    axis_ok = collect(axis) == cells,
    values_ok = collect(parent(store[:elevation])) == elevation)
 
-# The lookup is a `ChunkedCellLookup`: it answers the same selectors as a
-# `CellLookup` — `At` and `Contains` on a cell, `Contains` on a lon/lat point,
-# `Covering` on a region — but resolves them against the store's chunk grid
-# rather than by scanning it. That chunk grid is the `ChunkManifest`, described
-# in cells: for every chunk, the first and last id it holds and how many. It is
-# what says which chunks a selection touches, and `nchunks`, `chunkof` and
-# `chunkbounds` are how it is asked.
+# A `ChunkedCellLookup` resolves these selectors through the store's chunk grid:
+#
+#   - `At` and `Contains` select cells.
+#   - `Contains` also selects a longitude/latitude point.
+#   - `Covering` selects a region.
+#
+# The `ChunkManifest` records every chunk's first id, last id and cell count.
+# `nchunks`, `chunkof` and `chunkbounds` query that manifest.
 
 manifest = DGG.chunkmanifest(axis, 128)
 (; chunks = DGG.nchunks(manifest), cells = length(manifest))
@@ -82,42 +83,40 @@ region = store[:elevation][DGG.Cells(DGG.Covering(target))]
 
 # ## Encodings
 #
-# How the cell ids are laid out in the store is the *encoding*, and
-# `dggwrite`'s default `encoding = :auto` chooses one: `RangesEncoding` where
-# the axis is eligible — sorted, unique, and all one level — and
-# `DenseEncoding` otherwise, which is always eligible and so makes `:auto`
-# total. Ranges store `[start, stop]` intervals instead of ids, and the axis is
-# recovered from them by rank/select arithmetic, so opening one costs no data
-# IO at all however many cells it names. `encoding = :dense` is the interop
-# escape for readers that cannot expand intervals; it writes one id per cell.
+# The *encoding* controls the cell-id layout. `encoding = :auto` selects:
 #
-# `merge` chooses what an interval is allowed to hold. The default `:step`
-# merges ids that are adjacent AS INTEGERS, so no interval encloses an id naming
-# no cell and a reader that counts well-formed ids rather than cells recovers
-# the same axis. `merge = :rank` merges consecutive CELLS instead: the fewest
-# rows — this axis is rank-contiguous, so a single `[start, stop]` row — read
-# back correctly only by a rank-aware reader. The axis above is eligible, and
-# went to disk under the default:
+#   - `RangesEncoding` for a sorted, unique, single-level axis;
+#   - `CompactedEncoding` for a mixed-level axis; and
+#   - `DenseEncoding` for every other single-level axis.
+#
+# Ranges store `[start, stop]` intervals and reconstruct the axis with
+# rank/select arithmetic, so opening them requires no cell-id reads.
+# `encoding = :dense` writes one id per cell for readers without range support.
+#
+# `merge` controls range formation. The default `:step` merges integer-adjacent
+# ids, giving structural and cell-aware readers the same counts. `:rank` merges
+# consecutive cells for the fewest rows and requires a rank-aware reader. The
+# eligible axis above uses the default:
 
 (; encoding = DD.metadata(store)["encoding"],
    rows = size(Zarr.zopen(path)["cell_id_ranges"], 2))
 
 # ## Reading a store by URL
 #
-# `dggread` takes a `Zarr.ZGroup`, a local path, or a URL, so a public store is
-# read where it lives and only the chunks a selection touches are fetched. The
-# Pori stores this format was reverse-engineered from are readable over HTTPS —
-# not run here, because these pages build without a network:
+# `dggread` accepts a `Zarr.ZGroup`, local path or URL. A public remote store
+# stays lazy, and selections fetch only the chunks they touch. The Pori stores
+# that established this format are available over HTTPS; this example remains
+# unevaluated so the documentation builds offline:
 #
 # ```julia
 # pori = DGG.dggread("https://storage.googleapis.com/geo-assets/igeo7-zarr/pori_z7_r10.zarr")
 # ```
 #
-# Writing goes the other way round: `dggwrite` writes locally, and a remote
-# store is an upload of what it produced.
+# Remote publication starts with a local `dggwrite` and then uploads the result.
 #
-# A mixed-level array from the multi-order storage page writes as the
-# `compacted` layout — two aligned columns, `cell_ids` and `cell_levels`,
-# under `refinement_level: null` — and reads back as a `MultiOrderLookup`
-# axis. Requesting a single-level encoding for one is refused; `expand`
-# presents it at one level to write dense or as ranges.
+# `dggwrite` stores a mixed-level array from the
+# [multi-order storage tutorial](moc_storage.md) in the `compacted`
+# layout: two aligned columns, `cell_ids` and `cell_levels`, under
+# `refinement_level: null`. `dggread` restores a
+# [`MultiOrderLookup`](@ref) axis. Single-level encodings require
+# [`expand`](@ref) to present the data at one level.

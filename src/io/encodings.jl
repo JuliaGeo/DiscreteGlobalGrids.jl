@@ -1,28 +1,16 @@
-# The two halves of a stored cell axis.
-#
-#   * A GRID owns id ARITHMETIC: rank, select, and the count in an id interval,
-#     over the complete level in canonical order. Three functions per grid.
-#   * An ENCODING owns the LAYOUT the store keeps that axis in: dense ids, an
-#     inclusive-range array, or nothing at all. One set of verbs per encoding.
-#
-# Neither knows the other, so a new grid gains every encoding by implementing
-# the arithmetic, and a new encoding works on every grid that has it. The verbs
-# that need the axis and manifest TYPES are declared here and implemented in
-# `chunked_lookup.jl`, which defines them.
+# Separate grid-arithmetic and storage-layout interfaces make every combination reusable.
 
 """
     Encodings
 
-Grid id arithmetic and the pluggable cell-axis encodings a DGGS store can be
-written in.
+Grid id arithmetic and pluggable DGGS cell-axis encodings.
 
-[`idrank`](@ref), [`idselect`](@ref) and [`idcount_between`](@ref) are the grid
-side: closed-form rank/select over one complete level, defined on every
-`UInt64`/`Int64` rather than only on ids that name cells, so a reader can count
-what a stored interval holds without enumerating it.
+[`idrank`](@ref), [`idselect`](@ref) and [`idcount_between`](@ref) provide
+closed-form arithmetic over one complete level. Their integer-domain definitions
+let readers count stored intervals without enumerating their cells.
 
-[`CellEncoding`](@ref) and its four singletons are the layout side, resolved
-from a store's vocabulary through [`ENCODING_REGISTRY`](@ref).
+[`CellEncoding`](@ref) and its four shipped layouts form the storage side,
+resolved from a store's vocabulary through [`ENCODING_REGISTRY`](@ref).
 """
 module Encodings
 
@@ -30,19 +18,13 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex,
     AbstractHierarchicalGridSystem, HierarchicalLevelGrid,
     IGeo7System, HEALPixSystem, Z7Cell, LevelIndex,
     ncells, cellindex, level, levels, levelgrid, rawid
-# The compacted layout's axis IS the mixed-level container; nothing else here
-# touches a collection type.
 import ..DiscreteGlobalGrids.Engine: MultiOrderVector
-# The Z7 digit tables, validity predicate and inverse-rank walk are the system's
-# own; this file adds only the rank that is total on ids naming no cell.
+# IGeo7 owns the Z7 tables and validity walk; storage adds total rank arithmetic.
 import ..DiscreteGlobalGrids: IGeo7
 # From `errors.jl`, which the including module reads before this file.
 import ..DGGSFormatError
 
-# WIRING: rejections here throw `DGGSFormatError` with no store context, because
-# this layer sees ids and lengths and never a store. The extension that opened
-# the store adds the identifier and the conventions that fired on the way out,
-# with `with_store_context`.
+# The store boundary adds identifiers and convention names to these layer-neutral errors.
 
 export CellEncoding, DenseEncoding, RangesEncoding, ImplicitEncoding,
     CompactedEncoding
@@ -50,26 +32,22 @@ export ENCODING_REGISTRY, encodingname, register_encoding!
 export idrank, idselect, idcount_between, idvalid, idcell, idtype, idlevel
 export idranges, write_eligible, validate_ranges, cellaxis, storedid
 
-# ===========================================================================
-# The grid side: id arithmetic over one complete level
-# ===========================================================================
-
 """
     idrank(grid::AbstractGrid, id::Integer) -> Int
 
-The number of cells of `grid` whose raw id is strictly less than `id` — a
-COUNT, so it is a zero-based rank and `idrank(grid, rawid(c)) + 1` is
-[`globalindex`](@ref)`(grid, c)`.
+Return the number of `grid` cells whose raw id is less than `id`. This zero-based
+rank satisfies `idrank(grid, rawid(c)) + 1 == globalindex(grid, c)`.
 
-**Total on the integer type.** `id` need not name a cell: an id above every
-cell of the level answers `ncells(grid)`, one below every cell answers `0`, and
-one that is well formed but names nothing — a Z7 phantom on a pentagon's
-deleted branch — answers where it would sit. That totality is the whole point:
-a stored `[start, stop]` interval is counted by subtracting two ranks, and an
-interval's endpoints are not required to be cells.
+The function accepts every value of the grid's integer type:
 
-`grid` is a complete level grid; rank is meaningless against a subset, which
-has [`localindex`](@ref) instead.
+  - values below the level return `0`;
+  - values above the level return `ncells(grid)`; and
+  - non-cell values return their insertion rank.
+
+This total definition counts stored `[start, stop]` intervals by rank difference,
+including intervals whose endpoints are not cells.
+
+`grid` must be a complete level grid. Subsets use [`localindex`](@ref).
 
 **Required** of a grid that is to be read from a store, together with
 [`idselect`](@ref) and [`idcount_between`](@ref).
@@ -79,26 +57,25 @@ function idrank end
 """
     idselect(grid::AbstractGrid, r::Integer) -> Integer
 
-The raw id of the cell at zero-based rank `r` in `grid`'s canonical order — the
+Return the raw id at zero-based rank `r` in `grid`'s canonical order. This is the
 inverse of [`idrank`](@ref):
 
     idrank(grid, idselect(grid, r)) == r          for r in 0:ncells(grid)-1
     idselect(grid, idrank(grid, x)) == x          for every cell id x
 
-Equivalently `rawid(cellindex(grid, r + 1))`, without constructing the typed id.
-`r` outside `0:ncells(grid)-1` throws a `BoundsError`.
+The result equals `rawid(cellindex(grid, r + 1))` while avoiding a typed-cell
+allocation. Ranks outside `0:ncells(grid)-1` throw `BoundsError`.
 """
 function idselect end
 
 """
     idcount_between(grid::AbstractGrid, lo::Integer, hi::Integer) -> Int
 
-The number of cells of `grid` whose raw id lies in the INCLUSIVE interval
-`[lo, hi]`; zero when `hi < lo`. Neither endpoint need name a cell.
+Return the number of `grid` cells in the inclusive raw-id interval `[lo, hi]`.
+The result is zero when `hi < lo`, and either endpoint may be a non-cell value.
 
-This is what makes a `ranges` store readable without touching a data array: the
-axis length is the sum of this over the stored intervals, and the same sum
-prefixed gives the index of every interval's first cell.
+Ranges stores use these counts to derive the axis length and each interval's
+starting index without reading a data array.
 
 The generic implementation is the rank difference, and is correct for any grid
 that implements [`idrank`](@ref).
@@ -108,32 +85,23 @@ function idcount_between end
 """
     idvalid(grid::AbstractGrid, id::Integer) -> Bool
 
-Whether `id` names a cell **of this grid's level**. Never throws.
+Return whether `id` names a cell at `grid`'s level. This predicate never throws.
 
-The ingest-time check for a dense axis: a Z7 id can be well formed and still
-name nothing (the twelve pentagons delete one child digit each), and DGGRID
-itself does not reject those, so a reader must.
+Dense-axis ingestion uses this check to reject Z7 phantom ids from the deleted
+pentagon branches.
 """
 function idvalid end
 
 """
     idlevel(grid::AbstractGrid, id::Integer) -> Union{Int,Nothing}
 
-The level `id` names a cell of, read out of the id ITSELF, or `nothing` where
-the id scheme carries no level to read.
+Return the level encoded by `id`, or `nothing` when the id scheme carries no
+level. This optional information enriches validation errors; the store's declared
+level remains authoritative.
 
-**Optional**, and informational only: a stored axis is read at the level the
-store declares, and this never overrides it. What it is for is the error a
-level-lying store produces — "names no cell of level 3" is more useful with
-"and is a cell of level 4" after it, and that second half is the id's own claim,
-not a second opinion about the store's.
-
-Z7 pads its digit slots to a fixed width, so the level is the count of leading
-non-pad digits and every well-formed id answers. HEALPix nested ids carry
-nothing: `0:12*4^L-1` is a prefix of `0:12*4^(L+1)-1`, so a level-2 id is a
-structurally valid level-3 id and the honest answer is `nothing` rather than a
-guess. A grid that does not implement this gets the default, which is the same
-answer.
+Z7 derives the level from the leading non-padding digits. HEALPix nested ids
+return `nothing` because the id ranges of successive levels overlap. Grids
+without a specialized method use the same `nothing` default.
 """
 idlevel(::AbstractGrid, ::Integer) = nothing
 
@@ -157,27 +125,19 @@ idtype(grid::AbstractGrid) = typeof(rawid(cellindex(grid, 1)))
 """
     storedid(::Type{I}, x) -> I
 
-A value out of a store's cell coordinate as the grid's own id type `I`.
+Interpret a stored coordinate value as the grid's id type `I`.
 
-**A stored id is REINTERPRETED, not converted.** Integer width and signedness
-are a writer's choice and no part of a cell's identity: an IGEO7 id in base cell
-8 or above sets the top bit, so a store whose coordinate is `Int64` — which is
-what a producer gets by letting the ids through any signed dtype — holds those
-cells as negative integers whose bits are exactly the same cells. A signed value
-of `I`'s own width is therefore read as those bits.
+Integer signedness is a storage choice. A same-width signed value therefore
+preserves its bit pattern when read as `I`; this supports IGEO7 ids whose top bit
+appears negative in `Int64`. [`idvalid`](@ref) separately verifies that the
+resulting bits name a cell.
 
-Nothing downstream takes that on trust: a bit pattern naming no cell is what
-[`idvalid`](@ref) rejects in the scan, and this function decides only whether
-the bits fit. Anything that fits neither the reinterpretation nor a plain
-conversion — a fractional float, a value of another width — is a malformed
-coordinate and raises `DGGSFormatError(check = :coordinate_width)` naming the
-value, rather than the `InexactError` a bare `convert` raises with no store in
-it.
+Exact numeric values within `I`'s range convert normally. Other widths and
+fractional values raise `DGGSFormatError(check = :coordinate_width)` with the
+offending value.
 
-A persisted chunk manifest is deliberately stricter: one written at another
-width is DECLINED rather than reinterpreted, because declining it costs a scan
-and nothing else, where declining the coordinate would make the store
-unreadable.
+Persisted manifests use stricter width matching because the reader can safely
+discard an incompatible manifest and scan the coordinate.
 """
 function storedid(::Type{I}, x::Integer) where {I<:Integer}
     typemin(I) <= x <= typemax(I) && return x % I
@@ -186,9 +146,7 @@ function storedid(::Type{I}, x::Integer) where {I<:Integer}
     return _coordinate_width(I, x)
 end
 
-# A coordinate stored as something other than an integer. Zarr keeps whatever
-# dtype the writer chose, and a float array is an id array only where each of
-# its values is exactly one id.
+# Non-integer coordinate dtypes are valid only for exact in-range integer values.
 function storedid(::Type{I}, x) where {I<:Integer}
     (isinteger(x) && typemin(I) <= x <= typemax(I)) && return convert(I, x)
     return _coordinate_width(I, x)
@@ -222,15 +180,10 @@ function idcount_between(grid::AbstractGrid, lo::Integer, hi::Integer)
     return upper - idrank(grid, a)
 end
 
-# --- IGEO7 / Z7: the existence model ---------------------------------------
-#
-# A level-L Z7 id is a base cell and L base-7 digits, tail-padded with the 7
-# sentinel, so ascending integers are ascending mixed-radix numerals and rank is
-# a digit walk. The correction is the pentagon chain: at every all-zero-prefix
-# node one child digit is deleted (2 for bases 0:5, 5 for bases 6:11), which
-# leaves `10*7^L + 2` cells rather than `12*7^L` well-formed strings. Both walks
-# below carry `azero`, the "prefix so far is all zeros" flag that is exactly the
-# condition under which the deletion applies.
+# A Z7 id contains a base cell, `L` base-7 digits and a 7-filled tail. Integer
+# order therefore follows the mixed-radix digits. Pentagon chains delete digit 2
+# for bases 0:5 and digit 5 for bases 6:11 whenever the prefix remains all zero;
+# `azero` tracks that condition during the rank walk.
 
 const _Z7Grid = HierarchicalLevelGrid{IGeo7System}
 
@@ -275,10 +228,7 @@ idvalid(grid::_Z7Grid, id::Integer) =
     id >= 0 && IGeo7.is_valid_z7(UInt64(id)) &&
     IGeo7._z7_leading_resolution(UInt64(id)) == grid.level
 
-# The leading-resolution walk is the level: the padding tail says where the
-# digits stop. A structurally invalid id has none to report — a broken padding
-# tail or a deleted-digit prefix names no cell at ANY level, so there is nothing
-# to tell the reader about it.
+# The padding boundary gives a valid Z7 id's level; invalid digit paths return nothing.
 function idlevel(::_Z7Grid, id::Integer)
     id >= 0 && IGeo7.is_valid_z7(UInt64(id)) || return nothing
     return Int(IGeo7._z7_leading_resolution(UInt64(id)))
@@ -291,8 +241,7 @@ const _HPXGrid = HierarchicalLevelGrid{HEALPixSystem}
 idtype(::_HPXGrid) = Int64
 idcell(grid::_HPXGrid, id::Integer) = LevelIndex(grid.level, Int64(id))
 
-# Nested ids are exactly `0:12*4^L-1` in canonical order, so rank is the id
-# itself, clamped to the level at both ends.
+# HEALPix nested rank is the id clamped to its level's `0:12*4^L-1` range.
 function idrank(grid::_HPXGrid, id::Integer)
     n = ncells(grid)
     id <= 0 && return 0
@@ -309,45 +258,38 @@ end
 
 idvalid(grid::_HPXGrid, id::Integer) = 0 <= id < ncells(grid)
 
-# No `idlevel`: the default `nothing` is the correct answer here and not a gap.
-# Every level-L nested id is also a well-formed level-(L+1) id, so an id names
-# no level of its own and a reader cannot be told one.
-
-# ===========================================================================
-# The encoding side
-# ===========================================================================
+# Overlapping HEALPix level ranges make the default `idlevel == nothing` exact.
 
 """
     CellEncoding
 
-How a store lays its cell axis out. The four shipped layouts are
+Describe how a store lays out its cell axis. The shipped layouts are
 [`DenseEncoding`](@ref), [`RangesEncoding`](@ref), [`ImplicitEncoding`](@ref)
-and [`CompactedEncoding`](@ref); a downstream package adds its own by subtyping
-this and registering an instance in [`ENCODING_REGISTRY`](@ref).
+and [`CompactedEncoding`](@ref). A downstream package can subtype this type and
+register an instance in [`ENCODING_REGISTRY`](@ref).
 
-An encoding implements [`cellaxis`](@ref) (build the axis, and with it the
-chunk manifest), its own validation, and [`write_eligible`](@ref), which
-`encoding = :auto` consults. It never touches id arithmetic: everything it
-needs about the ids themselves is [`idrank`](@ref) / [`idselect`](@ref) /
-[`idcount_between`](@ref) on the grid.
+An encoding implements [`cellaxis`](@ref), its validation, and
+[`write_eligible`](@ref), which `encoding = :auto` consults. Single-level
+encodings build a chunk-aware axis; the compacted encoding builds a
+[`MultiOrderVector`](@ref). Encodings delegate id arithmetic to
+[`idrank`](@ref), [`idselect`](@ref) and [`idcount_between`](@ref) on the grid.
 """
 abstract type CellEncoding end
 
 """
     DenseEncoding()
 
-One stored id per cell. Universal and the interop escape hatch; the axis costs
-a chunked pass over the id array to verify and to build the manifest from.
+Store one id per cell. Reading verifies the id array in a chunked pass and
+builds its manifest. This universal layout provides broad interoperability.
 """
 struct DenseEncoding <: CellEncoding end
 
 """
     RangesEncoding()
 
-An `(n, 2)` array of INCLUSIVE `[start, stop]` raw-id intervals at one level.
-The axis is computed from the intervals by rank/select, so it needs no id
-storage at all and no data IO: the length, every chunk's first and last id, and
-every selector are closed-form.
+Store an `(n, 2)` array of inclusive `[start, stop]` raw-id intervals at one
+level. Rank/select arithmetic derives the axis length, chunk endpoints and
+selectors without reading an id array.
 """
 struct RangesEncoding <: CellEncoding end
 
@@ -362,29 +304,27 @@ struct ImplicitEncoding <: CellEncoding end
 """
     CompactedEncoding()
 
-One stored cell per index at MIXED refinement levels: two aligned columns, a
-level and a raw id at that level, in [`MultiOrderVector`](@ref) container
-order — ascending by subtree-interval start.
+Store one raw id and one level per mixed-level cell. The aligned columns follow
+[`MultiOrderVector`](@ref) order, ascending by subtree-interval start.
 
-  - The store declares `refinement_level: null` and
-    `compression: "compacted"`, and names its level column in
-    `refinement_levels`. Its axis reads back as a `MultiOrderVector`.
-  - This is an EXTENSION, not a conforming layout: v1 of
-    `zarr-conventions/dggs` takes the word `compacted` but requires
-    `compression: "none"` wherever `refinement_level` is null, and for healpix
-    a `*uniq` scheme with no level column at all. Only this package reads
-    these stores.
+The store declares `refinement_level: null` and `compression: "compacted"`;
+its `refinement_levels` attribute names the level column. Reading restores a
+`MultiOrderVector` axis.
+
+This package defines the layout as an extension to v1 of
+`zarr-conventions/dggs`. Version 1 specifies `compression: "none"` when
+`refinement_level` is null and a `*uniq` scheme without a HEALPix level column.
+This package supplies the reader for the extended layout.
 """
 struct CompactedEncoding <: CellEncoding end
 
 """
     ENCODING_REGISTRY
 
-Store vocabulary (`"none"`, `"ranges"`, `"implicit"`, `"compacted"`) to
-[`CellEncoding`](@ref) instance. Conventions resolve an attribute's string
-through this table, and keyword symbols are sugar over the same entries, so a
-downstream encoding becomes usable by adding one pair —
-[`register_encoding!`](@ref).
+Map store vocabulary (`"none"`, `"ranges"`, `"implicit"`, `"compacted"`) to
+[`CellEncoding`](@ref) instances. Conventions and keyword symbols resolve
+through the same table. [`register_encoding!`](@ref) adds a downstream
+encoding.
 """
 const ENCODING_REGISTRY = Dict{String,CellEncoding}(
     "none" => DenseEncoding(),
@@ -398,11 +338,10 @@ const ENCODING_REGISTRY = Dict{String,CellEncoding}(
 
 Register `enc` under the vocabulary string `name`, the way a store spells it.
 
-A store's `compression` attribute, and `dggwrite`'s `encoding` keyword, are both
-resolved through [`ENCODING_REGISTRY`](@ref), so this is what makes a downstream
-encoding reachable by name. Reading it also needs [`cellaxis`](@ref) and writing
-it the write path's own verbs; an encoding that registers without them is
-refused by name rather than by `MethodError`.
+Both a store's `compression` attribute and `dggwrite`'s `encoding` keyword
+resolve through [`ENCODING_REGISTRY`](@ref). Reading also requires a
+[`cellaxis`](@ref) implementation; writing requires the write-path verbs.
+Incomplete registrations raise a named unsupported-encoding error.
 """
 register_encoding!(name::AbstractString, enc::CellEncoding) =
     setindex!(ENCODING_REGISTRY, enc, String(name))
@@ -421,8 +360,8 @@ encodingname(::CompactedEncoding) = "compacted"
 """
     cellaxis(enc::CellEncoding, grid_or_system, source...; kw...) -> AbstractVector
 
-The stored axis as an `AbstractVector` of typed cell ids. `source` is whatever
-the encoding reads:
+Build the stored axis as an `AbstractVector` of typed cell ids. `source` depends
+on the encoding:
 
 | encoding | `source` | cost |
 |---|---|---|
@@ -431,9 +370,8 @@ the encoding reads:
 | [`DenseEncoding`](@ref) | the id vector, lazy or not | one chunked pass |
 | [`CompactedEncoding`](@ref) | the level and id columns | one validating pass |
 
-The single-level encodings take a level grid and answer a `ChunkedCellVector`
-(built in `chunked_lookup.jl`, where that type lives); the compacted one takes
-the SYSTEM and answers a [`MultiOrderVector`](@ref).
+Single-level encodings take a level grid and return a `ChunkedCellVector`.
+Compacted encoding takes a system and returns a [`MultiOrderVector`](@ref).
 """
 function cellaxis end
 
@@ -442,15 +380,15 @@ function cellaxis end
 """
     write_eligible(enc::CellEncoding, grid::AbstractGrid, ids::AbstractVector) -> Bool
 
-Whether `ids` can be written in `enc`. This is what `encoding = :auto` asks:
-[`RangesEncoding`](@ref) is eligible exactly when the ids are sorted, unique,
-and all cells of `grid`'s single level; [`ImplicitEncoding`](@ref) additionally
-requires them to be the whole level; [`DenseEncoding`](@ref) always is, which
-is what makes `:auto` total.
+Return whether `ids` can be written with `enc`. `encoding = :auto` uses these
+rules:
 
-`ids` may be raw integers or typed cell ids. A downstream encoding that states
-no restriction is eligible: the fallback is `true`, and the write path refuses
-it by name if it implements nothing else.
+  - [`RangesEncoding`](@ref) requires sorted, unique cells from `grid`'s level.
+  - [`ImplicitEncoding`](@ref) additionally requires the complete level.
+  - [`DenseEncoding`](@ref) accepts every axis, making `:auto` total.
+
+`ids` may contain raw integers or typed cells. The downstream fallback returns
+`true`; the write path separately checks for the required implementation verbs.
 """
 write_eligible(::CellEncoding, ::AbstractGrid, ::AbstractVector) = true
 
@@ -459,8 +397,6 @@ write_eligible(::DenseEncoding, ::AbstractGrid, ::AbstractVector) = true
 write_eligible(::RangesEncoding, grid::AbstractGrid, ids::AbstractVector) =
     _sorted_unique_cells(grid, ids)
 
-# A single-level axis is written dense or as ranges; the compacted layout is
-# reached from a `MultiOrderLookup`, never from one level's ids.
 write_eligible(::CompactedEncoding, ::AbstractGrid, ::AbstractVector) = false
 
 function write_eligible(::ImplicitEncoding, grid::AbstractGrid, ids::AbstractVector)
@@ -480,8 +416,7 @@ function _sorted_unique_cells(grid::AbstractGrid, ids::AbstractVector)
     return true
 end
 
-# A typed id from another level is not a cell of this grid, and says so by
-# answering `nothing` rather than by handing over a raw id that would validate.
+# Returning `nothing` prevents a typed cell from validating against another level.
 _rawid(grid::AbstractGrid, x::Integer) = convert(idtype(grid), x)
 _rawid(grid::AbstractGrid, c::AbstractCellIndex) =
     level(c) == level(grid) ? convert(idtype(grid), rawid(c)) : nothing
@@ -489,32 +424,25 @@ _rawid(grid::AbstractGrid, c::AbstractCellIndex) =
 """
     idranges(grid::AbstractGrid, ids::AbstractVector; merge = :rank) -> Matrix
 
-The `(n, 2)` inclusive-range array for a sorted, unique, single-level `ids`, one
-row per run. `merge` chooses what counts as a run:
+Build one inclusive `[start, stop]` row per run in sorted, unique, single-level
+`ids`. `merge` defines a run:
 
-  - `:rank` — maximal runs of CONSECUTIVE CELLS. An interval is read back by
-    counting the cells inside it, not by stepping through the integers, so a run
-    may span integers that name nothing: at a Z7 digit rollover it always does,
-    since a 3-bit slot holds eight values and a base-7 digit uses seven, and
-    across a pentagon's deleted branch it may.
-  - `:step` — runs of ids ADJACENT AS INTEGERS, at the level's unit increment.
-    No interval can then span an id that names nothing, so a reader that counts
-    well-formed digit strings rather than cells gets the same answer. It costs
-    rows: the whole res-3 earth is 504 runs of at most 7 cells this way, and one
-    single run the other.
+  - `:rank` forms maximal runs of consecutive cells. These intervals may span
+    unused integers at Z7 digit rollovers and deleted pentagon branches.
+  - `:step` forms runs of ids separated by the level's integer unit. Every
+    integer in such an interval names a cell, so structural and cell-aware
+    readers produce the same count.
 
-Both encode the same axis, and [`cellaxis`](@ref) reads either back to it. The
-difference is interop: `:step` is what a structural-count reader needs, and what
-the published IGEO7 range stores hold.
+Both modes encode the same axis, and [`cellaxis`](@ref) reads either mode.
+Published IGEO7 range stores use interoperable `:step` runs.
 
 Throws a `DGGSFormatError` when `ids` is not [`write_eligible`](@ref) for
 [`RangesEncoding`](@ref).
 
 !!! note "Runs across a pentagon's deleted branch"
-    Under `:rank` a structural-count reader overcounts an interval by the
-    phantoms inside it — 4 116 against 3 432 on the whole res-3 level. The three
-    published IGEO7 range stores contain no such interval, because they lie off
-    the pentagon chains entirely.
+    At resolution 3, a structural reader counts 4,116 digit strings where a
+    `:rank` interval contains 3,432 cells. The published IGEO7 stores use
+    `:step` intervals that exclude those phantom ids.
 """
 function idranges(grid::AbstractGrid, ids::AbstractVector; merge::Symbol=:rank)
     merge in (:rank, :step) || throw(ArgumentError(
@@ -542,10 +470,7 @@ function idranges(grid::AbstractGrid, ids::AbstractVector; merge::Symbol=:rank)
     return [starts stops]
 end
 
-# The id distance between two cells that are adjacent in canonical order with
-# nothing rolling over between them — the level's unit increment, `2^(3(20-L))`
-# for Z7 and 1 for HEALPix nested. Read off the first two cells of the level,
-# which every grid with a hierarchical id orders as siblings.
+# The first sibling pair exposes the level's raw-id unit without rollover effects.
 function _idunit(grid::AbstractGrid)
     ncells(grid) >= 2 || return one(idtype(grid))
     return idselect(grid, 1) - idselect(grid, 0)
@@ -555,15 +480,13 @@ end
     rangeindex(grid::AbstractGrid, ranges::AbstractMatrix)
         -> (starts, stops, rstart, offsets)
 
-Validate an `(n, 2)` inclusive-range array and reduce it to the rank/select
-dictionary the axis is read through: `rstart[i]` is the global rank of interval
-`i`'s first cell, and `offsets[i]` the number of cells before it, with
-`offsets[end]` the total.
+Validate an `(n, 2)` inclusive-range array and build its rank/select index.
+`rstart[i]` gives interval `i`'s global starting rank; `offsets[i]` gives the
+number of preceding cells; `offsets[end]` gives the total.
 
-Each row must be a non-empty interval and the rows must ascend and be disjoint;
-anything else is a malformed store and throws a `DGGSFormatError` naming the row.
-The whole thing is `O(n * level)` digit arithmetic over an array that is
-kilobytes even for a store of tens of millions of cells, and it reads no data.
+Rows must contain non-empty, ascending, disjoint intervals. A malformed row
+raises `DGGSFormatError` with its index. The method performs `O(n * level)` digit
+arithmetic and reads no data arrays.
 """
 function rangeindex(grid::AbstractGrid, ranges::AbstractMatrix)
     size(ranges, 2) == 2 || throw(DGGSFormatError(check=:invalid_ranges_shape,
@@ -595,13 +518,10 @@ end
 """
     validate_ranges(grid::AbstractGrid, ranges::AbstractMatrix, declared::Integer)
 
-Check an `(n, 2)` inclusive-range array against the length the store declares
-for its data arrays, and throw a `DGGSFormatError` naming the failure otherwise.
-
-[`rangeindex`](@ref)'s structural checks, and then the normative one: the total
-cell count is `declared`. That last comparison is what catches an
-expansion-semantics disagreement — an exclusive `stop`, a wrong step, a
-structural rather than existence count — before a single data byte is read.
+Validate an `(n, 2)` inclusive-range array against the store's declared data
+length. [`rangeindex`](@ref) first checks the rows, then the method requires a
+total cell count of `declared`. This catches exclusive stops, incorrect steps
+and structural-count mismatches before reading data.
 """
 function validate_ranges(grid::AbstractGrid, ranges::AbstractMatrix, declared::Integer)
     offsets = last(rangeindex(grid, ranges))
@@ -622,25 +542,23 @@ function checkcount(grid::AbstractGrid, total::Integer, declared::Integer)
     return nothing
 end
 
-# ===========================================================================
-# The compacted axis
-# ===========================================================================
-
 """
     cellaxis(CompactedEncoding(), sys::AbstractHierarchicalGridSystem,
              cell_levels::AbstractVector{<:Integer}, cell_ids::AbstractVector;
              declared_length = nothing) -> MultiOrderVector
 
-Build the mixed-level axis of a `compression: "compacted"` store from its two
-aligned columns: index `k` holds the cell whose raw id is `cell_ids[k]` at
-level `cell_levels[k]`.
+Build the mixed-level axis of a `compression: "compacted"` store. Index `k`
+combines raw id `cell_ids[k]` with level `cell_levels[k]`.
 
-Every pair is checked — the level must be one of the system's, the id must name
-a cell of that level — and the whole set must already BE a
-[`MultiOrderVector`](@ref): pairwise disjoint as subtrees and ascending by
-subtree-interval start. Container order is required rather than restored,
-because the store's data arrays are laid out against these indices and a
-sort here would silently misalign every value.
+The method validates that:
+
+  - both columns have the declared length;
+  - every level belongs to the system;
+  - every id names a cell at its paired level; and
+  - the cells form disjoint subtrees in ascending subtree-interval order.
+
+The method preserves the stored order because sorting the cells would misalign
+them with the store's data values.
 """
 function cellaxis(::CompactedEncoding, sys::AbstractHierarchicalGridSystem,
     cell_levels::AbstractVector{<:Integer}, cell_ids::AbstractVector;
@@ -656,13 +574,12 @@ function cellaxis(::CompactedEncoding, sys::AbstractHierarchicalGridSystem,
                "$declared_length; the axis and the data disagree."))
     grids = Dict{Int,Any}()
     cells = map(1:n) do k
-        # Membership before narrowing: `Int` of a wild unsigned is an
-        # InexactError, not the format error a malformed store deserves.
+        # Check membership before narrowing so an out-of-range UInt gets a format error.
         raw = cell_levels[k]
         raw in levels(sys) || throw(DGGSFormatError(check=:invalid_stored_level,
             declared=Int(first(levels(sys))):Int(last(levels(sys))), observed=raw,
-            detail="index $k of the cell axis declares level $raw, which " *
-                   "$(nameof(typeof(sys))) does not have."))
+            detail="cell-axis index $k declares level $raw outside the " *
+                   "$(nameof(typeof(sys))) level range."))
         l = Int(raw)
         grid = get!(() -> levelgrid(sys, l), grids, l)
         id = storedid(idtype(grid), cell_ids[k])
@@ -682,9 +599,9 @@ function cellaxis(::CompactedEncoding, sys::AbstractHierarchicalGridSystem,
     end
     all(k -> mov[k] == cells[k], 1:n) || throw(DGGSFormatError(
         check=:compacted_axis_order,
-        detail="the compacted cell axis is not in container order — ascending " *
-               "by subtree-interval start — so the store's data arrays do not " *
-               "align with its cells. Rewrite the store with `dggwrite`."))
+        detail="the compacted cell axis must ascend by subtree-interval start; " *
+               "its current order misaligns the store's cells and data arrays. " *
+               "Rewrite the store with `dggwrite`."))
     return mov
 end
 

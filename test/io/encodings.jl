@@ -1,19 +1,10 @@
-# Grid id arithmetic (the existence model for Z7, the trivial one for HEALPix
-# nested) and the pluggable encoding registry.
-#
-# The oracle for every Z7 assertion is the enumerated truth: the level's cells
-# in canonical order, produced by the package's own `cellindex`, and the
-# structurally well-formed digit strings that name no cell (the "phantoms").
-# Counts reproduce the committed `10*7^L + 2` / `2*7^L - 2` numbers.
+# Enumerated canonical cells and well-formed phantom ids provide the Z7 oracle.
 
 using Test
 import DiscreteGlobalGrids as DGG
 using DiscreteGlobalGrids: IGeo7System, HEALPixSystem, Z7Cell, LevelIndex,
     levelgrid, ncells, cellindex, localindex, rawid, level
 
-# Every well-formed level-`L` digit string, ascending: base in 0:11 and `L`
-# digits in 0:6, tail padded with the 7 sentinel. `12 * 7^L` of them, of which
-# `2 * 7^L - 2` are phantoms — well formed but naming no cell.
 function structural_z7_ids(L::Int)
     p = 7^L
     tail = (UInt64(1) << (3 * (20 - L))) - UInt64(1)
@@ -112,9 +103,6 @@ end
         keys(Encodings.ENCODING_REGISTRY))
 end
 
-# A downstream encoding, as far as the registry is concerned: a subtype and an
-# instance. What it does with a store is the registry's business no more than a
-# convention's implementation is `CONVENTION_REGISTRY`'s.
 struct GriddedRunsEncoding <: Encodings.CellEncoding end
 Encodings.encodingname(::GriddedRunsEncoding) = "gridded_runs"
 
@@ -234,10 +222,6 @@ end
 end
 
 @testset "the compacted axis: two columns to a validated MultiOrderVector" begin
-    # Round-trip identity on both radices, and each malformed column refused by
-    # name. Kills a reader that sorts the columns into container order — which
-    # would silently misalign the data arrays — and one that admits a phantom,
-    # a foreign level, or an ancestor overlapping its own descendants.
     for sys in (HEALPixSystem(), IGeo7System())
         l1 = levelgrid(sys, 1)
         a = cellindex(l1, 2)
@@ -274,7 +258,7 @@ end
             Int8[99; lv[2:end]], ids)) === :invalid_stored_level
         @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys, lv,
             [typemax(Int64); ids[2:end]])) === :id_names_no_cell
-        # A level no `Int` can hold is a malformed store, not an InexactError.
+        # Validate the level before narrowing an out-of-range UInt to Int.
         @test checkof(() -> Encodings.cellaxis(CompactedEncoding(), sys,
             [typemax(UInt64); UInt64.(lv[2:end])], ids)) === :invalid_stored_level
     end

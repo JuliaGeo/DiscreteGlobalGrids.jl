@@ -1,44 +1,22 @@
-# ---------------------------------------------------------------------------
-# `MultiOrderVector`: cells at mixed refinement levels, pairwise disjoint as
-# subtrees, sorted by their descendant-range intervals at a reference level.
-# The storage form of a MOC (`MultiOrderCellSet` is the query form). Every
-# query is a binary search over the flat interval index — the layout astronomy
-# MOC libraries use; there is no tree. Everything requires
-# `has_sorted_subtrees(sys)`: without descendant ranges a subtree is not one
-# interval of a level. A5 throws.
-# ---------------------------------------------------------------------------
-
 """
     MultiOrderVector(set::MultiOrderCellSet)
     MultiOrderVector(sys, cells::AbstractVector; reference_level = deepest cell level)
 
-An immutable `AbstractVector` of cells at mixed refinement levels of one
-hierarchical system — the storage form of a MOC, where
-[`MultiOrderCellSet`](@ref) is the query form. Requires
-[`has_sorted_subtrees`](@ref).
-
-  - Members are pairwise disjoint as subtrees, ordered by the index interval
-    each occupies at the **reference level**: the order a sorted single-level
-    axis has, and the one [`dggwrite`](@ref) chunks against.
-  - That interval index is stored beside the ids, so [`localindex`](@ref),
-    [`covering_index`](@ref), `in`, `cellat` and [`covering`](@ref) each cost
-    one binary search, and `CellVector(mov; level = l)` expands to windows.
-  - `union`, `intersect`, `setdiff`, `symdiff` and `complement` are O(n + m)
-    and return the coarsest cells tiling the result, so `union(a, a)` may be
-    coarser than `a`. `==` compares stored cells; `issetequal` compares leaves.
-  - Construction sorts and validates, so a parallel value vector must be
-    permuted with it — `localindex(mov, c)` gives each cell's stored index.
+`MultiOrderVector` stores pairwise-disjoint mixed-level cells as an immutable
+MOC. A flat reference-level interval index provides O(log n) membership and
+covering-cell lookup. Construction validates the system, reference level, and
+subtree disjointness; the system must support [`has_sorted_subtrees`](@ref).
+Set operations return the coarsest cells tiling their result.
 """
 struct MultiOrderVector{ID,S<:AbstractHierarchicalGridSystem} <: AbstractVector{ID}
     system::S
     cells::Vector{ID}
-    starts::Vector{Int}      # first(descendant_range(sys, c, reference_level))
-    stops::Vector{Int}       # ... and its inclusive last
-    offsets::Vector{Int}     # offsets[i] = leaves at the reference level in cells 1:i
+    starts::Vector{Int}
+    stops::Vector{Int}
+    offsets::Vector{Int}
     reference_level::Int
 
-    # Validation lives in the inner constructor; `checked = false` is for
-    # callers that have just established the invariants themselves.
+    # Internal builders may skip validation after establishing the invariants.
     function MultiOrderVector{ID,S}(system::S, cells::Vector{ID}, starts::Vector{Int},
         stops::Vector{Int}, offsets::Vector{Int}, ref::Int,
         checked::Bool) where {ID,S<:AbstractHierarchicalGridSystem}
@@ -47,8 +25,7 @@ struct MultiOrderVector{ID,S<:AbstractHierarchicalGridSystem} <: AbstractVector{
     end
 end
 
-# `offsets` is derived, never passed in, so it cannot disagree with the
-# intervals.
+# Deriving offsets here keeps them consistent with the intervals.
 function _multiorder_vector(sys::S, cells::Vector{ID}, starts::Vector{Int},
     stops::Vector{Int}, ref::Int, checked::Bool) where {ID,S<:AbstractHierarchicalGridSystem}
     length(cells) == length(starts) == length(stops) || throw(ArgumentError(
@@ -63,8 +40,7 @@ function _multiorder_vector(sys::S, cells::Vector{ID}, starts::Vector{Int},
     return MultiOrderVector{ID,S}(sys, cells, starts, stops, offsets, ref, checked)
 end
 
-# Checked before any `descendant_range` call, which would otherwise fail with
-# a less specific error.
+# Validate the reference level before computing descendant ranges.
 function _check_reference(sys::AbstractHierarchicalGridSystem, cells, ref::Int)
     has_sorted_subtrees(sys) || throw(ArgumentError(
         "$(typeof(sys)) has no descendant ranges, so a cell's subtree is not one " *
@@ -87,14 +63,12 @@ function _check_multiorder(sys::AbstractHierarchicalGridSystem, cells, starts, s
         starts[i] <= stops[i] || throw(ArgumentError(
             "the interval of $(cells[i]) at level $ref is empty: " *
             "$(starts[i]):$(stops[i])"))
-        # Catches an id outside the system here rather than at the first
-        # geometry call that decodes it.
+        # Report invalid ids at construction, before a geometry call decodes them.
         1 <= starts[i] && stops[i] <= n || throw(ArgumentError(
             "$(cells[i]) is not a cell of $(typeof(sys)): its level-$ref interval " *
             "$(starts[i]):$(stops[i]) leaves the level's indices 1:$n"))
         i == 1 && continue
-        # Overlapping reference-level intervals mean one cell contains the
-        # other, or repeats it.
+        # Overlap means containment or repetition at the reference level.
         starts[i] > stops[i-1] || throw(ArgumentError(
             "multi-order cells must be pairwise disjoint: $(cells[i-1]) holds " *
             "indices $(starts[i-1]):$(stops[i-1]) at level $ref and $(cells[i]) " *
@@ -110,14 +84,12 @@ function MultiOrderVector(set::MultiOrderCellSet)
     sys = system(set)
     ref = set.reference_level
     _check_reference(sys, set.cells, ref)
-    # `set.keys` ARE the reference-level interval starts, already sorted, so
-    # only the stops are new work.
+    # The set already stores sorted reference-level interval starts.
     stops = [last(descendant_range(sys, c, ref)) for c in set.cells]
     return _multiorder_vector(sys, copy(set.cells), copy(set.keys), stops, ref, true)
 end
 
-# The keyword shadows the `reference_level` accessor, so the work takes a
-# positional `Int`.
+# A positional helper keeps the keyword separate from the accessor.
 MultiOrderVector(sys::AbstractHierarchicalGridSystem, cells::AbstractVector;
     reference_level::Integer=_default_reference_level(sys, cells)) =
     _multiorder_from_cells(sys, cells, Int(reference_level))
@@ -126,13 +98,12 @@ _default_reference_level(sys::AbstractHierarchicalGridSystem, cells) =
     isempty(cells) ? first(levels(sys)) : maximum(level, cells)
 
 function _multiorder_from_cells(sys::AbstractHierarchicalGridSystem, cells, ref::Int)
-    # An abstract input eltype would make every downstream cell call dynamic.
+    # A concrete id type keeps downstream cell operations specialized.
     E = eltype(cells)
     ID = isconcretetype(E) && E <: AbstractCellIndex ? E : cellindextype(sys)
     cs = collect(ID, cells)
     _check_reference(sys, cs, ref)
-    # The intervals go straight into the arrays the container keeps, rather
-    # than through a vector of ranges that is then read twice.
+    # Store interval endpoints directly in the container's arrays.
     starts = Vector{Int}(undef, length(cs))
     stops = Vector{Int}(undef, length(cs))
     sorted = true
@@ -141,9 +112,7 @@ function _multiorder_from_cells(sys::AbstractHierarchicalGridSystem, cells, ref:
         @inbounds starts[i], stops[i] = first(r), last(r)
         i == 1 || @inbounds(starts[i-1]) <= @inbounds(starts[i]) || (sorted = false)
     end
-    # `coarsen`, the store reader and every re-key emit cells already ascending,
-    # and the constructor validates the order either way, so the sort is a cost
-    # only the callers that need it pay.
+    # Common builders already emit ascending cells and can skip sorting.
     sorted && return _multiorder_vector(sys, cs, starts, stops, ref, true)
     perm = sortperm(starts)
     return _multiorder_vector(sys, cs[perm], starts[perm], stops[perm], ref, true)
@@ -151,13 +120,11 @@ end
 
 MultiOrderVector(mov::MultiOrderVector) = mov
 
-# A subset of a valid container keeps its system, its reference level and its
-# disjointness; only the intervals it keeps are new.
+# Subsets inherit system, reference level, and disjointness.
 _derive(mov::MultiOrderVector, cells::Vector, starts::Vector{Int}, stops::Vector{Int}) =
     _multiorder_vector(mov.system, cells, starts, stops, mov.reference_level, false)
 
-# Re-keying to a DEEPER reference level is a change of units: the intervals
-# scale, their order and their disjointness do not.
+# A deeper reference level rescales intervals while preserving their order.
 function _rekey(mov::MultiOrderVector, ref::Int)
     ref == mov.reference_level && return mov
     ref >= mov.reference_level || throw(ArgumentError(
@@ -184,20 +151,17 @@ Base.@propagate_inbounds function Base.getindex(mov::MultiOrderVector, k::Int)
     return @inbounds mov.cells[k]
 end
 
-# Immutable, so the whole-vector slice is the vector rather than a copy of it.
+# Immutability makes the whole-vector slice safe to return directly.
 Base.getindex(mov::MultiOrderVector, ::Colon) = mov
 
-# Ascending indices keep the interval index; any other index is answered with
-# a plain `Vector`. `AbstractVector` rather than `AbstractArray`, as in
-# `CellVector`, so a shaped index falls through to Base's generic.
+# Ascending vector indices preserve the interval index; other shapes use Base.
 Base.getindex(mov::MultiOrderVector, idx::AbstractVector{<:Integer}) = _subset(mov, idx)
 
-# Ambiguity tie-break against SmallCollections' own `getindex`, as in
-# `cell_vector.jl`.
+# Resolve `getindex` dispatch for SmallCollections vectors.
 Base.getindex(mov::MultiOrderVector,
     i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(mov, i)
 
-# A mask of the wrong shape is a bounds error; `findall` alone cannot check it.
+# Check the mask before `findall`, which discards its original axes.
 function _subset(mov::MultiOrderVector, mask::AbstractArray{Bool})
     axes(mask) == axes(mov) || throw(BoundsError(mov, (mask,)))
     return _subset(mov, findall(mask))
@@ -227,17 +191,13 @@ system(mov::MultiOrderVector) = mov.system
 """
     reference_level(mov::MultiOrderVector) -> Int
 
-The level the container's intervals are stated at, no shallower than any
-stored cell. A property of the container, not of the system, and not part of
-equality. Public but unexported: `DiscreteGlobalGrids.reference_level(mov)`.
+The container's interval level. It is at least as deep as every stored cell
+and does not participate in equality. This function is public but unexported;
+call it as `DiscreteGlobalGrids.reference_level(mov)`.
 """
 reference_level(mov::MultiOrderVector) = mov.reference_level
 
-# The container's own intervals, in the shape the set operations merge. A view
-# over `starts`/`stops` would save this copy, but the merges read one endpoint
-# at a time and two arrays cost more per read than one: measured, that trade is
-# 24-57% fewer bytes for 12-36% more time. It needs the layout change, not a
-# wrapper.
+# Pair interval endpoints once for the merge loops' access pattern.
 intervals(mov::MultiOrderVector) =
     [(@inbounds(mov.starts[i]), @inbounds(mov.stops[i])) for i in eachindex(mov.starts)]
 
@@ -248,12 +208,9 @@ intervals(mov::MultiOrderVector) =
     localindex(mov::MultiOrderVector, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
     localindex(mov::MultiOrderVector, lon::Real, lat::Real) -> Union{Int,Nothing}
 
-Index of `c` in the container, or `nothing` when it does not hold that
-exact cell — a stored ancestor or descendant of `c` does not count. One binary
-search, O(log n). The point forms locate the point's covering stored cell, as
-[`cellat`](@ref) does; lon/lat in degrees.
-
-[`covering_index`](@ref) answers which stored cell speaks for `c`.
+Return the exact stored index of `c`, or `nothing`. Point forms return the index
+of the covering stored cell. Each lookup is O(log n); longitude and latitude
+are in degrees. [`covering_index`](@ref) resolves ancestors explicitly.
 """
 function localindex(mov::MultiOrderVector, c::AbstractCellIndex)
     lc = level(c)
@@ -270,11 +227,9 @@ end
 """
     covering_index(mov::MultiOrderVector, c::AbstractCellIndex) -> Union{Int,Nothing}
 
-Index of the stored cell that is `c` or an ancestor of `c`, or `nothing`
-when none covers it — resolves a leaf to the cell holding its value. `c` may
-be deeper than the container's [`reference_level`](@ref); it is keyed through
-its reference-level ancestor. O(log n). [`localindex`](@ref) is exact
-membership.
+Return the index of the stored cell equal to or ancestral to `c`, or `nothing`
+for an uncovered cell. Cells deeper than the [`reference_level`](@ref) use
+their reference-level ancestor as the O(log n) search key.
 """
 function covering_index(mov::MultiOrderVector, c::AbstractCellIndex)
     ref = mov.reference_level
@@ -292,10 +247,9 @@ Base.in(c::AbstractCellIndex, mov::MultiOrderVector) = localindex(mov, c) !== no
     cellat(mov::MultiOrderVector, p::GO.UnitSphericalPoint) -> Union{AbstractCellIndex,Nothing}
     cellat(mov::MultiOrderVector, lon::Real, lat::Real)
 
-The stored cell containing the point, at whatever level it sits, or `nothing`
-when none covers it: one point location at the reference level plus one
-binary search. [`localindex`](@ref)'s point forms answer with the index
-instead.
+Return the stored cell containing the point, or `nothing` for an uncovered
+point. The lookup combines reference-level point location with one binary
+search. [`localindex`](@ref) returns its index.
 """
 function cellat(mov::MultiOrderVector, p::GO.UnitSphericalPoint)
     k = localindex(mov, p)
@@ -318,12 +272,9 @@ localindex(mov::MultiOrderVector, lon::Real, lat::Real) =
 """
     CellVector(mov::MultiOrderVector; level = reference_level(mov))
 
-The container expanded to single-level ids: the leaf cells its subtrees name
-at `level`, as a windowed [`CellVector`](@ref). `level` must be no shallower
-than the deepest stored cell. The windows are the stored cells'
-`descendant_range`s merged where adjacent, agreeing with
-[`level_ranges`](@ref) window for window. O(n) in the number of stored cells,
-whatever `level` is. [`cellset`](@ref) on the result returns `mov`.
+Expand the stored subtrees into a windowed [`CellVector`](@ref) at `level`.
+The target must be at least as deep as every stored cell. Construction is O(n)
+in stored cells and merges adjacent descendant ranges.
 """
 CellVector(mov::MultiOrderVector; level::Integer=reference_level(mov)) =
     _cellvector(mov, Int(level))
@@ -364,11 +315,9 @@ end
 """
     covering(mov::MultiOrderVector, target) -> MultiOrderVector
 
-The cells of `mov` whose subtrees meet a [`MultiOrderCoverage`](@ref) of
-`target`, kept whole, never clipped. `target` is anything [`query`](@ref)
-accepts: a GeoInterface geometry, an `Extents.Extent` in lon/lat degrees, or
-a `GO.UnitSpherical.SphericalCap`. O(log n) per coverage interval.
-[`covering_indices`](@ref) is the index-space form.
+Return whole stored cells whose subtrees meet a [`MultiOrderCoverage`](@ref) of
+`target`. `target` accepts the same geometries and extents as [`query`](@ref).
+[`covering_indices`](@ref) returns their indices.
 """
 function covering(mov::MultiOrderVector, target)
     ks = covering_indices(mov, target)
@@ -400,11 +349,7 @@ function covering_indices(mov::MultiOrderVector, target)
     return out
 end
 
-# --- set arithmetic over the intervals -------------------------------------
-#
-# Operands are rekeyed to the deeper of the two reference levels, merged as
-# sorted intervals, and decomposed by `_cells_from_intervals` into the
-# coarsest cells that tile the result — hence normalized minimal answers.
+# --- set arithmetic ---------------------------------------------------------
 
 function _same_space(a::MultiOrderVector, b::MultiOrderVector, verb::AbstractString)
     system(a) == system(b) || throw(ArgumentError(
@@ -434,8 +379,7 @@ function Base.setdiff(a::MultiOrderVector, b::MultiOrderVector)
         _setdiff_intervals(intervals(_rekey(a, ref)), intervals(_rekey(b, ref))), ref)
 end
 
-# Base's n-ary forms go through `union!` on a `Set`, losing order and
-# normalization; fold the binary forms instead.
+# Binary folds preserve interval order and normalization in n-ary operations.
 Base.union(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector...) =
     foldl(union, rest; init=union(a, b))
 Base.intersect(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector...) =
@@ -443,9 +387,7 @@ Base.intersect(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector.
 Base.setdiff(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector...) =
     foldl(setdiff, rest; init=setdiff(a, b))
 
-# The predicates Base would otherwise answer by scanning the stored ids, which
-# reads a parent and its children as disjoint. Across systems only an empty
-# left operand is a subset, as in `CellVector`.
+# Interval predicates recognize equivalent parent and child coverage.
 function Base.issubset(a::MultiOrderVector, b::MultiOrderVector)
     system(a) == system(b) || return isempty(a)
     ref = max(a.reference_level, b.reference_level)
@@ -472,9 +414,9 @@ Base.symdiff(a::MultiOrderVector, b::MultiOrderVector, rest::MultiOrderVector...
 """
     complement(mov::MultiOrderVector) -> MultiOrderVector
 
-Everything `mov` does not hold: the coarsest cells tiling the whole sphere
-minus its subtrees, at its own [`reference_level`](@ref).
-`complement(complement(mov))` is `mov` normalized.
+Return the coarsest cells that tile the sphere outside `mov` at its
+[`reference_level`](@ref). `complement(complement(mov))` is the normalized
+form of `mov`.
 """
 function complement(mov::MultiOrderVector)
     ref = mov.reference_level
@@ -483,9 +425,7 @@ function complement(mov::MultiOrderVector)
         _setdiff_intervals([(1, n)], intervals(mov)), ref)
 end
 
-# Sorted, disjoint, maximal intervals from a sorted list that may touch or
-# overlap. Adjacency counts as overlap, or a parent spanning two touching
-# intervals is never found.
+# Merge adjacent intervals so parent cells can span their boundary.
 function _merged_intervals(ivs::Vector{Tuple{Int,Int}})
     out = Tuple{Int,Int}[]
     for (lo, hi) in ivs
@@ -498,8 +438,7 @@ function _merged_intervals(ivs::Vector{Tuple{Int,Int}})
     return out
 end
 
-# Both operands are sorted by start, so union is an O(n + m) merge; ties keep
-# `A` first.
+# Stable merge keeps `A` first on equal starts.
 function _union_intervals(A::Vector{Tuple{Int,Int}}, B::Vector{Tuple{Int,Int}})
     both = Vector{Tuple{Int,Int}}(undef, length(A) + length(B))
     i = j = 1
@@ -554,10 +493,7 @@ function _setdiff_intervals(A::Vector{Tuple{Int,Int}}, B::Vector{Tuple{Int,Int}}
     return out
 end
 
-# Intervals back to cells: at each index, climb ancestors while they start
-# there and fit inside the interval, emit the highest, resume past it.
-# O(cells × depth); the emitted cells are sorted and disjoint, so the
-# container is built unchecked.
+# Greedy ancestor climbing emits a sorted, minimal tiling in O(cells × depth).
 function _cells_from_intervals(sys::AbstractHierarchicalGridSystem,
     ivs::Vector{Tuple{Int,Int}}, ref::Int)
     grid = levelgrid(sys, ref)
@@ -586,10 +522,7 @@ end
 
 # --- equality and geometry -------------------------------------------------
 
-# Same system and same cells. The reference level is the unit the intervals
-# are stated in, not part of what is stored, so containers keyed at different
-# levels compare equal without rekeying — and intervals alone cannot be
-# compared, since an interval names a cell only together with its level.
+# Equality compares stored cell identities; reference levels only key intervals.
 function Base.:(==)(a::MultiOrderVector, b::MultiOrderVector)
     system(a) == system(b) || return false
     length(a) == length(b) || return false

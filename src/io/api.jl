@@ -1,20 +1,15 @@
-# `dggread`/`dggwrite` are defined and exported here as stubs. Their methods
-# live in `DiscreteGlobalGridsZarrExt`, so the store types, keyword defaults
-# and IO all stay behind the Zarr weak dependency.
+# Stubs keep Zarr types and IO behind the optional Zarr extension.
 
-# Everything that matches no method of the extension lands back on the stub, so
-# what it says has to depend on whether the extension is there: telling a caller
-# to run `using Zarr` when Zarr is already loaded sends them to fix the one thing
-# that is not wrong.
+# The loaded-extension check distinguishes unsupported arguments from setup errors.
 _needs_zarr(f) = error(_no_zarr_method(f,
     Base.get_extension(DiscreteGlobalGrids, :DiscreteGlobalGridsZarrExt) !== nothing))
 
 function _no_zarr_method(f, loaded::Bool)
     loaded && return """
-        no `$f` method matches these arguments; the Zarr extension is loaded, so \
-        this is an argument-type problem and not a missing package. A store is a \
-        `Zarr.ZGroup`, a `Zarr.AbstractStore`, a path or a URL, and the cube \
-        `dggwrite` takes is a `DimArray` or `DimStack` over a cell dimension."""
+        no `$f` method matches these arguments. The Zarr extension is loaded; \
+        check the argument types. A store is a `Zarr.ZGroup`, a \
+        `Zarr.AbstractStore`, a path or a URL. `dggwrite` accepts a `DimArray` \
+        or `DimStack` over a cell dimension."""
     return """
         `$f` requires Zarr.jl. Run
 
@@ -28,34 +23,40 @@ end
             conventions = CONVENTION_REGISTRY, description = nothing) -> DimStack
     dggread(store, var::Symbol; kwargs...) -> DimArray
 
-**Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`;
-until it loads, this name is a stub whose only behaviour is to say so, and the
-extension's docstring — not this one — is the full keyword reference.
+**Requires `using Zarr`.** Loading Zarr activates the methods and their full
+keyword reference from `DiscreteGlobalGridsZarrExt`.
 
-Read a DGGS store into plain DimensionalData: one `Cells` dimension shared by
-every layer, carrying a [`ChunkedCellLookup`](@ref) — the lookup over an axis a
-store wrote, which resolves a cell without scanning it — or, for a `compacted`
-store, a [`MultiOrderLookup`](@ref) over its mixed-level cells. The grid SYSTEM
-is in that lookup's type, the level is a field of the grid it holds, and what is
-neither — orientation, ellipsoid, the layout the store keeps its axis in — rides
-in the [`StoreDescription`](@ref) under the stack's `metadata["description"]`.
+Read a DGGS store into plain DimensionalData with one `Cells` dimension shared
+by every layer. The dimension carries one of two lookups:
 
-`store` is a `Zarr.ZGroup`, a `Zarr.AbstractStore`, a local path, or a URL
-(`gs://`, `s3://`, `https://`). `vars = All()` reads every data variable, or
-name the `Symbol`s to read. Data arrays are lazy by default; `lazy = false`
-materializes them. The detected convention, the verbatim original attributes and
-the source encoding ride in the stack's `metadata`, which is enough to
-regenerate a value-identical store.
+  - [`ChunkedCellLookup`](@ref) resolves cells on a stored single-level axis
+    without scanning it.
+  - [`MultiOrderLookup`](@ref) represents the mixed-level cells of a
+    `compacted` store.
 
-`validate = :strict` checks that every stored id names a cell of the declared
-level and `:lazy` samples instead. Neither reaches a store carrying a chunk
-manifest this package wrote: that axis is built from the manifest and no id is
-scanned, which is what opens a store of tens of millions of cells at all.
-`validate = :scan` declines the manifest and runs the full scan on any store.
+The lookup type identifies the grid system, and a single-level lookup's grid
+stores its level. The [`StoreDescription`](@ref) in the stack's
+`metadata["description"]` stores the orientation, ellipsoid and cell-axis
+layout.
 
-`description` bypasses detection: pass a [`StoreDescription`](@ref) and the
-caller asserts grid, level, encoding and array names, leaving only the
-mechanical checks. That is how an attribute-less store is read.
+`store` accepts a `Zarr.ZGroup`, `Zarr.AbstractStore`, local path or URL
+(`gs://`, `s3://`, `https://`). The main keywords are:
+
+  - `vars = All()` reads every data variable; a collection of `Symbol`s selects
+    specific variables.
+  - `lazy = true` preserves store-backed arrays; `false` materializes them.
+  - `validate = :strict` checks every id in scanned coordinates and trusts a
+    package-written chunk manifest.
+  - `validate = :lazy` samples each scanned coordinate chunk.
+  - `validate = :scan` ignores a trusted manifest and checks every id.
+  - `description = StoreDescription(...)` supplies grid, level, encoding and
+    array names directly and skips convention detection.
+
+The stack metadata records the detected conventions, source encoding and
+original attributes needed for a value-identical rewrite. A trusted manifest
+lets the default validation open large package-written stores without scanning
+their coordinate ids. A supplied [`StoreDescription`](@ref) enables reading an
+attribute-free store while retaining the mechanical checks.
 """
 dggread(args...; kwargs...) = _needs_zarr("dggread")
 
@@ -64,50 +65,48 @@ dggread(args...; kwargs...) = _needs_zarr("dggread")
              conventions = DEFAULT_WRITE_CONVENTIONS, chunks = :auto,
              merge = :step, chunk_target = 1_000_000) -> dest
 
-**Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`;
-until it loads, this name is a stub whose only behaviour is to say so, and the
-extension's docstring — not this one — is the full keyword reference.
+**Requires `using Zarr`.** Loading Zarr activates the methods and their full
+keyword reference from `DiscreteGlobalGridsZarrExt`.
 
 Write a `DimStack` or `DimArray` over a `Cells` dimension to a Zarr v2 directory
-store. The cell dimension carries a `CellLookup` or a
-[`ChunkedCellLookup`](@ref) — this package's way of saying the axis is still
-sorted, unique and at one level — or a [`MultiOrderLookup`](@ref), a
-mixed-level axis. `dest` is a local directory path or a writeable
-`Zarr.ZGroup`; a remote URL is refused rather than half-written — write locally
-and upload.
+store. A `CellLookup` or [`ChunkedCellLookup`](@ref) identifies a sorted,
+unique, single-level axis; a [`MultiOrderLookup`](@ref) identifies a mixed-level
+axis. `dest` is a local directory path or a writable `Zarr.ZGroup`. URL
+destinations are rejected; write locally and upload, or pass an already-open
+writable remote group.
 
-`encoding = :auto` picks compacted for a mixed-level axis (a
-[`MultiOrderLookup`](@ref)), ranges where a single-level axis is eligible —
-sorted, unique — and dense otherwise; `:dense` is the interop escape for
-readers that cannot expand ranges, `:ranges` forces the compact form, and
-`:implicit` writes no cell coordinate at all, which needs a whole level. A
-single-level encoding requested for a mixed-level axis is refused; present the
-cube at one level with [`expand`](@ref) to write it that way. `conventions`
-stamps the store, dual by default so that both a convention-aware reader and
-xdggs can open it; a compacted store carries no xdggs stamp, which cannot say
-mixed-level.
+`encoding` selects the cell-axis layout:
 
-`merge` picks the ranges run rule: `:step` (default) merges unit-increment ids,
-which a structural reader also counts correctly; `:rank` merges rank-adjacent
-cells for the fewest rows, and is read back correctly only by a rank-aware
-reader such as this package. `chunks = :auto` aims each chunk at
-`chunk_target` as a whole number of complete coarse-ancestor subtree runs; an
-`Integer` fixes the chunk length in cells instead. `chunk_target` counts the
-ELEMENTS of a chunk — cells times the extents of the non-cell dimensions, which
-are one chunk each — so a layer with a 40-step time axis gets a fortieth of the
-cells per chunk.
+  - `:auto` selects compacted for a mixed-level axis, ranges for an eligible
+    single-level axis, and dense otherwise.
+  - `:dense` writes every id for broad reader compatibility.
+  - `:ranges` writes the compact single-level range representation.
+  - `:implicit` writes a complete level with no cell coordinate.
+  - `:compacted` writes the aligned id and level columns of a mixed-level axis.
 
-Each layer's `metadata` is written as its array attributes and the stack's
-`metadata["attrs"]` as the group's, the two places `dggread` puts them, so a
-store read and rewritten keeps its `units`, `long_name` and group vocabulary;
-convention-generated keys are stamped over the producer's. A round trip
-normalizes two things: layers are written in alphabetical order, and each
-layer's attributes carry the `_ARRAY_DIMENSIONS` this writer stamps.
+Single-level encodings require [`expand`](@ref) to present mixed-level data at
+one level. `conventions` stamps the store with both default conventions for
+single-level layouts. Compacted stores carry the compatible DGGS convention
+metadata; xdggs attributes describe only a single-level coordinate.
 
-`layout` chooses the SHAPE of the store rather than the shape of its cell
-coordinate: `:cells` (the default) is everything above, a one-dimensional cell
-axis; `:subzones` is the two-dimensional [`SubzoneLayout`](@ref), which takes an
-`ancestor_level` and none of the keywords above it.
+The remaining layout controls are:
+
+  - `merge = :step` merges unit-increment ids for compatibility with structural
+    readers; `:rank` merges rank-adjacent cells for fewer rows and requires a
+    rank-aware reader.
+  - `chunks = :auto` groups complete coarse-ancestor subtree runs near the
+    `chunk_target`; an integer fixes the chunk length in cells.
+  - `chunk_target` counts all elements in a chunk, including the extents of
+    non-cell dimensions.
+
+The writer restores each layer's metadata as array attributes and
+`metadata["attrs"]` as group attributes. Convention-generated keys take
+precedence. A round trip sorts layers alphabetically and adds
+`_ARRAY_DIMENSIONS` to each layer's metadata.
+
+`layout` selects the store shape. `:cells` uses the one-dimensional cell axis
+described above. `:subzones` uses the two-dimensional [`SubzoneLayout`](@ref)
+and takes an `ancestor_level`.
 """
 dggwrite(args...; kwargs...) = _needs_zarr("dggwrite")
 
@@ -118,11 +117,10 @@ dggwrite(args...; kwargs...) = _needs_zarr("dggwrite")
 **Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`,
 whose docstring is the full keyword reference.
 
-Create — or reopen — an ancestor-subzone store for incremental writing: the
-group, its arrays and its attributes are stamped once, and the columns are
-filled afterwards, one [`dggwrite!`](@ref) at a time. A column is one chunk and
-therefore one file, and a column write rewrites nothing shared, so tasks writing
-disjoint columns need no coordination.
+Create or reopen an ancestor-subzone store for incremental writing. Creation
+stamps the group, arrays and attributes once. Each later [`dggwrite!`](@ref)
+fills one column, represented by one chunk and one file. Tasks can therefore
+write disjoint columns independently.
 
 See [`SubzoneLayout`](@ref) for the layout itself and [`dggwrite`](@ref)'s
 `layout = :subzones` for the one-shot form.
@@ -135,9 +133,9 @@ subzonestore(args...; kwargs...) = _needs_zarr("subzonestore")
 
 **Requires `using Zarr`.** The methods live in `DiscreteGlobalGridsZarrExt`.
 
-Fill columns of a store [`subzonestore`](@ref) has already created: one ancestor
-cell's subtree from a vector in ascending cell id, or every complete column of a
-cube over a cell axis.
+Fill a store created by [`subzonestore`](@ref). A vector supplies one ancestor
+cell's subtree in ascending cell-id order; a cube supplies every complete column
+over its cell axis.
 
 `values` is as long as that ancestor's subtree really is — `7^d` for a hexagon
 and `(5*7^d + 1)/6` for a pentagon — and the rest of the column stays fill.

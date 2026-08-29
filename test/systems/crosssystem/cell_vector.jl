@@ -1,6 +1,3 @@
-# Cross-system laws for `CellVector`, including expansion, indexing, selection,
-# iteration, and compact storage of multi-order cell sets.
-
 module CellVectorTests
 
 using Test
@@ -14,8 +11,6 @@ using .DGGTestHelpers: syslabel, sweepcovers
 const FB = DGG.Fallbacks
 const EN = DGG.Engine
 
-# The same Switzerland/Zurich fixture the DimensionalData suite uses, so the
-# two files can be read against each other.
 const REGION = GI.Polygon([GI.LinearRing([(6.0, 45.8), (10.5, 45.8), (10.5, 47.8),
     (6.0, 47.8), (6.0, 45.8)])])
 const ZURICH = GI.Polygon([GI.LinearRing([(8.3, 47.2), (8.8, 47.2), (8.8, 47.6),
@@ -36,8 +31,7 @@ const SWEEP = [
     (DGG.AuthalicSystem(DGG.IGeo7System()), 6, 3),
 ]
 
-# The oracle, computed without the type under test and through the same trait
-# branch it takes, but by a different route.
+# The oracle expands descendants independently of CellVector storage.
 function expand(sys, set, l::Int)
     grid = DGG.levelgrid(sys, l)
     DGG.has_sorted_subtrees(sys) &&
@@ -50,10 +44,6 @@ nwin(cv) = EN.nwindows(EN.windows(cv))
 @testset "the sweep covers every registered system" begin
     sweepcovers(SWEEP)
 end
-
-# ---------------------------------------------------------------------------
-# The core is reachable, and reachable without a cube
-# ---------------------------------------------------------------------------
 
 @testset "the compression is DimensionalData-free" begin
     sys, leaf = DGG.IGeo7System(), 5
@@ -71,8 +61,7 @@ end
     for f in (DGG.covering, DGG.covering_indices, DGG.cellset)
         @test any(m -> occursin("cell_vector.jl", string(m.file)), methods(f))
     end
-    # `covering`/`covering_indices` are answered ONLY in the core: the cube
-    # layer selects by calling them, never by reimplementing them.
+    # Cube selection delegates these functions to the engine substrate.
     for f in (DGG.covering, DGG.covering_indices)
         @test !any(m -> occursin("dimensionaldata.jl", string(m.file)), methods(f))
     end
@@ -89,10 +78,6 @@ end
     @test parent(DGG.CellLookup(set)) isa DGG.CellVector
     @test parent(DGG.CellLookup(set)) == cv
 end
-
-# ---------------------------------------------------------------------------
-# The laws, once per system
-# ---------------------------------------------------------------------------
 
 @testset "a compressed cell vector: $(syslabel(sys))" for (sys, leaf, _) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
@@ -141,8 +126,7 @@ end
         @test DGG.localindex(cv, outside) === nothing
         @test !(outside in cv)
         @test all(cv[k] in cv for k in (1, length(ids) ÷ 2, length(ids)))
-        # An id from another level names no index here, rather than the
-        # index of a cell with the same raw bits.
+        # Level identity prevents raw-bit collisions from matching.
         coarser = DGG.ancestor(sys, first(ids), leaf - 1)
         @test DGG.localindex(cv, coarser) === nothing
         @test !(coarser in cv)
@@ -191,8 +175,7 @@ end
         @test DGG.level(pg) == leaf
         @test all(DGG.cellindex(pg, k) == cv[k] for k in eachindex(ids))
         @test all(DGG.localindex(pg, cv[k]) == k for k in eachindex(ids))
-        # The round trip is exact, and it is the same windows rather than a
-        # re-derivation of them.
+        # The round trip preserves the original compressed windows.
         back = DGG.CellVector(pg)
         @test back == cv
         @test collect(back) == ids
@@ -250,10 +233,6 @@ end
     end
 end
 
-# ---------------------------------------------------------------------------
-# Set arithmetic over the windows
-# ---------------------------------------------------------------------------
-
 @testset "intersect and issubset are O(#windows)" begin
     sys, leaf = DGG.IGeo7System(), 6
     big = DGG.CellVector(DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf))
@@ -292,10 +271,7 @@ end
         DGG.query(DGG.HEALPixSystem(), DGG.MultiOrderCoverage(REGION); level=9)))
 end
 
-# ---------------------------------------------------------------------------
-# Memory: the reason the type exists, restated without a cube
-# ---------------------------------------------------------------------------
-
+# Memory growth follows window count independently of logical leaf count.
 @testset "memory is O(#windows): $(syslabel(sys))" for (sys, leaf, deeper) in SWEEP
     if !DGG.has_sorted_subtrees(sys)
         @test !DGG.has_sorted_subtrees(sys)

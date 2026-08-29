@@ -1,14 +1,3 @@
-# The machinery no system overrides: the region containers — `PartialGrid`,
-# `CellVector`, `MultiOrderCellSet` — the tree cursor and index tree, the
-# query planner, and the halo, adjacency and neighbourhood walks over all of
-# them. One implementation each, reached through the exported verbs.
-#
-# `Fallbacks` is the other half: the overridable defaults a system replaces.
-# The dependency runs one way, `Engine` on `Fallbacks`, with two methods
-# deliberately living here rather than there because their signatures name a
-# type defined here — `Fallbacks._check_wrappable(::PartialGrid)` and
-# `halo_engine(::AbstractQuadFaceGridSystem, ...)`.
-
 module Engine
 
 import ..DiscreteGlobalGrids as DGG
@@ -52,45 +41,33 @@ import Extents
 import DE9IM
 import ConservativeRegridding: Trees
 import GeometryOps: SpatialTreeInterface as STI
-# Only for the `getindex` tie-break in `cell_vector.jl`: a neighbour list is one
-# of SmallCollections' vectors, and indexing a cell vector by one is otherwise
-# ambiguous against that package's own method.
+# Resolve `getindex` dispatch for SmallCollections neighbor vectors.
 import SmallCollections
 
-# Unit-sphere aliases. Keep `SphericalCap` as the UnionAll so its two-argument
-# constructor remains available.
+# The UnionAll alias preserves the two-argument `SphericalCap` constructor.
 const US = GO.UnitSpherical
 const USPoint = GO.UnitSphericalPoint{Float64}
 const SphericalCap = GO.UnitSpherical.SphericalCap
 const Cap = GO.UnitSpherical.SphericalCap{Float64}
 
 include("partial_grid.jl")
-# The halo is the outside face of the boundary `Fallbacks`' subtree iterators
-# walk the inside of, and it reuses that file's stack vocabulary.
+# Halo walkers reuse the subtree-boundary stack types.
 include("halo.jl")
 include("cursor.jl")
 include("index_tree.jl")
-# Every cursor that derives a node extent rather than storing one reads the
-# same per-task tables.
+# Per-task tables share derived extents across cursors.
 include("extent_memo.jl")
 # The tiled raster tree packs tiles the way the index tree packs cells.
 include("tiled_raster.jl")
 include("query.jl")
 include("multiorder.jl")
 include("cell_vector.jl")
-# The mixed-level storage container, and the aggregation verbs that build one
-# from leaf data; both read the compressed vector's windows.
 include("multiorder_vector.jl")
-# The grid face of that container: its stored cells, each at its own level.
 include("multiorder_grid.jl")
 include("aggregate.jl")
-# The stencil layer reads every collection above it — the subset grid, the
-# compressed vector, the multi-order set — and the lazy border walkers besides.
 include("stencil.jl")
 # The indexed iterator depends on the stencil and window helpers.
 include("neighborhood.jl")
-# A vector over the collection that knows some entries and computes the rest,
-# and the bounded per-task reader a sweep wraps one in.
 include("cellfield.jl")
 # The field requests resolve against the clip the sweep above already made.
 include("needs.jl")
@@ -98,8 +75,6 @@ include("needs.jl")
 include("region.jl")
 # The cached table reads the region verbs and the same cursor.
 include("adjacency.jl")
-# The algebra composes everything above it: the halo walk grows a region, the
-# window helpers merge one, and the multi-order set is what compaction answers.
 include("region_algebra.jl")
 
 end # module Engine

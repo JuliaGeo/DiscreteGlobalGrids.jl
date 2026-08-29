@@ -1,8 +1,6 @@
 # ## Grids
 
-# Every grid publishes the same positional geometry interface.  Defining the
-# conversion at that interface also covers wrappers such as `AuthalicGrid` and
-# grid implementations supplied by downstream packages.
+# The abstract interface covers wrappers and downstream grid implementations.
 function Makie.convert_arguments(P::Makie.PointBased, grid::DGG.AbstractGrid)
     Makie.convert_arguments(P,
         GO.transform(GO.GeographicFromUnitSphere(), DGG.getcell(grid)))
@@ -15,9 +13,7 @@ end
 
 # ## Multi-order queries and results
 
-# A coverage is the query specification, so plotting it means plotting its
-# target.  The selected DGGS cells belong to the `MultiOrderCellSet` returned
-# after a system and a resolution or budget have been supplied.
+# A coverage plots its query target; a resolved cell set plots selected cells.
 function Makie.convert_arguments(P::Makie.PointBased, coverage::DGG.MultiOrderCoverage)
     Makie.convert_arguments(P, parent(coverage))
 end
@@ -52,9 +48,7 @@ function Makie.convert_arguments(P::Type{<:Makie.Poly}, lookup::DGG.AbstractCell
     Makie.convert_arguments(P, parent(lookup))
 end
 
-# A mixed-level container has no single grid to read through; `cell_polygons`
-# resolves each cell at its own level, as the `MultiOrderCellSet` conversions
-# above do.
+# Resolve mixed-level polygons through each cell's own level grid.
 function Makie.convert_arguments(P::Makie.PointBased, vector::DGG.MultiOrderVector)
     Makie.convert_arguments(P,
         GO.transform(GO.GeographicFromUnitSphere(), DGG.cell_polygons(vector)))
@@ -73,8 +67,7 @@ function Makie.convert_arguments(P::Type{<:Makie.Poly}, lookup::DGG.MultiOrderLo
     Makie.convert_arguments(P, parent(lookup))
 end
 
-# The subtree iterators carry the system and leaf level which a plain vector of
-# cell ids lacks, so they can be read unambiguously as partial grids.
+# Iterator metadata makes the partial-grid interpretation unambiguous.
 const SubtreeIterator = Union{DGG.EdgeCellIterator,DGG.InnerCellIterator}
 
 _partial_grid(iterator::SubtreeIterator) =

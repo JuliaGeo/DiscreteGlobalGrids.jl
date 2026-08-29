@@ -1,16 +1,4 @@
-# ---------------------------------------------------------------------------
-# The two aggregation verbs, without DimensionalData.
-#
-# `aggregate` reduces a `(CellVector, values)` pair to one fixed coarser level;
-# `coarsen` merges complete sibling groups within a tolerance and returns the
-# mixed-level container.
-#
-# Swept on a radix-4 system (HEALPix) and a radix-7 one (IGeo7): IGeo7's
-# sibling subtrees have unequal sizes, so a mean of child means differs from a
-# mean of leaves there — an implementation that summarised children instead of
-# leaves would pass on HEALPix alone. The oracles group with `ancestor` and a
-# `Dict`, not the implementations' descendant-range walks.
-# ---------------------------------------------------------------------------
+# IGeo7's unequal sibling subtrees expose child-mean aggregation errors.
 
 module AggregateTests
 
@@ -27,22 +15,18 @@ const LONLAT = GO.UnitSpherical.GeographicFromUnitSphere()
 const REGION = GI.Polygon([GI.LinearRing([(6.0, 45.8), (10.5, 45.8), (10.5, 47.8),
     (6.0, 47.8), (6.0, 45.8)])])
 
-# `dense`/`coarse` are the whole-level pair, `deep`/`shallow` the coverage pair,
-# and `sub` the level a rooted subtree is expanded to for `coarsen`.
 const SWEEP = [
     (system=DGG.HEALPixSystem(), dense=3, coarse=1, deep=8, shallow=6, sub=3),
     (system=DGG.IGeo7System(), dense=2, coarse=1, deep=6, shallow=4, sub=3),
 ]
 
-# Swept, not tuned; fixtures pick the first that yields a mixed-level answer.
 const TOLERANCES = (0.0, 2.0, 5.0, 8.0, 10.0, 25.0, 45.0)
 
 sysname(sys) = string(nameof(typeof(sys)))
 
 # --- fixtures --------------------------------------------------------------
 
-# A whole rooted subtree — complete by construction; completeness is broken by
-# removing cells.
+# A rooted subtree guarantees complete sibling groups.
 rooted_subtree(sys, l) = DGG.CellVector(DGG.subtree(sys, first(DGG.rootcells(sys)), l))
 
 # Centroid latitude in degrees: a smooth, grid-derived field.
@@ -69,9 +53,7 @@ function brute_aggregate(f, sys, ids, values, l)
     return order, [f(values[groups[a]]) for a in order], groups
 end
 
-# Per-leaf oracle for `coarsen`: climb from `minlevel`, take the first
-# complete-and-within-tolerance ancestor (the criterion is monotone, so the
-# first hit is the coarsest).
+# The first valid ancestor is the coarsest because the criterion is monotone.
 function brute_coarsen(sys, cv, values, atol, by, minlevel)
     L = DGG.level(cv)
     index = dataindex(cv)
@@ -101,8 +83,7 @@ function brute_coarsen(sys, cv, values, atol, by, minlevel)
     return cells, vals
 end
 
-# Per leaf, the value stored for its covering cell. Requires every stored cell
-# complete.
+# Complete stored cells define one value for every covered leaf.
 function covering_values(sys, cells, vals, cv)
     L = DGG.level(cv)
     index = dataindex(cv)
@@ -112,10 +93,6 @@ function covering_values(sys, cells, vals, cv)
     end
     return out
 end
-
-# ---------------------------------------------------------------------------
-# aggregate
-# ---------------------------------------------------------------------------
 
 @testset "aggregate groups by ancestor: $(sysname(f.system))" for f in SWEEP
     sys, dense, coarse = f.system, f.dense, f.coarse
@@ -206,10 +183,6 @@ end
     a5cv = DGG.CellVector(DGG.levelgrid(a5, 1))
     @test_throws ArgumentError DGG.aggregate(sum, a5cv, Float64.(eachindex(a5cv)), 0)
 end
-
-# ---------------------------------------------------------------------------
-# coarsen: the core, checked without the container
-# ---------------------------------------------------------------------------
 
 @testset "coarsen merges what the criterion allows: $(sysname(f.system))" for f in SWEEP
     sys, L = f.system, f.sub
@@ -423,10 +396,6 @@ end
     a5cv = DGG.CellVector(DGG.levelgrid(a5, 1))
     @test_throws ArgumentError DGG.coarsen(a5cv, Float64.(eachindex(a5cv)); atol=0.0)
 end
-
-# ---------------------------------------------------------------------------
-# The container the core is wrapped in
-# ---------------------------------------------------------------------------
 
 @testset "coarsen hands back a MultiOrderVector: $(sysname(f.system))" for f in SWEEP
     sys, L = f.system, f.sub

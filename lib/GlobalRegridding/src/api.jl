@@ -1,8 +1,5 @@
 # Public regridding API.
 
-# Whether `data` declares a chunking of its own: what makes a regrid lazy by
-# default, what `SourceChunking` reads, and what `flatsource` materializes before
-# reshaping. It says nothing about residence; `_isdisksource` tests that.
 declareschunks(data) = DiskArrays.haschunks(data) isa DiskArrays.Chunked
 
 # Nodata metadata keys, in precedence order.
@@ -35,15 +32,13 @@ end
            storage = nothing, sampling = nothing)
     regrid(data, plan::AbstractRegriddingPlan)
 
-Regrid `data` onto `to`. Spatial dimensions must come first and flatten in the
-source space's cell order. Non-spatial dimensions retain their order. One plan
-is reused for all non-spatial slices.
+Regrid `data` onto `to`. Spatial dimensions lead in source-cell order;
+non-spatial dimensions retain their order. One plan serves every non-spatial
+slice.
 
-A dimensional source comes back labelled with the destination's own axes — a
-[`RasterGrid`](@ref) echoes the dimension order it was constructed with —
-followed by its unchanged non-spatial dimensions. Destinations without axes of
-their own keep a flat `Cell` axis. Lazy results carry the same labels and
-shape over a disk-backed array.
+Dimensional results use the destination axes followed by the unchanged
+non-spatial dimensions. A destination without axes uses one flat `Cell` axis.
+Lazy results preserve the same labels and shape over a disk-backed array.
 
 Results are floating point. [`Weighted`](@ref) writes `missing` when supported
 by the source element type, and `NaN` otherwise.
@@ -51,11 +46,13 @@ by the source element type, and `NaN` otherwise.
 # Keyword arguments
 
   - `to`: destination [`RegridSpace`](@ref) or a package-specific target.
-  - `from`: source space; `nothing` derives a [`RasterGrid`](@ref) from `data`.
+  - `from`: source space. `nothing` infers a self-describing cell axis or a
+    [`RasterGrid`](@ref).
   - `method`: weight-building method; defaults to [`Conservative`](@ref).
   - `missingpolicy`: [`Weighted`](@ref) means or [`Extensive`](@ref) sums.
-  - `missingval`: additional nodata sentinel. `missing` and `NaN` are always invalid.
-  - `lazy`: compute on demand ([`LazyRegridArray`](@ref)); defaults to chunked sources.
+  - `missingval`: additional nodata sentinel. `missing` and `NaN` remain invalid.
+  - `lazy`: compute on demand with [`LazyRegridArray`](@ref); defaults to chunked
+    sources.
   - `chunks`: lazy destination tiling. `nothing` derives it automatically.
   - `budget`: target bytes for lazy reads and weights, default `2^31`.
   - `storage`: lazy weight storage, [`PerChunk`](@ref) or [`Spilled`](@ref).
@@ -63,14 +60,14 @@ by the source element type, and `NaN` otherwise.
     area-based methods give `Intervals`, point samples give `Points`
     ([`outputsampling`](@ref)).
 
-`chunks`, `budget` and `storage` apply only to `lazy = true`, and `sampling`
-only to `lazy = false`. The plan form accepts no keywords because the plan
-contains all settings.
+Keyword applicability:
 
-Every keyword above is [`plan_regrid`](@ref)'s and is forwarded to it, so each
-default and each check is stated there once. The relation keywords
-`dependencies`, `refine` and `narrow` describe a plan that is kept and are
-refused here.
+  - Lazy regrids accept `chunks`, `budget`, and `storage`.
+  - Eager regrids accept `sampling`.
+  - The plan form accepts no keywords because its plan contains all settings.
+
+The keyword form delegates to [`plan_regrid`](@ref). Dependency-relation
+keywords belong to reusable plans and are accepted directly by `plan_regrid`.
 """
 function regrid end
 
@@ -94,9 +91,9 @@ regrid(data, plan::AbstractRegriddingPlan) =
     destinationdims(plan::DirectPlan) -> Tuple or nothing
     destinationdims(plan::ChunkedPlan) -> Tuple or nothing
 
-Return the dimensions labelling this plan's results, under the plan's own
-`sampling` when it declares one and the method's otherwise. Chunked plans
-declare no sampling, so the method's always applies.
+Return dimensions for results produced by `plan`. A direct plan uses its
+sampling override when present, then [`outputsampling`](@ref). A chunked plan
+uses `outputsampling`.
 """
 destinationdims(plan::DirectPlan) = destinationdims(plan.dst_space,
     something(plan.sampling, outputsampling(plan.method)))
@@ -113,10 +110,9 @@ destinationdims(plan::ChunkedPlan) =
 
 Regrid `data` into the preallocated `dest` and return `dest`.
 
-`dest` starts with the destination's own axes, or one flat cell dimension,
-followed by `data`'s non-spatial dimensions; either leading shape is accepted.
-Keywords match [`regrid`](@ref) and are forwarded to [`plan_regrid`](@ref); the
-plan form takes none.
+`dest` starts with the destination axes or one flat cell dimension, followed by
+the non-spatial dimensions of `data`. Keywords match [`regrid`](@ref) and
+delegate to [`plan_regrid`](@ref). The plan form accepts no keywords.
 """
 function regrid! end
 
@@ -149,33 +145,33 @@ regrid!(dest, data, plan::AbstractRegriddingPlan) =
                 storage = nothing, sampling = nothing, dependencies = nothing,
                 refine = nothing, narrow = nothing) -> AbstractRegriddingPlan
 
-Build a reusable regridding plan without reading source values. In-memory data
-uses one whole-domain [`DirectPlan`](@ref). Lazy plans build blocks on demand
-and default to a budget-limited [`PerChunk`](@ref) cache. Use `PerChunk()` for
-an unlimited cache or `Spilled(dir)` for disk storage. Keywords match
-[`regrid`](@ref); `chunks`, `budget`, `storage`, `dependencies`, `refine` and
-`narrow` apply only to `lazy = true`, and `sampling` only to `lazy = false`.
+Build a reusable regridding plan without reading source values.
+
+  - Eager plans use one whole-domain [`DirectPlan`](@ref).
+  - Lazy plans build blocks on demand and default to a budget-limited
+    [`PerChunk`](@ref) cache.
+
+Use `PerChunk()` for an unlimited memory cache or `Spilled(dir)` for disk
+storage. Keywords match [`regrid`](@ref). Lazy plans accept `chunks`, `budget`,
+`storage`, `dependencies`, `refine`, and `narrow`; eager plans accept `sampling`.
 
 # The chunk dependency relation
 
-A lazy plan is the sole owner of its chunk dependency relation, and this is the
-only place a narrow phase may be supplied. `dependencies` chooses whether the
-plan builds one (`nothing`, the default, or `true`), adopts and validates one
-somebody else built (a [`ChunkDependencyGraph`](@ref)), or holds none (`false`).
-Every lazy read needs one — for tile order, wave costing, refcounts and
-prefetch, and on the chunk-pair route for the source chunks themselves — so a
-plan that holds none cannot back a [`LazyRegridArray`](@ref). `refine` is the
-conservative narrow phase to apply while building, `refine(dstchunk, srcchunk)
--> Bool`, and `narrow` the `Symbol` that names it in the relation's identity. A
-`refine` must only ever reject pairs it can *prove* disconnected; a wrong one
-silently corrupts results. [`dependencies`](@ref) documents each branch.
+A lazy plan owns one chunk dependency relation. `dependencies` selects its
+origin:
 
-[`dependencies`](@ref)`(plan)` reads the relation back and builds nothing. It is
-deliberately impossible to narrow, replace or rebuild a plan's relation once the
-plan exists: [`regrid`](@ref) and [`regrid!`](@ref) forward every other keyword
-here but refuse `dependencies`, `refine` and `narrow`, and
-[`chunk_dependency_graph`](@ref) has no `plan` method. A caller that wants a
-different relation makes a different plan.
+  - `nothing` or `true` builds a relation;
+  - a [`ChunkDependencyGraph`](@ref) adopts and validates that relation;
+  - `false` omits the relation.
+
+Every [`LazyRegridArray`](@ref) requires a relation for source selection, tile
+order, wave costing, reference counts, and prefetching. `refine(dstchunk,
+srcchunk) -> Bool` supplies a conservative narrow phase; `narrow` names that
+phase in the relation identity. `refine` must reject only pairs proven
+disconnected because a false rejection corrupts results.
+
+[`dependencies`](@ref)`(plan)` returns the relation. The relation remains fixed
+for the plan's lifetime; build another plan to use a different one.
 """
 function plan_regrid(data; to, from = nothing,
     method::AbstractRegriddingMethod = Conservative(),
@@ -224,9 +220,6 @@ function _rejectlazykeywords(chunks, budget, storage, dependencies, refine, narr
         "$(join(named, ", ", " or ")); pass `lazy = true` for the chunked path."))
 end
 
-# The three keywords that describe a plan somebody keeps: a relation to adopt,
-# the narrow phase to build it with, and the name that phase goes by. A one-shot
-# regrid builds its plan and drops it, so there is nothing for them to describe.
 function _rejectplankeywords(kwargs, name::AbstractString)
     named = String[]
     for k in (:dependencies, :refine, :narrow)
@@ -243,30 +236,16 @@ end
 """
     wholeblock(method, dst_space, src_space) -> WeightBlock
 
-Build one [`WeightBlock`](@ref) over all source and destination cells. The build
-path is [`weightblock`](@ref)'s, so the eager domain and a chunk pair are built
-the same way.
-
-The whole domain is one block, so it prepares no destination geometry
-([`preparedestination`](@ref)): with no second block to share it, a task-local
-memo is cheaper than a slot per destination cell.
+Build one [`WeightBlock`](@ref) over the full source and destination domains.
+The shared [`weightblock`](@ref) path keeps eager and chunk-pair construction
+equivalent. A task-local memo is cheaper here because one block offers no later
+build with which to share prepared destination geometry.
 """
 wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
     src_space::RegridSpace) =
     weightblock(method, dst_space, 1:Int(ncells(dst_space)),
         src_space, 1:Int(ncells(src_space)))
 
-# Only dimensional arrays carry enough geometry to infer a source space.
-#
-# An axis that presents the data itself ([`sourceview`](@ref)) resolves through
-# the space its own view names. An axis that merely names a source
-# ([`dimsource`](@ref)) resolves through that: it has already said what the
-# cells are, so asking the caller to retype it would be a spelling test, not a
-# question. A raster lattice is the last case, and the only one left for
-# [`RasterGrid`](@ref) to find.
-#
-# A named source `sourcespacefor` cannot resolve says so in `_asspace`'s own
-# terms — the package that supplied the axis owes the space.
 function _sourcespace(data::DD.AbstractDimArray, method)
     for d in DD.dims(data)
         lookup = DD.lookup(d)
@@ -279,10 +258,6 @@ function _sourcespace(data::DD.AbstractDimArray, method)
     return RasterGrid(data)
 end
 
-# The space a presented view is written against. The view is the array the
-# regrid reads, so it must name its own cells outright — and it is resolved
-# through the same `method` the view was chosen for, so an axis that presents
-# itself differently per method gets the matching space.
 function _presentedspace(view::DD.AbstractDimArray, method)
     for d in DD.dims(view)
         named = dimsource(DD.lookup(d))
@@ -319,9 +294,7 @@ _checkchunks(chunks) = throw(ArgumentError(
     "`chunks` must be a tuple of chunk sizes, a DiskArrays.GridChunks, or " *
     "nothing, got $(typeof(chunks))"))
 
-# Flatten the source to `ncells × nslices` and retain pass-through sizes. The
-# array flattened is the one the source's own axes present ([`sourceview`](@ref)),
-# which for an ordinary axis is `data` itself.
+# Apply the method-specific source presentation before spatial flattening.
 function _flatten(data, plan::AbstractRegriddingPlan)
     data = sourceview(data, plan.method)
     nsrc = Int(ncells(plan.src_space))

@@ -11,68 +11,64 @@ shared by every layer, lazy arrays behind it — and [`dggwrite`](@ref) turns it
 back. Neither introduces a container type: what a producer hands over is a
 `DimStack`, and what a consumer gets is a `DimStack`.
 
-Both methods live in an extension on Zarr.jl: until `using Zarr` loads it the
-two names are stubs, and calling one gets an error saying exactly that. What is
-rendered below is the stub's docstring; the extension's methods carry a longer
-one of their own, which `?dggread` prints once Zarr is loaded.
+Zarr.jl loads both methods through an extension. Before `using Zarr`, the two
+names are stubs that explain how to load their implementations. The reference
+below renders the stub docstrings; `?dggread` displays the longer extension
+docstring after Zarr loads.
 
-Between the store's attributes and the cube stands one plain-data value, the
-[`StoreDescription`](@ref): grid name, level, encoding, array names, grid
-parameters. Reading is attrs → description → axis and writing is
-axis → description → attrs, and the two halves are deliberately separate
-because they fail differently. Deciding **what a store says** is metadata
-logic over a [`StoreSnapshot`](@ref) — attribute dictionaries and an array
-listing, no chunks and no values — which is why a
-[`DGGSConvention`](@ref) is written and tested without a store existing at all.
-Deciding **how the ids are stored** is the other axis entirely, and it is a
-[`CellEncoding`](@ref): encodings own layout mechanics and the grid owns id
-arithmetic, so a new grid makes every encoding work and a new encoding works on
-every grid.
+[`StoreDescription`](@ref) connects store attributes to the cube. It records the
+grid name, level, encoding, array names and grid parameters. Reading follows
+attributes → description → axis; writing follows axis → description →
+attributes.
+
+Two independent abstractions support those pipelines:
+
+  - [`DGGSConvention`](@ref) interprets metadata in a [`StoreSnapshot`](@ref),
+    which contains attribute dictionaries and an array listing.
+  - [`CellEncoding`](@ref) implements cell-id storage layout while the grid
+    implements id arithmetic.
+
+This separation lets conventions run in tests without store chunks or values,
+and lets every grid and encoding combination share the same implementation.
 
 Both are registries rather than closed sets. A downstream package that speaks a
 fourth dialect calls [`register_convention!`](@ref); one that stores its ids
 some fifth way calls [`register_encoding!`](@ref). Neither requires a change
 here.
 
-The mixed-level axis [`coarsen`](@ref) builds writes and reads as the
-`compacted` layout: two aligned columns, `cell_ids` and `cell_levels` — the
-second named by `refinement_levels` — under `refinement_level: null`, coming
-back as a `MultiOrderLookup` axis. That layout is this package's extension:
-v1 of `zarr-conventions/dggs` requires `compression: "none"` wherever
-`refinement_level` is null, so only this package reads a compacted store. Requesting
-a single-level encoding for one is refused, with [`expand`](@ref) as the
-bridge to a writable level.
+[`coarsen`](@ref) builds a mixed-level axis. [`dggwrite`](@ref) stores that
+axis in the `compacted` layout as two aligned columns, `cell_ids` and
+`cell_levels`, under `refinement_level: null`; the `refinement_levels`
+attribute names the second column. [`dggread`](@ref) restores it as a
+[`MultiOrderLookup`](@ref).
 
-What a reader gets back is a [`ChunkedCellLookup`](@ref): the axis a store
-wrote, which answers `At`, `Contains` and `Covering` the way an ordinary
-`CellLookup` does but resolves them through the [`ChunkManifest`](@ref) — the
-chunk grid described in cells — rather than by scanning ids. That is the whole
-point of the layer: a store written by [`dggwrite`](@ref), or one whose ids are
-arithmetic rather than stored, opens without reading a single coordinate chunk
-however many cells it holds, and a selection over it fetches the chunks it lands
-in and no others. A foreign dense store pays one pass over its ids at open, and
-that pass is what proves them.
+This package defines `compacted` as an extension to v1 of
+`zarr-conventions/dggs`. Version 1 specifies `compression: "none"` when
+`refinement_level` is null, so this package supplies the reader for the extended
+layout. [`expand`](@ref) presents mixed-level data at the single level required
+by the other encodings.
 
-A stored axis is also a **region**, and answers the region verbs — `halo`,
-`border`, `interior`, `adjacency` — with the same code a computed one does. It
-does so through [`region`](@ref), which is the axis's compressed
-[`CellVector`](@ref) twin, built on the first call and kept. What that
-conversion costs is the encoding's and not the axis's length: a ranges or
-implicit store converts by arithmetic alone, because a stored interval is a run
-of consecutive ranks and a rank plus one is an index; a dense store reads its
-ids once, in the order that touches each chunk once. Index order is
-preserved either way, which is what lets a result computed through the twin be
-written back against the store's own axis with no permutation. Sweeping a store
-along its own chunk lines is
+A [`ChunkedCellLookup`](@ref) resolves `At`, `Contains` and `Covering` through a
+[`ChunkManifest`](@ref), the chunk grid expressed in cells. Stores written by
+[`dggwrite`](@ref) and stores with arithmetic axes open without reading a
+coordinate chunk. Selections then fetch only the chunks they touch. Opening a
+foreign dense store scans its ids once to validate them and build the manifest.
+
+A stored axis also supports `halo`, `border`, `interior` and `adjacency` as a
+region. The first [`region`](@ref) call builds and caches a compressed
+[`CellVector`](@ref) representation:
+
+  - Ranges and implicit encodings build it with rank arithmetic.
+  - Dense encoding reads the ids once in chunk order.
+
+Both paths preserve index order, so region results align directly with the
+stored axis. Sweeping a store along its own chunk lines is
 [its own page](@ref "Sweeping a cube along its chunk lines").
 
-Refusing to guess is policy. A grid name in no registry, two conventions that
-disagree about the level, an id that names no cell, a length that does not
-check out: all of them raise [`DGGSFormatError`](@ref) naming the check that
-failed, rather than being decoded into something plausible. The escape is
-explicit — `dggread(store; description = StoreDescription(...))` asserts the
-grid yourself and skips detection, which is also how an attribute-less store is
-read.
+[`DGGSFormatError`](@ref) names the failed check for an unknown grid, conflicting
+conventions, an invalid cell id or a length mismatch. To read an attribute-free
+store, pass `dggread(store; description = StoreDescription(...))`; the supplied
+description asserts the grid and skips detection.
 
 ## Reading and writing
 
@@ -141,12 +137,11 @@ DiscreteGlobalGrids.gridname
 
 ## Encodings and grid names
 
-An encoding is how the cell ids reach the disk; the grid reference table is how
-a store's spelling of a grid becomes a system this package can compute on. Both
-are lookup tables with a registration function, and both are deliberately
-strict about what they do not recognise. The types and the two tables are
-exported, so a downstream package registers an encoding or a grid without
-qualifying a name; the verbs it implements stay qualified, as a convention's do.
+An encoding determines how cell ids reach disk. The grid reference table maps a
+stored grid name to a system this package can compute on. Both lookup tables
+require registered names. Their exported types and registration functions let a
+downstream package register an encoding or grid; implementation verbs remain
+qualified.
 
 ```@docs
 CellEncoding
@@ -168,13 +163,10 @@ everything about the ids themselves, which is the layering rule — a grid that
 answers the five id functions below works under every encoding, and an encoding
 written against them works on every grid.
 
-Reaching a *store* takes two more, both in the Zarr extension and both still
-private: one `storedaxis` method, which says which array to open and how much of
-it to read before handing it to [`cellaxis`](@ref), and — to be written as well
-as read — the four verbs the write pipeline dispatches on. An encoding that
-registers without them is refused by name, with
-`DGGSFormatError(check = :unsupported_encoding)`, rather than by a `MethodError`
-about a private function.
+The Zarr extension adds the store-specific methods. `storedaxis` chooses the
+array and read size before calling [`cellaxis`](@ref). Writable encodings also
+implement the four private write-pipeline verbs. Missing methods raise
+`DGGSFormatError(check = :unsupported_encoding)` with the encoding name.
 
 ```@docs
 DiscreteGlobalGrids.cellaxis

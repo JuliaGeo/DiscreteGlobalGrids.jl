@@ -2,8 +2,9 @@
 #
 # Astronomers store sky regions as **Multi-Order Coverage** maps: HEALPix
 # cells at mixed orders, coarse inside, fine along the edge. The multi-order
-# coverage page builds that as a *region*; this page attaches *data* — one
-# value per cell, at mixed levels, as in adaptive mesh refinement.
+# [coverage tutorial](multiorder.md) builds that as a *region*; this page
+# attaches *data* — one value per cell, at mixed levels, as in adaptive mesh
+# refinement.
 #
 # A smooth field needs leaf cells only where it varies, so a mixed-level
 # container can hold it to a stated tolerance in a fraction of the leaf count
@@ -53,9 +54,9 @@ for l in 6:9
             lpad(round(across / pixel_km; digits = 2), 5), " × that pixel")
 end
 
-# Level 8 is the finest level whose cells are still wider than the equatorial
-# pixel, so sampling onto it cannot invent detail, and its leaf array is under
-# a million values.
+# Level 8 is the finest level whose cells remain wider than the equatorial
+# pixel. Sampling there respects the raster's source resolution and keeps the
+# leaf array under a million values.
 
 L = 8
 grid = DGG.levelgrid(DGG.HEALPixSystem(), L)
@@ -67,15 +68,15 @@ cells = DGG.CellVector(grid)
 # ## Sampling onto the cells
 #
 # One value per cell, taken at the cell centroid by nearest-neighbour lookup
-# into the raster. The regridding page has the conservative, area-exact
-# alternative; everything below works the same either way.
+# into the raster. The [regridding tutorial](regridding.md)
+# presents the conservative, area-exact alternative; everything below works
+# the same either way.
 
 tolonlat = GO.UnitSpherical.GeographicFromUnitSphere()
 centers = [tolonlat(DGG.cell_centroid(grid, c)) for c in cells]
 tavg = [raster[X(Near(lon)), Y(Near(lat))] for (lon, lat) in centers]
 
-# `Near` propagates the raster's `missing`s, so ocean cells arrive as
-# `missing` rather than as a sentinel.
+# `Near` preserves the raster's `missing` ocean values.
 
 (; cells = length(tavg), land = count(!ismissing, tavg),
    sea = count(ismissing, tavg))
@@ -109,8 +110,8 @@ lonspan(p) = (ring = GI.coordinates(p)[1]; maximum(first, ring) - minimum(first,
 onmap = findall(p -> lonspan(p) < 180, polys)
 length(cells) - length(onmap)
 
-# The colour scale clips at ±40 °C so midwinter Antarctica does not flatten
-# the rest of the range; ocean cells are `missing`, drawn in gray. The colour
+# Clipping the colour scale at ±40 °C keeps the rest of the range legible;
+# ocean cells are `missing`, drawn in gray. The colour
 # vector is built over `parent(A)`: a comprehension over the `DimArray`
 # returns a `DimArray`, which Makie would read as a per-vertex colouring.
 
@@ -181,8 +182,8 @@ for l in 7:-1:4
 end
 
 # A level-6 cell on the Antarctic coast, 100 km across, replaces a spread of
-# tens of degrees; one in the Sahara replaces a fraction of a degree. A fixed
-# level cannot treat the two differently.
+# tens of degrees; one in the Sahara replaces a fraction of a degree. These
+# regions need different resolutions, which motivates adaptive desampling.
 
 # ## Adaptive desampling
 #
@@ -257,9 +258,9 @@ fig
    mesh_MiB = round(Base.summarysize(mov) / 2^20; digits = 2),
    dense_MiB = round(Base.summarysize(parent(A)) / 2^20; digits = 2))
 
-# The values shrink by the cell ratio, a little over five times. The index
-# does not: a cell id and three interval bounds per stored cell — some forty
-# bytes — gives most of that saving back at this tolerance.
+# The values shrink by the cell ratio, a little over five times. The index uses
+# a cell id and three interval bounds per stored cell — about forty bytes — and
+# consumes most of that saving at this tolerance.
 
 round(Int, Base.summarysize(mov) / length(M))  # bytes of index per stored cell
 
@@ -286,9 +287,9 @@ end
 E = DGG.expand(M, L)
 DD.lookup(E, DGG.Cells) == DD.lookup(A, DGG.Cells)
 
-# The same axis as `A`, cell for cell. The storage is unchanged — one value
-# per stored cell plus a leaf count each, indexed by binary search — so the
-# presentation level moves while the memory does not.
+# The same axis as `A`, cell for cell. Storage remains one value and one leaf
+# count per stored cell, indexed by binary search, so the presentation level
+# changes at constant memory.
 
 for l in (L, L + 1, L + 2, L + 4)
     El = DGG.expand(M, l)
@@ -371,10 +372,11 @@ fig
 #     the coarsening staircase, rebuilt. Ask for it by name if you want it:
 #     `regrid(expand(M, ref); to = ...)`.
 #
-# `from` names a space, not a layout. Pairing the container with values stored
-# one per *cell* against a method that reads it as leaves is refused, and so is
-# the mirror; a `from` naming a different container than the cube's own axis is
-# refused too. Put the values on the axis and drop the keyword.
+# `from` names a source space; the cube axis names its storage layout. A method
+# that reads stored cells rejects values paired with leaves, and a method that
+# reads leaves rejects values paired with stored cells. A `from` container must
+# also match the cube's own axis. Put the values on the axis and omit the
+# keyword.
 
 # ## Summary
 #
@@ -384,10 +386,13 @@ fig
 # cells and resolution with leaves: the same two megabytes present 786,432
 # cells or two hundred million.
 #
-# The multi-order coverage page builds the same structure as a *region* — the
-# query side. The regridding page replaces this page's nearest-neighbour
-# sampling with conservative, area-exact regridding. The store round-trip page
-# writes cell axes to Zarr with `dggwrite`; a mixed-level array like `M` goes
-# to disk as the `compacted` layout and reads back as the same axis. (This
-# page's `M` itself cannot be written yet: it carries `missing` over the
-# ocean, and the writer has no fill-value story in any encoding.)
+# The [multi-order coverage tutorial](multiorder.md) builds the same structure
+# as a *region* — the query side. The [regridding tutorial](regridding.md)
+# replaces this page's
+# nearest-neighbour sampling with conservative, area-exact regridding. The
+# [store round-trip tutorial](store_io.md) writes
+# cell axes to Zarr with `dggwrite`; a mixed-level array like `M` goes to disk
+# as the `compacted` layout and reads back as the same axis.
+#
+# The writer currently lacks fill-value support for `missing`, so this page's
+# ocean-bearing `M` is not yet writable in any encoding.

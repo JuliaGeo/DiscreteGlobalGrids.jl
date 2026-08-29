@@ -12,9 +12,9 @@ t6_space(xs, ys) = RasterGrid(DD.DimArray(zeros(length(xs), length(ys)),
 """
     t6_raster(f, xs, ys; yfirst = false) -> DimArray
 
-`f(lon, lat)` sampled on the cell centres `xs × ys`. The lookups are whatever
-`xs` and `ys` are — pass a descending vector for a reverse-ordered lookup — and
-`yfirst` stores the array as `(Y, X)` instead of `(X, Y)`.
+Return `f(lon, lat)` sampled at the cell centres `xs × ys`. Input order defines
+lookup order. `yfirst = true` stores dimensions as `(Y, X)`; the default uses
+`(X, Y)`.
 """
 function t6_raster(f, xs, ys; yfirst = false)
     data = [Float64(f(x, y)) for x in xs, y in ys]
@@ -23,7 +23,7 @@ function t6_raster(f, xs, ys; yfirst = false)
     return DD.DimArray(data, (xd, yd))
 end
 
-# Select destination cells by location, not assumed index arithmetic.
+# Location-based selection remains valid across index layouts.
 t6_lat(space, i) = GO.UnitSpherical.GeographicFromUnitSphere()(cellcentroid(space, i))[2]
 
 t6_mass(space, values) =
@@ -43,9 +43,6 @@ function buildweights!(coo::WeightCOO, method::T6CountingMethod,
     return buildweights!(coo, method.inner, dst_space, dst_inds, src_space, src_inds)
 end
 
-# A lookup that names cells of its own, as a DGGS cell axis does, and the target
-# spelling it names. The package supplying the axis owes an `_asspace` for that
-# spelling; having one is what lets the axis resolve itself with no `from`.
 struct T6Grid end
 Base.show(io::IO, ::T6Grid) = print(io, "T6Grid()")
 
@@ -58,8 +55,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
 GR._asspace(::T6Grid, name::AbstractString) =
     t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
 
-# The same shape from a package that stopped one step short: the axis names a
-# source and nothing resolves that name into a space.
+# Deliberately omits `_asspace` to exercise unresolved source targets.
 struct T6Unresolved end
 Base.show(io::IO, ::T6Unresolved) = print(io, "T6Unresolved()")
 
@@ -214,9 +210,7 @@ GR.dimsource(::DD.Lookups.Lookup{T6LooseCell}) = T6Unresolved()
         dst = t6_space(t6_centres(-180, 180, 4), t6_centres(-90, 90, 2))
         src = t6_space(t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
 
-        # An axis that has already said what its cells are needs no `from`: the
-        # name it gives is resolved, not handed back to the caller to retype.
-        # Bit for bit the same as spelling that source out.
+        # The inferred source must match the same target spelled explicitly.
         for method in (Conservative(), NearestCell(), BarycentricPoint())
             @test regrid(data; to = dst, method) ==
                   regrid(data; to = dst, from = T6Grid(), method)
@@ -225,15 +219,12 @@ GR.dimsource(::DD.Lookups.Lookup{T6LooseCell}) = T6Unresolved()
         end
         @test GR.plan_regrid(data; to = dst, lazy = false).src_space isa RasterGrid
 
-        # An explicit `from` still wins: inference never overrides what the
-        # caller named. A coarser source over the same cells answers
-        # differently, and that is the answer.
+        # Explicit source geometry takes precedence over lookup inference.
         coarse = t6_space(t6_centres(-180, 180, 4), t6_centres(-90, 90, 8))
         @test regrid(data; to = dst, from = coarse) !=
               regrid(data; to = dst)
 
-        # A named source nothing resolves is the package's omission, and the
-        # error says so instead of pretending the axis is a raster lattice.
+        # An unresolved target identifies the missing package integration.
         loose = DD.DimArray(zeros(32), (DD.Dim{:Cells}(DD.Lookups.Categorical(
             [T6LooseCell(i) for i in 1:32]; order = DD.Lookups.Unordered())),))
         @test_throws ArgumentError regrid(loose; to = dst)

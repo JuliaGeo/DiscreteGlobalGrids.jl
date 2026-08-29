@@ -1,26 +1,9 @@
-# Region algebra over the same-level region types: growth by rings, set union,
-# bulk movement between levels, and compaction to a mixed-level set.
-#
-# Every verb here answers in leaf-grid INDEX space and hands the result to
-# `_windows`/`_windows_from_intervals`, which own the `CellVector` invariants.
-# Nothing assumes a cell's children are contiguous or ascending: sorted-subtree
-# systems reach for `descendant_range`, and every other system goes through
-# `descendants` and sorts. That branch is what makes A5 work.
-
 """
     grow(region, n; connectivity = Vertex()) -> CellVector
 
-The region plus `n` rings of level-grid neighbours, at the region's own level.
-`n == 0` returns the region as a [`CellVector`](@ref) and nothing else.
-
-`region` is a [`PartialGrid`](@ref), a [`CellVector`](@ref), or a complete grid;
-a `CellLookup` is grown through `parent(lk)`. Each ring is one [`halo`](@ref)
-walk, so a rooted subtree grid uses the subtree engine on its first step and the
-window walk afterwards — growth has no root.
-
-Cost is `n` halo walks plus `O(m log m)` per step to merge that step's `m`
-windows and halo cells. A [`MultiOrderCellSet`](@ref) has no method here: it has
-no single level to walk at, so [`expand`](@ref) it first.
+Add `n` neighbor rings to a same-level region and return a
+[`CellVector`](@ref). Each step performs one [`halo`](@ref) walk and merges its
+cells with the current windows. Expand mixed-level inputs before growing them.
 
 ```julia
 grow(subset, 2)                      # two rings of receptive field
@@ -39,8 +22,7 @@ function grow(region::Union{AbstractGrid,CellVector}, n::Integer;
     return grown
 end
 
-# `halo` is defined for subsets, not for a complete level grid; the vector form
-# of one walks nothing and answers empty.
+# A complete level becomes an empty-halo subset through its `CellVector` form.
 _walkable(cv::CellVector) = cv
 _walkable(pg::PartialGrid) = pg
 _walkable(grid::AbstractGrid) = CellVector(grid)
@@ -59,22 +41,10 @@ end
     expand(set::MultiOrderCellSet, l::Integer) -> CellVector
     expand(mov::MultiOrderVector, l::Integer) -> CellVector
 
-Every level-`l` descendant of the region's cells, as one [`CellVector`](@ref).
-`l` equal to the region's own level returns it unchanged; `l` above it throws.
-
-The expansion never assumes a cell's descendants are contiguous or ascending in
-the deeper level. Where [`has_sorted_subtrees`](@ref) holds it merges one
-[`descendant_range`](@ref) per cell; elsewhere (A5) it resolves
-[`descendants`](@ref) to indices and sorts them. Both paths visit every cell of
-the region, and the second visits every leaf it names.
-
-The set and [`MultiOrderVector`](@ref) forms are [`CellVector`](@ref)`(x; level = l)`
-— the same expansion, from the mixed-level side. [`expand`](@ref)`(A, l)` on a
-`DimArray` carries the values along with it.
-
-Descendants of a member need not lie inside the member's own footprint under
-non-congruent refinement, so an expanded coverage over-covers exactly where the
-refinement does; [`MultiOrderCoverage`](@ref) sizes that margin per system.
+Return every level-`l` descendant as one [`CellVector`](@ref). Sorted-subtree
+systems merge [`descendant_range`](@ref)s; other systems enumerate and sort
+[`descendants`](@ref). Non-congruent refinement can over-cover the original
+footprint; [`MultiOrderCoverage`](@ref) documents that margin.
 """
 function expand(cv::CellVector, l::Integer)
     target = Int(l)
@@ -117,18 +87,9 @@ end
 """
     compact(region) -> MultiOrderCellSet
 
-The region as a mixed-level set, with every complete sibling group replaced by
-its parent, recursively. The result names the same leaves at the region's own
-level, which becomes the set's reference level: `expand(compact(cv), level(cv))`
-is `cv` again.
-
-Ascent runs level by level and costs `O(k log k)` in the `k` cells still standing
-at that level; a region with no complete sibling group stops after one pass. A
-group counts as complete against `length(children(sys, parent))`, the parent's
-own child count — pentagon parents are not assumed to have the hexagonal one.
-
-[`iscontained`](@ref) is `false` on every member: compaction has no coverage
-target, so nothing was proven to lie inside anything.
+Replace complete sibling groups recursively with their parent and return a
+[`MultiOrderCellSet`](@ref) naming the same leaves. The input level becomes the
+reference level. Completeness uses each parent's actual child count.
 """
 function compact(cv::CellVector)
     sys = system(cv)
@@ -139,8 +100,7 @@ function compact(cv::CellVector)
     l = cv.level
     while l > rootlevel && !isempty(current)
         parents = ID[ancestor(sys, c, l - 1) for c in current]
-        # Siblings are adjacent in id order only where subtrees are sorted, so
-        # the grouping is done by the parent key rather than by adjacency.
+        # Parent-key grouping remains correct when sibling ids are nonadjacent.
         perm = sortperm(parents)
         promoted = ID[]
         i = 1
@@ -168,29 +128,15 @@ end
 
 compact(region::AbstractGrid) = compact(CellVector(region))
 
-# --- Base set and concatenation verbs --------------------------------------
-#
-# `intersect` and `issubset` live in `cell_vector.jl` beside the windows they
-# read. `union` and `vcat` are here because their cross-level answer is a
-# `MultiOrderCellSet`, which is the algebra's own product.
+# --- set and concatenation --------------------------------------------------
 
 """
     union(a::CellVector, b::CellVector, rest::CellVector...)
 
-The cells of every operand, once each.
-
-At one level the answer is a [`CellVector`](@ref) again, merged over the stored
-windows in `O(m log m)` for `m` windows and **ascending**: the container's
-invariant is strict ascent, which Base's first-appearance order cannot honour
-for two already-ascending operands.
-
-Across levels the answer is a [`MultiOrderCellSet`](@ref) whose reference level
-is the deepest operand's, holding each cell that no coarser operand already
-covers — the set invariant that no member descends from another. Complete
-sibling groups are left alone there; [`compact`](@ref) is the verb that merges
-them.
-
-Operands from different systems throw.
+Return every operand cell once. Same-level inputs produce an ascending
+[`CellVector`](@ref). Cross-level inputs produce a
+[`MultiOrderCellSet`](@ref) at the deepest reference level and omit cells
+covered by coarser operands. [`compact`](@ref) merges complete sibling groups.
 """
 function Base.union(a::CellVector, b::CellVector, rest::CellVector...)
     vs = (a, b, rest...)
@@ -235,13 +181,9 @@ end
 """
     vcat(a::CellVector, b::CellVector, rest::CellVector...)
 
-Concatenation, as an ordered vector of ids.
-
-A [`CellVector`](@ref) is returned when the concatenation is itself strictly
-ascending at one level — the only case in which the windows can carry it — and
-an ordinary `Vector` of ids otherwise, exactly as indexing a cell vector by a
-non-ascending index vector does. `union` is the order-free verb, and the one to
-reach for when the operands overlap.
+Concatenate operands in order. A same-level, strictly ascending result remains
+a [`CellVector`](@ref); other results use an ordinary id vector. Use `union`
+for order-independent overlapping inputs.
 """
 function Base.vcat(a::CellVector, b::CellVector, rest::CellVector...)
     vs = (a, b, rest...)
@@ -255,8 +197,7 @@ function Base.vcat(a::CellVector, b::CellVector, rest::CellVector...)
     return reduce(vcat, map(collect, vs))
 end
 
-# Ascending concatenation needs every non-empty operand to start past the end of
-# the one before it.
+# Each nonempty operand must begin after its predecessor ends.
 function _ascends(vs)
     previous = 0
     for v in vs

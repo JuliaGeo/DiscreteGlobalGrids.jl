@@ -1,18 +1,4 @@
-# ---------------------------------------------------------------------------
-# `MultiOrderGrid`: the grid face of a mixed-level container's STORED cells, and
-# the regridding route that reads it.
-#
-#   * counts and ids are the container's — never the reference level's leaves,
-#     which is the entire reason the type exists;
-#   * geometry is forwarded per cell to its own level's grid, never derived, so
-#     a system that overrides area on a level grid keeps that answer;
-#   * point location is the covering ancestor, which is what makes a nearest
-#     regrid off the stored cells BIT-IDENTICAL to one off the expansion;
-#   * the tiling does not conform, so every topology verb throws.
-#
-# Swept on HEALPix (radix 4, quadrilateral) and IGeo7 (radix 7, hexagonal) —
-# the two families the non-congruence argument distinguishes.
-# ---------------------------------------------------------------------------
+# HEALPix and IGeo7 distinguish congruent from non-congruent stored-cell geometry.
 
 module MultiOrderGridTests
 
@@ -24,14 +10,12 @@ import GeometryOps as GO
 
 const EN = DGG.Engine
 
-# A method declaring a sampling a mixed container has no presentation for:
-# neither the stored cells (sample sites) nor the expansion (a gap-free cover).
+# A third sampling declaration provides no valid stored or expanded presentation.
 struct OddSampling <: DD.Lookups.Sampling end
 struct ThirdSampling <: GR.AbstractRegriddingMethod end
 GR.sourcesampling(::ThirdSampling) = OddSampling()
 
-# A container spanning three levels over the whole sphere: every root at level
-# `top + 1`, with the first refined two levels deeper and the second one.
+# Three stored levels expose accidental reference-level flattening.
 function mixed(sys, top::Int)
     roots = collect(DGG.CellVector(DGG.levelgrid(sys, top + 1)))
     kids(c, l) = collect(DGG.CellVector(DGG.subtree(sys, c, l)))
@@ -39,8 +23,7 @@ function mixed(sys, top::Int)
     return DGG.MultiOrderVector(sys, cells; reference_level = top + 3)
 end
 
-# Typed wrappers: inference through a closure over an untyped global reports a
-# false instability, so every `@inferred` below goes through one of these.
+# Typed wrappers keep global fixtures out of inference checks.
 grid_of(mov::DGG.MultiOrderVector) = DGG.MultiOrderGrid(mov)
 count_of(g::DGG.MultiOrderGrid) = DGG.ncells(g)
 id_at(g::DGG.MultiOrderGrid, i::Int) = DGG.cellindex(g, i)
@@ -54,9 +37,7 @@ index_at(g::DGG.MultiOrderGrid, p::GO.UnitSphericalPoint) = DGG.localindex(g, p)
 space_for(mov::DGG.MultiOrderVector, m::GR.AbstractRegriddingMethod) =
     GR.sourcespacefor(mov, m)
 
-# `congruent` says whether a parent's polygon IS the union of its descendants':
-# true for HEALPix's nested quadrilaterals, false for IGeo7's hexagons, where a
-# parent and its children cover slightly different ground.
+# Congruence determines whether stored parent polygons tile like their descendants.
 const CASES = ((DGG.HEALPixSystem(), 0, true), (DGG.IGeo7System(), 0, false))
 
 @testset "MultiOrderGrid on $(nameof(typeof(sys)))" for (sys, top, congruent) in CASES
@@ -94,8 +75,7 @@ const CASES = ((DGG.HEALPixSystem(), 0, true), (DGG.IGeo7System(), 0, false))
             @test collect(DGG.cell_boundary(g, c)) == collect(DGG.cell_boundary(own, c))
             @test DGG.Fallbacks.cell_cap(g, c) == DGG.Fallbacks.cell_cap(own, c)
         end
-        # Cells at different levels really do have different areas here, so the
-        # forwarding is doing work rather than agreeing by accident.
+        # Distinct level areas make forwarding observable.
         areas = [DGG.cell_area(g, DGG.cellindex(g, i)) for i in 1:DGG.ncells(g)]
         @test length(unique(round.(areas; digits = 12))) >= 3
         # `getcell` is the local-index form of the same polygon.
@@ -111,9 +91,7 @@ const CASES = ((DGG.HEALPixSystem(), 0, true), (DGG.IGeo7System(), 0, false))
         if congruent
             @test sum(areas) ≈ 4pi rtol = 1e-9
         else
-            # The gap Route A exists to avoid: coarse polygons over a
-            # non-congruent hierarchy are not a partition, so an area method
-            # weighted against them would lose or double-count mass.
+            # Non-congruent coarse polygons leave gaps or overlaps in area weights.
             @test !isapprox(sum(areas), 4pi; rtol = 1e-6)
             @test isapprox(sum(areas), 4pi; rtol = 1e-2)
         end
@@ -133,7 +111,7 @@ const CASES = ((DGG.HEALPixSystem(), 0, true), (DGG.IGeo7System(), 0, false))
         # Exact membership stays exact...
         @test all(i -> DGG.localindex(g, mov[i]) == i, 1:length(mov))
         @test all(i -> mov[i] in g, 1:length(mov))
-        # ...and a leaf the container does not store is NOT a member.
+        # Exact membership excludes unstored covered leaves.
         level_ref = DGG.levelgrid(sys, ref)
         deep = DGG.cellindex(level_ref, 1)
         coarse_host = DGG.covering_index(mov, deep)
@@ -204,7 +182,7 @@ const CASES = ((DGG.HEALPixSystem(), 0, true), (DGG.IGeo7System(), 0, false))
 
         # A method declaring a third sampling has no presentation to pick.
         @test_throws ArgumentError GR.sourcespacefor(mov, ThirdSampling())
-        @test_throws "neither `Points()` nor `Intervals()`" GR.sourcespacefor(mov,
+        @test_throws "unsupported source sampling" GR.sourcespacefor(mov,
             ThirdSampling())
     end
 
@@ -245,8 +223,7 @@ const CASES = ((DGG.HEALPixSystem(), 0, true), (DGG.IGeo7System(), 0, false))
                     method = GR.NearestCell())), parent(base))
         end
 
-        # The weight matrix has one column per STORED cell, not per leaf. This
-        # is the shape the perf claim rests on, asserted rather than measured.
+        # Stored-cell columns keep matrix width proportional to compact storage.
         plan = GR.plan_regrid(cube; to = dst, method = GR.NearestCell(),
             lazy = false)
         @test size(plan.block.weights, 2) == length(mov)

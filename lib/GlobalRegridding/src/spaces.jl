@@ -3,22 +3,17 @@
 """
     RegridSpace
 
-A source or destination cell collection.
+Base type for source and destination cell geometry. Every space provides cell
+geometry, chunk ownership, and a manifold. Optional interfaces add restricted
+trees, native chunk indexes, rectangular reads, point lookup, charts, and
+labelled output.
 
-The qualified extension contract is grouped below by responsibility. Every
-space provides cell geometry, chunk ownership, and a manifold. Restricted cell
-trees, native chunk indexes, rectangular storage reads, point lookup, charts,
-and labelled output have generic fallbacks or are required only by the methods
-that use them.
-
-Spaces contain geometry and structure, not field data. Construction should be
-cheap, with cell polygons generated on demand.
+A space holds geometry and structure; data arrays hold field values. Constructors
+should remain cheap and generate cell polygons on demand.
 """
 abstract type RegridSpace end
 
-# --------------------------------------------------------------------------
 # Cell geometry
-# --------------------------------------------------------------------------
 
 """
     celltree(space::RegridSpace)
@@ -32,10 +27,9 @@ function celltree end
 """
     subtree(space::RegridSpace, inds) -> tree
 
-Return a spatial tree over `inds`, with leaves addressed by the space's
-local index. The fallback packs GeometryOps' Cartesian cell extents in an
-R-tree.
-Spaces with a cheaper restricted tree should specialize this function.
+Return a spatial tree over `inds` whose leaves use the space's local indices.
+The fallback packs GeometryOps Cartesian cell extents in an R-tree. Spaces with
+a native restricted tree should specialize this function.
 """
 function subtree end
 
@@ -49,33 +43,30 @@ function ncells end
 """
     getcell(space::RegridSpace, i::Int) -> GI.Polygon
 
-Return cell `i` as a GeoInterface polygon with one explicitly closed ring of
-unit-sphere `(x, y, z)` coordinates. The ring is counter-clockwise from outside
-the sphere and its segments are great-circle arcs. Densify non-geodesic edges.
-Throw `BoundsError` for an invalid index.
+Return cell `i` as a GeoInterface polygon. The polygon contract requires:
+
+  - one explicitly closed ring of unit-sphere `(x, y, z)` coordinates;
+  - counter-clockwise order when viewed from outside the sphere;
+  - great-circle segments, with non-geodesic edges densified.
+
+Invalid indices throw `BoundsError`.
 """
 function getcell end
 
 """
     expensivecellgeometry(space::RegridSpace) -> Bool
 
-Whether one [`getcell`](@ref) costs enough that an area method should keep the
-polygons of a destination tile rather than synthesize each one again for every
-source leaf that overlaps it.
+Return whether repeated [`getcell`](@ref) calls justify caching destination
+polygons across overlapping source leaves. The default is `true` for spaces
+that derive boundaries from cell identifiers. Lattice spaces should return
+`false` when coordinate reads are cheaper than cache traffic.
 
-  - `true` by default: a space that derives cell boundaries from an index pays
-    for every call.
-  - A space whose cells are a few coordinates read off a lattice should answer
-    `false`; keeping them there costs more memory traffic than it saves.
-  - A property of the space, not of the tree an index set produces. The
-    spatial-tree trait `STI.node_extent_is_expensive` describes extents, and the
-    packed R-tree fallback answers `false` for it whatever space it wraps.
+This trait describes cell geometry. `STI.node_extent_is_expensive` separately
+describes spatial-tree extents.
 """
 expensivecellgeometry(::RegridSpace) = true
 
-# --------------------------------------------------------------------------
 # Chunk ownership and spatial discovery
-# --------------------------------------------------------------------------
 
 """
     nchunks(space::RegridSpace) -> Int
@@ -88,19 +79,13 @@ function nchunks end
 """
     ownedindices(space::RegridSpace, chunk::Int) -> AbstractVector{Int}
 
-The space's local indices of the cells `chunk` owns — the cells it produces
-results for — ascending. Chunks must partition `1:ncells(space)`. Return an
-`AbstractUnitRange` when those indices are contiguous. Weight builders address
-entries by chunk-local index within this result.
+Return the ascending local indices owned by `chunk`. Chunks must partition
+`1:ncells(space)`. Contiguous ownership should use `AbstractUnitRange`. Weight
+builders address entries by position within this result.
 """
 function ownedindices end
 
-# `cellindices` is the old name of `ownedindices` and forwards to it, so a call
-# of the old name answers the same with a deprecation warning. In this package
-# "cell index" is the local index a space numbers its cells by, and the name
-# collided with the typed cell id it means elsewhere. Only callers are carried:
-# a space that defines the old name supplies no chunk ownership, and the
-# generic dispatches on the new one.
+# Deprecation forwards calls only; extensions must implement `ownedindices`.
 
 """
     cellindices(space::RegridSpace, chunk::Int) -> AbstractVector{Int}
@@ -115,38 +100,34 @@ function cellindices end
 """
     chunkextent(space::RegridSpace, chunk::Integer) -> SphericalCap
 
-Return the spherical cap covering every cell owned by `chunk`. The fallback
-indexes [`chunkextents`](@ref); a space specializes it when one extent is
-cheaper to obtain than the complete vector, as [`RasterGrid`](@ref) does.
+Return a spherical cap covering every cell owned by `chunk`. The fallback
+indexes [`chunkextents`](@ref). Spaces such as [`RasterGrid`](@ref) specialize
+this method when one cap is cheaper than the complete vector.
 
-For the cap of a chunk a *relation* was built over, prefer
-[`destinationextent`](@ref) or `sourceextent` on the relation: it already holds
-the caps it was built from, so reading them back off the space recomputes work
-and risks answering with a cap the relation never saw.
+A dependency relation retains the caps used at construction. Read those through
+[`destinationextent`](@ref) or [`sourceextent`](@ref) to preserve its identity
+and avoid recomputation.
 """
 function chunkextent end
 
 """
     chunkextents(space::RegridSpace) -> Vector{SphericalCap}
 
-Return the chunk extents in chunk-number order. Required of every space: there
-is no fallback.
+Return chunk caps in chunk-number order. Every space must implement this method.
 
-These are the caps as *values*, not a query. They stamp a relation's identity
-([`spacestamp`](@ref)), they are the destination caps a relation is built by
-querying with, and the generic [`chunkindex`](@ref) packs them. A chunk query
-goes to [`candidatechunks!`](@ref) on the space's own index, so a native space
-may report caps here that its index does not itself test.
+The returned values serve three roles: they define [`spacestamp`](@ref), provide
+destination queries during relation construction, and populate the generic
+[`chunkindex`](@ref). Native indexes may use a different internal extent
+representation in [`candidatechunks!`](@ref).
 """
 function chunkextents end
 
 """
     chunkindex(space::RegridSpace) -> index
 
-Build the source-chunk query object consumed by [`candidatechunks!`](@ref).
-The fallback packs [`chunkextents`](@ref) in a GeometryOps `FlexibleRTree`.
-Structured spaces may return any native hierarchy; indexes need not share a
-type or expose one common node-extent representation.
+Build the source-chunk query object consumed by [`candidatechunks!`](@ref). The
+fallback packs [`chunkextents`](@ref) in a GeometryOps `FlexibleRTree`.
+Structured spaces may return a native hierarchy and extent representation.
 """
 function chunkindex end
 
@@ -163,9 +144,9 @@ function candidatechunks! end
     chunkat(space::RegridSpace, i::Integer) -> Int
     chunkat(space::RegridSpace, p::GO.UnitSphericalPoint) -> Union{Int,Nothing}
 
-Return the chunk containing cell index `i` or point `p`. The fallback scans
-all chunks; structured spaces should provide an `O(1)` or `O(log nchunks)`
-method. The point form returns `nothing` outside the space's coverage.
+Return the chunk containing cell index `i` or point `p`. The fallback scans all
+chunks; structured spaces should provide an `O(1)` or `O(log nchunks)` method.
+The point form returns `nothing` outside coverage.
 """
 function chunkat end
 
@@ -186,25 +167,19 @@ function chunkat(space::RegridSpace, p::US.UnitSphericalPoint)
     return chunkat(space, i)
 end
 
-# --------------------------------------------------------------------------
 # Array storage
-# --------------------------------------------------------------------------
 
 """
     chunkranges(space::RegridSpace, chunk, spatialsize::NTuple{NS,Int})
         -> NTuple{NS,UnitRange{Int}}
 
-Return the rectangular array ranges that storage can read for `chunk` in one
-operation, in spatial-dimension order. Flattening that block must enumerate
-[`ownedindices`](@ref) in the same order, but the two contracts are distinct:
-`ownedindices` describes cell ownership and need not be a storage rectangle.
-Non-rectangular spaces must specialize this function.
+Return rectangular spatial ranges for reading `chunk` in one storage operation.
+Flattening the block must match the order of [`ownedindices`](@ref). Spaces with
+non-rectangular ownership must specialize this function.
 """
 function chunkranges end
 
-# --------------------------------------------------------------------------
 # Manifold, point lookup, and cell charts
-# --------------------------------------------------------------------------
 
 """
     manifold(space::RegridSpace) -> GeometryOpsCore.Manifold
@@ -281,10 +256,7 @@ Required when [`hascellchart`](@ref) is `true`.
 """
 function chartspacing end
 
-# `chartposition` is the old name of `chartlocalindex` and forwards to it, so a
-# call of the old name answers the same with a deprecation warning. Only
-# callers are carried: a space that defines the old name supplies no chart
-# hook, and `_chart_required` names the new one.
+# Deprecation forwards calls only; extensions must implement `chartlocalindex`.
 
 """
     chartposition(space::RegridSpace, ix::Int, iy::Int) -> Int
@@ -296,9 +268,7 @@ function chartposition end
 
 @deprecate chartposition(space::RegridSpace, ix::Int, iy::Int) chartlocalindex(space, ix, iy) false
 
-# --------------------------------------------------------------------------
 # Output labelling and target resolution
-# --------------------------------------------------------------------------
 
 """
     destinationdims(space::RegridSpace, sampling) -> Tuple or nothing
@@ -312,18 +282,12 @@ destinationdims(::RegridSpace, ::DD.Lookups.Sampling) = nothing
 """
     dimsource(lookup) -> `from` target or nothing
 
-Return the source a lookup already names, or `nothing`. A lookup that carries
-its own cells is not a raster axis, so a package that supplies one extends this
-and a regrid given no `from` **resolves** what it names — through
-[`sourcespacefor`](@ref) — instead of looking for `xdim`. The name must
-therefore be one [`_asspace`](@ref) answers for; a name nothing resolves is a
-missing method in the package that supplied the axis, and says so.
+Return the source target a lookup names, or `nothing`.
 
-A source resolves in one order: an explicit `from` wins; otherwise a
-self-describing axis — one answering [`sourceview`](@ref) or this — names the
-source itself; otherwise the array is read as a raster lattice, and an axis
-answering neither is the `from`-is-required error. Defining this used to make
-that error's wording better and nothing else; it now removes the error.
+Packages extend this for lookups over explicit cells. Source inference resolves
+the target through [`sourcespacefor`](@ref); lookups returning `nothing` remain
+eligible for raster inference. An explicit `from` takes precedence over both
+paths.
 """
 dimsource(::Any) = nothing
 
@@ -331,27 +295,16 @@ dimsource(::Any) = nothing
     sourceview(lookup, data, method) -> array or nothing
     sourceview(data, method) -> array
 
-Return the array `method` reads when `data` carries `lookup`, or `nothing` when
-that axis cannot present the data itself.
+Return the source array presented to `method`.
 
-An axis storing one value per cell of the space [`dimsource`](@ref) names needs
-no method here: the data is read as it stands. A *compressed* axis stores fewer
-values than that space has cells, so no `from` can describe the pair — only the
-axis knows how its stored values spread over the cells, and only this hook can
-present them.
+  - The axis-level form returns a specialized view or `nothing`.
+  - The array-level form returns the first specialized view or `data` unchanged.
 
-Either hook makes an axis self-describing, so neither asks for a `from`: an
-explicit one still wins, an axis answering one of them resolves itself, and an
-axis answering neither is the `from`-is-required error. A `from` that
-contradicts what a presenting axis lays its values out by belongs in
-[`checksource`](@ref).
-
-The view must present the cells in the space's own order and name that space
-through its own `dimsource`. It is also free to refuse `method`, which is what
-[`refinementinvariant`](@ref) is for.
-
-The two-argument form is the whole array's answer: the first axis that presents
-one, or `data` unchanged.
+Compressed axes use this hook to map stored values onto the cells named by
+[`dimsource`](@ref). The returned view must name its space through its own
+`dimsource` and order values like that space. Implementations may reject methods
+that fail [`refinementinvariant`](@ref). [`checksource`](@ref) handles conflicts
+with an explicit `from`.
 """
 sourceview(::Any, ::Any, ::Any) = nothing
 
@@ -368,12 +321,11 @@ end
 """
     checksource(from, data, space) -> nothing
 
-Refuse a `from` spelling that cannot describe `data`, or do nothing.
+Validate that an explicit `from` describes the layout of `data`.
 
-Called once per plan, only when `from` was given. A spelling whose cells are
-not one-per-stored-value extends this to say so in its own terms, rather than
-leaving the count mismatch to surface as a `DimensionMismatch` from the flatten
-step.
+Plans call this once after resolving `space`. Sources with compressed or
+method-specific layouts should throw an `ArgumentError` here when the target
+conflicts with the stored values.
 """
 checksource(::Any, ::Any, ::RegridSpace) = nothing
 
@@ -381,26 +333,21 @@ checksource(::Any, ::Any, ::RegridSpace) = nothing
     _asspace(space, name) -> RegridSpace
     _asspace(space, name, src_space) -> RegridSpace
 
-Resolve a `to` or `from` argument into a [`RegridSpace`](@ref). Packages that
-supply spaces extend the two-argument form for their own target spellings, and
-the three-argument form when the destination depends on the resolved source
-space. `name` names the keyword in error messages.
+Resolve a `to` or `from` target into a [`RegridSpace`](@ref). Packages extend
+the two-argument form for target spellings and the three-argument form for
+destinations that depend on the resolved source. `name` identifies the keyword
+in errors.
 """
 function _asspace end
 
 """
     sourcespacefor(target, method) -> RegridSpace
 
-Resolve a **source** target into the space `method` reads it through.
+Resolve a source target into the [`RegridSpace`](@ref) that `method` reads.
 
-The default is [`_asspace`](@ref)`(target, "from")`, method-blind, so a target
-with one presentation of itself needs no method here. A target that has a
-choice — a compressed cell collection that either refines to a single level or
-hands over the cells it stores — extends this and asks
-[`sourcesampling`](@ref) which presentation the method can read.
-
-The space returned must name the cells [`sourceview`](@ref) presents for the
-same `method`, in the same order: they are one decision taken in two places,
-one for the geometry and one for the values.
+The default delegates to [`_asspace`](@ref)`(target, "from")`. Targets with
+multiple presentations specialize this method and choose through
+[`sourcesampling`](@ref). The returned space must match the cells and ordering
+of [`sourceview`](@ref) for the same method.
 """
 sourcespacefor(target, method) = _asspace(target, "from")

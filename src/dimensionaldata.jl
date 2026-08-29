@@ -1,29 +1,13 @@
-# DimensionalData wrappers for `Fallbacks.CellVector`. Cell ids are computed
-# from compressed index windows rather than stored as an expanded vector.
-
 """
     CellLookups
 
-The DimensionalData layer: [`CellLookup`](@ref) and [`MultiOrderLookup`](@ref),
-the [`Cells`](@ref) dimension, and the [`Covering`](@ref) selector.
+DimensionalData integration for discrete global grid cells.
 
-A [`CellLookup`](@ref) is a one-dimensional `DimensionalData` lookup over cell
-ids at a single level. It is a thin wrapper around a [`CellVector`](@ref),
-which is where the compression lives: a set of **leaf index windows** —
-sorted, disjoint intervals (or, where intervals are unavailable, a sorted list)
-of indices in `levelgrid(sys, leaf)`. Its logical content is their
-concatenation, and every operation is arithmetic over that concatenation:
-`length` sums the window lengths, `lk[k]` binary-searches the cumulative
-lengths and resolves one `cellindex`, [`localindex`](@ref) runs the inverse.
-Nothing is materialised.
-
-A [`MultiOrderLookup`](@ref) is the mixed-level counterpart: a thin wrapper
-around a [`MultiOrderVector`](@ref). [`coarsen`](@ref) builds one from a
-`CellLookup` axis, [`expand`](@ref) presents one back at a single level, and
-[`aggregate`](@ref) is the fixed-level reduction.
-
-`CellVector` provides the storage and indexing behavior; this module provides
-the lookup, dimension, and selectors required by DimensionalData.
+  - [`CellLookup`](@ref) wraps a same-level [`CellVector`](@ref).
+  - [`MultiOrderLookup`](@ref) wraps a mixed-level
+    [`MultiOrderVector`](@ref).
+  - [`Cells`](@ref) names the cell dimension.
+  - [`Covering`](@ref) selects cells through a spatial coverage query.
 """
 module CellLookups
 
@@ -37,13 +21,10 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
 import ..DiscreteGlobalGrids: Helpers
 import ..DiscreteGlobalGrids.Engine: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
-# Core collection operations delegated to `CellVector`.
 import ..DiscreteGlobalGrids.Engine: CellVector, cellset, covering,
     covering_indices, windows, nwindows, RangeWindows, CellWindows, _derive,
     _windows, SubsetIndexedCell, mapneighbors, foreachneighbors,
     StorageOrder, _capacity, _ringtype
-# The mixed-level container, its membership verbs, and the aggregation verbs
-# whose DimArray methods close this file.
 import ..DiscreteGlobalGrids.Engine: MultiOrderVector, reference_level,
     covering_index, aggregate, coarsen, expand
 
@@ -51,34 +32,16 @@ import SmallCollections
 import DimensionalData as DD
 import DimensionalData: Dimensions, Lookups
 
-# ===========================================================================
-# The lookup
-# ===========================================================================
+# --- same-level lookup ------------------------------------------------------
 
 """
     abstract type AbstractCellLookup{ID} <: DimensionalData.Lookups.Lookup{ID,1}
 
-A `DimensionalData` lookup naming cells at one level — the cube face of
-[`AbstractCellVector`](@ref). `Base.parent` returns that vector, and every cell
-verb a cube supports is defined once here and forwarded to it.
-
-Two lookups ship, one per backing: [`CellLookup`](@ref) over a computed
-[`CellVector`](@ref), and [`ChunkedCellLookup`](@ref) over a stored
-[`ChunkedCellVector`](@ref). Code that means "the cell dimension of this cube"
-dispatches on this type and accepts both; naming either concrete type accepts
-only cubes from one source, which is how a cube from [`dggread`](@ref) comes to
-be refused by an operation that works on the identical cube built in memory.
-
-# Required interface
-
-`Base.parent(lk)` returns an [`AbstractCellVector`](@ref), and the lookup's
-`getindex`, `length` and `eltype` agree with it. Everything else — `system`,
-`level`, `localindex`, the neighbourhood and region verbs, `PartialGrid`,
-regridding and plotting — is generic over that one method.
-
-A subtype still writes its own `Lookups.rebuild` and `Lookups.selectindices`,
-because what a SUBSET of it should be is a property of the backing: a computed
-window set stays compressed, and a stored axis stops being stored.
+Abstract supertype for one-dimensional same-level cell lookups. `Base.parent`
+returns an [`AbstractCellVector`](@ref) that supplies collection, topology, and
+region operations. [`CellLookup`](@ref) uses computed windows;
+[`ChunkedCellLookup`](@ref) uses a stored axis. Subtypes define rebuild and
+selector behavior for their backing.
 """
 abstract type AbstractCellLookup{ID} <: Lookups.Lookup{ID,1} end
 
@@ -87,30 +50,14 @@ abstract type AbstractCellLookup{ID} <: Lookups.Lookup{ID,1} end
     CellLookup(set::MultiOrderCellSet; level = set's reference level)
     CellLookup(grid::AbstractGrid)
 
-A `DimensionalData` lookup naming cells at one level. Pair it with
-[`Cells`](@ref) to make a cube axis:
+Create a same-level DimensionalData lookup backed by a compressed
+[`CellVector`](@ref). Pair it with [`Cells`](@ref) to make a cube axis:
 
 ```julia
 set = query(sys, MultiOrderCoverage(region); level = 9)
 lk  = CellLookup(set)
 A   = DimensionalData.DimArray(values, Cells(lk))
 ```
-
-Semantically `lk` is the leaf id vector: `length(lk)` is the number of leaf
-cells, `lk[k]` is the `k`th of them, `collect(lk)` is the vector itself.
-
-`CellLookup` stores only a [`CellVector`](@ref). The vector represents the set
-as sorted, disjoint index windows at the leaf level ([`level_ranges`](@ref)),
-using O(number of windows) memory instead of O(number of leaf cells). Lookup
-operations delegate to the vector's methods, including `lk[k]`,
-[`localindex`](@ref), [`cellset`](@ref), [`covering`](@ref),
-and [`PartialGrid`](@ref).
-
-`Base.parent` returns the lookup's VALUES, as `DimensionalData` requires: the
-`CellVector`, which is an `AbstractVector` of the ids, is O(#windows) and
-materialises nothing. [`cellset`](@ref) returns the backing — the set, or the
-grid — for running a second coverage operation against without unpacking the
-lookup.
 
 Accepted inputs are:
 
@@ -121,8 +68,8 @@ Accepted inputs are:
     subset's indices — one window when the subset is a subtree, and the
     explicit list when it is scattered.
 
-All forms construct a [`CellVector`](@ref); an existing vector can be passed
-directly.
+All forms construct a `CellVector`; `Base.parent(lk)` returns it. Logical
+indexing and [`localindex`](@ref) remain O(log(number of windows)).
 
 # Selectors
 
@@ -132,20 +79,9 @@ A[Cells(DimensionalData.Contains(8.0, 46.5))] # a lon/lat point, through `cellat
 A[Cells(Covering(polygon))]                   # a region, through `MultiOrderCoverage`
 ```
 
-`At` and `Contains` resolve to one index; [`Covering`](@ref) to the
-indices of every stored cell the region's coverage names, and the view it
-produces carries a `CellLookup` again. Outside a cube those three are
-`localindex(cv, c)`, `localindex(cv, lon, lat)` and
-[`covering`](@ref)`(cv, polygon)`.
-
-`At` and `Contains` are referenced as `DD.At` and `DD.Contains`. They are not
-re-exported because this package exports DE9IM's unrelated [`Contains`](@ref)
-geometry predicate. [`Covering`](@ref) is exported by this package.
-
-`DD.Near` throws: cell ids ascend along a space-filling curve, so snapping to
-the nearest id is not snapping to the nearest cell on the sphere, and this
-lookup has no nearest-member search to offer instead. `Contains(lon, lat)`
-answers the question `Near` is usually reached for.
+`DimensionalData.At` selects an exact id, `DimensionalData.Contains` selects
+the cell containing a point, and [`Covering`](@ref) selects a spatial region.
+`Near` is unavailable because id order is not spherical distance.
 
 # What the cube's own operations do to it
 
@@ -154,25 +90,15 @@ Indexing, concatenation, and reductions preserve the most specific valid lookup:
   - an ASCENDING subset — a range, a sorted index vector, a boolean mask, a
     selector's result, or a concatenation of disjoint ascending axes — is a
     window set again, so it is a `CellLookup`;
-  - a REORDERED one — `lk[[3, 1]]`, `reverse(A; dims = Cells)` — is not, and
-    falls back to an unordered `DimensionalData.Categorical` of the same ids.
-    The values are right and the selectors work; the type is not `CellLookup`,
-    so reversing twice restores the data but not the axis's type;
+  - a reordered subset uses an unordered `DimensionalData.Categorical`;
   - a reduction (`sum(A; dims = Cells)`) collapses to a single element that no
     cell id names, so the axis becomes `NoLookup`;
-  - `rebuild` around anything that is not cell ids at this level throws, since
-    a `CellLookup` has no free fields to put them in. Replacing an axis
-    wholesale is `set(A, Cells => NoLookup())`.
+  - rebuilding with incompatible data throws; use
+    `set(A, Cells => NoLookup())` to replace the axis.
 
-!!! note "Systems without sorted subtrees (A5) are built by selection"
-    [`level_ranges`](@ref) throws where [`has_sorted_subtrees`](@ref) is
-    `false`, because a cell's descendants are not one interval of their level.
-    The lookup is then built by selection: `descendants` names the leaves, they
-    are resolved to indices and sorted, and the result is run-compressed like
-    any other index list. Every method above is unchanged and every law
-    still holds. [`CellVector`](@ref) documents what that costs, and the one
-    consequence it inherits: on A5 a [`Covering`](@ref) selection is a superset
-    of the cells that meet the region, by the same margin the refinement is.
+Systems without sorted subtrees build the backing vector by enumerating,
+sorting, and compressing descendants. [`CellVector`](@ref) documents the cost
+and non-congruent coverage behavior.
 """
 struct CellLookup{ID,C<:CellVector} <: AbstractCellLookup{ID}
     cells::C
@@ -195,8 +121,7 @@ windows(lk::CellLookup) = windows(parent(lk))
 
 # --- the collection surface ------------------------------------------------
 
-# DimensionalData derives lookup behavior from `parent`, so it must return the
-# logical values (`CellVector`). Use `cellset` to access the backing set or grid.
+# DimensionalData requires `parent` to return the logical lookup values.
 Base.parent(lk::CellLookup) = lk.cells
 Base.IndexStyle(::Type{<:AbstractCellLookup}) = Base.IndexLinear()
 
@@ -208,8 +133,7 @@ Base.@propagate_inbounds Base.getindex(lk::AbstractCellLookup, k::Int) = parent(
 Base.@propagate_inbounds Base.getindex(lk::AbstractCellLookup, k::CartesianIndex{1}) =
     parent(lk)[k[1]]
 
-# Only vector indices can produce a one-dimensional window set. Shaped indices
-# use Base's generic array indexing.
+# Base handles shaped indices; vector indices may preserve compressed windows.
 for f in (:getindex, :view, :dotview)
     @eval Base.$f(lk::AbstractCellLookup, ::Colon) = lk
     @eval Base.$f(lk::AbstractCellLookup, i::AbstractVector{<:Integer}) = _subset(lk, i)
@@ -222,12 +146,7 @@ Base.reverse(lk::AbstractCellLookup) = lk[lastindex(lk):-1:firstindex(lk)]
 Base.getindex(lk::AbstractCellLookup,
     i::SmallCollections.AbstractFixedOrSmallOrPackedVector{<:Integer}) = _subset(lk, i)
 
-# Validate boolean-mask axes against the lookup so bounds errors identify the
-# indexed lookup rather than its backing vector.
-#
-# The body is shared but the METHOD is written per concrete lookup: `Bool <:
-# Integer`, so a mask method on `AbstractCellLookup` and a concrete catch-all
-# `_subset(lk, idx)` are ambiguous on exactly the `BitVector` a mask arrives as.
+# Concrete mask methods avoid the `Bool <: Integer` catch-all ambiguity.
 function _masksubset(lk::AbstractCellLookup, mask::AbstractArray{Bool})
     axes(mask) == axes(lk) || throw(BoundsError(lk, (mask,)))
     return _subset(lk, findall(mask))
@@ -235,8 +154,7 @@ end
 
 _subset(lk::CellLookup, mask::AbstractArray{Bool}) = _masksubset(lk, mask)
 
-# Ascending subsets remain compressed; reordered subsets use an unordered
-# DimensionalData categorical lookup.
+# Only ascending subsets retain compressed interval order.
 function _subset(lk::CellLookup, idx)
     sub = parent(lk)[idx]
     sub isa CellVector && return CellLookup(sub)
@@ -248,11 +166,8 @@ end
 """
     cellset(lk::AbstractCellLookup)
 
-Return the [`MultiOrderCellSet`](@ref) or grid used to construct the lookup.
-
-`Base.parent(lk)` returns the logical values as an [`AbstractCellVector`](@ref).
-A subset produced by indexing or selection reports its [`PartialGrid`](@ref), as
-does a lookup over a stored axis, which was constructed from no set at all.
+Return the set or grid that constructed the lookup. Derived and stored-axis
+lookups return their describing [`PartialGrid`](@ref).
 """
 cellset(lk::AbstractCellLookup) = cellset(parent(lk))
 
@@ -263,8 +178,7 @@ The grid system the lookup's cells are named in.
 """
 system(lk::AbstractCellLookup) = system(parent(lk))
 
-# `CellLookup` neither adds cells nor changes adjacency; it carries the same
-# static degree bound as its compressed vector.
+# Wrapping preserves the backing vector's neighbor bound.
 maxneighbors(lk::AbstractCellLookup, connectivity::Connectivity) =
     maxneighbors(parent(lk), connectivity)
 maxneighbors(lk::AbstractCellLookup) = maxneighbors(lk, Vertex())
@@ -296,10 +210,8 @@ globalindex(lk::AbstractCellLookup, c::AbstractCellIndex) = globalindex(parent(l
     interior(lk::AbstractCellLookup; connectivity = Vertex(), cells = false)
     adjacency(lk::AbstractCellLookup; halo = 0, connectivity = Vertex(), threaded = true)
 
-Return the backing vector's adjacency operations. Neighbour and ring results are
-clipped to lookup membership, and the lookup is a region for the four region
-verbs: [`halo`](@ref) walks outside it, [`border`](@ref) and [`interior`](@ref)
-split what is inside, and [`adjacency`](@ref) tables the lot.
+Delegate topology to the backing vector. Neighbor and ring results are clipped
+to lookup membership; region verbs treat the lookup as the same subset.
 """
 neighbors(lk::AbstractCellLookup, c::AbstractCellIndex, k::Integer=1;
     connectivity::Connectivity=Vertex()) =
@@ -325,11 +237,9 @@ adjacency(lk::AbstractCellLookup; kw...) = adjacency(parent(lk); kw...)
 adjacency(lk::AbstractCellLookup, hpos::AbstractVector{<:Integer}; kw...) =
     adjacency(parent(lk), hpos; kw...)
 
-# Indexed handles use the parent vector's indices.
 neighbors(lk::AbstractCellLookup; connectivity::Connectivity=Vertex()) =
     neighbors(parent(lk); connectivity)
 
-# Delegate neighbourhood sweeps to the parent vector.
 mapneighbors(f, lk::AbstractCellLookup; kw...) = mapneighbors(f, parent(lk); kw...)
 mapneighbors(f, lk::AbstractCellLookup, data::AbstractVector; kw...) =
     mapneighbors(f, parent(lk), data; kw...)
@@ -351,13 +261,11 @@ DGG.region(lk::AbstractCellLookup) = DGG.region(parent(lk))
 
 # --- DimensionalData plumbing ----------------------------------------------
 
-# The values ascend in canonical id order, which is what makes the binary
-# searches below — and `searchsortedfirst` on the lookup — sound.
+# Canonical id order satisfies DimensionalData's ordered-lookup contract.
 Lookups.order(::AbstractCellLookup) = Lookups.ForwardOrdered()
 Lookups.metadata(::AbstractCellLookup) = Lookups.NoMetadata()
 
-# DimensionalData passes concatenated values through `rebuild`. Ascending cell
-# ids remain compressed; other orders become an unordered categorical lookup.
+# Rebuild preserves compression only for ascending ids.
 function Lookups.rebuild(lk::CellLookup; data=nothing, kw...)
     (data === nothing || data === lk || data === parent(lk)) && return lk
     return _rebuild(lk, data)
@@ -389,7 +297,7 @@ end
 # A reduced cell axis no longer corresponds to a cell id.
 Lookups.reducelookup(::AbstractCellLookup) = Lookups.NoLookup(Base.OneTo(1))
 
-# Use the window membership search instead of searching all logical cell ids.
+# Window membership keeps selector checks logarithmic.
 Lookups.hasselection(lk::AbstractCellLookup, sel::Lookups.At{<:AbstractCellIndex}) =
     localindex(lk, Lookups.val(sel)) !== nothing
 
@@ -413,15 +321,13 @@ end
 
 Base.show(io::IO, ::MIME"text/plain", lk::CellLookup) = show(io, lk)
 
-# ===========================================================================
-# The dimension
-# ===========================================================================
+# --- cell dimension ---------------------------------------------------------
 
 """
     Cells(x)
 
-The `DimensionalData` dimension of a cube's cell axis: `Cells(lk)` where `lk`
-is a [`CellLookup`](@ref), and `Cells(selector)` when indexing.
+The DimensionalData dimension for a cell axis. Use `Cells(lk)` to construct an
+axis and `Cells(selector)` to index it.
 
 ```julia
 A = DimensionalData.DimArray(values, Cells(CellLookup(set)))
@@ -430,11 +336,7 @@ A[Cells(Covering(county))]
 """
 DD.@dim Cells "Cells"
 
-# ---------------------------------------------------------------------------
-# Indexed handles index one-dimensional cell arrays directly by storage
-# index, with no membership check — the trusted-index contract. Bare
-# cells keep the resolved path through the selector machinery above.
-# ---------------------------------------------------------------------------
+# Indexed handles carry trusted storage positions from topology iterators.
 
 const CellsArray = DD.AbstractDimArray{T,1,<:Tuple{<:Cells}} where {T}
 
@@ -443,7 +345,6 @@ Base.@propagate_inbounds Base.getindex(A::CellsArray, h::SubsetIndexedCell) =
 Base.@propagate_inbounds Base.setindex!(A::CellsArray, x, h::SubsetIndexedCell) =
     setindex!(parent(A), x, h.index)
 
-# Find the first `Cells` dimension for indexed-handle indexing.
 function _handle_dimnum(A::DD.AbstractDimArray)
     for (i, d) in enumerate(DD.dims(A))
         d isa Cells && return i
@@ -456,22 +357,13 @@ end
 @inline _handle_slice(A::DD.AbstractDimArray, ::Val{D}, p::Int) where {D} =
     view(A, ntuple(i -> i == D ? p : Colon(), Val(ndims(A)))...)
 
-# On an N-D array, an indexed handle selects the slice at its index
-# along the first `Cells` dimension, as a view. The 1-D methods above keep
-# the scalar fast path; the index is trusted either way.
 Base.getindex(A::DD.AbstractDimArray, h::SubsetIndexedCell) =
     _handle_slice(A, Val(_handle_dimnum(A)), h.index)
 Base.view(A::DD.AbstractDimArray, h::SubsetIndexedCell) =
     _handle_slice(A, Val(_handle_dimnum(A)), h.index)
 
-# ===========================================================================
-# Whole-array entry points
-#
-# Neighborhood operations locate the cell dimension in any `AbstractDimArray`.
-# ===========================================================================
+# --- whole-array entry points ----------------------------------------------
 
-# Use the first `CellLookup` dimension unless `spatialdim` selects one
-# explicitly; failures throw an informative `ArgumentError` either way.
 function _cells_dimnum(A::DD.AbstractDimArray, ::Nothing)
     for (i, d) in enumerate(DD.dims(A))
         DD.lookup(d) isa AbstractCellLookup && return i
@@ -496,20 +388,11 @@ end
 _rebuilt(A::DD.AbstractDimArray, out::Tuple) = map(o -> DD.rebuild(A; data = o), out)
 _rebuilt(A::DD.AbstractDimArray, out) = DD.rebuild(A; data = out)
 
-# ===========================================================================
-# A cube as the `known` half of a cell field
-#
-# `cellfield` lives one layer down, where `DimensionalData` is not in scope,
-# so the cube shape of its `known` argument is named here. A cube over a
-# SUBSET of the swept collection is the partial case: its cells are read from
-# it, and the cells it does not carry are computed.
-# ===========================================================================
+# --- cell-field cube inputs -------------------------------------------------
 
 DGG.Engine._cellknown(A::DD.AbstractDimArray, cv::CellVector, ::Type{T}) where {T} =
     _cubeknown(A, cv, T)
-# A one-dimensional cube is both an `AbstractVector` and an `AbstractDimArray`,
-# and it is the cube: a vector `known` is the dense whole-collection form, and
-# a cube carries the cell axis that says which cells its entries are for.
+# Prefer the cube method over the dense-vector method for one-dimensional arrays.
 DGG.Engine._cellknown(A::DD.AbstractDimArray{<:Any,1}, cv::CellVector,
     ::Type{T}) where {T} = _cubeknown(A, cv, T)
 
@@ -531,10 +414,8 @@ end
 """
     Neighbors()
 
-Pass indexed cell handles to `f(cell, neighbors)`; the handles read data
-by indexing the array. This is the default for [`mapneighbors`](@ref) and
-[`foreachneighbors`](@ref) on dimensional arrays. `mapneighbors` returns one
-result per cell, on the cell dimension.
+Pass indexed cell handles as `f(cell, neighbors)`. This is the default for
+[`mapneighbors`](@ref) and [`foreachneighbors`](@ref).
 """
 struct Neighbors end
 
@@ -550,10 +431,8 @@ struct Values end
 """
     NeighborSlices()
 
-Pass views to `f(cell, slice, neighbor_slices)`, with the cell dimension
-removed from each view. [`mapneighbors`](@ref) returns one result per cell,
-on the cell dimension. A one-dimensional array is refused — its per-cell
-slice is a scalar, which is [`Values`](@ref).
+Pass cell-axis-free views as `f(cell, slice, neighbor_slices)`. This mode
+requires at least two dimensions; use [`Values`](@ref) for scalar slices.
 """
 struct NeighborSlices end   # Not `Slices`: Base exports that name.
 
@@ -565,7 +444,6 @@ _need_slices(A) = ndims(A) >= 2 || throw(ArgumentError(
     "NeighborSlices() needs at least two dimensions; a one-dimensional " *
     "array's per-cell slice is its scalar — use Values()"))
 
-# Rebuild one-result-per-cell outputs with the original cell dimension.
 _rebuilt_on_cells(A, d, out::Tuple) =
     map(o -> DD.rebuild(A; data = o, dims = (d,)), out)
 _rebuilt_on_cells(A, d, out) = DD.rebuild(A; data = out, dims = (d,))
@@ -574,8 +452,7 @@ _rebuilt_on_cells(A, d, out) = DD.rebuild(A; data = out, dims = (d,))
     "needs cannot be combined with pass = $(typeof(pass)): a field request " *
     "already names what the callback receives; drop one of the two"))
 
-# A field request names the callback's arguments itself, so only the default
-# `pass` may accompany one.
+# Field requests define callback arguments and require the default pass mode.
 _checkpass(::Neighbors) = nothing
 _checkpass(pass) = _needs_pass(pass)
 
@@ -585,38 +462,22 @@ _checkpass(pass) = _needs_pass(pass)
     mapneighbors(f, A::AbstractDimArray; needs = (Value(a), Centroid()), ...)
 
 Apply `f` to each cell and its neighbors. The result uses `A`'s wrapper and
-lookups. If `f` returns a concrete tuple, each component becomes an array.
-
-`spatialdim` accepts any selector supported by `DimensionalData.dims`.
-By default, the first dimension with a [`CellLookup`](@ref) is used. An
-array without one, or a selector that misses or names a non-cell dimension,
-is an `ArgumentError`.
+lookups. `spatialdim` selects the cell dimension and defaults to the first cell
+lookup.
 
 `pass` controls the callback arguments and output shape:
 
-- [`Neighbors`](@ref): indexed handles; one result per cell, on the cell
-  dimension.
+- [`Neighbors`](@ref): indexed handles, one result per cell.
 - [`Values`](@ref): scalar values; the same dimensions as `A`.
-- [`NeighborSlices`](@ref): views across the other dimensions; one result per
-  cell, on the cell dimension.
+- [`NeighborSlices`](@ref): views across non-cell dimensions, one result per
+  cell.
 
-`needs` names the per-neighbour fields the kernel reads instead of `pass`, and
-the callback becomes `f(center, rings)` — the contract is the [`CellVector`](@ref)
-method's, and the requests are `Cell`, `Index`, `Value` and `Centroid`. Values
-reach the callback through the request's `Value` entries rather than from `A`
-itself, so an array of any dimensionality gives one result per cell, on the
-cell dimension. Any `pass` other than the default alongside `needs` is an
-`ArgumentError`.
+Alternatively, `needs` supplies `Cell`, `Index`, `Value`, and `Centroid` field
+requests to `f(center, rings)`. Field requests produce one result per cell and
+use the default pass mode.
 
-With `pass = Values()` or a `needs` request, and `order = StorageOrder()`, a
-cube whose data is chunked on disk is swept along those chunks rather than cell
-by cell — see [`chunkplan`](@ref). The result is identical either way; what
-changes is that each stored chunk is decoded once instead of once per scalar
-read, and that a request's stored `Value`s are read the same way.
-`Index(Local())` still answers this cube's cell-axis index, never a chunk's
-own. A permutation `order` names a visit order over the whole axis and a
-chunked sweep visits by chunk, so the two cannot both be honoured and the
-permutation wins.
+Stored values follow chunk order when possible; see [`chunkplan`](@ref). An
+explicit permutation takes precedence over chunk traversal.
 """
 function mapneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
         needs = nothing, pass = Neighbors(), order = StorageOrder(),
@@ -625,20 +486,10 @@ function mapneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
     return _map_needs(needs, pass, f, A, dnum, order, threaded, connectivity)
 end
 
-# No field request: `pass` picks the callback form, exactly as before —
-# `needs = nothing` reaches those methods by dispatch, not by a branch.
 _map_needs(::Nothing, pass, f::F, A, dnum, order, threaded, conn) where {F} =
     _map_dimarray(pass, f, A, dnum, order, threaded, conn)
 
-# A field request is answered by the cell axis alone, whatever `A`'s
-# dimensionality: the callback's values arrive through the request's `Value`
-# entries, so the result is one per cell, on the cell dimension.
-#
-# A cube whose data is chunked on disk still takes the chunk route, under the
-# rule `Values()` uses — the request may name `A` itself, or any other stored
-# array, as a `Value`, and reading those along the chunk lines is the same win.
-# The route is `chunks.jl`'s; a permutation `order` keeps the whole-axis path,
-# because a chunked sweep visits by chunk and cannot honour one.
+# Field requests produce one cell-axis result and may use chunk traversal.
 function _map_needs(needs, pass, f::F, A, dnum, order, threaded, conn) where {F}
     _checkpass(pass)
     plan = _chunkedvalues(A, dnum, order, conn)
@@ -649,7 +500,6 @@ function _map_needs(needs, pass, f::F, A, dnum, order, threaded, conn) where {F}
     return _rebuilt_on_cells(A, DD.dims(A)[dnum], out)
 end
 
-# Answered in `chunks.jl`, like `_map_values_chunked`.
 function _map_needs_chunked end
 function _foreach_needs_chunked end
 
@@ -671,15 +521,7 @@ function _map_dimarray(::Values, f::F, A, dnum, order, threaded,
     return _rebuilt(A, _map_slices(f, A, dnum, cv, order, threaded, conn))
 end
 
-# Values flow through the traversal rather than being fetched by the callback,
-# which is what lets a cube whose data is chunked on disk be swept along those
-# chunks instead of cell by cell. `chunks.jl` owns the plan and answers these
-# two; everything without a chunk grid takes the direct path above.
-#
-# `Neighbors()` deliberately has no such route: its callback closes over the
-# ORIGINAL array and indexes it by the handles it is given, so a sweep over
-# blocks would hand it indices into a block and it would read them from the
-# whole cube. `foreachchunk` is the chunk-following form of that pass.
+# Value traversal can follow chunk storage; indexed handles remain whole-axis indices.
 _chunkedvalues(A, dnum, order, conn) = nothing
 function _map_values_chunked end
 
@@ -693,8 +535,7 @@ end
 
 _map_dimarray(pass, f, A, dnum, order, threaded, conn) = _bad_pass(pass)
 
-# Function barrier: the cell dimension's number becomes a constant, so the
-# slice views are concretely typed.
+# A value-type dimension number keeps slice views concrete.
 function _map_cell_slices(f::F, A, ::Val{D}, cv, order, threaded,
         conn) where {F,D}
     g = (c, nbrs) -> f(c, _handle_slice(A, Val(D), localindex(c)),
@@ -702,8 +543,7 @@ function _map_cell_slices(f::F, A, ::Val{D}, cv, order, threaded,
     return mapneighbors(g, cv; order, threaded, connectivity = conn)
 end
 
-# Run a separate buffered 1-D sweep for each non-cell index, so the
-# CellVector kernels own all traversal and the slices cannot interact.
+# Independent buffered sweeps isolate each non-cell slice.
 function _map_slices(f::F, A, dnum::Int, cv::AbstractCellVector, order, threaded,
         connectivity::Connectivity) where {F}
     data = parent(A)
@@ -736,7 +576,7 @@ _slice_store!(out::AbstractArray, res::AbstractVector, jpre, jpost) =
                      connectivity = Vertex())
     foreachneighbors(f, A::AbstractDimArray; needs = (Value(a), Centroid()), ...)
 
-Call `f` for each cell and its neighbors without collecting results.
+Call `f` for side effects on each cell and its neighbors.
 `spatialdim`, `pass` and `needs` behave as in [`mapneighbors`](@ref).
 """
 function foreachneighbors(f::F, A::DD.AbstractDimArray; spatialdim = nothing,
@@ -813,16 +653,7 @@ function neighbors(A::DD.AbstractDimArray; spatialdim = nothing,
     return neighbors(parent(DD.lookup(A, dnum)); connectivity)
 end
 
-# ===========================================================================
-# Selectors
-#
-# Point and id selectors resolve to one index; a region selector resolves to
-# all matching indices. Methods include the selector value type because DimensionalData
-# reads a `Tuple`-valued selector as a pair of interval endpoints and a
-# `Vector`-valued one as an elementwise map — both of which a bare
-# `(::CellLookup, ::Contains)` method would be ambiguous with.
-#
-# ===========================================================================
+# Selector value types disambiguate DimensionalData's tuple and vector methods.
 
 """
     Covering(target)
@@ -836,15 +667,9 @@ A[Cells(Covering(extent))]          # a lon/lat Extents.Extent
 A[Cells(Covering(cap))]             # a GO.UnitSpherical.SphericalCap
 ```
 
-`target` is anything [`query`](@ref) accepts. The result is the intersection of
-the coverage's leaf expansion with the lookup, in ascending index order. The
-resulting view retains a [`CellLookup`](@ref).
-
-Outside a cube, the equivalent selection is `covering(cv, target)`, which
-returns a
-[`CellVector`](@ref), or `covering_indices(cv, target)` for the indices
-alone. See that docstring for what the selection costs and for the
-over-covering it inherits from the coverage itself.
+`target` accepts the same inputs as [`query`](@ref). The ascending intersection
+retains a [`CellLookup`](@ref). Use `covering(cv, target)` for a
+[`CellVector`](@ref), or `covering_indices(cv, target)` for indices.
 """
 struct Covering{T} <: Lookups.ArraySelector{T}
     val::T
@@ -876,36 +701,26 @@ Lookups.selectindices(lk::AbstractCellLookup,
     sel::Lookups.At{<:Tuple{Real,Real}}; kw...) =
     _found(lk, localindex(parent(lk), Lookups.val(sel)...), sel)
 
-# Typed on `Lookup` so `MultiOrderLookup` resolves its selectors through the
-# same two lines.
 _found(lk::Lookups.Lookup, k::Int, sel) = k
 _found(lk::Lookups.Lookup, ::Nothing, sel) = throw(Lookups.SelectorError(lk, sel))
 
-# ===========================================================================
-# The mixed-level lookup: the same layering as `CellLookup`, holding a
-# `MultiOrderVector` and delegating every verb to it.
-# ===========================================================================
+# --- mixed-level lookup -----------------------------------------------------
 
 """
     MultiOrderLookup(mov::MultiOrderVector)
     MultiOrderLookup(set::MultiOrderCellSet)
 
-A `DimensionalData` lookup over cells at mixed refinement levels: a thin
-wrapper around the [`MultiOrderVector`](@ref) it holds, reached as
-`Base.parent`. Pair it with [`Cells`](@ref) for the axis of an adaptively
-refined mesh — `DimArray(vals, Cells(MultiOrderLookup(mov)))`.
+Present a [`MultiOrderVector`](@ref) as a mixed-level DimensionalData lookup.
+`Base.parent` returns the container. Pair the lookup with [`Cells`](@ref):
 
-  - Selectors resolve through the container's interval index in O(log n).
-    `At` is exact membership ([`localindex`](@ref)); `Contains` resolves a
-    cell — including one deeper than the [`reference_level`](@ref) — to the
-    stored ancestor that holds its value ([`covering_index`](@ref));
-    [`Covering`](@ref) names every stored cell a region meets. The first two
-    are `DimensionalData`'s, because this package exports DE9IM's `Contains`.
-  - An ascending subset stays a `MultiOrderLookup`; a reordered one degrades
-    to `Categorical` and a reduction to `NoLookup`, while `vcat`/`cat` of
-    disjoint ascending axes rebuild one.
-  - [`coarsen`](@ref) constructs one from a `Cells{<:CellLookup}` array;
-    [`expand`](@ref) presents one back at a single level.
+```julia
+DimArray(vals, Cells(MultiOrderLookup(mov)))
+```
+
+Selectors use the container's interval index in O(log n): `At` tests exact
+membership, `Contains` resolves the stored ancestor, and [`Covering`](@ref)
+selects stored cells meeting a region. Ascending subsets retain the lookup;
+reordered subsets use `Categorical`.
 """
 struct MultiOrderLookup{ID,M<:MultiOrderVector} <: Lookups.Lookup{ID,1}
     cells::M
@@ -920,21 +735,17 @@ MultiOrderLookup(lk::MultiOrderLookup) = lk
 
 # --- the collection surface ------------------------------------------------
 
-# The VALUES, per DimensionalData's contract (see `CellLookup`'s `parent`).
+# DimensionalData treats the parent as the lookup's values.
 Base.parent(lk::MultiOrderLookup) = lk.cells
 Base.IndexStyle(::Type{<:MultiOrderLookup}) = Base.IndexLinear()
 
 """
     cellset(lk::MultiOrderLookup)
 
-The [`MultiOrderVector`](@ref) the axis is written against — for this lookup the
-same collection `Base.parent` returns, since a mixed-level axis is its own
-backing.
+Return the [`MultiOrderVector`](@ref) backing the axis. This is the same
+collection as `Base.parent(lk)`.
 """
 cellset(lk::MultiOrderLookup) = cellset(parent(lk))
-
-# No `bounds` method: the lookup is `Unordered` (see `order` below), and the
-# generic `(nothing, nothing)` is the right answer.
 
 Base.@propagate_inbounds Base.getindex(lk::MultiOrderLookup, k::Int) = parent(lk)[k]
 Base.@propagate_inbounds Base.getindex(lk::MultiOrderLookup, k::CartesianIndex{1}) =
@@ -955,15 +766,14 @@ function _subset(lk::MultiOrderLookup, mask::AbstractArray{Bool})
     return _subset(lk, findall(mask))
 end
 
-# Ascending indices form sorted disjoint intervals again and stay in this
-# type; anything else becomes a plain unordered id vector.
+# Ascending subsets preserve disjoint interval order.
 function _subset(lk::MultiOrderLookup, idx)
     sub = parent(lk)[idx]
     sub isa MultiOrderVector && return MultiOrderLookup(sub)
     return Lookups.Categorical(sub; order=Lookups.Unordered())
 end
 
-# --- what the lookup is, in this package's own vocabulary ------------------
+# --- metadata ---------------------------------------------------------------
 
 """
     system(lk::MultiOrderLookup)
@@ -975,8 +785,8 @@ system(lk::MultiOrderLookup) = system(parent(lk))
 """
     reference_level(lk::MultiOrderLookup) -> Int
 
-The level the backing container's intervals are stated at — no shallower than
-any cell on the axis. Public but unexported; reach it as
+Return the backing container's interval level, which is at least as deep as
+every cell on the axis. This function is public but unexported; call it as
 `DiscreteGlobalGrids.reference_level(lk)`.
 """
 reference_level(lk::MultiOrderLookup) = reference_level(parent(lk))
@@ -984,29 +794,24 @@ reference_level(lk::MultiOrderLookup) = reference_level(parent(lk))
 """
     localindex(lk::MultiOrderLookup, c::AbstractCellIndex) -> Union{Int,Nothing}
 
-Index of cell `c` on the axis, or `nothing` when the axis does not hold that
-cell — including when `c` is a descendant or an ancestor of one it does hold.
-EXACT membership, and what `At` resolves to.
+Return the index of the exact cell `c`, or `nothing` when the axis stores only
+an ancestor or descendant. `DimensionalData.At` uses this lookup.
 """
 localindex(lk::MultiOrderLookup, c::AbstractCellIndex) = localindex(parent(lk), c)
 
 """
     covering_index(lk::MultiOrderLookup, c::AbstractCellIndex) -> Union{Int,Nothing}
 
-Index of the stored cell that **is `c`, or is an ancestor of `c`** — the
-compression verb, and what `Contains` resolves to. `c` may be deeper than
-[`reference_level`](@ref).
+Return the index of the stored cell equal to or ancestral to `c`.
+`DimensionalData.Contains` uses this lookup, including for cells deeper than
+the [`reference_level`](@ref).
 """
 covering_index(lk::MultiOrderLookup, c::AbstractCellIndex) =
     covering_index(parent(lk), c)
 
 # --- DimensionalData plumbing ----------------------------------------------
 
-# `order` is DimensionalData's claim about the id VALUES under `isless`, which
-# compares level first, so a mixed-level axis is genuinely unsorted: an ordered
-# claim makes `cat`'s boundary check read level inversions as overlaps and
-# silently return the parent array with the lookup dropped. Selectors resolve
-# through the interval index and never read `order`.
+# Cell-id ordering compares levels first, while selectors use interval order.
 Lookups.order(::MultiOrderLookup) = Lookups.Unordered()
 Lookups.metadata(::MultiOrderLookup) = Lookups.NoMetadata()
 
@@ -1017,14 +822,11 @@ end
 
 _rebuild(lk::MultiOrderLookup, mov::MultiOrderVector) = MultiOrderLookup(mov)
 
-# `vcat`/`cat` along `Cells` rebuild through here: an ascending disjoint id
-# vector becomes a container again, anything else an unordered `Categorical`;
-# overlapping ids error in the container's constructor.
+# Concatenation preserves this lookup only for ascending, disjoint ids.
 function _rebuild(lk::MultiOrderLookup, ids::AbstractVector{<:AbstractCellIndex})
     mov = parent(lk)
     sys = system(mov)
-    # A concatenated axis can hold cells deeper than this one's reference
-    # level; the result is keyed at the deepest level in play.
+    # Key the concatenated axis at its deepest cell level.
     ref = reference_level(mov)
     for c in ids
         ref = max(ref, level(c))
@@ -1041,14 +843,13 @@ function _rebuild(lk::MultiOrderLookup, ids::AbstractVector{<:AbstractCellIndex}
 end
 
 @noinline _rebuild(lk::MultiOrderLookup, data) = throw(ArgumentError(
-    "a MultiOrderLookup holds cell ids at mixed levels; it cannot be rebuilt " *
-    "around $(typeof(data)). Concatenate cell axes with `vcat`/`cat`, subset " *
-    "them by indexing, and replace one wholesale with " *
-    "`set(A, Cells => NoLookup())`."))
+    "MultiOrderLookup rebuild data must be mixed-level cell ids, got " *
+    "$(typeof(data)). Use `vcat` or `cat` for cell axes, indexing for subsets, " *
+    "or `set(A, Cells => NoLookup())` to replace the lookup."))
 
 Lookups.reducelookup(::MultiOrderLookup) = Lookups.NoLookup(Base.OneTo(1))
 
-# One binary search each, instead of the generic scan over the values.
+# The interval index gives each selector one binary search.
 Lookups.hasselection(lk::MultiOrderLookup, sel::Lookups.At{<:AbstractCellIndex}) =
     localindex(lk, Lookups.val(sel)) !== nothing
 
@@ -1073,9 +874,6 @@ end
 Base.show(io::IO, ::MIME"text/plain", lk::MultiOrderLookup) = show(io, lk)
 
 # --- selectors -------------------------------------------------------------
-#
-# One `MultiOrderVector` verb each: `At` is exact, `Contains` is covering.
-# Typed on the selector's value, as in the `CellLookup` block above.
 
 Lookups.selectindices(lk::MultiOrderLookup, sel::Covering; kw...) =
     covering_indices(parent(lk), Lookups.val(sel))
@@ -1086,8 +884,6 @@ Lookups.selectindices(lk::MultiOrderLookup, sel::Covering{<:AbstractVector}; kw.
 Lookups.selectindices(lk::MultiOrderLookup, sel::Lookups.At{<:AbstractCellIndex}; kw...) =
     _found(lk, localindex(parent(lk), Lookups.val(sel)), sel)
 
-# A cell the axis does not store — including one deeper than the reference
-# level — resolves to its stored ancestor.
 Lookups.selectindices(lk::MultiOrderLookup,
     sel::Lookups.Contains{<:AbstractCellIndex}; kw...) =
     _found(lk, covering_index(parent(lk), Lookups.val(sel)), sel)
@@ -1100,21 +896,15 @@ Lookups.selectindices(lk::MultiOrderLookup,
     sel::Lookups.At{<:Tuple{Real,Real}}; kw...) =
     _found(lk, localindex(parent(lk), Lookups.val(sel)...), sel)
 
-# ===========================================================================
-# The compression, presented at one level
-# ===========================================================================
+# --- lazy expansion values -------------------------------------------------
 
 """
     MultiOrderValues(values, offsets) <: AbstractVector
 
-[`expand`](@ref)'s data: mixed-level values presented as the values of the
-leaf cells they cover, stored as themselves. `offsets[i]` is the number of
-leaf cells the first `i` stored cells cover, so `v[k]` is
-`values[searchsortedfirst(offsets, k)]` and nothing is materialised:
-`length(v)` is the leaf count while `Base.summarysize(v)` stays O(#stored
-values).
-
-Internal: an `expand`ed array's data, reached as `parent(A)`.
+Present mixed-level values over their covered leaf cells. `offsets[i]` is the
+cumulative leaf count for the first `i` stored cells; indexing finds the owning
+stored value by binary search. Logical length counts leaves while storage
+remains O(stored values).
 """
 struct MultiOrderValues{T,V<:AbstractVector{T}} <: AbstractVector{T}
     values::V
@@ -1139,8 +929,6 @@ Base.@propagate_inbounds function Base.getindex(v::MultiOrderValues, k::Int)
     return @inbounds v.values[searchsortedfirst(v.offsets, k)]
 end
 
-# A run fill, so materialising the whole expansion costs O(#leaves) rather
-# than one binary search per leaf.
 function Base.copyto!(dest::Vector, v::MultiOrderValues)
     length(dest) >= length(v) || throw(ArgumentError(
         "destination has $(length(dest)) elements, cannot hold $(length(v))"))
@@ -1159,14 +947,8 @@ end
 Base.collect(v::MultiOrderValues{T}) where {T} =
     copyto!(Vector{T}(undef, length(v)), v)
 
-# ===========================================================================
-# DimArray methods for the aggregation verbs
-#
-# Each is one core call with the axis rebuilt around the answer. One `Cells`
-# dimension only: the cores read `(cells, values)` as parallel vectors.
-# ===========================================================================
+# --- DimArray aggregation methods ------------------------------------------
 
-# Shared validation; the error names the verb the caller reached for.
 function _cell_axis(A::DD.AbstractDimArray, ::Type{L}, verb::AbstractString) where {L}
     ndims(A) == 1 || throw(ArgumentError(
         "$verb is defined on a one-dimensional array over a `Cells` axis; this " *
@@ -1183,12 +965,11 @@ end
 """
     aggregate(f, A::AbstractDimArray, l::Integer) -> AbstractDimArray
 
-Reduce a cell array to level `l`: one element per distinct level-`l` ancestor
-of `A`'s cells, each carrying `f` of the values of its **present** descendants.
-`A` must be one-dimensional over a [`Cells`](@ref) axis with an
-[`AbstractCellLookup`](@ref) — a [`CellLookup`](@ref) or a [`ChunkedCellLookup`](@ref)
-read from a store; the answer carries the coarser `CellLookup`. A pyramid is
-this call once per level:
+Reduce a one-dimensional cell array to level `l`. Each level-`l` ancestor
+contributes `f` of its present descendant values. The result carries a coarser
+[`CellLookup`](@ref).
+
+Build a pyramid with one call per level:
 
 ```julia
 pyramid = [aggregate(sum, A, l) for l in level(lookup(A, Cells)) - 1 : -1 : 3]
@@ -1203,21 +984,15 @@ function aggregate(f, A::DD.AbstractDimArray, l::Integer)
     return _aggregated(A, coarse, vals)
 end
 
-# Function barrier. The core answers a `CellVector` whose window shape is a
-# runtime choice between two types, and rebuilding an array through that union
-# in line widens the result to `Any`; one call per shape keeps it a two-way
-# union the caller can split.
+# A function barrier preserves the two concrete `CellVector` window shapes.
 _aggregated(A::DD.AbstractDimArray, coarse::CellVector, vals::AbstractVector) =
     DD.rebuild(A; data=vals, dims=(Cells(CellLookup(coarse)),))
 
 """
     coarsen(A::AbstractDimArray; atol, by = mean, minlevel = shallowest) -> AbstractDimArray
 
-Merge each subtree of `A` whose values agree to within `atol` into the single
-coarse cell that stands for them. `A` must be one-dimensional over a
-[`Cells`](@ref) axis with an [`AbstractCellLookup`](@ref) — a
-[`CellLookup`](@ref) or a [`ChunkedCellLookup`](@ref) read from a store; the
-answer carries a [`MultiOrderLookup`](@ref) over the mixed-level container.
+Build an adaptive one-dimensional cell array by merging complete subtrees whose
+values agree within `atol`. The result carries a [`MultiOrderLookup`](@ref).
 
 ```julia
 M = coarsen(A; atol = 1.0)                       # °C
@@ -1237,12 +1012,9 @@ end
 """
     expand(A::AbstractDimArray, l::Integer) -> AbstractDimArray
 
-Present a mixed-level array at level `l`. `A` must be one-dimensional over a
-[`Cells`](@ref) axis with a [`MultiOrderLookup`](@ref); the answer carries a
-[`CellLookup`](@ref) at `l`, and its data is a lazy `MultiOrderValues` — still
-one stored value per multi-order cell, so `Base.summarysize` stays O(#stored
-cells) however many leaves `l` names. `l` must be no shallower than the
-deepest stored cell.
+Present a one-dimensional mixed-level array at level `l`. The result carries a
+[`CellLookup`](@ref) and lazy [`MultiOrderValues`](@ref), retaining one stored
+value per mixed-level cell. `l` must cover every stored cell level.
 
 ```julia
 E = expand(coarsen(A; atol), level(lookup(A, Cells)))
@@ -1258,9 +1030,8 @@ end
 """
     expand(mov::MultiOrderVector, values::AbstractVector, l::Integer) -> (CellVector, MultiOrderValues)
 
-The `(cells, values)` form, for the pair [`coarsen`](@ref) returns without a
-`DimArray`. `values` is indexed against `mov`; the answer is lazy, one stored
-value per multi-order cell however many leaves `l` names.
+Expand a `(cells, values)` pair returned by [`coarsen`](@ref). `values` is
+indexed against `mov`; the lazy result retains one value per stored cell.
 """
 function expand(mov::MultiOrderVector, values::AbstractVector, l::Integer)
     length(values) == length(mov) || throw(ArgumentError(
@@ -1271,8 +1042,6 @@ function expand(mov::MultiOrderVector, values::AbstractVector, l::Integer)
         MultiOrderValues(values, _leaf_offsets(mov, target))
 end
 
-# Cumulative leaf counts at `l`, one per stored cell. The container's own
-# `offsets` state these only at its reference level.
 function _leaf_offsets(mov::MultiOrderVector, l::Int)
     sys = system(mov)
     offsets = Vector{Int}(undef, length(mov))
@@ -1284,12 +1053,10 @@ function _leaf_offsets(mov::MultiOrderVector, l::Int)
     return offsets
 end
 
-# `Near` on a cell axis would have to mean "nearest on the sphere". Cell ids
-# ascend along a space-filling curve, so the generic order-based snap is not
-# that, and there is no cheap nearest-member search over an arbitrary subset.
+# Cell-id order cannot represent spherical nearest-neighbor distance.
 @noinline _no_near(lk, sel) = throw(ArgumentError(
-    "Near is not defined on a cell axis: cell ids run along a space-filling " *
-    "curve, so the nearest id is not the nearest cell on the sphere. Use " *
+    "Cell-id order follows a space-filling curve: the nearest id is not the " *
+    "nearest cell on the sphere. Use " *
     "At(cell) for one cell, Contains(lon, lat) for the cell holding a point, " *
     "or Covering(region) for a region."))
 
@@ -1298,22 +1065,12 @@ Lookups.selectindices(lk::AbstractCellLookup, sel::Lookups.Near; kw...) =
 Lookups.selectindices(lk::AbstractCellLookup, sel::Lookups.Near{<:AbstractVector};
     kw...) = _no_near(lk, sel)
 
-# ===========================================================================
-# Selector failures
-#
-# The default `SelectorError` prints the lookup's full type. A cell lookup can
-# say what it holds in one line, and name the mismatch — wrong level, wrong
-# system — that usually explains the miss.
-# ===========================================================================
+# Cell-specific selector failures expose likely level or system mismatches.
 
 """
     show_selector_error(io, lk, sel)
 
-Print a failed cell-axis selection: the value that matched nothing, the axis it
-was applied to, and the level or system mismatch behind it, if any.
-
-`sel` is whatever `DimensionalData` put in the error — a selector or the bare
-value it was carrying.
+Print a failed cell-axis selection and any level or system mismatch.
 """
 function show_selector_error(io::IO, lk, sel)
     print(io, "SelectorError: ", sel, " selects no cell of ", lk)

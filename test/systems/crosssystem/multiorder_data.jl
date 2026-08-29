@@ -1,21 +1,4 @@
-# ---------------------------------------------------------------------------
-# The DimensionalData face of the mixed-level container: `MultiOrderLookup`
-# and the cube methods of `aggregate`, `coarsen` and `expand`.
-#
-#   * selectors: `At` is exact membership, `Contains` is covering — including
-#     cells deeper than the reference level, via their ancestor there.
-#   * subsets: an ascending subset stays a `MultiOrderLookup`; a reordered one
-#     falls back to `Categorical`. `vcat` is swept over every split — an
-#     ordered-lookup claim would let DimensionalData's cat pre-check silently
-#     drop the axis at level-inverting splits.
-#   * `expand` is lazy: a deeper presentation level grows the element count
-#     but not `Base.summarysize`. `expand(coarsen(A; atol), L)` is within
-#     `atol` of `A`, and exact where the data was piecewise constant.
-#   * the verbs are 1-D over `Cells`, and each refuses the other's axis shape.
-#
-# Swept on HEALPix (radix 4) and IGeo7 (radix 7); see aggregate.jl. Tolerances
-# are swept and the first mixed-level fixture kept, asserted to exist.
-# ---------------------------------------------------------------------------
+# HEALPix and IGeo7 exercise both equal- and unequal-radix hierarchy behavior.
 
 module MultiOrderDataTests
 
@@ -40,8 +23,7 @@ const TOLERANCES = (2.0, 5.0, 8.0, 12.0, 20.0, 45.0)
 
 sysname(sys) = string(nameof(typeof(sys)))
 
-# A whole rooted subtree — complete, so every stored cell covers a full
-# sibling family.
+# A rooted subtree guarantees complete sibling families.
 rooted_subtree(sys, l) = DGG.CellVector(DGG.subtree(sys, first(DGG.rootcells(sys)), l))
 
 # Centroid latitude in degrees: a smooth, grid-derived field.
@@ -62,8 +44,7 @@ function fixture(sys, L)
     return nothing
 end
 
-# Leaf-by-leaf oracle for `Covering`; the implementation compares intervals
-# instead.
+# The oracle resolves leaves independently of interval selection.
 function covering_byhand(mov, sys, L, target)
     grid = DGG.levelgrid(sys, L)
     set = DGG.query(sys, DGG.MultiOrderCoverage(target); level=L)
@@ -74,10 +55,6 @@ function covering_byhand(mov, sys, L, target)
     end
     return unique!(sort!(out))
 end
-
-# ---------------------------------------------------------------------------
-# The axis, and the two questions it answers
-# ---------------------------------------------------------------------------
 
 @testset "a mixed-level cell axis: $(sysname(f.system))" for f in SWEEP
     sys, L = f.system, f.leaf
@@ -212,10 +189,6 @@ end
     end
 end
 
-# ---------------------------------------------------------------------------
-# expand: the compression, presented at one level
-# ---------------------------------------------------------------------------
-
 @testset "expand presents the leaves and stores the mesh: $(sysname(f.system))" for
     f in SWEEP
 
@@ -295,10 +268,6 @@ end
     end
 end
 
-# ---------------------------------------------------------------------------
-# The three cube verbs, against the cores they wrap
-# ---------------------------------------------------------------------------
-
 @testset "the DimArray verbs wrap the cores: $(sysname(f.system))" for f in SWEEP
     sys, L = f.system, f.leaf
     fx = fixture(sys, L)
@@ -353,12 +322,7 @@ end
 end
 
 @testset "aggregate and coarsen also read a ChunkedCellLookup axis" begin
-    # A store-backed axis over the same cells as a whole level, built directly
-    # from the implicit encoding rather than through a Zarr store — it is the
-    # store-shaped stand-in `dggread` would hand back. `region` compresses it
-    # to one whole-level window, identical to `CellVector(grid)`, so the two
-    # cubes below carry the same cells in the same order and any divergence in
-    # the answer is a real bug, not a fixture mismatch.
+    # An implicit axis isolates store-backed lookup behavior from Zarr I/O.
     sys, L = DGG.HEALPixSystem(), 3
     grid = DGG.levelgrid(sys, L)
     n = DGG.ncells(grid)
@@ -386,10 +350,6 @@ end
         @test parent(Mc) == parent(Mp)
     end
 end
-
-# ---------------------------------------------------------------------------
-# The DimensionalData plumbing, on one system
-# ---------------------------------------------------------------------------
 
 @testset "lookup mechanics" begin
     sys, L = DGG.IGeo7System(), 3
@@ -433,8 +393,7 @@ end
             catch err
                 err
             end))
-        # A cell deeper than the reference level re-keys the axis rather than
-        # refusing it, so a concatenation of unequal depths still joins.
+        # Deeper cells raise the reference level so unequal depths can join.
         deep = first(DGG.descendants(sys, ids[1], L + 1))
         dlk = DD.Lookups.rebuild(lk; data=[deep])
         @test dlk isa DGG.MultiOrderLookup

@@ -1,5 +1,4 @@
-# Nearest-cell and chart-Q1 weight construction, and the seam the output
-# sampling dispatches on.
+# Point-sampling construction and output-sampling dispatch.
 
 import DimensionalData as DD
 
@@ -59,8 +58,7 @@ struct T4NoChartSpace <: RegridSpace end
 struct T4BareChartSpace <: RegridSpace end
 GR.hascellchart(::T4BareChartSpace) = true
 
-# Two methods whose sampling is a field, so one method type can carry either
-# sampling. `weightblock` dispatches on the sampling, never on the method type.
+# Storing sampling in the method tests value-based `weightblock` dispatch.
 
 """
     T4SplitMethod(sampling)
@@ -95,12 +93,10 @@ end
 """
     T4TileMethod(sampling)
 
-Report `sampling` and specialise [`weightblock`](@ref) on `Points()` with a
-constant block — a third-party sampling specialising that seam. It implements
-no `buildweights!`, so it answers only where its own `weightblock` method is
-selected; any other sampling reaches the generic one, which assembles a pair
-through `buildweights!`. It supplies no [`sampler`](@ref), so a plan around it
-keeps the chunk-pair build.
+Test sampling-specific [`weightblock`](@ref) dispatch with a constant `Points()`
+block. The type intentionally omits `buildweights!` and [`sampler`](@ref): its
+specialized sampling succeeds, other samplings reach the generic error, and
+plans retain chunk-pair construction.
 """
 struct T4TileMethod{S<:DD.Lookups.Sampling} <: AbstractRegriddingMethod
     sampling::S
@@ -115,11 +111,9 @@ GR.weightblock(::DD.Lookups.Points, ::T4TileMethod, ::RegridSpace, dst_inds,
 """
     T4PlaceCount()
 
-Report `Points()`, record how many destination cells each `buildweights!` call
-is asked to place, and emit [`BarycentricPoint`](@ref) stencils. `placed` is
-therefore the number of destination point locations the builder performs, and
-`calls` the number of blocks it was asked for. Its support radius is
-`BarycentricPoint`'s, so a plan around it discovers the same source chunks.
+Emit [`BarycentricPoint`](@ref) stencils while counting construction work.
+`placed` counts destination locations and `calls` counts requested blocks. The
+matching support radius preserves source-chunk discovery.
 """
 struct T4PlaceCount <: AbstractRegriddingMethod
     placed::Threads.Atomic{Int}
@@ -143,10 +137,9 @@ end
 """
     t5_bracket(space::ToyLonLatSpace, p) -> ((i0, w0), (i1, w1))
 
-The two sample sites bracketing `p` in longitude on `space`'s lattice of cell
-centres, in the latitude row `p` falls in. Longitude wraps, so the pair
-straddles the last and first columns across the seam and names one cell twice
-on a one-column source. Weights are the linear ones between the two centres.
+Return the two longitude sample sites bracketing `p` in its latitude row, with
+linear weights. Longitude wrapping joins the first and last columns; a
+one-column source therefore names the same cell twice.
 """
 function t5_bracket(space::ToyLonLatSpace, p)
     lon, lat = toy_lonlat(p)
@@ -176,11 +169,10 @@ end
 """
     T5PlaceCount(; yielding = false)
 
-Report `Points()`, supply a sampler, and emit the two source sample sites
-bracketing each destination point. `placed` counts destination point locations,
-so it is the number of stencil queries the build performed however many blocks
-came out of them. `yielding` makes the first location of the first pass yield,
-so a second task can reach a build that is already in flight.
+Provide a point sampler that emits the two source sites bracketing each
+destination. `placed` counts stencil queries across all produced blocks.
+`yielding = true` pauses the first query so another task can observe an active
+build.
 """
 struct T5PlaceCount <: AbstractRegriddingMethod
     placed::Threads.Atomic{Int}
@@ -211,8 +203,7 @@ function GR.weightsat!(row::GR.WeightRow,
     return GR.WeightsMapped
 end
 
-# The chunk-pair route for the same stencils, which the eager whole domain and
-# an un-cached `buildblock` take.
+# Eager and uncached pair builds need the same stencil oracle.
 function buildweights!(coo::WeightCOO, method::T5PlaceCount, dst_space::RegridSpace,
     dst_inds, src_space::RegridSpace, src_inds)
     smp = GR.sampler(method, src_space)
@@ -233,10 +224,9 @@ end
 """
     T6LocateCount(space)
 
-Wrap a source space and count [`cellat`](@ref) queries, delegating every other
-space verb unchanged. `located` is therefore the number of point locations a
-build performed, whichever route it took; builds may run on spawned tasks,
-hence the atomic counter.
+Wrap a source space and count [`cellat`](@ref) queries while delegating the
+remaining interface. The atomic `located` counter covers builds running on
+spawned tasks.
 """
 struct T6LocateCount{S<:RegridSpace} <: RegridSpace
     space::S
@@ -270,7 +260,7 @@ t6_owners(dst, tile, src) =
     sort(unique(Int(GR.chunkat(src, cellat(src, cellcentroid(dst, Int(i)))))
                 for i in tile))
 
-# One tile's weights, built straight rather than through a plan's storage.
+# Direct construction keeps plan storage outside this oracle.
 t5_weights(method, dst, tile, src) =
     GR.tileweights(method, dst, tile, src,
         GR.sampler(method, src))
@@ -310,23 +300,16 @@ t5_owners(dst, tile, src) =
 
 @testset "Interpolation weights" begin
 
-    @testset "what a method reads on a source is its own trait" begin
-        # `sourcesampling` is what a method READS; `outputsampling` is what it
-        # WRITES. They agree for every method here, so wiring one to the other
-        # would be invisible today — and wrong the first time a source can offer
-        # sample sites but not a gap-free cover, which is the whole reason a
-        # compressed source consults this.
+    @testset "source sampling is independent of output sampling" begin
         @test GR.sourcesampling(Conservative()) isa DD.Lookups.Intervals
         @test GR.sourcesampling(UnimplementedMethod()) isa DD.Lookups.Intervals
         for method in (NearestCell(), DirectNearest(), BarycentricPoint())
             @test GR.sourcesampling(method) === DD.Lookups.Points()
         end
-        # Not the same function: a method may override one without the other.
+        # Methods may override either trait independently.
         @test GR.sourcesampling !== GR.outputsampling
 
-        # The default resolution is method-blind, so every source that has one
-        # presentation of itself answers the same for every method — including
-        # a space, which is already resolved.
+        # A source with one presentation resolves identically for every method.
         space = ToyLonLatSpace(8, 4)
         for method in (Conservative(), NearestCell(), DirectNearest(),
                        BarycentricPoint(), UnimplementedMethod())
@@ -335,8 +318,6 @@ t5_owners(dst, tile, src) =
         @test GR.sourcespacefor(space, NearestCell()) ===
               GR._asspace(space, "from")
 
-        # And it is the path `from` takes: a plan's source space is whatever
-        # `sourcespacefor` returned.
         plan = plan_regrid(collect(reshape(1.0:32.0, 8, 4)); to = ToyLonLatSpace(4, 2),
             from = space, method = NearestCell(), lazy = false)
         @test plan.src_space === space

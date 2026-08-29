@@ -1,21 +1,8 @@
-# The write half: a DimensionalData cube over a cell axis to a Zarr v2 store.
-#
-# Everything format-semantic is borrowed, not restated. The encoding decides the
-# layout of the cell coordinate (`idranges`, `cellaxis`), the conventions decide
-# the attributes (`encode!` on a `StoreSnapshot`), and the lookup layer decides
-# the manifest (`chunkmanifest`). What lives here is the order those are called
-# in, the chunk plan, and the Zarr calls themselves.
-#
-# The pipeline, once:
-#
-#   cube -> cell axis -> encoding -> chunk plan -> snapshot -> encode! -> bytes
-#
-# The snapshot is built BEFORE anything is created, so the group and its arrays
-# are written with their final attributes in one pass and no store is ever left
-# half-stamped.
-#
-# A submodule so that this file's helper names cannot collide with the read
-# half's, which shares the extension's namespace.
+# `dggwrite` follows cube → cell axis → encoding → chunk plan → snapshot →
+# bytes. Core IO code supplies encoding, convention and manifest semantics; this
+# extension plans Zarr arrays and writes them. Planning the complete snapshot
+# before creation keeps store attributes aligned with the arrays. A submodule
+# isolates these helpers from the read half of the extension.
 
 module DGGSZarrWrite
 
@@ -35,12 +22,8 @@ using DiscreteGlobalGrids: AbstractCellIndex, ArrayEntry,
 import DimensionalData as DD
 import Zarr
 
-# --- the on-disk contract ---------------------------------------------------
-#
-# Names follow the published IGEO7 stores (dggs-storage-landscape.md 4.1-4.3):
-# `spatial_dimension` names the dimension the DATA variables share and
-# `coordinate` names the array that encodes it, and in the ranges case those are
-# deliberately different — the coordinate is `(n, 2)` and carries neither.
+# Data variables share `spatial_dimension`; `coordinate` names the array that
+# encodes it. A ranges coordinate has its own `(n, 2)` dimensions.
 
 const CELL_IDS_ARRAY = "cell_ids"
 const CELL_RANGES_ARRAY = "cell_id_ranges"
@@ -53,24 +36,16 @@ const ARRAY_DIMENSIONS = "_ARRAY_DIMENSIONS"
 """
     DEFAULT_CHUNK_TARGET
 
-The number of ELEMENTS `chunks = :auto` aims a chunk at — cells times the
-extents of every other dimension, not cells alone. Roughly a million, which is
-the size the published stores' aperture-7 chunking lands on for a
-one-value-per-cell layer; `chunk_target` overrides it, and a test axis of a few
-hundred cells collapses to one chunk.
+The element-count target for `chunks = :auto`, including cells and every other
+dimension. `chunk_target` overrides this default.
 """
 const DEFAULT_CHUNK_TARGET = 1_000_000
 
-# Keyword sugar over `ENCODING_REGISTRY`: the same table a convention resolves a
-# store's vocabulary through, so a downstream encoding needs no keyword of its own.
+# Keyword aliases resolve through the same encoding registry as store metadata.
 const ENCODING_KEYWORDS = Dict(:dense => "none", :ranges => "ranges",
     :implicit => "implicit", :compacted => "compacted")
 
 const REMOTE_SCHEMES = ("gs://", "s3://", "http://", "https://", "az://", "abfs://")
-
-# ===========================================================================
-# Entry points
-# ===========================================================================
 
 const Cube = Union{DD.AbstractDimArray,DD.AbstractDimStack}
 
@@ -80,54 +55,56 @@ const Cube = Union{DD.AbstractDimArray,DD.AbstractDimStack}
              merge = :step, chunk_target = DEFAULT_CHUNK_TARGET) -> dest
 
 Write a `DimStack` or `DimArray` over a cell axis to a **Zarr v2 directory
-store**, consolidated metadata included. `dest` is a local path or an open
-writeable `Zarr.ZGroup`; a `gs://`/`s3://`/`https://` URL is refused rather than
-half-written.
+store**, consolidated metadata included. `dest` is a local path or an open,
+writable `Zarr.ZGroup`. String URL destinations are rejected; write locally and
+upload, or pass an already-open writable remote group.
 
-The cell dimension carries an `AbstractCellLookup` (a single-level axis, sorted
-and unique — `reverse` and friends degrade it to a `Categorical`, which is
-refused) or a `MultiOrderLookup` (a mixed-level axis, written as `compacted`).
+The cell dimension carries one of two lookup families:
 
-  - `encoding = :auto` writes a mixed-level axis as compacted, ranges where a
-    single-level axis is eligible, and dense otherwise. `:dense` is the interop
-    escape for readers that cannot expand ranges, `:ranges` forces the compact
-    form, `:implicit` writes no cell coordinate at all — the index is the cell —
-    which needs a whole level, and `:compacted` names the mixed-level layout:
-    two aligned columns, `cell_ids` and `cell_levels`, under
-    `refinement_level: null`. A single-level encoding requested for a
-    mixed-level axis is refused; `expand(A, level)` is the bridge.
-  - `merge = :step` merges only ids adjacent as integers, so no interval can
-    enclose an id that names no cell — what a structural-count reader needs, and
-    what the published IGEO7 range stores hold. `merge = :rank` merges runs of
-    consecutive CELLS instead, giving the fewest rows, and is read back correctly
-    only by a rank-aware reader such as this package; see [`idranges`](@ref).
-  - `chunks = :auto` groups whole coarse-ancestor subtree runs into chunks of
-    about `chunk_target` elements; an integer is a fixed chunk length in CELLS.
-    See `WriteChunkPlan` for what that guarantees and what it only aims at.
-    `chunk_target` counts the elements of a chunk — cells times the extents of
-    the non-cell dimensions, which are one chunk each — so a layer with a
-    40-step time axis gets a fortieth of the cells per chunk.
-  - `conventions` stamps the store, `zarr-conventions/dggs` plus xdggs by
-    default, so both a convention-aware reader and xdggs can open it.
+  - `AbstractCellLookup` represents a sorted, unique, single-level axis.
+    Operations such as `reverse` degrade it to a `Categorical`, which the writer
+    rejects as noncanonical.
+  - `MultiOrderLookup` represents a mixed-level axis and writes as compacted.
 
-The chunk grid is persisted as a `(n_chunks, 2)` sidecar array of per-chunk
-first and last id, so a reader need not scan the axis to rebuild it.
+`encoding` selects the cell-axis layout:
 
-**Attributes.** Each layer's `metadata` is written as its array attributes and
-the stack's `metadata["attrs"]` as the group's — the two places `dggread` puts
-them, so a store read and rewritten keeps its `units`, its `long_name` and its
-group vocabulary. Convention-generated keys are stamped OVER the producer's: a
-`_ARRAY_DIMENSIONS` or a `dggs` object carried in from another layout would
-describe this store wrongly. Other stack metadata is not written; the cell
-coordinate is regenerated by the encoding and carries no producer attributes.
+  - `:auto` selects compacted for a mixed-level axis, ranges for an eligible
+    single-level axis, and dense otherwise.
+  - `:dense` writes every id for broad reader compatibility.
+  - `:ranges` writes the compact single-level range representation.
+  - `:implicit` writes a complete level with no cell coordinate.
+  - `:compacted` writes `cell_ids` and `cell_levels` as aligned columns under
+    `refinement_level: null`.
 
-**Two documented normalizations of a round trip.** Layers are written in
-alphabetical order, so that is the order they come back in whatever order went
-in; and a layer's attributes include the `_ARRAY_DIMENSIONS` this writer stamps,
-so a stack read back carries it in each layer's `metadata`.
+Single-level encodings require `expand(A, level)` to present mixed-level data
+at one level.
 
-Layers are never overwritten: a `ZGroup` destination that already holds an array
-this write would create raises before anything is stamped.
+Other options are:
+
+  - `merge = :step` merges integer-adjacent ids for structural-reader
+    compatibility. `merge = :rank` merges consecutive cells for fewer rows and
+    requires a rank-aware reader; see [`idranges`](@ref).
+  - `chunks = :auto` groups complete coarse-ancestor subtree runs near
+    `chunk_target`. An integer fixes the chunk length in cells.
+  - `chunk_target` counts every element in a chunk, including non-cell
+    dimensions.
+  - `conventions` stamps a single-level store with `zarr-conventions/dggs` and
+    xdggs by default. Compacted stores carry only the compatible DGGS
+    convention metadata because xdggs describes a single-level coordinate.
+
+The writer persists each chunk's first and last id in an `(n_chunks, 2)`
+sidecar, allowing readers to rebuild the chunk grid without an axis scan.
+
+**Attributes.** Layer metadata becomes array attributes, and
+`metadata["attrs"]` becomes group attributes. Convention-generated keys take
+precedence over producer values. The encoding regenerates the cell coordinate,
+so it carries fresh layout attributes.
+
+**Round-trip normalizations.** Layers return in alphabetical order, and each
+layer's metadata gains the writer's `_ARRAY_DIMENSIONS` attribute.
+
+The writer raises before stamping a `ZGroup` that already contains a planned
+array name.
 """
 function DGG.dggwrite(dest::AbstractString, src::Cube; layout::Symbol=:cells, kw...)
     path = String(dest)
@@ -147,13 +124,8 @@ function DGG.dggwrite(dest::Zarr.ZGroup, src::Cube; layout::Symbol=:cells, kw...
     return dest
 end
 
-# `layout` chooses the SHAPE of the store where `encoding` chooses the shape of
-# its cell coordinate. `:cells` is everything in this file — one cell dimension,
-# cut into equal chunks — and `:subzones` is the two-dimensional
-# ancestor-subzone layout, which shares this entry point and none of the
-# pipeline below it. The module is named rather than imported because it is
-# included after this file: it needs the write half's error style, not the
-# other way round.
+# `layout` selects the store shape; `encoding` selects its cell-coordinate shape.
+# The subzone module is referenced by name because it loads after this file.
 @noinline function _otherlayout(layout::Symbol, dest, src; kw...)
     layout === :subzones && return DiscreteGlobalGridsZarrExt.DGGSZarrSubzones.write_subzones(
         dest, src; kw...)
@@ -175,9 +147,7 @@ end
     return nothing
 end
 
-# Stamping is the first irreversible step, and `zcreate` throws on the first
-# name it cannot take: a group checked afterwards would be left carrying
-# attributes for an encoding its arrays do not have, which no reader can open.
+# Validate every destination name before the first irreversible attribute write.
 function _stamp(g::Zarr.ZGroup, attrs, names)
     taken = sort!(String[n for n in names if haskey(g.arrays, n)])
     isempty(taken) || throw(DGGSFormatError(check=:destination_not_empty,
@@ -189,10 +159,6 @@ function _stamp(g::Zarr.ZGroup, attrs, names)
     Zarr.writeattrs(g.zarr_format, g.storage, g.path, g.attrs)
     return g
 end
-
-# ===========================================================================
-# The pipeline
-# ===========================================================================
 
 function _write(identifier, opengroup, src; encoding=:auto,
     conventions=DEFAULT_WRITE_CONVENTIONS, chunks=:auto, merge::Symbol=:step,
@@ -239,8 +205,6 @@ function _write(identifier, opengroup, src; encoding=:auto,
     end
 end
 
-# The mixed-level pipeline: the same shape as the single-level one, with the
-# level grid replaced by the container and the coordinate by its two columns.
 function _writemixed(opengroup, identifier, src, celldim, mov,
     encoding, conventions, chunks, chunk_target::Int)
     isempty(mov) && throw(ArgumentError(
@@ -252,9 +216,7 @@ function _writemixed(opengroup, identifier, src, celldim, mov,
     lv = Int8[level(c) for c in mov]
     I = idtype(levelgrid(system(mov), Int(maximum(lv))))
     ids = I[convert(I, rawid(c)) for c in mov]
-    # The reader's constructor validates the columns — pairwise disjoint,
-    # container order — before a byte is committed, as `_axis` does for the
-    # single-level encodings.
+    # Reject invalid alignment before creating a partial store.
     cellaxis(enc, system(mov), lv, ids; declared_length=length(mov))
     manifest = _movmanifest(mov, plan.chunklength)
     desc = _description(system(mov), nothing, enc, layers)
@@ -263,9 +225,6 @@ function _writemixed(opengroup, identifier, src, celldim, mov,
         reference_level=DGG.reference_level(mov))
 end
 
-# Stamp, create and fill: everything after the arrays are planned, shared by
-# both pipelines. `reference_level` rides into the manifest marker for a
-# compacted store, whose description carries no single level.
 function _commit(opengroup, identifier, src, desc, conventions, arrays;
     reference_level::Union{Int,Nothing}=nothing)
     reference_level === nothing || _markerreference!(arrays, reference_level)
@@ -287,15 +246,11 @@ function _commit(opengroup, identifier, src, desc, conventions, arrays;
     return group
 end
 
-# xdggs attributes describe a dense single-level coordinate; stamped on a
-# mixed-level store they would make its readers decode one, so they are skipped
-# there.
+# xdggs readers decode coordinates at one declared level.
 _stampable(::DGGSConvention, desc) = true
 _stampable(::XdggsConvention, desc) = desc.level !== nothing
 
-# `coordinate` names the id array; nothing in v1 of zarr-conventions/dggs names
-# the level array beside it, so the store says it itself — the one key an
-# independent reader needs to align `cell_levels[k]` with `cell_ids[k]`.
+# v1 of zarr-conventions/dggs lacks a level-column key, so publish the extension.
 function _declarelevels!(attrs)
     dggs = get(attrs, "dggs", nothing)
     dggs isa AbstractDict || return attrs
@@ -311,11 +266,8 @@ function _markerreference!(arrays, reference_level::Int)
     return arrays
 end
 
-# `chunk_target` counts the ELEMENTS of a chunk, so the cell-count target is
-# what is left after the non-cell dimensions have taken their share — a
-# (1M, 40) Float32 chunk is 160 MB and nobody asked for that. The widest layer
-# sets it for all of them: one chunk length is shared by the axis and every
-# array on it.
+# Divide the element target by the widest non-cell extent because every layer
+# and the cell axis share one chunk length.
 function _celltarget(target::Int, layers, celldim)
     trailing = 1
     for (_, A) in layers
@@ -328,9 +280,7 @@ function _celltarget(target::Int, layers, celldim)
     return max(1, target ÷ trailing)
 end
 
-# The group attributes a `dggread` stack carries verbatim under `"attrs"`, which
-# is where a round trip finds the producer's own vocabulary. The conventions
-# stamp on top of these.
+# Restore producer group attributes before conventions stamp authoritative keys.
 _groupattrs(src) = _attrs(get(_attrs(DD.metadata(src)), "attrs", nothing))
 
 _attrs(x) = Dict{String,Any}()
@@ -338,29 +288,18 @@ _attrs(md::AbstractDict) = Dict{String,Any}(String(k) => deepcopy(v) for (k, v) 
 _attrs(md::NamedTuple) = Dict{String,Any}(String(k) => deepcopy(v) for (k, v) in pairs(md))
 _attrs(md::DD.Metadata) = _attrs(DD.val(md))
 
-# ===========================================================================
-# The cell axis
-# ===========================================================================
-
 """
     _cellaxis(src) -> (dim, grid, ids)
 
-The cube's cell dimension, the complete level grid its cells live at, and the
-RAW ids on it.
+Return the cube's cell dimension, its complete level grid and its raw ids.
 
-The ids are read out of the lookup exactly ONCE, and as the integers a store
-holds rather than as typed cells, because that vector is the one the dense
-coordinate writes: everything downstream — eligibility, the chunk plan, the
-coordinate itself — works from this array, and a write of tens of millions of
-cells never holds the axis twice. Where a typed cell is wanted, `idcell` puts
-the wrapper back on for the one id in hand.
+Materializing raw ids once supplies eligibility checks, chunk planning and the
+dense coordinate without a second axis copy. `idcell` reconstructs an individual
+typed cell when needed.
 
-Only an [`AbstractCellLookup`](@ref) is accepted, and that is the canonicity
-check rather than a restriction: an ascending, unique subset of a cell axis is
-a cell lookup again, and one that is neither is exactly what DimensionalData
-degrades to a `Categorical` — so a cell dimension that is not a cell lookup is
-a cell dimension that is no longer sorted and unique. A `MultiOrderLookup`
-never reaches this: `_mixedaxis` claims it first.
+[`AbstractCellLookup`](@ref) guarantees a sorted, unique single-level axis.
+DimensionalData represents noncanonical cell axes as `Categorical`, which this
+writer rejects. `_mixedaxis` handles `MultiOrderLookup` before this method runs.
 """
 function _cellaxis(src)
     for d in DD.dims(src)
@@ -377,8 +316,6 @@ function _rawids(grid, cells)
     return I[convert(I, rawid(c)) for c in cells]
 end
 
-# The mixed-level cell dimension and its container, or `nothing` when the cube
-# has none and the single-level path applies.
 function _mixedaxis(src)
     for d in DD.dims(src)
         lk = DD.val(d)
@@ -405,18 +342,13 @@ end
                         " carries a cell lookup."))
 end
 
-# ===========================================================================
-# Encoding choice
-# ===========================================================================
-
 """
     _encoding(spec, grid, cells) -> CellEncoding
 
-`:auto` is [`RangesEncoding`](@ref) where the axis is eligible for it — sorted,
-unique, one level — and [`DenseEncoding`](@ref) otherwise, which is what makes
-it total. `:dense`, `:ranges` and `:implicit` are sugar over
-`ENCODING_REGISTRY`, and an encoding instance takes the same eligibility check
-its keyword would.
+Resolve the encoding for a single-level axis. `:auto` selects
+[`RangesEncoding`](@ref) for an eligible sorted, unique axis and
+[`DenseEncoding`](@ref) otherwise. Keyword aliases resolve through
+`ENCODING_REGISTRY`; direct instances use the same eligibility check.
 """
 function _encoding(spec::Symbol, grid, cells)
     spec === :auto && return write_eligible(RangesEncoding(), grid, cells) ?
@@ -429,8 +361,7 @@ function _encoding(spec::Symbol, grid, cells)
     return _encoding(ENCODING_REGISTRY[vocab], grid, cells)
 end
 
-# An instance is held to the same eligibility as its keyword: `write_eligible`
-# is part of the encoding interface, not of the keyword sugar.
+# Apply the encoding's eligibility rule equally to instances and keyword names.
 function _encoding(enc::CellEncoding, grid, cells)
     write_eligible(enc, grid, cells) || throw(DGGSFormatError(
         check=:not_write_eligible, declared=encodingname(enc), observed=length(cells),
@@ -440,20 +371,20 @@ function _encoding(enc::CellEncoding, grid, cells)
 end
 
 _ineligible(::ImplicitEncoding, grid) =
-    "an implicit axis is the whole of one level, in order, and this one is not."
+    "an implicit axis requires every cell of one level in canonical order."
 _ineligible(::RangesEncoding, grid) =
-    "ranges need sorted, unique ids from level $(level(grid))."
+    "ranges require sorted, unique ids from level $(level(grid))."
 _ineligible(::CompactedEncoding, grid) =
-    "compacted stores cells at MIXED levels, reached from a `MultiOrderLookup` " *
-    "axis; a level-$(level(grid)) axis is written dense or as ranges."
-_ineligible(::CellEncoding, grid) = "its `write_eligible` answered false."
+    "compacted requires a mixed-level `MultiOrderLookup`; write this " *
+    "level-$(level(grid)) axis as dense or ranges."
+_ineligible(::CellEncoding, grid) = "its `write_eligible` method returned false."
 
 """
     _mixedencoding(spec) -> CompactedEncoding
 
-The encoding for a `MultiOrderLookup` axis: `:auto` and `:compacted` both mean
-[`CompactedEncoding`](@ref), the one layout that stores mixed levels. Any
-single-level encoding, requested by name, is refused with the `expand` bridge.
+Resolve the encoding for a `MultiOrderLookup` axis. `:auto` and `:compacted`
+select [`CompactedEncoding`](@ref); single-level encodings report how to use
+`expand` first.
 """
 function _mixedencoding(spec)
     (spec === :auto || spec === :compacted || spec isa CompactedEncoding) &&
@@ -467,23 +398,21 @@ function _mixedencoding(spec)
     label = spec isa Symbol ? ENCODING_KEYWORDS[spec] : _encodinglabel(spec)
     throw(DGGSFormatError(check=:mixed_level_axis, declared=label,
         observed=:MultiOrderLookup,
-        detail="the cell axis is a `MultiOrderLookup` — cells at mixed " *
-               "refinement levels — which only the `compacted` encoding " *
-               "writes. Write it with `encoding = :auto`, or present the cube " *
-               "at one level with `expand(A, level)` and write that as " *
-               "`$label`."))
+        detail="a `MultiOrderLookup` axis requires the `compacted` encoding. " *
+               "Use `encoding = :auto`, or present the cube at one level with " *
+               "`expand(A, level)` before writing it as `$label`."))
 end
 
 """
     _coordinate(enc, grid, cells, merge)
 
-What the encoding stores for the axis: the `(n, 2)` inclusive-range array, the
-raw ids, or — for an implicit axis, which stores nothing — the length alone.
-Computed once, and both written and read back through `_axis`.
+Compute the axis representation once:
 
-The dense coordinate is the id vector `_cellaxis` already materialized,
-handed on rather than copied: one vector of ids exists between the lookup and
-the bytes on disk.
+  - ranges use an `(n, 2)` inclusive-range array;
+  - dense uses the materialized raw-id vector directly; and
+  - implicit uses the axis length.
+
+`_axis` validates the same representation before writing.
 """
 _coordinate(::RangesEncoding, grid, cells, merge) = idranges(grid, cells; merge=merge)
 _coordinate(::DenseEncoding, grid, cells, merge) = cells
@@ -493,9 +422,8 @@ _coordinate(enc::CellEncoding, grid, cells, merge) = _nowritepath(enc)
 """
     _axis(enc, grid, coord, plan, n) -> ChunkedCellVector
 
-The axis a reader would rebuild from `coord`, checked against the `n` cells that
-went in. This is where a writer's mistake surfaces: an expansion-semantics
-disagreement fails the normative count here rather than in someone else's reader.
+Rebuild and validate the reader-visible axis from `coord`. The declared count
+`n` catches expansion or counting disagreements before the store is committed.
 """
 _axis(::RangesEncoding, grid, coord, plan, n) =
     cellaxis(RangesEncoding(), grid, coord; declared_length=n)
@@ -511,29 +439,22 @@ _axis(enc::CellEncoding, grid, coord, plan, n) = _nowritepath(enc)
 """
     _nowritepath(enc)
 
-Refuse an encoding this writer has no verbs for, by name.
-
-The write pipeline is four private verbs on the encoding — `_coordinate`,
-`_axis`, `_coordinate!` and `_coordinatename` — and a downstream encoding
-that registers itself without them would otherwise fall off the end of dispatch
-into a `MethodError` about a private function. This is the write-side twin of
-the read half's `storedaxis` fallback: same check, same shape of message, from
-the other direction.
+Raise a named unsupported-encoding error when an encoding lacks any required
+write verb: `_coordinate`, `_axis`, `_coordinate!` or `_coordinatename`.
 """
 @noinline function _nowritepath(enc::CellEncoding)
     registered = sort!(collect(keys(ENCODING_REGISTRY)))
     throw(DGGSFormatError(check=:unsupported_encoding, observed=_encodinglabel(enc),
         detail="dggwrite writes the dense (`none`), `ranges`, `implicit` and " *
-               "`compacted` layouts; `$(_encodinglabel(enc))` names an encoding it has no " *
+               "`compacted` layouts; `$(_encodinglabel(enc))` names an " *
+               "encoding it has no " *
                "write path for. A downstream encoding is written by implementing " *
                "this extension's `_coordinate`, `_axis`, `_coordinate!` and " *
                "`_coordinatename` for it. Registered encodings: " *
                join(registered, ", ") * "."))
 end
 
-# An encoding's own name where it has one, and its registry key where it does
-# not: `encodingname` is the encoding's to define, and a type that has skipped
-# the write verbs may well have skipped that too.
+# Prefer a registry key so incomplete downstream encodings still have a useful label.
 function _encodinglabel(enc::CellEncoding)
     for (name, registered) in ENCODING_REGISTRY
         registered === enc && return name
@@ -541,39 +462,26 @@ function _encodinglabel(enc::CellEncoding)
     return string(nameof(typeof(enc)))
 end
 
-# ===========================================================================
-# The chunk plan
-# ===========================================================================
-
 """
     WriteChunkPlan(chunklength, ancestor_level, aligned)
 
-What `chunks = :auto` decided, and how much of the coarse-ancestor property it
-could keep.
+Record the chunk length selected by `chunks = :auto` and its ancestor alignment.
 
-**Zarr v2 chunks are uniform by format**: every chunk but the last holds exactly
-`chunklength` cells. "Chunk on ancestor boundaries" is therefore a property of
-one integer, not of individual boundaries, and `:auto` chooses that integer as
-the largest whole number of level-`ancestor_level` subtree runs that fits under
-the target.
+Zarr v2 uses a uniform `chunklength` except for the final chunk. Automatic
+planning chooses the largest whole number of level-`ancestor_level` subtree runs
+within the cell target.
 
-  - **Guaranteed**: `chunklength` is a whole number of complete
-    level-`ancestor_level` runs of the axis as written, so the FIRST chunk
-    boundary is always a subtree boundary, and the persisted
-    [`ChunkManifest`](@ref) describes the chunk grid exactly.
-  - **`aligned`**: whether EVERY chunk boundary lands on a run boundary. It does
-    whenever the runs are equal — full coverage of the coarse level, the case
-    aggregation cares about, and the whole-level case always — and it can fail
-    where they are not, because no uniform length lands on unequal boundaries.
-    `:auto` does not trade the target away to chase it.
+  - `chunklength` always contains complete runs from that ancestor level, so the
+    first chunk boundary aligns and the [`ChunkManifest`](@ref) describes the
+    exact grid.
+  - `aligned` reports whether every interior chunk boundary aligns. Equal run
+    lengths guarantee this property; unequal runs may prevent it.
+  - `ancestor_level = nothing` records a fixed integer request, a system without
+    contiguous subtrees, or ancestor runs larger than the target. In these cases
+    the clamped target becomes the chunk length.
 
-`ancestor_level` is `nothing` when no coarse level helped: an integer `chunks`,
-a system whose subtrees are not contiguous in canonical order, or an axis whose
-level-`(L-1)` runs already exceed the target. The chunk length is then the
-target itself, clamped to the axis.
-
-The target here is a CELL count: `dggwrite`'s `chunk_target` counts elements,
-and the non-cell extents have already been divided out of it.
+The target here counts cells because `_celltarget` has already divided out the
+non-cell extents.
 """
 struct WriteChunkPlan
     chunklength::Int
@@ -620,11 +528,8 @@ function _chunkplan(chunks::Symbol, grid, cells, target)
     return WriteChunkPlan(cl, bestlevel, _allaligned(best, cl, n))
 end
 
-# End indices of the maximal runs of cells sharing a level-`A` ancestor.
-# `starts` names the indices to look at: every cell for the first pass, one
-# representative per known run for each coarsening after it. The axis is raw
-# ids, so the typed cell `ancestor` wants is put back together one at a time —
-# a wrapper around an integer already in hand, and nothing is allocated.
+# `starts` samples every cell on the first pass and one representative per run on
+# later coarsening passes; typed wrappers are reconstructed one at a time.
 function _runends(grid, cells, A::Int, starts)
     sys = system(grid)
     ends = Int[]
@@ -643,8 +548,7 @@ _runstarts(ends) = [i == 1 ? 1 : ends[i-1] + 1 for i in eachindex(ends)]
 _maxrun(ends) = isempty(ends) ? 0 :
                 maximum(i -> i == 1 ? ends[1] : ends[i] - ends[i-1], eachindex(ends))
 
-# Whether every interior chunk boundary is also a run boundary. The last one is
-# the axis length, which always is.
+# Check whether every interior uniform-chunk boundary ends an ancestor run.
 function _allaligned(ends, cl::Int, n::Int)
     boundaries = Set(ends)
     for b in cl:cl:(n-1)
@@ -680,8 +584,7 @@ function _movchunkplan(chunks::Symbol, mov, target)
     return WriteChunkPlan(cl, bestlevel, _allaligned(best, cl, n))
 end
 
-# Runs of cells sharing a level-`A` ancestor, on the container itself. A cell
-# at level `A` or shallower is a complete subtree already and keys its own run.
+# Cells at or above level `A` key their own complete-subtree run.
 function _movrunends(mov, A::Int, starts)
     sys = system(mov)
     ends = Int[]
@@ -696,9 +599,7 @@ function _movrunends(mov, A::Int, starts)
     return ends
 end
 
-# The compacted manifest is keyed at the reference level: per chunk, the
-# interval start of its first cell and the interval stop of its last. Both
-# ascend because the container is sorted by interval start and disjoint.
+# Reference-level interval endpoints give each compacted chunk searchable bounds.
 function _movmanifest(mov::MultiOrderVector, chunklength::Int)
     n = length(mov)
     cl = max(chunklength, 1)
@@ -718,24 +619,13 @@ function _movmanifest(mov::MultiOrderVector, chunklength::Int)
     return ChunkManifest(firstids, lastids, lengths, offsets, cl)
 end
 
-# ===========================================================================
-# The arrays
-# ===========================================================================
-
-# One `ArrayEntry` (what the conventions stamp) plus what it takes to create the
-# array and fill it. `source` is either a materialized array — the coordinate,
-# the dimension values and the manifest, all kilobytes — or a `CellStream`,
-# which is the layer as it was handed in.
 struct ArrayWrite{S}
     entry::ArrayEntry
     source::S
     chunks::Tuple{Vararg{Int}}
 end
 
-# A layer still in whatever array it arrived in: a lazy `ZArray` straight out of
-# `dggread` as readily as an `Array`. `celldim` is the index of the cell
-# dimension in it and `perm` the permutation that puts cells first, `nothing`
-# where they already are. Nothing bigger than one chunk is ever taken from it.
+# Retain the source so writing materializes only one cell chunk at a time.
 struct CellStream{A,P}
     data::A
     celldim::Int
@@ -746,10 +636,6 @@ end
 _fill!(z, values::AbstractArray, chunklength::Int) =
     (z[ntuple(_ -> Colon(), ndims(values))...] = values; z)
 
-# A layer goes over a chunk at a time, along the cell axis and on the chunk
-# boundaries the array was created with, so a lazy source reads chunk-sized
-# pieces and the whole axis is never in memory at once. The premise is tens of
-# millions of cells: materializing a layer to write it costs the axis twice.
 function _fill!(z, s::CellStream, chunklength::Int)
     n = size(s.data, s.celldim)
     rest = ntuple(_ -> Colon(), ndims(s.data) - 1)
@@ -765,10 +651,7 @@ function _block(s::CellStream, r)
     return s.perm === nothing ? block : permutedims(block, s.perm)
 end
 
-# The names this writer owns, whatever the encoding chosen: the dense
-# coordinate, the range array, and the manifest sidecar. They are reserved
-# together rather than one encoding at a time, so that renaming a layer is not
-# something `encoding = :dense` asks for and `:auto` does not.
+# Reserve every writer-owned name independently of the selected encoding.
 const RESERVED_ARRAYS = (CELL_IDS_ARRAY, CELL_RANGES_ARRAY, MANIFEST_ARRAY,
     COMPACTED_LEVELS_ARRAY)
 
@@ -799,10 +682,7 @@ function _arrayplan(enc, coord, layers, celldim, plan, manifest, desc)
     return out
 end
 
-# One Zarr array per name, checked before the destination is touched. `zcreate`
-# would find the collision too, but only on the second array of that name — by
-# which time the group has been created and stamped and some of its arrays
-# written, and what is on disk is neither the old store nor the new one.
+# Detect array-name collisions before creating or stamping the destination.
 @noinline function _checklayernames(layers)
     taken = sort!(String[String(n) for (n, _) in layers if String(n) in RESERVED_ARRAYS])
     isempty(taken) && return nothing
@@ -827,10 +707,7 @@ end
     return nothing
 end
 
-# The cell coordinate. Grid attributes are stamped onto it later by the flat
-# conventions, so it carries only its dimension names here. Zarr.jl reverses
-# shape between the JSON and Julia, so the `(n, 2)` range array is handed over
-# transposed to land as `(n, 2)` in the store, as the published stores have it.
+# Transpose the ranges coordinate to preserve its `(n, 2)` on-disk Zarr shape.
 function _coordinate!(out, ::RangesEncoding, R::AbstractMatrix, plan)
     return _push!(out, CELL_RANGES_ARRAY, permutedims(R), (size(R, 1), 2),
         RANGES_DIMS, (2, size(R, 1)))
@@ -840,12 +717,9 @@ _coordinate!(out, ::DenseEncoding, ids::AbstractVector, plan) =
     _push!(out, CELL_IDS_ARRAY, ids, (length(ids),), [SPATIAL_DIMENSION],
         (plan.chunklength,))
 
-# An implicit axis stores nothing: the index IS the cell.
 _coordinate!(out, ::ImplicitEncoding, n::Integer, plan) = out
 
-# The compacted coordinate is the id column on the spatial dimension plus the
-# level column on a dimension of its own, so the levels never read as a data
-# variable.
+# A separate dimension keeps the level column out of data-variable discovery.
 function _coordinate!(out, ::CompactedEncoding, coord::Tuple, plan)
     lv, ids = coord
     _push!(out, CELL_IDS_ARRAY, ids, (length(ids),), [SPATIAL_DIMENSION],
@@ -864,10 +738,8 @@ function _push!(out, name, values, shape, dims, chunks)
     return out
 end
 
-# Cells become the LAST Zarr dimension and so the fastest-varying one, which is
-# what makes a chunk of cells contiguous. Zarr.jl reverses shape and chunks
-# between the JSON and Julia, so cells go first here — as a permutation applied
-# to each block rather than to the cube, which would materialize it.
+# Put cells first in Julia so reversed Zarr metadata makes them the contiguous
+# final on-disk dimension; permute each block to preserve lazy streaming.
 function _layerwrite(name, A, celldim, plan)
     ds = DD.dims(A)
     cd = findfirst(d -> DD.name(d) === DD.name(celldim), ds)
@@ -881,9 +753,7 @@ function _layerwrite(name, A, celldim, plan)
         (plan.chunklength, Base.tail(shape)...))
 end
 
-# The producer's attributes ride through to disk, with the ones this writer
-# generates stamped OVER them: a `_ARRAY_DIMENSIONS` carried in from another
-# layout would describe this array wrongly.
+# Stamp authoritative dimensions over producer attributes from an earlier layout.
 function _layerattrs(A, dims)
     attrs = _attrs(DD.metadata(A))
     attrs[ARRAY_DIMENSIONS] = dims
@@ -893,9 +763,7 @@ end
 _dimname(d, celldim) = DD.name(d) === DD.name(celldim) ? SPATIAL_DIMENSION :
                        string(DD.name(d))
 
-# A non-cell dimension's own values, where they are something Zarr holds
-# directly. Anything else (a DateTime axis, a lookup of structs) becomes a bare
-# Zarr dimension with no coordinate array; encoding those is not in v1.
+# Write directly representable dimension values; use a bare dimension for other types.
 function _dimcoordinate(d, key)
     lk = DD.val(d)
     lk isa DD.Lookups.NoLookup && return nothing
@@ -907,19 +775,9 @@ function _dimcoordinate(d, key)
     return ArrayWrite(entry, values, (max(length(values), 1),))
 end
 
-# The manifest as the design's `(n_chunks, 2)` sidecar: first and last id per
-# chunk, with the chunk length and the axis length that make it interpretable,
-# and — when the plan came from a coarse level — the ancestor level it grouped
-# by and whether every boundary really landed on one of its subtrees. Its
-# dimensions are its own, so it is invisible to every convention and to
-# `arrays_on` — an extra variable an xarray reader ignores.
-#
-# `writer`/`format`/`validated` are what a consumer decides how far to trust a
-# stale sidecar by: `validated` is always `"strict"`, because the axis is
-# rebuilt through the reader's own `cellaxis` before a byte is committed.
-# `grid`/`level` say what it was validated AGAINST — a claim of strictness is
-# empty without them, since the same ids are a clean axis at the level they were
-# written at and name no cell at all at any other.
+# The independent `(n_chunks, 2)` sidecar records chunk bounds, axis geometry,
+# validation provenance and optional ancestor alignment. Rebuilding the axis
+# through `cellaxis` before commit justifies its `validated = "strict"` marker.
 function _manifestwrite(manifest, plan, desc)
     rows = permutedims(hcat(manifest.firstids, manifest.lastids))
     n = size(rows, 2)
@@ -942,10 +800,6 @@ function _manifestwrite(manifest, plan, desc)
         shape=(n, 2), eltype=eltype(rows), dims=copy(MANIFEST_DIMS))
     return ArrayWrite(entry, rows, (2, n))
 end
-
-# ===========================================================================
-# Layers and the description
-# ===========================================================================
 
 _layers(A::DD.AbstractDimArray, celldim) = _checklayers([(_layername(A), A)], celldim)
 _layers(s::DD.AbstractDimStack, celldim) =
@@ -981,8 +835,7 @@ _coordinatename(::ImplicitEncoding) = nothing
 _coordinatename(::CompactedEncoding) = CELL_IDS_ARRAY
 _coordinatename(enc::CellEncoding) = _nowritepath(enc)
 
-# The reference table read backwards: a grid name pins the id packing, so a
-# system with no registered name has no store spelling either.
+# Reverse the grid registry because a canonical store name also fixes id packing.
 function _gridname(sys)
     for (name, ref) in DGG.GRID_REFERENCE
         ref.system == sys && return name, ref

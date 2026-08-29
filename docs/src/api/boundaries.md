@@ -9,11 +9,10 @@ a *region* — a [`PartialGrid`](@ref), a [`CellVector`](@ref), a
 [`CellLookup`](@ref) or a complete grid — and [`subtree`](@ref) is how a rooted
 subtree becomes one.
 
-The **inside** is [`border`](@ref) — the cells of the region that have a
-neighbour outside it — and its complement [`interior`](@ref). The **outside** is
-[`halo`](@ref): the cells at the same level that are *not* in the region but
-touch it. Neither derives the other, and a chunked computation needs both — the
-border is what a chunk sends, the halo is what it fetches.
+[`border`](@ref) yields the region cells that touch its exterior, while
+[`interior`](@ref) yields the remaining region cells. [`halo`](@ref) yields the
+exterior cells at the same level that touch the region. A chunked computation
+sends its border and fetches its halo.
 
 Because the region is arbitrary, a cell punched out of the middle of a subset is
 part of that subset's halo. All three verbs return a lazy, resumable,
@@ -73,11 +72,9 @@ DiscreteGlobalGrids.sizehint
 
 ## Adjacency on a region
 
-The verbs a halo is most often confused with. [`adjacency`](@ref) is the cached
-one-ring table over a region — which cells each of its cells touches, in three
-row shapes — and [`member_neighbors`](@ref) is adjacency across the levels of a
-[`MultiOrderCellSet`](@ref), which has no halo because it has no single level to
-answer at.
+[`adjacency`](@ref) caches the one-ring neighbours of every region cell in three
+row shapes. [`member_neighbors`](@ref) finds neighbours across the levels of a
+[`MultiOrderCellSet`](@ref); its mixed-level cells have no single halo level.
 
 ```@docs
 adjacency
@@ -91,25 +88,16 @@ ring
 
 ## The vocabulary these are stated in
 
-Listed here because the docstrings above cross-reference them, not because this
-is where they belong: a general API reference for the package does not exist
-yet, and these entries are what make the links on this page resolve.
-
-That reference stops here rather than going one step further on purpose. Every
-`@ref` written *by the boundary family* now lands on this page, with one
-exception: `Base.IteratorSize`, which is Base's docstring and not this site's to
-render. What does *not* resolve is the next ring out — the container and
-interface docstrings pulled in below cross-reference the rest of the package,
-and following those links to closure means rendering 530 entries, which is the
-whole package and then some. Those stay dead until a full reference exists to
-catch them.
+The boundary docstrings reference the package vocabulary below. Rendering these
+entries resolves the boundary-family links on this page; `Base.IteratorSize`
+continues to use Base's documentation. References from these broader container
+and interface docstrings await a package-wide API reference.
 
 !!! note "Three names print someone else's docstring first"
 
-    `ncells`, `treeify` and `getcell` are `ConservativeRegridding.Trees`
-    bindings this package extends rather than owns. `?ncells` in the REPL prints
-    the upstream docstring above this package's; both are there, and the second
-    is the one that describes a grid.
+    This package extends the `ConservativeRegridding.Trees` bindings `ncells`,
+    `treeify` and `getcell`. The REPL displays the upstream docstring first and
+    this package's grid-specific docstring second.
 
 ```@docs
 Connectivity
@@ -139,6 +127,7 @@ MultiOrderLookup
 grow
 aggregate
 coarsen
+expand
 covering_index
 complement
 reference_level
@@ -146,11 +135,9 @@ reference_level
 
 ## The engines
 
-Internal, and documented because a halo verb's behaviour *is* its engine's: the
-verb chooses one at construction by private dispatch, and the choice is what
-decides the cost, the count contract and the emit rule. A system adds a fast
-path by adding a `halo_engine` method, so this section is the reference for
-someone writing one — not public API, and not stable.
+Halo verbs select an engine through private dispatch. The engine determines the
+cost, count contract and emission rule; a system adds a fast path with a
+`halo_engine` method. This internal API may change.
 
 Every engine here is exact. A specialization may enumerate a conservative
 candidate band, but it runs the adjacency test on every candidate before

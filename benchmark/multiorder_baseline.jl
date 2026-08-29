@@ -1,57 +1,4 @@
-# Multi-order coverage (MOC) container baseline.
-#
-#     julia --project=benchmark --threads=1 benchmark/multiorder_baseline.jl
-#
-# Seven arms, all on synthetic HEALPix fixtures, no downloads:
-#
-#   1. INFERENCE   — the return type of every public entry point. The package
-#                    carries a juliac ambition, so an answer that is neither
-#                    concrete nor the small union the docstring promises is a
-#                    defect rather than a tuning knob.
-#   2. LOOKUP      — `localindex` / `covering_index` against container size.
-#                    The interval index is a binary search, so cost grows like
-#                    log n, not n, and nothing allocates.
-#   3. SET ALGEBRA — `union` / `intersect` / `setdiff` / `symdiff` and the two
-#                    predicates against size: sorted-interval merges, linear in
-#                    the operands.
-#   4. HIERARCHY   — `aggregate`, `coarsen` and container construction, in leaf
-#                    cells per second on a level-8 field.
-#   5. EXPAND      — the lazy presentation: per-element access is one binary
-#                    search and allocates nothing, `collect` is a run fill.
-#   6. STORE IO    — a compacted write+read against the expanded write of the
-#                    same field, same session, same data.
-#   7. REGRID      — `BarycentricPoint` off the stored cells against off their
-#                    reference-level expansion, same session, same field: build
-#                    and apply, and what the reference level costs.
-#
-# Plus a region note: `covering_indices` and the `Covering` selector are bounded
-# not by the container but by `query(sys, MultiOrderCoverage(...); level)`,
-# which is measured on its own so the two costs are not confused.
-#
-# The IO arm needs Zarr, which is a weak dependency: it self-skips when absent.
-#
-# Checkpoint 2026-08-27, Julia 1.12.7, 1 thread, M-series laptop, 140 s and
-# 1 563 MiB peak of which most is loading and compiling this script:
-#
-#   * every entry point concrete, `Union{T,Nothing}`, or the documented
-#     two-way shape union;
-#   * `localindex` / `covering_index` 8.6 -> 42 ns and ZERO bytes across
-#     1e3 -> 1e6 cells, so 1000x the container for 5x the lookup;
-#   * set algebra 9-20 ns per output cell, flat in n;
-#   * `coarsen` on 786 432 leaves: 0.91 ms at atol 0.05 (10 896 stored cells),
-#     12.0 ms at atol 0.001 (778 992); `aggregate` 1.2 ms one level up;
-#   * `expand` access 9.5 ns and zero bytes; `collect` 0.07 ns/cell;
-#   * a compacted store is 0.095x the expanded one on disk and 2.7x slower to
-#     read back, because reading validates every (level, id) pair;
-#   * `BarycentricPoint` off 624 stored cells onto 12 288: 819 ns and 0 bytes
-#     per destination point, 3.9 MiB of plan. Re-keying those SAME cells two
-#     reference levels deeper (16x the leaves) leaves the native plan at 1.02x
-#     time and 1.00x bytes; the expansion's goes to 3.52x bytes, so at that
-#     reference level the native plan is 0.22x the expanded one, and applying
-#     it 0.07x. Build TIME is the destination sweep either way — the source
-#     presentation moves the bytes, not the clock.
-#
-# The one cost that is NOT the container's is the region arm: see its note.
+# Run with `julia --project=benchmark --threads=1 benchmark/multiorder_baseline.jl`.
 
 import BenchmarkTools
 import DimensionalData as DD
@@ -60,7 +7,7 @@ import GeoInterface as GI
 import GlobalRegridding as GR
 import Printf: @printf, @sprintf
 
-# Loading Zarr is what makes the store extension exist; arm 6 checks and skips.
+# Loading Zarr activates the optional store extension.
 try
     @eval import Zarr
 catch
@@ -75,12 +22,7 @@ const SYS = DGG.HEALPixSystem()
 const REGION = GI.Polygon([GI.LinearRing([(-20.0, 20.0), (40.0, 20.0),
     (40.0, 60.0), (-20.0, 60.0), (-20.0, 20.0)])])
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-# `n` disjoint level-`l` cells at every `step`-th index, so no two are adjacent
-# and the container really holds `n` intervals rather than one merged run.
+# Spacing prevents interval coalescing in scaling measurements.
 function spread_container(n::Int; level::Int = 9, first::Int = 1, step::Int = 2)
     g = DGG.levelgrid(SYS, level)
     first + step * (n - 1) <= DGG.ncells(g) ||
@@ -89,14 +31,11 @@ function spread_container(n::Int; level::Int = 9, first::Int = 1, step::Int = 2)
     return EN.MultiOrderVector(SYS, cells; reference_level = level)
 end
 
-# Deterministic query cells at the container's own level, half of them stored
-# and half not, so the hit and the miss path are both exercised.
+# Alternate hits and misses under a deterministic permutation.
 query_cells(n::Int; level::Int = 9, q::Int = 10_000) =
     (g = DGG.levelgrid(SYS, level);
      [DGG.cellindex(g, 1 + (7919 * (k - 1)) % (2n)) for k in 1:q])
 
-# A smooth field over a whole level — the input `coarsen` is designed for,
-# where large regions agree to within `atol` and merge.
 function level_field(l::Int)
     g = DGG.levelgrid(SYS, l)
     n = DGG.ncells(g)
@@ -107,13 +46,7 @@ function level_field(l::Int)
     return DGG.CellVector(g), vals
 end
 
-# ---------------------------------------------------------------------------
-# Measurement
-# ---------------------------------------------------------------------------
-
-# `gcsample` collects before every sample. It costs wall time and buys the
-# only thing that matters on a laptop: the heap never carries an arm's garbage
-# into the next one.
+# Per-sample collection isolates each benchmark arm's heap use.
 function estimate(f; seconds = 1.0, samples = 12, gc = true)
     trial = BenchmarkTools.run(BenchmarkTools.@benchmarkable($f());
         samples, evals = 1, seconds, gcsample = gc)
@@ -134,23 +67,13 @@ fmt_bytes(b) = b < 1024 ? "$b B" :
                b < 2^20 ? @sprintf("%.1f KiB", b / 1024) :
                @sprintf("%.1f MiB", b / 2^20)
 
-# ---------------------------------------------------------------------------
-# 1. Inference
-# ---------------------------------------------------------------------------
-#
-# Keyword calls go through a typed wrapper on purpose: inference through a
-# closure over a script global sees `Any` and reports a false instability.
+# Typed wrappers prevent script globals from producing false inference failures.
 
 w_coarsen(cv, values, atol) = DGG.coarsen(cv, values; atol)
 w_coarsen_dim(A, atol) = DGG.coarsen(A; atol)
 w_cellvector(mov, l) = DGG.CellVector(mov; level = l)
 w_mov(sys, cells, ref) = EN.MultiOrderVector(sys, cells; reference_level = ref)
 
-# What each answer is allowed to be:
-#   :concrete — one type, no exceptions;
-#   :optional — `Union{T,Nothing}`, the "no such cell" contract;
-#   :shape    — a documented two-way union over the answer's SHAPE (the window
-#               form a `CellVector` picks, or container-or-plain-vector).
 function verdict(rt, expected)
     isconcretetype(rt) && return ("concrete", true)
     rt === Any && return ("Any", false)
@@ -258,10 +181,6 @@ function inference_arm(cv, vals)
     return nothing
 end
 
-# ---------------------------------------------------------------------------
-# 2. Lookup scaling
-# ---------------------------------------------------------------------------
-
 function lookup_batch(f, mov, qs)
     t = 0
     for c in qs
@@ -292,20 +211,14 @@ function lookup_arm(sizes)
         mov = qs = nothing
         GC.gc(true)
     end
-    println("\n1000x the cells for ~5x the lookup. The right-hand column " *
-            "rises rather than\nstaying flat because a longer binary search " *
-            "misses cache more often, not because\nthe search grows with n.")
+    println("\nLookup cost grows logarithmically with container size; cache " *
+            "misses raise the normalized cost for larger searches.")
 end
-
-# ---------------------------------------------------------------------------
-# 3. Set algebra
-# ---------------------------------------------------------------------------
 
 function algebra_arm(sizes)
     rule("3. SET ALGEBRA — merge cost against operand size")
-    println("`a` holds every 2nd cell of level 9, `b` every 4th, so b < a and " *
-            "every answer\nis proportional to n rather than collapsing to a " *
-            "handful of coarse cells.")
+    println("`a` holds every second level-9 cell and `b` every fourth. " *
+            "Separated cells keep every result proportional to n.")
     widths = (10, 12, 11, 12, 12, 12)
     row(("cells", "op", "out cells", "time", "bytes", "ns/out"), widths)
     println("-"^76)
@@ -332,10 +245,6 @@ function algebra_arm(sizes)
         GC.gc(true)
     end
 end
-
-# ---------------------------------------------------------------------------
-# 4. Hierarchy verbs
-# ---------------------------------------------------------------------------
 
 function hierarchy_arm(cv, vals)
     leaf = DGG.level(cv)
@@ -364,8 +273,7 @@ function hierarchy_arm(cv, vals)
                 "$(round(100 * length(mov) / n; digits = 2))% of the leaves")
     end
 
-    # Construction, the other superlinear-looking step. Ascending input is the
-    # case every caller inside the package hands it; shuffled input pays a sort.
+    # Package callers supply ascending ids; shuffled inputs include sorting cost.
     g9 = DGG.levelgrid(SYS, 9)
     for n2 in (10_000, 100_000)
         asc = [DGG.cellindex(g9, 2k - 1) for k in 1:n2]
@@ -382,10 +290,6 @@ function hierarchy_arm(cv, vals)
     end
     GC.gc()
 end
-
-# ---------------------------------------------------------------------------
-# 5. Expand
-# ---------------------------------------------------------------------------
 
 function access_batch(v, n)
     t = zero(eltype(v))
@@ -424,10 +328,6 @@ function expand_arm(cv, vals)
     return mov, mvals, ecv, edata
 end
 
-# ---------------------------------------------------------------------------
-# The region bound, which is not the container's
-# ---------------------------------------------------------------------------
-
 function region_arm()
     rule("R. REGION — `covering_indices` is bounded by the coverage query")
     println("`covering_indices(mov, target)` is one binary search per coverage " *
@@ -456,10 +356,6 @@ function region_arm()
     mov = nothing
     GC.gc(true)
 end
-
-# ---------------------------------------------------------------------------
-# 6. Store IO
-# ---------------------------------------------------------------------------
 
 dirsize(path) = sum(filesize(joinpath(root, f))
                     for (root, _, files) in walkdir(path) for f in files; init = 0)
@@ -499,7 +395,6 @@ function io_arm(leaf::Int)
         row((label, length(DD.lookup(A, DGG.Cells)), fmt_ns(ew.ns),
             fmt_ns(er.ns), fmt_bytes(sz)), widths)
         push!(results, (label, ew.ns, er.ns, sz))
-        # The round trip has to agree, or the comparison means nothing.
         back = S[:field]
         length(back) == length(A) ||
             error("$label round trip changed the cell count")
@@ -513,18 +408,8 @@ function io_arm(leaf::Int)
     GC.gc()
 end
 
-# ---------------------------------------------------------------------------
-# 7. Regrid
-# ---------------------------------------------------------------------------
-#
-# An interpolating method reads sample sites, so it takes the stored cells as
-# they are. The comparison is against the only other way to interpolate a
-# mixed-level field — expand to the reference level first, where every leaf
-# under a stored cell repeats one value — measured in the same session on the
-# same numbers, so only the source presentation differs.
-
-# Typed wrappers, as arm 1: a keyword call through a closure over a script
-# global reports a false answer for both inference and allocation.
+# The comparison changes only the source presentation: stored cells or expansion.
+# Typed wrappers keep script globals out of inference and allocation results.
 w_plan(A, dst, m) = GR.plan_regrid(A; to = dst, method = m, lazy = false)
 w_apply(A, plan) = GR.regrid(A, plan)
 w_cube(mov, values) = DD.DimArray(values, (DGG.Cells(DGG.MultiOrderLookup(mov)),))
@@ -574,11 +459,7 @@ function regrid_arm(leaf::Int, dstlevel::Int; atol = 0.25)
         GC.gc(true)
     end
 
-    # The reference level names the leaves and nothing else. Re-keying the SAME
-    # stored cells two levels deeper multiplies the leaf count by sixteen: the
-    # native plan should not move at all, and the expansion's should follow the
-    # leaves. Only the builds are measured here — applying the deep expansion
-    # would materialise a leaf per value and say nothing new.
+    # Re-keying two levels deeper keeps native size fixed and grows expansion 16×.
     deep = EN.MultiOrderVector(SYS, collect(mov); reference_level = leaf + 2)
     D = w_cube(deep, mvals)
     deepleaves = DGG.ncells(DGG.levelgrid(SYS, leaf + 2))
@@ -607,8 +488,7 @@ function regrid_arm(leaf::Int, dstlevel::Int; atol = 0.25)
     @printf("deep / shallow, same stored cells:  stored %.2fx time %.2fx bytes, expanded %.2fx time %.2fx bytes\n",
         sd[1] / s[1], sd[2] / s[2], ed[1] / e[1], ed[2] / e[2])
 
-    # And one query: the fan is fixed capacity, so a located stencil reaches no
-    # heap however big the container is.
+    # Fixed-capacity stencil lookup should remain allocation-free.
     smp = GR.sampler(m, GR.sourcespacefor(mov, m))
     pts = [GR.cellcentroid(DGG.DGGSpace(dst), i) for i in 1:DGG.ncells(dst)]
     grow = () -> w_sweep(GR.WeightRow(), smp, pts)
@@ -619,8 +499,6 @@ function regrid_arm(leaf::Int, dstlevel::Int; atol = 0.25)
     A = E = mov = mvals = smp = pts = nothing
     GC.gc(true)
 end
-
-# ---------------------------------------------------------------------------
 
 rss() = round(Sys.maxrss() / 2^20; digits = 1)
 mark(name) = println("\n[peak RSS after $name: $(rss()) MiB]")

@@ -1,76 +1,37 @@
-# A weightless nearest-cell regrid: no COO, no sparse block, no per-cell weight.
-#
-# `NearestCell` answers "which source cell holds this destination's sample site"
-# by *building* that answer into a sparse matrix of ones and then applying the
-# matrix. Every entry is 1.0, every row has exactly one entry, and the apply is
-# a gather dressed as a matvec. `DirectNearest` computes the same answer and
-# skips both halves: preparation holds nothing but the two spaces, and the
-# application asks `cellat` for the source cell and copies the value across.
-#
-# The result is defined to be identical to `NearestCell` under the same policy.
-# Under `Weighted(t)` a mapped destination has cover 1 and reference 1, so
-# `num/cover` is the source value itself and no threshold in `[0, 1]` can blank
-# it; an unmapped destination, or one whose source value is invalid, has cover 0
-# and is blanked. Under `Extensive` the same two cases sum to zero.
-
 """
     DirectNearest()
 
-Take each destination's value from the source cell containing its sample site,
-without building weights for it.
+Copy each destination value from the source cell containing its sample site.
+The apply loop calls [`cellat`](@ref) directly and materializes no weights.
 
-The stencil is [`NearestCell`](@ref)'s exactly — one source cell, weight one —
-and so are the results, element for element, under either missing policy and
-with any nodata sentinel. What differs is that no [`WeightCOO`](@ref),
-[`WeightBlock`](@ref) or sparse matrix is ever assembled: a plan holds only the
-two spaces, and the apply loop calls [`cellat`](@ref) per destination cell and
-copies the value across.
+`DirectNearest` produces the same one-cell, unit-weight stencil as
+[`NearestCell`](@ref), including missing-data results. Choose between them by
+plan use:
 
-# Which of the two to use
+# Selection guide
 
-Prefer `DirectNearest` when the operator is applied about as many times as it is
-built — a one-shot [`regrid`](@ref), or a chunked run whose plan serves one
-destination column and is then dropped, which is every lazy read. It allocates
-far less: the plan is `O(1)` rather than a row per destination cell, and a
-chunked read carries one `Int` per cell of the tile instead of a sparse block
-per source chunk. That is what it buys, and under many concurrent workers
-sharing one heap it is most of what matters.
+  - Prefer `DirectNearest` for one-shot and lazy reads. Its eager plan is `O(1)`,
+    and each lazy tile stores one source index per destination cell.
+  - Prefer `NearestCell` when one plan serves many sources or when callers need
+    to inspect, store, or apply the weight operator. Its matrix locates every
+    destination once and reuses those indices.
 
-Prefer `NearestCell` when one plan is applied to *many different sources*. Its
-matrix locates every destination once, for good, and each later application is a
-gather over stored indices; `DirectNearest` re-locates every destination on
-every application, and locating is the expensive half. Both methods locate once
-for all the non-spatial slices of a single source, so a multi-slice source is
-not the case this distinguishes. `NearestCell` is also the one to reach for when
-the operator itself is wanted — to inspect, to store, or to apply outside this
-package — since `DirectNearest` never materializes one.
-
-[`buildweights!`](@ref) is still supplied, so any route that has not been
-specialized for this method (a chunk pair built through [`pairblock`](@ref), a
-weight file, a test) falls back to `NearestCell`'s own assembly and answers the
-same.
+The fallback [`buildweights!`](@ref) delegates to `NearestCell`, preserving the
+same result on generic assembly routes.
 """
 struct DirectNearest <: AbstractRegriddingMethod end
 
 outputsampling(::DirectNearest) = DD.Lookups.Points()
 
-# It reads the one source cell containing a point, so the source is sample sites
-# for it exactly as it is for `NearestCell`.
 sourcesampling(::DirectNearest) = DD.Lookups.Points()
 
 supportradius(::DirectNearest, ::RegridSpace) = 0.0
 
-# The stencil is `NearestCell`'s, so the refinement argument is the same one.
 refinementinvariant(::DirectNearest) = true
 
-# The fallback route, so nothing that has not been specialized breaks.
 buildweights!(coo::WeightCOO, ::DirectNearest, dst_space::RegridSpace, dst_inds,
     src_space::RegridSpace, src_inds) =
     buildweights!(coo, NearestCell(), dst_space, dst_inds, src_space, src_inds)
-
-# --------------------------------------------------------------------------
-# The eager plan: preparation is the two spaces and nothing else
-# --------------------------------------------------------------------------
 
 """
     NearestDirectPlan(method, missingpolicy, dst_space, src_space, missingval, sampling)
@@ -142,13 +103,12 @@ end
 """
     applyplan!(out, plan::NearestDirectPlan, src) -> out
 
-Sample the source directly, one destination cell at a time. No weights are read
-because none exist: the loop locates the source cell at the destination's sample
-site and copies its value, blanking the destination where there is no such cell
-or its value is invalid.
+Sample the source directly into `out`, one destination cell at a time. Each
+iteration locates the containing source cell, copies valid values, and writes
+the policy's blank value for unmapped or invalid inputs.
 
-The loop is over destination cells and every iteration writes only its own row,
-so it is threaded when more than one thread is available.
+Independent destination rows permit threading when multiple threads are
+available.
 """
 function applyplan!(out::AbstractMatrix, plan::NearestDirectPlan, src::AbstractMatrix)
     dst_space, src_space = plan.dst_space, plan.src_space
@@ -192,28 +152,20 @@ end
     return out
 end
 
-# --------------------------------------------------------------------------
-# The lazy path: the executor's tiles and source reads, sampled directly
-# --------------------------------------------------------------------------
-
 """
     _readdestination!(out, A::LazyRegridArray{...,<:ChunkedPlan{DirectNearest}}, ...)
 
-The chunked read for [`DirectNearest`](@ref). It reuses the executor's tiling,
-its dependency-relation reach check, its source hold and its chunk reads, and
-replaces the weight build and the matvec with two passes over the tile:
+Read one [`DirectNearest`](@ref) destination tile through the existing executor
+and source cache. Two passes replace weight construction and matrix application:
 
- 1. locate: one [`cellat`](@ref) per destination cell of the tile, giving the
-    source cell it takes its value from and the source chunk that owns it. The
-    ascending unique chunks are the tile's manifest — exactly what
-    [`tileweights`](@ref) would have produced — and are checked against the
-    plan's relation the same way. Destination cells are then ordered by chunk
-    with a counting sort, so each chunk is read once and touched once.
- 2. gather: for each source chunk in ascending order, read its buffer through
-    the same [`SourceHold`](@ref) and copy each destination's value out of it.
+ 1. Locate each destination's source cell and owning chunk, validate the unique
+    chunk manifest against the dependency relation, then group destinations by
+    chunk.
+ 2. Read each source chunk once through [`SourceHold`](@ref) and gather its
+    destination values.
 
-Per-tile state is one `Int` per destination cell plus the output tile itself.
-No `WeightCOO`, no `sparse`, no `WeightBlock`, no accumulator pair.
+Per-tile state stores one source index per destination cell plus the output
+tile.
 """
 function _readdestination!(out::AbstractMatrix,
     A::LazyRegridArray{T,N,NS,NO,AA,P}, cellr::UnitRange{Int},

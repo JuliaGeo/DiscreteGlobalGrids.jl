@@ -1,11 +1,3 @@
-# The write path: encoding choice, the coarse-ancestor chunk plan, the persisted
-# manifest, and the dual-stamped attributes the store is read back through.
-#
-# Nothing here calls `dggread`. Every assertion reopens the store with Zarr
-# directly and rebuilds the metadata snapshot out of plain dictionaries, so what
-# is under test is the bytes on disk rather than a second helping of this
-# package's own read code.
-
 module DGGSIOWriteTests
 
 using Test
@@ -216,9 +208,6 @@ else
     end
 
     @testset "a mixed-level axis writes as compacted and reads back as itself" begin
-        # Kills a writer that sorts the container against its values, drops the
-        # levels column, stamps xdggs (whose readers would decode a dense
-        # single-level axis), or declares a refinement level.
         mov = DGG.MultiOrderVector(SYS, [ROOTS[1]; collect(DGG.children(SYS, ROOTS[2]))])
         vals = Float32.(1:length(mov))
         M = DD.DimArray(vals, Cells(DGG.MultiOrderLookup(mov)); name=:elevation)
@@ -231,15 +220,14 @@ else
         @test g.attrs["dggs"]["compression"] == "compacted"
         @test g.attrs["dggs"]["refinement_level"] === nothing
         @test g.attrs["dggs"]["coordinate"] == "cell_ids"
-        # The level column names itself: nothing in the convention does.
+        # The convention lacks a standard key for the level column.
         @test g.attrs["dggs"]["refinement_levels"] == "cell_levels"
         @test !haskey(g["cell_ids"].attrs, "grid_name")
         @test g["cell_ids"][:] == [DGG.rawid(c) for c in mov]
         @test Int.(g["cell_levels"][:]) == [DGG.level(c) for c in mov]
-        # The levels column sits on its own dimension, invisible to variables.
+        # A separate dimension keeps the level column out of variable discovery.
         @test g["cell_levels"].attrs["_ARRAY_DIMENSIONS"] == ["cell_levels"]
-        # The manifest marker records the container's reference level; the
-        # description has no single level to record.
+        # The manifest needs a reference level while the description has no single level.
         marker = g[MANIFEST].attrs[MARKER]
         @test marker["level"] === nothing && marker["reference_level"] == 2
 
@@ -251,9 +239,6 @@ else
     end
 
     @testset "a single-level encoding on a mixed-level axis keeps the refusal" begin
-        # Kills a dispatcher that routes an explicit :dense/:ranges/:implicit
-        # request into the compacted path, and the mirror mutant that lets
-        # :compacted claim a single-level axis.
         mov = DGG.MultiOrderVector(SYS, [ROOTS[1]; collect(DGG.children(SYS, ROOTS[2]))])
         M = DD.DimArray(Float32.(1:length(mov)), Cells(DGG.MultiOrderLookup(mov));
             name=:elevation)

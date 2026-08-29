@@ -1,12 +1,3 @@
-# `dggread`: opening a store, describing it, and assembling the lazy DimStack.
-#
-# Fixtures are real Zarr v2 stores written here with Zarr.jl and hand-stamped
-# with each convention's attrs, so what is under test is the whole path from
-# bytes to cube and not a snapshot someone typed. Every store is a few hundred
-# cells of IGEO7 level 4 or the whole of HEALPix level 2.
-#
-# The suite self-skips when Zarr.jl is absent: `dggread` is then the stub.
-
 module DGGSIOReadTests
 
 using Test
@@ -34,13 +25,6 @@ const ZarrExt = Base.get_extension(DGG, :DiscreteGlobalGridsZarrExt)
 
 d(pairs...) = Dict{String,Any}(pairs...)
 
-# ---------------------------------------------------------------------------
-# A store that counts the chunks read from it
-# ---------------------------------------------------------------------------
-
-# What it proves is laziness: which arrays `dggread` touches and which it does
-# not. Metadata keys are not chunks and are not counted; every other key is a
-# chunk of the array whose name prefixes it.
 struct CountingStore{S<:Zarr.AbstractStore} <: Zarr.AbstractStore
     parent::S
     reads::Dict{String,Int}
@@ -67,13 +51,8 @@ counting(path) = Zarr.zopen(CountingStore(Zarr.DirectoryStore(path)), "r")
 reads(g::Zarr.ZGroup, name) = get(g.storage.reads, name, 0)
 resetreads!(g::Zarr.ZGroup) = empty!(g.storage.reads)
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 const GRID = levelgrid(IGeo7System(), 4)
-# Three index runs: the shape of a regional store, and enough runs that the
-# ranges twin has more than one row.
+# Three disjoint runs exercise a multi-row regional ranges axis.
 const RANKS = [50:149; 399:399; 699:848]
 const IDS = UInt64[idselect(GRID, r) for r in RANKS]
 const CELLS = [Z7Cell(x) for x in IDS]
@@ -82,14 +61,11 @@ const ELEVATION = Float32.(10 .* (1:N))
 const SLOPE = Float64.(inv.(1:N))
 const COORD_CHUNK = 64
 
-# Base cell 0's pentagon chain deletes digit 2, so `00002` is well formed and
-# names no cell. It sits between the level-4 cells of ranks 1 and 2.
+# `00002` occupies the deleted digit-2 branch of base cell 0's pentagon chain.
 const PHANTOM = (UInt64(2) << 48) | ((UInt64(1) << 48) - 1)
 
-# The same axis shape in base cell 8, whose ids set the top bit: written into an
-# `Int64` sidecar they are NEGATIVE integers that wrap back to exactly these
-# ids, which is the one case where reinterpreting a foreign width would silently
-# work and is why the width guard refuses to.
+# Base-cell-8 ids set the top bit and appear negative in a same-width `Int64`
+# sidecar, exercising bit-preserving signed reinterpretation and width checks.
 const HIGH_IDS = UInt64[idselect(GRID, r) for r in 16008:(16008+N-1)]
 
 zarr_conventions() = Any[deepcopy(DGG.ZARR_DGGS_DECLARATION)]
@@ -107,8 +83,7 @@ xdggs_attrs(; level=4) = d("grid_name" => "igeo7", "level" => level,
 
 adims(names...) = d("_ARRAY_DIMENSIONS" => Any[names...])
 
-# The data variables every IGEO7 fixture carries, chunked unlike the coordinate
-# so that a store whose arrays disagree about chunking is the ordinary case.
+# Different data and coordinate chunks exercise independent per-array chunking.
 function write_data!(g, ids=IDS)
     n = length(ids)
     e = Zarr.zcreate(Float32, g, "elevation", n; chunks=(50,), attrs=adims("cell_ids"))
@@ -208,10 +183,6 @@ function dkrz_store(dir; name="dkrz.zarr")
     return path
 end
 
-# ---------------------------------------------------------------------------
-# The dense path, end to end
-# ---------------------------------------------------------------------------
-
 @testset "a dense store reads back as the cube it was written from" begin
     mktempdir() do dir
         st = dggread(dense_store(dir))
@@ -269,10 +240,6 @@ end
         @test collect(parent(st2[:slope])) == SLOPE
     end
 end
-
-# ---------------------------------------------------------------------------
-# The persisted manifest
-# ---------------------------------------------------------------------------
 
 @testset "a store we wrote opens from its manifest instead of scanning" begin
     # The design's trust model: our own marker means the chunk grid on disk IS
@@ -559,10 +526,6 @@ end
     end
 end
 
-# ---------------------------------------------------------------------------
-# The ranges path
-# ---------------------------------------------------------------------------
-
 @testset "a ranges store is the same cube, read with no data IO" begin
     mktempdir() do dir
         dense = dggread(dense_store(dir))
@@ -585,10 +548,6 @@ end
         @test DD.metadata(ranged)["encoding"] == "ranges"
     end
 end
-
-# ---------------------------------------------------------------------------
-# The implicit path
-# ---------------------------------------------------------------------------
 
 @testset "an implicit store has an axis and a time dimension and no cell array" begin
     mktempdir() do dir
@@ -645,10 +604,6 @@ end
     end
 end
 
-# ---------------------------------------------------------------------------
-# Several conventions on one store
-# ---------------------------------------------------------------------------
-
 @testset "a dual-stamped store merges, and a contradiction does not" begin
     mktempdir() do dir
         both = dense_store(dir; name="dual.zarr",
@@ -673,10 +628,6 @@ end
         @test err.conventions == ["zarr-conventions/dggs", "xdggs"]
     end
 end
-
-# ---------------------------------------------------------------------------
-# Asserting the description instead of detecting it
-# ---------------------------------------------------------------------------
 
 @testset "an attribute-less store is read from a supplied description" begin
     mktempdir() do dir
@@ -710,10 +661,6 @@ end
         @test occursin("bare.zarr", err.store)
     end
 end
-
-# ---------------------------------------------------------------------------
-# The validation pair
-# ---------------------------------------------------------------------------
 
 @testset "strict verifies every id where lazy samples, on a scanned store" begin
     mktempdir() do dir
@@ -763,10 +710,6 @@ end
         end
     end
 end
-
-# ---------------------------------------------------------------------------
-# What the store is not
-# ---------------------------------------------------------------------------
 
 @testset "a path that names an array is not a store" begin
     # A DGGS store is a GROUP of arrays over one cell axis, and pointing at a
@@ -843,10 +786,6 @@ end
     end
 end
 
-# ---------------------------------------------------------------------------
-# Variable selection
-# ---------------------------------------------------------------------------
-
 @testset "vars selects layers and an unknown one lists what there is" begin
     mktempdir() do dir
         path = dense_store(dir)
@@ -870,10 +809,6 @@ end
     end
 end
 
-# ---------------------------------------------------------------------------
-# URLs
-# ---------------------------------------------------------------------------
-
 @testset "a gs:// URL is the https one, and s3:// says so" begin
     # String level only: no request is made by either assertion.
     @test ZarrExt.normalize_store_url("gs://geo-assets/igeo7-zarr/pori.zarr") ==
@@ -895,16 +830,7 @@ end
     @test occursin("AWSS3", msg) && occursin("https", msg)
 end
 
-# ---------------------------------------------------------------------------
-# Compacted stores
-# ---------------------------------------------------------------------------
-
 @testset "a compacted store round-trips a coarsened field" begin
-    # The whole mixed-level path on both radices: coarsen leaf data, write,
-    # read back, query, expand. The field is exactly flat where it merges, so
-    # the expansion of the read-back cube reproduces the leaf values
-    # bit-for-bit — which kills any reordering of cells against values, a lost
-    # or misread levels column, and a signed/unsigned id-column mixup.
     for sys in (HEALPixSystem(), IGeo7System())
         L = 3
         grid = levelgrid(sys, L)
@@ -924,12 +850,10 @@ end
         @test collect(parent(lk)) == collect(mov)
         @test collect(A) == vals
 
-        # Contains resolves a leaf cell to its stored ancestor's value.
         leaf = cv[1]
         k = DGG.covering_index(parent(lk), leaf)
         @test A[Cells(DD.Contains(leaf))] == vals[k]
 
-        # The read-back cube expands to the leaf level it was coarsened from.
         @test collect(DGG.expand(A, L)) == leafvals
     end
 end

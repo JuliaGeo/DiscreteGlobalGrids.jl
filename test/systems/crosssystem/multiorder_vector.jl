@@ -1,21 +1,4 @@
-# ---------------------------------------------------------------------------
-# `MultiOrderVector`, the mixed-level cell container. Laws checked here:
-#
-#   * round trip: a coverage read as storage keeps its cells, order and
-#     reference level, and expands to the set's own `CellVector` at every level.
-#   * membership: `localindex` is exact; `covering_index` resolves every
-#     covered leaf (or deeper cell) to its stored ancestor.
-#   * point location: a stored cell's centroid resolves back to that cell.
-#   * set algebra: against a brute force over leaf-index `Set`s, which
-#     shares no code with the interval index.
-#   * normalization: results are the coarsest cells that tile them — no
-#     complete sibling family survives in any result.
-#   * validation: overlap, duplicates and a too-shallow reference level throw;
-#     unsorted input is sorted.
-#
-# A5 has no `has_sorted_subtrees`, hence no container; the last testset asserts
-# the refusal.
-# ---------------------------------------------------------------------------
+# Set-algebra oracles use leaf sets independently of the interval index.
 
 module MultiOrderVectorTests
 
@@ -35,8 +18,7 @@ const NOWHERE = GI.Polygon([GI.LinearRing([(-26.0, -41.0), (-24.0, -41.0),
     (-24.0, -39.0), (-26.0, -41.0)])])
 const FARAWAY = (-25.0, -40.0)
 
-# Overlapping continent-sized boxes for the set algebra — big enough to be
-# non-trivial at the shallow oracle level.
+# Large overlapping boxes keep shallow set-algebra oracles nontrivial.
 const BOXA = GI.Polygon([GI.LinearRing([(-20.0, 20.0), (40.0, 20.0), (40.0, 60.0),
     (-20.0, 60.0), (-20.0, 20.0)])])
 const BOXB = GI.Polygon([GI.LinearRing([(10.0, 0.0), (70.0, 0.0), (70.0, 40.0),
@@ -44,9 +26,7 @@ const BOXB = GI.Polygon([GI.LinearRing([(10.0, 0.0), (70.0, 0.0), (70.0, 40.0),
 
 const LONLAT = GO.UnitSpherical.GeographicFromUnitSphere()
 
-# Per-system leaf levels (a leaf is a few km across on each), deep enough that
-# the REGION coverage comes back mixed-level. A5 has no container; see the last
-# testset.
+# These levels produce genuinely mixed coverage across hierarchy apertures.
 const SWEEP = [
     (DGG.IGeo7System(), 5),
     (DGG.H3System(), 4),
@@ -59,8 +39,7 @@ const SWEEP = [
 sysname(sys) = sys isa DGG.AuthalicSystem ?
                "Authalic($(nameof(typeof(parent(sys)))))" : string(nameof(typeof(sys)))
 
-# Shallowest level with at least `atleast` cells, so the oracle size is
-# comparable across apertures.
+# A common minimum cell count keeps oracle sizes comparable across apertures.
 function shallow_level(sys; atleast=400)
     for l in DGG.levels(sys)
         DGG.ncells(DGG.levelgrid(sys, l)) >= atleast && return l
@@ -68,8 +47,7 @@ function shallow_level(sys; atleast=400)
     return last(DGG.levels(sys))
 end
 
-# Leaf indices a container names, via `descendant_range` — independent of
-# the container's own index.
+# Descendant ranges provide an interval-index-independent oracle.
 leafset(mov, l) = Set(p for c in mov for p in DGG.descendant_range(DGG.system(mov), c, l))
 
 # Intervals sorted and pairwise disjoint.
@@ -79,8 +57,7 @@ function disjoint_and_sorted(mov)
            all(k -> first(ivs[k]) > last(ivs[k-1]), 2:length(ivs))
 end
 
-# True if a complete sibling family is stored, i.e. the container is not
-# coarsest.
+# Complete sibling families indicate a nonminimal representation.
 function has_complete_family(sys, mov)
     stored = Set(collect(mov))
     top = first(DGG.levels(sys))
@@ -91,8 +68,7 @@ function has_complete_family(sys, mov)
     return false
 end
 
-# Deterministic probes: ends, middles, and the shallowest and deepest stored
-# cells.
+# Deterministic probes cover positions and refinement extremes.
 function probes(mov)
     n = length(mov)
     return unique([1, cld(n, 3), cld(n, 2), n,
@@ -108,10 +84,6 @@ end
     end
     @test any(s -> s isa DGG.AuthalicSystem, first.(SWEEP))
 end
-
-# ---------------------------------------------------------------------------
-# The container's own laws, once per system
-# ---------------------------------------------------------------------------
 
 @testset "a mixed-level container: $(sysname(sys))" for (sys, leaf) in SWEEP
     set = DGG.query(sys, DGG.MultiOrderCoverage(REGION); level=leaf)
@@ -161,8 +133,7 @@ end
         @test all(DGG.localindex(mov, mov[k]) == k for k in eachindex(mov))
         @test all(c in mov for c in mov)
 
-        # A descendant of a stored cell is covered but NOT stored — kills
-        # `localindex` answering with the covering index.
+        # Descendants distinguish exact membership from covering membership.
         coarse = argmin(k -> DGG.level(mov[k]), eachindex(mov))
         kid = first(DGG.children(sys, mov[coarse]))
         @test DGG.level(kid) <= leaf
@@ -303,10 +274,6 @@ end
     end
 end
 
-# ---------------------------------------------------------------------------
-# Set algebra, against a brute force over leaf index sets
-# ---------------------------------------------------------------------------
-
 @testset "set algebra: $(sysname(sys))" for (sys, _) in SWEEP
     l = shallow_level(sys)
     n = DGG.ncells(DGG.levelgrid(sys, l))
@@ -339,8 +306,7 @@ end
     @test leafset(union(a, c), l) == Set(1:n)
     # The whole sphere normalizes to the root cells.
     @test collect(union(a, c)) == collect(DGG.rootcells(sys))
-    # Double complement normalizes rather than round-trips: same leaves, as the
-    # coarsest cells that name them.
+    # Double complement preserves leaves and returns their coarsest tiling.
     @test leafset(EN.complement(c), l) == A
     @test EN.complement(c) == union(a, a)
     @test !has_complete_family(sys, EN.complement(c))
@@ -410,25 +376,19 @@ end
     @test_throws ArgumentError union(a, other)
     @test_throws ArgumentError intersect(a, other)
     @test_throws ArgumentError setdiff(a, other)
-    # The predicates answer instead of throwing, as `CellVector`'s do.
+    # Cross-system predicates return false, matching `CellVector`.
     @test !issubset(a, other)
     @test isdisjoint(a, other)
     @test !issetequal(a, other)
 end
 
-# An id outside its level is refused at construction, not at the first geometry
-# call that decodes it. `LevelIndex` indices are zero-based, so `ncells` is
-# one past the end.
+# A zero-based index equal to `ncells` lies outside its level.
 @testset "an id past the end of its level is refused" begin
     sys = DGG.HEALPixSystem()
     n = DGG.ncells(DGG.levelgrid(sys, 0))
     @test_throws ArgumentError DGG.MultiOrderVector(sys, [DGG.LevelIndex(0, n)])
     @test DGG.MultiOrderVector(sys, [DGG.LevelIndex(0, n - 1)]) isa DGG.MultiOrderVector
 end
-
-# ---------------------------------------------------------------------------
-# A5: no descendant ranges, so no container
-# ---------------------------------------------------------------------------
 
 @testset "A5 has no intervals to index" begin
     sys = DGG.A5System()

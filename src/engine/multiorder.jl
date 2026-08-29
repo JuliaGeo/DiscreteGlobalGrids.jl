@@ -170,9 +170,7 @@ degrades in the way [`MultiOrderCoverage`](@ref)'s warning already describes, an
 for the same reason — replacing a cell by its children swaps one footprint for
 another. Measured on a state-sized outline as the fraction of the target lying
 in no emitted cell: under 2% on IGEO7, 3% on its authalic wrap, 15% on H3 and
-30% on A5. Those are not decorative figures — they are the bounds
-`test/systems/crosssystem/multiorder_budget.jl` asserts, per system, so this
-paragraph cannot quietly stop being true.
+30% on A5.
 
 The LEAF statement `level` mode makes — every reference-level cell meeting the
 target is a member or the descendant of one — is a law here on those same three
@@ -180,12 +178,11 @@ systems only. Elsewhere the budget makes the same overhang descent but has no
 fixed depth to carry it to: where it stops paying, the search goes on only for
 the dropped cells whose share is still unproven. On the same outline the leaf
 statement misses under 1% of the target on IGEO7, 2% on its authalic wrap and
-on H3, and 18% on A5. Both statements are pinned per system, at three budgets
-and on four targets, in `test/systems/crosssystem/multiorder_budget.jl`.
+on H3, and 18% on A5. `test/systems/crosssystem/multiorder_budget.jl` asserts
+both statements' bounds per system, at three budgets and on four targets.
 
 What a budget does NOT buy is a tight picture of the target: at ten cells the
-set over-covers California by a wide margin, and it says so through
-[`iscontained`](@ref) rather than by pretending otherwise.
+set over-covers California by a wide margin, and [`iscontained`](@ref) says so.
 
 # Composition
 
@@ -293,8 +290,9 @@ end
 # PHANTOMS carry the descent through cells that miss the target but pass both
 # `node_extent` prunes: under non-congruent refinement a cell can meet the
 # target while its parent misses it. Phantoms are free; the meeting cells
-# found beneath them are ENTRANTS and cost one whole slot each. Congruent
-# systems never need them — every meeting cell has a meeting parent.
+# found beneath them are ENTRANTS and cost one whole slot each. On a congruent
+# system every meeting cell has a meeting parent, so the member stream reaches
+# everything and phantoms stay empty.
 #
 # PENDING cells are members none of whose children meet: the target lies in
 # their overhang annulus and the phantom stream reaches the cells covering it.
@@ -544,7 +542,7 @@ end
 
 # One (bounding cap, target) pair per connected piece of the target — a
 # MultiPolygon's parts; any other target is one piece, itself. Parts prepare
-# on first use: preparing all up front cost a quarter of a multipart query.
+# on first use: most walks never test containment.
 mutable struct _PieceSlot{G}
     const geom::G
     prepared::Any
@@ -745,8 +743,8 @@ end
 # The tie-break inside one level. `globalindex` is the level's own order, which
 # is curve order on every system here and is a bijection, so no two cells of a
 # level ever tie and the schedule has nothing left to decide. A missing index
-# would break that bijection and silently alias two cells onto one key, which is
-# a determinism bug wearing a plausible answer — so it is an error, not a zero.
+# would silently alias two cells onto one key and break determinism — so it is
+# an error, not a zero.
 function _budget_key(grid, c)::Int
     pos = globalindex(grid, c)
     pos === nothing && throw(ArgumentError(

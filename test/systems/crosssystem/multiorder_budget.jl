@@ -106,8 +106,8 @@ const LEAF_BOUND = Dict("IGeo7System" => 0.01, "Authalic(IGeo7System)" => 0.02,
 
 # Annulus-tile bounds, in units of the tile's own area: the whole set and its
 # largest single member, measured by the testset at the bottom of this file.
-# Excess rose from 2.50 when pending claims began reserving their slots: at a
-# budget of ten a reserved slot is a member not refined.
+# A held claim slot is a member left unrefined, which is most of the excess
+# at a budget of ten.
 const EXCESS_BOUND = 3.5        # measured 3.06
 const MEMBER_BOUND = 1.5        # measured 1.32
 
@@ -397,8 +397,8 @@ end
                 @test !isempty(budgeted)
                 # With four times the room nothing is refused and completeness
                 # becomes an equality: the budget descent reaches every cell
-                # `level` mode reaches, in the same order. Anything weaker
-                # than `==` cannot tell a complete descent from a lucky one.
+                # `level` mode reaches, in the same order. Only `==` tells a
+                # complete descent from a lucky one.
                 roomy = DGG.query(sys, DGG.MultiOrderCoverage(MAINLAND);
                     maxcells=4 * length(accurate), maxlevel=l)
                 @test collect(roomy) == collect(accurate)

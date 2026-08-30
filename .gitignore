@@ -10,6 +10,7 @@ docs/*
 !docs/src/
 !docs/Project.toml
 !docs/make.jl
+!docs/raytracing/
 !docs/package.json
 !docs/package-lock.json
 !docs/presentations/

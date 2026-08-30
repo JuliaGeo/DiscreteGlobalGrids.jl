@@ -58,7 +58,7 @@ import ArchGDAL
 import DimensionalData
 import Extents
 using Rasters, RasterDataSources
-using GLMakie, GeoMakie
+using Makie, GeoMakie
 using DiscreteGlobalGridsVisualization: dggsurface!
 using FlyThroughPaths
 using LinearAlgebra, Statistics
@@ -150,6 +150,13 @@ const PRESMOOTH = setting("presmooth", 2)
 
 # `height_above_nearest_drainage` needs to be told what counts as a channel.
 const HAND_THRESHOLD = setting("hand_threshold", 100)
+
+# Where the colour range is clipped, as quantiles of the indicator. See
+# `colorrange`: the default pair is a robust clip that keeps one gorge from
+# owning the whole colormap, and the upper one is the dial worth turning for a
+# field as skewed as flow accumulation.
+const RANGE_LOW = setting("range_low", 0.02)
+const RANGE_HIGH = setting("range_high", 0.98)
 
 # ---------------------------------------------------------------------------
 # The look
@@ -1015,11 +1022,17 @@ A robust range for `values`, clipped to its 2nd and 98th percentiles.
 A geomorphometric field is usually long-tailed — one gorge holds the whole top
 of a slope histogram — and a range taken from the extrema spends the entire
 colormap on cells that are a few pixels wide.
+
+`quantiles` is where the clip is taken. For a field as skewed as flow
+accumulation the upper one is worth turning down: at 0.98 the channels, a couple
+of per cent of the cells, still take most of the colormap and the hillslopes
+share what is left. Clipping lower spreads the hillslopes and lets the channels
+saturate at the top.
 """
-function colorrange(values, symmetric)
+function colorrange(values, symmetric; quantiles = (0.02, 0.98))
     finite = filter(isfinite, values)
     isempty(finite) && return (0.0, 1.0)
-    lo, hi = quantile(finite, 0.02), quantile(finite, 0.98)
+    lo, hi = quantile(finite, quantiles[1]), quantile(finite, quantiles[2])
     lo == hi && ((lo, hi) = (lo - 1, hi + 1))
     if symmetric
         m = max(abs(lo), abs(hi))
@@ -1265,7 +1278,24 @@ function mist!(out, base, vertices, eye, air)
     return
 end
 
-function main()
+"""
+    scene_inputs() -> NamedTuple
+
+Everything a drawing of this flight needs that does not depend on what draws it.
+
+The cube, the field that colours it, the projection, the camera's route and the
+river are one problem; turning them into pixels is another, and only the second
+has a backend in it. Splitting them lets `river_flythrough_raytraced.jl`
+`include` this file and path-trace the same flight rather than a second one
+written from the same description.
+
+Returns the cube (`elev`) and its cell lookup (`cells`), the grid they are on,
+the scaled indicator (`scaled`) with the `palette` and `range_` that map it,
+the orthographic `transform` the scene lives in and the `place` function that
+puts a cell position into it, the flight's waypoints (`tr`) and its length in
+kilometres (`flown`), and the `river`.
+"""
+function scene_inputs()
     haskey(INDICATORS, INDICATOR) || error("unknown indicator $INDICATOR; \
         one of $(join(sort(collect(keys(INDICATORS))), ", "))")
     spec = INDICATORS[INDICATOR]
@@ -1286,7 +1316,7 @@ function main()
 
     values = Float64.(spec.compute(elev, accumulation))
     scaled = spec.scale.(values)
-    range_ = colorrange(scaled, spec.symmetric)
+    range_ = colorrange(scaled, spec.symmetric; quantiles = (RANGE_LOW, RANGE_HIGH))
     palette = isempty(COLORMAP) ? spec.colormap : Symbol(COLORMAP)
     @info "coloured by $INDICATOR" colormap = palette colorrange = range_
 
@@ -1323,6 +1353,13 @@ function main()
     river = water(branches, upstream_cells, place,
         FLOW_SPEED == "auto" ? 0.35 * flown / max(SECONDS - HOLD_START - HOLD_END, eps()) :
             parse(Float64, FLOW_SPEED))
+
+    return (; elev, cells, grid, place, transform, scaled, palette,
+        range_ = range_, tr, flown, river)
+end
+
+function main()
+    (; elev, cells, place, transform, scaled, palette, range_, tr, river) = scene_inputs()
 
     figure = Figure(size = (WIDTH, HEIGHT),
         backgroundcolor = SKY ? SKY_HORIZON : BACKGROUND, figure_padding = 0)
@@ -1395,16 +1432,22 @@ function main()
     return
 end
 
-GLMakie.activate!(visible = false, fxaa = true, ssao = true, render_on_demand = true)
-# GLFW can hand back a null primary monitor on an unattended macOS session and
-# take the process down before the first frame. The video's geometry is fixed by
-# `size` and `px_per_unit`, so the window's DPI is not needed.
-@static if Sys.isapple()
-    function Makie.window_area(scene::Scene, screen::GLMakie.Screen)
-        Makie.disconnect!(screen, Makie.window_area)
-        scene.events.window_dpi[] = 96.0
-        return
+# GLMakie is loaded here rather than at the top because it is this script's
+# output, not its scene: everything above builds plain Makie plots, so another
+# backend can `include` this file without paying for a GL context it will never
+# draw into.
+if abspath(PROGRAM_FILE) == @__FILE__
+    using GLMakie
+    GLMakie.activate!(visible = false, fxaa = true, ssao = true, render_on_demand = true)
+    # GLFW can hand back a null primary monitor on an unattended macOS session
+    # and take the process down before the first frame. The video's geometry is
+    # fixed by `size` and `px_per_unit`, so the window's DPI is not needed.
+    @static if Sys.isapple()
+        function Makie.window_area(scene::Scene, screen::GLMakie.Screen)
+            Makie.disconnect!(screen, Makie.window_area)
+            scene.events.window_dpi[] = 96.0
+            return
+        end
     end
+    main()
 end
-
-(abspath(PROGRAM_FILE) == @__FILE__) && main()

@@ -73,6 +73,16 @@ the one over each pole drawn as the cap it covers.
     "Controls whether lights affect the surface.  Off by default: a DGGS surface carries a value, not a shape."
     shading = Makie.NoShading
     """
+    A backend material for the surface — a `Hikari.Material` under RayMakie, an
+    RPR material under RPRMakie.  `nothing`, the default, leaves the backend its
+    own; backends without materials ignore it.
+
+    Makie carries this on `mesh` through `mixin_shading_attributes`, which this
+    recipe cannot mix in wholesale because its `shading` default is the opposite
+    of Makie's, so it is declared separately.
+    """
+    material = nothing
+    """
     Whether to split triangles that straddle the map's cut meridian and to fill
     the polar caps.  Only planar targets have a cut; on a globe this does
     nothing.
@@ -220,6 +230,7 @@ function Makie.plot!(plot::DGGSurface{<:Tuple{<:CellRegion, <:AbstractVector}})
         nan_color = plot.nan_color,
         alpha = plot.alpha,
         shading = plot.shading,
+        material = plot.material,
         visible = plot.visible,
         transparency = plot.transparency,
         inspectable = plot.inspectable,

@@ -64,6 +64,12 @@ tavg = @time DGG.regrid(temps, plan)
 # The spatial dimensions are replaced by the destination's cells and every other
 # dimension passes through, so the result is a cube over `(cells, month)`, and
 # the cells with under 1% coverage are `NaN`.
+#
+# A raster in is a raster out, declaring the `missingval` its source declared:
+# `temps` holds plain `Float64` and declares none, so blanked cells are `NaN`. A
+# source of `Union{Missing, Float64}` would come back holding `missing` instead,
+# and `DGG.regrid(temps, plan; missingval = NaN)` is what keeps such a result
+# concrete. `regrid!` takes the sentinel from the buffer you hand it.
 
 dims(tavg)
 #

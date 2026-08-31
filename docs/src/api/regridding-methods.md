@@ -74,6 +74,34 @@ absent source may be interpolated across. `Weighted(1)` is the strict choice and
 the one to prefer for point output: a stencil naming a post with no value blanks
 the cell instead of renormalising over the posts that do.
 
+## The sentinel a blanked cell holds
+
+`missingpolicy` decides *which* cells are blanked. `missingval` decides what
+they hold, and it is the source's own nodata convention unless you say
+otherwise. A raster in is a raster out, declaring what it was handed:
+
+| the source | the result | a blanked cell holds |
+|---|---|---|
+| a `Raster` with `missingval = -9999.0` | a `Raster` declaring `-9999.0`, over a concrete float array | `-9999.0` |
+| a `Raster` with `missingval = missing` | a `Raster` declaring `missing`, over a `Union{Missing, Float64}` array | `missing` |
+| a `Raster` declaring no `missingval` | a `Raster` declaring `NaN` | `NaN` |
+| a `DimArray`, or a bare array | the same wrapper it came in as, with no nodata to declare | `missing` when the element type holds it, `NaN` otherwise |
+
+The `missingval` keyword names the nodata of the whole regrid: invalid on the
+way in, written on the way out. Give it a value the destination element type
+holds and the result stays concrete, which is what makes
+
+```julia
+DGG.regrid(ras; to = grid, missingval = NaN)
+```
+
+the fast reading of a `Union{Missing, Float64}` raster — a `Float64` array,
+smaller in memory and quicker in every operation that follows.
+
+`regrid!` reads the buffer you hand it rather than the source, so blanked cells
+take the sentinel `dest` declares. A buffer that cannot hold the sentinel says
+so instead of guessing.
+
 ## Rims, degeneracies, and poles
 
 Point interpolation is defined inside the polygons whose corners are source

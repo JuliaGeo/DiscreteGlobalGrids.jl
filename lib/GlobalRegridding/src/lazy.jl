@@ -626,6 +626,11 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
     wave = CachedBlock[]
     num = Matrix{Float64}(undef, 0, nslices)
     cover = Matrix{Float64}(undef, 0, nslices)
+    # Signed weights let a hole reach a destination without reaching its
+    # coverage, so those runs carry the two sums `degradetainted!` reads.
+    signed = signedweights(plan.method)
+    fallback = Matrix{Float64}(undef, 0, nslices)
+    taint = Matrix{Float64}(undef, 0, nslices)
     total = Float64[]
     vals = T[]
     for t in _coveringtiles(A, cellr)
@@ -638,6 +643,12 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
         fill!(num, 0.0)
         fill!(cover, 0.0)
         fill!(total, 0.0)
+        if signed
+            fallback = _fitmatrix(fallback, nd, nslices)
+            taint = _fitmatrix(taint, nd, nslices)
+            fill!(fallback, 0.0)
+            fill!(taint, 0.0)
+        end
         # On the tile route the weights come before the selection, because the
         # chunks that carry one are exactly the chunks read.
         tile = smp === nothing ? nothing : _taketile!(A.prefetch, A, plan, t, dinds, smp)
@@ -676,12 +687,18 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
                         continue
                     end
                     buf = _sourcefor!(hold, A, (s, gi), sr, gr, pos, keep)
-                    _applygroup!(num, cover, entry.block, buf, ncell, pos, strides, mv)
+                    _applygroup!(num, cover, entry.block, buf, ncell, pos, strides, mv,
+                        signed ? fallback : nothing, signed ? taint : nothing)
                 end
             end
             # Retain at most one local wave; storage manages its own cache.
             empty!(wave)
             i = j + 1
+        end
+        if signed
+            for c in axes(num, 2)
+                degradetainted!(view(num, :, c), view(fallback, :, c), view(taint, :, c))
+            end
         end
         _writechunk!(out, vals, num, cover, total, policy, A.missingval, dinds, cellr)
     end
@@ -1008,7 +1025,9 @@ end
 # off the block's own reference weights, which every slice shares.
 function _applygroup!(num::Matrix{Float64}, cover::Matrix{Float64}, block::WeightBlock,
     buf::AbstractArray, ncell::Int,
-    pos::NTuple{NO,UnitRange{Int}}, strides::NTuple{NO,Int}, missingval) where {NO}
+    pos::NTuple{NO,UnitRange{Int}}, strides::NTuple{NO,Int}, missingval,
+    fallback::Union{Nothing,Matrix{Float64}} = nothing,
+    taint::Union{Nothing,Matrix{Float64}} = nothing) where {NO}
     ref = block.reference
     src = reshape(buf, ncell, :)
     dirty = anyinvalid(buf, missingval)
@@ -1021,7 +1040,9 @@ function _applygroup!(num::Matrix{Float64}, cover::Matrix{Float64}, block::Weigh
         end
         x = view(src, :, k)
         applyblock!(view(num, :, col), view(cover, :, col), block, x,
-            dirty ? x : nothing, ref, missingval)
+            dirty ? x : nothing, ref, missingval;
+            fallback = fallback === nothing ? nothing : view(fallback, :, col),
+            taint = taint === nothing ? nothing : view(taint, :, col))
     end
     return num
 end

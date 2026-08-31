@@ -194,6 +194,20 @@ function addcoverage!(coo::WeightCOO, dst_local::Int, src_local::Int, a::Real)
 end
 
 """
+    signedweights(method::AbstractRegriddingMethod) -> Bool
+
+Return whether `method` emits negative value weights, and so reports coverage
+separately ([`addcoverage!`](@ref)). Defaults to `false`.
+
+The lazy path reads this to size its accumulators before it has built a block:
+signed weights let a hole reach a destination without reaching its coverage, so
+the executor carries the two extra sums [`degradetainted!`](@ref) needs. The
+whole-domain path asks the block itself and never reads this. A method that
+wraps another and forwards [`buildweights!`](@ref) should forward this too.
+"""
+signedweights(::AbstractRegriddingMethod) = false
+
+"""
     markcovered!(coo::WeightCOO)
 
 Declare that `coo` carries a coverage list, without adding to it, and return

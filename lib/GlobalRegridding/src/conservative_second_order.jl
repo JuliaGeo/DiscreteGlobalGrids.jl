@@ -31,10 +31,13 @@ that split it rather than flattened to the cell's mean.
     non-collinear neighbours keeps a zero gradient, which is first order there.
   - Coverage is the non-negative overlap area, reported apart from the signed
     weights, so [`Weighted`](@ref) normalizes and thresholds by area covered
-    and [`Extensive`](@ref) preserves the covered integral. Missing source
-    values inside a gradient stencil are read as zero by the fixed operator,
-    which biases that cell's gradient; where a source carries missing values,
-    fill it first or use [`Conservative`](@ref).
+    and [`Extensive`](@ref) preserves the covered integral.
+  - A destination whose weights reached a missing source — over it, or through
+    a neighbour's gradient stencil — falls back to the first-order answer
+    ([`degradetainted!`](@ref)), because a fixed operator would otherwise read
+    the hole as zero and bias that neighbour's gradient by a share of the
+    field's own value. The rest of the destinations keep the correction, and
+    only [`Extensive`](@ref) totals spanning a hole lose their exactness.
   - Requires cell polygons on both sides, and on the source
     [`cellneighbors`](@ref) and [`celldiameter`](@ref); both have geometric
     fallbacks. Source and destination manifolds must match.
@@ -49,6 +52,10 @@ supportradius(::ConservativeSecondOrder, src_space::RegridSpace) =
 
 preparesdestination(::ConservativeSecondOrder, dst_space::RegridSpace) =
     expensivecellgeometry(dst_space)
+
+# The gradient correction is signed, so coverage rides separately and a hole can
+# reach a destination without reaching it.
+signedweights(::ConservativeSecondOrder) = true
 
 # `BlockAreaOperator` keeps an overlap the way the pair operator does.
 @inline _covers(pm::PolygonMoments) = pm.area > 0

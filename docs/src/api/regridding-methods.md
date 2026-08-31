@@ -42,10 +42,16 @@ repeats one value across every cell inside it. What the gradient buys:
   - **Coverage is still the overlap area**, and so is what `Weighted`
     normalizes and thresholds by.
   - **The weights stay reusable across slices**, because the gradient is a fixed
-    operator over the source's geometry. The price is that a missing source
-    value inside a stencil is read as zero by the cell next to it, biasing that
-    cell's slope; where a source carries holes, fill it first or stay with
-    `Conservative()`.
+    operator over the source's geometry.
+  - **A hole degrades its own neighbourhood, and nothing else.** A fixed
+    operator would read a missing source as zero and bias the gradient of every
+    cell next to it by a share of the field's own value, where the coverage
+    threshold could never see it. So a destination whose weights reached a hole
+    — over it, or through a neighbour's stencil — takes the `Conservative()`
+    answer instead, and the rest keep the correction. The one cost is that an
+    `Extensive` total spanning a hole is no longer exact: the correction sums to
+    zero over the destinations covering a source cell, and dropping it for some
+    of them breaks that. Build the plan against a known mask to keep both.
 
 ## Point samples
 

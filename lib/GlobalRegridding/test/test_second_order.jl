@@ -162,8 +162,8 @@ end
                 @test isfinite(means[j])
             end
         end
-        # Beyond the hole's own ring — its neighbours' gradients read it as
-        # zero, the documented limit of a fixed operator — nothing changes.
+        # Beyond the reach of the hole's own weights, nothing changes: the
+        # degrade is confined to the destinations it actually touched.
         full = so_eager(f, dst, src, method)
         far = [j for j in 1:ncells(dst) if
                US.spherical_distance(cellcentroid(dst, j), toy_point(0.5, 0.5)) > 0.7]
@@ -171,6 +171,52 @@ end
         @test means[far] ≈ full[far]
         sums = so_eager(hole, dst, src, method; policy = Extensive())
         @test all(isfinite, sums)
+    end
+
+    @testset "a hole degrades its neighbourhood to first order" begin
+        f = so_means(so_smooth, src)
+        k = cellat(src, toy_point(0.5, 0.5))
+        hole = copy(f)
+        hole[k] = NaN
+        second = so_eager(hole, dst, src, method)
+        firstorder = so_eager(hole, dst, src, Conservative())
+        block = so_block(method, dst, src)
+
+        # A destination whose weights reached the hole — over it, or through a
+        # neighbour's gradient stencil — reads exactly as `Conservative` does.
+        touched = [j for j in 1:ncells(dst) if block.weights[j, k] != 0]
+        @test !isempty(touched)
+        for j in touched
+            (isnan(second[j]) || isnan(firstorder[j])) && continue
+            @test second[j] ≈ firstorder[j]
+        end
+
+        # Everything else keeps the correction: the degrade is local, not global.
+        untouched = [j for j in 1:ncells(dst) if
+                     block.weights[j, k] == 0 && isfinite(second[j])]
+        @test any(j -> !isapprox(second[j], firstorder[j]; rtol = 1e-9), untouched)
+
+        # Adding a constant to the source adds it to the result. This is what a
+        # hole used to break: the bias it injected scaled with the field's own
+        # value, so the answer was not invariant to the shift.
+        K = 1000.0
+        shifted = so_eager(hole .+ K, dst, src, method)
+        ok = findall(isfinite, second)
+        @test !isempty(ok)
+        @test shifted[ok] ≈ second[ok] .+ K
+
+        # The lazy path degrades the same destinations as the whole-domain one,
+        # on the chunk shapes it can read in one block.
+        rows = ToyLonLatSpace(36, 18; chunks = (36, 3))
+        tiles = ToyLonLatSpace(40, 20; chunks = (40, 4))
+        rowhole = so_means(so_smooth, rows)
+        rowhole[cellat(rows, toy_point(0.5, 0.5))] = NaN
+        lazy = so_chunked(rowhole, tiles, rows, method)
+        eager = so_eager(rowhole, tiles, rows, method)
+        @test isnan.(lazy) == isnan.(eager)
+        both = findall(isfinite, eager)
+        @test length(both) > ncells(tiles) ÷ 2
+        @test lazy[both] ≈ eager[both]
     end
 
     @testset "partial sources and degenerate stencils" begin

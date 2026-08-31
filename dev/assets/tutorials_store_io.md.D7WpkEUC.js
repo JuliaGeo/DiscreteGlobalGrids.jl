@@ -22,7 +22,7 @@ import{_ as i,o as a,c as e,ao as t}from"./chunks/framework.C2crioDF.js";const g
 <span class="line"><span style="--shiki-light:#959da5;--shiki-dark:#959da5;">├───────────────────────────────────────────────────────────────────────┴ metadata ┐</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">  Dict{String, Any} with 5 entries:</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">  &quot;conventions&quot; =&gt; [&quot;zarr-conventions/dggs&quot;, &quot;xdggs&quot;]</span></span>
-<span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">  &quot;source&quot;      =&gt; &quot;/tmp/jl_HvmGNY/demo.zarr&quot;</span></span>
+<span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">  &quot;source&quot;      =&gt; &quot;/tmp/jl_iqByju/demo.zarr&quot;</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">  &quot;encoding&quot;    =&gt; &quot;ranges&quot;</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">  &quot;attrs&quot;       =&gt; Dict{String, Any}(&quot;dggs&quot;=&gt;Dict{String, Any}(&quot;spatial_dimensi…</span></span>
 <span class="line"><span style="--shiki-light:#24292e;--shiki-dark:#e1e4e8;">  &quot;description&quot; =&gt; StoreDescription(igeo7/z7int, level 4, RangesEncoding, coord…</span></span>

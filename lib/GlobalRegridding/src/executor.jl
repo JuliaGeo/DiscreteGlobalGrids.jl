@@ -51,18 +51,29 @@ anyinvalid(src::AbstractArray) =
 anyinvalid(src::AbstractArray, ::Nothing) = anyinvalid(src)
 anyinvalid(src::AbstractArray, missingval) = any(x -> !_isvalid(x, missingval), src)
 
+# The blank an element type carries on its own, or `nothing` where it carries
+# none: `Extensive` writes every cell, so a destination that could never be
+# blanked is still a destination.
+@inline _elementblank(::Type{T}) where {T} =
+    Missing <: T ? missing : T <: AbstractFloat ? T(NaN) : nothing
+
 # Use `missing` when supported and NaN otherwise.
 @inline function _maskedvalue(::Type{T}) where {T}
-    if Missing <: T
-        return missing
-    elseif T <: AbstractFloat
-        return T(NaN)
-    else
-        throw(ArgumentError(
-            "`Weighted` blanks destinations below its coverage threshold and " *
-            "needs a sentinel to do it, but $T holds neither `missing` nor NaN"))
-    end
+    blank = _elementblank(T)
+    blank === nothing && throw(ArgumentError(
+        "`Weighted` blanks destinations below its coverage threshold and " *
+        "needs a sentinel to do it, but $T holds neither `missing` nor NaN"))
+    return blank
 end
+
+# The sentinel a destination of element type `T` is blanked with. A declared
+# `missingval` must be a value `T` can hold, so a mismatch is the caller's to fix.
+@inline _blankvalue(::Type{T}, ::Nothing) where {T} = _maskedvalue(T)
+@inline _blankvalue(::Type{T}, ::Missing) where {T} =
+    Missing <: T ? missing : throw(ArgumentError(
+        "`missingval = missing` needs a destination that holds `missing`, " *
+        "but this one holds $T"))
+@inline _blankvalue(::Type{T}, missingval) where {T} = convert(T, missingval)
 
 # Accumulation
 
@@ -290,7 +301,7 @@ end
 # Finalization
 
 """
-    finalize!(out, num, cover, total, policy) -> out
+    finalize!(out, num, cover, total, policy, missingval = _maskedvalue(eltype(out))) -> out
 
 Finalize one destination chunk after all source blocks have accumulated.
 
@@ -305,7 +316,8 @@ method reported, or the row sums when it reported none.
     `cover < t · total`.
 
 `Weighted` always normalizes by valid coverage and applies its threshold against
-`total`. Blanked values use `missing` when supported and NaN otherwise.
+`total`. `missingval` is the sentinel blanked cells receive, and defaults to
+`missing` when `out` holds it and NaN otherwise ([`outputmissingval`](@ref)).
 `Extensive` returns raw sums and never blanks.
 """
 function finalize! end
@@ -321,9 +333,14 @@ coverage [`Weighted`](@ref) blanks against, changing answers.
 usesreference(::Extensive) = false
 usesreference(policy::Weighted) = policy.threshold > 0
 
+finalize!(out::AbstractVector, num::AbstractVector{Float64},
+    cover::AbstractVector{Float64}, total::AbstractVector{Float64},
+    policy::AbstractMissingPolicy) =
+    finalize!(out, num, cover, total, policy, _maskedvalue(eltype(out)))
+
 function finalize!(out::AbstractVector, num::AbstractVector{Float64},
     cover::AbstractVector{Float64}, total::AbstractVector{Float64},
-    ::Extensive)
+    ::Extensive, missingval)
     @inbounds for j in eachindex(out, num)
         out[j] = num[j]
     end
@@ -332,8 +349,8 @@ end
 
 function finalize!(out::AbstractVector, num::AbstractVector{Float64},
     cover::AbstractVector{Float64}, total::AbstractVector{Float64},
-    policy::Weighted)
-    blank = _maskedvalue(eltype(out))
+    policy::Weighted, missingval)
+    blank = _blankvalue(eltype(out), missingval)
     t = policy.threshold
     @inbounds for j in eachindex(out, num, cover, total)
         c = cover[j]
@@ -422,7 +439,43 @@ function outputeltype(::Type{Tin}) where {Tin}
 end
 
 """
-    wrapoutput(out, data, sd, dstdims) -> array
+    outputeltype(Tin, missingval) -> Type
+
+The floating point element type a regrid of a `Tin` source writes, wide enough
+to hold `missingval`. `missing` unions itself in; every other sentinel is a
+number the float type already holds, so the result stays concrete.
+"""
+outputeltype(::Type{Tin}, missingval) where {Tin} =
+    nonmissingtype(outputeltype(Tin))
+
+outputeltype(::Type{Tin}, ::Missing) where {Tin} =
+    Union{Missing,nonmissingtype(outputeltype(Tin))}
+
+outputeltype(::Type{Tin}, ::Nothing) where {Tin} = outputeltype(Tin)
+
+"""
+    outputmissingval(data) -> value
+
+The sentinel a regrid of `data` blanks uncovered destination cells with, and
+the `missingval` a labelled result declares. Arrays take `missing` when their
+element type holds it and NaN otherwise; a `Rasters.AbstractRaster` inherits
+its own `missingval`, so a regrid keeps the nodata convention it was handed.
+
+Pass `missingval` to [`regrid`](@ref) to override it.
+"""
+outputmissingval(data) = _maskedvalue(outputeltype(eltype(data)))
+
+"""
+    destinationmissingval(dest) -> value
+
+The sentinel [`regrid!`](@ref) blanks uncovered cells of `dest` with. A
+preallocated destination declares its own nodata convention, so this reads
+`dest` where [`outputmissingval`](@ref) reads the source.
+"""
+destinationmissingval(dest) = _elementblank(eltype(dest))
+
+"""
+    wrapoutput(out, data, sd, dstdims, missingval = _maskedvalue(eltype(out))) -> array
 
 Put the destination's own axes `dstdims`, or one flat `Cell` axis when it has
 none ([`destinationdims`](@ref)), before the source's unchanged non-spatial
@@ -430,29 +483,56 @@ dimensions. Sources that are not dimensional are returned unlabelled.
 
 A destination naming one axis is already the shape the cells were written in,
 so the result is labelled over the written array itself; two or more axes split
-the leading cell axis by reshaping it.
+the leading cell axis by reshaping it. [`rebuildoutput`](@ref) decides what the
+labelled result is, and `missingval` is the sentinel it declares.
 """
-function wrapoutput(out::AbstractArray, data, sd, dstdims)
+function wrapoutput(out::AbstractArray, data, sd, dstdims,
+    missingval = _maskedvalue(eltype(out)))
     data isa DD.AbstractDimArray || return out
+    shaped, newdims = _outputlabels(out, data, sd, dstdims)
+    # Declare the value actually written, so a sentinel given in the source's
+    # own type reaches the result in the destination's.
+    return rebuildoutput(data, shaped, newdims, _blankvalue(eltype(out), missingval))
+end
+
+# The destination's axes and the source's pass-through dimensions, over an array
+# reshaped to match them.
+function _outputlabels(out::AbstractArray, data, sd, dstdims)
     ds = DD.dims(data)
     others = Tuple(ds[i] for i in eachindex(ds) if !(i in sd))
     dstdims === nothing &&
-        return DD.DimArray(out, (DD.Dim{:Cell}(1:size(out, 1)), others...))
-    length(dstdims) == 1 && return DD.DimArray(out, (dstdims..., others...))
+        return out, (DD.Dim{:Cell}(1:size(out, 1)), others...)
+    length(dstdims) == 1 && return out, (dstdims..., others...)
     shaped = reshape(out, map(length, dstdims)..., Base.tail(size(out))...)
-    return DD.DimArray(shaped, (dstdims..., others...))
+    return shaped, (dstdims..., others...)
 end
+
+"""
+    rebuildoutput(data, out, dims, missingval) -> array
+
+Label `out` with `dims` as the result of regridding `data`. A dimensional
+source that carries nodata of its own — a `Rasters.AbstractRaster` — rebuilds
+into its own array type declaring `missingval`; everything else becomes a plain
+`DimArray`, which has no nodata to declare.
+
+Both the eager and the lazy path label through here, so a reader and a
+`LazyRegridArray` come back wrapped the same way.
+"""
+rebuildoutput(data, out::AbstractArray, dims::Tuple, missingval) =
+    DD.DimArray(out, dims)
 
 # Whole-domain apply
 
 """
-    applyplan!(out, plan::DirectPlan, src) -> out
+    applyplan!(out, plan::DirectPlan, src, missingval = _maskedvalue(eltype(out))) -> out
 
-Apply the whole-domain plan to each source column. Accumulators are reused across
-slices, and the reference weights are the block's own, so a second application of
-one plan allocates nothing beyond its accumulators.
+Apply the whole-domain plan to each source column, blanking uncovered cells with
+`missingval`. Accumulators are reused across slices, and the reference weights
+are the block's own, so a second application of one plan allocates nothing beyond
+its accumulators.
 """
-function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix)
+function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix,
+    missingval = _maskedvalue(eltype(out)))
     block = plan.block
     ndst, nsrc = size(block)
     size(src, 1) == nsrc || throw(DimensionMismatch(
@@ -473,7 +553,7 @@ function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix)
         fill!(cover, 0.0)
         x = view(src, :, s)
         applyblock!(num, cover, block, x, anyinvalid(x, mv) ? x : nothing, ref, mv)
-        finalize!(view(out, :, s), num, cover, ref, policy)
+        finalize!(view(out, :, s), num, cover, ref, policy, missingval)
     end
     return out
 end

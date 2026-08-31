@@ -1,6 +1,8 @@
 # End-to-end regridding with `RasterGrid` and real weights.
 
 import DimensionalData as DD
+# Load and test `GlobalRegriddingRastersExt`.
+import Rasters
 
 # Cell centres whose midpointed outer edges are `lo` and `hi`.
 t6_centres(lo, hi, n) =
@@ -292,6 +294,35 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         end
     end
 
+    @testset "a raster in is a raster out, lazy and eager" begin
+        # The source covers one latitude band, so the destination rows beyond it
+        # are blanked and carry whichever sentinel the raster declares.
+        f(lon, lat) = 4.0 + 0.01 * lon
+        band = t6_raster(f, t6_centres(-180, 180, 24), t6_centres(-60, 60, 8))
+        dst = t6_space(t6_centres(-180, 180, 12), t6_centres(-90, 90, 6))
+        withmissing = Rasters.Raster(
+            Array{Union{Missing,Float64}}(parent(band)), DD.dims(band);
+            missingval = missing, name = :band)
+
+        for lazy in (false, true)
+            out = regrid(withmissing; to = dst, method = Conservative(), lazy)
+            @test out isa Rasters.AbstractRaster
+            @test eltype(out) == Union{Missing,Float64}
+            @test Rasters.missingval(out) === missing
+            @test DD.name(out) == :band
+            @test any(ismissing, Array(out))
+
+            # `missingval` trades the union away for a concrete raster holding
+            # the same numbers.
+            fast = regrid(withmissing; to = dst, method = Conservative(), lazy,
+                missingval = NaN)
+            @test fast isa Rasters.AbstractRaster
+            @test eltype(fast) == Float64
+            @test Rasters.missingval(fast) === NaN
+            @test all(isequal.(coalesce.(Array(out), NaN), Array(fast)))
+        end
+    end
+
     @testset "a one-axis destination is labelled, not reshaped" begin
         # A destination whose `destinationdims` names one axis is already the
         # shape the cells were written in, so neither route may put a view
@@ -331,13 +362,16 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         dst = t6_space(t6_centres(-180, 180, 6), t6_centres(-90, 90, 3))
         dest = zeros(ncells(dst))
 
-        # `plan_regrid` declares every keyword; `regrid` and `regrid!` declare
-        # a splat and nothing else, so no default can be restated on them.
+        # `plan_regrid` declares every keyword that describes a plan; `regrid`
+        # and `regrid!` declare a splat and `missingval`, the one setting that
+        # describes what a caller does with a plan rather than the plan itself.
         splat = [Symbol("kwargs...")]
         for f in (regrid, regrid!)
-            @test all(d -> isempty(d) || d == splat,
+            @test all(d -> isempty(d) || d == splat || d == [:missingval],
                 [Base.kwarg_decl(m) for m in methods(f)])
         end
+        @test any(==([:missingval]), [Base.kwarg_decl(m) for m in methods(regrid)])
+        @test any(==([:missingval]), [Base.kwarg_decl(m) for m in methods(regrid!)])
         planmethods = [m for m in methods(plan_regrid)
                        if !isempty(Base.kwarg_decl(m))]
         @test Set(Base.kwarg_decl(only(planmethods))) ==

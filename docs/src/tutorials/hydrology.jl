@@ -69,12 +69,13 @@ DGG.CellLookup(region) |> length
 # DiscreteGlobalGrids provides a `regrid` function that will take in a raster
 # and some sort of grid - a full level grid, or a region, or a partial grid -
 # and return a Raster whose axis is this new grid.
-# By default, it returns a DimArray, which we can promote to a Raster (those
-# have better handling for missing / NODATA values).
+# A raster in is a raster out: the result declares the `missingval` its source
+# declared. Copernicus DEM declares none, so the cells the tile does not cover
+# come back `NaN`, and the `missingval` keyword is there to choose something
+# else - `missing`, or a sentinel of your own.
 
 DGG.regrid(dem; to = region) # hide
-igeo7_dem = @time DGG.regrid(dem; to = region)
-elevation = Raster(igeo7_dem; missingval = oftype(first(igeo7_dem), NaN))
+elevation = @time DGG.regrid(dem; to = region)
 # Let's now plot this too, using the specialized [`dggsurface`](@ref) recipe for efficiency:
 f, a, p = dggsurface(lookup(elevation, DGG.Cells); color = vec(elevation), axis = (; aspect = DataAspect()))
 f
@@ -125,7 +126,7 @@ end
 # Elevation, and the drop to the downhill neighbour — the drop map picks out
 # valley floors as the flat regions and headwalls as the steep ones.
 # `CellVector(grid)[shown]` is the covered cells as a vector, which `poly!`
-# draws directly, in the same order `igeo7_dem[shown]` follows.
+# draws directly, in the same order `elevation[shown]` follows.
 
 
 fig = Figure(size = (900, 430))

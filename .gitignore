@@ -27,9 +27,12 @@ docs/src/tutorials/*.md
 # The river flythrough's own outputs, and the regridded-DEM cache its `--cache`
 # writes. `record_longrunning` keeps every frame beside the video so an
 # interrupted clip resumes, so the frame directory is ignored too.
-/river_flythrough_raytraced*.mp4
-/river_flythrough_raytraced*.png
-/river_flythrough_raytraced*_frames/
+/river_flythrough_*.mp4
+/river_flythrough_*.png
+/river_flythrough_*_frames/
+# Stills and crops from comparing sample counts and denoisers.
+/smoke_oidn.png
+/cmp_*.png
 /dem_igeo7.bin
 
 # Renderer comparison frames from performance work.

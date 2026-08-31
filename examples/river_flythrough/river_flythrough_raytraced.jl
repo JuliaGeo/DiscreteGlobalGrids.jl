@@ -32,9 +32,10 @@
 #
 #     --spp N            samples per pixel; the whole quality/time dial
 #     --max-depth N      path depth
-#     --denoise B        à-trous denoise; on, and worth leaving on
-#     --denoise-iterations N   filter passes, each doubling the radius.
-#                        1 is what the edge-stopping guides were tuned
+#     --denoise B        denoise; on, and worth leaving on
+#     --denoiser NAME    `oidn` or `atrous` — see the settings below
+#     --denoise-iterations N   `atrous` only: filter passes, each doubling the
+#                        radius. 1 is what the edge-stopping guides were tuned
 #                        against; 4 carries the filter across a ridge
 #     --sun-altitude D   degrees above the horizon
 #     --sun-azimuth D    degrees clockwise from north
@@ -70,15 +71,21 @@
 # And on one RX 9060 XT (RDNA4, RADV) at 1920×1080 over the same cube, warm,
 # which is where the defaults below come from:
 #
-#     128 spp  --denoise false   7.2 s/frame   (24 s at 30 fps = 720 frames, ~87 min)
-#      32 spp  --denoise true    1.9 s/frame   (the same 720 frames, ~23 min)
+#     128 spp  --denoise false     7.2 s/frame   (24 s at 30 fps = 720, ~87 min)
+#      32 spp  --denoiser atrous   1.8 s/frame   (the same 720 frames, ~22 min)
+#      32 spp  --denoiser oidn     1.9 s/frame   (the same 720 frames, ~23 min)
 #
-# The cheaper line is also the better picture. Its grain is gone where the
-# 128-spp frame still speckles the shaded slopes, and a quarter of the samples
-# is what pays for the four-fold speedup. Measured against a 256-spp reference
-# the raw 128-spp frame is nearer in RMS — 0.015 against 0.023 — so the filter
-# is trading a little bias for the noise it removes, and on this terrain that
-# trade reads as an improvement.
+# The cheapest line is also the best picture, and by a wide margin: at 32 spp
+# the network's frame is clean where the 128-spp raw frame still speckles every
+# shaded slope, for a quarter of the time. Judge that at 1:1 and in motion —
+# a downscaled crop hides exactly the grain that makes a video unusable, and
+# RMS against a reference does too, since it charges a filter for its bias but
+# barely charges noise for being noise.
+#
+# The three frame-to-frame RMS series over consecutive 30-fps frames all sit
+# *below* the 256-spp raw series, which is pure camera motion, so neither
+# denoiser adds temporal flicker — the per-frame grain they remove is what was
+# inflating the raw number.
 #
 # Nearly all of a frame is the trace itself: `rt_indirect` is 79% of GPU time,
 # and the GPU is busy 89% of the wall clock, so the sample count is the dial
@@ -109,6 +116,10 @@ using RayMakie, Hikari
 import Lava
 using Colors: RGB
 using FileIO: save
+
+# Defines `OIDNDenoise` but loads nothing: the library opens on first use, so
+# this costs nothing when `--denoiser` is not `oidn`.
+include(joinpath(@__DIR__, "oidn_denoise.jl"))
 
 # ---------------------------------------------------------------------------
 # The renderer
@@ -152,15 +163,52 @@ end
 
 const DEVICE = device()
 
-const SPP = setting("spp", 24)
+const SPP = setting("spp", 32)
 const MAX_DEPTH = setting("max_depth", 8)
-# On by default: at one iteration the filter removes more noise than the bias
-# it adds, so it buys back most of the samples it lets you drop.
+# On by default: the samples a denoiser buys back are worth much more than the
+# detail it costs, and at 32 spp neither of the two below is visibly biased.
 const DENOISE = setting("denoise", true)
-# Each pass doubles the filter radius, so 4 — the `DenoiseConfig` default —
-# reaches about sixteen pixels and takes the ridges with it. The aux normal and
-# depth guides that stop the filter at an edge were tuned at one pass.
+# Which one. `oidn` is Intel Open Image Denoise, a network trained on exactly
+# this input — a path-traced frame with its first-hit albedo and normal;
+# `atrous` is Hikari's own edge-stopping wavelet filter. At 1080p, per frame,
+# against a 256-spp reference:
+#
+#     32 spp  none      1.80 s   RMS 0.0370
+#     32 spp  atrous    1.83 s   RMS 0.0213
+#     32 spp  oidn      1.93 s   RMS 0.0171
+#      8 spp  oidn      0.57 s   RMS 0.0199
+#
+# `oidn` wins on both, and by more than the RMS column says — see the note in
+# the header on what that number does and does not measure. It needs the
+# release binaries, which are not a package: `oidn_denoise.jl` says how to
+# install them, and this falls back to `atrous` when they are missing.
+const DENOISER = Symbol(setting("denoiser", "oidn"))
+# `atrous` only. Each pass doubles the filter radius, so 4 — the
+# `DenoiseConfig` default — reaches about sixteen pixels and takes the ridges
+# with it. The aux normal and depth guides that stop the filter at an edge were
+# tuned at one pass.
 const DENOISE_ITERATIONS = setting("denoise_iterations", 1)
+
+DENOISER in (:oidn, :atrous) ||
+    error("--denoiser is `oidn` or `atrous`, not `$DENOISER`")
+
+# The network goes in by replacing `Hikari.denoise!` rather than by being passed
+# to it: denoising happens inside the screen's own render, so there is no
+# argument to route another implementation through. Everything downstream —
+# `renderkw`, the postprocess, `record_longrunning` — is unchanged.
+#
+# This is true when the network is actually in, which needs the binaries as well
+# as the flag, so it is what the rest of the file tests rather than `DENOISER`.
+const OIDN = DENOISE && DENOISER === :oidn && if isfile(OIDNDenoise.LIB)
+    OIDNDenoise.use_oidn!()
+    true
+else
+    @warn "no Open Image Denoise here, so this falls back to the à-trous \
+        filter, which is grainier at the same sample count. The head of \
+        oidn_denoise.jl says how to install it." OIDNDenoise.LIB
+    false
+end
+
 # 0.86 rather than 0.5 because the terrain is coated: a clearcoat over a bright
 # diffuse base returns about 58% of what the bare base returns, so the default
 # exposure carries the 1/0.58 that puts the valley back where it was. With
@@ -689,7 +737,8 @@ would pay for it three times.
 renderkw() = (device = DEVICE, integrator = integrator(), exposure = Float32(EXPOSURE),
     tonemap = TONEMAP === :none ? nothing : TONEMAP, gamma = Float32(GAMMA),
     denoise = DENOISE,
-    denoise_config = DENOISE ? Hikari.DenoiseConfig(iterations = DENOISE_ITERATIONS) : nothing,
+    denoise_config = DENOISE && !OIDN ?
+        Hikari.DenoiseConfig(iterations = DENOISE_ITERATIONS) : nothing,
     update = false)
 
 """

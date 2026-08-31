@@ -31,7 +31,7 @@ docs/src/tutorials/*.md
 /river_flythrough_*.png
 /river_flythrough_*_frames/
 # Stills and crops from comparing sample counts and denoisers.
-/smoke_oidn.png
+/smoke_*.png
 /cmp_*.png
 /dem_igeo7.bin
 

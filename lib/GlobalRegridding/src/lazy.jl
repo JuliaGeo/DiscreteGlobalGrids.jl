@@ -342,7 +342,7 @@ end
 # Lazy array
 
 """
-    LazyRegridArray(data, plan::ChunkedPlan)
+    LazyRegridArray(data, plan::ChunkedPlan; missingval = outputmissingval(data))
 
 Return a chunked disk array that computes destination tiles on demand.
 
@@ -360,11 +360,16 @@ Return a chunked disk array that computes destination tiles on demand.
   - Dropping the chunks [`knownempty`](@ref) reports empty comes after that
     selection, never instead of it.
   - A plan built with `dependencies = false` cannot back a lazy array.
+  - `missingval` is the sentinel blanked cells take, and it settles the element
+    type: `missing` widens the floating point type to hold it, and every other
+    sentinel leaves it concrete.
 """
 struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C,
     S<:SourceChunking{NO}} <: DiskArrays.AbstractDiskArray{T,N}
     source::A
     plan::P
+    # A value of `T` by construction: `T` was widened to hold it.
+    missingval::T
     srcsize::NTuple{NS,Int}
     size::NTuple{N,Int}
     # The plan's relation by reference (`graph === dependencies(plan)`): tile
@@ -381,7 +386,8 @@ struct LazyRegridArray{T,N,NS,NO,A,P<:ChunkedPlan,G<:ChunkDependencyGraph,C,
     prefetch::TilePrefetch
 end
 
-function LazyRegridArray(data, plan::ChunkedPlan)
+function LazyRegridArray(data, plan::ChunkedPlan;
+    missingval = outputmissingval(data))
     src_space, dst_space = plan.src_space, plan.dst_space
     graph = _lazygraph(plan)
     nsrc = Int(ncells(src_space))
@@ -394,10 +400,11 @@ function LazyRegridArray(data, plan::ChunkedPlan)
     spans, contiguous = _chunkspans(dst_space)
     chunking = SourceChunking(source, Val(nspatial), othersizes)
     chunks, tiling = _outputgrid(plan, chunking, ndst, spans, contiguous, othersizes)
-    T = outputeltype(eltype(data))
+    T = outputeltype(eltype(data), missingval)
     return LazyRegridArray{T,length(othersizes) + 1,nspatial,length(othersizes),
         typeof(source),typeof(plan),typeof(graph),typeof(chunks),typeof(chunking)}(
-        source, plan, srcsize, (ndst, othersizes...), graph, tiling,
+        source, plan, _blankvalue(T, missingval), srcsize,
+        (ndst, othersizes...), graph, tiling,
         chunks, chunking, zeros(Int8, Int(nchunks(src_space))),
         !usesreference(plan.missingpolicy), LazyStats(),
         TilePrefetch(length(tiling.runs), weightlimit(plan.storage)))
@@ -676,7 +683,7 @@ function _readdestination!(out::AbstractMatrix, A::LazyRegridArray{T,N,NS,NO},
             empty!(wave)
             i = j + 1
         end
-        _writechunk!(out, vals, num, cover, total, policy, dinds, cellr)
+        _writechunk!(out, vals, num, cover, total, policy, A.missingval, dinds, cellr)
     end
     return out
 end
@@ -1022,11 +1029,11 @@ end
 # Finalize each tile slice and scatter requested cells.
 function _writechunk!(out::AbstractMatrix, vals::Vector, num::Matrix{Float64},
     cover::Matrix{Float64}, total::Vector{Float64}, policy::AbstractMissingPolicy,
-    dinds, cellr::AbstractUnitRange)
+    missingval, dinds, cellr::AbstractUnitRange)
     lo, hi = first(cellr), last(cellr)
     off = lo - 1
     for t in axes(num, 2)
-        finalize!(vals, view(num, :, t), view(cover, :, t), total, policy)
+        finalize!(vals, view(num, :, t), view(cover, :, t), total, policy, missingval)
         @inbounds for (j, p) in enumerate(dinds)
             lo <= p <= hi || continue
             out[p-off, t] = vals[j]
@@ -1187,11 +1194,13 @@ function wraplazy(A::LazyRegridArray{T,N,NS}, data, dstdims) where {T,N,NS}
     data isa DD.AbstractDimArray || return A
     ds = DD.dims(data)
     others = ntuple(i -> ds[NS+i], ndims(data) - NS)
+    mv = A.missingval
     dstdims === nothing &&
-        return DD.DimArray(A, (DD.Dim{:Cell}(1:size(A, 1)), others...))
-    length(dstdims) == 1 && return DD.DimArray(A, (dstdims..., others...))
+        return rebuildoutput(data, A, (DD.Dim{:Cell}(1:size(A, 1)), others...), mv)
+    length(dstdims) == 1 &&
+        return rebuildoutput(data, A, (dstdims..., others...), mv)
     shaped = ShapedRegridArray(A, map(length, dstdims))
-    return DD.DimArray(shaped, (dstdims..., others...))
+    return rebuildoutput(data, shaped, (dstdims..., others...), mv)
 end
 
 # API
@@ -1208,8 +1217,8 @@ Return a disk-backed array that computes destination tiles on demand.
     axis; one axis, or none, is the [`LazyRegridArray`](@ref) itself.
   - Other sources stay a flat [`LazyRegridArray`](@ref).
 """
-function regrid(data, plan::ChunkedPlan)
-    A = LazyRegridArray(data, plan)
+function regrid(data, plan::ChunkedPlan; missingval = outputmissingval(data))
+    A = LazyRegridArray(data, plan; missingval)
     return wraplazy(A, data, destinationdims(plan))
 end
 
@@ -1220,8 +1229,9 @@ Materialize a chunked plan into `dest`, one destination tile at a time. As for
 [`DirectPlan`](@ref), `dest` may lead with the destination's own axes or one
 flat cell dimension.
 """
-function regrid!(dest, data, plan::ChunkedPlan)
-    A = LazyRegridArray(data, plan)
+function regrid!(dest, data, plan::ChunkedPlan;
+    missingval = destinationmissingval(dest))
+    A = LazyRegridArray(data, plan; missingval)
     dstdims = destinationdims(plan)
     shaped = dstdims === nothing ? size(A) :
              (map(length, dstdims)..., Base.tail(size(A))...)

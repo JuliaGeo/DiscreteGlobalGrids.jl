@@ -38,13 +38,19 @@ plan = @time DGG.plan_regrid(ras; to = grid, method = DGG.Conservative())
 # Let's suppose we get a single slice of this raster and implement the plan:
 ras_slice = Rasters.read(ras[:, :, 1])
 #
-igeo7_ras = @time Raster(DGG.regrid(ras_slice, plan))
-# You can also regrid into an existing buffer:
-@time DGG.regrid!(igeo7_ras, ras[:, :, 2], plan)
+igeo7_ras = @time DGG.regrid(ras_slice, plan)
+# A raster in is a raster out: `igeo7_ras` is a `Raster` over the grid's cells,
+# declaring the `missingval` the source declared.  ERA5 declares `missing`, so
+# the result holds `Union{Missing, Float64}`.  Pass `missingval` to choose the
+# sentinel yourself, and with it the element type - NaN keeps the result a plain
+# `Float64` array, which is both smaller and faster to work with downstream:
+igeo7_nan = @time DGG.regrid(ras_slice, plan; missingval = NaN)
+# You can also regrid into an existing buffer, which supplies its own sentinel:
+@time DGG.regrid!(igeo7_nan, ras[:, :, 2], plan)
 
 # Now, let's plot these side by side:
 fig = Figure()
 ras_ax, ras_plt = heatmap(fig[1, 1], ras_slice; axis = (; title = "ERA5 Raster Slice", aspect = DataAspect()))
-igeo7_ax, igeo7_plt = DiscreteGlobalGridsVisualization.dggpoly(fig[2, 1], lookup(igeo7_ras, DGG.Cells); color = vec(Rasters.replace_missing(igeo7_ras; missingval = NaN)), axis = (; title = "IGeo7 Regridded Slice", aspect = DataAspect()))
+igeo7_ax, igeo7_plt = DiscreteGlobalGridsVisualization.dggpoly(fig[2, 1], lookup(igeo7_ras, DGG.Cells); color = vec(igeo7_nan), axis = (; title = "IGeo7 Regridded Slice", aspect = DataAspect()))
 GLMakie.tightlimits!(igeo7_ax)
 fig

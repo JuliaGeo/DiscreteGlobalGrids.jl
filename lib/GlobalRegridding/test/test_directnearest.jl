@@ -124,6 +124,15 @@
         # The poisoned source really does blank destinations the clean one does not.
         @test count(isnan, dn_eager(DirectNearest(), dn_poisoned)) >
               count(isnan, dn_eager(DirectNearest(), dn_field))
+
+        # A declared sentinel is what the unmapped destinations come back
+        # holding, on both routes.
+        blanks = count(isnan, dn_eager(DirectNearest(), dn_field))
+        @test blanks > 0
+        @test count(==(-9999.0),
+            dn_eager(DirectNearest(), dn_field; missingval = -9999.0)) == blanks
+        @test count(==(-9999.0), LazyRegridArray(dn_field,
+            dn_lazyplan(DirectNearest()); missingval = -9999.0)[:]) == blanks
     end
 
     @testset "missing-carrying sources" begin

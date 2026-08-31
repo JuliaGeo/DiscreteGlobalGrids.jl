@@ -106,6 +106,8 @@ export LazyRegridArray
 
 # Qualified extension and observability APIs.
 public knownempty, sourcemissingval, chunkat, cellarea
+# The destination's nodata convention: what a regrid blanks with and declares.
+public outputmissingval, destinationmissingval, rebuildoutput
 public residency, LazyStats, ShapedRegridArray
 public spilledfiles, usesreference
 public outputsampling, destinationdims, dimsource

@@ -24,7 +24,7 @@
 # top of `docs/raytracing/Project.toml` for why the two stacks cannot share one:
 #
 #     julia --project=docs/raytracing -e 'using Pkg; Pkg.instantiate()'
-#     julia -t auto --project=docs/raytracing examples/river_flythrough_raytraced.jl
+#     julia -t auto --project=docs/raytracing examples/river_flythrough/river_flythrough_raytraced.jl
 #
 # Every flag of the raster script still applies — `--extent`, `--level`,
 # `--indicator`, `--palette`, `--cache`, `--exaggeration`, and the whole of the
@@ -32,7 +32,10 @@
 #
 #     --spp N            samples per pixel; the whole quality/time dial
 #     --max-depth N      path depth
-#     --denoise B        à-trous denoise, for previews at low `--spp`
+#     --denoise B        à-trous denoise; on, and worth leaving on
+#     --denoise-iterations N   filter passes, each doubling the radius.
+#                        1 is what the edge-stopping guides were tuned
+#                        against; 4 carries the filter across a ridge
 #     --sun-altitude D   degrees above the horizon
 #     --sun-azimuth D    degrees clockwise from north
 #     --turbidity X      2 is clear air, 10 is hazy
@@ -63,6 +66,23 @@
 #
 # Cost is sub-linear in pixels: the second line is 18× the samples of the first
 # for 9× the time, because 1080p keeps the GPU better occupied.
+#
+# And on one RX 9060 XT (RDNA4, RADV) at 1920×1080 over the same cube, warm,
+# which is where the defaults below come from:
+#
+#     128 spp  --denoise false   7.2 s/frame   (24 s at 30 fps = 720 frames, ~87 min)
+#      32 spp  --denoise true    1.9 s/frame   (the same 720 frames, ~23 min)
+#
+# The cheaper line is also the better picture. Its grain is gone where the
+# 128-spp frame still speckles the shaded slopes, and a quarter of the samples
+# is what pays for the four-fold speedup. Measured against a 256-spp reference
+# the raw 128-spp frame is nearer in RMS — 0.015 against 0.023 — so the filter
+# is trading a little bias for the noise it removes, and on this terrain that
+# trade reads as an improvement.
+#
+# Nearly all of a frame is the trace itself: `rt_indirect` is 79% of GPU time,
+# and the GPU is busy 89% of the wall clock, so the sample count is the dial
+# that matters and host-side work is not worth tuning.
 #
 # `--video` goes through `record_longrunning`, which writes every frame to
 # `<output>_frames/` and skips the ones already there when re-run — so an
@@ -134,7 +154,13 @@ const DEVICE = device()
 
 const SPP = setting("spp", 24)
 const MAX_DEPTH = setting("max_depth", 8)
-const DENOISE = setting("denoise", false)
+# On by default: at one iteration the filter removes more noise than the bias
+# it adds, so it buys back most of the samples it lets you drop.
+const DENOISE = setting("denoise", true)
+# Each pass doubles the filter radius, so 4 — the `DenoiseConfig` default —
+# reaches about sixteen pixels and takes the ridges with it. The aux normal and
+# depth guides that stop the filter at an edge were tuned at one pass.
+const DENOISE_ITERATIONS = setting("denoise_iterations", 1)
 # 0.86 rather than 0.5 because the terrain is coated: a clearcoat over a bright
 # diffuse base returns about 58% of what the bare base returns, so the default
 # exposure carries the 1/0.58 that puts the valley back where it was. With
@@ -662,7 +688,9 @@ would pay for it three times.
 """
 renderkw() = (device = DEVICE, integrator = integrator(), exposure = Float32(EXPOSURE),
     tonemap = TONEMAP === :none ? nothing : TONEMAP, gamma = Float32(GAMMA),
-    denoise = DENOISE, update = false)
+    denoise = DENOISE,
+    denoise_config = DENOISE ? Hikari.DenoiseConfig(iterations = DENOISE_ITERATIONS) : nothing,
+    update = false)
 
 """
     frame!(scene, path, run!, t)

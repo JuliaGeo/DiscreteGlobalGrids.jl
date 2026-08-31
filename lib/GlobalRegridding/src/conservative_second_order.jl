@@ -60,13 +60,16 @@ preparesdestination(::ConservativeSecondOrder, dst_space::RegridSpace) =
 
 The reconstruction of every cell in a block's extended source set — a chunk's
 cells and their one ring — ready to fold overlaps through, in one flat layout:
-cell `p` has tangent frame `(e1[p], e2[p])` and mean position `mean[p]`, and
-its value-weight terms are `cols[k] => coeffs[k]` for `k in ptr[p]:ptr[p+1]-1`,
-such that the cell's gradient is `Σ coeffs[k] f[cols[k]]` — the self term
-already merged, so a constant field has zero gradient exactly. `cols` are
-chunk-local source columns only; a neighbour outside the chunk belongs to
-another block's stencil, which folds its own share of this cell. A cell with
-no terms has no gradient: no area, or too few neighbours to fix one.
+
+  - Cell `p` has tangent frame `(e1[p], e2[p])` and mean position `mean[p]`, and
+    its value-weight terms are `cols[k] => coeffs[k]` for
+    `k in ptr[p]:ptr[p+1]-1`.
+  - The cell's gradient is `Σ coeffs[k] f[cols[k]]`, the self term already
+    merged, so a constant field has zero gradient exactly.
+  - `cols` are chunk-local source columns only; a neighbour outside the chunk
+    belongs to another block's stencil, which folds its own share of this cell.
+  - A cell with no terms has no gradient: no area, or too few neighbours to fix
+    one.
 
 Flat rather than one vector per cell because a whole-space build sweeps
 millions of cells, and the sweep is otherwise its allocations.

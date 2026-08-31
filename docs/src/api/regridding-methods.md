@@ -27,23 +27,25 @@ their own cells — most model output, most gridded observations, a DEM
 distributed as area means — this is the reading that keeps the field's integral,
 and no other method does.
 
-`ConservativeSecondOrder()` is the same reading with a better reconstruction.
-Where `Conservative()` treats each source cell as flat at its mean and so, on a
-destination finer than the source, repeats one value across every cell inside
-it, the second-order method fits a gradient to each source cell from the means
-of the cells adjacent to it and carries that slope into the overlaps. The
-correction has zero mean over the source cell, so the integral is kept exactly
-as before — the weights are signed now, and a destination can overshoot the
-values it draws on, but the total cannot move. On a smooth field the error is
-second order in the source cell width rather than first; on a field with a
-front, expect a small over- and undershoot on either side of it. Coverage, and
-so what `Weighted` normalizes and thresholds by, is still the overlap area.
+`ConservativeSecondOrder()` is the same reading with a better reconstruction: it
+fits a gradient to each source cell from the means of the cells adjacent to it
+and carries that slope into the overlaps. `Conservative()` treats each source
+cell as flat at its mean, and so, on a destination finer than the source,
+repeats one value across every cell inside it. What the gradient buys:
 
-The gradient is a fixed operator over the source's geometry, which is what
-makes the weights reusable across slices; the price is that a missing source
-value inside a stencil is read as zero by the cell next to it, biasing that
-cell's slope. Where a source carries holes, fill it first or stay with
-`Conservative()`.
+  - **The integral is kept exactly as before.** The correction has zero mean
+    over the source cell, so the total cannot move — though the weights are
+    signed now, and a destination can overshoot the values it draws on.
+  - **The error on a smooth field is second order** in the source cell width
+    rather than first. On a field with a front, expect a small over- and
+    undershoot on either side of it.
+  - **Coverage is still the overlap area**, and so is what `Weighted`
+    normalizes and thresholds by.
+  - **The weights stay reusable across slices**, because the gradient is a fixed
+    operator over the source's geometry. The price is that a missing source
+    value inside a stencil is read as zero by the cell next to it, biasing that
+    cell's slope; where a source carries holes, fill it first or stay with
+    `Conservative()`.
 
 ## Point samples
 

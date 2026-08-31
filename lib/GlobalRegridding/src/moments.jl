@@ -74,16 +74,22 @@ itself, so `∫_P x dA = ½ Σ_edges θ_e (a_e × b_e) / |a_e × b_e|` with `θ_
 arc length of the edge from `a_e` to `b_e`. A degenerate edge contributes
 nothing and is skipped.
 
-That sum is evaluated as `½ Σ (a_e − r) × (b_e − r) + ½ Σ (θ_e / sin θ_e − 1)
-(a_e × b_e)` with `r` the first vertex, which is the same number in exact
-arithmetic — around a closed ring the terms in `r` cancel — and a different one
-in floating point. Each `θ_e n̂_e` is of order `θ` while their sum is of order
-`θ²`, and the cross product of two nearly parallel unit vectors carries an
-absolute error near machine epsilon whatever its length: for a 30 m Copernicus
-pixel, `θ ≈ 5e-6`, the error of the plain sum is the size of the cell, and the
-gradient fitted from such positions is noise. Shifted to `r`, every term is of
-order `θ²` with relative error near epsilon, and the spherical correction is
-`O(θ²)` smaller again, so cells of any size measure to full precision.
+That sum is evaluated shifted to the first vertex `r`, as
+
+    ½ Σ (a_e − r) × (b_e − r) + ½ Σ (θ_e / sin θ_e − 1) (a_e × b_e)
+
+the same number in exact arithmetic — around a closed ring the terms in `r`
+cancel — and a different one in floating point:
+
+  - **Unshifted**, each `θ_e n̂_e` is of order `θ` while their sum is of order
+    `θ²`, and the cross product of two nearly parallel unit vectors carries an
+    absolute error near machine epsilon whatever its length.
+  - **Shifted to `r`**, every term is of order `θ²` with relative error near
+    epsilon, and the spherical correction is `O(θ²)` smaller again, so cells of
+    any size measure to full precision.
+
+For a 30 m Copernicus pixel, `θ ≈ 5e-6`: the error of the plain sum is the size
+of the cell, and the gradient fitted from such positions is noise.
 
 The formula is signed by the ring's orientation. The area is not, so a
 clockwise ring's moment is negated to match: both fields then describe the same

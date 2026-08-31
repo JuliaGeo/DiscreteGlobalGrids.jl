@@ -24,6 +24,18 @@ docs/src/tutorials/*.md
 /dem_igeo7.png
 /seasonal_tavg.mp4
 
+# The river flythrough's own outputs, and the regridded-DEM cache its `--cache`
+# writes. `record_longrunning` keeps every frame beside the video so an
+# interrupted clip resumes, so the frame directory is ignored too.
+/river_flythrough_raytraced*.mp4
+/river_flythrough_raytraced*.png
+/river_flythrough_raytraced*_frames/
+/dem_igeo7.bin
+
+# Renderer comparison frames from performance work.
+/denoise_comparison.png
+/spp_comparison.png
+
 # Lazily downloaded Copernicus DEM GeoTIFFs are a persistent local cache, not
 # repository data.
 /benchmark/data/CopernicusDEM/tiles/

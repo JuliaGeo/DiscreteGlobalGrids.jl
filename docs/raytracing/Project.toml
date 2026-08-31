@@ -17,11 +17,13 @@
 # graph has to be named below, not just the direct dependencies: Julia honours
 # `[sources]` from the top-level project only, so the ones `DiscreteGlobalGrids`
 # and `GlobalRegridding` declare for themselves are not consulted from here.
-# That is why `ConservativeRegridding` and `GlobalRegridding` appear as deps at
-# all — nothing in this environment calls them; they are here so that the
-# sources naming them are legal.
+# That is why `GlobalRegridding` appears as a dep at all — nothing in this
+# environment calls it; it is here so that the source naming it is legal.
 #
-#     julia -t auto --project=docs/raytracing examples/river_flythrough_raytraced.jl
+# `Pkg.add` rewrites this file and drops every comment in it. Recover the prose
+# from git rather than retyping it if that happens again.
+#
+#     julia -t auto --project=docs/raytracing examples/river_flythrough/river_flythrough_raytraced.jl
 #
 # The `[sources]` below are RayDemo's: the ray-tracing stack is a set of
 # branches that only resolve together, so they are pinned as a set rather than
@@ -30,36 +32,43 @@
 # Three of them are this example's rather than RayDemo's, and are unmerged
 # fixes it needs. Repoint each at whatever carries the fix once it lands:
 #
-#   RayMakie  fix/recipe-forwarded-material-color   MakieOrg/Makie.jl#5760
-#             `extract_material` dropped the colour of a material that reaches
-#             a plot as a recipe-forwarded graph edge rather than an input, so
-#             the terrain -- `dggsurface!` is such a recipe -- rendered flat
-#             grey instead of by its colormap.
-#   Hikari    as/hw-aux-normals                     JuliaGraphics/Hikari.jl#40
-#             Stacked on #40, so it carries both: #40 threads `sbt_offset`
-#             through the N-instance `push!`, without which the beads lose
-#             their materials under `hw_accel`; the branch's own commit gives
-#             the denoiser real normals and unmirrors its aux buffers.
-#   Lava      as/refit-preserve-custom-index        SimonDanisch/Lava.jl#9
-#             A TLAS refit restamped every instance's `custom_index` from the
-#             batch's, which is 0, and that index is how a shader finds the
-#             instance's material -- so a video's materials went wrong from
-#             the first refit on.
+#   Makie   as/raymakie-material-and-ffmpeg      off `sd/lava`
+#           `extract_material` dropped the colour of a material that reaches a
+#           plot as a recipe-forwarded graph edge rather than an input, so the
+#           terrain — `dggsurface!` is such a recipe — rendered flat grey
+#           instead of by its colormap. The branch also sends
+#           `record_longrunning` to `get_ffmpeg_path()`: it still named
+#           `FFMPEG_jll`, which has been a weak dependency since Makie v0.25 and
+#           so is unbound in `Makie`, and every `--video` run died there having
+#           already rendered and written every frame.
 #
-# `RayMakie` is a second rev of the repository `Makie` and `ComputePipeline`
-# already come from. That is not a second Makie: the branch forks off `sd/lava`
-# and touches only `RayMakie/`, so `Makie/` and `ComputePipeline/` are
-# identical at the two revs.
+#   Hikari  as/hw-aux-normals-rebased            off `sd/compile-optimizations`
+#           Three commits. The denoiser gets real normals and unmirrored aux
+#           buffers. The N-instance `push!` gets an `sbt_offset`, without which
+#           instanced geometry reads another material type's array — wrong
+#           materials, and a device loss once the read runs off the end of it.
+#           And `sample_batch` merges several samples into one wavefront pass,
+#           which pays below about a megapixel and costs VRAM above it.
+#
+#   Lava    as/refit-preserve-custom-index-rebased  off `sd/compiler-optimizations`
+#           A TLAS refit restamped every instance's `custom_index` from the
+#           batch's, which is 0, and that index is how a shader finds the
+#           instance's material — so a video's materials went wrong from the
+#           first refit on.
+#
+# `Makie`, `ComputePipeline` and `RayMakie` all come from that one Makie rev:
+# the branch forks off `sd/lava` and touches `Makie/` and `RayMakie/`, so naming
+# it three times names one tree three times.
 
 [deps]
 ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
 Colors = "5ae59095-9a9b-59fe-a467-6f913c188581"
 ComputePipeline = "95dc2771-c249-4cd0-9c9f-1f3b4330693c"
-ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 DiscreteGlobalGrids = "443be784-8f3c-41ab-9ff0-108bddc7e690"
 DiscreteGlobalGridsVisualization = "26394bad-8505-4b24-ad04-fcf267e3a913"
 Extents = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
+FFMPEG_jll = "b22a6f82-2f65-5046-a5b2-351ab43fb4e5"
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
 FlyThroughPaths = "c11bb9a7-2755-425a-88f3-ebe93bbdb91f"
 GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
@@ -67,8 +76,8 @@ GeoMakie = "db073c08-6b98-4ee5-b6a4-5efafb3259c6"
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
 GeometryOps = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
 GeometryOpsCore = "05efe853-fabf-41c8-927e-7063c8b9f013"
-GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
 Geomorphometry = "714e3e49-7933-471a-9334-4a6a65a92f36"
+GlobalRegridding = "76847d5f-3a3e-4aa5-90cc-2a3a47dd1c11"
 Hikari = "afc56b53-c9a9-482a-a956-d1d800e05558"
 ImageShow = "4e3cecfd-b093-5904-9786-8bbb286a6a31"
 KernelInterfaces = "ce25d451-9bb5-4870-a156-ce22182641de"
@@ -86,20 +95,17 @@ Vulkan = "9f14b124-c50e-4008-a7d4-969b3a6cd68a"
 VulkanCore = "16167f82-ea26-5cba-b1de-ed6fd5e30a11"
 
 [sources]
-ComputePipeline = {rev = "sd/lava", subdir = "ComputePipeline", url = "https://github.com/MakieOrg/Makie.jl.git"}
-ConservativeRegridding = {rev = "e8fc67f420da0362d59b354e2db6fcde8107fec0", url = "https://github.com/JuliaGeo/ConservativeRegridding.jl"}
+ComputePipeline = {rev = "as/raymakie-material-and-ffmpeg", subdir = "ComputePipeline", url = "https://github.com/MakieOrg/Makie.jl.git"}
 DiscreteGlobalGrids = {path = "../.."}
 DiscreteGlobalGridsVisualization = {path = "../../lib/DiscreteGlobalGridsVisualization"}
-GeometryOps = {rev = "697c7cc81b3d61666cf42bf697bf186cd7f6b2e2", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-GeometryOpsCore = {rev = "main", subdir = "GeometryOpsCore", url = "https://github.com/JuliaGeo/GeometryOps.jl.git"}
-GlobalRegridding = {path = "../../lib/GlobalRegridding"}
 Geomorphometry = {rev = "clipped-neighbors", url = "https://github.com/asinghvi17/GeoArrayOps.jl.git"}
-Hikari = {rev = "as/hw-aux-normals", url = "https://github.com/asinghvi17/Hikari.jl.git"}
+GlobalRegridding = {path = "../../lib/GlobalRegridding"}
+Hikari = {rev = "as/hw-aux-normals-rebased", url = "https://github.com/asinghvi17/Hikari.jl.git"}
 KernelInterfaces = {rev = "sd/mantle-dev", subdir = "lib/KernelInterfaces", url = "https://github.com/SimonDanisch/Mantle.jl"}
-Lava = {rev = "as/refit-preserve-custom-index", url = "https://github.com/asinghvi17/Lava.jl.git"}
-Makie = {rev = "sd/lava", subdir = "Makie", url = "https://github.com/MakieOrg/Makie.jl.git"}
+Lava = {rev = "as/refit-preserve-custom-index-rebased", url = "https://github.com/asinghvi17/Lava.jl.git"}
+Makie = {rev = "as/raymakie-material-and-ffmpeg", subdir = "Makie", url = "https://github.com/MakieOrg/Makie.jl.git"}
 Mantle = {rev = "sd/mantle-dev", url = "https://github.com/SimonDanisch/Mantle.jl"}
-RayMakie = {rev = "fix/recipe-forwarded-material-color", subdir = "RayMakie", url = "https://github.com/MakieOrg/Makie.jl.git"}
+RayMakie = {rev = "as/raymakie-material-and-ffmpeg", subdir = "RayMakie", url = "https://github.com/MakieOrg/Makie.jl.git"}
 Raycore = {rev = "sd/with-texture", url = "https://github.com/JuliaGeometry/Raycore.jl"}
 Vulkan = {rev = "sd/vk1.4", url = "https://github.com/JuliaGPU/Vulkan.jl.git"}
 VulkanCore = {rev = "sd/vk1.4", url = "https://github.com/JuliaGPU/VulkanCore.jl.git"}

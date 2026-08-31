@@ -33,7 +33,7 @@ end
            missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
            lazy = declareschunks(data), chunks = nothing, budget = nothing,
            storage = nothing, sampling = nothing)
-    regrid(data, plan::AbstractRegriddingPlan)
+    regrid(data, plan::AbstractRegriddingPlan; missingval = outputmissingval(data))
 
 Regrid `data` onto `to`. Spatial dimensions must come first and flatten in the
 source space's cell order. Non-spatial dimensions retain their order. One plan
@@ -45,8 +45,11 @@ followed by its unchanged non-spatial dimensions. Destinations without axes of
 their own keep a flat `Cell` axis. Lazy results carry the same labels and
 shape over a disk-backed array.
 
-Results are floating point. [`Weighted`](@ref) writes `missing` when supported
-by the source element type, and `NaN` otherwise.
+Results are floating point. [`Weighted`](@ref) blanks uncovered destination
+cells with the source's own nodata sentinel ([`outputmissingval`](@ref)): a
+`Rasters.AbstractRaster` comes back as a raster declaring the `missingval` it
+was handed, and every other array takes `missing` when its element type holds
+it and `NaN` otherwise.
 
 # Keyword arguments
 
@@ -54,7 +57,13 @@ by the source element type, and `NaN` otherwise.
   - `from`: source space; `nothing` derives a [`RasterGrid`](@ref) from `data`.
   - `method`: weight-building method; defaults to [`Conservative`](@ref).
   - `missingpolicy`: [`Weighted`](@ref) means or [`Extensive`](@ref) sums.
-  - `missingval`: additional nodata sentinel. `missing` and `NaN` are always invalid.
+  - `missingval`: the nodata sentinel of the regrid — invalid in the source, and
+    written into blanked destination cells. Left out, the source's comes from
+    [`sourcemissingval`](@ref)`(data)` and the destination's from
+    [`outputmissingval`](@ref)`(data)`, a raster's own `missingval`. `missing`
+    and `NaN` are always invalid whatever it is. Give it a value the destination
+    element type holds and the result stays concrete: `missingval = NaN` regrids
+    a `Union{Missing,Float64}` raster into a `Float64` one.
   - `lazy`: compute on demand ([`LazyRegridArray`](@ref)); defaults to chunked sources.
   - `chunks`: lazy destination tiling. `nothing` derives it automatically.
   - `budget`: target bytes for lazy reads and weights, default `2^31`.
@@ -64,11 +73,11 @@ by the source element type, and `NaN` otherwise.
     ([`outputsampling`](@ref)).
 
 `chunks`, `budget` and `storage` apply only to `lazy = true`, and `sampling`
-only to `lazy = false`. The plan form accepts no keywords because the plan
-contains all settings.
+only to `lazy = false`. The plan form takes `missingval` alone: a plan settles
+how weights are built, and the sentinel is what the caller does with them.
 
-Every keyword above is [`plan_regrid`](@ref)'s and is forwarded to it, so each
-default and each check is stated there once. The relation keywords
+Every other keyword above is [`plan_regrid`](@ref)'s and is forwarded to it, so
+each default and each check is stated there once. The relation keywords
 `dependencies`, `refine` and `narrow` describe a plan that is kept and are
 refused here.
 """
@@ -76,19 +85,27 @@ function regrid end
 
 function regrid(data; kwargs...)
     _rejectplankeywords(kwargs, "regrid")
-    return regrid(data, plan_regrid(data; kwargs...))
+    haskey(kwargs, :missingval) || return regrid(data, plan_regrid(data; kwargs...))
+    mv = kwargs[:missingval]
+    plan = plan_regrid(data; kwargs..., missingval = _sourcesentinel(mv))
+    return regrid(data, plan; missingval = mv)
 end
 
-function regrid(data, plan::DirectPlan)
+function regrid(data, plan::DirectPlan; missingval = outputmissingval(data))
     sd, othersizes, src = _flatten(data, plan)
     ndst = size(plan.block, 1)
-    out = Array{outputeltype(eltype(data))}(undef, ndst, othersizes...)
-    applyplan!(reshape(out, ndst, prod(othersizes)), plan, src)
-    return wrapoutput(out, data, sd, destinationdims(plan))
+    out = Array{outputeltype(eltype(data), missingval)}(undef, ndst, othersizes...)
+    applyplan!(reshape(out, ndst, prod(othersizes)), plan, src, missingval)
+    return wrapoutput(out, data, sd, destinationdims(plan), missingval)
 end
 
-regrid(data, plan::AbstractRegriddingPlan) =
+regrid(data, plan::AbstractRegriddingPlan; missingval = outputmissingval(data)) =
     error("$(typeof(plan).name.name) defines no `regrid` application")
+
+# The source half of a `missingval`. `missing` is invalid wherever it appears, so
+# declaring it as a sentinel would only cost `anyinvalid` a scan it can skip.
+_sourcesentinel(missingval) = missingval
+_sourcesentinel(::Missing) = nothing
 
 """
     destinationdims(plan::DirectPlan) -> Tuple or nothing
@@ -106,26 +123,37 @@ destinationdims(plan::ChunkedPlan) =
 
 """
     regrid!(dest, data; to, from = nothing, method = Conservative(),
-            missingpolicy = Weighted(0.5), missingval = sourcemissingval(data),
+            missingpolicy = Weighted(0.5), missingval = destinationmissingval(dest),
             lazy = declareschunks(data), chunks = nothing, budget = nothing,
             storage = nothing, sampling = nothing)
-    regrid!(dest, data, plan::AbstractRegriddingPlan)
+    regrid!(dest, data, plan::AbstractRegriddingPlan;
+            missingval = destinationmissingval(dest))
 
 Regrid `data` into the preallocated `dest` and return `dest`.
 
 `dest` starts with the destination's own axes, or one flat cell dimension,
 followed by `data`'s non-spatial dimensions; either leading shape is accepted.
-Keywords match [`regrid`](@ref) and are forwarded to [`plan_regrid`](@ref); the
-plan form takes none.
+Keywords match [`regrid`](@ref) and are forwarded to [`plan_regrid`](@ref).
+
+`dest` declares the destination's nodata convention here, so `missingval`
+defaults to [`destinationmissingval`](@ref)`(dest)` — its own `missingval` for a
+`Rasters.AbstractRaster`, and `missing` or NaN for a plain array. Passing one
+names the sentinel on both sides, as it does for [`regrid`](@ref), and it must
+be a value `eltype(dest)` holds.
 """
 function regrid! end
 
 function regrid!(dest, data; kwargs...)
     _rejectplankeywords(kwargs, "regrid!")
-    return regrid!(dest, data, plan_regrid(data; kwargs...))
+    haskey(kwargs, :missingval) ||
+        return regrid!(dest, data, plan_regrid(data; kwargs...))
+    mv = kwargs[:missingval]
+    plan = plan_regrid(data; kwargs..., missingval = _sourcesentinel(mv))
+    return regrid!(dest, data, plan; missingval = mv)
 end
 
-function regrid!(dest, data, plan::DirectPlan)
+function regrid!(dest, data, plan::DirectPlan;
+    missingval = destinationmissingval(dest))
     _, othersizes, src = _flatten(data, plan)
     ndst = size(plan.block, 1)
     dstdims = destinationdims(plan)
@@ -135,11 +163,12 @@ function regrid!(dest, data, plan::DirectPlan)
         throw(DimensionMismatch(
             "destination of size $(size(dest)) cannot hold a regrid of size $shaped"))
     raw = dest isa DD.AbstractDimArray ? parent(dest) : dest
-    applyplan!(reshape(raw, ndst, prod(othersizes)), plan, src)
+    applyplan!(reshape(raw, ndst, prod(othersizes)), plan, src, missingval)
     return dest
 end
 
-regrid!(dest, data, plan::AbstractRegriddingPlan) =
+regrid!(dest, data, plan::AbstractRegriddingPlan;
+    missingval = destinationmissingval(dest)) =
     error("$(typeof(plan).name.name) defines no `regrid!` application")
 
 """
@@ -149,8 +178,10 @@ regrid!(dest, data, plan::AbstractRegriddingPlan) =
                 storage = nothing, sampling = nothing, dependencies = nothing,
                 refine = nothing, narrow = nothing) -> AbstractRegriddingPlan
 
-Build a reusable regridding plan without reading source values. In-memory data
-uses one whole-domain [`DirectPlan`](@ref). Lazy plans build blocks on demand
+Build a reusable regridding plan without reading source values. `missingval` is
+the source sentinel alone here — a plan reads data and never writes it, so the
+destination's sentinel belongs to [`regrid`](@ref). In-memory data uses one
+whole-domain [`DirectPlan`](@ref). Lazy plans build blocks on demand
 and default to a budget-limited [`PerChunk`](@ref) cache. Use `PerChunk()` for
 an unlimited cache or `Spilled(dir)` for disk storage. Keywords match
 [`regrid`](@ref); `chunks`, `budget`, `storage`, `dependencies`, `refine` and

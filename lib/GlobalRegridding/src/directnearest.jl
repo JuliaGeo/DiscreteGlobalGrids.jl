@@ -107,18 +107,20 @@ destinationdims(plan::NearestDirectPlan) = destinationdims(plan.dst_space,
     something(plan.sampling, outputsampling(plan.method)))
 
 # What an unmapped destination, or one whose source value is invalid, becomes.
-_directblank(::Weighted, ::Type{T}) where {T} = _maskedvalue(T)
-_directblank(::Extensive, ::Type{T}) where {T} = convert(T, 0.0)
+_directblank(::Weighted, ::Type{T}, missingval) where {T} =
+    _blankvalue(T, missingval)
+_directblank(::Extensive, ::Type{T}, missingval) where {T} = convert(T, 0.0)
 
-function regrid(data, plan::NearestDirectPlan)
+function regrid(data, plan::NearestDirectPlan; missingval = outputmissingval(data))
     sd, othersizes, src = _flatten(data, plan)
     ndst = Int(ncells(plan.dst_space))
-    out = Array{outputeltype(eltype(data))}(undef, ndst, othersizes...)
-    applyplan!(reshape(out, ndst, prod(othersizes)), plan, src)
-    return wrapoutput(out, data, sd, destinationdims(plan))
+    out = Array{outputeltype(eltype(data), missingval)}(undef, ndst, othersizes...)
+    applyplan!(reshape(out, ndst, prod(othersizes)), plan, src, missingval)
+    return wrapoutput(out, data, sd, destinationdims(plan), missingval)
 end
 
-function regrid!(dest, data, plan::NearestDirectPlan)
+function regrid!(dest, data, plan::NearestDirectPlan;
+    missingval = destinationmissingval(dest))
     _, othersizes, src = _flatten(data, plan)
     ndst = Int(ncells(plan.dst_space))
     dstdims = destinationdims(plan)
@@ -128,22 +130,23 @@ function regrid!(dest, data, plan::NearestDirectPlan)
         throw(DimensionMismatch(
             "destination of size $(size(dest)) cannot hold a regrid of size $shaped"))
     raw = dest isa DD.AbstractDimArray ? parent(dest) : dest
-    applyplan!(reshape(raw, ndst, prod(othersizes)), plan, src)
+    applyplan!(reshape(raw, ndst, prod(othersizes)), plan, src, missingval)
     return dest
 end
 
 """
-    applyplan!(out, plan::NearestDirectPlan, src) -> out
+    applyplan!(out, plan::NearestDirectPlan, src, missingval = _maskedvalue(eltype(out))) -> out
 
 Sample the source directly, one destination cell at a time. No weights are read
 because none exist: the loop locates the source cell at the destination's sample
-site and copies its value, blanking the destination where there is no such cell
-or its value is invalid.
+site and copies its value, blanking the destination with `missingval` where
+there is no such cell or its value is invalid.
 
 The loop is over destination cells and every iteration writes only its own row,
 so it is threaded when more than one thread is available.
 """
-function applyplan!(out::AbstractMatrix, plan::NearestDirectPlan, src::AbstractMatrix)
+function applyplan!(out::AbstractMatrix, plan::NearestDirectPlan, src::AbstractMatrix,
+    missingval = _maskedvalue(eltype(out)))
     dst_space, src_space = plan.dst_space, plan.src_space
     ndst = Int(ncells(dst_space))
     size(src, 1) == Int(ncells(src_space)) || throw(DimensionMismatch(
@@ -153,7 +156,7 @@ function applyplan!(out::AbstractMatrix, plan::NearestDirectPlan, src::AbstractM
     size(out, 2) == size(src, 2) || throw(DimensionMismatch(
         "$(size(src, 2)) source slices into $(size(out, 2)) output slices"))
     sites = samplesites(dst_space)
-    blank = _directblank(plan.missingpolicy, eltype(out))
+    blank = _directblank(plan.missingpolicy, eltype(out), missingval)
     mv = plan.missingval
     if Threads.nthreads() > 1 && !OUTER_PARALLEL[]
         Threads.@threads for j in 1:ndst
@@ -215,7 +218,7 @@ function _readdestination!(out::AbstractMatrix,
     plan = A.plan
     src_space, dst_space = plan.src_space, plan.dst_space
     mv = plan.missingval
-    blank = _directblank(plan.missingpolicy, T)
+    blank = _directblank(plan.missingpolicy, T, A.missingval)
     sites = samplesites(dst_space)
     groups = _slicegroups(A, others)
     strides = _slicestrides(others)

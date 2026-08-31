@@ -31,7 +31,7 @@ grid = DGG.levelgrid(sys, level)
 
 # Now, we can create a regridding plan:
 plan = @time DGG.plan_regrid(ras; to = grid, method = DGG.Conservative())
-# You can also use a faster regridding method like `DGG.Bilinear()` or `DGG.NearestNeighbor()`, 
+# You can also use a faster regridding method like `DGG.BarycentricPoint()` or `DGG.NearestCell()`, 
 # but for this example, we'll use the conservative method.  It is a bit slower when planning,
 # but the time to execute the plan is about the same between the three methods.
 

@@ -2,7 +2,7 @@
 
 import DimensionalData as DD
 
-# Plain 3-vector arithmetic, so the tests never borrow the package's own.
+# Keeps the package's own vector arithmetic under test: these helpers duplicate it.
 grad_dot3(a, b) = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
 grad_cross3(a, b) = (a[2] * b[3] - a[3] * b[2], a[3] * b[1] - a[1] * b[3],
     a[1] * b[2] - a[2] * b[1])
@@ -10,9 +10,8 @@ grad_cross3(a, b) = (a[2] * b[3] - a[3] * b[2], a[3] * b[1] - a[1] * b[3],
 """
     grad_spiral(n) -> Vector{UnitSphericalPoint}
 
-`n` well-spread unit vectors, from the golden spiral. Deterministic, so a
-failure is reproducible, and unaligned with any axis, so a frame that quietly
-depends on one shows up.
+`n` well-spread unit vectors from the golden spiral: deterministic, and aligned
+with no axis.
 """
 function grad_spiral(n::Int)
     out = USPoint[]
@@ -25,8 +24,7 @@ function grad_spiral(n::Int)
     return out
 end
 
-# Neighbour offsets in the tangent plane: a regular ring, and a scattered set
-# that is neither symmetric nor collinear.
+# Tangent-plane offsets: a regular ring, and a set neither symmetric nor collinear.
 grad_ring(m::Int, r::Float64) =
     [(r * cos(2pi * (k - 1) / m), r * sin(2pi * (k - 1) / m)) for k in 1:m]
 
@@ -37,9 +35,8 @@ grad_scatter(m::Int, r::Float64) =
 """
     grad_neighbourpoints(c, e1, e2, offsets) -> Vector{NTuple{3,Float64}}
 
-The neighbour mean positions an offset set stands for: `c` displaced in its own
-tangent plane. Off the sphere by `O(offset²)`, exactly as polygon mean positions
-are.
+`c` displaced in its own tangent plane, off the sphere by `O(offset²)` exactly as
+polygon mean positions are.
 """
 grad_neighbourpoints(c, e1, e2, offsets) =
     [(c[1] + o[1] * e1[1] + o[2] * e2[1], c[2] + o[1] * e1[2] + o[2] * e2[2],
@@ -48,9 +45,9 @@ grad_neighbourpoints(c, e1, e2, offsets) =
 """
     grad_recover(n, offsets, b; scale = 1.0, a = 0.0) -> (recovered, exact)
 
-The tangent gradient a stencil recovers for the affine field `p -> a + b ⋅ p`,
-and the gradient that field actually has. The recovery applies the cell's own
-coefficient, `-sum(coeffs)`, so a nonzero `a` fails unless it cancels.
+The tangent gradient a stencil recovers for `p -> a + b ⋅ p`, and the true one.
+It applies the cell's own coefficient `-sum(coeffs)`, so a nonzero `a` fails
+unless it cancels.
 """
 function grad_recover(n, offsets, b; scale::Float64 = 1.0, a::Float64 = 0.0)
     e1, e2 = GR.tangentframe(n)
@@ -70,8 +67,7 @@ function grad_recover(n, offsets, b; scale::Float64 = 1.0, a::Float64 = 0.0)
     return ((g1, g2), GR.tangentcoords(e1, e2, b))
 end
 
-# The cell's actual angular diameter: its ring vertices are geodesic corners, so
-# the widest pair of them is the widest pair of the cell.
+# Ring vertices are geodesic corners, so their widest pair is the cell's diameter.
 grad_ringpoints(space, i) = [Tuple(p) for p in GI.getpoint(getcell(space, i))]
 
 function grad_celldiameter(space, i)
@@ -97,7 +93,6 @@ end
             toy_point(37.0, -12.5), grad_spiral(64)...]
         for n in points
             e1, e2 = GR.tangentframe(n)
-            # Orthonormal, and tangent at `n`.
             @test grad_dot3(e1, e1) ≈ 1.0 atol = 1e-14
             @test grad_dot3(e2, e2) ≈ 1.0 atol = 1e-14
             @test abs(grad_dot3(e1, e2)) < 1e-14
@@ -105,7 +100,6 @@ end
             @test abs(grad_dot3(e2, n)) < 1e-14
             # Right-handed about `n`, so a counter-clockwise turn stays one.
             @test all(abs.(grad_cross3(e1, e2) .- Tuple(n)) .< 1e-14)
-            # The point itself is the origin of its own frame.
             @test all(abs.(GR.tangentcoords(e1, e2, n)) .< 1e-14)
         end
 
@@ -129,8 +123,7 @@ end
             end
         end
 
-        # A mean position is not a point of the sphere, and a field has an
-        # offset the self coefficient must cancel.
+        # Inside the sphere, with a field offset the self coefficient must cancel.
         got = grad_recover(toy_point(15.0, -60.0), grad_ring(4, 0.01), b;
             scale = 0.87, a = 7.5)
         @test got !== nothing
@@ -145,10 +138,9 @@ end
         self = (-sum(w[1] for w in coeffs), -sum(w[2] for w in coeffs))
         @test sum(w[1] for w in coeffs) + self[1] == 0.0
         @test sum(w[2] for w in coeffs) + self[2] == 0.0
-        # A symmetric ring leans nowhere.
         @test all(abs.(self) .< 1e-12)
 
-        # Rank-deficient stencils are refused rather than solved.
+        # No unique solution: no neighbours, one neighbour, collinear neighbours.
         buffer = NTuple{2,Float64}[]
         @test !GR.gradientstencil!(buffer, e1, e2, c, NTuple{3,Float64}[])
         @test isempty(buffer)
@@ -177,7 +169,6 @@ end
     @testset "lattice adjacency" begin
         space = ToyLonLatSpace(8, 4)
 
-        # An interior cell has its four edge neighbours.
         i = localindex(space, 3, 2)
         @test sort(GR.cellneighbors(space, i)) == sort([localindex(space, 2, 2),
             localindex(space, 4, 2), localindex(space, 3, 1),
@@ -187,17 +178,16 @@ end
         @test localindex(space, 8, 2) in GR.cellneighbors(space, localindex(space, 1, 2))
         @test localindex(space, 1, 2) in GR.cellneighbors(space, localindex(space, 8, 2))
 
-        # Latitude never wraps: a polar row has three neighbours.
+        # Latitude never wraps.
         @test length(GR.cellneighbors(space, localindex(space, 5, 1))) == 3
         @test length(GR.cellneighbors(space, localindex(space, 5, 4))) == 3
         @test localindex(space, 5, 4) ∉ GR.cellneighbors(space, localindex(space, 5, 1))
 
-        # No cell is its own neighbour, and every answer is a cell.
         @test all(i -> i ∉ GR.cellneighbors(space, i), 1:ncells(space))
         @test all(j -> 1 <= j <= ncells(space),
             reduce(vcat, GR.cellneighbors(space, i) for i in 1:ncells(space)))
 
-        # A regional space has a rim instead of a wrap.
+        # A regional space ends at a rim: longitude wraps only around the globe.
         patch = ToyLonLatSpace(4, 3; lon = (-40.0, 40.0), lat = (-20.0, 20.0))
         @test length(GR.cellneighbors(patch, localindex(patch, 1, 1))) == 2
         @test length(GR.cellneighbors(patch, localindex(patch, 4, 3))) == 2
@@ -207,15 +197,13 @@ end
 
     @testset "geometric adjacency" begin
         space = ToyLonLatSpace(8, 4)
-        # `CountingSpace` forwards geometry and not topology, so it reaches the
-        # generic fallback the way an unstructured space does.
+        # `CountingSpace` forwards geometry and not topology, so it takes the fallback.
         counting = CountingSpace(space)
 
         for i in 1:ncells(space)
             generic = GR.cellneighbors(counting, i)
             @test generic == invoke(GR.cellneighbors, Tuple{RegridSpace,Int}, space, i)
             @test i ∉ generic
-            # A superset of the lattice answer, and every cell of it touches.
             @test GR.cellneighbors(space, i) ⊆ generic
             @test all(j -> grad_sharesvertex(space, i, j), generic)
         end
@@ -248,7 +236,6 @@ end
         @test length(GR.cellneighbors(space, GR.localindex(space, 1, 1))) == 3
         @test length(GR.cellneighbors(space, GR.localindex(space, 360, 360))) == 3
 
-        # A regional raster does not wrap.
         patch = RasterGrid(DD.DimArray(zeros(4, 3),
             (DD.X(5.0:10.0:35.0), DD.Y(5.0:10.0:25.0))))
         @test GR.chartperiod(patch)[1] === nothing
@@ -264,7 +251,6 @@ end
               sort([GR.localindex(transposed, 3, 9), GR.localindex(transposed, 5, 9),
             GR.localindex(transposed, 4, 8), GR.localindex(transposed, 4, 10)])
 
-        # The lattice answer agrees with the geometry the fallback reads.
         coarse = RasterGrid(DD.DimArray(zeros(36, 18),
             (DD.X(-175.0:10.0:175.0), DD.Y(-85.0:10.0:85.0))))
         for (ix, iy) in [(1, 1), (5, 9), (36, 9), (18, 18), (12, 2)]
@@ -281,17 +267,14 @@ end
         bound = GR.celldiameter(space)
         @test bound ≈ 2 * deg2rad(0.5)
 
-        # Sampled equatorial, mid-latitude and polar cells: the bound covers
-        # every one of them, and is the right size for the widest.
+        # Sampled equatorial, mid-latitude and polar cells: the bound covers all, loosely.
         sampled = [GR.localindex(space, ix, iy)
                    for ix in (1, 97, 360, 719) for iy in (1, 2, 90, 180, 181, 359, 360)]
         widest = maximum(grad_celldiameter(space, i) for i in sampled)
         @test all(grad_celldiameter(space, i) <= bound for i in sampled)
         @test bound <= 3 * widest
 
-        # The toy space answers from its resolution; the generic fallback reads
-        # the same cells' caps. Both bound every cell, and the cap bound is the
-        # tighter of the two.
+        # Resolution bound against the fallback's cap bound: both cover, the cap is tighter.
         toy = ToyLonLatSpace(8, 4)
         analytic = GR.celldiameter(toy)
         fallback = invoke(GR.celldiameter, Tuple{RegridSpace}, toy)

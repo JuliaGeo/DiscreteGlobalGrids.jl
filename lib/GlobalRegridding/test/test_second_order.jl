@@ -3,15 +3,13 @@
 import ConservativeRegridding as CR
 import SparseArrays
 
-# Cell means of `a + b ⋅ x` over a space's own polygons: exact, from the
-# first moments, for a field linear in the ambient coordinates.
+# Cell means of `a + b ⋅ x`, exact from the first moments.
 so_linear_means(space, a, b) = map(1:ncells(space)) do i
     pm = GR.cellmoments(space, i)
     return a + (b[1] * pm.moment[1] + b[2] * pm.moment[2] + b[3] * pm.moment[3]) / pm.area
 end
 
-# Cell means of a smooth `f(p)` by degree-8 fan quadrature over each polygon,
-# the rule ConservativeRegridding's own test helpers integrate with.
+# Degree-8 fan quadrature, the rule ConservativeRegridding's own tests integrate with.
 const SO_RULE = CR.TriangleQuadrature.reference_rule(8)
 
 function so_polygon_integral(f, pts)
@@ -50,7 +48,6 @@ so_block(method, dst, src) = GR.pairblock(method, dst, 1:ncells(dst), src, 1:nce
 so_eager(data, dst, src, method; policy = Weighted(0.5)) =
     regrid(data; to = dst, from = src, method, missingpolicy = policy, lazy = false)
 
-# The whole-domain weights, assembled one chunk pair at a time.
 function so_assembled(method, dst, src)
     W = zeros(ncells(dst), ncells(src))
     D = zeros(ncells(dst))
@@ -76,9 +73,7 @@ end
     @testset "block structure" begin
         block = so_block(method, dst, src)
         first = so_block(Conservative(), dst, src)
-        # Coverage is the first-order overlap matrix, entry for entry, and the
-        # denominator is its row sums; the value weights are signed and reach
-        # one cell further, but sum to the same coverage.
+        # Value weights are signed and reach a cell further than coverage, yet sum to it.
         @test block.coverage == first.weights
         @test block.denom ≈ first.denom
         @test all(>=(0), SparseArrays.nonzeros(block.coverage))
@@ -90,10 +85,8 @@ end
     end
 
     @testset "linear fields" begin
-        # A field linear in the ambient coordinates is linear in no cell's
-        # tangent chart, so it is carried to second order, not exactly: the
-        # remaining error is the chart's curvature term, an order below the
-        # first-order flattening.
+        # Linear in ambient coordinates is linear in no cell's tangent chart, so the
+        # residual is the chart's curvature term: second order, not exact.
         a, b = 3.0, (0.7, -0.4, 1.1)
         f = so_linear_means(src, a, b)
         exact = so_linear_means(dst, a, b)
@@ -129,14 +122,11 @@ end
     end
 
     @testset "chunked blocks agree with the whole domain" begin
-        # Every chunk pair's block, summed, is the whole-domain block: a chunk's
-        # weights read its ring's overlaps, and only its own cells are emitted.
         whole = so_block(method, dst, src)
         W, D = so_assembled(method, dst, src)
         @test W ≈ Matrix(whole.weights) atol = 1e-14
         @test D ≈ whole.denom atol = 1e-14
-        # Through a lazy plan, where discovery pairs chunks by cap and support
-        # radius: a tile touching only a source chunk's ring still reads it.
+        # Lazily, a tile touching only a source chunk's ring still reads it.
         f = so_means(so_smooth, src)
         rows = ToyLonLatSpace(36, 18; chunks = (36, 3))
         tiles = ToyLonLatSpace(40, 20; chunks = (40, 4))
@@ -162,8 +152,7 @@ end
                 @test isfinite(means[j])
             end
         end
-        # Beyond the reach of the hole's own weights, nothing changes: the
-        # degrade is confined to the destinations it actually touched.
+        # The degrade is confined to the destinations the hole's weights touched.
         full = so_eager(f, dst, src, method)
         far = [j for j in 1:ncells(dst) if
                US.spherical_distance(cellcentroid(dst, j), toy_point(0.5, 0.5)) > 0.7]
@@ -182,8 +171,7 @@ end
         firstorder = so_eager(hole, dst, src, Conservative())
         block = so_block(method, dst, src)
 
-        # A destination whose weights reached the hole — over it, or through a
-        # neighbour's gradient stencil — reads exactly as `Conservative` does.
+        # A destination reaching the hole, over it or through a neighbour's stencil.
         touched = [j for j in 1:ncells(dst) if block.weights[j, k] != 0]
         @test !isempty(touched)
         for j in touched
@@ -191,22 +179,17 @@ end
             @test second[j] ≈ firstorder[j]
         end
 
-        # Everything else keeps the correction: the degrade is local, not global.
         untouched = [j for j in 1:ncells(dst) if
                      block.weights[j, k] == 0 && isfinite(second[j])]
         @test any(j -> !isapprox(second[j], firstorder[j]; rtol = 1e-9), untouched)
 
-        # Adding a constant to the source adds it to the result. This is what a
-        # hole used to break: the bias it injected scaled with the field's own
-        # value, so the answer was not invariant to the shift.
+        # Shift invariance: a hole injecting a value-scaled bias would break it.
         K = 1000.0
         shifted = so_eager(hole .+ K, dst, src, method)
         ok = findall(isfinite, second)
         @test !isempty(ok)
         @test shifted[ok] ≈ second[ok] .+ K
 
-        # The lazy path degrades the same destinations as the whole-domain one,
-        # on the chunk shapes it can read in one block.
         rows = ToyLonLatSpace(36, 18; chunks = (36, 3))
         tiles = ToyLonLatSpace(40, 20; chunks = (40, 4))
         rowhole = so_means(so_smooth, rows)
@@ -228,8 +211,7 @@ end
         sums = so_eager(f, dst, patch, method; policy = Extensive())
         @test sum(sums) ≈ sum(f[i] * GR.cellarea(patch, i) for i in 1:ncells(patch)) rtol = 1e-12
 
-        # One column of cells: every stencil is collinear, so every gradient
-        # is zero and the weights are first order exactly.
+        # One column: every stencil is collinear, so the weights are first order exactly.
         column = ToyLonLatSpace(1, 6; lon = (0.0, 30.0), lat = (-60.0, 60.0))
         @test so_block(method, dst, column).weights == so_block(Conservative(), dst, column).weights
     end

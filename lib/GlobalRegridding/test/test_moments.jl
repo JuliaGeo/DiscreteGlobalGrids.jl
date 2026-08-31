@@ -5,15 +5,13 @@ import ConservativeRegridding as CR
 """
     moment_ring(n, r, N) -> Vector{USPoint}
 
-An open ring of `N` vertices, evenly spaced on the circle of angular radius `r`
-about the unit vector `n`, wound counter-clockwise seen from outside. The
-polygon it spans is inscribed in the cap of radius `r`, so its area and moment
+An open ring of `N` vertices on the circle of angular radius `r` about `n`, wound
+counter-clockwise seen from outside. Inscribed in the cap, so its area and moment
 approach the cap's from below as `O(1/N^2)`.
 """
 function moment_ring(n, r::Real, N::Int)
     axis = LinearAlgebra.normalize(USPoint(n[1], n[2], n[3]))
-    # Any vector off the axis gives the frame; `u × v = axis` makes the winding
-    # counter-clockwise about it.
+    # Any vector off the axis gives the frame; `u × v = axis` sets the winding.
     off = abs(axis[3]) < 0.9 ? USPoint(0.0, 0.0, 1.0) : USPoint(1.0, 0.0, 0.0)
     u = LinearAlgebra.normalize(LinearAlgebra.cross(off, axis))
     v = LinearAlgebra.cross(axis, u)
@@ -25,9 +23,8 @@ end
 """
     moment_graticule(lon0, lon1, lat0, lat1, n) -> Vector{USPoint}
 
-An open graticule ring whose two parallels are densified into `n` chords each.
-The meridian edges are great circles already, so only the parallels approach
-the true cell boundary, as `O(1/n^2)`.
+An open graticule ring with each parallel densified into `n` chords. The meridians
+are great circles already, so only the parallels converge, as `O(1/n^2)`.
 """
 function moment_graticule(lon0, lon1, lat0, lat1, n::Int)
     ring = USPoint[]
@@ -43,9 +40,8 @@ end
 """
     moment_graticule_exact(lon0, lon1, lat0, lat1) -> (area, moment)
 
-The graticule cell's exact area and first moment on the unit sphere, from
-`∫ x cos φ dφ dλ` with `∫cos²φ dφ = (φ + sin φ cos φ)/2` and
-`∫sin φ cos φ dφ = sin²φ/2`.
+Exact area and first moment on the unit sphere, from `∫ x cos φ dφ dλ` with
+`∫cos²φ dφ = (φ + sin φ cos φ)/2` and `∫sin φ cos φ dφ = sin²φ/2`.
 """
 function moment_graticule_exact(lon0, lon1, lat0, lat1)
     l0, l1 = deg2rad(Float64(lon0)), deg2rad(Float64(lon1))
@@ -77,7 +73,6 @@ end
         @test zero(a) === zero(GR.PolygonMoments)
         @test iszero(zero(GR.PolygonMoments))
         @test !iszero(a)
-        # An area-free polygon with a moment is not zero either.
         @test !iszero(GR.PolygonMoments(0.0, (0.0, 1.0, 0.0)))
         @test a + b === GR.PolygonMoments(4.0, (0.5, 0.7, 0.8999999999999999))
         @test a + zero(GR.PolygonMoments) === a
@@ -90,8 +85,7 @@ end
     @testset "a sparse matrix assembles over PolygonMoments" begin
         a = GR.PolygonMoments(1.5, (0.1, 0.2, 0.3))
         b = GR.PolygonMoments(2.5, (0.4, 0.5, 0.6))
-        # Duplicate coordinates are what a split overlap produces; `sparse`
-        # combines them with `+`, which is the whole reason for the type.
+        # A split overlap produces duplicate coordinates; `sparse` combines them with `+`.
         S = GR.SparseArrays.sparse([1, 1], [1, 1], [a, b], 1, 1)
         @test eltype(S) === GR.PolygonMoments
         @test S[1, 1] === a + b
@@ -99,7 +93,6 @@ end
         T = GR.SparseArrays.sparse([1, 2], [1, 2], [a, b], 2, 2)
         @test T[1, 1] === a
         @test T[2, 2] === b
-        # Structural zeros read back as `zero(PolygonMoments)`.
         @test T[1, 2] === zero(GR.PolygonMoments)
     end
 
@@ -138,8 +131,7 @@ end
             @test pm.area ≈ area rtol = 1e-5
             @test collect(pm.moment) ≈ collect(moment) rtol = 1e-5
 
-            # Doubling the densification quarters the error: only the chorded
-            # parallels are approximate, and they converge as O(1/n^2).
+            # Only the chorded parallels are approximate, and they converge as O(1/n^2).
             errs = map((100, 200, 400)) do n
                 q = GR.polygonmoments(m, ring(n); closed = false)
                 LinearAlgebra.norm(collect(q.moment) .- collect(moment)) /
@@ -158,8 +150,7 @@ end
                 closed = false)
             @test scaled.area ≈ unit.area * R^2 rtol = 1e-14
             @test collect(scaled.moment) ≈ collect(unit.moment) .* R^2 rtol = 1e-14
-            # The mean position vector is what the scaling is chosen to leave
-            # alone: it is a direction on the unit sphere, at any radius.
+            # The scaling leaves the mean position alone: a direction, at any radius.
             @test collect(scaled.moment) ./ scaled.area ≈
                   collect(unit.moment) ./ unit.area rtol = 1e-12
         end
@@ -189,7 +180,6 @@ end
         @test rev.area ≈ a.area rtol = 1e-14
         @test collect(rev.moment) ≈ collect(a.moment) rtol = 1e-12
 
-        # Too few vertices to enclose anything, and a repeated vertex.
         @test GR.polygonmoments(m, open[1:2]; closed = false) ===
               zero(GR.PolygonMoments)
         @test GR.polygonmoments(m, [open[1], open[1], open[1]]; closed = false) ===
@@ -208,7 +198,6 @@ end
                   GO.area(manifold(space), getcell(space, i))
                   for i in 1:ncells(space))
 
-        # Each cell's mean position sits inside its own lon/lat box.
         for i in (1, 200, ncells(space) - 1)
             pm = GR.cellmoments(space, i)
             lon_lo, lon_hi, lat_lo, lat_hi = cellbounds(space, i)
@@ -233,7 +222,6 @@ end
         src = ToyLonLatSpace(12, 6)
         dst = ToyLonLatSpace(20, 10)
 
-        # A disjoint pair, and one the destination genuinely cuts.
         @test op(getcell(src, 1), getcell(src, ncells(src))) ===
               zero(GR.PolygonMoments)
         inner = op(getcell(src, 1), getcell(dst, 1))
@@ -268,8 +256,7 @@ end
         op = GR.IntersectionMomentOperator(m)
         areaop = GR.IntersectionAreaOperator(m)
 
-        # Offset lattices: no destination edge lands on a source edge, so every
-        # source cell is genuinely cut up by several destination cells.
+        # Offset lattices: no edges coincide, so every source cell is genuinely cut up.
         for i in (1, 7, 40, ncells(src))
             subject = getcell(src, i)
             pieces = GR.PolygonMoments[]
@@ -290,14 +277,11 @@ end
 end
 
 @testset "tiny polygons keep their precision" begin
-    # A 30 m Copernicus pixel is 5e-6 rad across. Its mean position must be
-    # known to a small fraction of that, or a gradient fitted from it is noise:
-    # the plain edge sum loses the whole cell to cancellation, the shifted sum
-    # is limited only by the vertices themselves — unit vectors known to `eps`,
-    # so offsets of size `h` to `eps / h`, and the mean to `eps / h²` of `h`.
-    # Compared in the tangent plane with the planar centroid of the square,
-    # which the spherical one matches to O(h²); radially the mean lies inside
-    # the sphere by that same O(h²), which is not an error.
+    # A 30 m Copernicus pixel is 5e-6 rad across, and needs its mean position to a
+    # small fraction of that. The plain edge sum loses the cell to cancellation; the
+    # shifted sum is limited only by the vertices, giving the mean to `eps / h²` of
+    # `h`, which is `tol`. The comparison is against the square's planar centroid,
+    # which the spherical one matches to O(h²).
     for h in (5e-5, 5e-6), n in (USPoint(1.0, 0.0, 0.0), toy_point(10.0, 46.5))
         e1, e2 = GR.tangentframe(n)
         corner(u, v) = LinearAlgebra.normalize(USPoint((n .+ u .* e1 .+ v .* e2)...))

@@ -91,10 +91,10 @@ outputsampling(::BarycentricPoint) = DD.Lookups.Points()
 """
     CoverageCOO()
 
-A chunk-local coordinate list of coverage weights, the non-negative share of a
-destination that one source cell covers. Its `rows`, `cols` and `vals` are the
-weight list's own convention; [`WeightCOO`](@ref) holds one of these only when
-the method's value weights cannot serve as coverage themselves.
+A chunk-local coordinate list of coverage weights: the non-negative share of a
+destination one source cell covers, in the weight list's own convention.
+[`WeightCOO`](@ref) holds one only when its value weights cannot serve as
+coverage themselves.
 """
 struct CoverageCOO
     rows::Vector{Int}
@@ -118,18 +118,11 @@ builder declares them, through [`markdenominated!`](@ref) or the first
 [`adddenom!`](@ref); a method that reports none — every point sample — leaves it
 `nothing` and allocates no denominator vector.
 
-`coverage` holds an optional [`CoverageCOO`](@ref) and is `nothing` until a
-builder declares it, through [`markcovered!`](@ref) or the first
-[`addcoverage!`](@ref). It separates the two things a weight is asked to be:
-
-  - a method whose value weights are all non-negative — every method here today
-    — reports no coverage list, and its weights double as coverage, so a
-    destination's coverage by valid sources is their weights summed;
-  - a method whose value weights are signed, as a gradient correction that
-    subtracts as well as adds makes them, reports its non-negative coverage
-    through [`addcoverage!`](@ref) and its denominators as before. Summing
-    signed weights over the valid sources is the coverage of nothing: it is off
-    by the correction, and can even be negative.
+`coverage` holds an optional [`CoverageCOO`](@ref), `nothing` until
+[`markcovered!`](@ref) or the first [`addcoverage!`](@ref) declares it. Weights
+that are all non-negative double as coverage and need no list. Signed weights do
+— summed over the valid sources they measure nothing, being off by the
+correction and possibly negative.
 """
 mutable struct WeightCOO
     const ndst::Int
@@ -153,13 +146,12 @@ Base.show(io::IO, coo::WeightCOO) =
 """
     addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
 
-Add `w` to the value weight of source `src_local` in destination `dst_local`.
-Both are chunk-local indices within the builder's `dst_inds` and `src_inds`, not
-the spaces' local indices.
+Add `w` to the value weight of source `src_local` in destination `dst_local`,
+both chunk-local indices within the builder's `dst_inds` and `src_inds`.
 
-`w` may be negative. A method that emits negative weights must report its
-coverage separately, through [`addcoverage!`](@ref), because these weights no
-longer measure how much of a destination a source covers.
+`w` may be negative, in which case the method must report coverage separately
+through [`addcoverage!`](@ref): such weights no longer measure how much of a
+destination a source covers.
 """
 function addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
     push!(coo.rows, dst_local)
@@ -171,15 +163,12 @@ end
 """
     addcoverage!(coo::WeightCOO, dst_local::Int, src_local::Int, a::Real)
 
-Add `a` to the coverage of destination `dst_local` by source `src_local`, in the
-same chunk-local indices [`addweight!`](@ref) uses, and declare that `coo`
-carries coverage. `a` is the non-negative weight — an overlap area, in a
-conservative method — that `src_local` contributes to that destination's
-coverage when it is valid.
+Add `a` to the coverage of destination `dst_local` by source `src_local`, in
+[`addweight!`](@ref)'s chunk-local indices, and declare that `coo` carries
+coverage. `a` is the non-negative weight — an overlap area, conservatively —
+`src_local` contributes when valid.
 
-Report coverage only where the value weights cannot: a method whose weights are
-all non-negative leaves the list `nothing` and they serve as coverage
-themselves.
+Only signed methods need this; non-negative weights serve as their own coverage.
 """
 function addcoverage!(coo::WeightCOO, dst_local::Int, src_local::Int, a::Real)
     cov = coo.coverage
@@ -199,21 +188,19 @@ end
 Return whether `method` emits negative value weights, and so reports coverage
 separately ([`addcoverage!`](@ref)). Defaults to `false`.
 
-The lazy path reads this to size its accumulators before it has built a block:
-signed weights let a hole reach a destination without reaching its coverage, so
-the executor carries the two extra sums [`degradetainted!`](@ref) needs. The
-whole-domain path asks the block itself and never reads this. A method that
-wraps another and forwards [`buildweights!`](@ref) should forward this too.
+The lazy path reads this to size accumulators before it has a block: signed
+weights let a hole reach a destination without reaching its coverage, so the
+executor carries the two extra sums [`degradetainted!`](@ref) needs. A method
+forwarding [`buildweights!`](@ref) to another should forward this too.
 """
 signedweights(::AbstractRegriddingMethod) = false
 
 """
     markcovered!(coo::WeightCOO)
 
-Declare that `coo` carries a coverage list, without adding to it, and return
-`coo`. This is where the empty list is allocated, so a builder that covers no
-destination still produces a block whose coverage is a zero operator rather than
-one that falls back to its signed value weights.
+Declare that `coo` carries a coverage list, adding nothing to it, and return
+`coo`. Allocating the empty list here gives a builder that covers no destination
+a block whose coverage is a zero operator, not its signed value weights.
 """
 function markcovered!(coo::WeightCOO)
     coo.coverage === nothing && (coo.coverage = CoverageCOO())

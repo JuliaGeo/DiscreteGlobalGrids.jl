@@ -7,22 +7,17 @@
 """
     cellneighbors(space::RegridSpace, i::Int) -> Vector{Int}
 
-The geometric fallback: the cells of `space` whose polygon shares a vertex with
-cell `i`'s, which on a lattice is the eight-cell ring rather than the four edge
-neighbours.
+The geometric fallback: the cells whose polygon shares a vertex with cell `i`'s,
+which on a lattice is the eight-cell ring, diagonals included.
 
-It queries [`celltree`](@ref) with cell `i`'s own cap and compares the vertices
-of every candidate with `i`'s, so it costs one [`getcell`](@ref) per candidate
-and `O(candidates × vertices²)` comparisons per call. It also asks the space for
-its cell tree once per call, so a space that packs a fresh tree there pays for
-one per query. That is affordable in a once-per-plan sweep and nowhere else: a
-space that knows its own topology should answer from it.
+For a once-per-plan sweep only; a space that knows its topology should answer
+from that. Each call queries [`celltree`](@ref) with cell `i`'s cap — one
+[`getcell`](@ref) per candidate, `O(candidates × vertices²)` comparisons, and a
+fresh cell tree if the space packs one per query.
 
-Two vertices are the same when they are within `1e-6` times cell `i`'s cap
-radius of each other, with an absolute floor so a degenerate cap still compares
-something. The test measures chord rather than arc: at that scale the two agree
-far past the tolerance, and the chord is the shorter, so the test never
-loosens.
+Vertices match within `1e-6` of cell `i`'s cap radius, floored so a degenerate
+cap still compares something. The test measures chord, which at that scale is
+the shorter of chord and arc, so it never loosens.
 """
 function cellneighbors(space::RegridSpace, i::Int)
     1 <= i <= ncells(space) || throw(BoundsError(space, i))
@@ -63,13 +58,10 @@ end
 """
     celldiameter(space::RegridSpace) -> Float64
 
-The geometric fallback: twice the radius of the widest leaf cap of
-[`celltree`](@ref), capped at `pi`. A leaf cap covers its cell, so twice its
-radius covers the cell's diameter.
+The geometric fallback: twice the widest leaf cap of [`celltree`](@ref), capped
+at `pi`. A leaf cap covers its cell, so twice its radius covers the diameter.
 
-This visits every leaf, so it is `O(ncells(space))` and belongs in plan
-construction rather than in a loop. A space that knows its resolution should
-answer from that instead.
+For plan construction only — it visits every leaf, `O(ncells(space))`.
 """
 celldiameter(space::RegridSpace) =
     min(Float64(pi), 2 * _widestleafcap(celltree(space)))
@@ -97,10 +89,8 @@ _capradius(extent) = throw(ArgumentError(
 # Tangent frames
 # --------------------------------------------------------------------------
 
-# `_point3`, `_dot3`, `_cross3` and `_framefirst` are defined in barycentric.jl.
-# One module holds both files, so which one `include` reaches first does not
-# matter, and the frame a chart is drawn in is the frame a gradient is fitted
-# in.
+# `_point3`, `_dot3`, `_cross3` and `_framefirst` come from barycentric.jl, so a
+# gradient is fitted in the same frame a chart is drawn in.
 
 """
     tangentframe(n::USPoint) -> (e1, e2)
@@ -108,10 +98,9 @@ _capradius(extent) = throw(ArgumentError(
 A right-handed orthonormal basis of the tangent plane at the unit vector `n`,
 with `e1 × e2 == n`.
 
-The frame is fixed by `n` alone — no reference direction to line up with, no
-pole to avoid — because the axis least parallel to `n` names `e1`, which is
-therefore never close to degenerate. `n` must be a unit vector: normalize a
-mean position before asking for its frame.
+`n` alone fixes the frame — the axis least parallel to `n` names `e1`, never
+close to degenerate — and must be a unit vector, so normalize a mean position
+first.
 """
 @inline function tangentframe(n::USPoint)
     u = _point3(n)
@@ -122,10 +111,8 @@ end
 """
     tangentcoords(e1, e2, v) -> (Float64, Float64)
 
-The coordinates of the 3-vector `v` in the frame `(e1, e2)`, which is `v`'s
-projection onto the tangent plane written in that frame. `v` need not be a unit
-vector or a point of the sphere: the difference of two mean positions is the
-usual argument.
+`v`'s projection onto the tangent plane, written in the frame `(e1, e2)`. `v` is
+any 3-vector; the difference of two mean positions is the usual argument.
 """
 @inline function tangentcoords(e1::NTuple{3,Float64}, e2::NTuple{3,Float64}, v)
     w = _point3(v)
@@ -142,29 +129,22 @@ end
 Fill `coeffs` with the coefficients that recover a cell's tangent gradient from
 its neighbours' cell means, and return whether the stencil holds one.
 
-`c` is the cell's mean position and `neighbours` its neighbours' mean positions,
-as 3-vectors that need not be unit length; `(e1, e2)` is the tangent frame the
-gradient comes back in, from [`tangentframe`](@ref). `coeffs` is resized to
-`length(neighbours)`, so one buffer serves a whole sweep.
-
-The recovered gradient of the cell means `f` is
+`c` and `neighbours` are mean positions as 3-vectors of any length; `(e1, e2)`
+is the frame the gradient comes back in ([`tangentframe`](@ref)); `coeffs` is
+resized to `length(neighbours)`, so one buffer serves a whole sweep.
 
     g = sum(coeffs[k] .* (f[k] - f_c) for k in 1:length(neighbours))
 
-the unweighted least-squares fit of `Δf_k ≈ g ⋅ d_k` over the tangent offsets
-`d_k = tangentcoords(e1, e2, neighbours[k] - c)`. Its normal equations are the
-2×2 system `S g = Σ d_k Δf_k` with `S = Σ d_k d_kᵀ`, so `coeffs[k] = S⁻¹ d_k`.
+is the unweighted least-squares fit of `Δf_k ≈ g ⋅ d_k` over the tangent offsets
+`d_k = tangentcoords(e1, e2, neighbours[k] - c)`, whose normal equations
+`S g = Σ d_k Δf_k` with `S = Σ d_k d_kᵀ` give `coeffs[k] = S⁻¹ d_k`.
 
-The differences are the caller's to apply, and so is the cell's own
-coefficient: writing the sum out over `f_k` and `f_c` gives the self
-coefficient `-sum(coeffs)`, which is what makes a constant field recover a zero
-gradient exactly.
+The caller applies the differences and the self coefficient `-sum(coeffs)`,
+which is what recovers a zero gradient from a constant field exactly.
 
-Returns `false`, leaving `coeffs` empty, when the stencil cannot carry a
-gradient: fewer than two neighbours, or `det(S) <= 1e-10 * (S₁₁ + S₂₂)^2`, which
-is neighbours strung out along one line through the cell. The caller then falls
-back to a zero gradient rather than to a fit the neighbour geometry does not
-support.
+Returns `false` with `coeffs` empty, leaving the caller a zero gradient, when
+there are fewer than two neighbours or `det(S) <= 1e-10 * (S₁₁ + S₂₂)^2` —
+neighbours strung out along one line through the cell.
 """
 function gradientstencil!(coeffs::Vector{NTuple{2,Float64}},
         e1::NTuple{3,Float64}, e2::NTuple{3,Float64}, c,
@@ -205,8 +185,8 @@ end
     gradientstencil(e1, e2, c, neighbours) -> Union{Nothing,Vector{NTuple{2,Float64}}}
 
 The allocating form of [`gradientstencil!`](@ref): the coefficients, or
-`nothing` where that returns `false`. A sweep over many cells should reuse one
-buffer through the mutating form instead.
+`nothing` where that returns `false`. A sweep should reuse one buffer through
+the mutating form.
 """
 function gradientstencil(e1::NTuple{3,Float64}, e2::NTuple{3,Float64}, c,
         neighbours::AbstractVector)

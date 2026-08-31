@@ -1,18 +1,12 @@
-# Second-order conservative regridding on the DGG spaces, rather than on the
-# analytic toy spaces that `lib/GlobalRegridding/test/test_second_order.jl`
-# pins the method itself down on. Three things belong to this side:
+# Second-order conservative regridding on the DGG spaces themselves; the method
+# proper is pinned down on analytic toy spaces in
+# `lib/GlobalRegridding/test/test_second_order.jl`. This side covers the two
+# hooks the gradient is recovered from, `cellneighbors` and `celldiameter`;
+# that conservation and accuracy survive real cell geometry, both directions,
+# eagerly and across chunk seams; and the shapes a caller writes.
 #
-#   * the two hooks the gradient is recovered from — `cellneighbors`, which
-#     reads the grid's own edge one-ring, and `celldiameter`, which bounds the
-#     cell width the method declares as its support radius;
-#   * that conservation and the second-order accuracy survive real cell
-#     geometry, in both directions, eagerly and across source chunk seams;
-#   * the shapes a caller actually writes: a global lon/lat raster onto a level
-#     grid, a Copernicus DEM tile onto a `MultiOrderCoverage` region, and back.
-#
-# "The exact answer" here is always a cell mean, computed by a degree-8 fan
-# quadrature over each cell's own polygon — the rule the toy suite integrates
-# with — because a cell mean is what a conservative method reproduces.
+# The exact answer is always a cell mean, from a degree-8 fan quadrature over
+# the cell's own polygon — the rule the toy suite integrates with.
 
 module RegridSecondOrderTests
 
@@ -32,12 +26,9 @@ const TO_LONLAT = US.GeographicFromUnitSphere()
 const FIRST = GR.Conservative()
 const SECOND = GR.ConservativeSecondOrder()
 
-# --------------------------------------------------------------------------
 # Helpers
-# --------------------------------------------------------------------------
 
-# Vectors, spelled out: `LinearAlgebra` is not a dependency of the test
-# environment and three lines are cheaper than making it one.
+# Spelled out: `LinearAlgebra` is not a dependency of the test environment.
 _dot(a, b) = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
 _cross(a, b) = (a[2] * b[3] - a[3] * b[2], a[3] * b[1] - a[1] * b[3],
     a[1] * b[2] - a[2] * b[1])
@@ -45,8 +36,7 @@ _norm(a) = sqrt(_dot(a, a))
 
 const RULE = CR.TriangleQuadrature.reference_rule(8)
 
-# `∫ f dA` over a spherical polygon, as a fan of geodesic triangles under the
-# degree-8 reference rule.
+# `∫ f dA` over a spherical polygon: a fan of geodesic triangles, degree-8 rule.
 function polygonintegral(f, pts)
     bary, w = RULE
     total = 0.0
@@ -84,8 +74,7 @@ end
 
 lonlat(p) = TO_LONLAT(GO.UnitSphericalPoint(p[1], p[2], p[3]))
 
-# The measured angular diameter of one cell: the widest vertex-to-vertex arc.
-# `celldiameter` is a bound on this, over the whole space.
+# One cell's widest vertex-to-vertex arc; `celldiameter` bounds this space-wide.
 function measureddiameter(space, i)
     ring = cellring(space, i)
     d = 0.0
@@ -110,8 +99,7 @@ end
 _axis(D, centres, step) = D(DD.Sampled(collect(centres); span = DD.Regular(step),
     sampling = DD.Intervals(DD.Center()), order = DD.ForwardOrdered()))
 
-# Abutting intervals, so the raster's cell edges tile its extent exactly and a
-# conservative regrid off it can conserve.
+# Abutting intervals: the cell edges tile the extent exactly, no gap or overlap.
 function lonlatdims(step; lon = (-180.0, 180.0), lat = (-90.0, 90.0))
     return (_axis(DD.X, (lon[1] + step / 2):step:lon[2], step),
             _axis(DD.Y, (lat[1] + step / 2):step:lat[2], step))
@@ -131,10 +119,8 @@ mass(f, space) = sum(f[i] * GR.cellarea(space, i) for i in 1:GR.ncells(space))
 
 rms(a, b) = sqrt(sum(abs2, vec(a) .- vec(b)) / length(b))
 
-# Is every vertex of destination cell `j` inside the lon/lat box, with `margin`
-# degrees to spare? Vertices only, so `margin` has to cover the bulge of the
-# geodesic edges between them — 0.02° is an order of magnitude more than the
-# widest cell here needs.
+# Every vertex of cell `j` inside `box`, with `margin` degrees to spare for the
+# bulge of the geodesic edges. Callers pass 0.02°, 10x what the widest cell needs.
 function ringinside(space, j, box, margin)
     for p in GI.getpoint(GI.getexterior(GR.getcell(space, j)))
         lon, lat = lonlat((GI.x(p), GI.y(p), GI.z(p)))
@@ -144,25 +130,17 @@ function ringinside(space, j, box, margin)
     return true
 end
 
-# --------------------------------------------------------------------------
-# (1) The adjacency hooks
-# --------------------------------------------------------------------------
-
 @testset "the hooks a gradient is recovered from" begin
     hex = DGG.DGGSpace(DGG.levelgrid(DGG.IGeo7System(), 2))
 
     @testset "a complete hexagonal level" begin
         rings = [GR.cellneighbors(hex, i) for i in 1:GR.ncells(hex)]
-        # Six neighbours everywhere but at the twelve pentagons, no cell is its
-        # own neighbour, and every index names a cell of this space. Two
-        # non-collinear neighbours is all a gradient fit needs, so every cell
-        # here carries a full second-order stencil.
+        # Two non-collinear neighbours suffice, so the pentagons fit a gradient too.
         @test all(r -> length(r) in (5, 6), rings)
         @test count(r -> length(r) == 5, rings) == 12
         @test all(i -> !(i in rings[i]), 1:GR.ncells(hex))
         @test all(r -> all(k -> 1 <= k <= GR.ncells(hex), r), rings)
-        # Adjacency is symmetric, which is what makes a chunk's halo — the
-        # cells that read it — the same set as the cells it reads.
+        # Symmetric adjacency makes a chunk's halo the same set as the cells it reads.
         @test all(i in rings[k] for i in 1:GR.ncells(hex) for k in rings[i])
     end
 
@@ -172,20 +150,16 @@ end
             Extents.Extent(X = (-140.0, 40.0), Y = (-20.0, 60.0)))
         part = DGG.DGGSpace(DGG.PartialGrid(region))
         rings = [GR.cellneighbors(part, i) for i in 1:GR.ncells(part)]
-        # Local indices into the collection, not the complete level's global
-        # ones: a stencil column is a source column of this space.
+        # Local indices, not the complete level's: a stencil column is a source column.
         @test all(r -> all(k -> 1 <= k <= GR.ncells(part), r), rings)
         @test all(i in rings[k] for i in 1:GR.ncells(part) for k in rings[i])
-        # The rim is real — a one-sided fit is the documented behaviour there,
-        # not an error — and the interior is untouched by the clipping.
+        # The rim's short stencils get a one-sided fit; the interior is untouched.
         @test count(r -> length(r) < 5, rings) > 0
         @test count(r -> length(r) >= 5, rings) > GR.ncells(part) ÷ 2
     end
 
     @testset "a Copernicus tile is a quadrilateral lattice" begin
-        # `Edge()`, so an interior pixel answers its four edge neighbours and
-        # not the eight-cell ring: four is already a well-conditioned fit for
-        # two parameters.
+        # `Edge()`: four neighbours, already a well-conditioned fit for two parameters.
         twin = CD.CopernicusDEMSystem{30}()
         nrows = Int(CD.lat_intervals(twin))
         ncols = Int(CD.ncols_at(twin, 46))
@@ -193,21 +167,17 @@ end
         @test GR.ncells(tile) == nrows * ncols
         interior = [j * ncols + i + 1 for j in 1:(nrows - 2) for i in 1:(ncols - 2)]
         @test all(length(GR.cellneighbors(tile, k)) == 4 for k in interior)
-        # The vertex-contact fallback counts the diagonals as well, which is
-        # exactly the reason this space answers from its own topology.
+        # The vertex-contact fallback adds the diagonals — why this space answers itself.
         @test length(invoke(GR.cellneighbors, Tuple{GR.RegridSpace,Int},
             tile, first(interior))) == 8
 
-        # At a pole the tile's top row of pixels are triangles meeting at the
-        # apex, so a vertex ring there is the whole row. The edge ring is not:
-        # the westmost pixel of the polemost row sees its eastward neighbour
-        # and the pixel below it, and nothing else.
+        # The edge ring stays small at a pole: the top row's pixels are triangles
+        # meeting at the apex, so a vertex ring there would be the whole row.
         polar = DGG.DGGSpace(DGG.subtree(twin, CD.tilecell(twin, 89, 10), 1))
         polecols = Int(CD.ncols_at(twin, 89))
         @test polecols >= 3
         ring = GR.cellneighbors(polar, 1)
         @test sort(ring) == [2, polecols + 1]
-        # The cell across the apex is in the vertex ring and not in this one.
         @test polecols in invoke(GR.cellneighbors, Tuple{GR.RegridSpace,Int}, polar, 1)
         @test !(polecols in ring)
     end
@@ -217,21 +187,17 @@ end
         tile = DGG.DGGSpace(DGG.subtree(twin, CD.tilecell(twin, 46, 10), 1))
         for space in (hex, tile)
             bound = GR.celldiameter(space)
-            # A bound, not a measurement: overestimating costs discovery work
-            # and nothing else, so the only law is that nothing exceeds it.
+            # A bound, not a measurement: overestimating only costs discovery work.
             @test bound > 0
             @test all(measureddiameter(space, i) <= bound
                       for i in 1:max(1, GR.ncells(space) ÷ 24):GR.ncells(space))
-            # The method's stencil reaches one cell past its source cell, so
-            # this is the radius discovery has to dilate a destination cap by.
+            # The stencil reaches one cell out, so discovery dilates a cap by this.
             @test GR.supportradius(SECOND, space) == bound
         end
     end
 
     @testset "the geometric fallback is a superset" begin
-        # On hexagons the vertex ring and the edge ring are the same six cells,
-        # so the grid's answer is not merely contained in the fallback's — it
-        # is the fallback's. What matters for the method is the containment.
+        # On hexagons the two rings are the same six cells; the method needs only ⊆.
         for i in (1, 17, 200, GR.ncells(hex))
             grid = GR.cellneighbors(hex, i)
             generic = invoke(GR.cellneighbors, Tuple{GR.RegridSpace,Int}, hex, i)
@@ -241,18 +207,12 @@ end
     end
 end
 
-# --------------------------------------------------------------------------
-# (2) A global lon/lat field onto IGeo7, and back
-# --------------------------------------------------------------------------
-
 const GLOBAL_DIMS = lonlatdims(1.0)
 const GLOBAL_DATA, GLOBAL_SPACE = meanraster(smooth, GLOBAL_DIMS)
 const GLOBAL_MEANS = vec(parent(GLOBAL_DATA))
 const HEX4 = DGG.DGGSpace(DGG.levelgrid(DGG.IGeo7System(), 4))
 const HEX4_MEANS = cellmeans(smooth, HEX4)
-# The `Weighted` answers both directions are judged by, built once: a weight
-# build over 64800 source cells is the cost of this file and nothing here needs
-# two of them.
+# Built once and shared below: a weight build over 64800 source cells is the cost.
 const ONTO_HEX = map(m -> eager(GLOBAL_DATA, HEX4, GLOBAL_SPACE, m), (FIRST, SECOND))
 const ONTO_RASTER = map(m -> eager(HEX4_MEANS, GLOBAL_SPACE, HEX4, m), (FIRST, SECOND))
 
@@ -261,10 +221,7 @@ const ONTO_RASTER = map(m -> eager(HEX4_MEANS, GLOBAL_SPACE, HEX4, m), (FIRST, S
     @test total ≈ 4pi * 2 rtol = 1e-6      # the field's mean is 2 by symmetry
 
     @testset "Extensive conserves the source integral" begin
-        # The gradient correction has zero mean over each source cell, so it
-        # moves mass between destinations and never creates or destroys it.
-        # First order is the same claim with a zero gradient; both hold to
-        # rounding, which is the point of "conservative".
+        # The gradient correction has zero mean per source cell: it moves mass, never makes it.
         for method in (FIRST, SECOND)
             sums = eager(GLOBAL_DATA, HEX4, GLOBAL_SPACE, method; policy = GR.Extensive())
             @test sum(sums) ≈ total rtol = 1e-12
@@ -275,18 +232,15 @@ const ONTO_RASTER = map(m -> eager(HEX4_MEANS, GLOBAL_SPACE, HEX4, m), (FIRST, S
         first, second = ONTO_HEX
         @test all(isfinite, first) && all(isfinite, second)
         e1, e2 = rms(first, HEX4_MEANS), rms(second, HEX4_MEANS)
-        # An order of magnitude, not a factor: the source cell is about a
-        # third of a destination cell across, so the flattening first order
-        # does is the whole of its error and the correction removes most of it.
+        # The source cell is a third of a destination across, so first order's error is
+        # all piecewise-constant flattening; the correction removes most of it. Hence 10x.
         @test e2 < e1 / 10
         @test maximum(abs, second .- HEX4_MEANS) < maximum(abs, first .- HEX4_MEANS) / 10
     end
 
     @testset "a chunked source gives the eager answer" begin
-        # The seam is what this is for: a destination straddling two source
-        # chunks takes weights from both blocks, and each block's stencils read
-        # one ring past its own cells. Sixteen source chunks put a seam through
-        # most of the destination.
+        # The seam is the point: each block's stencils read one ring past its own
+        # cells, and sixteen chunks put a seam through most of the destination.
         chunked = GR.RasterGrid(GLOBAL_DIMS;
             chunks = ([1:90, 91:180, 181:270, 271:360],
                       [1:45, 46:90, 91:135, 136:180]))
@@ -311,8 +265,7 @@ end
     @testset "the second-order error is the smaller one" begin
         first, second = ONTO_RASTER
         @test all(isfinite, first) && all(isfinite, second)
-        # The coarse-to-fine direction: here the source cell is the wide one,
-        # so both errors are larger and the ratio is what is under test.
+        # Coarse-to-fine: the source cell is the wide one, so the ratio is under test.
         @test rms(second, GLOBAL_MEANS) < rms(first, GLOBAL_MEANS) / 10
     end
 
@@ -324,33 +277,22 @@ end
     end
 end
 
-# --------------------------------------------------------------------------
-# (3) A Copernicus DEM tile and an IGeo7 covering
-# --------------------------------------------------------------------------
-
-# The scaled twin of the Copernicus lattice: 30 rows to a 1° tile rather than
-# 3600, so one tile's pixels are 900 cells and the whole section runs in
-# seconds. Nothing is downloaded; the pixels are the system's own geometry and
-# the elevations are synthetic.
+# A scaled twin of the Copernicus lattice: 30 rows to a 1° tile, not 3600, so a
+# tile is 900 cells and runs in seconds. Real geometry, synthetic elevations.
 const TWIN = CD.CopernicusDEMSystem{30}()
 const TILE_LAT, TILE_LON = 46, 10
 const TILE = DGG.DGGSpace(DGG.subtree(TWIN, CD.tilecell(TWIN, TILE_LAT, TILE_LON), 1))
 const TILE_BOX = Extents.Extent(X = (Float64(TILE_LON), TILE_LON + 1.0),
     Y = (Float64(TILE_LAT), TILE_LAT + 1.0))
-# Padded, so the covering's cells reach past the tile on every side and the
-# tile's pixels are covered whole. A `MultiOrderCoverage` of the tile box
-# exactly would leave the destination short of the pixel rows along the
-# northern and southern edges — the covering's edges are geodesics and the
-# pixel rows' are not — and no conservation claim would survive it.
+# The 0.05° pad puts the covering past the tile on every side, so every pixel is
+# covered whole: the covering's geodesic edges fall short of the pixel parallels.
 const COVER_LEVEL = 7
 const REGION = DGG.query(DGG.IGeo7System(),
     DGG.MultiOrderCoverage(Extents.Extent(X = (TILE_LON - 0.05, TILE_LON + 1.05),
         Y = (TILE_LAT - 0.05, TILE_LAT + 1.05))); level = COVER_LEVEL)
 const COVER_CELLS = DGG.CellVector(REGION)
 const COVER = DGG.DGGSpace(DGG.PartialGrid(COVER_CELLS))
-# The covering cells that lie wholly inside the tile, with room for the bulge
-# of their geodesic edges: the ones the tile can answer for, and the ones the
-# tile covers when the direction is reversed.
+# Covering cells wholly inside the tile: the tile can answer for these, both ways.
 const INNER = [j for j in 1:GR.ncells(COVER) if ringinside(COVER, j, TILE_BOX, 0.02)]
 
 @testset "a Copernicus tile onto an IGeo7 covering" begin
@@ -364,16 +306,12 @@ const INNER = [j for j in 1:GR.ncells(COVER) if ringinside(COVER, j, TILE_BOX, 0
     second = eager(dem, COVER, TILE, SECOND)
 
     @testset "values" begin
-        # Inside the tile every destination has full coverage and a value; the
-        # covering overhangs the tile, and those cells are missing on both
-        # methods alike.
+        # The covering overhangs the tile; those cells are missing on both methods alike.
         @test all(isfinite, first[INNER])
         @test all(isfinite, second[INNER])
         @test count(isnan, first) == count(isnan, second) > 0
-        # The gradient is doing something — a smooth DEM is nowhere flat — but
-        # a smooth field gives it nothing to overshoot with. The margin is a
-        # tenth of the field's range: the weights are signed, so this is a
-        # sanity bound, not a maximum principle the method claims.
+        # A smooth DEM is nowhere flat, so the correction is visibly at work. The
+        # tenth-of-range margin is a sanity bound: signed weights admit no maximum principle.
         margin = (hi - lo) / 10
         @test maximum(abs, second[INNER] .- first[INNER]) > 1.0
         @test all(lo - margin <= v <= hi + margin for v in second[INNER])
@@ -382,21 +320,16 @@ const INNER = [j for j in 1:GR.ncells(COVER) if ringinside(COVER, j, TILE_BOX, 0
     @testset "Extensive totals agree" begin
         e1 = eager(dem, COVER, TILE, FIRST; policy = GR.Extensive())
         e2 = eager(dem, COVER, TILE, SECOND; policy = GR.Extensive())
-        # The covering takes every pixel whole, so first order recovers the
-        # tile's integral to rounding and second order has to move mass around
-        # without changing the total. The gradient terms cancel numerically
-        # rather than identically — each source cell's first moment about its
-        # own mean is a sum of overlap moments that cancels to about 1e-10 of
-        # the total, not to an ulp — so this is the tolerance, not 1e-15.
+        # The covering takes every pixel whole, so first order recovers the tile's
+        # integral to rounding. 1e-9 is the gradient terms' cancellation: each source
+        # cell's first moment about its own mean cancels to about 1e-10 of the total.
         @test sum(e1) ≈ mass(dem, TILE) rtol = 1e-12
         @test sum(e2) ≈ sum(e1) rtol = 1e-9
     end
 end
 
 @testset "an IGeo7 patch back onto the Copernicus tile" begin
-    # The reverse direction with the roles that make conservation testable:
-    # the source is the covering cells the tile contains, so the tile covers
-    # every one of them whole.
+    # Reversed: the source is the cells the tile contains, so it covers each whole.
     patch = DGG.DGGSpace(DGG.PartialGrid(DGG.IGeo7System(), COVER_LEVEL,
         sort!([COVER_CELLS[j] for j in INNER])))
     @test GR.ncells(patch) == length(INNER)
@@ -407,10 +340,8 @@ end
         @test all(isfinite, sums)
         @test sum(sums) ≈ total rtol = tol
     end
-    # A constant field has a zero gradient, so the second-order answer is the
-    # first-order one — to rounding, not bit for bit: the stencil's self term
-    # is the negated sum of its neighbour coefficients, and that sum cancels
-    # numerically rather than identically.
+    # A constant field has zero gradient, so second order reproduces first to rounding:
+    # the stencil's self term is the negated neighbour sum, and that cancellation sets the tol.
     ones1 = eager(ones(GR.ncells(patch)), TILE, patch, FIRST; policy = GR.Extensive())
     ones2 = eager(ones(GR.ncells(patch)), TILE, patch, SECOND; policy = GR.Extensive())
     @test ones1 ≈ ones2 rtol = 1e-12
@@ -418,8 +349,7 @@ end
 end
 
 @testset "the tutorial's path: a lon/lat DEM onto a covering" begin
-    # `RasterGrid` source, `DGGSpace(PartialGrid)` destination — what
-    # `docs/src/tutorials/hydrology.jl` does, at a size that runs in a second.
+    # What `docs/src/tutorials/hydrology.jl` does, at a size that runs in a second.
     dims = lonlatdims(1 / 30; lon = (Float64(TILE_LON), TILE_LON + 1.0),
         lat = (Float64(TILE_LAT), TILE_LAT + 1.0))
     data, space = meanraster(terrain, dims)
@@ -436,20 +366,12 @@ end
     # Both totals are the raster's integral: the covering takes it whole.
     @test sum(results[1][1]) ≈ total rtol = 1e-12
     @test sum(results[2][1]) ≈ total rtol = 1e-9
-    # And on the cells the covering can actually answer for, the correction is
-    # an improvement rather than merely a difference.
     @test rms(results[2][2][INNER], exact[INNER]) <
           rms(results[1][2][INNER], exact[INNER])
 end
 
-# --------------------------------------------------------------------------
-# (4) A masked source
-# --------------------------------------------------------------------------
-
 @testset "a hole in the source" begin
-    # Coverage is kept apart from the signed weights, so `Weighted` thresholds
-    # on the area a destination actually draws valid values from, not on the
-    # sum of its weights — which the gradient terms make signed.
+    # `Weighted` thresholds on valid area; signed gradient weights force separate tracking.
     step = 3.0
     dims = lonlatdims(step)
     data, space = meanraster(smooth, dims)
@@ -459,8 +381,7 @@ end
     for (i, x) in enumerate(DD.lookup(dims[1])), (j, y) in enumerate(DD.lookup(dims[2]))
         (x in xs && y in ys) && (holed[i, j] = NaN)
     end
-    # The blanked area is the union of those cells, which is their centres
-    # grown by half a step — not the box that selected them.
+    # The blanked area is those cells' centres grown by half a step, not the box.
     hole = Extents.Extent(X = (minimum(xs) - step / 2, maximum(xs) + step / 2),
         Y = (minimum(ys) - step / 2, maximum(ys) + step / 2))
     @test count(isnan, parent(holed)) == length(xs) * length(ys) > 16
@@ -474,11 +395,8 @@ end
     @test length(inside) > 4
     @test all(isnan, masked[inside])
 
-    # Far from the hole nothing moves. "Far" is two rings out: a source cell
-    # next to the hole has a NaN in its own gradient stencil, which the fixed
-    # operator reads as zero and which therefore biases that cell — the
-    # documented limit of the method, and the reason `Conservative` is the
-    # advice for a source with missing values in it.
+    # "Far" is two rings out: a gradient stencil reaches one source ring past the
+    # cells a destination overlaps, so everything nearer degrades to first order.
     centre = GO.UnitSphericalPoint(1.0, 0.0, 0.0)
     far = [j for j in 1:GR.ncells(dst)
            if US.spherical_distance(GR.cellcentroid(dst, j), centre) > 0.6]
@@ -486,8 +404,7 @@ end
     @test masked[far] ≈ full[far]
     @test all(isfinite, full)
 
-    # `Extensive` reports the covered integral, which the hole shrinks but
-    # never makes missing.
+    # `Extensive` reports the covered integral: the hole shrinks it, never voids it.
     sums = eager(holed, dst, space, SECOND; policy = GR.Extensive())
     @test all(isfinite, sums)
     @test 0 < sum(sums) < mass(vec(parent(data)), space)

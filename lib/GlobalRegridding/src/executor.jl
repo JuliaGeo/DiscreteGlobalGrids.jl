@@ -372,22 +372,19 @@ end
 
 Take the first-order sum wherever a signed weight reached an invalid source.
 
-`num` is the sum a signed block accumulated, `fallback` the same sum over the
-block's coverage weights alone, and `taint` the weight that reached a hole
-([`applyblock!`](@ref)). A destination with `taint > 0` takes `fallback`, which
-is what [`Conservative`](@ref) would have given it.
+`num` is a signed block's sum, `fallback` the same sum over its coverage weights
+alone, `taint` the weight that reached a hole ([`applyblock!`](@ref)). A
+destination with `taint > 0` takes `fallback` — [`Conservative`](@ref)'s answer.
 
-The correction a signed method adds is fitted from a source cell's neighbours,
-so one hole biases every neighbour it has by a share of the *field's* value, not
-of its gradient — and, because a stencil term sits on a neighbour's column, that
-bias never reaches `cover` for [`Weighted`](@ref) to threshold against. Dropping
-the correction where it was fitted from a hole is the conservative reading: a
-destination away from every hole keeps the better answer.
+A signed correction is fitted from a source cell's neighbours, so one hole biases
+every neighbour by a share of the *field's* value, not its gradient. That bias
+sits on a neighbour's column, invisible to the `cover` [`Weighted`](@ref)
+thresholds against.
 
-Accuracy near a hole, not conservation, is what this trades. The correction sums
-to zero over the destinations covering one source cell, so replacing it for some
-of them and not others leaves an [`Extensive`](@ref) total short by the
-difference. Build the plan against a known mask to keep both.
+The trade is accuracy near a hole, not conservation: the correction sums to zero
+over the destinations covering one source cell, so replacing it for some of them
+leaves an [`Extensive`](@ref) total short. Build the plan against a known mask to
+keep both.
 """
 function degradetainted!(num::AbstractVector{Float64},
     fallback::AbstractVector{Float64}, taint::AbstractVector{Float64})
@@ -402,20 +399,21 @@ end
 
 Finalize one destination chunk after all source blocks have accumulated.
 
-`num` is the weighted sum with invalid sources contributing zero, `cover` the
-weight of the sources that were valid — the applied blocks' coverage weights, or
-their value weights where they report none — and `total` the reference weight
-the applied blocks accumulated ([`addreference!`](@ref)) — the denominator the
-method reported, or the row sums when it reported none.
+  - `num` is the weighted sum, with invalid sources contributing zero.
+  - `cover` is the weight of the sources that were valid: the applied blocks'
+    coverage weights, or their value weights where they report none.
+  - `total` is the reference weight the applied blocks accumulated
+    ([`addreference!`](@ref)): the denominator the method reported, or the row
+    sums when it reported none.
 
-  - [`Extensive`](@ref): `num`.
+What `policy` writes into `out`:
+
+  - [`Extensive`](@ref): `num`, raw and never blanked.
   - [`Weighted`](@ref)`(t)`: `num / cover`, blank where `cover ≤ 0` or
     `cover < t · total`.
 
-`Weighted` always normalizes by valid coverage and applies its threshold against
-`total`. `missingval` is the sentinel blanked cells receive, and defaults to
-`missing` when `out` holds it and NaN otherwise ([`outputmissingval`](@ref)).
-`Extensive` returns raw sums and never blanks.
+`missingval` is the sentinel blanked cells receive, defaulting to `missing` when
+`out` holds it and NaN otherwise ([`outputmissingval`](@ref)).
 """
 function finalize! end
 

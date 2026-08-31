@@ -16,23 +16,18 @@ abstract type AbstractRegriddingPlan end
 
 Store one chunk pair's immutable weights.
 
-  - `weights` uses chunk-local indices; `denom` contains optional
-    per-destination denominators. Summing blocks across source chunks
-    reconstructs the full operator.
-  - `weights` may be signed: a method whose stencil corrects as well as averages
-    subtracts from some sources.
-  - `coverage` is the non-negative per-(destination, source) weight a valid
-    source contributes to its destination's coverage, over the same indices as
-    `weights`, and `nothing` when `weights` serves as its own coverage — which
-    it does exactly when every entry is non-negative. Execution reads it only
-    where a validity mask says some sources are missing.
-  - Construction from [`WeightCOO`](@ref) sums duplicate entries, and assembles
-    the coverage matrix when the COO carries a coverage list of its own.
-  - `reference` is the per-destination weight the values are normalized against,
-    held once and reusable by every application: `denom` itself on a denominated
-    block (`reference === denom`), the row sums of `weights` otherwise, computed
-    when the block is built.
-  - Nothing outside the block recomputes or copies the reference.
+  - `weights` uses chunk-local indices and may be signed, a correcting stencil
+    subtracting from some sources; `denom` holds optional per-destination
+    denominators. Summing blocks across source chunks rebuilds the operator.
+  - `coverage` is the non-negative weight a valid source contributes to its
+    destination's coverage, over `weights`' indices, and `nothing` exactly when
+    every `weights` entry is non-negative and serves as its own coverage. Read
+    only where a validity mask reports missing sources.
+  - Construction from [`WeightCOO`](@ref) sums duplicate entries and assembles
+    coverage when the COO carries a list of its own.
+  - `reference` is what values normalize against, computed at build time and
+    reused by every application: `denom` on a denominated block, the row sums of
+    `weights` otherwise. Nothing outside the block recomputes or copies it.
 """
 struct WeightBlock{M<:AbstractMatrix{Float64},D<:Union{Nothing,Vector{Float64}},
                    C<:Union{Nothing,AbstractMatrix{Float64}}}

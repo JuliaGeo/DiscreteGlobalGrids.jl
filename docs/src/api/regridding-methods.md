@@ -43,15 +43,13 @@ repeats one value across every cell inside it. What the gradient buys:
     normalizes and thresholds by.
   - **The weights stay reusable across slices**, because the gradient is a fixed
     operator over the source's geometry.
-  - **A hole degrades its own neighbourhood, and nothing else.** A fixed
-    operator would read a missing source as zero and bias the gradient of every
-    cell next to it by a share of the field's own value, where the coverage
-    threshold could never see it. So a destination whose weights reached a hole
-    — over it, or through a neighbour's stencil — takes the `Conservative()`
-    answer instead, and the rest keep the correction. The one cost is that an
-    `Extensive` total spanning a hole is no longer exact: the correction sums to
-    zero over the destinations covering a source cell, and dropping it for some
-    of them breaks that. Build the plan against a known mask to keep both.
+  - **A hole degrades its own neighbourhood, and nothing else.** A destination
+    whose weights reached a hole — over it, or through a neighbour's stencil —
+    takes the `Conservative()` answer; the rest keep the correction. Otherwise a
+    missing source read as zero would bias every neighbouring gradient by a share
+    of the field's own value, where the coverage threshold could never see it.
+    The cost is that an `Extensive` total spanning a hole is no longer exact.
+    Build the plan against a known mask to keep both.
 
 ## Point samples
 
@@ -196,11 +194,16 @@ destination finer than the source it has nothing finer to say.
 `GlobalRegridding.RegridSpace`, and both have geometric fallbacks:
 
   - `GlobalRegridding.cellneighbors(space, i)` returns the local indices of the
-    cells adjacent to cell `i`. A `DGGSpace` answers with the grid's own edge
-    one-ring, clipped to the collection; a `RasterGrid` with its lattice
-    neighbours; a space with neither is asked for the cells whose polygons share
-    a vertex with `i`'s, found through its cell tree. The fit is indifferent to
-    order and count, so four, six or eight are all fine.
+    cells adjacent to cell `i`:
+
+      - a `DGGSpace` answers with the grid's own edge one-ring, clipped to the
+        collection;
+      - a `RasterGrid` with its lattice neighbours;
+      - a space with neither is asked for the cells whose polygons share a
+        vertex with `i`'s, found through its cell tree.
+
+    The fit is indifferent to order and count, so four, six or eight are all
+    fine.
   - `GlobalRegridding.celldiameter(space)` bounds every cell's angular diameter,
     so that chunk discovery pairs a destination with each source chunk whose ring
     it can reach. Structured spaces answer from their resolution; the fallback

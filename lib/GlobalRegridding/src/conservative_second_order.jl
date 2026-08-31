@@ -5,56 +5,48 @@
     ConservativeSecondOrder()
 
 Weight source cells by their spherical intersection area with each destination,
-and correct each overlap by the source cell's recovered gradient, so that a
-field varying linearly across a source cell is carried into the destinations
-that split it rather than flattened to the cell's mean.
+correcting each overlap by the source cell's recovered gradient, so a field
+varying linearly across a cell reaches the destinations splitting it.
 
-  - Each source cell `i` is reconstructed as `f̄ᵢ + gᵢ ⋅ (u − ūᵢ)` in the tangent
-    plane at its own mean position, where `gᵢ` is the unweighted least-squares
-    fit of the neighbouring cells' means ([`cellneighbors`](@ref),
-    [`gradientstencil!`](@ref)). The correction has zero mean over the cell, so
-    the integral of every source cell the destination covers entirely is
-    preserved exactly whatever the gradient; that, not positivity, is what
-    makes the method conservative. A cell the destination covers only in part
-    — at the rim of a partial destination — hands over the reconstruction's
-    integral over the covered part, which differs from the flat share
-    [`Conservative`](@ref) hands over by the gradient's moment there.
-  - A destination's value weights are `A + M G`: the overlap areas
-    ([`Conservative`](@ref) exactly, bit for bit) plus each overlap's first
-    moment about the source mean folded through the gradient stencil. Weights
-    are therefore signed and can reach one cell past the overlapping sources;
-    a destination can overshoot the source values it draws on.
-  - The error in a smooth field is second order in the source cell width,
-    against first order for [`Conservative`](@ref): each cell's reconstruction
-    is exact for a field linear in that cell's tangent coordinates, and the
-    chart's curvature is the order below. A cell with fewer than two
-    non-collinear neighbours keeps a zero gradient, which is first order there.
-  - Coverage is the non-negative overlap area, reported apart from the signed
-    weights, so [`Weighted`](@ref) normalizes and thresholds by area covered
-    and [`Extensive`](@ref) preserves the covered integral.
-  - A destination whose weights reached a missing source — over it, or through
-    a neighbour's gradient stencil — falls back to the first-order answer
-    ([`degradetainted!`](@ref)), because a fixed operator would otherwise read
-    the hole as zero and bias that neighbour's gradient by a share of the
-    field's own value. The rest of the destinations keep the correction, and
-    only [`Extensive`](@ref) totals spanning a hole lose their exactness.
-  - Requires cell polygons on both sides, and on the source
-    [`cellneighbors`](@ref) and [`celldiameter`](@ref); both have geometric
-    fallbacks. Source and destination manifolds must match.
+Each source cell `i` is reconstructed as `f̄ᵢ + gᵢ ⋅ (u − ūᵢ)` in the tangent
+plane at its mean position, with `gᵢ` the least-squares fit of its neighbours'
+means ([`cellneighbors`](@ref), [`gradientstencil!`](@ref)).
+
+  - **Conservative** because the correction has zero mean over the cell: a
+    destination covering a source cell whole gets its integral exactly, whatever
+    the gradient. At the rim of a partial destination the covered part's
+    integral differs from [`Conservative`](@ref)'s flat share by the gradient's
+    moment there.
+  - **Second order** in the source cell width against `Conservative`'s first,
+    the chart's curvature being the order below. A cell with fewer than two
+    non-collinear neighbours keeps a zero gradient, first order there.
+  - **Signed weights** `A + M G`: the overlap areas (`Conservative`'s, bit for
+    bit) plus each overlap's first moment folded through the gradient stencil.
+    They reach one cell past the overlapping sources, and a destination can
+    overshoot the values it draws on. Coverage stays the non-negative area, so
+    [`Weighted`](@ref) thresholds and [`Extensive`](@ref) totals by area.
+  - **Holes degrade locally.** A destination whose weights reached a missing
+    source — over it, or through a neighbour's stencil — falls back to first
+    order ([`degradetainted!`](@ref)); otherwise a hole read as zero would bias
+    that neighbour's gradient by a share of the field's own value. Only
+    [`Extensive`](@ref) totals spanning a hole lose exactness.
+
+Requires cell polygons on both sides, [`cellneighbors`](@ref) and
+[`celldiameter`](@ref) on the source (both have geometric fallbacks), and
+matching manifolds.
 """
 struct ConservativeSecondOrder <: AbstractRegriddingMethod end
 
-# A block's weights for the sources of a chunk read the overlaps of the cells
-# around them, one ring out, so discovery must pair a destination with every
-# source chunk within one cell of it.
+# A block's weights read the overlaps of the ring one cell out, so discovery
+# must pair a destination with every source chunk within one cell of it.
 supportradius(::ConservativeSecondOrder, src_space::RegridSpace) =
     celldiameter(src_space)
 
 preparesdestination(::ConservativeSecondOrder, dst_space::RegridSpace) =
     expensivecellgeometry(dst_space)
 
-# The gradient correction is signed, so coverage rides separately and a hole can
-# reach a destination without reaching it.
+# Coverage rides separately because the gradient correction is signed: a hole
+# can reach a destination without reaching its coverage.
 signedweights(::ConservativeSecondOrder) = true
 
 # `BlockAreaOperator` keeps an overlap the way the pair operator does.
@@ -65,21 +57,18 @@ signedweights(::ConservativeSecondOrder) = true
 """
     GradientStencils
 
-The reconstruction of every cell in a block's extended source set — a chunk's
-cells and their one ring — ready to fold overlaps through, in one flat layout:
+Every cell of a block's extended source set — a chunk's cells and their one
+ring — in one flat layout, allocating nothing per cell across a sweep of
+millions.
 
-  - Cell `p` has tangent frame `(e1[p], e2[p])` and mean position `mean[p]`, and
-    its value-weight terms are `cols[k] => coeffs[k]` for
-    `k in ptr[p]:ptr[p+1]-1`.
-  - The cell's gradient is `Σ coeffs[k] f[cols[k]]`, the self term already
-    merged, so a constant field has zero gradient exactly.
-  - `cols` are chunk-local source columns only; a neighbour outside the chunk
-    belongs to another block's stencil, which folds its own share of this cell.
-  - A cell with no terms has no gradient: no area, or too few neighbours to fix
-    one.
+Cell `p` has frame `(e1[p], e2[p])`, mean position `mean[p]`, and terms
+`cols[k] => coeffs[k]` for `k in ptr[p]:ptr[p+1]-1`; its gradient is
+`Σ coeffs[k] f[cols[k]]` with the self term merged, so a constant field gives
+zero exactly.
 
-Flat rather than one vector per cell because a whole-space build sweeps
-millions of cells, and the sweep is otherwise its allocations.
+`cols` names chunk-local columns only — a neighbour outside the chunk is another
+block's to fold. A cell with no terms has no gradient: no area, or too few
+neighbours.
 """
 struct GradientStencils
     e1::Vector{NTuple{3,Float64}}
@@ -130,8 +119,7 @@ end
     _gradientstencils(src_space, ext_inds, extmap, srcmap) -> GradientStencils
 
 The stencils of every cell in `ext_inds`, restricted to the chunk `srcmap`
-names. A cell without area, or whose neighbours cannot fix a gradient, gets
-no terms and keeps first order.
+names. A cell without area, or too few neighbours, gets no terms.
 """
 function _gradientstencils(src_space::RegridSpace, ext_inds, extmap, srcmap)
     n = length(ext_inds)
@@ -193,13 +181,12 @@ end
 """
     buildweights!(coo, ::ConservativeSecondOrder, dst_space, dst_inds, src_space, src_inds)
 
-Append the second-order weights for the two chunks: each overlap's area for
-its own source, plus its first moment folded through the gradient stencils of
-every source cell it lies in. Coverage and denominators carry the areas alone.
+Append the two chunks' second-order weights: each overlap's area for its own
+source, plus its first moment folded through the stencils of every source cell
+it lies in. Coverage and denominators carry the areas alone.
 
-Overlaps are measured for the chunk's cells and their one ring, since a
-weight on a chunk cell reads the moments of the cells around it, but weights
-are emitted for the chunk's own cells only.
+Overlaps are measured over the chunk's cells and their one ring; weights are
+emitted for the chunk's own cells only.
 """
 function buildweights!(coo::WeightCOO, ::ConservativeSecondOrder,
     dst_space::RegridSpace, dst_inds, src_space::RegridSpace, src_inds)

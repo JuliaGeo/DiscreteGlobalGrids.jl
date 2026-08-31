@@ -173,8 +173,7 @@ GR.cellneighbors(space::DGGSpace, i::Int) =
     GlobalRegridding.celldiameter(space::DGGSpace) -> Float64
 
 Twice the widest chunk cover, in radians: the same bound
-[`supportradius`](@ref GlobalRegridding.supportradius)`(::BarycentricPoint, ::DGGSpace)`
-rests on.
+`supportradius(::BarycentricPoint, ::DGGSpace)` rests on.
 
 Every cell lies inside its own chunk's cover, so twice the widest of those
 covers bounds any cell's diameter.

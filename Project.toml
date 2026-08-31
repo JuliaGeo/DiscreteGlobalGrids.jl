@@ -4,12 +4,7 @@ version = "0.1.0"
 authors = ["Anshul Singhvi <anshulsinghvi@gmail.com>", "Fabian Gans <fabian.gans@bgc-jena.mpi.de>", "Maarten Pronk <git@evetion.nl>", "Alexander Kmoch <alexander.kmoch@ut.ee>", "and contributors"]
 
 [workspace]
-projects = [
-    "test", "docs", "benchmark",
-    "lib/DiscreteGlobalGridsConformanceTesting",
-    "lib/DiscreteGlobalGridsVisualization",
-    "lib/GlobalRegridding",
-]
+projects = ["test", "docs", "benchmark", "lib/DiscreteGlobalGridsConformanceTesting", "lib/DiscreteGlobalGridsVisualization", "lib/GlobalRegridding"]
 
 [deps]
 ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
@@ -29,14 +24,12 @@ SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
-[extensions]
-MakieExt = ["Makie"]
-DiscreteGlobalGridsZarrExt = ["Zarr"]
+[sources.GlobalRegridding]
+path = "lib/GlobalRegridding"
 
-[sources]
-# Not a workspace member: it resolves its own Manifest, so
-# `julia --project=lib/GlobalRegridding` stays self-contained.
-GlobalRegridding = {path = "lib/GlobalRegridding"}
+[extensions]
+DiscreteGlobalGridsZarrExt = ["Zarr"]
+MakieExt = ["Makie"]
 
 [compat]
 ConservativeRegridding = "0.2.10"
@@ -44,6 +37,7 @@ DE9IM = "0.1"
 DiskArrays = "0.4"
 GeometryOps = "0.1.45"
 GeometryOpsCore = "0.1.12"
+Makie = "0.24"
 SmallCollections = "0.6.3"
 Zarr = "0.10"
 julia = "1.11"

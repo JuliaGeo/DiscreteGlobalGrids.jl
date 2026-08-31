@@ -89,6 +89,24 @@ outputsampling(::BarycentricPoint) = DD.Lookups.Points()
 # Weight construction
 
 """
+    CoverageCOO()
+
+A chunk-local coordinate list of coverage weights: the non-negative share of a
+destination one source cell covers, in the weight list's own convention.
+[`WeightCOO`](@ref) holds one only when its value weights cannot serve as
+coverage themselves.
+"""
+struct CoverageCOO
+    rows::Vector{Int}
+    cols::Vector{Int}
+    vals::Vector{Float64}
+end
+
+CoverageCOO() = CoverageCOO(Int[], Int[], Float64[])
+
+Base.length(cov::CoverageCOO) = length(cov.vals)
+
+"""
     WeightCOO(ndst::Int)
 
 A chunk-local coordinate-list accumulator over `ndst` destination cells. `rows`
@@ -99,6 +117,12 @@ and `cols` are chunk-local indices within the builder's `dst_inds` and
 builder declares them, through [`markdenominated!`](@ref) or the first
 [`adddenom!`](@ref); a method that reports none — every point sample — leaves it
 `nothing` and allocates no denominator vector.
+
+`coverage` holds an optional [`CoverageCOO`](@ref), `nothing` until
+[`markcovered!`](@ref) or the first [`addcoverage!`](@ref) declares it. Weights
+that are all non-negative double as coverage and need no list. Signed weights do
+— summed over the valid sources they measure nothing, being off by the
+correction and possibly negative.
 """
 mutable struct WeightCOO
     const ndst::Int
@@ -106,22 +130,28 @@ mutable struct WeightCOO
     const cols::Vector{Int}
     const vals::Vector{Float64}
     denom::Union{Nothing,Vector{Float64}}
+    coverage::Union{Nothing,CoverageCOO}
 end
 
-WeightCOO(ndst::Integer) = WeightCOO(Int(ndst), Int[], Int[], Float64[], nothing)
+WeightCOO(ndst::Integer) =
+    WeightCOO(Int(ndst), Int[], Int[], Float64[], nothing, nothing)
 
 Base.length(coo::WeightCOO) = length(coo.vals)
 
 Base.show(io::IO, coo::WeightCOO) =
     print(io, "WeightCOO(ndst=", coo.ndst, ", entries=", length(coo),
-        coo.denom === nothing ? "" : ", denom", ")")
+        coo.denom === nothing ? "" : ", denom",
+        coo.coverage === nothing ? "" : ", coverage", ")")
 
 """
     addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
 
-Add `w` to the weight of source `src_local` in destination `dst_local`. Both
-are chunk-local indices within the builder's `dst_inds` and `src_inds`, not the
-spaces' local indices.
+Add `w` to the value weight of source `src_local` in destination `dst_local`,
+both chunk-local indices within the builder's `dst_inds` and `src_inds`.
+
+`w` may be negative, in which case the method must report coverage separately
+through [`addcoverage!`](@ref): such weights no longer measure how much of a
+destination a source covers.
 """
 function addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
     push!(coo.rows, dst_local)
@@ -129,6 +159,61 @@ function addweight!(coo::WeightCOO, dst_local::Int, src_local::Int, w::Real)
     push!(coo.vals, Float64(w))
     return coo
 end
+
+"""
+    addcoverage!(coo::WeightCOO, dst_local::Int, src_local::Int, a::Real)
+
+Add `a` to the coverage of destination `dst_local` by source `src_local`, in
+[`addweight!`](@ref)'s chunk-local indices, and declare that `coo` carries
+coverage. `a` is the non-negative weight — an overlap area, conservatively —
+`src_local` contributes when valid.
+
+Only signed methods need this; non-negative weights serve as their own coverage.
+"""
+function addcoverage!(coo::WeightCOO, dst_local::Int, src_local::Int, a::Real)
+    cov = coo.coverage
+    if cov === nothing
+        cov = CoverageCOO()
+        coo.coverage = cov
+    end
+    push!(cov.rows, dst_local)
+    push!(cov.cols, src_local)
+    push!(cov.vals, Float64(a))
+    return coo
+end
+
+"""
+    signedweights(method::AbstractRegriddingMethod) -> Bool
+
+Return whether `method` emits negative value weights, and so reports coverage
+separately ([`addcoverage!`](@ref)). Defaults to `false`.
+
+The lazy path reads this to size accumulators before it has a block: signed
+weights let a hole reach a destination without reaching its coverage, so the
+executor carries the two extra sums [`degradetainted!`](@ref) needs. A method
+forwarding [`buildweights!`](@ref) to another should forward this too.
+"""
+signedweights(::AbstractRegriddingMethod) = false
+
+"""
+    markcovered!(coo::WeightCOO)
+
+Declare that `coo` carries a coverage list, adding nothing to it, and return
+`coo`. Allocating the empty list here gives a builder that covers no destination
+a block whose coverage is a zero operator, not its signed value weights.
+"""
+function markcovered!(coo::WeightCOO)
+    coo.coverage === nothing && (coo.coverage = CoverageCOO())
+    return coo
+end
+
+"""
+    hascoverage(coo::WeightCOO) -> Bool
+
+Return whether `coo` carries a coverage list of its own. When it does not, its
+value weights are the coverage.
+"""
+hascoverage(coo::WeightCOO) = coo.coverage !== nothing
 
 """
     adddenom!(coo::WeightCOO, dst_local::Int, d::Real)
@@ -315,6 +400,11 @@ Return each weighted sum divided by its valid source weight. Destinations below
 the valid-coverage `threshold` become missing. `threshold` must be in `[0, 1]`.
 Coverage is measured against the source-covered portion, not the full
 destination area.
+
+The valid source weight is accumulated from the block's coverage weights, or
+from its value weights when it reports none ([`WeightBlock`](@ref)); a method
+with signed value weights is therefore normalized by the coverage it declared,
+not by its own weights.
 """
 struct Weighted <: AbstractMissingPolicy
     threshold::Float64

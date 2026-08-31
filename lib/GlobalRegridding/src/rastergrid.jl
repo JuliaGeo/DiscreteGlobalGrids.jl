@@ -1055,3 +1055,55 @@ chartspacing(space::RasterGrid) =
 
 _maxstep(e::Vector{Float64}) =
     maximum(abs(e[k+1] - e[k]) for k in 1:(length(e)-1))
+
+# Cell adjacency
+
+"""
+    cellneighbors(space::RasterGrid, i::Int)
+
+The lattice's edge neighbours of cell `i`: `(ix ± 1, iy)` and `(ix, iy ± 1)`, up
+to four of them, read off the raster's own subscript arithmetic rather than off
+the chart.
+
+X wraps only when the raster spans its chart's full period, which is what
+[`chartperiod`](@ref) reports; a regional raster and the Y axis both simply have
+fewer neighbours at their rim. A raster two cells wide does not wrap either: its
+east and west neighbour are the same cell, and adjacency names it once.
+"""
+function cellneighbors(space::RasterGrid, i::Int)
+    ix, iy = cellsubscript(space, i)
+    nx, ny = _nx(space), _ny(space)
+    wrapx = chartperiod(space)[1] !== nothing && nx > 2
+    out = Vector{Int}()
+    sizehint!(out, 4)
+    if ix > 1
+        push!(out, localindex(space, ix - 1, iy))
+    elseif wrapx
+        push!(out, localindex(space, nx, iy))
+    end
+    if ix < nx
+        push!(out, localindex(space, ix + 1, iy))
+    elseif wrapx
+        push!(out, localindex(space, 1, iy))
+    end
+    iy > 1 && push!(out, localindex(space, ix, iy - 1))
+    iy < ny && push!(out, localindex(space, ix, iy + 1))
+    return out
+end
+
+"""
+    celldiameter(space::RasterGrid)
+
+The two axis bounds of [`chartspacing`](@ref) added together, capped at `pi`: a
+cell is one step along each axis, and a diagonal is no longer than the sum of
+the two sides.
+
+This reads the forward chart alone, so it holds whether or not
+[`hascellchart`](@ref) is true. A raster whose chart cannot bound a native step
+in radians answers neither this nor `chartspacing`, and says so through
+`_spherical_step_bounds_radians`.
+"""
+function celldiameter(space::RasterGrid)
+    dx, dy = chartspacing(space)
+    return min(Float64(pi), Float64(dx) + Float64(dy))
+end

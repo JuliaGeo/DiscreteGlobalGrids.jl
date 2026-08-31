@@ -6,17 +6,18 @@ CurrentModule = DiscreteGlobalGrids
 
 `regrid` takes a `method`, and the choice is a statement about what the source
 *values mean*, not about how accurate you would like the answer to be. There are
-three readings of the data, and four names for them.
+three readings of the data, and five names for them.
 
 | method | what a destination cell gets | conserves the integral |
 |---|---|---|
 | `Conservative()` | the mean of the source values over the ground the cell covers | yes |
+| `ConservativeSecondOrder()` | the same, with each source cell read as a plane through its neighbours rather than a step | yes |
 | `BarycentricPoint()` | a sample at the cell's centre, interpolated between the source sample sites around it | no |
 | `NearestCell()` | the value of the source cell the centre falls in | no |
 | `DirectNearest()` | the same value, without building an operator for it | no |
 
-`Conservative()` is the default, and the only one whose output is an area
-quantity.
+`Conservative()` is the default; it and `ConservativeSecondOrder()` are the
+only ones whose output is an area quantity.
 
 ## Area means
 
@@ -25,6 +26,30 @@ meets and weights by the overlap area. If the source values are averages over
 their own cells — most model output, most gridded observations, a DEM
 distributed as area means — this is the reading that keeps the field's integral,
 and no other method does.
+
+`ConservativeSecondOrder()` is the same reading with a better reconstruction: it
+fits a gradient to each source cell from the means of the cells adjacent to it
+and carries that slope into the overlaps. `Conservative()` treats each source
+cell as flat at its mean, and so, on a destination finer than the source,
+repeats one value across every cell inside it. What the gradient buys:
+
+  - **The integral is kept exactly as before.** The correction has zero mean
+    over the source cell, so the total cannot move — though the weights are
+    signed now, and a destination can overshoot the values it draws on.
+  - **The error on a smooth field is second order** in the source cell width
+    rather than first. On a field with a front, expect a small over- and
+    undershoot on either side of it.
+  - **Coverage is still the overlap area**, and so is what `Weighted`
+    normalizes and thresholds by.
+  - **The weights stay reusable across slices**, because the gradient is a fixed
+    operator over the source's geometry.
+  - **A hole degrades its own neighbourhood, and nothing else.** A destination
+    whose weights reached a hole — over it, or through a neighbour's stencil —
+    takes the `Conservative()` answer; the rest keep the correction. Otherwise a
+    missing source read as zero would bias every neighbouring gradient by a share
+    of the field's own value, where the coverage threshold could never see it.
+    The cost is that an `Extensive` total spanning a hole is no longer exact.
+    Build the plan against a known mask to keep both.
 
 ## Point samples
 
@@ -162,6 +187,27 @@ truth = [peak(DGG.cell_centroid(dst, c)) for c in DGG.CellVector(dst)]
 The area column is not wrong: over a destination cell coarser than the source it
 is the better answer, and it is the only one that keeps the total. On a
 destination finer than the source it has nothing finer to say.
+
+## Making a source space gradient-aware
+
+`ConservativeSecondOrder()` needs two more things of a source
+`GlobalRegridding.RegridSpace`, and both have geometric fallbacks:
+
+  - `GlobalRegridding.cellneighbors(space, i)` returns the local indices of the
+    cells adjacent to cell `i`:
+
+      - a `DGGSpace` answers with the grid's own edge one-ring, clipped to the
+        collection;
+      - a `RasterGrid` with its lattice neighbours;
+      - a space with neither is asked for the cells whose polygons share a
+        vertex with `i`'s, found through its cell tree.
+
+    The fit is indifferent to order and count, so four, six or eight are all
+    fine.
+  - `GlobalRegridding.celldiameter(space)` bounds every cell's angular diameter,
+    so that chunk discovery pairs a destination with each source chunk whose ring
+    it can reach. Structured spaces answer from their resolution; the fallback
+    scans the cell tree's leaves once.
 
 ## Making a source space point-samplable
 

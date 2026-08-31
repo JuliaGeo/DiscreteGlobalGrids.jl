@@ -11,36 +11,61 @@ abstract type AbstractRegriddingPlan end
 
 """
     WeightBlock(weights, denom)
+    WeightBlock(weights, denom, coverage)
     WeightBlock(coo::WeightCOO, ndst::Integer, nsrc::Integer)
 
 Store one chunk pair's immutable weights.
 
-  - `weights` uses chunk-local indices; `denom` contains optional
-    per-destination denominators. Summing blocks across source chunks
-    reconstructs the full operator.
-  - Construction from [`WeightCOO`](@ref) sums duplicate entries.
-  - `reference` is the per-destination weight the values are normalized against,
-    held once and reusable by every application: `denom` itself on a denominated
-    block (`reference === denom`), the row sums of `weights` otherwise, computed
-    when the block is built.
-  - Nothing outside the block recomputes or copies the reference.
+  - `weights` uses chunk-local indices and may be signed, a correcting stencil
+    subtracting from some sources; `denom` holds optional per-destination
+    denominators. Summing blocks across source chunks rebuilds the operator.
+  - `coverage` is the non-negative weight a valid source contributes to its
+    destination's coverage, over `weights`' indices, and `nothing` exactly when
+    every `weights` entry is non-negative and serves as its own coverage. Read
+    only where a validity mask reports missing sources.
+  - Construction from [`WeightCOO`](@ref) sums duplicate entries and assembles
+    coverage when the COO carries a list of its own.
+  - `reference` is what values normalize against, computed at build time and
+    reused by every application: `denom` on a denominated block, the row sums of
+    `weights` otherwise. Nothing outside the block recomputes or copies it.
 """
-struct WeightBlock{M<:AbstractMatrix{Float64},D<:Union{Nothing,Vector{Float64}}}
+struct WeightBlock{M<:AbstractMatrix{Float64},D<:Union{Nothing,Vector{Float64}},
+                   C<:Union{Nothing,AbstractMatrix{Float64}}}
     weights::M
     denom::D
+    coverage::C
     reference::Vector{Float64}
 end
 
-WeightBlock(weights::AbstractMatrix{Float64}, denom::Vector{Float64}) =
-    WeightBlock{typeof(weights),Vector{Float64}}(weights, denom, denom)
+WeightBlock(weights::AbstractMatrix{Float64}, denom::Vector{Float64},
+    coverage::Union{Nothing,AbstractMatrix{Float64}} = nothing) =
+    WeightBlock{typeof(weights),Vector{Float64},typeof(coverage)}(
+        weights, denom, _checkcoverage(weights, coverage), denom)
 
-WeightBlock(weights::AbstractMatrix{Float64}, ::Nothing) =
-    WeightBlock{typeof(weights),Nothing}(weights, nothing, _rowsums(weights))
+WeightBlock(weights::AbstractMatrix{Float64}, ::Nothing,
+    coverage::Union{Nothing,AbstractMatrix{Float64}} = nothing) =
+    WeightBlock{typeof(weights),Nothing,typeof(coverage)}(
+        weights, nothing, _checkcoverage(weights, coverage), _rowsums(weights))
 
 function WeightBlock(coo::WeightCOO, ndst::Integer, nsrc::Integer)
     weights = sparse(coo.rows, coo.cols, coo.vals, Int(ndst), Int(nsrc))
     d = coo.denom
-    return WeightBlock(weights, d === nothing ? nothing : copy(d))
+    c = coo.coverage
+    coverage = c === nothing ? nothing :
+               sparse(c.rows, c.cols, c.vals, Int(ndst), Int(nsrc))
+    return WeightBlock(weights, d === nothing ? nothing : copy(d), coverage)
+end
+
+# Coverage is indexed exactly like the values it stands in for, so a mismatch is
+# caught where the block is built rather than in an `@inbounds` accumulation.
+_checkcoverage(::AbstractMatrix{Float64}, ::Nothing) = nothing
+
+function _checkcoverage(weights::AbstractMatrix{Float64},
+    coverage::AbstractMatrix{Float64})
+    size(coverage) == size(weights) || throw(DimensionMismatch(
+        "coverage is $(size(coverage, 1))×$(size(coverage, 2)) over " *
+        "$(size(weights, 1))×$(size(weights, 2)) weights"))
+    return coverage
 end
 
 Base.size(block::WeightBlock) = size(block.weights)
@@ -48,7 +73,8 @@ Base.size(block::WeightBlock, d::Integer) = size(block.weights, d)
 
 Base.show(io::IO, block::WeightBlock) =
     print(io, "WeightBlock(", size(block, 1), "×", size(block, 2),
-        block.denom === nothing ? "" : ", denom", ")")
+        block.denom === nothing ? "" : ", denom",
+        block.coverage === nothing ? "" : ", coverage", ")")
 
 # A block with no denominator references its row sums, which is what the
 # accumulated weight of every source cell a destination draws on comes to.
@@ -147,16 +173,19 @@ end
 CachedBlock(block::WeightBlock) = CachedBlock(block, _blockbytes(block), 0)
 
 # Estimate resident bytes from the block's backing arrays. A denominated block's
-# reference is its denominator, so either way one vector is counted.
+# reference is its denominator, so either way one vector is counted; a block
+# that separates coverage from values holds a second matrix.
 function _blockbytes(block::WeightBlock)
-    W = block.weights
-    w = W isa SparseMatrixCSC ?
-        16 * SparseArrays.nnz(W) + 8 * (size(W, 2) + 1) :
-        8 * length(W)
+    w = _matrixbytes(block.weights)
+    c = block.coverage === nothing ? 0 : _matrixbytes(block.coverage)
     d = block.denom === nothing ? 0 : 8 * length(block.denom)
     r = block.reference === block.denom ? 0 : 8 * length(block.reference)
-    return w + d + r + 64
+    return w + c + d + r + 64
 end
+
+_matrixbytes(W::SparseMatrixCSC) =
+    16 * SparseArrays.nnz(W) + 8 * (size(W, 2) + 1)
+_matrixbytes(W::AbstractMatrix) = 8 * length(W)
 
 """
     TileWeights(sourcechunks::Vector{Int}, blocks::Vector{WeightBlock})
@@ -515,10 +544,11 @@ function gettile!(storage::Spilled, tile::Int, build::F) where {F}
     end)
 end
 
-# Private format: magic, version, CSC arrays, then an optional denominator.
+# Private format: magic, version, CSC arrays, then an optional denominator and
+# an optional coverage matrix in the same CSC layout as the weights.
 const SPILL_MAGIC = 0x42575247  # "GRWB"
 const TILE_MAGIC = 0x54575247  # "GRWT"
-const SPILL_VERSION = 0x01
+const SPILL_VERSION = 0x02
 
 """
     writeblockfile(path, block::WeightBlock) -> path
@@ -536,9 +566,10 @@ end
 """
     readblockfile(path) -> WeightBlock
 
-Read a block written by [`writeblockfile`](@ref). The file holds the weights and
-the optional denominator; the block's reference vector is not stored but
-reconstructed here, as the denominator itself or as the weights' row sums.
+Read a block written by [`writeblockfile`](@ref). The file holds the weights,
+the optional denominator, and the optional coverage matrix; the block's
+reference vector is not stored but reconstructed here, as the denominator itself
+or as the weights' row sums.
 """
 function readblockfile(path::AbstractString)
     return open(path, "r") do io
@@ -603,31 +634,47 @@ function _readheader(io::IO, magic::UInt32, path::AbstractString)
 end
 
 function _writeblock(io::IO, block::WeightBlock)
-    W = block.weights
-    W isa SparseMatrixCSC || throw(ArgumentError(
-        "Spilled serializes sparse weight blocks; this block's weights are a " *
+    _writesparse(io, block.weights)
+    d = block.denom
+    write(io, UInt8(d === nothing ? 0 : 1))
+    d === nothing || write(io, d)
+    c = block.coverage
+    write(io, UInt8(c === nothing ? 0 : 1))
+    c === nothing || _writesparse(io, c)
+    return io
+end
+
+function _readblock(io::IO)
+    W = _readsparse(io)
+    d = read(io, UInt8) == 0x00 ? nothing :
+        read!(io, Vector{Float64}(undef, size(W, 1)))
+    c = read(io, UInt8) == 0x00 ? nothing : _readsparse(io)
+    return WeightBlock(W, d, c)
+end
+
+function _writesparse(io::IO, W::AbstractMatrix)
+    throw(ArgumentError(
+        "Spilled serializes sparse weight blocks; this block holds a " *
         "$(typeof(W)). Use PerChunk storage for a method that builds dense blocks."))
+end
+
+function _writesparse(io::IO, W::SparseMatrixCSC)
     nz = SparseArrays.nnz(W)
     write(io, Int64(size(W, 1)), Int64(size(W, 2)), Int64(nz))
     write(io, Int64.(SparseArrays.getcolptr(W)))
     write(io, Int64.(view(SparseArrays.rowvals(W), 1:nz)))
     write(io, Float64.(view(SparseArrays.nonzeros(W), 1:nz)))
-    d = block.denom
-    write(io, UInt8(d === nothing ? 0 : 1))
-    d === nothing || write(io, d)
     return io
 end
 
-function _readblock(io::IO)
+function _readsparse(io::IO)
     m = Int(read(io, Int64))
     n = Int(read(io, Int64))
     nz = Int(read(io, Int64))
     colptr = Vector{Int}(read!(io, Vector{Int64}(undef, n + 1)))
     rowval = Vector{Int}(read!(io, Vector{Int64}(undef, nz)))
     nzval = read!(io, Vector{Float64}(undef, nz))
-    W = SparseMatrixCSC{Float64,Int}(m, n, colptr, rowval, nzval)
-    read(io, UInt8) == 0x00 && return WeightBlock(W, nothing)
-    return WeightBlock(W, read!(io, Vector{Float64}(undef, m)))
+    return SparseMatrixCSC{Float64,Int}(m, n, colptr, rowval, nzval)
 end
 
 """

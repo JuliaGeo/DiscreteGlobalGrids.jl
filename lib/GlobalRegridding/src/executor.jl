@@ -101,12 +101,22 @@ Accumulate one source chunk into weighted sums `num` and valid coverage `cover`.
 valid and uses `ref` when supplied; otherwise `valid` is a same-length mask or
 the source itself. `missingval` adds a nodata sentinel. This function allocates
 nothing.
+
+Under a mask, coverage comes from the block's own coverage weights where it
+declares them and from its value weights otherwise ([`WeightBlock`](@ref)): a
+block whose values are signed cannot measure coverage with them.
+
+`fallback` and `taint` are the accumulators [`degradetainted!`](@ref) reads, and
+are filled only for a block that declares coverage, under a mask. Pass both or
+neither.
 """
 function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64},
     block::WeightBlock, src::AbstractVector,
     valid::Union{Nothing,AbstractVector} = nothing,
     ref::Union{Nothing,AbstractVector{Float64}} = nothing,
-    missingval = nothing)
+    missingval = nothing;
+    fallback::Union{Nothing,AbstractVector{Float64}} = nothing,
+    taint::Union{Nothing,AbstractVector{Float64}} = nothing)
     W = block.weights
     Base.require_one_based_indexing(num, cover, src)
     size(W, 1) == length(num) == length(cover) || throw(DimensionMismatch(
@@ -116,6 +126,12 @@ function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64
         "block expects $(size(W, 2)) source cells, got $(length(src))"))
     if valid === nothing
         _accumulate!(num, W, src, missingval)
+        # A clean chunk still owes the first-order sum: another chunk's hole can
+        # taint a destination this one also feeds, and the degrade then reads
+        # `fallback` for the whole destination, not just the tainted chunk.
+        if fallback !== nothing && block.coverage !== nothing
+            _accumulate!(fallback, block.coverage, src, missingval)
+        end
         if ref === nothing
             addreference!(cover, block)
         else
@@ -127,7 +143,22 @@ function applyblock!(num::AbstractVector{Float64}, cover::AbstractVector{Float64
         Base.require_one_based_indexing(valid)
         length(valid) == length(src) || throw(DimensionMismatch(
             "validity mask has $(length(valid)) entries, source has $(length(src))"))
-        _accumulate!(num, cover, W, src, valid, missingval)
+        C = block.coverage
+        if C === nothing
+            _accumulate!(num, cover, W, src, valid, missingval)
+        else
+            _accumulate!(num, W, src, missingval)
+            _accumulatecoverage!(cover, C, valid, missingval)
+            if fallback !== nothing && taint !== nothing
+                Base.require_one_based_indexing(fallback, taint)
+                length(fallback) == length(taint) == length(num) ||
+                    throw(DimensionMismatch(
+                        "degrade accumulators hold $(length(fallback)) and " *
+                        "$(length(taint)) entries, destinations $(length(num))"))
+                _accumulate!(fallback, C, src, missingval)
+                _accumulatetainted!(taint, W, valid, missingval)
+            end
+        end
     end
     return num
 end
@@ -242,26 +273,147 @@ function _accumulate!(num::AbstractVector{Float64}, cover::AbstractVector{Float6
     return num
 end
 
+# Accumulate coverage alone, from the block's separate coverage operator.
+function _accumulatecoverage!(cover::AbstractVector{Float64}, C::SparseMatrixCSC,
+    valid::AbstractVector, missingval = nothing)
+    rows = SparseArrays.rowvals(C)
+    vals = SparseArrays.nonzeros(C)
+    cols = SparseArrays.getcolptr(C)
+    if _walknonzeros(C)
+        p = 1
+        nz = SparseArrays.nnz(C)
+        @inbounds while p <= nz
+            k = _columnof(cols, p)
+            p2 = cols[k+1] - 1
+            m = _validity(valid[k], missingval)
+            if !iszero(m)
+                for q in p:p2
+                    cover[rows[q]] += vals[q] * m
+                end
+            end
+            p = p2 + 1
+        end
+        return cover
+    end
+    @inbounds for k in axes(C, 2)
+        p1, p2 = cols[k], cols[k+1] - 1
+        p1 > p2 && continue
+        m = _validity(valid[k], missingval)
+        iszero(m) && continue
+        for p in p1:p2
+            cover[rows[p]] += vals[p] * m
+        end
+    end
+    return cover
+end
+
+function _accumulatecoverage!(cover::AbstractVector{Float64}, C::AbstractMatrix,
+    valid::AbstractVector, missingval = nothing)
+    @inbounds for k in axes(C, 2)
+        m = _validity(valid[k], missingval)
+        iszero(m) && continue
+        for j in axes(C, 1)
+            cover[j] += C[j, k] * m
+        end
+    end
+    return cover
+end
+
+# Accumulate, per destination, the value weight that reached an invalid source.
+# Nonzero exactly where a hole entered a signed sum — including through a
+# gradient stencil, whose terms sit on a neighbour's column and so leave the
+# coverage accounting untouched.
+function _accumulatetainted!(taint::AbstractVector{Float64}, W::SparseMatrixCSC,
+    valid::AbstractVector, missingval = nothing)
+    rows = SparseArrays.rowvals(W)
+    vals = SparseArrays.nonzeros(W)
+    cols = SparseArrays.getcolptr(W)
+    if _walknonzeros(W)
+        p = 1
+        nz = SparseArrays.nnz(W)
+        @inbounds while p <= nz
+            k = _columnof(cols, p)
+            p2 = cols[k+1] - 1
+            if iszero(_validity(valid[k], missingval))
+                for q in p:p2
+                    taint[rows[q]] += abs(vals[q])
+                end
+            end
+            p = p2 + 1
+        end
+        return taint
+    end
+    @inbounds for k in axes(W, 2)
+        p1, p2 = cols[k], cols[k+1] - 1
+        p1 > p2 && continue
+        iszero(_validity(valid[k], missingval)) || continue
+        for p in p1:p2
+            taint[rows[p]] += abs(vals[p])
+        end
+    end
+    return taint
+end
+
+function _accumulatetainted!(taint::AbstractVector{Float64}, W::AbstractMatrix,
+    valid::AbstractVector, missingval = nothing)
+    @inbounds for k in axes(W, 2)
+        iszero(_validity(valid[k], missingval)) || continue
+        for j in axes(W, 1)
+            taint[j] += abs(W[j, k])
+        end
+    end
+    return taint
+end
+
 # Finalization
+
+"""
+    degradetainted!(num, fallback, taint) -> num
+
+Take the first-order sum wherever a signed weight reached an invalid source.
+
+`num` is a signed block's sum, `fallback` the same sum over its coverage weights
+alone, `taint` the weight that reached a hole ([`applyblock!`](@ref)). A
+destination with `taint > 0` takes `fallback` — [`Conservative`](@ref)'s answer.
+
+A signed correction is fitted from a source cell's neighbours, so one hole biases
+every neighbour by a share of the *field's* value, not its gradient. That bias
+sits on a neighbour's column, invisible to the `cover` [`Weighted`](@ref)
+thresholds against.
+
+The trade is accuracy near a hole, not conservation: the correction sums to zero
+over the destinations covering one source cell, so replacing it for some of them
+leaves an [`Extensive`](@ref) total short. Build the plan against a known mask to
+keep both.
+"""
+function degradetainted!(num::AbstractVector{Float64},
+    fallback::AbstractVector{Float64}, taint::AbstractVector{Float64})
+    @inbounds for j in eachindex(num, fallback, taint)
+        taint[j] > 0 && (num[j] = fallback[j])
+    end
+    return num
+end
 
 """
     finalize!(out, num, cover, total, policy, missingval = _maskedvalue(eltype(out))) -> out
 
 Finalize one destination chunk after all source blocks have accumulated.
 
-`num` is the weighted sum with invalid sources contributing zero, `cover` the
-weight of the sources that were valid, and `total` the reference weight the
-applied blocks accumulated ([`addreference!`](@ref)) — the denominator the
-method reported, or the row sums when it reported none.
+  - `num` is the weighted sum, with invalid sources contributing zero.
+  - `cover` is the weight of the sources that were valid: the applied blocks'
+    coverage weights, or their value weights where they report none.
+  - `total` is the reference weight the applied blocks accumulated
+    ([`addreference!`](@ref)): the denominator the method reported, or the row
+    sums when it reported none.
 
-  - [`Extensive`](@ref): `num`.
+What `policy` writes into `out`:
+
+  - [`Extensive`](@ref): `num`, raw and never blanked.
   - [`Weighted`](@ref)`(t)`: `num / cover`, blank where `cover ≤ 0` or
     `cover < t · total`.
 
-`Weighted` always normalizes by valid coverage and applies its threshold against
-`total`. `missingval` is the sentinel blanked cells receive, and defaults to
-`missing` when `out` holds it and NaN otherwise ([`outputmissingval`](@ref)).
-`Extensive` returns raw sums and never blanks.
+`missingval` is the sentinel blanked cells receive, defaulting to `missing` when
+`out` holds it and NaN otherwise ([`outputmissingval`](@ref)).
 """
 function finalize! end
 
@@ -486,6 +638,11 @@ function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix,
         "$(size(src, 2)) source slices into $(size(out, 2)) output slices"))
     num = zeros(Float64, ndst)
     cover = zeros(Float64, ndst)
+    # A block that declares coverage has signed weights, so a hole in the source
+    # can reach a destination without reaching its coverage.
+    signed = block.coverage !== nothing
+    fallback = signed ? zeros(Float64, ndst) : nothing
+    taint = signed ? zeros(Float64, ndst) : nothing
     # The block's own reference, not a copy: applying one plan again allocates
     # no second reference vector.
     ref = block.reference
@@ -494,8 +651,11 @@ function applyplan!(out::AbstractMatrix, plan::DirectPlan, src::AbstractMatrix,
     for s in axes(src, 2)
         fill!(num, 0.0)
         fill!(cover, 0.0)
+        signed && (fill!(fallback, 0.0); fill!(taint, 0.0))
         x = view(src, :, s)
-        applyblock!(num, cover, block, x, anyinvalid(x, mv) ? x : nothing, ref, mv)
+        applyblock!(num, cover, block, x, anyinvalid(x, mv) ? x : nothing, ref, mv;
+            fallback, taint)
+        signed && degradetainted!(num, fallback, taint)
         finalize!(view(out, :, s), num, cover, ref, policy, missingval)
     end
     return out

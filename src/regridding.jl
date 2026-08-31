@@ -148,6 +148,42 @@ end
 GR.cellcentroid(space::DGGSpace, i::Int) =
     cell_centroid(space.grid, cellindex(space.grid, i))
 
+"""
+    GlobalRegridding.cellneighbors(space::DGGSpace, i::Int)
+
+The grid's own edge one-ring of cell `i`, clipped to the collection: what a
+gradient-recovering method fits a cell's neighbours from.
+
+`Edge()` connectivity gives every system a stencil a gradient fit can use:
+
+  - A hexagonal system answers the same six cells either way, five at a
+    pentagon.
+  - A quadrilateral one answers its four edge neighbours, a well-conditioned
+    two-parameter fit already, where `Vertex()` would answer eight.
+  - CopernicusDEM's vertex ring at a pole apex is the whole polar row, which a
+    gradient fit has no use for.
+
+On a `PartialGrid` the ring is the complete level's, clipped to members, so a
+rim cell simply has fewer neighbours and its fit is one-sided.
+"""
+GR.cellneighbors(space::DGGSpace, i::Int) =
+    neighbors(space.grid, i, 1; connectivity = Edge())
+
+"""
+    GlobalRegridding.celldiameter(space::DGGSpace) -> Float64
+
+Twice the widest chunk cover, in radians: the same bound
+`supportradius(::BarycentricPoint, ::DGGSpace)` rests on.
+
+Every cell lies inside its own chunk's cover, so twice the widest of those
+covers bounds any cell's diameter.
+
+The bound is loose by the ratio of chunk to cell width, which costs discovery
+work, never weights. The single-chunk fallback's full-sphere cover makes it
+`π`, where the one source chunk leaves nothing to discover.
+"""
+GR.celldiameter(space::DGGSpace) = _dualreach(space)
+
 # The sites a point method interpolates between are `cellcentroid` above, read
 # through `GlobalRegridding`'s own `CentroidSites`: a pure vector that computes
 # an entry on read and holds nothing, so preparing a sampler materialises

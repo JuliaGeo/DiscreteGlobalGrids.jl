@@ -299,6 +299,37 @@ function ownedindices(space::ToyLonLatSpace, chunk::Int)
     return out
 end
 
+"""
+    GR.cellneighbors(space::ToyLonLatSpace, i::Int)
+
+The lattice's four edge neighbours, wrapping in longitude only where the space
+spans the whole 360 degrees. A space two cells wide does not wrap: east and west
+name the same cell, and adjacency names it once.
+"""
+function GR.cellneighbors(space::ToyLonLatSpace, i::Int)
+    ix, iy = cellsubscript(space, i)
+    wraplon = space.lon1 - space.lon0 >= 360 && space.nlon > 2
+    out = Int[]
+    if ix > 1
+        push!(out, localindex(space, ix - 1, iy))
+    elseif wraplon
+        push!(out, localindex(space, space.nlon, iy))
+    end
+    if ix < space.nlon
+        push!(out, localindex(space, ix + 1, iy))
+    elseif wraplon
+        push!(out, localindex(space, 1, iy))
+    end
+    iy > 1 && push!(out, localindex(space, ix, iy - 1))
+    iy < space.nlat && push!(out, localindex(space, ix, iy + 1))
+    return out
+end
+
+# One cell spans `dlon` of longitude and `dlat` of latitude, so its diagonal is
+# no longer than the two added together.
+GR.celldiameter(space::ToyLonLatSpace) =
+    min(Float64(pi), deg2rad(dlon(space)) + deg2rad(dlat(space)))
+
 celltree(space::ToyLonLatSpace) = ToyCapTree(space, 1:ncells(space))
 
 ToyCapTree(space::ToyLonLatSpace, indices) =

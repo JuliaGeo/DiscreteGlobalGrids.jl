@@ -74,6 +74,45 @@ source leaf that overlaps it.
 expensivecellgeometry(::RegridSpace) = true
 
 # --------------------------------------------------------------------------
+# Cell adjacency
+# --------------------------------------------------------------------------
+
+"""
+    cellneighbors(space::RegridSpace, i::Int) -> AbstractVector{Int}
+
+The local indices of the cells adjacent to cell `i`, in no particular order,
+without `i` itself.
+
+Adjacent means sharing an edge or a vertex. A space with lattice or grid
+topology answers from that, where edge neighbours are enough; the generic
+fallback answers from geometry, every cell sharing a vertex with `i`'s,
+diagonals included.
+
+Only cells of the collection are returned, so a partial space has fewer
+neighbours at its rim. The result may alias the space's own storage and is valid
+until the next call.
+
+Gradient-recovering methods use this, and their least-squares fit depends on
+neither the order nor the count, so 4, 6 or 8 are all fine.
+"""
+function cellneighbors end
+
+"""
+    celldiameter(space::RegridSpace) -> Float64
+
+An upper bound, in radians, on the angular diameter of every cell of `space` —
+the largest angular distance between two points of one cell.
+
+A bound, not a measurement: overestimating costs discovery work and nothing
+else. A method whose stencil reaches one cell past its source — a cell and its
+[`cellneighbors`](@ref) — declares this as its [`supportradius`](@ref).
+
+The generic fallback answers twice the widest leaf cap of [`celltree`](@ref),
+`O(ncells(space))`. A structured space should answer from its resolution.
+"""
+function celldiameter end
+
+# --------------------------------------------------------------------------
 # Chunk ownership and spatial discovery
 # --------------------------------------------------------------------------
 

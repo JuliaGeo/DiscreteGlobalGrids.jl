@@ -106,8 +106,9 @@ end
 to level-1 quintant fan-out.
 
   - [`treeify`](@ref) uses selection mode and materializes root indices;
-    prefer a [`PartialGrid`](@ref) for deep grids — a complete one is O(cells)
-    in memory and not viable past about level 12.
+    prefer a [`PartialGrid`](@ref DiscreteGlobalGrids.Engine.PartialGrid) for
+    deep grids — a complete one is O(cells) in memory and not viable past
+    about level 12.
   - `MultiOrderCellSet` orders by `(level, index)` rather than by curve
     interval, and `level_ranges` on one raises an `ArgumentError`.
   - [`descendants`](@ref) is overridden to avoid level-by-level expansion.
@@ -124,8 +125,8 @@ has_direct_location(::A5System) = true
 
 A5's four Hilbert children cover their parent's area but can extend beyond its
 footprint. The measured descendant-to-cell-cap ratio reaches `1.45363`, with an
-extrapolated bound of `1.47078`; `1.75` preserves the [`node_extent`](@ref)
-covering invariant.
+extrapolated bound of `1.47078`; `1.75` preserves the
+[`node_extent`](@ref DiscreteGlobalGrids.node_extent) covering invariant.
 """
 cap_inflation(::A5System) = 1.75
 

@@ -22,6 +22,12 @@ for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
                       flavor = Literate.DocumenterFlavor(), execute = false)
 end
 
+# The regridding verbs and the DE9IM predicates are re-exported, so their
+# docstrings belong to those packages; `GlobalRegridding` is not a direct
+# dependency of this environment, so reach it through a name it owns.
+const GlobalRegridding = parentmodule(DiscreteGlobalGrids.regrid)
+const Trees = DiscreteGlobalGrids.Trees
+
 makedocs(;
     # Register `Fallbacks` and `Engine` so Documenter can render their boundary
     # API docstrings, and `Encodings`/`ChunkedLookups` for the store-IO ones: the
@@ -30,10 +36,17 @@ makedocs(;
     modules = [DiscreteGlobalGrids, DiscreteGlobalGrids.Fallbacks,
                DiscreteGlobalGrids.Engine,
                DiscreteGlobalGrids.Encodings, DiscreteGlobalGrids.ChunkedLookups,
+               # Same reason, for the grid-interface and selection pages:
+               # `CellLookups` owns the DimensionalData layer and `Helpers` the
+               # authalic transform.
+               DiscreteGlobalGrids.CellLookups, DiscreteGlobalGrids.Helpers,
                # Documenter filters docstrings by module, so the Zarr
                # extension's dggread/dggwrite methods render only if it is
                # listed here.
-               Base.get_extension(DiscreteGlobalGrids, :DiscreteGlobalGridsZarrExt)],
+               Base.get_extension(DiscreteGlobalGrids, :DiscreteGlobalGridsZarrExt),
+               # Re-exported names whose docstrings this site renders:
+               # `Intersects` and friends, `Weighted`, `ncells`/`treeify`.
+               DiscreteGlobalGrids.DE9IM, GlobalRegridding, Trees],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",
     repo = Documenter.Remotes.GitHub("JuliaGeo", "DiscreteGlobalGrids.jl"),
@@ -55,6 +68,8 @@ makedocs(;
             "A round trip through a DGGS store" => "tutorials/store_io.md",
         ],
         "API" => [
+            "The grid interface" => "api/grid-interface.md",
+            "Selecting cells" => "api/selecting-cells.md",
             "Choosing a regridding method" => "api/regridding-methods.md",
             "Region boundaries" => "api/boundaries.md",
             "Reading and writing DGGS stores" => "api/store-io.md",

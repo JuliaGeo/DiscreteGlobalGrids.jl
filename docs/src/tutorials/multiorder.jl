@@ -150,7 +150,7 @@ box = Raster(
 # ## The set as a cube axis
 #
 # `to` takes the lookup as it stands. The result is an ordinary `DimArray` whose
-# axis is a `Cells` dimension over the same cells, so nothing has to be looked
+# axis is a [`Cells`](@ref) dimension over the same cells, so nothing has to be looked
 # up again to plot it or to slice it.
 
 A = DGG.regrid(box; to = lk)

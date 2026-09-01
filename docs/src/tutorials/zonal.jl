@@ -70,8 +70,8 @@ fig
 
 # ## The cube spelling
 #
-# The same selection inside a DimensionalData cube: `Cells` is the dimension,
-# and `Covering` is `covering` wearing a selector hat.
+# The same selection inside a DimensionalData cube: [`Cells`](@ref) is the
+# dimension, and `Covering` is `covering` wearing a selector hat.
 
 A = DD.DimArray(data, DGG.Cells(DGG.CellLookup(cells)); name = :tavg)
 mean(A[DGG.Cells(DGG.Covering(texas))])

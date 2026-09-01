@@ -1,7 +1,7 @@
 # # A round trip through a DGGS store
 #
 # A cube over a cell axis is an ordinary `DimArray` whose one spatial dimension
-# is `Cells`. `dggwrite` puts such a cube in a Zarr store and `dggread` opens
+# is [`Cells`](@ref). `dggwrite` puts such a cube in a Zarr store and `dggread` opens
 # one back, and neither invents a container type: what goes in is
 # DimensionalData and what comes out is DimensionalData. The grid SYSTEM is in
 # the type of the lookup that comes back, the level is a field of the grid it

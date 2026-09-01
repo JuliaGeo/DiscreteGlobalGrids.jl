@@ -74,6 +74,15 @@ absent source may be interpolated across. `Weighted(1)` is the strict choice and
 the one to prefer for point output: a stencil naming a post with no value blanks
 the cell instead of renormalising over the posts that do.
 
+The two policies in full, and the method whose reading of the data they are
+defined against:
+
+```@docs
+Weighted
+Extensive
+Conservative
+```
+
 ## The sentinel a blanked cell holds
 
 `missingpolicy` decides *which* cells are blanked. `missingval` decides what

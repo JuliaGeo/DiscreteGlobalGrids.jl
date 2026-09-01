@@ -8,8 +8,9 @@
 
 The complete grid of `sys` at `level`: every cell the system has there, in the
 system's canonical dense order. This is what [`levelgrid`](@ref) returns unless
-a system overrides it, and it is to a complete level what [`PartialGrid`](@ref)
-is to a subset of one.
+a system overrides it, and it is to a complete level what
+[`PartialGrid`](@ref DiscreteGlobalGrids.Engine.PartialGrid) is to a subset
+of one.
 
 It stores the system and the level and nothing else, so constructing one is
 O(1). The base grid interface is answered by forwarding to system-level

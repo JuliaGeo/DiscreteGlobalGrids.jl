@@ -1,117 +1,174 @@
 # # A round trip through a DGGS store
 #
-# A cube over a cell axis is an ordinary `DimArray` whose one spatial dimension
-# is `Cells`. `dggwrite` puts such a cube in a Zarr store and `dggread` opens
-# one back, and neither invents a container type: what goes in is
-# DimensionalData and what comes out is DimensionalData. The grid SYSTEM is in
-# the type of the lookup that comes back, the level is a field of the grid it
-# holds, and what is neither — orientation, ellipsoid, the layout the ids were
-# stored in — rides in the stack's metadata.
+# A cube over a cell axis is an ordinary `DimArray` or `DimStack` whose one
+# spatial dimension is `Cells`. `dggwrite` puts such a cube in a Zarr store and
+# `dggread` opens one back.
 #
-# The methods live in an extension on Zarr.jl, so `using Zarr` is what turns the
-# two stubs into functions.
+# Both methods live in the Zarr.jl extension: `using Zarr` loads them.
 
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
 using Zarr
+using DiscreteGlobalGridsVisualization: dggpoly, dggpoly!
+using GLMakie, GeoMakie
+GLMakie.activate!(inline = true)
 
 # ## A cube to write
 #
-# The first two level-1 IGEO7 cells, expanded to their level-4 descendants: 629
-# cells, which is a regional store in miniature. It is not 686 because one of
-# the two roots is a pentagon, and a pentagon's subtree is short. `CellVector`
-# names the cells, `CellLookup` reads them as a one-level cell axis, and `Cells`
-# makes that axis a cube dimension.
+# The first two level-1 IGEO7 cells, expanded to their level-4 descendants: a
+# regional store in miniature. `CellVector` names the cells, `CellLookup` reads
+# them as a one-level cell axis, and `Cells` makes that axis a cube dimension.
 
 sys = DGG.IGeo7System()
 roots = DGG.CellVector(DGG.levelgrid(sys, 1))[1:2]
 cells = sort!(reduce(vcat, [collect(DGG.descendants(sys, c, 4)) for c in roots]))
 lookup = DGG.CellLookup(DGG.CellVector(sys, 4, cells))
 
-# Two layers over that one axis, as a `DimStack`. The values are deterministic
-# so the round trip below is checkable rather than plausible.
+# Two layers over that one axis, as a `DimStack`. Elevation doubles as a
+# position marker: value `k` sits at axis position `k`. The chunk section reads
+# positions back out of a selection that way.
 
 n = length(cells)
 elevation = Float32.(1:n)
 slope = Float32.(0.5 .* (1:n))
 cube = DD.DimStack((; elevation, slope), (DGG.Cells(lookup),))
 
-# ## Out and back
+# ## Write the cube and read it back
 #
-# `dggwrite` returns its destination, so it composes. `chunks = 128` fixes the
-# chunk length in cells; the default `:auto` aims each chunk at a million
-# elements instead, which for 629 cells is one chunk and nothing to look at.
+# `dggwrite` returns its destination, ready to hand to `dggread`. `chunks = 128`
+# fixes the chunk length in cells and gives this small cube five chunks to look
+# at; the default `:auto` targets a million elements per chunk and would put the
+# whole cube in one.
 
 path = DGG.dggwrite(joinpath(mktempdir(), "demo.zarr"), cube; chunks = 128)
 store = DGG.dggread(path)
+#
+DD.metadata(store)["description"]
 
-# The axis came back as the cells that went in, and the values with it. What
-# `dggread` hands over is a lazy store-backed array, so `collect` is what
-# forces the comparison.
+# The description is read from the store's attributes: grid system, level, and
+# the layout of the ids. The arrays `dggread` returns are lazy; `collect` pulls
+# the axis and the values into memory to compare them with what went in:
 
 axis = DD.lookup(store[:elevation], DGG.Cells)
-(; ncells = length(axis), level = DGG.level(axis),
-   axis_ok = collect(axis) == cells,
-   values_ok = collect(parent(store[:elevation])) == elevation)
-
-# The lookup is a `ChunkedCellLookup`: it answers the same selectors as a
-# `CellLookup` — `At` and `Contains` on a cell, `Contains` on a lon/lat point,
-# `Covering` on a region — but resolves them against the store's chunk grid
-# rather than by scanning it. That chunk grid is the `ChunkManifest`, described
-# in cells: for every chunk, the first and last id it holds and how many. It is
-# what says which chunks a selection touches, and `nchunks`, `chunkof` and
-# `chunkbounds` are how it is asked.
-
-manifest = DGG.chunkmanifest(axis, 128)
-(; chunks = DGG.nchunks(manifest), cells = length(manifest))
+#
+collect(axis) == cells, collect(parent(store[:elevation])) == elevation
 
 # ## Selecting a region out of a store
 #
-# `Covering(target)` runs a coverage of `target` against the axis and keeps the
-# indices it lands on. The cheapest interesting target here is the extent of a
-# coarse ancestor of one of the stored cells: a level-2 cell, a small piece of
-# what was written.
+# The axis is a `ChunkedCellLookup`. It answers the same selectors a
+# `CellLookup` does and resolves each through the chunk manifest, touching at
+# most one chunk of ids. Three selectors name a single cell:
+#
+# - `At(cell)` — the cell itself;
+# - `Contains(cell)` — the same cell;
+# - `Contains((lon, lat))` — the cell holding a point.
+
+c = cells[300]
+at = store[:elevation][DGG.Cells(DD.At(c))]
+contains_cell = store[:elevation][DGG.Cells(DD.Contains(c))]
+contains_point = store[:elevation][DGG.Cells(DD.Contains((67.5, 66.7)))]
+at, contains_cell, contains_point
+
+# `Covering(target)` selects a region: every stored cell the coverage of
+# `target` lands on. The target is the extent of a level-2 cell, an ancestor of
+# one stored cell, which makes it a small piece of what was written. A coverage
+# is a superset of its region, and the selection spills a little past the box.
 
 target = DGG.cell_extent(DGG.levelgrid(sys, 2), DGG.ancestor(sys, cells[300], 2))
 region = store[:elevation][DGG.Cells(DGG.Covering(target))]
 
-# A subset is no longer a stored axis: the cells it names are materialised, and
-# the result is the package's own compressed `CellLookup` over them.
-
-(; ncells = length(region), lookup = nameof(typeof(DD.lookup(region, DGG.Cells))))
-
-# ## Encodings
+# The `dims` line of the result shows a `CellLookup`: a selection materialises
+# the cells it names and carries them as the package's compressed in-memory
+# axis. The `ChunkedCellLookup` stays with the store.
 #
-# How the cell ids are laid out in the store is the *encoding*, and
-# `dggwrite`'s default `encoding = :auto` chooses one: `RangesEncoding` where
-# the axis is eligible — sorted, unique, and all one level — and
-# `DenseEncoding` otherwise, which is always eligible and so makes `:auto`
-# total. Ranges store `[start, stop]` intervals instead of ids, and the axis is
-# recovered from them by rank/select arithmetic, so opening one costs no data
-# IO at all however many cells it names. `encoding = :dense` is the interop
-# escape for readers that cannot expand intervals; it writes one id per cell.
+# ## Which chunks a selection touches
 #
-# `merge` chooses what an interval is allowed to hold. The default `:step`
-# merges ids that are adjacent AS INTEGERS, so no interval encloses an id naming
-# no cell and a reader that counts well-formed ids rather than cells recovers
-# the same axis. `merge = :rank` merges consecutive CELLS instead: the fewest
-# rows — this axis is rank-contiguous, so a single `[start, stop]` row — read
-# back correctly only by a rank-aware reader. The axis above is eligible, and
-# went to disk under the default:
+# A `ChunkManifest` describes the store's chunk grid in cells: for each chunk,
+# its first id, its last id and its length. `nchunks` counts chunks, `chunkof`
+# maps an axis position to its chunk, and `chunkbounds` maps a chunk to the
+# positions it holds.
 
-(; encoding = DD.metadata(store)["encoding"],
-   rows = size(Zarr.zopen(path)["cell_id_ranges"], 2))
+manifest = DGG.chunkmanifest(axis, 128)
+#
+DGG.nchunks(manifest), length(manifest)
+#
+DGG.chunkbounds(manifest, 5)
+
+# The selection's values are stored positions, by construction of the elevation
+# layer. `chunkof` maps each position to the chunk a reader fetches for it:
+
+selected = Int.(collect(region))
+sort(unique(DGG.chunkof.(Ref(manifest), selected)))
+
+# The figure shows the read: stored cells coloured by chunk, the level-2 target
+# as a dashed box, the cells `Covering` returned outlined. The outline crosses
+# three colours — a compact region on the sphere spans three chunks of the file.
+
+chunk = DGG.chunkof.(Ref(manifest), 1:n)
+corners = [(target.X[1], target.Y[1]), (target.X[2], target.Y[1]),
+           (target.X[2], target.Y[2]), (target.X[1], target.Y[2])]
+box = [c1 .+ t .* (c2 .- c1) for (c1, c2) in zip(corners, circshift(corners, -1))
+       for t in range(0, 1; length = 30)]
+
+fig = Figure(size = (780, 470))
+ax = GeoAxis(fig[1, 1]; dest = "+proj=laea +lon_0=44 +lat_0=64",
+    limits = ((-16.0, 104.0), (45.0, 83.0)),
+    xticks = 0:20:100, yticks = 50:10:80,
+    title = "Stored cells by chunk; the cells Covering selects, outlined")
+plt = dggpoly!(ax, cube[:elevation]; color = chunk,
+    colormap = cgrad(:Set2, 5; categorical = true), colorrange = (0.5, 5.5))
+lines!(ax, GeoMakie.coastlines(); color = ("#212529", 0.55), linewidth = 0.6)
+dggpoly!(ax, region; color = :transparent, strokecolor = :black, strokewidth = 0.8)
+lines!(ax, box; color = :black, linewidth = 2, linestyle = :dash)
+Colorbar(fig[1, 2], plt; label = "chunk", ticks = 1:5)
+fig
+
+# How to make that outline land in fewer chunks is the subject of [Subzone
+# layout](../api/subzone-layout.md).
+#
+# ## Choosing how the cell ids are stored
+#
+# An *encoding* is how the store lays out its cell ids. `encoding = :auto` picks
+# one by the shape of the axis:
+#
+# | `encoding` | Stores | `:auto` picks it when |
+# |---|---|---|
+# | `:ranges` | `(n, 2)` inclusive `[start, stop]` id intervals | the axis is sorted, unique and one level |
+# | `:dense` | one id per cell | otherwise; also the interop choice for readers without interval support |
+#
+# A ranges axis opens with zero data IO at any size: its length, its chunk
+# boundaries and every selector are closed-form rank/select arithmetic over the
+# intervals. The description above named this store's encoding,
+# `RangesEncoding`; its cost is one row per interval:
+
+size(Zarr.zopen(path)["cell_id_ranges"], 2)
+
+# `merge` chooses what one interval may span:
+#
+# | `merge` | A run is | Rows | Read back correctly by |
+# |---|---|---|---|
+# | `:step` (default) | ids adjacent as integers | more (91 here) | any reader that counts ids, grid-aware or not |
+# | `:rank` | consecutive cells | fewest (1 here) | a rank-aware reader such as this package |
+#
+# This axis is a single run of consecutive cells, so under `:rank` it is one row:
+
+ranks = DGG.dggwrite(joinpath(mktempdir(), "ranks.zarr"), cube; chunks = 128,
+                     merge = :rank)
+size(Zarr.zopen(ranks)["cell_id_ranges"], 2)
 
 # ## Reading a store by URL
 #
-# `dggread` takes a `Zarr.ZGroup`, a local path, or a URL, so a public store is
-# read where it lives and only the chunks a selection touches are fetched. The
-# Pori stores this format was reverse-engineered from are readable over HTTPS —
-# not run here, because these pages build without a network:
+# `dggread` opens a public store in place from a `gs://`, `s3://` or `https://`
+# URL as readily as from a local path or a `Zarr.ZGroup`; a selection fetches
+# only the chunks it touches. A published IGEO7 store over Pori, Finland, reads
+# like this (displayed only: the docs build offline):
 #
 # ```julia
 # pori = DGG.dggread("https://storage.googleapis.com/geo-assets/igeo7-zarr/pori_z7_r10.zarr")
 # ```
 #
-# Writing goes the other way round: `dggwrite` writes locally, and a remote
-# store is an upload of what it produced.
+# `dggwrite` writes to a local path or an open `Zarr.ZGroup`; publish a remote
+# store by uploading the directory it produced.
+#
+# [Out of core](out_of_core.md) sweeps a kernel over a store chunk by chunk,
+# starting from a store like the one written here.

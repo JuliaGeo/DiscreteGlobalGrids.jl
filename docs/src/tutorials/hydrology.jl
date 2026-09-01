@@ -1,22 +1,14 @@
 # # Hydrology: a DEM on an IGEO7 grid
 #
-# Terrain analysis wants an equal-area grid: slope, flow accumulation and
-# catchment area are all areal quantities, and on a lon/lat raster every one of
-# them is a function of latitude. This page moves a Copernicus 30 m DEM tile
-# over the Alps onto IGEO7 — hexagons, equal-area by construction — and does
-# the first step of a flow-routing model on it. The worked example reads the
-# native 30 m tile and works at a level whose cells are a couple of pixels
-# across — as fine as a tile's worth of them will go on a standard CI runner.
-#
-# Three calls carry the page: `MultiOrderCoverage` names the cells the tile
-# touches, `regrid` fills them from the raster, and `mapneighbors` routes water
-# out of every cell.
+# Slope, flow accumulation and catchment area are areal quantities. An IGEO7
+# cell covers the same area in the Alps as on the equator, so a count of cells
+# is an area; the same count on a lon/lat raster is a function of latitude.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 
 import DiscreteGlobalGrids as DGG
 import Geomorphometry as GM
-import GeoInterface as GI, GeometryOps as GO
+import GeoInterface as GI
 using Rasters, RasterDataSources
 import ArchGDAL
 import Extents
@@ -25,152 +17,210 @@ using GLMakie, GeoMakie
 using DiscreteGlobalGridsVisualization: dggsurface, dggsurface!, dggpoly, dggpoly!
 GLMakie.activate!(inline = true)
 
-# ## Acquiring data
-
-# Let's first get a DEM tile and regrid it to IGeo7.
-# We'll use a Copernicus DEM 30m-tile over the Alps for this example.
+# ## Regrid a Copernicus DEM tile onto IGEO7 hexagons
+#
+# One 1°×1° tile of the [Copernicus DEM](https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM)
+# at 30 m over the Alps, fetched from its
+# [AWS Open Data bucket](https://registry.opendata.aws/copernicus-dem/) by
+# RasterDataSources:
 
 centre = GI.extent((10.5, 46.5))
 path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = centre)))
 Sys.isapple() && Rasters.checkmem!(false) # needed for Apple systems
 dem = Raster(path; lazy = false)
-## dem = aggregate(mean, dem, 8; progress = false)
-# This is what the raster looks like:
-plot(dem; axis = (; aspect = DataAspect()))
-# Now, let's regrid it to IGeo7.  First, the system:
+
+# Four lines put it on a grid. `levelfor` picks a level from the raster,
+# `MultiOrderCoverage` names the cells the tile touches, and `regrid` fills
+# them:
+
 sys = DGG.IGeo7System()
-# We can get the grid of IGeo7 cells that would cover the DEM tile,
-# using a `MultiOrderCoverage` query.
-# You can specify an integer here, or find the closest matching level automatically:
 leaf_level = DGG.levelfor(sys, dem)
-# Once we know the leaf level we want, we can query the system at that level with the
-# [`MultiOrderCoverage`](@ref) query, to get a cell set that we can use.
-region = @time DGG.query(
-    sys, 
-    DGG.MultiOrderCoverage(Rasters.extent(dem)); 
-    level = leaf_level
-)
-# Here's what this looks like:
-f, a, p = plot(dem; axis = (; aspect = DataAspect()))
-poly!(a, region; color = :transparent, strokewidth = 2, strokecolor = (:black, 0.5))
-f
-# This is a nice way to compress the set of cells that would be covered in memory.
-# Note that `region` says it has ~44,000 cells.  But when you look at the number of
-# cells at level 13,
-DGG.CellLookup(region) |> length
-# That's a lot of cells!  This optimization helps to decrease memory pressure,
-# especially on datasets that don't fit in memory in the first place.
+region = DGG.query(sys, DGG.MultiOrderCoverage(Rasters.extent(dem)); level = leaf_level)
+elevation = DGG.regrid(dem; to = region)
 
-# When we construct a DimArray with this, it will interpret `region` as a one
-# level cell axis.  Indices will run from `1:length(CellLookup(region))`,
-# linearly, so indexing is done as in a regular vector.
-
-# ## Regridding the DEM
-# DiscreteGlobalGrids provides a `regrid` function that will take in a raster
-# and some sort of grid - a full level grid, or a region, or a partial grid -
-# and return a Raster whose axis is this new grid.
-# A raster in is a raster out: the result declares the `missingval` its source
-# declared. Copernicus DEM declares none, so the cells the tile does not cover
-# come back `NaN`, and the `missingval` keyword is there to choose something
-# else - `missing`, or a sentinel of your own.
-
-DGG.regrid(dem; to = region) # hide
-elevation = @time DGG.regrid(dem; to = region)
-# Let's now plot this too, using the specialized [`dggsurface`](@ref) recipe for efficiency:
-f, a, p = dggsurface(lookup(elevation, DGG.Cells); color = vec(elevation), axis = (; aspect = DataAspect()))
-f
-
-# There are also some nice overloads to make this really feel like a surface plot.
-# To enhance realism, we'll transform it to "real" coordinates at least.
-f, a, p = dggsurface(
-    elevation .* 2; # just for effect, since this will be a static plot
-    color = vec(elevation), 
-    axis = (; type = Axis3, aspect = :data, clip = false)
-);
-p.transformation.transform_func[] = GeoMakie.create_transform("+proj=ortho +lon_0=10.5 +lat_0=46.5 +datum=WGS84", "+proj=longlat +datum=WGS84")
-f
-# We can compute the elevation of the cells pretty easily, as well.
-extrema(skipmissing(elevation))
-
-# ## Flow direction
+# `regrid` returns a `Raster` over a `Cells` axis. Cells outside the tile hold
+# its `missingval` — `NaN`, since Copernicus DEM declares none; `missingval =`
+# chooses another.
 #
-# Each cell sends its water to the lowest of its neighbours — the first step of
-# every flow-routing model. `mapneighbors` walks every cell with its clipped
-# one-ring as handles that index the cube; a neighbour whose
-# elevation is missing (the coverage overhangs the tile) is skipped. A cell
-# with no lower neighbour is a pit.
+# The level `levelfor` chose, and what its cells measure across:
 
-function downhill(elev, cell, nbrs)
-    dest = 0
-    zmin = typemax(eltype(elev))
-    for n in nbrs
-        z = elev[n]
-        isnan(z) && continue
-        if z < zmin
-            zmin = z
-            dest = DGG.localindex(n)
-        end
+leaf_level, DGG.cellsize(sys, leaf_level)
+
+# Pixels on the left, cells on the right, the same terrain in both:
+
+tile = Rasters.extent(dem)
+lims = (tile.X, tile.Y)
+shape = AxisAspect(cosd(46.5))            # a degree of longitude is cos(lat) as wide as a degree of latitude
+crange = extrema(dem)
+
+fig = Figure(size = (900, 470))
+ax1 = Axis(fig[1, 1]; aspect = shape, limits = lims,
+    xlabel = "longitude", ylabel = "latitude",
+    title = "Copernicus DEM, $(size(dem, 1))×$(size(dem, 2)) pixels")
+heatmap!(ax1, dem; colormap = :terrain, colorrange = crange)
+ax2 = Axis(fig[1, 2]; aspect = shape, limits = lims,
+    xlabel = "longitude", yticklabelsvisible = false,
+    title = "IGEO7 level $leaf_level, $(round(length(elevation) / 1e6; digits = 1)) M cells")
+p = dggsurface!(ax2, elevation; color = elevation,
+    colormap = :terrain, colorrange = crange)
+Colorbar(fig[1, 3], p; label = "elevation (m)")
+fig
+
+# ## Store sixteen million leaves as a multi-order coverage
+#
+# `region` is the coarsest set of cells that covers the tile: one big cell
+# where the tile is solidly covered, smaller ones towards the border where a
+# big cell would overhang. It stands for sixteen million leaves:
+
+length(region), length(DGG.CellLookup(region))
+
+# Coloured by level: a few tens of thousands of coverage cells in place of
+# sixteen million ids.
+
+levels = DGG.level.(collect(region))
+
+fig = Figure(size = (620, 540))
+ax = Axis(fig[1, 1]; aspect = shape, limits = lims,
+    xlabel = "longitude", ylabel = "latitude",
+    title = "$(length(region)) coverage cells over $(length(DGG.CellLookup(region))) leaves")
+heatmap!(ax, dem; colormap = :grays)
+p = dggpoly!(ax, region; color = levels, alpha = 0.75,
+    colormap = cgrad(:managua, length(unique(levels)); categorical = true),
+    colorrange = (minimum(levels) - 0.5, maximum(levels) + 0.5),
+    strokewidth = 0.15, strokecolor = (:black, 0.35))
+Colorbar(fig[1, 2], p; label = "cell level", ticks = minimum(levels):maximum(levels))
+fig
+
+# A coverage contains the extent, so its border cells overhang the tile by up
+# to a kilometre or two. Those leaves have no pixels under them and hold `NaN`:
+
+count(isnan, elevation)
+
+# Explicit `limits` keep the axes on the tile; the overhanging cells would
+# otherwise widen them.
+
+# ## Accumulate flow with D8
+#
+# Geomorphometry's verbs take this raster as it is: they read neighbours and
+# cell geometry off its `Cells` axis. One cell's area, in square metres:
+
+area_per_cell = GM.cellarea(elevation, first(eachindex(elevation)))
+
+# `flowaccumulation` returns the upstream area of every cell in square metres
+# and the flow directions it used to get there. Its default method is D8, which
+# sends all of a cell's water to one neighbour:
+
+accumulation, directions = GM.flowaccumulation(elevation)
+
+# A cell here is `area_per_cell` square metres, so dividing by it counts cells
+# upstream:
+
+log_cells = log10.(accumulation ./ area_per_cell)
+
+# A window a dozen kilometres across, taken by indexing the cube with an
+# extent. A channel is one cell wide, and over the full tile that is under a
+# screen pixel:
+
+window = Extents.Extent(X = (10.30, 10.45), Y = (46.55, 46.68))
+here = log_cells[DGG.Cells(DGG.Covering(window))]
+
+fig = Figure(size = (640, 560))
+ax = Axis(fig[1, 1]; aspect = shape, limits = (window.X, window.Y),
+    xlabel = "longitude", ylabel = "latitude",
+    title = "D8 flow accumulation, $(length(here)) cells")
+p = dggsurface!(ax, here; color = here,
+    colormap = :devon, colorrange = (1, 3.5), highclip = :white)
+Colorbar(fig[1, 2], p; label = "log₁₀ cells upstream")
+fig
+
+# ## Split the flow between neighbours with D∞
+#
+# D∞ ([Tarboton 1997](https://doi.org/10.1029/96WR03137)) splits each cell's
+# outflow between the two neighbours that bracket its downslope direction, so
+# hillslope flow fans out where D8 threads it through single cells. On a
+# hexagon those two neighbours are ring slots, two of the six around each cell.
+#
+# D∞ over the whole tile takes a few minutes; this run covers a padded box
+# around the same window, wide enough that the channels entering it arrive with
+# their upstream area:
+
+padded = Extents.Extent(X = (10.20, 10.55), Y = (46.45, 46.78))
+around = elevation[DGG.Cells(DGG.Covering(padded))]
+accumulation_dinf, _ = GM.flowaccumulation(around; method = GM.DInf())
+here_dinf = log10.(accumulation_dinf ./ area_per_cell)[DGG.Cells(DGG.Covering(window))]
+
+fig = Figure(size = (640, 560))
+ax = Axis(fig[1, 1]; aspect = shape, limits = (window.X, window.Y),
+    xlabel = "longitude", ylabel = "latitude",
+    title = "D∞ flow accumulation, $(length(here_dinf)) cells")
+p = dggsurface!(ax, here_dinf; color = here_dinf,
+    colormap = :devon, colorrange = (1, 3.5), highclip = :white)
+Colorbar(fig[1, 2], p; label = "log₁₀ cells upstream")
+fig
+
+# ## Find each cell's downhill neighbour by hand
+#
+# Each cell drains to its lowest neighbour. `mapneighbors` visits every cell
+# with its ring of neighbours; `needs` names what the kernel receives for each
+# of them — here the neighbour's elevation and its index in the cube:
+
+function downhill((z, _), (zs, ids))
+    isnan(z) && return (0, NaN32)
+    dest, fall = 0, 0.0f0
+    for k in eachindex(zs)
+        isnan(zs[k]) && continue
+        z - zs[k] > fall && ((dest, fall) = (ids[k], z - zs[k]))
     end
-    zc = elev[cell]
-    (dest == 0 || zmin >= zc) && return (0, NaN32)
-    return (dest, zc - zmin)
+    return (dest, dest == 0 ? NaN32 : fall)
 end
 
-flow, drop = @time DGG.mapneighbors(elevation) do cell, nbrs
-    (isnan(elevation[cell]) ? (0, NaN32) : downhill(elevation, cell, nbrs))::Tuple{Int,Float32}
-end
+flow, drop = DGG.mapneighbors(downhill, elevation;
+    needs = (DGG.Value(vec(elevation)), DGG.Index(DGG.Local())))
+flow
 
-# (; n_pits = count(i -> !isnan(elevation[i]) && flow[i] == 0, eachindex(flow)),
-#    max_drop = maximum(filter(!isnan, drop)))
+# `flow` is the index each cell drains to and `drop` is the fall to it, one
+# raster per component of the tuple the kernel returns. Cells that drain
+# nowhere — a pit, or a cell the tile does not cover:
 
-# Elevation, and the drop to the downhill neighbour — the drop map picks out
-# valley floors as the flat regions and headwalls as the steep ones.
-# `CellVector(grid)[shown]` is the covered cells as a vector, which `poly!`
-# draws directly, in the same order `elevation[shown]` follows.
+count(==(0), flow)
 
+# Valley floors have little fall and come out dark; headwalls come out bright.
 
-fig = Figure(size = (900, 430))
-ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84", title = "elevation (m)")
-p1 = dggsurface!(ax1, lookup(elevation, DGG.Cells); color = vec(elevation), colormap = :terrain)
-Colorbar(fig[2, 1], p1; vertical = false)
-ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84", title = "drop to downhill neighbour (m)")
-p2 = dggsurface!(ax2, lookup(elevation, DGG.Cells); color = drop, colormap = :magma,
-    nan_color = :gray80)
-Colorbar(fig[2, 2], p2; vertical = false)
+fig = Figure(size = (620, 540))
+ax = Axis(fig[1, 1]; aspect = shape, limits = lims,
+    xlabel = "longitude", ylabel = "latitude", title = "drop to the downhill neighbour")
+p = dggsurface!(ax, drop; color = drop,
+    colormap = :magma, colorrange = (0, 30), highclip = :white)
+Colorbar(fig[1, 2], p; label = "metres")
 fig
 
-# ## Terrain analysis with Geomorphometry
+# ## Compare the two sets of directions
 #
-# The cube's axis is already a `CellLookup`: canonical IGEO7 cell identities
-# over indexed vector storage. Geomorphometry reads the DGGS neighbourhood
-# and physical cell geometry off it directly. TPI is a single local call; flow
-# accumulation uses D8 here, with each result expressed as upstream area in
-# square metres.
+# `directions` from the D8 run holds one downstream neighbour per cell in
+# Geomorphometry's local-drain-direction (LDD) code. Encoding `flow` the same
+# way makes the two comparable:
 
-tpi = @time GM.topographic_position_index(elevation)
+cells = collect(lookup(elevation, DGG.Cells))
+sends = vec(flow)
+downstream(i) = sends[i] == 0 ? cells[i] : cells[sends[i]]
+mine = [GM.FlowDirection{GM.LDD}(downstream(i) - cells[i]) for i in eachindex(cells)]
+
+mean(mine .== directions)
+
+# The disagreements are pits, where a one-ring rule stops. The library's D8 is
+# a priority flood: it fills each depression and routes the water out over its
+# rim. Where the kernel did find a lower neighbour, both pick the same one:
+
+routed = findall(!=(0), sends)
+mean(mine[routed] .== vec(directions)[routed])
+
+# ## Which systems each method runs on
 #
-accumulation, directions = @time GM.flowaccumulation(elevation; method = GM.D8())
-# accumulation, directions = @time GM.flowaccumulation(elevation; method = GM.DInf())
-
-cell_area = @time GM.cellarea(elevation, first(eachindex(elevation)))
-log_cells = log10.(accumulation ./ cell_area)
-
-fig = Figure(size = (900, 430))
-ax1 = GeoAxis(fig[1, 1]; dest = "+proj=longlat +datum=WGS84",
-    title = "topographic position index (m)")
-p1 = dggsurface!(ax1, lookup(tpi, DGG.Cells); color = vec(tpi), colorrange = (-25, 25),
-    colormap = :delta)
-Colorbar(fig[2, 1], p1; vertical = false)
-ax2 = GeoAxis(fig[1, 2]; dest = "+proj=longlat +datum=WGS84",
-    title = "D8 flow accumulation")
-p2 = dggsurface!(ax2, lookup(log_cells, DGG.Cells); color = vec(log_cells),
-    colormap = :devon)
-Colorbar(fig[2, 2], p2; vertical = false,
-    label = "log₁₀(upstream cell equivalents)")
-fig
-save("geomorphometry_igeo7.png", fig)
-
-# `MultiOrderCoverage`, `subtree`, `regrid` and `mapneighbors` are interface
-# methods, so the regridding and routing portions can use another system.
-# `RelativeZ7Cell` and the lazy cell-index iterator provide the IGEO7-specific
-# Geomorphometry integration.
+# `MultiOrderCoverage`, `regrid` and `mapneighbors` are interface methods and
+# run on any system: set `sys = DGG.HEALPixSystem()` and nothing else above
+# changes. Geomorphometry's verbs on a DGGS raster:
+#
+# | verb | systems |
+# |---|---|
+# | `flowaccumulation` with `D8()`, the default | any |
+# | `flowaccumulation` with `DInf()` or `FD8()`, and `height_above_nearest_drainage` | IGEO7 — these need relative-cell arithmetic, which the IGEO7 backend provides |

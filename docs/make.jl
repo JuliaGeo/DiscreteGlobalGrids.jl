@@ -15,8 +15,9 @@ DocMeta.setdocmeta!(DiscreteGlobalGrids, :DocTestSetup,
                     :(using DiscreteGlobalGrids); recursive = true)
 
 # Generate Markdown beside each Literate source without executing its examples.
-for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
-          "healpix_astronomy", "store_io")
+for f in ("choosing_a_grid", "regridding", "stencils", "zonal", "multiorder",
+          "between_grids", "hydrology", "store_io", "out_of_core",
+          "healpix_astronomy")
     Literate.markdown(joinpath(@__DIR__, "src", "tutorials", f * ".jl"),
                       joinpath(@__DIR__, "src", "tutorials");
                       flavor = Literate.DocumenterFlavor(), execute = false)
@@ -46,14 +47,18 @@ makedocs(;
         "Home" => "index.md",
         "DGGS gallery" => "all_dggs.md",
         "Tutorials" => [
+            "Choosing a grid" => "tutorials/choosing_a_grid.md",
+            "Regridding: getting data onto a grid" => "tutorials/regridding.md",
             "Stencil operations" => "tutorials/stencils.md",
             "Zonal statistics" => "tutorials/zonal.md",
-            "Regridding a time series" => "tutorials/regridding.md",
             "Multi-order coverage" => "tutorials/multiorder.md",
+            "Moving between DGGS" => "tutorials/between_grids.md",
             "Hydrology: a DEM on an IGEO7 grid" => "tutorials/hydrology.md",
-            "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
             "A round trip through a DGGS store" => "tutorials/store_io.md",
+            "Out of core" => "tutorials/out_of_core.md",
+            "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
         ],
+        "Writing a grid system" => "extending.md",
         "API" => [
             "Choosing a regridding method" => "api/regridding-methods.md",
             "Region boundaries" => "api/boundaries.md",

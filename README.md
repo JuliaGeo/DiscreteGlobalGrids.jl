@@ -92,7 +92,8 @@ DGG.halo(region; cells = true)                    # ids rather than indices
 
 Swapping `HEALPixSystem()` for `IGeo7System()`, `H3System()`, `A5System()`,
 `S2System()` or `ISEA4RSystem()` changes nothing else, and `AuthalicSystem`
-wraps any of them to read geometry at geodetic latitude. `DGG.systems()` lists
+wraps any of them — except A5, whose geometry is geodetic already — to read
+geometry at geodetic latitude. `DGG.systems()` lists
 all six, and its docstring is the comparison table: cell counts, cell shape,
 equal-areaness, and the traits that differ across them.
 

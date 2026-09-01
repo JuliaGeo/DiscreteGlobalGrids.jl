@@ -55,9 +55,11 @@ figure
   - **ISEA4R** — rhombi on ten icosahedral diamonds, exactly `4π/(10·4^l)`
     steradians each.
 
-`AuthalicSystem` wraps any of the six to read geometry at geodetic latitude.
-Ids, indices, hierarchy and ordering are untouched, so it draws the same
-picture and is not in the sweep.
+`AuthalicSystem` wraps a system to read its geometry at geodetic latitude. Ids,
+indices, hierarchy and ordering are untouched, so it draws the same picture and
+is not in the sweep. A5 is the exception: it converts to authalic latitude
+inside its own projection, so its geometry is geodetic already and the wrapper
+refuses it rather than converting twice.
 
 ## What differs
 

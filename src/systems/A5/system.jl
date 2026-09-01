@@ -9,7 +9,9 @@ The canonical id is [`A5Cell`](@ref); projection, hierarchy, geometry, and
 adjacency follow upstream a5. A5 is equal-area on the *ellipsoid* and its
 coordinates are geodetic, so unit-sphere [`cell_area`](@ref) carries the
 authalic conversion and varies about 1% peak to peak within a level, still
-summing to 4π.
+summing to 4π. Being geodetic already, this system cannot be wrapped in
+[`AuthalicSystem`](@ref) — that wrapper converts a system that publishes
+authalic latitude, and A5 has done the conversion itself.
 
 The encoding also represents a level `-1` world cell and 42 of 60 level-30
 quintants; neither belongs to a complete system level.

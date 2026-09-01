@@ -93,7 +93,8 @@ ellipsoidal area. For true ellipsoidal area, multiply the base grid's area by
 
 Wrapping an `AuthalicGrid` throws; use `parent(grid)` before changing ellipsoid.
 
-A [`PartialGrid`](@ref) is also rejected. Wrap its system instead:
+A [`PartialGrid`](@ref DiscreteGlobalGrids.Engine.PartialGrid) is also
+rejected. Wrap its system instead:
 
     PartialGrid(AuthalicSystem(sys), level, ids)
 

@@ -78,6 +78,7 @@ spelling of [`query`](@ref).
 ```@docs
 Cells
 Covering
+predicate_indices
 NeighborSlices
 ```
 

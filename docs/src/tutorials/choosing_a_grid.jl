@@ -145,15 +145,25 @@ DGG.levelfor(DGG.IGeo7System(), 25_000)
 # *geodetic* latitude, on the WGS84 ellipsoid. The two differ by up to 0.128°,
 # 14 km along a meridian at ±45°.
 #
-# `AuthalicSystem` reads a system's geometry at geodetic latitude. It wraps any
-# of the five:
+# `AuthalicSystem` reads a system's geometry at geodetic latitude, wrapping a
+# system that computes at authalic latitude — four of the five:
 
 DGG.AuthalicSystem(DGG.IGeo7System())
 
 #
 
-[DGG.AuthalicSystem(sys) for sys in (DGG.A5System(), DGG.H3System(),
-                                     DGG.HEALPixSystem(), DGG.ISEA4RSystem())]
+[DGG.AuthalicSystem(sys) for sys in (DGG.H3System(), DGG.HEALPixSystem(),
+                                     DGG.ISEA4RSystem())]
+
+# A5 converts to geodetic latitude inside its own projection, so its geometry
+# is geodetic already — wrapping it would convert twice, and the constructor
+# refuses:
+
+try
+    DGG.AuthalicSystem(DGG.A5System())
+catch err
+    err
+end
 
 # The wrapper moves the geometry and forwards the rest:
 #

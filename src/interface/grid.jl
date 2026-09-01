@@ -59,7 +59,7 @@ The exact boundary ring of cell `c`, as points on the unit sphere.
 Contract:
 
   - The ring is **implicitly closed**: the first vertex is *not* repeated at the
-    end. [`cell_polygon`](@ref) is what closes it.
+    end. The internal `cell_polygon` wrapper is what closes it.
   - Vertices are in **counter-clockwise order seen from outside the sphere**
     (right-hand rule about the outward normal), so the ring bounds the cell
     rather than its complement and spherical signed area comes out positive.
@@ -232,15 +232,10 @@ localindex(sys::AbstractHierarchicalGridSystem, c::AbstractCellIndex) =
 """
     cell_polygon(grid::AbstractGrid, c::AbstractCellIndex) -> GI.Polygon
 
-Cell `c` as a GeoInterface polygon on the unit sphere: the
-[`cell_boundary`](@ref) ring, explicitly closed, wrapped in a
-`GI.LinearRing` inside a `GI.Polygon`. Neither wrapper allocates, so a system
-whose `cell_boundary` uses inline storage gets an `isbits` polygon; read the
-polygon through GeoInterface rather than depending on its container types.
-
-Coordinates are unit-sphere `(x, y, z)`, not longitude/latitude — this polygon
-is meant for spherical predicates, spherical area, and
-`ConservativeRegridding`, all of which work in that frame.
+Internal. The GeoInterface wrapper over [`cell_boundary`](@ref): the ring,
+explicitly closed, as a `GI.Polygon` in unit-sphere `(x, y, z)`. It is what the
+[`query`](@ref) predicates, [`getcell`](@ref) and regridding read a cell's
+geometry through; a caller wanting the geometry itself reads `cell_boundary`.
 """
 function cell_polygon end
 

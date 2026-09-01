@@ -206,6 +206,7 @@ end
 idrank(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)
 idselect(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)
 idcell(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)
+idvalid(grid::AbstractGrid, ::Integer) = _no_arithmetic(grid)
 
 function idcount_between(grid::AbstractGrid, lo::Integer, hi::Integer)
     I = idtype(grid)

@@ -322,9 +322,12 @@ dimsource(::Any) = nothing
     _asspace(space, name) -> RegridSpace
     _asspace(space, name, src_space) -> RegridSpace
 
-Resolve a `to` or `from` argument into a [`RegridSpace`](@ref). Packages that
-supply spaces extend the two-argument form for their own target spellings, and
-the three-argument form when the destination depends on the resolved source
-space. `name` names the keyword in error messages.
+Resolve a `to` or `from` argument into a [`RegridSpace`](@ref). A space stands
+for itself, and a dimensional raster or a tuple of dimensions names the
+[`RasterGrid`](@ref) over its lattice — a dimension that already names cells
+([`dimsource`](@ref)) is refused rather than read as one. Packages that supply
+spaces extend the two-argument form for their own target spellings, and the
+three-argument form when the destination depends on the resolved source space.
+`name` names the keyword in error messages.
 """
 function _asspace end

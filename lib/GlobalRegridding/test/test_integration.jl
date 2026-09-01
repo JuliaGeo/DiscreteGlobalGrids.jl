@@ -193,6 +193,31 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         @test DD.dims(regrid(src; to = yfirst)) isa Tuple{<:DD.Y,<:DD.X}
     end
 
+    @testset "a raster names its own space" begin
+        f(lon, lat) = 2.0 + sind(2 * lat) + 0.25 * cosd(lon)
+        src = t6_raster(f, t6_centres(-180, 180, 36), t6_centres(-90, 90, 18))
+        template = t6_raster(f, t6_centres(-180, 180, 9), t6_centres(-90, 90, 6))
+        reference = regrid(src; to = RasterGrid(template))
+
+        # A raster and the dimensions it carries are two spellings of the
+        # lattice `RasterGrid` reads off them, and the space they name is the
+        # one written out by hand — same values, same labels.
+        for to in (template, DD.dims(template))
+            out = regrid(src; to)
+            @test parent(out) == parent(reference)
+            @test DD.dims(out) == DD.dims(reference)
+        end
+
+        # `from` takes the same spellings, and the source raster names the
+        # space a source given no `from` would have derived from it anyway.
+        for from in (src, DD.dims(src))
+            @test parent(regrid(src; to = template, from)) == parent(reference)
+        end
+
+        # Everything else is still refused, and still says who resolves it.
+        @test_throws "must be a RegridSpace" regrid(src; to = 1)
+    end
+
     @testset "a cell axis names its own source" begin
         data = DD.DimArray(zeros(32), (DD.Dim{:Cells}(DD.Lookups.Categorical(
             [T6Cell(i) for i in 1:32]; order = DD.Lookups.Unordered())),))
@@ -201,6 +226,15 @@ GR.dimsource(::DD.Lookups.Lookup{T6Cell}) = T6Grid()
         # Without `from` the source space is derived from the data, and a cell
         # axis is not a raster lattice: name the grid it holds, not `xdim`.
         @test_throws "from = T6Grid()" regrid(data; to = dst)
+
+        # A cube handed straight to a keyword is refused by the same guard, and
+        # names the keyword that was given rather than always `from`.
+        raster = t6_raster((lon, lat) -> Float64(lat),
+            t6_centres(-180, 180, 8), t6_centres(-90, 90, 4))
+        @test_throws "`to` was given a dimensional raster" regrid(raster; to = data)
+        @test_throws "to = T6Grid()" regrid(raster; to = data)
+        @test_throws "to = T6Grid()" regrid(raster; to = DD.dims(data))
+        @test_throws "from = T6Grid()" regrid(zeros(32); to = dst, from = data)
     end
 
     @testset "cross-method agreement" begin

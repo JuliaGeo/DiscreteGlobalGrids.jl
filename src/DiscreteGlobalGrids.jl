@@ -136,10 +136,10 @@ using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
     EdgeCellIterator, InnerCellIterator
 
 using .Engine: PartialGrid,
-    HierarchicalGridCursor, TiledRasterCursor,
+    HierarchicalGridCursor, TiledRasterCursor, node_cell,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
-    CellVector, cellset, covering, covering_indices,
+    CellVector, cellset, covering, covering_indices, predicate_indices,
     grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
     halo_indices, sizehint,

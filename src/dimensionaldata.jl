@@ -28,13 +28,13 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractHierarchicalGridSystem,
     ncells, cellindex, localindex, globalindex, cellat, level, system,
     levelgrid, cellindextype, has_sorted_subtrees, descendants, query,
     neighbors, ring, neighborcount, Connectivity, Vertex, maxneighbors,
-    halo, border, interior, adjacency
+    halo, border, interior, adjacency, DE9IMPredicate
 import ..DiscreteGlobalGrids: Helpers
 import ..DiscreteGlobalGrids.Engine: PartialGrid, SubtreeIds,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges
 # Core collection operations delegated to `CellVector`.
 import ..DiscreteGlobalGrids.Engine: CellVector, cellset, covering,
-    covering_indices, windows, nwindows, RangeWindows, CellWindows, _derive,
+    covering_indices, predicate_indices, windows, nwindows, RangeWindows, CellWindows, _derive,
     _windows, SubsetIndexedCell, mapneighbors, foreachneighbors,
     StorageOrder, _capacity, _ringtype
 
@@ -469,7 +469,20 @@ function _cells_dimnum(A::DD.AbstractDimArray, ::Nothing)
     end
     throw(ArgumentError(
         "no cell dimension found: none of the dims $(map(DD.name, DD.dims(A))) " *
-        "carries a cell lookup; pass spatialdim to name one"))
+        "carries a cell lookup; pass the cell dimension to name one"))
+end
+
+# `DimensionalData.dims` accepts a tuple of dimensions; a cell axis is one
+# dimension, so only the one-element tuple has a meaning here. The positional
+# forms below take the tuple untyped: `(Cells,)` is a `Tuple{UnionAll}` to
+# dispatch, which no `Tuple{Type{<:Dimension}}` signature admits.
+const DimSelector = Union{Symbol, DD.Dimension, Type{<:DD.Dimension}, Tuple}
+
+function _cells_dimnum(A::DD.AbstractDimArray, spatialdim::Tuple)
+    length(spatialdim) == 1 || throw(ArgumentError(
+        "a cell dimension is one dimension, not $(length(spatialdim)); " *
+        "name it alone"))
+    return _cells_dimnum(A, spatialdim[1])
 end
 
 function _cells_dimnum(A::DD.AbstractDimArray, spatialdim)
@@ -578,7 +591,8 @@ _checkpass(pass) = _needs_pass(pass)
 Apply `f` to each cell and its neighbors. The result uses `A`'s wrapper and
 lookups. If `f` returns a concrete tuple, each component becomes an array.
 
-`spatialdim` accepts any selector supported by `DimensionalData.dims`.
+`spatialdim` accepts any selector supported by `DimensionalData.dims`, and
+`mapneighbors(f, A, dims; kw...)` is the same request spelled positionally.
 By default, the first dimension with a [`CellLookup`](@ref) is used. An
 array without one, or a selector that misses or names a non-cell dimension,
 is an `ArgumentError`.
@@ -792,17 +806,55 @@ function _foreach_cell_slices(f::F, A, ::Val{D}, cv, order, threaded,
 end
 
 """
-    neighbors(A::AbstractDimArray; spatialdim = nothing, connectivity = Vertex())
+    neighbors(A::AbstractDimArray; connectivity = Vertex())
+    neighbors(A::AbstractDimArray, dims; connectivity = Vertex())
 
-Iterate over each cell and its indexed neighbor handles. The cell
-dimension is selected as in [`mapneighbors`](@ref); the minted indices are
-that dimension's axis indices.
+Iterate over each cell and its indexed neighbor handles; the minted indices
+are the cell dimension's axis indices.
+
+`dims` names the cell dimension the way `DimensionalData.dims(A, dims)` does —
+`Cells`, `:Cells`, or a `Dimension` (any `DimensionalData` dimension
+selector, typed as such so a cell handle is never read as one) — and must name one that carries a cell
+lookup. Without it, the first dimension carrying one is used. An array without
+one, or a `dims` that misses or names a non-cell dimension, is an
+`ArgumentError`.
 """
-function neighbors(A::DD.AbstractDimArray; spatialdim = nothing,
-        connectivity::Connectivity = Vertex())
-    dnum = _cells_dimnum(A, spatialdim)
-    return neighbors(parent(DD.lookup(A, dnum)); connectivity)
-end
+neighbors(A::DD.AbstractDimArray; connectivity::Connectivity = Vertex()) =
+    neighbors(parent(DD.lookup(A, _cells_dimnum(A, nothing))); connectivity)
+
+neighbors(A::DD.AbstractDimArray, dims::DimSelector;
+        connectivity::Connectivity = Vertex()) =
+    neighbors(parent(DD.lookup(A, _cells_dimnum(A, dims))); connectivity)
+
+"""
+    adjacency(A::AbstractDimArray; kw...) -> AdjacencyTable
+    adjacency(A::AbstractDimArray, dims; kw...) -> AdjacencyTable
+
+The one-ring [`adjacency`](@ref) table of `A`'s cell dimension, chosen as in
+[`neighbors`](@ref): the first dimension carrying a cell lookup, or the one
+`dims` names. The keywords are those of the [`CellVector`](@ref) method.
+"""
+adjacency(A::DD.AbstractDimArray; kw...) =
+    adjacency(parent(DD.lookup(A, _cells_dimnum(A, nothing))); kw...)
+
+adjacency(A::DD.AbstractDimArray, dims::DimSelector; kw...) =
+    adjacency(parent(DD.lookup(A, _cells_dimnum(A, dims))); kw...)
+
+"""
+    mapneighbors(f, A::AbstractDimArray, dims; kw...)
+    foreachneighbors(f, A::AbstractDimArray, dims; kw...)
+
+The positional spelling of `spatialdim = dims`: `dims` names the cell
+dimension as [`neighbors`](@ref) reads it. Every other keyword is as in the
+two-argument forms.
+"""
+mapneighbors(f::F, A::DD.AbstractDimArray, dims::DimSelector;
+        kw...) where {F} =
+    mapneighbors(f, A; spatialdim = dims, kw...)
+
+foreachneighbors(f::F, A::DD.AbstractDimArray, dims::DimSelector;
+        kw...) where {F} =
+    foreachneighbors(f, A; spatialdim = dims, kw...)
 
 # ===========================================================================
 # Selectors
@@ -836,6 +888,10 @@ returns a
 [`CellVector`](@ref), or `covering_indices(cv, target)` for the indices
 alone. See that docstring for what the selection costs and for the
 over-covering it inherits from the coverage itself.
+
+A [`query`](@ref) predicate — `Cells(Intersects(target))`,
+`Cells(Within(target))` — is the exact selection the coverage over-covers;
+see [`Cells`](@ref).
 """
 struct Covering{T} <: Lookups.ArraySelector{T}
     val::T
@@ -849,6 +905,29 @@ Lookups.selectindices(lk::AbstractCellLookup, sel::Covering; kw...) =
 
 Lookups.selectindices(lk::AbstractCellLookup, sel::Covering{<:AbstractVector};
     kw...) = covering_indices(parent(lk), Lookups.val(sel))
+
+"""
+    Cells(pred::DE9IMPredicate)
+
+A [`query`](@ref) predicate is itself a cell selector: it selects every stored
+cell that satisfies the predicate against its target, at the lookup's level.
+
+```julia
+A[Cells(Intersects(cap))]           # cells meeting a SphericalCap
+A[Cells(Within(county))]            # cells lying wholly inside a polygon
+A[Cells(Disjoint(extent))]          # cells clear of a lon/lat extent
+```
+
+The predicate and target are whatever `query` accepts — the same limits apply,
+so a cap target supports `Intersects`, `Disjoint` and `Within` only. The
+result is the query's answer intersected with the lookup, in ascending index
+order; unlike [`Covering`](@ref) it is exact, not a coverage's over-cover. The
+resulting view retains a [`CellLookup`](@ref).
+
+Outside a cube, the equivalent selection is `predicate_indices(cv, pred)`.
+"""
+Lookups.selectindices(lk::AbstractCellLookup, pred::DE9IMPredicate; kw...) =
+    predicate_indices(parent(lk), pred)
 
 Lookups.selectindices(lk::AbstractCellLookup,
     sel::Lookups.At{<:AbstractCellIndex}; kw...) =

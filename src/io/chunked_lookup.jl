@@ -31,7 +31,7 @@ import ..DiscreteGlobalGrids: AbstractGrid, AbstractCellIndex, AbstractCellVecto
     AbstractHierarchicalGridSystem, ncells, cellindex, localindex, globalindex, cellat,
     level, system, cellindextype, rawid, query, descendants,
     has_sorted_subtrees, level_ranges, MultiOrderCoverage, CellVector,
-    CellLookup, Covering, covering_indices,
+    CellLookup, Covering, covering_indices, predicate_indices, DE9IMPredicate,
     PartialGrid, cellset, covering, maxneighbors,
     neighbors, ring, neighborcount, halo, border, interior, adjacency,
     mapneighbors, foreachneighbors, region
@@ -791,6 +791,25 @@ function covering_indices(axis::ChunkedCellVector, target)
     out = Int[]
     _each_leaf(sys, set, axis.grid, l) do p
         k = axisindex(axis, convert(idtype(axis.grid), rawid(cellindex(axis.grid, p))))
+        k === nothing || push!(out, k)
+    end
+    return issorted(out) ? out : sort!(out)
+end
+
+"""
+    predicate_indices(axis::ChunkedCellVector, pred::DE9IMPredicate) -> Vector{Int}
+
+The indices in `axis` of the cells that satisfy `pred` at the axis's level,
+ascending — the index-space form of a predicate used as a [`Cells`](@ref)
+selector, on a stored axis instead of a computed one.
+
+`query` answers in ascending id order, so a chunk-backed axis touches each
+chunk the matching cells fall in once.
+"""
+function predicate_indices(axis::ChunkedCellVector, pred::DE9IMPredicate)
+    out = Int[]
+    for c in query(axis.grid, pred)
+        k = DGG.localindex(axis, c)
         k === nothing || push!(out, k)
     end
     return issorted(out) ? out : sort!(out)

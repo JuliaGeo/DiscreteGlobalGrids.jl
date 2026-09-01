@@ -208,6 +208,65 @@ end
             (-24.0, -39.0), (-26.0, -41.0)])])
         @test isempty(A[DGG.Cells(DGG.Covering(empty_target))])
     end
+
+    # A query predicate is a selector: the query's answer, intersected with the
+    # lookup, in index order — exact where `Covering` over-covers.
+    @testset "a DE9IM predicate selects the query's cells, intersected" begin
+        for pred in (DGG.Intersects(ZURICH), DGG.Within(ZURICH))
+            byhand = sort!(Int[k for k in (DGG.localindex(lk, c) for c in DGG.query(grid, pred))
+                if k !== nothing])
+            sub = A[DGG.Cells(pred)]
+            @test parent(sub) == Float64.(byhand)
+            sublk = DD.lookup(sub, DGG.Cells)
+            @test sublk isa DGG.CellLookup
+            @test collect(sublk) == [lk[k] for k in byhand]
+            # The index-space verb the selector resolves to.
+            @test DGG.predicate_indices(parent(lk), pred) == byhand
+        end
+        # `Within` is a subset of `Intersects`, and `Intersects` of `Covering`.
+        within = Set(collect(DD.lookup(A[DGG.Cells(DGG.Within(ZURICH))], DGG.Cells)))
+        meets = Set(collect(DD.lookup(A[DGG.Cells(DGG.Intersects(ZURICH))], DGG.Cells)))
+        covers = Set(collect(DD.lookup(A[DGG.Cells(DGG.Covering(ZURICH))], DGG.Cells)))
+        @test within ⊆ meets ⊆ covers
+    end
+end
+
+# ---------------------------------------------------------------------------
+# Predicate selectors on a whole level, against caps and polygons
+#
+# One system, one level, no coverage in the way: the selector must answer
+# exactly what `query` answers, for every target kind `query` takes.
+# ---------------------------------------------------------------------------
+
+@testset "predicate selectors on a complete HEALPix level" begin
+    sys = DGG.HEALPixSystem()
+    grid = DGG.levelgrid(sys, 4)
+    cv = DGG.CellVector(grid)
+    lk = DGG.CellLookup(cv)
+    A = DD.DimArray(collect(1.0:length(cv)), DGG.Cells(lk))
+    to_sphere = GO.UnitSpherical.UnitSphereFromGeographic()
+    cap = GO.UnitSpherical.SphericalCap(to_sphere((8.5, 47.4)), deg2rad(5.0))
+    # Level-4 cells are a few degrees wide, so the polygon is sized to hold some.
+    alps = GI.Polygon([GI.LinearRing([(0.0, 35.0), (25.0, 35.0), (25.0, 55.0),
+        (0.0, 55.0), (0.0, 35.0)])])
+    for target in (cap, alps), P in (DGG.Intersects, DGG.Within)
+        pred = P(target)
+        byhand = sort!([DGG.localindex(grid, c) for c in DGG.query(grid, pred)])
+        @test !isempty(byhand)
+        sub = A[DGG.Cells(pred)]
+        @test parent(sub) == Float64.(byhand)
+        @test DD.lookup(sub, DGG.Cells) isa DGG.CellLookup
+        @test collect(DD.lookup(sub, DGG.Cells)) == DGG.query(grid, pred)
+        # The selection composes: selecting again on the subset is the identity.
+        @test parent(sub[DGG.Cells(pred)]) == parent(sub)
+    end
+    # The two predicates nest, and a cap's `Within` is strictly inside its `Intersects`.
+    @test length(A[DGG.Cells(DGG.Within(cap))]) < length(A[DGG.Cells(DGG.Intersects(cap))])
+    # A predicate `query` refuses for the target stays refused as a selector.
+    @test_throws ArgumentError A[DGG.Cells(DGG.Touches(cap))]
+    # A target the level does not reach selects nothing, not an error.
+    far = GO.UnitSpherical.SphericalCap(to_sphere(FARAWAY), deg2rad(0.01))
+    @test isempty(A[DGG.Cells(DGG.Within(far))])
 end
 
 # ---------------------------------------------------------------------------

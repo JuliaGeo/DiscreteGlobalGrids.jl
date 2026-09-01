@@ -380,6 +380,27 @@ end
 # A reduced cell axis no longer corresponds to a cell id.
 Lookups.reducelookup(::AbstractCellLookup) = Lookups.NoLookup(Base.OneTo(1))
 
+# A broadcast combines its operands' axes with `Lookups.promote_first`, whose
+# `Lookup` fallback keeps a lookup only when the operands' CONCRETE types are
+# identical and answers `NoLookup` otherwise. Two cell axes over the same cells
+# differ in type routinely — a set-backed window run against a grid-backed one,
+# a stored axis against the same cells in memory — so `a .- b` was dropping an
+# axis neither operand had changed. Equal ids are the same axis whatever the
+# backing; `Categorical` and `Sampled` each say so for themselves, and this is
+# the cell axis saying it.
+Lookups.promote_first(lk::AbstractCellLookup) = lk
+
+# The same-type case is DimensionalData's own; it is written here too because
+# the general method below would otherwise be ambiguous with it.
+Lookups.promote_first(lk::L, ::L, ::L...) where {L<:AbstractCellLookup} = lk
+
+# Unequal cell axes degrade to `NoLookup`, which is what `Sampled` does when it
+# cannot promote. Under DimensionalData's default strict broadcast they never
+# get this far: `comparedims` compares the values first and throws.
+Lookups.promote_first(l1::AbstractCellLookup, l2::AbstractCellLookup,
+    ls::AbstractCellLookup...) =
+    all(==(l1), (l2, ls...)) ? l1 : Lookups.NoLookup(Base.OneTo(length(l1)))
+
 # Use the window membership search instead of searching all logical cell ids.
 Lookups.hasselection(lk::AbstractCellLookup, sel::Lookups.At{<:AbstractCellIndex}) =
     localindex(lk, Lookups.val(sel)) !== nothing
@@ -433,6 +454,14 @@ Base.@propagate_inbounds Base.getindex(A::CellsArray, h::SubsetIndexedCell) =
     parent(A)[h.index]
 Base.@propagate_inbounds Base.setindex!(A::CellsArray, x, h::SubsetIndexedCell) =
     setindex!(parent(A), x, h.index)
+
+# `Base.filter` reaches for a `LogicalIndex` over the whole array whenever the
+# array is not `IndexLinear` — which a cube whose data is a store is not — and
+# a chunked parent cannot answer one. Resolve the mask to indices instead:
+# indexing a cell axis by ascending indices is already defined, and it is what
+# `filter` on a `Sampled` axis does, so the result is the surviving values on
+# the axis of the cells they belong to.
+Base.filter(f, A::CellsArray) = A[findall(f, parent(A))]
 
 # Find the first `Cells` dimension for indexed-handle indexing.
 function _handle_dimnum(A::DD.AbstractDimArray)

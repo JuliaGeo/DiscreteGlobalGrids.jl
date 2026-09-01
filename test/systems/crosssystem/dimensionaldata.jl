@@ -452,6 +452,55 @@ end
         @test parent(plain) == parent(A)
         @test plain[DGG.Cells(3)] == 3.0
     end
+
+    # A broadcast combines its operands' axes through `Lookups.promote_first`.
+    # DimensionalData's own fallback keeps a lookup only where the operands'
+    # concrete types are identical, and two cell axes over the same cells
+    # differ in type as a matter of course.
+    @testset "broadcast" begin
+        other = DGG.CellLookup(DGG.PartialGrid(sys, leaf, ids))
+        # The regression, stated: same cells, different backing, different type.
+        @test other == lk
+        @test typeof(other) !== typeof(lk)
+        @test DD.Lookups.promote_first(lk) === lk
+        @test DD.Lookups.promote_first(lk, lk) == lk
+        @test DD.Lookups.promote_first(lk, other) == lk
+
+        B = DD.DimArray(fill(0.5, length(ids)), DGG.Cells(other))
+        want = length(A[DGG.Cells(DGG.Covering(ZURICH))])
+        @test want > 0
+        for C in (A .- A, A .- B, B .- A, A .+ 1, 2 .* A)
+            clk = DD.lookup(C, DGG.Cells)
+            @test clk isa DGG.CellLookup
+            @test collect(clk) == ids
+            # The reason to keep it: the result still answers cell selectors.
+            @test length(C[DGG.Cells(DGG.Covering(ZURICH))]) == want
+            @test C[DGG.Cells(DD.At(ids[3]))] == parent(C)[3]
+        end
+
+        # Axes that are not the same cells still part company the way
+        # DimensionalData means them to: strict broadcast compares the values
+        # and throws, and an unlike pair that gets past it degrades to
+        # `NoLookup` rather than claiming one operand's cells for the other's.
+        @test_throws DimensionMismatch A[1:3] .- A[4:6]
+        @test DD.Lookups.promote_first(lk, DGG.CellLookup(grid)) isa
+              DD.Lookups.NoLookup
+    end
+
+    # `filter` shrinks the axis along with the values, as it does on a
+    # `Sampled` axis: the survivors, on the axis of the cells they came from.
+    @testset "filter" begin
+        v = [isodd(i) ? NaN : Float64(i) for i in eachindex(ids)]
+        F = DD.DimArray(v, DGG.Cells(lk))
+        r = filter(!isnan, F)
+        @test parent(r) == filter(!isnan, v)
+        rlk = DD.lookup(r, DGG.Cells)
+        @test rlk isa DGG.CellLookup
+        @test collect(rlk) == ids[2:2:end]
+        @test r[DGG.Cells(DD.At(ids[2]))] == v[2]
+        @test isempty(filter(_ -> false, F))
+        @test collect(DD.lookup(filter(_ -> true, F), DGG.Cells)) == ids
+    end
 end
 
 # ---------------------------------------------------------------------------

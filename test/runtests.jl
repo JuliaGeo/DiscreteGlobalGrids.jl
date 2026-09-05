@@ -10,6 +10,8 @@ using DiscreteGlobalGrids
 # lib/. Each system suite imports that package and runs its two public suites
 # on its own system, alongside that system's own oracle vectors.
 @testset "DiscreteGlobalGrids.jl" begin
+    include("partitioning/runtests.jl")
+    include("partitioning/distributed.jl")
     include("interface/runtests.jl")
     include("fallbacks/runtests.jl")
     include("fallbacks/authalic.jl")

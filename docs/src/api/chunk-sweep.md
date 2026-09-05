@@ -32,10 +32,11 @@ irregular layouts such as one chunk per ancestor subtree. It finds each halo by
 walking its boundary through [`halo`](@ref), so planning reads metadata and
 performs CPU work without loading data chunks.
 
-[`split`](@ref Base.split(::MapChunkPlan, ::Integer)) partitions a plan for
-parallel execution. Pieces own disjoint destination ranges, including when the
-destination is a store. Build the plan before splitting so its [`region`](@ref)
-conversion is shared by all pieces.
+[`split`](@ref Base.split(::MapChunkPlan, ::Integer)) divides a plan into
+contiguous pieces with similar chunk counts. For weighted work, unequal worker
+capacities, or grouping chunks by shared inputs, use the
+[partitioning API](partitioning.md). Build the plan before assigning work so
+its [`region`](@ref) conversion is shared by in-process tasks.
 
 ```@docs
 chunkplan

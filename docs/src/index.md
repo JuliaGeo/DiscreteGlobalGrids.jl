@@ -120,7 +120,8 @@ The API pages cover [grids](api/grid-interface.md),
 [neighbours and stencils](api/neighbors.md),
 [neighbour fields](api/neighbor-fields.md),
 [store I/O](api/store-io.md),
-[chunked computation](api/chunk-sweep.md) and
+[chunked computation](api/chunk-sweep.md),
+[work partitioning](api/partitioning.md) and
 [subzone storage](api/subzone-layout.md).
 
 To add a grid, follow [Writing a grid system](extending.md). The

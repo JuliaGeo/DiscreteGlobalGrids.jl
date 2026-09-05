@@ -26,11 +26,15 @@ Healpix = "9f4e344d-96bc-545a-84a3-ae6b9e1b672b"
 SmallCollections = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
 
 [weakdeps]
+KaHyPar_jll = "87a0c12d-51e1-52a8-b1ed-2b00825fe6a4"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 Metis = "2679e427-3c69-5b7f-982b-ece356f1e94b"
+Scotch = "c8656ae5-b689-4c12-92d5-de0ad806c81d"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [extensions]
+DiscreteGlobalGridsKaHyParExt = ["KaHyPar_jll"]
+DiscreteGlobalGridsScotchExt = ["Scotch"]
 MakieExt = ["Makie"]
 DiscreteGlobalGridsMetisExt = ["Metis"]
 DiscreteGlobalGridsZarrExt = ["Zarr"]
@@ -46,7 +50,9 @@ DE9IM = "0.1"
 DiskArrays = "0.4"
 GeometryOps = "0.1.45"
 GeometryOpsCore = "0.1.12"
+KaHyPar_jll = "1.3.5"
 Metis = "1.5"
+Scotch = "1.2"
 SmallCollections = "0.6.3"
 Zarr = "0.10"
 julia = "1.11"

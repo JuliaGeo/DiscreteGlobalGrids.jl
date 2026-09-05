@@ -5,6 +5,8 @@ import Distributed
 import DiscreteGlobalGrids as DGG
 import GlobalRegridding as GR
 import Metis
+import KaHyPar_jll
+import Scotch
 
 const FIXTURE = joinpath(@__DIR__, "worker_fixture.jl")
 if !isdefined(Main, :PartitionWorkerFixtures)
@@ -42,51 +44,53 @@ end
             @async Distributed.remotecall_fetch(Base.include, process, Main, FIXTURE)
         end
 
-        @testset "stencil parts preserve owned outputs" begin
-            data, plan = Fixtures.stencil_fixture()
-            expected = zeros(size(data))
-            DGG.mapneighbors!(expected, Fixtures.stencil, data, plan; threaded=false)
-            assignment = DGG.partition(plan, 3;
-                algorithm=DGG.MetisPartition(), capacities=[1.0, 2.0, 1.0])
-            futures = [Distributed.remotecall(Fixtures.stencil_part,
-                processes[mod1(part, length(processes))], assignment, part)
-                for part in 1:DGG.npartitions(assignment)]
-            received = fetch.(futures)
-            result = fill(NaN, size(expected))
-            visits = zeros(Int, length(expected))
-            for part in received
-                result[part.indices] = part.values
-                visits[part.indices] .+= 1
-                @test !part.metis_loaded
+        for algorithm in (DGG.MetisPartition(), DGG.KaHyParPartition(), DGG.ScotchPartition())
+            @testset "$(nameof(typeof(algorithm))) stencil parts preserve owned outputs" begin
+                data, plan = Fixtures.stencil_fixture()
+                expected = zeros(size(data))
+                DGG.mapneighbors!(expected, Fixtures.stencil, data, plan; threaded=false)
+                assignment = DGG.partition(plan, 3;
+                    algorithm, capacities=[1.0, 2.0, 1.0])
+                futures = [Distributed.remotecall(Fixtures.stencil_part,
+                    processes[mod1(part, length(processes))], assignment, part)
+                    for part in 1:DGG.npartitions(assignment)]
+                received = fetch.(futures)
+                result = fill(NaN, size(expected))
+                visits = zeros(Int, length(expected))
+                for part in received
+                    result[part.indices] = part.values
+                    visits[part.indices] .+= 1
+                    @test !part.partitioner_loaded
+                end
+                @test all(==(1), visits)
+                @test result == expected
+                @test sort(reduce(vcat, getproperty.(received, :chunks))) ==
+                      sort([chunk.index for chunk in plan])
             end
-            @test all(==(1), visits)
-            @test result == expected
-            @test sort(reduce(vcat, getproperty.(received, :chunks))) ==
-                  sort([chunk.index for chunk in plan])
-        end
 
-        @testset "regridding assigns destinations and retains source dependencies" begin
-            data, plan = Fixtures.regrid_fixture()
-            expected = collect(GR.regrid(data, plan))
-            assignment = DGG.partition(plan, 3; algorithm=DGG.MetisPartition())
-            futures = [Distributed.remotecall(Fixtures.regrid_part,
-                processes[mod1(part + 1, length(processes))], assignment, part)
-                for part in 1:DGG.npartitions(assignment)]
-            received = fetch.(futures)
-            result = fill(NaN, size(expected))
-            visits = zeros(Int, length(expected))
-            for part in received
-                result[part.indices] = part.values
-                visits[part.indices] .+= 1
-                needed = sort!(unique!(reduce(vcat,
-                    [collect(GR.sourcesof(GR.dependencies(plan), c)) for c in part.chunks];
-                    init=Int[])))
-                @test part.sources == needed
-                @test !part.metis_loaded
+            @testset "$(nameof(typeof(algorithm))) regridding retains dependencies" begin
+                data, plan = Fixtures.regrid_fixture()
+                expected = collect(GR.regrid(data, plan))
+                assignment = DGG.partition(plan, 3; algorithm)
+                futures = [Distributed.remotecall(Fixtures.regrid_part,
+                    processes[mod1(part + 1, length(processes))], assignment, part)
+                    for part in 1:DGG.npartitions(assignment)]
+                received = fetch.(futures)
+                result = fill(NaN, size(expected))
+                visits = zeros(Int, length(expected))
+                for part in received
+                    result[part.indices] = part.values
+                    visits[part.indices] .+= 1
+                    needed = sort!(unique!(reduce(vcat,
+                        [collect(GR.sourcesof(GR.dependencies(plan), c)) for c in part.chunks];
+                        init=Int[])))
+                    @test part.sources == needed
+                    @test !part.partitioner_loaded
+                end
+                @test all(==(1), visits)
+                @test isequal(result, expected)
+                @test all(isfinite, result)
             end
-            @test all(==(1), visits)
-            @test isequal(result, expected)
-            @test all(isfinite, result)
         end
     finally
         Distributed.rmprocs(processes)

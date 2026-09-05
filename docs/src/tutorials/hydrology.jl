@@ -1,8 +1,8 @@
 # # Hydrology: a DEM on an IGEO7 grid
 #
-# Slope, flow accumulation and catchment area are areal quantities. An IGEO7
-# cell covers the same area in the Alps as on the equator, so a count of cells
-# is an area; the same count on a lon/lat raster is a function of latitude.
+# This tutorial takes a regional Copernicus DEM through IGEO7 regridding, D8
+# and D∞ flow routing, and a custom downhill-neighbour kernel with
+# `mapneighbors`.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 
@@ -29,24 +29,24 @@ path = only(skipmissing(RasterDataSources.getraster(CopernicusDEM; extent = cent
 Sys.isapple() && Rasters.checkmem!(false) # needed for Apple systems
 dem = Raster(path; lazy = false)
 
-# Four lines put it on a grid. `levelfor` picks a level from the raster,
-# `MultiOrderCoverage` names the cells the tile touches, and `regrid` fills
-# them:
+# These three calls choose a compatible resolution, select the cells touched
+# by the tile, and transfer the DEM values onto that irregular cell set:
 
 sys = DGG.IGeo7System()
 leaf_level = DGG.levelfor(sys, dem)
 region = DGG.query(sys, DGG.MultiOrderCoverage(Rasters.extent(dem)); level = leaf_level)
 elevation = DGG.regrid(dem; to = region)
 
-# `regrid` returns a `Raster` over a `Cells` axis. Cells outside the tile hold
-# its `missingval` — `NaN`, since Copernicus DEM declares none; `missingval =`
-# chooses another.
+# `regrid` returns a `Raster` over a `Cells` axis. Copernicus DEM declares no
+# source missing value, so cells outside the tile use the output convention
+# `NaN`; pass `missingval` to choose a different fill value.
 #
 # The level `levelfor` chose, and what its cells measure across:
 
 leaf_level, DGG.cellsize(sys, leaf_level)
 
-# Pixels on the left, cells on the right, the same terrain in both:
+# The two panels show the source pixels and the regridded cells over the same
+# terrain:
 
 tile = Rasters.extent(dem)
 lims = (tile.X, tile.Y)
@@ -66,16 +66,16 @@ p = dggsurface!(ax2, elevation; color = elevation,
 Colorbar(fig[1, 3], p; label = "elevation (m)")
 fig
 
-# ## Store sixteen million leaves as a multi-order coverage
+# ## Represent a large region as a multi-order coverage
 #
-# `region` is the coarsest set of cells that covers the tile: one big cell
-# where the tile is solidly covered, smaller ones towards the border where a
-# big cell would overhang. It stands for sixteen million leaves:
+# `region` is the coarsest hierarchical set of cells that covers the tile. It
+# keeps large cells in the interior and refines cells near the boundary, where
+# a large cell would extend beyond the tile. Its cell lookup expands that
+# compact representation to the leaf cells:
 
 length(region), length(DGG.CellLookup(region))
 
-# Coloured by level: a few tens of thousands of coverage cells in place of
-# sixteen million ids.
+# Colouring by level makes the compact hierarchy visible.
 
 levels = DGG.level.(collect(region))
 
@@ -91,13 +91,12 @@ p = dggpoly!(ax, region; color = levels, alpha = 0.75,
 Colorbar(fig[1, 2], p; label = "cell level", ticks = minimum(levels):maximum(levels))
 fig
 
-# A coverage contains the extent, so its border cells overhang the tile by up
-# to a kilometre or two. Those leaves have no pixels under them and hold `NaN`:
+# A coverage contains the extent, so boundary cells can extend beyond the tile.
+# Those leaves have no source pixels and hold `NaN`:
 
 count(isnan, elevation)
 
-# Explicit `limits` keep the axes on the tile; the overhanging cells would
-# otherwise widen them.
+# The explicit limits keep the plot focused on the source tile.
 
 # ## Accumulate flow with D8
 #
@@ -106,20 +105,19 @@ count(isnan, elevation)
 
 area_per_cell = GM.cellarea(elevation, first(eachindex(elevation)))
 
-# `flowaccumulation` returns the upstream area of every cell in square metres
-# and the flow directions it used to get there. Its default method is D8, which
-# sends all of a cell's water to one neighbour:
+# `flowaccumulation` returns upstream area in square metres together with the
+# directions used to route it. The default D8 method sends all of a cell's
+# outflow to one neighbour:
 
 accumulation, directions = GM.flowaccumulation(elevation)
 
-# A cell here is `area_per_cell` square metres, so dividing by it counts cells
-# upstream:
+# Dividing by a representative cell area expresses accumulation in cell-area
+# units. IGEO7 is approximately equal-area, so this is an approximate upstream
+# cell count rather than an exact count:
 
 log_cells = log10.(accumulation ./ area_per_cell)
 
-# A window a dozen kilometres across, taken by indexing the cube with an
-# extent. A channel is one cell wide, and over the full tile that is under a
-# screen pixel:
+# Index a smaller extent to inspect the drainage pattern:
 
 window = Extents.Extent(X = (10.30, 10.45), Y = (46.55, 46.68))
 here = log_cells[DGG.Cells(DGG.Covering(window))]
@@ -140,9 +138,9 @@ fig
 # hillslope flow fans out where D8 threads it through single cells. On a
 # hexagon those two neighbours are ring slots, two of the six around each cell.
 #
-# D∞ over the whole tile takes a few minutes; this run covers a padded box
-# around the same window, wide enough that the channels entering it arrive with
-# their upstream area:
+# The example uses a padded box to reduce edge effects for the selected
+# window. Padding helps capture upstream paths, but it cannot guarantee that
+# every catchment is complete unless the box reaches each true divide:
 
 padded = Extents.Extent(X = (10.20, 10.55), Y = (46.45, 46.78))
 around = elevation[DGG.Cells(DGG.Covering(padded))]
@@ -160,9 +158,9 @@ fig
 
 # ## Find each cell's downhill neighbour by hand
 #
-# Each cell drains to its lowest neighbour. `mapneighbors` visits every cell
-# with its ring of neighbours; `needs` names what the kernel receives for each
-# of them — here the neighbour's elevation and its index in the cube:
+# This kernel demonstrates custom neighbourhood logic: each cell drains to the
+# neighbour with the greatest elevation drop. `mapneighbors` supplies the
+# elevation and local index for every ring neighbour:
 
 function downhill((z, _), (zs, ids))
     isnan(z) && return (0, NaN32)
@@ -178,13 +176,15 @@ flow, drop = DGG.mapneighbors(downhill, elevation;
     needs = (DGG.Value(vec(elevation)), DGG.Index(DGG.Local())))
 flow
 
-# `flow` is the index each cell drains to and `drop` is the fall to it, one
-# raster per component of the tuple the kernel returns. Cells that drain
-# nowhere — a pit, or a cell the tile does not cover:
+# `flow` stores the selected downstream index and `drop` stores its elevation
+# fall, one raster per returned component. The kernel leaves pits and cells
+# outside the source coverage without a destination:
 
 count(==(0), flow)
 
-# Valley floors have little fall and come out dark; headwalls come out bright.
+# The drop raster highlights steep local steps and leaves gentle valley floors
+# dark. Because the kernel compares elevation differences only, it does not
+# normalize the drop by neighbour distance or compute slope.
 
 fig = Figure(size = (620, 540))
 ax = Axis(fig[1, 1]; aspect = shape, limits = lims,
@@ -207,18 +207,19 @@ mine = [GM.FlowDirection{GM.LDD}(downstream(i) - cells[i]) for i in eachindex(ce
 
 mean(mine .== directions)
 
-# The disagreements are pits, where a one-ring rule stops. The library's D8 is
-# a priority flood: it fills each depression and routes the water out over its
-# rim. Where the kernel did find a lower neighbour, both pick the same one:
+# Differences occur where the one-ring rule stops at a pit. The library's D8
+# fills depressions and routes water over their rims. Where the custom kernel
+# finds a lower neighbour, compare the resulting directions directly:
 
 routed = findall(!=(0), sends)
 mean(mine[routed] .== vec(directions)[routed])
 
 # ## Which systems each method runs on
 #
-# `MultiOrderCoverage`, `regrid` and `mapneighbors` are interface methods and
-# run on any system: set `sys = DGG.HEALPixSystem()` and nothing else above
-# changes. Geomorphometry's verbs on a DGGS raster:
+# `MultiOrderCoverage`, `regrid`, and `mapneighbors` share the DGGS interface;
+# their setup can be reused with another system. Among the Geomorphometry
+# methods shown here, D8 is portable across systems, while the advanced
+# methods require IGEO7 support for relative-cell arithmetic:
 #
 # | verb | systems |
 # |---|---|

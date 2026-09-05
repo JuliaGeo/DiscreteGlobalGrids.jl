@@ -4,10 +4,10 @@
 CurrentModule = DiscreteGlobalGrids
 ```
 
-Selection has one verb and three answers. [`query`](@ref) asks a grid or a
-system which of its cells stand in a named relation to a geometry;
-[`covering`](@ref) is the same question phrased as "give me the cells", and
-[`covering_indices`](@ref) is it phrased as "give me their indices".
+Select cells by their spatial relationship to a point, polygon or spherical
+cap. [`query`](@ref) returns cells matching a predicate, such as intersection
+or containment. [`covering`](@ref) finds cells covering a region, and
+[`covering_indices`](@ref) returns positions in a cell collection.
 
 The relation is a DE9IM predicate — [`Intersects`](@ref), [`Within`](@ref),
 [`Disjoint`](@ref) and the rest — read with spherical semantics rather than
@@ -15,7 +15,21 @@ planar ones. The answer comes back as a [`CellVector`](@ref) at one level, or as
 a [`MultiOrderCellSet`](@ref) spanning several when the query is allowed to
 coarsen.
 
-## Asking
+## Cell collections
+
+A `CellVector` holds cells at one level, and a `CellLookup` connects them to a
+`Cells` dimension. `region` obtains the cell collection used by regional
+operations, including for a stored axis.
+
+```@docs
+AbstractCellVector
+CellVector
+AbstractCellLookup
+CellLookup
+region
+```
+
+## Query functions
 
 ```@docs
 query
@@ -46,11 +60,13 @@ Equals
 
 ## Multi-order answers
 
-A coverage that may span levels, and the verbs that read one. The set types
-themselves — [`MultiOrderCoverage`](@ref) and [`MultiOrderCellSet`](@ref) — are
-documented with the [region boundaries](boundaries.md).
+`MultiOrderCoverage` queries a region using cells at several levels and returns
+a `MultiOrderCellSet`. See [Multi-order coverage](../tutorials/multiorder.md)
+for a worked example.
 
 ```@docs
+MultiOrderCoverage
+MultiOrderCellSet
 level_ranges
 cellindices
 iscontained
@@ -60,8 +76,9 @@ cell_polygons
 
 ## Region algebra
 
-[`grow`](@ref) is documented with the boundary verbs it is built on; these two
-complete the trio.
+Use `expand` to obtain cells at a chosen level and `compact` to merge complete
+sibling groups. [`grow`](@ref), documented with [region boundaries](boundaries.md),
+adds neighbouring cells to a region.
 
 ```@docs
 expand

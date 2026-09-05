@@ -39,14 +39,14 @@ let                                                                          # h
 end                                                                          # hide
 fig                                                                          # hide
 
-# A stencil recomputes every cell from its own value and its neighbours'. On a
-# grid the neighbours are the cells that touch it — six on the IGeo7 hexagons
-# above, eight on HEALPix — and a kernel that reads them once per cell is one
-# `mapneighbors` call. Stacking passes reaches the second- and third-order
-# neighbours in the picture.
+# A stencil computes a new value from a cell and its neighbours. The figure
+# shows successive rings of neighbours around one cell. Here we use stencils
+# to smooth a field, detect its edges, request extra neighbour data, and
+# compute a graph distance. Each example uses `mapneighbors` or the related
+# `adjacency` table, so the same code can work with a different grid system.
 #
-# Every sweep on this page runs on a `DimArray` whose one dimension is `Cells`:
-# a value per cell of a grid, indexed by the cells themselves.
+# Every field here is a `DimArray` with one `Cells` dimension. That dimension
+# holds the lookup that connects array positions to cells and their neighbours.
 
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
@@ -69,18 +69,18 @@ grid = DGG.levelgrid(DGG.HEALPixSystem(), 5)
 
 lookup = DGG.CellLookup(grid)
 
-# Each cell's centroid gives a longitude and a latitude to write the field in
-# terms of. `cell_centroid` broadcasts over the lookup, and
-# `GeographicFromUnitSphere` turns the unit-sphere points into lon/lat pairs.
+# We use cell centroids to define a reproducible test field. `cell_centroid`
+# broadcasts over the lookup, and `GeographicFromUnitSphere` converts the
+# returned unit-sphere points to longitude and latitude.
 
 lonlat = GO.UnitSpherical.GeographicFromUnitSphere()
 centroids = lonlat.(DGG.cell_centroid.(grid, lookup))
 lon = DD.DimArray(first.(centroids), DGG.Cells(lookup); name = :lon)
 lat = DD.DimArray(last.(centroids), DGG.Cells(lookup); name = :lat)
 
-# The field is a step at ±30°, a wave in longitude, and speckle on top. Any
-# `DimArray` over the same `Cells` dimension replaces it — a [regridded
-# raster](regridding.md), a column read out of [a store](store_io.md).
+# The field combines a broad step, a longitude wave, and random noise. Any
+# `DimArray` over the same `Cells` dimension can take its place, including a
+# [regridded raster](regridding.md) or a column read from [a store](store_io.md).
 
 Random.seed!(42)
 plateau = ifelse.(abs.(lat) .< 30, 8.0, 0.0)
@@ -105,15 +105,16 @@ fig
 
 # ## Smoothing with mapneighbors
 #
-# `mapneighbors` calls a kernel once per cell, threaded. With
-# `pass = Values()` the kernel is `f(cell, value, neighbours)`:
+# `mapneighbors` applies a kernel once per cell and can thread those calls.
+# With `pass = Values()`, the kernel receives `f(cell, value, neighbours)`:
 #
 # - `value` — the cell's own entry;
 # - `neighbours` — its neighbours' entries, counter-clockwise seen from outside
 #   the sphere, in the order [`neighbors`](@ref) fixes.
 #
-# An oriented stencil (a gradient, an upwind scheme) relies on that order; an
-# average ignores it. The result comes back as a `DimArray` over the same cells.
+# The neighbour order matters for oriented stencils such as gradients and
+# upwind schemes. An average only needs the values. The result keeps the same
+# `Cells` dimension.
 
 smooth(A) = DGG.mapneighbors((c, x, nbs) -> (x + sum(nbs)) / (1 + length(nbs)),
     A; pass = DGG.Values())
@@ -124,7 +125,8 @@ smoothed = smooth(field)
 
 var(field), var(smoothed)
 
-# Each pass mixes one hop further out, so iterating it is diffusion.
+# Repeating the pass increases the radius of the operation and produces a
+# simple diffusion process.
 
 diffused = foldl((v, _) -> smooth(v), 1:10; init = field)
 var(diffused)
@@ -158,17 +160,16 @@ fig
 
 # ## Detecting edges with the Laplacian
 #
-# `mean(neighbours) - centre` is a discrete Laplacian, an edge detector.
-# Smoothing first leaves the two step edges as the largest second differences
-# in the field.
+# The discrete Laplacian compares a cell with the mean of its neighbours.
+# Applying it after smoothing makes the step boundaries stand out as large
+# second differences.
 
 laplacian = DGG.mapneighbors((c, v, nbs) -> mean(nbs) - v, diffused;
     pass = DGG.Values())
 extrema(laplacian)
 
-# The colour range is the 95th percentile of |Laplacian|, so the field's
-# texture stays visible; the two step edges exceed it and clip to `highclip`
-# and `lowclip`.
+# The colour range uses the 95th percentile of the absolute Laplacian. This
+# keeps ordinary texture visible while larger edge values use the clip colours.
 
 q = quantile(abs.(laplacian), 0.95)
 
@@ -186,10 +187,9 @@ fig
 
 # ## Reading more than one quantity per neighbour
 #
-# `needs` names what the kernel reads for each neighbour, and the sweep hands
-# those quantities over directly. A finite-difference gradient reads two: the
-# neighbour's value and its centroid, so each difference is taken over the real
-# distance.
+# `needs` declares the fields a kernel reads for each neighbour. This example
+# requests values and centroids so it can measure a finite difference per unit
+# great-circle distance.
 
 function steepest((value, centre), (values, centres))
     isempty(values) && return 0.0
@@ -218,15 +218,16 @@ valuerings = DGG.mapneighbors((centre, rings) -> first(rings), field;
     needs = (DGG.Value(field), DGG.Centroid()))
 valuerings[1]
 
-# A kernel that wants one record per neighbour writes `zip(rings...)` itself.
-# [Requesting neighbour fields](../api/neighbor-fields.md) is the full account,
-# including `Cell()` and `Index(Local())` and what each costs.
+# A kernel that wants one record per neighbour can combine the parallel rings
+# with `zip(rings...)`. [Requesting neighbour fields](../api/neighbor-fields.md)
+# documents the other available requests, including `Cell()` and
+# `Index(Local())`.
 #
 # ## Materialising the neighbour table with adjacency
 #
-# `adjacency` materialises every cell's neighbour list once, as one CSR table,
-# for kernels that make many passes over the same grid. `Cells` names the
-# dimension to walk; the sweeps above found it themselves.
+# `adjacency` materialises the neighbour lists once as a CSR table. Reuse it
+# when many passes will traverse the same grid. `Cells` names the dimension to
+# walk; `mapneighbors` inferred it in the earlier examples.
 
 table = DGG.adjacency(field, DGG.Cells)
 
@@ -235,15 +236,14 @@ table = DGG.adjacency(field, DGG.Cells)
 
 [mean(vcat(field[i], field[table[i]])) for i in eachindex(field)] ≈ smoothed
 
-# The rows differ in length where the grid does — eight neighbours nearly
-# everywhere, seven at the cells sitting on a degree-three vertex of the base
-# tiling:
+# Rows can have different lengths because the grid has cells with different
+# degrees. HEALPix has fewer neighbours at cells around a base-tiling vertex:
 
 sort(unique(length.(table))), count(==(7), length.(table))
 
-# `Vertex()`, the default connectivity, counts every cell that shares a corner;
-# `Edge()` counts only the cells that share a side. Both are drawn around the
-# cell over Zürich, which `Contains` resolves to one index along `Cells`:
+# `Vertex()` counts cells that share a corner, while `Edge()` keeps only cells
+# that share a side. The next figure compares both neighbourhoods around the
+# cell containing Zürich, selected with `Contains`:
 
 p = only(DD.dims2indices(field, DGG.Cells(DD.Contains((8.5, 47.4)))))
 
@@ -273,23 +273,23 @@ fig
 
 # ## Running a stencil on a subset of the grid
 #
-# A subset of the grid clips every neighbourhood to its membership: a cell on
-# the subset's edge has fewer neighbours, and the same `smooth` call runs on
-# it.
+# A subset is itself a valid input. Its boundary cells see only neighbours that
+# belong to the subset, so the same `smooth` call runs with a clipped stencil.
 
 smoothed_patch = smooth(patch)
 count(.!(parent(smoothed_patch) .≈ parent(smoothed[DGG.Cells(DGG.Covering(box))])))
 
-# Those are the cells on the edge of `patch`, whose neighbourhoods lost
-# members. [Out of core](out_of_core.md) loads the margin a stencil on a tile
-# needs, so its edge cells agree with the whole-grid pass.
+# The count identifies cells whose subset neighbourhood differs from the
+# whole-grid result. [Out of core](out_of_core.md) shows how to load the margin
+# a tile needs when boundary cells must agree with a full-grid pass.
 #
 # ## Cost distance with Dijkstra
 #
-# Given a cost per cell, the cost distance to a cell is the smallest
-# accumulated cost of any path from the seed. Dijkstra's algorithm computes it
-# with a priority queue; `neighbors(lookup, i)` — a local index in, local
-# indices out — is the only grid call it needs.
+# A cost field turns the cell graph into a travel network. The cost distance is
+# the least accumulated cost from a seed, which Dijkstra's algorithm computes
+# with a priority queue. `neighbors(lookup, i)` supplies the graph edges as
+# local indices. This example measures cost per graph step; a travel cost per
+# kilometre would also need the distance between cell centres.
 
 function costdistance(cost, seed)
     lookup = DD.lookup(cost, DGG.Cells)
@@ -312,21 +312,18 @@ function costdistance(cost, seed)
     return DD.rebuild(cost; data = dist, name = :costdistance)
 end
 
-# Crossing a cell costs 1 everywhere except in a wall along the equator, which
-# is impassable — cost `Inf` — apart from a gap between 0° and 25° E. The seed
-# is Zürich. Every cell's cost distance is then what it takes to reach it
-# around the wall, or through the gap.
+# The example makes an equatorial wall impassable (`Inf`) except for a gap
+# between 0° and 25° E. With Zürich as the seed, the resulting distance field
+# shows how paths go around the wall or through the gap.
 
 wall = @. (abs(lat) < 5) & !(0 <= lon <= 25)
 cost = DD.rebuild(lat; data = ifelse.(wall, Inf, 1.0), name = :cost)
 travel = costdistance(cost, (8.5, 47.4))
 reach = maximum(filter(isfinite, parent(travel)))
 
-# The projection is azimuthal equidistant, centred on the seed: distance from
-# the centre of the page is great-circle distance from the seed, so at uniform
-# cost the bands are circles, and every departure from a circle is the wall's
-# doing. The map covers a 172° cap around the seed, selected with
-# `Covering(cap)`.
+# The azimuthal-equidistant projection centres the map on the seed, making
+# great-circle distance easy to compare visually. The map uses a 172° cap
+# selected with `Covering(cap)`.
 
 centre = DGG.cell_centroid(grid, DGG.cellat(grid, 8.5, 47.4))
 cap = GO.UnitSpherical.SphericalCap(centre, deg2rad(172))
@@ -359,10 +356,8 @@ Colorbar(fig[1, 3]; colormap = bands, colorrange = (0, reach),
     highclip = "#8c1b1b", label = "cost distance")
 fig
 
-# On the seed's side of the wall the bands are circles around the seed. Every
-# cell beyond it is reached through the gap, so the bands there are centred on
-# the gap. The wall itself is `Inf` and draws in dark red, above the top of the
-# scale.
+# The bands bend around the wall and spread from the gap on its far side. The
+# `Inf` wall is drawn in dark red above the distance scale.
 #
 # ## Sweeping a plain vector of values
 #
@@ -376,11 +371,7 @@ DGG.mapneighbors((c, x, nbs) -> (x + sum(nbs)) / (1 + length(nbs)), cells,
 
 # ## Running the page on another grid system
 #
-# `levelgrid`, `mapneighbors`, `adjacency` and `neighbors` are interface
-# methods, so the page runs unchanged on any system; only the neighbour count
-# changes — six on IGeo7's hexagons, eight here. [Choosing a
-# grid](choosing_a_grid.md) covers what that does to a kernel.
-#
-# The smoothing pass is also the graph convolution behind DeepSphere-style
-# machine learning on spherical grids: stack `k` of them and every cell has a
-# `k`-hop receptive field.
+# `levelgrid`, `mapneighbors`, `adjacency`, and `neighbors` share the same
+# interface across grid systems. Switching the constructor changes the cell
+# topology while the stencil code stays the same. [Choosing a
+# grid](choosing_a_grid.md) compares those topology choices.

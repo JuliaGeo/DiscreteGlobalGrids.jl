@@ -4,17 +4,15 @@
 CurrentModule = DiscreteGlobalGrids
 ```
 
-Every verb on this page is asked of one of two things, and
-[Architecture](../architecture.md) says why they are disjoint: an
-[`AbstractGrid`](@ref) is a finite collection of cells with a length, and an
-[`AbstractHierarchicalGridSystem`](@ref) is a rule for tessellating the sphere
-with no length at all. [`levelgrid`](@ref) is the bridge — a complete level of a
-system, answered as a grid.
+Use this interface to locate cells, read their geometry and navigate between
+levels. An [`AbstractGrid`](@ref) is a finite collection of cells; an
+[`AbstractHierarchicalGridSystem`](@ref) defines grids and their hierarchy.
+[`levelgrid`](@ref) returns one complete level of a system.
 
-A cell is named twice over. A bare `Int` is always a *local index* into
-`1:ncells(grid)`; an [`AbstractCellIndex`](@ref) is a typed identity that carries
-its own level. The two are separated by method signature alone, so a verb that
-takes either takes both.
+A bare `Int` addresses a local position in `1:ncells(grid)`. An
+[`AbstractCellIndex`](@ref) identifies a cell and carries its level. Keep
+that distinction when working with subsets, where local positions change.
+The [architecture guide](../architecture.md) explains the design.
 
 ## What a grid answers
 
@@ -24,6 +22,7 @@ the rest have working defaults built on them.
 
 ```@docs
 ncells
+levelgrid
 cell_boundary
 cell_centroid
 cell_polygon
@@ -36,8 +35,8 @@ level
 
 ## Cell size, and choosing a level
 
-The two directions of one question: how coarse is this level, and which level is
-that coarse.
+`cellsize` measures a typical cell width in metres. `levelfor` finds the
+closest available level for a requested width or another dataset's resolution.
 
 ```@docs
 cellsize
@@ -53,14 +52,15 @@ rootcells
 children
 Base.parent(::AbstractHierarchicalGridSystem, ::AbstractCellIndex)
 ancestor
+descendants
+descendant_range
 ```
 
 ## Trees over a grid
 
-[`treeify`](@ref) is how the regridding and point-location machinery walks a
-grid: it hands back a `ConservativeRegridding.Trees` cursor whose nodes are
-subtrees of the system's own hierarchy, so no tree is built and no geometry is
-touched until a query descends.
+[`treeify`](@ref) exposes a grid as a spatial tree for queries and regridding.
+Hierarchical grids can use their existing parent/child structure and compute
+node geometry as the traversal needs it.
 
 ```@docs
 treeify
@@ -72,6 +72,10 @@ DiscreteGlobalGrids.Engine.node_indices
 ## Identifiers
 
 ```@docs
+cellindex
+localindex
+globalindex
+LevelIndex
 cellid
 rawid
 reindex
@@ -79,30 +83,13 @@ cellindextype
 cellindextypes
 ```
 
-## Neighbour counts and ring order
-
-The bounds and the ordering declaration the neighbourhood machinery reads.
-[`neighbors`](@ref) and [`ring`](@ref) themselves are documented with the
-[region boundaries](boundaries.md).
-
-```@docs
-neighborcount
-maxring
-winding
-Winding
-CounterClockwise
-Clockwise
-CustomOrder
-Unordered
-```
-
 ## Grids that stand for a system
 
-No shipped system defines a grid type of its own: [`levelgrid`](@ref) returns a
-[`HierarchicalLevelGrid`](@ref), and [`AuthalicSystem`](@ref) wraps any system so
-that geometry reads at geodetic latitude, leaving ids, indices, hierarchy and
-ordering exactly as they were. The concrete systems themselves are drawn and
-compared in the [gallery](../all_dggs.md).
+[`levelgrid`](@ref) returns a [`HierarchicalLevelGrid`](@ref).
+[`AuthalicSystem`](@ref) adapts supported systems to geodetic latitude while
+preserving cell ids and hierarchy. See [Choosing a
+grid](../tutorials/choosing_a_grid.md) for coordinate guidance and the
+[gallery](../all_dggs.md) for the available systems.
 
 ```@docs
 HierarchicalLevelGrid
@@ -114,16 +101,28 @@ AuthalicGrid
 
 ```@docs
 AbstractGrid
+PartialGrid
 AbstractHierarchicalGridSystem
 AbstractQuadFaceGridSystem
 AbstractCellIndex
 ```
 
-## The internals these link to
+## System capabilities
 
-Listed for the same reason as the corresponding section of
-[Region boundaries](boundaries.md): the docstrings above cross-reference them,
-and these entries are what make the links resolve.
+These declarations let generic algorithms use a system's hierarchy, cell
+ordering and point-location methods efficiently.
+
+```@docs
+has_sorted_subtrees
+has_congruent_refinement
+has_direct_location
+node_extent
+```
+
+## Geometry and traversal helpers
+
+These helpers support grid implementations: coordinate transforms, boundary
+rings, spatial bounds and traversal engines.
 
 ```@docs
 DiscreteGlobalGrids.one_ring

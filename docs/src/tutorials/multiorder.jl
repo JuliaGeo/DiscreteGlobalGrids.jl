@@ -27,17 +27,15 @@ poly!(ax, california; color = :transparent,                                     
 Colorbar(fig[1, 2], plt; ticks = lo:hi, label = "cell level")                    # hide
 fig                                                                              # hide
 
-# A multi-order coverage is a set of cells at mixed levels that covers a region:
-# coarse cells wherever the region's interior fills them, finer cells along its
-# boundary. Above, nineteen level-6 cells carry the interior of California and
-# the coastline is traced at level 9.
+# A multi-order coverage represents a region with cells at several levels.
+# Coarse cells describe interior areas; finer cells follow the boundary. This
+# gives a compact regional index while retaining a controllable finest
+# resolution.
 #
-# It is index compression. In a hierarchical system a parent's index stands for
-# all of its children at the target level, so a subtree that lies wholly inside
-# the region is stored as its root — and that root's parent, recursively upward,
-# wherever the whole subtree fits. The 729 entries drawn above name 2721
-# level-9 cells, and `level_ranges` expands them to sorted index ranges when the
-# data is read.
+# A parent cell stands for all of its descendants at the target level when its
+# whole subtree fits the region. The coverage stores that parent, and
+# `level_ranges` can expose the represented leaves as sorted ranges when an
+# operation needs a one-level view.
 
 # ## Query California as a coverage in HEALPix
 #
@@ -59,33 +57,31 @@ california = fc.geometry[findfirst(==("California"), fc.name)]
 sys = DGG.HEALPixSystem()
 moc = DGG.query(sys, DGG.MultiOrderCoverage(california); level = 9)
 
-# `level = 9` fixes the finest cell the set may hold. Its width in metres, by
-# √area — the convention on these pages:
+# `level = 9` sets the finest cell the query may emit. Inspect its typical width
+# in metres with the package's √area convention:
 
 DGG.cellsize(sys, 9)
 
-# Every entry carries the level it was emitted at. Counting them by level shows
-# where the coverage spent its cells:
+# Every entry carries the level at which it was emitted. Counting by level shows
+# how the representation spends its cells:
 
 levels = DGG.level.(moc)
 [l => count(==(l), levels) for l in minimum(levels):maximum(levels)]
 
-# `level_ranges` reads the set as sorted, disjoint ranges of level-9 indices —
-# the form a lookup layer slices arrays with, without ever materialising the ids
-# one at a time:
+# `level_ranges` reads the set as sorted, disjoint ranges of level-9 indices.
+# A lookup can slice those ranges without materialising every represented id:
 
 ranges = DGG.level_ranges(moc, 9)
 
-# Their total length is the number of level-9 cells the set stands for:
+# Their total length is the number of level-9 leaves represented by the set:
 
 sum(length, ranges)
 
 # ## Put an elevation raster onto the coverage
 #
-# A coverage names a region and `regrid` fills it with values. The source here
-# is [CRU CL 2.0](https://zenodo.org/records/20754689), a 10-arcminute
-# climatology of the world's land, whose `:elv` layer holds the mean elevation
-# of each grid cell in metres.
+# A coverage can be the destination of `regrid`. The source here is [CRU CL
+# 2.0](https://zenodo.org/records/20754689), a 10-arcminute land climatology
+# whose `:elv` layer holds mean elevation in metres.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 using Rasters, RasterDataSources
@@ -98,9 +94,9 @@ world = Raster(RasterDataSources.getraster(CRUCL2); name = :elv, lazy = true)
 elevation = read(world[X(-125.5 .. -113.5), Y(32.0 .. 42.5)])
 elevation = DD.rebuild(elevation; metadata = DD.NoMetadata())
 
-# The crop is a box, so it carries a margin of Nevada and Arizona along with
-# California. `surface!` draws a raster on the `GeoAxis` these pages use for
-# cells; pushing it back in `z` keeps the state outline on top:
+# The crop is a box and therefore includes a margin around California.
+# `surface!` draws the source raster on the same `GeoAxis` used for cells; the
+# z translation keeps the state outline visible above it:
 
 albers = "+proj=aea +lat_1=34 +lat_2=40.5 +lat_0=0 +lon_0=-120 +datum=WGS84"
 
@@ -119,8 +115,8 @@ fig
 
 A = DGG.regrid(elevation; to = moc)
 
-# The result is a `Raster` over a single `Cells` dimension, one value per
-# level-9 leaf cell. The cells offshore hold `missing`, because the source
+# The result is a `Raster` over one `Cells` dimension, with one value per
+# represented level-9 leaf. Offshore cells remain `missing` because the source
 # covers land:
 
 count(ismissing, A)
@@ -154,16 +150,15 @@ poly!(ax, california; color = :transparent,
 Colorbar(fig[1, 2], plt; label = "elevation (m)")
 fig
 
-# The Sierra Nevada runs down the eastern edge, Death Valley sits below sea
-# level to its south-east, and the Central Valley is the low band between the
-# Sierra and the Coast Ranges. Cells reach past the state line because the
-# coverage holds the coarsest cells that *meet* California, so its leaf
-# expansion is a superset of the state's own cells.
+# The map shows the regional relief while preserving the coverage's boundary
+# rule: cells that meet California remain in the representation, so expanding
+# the coverage produces a superset around the state outline.
 
 # ## Cap the cell count with `maxcells`
 #
-# `maxcells` asks the other question: cover California in ten cells, or forty,
-# or a hundred. The query refines coarsest first.
+# `maxcells` chooses a space budget for the representation. The query refines
+# the coarsest boundary cells first and stops when further refinement would
+# exceed that budget.
 #
 # 1. Take the coarsest cell the outline crosses.
 # 2. Replace it by the children that meet California.
@@ -174,10 +169,8 @@ fig
 budgets = (10, 40, 100)
 sets = [DGG.query(sys, DGG.MultiOrderCoverage(california); maxcells = n) for n in budgets]
 
-# Each set stops where its budget runs out, so each spans its own levels. The
-# budget is the only limit here, so the hundred-cell set refines to level 11
-# along the coast. The three panels share one colour scale, taken from all of
-# them:
+# Each result can span a different range of levels. The panels use one colour
+# scale so the effect of the budget is easy to compare:
 
 levelrange = extrema(DGG.level(c) for set in sets for c in set)
 
@@ -232,14 +225,12 @@ poly!(ax, california; color = :transparent,
 Colorbar(fig[1, 2], plt; ticks = lo7:hi7, label = "cell level")
 fig
 
-# HEALPix children cover exactly their parent, so a HEALPix set at mixed levels
-# tiles the region. IGeo7's seven children carry their parent's area with a
-# different footprint, so where the level changes here the drawn cells overlap
-# their coarser neighbour and leave slivers around it. The guarantee holds at
-# the leaf level: every level-6 cell that meets California belongs to the set or
-# descends from a member, and no member descends from another.
-# [`MultiOrderCoverage`](@ref) tabulates how far each system departs from a
-# tiling.
+# Mixed-level geometry follows the hierarchy of each system. HEALPix children
+# tile their parent, while IGeo7's child footprints can overlap a coarser
+# neighbour where the level changes. The leaf-level coverage guarantee remains
+# the same: every finest cell that meets the region is represented by a member
+# or one of its descendants. [`MultiOrderCoverage`](@ref) documents the
+# system-specific coverage traits.
 #
 # The raster regrids onto it by the same call:
 
@@ -256,17 +247,63 @@ poly!(ax, california; color = :transparent,
 Colorbar(fig[1, 2], plt; label = "elevation (m)")
 fig
 
-# ## What the query is doing
+# ## Work directly with cell collections
 #
-# The coverage walk is a depth-first search over the system's hierarchy.
-# `DGG.treeify` exposes a grid as a `GeometryOps.SpatialTreeInterface` tree, and
-# the search reads four things from each node: its bounding cap, its cell,
-# whether it is a leaf, and its children. At each node:
+# `regrid` and the selectors read the coverage through the calls below. Reach
+# for them when you want the cell ids themselves.
 #
-# 1. drop it when its cap misses the target;
-# 2. drop it when its cell polygon misses the target;
-# 3. emit it when it is a leaf, or when its polygon lies inside the target;
-# 4. otherwise descend into its children.
+# `CellLookup` reads a set as a one-level cell axis. Its window count reports the
+# contiguous runs used to represent the leaf ids:
+
+lk = DGG.CellLookup(moc)
+
+# `expand` flattens the set to one level as a `CellVector`, which is useful when
+# an algorithm needs explicit cell ids:
+
+flat = DGG.expand(moc, 9)
+
+# `compact` merges complete sibling groups into parents wherever membership
+# permits. It uses membership alone and can therefore produce a shorter
+# representation than the queried coverage:
+
+DGG.compact(flat)
+
+# `level_ranges` needs contiguous subtrees (`has_sorted_subtrees`); `expand`
+# works on every system.
+#
+# A budgeted set records cells proven to lie inside the target.
+# `coarsest_contained` returns the shallowest such cell, or `nothing` when the
+# set contains no wholly contained cell:
+
+DGG.coarsest_contained(sets[1])
+
+# Compare with the larger budget:
+
+DGG.coarsest_contained(sets[2])
+
+# Cell areas over the coverage's leaves, in steradians. Equal-area systems make
+# an unweighted mean over those leaves an areal mean:
+
+g9 = DGG.levelgrid(sys, 9)
+extrema(DGG.cell_area(g9, c) for c in flat)
+
+# A budget set can back the same axis: `CellLookup` expands its mixed-level cells
+# to the requested leaf level.
+
+DGG.CellLookup(sets[2]; level = 9)
+
+# ## Optional: reproduce the coverage walk
+#
+# The earlier sections are the practical API. This optional section shows how a
+# coverage query can be assembled from the hierarchy when you need a custom
+# predicate or traversal. The walk is depth-first over the tree exposed by
+# `DGG.treeify`; each node supplies an extent, a cell, its leaf status, and its
+# children. At each node, the search:
+#
+# 1. drops the node when its cap misses the target;
+# 2. drops the node when its cell polygon misses the target;
+# 3. emits the cell when it is a leaf, or when its polygon lies inside the target;
+# 4. visits the children when further refinement is needed.
 
 import GeometryOps.SpatialTreeInterface as STI
 import GeometryOps.UnitSpherical as US
@@ -334,52 +371,6 @@ length(walked7), length(queried7), Set(walked7) == Set(queried7)
 walked9 = coverage(sys, california, 9)
 length(walked9), length(moc), Set(walked9) == Set(moc)
 
-# The same sets, both times. `query` adds two accelerations to the same walk: a
-# proof that a cap lying on the far side of the target's boundary is wholly
-# outside, which discards whole subtrees without building a polygon, and a
-# cheaper accept for cells whose centroid falls inside.
-
-# ## The cells behind the axis
-#
-# `regrid` and the selectors read the coverage through the calls below. Reach
-# for them when you want the cell ids themselves.
-#
-# `CellLookup` reads a set as a one-level cell axis. Its window count is how
-# many contiguous runs of leaf ids the set compresses to:
-
-lk = DGG.CellLookup(moc)
-
-# `expand` flattens the set to one level as a `CellVector`, the cells you would
-# compute on:
-
-flat = DGG.expand(moc, 9)
-
-# `compact` merges every complete sibling group into its parent, as far up as it
-# can go. It reads membership alone, so along the coast it merges groups the
-# coverage kept apart and returns fewer entries than the coverage started with:
-
-DGG.compact(flat)
-
-# `level_ranges` needs contiguous subtrees (`has_sorted_subtrees`); `expand`
-# works on every system.
-#
-# A budget set records which of its cells were proven to lie inside the target,
-# and `coarsest_contained` returns the shallowest of those. At ten cells every
-# cell still straddles the state line, so the answer is `nothing`:
-
-DGG.coarsest_contained(sets[1])
-
-# By forty cells, one is inside:
-
-DGG.coarsest_contained(sets[2])
-
-# Cell areas over the coverage's leaves, in steradians. HEALPix gives the same
-# number twice, so an unweighted mean over these cells is the areal mean:
-
-g9 = DGG.levelgrid(sys, 9)
-extrema(DGG.cell_area(g9, c) for c in flat)
-
-# A budget set backs the same axis: `CellLookup` expands its forty cells to
-# level-9 leaves.
-
-DGG.CellLookup(sets[2]; level = 9)
+# The sets agree. `query` accelerates this same traversal with subtree rejection
+# from bounding caps and a cheaper acceptance test for cells whose centroids are
+# inside the target.

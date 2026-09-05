@@ -1,10 +1,11 @@
 # # A round trip through a DGGS store
 #
-# A cube over a cell axis is an ordinary `DimArray` or `DimStack` whose one
-# spatial dimension is `Cells`. `dggwrite` puts such a cube in a Zarr store and
-# `dggread` opens one back.
+# This tutorial shows how to persist a cell-indexed cube, reopen it lazily, and
+# select only the stored cells needed for a region. It also compares the two
+# cell-id encodings available to a DGGS store.
 #
-# Both methods live in the Zarr.jl extension: `using Zarr` loads them.
+# `dggwrite` and `dggread` are provided by the Zarr.jl extension, loaded by
+# `using Zarr`.
 
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
@@ -15,18 +16,17 @@ GLMakie.activate!(inline = true)
 
 # ## A cube to write
 #
-# The first two level-1 IGEO7 cells, expanded to their level-4 descendants: a
-# regional store in miniature. `CellVector` names the cells, `CellLookup` reads
-# them as a one-level cell axis, and `Cells` makes that axis a cube dimension.
+# The example uses two level-1 IGEO7 cells and their level-4 descendants as a
+# small regional store. `CellVector` names the cells, `CellLookup` turns them
+# into a one-level axis, and `Cells` makes that axis a cube dimension.
 
 sys = DGG.IGeo7System()
 roots = DGG.CellVector(DGG.levelgrid(sys, 1))[1:2]
 cells = sort!(reduce(vcat, [collect(DGG.descendants(sys, c, 4)) for c in roots]))
 lookup = DGG.CellLookup(DGG.CellVector(sys, 4, cells))
 
-# Two layers over that one axis, as a `DimStack`. Elevation doubles as a
-# position marker: value `k` sits at axis position `k`. The chunk section reads
-# positions back out of a selection that way.
+# The two layers share the cell axis. Their values encode axis positions, which
+# makes the later selection checks easy to read.
 
 n = length(cells)
 elevation = Float32.(1:n)
@@ -35,19 +35,17 @@ cube = DD.DimStack((; elevation, slope), (DGG.Cells(lookup),))
 
 # ## Write the cube and read it back
 #
-# `dggwrite` returns its destination, ready to hand to `dggread`. `chunks = 128`
-# fixes the chunk length in cells and gives this small cube five chunks to look
-# at; the default `:auto` targets a million elements per chunk and would put the
-# whole cube in one.
+# `dggwrite` returns the path that `dggread` opens. `chunks = 128` gives this
+# small cube five chunks; `:auto` would place the whole example in one chunk.
 
 path = DGG.dggwrite(joinpath(mktempdir(), "demo.zarr"), cube; chunks = 128)
 store = DGG.dggread(path)
 #
 DD.metadata(store)["description"]
 
-# The description is read from the store's attributes: grid system, level, and
-# the layout of the ids. The arrays `dggread` returns are lazy; `collect` pulls
-# the axis and the values into memory to compare them with what went in:
+# `dggread` reconstructs the grid description from store attributes. The
+# returned arrays stay lazy until a value is requested; `collect` makes an
+# explicit in-memory comparison with the original cube:
 
 axis = DD.lookup(store[:elevation], DGG.Cells)
 #
@@ -55,9 +53,9 @@ collect(axis) == cells, collect(parent(store[:elevation])) == elevation
 
 # ## Selecting a region out of a store
 #
-# The axis is a `ChunkedCellLookup`. It answers the same selectors a
-# `CellLookup` does and resolves each through the chunk manifest, touching at
-# most one chunk of ids. Three selectors name a single cell:
+# The axis is a `ChunkedCellLookup`. It supports the same selectors as a
+# `CellLookup` and uses the chunk manifest to locate the required id data. Three
+# selectors name a single cell:
 #
 # - `At(cell)` — the cell itself;
 # - `Contains(cell)` — the same cell;
@@ -69,24 +67,20 @@ contains_cell = store[:elevation][DGG.Cells(DD.Contains(c))]
 contains_point = store[:elevation][DGG.Cells(DD.Contains((67.5, 66.7)))]
 at, contains_cell, contains_point
 
-# `Covering(target)` selects a region: every stored cell the coverage of
-# `target` lands on. The target is the extent of a level-2 cell, an ancestor of
-# one stored cell, which makes it a small piece of what was written. A coverage
-# is a superset of its region, and the selection spills a little past the box.
+# `Covering(target)` selects every stored cell reached by the coverage of
+# `target`. Here `target` is the extent of a level-2 ancestor, so the selection
+# demonstrates the small spill beyond a region's exact boundary.
 
 target = DGG.cell_extent(DGG.levelgrid(sys, 2), DGG.ancestor(sys, cells[300], 2))
 region = store[:elevation][DGG.Cells(DGG.Covering(target))]
 
-# The `dims` line of the result shows a `CellLookup`: a selection materialises
-# the cells it names and carries them as the package's compressed in-memory
-# axis. The `ChunkedCellLookup` stays with the store.
+# The selected result has a compressed in-memory `CellLookup`; the source
+# remains a `ChunkedCellLookup`.
 #
 # ## Which chunks a selection touches
 #
-# A `ChunkManifest` describes the store's chunk grid in cells: for each chunk,
-# its first id, its last id and its length. `nchunks` counts chunks, `chunkof`
-# maps an axis position to its chunk, and `chunkbounds` maps a chunk to the
-# positions it holds.
+# A `ChunkManifest` describes the chunk grid in cell-axis positions. It records
+# each chunk's bounds and maps an axis position to its chunk.
 
 manifest = DGG.chunkmanifest(axis, 128)
 #
@@ -94,15 +88,15 @@ DGG.nchunks(manifest), length(manifest)
 #
 DGG.chunkbounds(manifest, 5)
 
-# The selection's values are stored positions, by construction of the elevation
-# layer. `chunkof` maps each position to the chunk a reader fetches for it:
+# The elevation values equal their positions, so selected values reveal which
+# positions were fetched. `chunkof` maps each position to its chunk:
 
 selected = Int.(collect(region))
 sort(unique(DGG.chunkof.(Ref(manifest), selected)))
 
-# The figure shows the read: stored cells coloured by chunk, the level-2 target
-# as a dashed box, the cells `Covering` returned outlined. The outline crosses
-# three colours — a compact region on the sphere spans three chunks of the file.
+# The figure shows stored cells coloured by chunk, the target as a dashed box,
+# and the selected cells outlined. A compact spherical region can span several
+# file chunks.
 
 chunk = DGG.chunkof.(Ref(manifest), 1:n)
 corners = [(target.X[1], target.Y[1]), (target.X[2], target.Y[1]),
@@ -128,18 +122,17 @@ fig
 #
 # ## Choosing how the cell ids are stored
 #
-# An *encoding* is how the store lays out its cell ids. `encoding = :auto` picks
-# one by the shape of the axis:
+# An *encoding* describes how the store lays out cell ids. `encoding = :auto`
+# chooses from the axis shape:
 #
 # | `encoding` | Stores | `:auto` picks it when |
 # |---|---|---|
 # | `:ranges` | `(n, 2)` inclusive `[start, stop]` id intervals | the axis is sorted, unique and one level |
 # | `:dense` | one id per cell | otherwise; also the interop choice for readers without interval support |
 #
-# A ranges axis opens with zero data IO at any size: its length, its chunk
-# boundaries and every selector are closed-form rank/select arithmetic over the
-# intervals. The description above named this store's encoding,
-# `RangesEncoding`; its cost is one row per interval:
+# A ranges axis opens without reading coordinate data: length, chunk boundaries
+# and selectors use rank/select arithmetic over its intervals. This store uses
+# `RangesEncoding`, with one row per interval:
 
 size(Zarr.zopen(path)["cell_id_ranges"], 2)
 
@@ -158,17 +151,15 @@ size(Zarr.zopen(ranks)["cell_id_ranges"], 2)
 
 # ## Reading a store by URL
 #
-# `dggread` opens a public store in place from a `gs://`, `s3://` or `https://`
-# URL as readily as from a local path or a `Zarr.ZGroup`; a selection fetches
-# only the chunks it touches. A published IGEO7 store over Pori, Finland, reads
-# like this (displayed only: the docs build offline):
+# `dggread` also opens a public `gs://`, `s3://` or `https://` store in place.
+# A selection then fetches the chunks it needs. For example:
 #
 # ```julia
 # pori = DGG.dggread("https://storage.googleapis.com/geo-assets/igeo7-zarr/pori_z7_r10.zarr")
 # ```
 #
-# `dggwrite` writes to a local path or an open `Zarr.ZGroup`; publish a remote
-# store by uploading the directory it produced.
+# `dggwrite` writes to a local path or an open `Zarr.ZGroup`; publishing a
+# remote store means uploading the directory it produced.
 #
 # [Out of core](out_of_core.md) sweeps a kernel over a store chunk by chunk,
 # starting from a store like the one written here.

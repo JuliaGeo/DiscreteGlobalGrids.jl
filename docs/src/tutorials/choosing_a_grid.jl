@@ -23,40 +23,36 @@ for (k, sys) in enumerate((DGG.IGeo7System(), DGG.A5System(), DGG.H3System(),  #
 end                                                                            # hide
 fig                                                                            # hide
 
-# A discrete global grid system tiles the sphere with cells and refines them
-# level by level. The five above cover most choices: IGeo7 and H3 lay hexagons
-# on an icosahedron, A5 pentagons on a dodecahedron, HEALPix and ISEA4R
-# quadrilaterals. Each globe is drawn at the level whose cells come nearest
-# 800 km across. The [DGGS gallery](../all_dggs.md) draws every system the
-# package ships.
+# A discrete global grid system divides the sphere into cells at several
+# resolutions. Choose a system for its cell geometry and compatibility with
+# your data, then choose a level for the cell size you need.
 #
-# Three properties decide between them: the shape of a cell, how close the
-# cells come to equal area, and how fine they go.
+# This tutorial compares five systems, finds a level from a size in metres,
+# and checks the coordinate convention used to locate cells. The globes above
+# show cells roughly 800 km across; the [DGGS gallery](../all_dggs.md) includes
+# all systems in the package.
 
 import DiscreteGlobalGrids as DGG
 import GeometryOps as GO
 using Statistics
 
-# ## Compare cell shape, equal-area and fineness
+# ## Choose a cell geometry
 #
-# Neighbour tallies and area ratios are over every cell of the level nearest
-# 500 km.
+# Start with the requirements of your analysis:
 #
-# | | IGeo7 | A5 | H3 | HEALPix | ISEA4R |
-# |---|---|---|---|---|---|
-# | **Cell shape** | hexagon, 12 pentagons | pentagon | hexagon, 12 pentagons | curvilinear quadrilateral | rhombus |
-# | neighbours, edge / vertex | 6 / 6 (5 / 5 at a pentagon) | 5 / 6–8 | 6 / 6 (5 / 5 at a pentagon) | 4 / 7–8 | 4 / 7–9 |
-# | suits | stencils and kernels: one class of neighbour | equal area with a single shape | joining against existing H3 ids | raster habits: 4 across an edge, 4 at a corner | raster habits |
-# | **Equal-area**, max/min (middle 90 %) | 1.39 (1.02) | 1.01 (1.01) | 2.22 (1.58) | 1.00 (1.00) | 1.00 (1.00) |
-# | suits | unweighted means | unweighted means | means weighted by `cell_area` | exact areal statistics | exact areal statistics |
-# | **Fineness**: aperture | 7 | 4 | 7 | 4 | 4 |
-# | levels | 0–19 | 0–29 | 0–15 | 0–29 | 0–29 |
-# | coarsest → finest cell | 6520 km → 7 cm | 6524 km → 1 cm | 2026 km → 96 cm | 6520 km → 1 cm | 7142 km → 1 cm |
-# | suits | steps of ÷2.65 | steps of ÷2 | steps of ÷2.65, 1 m floor | steps of ÷2 | steps of ÷2 |
+# | System | Cell shape | Useful when you need |
+# |---|---|---|
+# | IGeo7 | Hexagons, with twelve pentagons | Hexagonal neighbourhoods and approximately equal cell areas |
+# | H3 | Hexagons, with twelve pentagons | Compatibility with existing H3 identifiers and datasets |
+# | A5 | Pentagons | A single cell shape with nearly equal areas |
+# | HEALPix | Curved quadrilaterals | Equal-area cells and compatibility with HEALPix maps |
+# | ISEA4R | Rhombi | Equal-area cells with four edge neighbours |
 #
-# Compare systems by cell size. A level number counts refinements from a root
-# that each system picks for itself, so the same number is a different size in
-# every column:
+# Cell shape affects neighbourhood calculations. Cell area affects the weights
+# needed for spatial averages. We examine both below.
+#
+# Compare resolutions by cell size: each system assigns its own meaning to a
+# level number. Approximate cell widths in kilometres are:
 #
 # | level | IGeo7 | A5 | H3 | HEALPix | ISEA4R |
 # |---|---|---|---|---|---|
@@ -72,12 +68,30 @@ using Statistics
 # | 9 | 1 km | 11 km | 0.3 km | 13 km | 14 km |
 # | 10 | 0.4 km | 6 km | 0.1 km | 6 km | 7 km |
 #
+# ## Find the level for a cell size
+#
+# `cellsize(sys, level)` is the typical cell width in metres, the side of a
+# square with the median cell's area:
+
+DGG.cellsize(DGG.IGeo7System(), 5)
+
+# Use `levelfor` to choose the closest available level. It accepts a size in
+# metres, a raster, or another grid:
+
+DGG.levelfor(DGG.IGeo7System(), 25_000)
+
+# Cell width shrinks by √7 per level on IGeo7 and H3 and by 2 on A5, HEALPix
+# and ISEA4R, so `levelfor` returns the level nearest in ratio.
+#
 # ## Count a cell's neighbours
 #
-# A hexagon's six neighbours are alike: each shares a full edge, each centroid
-# the same distance away. A quadrilateral has two classes — four across an
-# edge, four more at a corner √2 further out — the same distinction every
-# raster algorithm already makes. `connectivity` picks the class:
+# Neighbourhood algorithms need a rule for which cells to include. `Edge()`
+# includes cells sharing an edge; `Vertex()` also includes cells that touch
+# at a corner. On a hexagonal grid these usually give the same neighbours.
+# Quadrilateral grids distinguish the two, much like a raster's four- and
+# eight-neighbour rules. Distances between centres depend on the grid geometry.
+#
+# Compare the two rules at Zürich:
 
 igeo7 = DGG.levelgrid(DGG.IGeo7System(), 4)
 zurich = DGG.cellat(igeo7, 8.5, 47.4)
@@ -100,9 +114,12 @@ count(c -> DGG.neighborcount(igeo7, c; connectivity = DGG.Edge()) == 5,
 
 # ## Measure how equal the cell areas are
 #
-# An unweighted mean over cells is the areal mean over the ground they cover
-# when the cells hold equal area. Largest cell area over smallest, across a
-# whole level and across the middle ninety per cent of it:
+# Equal-area cells let you compute an area mean with an ordinary `mean`.
+# For unequal cells, weight values by `cell_area`.
+#
+# Compare the largest and smallest cell areas at a resolution near 500 km.
+# A ratio of 1 means equal areas. The middle-90% ratio shows the spread after
+# excluding the smallest and largest 5% of cells:
 
 map([DGG.IGeo7System(), DGG.A5System(), DGG.H3System(),
      DGG.HEALPixSystem(), DGG.ISEA4RSystem()]) do sys
@@ -114,39 +131,22 @@ map([DGG.IGeo7System(), DGG.A5System(), DGG.H3System(),
        middle_90 = round(hi / lo; digits = 2))
 end
 
-# HEALPix and ISEA4R are exact by construction and A5 is within a per cent.
-# IGeo7 is equal-area in its own projection and gives a little back to the
-# sphere: its twelve pentagons hold about three quarters of a hexagon and
-# account for the whole of its first number, which is why its middle ninety per
-# cent is so much tighter. H3 puts its cells on gnomonic faces of the
-# icosahedron, which buys a fast closed-form index at the price of a cell near a
-# face corner holding nearly twice one at its centre — average over H3 cells
-# with `cell_area` as the weight.
-#
-# ## Find the level for a cell size
-#
-# `cellsize(sys, level)` is the typical cell width in metres, the side of a
-# square with the median cell's area:
-
-DGG.cellsize(DGG.IGeo7System(), 5)
-
-# `levelfor` inverts it. It takes metres, or anything carrying a resolution of
-# its own — a raster, another grid:
-
-DGG.levelfor(DGG.IGeo7System(), 25_000)
-
-# Cell width shrinks by √7 per level on IGeo7 and H3 and by 2 on A5, HEALPix
-# and ISEA4R, so `levelfor` returns the level nearest in ratio.
+# HEALPix and ISEA4R have equal areas by construction. A5 and most IGeo7
+# cells have similar areas, while IGeo7's pentagons are smaller. H3 has a
+# larger spread. Use area weights whenever those differences matter to your
+# statistic, including on approximately equal-area grids.
 #
 # ## Match the ellipsoid of the source
 #
-# A grid lays its cells on a sphere of equal area, and the package reads their
-# geometry at *authalic* latitude. A GPS fix, a shapefile and a GeoTIFF carry
-# *geodetic* latitude, on the WGS84 ellipsoid. The two differ by up to 0.128°,
-# 14 km along a meridian at ±45°.
+# Accurate alignment with Earth data also depends on the latitude convention.
+# An *authalic* sphere preserves the area of an ellipsoid. Its latitude differs
+# from the *geodetic* latitude used by WGS84 coordinates by up to about 0.13°,
+# or 14 km along a meridian.
 #
-# `AuthalicSystem` reads a system's geometry at geodetic latitude, wrapping a
-# system that computes at authalic latitude — four of the five:
+# `AuthalicSystem` converts between these conventions when locating cells or
+# reading their geometry. Its default ellipsoid is WGS84. Wrap IGeo7, H3,
+# HEALPix or ISEA4R when their sphere represents the authalic sphere of your
+# source ellipsoid:
 
 DGG.AuthalicSystem(DGG.IGeo7System())
 
@@ -165,7 +165,7 @@ catch err
     err
 end
 
-# The wrapper moves the geometry and forwards the rest:
+# The wrapper changes coordinates while preserving cell identity and topology:
 #
 # | | verbs |
 # |---|---|
@@ -195,16 +195,17 @@ level = DGG.levelfor(sys, 10_000)
 DGG.cellat(DGG.levelgrid(sys, level), 8.5, 47.4),
     DGG.cellat(DGG.levelgrid(DGG.AuthalicSystem(sys), level), 8.5, 47.4)
 
-# So match the ellipsoid of the source. `regrid` reads source and destination
-# coordinates in one frame and converts neither:
+# Check the coordinate convention of both datasets before regridding:
 #
-#   - A lon/lat raster, a shapefile or a GPS track carries geodetic latitude,
-#     so regrid it onto `AuthalicSystem(sys)`.
-#   - Data already on a DGGS carries authalic latitude, so it moves between
-#     plain systems.
-#   - Mixing the two misregisters by the 0.13° above, a cell and a half at
-#     10 km.
+# - For geodetic coordinates and an authalic grid, use `AuthalicSystem(sys)`
+#   with the matching ellipsoid.
+# - For data expressed on the same sphere, use the plain systems.
+# - For existing DGGS data, check how its producer interpreted latitude;
+#   the cell system's name alone does not establish that convention.
 #
-# `AuthalicSystem` is also what reports a cell to somebody else's data:
-# `cell_boundary` on a wrapped grid returns a ring that overlays a shapefile
-# directly.
+# `regrid` uses the coordinates supplied by each side. The wrapper also lets
+# `cell_boundary` return coordinates suitable for an overlay with geodetic
+# vector data.
+#
+# Continue with [Regridding](regridding.md) to put data on your chosen grid,
+# or [Stencil operations](stencils.md) to compute with its neighbours.

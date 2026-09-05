@@ -1,20 +1,14 @@
 # # Regridding: getting data onto a grid
 #
-# Regridding is how you get data that is not on a DGGS onto a DGGS.
+# Use `regrid` to bring a longitude/latitude raster onto a global grid. The
+# result keeps its time dimension and works with the package's spatial
+# selectors, neighbourhood operations and plotting tools.
 #
-# Three methods are available today:
-#
-# - `Conservative()` — the area-weighted mean of the source values over the
-#   ground each destination cell covers. It conserves the integral, and it is
-#   the default.
-# - `BarycentricPoint()` — interpolation between the source sample sites around
-#   each destination cell's centre: bilinear on a raster's quadrilaterals,
-#   barycentric on a triangle.
-# - `NearestCell()` — the value of the one source cell that contains each
-#   destination cell's centre.
-#
-# More will come. [Choosing a regridding method](../api/regridding-methods.md)
-# compares the three side by side.
+# Here we move twelve months of soil moisture onto HEALPix, choose how to
+# handle missing ocean values, and map the result back to a raster. We use the
+# default `Conservative()` method, which weights source values by their overlap
+# with each destination cell. [Moving between DGGS](between_grids.md) compares
+# area averaging with point interpolation.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 
@@ -35,21 +29,15 @@ GLMakie.activate!(inline = true)
 
 soil = Rasters.set(Raster(RasterDataSources.getraster(CPCSoil; period = "1981-2010");
     name = :soilw), Ti => 1:12)
-soil = DD.rebuild(soil; metadata = DD.NoMetadata())   # the NetCDF header is noise here
+soil = DD.rebuild(soil; metadata = DD.NoMetadata())
 
 # Every `missing` cell is ocean — the source measures land — and the ocean is
 # most of the raster:
 
 count(ismissing, soil) / length(soil)
 
-# Two properties of this lattice the regridder reads for itself:
-#
-# - longitude runs `0 … 360`, and a longitude axis is periodic, so the cut
-#   falls where the data puts it;
-# - the lookups are `Points`, so cell edges are the midpoints between centres.
-#
-# Here is January. `heatmap` on a plain `Axis` draws the raster as it is
-# stored, and leaves the ocean blank:
+# The January map shows the source on its `0 … 360` longitude axis. `regrid`
+# handles that longitude convention directly; the ocean remains missing.
 
 fig, ax, plt = heatmap(soil[Ti = 1]; colormap = :viridis,
     axis = (; title = "January", xlabel = "longitude", ylabel = "latitude"))
@@ -58,9 +46,10 @@ fig
 
 # ## Regrid the raster onto HEALPix
 #
-# HEALPix cells are exactly equal-area, so the unweighted mean of a field over
-# them is its areal mean. `levelfor` picks the level whose cells come closest
-# in size to the source's, and `levelgrid` builds the grid at that level:
+# HEALPix gives each cell the same area, which simplifies spatial averages.
+# Choose a resolution close to the source with `levelfor`, then build that
+# level with `levelgrid`. [Choosing a grid](choosing_a_grid.md) explains cell
+# sizes and coordinate conventions.
 
 sys = DGG.HEALPixSystem()
 grid = DGG.levelgrid(sys, DGG.levelfor(sys, soil))
@@ -69,12 +58,12 @@ grid = DGG.levelgrid(sys, DGG.levelfor(sys, soil))
 
 DGG.cellsize(soil), DGG.cellsize(grid)
 
-# `to` names the destination:
+# One call regrids all twelve months:
 
 onhealpix = DGG.regrid(soil; to = grid)
 
-# A raster in is a raster out: the two spatial dimensions have become one
-# `Cells` dimension carrying the grid, and `Ti` passed through untouched.
+# The result is a `Raster` with dimensions `Cells` and `Ti`: one value per
+# cell per month. You can still select January with `[Ti = 1]`.
 #
 # ## Draw the result on the sphere
 #
@@ -89,8 +78,8 @@ plt = dggpoly!(ax, january; color = january, colormap = :viridis)
 Colorbar(fig[1, 2], plt; label = "soil moisture (mm)")
 fig
 
-# The values land where they should. A `Cells` lookup takes a lon/lat position
-# through `DD.Contains`:
+# Read January's value at a few locations with `DD.Contains((lon, lat))`.
+# The mid-Pacific query also checks how missing ocean data appears:
 
 [place => onhealpix[DGG.Cells(DD.Contains((lon, lat))), Ti = DD.At(1)]
  for (place, lon, lat) in (("Amazon", -60.0, -5.0), ("Sahara", 15.0, 24.0),
@@ -98,46 +87,35 @@ fig
 
 # ## Choose what a coastal cell holds
 #
-# A destination cell on a coastline is part land, part ocean. `missingpolicy`
-# decides its value:
+# A coastal cell can overlap both valid land values and missing ocean values.
+# The default `Weighted(0.5)` averages the valid contribution and requires at
+# least half of the total weight to be valid. A cell below that threshold gets
+# a missing value.
 #
-# | policy | value | blanked when |
-# |---|---|---|
-# | `Weighted(t)`, default `t = 0.5` | mean over the covered part | coverage below `t` |
-# | `Extensive()` | sum over the covered part | never |
-#
-# `Weighted` normalizes by the covered area, so a coastal cell keeps the
-# magnitude of the land it saw. A lower `t` admits more of the coastline:
+# Lowering the threshold keeps more coastal cells. Raising it asks for more
+# complete coverage. Compare the number of valid January cells:
 
 covered(t) = count(!ismissing, DGG.regrid(soil; to = grid,
     missingpolicy = DGG.Weighted(t))[:, 1])
 [t => covered(t) for t in (0.01, 0.5, 1.0)]
 
-# The gap between the first count and the last is the coastline: cells that saw
-# some land and some sea.
-#
-# A blanked cell holds the destination's own sentinel:
-#
-# - a `Raster` keeps its `missingval`, which is `missing` here because that is
-#   what `soil` declares;
-# - a plain array takes `missing` or `NaN`, by element type;
-# - `missingval = NaN` names the sentinel explicitly;
-# - `regrid!` uses the buffer's.
+# The difference between these counts shows how much of the result depends on
+# partial coverage. This raster uses `missing` for those cells. The
+# [regridding reference](../api/regridding-methods.md) explains other missing
+# value conventions and the `Extensive()` policy.
 #
 # ## Reuse one plan across the twelve months
 #
-# `plan_regrid` builds the weights from the two lattices alone, reading no
-# array values:
+# Reuse a regridding plan when several variables share the same source and
+# destination grids. The plan computes the spatial weights once:
 
 plan = DGG.plan_regrid(soil; to = grid)
 
-# The plan covers the spatial dimensions only, so `Ti` passes through it: one
-# plan regrids all twelve months, and every other field on the same lattice.
+# Apply it to the full monthly cube:
 
 monthly = DGG.regrid(soil, plan)
 
-# `regrid!` applies the plan into a buffer you already hold, blanking with the
-# buffer's own sentinel:
+# Use `regrid!` to reuse an output array as well:
 
 buffer = similar(monthly)
 DGG.regrid!(buffer, soil, plan)
@@ -145,8 +123,8 @@ isequal(buffer, monthly)
 
 # ## Animate the seasonal cycle
 #
-# Only the colours change from frame to frame, so they go in an `Observable`
-# and the mesh is built once:
+# A shared colour scale makes the months comparable. Animate the values on
+# the same grid to see the seasonal cycle:
 
 seasonal = Rasters.replace_missing(monthly, NaN)
 crange = extrema(filter(!isnan, seasonal))
@@ -171,22 +149,21 @@ nothing #hide
 
 # ## Regrid back onto a lon/lat raster
 #
-# The same call runs the other way:
-#
-# - `to` takes a raster, and its lookups become the destination lattice;
-# - `from` names the source grid, because a `Cells` axis carries cell ids
-#   rather than a lattice.
+# Use an existing raster as the destination template when a downstream tool
+# expects longitude and latitude axes. Pass the source DGGS grid as `from`:
 
 back = DGG.regrid(monthly; to = soil, from = grid)
 
-# A round trip conserves the mean over the cells covered in both directions.
-# Detail that the coarser grid averaged away stays averaged.
+# Compare the original and returned values where both are valid. These plain
+# means are a useful check of the change in the field; they do not test area
+# conservation, because longitude/latitude pixels have unequal areas. The
+# round trip also retains the smoothing introduced by regridding.
 
 both = .!ismissing.(soil) .&& .!ismissing.(back)
 mean(soil[both]), mean(back[both])
 
-# Any lattice is a valid destination, and a `-180 … 180` one draws cleanly on a
-# map cut at ±180:
+# You can also choose new destination coordinates. A `-180 … 180` longitude
+# axis fits the following world map:
 
 shown = DGG.regrid(monthly[Ti = 1]; from = grid,
     to = Rasters.set(soil, X => -179.75:0.5:179.75))
@@ -200,19 +177,14 @@ fig
 
 # ## Regrid onto any other system
 #
-# The same call takes any system:
+# Choose another system and match its cell size to the same source:
 
 igeo7 = DGG.IGeo7System()
 DGG.regrid(soil; to = DGG.levelgrid(igeo7, DGG.levelfor(igeo7, soil)))
 
-# Two things depend on the system:
+# The result supports the same operations whichever system you choose. Try
+# [Zonal statistics](zonal.md) to summarize it by region, or
+# [Stencil operations](stencils.md) to compute from neighbouring cells.
 #
-# - an areal mean over cells that differ in area needs `cell_area` weights;
-# - conservation into a destination holds for systems whose cell rings are
-#   convex, IGeo7 among them. On HEALPix, `missingpolicy = DGG.Weighted(t)`
-#   normalizes by covered area and carries the result.
-#
-# Every regrid above is conservative, an area operation. For data whose values
-# sit at points rather than over footprints — a DEM's posts, a station network —
-# see [Choosing a regridding method](../api/regridding-methods.md), and
-# [Moving between DGGS](between_grids.md) for the DGGS-to-DGGS case.
+# For a different interpretation of the source values, see
+# [Choosing a regridding method](../api/regridding-methods.md).

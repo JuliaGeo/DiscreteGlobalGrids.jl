@@ -1,8 +1,7 @@
 # # Zonal statistics
 #
-# A zonal statistic is one number per region. Here it is the mean July
-# temperature of every country on Earth, taken over the HEALPix cells that
-# cover each one.
+# A zonal statistic reduces the cells in each region to one value. This example
+# estimates each country's mean July temperature from a HEALPix grid.
 
 import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
@@ -22,7 +21,8 @@ GLMakie.activate!(inline = true)
 
 tavg = read(Raster(RasterDataSources.getraster(CRUCL2); name = :tmp, lazy = true)[Ti = 7])
 
-# Ocean cells hold `missing`, and the land record stops short of Antarctica.
+# Ocean cells hold `missing`, and the source record has limited Antarctic
+# coverage.
 
 fig, ax, plt = heatmap(tavg; colormap = :thermal,
     axis = (; aspect = DataAspect(), title = "CRU CL 2.0 mean July temperature"))
@@ -40,9 +40,9 @@ field = DGG.regrid(tavg; to = grid)
 
 # ## Average the field over every country
 #
-# `field[Cells(Covering(geom))]` selects the cells covering a polygon, and
-# `mean` over that selection is the zonal mean. Any reduction works in its
-# place.
+# `field[Cells(Covering(geom))]` selects a cell coverage for a polygon. Applying
+# `mean` to that selection gives a grid-based estimate; any reduction can be
+# used in its place.
 
 countries = NaturalEarth.naturalearth("admin_0_countries", 50)
 
@@ -51,9 +51,9 @@ countries = NaturalEarth.naturalearth("admin_0_countries", 50)
 percountry = [mean(skipmissing(field[DGG.Cells(DGG.Covering(g))]))
               for g in countries.geometry]
 
-# 100 km cells are coarser than the smaller island states, and CRU has no
-# Antarctic stations, so 64 countries hold no land cell at all. Their mean is
-# `NaN`, which sorts to the end of the ranking and draws grey on the map.
+# At this resolution, small islands may have no selected land cell, and the
+# source has no observations for some Antarctic regions. Those means are
+# `NaN`; the ranking places them at the end and the map draws them grey.
 
 ranked = sort(countries.NAME .=> round.(percountry; digits = 1); by = last)
 last(filter(!isnan ∘ last, ranked), 5)
@@ -83,9 +83,10 @@ poly!(ax2, countries.geometry; color = percountry, colormap = :thermal,
 Colorbar(fig[2, 2]; colormap = :thermal, colorrange = crange, label = "°C")
 fig
 
-# `Covering` keeps every cell that touches the outline, so each country's mean
-# includes a rim of cells that reach past its border. [Count only cells wholly
-# inside the outline](@ref) is the stricter rule.
+# `Covering` returns a cell set that contains the polygon and may include a rim
+# extending beyond the border. The country value is therefore an approximation,
+# not an exact polygon statistic. [Count only cells wholly inside the outline](@ref)
+# is a stricter alternative.
 #
 # ## Select the cells covering one region
 #
@@ -100,8 +101,8 @@ tx = field[DGG.Cells(DGG.Covering(texas))]
 
 mean(skipmissing(tx))
 
-# HEALPix cells share one area, so the plain mean is the area-weighted mean.
-# On a system with unequal cells, weight by
+# HEALPix cells have equal area, so the plain mean is area-weighted for this
+# grid. On a system with unequal cells, weight by
 # `DGG.cell_area.(grid, DD.lookup(tx, DGG.Cells))`.
 #
 # ## Draw the covering cells of Texas
@@ -125,12 +126,12 @@ fig
 
 # ## Count only cells wholly inside the outline
 #
-# Three boundary rules, from the widest set of cells to the narrowest. The
-# middle one is what a raster zonal tool applies to its pixels.
+# These boundary rules select progressively narrower sets of cells. A raster
+# zonal tool commonly uses the centre-in-zone rule for its pixels.
 #
 # | rule | cells kept | spelling |
 # |---|---|---|
-# | `Covering` | every cell touching the outline | `field[Cells(Covering(geom))]` |
+# | `Covering` | a cell set containing the outline, possibly with an outer rim | `field[Cells(Covering(geom))]` |
 # | centre-in-zone | every cell whose centre is inside | — |
 # | `Within` | every cell wholly inside the outline | `field[Cells(Within(geom))]` |
 
@@ -140,8 +141,8 @@ inside = field[DGG.Cells(DGG.Within(texas))]
 
 mean(skipmissing(tx)), mean(skipmissing(inside))
 
-# The interior runs 0.2 °C warmer, because the covering's rim reaches into the
-# cooler high plains of the Panhandle and the Trans-Pecos.
+# The two means differ because boundary cells change which ground contributes
+# to the statistic.
 #
 # ## Read the cell holding a point
 #
@@ -152,9 +153,8 @@ field[DGG.Cells(DD.Contains((-97.74, 30.27)))]
 
 # ## Run the same statistic on another system
 #
-# Every selector above is an interface method, so swapping the constructor
-# runs the page on another system. `levelfor` picks the level whose cells are
-# about 100 km across, matching the HEALPix grid.
+# The same selectors work with another grid system. Here `levelfor` chooses an
+# IGEO7 level with cells approximately 100 km across:
 
 igeo7 = DGG.IGeo7System()
 level = DGG.levelfor(igeo7, 100_000)
@@ -167,14 +167,14 @@ field7 = DGG.regrid(tavg; to = DGG.levelgrid(igeo7, level))
 
 mean(skipmissing(field7[DGG.Cells(DGG.Covering(texas))]))
 
-# The width of the covering's rim depends on how the system refines;
+# The width of the covering rim depends on the grid's refinement scheme;
 # [Multi-order coverage](multiorder.md) shows where that width comes from.
 #
 # ## Without the DimArray
 #
-# `CellVector` reads a grid as a vector of cell ids, and the two functions
-# below are what `Covering` and `Contains` resolve to on the `Cells` axis:
-# positions into that vector.
+# `CellVector` exposes the grid as a vector of cell ids. The two functions below
+# show the index operations used by `Covering` and `Contains` on the `Cells`
+# axis:
 
 cells = DGG.CellVector(grid)
 DGG.covering_indices(cells, texas)

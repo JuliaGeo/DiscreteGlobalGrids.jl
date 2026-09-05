@@ -1,8 +1,12 @@
 # DiscreteGlobalGrids.jl
 
-Six discrete global grid systems — IGEO7, H3, HEALPix, A5, S2, ISEA4R — behind
-one small interface, with every algorithm written against the interface exactly
-once.
+DiscreteGlobalGrids.jl lets you analyse data on global grids: move rasters
+onto cells, select regions, compute with neighbours, and read or write Zarr
+stores. The same operations work across IGEO7, H3, HEALPix, A5, S2 and ISEA4R.
+
+A discrete global grid divides the Earth's surface into cells. Each cell has
+an identifier, a boundary and neighbours, so you can work with it much as you
+would with a raster pixel.
 
 ```@example index
 import DiscreteGlobalGrids as DGG
@@ -28,8 +32,8 @@ lines!(axis, GeoMakie.coastlines(); color = ("#212529", 0.7), linewidth = 1.0,
 figure
 ```
 
-That is IGEO7 at level 3: hexagons, with twelve pentagons where an
-icosahedron's vertices fall. A grid is a system and a level and nothing else:
+The globe shows IGEO7 at level 3. To work with a grid, choose a system and a
+resolution level:
 
 ```@example index
 grid = DGG.levelgrid(DGG.IGeo7System(), 4)
@@ -48,24 +52,28 @@ import Extents
 DGG.query(grid, DGG.Intersects(Extents.Extent(X = (5, 12), Y = (45, 50))))
 ```
 
-Swap `IGeo7System()` for any of the six and nothing else changes.
-[Choosing a grid](tutorials/choosing_a_grid.md) is how to decide which one you
-want; the [README](https://github.com/JuliaGeo/DiscreteGlobalGrids.jl) walks
-the whole surface.
+These calls also work with the other systems. [Choosing a
+grid](tutorials/choosing_a_grid.md) compares cell shapes, sizes and coordinate
+conventions.
 
-## The mental model
+## Grids, cells and data
 
-Two tiers. A **grid** is one finite collection of cells on the sphere — a
-complete level, or a regional subset of one — and geometry, stencils and
-queries are all answered there. A **system** adds the parent/child hierarchy
-across levels, always as a fast path: hierarchy is an optimisation, never a
-semantic. A bare `Int` is always an **index** in `1:ncells(grid)`, a local
-index into that collection's own storage; a typed cell id knows its own level.
+| Term | Meaning |
+|---|---|
+| System | A family of grids at different resolutions, such as HEALPix |
+| Grid | A collection of cells at one level, covering the globe or a region |
+| Cell id | A typed identifier for a cell, including its level |
+| Local index | A cell's position in a particular collection or array |
+| `Cells` dimension | The link between an array's values and its grid cells |
+
+Regridding a monthly raster produces an array with `Cells` and time dimensions.
+Spatial selectors act on `Cells`; ordinary Julia indexing and reductions work
+on the result. See the [grid interface](api/grid-interface.md) for the full
+reference.
 
 ## Installation
 
-Neither package is in the General registry yet, so both install from the
-repository:
+Install the package and its plotting companion from the repository:
 
 ```julia
 using Pkg
@@ -74,55 +82,47 @@ Pkg.add(url = "https://github.com/JuliaGeo/DiscreteGlobalGrids.jl",
         subdir = "lib/DiscreteGlobalGridsVisualization")
 ```
 
-The second one is the plotting companion, and it is what the tutorials draw
-with: `dggpoly`, `dggpoly!` and `dggsurface` live there. `using Makie` on its
-own teaches Makie how to read a cell set, but does not give you those verbs.
+Julia 1.11 or newer is required. The tutorials import the packages needed
+for each example. Plotting uses `DiscreteGlobalGridsVisualization` with a
+Makie backend; store I/O requires `using Zarr` to load `dggread` and `dggwrite`.
+Use `Pkg.develop(url = ...)` for a checkout you intend to edit.
 
-`Pkg.develop(url = ...)` instead for a checkout you intend to edit. Julia 1.11
-or newer is required. Two more capabilities arrive with the package that
-provides them: `using Makie` (or a backend) makes cells drawable, and
-`using Zarr` gives `dggread` and `dggwrite` real methods — without it they
-exist only to report that Zarr is missing.
+## Choose a tutorial
 
-## Where to go next
+Start with **Choosing a grid** and **Regridding** if you are new to DGGS data.
+Each tutorial includes its own setup, so you can then follow the capability
+you need:
 
-The [DGGS gallery](all_dggs.md) draws every system. The tutorials run in order:
+| Task | Tutorial |
+|---|---|
+| Choose cell geometry, resolution and latitude convention | [Choosing a grid](tutorials/choosing_a_grid.md) |
+| Bring a monthly raster onto a DGGS and export it back | [Regridding](tutorials/regridding.md) |
+| Change grid system or resolution; compare interpolation methods | [Moving between DGGS](tutorials/between_grids.md) |
+| Select cells by region and calculate regional means | [Zonal statistics](tutorials/zonal.md) |
+| Represent a region compactly and regrid onto it | [Multi-order coverage](tutorials/multiorder.md) |
+| Smooth a field, detect edges and traverse the cell graph | [Stencil operations](tutorials/stencils.md) |
+| Use Geomorphometry and write a custom terrain kernel | [Hydrology](tutorials/hydrology.md) |
+| Save data, reopen it lazily and read a region | [DGGS stores](tutorials/store_io.md) |
+| Run a neighbourhood kernel over stored chunks | [Out of core](tutorials/out_of_core.md) |
+| Work with HEALPix vectors, sky masks and cone searches | [The sky in HEALPix](tutorials/healpix_astronomy.md) |
 
-  - [Choosing a grid](tutorials/choosing_a_grid.md) — hexagons or
-    quadrilaterals, equal-area or not, how fine, and on which sphere.
-  - [Regridding: getting data onto a grid](tutorials/regridding.md) — a real
-    monthly climatology moved conservatively onto a DGGS, and back to a raster.
-  - [Stencil operations](tutorials/stencils.md) — smoothing, Laplacians and
-    diffusion from each cell's neighbourhood.
-  - [Zonal statistics](tutorials/zonal.md) — reduce a field over regions, with
-    spatial queries.
-  - [Multi-order coverage](tutorials/multiorder.md) — one region at every
-    resolution at once.
-  - [Moving between DGGS](tutorials/between_grids.md) — across systems and
-    across resolutions, and whether your values are areas or points.
-  - [Hydrology: a DEM on an IGEO7 grid](tutorials/hydrology.md) — elevation
-    data on a regional subset, and flow routing across it.
-  - [A round trip through a DGGS store](tutorials/store_io.md) — `dggwrite` and
-    `dggread` over a Zarr store.
-  - [Out of core](tutorials/out_of_core.md) — a stencil over a stored cube that
-    never holds more than one chunk and its halo.
-  - [The sky in HEALPix](tutorials/healpix_astronomy.md) — nested order, cone
-    searches, and a galactic-plane cut.
+The Earth-data examples use simple spherical setups to demonstrate the
+operations. For work that requires alignment with geodetic data, follow the
+[coordinate guidance](tutorials/choosing_a_grid.md#match-the-ellipsoid-of-the-source)
+when choosing your grid.
 
-Six API pages sit under the tutorials, one for each verb that needs more room
-than a worked example gives it:
+## Reference and extension
 
-  - [Choosing a regridding method](api/regridding-methods.md)
-  - [Region boundaries](api/boundaries.md) — `halo`, `border`, `interior`,
-    `adjacency`, and the engines behind them
-  - [Reading and writing DGGS stores](api/store-io.md)
-  - [Sweeping a cube along its chunk lines](api/chunk-sweep.md)
-  - [Requesting neighbour fields](api/neighbor-fields.md)
-  - [The ancestor-subzone layout](api/subzone-layout.md)
+The API pages cover [grids](api/grid-interface.md),
+[spatial selection](api/selecting-cells.md),
+[regridding methods](api/regridding-methods.md),
+[region boundaries](api/boundaries.md),
+[neighbours and stencils](api/neighbors.md),
+[neighbour fields](api/neighbor-fields.md),
+[store I/O](api/store-io.md),
+[chunked computation](api/chunk-sweep.md) and
+[subzone storage](api/subzone-layout.md).
 
-[Writing a grid system](extending.md) is the other direction: what the
-interface asks of a new system, built up on a plain lon/lat grid. There is a
-second worked example in the repository — `DGG.CopernicusDEMSystem` implements
-the same interface for the Copernicus DEM raster lattice, which is a raster
-rather than a DGGS and so is not one of the six, and
-`examples/copernicus_dem/copernicus_dem.jl` puts it to work.
+To add a grid, follow [Writing a grid system](extending.md). The
+[architecture guide](architecture.md) explains how grids, cell collections
+and algorithms fit together.

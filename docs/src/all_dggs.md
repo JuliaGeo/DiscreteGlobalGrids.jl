@@ -1,7 +1,8 @@
 # DGGS gallery
 
-The six systems, drawn the same way: `levelgrid(sys, level)` goes straight into
-`dggpoly!`. The levels differ per panel only because apertures do.
+Compare the cell shapes and global arrangement of the six systems below.
+Each panel uses a level that keeps individual cells visible. To compare
+resolutions numerically, use cell size in metres.
 
 ```@raw html
 <style>
@@ -47,8 +48,8 @@ figure
 
 ## What differs
 
-At the *same* level the six disagree about almost everything — apertures 7 and
-4 put their cell counts two orders of magnitude apart:
+Each system refines its base cells differently, so equal level numbers can
+have very different cell counts and sizes:
 
 ```@example all-dggs
 println(rpad("system", 10), lpad("levels", 8), lpad("cells at level 3", 18),
@@ -61,8 +62,8 @@ for (sys, _) in panels
 end
 ```
 
-  - **IGeo7** — hexagons with twelve pentagons, aperture 7, equal-area by
-    construction.
+  - **IGeo7** — hexagons with twelve smaller pentagons; approximately equal
+    areas and aperture-7 refinement.
   - **H3** — the same hexagon family on gnomonic icosahedral faces, so not
     equal-area.
   - **HEALPix** — curvilinear diamonds, exactly `4π/(12·4^l)` steradians each.
@@ -72,12 +73,10 @@ end
   - **ISEA4R** — rhombi on ten icosahedral diamonds, exactly `4π/(10·4^l)`
     steradians each.
 
-`AuthalicSystem` wraps a system to read its geometry at geodetic latitude. Ids,
-indices, hierarchy and ordering are untouched, so it draws the same picture and
-is not in the sweep. A5 is the exception: it converts to authalic latitude
-inside its own projection, so its geometry is geodetic already and the wrapper
-refuses it rather than converting twice.
+`AuthalicSystem` adapts a system's spherical geometry to geodetic latitude
+while preserving cell ids and hierarchy. A5 already returns geodetic geometry
+and rejects this wrapper.
 
-[Choosing a grid](tutorials/choosing_a_grid.md) is the walk through the axes
-that decide between them: cell shape, how close to equal-area, how fine, and
-which sphere.
+[Choosing a grid](tutorials/choosing_a_grid.md) connects these differences to
+neighbourhood calculations, spatial averages, resolution and coordinate
+alignment.

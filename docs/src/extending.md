@@ -4,11 +4,11 @@
 CurrentModule = DiscreteGlobalGrids
 ```
 
-DiscreteGlobalGrids describes a grid system as methods on two types you write: a
-cell id (`<: AbstractCellIndex`) and a system (`<: AbstractHierarchicalGridSystem`).
-Every algorithm in the package — point location, neighbourhoods, queries,
-regridding, plotting, store I/O — is written once against those methods, so a
-system that implements the required set gets all of them.
+To add a grid system and reuse the package's algorithms, define methods on two
+types: a cell id (`<: AbstractCellIndex`) and a system
+(`<: AbstractHierarchicalGridSystem`). Point location, neighbourhoods, queries,
+regridding, and plotting then use the shared grid interface. Store I/O also
+requires the optional encoding and metadata hooks described below.
 
 Thirteen methods are required. Three describe the cell id, an immutable
 `isbits` struct subtyping `AbstractCellIndex`:
@@ -44,8 +44,8 @@ falls into three groups:
 | fast paths | `cellat`, `localindex`, `neighbors`, `ring`, `cell_area`, `cell_extent`, `getcell`, `ancestor`, `descendants`, `subtree` | speed; the generic implementations already answer every one of them |
 
 This page implements the thirteen for a longitude/latitude lattice, runs the
-conformance suites over it, puts the package's high-level API through the
-result, and then adds two of the optional groups.
+conformance suites over it, exercises the package's high-level API, and then
+adds selected optional hooks.
 
 ## Define the cell id
 
@@ -80,8 +80,8 @@ Julia's defaults and already agree with `isless`.
 
 ## Define the system
 
-The system itself carries no state — the lattice is fixed by the level — so it
-is an empty struct. Five methods tie an id to a position in the level:
+The system carries no state because the lattice is fixed by the level, so it is
+an empty struct. These methods tie an id to a position in the level:
 
 ```@example extending
 struct LonLatSystem <: DGG.AbstractHierarchicalGridSystem end
@@ -210,10 +210,10 @@ test_hierarchical_system(sys)
 nothing # hide
 ```
 
-Six methods are unwritten, and the skip list is the plan: `cellat`, `ancestor`,
-`descendants`, `neighbors`, `ring` and `descendant_range`. The rest of this page
-uses the grid as it stands, then writes the ones this lattice can answer in
-closed form.
+Several methods remain unwritten, and the skip list identifies them:
+`cellat`, `ancestor`, `descendants`, `neighbors`, `ring`, and
+`descendant_range`. The rest of this page uses generic fallbacks, then adds the
+closed-form methods this lattice can answer directly.
 
 A third suite, `test_generic_fallbacks(sys)`, hides a system's fast paths from
 dispatch and re-runs the adjacency and point-location laws against the generic
@@ -229,8 +229,8 @@ DGG.cellat(grid, 10.5, 46.5)
 ```
 
 `cell_area` is answered too, by taking the spherical area of the ring
-`cell_boundary` returned. An equal-angle cell at the equator covers forty times
-the area of one at the pole:
+`cell_boundary` returned. Equal-angle cells cover different areas at different
+latitudes:
 
 ```@example extending
 equator = DGG.cellat(grid, 0.0, 0.5)
@@ -350,10 +350,9 @@ table = DGG.adjacency(grid)
 sort(unique(length.(table)))
 ```
 
-Eight neighbours nearly everywhere, and 130 in the polar rows: the other 127
-cells of the row, all touching at the pole, plus the three below. Vertex
-adjacency means exactly this on a lattice with a polar row, and every
-neighbourhood sweep sees it:
+The polar rows have substantially more vertex neighbours because every cell in
+the row touches the pole. Vertex adjacency therefore differs from the usual
+interior neighbourhood, and every neighbourhood sweep sees that topology:
 
 ```@example extending
 extrema(DGG.mapneighbors((c, x, nbs) -> length(nbs), cells, parent(field)))
@@ -386,8 +385,8 @@ DGG.cellat(grid, 10.5, 46.5)
 ```
 
 An optional method must return what the generic implementation returns, and the
-conformance suite is where that is checked. The `cellat` law group opens, and
-the grid run comes back with no skips at all:
+conformance suite is where that is checked. The `cellat` law group now checks
+the direct-location implementation:
 
 ```@example extending
 test_grid_interface(grid)
@@ -450,9 +449,9 @@ Four groups are still generic on this system, roughly in order of payoff:
 
   - **`neighbors` and `ring`** — lattice arithmetic, replacing a geometric
     search. [`maxneighbors`](@ref) declares the ceiling that lets the whole
-    neighbourhood family use stack-allocated containers; the polar row's 130
-    neighbours are what this lattice would have to declare, so a bound of 8 is
-    out of reach.
+    neighbourhood family use stack-allocated containers; the polar row's large
+    neighbourhood is the bound this lattice would have to declare, so a small
+    interior-cell bound is out of reach.
   - **[`descendant_range`](@ref) with `has_sorted_subtrees(sys) = true`** — a
     range test for subtree membership, which the halo and grow engines use in
     place of scanning a level. Row-major order scatters a subtree across rows;

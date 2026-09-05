@@ -1,8 +1,13 @@
 # # Moving between DGGS
 #
-# `regrid` also moves data between DGGS grids. This page starts from the CPC
-# soil moisture cube that [Regridding](regridding.md) put on HEALPix, and moves
-# it onto IGeo7.
+# Move data between grid systems when you need to combine datasets or use a
+# different cell shape. `regrid` handles both a change of system and a change
+# of resolution.
+#
+# This example moves monthly soil moisture from HEALPix to IGeo7. We compare
+# area averaging and point interpolation, first on a much finer destination
+# and then on grids of similar cell size. The setup repeats the data loading
+# from [Regridding](regridding.md), so you can run this page on its own.
 
 ENV["RASTERDATASOURCES_PATH"] = mkpath(get(ENV, "RASTERDATASOURCES_PATH", joinpath(tempdir(), "rasterdatasources")))
 
@@ -18,24 +23,21 @@ GLMakie.activate!(inline = true)
 
 soil = Rasters.set(Raster(RasterDataSources.getraster(CPCSoil; period = "1981-2010");
     name = :soilw), Ti => 1:12)
-soil = DD.rebuild(soil; metadata = DD.NoMetadata())   # the NetCDF header is noise here
-
+soil = DD.rebuild(soil; metadata = DD.NoMetadata())
+#
 healpix = DGG.levelgrid(DGG.HEALPixSystem(), 7)
-onhealpix = DGG.regrid(soil; to = healpix)
+soilonhealpix = DGG.regrid(soil; to = healpix)
 
 # ## Move the cube from HEALPix onto IGeo7
 #
 # `to` names the destination grid and `from` names the source grid:
 
 igeo7 = DGG.levelgrid(DGG.IGeo7System(), 5)
-crossed = DGG.regrid(onhealpix; to = igeo7, from = healpix)
+crossed = DGG.regrid(soilonhealpix; to = igeo7, from = healpix)
 
-# The `Cells` axis now carries IGeo7 cells, and `Ti` came through untouched. A
-# `Cells` lookup carries its own grid, and `regrid` still asks for it by name:
-# leave `from` out and the error prints the grid to pass.
-#
-# `replace_missing` turns the ocean cells into `NaN`, which `dggpoly!` leaves
-# unpainted:
+# The result has one value per IGeo7 cell for each of the twelve months.
+# Plot January to see the soil moisture field on the new cells; missing ocean
+# values remain blank.
 
 january = Rasters.replace_missing(crossed[Ti = 1], NaN)
 
@@ -52,21 +54,23 @@ fig
 
 DGG.cellsize(healpix), DGG.cellsize(igeo7)
 
-# The two agree to 8 %, so the move changes the tiling and leaves the
-# resolution where it was. Both grids are equal-area, so the unweighted land
-# mean is the same on either:
+# These levels have similar cell widths. Comparing their plain means gives
+# a quick check of the effect on the data. For an area-weighted comparison,
+# use `cell_area` weights on IGeo7 and account for changes in coastal coverage;
+# its cells are only approximately equal in area.
 
-mean(skipmissing(onhealpix)), mean(skipmissing(crossed))
+mean(skipmissing(soilonhealpix)), mean(skipmissing(crossed))
 
 # ## Refine a coarse field onto a finer grid
 #
-# A move onto a much finer grid is a refinement, and the method decides how one
-# coarse cell is spread over the finer cells under it:
+# A finer destination makes the choice of method visible. Choose according
+# to what a source value represents: an average over a cell, or a measurement
+# at a point.
 #
 # | method | what a destination cell gets |
 # |---|---|
 # | `Conservative()` (default) | the area-weighted mean of the source cells under it |
-# | `BarycentricPoint()` | a sample at its centre, interpolated between the three source centres around it |
+# | `BarycentricPoint()` | a sample at its centre, interpolated from surrounding source centres |
 #
 # HEALPix level 4 cells are 407 km across, against 55 km on IGeo7 level 5, so
 # roughly fifty destination cells sit under each source cell:
@@ -96,11 +100,11 @@ end
 Colorbar(fig[1, 3], first(plots); label = "soil moisture (mm)")
 fig
 
-# `Conservative()` holds each coarse value flat across the fine cells under it,
-# so the blocks on the left are the HEALPix cells the numbers came from.
-# `BarycentricPoint()` interpolates between the coarse centroids, and reads the
-# values as samples of a continuous surface, which suits data measured at
-# points.
+# `Conservative()` repeats a source value in destination cells wholly inside
+# that source cell, and combines values where cells overlap. The coarse
+# HEALPix pattern remains visible. `BarycentricPoint()` treats the values as
+# samples at the source centres and interpolates a smoother surface. Neither
+# method adds measurements at the finer resolution.
 #
 # ## Compare the two methods at equal resolution
 #
@@ -109,7 +113,7 @@ fig
 # `BarycentricPoint()` across that pair:
 
 pointwise = Rasters.replace_missing(
-    DGG.regrid(onhealpix[Ti = 1]; to = igeo7, from = healpix,
+    DGG.regrid(soilonhealpix[Ti = 1]; to = igeo7, from = healpix,
         method = DGG.BarycentricPoint()), NaN)
 
 # The 99th percentile of the absolute difference, beside the standard deviation
@@ -118,8 +122,8 @@ pointwise = Rasters.replace_missing(
 q99 = quantile(abs.(filter(!isnan, january .- pointwise)), 0.99)
 (q99 = q99, sigma = std(filter(!isnan, january)))
 
-# At matched resolution the two methods agree to a few millimetres, on a field
-# whose own spread is 177 mm. The third panel maps what is left:
+# Compare `q99` with `sigma` to judge the method difference relative to the
+# field's own variation. The third panel shows where the methods differ:
 
 conservative = january[DGG.Cells(DGG.Covering(europe))]
 barycentric = pointwise[DGG.Cells(DGG.Covering(europe))]
@@ -139,13 +143,10 @@ plt = dggpoly!(ax, conservative; color = conservative .- barycentric,
 Colorbar(fig[1, 5], plt; label = "Conservative() − BarycentricPoint() (mm)")
 fig
 
-# What is left sits on the coastlines: an area mean weights the land fraction
-# under a cell, and a point sample reads the source centres around the cell's
-# centre.
-#
-# `BarycentricPoint()` also blanks a destination cell whose centre lies outside
-# every triangle of source centres, which along a coastline costs a handful of
-# cells:
+# Coastal cells are particularly sensitive to the method: area averaging uses
+# overlap weights, while point interpolation uses surrounding sample sites.
+# Missing source values can therefore affect different destination cells.
+# Compare how many cells each method leaves missing:
 
 count(isnan, pointwise) - count(isnan, january)
 
@@ -154,18 +155,18 @@ count(isnan, pointwise) - count(isnan, january)
 # `plan_regrid` builds the weights for the pair of grids once. Every field that
 # crosses the same pair — the twelve months here — reuses them:
 
-plan = DGG.plan_regrid(onhealpix; to = igeo7, from = healpix)
+plan = DGG.plan_regrid(soilonhealpix; to = igeo7, from = healpix)
 
-# `regrid!` writes the result into a buffer you own, and a blanked cell takes
-# the buffer's `missingval`:
+# Reuse the output buffer while computing a monthly mean. Each call replaces
+# the previous month's values:
 
-dest = DGG.regrid(onhealpix[Ti = 1], plan)
+dest = DGG.regrid(soilonhealpix[Ti = 1], plan)
 seasonal = map(1:12) do m
-    DGG.regrid!(dest, onhealpix[Ti = m], plan)
+    DGG.regrid!(dest, soilonhealpix[Ti = m], plan)
     mean(skipmissing(dest))
 end
 
-# Twelve applies of one plan:
+# Plot the monthly cell means to see the seasonal cycle:
 
 fig = Figure(size = (600, 340))
 ax = Axis(fig[1, 1]; xticks = 1:12, xlabel = "month",
@@ -173,20 +174,14 @@ ax = Axis(fig[1, 1]; xticks = 1:12, xlabel = "month",
 scatterlines!(ax, 1:12, seasonal)
 fig
 
-# ## What `to` and `from` accept
+# ## Let the destination match the source resolution
 #
-# | spelling | names |
-# |---|---|
-# | a grid | itself |
-# | a `Cells` lookup, a `CellVector`, a `MultiOrderCellSet` | the partial grid of their cells |
-# | a bare system, as `to` | the level whose cells come closest to the source's in size |
-# | a raster, or a tuple of dimensions | its lon/lat lattice |
-#
-# Any of those sits on either end, so a move between two subsets of two
-# different systems is the same call. The bare-system spelling picks IGeo7
-# level 5 here, to match HEALPix level 7:
+# Pass a system as `to` to choose the destination level automatically. Here it
+# selects the IGeo7 level closest in cell size to HEALPix level 7:
 
-DGG.regrid(onhealpix[Ti = 1]; to = DGG.IGeo7System(), from = healpix)
+DGG.regrid(soilonhealpix[Ti = 1]; to = DGG.IGeo7System(), from = healpix)
 
-# [Choosing a regridding method](../api/regridding-methods.md) compares the
-# methods side by side.
+# For a regional destination, pass a cell collection or coverage as `to`;
+# [Multi-order coverage](multiorder.md) shows that workflow.
+# [Choosing a regridding method](../api/regridding-methods.md) provides the
+# method and missing-data reference.

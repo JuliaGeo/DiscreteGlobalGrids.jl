@@ -92,7 +92,8 @@ DGG.halo(region; cells = true)                    # ids rather than indices
 
 Swapping `HEALPixSystem()` for `IGeo7System()`, `H3System()`, `A5System()`,
 `S2System()` or `ISEA4RSystem()` changes nothing else, and `AuthalicSystem`
-wraps any of them to read geometry at geodetic latitude. `DGG.systems()` lists
+wraps any of them — except A5, whose geometry is geodetic already — to read
+geometry at geodetic latitude. `DGG.systems()` lists
 all six, and its docstring is the comparison table: cell counts, cell shape,
 equal-areaness, and the traits that differ across them.
 
@@ -167,8 +168,6 @@ conservative by default. A grid, a `CellVector`, a `CellLookup`, a
 `MultiOrderCellSet` or a bare system is a destination as it stands:
 
 ```julia
-import GlobalRegridding as GR
-
 grid = DGG.levelgrid(DGG.HEALPixSystem(), 6)
 temps = DD.DimArray(rand(360, 180), (DD.X(-179.5:179.5), DD.Y(-89.5:89.5)))
 
@@ -178,8 +177,8 @@ auto = DGG.regrid(temps; to = DGG.HEALPixSystem())  # level matched by cell area
 
 # The other direction. `from` is required whenever the source is not a lon/lat
 # raster: a grid, a `CellVector` or a `CellLookup` is a source as it stands, and
-# `RasterGrid` is the lon/lat destination.
-back = DGG.regrid(tavg; to = GR.RasterGrid(DD.dims(temps)), from = grid)
+# a raster or a dimension tuple names the lon/lat destination.
+back = DGG.regrid(tavg; to = temps, from = grid)
 
 plan = DGG.plan_regrid(temps; to = grid)            # the operator alone, reusable
 DGG.regrid(temps, plan)                             # ... applied, no keywords left
@@ -188,10 +187,10 @@ DGG.regrid(temps, plan)                             # ... applied, no keywords l
 Weights are geometry: building the plan is the expensive half and reads no data,
 and a plan carries the method, both spaces and the missing policy, so applying
 one takes no keyword arguments. `missingpolicy` says what a partly covered
-destination cell holds — `GR.Weighted(t)` the coverage-normalised mean, blanking
-cells covered less than `t`, `GR.Extensive()` the raw conservative sum. The
-destination's cells replace the source's spatial dimensions and every other
-dimension passes through. Each space carries the manifold it computes on — the
+destination cell holds — `DGG.Weighted(t)` the coverage-normalised mean,
+blanking cells covered less than `t`, `DGG.Extensive()` the raw conservative
+sum. The destination's cells replace the source's spatial dimensions and every
+other dimension passes through. Each space carries the manifold it computes on — the
 unit sphere, everywhere here — and a pair that disagrees is an error rather than
 a silent rescaling by `R^2`.
 

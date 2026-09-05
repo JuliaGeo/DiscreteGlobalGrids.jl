@@ -1,6 +1,13 @@
 # `cell_boundary_cartesian` uses A5's internal Cartesian frame. The public
 # geometry methods use geographic longitude and geodetic latitude.
 
+# The projection itself is the authalic one: `A5Native._from_lonlat` converts
+# geodetic latitude to authalic before projecting, and `_to_lonlat` converts
+# back. That conversion is already inside every method here, so the geometry
+# below is geodetic and `AuthalicSystem` must refuse it rather than convert a
+# second time.
+DGG.Fallbacks.publishes_geodetic_geometry(::A5System) = true
+
 # Convert geographic longitude and latitude in degrees to a unit vector.
 function _unit_point(lon::Real, lat::Real)
     λ = deg2rad(Float64(lon))

@@ -15,12 +15,19 @@ DocMeta.setdocmeta!(DiscreteGlobalGrids, :DocTestSetup,
                     :(using DiscreteGlobalGrids); recursive = true)
 
 # Generate Markdown beside each Literate source without executing its examples.
-for f in ("stencils", "zonal", "regridding", "multiorder", "hydrology",
-          "healpix_astronomy", "store_io")
+for f in ("choosing_a_grid", "regridding", "stencils", "zonal", "multiorder",
+          "between_grids", "hydrology", "store_io", "out_of_core",
+          "healpix_astronomy")
     Literate.markdown(joinpath(@__DIR__, "src", "tutorials", f * ".jl"),
                       joinpath(@__DIR__, "src", "tutorials");
                       flavor = Literate.DocumenterFlavor(), execute = false)
 end
+
+# The regridding verbs and the DE9IM predicates are re-exported, so their
+# docstrings belong to those packages; `GlobalRegridding` is not a direct
+# dependency of this environment, so reach it through a name it owns.
+const GlobalRegridding = parentmodule(DiscreteGlobalGrids.regrid)
+const Trees = DiscreteGlobalGrids.Trees
 
 makedocs(;
     # Register `Fallbacks` and `Engine` so Documenter can render their boundary
@@ -30,10 +37,17 @@ makedocs(;
     modules = [DiscreteGlobalGrids, DiscreteGlobalGrids.Fallbacks,
                DiscreteGlobalGrids.Engine,
                DiscreteGlobalGrids.Encodings, DiscreteGlobalGrids.ChunkedLookups,
+               # Same reason, for the grid-interface and selection pages:
+               # `CellLookups` owns the DimensionalData layer and `Helpers` the
+               # authalic transform.
+               DiscreteGlobalGrids.CellLookups, DiscreteGlobalGrids.Helpers,
                # Documenter filters docstrings by module, so the Zarr
                # extension's dggread/dggwrite methods render only if it is
                # listed here.
-               Base.get_extension(DiscreteGlobalGrids, :DiscreteGlobalGridsZarrExt)],
+               Base.get_extension(DiscreteGlobalGrids, :DiscreteGlobalGridsZarrExt),
+               # Re-exported names whose docstrings this site renders:
+               # `Intersects` and friends, `Weighted`, `ncells`/`treeify`.
+               DiscreteGlobalGrids.DE9IM, GlobalRegridding, Trees],
     authors = "Anshul Singhvi and contributors",
     sitename = "DiscreteGlobalGrids.jl",
     repo = Documenter.Remotes.GitHub("JuliaGeo", "DiscreteGlobalGrids.jl"),
@@ -46,21 +60,31 @@ makedocs(;
         "Home" => "index.md",
         "DGGS gallery" => "all_dggs.md",
         "Tutorials" => [
-            "Stencil operations" => "tutorials/stencils.md",
+            "Choosing a grid" => "tutorials/choosing_a_grid.md",
+            "Regridding: getting data onto a grid" => "tutorials/regridding.md",
+            "Moving between DGGS" => "tutorials/between_grids.md",
             "Zonal statistics" => "tutorials/zonal.md",
-            "Regridding a time series" => "tutorials/regridding.md",
             "Multi-order coverage" => "tutorials/multiorder.md",
+            "Stencil operations" => "tutorials/stencils.md",
             "Hydrology: a DEM on an IGEO7 grid" => "tutorials/hydrology.md",
-            "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
             "A round trip through a DGGS store" => "tutorials/store_io.md",
+            "Out of core" => "tutorials/out_of_core.md",
+            "The sky in HEALPix" => "tutorials/healpix_astronomy.md",
         ],
+        "Writing a grid system" => "extending.md",
         "API" => [
+            "The grid interface" => "api/grid-interface.md",
+            "Selecting cells" => "api/selecting-cells.md",
             "Choosing a regridding method" => "api/regridding-methods.md",
             "Region boundaries" => "api/boundaries.md",
+            "Neighbours and stencils" => "api/neighbors.md",
             "Reading and writing DGGS stores" => "api/store-io.md",
             "Sweeping a cube along its chunk lines" => "api/chunk-sweep.md",
             "Requesting neighbour fields" => "api/neighbor-fields.md",
             "The ancestor-subzone layout" => "api/subzone-layout.md",
+        ],
+        "Internals" => [
+            "Boundary traversal engines" => "internals/boundary-engines.md",
         ],
     ],
     plugins = [DocumenterVitepress.BonitoPlugin()],

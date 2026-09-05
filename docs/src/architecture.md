@@ -5,8 +5,8 @@ demands of an implementor, and why it exists. It is written for someone who has 
 the source.
 
 A discrete global grid system tessellates the sphere into cells, usually recursively, so
-that every cell has an identifier and a geometry. The package implements seven of them and
-makes them answerable through one set of verbs, without giving up the closed-form
+that every cell has an identifier and a geometry. The package implements several of them and
+makes them answerable through one set of verbs while preserving the closed-form
 arithmetic each one has of its own.
 
 ## Grids and systems
@@ -18,7 +18,7 @@ An `AbstractGrid` is a finite, concrete collection of cells. It has a length, an
 tessellating the sphere, with analytic parent and child structure. It is not a collection
 and has no length.
 
-The split is what lets the package accept grids that no hierarchy produced — a tripolar
+This split lets the package accept grids that no hierarchy produced — a tripolar
 ocean grid, a cubed sphere, anything whose neighbours must be derived geometrically. Such a
 grid supplies four methods and gets tree building, point location, adjacency, and geometry
 from generic fallbacks. A grid that *is* backed by a system keeps those fallbacks as a
@@ -31,19 +31,18 @@ primitives described below.
 
 ## Level grids
 
-No shipped system defines a grid type of its own. `levelgrid(sys, l)` returns a
+No shipped system defines a grid type of its own. [`levelgrid`](@ref) returns a
 `HierarchicalLevelGrid`, which holds nothing but the system and the level, and forwards the
 four grid primitives to five system-level ones: `ncells(sys, l)`, `cellindex(sys, l, i)`,
 `globalindex(sys, c)`, `cell_boundary(sys, c)`, and `cell_centroid(sys, c)`.
 
-There are five rather than four because a complete level needs a real `globalindex`. The
-generic grid version is a linear scan over every cell, which is fine for an exotic grid of a
-few thousand cells and useless for a level of a hierarchical system.
+The additional `globalindex` method gives a complete level an efficient id-to-position
+operation. Its generic grid version scans the cells, which is suitable for small or exotic
+grids; hierarchical systems usually provide a faster implementation.
 
 Everything beyond those four — `cellat`, `neighbors`, `ring`, `cell_area` — a system
-attaches to `HierarchicalLevelGrid{ItsOwnSystem}`. So the fast paths dispatch on the type
-parameter, grid construction stays free, and the package needs only three concrete grid
-types in total: the level grid, `PartialGrid`, and the authalic wrapper.
+attaches to `HierarchicalLevelGrid{ItsOwnSystem}`. Fast paths dispatch on the type parameter,
+while grid construction remains independent of the system's implementation.
 
 ## Cell indexing
 
@@ -58,9 +57,8 @@ own level. There is no wrapper type for indices — the two are separated by met
 signature alone.
 
 A cell index must be an immutable isbits struct with a total `Base.isless` giving canonical
-order, plus `level` and `rawid`. Equality and hashing are never defined for any of the five
-concrete index types; they come free from Julia's structural equality on isbits values,
-which is why immutability is load-bearing rather than stylistic.
+order, plus `level` and `rawid`. Equality and hashing come from Julia's structural equality
+on isbits values, so immutability is part of the contract.
 
 The single gate between the two worlds is internal: a cell of the wrong level, or of a
 scheme the system does not claim, resolves to `nothing` rather than throwing. That is what
@@ -81,9 +79,8 @@ border and interior walkers. All of it is bit arithmetic on the identifier. In p
 new member of this family needs six methods: the three declarations plus `levels`,
 `cell_boundary` and `cell_centroid`.
 
-This is the largest piece of reuse in the package. For comparison, IGeo7, H3 and A5 are not
-in the family and each writes its own identity and hierarchy layer, between twenty and
-thirty methods.
+This is the largest piece of reuse in the package. IGeo7, H3 and A5 are not in the family;
+each provides its own identity and hierarchy layer.
 
 There is no chart abstraction. The three chart files share a naming convention and two
 helper calls, but no abstract type and no shared interface. They are independent
@@ -97,8 +94,8 @@ are built on top. A grid without a system gets a geometric fallback that finds n
 matching shared vertices against a spatial tree.
 
 Adjacency is not one relation, so `Connectivity` is an explicit argument rather than a
-property of the grid. `Vertex()` and `Edge()` can differ sharply: A5 has up to eleven
-vertex-neighbours and five edge-neighbours.
+property of the grid. `Vertex()` and `Edge()` can differ sharply: a system may have many
+more corner-touching neighbours than edge-sharing neighbours.
 
 `Winding` declares whether a system's ring order is a rotation that can be carried outward
 to shells at distance two and beyond, or whether those shells must be re-sorted by measured
@@ -106,8 +103,7 @@ azimuth. Declaring a winding is a speed decision, not a correctness one — the 
 is always available and always correct.
 
 `maxneighbors` is an upper bound, not a count. Declaring one lets the neighbourhood machinery
-use a fixed-capacity stack container instead of a heap allocation, which is why it is worth
-declaring even where the bound is loose.
+use fixed-capacity storage and avoid a heap allocation when the bound is known.
 
 ## Regions
 
@@ -124,9 +120,9 @@ cells punched out of its middle. `border` and `interior` split what is inside. `
 tables every one-ring at once.
 
 The first three are lazy iterators, serial, and use memory proportional to tree depth rather
-than to the answer. `adjacency` is the opposite: materialised, threaded, and the only one
-that keeps its halo. It is a CSR table with three row shapes — out-of-region members
-dropped, marked in place with a zero, or addressed into a `[region; halo]` buffer. The two
+than to the answer. `adjacency` is materialised and threaded, and it is the one
+that keeps its halo. Its CSR rows support three layouts: out-of-region members can be dropped,
+marked in place with a zero, or addressed into a `[region; halo]` buffer. The two
 full-width shapes preserve slot index against the canonical ring, so a slot number is a
 direction; the clipped shape preserves order only.
 
@@ -149,7 +145,7 @@ A complete level is a single run. A subtree of a system with sorted subtrees is 
 single run, computed without touching a cell. Set operations walk intervals rather than
 cells. Indexing is a binary search over runs and allocates nothing.
 
-`ChunkedCellVector` is the stored one — see *Store IO*. `region` is the verb that turns any
+`ChunkedCellVector` is the stored one — see [Store IO](tutorials/store_io.md). `region` is the verb that turns any
 cell vector into the compressed one; it is the identity on `CellVector` and a memoised
 conversion on the stored twin, so the region machinery has exactly one implementation of
 each walk.
@@ -169,9 +165,8 @@ it stores sort keys instead of indices. And it deliberately has no `halo`, `bord
 them at; `member_neighbors` is the cross-level substitute.
 
 It also carries a per-cell flag recording whether containment was *proven* or merely not
-asked. The flag is asymmetric on purpose: the exact containment test costs roughly eighty
-times what an intersection test costs, so the traversal skips it wherever the answer would
-not change the result.
+asked. The flag is asymmetric because exact containment is more expensive than intersection;
+the traversal skips it wherever the answer would not change the result.
 
 ## The cube layer
 
@@ -191,15 +186,14 @@ indices covering it.
 
 ## Store IO
 
-Reading someone else's DGGS store is three stacked problems, and there is one abstraction
-for each.
+Reading a DGGS store involves three concerns, each represented by an abstraction.
 
 `CellEncoding` describes how cell identifiers are laid out on disk — densely, as ranges, or
 implicitly — together with the rank and select arithmetic needed to resolve a selector
 without scanning the identifier array.
 
 `DGGSConvention` describes how to recognise and interpret a particular community's metadata.
-Four ship. Detection runs every convention rather than stopping at the first match, sorts
+Detection runs every registered convention, sorts
 what they return so an explicit declaration beats a fingerprint, and merges the results
 field by field. Two conventions disagreeing about the same field is an error rather than a
 silent precedence choice.
@@ -217,12 +211,11 @@ order that touches each chunk once, and the result is kept.
 
 ## Following the chunk lines
 
-A cell-at-a-time pass over a lazy cube decodes one storage chunk per scalar read, so a ring
-that straddles a chunk boundary decodes its neighbour's chunk, drops it, and decodes it
-again for the next cell. The traversal that fixes this follows the chunk grid the store
-already has, and it is spelled as a plan and a runner rather than as one opaque call.
+A cell-at-a-time pass over a lazy cube can decode the same storage chunk repeatedly when a
+ring crosses chunk boundaries. The chunk traversal follows the store's existing chunk grid
+and exposes the work as a plan and a runner.
 
-`chunkplan` returns a `MapChunkPlan`: per chunk, the axis indices it owns and the axis
+[`chunkplan`](@ref) returns a `MapChunkPlan`: per chunk, the axis indices it owns and the axis
 indices outside it that its cells' rings reach. Boundaries come from the data's own chunk
 grid, so an irregularly chunked store — one chunk per ancestor subtree, say — is planned on
 its real boundaries. Building a plan walks each chunk's boundary through `halo`, which is
@@ -266,7 +259,7 @@ singleton tag: `Conservative`, `NearestCell` or `BilinearPoint`; `Weighted` or `
 
 ## Conformance testing
 
-The abstractions above are prose. The executable form is
+The executable form of these contracts is
 `lib/DiscreteGlobalGridsConformanceTesting`, whose two entry points assert the laws a grid
 and a system must satisfy: index round-trips, boundary rings that are closed implicitly and
 wound counter-clockwise seen from outside, centroids strictly inside their own cells,

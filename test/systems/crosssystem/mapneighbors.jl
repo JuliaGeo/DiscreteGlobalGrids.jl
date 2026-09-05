@@ -280,6 +280,26 @@ end
     res = collect(neighbors(cube))
     @test length(res) == n
     @test cellid(res[1][1]) == cv[1]
+
+    # The positional `dims` form names the cell dimension the way
+    # `DimensionalData.dims(A, dims)` reads it, and agrees with discovery.
+    for dims in (Cells, :Cells, (Cells,))
+        @test collect(neighbors(cube, dims)) == res
+        @test parent(mapneighbors(metric, cube, dims; pass = Values(),
+            threaded = false)) == parent(coutV)
+        @test adjacency(cube, dims) == adjacency(cv)
+    end
+    @test adjacency(cube) == adjacency(cv)
+    @test adjacency(A) == adjacency(cv)
+    @test adjacency(cube; threaded = false) == adjacency(cv)
+    acc = Ref(0)
+    foreachneighbors((c, nbrs) -> (acc[] += length(nbrs)), cube, Cells)
+    @test acc[] == accH[]
+    @test_throws "no dimension matching" neighbors(cube, DD.Ti)
+    @test_throws "not a cell lookup" adjacency(cube, :time)
+    @test_throws "one dimension" neighbors(cube, (Cells, :time))
+    @test_throws "carries a cell lookup" adjacency(
+        DD.DimArray(collect(1.0:4), (DD.X(1:4),)))
 end
 
 end # module MapNeighborsTests

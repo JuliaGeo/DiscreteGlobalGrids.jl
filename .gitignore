@@ -36,3 +36,6 @@ docs/src/tutorials/*.md
 
 # AI slop
 .claude/worktrees
+
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/

@@ -479,8 +479,8 @@ Return the [`MultiOrderCellSet`](@ref) or grid used to build the collection.
 A collection *derived* from another one, by indexing or by [`covering`](@ref),
 has no such origin and reports the [`PartialGrid`](@ref) describing it instead.
 
-For [`CellLookup`](@ref), `Base.parent` returns the logical values as a
-[`CellVector`](@ref).
+For [`CellLookup`](@ref DiscreteGlobalGrids.CellLookups.CellLookup),
+`Base.parent` returns the logical values as a [`CellVector`](@ref).
 """
 cellset(cv::CellVector) = _origin(cv, cv.backing)
 
@@ -595,7 +595,8 @@ data[covering_indices(cv, watershed)]    # the same selection as indices
 
 [`covering_indices`](@ref) is the index-space form, for indexing a data
 array laid out against `cv`. This is what the `DimensionalData` selector
-[`Covering`](@ref) is spelled as outside `DimensionalData`.
+[`Covering`](@ref DiscreteGlobalGrids.CellLookups.Covering) is spelled as
+outside `DimensionalData`.
 
 Selection visits each leaf named by the coverage, even though the result is
 stored compactly. Select at the level being read to avoid unnecessary expansion.
@@ -615,13 +616,36 @@ indexing a data array laid out against `cv` without building the sub-vector.
 
 `covering(cv, target)` and `cv[covering_indices(cv, target)]` name the same
 cells; this form is the one a cube's `getindex` needs, and is what the
-[`Covering`](@ref) selector resolves to.
+[`Covering`](@ref DiscreteGlobalGrids.CellLookups.Covering) selector resolves
+to.
 """
 function covering_indices(cv::CellVector, target)
     out = Int[]
     w = cv.windows
     _each_leaf_index(cv, target) do p
         k = windowindex(w, p)
+        k === nothing || push!(out, k)
+    end
+    return issorted(out) ? out : sort!(out)
+end
+
+"""
+    predicate_indices(cv::CellVector, pred::DE9IMPredicate) -> Vector{Int}
+
+The indices in `cv` of the cells that satisfy `pred` at `cv`'s level, ascending
+— `query(system(cv), pred; level = level(cv))` intersected with `cv`, answered
+in index space so a data array laid out against `cv` can be indexed by it.
+
+`pred` is any predicate [`query`](@ref) implements, over any target it accepts;
+`cv[predicate_indices(cv, Within(cap))]` names the cells of `cv` lying wholly
+inside `cap`. This is what a predicate used as a [`Cells`](@ref) selector
+resolves to. Unlike [`covering_indices`](@ref), the answer is exact: it
+inherits no over-covering from a coverage.
+"""
+function predicate_indices(cv::CellVector, pred::DE9IM.DE9IMPredicate)
+    out = Int[]
+    for c in query(cv.grid, pred)
+        k = localindex(cv, c)
         k === nothing || push!(out, k)
     end
     return issorted(out) ? out : sort!(out)

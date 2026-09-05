@@ -11,9 +11,9 @@ with longitude spacing reduced at latitude bands 50/60/70/80/85.
 Level 0 is a global lattice of 1°x1° tiles; level 1 is pixels in north-to-south,
 west-to-east raster order. `levelgrid` returns a [`HierarchicalLevelGrid`](@ref).
 
-!!! note "Do not wrap in `AuthalicSystem`"
-    Coordinates are geodetic WGS84-G1150 (EPSG:4326). [`AuthalicSystem`](@ref)
-    would reinterpret and warp them.
+!!! note "Cannot be wrapped in `AuthalicSystem`"
+    Coordinates are geodetic WGS84-G1150 (EPSG:4326), so [`AuthalicSystem`](@ref)
+    would reinterpret and warp them. It refuses this system for that reason.
 
 !!! note "DGED, not DTED"
     This implements the AWS DGED profile. It does not implement the DTED

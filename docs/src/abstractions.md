@@ -1,32 +1,28 @@
-# Abstractions
+# Grids and cell indices
 
-This file attempts to go through most of the abstractions in this package, and explain what they are and why they are needed.
+DiscreteGlobalGrids separates a grid's geometry from the values stored on it.
+These concepts also apply to regional grids and grids without a hierarchy.
 
 ## Grids and systems
 
-The idea is to separate the concept of a "grid", a collection of cells, from a "grid system", describing a way to tessellate the sphere.
-For example, a grid of H3 at level 12 is a grid; H3 is itself a grid system.
+A **grid** is a finite collection of cells. An H3 grid at level 12 is a grid;
+so is a selected region of that level. Geometry, point queries and
+neighbourhood operations act on grids.
 
-But a grid need not be backed by a hierarchical system.  Consider the tripolar grid of ocean simulation, or a cubed sphere grid, or other
-similarly exotic grids.  These are innately non hierarchical, and some of them might even require neighbors to be derived geometrically.
+A **system** defines related grids at several levels, including their parent
+and child relationships. `levelgrid(sys, level)` selects one complete level.
+A grid can also supply its geometry directly, as an ocean-model grid might.
 
-In DiscreteGlobalGrids, we want to support any case you can throw at us, _and_ have it be performant.  But when you have information about e.g.
-hierarchy, to derive a tree from, then we need to hook into that too.
+The [grid interface](api/grid-interface.md) documents both abstractions.
+[Writing a grid system](extending.md) implements a complete example, and the
+[architecture guide](architecture.md) describes the generic algorithms.
 
-Therefore we have these two abstractions.  This also allows partial grids to take advantage of accelerations - they are not full systems, nor fully
-instantiated levels of a system, but still backed by some system (if they are).
+## Cell ids and array positions
 
-### AbstractGrid interface
+A **cell id** identifies a cell independently of the array that stores its
+value. A **local index** identifies a position in one collection. Selecting
+a region changes local positions while preserving cell ids.
 
-### AbstractHierarchicalGridSystem interface
-
-## Cell indexing
-
-Many DGGSes define their own indexing schemes.  Some may not even have an indexing scheme at all.
-And in some cases, computing the cell index or going from a local index in the array to the cell index may be expensive.
-
-There's a difference between "cell index" (the semantic identity) and "local index" (an index into an array).  Some systems may even
-have multiple - see HEALPix with its nested, ring, morton and zuniq orderings.
-
-We made the choice that a local index in the array is always a supported way to address
-a cell.  
+A `Cells` dimension connects those identities to array values. Use it to
+[select data by point or region](api/selecting-cells.md), while ordinary
+integer indexing selects positions in the current array.

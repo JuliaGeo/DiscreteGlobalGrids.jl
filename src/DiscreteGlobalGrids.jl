@@ -136,10 +136,10 @@ using .Fallbacks: HierarchicalLevelGrid, AuthalicGrid, AuthalicSystem,
     EdgeCellIterator, InnerCellIterator
 
 using .Engine: PartialGrid,
-    HierarchicalGridCursor, TiledRasterCursor,
+    HierarchicalGridCursor, TiledRasterCursor, node_cell,
     MultiOrderCoverage, MultiOrderCellSet, level_ranges,
     iscontained, coarsest_contained, cell_polygons,
-    CellVector, cellset, covering, covering_indices,
+    CellVector, cellset, covering, covering_indices, predicate_indices,
     grow, expand, compact, member_neighbors,
     SubtreeHaloIterator, SubsetHaloIterator, HaloIndexIterator, RegionSide,
     halo_indices, sizehint,
@@ -387,7 +387,7 @@ export ncells, cellindex, cell_boundary, cell_centroid
 export localindex, globalindex
 # `cellposition` stays exported for the deprecation shim in `deprecated.jl`.
 export cellposition, rawid, reindex, cellindextypes
-export cell_polygon, cell_area, cell_extent, getcell
+export cell_area, cell_extent, getcell
 export cellat, neighbors, ring, neighborcount
 export treeify, query
 export system, level
@@ -436,6 +436,8 @@ public sizehint
 public halo_indices
 public SubsetIndexedCell
 public HierarchicalGridCursor
+# The cell a cursor node stands for; `nothing` at the synthetic root.
+public node_cell
 public TiledRasterCursor
 # A traversal order, not a traversal.
 public StorageOrder

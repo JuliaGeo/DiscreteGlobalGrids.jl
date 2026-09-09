@@ -18,6 +18,9 @@ containing cell. Pass the method with `regrid(...; method = ...)`.
 `Conservative()` is the default. Its weights describe area overlaps;
 `missingpolicy` controls how those weights apply when coverage is incomplete.
 
+For distributing a chunked regridding run across workers, see
+[assigning chunks to workers](partitioning.md#partition-a-regridding-run).
+
 ## Area means
 
 Use `Conservative()` for values that represent cell averages, such as model

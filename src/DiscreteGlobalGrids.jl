@@ -223,6 +223,8 @@ include("chunks.jl")
 # Last: the regridding face reads the grids, the compressed collection, and the
 # cube axis alike.
 include("regridding.jl")
+include("partitioning.jl")
+include("partitioning_backends.jl")
 include("cap_cached_tree.jl")
 
 # Copernicus DEM answers point queries from its own row arithmetic. The methods
@@ -509,6 +511,12 @@ export Conservative, NearestCell, DirectNearest, BarycentricPoint
 export Weighted, Extensive
 export PerChunk, Spilled
 
+# --- Chunk partitioning ----------------------------------------------------
+export AbstractPartitioningAlgorithm, WeightedContiguous, MetisPartition, KaHyParPartition, ScotchPartition
+export PartitionProblem, ChunkPartition, PartitionBackendUnavailable
+export partitionproblem, partitionlabels, partition
+export npartitions, partindices, partchunks, partsources, partweights
+
 # --- Store IO --------------------------------------------------------------
 # `detect`, `decode`, `encode!` and `gridname` stay qualified: they are
 # extension points, and the names are too generic to export.
@@ -548,5 +556,15 @@ public CONVENTION_REGISTRY
 public DEFAULT_WRITE_CONVENTIONS
 public ENCODING_REGISTRY
 public GRID_REFERENCE
+
+function __init__()
+    Base.Experimental.register_error_hint(PartitionBackendUnavailable) do io, err
+        err.backend in (:Metis, :KaHyPar_jll, :Scotch) || return
+        backend = string(err.backend)
+        algorithm = nameof(typeof(err.algorithm))
+        print(io, "\nLoad `$backend` with `using $backend` to enable $algorithm. " *
+            "If it is not installed, run `import Pkg; Pkg.add(\"$backend\")`.")
+    end
+end
 
 end # module DiscreteGlobalGrids

@@ -80,6 +80,7 @@ makedocs(;
             "Neighbours and stencils" => "api/neighbors.md",
             "Reading and writing DGGS stores" => "api/store-io.md",
             "Sweeping a cube along its chunk lines" => "api/chunk-sweep.md",
+            "Assigning chunks to workers" => "api/partitioning.md",
             "Requesting neighbour fields" => "api/neighbor-fields.md",
             "The ancestor-subzone layout" => "api/subzone-layout.md",
         ],

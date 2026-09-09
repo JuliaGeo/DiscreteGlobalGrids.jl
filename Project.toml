@@ -35,6 +35,7 @@ MakieExt = ["Makie"]
 ConservativeRegridding = "0.2.10"
 DE9IM = "0.1"
 DiskArrays = "0.4"
+GeoInterface = "1"
 GeometryOps = "0.1.45"
 GeometryOpsCore = "0.1.12"
 Healpix = "4"

@@ -10,6 +10,10 @@ using DiscreteGlobalGrids
 # lib/. Each system suite imports that package and runs its two public suites
 # on its own system, alongside that system's own oracle vectors.
 @testset "DiscreteGlobalGrids.jl" begin
+    include("raster_selection.jl")
+    include("raster_geometry_regressions.jl")
+    include("rasterize.jl")
+    include("raster_extract_zonal.jl")
     include("partitioning/runtests.jl")
     include("partitioning/backends.jl")
     include("partitioning/distributed.jl")
@@ -58,4 +62,6 @@ using DiscreteGlobalGrids
     # an invariant, and an invariant is what a test is for.
     include("scripts/copdem_source_mode.jl")
     include("scripts/copdem_policy.jl")
+    include("raster_rasters_ext.jl")
+    include("raster_api_regressions.jl")
 end

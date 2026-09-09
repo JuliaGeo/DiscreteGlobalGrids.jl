@@ -1672,8 +1672,10 @@ state_size(it) = Base.summarysize(it)
     # -----------------------------------------------------------------------
 
     @testset "AuthalicSystem forwards the halo walk" begin
+        # `authalic = true` drops A5: it publishes geodetic geometry, so the
+        # wrapper refuses it rather than converting a second time.
         seen = Set{Symbol}()
-        for sys in systems()
+        for sys in forsystems(authalic = true)
             wrapped = DGG.AuthalicSystem(sys)
             grid0 = levelgrid(sys, 0)
             c = cellindex(grid0, 1)
@@ -1683,7 +1685,7 @@ state_size(it) = Base.summarysize(it)
                 @test collect(it) == collect(SubtreeHaloIterator(sys, c, l))
             end
         end
-        for sys in systems()
+        for sys in forsystems(authalic = true)
             wrapped = DGG.AuthalicSystem(sys)
             c = cellindex(levelgrid(sys, 0), 1)
             l = min(2, maxlevel(sys))
@@ -1723,8 +1725,12 @@ state_size(it) = Base.summarysize(it)
                       collect(SubtreeHaloIterator(sys, c, 1 + d; connectivity = conn))
             end
         end
-        @test seen == ALL_ENGINE_TAGS
-        for sys in systems()
+        # `ScanHaloEngine` is chosen only when `has_sorted_subtrees` is false,
+        # and the systems in that state may all be geodetic already — A5 is, and
+        # is the only one today — in which case nothing wrapped can reach it.
+        @test seen == (any(!hassortedsubtrees, forsystems(authalic = true)) ?
+                       ALL_ENGINE_TAGS : setdiff(ALL_ENGINE_TAGS, [:ScanHaloEngine]))
+        for sys in forsystems(authalic = true)
             wrapped = DGG.AuthalicSystem(sys)
             l = min(2, maxlevel(sys))
             c = cellindex(levelgrid(sys, 0), 1)

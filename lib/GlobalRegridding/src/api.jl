@@ -53,8 +53,10 @@ it and `NaN` otherwise.
 
 # Keyword arguments
 
-  - `to`: destination [`RegridSpace`](@ref) or a package-specific target.
-  - `from`: source space; `nothing` derives a [`RasterGrid`](@ref) from `data`.
+  - `to`: destination [`RegridSpace`](@ref), a dimensional raster or tuple of
+    dimensions naming a [`RasterGrid`](@ref), or a package-specific target.
+  - `from`: source space, spelled any of those ways; `nothing` derives a
+    [`RasterGrid`](@ref) from `data`.
   - `method`: weight-building method; defaults to [`Conservative`](@ref).
   - `missingpolicy`: [`Weighted`](@ref) means or [`Extensive`](@ref) sums.
   - `missingval`: the nodata sentinel of the regrid — invalid in the source, and
@@ -286,18 +288,9 @@ wholeblock(method::AbstractRegriddingMethod, dst_space::RegridSpace,
         src_space, 1:Int(ncells(src_space)))
 
 # Only dimensional arrays carry enough geometry to infer a source space.
-# A dimension that already names cells ([`dimsource`](@ref)) is not a raster
-# axis, so name it rather than ask for the raster axis it does not have.
 function _sourcespace(data::DD.AbstractDimArray)
-    for d in DD.dims(data)
-        named = dimsource(DD.lookup(d))
-        named === nothing && continue
-        throw(ArgumentError("""
-        no `from` was given, so the source space was derived from the data, but \
-        its $(DD.name(d)) dimension names cells rather than a raster lattice. \
-        Pass `from = $(named)`.
-        """))
-    end
+    _checkrasterdims(DD.dims(data), "from",
+        "no `from` was given, so the source space was derived from the data")
     return RasterGrid(data)
 end
 
@@ -305,10 +298,41 @@ _sourcespace(data) = throw(ArgumentError(
     "a $(typeof(data)) carries no coordinates, so no source space can be " *
     "derived from it; pass `from = ` a RegridSpace."))
 
+# A dimension that already names cells ([`dimsource`](@ref)) is not a raster
+# axis, so name the source it holds rather than ask for the raster axis it does
+# not have. Every route that reads a lattice off dimensions comes through here:
+# `context` says which route it was, and `name` is the keyword whose spelling
+# the caller has to change.
+function _checkrasterdims(ds, name::AbstractString, context::AbstractString)
+    for d in ds
+        named = dimsource(DD.lookup(d))
+        named === nothing && continue
+        throw(ArgumentError("""
+        $context, but its $(DD.name(d)) dimension names cells rather than a \
+        raster lattice. Pass `$name = $(named)`.
+        """))
+    end
+    return nothing
+end
+
+# A dimensional raster, or the bare dimensions of one, stands for the lattice it
+# carries. Either side of a regrid may be spelled that way, so putting a result
+# back on the axes it came from needs no `RasterGrid` written out by hand.
+function _asspace(A::DD.AbstractDimArray, name::AbstractString)
+    _checkrasterdims(DD.dims(A), name, "`$name` was given a dimensional raster")
+    return RasterGrid(A)
+end
+
+function _asspace(ds::Tuple{Vararg{DD.Dimension}}, name::AbstractString)
+    _checkrasterdims(ds, name, "`$name` was given a dimension tuple")
+    return RasterGrid(ds)
+end
+
 function _asspace(space, name)
     space isa RegridSpace || throw(ArgumentError(
-        "`$name` must be a RegridSpace, got $(typeof(space)). A package that " *
-        "supplies spaces resolves its own target spellings into one."))
+        "`$name` must be a RegridSpace, a dimensional raster or a tuple of " *
+        "dimensions, got $(typeof(space)). A package that supplies spaces " *
+        "resolves its own target spellings into one."))
     return space
 end
 

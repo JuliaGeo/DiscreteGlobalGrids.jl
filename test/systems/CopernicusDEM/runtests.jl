@@ -12,6 +12,7 @@ using Random
 
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
+using DiscreteGlobalGrids: cell_polygon
 const CD = DiscreteGlobalGrids.CopernicusDEM
 # Sections (k2b) and (k3) read the extent tables the cursors share.
 const Engine = DiscreteGlobalGrids.Engine

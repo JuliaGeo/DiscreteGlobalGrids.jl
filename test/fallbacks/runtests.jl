@@ -24,6 +24,8 @@ module TestFallbacks
 using Test
 using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
+# Internal since the export was dropped; the fallback is what this file tests.
+using DiscreteGlobalGrids: cell_polygon
 const FB = DGG.Fallbacks
 const EN = DGG.Engine
 import GeometryOps as GO

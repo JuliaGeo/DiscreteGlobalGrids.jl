@@ -11,7 +11,12 @@
 #      necessity of the inflation is shown separately: against the TIGHTEST
 #      sound base cap the warp really does push descendants out, so a wrapper
 #      that forwarded `node_extent` would under-cover.
-#   4. REGISTRATION. A wrapped grid regridded
+#   4. FRAME. The wrapper reads its base grid as authalic, so a system that
+#      publishes geodetic latitude itself must be refused rather than converted
+#      twice. Which frame a system is in is measured, not asserted: an
+#      equal-area DGGS has equal-area cells on the sphere it tessellates, so the
+#      warp that flattens its area spread names its frame.
+#   5. REGISTRATION. A wrapped grid regridded
 #      against a geodetic lon/lat grid lands where the data says it does, and an
 #      unwrapped one misses by the authalic shift.
 #
@@ -25,6 +30,7 @@ using DiscreteGlobalGrids
 import DiscreteGlobalGrids as DGG
 const FB = DGG.Fallbacks
 const H = DGG.Helpers
+import GeoInterface as GI
 import GeometryOps as GO
 import GeometryOpsCore as GOCore
 import ConservativeRegridding as CR
@@ -219,6 +225,71 @@ end
     # An unnamed frame is refused where it always is.
     @test_throws ArgumentError AuthalicGrid(levelgrid(BASE, 2), GO.Planar())
     @test_throws ArgumentError AuthalicSystem(BASE, GO.AutoManifold())
+end
+
+# ===========================================================================
+# 2b. The frame the base grid is in
+# ===========================================================================
+
+# The unit-sphere area of a boundary ring, after `warp` moves every vertex.
+ringarea(ring, warp) = Float64(GO.area(GO.Spherical(; radius=1.0),
+    GI.Polygon([GI.LinearRing(FB.closed_ring(map(warp, ring)))])))
+
+# Peak-to-peak cell area, relative to the mean, over a spread of cells. An
+# equal-area DGGS reads as equal-area exactly in the frame it tessellates.
+function areaspread(grid, warp)
+    a = [ringarea(cell_boundary(grid, c), warp) for c in spread(grid, 200)]
+    return (maximum(a) - minimum(a)) / (sum(a) / length(a))
+end
+
+to_geodetic(p) = FB.geodetic_point(WGS84, p)   # the warp the wrapper applies
+to_authalic(p) = FB.authalic_point(WGS84, p)
+
+@testset "a system that is geodetic already is refused" begin
+    a5 = A5System()
+
+    # The claim, measured. A5's projection converts geodetic latitude to
+    # authalic itself, so its published geometry is geodetic: undoing that
+    # conversion is what flattens its area spread, and the wrapper's warp —
+    # the same conversion a second time — nearly doubles it.
+    g5 = levelgrid(a5, 5)
+    plain5 = areaspread(g5, identity)
+    @test areaspread(g5, to_authalic) < plain5 / 2
+    @test areaspread(g5, to_geodetic) > 1.5 * plain5
+
+    # HEALPix is the contrast: it is equal-area on the sphere it tessellates,
+    # which is therefore the authalic one, so no warp of its geometry can
+    # flatten the spread further — either direction costs equal-areaness, which
+    # is what the wrapper knowingly trades for correct registration.
+    gh = levelgrid(BASE, 3)
+    plainh = areaspread(gh, identity)
+    @test areaspread(gh, to_geodetic) > 4 * plainh
+    @test areaspread(gh, to_authalic) > 4 * plainh
+
+    @test FB.publishes_geodetic_geometry(a5)
+    @test FB.publishes_geodetic_geometry(levelgrid(a5, 3))
+    @test !FB.publishes_geodetic_geometry(BASE)
+    @test !FB.publishes_geodetic_geometry(levelgrid(BASE, 3))
+    # Both wrappers publish the geodetic frame by construction.
+    @test FB.publishes_geodetic_geometry(SYS)
+    @test FB.publishes_geodetic_geometry(levelgrid(SYS, 3))
+
+    @test_throws ArgumentError AuthalicSystem(a5)
+    @test_throws ArgumentError AuthalicGrid(levelgrid(a5, 3))
+    @test_throws ArgumentError AuthalicGrid(levelgrid(a5, 3), GO.Geodesic())
+    msg = sprint(showerror, try
+        AuthalicSystem(a5)
+    catch err
+        err
+    end)
+    @test occursin("A5System()", msg)
+    @test occursin("geodetic latitude already", msg)
+
+    # Copernicus DEM's coordinates are EPSG:4326; its docstring says not to wrap
+    # it, and the wrapper is what enforces that.
+    copdem = DGG.CopernicusDEM.CopernicusDEMSystem(30)
+    @test FB.publishes_geodetic_geometry(copdem)
+    @test_throws ArgumentError AuthalicSystem(copdem)
 end
 
 # ===========================================================================

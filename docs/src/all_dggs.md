@@ -1,8 +1,8 @@
 # DGGS gallery
 
-The six systems `systems()` returns, drawn the same way: `levelgrid(sys, level)`
-goes straight into `Makie.poly!`. The levels differ per panel only because
-apertures differ — each is chosen so the cells stay visible at figure size.
+Compare the cell shapes and global arrangement of the six systems below.
+Each panel uses a level that keeps individual cells visible. To compare
+resolutions numerically, use cell size in metres.
 
 ```@raw html
 <style>
@@ -16,63 +16,67 @@ apertures differ — each is chosen so the cells stay visible at figure size.
 ```@example all-dggs
 import DiscreteGlobalGrids as DGG
 using GeoMakie
-using WGLMakie   # tutorials use GLMakie; this page activates the web backend
-using Bonito
-import Makie
+using WGLMakie
+using DiscreteGlobalGridsVisualization
 
 WGLMakie.activate!()
 
-figure = Makie.Figure(size = (1200, 850), figure_padding = 4)
-for (k, (sys, level)) in enumerate([
-        DGG.IGeo7System() => 2, DGG.H3System() => 1, DGG.HEALPixSystem() => 3,
-        DGG.A5System() => 3, DGG.S2System() => 3, DGG.ISEA4RSystem() => 3,
-    ])
+panels = [
+    DGG.IGeo7System() => 2, DGG.H3System() => 1, DGG.HEALPixSystem() => 3,
+    DGG.A5System() => 3, DGG.S2System() => 3, DGG.ISEA4RSystem() => 3,
+]
+
+figure = Figure(size = (1200, 850), figure_padding = 4)
+for (k, (sys, level)) in enumerate(panels)
     row, col = fldmod1(k, 3)
-    axis = GeoMakie.GlobeAxis(
+    axis = GlobeAxis(
         figure[row, col];
         source = "+proj=longlat +R=1",
         dest = GeoMakie.Geodesy.Ellipsoid(; a = "1", b = "1"),
         camera_altitude = 2.0,
     )
-    GeoMakie.meshimage!(axis, -180..180, -90..90, fill(colorant"white", 1, 1); zlevel = 0.0)
-    Makie.lines!(axis, GeoMakie.coastlines(); color = (:gray35, 0.55), linewidth = 0.8, zlevel = 0.005)
-    Makie.poly!(axis, DGG.levelgrid(sys, level);
-        color = :transparent, strokewidth = 0.9, strokecolor = :black, zlevel = 0.01)
-    Makie.Label(figure[row, col, Makie.Top()], "$(nameof(typeof(sys))), level $level"; font = :bold)
+    meshimage!(axis, -180 .. 180, -90 .. 90, fill("#f0faea", 1, 1);
+        zlevel = -0.05, npoints = 300)
+    dggpoly!(axis, DGG.levelgrid(sys, level);
+        color = "#dcf5d7", strokecolor = "#2c7a1e", strokewidth = 0.9)
+    lines!(axis, GeoMakie.coastlines(); color = ("#212529", 0.7), linewidth = 0.8,
+        zlevel = 0.002)
+    Label(figure[row, col, Top()], "$(nameof(typeof(sys))), level $level"; font = :bold)
 end
 figure
 ```
 
-  - **IGeo7** — hexagons with twelve pentagons, aperture 7, equal-area by
-    construction.
-  - **H3** — the same hexagon family on libh3's gnomonic faces, so not
+## What differs
+
+Each system refines its base cells differently, so equal level numbers can
+have very different cell counts and sizes:
+
+```@example all-dggs
+println(rpad("system", 10), lpad("levels", 8), lpad("cells at level 3", 18),
+        "   id type")
+for (sys, _) in panels
+    println(rpad(chopsuffix(String(nameof(typeof(sys))), "System"), 10),
+            lpad(string(DGG.levels(sys)), 8),
+            lpad(DGG.ncells(DGG.levelgrid(sys, 3)), 18),
+            "   ", nameof(DGG.cellindextype(sys)))
+end
+```
+
+  - **IGeo7** — hexagons with twelve smaller pentagons; approximately equal
+    areas and aperture-7 refinement.
+  - **H3** — the same hexagon family on gnomonic icosahedral faces, so not
     equal-area.
   - **HEALPix** — curvilinear diamonds, exactly `4π/(12·4^l)` steradians each.
-  - **A5** — Cairo-style pentagons, equal-area; the one system without
-    contiguous `descendant_range`s.
+  - **A5** — Cairo-style pentagons, equal-area.
   - **S2** — geodesic quadrilaterals on the cube, about a 2× area spread within
     a level.
   - **ISEA4R** — rhombi on ten icosahedral diamonds, exactly `4π/(10·4^l)`
     steradians each.
 
-`AuthalicSystem` wraps any of the six to read geometry at geodetic latitude.
-Ids, indices, hierarchy and ordering are untouched, so it draws the same
-picture and is not in the sweep.
+`AuthalicSystem` adapts a system's spherical geometry to geodetic latitude
+while preserving cell ids and hierarchy. A5 already returns geodetic geometry
+and rejects this wrapper.
 
-## What differs
-
-At the *same* level the six disagree about almost everything — apertures 7 and 4
-put their cell counts two orders of magnitude apart. The docstring of
-`systems()` is the full comparison table.
-
-```@example all-dggs
-for sys in DGG.systems()
-    grid = DGG.levelgrid(sys, 3)
-    println(rpad(nameof(typeof(sys)), 14),
-            " levels ", DGG.levels(sys),
-            ", ", lpad(DGG.ncells(grid), 6), " cells at level 3",
-            ", sorted subtrees: ", DGG.has_sorted_subtrees(sys),
-            ", congruent refinement: ", DGG.has_congruent_refinement(sys),
-            ", id: ", nameof(DGG.cellindextype(sys)))
-end
-```
+[Choosing a grid](tutorials/choosing_a_grid.md) connects these differences to
+neighbourhood calculations, spatial averages, resolution and coordinate
+alignment.

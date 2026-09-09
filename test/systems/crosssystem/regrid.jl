@@ -464,6 +464,28 @@ end
     end
 end
 
+@testset "a raster spells the way back off the cells" begin
+    onto = DGG.regrid(RASTER; to = GRID)
+
+    # The return leg wants the raster's lattice, and the raster — or just the
+    # dimensions it carries — is that lattice. Neither side has to reach past
+    # it for the `RasterGrid` it stands for.
+    reference = DGG.regrid(onto; to = SRC, from = GRID)
+    for to in (RASTER, DD.dims(RASTER))
+        back = DGG.regrid(onto; to, from = GRID)
+        @test parent(back) == parent(reference)
+        @test DD.dims(back) == DD.dims(reference)
+    end
+
+    # A `Cells` axis is not a lattice, so it is refused wherever it is given.
+    # It is the same guard either way, and it names the keyword it was handed
+    # and the grid the axis holds — not `from` and not `xdim`.
+    named = DGG.cellset(DD.lookup(onto, 1))
+    @test_throws "`to` was given a dimensional raster" DGG.regrid(RASTER; to = onto)
+    @test_throws "to = $named" DGG.regrid(RASTER; to = onto)
+    @test_throws "from = $named" DGG.regrid(onto; to = GRID)
+end
+
 @testset "Extensive conserves the global integral" begin
     out = DGG.regrid(RASTER; to = GRID, missingpolicy = GR.Extensive())
     for m in 1:2

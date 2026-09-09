@@ -66,6 +66,10 @@ See also [`AbstractHierarchicalGridSystem`](@ref), [`AbstractCellIndex`](@ref).
 """
 abstract type AbstractGrid end
 
+# A grid is one argument to every cell verb, never a container to iterate over:
+# `cell_centroid.(grid, cells)` broadcasts the cells, not the grid.
+Base.broadcastable(g::AbstractGrid) = Ref(g)
+
 """
     abstract type AbstractHierarchicalGridSystem
 
@@ -141,6 +145,10 @@ See also [`AbstractGrid`](@ref), [`AbstractQuadFaceGridSystem`](@ref),
 [`node_extent`](@ref).
 """
 abstract type AbstractHierarchicalGridSystem end
+
+# As for a grid: a system broadcasts as one value, so `ancestor.(sys, cells, 3)`
+# needs no `Ref`.
+Base.broadcastable(sys::AbstractHierarchicalGridSystem) = Ref(sys)
 
 """
     abstract type AbstractQuadFaceGridSystem <: AbstractHierarchicalGridSystem

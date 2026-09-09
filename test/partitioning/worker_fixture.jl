@@ -4,6 +4,9 @@ import DiscreteGlobalGrids as DGG
 import DimensionalData as DD
 import GlobalRegridding as GR
 
+partitioner_loaded() = any(name -> Base.get_extension(DGG, name) !== nothing,
+    (:DiscreteGlobalGridsMetisExt, :DiscreteGlobalGridsKaHyParExt, :DiscreteGlobalGridsScotchExt))
+
 function stencil_fixture()
     grid = DGG.levelgrid(DGG.S2System(), 2)
     lookup = DGG.CellLookup(DGG.CellVector(grid))
@@ -20,7 +23,7 @@ function stencil_part(assignment, part)
     DGG.mapneighbors!(result, stencil, data, selected; threaded=false)
     indices = reduce(vcat, [collect(DGG.ownedindices(c)) for c in selected]; init=Int[])
     return (; indices, values=result[indices], chunks=DGG.partchunks(assignment, part),
-        metis_loaded=Base.get_extension(DGG, :DiscreteGlobalGridsMetisExt) !== nothing)
+        partitioner_loaded=partitioner_loaded())
 end
 
 function regrid_fixture()
@@ -45,7 +48,7 @@ function regrid_part(assignment, part)
     end
     return (; indices, values, chunks,
         sources=DGG.partsources(assignment, part),
-        metis_loaded=Base.get_extension(DGG, :DiscreteGlobalGridsMetisExt) !== nothing)
+        partitioner_loaded=partitioner_loaded())
 end
 
 end

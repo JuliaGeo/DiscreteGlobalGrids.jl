@@ -29,19 +29,64 @@ struct MetisPartition <: AbstractPartitioningAlgorithm
 
     function MetisPartition(; seed::Integer=0, imbalance::Real=0.03,
             maxedges::Integer=1_000_000)
-        0 <= seed <= typemax(Cint) || throw(ArgumentError(
-            "seed must fit a non-negative Cint, got $seed"))
-        u = Float64(imbalance)
-        isfinite(u) && 0 <= u <= 1 || throw(ArgumentError(
-            "imbalance must be finite and between 0 and 1, got $imbalance"))
-        m = try
-            Int(maxedges)
-        catch
-            throw(ArgumentError("maxedges must fit Int, got $maxedges"))
-        end
-        m > 0 || throw(ArgumentError("maxedges must be positive, got $maxedges"))
-        return new(Cint(seed), u, m)
+        seed, u = _partition_seed_imbalance(seed, imbalance)
+        m = _partition_maxedges(maxedges)
+        return new(seed, u, m)
     end
+end
+
+"""
+    KaHyParPartition(; seed=0, imbalance=0.03)
+
+Group chunks by shared source data with KaHyPar's connectivity objective.
+Each source costs its weight for every additional partition that reads it.
+Load `KaHyPar_jll` to enable this optional backend. Capacity targets become native
+integer upper bounds, including `imbalance`; indivisible chunks may exceed them.
+"""
+struct KaHyParPartition <: AbstractPartitioningAlgorithm
+    seed::Cint
+    imbalance::Float64
+    function KaHyParPartition(; seed::Integer=0, imbalance::Real=0.03)
+        seed, u = _partition_seed_imbalance(seed, imbalance)
+        new(seed, u)
+    end
+end
+
+"""
+    ScotchPartition(; seed=0, imbalance=0.03, maxedges=1_000_000)
+
+Map the shared-source graph onto workers with relative compute capacities.
+Load `Scotch` to enable this optional backend. `maxedges` bounds the projected
+graph's unique undirected edges.
+"""
+struct ScotchPartition <: AbstractPartitioningAlgorithm
+    seed::Cint
+    imbalance::Float64
+    maxedges::Int
+    function ScotchPartition(; seed::Integer=0, imbalance::Real=0.03,
+            maxedges::Integer=1_000_000)
+        seed, u = _partition_seed_imbalance(seed, imbalance)
+        new(seed, u, _partition_maxedges(maxedges))
+    end
+end
+
+function _partition_seed_imbalance(seed::Integer, imbalance::Real)
+    0 <= seed <= typemax(Cint) || throw(ArgumentError(
+        "seed must fit a non-negative Cint, got $seed"))
+    u = Float64(imbalance)
+    isfinite(u) && 0 <= u <= 1 || throw(ArgumentError(
+        "imbalance must be finite and between 0 and 1, got $imbalance"))
+    return Cint(seed), u
+end
+
+function _partition_maxedges(maxedges::Integer)
+    m = try
+        Int(maxedges)
+    catch
+        throw(ArgumentError("maxedges must fit Int, got $maxedges"))
+    end
+    m > 0 || throw(ArgumentError("maxedges must be positive, got $maxedges"))
+    return m
 end
 
 """
@@ -339,6 +384,16 @@ end
 function partitionlabels(algorithm::MetisPartition, problem::PartitionProblem,
         nparts::Integer, capacities::AbstractVector{<:Real})
     throw(PartitionBackendUnavailable(:Metis, algorithm))
+end
+
+function partitionlabels(algorithm::KaHyParPartition, problem::PartitionProblem,
+        nparts::Integer, capacities::AbstractVector{<:Real})
+    throw(PartitionBackendUnavailable(:KaHyPar_jll, algorithm))
+end
+
+function partitionlabels(algorithm::ScotchPartition, problem::PartitionProblem,
+        nparts::Integer, capacities::AbstractVector{<:Real})
+    throw(PartitionBackendUnavailable(:Scotch, algorithm))
 end
 
 """

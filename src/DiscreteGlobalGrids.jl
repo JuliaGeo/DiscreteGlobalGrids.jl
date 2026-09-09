@@ -224,6 +224,7 @@ include("chunks.jl")
 # cube axis alike.
 include("regridding.jl")
 include("partitioning.jl")
+include("partitioning_backends.jl")
 include("cap_cached_tree.jl")
 
 # Copernicus DEM answers point queries from its own row arithmetic. The methods
@@ -511,7 +512,7 @@ export Weighted, Extensive
 export PerChunk, Spilled
 
 # --- Chunk partitioning ----------------------------------------------------
-export AbstractPartitioningAlgorithm, WeightedContiguous, MetisPartition
+export AbstractPartitioningAlgorithm, WeightedContiguous, MetisPartition, KaHyParPartition, ScotchPartition
 export PartitionProblem, ChunkPartition, PartitionBackendUnavailable
 export partitionproblem, partitionlabels, partition
 export npartitions, partindices, partchunks, partsources, partweights
@@ -558,9 +559,11 @@ public GRID_REFERENCE
 
 function __init__()
     Base.Experimental.register_error_hint(PartitionBackendUnavailable) do io, err
-        err.backend === :Metis || return
-        print(io, "\nLoad `Metis` with `using Metis` to enable MetisPartition. " *
-            "If it is not installed, run `import Pkg; Pkg.add(\"Metis\")`.")
+        err.backend in (:Metis, :KaHyPar_jll, :Scotch) || return
+        backend = string(err.backend)
+        algorithm = nameof(typeof(err.algorithm))
+        print(io, "\nLoad `$backend` with `using $backend` to enable $algorithm. " *
+            "If it is not installed, run `import Pkg; Pkg.add(\"$backend\")`.")
     end
 end
 

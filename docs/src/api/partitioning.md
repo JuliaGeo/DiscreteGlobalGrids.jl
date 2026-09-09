@@ -135,6 +135,60 @@ For resumed runs, describe only the pending destinations and retain their
 application IDs. An assignment describes ownership; the executor still owns
 task completion, retries, data exchange, and output writes.
 
+## Choose an algorithm
+
+| Algorithm | Use it for | Load on the coordinator |
+|---|---|---|
+| [`WeightedContiguous`](@ref) | A quick split that keeps traversal order | Available by default |
+| [`MetisPartition`](@ref) | Balancing work while keeping strongly connected chunks together | `using Metis` |
+| [`KaHyParPartition`](@ref) | Reducing shared source replication, especially when one source serves many chunks | `using KaHyPar_jll` |
+| [`ScotchPartition`](@ref) | A graph mapping alternative with weighted worker capacities | `using Scotch` |
+
+All four return the same [`ChunkPartition`](@ref). Only the coordinator that
+builds an assignment needs its optional library. The workers receive chunk and
+source IDs and open their own data handles.
+
+The algorithm types are always available from DiscreteGlobalGrids. Calling an
+optional algorithm before loading its library raises
+[`PartitionBackendUnavailable`](@ref) with an installation and loading hint.
+
+## Reduce shared source replication with KaHyPar
+
+KaHyPar is a useful starting point for a CopDEM run whose workers share a tile
+cache. It balances destination work while grouping chunks that read the same
+tiles:
+
+```julia
+using KaHyPar_jll
+
+assignment = DGG.partition(problem, length(worker_ids);
+    algorithm=DGG.KaHyParPartition(seed=42, imbalance=0.03),
+    capacities=worker_capacities)
+```
+
+Each source forms one *hyperedge*: the set of destination chunks that read it.
+The connectivity objective charges `sourceweight * (partitions_using_source - 1)`
+for each used source. With tile byte sizes as source weights, this estimates
+extra bytes read when each worker loads a tile once. Actual reuse still depends
+on the worker's cache and eviction policy.
+
+This representation stores one entry per destination-to-source dependency.
+A tile shared by a thousand destinations remains a single source set. The
+extension retains large source sets during optimization and disables the
+upstream preset's incidence sparsification.
+
+The extension calls the [KaHyPar C API](https://github.com/kahypar/kahypar/blob/v1.3.5/include/libkahypar.h)
+through `KaHyPar_jll` 1.3.5 or later. This supports the current native build;
+KaHyPar.jl 0.3.1 pins an older build with a conflicting Boost dependency in this
+workspace. KaHyPar's native library and bundled configuration use GPL-3.0.
+The 1.3.5 artifacts support Linux, macOS, and FreeBSD, with no Windows build.
+
+KaHyPar uses integer weights. The extension scales work and source costs into
+bounded integer ranges and gives zero-cost work the minimum unit required by
+the library. Worker capacities become integer upper bounds that include
+`imbalance`. Indivisible chunks can exceed those bounds; inspect
+[`partweights`](@ref) when planning a run.
+
 ## Use METIS
 
 Load Metis.jl to enable [`MetisPartition`](@ref):
@@ -145,10 +199,6 @@ using Metis
 assignment = DGG.partition(problem, 4;
     algorithm=DGG.MetisPartition(seed=42, imbalance=0.03))
 ```
-
-The algorithm type is available from DiscreteGlobalGrids even before Metis.jl
-is loaded. Calling it then raises [`PartitionBackendUnavailable`](@ref) with a
-hint to load `Metis`. Only the process building the assignment needs Metis.jl.
 
 The extension builds a graph whose vertices are work chunks. Two chunks are
 connected when they read a common source. A source with `d` consumers adds
@@ -161,6 +211,30 @@ pairwise connections; `maxedges` bounds the graph expansion. Native weights
 are quantized to METIS integers. Use consistent inputs and a fixed seed for
 repeatable calls; partition labels are not a persistent identity across
 library versions.
+
+## Map work with Scotch
+
+[Scotch.jl](https://github.com/Keluaa/Scotch.jl) offers another graph partitioner
+through the same API:
+
+```julia
+using Scotch
+
+assignment = DGG.partition(problem, 4;
+    algorithm=DGG.ScotchPartition(seed=42), capacities=[1, 2, 1, 2])
+```
+
+The extension uses the same bounded shared-source graph as METIS and maps it
+onto a complete worker graph weighted by `capacities`. Work, connections, and
+capacities become integer weights; zero-cost work receives the minimum unit.
+`maxedges` limits graph expansion. Scotch has a fresh random context for each
+assignment, so calls with the same seed and inputs can be repeated.
+
+All native backends use heuristics, and their results can change with library
+versions. A fixed seed supports repeatable calls within a build. Empty work,
+one partition, and problems with at least as many partitions as chunks use the
+contiguous splitter after the requested backend is loaded. Problems without
+positive shared-source costs also use that splitter.
 
 ## Add a partitioner
 
@@ -197,6 +271,8 @@ partweights
 AbstractPartitioningAlgorithm
 WeightedContiguous
 MetisPartition
+KaHyParPartition
+ScotchPartition
 partitionlabels
 PartitionBackendUnavailable
 ```

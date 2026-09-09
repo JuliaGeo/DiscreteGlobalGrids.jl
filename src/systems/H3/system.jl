@@ -107,7 +107,8 @@ has_direct_location(::H3System) = true
 
 `1.2`, the generic default.
 
-Children overhang their parents, so [`node_extent`](@ref) must be inflated. The
+Children overhang their parents, so
+[`node_extent`](@ref DiscreteGlobalGrids.node_extent) must be inflated. The
 measured maximum ratio of a descendant *boundary vertex*'s distance from an
 ancestor's cell-cap centre to that cap's radius is `1.0522`; `1.2` preserves the
 covering invariant. Descendant caps are not the quantity bounded and may exceed

@@ -22,6 +22,8 @@ names only its cells here — `dggpoly(A)` draws them in one flat colour, and
 `dggpoly(A; color = A)` colours them by its values; it is [`dggsurface`](@ref)
 that reads a cube axis as heights.
 
+Cells whose colour is `NaN` or `missing` are not drawn.
+
 ```julia
 sys = DGG.IGeo7System()
 cells = DGG.CellVector(DGG.query(sys, DGG.MultiOrderCoverage(extent); level = 9))
@@ -135,6 +137,77 @@ function is_cairo_backend()
 end
 
 """
+    isdrawn(x) -> Bool
+
+Whether a cell coloured `x` should be drawn at all.
+
+`false` for `missing` and for a `NaN` float; `true` for everything else,
+including an ordinary number and a named colour.  `dggpoly` drops a cell's
+faces — or, on the polygon path, its whole ring — rather than hand either kind
+of blank value to a backend: GLMakie interpolates a `NaN` vertex colour to the
+top of the colormap instead of leaving it unpainted (`nan_color` is never
+consulted on that path), and Makie's colour conversion rejects `missing`
+outright.
+"""
+isdrawn(x) = true
+isdrawn(::Missing) = false
+isdrawn(x::AbstractFloat) = !isnan(x)
+
+"""
+    _fill_value(color::AbstractVector)
+
+A finite, in-range stand-in for an undrawn cell's colour.
+
+The mesh keeps one colour slot per cell for every vertex (and, before
+filtering, every ring) it built, whether or not that cell ends up drawn:
+dropping a cell's faces stops it from being rasterised, but a backend that
+scans the whole colour buffer to pick a default `colorrange` — GLMakie among
+them — still sees the undrawn slots, and a `NaN` anywhere in that scan can
+break the range for every cell, drawn or not.  Filling undrawn slots with the
+first drawn colour in `color` (or `0` if none is drawn) keeps the scan finite;
+which value is used does not matter, because no undrawn slot is ever
+rasterised.
+"""
+function _fill_value(color::AbstractVector)
+    for c in color
+        isdrawn(c) && return c
+    end
+    S = nonmissingtype(eltype(color))
+    return S <: Real ? zero(float(S)) : first(color)
+end
+
+"""
+    drawn_faces(mesh::CellMesh, color) -> Vector{GLTriangleFace}
+
+The mesh's faces with every triangle belonging to an undrawn cell removed.
+
+Every vertex of a face belongs to the same cell — faces never span a cell
+boundary, see [`CellMesh`](@ref) — so checking the first vertex is enough.
+`color` that is not a per-cell vector (a single colour, or something already
+spread to one entry per vertex) keeps every face, as before.
+"""
+function drawn_faces(mesh::CellMesh, color)
+    (color isa AbstractVector && length(color) == mesh.ncells) || return mesh.faces
+    return filter(f -> isdrawn(@inbounds color[Int(mesh.vertex_cell[f[1]])]), mesh.faces)
+end
+
+"""
+    drawn_ring_indices(mesh::CellMesh, color) -> AbstractVector{Int}
+
+Which of the mesh's rings belong to a drawn cell.
+
+Every ring, unless `color` is a per-cell vector, in which case a ring is kept
+only when its cell's colour is [`isdrawn`](@ref).  Used by the polygon path
+and by the outline path, so that both agree with the mesh path about which
+cells get drawn.
+"""
+function drawn_ring_indices(mesh::CellMesh, color)
+    (color isa AbstractVector && length(color) == mesh.ncells) || return 1:nrings(mesh)
+    starts = mesh.ring_start
+    return findall(i -> isdrawn(@inbounds color[Int(mesh.vertex_cell[starts[i]])]), 1:nrings(mesh))
+end
+
+"""
     vertex_colors(mesh::CellMesh, color)
 
 Spread a per-cell colour over the mesh's vertices.
@@ -143,6 +216,11 @@ A vector as long as the cell set is gathered through `mesh.vertex_cell`; anythin
 else — a single colour, or something already as long as the vertex buffer — is
 passed through untouched.  The gather is the only work a recolour costs: the
 geometry never moves.
+
+A `missing` or `NaN` entry never reaches the output: the vertices of a cell
+that fails [`isdrawn`](@ref) get [`_fill_value`](@ref) instead, because their
+faces are dropped by [`drawn_faces`](@ref) but their colour slot is not — the
+colour buffer this returns holds no `NaN` and no `missing` at all.
 """
 function vertex_colors(mesh::CellMesh, color)
     color isa AbstractVector || return color
@@ -150,20 +228,33 @@ function vertex_colors(mesh::CellMesh, color)
     length(color) == mesh.ncells ||
         throw(ArgumentError("color has $(length(color)) entries, but there are \
             $(mesh.ncells) cells"))
-    return @inbounds [color[Int(c)] for c in mesh.vertex_cell]
+    fill_value = _fill_value(color)
+    T = typeof(fill_value)
+    out = Vector{T}(undef, length(mesh.vertex_cell))
+    @inbounds for (i, c) in enumerate(mesh.vertex_cell)
+        v = color[Int(c)]
+        out[i] = isdrawn(v) ? v : fill_value
+    end
+    return out
 end
 
 """
-    cell_polygons(mesh::CellMesh, ntasks = Threads.nthreads()) -> Vector{Makie.Polygon}
+    cell_polygons(mesh::CellMesh, color, ntasks = Threads.nthreads()) -> Vector{Makie.Polygon}
 
-The mesh's rings as one polygon each, for backends that draw paths.
+The mesh's drawn rings as one polygon each, for backends that draw paths.
+
+A ring whose cell fails [`isdrawn`](@ref) — see [`drawn_ring_indices`](@ref) —
+is left out entirely, matching [`ring_colors`](@ref).
 """
-function cell_polygons(mesh::CellMesh{P}, ntasks::Int = Threads.nthreads()) where {P}
-    polys = Vector{Makie.Polygon{2, Float64}}(undef, nrings(mesh))
+function cell_polygons(mesh::CellMesh{P}, color, ntasks::Int = Threads.nthreads()) where {P}
     starts = mesh.ring_start
-    inparallel(nrings(mesh), ntasks) do lo, hi
-        @inbounds for i in lo:hi
-            polys[i] = Makie.Polygon(mesh.positions[starts[i]:(starts[i + 1] - 1)])
+    keep = drawn_ring_indices(mesh, color)
+    m = length(keep)
+    polys = Vector{Makie.Polygon{2, Float64}}(undef, m)
+    inparallel(m, ntasks) do lo, hi
+        @inbounds for j in lo:hi
+            i = keep[j]
+            polys[j] = Makie.Polygon(mesh.positions[starts[i]:(starts[i + 1] - 1)])
         end
     end
     return polys
@@ -173,6 +264,10 @@ end
     ring_colors(mesh::CellMesh, color)
 
 `color` reduced to one entry per drawn ring, for the polygon path.
+
+Unlike [`vertex_colors`](@ref), an undrawn ring is not filled — it is left out
+of the result altogether, in the same order [`cell_polygons`](@ref) leaves it
+out of the polygon list, so the two stay aligned.
 """
 function ring_colors(mesh::CellMesh, color)
     color isa AbstractVector || return color
@@ -180,23 +275,37 @@ function ring_colors(mesh::CellMesh, color)
         throw(ArgumentError("color has $(length(color)) entries, but there are \
             $(mesh.ncells) cells"))
     starts = mesh.ring_start
-    return @inbounds [color[Int(mesh.vertex_cell[starts[i]])] for i in 1:nrings(mesh)]
+    keep = drawn_ring_indices(mesh, color)
+    T = nonmissingtype(eltype(color))
+    out = Vector{T}(undef, length(keep))
+    @inbounds for (j, i) in enumerate(keep)
+        out[j] = color[Int(mesh.vertex_cell[starts[i]])]
+    end
+    return out
 end
 
 """
     outline_points(mesh::CellMesh) -> Vector
+    outline_points(mesh::CellMesh, color) -> Vector
 
 Every drawn ring as a closed loop, the loops separated by `NaN` points, ready
 for a single `lines!`.
+
+With `color`, a ring whose cell fails [`isdrawn`](@ref) is left out (see
+[`drawn_ring_indices`](@ref)), so a positive `strokewidth` never outlines a
+blank cell.  Without it, every ring is kept.
 """
-function outline_points(mesh::CellMesh{GeometryBasics.Point{N, T}}) where {N, T}
+function _outline_points(mesh::CellMesh{GeometryBasics.Point{N, T}}, keep) where {N, T}
     P = GeometryBasics.Point{N, T}
-    n = nrings(mesh)
-    out = Vector{P}(undef, length(mesh.positions) + 2n)
+    starts = mesh.ring_start
+    total = 0
+    @inbounds for i in keep
+        total += (starts[i + 1] - starts[i]) + 2
+    end
+    out = Vector{P}(undef, total)
     nan = P(ntuple(_ -> T(NaN), N))
     k = 0
-    starts = mesh.ring_start
-    @inbounds for i in 1:n
+    @inbounds for i in keep
         lo, hi = starts[i], starts[i + 1] - 1
         for j in lo:hi
             out[k += 1] = mesh.positions[j]
@@ -206,6 +315,9 @@ function outline_points(mesh::CellMesh{GeometryBasics.Point{N, T}}) where {N, T}
     end
     return out
 end
+
+outline_points(mesh::CellMesh) = _outline_points(mesh, 1:nrings(mesh))
+outline_points(mesh::CellMesh, color) = _outline_points(mesh, drawn_ring_indices(mesh, color))
 
 function Makie.plot!(plot::DGGPoly{<:Tuple{<:CellSet}})
     Makie.map!(
@@ -231,7 +343,10 @@ end
 
 function draw_mesh!(plot::DGGPoly)
     Makie.map!(m -> (m.positions,), plot, [:cellmesh], [:mesh_positions])
-    Makie.map!(m -> (m.faces,), plot, [:cellmesh], [:mesh_faces])
+    # `mesh_faces` depends on `color` too: an undrawn cell's faces are dropped
+    # from the mesh, not just recoloured, because GLMakie interpolates a NaN
+    # vertex colour into the colormap rather than leaving it unpainted.
+    Makie.map!((m, c) -> (drawn_faces(m, c),), plot, [:cellmesh, :color], [:mesh_faces])
     Makie.map!((m, c) -> (vertex_colors(m, c),), plot, [:cellmesh, :color], [:mesh_color])
 
     return Makie.mesh!(
@@ -257,8 +372,8 @@ function draw_mesh!(plot::DGGPoly)
 end
 
 function draw_polygons!(plot::DGGPoly)
-    Makie.map!((m, n) -> (cell_polygons(m, task_count(n)),), plot,
-        [:cellmesh, :ntasks], [:polygons])
+    Makie.map!((m, c, n) -> (cell_polygons(m, c, task_count(n)),), plot,
+        [:cellmesh, :color, :ntasks], [:polygons])
     Makie.map!((m, c) -> (ring_colors(m, c),), plot, [:cellmesh, :color], [:polygon_color])
 
     return Makie.poly!(
@@ -285,11 +400,11 @@ function draw_polygons!(plot::DGGPoly)
 end
 
 function draw_strokes!(plot::DGGPoly)
-    Makie.map!(plot, [:cellmesh, :strokewidth], [:outline]) do mesh, strokewidth
+    Makie.map!(plot, [:cellmesh, :color, :strokewidth], [:outline]) do mesh, color, strokewidth
         # Outlines cost as much as the fill, so they are only built when they
-        # will actually be drawn.
+        # will actually be drawn.  An undrawn cell gets no outline either.
         strokewidth > 0 || return (similar(mesh.positions, 0),)
-        return (outline_points(mesh),)
+        return (outline_points(mesh, color),)
     end
     Makie.map!(
         (visible, strokewidth) -> (visible && strokewidth > 0,),

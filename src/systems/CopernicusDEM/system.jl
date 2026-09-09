@@ -202,6 +202,10 @@ function cell_box(sys::CopernicusDEMSystem{N}, c::DGG.LevelIndex) where {N}
     return (west, east, south, north)
 end
 
+# Coordinates are geodetic WGS84-G1150 (EPSG:4326) throughout, so the authalic
+# wrapper has nothing to convert and refuses this system.
+DGG.Fallbacks.publishes_geodetic_geometry(::CopernicusDEMSystem) = true
+
 # Shared pole literals avoid longitude-dependent signed zeros.
 const NORTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, 1.0)
 const SOUTH_POLE = GO.UnitSphericalPoint(0.0, 0.0, -1.0)

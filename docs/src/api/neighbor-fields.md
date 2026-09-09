@@ -4,16 +4,11 @@
 CurrentModule = DiscreteGlobalGrids
 ```
 
-A neighbourhood kernel almost never wants only cells. It wants an elevation, an
-index into its own storage, a centroid — and with [`Neighbors`](@ref) it is
-handed cell handles and has to go and get each of those itself, once per
-neighbour, from inside the innermost loop: one array read per neighbour, issued
-by the callback for every cell in the sweep, or a `cell_centroid` call whose trig
-is recomputed for every edge the cell shares. A **request** turns that around.
-`needs = (Value(dem), Centroid())` states up front which per-neighbour
-quantities the kernel reads, and the sweep streams exactly those out of the one
-membership clip it already performs per cell. The callback reaches back into
-nothing.
+Neighbourhood kernels commonly use fields alongside cell ids: elevations,
+indices, or centroids. A **request** declares those inputs once, and the sweep
+streams them with each clipped ring. For example,
+`needs = (Value(dem), Centroid())` supplies values and geometry without callback
+lookups.
 
 Each entry of `needs` is an [`AbstractNeed`](@ref). There are four of them, and
 one — [`Index`](@ref DiscreteGlobalGrids.Index) — also names the index space it
@@ -28,71 +23,45 @@ answers in:
 | [`Value`](@ref)`(a)` | `a` at its index | `a` at the neighbour's index |
 | [`Centroid`](@ref)`()` | its centroid, on the unit sphere | the neighbour's |
 
-`Value` takes any vector laid out against the collection, and `needs` may carry
-as many of them as the kernel reads — two arrays of different element types give
-two rings of those element types. A single one is what [`Values`](@ref) already
-passes; a request is that idea without the one-array limit and with the geometry
-in it. `needs` is a keyword on [`mapneighbors`](@ref) and
+`Value` accepts any vector laid out against the collection, and `needs` may
+carry as many fields as the kernel reads. A single field is what
+[`Values`](@ref) passes; a request extends that form to multiple fields and
+geometry. `needs` is a keyword on [`mapneighbors`](@ref) and
 [`foreachneighbors`](@ref), alongside `order`, `threaded` and `connectivity`,
 over a [`CellVector`](@ref), a [`PartialGrid`](@ref), a [`CellLookup`](@ref) or
 a dimensional array.
 
+For the basic kernel forms, see [Neighbours and stencils](neighbors.md).
+
 ## The callback
 
-`f(center, rings)`. Both arguments are tuples with one entry per need, in the
-order `needs` states them; there is no special case for a single need.
+`f(center, rings)` receives tuples with one entry per need, in the order listed
+by `needs`.
 `center` holds the visited cell's answers and `rings` holds the neighbours'.
 Three things about them are the contract:
 
   - **Rings are field-major.** `rings[j]` is need `j`'s value for *every*
-    clipped neighbour, so a two-need request gives two rings, not one ring of
-    pairs. Slot `i` of every ring names the same neighbour, in the order
+    clipped neighbour, so a two-need request gives two rings. Slot `i` of every
+    ring names the same neighbour, in the order
     [`neighbors`](@ref) states — counter-clockwise seen from outside the sphere,
     clipped to membership. A kernel that wants neighbour-major records writes
-    `zip(rings...)`, on its own side; the sweep does not build them, because
-    most kernels reduce one field at a time and would pay to take the tuples
-    apart again. Each ring is a `SmallVector` where the system declares a
+    `zip(rings...)`. Each ring is a `SmallVector` where the system declares a
     [`maxneighbors`](@ref) and a `Vector` where it does not, which is the same
     rule the [`Values`](@ref) pass follows.
 
-  - **`Index(Local())` is the index in the collection the caller passed** — the
-    [`CellVector`](@ref), or the cube's cell axis — never an index into some
-    block the sweep chose internally. On a complete grid that equals the global
-    index; on a subset it does not, and the subset's numbering is the one you
-    get. That holds however the sweep is run. A request may be answered
-    [chunk by chunk](@ref "Sweeping a cube along its chunk lines"), and a chunk
-    is a partial grid whose `1:ncells` is its own; the route translates the
-    request onto each chunk before sweeping it, and `Index(Local())` becomes a
-    `Value` of the chunk's cells' indices **in the caller's axis**, so the
-    visited cell's and every neighbour's number is the one the whole-axis sweep
-    would have reported. Every stored `Value` in the request is restricted the
-    same way, and one over a chunked array is read along its own storage chunks
-    rather than a scalar at a time. The chunked result is the whole-axis
-    result, cell for cell. [`mapneighbors!`](@ref) takes that route when given
-    `needs`, and [`mapneighbors`](@ref) and [`foreachneighbors`](@ref) take it
-    by themselves on a cube whose data is chunked and whose `order` is
-    `StorageOrder()` — the same rule [`Values`](@ref) follows. A
-    permutation `order` names a visit order over the whole axis, which a
-    chunked sweep cannot honour, so it keeps the whole-axis path.
+  - **`Index(Local())` uses the caller's collection.** On a complete grid it
+    equals the global index; on a subset it uses the subset's numbering. A
+    [chunked sweep](@ref "Sweeping a cube along its chunk lines") translates
+    requests back to that caller axis, including stored `Value`s. Automatic
+    chunked execution applies to `needs` with `StorageOrder()`; a permutation
+    order uses the whole-axis path.
 
-  - **`Centroid()` is `cell_centroid` on the unit sphere, answered from a
-    working set.** A cell's centroid is touched once as a centre and once from
-    every ring that names it, so each sweep task keeps a bounded cache of
-    recent centroids and computes each one on its first touch inside it —
-    automatic, with no knob, and the same values `cell_centroid` gives either
-    way. The key is the local index rather than the order it was visited
-    in, which is what keeps a locality-preserving `order` hitting; a random
-    permutation scatters the keys, the window essentially stops hitting, and
-    the centroid surcharge measured 4.2–4.4× storage order's on the same fixture
-    (`benchmark/needs_centroid.jl`). In storage order it settles at roughly
-    one computation per cell instead of one per touch, and that one is most
-    of what is left: at 117,649 cells the sweep is 48.6 ms against 29.5 ms
-    with the whole grid's centroids prebuilt as `Value(table)`, over a
-    21.8 ms value-only floor. The table is materially faster — some 70% of
-    the residual surcharge — at 24 bytes per cell and a build pass, so the
-    bounded window is the default and the table the opt-in.
-    The point is a direction, not a place: distance and bearing want a radius,
-    and stay in the kernel.
+  - **`Centroid()` supplies unit-sphere centroids.** Each task computes a
+    centroid on first use and keeps recent results in a bounded window. A
+    locality-preserving order benefits from the window; a random permutation
+    reduces its reuse. Use `Value(table)` when a complete precomputed field is
+    faster for the workload. Distance and bearing remain the kernel's choice of
+    radius.
 
 ## Steepest descent, in one pass
 

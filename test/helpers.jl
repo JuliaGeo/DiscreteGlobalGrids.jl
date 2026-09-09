@@ -16,7 +16,7 @@ using Test
 import DiscreteGlobalGrids as DGG
 
 export syslabel, basesystem, isquadface, ishexwalk, hassortedsubtrees,
-    forsystems, sweepcovers
+    isauthalic, forsystems, sweepcovers
 
 """
     syslabel(sys) -> String
@@ -55,7 +55,14 @@ end
 hassortedsubtrees(sys) = DGG.has_sorted_subtrees(basesystem(sys))
 
 """
-    forsystems(; quadface, hexwalk, sortedsubtrees) -> Tuple
+`sys` tessellates the authalic sphere, so `AuthalicSystem` will wrap it. A
+system that publishes geodetic latitude itself, as A5 does, is refused by the
+wrapper and must be filtered out of sweeps that wrap whatever they are handed.
+"""
+isauthalic(sys) = !DGG.Fallbacks.publishes_geodetic_geometry(basesystem(sys))
+
+"""
+    forsystems(; quadface, hexwalk, sortedsubtrees, authalic) -> Tuple
     forsystems(f; kwargs...)
 
 The registered systems matching every trait given, in registry order; each
@@ -64,11 +71,12 @@ keyword left out is not constrained. The one-argument form applies `f` to each.
     @testset "\$(syslabel(sys))" for sys in forsystems(quadface = true)
 """
 function forsystems(; quadface = nothing, hexwalk = nothing,
-                    sortedsubtrees = nothing)
+                    sortedsubtrees = nothing, authalic = nothing)
     matches(sys) =
         (quadface === nothing || isquadface(sys) == quadface) &&
         (hexwalk === nothing || ishexwalk(sys) == hexwalk) &&
-        (sortedsubtrees === nothing || hassortedsubtrees(sys) == sortedsubtrees)
+        (sortedsubtrees === nothing || hassortedsubtrees(sys) == sortedsubtrees) &&
+        (authalic === nothing || isauthalic(sys) == authalic)
     return filter(matches, DGG.systems())
 end
 

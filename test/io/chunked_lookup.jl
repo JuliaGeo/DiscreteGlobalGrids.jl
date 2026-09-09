@@ -285,6 +285,15 @@ end
     for lookup in (ranged, dense)
         @test Lookups.selectindices(lookup, Covering(target)) == expected
     end
+    # A query predicate resolves the same way on a stored axis as on a computed
+    # one: the query's answer, intersected with the axis.
+    for pred in (DGG.Intersects(target), DGG.Within(target))
+        want = Lookups.selectindices(naive, pred)
+        @test !isempty(want)
+        for lookup in (ranged, dense)
+            @test Lookups.selectindices(lookup, pred) == want
+        end
+    end
 end
 
 @testset "the stored axis is a cube dimension" begin

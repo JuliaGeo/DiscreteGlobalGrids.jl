@@ -4,9 +4,9 @@
 CurrentModule = DiscreteGlobalGrids
 ```
 
-`regrid` takes a `method`, and the choice is a statement about what the source
-*values mean*, not about how accurate you would like the answer to be. There are
-three readings of the data, and four names for them.
+Choose a regridding method according to what each source value represents:
+an average over a cell, a sample at a point, or a value to copy from the
+containing cell. Pass the method with `regrid(...; method = ...)`.
 
 | method | what a destination cell gets | conserves the integral |
 |---|---|---|
@@ -15,16 +15,16 @@ three readings of the data, and four names for them.
 | `NearestCell()` | the value of the source cell the centre falls in | no |
 | `DirectNearest()` | the same value, without building an operator for it | no |
 
-`Conservative()` is the default, and the only one whose output is an area
-quantity.
+`Conservative()` is the default. Its weights describe area overlaps;
+`missingpolicy` controls how those weights apply when coverage is incomplete.
 
 ## Area means
 
-`Conservative()` clips every source cell against every destination cell it
-meets and weights by the overlap area. If the source values are averages over
-their own cells — most model output, most gridded observations, a DEM
-distributed as area means — this is the reading that keeps the field's integral,
-and no other method does.
+Use `Conservative()` for values that represent cell averages, such as model
+output or observations supplied as averages over pixels. It weights each source
+value by its overlap with the destination cell. With complete coverage and
+consistent overlap geometry, this preserves the area integral. Missing-data
+thresholds and normalization affect that property at partially covered cells.
 
 ## Point samples
 
@@ -36,30 +36,30 @@ polygon. The weights are non-negative and sum to one, so the output stays inside
 the range of the sources it came from, and a destination point landing exactly
 on a source sample site reproduces that source exactly.
 
-`NearestCell()` is the degenerate case of the same idea — one source, weight
-one. It costs less and it is not continuous. `DirectNearest()` answers exactly
-what `NearestCell()` answers, element for element, by looking the source cell up
-and copying the value instead of assembling a matrix of ones and multiplying by
-it: prefer it where a plan is applied about as often as it is built, and
-`NearestCell()` where one plan serves many different sources or the operator
-itself is wanted.
+`NearestCell()` copies the value from the source cell containing the destination
+centre. It preserves the selected value, with discontinuities at source-cell
+boundaries. `DirectNearest()` produces the same result by direct lookup.
 
-None of them is conservative. Sampling a field at points and calling the result an
-area mean is the mistake this page exists to prevent.
+- Use `DirectNearest()` for a transfer that needs little plan reuse.
+- Use `NearestCell()` when several fields share a plan or you need its operator.
+
+These point methods do not preserve area integrals.
 
 ## Which one your data wants
 
-Copernicus DEM is the clear case for points: its pixels are **posts**, elevations
-published *at* a coordinate rather than averaged over a footprint, so
-`BarycentricPoint()` is the faithful reading of them and `Conservative()`
-quietly turns a post into a cell average it never was. A DEM distributed as area
-means, and anything whose documentation says "cell average", wants
-`Conservative()`.
+Check the source dataset's definition of a pixel. Elevations published at
+coordinates, often called **posts**, suit `BarycentricPoint()`. Elevations
+published as averages over pixel footprints suit `Conservative()`.
 
-When source and destination are close in size the two agree closely. They part
-company when the destination is *finer* than the source: an area mean has
-nothing finer to say, so it repeats one source value across the cells inside it,
-while a point sample interpolates between the sites around each one.
+The [hydrology tutorial](../tutorials/hydrology.md) uses the default area
+method to demonstrate the workflow. Choose the point method when your analysis
+needs to retain the interpretation of DEM values as samples. When aligning
+Earth data, also check the [latitude convention](../tutorials/choosing_a_grid.md#match-the-ellipsoid-of-the-source).
+
+A finer destination makes the difference especially visible: area averaging
+repeats a source value across destination cells wholly inside it, while point
+interpolation varies between sample sites. [Moving between
+DGGS](../tutorials/between_grids.md) compares both methods at two resolutions.
 
 ## Missing data
 
@@ -67,12 +67,19 @@ while a point sample interpolates between the sites around each one.
 under it is missing. `Weighted(t)` divides by the valid weight and blanks a cell
 whose valid weight falls below `t` of the total.
 
-An area weight row is a spectrum: a coastal cell may be 30 % covered and
-`Weighted(0.5)` blanks it. A point row is different — it is complete or it is
-empty, four posts or none — so the threshold is a yes/no switch on whether an
-absent source may be interpolated across. `Weighted(1)` is the strict choice and
-the one to prefer for point output: a stencil naming a post with no value blanks
-the cell instead of renormalising over the posts that do.
+For example, `Weighted(0.5)` marks a coastal cell missing when only 30% of
+its total weight comes from valid source values. For point interpolation,
+`Weighted(1)` requires the full interpolation weight to be valid. Use it when
+you want missing samples to leave gaps; lower thresholds allow normalization
+over the valid samples.
+
+The policy and conservative-method reference:
+
+```@docs
+Weighted
+Extensive
+Conservative
+```
 
 ## The sentinel a blanked cell holds
 
@@ -98,15 +105,13 @@ DGG.regrid(ras; to = grid, missingval = NaN)
 the fast reading of a `Union{Missing, Float64}` raster — a `Float64` array,
 smaller in memory and quicker in every operation that follows.
 
-`regrid!` reads the buffer you hand it rather than the source, so blanked cells
-take the sentinel `dest` declares. A buffer that cannot hold the sentinel says
-so instead of guessing.
+`regrid!` uses the missing-value convention declared by `dest`. Its element
+type must be able to hold that value.
 
 ## Rims, degeneracies, and poles
 
-Point interpolation is defined inside the polygons whose corners are source
-sample sites, and nowhere else. Three things therefore stay unmapped rather than
-being invented:
+Point interpolation requires a polygon of source sample sites containing the
+destination point. The following cases remain unmapped:
 
   - the strip between the outermost sample sites and the source's own boundary,
     where no such polygon exists;
@@ -143,12 +148,11 @@ point = DGG.regrid(elevation; to = dst, from = src,
 count(isfinite, area), count(isfinite, point)
 ```
 
-The point field leaves a couple of cells unmapped: no polygon of source sample
-sites contains them, and the alternative to a blank would be extrapolation.
+The counts show how many destination cells each method can fill. A point
+remains unmapped when no valid source polygon contains it.
 
-Where both placed a value, they differ by tens of metres on a field whose range
-is thousands, and the smooth field they were both built from says which is
-closer to it:
+The source in this example samples a known function. Evaluate that function
+at the destination centres to compare the interpolation errors:
 
 ```@example methods
 both = isfinite.(area) .& isfinite.(point)
@@ -159,15 +163,15 @@ truth = [peak(DGG.cell_centroid(dst, c)) for c in DGG.CellVector(dst)]
  maximum(abs, point[both] .- truth[both]))
 ```
 
-The area column is not wrong: over a destination cell coarser than the source it
-is the better answer, and it is the only one that keeps the total. On a
-destination finer than the source it has nothing finer to say.
+This comparison tests agreement with point samples of `peak`. Testing area
+averages would require averaging `peak` over each destination footprint.
+Use the test that matches the meaning of your data.
 
-## Making a source space point-samplable
+## Implementing point interpolation for a source space
 
-A `GlobalRegridding.RegridSpace` answers point queries by describing, for one
-destination point, the polygon of its own sample sites containing it. Three
-hooks and a small closed set of names:
+To add point interpolation to a `GlobalRegridding.RegridSpace`, describe the
+polygon of source sample sites surrounding a destination point. Implement
+these three hooks:
 
   - `GlobalRegridding.hasdualcells(space)` returns `true`. A space declaring
     neither this nor `hascellchart` is refused rather than silently answering

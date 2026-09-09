@@ -132,6 +132,19 @@ end
 @inline lon_distance(a::Float64, b::Float64) = abs(lon_delta(a, b))
 
 """
+    ispole(p) -> Bool
+
+Is this unit-sphere point a pole?
+
+A pole is the one point of the sphere longitude does not name: `atand(0, 0)` is
+`0`, not "any", so a corner sitting there would otherwise be read as a corner on
+the prime meridian and drag the ring's whole longitude bookkeeping with it.
+Every cell corner that lands exactly on the axis is one of these — the four
+HEALPix cells meeting at each pole all have one.
+"""
+@inline ispole(p) = p[1] * p[1] + p[2] * p[2] < 1.0e-18
+
+"""
     ring_lonlat!(buf, ring, n) -> winding
 
 Fill `buf` with the ring as longitude/latitude in degrees, unwrapped so that it
@@ -151,6 +164,10 @@ ambiguous.  A longer one can be, and rather than guess, [`trace_edge!`](@ref)
 walks it.  Because that only happens near a pole, it is kept off the common
 path: the loop below notes the longest step it took, and only if one was long
 does the ring get traced again with care.
+
+A corner *at* a pole is handed over as well, whatever its steps measure: it has
+no longitude, so the winding computed around it would be a fiction — see
+[`ispole`](@ref).
 """
 function ring_lonlat!(buf::Vector{Point2d}, ring, n::Int)
     resize!(buf, n)
@@ -158,6 +175,7 @@ function ring_lonlat!(buf::Vector{Point2d}, ring, n::Int)
     longest = 0.0
     @inbounds for k in 1:n
         p = ring[k]
+        ispole(p) && return trace_ring!(buf, ring, n)
         lon = atand(p[2], p[1])
         lat = asind(clamp(p[3], -1.0, 1.0))
         if k > 1
@@ -178,25 +196,57 @@ end
 """
     trace_ring!(buf, ring, n) -> winding
 
-[`ring_lonlat!`](@ref) for a ring with an edge long enough in longitude to be
-ambiguous — which in practice means an edge running over or beside a pole.
+[`ring_lonlat!`](@ref) for a ring the common path cannot read: one with an edge
+long enough in longitude to be ambiguous, or with a corner at a pole.  Both mean
+the same thing in practice — the cell reaches a pole.
 
 Every such edge is walked by [`trace_edge!`](@ref), so `buf` can come out longer
 than the ring: an edge that runs exactly across a pole gets the two pole corners
 it passes through inserted, which is what turns a cell merely *touching* the
 pole into a polygon that closes along the top of the map instead of one that
 guesses a side and smears.
+
+A corner at a pole gets the same two corners, for the same reason.  It is also
+where the walk must not *start*: the corner has no longitude to start from, and
+seeding the walk with the `0` that `atand(0, 0)` returns tilts every step after
+it — enough, on a cell whose wedge is a quarter turn, to make the ring look like
+it wound most of the way around the pole, so that it is drawn as a band across
+the whole map instead of as a cell.
 """
 function trace_ring!(buf::Vector{Point2d}, ring, n::Int)
     reference = reference_longitude(ring, n)
     empty!(buf)
-    previous = atand(ring[1][2], ring[1][1])
+    start = 1
+    @inbounds while start <= n && ispole(ring[start])
+        start += 1
+    end
+    start > n && return 0.0   # every corner on the axis: nothing to draw
+    previous = @inbounds atand(ring[start][2], ring[start][1])
     first_lon = previous
-    @inbounds for k in 1:n
+    @inbounds for j in 0:(n - 1)
+        k = start + j
+        k > n && (k -= n)
         a = ring[k]
         b = ring[k == n ? 1 : k + 1]
-        push!(buf, Point2d(previous, asind(clamp(a[3], -1.0, 1.0))))
-        previous = trace_edge!(buf, a, b, previous, reference, 24)
+        if ispole(a)
+            # Both edges meeting at a pole run along their own meridians, so the
+            # ring arrives on the longitude it left the last corner at and
+            # departs on the next corner's.  The short way between the two is
+            # the sweep that belongs to the cell, because a cell's interior
+            # angle at a corner is under half a turn; the two points that says
+            # are what closes the polygon along the top or bottom of the map.
+            pole = a[3] >= 0 ? 90.0 : -90.0
+            target = ispole(b) ? previous :
+                previous + lon_delta(atand(b[2], b[1]), previous)
+            push!(buf, Point2d(previous, pole))
+            push!(buf, Point2d(target, pole))
+            previous = target
+        else
+            push!(buf, Point2d(previous, asind(clamp(a[3], -1.0, 1.0))))
+            # An edge ending at a pole is `a`'s own meridian: longitude stays
+            # where it is, and `b` has none to move it to.
+            ispole(b) || (previous = trace_edge!(buf, a, b, previous, reference, 24))
+        end
     end
     return previous - first_lon
 end

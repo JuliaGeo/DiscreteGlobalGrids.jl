@@ -28,6 +28,19 @@ DGG.cell_boundary(::PolarSource, ::Int) =
     [DGG.UnitSphericalPoint(cosd(80) * cosd(a), cosd(80) * sind(a), sind(80))
         for a in 0.0:60.0:300.0]
 
+"A unit-sphere point from longitude and latitude in degrees."
+sphere(lon, lat) = DGG.UnitSphericalPoint(cosd(lat) * cosd(lon), cosd(lat) * sind(lon),
+    sind(lat))
+
+"""
+A one-cell grid whose cell has a corner *at* the north pole, listed first: the
+shape HEALPix puts around each pole, where four cells meet at a point.
+"""
+struct PoleCornerSource end
+
+DGG.cell_boundary(::PoleCornerSource, ::Int) =
+    [sphere(0.0, 90.0), sphere(0.0, 85.0), sphere(45.0, 85.0), sphere(90.0, 85.0)]
+
 "The signed area of a spherical triangle, from its three unit-sphere corners."
 function spherical_area(a, b, c)
     triple = a[1] * (b[2] * c[3] - b[3] * c[2]) -
@@ -180,6 +193,44 @@ end
         mesh = DGGV.tessellate(planar(), DGG.levelgrid(SYS, 0))
         at_pole = findall(p -> abs(p[2]) == 90.0, mesh.positions)
         @test length(unique(mesh.vertex_cell[at_pole])) == 4
+    end
+
+    @testset "a cell with a corner at a pole" begin
+        # HEALPix meets four cells at a point on each pole.  A corner there has
+        # no longitude of its own, and reading the `0` that `atand(0, 0)`
+        # returns as one tilted every step of the ring after it: a quarter-turn
+        # cell came out winding three quarters of the way around the pole, was
+        # taken for a cell *containing* one, and was drawn as a band across the
+        # whole map — the streak from the centre of an azimuthal map to its
+        # pole.
+        source = PoleCornerSource()
+        ring = DGG.cell_boundary(source, 1)
+        buffer = Point2d[]
+        @test abs(DGGV.ring_lonlat!(buffer, ring, length(ring))) < 1.0e-9
+        # The pole corner is drawn as two, one on each meridian the cell's edges
+        # arrive and leave on, so that the ring closes along the top of the map.
+        @test length(buffer) == length(ring) + 1
+        @test count(p -> p[2] == 90.0, buffer) == 2
+
+        mesh = DGGV.tessellate(planar(), DGGV.CellSet(source, [1]))
+        @test DGGV.nrings(mesh) == 1
+        @test maximum(lats(mesh)) == 90.0
+        @test extrema(lons(mesh)) == (0.0, 90.0)
+
+        # And on the grid the case comes from: no HEALPix cell contains a pole,
+        # so none may be drawn as a band, at any level.
+        for level in 0:3
+            grid = DGG.levelgrid(DGG.HEALPixSystem(), level)
+            mesh = DGGV.tessellate(planar(), grid)
+            @test length(unique(mesh.vertex_cell)) == DGG.ncells(grid)
+            @test maximum(lats(mesh)) == 90.0
+            @test minimum(lats(mesh)) == -90.0
+            for i in 1:DGGV.nrings(mesh)
+                span = mesh.ring_start[i]:(mesh.ring_start[i + 1] - 1)
+                width = maximum(lons(mesh)[span]) - minimum(lons(mesh)[span])
+                @test width <= 90.0 + 1.0e-9   # a base cell's own width
+            end
+        end
     end
 
     @testset "a cell containing a pole" begin

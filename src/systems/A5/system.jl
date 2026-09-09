@@ -9,7 +9,9 @@ The canonical id is [`A5Cell`](@ref); projection, hierarchy, geometry, and
 adjacency follow upstream a5. A5 is equal-area on the *ellipsoid* and its
 coordinates are geodetic, so unit-sphere [`cell_area`](@ref) carries the
 authalic conversion and varies about 1% peak to peak within a level, still
-summing to 4π.
+summing to 4π. Being geodetic already, this system cannot be wrapped in
+[`AuthalicSystem`](@ref) — that wrapper converts a system that publishes
+authalic latitude, and A5 has done the conversion itself.
 
 The encoding also represents a level `-1` world cell and 42 of 60 level-30
 quintants; neither belongs to a complete system level.
@@ -106,8 +108,9 @@ end
 to level-1 quintant fan-out.
 
   - [`treeify`](@ref) uses selection mode and materializes root indices;
-    prefer a [`PartialGrid`](@ref) for deep grids — a complete one is O(cells)
-    in memory and not viable past about level 12.
+    prefer a [`PartialGrid`](@ref DiscreteGlobalGrids.Engine.PartialGrid) for
+    deep grids — a complete one is O(cells) in memory and not viable past
+    about level 12.
   - `MultiOrderCellSet` orders by `(level, index)` rather than by curve
     interval, and `level_ranges` on one raises an `ArgumentError`.
   - [`descendants`](@ref) is overridden to avoid level-by-level expansion.
@@ -124,8 +127,8 @@ has_direct_location(::A5System) = true
 
 A5's four Hilbert children cover their parent's area but can extend beyond its
 footprint. The measured descendant-to-cell-cap ratio reaches `1.45363`, with an
-extrapolated bound of `1.47078`; `1.75` preserves the [`node_extent`](@ref)
-covering invariant.
+extrapolated bound of `1.47078`; `1.75` preserves the
+[`node_extent`](@ref DiscreteGlobalGrids.node_extent) covering invariant.
 """
 cap_inflation(::A5System) = 1.75
 

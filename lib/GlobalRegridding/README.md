@@ -1,61 +1,97 @@
 # GlobalRegridding.jl
 
-Regrid spherical cell collections eagerly or in chunks. The source and
-destination are both `RegridSpace`s, so a regridding method is written once and
-runs between any pair of them.
+Remap data from one grid to another, using a variety of methods.
+
+GlobalRegridding currently focuses on spherical regridding, with
+plans to generalize to planar regridding. It supports conservative area
+weighting, point sampling, and interpolation. It computes results eagerly or
+reads them on demand in chunks.
+
+This is an extension of the concept from [ConservativeRegridding.jl](https://github.com/JuliaGeo/ConservativeRegridding.jl),
+but meant to also support:
+- derivative-aware and interpolating regridding, which requires neighbourhood information,
+- chunk-aware regridding for big data,
+- lazy and cached regridding for reuse across multidimensional datasets.
+
+
+Grids are described by the `RegridSpace` interface.  In here, we define the `RasterGrid`, which assumes longitude and latitude in degrees.
+Other packages like [DiscreteGlobalGrids.jl](../../README.md) define other spaces for their grids.
+
+## Quick start
+
+Use Julia 1.11 or later.  In the REPL, type:
+```julia
+using Pkg
+Pkg.add("GlobalRegridding")
+```
+to add the package.  Then, load via `using GlobalRegridding`.
+
+
+
+Choose a method with the `method` keyword.  Currently, three methods are implemented,
+though we'll add more in the future:
+
+- `Conservative()` constructs weights by the overlap of the source and destination cells.  This is the same as ConservativeRegridding's default method.
+- `NearestCell()` samples the source cell containing the destination cell's centroid.  This is a nearest neighbor interpolation.
+- `BarycentricPoint()` interpolates the value at the destination cell's centroid by a weighted average of the source cell values, following [Barycentric interpolation](https://en.wikipedia.org/wiki/Barycentric_coordinate_system).
+
+Point methods do not preserve integrals. This example uses `Conservative()` to
+coarsen a global raster from 10° to 20° cells:
 
 ```julia
-regrid(data; to, method = Conservative())   # build a plan, apply it, drop it
-plan = plan_regrid(data; to, method)        # keep it
-regrid(data, plan)                          # reuse across slices and reads
+using GlobalRegridding
+using DimensionalData
+
+lon = collect(-175.0:10.0:175.0)
+lat = collect(-85.0:10.0:85.0)
+data = DimArray([cosd(y) * cosd(x) for x in lon, y in lat],
+                (X(lon), Y(lat)))
+target = RasterGrid(DimArray(zeros(18, 9),
+    (X(collect(-170.0:20.0:170.0)), Y(collect(-80.0:20.0:80.0)))))
+
+result = regrid(data; to = target, method = Conservative())
+size(result)  # (18, 9)
+
+# Keep the weights for repeated use on the same grids.
+plan = plan_regrid(data; to = target, method = Conservative())
+result = regrid(data, plan)
 ```
 
-A dimensional source comes back on the destination's own axes — `RasterGrid`
-gives `(X, Y)` — sampled as the method implies: `Intervals` for area-based
-methods, `Points` for point samples, or whatever `sampling` says.
+`RasterGrid` assumes longitude and latitude in degrees; projected coordinates
+require an explicit transform. For plain arrays, supply a source space with
+`from`. Put spatial dimensions first, in the source space's cell order.
+Dimensional results use the destination's axes and retain non-spatial dimensions,
+such as time.
 
-`RasterGrid` is the built-in space. `DiscreteGlobalGrids.jl` supplies
-`DGGSpace` for its grid systems, and is the reference for what a space package
-has to provide.
+## API
 
-Regridding is threaded, and at high thread counts it wants `--gcthreads=8` as
-well: at `-t 64` the default GC thread count leaves the serial tail spinning at
-~300 % CPU, and pinning the mark threads at 8 cuts wall time a further ~7 %, in
-place of the default of one mark thread per worker thread.
+| API | Purpose |
+| --- | --- |
+| `regrid(data; to, from, method, ...)` | Build a plan and return the regridded data. Only `to` is required. |
+| `plan_regrid(data; to, ...)` | Build a reusable plan without reading source values. |
+| `regrid(data, plan)` | Apply an existing plan to compatible data. |
+| `regrid!(dest, data, plan)` | Write results into a preallocated array. |
+| `RasterGrid(data_or_dims; ...)` | Describe raster cells from a dimensional array or a tuple of dimensions. |
 
-Do **not** add the optional second field. `--gcthreads=N,1` also starts Julia's
-*concurrent page sweeper*, which `madvise`s freed pages from a background thread
-while the workers run — and on 2026-08-21 a production regrid died of a SIGSEGV
-whose signature is a page released out from under a live object, with no
-out-of-bounds access, no unsafe code and no unsynchronized state anywhere on the
-path. `M` defaults to `0`; leave it there. The measured ~7 % is the mark threads,
-not the sweeper.
+See the [API docstrings](src/api.jl) for all keywords.
 
-## Extension surface
+## How it works
 
-A package that supplies its own space implements the `RegridSpace` interface —
-`celltree`, `nchunks`, `ownedindices`, `ncells`, `getcell`,
-`cellcentroid`, `cellat`, `hascellchart`, `manifold` — all exported — plus the
-unexported-but-public `chunkextents`, which every space must answer. A space's
-chunk caps come from `chunkextents`, and a chunk query from `candidatechunks!`
-on its `chunkindex`.
+1. Source and destination spaces describe cell geometry, cell order, and spatial
+   indexes on a common sphere.
+2. The method builds weights from geometry. `Conservative()` uses spherical
+   polygon intersection areas; point methods use source samples.
+3. A plan applies these weights to each field or time slice. Eager plans store
+   one sparse weight block. Lazy plans build and cache blocks as needed.
 
-Five further names are unexported but load-bearing from outside, and their
-signatures are as fixed as the exported ones:
+The default `Weighted(0.5)` policy returns means normalized by valid source
+weight. It marks results as missing when valid weight falls below 50% of the
+source-covered weight, or no valid weight remains. `missing`, `NaN`, and declared
+nodata values do not contribute. `Extensive()` returns unnormalized weighted
+sums; with `Conservative()`, these represent integrals over valid source coverage.
 
-| Name | Where | Role |
-|:--|:--|:--|
-| `_asspace(target, name[, src_space])` | `src/api.jl` | resolve a `to`/`from` argument spelling into a `RegridSpace` |
-| `subtree(space, inds)` | `src/conservative.jl` | cell tree restricted to one chunk |
-| `chunkextents(space)` | `src/discovery.jl` | per-chunk spherical caps |
-| `resolvespatialdims(data, nsrc)` | `src/executor.jl` | which array dimensions a regrid replaces |
-| `dimsource(lookup)` | `src/spaces.jl` | the `from` a lookup already names |
-
-Observability and finer extension points are marked `public` in
-`src/GlobalRegridding.jl`.
-
-## Tests
-
-```
-julia --project=lib/GlobalRegridding -e 'using Pkg; Pkg.test()'
-```
+Chunked sources default to lazy execution; set `lazy = true` to request it
+explicitly. A chunk dependency graph identifies which source chunks each
+destination chunk needs. For lazy execution, `chunks` sets destination tiling
+and `budget` sets a memory target in bytes. Use `storage = Spilled(dir)` to store
+weights on disk.

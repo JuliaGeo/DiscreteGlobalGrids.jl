@@ -236,6 +236,13 @@ Base.include(CopernicusDEM, joinpath(@__DIR__, "systems", "CopernicusDEM", "poin
 include("sizing.jl")
 include("deprecated.jl")
 
+# Package-owned raster verbs: keyword destinations cannot dispatch Rasters verbs.
+include("raster/common.jl")
+include("raster/selection.jl")
+include("raster/rasterize.jl")
+include("raster/extract.jl")
+include("raster/zonal.jl")
+
 # CopernicusDEM is deliberately absent: registering a system enrols it in every
 # cross-system sweep, whose hardcoded cases and level choices assume a globally
 # uniform cell size. Reach for it by name: `DGG.CopernicusDEMSystem(90)`.

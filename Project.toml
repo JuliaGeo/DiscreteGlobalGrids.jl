@@ -33,6 +33,10 @@ Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 [sources.GlobalRegridding]
 path = "lib/GlobalRegridding"
 
+[sources.GeometryOps]
+url = "https://github.com/JuliaGeo/GeometryOps.jl.git"
+rev = "ecaa0d71cb9eb8a6cdfc17a6a21dc03270b232b3"
+
 [extensions]
 DiscreteGlobalGridsRastersExt = "Rasters"
 DiscreteGlobalGridsKaHyParExt = ["KaHyPar_jll"]
@@ -49,7 +53,7 @@ ConservativeRegridding = "0.2.10"
 DE9IM = "0.1"
 DiskArrays = "0.4"
 GeoInterface = "1"
-GeometryOps = "0.1.45"
+GeometryOps = "0.1.47"
 GeometryOpsCore = "0.1.12"
 KaHyPar_jll = "1.3.5"
 Metis = "1.5"

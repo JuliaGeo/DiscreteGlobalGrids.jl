@@ -142,15 +142,16 @@ end
 function _raster_leaf_matches(prepared, grid, i, boundary)
     c = cellindex(grid, i)
     if prepared.polygon
-        covered = _raster_relate(prepared.target, GO.pred_intersects,
-            cell_centroid(grid, c))
+        covered = GO.relate_predicate(prepared.target.prepared,
+            GO.pred_intersects(), cell_centroid(grid, c))
         boundary === :center && return covered
         boundary === :intersects && covered && return true
         boundary === :inside && !covered && return false
     end
     predicate = prepared.polygon && boundary === :inside ?
-        GO.pred_contains : GO.pred_intersects
-    return _raster_relate(prepared.target, predicate, cell_polygon(grid, c))
+        GO.pred_contains() : GO.pred_intersects()
+    return GO.relate_predicate(prepared.target.prepared, predicate,
+        cell_polygon(grid, c))
 end
 
 # The intersection sandwich scans only edge buckets that survived both trees.
@@ -161,8 +162,8 @@ function _raster_candidate_matches(prepared, grid, i, boundary, frontier)
     prepared.edges === nothing && return _raster_leaf_matches(prepared, grid, i, boundary)
     c = cellindex(grid, i)
     centroid = cell_centroid(grid, c)
-    prepared.polygon && _raster_relate(prepared.target,
-        GO.pred_intersects, centroid) && return true
+    prepared.polygon && GO.relate_predicate(prepared.target.prepared,
+        GO.pred_intersects(), centroid) && return true
     ring = Fallbacks.closed_ring(cell_boundary(grid, c))
     cap = Fallbacks.points_cap(ring)
     localfrontier = Int[]
@@ -175,7 +176,7 @@ function _raster_candidate_matches(prepared, grid, i, boundary, frontier)
     end
     verdict = Engine._sandwich(arcs, centroid, ring)
     verdict == 0 || return verdict > 0
-    return _raster_relate(prepared.target, GO.pred_intersects,
+    return GO.relate_predicate(prepared.target.prepared, GO.pred_intersects(),
         GI.Polygon([GI.LinearRing(ring)]))
 end
 
@@ -196,8 +197,8 @@ function _raster_descend!(out, node, grid, prepared, frontier, boundary)
         if isempty(nextfrontier)
             prepared.polygon || return out
             i = _raster_witness_index(node)
-            covered = _raster_relate(prepared.target, GO.pred_intersects,
-                cell_centroid(grid, cellindex(grid, i)))
+            covered = GO.relate_predicate(prepared.target.prepared,
+                GO.pred_intersects(), cell_centroid(grid, cellindex(grid, i)))
             covered && _raster_emit!(out, node)
             return out
         end

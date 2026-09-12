@@ -238,7 +238,6 @@ include("deprecated.jl")
 
 # Package-owned raster verbs: keyword destinations cannot dispatch Rasters verbs.
 include("raster/common.jl")
-include("raster/predicates.jl")
 include("raster/selection.jl")
 include("raster/rasterize.jl")
 include("raster/extract.jl")

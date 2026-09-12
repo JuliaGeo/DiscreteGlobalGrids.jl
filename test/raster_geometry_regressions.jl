@@ -91,11 +91,19 @@ function random_geometries(rng, count)
 end
 
 @testset "spherical crossing projection regressions" begin
+    equator = GI.LineString([(0.0, 0.0), (10.0, 0.0)])
+    meridian = GI.LineString([(5.0, -1.0), (5.0, 1.0)])
+    equator_prepared = GO.prepare(GO.RelateNG(; manifold=GO.Spherical()), equator)
+    @test GO.relate_predicate(equator_prepared, GO.pred_intersects(), meridian)
+
     # The unique minor arc runs east along the equator. Z7Cell("1006")
     # (local index 416) straddles it: its vertices range from -6.39° to
     # +6.39° latitude and 163.98° to 172.79° longitude.
     grid = DGG.levelgrid(DGG.IGeo7System(), 2)
     almost_antipodal = GI.LineString([(0.0, 0.0), (179.999999, 0.0)])
+    almost_antipodal_prepared = DGG._prepare_raster_geometry(almost_antipodal)
+    @test GO.relate_predicate(almost_antipodal_prepared.target.prepared,
+        GO.pred_intersects(), DGG.cell_polygon(grid, DGG.cellindex(grid, 416)))
     @test DGG._raster_indices(grid, almost_antipodal; boundary=:intersects) ==
         [162, 163, 165, 166, 168, 170, 173, 174, 185, 187, 188, 191,
          234, 237, 238, 385, 389, 406, 411, 412, 416, 432, 435, 436, 450]
@@ -106,6 +114,11 @@ end
     # chords have a singular projection into the XY plane.
     grid = DGG.levelgrid(DGG.HEALPixSystem(), 2)
     with_equatorial_hole = deterministic_geometries()[5]
+    with_hole_prepared = DGG._prepare_raster_geometry(with_equatorial_hole)
+    for i in (71, 74)
+        @test !GO.relate_predicate(with_hole_prepared.target.prepared,
+            GO.pred_contains(), DGG.cell_polygon(grid, DGG.cellindex(grid, i)))
+    end
     @test DGG._raster_indices(grid, with_equatorial_hole; boundary=:inside) ==
         [66, 67, 69, 72, 73, 76, 78, 79]
 end
@@ -119,10 +132,6 @@ end
         grid = DGG.levelgrid(system, first(DGG.levels(system)) + 2)
         for (j, geometry) in pairs(geometries)
             for boundary in (:inside, :center, :intersects)
-                # Covered by the focused tests above. On the affected
-                # GeometryOps release these throw before an oracle exists.
-                system isa DGG.IGeo7System && j == 10 && continue
-                system isa DGG.HEALPixSystem && j == 5 && boundary === :inside && continue
                 @test check_selection(grid, geometry, boundary;
                     label="geometry $j")
             end

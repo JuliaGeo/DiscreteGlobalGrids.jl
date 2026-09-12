@@ -95,3 +95,7 @@ explicitly. A chunk dependency graph identifies which source chunks each
 destination chunk needs. For lazy execution, `chunks` sets destination tiling
 and `budget` sets a memory target in bytes. Use `storage = Spilled(dir)` to store
 weights on disk.
+
+## AI disclosure
+
+This package was created with the help of AI agents, including Claude and Codex, and will continue to be developed with these agents.

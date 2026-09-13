@@ -430,7 +430,8 @@ end
         known = [cell_centroid(big.grid, c) for c in big])
     @test sweepbytes(slopesum, big, (Value(bigdata), Value(full));
         threaded = false) ==
-          sweepbytes(valuesum, big, (Value(bigdata),); threaded = false)
+          sweepbytes(valuesum, big, (Value(bigdata),); threaded = false) skip =
+        VERSION < v"1.12"
 end
 
 # A field request on a cube runs the same sweep on the cell axis and hands
